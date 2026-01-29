@@ -18,4 +18,5 @@ klipper-mcu = { path = "../klipper-mcu" }
 tmc4671 = { path = "../tmc4671" }
 
 [dev-dependencies]
-embedded-hal-mock = { version = "0.11", features = ["eh1"] }
+embedded-hal-mock = { version = "0.11", features = ["eh1", "embedded-hal-async"] }
+tokio = { version = "1", features = ["macros", "rt"] }

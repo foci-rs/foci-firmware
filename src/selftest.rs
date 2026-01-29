@@ -199,6 +199,118 @@ where
     })
 }
 
+/// Minimum ADC current reading (absolute) to consider a motor coil present.
+/// Determined empirically during hardware bring-up. This is a raw ADC
+/// value after offset subtraction, not milliamps.
+const MOTOR_CURRENT_THRESHOLD: u16 = 200;
+
+/// Result from a single coil test.
+struct CoilTestResult {
+    /// Current reading on the expected ADC channel.
+    current_expected: i16,
+    /// Current reading on the other ADC channel.
+    current_other: i16,
+}
+
+/// Apply voltage to one phase via UD_EXT, measure current on both channels.
+///
+/// Sets up open-loop voltage mode (MODE=8) with external PHI_E, applies
+/// voltage on the selected phase, waits for current to settle, and reads
+/// the ADC. The motor is stopped before returning.
+///
+/// # Parameters
+/// - `tmc`: mutable reference to the TMC4671 SPI driver
+/// - `enable_pin`: mutable reference to the motor enable output pin
+/// - `delay`: mutable reference to an async delay source
+/// - `phase`: 0 for UX (coil A, phi_e=0), 1 for WY (coil B, phi_e=16384)
+/// - `voltage`: test voltage magnitude (UD_EXT value, bits [15:0])
+///
+/// # Returns
+/// `Some(CoilTestResult)` with current readings, `None` on SPI error.
+async fn selftest_coil_test<SPI, PIN, D, E>(
+    tmc: &mut Tmc4671Spi<SPI>,
+    enable_pin: &mut PIN,
+    delay: &mut D,
+    phase: u8,
+    voltage: u32,
+) -> Option<CoilTestResult>
+where
+    SPI: SpiDevice<u8, Error = E>,
+    PIN: OutputPin,
+    D: DelayNs,
+{
+    use tmc4671::registers::*;
+
+    // Set PHI_E source to external
+    tmc.write_register(PHI_E_SELECTION, 1).await.ok()?;
+
+    // Set electrical angle: 0 for UX (D-axis), 16384 for WY (Q-axis / 90 deg)
+    let phi_e = if phase == 0 { 0u32 } else { 16384 };
+    tmc.write_register(PHI_E_EXT, phi_e).await.ok()?;
+
+    // Apply voltage via UQ_UD_EXT in voltage mode (MODE=8: UQ_UD_EXT)
+    // UD_EXT in bits[15:0], UQ_EXT in bits[31:16]
+    tmc.write_register(UQ_UD_EXT, voltage & 0xFFFF).await.ok()?;
+    tmc.write_register(MODE_RAMP_MODE_MOTION, 8).await.ok()?;
+
+    // Enable and wait for current to settle
+    let _ = enable_pin.set_high();
+    delay.delay_ms(100).await;
+
+    // Read ADC current on both channels
+    let raw = tmc.read_register(ADC_IWY_IUX).await.ok()?;
+    let i_ux = (raw & 0xFFFF) as i16;
+    let i_wy = ((raw >> 16) & 0xFFFF) as i16;
+
+    // Stop motor and disable
+    tmc.write_register(MODE_RAMP_MODE_MOTION, 0).await.ok()?;
+    tmc.write_register(UQ_UD_EXT, 0).await.ok()?;
+    let _ = enable_pin.set_low();
+
+    if phase == 0 {
+        Some(CoilTestResult {
+            current_expected: i_ux,
+            current_other: i_wy,
+        })
+    } else {
+        Some(CoilTestResult {
+            current_expected: i_wy,
+            current_other: i_ux,
+        })
+    }
+}
+
+/// Check if encoder count changed between two reads.
+///
+/// Compares the current ABN decoder count against a previously captured
+/// value. Any non-zero delta indicates encoder presence and movement.
+///
+/// # Parameters
+/// - `tmc`: mutable reference to the TMC4671 SPI driver
+/// - `count_before`: encoder count captured before a motor pulse
+///
+/// # Returns
+/// `Some(delta)` if count changed, `None` if unchanged or SPI error.
+async fn selftest_encoder_presence<SPI, E>(
+    tmc: &mut Tmc4671Spi<SPI>,
+    count_before: u32,
+) -> Option<u32>
+where
+    SPI: SpiDevice<u8, Error = E>,
+{
+    use tmc4671::registers::*;
+
+    let count_after = tmc.read_register(ABN_DECODER_COUNT).await.ok()?;
+    let delta = (count_after as i32)
+        .wrapping_sub(count_before as i32)
+        .unsigned_abs();
+    if delta > 0 {
+        Some(delta)
+    } else {
+        None
+    }
+}
+
 /// Run the full 8-stage selftest sequence.
 ///
 /// The caller must ensure the motor is disabled before calling.
@@ -242,11 +354,99 @@ where
         }
     }
 
-    // Stages 2–8: not yet implemented
-    reporter.report_stage(STAGE_MOTOR_COIL_A, SELFTEST_SKIP, 0);
-    reporter.report_stage(STAGE_MOTOR_COIL_B, SELFTEST_SKIP, 0);
-    reporter.report_stage(STAGE_PHASE_WIRING, SELFTEST_SKIP, 0);
-    reporter.report_stage(STAGE_ENCODER_PRESENCE, SELFTEST_SKIP, 0);
+    // Read encoder count before motor pulses (for stage 5)
+    let encoder_before = tmc
+        .read_register(tmc4671::registers::ABN_DECODER_COUNT)
+        .await
+        .unwrap_or(0);
+
+    // Conservative test voltage for coil excitation
+    let voltage = 512u32;
+
+    // Stage 2: Motor coil A presence
+    let coil_a = selftest_coil_test(tmc, enable_pin, delay, 0, voltage).await;
+    let (coil_a_current, coil_a_other) = match coil_a {
+        Some(r) if r.current_expected.unsigned_abs() > MOTOR_CURRENT_THRESHOLD => {
+            reporter.report_stage(
+                STAGE_MOTOR_COIL_A,
+                SELFTEST_PASS,
+                r.current_expected.unsigned_abs() as u32,
+            );
+            (r.current_expected, r.current_other)
+        }
+        Some(r) => {
+            reporter.report_stage(
+                STAGE_MOTOR_COIL_A,
+                SELFTEST_FAIL,
+                r.current_expected.unsigned_abs() as u32,
+            );
+            restore_safe_state(tmc, enable_pin).await;
+            return SELFTEST_DONE_FAIL;
+        }
+        None => {
+            reporter.report_stage(STAGE_MOTOR_COIL_A, SELFTEST_FAIL, 0);
+            restore_safe_state(tmc, enable_pin).await;
+            return SELFTEST_DONE_FAIL;
+        }
+    };
+
+    // Stage 3: Motor coil B presence
+    let coil_b = selftest_coil_test(tmc, enable_pin, delay, 1, voltage).await;
+    match coil_b {
+        Some(r) if r.current_expected.unsigned_abs() > MOTOR_CURRENT_THRESHOLD => {
+            reporter.report_stage(
+                STAGE_MOTOR_COIL_B,
+                SELFTEST_PASS,
+                r.current_expected.unsigned_abs() as u32,
+            );
+        }
+        Some(r) => {
+            reporter.report_stage(
+                STAGE_MOTOR_COIL_B,
+                SELFTEST_FAIL,
+                r.current_expected.unsigned_abs() as u32,
+            );
+            restore_safe_state(tmc, enable_pin).await;
+            return SELFTEST_DONE_FAIL;
+        }
+        None => {
+            reporter.report_stage(STAGE_MOTOR_COIL_B, SELFTEST_FAIL, 0);
+            restore_safe_state(tmc, enable_pin).await;
+            return SELFTEST_DONE_FAIL;
+        }
+    }
+
+    // Stage 4: Phase wiring (derived from stage 2)
+    // If coil A test showed more current on the "other" channel than the
+    // "expected" channel, wires are swapped.
+    let wiring_ok = coil_a_other.unsigned_abs() < coil_a_current.unsigned_abs();
+    reporter.report_stage(
+        STAGE_PHASE_WIRING,
+        if wiring_ok {
+            SELFTEST_PASS
+        } else {
+            SELFTEST_FAIL
+        },
+        0,
+    );
+    if !wiring_ok {
+        restore_safe_state(tmc, enable_pin).await;
+        return SELFTEST_DONE_FAIL;
+    }
+
+    // Stage 5: Encoder presence
+    match selftest_encoder_presence::<SPI, E>(tmc, encoder_before).await {
+        Some(delta) => {
+            reporter.report_stage(STAGE_ENCODER_PRESENCE, SELFTEST_PASS, delta);
+        }
+        None => {
+            reporter.report_stage(STAGE_ENCODER_PRESENCE, SELFTEST_FAIL, 0);
+            restore_safe_state(tmc, enable_pin).await;
+            return SELFTEST_DONE_FAIL;
+        }
+    }
+
+    // Stages 6-8: not yet implemented
     reporter.report_stage(STAGE_ENCODER_DIRECTION, SELFTEST_SKIP, 0);
     reporter.report_stage(STAGE_RESISTANCE, SELFTEST_SKIP, 0);
     reporter.report_stage(STAGE_INDUCTANCE, SELFTEST_SKIP, 0);
@@ -304,6 +504,176 @@ mod tests {
     fn done_constants_are_distinct() {
         assert_ne!(SELFTEST_DONE_PASS, SELFTEST_DONE_FAIL);
         assert_ne!(SELFTEST_DONE_FAIL, SELFTEST_DONE_ABORTED);
+    }
+
+    // ---- Stages 2-5 helper tests ----
+
+    extern crate alloc;
+    use alloc::vec;
+    use alloc::vec::Vec;
+    use embedded_hal_mock::eh1::delay::NoopDelay;
+    use embedded_hal_mock::eh1::digital::{
+        Mock as PinMock, State as PinState, Transaction as PinTx,
+    };
+    use embedded_hal_mock::eh1::spi::{Mock as SpiMock, Transaction as SpiTx};
+    use tmc4671::registers::*;
+
+    /// Helper: build SPI write transaction wrapped in transaction start/end.
+    /// Returns 3 expectations: TransactionStart, Write, TransactionEnd.
+    fn spi_write(reg: Register, value: u32) -> Vec<SpiTx<u8>> {
+        let bytes = value.to_be_bytes();
+        vec![
+            SpiTx::transaction_start(),
+            SpiTx::write_vec(vec![
+                reg.addr() | 0x80,
+                bytes[0],
+                bytes[1],
+                bytes[2],
+                bytes[3],
+            ]),
+            SpiTx::transaction_end(),
+        ]
+    }
+
+    /// Helper: build SPI read transaction wrapped in transaction start/end.
+    /// Returns 3 expectations: TransactionStart, TransferInPlace, TransactionEnd.
+    fn spi_read(reg: Register, value: u32) -> Vec<SpiTx<u8>> {
+        let bytes = value.to_be_bytes();
+        vec![
+            SpiTx::transaction_start(),
+            SpiTx::transfer_in_place(
+                vec![reg.addr(), 0, 0, 0, 0],
+                vec![0, bytes[0], bytes[1], bytes[2], bytes[3]],
+            ),
+            SpiTx::transaction_end(),
+        ]
+    }
+
+    /// Flatten multiple SPI transaction groups into a single expectations vec.
+    fn spi_expectations(groups: Vec<Vec<SpiTx<u8>>>) -> Vec<SpiTx<u8>> {
+        groups.into_iter().flatten().collect()
+    }
+
+    #[tokio::test]
+    async fn coil_test_phase0_returns_ux_as_expected() {
+        // Phase 0 (coil A): current on UX channel is "expected", WY is "other".
+        // ADC_IWY_IUX: IWY in [31:16], IUX in [15:0].
+        let i_ux: i16 = 500;
+        let i_wy: i16 = 30;
+        let adc_raw = ((i_wy as u16 as u32) << 16) | (i_ux as u16 as u32);
+
+        let expectations = spi_expectations(vec![
+            spi_write(PHI_E_SELECTION, 1),
+            spi_write(PHI_E_EXT, 0),
+            spi_write(UQ_UD_EXT, 512),
+            spi_write(MODE_RAMP_MODE_MOTION, 8),
+            spi_read(ADC_IWY_IUX, adc_raw),
+            spi_write(MODE_RAMP_MODE_MOTION, 0),
+            spi_write(UQ_UD_EXT, 0),
+        ]);
+        let spi = SpiMock::new(&expectations);
+        let mut tmc = Tmc4671Spi::new(spi);
+        let pin_expectations = [PinTx::set(PinState::High), PinTx::set(PinState::Low)];
+        let mut pin = PinMock::new(&pin_expectations);
+        let mut delay = NoopDelay::new();
+
+        let result = selftest_coil_test(&mut tmc, &mut pin, &mut delay, 0, 512)
+            .await
+            .unwrap();
+        assert_eq!(result.current_expected, i_ux);
+        assert_eq!(result.current_other, i_wy);
+
+        tmc.into_inner().done();
+        pin.done();
+    }
+
+    #[tokio::test]
+    async fn coil_test_phase1_returns_wy_as_expected() {
+        // Phase 1 (coil B): current on WY channel is "expected", UX is "other".
+        let i_ux: i16 = 25;
+        let i_wy: i16 = 480;
+        let adc_raw = ((i_wy as u16 as u32) << 16) | (i_ux as u16 as u32);
+
+        let expectations = spi_expectations(vec![
+            spi_write(PHI_E_SELECTION, 1),
+            spi_write(PHI_E_EXT, 16384),
+            spi_write(UQ_UD_EXT, 512),
+            spi_write(MODE_RAMP_MODE_MOTION, 8),
+            spi_read(ADC_IWY_IUX, adc_raw),
+            spi_write(MODE_RAMP_MODE_MOTION, 0),
+            spi_write(UQ_UD_EXT, 0),
+        ]);
+        let spi = SpiMock::new(&expectations);
+        let mut tmc = Tmc4671Spi::new(spi);
+        let pin_expectations = [PinTx::set(PinState::High), PinTx::set(PinState::Low)];
+        let mut pin = PinMock::new(&pin_expectations);
+        let mut delay = NoopDelay::new();
+
+        let result = selftest_coil_test(&mut tmc, &mut pin, &mut delay, 1, 512)
+            .await
+            .unwrap();
+        assert_eq!(result.current_expected, i_wy);
+        assert_eq!(result.current_other, i_ux);
+
+        tmc.into_inner().done();
+        pin.done();
+    }
+
+    #[tokio::test]
+    async fn encoder_presence_detects_movement() {
+        let count_before = 1000u32;
+        let count_after = 1050u32;
+
+        let expectations = spi_expectations(vec![spi_read(ABN_DECODER_COUNT, count_after)]);
+        let spi = SpiMock::new(&expectations);
+        let mut tmc = Tmc4671Spi::new(spi);
+
+        let result =
+            selftest_encoder_presence::<_, embedded_hal::spi::ErrorKind>(&mut tmc, count_before)
+                .await;
+        assert_eq!(result, Some(50));
+
+        tmc.into_inner().done();
+    }
+
+    #[tokio::test]
+    async fn encoder_presence_returns_none_when_unchanged() {
+        let count = 1000u32;
+
+        let expectations = spi_expectations(vec![spi_read(ABN_DECODER_COUNT, count)]);
+        let spi = SpiMock::new(&expectations);
+        let mut tmc = Tmc4671Spi::new(spi);
+
+        let result =
+            selftest_encoder_presence::<_, embedded_hal::spi::ErrorKind>(&mut tmc, count).await;
+        assert_eq!(result, None);
+
+        tmc.into_inner().done();
+    }
+
+    #[tokio::test]
+    async fn encoder_presence_handles_wraparound() {
+        // Counter wrapping from near-max to near-zero
+        let count_before = u32::MAX - 10;
+        let count_after = 20u32;
+
+        let expectations = spi_expectations(vec![spi_read(ABN_DECODER_COUNT, count_after)]);
+        let spi = SpiMock::new(&expectations);
+        let mut tmc = Tmc4671Spi::new(spi);
+
+        let result =
+            selftest_encoder_presence::<_, embedded_hal::spi::ErrorKind>(&mut tmc, count_before)
+                .await;
+        assert_eq!(result, Some(31)); // wrapping distance
+
+        tmc.into_inner().done();
+    }
+
+    #[test]
+    fn motor_current_threshold_is_reasonable() {
+        // Threshold must be > 0 and small enough to detect a connected motor
+        assert!(MOTOR_CURRENT_THRESHOLD > 0);
+        assert!(MOTOR_CURRENT_THRESHOLD < 1000);
     }
 
     #[test]
