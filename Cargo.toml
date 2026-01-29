@@ -11,5 +11,11 @@ defmt = ["dep:defmt"]
 
 [dependencies]
 defmt = { workspace = true, optional = true }
+embedded-hal = { workspace = true }
+embedded-hal-async = { workspace = true }
 heapless.workspace = true
 klipper-mcu = { path = "../klipper-mcu" }
+tmc4671 = { path = "../tmc4671" }
+
+[dev-dependencies]
+embedded-hal-mock = { version = "0.11", features = ["eh1"] }
