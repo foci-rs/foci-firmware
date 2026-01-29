@@ -24,7 +24,7 @@ pub enum TmcRequest {
     /// Set encoder count direction.
     SetEncoderDir { invert: bool },
     /// Trigger TMC4671 self-test diagnostic.
-    SelfTest,
+    SelfTest { oid: u8 },
     /// Dump all registers via klipper_output protocol.
     DumpRegisters { oid: u8 },
     /// Write a TMC4671 register via SPI (dev-only).
@@ -71,8 +71,8 @@ pub fn tmc_set_encoder_dir(invert: bool) -> TmcRequest {
 }
 
 /// Build a `SelfTest` request.
-pub fn tmc_selftest() -> TmcRequest {
-    TmcRequest::SelfTest
+pub fn tmc_selftest(oid: u8) -> TmcRequest {
+    TmcRequest::SelfTest { oid }
 }
 
 /// Build a `Calibrate` request.
@@ -148,7 +148,7 @@ mod tests {
 
     #[test]
     fn tmc_selftest_builds_request() {
-        assert_eq!(tmc_selftest(), TmcRequest::SelfTest);
+        assert_eq!(tmc_selftest(5), TmcRequest::SelfTest { oid: 5 });
     }
 
     #[test]
