@@ -318,19 +318,22 @@ where
 ///
 /// # Parameters
 /// - `tmc`: mutable reference to the TMC4671 SPI driver
+/// - `enable_pin`: mutable reference to the motor enable output pin
 /// - `delay`: mutable reference to an async delay source
 /// - `voltage`: test voltage magnitude (UD_EXT value, bits [15:0])
 ///
 /// # Returns
 /// `Some(0)` if forward (count increases), `Some(1)` if reversed,
 /// `None` on SPI error.
-async fn selftest_encoder_direction<SPI, D, E>(
+async fn selftest_encoder_direction<SPI, PIN, D, E>(
     tmc: &mut Tmc4671Spi<SPI>,
+    enable_pin: &mut PIN,
     delay: &mut D,
     voltage: u32,
 ) -> Option<u8>
 where
     SPI: SpiDevice<u8, Error = E>,
+    PIN: OutputPin,
     D: DelayNs,
 {
     use tmc4671::registers::*;
@@ -343,6 +346,9 @@ where
     tmc.write_register(UQ_UD_EXT, voltage & 0xFFFF).await.ok()?;
     tmc.write_register(MODE_RAMP_MODE_MOTION, 8).await.ok()?;
 
+    // Enable gate driver so current actually flows
+    let _ = enable_pin.set_high();
+
     // Sweep PHI_E_EXT from 0 to 65535 in 50 steps (~500ms)
     let steps = 50u32;
     for i in 0..=steps {
@@ -354,9 +360,10 @@ where
     // Read final count
     let count_end = tmc.read_register(ABN_DECODER_COUNT).await.ok()? as i32;
 
-    // Stop
+    // Stop and disable
     tmc.write_register(MODE_RAMP_MODE_MOTION, 0).await.ok()?;
     tmc.write_register(UQ_UD_EXT, 0).await.ok()?;
+    let _ = enable_pin.set_low();
 
     let delta = count_end.wrapping_sub(count_start);
     // Positive delta = forward, negative = reversed
@@ -370,19 +377,22 @@ where
 ///
 /// # Parameters
 /// - `tmc`: mutable reference to the TMC4671 SPI driver
+/// - `enable_pin`: mutable reference to the motor enable output pin
 /// - `delay`: mutable reference to an async delay source
 /// - `voltage`: test voltage magnitude (UD_EXT value, bits [15:0])
 ///
 /// # Returns
 /// `Some((resistance_a, resistance_b))` in raw V/I * 1000 units,
 /// `None` on SPI error.
-async fn selftest_measure_resistance<SPI, D, E>(
+async fn selftest_measure_resistance<SPI, PIN, D, E>(
     tmc: &mut Tmc4671Spi<SPI>,
+    enable_pin: &mut PIN,
     delay: &mut D,
     voltage: u32,
 ) -> Option<(u16, u16)>
 where
     SPI: SpiDevice<u8, Error = E>,
+    PIN: OutputPin,
     D: DelayNs,
 {
     use tmc4671::registers::*;
@@ -395,6 +405,9 @@ where
         tmc.write_register(UQ_UD_EXT, voltage & 0xFFFF).await.ok()?;
         tmc.write_register(MODE_RAMP_MODE_MOTION, 8).await.ok()?;
 
+        // Enable gate driver so current actually flows
+        let _ = enable_pin.set_high();
+
         // Wait for steady state
         delay.delay_ms(100).await;
 
@@ -406,9 +419,10 @@ where
             ((actual >> 16) & 0xFFFF) as i16
         };
 
-        // Stop
+        // Stop and disable
         tmc.write_register(MODE_RAMP_MODE_MOTION, 0).await.ok()?;
         tmc.write_register(UQ_UD_EXT, 0).await.ok()?;
+        let _ = enable_pin.set_low();
         delay.delay_ms(50).await;
 
         // R = V / I (raw ratio * 1000)
@@ -428,20 +442,23 @@ where
 ///
 /// # Parameters
 /// - `tmc`: mutable reference to the TMC4671 SPI driver
+/// - `enable_pin`: mutable reference to the motor enable output pin
 /// - `delay`: mutable reference to an async delay source
 /// - `voltage`: test voltage magnitude (UD_EXT value, bits [15:0])
 /// - `resistance_mohm`: measured resistance from stage 7 `(coil_a, coil_b)`
 ///
 /// # Returns
 /// `Some((inductance_a_uh, inductance_b_uh))`, `None` on SPI error.
-async fn selftest_measure_inductance<SPI, D, E>(
+async fn selftest_measure_inductance<SPI, PIN, D, E>(
     tmc: &mut Tmc4671Spi<SPI>,
+    enable_pin: &mut PIN,
     delay: &mut D,
     voltage: u32,
     resistance_mohm: (u16, u16),
 ) -> Option<(u16, u16)>
 where
     SPI: SpiDevice<u8, Error = E>,
+    PIN: OutputPin,
     D: DelayNs,
 {
     use tmc4671::registers::*;
@@ -464,6 +481,9 @@ where
         // Ensure zero current starting point
         tmc.write_register(UQ_UD_EXT, 0).await.ok()?;
         tmc.write_register(MODE_RAMP_MODE_MOTION, 8).await.ok()?;
+
+        // Enable gate driver so current actually flows
+        let _ = enable_pin.set_high();
         delay.delay_ms(50).await;
 
         // Step voltage
@@ -482,9 +502,10 @@ where
             let _ = i; // suppress unused warning
         }
 
-        // Stop
+        // Stop and disable
         tmc.write_register(MODE_RAMP_MODE_MOTION, 0).await.ok()?;
         tmc.write_register(UQ_UD_EXT, 0).await.ok()?;
+        let _ = enable_pin.set_low();
 
         // Find steady-state current (average of last 10 samples)
         let steady: i32 = samples[90..100].iter().map(|&s| s as i32).sum::<i32>() / 10;
@@ -647,7 +668,7 @@ where
     }
 
     // Stage 6: Encoder direction (diagnostic only — does not abort)
-    match selftest_encoder_direction(tmc, delay, voltage).await {
+    match selftest_encoder_direction(tmc, enable_pin, delay, voltage).await {
         Some(dir) => {
             reporter.report_stage(STAGE_ENCODER_DIRECTION, SELFTEST_PASS, dir as u32);
         }
@@ -657,7 +678,7 @@ where
     }
 
     // Stage 7: Resistance (diagnostic only)
-    let resistance = match selftest_measure_resistance(tmc, delay, voltage).await {
+    let resistance = match selftest_measure_resistance(tmc, enable_pin, delay, voltage).await {
         Some((ra, rb)) => {
             let packed = ((ra as u32) << 16) | (rb as u32);
             reporter.report_stage(STAGE_RESISTANCE, SELFTEST_PASS, packed);
@@ -670,7 +691,7 @@ where
     };
 
     // Stage 8: Inductance (diagnostic only)
-    match selftest_measure_inductance(tmc, delay, voltage, resistance).await {
+    match selftest_measure_inductance(tmc, enable_pin, delay, voltage, resistance).await {
         Some((la, lb)) => {
             let packed = ((la as u32) << 16) | (lb as u32);
             reporter.report_stage(STAGE_INDUCTANCE, SELFTEST_PASS, packed);
@@ -949,12 +970,15 @@ mod tests {
 
         let spi = SpiMock::new(&expectations);
         let mut tmc = Tmc4671Spi::new(spi);
+        let pin_expectations = [PinTx::set(PinState::High), PinTx::set(PinState::Low)];
+        let mut pin = PinMock::new(&pin_expectations);
         let mut delay = NoopDelay::new();
 
-        let result = selftest_encoder_direction(&mut tmc, &mut delay, 512).await;
+        let result = selftest_encoder_direction(&mut tmc, &mut pin, &mut delay, 512).await;
         assert_eq!(result, Some(0)); // forward
 
         tmc.into_inner().done();
+        pin.done();
     }
 
     #[tokio::test]
@@ -977,12 +1001,15 @@ mod tests {
 
         let spi = SpiMock::new(&expectations);
         let mut tmc = Tmc4671Spi::new(spi);
+        let pin_expectations = [PinTx::set(PinState::High), PinTx::set(PinState::Low)];
+        let mut pin = PinMock::new(&pin_expectations);
         let mut delay = NoopDelay::new();
 
-        let result = selftest_encoder_direction(&mut tmc, &mut delay, 512).await;
+        let result = selftest_encoder_direction(&mut tmc, &mut pin, &mut delay, 512).await;
         assert_eq!(result, Some(1)); // reversed
 
         tmc.into_inner().done();
+        pin.done();
     }
 
     #[tokio::test]
@@ -1015,14 +1042,23 @@ mod tests {
 
         let spi = SpiMock::new(&expectations);
         let mut tmc = Tmc4671Spi::new(spi);
+        // 2 phases: each does enable HIGH then LOW
+        let pin_expectations = [
+            PinTx::set(PinState::High),
+            PinTx::set(PinState::Low),
+            PinTx::set(PinState::High),
+            PinTx::set(PinState::Low),
+        ];
+        let mut pin = PinMock::new(&pin_expectations);
         let mut delay = NoopDelay::new();
 
-        let result = selftest_measure_resistance(&mut tmc, &mut delay, 512).await;
+        let result = selftest_measure_resistance(&mut tmc, &mut pin, &mut delay, 512).await;
         let (ra, rb) = result.unwrap();
         assert_eq!(ra, 1125); // 512*1000/455
         assert_eq!(rb, 1113); // 512*1000/460
 
         tmc.into_inner().done();
+        pin.done();
     }
 
     #[test]
