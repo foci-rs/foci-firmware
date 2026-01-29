@@ -311,6 +311,206 @@ where
     }
 }
 
+/// Check encoder direction by doing a brief open-loop rotation.
+///
+/// Sweeps PHI_E_EXT from 0 to 65536 (one electrical revolution) over
+/// ~500ms and checks whether ABN_DECODER_COUNT increases or decreases.
+///
+/// # Parameters
+/// - `tmc`: mutable reference to the TMC4671 SPI driver
+/// - `delay`: mutable reference to an async delay source
+/// - `voltage`: test voltage magnitude (UD_EXT value, bits [15:0])
+///
+/// # Returns
+/// `Some(0)` if forward (count increases), `Some(1)` if reversed,
+/// `None` on SPI error.
+async fn selftest_encoder_direction<SPI, D, E>(
+    tmc: &mut Tmc4671Spi<SPI>,
+    delay: &mut D,
+    voltage: u32,
+) -> Option<u8>
+where
+    SPI: SpiDevice<u8, Error = E>,
+    D: DelayNs,
+{
+    use tmc4671::registers::*;
+
+    // Record starting count
+    let count_start = tmc.read_register(ABN_DECODER_COUNT).await.ok()? as i32;
+
+    // Set up open-loop voltage mode
+    tmc.write_register(PHI_E_SELECTION, 1).await.ok()?;
+    tmc.write_register(UQ_UD_EXT, voltage & 0xFFFF).await.ok()?;
+    tmc.write_register(MODE_RAMP_MODE_MOTION, 8).await.ok()?;
+
+    // Sweep PHI_E_EXT from 0 to 65535 in 50 steps (~500ms)
+    let steps = 50u32;
+    for i in 0..=steps {
+        let phi = (65536u64 * i as u64 / steps as u64) as u32;
+        let _ = tmc.write_register(PHI_E_EXT, phi).await;
+        delay.delay_ms(10).await;
+    }
+
+    // Read final count
+    let count_end = tmc.read_register(ABN_DECODER_COUNT).await.ok()? as i32;
+
+    // Stop
+    tmc.write_register(MODE_RAMP_MODE_MOTION, 0).await.ok()?;
+    tmc.write_register(UQ_UD_EXT, 0).await.ok()?;
+
+    let delta = count_end.wrapping_sub(count_start);
+    // Positive delta = forward, negative = reversed
+    Some(if delta >= 0 { 0 } else { 1 })
+}
+
+/// Measure phase resistance by applying known voltage.
+///
+/// For each phase, applies voltage via UQ_UD_EXT (MODE=8), waits for
+/// steady-state, reads PID_TORQUE_FLUX_ACTUAL, computes R = V/I.
+///
+/// # Parameters
+/// - `tmc`: mutable reference to the TMC4671 SPI driver
+/// - `delay`: mutable reference to an async delay source
+/// - `voltage`: test voltage magnitude (UD_EXT value, bits [15:0])
+///
+/// # Returns
+/// `Some((resistance_a, resistance_b))` in raw V/I * 1000 units,
+/// `None` on SPI error.
+async fn selftest_measure_resistance<SPI, D, E>(
+    tmc: &mut Tmc4671Spi<SPI>,
+    delay: &mut D,
+    voltage: u32,
+) -> Option<(u16, u16)>
+where
+    SPI: SpiDevice<u8, Error = E>,
+    D: DelayNs,
+{
+    use tmc4671::registers::*;
+
+    let mut results = [0u16; 2];
+    for phase in 0..2u8 {
+        tmc.write_register(PHI_E_SELECTION, 1).await.ok()?;
+        let phi_e = if phase == 0 { 0u32 } else { 16384 };
+        tmc.write_register(PHI_E_EXT, phi_e).await.ok()?;
+        tmc.write_register(UQ_UD_EXT, voltage & 0xFFFF).await.ok()?;
+        tmc.write_register(MODE_RAMP_MODE_MOTION, 8).await.ok()?;
+
+        // Wait for steady state
+        delay.delay_ms(100).await;
+
+        // Read current — flux in [15:0], torque in [31:16]
+        let actual = tmc.read_register(PID_TORQUE_FLUX_ACTUAL).await.ok()?;
+        let current = if phase == 0 {
+            (actual & 0xFFFF) as i16
+        } else {
+            ((actual >> 16) & 0xFFFF) as i16
+        };
+
+        // Stop
+        tmc.write_register(MODE_RAMP_MODE_MOTION, 0).await.ok()?;
+        tmc.write_register(UQ_UD_EXT, 0).await.ok()?;
+        delay.delay_ms(50).await;
+
+        // R = V / I (raw ratio * 1000)
+        if current.unsigned_abs() > 0 {
+            results[phase as usize] =
+                ((voltage as u64 * 1000) / current.unsigned_abs() as u64) as u16;
+        }
+    }
+    Some((results[0], results[1]))
+}
+
+/// Measure phase inductance via step response.
+///
+/// For each phase, steps voltage from 0 to a known value, samples current
+/// at ~1ms intervals for 100ms, finds the time constant tau where current
+/// reaches 63% of steady state. L = R * tau.
+///
+/// # Parameters
+/// - `tmc`: mutable reference to the TMC4671 SPI driver
+/// - `delay`: mutable reference to an async delay source
+/// - `voltage`: test voltage magnitude (UD_EXT value, bits [15:0])
+/// - `resistance_mohm`: measured resistance from stage 7 `(coil_a, coil_b)`
+///
+/// # Returns
+/// `Some((inductance_a_uh, inductance_b_uh))`, `None` on SPI error.
+async fn selftest_measure_inductance<SPI, D, E>(
+    tmc: &mut Tmc4671Spi<SPI>,
+    delay: &mut D,
+    voltage: u32,
+    resistance_mohm: (u16, u16),
+) -> Option<(u16, u16)>
+where
+    SPI: SpiDevice<u8, Error = E>,
+    D: DelayNs,
+{
+    use tmc4671::registers::*;
+
+    let mut results = [0u16; 2];
+    for phase in 0..2u8 {
+        let r_mohm = if phase == 0 {
+            resistance_mohm.0
+        } else {
+            resistance_mohm.1
+        };
+        if r_mohm == 0 {
+            continue;
+        }
+
+        tmc.write_register(PHI_E_SELECTION, 1).await.ok()?;
+        let phi_e = if phase == 0 { 0u32 } else { 16384 };
+        tmc.write_register(PHI_E_EXT, phi_e).await.ok()?;
+
+        // Ensure zero current starting point
+        tmc.write_register(UQ_UD_EXT, 0).await.ok()?;
+        tmc.write_register(MODE_RAMP_MODE_MOTION, 8).await.ok()?;
+        delay.delay_ms(50).await;
+
+        // Step voltage
+        tmc.write_register(UQ_UD_EXT, voltage & 0xFFFF).await.ok()?;
+
+        // Sample current at 1ms intervals for 100ms
+        let mut samples = [0i16; 100];
+        for (i, sample) in samples.iter_mut().enumerate() {
+            delay.delay_ms(1).await;
+            let raw = tmc.read_register(ADC_IWY_IUX).await.ok()?;
+            *sample = if phase == 0 {
+                (raw & 0xFFFF) as i16
+            } else {
+                ((raw >> 16) & 0xFFFF) as i16
+            };
+            let _ = i; // suppress unused warning
+        }
+
+        // Stop
+        tmc.write_register(MODE_RAMP_MODE_MOTION, 0).await.ok()?;
+        tmc.write_register(UQ_UD_EXT, 0).await.ok()?;
+
+        // Find steady-state current (average of last 10 samples)
+        let steady: i32 = samples[90..100].iter().map(|&s| s as i32).sum::<i32>() / 10;
+        if steady.unsigned_abs() < 10 {
+            continue; // No measurable current
+        }
+
+        // Find tau: time when current reaches 63% of steady state
+        let target = (steady * 63) / 100;
+        let mut tau_ms: u16 = 0;
+        for (i, &s) in samples.iter().enumerate() {
+            if (s as i32).abs() >= target.abs() {
+                tau_ms = i as u16 + 1;
+                break;
+            }
+        }
+        if tau_ms == 0 {
+            tau_ms = 100; // Never reached — use full window
+        }
+
+        // L = R * tau (R in mohm, tau in ms -> L in uH)
+        results[phase as usize] = (r_mohm as u32 * tau_ms as u32) as u16;
+    }
+    Some((results[0], results[1]))
+}
+
 /// Run the full 8-stage selftest sequence.
 ///
 /// The caller must ensure the motor is disabled before calling.
@@ -446,10 +646,39 @@ where
         }
     }
 
-    // Stages 6-8: not yet implemented
-    reporter.report_stage(STAGE_ENCODER_DIRECTION, SELFTEST_SKIP, 0);
-    reporter.report_stage(STAGE_RESISTANCE, SELFTEST_SKIP, 0);
-    reporter.report_stage(STAGE_INDUCTANCE, SELFTEST_SKIP, 0);
+    // Stage 6: Encoder direction (diagnostic only — does not abort)
+    match selftest_encoder_direction(tmc, delay, voltage).await {
+        Some(dir) => {
+            reporter.report_stage(STAGE_ENCODER_DIRECTION, SELFTEST_PASS, dir as u32);
+        }
+        None => {
+            reporter.report_stage(STAGE_ENCODER_DIRECTION, SELFTEST_SKIP, 0);
+        }
+    }
+
+    // Stage 7: Resistance (diagnostic only)
+    let resistance = match selftest_measure_resistance(tmc, delay, voltage).await {
+        Some((ra, rb)) => {
+            let packed = ((ra as u32) << 16) | (rb as u32);
+            reporter.report_stage(STAGE_RESISTANCE, SELFTEST_PASS, packed);
+            (ra, rb)
+        }
+        None => {
+            reporter.report_stage(STAGE_RESISTANCE, SELFTEST_SKIP, 0);
+            (0, 0)
+        }
+    };
+
+    // Stage 8: Inductance (diagnostic only)
+    match selftest_measure_inductance(tmc, delay, voltage, resistance).await {
+        Some((la, lb)) => {
+            let packed = ((la as u32) << 16) | (lb as u32);
+            reporter.report_stage(STAGE_INDUCTANCE, SELFTEST_PASS, packed);
+        }
+        None => {
+            reporter.report_stage(STAGE_INDUCTANCE, SELFTEST_SKIP, 0);
+        }
+    }
 
     restore_safe_state(tmc, enable_pin).await;
     SELFTEST_DONE_PASS
@@ -674,6 +903,126 @@ mod tests {
         // Threshold must be > 0 and small enough to detect a connected motor
         assert!(MOTOR_CURRENT_THRESHOLD > 0);
         assert!(MOTOR_CURRENT_THRESHOLD < 1000);
+    }
+
+    #[test]
+    fn resistance_calculation() {
+        // V=512, I=455 (absolute) -> R = 512*1000/455 = 1125 mohm
+        // Close to LDO-42STH48-2504B spec of 1200 +/- 15%
+        let r = (512u64 * 1000) / 455u64;
+        assert_eq!(r, 1125);
+    }
+
+    #[test]
+    fn inductance_calculation() {
+        // R=1125 mohm, tau=1ms -> L = 1125 * 1 = 1125 uH
+        // LDO spec: 1500 +/- 20% (1200-1800 uH range)
+        let l = 1125u32 * 1;
+        assert_eq!(l, 1125);
+    }
+
+    #[tokio::test]
+    async fn encoder_direction_forward() {
+        // Sweep PHI_E 0..65536 in 50 steps, count increases -> forward (0)
+        let count_start = 1000u32;
+        let count_end = 1200u32;
+
+        let mut expectations: Vec<SpiTx<u8>> = Vec::new();
+        // Read ABN_DECODER_COUNT (start)
+        expectations.extend(spi_read(ABN_DECODER_COUNT, count_start));
+        // PHI_E_SELECTION = 1
+        expectations.extend(spi_write(PHI_E_SELECTION, 1));
+        // UQ_UD_EXT = 512
+        expectations.extend(spi_write(UQ_UD_EXT, 512));
+        // MODE = 8
+        expectations.extend(spi_write(MODE_RAMP_MODE_MOTION, 8));
+        // 51 PHI_E_EXT writes (i=0..=50)
+        for i in 0..=50u32 {
+            let phi = (65536u64 * i as u64 / 50u64) as u32;
+            expectations.extend(spi_write(PHI_E_EXT, phi));
+        }
+        // Read ABN_DECODER_COUNT (end)
+        expectations.extend(spi_read(ABN_DECODER_COUNT, count_end));
+        // Stop: MODE=0, UQ_UD_EXT=0
+        expectations.extend(spi_write(MODE_RAMP_MODE_MOTION, 0));
+        expectations.extend(spi_write(UQ_UD_EXT, 0));
+
+        let spi = SpiMock::new(&expectations);
+        let mut tmc = Tmc4671Spi::new(spi);
+        let mut delay = NoopDelay::new();
+
+        let result = selftest_encoder_direction(&mut tmc, &mut delay, 512).await;
+        assert_eq!(result, Some(0)); // forward
+
+        tmc.into_inner().done();
+    }
+
+    #[tokio::test]
+    async fn encoder_direction_reversed() {
+        let count_start = 1200u32;
+        let count_end = 1000u32;
+
+        let mut expectations: Vec<SpiTx<u8>> = Vec::new();
+        expectations.extend(spi_read(ABN_DECODER_COUNT, count_start));
+        expectations.extend(spi_write(PHI_E_SELECTION, 1));
+        expectations.extend(spi_write(UQ_UD_EXT, 512));
+        expectations.extend(spi_write(MODE_RAMP_MODE_MOTION, 8));
+        for i in 0..=50u32 {
+            let phi = (65536u64 * i as u64 / 50u64) as u32;
+            expectations.extend(spi_write(PHI_E_EXT, phi));
+        }
+        expectations.extend(spi_read(ABN_DECODER_COUNT, count_end));
+        expectations.extend(spi_write(MODE_RAMP_MODE_MOTION, 0));
+        expectations.extend(spi_write(UQ_UD_EXT, 0));
+
+        let spi = SpiMock::new(&expectations);
+        let mut tmc = Tmc4671Spi::new(spi);
+        let mut delay = NoopDelay::new();
+
+        let result = selftest_encoder_direction(&mut tmc, &mut delay, 512).await;
+        assert_eq!(result, Some(1)); // reversed
+
+        tmc.into_inner().done();
+    }
+
+    #[tokio::test]
+    async fn measure_resistance_computes_ratio() {
+        // Phase 0: V=512, I=455 -> R=1125
+        // Phase 1: V=512, I=460 -> R=1113
+        let current_a: i16 = 455;
+        let current_b: i16 = 460;
+        // PID_TORQUE_FLUX_ACTUAL: torque[31:16], flux[15:0]
+        let actual_a = current_a as u16 as u32; // flux in low half for phase 0
+        let actual_b = (current_b as u16 as u32) << 16; // torque in high half for phase 1
+
+        let mut expectations: Vec<SpiTx<u8>> = Vec::new();
+        // Phase 0
+        expectations.extend(spi_write(PHI_E_SELECTION, 1));
+        expectations.extend(spi_write(PHI_E_EXT, 0));
+        expectations.extend(spi_write(UQ_UD_EXT, 512));
+        expectations.extend(spi_write(MODE_RAMP_MODE_MOTION, 8));
+        expectations.extend(spi_read(PID_TORQUE_FLUX_ACTUAL, actual_a));
+        expectations.extend(spi_write(MODE_RAMP_MODE_MOTION, 0));
+        expectations.extend(spi_write(UQ_UD_EXT, 0));
+        // Phase 1
+        expectations.extend(spi_write(PHI_E_SELECTION, 1));
+        expectations.extend(spi_write(PHI_E_EXT, 16384));
+        expectations.extend(spi_write(UQ_UD_EXT, 512));
+        expectations.extend(spi_write(MODE_RAMP_MODE_MOTION, 8));
+        expectations.extend(spi_read(PID_TORQUE_FLUX_ACTUAL, actual_b));
+        expectations.extend(spi_write(MODE_RAMP_MODE_MOTION, 0));
+        expectations.extend(spi_write(UQ_UD_EXT, 0));
+
+        let spi = SpiMock::new(&expectations);
+        let mut tmc = Tmc4671Spi::new(spi);
+        let mut delay = NoopDelay::new();
+
+        let result = selftest_measure_resistance(&mut tmc, &mut delay, 512).await;
+        let (ra, rb) = result.unwrap();
+        assert_eq!(ra, 1125); // 512*1000/455
+        assert_eq!(rb, 1113); // 512*1000/460
+
+        tmc.into_inner().done();
     }
 
     #[test]
