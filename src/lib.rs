@@ -6,4 +6,5 @@
 #![no_std]
 
 pub mod dump;
+pub mod selftest;
 pub mod tmc;
