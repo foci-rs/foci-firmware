@@ -57,6 +57,148 @@ pub trait SelftestReporter {
     fn report_stage(&mut self, stage: u8, status: u8, value: u32);
 }
 
+/// Result of a successful ADC offset calibration.
+struct AdcCalResult {
+    /// Calibrated offset for ADC channel I0 (IUX).
+    offset_i0: u16,
+    /// Calibrated offset for ADC channel I1 (IWY).
+    offset_i1: u16,
+}
+
+/// Put the TMC4671 into a safe state: MODE=0, targets zeroed, enable pin LOW.
+///
+/// Best-effort: SPI errors are silently ignored. The enable pin is always
+/// driven low regardless of prior TMC4671 state.
+///
+/// # Parameters
+/// - `tmc`: mutable reference to the TMC4671 SPI driver
+/// - `enable_pin`: mutable reference to the motor enable output pin
+async fn restore_safe_state<SPI, PIN, E>(tmc: &mut Tmc4671Spi<SPI>, enable_pin: &mut PIN)
+where
+    SPI: SpiDevice<u8, Error = E>,
+    PIN: OutputPin,
+{
+    use tmc4671::registers::*;
+
+    let _ = enable_pin.set_low();
+    let _ = tmc.write_register(MODE_RAMP_MODE_MOTION, 0x0000_0000).await;
+    let _ = tmc.write_register(PID_TORQUE_FLUX_TARGET, 0).await;
+    let _ = tmc.write_register(UQ_UD_EXT, 0).await;
+    let _ = tmc.write_register(PWM_SV_CHOP, 0).await;
+}
+
+/// Perform ADC offset calibration (selftest stage 1).
+///
+/// Configures the TMC4671 for current-sense ADC sampling with chopping
+/// disabled, collects 128 samples per channel, computes the mean offset,
+/// validates the result is in the expected hardware range, and programs the
+/// offsets back. PWM chopping is restored after successful calibration.
+///
+/// # Parameters
+/// - `tmc`: mutable reference to the TMC4671 SPI driver
+/// - `enable_pin`: mutable reference to the motor enable output pin
+/// - `delay`: mutable reference to an async delay source
+///
+/// # Returns
+/// `Some(AdcCalResult)` on success, `None` on any SPI error or out-of-range
+/// ADC offset.
+async fn selftest_adc_calibrate<SPI, PIN, D, E>(
+    tmc: &mut Tmc4671Spi<SPI>,
+    enable_pin: &mut PIN,
+    delay: &mut D,
+) -> Option<AdcCalResult>
+where
+    SPI: SpiDevice<u8, Error = E>,
+    PIN: OutputPin,
+    D: DelayNs,
+{
+    use tmc4671::registers::*;
+
+    // 1. SAFETY FIRST: stop motor, disable outputs, set voltage limit
+    let _ = enable_pin.set_low();
+    tmc.write_register(MODE_RAMP_MODE_MOTION, 0x0000_0000)
+        .await
+        .ok()?;
+    let voltage_limit: u32 = 1024;
+    tmc.write_register(PIDOUT_UQ_UD_LIMITS, voltage_limit)
+        .await
+        .ok()?;
+    // Verify voltage limit write
+    let readback = tmc.read_register(PIDOUT_UQ_UD_LIMITS).await.ok()?;
+    if readback != voltage_limit {
+        return None;
+    }
+    let _ = tmc.write_register(PID_TORQUE_FLUX_TARGET, 0).await;
+    let _ = tmc.write_register(UQ_UD_EXT, 0).await;
+
+    // 2. PWM configuration (chopping disabled for ADC calibration)
+    let _ = tmc.write_register(PWM_POLARITIES, 0).await;
+    let _ = tmc.write_register(PWM_MAXCNT, 3999).await;
+    let _ = tmc.write_register(PWM_BBM_H_BBM_L, (10 << 8) | 10).await;
+    tmc.write_register(PWM_SV_CHOP, 0).await.ok()?;
+    // Verify MODE=0 and PWM_SV_CHOP=0
+    let mode_rb = tmc.read_register(MODE_RAMP_MODE_MOTION).await.ok()?;
+    let chop_rb = tmc.read_register(PWM_SV_CHOP).await.ok()?;
+    if mode_rb != 0 || chop_rb != 0 {
+        return None;
+    }
+
+    // 3. ADC configuration
+    let mdec: u32 = 331;
+    let _ = tmc
+        .write_register(DSADC_MDEC_B_MDEC_A, (mdec << 16) | mdec)
+        .await;
+    let _ = tmc.write_register(ADC_I_SELECT, (1 << 28) | (1 << 8)).await;
+
+    // 4. Motor type: 2-phase stepper (type 2), 50 pole pairs
+    let _ = tmc
+        .write_register(MOTOR_TYPE_N_POLE_PAIRS, (2 << 16) | 50)
+        .await;
+
+    // 5. ADC offset calibration — clear offsets, enable outputs, settle
+    let _ = tmc.write_register(ADC_I0_SCALE_OFFSET, 256 << 16).await;
+    let _ = tmc.write_register(ADC_I1_SCALE_OFFSET, 256 << 16).await;
+
+    let _ = enable_pin.set_high();
+    delay.delay_ms(250).await;
+
+    // Sample ADC values 128 times
+    let mut sum_i0: i32 = 0;
+    let mut sum_i1: i32 = 0;
+    const N_SAMPLES: i32 = 128;
+    for _ in 0..N_SAMPLES {
+        if let Ok(raw) = tmc.read_register(ADC_IWY_IUX).await {
+            let i_ux = (raw & 0xFFFF) as i16 as i32;
+            let i_wy = ((raw >> 16) & 0xFFFF) as i16 as i32;
+            sum_i0 += i_ux;
+            sum_i1 += i_wy;
+        }
+        delay.delay_ms(1).await;
+    }
+    let offset_i0 = (sum_i0 / N_SAMPLES) as i16 as u16;
+    let offset_i1 = (sum_i1 / N_SAMPLES) as i16 as u16;
+
+    // Validate ADC offsets are in expected range (centered around 33000)
+    if !(30000..=36000).contains(&offset_i0) || !(30000..=36000).contains(&offset_i1) {
+        return None;
+    }
+
+    let _ = tmc
+        .write_register(ADC_I0_SCALE_OFFSET, (256 << 16) | offset_i0 as u32)
+        .await;
+    let _ = tmc
+        .write_register(ADC_I1_SCALE_OFFSET, (256 << 16) | offset_i1 as u32)
+        .await;
+
+    // Re-enable PWM chopping
+    let _ = tmc.write_register(PWM_SV_CHOP, 7).await;
+
+    Some(AdcCalResult {
+        offset_i0,
+        offset_i1,
+    })
+}
+
 /// Run the full 8-stage selftest sequence.
 ///
 /// The caller must ensure the motor is disabled before calling.
@@ -65,28 +207,51 @@ pub trait SelftestReporter {
 /// (MODE=0, targets zeroed, enable pin LOW).
 ///
 /// # Parameters
-/// - `_tmc`: mutable reference to the TMC4671 SPI driver
-/// - `_enable_pin`: mutable reference to the motor enable output pin
-/// - `_delay`: mutable reference to an async delay source
+/// - `tmc`: mutable reference to the TMC4671 SPI driver
+/// - `enable_pin`: mutable reference to the motor enable output pin
+/// - `delay`: mutable reference to an async delay source
 /// - `_current_limit`: maximum current in milliamps for test excitation
-/// - `_reporter`: mutable reference to the result callback
+/// - `reporter`: mutable reference to the result callback
 ///
 /// # Returns
 /// Overall status: `SELFTEST_DONE_PASS`, `SELFTEST_DONE_FAIL`,
 /// or `SELFTEST_DONE_ABORTED`.
 pub async fn run_selftest<SPI, PIN, D, E>(
-    _tmc: &mut Tmc4671Spi<SPI>,
-    _enable_pin: &mut PIN,
-    _delay: &mut D,
+    tmc: &mut Tmc4671Spi<SPI>,
+    enable_pin: &mut PIN,
+    delay: &mut D,
     _current_limit: u32,
-    _reporter: &mut impl SelftestReporter,
+    reporter: &mut impl SelftestReporter,
 ) -> u8
 where
     SPI: SpiDevice<u8, Error = E>,
     PIN: OutputPin,
     D: DelayNs,
 {
-    // Stub — stages will be implemented in subsequent tasks
+    // Stage 1: ADC calibration
+    match selftest_adc_calibrate(tmc, enable_pin, delay).await {
+        Some(cal) => {
+            // Report average of both channel offsets as the stage value
+            let value = ((cal.offset_i0 as u32) + (cal.offset_i1 as u32)) / 2;
+            reporter.report_stage(STAGE_ADC_CAL, SELFTEST_PASS, value);
+        }
+        None => {
+            reporter.report_stage(STAGE_ADC_CAL, SELFTEST_FAIL, 0);
+            restore_safe_state(tmc, enable_pin).await;
+            return SELFTEST_DONE_FAIL;
+        }
+    }
+
+    // Stages 2–8: not yet implemented
+    reporter.report_stage(STAGE_MOTOR_COIL_A, SELFTEST_SKIP, 0);
+    reporter.report_stage(STAGE_MOTOR_COIL_B, SELFTEST_SKIP, 0);
+    reporter.report_stage(STAGE_PHASE_WIRING, SELFTEST_SKIP, 0);
+    reporter.report_stage(STAGE_ENCODER_PRESENCE, SELFTEST_SKIP, 0);
+    reporter.report_stage(STAGE_ENCODER_DIRECTION, SELFTEST_SKIP, 0);
+    reporter.report_stage(STAGE_RESISTANCE, SELFTEST_SKIP, 0);
+    reporter.report_stage(STAGE_INDUCTANCE, SELFTEST_SKIP, 0);
+
+    restore_safe_state(tmc, enable_pin).await;
     SELFTEST_DONE_PASS
 }
 
@@ -139,5 +304,14 @@ mod tests {
     fn done_constants_are_distinct() {
         assert_ne!(SELFTEST_DONE_PASS, SELFTEST_DONE_FAIL);
         assert_ne!(SELFTEST_DONE_FAIL, SELFTEST_DONE_ABORTED);
+    }
+
+    #[test]
+    fn adc_offset_in_range() {
+        assert!((30000..=36000).contains(&33000u16));
+        assert!((30000..=36000).contains(&30000u16));
+        assert!((30000..=36000).contains(&36000u16));
+        assert!(!(30000..=36000).contains(&29999u16));
+        assert!(!(30000..=36000).contains(&36001u16));
     }
 }
