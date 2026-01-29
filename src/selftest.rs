@@ -411,13 +411,12 @@ where
         // Wait for steady state
         delay.delay_ms(100).await;
 
-        // Read current — flux in [15:0], torque in [31:16]
+        // Read current — flux_actual in [15:0], torque_actual in [31:16].
+        // We apply UD_EXT (d-axis voltage) and the Park transform ensures the
+        // resulting d-axis current always appears in flux_actual regardless of
+        // phi_e angle. Read flux (low half) for both phases.
         let actual = tmc.read_register(PID_TORQUE_FLUX_ACTUAL).await.ok()?;
-        let current = if phase == 0 {
-            (actual & 0xFFFF) as i16
-        } else {
-            ((actual >> 16) & 0xFFFF) as i16
-        };
+        let current = (actual & 0xFFFF) as i16;
 
         // Stop and disable
         tmc.write_register(MODE_RAMP_MODE_MOTION, 0).await.ok()?;
@@ -1019,8 +1018,10 @@ mod tests {
         let current_a: i16 = 455;
         let current_b: i16 = 460;
         // PID_TORQUE_FLUX_ACTUAL: torque[31:16], flux[15:0]
-        let actual_a = current_a as u16 as u32; // flux in low half for phase 0
-        let actual_b = (current_b as u16 as u32) << 16; // torque in high half for phase 1
+        // Park transform ensures d-axis current appears in flux (low half)
+        // for both phases regardless of phi_e angle.
+        let actual_a = current_a as u16 as u32;
+        let actual_b = current_b as u16 as u32;
 
         let mut expectations: Vec<SpiTx<u8>> = Vec::new();
         // Phase 0
