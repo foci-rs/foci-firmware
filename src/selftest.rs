@@ -438,6 +438,10 @@ where
                 ((voltage as u64 * 1000) / current.unsigned_abs() as u64) as u16;
         }
     }
+    // Both zero = no measurable current on either phase
+    if results[0] == 0 && results[1] == 0 {
+        return None;
+    }
     Some((results[0], results[1]))
 }
 
