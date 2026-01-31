@@ -563,8 +563,8 @@ where
     // Stage 1: ADC calibration
     match selftest_adc_calibrate(tmc, enable_pin, delay).await {
         Some(cal) => {
-            // Report average of both channel offsets as the stage value
-            let value = ((cal.offset_i0 as u32) + (cal.offset_i1 as u32)) / 2;
+            // Pack both ADC offsets: I0 in high 16 bits, I1 in low 16 bits
+            let value = ((cal.offset_i0 as u32) << 16) | (cal.offset_i1 as u32);
             reporter.report_stage(STAGE_ADC_CAL, SELFTEST_PASS, value);
         }
         None => {
