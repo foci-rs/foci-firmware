@@ -357,13 +357,15 @@ where
         delay.delay_ms(10).await;
     }
 
-    // Read final count
-    let count_end = tmc.read_register(ABN_DECODER_COUNT).await.ok()? as i32;
+    // Read final count — clean up even on SPI error
+    let count_end = tmc.read_register(ABN_DECODER_COUNT).await;
 
-    // Stop and disable
-    tmc.write_register(MODE_RAMP_MODE_MOTION, 0).await.ok()?;
-    tmc.write_register(UQ_UD_EXT, 0).await.ok()?;
+    // Stop and disable (always, regardless of read result)
+    let _ = tmc.write_register(MODE_RAMP_MODE_MOTION, 0).await;
+    let _ = tmc.write_register(UQ_UD_EXT, 0).await;
     let _ = enable_pin.set_low();
+
+    let count_end = count_end.ok()? as i32;
 
     let delta = count_end.wrapping_sub(count_start);
     match delta.cmp(&0) {
@@ -414,18 +416,21 @@ where
         // Wait for steady state
         delay.delay_ms(100).await;
 
-        // Read current — flux_actual in [15:0], torque_actual in [31:16].
+        // Read current — clean up even on SPI error
+        let actual = tmc.read_register(PID_TORQUE_FLUX_ACTUAL).await;
+
+        // Stop and disable (always, regardless of read result)
+        let _ = tmc.write_register(MODE_RAMP_MODE_MOTION, 0).await;
+        let _ = tmc.write_register(UQ_UD_EXT, 0).await;
+        let _ = enable_pin.set_low();
+        delay.delay_ms(50).await;
+
+        // flux_actual in [15:0], torque_actual in [31:16].
         // We apply UD_EXT (d-axis voltage) and the Park transform ensures the
         // resulting d-axis current always appears in flux_actual regardless of
         // phi_e angle. Read flux (low half) for both phases.
-        let actual = tmc.read_register(PID_TORQUE_FLUX_ACTUAL).await.ok()?;
+        let actual = actual.ok()?;
         let current = (actual & 0xFFFF) as i16;
-
-        // Stop and disable
-        tmc.write_register(MODE_RAMP_MODE_MOTION, 0).await.ok()?;
-        tmc.write_register(UQ_UD_EXT, 0).await.ok()?;
-        let _ = enable_pin.set_low();
-        delay.delay_ms(50).await;
 
         // R = V / I (raw ratio * 1000)
         if current.unsigned_abs() > 0 {
@@ -488,29 +493,46 @@ where
         let _ = enable_pin.set_high();
         delay.delay_ms(50).await;
 
-        // Step voltage
-        tmc.write_register(UQ_UD_EXT, voltage & 0xFFFF).await.ok()?;
+        // Step voltage — if this fails, clean up and skip this phase
+        let step_ok = tmc
+            .write_register(UQ_UD_EXT, voltage & 0xFFFF)
+            .await
+            .is_ok();
 
         // Sample current at 1ms intervals for 100ms
         let mut samples = [0i16; 100];
-        for (i, sample) in samples.iter_mut().enumerate() {
-            delay.delay_ms(1).await;
-            let raw = tmc.read_register(ADC_IWY_IUX).await.ok()?;
-            *sample = if phase == 0 {
-                (raw & 0xFFFF) as i16
-            } else {
-                ((raw >> 16) & 0xFFFF) as i16
-            };
-            let _ = i; // suppress unused warning
+        let mut sample_count = 0usize;
+        if step_ok {
+            for sample in samples.iter_mut() {
+                delay.delay_ms(1).await;
+                match tmc.read_register(ADC_IWY_IUX).await {
+                    Ok(raw) => {
+                        *sample = if phase == 0 {
+                            (raw & 0xFFFF) as i16
+                        } else {
+                            ((raw >> 16) & 0xFFFF) as i16
+                        };
+                        sample_count += 1;
+                    }
+                    Err(_) => break,
+                }
+            }
         }
 
-        // Stop and disable
-        tmc.write_register(MODE_RAMP_MODE_MOTION, 0).await.ok()?;
-        tmc.write_register(UQ_UD_EXT, 0).await.ok()?;
+        // Stop and disable (always, regardless of sampling result)
+        let _ = tmc.write_register(MODE_RAMP_MODE_MOTION, 0).await;
+        let _ = tmc.write_register(UQ_UD_EXT, 0).await;
         let _ = enable_pin.set_low();
 
-        // Find steady-state current (average of last 10 samples)
-        let steady: i32 = samples[90..100].iter().map(|&s| s as i32).sum::<i32>() / 10;
+        // Need enough samples for meaningful measurement
+        if sample_count < 20 {
+            continue;
+        }
+
+        // Find steady-state current (average of last 10 collected samples)
+        let tail_start = sample_count.saturating_sub(10);
+        let tail = &samples[tail_start..sample_count];
+        let steady: i32 = tail.iter().map(|&s| s as i32).sum::<i32>() / tail.len() as i32;
         if steady.unsigned_abs() < 10 {
             continue; // No measurable current
         }
@@ -518,14 +540,14 @@ where
         // Find tau: time when current reaches 63% of steady state
         let target = (steady * 63) / 100;
         let mut tau_ms: u16 = 0;
-        for (i, &s) in samples.iter().enumerate() {
+        for (i, &s) in samples[..sample_count].iter().enumerate() {
             if (s as i32).abs() >= target.abs() {
                 tau_ms = i as u16 + 1;
                 break;
             }
         }
         if tau_ms == 0 {
-            tau_ms = 100; // Never reached — use full window
+            tau_ms = sample_count as u16; // Never reached — use full window
         }
 
         // L = R * tau (R in mohm, tau in ms -> L in uH)
