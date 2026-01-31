@@ -432,10 +432,10 @@ where
         let actual = actual.ok()?;
         let current = (actual & 0xFFFF) as i16;
 
-        // R = V / I (raw ratio * 1000)
+        // R = V / I (raw ratio * 1000), clamped to u16::MAX
         if current.unsigned_abs() > 0 {
-            results[phase as usize] =
-                ((voltage as u64 * 1000) / current.unsigned_abs() as u64) as u16;
+            let r = (voltage as u64 * 1000) / current.unsigned_abs() as u64;
+            results[phase as usize] = r.min(u16::MAX as u64) as u16;
         }
     }
     // Both zero = no measurable current on either phase
@@ -554,8 +554,9 @@ where
             tau_ms = sample_count as u16; // Never reached — use full window
         }
 
-        // L = R * tau (R in mohm, tau in ms -> L in uH)
-        results[phase as usize] = (r_mohm as u32 * tau_ms as u32) as u16;
+        // L = R * tau (R in mohm, tau in ms -> L in uH), clamped to u16::MAX
+        let l = r_mohm as u32 * tau_ms as u32;
+        results[phase as usize] = l.min(u16::MAX as u32) as u16;
     }
     // Both zero = no measurable inductance on either phase
     if results[0] == 0 && results[1] == 0 {
