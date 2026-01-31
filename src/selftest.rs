@@ -366,8 +366,11 @@ where
     let _ = enable_pin.set_low();
 
     let delta = count_end.wrapping_sub(count_start);
-    // Positive delta = forward, negative = reversed
-    Some(if delta >= 0 { 0 } else { 1 })
+    match delta.cmp(&0) {
+        core::cmp::Ordering::Greater => Some(0), // forward
+        core::cmp::Ordering::Less => Some(1),    // reversed
+        core::cmp::Ordering::Equal => None,       // no motion detected
+    }
 }
 
 /// Measure phase resistance by applying known voltage.
@@ -672,7 +675,8 @@ where
             reporter.report_stage(STAGE_ENCODER_DIRECTION, SELFTEST_PASS, dir as u32);
         }
         None => {
-            reporter.report_stage(STAGE_ENCODER_DIRECTION, SELFTEST_SKIP, 0);
+            // Zero encoder delta or SPI error — cannot determine direction
+            reporter.report_stage(STAGE_ENCODER_DIRECTION, SELFTEST_FAIL, 0);
         }
     }
 
@@ -1006,6 +1010,36 @@ mod tests {
 
         let result = selftest_encoder_direction(&mut tmc, &mut pin, &mut delay, 512).await;
         assert_eq!(result, Some(1)); // reversed
+
+        tmc.into_inner().done();
+        pin.done();
+    }
+
+    #[tokio::test]
+    async fn encoder_direction_zero_delta_returns_none() {
+        let count = 1000u32;
+
+        let mut expectations: Vec<SpiTx<u8>> = Vec::new();
+        expectations.extend(spi_read(ABN_DECODER_COUNT, count));
+        expectations.extend(spi_write(PHI_E_SELECTION, 1));
+        expectations.extend(spi_write(UQ_UD_EXT, 512));
+        expectations.extend(spi_write(MODE_RAMP_MODE_MOTION, 8));
+        for i in 0..=50u32 {
+            let phi = (65536u64 * i as u64 / 50u64) as u32;
+            expectations.extend(spi_write(PHI_E_EXT, phi));
+        }
+        expectations.extend(spi_read(ABN_DECODER_COUNT, count));
+        expectations.extend(spi_write(MODE_RAMP_MODE_MOTION, 0));
+        expectations.extend(spi_write(UQ_UD_EXT, 0));
+
+        let spi = SpiMock::new(&expectations);
+        let mut tmc = Tmc4671Spi::new(spi);
+        let pin_expectations = [PinTx::set(PinState::High), PinTx::set(PinState::Low)];
+        let mut pin = PinMock::new(&pin_expectations);
+        let mut delay = NoopDelay::new();
+
+        let result = selftest_encoder_direction(&mut tmc, &mut pin, &mut delay, 512).await;
+        assert_eq!(result, None); // zero delta = indeterminate
 
         tmc.into_inner().done();
         pin.done();
