@@ -557,6 +557,10 @@ where
         // L = R * tau (R in mohm, tau in ms -> L in uH)
         results[phase as usize] = (r_mohm as u32 * tau_ms as u32) as u16;
     }
+    // Both zero = no measurable inductance on either phase
+    if results[0] == 0 && results[1] == 0 {
+        return None;
+    }
     Some((results[0], results[1]))
 }
 
