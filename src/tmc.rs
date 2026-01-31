@@ -56,8 +56,8 @@ pub fn tmc_set_current(run_ma: u32) -> TmcRequest {
 /// Step width formula: `65536 * pole_pairs / (ppr * 4)`
 pub fn tmc_set_encoder(state: &mut State, channel: u8, ppr: u32, pole_pairs: u32) -> TmcRequest {
     if ppr > 0 {
-        let quad_ppr = ppr * 4;
-        let step_width = (65536u64 * pole_pairs as u64 / quad_ppr as u64) as i32;
+        let quad_ppr = (ppr as u64) * 4;
+        let step_width = (65536u64 * pole_pairs as u64 / quad_ppr) as i32;
         if (channel as usize) < NUM_STEPPERS {
             state.steppers[channel as usize].set_step_width(step_width);
         }
