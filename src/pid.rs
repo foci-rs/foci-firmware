@@ -131,10 +131,7 @@ pub fn validate_motor_params(
 /// Debug-asserts that `params` fields are within `validate_motor_params` bounds
 /// and `pwm_freq_hz > 0`. In release builds, out-of-range inputs may produce
 /// incorrect results due to integer overflow.
-pub fn compute_inner_gains(
-    params: &MotorParams,
-    pwm_freq_hz: u32,
-) -> InnerLoopGains {
+pub fn compute_inner_gains(params: &MotorParams, pwm_freq_hz: u32) -> InnerLoopGains {
     debug_assert!(pwm_freq_hz > 0, "PWM frequency must be non-zero");
     debug_assert!(
         params.resistance_mohm <= 50_000,
@@ -180,6 +177,51 @@ pub fn compute_inner_gains(
         flux_i,
         torque_p: flux_p,
         torque_i: flux_i,
+    }
+}
+
+/// Pack P and I gains into a TMC4671 PID register value.
+///
+/// Register layout (datasheet section 7.2, page 96):
+///   bits[15:0] = I gain
+///   bits[31:16] = P gain
+///
+/// Note: the datasheet types these fields as s16, but PI gains are
+/// always non-negative. This function treats them as u16.
+pub fn pack_pid_register(p: u16, i: u16) -> u32 {
+    ((p as u32) << 16) | (i as u32)
+}
+
+/// Unpack P and I gains from a TMC4671 PID register value.
+///
+/// Returns (p_gain, i_gain).
+pub fn unpack_pid_register(reg: u32) -> (u16, u16) {
+    let p = (reg >> 16) as u16;
+    let i = (reg & 0xFFFF) as u16;
+    (p, i)
+}
+
+impl InnerLoopGains {
+    /// Pack gains into TMC4671 register values.
+    ///
+    /// Returns (flux_register, torque_register) ready for
+    /// `PID_FLUX_P_FLUX_I` (0x54) and `PID_TORQUE_P_TORQUE_I` (0x56).
+    pub fn to_registers(&self) -> (u32, u32) {
+        let flux = pack_pid_register(self.flux_p, self.flux_i);
+        let torque = pack_pid_register(self.torque_p, self.torque_i);
+        (flux, torque)
+    }
+
+    /// Unpack gains from TMC4671 register values.
+    pub fn from_registers(flux_reg: u32, torque_reg: u32) -> Self {
+        let (flux_p, flux_i) = unpack_pid_register(flux_reg);
+        let (torque_p, torque_i) = unpack_pid_register(torque_reg);
+        Self {
+            flux_p,
+            flux_i,
+            torque_p,
+            torque_i,
+        }
     }
 }
 
@@ -266,8 +308,11 @@ mod tests {
         // bw = 625 Hz
         // P = 1500e-6 * 2*pi*625 * 256 = 1500 * 625 * 256 * 6283 / 1e9
         // = 1,508,304,000,000 / 1e9 = 1508 (approx)
-        assert!(gains.flux_p > 1000 && gains.flux_p < 2000,
-            "flux_p={} expected ~1508", gains.flux_p);
+        assert!(
+            gains.flux_p > 1000 && gains.flux_p < 2000,
+            "flux_p={} expected ~1508",
+            gains.flux_p
+        );
 
         // I = R * 2*pi*bw * 256 (Q8.8, advanced mode)
         // I = 1200e-3 * 2*pi*625 * 256 = 1200 * 625 * 256 * 6283 / 1e9
@@ -291,8 +336,14 @@ mod tests {
             inductance_uh: 100,
         };
         let gains = compute_inner_gains(&params, 6250);
-        assert!(gains.flux_p > 0, "P gain should be non-zero for any valid motor");
-        assert!(gains.flux_i > 0, "I gain should be non-zero for any valid motor");
+        assert!(
+            gains.flux_p > 0,
+            "P gain should be non-zero for any valid motor"
+        );
+        assert!(
+            gains.flux_i > 0,
+            "I gain should be non-zero for any valid motor"
+        );
     }
 
     #[test]
@@ -328,5 +379,32 @@ mod tests {
         assert!(DEFAULT_INNER_GAINS.flux_i > 0);
         assert!(DEFAULT_INNER_GAINS.torque_p > 0);
         assert!(DEFAULT_INNER_GAINS.torque_i > 0);
+    }
+
+    #[test]
+    fn pack_unpack_roundtrip() {
+        let gains = InnerLoopGains {
+            flux_p: 1508,
+            flux_i: 32768,
+            torque_p: 1508,
+            torque_i: 32768,
+        };
+        let (flux_reg, torque_reg) = gains.to_registers();
+        let restored = InnerLoopGains::from_registers(flux_reg, torque_reg);
+        assert_eq!(gains, restored);
+    }
+
+    #[test]
+    fn pack_register_layout() {
+        // P=0x1234 in bits[31:16], I=0x5678 in bits[15:0]
+        let reg = pack_pid_register(0x1234, 0x5678);
+        assert_eq!(reg, 0x12345678);
+    }
+
+    #[test]
+    fn unpack_register_layout() {
+        let (p, i) = unpack_pid_register(0x12345678);
+        assert_eq!(p, 0x1234);
+        assert_eq!(i, 0x5678);
     }
 }
