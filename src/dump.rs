@@ -39,6 +39,8 @@ pub const DUMP_REGISTERS: &[u8] = &[
     0x68, // PID_POSITION_TARGET
     0x69, // PID_TORQUE_FLUX_ACTUAL
     0x6B, // PID_POSITION_ACTUAL
+    // ADC limits
+    0x75, // ADC_VM_LIMITS
     // Status
     0x7C, // STATUS_FLAGS
 ];
