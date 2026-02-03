@@ -31,6 +31,38 @@ pub enum MotorParamError {
     InductanceAsymmetry,
 }
 
+/// Computed PI gains for TMC4671 flux and torque controllers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub struct InnerLoopGains {
+    /// Flux P gain — raw TMC4671 register value (Q8.8 format).
+    pub flux_p: u16,
+    /// Flux I gain — raw TMC4671 register value (Q8.8 format, advanced mode).
+    pub flux_i: u16,
+    /// Torque P gain — raw TMC4671 register value (Q8.8 format).
+    pub torque_p: u16,
+    /// Torque I gain — raw TMC4671 register value (Q8.8 format, advanced mode).
+    pub torque_i: u16,
+}
+
+/// TMC4671 PWM frequency derived from clock and PWM_MAXCNT.
+/// f_pwm = tmc_clock / (pwm_maxcnt + 1)
+/// OpenFFBoard: 25_000_000 / 4000 = 6250 Hz
+pub const DEFAULT_PWM_FREQ_HZ: u32 = 6250;
+
+/// Target closed-loop bandwidth as fraction of PWM frequency.
+/// 1/10th is a conservative, stable choice.
+const BANDWIDTH_DIVISOR: u32 = 10;
+
+/// Conservative default gains for when no R/L data is available.
+/// These are intentionally low — stable but sluggish.
+pub const DEFAULT_INNER_GAINS: InnerLoopGains = InnerLoopGains {
+    flux_p: 256,   // 1.0 in Q8.8
+    flux_i: 26,    // ~0.1 in Q8.8 (matches firmware hardcoded value)
+    torque_p: 256, // 1.0 in Q8.8
+    torque_i: 26,  // ~0.1 in Q8.8 (matches firmware hardcoded value)
+};
+
 /// Validate and average per-coil R/L measurements.
 ///
 /// # Parameters
@@ -75,6 +107,80 @@ pub fn validate_motor_params(
         resistance_mohm: (r_a as u32 + r_b as u32) / 2,
         inductance_uh: (l_a as u32 + l_b as u32) / 2,
     })
+}
+
+/// Compute inner loop PI gains from motor parameters.
+///
+/// Uses standard PI tuning for RL load:
+///   P = L * bandwidth (proportional to inductance)
+///   I = R * bandwidth (proportional to resistance)
+///
+/// Bandwidth = f_pwm / BANDWIDTH_DIVISOR (default: 625 Hz = 3927 rad/s)
+///
+/// The TMC4671 PI controller in advanced mode (MODE_PID_TYPE=1) uses
+/// Q8.8 format for both P and I gains (register value / 256).
+/// Section 4.7.6 describes Q0.15 for I in standard mode, but the
+/// firmware uses advanced mode with default ADVANCED_PI_REPRESENT
+/// (sub-register 62), where all gains are Q8.8.
+///
+/// # Parameters
+/// - `params`: validated motor parameters (R in milliohms, L in microhenries)
+/// - `pwm_freq_hz`: TMC4671 PWM frequency (default 6250 Hz for OpenFFBoard)
+///
+/// # Panics (debug only)
+/// Debug-asserts that `params` fields are within `validate_motor_params` bounds
+/// and `pwm_freq_hz > 0`. In release builds, out-of-range inputs may produce
+/// incorrect results due to integer overflow.
+pub fn compute_inner_gains(
+    params: &MotorParams,
+    pwm_freq_hz: u32,
+) -> InnerLoopGains {
+    debug_assert!(pwm_freq_hz > 0, "PWM frequency must be non-zero");
+    debug_assert!(
+        params.resistance_mohm <= 50_000,
+        "resistance out of validated range"
+    );
+    debug_assert!(
+        params.inductance_uh <= 50_000,
+        "inductance out of validated range"
+    );
+
+    // Target bandwidth in Hz
+    let bw_hz = pwm_freq_hz / BANDWIDTH_DIVISOR;
+
+    // P gain = L * 2 * pi * bw_hz
+    // Units: L is in uH, bw in Hz
+    // P_real = L_uH * 1e-6 * 2 * pi * bw_hz
+    // P_q8_8 = P_real * 256
+    //
+    // To keep integer math: P_q8_8 = L_uH * bw_hz * 256 * 2 * pi / 1_000_000
+    // Approximate 2*pi as 6283/1000:
+    // P_q8_8 = L_uH * bw_hz * 256 * 6283 / 1_000_000_000
+    //
+    // To avoid overflow with u64:
+    let p_num = params.inductance_uh as u64 * bw_hz as u64 * 256 * 6283;
+    let p_raw = (p_num / 1_000_000_000) as u32;
+    let flux_p = p_raw.min(u16::MAX as u32) as u16;
+
+    // I gain = R * 2 * pi * bw_hz
+    // Units: R is in milliohms, bw in Hz
+    // I_real = R_mohm * 1e-3 * 2 * pi * bw_hz
+    // I_q8_8 = I_real * 256
+    //
+    // In advanced PID mode (MODE_PID_TYPE=1) with default
+    // ADVANCED_PI_REPRESENT, I gains are Q8.8 (not Q0.15).
+    // I_q8_8 = R_mohm * bw_hz * 256 * 6283 / 1_000_000_000
+    let i_num = params.resistance_mohm as u64 * bw_hz as u64 * 256 * 6283;
+    let i_raw = (i_num / 1_000_000_000) as u32;
+    let flux_i = i_raw.min(u16::MAX as u32) as u16;
+
+    // Torque gains are identical to flux for 2-phase stepper (FOC2)
+    InnerLoopGains {
+        flux_p,
+        flux_i,
+        torque_p: flux_p,
+        torque_i: flux_i,
+    }
 }
 
 #[cfg(test)]
@@ -145,5 +251,82 @@ mod tests {
         // 1200 vs 900 — differ by 25%, within 50% threshold
         let result = validate_motor_params(1200, 900, 1500, 1200);
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn compute_gains_typical_stepper() {
+        // 17HS19-2004S1: R=1200 mOhm, L=1500 uH
+        let params = MotorParams {
+            resistance_mohm: 1200,
+            inductance_uh: 1500,
+        };
+        let gains = compute_inner_gains(&params, 6250);
+
+        // P = L * 2*pi*bw * 256 (Q8.8)
+        // bw = 625 Hz
+        // P = 1500e-6 * 2*pi*625 * 256 = 1500 * 625 * 256 * 6283 / 1e9
+        // = 1,508,304,000,000 / 1e9 = 1508 (approx)
+        assert!(gains.flux_p > 1000 && gains.flux_p < 2000,
+            "flux_p={} expected ~1508", gains.flux_p);
+
+        // I = R * 2*pi*bw * 256 (Q8.8, advanced mode)
+        // I = 1200e-3 * 2*pi*625 * 256 = 1200 * 625 * 256 * 6283 / 1e9
+        // = 1,205,568,000,000 / 1e9 = ~1205
+        assert!(
+            gains.flux_i > 900 && gains.flux_i < 1500,
+            "flux_i={} expected ~1205",
+            gains.flux_i
+        );
+
+        // Torque == flux for FOC2
+        assert_eq!(gains.flux_p, gains.torque_p);
+        assert_eq!(gains.flux_i, gains.torque_i);
+    }
+
+    #[test]
+    fn compute_gains_low_rl() {
+        // Very low R/L motor
+        let params = MotorParams {
+            resistance_mohm: 100,
+            inductance_uh: 100,
+        };
+        let gains = compute_inner_gains(&params, 6250);
+        assert!(gains.flux_p > 0, "P gain should be non-zero for any valid motor");
+        assert!(gains.flux_i > 0, "I gain should be non-zero for any valid motor");
+    }
+
+    #[test]
+    fn compute_gains_high_rl() {
+        // High R/L motor (large stepper)
+        let params = MotorParams {
+            resistance_mohm: 10000,
+            inductance_uh: 20000,
+        };
+        let gains = compute_inner_gains(&params, 6250);
+        // Should clamp to u16::MAX, not overflow
+        assert!(gains.flux_p <= u16::MAX);
+        assert!(gains.flux_i <= u16::MAX);
+    }
+
+    #[test]
+    fn compute_gains_different_pwm_freq() {
+        let params = MotorParams {
+            resistance_mohm: 1200,
+            inductance_uh: 1500,
+        };
+        let gains_6250 = compute_inner_gains(&params, 6250);
+        let gains_12500 = compute_inner_gains(&params, 12500);
+
+        // Higher PWM freq = higher bandwidth = higher gains
+        assert!(gains_12500.flux_p > gains_6250.flux_p);
+    }
+
+    #[test]
+    fn default_gains_are_valid() {
+        // Defaults should be reasonable non-zero values
+        assert!(DEFAULT_INNER_GAINS.flux_p > 0);
+        assert!(DEFAULT_INNER_GAINS.flux_i > 0);
+        assert!(DEFAULT_INNER_GAINS.torque_p > 0);
+        assert!(DEFAULT_INNER_GAINS.torque_i > 0);
     }
 }
