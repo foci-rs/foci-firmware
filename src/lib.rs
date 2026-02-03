@@ -6,5 +6,6 @@
 #![no_std]
 
 pub mod dump;
+pub mod pid;
 pub mod selftest;
 pub mod tmc;
