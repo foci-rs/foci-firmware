@@ -31,6 +31,27 @@ pub enum MotorParamError {
     InductanceAsymmetry,
 }
 
+/// Raw step-response measurement data in TMC4671 internal units.
+///
+/// These values encode the board-specific ADC and voltage scaling
+/// implicitly — the PI controller, ADC, and voltage output all operate
+/// in the same s16 space, so gain computation from these values needs
+/// no board-specific constants.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub struct RawMeasurement {
+    /// Voltage step applied via UQ_UD_EXT (PIDOUT units).
+    pub voltage: u16,
+    /// Steady-state current response, coil A (ADC units, unsigned abs).
+    pub current_a: u16,
+    /// Steady-state current response, coil B (ADC units, unsigned abs).
+    pub current_b: u16,
+    /// Time constant tau for coil A in sample periods (1ms each).
+    pub tau_samples_a: u16,
+    /// Time constant tau for coil B in sample periods (1ms each).
+    pub tau_samples_b: u16,
+}
+
 /// Computed PI gains for TMC4671 flux and torque controllers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
@@ -172,6 +193,80 @@ pub fn compute_inner_gains(params: &MotorParams, pwm_freq_hz: u32) -> InnerLoopG
     let flux_i = i_raw.min(u16::MAX as u32) as u16;
 
     // Torque gains are identical to flux for 2-phase stepper (FOC2)
+    InnerLoopGains {
+        flux_p,
+        flux_i,
+        torque_p: flux_p,
+        torque_i: flux_i,
+    }
+}
+
+/// Compute inner loop PI gains from raw step-response measurement.
+///
+/// Uses the TMC4671's internal-unit R/L values directly, avoiding
+/// board-specific scaling factors. The advanced PI controller
+/// (MODE_PID_TYPE=1, Table 22) with P 8.8 / I 8.8 representation:
+///
+/// ```text
+/// output = (P_reg/256) * error + integrator
+/// integrator += (P_reg/256 * I_reg/256 * error) / 256
+/// ```
+///
+/// The I parameter acts as a ratio relative to P (inverse integral
+/// time constant), not an independent integrator gain.
+///
+/// # Strategy
+///
+/// P gain scales linearly with internal inductance (L_int = V/I * tau).
+/// Higher inductance requires more voltage per unit current change rate.
+///
+/// I gain is a conservative fraction — slow integrator to eliminate
+/// steady-state error without aggressive dynamics. Scaled with R/L
+/// ratio (the plant's natural frequency).
+///
+/// Reference calibration point: OpenFFBoard v1.2.4, test motor
+/// (R~1.2 ohm, L~1.5 mH), working gains P=404, I=26,
+/// raw measurement V=512, I=455, tau=1.
+pub fn compute_inner_gains_from_raw(raw: &RawMeasurement) -> InnerLoopGains {
+    // Average the two coils (both should be similar after validation)
+    let current_avg = (raw.current_a as u32 + raw.current_b as u32) / 2;
+    let tau_avg = (raw.tau_samples_a as u32 + raw.tau_samples_b as u32) / 2;
+
+    if current_avg == 0 || tau_avg == 0 {
+        return DEFAULT_INNER_GAINS;
+    }
+
+    // Internal-unit R and L:
+    //   R_int = voltage / current  (dimensionless ratio in s16 space)
+    //   L_int = R_int * tau        (ratio * sample periods)
+    //
+    // Reference point (OpenFFBoard test motor):
+    //   V=512, I=455, tau=1 → R_int_ref = 512/455 ≈ 1.125, L_int_ref ≈ 1.125
+    //   Working gains: P=404, I=26
+    //
+    // Scaling:
+    //   P_new = P_ref * L_int_new / L_int_ref
+    //         = 404 * (V_new/I_new * tau_new) / (512/455 * 1)
+    //         = 404 * V_new * tau_new * 455 / (I_new * 512)
+    //
+    //   I_new = I_ref * (R_int_new/L_int_new) / (R_int_ref/L_int_ref)
+    //         = I_ref * (1/tau_new) / (1/tau_ref)
+    //         = I_ref * tau_ref / tau_new
+    //         = 26 * 1 / tau_new
+    //         = 26 / tau_new
+
+    // P = 404 * voltage * tau_avg * 455 / (current_avg * 512)
+    let p_num = 404u64 * raw.voltage as u64 * tau_avg as u64 * 455;
+    let p_den = current_avg as u64 * 512;
+    let p_raw = (p_num / p_den) as u32;
+    let flux_p = p_raw.min(u16::MAX as u32) as u16;
+
+    // I = 26 / tau_avg (tau_ref = 1 for reference motor)
+    // For tau=1 (fast rise, low inductance motor): I=26 (matches reference)
+    // For tau=5 (slower rise, higher inductance): I=5 (slower integrator)
+    let flux_i = (26u32 / tau_avg).max(1).min(u16::MAX as u32) as u16;
+
+    // Torque gains identical to flux for 2-phase stepper (FOC2)
     InnerLoopGains {
         flux_p,
         flux_i,
@@ -379,6 +474,103 @@ mod tests {
         assert!(DEFAULT_INNER_GAINS.flux_i > 0);
         assert!(DEFAULT_INNER_GAINS.torque_p > 0);
         assert!(DEFAULT_INNER_GAINS.torque_i > 0);
+    }
+
+    #[test]
+    fn raw_gains_reference_motor() {
+        // OpenFFBoard test motor: V=512, I=455, tau=1
+        // Known-working gains: P=404, I=26
+        let raw = RawMeasurement {
+            voltage: 512,
+            current_a: 455,
+            current_b: 455,
+            tau_samples_a: 1,
+            tau_samples_b: 1,
+        };
+        let gains = compute_inner_gains_from_raw(&raw);
+
+        // Should produce gains close to the known-working values
+        assert!(
+            gains.flux_p > 350 && gains.flux_p < 460,
+            "flux_p={} expected ~404",
+            gains.flux_p
+        );
+        assert_eq!(gains.flux_i, 26, "flux_i should match reference I=26");
+        assert_eq!(gains.flux_p, gains.torque_p);
+        assert_eq!(gains.flux_i, gains.torque_i);
+    }
+
+    #[test]
+    fn raw_gains_higher_inductance() {
+        // Same current but longer tau = higher inductance → higher P
+        let raw = RawMeasurement {
+            voltage: 512,
+            current_a: 455,
+            current_b: 455,
+            tau_samples_a: 3,
+            tau_samples_b: 3,
+        };
+        let gains = compute_inner_gains_from_raw(&raw);
+
+        // P should scale with tau (3x inductance → ~3x P)
+        assert!(
+            gains.flux_p > 1000 && gains.flux_p < 1400,
+            "flux_p={} expected ~1212 (404*3)",
+            gains.flux_p
+        );
+        // I should decrease with tau (slower integrator for higher inductance)
+        assert!(
+            gains.flux_i < 26,
+            "flux_i={} should be less than reference 26",
+            gains.flux_i
+        );
+    }
+
+    #[test]
+    fn raw_gains_higher_resistance() {
+        // Higher R = lower current for same voltage → higher R_int
+        let raw = RawMeasurement {
+            voltage: 512,
+            current_a: 200,
+            current_b: 200,
+            tau_samples_a: 1,
+            tau_samples_b: 1,
+        };
+        let gains = compute_inner_gains_from_raw(&raw);
+
+        // P scales with V/I ratio (higher R → higher P for same tau)
+        assert!(
+            gains.flux_p > gains.flux_i,
+            "P should be larger than I for any real motor"
+        );
+        // I stays at 26 since tau=1 (same as reference)
+        assert_eq!(gains.flux_i, 26);
+    }
+
+    #[test]
+    fn raw_gains_zero_current_returns_defaults() {
+        let raw = RawMeasurement {
+            voltage: 512,
+            current_a: 0,
+            current_b: 0,
+            tau_samples_a: 1,
+            tau_samples_b: 1,
+        };
+        let gains = compute_inner_gains_from_raw(&raw);
+        assert_eq!(gains, DEFAULT_INNER_GAINS);
+    }
+
+    #[test]
+    fn raw_gains_zero_tau_returns_defaults() {
+        let raw = RawMeasurement {
+            voltage: 512,
+            current_a: 455,
+            current_b: 455,
+            tau_samples_a: 0,
+            tau_samples_b: 0,
+        };
+        let gains = compute_inner_gains_from_raw(&raw);
+        assert_eq!(gains, DEFAULT_INNER_GAINS);
     }
 
     #[test]
