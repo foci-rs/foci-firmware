@@ -7,6 +7,7 @@
 //! All logic is generic over `embedded-hal-async` traits for cross-board
 //! reuse and host-side unit testing.
 
+use crate::pid::RawMeasurement;
 use embedded_hal::digital::OutputPin;
 use embedded_hal_async::delay::DelayNs;
 use embedded_hal_async::spi::SpiDevice;
@@ -43,6 +44,18 @@ pub const SELFTEST_DONE_FAIL: u8 = 1;
 /// Overall selftest completion status: sequence aborted before completion.
 pub const SELFTEST_DONE_ABORTED: u8 = 2;
 
+/// Result of a completed selftest run.
+#[derive(Debug, Clone, Copy)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub struct SelftestResult {
+    /// Overall status: `SELFTEST_DONE_PASS`, `SELFTEST_DONE_FAIL`,
+    /// or `SELFTEST_DONE_ABORTED`.
+    pub status: u8,
+    /// Raw step-response measurement data for PI gain computation.
+    /// Present only if both resistance and inductance stages passed.
+    pub raw_measurement: Option<RawMeasurement>,
+}
+
 /// Callback for streaming selftest results to the host.
 ///
 /// Firmware implements this with `klipper_reply!` calls.
@@ -63,6 +76,22 @@ struct AdcCalResult {
     offset_i0: u16,
     /// Calibrated offset for ADC channel I1 (IWY).
     offset_i1: u16,
+}
+
+/// Result of resistance measurement (stage 7).
+struct ResistanceResult {
+    /// Per-coil resistance in milliohms.
+    mohm: (u16, u16),
+    /// Per-coil raw absolute ADC current (internal units).
+    raw_current: (u16, u16),
+}
+
+/// Result of inductance measurement (stage 8).
+struct InductanceResult {
+    /// Per-coil inductance in microhenries.
+    uh: (u16, u16),
+    /// Per-coil time constant in sample periods (1ms each).
+    raw_tau: (u16, u16),
 }
 
 /// Put the TMC4671 into a safe state: MODE=0, targets zeroed, enable pin LOW.
@@ -371,7 +400,7 @@ where
     match delta.cmp(&0) {
         core::cmp::Ordering::Greater => Some(0), // forward
         core::cmp::Ordering::Less => Some(1),    // reversed
-        core::cmp::Ordering::Equal => None,       // no motion detected
+        core::cmp::Ordering::Equal => None,      // no motion detected
     }
 }
 
@@ -387,14 +416,14 @@ where
 /// - `voltage`: test voltage magnitude (UD_EXT value, bits [15:0])
 ///
 /// # Returns
-/// `Some((resistance_a, resistance_b))` in raw V/I * 1000 units,
-/// `None` on SPI error.
+/// `Some(ResistanceResult)` with per-coil resistance in milliohms and
+/// raw ADC current values. `None` on SPI error.
 async fn selftest_measure_resistance<SPI, PIN, D, E>(
     tmc: &mut Tmc4671Spi<SPI>,
     enable_pin: &mut PIN,
     delay: &mut D,
     voltage: u32,
-) -> Option<(u16, u16)>
+) -> Option<ResistanceResult>
 where
     SPI: SpiDevice<u8, Error = E>,
     PIN: OutputPin,
@@ -403,6 +432,7 @@ where
     use tmc4671::registers::*;
 
     let mut results = [0u16; 2];
+    let mut raw_currents = [0u16; 2];
     for phase in 0..2u8 {
         tmc.write_register(PHI_E_SELECTION, 1).await.ok()?;
         let phi_e = if phase == 0 { 0u32 } else { 16384 };
@@ -432,6 +462,9 @@ where
         let actual = actual.ok()?;
         let current = (actual & 0xFFFF) as i16;
 
+        // Preserve raw absolute current for gain computation
+        raw_currents[phase as usize] = current.unsigned_abs();
+
         // R = V / I (raw ratio * 1000), clamped to u16::MAX
         if current.unsigned_abs() > 0 {
             let r = (voltage as u64 * 1000) / current.unsigned_abs() as u64;
@@ -442,7 +475,10 @@ where
     if results[0] == 0 && results[1] == 0 {
         return None;
     }
-    Some((results[0], results[1]))
+    Some(ResistanceResult {
+        mohm: (results[0], results[1]),
+        raw_current: (raw_currents[0], raw_currents[1]),
+    })
 }
 
 /// Measure phase inductance via step response.
@@ -459,14 +495,15 @@ where
 /// - `resistance_mohm`: measured resistance from stage 7 `(coil_a, coil_b)`
 ///
 /// # Returns
-/// `Some((inductance_a_uh, inductance_b_uh))`, `None` on SPI error.
+/// `Some(InductanceResult)` with per-coil inductance in microhenries and
+/// raw tau in sample periods. `None` on SPI error.
 async fn selftest_measure_inductance<SPI, PIN, D, E>(
     tmc: &mut Tmc4671Spi<SPI>,
     enable_pin: &mut PIN,
     delay: &mut D,
     voltage: u32,
     resistance_mohm: (u16, u16),
-) -> Option<(u16, u16)>
+) -> Option<InductanceResult>
 where
     SPI: SpiDevice<u8, Error = E>,
     PIN: OutputPin,
@@ -475,6 +512,7 @@ where
     use tmc4671::registers::*;
 
     let mut results = [0u16; 2];
+    let mut raw_taus = [0u16; 2];
     for phase in 0..2u8 {
         let r_mohm = if phase == 0 {
             resistance_mohm.0
@@ -554,6 +592,9 @@ where
             tau_ms = sample_count as u16; // Never reached — use full window
         }
 
+        // Preserve raw tau for gain computation
+        raw_taus[phase as usize] = tau_ms;
+
         // L = R * tau (R in mohm, tau in ms -> L in uH), clamped to u16::MAX
         let l = r_mohm as u32 * tau_ms as u32;
         results[phase as usize] = l.min(u16::MAX as u32) as u16;
@@ -562,7 +603,10 @@ where
     if results[0] == 0 && results[1] == 0 {
         return None;
     }
-    Some((results[0], results[1]))
+    Some(InductanceResult {
+        uh: (results[0], results[1]),
+        raw_tau: (raw_taus[0], raw_taus[1]),
+    })
 }
 
 /// Run the full 8-stage selftest sequence.
@@ -580,15 +624,15 @@ where
 /// - `reporter`: mutable reference to the result callback
 ///
 /// # Returns
-/// Overall status: `SELFTEST_DONE_PASS`, `SELFTEST_DONE_FAIL`,
-/// or `SELFTEST_DONE_ABORTED`.
+/// [`SelftestResult`] with overall status and optional raw measurement
+/// data for PI gain computation.
 pub async fn run_selftest<SPI, PIN, D, E>(
     tmc: &mut Tmc4671Spi<SPI>,
     enable_pin: &mut PIN,
     delay: &mut D,
     _current_limit: u32,
     reporter: &mut impl SelftestReporter,
-) -> u8
+) -> SelftestResult
 where
     SPI: SpiDevice<u8, Error = E>,
     PIN: OutputPin,
@@ -604,7 +648,10 @@ where
         None => {
             reporter.report_stage(STAGE_ADC_CAL, SELFTEST_FAIL, 0);
             restore_safe_state(tmc, enable_pin).await;
-            return SELFTEST_DONE_FAIL;
+            return SelftestResult {
+                status: SELFTEST_DONE_FAIL,
+                raw_measurement: None,
+            };
         }
     }
 
@@ -635,12 +682,18 @@ where
                 r.current_expected.unsigned_abs() as u32,
             );
             restore_safe_state(tmc, enable_pin).await;
-            return SELFTEST_DONE_FAIL;
+            return SelftestResult {
+                status: SELFTEST_DONE_FAIL,
+                raw_measurement: None,
+            };
         }
         None => {
             reporter.report_stage(STAGE_MOTOR_COIL_A, SELFTEST_FAIL, 0);
             restore_safe_state(tmc, enable_pin).await;
-            return SELFTEST_DONE_FAIL;
+            return SelftestResult {
+                status: SELFTEST_DONE_FAIL,
+                raw_measurement: None,
+            };
         }
     };
 
@@ -661,12 +714,18 @@ where
                 r.current_expected.unsigned_abs() as u32,
             );
             restore_safe_state(tmc, enable_pin).await;
-            return SELFTEST_DONE_FAIL;
+            return SelftestResult {
+                status: SELFTEST_DONE_FAIL,
+                raw_measurement: None,
+            };
         }
         None => {
             reporter.report_stage(STAGE_MOTOR_COIL_B, SELFTEST_FAIL, 0);
             restore_safe_state(tmc, enable_pin).await;
-            return SELFTEST_DONE_FAIL;
+            return SelftestResult {
+                status: SELFTEST_DONE_FAIL,
+                raw_measurement: None,
+            };
         }
     }
 
@@ -685,7 +744,10 @@ where
     );
     if !wiring_ok {
         restore_safe_state(tmc, enable_pin).await;
-        return SELFTEST_DONE_FAIL;
+        return SelftestResult {
+            status: SELFTEST_DONE_FAIL,
+            raw_measurement: None,
+        };
     }
 
     // Stage 5: Encoder presence
@@ -696,7 +758,10 @@ where
         None => {
             reporter.report_stage(STAGE_ENCODER_PRESENCE, SELFTEST_FAIL, 0);
             restore_safe_state(tmc, enable_pin).await;
-            return SELFTEST_DONE_FAIL;
+            return SelftestResult {
+                status: SELFTEST_DONE_FAIL,
+                raw_measurement: None,
+            };
         }
     }
 
@@ -713,30 +778,55 @@ where
 
     // Stage 7: Resistance (diagnostic only)
     let resistance = match selftest_measure_resistance(tmc, enable_pin, delay, voltage).await {
-        Some((ra, rb)) => {
-            let packed = ((ra as u32) << 16) | (rb as u32);
+        Some(r) => {
+            let packed = ((r.mohm.0 as u32) << 16) | (r.mohm.1 as u32);
             reporter.report_stage(STAGE_RESISTANCE, SELFTEST_PASS, packed);
-            (ra, rb)
+            Some(r)
         }
         None => {
             reporter.report_stage(STAGE_RESISTANCE, SELFTEST_SKIP, 0);
-            (0, 0)
+            None
         }
     };
 
     // Stage 8: Inductance (diagnostic only)
-    match selftest_measure_inductance(tmc, enable_pin, delay, voltage, resistance).await {
-        Some((la, lb)) => {
-            let packed = ((la as u32) << 16) | (lb as u32);
+    let mohm = resistance.as_ref().map(|r| r.mohm).unwrap_or((0, 0));
+    let inductance = match selftest_measure_inductance(tmc, enable_pin, delay, voltage, mohm).await
+    {
+        Some(l) => {
+            let packed = ((l.uh.0 as u32) << 16) | (l.uh.1 as u32);
             reporter.report_stage(STAGE_INDUCTANCE, SELFTEST_PASS, packed);
+            Some(l)
         }
         None => {
             reporter.report_stage(STAGE_INDUCTANCE, SELFTEST_SKIP, 0);
+            None
         }
-    }
+    };
+
+    // Build RawMeasurement only if both stages produced valid data
+    // for BOTH coils. Partial data (one coil zero) would distort the
+    // averaged gain computation in compute_inner_gains_from_raw().
+    let raw_measurement = match (&resistance, &inductance) {
+        (Some(r), Some(l))
+            if r.raw_current.0 > 0 && r.raw_current.1 > 0 && l.raw_tau.0 > 0 && l.raw_tau.1 > 0 =>
+        {
+            Some(RawMeasurement {
+                voltage: (voltage & 0xFFFF) as u16,
+                current_a: r.raw_current.0,
+                current_b: r.raw_current.1,
+                tau_samples_a: l.raw_tau.0,
+                tau_samples_b: l.raw_tau.1,
+            })
+        }
+        _ => None,
+    };
 
     restore_safe_state(tmc, enable_pin).await;
-    SELFTEST_DONE_PASS
+    SelftestResult {
+        status: SELFTEST_DONE_PASS,
+        raw_measurement,
+    }
 }
 
 #[cfg(test)]
@@ -1119,9 +1209,11 @@ mod tests {
         let mut delay = NoopDelay::new();
 
         let result = selftest_measure_resistance(&mut tmc, &mut pin, &mut delay, 512).await;
-        let (ra, rb) = result.unwrap();
-        assert_eq!(ra, 1125); // 512*1000/455
-        assert_eq!(rb, 1113); // 512*1000/460
+        let r = result.unwrap();
+        assert_eq!(r.mohm.0, 1125); // 512*1000/455
+        assert_eq!(r.mohm.1, 1113); // 512*1000/460
+        assert_eq!(r.raw_current.0, 455);
+        assert_eq!(r.raw_current.1, 460);
 
         tmc.into_inner().done();
         pin.done();
