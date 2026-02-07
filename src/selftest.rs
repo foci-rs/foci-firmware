@@ -79,19 +79,19 @@ struct AdcCalResult {
 }
 
 /// Result of resistance measurement (stage 7).
-struct ResistanceResult {
+pub struct ResistanceResult {
     /// Per-coil resistance in milliohms.
-    mohm: (u16, u16),
+    pub mohm: (u16, u16),
     /// Per-coil raw absolute ADC current (internal units).
-    raw_current: (u16, u16),
+    pub raw_current: (u16, u16),
 }
 
 /// Result of inductance measurement (stage 8).
-struct InductanceResult {
+pub struct InductanceResult {
     /// Per-coil inductance in microhenries.
-    uh: (u16, u16),
+    pub uh: (u16, u16),
     /// Per-coil time constant in sample periods (1ms each).
-    raw_tau: (u16, u16),
+    pub raw_tau: (u16, u16),
 }
 
 /// Put the TMC4671 into a safe state: MODE=0, targets zeroed, enable pin LOW.
@@ -102,7 +102,7 @@ struct InductanceResult {
 /// # Parameters
 /// - `tmc`: mutable reference to the TMC4671 SPI driver
 /// - `enable_pin`: mutable reference to the motor enable output pin
-async fn restore_safe_state<SPI, PIN, E>(tmc: &mut Tmc4671Spi<SPI>, enable_pin: &mut PIN)
+pub async fn restore_safe_state<SPI, PIN, E>(tmc: &mut Tmc4671Spi<SPI>, enable_pin: &mut PIN)
 where
     SPI: SpiDevice<u8, Error = E>,
     PIN: OutputPin,
@@ -418,7 +418,7 @@ where
 /// # Returns
 /// `Some(ResistanceResult)` with per-coil resistance in milliohms and
 /// raw ADC current values. `None` on SPI error.
-async fn selftest_measure_resistance<SPI, PIN, D, E>(
+pub async fn selftest_measure_resistance<SPI, PIN, D, E>(
     tmc: &mut Tmc4671Spi<SPI>,
     enable_pin: &mut PIN,
     delay: &mut D,
@@ -497,7 +497,7 @@ where
 /// # Returns
 /// `Some(InductanceResult)` with per-coil inductance in microhenries and
 /// raw tau in sample periods. `None` on SPI error.
-async fn selftest_measure_inductance<SPI, PIN, D, E>(
+pub async fn selftest_measure_inductance<SPI, PIN, D, E>(
     tmc: &mut Tmc4671Spi<SPI>,
     enable_pin: &mut PIN,
     delay: &mut D,

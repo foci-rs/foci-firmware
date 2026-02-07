@@ -27,6 +27,20 @@ pub enum TmcRequest {
     SelfTest { oid: u8 },
     /// Dump all registers via klipper_output protocol.
     DumpRegisters { oid: u8 },
+    /// Host sends pre-computed PI gains for flux/torque controllers.
+    SetPidGains {
+        flux_p: u16,
+        flux_i: u16,
+        torque_p: u16,
+        torque_i: u16,
+    },
+    /// Host sends measured motor R/L for firmware-side gain computation.
+    SetMotorParams {
+        resistance_mohm: u32,
+        inductance_uh: u32,
+    },
+    /// Trigger R/L measurement and gain computation (FOCI_AUTOTUNE).
+    Autotune { oid: u8 },
     /// Write a TMC4671 register via SPI (dev-only).
     #[cfg(feature = "dev")]
     Write { addr: u8, value: u32 },
@@ -83,6 +97,29 @@ pub fn tmc_calibrate(oid: u8) -> TmcRequest {
 /// Build a `DumpRegisters` request.
 pub fn tmc_dump_registers(oid: u8) -> TmcRequest {
     TmcRequest::DumpRegisters { oid }
+}
+
+/// Build a `SetPidGains` request.
+pub fn tmc_set_pid_gains(flux_p: u16, flux_i: u16, torque_p: u16, torque_i: u16) -> TmcRequest {
+    TmcRequest::SetPidGains {
+        flux_p,
+        flux_i,
+        torque_p,
+        torque_i,
+    }
+}
+
+/// Build a `SetMotorParams` request.
+pub fn tmc_set_motor_params(resistance_mohm: u32, inductance_uh: u32) -> TmcRequest {
+    TmcRequest::SetMotorParams {
+        resistance_mohm,
+        inductance_uh,
+    }
+}
+
+/// Build an `Autotune` request.
+pub fn tmc_autotune(oid: u8) -> TmcRequest {
+    TmcRequest::Autotune { oid }
 }
 
 /// Build a `Write` request (dev-only).
@@ -159,5 +196,34 @@ mod tests {
     #[test]
     fn tmc_dump_registers_builds_request() {
         assert_eq!(tmc_dump_registers(1), TmcRequest::DumpRegisters { oid: 1 });
+    }
+
+    #[test]
+    fn tmc_set_pid_gains_builds_request() {
+        assert_eq!(
+            tmc_set_pid_gains(100, 200, 300, 400),
+            TmcRequest::SetPidGains {
+                flux_p: 100,
+                flux_i: 200,
+                torque_p: 300,
+                torque_i: 400,
+            }
+        );
+    }
+
+    #[test]
+    fn tmc_set_motor_params_builds_request() {
+        assert_eq!(
+            tmc_set_motor_params(1200, 1500),
+            TmcRequest::SetMotorParams {
+                resistance_mohm: 1200,
+                inductance_uh: 1500,
+            }
+        );
+    }
+
+    #[test]
+    fn tmc_autotune_builds_request() {
+        assert_eq!(tmc_autotune(0), TmcRequest::Autotune { oid: 0 });
     }
 }
