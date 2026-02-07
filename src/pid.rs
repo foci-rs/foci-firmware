@@ -320,40 +320,48 @@ pub fn compute_inner_gains_from_raw(raw: &RawMeasurement) -> InnerLoopGains {
 ///
 /// # Returns
 /// Computed gains, or `DEFAULT_INNER_GAINS` if measurement data is invalid.
-/// Bandwidth divisor for current loop relative to PWM frequency.
-/// 1% of f_PWM = conservative, stable for 6.25 kHz with one-sample delay.
-/// The TMC4671 at 6.25 kHz can theoretically support up to ~5%, but
-/// the computation delay and ADC group delay reduce the effective
-/// phase margin. 1% gives a safe starting point.
-const BANDWIDTH_PERCENT: f32 = 1.0;
+/// Absolute target bandwidth for the current loop in Hz.
+/// 50 Hz (314 rad/s) — validated on hardware via sweep (50/62.5 Hz).
+/// 50 Hz produces silent idle with minimal vibration; 62.5 Hz is
+/// slightly audible with stronger vibration. Move quality is equal.
+const BANDWIDTH_HZ: f32 = 50.0;
 
 pub fn compute_gains_from_internal(meas: &InternalMeasurement, pwm_freq_hz: u32) -> InnerLoopGains {
-    if meas.current_avg == 0 || meas.delta_i_avg == 0 || meas.dt_us == 0 || pwm_freq_hz == 0 {
+    if meas.current_avg == 0 || meas.delta_i_avg == 0 || meas.dt_us == 0 {
         return DEFAULT_INNER_GAINS;
     }
 
     // L_int = V * dt / dI (internal units, dt in seconds)
     let v = meas.voltage as f32;
     let di = meas.delta_i_avg as f32;
+    let i_ss = meas.current_avg as f32;
     let dt_s = meas.dt_us as f32 / 1_000_000.0;
     let l_int = v * dt_s / di;
 
-    // omega_bw = 2 * pi * f_pwm * bandwidth_percent / 100
-    let omega_bw = 2.0 * core::f32::consts::PI * pwm_freq_hz as f32 * BANDWIDTH_PERCENT / 100.0;
+    // R_int = V / I_ss (internal units, resistance in ADC/DAC space)
+    let r_int = v / i_ss;
+
+    // omega_bw = 2 * pi * bandwidth_hz (absolute, not relative to f_pwm)
+    let omega_bw = 2.0 * core::f32::consts::PI * BANDWIDTH_HZ;
 
     // P = L_int * omega_bw * 256 (Q8.8)
     let p_real = l_int * omega_bw;
     let p_reg = (p_real * 256.0).clamp(1.0, u16::MAX as f32) as u16;
 
-    // I = 1 for Phase 2 (P-only control). Will be replaced with
-    // empirically validated formula in Phase 3.
-    let flux_i: u16 = 1;
+    // I gain: pole-zero cancellation places the PI zero at the plant
+    // pole (1/tau = R/L). In the TMC4671's advanced PI structure where
+    // the integrator is scaled by P, the effective Ki = P * I / 256^2
+    // per sample. For the zero at R/L:
+    //   I = R_int * 256 / (L_int * f_pwm)
+    let f_pwm = pwm_freq_hz as f32;
+    let i_real = r_int * 256.0 / (l_int * f_pwm);
+    let i_reg = i_real.clamp(1.0, u16::MAX as f32) as u16;
 
     InnerLoopGains {
         flux_p: p_reg,
-        flux_i,
+        flux_i: i_reg,
         torque_p: p_reg,
-        torque_i: flux_i,
+        torque_i: i_reg,
     }
 }
 
