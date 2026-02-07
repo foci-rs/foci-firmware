@@ -481,6 +481,197 @@ where
     })
 }
 
+/// Measure per-coil resistance with PWM-rate current averaging for autotune.
+///
+/// Same setup as `selftest_measure_resistance` (MODE=8, UQ_UD_EXT, per-coil
+/// phi_e), but samples current 1000 times at PWM rate (160us) instead of
+/// a single reading. Returns averaged current per coil for internal-unit
+/// gain computation.
+///
+/// # Parameters
+/// - `tmc`: TMC4671 SPI driver
+/// - `enable_pin`: motor enable output
+/// - `delay`: async delay source
+/// - `voltage`: excitation voltage (PIDOUT units, typically 512)
+///
+/// # Returns
+/// `Some((current_a, current_b))` with averaged unsigned absolute current
+/// per coil, or `None` on SPI error.
+pub async fn autotune_measure_resistance<SPI, PIN, D, E>(
+    tmc: &mut Tmc4671Spi<SPI>,
+    enable_pin: &mut PIN,
+    delay: &mut D,
+    voltage: u32,
+) -> Option<(u16, u16)>
+where
+    SPI: SpiDevice<u8, Error = E>,
+    PIN: OutputPin,
+    D: DelayNs,
+{
+    use tmc4671::registers::*;
+
+    const SAMPLE_COUNT: u32 = 1000;
+    const SAMPLE_PERIOD_US: u32 = 160;
+
+    let mut currents = [0u16; 2];
+    for phase in 0..2u8 {
+        tmc.write_register(PHI_E_SELECTION, 1).await.ok()?;
+        let phi_e = if phase == 0 { 0u32 } else { 16384 };
+        tmc.write_register(PHI_E_EXT, phi_e).await.ok()?;
+        tmc.write_register(UQ_UD_EXT, voltage & 0xFFFF).await.ok()?;
+        tmc.write_register(MODE_RAMP_MODE_MOTION, 8).await.ok()?;
+
+        let _ = enable_pin.set_high();
+
+        // Wait for steady state (100ms = ~625 PWM cycles)
+        delay.delay_ms(100).await;
+
+        // Sample current at PWM rate and accumulate
+        let mut sum: i64 = 0;
+        let mut count: u32 = 0;
+        for _ in 0..SAMPLE_COUNT {
+            delay.delay_us(SAMPLE_PERIOD_US).await;
+            if let Ok(actual) = tmc.read_register(PID_TORQUE_FLUX_ACTUAL).await {
+                let current = (actual & 0xFFFF) as i16;
+                sum += current.unsigned_abs() as i64;
+                count += 1;
+            }
+        }
+
+        // Stop and disable
+        let _ = tmc.write_register(MODE_RAMP_MODE_MOTION, 0).await;
+        let _ = tmc.write_register(UQ_UD_EXT, 0).await;
+        let _ = enable_pin.set_low();
+        delay.delay_ms(50).await;
+
+        if count > 0 {
+            currents[phase as usize] = (sum / count as i64) as u16;
+        }
+    }
+
+    if currents[0] == 0 && currents[1] == 0 {
+        return None;
+    }
+    Some((currents[0], currents[1]))
+}
+
+/// Total settle/cooldown time inside `autotune_measure_inductance` in
+/// milliseconds. The caller must subtract this from any wall-clock
+/// timing that wraps the function call.
+///
+/// Per coil: 10ms pre-toggle settle + 50ms post-toggle cooldown = 60ms.
+/// Two coils: 120ms total.
+pub const DIDT_SETTLE_MS: u32 = 120;
+
+/// Result of square-wave di/dt inductance measurement.
+pub struct DiDtResult {
+    /// Per-coil sum of |delta_I| over all cycles (ADC units).
+    pub sum_delta: (u64, u64),
+    /// Per-coil number of valid delta_I samples.
+    pub count: (u32, u32),
+}
+
+/// Measure per-coil inductance via square-wave di/dt method for autotune.
+///
+/// Toggles UQ_UD_EXT between +V and -V as fast as SPI allows (no
+/// additional delay — the SPI write+read paces each cycle at ~50us).
+/// Reads current via PID_TORQUE_FLUX_ACTUAL and accumulates |delta_I|
+/// between consecutive samples over `cycles` iterations per coil.
+///
+/// Returns raw accumulated sum_delta and count. The **caller** must
+/// measure wall-clock time (e.g., via DWT cycle counter) to compute
+/// the actual dt per cycle, since SPI transfer time varies and
+/// dominates the cycle period.
+///
+/// L_int = V * total_time_s / sum_delta (for each coil)
+///
+/// All values are in TMC4671 internal units (s16 ADC/DAC space).
+///
+/// # Parameters
+/// - `tmc`: TMC4671 SPI driver
+/// - `enable_pin`: motor enable output
+/// - `delay`: async delay source (used only for settle periods)
+/// - `voltage`: excitation voltage magnitude (PIDOUT units, typically 512)
+/// - `cycles`: number of +V/-V toggle cycles per coil
+///
+/// # Returns
+/// `Some(DiDtResult)` with per-coil raw accumulations, or `None` on
+/// SPI error. Caller computes L_int using measured wall-clock time.
+pub async fn autotune_measure_inductance<SPI, PIN, D, E>(
+    tmc: &mut Tmc4671Spi<SPI>,
+    enable_pin: &mut PIN,
+    delay: &mut D,
+    voltage: u32,
+    cycles: u32,
+) -> Option<DiDtResult>
+where
+    SPI: SpiDevice<u8, Error = E>,
+    PIN: OutputPin,
+    D: DelayNs,
+{
+    use tmc4671::registers::*;
+
+    let mut sum_deltas = [0u64; 2];
+    let mut counts = [0u32; 2];
+    for phase in 0..2u8 {
+        tmc.write_register(PHI_E_SELECTION, 1).await.ok()?;
+        let phi_e = if phase == 0 { 0u32 } else { 16384 };
+        tmc.write_register(PHI_E_EXT, phi_e).await.ok()?;
+
+        // Start with zero voltage in UQ_UD_EXT mode
+        tmc.write_register(UQ_UD_EXT, 0).await.ok()?;
+        tmc.write_register(MODE_RAMP_MODE_MOTION, 8).await.ok()?;
+        let _ = enable_pin.set_high();
+
+        // Brief settle before toggling
+        delay.delay_ms(10).await;
+
+        // Toggle voltage and accumulate |delta_I|.
+        // No delay between cycles — SPI transfer time (~50us for
+        // write+read at 2 MHz) paces each iteration naturally.
+        let v_pos = voltage & 0xFFFF;
+        let v_neg = (-(voltage as i32) as u32) & 0xFFFF;
+        let mut sum_delta: u64 = 0;
+        let mut count: u32 = 0;
+        let mut prev_current: i16 = 0;
+        let mut first = true;
+
+        for cycle in 0..cycles {
+            let v = if cycle % 2 == 0 { v_pos } else { v_neg };
+            let _ = tmc.write_register(UQ_UD_EXT, v).await;
+
+            // No delay — read immediately. SPI transfer provides pacing.
+            if let Ok(actual) = tmc.read_register(PID_TORQUE_FLUX_ACTUAL).await {
+                let current = (actual & 0xFFFF) as i16;
+                if !first {
+                    let delta = (current as i32 - prev_current as i32).unsigned_abs();
+                    sum_delta += delta as u64;
+                    count += 1;
+                }
+                prev_current = current;
+                first = false;
+            }
+        }
+
+        // Stop and disable
+        let _ = tmc.write_register(UQ_UD_EXT, 0).await;
+        let _ = tmc.write_register(MODE_RAMP_MODE_MOTION, 0).await;
+        let _ = enable_pin.set_low();
+        delay.delay_ms(50).await;
+
+        sum_deltas[phase as usize] = sum_delta;
+        counts[phase as usize] = count;
+    }
+
+    if counts[0] == 0 && counts[1] == 0 {
+        return None;
+    }
+    Some(DiDtResult {
+        sum_delta: (sum_deltas[0], sum_deltas[1]),
+        count: (counts[0], counts[1]),
+    })
+}
+
 /// Measure phase inductance via step response.
 ///
 /// For each phase, steps voltage from 0 to a known value, samples current

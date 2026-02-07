@@ -52,6 +52,28 @@ pub struct RawMeasurement {
     pub tau_samples_b: u16,
 }
 
+/// Motor R and L measured in TMC4671 internal units.
+///
+/// These values are dimensionless ratios in the TMC4671's s16 ADC/DAC
+/// space. Because the PI controller, ADC, and voltage output all
+/// operate in this same space, gain computation from internal-unit
+/// values needs no board-specific scaling constants.
+#[derive(Debug, Clone, Copy)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub struct InternalMeasurement {
+    /// Voltage applied during measurement (PIDOUT units).
+    pub voltage: u16,
+    /// Steady-state current per coil (ADC units, unsigned absolute).
+    /// Average of coil A and coil B.
+    pub current_avg: u16,
+    /// Average |delta_I| per cycle during square-wave excitation
+    /// (ADC units). Averaged over both coils.
+    pub delta_i_avg: u16,
+    /// Actual time per di/dt cycle in microseconds, measured via DWT.
+    /// Includes SPI transfer overhead (~50us write + ~25us read).
+    pub dt_us: u32,
+}
+
 /// Computed PI gains for TMC4671 flux and torque controllers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
@@ -273,6 +295,64 @@ pub fn compute_inner_gains_from_raw(raw: &RawMeasurement) -> InnerLoopGains {
         flux_p,
         flux_i,
         torque_p: flux_p,
+        torque_i: flux_i,
+    }
+}
+
+/// Compute PI gains from internal-unit measurements.
+///
+/// Uses the standard pole-zero cancellation formula directly in the
+/// TMC4671's internal unit space:
+///
+///   R_int = voltage / current_avg
+///   L_int = voltage / (delta_i_avg * f_pwm)
+///   P = L_int * omega_bw * 256         (Q8.8)
+///
+/// The f_pwm terms cancel in the P formula:
+///   P = V / (dI * f) * 2*pi*f/20 * 256 = V * pi / (dI * 10) * 256
+///
+/// Because all quantities are in the same internal-unit space, no
+/// board-specific scaling constants are needed.
+///
+/// # Parameters
+/// - `meas`: internal-unit measurement from R and L measurement
+/// - `pwm_freq_hz`: TMC4671 PWM frequency (6250 Hz for OpenFFBoard)
+///
+/// # Returns
+/// Computed gains, or `DEFAULT_INNER_GAINS` if measurement data is invalid.
+/// Bandwidth divisor for current loop relative to PWM frequency.
+/// 1% of f_PWM = conservative, stable for 6.25 kHz with one-sample delay.
+/// The TMC4671 at 6.25 kHz can theoretically support up to ~5%, but
+/// the computation delay and ADC group delay reduce the effective
+/// phase margin. 1% gives a safe starting point.
+const BANDWIDTH_PERCENT: f32 = 1.0;
+
+pub fn compute_gains_from_internal(meas: &InternalMeasurement, pwm_freq_hz: u32) -> InnerLoopGains {
+    if meas.current_avg == 0 || meas.delta_i_avg == 0 || meas.dt_us == 0 || pwm_freq_hz == 0 {
+        return DEFAULT_INNER_GAINS;
+    }
+
+    // L_int = V * dt / dI (internal units, dt in seconds)
+    let v = meas.voltage as f32;
+    let di = meas.delta_i_avg as f32;
+    let dt_s = meas.dt_us as f32 / 1_000_000.0;
+    let l_int = v * dt_s / di;
+
+    // omega_bw = 2 * pi * f_pwm * bandwidth_percent / 100
+    let omega_bw = 2.0 * core::f32::consts::PI * pwm_freq_hz as f32 * BANDWIDTH_PERCENT / 100.0;
+
+    // P = L_int * omega_bw * 256 (Q8.8)
+    let p_real = l_int * omega_bw;
+    let p_reg = (p_real * 256.0).clamp(1.0, u16::MAX as f32) as u16;
+
+    // I = 1 for Phase 2 (P-only control). Will be replaced with
+    // empirically validated formula in Phase 3.
+    let flux_i: u16 = 1;
+
+    InnerLoopGains {
+        flux_p: p_reg,
+        flux_i,
+        torque_p: p_reg,
         torque_i: flux_i,
     }
 }
@@ -614,5 +694,76 @@ mod tests {
         let (p, i) = unpack_pid_register(0x12345678);
         assert_eq!(p, 0x1234);
         assert_eq!(i, 0x5678);
+    }
+
+    #[test]
+    fn internal_gains_zero_current_returns_defaults() {
+        let meas = InternalMeasurement {
+            voltage: 512,
+            current_avg: 0,
+            delta_i_avg: 100,
+            dt_us: 98,
+        };
+        assert_eq!(
+            compute_gains_from_internal(&meas, 6250),
+            DEFAULT_INNER_GAINS
+        );
+    }
+
+    #[test]
+    fn internal_gains_zero_delta_returns_defaults() {
+        let meas = InternalMeasurement {
+            voltage: 512,
+            current_avg: 455,
+            delta_i_avg: 0,
+            dt_us: 98,
+        };
+        assert_eq!(
+            compute_gains_from_internal(&meas, 6250),
+            DEFAULT_INNER_GAINS
+        );
+    }
+
+    #[test]
+    fn internal_gains_p_scales_with_voltage_over_delta_i() {
+        let low_l = InternalMeasurement {
+            voltage: 512,
+            current_avg: 455,
+            delta_i_avg: 200,
+            dt_us: 98,
+        };
+        let high_l = InternalMeasurement {
+            voltage: 512,
+            current_avg: 455,
+            delta_i_avg: 50,
+            dt_us: 98,
+        };
+        let gains_low = compute_gains_from_internal(&low_l, 6250);
+        let gains_high = compute_gains_from_internal(&high_l, 6250);
+        assert!(
+            gains_high.flux_p > gains_low.flux_p,
+            "higher L (lower dI) should give higher P: low={} high={}",
+            gains_low.flux_p,
+            gains_high.flux_p,
+        );
+    }
+
+    #[test]
+    fn internal_gains_p_scales_with_pwm_freq() {
+        // Higher f_pwm = higher bandwidth = higher P
+        let meas = InternalMeasurement {
+            voltage: 512,
+            current_avg: 455,
+            delta_i_avg: 100,
+            dt_us: 98,
+        };
+        let gains_6250 = compute_gains_from_internal(&meas, 6250);
+        let gains_12500 = compute_gains_from_internal(&meas, 12500);
+        assert!(
+            gains_12500.flux_p > gains_6250.flux_p,
+            "higher f_pwm should give higher P: 6250={} 12500={}",
+            gains_6250.flux_p,
+            gains_12500.flux_p,
+        );
     }
 }
