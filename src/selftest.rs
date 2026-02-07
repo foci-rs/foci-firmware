@@ -614,7 +614,7 @@ where
             // tau = -dt / ln(ratio), dt = SAMPLE_PERIOD_US
             if avg_ratio > 0.01 && avg_ratio < 0.999 {
                 let tau_f = -(SAMPLE_PERIOD_US as f32) / libm::logf(avg_ratio);
-                tau_f.max(1.0).min(50_000.0) as u32
+                tau_f.clamp(1.0, 50_000.0) as u32
             } else {
                 // Ratio out of range — fall back to threshold crossing
                 let target = (steady * 63) / 100;
