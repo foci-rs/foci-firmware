@@ -71,10 +71,6 @@ pub struct InnerLoopGains {
 /// OpenFFBoard: 25_000_000 / 4000 = 6250 Hz
 pub const DEFAULT_PWM_FREQ_HZ: u32 = 6250;
 
-/// Target closed-loop bandwidth as fraction of PWM frequency.
-/// 1/10th is a conservative, stable choice.
-const BANDWIDTH_DIVISOR: u32 = 10;
-
 /// Conservative default gains for when no R/L data is available.
 /// These are intentionally low — stable but sluggish.
 pub const DEFAULT_INNER_GAINS: InnerLoopGains = InnerLoopGains {
@@ -132,17 +128,15 @@ pub fn validate_motor_params(
 
 /// Compute inner loop PI gains from motor parameters.
 ///
-/// Uses standard PI tuning for RL load:
-///   P = L * bandwidth (proportional to inductance)
-///   I = R * bandwidth (proportional to resistance)
+/// Scales from known-working reference gains using relative R/L ratios.
+/// This avoids the TMC4671's board-specific ADC/DAC unit scaling — the
+/// scaling factor cancels in the ratio because both reference and new
+/// motor are on the same board family.
 ///
-/// Bandwidth = f_pwm / BANDWIDTH_DIVISOR (default: 625 Hz = 3927 rad/s)
+///   P_new = P_ref * L_new / L_ref
+///   I_new = I_ref * (R_new/L_new) / (R_ref/L_ref)
 ///
-/// The TMC4671 PI controller in advanced mode (MODE_PID_TYPE=1) uses
-/// Q8.8 format for both P and I gains (register value / 256).
-/// Section 4.7.6 describes Q0.15 for I in standard mode, but the
-/// firmware uses advanced mode with default ADVANCED_PI_REPRESENT
-/// (sub-register 62), where all gains are Q8.8.
+/// Reference: OpenFFBoard v1.2.4, P=404, I=26, R=1200mOhm, L=1500uH.
 ///
 /// # Parameters
 /// - `params`: validated motor parameters (R in milliohms, L in microhenries)
@@ -150,10 +144,9 @@ pub fn validate_motor_params(
 ///
 /// # Panics (debug only)
 /// Debug-asserts that `params` fields are within `validate_motor_params` bounds
-/// and `pwm_freq_hz > 0`. In release builds, out-of-range inputs may produce
-/// incorrect results due to integer overflow.
-pub fn compute_inner_gains(params: &MotorParams, pwm_freq_hz: u32) -> InnerLoopGains {
-    debug_assert!(pwm_freq_hz > 0, "PWM frequency must be non-zero");
+/// and fields are within `validate_motor_params` bounds. In release builds,
+/// out-of-range inputs may produce incorrect results due to integer overflow.
+pub fn compute_inner_gains(params: &MotorParams, _pwm_freq_hz: u32) -> InnerLoopGains {
     debug_assert!(
         params.resistance_mohm <= 50_000,
         "resistance out of validated range"
@@ -163,34 +156,41 @@ pub fn compute_inner_gains(params: &MotorParams, pwm_freq_hz: u32) -> InnerLoopG
         "inductance out of validated range"
     );
 
-    // Target bandwidth in Hz
-    let bw_hz = pwm_freq_hz / BANDWIDTH_DIVISOR;
+    // Relative scaling from a known-working reference point.
+    //
+    // The standard PI formula (Kp = L*omega_bw, Ki = R*omega_bw)
+    // operates in SI units (V/A), but the TMC4671's PI controller
+    // uses board-specific internal units (ADC counts, DAC counts).
+    // The mapping depends on sense resistors, amplifier gain, supply
+    // voltage, and ADC_SCALE — factors that differ between boards.
+    //
+    // Relative scaling cancels this unknown factor by computing gains
+    // as ratios to a known-working reference on the same board:
+    //
+    //   P_new = P_ref * L_new / L_ref
+    //   I_new = I_ref * (R_new/L_new) / (R_ref/L_ref)
+    //         = I_ref * R_new * L_ref / (R_ref * L_new)
+    //
+    // Reference: OpenFFBoard v1.2.4 test motor
+    //   R_ref = 1200 mOhm, L_ref = 1500 uH
+    //   P_ref = 404, I_ref = 26 (known-working, hand-tuned)
+    const P_REF: u64 = 404;
+    const I_REF: u64 = 26;
+    const R_REF: u64 = 1200; // milliohms
+    const L_REF: u64 = 1500; // microhenries
 
-    // P gain = L * 2 * pi * bw_hz
-    // Units: L is in uH, bw in Hz
-    // P_real = L_uH * 1e-6 * 2 * pi * bw_hz
-    // P_q8_8 = P_real * 256
-    //
-    // To keep integer math: P_q8_8 = L_uH * bw_hz * 256 * 2 * pi / 1_000_000
-    // Approximate 2*pi as 6283/1000:
-    // P_q8_8 = L_uH * bw_hz * 256 * 6283 / 1_000_000_000
-    //
-    // To avoid overflow with u64:
-    let p_num = params.inductance_uh as u64 * bw_hz as u64 * 256 * 6283;
-    let p_raw = (p_num / 1_000_000_000) as u32;
-    let flux_p = p_raw.min(u16::MAX as u32) as u16;
+    // P scales with inductance (higher L needs more voltage per di/dt)
+    let p_raw = (P_REF * params.inductance_uh as u64 / L_REF) as u32;
+    let flux_p = p_raw.max(1).min(u16::MAX as u32) as u16;
 
-    // I gain = R * 2 * pi * bw_hz
-    // Units: R is in milliohms, bw in Hz
-    // I_real = R_mohm * 1e-3 * 2 * pi * bw_hz
-    // I_q8_8 = I_real * 256
-    //
-    // In advanced PID mode (MODE_PID_TYPE=1) with default
-    // ADVANCED_PI_REPRESENT, I gains are Q8.8 (not Q0.15).
-    // I_q8_8 = R_mohm * bw_hz * 256 * 6283 / 1_000_000_000
-    let i_num = params.resistance_mohm as u64 * bw_hz as u64 * 256 * 6283;
-    let i_raw = (i_num / 1_000_000_000) as u32;
-    let flux_i = i_raw.min(u16::MAX as u32) as u16;
+    // I scales with R/L ratio (PI zero tracks plant pole)
+    let i_raw = if params.inductance_uh > 0 {
+        (I_REF * params.resistance_mohm as u64 * L_REF / (R_REF * params.inductance_uh as u64))
+            as u32
+    } else {
+        0
+    };
+    let flux_i = i_raw.max(1).min(u16::MAX as u32) as u16;
 
     // Torque gains are identical to flux for 2-phase stepper (FOC2)
     InnerLoopGains {
@@ -236,27 +236,29 @@ pub fn compute_inner_gains_from_raw(raw: &RawMeasurement) -> InnerLoopGains {
         return DEFAULT_INNER_GAINS;
     }
 
-    // Internal-unit R and L:
+    // Internal-unit resistance ratio:
     //   R_int = voltage / current  (dimensionless ratio in s16 space)
-    //   L_int = R_int * tau        (ratio * sample periods)
     //
     // Reference point (OpenFFBoard test motor):
-    //   V=512, I=455, tau=1 → R_int_ref = 512/455 ≈ 1.125, L_int_ref ≈ 1.125
+    //   V=512, I=455, tau=1 → R_int_ref = 512/455 ≈ 1.125
     //   Working gains: P=404, I=26
     //
-    // Scaling:
-    //   P_new = P_ref * L_int_new / L_int_ref
-    //         = 404 * (V_new/I_new * tau_new) / (512/455 * 1)
-    //         = 404 * V_new * tau_new * 455 / (I_new * 512)
+    // P scales with R_int only (not L_int). The proportional gain
+    // compensates for how much voltage is needed per unit current
+    // error — this depends on resistance, not inductance. Including
+    // tau in P caused 3x overshoot because the 1ms step-response
+    // sampling quantizes tau to integers, inflating L by 2-3x for
+    // fast motors (real tau ~1.25ms rounds to 2-3 samples).
     //
-    //   I_new = I_ref * (R_int_new/L_int_new) / (R_int_ref/L_int_ref)
-    //         = I_ref * (1/tau_new) / (1/tau_ref)
-    //         = I_ref * tau_ref / tau_new
-    //         = 26 * 1 / tau_new
+    //   P_new = P_ref * R_int_new / R_int_ref
+    //         = 404 * (V_new/I_new) / (512/455)
+    //         = 404 * V_new * 455 / (I_new * 512)
+    //
+    //   I_new = I_ref / tau_new (slower integrator for higher L)
     //         = 26 / tau_new
 
-    // P = 404 * voltage * tau_avg * 455 / (current_avg * 512)
-    let p_num = 404u64 * raw.voltage as u64 * tau_avg as u64 * 455;
+    // P = 404 * voltage * 455 / (current_avg * 512)
+    let p_num = 404u64 * raw.voltage as u64 * 455;
     let p_den = current_avg as u64 * 512;
     let p_raw = (p_num / p_den) as u32;
     let flux_p = p_raw.min(u16::MAX as u32) as u16;
@@ -399,22 +401,17 @@ mod tests {
         };
         let gains = compute_inner_gains(&params, 6250);
 
-        // P = L * 2*pi*bw * 256 (Q8.8)
-        // bw = 625 Hz
-        // P = 1500e-6 * 2*pi*625 * 256 = 1500 * 625 * 256 * 6283 / 1e9
-        // = 1,508,304,000,000 / 1e9 = 1508 (approx)
-        assert!(
-            gains.flux_p > 1000 && gains.flux_p < 2000,
-            "flux_p={} expected ~1508",
+        // P = P_ref * L_new / L_ref = 404 * 1500 / 1500 = 404
+        assert_eq!(
+            gains.flux_p, 404,
+            "flux_p={} expected 404 (reference motor)",
             gains.flux_p
         );
 
-        // I = R * 2*pi*bw * 256 (Q8.8, advanced mode)
-        // I = 1200e-3 * 2*pi*625 * 256 = 1200 * 625 * 256 * 6283 / 1e9
-        // = 1,205,568,000,000 / 1e9 = ~1205
-        assert!(
-            gains.flux_i > 900 && gains.flux_i < 1500,
-            "flux_i={} expected ~1205",
+        // I = I_ref * R_new * L_ref / (R_ref * L_new) = 26 * 1200 * 1500 / (1200 * 1500) = 26
+        assert_eq!(
+            gains.flux_i, 26,
+            "flux_i={} expected 26 (reference motor)",
             gains.flux_i
         );
 
@@ -455,16 +452,33 @@ mod tests {
     }
 
     #[test]
-    fn compute_gains_different_pwm_freq() {
-        let params = MotorParams {
+    fn compute_gains_different_motor() {
+        // Higher inductance motor should get higher P
+        let low_l = MotorParams {
             resistance_mohm: 1200,
+            inductance_uh: 800,
+        };
+        let high_l = MotorParams {
+            resistance_mohm: 1200,
+            inductance_uh: 3000,
+        };
+        let gains_low = compute_inner_gains(&low_l, 6250);
+        let gains_high = compute_inner_gains(&high_l, 6250);
+        assert!(
+            gains_high.flux_p > gains_low.flux_p,
+            "higher L should give higher P"
+        );
+
+        // Higher R/L ratio should give higher I
+        let high_r = MotorParams {
+            resistance_mohm: 3000,
             inductance_uh: 1500,
         };
-        let gains_6250 = compute_inner_gains(&params, 6250);
-        let gains_12500 = compute_inner_gains(&params, 12500);
-
-        // Higher PWM freq = higher bandwidth = higher gains
-        assert!(gains_12500.flux_p > gains_6250.flux_p);
+        let gains_high_r = compute_inner_gains(&high_r, 6250);
+        assert!(
+            gains_high_r.flux_i > gains_low.flux_i,
+            "higher R/L should give higher I"
+        );
     }
 
     #[test]
@@ -502,7 +516,9 @@ mod tests {
 
     #[test]
     fn raw_gains_higher_inductance() {
-        // Same current but longer tau = higher inductance → higher P
+        // Same current but longer tau = higher inductance.
+        // P scales with R_int only (not tau), so P stays the same.
+        // I decreases with tau (slower integrator).
         let raw = RawMeasurement {
             voltage: 512,
             current_a: 455,
@@ -512,10 +528,10 @@ mod tests {
         };
         let gains = compute_inner_gains_from_raw(&raw);
 
-        // P should scale with tau (3x inductance → ~3x P)
+        // P should be ~404 (same as reference — same V/I ratio)
         assert!(
-            gains.flux_p > 1000 && gains.flux_p < 1400,
-            "flux_p={} expected ~1212 (404*3)",
+            gains.flux_p > 350 && gains.flux_p < 460,
+            "flux_p={} expected ~404 (same R_int as reference)",
             gains.flux_p
         );
         // I should decrease with tau (slower integrator for higher inductance)

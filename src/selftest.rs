@@ -541,12 +541,16 @@ where
             .await
             .is_ok();
 
-        // Sample current at 1ms intervals for 100ms
+        // Sample current at PWM rate (160us per cycle, 6250 Hz).
+        // The TMC4671 ADC updates once per PWM cycle — sampling faster
+        // reads stale data. 100 samples at 160us = 16ms, covering ~10x
+        // tau for typical steppers (tau ~1.5ms).
+        const SAMPLE_PERIOD_US: u32 = 160;
         let mut samples = [0i16; 100];
         let mut sample_count = 0usize;
         if step_ok {
             for sample in samples.iter_mut() {
-                delay.delay_ms(1).await;
+                delay.delay_us(SAMPLE_PERIOD_US).await;
                 match tmc.read_register(ADC_IWY_IUX).await {
                     Ok(raw) => {
                         *sample = if phase == 0 {
@@ -579,25 +583,78 @@ where
             continue; // No measurable current
         }
 
-        // Find tau: time when current reaches 63% of steady state
-        let target = (steady * 63) / 100;
-        let mut tau_ms: u16 = 0;
-        for (i, &s) in samples[..sample_count].iter().enumerate() {
-            if (s as i32).abs() >= target.abs() {
-                tau_ms = i as u16 + 1;
-                break;
+        // Extract tau via ratio method with sub-sample resolution.
+        //
+        // For an RL step response I(t) = I_ss * (1 - e^(-t/tau)),
+        // the decay d(t) = I_ss - I(t) = I_ss * e^(-t/tau) satisfies:
+        //   d[n+1] / d[n] = e^(-dt/tau) = constant
+        //
+        // Average this ratio over the transient region (first ~30
+        // samples, covering ~5ms), then tau = -dt / ln(ratio).
+        // Only use samples where d[n] is significant (>5% of I_ss)
+        // to avoid noise-dominated ratios near steady state.
+        let i_ss = steady;
+        let threshold = i_ss.unsigned_abs() as i32 / 20; // 5% of I_ss
+        let transient_end = sample_count.min(30);
+        let mut ratio_sum: f32 = 0.0;
+        let mut ratio_count: u32 = 0;
+        for i in 0..transient_end.saturating_sub(1) {
+            let d_n = (i_ss - samples[i] as i32).abs();
+            let d_n1 = (i_ss - samples[i + 1] as i32).abs();
+            // Both decay values must be above noise threshold
+            if d_n > threshold && d_n1 > threshold && d_n > d_n1 {
+                ratio_sum += d_n1 as f32 / d_n as f32;
+                ratio_count += 1;
             }
         }
-        if tau_ms == 0 {
-            tau_ms = sample_count as u16; // Never reached — use full window
-        }
 
-        // Preserve raw tau for gain computation
-        raw_taus[phase as usize] = tau_ms;
+        // Fall back to threshold crossing if fitting fails
+        let tau_us: u32 = if ratio_count >= 3 {
+            let avg_ratio = ratio_sum / ratio_count as f32;
+            // tau = -dt / ln(ratio), dt = SAMPLE_PERIOD_US
+            if avg_ratio > 0.01 && avg_ratio < 0.999 {
+                let tau_f = -(SAMPLE_PERIOD_US as f32) / libm::logf(avg_ratio);
+                tau_f.max(1.0).min(50_000.0) as u32
+            } else {
+                // Ratio out of range — fall back to threshold crossing
+                let target = (steady * 63) / 100;
+                let mut tau_idx: u32 = 0;
+                for (i, &s) in samples[..sample_count].iter().enumerate() {
+                    if (s as i32).abs() >= target.abs() {
+                        tau_idx = i as u32 + 1;
+                        break;
+                    }
+                }
+                if tau_idx == 0 {
+                    tau_idx = sample_count as u32;
+                }
+                tau_idx * SAMPLE_PERIOD_US
+            }
+        } else {
+            // Not enough valid ratios — threshold crossing fallback
+            let target = (steady * 63) / 100;
+            let mut tau_idx: u32 = 0;
+            for (i, &s) in samples[..sample_count].iter().enumerate() {
+                if (s as i32).abs() >= target.abs() {
+                    tau_idx = i as u32 + 1;
+                    break;
+                }
+            }
+            if tau_idx == 0 {
+                tau_idx = sample_count as u32;
+            }
+            tau_idx * SAMPLE_PERIOD_US
+        };
 
-        // L = R * tau (R in mohm, tau in ms -> L in uH), clamped to u16::MAX
-        let l = r_mohm as u32 * tau_ms as u32;
-        results[phase as usize] = l.min(u16::MAX as u32) as u16;
+        // Preserve raw tau in sample periods for gain computation
+        // (convert back to sample-period units for InductanceResult)
+        let tau_samples = (tau_us / SAMPLE_PERIOD_US).max(1) as u16;
+        raw_taus[phase as usize] = tau_samples;
+
+        // L = R * tau (R in mohm, tau in us -> L in nH, /1000 -> uH)
+        let l_nh = r_mohm as u64 * tau_us as u64;
+        let l_uh = (l_nh / 1000).min(u16::MAX as u64) as u16;
+        results[phase as usize] = l_uh;
     }
     // Both zero = no measurable inductance on either phase
     if results[0] == 0 && results[1] == 0 {
