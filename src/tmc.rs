@@ -34,11 +34,6 @@ pub enum TmcRequest {
         torque_p: u16,
         torque_i: u16,
     },
-    /// Host sends measured motor R/L for firmware-side gain computation.
-    SetMotorParams {
-        resistance_mohm: u32,
-        inductance_uh: u32,
-    },
     /// Trigger R/L measurement and gain computation (FOCI_AUTOTUNE).
     Autotune { oid: u8 },
     /// Write a TMC4671 register via SPI (dev-only).
@@ -106,14 +101,6 @@ pub fn tmc_set_pid_gains(flux_p: u16, flux_i: u16, torque_p: u16, torque_i: u16)
         flux_i,
         torque_p,
         torque_i,
-    }
-}
-
-/// Build a `SetMotorParams` request.
-pub fn tmc_set_motor_params(resistance_mohm: u32, inductance_uh: u32) -> TmcRequest {
-    TmcRequest::SetMotorParams {
-        resistance_mohm,
-        inductance_uh,
     }
 }
 
@@ -207,17 +194,6 @@ mod tests {
                 flux_i: 200,
                 torque_p: 300,
                 torque_i: 400,
-            }
-        );
-    }
-
-    #[test]
-    fn tmc_set_motor_params_builds_request() {
-        assert_eq!(
-            tmc_set_motor_params(1200, 1500),
-            TmcRequest::SetMotorParams {
-                resistance_mohm: 1200,
-                inductance_uh: 1500,
             }
         );
     }

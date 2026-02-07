@@ -7,7 +7,6 @@
 //! All logic is generic over `embedded-hal-async` traits for cross-board
 //! reuse and host-side unit testing.
 
-use crate::pid::RawMeasurement;
 use embedded_hal::digital::OutputPin;
 use embedded_hal_async::delay::DelayNs;
 use embedded_hal_async::spi::SpiDevice;
@@ -51,9 +50,6 @@ pub struct SelftestResult {
     /// Overall status: `SELFTEST_DONE_PASS`, `SELFTEST_DONE_FAIL`,
     /// or `SELFTEST_DONE_ABORTED`.
     pub status: u8,
-    /// Raw step-response measurement data for PI gain computation.
-    /// Present only if both resistance and inductance stages passed.
-    pub raw_measurement: Option<RawMeasurement>,
 }
 
 /// Callback for streaming selftest results to the host.
@@ -555,14 +551,6 @@ where
     Some((currents[0], currents[1]))
 }
 
-/// Total settle/cooldown time inside `autotune_measure_inductance` in
-/// milliseconds. The caller must subtract this from any wall-clock
-/// timing that wraps the function call.
-///
-/// Per coil: 10ms pre-toggle settle + 50ms post-toggle cooldown = 60ms.
-/// Two coils: 120ms total.
-pub const DIDT_SETTLE_MS: u32 = 120;
-
 /// Result of square-wave di/dt inductance measurement.
 pub struct DiDtResult {
     /// Per-coil sum of |delta_I| over all cycles (ADC units).
@@ -570,6 +558,14 @@ pub struct DiDtResult {
     /// Per-coil number of valid delta_I samples.
     pub count: (u32, u32),
 }
+
+/// Total settle/cooldown time inside `autotune_measure_inductance` in
+/// milliseconds. The caller must subtract this from any wall-clock
+/// timing that wraps the function call.
+///
+/// Per coil: 10ms pre-toggle settle + 50ms post-toggle cooldown = 60ms.
+/// Two coils: 120ms total.
+pub const DIDT_SETTLE_MS: u32 = 120;
 
 /// Measure per-coil inductance via square-wave di/dt method for autotune.
 ///
@@ -898,7 +894,6 @@ where
             restore_safe_state(tmc, enable_pin).await;
             return SelftestResult {
                 status: SELFTEST_DONE_FAIL,
-                raw_measurement: None,
             };
         }
     }
@@ -932,7 +927,6 @@ where
             restore_safe_state(tmc, enable_pin).await;
             return SelftestResult {
                 status: SELFTEST_DONE_FAIL,
-                raw_measurement: None,
             };
         }
         None => {
@@ -940,7 +934,6 @@ where
             restore_safe_state(tmc, enable_pin).await;
             return SelftestResult {
                 status: SELFTEST_DONE_FAIL,
-                raw_measurement: None,
             };
         }
     };
@@ -964,7 +957,6 @@ where
             restore_safe_state(tmc, enable_pin).await;
             return SelftestResult {
                 status: SELFTEST_DONE_FAIL,
-                raw_measurement: None,
             };
         }
         None => {
@@ -972,7 +964,6 @@ where
             restore_safe_state(tmc, enable_pin).await;
             return SelftestResult {
                 status: SELFTEST_DONE_FAIL,
-                raw_measurement: None,
             };
         }
     }
@@ -994,7 +985,6 @@ where
         restore_safe_state(tmc, enable_pin).await;
         return SelftestResult {
             status: SELFTEST_DONE_FAIL,
-            raw_measurement: None,
         };
     }
 
@@ -1008,7 +998,6 @@ where
             restore_safe_state(tmc, enable_pin).await;
             return SelftestResult {
                 status: SELFTEST_DONE_FAIL,
-                raw_measurement: None,
             };
         }
     }
@@ -1039,41 +1028,19 @@ where
 
     // Stage 8: Inductance (diagnostic only)
     let mohm = resistance.as_ref().map(|r| r.mohm).unwrap_or((0, 0));
-    let inductance = match selftest_measure_inductance(tmc, enable_pin, delay, voltage, mohm).await
-    {
+    match selftest_measure_inductance(tmc, enable_pin, delay, voltage, mohm).await {
         Some(l) => {
             let packed = ((l.uh.0 as u32) << 16) | (l.uh.1 as u32);
             reporter.report_stage(STAGE_INDUCTANCE, SELFTEST_PASS, packed);
-            Some(l)
         }
         None => {
             reporter.report_stage(STAGE_INDUCTANCE, SELFTEST_SKIP, 0);
-            None
         }
-    };
-
-    // Build RawMeasurement only if both stages produced valid data
-    // for BOTH coils. Partial data (one coil zero) would distort the
-    // averaged gain computation in compute_inner_gains_from_raw().
-    let raw_measurement = match (&resistance, &inductance) {
-        (Some(r), Some(l))
-            if r.raw_current.0 > 0 && r.raw_current.1 > 0 && l.raw_tau.0 > 0 && l.raw_tau.1 > 0 =>
-        {
-            Some(RawMeasurement {
-                voltage: (voltage & 0xFFFF) as u16,
-                current_a: r.raw_current.0,
-                current_b: r.raw_current.1,
-                tau_samples_a: l.raw_tau.0,
-                tau_samples_b: l.raw_tau.1,
-            })
-        }
-        _ => None,
-    };
+    }
 
     restore_safe_state(tmc, enable_pin).await;
     SelftestResult {
         status: SELFTEST_DONE_PASS,
-        raw_measurement,
     }
 }
 
