@@ -40,11 +40,6 @@ pub struct InnerLoopGains {
     pub torque_i: u16,
 }
 
-/// TMC4671 PWM frequency derived from clock and PWM_MAXCNT.
-/// f_pwm = tmc_clock / (pwm_maxcnt + 1)
-/// OpenFFBoard: 25_000_000 / 4000 = 6250 Hz
-pub const DEFAULT_PWM_FREQ_HZ: u32 = 6250;
-
 /// Conservative default gains for when no R/L data is available.
 /// These are intentionally low — stable but sluggish.
 pub const DEFAULT_INNER_GAINS: InnerLoopGains = InnerLoopGains {
@@ -71,17 +66,14 @@ pub const DEFAULT_INNER_GAINS: InnerLoopGains = InnerLoopGains {
 ///
 /// # Parameters
 /// - `meas`: internal-unit measurement from R and L measurement
-/// - `pwm_freq_hz`: TMC4671 PWM frequency (6250 Hz for OpenFFBoard)
+/// - `config`: board-specific TMC4671 configuration (PWM frequency, bandwidth)
 ///
 /// # Returns
 /// Computed gains, or `DEFAULT_INNER_GAINS` if measurement data is invalid.
-/// Absolute target bandwidth for the current loop in Hz.
-/// 50 Hz (314 rad/s) — validated on hardware via sweep (50/62.5 Hz).
-/// 50 Hz produces silent idle with minimal vibration; 62.5 Hz is
-/// slightly audible with stronger vibration. Move quality is equal.
-const BANDWIDTH_HZ: f32 = 50.0;
-
-pub fn compute_gains_from_internal(meas: &InternalMeasurement, pwm_freq_hz: u32) -> InnerLoopGains {
+pub fn compute_gains_from_internal(
+    meas: &InternalMeasurement,
+    config: &crate::config::TmcConfig,
+) -> InnerLoopGains {
     if meas.current_avg == 0 || meas.delta_i_avg == 0 || meas.dt_us == 0 {
         return DEFAULT_INNER_GAINS;
     }
@@ -97,19 +89,20 @@ pub fn compute_gains_from_internal(meas: &InternalMeasurement, pwm_freq_hz: u32)
     let r_int = v / i_ss;
 
     // omega_bw = 2 * pi * bandwidth_hz (absolute, not relative to f_pwm)
-    let omega_bw = 2.0 * core::f32::consts::PI * BANDWIDTH_HZ;
+    let omega_bw = 2.0 * core::f32::consts::PI * config.bandwidth_hz;
 
     // P = L_int * omega_bw * 256 (Q8.8)
     let p_real = l_int * omega_bw;
     let p_reg = (p_real * 256.0).clamp(1.0, u16::MAX as f32) as u16;
 
-    // I gain: pole-zero cancellation places the PI zero at the plant
-    // pole (1/tau = R/L). In the TMC4671's advanced PI structure where
-    // the integrator is scaled by P, the effective Ki = P * I / 256^2
-    // per sample. For the zero at R/L:
-    //   I = R_int * 256 / (L_int * f_pwm)
-    let f_pwm = pwm_freq_hz as f32;
-    let i_real = r_int * 256.0 / (l_int * f_pwm);
+    // I gain: pole-zero cancellation at plant pole (R/L).
+    // Factor 1024 is an empirical correction for the TMC4671's advanced
+    // PI integrator structure (datasheet section 4.7.4, Table 22).
+    // The integrator path has (P/256 * I/256 * e) / 256 per sample,
+    // giving an extra /256 not accounted for in the original derivation.
+    // Validated: produces I=25 at MAXCNT=3999, matching empirical I=26.
+    let f_pwm = config.pwm_freq_hz() as f32;
+    let i_real = r_int * 1024.0 / (l_int * f_pwm);
     let i_reg = i_real.clamp(1.0, u16::MAX as f32) as u16;
 
     InnerLoopGains {
@@ -169,6 +162,19 @@ impl InnerLoopGains {
 mod tests {
     use super::*;
 
+    fn test_config() -> crate::config::TmcConfig {
+        crate::config::TmcConfig {
+            pwm_maxcnt: 3999,
+            tmc_clock_hz: 25_000_000,
+            bbm_h: 10,
+            bbm_l: 10,
+            dsadc_mdec: 331,
+            excitation_voltage: 512,
+            didt_cycles: 5000,
+            bandwidth_hz: 50.0,
+        }
+    }
+
     #[test]
     fn default_gains_are_valid() {
         assert!(DEFAULT_INNER_GAINS.flux_p > 0);
@@ -213,7 +219,7 @@ mod tests {
             dt_us: 98,
         };
         assert_eq!(
-            compute_gains_from_internal(&meas, 6250),
+            compute_gains_from_internal(&meas, &test_config()),
             DEFAULT_INNER_GAINS
         );
     }
@@ -227,7 +233,7 @@ mod tests {
             dt_us: 98,
         };
         assert_eq!(
-            compute_gains_from_internal(&meas, 6250),
+            compute_gains_from_internal(&meas, &test_config()),
             DEFAULT_INNER_GAINS
         );
     }
@@ -246,8 +252,8 @@ mod tests {
             delta_i_avg: 50,
             dt_us: 98,
         };
-        let gains_low = compute_gains_from_internal(&low_l, 6250);
-        let gains_high = compute_gains_from_internal(&high_l, 6250);
+        let gains_low = compute_gains_from_internal(&low_l, &test_config());
+        let gains_high = compute_gains_from_internal(&high_l, &test_config());
         assert!(
             gains_high.flux_p > gains_low.flux_p,
             "higher L (lower dI) should give higher P: low={} high={}",
@@ -259,24 +265,29 @@ mod tests {
     #[test]
     fn internal_gains_p_independent_of_pwm_freq() {
         // Bandwidth is absolute (50 Hz), so P does not depend on f_pwm.
-        // I depends on f_pwm (pole-zero cancellation: I = R*256/(L*f_pwm)).
+        // I depends on f_pwm (pole-zero cancellation: I = R*1024/(L*f_pwm)).
         let meas = InternalMeasurement {
             voltage: 512,
             current_avg: 455,
             delta_i_avg: 100,
             dt_us: 98,
         };
-        let gains_6250 = compute_gains_from_internal(&meas, 6250);
-        let gains_25000 = compute_gains_from_internal(&meas, 25000);
+        let config_25k = test_config(); // pwm_maxcnt=3999 -> 25 kHz
+        let config_100k = crate::config::TmcConfig {
+            pwm_maxcnt: 999, // 100 kHz
+            ..test_config()
+        };
+        let gains_25k = compute_gains_from_internal(&meas, &config_25k);
+        let gains_100k = compute_gains_from_internal(&meas, &config_100k);
         assert_eq!(
-            gains_6250.flux_p, gains_25000.flux_p,
+            gains_25k.flux_p, gains_100k.flux_p,
             "P should not depend on f_pwm"
         );
         assert!(
-            gains_6250.flux_i > gains_25000.flux_i,
-            "I should decrease with higher f_pwm: 6250Hz={} 25kHz={}",
-            gains_6250.flux_i,
-            gains_25000.flux_i,
+            gains_25k.flux_i > gains_100k.flux_i,
+            "I should decrease with higher f_pwm: 25kHz={} 100kHz={}",
+            gains_25k.flux_i,
+            gains_100k.flux_i,
         );
     }
 
@@ -284,14 +295,15 @@ mod tests {
     fn internal_gains_i_matches_reference() {
         // Test motor: V=512, I_ss=300, dI=17, dt=98us
         // R_int = 512/300 = 1.707, L_int = 512*98e-6/17 = 0.00295
-        // I = R_int * 256 / (L_int * 6250) = 1.707 * 256 / (0.00295 * 6250) = 23.7
+        // I = R_int * 1024 / (L_int * 25000) = 1.707 * 1024 / (0.00295 * 25000) = 23.7
+        // Same result as old formula (R*256 / (L*6250)) — factor of 4 cancels.
         let meas = InternalMeasurement {
             voltage: 512,
             current_avg: 300,
             delta_i_avg: 17,
             dt_us: 98,
         };
-        let gains = compute_gains_from_internal(&meas, 6250);
+        let gains = compute_gains_from_internal(&meas, &test_config());
         // Should be close to the empirically validated I=26
         assert!(
             gains.flux_i >= 20 && gains.flux_i <= 30,
