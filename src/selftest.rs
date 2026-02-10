@@ -123,6 +123,7 @@ where
 /// - `tmc`: mutable reference to the TMC4671 SPI driver
 /// - `enable_pin`: mutable reference to the motor enable output pin
 /// - `delay`: mutable reference to an async delay source
+/// - `config`: board-specific TMC4671 hardware configuration
 ///
 /// # Returns
 /// `Some(AdcCalResult)` on success, `None` on any SPI error or out-of-range
@@ -131,6 +132,7 @@ async fn selftest_adc_calibrate<SPI, PIN, D, E>(
     tmc: &mut Tmc4671Spi<SPI>,
     enable_pin: &mut PIN,
     delay: &mut D,
+    config: &crate::config::TmcConfig,
 ) -> Option<AdcCalResult>
 where
     SPI: SpiDevice<u8, Error = E>,
@@ -158,8 +160,12 @@ where
 
     // 2. PWM configuration (chopping disabled for ADC calibration)
     let _ = tmc.write_register(PWM_POLARITIES, 0).await;
-    let _ = tmc.write_register(PWM_MAXCNT, 3999).await;
-    let _ = tmc.write_register(PWM_BBM_H_BBM_L, (10 << 8) | 10).await;
+    let _ = tmc
+        .write_register(PWM_MAXCNT, config.pwm_maxcnt as u32)
+        .await;
+    let _ = tmc
+        .write_register(PWM_BBM_H_BBM_L, config.bbm_register())
+        .await;
     tmc.write_register(PWM_SV_CHOP, 0).await.ok()?;
     // Verify MODE=0 and PWM_SV_CHOP=0
     let mode_rb = tmc.read_register(MODE_RAMP_MODE_MOTION).await.ok()?;
@@ -169,9 +175,8 @@ where
     }
 
     // 3. ADC configuration
-    let mdec: u32 = 331;
     let _ = tmc
-        .write_register(DSADC_MDEC_B_MDEC_A, (mdec << 16) | mdec)
+        .write_register(DSADC_MDEC_B_MDEC_A, config.dsadc_mdec_register())
         .await;
     let _ = tmc.write_register(ADC_I_SELECT, (1 << 28) | (1 << 8)).await;
 
@@ -409,7 +414,7 @@ where
 /// - `tmc`: mutable reference to the TMC4671 SPI driver
 /// - `enable_pin`: mutable reference to the motor enable output pin
 /// - `delay`: mutable reference to an async delay source
-/// - `voltage`: test voltage magnitude (UD_EXT value, bits [15:0])
+/// - `config`: board-specific TMC4671 hardware configuration
 ///
 /// # Returns
 /// `Some(ResistanceResult)` with per-coil resistance in milliohms and
@@ -418,7 +423,7 @@ pub async fn selftest_measure_resistance<SPI, PIN, D, E>(
     tmc: &mut Tmc4671Spi<SPI>,
     enable_pin: &mut PIN,
     delay: &mut D,
-    voltage: u32,
+    config: &crate::config::TmcConfig,
 ) -> Option<ResistanceResult>
 where
     SPI: SpiDevice<u8, Error = E>,
@@ -427,6 +432,7 @@ where
 {
     use tmc4671::registers::*;
 
+    let voltage = config.excitation_voltage as u32;
     let mut results = [0u16; 2];
     let mut raw_currents = [0u16; 2];
     for phase in 0..2u8 {
@@ -480,15 +486,15 @@ where
 /// Measure per-coil resistance with PWM-rate current averaging for autotune.
 ///
 /// Same setup as `selftest_measure_resistance` (MODE=8, UQ_UD_EXT, per-coil
-/// phi_e), but samples current 1000 times at PWM rate (160us) instead of
-/// a single reading. Returns averaged current per coil for internal-unit
-/// gain computation.
+/// phi_e), but samples current 1000 times at PWM rate instead of a single
+/// reading. Returns averaged current per coil for internal-unit gain
+/// computation.
 ///
 /// # Parameters
 /// - `tmc`: TMC4671 SPI driver
 /// - `enable_pin`: motor enable output
 /// - `delay`: async delay source
-/// - `voltage`: excitation voltage (PIDOUT units, typically 512)
+/// - `config`: board-specific TMC4671 hardware configuration
 ///
 /// # Returns
 /// `Some((current_a, current_b))` with averaged unsigned absolute current
@@ -497,7 +503,7 @@ pub async fn autotune_measure_resistance<SPI, PIN, D, E>(
     tmc: &mut Tmc4671Spi<SPI>,
     enable_pin: &mut PIN,
     delay: &mut D,
-    voltage: u32,
+    config: &crate::config::TmcConfig,
 ) -> Option<(u16, u16)>
 where
     SPI: SpiDevice<u8, Error = E>,
@@ -509,6 +515,7 @@ where
     const SAMPLE_COUNT: u32 = 1000;
     const SAMPLE_PERIOD_US: u32 = 160;
 
+    let voltage = config.excitation_voltage as u32;
     let mut currents = [0u16; 2];
     for phase in 0..2u8 {
         tmc.write_register(PHI_E_SELECTION, 1).await.ok()?;
@@ -572,7 +579,7 @@ pub const DIDT_SETTLE_MS: u32 = 120;
 /// Toggles UQ_UD_EXT between +V and -V as fast as SPI allows (no
 /// additional delay — the SPI write+read paces each cycle at ~50us).
 /// Reads current via PID_TORQUE_FLUX_ACTUAL and accumulates |delta_I|
-/// between consecutive samples over `cycles` iterations per coil.
+/// between consecutive samples over `config.didt_cycles` iterations per coil.
 ///
 /// Returns raw accumulated sum_delta and count. The **caller** must
 /// measure wall-clock time (e.g., via DWT cycle counter) to compute
@@ -587,8 +594,7 @@ pub const DIDT_SETTLE_MS: u32 = 120;
 /// - `tmc`: TMC4671 SPI driver
 /// - `enable_pin`: motor enable output
 /// - `delay`: async delay source (used only for settle periods)
-/// - `voltage`: excitation voltage magnitude (PIDOUT units, typically 512)
-/// - `cycles`: number of +V/-V toggle cycles per coil
+/// - `config`: board-specific TMC4671 hardware configuration
 ///
 /// # Returns
 /// `Some(DiDtResult)` with per-coil raw accumulations, or `None` on
@@ -597,8 +603,7 @@ pub async fn autotune_measure_inductance<SPI, PIN, D, E>(
     tmc: &mut Tmc4671Spi<SPI>,
     enable_pin: &mut PIN,
     delay: &mut D,
-    voltage: u32,
-    cycles: u32,
+    config: &crate::config::TmcConfig,
 ) -> Option<DiDtResult>
 where
     SPI: SpiDevice<u8, Error = E>,
@@ -607,6 +612,8 @@ where
 {
     use tmc4671::registers::*;
 
+    let voltage = config.excitation_voltage as u32;
+    let cycles = config.didt_cycles;
     let mut sum_deltas = [0u64; 2];
     let mut counts = [0u32; 2];
     for phase in 0..2u8 {
@@ -678,7 +685,7 @@ where
 /// - `tmc`: mutable reference to the TMC4671 SPI driver
 /// - `enable_pin`: mutable reference to the motor enable output pin
 /// - `delay`: mutable reference to an async delay source
-/// - `voltage`: test voltage magnitude (UD_EXT value, bits [15:0])
+/// - `config`: board-specific TMC4671 hardware configuration
 /// - `resistance_mohm`: measured resistance from stage 7 `(coil_a, coil_b)`
 ///
 /// # Returns
@@ -688,7 +695,7 @@ pub async fn selftest_measure_inductance<SPI, PIN, D, E>(
     tmc: &mut Tmc4671Spi<SPI>,
     enable_pin: &mut PIN,
     delay: &mut D,
-    voltage: u32,
+    config: &crate::config::TmcConfig,
     resistance_mohm: (u16, u16),
 ) -> Option<InductanceResult>
 where
@@ -698,6 +705,7 @@ where
 {
     use tmc4671::registers::*;
 
+    let voltage = config.excitation_voltage as u32;
     let mut results = [0u16; 2];
     let mut raw_taus = [0u16; 2];
     for phase in 0..2u8 {
@@ -728,10 +736,9 @@ where
             .await
             .is_ok();
 
-        // Sample current at PWM rate (160us per cycle, 6250 Hz).
-        // The TMC4671 ADC updates once per PWM cycle — sampling faster
-        // reads stale data. 100 samples at 160us = 16ms, covering ~10x
-        // tau for typical steppers (tau ~1.5ms).
+        // Sample current once per PWM cycle (ADC updates at the PWM rate).
+        // Sampling faster reads stale data. 100 samples covers ~10x tau
+        // for typical steppers (tau ~1.5ms).
         const SAMPLE_PERIOD_US: u32 = 160;
         let mut samples = [0i16; 100];
         let mut sample_count = 0usize;
@@ -864,6 +871,7 @@ where
 /// - `tmc`: mutable reference to the TMC4671 SPI driver
 /// - `enable_pin`: mutable reference to the motor enable output pin
 /// - `delay`: mutable reference to an async delay source
+/// - `config`: board-specific TMC4671 hardware configuration
 /// - `_current_limit`: maximum current in milliamps for test excitation
 /// - `reporter`: mutable reference to the result callback
 ///
@@ -874,6 +882,7 @@ pub async fn run_selftest<SPI, PIN, D, E>(
     tmc: &mut Tmc4671Spi<SPI>,
     enable_pin: &mut PIN,
     delay: &mut D,
+    config: &crate::config::TmcConfig,
     _current_limit: u32,
     reporter: &mut impl SelftestReporter,
 ) -> SelftestResult
@@ -883,7 +892,7 @@ where
     D: DelayNs,
 {
     // Stage 1: ADC calibration
-    match selftest_adc_calibrate(tmc, enable_pin, delay).await {
+    match selftest_adc_calibrate(tmc, enable_pin, delay, config).await {
         Some(cal) => {
             // Pack both ADC offsets: I0 in high 16 bits, I1 in low 16 bits
             let value = ((cal.offset_i0 as u32) << 16) | (cal.offset_i1 as u32);
@@ -904,8 +913,7 @@ where
         .await
         .unwrap_or(0);
 
-    // Conservative test voltage for coil excitation
-    let voltage = 512u32;
+    let voltage = config.excitation_voltage as u32;
 
     // Stage 2: Motor coil A presence
     let coil_a = selftest_coil_test(tmc, enable_pin, delay, 0, voltage).await;
@@ -1014,7 +1022,7 @@ where
     }
 
     // Stage 7: Resistance (diagnostic only)
-    let resistance = match selftest_measure_resistance(tmc, enable_pin, delay, voltage).await {
+    let resistance = match selftest_measure_resistance(tmc, enable_pin, delay, config).await {
         Some(r) => {
             let packed = ((r.mohm.0 as u32) << 16) | (r.mohm.1 as u32);
             reporter.report_stage(STAGE_RESISTANCE, SELFTEST_PASS, packed);
@@ -1028,7 +1036,7 @@ where
 
     // Stage 8: Inductance (diagnostic only)
     let mohm = resistance.as_ref().map(|r| r.mohm).unwrap_or((0, 0));
-    match selftest_measure_inductance(tmc, enable_pin, delay, voltage, mohm).await {
+    match selftest_measure_inductance(tmc, enable_pin, delay, config, mohm).await {
         Some(l) => {
             let packed = ((l.uh.0 as u32) << 16) | (l.uh.1 as u32);
             reporter.report_stage(STAGE_INDUCTANCE, SELFTEST_PASS, packed);
@@ -1047,6 +1055,19 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn test_config() -> crate::config::TmcConfig {
+        crate::config::TmcConfig {
+            pwm_maxcnt: 3999,
+            tmc_clock_hz: 25_000_000,
+            bbm_h: 10,
+            bbm_l: 10,
+            dsadc_mdec: 331,
+            excitation_voltage: 512,
+            didt_cycles: 5000,
+            bandwidth_hz: 50.0,
+        }
+    }
 
     /// A mock reporter that collects results for assertions.
     pub(crate) struct MockReporter {
@@ -1423,7 +1444,8 @@ mod tests {
         let mut pin = PinMock::new(&pin_expectations);
         let mut delay = NoopDelay::new();
 
-        let result = selftest_measure_resistance(&mut tmc, &mut pin, &mut delay, 512).await;
+        let result =
+            selftest_measure_resistance(&mut tmc, &mut pin, &mut delay, &test_config()).await;
         let r = result.unwrap();
         assert_eq!(r.mohm.0, 1125); // 512*1000/455
         assert_eq!(r.mohm.1, 1113); // 512*1000/460
