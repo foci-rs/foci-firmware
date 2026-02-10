@@ -36,6 +36,9 @@ pub enum TmcRequest {
     },
     /// Trigger R/L measurement and gain computation (FOCI_AUTOTUNE).
     Autotune { oid: u8 },
+    /// Set velocity biquad low-pass filter cutoff frequency.
+    /// 0 = disabled, 10..1000 Hz = enabled.
+    SetVelocityFilter { filter_hz: u16 },
     /// Write a TMC4671 register via SPI (dev-only).
     #[cfg(feature = "dev")]
     Write { addr: u8, value: u32 },
@@ -107,6 +110,11 @@ pub fn tmc_set_pid_gains(flux_p: u16, flux_i: u16, torque_p: u16, torque_i: u16)
 /// Build an `Autotune` request.
 pub fn tmc_autotune(oid: u8) -> TmcRequest {
     TmcRequest::Autotune { oid }
+}
+
+/// Build a `SetVelocityFilter` request.
+pub fn tmc_set_velocity_filter(filter_hz: u16) -> TmcRequest {
+    TmcRequest::SetVelocityFilter { filter_hz }
 }
 
 /// Build a `Write` request (dev-only).
@@ -201,5 +209,13 @@ mod tests {
     #[test]
     fn tmc_autotune_builds_request() {
         assert_eq!(tmc_autotune(0), TmcRequest::Autotune { oid: 0 });
+    }
+
+    #[test]
+    fn tmc_set_velocity_filter_builds_request() {
+        assert_eq!(
+            tmc_set_velocity_filter(200),
+            TmcRequest::SetVelocityFilter { filter_hz: 200 }
+        );
     }
 }
