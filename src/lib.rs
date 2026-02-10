@@ -6,6 +6,7 @@
 #![no_std]
 
 pub mod biquad;
+pub mod config;
 pub mod dump;
 pub mod pid;
 pub mod selftest;
