@@ -630,8 +630,14 @@ where
         delay.delay_ms(10).await;
 
         // Toggle voltage and accumulate |delta_I|.
-        // No delay between cycles — SPI transfer time (~50us for
-        // write+read at 2 MHz) paces each iteration naturally.
+        // SPI transfer time paces each iteration naturally. At 2 MHz SPI
+        // this is ~100us; at 8 MHz it is ~11us. Faster cycles produce
+        // smaller per-cycle dI but more samples per unit time. The DWT
+        // wall-clock timing in the caller measures actual elapsed time,
+        // so the gain formula (L = V * dt / dI) compensates correctly
+        // regardless of cycle speed. Use more cycles (didt_cycles in
+        // TmcConfig) to compensate for noisier per-cycle dI at higher
+        // SPI speeds.
         let v_pos = voltage & 0xFFFF;
         let v_neg = (-(voltage as i32) as u32) & 0xFFFF;
         let mut sum_delta: u64 = 0;
@@ -643,7 +649,7 @@ where
             let v = if cycle % 2 == 0 { v_pos } else { v_neg };
             let _ = tmc.write_register(UQ_UD_EXT, v).await;
 
-            // No delay — read immediately. SPI transfer provides pacing.
+            // No explicit delay — SPI transfer provides pacing.
             if let Ok(actual) = tmc.read_register(PID_TORQUE_FLUX_ACTUAL).await {
                 let current = (actual & 0xFFFF) as i16;
                 if !first {
@@ -1146,15 +1152,16 @@ mod tests {
     }
 
     /// Helper: build SPI read transaction wrapped in transaction start/end.
-    /// Returns 3 expectations: TransactionStart, TransferInPlace, TransactionEnd.
+    /// Returns 5 expectations: TransactionStart, Write(addr), Delay(500ns),
+    /// Read(4 bytes), TransactionEnd — matching the split transaction pattern
+    /// in `tmc4671::spi::Tmc4671Spi::read_register`.
     fn spi_read(reg: Register, value: u32) -> Vec<SpiTx<u8>> {
         let bytes = value.to_be_bytes();
         vec![
             SpiTx::transaction_start(),
-            SpiTx::transfer_in_place(
-                vec![reg.addr(), 0, 0, 0, 0],
-                vec![0, bytes[0], bytes[1], bytes[2], bytes[3]],
-            ),
+            SpiTx::write(reg.addr()),
+            SpiTx::delay(500),
+            SpiTx::read_vec(vec![bytes[0], bytes[1], bytes[2], bytes[3]]),
             SpiTx::transaction_end(),
         ]
     }
