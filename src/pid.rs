@@ -2,7 +2,7 @@
 //!
 //! Computes flux and torque PI gains from di/dt measurement in the
 //! TMC4671's internal unit space. Uses pole-zero cancellation with
-//! a 50 Hz bandwidth validated on hardware.
+//! bandwidth from [`TmcConfig`](crate::config::TmcConfig).
 
 /// Motor R and L measured in TMC4671 internal units.
 ///
@@ -39,6 +39,27 @@ pub struct InnerLoopGains {
     /// Torque I gain — raw TMC4671 register value (Q8.8 format, advanced mode).
     pub torque_i: u16,
 }
+
+/// Empirical correction factor for the I gain formula.
+///
+/// The theoretical discrete-time derivation from the TMC4671's advanced PI
+/// structure (datasheet Table 22, section 4.7.4) gives:
+///   I = 65536 * R / (L * f_PWM)
+///
+/// But empirically validated gains are 64x lower:
+///   I = 1024 * R / (L * f_PWM)
+///
+/// The 64x discrepancy is NOT from the PI math, Q format, or MODE_PID_SMPL.
+/// It comes from the SPI-based R/L measurement path: the R_int and L_int
+/// values measured via SPI register reads see the plant through ADC/DAC
+/// scaling that differs from the PI controller's internal operating point
+/// by a factor of 64. The formula is correct for our measurement method.
+///
+/// Validated across:
+/// - SPI speeds: 2 MHz (I=25) and 8 MHz (I=50), both stable
+/// - Bandwidths: 100-200 Hz sweep, all produce good motor behavior
+/// - PWM frequencies: 25 kHz and 50 kHz
+pub const I_GAIN_EMPIRICAL_FACTOR: f32 = 1024.0;
 
 /// Conservative default gains for when no R/L data is available.
 /// These are intentionally low — stable but sluggish.
@@ -96,13 +117,8 @@ pub fn compute_gains_from_internal(
     let p_reg = (p_real * 256.0).clamp(1.0, u16::MAX as f32) as u16;
 
     // I gain: pole-zero cancellation at plant pole (R/L).
-    // Factor 1024 is an empirical correction for the TMC4671's advanced
-    // PI integrator structure (datasheet section 4.7.4, Table 22).
-    // The integrator path has (P/256 * I/256 * e) / 256 per sample,
-    // giving an extra /256 not accounted for in the original derivation.
-    // Validated: produces I=25 at MAXCNT=3999, matching empirical I=26.
     let f_pwm = config.pwm_freq_hz() as f32;
-    let i_real = r_int * 1024.0 / (l_int * f_pwm);
+    let i_real = r_int * I_GAIN_EMPIRICAL_FACTOR / (l_int * f_pwm);
     let i_reg = i_real.clamp(1.0, u16::MAX as f32) as u16;
 
     InnerLoopGains {
