@@ -39,6 +39,15 @@ pub enum TmcRequest {
     /// Set velocity biquad low-pass filter cutoff frequency.
     /// 0 = disabled, 10..1000 Hz = enabled.
     SetVelocityFilter { filter_hz: u16 },
+    /// Set torque biquad low-pass filter cutoff frequency.
+    /// 0 = disabled, 10..1000 Hz = enabled.
+    SetTorqueFilter { filter_hz: u16 },
+    /// Set position target biquad low-pass filter cutoff frequency.
+    /// 0 = disabled, 10..1000 Hz = enabled.
+    SetPositionFilter { filter_hz: u16 },
+    /// Set flux biquad low-pass filter cutoff frequency.
+    /// 0 = disabled, 10..1000 Hz = enabled.
+    SetFluxFilter { filter_hz: u16 },
     /// Write a TMC4671 register via SPI (dev-only).
     #[cfg(feature = "dev")]
     Write { addr: u8, value: u32 },
@@ -115,6 +124,21 @@ pub fn tmc_autotune(oid: u8) -> TmcRequest {
 /// Build a `SetVelocityFilter` request.
 pub fn tmc_set_velocity_filter(filter_hz: u16) -> TmcRequest {
     TmcRequest::SetVelocityFilter { filter_hz }
+}
+
+/// Build a `SetTorqueFilter` request.
+pub fn tmc_set_torque_filter(filter_hz: u16) -> TmcRequest {
+    TmcRequest::SetTorqueFilter { filter_hz }
+}
+
+/// Build a `SetPositionFilter` request.
+pub fn tmc_set_position_filter(filter_hz: u16) -> TmcRequest {
+    TmcRequest::SetPositionFilter { filter_hz }
+}
+
+/// Build a `SetFluxFilter` request.
+pub fn tmc_set_flux_filter(filter_hz: u16) -> TmcRequest {
+    TmcRequest::SetFluxFilter { filter_hz }
 }
 
 /// Build a `Write` request (dev-only).
@@ -216,6 +240,30 @@ mod tests {
         assert_eq!(
             tmc_set_velocity_filter(200),
             TmcRequest::SetVelocityFilter { filter_hz: 200 }
+        );
+    }
+
+    #[test]
+    fn tmc_set_torque_filter_builds_request() {
+        assert_eq!(
+            tmc_set_torque_filter(500),
+            TmcRequest::SetTorqueFilter { filter_hz: 500 }
+        );
+    }
+
+    #[test]
+    fn tmc_set_position_filter_builds_request() {
+        assert_eq!(
+            tmc_set_position_filter(100),
+            TmcRequest::SetPositionFilter { filter_hz: 100 }
+        );
+    }
+
+    #[test]
+    fn tmc_set_flux_filter_builds_request() {
+        assert_eq!(
+            tmc_set_flux_filter(300),
+            TmcRequest::SetFluxFilter { filter_hz: 300 }
         );
     }
 }
