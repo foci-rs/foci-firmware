@@ -110,6 +110,7 @@ where
     let _ = tmc.write_register(PID_TORQUE_FLUX_TARGET, 0).await;
     let _ = tmc.write_register(UQ_UD_EXT, 0).await;
     let _ = tmc.write_register(PWM_SV_CHOP, 0).await;
+    let _ = tmc.write_register(PID_VELOCITY_OFFSET, 0).await;
 }
 
 /// Perform ADC offset calibration (selftest stage 1).

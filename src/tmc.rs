@@ -48,6 +48,16 @@ pub enum TmcRequest {
     /// Set flux biquad low-pass filter cutoff frequency.
     /// 0 = disabled, 10..1000 Hz = enabled.
     SetFluxFilter { filter_hz: u16 },
+    /// Host sends pre-computed PI gains for position/velocity controllers.
+    /// Range: 0..32767 (Q8.8 format, max 0x7FFF per datasheet page 120).
+    SetPositionGains {
+        position_p: u16,
+        position_i: u16,
+        velocity_p: u16,
+        velocity_i: u16,
+    },
+    /// Enable or disable velocity feedforward in the 1ms tick loop.
+    SetVelocityFeedforward { enable: bool },
     /// Write a TMC4671 register via SPI (dev-only).
     #[cfg(feature = "dev")]
     Write { addr: u8, value: u32 },
@@ -139,6 +149,26 @@ pub fn tmc_set_position_filter(filter_hz: u16) -> TmcRequest {
 /// Build a `SetFluxFilter` request.
 pub fn tmc_set_flux_filter(filter_hz: u16) -> TmcRequest {
     TmcRequest::SetFluxFilter { filter_hz }
+}
+
+/// Build a `SetPositionGains` request.
+pub fn tmc_set_position_gains(
+    position_p: u16,
+    position_i: u16,
+    velocity_p: u16,
+    velocity_i: u16,
+) -> TmcRequest {
+    TmcRequest::SetPositionGains {
+        position_p,
+        position_i,
+        velocity_p,
+        velocity_i,
+    }
+}
+
+/// Build a `SetVelocityFeedforward` request.
+pub fn tmc_set_velocity_feedforward(enable: bool) -> TmcRequest {
+    TmcRequest::SetVelocityFeedforward { enable }
 }
 
 /// Build a `Write` request (dev-only).
@@ -264,6 +294,27 @@ mod tests {
         assert_eq!(
             tmc_set_flux_filter(300),
             TmcRequest::SetFluxFilter { filter_hz: 300 }
+        );
+    }
+
+    #[test]
+    fn tmc_set_position_gains_builds_request() {
+        assert_eq!(
+            tmc_set_position_gains(640, 5, 1152, 0),
+            TmcRequest::SetPositionGains {
+                position_p: 640,
+                position_i: 5,
+                velocity_p: 1152,
+                velocity_i: 0,
+            }
+        );
+    }
+
+    #[test]
+    fn tmc_set_velocity_feedforward_builds_request() {
+        assert_eq!(
+            tmc_set_velocity_feedforward(true),
+            TmcRequest::SetVelocityFeedforward { enable: true }
         );
     }
 }
