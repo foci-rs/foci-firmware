@@ -96,6 +96,24 @@ pub fn tmc_set_encoder(state: &mut State, channel: u8, ppr: u32, pole_pairs: u32
     TmcRequest::SetEncoder { ppr }
 }
 
+/// Compute step width from encoder PPR and pole pairs for hardware step/dir.
+///
+/// Returns `(TmcRequest, step_width)` where `step_width` is the value to
+/// write to TMC4671 STEP_WIDTH register (0x78). Unlike [`tmc_set_encoder`],
+/// this function does not store the value in an `EmulatedStepper` — the
+/// board crate writes it directly to the TMC4671 register.
+///
+/// Step width formula: `65536 * pole_pairs / (ppr * 4)`
+pub fn tmc_set_encoder_hw(ppr: u32, pole_pairs: u32) -> (TmcRequest, i32) {
+    let step_width = if ppr > 0 {
+        let quad_ppr = (ppr as u64) * 4;
+        (65536u64 * pole_pairs as u64 / quad_ppr) as i32
+    } else {
+        0
+    };
+    (TmcRequest::SetEncoder { ppr }, step_width)
+}
+
 /// Build a `SetEncoderDir` request.
 pub fn tmc_set_encoder_dir(invert: bool) -> TmcRequest {
     TmcRequest::SetEncoderDir { invert }
@@ -222,6 +240,20 @@ mod tests {
         // Channel 5 is out of range (NUM_STEPPERS=2), should not panic
         let req = tmc_set_encoder(&mut state, 5, 1000, 50);
         assert_eq!(req, TmcRequest::SetEncoder { ppr: 1000 });
+    }
+
+    #[test]
+    fn tmc_set_encoder_hw_computes_step_width() {
+        let (req, step_width) = tmc_set_encoder_hw(1000, 50);
+        assert_eq!(req, TmcRequest::SetEncoder { ppr: 1000 });
+        assert_eq!(step_width, 819);
+    }
+
+    #[test]
+    fn tmc_set_encoder_hw_zero_ppr() {
+        let (req, step_width) = tmc_set_encoder_hw(0, 50);
+        assert_eq!(req, TmcRequest::SetEncoder { ppr: 0 });
+        assert_eq!(step_width, 0);
     }
 
     #[test]
