@@ -33,6 +33,12 @@ pub struct TransientBuffer {
     sample_period_us: u16,
 }
 
+impl Default for TransientBuffer {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl TransientBuffer {
     /// Create an empty buffer.
     ///
@@ -406,6 +412,28 @@ pub struct CurrentGains {
     pub lambda_us: u32,
 }
 
+/// Metrics from a current-loop step-response validation test.
+///
+/// Extracted from the [`TransientBuffer`] after a torque step.
+/// Used by [`classify_current_validation`] to determine pass/marginal/fail.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub struct CurrentValidation {
+    /// Time from 10% to 90% of target, in microseconds.
+    pub rise_time_us: u32,
+    /// Peak overshoot above target, in 0.1% units (150 = 15.0%).
+    pub overshoot_pct: u16,
+    /// Time to settle within +/-5% of target, in microseconds.
+    pub settling_time_us: u32,
+    /// Zero-crossings of (actual - target) after peak.
+    pub ringing_count: u8,
+    /// Samples where value hit the saturation limit.
+    pub saturation_samples: u16,
+    /// |rise_fwd - rise_rev| / avg, in 0.1% units.
+    /// Set to 0 by extract_step_metrics (requires two captures).
+    pub symmetry_pct: u16,
+}
+
 /// Compute the SIMC lambda (closed-loop time constant) for a given profile.
 ///
 /// All profiles guarantee `lambda >= theta_e` (SIMC stability boundary).
@@ -504,6 +532,113 @@ pub fn simc_current_gains(
         effective_bandwidth_hz: 0,
         lambda_us: 0,
     })
+}
+
+/// Extract step-response metrics from a transient buffer capture.
+///
+/// Analyzes a captured step response to measure rise time, overshoot,
+/// settling time, ringing, and saturation. These metrics are then
+/// classified by [`classify_current_validation`].
+///
+/// # Parameters
+/// - `buf`: captured step response samples (raw ADC or encoder values)
+/// - `target`: the target value that was commanded (step amplitude)
+/// - `pidout_limit`: saturation threshold (0 to skip saturation check)
+///
+/// Returns metrics with `symmetry_pct = 0`. Symmetry requires two captures
+/// (forward + reverse); the caller computes it via [`compute_symmetry_pct`].
+pub fn extract_step_metrics(
+    buf: &TransientBuffer,
+    target: u32,
+    pidout_limit: u32,
+) -> CurrentValidation {
+    let samples = buf.samples();
+    if samples.is_empty() || target == 0 {
+        return CurrentValidation {
+            rise_time_us: 0,
+            overshoot_pct: 0,
+            settling_time_us: 0,
+            ringing_count: 0,
+            saturation_samples: 0,
+            symmetry_pct: 0,
+        };
+    }
+
+    let period = buf.sample_period_us() as u32;
+    let target_f = target as f32;
+    let threshold_10 = (target_f * 0.10) as u32;
+    let threshold_90 = (target_f * 0.90) as u32;
+    let settle_band = (target_f * 0.05) as u32;
+
+    let mut t_10: Option<u32> = None;
+    let mut t_90: Option<u32> = None;
+    let mut peak: u32 = 0;
+    let mut peak_idx: usize = 0;
+    let mut saturation_count: u16 = 0;
+
+    for (i, &s) in samples.iter().enumerate() {
+        if t_10.is_none() && s >= threshold_10 {
+            t_10 = Some(i as u32 * period);
+        }
+        if t_90.is_none() && s >= threshold_90 {
+            t_90 = Some(i as u32 * period);
+        }
+        if s > peak {
+            peak = s;
+            peak_idx = i;
+        }
+        if pidout_limit > 0 && s >= pidout_limit {
+            saturation_count += 1;
+        }
+    }
+
+    let rise_time_us = match (t_10, t_90) {
+        (Some(a), Some(b)) => b.saturating_sub(a),
+        _ => 0,
+    };
+
+    // Overshoot: (peak - target) / target in 0.1% units
+    let overshoot_pct = if peak > target {
+        ((peak - target) as u64 * 1000 / target as u64) as u16
+    } else {
+        0
+    };
+
+    // Settling: last sample where |actual - target| > 5% band
+    let mut last_outside: usize = 0;
+    for (i, &s) in samples.iter().enumerate() {
+        let diff = s.abs_diff(target);
+        if diff > settle_band {
+            last_outside = i;
+        }
+    }
+    let settling_time_us = if last_outside > 0 {
+        (last_outside as u32 + 1) * period
+    } else {
+        0
+    };
+
+    // Ringing: zero-crossings of (actual - target) after peak
+    let mut ringing_count: u8 = 0;
+    if peak_idx + 1 < samples.len() {
+        let mut above = samples[peak_idx] > target;
+        for &s in &samples[peak_idx + 1..] {
+            let now_above = s > target;
+            if now_above != above {
+                ringing_count = ringing_count.saturating_add(1);
+                above = now_above;
+            }
+        }
+    }
+
+    CurrentValidation {
+        rise_time_us,
+        overshoot_pct,
+        settling_time_us,
+        ringing_count,
+        saturation_samples: saturation_count,
+        symmetry_pct: 0,
+    }
 }
 
 #[cfg(test)]
@@ -855,6 +990,63 @@ mod tests {
             "flux_i={} is suspiciously low (units bug?)",
             gains.flux_i
         );
+    }
+
+    // --- Step metrics extraction ---
+
+    /// Build a synthetic first-order step response for testing.
+    /// Fills 256 samples at 100us intervals.
+    fn synthetic_step_response(overshoot_pct: f32) -> TransientBuffer {
+        let mut buf = TransientBuffer::new();
+        buf.reset(100);
+        let target = 1000.0f32;
+        for i in 0..256u32 {
+            let t = i as f32;
+            let base = target * (1.0 - (-t / 10.0).exp());
+            let overshoot_term = if overshoot_pct > 0.0 {
+                target * overshoot_pct / 100.0 * (-t / 20.0).exp() * (t / 5.0).sin()
+            } else {
+                0.0
+            };
+            buf.push((base + overshoot_term).max(0.0) as u32);
+        }
+        buf
+    }
+
+    #[test]
+    fn step_metrics_clean_response() {
+        let buf = synthetic_step_response(0.0);
+        let metrics = extract_step_metrics(&buf, 1000, 0);
+        assert!(
+            metrics.overshoot_pct < 20,
+            "overshoot {} should be <2%",
+            metrics.overshoot_pct
+        );
+        assert!(
+            metrics.ringing_count <= 1,
+            "ringing {} should be <=1",
+            metrics.ringing_count
+        );
+        assert!(metrics.rise_time_us > 0, "rise time must be nonzero");
+    }
+
+    #[test]
+    fn step_metrics_with_overshoot() {
+        let buf = synthetic_step_response(100.0);
+        let metrics = extract_step_metrics(&buf, 1000, 0);
+        assert!(
+            metrics.overshoot_pct > 100,
+            "should detect significant overshoot: {}",
+            metrics.overshoot_pct
+        );
+    }
+
+    #[test]
+    fn step_metrics_empty_buffer() {
+        let buf = TransientBuffer::new();
+        let metrics = extract_step_metrics(&buf, 1000, 0);
+        assert_eq!(metrics.rise_time_us, 0);
+        assert_eq!(metrics.overshoot_pct, 0);
     }
 
     #[test]
