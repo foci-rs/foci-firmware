@@ -34,6 +34,13 @@ pub enum TmcRequest {
     },
     /// Trigger R/L measurement and gain computation (FOCI_AUTOTUNE).
     Autotune { oid: u8 },
+    /// Start inner commissioning (diagnostics + electrical ID + current tune).
+    /// Profile: 0=Conservative, 1=Balanced, 2=Stiff.
+    CommissionInner { oid: u8, profile: u8 },
+    /// Start outer commissioning (mechanical ID + velocity/position + filters).
+    /// Profile: 0=Conservative, 1=Balanced, 2=Stiff.
+    /// Mode: 0=Unloaded, 1=Nominal, 2=HighInertia.
+    CommissionOuter { oid: u8, profile: u8, mode: u8 },
     /// Set velocity biquad low-pass filter cutoff frequency.
     /// 0 = disabled, 10..1000 Hz = enabled.
     SetVelocityFilter { filter_hz: u16 },
@@ -125,6 +132,16 @@ pub fn tmc_set_pid_gains(flux_p: u16, flux_i: u16, torque_p: u16, torque_i: u16)
 /// Build an `Autotune` request.
 pub fn tmc_autotune(oid: u8) -> TmcRequest {
     TmcRequest::Autotune { oid }
+}
+
+/// Build a `CommissionInner` request.
+pub fn tmc_commission_inner(oid: u8, profile: u8) -> TmcRequest {
+    TmcRequest::CommissionInner { oid, profile }
+}
+
+/// Build a `CommissionOuter` request.
+pub fn tmc_commission_outer(oid: u8, profile: u8, mode: u8) -> TmcRequest {
+    TmcRequest::CommissionOuter { oid, profile, mode }
 }
 
 /// Build a `SetVelocityFilter` request.
@@ -305,6 +322,26 @@ mod tests {
         assert_eq!(
             tmc_set_velocity_feedforward(true),
             TmcRequest::SetVelocityFeedforward { enable: true }
+        );
+    }
+
+    #[test]
+    fn tmc_commission_inner_builds_request() {
+        assert_eq!(
+            tmc_commission_inner(0, 1),
+            TmcRequest::CommissionInner { oid: 0, profile: 1 }
+        );
+    }
+
+    #[test]
+    fn tmc_commission_outer_builds_request() {
+        assert_eq!(
+            tmc_commission_outer(0, 2, 1),
+            TmcRequest::CommissionOuter {
+                oid: 0,
+                profile: 2,
+                mode: 1
+            }
         );
     }
 }
