@@ -5,6 +5,7 @@
 
 #![no_std]
 
+pub mod autotune;
 pub mod biquad;
 pub mod config;
 pub mod dump;
