@@ -74,7 +74,7 @@ const CUTOFF_MAX_HZ: u16 = 1000;
 /// `Some(BiquadCoeffs)` with Q3.29 register values, or `None` if either
 /// argument is out of range.
 pub fn butterworth_lowpass(cutoff_hz: u16, pwm_maxcnt: u16) -> Option<BiquadCoeffs> {
-    if cutoff_hz < CUTOFF_MIN_HZ || cutoff_hz > CUTOFF_MAX_HZ {
+    if !(CUTOFF_MIN_HZ..=CUTOFF_MAX_HZ).contains(&cutoff_hz) {
         return None;
     }
     if pwm_maxcnt == 0 {
