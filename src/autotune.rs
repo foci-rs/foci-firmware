@@ -384,6 +384,128 @@ pub struct ElectricalModel {
     pub tau_e_crosscheck_us: u32,
 }
 
+/// Computed PI gains for the TMC4671 current (flux/torque) loops.
+///
+/// Produced by [`simc_current_gains`] from an [`ElectricalModel`] and
+/// a [`CommissionProfile`]. Includes the effective bandwidth and lambda
+/// for diagnostics and downstream use (velocity loop bandwidth constraint).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub struct CurrentGains {
+    /// Flux P gain — TMC4671 Q8.8 register value.
+    pub flux_p: u16,
+    /// Flux I gain — TMC4671 Q8.8 register value.
+    pub flux_i: u16,
+    /// Torque P gain — TMC4671 Q8.8 register value.
+    pub torque_p: u16,
+    /// Torque I gain — TMC4671 Q8.8 register value.
+    pub torque_i: u16,
+    /// Effective closed-loop bandwidth in Hz.
+    pub effective_bandwidth_hz: u32,
+    /// Closed-loop time constant lambda in microseconds.
+    pub lambda_us: u32,
+}
+
+/// Compute the SIMC lambda (closed-loop time constant) for a given profile.
+///
+/// All profiles guarantee `lambda >= theta_e` (SIMC stability boundary).
+fn simc_lambda_us(profile: CommissionProfile, tau_e_us: u32, theta_e_us: u32) -> u32 {
+    let lambda = match profile {
+        CommissionProfile::Conservative => 4 * theta_e_us,
+        CommissionProfile::Balanced => 2 * theta_e_us,
+        CommissionProfile::Stiff => {
+            let from_theta = theta_e_us;
+            let from_tau = tau_e_us / 4;
+            if from_theta > from_tau {
+                from_theta
+            } else {
+                from_tau
+            }
+        }
+    };
+    // Enforce stability boundary: lambda >= theta_e
+    if lambda >= theta_e_us {
+        lambda
+    } else {
+        theta_e_us
+    }
+}
+
+/// Compute SIMC PI gains for the current loop, returning `None` if the
+/// electrical model is invalid (zero R, zero L, or zero theta).
+pub fn simc_current_gains_checked(
+    model: &ElectricalModel,
+    profile: CommissionProfile,
+    config: &crate::config::TmcConfig,
+) -> Option<CurrentGains> {
+    if model.r_int == 0 || model.l_int == 0 || model.theta_e_us == 0 {
+        return None;
+    }
+
+    let lambda_us = simc_lambda_us(profile, model.tau_e_us, model.theta_e_us);
+
+    // SIMC PI tuning law for FOPDT plant G(s) = K / (tau*s+1) * e^(-theta*s):
+    //   Kp = tau / (K * (lambda + theta))
+    //   Ti = min(tau, 4 * (lambda + theta))
+    //   Ki = Kp / Ti
+    //
+    // For current loop: K = 1/R_int (DC gain: current per unit voltage).
+    // All in internal units — no board-specific scaling needed.
+
+    let tau = model.tau_e_us as f32;
+    let theta = model.theta_e_us as f32;
+    let lambda = lambda_us as f32;
+    let r_int = model.r_int as f32;
+    let k = 1.0 / r_int; // Plant DC gain
+
+    let kp = tau / (k * (lambda + theta));
+    let ti = {
+        let candidate = 4.0 * (lambda + theta);
+        if tau < candidate {
+            tau
+        } else {
+            candidate
+        }
+    };
+    let ti_s = ti * 1e-6; // Convert Ti from microseconds to seconds
+    let ki = kp / ti_s;
+
+    // Convert to TMC4671 Q8.8 register format
+    let f_pwm = config.pwm_freq_hz() as f32;
+    let p_reg = (kp * 256.0).clamp(1.0, u16::MAX as f32) as u16;
+    let i_reg = (ki / f_pwm * 256.0).clamp(1.0, u16::MAX as f32) as u16;
+
+    // Effective bandwidth = 1 / (2*pi*(lambda+theta)) in Hz
+    let bw_hz = 1_000_000.0 / (2.0 * core::f32::consts::PI * (lambda + theta));
+
+    Some(CurrentGains {
+        flux_p: p_reg,
+        flux_i: i_reg,
+        torque_p: p_reg,
+        torque_i: i_reg,
+        effective_bandwidth_hz: bw_hz as u32,
+        lambda_us,
+    })
+}
+
+/// Compute SIMC PI gains for the current loop.
+///
+/// Returns default conservative gains if the electrical model is invalid.
+pub fn simc_current_gains(
+    model: &ElectricalModel,
+    profile: CommissionProfile,
+    config: &crate::config::TmcConfig,
+) -> CurrentGains {
+    simc_current_gains_checked(model, profile, config).unwrap_or(CurrentGains {
+        flux_p: crate::pid::DEFAULT_INNER_GAINS.flux_p,
+        flux_i: crate::pid::DEFAULT_INNER_GAINS.flux_i,
+        torque_p: crate::pid::DEFAULT_INNER_GAINS.torque_p,
+        torque_i: crate::pid::DEFAULT_INNER_GAINS.torque_i,
+        effective_bandwidth_hz: 0,
+        lambda_us: 0,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -561,5 +683,223 @@ mod tests {
         assert_eq!(model.r_int, 512);
         assert_eq!(model.tau_e_us, 50);
         assert_eq!(model.theta_e_us, 10);
+    }
+
+    // --- SIMC current gains ---
+
+    fn autotune_test_config() -> crate::config::TmcConfig {
+        crate::config::TmcConfig {
+            pwm_maxcnt: 3999,
+            tmc_clock_hz: 25_000_000,
+            bbm_h: 10,
+            bbm_l: 10,
+            dsadc_mdec: 331,
+            excitation_voltage: 512,
+            didt_cycles: 5000,
+            bandwidth_hz: 150.0,
+        }
+    }
+
+    fn test_electrical_model() -> ElectricalModel {
+        ElectricalModel {
+            r_int: 1125,
+            l_int: 2950,
+            tau_e_us: 2622,
+            theta_e_us: 700,
+            r_mohm: 1125,
+            l_uh: 450,
+            tau_e_crosscheck_us: 2500,
+        }
+    }
+
+    #[test]
+    fn simc_balanced_gains_nonzero() {
+        let model = test_electrical_model();
+        let config = autotune_test_config();
+        let gains = simc_current_gains(&model, CommissionProfile::Balanced, &config);
+        assert!(gains.flux_p > 0, "flux_p must be nonzero");
+        assert!(gains.flux_i > 0, "flux_i must be nonzero");
+        assert_eq!(gains.flux_p, gains.torque_p, "flux/torque P must match");
+        assert_eq!(gains.flux_i, gains.torque_i, "flux/torque I must match");
+        assert!(gains.lambda_us > 0, "lambda must be nonzero");
+        assert!(
+            gains.effective_bandwidth_hz > 0,
+            "bandwidth must be nonzero"
+        );
+    }
+
+    #[test]
+    fn simc_delay_dominated_plant_stiff_below_balanced() {
+        // Delay-dominated: theta is large relative to tau.
+        // Stiff = max(theta, tau/4) = max(700, 655) = 700
+        // Balanced = 2*theta = 1400
+        // So stiff < balanced here.
+        let model = test_electrical_model(); // theta=700, tau=2622
+        let config = autotune_test_config();
+        let balanced = simc_current_gains(&model, CommissionProfile::Balanced, &config);
+        let stiff = simc_current_gains(&model, CommissionProfile::Stiff, &config);
+        assert!(
+            stiff.lambda_us < balanced.lambda_us,
+            "delay-dominated: stiff lambda {} should be < balanced {}",
+            stiff.lambda_us,
+            balanced.lambda_us
+        );
+    }
+
+    #[test]
+    fn simc_tau_dominated_plant_stiff_above_balanced() {
+        // Tau-dominated: tau >> theta, so tau/4 dominates the Stiff formula.
+        // Stiff = max(theta, tau/4) = max(100, 1000) = 1000
+        // Balanced = 2*theta = 200
+        // So stiff > balanced here.
+        let model = ElectricalModel {
+            r_int: 1125,
+            l_int: 2950,
+            tau_e_us: 4000,
+            theta_e_us: 100,
+            r_mohm: 1125,
+            l_uh: 450,
+            tau_e_crosscheck_us: 3800,
+        };
+        let config = autotune_test_config();
+        let balanced = simc_current_gains(&model, CommissionProfile::Balanced, &config);
+        let stiff = simc_current_gains(&model, CommissionProfile::Stiff, &config);
+        assert!(
+            stiff.lambda_us > balanced.lambda_us,
+            "tau-dominated: stiff lambda {} should be > balanced {}",
+            stiff.lambda_us,
+            balanced.lambda_us
+        );
+    }
+
+    #[test]
+    fn simc_invariants_hold_for_all_profiles() {
+        // Universal SIMC invariants that hold regardless of plant shape:
+        // 1. conservative >= balanced (4*theta >= 2*theta always)
+        // 2. stiff >= theta (stability floor)
+        // 3. stiff >= tau/4 (stiff formula is max(theta, tau/4))
+        // 4. all profiles >= theta (SIMC stability boundary)
+        for model in [
+            test_electrical_model(),
+            ElectricalModel {
+                tau_e_us: 4000,
+                theta_e_us: 100,
+                ..test_electrical_model()
+            },
+            ElectricalModel {
+                tau_e_us: 200,
+                theta_e_us: 500,
+                ..test_electrical_model()
+            },
+        ] {
+            let config = autotune_test_config();
+            let con = simc_current_gains(&model, CommissionProfile::Conservative, &config);
+            let bal = simc_current_gains(&model, CommissionProfile::Balanced, &config);
+            let stf = simc_current_gains(&model, CommissionProfile::Stiff, &config);
+
+            assert!(
+                con.lambda_us >= bal.lambda_us,
+                "tau={} theta={}: conservative {} must be >= balanced {}",
+                model.tau_e_us,
+                model.theta_e_us,
+                con.lambda_us,
+                bal.lambda_us
+            );
+            assert!(
+                stf.lambda_us >= model.theta_e_us,
+                "tau={} theta={}: stiff {} must be >= theta {}",
+                model.tau_e_us,
+                model.theta_e_us,
+                stf.lambda_us,
+                model.theta_e_us
+            );
+            assert!(
+                stf.lambda_us >= model.tau_e_us / 4,
+                "tau={} theta={}: stiff {} must be >= tau/4={}",
+                model.tau_e_us,
+                model.theta_e_us,
+                stf.lambda_us,
+                model.tau_e_us / 4
+            );
+            for (name, gains) in [("conservative", &con), ("balanced", &bal), ("stiff", &stf)] {
+                assert!(
+                    gains.lambda_us >= model.theta_e_us,
+                    "tau={} theta={}: {} lambda {} must satisfy stability floor theta {}",
+                    model.tau_e_us,
+                    model.theta_e_us,
+                    name,
+                    gains.lambda_us,
+                    model.theta_e_us
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn simc_zero_r_returns_none() {
+        let mut model = test_electrical_model();
+        model.r_int = 0;
+        let config = autotune_test_config();
+        assert!(simc_current_gains_checked(&model, CommissionProfile::Balanced, &config).is_none());
+    }
+
+    #[test]
+    fn simc_i_gain_not_trivial() {
+        // With typical motor parameters, the I gain should be significantly
+        // above the minimum clamp of 1. A value of 1 indicates a units bug.
+        let model = test_electrical_model();
+        let config = autotune_test_config();
+        let gains = simc_current_gains(&model, CommissionProfile::Balanced, &config);
+        assert!(
+            gains.flux_i > 10,
+            "flux_i={} is suspiciously low (units bug?)",
+            gains.flux_i
+        );
+    }
+
+    #[test]
+    fn simc_dimensional_consistency() {
+        // Compute gains using the microsecond-based function, then verify
+        // against a manual calculation using seconds throughout. The final
+        // Q8.8 register values must match, proving no units conversion error.
+        let model = test_electrical_model();
+        let config = autotune_test_config();
+        let gains = simc_current_gains(&model, CommissionProfile::Balanced, &config);
+
+        // Manual calculation in SI (seconds):
+        let tau_s = model.tau_e_us as f64 * 1e-6;
+        let theta_s = model.theta_e_us as f64 * 1e-6;
+        let lambda_s = (2.0 * model.theta_e_us as f64) * 1e-6; // Balanced = 2*theta
+        let r_int = model.r_int as f64;
+        let k = 1.0 / r_int;
+        let f_pwm = config.pwm_freq_hz() as f64;
+
+        let kp_si = tau_s / (k * (lambda_s + theta_s));
+        let ti_s = {
+            let candidate = 4.0 * (lambda_s + theta_s);
+            if tau_s < candidate {
+                tau_s
+            } else {
+                candidate
+            }
+        };
+        let ki_si = kp_si / ti_s; // 1/second — no conversion needed
+        let p_reg_expected = (kp_si * 256.0).clamp(1.0, u16::MAX as f64) as u16;
+        let i_reg_expected = (ki_si / f_pwm * 256.0).clamp(1.0, u16::MAX as f64) as u16;
+
+        assert_eq!(
+            gains.flux_p, p_reg_expected,
+            "P gain mismatch: got {} expected {}",
+            gains.flux_p, p_reg_expected
+        );
+        // Allow +/- 1 for f32 vs f64 rounding
+        let i_diff = (gains.flux_i as i32 - i_reg_expected as i32).unsigned_abs();
+        assert!(
+            i_diff <= 1,
+            "I gain mismatch: got {} expected {} (diff {})",
+            gains.flux_i,
+            i_reg_expected,
+            i_diff
+        );
     }
 }
