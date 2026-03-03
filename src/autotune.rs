@@ -641,6 +641,96 @@ pub fn extract_step_metrics(
     }
 }
 
+/// Outcome of a validation threshold check.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub enum ValidationResult {
+    /// All metrics within normal limits.
+    Pass,
+    /// One or more metrics in the marginal range — retry with more conservative gains.
+    Marginal,
+    /// One or more metrics exceed hard limits — fall back to defaults.
+    Fail,
+}
+
+/// Classify current-loop validation metrics against thresholds.
+///
+/// Thresholds (starting points, subject to hardware validation):
+///
+/// | Metric | Pass | Marginal | Fail |
+/// |--------|------|----------|------|
+/// | Overshoot | < 15% | 15-30% | > 30% |
+/// | Ringing | 0-1 | 2-3 | > 3 |
+/// | Settling | < 5*tau_e | 5-10*tau_e | > 10*tau_e |
+/// | Symmetry | < 20% | 20-40% | > 40% |
+/// | Saturation | < 10% | 10-25% | > 25% |
+///
+/// `total_samples` is the total number of capture samples across both
+/// directions, used for computing the saturation percentage.
+/// Returns the worst classification across all metrics.
+pub fn classify_current_validation(
+    metrics: &CurrentValidation,
+    tau_e_us: u32,
+    total_samples: u16,
+) -> ValidationResult {
+    let mut worst = ValidationResult::Pass;
+
+    // Overshoot (0.1% units: 150 = 15.0%, 300 = 30.0%)
+    if metrics.overshoot_pct > 300 {
+        return ValidationResult::Fail;
+    } else if metrics.overshoot_pct > 150 {
+        worst = ValidationResult::Marginal;
+    }
+
+    // Ringing
+    if metrics.ringing_count > 3 {
+        return ValidationResult::Fail;
+    } else if metrics.ringing_count > 1 {
+        worst = ValidationResult::Marginal;
+    }
+
+    // Settling (relative to tau_e)
+    let settle_5x = 5 * tau_e_us;
+    let settle_10x = 10 * tau_e_us;
+    if metrics.settling_time_us > settle_10x {
+        return ValidationResult::Fail;
+    } else if metrics.settling_time_us > settle_5x {
+        worst = ValidationResult::Marginal;
+    }
+
+    // Symmetry (0.1% units: 200 = 20.0%, 400 = 40.0%)
+    if metrics.symmetry_pct > 400 {
+        return ValidationResult::Fail;
+    } else if metrics.symmetry_pct > 200 {
+        worst = ValidationResult::Marginal;
+    }
+
+    // Saturation (fraction of total samples): pass <10%, marginal 10-25%, fail >25%
+    if total_samples > 0 {
+        let sat_pct = (metrics.saturation_samples as u32 * 100) / total_samples as u32;
+        if sat_pct > 25 {
+            return ValidationResult::Fail;
+        } else if sat_pct > 10 {
+            worst = ValidationResult::Marginal;
+        }
+    }
+
+    worst
+}
+
+/// Compute symmetry metric from forward and reverse rise times.
+///
+/// Returns `|a - b| / avg(a, b)` in 0.1% units (200 = 20.0%).
+/// Returns 0 if both values are zero.
+pub fn compute_symmetry_pct(rise_fwd: u32, rise_rev: u32) -> u16 {
+    let avg = (rise_fwd as u64 + rise_rev as u64) / 2;
+    if avg == 0 {
+        return 0;
+    }
+    let diff = rise_fwd.abs_diff(rise_rev);
+    (diff as u64 * 1000 / avg) as u16
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1093,5 +1183,109 @@ mod tests {
             i_reg_expected,
             i_diff
         );
+    }
+
+    // --- Validation classification ---
+
+    #[test]
+    fn classify_pass() {
+        let metrics = CurrentValidation {
+            rise_time_us: 500,
+            overshoot_pct: 100, // 10.0%
+            settling_time_us: 2000,
+            ringing_count: 1,
+            saturation_samples: 5,
+            symmetry_pct: 100, // 10.0%
+        };
+        assert_eq!(
+            classify_current_validation(&metrics, 1000, 512),
+            ValidationResult::Pass
+        );
+    }
+
+    #[test]
+    fn classify_marginal_overshoot() {
+        let metrics = CurrentValidation {
+            rise_time_us: 500,
+            overshoot_pct: 200, // 20.0%
+            settling_time_us: 2000,
+            ringing_count: 1,
+            saturation_samples: 5,
+            symmetry_pct: 100,
+        };
+        assert_eq!(
+            classify_current_validation(&metrics, 1000, 512),
+            ValidationResult::Marginal
+        );
+    }
+
+    #[test]
+    fn classify_fail_overshoot() {
+        let metrics = CurrentValidation {
+            rise_time_us: 500,
+            overshoot_pct: 350, // 35.0%
+            settling_time_us: 2000,
+            ringing_count: 1,
+            saturation_samples: 5,
+            symmetry_pct: 100,
+        };
+        assert_eq!(
+            classify_current_validation(&metrics, 1000, 512),
+            ValidationResult::Fail
+        );
+    }
+
+    #[test]
+    fn classify_fail_ringing() {
+        let metrics = CurrentValidation {
+            rise_time_us: 500,
+            overshoot_pct: 50,
+            settling_time_us: 2000,
+            ringing_count: 4,
+            saturation_samples: 0,
+            symmetry_pct: 0,
+        };
+        assert_eq!(
+            classify_current_validation(&metrics, 1000, 512),
+            ValidationResult::Fail
+        );
+    }
+
+    #[test]
+    fn classify_marginal_settling() {
+        let metrics = CurrentValidation {
+            rise_time_us: 500,
+            overshoot_pct: 50,
+            settling_time_us: 7000, // 7x tau=1000
+            ringing_count: 0,
+            saturation_samples: 0,
+            symmetry_pct: 0,
+        };
+        assert_eq!(
+            classify_current_validation(&metrics, 1000, 512),
+            ValidationResult::Marginal
+        );
+    }
+
+    // --- Symmetry ---
+
+    #[test]
+    fn compute_symmetry_identical() {
+        assert_eq!(compute_symmetry_pct(500, 500), 0);
+    }
+
+    #[test]
+    fn compute_symmetry_20_percent() {
+        // |600 - 500| / 550 ≈ 18.2% → 181 in 0.1% units
+        let result = compute_symmetry_pct(600, 500);
+        assert!(
+            result >= 170 && result <= 190,
+            "symmetry {result} expected ~181"
+        );
+    }
+
+    #[test]
+    fn compute_symmetry_zero_avg() {
+        assert_eq!(compute_symmetry_pct(0, 0), 0);
     }
 }
