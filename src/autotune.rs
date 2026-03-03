@@ -354,6 +354,36 @@ impl PhaseId {
     }
 }
 
+/// First-order-plus-dead-time (FOPDT) current plant model.
+///
+/// Estimated during electrical identification (Phase 5). Contains
+/// both internal-unit values (used for gain computation) and physical
+/// values (milliohms, microhenries — for host display and persistence).
+///
+/// Plant model: `G(s) = K / (tau_e * s + 1) * e^(-theta_e * s)`
+/// where `K = 1 / R_int` (DC gain in internal units).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub struct ElectricalModel {
+    /// Winding resistance in internal (ADC/DAC) units.
+    /// R_int = V_excitation / I_steady_state.
+    pub r_int: u32,
+    /// Winding inductance in internal units.
+    /// L_int = V * dt_s / delta_I.
+    pub l_int: u32,
+    /// Electrical time constant L/R in microseconds.
+    pub tau_e_us: u32,
+    /// Effective transport delay in microseconds (from transient onset).
+    pub theta_e_us: u32,
+    /// Physical resistance in milliohms (for display/persistence).
+    pub r_mohm: u32,
+    /// Physical inductance in microhenries (for display/persistence).
+    pub l_uh: u32,
+    /// Tau from two-point transient fit in microseconds.
+    /// Compared against L/R tau for plant model validation.
+    pub tau_e_crosscheck_us: u32,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -513,5 +543,23 @@ mod tests {
             assert!(!seen[code], "duplicate to_u8 code {code} for {p:?}");
             seen[code] = true;
         }
+    }
+
+    // --- ElectricalModel ---
+
+    #[test]
+    fn electrical_model_tau_from_l_over_r() {
+        let model = ElectricalModel {
+            r_int: 512,
+            l_int: 256,
+            tau_e_us: 50,
+            theta_e_us: 10,
+            r_mohm: 1125,
+            l_uh: 450,
+            tau_e_crosscheck_us: 48,
+        };
+        assert_eq!(model.r_int, 512);
+        assert_eq!(model.tau_e_us, 50);
+        assert_eq!(model.theta_e_us, 10);
     }
 }
