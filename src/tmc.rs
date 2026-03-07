@@ -40,7 +40,19 @@ pub enum TmcRequest {
     /// Start outer commissioning (mechanical ID + velocity/position + filters).
     /// Profile: 0=Conservative, 1=Balanced, 2=Stiff.
     /// Mode: 0=Unloaded, 1=Nominal, 2=HighInertia.
-    CommissionOuter { oid: u8, profile: u8, mode: u8 },
+    /// inner_lambda_us: closed-loop lambda from inner (current) loop, microseconds.
+    /// theta_e_us: electrical transport delay from inner loop, microseconds.
+    CommissionOuter {
+        oid: u8,
+        profile: u8,
+        mode: u8,
+        inner_lambda_us: u32,
+        theta_e_us: u32,
+        /// Current-loop ringing count from inner validation (>1 = ringing).
+        current_ringing_count: u8,
+        /// Current-loop effective bandwidth Hz from inner commissioning.
+        current_bandwidth_hz: u32,
+    },
     /// Set velocity biquad low-pass filter cutoff frequency.
     /// 0 = disabled, 10..1000 Hz = enabled.
     SetVelocityFilter { filter_hz: u16 },
@@ -140,8 +152,24 @@ pub fn tmc_commission_inner(oid: u8, profile: u8) -> TmcRequest {
 }
 
 /// Build a `CommissionOuter` request.
-pub fn tmc_commission_outer(oid: u8, profile: u8, mode: u8) -> TmcRequest {
-    TmcRequest::CommissionOuter { oid, profile, mode }
+pub fn tmc_commission_outer(
+    oid: u8,
+    profile: u8,
+    mode: u8,
+    inner_lambda_us: u32,
+    theta_e_us: u32,
+    current_ringing_count: u8,
+    current_bandwidth_hz: u32,
+) -> TmcRequest {
+    TmcRequest::CommissionOuter {
+        oid,
+        profile,
+        mode,
+        inner_lambda_us,
+        theta_e_us,
+        current_ringing_count,
+        current_bandwidth_hz,
+    }
 }
 
 /// Build a `SetVelocityFilter` request.
@@ -336,11 +364,15 @@ mod tests {
     #[test]
     fn tmc_commission_outer_builds_request() {
         assert_eq!(
-            tmc_commission_outer(0, 2, 1),
+            tmc_commission_outer(0, 2, 1, 1400, 700, 3, 500),
             TmcRequest::CommissionOuter {
                 oid: 0,
                 profile: 2,
-                mode: 1
+                mode: 1,
+                inner_lambda_us: 1400,
+                theta_e_us: 700,
+                current_ringing_count: 3,
+                current_bandwidth_hz: 500,
             }
         );
     }
