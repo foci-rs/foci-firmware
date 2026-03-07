@@ -434,6 +434,32 @@ pub struct CurrentValidation {
     pub symmetry_pct: u16,
 }
 
+/// First-order mechanical plant model estimated during Phase 8.
+///
+/// Represents `G_mech(s) = 1 / (J_eff * s + B_eff)` where J_eff includes
+/// carriage mass, belt compliance, and reflected rotor inertia. Used by
+/// Phase 9 (velocity-loop SIMC synthesis) to compute velocity gains.
+///
+/// All values are in internal units derived from encoder counts and
+/// torque DAC values. Physical conversion happens on the host side.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub struct MechanicalModel {
+    /// Effective inertia in internal units.
+    /// J_eff = torque / initial_acceleration (from first few samples).
+    pub j_eff: u32,
+    /// Effective damping in internal units.
+    /// B_eff = torque / steady_state_velocity, or from deceleration curve.
+    pub b_eff: u32,
+    /// Mechanical time constant J_eff / B_eff in milliseconds.
+    pub tau_mech_ms: u32,
+    /// Effective mechanical delay in microseconds.
+    /// Time from torque step to first measurable velocity change.
+    pub theta_mech_us: u32,
+    /// Static friction estimate in torque units. 0 if not measured.
+    pub t_f: u16,
+}
+
 /// Compute the SIMC lambda (closed-loop time constant) for a given profile.
 ///
 /// All profiles guarantee `lambda >= theta_e` (SIMC stability boundary).
