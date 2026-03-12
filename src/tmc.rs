@@ -212,6 +212,48 @@ pub fn tmc_set_velocity_feedforward(enable: bool) -> TmcRequest {
     TmcRequest::SetVelocityFeedforward { enable }
 }
 
+/// Precompute the velocity feedforward scale factor.
+///
+/// The result encodes `step_width * clock_freq / f_pwm` so that the
+/// per-tick feedforward computation is a single division:
+/// `velocity_tmc = scale_factor / step_interval`.
+///
+/// Uses `u64` intermediate to avoid overflow on the multiplication
+/// (`step_width * clock_freq` can exceed `u32::MAX`).
+///
+/// Returns 0 if `step_width == 0` or `f_pwm == 0` (feedforward disabled).
+pub fn compute_velocity_scale_factor(step_width: u32, clock_freq: u32, f_pwm: u32) -> u32 {
+    if step_width == 0 || f_pwm == 0 {
+        return 0;
+    }
+    let numerator = step_width as u64 * clock_freq as u64;
+    (numerator / f_pwm as u64) as u32
+}
+
+/// Compute the velocity feedforward offset value for PID_VELOCITY_OFFSET.
+///
+/// # Parameters
+/// - `scale_factor`: precomputed by [`compute_velocity_scale_factor`]
+/// - `step_interval`: current step interval in TIM5 clock ticks (from atomic)
+/// - `forward`: true if stepping in the forward direction
+///
+/// Returns 0 if `step_interval == 0` (motor idle) or `scale_factor == 0`
+/// (feedforward not configured).
+///
+/// The result is in TMC4671 velocity units (position change per PWM period)
+/// and is written directly to PID_VELOCITY_OFFSET (0x67, s32).
+pub fn compute_velocity_offset(scale_factor: u32, step_interval: u32, forward: bool) -> i32 {
+    if step_interval == 0 || scale_factor == 0 {
+        return 0;
+    }
+    let magnitude = scale_factor / step_interval;
+    if forward {
+        magnitude as i32
+    } else {
+        -(magnitude as i32)
+    }
+}
+
 /// Build a `Write` request (dev-only).
 #[cfg(feature = "dev")]
 pub fn tmc_write_register(addr: u8, value: u32) -> TmcRequest {
@@ -375,5 +417,64 @@ mod tests {
                 current_bandwidth_hz: 500,
             }
         );
+    }
+
+    #[test]
+    fn velocity_scale_factor_typical() {
+        let scale = compute_velocity_scale_factor(81, 84_000_000, 25_000);
+        assert_eq!(scale, 272_160);
+    }
+
+    #[test]
+    fn velocity_scale_factor_zero_step_width() {
+        let scale = compute_velocity_scale_factor(0, 84_000_000, 25_000);
+        assert_eq!(scale, 0);
+    }
+
+    #[test]
+    fn velocity_scale_factor_large_step_width() {
+        let scale = compute_velocity_scale_factor(4096, 84_000_000, 25_000);
+        assert_eq!(scale, 13_762_560);
+    }
+
+    #[test]
+    fn velocity_offset_worked_example() {
+        let scale = compute_velocity_scale_factor(81, 84_000_000, 25_000);
+        let offset = compute_velocity_offset(scale, 420, true);
+        assert_eq!(offset, 648);
+    }
+
+    #[test]
+    fn velocity_offset_reverse_direction() {
+        let scale = compute_velocity_scale_factor(81, 84_000_000, 25_000);
+        let offset = compute_velocity_offset(scale, 420, false);
+        assert_eq!(offset, -648);
+    }
+
+    #[test]
+    fn velocity_offset_zero_interval() {
+        let scale = compute_velocity_scale_factor(81, 84_000_000, 25_000);
+        let offset = compute_velocity_offset(scale, 0, true);
+        assert_eq!(offset, 0);
+    }
+
+    #[test]
+    fn velocity_offset_zero_scale() {
+        let offset = compute_velocity_offset(0, 420, true);
+        assert_eq!(offset, 0);
+    }
+
+    #[test]
+    fn velocity_offset_high_speed() {
+        let scale = compute_velocity_scale_factor(81, 84_000_000, 25_000);
+        let offset = compute_velocity_offset(scale, 84, true);
+        assert_eq!(offset, 3240);
+    }
+
+    #[test]
+    fn velocity_offset_low_speed() {
+        let scale = compute_velocity_scale_factor(81, 84_000_000, 25_000);
+        let offset = compute_velocity_offset(scale, 84_000, true);
+        assert_eq!(offset, 3);
     }
 }
