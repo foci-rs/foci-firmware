@@ -16,6 +16,13 @@ use tmc4671::spi::Tmc4671Spi;
 /// Best-effort: SPI errors are silently ignored. The enable pin is always
 /// driven low regardless of prior TMC4671 state.
 ///
+/// Also resets `PIDOUT_UQ_UD_LIMITS` to the conservative default (1024)
+/// so that any subsequent partial re-enable path inherits a low voltage
+/// ceiling instead of whatever closed-loop entry last raised it to. This
+/// mirrors the value AdcCalibrate writes as its safety default, and
+/// prevents runaway current in fault recovery paths that re-assert PWM
+/// without running full closed-loop initialization.
+///
 /// # Parameters
 /// - `tmc`: mutable reference to the TMC4671 SPI driver
 /// - `enable_pin`: mutable reference to the motor enable output pin
@@ -32,6 +39,10 @@ where
     let _ = tmc.write_register(UQ_UD_EXT, 0).await;
     let _ = tmc.write_register(PWM_SV_CHOP, 0).await;
     let _ = tmc.write_register(PID_VELOCITY_OFFSET, 0).await;
+    // Conservative voltage ceiling matching AdcCalibrate's safety default.
+    // Prevents high-voltage drive authority from leaking across a safe-state
+    // transition into a subsequent partial re-enable.
+    let _ = tmc.write_register(PIDOUT_UQ_UD_LIMITS, 1024).await;
 }
 
 /// Measure per-coil resistance with PWM-rate current averaging for autotune.
