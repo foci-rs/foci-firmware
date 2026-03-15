@@ -333,6 +333,14 @@ pub enum PhaseId {
     Commit,
     /// Outer commissioning completed.
     OuterDone,
+    /// Encoder alignment — drive rotor to the D-axis, zero
+    /// ABN_DECODER_COUNT and offset, switch PHI_E_SELECTION to ABN
+    /// while still driving. Runs between EncoderCheck and ElectricalId
+    /// in the inner sequence, and is a valid `stop_after` target for
+    /// calibrate-on-enable paths. Appended (not inserted between
+    /// EncoderCheck and ElectricalId) so the stable wire values remain
+    /// unchanged — wire code 16.
+    EncoderAlign,
 }
 
 impl PhaseId {
@@ -356,6 +364,7 @@ impl PhaseId {
             Self::FilterTune => 13,
             Self::Commit => 14,
             Self::OuterDone => 15,
+            Self::EncoderAlign => 16,
         }
     }
 }
