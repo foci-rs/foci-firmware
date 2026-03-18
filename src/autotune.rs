@@ -673,7 +673,11 @@ pub fn extract_step_metrics(
     let target_f = target as f32;
     let threshold_10 = (target_f * 0.10) as u32;
     let threshold_90 = (target_f * 0.90) as u32;
-    let settle_band = (target_f * 0.05) as u32;
+    // Velocity validation samples encoder-count deltas at 1 kHz. At low
+    // targets a strict 5% band truncates to zero counts, which would require
+    // every sample to equal the target exactly. Allow at least one count of
+    // quantization noise so a small, otherwise stable response can settle.
+    let settle_band = ((target_f * 0.05) as u32).max(1);
 
     let mut t_10: Option<u32> = None;
     let mut t_90: Option<u32> = None;
@@ -1031,7 +1035,10 @@ pub fn extract_velocity_metrics(
     let target_f = target as f32;
     let threshold_10 = (target_f * 0.10) as u32;
     let threshold_90 = (target_f * 0.90) as u32;
-    let settle_band = (target_f * 0.05) as u32;
+    // Encoder-derived velocity is integer counts per sample. At low targets,
+    // a strict 5% band truncates to zero counts and makes a stable +/-1 count
+    // response look permanently unsettled.
+    let settle_band = ((target_f * 0.05) as u32).max(1);
 
     let mut t_10: Option<u32> = None;
     let mut t_90: Option<u32> = None;
@@ -2196,6 +2203,21 @@ mod tests {
             metrics.zero_speed_chatter,
             "should detect chatter in tail samples"
         );
+    }
+
+    #[test]
+    fn velocity_metrics_settle_band_allows_low_target_quantization() {
+        let mut buf = TransientBuffer::new();
+        buf.reset(1000);
+        for i in 0..256 {
+            // A low-speed encoder-derived velocity target cannot represent
+            // fractional counts per sample. Alternating 5/6 around target 6 is
+            // stable within one count and should not look permanently unsettled.
+            buf.push(if i % 2 == 0 { 6 } else { 5 });
+        }
+
+        let metrics = extract_velocity_metrics(&buf, 6, 0, 3, 0);
+        assert_eq!(metrics.settling_time_ms, 0);
     }
 
     #[test]
