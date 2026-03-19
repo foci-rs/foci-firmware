@@ -37,6 +37,9 @@ pub enum TmcRequest {
     /// Start inner commissioning (diagnostics + electrical ID + current tune).
     /// Profile: 0=Conservative, 1=Balanced, 2=Stiff.
     CommissionInner { oid: u8, profile: u8 },
+    /// Start Stage 1 commissioning (full diagnostics + current tune + closed-loop entry).
+    /// Profile: 0=Conservative, 1=Balanced, 2=Stiff.
+    Commission { oid: u8, profile: u8 },
     /// Start outer commissioning (mechanical ID + velocity/position + filters).
     /// Profile: 0=Conservative, 1=Balanced, 2=Stiff.
     /// Mode: 0=Unloaded, 1=Nominal, 2=HighInertia.
@@ -149,6 +152,11 @@ pub fn tmc_autotune(oid: u8) -> TmcRequest {
 /// Build a `CommissionInner` request.
 pub fn tmc_commission_inner(oid: u8, profile: u8) -> TmcRequest {
     TmcRequest::CommissionInner { oid, profile }
+}
+
+/// Build a `Commission` request (Stage 1: diagnostics + current tune + closed-loop entry).
+pub fn tmc_commission(oid: u8, profile: u8) -> TmcRequest {
+    TmcRequest::Commission { oid, profile }
 }
 
 /// Build a `CommissionOuter` request.
