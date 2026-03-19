@@ -369,6 +369,95 @@ impl PhaseId {
     }
 }
 
+/// Complete gain set for closed-loop entry on re-enable.
+///
+/// Preloaded into firmware atomics by the Python host before `foci_calibrate`.
+/// Contains current-loop gains (from commissioning) and outer gains
+/// (from commissioning fallbacks or prior tuning).
+#[derive(Debug, Clone, Copy)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub struct SavedGains {
+    /// Current-loop flux P gain (Q8.8).
+    pub flux_p: u16,
+    /// Current-loop flux I gain (Q8.8).
+    pub flux_i: u16,
+    /// Current-loop torque P gain (Q8.8).
+    pub torque_p: u16,
+    /// Current-loop torque I gain (Q8.8).
+    pub torque_i: u16,
+    /// Velocity P gain (Q8.8).
+    pub velocity_p: u16,
+    /// Velocity I gain (Q8.8).
+    pub velocity_i: u16,
+    /// Position P gain (Q8.8).
+    pub position_p: u16,
+    /// Position I gain (Q8.8).
+    pub position_i: u16,
+    /// PID velocity limit register value.
+    pub velocity_limit: u32,
+    /// Velocity biquad filter cutoff (Hz), 0 = disabled.
+    pub velocity_filter_hz: u16,
+    /// Torque biquad filter cutoff (Hz), 0 = disabled.
+    pub torque_filter_hz: u16,
+    /// Position biquad filter cutoff (Hz), 0 = disabled.
+    pub position_filter_hz: u16,
+    /// Flux biquad filter cutoff (Hz), 0 = disabled.
+    pub flux_filter_hz: u16,
+}
+
+/// Sub-states for the `ClosedLoopEntry` engine phase.
+///
+/// Writes PID gains, velocity limit, voltage limits, position selection,
+/// step width, motion mode, and biquad filters, then verifies position
+/// hold stability.
+#[derive(Debug, Clone, Copy)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub enum ClosedLoopEntryState {
+    /// Write current-loop and outer PID gains.
+    WriteGains,
+    /// Write velocity limit and raise PIDOUT_UQ_UD_LIMITS.
+    WriteLimits,
+    /// Verify PHI_E_SELECTION = 3 (ABN encoder from alignment).
+    VerifyPhiE,
+    /// Zero position, clear integrators, clear status flags.
+    ZeroAndClear,
+    /// Write POSITION_SELECTION, STEP_WIDTH with readback.
+    WritePositionConfig,
+    /// Write biquad filters (best-effort, warn on failure).
+    WriteFilters,
+    /// Enter position mode: MODE_RAMP_MODE_MOTION = 0x8000_0003.
+    EnterPositionMode,
+    /// Wait 10 ms, read position, wait 20 ms, read again. Verify stable.
+    StabilityCheck1 {
+        /// First position reading.
+        position_1: i32,
+        /// Deadline in microseconds for second reading.
+        deadline_us: u64,
+    },
+    /// Second stability read after 20 ms.
+    StabilityCheck2 {
+        /// First position reading for comparison.
+        position_1: i32,
+        /// Deadline in microseconds for second reading.
+        deadline_us: u64,
+    },
+}
+
+/// Controls which phases run and in what order for the inner engine.
+///
+/// Replaces the old `stop_after: PhaseId` mechanism.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub enum InnerSequence {
+    /// Re-enable path: ADC cal -> encoder align -> closed-loop entry (saved gains).
+    /// Skips coil/wiring/encoder diagnostics -- trusts prior Stage 1 validation.
+    Calibrate,
+    /// Diagnostic path: ADC cal -> coil -> wiring -> encoder -> align -> elec ID.
+    Selftest,
+    /// Stage 1: full diagnostics -> elec ID -> current tune/validate -> closed-loop entry.
+    Commission,
+}
+
 /// First-order-plus-dead-time (FOPDT) current plant model.
 ///
 /// Estimated during electrical identification (Phase 5). Contains
