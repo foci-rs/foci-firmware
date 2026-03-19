@@ -341,6 +341,11 @@ pub enum PhaseId {
     /// EncoderCheck and ElectricalId) so the stable wire values remain
     /// unchanged — wire code 16.
     EncoderAlign,
+    /// Closed-loop position mode entry — writes PID gains, velocity
+    /// limit, voltage limits, biquad filters, STEP_WIDTH, enters
+    /// position mode, and verifies stability. Runs as the final inner
+    /// phase for Calibrate and Commission sequences — wire code 17.
+    ClosedLoopEntry,
 }
 
 impl PhaseId {
@@ -365,6 +370,7 @@ impl PhaseId {
             Self::Commit => 14,
             Self::OuterDone => 15,
             Self::EncoderAlign => 16,
+            Self::ClosedLoopEntry => 17,
         }
     }
 }
