@@ -64,6 +64,9 @@ pub const DUMP_SUB_REGISTERS: &[(u8, SubRegister)] = &[
     (0x81, tmc4671::registers::INTERIM_PIDOUT_TARGET_VELOCITY),
     // PID_ERROR: integrator state (datasheet page 122)
     (0x82, tmc4671::registers::PID_ERROR_PID_POSITION_ERROR_SUM),
+    (0x83, tmc4671::registers::PID_ERROR_PID_TORQUE_ERROR_SUM),
+    (0x84, tmc4671::registers::PID_ERROR_PID_FLUX_ERROR_SUM),
+    (0x85, tmc4671::registers::PID_ERROR_PID_VELOCITY_ERROR_SUM),
 ];
 
 #[cfg(test)]
