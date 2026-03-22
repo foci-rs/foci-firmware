@@ -32,20 +32,13 @@ pub enum TmcRequest {
         torque_p: u16,
         torque_i: u16,
     },
-    /// Trigger R/L measurement and gain computation (FOCI_AUTOTUNE).
-    Autotune { oid: u8 },
-    /// Start inner commissioning (diagnostics + electrical ID + current tune).
-    /// Profile: 0=Conservative, 1=Balanced, 2=Stiff.
-    CommissionInner { oid: u8, profile: u8 },
-    /// Start Stage 1 commissioning (full diagnostics + current tune + closed-loop entry).
+    /// Start Stage 1 commissioning (diagnostics + current tune + closed-loop entry).
     /// Profile: 0=Conservative, 1=Balanced, 2=Stiff.
     Commission { oid: u8, profile: u8 },
-    /// Start outer commissioning (mechanical ID + velocity/position + filters).
+    /// Start Stage 2 installed tuning (mechanical ID + velocity/position + filters).
     /// Profile: 0=Conservative, 1=Balanced, 2=Stiff.
     /// Mode: 0=Unloaded, 1=Nominal, 2=HighInertia.
-    /// inner_lambda_us: closed-loop lambda from inner (current) loop, microseconds.
-    /// theta_e_us: electrical transport delay from inner loop, microseconds.
-    CommissionOuter {
+    Tune {
         oid: u8,
         profile: u8,
         mode: u8,
@@ -144,23 +137,13 @@ pub fn tmc_set_pid_gains(flux_p: u16, flux_i: u16, torque_p: u16, torque_i: u16)
     }
 }
 
-/// Build an `Autotune` request.
-pub fn tmc_autotune(oid: u8) -> TmcRequest {
-    TmcRequest::Autotune { oid }
-}
-
-/// Build a `CommissionInner` request.
-pub fn tmc_commission_inner(oid: u8, profile: u8) -> TmcRequest {
-    TmcRequest::CommissionInner { oid, profile }
-}
-
 /// Build a `Commission` request (Stage 1: diagnostics + current tune + closed-loop entry).
 pub fn tmc_commission(oid: u8, profile: u8) -> TmcRequest {
     TmcRequest::Commission { oid, profile }
 }
 
-/// Build a `CommissionOuter` request.
-pub fn tmc_commission_outer(
+/// Build a `Tune` request (Stage 2: mechanical ID + velocity/position + filters).
+pub fn tmc_tune(
     oid: u8,
     profile: u8,
     mode: u8,
@@ -169,7 +152,7 @@ pub fn tmc_commission_outer(
     current_ringing_count: u8,
     current_bandwidth_hz: u32,
 ) -> TmcRequest {
-    TmcRequest::CommissionOuter {
+    TmcRequest::Tune {
         oid,
         profile,
         mode,
@@ -346,11 +329,6 @@ mod tests {
     }
 
     #[test]
-    fn tmc_autotune_builds_request() {
-        assert_eq!(tmc_autotune(0), TmcRequest::Autotune { oid: 0 });
-    }
-
-    #[test]
     fn tmc_set_velocity_filter_builds_request() {
         assert_eq!(
             tmc_set_velocity_filter(200),
@@ -404,18 +382,18 @@ mod tests {
     }
 
     #[test]
-    fn tmc_commission_inner_builds_request() {
+    fn tmc_commission_builds_request() {
         assert_eq!(
-            tmc_commission_inner(0, 1),
-            TmcRequest::CommissionInner { oid: 0, profile: 1 }
+            tmc_commission(0, 1),
+            TmcRequest::Commission { oid: 0, profile: 1 }
         );
     }
 
     #[test]
-    fn tmc_commission_outer_builds_request() {
+    fn tmc_tune_builds_request() {
         assert_eq!(
-            tmc_commission_outer(0, 2, 1, 1400, 700, 3, 500),
-            TmcRequest::CommissionOuter {
+            tmc_tune(0, 2, 1, 1400, 700, 3, 500),
+            TmcRequest::Tune {
                 oid: 0,
                 profile: 2,
                 mode: 1,
