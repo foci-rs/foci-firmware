@@ -282,8 +282,8 @@ impl CommissionError {
 
 /// Overall outcome of a commissioning run.
 ///
-/// Reported in the `foci_commission_inner_result` or
-/// `foci_commission_outer_result` message. The Python module uses this to
+/// Reported in the `foci_commission_result` or `foci_tune_result`
+/// message. The Python module uses this to
 /// decide whether to persist the resulting gains.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
@@ -1506,6 +1506,7 @@ mod tests {
             CommissionError::Shutdown,
             CommissionError::AlreadyRunning,
             CommissionError::QueueFull,
+            CommissionError::SafetyEnvelopeViolation,
         ];
         let mut seen = [false; 256];
         for e in errors {
