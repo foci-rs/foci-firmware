@@ -12,3 +12,4 @@ pub mod dump;
 pub mod pid;
 pub mod selftest;
 pub mod tmc;
+pub mod trace;

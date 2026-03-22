@@ -16,6 +16,7 @@ embedded-hal-async = { workspace = true }
 heapless.workspace = true
 klipper-mcu = { path = "../klipper-mcu" }
 libm = "0.2"
+static_assertions = "1.1"
 tmc4671 = { path = "../tmc4671" }
 
 [dev-dependencies]
