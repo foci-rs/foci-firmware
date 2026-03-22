@@ -247,6 +247,9 @@ pub enum CommissionError {
     AlreadyRunning,
     /// The commissioning command queue was full. Code 16.
     QueueFull,
+    /// Outer safety envelope violated (velocity/position/torque limit exceeded). Code 17.
+    /// Always a safety fault: motor must be hard-disabled.
+    SafetyEnvelopeViolation,
 }
 
 impl CommissionError {
@@ -272,6 +275,7 @@ impl CommissionError {
             Self::Shutdown => 14,
             Self::AlreadyRunning => 15,
             Self::QueueFull => 16,
+            Self::SafetyEnvelopeViolation => 17,
         }
     }
 }
