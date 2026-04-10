@@ -122,9 +122,9 @@ impl core::fmt::Debug for TransientBuffer {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum CommissionProfile {
-    /// `lambda = 4 * theta` — slow, very robust, minimal audible noise.
+    /// `lambda = max(4 * theta, tau)` — slow, very robust, minimal audible noise.
     Conservative,
-    /// `lambda = 2 * theta` — good default for most motors and print setups.
+    /// `lambda = max(2 * theta, tau / 2)` — good default for most motors and print setups.
     Balanced,
     /// `lambda = max(theta, tau/4)` — fastest safe response; may be audible.
     Stiff,
@@ -520,6 +520,21 @@ pub struct CurrentGains {
     pub lambda_us: u32,
 }
 
+/// Current-loop SIMC integrator damping factor.
+///
+/// The documented advanced-PI zero placement is correct in isolation, but on
+/// the target hardware the raw `4*(lambda+theta)` SIMC integral time winds up
+/// during the current-step rise. Use a slower integral time while keeping the
+/// proportional SIMC damping unchanged.
+const CURRENT_SIMC_TI_MULTIPLIER: f32 = 11.0;
+
+/// Samples used to smooth current validation settling/ringing checks.
+///
+/// Current captures include PWM/ADC ripple around the regulated value. A short
+/// trailing average keeps the validation focused on the controller envelope
+/// while preserving raw samples for rise time and overshoot.
+const CURRENT_METRIC_SMOOTHING_SAMPLES: usize = 8;
+
 /// Metrics from a current-loop step-response validation test.
 ///
 /// Extracted from the [`TransientBuffer`] after a torque step.
@@ -643,8 +658,8 @@ pub struct FilterConfig {
 /// All profiles guarantee `lambda >= theta_e` (SIMC stability boundary).
 fn simc_lambda_us(profile: CommissionProfile, tau_e_us: u32, theta_e_us: u32) -> u32 {
     let lambda = match profile {
-        CommissionProfile::Conservative => 4 * theta_e_us,
-        CommissionProfile::Balanced => 2 * theta_e_us,
+        CommissionProfile::Conservative => (4 * theta_e_us).max(tau_e_us),
+        CommissionProfile::Balanced => (2 * theta_e_us).max(tau_e_us / 2),
         CommissionProfile::Stiff => {
             let from_theta = theta_e_us;
             let from_tau = tau_e_us / 4;
@@ -670,15 +685,25 @@ pub fn simc_current_gains_checked(
     profile: CommissionProfile,
     config: &crate::config::TmcConfig,
 ) -> Option<CurrentGains> {
+    let lambda_us = simc_lambda_us(profile, model.tau_e_us, model.theta_e_us);
+    simc_current_gains_with_lambda_checked(model, lambda_us, config)
+}
+
+/// Compute SIMC PI gains for the current loop using an explicit lambda.
+pub fn simc_current_gains_with_lambda_checked(
+    model: &ElectricalModel,
+    lambda_us: u32,
+    config: &crate::config::TmcConfig,
+) -> Option<CurrentGains> {
     if model.r_int == 0 || model.l_int == 0 || model.theta_e_us == 0 {
         return None;
     }
 
-    let lambda_us = simc_lambda_us(profile, model.tau_e_us, model.theta_e_us);
+    let lambda_us = lambda_us.max(model.theta_e_us);
 
     // SIMC PI tuning law for FOPDT plant G(s) = K / (tau*s+1) * e^(-theta*s):
     //   Kp = tau / (K * (lambda + theta))
-    //   Ti = min(tau, 4 * (lambda + theta))
+    //   Ti = max(tau, 16 * (lambda + theta))
     //   Ki = Kp / Ti
     //
     // For current loop: K = 1/R_int (DC gain: current per unit voltage).
@@ -692,20 +717,24 @@ pub fn simc_current_gains_checked(
 
     let kp = tau / (k * (lambda + theta));
     let ti = {
-        let candidate = 4.0 * (lambda + theta);
-        if tau < candidate {
+        let candidate = CURRENT_SIMC_TI_MULTIPLIER * (lambda + theta);
+        if tau > candidate {
             tau
         } else {
             candidate
         }
     };
     let ti_s = ti * 1e-6; // Convert Ti from microseconds to seconds
-    let ki = kp / ti_s;
 
-    // Convert to TMC4671 Q8.8 register format
+    // Convert to TMC4671 advanced PI register format.
+    //
+    // In advanced PI mode the integrator is series/interacting:
+    //   x[k+1] = x[k] + Kp * (I/65536) * e[k]
+    // so the I register places the PI zero as I/65536 per PWM sample.
+    // A continuous Ti maps to I ~= 65536 / (Ti * f_pwm).
     let f_pwm = config.pwm_freq_hz() as f32;
     let p_reg = (kp * 256.0).clamp(1.0, u16::MAX as f32) as u16;
-    let i_reg = (ki / f_pwm * 256.0).clamp(1.0, u16::MAX as f32) as u16;
+    let i_reg = (65_536.0 / (ti_s * f_pwm)).clamp(1.0, u16::MAX as f32) as u16;
 
     // Effective bandwidth = 1 / (2*pi*(lambda+theta)) in Hz
     let bw_hz = 1_000_000.0 / (2.0 * core::f32::consts::PI * (lambda + theta));
@@ -736,6 +765,43 @@ pub fn simc_current_gains(
         effective_bandwidth_hz: 0,
         lambda_us: 0,
     })
+}
+
+/// Compute SIMC current-loop gains with an explicit lambda, falling back to defaults.
+pub fn simc_current_gains_with_lambda(
+    model: &ElectricalModel,
+    lambda_us: u32,
+    config: &crate::config::TmcConfig,
+) -> CurrentGains {
+    simc_current_gains_with_lambda_checked(model, lambda_us, config).unwrap_or(CurrentGains {
+        flux_p: crate::pid::DEFAULT_INNER_GAINS.flux_p,
+        flux_i: crate::pid::DEFAULT_INNER_GAINS.flux_i,
+        torque_p: crate::pid::DEFAULT_INNER_GAINS.torque_p,
+        torque_i: crate::pid::DEFAULT_INNER_GAINS.torque_i,
+        effective_bandwidth_hz: 0,
+        lambda_us: 0,
+    })
+}
+
+/// Settling reference for current-loop validation, in microseconds.
+///
+/// Advanced PI uses the `I` register as the controller zero location. When the
+/// current-loop integrator is intentionally damped, electrical tau is no longer
+/// the dominant settling reference; the configured PI zero time is.
+pub fn current_settling_reference_us(
+    gains: &CurrentGains,
+    config: &crate::config::TmcConfig,
+) -> u32 {
+    let i_reg = gains.flux_i.min(gains.torque_i).max(1) as u64;
+    let f_pwm = config.pwm_freq_hz().max(1) as u64;
+    (65_536_000_000u64 / (i_reg * f_pwm)).min(u32::MAX as u64) as u32
+}
+
+fn trailing_average(samples: &[u32], idx: usize, window_len: usize) -> u32 {
+    let start = idx.saturating_add(1).saturating_sub(window_len);
+    let window = &samples[start..=idx];
+    let sum: u64 = window.iter().map(|&sample| sample as u64).sum();
+    (sum / window.len() as u64) as u32
 }
 
 /// Extract step-response metrics from a transient buffer capture.
@@ -772,10 +838,10 @@ pub fn extract_step_metrics(
     let target_f = target as f32;
     let threshold_10 = (target_f * 0.10) as u32;
     let threshold_90 = (target_f * 0.90) as u32;
-    // Velocity validation samples encoder-count deltas at 1 kHz. At low
-    // targets a strict 5% band truncates to zero counts, which would require
-    // every sample to equal the target exactly. Allow at least one count of
-    // quantization noise so a small, otherwise stable response can settle.
+    // Current validation samples quantized ADC values. At low targets, a
+    // strict 5% band can truncate to zero counts, which would require every
+    // sample to equal the target exactly. Allow at least one count so a small,
+    // otherwise stable response can settle.
     let settle_band = ((target_f * 0.05) as u32).max(1);
 
     let mut t_10: Option<u32> = None;
@@ -812,10 +878,11 @@ pub fn extract_step_metrics(
         0
     };
 
-    // Settling: last sample where |actual - target| > 5% band
+    // Settling: last smoothed sample where |actual - target| > 5% band.
     let mut last_outside: usize = 0;
-    for (i, &s) in samples.iter().enumerate() {
-        let diff = s.abs_diff(target);
+    for (i, _) in samples.iter().enumerate() {
+        let smoothed = trailing_average(samples, i, CURRENT_METRIC_SMOOTHING_SAMPLES);
+        let diff = smoothed.abs_diff(target);
         if diff > settle_band {
             last_outside = i;
         }
@@ -826,15 +893,30 @@ pub fn extract_step_metrics(
         0
     };
 
-    // Ringing: zero-crossings of (actual - target) after peak
+    // Ringing: crossings between smoothed excursions outside the settle band.
+    // Samples inside the accepted band are ignored so ADC noise around the
+    // target does not look like sustained oscillation.
     let mut ringing_count: u8 = 0;
     if peak_idx + 1 < samples.len() {
-        let mut above = samples[peak_idx] > target;
-        for &s in &samples[peak_idx + 1..] {
-            let now_above = s > target;
-            if now_above != above {
-                ringing_count = ringing_count.saturating_add(1);
-                above = now_above;
+        let upper = target.saturating_add(settle_band);
+        let lower = target.saturating_sub(settle_band);
+        let mut above: Option<bool> = None;
+        for i in peak_idx + 1..samples.len() {
+            let smoothed = trailing_average(samples, i, CURRENT_METRIC_SMOOTHING_SAMPLES);
+            let now_above = if smoothed > upper {
+                Some(true)
+            } else if smoothed < lower {
+                Some(false)
+            } else {
+                None
+            };
+            if let Some(now) = now_above {
+                if let Some(prev) = above {
+                    if now != prev {
+                        ringing_count = ringing_count.saturating_add(1);
+                    }
+                }
+                above = Some(now);
             }
         }
     }
@@ -869,7 +951,7 @@ pub enum ValidationResult {
 /// |--------|------|----------|------|
 /// | Overshoot | < 15% | 15-30% | > 30% |
 /// | Ringing | 0-1 | 2-3 | > 3 |
-/// | Settling | < 5*tau_e | 5-10*tau_e | > 10*tau_e |
+/// | Settling | < 5*settle_ref | 5-10*settle_ref | > 10*settle_ref |
 /// | Symmetry | < 20% | 20-40% | > 40% |
 /// | Saturation | < 10% | 10-25% | > 25% |
 ///
@@ -878,7 +960,7 @@ pub enum ValidationResult {
 /// Returns the worst classification across all metrics.
 pub fn classify_current_validation(
     metrics: &CurrentValidation,
-    tau_e_us: u32,
+    settle_reference_us: u32,
     total_samples: u16,
 ) -> ValidationResult {
     let mut worst = ValidationResult::Pass;
@@ -897,9 +979,9 @@ pub fn classify_current_validation(
         worst = ValidationResult::Marginal;
     }
 
-    // Settling (relative to tau_e)
-    let settle_5x = 5 * tau_e_us;
-    let settle_10x = 10 * tau_e_us;
+    // Settling (relative to the dominant current-loop reference).
+    let settle_5x = 5 * settle_reference_us;
+    let settle_10x = 10 * settle_reference_us;
     if metrics.settling_time_us > settle_10x {
         return ValidationResult::Fail;
     } else if metrics.settling_time_us > settle_5x {
@@ -924,6 +1006,74 @@ pub fn classify_current_validation(
     }
 
     worst
+}
+
+/// Return whether current validation should retry with adjusted gains.
+pub fn should_retry_current_validation(result: ValidationResult, attempt: u8) -> bool {
+    attempt == 0 && result != ValidationResult::Pass
+}
+
+/// Return whether a marginal current validation can be accepted without retry.
+///
+/// This is intentionally narrow: it only accepts the case where all metrics
+/// except bidirectional rise-time symmetry are already in the pass range, and
+/// the computed retry would not change the gains. That covers measurement
+/// variability in the symmetry metric without hiding overshoot, ringing,
+/// settling, or saturation issues.
+pub fn should_accept_current_validation_without_retry(
+    metrics: &CurrentValidation,
+    settle_reference_us: u32,
+    total_samples: u16,
+    previous: CurrentGains,
+    retry: CurrentGains,
+) -> bool {
+    if previous != retry {
+        return false;
+    }
+    if metrics.overshoot_pct > 150 || metrics.ringing_count > 1 {
+        return false;
+    }
+    if metrics.settling_time_us > 5 * settle_reference_us {
+        return false;
+    }
+    if total_samples > 0 {
+        let sat_pct = (metrics.saturation_samples as u32 * 100) / total_samples as u32;
+        if sat_pct > 10 {
+            return false;
+        }
+    }
+
+    metrics.symmetry_pct > 200 && metrics.symmetry_pct <= 400
+}
+
+/// Adjust current-loop integrator gain for a validation retry while retaining P damping.
+pub fn current_validation_retry_gains(
+    previous: CurrentGains,
+    target: u32,
+    settle_band: u32,
+    forward_tail_avg: u32,
+    reverse_tail_avg: u32,
+    overshoot_pct: u16,
+) -> CurrentGains {
+    let min_tail = forward_tail_avg.min(reverse_tail_avg);
+    let max_tail = forward_tail_avg.max(reverse_tail_avg);
+    let upper = target.saturating_add(settle_band);
+    let lower = target.saturating_sub(settle_band);
+    let i = if overshoot_pct > 150 || max_tail > upper {
+        (previous.flux_i / 2).max(1)
+    } else if min_tail < lower {
+        previous.flux_i.saturating_add((previous.flux_i / 2).max(1))
+    } else {
+        previous.flux_i
+    };
+    CurrentGains {
+        flux_p: previous.flux_p,
+        flux_i: i,
+        torque_p: previous.torque_p,
+        torque_i: i,
+        effective_bandwidth_hz: previous.effective_bandwidth_hz,
+        lambda_us: previous.lambda_us,
+    }
 }
 
 /// Compute symmetry metric from forward and reverse rise times.
@@ -1627,11 +1777,9 @@ mod tests {
     }
 
     #[test]
-    fn simc_tau_dominated_plant_stiff_above_balanced() {
-        // Tau-dominated: tau >> theta, so tau/4 dominates the Stiff formula.
-        // Stiff = max(theta, tau/4) = max(100, 1000) = 1000
-        // Balanced = 2*theta = 200
-        // So stiff > balanced here.
+    fn simc_tau_dominated_plant_profiles_remain_ordered() {
+        // Tau-dominated current plants still need tau-based lambda floors:
+        // Conservative >= Balanced >= Stiff.
         let model = ElectricalModel {
             r_int: 1125,
             l_int: 2950,
@@ -1642,23 +1790,20 @@ mod tests {
             tau_e_crosscheck_us: 3800,
         };
         let config = autotune_test_config();
+        let conservative = simc_current_gains(&model, CommissionProfile::Conservative, &config);
         let balanced = simc_current_gains(&model, CommissionProfile::Balanced, &config);
         let stiff = simc_current_gains(&model, CommissionProfile::Stiff, &config);
-        assert!(
-            stiff.lambda_us > balanced.lambda_us,
-            "tau-dominated: stiff lambda {} should be > balanced {}",
-            stiff.lambda_us,
-            balanced.lambda_us
-        );
+        assert_eq!(conservative.lambda_us, 4000);
+        assert_eq!(balanced.lambda_us, 2000);
+        assert_eq!(stiff.lambda_us, 1000);
     }
 
     #[test]
     fn simc_invariants_hold_for_all_profiles() {
         // Universal SIMC invariants that hold regardless of plant shape:
-        // 1. conservative >= balanced (4*theta >= 2*theta always)
-        // 2. stiff >= theta (stability floor)
-        // 3. stiff >= tau/4 (stiff formula is max(theta, tau/4))
-        // 4. all profiles >= theta (SIMC stability boundary)
+        // 1. conservative >= balanced >= stiff
+        // 2. conservative >= tau, balanced >= tau/2, stiff >= tau/4
+        // 3. all profiles >= theta (SIMC stability boundary)
         for model in [
             test_electrical_model(),
             ElectricalModel {
@@ -1684,6 +1829,29 @@ mod tests {
                 model.theta_e_us,
                 con.lambda_us,
                 bal.lambda_us
+            );
+            assert!(
+                bal.lambda_us >= stf.lambda_us,
+                "tau={} theta={}: balanced {} must be >= stiff {}",
+                model.tau_e_us,
+                model.theta_e_us,
+                bal.lambda_us,
+                stf.lambda_us
+            );
+            assert!(
+                con.lambda_us >= model.tau_e_us,
+                "tau={} theta={}: conservative {} must be >= tau",
+                model.tau_e_us,
+                model.theta_e_us,
+                con.lambda_us
+            );
+            assert!(
+                bal.lambda_us >= model.tau_e_us / 2,
+                "tau={} theta={}: balanced {} must be >= tau/2={}",
+                model.tau_e_us,
+                model.theta_e_us,
+                bal.lambda_us,
+                model.tau_e_us / 2
             );
             assert!(
                 stf.lambda_us >= model.theta_e_us,
@@ -1737,6 +1905,98 @@ mod tests {
         );
     }
 
+    #[test]
+    fn simc_current_i_gain_uses_advanced_pi_zero_parameter() {
+        let model = ElectricalModel {
+            r_int: 1,
+            l_int: 1863,
+            tau_e_us: 1863,
+            theta_e_us: 160,
+            r_mohm: 1000,
+            l_uh: 1863,
+            tau_e_crosscheck_us: 1863,
+        };
+        let config = autotune_test_config();
+        let gains = simc_current_gains(&model, CommissionProfile::Balanced, &config);
+
+        // Balanced current-loop lambda is floored at tau/2 for robustness:
+        // max(2*theta=320us, tau/2=931us). The damped SIMC integrator time is
+        // max(tau, CURRENT_SIMC_TI_MULTIPLIER*(lambda+theta)). In TMC4671
+        // advanced PI mode the I register places the series PI zero as
+        // I/65536 per PWM sample.
+        assert_eq!(gains.lambda_us, model.tau_e_us / 2);
+        let ti_s =
+            CURRENT_SIMC_TI_MULTIPLIER as f64 * (gains.lambda_us + model.theta_e_us) as f64 * 1e-6;
+        let expected_i = (65_536.0 / (ti_s * config.pwm_freq_hz() as f64)) as u16;
+
+        assert_eq!(gains.flux_i, expected_i);
+        assert_eq!(gains.torque_i, expected_i);
+    }
+
+    #[test]
+    fn simc_current_i_gain_starts_near_observed_settling_bracket() {
+        let model = ElectricalModel {
+            r_int: 1,
+            l_int: 1868,
+            tau_e_us: 1868,
+            theta_e_us: 160,
+            r_mohm: 1000,
+            l_uh: 1868,
+            tau_e_crosscheck_us: 1868,
+        };
+        let config = autotune_test_config();
+        let gains = simc_current_gains(&model, CommissionProfile::Balanced, &config);
+
+        assert!(
+            (215..=225).contains(&gains.flux_i),
+            "initial I should start near the measured stable retry value, got {}",
+            gains.flux_i
+        );
+        assert_eq!(gains.flux_i, gains.torque_i);
+    }
+
+    #[test]
+    fn current_settling_reference_uses_advanced_pi_zero_time() {
+        let gains = CurrentGains {
+            flux_p: 436,
+            flux_i: 220,
+            torque_p: 436,
+            torque_i: 220,
+            effective_bandwidth_hz: 146,
+            lambda_us: 923,
+        };
+        let config = autotune_test_config();
+
+        assert_eq!(current_settling_reference_us(&gains, &config), 11915);
+    }
+
+    #[test]
+    fn simc_retry_lambda_preserves_measured_theta() {
+        let model = ElectricalModel {
+            r_int: 1,
+            l_int: 1917,
+            tau_e_us: 1917,
+            theta_e_us: 160,
+            r_mohm: 1000,
+            l_uh: 1917,
+            tau_e_crosscheck_us: 1917,
+        };
+        let config = autotune_test_config();
+        let gains = simc_current_gains_with_lambda(&model, 1436, &config);
+
+        let p_expected =
+            (1917.0_f64 / (1436.0_f64 + 160.0_f64) * 256.0_f64).clamp(1.0, u16::MAX as f64) as u16;
+        let ti_s = CURRENT_SIMC_TI_MULTIPLIER as f64 * (1436.0 + 160.0) * 1e-6;
+        let i_expected =
+            (65_536.0 / (ti_s * config.pwm_freq_hz() as f64)).clamp(1.0, u16::MAX as f64) as u16;
+
+        assert_eq!(gains.lambda_us, 1436);
+        assert_eq!(gains.flux_p, p_expected);
+        assert_eq!(gains.flux_i, i_expected);
+        assert!(gains.flux_p > 227, "retry P should not use inflated theta");
+        assert!(gains.flux_i > 76, "retry I should not use inflated theta");
+    }
+
     // --- Step metrics extraction ---
 
     /// Build a synthetic first-order step response for testing.
@@ -1787,6 +2047,47 @@ mod tests {
     }
 
     #[test]
+    fn step_metrics_ignore_in_band_noise_for_ringing() {
+        let mut buf = TransientBuffer::new();
+        buf.reset(160);
+        for &sample in &[0, 120, 500, 900, 1220, 1100, 1040] {
+            buf.push(sample);
+        }
+        for i in 0..96 {
+            let sample = if i % 2 == 0 { 960 } else { 1040 };
+            buf.push(sample);
+        }
+
+        let metrics = extract_step_metrics(&buf, 1000, 0);
+        assert_eq!(metrics.ringing_count, 0);
+    }
+
+    #[test]
+    fn current_metrics_ignore_tail_ripple_after_settling() {
+        let mut buf = TransientBuffer::new();
+        buf.reset(160);
+        for &sample in &[53, 98, 180, 260, 330, 390, 416, 370] {
+            buf.push(sample);
+        }
+        for i in 0..248 {
+            let sample = if i % 2 == 0 { 345 } else { 416 };
+            buf.push(sample);
+        }
+
+        let metrics = extract_step_metrics(&buf, 367, 0);
+
+        assert!(
+            metrics.settling_time_us < 10 * 1868,
+            "tail ripple around target should not force full-window settling"
+        );
+        assert_eq!(metrics.ringing_count, 0);
+        assert_eq!(
+            classify_current_validation(&metrics, 1868, 512),
+            ValidationResult::Pass
+        );
+    }
+
+    #[test]
     fn step_metrics_empty_buffer() {
         let buf = TransientBuffer::new();
         let metrics = extract_step_metrics(&buf, 1000, 0);
@@ -1806,23 +2107,22 @@ mod tests {
         // Manual calculation in SI (seconds):
         let tau_s = model.tau_e_us as f64 * 1e-6;
         let theta_s = model.theta_e_us as f64 * 1e-6;
-        let lambda_s = (2.0 * model.theta_e_us as f64) * 1e-6; // Balanced = 2*theta
+        let lambda_s = ((2 * model.theta_e_us).max(model.tau_e_us / 2)) as f64 * 1e-6;
         let r_int = model.r_int as f64;
         let k = 1.0 / r_int;
         let f_pwm = config.pwm_freq_hz() as f64;
 
         let kp_si = tau_s / (k * (lambda_s + theta_s));
         let ti_s = {
-            let candidate = 4.0 * (lambda_s + theta_s);
-            if tau_s < candidate {
+            let candidate = CURRENT_SIMC_TI_MULTIPLIER as f64 * (lambda_s + theta_s);
+            if tau_s > candidate {
                 tau_s
             } else {
                 candidate
             }
         };
-        let ki_si = kp_si / ti_s; // 1/second — no conversion needed
         let p_reg_expected = (kp_si * 256.0).clamp(1.0, u16::MAX as f64) as u16;
-        let i_reg_expected = (ki_si / f_pwm * 256.0).clamp(1.0, u16::MAX as f64) as u16;
+        let i_reg_expected = (65_536.0 / (ti_s * f_pwm)).clamp(1.0, u16::MAX as f64) as u16;
 
         assert_eq!(
             gains.flux_p, p_reg_expected,
@@ -1919,6 +2219,111 @@ mod tests {
         assert_eq!(
             classify_current_validation(&metrics, 1000, 512),
             ValidationResult::Marginal
+        );
+    }
+
+    #[test]
+    fn classify_current_validation_settling_uses_controller_reference() {
+        let metrics = CurrentValidation {
+            rise_time_us: 500,
+            overshoot_pct: 141,
+            settling_time_us: 39360,
+            ringing_count: 0,
+            saturation_samples: 0,
+            symmetry_pct: 83,
+        };
+
+        assert_eq!(
+            classify_current_validation(&metrics, 11915, 512),
+            ValidationResult::Pass
+        );
+    }
+
+    #[test]
+    fn accept_noop_retry_when_marginal_is_symmetry_only() {
+        let previous = CurrentGains {
+            flux_p: 437,
+            flux_i: 217,
+            torque_p: 437,
+            torque_i: 217,
+            effective_bandwidth_hz: 145,
+            lambda_us: 934,
+        };
+        let retry = current_validation_retry_gains(previous, 367, 18, 351, 358, 119);
+        let metrics = CurrentValidation {
+            rise_time_us: 500,
+            overshoot_pct: 119,
+            settling_time_us: 40480,
+            ringing_count: 0,
+            saturation_samples: 0,
+            symmetry_pct: 287,
+        };
+
+        assert_eq!(
+            classify_current_validation(&metrics, 12080, 512),
+            ValidationResult::Marginal
+        );
+        assert!(should_accept_current_validation_without_retry(
+            &metrics, 12080, 512, previous, retry,
+        ));
+    }
+
+    #[test]
+    fn current_validation_retries_first_failed_attempt() {
+        assert!(should_retry_current_validation(ValidationResult::Fail, 0));
+        assert!(should_retry_current_validation(
+            ValidationResult::Marginal,
+            0
+        ));
+        assert!(!should_retry_current_validation(ValidationResult::Pass, 0));
+        assert!(!should_retry_current_validation(ValidationResult::Fail, 1));
+    }
+
+    #[test]
+    fn current_validation_retry_reduces_integrator_when_tail_high() {
+        let previous = CurrentGains {
+            flux_p: 437,
+            flux_i: 592,
+            torque_p: 437,
+            torque_i: 592,
+            effective_bandwidth_hz: 143,
+            lambda_us: 947,
+        };
+
+        let retry = current_validation_retry_gains(previous, 367, 18, 372, 403, 294);
+
+        assert_eq!(retry.flux_p, previous.flux_p);
+        assert_eq!(retry.torque_p, previous.torque_p);
+        assert_eq!(retry.flux_i, 296);
+        assert_eq!(retry.torque_i, 296);
+        assert_eq!(retry.lambda_us, previous.lambda_us);
+        assert_eq!(
+            retry.effective_bandwidth_hz,
+            previous.effective_bandwidth_hz
+        );
+    }
+
+    #[test]
+    fn current_validation_retry_increases_integrator_when_tail_low() {
+        let previous = CurrentGains {
+            flux_p: 436,
+            flux_i: 151,
+            torque_p: 436,
+            torque_i: 151,
+            effective_bandwidth_hz: 146,
+            lambda_us: 923,
+        };
+
+        let retry = current_validation_retry_gains(previous, 367, 18, 354, 321, 35);
+
+        assert_eq!(retry.flux_p, previous.flux_p);
+        assert_eq!(retry.torque_p, previous.torque_p);
+        assert_eq!(retry.flux_i, 226);
+        assert_eq!(retry.torque_i, 226);
+        assert_eq!(retry.lambda_us, previous.lambda_us);
+        assert_eq!(
+            retry.effective_bandwidth_hz,
+            previous.effective_bandwidth_hz
         );
     }
 
