@@ -535,6 +535,31 @@ const CURRENT_SIMC_TI_MULTIPLIER: f32 = 11.0;
 /// while preserving raw samples for rise time and overshoot.
 const CURRENT_METRIC_SMOOTHING_SAMPLES: usize = 8;
 
+/// Capture direction for bidirectional current-loop validation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub enum CaptureDirection {
+    /// Positive torque step.
+    Forward,
+    /// Negative torque step.
+    Reverse,
+}
+
+/// Normalize a raw torque-actual reading by capture direction.
+///
+/// Forward captures keep the sign as-is; reverse captures negate so that a
+/// correctly responding motor produces a positive value in both directions.
+/// Negative normalized values (wrong-sign current) are clamped to zero — the
+/// tail-level metric will be near-zero and the target-attainment check will
+/// flag the failure.
+pub fn normalize_capture_sample(torque_actual: i16, direction: CaptureDirection) -> u32 {
+    let normalized = match direction {
+        CaptureDirection::Forward => torque_actual as i32,
+        CaptureDirection::Reverse => -(torque_actual as i32),
+    };
+    normalized.max(0) as u32
+}
+
 /// Metrics from a current-loop step-response validation test.
 ///
 /// Extracted from the [`TransientBuffer`] after a torque step.
@@ -552,9 +577,18 @@ pub struct CurrentValidation {
     pub ringing_count: u8,
     /// Samples where value hit the saturation limit.
     pub saturation_samples: u16,
-    /// |rise_fwd - rise_rev| / avg, in 0.1% units.
+    /// |fwd_tail - rev_tail| / avg, in 0.1% units (permille).
     /// Set to 0 by extract_step_metrics (requires two captures).
     pub symmetry_pct: u16,
+    /// Robust tail level: median of last 32 samples (or fewer if buffer is
+    /// shorter). Used to compute steady-state signed-current symmetry between
+    /// forward and reverse captures.
+    pub tail_level: u32,
+    /// |tail_level - target| / target, in 0.1% units (permille).
+    /// Measures whether the current loop actually reached the commanded
+    /// target. Set to 0 by extract_step_metrics; the caller computes it
+    /// from the combined (worst-case) tail_level and commanded target.
+    pub target_error_pct: u16,
 }
 
 /// First-order mechanical plant model estimated during Phase 8.
@@ -797,6 +831,30 @@ pub fn current_settling_reference_us(
     (65_536_000_000u64 / (i_reg * f_pwm)).min(u32::MAX as u64) as u32
 }
 
+/// Number of tail samples used for the robust tail-level statistic.
+const TAIL_LEVEL_WINDOW: usize = 32;
+
+/// Compute the median of a slice of u32 values.
+///
+/// Uses a stack-allocated scratch buffer (max 32 elements). Returns 0 for
+/// empty slices. For even-length slices, returns the mean of the two middle
+/// values.
+fn median_u32(values: &[u32]) -> u32 {
+    let len = values.len();
+    if len == 0 {
+        return 0;
+    }
+    let mut scratch = [0u32; TAIL_LEVEL_WINDOW];
+    let n = len.min(TAIL_LEVEL_WINDOW);
+    scratch[..n].copy_from_slice(&values[..n]);
+    scratch[..n].sort_unstable();
+    if n % 2 == 1 {
+        scratch[n / 2]
+    } else {
+        (scratch[n / 2 - 1] + scratch[n / 2]) / 2
+    }
+}
+
 fn trailing_average(samples: &[u32], idx: usize, window_len: usize) -> u32 {
     let start = idx.saturating_add(1).saturating_sub(window_len);
     let window = &samples[start..=idx];
@@ -816,7 +874,7 @@ fn trailing_average(samples: &[u32], idx: usize, window_len: usize) -> u32 {
 /// - `pidout_limit`: saturation threshold (0 to skip saturation check)
 ///
 /// Returns metrics with `symmetry_pct = 0`. Symmetry requires two captures
-/// (forward + reverse); the caller computes it via [`compute_symmetry_pct`].
+/// (forward + reverse); the caller computes it via [`compute_tail_symmetry_pct`].
 pub fn extract_step_metrics(
     buf: &TransientBuffer,
     target: u32,
@@ -831,6 +889,8 @@ pub fn extract_step_metrics(
             ringing_count: 0,
             saturation_samples: 0,
             symmetry_pct: 0,
+            tail_level: 0,
+            target_error_pct: 0,
         };
     }
 
@@ -921,6 +981,10 @@ pub fn extract_step_metrics(
         }
     }
 
+    // Tail level: median of last TAIL_LEVEL_WINDOW samples.
+    let tail_start = samples.len().saturating_sub(TAIL_LEVEL_WINDOW);
+    let tail_level = median_u32(&samples[tail_start..]);
+
     CurrentValidation {
         rise_time_us,
         overshoot_pct,
@@ -928,6 +992,8 @@ pub fn extract_step_metrics(
         ringing_count,
         saturation_samples: saturation_count,
         symmetry_pct: 0,
+        tail_level,
+        target_error_pct: 0,
     }
 }
 
@@ -952,8 +1018,9 @@ pub enum ValidationResult {
 /// | Overshoot | < 15% | 15-30% | > 30% |
 /// | Ringing | 0-1 | 2-3 | > 3 |
 /// | Settling | < 5*settle_ref | 5-10*settle_ref | > 10*settle_ref |
-/// | Symmetry | < 20% | 20-40% | > 40% |
+/// | Symmetry | <= 10% | 10-25% | > 25% |
 /// | Saturation | < 10% | 10-25% | > 25% |
+/// | Target error | <= 10% | 10-50% | > 50% |
 ///
 /// `total_samples` is the total number of capture samples across both
 /// directions, used for computing the saturation percentage.
@@ -988,10 +1055,12 @@ pub fn classify_current_validation(
         worst = ValidationResult::Marginal;
     }
 
-    // Symmetry (0.1% units: 200 = 20.0%, 400 = 40.0%)
-    if metrics.symmetry_pct > 400 {
+    // Symmetry (0.1% units: 100 = 10.0%, 250 = 25.0%)
+    // Tail-level symmetry is much less noisy than the old rise-time metric,
+    // so tighter thresholds are appropriate.
+    if metrics.symmetry_pct > 250 {
         return ValidationResult::Fail;
-    } else if metrics.symmetry_pct > 200 {
+    } else if metrics.symmetry_pct > 100 {
         worst = ValidationResult::Marginal;
     }
 
@@ -1003,6 +1072,16 @@ pub fn classify_current_validation(
         } else if sat_pct > 10 {
             worst = ValidationResult::Marginal;
         }
+    }
+
+    // Target attainment: did the current loop actually reach the commanded
+    // target? Catches zero-current, wrong-sign, and under-target responses
+    // that would otherwise pass all other checks.
+    // 0.1% units: 500 = 50.0%, 100 = 10.0%
+    if metrics.target_error_pct > 500 {
+        return ValidationResult::Fail;
+    } else if metrics.target_error_pct > 100 {
+        worst = ValidationResult::Marginal;
     }
 
     worst
@@ -1043,7 +1122,7 @@ pub fn should_accept_current_validation_without_retry(
         }
     }
 
-    metrics.symmetry_pct > 200 && metrics.symmetry_pct <= 400
+    metrics.symmetry_pct > 100 && metrics.symmetry_pct <= 250
 }
 
 /// Adjust current-loop integrator gain for a validation retry while retaining P damping.
@@ -1051,12 +1130,12 @@ pub fn current_validation_retry_gains(
     previous: CurrentGains,
     target: u32,
     settle_band: u32,
-    forward_tail_avg: u32,
-    reverse_tail_avg: u32,
+    forward_tail_level: u32,
+    reverse_tail_level: u32,
     overshoot_pct: u16,
 ) -> CurrentGains {
-    let min_tail = forward_tail_avg.min(reverse_tail_avg);
-    let max_tail = forward_tail_avg.max(reverse_tail_avg);
+    let min_tail = forward_tail_level.min(reverse_tail_level);
+    let max_tail = forward_tail_level.max(reverse_tail_level);
     let upper = target.saturating_add(settle_band);
     let lower = target.saturating_sub(settle_band);
     let i = if overshoot_pct > 150 || max_tail > upper {
@@ -1087,6 +1166,33 @@ pub fn compute_symmetry_pct(rise_fwd: u32, rise_rev: u32) -> u16 {
     }
     let diff = rise_fwd.abs_diff(rise_rev);
     (diff as u64 * 1000 / avg) as u16
+}
+
+/// Compute symmetry metric from forward and reverse tail levels.
+///
+/// Returns `|fwd - rev| / avg(fwd, rev)` in 0.1% units (permille).
+/// This measures steady-state signed-current symmetry — whether both
+/// directions produce the same actual current magnitude. Returns 0 if
+/// both values are zero.
+pub fn compute_tail_symmetry_pct(fwd_tail: u32, rev_tail: u32) -> u16 {
+    let avg = (fwd_tail as u64 + rev_tail as u64) / 2;
+    if avg == 0 {
+        return 0;
+    }
+    let diff = fwd_tail.abs_diff(rev_tail);
+    (diff as u64 * 1000 / avg) as u16
+}
+
+/// Compute target-attainment error from a tail level and commanded target.
+///
+/// Returns `|tail_level - target| / target` in 0.1% units (permille).
+/// Returns 1000 (100%) if `target` is zero to avoid division by zero.
+pub fn compute_target_error_pct(tail_level: u32, target: u32) -> u16 {
+    if target == 0 {
+        return 1000;
+    }
+    let diff = tail_level.abs_diff(target);
+    (diff as u64 * 1000 / target as u64) as u16
 }
 
 // ---------------------------------------------------------------------------
@@ -2093,6 +2199,63 @@ mod tests {
         let metrics = extract_step_metrics(&buf, 1000, 0);
         assert_eq!(metrics.rise_time_us, 0);
         assert_eq!(metrics.overshoot_pct, 0);
+        assert_eq!(metrics.tail_level, 0);
+    }
+
+    #[test]
+    fn step_metrics_tail_level_from_last_32_samples() {
+        // Build a buffer that rises quickly to ~950, then stays there.
+        // The tail_level (median of last 32 samples) should be ~950.
+        let mut buf = TransientBuffer::new();
+        buf.reset(160);
+        // 10 rising samples
+        for &sample in &[0u32, 100, 300, 500, 700, 850, 920, 940, 945, 948] {
+            buf.push(sample);
+        }
+        // 246 steady-state samples at 950
+        for _ in 0..246 {
+            buf.push(950);
+        }
+        let metrics = extract_step_metrics(&buf, 1000, 0);
+        assert_eq!(
+            metrics.tail_level, 950,
+            "tail_level should be median of last 32 samples"
+        );
+    }
+
+    #[test]
+    fn step_metrics_tail_level_resists_outliers() {
+        // Last 32 samples: 30 at 950, 2 outliers at 0. Median should be 950.
+        let mut buf = TransientBuffer::new();
+        buf.reset(160);
+        // Fill first 224 samples as steady state
+        for _ in 0..224 {
+            buf.push(950);
+        }
+        // Last 32 samples: 2 outliers, then 30 at 950
+        buf.push(0);
+        buf.push(0);
+        for _ in 0..30 {
+            buf.push(950);
+        }
+        let metrics = extract_step_metrics(&buf, 1000, 0);
+        assert_eq!(metrics.tail_level, 950, "median should resist outliers");
+    }
+
+    #[test]
+    fn step_metrics_tail_level_short_buffer() {
+        // Buffer with only 10 samples — tail_level uses all of them.
+        let mut buf = TransientBuffer::new();
+        buf.reset(160);
+        for &sample in &[100u32, 200, 300, 400, 500, 600, 700, 800, 900, 950] {
+            buf.push(sample);
+        }
+        let metrics = extract_step_metrics(&buf, 1000, 0);
+        // Median of [100,200,300,400,500,600,700,800,900,950] = (500+600)/2 = 550
+        assert_eq!(
+            metrics.tail_level, 550,
+            "tail_level should use all samples when buffer < 32"
+        );
     }
 
     #[test]
@@ -2151,6 +2314,8 @@ mod tests {
             ringing_count: 1,
             saturation_samples: 5,
             symmetry_pct: 100, // 10.0%
+            tail_level: 0,
+            target_error_pct: 0,
         };
         assert_eq!(
             classify_current_validation(&metrics, 1000, 512),
@@ -2167,6 +2332,8 @@ mod tests {
             ringing_count: 1,
             saturation_samples: 5,
             symmetry_pct: 100,
+            tail_level: 0,
+            target_error_pct: 0,
         };
         assert_eq!(
             classify_current_validation(&metrics, 1000, 512),
@@ -2183,6 +2350,8 @@ mod tests {
             ringing_count: 1,
             saturation_samples: 5,
             symmetry_pct: 100,
+            tail_level: 0,
+            target_error_pct: 0,
         };
         assert_eq!(
             classify_current_validation(&metrics, 1000, 512),
@@ -2199,6 +2368,8 @@ mod tests {
             ringing_count: 4,
             saturation_samples: 0,
             symmetry_pct: 0,
+            tail_level: 0,
+            target_error_pct: 0,
         };
         assert_eq!(
             classify_current_validation(&metrics, 1000, 512),
@@ -2215,6 +2386,8 @@ mod tests {
             ringing_count: 0,
             saturation_samples: 0,
             symmetry_pct: 0,
+            tail_level: 0,
+            target_error_pct: 0,
         };
         assert_eq!(
             classify_current_validation(&metrics, 1000, 512),
@@ -2231,6 +2404,8 @@ mod tests {
             ringing_count: 0,
             saturation_samples: 0,
             symmetry_pct: 83,
+            tail_level: 0,
+            target_error_pct: 0,
         };
 
         assert_eq!(
@@ -2250,13 +2425,16 @@ mod tests {
             lambda_us: 934,
         };
         let retry = current_validation_retry_gains(previous, 367, 18, 351, 358, 119);
+        // 180 permille: Marginal under tail-level thresholds (Pass <= 100, Fail > 250).
         let metrics = CurrentValidation {
             rise_time_us: 500,
             overshoot_pct: 119,
             settling_time_us: 40480,
             ringing_count: 0,
             saturation_samples: 0,
-            symmetry_pct: 287,
+            symmetry_pct: 180,
+            tail_level: 0,
+            target_error_pct: 0,
         };
 
         assert_eq!(
@@ -2266,6 +2444,125 @@ mod tests {
         assert!(should_accept_current_validation_without_retry(
             &metrics, 12080, 512, previous, retry,
         ));
+    }
+
+    #[test]
+    fn classify_marginal_symmetry_at_150_permille() {
+        // With tail-level symmetry thresholds (Pass <= 100, Marginal <= 250),
+        // 150 permille should be Marginal (not Pass as with old 200 threshold).
+        let metrics = CurrentValidation {
+            rise_time_us: 500,
+            overshoot_pct: 50,
+            settling_time_us: 2000,
+            ringing_count: 0,
+            saturation_samples: 0,
+            symmetry_pct: 150,
+            tail_level: 0,
+            target_error_pct: 0,
+        };
+        assert_eq!(
+            classify_current_validation(&metrics, 1000, 512),
+            ValidationResult::Marginal
+        );
+    }
+
+    #[test]
+    fn classify_fail_symmetry_at_300_permille() {
+        // With tail-level thresholds (Fail > 250), 300 should be Fail
+        // (not Marginal as with old 400 threshold).
+        let metrics = CurrentValidation {
+            rise_time_us: 500,
+            overshoot_pct: 50,
+            settling_time_us: 2000,
+            ringing_count: 0,
+            saturation_samples: 0,
+            symmetry_pct: 300,
+            tail_level: 0,
+            target_error_pct: 0,
+        };
+        assert_eq!(
+            classify_current_validation(&metrics, 1000, 512),
+            ValidationResult::Fail
+        );
+    }
+
+    #[test]
+    fn classify_pass_symmetry_at_boundary() {
+        // Exactly 100 permille should still pass.
+        let metrics = CurrentValidation {
+            rise_time_us: 500,
+            overshoot_pct: 50,
+            settling_time_us: 2000,
+            ringing_count: 0,
+            saturation_samples: 0,
+            symmetry_pct: 100,
+            tail_level: 0,
+            target_error_pct: 0,
+        };
+        assert_eq!(
+            classify_current_validation(&metrics, 1000, 512),
+            ValidationResult::Pass
+        );
+    }
+
+    // --- Target attainment ---
+
+    #[test]
+    fn classify_fails_when_both_tails_zero() {
+        // Zero current in both directions: target_error = 1000‰ (100% off).
+        let metrics = CurrentValidation {
+            rise_time_us: 0,
+            overshoot_pct: 0,
+            settling_time_us: 0,
+            ringing_count: 0,
+            saturation_samples: 0,
+            symmetry_pct: 0,
+            tail_level: 0,
+            target_error_pct: 1000, // 100% off target
+        };
+        assert_eq!(
+            classify_current_validation(&metrics, 12000, 512),
+            ValidationResult::Fail
+        );
+    }
+
+    #[test]
+    fn classify_fails_when_tails_below_lower_band() {
+        // tail_level=200 vs target=367 → error ≈ 455‰ (45.5% off).
+        // |200 - 367| / 367 * 1000 = 455
+        let metrics = CurrentValidation {
+            rise_time_us: 500,
+            overshoot_pct: 0,
+            settling_time_us: 2000,
+            ringing_count: 0,
+            saturation_samples: 0,
+            symmetry_pct: 20,
+            tail_level: 200,
+            target_error_pct: 455,
+        };
+        assert_eq!(
+            classify_current_validation(&metrics, 12000, 512),
+            ValidationResult::Marginal
+        );
+    }
+
+    #[test]
+    fn classify_passes_when_tails_in_band() {
+        // tail_level=360 vs target=367 → error ≈ 19‰ (1.9% off).
+        let metrics = CurrentValidation {
+            rise_time_us: 500,
+            overshoot_pct: 50,
+            settling_time_us: 2000,
+            ringing_count: 0,
+            saturation_samples: 0,
+            symmetry_pct: 20,
+            tail_level: 360,
+            target_error_pct: 19,
+        };
+        assert_eq!(
+            classify_current_validation(&metrics, 12000, 512),
+            ValidationResult::Pass
+        );
     }
 
     #[test]
@@ -2347,6 +2644,73 @@ mod tests {
     #[test]
     fn compute_symmetry_zero_avg() {
         assert_eq!(compute_symmetry_pct(0, 0), 0);
+    }
+
+    // --- Tail-level symmetry ---
+
+    #[test]
+    fn tail_symmetry_identical_is_zero() {
+        assert_eq!(compute_tail_symmetry_pct(367, 367), 0);
+    }
+
+    #[test]
+    fn tail_symmetry_small_mismatch() {
+        // |351 - 358| / avg(351, 358) = 7 / 354.5 ≈ 19.7‰ → 19 in permille
+        let result = compute_tail_symmetry_pct(351, 358);
+        assert!(
+            result >= 15 && result <= 25,
+            "tail symmetry {result} expected ~20‰"
+        );
+    }
+
+    #[test]
+    fn tail_symmetry_large_mismatch() {
+        // |200 - 400| / avg(200, 400) = 200 / 300 ≈ 666.7‰
+        let result = compute_tail_symmetry_pct(200, 400);
+        assert!(
+            result >= 660 && result <= 670,
+            "tail symmetry {result} expected ~667‰"
+        );
+    }
+
+    #[test]
+    fn tail_symmetry_zero_avg() {
+        assert_eq!(compute_tail_symmetry_pct(0, 0), 0);
+    }
+
+    // --- Direction-normalized capture ---
+
+    #[test]
+    fn normalize_forward_positive_current() {
+        // Forward capture, positive torque_actual → stored as-is.
+        assert_eq!(
+            normalize_capture_sample(367, CaptureDirection::Forward),
+            367
+        );
+    }
+
+    #[test]
+    fn normalize_reverse_negative_current() {
+        // Reverse capture, negative torque_actual → negated to positive.
+        // A correctly responding motor produces negative current for a
+        // negative torque step.
+        assert_eq!(
+            normalize_capture_sample(-367, CaptureDirection::Reverse),
+            367
+        );
+    }
+
+    #[test]
+    fn normalize_reverse_wrong_sign_clamps_to_zero() {
+        // Reverse capture but torque_actual is positive (wrong sign).
+        // Normalized = -(+367) = -367 → clamped to 0.
+        assert_eq!(normalize_capture_sample(367, CaptureDirection::Reverse), 0);
+    }
+
+    #[test]
+    fn normalize_forward_wrong_sign_clamps_to_zero() {
+        // Forward capture but torque_actual is negative (wrong sign).
+        assert_eq!(normalize_capture_sample(-367, CaptureDirection::Forward), 0);
     }
 
     // --- MechanicalModel ---
