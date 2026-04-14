@@ -264,14 +264,28 @@ impl SelftestStageValue {
 
     /// Coil current measurement (stages 2, 3).
     ///
-    /// The value is sign-zero-extended: i16 -> u32 via plain `as` casts
-    /// zero-extends the low 16 bits, so the receiving host formatter is
-    /// responsible for reinterpreting values with the top bit set as
-    /// negative when decoded.
+    /// The i16 is bit-reinterpreted as u16 (two's-complement bit pattern
+    /// preserved), then zero-extended to u32. The host decoder must treat
+    /// bit 15 of the lower 16 bits as the sign bit to recover negative
+    /// values (values >= 0x8000 in the low 16 bits represent negative i16).
     pub fn coil_current(current: i16) -> Self {
         Self {
             status: 0,
             value: current as u16 as u32,
+        }
+    }
+
+    /// Constructor for a failed stage. `value` may carry an error code or
+    /// zero if no detail is available.
+    pub fn fail(value: u32) -> Self {
+        Self { status: 1, value }
+    }
+
+    /// Constructor for a skipped stage.
+    pub fn skip() -> Self {
+        Self {
+            status: 2,
+            value: 0,
         }
     }
 }
@@ -280,7 +294,8 @@ impl SelftestStageValue {
 ///
 /// Stages are populated in phase order as they complete; `None` means
 /// the stage was skipped or aborted before running.
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct SelftestResults {
     stages: [Option<SelftestStageValue>; 8],
 }
@@ -344,5 +359,19 @@ mod selftest_results_tests {
         let v = SelftestStageValue::adc_offsets(0x1111, 0x2222);
         assert_eq!(v.value, (0x2222_u32 << 16) | 0x1111_u32);
         assert_eq!(v.status, 0);
+    }
+
+    #[test]
+    fn fail_constructor_sets_status_one() {
+        let v = SelftestStageValue::fail(42);
+        assert_eq!(v.status, 1);
+        assert_eq!(v.value, 42);
+    }
+
+    #[test]
+    fn skip_constructor_sets_status_two_and_zero_value() {
+        let v = SelftestStageValue::skip();
+        assert_eq!(v.status, 2);
+        assert_eq!(v.value, 0);
     }
 }
