@@ -242,3 +242,107 @@ where
         count: (counts[0], counts[1]),
     })
 }
+
+/// Result of one selftest stage, streamed to the host.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub struct SelftestStageValue {
+    /// 0 = PASS, 1 = FAIL, 2 = SKIP.
+    pub status: u8,
+    /// Stage-specific encoded value.
+    pub value: u32,
+}
+
+impl SelftestStageValue {
+    /// Pack two ADC channel offsets into a single u32 for stage 1.
+    pub fn adc_offsets(offset_i0: u16, offset_i1: u16) -> Self {
+        Self {
+            status: 0,
+            value: ((offset_i1 as u32) << 16) | offset_i0 as u32,
+        }
+    }
+
+    /// Coil current measurement (stages 2, 3).
+    ///
+    /// The value is sign-zero-extended: i16 -> u32 via plain `as` casts
+    /// zero-extends the low 16 bits, so the receiving host formatter is
+    /// responsible for reinterpreting values with the top bit set as
+    /// negative when decoded.
+    pub fn coil_current(current: i16) -> Self {
+        Self {
+            status: 0,
+            value: current as u16 as u32,
+        }
+    }
+}
+
+/// Per-stage results collected during a selftest run.
+///
+/// Stages are populated in phase order as they complete; `None` means
+/// the stage was skipped or aborted before running.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct SelftestResults {
+    stages: [Option<SelftestStageValue>; 8],
+}
+
+impl SelftestResults {
+    /// Write a stage result. `stage` is 1-indexed (1..=8). Out-of-range
+    /// stages are silently ignored.
+    pub fn set(&mut self, stage: u8, value: SelftestStageValue) {
+        if (1..=8).contains(&stage) {
+            self.stages[(stage - 1) as usize] = Some(value);
+        }
+    }
+
+    /// Read a stage result. Returns `None` if unpopulated or out of range.
+    pub fn stage(&self, stage: u8) -> Option<SelftestStageValue> {
+        if (1..=8).contains(&stage) {
+            self.stages[(stage - 1) as usize]
+        } else {
+            None
+        }
+    }
+
+    /// Iterate populated stages in order, yielding `(stage_id, value)` pairs.
+    pub fn iter(&self) -> impl Iterator<Item = (u8, SelftestStageValue)> + '_ {
+        self.stages
+            .iter()
+            .enumerate()
+            .filter_map(|(i, o)| o.map(|v| (i as u8 + 1, v)))
+    }
+}
+
+#[cfg(test)]
+mod selftest_results_tests {
+    use super::*;
+
+    #[test]
+    fn results_default_has_all_stages_unpopulated() {
+        let r = SelftestResults::default();
+        for stage in 1..=8u8 {
+            assert!(r.stage(stage).is_none(), "stage {} should be None", stage);
+        }
+    }
+
+    #[test]
+    fn set_and_get_round_trips_value() {
+        let mut r = SelftestResults::default();
+        r.set(
+            3,
+            SelftestStageValue {
+                status: 0,
+                value: 0x1234,
+            },
+        );
+        let got = r.stage(3).expect("stage 3 populated");
+        assert_eq!(got.status, 0);
+        assert_eq!(got.value, 0x1234);
+    }
+
+    #[test]
+    fn adc_offsets_pack_into_value() {
+        let v = SelftestStageValue::adc_offsets(0x1111, 0x2222);
+        assert_eq!(v.value, (0x2222_u32 << 16) | 0x1111_u32);
+        assert_eq!(v.status, 0);
+    }
+}
