@@ -1419,7 +1419,13 @@ impl CommissioningEngine {
             InnerPhase::PhaseWiringCheck { coil_a, coil_b } => {
                 let a = *coil_a;
                 let b = *coil_b;
-                Self::step_phase_wiring(phase, sequence, selftest_results, a, b)
+                crate::commissioning::inner::phase::step_phase_wiring(
+                    phase,
+                    sequence,
+                    selftest_results,
+                    a,
+                    b,
+                )
             }
             InnerPhase::EncoderCheck { .. } => {
                 Self::step_encoder_check(phase, sequence, selftest_results, backend).await
@@ -1441,52 +1447,6 @@ impl CommissioningEngine {
             }
             InnerPhase::Failed(err) => StepResult::InnerFailed(*err),
         }
-    }
-
-    // -------------------------------------------------------------------
-    // Phase 3: Phase Wiring Check
-    // -------------------------------------------------------------------
-
-    /// Validate phase wiring from coil test observations.
-    ///
-    /// Current on the expected ADC channel must exceed current on
-    /// the other channel. If reversed, the motor phases are swapped.
-    fn step_phase_wiring(
-        phase: &mut InnerPhase,
-        sequence: InnerSequence,
-        selftest_results: &mut crate::selftest::SelftestResults,
-        coil_a: CoilObservation,
-        coil_b: CoilObservation,
-    ) -> StepResult {
-        // Phase wiring check: expected channel must dominate.
-        if coil_a.other.unsigned_abs() >= coil_a.expected.unsigned_abs() {
-            if matches!(sequence, InnerSequence::Selftest) {
-                selftest_results.set(4, crate::selftest::SelftestStageValue::fail(0));
-            }
-            return Self::fail_inner(phase, CommissionError::PhaseFault);
-        }
-        if coil_b.other.unsigned_abs() >= coil_b.expected.unsigned_abs() {
-            if matches!(sequence, InnerSequence::Selftest) {
-                selftest_results.set(4, crate::selftest::SelftestStageValue::fail(0));
-            }
-            return Self::fail_inner(phase, CommissionError::PhaseFault);
-        }
-
-        if matches!(sequence, InnerSequence::Selftest) {
-            selftest_results.set(
-                4,
-                crate::selftest::SelftestStageValue {
-                    status: 0,
-                    value: 0,
-                },
-            );
-        }
-
-        // Transition to encoder check.
-        *phase = InnerPhase::EncoderCheck {
-            state: EncoderCheckState::Setup,
-        };
-        StepResult::PhaseChanged(PhaseId::EncoderCheck)
     }
 
     // -------------------------------------------------------------------

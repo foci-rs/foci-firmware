@@ -10,6 +10,7 @@ use crate::commissioning::types::StepResult;
 
 pub mod adc;
 pub mod coil;
+pub mod phase;
 
 /// Transition the inner phase to `Failed` and emit an `InnerFailed` result.
 ///
