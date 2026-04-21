@@ -14,7 +14,7 @@ defmt = { workspace = true, optional = true }
 embedded-hal = { workspace = true }
 embedded-hal-async = { workspace = true }
 heapless.workspace = true
-klipper-mcu = { path = "../klipper-mcu" }
+foci-klipper = { path = "../foci-klipper" }
 libm = "0.2"
 static_assertions = "1.1"
 foci-tmc4671 = { path = "../foci-tmc4671" }
