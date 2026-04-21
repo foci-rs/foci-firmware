@@ -73,8 +73,12 @@ pub enum TmcRequest {
     SetVelocityFeedforward { enable: bool },
     /// Query trace buffer metadata.
     TraceInfo { oid: u8 },
-    /// Fetch a trace sample by offset. gen must match current generation.
-    TraceFetch { oid: u8, offset: u16, gen: u8 },
+    /// Fetch a trace sample by offset. generation must match current generation.
+    TraceFetch {
+        oid: u8,
+        offset: u16,
+        generation: u8,
+    },
     /// Write a TMC4671 register via SPI (dev-only).
     #[cfg(feature = "dev")]
     Write { addr: u8, value: u32 },
@@ -213,8 +217,12 @@ pub fn tmc_trace_info(oid: u8) -> TmcRequest {
 }
 
 /// Build a `TraceFetch` request.
-pub fn tmc_trace_fetch(oid: u8, offset: u16, gen: u8) -> TmcRequest {
-    TmcRequest::TraceFetch { oid, offset, gen }
+pub fn tmc_trace_fetch(oid: u8, offset: u16, generation: u8) -> TmcRequest {
+    TmcRequest::TraceFetch {
+        oid,
+        offset,
+        generation,
+    }
 }
 
 /// Precompute the velocity feedforward scale factor.

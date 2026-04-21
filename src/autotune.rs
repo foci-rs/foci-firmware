@@ -752,11 +752,7 @@ pub fn simc_current_gains_with_lambda_checked(
     let kp = tau / (k * (lambda + theta));
     let ti = {
         let candidate = CURRENT_SIMC_TI_MULTIPLIER * (lambda + theta);
-        if tau > candidate {
-            tau
-        } else {
-            candidate
-        }
+        if tau > candidate { tau } else { candidate }
     };
     let ti_s = ti * 1e-6; // Convert Ti from microseconds to seconds
 
@@ -971,10 +967,10 @@ pub fn extract_step_metrics(
                 None
             };
             if let Some(now) = now_above {
-                if let Some(prev) = above {
-                    if now != prev {
-                        ringing_count = ringing_count.saturating_add(1);
-                    }
+                if let Some(prev) = above
+                    && now != prev
+                {
+                    ringing_count = ringing_count.saturating_add(1);
                 }
                 above = Some(now);
             }
@@ -1322,11 +1318,7 @@ pub fn simc_velocity_gains(
     let kp = tau / (k * (lambda + theta));
     let ti = {
         let candidate = 4.0 * (lambda + theta);
-        if tau < candidate {
-            tau
-        } else {
-            candidate
-        }
+        if tau < candidate { tau } else { candidate }
     };
     let ti_s = ti * 1e-6; // Convert Ti from microseconds to seconds.
     let ki = kp / ti_s;
@@ -2278,11 +2270,7 @@ mod tests {
         let kp_si = tau_s / (k * (lambda_s + theta_s));
         let ti_s = {
             let candidate = CURRENT_SIMC_TI_MULTIPLIER as f64 * (lambda_s + theta_s);
-            if tau_s > candidate {
-                tau_s
-            } else {
-                candidate
-            }
+            if tau_s > candidate { tau_s } else { candidate }
         };
         let p_reg_expected = (kp_si * 256.0).clamp(1.0, u16::MAX as f64) as u16;
         let i_reg_expected = (65_536.0 / (ti_s * f_pwm)).clamp(1.0, u16::MAX as f64) as u16;
@@ -2837,16 +2825,18 @@ mod tests {
         let mut model = test_mechanical_model();
         model.j_eff = 0;
         let config = autotune_test_config();
-        assert!(simc_velocity_gains(
-            &model,
-            CommissionProfile::Balanced,
-            OperatingMode::Nominal,
-            700,
-            100,
-            1000,
-            &config
-        )
-        .is_none());
+        assert!(
+            simc_velocity_gains(
+                &model,
+                CommissionProfile::Balanced,
+                OperatingMode::Nominal,
+                700,
+                100,
+                1000,
+                &config
+            )
+            .is_none()
+        );
     }
 
     #[test]
@@ -2854,16 +2844,18 @@ mod tests {
         let mut model = test_mechanical_model();
         model.theta_mech_us = 0;
         let config = autotune_test_config();
-        assert!(simc_velocity_gains(
-            &model,
-            CommissionProfile::Balanced,
-            OperatingMode::Nominal,
-            700,
-            100,
-            1000,
-            &config
-        )
-        .is_none());
+        assert!(
+            simc_velocity_gains(
+                &model,
+                CommissionProfile::Balanced,
+                OperatingMode::Nominal,
+                700,
+                100,
+                1000,
+                &config
+            )
+            .is_none()
+        );
     }
 
     #[test]

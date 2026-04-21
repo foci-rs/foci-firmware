@@ -229,13 +229,13 @@ impl TraceBuffer {
     }
 
     /// Fetch a sample by linearized offset. Returns None on error.
-    /// `gen` must match current generation.
-    pub fn fetch(&self, requesting_oid: u8, offset: u16, gen: u8) -> FetchResult {
-        // Check order: magic/OID -> gen -> capturing -> offset -> OK
+    /// `expected_generation` must match current generation.
+    pub fn fetch(&self, requesting_oid: u8, offset: u16, expected_generation: u8) -> FetchResult {
+        // Check order: magic/OID -> generation -> capturing -> offset -> OK
         if self.magic != TRACE_MAGIC || self.owner_oid != requesting_oid {
             return FetchResult::Invalid;
         }
-        if self.generation != gen {
+        if self.generation != expected_generation {
             return FetchResult::Invalid;
         }
         if self.state == STATE_CAPTURING {
@@ -283,7 +283,7 @@ pub enum FetchResult {
     Ok(u16),
     /// Capture still active.
     Busy,
-    /// OID/gen mismatch, offset out of range, or uninitialized.
+    /// OID/generation mismatch, offset out of range, or uninitialized.
     Invalid,
 }
 
