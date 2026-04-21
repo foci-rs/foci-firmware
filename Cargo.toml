@@ -1,0 +1,24 @@
+[package]
+name = "foci-firmware"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+description = "Board-agnostic FOCI firmware library: protocol handlers, commissioning, trace capture, and platform traits"
+
+[features]
+dev = []
+defmt = ["dep:defmt"]
+
+[dependencies]
+defmt = { workspace = true, optional = true }
+embedded-hal = { workspace = true }
+embedded-hal-async = { workspace = true }
+heapless.workspace = true
+foci-klipper = { path = "../foci-klipper" }
+libm = "0.2"
+static_assertions = "1.1"
+foci-tmc4671 = { path = "../foci-tmc4671" }
+
+[dev-dependencies]
+embedded-hal-mock = { version = "0.11", features = ["eh1", "embedded-hal-async"] }
+tokio = { version = "1", features = ["macros", "rt"] }
