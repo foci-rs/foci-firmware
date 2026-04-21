@@ -6,4 +6,5 @@
 //! data structures and trait surface re-exported to consumers.
 
 pub mod helpers;
+pub mod inner;
 pub mod types;
