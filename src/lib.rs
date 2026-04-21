@@ -8,6 +8,12 @@
 
 pub mod autotune;
 pub mod biquad;
+// Commission is target-only firmware: its runtime `defmt::info!` calls emit
+// Mach-O custom sections that overflow Apple ld's per-binary limit when a
+// host test binary also pulls in the defmt derives from the rest of the
+// workspace.
+#[cfg(target_os = "none")]
+pub mod commission;
 pub mod config;
 pub mod dump;
 pub mod pid;
