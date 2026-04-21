@@ -17,7 +17,7 @@ heapless.workspace = true
 klipper-mcu = { path = "../klipper-mcu" }
 libm = "0.2"
 static_assertions = "1.1"
-tmc4671 = { path = "../tmc4671" }
+foci-tmc4671 = { path = "../foci-tmc4671" }
 
 [dev-dependencies]
 embedded-hal-mock = { version = "0.11", features = ["eh1", "embedded-hal-async"] }

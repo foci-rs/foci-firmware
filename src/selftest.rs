@@ -9,7 +9,7 @@
 use embedded_hal::digital::OutputPin;
 use embedded_hal_async::delay::DelayNs;
 use embedded_hal_async::spi::SpiDevice;
-use tmc4671::spi::Tmc4671Spi;
+use foci_tmc4671::spi::Tmc4671Spi;
 
 /// Put the TMC4671 into a safe state: MODE=0, targets zeroed, enable pin LOW.
 ///
@@ -31,7 +31,7 @@ where
     SPI: SpiDevice<u8, Error = E>,
     PIN: OutputPin,
 {
-    use tmc4671::registers::*;
+    use foci_tmc4671::registers::*;
 
     let _ = enable_pin.set_low();
     let _ = tmc.write_register(MODE_RAMP_MODE_MOTION, 0x0000_0000).await;
@@ -72,7 +72,7 @@ where
     PIN: OutputPin,
     D: DelayNs,
 {
-    use tmc4671::registers::*;
+    use foci_tmc4671::registers::*;
 
     const SAMPLE_COUNT: u32 = 1000;
     const SAMPLE_PERIOD_US: u32 = 160;
@@ -172,7 +172,7 @@ where
     PIN: OutputPin,
     D: DelayNs,
 {
-    use tmc4671::registers::*;
+    use foci_tmc4671::registers::*;
 
     let voltage = config.excitation_voltage as u32;
     let cycles = config.didt_cycles;

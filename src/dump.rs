@@ -2,15 +2,15 @@
 //!
 //! The firmware reads these registers via SPI and sends each value
 //! back as a `foci_dump_value` reply. The Python host collects them
-//! and pretty-prints using field definitions from `tmc4671.py`.
+//! and pretty-prints using field definitions from `foci.py`.
 
-use tmc4671::registers::SubRegister;
+use foci_tmc4671::registers::SubRegister;
 
 /// Registers to dump, in address order. Must include every register
-/// referenced by `DUMP_GROUPS` in `klipper-foci/tmc4671.py`.
+/// referenced by `DUMP_GROUPS` in `klipper-foci/foci.py`.
 ///
 /// Register addresses verified against TMC4671 datasheet rev 2.08 and
-/// `tmc4671/src/registers.rs`.
+/// `foci-tmc4671/src/registers.rs`.
 pub const DUMP_REGISTERS: &[u8] = &[
     // ADC calibration
     0x08, // ADC_I1_SCALE_OFFSET
@@ -60,13 +60,25 @@ pub const DUMP_REGISTERS: &[u8] = &[
 /// indicator.
 pub const DUMP_SUB_REGISTERS: &[(u8, SubRegister)] = &[
     // INTERIM: PID cascade internal targets (datasheet page 122)
-    (0x80, tmc4671::registers::INTERIM_PIDIN_TARGET_VELOCITY),
-    (0x81, tmc4671::registers::INTERIM_PIDOUT_TARGET_VELOCITY),
+    (0x80, foci_tmc4671::registers::INTERIM_PIDIN_TARGET_VELOCITY),
+    (
+        0x81,
+        foci_tmc4671::registers::INTERIM_PIDOUT_TARGET_VELOCITY,
+    ),
     // PID_ERROR: integrator state (datasheet page 122)
-    (0x82, tmc4671::registers::PID_ERROR_PID_POSITION_ERROR_SUM),
-    (0x83, tmc4671::registers::PID_ERROR_PID_TORQUE_ERROR_SUM),
-    (0x84, tmc4671::registers::PID_ERROR_PID_FLUX_ERROR_SUM),
-    (0x85, tmc4671::registers::PID_ERROR_PID_VELOCITY_ERROR_SUM),
+    (
+        0x82,
+        foci_tmc4671::registers::PID_ERROR_PID_POSITION_ERROR_SUM,
+    ),
+    (
+        0x83,
+        foci_tmc4671::registers::PID_ERROR_PID_TORQUE_ERROR_SUM,
+    ),
+    (0x84, foci_tmc4671::registers::PID_ERROR_PID_FLUX_ERROR_SUM),
+    (
+        0x85,
+        foci_tmc4671::registers::PID_ERROR_PID_VELOCITY_ERROR_SUM,
+    ),
 ];
 
 #[cfg(test)]
