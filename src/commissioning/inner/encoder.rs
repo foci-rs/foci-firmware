@@ -270,11 +270,9 @@ pub(crate) async fn step_encoder_check<B: CommissioningBackend>(
 
 /// Advance encoder D-axis alignment sub-state.
 ///
-/// This is the non-blocking engine equivalent of the old blocking
-/// alignment helper. It applies current-regulated open-loop drive,
-/// verifies the encoder moved and settled, zeros ABN count/offset
-/// while still driving, then locks PHI_E to ABN before stopping the
-/// drive.
+/// Applies current-regulated open-loop drive, verifies the encoder
+/// moved and settled, zeros ABN count/offset while still driving, then
+/// locks PHI_E to ABN before stopping the drive.
 pub(crate) async fn step_encoder_align<B: CommissioningBackend>(
     phase: &mut InnerPhase,
     sequence: InnerSequence,

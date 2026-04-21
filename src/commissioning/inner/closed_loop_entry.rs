@@ -1,9 +1,11 @@
 //! Phase 8: Closed-loop entry.
 //!
-//! Mirrors the register write sequence from `tmc_enter_closedloop` (gains,
-//! limits, PHI_E verification, position zeroing, integrator clear,
-//! `STEP_WIDTH`, biquad filters, position mode entry, stability check) but
-//! uses the engine's per-tick state machine pattern.
+//! Final phase before motion: writes the inner-loop (flux/torque/velocity/
+//! position) PID gains and velocity limit, raises the post-calibration
+//! voltage limit, locks `PHI_E_SELECTION` to the ABN encoder, zeros the
+//! position registers and PID integrators, programs `STEP_WIDTH` and
+//! biquad filters, enters position mode, and runs a 30 ms two-sample
+//! stability check that aborts on runaway or drift.
 
 use crate::autotune::{ClosedLoopEntryState, CommissionError, CommissionStatus, InnerSequence};
 use crate::commission::InnerPhase;
@@ -11,12 +13,7 @@ use crate::commissioning::types::{
     AdcCalResult, CommissionResult, CommissioningBackend, InnerResult, StepResult,
 };
 
-/// Advance closed-loop entry sub-state.
-///
-/// Mirrors the register write sequence from `tmc_enter_closedloop`
-/// (gains, limits, PHI_E verification, position zeroing, integrator
-/// clear, STEP_WIDTH, biquad filters, position mode entry, stability
-/// check) but uses the engine's per-tick state machine pattern.
+/// Advance closed-loop entry sub-state by one cooperative tick.
 pub(crate) async fn step_closed_loop_entry<B: CommissioningBackend>(
     phase: &mut InnerPhase,
     sequence: InnerSequence,

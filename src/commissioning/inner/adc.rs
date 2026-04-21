@@ -22,9 +22,9 @@ const ADC_OFFSET_MAX: u16 = 36_000;
 
 /// Advance ADC calibration sub-state.
 ///
-/// Ported from `selftest_adc_calibrate`: configures TMC4671 for
-/// zero-current ADC sampling (PWM_CHOP=0), collects 128 samples
-/// one per step() call, validates offsets, programs them back.
+/// Configures TMC4671 for zero-current ADC sampling (PWM_CHOP=0),
+/// collects 128 samples one per `step()` call, validates the resulting
+/// offsets, and programs them back.
 pub(crate) async fn step_adc_calibrate<B: CommissioningBackend>(
     phase: &mut InnerPhase,
     sequence: InnerSequence,
