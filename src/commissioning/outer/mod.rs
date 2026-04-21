@@ -5,6 +5,7 @@
 //! here too. For now this module hosts the helpers shared across phases
 //! plus the safety-envelope guard used by every outer step.
 
+pub mod commit;
 pub mod filter;
 pub mod mechanical;
 pub mod position;
