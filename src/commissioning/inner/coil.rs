@@ -4,8 +4,8 @@
 //! exceeds `MOTOR_CURRENT_THRESHOLD` on the expected ADC channel and
 //! carries the observations forward into the phase-wiring check.
 
+use super::{CoilCheckState, CoilObservation, CoilTestState, InnerPhase};
 use crate::autotune::{CommissionError, InnerSequence, PhaseId};
-use crate::commission::{CoilCheckState, CoilObservation, CoilTestState, InnerPhase};
 use crate::commissioning::types::{CommissioningBackend, StepResult};
 
 /// Minimum ADC current to consider a coil present (raw ADC units).

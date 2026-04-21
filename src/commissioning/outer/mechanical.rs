@@ -7,8 +7,8 @@
 //! larger torque step (up to `MECHANICAL_ID_MAX_ATTEMPTS`) before
 //! falling back to the response-ramp velocity tuning.
 
+use super::{MechanicalIdState, OuterDiagnostics, OuterPhase};
 use crate::autotune::{CommissionError, MechanicalModel, PhaseId, TransientBuffer};
-use crate::commission::{MechanicalIdState, OuterDiagnostics, OuterPhase};
 use crate::commissioning::outer::{fail_outer, response};
 use crate::commissioning::types::{CommissioningBackend, StepResult};
 

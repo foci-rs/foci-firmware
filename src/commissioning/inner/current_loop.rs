@@ -10,10 +10,61 @@
 
 use crate::autotune::{
     CaptureDirection, ClosedLoopEntryState, CommissionError, CommissionProfile, CommissionStatus,
-    CurrentGains, CurrentValidation, InnerSequence, PhaseId, TransientBuffer, ValidationResult,
+    CurrentGains, ElectricalModel, InnerSequence, PhaseId, TransientBuffer, ValidationResult,
 };
-use crate::commission::{CurrentValidateData, CurrentValidateState, InnerPhase, InnerResult};
-use crate::commissioning::types::{CommissioningBackend, StepResult};
+use crate::commissioning::inner::InnerPhase;
+use crate::commissioning::types::{CommissioningBackend, InnerResult, StepResult};
+
+pub(crate) use crate::autotune::CurrentValidation;
+
+/// Current-loop validation sub-state machine (Phase 7).
+#[derive(Debug, defmt::Format)]
+pub(crate) enum CurrentValidateState {
+    /// Write PI gains to TMC4671 registers.
+    WriteGains,
+    /// Switch to torque mode and apply current step.
+    StepSetup { direction: CaptureDirection },
+    /// Wait for transient to develop before capturing.
+    StepSettle {
+        direction: CaptureDirection,
+        deadline_us: u64,
+    },
+    /// Capture step response into TransientBuffer at 160us intervals.
+    StepCapture {
+        direction: CaptureDirection,
+        next_sample_us: u64,
+    },
+    /// Extract metrics and classify response.
+    Classify,
+    /// Restore safe state before finalizing.
+    SafeState { deadline_us: u64 },
+    /// Emit final InnerResult.
+    Finalize,
+}
+
+/// Accumulated data for current-loop validation.
+#[derive(Debug, Clone, defmt::Format)]
+pub(crate) struct CurrentValidateData {
+    /// The electrical model from Phase 5.
+    pub(crate) model: ElectricalModel,
+    /// Currently applied gains.
+    pub(crate) gains: CurrentGains,
+    /// Validation attempt (0 = first, 1 = retry).
+    pub(crate) attempt: u8,
+    /// Current step amplitude (absolute, PIDOUT units).
+    pub(crate) step_amplitude: u16,
+    /// Forward capture metrics (filled after forward capture).
+    pub(crate) forward_metrics: Option<CurrentValidation>,
+    /// Reverse capture metrics (filled after reverse capture).
+    pub(crate) reverse_metrics: Option<CurrentValidation>,
+    /// Final commissioning status to report.
+    pub(crate) final_status: CommissionStatus,
+    /// PID-output saturation counter: samples where the current PID's
+    /// voltage output is at or near `PIDOUT_UQ_UD_LIMITS`.
+    pub(crate) saturation_count: u16,
+    /// Configured PIDOUT voltage limit for saturation detection.
+    pub(crate) pidout_limit: u32,
+}
 
 /// Step amplitude as a fraction of run_current (15% = 15/100).
 const VALIDATION_STEP_PERCENT: u32 = 15;

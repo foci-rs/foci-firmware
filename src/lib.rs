@@ -8,7 +8,6 @@
 
 pub mod autotune;
 pub mod biquad;
-pub mod commission;
 pub mod commissioning;
 pub mod config;
 pub mod dump;
@@ -17,3 +16,14 @@ pub mod platform;
 pub mod selftest;
 pub mod tmc;
 pub mod trace;
+
+/// Backwards-compatibility shim. The implementation lives in
+/// [`commissioning`]; this module exposes the engine and result types
+/// under the legacy `foci_firmware::commission::*` path so existing board
+/// binaries continue to compile through the renaming transition.
+pub mod commission {
+    pub use crate::commissioning::types::{
+        AdcCalResult, CommissionResult, CommissioningBackend, InnerResult, OuterResult, StepResult,
+    };
+    pub use crate::commissioning::{CommissioningEngine, EntrySnapshot, OuterTuneParams};
+}

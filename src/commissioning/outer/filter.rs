@@ -6,8 +6,8 @@
 //! avoid stale biquad state leaking from prior commissioning runs or
 //! host configuration.
 
+use super::OuterPhase;
 use crate::autotune::PhaseId;
-use crate::commission::OuterPhase;
 use crate::commissioning::helpers;
 use crate::commissioning::types::{CommissioningBackend, StepResult};
 

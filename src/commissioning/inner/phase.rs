@@ -4,8 +4,8 @@
 //! expected ADC channel dominates the cross-talk on the other channel for
 //! both coils. A reversed dominance indicates swapped motor phases.
 
+use super::{CoilObservation, EncoderCheckState, InnerPhase};
 use crate::autotune::{CommissionError, InnerSequence, PhaseId};
-use crate::commission::{CoilObservation, EncoderCheckState, InnerPhase};
 use crate::commissioning::types::StepResult;
 
 /// Validate phase wiring from coil test observations.

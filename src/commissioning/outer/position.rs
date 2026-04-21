@@ -7,11 +7,11 @@
 //! Response-tuned velocity gains use a tighter cap and disable position
 //! integral.
 
-use crate::autotune::{CommissionError, OperatingMode, PhaseId, PositionGains, TransientBuffer};
-use crate::commission::{
+use super::{
     OUTER_FALLBACK_POSITION_P, OUTER_MAX_POSITION_P, OuterPhase, POS_TUNE_INITIAL_P,
     PositionTuneState,
 };
+use crate::autotune::{CommissionError, OperatingMode, PhaseId, PositionGains, TransientBuffer};
 use crate::commissioning::outer::fail_outer;
 use crate::commissioning::types::{CommissioningBackend, StepResult};
 

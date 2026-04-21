@@ -4,10 +4,8 @@
 //! 128 samples one per `step()` call, validates the resulting offsets, and
 //! programs them back into `ADC_I0/I1_SCALE_OFFSET`.
 
+use super::{AdcCalState, CoilCheckState, CoilTestState, EncoderCheckState, InnerPhase};
 use crate::autotune::{CommissionError, InnerSequence, PhaseId};
-use crate::commission::{
-    AdcCalState, CoilCheckState, CoilTestState, EncoderCheckState, InnerPhase,
-};
 use crate::commissioning::types::{AdcCalResult, CommissioningBackend, StepResult};
 
 /// Number of ADC samples for offset calibration.

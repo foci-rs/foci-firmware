@@ -6,8 +6,8 @@
 //! `ElectricalModel` and validates it before transitioning to
 //! `CurrentTune` (commission flow) or emitting `SelftestDone` (selftest).
 
+use super::{ElectricalIdState, InnerPhase};
 use crate::autotune::{CommissionError, ElectricalModel, InnerSequence, PhaseId, TransientBuffer};
-use crate::commission::{ElectricalIdState, InnerPhase};
 use crate::commissioning::types::{CommissioningBackend, StepResult};
 
 /// Number of steady-state current samples for resistance measurement.

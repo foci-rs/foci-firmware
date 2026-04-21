@@ -5,12 +5,12 @@
 //! the safety envelope by falling back to conservative runtime defaults
 //! and flagging the result with `OUTER_WARNING_UNSAFE_SYNTH_GAINS`.
 
-use crate::autotune::CommissionStatus;
-use crate::commission::{
+use super::{
     OUTER_FALLBACK_POSITION_I, OUTER_FALLBACK_POSITION_P, OUTER_FALLBACK_VELOCITY_I,
     OUTER_FALLBACK_VELOCITY_P, OUTER_MAX_POSITION_I, OUTER_MAX_POSITION_P, OUTER_MAX_VELOCITY_I,
     OUTER_MAX_VELOCITY_P, OUTER_WARNING_NONE, OUTER_WARNING_UNSAFE_SYNTH_GAINS, OuterPhase,
 };
+use crate::autotune::CommissionStatus;
 use crate::commissioning::types::{OuterResult, StepResult};
 
 /// Assemble and emit the final outer commissioning result.

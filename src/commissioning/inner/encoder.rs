@@ -4,10 +4,10 @@
 //! through electrical angles to confirm encoder counts move, then locks
 //! `PHI_E_SELECTION` to the ABN decoder before any closed-loop operation.
 
-use crate::autotune::{ClosedLoopEntryState, CommissionError, InnerSequence, PhaseId};
-use crate::commission::{
+use super::{
     ElectricalIdData, ElectricalIdState, EncoderAlignState, EncoderCheckState, InnerPhase,
 };
+use crate::autotune::{ClosedLoopEntryState, CommissionError, InnerSequence, PhaseId};
 use crate::commissioning::types::{AdcCalResult, CommissioningBackend, StepResult};
 
 /// Number of PHI_E steps for encoder direction sweep.

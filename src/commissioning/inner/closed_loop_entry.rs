@@ -7,8 +7,8 @@
 //! biquad filters, enters position mode, and runs a 30 ms two-sample
 //! stability check that aborts on runaway or drift.
 
+use super::InnerPhase;
 use crate::autotune::{ClosedLoopEntryState, CommissionError, CommissionStatus, InnerSequence};
-use crate::commission::InnerPhase;
 use crate::commissioning::types::{
     AdcCalResult, CommissionResult, CommissioningBackend, InnerResult, StepResult,
 };

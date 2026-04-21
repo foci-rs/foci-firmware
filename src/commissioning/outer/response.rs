@@ -6,10 +6,8 @@
 //! rather than alongside any single phase because they are referenced
 //! across multiple phases.
 
+use super::{MechanicalIdData, MechanicalIdState, OuterDiagnostics, OuterPhase, OuterSafetyLimits};
 use crate::autotune::{MechanicalModel, TransientBuffer, VelocityGains};
-use crate::commission::{
-    MechanicalIdData, MechanicalIdState, OuterDiagnostics, OuterPhase, OuterSafetyLimits,
-};
 
 /// Torque step attempts as fractions of run_current.
 ///
@@ -47,7 +45,7 @@ pub(crate) const VELOCITY_RESPONSE_VALIDATE_TAU_MS: u32 = 50;
 // `commission.rs` because the still-resident outer step functions reference
 // them. They are re-exported here so the response helpers can name them
 // without reaching across modules at every site.
-pub(crate) use crate::commission::{
+pub(crate) use super::{
     OUTER_FALLBACK_VELOCITY_I, OUTER_FALLBACK_VELOCITY_P, VELOCITY_CAP_COUNTS_PER_MS,
 };
 

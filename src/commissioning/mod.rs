@@ -127,7 +127,7 @@ impl CommissioningEngine {
         Self {
             oid,
             engine_mode: EngineMode::Inner {
-                phase: InnerPhase::AdcCalibrate(crate::commission::AdcCalState::Setup),
+                phase: InnerPhase::AdcCalibrate(inner::AdcCalState::Setup),
                 profile: CommissionProfile::Balanced,
                 sequence: InnerSequence::Calibrate,
                 adc_cal: None,
@@ -146,7 +146,7 @@ impl CommissioningEngine {
         Self {
             oid,
             engine_mode: EngineMode::Inner {
-                phase: InnerPhase::AdcCalibrate(crate::commission::AdcCalState::Setup),
+                phase: InnerPhase::AdcCalibrate(inner::AdcCalState::Setup),
                 profile: CommissionProfile::Balanced,
                 sequence: InnerSequence::Selftest,
                 adc_cal: None,
@@ -165,7 +165,7 @@ impl CommissioningEngine {
         Self {
             oid,
             engine_mode: EngineMode::Inner {
-                phase: InnerPhase::AdcCalibrate(crate::commission::AdcCalState::Setup),
+                phase: InnerPhase::AdcCalibrate(inner::AdcCalState::Setup),
                 profile,
                 sequence: InnerSequence::Commission,
                 adc_cal: None,

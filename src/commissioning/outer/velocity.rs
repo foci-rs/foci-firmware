@@ -7,15 +7,15 @@
 //! accepts the gains, retries with a relaxed lambda, or falls back to
 //! conservative response-ramp tuning.
 
-use crate::autotune::{
-    CommissionError, CommissionProfile, OperatingMode, PhaseId, TransientBuffer, ValidationResult,
-    VelocityValidation,
-};
-use crate::commission::{
+use super::{
     OUTER_FALLBACK_VELOCITY_P, OUTER_MAX_VELOCITY_I, OUTER_MAX_VELOCITY_P,
     OUTER_WARNING_UNSAFE_SYNTH_GAINS, OuterPhase, POS_TUNE_INITIAL_P, POS_TUNE_STEP_COUNTS,
     PositionTuneData, PositionTuneState, VelocityTuneStrategy, VelocityValidateData,
     VelocityValidateState,
+};
+use crate::autotune::{
+    CommissionError, CommissionProfile, OperatingMode, PhaseId, TransientBuffer, ValidationResult,
+    VelocityValidation,
 };
 use crate::commissioning::outer::{fail_outer, response};
 use crate::commissioning::types::{CommissioningBackend, StepResult};
