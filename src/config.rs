@@ -5,8 +5,7 @@
 /// Constructed as a `const` by each firmware crate. Passed to all
 /// foci-firmware functions that interact with TMC4671 registers.
 /// Changing `pwm_maxcnt` is the only edit needed to switch PWM frequency.
-#[derive(Debug, Clone, Copy, PartialEq)]
-#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+#[derive(Debug, Clone, Copy, PartialEq, defmt::Format)]
 pub struct TmcConfig {
     /// PWM_MAXCNT register value.
     pub pwm_maxcnt: u16,

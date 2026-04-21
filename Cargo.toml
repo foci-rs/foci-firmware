@@ -7,10 +7,9 @@ description = "Board-agnostic FOCI firmware library: protocol handlers, commissi
 
 [features]
 dev = []
-defmt = ["dep:defmt"]
 
 [dependencies]
-defmt = { workspace = true, optional = true }
+defmt = { workspace = true }
 embedded-hal = { workspace = true }
 embedded-hal-async = { workspace = true }
 heapless.workspace = true

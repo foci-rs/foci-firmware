@@ -23,8 +23,7 @@ pub const TRANSIENT_LEN: usize = 256;
 /// reset for the next phase. Raw transient streaming is deferred to Phase 6.
 ///
 /// Memory: 1,024 bytes for samples, plus 4 bytes of metadata.
-#[derive(Clone)]
-#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+#[derive(Clone, defmt::Format)]
 pub struct TransientBuffer {
     samples: [u32; TRANSIENT_LEN],
     /// Number of samples captured so far (always <= `TRANSIENT_LEN`).
@@ -119,8 +118,7 @@ impl core::fmt::Debug for TransientBuffer {
 /// Controls the closed-loop time constant lambda in the SIMC PI tuning law.
 /// A more aggressive profile yields faster response but requires a more
 /// accurate plant model and leaves less stability margin.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub enum CommissionProfile {
     /// `lambda = max(4 * theta, tau)` — slow, very robust, minimal audible noise.
     Conservative,
@@ -163,8 +161,7 @@ impl CommissionProfile {
 ///
 /// Adjusts velocity-loop lambda after SIMC synthesis to account for the
 /// expected operating environment.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub enum OperatingMode {
     /// Motor running without a significant load (e.g., belt axis with no
     /// toolhead). `lambda_vel *= 1.5` — reduces standstill buzz.
@@ -212,8 +209,7 @@ impl OperatingMode {
 ///
 /// Codes are stable across firmware versions. Adding new variants must
 /// use new codes; existing codes must not be renumbered.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub enum CommissionError {
     /// Motor was already enabled when commissioning was requested. Code 1.
     MotorEnabled,
@@ -285,8 +281,7 @@ impl CommissionError {
 /// Reported in the `foci_commission_result` or `foci_tune_result`
 /// message. The Python module uses this to
 /// decide whether to persist the resulting gains.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub enum CommissionStatus {
     /// All phases passed; gains are reliable.
     Accepted,
@@ -304,8 +299,7 @@ pub enum CommissionStatus {
 ///
 /// Sent in the `foci_commission_phase` message on each phase transition.
 /// The Python module translates the `u8` code to a human-readable label.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub enum PhaseId {
     /// Inner phase 1 — ADC offset calibration.
     AdcCalibrate,
@@ -384,8 +378,7 @@ impl PhaseId {
 /// Preloaded into firmware atomics by the Python host before `foci_calibrate`.
 /// Contains current-loop gains (from commissioning) and outer gains
 /// (from commissioning fallbacks or prior tuning).
-#[derive(Debug, Clone, Copy)]
-#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+#[derive(Debug, Clone, Copy, defmt::Format)]
 pub struct SavedGains {
     /// Current-loop flux P gain (Q8.8).
     pub flux_p: u16,
@@ -420,8 +413,7 @@ pub struct SavedGains {
 /// Writes PID gains, velocity limit, voltage limits, position selection,
 /// step width, motion mode, and biquad filters, then verifies position
 /// hold stability.
-#[derive(Debug, Clone, Copy)]
-#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+#[derive(Debug, Clone, Copy, defmt::Format)]
 pub enum ClosedLoopEntryState {
     /// Write current-loop and outer PID gains.
     WriteGains,
@@ -456,8 +448,7 @@ pub enum ClosedLoopEntryState {
 /// Controls which phases run and in what order for the inner engine.
 ///
 /// Replaces the old `stop_after: PhaseId` mechanism.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub enum InnerSequence {
     /// Re-enable path: ADC cal -> encoder align -> closed-loop entry (saved gains).
     /// Skips coil/wiring/encoder diagnostics -- trusts prior Stage 1 validation.
@@ -476,8 +467,7 @@ pub enum InnerSequence {
 ///
 /// Plant model: `G(s) = K / (tau_e * s + 1) * e^(-theta_e * s)`
 /// where `K = 1 / R_int` (DC gain in internal units).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub struct ElectricalModel {
     /// Winding resistance in internal (ADC/DAC) units.
     /// R_int = V_excitation / I_steady_state.
@@ -503,8 +493,7 @@ pub struct ElectricalModel {
 /// Produced by [`simc_current_gains`] from an [`ElectricalModel`] and
 /// a [`CommissionProfile`]. Includes the effective bandwidth and lambda
 /// for diagnostics and downstream use (velocity loop bandwidth constraint).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub struct CurrentGains {
     /// Flux P gain — TMC4671 Q8.8 register value.
     pub flux_p: u16,
@@ -536,8 +525,7 @@ const CURRENT_SIMC_TI_MULTIPLIER: f32 = 11.0;
 const CURRENT_METRIC_SMOOTHING_SAMPLES: usize = 8;
 
 /// Capture direction for bidirectional current-loop validation.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub enum CaptureDirection {
     /// Positive torque step.
     Forward,
@@ -564,8 +552,7 @@ pub fn normalize_capture_sample(torque_actual: i16, direction: CaptureDirection)
 ///
 /// Extracted from the [`TransientBuffer`] after a torque step.
 /// Used by [`classify_current_validation`] to determine pass/marginal/fail.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub struct CurrentValidation {
     /// Time from 10% to 90% of target, in microseconds.
     pub rise_time_us: u32,
@@ -599,8 +586,7 @@ pub struct CurrentValidation {
 ///
 /// All values are in internal units derived from encoder counts and
 /// torque DAC values. Physical conversion happens on the host side.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub struct MechanicalModel {
     /// Effective inertia in internal units.
     /// J_eff = torque / initial_acceleration (from first few samples).
@@ -622,8 +608,7 @@ pub struct MechanicalModel {
 /// Produced by [`simc_velocity_gains`] from a [`MechanicalModel`],
 /// inner-loop bandwidth, and tuning profile. The velocity limit is
 /// derived from the peak velocity observed during mechanical ID.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub struct VelocityGains {
     /// Velocity P gain — TMC4671 Q8.8 register value.
     pub velocity_p: u16,
@@ -641,8 +626,7 @@ pub struct VelocityGains {
 ///
 /// Extracted from the [`TransientBuffer`] after a velocity step.
 /// Used by [`classify_velocity_validation`] to determine pass/marginal/fail.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub struct VelocityValidation {
     /// Time from 10% to 90% of target velocity, in milliseconds.
     pub rise_time_ms: u32,
@@ -659,8 +643,7 @@ pub struct VelocityValidation {
 }
 
 /// Computed position-loop gains from Phase 11 P ramp-up.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub struct PositionGains {
     /// Position P gain — TMC4671 Q8.8 register value.
     pub position_p: u16,
@@ -674,8 +657,7 @@ pub struct PositionGains {
 /// when the corresponding validation stage detected noise/chatter.
 /// The firmware uses these with [`crate::biquad::butterworth_lowpass`]
 /// to compute register coefficients.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub struct FilterConfig {
     /// Velocity biquad low-pass cutoff Hz. Enabled if zero-speed chatter detected.
     pub velocity_filter_hz: Option<u32>,
@@ -994,8 +976,7 @@ pub fn extract_step_metrics(
 }
 
 /// Outcome of a validation threshold check.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub enum ValidationResult {
     /// All metrics within normal limits.
     Pass,

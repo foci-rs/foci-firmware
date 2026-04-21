@@ -18,8 +18,7 @@
 /// Register mapping:
 /// - `b_0`, `b_1`, `b_2` → BIQUAD_V_B (bits 29:0 of each sub-field)
 /// - `a_1`, `a_2`        → BIQUAD_V_A (bits 29:0 of each sub-field)
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub struct BiquadCoeffs {
     /// Feedback coefficient a_1, negated for TMC4671 register format (Q3.29).
     pub a_1: i32,

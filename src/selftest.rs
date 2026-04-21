@@ -244,8 +244,7 @@ where
 }
 
 /// Result of one selftest stage, streamed to the host.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, defmt::Format)]
 pub struct SelftestStageValue {
     /// 0 = PASS, 1 = FAIL, 2 = SKIP.
     pub status: u8,
@@ -294,8 +293,7 @@ impl SelftestStageValue {
 ///
 /// Stages are populated in phase order as they complete; `None` means
 /// the stage was skipped or aborted before running.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, defmt::Format)]
 pub struct SelftestResults {
     stages: [Option<SelftestStageValue>; 8],
 }

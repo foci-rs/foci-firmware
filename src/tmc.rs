@@ -8,8 +8,7 @@
 ///
 /// Firmware crates send these to their board-specific SPI task via a
 /// channel (e.g., `heapless::spsc` or `rtic_sync::channel`).
-#[derive(Debug, Clone, PartialEq, Eq)]
-#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+#[derive(Debug, Clone, PartialEq, Eq, defmt::Format)]
 pub enum TmcRequest {
     /// Set motor enable/disable.
     SetEnable(bool),

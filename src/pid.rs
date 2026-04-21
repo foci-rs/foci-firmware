@@ -10,8 +10,7 @@
 /// space. Because the PI controller, ADC, and voltage output all
 /// operate in this same space, gain computation from internal-unit
 /// values needs no board-specific scaling constants.
-#[derive(Debug, Clone, Copy)]
-#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+#[derive(Debug, Clone, Copy, defmt::Format)]
 pub struct InternalMeasurement {
     /// Voltage applied during measurement (PIDOUT units).
     pub voltage: u16,
@@ -27,8 +26,7 @@ pub struct InternalMeasurement {
 }
 
 /// Computed PI gains for TMC4671 flux and torque controllers.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub struct InnerLoopGains {
     /// Flux P gain — raw TMC4671 register value (Q8.8 format).
     pub flux_p: u16,
