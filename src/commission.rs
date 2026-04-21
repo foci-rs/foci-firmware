@@ -196,26 +196,26 @@ pub(crate) struct ElectricalIdData {
     /// Excitation voltage used for all measurements (PIDOUT units).
     pub(crate) voltage: u32,
     /// Per-coil accumulated signed current for resistance (sum of i16 readings).
-    pub(crate) res_current_sum: [i32; 2],
+    pub(crate) resistance_current_sum: [i32; 2],
     /// Per-coil number of resistance samples collected.
-    pub(crate) res_sample_count: [u16; 2],
+    pub(crate) resistance_sample_count: [u16; 2],
     /// Per-coil accumulated |delta_I| for di/dt inductance measurement.
-    pub(crate) ind_sum_delta: [u64; 2],
+    pub(crate) inductance_sum_delta: [u64; 2],
     /// Per-coil number of valid di/dt cycles.
-    pub(crate) ind_count: [u32; 2],
+    pub(crate) inductance_count: [u32; 2],
     /// Per-coil elapsed microseconds during di/dt measurement.
-    pub(crate) ind_elapsed_us: [u32; 2],
+    pub(crate) inductance_elapsed_us: [u32; 2],
 }
 
 impl ElectricalIdData {
     pub(crate) fn new(voltage: u32) -> Self {
         Self {
             voltage,
-            res_current_sum: [0; 2],
-            res_sample_count: [0; 2],
-            ind_sum_delta: [0; 2],
-            ind_count: [0; 2],
-            ind_elapsed_us: [0; 2],
+            resistance_current_sum: [0; 2],
+            resistance_sample_count: [0; 2],
+            inductance_sum_delta: [0; 2],
+            inductance_count: [0; 2],
+            inductance_elapsed_us: [0; 2],
         }
     }
 }
@@ -1559,12 +1559,12 @@ impl CommissioningEngine {
 
                 // Reset buffer for this capture.
                 buf.reset(
-                    crate::commissioning::inner::electrical_identification::ELEC_SAMPLE_PERIOD_US
+                    crate::commissioning::inner::electrical_identification::ELECTRICAL_SAMPLE_PERIOD_US
                         as u16,
                 );
 
                 let next = backend.elapsed_us().wrapping_add(
-                    crate::commissioning::inner::electrical_identification::ELEC_SAMPLE_PERIOD_US,
+                    crate::commissioning::inner::electrical_identification::ELECTRICAL_SAMPLE_PERIOD_US,
                 );
                 *validate_state = CurrentValidateState::StepCapture {
                     direction: dir,
@@ -1676,7 +1676,7 @@ impl CommissioningEngine {
                             }
                         }
                     }
-                    *next_sample_us = next_sample_us.wrapping_add(crate::commissioning::inner::electrical_identification::ELEC_SAMPLE_PERIOD_US);
+                    *next_sample_us = next_sample_us.wrapping_add(crate::commissioning::inner::electrical_identification::ELECTRICAL_SAMPLE_PERIOD_US);
                 }
                 StepResult::Continue
             }

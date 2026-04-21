@@ -11,10 +11,10 @@ use crate::commission::{
 use crate::commissioning::types::{AdcCalResult, CommissioningBackend, StepResult};
 
 /// Number of ADC samples for offset calibration.
-const ADC_CAL_SAMPLES: u16 = 128;
+const ADC_CALIBRATION_SAMPLES: u16 = 128;
 
 /// Settling time after enabling ADC outputs (microseconds).
-const ADC_CAL_SETTLE_US: u64 = 250_000;
+const ADC_CALIBRATION_SETTLE_US: u64 = 250_000;
 
 /// Valid ADC offset range (centered around ~33000).
 const ADC_OFFSET_MIN: u16 = 30_000;
@@ -107,7 +107,7 @@ pub(crate) async fn step_adc_calibrate<B: CommissioningBackend>(
             let _ = backend.write_register(ADC_I1_SCALE_OFFSET, 256 << 16).await;
             backend.set_enable_pin(true);
 
-            let deadline = backend.elapsed_us().wrapping_add(ADC_CAL_SETTLE_US);
+            let deadline = backend.elapsed_us().wrapping_add(ADC_CALIBRATION_SETTLE_US);
             *cal_state = AdcCalState::Settle {
                 deadline_us: deadline,
             };
@@ -144,7 +144,7 @@ pub(crate) async fn step_adc_calibrate<B: CommissioningBackend>(
                     return super::fail_inner(phase, CommissionError::Spi);
                 }
             }
-            if *count >= ADC_CAL_SAMPLES {
+            if *count >= ADC_CALIBRATION_SAMPLES {
                 *cal_state = AdcCalState::Finalize {
                     sum_i0: *sum_i0,
                     sum_i1: *sum_i1,
@@ -154,7 +154,7 @@ pub(crate) async fn step_adc_calibrate<B: CommissioningBackend>(
         }
 
         AdcCalState::Finalize { sum_i0, sum_i1 } => {
-            let n = ADC_CAL_SAMPLES as i32;
+            let n = ADC_CALIBRATION_SAMPLES as i32;
             let offset_i0 = (*sum_i0 / n) as i16 as u16;
             let offset_i1 = (*sum_i1 / n) as i16 as u16;
 

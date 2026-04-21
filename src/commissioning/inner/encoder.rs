@@ -11,35 +11,35 @@ use crate::commission::{
 use crate::commissioning::types::{AdcCalResult, CommissioningBackend, StepResult};
 
 /// Number of PHI_E steps for encoder direction sweep.
-const ENCODER_DIR_STEPS: u16 = 50;
+const ENCODER_DIRECTION_STEPS: u16 = 50;
 
 /// Final PHI_E_EXT value for encoder direction sweep.
 ///
 /// Keep this away from 0/65536 so the sweep has a non-zero final rotor
 /// displacement. A full electrical revolution can end at the same stable
 /// angle it started from, producing a false ENCODER_FAULT.
-const ENCODER_DIR_TARGET_PHI: u32 = 32768;
+const ENCODER_DIRECTION_TARGET_PHI_E: u32 = 32768;
 
 /// Per-step dwell time for encoder direction sweep (microseconds).
-const ENCODER_DIR_STEP_US: u64 = 10_000;
+const ENCODER_DIRECTION_STEP_US: u64 = 10_000;
 
 /// Settling time after applying encoder alignment voltage.
-const ENCODER_ALIGN_SETTLE_US: u64 = 500_000;
+const ENCODER_ALIGNMENT_SETTLE_US: u64 = 500_000;
 
 /// Stability double-read delay after encoder alignment settle.
-const ENCODER_ALIGN_STABILITY_US: u64 = 10_000;
+const ENCODER_ALIGNMENT_STABILITY_US: u64 = 10_000;
 
 /// Allowed encoder jitter during the alignment double-read.
-const ENCODER_ALIGN_STABILITY_COUNTS: u32 = 2;
+const ENCODER_ALIGNMENT_STABILITY_COUNTS: u32 = 2;
 
 /// Voltage limit used only while applying encoder movement current.
-const ENCODER_ALIGN_VOLTAGE_LIMIT: u32 = 2000;
+const ENCODER_ALIGNMENT_VOLTAGE_LIMIT: u32 = 2000;
 
 /// Minimum D-axis current target used while forcing encoder movement.
-const ENCODER_MOVE_CURRENT_MIN: u32 = 100;
+const ENCODER_MOVEMENT_CURRENT_MIN: u32 = 100;
 
 /// Maximum D-axis current target used while forcing encoder movement.
-const ENCODER_MOVE_CURRENT_MAX: u32 = 1000;
+const ENCODER_MOVEMENT_CURRENT_MAX: u32 = 1000;
 
 /// Start current-regulated open-loop encoder movement.
 ///
@@ -60,7 +60,7 @@ pub(crate) async fn start_encoder_current_drive<B: CommissioningBackend>(
     }
 
     let target = (current_limit / 2)
-        .clamp(ENCODER_MOVE_CURRENT_MIN, ENCODER_MOVE_CURRENT_MAX)
+        .clamp(ENCODER_MOVEMENT_CURRENT_MIN, ENCODER_MOVEMENT_CURRENT_MAX)
         .min(current_limit) as i16;
     let defaults = crate::pid::DEFAULT_INNER_GAINS;
     let flux_reg = (defaults.flux_p as u32) << 16 | defaults.flux_i as u32;
@@ -96,7 +96,7 @@ pub(crate) async fn start_encoder_current_drive<B: CommissioningBackend>(
         .await
         .map_err(|_| CommissionError::Spi)?;
     backend
-        .write_register(PIDOUT_UQ_UD_LIMITS, ENCODER_ALIGN_VOLTAGE_LIMIT)
+        .write_register(PIDOUT_UQ_UD_LIMITS, ENCODER_ALIGNMENT_VOLTAGE_LIMIT)
         .await
         .map_err(|_| CommissionError::Spi)?;
     backend
@@ -166,7 +166,7 @@ pub(crate) async fn step_encoder_check<B: CommissioningBackend>(
                 return super::fail_inner(phase, error);
             }
 
-            let deadline = backend.elapsed_us().wrapping_add(ENCODER_DIR_STEP_US);
+            let deadline = backend.elapsed_us().wrapping_add(ENCODER_DIRECTION_STEP_US);
             *state = EncoderCheckState::Sweep {
                 step: 0,
                 deadline_us: deadline,
@@ -186,7 +186,7 @@ pub(crate) async fn step_encoder_check<B: CommissioningBackend>(
             }
 
             *step += 1;
-            if *step > ENCODER_DIR_STEPS {
+            if *step > ENCODER_DIRECTION_STEPS {
                 let cs = *count_start;
                 *state = EncoderCheckState::Finalize { count_start: cs };
                 return StepResult::Continue;
@@ -195,11 +195,11 @@ pub(crate) async fn step_encoder_check<B: CommissioningBackend>(
             // Advance PHI_E_EXT toward a non-zero final angle. Ending
             // at 65536/0 can return the rotor to the start angle and
             // make a working encoder look stationary.
-            let phi =
-                (ENCODER_DIR_TARGET_PHI as u64 * *step as u64 / ENCODER_DIR_STEPS as u64) as u32;
+            let phi = (ENCODER_DIRECTION_TARGET_PHI_E as u64 * *step as u64
+                / ENCODER_DIRECTION_STEPS as u64) as u32;
             let _ = backend.write_register(PHI_E_EXT, phi).await;
 
-            *deadline_us = backend.elapsed_us().wrapping_add(ENCODER_DIR_STEP_US);
+            *deadline_us = backend.elapsed_us().wrapping_add(ENCODER_DIRECTION_STEP_US);
             StepResult::Continue
         }
 
@@ -315,7 +315,9 @@ pub(crate) async fn step_encoder_align<B: CommissioningBackend>(
 
             let step_width = backend.step_width().max(1);
             let min_movement = (65536u32 / (20 * step_width)).max(2);
-            let deadline = backend.elapsed_us().wrapping_add(ENCODER_ALIGN_SETTLE_US);
+            let deadline = backend
+                .elapsed_us()
+                .wrapping_add(ENCODER_ALIGNMENT_SETTLE_US);
             *state = EncoderAlignState::Settle {
                 count_before: *count_before,
                 deadline_us: deadline,
@@ -348,7 +350,7 @@ pub(crate) async fn step_encoder_align<B: CommissioningBackend>(
             };
             let deadline = backend
                 .elapsed_us()
-                .wrapping_add(ENCODER_ALIGN_STABILITY_US);
+                .wrapping_add(ENCODER_ALIGNMENT_STABILITY_US);
             *state = EncoderAlignState::StabilityCheck2 {
                 count_before: *count_before,
                 count1,
@@ -376,8 +378,8 @@ pub(crate) async fn step_encoder_align<B: CommissioningBackend>(
             let movement1 = (*count1 as i32 - *count_before as i32).unsigned_abs();
             let movement2 = (count2 as i32 - *count_before as i32).unsigned_abs();
             let movement = movement1.max(movement2);
-            let stable =
-                (*count1 as i32 - count2 as i32).unsigned_abs() <= ENCODER_ALIGN_STABILITY_COUNTS;
+            let stable = (*count1 as i32 - count2 as i32).unsigned_abs()
+                <= ENCODER_ALIGNMENT_STABILITY_COUNTS;
             if movement < *min_movement || !stable {
                 defmt::warn!(
                     "encoder-align FAIL: count_before={} count1={} count2={} \

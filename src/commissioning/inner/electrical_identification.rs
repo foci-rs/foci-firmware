@@ -1,7 +1,7 @@
 //! Phase 5: Electrical identification (R, L, transport delay).
 //!
 //! Per-coil resistance from steady-state current sampling, per-coil
-//! inductance from a bounded square-wave di/dt sweep, and electrical
+//! inductance from a bounded square-wave dI/dt sweep, and electrical
 //! transport delay from a 256-sample current transient. Assembles an
 //! `ElectricalModel` and validates it before transitioning to
 //! `CurrentTune` (commission flow) or emitting `SelftestDone` (selftest).
@@ -11,32 +11,32 @@ use crate::commission::{ElectricalIdState, InnerPhase};
 use crate::commissioning::types::{CommissioningBackend, StepResult};
 
 /// Number of steady-state current samples for resistance measurement.
-const RES_SAMPLE_COUNT: u16 = 1000;
+const RESISTANCE_SAMPLE_COUNT: u16 = 1000;
 
 /// Sampling interval for resistance and transient captures (microseconds).
 /// Matches PWM rate (~160us at 25 kHz) for Nyquist-rate current sampling.
 ///
 /// Re-exported for the validation phase, which captures step responses at
 /// the same cadence.
-pub(crate) const ELEC_SAMPLE_PERIOD_US: u64 = 160;
+pub(crate) const ELECTRICAL_SAMPLE_PERIOD_US: u64 = 160;
 
 /// Settling time after applying excitation voltage (microseconds).
-const RES_SETTLE_US: u64 = 100_000;
+const RESISTANCE_SETTLE_US: u64 = 100_000;
 
 /// Cooldown time after disabling a per-coil measurement (microseconds).
-const ELEC_COOLDOWN_US: u64 = 50_000;
+const ELECTRICAL_COOLDOWN_US: u64 = 50_000;
 
 /// Brief settle before starting di/dt toggling (microseconds).
-const DIDT_PRE_SETTLE_US: u64 = 10_000;
+const INDUCTANCE_PRE_SETTLE_US: u64 = 10_000;
 
 /// Maximum di/dt toggle cycles per step() call.
 /// Each cycle is ~2 SPI transfers (~22us at 8 MHz SPI).
 /// Budget: ~30 cycles/step ≈ 660us, leaving margin within 1ms tick.
-const DIDT_CYCLES_PER_STEP: u32 = 30;
+const INDUCTANCE_CYCLES_PER_STEP: u32 = 30;
 
 /// Minimum average |delta_I| per di/dt cycle to consider inductance valid.
 /// Below this, the current change is too small to extract L reliably.
-const DIDT_MIN_DELTA: u32 = 5;
+const INDUCTANCE_MIN_DELTA: u32 = 5;
 
 /// Number of transient samples for delay identification.
 /// Matches TransientBuffer capacity. Re-exported because the current-loop
@@ -54,7 +54,7 @@ const RISE_63_PCT_Q10: u32 = 647;
 /// Advance electrical identification sub-state.
 ///
 /// Measures per-coil resistance (1000 samples at 160us in steady
-/// state), per-coil inductance (square-wave di/dt), and delay
+/// state), per-coil inductance (square-wave dI/dt), and delay
 /// (transient capture with two-point fit). Assembles an
 /// `ElectricalModel` and validates before transitioning.
 pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
@@ -66,12 +66,12 @@ pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
 ) -> StepResult {
     use foci_tmc4671::registers::*;
 
-    let (elec_id_state, data) = match phase {
+    let (electrical_id_state, data) = match phase {
         InnerPhase::ElectricalId { state, data } => (state, data),
         _ => return StepResult::Continue,
     };
 
-    match elec_id_state {
+    match electrical_id_state {
         // ---------------------------------------------------------------
         // Resistance measurement (per coil)
         // ---------------------------------------------------------------
@@ -101,8 +101,8 @@ pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
             }
             backend.set_enable_pin(true);
 
-            let deadline = backend.elapsed_us().wrapping_add(RES_SETTLE_US);
-            *elec_id_state = ElectricalIdState::ResSettle {
+            let deadline = backend.elapsed_us().wrapping_add(RESISTANCE_SETTLE_US);
+            *electrical_id_state = ElectricalIdState::ResSettle {
                 coil: coil_idx,
                 deadline_us: deadline,
             };
@@ -111,8 +111,10 @@ pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
 
         ElectricalIdState::ResSettle { coil, deadline_us } => {
             if backend.elapsed_us().wrapping_sub(*deadline_us) < 0x8000_0000 {
-                let next = backend.elapsed_us().wrapping_add(ELEC_SAMPLE_PERIOD_US);
-                *elec_id_state = ElectricalIdState::ResSample {
+                let next = backend
+                    .elapsed_us()
+                    .wrapping_add(ELECTRICAL_SAMPLE_PERIOD_US);
+                *electrical_id_state = ElectricalIdState::ResSample {
                     coil: *coil,
                     next_sample_us: next,
                 };
@@ -127,13 +129,13 @@ pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
             let coil_idx = *coil as usize;
             // Take as many samples as fit within this step's time budget.
             loop {
-                if data.res_sample_count[coil_idx] >= RES_SAMPLE_COUNT {
+                if data.resistance_sample_count[coil_idx] >= RESISTANCE_SAMPLE_COUNT {
                     // All samples collected. Disable motor.
                     let _ = backend.write_register(MODE_RAMP_MODE_MOTION, 0).await;
                     let _ = backend.write_register(UQ_UD_EXT, 0).await;
                     backend.set_enable_pin(false);
-                    let deadline = backend.elapsed_us().wrapping_add(ELEC_COOLDOWN_US);
-                    *elec_id_state = ElectricalIdState::ResDisable {
+                    let deadline = backend.elapsed_us().wrapping_add(ELECTRICAL_COOLDOWN_US);
+                    *electrical_id_state = ElectricalIdState::ResDisable {
                         coil: *coil,
                         deadline_us: deadline,
                     };
@@ -147,14 +149,14 @@ pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
                 match backend.read_register(PID_TORQUE_FLUX_ACTUAL).await {
                     Ok(actual) => {
                         let current = (actual & 0xFFFF) as i16;
-                        data.res_current_sum[coil_idx] += current as i32;
-                        data.res_sample_count[coil_idx] += 1;
+                        data.resistance_current_sum[coil_idx] += current as i32;
+                        data.resistance_sample_count[coil_idx] += 1;
                     }
                     Err(_) => {
                         return super::fail_inner(phase, CommissionError::Spi);
                     }
                 }
-                *next_sample_us = next_sample_us.wrapping_add(ELEC_SAMPLE_PERIOD_US);
+                *next_sample_us = next_sample_us.wrapping_add(ELECTRICAL_SAMPLE_PERIOD_US);
             }
             StepResult::Continue
         }
@@ -166,16 +168,16 @@ pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
             let coil_idx = *coil;
             if coil_idx == 0 {
                 // Move to coil B resistance.
-                *elec_id_state = ElectricalIdState::ResSetup { coil: 1 };
+                *electrical_id_state = ElectricalIdState::ResSetup { coil: 1 };
             } else {
                 // Both resistance measurements done. Start inductance.
-                *elec_id_state = ElectricalIdState::IndSetup { coil: 0 };
+                *electrical_id_state = ElectricalIdState::IndSetup { coil: 0 };
             }
             StepResult::Continue
         }
 
         // ---------------------------------------------------------------
-        // Inductance measurement (per coil, square-wave di/dt)
+        // Inductance measurement (per coil, square-wave dI/dt)
         // ---------------------------------------------------------------
         ElectricalIdState::IndSetup { coil } => {
             let coil_idx = *coil;
@@ -199,8 +201,8 @@ pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
             }
             backend.set_enable_pin(true);
 
-            let deadline = backend.elapsed_us().wrapping_add(DIDT_PRE_SETTLE_US);
-            *elec_id_state = ElectricalIdState::IndSettle {
+            let deadline = backend.elapsed_us().wrapping_add(INDUCTANCE_PRE_SETTLE_US);
+            *electrical_id_state = ElectricalIdState::IndSettle {
                 coil: coil_idx,
                 deadline_us: deadline,
             };
@@ -218,7 +220,7 @@ pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
             };
             let total_cycles = 5000u32; // From TmcConfig::didt_cycles default
             let start = backend.elapsed_us();
-            *elec_id_state = ElectricalIdState::IndToggle {
+            *electrical_id_state = ElectricalIdState::IndToggle {
                 coil: *coil,
                 remaining_cycles: total_cycles,
                 prev_current: initial_current,
@@ -240,7 +242,7 @@ pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
 
             let mut cycles_this_step = 0u32;
 
-            while *remaining_cycles > 0 && cycles_this_step < DIDT_CYCLES_PER_STEP {
+            while *remaining_cycles > 0 && cycles_this_step < INDUCTANCE_CYCLES_PER_STEP {
                 // Determine polarity based on which cycle we're on.
                 let total_done = 5000u32.saturating_sub(*remaining_cycles);
                 let v = if total_done % 2 == 0 { v_pos } else { v_neg };
@@ -249,8 +251,8 @@ pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
                 if let Ok(actual) = backend.read_register(PID_TORQUE_FLUX_ACTUAL).await {
                     let current = (actual & 0xFFFF) as i16;
                     let delta = (current as i32 - *prev_current as i32).unsigned_abs();
-                    data.ind_sum_delta[coil_idx] += delta as u64;
-                    data.ind_count[coil_idx] += 1;
+                    data.inductance_sum_delta[coil_idx] += delta as u64;
+                    data.inductance_count[coil_idx] += 1;
                     *prev_current = current;
                 }
                 *remaining_cycles -= 1;
@@ -259,18 +261,18 @@ pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
 
             if *remaining_cycles == 0 {
                 // All cycles done. Record elapsed time.
-                // Duration is bounded by DIDT_CYCLES * cycle time
+                // Duration is bounded by INDUCTANCE_CYCLES * cycle time
                 // (~200ms max), well within u32 us range.
                 let end = backend.elapsed_us();
-                data.ind_elapsed_us[coil_idx] = (end - *start_us) as u32;
+                data.inductance_elapsed_us[coil_idx] = (end - *start_us) as u32;
 
                 // Disable motor.
                 let _ = backend.write_register(UQ_UD_EXT, 0).await;
                 let _ = backend.write_register(MODE_RAMP_MODE_MOTION, 0).await;
                 backend.set_enable_pin(false);
 
-                let deadline = backend.elapsed_us().wrapping_add(ELEC_COOLDOWN_US);
-                *elec_id_state = ElectricalIdState::IndDisable {
+                let deadline = backend.elapsed_us().wrapping_add(ELECTRICAL_COOLDOWN_US);
+                *electrical_id_state = ElectricalIdState::IndDisable {
                     coil: *coil,
                     deadline_us: deadline,
                 };
@@ -285,10 +287,10 @@ pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
             let coil_idx = *coil;
             if coil_idx == 0 {
                 // Move to coil B inductance.
-                *elec_id_state = ElectricalIdState::IndSetup { coil: 1 };
+                *electrical_id_state = ElectricalIdState::IndSetup { coil: 1 };
             } else {
                 // Both inductance measurements done. Start delay capture.
-                *elec_id_state = ElectricalIdState::DelaySetup;
+                *electrical_id_state = ElectricalIdState::DelaySetup;
             }
             StepResult::Continue
         }
@@ -311,10 +313,10 @@ pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
             backend.set_enable_pin(true);
 
             // Reset transient buffer for 160us sampling.
-            buf.reset(ELEC_SAMPLE_PERIOD_US as u16);
+            buf.reset(ELECTRICAL_SAMPLE_PERIOD_US as u16);
 
-            let deadline = backend.elapsed_us().wrapping_add(DIDT_PRE_SETTLE_US);
-            *elec_id_state = ElectricalIdState::DelaySettle {
+            let deadline = backend.elapsed_us().wrapping_add(INDUCTANCE_PRE_SETTLE_US);
+            *electrical_id_state = ElectricalIdState::DelaySettle {
                 deadline_us: deadline,
             };
             StepResult::Continue
@@ -324,7 +326,7 @@ pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
             if backend.elapsed_us().wrapping_sub(*deadline_us) >= 0x8000_0000 {
                 return StepResult::Continue; // Not yet.
             }
-            *elec_id_state = ElectricalIdState::DelayStep;
+            *electrical_id_state = ElectricalIdState::DelayStep;
             StepResult::Continue
         }
 
@@ -344,8 +346,10 @@ pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
                 return super::fail_inner(phase, CommissionError::Spi);
             }
 
-            let next = backend.elapsed_us().wrapping_add(ELEC_SAMPLE_PERIOD_US);
-            *elec_id_state = ElectricalIdState::DelaySample {
+            let next = backend
+                .elapsed_us()
+                .wrapping_add(ELECTRICAL_SAMPLE_PERIOD_US);
+            *electrical_id_state = ElectricalIdState::DelaySample {
                 baseline,
                 next_sample_us: next,
             };
@@ -363,8 +367,8 @@ pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
                     let _ = backend.write_register(MODE_RAMP_MODE_MOTION, 0).await;
                     let _ = backend.write_register(UQ_UD_EXT, 0).await;
                     backend.set_enable_pin(false);
-                    let deadline = backend.elapsed_us().wrapping_add(ELEC_COOLDOWN_US);
-                    *elec_id_state = ElectricalIdState::DelayDisable {
+                    let deadline = backend.elapsed_us().wrapping_add(ELECTRICAL_COOLDOWN_US);
+                    *electrical_id_state = ElectricalIdState::DelayDisable {
                         deadline_us: deadline,
                     };
                     return StepResult::Continue;
@@ -383,7 +387,7 @@ pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
                         return super::fail_inner(phase, CommissionError::Spi);
                     }
                 }
-                *next_sample_us = next_sample_us.wrapping_add(ELEC_SAMPLE_PERIOD_US);
+                *next_sample_us = next_sample_us.wrapping_add(ELECTRICAL_SAMPLE_PERIOD_US);
             }
             StepResult::Continue
         }
@@ -392,7 +396,7 @@ pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
             if backend.elapsed_us().wrapping_sub(*deadline_us) >= 0x8000_0000 {
                 return StepResult::Continue; // Not yet.
             }
-            *elec_id_state = ElectricalIdState::Validate;
+            *electrical_id_state = ElectricalIdState::Validate;
             StepResult::Continue
         }
 
@@ -407,11 +411,11 @@ pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
             let mut r_int_per_coil = [0u32; 2];
             let mut r_mohm_per_coil = [0u32; 2];
             for coil_idx in 0..2 {
-                let count = data.res_sample_count[coil_idx] as i32;
+                let count = data.resistance_sample_count[coil_idx] as i32;
                 if count == 0 {
                     return super::fail_inner(phase, CommissionError::ElectricalIdFailed);
                 }
-                let avg_current = (data.res_current_sum[coil_idx] / count) as i16;
+                let avg_current = (data.resistance_current_sum[coil_idx] / count) as i16;
                 let abs_current = avg_current.unsigned_abs() as u32;
                 if abs_current == 0 {
                     return super::fail_inner(phase, CommissionError::ElectricalIdFailed);
@@ -436,15 +440,19 @@ pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
             let mut tau_per_coil = [0u32; 2];
             for (tau_result, ((count, sum_delta), elapsed)) in tau_per_coil
                 .iter_mut()
-                .zip(data.ind_count.iter().zip(data.ind_sum_delta.iter()))
-                .zip(data.ind_elapsed_us.iter())
+                .zip(
+                    data.inductance_count
+                        .iter()
+                        .zip(data.inductance_sum_delta.iter()),
+                )
+                .zip(data.inductance_elapsed_us.iter())
                 .map(|((t, (c, s)), e)| (t, ((c, s), e)))
             {
                 if *count == 0 || *sum_delta == 0 || *elapsed == 0 {
                     continue;
                 }
                 let avg_delta = (*sum_delta / *count as u64) as u32;
-                if avg_delta < DIDT_MIN_DELTA {
+                if avg_delta < INDUCTANCE_MIN_DELTA {
                     continue;
                 }
                 // dt_per_cycle_us = elapsed / count
@@ -500,7 +508,7 @@ pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
             let mut theta_e_us = 0u32;
             for (i, &sample) in samples.iter().enumerate() {
                 if sample > onset_threshold {
-                    theta_e_us = (i as u64 * ELEC_SAMPLE_PERIOD_US) as u32;
+                    theta_e_us = (i as u64 * ELECTRICAL_SAMPLE_PERIOD_US) as u32;
                     break;
                 }
             }
@@ -510,14 +518,14 @@ pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
             let mut tau_crosscheck_us = 0u32;
             for (i, &sample) in samples.iter().enumerate() {
                 if sample >= rise_threshold {
-                    tau_crosscheck_us = (i as u64 * ELEC_SAMPLE_PERIOD_US) as u32;
+                    tau_crosscheck_us = (i as u64 * ELECTRICAL_SAMPLE_PERIOD_US) as u32;
                     break;
                 }
             }
 
             // Default theta_e to at least one sample period if zero.
             if theta_e_us == 0 {
-                theta_e_us = ELEC_SAMPLE_PERIOD_US as u32;
+                theta_e_us = ELECTRICAL_SAMPLE_PERIOD_US as u32;
             }
 
             // --- Assemble ElectricalModel ---
