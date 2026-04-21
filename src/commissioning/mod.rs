@@ -5,4 +5,5 @@
 //! functions and state machine while `commissioning::types` owns the
 //! data structures and trait surface re-exported to consumers.
 
+pub mod helpers;
 pub mod types;

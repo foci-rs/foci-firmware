@@ -1209,18 +1209,34 @@ impl CommissioningEngine {
             .map_err(|_| CommissionError::Spi)?;
 
         // 3. Clear PID integrators.
-        Self::write_sub_register_checked(backend, PID_ERROR_PID_TORQUE_ERROR_SUM, 0)
-            .await
-            .map_err(|_| CommissionError::Spi)?;
-        Self::write_sub_register_checked(backend, PID_ERROR_PID_FLUX_ERROR_SUM, 0)
-            .await
-            .map_err(|_| CommissionError::Spi)?;
-        Self::write_sub_register_checked(backend, PID_ERROR_PID_VELOCITY_ERROR_SUM, 0)
-            .await
-            .map_err(|_| CommissionError::Spi)?;
-        Self::write_sub_register_checked(backend, PID_ERROR_PID_POSITION_ERROR_SUM, 0)
-            .await
-            .map_err(|_| CommissionError::Spi)?;
+        crate::commissioning::helpers::write_sub_register_checked(
+            backend,
+            PID_ERROR_PID_TORQUE_ERROR_SUM,
+            0,
+        )
+        .await
+        .map_err(|_| CommissionError::Spi)?;
+        crate::commissioning::helpers::write_sub_register_checked(
+            backend,
+            PID_ERROR_PID_FLUX_ERROR_SUM,
+            0,
+        )
+        .await
+        .map_err(|_| CommissionError::Spi)?;
+        crate::commissioning::helpers::write_sub_register_checked(
+            backend,
+            PID_ERROR_PID_VELOCITY_ERROR_SUM,
+            0,
+        )
+        .await
+        .map_err(|_| CommissionError::Spi)?;
+        crate::commissioning::helpers::write_sub_register_checked(
+            backend,
+            PID_ERROR_PID_POSITION_ERROR_SUM,
+            0,
+        )
+        .await
+        .map_err(|_| CommissionError::Spi)?;
 
         // 4. Clear status flags.
         backend
@@ -1248,24 +1264,48 @@ impl CommissioningEngine {
         // to restore the full entry filter state.
         let pwm_maxcnt = backend.pwm_maxcnt();
         if snapshot.velocity_filter_hz > 0 {
-            Self::write_biquad_velocity(backend, snapshot.velocity_filter_hz, pwm_maxcnt).await;
+            crate::commissioning::helpers::write_biquad_velocity(
+                backend,
+                snapshot.velocity_filter_hz,
+                pwm_maxcnt,
+            )
+            .await;
         } else {
-            Self::write_sub_register(backend, CONFIG_BIQUAD_V_ENABLE, 0).await;
+            crate::commissioning::helpers::write_sub_register(backend, CONFIG_BIQUAD_V_ENABLE, 0)
+                .await;
         }
         if snapshot.torque_filter_hz > 0 {
-            Self::write_biquad_torque(backend, snapshot.torque_filter_hz, pwm_maxcnt).await;
+            crate::commissioning::helpers::write_biquad_torque(
+                backend,
+                snapshot.torque_filter_hz,
+                pwm_maxcnt,
+            )
+            .await;
         } else {
-            Self::write_sub_register(backend, CONFIG_BIQUAD_T_ENABLE, 0).await;
+            crate::commissioning::helpers::write_sub_register(backend, CONFIG_BIQUAD_T_ENABLE, 0)
+                .await;
         }
         if snapshot.position_filter_hz > 0 {
-            Self::write_biquad_position(backend, snapshot.position_filter_hz, pwm_maxcnt).await;
+            crate::commissioning::helpers::write_biquad_position(
+                backend,
+                snapshot.position_filter_hz,
+                pwm_maxcnt,
+            )
+            .await;
         } else {
-            Self::write_sub_register(backend, CONFIG_BIQUAD_X_ENABLE, 0).await;
+            crate::commissioning::helpers::write_sub_register(backend, CONFIG_BIQUAD_X_ENABLE, 0)
+                .await;
         }
         if snapshot.flux_filter_hz > 0 {
-            Self::write_biquad_flux(backend, snapshot.flux_filter_hz, pwm_maxcnt).await;
+            crate::commissioning::helpers::write_biquad_flux(
+                backend,
+                snapshot.flux_filter_hz,
+                pwm_maxcnt,
+            )
+            .await;
         } else {
-            Self::write_sub_register(backend, CONFIG_BIQUAD_F_ENABLE, 0).await;
+            crate::commissioning::helpers::write_sub_register(backend, CONFIG_BIQUAD_F_ENABLE, 0)
+                .await;
         }
 
         // 6. Reload voltage limit.
@@ -2895,7 +2935,9 @@ impl CommissioningEngine {
                         .write_register(PIDOUT_UQ_UD_LIMITS, CURRENT_VALIDATE_PIDOUT_LIMIT)
                         .await
                         .is_err()
-                    || Self::clear_current_integrators(backend).await.is_err()
+                    || crate::commissioning::helpers::clear_current_integrators(backend)
+                        .await
+                        .is_err()
                 {
                     return Self::fail_inner(phase, CommissionError::Spi);
                 }
@@ -2925,7 +2967,10 @@ impl CommissioningEngine {
                 }
                 backend.set_enable_pin(true);
 
-                if Self::clear_current_integrators(backend).await.is_err() {
+                if crate::commissioning::helpers::clear_current_integrators(backend)
+                    .await
+                    .is_err()
+                {
                     return Self::fail_inner(phase, CommissionError::Spi);
                 }
 
@@ -3010,7 +3055,9 @@ impl CommissioningEngine {
                             .write_register(PID_TORQUE_FLUX_TARGET, 0)
                             .await
                             .is_err()
-                            || Self::clear_current_integrators(backend).await.is_err()
+                            || crate::commissioning::helpers::clear_current_integrators(backend)
+                                .await
+                                .is_err()
                         {
                             return Self::fail_inner(phase, CommissionError::Spi);
                         }
@@ -3462,14 +3509,30 @@ impl CommissioningEngine {
                 // Clear PID integrators. These must succeed — entering
                 // position mode with stale error sums causes transients.
                 let integrators_ok = async {
-                    Self::write_sub_register_checked(backend, PID_ERROR_PID_TORQUE_ERROR_SUM, 0)
-                        .await?;
-                    Self::write_sub_register_checked(backend, PID_ERROR_PID_FLUX_ERROR_SUM, 0)
-                        .await?;
-                    Self::write_sub_register_checked(backend, PID_ERROR_PID_VELOCITY_ERROR_SUM, 0)
-                        .await?;
-                    Self::write_sub_register_checked(backend, PID_ERROR_PID_POSITION_ERROR_SUM, 0)
-                        .await?;
+                    crate::commissioning::helpers::write_sub_register_checked(
+                        backend,
+                        PID_ERROR_PID_TORQUE_ERROR_SUM,
+                        0,
+                    )
+                    .await?;
+                    crate::commissioning::helpers::write_sub_register_checked(
+                        backend,
+                        PID_ERROR_PID_FLUX_ERROR_SUM,
+                        0,
+                    )
+                    .await?;
+                    crate::commissioning::helpers::write_sub_register_checked(
+                        backend,
+                        PID_ERROR_PID_VELOCITY_ERROR_SUM,
+                        0,
+                    )
+                    .await?;
+                    crate::commissioning::helpers::write_sub_register_checked(
+                        backend,
+                        PID_ERROR_PID_POSITION_ERROR_SUM,
+                        0,
+                    )
+                    .await?;
                     backend
                         .write_register(STATUS_FLAGS, 0)
                         .await
@@ -3521,27 +3584,67 @@ impl CommissioningEngine {
 
                 // Best-effort filter writes (warn on failure, don't abort).
                 if velocity_filter_hz > 0 {
-                    Self::write_biquad_velocity(backend, velocity_filter_hz, pwm_maxcnt).await;
+                    crate::commissioning::helpers::write_biquad_velocity(
+                        backend,
+                        velocity_filter_hz,
+                        pwm_maxcnt,
+                    )
+                    .await;
                 } else {
-                    Self::write_sub_register(backend, CONFIG_BIQUAD_V_ENABLE, 0).await;
+                    crate::commissioning::helpers::write_sub_register(
+                        backend,
+                        CONFIG_BIQUAD_V_ENABLE,
+                        0,
+                    )
+                    .await;
                 }
 
                 if torque_filter_hz > 0 {
-                    Self::write_biquad_torque(backend, torque_filter_hz, pwm_maxcnt).await;
+                    crate::commissioning::helpers::write_biquad_torque(
+                        backend,
+                        torque_filter_hz,
+                        pwm_maxcnt,
+                    )
+                    .await;
                 } else {
-                    Self::write_sub_register(backend, CONFIG_BIQUAD_T_ENABLE, 0).await;
+                    crate::commissioning::helpers::write_sub_register(
+                        backend,
+                        CONFIG_BIQUAD_T_ENABLE,
+                        0,
+                    )
+                    .await;
                 }
 
                 if position_filter_hz > 0 {
-                    Self::write_biquad_position(backend, position_filter_hz, pwm_maxcnt).await;
+                    crate::commissioning::helpers::write_biquad_position(
+                        backend,
+                        position_filter_hz,
+                        pwm_maxcnt,
+                    )
+                    .await;
                 } else {
-                    Self::write_sub_register(backend, CONFIG_BIQUAD_X_ENABLE, 0).await;
+                    crate::commissioning::helpers::write_sub_register(
+                        backend,
+                        CONFIG_BIQUAD_X_ENABLE,
+                        0,
+                    )
+                    .await;
                 }
 
                 if flux_filter_hz > 0 {
-                    Self::write_biquad_flux(backend, flux_filter_hz, pwm_maxcnt).await;
+                    crate::commissioning::helpers::write_biquad_flux(
+                        backend,
+                        flux_filter_hz,
+                        pwm_maxcnt,
+                    )
+                    .await;
                 } else {
-                    Self::write_sub_register(backend, CONFIG_BIQUAD_F_ENABLE, 0).await;
+                    crate::commissioning::helpers::write_sub_register(
+                        backend,
+                        CONFIG_BIQUAD_F_ENABLE,
+                        0,
+                    )
+                    .await;
                 }
 
                 *cle_state = ClosedLoopEntryState::EnterPositionMode;
@@ -5490,31 +5593,63 @@ impl CommissioningEngine {
         // Enable or explicitly disable each filter to avoid stale biquad
         // state leaking from prior commissioning runs or host configuration.
         if let Some(cutoff_hz) = filter_config.velocity_filter_hz {
-            Self::write_biquad_velocity(backend, cutoff_hz as u16, pwm_maxcnt).await;
+            crate::commissioning::helpers::write_biquad_velocity(
+                backend,
+                cutoff_hz as u16,
+                pwm_maxcnt,
+            )
+            .await;
         } else {
-            Self::write_sub_register(backend, foci_tmc4671::registers::CONFIG_BIQUAD_V_ENABLE, 0)
-                .await;
+            crate::commissioning::helpers::write_sub_register(
+                backend,
+                foci_tmc4671::registers::CONFIG_BIQUAD_V_ENABLE,
+                0,
+            )
+            .await;
         }
 
         if let Some(cutoff_hz) = filter_config.position_filter_hz {
-            Self::write_biquad_position(backend, cutoff_hz as u16, pwm_maxcnt).await;
+            crate::commissioning::helpers::write_biquad_position(
+                backend,
+                cutoff_hz as u16,
+                pwm_maxcnt,
+            )
+            .await;
         } else {
-            Self::write_sub_register(backend, foci_tmc4671::registers::CONFIG_BIQUAD_X_ENABLE, 0)
-                .await;
+            crate::commissioning::helpers::write_sub_register(
+                backend,
+                foci_tmc4671::registers::CONFIG_BIQUAD_X_ENABLE,
+                0,
+            )
+            .await;
         }
 
         if let Some(cutoff_hz) = filter_config.flux_filter_hz {
-            Self::write_biquad_flux(backend, cutoff_hz as u16, pwm_maxcnt).await;
-        } else {
-            Self::write_sub_register(backend, foci_tmc4671::registers::CONFIG_BIQUAD_F_ENABLE, 0)
+            crate::commissioning::helpers::write_biquad_flux(backend, cutoff_hz as u16, pwm_maxcnt)
                 .await;
+        } else {
+            crate::commissioning::helpers::write_sub_register(
+                backend,
+                foci_tmc4671::registers::CONFIG_BIQUAD_F_ENABLE,
+                0,
+            )
+            .await;
         }
 
         if let Some(cutoff_hz) = filter_config.torque_filter_hz {
-            Self::write_biquad_torque(backend, cutoff_hz as u16, pwm_maxcnt).await;
+            crate::commissioning::helpers::write_biquad_torque(
+                backend,
+                cutoff_hz as u16,
+                pwm_maxcnt,
+            )
+            .await;
         } else {
-            Self::write_sub_register(backend, foci_tmc4671::registers::CONFIG_BIQUAD_T_ENABLE, 0)
-                .await;
+            crate::commissioning::helpers::write_sub_register(
+                backend,
+                foci_tmc4671::registers::CONFIG_BIQUAD_T_ENABLE,
+                0,
+            )
+            .await;
         }
 
         defmt::info!(
@@ -5534,120 +5669,6 @@ impl CommissioningEngine {
             diagnostics,
         };
         StepResult::PhaseChanged(PhaseId::Commit)
-    }
-
-    // -------------------------------------------------------------------
-    // Biquad filter write helpers
-    // -------------------------------------------------------------------
-
-    /// Write a sub-register via the backend's regular register writes.
-    ///
-    /// TMC4671 sub-registers use address register 0x4D and data register 0x4E.
-    async fn write_sub_register<B: CommissioningBackend>(
-        backend: &mut B,
-        sub: foci_tmc4671::registers::SubRegister,
-        value: u32,
-    ) {
-        let _ = backend.write_register(sub.addr, sub.sub_addr as u32).await;
-        let _ = backend.write_register(sub.data, value).await;
-    }
-
-    /// Write a sub-register, returning `Err(())` if either SPI transfer fails.
-    async fn write_sub_register_checked<B: CommissioningBackend>(
-        backend: &mut B,
-        sub: foci_tmc4671::registers::SubRegister,
-        value: u32,
-    ) -> Result<(), ()> {
-        backend
-            .write_register(sub.addr, sub.sub_addr as u32)
-            .await
-            .map_err(|_| ())?;
-        backend
-            .write_register(sub.data, value)
-            .await
-            .map_err(|_| ())
-    }
-
-    /// Clear torque/flux PI error sums for current-loop captures.
-    async fn clear_current_integrators<B: CommissioningBackend>(backend: &mut B) -> Result<(), ()> {
-        use foci_tmc4671::registers::{
-            PID_ERROR_PID_FLUX_ERROR_SUM, PID_ERROR_PID_TORQUE_ERROR_SUM,
-        };
-
-        Self::write_sub_register_checked(backend, PID_ERROR_PID_TORQUE_ERROR_SUM, 0).await?;
-        Self::write_sub_register_checked(backend, PID_ERROR_PID_FLUX_ERROR_SUM, 0).await
-    }
-
-    /// Write velocity biquad filter coefficients.
-    async fn write_biquad_velocity<B: CommissioningBackend>(
-        backend: &mut B,
-        cutoff_hz: u16,
-        pwm_maxcnt: u16,
-    ) {
-        use foci_tmc4671::registers::*;
-        if let Some(coeffs) = crate::biquad::butterworth_lowpass(cutoff_hz, pwm_maxcnt) {
-            Self::write_sub_register(backend, CONFIG_BIQUAD_V_A_1, coeffs.a_1 as u32).await;
-            Self::write_sub_register(backend, CONFIG_BIQUAD_V_A_2, coeffs.a_2 as u32).await;
-            Self::write_sub_register(backend, CONFIG_BIQUAD_V_B_0, coeffs.b_0 as u32).await;
-            Self::write_sub_register(backend, CONFIG_BIQUAD_V_B_1, coeffs.b_1 as u32).await;
-            Self::write_sub_register(backend, CONFIG_BIQUAD_V_B_2, coeffs.b_2 as u32).await;
-            Self::write_sub_register(backend, CONFIG_BIQUAD_V_ENABLE, 1).await;
-            defmt::info!("biquad velocity: {}Hz enabled", cutoff_hz);
-        }
-    }
-
-    /// Write position biquad filter coefficients.
-    async fn write_biquad_position<B: CommissioningBackend>(
-        backend: &mut B,
-        cutoff_hz: u16,
-        pwm_maxcnt: u16,
-    ) {
-        use foci_tmc4671::registers::*;
-        if let Some(coeffs) = crate::biquad::butterworth_lowpass(cutoff_hz, pwm_maxcnt) {
-            Self::write_sub_register(backend, CONFIG_BIQUAD_X_A_1, coeffs.a_1 as u32).await;
-            Self::write_sub_register(backend, CONFIG_BIQUAD_X_A_2, coeffs.a_2 as u32).await;
-            Self::write_sub_register(backend, CONFIG_BIQUAD_X_B_0, coeffs.b_0 as u32).await;
-            Self::write_sub_register(backend, CONFIG_BIQUAD_X_B_1, coeffs.b_1 as u32).await;
-            Self::write_sub_register(backend, CONFIG_BIQUAD_X_B_2, coeffs.b_2 as u32).await;
-            Self::write_sub_register(backend, CONFIG_BIQUAD_X_ENABLE, 1).await;
-            defmt::info!("biquad position: {}Hz enabled", cutoff_hz);
-        }
-    }
-
-    /// Write flux biquad filter coefficients.
-    async fn write_biquad_flux<B: CommissioningBackend>(
-        backend: &mut B,
-        cutoff_hz: u16,
-        pwm_maxcnt: u16,
-    ) {
-        use foci_tmc4671::registers::*;
-        if let Some(coeffs) = crate::biquad::butterworth_lowpass(cutoff_hz, pwm_maxcnt) {
-            Self::write_sub_register(backend, CONFIG_BIQUAD_F_A_1, coeffs.a_1 as u32).await;
-            Self::write_sub_register(backend, CONFIG_BIQUAD_F_A_2, coeffs.a_2 as u32).await;
-            Self::write_sub_register(backend, CONFIG_BIQUAD_F_B_0, coeffs.b_0 as u32).await;
-            Self::write_sub_register(backend, CONFIG_BIQUAD_F_B_1, coeffs.b_1 as u32).await;
-            Self::write_sub_register(backend, CONFIG_BIQUAD_F_B_2, coeffs.b_2 as u32).await;
-            Self::write_sub_register(backend, CONFIG_BIQUAD_F_ENABLE, 1).await;
-            defmt::info!("biquad flux: {}Hz enabled", cutoff_hz);
-        }
-    }
-
-    /// Write torque biquad filter coefficients.
-    async fn write_biquad_torque<B: CommissioningBackend>(
-        backend: &mut B,
-        cutoff_hz: u16,
-        pwm_maxcnt: u16,
-    ) {
-        use foci_tmc4671::registers::*;
-        if let Some(coeffs) = crate::biquad::butterworth_lowpass(cutoff_hz, pwm_maxcnt) {
-            Self::write_sub_register(backend, CONFIG_BIQUAD_T_A_1, coeffs.a_1 as u32).await;
-            Self::write_sub_register(backend, CONFIG_BIQUAD_T_A_2, coeffs.a_2 as u32).await;
-            Self::write_sub_register(backend, CONFIG_BIQUAD_T_B_0, coeffs.b_0 as u32).await;
-            Self::write_sub_register(backend, CONFIG_BIQUAD_T_B_1, coeffs.b_1 as u32).await;
-            Self::write_sub_register(backend, CONFIG_BIQUAD_T_B_2, coeffs.b_2 as u32).await;
-            Self::write_sub_register(backend, CONFIG_BIQUAD_T_ENABLE, 1).await;
-            defmt::info!("biquad torque: {}Hz enabled", cutoff_hz);
-        }
     }
 
     // -------------------------------------------------------------------
