@@ -1,27 +1,30 @@
 //! Commissioning state machine and hardware backend.
 //!
 //! The [`CommissioningEngine`] is a cooperative state machine invoked
-//! every 1ms by the `tmc_control` task. Each `step()` call advances
-//! the current phase by one chunk of work (max 1ms runtime).
+//! every 1ms by the `tmc_control` task. Each `step()` call advances the
+//! current phase by one chunk of work (max 1ms runtime).
 //!
-//! Phases 1-4 (diagnostics) are implemented here. Phases 5-7
-//! (electrical ID, current tune, validation) are filled by the
-//! electrical-ID and current-tune plans.
+//! Implementation now lives in `commissioning/`; this module retains the
+//! `CommissioningEngine` struct and constructors plus the inner-only
+//! sub-state types until the final pass moves them out too.
 
 use crate::autotune::{
     CommissionError, CommissionProfile, CommissionStatus, CurrentGains, CurrentValidation,
-    ElectricalModel, InnerSequence, MechanicalModel, OperatingMode, TransientBuffer, VelocityGains,
-    VelocityValidation,
+    ElectricalModel, InnerSequence, MechanicalModel, OperatingMode, TransientBuffer,
 };
 
 pub(crate) use crate::commissioning::inner::InnerPhase;
+pub(crate) use crate::commissioning::outer::{
+    MechanicalIdData, MechanicalIdState, OUTER_FALLBACK_POSITION_I, OUTER_FALLBACK_POSITION_P,
+    OUTER_FALLBACK_VELOCITY_I, OUTER_FALLBACK_VELOCITY_P, OUTER_MAX_POSITION_I,
+    OUTER_MAX_POSITION_P, OUTER_MAX_VELOCITY_I, OUTER_MAX_VELOCITY_P, OUTER_WARNING_NONE,
+    OUTER_WARNING_UNSAFE_SYNTH_GAINS, OuterDiagnostics, OuterPhase, OuterSafetyLimits,
+    POS_TUNE_INITIAL_P, POS_TUNE_STEP_COUNTS, PositionTuneData, PositionTuneState,
+    VELOCITY_CAP_COUNTS_PER_MS, VelocityTuneStrategy, VelocityValidateData, VelocityValidateState,
+};
 pub use crate::commissioning::types::{
     AdcCalResult, CommissionResult, CommissioningBackend, InnerResult, OuterResult, StepResult,
 };
-
-// ---------------------------------------------------------------------------
-// Diagnostic sub-state constants
-// ---------------------------------------------------------------------------
 
 use crate::autotune::CaptureDirection;
 
@@ -73,10 +76,6 @@ pub(crate) struct CurrentValidateData {
     /// Configured PIDOUT voltage limit for saturation detection.
     pub(crate) pidout_limit: u32,
 }
-
-// ---------------------------------------------------------------------------
-// Diagnostic sub-states
-// ---------------------------------------------------------------------------
 
 /// ADC calibration sub-state.
 #[derive(Debug, defmt::Format)]
@@ -246,401 +245,6 @@ pub(crate) enum ElectricalIdState {
     // --- Final ---
     /// Assemble ElectricalModel and validate.
     Validate,
-}
-
-// ---------------------------------------------------------------------------
-// Outer safety-envelope constants
-// ---------------------------------------------------------------------------
-
-/// Default velocity cap in encoder counts per millisecond.
-/// 4 rev/s at 4000 counts/rev = 16000 counts/s = 16 counts/ms.
-/// Raised from 8 (2 rev/s) because MechanicalId at 60% torque
-/// on low-inertia motors exceeds 8 counts/ms.
-///
-pub(crate) const VELOCITY_CAP_COUNTS_PER_MS: i32 = 16;
-
-/// Default position window: +/- encoder counts from start position.
-/// 2 revolutions at 4096 counts/rev = 8192 counts.
-const POSITION_WINDOW_COUNTS: i32 = 8192;
-
-// ---------------------------------------------------------------------------
-// Position-loop tuning constants (Phase 11)
-// ---------------------------------------------------------------------------
-
-pub(crate) const POS_TUNE_INITIAL_P: u16 = 128;
-
-/// Motor-local position step for position-loop tuning, in ABN encoder counts.
-///
-/// The TMC position target is written in electrical-position units, while
-/// response capture uses ABN counts. Keep the commanded move small enough for
-/// installed mechanics but larger than one-count quantization noise.
-pub(crate) const POS_TUNE_STEP_COUNTS: u32 = 8;
-
-/// Conservative velocity-loop runtime fallback used when autotuned outer gains
-/// exceed the accepted safety envelope. These are the same defaults used by
-/// closed-loop entry when no outer gains are configured.
-pub(crate) const OUTER_FALLBACK_VELOCITY_P: u16 = 1152;
-pub(crate) const OUTER_FALLBACK_VELOCITY_I: u16 = 0;
-
-/// Conservative position-loop runtime fallback used with
-/// `OUTER_FALLBACK_VELOCITY_*`.
-pub(crate) const OUTER_FALLBACK_POSITION_P: u16 = 640;
-pub(crate) const OUTER_FALLBACK_POSITION_I: u16 = 0;
-
-/// Maximum accepted autotuned velocity P gain.
-///
-/// The current mechanical-ID scaling can saturate the velocity P register on
-/// real hardware. Accepting those gains caused immediate velocity/position
-/// limit windup during normal motion, so keep runtime gains near the known-good
-/// default envelope until the mechanical model scaling is reworked.
-pub(crate) const OUTER_MAX_VELOCITY_P: u16 = OUTER_FALLBACK_VELOCITY_P * 4;
-pub(crate) const OUTER_MAX_VELOCITY_I: u16 = 512;
-pub(crate) const OUTER_MAX_POSITION_P: u16 = OUTER_FALLBACK_POSITION_P * 4;
-pub(crate) const OUTER_MAX_POSITION_I: u16 = 128;
-
-pub(crate) const OUTER_WARNING_NONE: u8 = 0;
-pub(crate) const OUTER_WARNING_UNSAFE_SYNTH_GAINS: u8 = 2;
-
-// ---------------------------------------------------------------------------
-// Mechanical identification sub-states
-// ---------------------------------------------------------------------------
-
-/// Mechanical identification sub-state machine (Phase 8).
-#[derive(Debug, defmt::Format)]
-pub(crate) enum MechanicalIdState {
-    /// Record starting position, configure torque mode.
-    Setup,
-    /// Apply torque step and begin forward capture.
-    ForwardStart,
-    /// Sample encoder position into transient buffer at 1 kHz.
-    ForwardCapture { next_sample_us: u64 },
-    /// Return to zero torque and wait for settling.
-    ForwardSettle { deadline_us: u64 },
-    /// Apply reverse torque step and begin reverse capture.
-    ReverseStart,
-    /// Sample encoder position for reverse direction.
-    ReverseCapture { next_sample_us: u64 },
-    /// Return to zero torque and wait for settling.
-    ReverseSettle { deadline_us: u64 },
-    /// Estimate mechanical parameters from captured data.
-    Estimate,
-    /// Validate gates and finalize.
-    Finalize,
-}
-
-/// Accumulated data for mechanical identification.
-#[derive(Debug, defmt::Format)]
-pub(crate) struct MechanicalIdData {
-    /// Starting encoder position recorded at setup.
-    pub(crate) start_position: i32,
-    /// Retry attempt index for adaptive torque steps.
-    pub(crate) attempt: u8,
-    /// Torque step amplitude (PIDOUT units).
-    pub(crate) torque_step: u16,
-    /// Forward capture: per-sample velocity (encoder counts/ms).
-    /// Stored as [initial_acceleration, peak_velocity] pairs.
-    pub(crate) forward_initial_accel: i32,
-    pub(crate) forward_peak_velocity: i32,
-    pub(crate) forward_delay_samples: u16,
-    pub(crate) forward_travel: u32,
-    /// Reverse capture: same metrics.
-    pub(crate) reverse_initial_accel: i32,
-    pub(crate) reverse_peak_velocity: i32,
-    pub(crate) reverse_delay_samples: u16,
-    pub(crate) reverse_travel: u32,
-}
-
-impl MechanicalIdData {
-    pub(crate) fn new(start_position: i32, torque_step: u16) -> Self {
-        Self {
-            start_position,
-            attempt: 0,
-            torque_step,
-            forward_initial_accel: 0,
-            forward_peak_velocity: 0,
-            forward_delay_samples: 0,
-            forward_travel: 0,
-            reverse_initial_accel: 0,
-            reverse_peak_velocity: 0,
-            reverse_delay_samples: 0,
-            reverse_travel: 0,
-        }
-    }
-
-    pub(crate) fn reset_captures(&mut self) {
-        self.forward_initial_accel = 0;
-        self.forward_peak_velocity = 0;
-        self.forward_delay_samples = 0;
-        self.forward_travel = 0;
-        self.reverse_initial_accel = 0;
-        self.reverse_peak_velocity = 0;
-        self.reverse_delay_samples = 0;
-        self.reverse_travel = 0;
-    }
-}
-
-/// Mechanical-ID diagnostics carried into the final host result.
-#[derive(Debug, Clone, Copy, defmt::Format)]
-pub(crate) struct OuterDiagnostics {
-    pub(crate) warning_code: u8,
-    pub(crate) mech_torque_step: u16,
-    pub(crate) mech_fwd_accel: u32,
-    pub(crate) mech_rev_accel: u32,
-    pub(crate) mech_fwd_peak_velocity: u32,
-    pub(crate) mech_rev_peak_velocity: u32,
-    pub(crate) mech_fwd_travel: u32,
-    pub(crate) mech_rev_travel: u32,
-    pub(crate) synth_velocity_p: u16,
-    pub(crate) synth_velocity_i: u16,
-    pub(crate) synth_position_p: u16,
-    pub(crate) synth_position_i: u16,
-}
-
-impl OuterDiagnostics {
-    pub(crate) fn from_mechanical_id(data: &MechanicalIdData) -> Self {
-        Self {
-            warning_code: OUTER_WARNING_NONE,
-            mech_torque_step: data.torque_step,
-            mech_fwd_accel: data.forward_initial_accel.unsigned_abs(),
-            mech_rev_accel: data.reverse_initial_accel.unsigned_abs(),
-            mech_fwd_peak_velocity: data.forward_peak_velocity.unsigned_abs(),
-            mech_rev_peak_velocity: data.reverse_peak_velocity.unsigned_abs(),
-            mech_fwd_travel: data.forward_travel,
-            mech_rev_travel: data.reverse_travel,
-            synth_velocity_p: 0,
-            synth_velocity_i: 0,
-            synth_position_p: 0,
-            synth_position_i: 0,
-        }
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Velocity validation sub-states
-// ---------------------------------------------------------------------------
-
-/// Velocity-loop validation sub-state machine (Phase 10).
-#[derive(Debug, defmt::Format)]
-pub(crate) enum VelocityValidateState {
-    /// Write velocity gains to TMC4671 registers.
-    WriteGains,
-    /// Switch to velocity mode and apply forward velocity step.
-    ForwardStep,
-    /// Capture forward step response at 1 kHz.
-    ForwardCapture { next_sample_us: u64 },
-    /// Return to zero velocity and wait for settling.
-    ForwardSettle { deadline_us: u64 },
-    /// Apply reverse velocity step.
-    ReverseStep,
-    /// Capture reverse step response.
-    ReverseCapture { next_sample_us: u64 },
-    /// Return to zero velocity and wait for settling.
-    ReverseSettle { deadline_us: u64 },
-    /// Monitor zero-speed chatter for 200ms.
-    ChatterCheck { next_sample_us: u64, remaining: u16 },
-    /// Extract metrics and classify response.
-    Classify,
-    /// Restore safe state before finalize or retry.
-    SafeState { deadline_us: u64 },
-    /// Emit result or transition.
-    Finalize,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
-pub(crate) enum VelocityTuneStrategy {
-    /// Validate gains synthesized from the mechanical model.
-    Model,
-    /// Tune motor-local velocity P from bounded closed-loop response.
-    ResponseRamp,
-}
-
-/// Accumulated data for velocity-loop validation.
-#[derive(Debug, defmt::Format)]
-pub(crate) struct VelocityValidateData {
-    /// Synthesized velocity gains for the current attempt.
-    pub(crate) gains: VelocityGains,
-    /// Last response-ramp gain set that validated cleanly.
-    pub(crate) accepted_gains: VelocityGains,
-    /// Whether `accepted_gains` came from a passing response-ramp attempt.
-    pub(crate) has_accepted_gains: bool,
-    /// The mechanical model from Phase 8 (needed for retry re-synthesis).
-    pub(crate) model: MechanicalModel,
-    /// Velocity tuning strategy for this run.
-    pub(crate) strategy: VelocityTuneStrategy,
-    /// Current attempt (0 = first, 1 = retry).
-    pub(crate) attempt: u8,
-    /// Velocity step amplitude (encoder counts/ms or velocity target units).
-    pub(crate) step_target: u32,
-    /// Forward capture metrics.
-    pub(crate) forward_metrics: Option<VelocityValidation>,
-    /// Reverse capture metrics.
-    pub(crate) reverse_metrics: Option<VelocityValidation>,
-    /// Maximum chatter value observed during zero-speed check.
-    pub(crate) max_chatter: u32,
-    /// Peak velocity from mechanical ID (for velocity limit derivation).
-    pub(crate) peak_velocity: u32,
-    /// Previous encoder count for velocity derivation (position delta per tick).
-    pub(crate) prev_encoder_for_velocity: u32,
-    /// Saturation counter: samples where the velocity PID's torque output
-    /// is near the current limit (indicating the controller is effort-limited).
-    pub(crate) saturation_count: u16,
-    /// Current limit for saturation detection (from `backend.current_limit()`).
-    pub(crate) torque_limit: u32,
-    /// Operational velocity limit to restore after validation.
-    pub(crate) operational_velocity_limit: u32,
-    /// Diagnostics carried into the final result.
-    pub(crate) diagnostics: OuterDiagnostics,
-}
-
-// ---------------------------------------------------------------------------
-// Position-loop tuning sub-states (Phase 11)
-// ---------------------------------------------------------------------------
-
-/// Position-loop tuning sub-state machine (Phase 11).
-#[derive(Debug, defmt::Format)]
-pub(crate) enum PositionTuneState {
-    /// Switch to position mode and write initial P gain.
-    Setup,
-    /// Command a position step and capture response.
-    StepCapture { next_sample_us: u64 },
-    /// Wait for settling after capture.
-    Settle { deadline_us: u64 },
-    /// Analyze capture: oscillation check and decide to increase P or stop.
-    Analyze,
-    /// Restore safe state and finalize.
-    Finalize,
-}
-
-/// Accumulated data for position-loop tuning.
-#[derive(Debug, defmt::Format)]
-pub(crate) struct PositionTuneData {
-    /// Current candidate P gain.
-    pub(crate) current_p: u16,
-    /// Last known stable P gain (no oscillation).
-    pub(crate) stable_p: u16,
-    /// Position step target in ABN encoder counts.
-    pub(crate) step_target_counts: u32,
-    /// Position step target in TMC electrical-position units.
-    pub(crate) step_target_tmc: u32,
-    /// Starting ABN encoder count for response measurement.
-    pub(crate) step_start_counts: i32,
-    /// Starting TMC position for target writes.
-    pub(crate) step_start_tmc: i32,
-    /// Whether oscillation was detected early (at the first P value).
-    pub(crate) oscillation_at_minimum: bool,
-    /// Accepted velocity gains from Phase 10.
-    pub(crate) velocity_gains: VelocityGains,
-    /// Whether zero-speed chatter was detected during velocity validation.
-    pub(crate) velocity_chatter: bool,
-    /// Whether current ringing was detected (from inner validation).
-    pub(crate) current_ringing: bool,
-    /// Current-loop effective bandwidth Hz (for filter recommendation).
-    pub(crate) current_bandwidth_hz: u32,
-    /// Identified effective inertia from mechanical ID (internal units).
-    pub(crate) j_eff: u32,
-    /// Identified effective damping from mechanical ID (internal units).
-    pub(crate) b_eff: u32,
-    /// Diagnostics carried into the final result.
-    pub(crate) diagnostics: OuterDiagnostics,
-}
-
-/// Outer safety limits, computed once at the start of outer commissioning.
-#[derive(Debug, Clone, Copy, defmt::Format)]
-pub(crate) struct OuterSafetyLimits {
-    /// Maximum absolute velocity in encoder counts per millisecond.
-    pub(crate) velocity_cap: i32,
-    /// Maximum distance from start position in encoder counts.
-    pub(crate) position_window: i32,
-    /// Unwrapped signed position accumulated from wrap-aware deltas.
-    pub(crate) unwrapped_position: i32,
-    /// Torque cap: the configured run_current limit.
-    pub(crate) torque_cap: u16,
-    /// Previous raw encoder count for delta computation.
-    pub(crate) prev_encoder_count: i32,
-    /// Encoder counts per revolution (PPR * 4). Used to normalize
-    /// wrap-around deltas when the ABN decoder counter rolls over.
-    pub(crate) counts_per_rev: i32,
-}
-
-impl OuterSafetyLimits {
-    pub(crate) fn new(start_position: i32, torque_cap: u16) -> Self {
-        Self {
-            velocity_cap: VELOCITY_CAP_COUNTS_PER_MS,
-            position_window: POSITION_WINDOW_COUNTS,
-            unwrapped_position: 0,
-            torque_cap,
-            prev_encoder_count: start_position,
-            counts_per_rev: 0, // Set by MechanicalId::Setup after reading ABN_DECODER_PPR
-        }
-    }
-}
-
-/// Outer commissioning phase state machine.
-#[derive(Debug, defmt::Format)]
-#[allow(dead_code)] // Later phases (9-13) are placeholders for future plans.
-pub(crate) enum OuterPhase {
-    /// Phase 8: Mechanical identification.
-    MechanicalId {
-        state: MechanicalIdState,
-        data: MechanicalIdData,
-        safety: OuterSafetyLimits,
-    },
-    /// Phase 9: Velocity-loop SIMC gain synthesis.
-    VelocityTune {
-        model: MechanicalModel,
-        /// Peak velocity from mechanical ID (for velocity limit derivation).
-        peak_velocity: u32,
-        diagnostics: OuterDiagnostics,
-        safety: OuterSafetyLimits,
-    },
-    /// Phase 10: Velocity-loop step-response validation.
-    VelocityValidate {
-        state: VelocityValidateState,
-        data: VelocityValidateData,
-        safety: OuterSafetyLimits,
-    },
-    /// Phase 11: Position-loop P ramp-up.
-    PositionTune {
-        state: PositionTuneState,
-        data: PositionTuneData,
-        safety: OuterSafetyLimits,
-    },
-    /// Phase 12: Filter selection.
-    FilterTune {
-        /// Accepted velocity gains.
-        velocity_gains: VelocityGains,
-        /// Accepted position gains.
-        position_gains: crate::autotune::PositionGains,
-        /// Whether position oscillation was detected early (at minimum P).
-        position_oscillation_early: bool,
-        /// Whether velocity chatter was detected.
-        velocity_chatter: bool,
-        /// Whether current ringing was detected.
-        current_ringing: bool,
-        /// Current-loop bandwidth Hz.
-        current_bandwidth_hz: u32,
-        /// Identified effective inertia from mechanical ID (internal units).
-        j_eff: u32,
-        /// Identified effective damping from mechanical ID (internal units).
-        b_eff: u32,
-        diagnostics: OuterDiagnostics,
-        safety: OuterSafetyLimits,
-    },
-    /// Phase 13: Assemble and transmit results.
-    Commit {
-        velocity_gains: VelocityGains,
-        position_gains: crate::autotune::PositionGains,
-        filter_config: crate::autotune::FilterConfig,
-        /// Identified effective inertia from mechanical ID (internal units).
-        j_eff: u32,
-        /// Identified effective damping from mechanical ID (internal units).
-        b_eff: u32,
-        diagnostics: OuterDiagnostics,
-    },
-    /// All outer phases completed.
-    Done(OuterResult),
-    /// A phase failed.
-    Failed(CommissionError),
 }
 
 /// Parameters for outer (mechanical) commissioning engine construction.
@@ -874,13 +478,13 @@ impl CommissioningEngine {
 
     /// Advance the state machine by one tick (max 1ms).
     ///
-    /// Returns a [`StepResult`] indicating whether to continue,
-    /// report a phase transition, or finalize.
+    /// Returns a [`StepResult`] indicating whether to continue, report
+    /// a phase transition, or finalize.
     ///
-    /// The method destructures `engine_mode` to pass `phase` and
-    /// `buf` separately, avoiding a double `&mut self` borrow.
+    /// Destructures `engine_mode` to pass `phase` and `buf` separately,
+    /// avoiding a double `&mut self` borrow.
     pub async fn step<B: CommissioningBackend>(&mut self, backend: &mut B) -> StepResult {
-        // E-stop check at the top of every step
+        // E-stop check at the top of every step.
         if backend.is_shutdown_requested() {
             return self.abort(CommissionError::Shutdown);
         }
@@ -914,7 +518,7 @@ impl CommissioningEngine {
                 current_bandwidth_hz,
                 ..
             } => {
-                Self::step_outer(
+                crate::commissioning::outer::step_outer(
                     phase,
                     &mut self.buf,
                     *profile,
@@ -937,97 +541,9 @@ impl CommissioningEngine {
             EngineMode::Outer { .. } => StepResult::OuterFailed(error),
         }
     }
-
-    // -------------------------------------------------------------------
-    // Outer phase dispatch and safety
-    // -------------------------------------------------------------------
-
-    /// Step outer phase state machine.
-    ///
-    /// Dispatches to per-phase handlers. Every tick runs the safety
-    /// envelope check before the phase-specific logic.
-    #[allow(clippy::too_many_arguments)]
-    async fn step_outer<B: CommissioningBackend>(
-        phase: &mut OuterPhase,
-        buf: &mut TransientBuffer,
-        profile: CommissionProfile,
-        mode: OperatingMode,
-        inner_lambda_us: u32,
-        theta_e_us: u32,
-        current_ringing: bool,
-        current_bandwidth_hz: u32,
-        backend: &mut B,
-    ) -> StepResult {
-        // Run per-tick safety envelope for all active phases.
-        if let Some(safety) = Self::outer_safety_mut(phase)
-            && crate::commissioning::outer::check_outer_safety(safety, backend).await
-        {
-            // Zero excitation immediately on any safety violation.
-            let _ = backend
-                .write_register(foci_tmc4671::registers::PID_TORQUE_FLUX_TARGET, 0)
-                .await;
-            let _ = backend
-                .write_register(foci_tmc4671::registers::MODE_RAMP_MODE_MOTION, 0)
-                .await;
-            let err = crate::commissioning::outer::safety_error_for_phase(phase);
-            return crate::commissioning::outer::fail_outer(phase, err);
-        }
-
-        match phase {
-            OuterPhase::MechanicalId { .. } => {
-                crate::commissioning::outer::mechanical::step_mechanical_id(phase, buf, backend)
-                    .await
-            }
-            OuterPhase::VelocityTune { .. } => {
-                crate::commissioning::outer::velocity::step_velocity_tune(
-                    phase,
-                    profile,
-                    mode,
-                    inner_lambda_us,
-                    theta_e_us,
-                    backend,
-                )
-                .await
-            }
-            OuterPhase::VelocityValidate { .. } => {
-                crate::commissioning::outer::velocity::step_velocity_validate(
-                    phase,
-                    buf,
-                    profile,
-                    mode,
-                    inner_lambda_us,
-                    theta_e_us,
-                    current_ringing,
-                    current_bandwidth_hz,
-                    backend,
-                )
-                .await
-            }
-            OuterPhase::PositionTune { .. } => {
-                crate::commissioning::outer::position::step_position_tune(phase, buf, mode, backend)
-                    .await
-            }
-            OuterPhase::FilterTune { .. } => {
-                crate::commissioning::outer::filter::step_filter_tune(phase, backend).await
-            }
-            OuterPhase::Commit { .. } => crate::commissioning::outer::commit::step_commit(phase),
-            OuterPhase::Done(result) => StepResult::OuterDone(result.clone()),
-            OuterPhase::Failed(err) => StepResult::OuterFailed(*err),
-        }
-    }
-
-    /// Get a mutable reference to the safety limits for the current phase.
-    ///
-    /// Returns `None` for terminal phases (Done/Failed/Commit) that don't
-    /// need per-tick safety checks.
-    fn outer_safety_mut(phase: &mut OuterPhase) -> Option<&mut OuterSafetyLimits> {
-        match phase {
-            OuterPhase::MechanicalId { safety, .. }
-            | OuterPhase::VelocityTune { safety, .. }
-            | OuterPhase::VelocityValidate { safety, .. }
-            | OuterPhase::PositionTune { safety, .. }
-            | OuterPhase::FilterTune { safety, .. } => Some(safety),
-            OuterPhase::Commit { .. } | OuterPhase::Done(_) | OuterPhase::Failed(_) => None,
-        }
-    }
 }
+
+// MechanicalModel is referenced inside EngineMode but currently not via a
+// public path; explicit use to satisfy the import set.
+#[allow(dead_code)]
+const _: Option<MechanicalModel> = None;
