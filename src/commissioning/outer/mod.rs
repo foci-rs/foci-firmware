@@ -6,6 +6,7 @@
 //! plus the safety-envelope guard used by every outer step.
 
 pub mod mechanical;
+pub mod position;
 pub mod response;
 pub mod velocity;
 

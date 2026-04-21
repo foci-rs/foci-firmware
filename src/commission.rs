@@ -263,23 +263,11 @@ pub(crate) const VELOCITY_CAP_COUNTS_PER_MS: i32 = 16;
 /// 2 revolutions at 4096 counts/rev = 8192 counts.
 const POSITION_WINDOW_COUNTS: i32 = 8192;
 
-/// Position mode with MODE_PID_TYPE set, matching production closed-loop entry.
-const OUTER_POSITION_MODE: u32 = 0x8000_0003;
-
 // ---------------------------------------------------------------------------
 // Position-loop tuning constants (Phase 11)
 // ---------------------------------------------------------------------------
 
-/// Starting position P gain: 128 = 0.5 in Q8.8 (conservative).
 pub(crate) const POS_TUNE_INITIAL_P: u16 = 128;
-
-/// P gain increase per iteration: 150% = P * 3 / 2.
-const POS_TUNE_P_MUL_NUM: u32 = 3;
-const POS_TUNE_P_MUL_DEN: u32 = 2;
-
-/// Position I gain as fraction of P for Nominal/HighInertia modes.
-/// 5% of P = P * 5 / 100.
-const POS_TUNE_I_PERCENT: u32 = 5;
 
 /// Motor-local position step for position-loop tuning, in ABN encoder counts.
 ///
@@ -296,7 +284,7 @@ pub(crate) const OUTER_FALLBACK_VELOCITY_I: u16 = 0;
 
 /// Conservative position-loop runtime fallback used with
 /// `OUTER_FALLBACK_VELOCITY_*`.
-const OUTER_FALLBACK_POSITION_P: u16 = 640;
+pub(crate) const OUTER_FALLBACK_POSITION_P: u16 = 640;
 const OUTER_FALLBACK_POSITION_I: u16 = 0;
 
 /// Maximum accepted autotuned velocity P gain.
@@ -307,28 +295,11 @@ const OUTER_FALLBACK_POSITION_I: u16 = 0;
 /// default envelope until the mechanical model scaling is reworked.
 pub(crate) const OUTER_MAX_VELOCITY_P: u16 = OUTER_FALLBACK_VELOCITY_P * 4;
 pub(crate) const OUTER_MAX_VELOCITY_I: u16 = 512;
-const OUTER_MAX_POSITION_P: u16 = OUTER_FALLBACK_POSITION_P * 4;
+pub(crate) const OUTER_MAX_POSITION_P: u16 = OUTER_FALLBACK_POSITION_P * 4;
 const OUTER_MAX_POSITION_I: u16 = 128;
-
-/// Maximum position P tested during ramp-up.
-///
-/// Keep Phase 11 inside the same envelope that the final commit guard accepts
-/// so tuning never exercises gains that would be rejected for runtime use.
-const POS_TUNE_MAX_P: u16 = OUTER_MAX_POSITION_P;
-
-/// Response-tuned velocity is deliberately soft. Keep position P at the
-/// fallback value so a few encoder counts of residual error do not command
-/// large hold velocity and current-loop integral effort.
-const POS_RESPONSE_TUNE_MAX_P: u16 = OUTER_FALLBACK_POSITION_P;
 
 const OUTER_WARNING_NONE: u8 = 0;
 pub(crate) const OUTER_WARNING_UNSAFE_SYNTH_GAINS: u8 = 2;
-
-/// Sampling interval for position capture (microseconds). 1 kHz.
-const POS_TUNE_SAMPLE_PERIOD_US: u64 = 1000;
-
-/// Settling time after position step (microseconds).
-const POS_TUNE_SETTLE_US: u64 = 200_000;
 
 // ---------------------------------------------------------------------------
 // Mechanical identification sub-states
@@ -1033,7 +1004,8 @@ impl CommissioningEngine {
                 .await
             }
             OuterPhase::PositionTune { .. } => {
-                Self::step_position_tune(phase, buf, mode, backend).await
+                crate::commissioning::outer::position::step_position_tune(phase, buf, mode, backend)
+                    .await
             }
             OuterPhase::FilterTune { .. } => Self::step_filter_tune(phase, backend).await,
             OuterPhase::Commit { .. } => Self::step_commit(phase),
@@ -1056,270 +1028,6 @@ impl CommissioningEngine {
             OuterPhase::Commit { .. } | OuterPhase::Done(_) | OuterPhase::Failed(_) => None,
         }
     }
-    // -------------------------------------------------------------------
-    // Phase 11: Position-Loop P Ramp-Up
-    // -------------------------------------------------------------------
-
-    /// Advance position-tune sub-state machine.
-    ///
-    /// Ramps position P from conservative starting value until oscillation
-    /// is detected or a cap is reached. Final P = last non-oscillating value.
-    async fn step_position_tune<B: CommissioningBackend>(
-        phase: &mut OuterPhase,
-        buf: &mut TransientBuffer,
-        mode: OperatingMode,
-        backend: &mut B,
-    ) -> StepResult {
-        use foci_tmc4671::registers::*;
-
-        let (state, data, safety) = match phase {
-            OuterPhase::PositionTune {
-                state,
-                data,
-                safety,
-            } => (state, data, safety),
-            _ => return StepResult::Continue,
-        };
-
-        match state {
-            PositionTuneState::Setup => {
-                // Switch to position mode using the same advanced PI
-                // controller structure as production closed-loop entry.
-                if backend
-                    .write_register(MODE_RAMP_MODE_MOTION, OUTER_POSITION_MODE)
-                    .await
-                    .is_err()
-                {
-                    return crate::commissioning::outer::fail_outer(phase, CommissionError::Spi);
-                }
-
-                // Write initial position P gain, I=0.
-                let pos_reg = (data.current_p as u32) << 16;
-                if backend
-                    .write_register(PID_POSITION_P_POSITION_I, pos_reg)
-                    .await
-                    .is_err()
-                {
-                    return crate::commissioning::outer::fail_outer(phase, CommissionError::Spi);
-                }
-
-                // Record both position domains. ABN counts are used for
-                // response measurement; PID_POSITION_ACTUAL is the TMC target
-                // domain used by PID_POSITION_TARGET.
-                let encoder_raw = backend.read_encoder_count().await;
-                data.step_start_counts = encoder_raw as i32;
-                let position_raw = match backend.read_register(PID_POSITION_ACTUAL).await {
-                    Ok(v) => v as i32,
-                    Err(_) => {
-                        return crate::commissioning::outer::fail_outer(
-                            phase,
-                            CommissionError::Spi,
-                        );
-                    }
-                };
-                data.step_start_tmc = position_raw;
-
-                // Command a position step.
-                let target = position_raw.wrapping_add(data.step_target_tmc as i32);
-                if backend
-                    .write_register(PID_POSITION_TARGET, target as u32)
-                    .await
-                    .is_err()
-                {
-                    return crate::commissioning::outer::fail_outer(phase, CommissionError::Spi);
-                }
-
-                // Prepare capture buffer.
-                buf.reset(POS_TUNE_SAMPLE_PERIOD_US as u16);
-
-                let next_sample_us = backend.elapsed_us().wrapping_add(POS_TUNE_SAMPLE_PERIOD_US);
-                *state = PositionTuneState::StepCapture { next_sample_us };
-                StepResult::Continue
-            }
-
-            PositionTuneState::StepCapture { next_sample_us } => {
-                let now = backend.elapsed_us();
-                if now.wrapping_sub(*next_sample_us) >= 0x8000_0000 {
-                    return StepResult::Continue;
-                }
-
-                let encoder_raw = backend.read_encoder_count().await;
-                // Store position relative to step start so the oscillation
-                // detector compares against the step amplitude, not absolute
-                // encoder counts.
-                let relative = (encoder_raw as i32)
-                    .wrapping_sub(data.step_start_counts)
-                    .unsigned_abs();
-                buf.push(relative);
-
-                if buf.is_full() {
-                    // Return to start position.
-                    let _ = backend
-                        .write_register(PID_POSITION_TARGET, data.step_start_tmc as u32)
-                        .await;
-
-                    let deadline = backend.elapsed_us().wrapping_add(POS_TUNE_SETTLE_US);
-                    *state = PositionTuneState::Settle {
-                        deadline_us: deadline,
-                    };
-                } else {
-                    *next_sample_us = now.wrapping_add(POS_TUNE_SAMPLE_PERIOD_US);
-                }
-                StepResult::Continue
-            }
-
-            PositionTuneState::Settle { deadline_us } => {
-                if backend.elapsed_us().wrapping_sub(*deadline_us) < 0x8000_0000 {
-                    *state = PositionTuneState::Analyze;
-                }
-                StepResult::Continue
-            }
-
-            PositionTuneState::Analyze => {
-                // Check for oscillation in the captured response.
-                let target_abs = data.step_target_counts;
-                let oscillation = crate::autotune::detect_position_oscillation(buf, target_abs);
-
-                defmt::info!(
-                    "pos tune: P={}, oscillation={}",
-                    data.current_p,
-                    oscillation
-                );
-
-                if oscillation {
-                    if data.stable_p == 0 {
-                        // Minimum P already oscillates — position tune failed.
-                        data.oscillation_at_minimum = true;
-                        defmt::warn!("pos tune: minimum P={} oscillates", data.current_p);
-                    }
-                    // Stop ramp-up. Use last stable P (or fail if none).
-                    *state = PositionTuneState::Finalize;
-                } else {
-                    // Clean response — record this as stable and increase P.
-                    data.stable_p = data.current_p;
-
-                    let response_tuned = data.velocity_gains.effective_bandwidth_hz == 0;
-                    let max_p = if response_tuned {
-                        POS_RESPONSE_TUNE_MAX_P
-                    } else {
-                        POS_TUNE_MAX_P
-                    };
-                    if data.current_p >= max_p {
-                        // Hit cap — finalize with current stable P.
-                        defmt::info!("pos tune: P cap reached at {}", data.stable_p);
-                        *state = PositionTuneState::Finalize;
-                    } else {
-                        // Try higher P.
-                        let new_p = (data.current_p as u32 * POS_TUNE_P_MUL_NUM
-                            / POS_TUNE_P_MUL_DEN)
-                            .min(max_p as u32) as u16;
-                        if new_p <= data.current_p {
-                            defmt::info!("pos tune: P cap reached at {}", data.stable_p);
-                            *state = PositionTuneState::Finalize;
-                            return StepResult::Continue;
-                        }
-                        data.current_p = new_p;
-
-                        // Write new P to registers.
-                        let pos_reg = (data.current_p as u32) << 16;
-                        let _ = backend
-                            .write_register(PID_POSITION_P_POSITION_I, pos_reg)
-                            .await;
-
-                        // Record new step start and command step.
-                        let encoder_raw = backend.read_encoder_count().await;
-                        data.step_start_counts = encoder_raw as i32;
-                        let position_raw = match backend.read_register(PID_POSITION_ACTUAL).await {
-                            Ok(v) => v as i32,
-                            Err(_) => {
-                                return crate::commissioning::outer::fail_outer(
-                                    phase,
-                                    CommissionError::Spi,
-                                );
-                            }
-                        };
-                        data.step_start_tmc = position_raw;
-                        let target = position_raw.wrapping_add(data.step_target_tmc as i32);
-                        let _ = backend
-                            .write_register(PID_POSITION_TARGET, target as u32)
-                            .await;
-
-                        buf.reset(POS_TUNE_SAMPLE_PERIOD_US as u16);
-                        let next_sample_us =
-                            backend.elapsed_us().wrapping_add(POS_TUNE_SAMPLE_PERIOD_US);
-                        *state = PositionTuneState::StepCapture { next_sample_us };
-                    }
-                }
-                StepResult::Continue
-            }
-
-            PositionTuneState::Finalize => {
-                // Ensure motor is stopped.
-                let _ = backend.write_register(MODE_RAMP_MODE_MOTION, 0).await;
-
-                if data.oscillation_at_minimum {
-                    // Position tune failed — keep velocity gains.
-                    return crate::commissioning::outer::fail_outer(
-                        phase,
-                        CommissionError::PositionTuneFailed,
-                    );
-                }
-
-                let final_p = data.stable_p;
-
-                // Response-tuned velocity gains are deliberately conservative:
-                // the tuner has not measured a steady-state position bias, so
-                // leave position integral disabled to avoid windup on installed
-                // mechanics.
-                let response_tuned = data.velocity_gains.effective_bandwidth_hz == 0;
-                let final_i = if response_tuned {
-                    0
-                } else {
-                    match mode {
-                        OperatingMode::Nominal | OperatingMode::HighInertia => {
-                            (final_p as u32 * POS_TUNE_I_PERCENT / 100).max(1) as u16
-                        }
-                        OperatingMode::Unloaded => 0,
-                    }
-                };
-
-                defmt::info!("pos tune: final P={}, I={}", final_p, final_i);
-
-                let carried_safety = *safety;
-                let position_gains = crate::autotune::PositionGains {
-                    position_p: final_p,
-                    position_i: final_i,
-                };
-                let velocity_gains = data.velocity_gains;
-                let velocity_chatter = data.velocity_chatter;
-                let current_ringing = data.current_ringing;
-                let current_bandwidth_hz = data.current_bandwidth_hz;
-                let j_eff = data.j_eff;
-                let b_eff = data.b_eff;
-                let diagnostics = data.diagnostics;
-                // Position oscillation is "early" if the first stable P was
-                // reached only at the minimum value (suggesting the system
-                // is marginal for position control).
-                let position_oscillation_early =
-                    final_p == POS_TUNE_INITIAL_P && data.current_p > POS_TUNE_INITIAL_P;
-
-                *phase = OuterPhase::FilterTune {
-                    velocity_gains,
-                    position_gains,
-                    position_oscillation_early,
-                    velocity_chatter,
-                    current_ringing,
-                    current_bandwidth_hz,
-                    j_eff,
-                    b_eff,
-                    diagnostics,
-                    safety: carried_safety,
-                };
-                StepResult::PhaseChanged(PhaseId::FilterTune)
-            }
-        }
-    }
-
     // -------------------------------------------------------------------
     // Phase 12: Filter Selection
     // -------------------------------------------------------------------
