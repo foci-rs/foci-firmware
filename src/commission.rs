@@ -10,8 +10,8 @@
 
 use crate::autotune::{
     CommissionError, CommissionProfile, CommissionStatus, CurrentGains, CurrentValidation,
-    ElectricalModel, InnerSequence, MechanicalModel, OperatingMode, PhaseId, TransientBuffer,
-    VelocityGains, VelocityValidation,
+    ElectricalModel, InnerSequence, MechanicalModel, OperatingMode, TransientBuffer, VelocityGains,
+    VelocityValidation,
 };
 
 pub(crate) use crate::commissioning::inner::InnerPhase;
@@ -1007,7 +1007,9 @@ impl CommissioningEngine {
                 crate::commissioning::outer::position::step_position_tune(phase, buf, mode, backend)
                     .await
             }
-            OuterPhase::FilterTune { .. } => Self::step_filter_tune(phase, backend).await,
+            OuterPhase::FilterTune { .. } => {
+                crate::commissioning::outer::filter::step_filter_tune(phase, backend).await
+            }
             OuterPhase::Commit { .. } => Self::step_commit(phase),
             OuterPhase::Done(result) => StepResult::OuterDone(result.clone()),
             OuterPhase::Failed(err) => StepResult::OuterFailed(*err),
@@ -1028,149 +1030,6 @@ impl CommissioningEngine {
             OuterPhase::Commit { .. } | OuterPhase::Done(_) | OuterPhase::Failed(_) => None,
         }
     }
-    // -------------------------------------------------------------------
-    // Phase 12: Filter Selection
-    // -------------------------------------------------------------------
-
-    /// Implement filter selection from prior validation metrics.
-    ///
-    /// Calls the pure recommendation helper, computes biquad coefficients,
-    /// and writes them to the TMC4671 sub-registers.
-    async fn step_filter_tune<B: CommissioningBackend>(
-        phase: &mut OuterPhase,
-        backend: &mut B,
-    ) -> StepResult {
-        let (
-            velocity_gains,
-            position_gains,
-            position_oscillation_early,
-            velocity_chatter,
-            current_ringing,
-            current_bandwidth_hz,
-            j_eff,
-            b_eff,
-            diagnostics,
-        ) = match phase {
-            OuterPhase::FilterTune {
-                velocity_gains,
-                position_gains,
-                position_oscillation_early,
-                velocity_chatter,
-                current_ringing,
-                current_bandwidth_hz,
-                j_eff,
-                b_eff,
-                diagnostics,
-                ..
-            } => (
-                *velocity_gains,
-                *position_gains,
-                *position_oscillation_early,
-                *velocity_chatter,
-                *current_ringing,
-                *current_bandwidth_hz,
-                *j_eff,
-                *b_eff,
-                *diagnostics,
-            ),
-            _ => return StepResult::Continue,
-        };
-
-        // Estimate position bandwidth as velocity_bw / 4.
-        let position_bandwidth_hz = velocity_gains.effective_bandwidth_hz / 4;
-
-        let filter_config = crate::autotune::recommend_filters(
-            velocity_chatter,
-            velocity_gains.effective_bandwidth_hz,
-            position_oscillation_early,
-            position_bandwidth_hz,
-            current_ringing,
-            current_bandwidth_hz,
-        );
-
-        let pwm_maxcnt = backend.pwm_maxcnt();
-
-        // Enable or explicitly disable each filter to avoid stale biquad
-        // state leaking from prior commissioning runs or host configuration.
-        if let Some(cutoff_hz) = filter_config.velocity_filter_hz {
-            crate::commissioning::helpers::write_biquad_velocity(
-                backend,
-                cutoff_hz as u16,
-                pwm_maxcnt,
-            )
-            .await;
-        } else {
-            crate::commissioning::helpers::write_sub_register(
-                backend,
-                foci_tmc4671::registers::CONFIG_BIQUAD_V_ENABLE,
-                0,
-            )
-            .await;
-        }
-
-        if let Some(cutoff_hz) = filter_config.position_filter_hz {
-            crate::commissioning::helpers::write_biquad_position(
-                backend,
-                cutoff_hz as u16,
-                pwm_maxcnt,
-            )
-            .await;
-        } else {
-            crate::commissioning::helpers::write_sub_register(
-                backend,
-                foci_tmc4671::registers::CONFIG_BIQUAD_X_ENABLE,
-                0,
-            )
-            .await;
-        }
-
-        if let Some(cutoff_hz) = filter_config.flux_filter_hz {
-            crate::commissioning::helpers::write_biquad_flux(backend, cutoff_hz as u16, pwm_maxcnt)
-                .await;
-        } else {
-            crate::commissioning::helpers::write_sub_register(
-                backend,
-                foci_tmc4671::registers::CONFIG_BIQUAD_F_ENABLE,
-                0,
-            )
-            .await;
-        }
-
-        if let Some(cutoff_hz) = filter_config.torque_filter_hz {
-            crate::commissioning::helpers::write_biquad_torque(
-                backend,
-                cutoff_hz as u16,
-                pwm_maxcnt,
-            )
-            .await;
-        } else {
-            crate::commissioning::helpers::write_sub_register(
-                backend,
-                foci_tmc4671::registers::CONFIG_BIQUAD_T_ENABLE,
-                0,
-            )
-            .await;
-        }
-
-        defmt::info!(
-            "filter tune: vel={}, pos={}, flux={}, torque={}",
-            filter_config.velocity_filter_hz.unwrap_or(0),
-            filter_config.position_filter_hz.unwrap_or(0),
-            filter_config.flux_filter_hz.unwrap_or(0),
-            filter_config.torque_filter_hz.unwrap_or(0)
-        );
-
-        *phase = OuterPhase::Commit {
-            velocity_gains,
-            position_gains,
-            filter_config,
-            j_eff,
-            b_eff,
-            diagnostics,
-        };
-        StepResult::PhaseChanged(PhaseId::Commit)
-    }
-
     // -------------------------------------------------------------------
     // Phase 13: Commit
     // -------------------------------------------------------------------
