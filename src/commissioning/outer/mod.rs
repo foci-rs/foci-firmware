@@ -7,6 +7,7 @@
 
 pub mod mechanical;
 pub mod response;
+pub mod velocity;
 
 use crate::autotune::CommissionError;
 use crate::commission::{OuterPhase, OuterSafetyLimits};

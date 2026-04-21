@@ -11,7 +11,7 @@
 use crate::autotune::{
     CommissionError, CommissionProfile, CommissionStatus, CurrentGains, CurrentValidation,
     ElectricalModel, InnerSequence, MechanicalModel, OperatingMode, PhaseId, TransientBuffer,
-    ValidationResult, VelocityGains, VelocityValidation,
+    VelocityGains, VelocityValidation,
 };
 
 pub(crate) use crate::commissioning::inner::InnerPhase;
@@ -263,54 +263,15 @@ pub(crate) const VELOCITY_CAP_COUNTS_PER_MS: i32 = 16;
 /// 2 revolutions at 4096 counts/rev = 8192 counts.
 const POSITION_WINDOW_COUNTS: i32 = 8192;
 
-/// Velocity mode with MODE_PID_TYPE set for the TMC4671 advanced PI structure.
-///
-/// The production closed-loop path uses advanced PID mode because the ADC
-/// setup also configures the PWM-synchronized velocity meter expected by that
-/// controller structure. Outer validation must exercise the same controller
-/// path it is tuning.
-const OUTER_VELOCITY_MODE: u32 = 0x8000_0002;
-
 /// Position mode with MODE_PID_TYPE set, matching production closed-loop entry.
 const OUTER_POSITION_MODE: u32 = 0x8000_0003;
-
-// ---------------------------------------------------------------------------
-// Velocity validation constants (Phase 10)
-// ---------------------------------------------------------------------------
-
-/// Velocity step as a fraction of velocity_limit (15% = 15/100).
-/// Spec says 10-20%.
-const VEL_VALIDATE_STEP_PERCENT: u32 = 15;
-
-/// Sampling interval for velocity capture (microseconds).
-/// 1 kHz = 1000us between samples.
-const VEL_VALIDATE_SAMPLE_PERIOD_US: u64 = 1000;
-
-/// Settling time after removing velocity target (microseconds).
-const VEL_VALIDATE_SETTLE_US: u64 = 200_000;
-
-/// Zero-speed chatter monitoring window (samples at 1 kHz).
-/// Spec: 200ms = 200 samples.
-const VEL_VALIDATE_CHATTER_WINDOW: u16 = 200;
-
-/// Chatter threshold (encoder counts/tick). Spec: > 3.
-const VEL_VALIDATE_CHATTER_THRESHOLD: u32 = 3;
-
-/// Lambda multiplier for retry (150% = lambda * 3 / 2).
-const VEL_RETRY_LAMBDA_MUL_NUM: u32 = 3;
-const VEL_RETRY_LAMBDA_MUL_DEN: u32 = 2;
-
-/// Motor-local response tuning uses small velocity targets so an installed
-/// mechanism stays within the existing outer safety envelope.
-const VEL_RESPONSE_P_MUL_NUM: u32 = 3;
-const VEL_RESPONSE_P_MUL_DEN: u32 = 2;
 
 // ---------------------------------------------------------------------------
 // Position-loop tuning constants (Phase 11)
 // ---------------------------------------------------------------------------
 
 /// Starting position P gain: 128 = 0.5 in Q8.8 (conservative).
-const POS_TUNE_INITIAL_P: u16 = 128;
+pub(crate) const POS_TUNE_INITIAL_P: u16 = 128;
 
 /// P gain increase per iteration: 150% = P * 3 / 2.
 const POS_TUNE_P_MUL_NUM: u32 = 3;
@@ -325,7 +286,7 @@ const POS_TUNE_I_PERCENT: u32 = 5;
 /// The TMC position target is written in electrical-position units, while
 /// response capture uses ABN counts. Keep the commanded move small enough for
 /// installed mechanics but larger than one-count quantization noise.
-const POS_TUNE_STEP_COUNTS: u32 = 8;
+pub(crate) const POS_TUNE_STEP_COUNTS: u32 = 8;
 
 /// Conservative velocity-loop runtime fallback used when autotuned outer gains
 /// exceed the accepted safety envelope. These are the same defaults used by
@@ -344,8 +305,8 @@ const OUTER_FALLBACK_POSITION_I: u16 = 0;
 /// real hardware. Accepting those gains caused immediate velocity/position
 /// limit windup during normal motion, so keep runtime gains near the known-good
 /// default envelope until the mechanical model scaling is reworked.
-const OUTER_MAX_VELOCITY_P: u16 = OUTER_FALLBACK_VELOCITY_P * 4;
-const OUTER_MAX_VELOCITY_I: u16 = 512;
+pub(crate) const OUTER_MAX_VELOCITY_P: u16 = OUTER_FALLBACK_VELOCITY_P * 4;
+pub(crate) const OUTER_MAX_VELOCITY_I: u16 = 512;
 const OUTER_MAX_POSITION_P: u16 = OUTER_FALLBACK_POSITION_P * 4;
 const OUTER_MAX_POSITION_I: u16 = 128;
 
@@ -361,7 +322,7 @@ const POS_TUNE_MAX_P: u16 = OUTER_MAX_POSITION_P;
 const POS_RESPONSE_TUNE_MAX_P: u16 = OUTER_FALLBACK_POSITION_P;
 
 const OUTER_WARNING_NONE: u8 = 0;
-const OUTER_WARNING_UNSAFE_SYNTH_GAINS: u8 = 2;
+pub(crate) const OUTER_WARNING_UNSAFE_SYNTH_GAINS: u8 = 2;
 
 /// Sampling interval for position capture (microseconds). 1 kHz.
 const POS_TUNE_SAMPLE_PERIOD_US: u64 = 1000;
@@ -526,38 +487,38 @@ pub(crate) enum VelocityTuneStrategy {
 #[derive(Debug, defmt::Format)]
 pub(crate) struct VelocityValidateData {
     /// Synthesized velocity gains for the current attempt.
-    gains: VelocityGains,
+    pub(crate) gains: VelocityGains,
     /// Last response-ramp gain set that validated cleanly.
-    accepted_gains: VelocityGains,
+    pub(crate) accepted_gains: VelocityGains,
     /// Whether `accepted_gains` came from a passing response-ramp attempt.
-    has_accepted_gains: bool,
+    pub(crate) has_accepted_gains: bool,
     /// The mechanical model from Phase 8 (needed for retry re-synthesis).
-    model: MechanicalModel,
+    pub(crate) model: MechanicalModel,
     /// Velocity tuning strategy for this run.
-    strategy: VelocityTuneStrategy,
+    pub(crate) strategy: VelocityTuneStrategy,
     /// Current attempt (0 = first, 1 = retry).
-    attempt: u8,
+    pub(crate) attempt: u8,
     /// Velocity step amplitude (encoder counts/ms or velocity target units).
-    step_target: u32,
+    pub(crate) step_target: u32,
     /// Forward capture metrics.
-    forward_metrics: Option<VelocityValidation>,
+    pub(crate) forward_metrics: Option<VelocityValidation>,
     /// Reverse capture metrics.
-    reverse_metrics: Option<VelocityValidation>,
+    pub(crate) reverse_metrics: Option<VelocityValidation>,
     /// Maximum chatter value observed during zero-speed check.
-    max_chatter: u32,
+    pub(crate) max_chatter: u32,
     /// Peak velocity from mechanical ID (for velocity limit derivation).
-    peak_velocity: u32,
+    pub(crate) peak_velocity: u32,
     /// Previous encoder count for velocity derivation (position delta per tick).
-    prev_encoder_for_velocity: u32,
+    pub(crate) prev_encoder_for_velocity: u32,
     /// Saturation counter: samples where the velocity PID's torque output
     /// is near the current limit (indicating the controller is effort-limited).
-    saturation_count: u16,
+    pub(crate) saturation_count: u16,
     /// Current limit for saturation detection (from `backend.current_limit()`).
-    torque_limit: u32,
+    pub(crate) torque_limit: u32,
     /// Operational velocity limit to restore after validation.
-    operational_velocity_limit: u32,
+    pub(crate) operational_velocity_limit: u32,
     /// Diagnostics carried into the final result.
-    diagnostics: OuterDiagnostics,
+    pub(crate) diagnostics: OuterDiagnostics,
 }
 
 // ---------------------------------------------------------------------------
@@ -583,33 +544,33 @@ pub(crate) enum PositionTuneState {
 #[derive(Debug, defmt::Format)]
 pub(crate) struct PositionTuneData {
     /// Current candidate P gain.
-    current_p: u16,
+    pub(crate) current_p: u16,
     /// Last known stable P gain (no oscillation).
-    stable_p: u16,
+    pub(crate) stable_p: u16,
     /// Position step target in ABN encoder counts.
-    step_target_counts: u32,
+    pub(crate) step_target_counts: u32,
     /// Position step target in TMC electrical-position units.
-    step_target_tmc: u32,
+    pub(crate) step_target_tmc: u32,
     /// Starting ABN encoder count for response measurement.
-    step_start_counts: i32,
+    pub(crate) step_start_counts: i32,
     /// Starting TMC position for target writes.
-    step_start_tmc: i32,
+    pub(crate) step_start_tmc: i32,
     /// Whether oscillation was detected early (at the first P value).
-    oscillation_at_minimum: bool,
+    pub(crate) oscillation_at_minimum: bool,
     /// Accepted velocity gains from Phase 10.
-    velocity_gains: VelocityGains,
+    pub(crate) velocity_gains: VelocityGains,
     /// Whether zero-speed chatter was detected during velocity validation.
-    velocity_chatter: bool,
+    pub(crate) velocity_chatter: bool,
     /// Whether current ringing was detected (from inner validation).
-    current_ringing: bool,
+    pub(crate) current_ringing: bool,
     /// Current-loop effective bandwidth Hz (for filter recommendation).
-    current_bandwidth_hz: u32,
+    pub(crate) current_bandwidth_hz: u32,
     /// Identified effective inertia from mechanical ID (internal units).
-    j_eff: u32,
+    pub(crate) j_eff: u32,
     /// Identified effective damping from mechanical ID (internal units).
-    b_eff: u32,
+    pub(crate) b_eff: u32,
     /// Diagnostics carried into the final result.
-    diagnostics: OuterDiagnostics,
+    pub(crate) diagnostics: OuterDiagnostics,
 }
 
 /// Outer safety limits, computed once at the start of outer commissioning.
@@ -1047,11 +1008,18 @@ impl CommissioningEngine {
                     .await
             }
             OuterPhase::VelocityTune { .. } => {
-                Self::step_velocity_tune(phase, profile, mode, inner_lambda_us, theta_e_us, backend)
-                    .await
+                crate::commissioning::outer::velocity::step_velocity_tune(
+                    phase,
+                    profile,
+                    mode,
+                    inner_lambda_us,
+                    theta_e_us,
+                    backend,
+                )
+                .await
             }
             OuterPhase::VelocityValidate { .. } => {
-                Self::step_velocity_validate(
+                crate::commissioning::outer::velocity::step_velocity_validate(
                     phase,
                     buf,
                     profile,
@@ -1088,705 +1056,6 @@ impl CommissioningEngine {
             OuterPhase::Commit { .. } | OuterPhase::Done(_) | OuterPhase::Failed(_) => None,
         }
     }
-    // -------------------------------------------------------------------
-    // Phase 9: Velocity-Loop SIMC Synthesis
-    // -------------------------------------------------------------------
-
-    /// Advance velocity-tune phase.
-    ///
-    /// This is a thin pass-through: call the pure synthesis helper,
-    /// then immediately transition to VelocityValidate with the
-    /// computed gains.
-    async fn step_velocity_tune<B: CommissioningBackend>(
-        phase: &mut OuterPhase,
-        profile: CommissionProfile,
-        mode: OperatingMode,
-        inner_lambda_us: u32,
-        theta_e_us: u32,
-        backend: &mut B,
-    ) -> StepResult {
-        let (model, peak_velocity, mut diagnostics, safety) = match phase {
-            OuterPhase::VelocityTune {
-                model,
-                peak_velocity,
-                diagnostics,
-                safety,
-            } => (*model, *peak_velocity, *diagnostics, *safety),
-            _ => return StepResult::Continue,
-        };
-
-        let (gains, strategy, step_target) = if diagnostics.warning_code
-            == crate::commissioning::outer::response::OUTER_WARNING_LOW_CONFIDENCE_MECHANICAL_ID
-        {
-            let gains = crate::commissioning::outer::response::response_velocity_gains();
-            (
-                gains,
-                VelocityTuneStrategy::ResponseRamp,
-                crate::commissioning::outer::response::VELOCITY_RESPONSE_STEP_TARGET,
-            )
-        } else {
-            let config = backend.tmc_config();
-            let gains = match crate::autotune::simc_velocity_gains(
-                &model,
-                profile,
-                mode,
-                inner_lambda_us,
-                theta_e_us,
-                peak_velocity,
-                config,
-            ) {
-                Some(gains) => gains,
-                None => {
-                    defmt::warn!("velocity tune: synthesis returned None");
-                    return crate::commissioning::outer::fail_outer(
-                        phase,
-                        CommissionError::MechanicalIdFailed,
-                    );
-                }
-            };
-
-            diagnostics.synth_velocity_p = gains.velocity_p;
-            diagnostics.synth_velocity_i = gains.velocity_i;
-
-            if gains.velocity_p > OUTER_MAX_VELOCITY_P || gains.velocity_i > OUTER_MAX_VELOCITY_I {
-                diagnostics.warning_code = OUTER_WARNING_UNSAFE_SYNTH_GAINS;
-                defmt::warn!(
-                    "velocity tune: synthesized P={}, I={} outside envelope, using response tuning",
-                    gains.velocity_p,
-                    gains.velocity_i
-                );
-                (
-                    crate::commissioning::outer::response::response_velocity_gains(),
-                    VelocityTuneStrategy::ResponseRamp,
-                    crate::commissioning::outer::response::VELOCITY_RESPONSE_STEP_TARGET,
-                )
-            } else {
-                let step_target = if gains.velocity_limit > 0 {
-                    (gains.velocity_limit * VEL_VALIDATE_STEP_PERCENT / 100).max(1)
-                } else {
-                    return crate::commissioning::outer::fail_outer(
-                        phase,
-                        CommissionError::VelocityValidationFailed,
-                    );
-                };
-                (gains, VelocityTuneStrategy::Model, step_target)
-            }
-        };
-
-        defmt::info!(
-            "velocity tune: P={}, I={}, limit={}, bw={}Hz, lambda={}ms, strategy={}",
-            gains.velocity_p,
-            gains.velocity_i,
-            gains.velocity_limit,
-            gains.effective_bandwidth_hz,
-            gains.lambda_vel_ms,
-            match strategy {
-                VelocityTuneStrategy::Model => "model",
-                VelocityTuneStrategy::ResponseRamp => "response",
-            }
-        );
-
-        let data = VelocityValidateData {
-            gains,
-            accepted_gains: gains,
-            has_accepted_gains: false,
-            model,
-            strategy,
-            attempt: 0,
-            step_target,
-            forward_metrics: None,
-            reverse_metrics: None,
-            max_chatter: 0,
-            peak_velocity,
-            prev_encoder_for_velocity: 0,
-            saturation_count: 0,
-            torque_limit: backend.current_limit() & 0xFFFF,
-            operational_velocity_limit: backend.operational_velocity_limit(),
-            diagnostics,
-        };
-
-        *phase = OuterPhase::VelocityValidate {
-            state: VelocityValidateState::WriteGains,
-            data,
-            safety,
-        };
-        StepResult::PhaseChanged(PhaseId::VelocityValidate)
-    }
-
-    // -------------------------------------------------------------------
-    // Phase 10: Velocity-Loop Validation
-    // -------------------------------------------------------------------
-
-    /// Advance velocity-validate sub-state machine.
-    #[allow(clippy::too_many_arguments)]
-    #[allow(clippy::too_many_arguments)]
-    async fn step_velocity_validate<B: CommissioningBackend>(
-        phase: &mut OuterPhase,
-        buf: &mut TransientBuffer,
-        profile: CommissionProfile,
-        mode: OperatingMode,
-        inner_lambda_us: u32,
-        theta_e_us: u32,
-        current_ringing: bool,
-        current_bandwidth_hz: u32,
-        backend: &mut B,
-    ) -> StepResult {
-        use foci_tmc4671::registers::*;
-
-        let (state, data, safety) = match phase {
-            OuterPhase::VelocityValidate {
-                state,
-                data,
-                safety,
-            } => (state, data, safety),
-            _ => return StepResult::Continue,
-        };
-
-        match state {
-            VelocityValidateState::WriteGains => {
-                // Write velocity PI gains to TMC4671.
-                let vel_reg =
-                    ((data.gains.velocity_p as u32) << 16) | (data.gains.velocity_i as u32);
-                if backend
-                    .write_register(PID_VELOCITY_P_VELOCITY_I, vel_reg)
-                    .await
-                    .is_err()
-                {
-                    return crate::commissioning::outer::fail_outer(phase, CommissionError::Spi);
-                }
-
-                // Write velocity limit.
-                if backend
-                    .write_register(PID_VELOCITY_LIMIT, data.gains.velocity_limit)
-                    .await
-                    .is_err()
-                {
-                    return crate::commissioning::outer::fail_outer(phase, CommissionError::Spi);
-                }
-
-                // Switch to velocity mode using the same advanced PI
-                // controller structure as production closed-loop entry.
-                if backend
-                    .write_register(MODE_RAMP_MODE_MOTION, OUTER_VELOCITY_MODE)
-                    .await
-                    .is_err()
-                {
-                    return crate::commissioning::outer::fail_outer(phase, CommissionError::Spi);
-                }
-
-                // Zero velocity target.
-                let _ = backend.write_register(PID_VELOCITY_TARGET, 0).await;
-
-                // Prepare buffer for forward capture.
-                buf.reset(VEL_VALIDATE_SAMPLE_PERIOD_US as u16);
-                data.forward_metrics = None;
-                data.reverse_metrics = None;
-                data.max_chatter = 0;
-                data.saturation_count = 0;
-
-                *state = VelocityValidateState::ForwardStep;
-                StepResult::Continue
-            }
-
-            VelocityValidateState::ForwardStep => {
-                // Apply positive velocity step.
-                if backend
-                    .write_register(PID_VELOCITY_TARGET, data.step_target)
-                    .await
-                    .is_err()
-                {
-                    return crate::commissioning::outer::fail_outer(phase, CommissionError::Spi);
-                }
-
-                // Record initial encoder position for velocity derivation.
-                data.prev_encoder_for_velocity = backend.read_encoder_count().await;
-
-                let next_sample_us = backend
-                    .elapsed_us()
-                    .wrapping_add(VEL_VALIDATE_SAMPLE_PERIOD_US);
-                *state = VelocityValidateState::ForwardCapture { next_sample_us };
-                StepResult::Continue
-            }
-
-            VelocityValidateState::ForwardCapture { next_sample_us } => {
-                let now = backend.elapsed_us();
-                if now.wrapping_sub(*next_sample_us) >= 0x8000_0000 {
-                    return StepResult::Continue;
-                }
-
-                // Derive velocity from encoder position delta (counts/tick).
-                let encoder_raw = backend.read_encoder_count().await;
-                let velocity = (encoder_raw as i32)
-                    .wrapping_sub(data.prev_encoder_for_velocity as i32)
-                    .unsigned_abs();
-                data.prev_encoder_for_velocity = encoder_raw;
-                buf.push(velocity);
-
-                // Detect velocity-controller saturation: read the velocity
-                // PID's torque output (INTERIM_PIDOUT_TARGET_TORQUE) and
-                // count when it's at or near the configured torque limit.
-                if data.torque_limit > 0 {
-                    let sub = foci_tmc4671::registers::INTERIM_PIDOUT_TARGET_TORQUE;
-                    let _ = backend.write_register(sub.addr, sub.sub_addr as u32).await;
-                    if let Ok(pidout) = backend.read_register(sub.data).await {
-                        let commanded_torque = (pidout & 0xFFFF) as i16;
-                        let abs_commanded = commanded_torque.unsigned_abs() as u32;
-                        if abs_commanded >= data.torque_limit * 9 / 10 {
-                            data.saturation_count += 1;
-                        }
-                    }
-                }
-
-                if buf.is_full() {
-                    // Forward capture complete — zero velocity target.
-                    let _ = backend.write_register(PID_VELOCITY_TARGET, 0).await;
-
-                    // Extract forward metrics.
-                    let metrics = crate::autotune::extract_velocity_metrics(
-                        buf,
-                        data.step_target,
-                        0, // Saturation counted from velocity PID output, not velocity samples.
-                        VEL_VALIDATE_CHATTER_THRESHOLD,
-                        VEL_VALIDATE_CHATTER_WINDOW,
-                    );
-                    data.forward_metrics = Some(metrics);
-
-                    defmt::info!(
-                        "vel fwd: rise={}ms, overshoot={}, settle={}ms",
-                        metrics.rise_time_ms,
-                        metrics.overshoot_pct,
-                        metrics.settling_time_ms
-                    );
-
-                    let deadline = backend.elapsed_us().wrapping_add(VEL_VALIDATE_SETTLE_US);
-                    *state = VelocityValidateState::ForwardSettle {
-                        deadline_us: deadline,
-                    };
-                } else {
-                    *next_sample_us = now.wrapping_add(VEL_VALIDATE_SAMPLE_PERIOD_US);
-                }
-                StepResult::Continue
-            }
-
-            VelocityValidateState::ForwardSettle { deadline_us } => {
-                if backend.elapsed_us().wrapping_sub(*deadline_us) < 0x8000_0000 {
-                    buf.reset(VEL_VALIDATE_SAMPLE_PERIOD_US as u16);
-                    *state = VelocityValidateState::ReverseStep;
-                }
-                StepResult::Continue
-            }
-
-            VelocityValidateState::ReverseStep => {
-                // Apply negative velocity step.
-                // PID_VELOCITY_TARGET is signed i32.
-                let neg_target = -(data.step_target as i32);
-                if backend
-                    .write_register(PID_VELOCITY_TARGET, neg_target as u32)
-                    .await
-                    .is_err()
-                {
-                    return crate::commissioning::outer::fail_outer(phase, CommissionError::Spi);
-                }
-
-                // Record initial encoder position for velocity derivation.
-                data.prev_encoder_for_velocity = backend.read_encoder_count().await;
-
-                let next_sample_us = backend
-                    .elapsed_us()
-                    .wrapping_add(VEL_VALIDATE_SAMPLE_PERIOD_US);
-                *state = VelocityValidateState::ReverseCapture { next_sample_us };
-                StepResult::Continue
-            }
-
-            VelocityValidateState::ReverseCapture { next_sample_us } => {
-                let now = backend.elapsed_us();
-                if now.wrapping_sub(*next_sample_us) >= 0x8000_0000 {
-                    return StepResult::Continue;
-                }
-
-                // Derive velocity from encoder position delta (counts/tick).
-                let encoder_raw = backend.read_encoder_count().await;
-                let velocity = (encoder_raw as i32)
-                    .wrapping_sub(data.prev_encoder_for_velocity as i32)
-                    .unsigned_abs();
-                data.prev_encoder_for_velocity = encoder_raw;
-                buf.push(velocity);
-
-                // Detect velocity-controller saturation from PID output.
-                if data.torque_limit > 0 {
-                    let sub = foci_tmc4671::registers::INTERIM_PIDOUT_TARGET_TORQUE;
-                    let _ = backend.write_register(sub.addr, sub.sub_addr as u32).await;
-                    if let Ok(pidout) = backend.read_register(sub.data).await {
-                        let commanded_torque = (pidout & 0xFFFF) as i16;
-                        let abs_commanded = commanded_torque.unsigned_abs() as u32;
-                        if abs_commanded >= data.torque_limit * 9 / 10 {
-                            data.saturation_count += 1;
-                        }
-                    }
-                }
-
-                if buf.is_full() {
-                    let _ = backend.write_register(PID_VELOCITY_TARGET, 0).await;
-
-                    let metrics = crate::autotune::extract_velocity_metrics(
-                        buf,
-                        data.step_target,
-                        0, // Saturation counted from velocity PID output, not velocity samples.
-                        VEL_VALIDATE_CHATTER_THRESHOLD,
-                        VEL_VALIDATE_CHATTER_WINDOW,
-                    );
-                    data.reverse_metrics = Some(metrics);
-
-                    defmt::info!(
-                        "vel rev: rise={}ms, overshoot={}, settle={}ms",
-                        metrics.rise_time_ms,
-                        metrics.overshoot_pct,
-                        metrics.settling_time_ms
-                    );
-
-                    let deadline = backend.elapsed_us().wrapping_add(VEL_VALIDATE_SETTLE_US);
-                    *state = VelocityValidateState::ReverseSettle {
-                        deadline_us: deadline,
-                    };
-                } else {
-                    *next_sample_us = now.wrapping_add(VEL_VALIDATE_SAMPLE_PERIOD_US);
-                }
-                StepResult::Continue
-            }
-
-            VelocityValidateState::ReverseSettle { deadline_us } => {
-                if backend.elapsed_us().wrapping_sub(*deadline_us) < 0x8000_0000 {
-                    // Seed chatter encoder tracker independently of safety.
-                    data.prev_encoder_for_velocity = backend.read_encoder_count().await;
-                    buf.reset(VEL_VALIDATE_SAMPLE_PERIOD_US as u16);
-                    let next_sample_us = backend
-                        .elapsed_us()
-                        .wrapping_add(VEL_VALIDATE_SAMPLE_PERIOD_US);
-                    *state = VelocityValidateState::ChatterCheck {
-                        next_sample_us,
-                        remaining: VEL_VALIDATE_CHATTER_WINDOW,
-                    };
-                }
-                StepResult::Continue
-            }
-
-            VelocityValidateState::ChatterCheck {
-                next_sample_us,
-                remaining,
-            } => {
-                let now = backend.elapsed_us();
-                if now.wrapping_sub(*next_sample_us) >= 0x8000_0000 {
-                    return StepResult::Continue;
-                }
-
-                // Derive velocity from own encoder tracker, independent of
-                // the safety check which updates prev_encoder_count earlier.
-                let count = backend.read_encoder_count().await;
-                let velocity = (count as i32).wrapping_sub(data.prev_encoder_for_velocity as i32);
-                data.prev_encoder_for_velocity = count;
-                let abs_velocity = if velocity < 0 {
-                    (-velocity) as u32
-                } else {
-                    velocity as u32
-                };
-                if abs_velocity > data.max_chatter {
-                    data.max_chatter = abs_velocity;
-                }
-
-                *remaining -= 1;
-                if *remaining == 0 {
-                    *state = VelocityValidateState::Classify;
-                } else {
-                    *next_sample_us = now.wrapping_add(VEL_VALIDATE_SAMPLE_PERIOD_US);
-                }
-                StepResult::Continue
-            }
-
-            VelocityValidateState::Classify => {
-                // Compute symmetry from forward/reverse rise times.
-                let fwd = data.forward_metrics.unwrap_or(VelocityValidation {
-                    rise_time_ms: 0,
-                    overshoot_pct: 0,
-                    settling_time_ms: 0,
-                    zero_speed_chatter: false,
-                    saturation_samples: 0,
-                    symmetry_pct: 0,
-                });
-                let rev = data.reverse_metrics.unwrap_or(VelocityValidation {
-                    rise_time_ms: 0,
-                    overshoot_pct: 0,
-                    settling_time_ms: 0,
-                    zero_speed_chatter: false,
-                    saturation_samples: 0,
-                    symmetry_pct: 0,
-                });
-
-                let symmetry =
-                    crate::autotune::compute_symmetry_pct(fwd.rise_time_ms, rev.rise_time_ms);
-
-                // Merge: take the worst of forward/reverse for each metric.
-                let merged = VelocityValidation {
-                    rise_time_ms: fwd.rise_time_ms.max(rev.rise_time_ms),
-                    overshoot_pct: fwd.overshoot_pct.max(rev.overshoot_pct),
-                    settling_time_ms: fwd.settling_time_ms.max(rev.settling_time_ms),
-                    zero_speed_chatter: data.max_chatter > VEL_VALIDATE_CHATTER_THRESHOLD,
-                    saturation_samples: data.saturation_count,
-                    symmetry_pct: symmetry,
-                };
-
-                let validation_tau_ms = if data.strategy == VelocityTuneStrategy::ResponseRamp {
-                    crate::commissioning::outer::response::VELOCITY_RESPONSE_VALIDATE_TAU_MS
-                } else {
-                    data.model.tau_mech_ms.max(1)
-                };
-                let result = crate::autotune::classify_velocity_validation(
-                    &merged,
-                    validation_tau_ms,
-                    crate::autotune::TRANSIENT_LEN as u16 * 2, // Total samples across both captures.
-                );
-
-                defmt::info!(
-                    "vel classify: result={}, chatter={}, symmetry={}",
-                    match result {
-                        ValidationResult::Pass => "pass",
-                        ValidationResult::Marginal => "marginal",
-                        ValidationResult::Fail => "fail",
-                    },
-                    data.max_chatter,
-                    symmetry
-                );
-
-                if data.strategy == VelocityTuneStrategy::ResponseRamp {
-                    match result {
-                        ValidationResult::Pass => {
-                            data.accepted_gains = data.gains;
-                            data.has_accepted_gains = true;
-
-                            let next_p = data.gains.velocity_p as u32 * VEL_RESPONSE_P_MUL_NUM
-                                / VEL_RESPONSE_P_MUL_DEN;
-                            if next_p > OUTER_MAX_VELOCITY_P as u32
-                                || next_p <= data.gains.velocity_p as u32
-                            {
-                                defmt::info!(
-                                    "vel response: cap reached, accepted P={}, I={}",
-                                    data.accepted_gains.velocity_p,
-                                    data.accepted_gains.velocity_i
-                                );
-                                let _ = backend.write_register(PID_VELOCITY_TARGET, 0).await;
-                                let _ = backend.write_register(MODE_RAMP_MODE_MOTION, 0).await;
-                                let deadline =
-                                    backend.elapsed_us().wrapping_add(VEL_VALIDATE_SETTLE_US);
-                                *state = VelocityValidateState::SafeState {
-                                    deadline_us: deadline,
-                                };
-                            } else {
-                                data.attempt = data.attempt.saturating_add(1);
-                                data.gains.velocity_p = next_p as u16;
-                                data.gains.velocity_i = 0;
-                                defmt::info!(
-                                    "vel response: clean response, trying P={}, I=0",
-                                    data.gains.velocity_p
-                                );
-                                *state = VelocityValidateState::WriteGains;
-                            }
-                        }
-                        ValidationResult::Marginal | ValidationResult::Fail => {
-                            let failed_p = data.gains.velocity_p;
-                            if data.has_accepted_gains {
-                                data.gains = data.accepted_gains;
-                            } else {
-                                data.gains =
-                                    crate::commissioning::outer::response::response_velocity_gains(
-                                    );
-                            }
-                            defmt::warn!(
-                                "vel response: {} at P={}, accepting P={}",
-                                match result {
-                                    ValidationResult::Fail => "fail",
-                                    _ => "marginal",
-                                },
-                                failed_p,
-                                if data.has_accepted_gains {
-                                    data.accepted_gains.velocity_p
-                                } else {
-                                    OUTER_FALLBACK_VELOCITY_P
-                                }
-                            );
-                            let _ = backend.write_register(PID_VELOCITY_TARGET, 0).await;
-                            let _ = backend.write_register(MODE_RAMP_MODE_MOTION, 0).await;
-                            let deadline =
-                                backend.elapsed_us().wrapping_add(VEL_VALIDATE_SETTLE_US);
-                            *state = VelocityValidateState::SafeState {
-                                deadline_us: deadline,
-                            };
-                        }
-                    }
-                    return StepResult::Continue;
-                }
-
-                match result {
-                    ValidationResult::Pass => {
-                        // Success — restore safe state then transition.
-                        let _ = backend.write_register(PID_VELOCITY_TARGET, 0).await;
-                        let _ = backend.write_register(MODE_RAMP_MODE_MOTION, 0).await;
-                        let deadline = backend.elapsed_us().wrapping_add(VEL_VALIDATE_SETTLE_US);
-                        *state = VelocityValidateState::SafeState {
-                            deadline_us: deadline,
-                        };
-                    }
-                    ValidationResult::Marginal if data.attempt == 0 => {
-                        // Retry: increase lambda_vel by 50% and recompute gains.
-                        defmt::info!("vel validate: marginal on attempt 0, retrying");
-                        data.attempt = 1;
-
-                        let config = backend.tmc_config();
-                        // Compute new gains with increased lambda.
-                        // We modify the model's theta_mech to force a larger lambda,
-                        // matching the SIMC retry pattern from current validation.
-                        let mut retry_model = data.model;
-                        let new_theta = data.model.theta_mech_us * VEL_RETRY_LAMBDA_MUL_NUM
-                            / VEL_RETRY_LAMBDA_MUL_DEN;
-                        retry_model.theta_mech_us = new_theta;
-
-                        match crate::autotune::simc_velocity_gains(
-                            &retry_model,
-                            profile,
-                            mode,
-                            inner_lambda_us,
-                            theta_e_us,
-                            data.peak_velocity,
-                            config,
-                        ) {
-                            Some(mut new_gains) => {
-                                data.diagnostics.synth_velocity_p = new_gains.velocity_p;
-                                data.diagnostics.synth_velocity_i = new_gains.velocity_i;
-                                if new_gains.velocity_p > OUTER_MAX_VELOCITY_P
-                                    || new_gains.velocity_i > OUTER_MAX_VELOCITY_I
-                                {
-                                    data.diagnostics.warning_code =
-                                        OUTER_WARNING_UNSAFE_SYNTH_GAINS;
-                                    defmt::warn!(
-                                        "vel retry: synthesized P={}, I={} outside envelope, using response tuning",
-                                        new_gains.velocity_p,
-                                        new_gains.velocity_i
-                                    );
-                                    new_gains = crate::commissioning::outer::response::response_velocity_gains();
-                                    data.strategy = VelocityTuneStrategy::ResponseRamp;
-                                    data.step_target = crate::commissioning::outer::response::VELOCITY_RESPONSE_STEP_TARGET;
-                                }
-                                defmt::info!(
-                                    "vel retry: P={}, I={}, lambda={}ms",
-                                    new_gains.velocity_p,
-                                    new_gains.velocity_i,
-                                    new_gains.lambda_vel_ms
-                                );
-                                data.gains = new_gains;
-                                if data.strategy == VelocityTuneStrategy::Model {
-                                    data.step_target = (new_gains.velocity_limit
-                                        * VEL_VALIDATE_STEP_PERCENT
-                                        / 100)
-                                        .max(1);
-                                }
-                                *state = VelocityValidateState::WriteGains;
-                            }
-                            None => {
-                                return crate::commissioning::outer::fail_outer(
-                                    phase,
-                                    CommissionError::VelocityValidationFailed,
-                                );
-                            }
-                        }
-                    }
-                    ValidationResult::Marginal | ValidationResult::Fail => {
-                        // Already retried or hard fail — abort.
-                        defmt::warn!(
-                            "vel validate: {} on attempt {}",
-                            match result {
-                                ValidationResult::Fail => "fail",
-                                _ => "marginal",
-                            },
-                            data.attempt
-                        );
-                        let _ = backend.write_register(PID_VELOCITY_TARGET, 0).await;
-                        let _ = backend.write_register(MODE_RAMP_MODE_MOTION, 0).await;
-                        return crate::commissioning::outer::fail_outer(
-                            phase,
-                            CommissionError::VelocityValidationFailed,
-                        );
-                    }
-                }
-                StepResult::Continue
-            }
-
-            VelocityValidateState::SafeState { deadline_us } => {
-                if backend.elapsed_us().wrapping_sub(*deadline_us) < 0x8000_0000 {
-                    *state = VelocityValidateState::Finalize;
-                }
-                StepResult::Continue
-            }
-
-            VelocityValidateState::Finalize => {
-                // Ensure motor is stopped.
-                let _ = backend.write_register(PID_VELOCITY_TARGET, 0).await;
-                let _ = backend.write_register(MODE_RAMP_MODE_MOTION, 0).await;
-
-                let carried_safety = *safety;
-                let mut accepted_gains = data.gains;
-                // Keep the bounded validation velocity limit in hardware for
-                // Phase 11. Position tuning intentionally uses small, local
-                // step responses; restoring the runtime limit here lets the
-                // first position step violate the outer safety envelope.
-                //
-                // The final reported gains still carry the operational limit
-                // so SAVE_CONFIG does not persist the commissioning test limit.
-                accepted_gains.velocity_limit = data.operational_velocity_limit.max(1);
-                let velocity_chatter = data.max_chatter > VEL_VALIDATE_CHATTER_THRESHOLD;
-
-                defmt::info!(
-                    "vel validate: accepted P={}, I={}, limit={}",
-                    accepted_gains.velocity_p,
-                    accepted_gains.velocity_i,
-                    accepted_gains.velocity_limit
-                );
-
-                // Position capture is measured in ABN counts, but
-                // PID_POSITION_TARGET is written in TMC electrical-position
-                // units. Convert the small motor-local test move through the
-                // configured STEP_WIDTH so the command and measurement agree.
-                let step_width = backend.step_width().max(1);
-                let step_target_counts = POS_TUNE_STEP_COUNTS;
-                let step_target_tmc = step_width.saturating_mul(step_target_counts);
-
-                let j_eff = data.model.j_eff;
-                let b_eff = data.model.b_eff;
-
-                let pos_data = PositionTuneData {
-                    current_p: POS_TUNE_INITIAL_P,
-                    stable_p: 0,
-                    step_target_counts,
-                    step_target_tmc,
-                    step_start_counts: 0,
-                    step_start_tmc: 0,
-                    oscillation_at_minimum: false,
-                    velocity_gains: accepted_gains,
-                    velocity_chatter,
-                    current_ringing,
-                    current_bandwidth_hz,
-                    j_eff,
-                    b_eff,
-                    diagnostics: data.diagnostics,
-                };
-
-                *phase = OuterPhase::PositionTune {
-                    state: PositionTuneState::Setup,
-                    data: pos_data,
-                    safety: carried_safety,
-                };
-                StepResult::PhaseChanged(PhaseId::PositionTune)
-            }
-        }
-    }
-
     // -------------------------------------------------------------------
     // Phase 11: Position-Loop P Ramp-Up
     // -------------------------------------------------------------------
