@@ -257,7 +257,7 @@ pub(crate) enum ElectricalIdState {
 /// Raised from 8 (2 rev/s) because MechanicalId at 60% torque
 /// on low-inertia motors exceeds 8 counts/ms.
 ///
-const VELOCITY_CAP_COUNTS_PER_MS: i32 = 16;
+pub(crate) const VELOCITY_CAP_COUNTS_PER_MS: i32 = 16;
 
 /// Default position window: +/- encoder counts from start position.
 /// 2 revolutions at 4096 counts/rev = 8192 counts.
@@ -266,19 +266,6 @@ const POSITION_WINDOW_COUNTS: i32 = 8192;
 // ---------------------------------------------------------------------------
 // Mechanical identification constants (Phase 8)
 // ---------------------------------------------------------------------------
-
-/// Torque step attempts as fractions of run_current.
-///
-/// Start at the spec midpoint, then retry with stronger bounded torque if the
-/// encoder response is too quantized to identify a useful mechanical model.
-const MECH_ID_TORQUE_STEP_PERCENT_0: u32 = 25;
-const MECH_ID_TORQUE_STEP_PERCENT_1: u32 = 40;
-const MECH_ID_TORQUE_STEP_PERCENT_2: u32 = 60;
-const MECH_ID_MAX_ATTEMPTS: u8 = 3;
-
-/// Sampling interval for encoder capture (microseconds).
-/// 1 kHz = 1000us between samples.
-const MECH_ID_SAMPLE_PERIOD_US: u64 = 1000;
 
 /// Settling time after removing torque (microseconds).
 /// Allow the motor to decelerate and stop before reverse capture.
@@ -311,22 +298,6 @@ const OUTER_VELOCITY_MODE: u32 = 0x8000_0002;
 /// Position mode with MODE_PID_TYPE set, matching production closed-loop entry.
 const OUTER_POSITION_MODE: u32 = 0x8000_0003;
 
-/// Minimum number of acceleration samples used for inertia estimate.
-/// First few samples before friction/damping dominates.
-const MECH_ID_ACCEL_SAMPLES: usize = 8;
-
-/// Minimum velocity delta to consider the motor has started moving.
-/// In encoder counts per sample period.
-const MECH_ID_VELOCITY_ONSET_THRESHOLD: i32 = 2;
-
-/// Minimum mechanical-ID signal before model-based gain synthesis is trusted.
-///
-/// These thresholds reject the observed 1-count acceleration and
-/// 2-count/ms peak velocity case that produced saturated gains.
-const MECH_ID_MIN_ACCEL_COUNTS_PER_MS2: u32 = 2;
-const MECH_ID_MIN_PEAK_VELOCITY_COUNTS_PER_MS: u32 = 4;
-const MECH_ID_MIN_TRAVEL_COUNTS: u32 = 64;
-
 // ---------------------------------------------------------------------------
 // Velocity validation constants (Phase 10)
 // ---------------------------------------------------------------------------
@@ -355,11 +326,8 @@ const VEL_RETRY_LAMBDA_MUL_DEN: u32 = 2;
 
 /// Motor-local response tuning uses small velocity targets so an installed
 /// mechanism stays within the existing outer safety envelope.
-const VEL_RESPONSE_STEP_TARGET: u32 = 4;
-const VEL_RESPONSE_LIMIT: u32 = VELOCITY_CAP_COUNTS_PER_MS as u32;
 const VEL_RESPONSE_P_MUL_NUM: u32 = 3;
 const VEL_RESPONSE_P_MUL_DEN: u32 = 2;
-const VEL_RESPONSE_VALIDATE_TAU_MS: u32 = 50;
 
 // ---------------------------------------------------------------------------
 // Position-loop tuning constants (Phase 11)
@@ -386,8 +354,8 @@ const POS_TUNE_STEP_COUNTS: u32 = 8;
 /// Conservative velocity-loop runtime fallback used when autotuned outer gains
 /// exceed the accepted safety envelope. These are the same defaults used by
 /// closed-loop entry when no outer gains are configured.
-const OUTER_FALLBACK_VELOCITY_P: u16 = 1152;
-const OUTER_FALLBACK_VELOCITY_I: u16 = 0;
+pub(crate) const OUTER_FALLBACK_VELOCITY_P: u16 = 1152;
+pub(crate) const OUTER_FALLBACK_VELOCITY_I: u16 = 0;
 
 /// Conservative position-loop runtime fallback used with
 /// `OUTER_FALLBACK_VELOCITY_*`.
@@ -417,7 +385,6 @@ const POS_TUNE_MAX_P: u16 = OUTER_MAX_POSITION_P;
 const POS_RESPONSE_TUNE_MAX_P: u16 = OUTER_FALLBACK_POSITION_P;
 
 const OUTER_WARNING_NONE: u8 = 0;
-const OUTER_WARNING_LOW_CONFIDENCE_MECH_ID: u8 = 1;
 const OUTER_WARNING_UNSAFE_SYNTH_GAINS: u8 = 2;
 
 /// Sampling interval for position capture (microseconds). 1 kHz.
@@ -432,7 +399,7 @@ const POS_TUNE_SETTLE_US: u64 = 200_000;
 
 /// Mechanical identification sub-state machine (Phase 8).
 #[derive(Debug, defmt::Format)]
-enum MechanicalIdState {
+pub(crate) enum MechanicalIdState {
     /// Record starting position, configure torque mode.
     Setup,
     /// Apply torque step and begin forward capture.
@@ -455,28 +422,28 @@ enum MechanicalIdState {
 
 /// Accumulated data for mechanical identification.
 #[derive(Debug, defmt::Format)]
-struct MechanicalIdData {
+pub(crate) struct MechanicalIdData {
     /// Starting encoder position recorded at setup.
-    start_position: i32,
+    pub(crate) start_position: i32,
     /// Retry attempt index for adaptive torque steps.
-    attempt: u8,
+    pub(crate) attempt: u8,
     /// Torque step amplitude (PIDOUT units).
-    torque_step: u16,
+    pub(crate) torque_step: u16,
     /// Forward capture: per-sample velocity (encoder counts/ms).
     /// Stored as [initial_acceleration, peak_velocity] pairs.
-    forward_initial_accel: i32,
-    forward_peak_velocity: i32,
-    forward_delay_samples: u16,
-    forward_travel: u32,
+    pub(crate) forward_initial_accel: i32,
+    pub(crate) forward_peak_velocity: i32,
+    pub(crate) forward_delay_samples: u16,
+    pub(crate) forward_travel: u32,
     /// Reverse capture: same metrics.
-    reverse_initial_accel: i32,
-    reverse_peak_velocity: i32,
-    reverse_delay_samples: u16,
-    reverse_travel: u32,
+    pub(crate) reverse_initial_accel: i32,
+    pub(crate) reverse_peak_velocity: i32,
+    pub(crate) reverse_delay_samples: u16,
+    pub(crate) reverse_travel: u32,
 }
 
 impl MechanicalIdData {
-    fn new(start_position: i32, torque_step: u16) -> Self {
+    pub(crate) fn new(start_position: i32, torque_step: u16) -> Self {
         Self {
             start_position,
             attempt: 0,
@@ -492,7 +459,7 @@ impl MechanicalIdData {
         }
     }
 
-    fn reset_captures(&mut self) {
+    pub(crate) fn reset_captures(&mut self) {
         self.forward_initial_accel = 0;
         self.forward_peak_velocity = 0;
         self.forward_delay_samples = 0;
@@ -506,23 +473,23 @@ impl MechanicalIdData {
 
 /// Mechanical-ID diagnostics carried into the final host result.
 #[derive(Debug, Clone, Copy, defmt::Format)]
-struct OuterDiagnostics {
-    warning_code: u8,
-    mech_torque_step: u16,
-    mech_fwd_accel: u32,
-    mech_rev_accel: u32,
-    mech_fwd_peak_velocity: u32,
-    mech_rev_peak_velocity: u32,
-    mech_fwd_travel: u32,
-    mech_rev_travel: u32,
-    synth_velocity_p: u16,
-    synth_velocity_i: u16,
-    synth_position_p: u16,
-    synth_position_i: u16,
+pub(crate) struct OuterDiagnostics {
+    pub(crate) warning_code: u8,
+    pub(crate) mech_torque_step: u16,
+    pub(crate) mech_fwd_accel: u32,
+    pub(crate) mech_rev_accel: u32,
+    pub(crate) mech_fwd_peak_velocity: u32,
+    pub(crate) mech_rev_peak_velocity: u32,
+    pub(crate) mech_fwd_travel: u32,
+    pub(crate) mech_rev_travel: u32,
+    pub(crate) synth_velocity_p: u16,
+    pub(crate) synth_velocity_i: u16,
+    pub(crate) synth_position_p: u16,
+    pub(crate) synth_position_i: u16,
 }
 
 impl OuterDiagnostics {
-    fn from_mechanical_id(data: &MechanicalIdData) -> Self {
+    pub(crate) fn from_mechanical_id(data: &MechanicalIdData) -> Self {
         Self {
             warning_code: OUTER_WARNING_NONE,
             mech_torque_step: data.torque_step,
@@ -546,7 +513,7 @@ impl OuterDiagnostics {
 
 /// Velocity-loop validation sub-state machine (Phase 10).
 #[derive(Debug, defmt::Format)]
-enum VelocityValidateState {
+pub(crate) enum VelocityValidateState {
     /// Write velocity gains to TMC4671 registers.
     WriteGains,
     /// Switch to velocity mode and apply forward velocity step.
@@ -572,7 +539,7 @@ enum VelocityValidateState {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
-enum VelocityTuneStrategy {
+pub(crate) enum VelocityTuneStrategy {
     /// Validate gains synthesized from the mechanical model.
     Model,
     /// Tune motor-local velocity P from bounded closed-loop response.
@@ -581,7 +548,7 @@ enum VelocityTuneStrategy {
 
 /// Accumulated data for velocity-loop validation.
 #[derive(Debug, defmt::Format)]
-struct VelocityValidateData {
+pub(crate) struct VelocityValidateData {
     /// Synthesized velocity gains for the current attempt.
     gains: VelocityGains,
     /// Last response-ramp gain set that validated cleanly.
@@ -623,7 +590,7 @@ struct VelocityValidateData {
 
 /// Position-loop tuning sub-state machine (Phase 11).
 #[derive(Debug, defmt::Format)]
-enum PositionTuneState {
+pub(crate) enum PositionTuneState {
     /// Switch to position mode and write initial P gain.
     Setup,
     /// Command a position step and capture response.
@@ -638,7 +605,7 @@ enum PositionTuneState {
 
 /// Accumulated data for position-loop tuning.
 #[derive(Debug, defmt::Format)]
-struct PositionTuneData {
+pub(crate) struct PositionTuneData {
     /// Current candidate P gain.
     current_p: u16,
     /// Last known stable P gain (no oscillation).
@@ -671,24 +638,24 @@ struct PositionTuneData {
 
 /// Outer safety limits, computed once at the start of outer commissioning.
 #[derive(Debug, Clone, Copy, defmt::Format)]
-struct OuterSafetyLimits {
+pub(crate) struct OuterSafetyLimits {
     /// Maximum absolute velocity in encoder counts per millisecond.
-    velocity_cap: i32,
+    pub(crate) velocity_cap: i32,
     /// Maximum distance from start position in encoder counts.
-    position_window: i32,
+    pub(crate) position_window: i32,
     /// Unwrapped signed position accumulated from wrap-aware deltas.
-    unwrapped_position: i32,
+    pub(crate) unwrapped_position: i32,
     /// Torque cap: the configured run_current limit.
-    torque_cap: u16,
+    pub(crate) torque_cap: u16,
     /// Previous raw encoder count for delta computation.
-    prev_encoder_count: i32,
+    pub(crate) prev_encoder_count: i32,
     /// Encoder counts per revolution (PPR * 4). Used to normalize
     /// wrap-around deltas when the ABN decoder counter rolls over.
-    counts_per_rev: i32,
+    pub(crate) counts_per_rev: i32,
 }
 
 impl OuterSafetyLimits {
-    fn new(start_position: i32, torque_cap: u16) -> Self {
+    pub(crate) fn new(start_position: i32, torque_cap: u16) -> Self {
         Self {
             velocity_cap: VELOCITY_CAP_COUNTS_PER_MS,
             position_window: POSITION_WINDOW_COUNTS,
@@ -703,7 +670,7 @@ impl OuterSafetyLimits {
 /// Outer commissioning phase state machine.
 #[derive(Debug, defmt::Format)]
 #[allow(dead_code)] // Later phases (9-13) are placeholders for future plans.
-enum OuterPhase {
+pub(crate) enum OuterPhase {
     /// Phase 8: Mechanical identification.
     MechanicalId {
         state: MechanicalIdState,
@@ -819,7 +786,7 @@ pub struct EntrySnapshot {
 
 /// Which commissioning mode is active.
 #[derive(Debug, defmt::Format)]
-enum EngineMode {
+pub(crate) enum EngineMode {
     Inner {
         phase: InnerPhase,
         profile: CommissionProfile,
@@ -1085,7 +1052,7 @@ impl CommissioningEngine {
     ) -> StepResult {
         // Run per-tick safety envelope for all active phases.
         if let Some(safety) = Self::outer_safety_mut(phase)
-            && Self::check_outer_safety(safety, backend).await
+            && crate::commissioning::outer::check_outer_safety(safety, backend).await
         {
             // Zero excitation immediately on any safety violation.
             let _ = backend
@@ -1094,8 +1061,8 @@ impl CommissioningEngine {
             let _ = backend
                 .write_register(foci_tmc4671::registers::MODE_RAMP_MODE_MOTION, 0)
                 .await;
-            let err = Self::safety_error_for_phase(phase);
-            return Self::fail_outer(phase, err);
+            let err = crate::commissioning::outer::safety_error_for_phase(phase);
+            return crate::commissioning::outer::fail_outer(phase, err);
         }
 
         match phase {
@@ -1142,198 +1109,6 @@ impl CommissioningEngine {
             OuterPhase::Commit { .. } | OuterPhase::Done(_) | OuterPhase::Failed(_) => None,
         }
     }
-
-    /// Compute a wrap-aware encoder delta.
-    ///
-    /// The ABN decoder counter wraps at `counts_per_rev` (PPR * 4).
-    /// A raw subtraction across the wrap boundary produces a delta
-    /// near +/- counts_per_rev instead of the true small motion.
-    /// This normalizes the delta to `[-half, +half)`.
-    fn encoder_delta(current: i32, previous: i32, counts_per_rev: i32) -> i32 {
-        let half = counts_per_rev / 2;
-        let raw = current.wrapping_sub(previous);
-        if raw > half {
-            raw - counts_per_rev
-        } else if raw < -half {
-            raw + counts_per_rev
-        } else {
-            raw
-        }
-    }
-
-    /// Per-tick safety envelope check for all outer phases.
-    ///
-    /// Reads the current encoder position, computes a wrap-aware
-    /// velocity delta, and accumulates an unwrapped signed position.
-    /// Checks:
-    /// - Velocity within cap
-    /// - Unwrapped position within window from start
-    ///
-    /// Returns `true` if a safety limit is violated.
-    async fn check_outer_safety<B: CommissioningBackend>(
-        safety: &mut OuterSafetyLimits,
-        backend: &mut B,
-    ) -> bool {
-        // Safety limits are initialized by MechanicalId::Setup after it reads
-        // the real encoder baseline. Skip the pre-setup placeholder values.
-        if safety.torque_cap == 0 {
-            return false;
-        }
-
-        let encoder_raw = backend.read_encoder_count().await;
-        let encoder_count = encoder_raw as i32;
-
-        // Wrap-aware velocity: delta encoder counts per 1ms tick.
-        let velocity = Self::encoder_delta(
-            encoder_count,
-            safety.prev_encoder_count,
-            safety.counts_per_rev,
-        );
-        safety.prev_encoder_count = encoder_count;
-        safety.unwrapped_position += velocity;
-
-        // Check velocity cap (absolute value).
-        let abs_velocity = if velocity < 0 { -velocity } else { velocity };
-        if abs_velocity > safety.velocity_cap {
-            defmt::warn!(
-                "outer safety: velocity {} exceeds cap {}",
-                abs_velocity,
-                safety.velocity_cap
-            );
-            return true;
-        }
-
-        // Check position window against unwrapped accumulator.
-        let abs_position = if safety.unwrapped_position < 0 {
-            -safety.unwrapped_position
-        } else {
-            safety.unwrapped_position
-        };
-        if abs_position > safety.position_window {
-            defmt::warn!(
-                "outer safety: position {} exceeds window {}",
-                abs_position,
-                safety.position_window
-            );
-            return true;
-        }
-
-        false
-    }
-
-    /// Map a safety-envelope violation to the dedicated error variant.
-    ///
-    /// Always returns `SafetyEnvelopeViolation` so the OuterFailed handler
-    /// can classify it as a safety fault requiring hard disable, distinct
-    /// from normal phase failures that are eligible for soft restore.
-    fn safety_error_for_phase(_phase: &OuterPhase) -> CommissionError {
-        CommissionError::SafetyEnvelopeViolation
-    }
-
-    /// Transition outer phase to Failed.
-    fn fail_outer(phase: &mut OuterPhase, err: CommissionError) -> StepResult {
-        *phase = OuterPhase::Failed(err);
-        StepResult::OuterFailed(err)
-    }
-
-    fn mech_id_torque_percent(attempt: u8) -> u32 {
-        match attempt {
-            0 => MECH_ID_TORQUE_STEP_PERCENT_0,
-            1 => MECH_ID_TORQUE_STEP_PERCENT_1,
-            _ => MECH_ID_TORQUE_STEP_PERCENT_2,
-        }
-    }
-
-    fn mech_id_torque_step(current_limit: u32, attempt: u8) -> u16 {
-        let percent = Self::mech_id_torque_percent(attempt);
-        (current_limit * percent / 100).max(1).min(u16::MAX as u32) as u16
-    }
-
-    fn mech_id_low_confidence(
-        fwd_accel: u32,
-        rev_accel: u32,
-        fwd_peak: u32,
-        rev_peak: u32,
-        fwd_travel: u32,
-        rev_travel: u32,
-    ) -> bool {
-        fwd_accel.min(rev_accel) < MECH_ID_MIN_ACCEL_COUNTS_PER_MS2
-            || fwd_peak.min(rev_peak) < MECH_ID_MIN_PEAK_VELOCITY_COUNTS_PER_MS
-            || fwd_travel.min(rev_travel) < MECH_ID_MIN_TRAVEL_COUNTS
-    }
-
-    fn retry_mechanical_id(
-        state: &mut MechanicalIdState,
-        data: &mut MechanicalIdData,
-        reason: &str,
-    ) -> bool {
-        if data.attempt + 1 >= MECH_ID_MAX_ATTEMPTS {
-            return false;
-        }
-
-        data.attempt += 1;
-        data.reset_captures();
-        *state = MechanicalIdState::Setup;
-        defmt::warn!(
-            "mech-id: {} on attempt {}, retrying at {}% current",
-            reason,
-            data.attempt,
-            Self::mech_id_torque_percent(data.attempt)
-        );
-        true
-    }
-
-    fn response_velocity_gains() -> VelocityGains {
-        VelocityGains {
-            velocity_p: OUTER_FALLBACK_VELOCITY_P,
-            velocity_i: OUTER_FALLBACK_VELOCITY_I,
-            velocity_limit: VEL_RESPONSE_LIMIT,
-            effective_bandwidth_hz: 0,
-            lambda_vel_ms: 0,
-        }
-    }
-
-    fn response_mech_model(
-        data: &MechanicalIdData,
-        torque: u32,
-        fwd_accel: u32,
-        rev_accel: u32,
-        fwd_peak: u32,
-        rev_peak: u32,
-    ) -> (MechanicalModel, u32) {
-        let accel_avg = ((fwd_accel.max(1) + rev_accel.max(1)) / 2).max(1);
-        let peak_avg = ((fwd_peak + rev_peak) / 2).max(1);
-        let j_eff = (torque * 1000) / accel_avg;
-        let b_eff = (torque * 1000) / peak_avg;
-        let avg_delay_samples = (data.forward_delay_samples + data.reverse_delay_samples) / 2;
-
-        (
-            MechanicalModel {
-                j_eff,
-                b_eff,
-                tau_mech_ms: VEL_RESPONSE_VALIDATE_TAU_MS,
-                theta_mech_us: (avg_delay_samples as u64 * MECH_ID_SAMPLE_PERIOD_US) as u32,
-                t_f: 0,
-            },
-            peak_avg,
-        )
-    }
-
-    fn response_velocity_phase(
-        model: MechanicalModel,
-        peak_velocity: u32,
-        mut diagnostics: OuterDiagnostics,
-        safety: OuterSafetyLimits,
-    ) -> OuterPhase {
-        diagnostics.warning_code = OUTER_WARNING_LOW_CONFIDENCE_MECH_ID;
-        OuterPhase::VelocityTune {
-            model,
-            peak_velocity,
-            diagnostics,
-            safety,
-        }
-    }
-
     // -------------------------------------------------------------------
     // Phase 8: Mechanical Identification
     // -------------------------------------------------------------------
@@ -1373,9 +1148,15 @@ impl CommissioningEngine {
                 // Compute torque step from configured run_current.
                 let current_limit = backend.current_limit() & 0xFFFF;
                 let torque_step = if current_limit > 0 {
-                    Self::mech_id_torque_step(current_limit, data.attempt)
+                    crate::commissioning::outer::response::mechanical_id_torque_step(
+                        current_limit,
+                        data.attempt,
+                    )
                 } else {
-                    return Self::fail_outer(phase, CommissionError::NoCurrent);
+                    return crate::commissioning::outer::fail_outer(
+                        phase,
+                        CommissionError::NoCurrent,
+                    );
                 };
 
                 // Initialize safety limits with real values.
@@ -1399,7 +1180,7 @@ impl CommissioningEngine {
                         .await
                         .is_err()
                 {
-                    return Self::fail_outer(phase, CommissionError::Spi);
+                    return crate::commissioning::outer::fail_outer(phase, CommissionError::Spi);
                 }
 
                 let phi_ok = backend
@@ -1407,7 +1188,10 @@ impl CommissioningEngine {
                     .await
                     .is_ok_and(|v| v == 3);
                 if !phi_ok {
-                    return Self::fail_outer(phase, CommissionError::EncoderNotAligned);
+                    return crate::commissioning::outer::fail_outer(
+                        phase,
+                        CommissionError::EncoderNotAligned,
+                    );
                 }
 
                 backend.set_enable_pin(true);
@@ -1416,7 +1200,9 @@ impl CommissioningEngine {
                 let _ = backend.write_register(PID_TORQUE_FLUX_TARGET, 0).await;
 
                 // Prepare transient buffer for forward capture.
-                buf.reset(MECH_ID_SAMPLE_PERIOD_US as u16);
+                buf.reset(
+                    crate::commissioning::outer::response::MECHANICAL_ID_SAMPLE_PERIOD_US as u16,
+                );
 
                 // Read encoder PPR for wrap-aware delta computation.
                 let ppr_raw = backend.read_register(ABN_DECODER_PPR).await.unwrap_or(4000);
@@ -1454,10 +1240,12 @@ impl CommissioningEngine {
                     .await
                     .is_err()
                 {
-                    return Self::fail_outer(phase, CommissionError::Spi);
+                    return crate::commissioning::outer::fail_outer(phase, CommissionError::Spi);
                 }
 
-                let next_sample_us = backend.elapsed_us().wrapping_add(MECH_ID_SAMPLE_PERIOD_US);
+                let next_sample_us = backend.elapsed_us().wrapping_add(
+                    crate::commissioning::outer::response::MECHANICAL_ID_SAMPLE_PERIOD_US,
+                );
                 *state = MechanicalIdState::ForwardCapture { next_sample_us };
                 StepResult::Continue
             }
@@ -1480,7 +1268,11 @@ impl CommissioningEngine {
 
                     // Extract forward metrics from buffer before reset.
                     let (initial_accel, peak_velocity, delay_samples, travel) =
-                        Self::extract_mech_metrics(buf, data.start_position, safety.counts_per_rev);
+                        crate::commissioning::outer::response::extract_mechanical_id_metrics(
+                            buf,
+                            data.start_position,
+                            safety.counts_per_rev,
+                        );
                     data.forward_initial_accel = initial_accel;
                     data.forward_peak_velocity = peak_velocity;
                     data.forward_delay_samples = delay_samples;
@@ -1499,7 +1291,9 @@ impl CommissioningEngine {
                         deadline_us: deadline,
                     };
                 } else {
-                    *next_sample_us = now.wrapping_add(MECH_ID_SAMPLE_PERIOD_US);
+                    *next_sample_us = now.wrapping_add(
+                        crate::commissioning::outer::response::MECHANICAL_ID_SAMPLE_PERIOD_US,
+                    );
                 }
                 StepResult::Continue
             }
@@ -1507,7 +1301,10 @@ impl CommissioningEngine {
             MechanicalIdState::ForwardSettle { deadline_us } => {
                 if backend.elapsed_us().wrapping_sub(*deadline_us) < 0x8000_0000 {
                     // Settled — prepare for reverse capture.
-                    buf.reset(MECH_ID_SAMPLE_PERIOD_US as u16);
+                    buf.reset(
+                        crate::commissioning::outer::response::MECHANICAL_ID_SAMPLE_PERIOD_US
+                            as u16,
+                    );
                     *state = MechanicalIdState::ReverseStart;
                 }
                 StepResult::Continue
@@ -1523,10 +1320,12 @@ impl CommissioningEngine {
                     .await
                     .is_err()
                 {
-                    return Self::fail_outer(phase, CommissionError::Spi);
+                    return crate::commissioning::outer::fail_outer(phase, CommissionError::Spi);
                 }
 
-                let next_sample_us = backend.elapsed_us().wrapping_add(MECH_ID_SAMPLE_PERIOD_US);
+                let next_sample_us = backend.elapsed_us().wrapping_add(
+                    crate::commissioning::outer::response::MECHANICAL_ID_SAMPLE_PERIOD_US,
+                );
                 *state = MechanicalIdState::ReverseCapture { next_sample_us };
                 StepResult::Continue
             }
@@ -1552,7 +1351,11 @@ impl CommissioningEngine {
                         data.start_position
                     };
                     let (initial_accel, peak_velocity, delay_samples, travel) =
-                        Self::extract_mech_metrics(buf, reverse_start, safety.counts_per_rev);
+                        crate::commissioning::outer::response::extract_mechanical_id_metrics(
+                            buf,
+                            reverse_start,
+                            safety.counts_per_rev,
+                        );
                     // Store as absolute values for symmetry comparison.
                     data.reverse_initial_accel = if initial_accel < 0 {
                         -initial_accel
@@ -1580,7 +1383,9 @@ impl CommissioningEngine {
                         deadline_us: deadline,
                     };
                 } else {
-                    *next_sample_us = now.wrapping_add(MECH_ID_SAMPLE_PERIOD_US);
+                    *next_sample_us = now.wrapping_add(
+                        crate::commissioning::outer::response::MECHANICAL_ID_SAMPLE_PERIOD_US,
+                    );
                 }
                 StepResult::Continue
             }
@@ -1623,16 +1428,21 @@ impl CommissioningEngine {
 
                 // Gate: both accelerations must be positive and non-zero.
                 if fwd_accel == 0 || rev_accel == 0 {
-                    if Self::retry_mechanical_id(state, data, "zero acceleration") {
+                    if crate::commissioning::outer::response::retry_mechanical_id(
+                        state,
+                        data,
+                        "zero acceleration",
+                    ) {
                         return StepResult::Continue;
                     }
                     defmt::warn!(
                         "mech-id: zero acceleration after retries, using response velocity tuning"
                     );
-                    let (model, peak_velocity) = Self::response_mech_model(
-                        data, torque, fwd_accel, rev_accel, fwd_peak, rev_peak,
-                    );
-                    *phase = Self::response_velocity_phase(
+                    let (model, peak_velocity) =
+                        crate::commissioning::outer::response::response_mechanical_model(
+                            data, torque, fwd_accel, rev_accel, fwd_peak, rev_peak,
+                        );
+                    *phase = crate::commissioning::outer::response::response_velocity_phase(
                         model,
                         peak_velocity,
                         OuterDiagnostics::from_mechanical_id(data),
@@ -1651,12 +1461,19 @@ impl CommissioningEngine {
                 let j_avg = (j_eff_fwd + j_eff_rev) / 2;
                 if j_avg == 0 {
                     defmt::warn!("mech-id: zero average inertia");
-                    return Self::fail_outer(phase, CommissionError::MechanicalIdFailed);
+                    return crate::commissioning::outer::fail_outer(
+                        phase,
+                        CommissionError::MechanicalIdFailed,
+                    );
                 }
                 let j_diff = j_eff_fwd.abs_diff(j_eff_rev);
                 let asymmetry_pct = (j_diff * 100) / j_avg;
                 if asymmetry_pct > MECH_ID_SYMMETRY_THRESHOLD_PCT {
-                    if Self::retry_mechanical_id(state, data, "asymmetric response") {
+                    if crate::commissioning::outer::response::retry_mechanical_id(
+                        state,
+                        data,
+                        "asymmetric response",
+                    ) {
                         return StepResult::Continue;
                     }
                     defmt::warn!(
@@ -1664,10 +1481,11 @@ impl CommissioningEngine {
                         asymmetry_pct,
                         MECH_ID_SYMMETRY_THRESHOLD_PCT
                     );
-                    let (model, peak_velocity) = Self::response_mech_model(
-                        data, torque, fwd_accel, rev_accel, fwd_peak, rev_peak,
-                    );
-                    *phase = Self::response_velocity_phase(
+                    let (model, peak_velocity) =
+                        crate::commissioning::outer::response::response_mechanical_model(
+                            data, torque, fwd_accel, rev_accel, fwd_peak, rev_peak,
+                        );
+                    *phase = crate::commissioning::outer::response::response_velocity_phase(
                         model,
                         peak_velocity,
                         OuterDiagnostics::from_mechanical_id(data),
@@ -1695,7 +1513,9 @@ impl CommissioningEngine {
                 // first measurable velocity change).
                 let avg_delay_samples =
                     (data.forward_delay_samples + data.reverse_delay_samples) / 2;
-                let theta_mech_us = (avg_delay_samples as u64 * MECH_ID_SAMPLE_PERIOD_US) as u32;
+                let theta_mech_us = (avg_delay_samples as u64
+                    * crate::commissioning::outer::response::MECHANICAL_ID_SAMPLE_PERIOD_US)
+                    as u32;
 
                 let model = MechanicalModel {
                     j_eff,
@@ -1714,7 +1534,7 @@ impl CommissioningEngine {
                 );
 
                 let diagnostics = OuterDiagnostics::from_mechanical_id(data);
-                if Self::mech_id_low_confidence(
+                if crate::commissioning::outer::response::mechanical_id_low_confidence(
                     fwd_accel,
                     rev_accel,
                     fwd_peak,
@@ -1722,12 +1542,21 @@ impl CommissioningEngine {
                     data.forward_travel,
                     data.reverse_travel,
                 ) {
-                    if Self::retry_mechanical_id(state, data, "low-confidence response") {
+                    if crate::commissioning::outer::response::retry_mechanical_id(
+                        state,
+                        data,
+                        "low-confidence response",
+                    ) {
                         return StepResult::Continue;
                     }
 
                     defmt::warn!("mech-id: low-confidence data, using response velocity tuning");
-                    *phase = Self::response_velocity_phase(model, peak_avg, diagnostics, *safety);
+                    *phase = crate::commissioning::outer::response::response_velocity_phase(
+                        model,
+                        peak_avg,
+                        diagnostics,
+                        *safety,
+                    );
                     return StepResult::PhaseChanged(PhaseId::VelocityTune);
                 }
 
@@ -1746,107 +1575,6 @@ impl CommissioningEngine {
                 StepResult::PhaseChanged(PhaseId::VelocityTune)
             }
         }
-    }
-
-    /// Extract mechanical metrics from a position transient buffer.
-    ///
-    /// Computes velocity as first-order differences of position samples,
-    /// then derives:
-    /// - Initial acceleration (from first `MECH_ID_ACCEL_SAMPLES` velocities)
-    /// - Peak velocity (maximum absolute velocity in the capture)
-    /// - Delay samples (number of samples before first velocity onset)
-    ///
-    /// # Parameters
-    /// - `buf`: Transient buffer filled with encoder position samples
-    /// - `reference_position`: Starting position for velocity computation
-    fn extract_mech_metrics(
-        buf: &TransientBuffer,
-        reference_position: i32,
-        counts_per_rev: i32,
-    ) -> (i32, i32, u16, u32) {
-        let samples = buf.samples();
-        if samples.len() < 2 {
-            return (0, 0, 0, 0);
-        }
-
-        // Convert absolute encoder samples into per-sample velocity using
-        // wrap-aware deltas. The ABN decoder wraps at counts_per_rev, so
-        // raw subtraction produces wrong results near the boundary.
-        let velocity_at = |idx: usize| -> i32 {
-            if idx == 0 {
-                Self::encoder_delta(samples[0] as i32, reference_position, counts_per_rev)
-            } else {
-                Self::encoder_delta(samples[idx] as i32, samples[idx - 1] as i32, counts_per_rev)
-            }
-        };
-
-        let mut peak_velocity: i32 = 0;
-        let mut onset_idx: Option<usize> = None;
-        let mut max_travel: u32 = 0;
-
-        // Accumulate unwrapped travel from wrap-aware deltas.
-        let mut unwrapped_travel: i32 = 0;
-
-        // Find the first sample with real motion and track the signed peak
-        // velocity. Mechanical ID runs against an unloaded motor, but current
-        // buildup and static friction can leave a quiet prefix at the start of
-        // the capture. Treating that prefix as the acceleration window caused
-        // false zero-acceleration failures on hardware.
-        for (i, &_sample) in samples.iter().enumerate() {
-            let velocity = velocity_at(i);
-            unwrapped_travel += velocity;
-            let travel = unwrapped_travel.unsigned_abs();
-            if travel > max_travel {
-                max_travel = travel;
-            }
-            let abs_cur = velocity.unsigned_abs();
-            let abs_peak = peak_velocity.unsigned_abs();
-            if abs_cur > abs_peak {
-                peak_velocity = velocity;
-            }
-
-            if onset_idx.is_none() && abs_cur >= MECH_ID_VELOCITY_ONSET_THRESHOLD as u32 {
-                onset_idx = Some(i);
-            }
-        }
-
-        let onset_idx = match onset_idx {
-            Some(idx) => idx,
-            None => return (0, peak_velocity, samples.len() as u16, max_travel),
-        };
-        let delay_samples = onset_idx as u16;
-
-        // Estimate initial acceleration from the first few samples after
-        // motion onset, preserving sign so the caller can compare forward and
-        // reverse captures. We use the velocity step to the local peak rather
-        // than an average over the whole window so integer quantization cannot
-        // round a small but real acceleration down to zero.
-        let previous_velocity = if onset_idx == 0 {
-            0
-        } else {
-            velocity_at(onset_idx - 1)
-        };
-
-        let direction_positive = velocity_at(onset_idx) >= 0;
-        let end = (onset_idx + MECH_ID_ACCEL_SAMPLES).min(samples.len());
-        let mut window_peak = velocity_at(onset_idx);
-        for i in onset_idx + 1..end {
-            let velocity = velocity_at(i);
-            if direction_positive {
-                if velocity > window_peak {
-                    window_peak = velocity;
-                }
-            } else if velocity < window_peak {
-                window_peak = velocity;
-            }
-        }
-
-        let mut initial_accel = window_peak.wrapping_sub(previous_velocity);
-        if initial_accel == 0 {
-            initial_accel = velocity_at(onset_idx);
-        }
-
-        (initial_accel, peak_velocity, delay_samples, max_travel)
     }
 
     // -------------------------------------------------------------------
@@ -1877,13 +1605,13 @@ impl CommissioningEngine {
         };
 
         let (gains, strategy, step_target) = if diagnostics.warning_code
-            == OUTER_WARNING_LOW_CONFIDENCE_MECH_ID
+            == crate::commissioning::outer::response::OUTER_WARNING_LOW_CONFIDENCE_MECHANICAL_ID
         {
-            let gains = Self::response_velocity_gains();
+            let gains = crate::commissioning::outer::response::response_velocity_gains();
             (
                 gains,
                 VelocityTuneStrategy::ResponseRamp,
-                VEL_RESPONSE_STEP_TARGET,
+                crate::commissioning::outer::response::VELOCITY_RESPONSE_STEP_TARGET,
             )
         } else {
             let config = backend.tmc_config();
@@ -1899,7 +1627,10 @@ impl CommissioningEngine {
                 Some(gains) => gains,
                 None => {
                     defmt::warn!("velocity tune: synthesis returned None");
-                    return Self::fail_outer(phase, CommissionError::MechanicalIdFailed);
+                    return crate::commissioning::outer::fail_outer(
+                        phase,
+                        CommissionError::MechanicalIdFailed,
+                    );
                 }
             };
 
@@ -1914,15 +1645,18 @@ impl CommissioningEngine {
                     gains.velocity_i
                 );
                 (
-                    Self::response_velocity_gains(),
+                    crate::commissioning::outer::response::response_velocity_gains(),
                     VelocityTuneStrategy::ResponseRamp,
-                    VEL_RESPONSE_STEP_TARGET,
+                    crate::commissioning::outer::response::VELOCITY_RESPONSE_STEP_TARGET,
                 )
             } else {
                 let step_target = if gains.velocity_limit > 0 {
                     (gains.velocity_limit * VEL_VALIDATE_STEP_PERCENT / 100).max(1)
                 } else {
-                    return Self::fail_outer(phase, CommissionError::VelocityValidationFailed);
+                    return crate::commissioning::outer::fail_outer(
+                        phase,
+                        CommissionError::VelocityValidationFailed,
+                    );
                 };
                 (gains, VelocityTuneStrategy::Model, step_target)
             }
@@ -2007,7 +1741,7 @@ impl CommissioningEngine {
                     .await
                     .is_err()
                 {
-                    return Self::fail_outer(phase, CommissionError::Spi);
+                    return crate::commissioning::outer::fail_outer(phase, CommissionError::Spi);
                 }
 
                 // Write velocity limit.
@@ -2016,7 +1750,7 @@ impl CommissioningEngine {
                     .await
                     .is_err()
                 {
-                    return Self::fail_outer(phase, CommissionError::Spi);
+                    return crate::commissioning::outer::fail_outer(phase, CommissionError::Spi);
                 }
 
                 // Switch to velocity mode using the same advanced PI
@@ -2026,7 +1760,7 @@ impl CommissioningEngine {
                     .await
                     .is_err()
                 {
-                    return Self::fail_outer(phase, CommissionError::Spi);
+                    return crate::commissioning::outer::fail_outer(phase, CommissionError::Spi);
                 }
 
                 // Zero velocity target.
@@ -2050,7 +1784,7 @@ impl CommissioningEngine {
                     .await
                     .is_err()
                 {
-                    return Self::fail_outer(phase, CommissionError::Spi);
+                    return crate::commissioning::outer::fail_outer(phase, CommissionError::Spi);
                 }
 
                 // Record initial encoder position for velocity derivation.
@@ -2140,7 +1874,7 @@ impl CommissioningEngine {
                     .await
                     .is_err()
                 {
-                    return Self::fail_outer(phase, CommissionError::Spi);
+                    return crate::commissioning::outer::fail_outer(phase, CommissionError::Spi);
                 }
 
                 // Record initial encoder position for velocity derivation.
@@ -2290,7 +2024,7 @@ impl CommissioningEngine {
                 };
 
                 let validation_tau_ms = if data.strategy == VelocityTuneStrategy::ResponseRamp {
-                    VEL_RESPONSE_VALIDATE_TAU_MS
+                    crate::commissioning::outer::response::VELOCITY_RESPONSE_VALIDATE_TAU_MS
                 } else {
                     data.model.tau_mech_ms.max(1)
                 };
@@ -2350,7 +2084,9 @@ impl CommissioningEngine {
                             if data.has_accepted_gains {
                                 data.gains = data.accepted_gains;
                             } else {
-                                data.gains = Self::response_velocity_gains();
+                                data.gains =
+                                    crate::commissioning::outer::response::response_velocity_gains(
+                                    );
                             }
                             defmt::warn!(
                                 "vel response: {} at P={}, accepting P={}",
@@ -2423,9 +2159,9 @@ impl CommissioningEngine {
                                         new_gains.velocity_p,
                                         new_gains.velocity_i
                                     );
-                                    new_gains = Self::response_velocity_gains();
+                                    new_gains = crate::commissioning::outer::response::response_velocity_gains();
                                     data.strategy = VelocityTuneStrategy::ResponseRamp;
-                                    data.step_target = VEL_RESPONSE_STEP_TARGET;
+                                    data.step_target = crate::commissioning::outer::response::VELOCITY_RESPONSE_STEP_TARGET;
                                 }
                                 defmt::info!(
                                     "vel retry: P={}, I={}, lambda={}ms",
@@ -2443,7 +2179,7 @@ impl CommissioningEngine {
                                 *state = VelocityValidateState::WriteGains;
                             }
                             None => {
-                                return Self::fail_outer(
+                                return crate::commissioning::outer::fail_outer(
                                     phase,
                                     CommissionError::VelocityValidationFailed,
                                 );
@@ -2462,7 +2198,10 @@ impl CommissioningEngine {
                         );
                         let _ = backend.write_register(PID_VELOCITY_TARGET, 0).await;
                         let _ = backend.write_register(MODE_RAMP_MODE_MOTION, 0).await;
-                        return Self::fail_outer(phase, CommissionError::VelocityValidationFailed);
+                        return crate::commissioning::outer::fail_outer(
+                            phase,
+                            CommissionError::VelocityValidationFailed,
+                        );
                     }
                 }
                 StepResult::Continue
@@ -2571,7 +2310,7 @@ impl CommissioningEngine {
                     .await
                     .is_err()
                 {
-                    return Self::fail_outer(phase, CommissionError::Spi);
+                    return crate::commissioning::outer::fail_outer(phase, CommissionError::Spi);
                 }
 
                 // Write initial position P gain, I=0.
@@ -2581,7 +2320,7 @@ impl CommissioningEngine {
                     .await
                     .is_err()
                 {
-                    return Self::fail_outer(phase, CommissionError::Spi);
+                    return crate::commissioning::outer::fail_outer(phase, CommissionError::Spi);
                 }
 
                 // Record both position domains. ABN counts are used for
@@ -2591,7 +2330,12 @@ impl CommissioningEngine {
                 data.step_start_counts = encoder_raw as i32;
                 let position_raw = match backend.read_register(PID_POSITION_ACTUAL).await {
                     Ok(v) => v as i32,
-                    Err(_) => return Self::fail_outer(phase, CommissionError::Spi),
+                    Err(_) => {
+                        return crate::commissioning::outer::fail_outer(
+                            phase,
+                            CommissionError::Spi,
+                        );
+                    }
                 };
                 data.step_start_tmc = position_raw;
 
@@ -2602,7 +2346,7 @@ impl CommissioningEngine {
                     .await
                     .is_err()
                 {
-                    return Self::fail_outer(phase, CommissionError::Spi);
+                    return crate::commissioning::outer::fail_outer(phase, CommissionError::Spi);
                 }
 
                 // Prepare capture buffer.
@@ -2707,7 +2451,12 @@ impl CommissioningEngine {
                         data.step_start_counts = encoder_raw as i32;
                         let position_raw = match backend.read_register(PID_POSITION_ACTUAL).await {
                             Ok(v) => v as i32,
-                            Err(_) => return Self::fail_outer(phase, CommissionError::Spi),
+                            Err(_) => {
+                                return crate::commissioning::outer::fail_outer(
+                                    phase,
+                                    CommissionError::Spi,
+                                );
+                            }
                         };
                         data.step_start_tmc = position_raw;
                         let target = position_raw.wrapping_add(data.step_target_tmc as i32);
@@ -2730,7 +2479,10 @@ impl CommissioningEngine {
 
                 if data.oscillation_at_minimum {
                     // Position tune failed — keep velocity gains.
-                    return Self::fail_outer(phase, CommissionError::PositionTuneFailed);
+                    return crate::commissioning::outer::fail_outer(
+                        phase,
+                        CommissionError::PositionTuneFailed,
+                    );
                 }
 
                 let final_p = data.stable_p;

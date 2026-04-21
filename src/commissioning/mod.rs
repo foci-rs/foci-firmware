@@ -7,4 +7,5 @@
 
 pub mod helpers;
 pub mod inner;
+pub mod outer;
 pub mod types;
