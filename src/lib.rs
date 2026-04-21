@@ -8,6 +8,7 @@
 
 pub mod autotune;
 pub mod biquad;
+pub mod calibration;
 pub mod commissioning;
 pub mod config;
 pub mod dump;
