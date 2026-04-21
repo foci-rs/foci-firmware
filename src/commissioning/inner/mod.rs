@@ -10,6 +10,7 @@ use crate::commissioning::types::StepResult;
 
 pub mod adc;
 pub mod coil;
+pub mod electrical_identification;
 pub mod encoder;
 pub mod phase;
 
