@@ -9,6 +9,7 @@ use crate::commission::InnerPhase;
 use crate::commissioning::types::StepResult;
 
 pub mod adc;
+pub mod closed_loop_entry;
 pub mod coil;
 pub mod current_loop;
 pub mod electrical_identification;
