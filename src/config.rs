@@ -3,7 +3,7 @@
 /// Board-specific TMC4671 hardware configuration.
 ///
 /// Constructed as a `const` by each firmware crate. Passed to all
-/// foci-core functions that interact with TMC4671 registers.
+/// foci-firmware functions that interact with TMC4671 registers.
 /// Changing `pwm_maxcnt` is the only edit needed to switch PWM frequency.
 #[derive(Debug, Clone, Copy, PartialEq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
