@@ -17,6 +17,7 @@ pub mod dump;
 pub mod pid;
 pub mod platform;
 pub mod selftest;
+pub mod state;
 pub mod tmc;
 pub mod trace;
 
