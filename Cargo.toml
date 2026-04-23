@@ -18,6 +18,8 @@ foci-klipper = { path = "../foci-klipper" }
 libm = "0.2"
 static_assertions = "1.1"
 foci-tmc4671 = { path = "../foci-tmc4671" }
+ankyra.workspace = true
+ankyra-macros.workspace = true
 
 [dev-dependencies]
 embedded-hal-mock = { version = "0.11", features = ["eh1", "embedded-hal-async"] }
