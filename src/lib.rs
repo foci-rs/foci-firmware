@@ -14,6 +14,7 @@ pub mod commissioning;
 pub mod config;
 pub mod context;
 pub mod dump;
+pub mod helpers;
 pub mod pid;
 pub mod platform;
 pub mod selftest;
