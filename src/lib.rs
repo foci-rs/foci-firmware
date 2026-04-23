@@ -11,6 +11,7 @@ pub mod biquad;
 pub mod calibration;
 pub mod commissioning;
 pub mod config;
+pub mod context;
 pub mod dump;
 pub mod pid;
 pub mod platform;
