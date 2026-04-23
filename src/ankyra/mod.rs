@@ -1,0 +1,16 @@
+//! Ankyra Klipper-protocol surface shared across all FOCI boards.
+//!
+//! - `handlers::*` — `#[klipper_command]` handlers taking capability
+//!   trait objects. Each subsystem has its own module.
+//! - `replies.rs` — `#[klipper_reply]` struct declarations.
+//! - `outputs.rs` — `#[klipper_output]` struct declarations.
+//! - `constants.rs` — firmware-wide `#[klipper_constant]` items.
+//! - `provider.rs` — `FOCI_FIRMWARE_PROVIDER` (added in Stage 6).
+//!
+//! Board crates compose this provider with their own `BOARD_PROVIDER`
+//! in `ankyra_config!`.
+
+pub mod constants;
+pub mod handlers;
+pub mod outputs;
+pub mod replies;

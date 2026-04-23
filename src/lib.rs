@@ -6,6 +6,7 @@
 
 #![no_std]
 
+pub mod ankyra;
 pub mod autotune;
 pub mod biquad;
 pub mod calibration;
