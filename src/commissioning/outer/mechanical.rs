@@ -16,6 +16,19 @@ use crate::commissioning::types::{CommissioningBackend, StepResult};
 /// Allow the motor to decelerate and stop before reverse capture.
 const MECHANICAL_ID_SETTLE_US: u64 = 500_000;
 
+/// Brief zero-torque grace period after entering torque mode (microseconds).
+///
+/// The position->torque mode transition can produce a one-tick encoder jump
+/// before the intended MechanicalId excitation starts. Hold zero torque long
+/// enough to ignore the immediate transient before evaluating settle velocity.
+const MECHANICAL_ID_MODE_SWITCH_GRACE_US: u64 = 10_000;
+
+/// Maximum zero-torque settle time allowed after the mode switch (microseconds).
+const MECHANICAL_ID_MODE_SWITCH_TIMEOUT_US: u64 = 100_000;
+
+/// Consecutive low-velocity ticks required before arming MechanicalId safety.
+const MECHANICAL_ID_MODE_SWITCH_STABLE_TICKS: u8 = 3;
+
 /// Forward/reverse agreement threshold (30% = 30/100).
 /// If `|J_fwd - J_rev| / avg > 30%`, mechanical ID fails (or retries).
 const MECHANICAL_ID_SYMMETRY_THRESHOLD_PCT: u32 = 30;
@@ -73,13 +86,19 @@ pub(crate) async fn step_mechanical_id<B: CommissioningBackend>(
                 return fail_outer(phase, CommissionError::NoCurrent);
             };
 
-            // Initialize safety limits with real values.
-            safety.prev_encoder_count = start_position;
-            safety.torque_cap = current_limit as u16;
-
             // Initialize data with real values.
             data.start_position = start_position;
             data.torque_step = torque_step;
+
+            // Zero torque before the position->torque mode switch so any stale
+            // target from the prior closed-loop hold cannot bleed into setup.
+            if backend
+                .write_register(PID_TORQUE_FLUX_TARGET, 0)
+                .await
+                .is_err()
+            {
+                return fail_outer(phase, CommissionError::Spi);
+            }
 
             // Ensure we are in torque mode with the same advanced PI
             // controller structure used by the tuned current loop.
@@ -107,9 +126,6 @@ pub(crate) async fn step_mechanical_id<B: CommissioningBackend>(
 
             backend.set_enable_pin(true);
 
-            // Zero torque target before starting capture.
-            let _ = backend.write_register(PID_TORQUE_FLUX_TARGET, 0).await;
-
             // Prepare transient buffer for forward capture.
             buf.reset(response::MECHANICAL_ID_SAMPLE_PERIOD_US as u16);
 
@@ -118,44 +134,103 @@ pub(crate) async fn step_mechanical_id<B: CommissioningBackend>(
             let counts_per_rev = (ppr_raw as i32).max(4);
             safety.counts_per_rev = counts_per_rev;
 
-            // Re-read encoder after mode switch to prevent a false
-            // velocity spike in the safety check. The transition from
-            // position mode to torque mode can cause the motor to
-            // drift, producing a large encoder delta on the next tick.
+            // Seed the safety baseline from the post-switch position, but keep
+            // safety disarmed until a brief zero-torque settle completes.
             let post_switch_pos = backend.read_encoder_count().await as i32;
             safety.prev_encoder_count = post_switch_pos;
             safety.unwrapped_position = 0;
             data.start_position = post_switch_pos;
+            safety.torque_cap = 0;
 
-            defmt::info!(
-                "mechanical-id: attempt={}, start pos={}, torque_step={}, current_limit={}",
-                data.attempt,
-                post_switch_pos,
-                torque_step,
-                current_limit
-            );
-
-            *state = MechanicalIdState::ForwardStart;
+            let now = backend.elapsed_us();
+            safety.last_sample_us = now;
+            *state = MechanicalIdState::PostSwitchSettle {
+                earliest_sample_us: now + MECHANICAL_ID_MODE_SWITCH_GRACE_US,
+                timeout_deadline_us: now + MECHANICAL_ID_MODE_SWITCH_TIMEOUT_US,
+                stable_ticks: 0,
+            };
             StepResult::PhaseChanged(PhaseId::MechanicalId)
         }
 
-        MechanicalIdState::ForwardStart => {
-            // Apply positive torque step.
-            let torque = data.torque_step as u32;
-            // PID_TORQUE_FLUX_TARGET: torque in [31:16], flux=0 in [15:0].
-            let target = torque << 16;
-            if backend
-                .write_register(PID_TORQUE_FLUX_TARGET, target)
-                .await
-                .is_err()
-            {
-                return fail_outer(phase, CommissionError::Spi);
+        MechanicalIdState::PostSwitchSettle {
+            earliest_sample_us,
+            timeout_deadline_us,
+            stable_ticks,
+        } => {
+            let now = backend.elapsed_us();
+            if now < *earliest_sample_us {
+                return StepResult::Continue;
             }
 
-            let next_sample_us = backend
-                .elapsed_us()
-                .wrapping_add(response::MECHANICAL_ID_SAMPLE_PERIOD_US);
-            *state = MechanicalIdState::ForwardCapture { next_sample_us };
+            let settled_pos = backend.read_encoder_count().await as i32;
+            let delta_counts = response::encoder_delta(
+                settled_pos,
+                safety.prev_encoder_count,
+                safety.counts_per_rev,
+            );
+            let dt_us = if safety.last_sample_us == 0 {
+                0
+            } else {
+                now.wrapping_sub(safety.last_sample_us)
+            };
+            let velocity_cpms = response::counts_per_ms(delta_counts, dt_us);
+            safety.prev_encoder_count = settled_pos;
+            safety.last_sample_us = now;
+
+            if velocity_cpms.unsigned_abs() as i32
+                <= response::MECHANICAL_ID_VELOCITY_ONSET_THRESHOLD
+            {
+                *stable_ticks = stable_ticks.saturating_add(1);
+            } else {
+                *stable_ticks = 0;
+            }
+
+            if *stable_ticks >= MECHANICAL_ID_MODE_SWITCH_STABLE_TICKS {
+                let current_limit = backend.current_limit() & 0xFFFF;
+                safety.prev_encoder_count = settled_pos;
+                safety.unwrapped_position = 0;
+                safety.torque_cap = current_limit as u16;
+                safety.last_sample_us = backend.elapsed_us();
+                data.start_position = settled_pos;
+
+                // Apply the first positive torque step immediately so the next
+                // outer tick does not arm safety for an idle pre-excitation gap.
+                let torque = data.torque_step as u32;
+                let target = torque << 16;
+                if backend
+                    .write_register(PID_TORQUE_FLUX_TARGET, target)
+                    .await
+                    .is_err()
+                {
+                    return fail_outer(phase, CommissionError::Spi);
+                }
+
+                let next_sample_us = backend
+                    .elapsed_us()
+                    .wrapping_add(response::MECHANICAL_ID_SAMPLE_PERIOD_US);
+
+                defmt::info!(
+                    "mechanical-id: attempt={}, start pos={}, torque_step={}, current_limit={}",
+                    data.attempt,
+                    settled_pos,
+                    data.torque_step,
+                    current_limit
+                );
+
+                *state = MechanicalIdState::ForwardCapture { next_sample_us };
+                return StepResult::Continue;
+            }
+
+            if now >= *timeout_deadline_us {
+                defmt::warn!(
+                    "mechanical-id: post-switch settle timed out at velocity={} (delta={} dt_us={})",
+                    velocity_cpms.unsigned_abs(),
+                    delta_counts,
+                    dt_us,
+                );
+                return fail_outer(phase, CommissionError::SafetyEnvelopeViolation);
+            }
+
             StepResult::Continue
         }
 

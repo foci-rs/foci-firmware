@@ -83,8 +83,12 @@ pub(crate) const POS_TUNE_STEP_COUNTS: u32 = 8;
 pub(crate) enum MechanicalIdState {
     /// Record starting position, configure torque mode.
     Setup,
-    /// Apply torque step and begin forward capture.
-    ForwardStart,
+    /// Hold zero torque briefly after the mode switch, then arm safety.
+    PostSwitchSettle {
+        earliest_sample_us: u64,
+        timeout_deadline_us: u64,
+        stable_ticks: u8,
+    },
     /// Sample encoder position into transient buffer at 1 kHz.
     ForwardCapture { next_sample_us: u64 },
     /// Return to zero torque and wait for settling.
@@ -582,8 +586,16 @@ pub(crate) async fn step_outer<B: CommissioningBackend>(
 
 #[cfg(test)]
 mod tests {
-    use super::{MECHANICAL_ID_VELOCITY_CAP_COUNTS_PER_MS, OuterSafetyLimits, check_outer_safety};
-    use crate::commission_dispatch::test_support::MockBackend;
+    use super::{
+        MECHANICAL_ID_VELOCITY_CAP_COUNTS_PER_MS, MechanicalIdData, MechanicalIdState, OuterPhase,
+        OuterSafetyLimits, check_outer_safety, step_outer,
+    };
+    use crate::autotune::{
+        CommissionError, CommissionProfile, OperatingMode, PhaseId, TransientBuffer,
+    };
+    use crate::commission_dispatch::test_support::{MockBackend, SpiOp};
+    use crate::commissioning::types::StepResult;
+    use foci_tmc4671::registers::{ABN_DECODER_PPR, MODE_RAMP_MODE_MOTION, PID_TORQUE_FLUX_TARGET};
 
     #[test]
     fn outer_safety_uses_mechanical_id_velocity_cap() {
@@ -614,6 +626,310 @@ mod tests {
             assert_eq!(safety.prev_encoder_count, 2525);
             assert_eq!(safety.last_sample_us, 124_909);
             assert_eq!(safety.unwrapped_position, 197);
+        });
+    }
+
+    #[test]
+    fn mechanical_id_setup_zeroes_torque_before_switching_modes() {
+        pollster::block_on(async {
+            let mut phase = OuterPhase::MechanicalId {
+                state: MechanicalIdState::Setup,
+                data: MechanicalIdData::new(0, 0),
+                safety: OuterSafetyLimits::new(0, 0),
+            };
+            let mut buf = TransientBuffer::new();
+            let mut backend = MockBackend::new();
+            backend.current_limit_value = 2448;
+            backend.encoder_count_value = 1234;
+            let _ = backend.registers.insert(ABN_DECODER_PPR.addr(), 4000);
+
+            let result = step_outer(
+                &mut phase,
+                &mut buf,
+                CommissionProfile::Balanced,
+                OperatingMode::Nominal,
+                0,
+                0,
+                false,
+                0,
+                &mut backend,
+            )
+            .await;
+
+            assert!(matches!(
+                result,
+                StepResult::PhaseChanged(PhaseId::MechanicalId)
+            ));
+
+            let zero_torque_idx = backend
+                .spi_log
+                .iter()
+                .position(|op| {
+                    matches!(
+                        op,
+                        SpiOp::Write(addr, 0) if *addr == PID_TORQUE_FLUX_TARGET.addr()
+                    )
+                })
+                .expect("setup should zero PID_TORQUE_FLUX_TARGET");
+            let mode_switch_idx = backend
+                .spi_log
+                .iter()
+                .position(|op| {
+                    matches!(
+                        op,
+                        SpiOp::Write(addr, _) if *addr == MODE_RAMP_MODE_MOTION.addr()
+                    )
+                })
+                .expect("setup should switch MODE_RAMP_MODE_MOTION");
+
+            assert!(
+                zero_torque_idx < mode_switch_idx,
+                "setup must zero torque before entering torque mode"
+            );
+        });
+    }
+
+    #[test]
+    fn mechanical_id_ignores_immediate_post_switch_velocity_spike() {
+        pollster::block_on(async {
+            let mut phase = OuterPhase::MechanicalId {
+                state: MechanicalIdState::Setup,
+                data: MechanicalIdData::new(0, 0),
+                safety: OuterSafetyLimits::new(0, 0),
+            };
+            let mut buf = TransientBuffer::new();
+            let mut backend = MockBackend::new();
+            backend.current_limit_value = 2448;
+            backend.encoder_count_value = 1000;
+            let _ = backend.registers.insert(ABN_DECODER_PPR.addr(), 4000);
+
+            let first = step_outer(
+                &mut phase,
+                &mut buf,
+                CommissionProfile::Balanced,
+                OperatingMode::Nominal,
+                0,
+                0,
+                false,
+                0,
+                &mut backend,
+            )
+            .await;
+            assert!(matches!(
+                first,
+                StepResult::PhaseChanged(PhaseId::MechanicalId)
+            ));
+
+            // Reproduce the field failure: the first sample after the position->torque
+            // mode switch jumps by 25 counts/ms before the intended torque step starts.
+            backend.encoder_count_value = 1025;
+
+            let second = step_outer(
+                &mut phase,
+                &mut buf,
+                CommissionProfile::Balanced,
+                OperatingMode::Nominal,
+                0,
+                0,
+                false,
+                0,
+                &mut backend,
+            )
+            .await;
+
+            assert!(
+                !matches!(
+                    second,
+                    StepResult::OuterFailed(CommissionError::SafetyEnvelopeViolation)
+                ),
+                "mechanical-id should not abort on the immediate post-switch spike"
+            );
+            assert!(
+                !matches!(
+                    phase,
+                    OuterPhase::Failed(CommissionError::SafetyEnvelopeViolation)
+                ),
+                "phase should survive the immediate post-switch spike"
+            );
+        });
+    }
+
+    #[test]
+    fn mechanical_id_waits_for_post_switch_settle_before_arming_safety() {
+        pollster::block_on(async {
+            let mut phase = OuterPhase::MechanicalId {
+                state: MechanicalIdState::Setup,
+                data: MechanicalIdData::new(0, 0),
+                safety: OuterSafetyLimits::new(0, 0),
+            };
+            let mut buf = TransientBuffer::new();
+            let mut backend = MockBackend::new();
+            backend.current_limit_value = 2448;
+            backend.encoder_count_value = 1000;
+            let _ = backend.registers.insert(ABN_DECODER_PPR.addr(), 4000);
+
+            let first = step_outer(
+                &mut phase,
+                &mut buf,
+                CommissionProfile::Balanced,
+                OperatingMode::Nominal,
+                0,
+                0,
+                false,
+                0,
+                &mut backend,
+            )
+            .await;
+            assert!(matches!(
+                first,
+                StepResult::PhaseChanged(PhaseId::MechanicalId)
+            ));
+
+            backend.elapsed_us_value = 10_000;
+            backend.encoder_count_value = 1025;
+            let second = step_outer(
+                &mut phase,
+                &mut buf,
+                CommissionProfile::Balanced,
+                OperatingMode::Nominal,
+                0,
+                0,
+                false,
+                0,
+                &mut backend,
+            )
+            .await;
+            assert!(matches!(second, StepResult::Continue));
+            match &phase {
+                OuterPhase::MechanicalId { state, safety, .. } => {
+                    assert!(matches!(state, MechanicalIdState::PostSwitchSettle { .. }));
+                    assert_eq!(
+                        safety.torque_cap, 0,
+                        "safety should remain disarmed while drifting"
+                    );
+                }
+                _ => panic!("expected MechanicalId phase"),
+            }
+
+            for (us, pos) in [(11_000, 1026), (12_000, 1027), (13_000, 1028)] {
+                backend.elapsed_us_value = us;
+                backend.encoder_count_value = pos;
+                let result = step_outer(
+                    &mut phase,
+                    &mut buf,
+                    CommissionProfile::Balanced,
+                    OperatingMode::Nominal,
+                    0,
+                    0,
+                    false,
+                    0,
+                    &mut backend,
+                )
+                .await;
+                assert!(matches!(result, StepResult::Continue));
+            }
+
+            match &phase {
+                OuterPhase::MechanicalId {
+                    state,
+                    safety,
+                    data,
+                } => {
+                    assert!(matches!(state, MechanicalIdState::ForwardCapture { .. }));
+                    assert_eq!(safety.torque_cap, 2448);
+                    assert_eq!(safety.prev_encoder_count, 1028);
+                    assert_eq!(data.start_position, 1027);
+                }
+                _ => panic!("expected MechanicalId phase"),
+            }
+
+            assert!(
+                backend.spi_log.iter().any(|op| matches!(
+                    op,
+                    SpiOp::Write(addr, val)
+                        if *addr == PID_TORQUE_FLUX_TARGET.addr() && (*val >> 16) != 0
+                )),
+                "settle completion should apply the first torque step immediately"
+            );
+        });
+    }
+
+    #[test]
+    fn mechanical_id_fails_if_post_switch_motion_never_settles() {
+        pollster::block_on(async {
+            let mut phase = OuterPhase::MechanicalId {
+                state: MechanicalIdState::Setup,
+                data: MechanicalIdData::new(0, 0),
+                safety: OuterSafetyLimits::new(0, 0),
+            };
+            let mut buf = TransientBuffer::new();
+            let mut backend = MockBackend::new();
+            backend.current_limit_value = 2448;
+            backend.encoder_count_value = 1000;
+            let _ = backend.registers.insert(ABN_DECODER_PPR.addr(), 4000);
+
+            let first = step_outer(
+                &mut phase,
+                &mut buf,
+                CommissionProfile::Balanced,
+                OperatingMode::Nominal,
+                0,
+                0,
+                false,
+                0,
+                &mut backend,
+            )
+            .await;
+            assert!(matches!(
+                first,
+                StepResult::PhaseChanged(PhaseId::MechanicalId)
+            ));
+
+            for (us, pos) in [
+                (10_000, 1050),
+                (20_000, 1100),
+                (30_000, 1150),
+                (40_000, 1200),
+            ] {
+                backend.elapsed_us_value = us;
+                backend.encoder_count_value = pos;
+                let _ = step_outer(
+                    &mut phase,
+                    &mut buf,
+                    CommissionProfile::Balanced,
+                    OperatingMode::Nominal,
+                    0,
+                    0,
+                    false,
+                    0,
+                    &mut backend,
+                )
+                .await;
+            }
+
+            backend.elapsed_us_value = 150_000;
+            backend.encoder_count_value = 1250;
+            let result = step_outer(
+                &mut phase,
+                &mut buf,
+                CommissionProfile::Balanced,
+                OperatingMode::Nominal,
+                0,
+                0,
+                false,
+                0,
+                &mut backend,
+            )
+            .await;
+
+            assert!(matches!(
+                result,
+                StepResult::OuterFailed(CommissionError::SafetyEnvelopeViolation)
+            ));
+            assert!(matches!(
+                phase,
+                OuterPhase::Failed(CommissionError::SafetyEnvelopeViolation)
+            ));
         });
     }
 }
