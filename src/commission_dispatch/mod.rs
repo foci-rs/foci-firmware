@@ -447,15 +447,22 @@ pub async fn drive_commission_result<B: CommissioningBackend>(
                             .await;
                         match (pos1, pos2) {
                             (Ok(p1), Ok(p2)) => {
-                                let drift = (p2 as i32).wrapping_sub(p1 as i32).unsigned_abs();
+                                let p1_signed = p1 as i32;
+                                let p2_signed = p2 as i32;
+                                let drift = p2_signed.wrapping_sub(p1_signed).unsigned_abs();
                                 if drift > 2 {
                                     defmt::error!(
                                         "OuterFailed restore: unstable p1={} p2={} drift={}",
-                                        p1,
-                                        p2,
+                                        p1_signed,
+                                        p2_signed,
                                         drift,
                                     );
-                                    Some(CE::CurrentValidationFailed)
+                                    // Preserve the upstream error; the drift
+                                    // log is the secondary diagnostic. Overriding
+                                    // with CurrentValidationFailed would mask
+                                    // the meaningful failure (e.g.
+                                    // VelocityValidationFailed).
+                                    Some(error)
                                 } else {
                                     None
                                 }

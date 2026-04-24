@@ -701,7 +701,7 @@ fn outer_failed_soft_failure_holds_motor() {
 }
 
 #[test]
-fn outer_failed_unstable_drift_treats_as_failure() {
+fn outer_failed_unstable_drift_preserves_upstream_error() {
     pollster::block_on(async {
         use core::sync::atomic::Ordering;
         let _guard = test_support::SHARED_STATE_MUTEX.lock().unwrap();
@@ -739,9 +739,13 @@ fn outer_failed_unstable_drift_treats_as_failure() {
                 reply: ReplyPayload::TuneResult { status, .. },
                 ..
             } => {
+                // Drift > 2 in the restore stability check no longer
+                // overrides the upstream error; the original NoCurrent
+                // failure is preserved so the host sees the meaningful
+                // root cause. Drift is still logged for diagnostics.
                 assert_eq!(
                     status,
-                    crate::autotune::CommissionError::CurrentValidationFailed.status_code()
+                    crate::autotune::CommissionError::NoCurrent.status_code()
                 );
             }
             _ => panic!("expected TuneResult error"),
