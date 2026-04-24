@@ -154,15 +154,43 @@ fn zero_adc_cal_result() -> AdcCalResult {
     }
 }
 
-/// The dispatch entry point. Stub here; full per-variant impl lands in Tasks 12-18.
+/// Dispatch a single `StepResult` from `CommissioningEngine::step()` to the
+/// appropriate outcome, executing any required SPI work, state mutations, and
+/// atomic stores along the way.
+///
+/// # Parameters
+/// - `result`: The `StepResult` returned by the most recent engine step.
+/// - `engine`: Mutable reference to the `Option<CommissioningEngine>` task-local
+///   slot. Terminal variants consume the engine (`engine.take()`); non-terminal
+///   variants leave it in place.
+/// - `backend`: SPI + GPIO backend for register access.
+/// - `state`: Borrowed task-local mutable state (calibrated flag, motor-enabled
+///   flag, stored PID gains).
+/// - `pwm_maxcnt`: PWM period counter used when re-applying filters or limits
+///   after a terminal outcome.
 pub async fn drive_commission_result<B: CommissioningBackend>(
-    _result: StepResult,
-    _engine: &mut Option<CommissioningEngine>,
-    _backend: &mut B,
-    _state: &mut DispatchState<'_>,
-    _pwm_maxcnt: u16,
+    result: StepResult,
+    engine: &mut Option<CommissioningEngine>,
+    backend: &mut B,
+    state: &mut DispatchState<'_>,
+    pwm_maxcnt: u16,
 ) -> CommissionOutcome {
-    todo!("implemented per-variant in Tasks 12-18")
+    let _ = (backend, state, pwm_maxcnt); // suppress unused warnings until all arms land
+    match result {
+        StepResult::Continue => CommissionOutcome::Continue,
+        StepResult::PhaseChanged(phase_id) => {
+            let engine_ref = engine
+                .as_ref()
+                .expect("engine slot is None on PhaseChanged");
+            CommissionOutcome::PhaseChanged {
+                oid: engine_ref.oid(),
+                phase_id,
+                engine_kind: engine_ref.kind(),
+            }
+        }
+        // Other arms added in Tasks 13-18.
+        _ => todo!("implemented per-variant in Tasks 13-18"),
+    }
 }
 
 // Suppress unused-helper warnings until the dispatch arms consume them.
