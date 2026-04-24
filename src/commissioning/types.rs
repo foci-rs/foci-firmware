@@ -108,6 +108,23 @@ pub trait CommissioningBackend {
     /// validation step bounded. Once velocity validation passes, later phases
     /// should return to the operational limit used for normal motion.
     fn operational_velocity_limit(&self) -> u32;
+
+    /// Cooperative microsecond delay. Used by the OuterFailed stability
+    /// check (10ms between PID_POSITION_ACTUAL reads) and any other
+    /// firmware-side wait that must yield to higher-priority RTIC tasks.
+    ///
+    /// `u32` micros gives ~71-minute range — far more than any
+    /// commissioning wait. Implementations SHOULD override with the
+    /// board's RTIC monotonic so the delay yields to higher-priority
+    /// tasks. The default panics — this is a missing-override bug,
+    /// not a soft fallback, because firmware-side cooperative waits
+    /// would not yield without a real wait.
+    async fn delay_us(&mut self, _us: u32) {
+        panic!(
+            "CommissioningBackend impl missing delay_us override; \
+             firmware-side cooperative waits would not yield"
+        );
+    }
 }
 
 /// Result of a `step()` call.
