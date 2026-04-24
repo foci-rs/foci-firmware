@@ -160,6 +160,24 @@ impl CommissioningBackend for MockBackend {
     }
 }
 
+/// Mutex for tests that mutate firmware-shared statics
+/// (`MOTOR_ARMED`, `COMMISSION_IN_FLIGHT`, the gain/filter atomics in `state::tmc`).
+///
+/// Tests acquire this guard before any read-modify-write sequence on a shared
+/// static, and hold it for the duration of the assertion phase. Cargo runs
+/// tests in parallel by default; without serialization, dirty static state
+/// from one test would flake another running concurrently.
+///
+/// Usage:
+/// ```ignore
+/// let _guard = SHARED_STATE_MUTEX.lock();
+/// crate::state::tmc::MOTOR_ARMED.store(false, Ordering::Relaxed);
+/// // ... test body ...
+/// ```
+///
+/// Use `std::sync::Mutex` (host-side `cargo test` always has std).
+pub static SHARED_STATE_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 /// Build locals for a fresh dispatch state.
 ///
 /// Returns `(calibrated, motor_enabled, stored_gains)` with zero/false/None

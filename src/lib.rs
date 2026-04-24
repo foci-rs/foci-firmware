@@ -6,6 +6,11 @@
 
 #![no_std]
 
+// Host-side `cargo test` always links std; make it available in test modules
+// even though the production crate is no_std.
+#[cfg(test)]
+extern crate std;
+
 pub mod ankyra;
 pub mod autotune;
 pub mod biquad;

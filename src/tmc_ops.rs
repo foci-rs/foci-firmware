@@ -26,6 +26,8 @@
 //! restructure.md`). See the extraction blueprint in this session's
 //! logbook entry for commit-by-commit scope.
 
+use crate::commission_dispatch::DispatchState;
+use crate::commissioning::types::CommissioningBackend;
 use embedded_hal_async::spi::SpiDevice;
 use foci_tmc4671::spi::Tmc4671Spi;
 
@@ -341,9 +343,6 @@ where
     Ok(())
 }
 
-use crate::commission_dispatch::DispatchState;
-use crate::commissioning::types::CommissioningBackend;
-
 /// Mark the motor electrically energized after verified calibration.
 ///
 /// Asserts `state.calibrated`; sets the enable pin high; updates
@@ -417,6 +416,9 @@ mod tests {
     #[test]
     fn arm_motor_success_path() {
         use core::sync::atomic::Ordering;
+        let _guard = crate::commission_dispatch::test_support::SHARED_STATE_MUTEX
+            .lock()
+            .unwrap();
         let mut backend = MockBackend::new();
         let (mut cal, mut en, mut gains) = fresh_state_locals();
         cal = true;
