@@ -250,13 +250,46 @@ pub(crate) fn estimate_early_slope(
     let v_end = v_at(fit_end_idx);
     let velocity_rise_mcpms = (v_end - v_start) as i32;
 
-    // Residual and sign_match are filled in by Task 5.
+    // Residual: compute predicted position at each fit sample, then RMS.
+    // det is known ≠ 0; scale c₀, c₁, c₂ into explicit i128 (num, denom)
+    // rationals and evaluate predicted_p in i128.
+    let det_c0 = sp0 * (s2 * s4 - s3 * s3) - sp1 * (s1 * s4 - s2 * s3) + sp2 * (s1 * s3 - s2 * s2);
+    let det_c1 =
+        n * (sp1 * s4 - sp2 * s3) - s1 * (sp0 * s4 - sp2 * s2) + s2 * (sp0 * s3 - sp1 * s2);
+    let mut residual_sq_sum: i128 = 0;
+    for (offset, &ts) in timestamps_us[fit_start_idx..=fit_end_idx]
+        .iter()
+        .enumerate()
+    {
+        let i = fit_start_idx + offset;
+        let t = ts.saturating_sub(t_origin_us) as i128;
+        // predicted_p = (det_c0 + det_c1·t + det_c2·t²) / det
+        let predicted_scaled = det_c0 + det_c1 * t + det_c2 * t * t;
+        let observed_scaled = unwrapped[i] * det;
+        let err = predicted_scaled - observed_scaled;
+        // err² can be large — divide before squaring isn't accurate, so
+        // compute (err / det)² and accumulate.
+        let err_counts = round_div_signed_i128(err, det);
+        residual_sq_sum = residual_sq_sum.saturating_add(err_counts * err_counts);
+    }
+    let mean_sq = residual_sq_sum / n;
+    let residual_counts = isqrt_i128(mean_sq) as u32;
+
+    // sign_match: fitted slope agrees with observed rise direction, or
+    // rise is below the rise-magnitude gate in which case sign carries
+    // no information (deadband bypass).
+    let sign_match = if velocity_rise_mcpms.unsigned_abs() < MIN_RISE_MCPMS {
+        true
+    } else {
+        accel_cpms2.signum() == velocity_rise_mcpms.signum()
+    };
+
     SlopeEstimate {
         accel: accel_cpms2,
-        residual_counts: 0,
+        residual_counts,
         velocity_rise_mcpms,
         fit_sample_count: n as u8,
-        sign_match: true, // placeholder — real value set in Task 5
+        sign_match,
     }
 }
 
@@ -271,6 +304,21 @@ fn round_div_signed_i128(numerator: i128, denominator: i128) -> i128 {
     } else {
         (numerator - half) / denominator
     }
+}
+
+/// Integer square root of a non-negative i128 via Newton iteration.
+/// Returns 0 for negative inputs.
+fn isqrt_i128(value: i128) -> i128 {
+    if value < 2 {
+        return value.max(0);
+    }
+    let mut x = value;
+    let mut y = (x + 1) / 2;
+    while y < x {
+        x = y;
+        y = (x + value / x) / 2;
+    }
+    x
 }
 
 /// Wrap-aware encoder delta in the range `(-counts_per_rev/2, +counts_per_rev/2]`.
@@ -365,6 +413,144 @@ mod tests {
             est.velocity_rise_mcpms > 0,
             "rise should be positive, got {}",
             est.velocity_rise_mcpms
+        );
+        assert!(
+            est.is_high_confidence(),
+            "clean ramp should be high-confidence: {:?}",
+            est,
+        );
+    }
+
+    #[test]
+    fn is_high_confidence_requires_sign_match() {
+        // Everything passes EXCEPT sign_match → false.
+        let est = SlopeEstimate {
+            accel: 10,
+            residual_counts: 1,
+            velocity_rise_mcpms: 10_000,
+            fit_sample_count: FIT_MIN_SAMPLES,
+            sign_match: false,
+        };
+        assert!(
+            !est.is_high_confidence(),
+            "sign mismatch alone should block high-confidence"
+        );
+    }
+
+    #[test]
+    fn is_high_confidence_requires_minimum_samples() {
+        // Everything passes EXCEPT fit_sample_count below minimum.
+        let est = SlopeEstimate {
+            accel: 10,
+            residual_counts: 1,
+            velocity_rise_mcpms: 10_000,
+            fit_sample_count: FIT_MIN_SAMPLES - 1,
+            sign_match: true,
+        };
+        assert!(
+            !est.is_high_confidence(),
+            "insufficient fit samples should block high-confidence"
+        );
+    }
+
+    #[test]
+    fn is_high_confidence_requires_rise_above_min() {
+        // Everything passes EXCEPT rise magnitude too small.
+        let est = SlopeEstimate {
+            accel: 10,
+            residual_counts: 1,
+            velocity_rise_mcpms: MIN_RISE_MCPMS as i32 - 1,
+            fit_sample_count: FIT_MIN_SAMPLES,
+            sign_match: true,
+        };
+        assert!(
+            !est.is_high_confidence(),
+            "rise below MIN_RISE_MCPMS should block high-confidence"
+        );
+    }
+
+    #[test]
+    fn is_high_confidence_requires_residual_below_max() {
+        // Everything passes EXCEPT residual too high.
+        let est = SlopeEstimate {
+            accel: 10,
+            residual_counts: MAX_RESIDUAL_COUNTS + 1,
+            velocity_rise_mcpms: 10_000,
+            fit_sample_count: FIT_MIN_SAMPLES,
+            sign_match: true,
+        };
+        assert!(
+            !est.is_high_confidence(),
+            "residual above MAX_RESIDUAL_COUNTS should block high-confidence"
+        );
+    }
+
+    #[test]
+    fn is_high_confidence_accepts_when_all_gates_pass() {
+        let est = SlopeEstimate {
+            accel: 10,
+            residual_counts: MAX_RESIDUAL_COUNTS,
+            velocity_rise_mcpms: MIN_RISE_MCPMS as i32,
+            fit_sample_count: FIT_MIN_SAMPLES,
+            sign_match: true,
+        };
+        assert!(est.is_high_confidence());
+    }
+
+    #[test]
+    fn sign_match_deadband_bypass_for_tiny_rise() {
+        // When velocity_rise is below MIN_RISE_MCPMS, sign agreement is
+        // meaningless; the estimator sets sign_match = true. But the
+        // rise-magnitude gate still fails, so is_high_confidence stays
+        // false. This test pins the layered semantics.
+        let est = SlopeEstimate {
+            accel: -10, // deliberately opposite sign to any positive rise
+            residual_counts: 1,
+            velocity_rise_mcpms: 100, // well below MIN_RISE_MCPMS=4000
+            fit_sample_count: FIT_MIN_SAMPLES,
+            sign_match: true, // deadband bypass in estimator body
+        };
+        assert!(
+            !est.is_high_confidence(),
+            "tiny rise should fail rise-magnitude gate even with deadband bypass"
+        );
+    }
+
+    #[test]
+    fn estimator_reports_sign_match_false_on_decelerating_capture() {
+        // Strictly increasing positions with rapidly decelerating velocity.
+        // Velocity deltas per 1 ms: 200, 100, 50, 30, 15, 10, 5.
+        // LSQ fits a concave-down parabola → c₂ < 0 → accel < 0.
+        // But v_start = 0 (first sample: delta from reference is 0 with
+        // dt_us = 0) and v_end = 15 cpms × 1000 = 15000 mcpms → rise > 0
+        // and |rise| >> MIN_RISE_MCPMS. Signs disagree → sign_match = false.
+        let samples: [u32; 8] = [0, 200, 300, 350, 380, 395, 405, 410];
+        let timestamps: [u64; 8] = [0, 1000, 2000, 3000, 4000, 5000, 6000, 7000];
+        let buf = buf_from(&samples);
+
+        let est = estimate_early_slope(&buf, &timestamps, 0, 0, 4000);
+
+        assert!(
+            est.accel < 0,
+            "decelerating pattern should fit a negative c₂: accel={}",
+            est.accel,
+        );
+        assert!(
+            est.velocity_rise_mcpms > 0,
+            "boundary-velocity rise should be positive: rise={}",
+            est.velocity_rise_mcpms,
+        );
+        assert!(
+            est.velocity_rise_mcpms.unsigned_abs() >= MIN_RISE_MCPMS,
+            "rise magnitude must clear the deadband for sign_match to apply",
+        );
+        assert!(
+            !est.sign_match,
+            "sign(accel) ≠ sign(rise) with rise above deadband → sign_match=false"
+        );
+        assert!(
+            !est.is_high_confidence(),
+            "sign mismatch must propagate through is_high_confidence()"
         );
     }
 }
