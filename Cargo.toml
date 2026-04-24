@@ -23,6 +23,7 @@ ankyra-macros.workspace = true
 cortex-m = "0.7"
 
 [dev-dependencies]
+defmt = { workspace = true, features = ["unstable-test"] }
 embedded-hal-mock = { version = "0.11", features = ["eh1", "embedded-hal-async"] }
 pollster = "0.4.0"
 tokio = { version = "1", features = ["macros", "rt"] }

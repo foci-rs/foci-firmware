@@ -327,6 +327,143 @@ fn calibrate_done_arms_after_gain_restore() {
     });
 }
 
+use crate::commissioning::types::OuterResult;
+
+fn sample_outer_result_for_dispatch() -> OuterResult {
+    OuterResult {
+        status: crate::autotune::CommissionStatus::Accepted,
+        velocity_p: 1152,
+        velocity_i: 0,
+        velocity_limit: 500_000,
+        position_p: 640,
+        position_i: 0,
+        velocity_filter_hz: 0,
+        position_filter_hz: 0,
+        flux_filter_hz: 0,
+        torque_filter_hz: 0,
+        j_eff: 0,
+        b_eff: 0,
+        warning_code: 0,
+        mech_torque_step: 0,
+        mech_fwd_accel: 0,
+        mech_rev_accel: 0,
+        mech_fwd_peak_velocity: 0,
+        mech_rev_peak_velocity: 0,
+        mech_fwd_travel: 0,
+        mech_rev_travel: 0,
+        synth_velocity_p: 0,
+        synth_velocity_i: 0,
+        synth_position_p: 0,
+        synth_position_i: 0,
+    }
+}
+
+#[test]
+fn outer_done_success_arms_motor() {
+    pollster::block_on(async {
+        use core::sync::atomic::Ordering;
+        let _guard = test_support::SHARED_STATE_MUTEX.lock().unwrap();
+        let mut backend = MockBackend::new();
+        let (mut cal, mut en, mut gains) = fresh_state_locals();
+        let mut state = DispatchState {
+            calibrated: &mut cal,
+            motor_enabled: &mut en,
+            stored_gains: &mut gains,
+        };
+        let mut engine = Some(CommissioningEngine::new_commission(
+            0,
+            CommissionProfile::Balanced,
+        ));
+        let outer = sample_outer_result_for_dispatch();
+
+        let outcome = drive_commission_result(
+            StepResult::OuterDone(outer.clone()),
+            &mut engine,
+            &mut backend,
+            &mut state,
+            4095,
+        )
+        .await;
+
+        // Atomics persisted
+        assert_eq!(
+            crate::state::tmc::POSITION_P_VALUE.load(Ordering::Relaxed),
+            outer.position_p
+        );
+        assert_eq!(
+            crate::state::tmc::VELOCITY_LIMIT_CFG.load(Ordering::Relaxed),
+            outer.velocity_limit
+        );
+
+        // Motor armed
+        assert!(backend.enable_pin);
+        assert!(crate::state::tmc::MOTOR_ARMED.load(Ordering::Relaxed));
+
+        match outcome {
+            CommissionOutcome::Terminal {
+                reply: ReplyPayload::TuneResult { status, .. },
+                actions,
+            } => {
+                assert_eq!(status, 0);
+                assert!(actions.stop_trace);
+                assert!(!actions.stop_stepper);
+                assert!(!actions.spawn_arm_check); // OuterDone doesn't spawn arm_check
+            }
+            _ => panic!("expected TuneResult"),
+        }
+
+        crate::state::tmc::MOTOR_ARMED.store(false, Ordering::Relaxed);
+    });
+}
+
+#[test]
+fn outer_done_spi_failure_disarms() {
+    pollster::block_on(async {
+        use core::sync::atomic::Ordering;
+        let _guard = test_support::SHARED_STATE_MUTEX.lock().unwrap();
+        let mut backend = MockBackend::new();
+        backend.fail_on_write = Some(foci_tmc4671::registers::MODE_RAMP_MODE_MOTION.addr());
+        let (mut cal, mut en, mut gains) = fresh_state_locals();
+        let mut state = DispatchState {
+            calibrated: &mut cal,
+            motor_enabled: &mut en,
+            stored_gains: &mut gains,
+        };
+        let mut engine = Some(CommissioningEngine::new_commission(
+            0,
+            CommissionProfile::Balanced,
+        ));
+        let outer = sample_outer_result_for_dispatch();
+
+        let outcome = drive_commission_result(
+            StepResult::OuterDone(outer),
+            &mut engine,
+            &mut backend,
+            &mut state,
+            4095,
+        )
+        .await;
+
+        // Disarmed
+        assert!(!*state.calibrated);
+        assert!(!*state.motor_enabled);
+        assert!(!backend.enable_pin);
+        assert!(!crate::state::tmc::MOTOR_ARMED.load(Ordering::Relaxed));
+
+        match outcome {
+            CommissionOutcome::Terminal {
+                reply: ReplyPayload::TuneResult { status, .. },
+                actions,
+            } => {
+                assert_eq!(status, crate::autotune::CommissionError::Spi.status_code());
+                assert!(actions.stop_trace);
+                assert!(actions.stop_stepper);
+            }
+            _ => panic!("expected TuneResult error"),
+        }
+    });
+}
+
 fn sample_commission_result() -> crate::commissioning::types::CommissionResult {
     use crate::autotune::CommissionStatus;
     use crate::commissioning::types::{CommissionResult, InnerResult};

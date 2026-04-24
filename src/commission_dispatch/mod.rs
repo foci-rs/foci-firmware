@@ -347,13 +347,73 @@ pub async fn drive_commission_result<B: CommissioningBackend>(
                 },
             }
         }
-        // Other arms added in Tasks 17-18.
-        _ => todo!("implemented per-variant in Tasks 17-18"),
+        StepResult::OuterDone(outer) => {
+            use core::sync::atomic::Ordering::Relaxed;
+            let consumed = engine.take().expect("engine slot None on OuterDone");
+            let oid = consumed.oid();
+
+            // Persist outer gains to atomics for closed-loop entry.
+            crate::state::tmc::POSITION_P_VALUE.store(outer.position_p, Relaxed);
+            crate::state::tmc::POSITION_I_VALUE.store(outer.position_i, Relaxed);
+            crate::state::tmc::VELOCITY_P_VALUE.store(outer.velocity_p, Relaxed);
+            crate::state::tmc::VELOCITY_I_VALUE.store(outer.velocity_i, Relaxed);
+            crate::state::tmc::VELOCITY_LIMIT_CFG.store(outer.velocity_limit, Relaxed);
+            crate::state::tmc::VELOCITY_FILTER_HZ.store(outer.velocity_filter_hz, Relaxed);
+            crate::state::tmc::POSITION_FILTER_HZ.store(outer.position_filter_hz, Relaxed);
+            crate::state::tmc::FLUX_FILTER_HZ.store(outer.flux_filter_hz, Relaxed);
+            crate::state::tmc::TORQUE_FILTER_HZ.store(outer.torque_filter_hz, Relaxed);
+
+            // SPI restore — enter position mode with the tuned gains.
+            if crate::tmc_ops::restore_position_mode_after_outer(backend, &outer)
+                .await
+                .is_err()
+            {
+                defmt::error!("OuterDone: position-mode restore SPI failed");
+                crate::tmc_ops::disarm_motor(backend, state).await;
+                crate::state::tmc::COMMISSION_IN_FLIGHT.store(false, Relaxed);
+                return CommissionOutcome::Terminal {
+                    reply: ReplyPayload::TuneResult {
+                        oid,
+                        status: crate::autotune::CommissionError::Spi.status_code(),
+                        result: zero_outer_result(),
+                    },
+                    actions: PostActions {
+                        stop_trace: true,
+                        stop_stepper: true,
+                        spawn_arm_check: false,
+                    },
+                };
+            }
+
+            crate::tmc_ops::apply_stored_filters_via_backend(backend, pwm_maxcnt).await;
+
+            *state.calibrated = true;
+            crate::tmc_ops::arm_motor_electrical(backend, state);
+            // OuterDone does NOT zero STEPPER_POSITION (Stage 2 holds existing position).
+            crate::tmc_ops::arm_motor_for_steps(state);
+
+            crate::state::tmc::COMMISSION_IN_FLIGHT.store(false, Relaxed);
+
+            let status = match outer.status {
+                crate::autotune::CommissionStatus::Accepted => 0u8,
+                crate::autotune::CommissionStatus::AcceptedWithWarnings => 1,
+                crate::autotune::CommissionStatus::InnerOnly => 2,
+                crate::autotune::CommissionStatus::Failed(e) => e.status_code(),
+            };
+            CommissionOutcome::Terminal {
+                reply: ReplyPayload::TuneResult {
+                    oid,
+                    status,
+                    result: outer,
+                },
+                actions: PostActions {
+                    stop_trace: true,
+                    stop_stepper: false,
+                    spawn_arm_check: false,
+                },
+            }
+        }
+        // OuterFailed arm added in Task 18.
+        _ => todo!("implemented per-variant in Task 18"),
     }
 }
-
-// Suppress unused-helper warnings until the dispatch arms consume them.
-#[allow(dead_code)]
-const _: fn() = || {
-    let _ = zero_outer_result;
-};
