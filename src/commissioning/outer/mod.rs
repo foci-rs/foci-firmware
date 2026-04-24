@@ -978,6 +978,154 @@ mod tests {
     }
 
     #[test]
+    fn low_confidence_slope_falls_back_instead_of_retrying_more_torque() {
+        pollster::block_on(async {
+            use crate::commissioning::outer::slope_estimator::SlopeEstimate;
+            let low_conf = SlopeEstimate::default(); // fit_sample_count = 0 → low-conf
+            let mut phase = OuterPhase::MechanicalId {
+                state: MechanicalIdState::Finalize,
+                data: MechanicalIdData {
+                    start_position: 0,
+                    attempt: 0,
+                    torque_step: 367,
+                    fwd_slope: low_conf,
+                    forward_peak_velocity: 28,
+                    forward_delay_us: 1000,
+                    forward_travel: 3830,
+                    rev_slope: low_conf,
+                    reverse_peak_velocity: 29,
+                    reverse_delay_us: 1000,
+                    reverse_travel: 3888,
+                    sample_timestamps_us: [0; crate::autotune::TRANSIENT_LEN],
+                    sample_timestamp_len: 0,
+                },
+                safety: OuterSafetyLimits::new(0, 2448),
+            };
+            let mut buf = TransientBuffer::new();
+            let mut backend = MockBackend::new();
+
+            let result = mechanical::step_mechanical_id(&mut phase, &mut buf, &mut backend).await;
+
+            assert!(matches!(
+                result,
+                StepResult::PhaseChanged(PhaseId::VelocityTune)
+            ));
+            assert!(
+                matches!(phase, OuterPhase::VelocityTune { .. }),
+                "low-confidence should fall back to VelocityTune (response ramp), not retry"
+            );
+        });
+    }
+
+    #[test]
+    fn high_confidence_asymmetry_still_retries_with_more_torque() {
+        pollster::block_on(async {
+            use crate::commissioning::outer::slope_estimator::SlopeEstimate;
+            // Both slopes high-confidence, asymmetric by >30%.
+            let high_conf_fwd = SlopeEstimate {
+                accel: 20,
+                residual_counts: 1,
+                velocity_rise_mcpms: 20_000,
+                fit_sample_count: 6,
+                sign_match: true,
+            };
+            let high_conf_rev = SlopeEstimate {
+                accel: -50,
+                residual_counts: 1,
+                velocity_rise_mcpms: -50_000,
+                fit_sample_count: 6,
+                sign_match: true,
+            };
+            let mut phase = OuterPhase::MechanicalId {
+                state: MechanicalIdState::Finalize,
+                data: MechanicalIdData {
+                    start_position: 0,
+                    attempt: 0,
+                    torque_step: 367,
+                    fwd_slope: high_conf_fwd,
+                    forward_peak_velocity: 20,
+                    forward_delay_us: 1000,
+                    forward_travel: 3000,
+                    rev_slope: high_conf_rev,
+                    reverse_peak_velocity: 50,
+                    reverse_delay_us: 1000,
+                    reverse_travel: 5000,
+                    sample_timestamps_us: [0; crate::autotune::TRANSIENT_LEN],
+                    sample_timestamp_len: 0,
+                },
+                safety: OuterSafetyLimits::new(0, 2448),
+            };
+            let mut buf = TransientBuffer::new();
+            let mut backend = MockBackend::new();
+
+            let _ = mechanical::step_mechanical_id(&mut phase, &mut buf, &mut backend).await;
+
+            // Expect retry: attempt increments, state returns to Setup.
+            match &phase {
+                OuterPhase::MechanicalId { state, data, .. } => {
+                    assert_eq!(data.attempt, 1, "expected attempt increment on retry");
+                    assert!(
+                        matches!(state, MechanicalIdState::Setup),
+                        "expected return to Setup for retry, got {:?}",
+                        state,
+                    );
+                }
+                other => panic!("expected MechanicalId phase after retry, got {:?}", other),
+            }
+        });
+    }
+
+    #[test]
+    fn high_confidence_zero_accel_still_retries() {
+        pollster::block_on(async {
+            use crate::commissioning::outer::slope_estimator::SlopeEstimate;
+            // Forward slope "high-confidence" but accel is zero: a
+            // high-confidence fit could still produce 0 if the rotor
+            // genuinely didn't move during the fit window. The zero-accel
+            // retry path is gated on confidence, not on magnitude, so
+            // this retries.
+            let zero_accel = SlopeEstimate {
+                accel: 0,
+                residual_counts: 1,
+                velocity_rise_mcpms: 10_000,
+                fit_sample_count: 6,
+                sign_match: true,
+            };
+            let mut phase = OuterPhase::MechanicalId {
+                state: MechanicalIdState::Finalize,
+                data: MechanicalIdData {
+                    start_position: 0,
+                    attempt: 0,
+                    torque_step: 367,
+                    fwd_slope: zero_accel,
+                    forward_peak_velocity: 10,
+                    forward_delay_us: 1000,
+                    forward_travel: 100,
+                    rev_slope: zero_accel,
+                    reverse_peak_velocity: 10,
+                    reverse_delay_us: 1000,
+                    reverse_travel: 100,
+                    sample_timestamps_us: [0; crate::autotune::TRANSIENT_LEN],
+                    sample_timestamp_len: 0,
+                },
+                safety: OuterSafetyLimits::new(0, 2448),
+            };
+            let mut buf = TransientBuffer::new();
+            let mut backend = MockBackend::new();
+
+            let _ = mechanical::step_mechanical_id(&mut phase, &mut buf, &mut backend).await;
+
+            match &phase {
+                OuterPhase::MechanicalId { state, data, .. } => {
+                    assert_eq!(data.attempt, 1, "high-confidence zero-accel should retry");
+                    assert!(matches!(state, MechanicalIdState::Setup));
+                }
+                other => panic!("expected retry, got {:?}", other),
+            }
+        });
+    }
+
+    #[test]
     fn high_signal_asymmetry_still_retries_with_more_torque() {
         pollster::block_on(async {
             use crate::commissioning::outer::slope_estimator::SlopeEstimate;
