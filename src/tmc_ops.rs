@@ -380,6 +380,23 @@ pub fn arm_motor_for_steps(state: &mut DispatchState<'_>) {
     crate::state::tmc::MOTOR_ARMED.store(true, core::sync::atomic::Ordering::Relaxed);
 }
 
+/// De-energize the motor and clear all armed/enabled state.
+///
+/// Routes the safe-state register sequence through
+/// [`crate::selftest::restore_safe_state_via_backend`], then clears
+/// `state.calibrated`, `state.motor_enabled`, and
+/// [`crate::state::tmc::MOTOR_ARMED`].
+///
+/// Idempotent: safe to call when the motor is already disarmed.
+/// Does not touch the stepper queue or invoke `stepper_stop_from_p1` —
+/// those remain board-side responsibilities.
+pub async fn disarm_motor<B: CommissioningBackend>(backend: &mut B, state: &mut DispatchState<'_>) {
+    crate::selftest::restore_safe_state_via_backend(backend).await;
+    *state.calibrated = false;
+    *state.motor_enabled = false;
+    crate::state::tmc::MOTOR_ARMED.store(false, core::sync::atomic::Ordering::Relaxed);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -411,6 +428,33 @@ mod tests {
         };
         // motor_enabled is false; this MUST panic.
         arm_motor_for_steps(&mut state);
+    }
+
+    #[test]
+    fn arm_then_disarm_returns_to_baseline() {
+        pollster::block_on(async {
+            use core::sync::atomic::Ordering;
+            let _guard = crate::commission_dispatch::test_support::SHARED_STATE_MUTEX
+                .lock()
+                .unwrap();
+            let mut backend = MockBackend::new();
+            let (mut cal, mut en, mut gains) = fresh_state_locals();
+            cal = true;
+            let mut state = DispatchState {
+                calibrated: &mut cal,
+                motor_enabled: &mut en,
+                stored_gains: &mut gains,
+            };
+            arm_motor_electrical(&mut backend, &mut state);
+            arm_motor_for_steps(&mut state);
+            assert!(backend.enable_pin);
+            assert!(crate::state::tmc::MOTOR_ARMED.load(Ordering::Relaxed));
+            disarm_motor(&mut backend, &mut state).await;
+            assert!(!backend.enable_pin);
+            assert!(!*state.calibrated);
+            assert!(!*state.motor_enabled);
+            assert!(!crate::state::tmc::MOTOR_ARMED.load(Ordering::Relaxed));
+        });
     }
 
     #[test]
