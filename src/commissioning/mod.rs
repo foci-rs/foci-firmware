@@ -79,6 +79,10 @@ pub struct EntrySnapshot {
 
 /// Which commissioning mode is active.
 #[derive(Debug, defmt::Format)]
+#[allow(clippy::large_enum_variant)]
+// The Outer variant holds an OuterPhase whose MechanicalId state carries a
+// ~2 KB timestamp array for time-aware metrics. Acceptable on STM32F407's
+// 128 KB SRAM; boxing is not available in no_std without an allocator.
 pub(crate) enum EngineMode {
     Inner {
         phase: InnerPhase,

@@ -16,22 +16,33 @@ use crate::commissioning::types::{CommissioningBackend, StepResult};
 /// Allow the motor to decelerate and stop before reverse capture.
 const MECHANICAL_ID_SETTLE_US: u64 = 500_000;
 
-/// Brief zero-torque grace period after entering torque mode (microseconds).
+/// Phase-local settle tuning for the position->torque mode switch.
 ///
-/// The position->torque mode transition can produce a one-tick encoder jump
-/// before the intended MechanicalId excitation starts. Hold zero torque long
-/// enough to ignore the immediate transient before evaluating settle velocity.
-const MECHANICAL_ID_MODE_SWITCH_GRACE_US: u64 = 10_000;
+/// These values are still firmware constants today, but grouping them makes
+/// it straightforward to promote them into a future board/profile tuning
+/// surface without touching the state-machine logic.
+struct MechanicalIdModeSwitchSettlePolicy {
+    grace_us: u64,
+    timeout_us: u64,
+    stable_ticks: u8,
+}
 
-/// Maximum zero-torque settle time allowed after the mode switch (microseconds).
-const MECHANICAL_ID_MODE_SWITCH_TIMEOUT_US: u64 = 100_000;
-
-/// Consecutive low-velocity ticks required before arming MechanicalId safety.
-const MECHANICAL_ID_MODE_SWITCH_STABLE_TICKS: u8 = 3;
+const MECHANICAL_ID_MODE_SWITCH_SETTLE_POLICY: MechanicalIdModeSwitchSettlePolicy =
+    MechanicalIdModeSwitchSettlePolicy {
+        // Ignore the immediate position->torque transient before sampling settle velocity.
+        grace_us: 10_000,
+        // Fail cleanly if the unloaded axis never comes to rest after the mode switch.
+        timeout_us: 100_000,
+        // Require a few consecutive quiet samples before arming MechanicalId safety.
+        stable_ticks: 3,
+    };
 
 /// Forward/reverse agreement threshold (30% = 30/100).
 /// If `|J_fwd - J_rev| / avg > 30%`, mechanical ID fails (or retries).
 const MECHANICAL_ID_SYMMETRY_THRESHOLD_PCT: u32 = 30;
+/// Below this acceleration, asymmetry is treated as low-confidence rather than
+/// a reason to escalate torque on unloaded low-inertia rigs.
+const MECHANICAL_ID_MIN_RETRY_ACCEL_COUNTS_PER_MS2: u32 = 4;
 
 /// Operational PID output voltage limit for outer commissioning.
 ///
@@ -145,8 +156,8 @@ pub(crate) async fn step_mechanical_id<B: CommissioningBackend>(
             let now = backend.elapsed_us();
             safety.last_sample_us = now;
             *state = MechanicalIdState::PostSwitchSettle {
-                earliest_sample_us: now + MECHANICAL_ID_MODE_SWITCH_GRACE_US,
-                timeout_deadline_us: now + MECHANICAL_ID_MODE_SWITCH_TIMEOUT_US,
+                earliest_sample_us: now + MECHANICAL_ID_MODE_SWITCH_SETTLE_POLICY.grace_us,
+                timeout_deadline_us: now + MECHANICAL_ID_MODE_SWITCH_SETTLE_POLICY.timeout_us,
                 stable_ticks: 0,
             };
             StepResult::PhaseChanged(PhaseId::MechanicalId)
@@ -178,14 +189,14 @@ pub(crate) async fn step_mechanical_id<B: CommissioningBackend>(
             safety.last_sample_us = now;
 
             if velocity_cpms.unsigned_abs() as i32
-                <= response::MECHANICAL_ID_VELOCITY_ONSET_THRESHOLD
+                <= response::MECHANICAL_ID_SETTLE_VELOCITY_THRESHOLD
             {
                 *stable_ticks = stable_ticks.saturating_add(1);
             } else {
                 *stable_ticks = 0;
             }
 
-            if *stable_ticks >= MECHANICAL_ID_MODE_SWITCH_STABLE_TICKS {
+            if *stable_ticks >= MECHANICAL_ID_MODE_SWITCH_SETTLE_POLICY.stable_ticks {
                 let current_limit = backend.current_limit() & 0xFFFF;
                 safety.prev_encoder_count = settled_pos;
                 safety.unwrapped_position = 0;
@@ -205,9 +216,10 @@ pub(crate) async fn step_mechanical_id<B: CommissioningBackend>(
                     return fail_outer(phase, CommissionError::Spi);
                 }
 
-                let next_sample_us = backend
-                    .elapsed_us()
-                    .wrapping_add(response::MECHANICAL_ID_SAMPLE_PERIOD_US);
+                let capture_start_us = backend.elapsed_us();
+                data.reset_sample_timestamps();
+                let next_sample_us =
+                    capture_start_us.wrapping_add(response::MECHANICAL_ID_SAMPLE_PERIOD_US);
 
                 defmt::info!(
                     "mechanical-id: attempt={}, start pos={}, torque_step={}, current_limit={}",
@@ -217,7 +229,10 @@ pub(crate) async fn step_mechanical_id<B: CommissioningBackend>(
                     current_limit
                 );
 
-                *state = MechanicalIdState::ForwardCapture { next_sample_us };
+                *state = MechanicalIdState::ForwardCapture {
+                    next_sample_us,
+                    capture_start_us,
+                };
                 return StepResult::Continue;
             }
 
@@ -234,7 +249,10 @@ pub(crate) async fn step_mechanical_id<B: CommissioningBackend>(
             StepResult::Continue
         }
 
-        MechanicalIdState::ForwardCapture { next_sample_us } => {
+        MechanicalIdState::ForwardCapture {
+            next_sample_us,
+            capture_start_us,
+        } => {
             // Check if it's time for the next sample.
             let now = backend.elapsed_us();
             if now.wrapping_sub(*next_sample_us) >= 0x8000_0000 {
@@ -245,29 +263,31 @@ pub(crate) async fn step_mechanical_id<B: CommissioningBackend>(
             // Sample encoder position.
             let encoder_raw = backend.read_encoder_count().await;
             buf.push(encoder_raw);
+            data.push_sample_timestamp(now);
 
             if buf.is_full() {
                 // Forward capture complete — zero torque.
                 let _ = backend.write_register(PID_TORQUE_FLUX_TARGET, 0).await;
 
                 // Extract forward metrics from buffer before reset.
-                let (initial_accel, peak_velocity, delay_samples, travel) =
-                    response::extract_mechanical_id_metrics(
-                        buf,
-                        data.start_position,
-                        safety.counts_per_rev,
-                    );
-                data.forward_initial_accel = initial_accel;
-                data.forward_peak_velocity = peak_velocity;
-                data.forward_delay_samples = delay_samples;
-                data.forward_travel = travel;
+                let metrics = response::extract_mechanical_id_metrics(
+                    buf,
+                    data.sample_timestamps(),
+                    *capture_start_us,
+                    data.start_position,
+                    safety.counts_per_rev,
+                );
+                data.forward_initial_accel = metrics.initial_accel;
+                data.forward_peak_velocity = metrics.peak_velocity;
+                data.forward_delay_us = metrics.delay_us;
+                data.forward_travel = metrics.travel;
 
                 defmt::info!(
-                    "mechanical-id fwd: accel={}, peak_vel={}, delay={}, travel={}",
-                    initial_accel,
-                    peak_velocity,
-                    delay_samples,
-                    travel
+                    "mechanical-id fwd: accel={}, peak_vel={}, delay_us={}, travel={}",
+                    metrics.initial_accel,
+                    metrics.peak_velocity,
+                    metrics.delay_us,
+                    metrics.travel
                 );
 
                 let deadline = backend.elapsed_us().wrapping_add(MECHANICAL_ID_SETTLE_US);
@@ -302,14 +322,21 @@ pub(crate) async fn step_mechanical_id<B: CommissioningBackend>(
                 return fail_outer(phase, CommissionError::Spi);
             }
 
-            let next_sample_us = backend
-                .elapsed_us()
-                .wrapping_add(response::MECHANICAL_ID_SAMPLE_PERIOD_US);
-            *state = MechanicalIdState::ReverseCapture { next_sample_us };
+            let capture_start_us = backend.elapsed_us();
+            data.reset_sample_timestamps();
+            let next_sample_us =
+                capture_start_us.wrapping_add(response::MECHANICAL_ID_SAMPLE_PERIOD_US);
+            *state = MechanicalIdState::ReverseCapture {
+                next_sample_us,
+                capture_start_us,
+            };
             StepResult::Continue
         }
 
-        MechanicalIdState::ReverseCapture { next_sample_us } => {
+        MechanicalIdState::ReverseCapture {
+            next_sample_us,
+            capture_start_us,
+        } => {
             let now = backend.elapsed_us();
             if now.wrapping_sub(*next_sample_us) >= 0x8000_0000 {
                 return StepResult::Continue;
@@ -317,6 +344,7 @@ pub(crate) async fn step_mechanical_id<B: CommissioningBackend>(
 
             let encoder_raw = backend.read_encoder_count().await;
             buf.push(encoder_raw);
+            data.push_sample_timestamp(now);
 
             if buf.is_full() {
                 // Reverse capture complete — zero torque.
@@ -329,24 +357,25 @@ pub(crate) async fn step_mechanical_id<B: CommissioningBackend>(
                 } else {
                     data.start_position
                 };
-                let (initial_accel, peak_velocity, delay_samples, travel) =
-                    response::extract_mechanical_id_metrics(
-                        buf,
-                        reverse_start,
-                        safety.counts_per_rev,
-                    );
+                let metrics = response::extract_mechanical_id_metrics(
+                    buf,
+                    data.sample_timestamps(),
+                    *capture_start_us,
+                    reverse_start,
+                    safety.counts_per_rev,
+                );
                 // Store as absolute values for symmetry comparison.
-                data.reverse_initial_accel = initial_accel.unsigned_abs() as i32;
-                data.reverse_peak_velocity = peak_velocity.unsigned_abs() as i32;
-                data.reverse_delay_samples = delay_samples;
-                data.reverse_travel = travel;
+                data.reverse_initial_accel = metrics.initial_accel.unsigned_abs() as i32;
+                data.reverse_peak_velocity = metrics.peak_velocity.unsigned_abs() as i32;
+                data.reverse_delay_us = metrics.delay_us;
+                data.reverse_travel = metrics.travel;
 
                 defmt::info!(
-                    "mechanical-id rev: accel={}, peak_vel={}, delay={}, travel={}",
+                    "mechanical-id rev: accel={}, peak_vel={}, delay_us={}, travel={}",
                     data.reverse_initial_accel,
                     data.reverse_peak_velocity,
-                    delay_samples,
-                    travel
+                    metrics.delay_us,
+                    metrics.travel
                 );
 
                 let deadline = backend.elapsed_us().wrapping_add(MECHANICAL_ID_SETTLE_US);
@@ -386,6 +415,7 @@ pub(crate) async fn step_mechanical_id<B: CommissioningBackend>(
             let fwd_peak = data.forward_peak_velocity.unsigned_abs();
             let rev_peak = data.reverse_peak_velocity as u32;
             let peak_avg = (fwd_peak + rev_peak) / 2;
+            let min_accel = fwd_accel.min(rev_accel);
 
             // Gate: both accelerations must be positive and non-zero.
             if fwd_accel == 0 || rev_accel == 0 {
@@ -422,6 +452,26 @@ pub(crate) async fn step_mechanical_id<B: CommissioningBackend>(
             let j_diff = j_eff_fwd.abs_diff(j_eff_rev);
             let asymmetry_pct = (j_diff * 100) / j_avg;
             if asymmetry_pct > MECHANICAL_ID_SYMMETRY_THRESHOLD_PCT {
+                // This intentionally short-circuits the retry ladder for weak
+                // onset-acceleration captures: pushing harder on a low-SNR rotor
+                // widens excursion without materially improving the measurement.
+                if min_accel < MECHANICAL_ID_MIN_RETRY_ACCEL_COUNTS_PER_MS2 {
+                    defmt::warn!(
+                        "mechanical-id: asymmetry {}% at low accel {} -> response fallback",
+                        asymmetry_pct,
+                        min_accel
+                    );
+                    let (model, peak_velocity) = response::response_mechanical_model(
+                        data, torque, fwd_accel, rev_accel, fwd_peak, rev_peak,
+                    );
+                    *phase = response::response_velocity_phase(
+                        model,
+                        peak_velocity,
+                        OuterDiagnostics::from_mechanical_id(data),
+                        *safety,
+                    );
+                    return StepResult::PhaseChanged(PhaseId::VelocityTune);
+                }
                 if response::retry_mechanical_id(state, data, "asymmetric response") {
                     return StepResult::Continue;
                 }
@@ -459,9 +509,7 @@ pub(crate) async fn step_mechanical_id<B: CommissioningBackend>(
 
             // theta_mech from delay samples (time from torque step to
             // first measurable velocity change).
-            let avg_delay_samples = (data.forward_delay_samples + data.reverse_delay_samples) / 2;
-            let theta_mech_us =
-                (avg_delay_samples as u64 * response::MECHANICAL_ID_SAMPLE_PERIOD_US) as u32;
+            let theta_mech_us = (data.forward_delay_us + data.reverse_delay_us) / 2;
 
             let model = MechanicalModel {
                 j_eff,

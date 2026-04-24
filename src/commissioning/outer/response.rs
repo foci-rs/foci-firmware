@@ -31,6 +31,19 @@ pub(crate) const MECHANICAL_ID_ACCEL_SAMPLES: usize = 8;
 /// Velocity threshold (encoder counts per ms) above which a sample is
 /// considered to mark the start of the rotor's response to the torque step.
 pub(crate) const MECHANICAL_ID_VELOCITY_ONSET_THRESHOLD: i32 = 2;
+/// Velocity threshold (encoder counts per ms) below which the zero-torque
+/// post-switch settle is considered stationary enough to arm MechanicalId.
+///
+/// Kept as a dedicated alias so settle qualification can diverge from onset
+/// detection later without a cross-cutting rename.
+pub(crate) const MECHANICAL_ID_SETTLE_VELOCITY_THRESHOLD: i32 =
+    MECHANICAL_ID_VELOCITY_ONSET_THRESHOLD;
+
+/// Onset threshold converted to milli-counts/ms for comparison against the
+/// time-normalized velocity estimator used by MechanicalId metric extraction.
+pub(crate) const fn mechanical_id_velocity_onset_threshold_mcpms() -> i32 {
+    MECHANICAL_ID_VELOCITY_ONSET_THRESHOLD * 1000
+}
 
 /// Quality gates for accepting mechanical-ID estimates.
 pub(crate) const MECHANICAL_ID_MIN_ACCEL_COUNTS_PER_MS2: u32 = 2;
@@ -174,14 +187,14 @@ pub(crate) fn response_mechanical_model(
     let peak_avg = ((fwd_peak + rev_peak) / 2).max(1);
     let j_eff = (torque * 1000) / accel_avg;
     let b_eff = (torque * 1000) / peak_avg;
-    let avg_delay_samples = (data.forward_delay_samples + data.reverse_delay_samples) / 2;
+    let avg_delay_us = (data.forward_delay_us + data.reverse_delay_us) / 2;
 
     (
         MechanicalModel {
             j_eff,
             b_eff,
             tau_mech_ms: VELOCITY_RESPONSE_VALIDATE_TAU_MS,
-            theta_mech_us: (avg_delay_samples as u64 * MECHANICAL_ID_SAMPLE_PERIOD_US) as u32,
+            theta_mech_us: avg_delay_us,
             t_f: 0,
         },
         peak_avg,
@@ -205,6 +218,15 @@ pub(crate) fn response_velocity_phase(
     }
 }
 
+/// Time-aware metrics extracted from a MechanicalId transient capture.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct MechanicalIdMetrics {
+    pub(crate) initial_accel: i32,
+    pub(crate) peak_velocity: i32,
+    pub(crate) delay_us: u32,
+    pub(crate) travel: u32,
+}
+
 /// Extract initial acceleration, peak velocity, motion-onset sample
 /// index, and total absolute travel from a mechanical-ID transient capture.
 ///
@@ -214,18 +236,43 @@ pub(crate) fn response_velocity_phase(
 /// wrap-aware on the ABN decoder boundary.
 pub(crate) fn extract_mechanical_id_metrics(
     buf: &TransientBuffer,
+    timestamps_us: &[u64],
+    capture_start_us: u64,
     reference_position: i32,
     counts_per_rev: i32,
-) -> (i32, i32, u16, u32) {
+) -> MechanicalIdMetrics {
     let samples = buf.samples();
-    if samples.len() < 2 {
-        return (0, 0, 0, 0);
+    debug_assert_eq!(timestamps_us.len(), samples.len());
+    if samples.len() < 2 || timestamps_us.len() != samples.len() {
+        defmt::error!(
+            "mechanical-id: ts/sample length desync: {}/{}",
+            timestamps_us.len(),
+            samples.len()
+        );
+        return MechanicalIdMetrics {
+            initial_accel: 0,
+            peak_velocity: 0,
+            delay_us: 0,
+            travel: 0,
+        };
     }
 
-    // Convert absolute encoder samples into per-sample velocity using
-    // wrap-aware deltas. The ABN decoder wraps at counts_per_rev, so
-    // raw subtraction produces wrong results near the boundary.
-    let velocity_at = |idx: usize| -> i32 {
+    let velocity_mcpms_at = |idx: usize| -> i32 {
+        let (previous_count, previous_ts) = if idx == 0 {
+            (reference_position, capture_start_us)
+        } else {
+            (samples[idx - 1] as i32, timestamps_us[idx - 1])
+        };
+        let delta_counts = encoder_delta(samples[idx] as i32, previous_count, counts_per_rev);
+        let dt_us = timestamps_us[idx].saturating_sub(previous_ts);
+        if dt_us == 0 {
+            0
+        } else {
+            ((delta_counts as i64) * 1_000_000 / dt_us as i64) as i32
+        }
+    };
+
+    let delta_at = |idx: usize| -> i32 {
         if idx == 0 {
             encoder_delta(samples[0] as i32, reference_position, counts_per_rev)
         } else {
@@ -233,7 +280,7 @@ pub(crate) fn extract_mechanical_id_metrics(
         }
     };
 
-    let mut peak_velocity: i32 = 0;
+    let mut peak_velocity_mcpms: i32 = 0;
     let mut onset_idx: Option<usize> = None;
     let mut max_travel: u32 = 0;
 
@@ -246,65 +293,103 @@ pub(crate) fn extract_mechanical_id_metrics(
     // the capture. Treating that prefix as the acceleration window caused
     // false zero-acceleration failures on hardware.
     for (i, &_sample) in samples.iter().enumerate() {
-        let velocity = velocity_at(i);
-        unwrapped_travel += velocity;
+        let delta_counts = delta_at(i);
+        let velocity_mcpms = velocity_mcpms_at(i);
+        unwrapped_travel += delta_counts;
         let travel = unwrapped_travel.unsigned_abs();
         if travel > max_travel {
             max_travel = travel;
         }
-        let abs_cur = velocity.unsigned_abs();
-        let abs_peak = peak_velocity.unsigned_abs();
+        let abs_cur = velocity_mcpms.unsigned_abs();
+        let abs_peak = peak_velocity_mcpms.unsigned_abs();
         if abs_cur > abs_peak {
-            peak_velocity = velocity;
+            peak_velocity_mcpms = velocity_mcpms;
         }
 
-        if onset_idx.is_none() && abs_cur >= MECHANICAL_ID_VELOCITY_ONSET_THRESHOLD as u32 {
+        if onset_idx.is_none() && abs_cur >= mechanical_id_velocity_onset_threshold_mcpms() as u32 {
             onset_idx = Some(i);
         }
     }
 
     let onset_idx = match onset_idx {
         Some(idx) => idx,
-        None => return (0, peak_velocity, samples.len() as u16, max_travel),
+        None => {
+            return MechanicalIdMetrics {
+                initial_accel: 0,
+                peak_velocity: round_div_signed_i32(peak_velocity_mcpms, 1000),
+                delay_us: timestamps_us
+                    .last()
+                    .map(|ts| ts.saturating_sub(capture_start_us) as u32)
+                    .unwrap_or(0),
+                travel: max_travel,
+            };
+        }
     };
-    let delay_samples = onset_idx as u16;
+    let delay_us = timestamps_us[onset_idx].saturating_sub(capture_start_us) as u32;
 
-    // Estimate initial acceleration from the first few samples after
-    // motion onset, preserving sign so the caller can compare forward and
-    // reverse captures. We use the velocity step to the local peak rather
-    // than an average over the whole window so integer quantization cannot
-    // round a small but real acceleration down to zero.
-    let previous_velocity = if onset_idx == 0 {
+    // Estimate initial acceleration from a least-squares slope fit over the
+    // first few post-onset velocity samples. This is much less sensitive to
+    // one-count quantization than using a single peak-minus-previous delta.
+    let end = (onset_idx + MECHANICAL_ID_ACCEL_SAMPLES).min(samples.len());
+    let onset_ts = timestamps_us[onset_idx];
+    let mut n: i128 = 0;
+    let mut sum_x: i128 = 0;
+    let mut sum_y: i128 = 0;
+    let mut sum_xx: i128 = 0;
+    let mut sum_xy: i128 = 0;
+    for (i, &ts) in timestamps_us[onset_idx..end].iter().enumerate() {
+        let x = ts.saturating_sub(onset_ts) as i128;
+        let y = velocity_mcpms_at(onset_idx + i) as i128;
+        n += 1;
+        sum_x += x;
+        sum_y += y;
+        sum_xx += x * x;
+        sum_xy += x * y;
+    }
+    let numerator = n * sum_xy - sum_x * sum_y;
+    let denominator = n * sum_xx - sum_x * sum_x;
+    let mut initial_accel = if denominator == 0 {
         0
     } else {
-        velocity_at(onset_idx - 1)
+        round_div_signed_i128(numerator, denominator) as i32
     };
-
-    let direction_positive = velocity_at(onset_idx) >= 0;
-    let end = (onset_idx + MECHANICAL_ID_ACCEL_SAMPLES).min(samples.len());
-    let mut window_peak = velocity_at(onset_idx);
-    for i in onset_idx + 1..end {
-        let velocity = velocity_at(i);
-        if direction_positive {
-            if velocity > window_peak {
-                window_peak = velocity;
-            }
-        } else if velocity < window_peak {
-            window_peak = velocity;
+    if initial_accel == 0 {
+        let onset_velocity = velocity_mcpms_at(onset_idx);
+        let onset_dt_us = timestamps_us[onset_idx].saturating_sub(capture_start_us);
+        if onset_dt_us > 0 {
+            initial_accel =
+                round_div_signed_i128(onset_velocity as i128, onset_dt_us as i128) as i32;
         }
     }
 
-    let mut initial_accel = window_peak.wrapping_sub(previous_velocity);
-    if initial_accel == 0 {
-        initial_accel = velocity_at(onset_idx);
+    MechanicalIdMetrics {
+        initial_accel,
+        peak_velocity: round_div_signed_i32(peak_velocity_mcpms, 1000),
+        delay_us,
+        travel: max_travel,
     }
+}
 
-    (initial_accel, peak_velocity, delay_samples, max_travel)
+fn round_div_signed_i32(numerator: i32, denominator: i32) -> i32 {
+    round_div_signed_i128(numerator as i128, denominator as i128) as i32
+}
+
+fn round_div_signed_i128(numerator: i128, denominator: i128) -> i128 {
+    if denominator == 0 {
+        return 0;
+    }
+    let half = denominator.abs() / 2;
+    if numerator >= 0 {
+        (numerator + half) / denominator
+    } else {
+        (numerator - half) / denominator
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::response_velocity_gains;
+    use super::{extract_mechanical_id_metrics, response_velocity_gains};
+    use crate::autotune::TransientBuffer;
     use crate::commissioning::outer::{
         MECHANICAL_ID_VELOCITY_CAP_COUNTS_PER_MS, RESPONSE_FALLBACK_VELOCITY_LIMIT_COUNTS_PER_MS,
     };
@@ -320,5 +405,43 @@ mod tests {
             gains.velocity_limit,
             MECHANICAL_ID_VELOCITY_CAP_COUNTS_PER_MS as u32
         );
+    }
+
+    #[test]
+    fn extract_mechanical_id_metrics_estimates_initial_slope_not_window_peak() {
+        let mut buf = TransientBuffer::new();
+        buf.reset(1000);
+        for sample in [2_u32, 8, 18, 32, 50] {
+            assert!(buf.push(sample));
+        }
+
+        let timestamps = [1000_u64, 2000, 3000, 4000, 5000];
+        let metrics = extract_mechanical_id_metrics(&buf, &timestamps, 0, 0, 4000);
+
+        assert_eq!(
+            metrics.initial_accel, 4,
+            "initial acceleration should match the fitted early slope"
+        );
+        assert_eq!(metrics.peak_velocity, 18);
+        assert_eq!(metrics.delay_us, 1000);
+        assert_eq!(metrics.travel, 50);
+    }
+
+    #[test]
+    fn extract_mechanical_id_metrics_is_stable_under_small_quantization_noise() {
+        let mut buf = TransientBuffer::new();
+        buf.reset(1000);
+        for sample in [2_u32, 8, 17, 33, 50] {
+            assert!(buf.push(sample));
+        }
+
+        let timestamps = [1000_u64, 2000, 3000, 4000, 5000];
+        let metrics = extract_mechanical_id_metrics(&buf, &timestamps, 0, 0, 4000);
+
+        assert_eq!(
+            metrics.initial_accel, 4,
+            "least-squares fit should remain stable under small quantization perturbations"
+        );
+        assert_eq!(metrics.peak_velocity, 17);
     }
 }

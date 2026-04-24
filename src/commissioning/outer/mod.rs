@@ -15,7 +15,7 @@ pub mod velocity;
 
 use crate::autotune::{
     CommissionError, CommissionProfile, FilterConfig, MechanicalModel, OperatingMode,
-    PositionGains, TransientBuffer, VelocityGains, VelocityValidation,
+    PositionGains, TRANSIENT_LEN, TransientBuffer, VelocityGains, VelocityValidation,
 };
 use crate::commissioning::types::{CommissioningBackend, OuterResult, StepResult};
 
@@ -90,13 +90,19 @@ pub(crate) enum MechanicalIdState {
         stable_ticks: u8,
     },
     /// Sample encoder position into transient buffer at 1 kHz.
-    ForwardCapture { next_sample_us: u64 },
+    ForwardCapture {
+        next_sample_us: u64,
+        capture_start_us: u64,
+    },
     /// Return to zero torque and wait for settling.
     ForwardSettle { deadline_us: u64 },
     /// Apply reverse torque step and begin reverse capture.
     ReverseStart,
     /// Sample encoder position for reverse direction.
-    ReverseCapture { next_sample_us: u64 },
+    ReverseCapture {
+        next_sample_us: u64,
+        capture_start_us: u64,
+    },
     /// Return to zero torque and wait for settling.
     ReverseSettle { deadline_us: u64 },
     /// Estimate mechanical parameters from captured data.
@@ -118,13 +124,17 @@ pub(crate) struct MechanicalIdData {
     /// Stored as [initial_acceleration, peak_velocity] pairs.
     pub(crate) forward_initial_accel: i32,
     pub(crate) forward_peak_velocity: i32,
-    pub(crate) forward_delay_samples: u16,
+    pub(crate) forward_delay_us: u32,
     pub(crate) forward_travel: u32,
     /// Reverse capture: same metrics.
     pub(crate) reverse_initial_accel: i32,
     pub(crate) reverse_peak_velocity: i32,
-    pub(crate) reverse_delay_samples: u16,
+    pub(crate) reverse_delay_us: u32,
     pub(crate) reverse_travel: u32,
+    /// Timestamp of each sample in the currently active MechanicalId capture.
+    pub(crate) sample_timestamps_us: [u64; TRANSIENT_LEN],
+    /// Number of valid entries in `sample_timestamps_us`.
+    pub(crate) sample_timestamp_len: u16,
 }
 
 impl MechanicalIdData {
@@ -135,24 +145,43 @@ impl MechanicalIdData {
             torque_step,
             forward_initial_accel: 0,
             forward_peak_velocity: 0,
-            forward_delay_samples: 0,
+            forward_delay_us: 0,
             forward_travel: 0,
             reverse_initial_accel: 0,
             reverse_peak_velocity: 0,
-            reverse_delay_samples: 0,
+            reverse_delay_us: 0,
             reverse_travel: 0,
+            sample_timestamps_us: [0; TRANSIENT_LEN],
+            sample_timestamp_len: 0,
         }
     }
 
     pub(crate) fn reset_captures(&mut self) {
         self.forward_initial_accel = 0;
         self.forward_peak_velocity = 0;
-        self.forward_delay_samples = 0;
+        self.forward_delay_us = 0;
         self.forward_travel = 0;
         self.reverse_initial_accel = 0;
         self.reverse_peak_velocity = 0;
-        self.reverse_delay_samples = 0;
+        self.reverse_delay_us = 0;
         self.reverse_travel = 0;
+        self.sample_timestamp_len = 0;
+    }
+
+    pub(crate) fn reset_sample_timestamps(&mut self) {
+        self.sample_timestamp_len = 0;
+    }
+
+    pub(crate) fn push_sample_timestamp(&mut self, timestamp_us: u64) {
+        let idx = self.sample_timestamp_len as usize;
+        if idx < self.sample_timestamps_us.len() {
+            self.sample_timestamps_us[idx] = timestamp_us;
+            self.sample_timestamp_len += 1;
+        }
+    }
+
+    pub(crate) fn sample_timestamps(&self) -> &[u64] {
+        &self.sample_timestamps_us[..self.sample_timestamp_len as usize]
     }
 }
 
@@ -351,6 +380,10 @@ impl OuterSafetyLimits {
 /// Outer commissioning phase state machine.
 #[derive(Debug, defmt::Format)]
 #[allow(dead_code)] // Later phases (9-13) are placeholders for future plans.
+#[allow(clippy::large_enum_variant)]
+// MechanicalId carries a ~2 KB sample_timestamps_us array for time-aware
+// metrics extraction. On STM32F407's 128 KB SRAM the variant size is
+// acceptable; boxing is not available in no_std without an allocator.
 pub(crate) enum OuterPhase {
     /// Phase 8: Mechanical identification.
     MechanicalId {
@@ -586,9 +619,11 @@ pub(crate) async fn step_outer<B: CommissioningBackend>(
 
 #[cfg(test)]
 mod tests {
+    use core::mem::size_of;
+
     use super::{
         MECHANICAL_ID_VELOCITY_CAP_COUNTS_PER_MS, MechanicalIdData, MechanicalIdState, OuterPhase,
-        OuterSafetyLimits, check_outer_safety, step_outer,
+        OuterSafetyLimits, check_outer_safety, mechanical, step_outer,
     };
     use crate::autotune::{
         CommissionError, CommissionProfile, OperatingMode, PhaseId, TransientBuffer,
@@ -603,6 +638,15 @@ mod tests {
         assert_eq!(
             safety.velocity_cap,
             MECHANICAL_ID_VELOCITY_CAP_COUNTS_PER_MS
+        );
+    }
+
+    #[test]
+    fn outer_phase_size_stays_within_reasonable_stack_budget() {
+        assert!(
+            size_of::<OuterPhase>() <= 4096,
+            "OuterPhase grew to {} bytes",
+            size_of::<OuterPhase>()
         );
     }
 
@@ -930,6 +974,82 @@ mod tests {
                 phase,
                 OuterPhase::Failed(CommissionError::SafetyEnvelopeViolation)
             ));
+        });
+    }
+
+    #[test]
+    fn low_signal_asymmetry_falls_back_instead_of_retrying_more_torque() {
+        pollster::block_on(async {
+            let mut phase = OuterPhase::MechanicalId {
+                state: MechanicalIdState::Finalize,
+                data: MechanicalIdData {
+                    start_position: 0,
+                    attempt: 0,
+                    torque_step: 367,
+                    forward_initial_accel: 3,
+                    forward_peak_velocity: 28,
+                    forward_delay_us: 1000,
+                    forward_travel: 3830,
+                    reverse_initial_accel: 2,
+                    reverse_peak_velocity: 29,
+                    reverse_delay_us: 1000,
+                    reverse_travel: 3888,
+                    sample_timestamps_us: [0; crate::autotune::TRANSIENT_LEN],
+                    sample_timestamp_len: 0,
+                },
+                safety: OuterSafetyLimits::new(0, 2448),
+            };
+            let mut buf = TransientBuffer::new();
+            let mut backend = MockBackend::new();
+
+            let result = mechanical::step_mechanical_id(&mut phase, &mut buf, &mut backend).await;
+
+            assert!(matches!(
+                result,
+                StepResult::PhaseChanged(PhaseId::VelocityTune)
+            ));
+            assert!(
+                matches!(phase, OuterPhase::VelocityTune { .. }),
+                "low-signal asymmetry should fall back instead of escalating torque"
+            );
+        });
+    }
+
+    #[test]
+    fn high_signal_asymmetry_still_retries_with_more_torque() {
+        pollster::block_on(async {
+            let mut phase = OuterPhase::MechanicalId {
+                state: MechanicalIdState::Finalize,
+                data: MechanicalIdData {
+                    start_position: 0,
+                    attempt: 0,
+                    torque_step: 367,
+                    forward_initial_accel: 20,
+                    forward_peak_velocity: 28,
+                    forward_delay_us: 1000,
+                    forward_travel: 3830,
+                    reverse_initial_accel: 30,
+                    reverse_peak_velocity: 29,
+                    reverse_delay_us: 1000,
+                    reverse_travel: 3888,
+                    sample_timestamps_us: [0; crate::autotune::TRANSIENT_LEN],
+                    sample_timestamp_len: 0,
+                },
+                safety: OuterSafetyLimits::new(0, 2448),
+            };
+            let mut buf = TransientBuffer::new();
+            let mut backend = MockBackend::new();
+
+            let result = mechanical::step_mechanical_id(&mut phase, &mut buf, &mut backend).await;
+
+            assert!(matches!(result, StepResult::Continue));
+            match &phase {
+                OuterPhase::MechanicalId { state, data, .. } => {
+                    assert!(matches!(state, MechanicalIdState::Setup));
+                    assert_eq!(data.attempt, 1);
+                }
+                _ => panic!("expected retry to stay in MechanicalId"),
+            }
         });
     }
 }
