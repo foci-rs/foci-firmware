@@ -325,6 +325,9 @@ pub(crate) struct OuterSafetyLimits {
     /// Encoder counts per revolution (PPR * 4). Used to normalize
     /// wrap-around deltas when the ABN decoder counter rolls over.
     pub(crate) counts_per_rev: i32,
+    /// Timestamp (microseconds) of the previous safety sample.
+    /// Zero means the next sample initializes the baseline.
+    pub(crate) last_sample_us: u64,
 }
 
 impl OuterSafetyLimits {
@@ -336,6 +339,7 @@ impl OuterSafetyLimits {
             torque_cap,
             prev_encoder_count: start_position,
             counts_per_rev: 0, // Set by MechanicalId::Setup after reading ABN_DECODER_PPR
+            last_sample_us: 0,
         }
     }
 }
@@ -429,9 +433,10 @@ pub(crate) fn safety_error_for_phase(_phase: &OuterPhase) -> CommissionError {
 
 /// Per-tick safety envelope check for all outer phases.
 ///
-/// Reads the current encoder position, computes a wrap-aware velocity
-/// delta, and accumulates an unwrapped signed position. Checks:
-/// - Velocity within cap.
+/// Reads the current encoder position, computes a wrap-aware delta,
+/// normalizes velocity by actual elapsed time, and accumulates an
+/// unwrapped signed position. Checks:
+/// - Time-normalized velocity within cap.
 /// - Unwrapped position within window from start.
 ///
 /// Returns `true` if a safety limit is violated.
@@ -447,23 +452,33 @@ pub(crate) async fn check_outer_safety<B: CommissioningBackend>(
 
     let encoder_raw = backend.read_encoder_count().await;
     let encoder_count = encoder_raw as i32;
+    let now_us = backend.elapsed_us();
 
-    // Wrap-aware velocity: delta encoder counts per 1ms tick.
-    let velocity = response::encoder_delta(
+    // Wrap-aware delta in encoder counts since the last safety sample.
+    let delta_counts = response::encoder_delta(
         encoder_count,
         safety.prev_encoder_count,
         safety.counts_per_rev,
     );
+    let dt_us = if safety.last_sample_us == 0 {
+        0
+    } else {
+        now_us.wrapping_sub(safety.last_sample_us)
+    };
+    let velocity_cpms = response::counts_per_ms(delta_counts, dt_us);
     safety.prev_encoder_count = encoder_count;
-    safety.unwrapped_position += velocity;
+    safety.last_sample_us = now_us;
+    safety.unwrapped_position += delta_counts;
 
     // Check velocity cap (absolute value).
-    let abs_velocity = velocity.unsigned_abs() as i32;
+    let abs_velocity = velocity_cpms.unsigned_abs() as i32;
     if abs_velocity > safety.velocity_cap {
         defmt::warn!(
-            "outer safety: velocity {} exceeds cap {}",
+            "outer safety: velocity {} exceeds cap {} (delta={} dt_us={})",
             abs_velocity,
-            safety.velocity_cap
+            safety.velocity_cap,
+            delta_counts,
+            dt_us,
         );
         return true;
     }
@@ -562,5 +577,43 @@ pub(crate) async fn step_outer<B: CommissioningBackend>(
         OuterPhase::Commit { .. } => commit::step_commit(phase),
         OuterPhase::Done(result) => StepResult::OuterDone(result.clone()),
         OuterPhase::Failed(err) => StepResult::OuterFailed(*err),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{MECHANICAL_ID_VELOCITY_CAP_COUNTS_PER_MS, OuterSafetyLimits, check_outer_safety};
+    use crate::commission_dispatch::test_support::MockBackend;
+
+    #[test]
+    fn outer_safety_uses_mechanical_id_velocity_cap() {
+        let safety = OuterSafetyLimits::new(0, 100);
+        assert_eq!(
+            safety.velocity_cap,
+            MECHANICAL_ID_VELOCITY_CAP_COUNTS_PER_MS
+        );
+    }
+
+    #[test]
+    fn outer_safety_normalizes_velocity_by_elapsed_time() {
+        pollster::block_on(async {
+            let mut safety = OuterSafetyLimits::new(0, 100);
+            safety.counts_per_rev = 4000;
+            safety.prev_encoder_count = 2328;
+            safety.last_sample_us = 100_000;
+            let mut backend = MockBackend::new();
+            backend.elapsed_us_value = 124_909;
+            backend.encoder_count_value = 2525; // delta=197 over 24.909ms => ~7 counts/ms
+
+            let violated = check_outer_safety(&mut safety, &mut backend).await;
+
+            assert!(
+                !violated,
+                "time-normalized velocity should stay below the cap"
+            );
+            assert_eq!(safety.prev_encoder_count, 2525);
+            assert_eq!(safety.last_sample_us, 124_909);
+            assert_eq!(safety.unwrapped_position, 197);
+        });
     }
 }

@@ -74,6 +74,19 @@ pub(crate) fn encoder_delta(current: i32, previous: i32, counts_per_rev: i32) ->
     }
 }
 
+/// Convert a wrap-aware encoder delta into counts per millisecond using the
+/// actual elapsed sample time.
+///
+/// Returns 0 when `dt_us == 0` so same-tick initialization does not create
+/// artificial infinite velocity.
+pub(crate) fn counts_per_ms(delta_counts: i32, dt_us: u64) -> i32 {
+    if dt_us == 0 {
+        0
+    } else {
+        ((delta_counts as i64) * 1000 / dt_us as i64) as i32
+    }
+}
+
 /// Adaptive torque step percentage for mechanical ID, indexed by retry attempt.
 pub(crate) fn mechanical_id_torque_percent(attempt: u8) -> u32 {
     match attempt {
