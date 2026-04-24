@@ -46,7 +46,8 @@ pub(crate) const VELOCITY_RESPONSE_VALIDATE_TAU_MS: u32 = 50;
 // them. They are re-exported here so the response helpers can name them
 // without reaching across modules at every site.
 pub(crate) use super::{
-    OUTER_FALLBACK_VELOCITY_I, OUTER_FALLBACK_VELOCITY_P, VELOCITY_CAP_COUNTS_PER_MS,
+    OUTER_FALLBACK_VELOCITY_I, OUTER_FALLBACK_VELOCITY_P,
+    RESPONSE_FALLBACK_VELOCITY_LIMIT_COUNTS_PER_MS,
 };
 
 /// Diagnostic warning code: low-confidence mechanical ID, response ramp
@@ -135,7 +136,7 @@ pub(crate) fn response_velocity_gains() -> VelocityGains {
     VelocityGains {
         velocity_p: OUTER_FALLBACK_VELOCITY_P,
         velocity_i: OUTER_FALLBACK_VELOCITY_I,
-        velocity_limit: VELOCITY_CAP_COUNTS_PER_MS as u32,
+        velocity_limit: RESPONSE_FALLBACK_VELOCITY_LIMIT_COUNTS_PER_MS as u32,
         effective_bandwidth_hz: 0,
         lambda_vel_ms: 0,
     }
@@ -284,4 +285,25 @@ pub(crate) fn extract_mechanical_id_metrics(
     }
 
     (initial_accel, peak_velocity, delay_samples, max_travel)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::response_velocity_gains;
+    use crate::commissioning::outer::{
+        MECHANICAL_ID_VELOCITY_CAP_COUNTS_PER_MS, RESPONSE_FALLBACK_VELOCITY_LIMIT_COUNTS_PER_MS,
+    };
+
+    #[test]
+    fn response_velocity_gains_keep_conservative_runtime_limit() {
+        let gains = response_velocity_gains();
+        assert_eq!(
+            gains.velocity_limit,
+            RESPONSE_FALLBACK_VELOCITY_LIMIT_COUNTS_PER_MS as u32
+        );
+        assert_ne!(
+            gains.velocity_limit,
+            MECHANICAL_ID_VELOCITY_CAP_COUNTS_PER_MS as u32
+        );
+    }
 }

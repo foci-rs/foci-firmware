@@ -23,11 +23,16 @@ use crate::commissioning::types::{CommissioningBackend, OuterResult, StepResult}
 // Outer safety-envelope constants
 // ---------------------------------------------------------------------------
 
-/// Default velocity cap in encoder counts per millisecond.
-/// 4 rev/s at 4000 counts/rev = 16000 counts/s = 16 counts/ms.
-/// Raised from 8 (2 rev/s) because MechanicalId at 60% torque on
-/// low-inertia motors exceeds 8 counts/ms.
-pub(crate) const VELOCITY_CAP_COUNTS_PER_MS: i32 = 16;
+/// MechanicalId safety velocity cap in encoder counts per millisecond.
+/// 6 rev/s at 4000 counts/rev = 24000 counts/s = 24 counts/ms.
+/// Kept separate from the conservative runtime fallback velocity limit so
+/// outer safety tuning does not silently retune response-ramp behavior.
+pub(crate) const MECHANICAL_ID_VELOCITY_CAP_COUNTS_PER_MS: i32 = 24;
+
+/// Conservative runtime fallback velocity limit in encoder counts/ms.
+/// Used by response-ramp fallback gains when autotuned outer gains are not
+/// accepted. Keep this lower than the MechanicalId safety cap.
+pub(crate) const RESPONSE_FALLBACK_VELOCITY_LIMIT_COUNTS_PER_MS: i32 = 16;
 
 /// Default position window: ± encoder counts from start position.
 /// 2 revolutions at 4096 counts/rev = 8192 counts.
@@ -325,7 +330,7 @@ pub(crate) struct OuterSafetyLimits {
 impl OuterSafetyLimits {
     pub(crate) fn new(start_position: i32, torque_cap: u16) -> Self {
         Self {
-            velocity_cap: VELOCITY_CAP_COUNTS_PER_MS,
+            velocity_cap: MECHANICAL_ID_VELOCITY_CAP_COUNTS_PER_MS,
             position_window: POSITION_WINDOW_COUNTS,
             unwrapped_position: 0,
             torque_cap,
