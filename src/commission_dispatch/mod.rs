@@ -266,7 +266,11 @@ pub async fn drive_commission_result<B: CommissioningBackend>(
 
             *state.calibrated = true;
             crate::tmc_ops::arm_motor_electrical(backend, state);
-            crate::state::stepper::STEPPER_POSITION.store(0, core::sync::atomic::Ordering::Relaxed);
+            // Do NOT zero STEPPER_POSITION here. The board's SetEnable(true)
+            // calibrated branch already zeroes it at the right time (right
+            // before the motion resumes). Double-zeroing from the firmware
+            // dispatch races with queued homing moves that start as soon as
+            // arm_motor_for_steps sets MOTOR_ARMED and arm_check::spawn fires.
             crate::tmc_ops::arm_motor_for_steps(state);
 
             crate::state::tmc::COMMISSION_IN_FLIGHT
@@ -324,7 +328,8 @@ pub async fn drive_commission_result<B: CommissioningBackend>(
 
             *state.calibrated = true;
             crate::tmc_ops::arm_motor_electrical(backend, state);
-            crate::state::stepper::STEPPER_POSITION.store(0, Relaxed);
+            // Do NOT zero STEPPER_POSITION here (parity with CalibrateDone).
+            // The board's SetEnable(true) path handles zeroing.
             crate::tmc_ops::arm_motor_for_steps(state);
 
             crate::state::tmc::COMMISSION_IN_FLIGHT.store(false, Relaxed);

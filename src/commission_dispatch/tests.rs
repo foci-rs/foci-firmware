@@ -293,10 +293,13 @@ fn calibrate_done_arms_after_gain_restore() {
         assert!(*state.motor_enabled);
         assert!(*state.calibrated);
         assert!(crate::state::tmc::MOTOR_ARMED.load(Ordering::Relaxed));
-        // STEPPER_POSITION zeroed between electrical and for_steps.
+        // STEPPER_POSITION is NOT zeroed by the dispatch — the board's
+        // SetEnable(true) path owns the zero. Dispatch must not touch it,
+        // to avoid racing with queued homing moves that start as soon as
+        // MOTOR_ARMED is set.
         assert_eq!(
             crate::state::stepper::STEPPER_POSITION.load(Ordering::Relaxed),
-            0
+            42
         );
 
         match outcome {
@@ -522,9 +525,11 @@ fn commission_done_finalize_path() {
         assert!(*state.calibrated);
         assert!(backend.enable_pin);
         assert!(crate::state::tmc::MOTOR_ARMED.load(Ordering::Relaxed));
+        // STEPPER_POSITION must NOT be zeroed by the dispatch — the board's
+        // SetEnable(true) path owns the zero. See CalibrateDone test comment.
         assert_eq!(
             crate::state::stepper::STEPPER_POSITION.load(Ordering::Relaxed),
-            0
+            99
         );
         // PID_TORQUE_FLUX_LIMITS write expected: current limit re-apply.
         let writes: heapless::Vec<u8, 32> = backend
