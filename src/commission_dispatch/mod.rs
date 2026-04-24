@@ -244,6 +244,7 @@ pub async fn drive_commission_result<B: CommissioningBackend>(
             let restore_result =
                 crate::tmc_ops::restore_calibrate_gains(backend, *state.stored_gains).await;
             if restore_result.is_err() {
+                defmt::error!("CalibrateDone: saved gain restore SPI failed");
                 crate::tmc_ops::disarm_motor(backend, state).await;
                 crate::state::tmc::COMMISSION_IN_FLIGHT
                     .store(false, core::sync::atomic::Ordering::Relaxed);
@@ -334,6 +335,7 @@ pub async fn drive_commission_result<B: CommissioningBackend>(
                 crate::autotune::CommissionStatus::InnerOnly => 2,
                 crate::autotune::CommissionStatus::Failed(e) => e.status_code(),
             };
+            defmt::info!("foci_commission complete: oid={} status={}", oid, status);
             CommissionOutcome::Terminal {
                 reply: ReplyPayload::CommissionResult {
                     oid,
