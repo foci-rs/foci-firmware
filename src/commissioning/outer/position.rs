@@ -112,13 +112,16 @@ pub(crate) async fn step_position_tune<B: CommissioningBackend>(
             }
 
             let encoder_raw = backend.read_encoder_count().await;
-            // Store position relative to step start so the oscillation
-            // detector compares against the step amplitude, not absolute
-            // encoder counts.
-            let relative = (encoder_raw as i32)
-                .wrapping_sub(data.step_start_counts)
-                .unsigned_abs();
-            buf.push(relative);
+            // Wrap-aware displacement from step start, normalized to
+            // [-counts_per_rev/2, +counts_per_rev/2). Stored unsigned for
+            // comparison against the unsigned step target_abs in the
+            // oscillation detector.
+            let delta = crate::commissioning::outer::response::encoder_delta(
+                encoder_raw as i32,
+                data.step_start_counts,
+                safety.counts_per_rev,
+            );
+            buf.push(delta.unsigned_abs());
 
             if buf.is_full() {
                 let _ = backend
