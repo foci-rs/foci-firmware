@@ -553,4 +553,37 @@ mod tests {
             "sign mismatch must propagate through is_high_confidence()"
         );
     }
+
+    #[test]
+    fn fast_ramp_then_terminal_yields_high_confidence_positive_accel() {
+        // RTT failure pattern reproduction: rotor at rest for ~2 ms,
+        // then ramps to terminal velocity (~18 cpms) in 1-2 ms, then
+        // stays flat. Onset (|v| >= 2 cpms) fires on sample 2 or 3.
+        //
+        // Position deltas: 0, 0, 5, 13, 18, 18, 18, 18, 18.
+        // Cumulative:     0, 0, 5, 18, 36, 54, 72, 90, 108.
+        //
+        // With capture_start_us = 0 and 1 ms cadence, onset_us ≈ 2000 µs,
+        // fit window = [onset - 2 ms, onset + 4 ms] = [0, 6000], which
+        // includes samples 0..6 — the full ramp plus some plateau.
+        let samples: [u32; 9] = [0, 0, 5, 18, 36, 54, 72, 90, 108];
+        let timestamps: [u64; 9] = [0, 1000, 2000, 3000, 4000, 5000, 6000, 7000, 8000];
+        let buf = buf_from(&samples);
+
+        let est = estimate_early_slope(&buf, &timestamps, 0, 0, 4000);
+
+        assert!(
+            est.accel > 0,
+            "rig regression: accel should be positive, got {} ({:?})",
+            est.accel,
+            est,
+        );
+        assert!(
+            est.is_high_confidence(),
+            "expected high confidence: {:?}",
+            est
+        );
+        assert!(est.velocity_rise_mcpms > 0);
+        assert!(est.fit_sample_count >= FIT_MIN_SAMPLES);
+    }
 }
