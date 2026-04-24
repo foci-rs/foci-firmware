@@ -9,6 +9,20 @@ use crate::autotune::{CommissionError, CommissionStatus, PhaseId};
 use crate::config::TmcConfig;
 use foci_tmc4671::registers::Register;
 
+/// Discriminant for the four ways a `CommissioningEngine` can be constructed.
+/// Used by the dispatch to choose the right reply payload at terminal arms.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+pub enum EngineKind {
+    /// Engine constructed via `new_commission` — Stage 1 commissioning.
+    Commission,
+    /// Engine constructed via `new_calibrate` — ADC calibration + alignment.
+    Calibrate,
+    /// Engine constructed via `new_selftest` — diagnostic selftest run.
+    Selftest,
+    /// Engine constructed via `new_outer` — Stage 2 mechanical/velocity tune.
+    OuterTune,
+}
+
 /// Hardware abstraction for commissioning measurements.
 ///
 /// The engine operates through this trait rather than raw SPI.

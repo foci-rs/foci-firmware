@@ -219,6 +219,30 @@ impl CommissioningEngine {
         self.oid
     }
 
+    /// Identify which constructor produced this engine.
+    ///
+    /// Used by the dispatch (Tasks 11+) to choose the right reply payload
+    /// at terminal arms, and at trace-start gating in PhaseChanged.
+    pub fn kind(&self) -> crate::commissioning::types::EngineKind {
+        use crate::autotune::InnerSequence;
+        use crate::commissioning::types::EngineKind;
+        match &self.engine_mode {
+            EngineMode::Inner {
+                sequence: InnerSequence::Commission,
+                ..
+            } => EngineKind::Commission,
+            EngineMode::Inner {
+                sequence: InnerSequence::Calibrate,
+                ..
+            } => EngineKind::Calibrate,
+            EngineMode::Inner {
+                sequence: InnerSequence::Selftest,
+                ..
+            } => EngineKind::Selftest,
+            EngineMode::Outer { .. } => EngineKind::OuterTune,
+        }
+    }
+
     /// Whether this engine was launched by `foci_calibrate`.
     pub fn is_calibrate(&self) -> bool {
         matches!(
@@ -321,5 +345,60 @@ impl CommissioningEngine {
             EngineMode::Inner { .. } => StepResult::InnerFailed(error),
             EngineMode::Outer { .. } => StepResult::OuterFailed(error),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::commissioning::types::EngineKind;
+
+    fn sample_outer_params_for_test() -> OuterTuneParams {
+        OuterTuneParams {
+            profile: crate::autotune::CommissionProfile::Balanced,
+            mode: crate::autotune::OperatingMode::Nominal,
+            inner_lambda_us: 100,
+            theta_e_us: 50,
+            current_ringing: false,
+            current_bandwidth_hz: 1000,
+        }
+    }
+
+    fn sample_entry_snapshot_for_test() -> EntrySnapshot {
+        EntrySnapshot {
+            velocity_p: 1152,
+            velocity_i: 0,
+            position_p: 640,
+            position_i: 0,
+            velocity_limit: 500_000,
+            voltage_limit: 16000,
+            velocity_filter_hz: 0,
+            torque_filter_hz: 0,
+            position_filter_hz: 0,
+            flux_filter_hz: 0,
+        }
+    }
+
+    #[test]
+    fn engine_kind_matches_constructor() {
+        assert_eq!(
+            CommissioningEngine::new_commission(0, crate::autotune::CommissionProfile::Balanced)
+                .kind(),
+            EngineKind::Commission,
+        );
+        assert_eq!(
+            CommissioningEngine::new_calibrate(0).kind(),
+            EngineKind::Calibrate
+        );
+        assert_eq!(
+            CommissioningEngine::new_selftest(0).kind(),
+            EngineKind::Selftest
+        );
+        let params = sample_outer_params_for_test();
+        let snapshot = sample_entry_snapshot_for_test();
+        assert_eq!(
+            CommissioningEngine::new_outer(0, params, snapshot).kind(),
+            EngineKind::OuterTune,
+        );
     }
 }
