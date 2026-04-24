@@ -326,3 +326,95 @@ fn calibrate_done_arms_after_gain_restore() {
         crate::state::stepper::STEPPER_POSITION.store(0, Ordering::Relaxed);
     });
 }
+
+fn sample_commission_result() -> crate::commissioning::types::CommissionResult {
+    use crate::autotune::CommissionStatus;
+    use crate::commissioning::types::{CommissionResult, InnerResult};
+    CommissionResult {
+        inner: InnerResult {
+            status: CommissionStatus::Accepted,
+            r_mohm: 1700,
+            l_uh: 3100,
+            flux_p: 100,
+            flux_i: 10,
+            torque_p: 200,
+            torque_i: 20,
+            lambda_us: 100,
+            theta_e_us: 50,
+            ringing_count: 0,
+            bandwidth_hz: 1000,
+        },
+        fallback_velocity_p: 1152,
+        fallback_velocity_i: 0,
+        fallback_position_p: 640,
+        fallback_position_i: 0,
+        fallback_velocity_limit: 500_000,
+    }
+}
+
+#[test]
+fn commission_done_finalize_path() {
+    pollster::block_on(async {
+        use core::sync::atomic::Ordering;
+        let _guard = test_support::SHARED_STATE_MUTEX.lock().unwrap();
+        let mut backend = MockBackend::new();
+        let (mut cal, mut en, mut gains) = fresh_state_locals();
+        let mut state = DispatchState {
+            calibrated: &mut cal,
+            motor_enabled: &mut en,
+            stored_gains: &mut gains,
+        };
+        crate::state::tmc::CURRENT_LIMIT_REG.store(0x0010_0010, Ordering::Relaxed);
+        crate::state::stepper::STEPPER_POSITION.store(99, Ordering::Relaxed);
+        let mut engine = Some(CommissioningEngine::new_commission(
+            6,
+            CommissionProfile::Balanced,
+        ));
+        let commission_result = sample_commission_result();
+
+        let outcome = drive_commission_result(
+            StepResult::CommissionDone(commission_result.clone()),
+            &mut engine,
+            &mut backend,
+            &mut state,
+            4095,
+        )
+        .await;
+
+        assert!(state.stored_gains.is_some());
+        assert!(*state.calibrated);
+        assert!(backend.enable_pin);
+        assert!(crate::state::tmc::MOTOR_ARMED.load(Ordering::Relaxed));
+        assert_eq!(
+            crate::state::stepper::STEPPER_POSITION.load(Ordering::Relaxed),
+            0
+        );
+        // PID_TORQUE_FLUX_LIMITS write expected: current limit re-apply.
+        let writes: heapless::Vec<u8, 32> = backend
+            .spi_log
+            .iter()
+            .filter_map(|op| {
+                if let SpiOp::Write(a, _) = op {
+                    Some(*a)
+                } else {
+                    None
+                }
+            })
+            .collect();
+        assert!(writes.contains(&foci_tmc4671::registers::PID_TORQUE_FLUX_LIMITS.addr()));
+
+        match outcome {
+            CommissionOutcome::Terminal { actions, .. } => {
+                assert!(actions.stop_trace);
+                assert!(actions.spawn_arm_check);
+                assert!(!actions.stop_stepper);
+            }
+            _ => panic!("expected Terminal"),
+        }
+
+        // Cleanup
+        crate::state::tmc::MOTOR_ARMED.store(false, Ordering::Relaxed);
+        crate::state::stepper::STEPPER_POSITION.store(0, Ordering::Relaxed);
+        crate::state::tmc::CURRENT_LIMIT_REG.store(0, Ordering::Relaxed);
+    });
+}

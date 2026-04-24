@@ -284,8 +284,71 @@ pub async fn drive_commission_result<B: CommissioningBackend>(
                 },
             }
         }
-        // Other arms added in Tasks 16-18.
-        _ => todo!("implemented per-variant in Tasks 16-18"),
+        StepResult::CommissionDone(commission_result) => {
+            use core::sync::atomic::Ordering::Relaxed;
+            let consumed = engine.take().expect("engine slot None on CommissionDone");
+            let oid = consumed.oid();
+
+            // The engine's ClosedLoopEntry phase already set PID gains, limits,
+            // filters, and entered position mode. Re-apply current limit because
+            // the mode change resets PID_TORQUE_FLUX_LIMITS.
+            let current_limit = crate::state::tmc::CURRENT_LIMIT_REG.load(Relaxed);
+            let _ = backend
+                .write_register(
+                    foci_tmc4671::registers::PID_TORQUE_FLUX_LIMITS,
+                    current_limit,
+                )
+                .await;
+
+            // Persist inner gains so future calibrate uses them.
+            let inner = &commission_result.inner;
+            *state.stored_gains = Some(crate::pid::InnerLoopGains {
+                flux_p: inner.flux_p,
+                flux_i: inner.flux_i,
+                torque_p: inner.torque_p,
+                torque_i: inner.torque_i,
+            });
+
+            // Sync outer-gain atomics to the fallback values the engine wrote.
+            crate::state::tmc::POSITION_P_VALUE
+                .store(commission_result.fallback_position_p, Relaxed);
+            crate::state::tmc::POSITION_I_VALUE
+                .store(commission_result.fallback_position_i, Relaxed);
+            crate::state::tmc::VELOCITY_P_VALUE
+                .store(commission_result.fallback_velocity_p, Relaxed);
+            crate::state::tmc::VELOCITY_I_VALUE
+                .store(commission_result.fallback_velocity_i, Relaxed);
+            crate::state::tmc::VELOCITY_LIMIT_CFG
+                .store(commission_result.fallback_velocity_limit, Relaxed);
+
+            *state.calibrated = true;
+            crate::tmc_ops::arm_motor_electrical(backend, state);
+            crate::state::stepper::STEPPER_POSITION.store(0, Relaxed);
+            crate::tmc_ops::arm_motor_for_steps(state);
+
+            crate::state::tmc::COMMISSION_IN_FLIGHT.store(false, Relaxed);
+
+            let status = match inner.status {
+                crate::autotune::CommissionStatus::Accepted => 0u8,
+                crate::autotune::CommissionStatus::AcceptedWithWarnings => 1,
+                crate::autotune::CommissionStatus::InnerOnly => 2,
+                crate::autotune::CommissionStatus::Failed(e) => e.status_code(),
+            };
+            CommissionOutcome::Terminal {
+                reply: ReplyPayload::CommissionResult {
+                    oid,
+                    status,
+                    result: commission_result,
+                },
+                actions: PostActions {
+                    stop_trace: true,
+                    stop_stepper: false,
+                    spawn_arm_check: true,
+                },
+            }
+        }
+        // Other arms added in Tasks 17-18.
+        _ => todo!("implemented per-variant in Tasks 17-18"),
     }
 }
 
