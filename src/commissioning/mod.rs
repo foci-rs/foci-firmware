@@ -20,7 +20,7 @@ use crate::commissioning::inner::InnerPhase;
 use crate::commissioning::outer::{
     MechanicalIdData, MechanicalIdState, OuterPhase, OuterSafetyLimits,
 };
-use crate::commissioning::types::{AdcCalResult, CommissioningBackend, StepResult};
+use crate::commissioning::types::{AdcCalResult, CommissioningBackend, EngineKind, StepResult};
 
 // Re-export public API surface for downstream consumers.
 pub use crate::commissioning::types::{
@@ -221,11 +221,9 @@ impl CommissioningEngine {
 
     /// Identify which constructor produced this engine.
     ///
-    /// Used by the dispatch (Tasks 11+) to choose the right reply payload
-    /// at terminal arms, and at trace-start gating in PhaseChanged.
-    pub fn kind(&self) -> crate::commissioning::types::EngineKind {
-        use crate::autotune::InnerSequence;
-        use crate::commissioning::types::EngineKind;
+    /// Used by the dispatch to choose the right reply payload at terminal arms,
+    /// and at trace-start gating in PhaseChanged.
+    pub fn kind(&self) -> EngineKind {
         match &self.engine_mode {
             EngineMode::Inner {
                 sequence: InnerSequence::Commission,
@@ -353,7 +351,7 @@ mod tests {
     use super::*;
     use crate::commissioning::types::EngineKind;
 
-    fn sample_outer_params_for_test() -> OuterTuneParams {
+    fn sample_outer_params() -> OuterTuneParams {
         OuterTuneParams {
             profile: crate::autotune::CommissionProfile::Balanced,
             mode: crate::autotune::OperatingMode::Nominal,
@@ -364,7 +362,7 @@ mod tests {
         }
     }
 
-    fn sample_entry_snapshot_for_test() -> EntrySnapshot {
+    fn sample_entry_snapshot() -> EntrySnapshot {
         EntrySnapshot {
             velocity_p: 1152,
             velocity_i: 0,
@@ -394,8 +392,8 @@ mod tests {
             CommissioningEngine::new_selftest(0).kind(),
             EngineKind::Selftest
         );
-        let params = sample_outer_params_for_test();
-        let snapshot = sample_entry_snapshot_for_test();
+        let params = sample_outer_params();
+        let snapshot = sample_entry_snapshot();
         assert_eq!(
             CommissioningEngine::new_outer(0, params, snapshot).kind(),
             EngineKind::OuterTune,
