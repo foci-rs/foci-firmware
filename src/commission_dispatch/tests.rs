@@ -555,3 +555,194 @@ fn commission_done_finalize_path() {
         crate::state::tmc::CURRENT_LIMIT_REG.store(0, Ordering::Relaxed);
     });
 }
+
+fn sample_entry_snapshot() -> crate::commissioning::EntrySnapshot {
+    crate::commissioning::EntrySnapshot {
+        velocity_p: 1152,
+        velocity_i: 0,
+        position_p: 640,
+        position_i: 0,
+        velocity_limit: 500_000,
+        voltage_limit: 16000,
+        velocity_filter_hz: 0,
+        torque_filter_hz: 0,
+        position_filter_hz: 0,
+        flux_filter_hz: 0,
+    }
+}
+
+fn sample_outer_params() -> crate::commissioning::OuterTuneParams {
+    crate::commissioning::OuterTuneParams {
+        profile: CommissionProfile::Balanced,
+        mode: crate::autotune::OperatingMode::Nominal,
+        inner_lambda_us: 100,
+        theta_e_us: 50,
+        current_ringing: false,
+        current_bandwidth_hz: 1000,
+    }
+}
+
+#[test]
+fn outer_failed_safety_fault_full_disarm() {
+    pollster::block_on(async {
+        use core::sync::atomic::Ordering;
+        let _guard = test_support::SHARED_STATE_MUTEX.lock().unwrap();
+        let mut backend = MockBackend::new();
+        let (mut cal, mut en, mut gains) = fresh_state_locals();
+        cal = true;
+        en = true; // simulate motor was previously armed
+        crate::state::tmc::MOTOR_ARMED.store(true, Ordering::Relaxed);
+        let mut state = DispatchState {
+            calibrated: &mut cal,
+            motor_enabled: &mut en,
+            stored_gains: &mut gains,
+        };
+        let mut engine = Some(CommissioningEngine::new_outer(
+            0,
+            sample_outer_params(),
+            sample_entry_snapshot(),
+        ));
+        let err = crate::autotune::CommissionError::Spi;
+
+        let outcome = drive_commission_result(
+            StepResult::OuterFailed(err),
+            &mut engine,
+            &mut backend,
+            &mut state,
+            4095,
+        )
+        .await;
+
+        assert!(!*state.calibrated);
+        assert!(!*state.motor_enabled);
+        assert!(!backend.enable_pin);
+        assert!(!crate::state::tmc::MOTOR_ARMED.load(Ordering::Relaxed));
+        // Safety fault skips stability check — no delays.
+        assert!(backend.delay_us_log.is_empty());
+
+        match outcome {
+            CommissionOutcome::Terminal {
+                reply: ReplyPayload::TuneResult { status, .. },
+                actions,
+            } => {
+                assert_eq!(status, err.status_code());
+                assert!(actions.stop_stepper);
+                assert!(actions.stop_trace);
+            }
+            _ => panic!("expected TuneResult"),
+        }
+    });
+}
+
+#[test]
+fn outer_failed_soft_failure_holds_motor() {
+    pollster::block_on(async {
+        use core::sync::atomic::Ordering;
+        let _guard = test_support::SHARED_STATE_MUTEX.lock().unwrap();
+        let mut backend = MockBackend::new();
+        let (mut cal, mut en, mut gains) = fresh_state_locals();
+        cal = true;
+        en = true;
+        crate::state::stepper::STEPPER_POSITION.store(99, Ordering::Relaxed);
+        let mut state = DispatchState {
+            calibrated: &mut cal,
+            motor_enabled: &mut en,
+            stored_gains: &mut gains,
+        };
+        let mut engine = Some(CommissioningEngine::new_outer(
+            0,
+            sample_outer_params(),
+            sample_entry_snapshot(),
+        ));
+        // NoCurrent is not a safety-fault variant.
+        let err = crate::autotune::CommissionError::NoCurrent;
+
+        let outcome = drive_commission_result(
+            StepResult::OuterFailed(err),
+            &mut engine,
+            &mut backend,
+            &mut state,
+            4095,
+        )
+        .await;
+
+        // Two delay_us(10_000) calls expected (one before each stability read).
+        assert_eq!(backend.delay_us_log.len(), 2);
+        assert!(backend.delay_us_log.iter().all(|d| *d == 10_000));
+
+        // Motor still armed (soft failure, stable).
+        assert!(*state.calibrated);
+        assert!(backend.enable_pin);
+        // STEPPER_POSITION NOT zeroed (motor held position).
+        assert_eq!(
+            crate::state::stepper::STEPPER_POSITION.load(Ordering::Relaxed),
+            99
+        );
+
+        match outcome {
+            CommissionOutcome::Terminal {
+                reply: ReplyPayload::TuneResult { status, .. },
+                actions,
+            } => {
+                assert_eq!(status, err.status_code());
+                assert!(!actions.stop_stepper);
+            }
+            _ => panic!("expected TuneResult"),
+        }
+
+        crate::state::tmc::MOTOR_ARMED.store(false, Ordering::Relaxed);
+        crate::state::stepper::STEPPER_POSITION.store(0, Ordering::Relaxed);
+    });
+}
+
+#[test]
+fn outer_failed_unstable_drift_treats_as_failure() {
+    pollster::block_on(async {
+        use core::sync::atomic::Ordering;
+        let _guard = test_support::SHARED_STATE_MUTEX.lock().unwrap();
+        let mut backend = MockBackend::new();
+        // Pre-load drifting position values (drift > 2 => unstable).
+        backend.read_position_actual_sequence.push(100).unwrap();
+        backend.read_position_actual_sequence.push(120).unwrap();
+
+        let (mut cal, mut en, mut gains) = fresh_state_locals();
+        cal = true;
+        en = true;
+        let mut state = DispatchState {
+            calibrated: &mut cal,
+            motor_enabled: &mut en,
+            stored_gains: &mut gains,
+        };
+        let mut engine = Some(CommissioningEngine::new_outer(
+            0,
+            sample_outer_params(),
+            sample_entry_snapshot(),
+        ));
+        let err = crate::autotune::CommissionError::NoCurrent;
+
+        let outcome = drive_commission_result(
+            StepResult::OuterFailed(err),
+            &mut engine,
+            &mut backend,
+            &mut state,
+            4095,
+        )
+        .await;
+
+        match outcome {
+            CommissionOutcome::Terminal {
+                reply: ReplyPayload::TuneResult { status, .. },
+                ..
+            } => {
+                assert_eq!(
+                    status,
+                    crate::autotune::CommissionError::CurrentValidationFailed.status_code()
+                );
+            }
+            _ => panic!("expected TuneResult error"),
+        }
+        assert_eq!(backend.delay_us_log.len(), 2);
+
+        crate::state::tmc::MOTOR_ARMED.store(false, Ordering::Relaxed);
+    });
+}

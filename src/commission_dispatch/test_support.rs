@@ -58,6 +58,14 @@ pub struct MockBackend {
     pub tmc_config: TmcConfig,
     /// Value returned by `read_encoder_count()`.
     pub encoder_count_value: u32,
+    /// Sequential values to return for consecutive `PID_POSITION_ACTUAL` reads.
+    ///
+    /// When non-empty, each `read_register(PID_POSITION_ACTUAL)` call pops and
+    /// returns the front value instead of consulting `registers`. Used by
+    /// stability-check tests that need two reads to return different values.
+    pub read_position_actual_sequence: Vec<u32, 8>,
+    /// Current index into `read_position_actual_sequence`.
+    pub read_position_actual_pos: usize,
 }
 
 impl MockBackend {
@@ -81,6 +89,8 @@ impl MockBackend {
             operational_velocity_limit_value: 500_000,
             tmc_config: TmcConfig::default_for_test(),
             encoder_count_value: 0,
+            read_position_actual_sequence: Vec::new(),
+            read_position_actual_pos: 0,
         }
     }
 }
@@ -93,6 +103,13 @@ impl CommissioningBackend for MockBackend {
         self.spi_log.push(SpiOp::Read(addr)).ok();
         if self.fail_on_read == Some(addr) {
             return Err(MockSpiError);
+        }
+        if addr == foci_tmc4671::registers::PID_POSITION_ACTUAL.addr()
+            && self.read_position_actual_pos < self.read_position_actual_sequence.len()
+        {
+            let val = self.read_position_actual_sequence[self.read_position_actual_pos];
+            self.read_position_actual_pos += 1;
+            return Ok(val);
         }
         Ok(*self.registers.get(&addr).unwrap_or(&0))
     }

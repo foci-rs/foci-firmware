@@ -413,7 +413,99 @@ pub async fn drive_commission_result<B: CommissioningBackend>(
                 },
             }
         }
-        // OuterFailed arm added in Task 18.
-        _ => todo!("implemented per-variant in Task 18"),
+        StepResult::OuterFailed(error) => {
+            use crate::autotune::CommissionError as CE;
+            use core::sync::atomic::Ordering::Relaxed;
+            let consumed = engine.take().expect("engine slot None on OuterFailed");
+            let oid = consumed.oid();
+            let snapshot = consumed.entry_snapshot();
+
+            let is_safety_fault =
+                matches!(error, CE::Spi | CE::Shutdown | CE::SafetyEnvelopeViolation);
+
+            let restore_failure: Option<CE> = if is_safety_fault {
+                // Safety faults skip restore — motor state unknown, disarm immediately.
+                Some(error)
+            } else if let Some(ref snap) = snapshot {
+                match crate::commissioning::inner::restore_entry_gains(snap, backend).await {
+                    Ok(()) => {
+                        // Two-read stability check: wait 10ms, read position, wait 10ms, read again.
+                        backend.delay_us(10_000).await;
+                        let pos1 = backend
+                            .read_register(foci_tmc4671::registers::PID_POSITION_ACTUAL)
+                            .await;
+                        backend.delay_us(10_000).await;
+                        let pos2 = backend
+                            .read_register(foci_tmc4671::registers::PID_POSITION_ACTUAL)
+                            .await;
+                        match (pos1, pos2) {
+                            (Ok(p1), Ok(p2)) => {
+                                let drift = (p2 as i32).wrapping_sub(p1 as i32).unsigned_abs();
+                                if drift > 2 {
+                                    defmt::error!("OuterFailed restore: unstable drift={}", drift);
+                                    Some(CE::CurrentValidationFailed)
+                                } else {
+                                    None
+                                }
+                            }
+                            _ => {
+                                defmt::error!("OuterFailed restore: stability read SPI failed");
+                                Some(CE::Spi)
+                            }
+                        }
+                    }
+                    Err(restore_err) => {
+                        defmt::error!("OuterFailed: Stage 2 restore failed: {}", restore_err);
+                        Some(restore_err)
+                    }
+                }
+            } else {
+                // No snapshot available — treat as unrecoverable.
+                Some(CE::Spi)
+            };
+
+            let (reply_status, actions) = if let Some(fault) = restore_failure {
+                let _ = backend
+                    .write_register(foci_tmc4671::registers::MODE_RAMP_MODE_MOTION, 0)
+                    .await;
+                crate::tmc_ops::disarm_motor(backend, state).await;
+                defmt::error!("OuterFailed: safety fault ({}), motor disabled", fault);
+                (
+                    fault.status_code(),
+                    PostActions {
+                        stop_trace: true,
+                        stop_stepper: true,
+                        spawn_arm_check: false,
+                    },
+                )
+            } else {
+                *state.calibrated = true;
+                crate::tmc_ops::arm_motor_electrical(backend, state);
+                crate::tmc_ops::arm_motor_for_steps(state);
+                defmt::warn!(
+                    "OuterFailed: soft failure ({}), entry gains restored",
+                    error
+                );
+                (
+                    error.status_code(),
+                    PostActions {
+                        stop_trace: true,
+                        stop_stepper: false,
+                        spawn_arm_check: false,
+                    },
+                )
+            };
+
+            crate::state::tmc::COMMISSION_IN_FLIGHT.store(false, Relaxed);
+
+            CommissionOutcome::Terminal {
+                reply: ReplyPayload::TuneResult {
+                    oid,
+                    status: reply_status,
+                    result: zero_outer_result(),
+                },
+                actions,
+            }
+        }
     }
 }
