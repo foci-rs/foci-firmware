@@ -135,8 +135,37 @@ pub(crate) fn estimate_early_slope(
         }
     };
 
-    // Stages 2 & 3 are placeholders for now; see subsequent tasks.
-    let _ = onset_idx;
+    // Stage 2: fit window placement (onset-straddling).
+    let onset_us = timestamps_us[onset_idx];
+    let fit_start_us = onset_us.saturating_sub(PRE_ONSET_US).max(capture_start_us);
+    let fit_end_us = onset_us.saturating_add(POST_ONSET_US);
+
+    let fit_start_idx = match timestamps_us.iter().position(|&ts| ts >= fit_start_us) {
+        Some(idx) => idx,
+        None => return SlopeEstimate::default(),
+    };
+    let fit_end_idx = {
+        let mut last: Option<usize> = None;
+        for (offset, &ts) in timestamps_us[fit_start_idx..].iter().enumerate() {
+            if ts <= fit_end_us {
+                last = Some(fit_start_idx + offset);
+            } else {
+                break;
+            }
+        }
+        match last {
+            Some(idx) => idx,
+            None => return SlopeEstimate::default(),
+        }
+    };
+
+    let n_window = fit_end_idx - fit_start_idx + 1;
+    if n_window < FIT_MIN_SAMPLES as usize {
+        return SlopeEstimate::default();
+    }
+
+    // Stage 3 (quadratic LSQ) is implemented in the next task.
+    let _ = n_window;
     SlopeEstimate::default()
 }
 
@@ -192,6 +221,20 @@ mod tests {
         let est = estimate_early_slope(&buf, &timestamps, 0, 1000, 4000);
 
         assert_eq!(est.accel, 0);
+        assert_eq!(est.fit_sample_count, 0);
+        assert!(!est.is_high_confidence());
+    }
+
+    #[test]
+    fn fit_window_starves_returns_low_confidence() {
+        // Onset fires at sample 0 (jumps by 5 counts in 1 ms → 5 cpms).
+        // Capture ends immediately — no room for a post-onset window.
+        let samples = [0_u32, 5];
+        let timestamps: [u64; 2] = [0, 1000];
+        let buf = buf_from(&samples);
+
+        let est = estimate_early_slope(&buf, &timestamps, 0, 0, 4000);
+
         assert_eq!(est.fit_sample_count, 0);
         assert!(!est.is_high_confidence());
     }
