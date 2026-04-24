@@ -380,6 +380,131 @@ pub fn arm_motor_for_steps(state: &mut DispatchState<'_>) {
     crate::state::tmc::MOTOR_ARMED.store(true, core::sync::atomic::Ordering::Relaxed);
 }
 
+/// Apply biquad filters via [`CommissioningBackend`].
+///
+/// Mirror of [`apply_stored_filters`] (which uses raw `Tmc4671Spi<B>`),
+/// but routes all writes through the backend trait so the dispatch can
+/// call it without holding a raw SPI device. Best-effort: SPI failures
+/// are ignored (filters affect loop shaping; the loop runs unfiltered
+/// if writes fail).
+///
+/// Each [`SubRegister`] write reproduces the addr-then-data sequence that
+/// `Tmc4671Spi::write_sub_register` does internally: write `sub_addr`
+/// (the selector) to the `addr` register, then write the value to the
+/// `data` register.
+///
+/// # Parameters
+///
+/// - `backend` — mutable reference to a [`CommissioningBackend`] implementation.
+/// - `pwm_maxcnt` — board-specific PWM counter maximum, used to derive
+///   the biquad sampling frequency for coefficient calculation.
+pub async fn apply_stored_filters_via_backend<B: CommissioningBackend>(
+    backend: &mut B,
+    pwm_maxcnt: u16,
+) {
+    use core::sync::atomic::Ordering::Relaxed;
+    use foci_tmc4671::registers::{SubRegister, *};
+
+    /// The six SubRegister addresses that make up one biquad channel.
+    struct BiquadFilterSubRegs {
+        a_1: SubRegister,
+        a_2: SubRegister,
+        b_0: SubRegister,
+        b_1: SubRegister,
+        b_2: SubRegister,
+        enable: SubRegister,
+    }
+
+    async fn write_sub<B: CommissioningBackend>(
+        backend: &mut B,
+        sub: SubRegister,
+        val: u32,
+    ) -> Result<(), B::Error> {
+        backend
+            .write_register(sub.addr, sub.sub_addr as u32)
+            .await?;
+        backend.write_register(sub.data, val).await?;
+        Ok(())
+    }
+
+    async fn apply_one<B: CommissioningBackend>(
+        backend: &mut B,
+        filter_hz: u16,
+        pwm_maxcnt: u16,
+        regs: BiquadFilterSubRegs,
+    ) {
+        if filter_hz == 0 {
+            return;
+        }
+        let Some(coeffs) = crate::biquad::butterworth_lowpass(filter_hz, pwm_maxcnt) else {
+            return;
+        };
+        let _ = write_sub(backend, regs.a_1, coeffs.a_1 as u32).await;
+        let _ = write_sub(backend, regs.a_2, coeffs.a_2 as u32).await;
+        let _ = write_sub(backend, regs.b_0, coeffs.b_0 as u32).await;
+        let _ = write_sub(backend, regs.b_1, coeffs.b_1 as u32).await;
+        let _ = write_sub(backend, regs.b_2, coeffs.b_2 as u32).await;
+        let _ = write_sub(backend, regs.enable, 1).await;
+    }
+
+    apply_one(
+        backend,
+        crate::state::tmc::VELOCITY_FILTER_HZ.load(Relaxed),
+        pwm_maxcnt,
+        BiquadFilterSubRegs {
+            a_1: CONFIG_BIQUAD_V_A_1,
+            a_2: CONFIG_BIQUAD_V_A_2,
+            b_0: CONFIG_BIQUAD_V_B_0,
+            b_1: CONFIG_BIQUAD_V_B_1,
+            b_2: CONFIG_BIQUAD_V_B_2,
+            enable: CONFIG_BIQUAD_V_ENABLE,
+        },
+    )
+    .await;
+    apply_one(
+        backend,
+        crate::state::tmc::TORQUE_FILTER_HZ.load(Relaxed),
+        pwm_maxcnt,
+        BiquadFilterSubRegs {
+            a_1: CONFIG_BIQUAD_T_A_1,
+            a_2: CONFIG_BIQUAD_T_A_2,
+            b_0: CONFIG_BIQUAD_T_B_0,
+            b_1: CONFIG_BIQUAD_T_B_1,
+            b_2: CONFIG_BIQUAD_T_B_2,
+            enable: CONFIG_BIQUAD_T_ENABLE,
+        },
+    )
+    .await;
+    apply_one(
+        backend,
+        crate::state::tmc::POSITION_FILTER_HZ.load(Relaxed),
+        pwm_maxcnt,
+        BiquadFilterSubRegs {
+            a_1: CONFIG_BIQUAD_X_A_1,
+            a_2: CONFIG_BIQUAD_X_A_2,
+            b_0: CONFIG_BIQUAD_X_B_0,
+            b_1: CONFIG_BIQUAD_X_B_1,
+            b_2: CONFIG_BIQUAD_X_B_2,
+            enable: CONFIG_BIQUAD_X_ENABLE,
+        },
+    )
+    .await;
+    apply_one(
+        backend,
+        crate::state::tmc::FLUX_FILTER_HZ.load(Relaxed),
+        pwm_maxcnt,
+        BiquadFilterSubRegs {
+            a_1: CONFIG_BIQUAD_F_A_1,
+            a_2: CONFIG_BIQUAD_F_A_2,
+            b_0: CONFIG_BIQUAD_F_B_0,
+            b_1: CONFIG_BIQUAD_F_B_1,
+            b_2: CONFIG_BIQUAD_F_B_2,
+            enable: CONFIG_BIQUAD_F_ENABLE,
+        },
+    )
+    .await;
+}
+
 /// De-energize the motor and clear all armed/enabled state.
 ///
 /// Routes the safe-state register sequence through
@@ -479,5 +604,76 @@ mod tests {
         assert!(crate::state::tmc::MOTOR_ARMED.load(Ordering::Relaxed));
         // Reset the static for downstream tests.
         crate::state::tmc::MOTOR_ARMED.store(false, Ordering::Relaxed);
+    }
+
+    #[test]
+    fn apply_stored_filters_via_backend_writes_enabled_filters() {
+        pollster::block_on(async {
+            use core::sync::atomic::Ordering;
+            let _guard = crate::commission_dispatch::test_support::SHARED_STATE_MUTEX
+                .lock()
+                .unwrap();
+            // Set the velocity filter to a non-zero Hz so it gets applied.
+            crate::state::tmc::VELOCITY_FILTER_HZ.store(100, Ordering::Relaxed);
+            crate::state::tmc::TORQUE_FILTER_HZ.store(0, Ordering::Relaxed);
+            crate::state::tmc::POSITION_FILTER_HZ.store(0, Ordering::Relaxed);
+            crate::state::tmc::FLUX_FILTER_HZ.store(0, Ordering::Relaxed);
+
+            let mut backend = MockBackend::new();
+            apply_stored_filters_via_backend(&mut backend, 4095).await;
+
+            // All four biquad SubRegisters share the same data register (0x4D)
+            // and the same addr register (0x4E). The only way to distinguish
+            // which sub-register was targeted is by checking the selector value
+            // written to the addr register immediately before each data write.
+            // Check consecutive (selector, data) write pairs.
+            use crate::commission_dispatch::test_support::SpiOp;
+            use foci_tmc4671::registers::*;
+            let writes: std::vec::Vec<(u8, u32)> = backend
+                .spi_log
+                .iter()
+                .filter_map(|op| {
+                    if let SpiOp::Write(addr, val) = op {
+                        Some((*addr, *val))
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+
+            // Returns true when the write log contains the consecutive pair:
+            //   Write(addr_reg, sub_addr_val) immediately followed by
+            //   Write(data_reg, data_val).
+            let has_sub_write = |sub: foci_tmc4671::registers::SubRegister, data_val: u32| {
+                writes.windows(2).any(|pair| {
+                    pair[0].0 == sub.addr.addr()
+                        && pair[0].1 == sub.sub_addr as u32
+                        && pair[1].0 == sub.data.addr()
+                        && pair[1].1 == data_val
+                })
+            };
+
+            // Velocity biquad was Hz=100; its enable=1 pair must appear.
+            assert!(
+                has_sub_write(CONFIG_BIQUAD_V_ENABLE, 1),
+                "velocity filter enable=1 write pair not found"
+            );
+            // Torque/position/flux were Hz=0; their enable=1 pairs must NOT appear.
+            assert!(
+                !has_sub_write(CONFIG_BIQUAD_T_ENABLE, 1),
+                "torque filter should not have been enabled"
+            );
+            assert!(
+                !has_sub_write(CONFIG_BIQUAD_X_ENABLE, 1),
+                "position filter should not have been enabled"
+            );
+            assert!(
+                !has_sub_write(CONFIG_BIQUAD_F_ENABLE, 1),
+                "flux filter should not have been enabled"
+            );
+
+            // Cleanup.
+            crate::state::tmc::VELOCITY_FILTER_HZ.store(0, Ordering::Relaxed);
+        });
     }
 }
