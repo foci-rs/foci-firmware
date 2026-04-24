@@ -522,6 +522,142 @@ pub async fn disarm_motor<B: CommissioningBackend>(backend: &mut B, state: &mut 
     crate::state::tmc::MOTOR_ARMED.store(false, core::sync::atomic::Ordering::Relaxed);
 }
 
+/// SPI restore sequence for the OuterDone success path.
+///
+/// Writes tuned velocity and position gains, the operational velocity limit,
+/// current limit (from [`crate::state::tmc::CURRENT_LIMIT_REG`]), the
+/// safety-net [`PIDOUT_UQ_UD_LIMITS`] cap (1024 counts), clears the
+/// position-actual integrator, snaps the position target to the current
+/// encoder count scaled by [`crate::state::tmc::STEP_WIDTH_VALUE`], and
+/// enters position mode via `MODE_RAMP_MODE_MOTION = 0x8000_0003`.
+///
+/// The write order matches the OuterDone restore block in `main.rs` exactly.
+/// Motor safety depends on setting limits (`PID_TORQUE_FLUX_LIMITS`,
+/// `PIDOUT_UQ_UD_LIMITS`) before entering motion mode.
+///
+/// # Parameters
+///
+/// - `backend` — mutable reference to a [`CommissioningBackend`] implementation.
+/// - `outer` — outer commissioning result containing tuned gain values.
+///
+/// # Errors
+///
+/// Returns the backend's SPI error on the first failed write.
+pub async fn restore_position_mode_after_outer<B: CommissioningBackend>(
+    backend: &mut B,
+    outer: &crate::commissioning::types::OuterResult,
+) -> Result<(), B::Error> {
+    use core::sync::atomic::Ordering::Relaxed;
+    use foci_tmc4671::registers::*;
+
+    // Tuned velocity + position gains.
+    let velocity_reg = (outer.velocity_p as u32) << 16 | outer.velocity_i as u32;
+    backend
+        .write_register(PID_VELOCITY_P_VELOCITY_I, velocity_reg)
+        .await?;
+
+    let position_reg = (outer.position_p as u32) << 16 | outer.position_i as u32;
+    backend
+        .write_register(PID_POSITION_P_POSITION_I, position_reg)
+        .await?;
+
+    // Operational limits (not safety caps).
+    backend
+        .write_register(PID_VELOCITY_LIMIT, outer.velocity_limit)
+        .await?;
+
+    let current_limit = crate::state::tmc::CURRENT_LIMIT_REG.load(Relaxed);
+    backend
+        .write_register(PID_TORQUE_FLUX_LIMITS, current_limit)
+        .await?;
+
+    // Safety-net voltage cap — must be written before entering motion mode.
+    backend.write_register(PIDOUT_UQ_UD_LIMITS, 1024).await?;
+
+    // Clear PID error sums before mode switch.
+    backend.write_register(PID_POSITION_ACTUAL, 0).await?;
+
+    let target = backend.read_register(ABN_DECODER_COUNT).await?;
+    let target_scaled =
+        target.wrapping_mul(crate::state::tmc::STEP_WIDTH_VALUE.load(Relaxed) as u32);
+    backend
+        .write_register(PID_POSITION_TARGET, target_scaled)
+        .await?;
+
+    // Enter position mode (advanced PID cascade).
+    backend
+        .write_register(MODE_RAMP_MODE_MOTION, 0x8000_0003)
+        .await?;
+
+    Ok(())
+}
+
+/// SPI restore sequence for the CalibrateDone path.
+///
+/// Reapplies host-stored inner gains (if any) to `PID_FLUX_P_FLUX_I` and
+/// `PID_TORQUE_P_TORQUE_I`, then reads outer gain values from the
+/// [`crate::state::tmc`] atomics and writes velocity gains, position gains,
+/// velocity limit, and current limit back to the TMC4671.
+///
+/// The write order matches the CalibrateDone gain-restore block in `main.rs`
+/// exactly. SPI failures abort immediately; reporting success with wrong
+/// gains active is worse than failing.
+///
+/// # Parameters
+///
+/// - `backend` — mutable reference to a [`CommissioningBackend`] implementation.
+/// - `stored` — optional host-stored inner loop gains; skipped when `None`.
+///
+/// # Errors
+///
+/// Returns the backend's SPI error on the first failed write.
+pub async fn restore_calibrate_gains<B: CommissioningBackend>(
+    backend: &mut B,
+    stored: Option<crate::pid::InnerLoopGains>,
+) -> Result<(), B::Error> {
+    use core::sync::atomic::Ordering::Relaxed;
+    use foci_tmc4671::registers::*;
+
+    // Current-loop gains from prior commissioning.
+    if let Some(gains) = stored {
+        let (flux_reg, torque_reg) = gains.to_registers();
+        backend.write_register(PID_FLUX_P_FLUX_I, flux_reg).await?;
+        backend
+            .write_register(PID_TORQUE_P_TORQUE_I, torque_reg)
+            .await?;
+    }
+
+    // Velocity gains.
+    let velocity_p = crate::state::tmc::VELOCITY_P_VALUE.load(Relaxed);
+    let velocity_i = crate::state::tmc::VELOCITY_I_VALUE.load(Relaxed);
+    let velocity_reg = (velocity_p as u32) << 16 | velocity_i as u32;
+    backend
+        .write_register(PID_VELOCITY_P_VELOCITY_I, velocity_reg)
+        .await?;
+
+    // Position gains.
+    let position_p = crate::state::tmc::POSITION_P_VALUE.load(Relaxed);
+    let position_i = crate::state::tmc::POSITION_I_VALUE.load(Relaxed);
+    let position_reg = (position_p as u32) << 16 | position_i as u32;
+    backend
+        .write_register(PID_POSITION_P_POSITION_I, position_reg)
+        .await?;
+
+    // Velocity limit.
+    let velocity_limit = crate::state::tmc::VELOCITY_LIMIT_CFG.load(Relaxed);
+    backend
+        .write_register(PID_VELOCITY_LIMIT, velocity_limit)
+        .await?;
+
+    // Current limit (TMC4671 resets on mode change).
+    let current_limit = crate::state::tmc::CURRENT_LIMIT_REG.load(Relaxed);
+    backend
+        .write_register(PID_TORQUE_FLUX_LIMITS, current_limit)
+        .await?;
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -674,6 +810,158 @@ mod tests {
 
             // Cleanup.
             crate::state::tmc::VELOCITY_FILTER_HZ.store(0, Ordering::Relaxed);
+        });
+    }
+
+    #[test]
+    fn restore_position_mode_after_outer_writes_six_registers() {
+        pollster::block_on(async {
+            use crate::commission_dispatch::test_support::SpiOp;
+            use foci_tmc4671::registers::*;
+            let _guard = crate::commission_dispatch::test_support::SHARED_STATE_MUTEX
+                .lock()
+                .unwrap();
+            let mut backend = MockBackend::new();
+            crate::state::tmc::CURRENT_LIMIT_REG
+                .store(0x0010_0010, core::sync::atomic::Ordering::Relaxed);
+            crate::state::tmc::STEP_WIDTH_VALUE.store(50, core::sync::atomic::Ordering::Relaxed);
+            // Pre-seed ABN_DECODER_COUNT for the position-target compute.
+            let _ = backend.write_register(ABN_DECODER_COUNT, 1234).await;
+            backend.spi_log.clear();
+
+            let outer = sample_outer_result();
+            let result = restore_position_mode_after_outer(&mut backend, &outer).await;
+            assert!(result.is_ok());
+
+            let writes: heapless::Vec<u8, 32> = backend
+                .spi_log
+                .iter()
+                .filter_map(|op| {
+                    if let SpiOp::Write(a, _) = op {
+                        Some(*a)
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            assert!(writes.contains(&PID_VELOCITY_P_VELOCITY_I.addr()));
+            assert!(writes.contains(&PID_POSITION_P_POSITION_I.addr()));
+            assert!(writes.contains(&PID_VELOCITY_LIMIT.addr()));
+            assert!(writes.contains(&PID_TORQUE_FLUX_LIMITS.addr()));
+            assert!(writes.contains(&PIDOUT_UQ_UD_LIMITS.addr()));
+            assert!(writes.contains(&MODE_RAMP_MODE_MOTION.addr()));
+
+            // Cleanup atomics.
+            crate::state::tmc::CURRENT_LIMIT_REG.store(0, core::sync::atomic::Ordering::Relaxed);
+            crate::state::tmc::STEP_WIDTH_VALUE.store(0, core::sync::atomic::Ordering::Relaxed);
+        });
+    }
+
+    #[test]
+    fn restore_position_mode_after_outer_propagates_spi_failure() {
+        pollster::block_on(async {
+            use foci_tmc4671::registers::*;
+            let _guard = crate::commission_dispatch::test_support::SHARED_STATE_MUTEX
+                .lock()
+                .unwrap();
+            let mut backend = MockBackend::new();
+            backend.fail_on_write = Some(MODE_RAMP_MODE_MOTION.addr());
+            let outer = sample_outer_result();
+            let result = restore_position_mode_after_outer(&mut backend, &outer).await;
+            assert!(result.is_err());
+        });
+    }
+
+    fn sample_outer_result() -> crate::commissioning::types::OuterResult {
+        crate::commissioning::types::OuterResult {
+            status: crate::autotune::CommissionStatus::Accepted,
+            velocity_p: 1000,
+            velocity_i: 100,
+            velocity_limit: 500_000,
+            position_p: 640,
+            position_i: 0,
+            velocity_filter_hz: 0,
+            position_filter_hz: 0,
+            flux_filter_hz: 0,
+            torque_filter_hz: 0,
+            j_eff: 0,
+            b_eff: 0,
+            warning_code: 0,
+            mech_torque_step: 0,
+            mech_fwd_accel: 0,
+            mech_rev_accel: 0,
+            mech_fwd_peak_velocity: 0,
+            mech_rev_peak_velocity: 0,
+            mech_fwd_travel: 0,
+            mech_rev_travel: 0,
+            synth_velocity_p: 0,
+            synth_velocity_i: 0,
+            synth_position_p: 0,
+            synth_position_i: 0,
+        }
+    }
+
+    #[test]
+    fn restore_calibrate_gains_writes_all_gains_when_stored_present() {
+        pollster::block_on(async {
+            use crate::commission_dispatch::test_support::SpiOp;
+            use foci_tmc4671::registers::*;
+            let _guard = crate::commission_dispatch::test_support::SHARED_STATE_MUTEX
+                .lock()
+                .unwrap();
+            let mut backend = MockBackend::new();
+            let stored = Some(crate::pid::InnerLoopGains {
+                flux_p: 100,
+                flux_i: 10,
+                torque_p: 200,
+                torque_i: 20,
+            });
+            let result = restore_calibrate_gains(&mut backend, stored).await;
+            assert!(result.is_ok());
+            let writes: heapless::Vec<u8, 32> = backend
+                .spi_log
+                .iter()
+                .filter_map(|op| {
+                    if let SpiOp::Write(a, _) = op {
+                        Some(*a)
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            assert!(writes.contains(&PID_FLUX_P_FLUX_I.addr()));
+            assert!(writes.contains(&PID_TORQUE_P_TORQUE_I.addr()));
+            assert!(writes.contains(&PID_VELOCITY_P_VELOCITY_I.addr()));
+            assert!(writes.contains(&PID_POSITION_P_POSITION_I.addr()));
+            assert!(writes.contains(&PID_VELOCITY_LIMIT.addr()));
+            assert!(writes.contains(&PID_TORQUE_FLUX_LIMITS.addr()));
+        });
+    }
+
+    #[test]
+    fn restore_calibrate_gains_skips_inner_when_stored_none() {
+        pollster::block_on(async {
+            use crate::commission_dispatch::test_support::SpiOp;
+            use foci_tmc4671::registers::*;
+            let _guard = crate::commission_dispatch::test_support::SHARED_STATE_MUTEX
+                .lock()
+                .unwrap();
+            let mut backend = MockBackend::new();
+            let result = restore_calibrate_gains(&mut backend, None).await;
+            assert!(result.is_ok());
+            let writes: heapless::Vec<u8, 32> = backend
+                .spi_log
+                .iter()
+                .filter_map(|op| {
+                    if let SpiOp::Write(a, _) = op {
+                        Some(*a)
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            assert!(!writes.contains(&PID_FLUX_P_FLUX_I.addr()));
+            assert!(writes.contains(&PID_VELOCITY_P_VELOCITY_I.addr()));
         });
     }
 }
