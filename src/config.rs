@@ -50,6 +50,27 @@ impl TmcConfig {
 }
 
 #[cfg(test)]
+impl TmcConfig {
+    /// Minimal valid configuration for host-side unit tests.
+    ///
+    /// Uses OpenFFBoard v1.2.4 hardware constants (25 MHz clock, 4 kHz PWM)
+    /// so computed values match the reference board. Tests that need different
+    /// parameters should construct `TmcConfig` directly.
+    pub fn default_for_test() -> Self {
+        Self {
+            pwm_maxcnt: 3999,
+            tmc_clock_hz: 25_000_000,
+            bbm_h: 10,
+            bbm_l: 10,
+            dsadc_mdec: 331,
+            excitation_voltage: 512,
+            didt_cycles: 5000,
+            bandwidth_hz: 50.0,
+        }
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 

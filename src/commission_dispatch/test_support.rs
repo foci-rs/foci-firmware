@@ -1,0 +1,170 @@
+//! Test infrastructure for commission_dispatch: mock CommissioningBackend
+//! with injectable SPI failures, register-write log, delay log, and
+//! enable-pin tracking.
+
+use crate::commissioning::types::CommissioningBackend;
+use crate::config::TmcConfig;
+use foci_tmc4671::registers::Register;
+use heapless::Vec;
+
+/// Synthetic SPI error for test injection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+pub struct MockSpiError;
+
+/// A single SPI operation recorded by `MockBackend`.
+#[derive(Debug, Clone, Copy)]
+pub enum SpiOp {
+    Read(u8),
+    Write(u8, u32),
+}
+
+/// Mock implementation of [`CommissioningBackend`] for host-side unit tests.
+///
+/// Stores register state in a linear map keyed by register address, records
+/// every SPI operation, and supports per-address failure injection for both
+/// reads and writes.
+pub struct MockBackend {
+    /// Current register values, keyed by TMC4671 address byte.
+    pub registers: heapless::LinearMap<u8, u32, 64>,
+    /// Ordered log of every SPI read/write issued during the test.
+    pub spi_log: Vec<SpiOp, 128>,
+    /// Current state of the TMC4671 enable pin.
+    pub enable_pin: bool,
+    /// Log of every `delay_us` call, in order.
+    pub delay_us_log: Vec<u32, 32>,
+    /// If `Some(addr)`, `write_register` returns `Err(MockSpiError)` for that address.
+    pub fail_on_write: Option<u8>,
+    /// If `Some(addr)`, `read_register` returns `Err(MockSpiError)` for that address.
+    pub fail_on_read: Option<u8>,
+    /// Value returned by `elapsed_us()`.
+    pub elapsed_us_value: u64,
+    /// Value returned by `is_shutdown_requested()`.
+    pub shutdown_requested: bool,
+    /// Value returned by `current_limit()`.
+    pub current_limit_value: u32,
+    /// Value returned by `pwm_maxcnt()`.
+    pub pwm_maxcnt_value: u16,
+    /// Value returned by `bbm_register()`.
+    pub bbm_register_value: u32,
+    /// Value returned by `dsadc_mdec_register()`.
+    pub dsadc_mdec_register_value: u32,
+    /// Value returned by `excitation_voltage()`.
+    pub excitation_voltage_value: u16,
+    /// Value returned by `step_width()`.
+    pub step_width_value: u32,
+    /// Value returned by `operational_velocity_limit()`.
+    pub operational_velocity_limit_value: u32,
+    /// Value returned by `tmc_config()`.
+    pub tmc_config: TmcConfig,
+    /// Value returned by `read_encoder_count()`.
+    pub encoder_count_value: u32,
+}
+
+impl MockBackend {
+    /// Construct a `MockBackend` with sensible defaults for unit tests.
+    pub fn new() -> Self {
+        Self {
+            registers: heapless::LinearMap::new(),
+            spi_log: Vec::new(),
+            enable_pin: false,
+            delay_us_log: Vec::new(),
+            fail_on_write: None,
+            fail_on_read: None,
+            elapsed_us_value: 0,
+            shutdown_requested: false,
+            current_limit_value: 0,
+            pwm_maxcnt_value: 4095,
+            bbm_register_value: 0,
+            dsadc_mdec_register_value: 0,
+            excitation_voltage_value: 1024,
+            step_width_value: 0,
+            operational_velocity_limit_value: 500_000,
+            tmc_config: TmcConfig::default_for_test(),
+            encoder_count_value: 0,
+        }
+    }
+}
+
+impl CommissioningBackend for MockBackend {
+    type Error = MockSpiError;
+
+    async fn read_register(&mut self, reg: Register) -> Result<u32, Self::Error> {
+        let addr = reg.addr();
+        self.spi_log.push(SpiOp::Read(addr)).ok();
+        if self.fail_on_read == Some(addr) {
+            return Err(MockSpiError);
+        }
+        Ok(*self.registers.get(&addr).unwrap_or(&0))
+    }
+
+    async fn write_register(&mut self, reg: Register, val: u32) -> Result<(), Self::Error> {
+        let addr = reg.addr();
+        self.spi_log.push(SpiOp::Write(addr, val)).ok();
+        if self.fail_on_write == Some(addr) {
+            return Err(MockSpiError);
+        }
+        let _ = self.registers.insert(addr, val);
+        Ok(())
+    }
+
+    fn set_enable_pin(&mut self, state: bool) {
+        self.enable_pin = state;
+    }
+
+    async fn read_encoder_count(&mut self) -> u32 {
+        self.encoder_count_value
+    }
+
+    fn elapsed_us(&self) -> u64 {
+        self.elapsed_us_value
+    }
+
+    fn is_shutdown_requested(&self) -> bool {
+        self.shutdown_requested
+    }
+
+    fn current_limit(&self) -> u32 {
+        self.current_limit_value
+    }
+
+    fn pwm_maxcnt(&self) -> u16 {
+        self.pwm_maxcnt_value
+    }
+
+    fn bbm_register(&self) -> u32 {
+        self.bbm_register_value
+    }
+
+    fn dsadc_mdec_register(&self) -> u32 {
+        self.dsadc_mdec_register_value
+    }
+
+    fn excitation_voltage(&self) -> u16 {
+        self.excitation_voltage_value
+    }
+
+    fn tmc_config(&self) -> &TmcConfig {
+        &self.tmc_config
+    }
+
+    fn step_width(&self) -> u32 {
+        self.step_width_value
+    }
+
+    fn operational_velocity_limit(&self) -> u32 {
+        self.operational_velocity_limit_value
+    }
+
+    async fn delay_us(&mut self, us: u32) {
+        self.delay_us_log.push(us).ok();
+    }
+}
+
+/// Build locals for a fresh dispatch state.
+///
+/// Returns `(calibrated, motor_enabled, stored_gains)` with zero/false/None
+/// defaults. Tests borrow these as `&mut` to construct a `DispatchState`
+/// (added in Task 11+) per call site.
+pub fn fresh_state_locals() -> (bool, bool, Option<crate::pid::InnerLoopGains>) {
+    (false, false, None)
+}

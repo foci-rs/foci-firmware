@@ -10,6 +10,7 @@ pub mod ankyra;
 pub mod autotune;
 pub mod biquad;
 pub mod calibration;
+pub mod commission_dispatch;
 pub mod commissioning;
 pub mod config;
 pub mod context;
