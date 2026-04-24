@@ -8,10 +8,9 @@
 //! conservative response-ramp tuning.
 
 use super::{
-    OUTER_FALLBACK_VELOCITY_P, OUTER_MAX_VELOCITY_I, OUTER_MAX_VELOCITY_P,
-    OUTER_WARNING_UNSAFE_SYNTH_GAINS, OuterPhase, POS_TUNE_INITIAL_P, POS_TUNE_STEP_COUNTS,
-    PositionTuneData, PositionTuneState, VelocityTuneStrategy, VelocityValidateData,
-    VelocityValidateState,
+    OUTER_MAX_VELOCITY_I, OUTER_MAX_VELOCITY_P, OUTER_WARNING_UNSAFE_SYNTH_GAINS, OuterPhase,
+    POS_TUNE_INITIAL_P, POS_TUNE_STEP_COUNTS, PositionTuneData, PositionTuneState,
+    VelocityTuneStrategy, VelocityValidateData, VelocityValidateState,
 };
 use crate::autotune::{
     CommissionError, CommissionProfile, OperatingMode, PhaseId, TransientBuffer, ValidationResult,
@@ -513,23 +512,29 @@ pub(crate) async fn step_velocity_validate<B: CommissioningBackend>(
                     }
                     ValidationResult::Marginal | ValidationResult::Fail => {
                         let failed_p = data.gains.velocity_p;
-                        if data.has_accepted_gains {
-                            data.gains = data.accepted_gains;
-                        } else {
-                            data.gains = response::response_velocity_gains();
+                        if !data.has_accepted_gains {
+                            defmt::warn!(
+                                "vel response: {} at P={} with no passing response gain",
+                                match result {
+                                    ValidationResult::Fail => "fail",
+                                    _ => "marginal",
+                                },
+                                failed_p
+                            );
+                            let _ = backend.write_register(PID_VELOCITY_TARGET, 0).await;
+                            let _ = backend.write_register(MODE_RAMP_MODE_MOTION, 0).await;
+                            return fail_outer(phase, CommissionError::VelocityValidationFailed);
                         }
+
+                        data.gains = data.accepted_gains;
                         defmt::warn!(
-                            "vel response: {} at P={}, accepting P={}",
+                            "vel response: {} at P={}, restoring passing P={}",
                             match result {
                                 ValidationResult::Fail => "fail",
                                 _ => "marginal",
                             },
                             failed_p,
-                            if data.has_accepted_gains {
-                                data.accepted_gains.velocity_p
-                            } else {
-                                OUTER_FALLBACK_VELOCITY_P
-                            }
+                            data.accepted_gains.velocity_p
                         );
                         let _ = backend.write_register(PID_VELOCITY_TARGET, 0).await;
                         let _ = backend.write_register(MODE_RAMP_MODE_MOTION, 0).await;
