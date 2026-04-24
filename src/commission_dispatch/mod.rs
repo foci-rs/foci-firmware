@@ -175,7 +175,7 @@ pub async fn drive_commission_result<B: CommissioningBackend>(
     state: &mut DispatchState<'_>,
     pwm_maxcnt: u16,
 ) -> CommissionOutcome {
-    let _ = (backend, state, pwm_maxcnt); // suppress unused warnings until all arms land
+    let _ = (state, pwm_maxcnt); // suppress unused warnings until all arms land
     match result {
         StepResult::Continue => CommissionOutcome::Continue,
         StepResult::PhaseChanged(phase_id) => {
@@ -203,8 +203,43 @@ pub async fn drive_commission_result<B: CommissioningBackend>(
                 actions: PostActions::NONE,
             }
         }
-        // Other arms added in Tasks 14-18.
-        _ => todo!("implemented per-variant in Tasks 14-18"),
+        StepResult::InnerFailed(error) => {
+            let mut consumed = engine.take().expect("engine slot None on InnerFailed");
+            let oid = consumed.oid();
+            let kind = consumed.kind();
+            let selftest_results = consumed.take_selftest_results();
+            crate::state::tmc::COMMISSION_IN_FLIGHT
+                .store(false, core::sync::atomic::Ordering::Relaxed);
+            crate::selftest::restore_safe_state_via_backend(backend).await;
+
+            let reply = match kind {
+                EngineKind::Calibrate => ReplyPayload::CalibrateResult {
+                    oid,
+                    status: error.status_code(),
+                    result: zero_adc_cal_result(),
+                },
+                EngineKind::Selftest => ReplyPayload::Selftest {
+                    oid,
+                    results: selftest_results,
+                    done_status: error.status_code(),
+                },
+                EngineKind::Commission | EngineKind::OuterTune => ReplyPayload::CommissionPhase {
+                    oid,
+                    phase: 0,
+                    status: error.status_code(),
+                },
+            };
+            CommissionOutcome::Terminal {
+                reply,
+                actions: PostActions {
+                    stop_trace: true,
+                    stop_stepper: false,
+                    spawn_arm_check: false,
+                },
+            }
+        }
+        // Other arms added in Tasks 15-18.
+        _ => todo!("implemented per-variant in Tasks 15-18"),
     }
 }
 
@@ -212,5 +247,4 @@ pub async fn drive_commission_result<B: CommissioningBackend>(
 #[allow(dead_code)]
 const _: fn() = || {
     let _ = zero_outer_result;
-    let _ = zero_adc_cal_result;
 };
