@@ -12,6 +12,7 @@
 #![allow(dead_code)] // Scaffolding — items are used across tasks 2-8 as the algorithm lands.
 
 use crate::autotune::TransientBuffer;
+use crate::commissioning::outer::response::mechanical_id_velocity_onset_threshold_mcpms;
 
 /// Fit window placement: straddle onset. The LSQ window includes
 /// `PRE_ONSET_US` before onset and `POST_ONSET_US` after, so the fit sees
@@ -89,11 +90,109 @@ impl SlopeEstimate {
 /// least `FIT_MIN_SAMPLES` samples. Stages 2–3 are implemented in
 /// subsequent tasks; this scaffold always returns the low-confidence default.
 pub(crate) fn estimate_early_slope(
-    _buf: &TransientBuffer,
-    _timestamps_us: &[u64],
-    _capture_start_us: u64,
-    _reference_position: i32,
-    _counts_per_rev: i32,
+    buf: &TransientBuffer,
+    timestamps_us: &[u64],
+    capture_start_us: u64,
+    reference_position: i32,
+    counts_per_rev: i32,
 ) -> SlopeEstimate {
+    let samples = buf.samples();
+    debug_assert_eq!(timestamps_us.len(), samples.len());
+    if samples.len() < 2 || timestamps_us.len() != samples.len() {
+        defmt::error!(
+            "slope_estimator: ts/sample length desync: {}/{}",
+            timestamps_us.len(),
+            samples.len(),
+        );
+        return SlopeEstimate::default();
+    }
+
+    // Stage 1: onset detection — first sample with per-sample velocity
+    // above the onset threshold (in milli-counts per millisecond).
+    let threshold_mcpms = mechanical_id_velocity_onset_threshold_mcpms() as i64;
+    let onset_idx = {
+        let mut found: Option<usize> = None;
+        for i in 0..samples.len() {
+            let (prev_count, prev_ts) = if i == 0 {
+                (reference_position as i64, capture_start_us)
+            } else {
+                (samples[i - 1] as i64, timestamps_us[i - 1])
+            };
+            let delta = wrap_aware_delta(samples[i] as i64, prev_count, counts_per_rev as i64);
+            let dt_us = timestamps_us[i].saturating_sub(prev_ts) as i64;
+            if dt_us == 0 {
+                continue;
+            }
+            let v_mcpms = delta.saturating_mul(1_000_000) / dt_us;
+            if v_mcpms.abs() >= threshold_mcpms {
+                found = Some(i);
+                break;
+            }
+        }
+        match found {
+            Some(idx) => idx,
+            None => return SlopeEstimate::default(),
+        }
+    };
+
+    // Stages 2 & 3 are placeholders for now; see subsequent tasks.
+    let _ = onset_idx;
     SlopeEstimate::default()
+}
+
+/// Wrap-aware encoder delta in the range `(-counts_per_rev/2, +counts_per_rev/2]`.
+fn wrap_aware_delta(current: i64, previous: i64, counts_per_rev: i64) -> i64 {
+    let raw = current - previous;
+    let half = counts_per_rev / 2;
+    if raw > half {
+        raw - counts_per_rev
+    } else if raw < -half {
+        raw + counts_per_rev
+    } else {
+        raw
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::autotune::TransientBuffer;
+
+    /// Build a buffer populated with the given encoder samples.
+    fn buf_from(samples: &[u32]) -> TransientBuffer {
+        let mut buf = TransientBuffer::new();
+        buf.reset(1000);
+        for &s in samples {
+            assert!(buf.push(s));
+        }
+        buf
+    }
+
+    #[test]
+    fn no_motion_returns_low_confidence_zero_accel() {
+        let samples = [1000_u32; 8];
+        let timestamps: [u64; 8] = [0, 1000, 2000, 3000, 4000, 5000, 6000, 7000];
+        let buf = buf_from(&samples);
+
+        let est = estimate_early_slope(&buf, &timestamps, 0, 1000, 4000);
+
+        assert_eq!(est.accel, 0);
+        assert_eq!(est.fit_sample_count, 0);
+        assert!(!est.is_high_confidence());
+    }
+
+    #[test]
+    fn below_onset_threshold_returns_low_confidence() {
+        // Positions creep by 1 count every 1 ms → 1 cpms = 1000 mcpms,
+        // which is below the 2 cpms = 2000 mcpms onset threshold.
+        let samples = [1000_u32, 1001, 1002, 1003, 1004, 1005, 1006, 1007];
+        let timestamps: [u64; 8] = [0, 1000, 2000, 3000, 4000, 5000, 6000, 7000];
+        let buf = buf_from(&samples);
+
+        let est = estimate_early_slope(&buf, &timestamps, 0, 1000, 4000);
+
+        assert_eq!(est.accel, 0);
+        assert_eq!(est.fit_sample_count, 0);
+        assert!(!est.is_high_confidence());
+    }
 }
