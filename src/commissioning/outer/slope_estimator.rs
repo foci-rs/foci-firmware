@@ -586,4 +586,63 @@ mod tests {
         assert!(est.velocity_rise_mcpms > 0);
         assert!(est.fit_sample_count >= FIT_MIN_SAMPLES);
     }
+
+    #[test]
+    fn one_sample_outlier_does_not_corrupt_slope() {
+        // Same clean ramp as before, but with one sample shifted by one
+        // count (a realistic quantization perturbation).
+        let samples: [u32; 8] = [0, 5, 20, 46, 80, 125, 180, 245];
+        //                                 ^^ was 45
+        let timestamps: [u64; 8] = [0, 1000, 2000, 3000, 4000, 5000, 6000, 7000];
+        let buf = buf_from(&samples);
+
+        let est = estimate_early_slope(&buf, &timestamps, 0, 0, 4000);
+
+        // Expected accel from the clean ramp was 10; with one quantized
+        // sample we allow ±2 cpms² drift.
+        assert!(
+            (8..=12).contains(&est.accel),
+            "outlier should not pull slope far from 10 cpms²: {}",
+            est.accel
+        );
+    }
+
+    #[test]
+    fn jittered_timestamps_still_produce_coherent_slope() {
+        // Same positions as the clean ramp, but timestamps jittered by
+        // ±200 µs. The time-aware estimator should still land near 10
+        // cpms² because it divides delta_counts by actual dt_us.
+        let samples: [u32; 8] = [0, 5, 20, 45, 80, 125, 180, 245];
+        let timestamps: [u64; 8] = [0, 1200, 1900, 3100, 3950, 5200, 5850, 7100];
+        let buf = buf_from(&samples);
+
+        let est = estimate_early_slope(&buf, &timestamps, 0, 0, 4000);
+
+        assert!(
+            (8..=12).contains(&est.accel),
+            "jittered timestamps should keep accel close to 10: got {}",
+            est.accel
+        );
+    }
+
+    #[test]
+    fn encoder_wrap_within_window_is_handled() {
+        // Positions cross the encoder wrap (counts_per_rev = 4000).
+        // Unwrapped progression: 0, 3, 8, 15, 24, 35, 48, 63 (truly
+        // quadratic). Wrapped samples: 3995, 3998, 3, 10, 19, 30, 43, 58.
+        // Estimator should unwrap via encoder_delta integration and
+        // recover the same accel as the un-wrapped case.
+        let samples: [u32; 8] = [3995, 3998, 3, 10, 19, 30, 43, 58];
+        let timestamps: [u64; 8] = [0, 1000, 2000, 3000, 4000, 5000, 6000, 7000];
+        let buf = buf_from(&samples);
+
+        let est = estimate_early_slope(&buf, &timestamps, 0, 3995, 4000);
+        // Note reference_position = 3995 (last known rest position before capture).
+
+        assert!(
+            est.accel > 0,
+            "wrap capture should still show positive accel: {}",
+            est.accel
+        );
+    }
 }
