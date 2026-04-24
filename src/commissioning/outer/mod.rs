@@ -11,6 +11,7 @@ pub mod filter;
 pub mod mechanical;
 pub mod position;
 pub mod response;
+pub mod slope_estimator;
 pub mod velocity;
 
 use crate::autotune::{
