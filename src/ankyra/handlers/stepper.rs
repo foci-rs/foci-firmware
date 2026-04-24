@@ -88,8 +88,7 @@ pub fn reset_step_clock(ctx: &mut dyn StepperReset, _oid: u8, clock: u32) {
 
 /// Report the current position of a stepper.
 #[klipper_command]
-pub fn stepper_get_position(ctx: &mut dyn StateAccess, oid: u8) {
-    let _ = ctx;
+pub fn stepper_get_position(_ctx: &mut dyn StateAccess, oid: u8) {
     let pos = STEPPER_POSITION.load(core::sync::atomic::Ordering::Relaxed);
     ::ankyra::klipper_reply!(
         crate::ankyra::replies::StepperPosition,
@@ -103,8 +102,7 @@ pub fn stepper_get_position(ctx: &mut dyn StateAccess, oid: u8) {
 /// For hardware step/dir this is equivalent to `stepper_get_position`
 /// since the firmware tracks only the logical step count.
 #[klipper_command]
-pub fn stepper_get_commanded_position(ctx: &mut dyn StateAccess, oid: u8) {
-    let _ = ctx;
+pub fn stepper_get_commanded_position(_ctx: &mut dyn StateAccess, oid: u8) {
     let pos = STEPPER_POSITION.load(core::sync::atomic::Ordering::Relaxed);
     ::ankyra::klipper_reply!(
         crate::ankyra::replies::StepperPosition,
