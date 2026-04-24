@@ -188,8 +188,23 @@ pub async fn drive_commission_result<B: CommissioningBackend>(
                 engine_kind: engine_ref.kind(),
             }
         }
-        // Other arms added in Tasks 13-18.
-        _ => todo!("implemented per-variant in Tasks 13-18"),
+        StepResult::SelftestDone => {
+            let mut consumed = engine.take().expect("engine slot None on SelftestDone");
+            let oid = consumed.oid();
+            let results = consumed.take_selftest_results();
+            crate::state::tmc::COMMISSION_IN_FLIGHT
+                .store(false, core::sync::atomic::Ordering::Relaxed);
+            CommissionOutcome::Terminal {
+                reply: ReplyPayload::Selftest {
+                    oid,
+                    results,
+                    done_status: 0,
+                },
+                actions: PostActions::NONE,
+            }
+        }
+        // Other arms added in Tasks 14-18.
+        _ => todo!("implemented per-variant in Tasks 14-18"),
     }
 }
 

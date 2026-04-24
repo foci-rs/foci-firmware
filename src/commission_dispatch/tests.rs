@@ -74,3 +74,49 @@ fn phase_changed_returns_oid_phase_kind() {
         assert!(engine.is_some()); // not consumed
     });
 }
+
+#[test]
+fn selftest_done_zero_stages_emits_done_only() {
+    pollster::block_on(async {
+        let _guard = test_support::SHARED_STATE_MUTEX.lock().unwrap();
+        // Reset COMMISSION_IN_FLIGHT to a known state before the test.
+        crate::state::tmc::COMMISSION_IN_FLIGHT.store(true, core::sync::atomic::Ordering::Relaxed);
+        let mut backend = MockBackend::new();
+        let (mut cal, mut en, mut gains) = fresh_state_locals();
+        let mut state = DispatchState {
+            calibrated: &mut cal,
+            motor_enabled: &mut en,
+            stored_gains: &mut gains,
+        };
+        let mut engine = Some(CommissioningEngine::new_selftest(3));
+        let outcome = drive_commission_result(
+            crate::commissioning::types::StepResult::SelftestDone,
+            &mut engine,
+            &mut backend,
+            &mut state,
+            4095,
+        )
+        .await;
+        match outcome {
+            CommissionOutcome::Terminal { reply, actions } => {
+                assert!(!actions.stop_trace);
+                assert!(!actions.stop_stepper);
+                assert!(!actions.spawn_arm_check);
+                match reply {
+                    ReplyPayload::Selftest {
+                        oid, done_status, ..
+                    } => {
+                        assert_eq!(oid, 3);
+                        assert_eq!(done_status, 0);
+                    }
+                    _ => panic!("expected Selftest reply"),
+                }
+            }
+            _ => panic!("expected Terminal"),
+        }
+        assert!(engine.is_none()); // consumed
+        assert!(
+            !crate::state::tmc::COMMISSION_IN_FLIGHT.load(core::sync::atomic::Ordering::Relaxed)
+        );
+    });
+}
