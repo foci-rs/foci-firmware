@@ -252,3 +252,77 @@ fn inner_failed_selftest_emits_selftest_pair() {
         );
     });
 }
+
+#[test]
+fn calibrate_done_arms_after_gain_restore() {
+    pollster::block_on(async {
+        use core::sync::atomic::Ordering;
+        let _guard = test_support::SHARED_STATE_MUTEX.lock().unwrap();
+        let mut backend = MockBackend::new();
+        let (mut cal, mut en, mut gains) = fresh_state_locals();
+        gains = Some(crate::pid::InnerLoopGains {
+            flux_p: 100,
+            flux_i: 10,
+            torque_p: 200,
+            torque_i: 20,
+        });
+        let mut state = DispatchState {
+            calibrated: &mut cal,
+            motor_enabled: &mut en,
+            stored_gains: &mut gains,
+        };
+        let mut engine = Some(CommissioningEngine::new_calibrate(4));
+        let cal_result = crate::commissioning::types::AdcCalResult {
+            adc_i0: 1234,
+            adc_i1: 5678,
+            encoder_count: 999,
+        };
+        crate::state::stepper::STEPPER_POSITION.store(42, Ordering::Relaxed);
+
+        let outcome = drive_commission_result(
+            StepResult::CalibrateDone(cal_result.clone()),
+            &mut engine,
+            &mut backend,
+            &mut state,
+            4095,
+        )
+        .await;
+
+        // Motor armed via electrical+for_steps.
+        assert!(backend.enable_pin);
+        assert!(*state.motor_enabled);
+        assert!(*state.calibrated);
+        assert!(crate::state::tmc::MOTOR_ARMED.load(Ordering::Relaxed));
+        // STEPPER_POSITION zeroed between electrical and for_steps.
+        assert_eq!(
+            crate::state::stepper::STEPPER_POSITION.load(Ordering::Relaxed),
+            0
+        );
+
+        match outcome {
+            CommissionOutcome::Terminal { reply, actions } => {
+                assert!(actions.spawn_arm_check);
+                assert!(!actions.stop_trace);
+                assert!(!actions.stop_stepper);
+                match reply {
+                    ReplyPayload::CalibrateResult {
+                        oid,
+                        status,
+                        result,
+                    } => {
+                        assert_eq!(oid, 4);
+                        assert_eq!(status, 0);
+                        assert_eq!(result.adc_i0, cal_result.adc_i0);
+                        assert_eq!(result.encoder_count, cal_result.encoder_count);
+                    }
+                    _ => panic!("expected CalibrateResult"),
+                }
+            }
+            _ => panic!("expected Terminal"),
+        }
+
+        // Cleanup statics for downstream tests.
+        crate::state::tmc::MOTOR_ARMED.store(false, Ordering::Relaxed);
+        crate::state::stepper::STEPPER_POSITION.store(0, Ordering::Relaxed);
+    });
+}

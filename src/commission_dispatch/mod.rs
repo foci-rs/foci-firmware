@@ -175,7 +175,7 @@ pub async fn drive_commission_result<B: CommissioningBackend>(
     state: &mut DispatchState<'_>,
     pwm_maxcnt: u16,
 ) -> CommissionOutcome {
-    let _ = (state, pwm_maxcnt); // suppress unused warnings until all arms land
+    let _ = pwm_maxcnt; // suppress unused warning until all arms land
     match result {
         StepResult::Continue => CommissionOutcome::Continue,
         StepResult::PhaseChanged(phase_id) => {
@@ -238,8 +238,54 @@ pub async fn drive_commission_result<B: CommissioningBackend>(
                 },
             }
         }
-        // Other arms added in Tasks 15-18.
-        _ => todo!("implemented per-variant in Tasks 15-18"),
+        StepResult::CalibrateDone(cal_result) => {
+            let consumed = engine.take().expect("engine slot None on CalibrateDone");
+            let oid = consumed.oid();
+            let restore_result =
+                crate::tmc_ops::restore_calibrate_gains(backend, *state.stored_gains).await;
+            if restore_result.is_err() {
+                crate::tmc_ops::disarm_motor(backend, state).await;
+                crate::state::tmc::COMMISSION_IN_FLIGHT
+                    .store(false, core::sync::atomic::Ordering::Relaxed);
+                return CommissionOutcome::Terminal {
+                    reply: ReplyPayload::CalibrateResult {
+                        oid,
+                        status: crate::calibration::CalibrationError::SpiError.status_code(),
+                        result: zero_adc_cal_result(),
+                    },
+                    actions: PostActions {
+                        stop_trace: false,
+                        stop_stepper: true,
+                        spawn_arm_check: false,
+                    },
+                };
+            }
+
+            crate::tmc_ops::apply_stored_filters_via_backend(backend, pwm_maxcnt).await;
+
+            *state.calibrated = true;
+            crate::tmc_ops::arm_motor_electrical(backend, state);
+            crate::state::stepper::STEPPER_POSITION.store(0, core::sync::atomic::Ordering::Relaxed);
+            crate::tmc_ops::arm_motor_for_steps(state);
+
+            crate::state::tmc::COMMISSION_IN_FLIGHT
+                .store(false, core::sync::atomic::Ordering::Relaxed);
+
+            CommissionOutcome::Terminal {
+                reply: ReplyPayload::CalibrateResult {
+                    oid,
+                    status: 0,
+                    result: cal_result,
+                },
+                actions: PostActions {
+                    stop_trace: false,
+                    stop_stepper: false,
+                    spawn_arm_check: true,
+                },
+            }
+        }
+        // Other arms added in Tasks 16-18.
+        _ => todo!("implemented per-variant in Tasks 16-18"),
     }
 }
 
