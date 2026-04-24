@@ -11,12 +11,14 @@ use crate::autotune::{MechanicalModel, TransientBuffer, VelocityGains};
 
 /// Torque step attempts as fractions of run_current.
 ///
-/// Start at the spec midpoint, then retry with stronger bounded torque if
-/// the encoder response is too quantized to identify a useful mechanical
-/// model.
-pub(crate) const MECHANICAL_ID_TORQUE_STEP_PERCENT_0: u32 = 25;
-pub(crate) const MECHANICAL_ID_TORQUE_STEP_PERCENT_1: u32 = 40;
-pub(crate) const MECHANICAL_ID_TORQUE_STEP_PERCENT_2: u32 = 60;
+/// The ladder climbs from a conservative first pass to retry with stronger
+/// bounded torque if the encoder response is too quantized to identify a
+/// useful mechanical model. Lowered from (25/40/60) to (15/25/40) after the
+/// Stage 1 current-loop tuning pass was strengthened — the previous ladder
+/// overshot the outer velocity cap on low-inertia rigs with the new gains.
+pub(crate) const MECHANICAL_ID_TORQUE_STEP_PERCENT_0: u32 = 15;
+pub(crate) const MECHANICAL_ID_TORQUE_STEP_PERCENT_1: u32 = 25;
+pub(crate) const MECHANICAL_ID_TORQUE_STEP_PERCENT_2: u32 = 40;
 pub(crate) const MECHANICAL_ID_MAX_ATTEMPTS: u8 = 3;
 
 /// Sampling interval for encoder capture during mechanical ID (microseconds).
