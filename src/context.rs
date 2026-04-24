@@ -196,6 +196,10 @@ pub trait TrsyncHost: StateAccess {
 
     /// Configure an endstop runtime for homing and schedule its
     /// first sample event. `sample_count == 0` acts as a disarm.
+    ///
+    /// The implementation must retrieve the `pin_id` for `oid` from
+    /// `foci_firmware::state::trsync::ENDSTOP_PIN_IDS` inside the
+    /// trigger-domain critical section.
     #[allow(clippy::too_many_arguments)]
     fn endstop_start_homing(
         &mut self,
@@ -207,7 +211,6 @@ pub trait TrsyncHost: StateAccess {
         pin_value_expected: bool,
         trsync_oid: u8,
         trigger_reason: u8,
-        pin_id: u8,
     ) -> Result<(), ()>;
 
     /// Read the endstop runtime state tuple `(is_homing, next_clock,
@@ -256,7 +259,6 @@ impl<T: ?Sized + TrsyncHost> TrsyncHost for &mut T {
         pin_value_expected: bool,
         trsync_oid: u8,
         trigger_reason: u8,
-        pin_id: u8,
     ) -> Result<(), ()> {
         (**self).endstop_start_homing(
             oid,
@@ -267,7 +269,6 @@ impl<T: ?Sized + TrsyncHost> TrsyncHost for &mut T {
             pin_value_expected,
             trsync_oid,
             trigger_reason,
-            pin_id,
         )
     }
     fn endstop_query(&mut self, oid: u8) -> Result<(bool, u32, u8), ()> {
