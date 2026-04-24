@@ -14,6 +14,12 @@
 //!   error accumulators and STATUS_FLAGS.
 //! - [`apply_stored_filters`] — write the four biquad filter sections from
 //!   the `state::tmc` filter-Hz atomics back to TMC4671 registers.
+//! - [`apply_set_current`] — convert RMS current to TMC4671 peak counts and
+//!   write `PID_TORQUE_FLUX_LIMITS`; stores the result in `CURRENT_LIMIT_REG`.
+//! - [`apply_set_encoder`] — validate PPR, write `ABN_DECODER_PPR` (×4 for
+//!   quadrature), and log the computed step width.
+//! - [`apply_set_encoder_dir`] — write `ABN_DECODER_MODE` and update the
+//!   `ENCODER_REVERSED` / `FEEDFORWARD_RESET` atomics.
 //!
 //! Populated progressively by Phase A-7 Tasks 26–27 of the internal-
 //! restructure plan (`docs/plans/archive/2026-04-20-phase-a-internal-
@@ -206,4 +212,131 @@ where
             .await;
         let _ = tmc.write_sub_register(CONFIG_BIQUAD_F_ENABLE, 1).await;
     }
+}
+
+/// Apply a new RMS current limit to the TMC4671.
+///
+/// Converts the Klipper-convention RMS milliamp value to the TMC4671 peak
+/// amplitude count (datasheet eq. 19/21: `I_phase = I_D * sin(phi_e)`),
+/// writes `PID_TORQUE_FLUX_LIMITS`, and stores the packed register value in
+/// `CURRENT_LIMIT_REG` for use by the commissioning engine.
+///
+/// # Parameters
+///
+/// - `tmc` — mutable reference to the TMC4671 SPI driver.
+/// - `run_ma` — target RMS current in milliamps.
+/// - `current_scale_ma_per_lsb` — board-specific milliamps-per-LSB scaling
+///   factor (e.g. `1.155` for OpenFFBoard v1.2.x).
+///
+/// # Errors
+///
+/// Returns `Err(())` if the SPI write fails.
+pub async fn apply_set_current<B>(
+    tmc: &mut Tmc4671Spi<B>,
+    run_ma: u32,
+    current_scale_ma_per_lsb: f32,
+) -> Result<(), ()>
+where
+    B: SpiDevice<u8>,
+{
+    use foci_tmc4671::registers::*;
+
+    // User configures RMS current (Klipper convention). The TMC4671
+    // PID limits operate on peak amplitude in the d-q frame
+    // (datasheet eq. 19/21: I_phase = I_D * sin(phi_e)).
+    // Convert: peak = RMS * sqrt(2).
+    let peak_ma = run_ma as f32 * core::f32::consts::SQRT_2;
+    let counts = (peak_ma / current_scale_ma_per_lsb) as u32;
+    let limit = (counts << 16) | counts;
+    if tmc
+        .write_register(PID_TORQUE_FLUX_LIMITS, limit)
+        .await
+        .is_err()
+    {
+        defmt::error!("TMC4671 SPI write failed: PID_TORQUE_FLUX_LIMITS");
+        return Err(());
+    }
+    crate::state::tmc::CURRENT_LIMIT_REG.store(limit, core::sync::atomic::Ordering::Relaxed);
+    defmt::info!(
+        "TMC4671 current: {}mA RMS -> {} counts (peak)",
+        run_ma,
+        counts
+    );
+    Ok(())
+}
+
+/// Apply a new encoder pulses-per-revolution value to the TMC4671.
+///
+/// Validates that `ppr` is non-zero, multiplies by 4 to obtain the
+/// quadrature count (ABN encoders produce four edges per mechanical cycle),
+/// writes `ABN_DECODER_PPR`, and logs the derived step width.
+///
+/// # Parameters
+///
+/// - `tmc` — mutable reference to the TMC4671 SPI driver.
+/// - `ppr` — encoder pulses per revolution (mechanical, pre-quadrature).
+///
+/// # Errors
+///
+/// Returns `Err(())` if `ppr` is zero or if the SPI write fails.
+pub async fn apply_set_encoder<B>(tmc: &mut Tmc4671Spi<B>, ppr: u32) -> Result<(), ()>
+where
+    B: SpiDevice<u8>,
+{
+    use foci_tmc4671::registers::*;
+
+    if ppr == 0 {
+        defmt::error!("Invalid encoder PPR: 0");
+        return Err(());
+    }
+    let quadrature_ppr = ppr.saturating_mul(4);
+    if tmc
+        .write_register(ABN_DECODER_PPR, quadrature_ppr)
+        .await
+        .is_err()
+    {
+        defmt::error!("TMC4671 SPI write failed: ABN_DECODER_PPR");
+        return Err(());
+    }
+    let step_width = 65536u64 * 50 / quadrature_ppr as u64;
+    defmt::info!("TMC4671 encoder: {} PPR, step_width={}", ppr, step_width);
+    Ok(())
+}
+
+/// Apply an encoder direction setting to the TMC4671.
+///
+/// Writes `ABN_DECODER_MODE` (bit 12 selects reversed/default direction),
+/// stores the inversion flag in `ENCODER_REVERSED`, and sets `FEEDFORWARD_RESET`
+/// to prevent a one-tick velocity impulse from the sign-flipped delta in the
+/// feedforward path on the next tick.
+///
+/// # Parameters
+///
+/// - `tmc` — mutable reference to the TMC4671 SPI driver.
+/// - `invert` — `true` to reverse the encoder direction, `false` for default.
+///
+/// # Errors
+///
+/// Returns `Err(())` if the SPI write fails.
+pub async fn apply_set_encoder_dir<B>(tmc: &mut Tmc4671Spi<B>, invert: bool) -> Result<(), ()>
+where
+    B: SpiDevice<u8>,
+{
+    use foci_tmc4671::registers::*;
+
+    let mode = if invert { 1u32 << 12 } else { 0 };
+    if tmc.write_register(ABN_DECODER_MODE, mode).await.is_err() {
+        defmt::error!("TMC4671 SPI write failed: ABN_DECODER_MODE");
+        return Err(());
+    }
+    crate::state::tmc::ENCODER_REVERSED.store(invert, core::sync::atomic::Ordering::Relaxed);
+    // Signal the tick loop to reset feedforward state: prev_position_target
+    // has the wrong sign after a direction flip, which would produce a
+    // one-tick velocity impulse in the feedforward delta computation.
+    crate::state::tmc::FEEDFORWARD_RESET.store(true, core::sync::atomic::Ordering::Relaxed);
+    defmt::info!(
+        "TMC4671 encoder direction: {}",
+        if invert { "reversed" } else { "default" }
+    );
+    Ok(())
 }
