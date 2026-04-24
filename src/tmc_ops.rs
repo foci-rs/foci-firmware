@@ -340,3 +340,98 @@ where
     );
     Ok(())
 }
+
+use crate::commission_dispatch::DispatchState;
+use crate::commissioning::types::CommissioningBackend;
+
+/// Mark the motor electrically energized after verified calibration.
+///
+/// Asserts `state.calibrated`; sets the enable pin high; updates
+/// `state.motor_enabled`. Does NOT touch `MOTOR_ARMED` — stepper
+/// arming is a separate concern (see `arm_motor_for_steps`).
+///
+/// `assert!`, not `debug_assert!`: this is a hard motor-safety
+/// contract and must enforce in release builds. Costs one branch
+/// per arming (not on the hot path). On failure: panic -> RTIC fault
+/// handler -> safe-state via the GPIO Drop and `PIDOUT_UQ_UD_LIMITS` cap.
+pub fn arm_motor_electrical<B: CommissioningBackend>(
+    backend: &mut B,
+    state: &mut DispatchState<'_>,
+) {
+    assert!(
+        *state.calibrated,
+        "FATAL: arm_motor_electrical called with calibrated=false; \
+         SPI restore must precede arm"
+    );
+    backend.set_enable_pin(true);
+    *state.motor_enabled = true;
+}
+
+/// Arm the stepper for step-timer processing.
+///
+/// Asserts `state.motor_enabled` (set only by `arm_motor_electrical`);
+/// stores `MOTOR_ARMED=true`. Caller is responsible for any
+/// prerequisite state (e.g. zeroing `STEPPER_POSITION`) before
+/// invoking. Always-on assert.
+pub fn arm_motor_for_steps(state: &mut DispatchState<'_>) {
+    assert!(
+        *state.motor_enabled,
+        "FATAL: arm_motor_for_steps called with motor_enabled=false"
+    );
+    crate::state::tmc::MOTOR_ARMED.store(true, core::sync::atomic::Ordering::Relaxed);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::commission_dispatch::DispatchState;
+    use crate::commission_dispatch::test_support::{MockBackend, fresh_state_locals};
+
+    #[test]
+    #[should_panic(expected = "calibrated=false")]
+    fn arm_motor_electrical_panics_when_uncalibrated() {
+        let mut backend = MockBackend::new();
+        let (mut cal, mut en, mut gains) = fresh_state_locals();
+        let mut state = DispatchState {
+            calibrated: &mut cal,
+            motor_enabled: &mut en,
+            stored_gains: &mut gains,
+        };
+        // calibrated is false; this MUST panic.
+        arm_motor_electrical(&mut backend, &mut state);
+    }
+
+    #[test]
+    #[should_panic(expected = "motor_enabled=false")]
+    fn arm_motor_for_steps_panics_when_motor_disabled() {
+        let (mut cal, mut en, mut gains) = fresh_state_locals();
+        let mut state = DispatchState {
+            calibrated: &mut cal,
+            motor_enabled: &mut en,
+            stored_gains: &mut gains,
+        };
+        // motor_enabled is false; this MUST panic.
+        arm_motor_for_steps(&mut state);
+    }
+
+    #[test]
+    fn arm_motor_success_path() {
+        use core::sync::atomic::Ordering;
+        let mut backend = MockBackend::new();
+        let (mut cal, mut en, mut gains) = fresh_state_locals();
+        cal = true;
+        let mut state = DispatchState {
+            calibrated: &mut cal,
+            motor_enabled: &mut en,
+            stored_gains: &mut gains,
+        };
+        arm_motor_electrical(&mut backend, &mut state);
+        assert!(backend.enable_pin);
+        assert!(*state.motor_enabled);
+        assert!(!crate::state::tmc::MOTOR_ARMED.load(Ordering::Relaxed));
+        arm_motor_for_steps(&mut state);
+        assert!(crate::state::tmc::MOTOR_ARMED.load(Ordering::Relaxed));
+        // Reset the static for downstream tests.
+        crate::state::tmc::MOTOR_ARMED.store(false, Ordering::Relaxed);
+    }
+}
