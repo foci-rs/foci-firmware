@@ -1497,48 +1497,73 @@ pub fn classify_velocity_validation(
 // Position oscillation detection (Phase 11)
 // ---------------------------------------------------------------------------
 
-/// Check whether a position step response shows oscillation.
+/// Diagnostic breakdown of `analyze_position_oscillation`. Exposed so the
+/// caller can log the inputs that drove the bool decision when an autotune
+/// rejects a gain choice.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PositionOscillationDiagnostics {
+    pub oscillating: bool,
+    pub peak: u32,
+    pub overshoot: u32,
+    pub crossings: u8,
+}
+
+/// Compute oscillation diagnostics from a position capture.
 ///
-/// Used during the Phase 11 P ramp-up to decide when to stop increasing
-/// the position P gain. Returns `true` if:
-/// - Overshoot exceeds 10% of step size, OR
-/// - More than 1 ringing cycle is detected
-///
-/// # Parameters
-/// - `buf`: captured position response (encoder counts)
-/// - `target_position`: commanded position step target
-pub fn detect_position_oscillation(buf: &TransientBuffer, target_position: u32) -> bool {
+/// Returns the same boolean decision as `detect_position_oscillation`, plus
+/// the peak sample, the overshoot above target, and the post-peak zero-crossing
+/// count. All three feed the bool so logging them tells you exactly which
+/// rule fired (or which one almost fired).
+pub fn analyze_position_oscillation(
+    buf: &TransientBuffer,
+    target_position: u32,
+) -> PositionOscillationDiagnostics {
     let samples = buf.samples();
     if samples.is_empty() || target_position == 0 {
-        return false;
+        return PositionOscillationDiagnostics {
+            oscillating: false,
+            peak: 0,
+            overshoot: 0,
+            crossings: 0,
+        };
     }
 
-    // Check overshoot > 10%.
+    // Overshoot.
     let overshoot_threshold = target_position / 10;
     let peak = samples.iter().copied().max().unwrap_or(0);
-    if peak > target_position && (peak - target_position) > overshoot_threshold {
-        return true;
-    }
+    let overshoot = peak.saturating_sub(target_position);
 
-    // Check ringing: zero-crossings of (actual - target) after peak.
+    // Ringing: zero-crossings of (actual - target) after peak.
+    let mut crossings: u8 = 0;
     let peak_idx = samples.iter().position(|&s| s == peak).unwrap_or(0);
     if peak_idx + 1 < samples.len() {
         let mut above = samples[peak_idx] > target_position;
-        let mut crossings: u8 = 0;
         for &sample in &samples[peak_idx + 1..] {
             let now_above = sample > target_position;
             if now_above != above {
-                crossings += 1;
+                crossings = crossings.saturating_add(1);
                 above = now_above;
             }
         }
-        // More than 1 full ringing cycle (2 crossings = 1 cycle).
-        if crossings > 2 {
-            return true;
-        }
     }
 
-    false
+    let oscillating = (peak > target_position && overshoot > overshoot_threshold) || crossings > 2;
+
+    PositionOscillationDiagnostics {
+        oscillating,
+        peak,
+        overshoot,
+        crossings,
+    }
+}
+
+/// Returns true when the position capture overshoots target by more than 10%
+/// or shows more than one full ringing cycle (>2 zero-crossings) after peak.
+///
+/// Thin wrapper around `analyze_position_oscillation`; preserves the original
+/// boolean API for callers that don't need the diagnostic breakdown.
+pub fn detect_position_oscillation(buf: &TransientBuffer, target_position: u32) -> bool {
+    analyze_position_oscillation(buf, target_position).oscillating
 }
 
 // ---------------------------------------------------------------------------

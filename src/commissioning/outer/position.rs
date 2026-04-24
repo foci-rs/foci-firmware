@@ -144,13 +144,25 @@ pub(crate) async fn step_position_tune<B: CommissioningBackend>(
 
         PositionTuneState::Analyze => {
             let target_abs = data.step_target_counts;
-            let oscillation = crate::autotune::detect_position_oscillation(buf, target_abs);
+            let diag = crate::autotune::analyze_position_oscillation(buf, target_abs);
+            let oscillation = diag.oscillating;
 
+            // Diagnostic dump for the 2026-04-24 PositionTune-current-validation
+            // bug: log the inputs that drove the bool plus the first ~16 raw
+            // samples so a low-confidence response-ramp gain regression is
+            // distinguishable from a true minimum-P instability.
+            let samples_slice = buf.samples();
+            let head_len = samples_slice.len().min(16);
             defmt::info!(
-                "pos tune: P={}, oscillation={}",
+                "pos tune: P={} target_abs={} peak={} overshoot={} crossings={} samples_head={:?}",
                 data.current_p,
-                oscillation
+                target_abs,
+                diag.peak,
+                diag.overshoot,
+                diag.crossings,
+                &samples_slice[..head_len],
             );
+            defmt::info!("pos tune: oscillation={}", oscillation);
 
             if oscillation {
                 if data.stable_p == 0 {

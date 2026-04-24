@@ -449,7 +449,12 @@ pub async fn drive_commission_result<B: CommissioningBackend>(
                             (Ok(p1), Ok(p2)) => {
                                 let drift = (p2 as i32).wrapping_sub(p1 as i32).unsigned_abs();
                                 if drift > 2 {
-                                    defmt::error!("OuterFailed restore: unstable drift={}", drift);
+                                    defmt::error!(
+                                        "OuterFailed restore: unstable p1={} p2={} drift={}",
+                                        p1,
+                                        p2,
+                                        drift,
+                                    );
                                     Some(CE::CurrentValidationFailed)
                                 } else {
                                     None
