@@ -18,6 +18,7 @@ pub mod helpers;
 pub mod pid;
 pub mod platform;
 pub mod selftest;
+pub mod shutdown;
 pub mod state;
 pub mod tmc;
 pub mod trace;

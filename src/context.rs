@@ -35,7 +35,7 @@ pub trait ClockSource {
 }
 
 /// MCU shutdown + recovery operations.
-pub trait ShutdownRecovery: StateAccess {
+pub trait ShutdownRecovery: StateAccess + ClockSource {
     /// Transition to shutdown state and quiesce dependent subsystems.
     /// Returns `true` if the transition actually happened (first call),
     /// `false` if the MCU was already in shutdown.
@@ -44,6 +44,16 @@ pub trait ShutdownRecovery: StateAccess {
     /// Write the Katapult "bypass" signature and perform a system
     /// reset. Matches Klipper's `command_reset` semantics.
     fn reset_to_bootloader(&mut self) -> !;
+
+    /// Emit a `klipper_shutdown` message on the firmware's transport.
+    ///
+    /// Cross-crate bridge: lifted handlers (living in `foci-firmware`)
+    /// cannot invoke `::ankyra::klipper_shutdown!` directly because the
+    /// macro expands to a `crate::_ankyra_config::…` path that only
+    /// resolves in the board binary. The board-side impl dispatches
+    /// through [`crate::dispatch_shutdown!`] to the matching
+    /// `klipper_shutdown_from!` call.
+    fn send_shutdown(&mut self, reason: crate::shutdown::ShutdownReason, clock: u32);
 }
 
 /// Stepper subsystem: direction/queue/clock operations exposed at the
