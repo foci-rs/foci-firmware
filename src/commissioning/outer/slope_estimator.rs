@@ -9,24 +9,23 @@
 //!
 //! See `docs/specs/2026-04-24-mechanical-id-slope-estimator-design.md`.
 
+#![allow(dead_code)] // Scaffolding — items are used across tasks 2-8 as the algorithm lands.
+
 use crate::autotune::TransientBuffer;
 
 /// Fit window placement: straddle onset. The LSQ window includes
 /// `PRE_ONSET_US` before onset and `POST_ONSET_US` after, so the fit sees
 /// the rest → steady-state transition regardless of whether the rotor is
 /// already near terminal by the time onset fires. Clamped to capture bounds.
-#[allow(dead_code)]
 pub(crate) const PRE_ONSET_US: u64 = 2_000;
-#[allow(dead_code)]
+
 pub(crate) const POST_ONSET_US: u64 = 4_000;
 
 /// Total fit window (sum of pre + post). Used for overflow bounds and tests.
 /// Keep in sync with `PRE_ONSET_US + POST_ONSET_US`.
-#[allow(dead_code)]
 pub(crate) const FIT_WINDOW_US: u64 = PRE_ONSET_US + POST_ONSET_US;
 
 /// Minimum samples within the fit window for `is_high_confidence`.
-#[allow(dead_code)]
 pub(crate) const FIT_MIN_SAMPLES: u8 = 4;
 
 /// Minimum velocity rise across the fit window for high confidence.
@@ -34,18 +33,15 @@ pub(crate) const FIT_MIN_SAMPLES: u8 = 4;
 /// information — keeping one threshold for both roles prevents the
 /// dead-code configuration that arises when the deadband is separately
 /// configured below the rise gate.
-#[allow(dead_code)]
 pub(crate) const MIN_RISE_MCPMS: u32 = 4_000;
 
 /// Maximum RMS position-fit residual (counts) for high confidence.
-#[allow(dead_code)]
 pub(crate) const MAX_RESIDUAL_COUNTS: u32 = 3;
 
 /// Conservative J_eff substituted in the response-ramp fallback when the
 /// slope estimator reports low confidence. Chosen against the current
 /// 15/25/40% torque ladder and SIMC scaling so the fallback velocity gains
 /// land well below the outer_max_velocity_p cap.
-#[allow(dead_code)]
 pub(crate) const J_EFF_CONSERVATIVE_FALLBACK: u32 = 50_000;
 
 /// Confidence-attributed early-slope estimate for one direction of a
@@ -59,7 +55,6 @@ pub(crate) const J_EFF_CONSERVATIVE_FALLBACK: u32 = 50_000;
 /// `residual_counts: 0`, `velocity_rise_mcpms: 0`, `fit_sample_count: 0`,
 /// `sign_match: false`. Used by `MechanicalIdData::new()` and
 /// `reset_captures()` as the pre-capture placeholder.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, defmt::Format)]
 pub(crate) struct SlopeEstimate {
     /// Initial acceleration in counts per ms squared (cpms²).
@@ -77,7 +72,6 @@ pub(crate) struct SlopeEstimate {
     pub(crate) sign_match: bool,
 }
 
-#[allow(dead_code)]
 impl SlopeEstimate {
     /// True iff all four gates pass. Single place for the confidence policy.
     pub(crate) fn is_high_confidence(&self) -> bool {
@@ -94,7 +88,6 @@ impl SlopeEstimate {
 /// not contain a detectable onset or an onset-straddling fit window with at
 /// least `FIT_MIN_SAMPLES` samples. Stages 2–3 are implemented in
 /// subsequent tasks; this scaffold always returns the low-confidence default.
-#[allow(dead_code)]
 pub(crate) fn estimate_early_slope(
     _buf: &TransientBuffer,
     _timestamps_us: &[u64],
