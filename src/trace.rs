@@ -3,6 +3,8 @@
 //! Ring buffer stored in CCM RAM, captures register snapshots during
 //! commissioning phases. See `docs/specs/2026-04-13-trace-capture-design.md`.
 
+use embedded_hal_async::spi::SpiDevice;
+use foci_tmc4671::spi::Tmc4671Spi;
 use static_assertions::const_assert;
 
 /// Fast preset: 28 bytes/sample, 1 kHz, 5 reg + 1 sub-reg read.
@@ -298,6 +300,198 @@ pub const MESSAGE_PAYLOAD_MAX: usize = 59;
 pub const TRACE_DATA_RESPONSE_MAX: usize = 1 + 1 + 2 + 1 + 2 + 48;
 
 const_assert!(TRACE_DATA_RESPONSE_MAX <= MESSAGE_PAYLOAD_MAX);
+
+/// SPI time budget for the fast trace preset (microseconds).
+///
+/// DWT-measured duration on OpenFFBoard hardware is approximately 227 us.
+/// The budget includes margin for SPI scheduling jitter.
+pub const SPI_BUDGET_FAST_US: u64 = 300;
+
+/// SPI time budget for the full trace preset (microseconds).
+///
+/// Estimated from the fast-preset ratio. Full preset reads 7 registers and
+/// 4 sub-registers versus 5 + 1 for fast.
+pub const SPI_BUDGET_FULL_US: u64 = 550;
+
+/// Read trace registers from the TMC4671 and push one sample into `buf`.
+///
+/// Called once per 1 kHz tick from the TMC control task. Handles decimation
+/// (full preset fires at 500 Hz), pre- and post-read deadline checks, and
+/// SPI failure by recording a budget drop instead of storing partial data.
+///
+/// # Parameters
+///
+/// - `tmc` — mutable reference to the TMC4671 SPI driver.
+/// - `buf` — mutable reference to the trace ring buffer (caller owns the unsafe
+///   static accessor).
+/// - `remaining_budget_us` — closure returning `Some(us)` of time left before
+///   `tick_deadline`, or `None` if the deadline has already passed.
+/// - `past_deadline` — closure returning `true` if the current time is strictly
+///   past `tick_deadline` (used for the post-read overrun check).
+/// - `cpu_freq_mhz` — CPU frequency in MHz used to convert DWT cycle counts to
+///   microseconds for the first-sample SPI-duration log message.
+pub async fn sample_tick<B, F1, F2>(
+    tmc: &mut Tmc4671Spi<B>,
+    buf: &mut TraceBuffer,
+    remaining_budget_us: F1,
+    past_deadline: F2,
+    cpu_freq_mhz: u32,
+) where
+    B: SpiDevice<u8>,
+    F1: Fn() -> Option<u64>,
+    F2: Fn() -> bool,
+{
+    use foci_tmc4671::registers::*;
+
+    if !buf.is_capturing() {
+        return;
+    }
+
+    let preset = buf.preset();
+    let engine_tick = buf.engine_tick();
+
+    // Full preset decimation: skip odd ticks (500 Hz effective)
+    if preset == PRESET_FULL && !engine_tick.is_multiple_of(2) {
+        buf.tick_no_sample(false); // intentional decimation, not a drop
+        return;
+    }
+
+    // Pre-read deadline check
+    let budget_us = if preset == PRESET_FULL {
+        SPI_BUDGET_FULL_US
+    } else {
+        SPI_BUDGET_FAST_US
+    };
+    if remaining_budget_us().is_none_or(|d| d < budget_us) {
+        buf.tick_no_sample(true); // budget drop
+        return;
+    }
+
+    // First sample: measure actual SPI duration via DWT CYCCNT
+    let is_first_sample = engine_tick == 0;
+    let cyccnt_before = if is_first_sample {
+        cortex_m::peripheral::DWT::cycle_count()
+    } else {
+        0
+    };
+
+    // Read fast-preset registers. Any SPI failure discards the whole
+    // sample — storing zeros would be indistinguishable from real data.
+    macro_rules! read_or_drop {
+        ($expr:expr) => {
+            match $expr.await {
+                Ok(v) => v,
+                Err(_) => {
+                    buf.tick_no_sample(true);
+                    return;
+                }
+            }
+        };
+    }
+
+    let position_target = read_or_drop!(tmc.read_register(PID_POSITION_TARGET)) as i32;
+    let position_actual = read_or_drop!(tmc.read_register(PID_POSITION_ACTUAL)) as i32;
+    let torque_flux_actual = read_or_drop!(tmc.read_register(PID_TORQUE_FLUX_ACTUAL));
+    let abn_count = read_or_drop!(tmc.read_register(ABN_DECODER_COUNT)) as i32;
+    let status_flags = read_or_drop!(tmc.read_register(STATUS_FLAGS));
+    let velocity_actual =
+        read_or_drop!(tmc.read_sub_register(INTERIM_PIDOUT_TARGET_VELOCITY)) as i32;
+
+    if preset == PRESET_FULL {
+        // Read additional full-preset registers
+        let torque_flux_target = read_or_drop!(tmc.read_register(PID_TORQUE_FLUX_TARGET));
+        let velocity_offset = read_or_drop!(tmc.read_register(PID_VELOCITY_OFFSET)) as i32;
+        let error_sum_position =
+            read_or_drop!(tmc.read_sub_register(PID_ERROR_PID_POSITION_ERROR_SUM)) as i32;
+        let error_sum_velocity =
+            read_or_drop!(tmc.read_sub_register(PID_ERROR_PID_VELOCITY_ERROR_SUM)) as i32;
+        let error_sum_torque =
+            read_or_drop!(tmc.read_sub_register(PID_ERROR_PID_TORQUE_ERROR_SUM)) as i32;
+
+        // First sample: log measured SPI duration
+        if is_first_sample {
+            let elapsed_cycles =
+                cortex_m::peripheral::DWT::cycle_count().wrapping_sub(cyccnt_before);
+            let elapsed_us = elapsed_cycles / cpu_freq_mhz;
+            defmt::info!(
+                "trace: full SPI read {} us ({} cycles)",
+                elapsed_us,
+                elapsed_cycles
+            );
+            if elapsed_us as u64 > SPI_BUDGET_FULL_US {
+                defmt::warn!(
+                    "trace: full SPI read {} us exceeds budget {} us",
+                    elapsed_us,
+                    SPI_BUDGET_FULL_US
+                );
+            }
+        }
+
+        // Post-read deadline check
+        if past_deadline() {
+            buf.tick_no_sample(true);
+            defmt::warn!("trace: tick overrun, full sample discarded");
+            return;
+        }
+
+        buf.push_full(TraceSampleFull {
+            fast: TraceSampleFast {
+                engine_tick: 0, // set by push
+                phase_id: 0,    // set by push
+                flags: 0,       // set by push
+                position_target,
+                position_actual,
+                torque_flux_actual,
+                velocity_actual,
+                status_flags,
+                abn_count,
+            },
+            torque_flux_target,
+            velocity_offset,
+            error_sum_position,
+            error_sum_velocity,
+            error_sum_torque,
+        });
+    } else {
+        // First sample: log measured SPI duration
+        if is_first_sample {
+            let elapsed_cycles =
+                cortex_m::peripheral::DWT::cycle_count().wrapping_sub(cyccnt_before);
+            let elapsed_us = elapsed_cycles / cpu_freq_mhz;
+            defmt::info!(
+                "trace: fast SPI read {} us ({} cycles)",
+                elapsed_us,
+                elapsed_cycles
+            );
+            if elapsed_us as u64 > SPI_BUDGET_FAST_US {
+                defmt::warn!(
+                    "trace: fast SPI read {} us exceeds budget {} us",
+                    elapsed_us,
+                    SPI_BUDGET_FAST_US
+                );
+            }
+        }
+
+        // Post-read deadline check
+        if past_deadline() {
+            buf.tick_no_sample(true);
+            defmt::warn!("trace: tick overrun, fast sample discarded");
+            return;
+        }
+
+        buf.push_fast(TraceSampleFast {
+            engine_tick: 0,
+            phase_id: 0,
+            flags: 0,
+            position_target,
+            position_actual,
+            torque_flux_actual,
+            velocity_actual,
+            status_flags,
+            abn_count,
+        });
+    }
+}
 
 #[cfg(test)]
 mod tests {
