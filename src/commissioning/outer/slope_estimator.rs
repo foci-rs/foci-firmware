@@ -9,8 +9,6 @@
 //!
 //! See `docs/specs/2026-04-24-mechanical-id-slope-estimator-design.md`.
 
-#![allow(dead_code)] // Scaffolding — items are used across tasks 2-8 as the algorithm lands.
-
 use crate::autotune::TransientBuffer;
 use crate::commissioning::outer::response::mechanical_id_velocity_onset_threshold_mcpms;
 
@@ -24,6 +22,7 @@ pub(crate) const POST_ONSET_US: u64 = 4_000;
 
 /// Total fit window (sum of pre + post). Used for overflow bounds and tests.
 /// Keep in sync with `PRE_ONSET_US + POST_ONSET_US`.
+#[allow(dead_code)] // Overflow-bounds constant; value is documented in the spec.
 pub(crate) const FIT_WINDOW_US: u64 = PRE_ONSET_US + POST_ONSET_US;
 
 /// Minimum samples within the fit window for `is_high_confidence`.

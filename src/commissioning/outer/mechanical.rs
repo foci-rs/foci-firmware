@@ -40,9 +40,6 @@ const MECHANICAL_ID_MODE_SWITCH_SETTLE_POLICY: MechanicalIdModeSwitchSettlePolic
 /// Forward/reverse agreement threshold (30% = 30/100).
 /// If `|J_fwd - J_rev| / avg > 30%`, mechanical ID fails (or retries).
 const MECHANICAL_ID_SYMMETRY_THRESHOLD_PCT: u32 = 30;
-/// Below this acceleration, asymmetry is treated as low-confidence rather than
-/// a reason to escalate torque on unloaded low-inertia rigs.
-const MECHANICAL_ID_MIN_RETRY_ACCEL_COUNTS_PER_MS2: u32 = 4;
 
 /// Operational PID output voltage limit for outer commissioning.
 ///
@@ -277,17 +274,21 @@ pub(crate) async fn step_mechanical_id<B: CommissioningBackend>(
                     data.start_position,
                     safety.counts_per_rev,
                 );
-                data.forward_initial_accel = metrics.initial_accel;
+                data.fwd_slope = metrics.accel;
                 data.forward_peak_velocity = metrics.peak_velocity;
                 data.forward_delay_us = metrics.delay_us;
                 data.forward_travel = metrics.travel;
 
                 defmt::info!(
-                    "mechanical-id fwd: accel={}, peak_vel={}, delay_us={}, travel={}",
-                    metrics.initial_accel,
-                    metrics.peak_velocity,
-                    metrics.delay_us,
-                    metrics.travel
+                    "mechanical-id fwd: accel={} peak_vel={} delay_us={} travel={} \
+                     resid_counts={} rise_mcpms={} samples={}",
+                    data.fwd_slope.accel,
+                    data.forward_peak_velocity,
+                    data.forward_delay_us,
+                    data.forward_travel,
+                    data.fwd_slope.residual_counts,
+                    data.fwd_slope.velocity_rise_mcpms,
+                    data.fwd_slope.fit_sample_count,
                 );
 
                 let deadline = backend.elapsed_us().wrapping_add(MECHANICAL_ID_SETTLE_US);
@@ -364,18 +365,21 @@ pub(crate) async fn step_mechanical_id<B: CommissioningBackend>(
                     reverse_start,
                     safety.counts_per_rev,
                 );
-                // Store as absolute values for symmetry comparison.
-                data.reverse_initial_accel = metrics.initial_accel.unsigned_abs() as i32;
+                data.rev_slope = metrics.accel;
                 data.reverse_peak_velocity = metrics.peak_velocity.unsigned_abs() as i32;
                 data.reverse_delay_us = metrics.delay_us;
                 data.reverse_travel = metrics.travel;
 
                 defmt::info!(
-                    "mechanical-id rev: accel={}, peak_vel={}, delay_us={}, travel={}",
-                    data.reverse_initial_accel,
+                    "mechanical-id rev: accel={} peak_vel={} delay_us={} travel={} \
+                     resid_counts={} rise_mcpms={} samples={}",
+                    data.rev_slope.accel,
                     data.reverse_peak_velocity,
-                    metrics.delay_us,
-                    metrics.travel
+                    data.reverse_delay_us,
+                    data.reverse_travel,
+                    data.rev_slope.residual_counts,
+                    data.rev_slope.velocity_rise_mcpms,
+                    data.rev_slope.fit_sample_count,
                 );
 
                 let deadline = backend.elapsed_us().wrapping_add(MECHANICAL_ID_SETTLE_US);
@@ -408,16 +412,42 @@ pub(crate) async fn step_mechanical_id<B: CommissioningBackend>(
             // Assemble and validate mechanical model.
             let torque = data.torque_step as u32;
 
-            // Forward metrics (already absolute for accel).
-            let fwd_accel = data.forward_initial_accel.unsigned_abs();
-            let rev_accel = data.reverse_initial_accel as u32;
-
             let fwd_peak = data.forward_peak_velocity.unsigned_abs();
             let rev_peak = data.reverse_peak_velocity as u32;
             let peak_avg = (fwd_peak + rev_peak) / 2;
-            let min_accel = fwd_accel.min(rev_accel);
 
-            // Gate: both accelerations must be positive and non-zero.
+            // Confidence gate: if either slope is low-confidence, fall back via
+            // the response-ramp fallback using a conservative J_eff. The
+            // slope estimator's is_high_confidence() replaces the old
+            // MECHANICAL_ID_MIN_RETRY_ACCEL_COUNTS_PER_MS2 magic-number gate.
+            if !data.fwd_slope.is_high_confidence() || !data.rev_slope.is_high_confidence() {
+                defmt::warn!(
+                    "mechanical-id: low-confidence slope \
+                     (fwd: rise={} samples={} resid={}, rev: rise={} samples={} resid={}) \
+                     -> response fallback",
+                    data.fwd_slope.velocity_rise_mcpms,
+                    data.fwd_slope.fit_sample_count,
+                    data.fwd_slope.residual_counts,
+                    data.rev_slope.velocity_rise_mcpms,
+                    data.rev_slope.fit_sample_count,
+                    data.rev_slope.residual_counts,
+                );
+                let avg_delay_us = (data.forward_delay_us + data.reverse_delay_us) / 2;
+                let (model, peak_velocity) =
+                    response::response_mechanical_model_low_confidence(peak_avg, avg_delay_us);
+                *phase = response::response_velocity_phase(
+                    model,
+                    peak_velocity,
+                    OuterDiagnostics::from_mechanical_id(data),
+                    *safety,
+                );
+                return StepResult::PhaseChanged(PhaseId::VelocityTune);
+            }
+
+            let fwd_accel = data.fwd_slope.accel;
+            let rev_accel = data.rev_slope.accel;
+
+            // Gate: both accelerations must be non-zero.
             if fwd_accel == 0 || rev_accel == 0 {
                 if response::retry_mechanical_id(state, data, "zero acceleration") {
                     return StepResult::Continue;
@@ -440,8 +470,8 @@ pub(crate) async fn step_mechanical_id<B: CommissioningBackend>(
             // J_eff = torque / initial_acceleration.
             // Scale: torque is in DAC units, accel is in counts/ms^2.
             // We multiply torque by 1000 to get better fixed-point resolution.
-            let j_eff_fwd = (torque * 1000) / fwd_accel;
-            let j_eff_rev = (torque * 1000) / rev_accel;
+            let j_eff_fwd = (torque * 1000) / fwd_accel.unsigned_abs().max(1);
+            let j_eff_rev = (torque * 1000) / rev_accel.unsigned_abs().max(1);
 
             // Symmetry gate: |J_fwd - J_rev| / avg <= 30%.
             let j_avg = (j_eff_fwd + j_eff_rev) / 2;
@@ -452,26 +482,6 @@ pub(crate) async fn step_mechanical_id<B: CommissioningBackend>(
             let j_diff = j_eff_fwd.abs_diff(j_eff_rev);
             let asymmetry_pct = (j_diff * 100) / j_avg;
             if asymmetry_pct > MECHANICAL_ID_SYMMETRY_THRESHOLD_PCT {
-                // This intentionally short-circuits the retry ladder for weak
-                // onset-acceleration captures: pushing harder on a low-SNR rotor
-                // widens excursion without materially improving the measurement.
-                if min_accel < MECHANICAL_ID_MIN_RETRY_ACCEL_COUNTS_PER_MS2 {
-                    defmt::warn!(
-                        "mechanical-id: asymmetry {}% at low accel {} -> response fallback",
-                        asymmetry_pct,
-                        min_accel
-                    );
-                    let (model, peak_velocity) = response::response_mechanical_model(
-                        data, torque, fwd_accel, rev_accel, fwd_peak, rev_peak,
-                    );
-                    *phase = response::response_velocity_phase(
-                        model,
-                        peak_velocity,
-                        OuterDiagnostics::from_mechanical_id(data),
-                        *safety,
-                    );
-                    return StepResult::PhaseChanged(PhaseId::VelocityTune);
-                }
                 if response::retry_mechanical_id(state, data, "asymmetric response") {
                     return StepResult::Continue;
                 }
@@ -529,8 +539,8 @@ pub(crate) async fn step_mechanical_id<B: CommissioningBackend>(
 
             let diagnostics = OuterDiagnostics::from_mechanical_id(data);
             if response::mechanical_id_low_confidence(
-                fwd_accel,
-                rev_accel,
+                fwd_accel.unsigned_abs(),
+                rev_accel.unsigned_abs(),
                 fwd_peak,
                 rev_peak,
                 data.forward_travel,

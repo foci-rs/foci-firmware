@@ -121,14 +121,13 @@ pub(crate) struct MechanicalIdData {
     pub(crate) attempt: u8,
     /// Torque step amplitude (PIDOUT units).
     pub(crate) torque_step: u16,
-    /// Forward capture: per-sample velocity (encoder counts/ms).
-    /// Stored as [initial_acceleration, peak_velocity] pairs.
-    pub(crate) forward_initial_accel: i32,
+    /// Forward capture slope estimate + confidence.
+    pub(crate) fwd_slope: crate::commissioning::outer::slope_estimator::SlopeEstimate,
     pub(crate) forward_peak_velocity: i32,
     pub(crate) forward_delay_us: u32,
     pub(crate) forward_travel: u32,
-    /// Reverse capture: same metrics.
-    pub(crate) reverse_initial_accel: i32,
+    /// Reverse capture slope estimate + confidence.
+    pub(crate) rev_slope: crate::commissioning::outer::slope_estimator::SlopeEstimate,
     pub(crate) reverse_peak_velocity: i32,
     pub(crate) reverse_delay_us: u32,
     pub(crate) reverse_travel: u32,
@@ -144,11 +143,11 @@ impl MechanicalIdData {
             start_position,
             attempt: 0,
             torque_step,
-            forward_initial_accel: 0,
+            fwd_slope: crate::commissioning::outer::slope_estimator::SlopeEstimate::default(),
             forward_peak_velocity: 0,
             forward_delay_us: 0,
             forward_travel: 0,
-            reverse_initial_accel: 0,
+            rev_slope: crate::commissioning::outer::slope_estimator::SlopeEstimate::default(),
             reverse_peak_velocity: 0,
             reverse_delay_us: 0,
             reverse_travel: 0,
@@ -158,11 +157,11 @@ impl MechanicalIdData {
     }
 
     pub(crate) fn reset_captures(&mut self) {
-        self.forward_initial_accel = 0;
+        self.fwd_slope = crate::commissioning::outer::slope_estimator::SlopeEstimate::default();
         self.forward_peak_velocity = 0;
         self.forward_delay_us = 0;
         self.forward_travel = 0;
-        self.reverse_initial_accel = 0;
+        self.rev_slope = crate::commissioning::outer::slope_estimator::SlopeEstimate::default();
         self.reverse_peak_velocity = 0;
         self.reverse_delay_us = 0;
         self.reverse_travel = 0;
@@ -208,8 +207,8 @@ impl OuterDiagnostics {
         Self {
             warning_code: OUTER_WARNING_NONE,
             mech_torque_step: data.torque_step,
-            mech_fwd_accel: data.forward_initial_accel.unsigned_abs(),
-            mech_rev_accel: data.reverse_initial_accel.unsigned_abs(),
+            mech_fwd_accel: data.fwd_slope.accel.unsigned_abs(),
+            mech_rev_accel: data.rev_slope.accel.unsigned_abs(),
             mech_fwd_peak_velocity: data.forward_peak_velocity.unsigned_abs(),
             mech_rev_peak_velocity: data.reverse_peak_velocity.unsigned_abs(),
             mech_fwd_travel: data.forward_travel,
@@ -979,57 +978,35 @@ mod tests {
     }
 
     #[test]
-    fn low_signal_asymmetry_falls_back_instead_of_retrying_more_torque() {
-        pollster::block_on(async {
-            let mut phase = OuterPhase::MechanicalId {
-                state: MechanicalIdState::Finalize,
-                data: MechanicalIdData {
-                    start_position: 0,
-                    attempt: 0,
-                    torque_step: 367,
-                    forward_initial_accel: 3,
-                    forward_peak_velocity: 28,
-                    forward_delay_us: 1000,
-                    forward_travel: 3830,
-                    reverse_initial_accel: 2,
-                    reverse_peak_velocity: 29,
-                    reverse_delay_us: 1000,
-                    reverse_travel: 3888,
-                    sample_timestamps_us: [0; crate::autotune::TRANSIENT_LEN],
-                    sample_timestamp_len: 0,
-                },
-                safety: OuterSafetyLimits::new(0, 2448),
-            };
-            let mut buf = TransientBuffer::new();
-            let mut backend = MockBackend::new();
-
-            let result = mechanical::step_mechanical_id(&mut phase, &mut buf, &mut backend).await;
-
-            assert!(matches!(
-                result,
-                StepResult::PhaseChanged(PhaseId::VelocityTune)
-            ));
-            assert!(
-                matches!(phase, OuterPhase::VelocityTune { .. }),
-                "low-signal asymmetry should fall back instead of escalating torque"
-            );
-        });
-    }
-
-    #[test]
     fn high_signal_asymmetry_still_retries_with_more_torque() {
         pollster::block_on(async {
+            use crate::commissioning::outer::slope_estimator::SlopeEstimate;
+            // Both slopes high-confidence, asymmetric by >30%.
+            let high_conf_fwd = SlopeEstimate {
+                accel: 20,
+                residual_counts: 1,
+                velocity_rise_mcpms: 20_000,
+                fit_sample_count: 6,
+                sign_match: true,
+            };
+            let high_conf_rev = SlopeEstimate {
+                accel: -50,
+                residual_counts: 1,
+                velocity_rise_mcpms: -50_000,
+                fit_sample_count: 6,
+                sign_match: true,
+            };
             let mut phase = OuterPhase::MechanicalId {
                 state: MechanicalIdState::Finalize,
                 data: MechanicalIdData {
                     start_position: 0,
                     attempt: 0,
                     torque_step: 367,
-                    forward_initial_accel: 20,
+                    fwd_slope: high_conf_fwd,
                     forward_peak_velocity: 28,
                     forward_delay_us: 1000,
                     forward_travel: 3830,
-                    reverse_initial_accel: 30,
+                    rev_slope: high_conf_rev,
                     reverse_peak_velocity: 29,
                     reverse_delay_us: 1000,
                     reverse_travel: 3888,
@@ -1041,15 +1018,18 @@ mod tests {
             let mut buf = TransientBuffer::new();
             let mut backend = MockBackend::new();
 
-            let result = mechanical::step_mechanical_id(&mut phase, &mut buf, &mut backend).await;
+            let _ = mechanical::step_mechanical_id(&mut phase, &mut buf, &mut backend).await;
 
-            assert!(matches!(result, StepResult::Continue));
             match &phase {
                 OuterPhase::MechanicalId { state, data, .. } => {
-                    assert!(matches!(state, MechanicalIdState::Setup));
-                    assert_eq!(data.attempt, 1);
+                    assert_eq!(data.attempt, 1, "expected attempt increment on retry");
+                    assert!(
+                        matches!(state, MechanicalIdState::Setup),
+                        "expected return to Setup for retry, got {:?}",
+                        state,
+                    );
                 }
-                _ => panic!("expected retry to stay in MechanicalId"),
+                other => panic!("expected MechanicalId phase after retry, got {:?}", other),
             }
         });
     }

@@ -25,9 +25,6 @@ pub(crate) const MECHANICAL_ID_MAX_ATTEMPTS: u8 = 3;
 /// 1 kHz = 1000us between samples.
 pub(crate) const MECHANICAL_ID_SAMPLE_PERIOD_US: u64 = 1000;
 
-/// Number of post-onset samples averaged to estimate initial acceleration.
-pub(crate) const MECHANICAL_ID_ACCEL_SAMPLES: usize = 8;
-
 /// Velocity threshold (encoder counts per ms) above which a sample is
 /// considered to mark the start of the rotor's response to the torque step.
 pub(crate) const MECHANICAL_ID_VELOCITY_ONSET_THRESHOLD: i32 = 2;
@@ -178,17 +175,47 @@ pub(crate) fn response_velocity_gains() -> VelocityGains {
 pub(crate) fn response_mechanical_model(
     data: &MechanicalIdData,
     torque: u32,
-    fwd_accel: u32,
-    rev_accel: u32,
+    fwd_accel: i32,
+    rev_accel: i32,
     fwd_peak: u32,
     rev_peak: u32,
 ) -> (MechanicalModel, u32) {
-    let accel_avg = ((fwd_accel.max(1) + rev_accel.max(1)) / 2).max(1);
+    let accel_avg =
+        ((fwd_accel.unsigned_abs().max(1) + rev_accel.unsigned_abs().max(1)) / 2).max(1);
     let peak_avg = ((fwd_peak + rev_peak) / 2).max(1);
     let j_eff = (torque * 1000) / accel_avg;
     let b_eff = (torque * 1000) / peak_avg;
     let avg_delay_us = (data.forward_delay_us + data.reverse_delay_us) / 2;
 
+    (
+        MechanicalModel {
+            j_eff,
+            b_eff,
+            tau_mech_ms: VELOCITY_RESPONSE_VALIDATE_TAU_MS,
+            theta_mech_us: avg_delay_us,
+            t_f: 0,
+        },
+        peak_avg,
+    )
+}
+
+/// Response-ramp fallback when the slope estimator reported low confidence.
+///
+/// Substitutes J_eff with `J_EFF_CONSERVATIVE_FALLBACK` (the quantity
+/// derived from the untrusted accel measurement). B_eff is derived
+/// consistently from J_eff and the fixed `VELOCITY_RESPONSE_VALIDATE_TAU_MS`
+/// so the j/b ratio remains in the bounded conservative band. Measured
+/// peak velocity and measured delay flow through unchanged — they retain
+/// their "motion happened" semantics.
+pub(crate) fn response_mechanical_model_low_confidence(
+    peak_avg: u32,
+    avg_delay_us: u32,
+) -> (MechanicalModel, u32) {
+    use crate::commissioning::outer::slope_estimator::J_EFF_CONSERVATIVE_FALLBACK;
+
+    let peak_avg = peak_avg.max(1);
+    let j_eff = J_EFF_CONSERVATIVE_FALLBACK;
+    let b_eff = (j_eff / VELOCITY_RESPONSE_VALIDATE_TAU_MS).max(1);
     (
         MechanicalModel {
             j_eff,
@@ -221,19 +248,19 @@ pub(crate) fn response_velocity_phase(
 /// Time-aware metrics extracted from a MechanicalId transient capture.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct MechanicalIdMetrics {
-    pub(crate) initial_accel: i32,
+    pub(crate) accel: crate::commissioning::outer::slope_estimator::SlopeEstimate,
     pub(crate) peak_velocity: i32,
     pub(crate) delay_us: u32,
     pub(crate) travel: u32,
 }
 
-/// Extract initial acceleration, peak velocity, motion-onset sample
-/// index, and total absolute travel from a mechanical-ID transient capture.
+/// Extract slope estimate, peak velocity, motion-onset delay, and total
+/// absolute travel from a mechanical-ID transient capture.
 ///
-/// Returns `(initial_accel, peak_velocity, delay_samples, max_travel)`.
-/// The caller already knows the reference encoder position and
-/// counts-per-revolution and supplies them here so the math can be
-/// wrap-aware on the ABN decoder boundary.
+/// Accel + confidence is delegated to `estimate_early_slope`; peak velocity,
+/// delay, and travel are computed inline. The caller supplies the reference
+/// encoder position and counts-per-revolution so all math is wrap-aware on
+/// the ABN decoder boundary.
 pub(crate) fn extract_mechanical_id_metrics(
     buf: &TransientBuffer,
     timestamps_us: &[u64],
@@ -241,6 +268,8 @@ pub(crate) fn extract_mechanical_id_metrics(
     reference_position: i32,
     counts_per_rev: i32,
 ) -> MechanicalIdMetrics {
+    use crate::commissioning::outer::slope_estimator::{SlopeEstimate, estimate_early_slope};
+
     let samples = buf.samples();
     debug_assert_eq!(timestamps_us.len(), samples.len());
     if samples.len() < 2 || timestamps_us.len() != samples.len() {
@@ -250,120 +279,73 @@ pub(crate) fn extract_mechanical_id_metrics(
             samples.len()
         );
         return MechanicalIdMetrics {
-            initial_accel: 0,
+            accel: SlopeEstimate::default(),
             peak_velocity: 0,
             delay_us: 0,
             travel: 0,
         };
     }
 
-    let velocity_mcpms_at = |idx: usize| -> i32 {
-        let (previous_count, previous_ts) = if idx == 0 {
-            (reference_position, capture_start_us)
-        } else {
-            (samples[idx - 1] as i32, timestamps_us[idx - 1])
-        };
-        let delta_counts = encoder_delta(samples[idx] as i32, previous_count, counts_per_rev);
-        let dt_us = timestamps_us[idx].saturating_sub(previous_ts);
-        if dt_us == 0 {
-            0
-        } else {
-            ((delta_counts as i64) * 1_000_000 / dt_us as i64) as i32
-        }
-    };
+    // Accel + confidence is delegated.
+    let accel = estimate_early_slope(
+        buf,
+        timestamps_us,
+        capture_start_us,
+        reference_position,
+        counts_per_rev,
+    );
 
-    let delta_at = |idx: usize| -> i32 {
-        if idx == 0 {
-            encoder_delta(samples[0] as i32, reference_position, counts_per_rev)
-        } else {
-            encoder_delta(samples[idx] as i32, samples[idx - 1] as i32, counts_per_rev)
-        }
-    };
-
+    // Peak velocity, delay_us, and travel keep their existing extraction.
     let mut peak_velocity_mcpms: i32 = 0;
     let mut onset_idx: Option<usize> = None;
     let mut max_travel: u32 = 0;
-
-    // Accumulate unwrapped travel from wrap-aware deltas.
     let mut unwrapped_travel: i32 = 0;
 
-    // Find the first sample with real motion and track the signed peak
-    // velocity. Mechanical ID runs against an unloaded motor, but current
-    // buildup and static friction can leave a quiet prefix at the start of
-    // the capture. Treating that prefix as the acceleration window caused
-    // false zero-acceleration failures on hardware.
-    for (i, &_sample) in samples.iter().enumerate() {
-        let delta_counts = delta_at(i);
-        let velocity_mcpms = velocity_mcpms_at(i);
+    for i in 0..samples.len() {
+        let delta_counts = encoder_delta(
+            samples[i] as i32,
+            if i == 0 {
+                reference_position
+            } else {
+                samples[i - 1] as i32
+            },
+            counts_per_rev,
+        );
+        let dt_us = if i == 0 {
+            timestamps_us[i].saturating_sub(capture_start_us)
+        } else {
+            timestamps_us[i].saturating_sub(timestamps_us[i - 1])
+        };
+        let v_mcpms = if dt_us == 0 {
+            0
+        } else {
+            ((delta_counts as i64) * 1_000_000 / dt_us as i64) as i32
+        };
         unwrapped_travel += delta_counts;
         let travel = unwrapped_travel.unsigned_abs();
         if travel > max_travel {
             max_travel = travel;
         }
-        let abs_cur = velocity_mcpms.unsigned_abs();
-        let abs_peak = peak_velocity_mcpms.unsigned_abs();
-        if abs_cur > abs_peak {
-            peak_velocity_mcpms = velocity_mcpms;
+        if v_mcpms.unsigned_abs() > peak_velocity_mcpms.unsigned_abs() {
+            peak_velocity_mcpms = v_mcpms;
         }
-
-        if onset_idx.is_none() && abs_cur >= mechanical_id_velocity_onset_threshold_mcpms() as u32 {
+        if onset_idx.is_none()
+            && v_mcpms.unsigned_abs() >= mechanical_id_velocity_onset_threshold_mcpms() as u32
+        {
             onset_idx = Some(i);
         }
     }
 
-    let onset_idx = match onset_idx {
-        Some(idx) => idx,
-        None => {
-            return MechanicalIdMetrics {
-                initial_accel: 0,
-                peak_velocity: round_div_signed_i32(peak_velocity_mcpms, 1000),
-                delay_us: timestamps_us
-                    .last()
-                    .map(|ts| ts.saturating_sub(capture_start_us) as u32)
-                    .unwrap_or(0),
-                travel: max_travel,
-            };
-        }
+    let delay_us = match onset_idx {
+        Some(idx) => timestamps_us[idx].saturating_sub(capture_start_us) as u32,
+        None => timestamps_us
+            .last()
+            .map(|ts| ts.saturating_sub(capture_start_us) as u32)
+            .unwrap_or(0),
     };
-    let delay_us = timestamps_us[onset_idx].saturating_sub(capture_start_us) as u32;
-
-    // Estimate initial acceleration from a least-squares slope fit over the
-    // first few post-onset velocity samples. This is much less sensitive to
-    // one-count quantization than using a single peak-minus-previous delta.
-    let end = (onset_idx + MECHANICAL_ID_ACCEL_SAMPLES).min(samples.len());
-    let onset_ts = timestamps_us[onset_idx];
-    let mut n: i128 = 0;
-    let mut sum_x: i128 = 0;
-    let mut sum_y: i128 = 0;
-    let mut sum_xx: i128 = 0;
-    let mut sum_xy: i128 = 0;
-    for (i, &ts) in timestamps_us[onset_idx..end].iter().enumerate() {
-        let x = ts.saturating_sub(onset_ts) as i128;
-        let y = velocity_mcpms_at(onset_idx + i) as i128;
-        n += 1;
-        sum_x += x;
-        sum_y += y;
-        sum_xx += x * x;
-        sum_xy += x * y;
-    }
-    let numerator = n * sum_xy - sum_x * sum_y;
-    let denominator = n * sum_xx - sum_x * sum_x;
-    let mut initial_accel = if denominator == 0 {
-        0
-    } else {
-        round_div_signed_i128(numerator, denominator) as i32
-    };
-    if initial_accel == 0 {
-        let onset_velocity = velocity_mcpms_at(onset_idx);
-        let onset_dt_us = timestamps_us[onset_idx].saturating_sub(capture_start_us);
-        if onset_dt_us > 0 {
-            initial_accel =
-                round_div_signed_i128(onset_velocity as i128, onset_dt_us as i128) as i32;
-        }
-    }
 
     MechanicalIdMetrics {
-        initial_accel,
+        accel,
         peak_velocity: round_div_signed_i32(peak_velocity_mcpms, 1000),
         delay_us,
         travel: max_travel,
@@ -419,8 +401,13 @@ mod tests {
         let metrics = extract_mechanical_id_metrics(&buf, &timestamps, 0, 0, 4000);
 
         assert_eq!(
-            metrics.initial_accel, 4,
+            metrics.accel.accel,
+            4, // was initial_accel
             "initial acceleration should match the fitted early slope"
+        );
+        assert!(
+            metrics.accel.is_high_confidence(),
+            "expected high confidence"
         );
         assert_eq!(metrics.peak_velocity, 18);
         assert_eq!(metrics.delay_us, 1000);
@@ -439,8 +426,13 @@ mod tests {
         let metrics = extract_mechanical_id_metrics(&buf, &timestamps, 0, 0, 4000);
 
         assert_eq!(
-            metrics.initial_accel, 4,
+            metrics.accel.accel,
+            4, // was initial_accel
             "least-squares fit should remain stable under small quantization perturbations"
+        );
+        assert!(
+            metrics.accel.is_high_confidence(),
+            "expected high confidence"
         );
         assert_eq!(metrics.peak_velocity, 17);
     }
