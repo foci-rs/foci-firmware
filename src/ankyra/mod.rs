@@ -13,4 +13,5 @@
 pub mod constants;
 pub mod handlers;
 pub mod outputs;
+pub mod provider;
 pub mod replies;
