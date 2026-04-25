@@ -278,10 +278,18 @@ pub(crate) async fn step_mechanical_id<B: CommissioningBackend>(
                 data.forward_peak_velocity = metrics.peak_velocity;
                 data.forward_delay_us = metrics.delay_us;
                 data.forward_travel = metrics.travel;
+                data.fwd_response = response::extract_mechanical_response_model(
+                    buf,
+                    data.sample_timestamps(),
+                    *capture_start_us,
+                    data.start_position,
+                    safety.counts_per_rev,
+                    data.torque_step as u32,
+                );
 
                 defmt::info!(
                     "mechanical-id fwd: accel={} peak_vel={} delay_us={} travel={} \
-                     resid_counts={} rise_mcpms={} samples={}",
+                     resid_counts={} rise_mcpms={} samples={} steady={} tau={}ms response_resid={}",
                     data.fwd_slope.accel,
                     data.forward_peak_velocity,
                     data.forward_delay_us,
@@ -289,6 +297,9 @@ pub(crate) async fn step_mechanical_id<B: CommissioningBackend>(
                     data.fwd_slope.residual_counts,
                     data.fwd_slope.velocity_rise_mcpms,
                     data.fwd_slope.fit_sample_count,
+                    data.fwd_response.steady_velocity_cpms,
+                    data.fwd_response.tau_mech_ms,
+                    data.fwd_response.residual_mcpms,
                 );
 
                 let deadline = backend.elapsed_us().wrapping_add(MECHANICAL_ID_SETTLE_US);
@@ -369,10 +380,18 @@ pub(crate) async fn step_mechanical_id<B: CommissioningBackend>(
                 data.reverse_peak_velocity = metrics.peak_velocity.unsigned_abs() as i32;
                 data.reverse_delay_us = metrics.delay_us;
                 data.reverse_travel = metrics.travel;
+                data.rev_response = response::extract_mechanical_response_model(
+                    buf,
+                    data.sample_timestamps(),
+                    *capture_start_us,
+                    reverse_start,
+                    safety.counts_per_rev,
+                    data.torque_step as u32,
+                );
 
                 defmt::info!(
                     "mechanical-id rev: accel={} peak_vel={} delay_us={} travel={} \
-                     resid_counts={} rise_mcpms={} samples={}",
+                     resid_counts={} rise_mcpms={} samples={} steady={} tau={}ms response_resid={}",
                     data.rev_slope.accel,
                     data.reverse_peak_velocity,
                     data.reverse_delay_us,
@@ -380,6 +399,9 @@ pub(crate) async fn step_mechanical_id<B: CommissioningBackend>(
                     data.rev_slope.residual_counts,
                     data.rev_slope.velocity_rise_mcpms,
                     data.rev_slope.fit_sample_count,
+                    data.rev_response.steady_velocity_cpms,
+                    data.rev_response.tau_mech_ms,
+                    data.rev_response.residual_mcpms,
                 );
 
                 let deadline = backend.elapsed_us().wrapping_add(MECHANICAL_ID_SETTLE_US);
@@ -415,6 +437,71 @@ pub(crate) async fn step_mechanical_id<B: CommissioningBackend>(
             let fwd_peak = data.forward_peak_velocity.unsigned_abs();
             let rev_peak = data.reverse_peak_velocity as u32;
             let peak_avg = (fwd_peak + rev_peak) / 2;
+            let diagnostics = OuterDiagnostics::from_mechanical_id(data);
+
+            if data.fwd_response.is_high_confidence() && data.rev_response.is_high_confidence() {
+                let j_avg = (data.fwd_response.j_eff + data.rev_response.j_eff) / 2;
+                let j_diff = data.fwd_response.j_eff.abs_diff(data.rev_response.j_eff);
+                let asymmetry_pct = if j_avg == 0 {
+                    100
+                } else {
+                    (j_diff * 100) / j_avg
+                };
+                if asymmetry_pct > MECHANICAL_ID_SYMMETRY_THRESHOLD_PCT {
+                    if response::retry_mechanical_id(state, data, "asymmetric full response") {
+                        return StepResult::Continue;
+                    }
+                    defmt::warn!(
+                        "mechanical-id: full-response asymmetry {}% exceeds {}%, using response fallback",
+                        asymmetry_pct,
+                        MECHANICAL_ID_SYMMETRY_THRESHOLD_PCT
+                    );
+                    let avg_delay_us =
+                        (data.fwd_response.theta_mech_us + data.rev_response.theta_mech_us) / 2;
+                    let (model, peak_velocity) =
+                        response::response_mechanical_model_low_confidence(peak_avg, avg_delay_us);
+                    *phase = response::response_velocity_phase(
+                        model,
+                        peak_velocity,
+                        diagnostics,
+                        *safety,
+                    );
+                    return StepResult::PhaseChanged(PhaseId::VelocityTune);
+                } else {
+                    let b_eff = (data.fwd_response.b_eff + data.rev_response.b_eff) / 2;
+                    let tau_mech_ms =
+                        (data.fwd_response.tau_mech_ms + data.rev_response.tau_mech_ms) / 2;
+                    let theta_mech_us =
+                        (data.fwd_response.theta_mech_us + data.rev_response.theta_mech_us) / 2;
+                    let model = MechanicalModel {
+                        j_eff: j_avg.max(1),
+                        b_eff: b_eff.max(1),
+                        tau_mech_ms: tau_mech_ms.max(1),
+                        theta_mech_us,
+                        t_f: 0,
+                    };
+                    defmt::info!(
+                        "mechanical-id full-response: J={} B={} tau={}ms theta={}us steady={}/{}",
+                        model.j_eff,
+                        model.b_eff,
+                        model.tau_mech_ms,
+                        model.theta_mech_us,
+                        data.fwd_response.steady_velocity_cpms,
+                        data.rev_response.steady_velocity_cpms,
+                    );
+                    let carried_safety = match phase {
+                        OuterPhase::MechanicalId { safety, .. } => *safety,
+                        _ => unreachable!(),
+                    };
+                    *phase = OuterPhase::VelocityTune {
+                        model,
+                        peak_velocity: peak_avg.max(1),
+                        diagnostics,
+                        safety: carried_safety,
+                    };
+                    return StepResult::PhaseChanged(PhaseId::VelocityTune);
+                }
+            }
 
             // Confidence gate: if either slope is low-confidence, fall back via
             // the response-ramp fallback using a conservative J_eff. The
@@ -533,7 +620,6 @@ pub(crate) async fn step_mechanical_id<B: CommissioningBackend>(
                 model.theta_mech_us
             );
 
-            let diagnostics = OuterDiagnostics::from_mechanical_id(data);
             if response::mechanical_id_low_confidence(
                 fwd_accel.unsigned_abs(),
                 rev_accel.unsigned_abs(),

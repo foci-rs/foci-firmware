@@ -13,9 +13,7 @@ use crate::autotune::{MechanicalModel, TransientBuffer, VelocityGains};
 ///
 /// The ladder climbs from a conservative first pass to retry with stronger
 /// bounded torque if the encoder response is too quantized to identify a
-/// useful mechanical model. Lowered from (25/40/60) to (15/25/40) after the
-/// Stage 1 current-loop tuning pass was strengthened — the previous ladder
-/// overshot the outer velocity cap on low-inertia rigs with the new gains.
+/// useful mechanical model.
 pub(crate) const MECHANICAL_ID_TORQUE_STEP_PERCENT_0: u32 = 15;
 pub(crate) const MECHANICAL_ID_TORQUE_STEP_PERCENT_1: u32 = 25;
 pub(crate) const MECHANICAL_ID_TORQUE_STEP_PERCENT_2: u32 = 40;
@@ -52,6 +50,10 @@ pub(crate) const VELOCITY_RESPONSE_STEP_TARGET: u32 = 4;
 
 /// Velocity-loop response-ramp validation time constant (ms).
 pub(crate) const VELOCITY_RESPONSE_VALIDATE_TAU_MS: u32 = 50;
+
+const FULL_RESPONSE_TAIL_SAMPLES: usize = 4;
+const FULL_RESPONSE_MIN_TAIL_SAMPLES: u8 = 4;
+const FULL_RESPONSE_MAX_TAIL_RESIDUAL_PCT: u32 = 15;
 
 // Default fallback velocity gains and the velocity cap currently live in
 // `commission.rs` because the still-resident outer step functions reference
@@ -254,6 +256,158 @@ pub(crate) struct MechanicalIdMetrics {
     pub(crate) travel: u32,
 }
 
+/// Mechanical model estimate from the full torque-step velocity response.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, defmt::Format)]
+pub(crate) struct MechanicalResponseEstimate {
+    pub(crate) j_eff: u32,
+    pub(crate) b_eff: u32,
+    pub(crate) tau_mech_ms: u32,
+    pub(crate) theta_mech_us: u32,
+    pub(crate) steady_velocity_cpms: i32,
+    pub(crate) travel: u32,
+    pub(crate) residual_mcpms: u32,
+    pub(crate) fit_sample_count: u8,
+    pub(crate) sign_match: bool,
+}
+
+impl MechanicalResponseEstimate {
+    pub(crate) fn is_high_confidence(&self) -> bool {
+        self.fit_sample_count >= FULL_RESPONSE_MIN_TAIL_SAMPLES
+            && self.sign_match
+            && self.steady_velocity_cpms.unsigned_abs()
+                >= MECHANICAL_ID_MIN_PEAK_VELOCITY_COUNTS_PER_MS
+            && self.travel >= MECHANICAL_ID_MIN_TRAVEL_COUNTS
+            && self.residual_mcpms
+                <= (self.steady_velocity_cpms.unsigned_abs()
+                    * 1000
+                    * FULL_RESPONSE_MAX_TAIL_RESIDUAL_PCT
+                    / 100)
+            && self.b_eff > 0
+            && self.j_eff > 0
+    }
+}
+
+/// Extract a first-order mechanical model from the whole torque-step response.
+///
+/// This path uses measured steady velocity for damping and the 63% rise time
+/// for the time constant, so low-inertia rigs that reach steady velocity before
+/// the early-slope estimator gets a clean fit can still produce a usable model.
+pub(crate) fn extract_mechanical_response_model(
+    buf: &TransientBuffer,
+    timestamps_us: &[u64],
+    capture_start_us: u64,
+    reference_position: i32,
+    counts_per_rev: i32,
+    torque: u32,
+) -> MechanicalResponseEstimate {
+    let samples = buf.samples();
+    debug_assert_eq!(timestamps_us.len(), samples.len());
+    if samples.len() < 2 || timestamps_us.len() != samples.len() || torque == 0 {
+        return MechanicalResponseEstimate::default();
+    }
+
+    let mut velocities_mcpms = [0_i32; crate::autotune::TRANSIENT_LEN];
+    let mut peak_velocity_mcpms: i32 = 0;
+    let mut onset_idx: Option<usize> = None;
+    let mut unwrapped_travel: i32 = 0;
+    let mut max_travel: u32 = 0;
+    let threshold_mcpms = mechanical_id_velocity_onset_threshold_mcpms();
+
+    for i in 0..samples.len() {
+        let previous_count = if i == 0 {
+            reference_position
+        } else {
+            samples[i - 1] as i32
+        };
+        let previous_ts = if i == 0 {
+            capture_start_us
+        } else {
+            timestamps_us[i - 1]
+        };
+        let delta = encoder_delta(samples[i] as i32, previous_count, counts_per_rev);
+        let dt_us = timestamps_us[i].saturating_sub(previous_ts);
+        let v_mcpms = if dt_us == 0 {
+            0
+        } else {
+            ((delta as i64) * 1_000_000 / dt_us as i64) as i32
+        };
+        velocities_mcpms[i] = v_mcpms;
+
+        unwrapped_travel += delta;
+        max_travel = max_travel.max(unwrapped_travel.unsigned_abs());
+        if v_mcpms.unsigned_abs() > peak_velocity_mcpms.unsigned_abs() {
+            peak_velocity_mcpms = v_mcpms;
+        }
+        if onset_idx.is_none() && v_mcpms.unsigned_abs() >= threshold_mcpms as u32 {
+            onset_idx = Some(i);
+        }
+    }
+
+    let onset_idx = match onset_idx {
+        Some(idx) => idx,
+        None => return MechanicalResponseEstimate::default(),
+    };
+
+    let tail_start = samples
+        .len()
+        .saturating_sub(FULL_RESPONSE_TAIL_SAMPLES)
+        .max(onset_idx);
+    let tail_len = samples.len() - tail_start;
+    if tail_len < FULL_RESPONSE_MIN_TAIL_SAMPLES as usize {
+        return MechanicalResponseEstimate::default();
+    }
+
+    let tail_sum: i64 = velocities_mcpms[tail_start..samples.len()]
+        .iter()
+        .map(|&v| v as i64)
+        .sum();
+    let steady_mcpms = round_div_signed_i128(tail_sum as i128, tail_len as i128) as i32;
+    let steady_abs_mcpms = steady_mcpms.unsigned_abs();
+    if steady_abs_mcpms < threshold_mcpms as u32 {
+        return MechanicalResponseEstimate::default();
+    }
+
+    let mut residual_sq: i128 = 0;
+    for &v in &velocities_mcpms[tail_start..samples.len()] {
+        let err = v as i128 - steady_mcpms as i128;
+        residual_sq = residual_sq.saturating_add(err * err);
+    }
+    let mean_sq = residual_sq / tail_len as i128;
+    let residual_mcpms = mean_sq.max(0) as u128;
+    let residual_mcpms = residual_mcpms.isqrt() as u32;
+
+    let target_mcpms = (steady_abs_mcpms as u64 * 632 / 1000).max(threshold_mcpms as u64);
+    let mut tau_cross_idx = onset_idx;
+    for (offset, &v) in velocities_mcpms[onset_idx..samples.len()]
+        .iter()
+        .enumerate()
+    {
+        if v.unsigned_abs() as u64 >= target_mcpms {
+            tau_cross_idx = onset_idx + offset;
+            break;
+        }
+    }
+    let tau_us = timestamps_us[tau_cross_idx].saturating_sub(timestamps_us[onset_idx]);
+    let tau_mech_ms = ((tau_us + 500) / 1000).max(1) as u32;
+    let steady_velocity_cpms = round_div_signed_i32(steady_mcpms, 1000);
+    let steady_abs_cpms = steady_velocity_cpms.unsigned_abs().max(1);
+    let b_eff = (torque * 1000 / steady_abs_cpms).max(1);
+    let j_eff = b_eff.saturating_mul(tau_mech_ms).max(1);
+    let sign_match = steady_mcpms.signum() == peak_velocity_mcpms.signum();
+
+    MechanicalResponseEstimate {
+        j_eff,
+        b_eff,
+        tau_mech_ms,
+        theta_mech_us: timestamps_us[onset_idx].saturating_sub(capture_start_us) as u32,
+        steady_velocity_cpms,
+        travel: max_travel,
+        residual_mcpms,
+        fit_sample_count: tail_len as u8,
+        sign_match,
+    }
+}
+
 /// Extract slope estimate, peak velocity, motion-onset delay, and total
 /// absolute travel from a mechanical-ID transient capture.
 ///
@@ -370,7 +524,10 @@ fn round_div_signed_i128(numerator: i128, denominator: i128) -> i128 {
 
 #[cfg(test)]
 mod tests {
-    use super::{extract_mechanical_id_metrics, response_velocity_gains};
+    use super::{
+        extract_mechanical_id_metrics, extract_mechanical_response_model,
+        mechanical_id_torque_percent, response_velocity_gains,
+    };
     use crate::autotune::TransientBuffer;
     use crate::commissioning::outer::{
         MECHANICAL_ID_VELOCITY_CAP_COUNTS_PER_MS, RESPONSE_FALLBACK_VELOCITY_LIMIT_COUNTS_PER_MS,
@@ -387,6 +544,13 @@ mod tests {
             gains.velocity_limit,
             MECHANICAL_ID_VELOCITY_CAP_COUNTS_PER_MS as u32
         );
+    }
+
+    #[test]
+    fn mechanical_id_torque_ladder_starts_with_gentle_excitation() {
+        assert_eq!(mechanical_id_torque_percent(0), 15);
+        assert_eq!(mechanical_id_torque_percent(1), 25);
+        assert_eq!(mechanical_id_torque_percent(2), 40);
     }
 
     #[test]
@@ -435,5 +599,32 @@ mod tests {
             "expected high confidence"
         );
         assert_eq!(metrics.peak_velocity, 17);
+    }
+
+    #[test]
+    fn extract_mechanical_response_model_uses_full_transient() {
+        let mut buf = TransientBuffer::new();
+        buf.reset(1000);
+        // Position samples generated from a response whose velocity rises
+        // toward an 18 counts/ms steady state.
+        for sample in [0_u32, 4, 12, 23, 36, 51, 67, 84, 102, 120, 138, 156] {
+            assert!(buf.push(sample));
+        }
+        let timestamps = [
+            1_000_u64, 2_000, 3_000, 4_000, 5_000, 6_000, 7_000, 8_000, 9_000, 10_000, 11_000,
+            12_000,
+        ];
+
+        let estimate = extract_mechanical_response_model(&buf, &timestamps, 0, 0, 4000, 360);
+
+        assert!(
+            estimate.is_high_confidence(),
+            "expected high-confidence full-response model: {:?}",
+            estimate,
+        );
+        assert_eq!(estimate.steady_velocity_cpms, 18);
+        assert_eq!(estimate.b_eff, 20_000);
+        assert!((2..=6).contains(&estimate.tau_mech_ms));
+        assert_eq!(estimate.j_eff, estimate.b_eff * estimate.tau_mech_ms);
     }
 }

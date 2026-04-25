@@ -123,11 +123,13 @@ pub(crate) struct MechanicalIdData {
     pub(crate) torque_step: u16,
     /// Forward capture slope estimate + confidence.
     pub(crate) fwd_slope: crate::commissioning::outer::slope_estimator::SlopeEstimate,
+    pub(crate) fwd_response: crate::commissioning::outer::response::MechanicalResponseEstimate,
     pub(crate) forward_peak_velocity: i32,
     pub(crate) forward_delay_us: u32,
     pub(crate) forward_travel: u32,
     /// Reverse capture slope estimate + confidence.
     pub(crate) rev_slope: crate::commissioning::outer::slope_estimator::SlopeEstimate,
+    pub(crate) rev_response: crate::commissioning::outer::response::MechanicalResponseEstimate,
     pub(crate) reverse_peak_velocity: i32,
     pub(crate) reverse_delay_us: u32,
     pub(crate) reverse_travel: u32,
@@ -144,10 +146,14 @@ impl MechanicalIdData {
             attempt: 0,
             torque_step,
             fwd_slope: crate::commissioning::outer::slope_estimator::SlopeEstimate::default(),
+            fwd_response:
+                crate::commissioning::outer::response::MechanicalResponseEstimate::default(),
             forward_peak_velocity: 0,
             forward_delay_us: 0,
             forward_travel: 0,
             rev_slope: crate::commissioning::outer::slope_estimator::SlopeEstimate::default(),
+            rev_response:
+                crate::commissioning::outer::response::MechanicalResponseEstimate::default(),
             reverse_peak_velocity: 0,
             reverse_delay_us: 0,
             reverse_travel: 0,
@@ -158,10 +164,14 @@ impl MechanicalIdData {
 
     pub(crate) fn reset_captures(&mut self) {
         self.fwd_slope = crate::commissioning::outer::slope_estimator::SlopeEstimate::default();
+        self.fwd_response =
+            crate::commissioning::outer::response::MechanicalResponseEstimate::default();
         self.forward_peak_velocity = 0;
         self.forward_delay_us = 0;
         self.forward_travel = 0;
         self.rev_slope = crate::commissioning::outer::slope_estimator::SlopeEstimate::default();
+        self.rev_response =
+            crate::commissioning::outer::response::MechanicalResponseEstimate::default();
         self.reverse_peak_velocity = 0;
         self.reverse_delay_us = 0;
         self.reverse_travel = 0;
@@ -985,6 +995,8 @@ mod tests {
         pollster::block_on(async {
             use crate::commissioning::outer::slope_estimator::SlopeEstimate;
             let low_conf = SlopeEstimate::default(); // fit_sample_count = 0 → low-conf
+            let no_response =
+                crate::commissioning::outer::response::MechanicalResponseEstimate::default();
             let mut phase = OuterPhase::MechanicalId {
                 state: MechanicalIdState::Finalize,
                 data: MechanicalIdData {
@@ -992,10 +1004,12 @@ mod tests {
                     attempt: 0,
                     torque_step: 367,
                     fwd_slope: low_conf,
+                    fwd_response: no_response,
                     forward_peak_velocity: 28,
                     forward_delay_us: 1000,
                     forward_travel: 3830,
                     rev_slope: low_conf,
+                    rev_response: no_response,
                     reverse_peak_velocity: 29,
                     reverse_delay_us: 1000,
                     reverse_travel: 3888,
@@ -1021,6 +1035,128 @@ mod tests {
     }
 
     #[test]
+    fn full_response_model_takes_precedence_over_low_confidence_slope() {
+        pollster::block_on(async {
+            use crate::commissioning::outer::response::MechanicalResponseEstimate;
+            use crate::commissioning::outer::slope_estimator::SlopeEstimate;
+            let low_conf = SlopeEstimate::default();
+            let fwd_response = MechanicalResponseEstimate {
+                j_eff: 100_000,
+                b_eff: 20_000,
+                tau_mech_ms: 5,
+                theta_mech_us: 10_000,
+                steady_velocity_cpms: 18,
+                travel: 3000,
+                residual_mcpms: 0,
+                fit_sample_count: 4,
+                sign_match: true,
+            };
+            let rev_response = MechanicalResponseEstimate {
+                steady_velocity_cpms: -18,
+                ..fwd_response
+            };
+            let mut phase = OuterPhase::MechanicalId {
+                state: MechanicalIdState::Finalize,
+                data: MechanicalIdData {
+                    start_position: 0,
+                    attempt: 0,
+                    torque_step: 122,
+                    fwd_slope: low_conf,
+                    fwd_response,
+                    forward_peak_velocity: 18,
+                    forward_delay_us: 10_000,
+                    forward_travel: 3000,
+                    rev_slope: low_conf,
+                    rev_response,
+                    reverse_peak_velocity: 18,
+                    reverse_delay_us: 10_000,
+                    reverse_travel: 3000,
+                    sample_timestamps_us: [0; crate::autotune::TRANSIENT_LEN],
+                    sample_timestamp_len: 0,
+                },
+                safety: OuterSafetyLimits::new(0, 2448),
+            };
+            let mut buf = TransientBuffer::new();
+            let mut backend = MockBackend::new();
+
+            let result = mechanical::step_mechanical_id(&mut phase, &mut buf, &mut backend).await;
+
+            assert!(matches!(
+                result,
+                StepResult::PhaseChanged(PhaseId::VelocityTune)
+            ));
+            match phase {
+                OuterPhase::VelocityTune {
+                    model, diagnostics, ..
+                } => {
+                    assert_eq!(diagnostics.warning_code, super::OUTER_WARNING_NONE);
+                    assert_eq!(model.j_eff, 100_000);
+                    assert_eq!(model.b_eff, 20_000);
+                    assert_eq!(model.tau_mech_ms, 5);
+                }
+                other => panic!("expected VelocityTune phase, got {:?}", other),
+            }
+        });
+    }
+
+    #[test]
+    fn asymmetric_full_response_retries_with_more_torque() {
+        pollster::block_on(async {
+            use crate::commissioning::outer::response::MechanicalResponseEstimate;
+            let fwd_response = MechanicalResponseEstimate {
+                j_eff: 100_000,
+                b_eff: 20_000,
+                tau_mech_ms: 5,
+                theta_mech_us: 10_000,
+                steady_velocity_cpms: 18,
+                travel: 3000,
+                residual_mcpms: 0,
+                fit_sample_count: 4,
+                sign_match: true,
+            };
+            let rev_response = MechanicalResponseEstimate {
+                j_eff: 200_000,
+                steady_velocity_cpms: -18,
+                ..fwd_response
+            };
+            let mut phase = OuterPhase::MechanicalId {
+                state: MechanicalIdState::Finalize,
+                data: MechanicalIdData {
+                    start_position: 0,
+                    attempt: 0,
+                    torque_step: 367,
+                    fwd_slope: Default::default(),
+                    fwd_response,
+                    forward_peak_velocity: 18,
+                    forward_delay_us: 10_000,
+                    forward_travel: 3000,
+                    rev_slope: Default::default(),
+                    rev_response,
+                    reverse_peak_velocity: 18,
+                    reverse_delay_us: 10_000,
+                    reverse_travel: 3000,
+                    sample_timestamps_us: [0; crate::autotune::TRANSIENT_LEN],
+                    sample_timestamp_len: 0,
+                },
+                safety: OuterSafetyLimits::new(0, 2448),
+            };
+            let mut buf = TransientBuffer::new();
+            let mut backend = MockBackend::new();
+
+            let result = mechanical::step_mechanical_id(&mut phase, &mut buf, &mut backend).await;
+
+            assert!(matches!(result, StepResult::Continue));
+            match phase {
+                OuterPhase::MechanicalId { state, data, .. } => {
+                    assert_eq!(data.attempt, 1);
+                    assert!(matches!(state, MechanicalIdState::Setup));
+                }
+                other => panic!("expected MechanicalId retry, got {:?}", other),
+            }
+        });
+    }
+
+    #[test]
     fn high_confidence_asymmetry_still_retries_with_more_torque() {
         pollster::block_on(async {
             use crate::commissioning::outer::slope_estimator::SlopeEstimate;
@@ -1039,6 +1175,8 @@ mod tests {
                 fit_sample_count: 6,
                 sign_match: true,
             };
+            let no_response =
+                crate::commissioning::outer::response::MechanicalResponseEstimate::default();
             let mut phase = OuterPhase::MechanicalId {
                 state: MechanicalIdState::Finalize,
                 data: MechanicalIdData {
@@ -1046,10 +1184,12 @@ mod tests {
                     attempt: 0,
                     torque_step: 367,
                     fwd_slope: high_conf_fwd,
+                    fwd_response: no_response,
                     forward_peak_velocity: 20,
                     forward_delay_us: 1000,
                     forward_travel: 3000,
                     rev_slope: high_conf_rev,
+                    rev_response: no_response,
                     reverse_peak_velocity: 50,
                     reverse_delay_us: 1000,
                     reverse_travel: 5000,
@@ -1094,6 +1234,8 @@ mod tests {
                 fit_sample_count: 6,
                 sign_match: true,
             };
+            let no_response =
+                crate::commissioning::outer::response::MechanicalResponseEstimate::default();
             let mut phase = OuterPhase::MechanicalId {
                 state: MechanicalIdState::Finalize,
                 data: MechanicalIdData {
@@ -1101,10 +1243,12 @@ mod tests {
                     attempt: 0,
                     torque_step: 367,
                     fwd_slope: zero_accel,
+                    fwd_response: no_response,
                     forward_peak_velocity: 10,
                     forward_delay_us: 1000,
                     forward_travel: 100,
                     rev_slope: zero_accel,
+                    rev_response: no_response,
                     reverse_peak_velocity: 10,
                     reverse_delay_us: 1000,
                     reverse_travel: 100,
@@ -1147,6 +1291,8 @@ mod tests {
                 fit_sample_count: 6,
                 sign_match: true,
             };
+            let no_response =
+                crate::commissioning::outer::response::MechanicalResponseEstimate::default();
             let mut phase = OuterPhase::MechanicalId {
                 state: MechanicalIdState::Finalize,
                 data: MechanicalIdData {
@@ -1154,10 +1300,12 @@ mod tests {
                     attempt: 0,
                     torque_step: 367,
                     fwd_slope: high_conf_fwd,
+                    fwd_response: no_response,
                     forward_peak_velocity: 28,
                     forward_delay_us: 1000,
                     forward_travel: 3830,
                     rev_slope: high_conf_rev,
+                    rev_response: no_response,
                     reverse_peak_velocity: 29,
                     reverse_delay_us: 1000,
                     reverse_travel: 3888,
