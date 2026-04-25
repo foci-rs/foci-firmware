@@ -52,12 +52,9 @@ pub(crate) const OUTER_FALLBACK_POSITION_I: u16 = 0;
 
 /// Maximum accepted autotuned velocity P gain.
 ///
-/// The current mechanical-ID scaling can saturate the velocity P register
-/// on real hardware. Accepting those gains caused immediate
-/// velocity/position limit windup during normal motion, so keep runtime
-/// gains near the known-good default envelope until the mechanical model
-/// scaling is reworked.
-pub(crate) const OUTER_MAX_VELOCITY_P: u16 = OUTER_FALLBACK_VELOCITY_P * 4;
+/// Keep runtime gains near the known-good default envelope even when SIMC
+/// widens lambda to fit high-damping mechanical models.
+pub(crate) const OUTER_MAX_VELOCITY_P: u16 = crate::autotune::VELOCITY_SIMC_MAX_P_REG;
 pub(crate) const OUTER_MAX_VELOCITY_I: u16 = 512;
 pub(crate) const OUTER_MAX_POSITION_P: u16 = OUTER_FALLBACK_POSITION_P * 4;
 pub(crate) const OUTER_MAX_POSITION_I: u16 = 128;

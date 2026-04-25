@@ -622,6 +622,12 @@ pub struct VelocityGains {
     pub lambda_vel_ms: u32,
 }
 
+/// Maximum model-synthesized velocity P accepted by outer commissioning.
+///
+/// Keep this centralized so SIMC synthesis and the Phase 10/commit envelope
+/// use the same bound.
+pub(crate) const VELOCITY_SIMC_MAX_P_REG: u16 = 1152 * 4;
+
 /// Metrics from a velocity-loop step-response validation test (Phase 10).
 ///
 /// Extracted from the [`TransientBuffer`] after a velocity step.
@@ -1245,6 +1251,24 @@ fn apply_mode_adjustment(lambda_us: u32, mode: OperatingMode) -> u32 {
     }
 }
 
+fn apply_velocity_gain_envelope(lambda_us: u32, tau_us: u32, theta_us: u32, b_eff: u32) -> u32 {
+    if b_eff == 0 {
+        return lambda_us;
+    }
+
+    // b_eff is stored as torque * 1000 / velocity, so Kp in TMC Q8.8 is:
+    //
+    //   P_reg = tau_us * b_eff * 256 / (1000 * (lambda_us + theta_us))
+    //
+    // Widen lambda when needed so the synthesized P lands inside the same
+    // envelope enforced by Phase 10 and commit.
+    let numerator = tau_us as u64 * b_eff as u64 * 256;
+    let denominator = 1000_u64 * VELOCITY_SIMC_MAX_P_REG as u64;
+    let required_sum = numerator.div_ceil(denominator) as u32;
+    let lambda_floor = required_sum.saturating_sub(theta_us);
+    lambda_us.max(lambda_floor)
+}
+
 /// Compute SIMC PI gains for the velocity loop, returning `None` if the
 /// mechanical model is invalid (zero J, zero tau, or zero theta).
 ///
@@ -1281,20 +1305,25 @@ pub fn simc_velocity_gains(
     );
     let lambda_us = apply_mode_adjustment(lambda_us, mode);
 
-    // Ensure lambda doesn't collapse to zero after mode adjustment.
+    // Ensure lambda doesn't collapse to zero after mode adjustment, then widen
+    // it if the model would synthesize gains outside the accepted register
+    // envelope.
     let lambda_us = lambda_us.max(model.theta_mech_us);
+    let lambda_us =
+        apply_velocity_gain_envelope(lambda_us, tau_mech_us, model.theta_mech_us, model.b_eff);
 
     // SIMC PI tuning law for FOPDT plant G_mech(s) = K / (tau*s+1) * e^(-theta*s):
     //   Kp = tau / (K * (lambda + theta))
     //   Ti = min(tau, 4 * (lambda + theta))
     //   Ki = Kp / Ti
     //
-    // For velocity loop: K = 1/B_eff (DC gain: velocity per unit torque).
+    // For velocity loop: K = 1000/B_eff because B_eff is stored as
+    // torque * 1000 / velocity.
     let tau = tau_mech_us as f32;
     let theta = model.theta_mech_us as f32;
     let lambda = lambda_us as f32;
     let b_eff = model.b_eff as f32;
-    let k = if b_eff > 0.0 { 1.0 / b_eff } else { 1.0 };
+    let k = if b_eff > 0.0 { 1000.0 / b_eff } else { 1.0 };
 
     let kp = tau / (k * (lambda + theta));
     let ti = {
@@ -2824,6 +2853,74 @@ mod tests {
         assert_eq!(gains.velocity_limit, 800, "80% of peak=1000");
         assert!(gains.effective_bandwidth_hz > 0);
         assert!(gains.lambda_vel_ms > 0);
+    }
+
+    #[test]
+    fn velocity_gains_field_model_stays_inside_outer_envelope() {
+        let config = autotune_test_config();
+        let field_models = [
+            MechanicalModel {
+                j_eff: 2_522_213,
+                b_eff: 19_851,
+                tau_mech_ms: 127,
+                theta_mech_us: 14_764,
+                t_f: 0,
+            },
+            MechanicalModel {
+                j_eff: 2_624_100,
+                b_eff: 20_988,
+                tau_mech_ms: 125,
+                theta_mech_us: 10_731,
+                t_f: 0,
+            },
+        ];
+
+        for model in field_models {
+            let base_lambda_us = apply_mode_adjustment(
+                simc_velocity_lambda_us(
+                    CommissionProfile::Balanced,
+                    model.tau_mech_ms * 1000,
+                    model.theta_mech_us,
+                    934,
+                    160,
+                ),
+                OperatingMode::Nominal,
+            )
+            .max(model.theta_mech_us);
+
+            let gains = simc_velocity_gains(
+                &model,
+                CommissionProfile::Balanced,
+                OperatingMode::Nominal,
+                934,
+                160,
+                19,
+                &config,
+            )
+            .expect("field model should synthesize gains");
+
+            assert!(
+                gains.velocity_p <= VELOCITY_SIMC_MAX_P_REG,
+                "velocity P {} should fit envelope {} for {:?}",
+                gains.velocity_p,
+                VELOCITY_SIMC_MAX_P_REG,
+                model
+            );
+            assert!(
+                gains.velocity_i <= crate::commissioning::outer::OUTER_MAX_VELOCITY_I,
+                "velocity I {} should fit envelope {} for {:?}",
+                gains.velocity_i,
+                crate::commissioning::outer::OUTER_MAX_VELOCITY_I,
+                model
+            );
+            assert!(
+                gains.lambda_vel_ms > base_lambda_us / 1000,
+                "lambda should widen beyond base {}us for {:?}, got {}ms",
+                base_lambda_us,
+                model,
+                gains.lambda_vel_ms
+            );
+        }
     }
 
     #[test]
