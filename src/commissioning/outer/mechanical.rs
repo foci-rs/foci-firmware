@@ -504,18 +504,14 @@ pub(crate) async fn step_mechanical_id<B: CommissioningBackend>(
 
             let j_eff = j_avg;
 
-            // B_eff = torque / steady_state_velocity.
-            // Scale to match J_eff units.
-            let b_eff = if peak_avg > 0 {
-                (torque * 1000) / peak_avg
-            } else {
-                // No steady-state velocity reached — pure inertial load.
-                // Use a small minimum to avoid division by zero in tau.
-                1
-            };
+            // B_eff = torque / steady_state_velocity, scaled to match J_eff units.
+            // No steady-state velocity reached -> pure inertial load; small minimum
+            // (1) avoids division by zero in tau below.
+            let b_eff = (torque * 1000).checked_div(peak_avg).unwrap_or(1);
 
-            // tau_mech = J_eff / B_eff in milliseconds.
-            let tau_mech_ms = if b_eff > 0 { j_eff / b_eff } else { 1000 };
+            // tau_mech = J_eff / B_eff in milliseconds. Default to 1000 ms when
+            // b_eff is zero (matches the historical fall-back).
+            let tau_mech_ms = j_eff.checked_div(b_eff).unwrap_or(1000);
 
             // theta_mech from delay samples (time from torque step to
             // first measurable velocity change).
