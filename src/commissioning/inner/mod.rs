@@ -1,10 +1,10 @@
 //! Stage 1 (current-loop) commissioning: phase enum, dispatcher, and
 //! per-phase step submodules.
 //!
-//! [`InnerPhase`] encodes the current diagnostic / electrical-ID / current-
-//! tune state. [`step_inner`] dispatches a single cooperative tick to the
-//! handler in the matching submodule. [`fail_inner`] is the shared
-//! short-circuit transition into [`InnerPhase::Failed`]. [`restore_entry_gains`]
+//! `InnerPhase` encodes the current diagnostic / electrical-ID / current-
+//! tune state. `step_inner` dispatches a single cooperative tick to the
+//! handler in the matching submodule. `fail_inner` is the shared
+//! short-circuit transition into `InnerPhase::Failed`. [`restore_entry_gains`]
 //! is the soft-failure recovery routine called by the board after an outer
 //! commissioning fault.
 
@@ -202,7 +202,7 @@ pub(crate) enum ElectricalIdState {
 ///
 /// Orderable cooperative state machine. Each variant either holds a
 /// nested sub-state for that phase or carries forward data needed by the
-/// next phase. The dispatcher [`step_inner`] selects the matching
+/// next phase. The dispatcher `step_inner` selects the matching
 /// submodule's `step_*` function each tick; long-running register
 /// operations can be chunked across 1ms `step()` calls.
 #[derive(Debug, defmt::Format)]
@@ -341,7 +341,7 @@ pub(crate) async fn step_inner<B: CommissioningBackend>(
 /// integrators and status flags, reloads the snapshotted velocity/position
 /// gains, velocity limit, and biquad filters, then re-enters position
 /// mode. The caller is responsible for the post-restore stability check
-/// because [`CommissioningBackend`] does not expose a delay primitive.
+/// because `CommissioningBackend` does not expose a delay primitive.
 pub async fn restore_entry_gains<B: CommissioningBackend>(
     snapshot: &EntrySnapshot,
     backend: &mut B,

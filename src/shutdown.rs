@@ -15,7 +15,7 @@
 //! handlers pass a variant to
 //! [`ShutdownRecovery::send_shutdown`](crate::context::ShutdownRecovery::send_shutdown),
 //! and the board-side impl maps each variant to the corresponding
-//! `klipper_shutdown_from!` call via the [`dispatch_shutdown!`] macro.
+//! `klipper_shutdown_from!` call via the `dispatch_shutdown!` macro.
 //!
 //! # Adding a new shutdown reason
 //!
@@ -23,8 +23,8 @@
 //!
 //! 1. The [`ShutdownReason`] enum variant.
 //! 2. The [`ShutdownReason::message`] match arm (same literal).
-//! 3. The [`dispatch_shutdown!`] match arm (same variant + same literal).
-//! 4. The [`foci_ankyra_config!`] `static_strings` list entry.
+//! 3. The `dispatch_shutdown!` match arm (same variant + same literal).
+//! 4. The `foci_ankyra_config!` `static_strings` list entry.
 //!
 //! All four lists are in this single file so a reviewer can check them
 //! at a glance. The literal strings must be byte-identical; they are
@@ -75,7 +75,7 @@ pub enum ShutdownReason {
 impl ShutdownReason {
     /// Static-string literal for this reason. Matches exactly one entry
     /// in the binary's `ankyra_config! { static_strings = [...] }` list
-    /// (auto-included via [`foci_ankyra_config!`]).
+    /// (auto-included via `foci_ankyra_config!`).
     pub const fn message(self) -> &'static str {
         match self {
             Self::ShutdownClearedWhenNotShutdown => "Shutdown cleared when not shutdown",
@@ -132,7 +132,7 @@ impl ShutdownReason {
 /// Each match arm is a `klipper_shutdown_from!(sender, "literal", clock)`
 /// call that ankyra hashes at build time. The literal list here must
 /// match [`ShutdownReason::message`] above and the `static_strings`
-/// list in [`foci_ankyra_config!`].
+/// list in `foci_ankyra_config!`.
 #[macro_export]
 macro_rules! dispatch_shutdown {
     ($reason:expr, $clock:expr, $sender:expr) => {

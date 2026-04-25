@@ -45,7 +45,7 @@ where
     let _ = tmc.write_register(PIDOUT_UQ_UD_LIMITS, 1024).await;
 }
 
-/// Restore the TMC4671 to a safe non-energized state via [`CommissioningBackend`].
+/// Restore the TMC4671 to a safe non-energized state via `CommissioningBackend`.
 ///
 /// Mirror of [`restore_safe_state`], which uses a raw `Tmc4671Spi<B>` and a
 /// GPIO pin directly. This variant routes all register writes and the
@@ -65,7 +65,7 @@ where
 /// The chip is potentially in a suspect state; every step is attempted.
 ///
 /// # Parameters
-/// - `backend`: mutable reference to a [`CommissioningBackend`] implementation.
+/// - `backend`: mutable reference to a `CommissioningBackend` implementation.
 pub async fn restore_safe_state_via_backend<B>(backend: &mut B)
 where
     B: crate::commissioning::types::CommissioningBackend,

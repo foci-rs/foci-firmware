@@ -380,7 +380,7 @@ pub fn arm_motor_for_steps(state: &mut DispatchState<'_>) {
     crate::state::tmc::MOTOR_ARMED.store(true, core::sync::atomic::Ordering::Relaxed);
 }
 
-/// Apply biquad filters via [`CommissioningBackend`].
+/// Apply biquad filters via `CommissioningBackend`.
 ///
 /// Mirror of [`apply_stored_filters`] (which uses raw `Tmc4671Spi<B>`),
 /// but routes all writes through the backend trait so the dispatch can
@@ -388,14 +388,14 @@ pub fn arm_motor_for_steps(state: &mut DispatchState<'_>) {
 /// are ignored (filters affect loop shaping; the loop runs unfiltered
 /// if writes fail).
 ///
-/// Each [`SubRegister`] write reproduces the addr-then-data sequence that
+/// Each `SubRegister` write reproduces the addr-then-data sequence that
 /// `Tmc4671Spi::write_sub_register` does internally: write `sub_addr`
 /// (the selector) to the `addr` register, then write the value to the
 /// `data` register.
 ///
 /// # Parameters
 ///
-/// - `backend` — mutable reference to a [`CommissioningBackend`] implementation.
+/// - `backend` — mutable reference to a `CommissioningBackend` implementation.
 /// - `pwm_maxcnt` — board-specific PWM counter maximum, used to derive
 ///   the biquad sampling frequency for coefficient calculation.
 pub async fn apply_stored_filters_via_backend<B: CommissioningBackend>(
@@ -526,7 +526,7 @@ pub async fn disarm_motor<B: CommissioningBackend>(backend: &mut B, state: &mut 
 ///
 /// Writes tuned velocity and position gains, the operational velocity limit,
 /// current limit (from [`crate::state::tmc::CURRENT_LIMIT_REG`]), the
-/// safety-net [`PIDOUT_UQ_UD_LIMITS`] cap (1024 counts), clears the
+/// safety-net `PIDOUT_UQ_UD_LIMITS` cap (1024 counts), clears the
 /// position-actual integrator, snaps the position target to the current
 /// encoder count scaled by [`crate::state::tmc::STEP_WIDTH_VALUE`], and
 /// enters position mode via `MODE_RAMP_MODE_MOTION = 0x8000_0003`.
@@ -537,7 +537,7 @@ pub async fn disarm_motor<B: CommissioningBackend>(backend: &mut B, state: &mut 
 ///
 /// # Parameters
 ///
-/// - `backend` — mutable reference to a [`CommissioningBackend`] implementation.
+/// - `backend` — mutable reference to a `CommissioningBackend` implementation.
 /// - `outer` — outer commissioning result containing tuned gain values.
 ///
 /// # Errors
@@ -605,7 +605,7 @@ pub async fn restore_position_mode_after_outer<B: CommissioningBackend>(
 ///
 /// # Parameters
 ///
-/// - `backend` — mutable reference to a [`CommissioningBackend`] implementation.
+/// - `backend` — mutable reference to a `CommissioningBackend` implementation.
 /// - `stored` — optional host-stored inner loop gains; skipped when `None`.
 ///
 /// # Errors

@@ -1,6 +1,6 @@
 //! Platform traits — the hardware abstraction surface between foci-firmware
 //! and each board binary. All I/O in foci-firmware routes through one of
-//! these traits; impls live in the board crate (boards/<board>-fw/).
+//! these traits; impls live in the board crate (`boards/<board>-fw/`).
 //!
 //! The traits are intentionally synchronous and narrow: they describe what
 //! the firmware needs, not how any particular MCU provides it. Board crates

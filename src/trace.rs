@@ -64,7 +64,7 @@ pub struct TraceSampleFull {
 
 const_assert!(core::mem::size_of::<TraceSampleFull>() == 48);
 
-/// Storage union: sized to the larger variant (fast[512] = 14336 bytes).
+/// Storage union: sized to the larger variant (`fast[512]` = 14336 bytes).
 #[repr(C)]
 pub union TraceStorage {
     pub fast: [TraceSampleFast; FAST_CAPACITY],

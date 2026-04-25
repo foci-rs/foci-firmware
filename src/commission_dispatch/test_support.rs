@@ -18,7 +18,7 @@ pub enum SpiOp {
     Write(u8, u32),
 }
 
-/// Mock implementation of [`CommissioningBackend`] for host-side unit tests.
+/// Mock implementation of `CommissioningBackend` for host-side unit tests.
 ///
 /// Stores register state in a linear map keyed by register address, records
 /// every SPI operation, and supports per-address failure injection for both
