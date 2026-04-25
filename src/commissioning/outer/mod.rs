@@ -30,9 +30,9 @@ use crate::commissioning::types::{CommissioningBackend, OuterResult, StepResult}
 /// outer safety tuning does not silently retune response-ramp behavior.
 pub(crate) const MECHANICAL_ID_VELOCITY_CAP_COUNTS_PER_MS: i32 = 24;
 
-/// Conservative runtime fallback velocity limit in encoder counts/ms.
-/// Used by response-ramp fallback gains when autotuned outer gains are not
-/// accepted. Keep this lower than the MechanicalId safety cap.
+/// Conservative commissioning fallback velocity limit in encoder counts/ms.
+/// The velocity-validation phase converts this to TMC velocity-register units
+/// before writing PID_VELOCITY_LIMIT.
 pub(crate) const RESPONSE_FALLBACK_VELOCITY_LIMIT_COUNTS_PER_MS: i32 = 16;
 
 /// Default position window: ± encoder counts from start position.
@@ -1364,6 +1364,7 @@ mod tests {
                     forward_metrics: Some(VelocityValidation {
                         rise_time_ms: 20,
                         overshoot_pct: 5250,
+                        peak_velocity: 25,
                         settling_time_ms: 256,
                         zero_speed_chatter: false,
                         saturation_samples: 0,
@@ -1372,6 +1373,7 @@ mod tests {
                     reverse_metrics: Some(VelocityValidation {
                         rise_time_ms: 0,
                         overshoot_pct: 5000,
+                        peak_velocity: 24,
                         settling_time_ms: 256,
                         zero_speed_chatter: false,
                         saturation_samples: 0,

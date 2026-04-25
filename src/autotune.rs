@@ -607,14 +607,17 @@ pub struct MechanicalModel {
 ///
 /// Produced by [`simc_velocity_gains`] from a [`MechanicalModel`],
 /// inner-loop bandwidth, and tuning profile. The velocity limit is
-/// derived from the peak velocity observed during mechanical ID.
+/// derived from the peak velocity observed during mechanical ID and is
+/// represented in encoder counts/ms during commissioning validation. The
+/// validation phase converts it to TMC velocity-register units at the SPI
+/// write boundary.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub struct VelocityGains {
     /// Velocity P gain — TMC4671 Q8.8 register value.
     pub velocity_p: u16,
     /// Velocity I gain — TMC4671 Q8.8 register value.
     pub velocity_i: u16,
-    /// PID_VELOCITY_LIMIT register value.
+    /// Commissioning velocity limit in encoder counts/ms.
     pub velocity_limit: u32,
     /// Effective closed-loop velocity bandwidth in Hz.
     pub effective_bandwidth_hz: u32,
@@ -638,6 +641,8 @@ pub struct VelocityValidation {
     pub rise_time_ms: u32,
     /// Peak overshoot above target velocity, in 0.1% units (200 = 20.0%).
     pub overshoot_pct: u16,
+    /// Peak measured encoder velocity in counts/ms.
+    pub peak_velocity: u32,
     /// Time to settle within +/-5% of target velocity, in milliseconds.
     pub settling_time_ms: u32,
     /// Zero-speed chatter detected after returning to zero velocity.
@@ -1251,20 +1256,30 @@ fn apply_mode_adjustment(lambda_us: u32, mode: OperatingMode) -> u32 {
     }
 }
 
-fn apply_velocity_gain_envelope(lambda_us: u32, tau_us: u32, theta_us: u32, b_eff: u32) -> u32 {
-    if b_eff == 0 {
+fn apply_velocity_gain_envelope(
+    lambda_us: u32,
+    tau_us: u32,
+    theta_us: u32,
+    b_eff: u32,
+    step_width: u32,
+    f_pwm_hz: u32,
+) -> u32 {
+    if b_eff == 0 || step_width == 0 || f_pwm_hz == 0 {
         return lambda_us;
     }
 
-    // b_eff is stored as torque * 1000 / velocity, so Kp in TMC Q8.8 is:
+    // b_eff is stored as torque * 1000 / encoder-counts/ms, while TMC4671
+    // velocity error is measured in TMC velocity units:
     //
-    //   P_reg = tau_us * b_eff * 256 / (1000 * (lambda_us + theta_us))
+    //   tmc_vel_per_cpms = step_width * 1000 / f_pwm_hz
+    //   P_reg = tau_us * b_eff * 256 * f_pwm_hz
+    //           / (1_000_000 * step_width * (lambda_us + theta_us))
     //
     // Widen lambda when needed so the synthesized P lands inside the same
     // envelope enforced by Phase 10 and commit.
-    let numerator = tau_us as u64 * b_eff as u64 * 256;
-    let denominator = 1000_u64 * VELOCITY_SIMC_MAX_P_REG as u64;
-    let required_sum = numerator.div_ceil(denominator) as u32;
+    let numerator = tau_us as u128 * b_eff as u128 * 256 * f_pwm_hz as u128;
+    let denominator = 1_000_000_u128 * step_width as u128 * VELOCITY_SIMC_MAX_P_REG as u128;
+    let required_sum = numerator.div_ceil(denominator).min(u32::MAX as u128) as u32;
     let lambda_floor = required_sum.saturating_sub(theta_us);
     lambda_us.max(lambda_floor)
 }
@@ -1279,7 +1294,9 @@ fn apply_velocity_gain_envelope(lambda_us: u32, tau_us: u32, theta_us: u32, b_ef
 /// - `inner_lambda_us`: closed-loop lambda from inner (current) loop
 /// - `theta_e_us`: electrical transport delay from inner loop
 /// - `peak_velocity`: peak velocity observed during mechanical ID (for limit)
+/// - `step_width`: TMC position units per encoder count
 /// - `config`: TMC4671 board configuration (for PWM frequency)
+#[allow(clippy::too_many_arguments)]
 pub fn simc_velocity_gains(
     model: &MechanicalModel,
     profile: CommissionProfile,
@@ -1287,9 +1304,14 @@ pub fn simc_velocity_gains(
     inner_lambda_us: u32,
     theta_e_us: u32,
     peak_velocity: u32,
+    step_width: u32,
     config: &crate::config::TmcConfig,
 ) -> Option<VelocityGains> {
     if model.j_eff == 0 || model.tau_mech_ms == 0 || model.theta_mech_us == 0 {
+        return None;
+    }
+    let f_pwm_hz = config.pwm_freq_hz();
+    if step_width == 0 || f_pwm_hz == 0 {
         return None;
     }
 
@@ -1309,23 +1331,32 @@ pub fn simc_velocity_gains(
     // it if the model would synthesize gains outside the accepted register
     // envelope.
     let lambda_us = lambda_us.max(model.theta_mech_us);
-    let lambda_us =
-        apply_velocity_gain_envelope(lambda_us, tau_mech_us, model.theta_mech_us, model.b_eff);
+    let lambda_us = apply_velocity_gain_envelope(
+        lambda_us,
+        tau_mech_us,
+        model.theta_mech_us,
+        model.b_eff,
+        step_width,
+        f_pwm_hz,
+    );
 
     // SIMC PI tuning law for FOPDT plant G_mech(s) = K / (tau*s+1) * e^(-theta*s):
     //   Kp = tau / (K * (lambda + theta))
     //   Ti = min(tau, 4 * (lambda + theta))
     //   Ki = Kp / Ti
     //
-    // For velocity loop: K = 1000/B_eff because B_eff is stored as
-    // torque * 1000 / velocity.
+    // In encoder-counts/ms units: K = 1000/B_eff because B_eff is stored as
+    // torque * 1000 / cpms. TMC4671 evaluates velocity error in TMC velocity
+    // units, so convert the cpms-domain SIMC gains before Q8.8 packing.
     let tau = tau_mech_us as f32;
     let theta = model.theta_mech_us as f32;
     let lambda = lambda_us as f32;
     let b_eff = model.b_eff as f32;
     let k = if b_eff > 0.0 { 1000.0 / b_eff } else { 1.0 };
+    let tmc_velocity_units_per_cpms = step_width as f32 * 1000.0 / f_pwm_hz as f32;
 
-    let kp = tau / (k * (lambda + theta));
+    let kp_cpms = tau / (k * (lambda + theta));
+    let kp = kp_cpms / tmc_velocity_units_per_cpms;
     let ti = {
         let candidate = 4.0 * (lambda + theta);
         if tau < candidate { tau } else { candidate }
@@ -1334,7 +1365,7 @@ pub fn simc_velocity_gains(
     let ki = kp / ti_s;
 
     // Convert to TMC4671 Q8.8 register format.
-    let f_pwm = config.pwm_freq_hz() as f32;
+    let f_pwm = f_pwm_hz as f32;
     let p_reg = (kp * 256.0).clamp(1.0, u16::MAX as f32) as u16;
     let i_reg = (ki / f_pwm * 256.0).clamp(1.0, u16::MAX as f32) as u16;
 
@@ -1356,6 +1387,8 @@ pub fn simc_velocity_gains(
 // ---------------------------------------------------------------------------
 // Velocity validation metric extraction and classification (Phase 10)
 // ---------------------------------------------------------------------------
+
+const VELOCITY_OVERSHOOT_DEADBAND_COUNTS: u32 = 3;
 
 /// Extract velocity step-response metrics from a transient buffer.
 ///
@@ -1381,6 +1414,7 @@ pub fn extract_velocity_metrics(
         return VelocityValidation {
             rise_time_ms: 0,
             overshoot_pct: 0,
+            peak_velocity: 0,
             settling_time_ms: 0,
             zero_speed_chatter: false,
             saturation_samples: 0,
@@ -1424,9 +1458,14 @@ pub fn extract_velocity_metrics(
     // Convert to milliseconds (rounding up).
     let rise_time_ms = (rise_time_us + 500) / 1000;
 
-    // Overshoot: (peak - target) / target in 0.1% units.
-    let overshoot_pct = if peak > target {
-        ((peak - target) as u64 * 1000 / target as u64) as u16
+    // Overshoot: (peak - target) / target in 0.1% units. The absolute
+    // deadband prevents a few integer encoder counts at low target speeds from
+    // dominating the relative percentage.
+    let overshoot_counts = peak
+        .saturating_sub(target)
+        .saturating_sub(VELOCITY_OVERSHOOT_DEADBAND_COUNTS);
+    let overshoot_pct = if overshoot_counts > 0 {
+        (overshoot_counts as u64 * 1000 / target as u64) as u16
     } else {
         0
     };
@@ -1456,6 +1495,7 @@ pub fn extract_velocity_metrics(
     VelocityValidation {
         rise_time_ms,
         overshoot_pct,
+        peak_velocity: peak,
         settling_time_ms,
         zero_speed_chatter,
         saturation_samples: saturation_count,
@@ -1862,6 +1902,8 @@ mod tests {
             bandwidth_hz: 150.0,
         }
     }
+
+    const TEST_STEP_WIDTH: u32 = 819;
 
     fn test_electrical_model() -> ElectricalModel {
         ElectricalModel {
@@ -2845,6 +2887,7 @@ mod tests {
             700,  // inner lambda from current tune
             100,  // theta_e
             1000, // peak velocity
+            TEST_STEP_WIDTH,
             &config,
         );
         let gains = gains.expect("gains should be Some for valid model");
@@ -2895,6 +2938,7 @@ mod tests {
                 934,
                 160,
                 19,
+                TEST_STEP_WIDTH,
                 &config,
             )
             .expect("field model should synthesize gains");
@@ -2914,13 +2958,49 @@ mod tests {
                 model
             );
             assert!(
-                gains.lambda_vel_ms > base_lambda_us / 1000,
-                "lambda should widen beyond base {}us for {:?}, got {}ms",
+                gains.velocity_p < 1024,
+                "velocity P {} should be scaled to TMC velocity-error units for {:?}",
+                gains.velocity_p,
+                model
+            );
+            assert!(
+                gains.lambda_vel_ms >= base_lambda_us / 1000,
+                "lambda should not tighten below base {}us for {:?}, got {}ms",
                 base_lambda_us,
                 model,
                 gains.lambda_vel_ms
             );
         }
+    }
+
+    #[test]
+    fn velocity_gains_field_model_are_scaled_to_tmc_velocity_units() {
+        let config = autotune_test_config();
+        let model = MechanicalModel {
+            j_eff: 2_712_665,
+            b_eff: 20_451,
+            tau_mech_ms: 132,
+            theta_mech_us: 12_895,
+            t_f: 0,
+        };
+
+        let gains = simc_velocity_gains(
+            &model,
+            CommissionProfile::Balanced,
+            OperatingMode::Nominal,
+            934,
+            160,
+            18,
+            TEST_STEP_WIDTH,
+            &config,
+        )
+        .expect("field model should synthesize gains");
+
+        assert!(
+            gains.velocity_p < 1024,
+            "P={} is still in cpms-domain units; expected TMC velocity-error scaling",
+            gains.velocity_p
+        );
     }
 
     #[test]
@@ -2936,6 +3016,7 @@ mod tests {
                 700,
                 100,
                 1000,
+                TEST_STEP_WIDTH,
                 &config
             )
             .is_none()
@@ -2955,6 +3036,7 @@ mod tests {
                 700,
                 100,
                 1000,
+                TEST_STEP_WIDTH,
                 &config
             )
             .is_none()
@@ -2972,6 +3054,7 @@ mod tests {
             700,
             100,
             1000,
+            TEST_STEP_WIDTH,
             &config,
         )
         .unwrap();
@@ -2982,6 +3065,7 @@ mod tests {
             700,
             100,
             1000,
+            TEST_STEP_WIDTH,
             &config,
         )
         .unwrap();
@@ -3004,6 +3088,7 @@ mod tests {
             700,
             100,
             1000,
+            TEST_STEP_WIDTH,
             &config,
         )
         .unwrap();
@@ -3014,6 +3099,7 @@ mod tests {
             700,
             100,
             1000,
+            TEST_STEP_WIDTH,
             &config,
         )
         .unwrap();
@@ -3032,6 +3118,7 @@ mod tests {
         let metrics = VelocityValidation {
             rise_time_ms: 5,
             overshoot_pct: 100, // 10%
+            peak_velocity: 0,
             settling_time_ms: 30,
             zero_speed_chatter: false,
             saturation_samples: 5,
@@ -3048,6 +3135,7 @@ mod tests {
         let metrics = VelocityValidation {
             rise_time_ms: 5,
             overshoot_pct: 300, // 30%
+            peak_velocity: 0,
             settling_time_ms: 30,
             zero_speed_chatter: false,
             saturation_samples: 0,
@@ -3064,6 +3152,7 @@ mod tests {
         let metrics = VelocityValidation {
             rise_time_ms: 5,
             overshoot_pct: 500, // 50%
+            peak_velocity: 0,
             settling_time_ms: 30,
             zero_speed_chatter: false,
             saturation_samples: 0,
@@ -3080,6 +3169,7 @@ mod tests {
         let metrics = VelocityValidation {
             rise_time_ms: 5,
             overshoot_pct: 50,
+            peak_velocity: 0,
             settling_time_ms: 30,
             zero_speed_chatter: true,
             saturation_samples: 0,
@@ -3096,6 +3186,7 @@ mod tests {
         let metrics = VelocityValidation {
             rise_time_ms: 5,
             overshoot_pct: 50,
+            peak_velocity: 0,
             settling_time_ms: 150, // > 10 * tau_mech(10) = 100
             zero_speed_chatter: false,
             saturation_samples: 0,
@@ -3112,6 +3203,7 @@ mod tests {
         let metrics = VelocityValidation {
             rise_time_ms: 5,
             overshoot_pct: 50,
+            peak_velocity: 0,
             settling_time_ms: 30,
             zero_speed_chatter: false,
             saturation_samples: 70, // 70/256 = 27% > 25%
@@ -3128,6 +3220,7 @@ mod tests {
         let metrics = VelocityValidation {
             rise_time_ms: 5,
             overshoot_pct: 50,
+            peak_velocity: 0,
             settling_time_ms: 70, // 7*10 = 70, between 5*10=50 and 10*10=100
             zero_speed_chatter: false,
             saturation_samples: 0,
@@ -3182,6 +3275,19 @@ mod tests {
 
         let metrics = extract_velocity_metrics(&buf, 6, 0, 3, 0);
         assert_eq!(metrics.settling_time_ms, 0);
+    }
+
+    #[test]
+    fn velocity_metrics_overshoot_allows_low_target_quantization() {
+        let mut buf = TransientBuffer::new();
+        buf.reset(1000);
+        buf.push(7);
+        for _ in 1..256 {
+            buf.push(4);
+        }
+
+        let metrics = extract_velocity_metrics(&buf, 4, 0, 3, 0);
+        assert_eq!(metrics.overshoot_pct, 0);
     }
 
     #[test]

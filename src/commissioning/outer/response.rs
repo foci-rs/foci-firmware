@@ -51,6 +51,13 @@ pub(crate) const VELOCITY_RESPONSE_STEP_TARGET: u32 = 4;
 /// Velocity-loop response-ramp validation time constant (ms).
 pub(crate) const VELOCITY_RESPONSE_VALIDATE_TAU_MS: u32 = 50;
 
+/// Initial P for response-ramp tuning.
+///
+/// This is deliberately lower than the runtime fallback. The ramp is a search:
+/// start with a low-energy validation step, then increase P until the first
+/// clean response is found and finally stop before the response turns unsafe.
+pub(crate) const VELOCITY_RESPONSE_INITIAL_P: u16 = 128;
+
 const FULL_RESPONSE_TAIL_SAMPLES: usize = 4;
 const FULL_RESPONSE_MIN_TAIL_SAMPLES: u8 = 4;
 const FULL_RESPONSE_MAX_TAIL_RESIDUAL_PCT: u32 = 15;
@@ -59,10 +66,7 @@ const FULL_RESPONSE_MAX_TAIL_RESIDUAL_PCT: u32 = 15;
 // `commission.rs` because the still-resident outer step functions reference
 // them. They are re-exported here so the response helpers can name them
 // without reaching across modules at every site.
-pub(crate) use super::{
-    OUTER_FALLBACK_VELOCITY_I, OUTER_FALLBACK_VELOCITY_P,
-    RESPONSE_FALLBACK_VELOCITY_LIMIT_COUNTS_PER_MS,
-};
+pub(crate) use super::{OUTER_FALLBACK_VELOCITY_I, RESPONSE_FALLBACK_VELOCITY_LIMIT_COUNTS_PER_MS};
 
 /// Diagnostic warning code: low-confidence mechanical ID, response ramp
 /// fallback was used.
@@ -161,7 +165,7 @@ pub(crate) fn retry_mechanical_id(
 /// Default velocity gains used by the response-ramp fallback.
 pub(crate) fn response_velocity_gains() -> VelocityGains {
     VelocityGains {
-        velocity_p: OUTER_FALLBACK_VELOCITY_P,
+        velocity_p: VELOCITY_RESPONSE_INITIAL_P,
         velocity_i: OUTER_FALLBACK_VELOCITY_I,
         velocity_limit: RESPONSE_FALLBACK_VELOCITY_LIMIT_COUNTS_PER_MS as u32,
         effective_bandwidth_hz: 0,
