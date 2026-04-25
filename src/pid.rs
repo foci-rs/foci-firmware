@@ -130,8 +130,8 @@ pub fn compute_gains_from_internal(
 /// Pack P and I gains into a TMC4671 PID register value.
 ///
 /// Register layout (datasheet section 7.2, page 96):
-///   bits[15:0] = I gain
-///   bits[31:16] = P gain
+///   bits `[15:0]` = I gain
+///   bits `[31:16]` = P gain
 ///
 /// Note: the datasheet types these fields as s16, but PI gains are
 /// always non-negative. This function treats them as u16.

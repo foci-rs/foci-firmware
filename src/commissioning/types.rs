@@ -88,7 +88,7 @@ pub trait CommissioningBackend {
     /// DSADC_MDEC_B_MDEC_A register value (same MDEC for both groups).
     fn dsadc_mdec_register(&self) -> u32;
 
-    /// Test excitation voltage magnitude (PIDOUT units, bits [15:0]).
+    /// Test excitation voltage magnitude (PIDOUT units, bits `[15:0]`).
     fn excitation_voltage(&self) -> u16;
 
     /// Board-specific TMC4671 configuration.

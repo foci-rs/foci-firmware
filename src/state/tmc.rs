@@ -13,7 +13,7 @@ use embassy_sync::signal::Signal;
 pub static TMC_DISABLE_SIGNAL: Signal<CriticalSectionRawMutex, ()> = Signal::new();
 
 /// Current limit for PID_TORQUE_FLUX_LIMITS (0x5E).
-/// Datasheet: single u16 field at bits[15:0]; upper 16 bits ignored by hardware.
+/// Datasheet: single u16 field at bits `[15:0]`; upper 16 bits ignored by hardware.
 /// Set by tmc_set_current, re-applied during calibration to ensure
 /// the limit is correct regardless of TMC4671 register state.
 pub static CURRENT_LIMIT_REG: AtomicU32 = AtomicU32::new(0);
