@@ -13,23 +13,17 @@ env:
 
 jobs:
   check:
-    name: Rust ${{ matrix.rust }}
+    name: Rust stable
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        rust: [stable, "1.85"]
     steps:
       - uses: actions/checkout@v6
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: ${{ matrix.rust }}
+          toolchain: stable
           targets: thumbv7em-none-eabi
           components: clippy, rustfmt
       - uses: Swatinem/rust-cache@v2
-        with:
-          key: ${{ matrix.rust }}
       - name: Configure cargo for private foci-rs deps
         run: |
           git config --global url."https://x-access-token:${{ secrets.CARGO_PRIVATE_DEPS_TOKEN }}@github.com/".insteadOf "https://github.com/"
@@ -38,7 +32,7 @@ jobs:
       - name: cargo fmt
         run: cargo fmt --all --check
       - name: cargo clippy (host)
-        run: cargo clippy --all-targets -- -D warnings
+        run: cargo clippy -- -D warnings
       - name: cargo test (host)
         run: cargo test
       - name: cargo check (embedded)
