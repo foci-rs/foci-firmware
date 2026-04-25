@@ -96,7 +96,20 @@ pub(crate) async fn step_position_tune<B: CommissioningBackend>(
                 return fail_outer(phase, CommissionError::Spi);
             }
 
+            defmt::info!(
+                "pos tune setup: P={} target_counts={} target_tmc={} torque_limit={} \
+                 vel_gains P={} I={} lambda_ms={}",
+                data.current_p,
+                data.step_target_counts,
+                data.step_target_tmc,
+                data.torque_limit,
+                data.velocity_gains.velocity_p,
+                data.velocity_gains.velocity_i,
+                data.velocity_gains.lambda_vel_ms,
+            );
+
             buf.reset(POSITION_TUNE_SAMPLE_PERIOD_US as u16);
+            data.saturation_count = 0;
 
             let next_sample_us = backend
                 .elapsed_us()
@@ -122,6 +135,18 @@ pub(crate) async fn step_position_tune<B: CommissioningBackend>(
                 safety.counts_per_rev,
             );
             buf.push(delta.unsigned_abs());
+
+            if data.torque_limit > 0 {
+                let sub = foci_tmc4671::registers::INTERIM_PIDOUT_TARGET_TORQUE;
+                let _ = backend.write_register(sub.addr, sub.sub_addr as u32).await;
+                if let Ok(pidout) = backend.read_register(sub.data).await {
+                    let commanded_torque = (pidout & 0xFFFF) as i16;
+                    let abs_commanded = commanded_torque.unsigned_abs() as u32;
+                    if abs_commanded >= data.torque_limit * 9 / 10 {
+                        data.saturation_count = data.saturation_count.saturating_add(1);
+                    }
+                }
+            }
 
             if buf.is_full() {
                 let _ = backend
@@ -150,20 +175,39 @@ pub(crate) async fn step_position_tune<B: CommissioningBackend>(
             let diag = crate::autotune::analyze_position_oscillation(buf, target_abs);
             let oscillation = diag.oscillating;
 
-            // Diagnostic dump for the 2026-04-24 PositionTune-current-validation
-            // bug: log the inputs that drove the bool plus the first ~16 raw
-            // samples so a low-confidence response-ramp gain regression is
-            // distinguishable from a true minimum-P instability.
+            // Diagnostic dump: log the inputs that drove the bool plus three
+            // 16-sample windows (head, around peak, tail) and the saturation
+            // count from the capture so a cascade-saturation issue is
+            // distinguishable from quantization-driven limit cycling.
             let samples_slice = buf.samples();
-            let head_len = samples_slice.len().min(16);
+            let total = samples_slice.len();
+            let head_end = total.min(16);
+            let peak_idx = samples_slice
+                .iter()
+                .position(|&s| s == diag.peak)
+                .unwrap_or(0);
+            let mid_start = peak_idx.saturating_sub(8).min(total.saturating_sub(16));
+            let mid_end = (mid_start + 16).min(total);
+            let tail_start = total.saturating_sub(16);
             defmt::info!(
-                "pos tune: P={} target_abs={} peak={} overshoot={} crossings={} samples_head={:?}",
+                "pos tune: P={} target_abs={} peak={} peak_idx={} overshoot={} crossings={} \
+                 saturation={}",
                 data.current_p,
                 target_abs,
                 diag.peak,
+                peak_idx,
                 diag.overshoot,
                 diag.crossings,
-                &samples_slice[..head_len],
+                data.saturation_count,
+            );
+            defmt::info!("pos tune samples_head: {:?}", &samples_slice[..head_end]);
+            defmt::info!(
+                "pos tune samples_mid: {:?}",
+                &samples_slice[mid_start..mid_end]
+            );
+            defmt::info!(
+                "pos tune samples_tail: {:?}",
+                &samples_slice[tail_start..total]
             );
             defmt::info!("pos tune: oscillation={}", oscillation);
 
@@ -216,6 +260,7 @@ pub(crate) async fn step_position_tune<B: CommissioningBackend>(
                         .await;
 
                     buf.reset(POSITION_TUNE_SAMPLE_PERIOD_US as u16);
+                    data.saturation_count = 0;
                     let next_sample_us = backend
                         .elapsed_us()
                         .wrapping_add(POSITION_TUNE_SAMPLE_PERIOD_US);

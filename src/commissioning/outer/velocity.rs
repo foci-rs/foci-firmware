@@ -44,6 +44,9 @@ const VELOCITY_RETRY_LAMBDA_MUL_DEN: u32 = 2;
 const VELOCITY_RESPONSE_P_MUL_NUM: u32 = 3;
 const VELOCITY_RESPONSE_P_MUL_DEN: u32 = 2;
 const VELOCITY_RESPONSE_BREAKAWAY_OVERSHOOT_COUNTS: u32 = 4;
+const VELOCITY_RESPONSE_MAX_STEP_PERCENT: u32 = 50;
+const VELOCITY_RESPONSE_MIN_BRACKET_P: u16 = 64;
+const VELOCITY_RESPONSE_MAX_RETRIES: u8 = 12;
 
 /// Velocity mode with `MODE_PID_TYPE` set for the TMC4671 advanced PI structure.
 const OUTER_VELOCITY_MODE: u32 = 0x8000_0002;
@@ -60,6 +63,26 @@ fn counts_per_ms_to_tmc_velocity(counts_per_ms: u32, step_width: u32, f_pwm_hz: 
     raw.min(u32::MAX as u64) as u32
 }
 
+fn encoder_delta_counts_per_ms(
+    current: u32,
+    previous: u32,
+    counts_per_rev: i32,
+    elapsed_us: u64,
+) -> u32 {
+    if elapsed_us == 0 {
+        return 0;
+    }
+
+    let delta_counts =
+        response::encoder_delta(current as i32, previous as i32, counts_per_rev).unsigned_abs();
+    if delta_counts == 0 {
+        return 0;
+    }
+
+    let numerator = delta_counts as u128 * 1000;
+    ((numerator + elapsed_us as u128 / 2) / elapsed_us as u128).min(u32::MAX as u128) as u32
+}
+
 fn response_next_velocity_p(current_p: u16) -> Option<u16> {
     let next_p = current_p as u32 * VELOCITY_RESPONSE_P_MUL_NUM / VELOCITY_RESPONSE_P_MUL_DEN;
     if next_p > OUTER_MAX_VELOCITY_P as u32 || next_p <= current_p as u32 {
@@ -67,6 +90,46 @@ fn response_next_velocity_p(current_p: u16) -> Option<u16> {
     } else {
         Some(next_p as u16)
     }
+}
+
+fn response_midpoint_p(lower_p: u16, upper_p: u16) -> Option<u16> {
+    if lower_p == 0 || upper_p <= lower_p.saturating_add(VELOCITY_RESPONSE_MIN_BRACKET_P) {
+        return None;
+    }
+
+    Some(lower_p + (upper_p - lower_p) / 2)
+}
+
+fn response_next_gain_limited_p(current_p: u16, upper_p: u16) -> Option<u16> {
+    if let Some(mid_p) = response_midpoint_p(current_p, upper_p) {
+        Some(mid_p)
+    } else if upper_p == 0 {
+        response_next_velocity_p(current_p)
+    } else {
+        None
+    }
+}
+
+fn response_next_step_target(current_target: u32, velocity_limit: u32) -> Option<u32> {
+    if current_target == 0 || velocity_limit == 0 {
+        return None;
+    }
+
+    let max_target = (velocity_limit * VELOCITY_RESPONSE_MAX_STEP_PERCENT / 100).max(1);
+    let next_target = current_target.saturating_mul(2).min(max_target);
+    (next_target > current_target).then_some(next_target)
+}
+
+fn response_scaled_p_for_target(lower_p: u16, old_target: u32, new_target: u32) -> u16 {
+    if old_target == 0 || new_target == 0 {
+        return response::VELOCITY_RESPONSE_INITIAL_P;
+    }
+
+    let reference_p = lower_p.max(response::VELOCITY_RESPONSE_INITIAL_P);
+    let scaled = (reference_p as u32 * old_target).div_ceil(new_target);
+    scaled
+        .max(response::VELOCITY_RESPONSE_INITIAL_P as u32)
+        .min(OUTER_MAX_VELOCITY_P as u32) as u16
 }
 
 fn response_result_is_gain_limited(
@@ -84,8 +147,9 @@ fn response_result_is_gain_limited(
 
     let min_peak = fwd.peak_velocity.min(rev.peak_velocity);
     let max_peak = fwd.peak_velocity.max(rev.peak_velocity);
-    let breakaway_stiction = min_peak < target
-        && max_peak <= target.saturating_add(VELOCITY_RESPONSE_BREAKAWAY_OVERSHOOT_COUNTS);
+    let breakaway_peak_cap =
+        target.saturating_add(target.max(VELOCITY_RESPONSE_BREAKAWAY_OVERSHOOT_COUNTS));
+    let breakaway_stiction = min_peak < target && max_peak <= breakaway_peak_cap;
 
     // Before the first passing response, only keep increasing P when the
     // capture looks under-driven. A one-sided breakaway hop is also
@@ -190,6 +254,8 @@ pub(crate) async fn step_velocity_tune<B: CommissioningBackend>(
         gains,
         accepted_gains: gains,
         has_accepted_gains: false,
+        response_lower_p: 0,
+        response_upper_p: 0,
         model,
         strategy,
         attempt: 0,
@@ -312,21 +378,31 @@ pub(crate) async fn step_velocity_validate<B: CommissioningBackend>(
             let next_sample_us = backend
                 .elapsed_us()
                 .wrapping_add(VELOCITY_VALIDATE_SAMPLE_PERIOD_US);
-            *state = VelocityValidateState::ForwardCapture { next_sample_us };
+            *state = VelocityValidateState::ForwardCapture {
+                next_sample_us,
+                last_sample_us: backend.elapsed_us(),
+            };
             StepResult::Continue
         }
 
-        VelocityValidateState::ForwardCapture { next_sample_us } => {
+        VelocityValidateState::ForwardCapture {
+            next_sample_us,
+            last_sample_us,
+        } => {
             let now = backend.elapsed_us();
             if now.wrapping_sub(*next_sample_us) >= 0x8000_0000 {
                 return StepResult::Continue;
             }
 
             let encoder_raw = backend.read_encoder_count().await;
-            let velocity = (encoder_raw as i32)
-                .wrapping_sub(data.prev_encoder_for_velocity as i32)
-                .unsigned_abs();
+            let prev_encoder = data.prev_encoder_for_velocity;
             data.prev_encoder_for_velocity = encoder_raw;
+            let velocity = encoder_delta_counts_per_ms(
+                encoder_raw,
+                prev_encoder,
+                safety.counts_per_rev,
+                now.wrapping_sub(*last_sample_us),
+            );
             buf.push(velocity);
 
             if data.torque_limit > 0 {
@@ -375,6 +451,7 @@ pub(crate) async fn step_velocity_validate<B: CommissioningBackend>(
                 };
             } else {
                 *next_sample_us = now.wrapping_add(VELOCITY_VALIDATE_SAMPLE_PERIOD_US);
+                *last_sample_us = now;
             }
             StepResult::Continue
         }
@@ -409,21 +486,31 @@ pub(crate) async fn step_velocity_validate<B: CommissioningBackend>(
             let next_sample_us = backend
                 .elapsed_us()
                 .wrapping_add(VELOCITY_VALIDATE_SAMPLE_PERIOD_US);
-            *state = VelocityValidateState::ReverseCapture { next_sample_us };
+            *state = VelocityValidateState::ReverseCapture {
+                next_sample_us,
+                last_sample_us: backend.elapsed_us(),
+            };
             StepResult::Continue
         }
 
-        VelocityValidateState::ReverseCapture { next_sample_us } => {
+        VelocityValidateState::ReverseCapture {
+            next_sample_us,
+            last_sample_us,
+        } => {
             let now = backend.elapsed_us();
             if now.wrapping_sub(*next_sample_us) >= 0x8000_0000 {
                 return StepResult::Continue;
             }
 
             let encoder_raw = backend.read_encoder_count().await;
-            let velocity = (encoder_raw as i32)
-                .wrapping_sub(data.prev_encoder_for_velocity as i32)
-                .unsigned_abs();
+            let prev_encoder = data.prev_encoder_for_velocity;
             data.prev_encoder_for_velocity = encoder_raw;
+            let velocity = encoder_delta_counts_per_ms(
+                encoder_raw,
+                prev_encoder,
+                safety.counts_per_rev,
+                now.wrapping_sub(*last_sample_us),
+            );
             buf.push(velocity);
 
             if data.torque_limit > 0 {
@@ -472,6 +559,7 @@ pub(crate) async fn step_velocity_validate<B: CommissioningBackend>(
                 };
             } else {
                 *next_sample_us = now.wrapping_add(VELOCITY_VALIDATE_SAMPLE_PERIOD_US);
+                *last_sample_us = now;
             }
             StepResult::Continue
         }
@@ -485,6 +573,7 @@ pub(crate) async fn step_velocity_validate<B: CommissioningBackend>(
                     .wrapping_add(VELOCITY_VALIDATE_SAMPLE_PERIOD_US);
                 *state = VelocityValidateState::ChatterCheck {
                     next_sample_us,
+                    last_sample_us: backend.elapsed_us(),
                     remaining: VELOCITY_VALIDATE_CHATTER_WINDOW,
                 };
             }
@@ -493,6 +582,7 @@ pub(crate) async fn step_velocity_validate<B: CommissioningBackend>(
 
         VelocityValidateState::ChatterCheck {
             next_sample_us,
+            last_sample_us,
             remaining,
         } => {
             let now = backend.elapsed_us();
@@ -501,11 +591,16 @@ pub(crate) async fn step_velocity_validate<B: CommissioningBackend>(
             }
 
             let count = backend.read_encoder_count().await;
-            let velocity = (count as i32).wrapping_sub(data.prev_encoder_for_velocity as i32);
+            let prev_encoder = data.prev_encoder_for_velocity;
             data.prev_encoder_for_velocity = count;
-            let abs_velocity = velocity.unsigned_abs();
-            if abs_velocity > data.max_chatter {
-                data.max_chatter = abs_velocity;
+            let velocity = encoder_delta_counts_per_ms(
+                count,
+                prev_encoder,
+                safety.counts_per_rev,
+                now.wrapping_sub(*last_sample_us),
+            );
+            if velocity > data.max_chatter {
+                data.max_chatter = velocity;
             }
 
             *remaining -= 1;
@@ -513,6 +608,7 @@ pub(crate) async fn step_velocity_validate<B: CommissioningBackend>(
                 *state = VelocityValidateState::Classify;
             } else {
                 *next_sample_us = now.wrapping_add(VELOCITY_VALIDATE_SAMPLE_PERIOD_US);
+                *last_sample_us = now;
             }
             StepResult::Continue
         }
@@ -580,7 +676,9 @@ pub(crate) async fn step_velocity_validate<B: CommissioningBackend>(
                         data.accepted_gains = data.gains;
                         data.has_accepted_gains = true;
 
-                        if let Some(next_p) = response_next_velocity_p(data.gains.velocity_p) {
+                        if data.attempt < VELOCITY_RESPONSE_MAX_RETRIES
+                            && let Some(next_p) = response_next_velocity_p(data.gains.velocity_p)
+                        {
                             data.attempt = data.attempt.saturating_add(1);
                             data.gains.velocity_p = next_p;
                             data.gains.velocity_i = 0;
@@ -607,6 +705,21 @@ pub(crate) async fn step_velocity_validate<B: CommissioningBackend>(
                     }
                     ValidationResult::Marginal | ValidationResult::Fail => {
                         let failed_p = data.gains.velocity_p;
+                        if !data.has_accepted_gains && data.attempt >= VELOCITY_RESPONSE_MAX_RETRIES
+                        {
+                            defmt::warn!(
+                                "vel response: {} at P={} exhausted retry budget ({})",
+                                match result {
+                                    ValidationResult::Fail => "fail",
+                                    _ => "marginal",
+                                },
+                                failed_p,
+                                data.attempt
+                            );
+                            let _ = backend.write_register(PID_VELOCITY_TARGET, 0).await;
+                            let _ = backend.write_register(MODE_RAMP_MODE_MOTION, 0).await;
+                            return fail_outer(phase, CommissionError::VelocityValidationFailed);
+                        }
                         if !data.has_accepted_gains
                             && response_result_is_gain_limited(
                                 &merged,
@@ -615,8 +728,10 @@ pub(crate) async fn step_velocity_validate<B: CommissioningBackend>(
                                 data.step_target,
                                 total_samples,
                             )
-                            && let Some(next_p) = response_next_velocity_p(data.gains.velocity_p)
+                            && let Some(next_p) =
+                                response_next_gain_limited_p(failed_p, data.response_upper_p)
                         {
+                            data.response_lower_p = failed_p;
                             data.attempt = data.attempt.saturating_add(1);
                             data.gains.velocity_p = next_p;
                             data.gains.velocity_i = 0;
@@ -633,6 +748,69 @@ pub(crate) async fn step_velocity_validate<B: CommissioningBackend>(
                             return StepResult::Continue;
                         }
                         if !data.has_accepted_gains {
+                            let gain_limited = response_result_is_gain_limited(
+                                &merged,
+                                &fwd,
+                                &rev,
+                                data.step_target,
+                                total_samples,
+                            );
+                            if gain_limited {
+                                data.response_lower_p = failed_p;
+                            } else {
+                                data.response_upper_p = if data.response_upper_p == 0 {
+                                    failed_p
+                                } else {
+                                    data.response_upper_p.min(failed_p)
+                                };
+                            }
+                            if let Some(next_p) =
+                                response_midpoint_p(data.response_lower_p, data.response_upper_p)
+                            {
+                                data.attempt = data.attempt.saturating_add(1);
+                                data.gains.velocity_p = next_p;
+                                data.gains.velocity_i = 0;
+                                defmt::info!(
+                                    "vel response: {} at P={} bracketed by P={}..{}, trying P={}",
+                                    match result {
+                                        ValidationResult::Fail => "fail",
+                                        _ => "marginal",
+                                    },
+                                    failed_p,
+                                    data.response_lower_p,
+                                    data.response_upper_p,
+                                    data.gains.velocity_p
+                                );
+                                *state = VelocityValidateState::WriteGains;
+                                return StepResult::Continue;
+                            }
+                            if data.response_lower_p > 0
+                                && data.response_upper_p > data.response_lower_p
+                                && let Some(next_target) = response_next_step_target(
+                                    data.step_target,
+                                    data.gains.velocity_limit,
+                                )
+                            {
+                                let old_target = data.step_target;
+                                data.gains.velocity_p = response_scaled_p_for_target(
+                                    data.response_lower_p,
+                                    old_target,
+                                    next_target,
+                                );
+                                data.gains.velocity_i = 0;
+                                data.step_target = next_target;
+                                data.response_lower_p = 0;
+                                data.response_upper_p = 0;
+                                data.attempt = data.attempt.saturating_add(1);
+                                defmt::info!(
+                                    "vel response: no passing P bracket at target={}cpms, trying target={}cpms P={}",
+                                    old_target,
+                                    data.step_target,
+                                    data.gains.velocity_p
+                                );
+                                *state = VelocityValidateState::WriteGains;
+                                return StepResult::Continue;
+                            }
                             defmt::warn!(
                                 "vel response: {} at P={} with no passing response gain",
                                 match result {
@@ -750,6 +928,8 @@ pub(crate) async fn step_velocity_validate<B: CommissioningBackend>(
                     data.gains = response::response_velocity_gains();
                     data.accepted_gains = data.gains;
                     data.has_accepted_gains = false;
+                    data.response_lower_p = 0;
+                    data.response_upper_p = 0;
                     data.strategy = VelocityTuneStrategy::ResponseRamp;
                     data.attempt = 0;
                     data.step_target = response::VELOCITY_RESPONSE_STEP_TARGET;
@@ -820,6 +1000,8 @@ pub(crate) async fn step_velocity_validate<B: CommissioningBackend>(
                 current_bandwidth_hz,
                 j_eff,
                 b_eff,
+                torque_limit: data.torque_limit,
+                saturation_count: 0,
                 diagnostics: data.diagnostics,
             };
 
@@ -835,7 +1017,9 @@ pub(crate) async fn step_velocity_validate<B: CommissioningBackend>(
 
 #[cfg(test)]
 mod tests {
-    use super::{counts_per_ms_to_tmc_velocity, step_velocity_validate};
+    use super::{
+        counts_per_ms_to_tmc_velocity, encoder_delta_counts_per_ms, step_velocity_validate,
+    };
     use crate::autotune::{
         CommissionError, CommissionProfile, MechanicalModel, OperatingMode, TransientBuffer,
         VelocityGains, VelocityValidation,
@@ -916,6 +1100,8 @@ mod tests {
                 gains,
                 accepted_gains: gains,
                 has_accepted_gains: false,
+                response_lower_p: 0,
+                response_upper_p: 0,
                 model: MechanicalModel {
                     j_eff: 2_712_665,
                     b_eff: 20_451,
@@ -947,6 +1133,161 @@ mod tests {
     }
 
     #[test]
+    fn velocity_validation_normalizes_encoder_delta_by_elapsed_time() {
+        assert_eq!(encoder_delta_counts_per_ms(1_024, 1_000, 4_000, 1_600), 15);
+        assert_eq!(encoder_delta_counts_per_ms(1_024, 1_000, 4_000, 1_000), 24);
+        assert_eq!(encoder_delta_counts_per_ms(1_000, 1_000, 4_000, 1_600), 0);
+        assert_eq!(encoder_delta_counts_per_ms(1_024, 1_000, 4_000, 0), 0);
+    }
+
+    #[test]
+    fn velocity_validation_capture_uses_elapsed_time_for_sample_velocity() {
+        pollster::block_on(async {
+            let gains = VelocityGains {
+                velocity_p: 1152,
+                velocity_i: 0,
+                velocity_limit: 16,
+                effective_bandwidth_hz: 0,
+                lambda_vel_ms: 0,
+            };
+            let mut phase = OuterPhase::VelocityValidate {
+                state: VelocityValidateState::ForwardCapture {
+                    next_sample_us: 1_000,
+                    last_sample_us: 0,
+                },
+                data: VelocityValidateData {
+                    gains,
+                    accepted_gains: gains,
+                    has_accepted_gains: false,
+                    response_lower_p: 0,
+                    response_upper_p: 0,
+                    model: MechanicalModel {
+                        j_eff: 1,
+                        b_eff: 1,
+                        tau_mech_ms: 50,
+                        theta_mech_us: 1,
+                        t_f: 0,
+                    },
+                    strategy: VelocityTuneStrategy::Model,
+                    attempt: 0,
+                    step_target: 4,
+                    forward_metrics: None,
+                    reverse_metrics: None,
+                    max_chatter: 0,
+                    peak_velocity: 20,
+                    prev_encoder_for_velocity: 1_000,
+                    saturation_count: 0,
+                    torque_limit: 0,
+                    operational_velocity_limit: 500_000,
+                    diagnostics: zero_diagnostics(),
+                },
+                safety: OuterSafetyLimits::new(0, 2448),
+            };
+            let mut buf = TransientBuffer::new();
+            let mut backend = MockBackend::new();
+            backend.elapsed_us_value = 1_600;
+            backend.encoder_count_value = 1_024;
+
+            let result = step_velocity_validate(
+                &mut phase,
+                &mut buf,
+                CommissionProfile::Balanced,
+                OperatingMode::Nominal,
+                0,
+                0,
+                false,
+                0,
+                &mut backend,
+            )
+            .await;
+
+            assert!(matches!(result, StepResult::Continue));
+            assert_eq!(buf.samples(), &[15]);
+            match phase {
+                OuterPhase::VelocityValidate { state, data, .. } => {
+                    assert_eq!(data.prev_encoder_for_velocity, 1_024);
+                    assert!(matches!(
+                        state,
+                        VelocityValidateState::ForwardCapture {
+                            next_sample_us: 2_600,
+                            last_sample_us: 1_600
+                        }
+                    ));
+                }
+                other => panic!("expected velocity validate phase, got {:?}", other),
+            }
+        });
+    }
+
+    #[test]
+    fn velocity_validation_capture_uses_wrap_aware_encoder_delta() {
+        pollster::block_on(async {
+            let gains = VelocityGains {
+                velocity_p: 1152,
+                velocity_i: 0,
+                velocity_limit: 16,
+                effective_bandwidth_hz: 0,
+                lambda_vel_ms: 0,
+            };
+            let mut safety = OuterSafetyLimits::new(0, 2448);
+            safety.counts_per_rev = 4000;
+            let mut phase = OuterPhase::VelocityValidate {
+                state: VelocityValidateState::ForwardCapture {
+                    next_sample_us: 1_000,
+                    last_sample_us: 0,
+                },
+                data: VelocityValidateData {
+                    gains,
+                    accepted_gains: gains,
+                    has_accepted_gains: false,
+                    response_lower_p: 0,
+                    response_upper_p: 0,
+                    model: MechanicalModel {
+                        j_eff: 1,
+                        b_eff: 1,
+                        tau_mech_ms: 50,
+                        theta_mech_us: 1,
+                        t_f: 0,
+                    },
+                    strategy: VelocityTuneStrategy::Model,
+                    attempt: 0,
+                    step_target: 4,
+                    forward_metrics: None,
+                    reverse_metrics: None,
+                    max_chatter: 0,
+                    peak_velocity: 20,
+                    prev_encoder_for_velocity: 3_995,
+                    saturation_count: 0,
+                    torque_limit: 0,
+                    operational_velocity_limit: 500_000,
+                    diagnostics: zero_diagnostics(),
+                },
+                safety,
+            };
+            let mut buf = TransientBuffer::new();
+            let mut backend = MockBackend::new();
+            backend.elapsed_us_value = 1_000;
+            backend.encoder_count_value = 5;
+
+            let result = step_velocity_validate(
+                &mut phase,
+                &mut buf,
+                CommissionProfile::Balanced,
+                OperatingMode::Nominal,
+                0,
+                0,
+                false,
+                0,
+                &mut backend,
+            )
+            .await;
+
+            assert!(matches!(result, StepResult::Continue));
+            assert_eq!(buf.samples(), &[10]);
+        });
+    }
+
+    #[test]
     fn velocity_validation_conversion_handles_zero_inputs() {
         assert_eq!(counts_per_ms_to_tmc_velocity(0, 819, 25_000), 0);
         assert_eq!(counts_per_ms_to_tmc_velocity(4, 0, 25_000), 0);
@@ -969,6 +1310,8 @@ mod tests {
                     gains,
                     accepted_gains: gains,
                     has_accepted_gains: false,
+                    response_lower_p: 0,
+                    response_upper_p: 0,
                     model: MechanicalModel {
                         j_eff: 1,
                         b_eff: 1,
@@ -1142,6 +1485,8 @@ mod tests {
                     gains,
                     accepted_gains: gains,
                     has_accepted_gains: false,
+                    response_lower_p: 0,
+                    response_upper_p: 0,
                     model: MechanicalModel {
                         j_eff: 1,
                         b_eff: 1,
@@ -1208,6 +1553,8 @@ mod tests {
                     gains,
                     accepted_gains: gains,
                     has_accepted_gains: false,
+                    response_lower_p: 0,
+                    response_upper_p: 0,
                     model: MechanicalModel {
                         j_eff: 1,
                         b_eff: 1,
@@ -1261,6 +1608,366 @@ mod tests {
                 }
                 other => panic!("expected response-ramp search to continue, got {:?}", other),
             }
+        });
+    }
+
+    #[test]
+    fn response_ramp_brackets_between_underdriven_and_unsafe_without_accepted_gain() {
+        pollster::block_on(async {
+            let gains = VelocityGains {
+                velocity_p: 648,
+                velocity_i: 0,
+                velocity_limit: response::RESPONSE_FALLBACK_VELOCITY_LIMIT_COUNTS_PER_MS as u32,
+                effective_bandwidth_hz: 0,
+                lambda_vel_ms: 0,
+            };
+            let mut phase = OuterPhase::VelocityValidate {
+                state: VelocityValidateState::Classify,
+                data: VelocityValidateData {
+                    gains,
+                    accepted_gains: response::response_velocity_gains(),
+                    has_accepted_gains: false,
+                    response_lower_p: 432,
+                    response_upper_p: 0,
+                    model: MechanicalModel {
+                        j_eff: 1,
+                        b_eff: 1,
+                        tau_mech_ms: 50,
+                        theta_mech_us: 1,
+                        t_f: 0,
+                    },
+                    strategy: VelocityTuneStrategy::ResponseRamp,
+                    attempt: 0,
+                    step_target: response::VELOCITY_RESPONSE_STEP_TARGET,
+                    forward_metrics: Some(failing_velocity_metrics()),
+                    reverse_metrics: Some(failing_velocity_metrics()),
+                    max_chatter: 23,
+                    peak_velocity: 18,
+                    prev_encoder_for_velocity: 0,
+                    saturation_count: 283,
+                    torque_limit: 2448,
+                    operational_velocity_limit: 500_000,
+                    diagnostics: zero_diagnostics(),
+                },
+                safety: OuterSafetyLimits::new(0, 2448),
+            };
+            let mut buf = TransientBuffer::new();
+            let mut backend = MockBackend::new();
+
+            let result = step_velocity_validate(
+                &mut phase,
+                &mut buf,
+                CommissionProfile::Balanced,
+                OperatingMode::Nominal,
+                934,
+                160,
+                false,
+                0,
+                &mut backend,
+            )
+            .await;
+
+            assert!(matches!(result, StepResult::Continue));
+            match phase {
+                OuterPhase::VelocityValidate { state, data, .. } => {
+                    assert!(matches!(state, VelocityValidateState::WriteGains));
+                    assert_eq!(data.strategy, VelocityTuneStrategy::ResponseRamp);
+                    assert!(!data.has_accepted_gains);
+                    assert_eq!(data.response_lower_p, 432);
+                    assert_eq!(data.response_upper_p, 648);
+                    assert_eq!(data.gains.velocity_p, 540);
+                }
+                other => panic!("expected bracketed response-ramp search, got {:?}", other),
+            }
+        });
+    }
+
+    #[test]
+    fn response_ramp_raises_step_target_when_p_bracket_collapses_under_stiction() {
+        pollster::block_on(async {
+            let gains = VelocityGains {
+                velocity_p: 485,
+                velocity_i: 0,
+                velocity_limit: response::RESPONSE_FALLBACK_VELOCITY_LIMIT_COUNTS_PER_MS as u32,
+                effective_bandwidth_hz: 0,
+                lambda_vel_ms: 0,
+            };
+            let mut phase = OuterPhase::VelocityValidate {
+                state: VelocityValidateState::Classify,
+                data: VelocityValidateData {
+                    gains,
+                    accepted_gains: response::response_velocity_gains(),
+                    has_accepted_gains: false,
+                    response_lower_p: 484,
+                    response_upper_p: 486,
+                    model: MechanicalModel {
+                        j_eff: 1,
+                        b_eff: 1,
+                        tau_mech_ms: 50,
+                        theta_mech_us: 1,
+                        t_f: 0,
+                    },
+                    strategy: VelocityTuneStrategy::ResponseRamp,
+                    attempt: 0,
+                    step_target: response::VELOCITY_RESPONSE_STEP_TARGET,
+                    forward_metrics: Some(stiction_breakaway_metrics(2, 0)),
+                    reverse_metrics: Some(stiction_breakaway_metrics(2, 0)),
+                    max_chatter: 1,
+                    peak_velocity: 18,
+                    prev_encoder_for_velocity: 0,
+                    saturation_count: 0,
+                    torque_limit: 2448,
+                    operational_velocity_limit: 500_000,
+                    diagnostics: zero_diagnostics(),
+                },
+                safety: OuterSafetyLimits::new(0, 2448),
+            };
+            let mut buf = TransientBuffer::new();
+            let mut backend = MockBackend::new();
+
+            let result = step_velocity_validate(
+                &mut phase,
+                &mut buf,
+                CommissionProfile::Balanced,
+                OperatingMode::Nominal,
+                934,
+                160,
+                false,
+                0,
+                &mut backend,
+            )
+            .await;
+
+            assert!(matches!(result, StepResult::Continue));
+            match phase {
+                OuterPhase::VelocityValidate { state, data, .. } => {
+                    assert!(matches!(state, VelocityValidateState::WriteGains));
+                    assert_eq!(data.strategy, VelocityTuneStrategy::ResponseRamp);
+                    assert!(!data.has_accepted_gains);
+                    assert_eq!(
+                        data.step_target,
+                        response::VELOCITY_RESPONSE_STEP_TARGET * 2
+                    );
+                    assert_eq!(data.response_lower_p, 0);
+                    assert_eq!(data.response_upper_p, 0);
+                    assert_eq!(data.gains.velocity_p, 243);
+                }
+                other => panic!(
+                    "expected raised-target response-ramp search, got {:?}",
+                    other
+                ),
+            }
+        });
+    }
+
+    #[test]
+    fn response_ramp_treats_one_sided_overshoot_as_stiction_at_higher_target() {
+        pollster::block_on(async {
+            let gains = VelocityGains {
+                velocity_p: 645,
+                velocity_i: 0,
+                velocity_limit: response::RESPONSE_FALLBACK_VELOCITY_LIMIT_COUNTS_PER_MS as u32,
+                effective_bandwidth_hz: 0,
+                lambda_vel_ms: 0,
+            };
+            let mut phase = OuterPhase::VelocityValidate {
+                state: VelocityValidateState::Classify,
+                data: VelocityValidateData {
+                    gains,
+                    accepted_gains: response::response_velocity_gains(),
+                    has_accepted_gains: false,
+                    response_lower_p: 580,
+                    response_upper_p: 774,
+                    model: MechanicalModel {
+                        j_eff: 1,
+                        b_eff: 1,
+                        tau_mech_ms: 50,
+                        theta_mech_us: 1,
+                        t_f: 0,
+                    },
+                    strategy: VelocityTuneStrategy::ResponseRamp,
+                    attempt: 0,
+                    step_target: response::VELOCITY_RESPONSE_STEP_TARGET * 2,
+                    forward_metrics: Some(stiction_breakaway_metrics(13, 250)),
+                    reverse_metrics: Some(stiction_breakaway_metrics(2, 0)),
+                    max_chatter: 0,
+                    peak_velocity: 18,
+                    prev_encoder_for_velocity: 0,
+                    saturation_count: 1,
+                    torque_limit: 2448,
+                    operational_velocity_limit: 500_000,
+                    diagnostics: zero_diagnostics(),
+                },
+                safety: OuterSafetyLimits::new(0, 2448),
+            };
+            let mut buf = TransientBuffer::new();
+            let mut backend = MockBackend::new();
+
+            let result = step_velocity_validate(
+                &mut phase,
+                &mut buf,
+                CommissionProfile::Balanced,
+                OperatingMode::Nominal,
+                934,
+                160,
+                false,
+                0,
+                &mut backend,
+            )
+            .await;
+
+            assert!(matches!(result, StepResult::Continue));
+            match phase {
+                OuterPhase::VelocityValidate { state, data, .. } => {
+                    assert!(matches!(state, VelocityValidateState::WriteGains));
+                    assert_eq!(data.strategy, VelocityTuneStrategy::ResponseRamp);
+                    assert!(!data.has_accepted_gains);
+                    assert_eq!(data.response_lower_p, 645);
+                    assert_eq!(data.response_upper_p, 774);
+                    assert_eq!(data.gains.velocity_p, 709);
+                }
+                other => panic!("expected one-sided stiction search, got {:?}", other),
+            }
+        });
+    }
+
+    #[test]
+    fn response_ramp_raises_step_target_when_p_bracket_is_too_narrow_to_search() {
+        pollster::block_on(async {
+            let gains = VelocityGains {
+                velocity_p: 668,
+                velocity_i: 0,
+                velocity_limit: response::RESPONSE_FALLBACK_VELOCITY_LIMIT_COUNTS_PER_MS as u32,
+                effective_bandwidth_hz: 0,
+                lambda_vel_ms: 0,
+            };
+            let mut phase = OuterPhase::VelocityValidate {
+                state: VelocityValidateState::Classify,
+                data: VelocityValidateData {
+                    gains,
+                    accepted_gains: response::response_velocity_gains(),
+                    has_accepted_gains: false,
+                    response_lower_p: 648,
+                    response_upper_p: 688,
+                    model: MechanicalModel {
+                        j_eff: 1,
+                        b_eff: 1,
+                        tau_mech_ms: 50,
+                        theta_mech_us: 1,
+                        t_f: 0,
+                    },
+                    strategy: VelocityTuneStrategy::ResponseRamp,
+                    attempt: 0,
+                    step_target: response::VELOCITY_RESPONSE_STEP_TARGET,
+                    forward_metrics: Some(stiction_breakaway_metrics(2, 0)),
+                    reverse_metrics: Some(stiction_breakaway_metrics(2, 0)),
+                    max_chatter: 1,
+                    peak_velocity: 18,
+                    prev_encoder_for_velocity: 0,
+                    saturation_count: 0,
+                    torque_limit: 2448,
+                    operational_velocity_limit: 500_000,
+                    diagnostics: zero_diagnostics(),
+                },
+                safety: OuterSafetyLimits::new(0, 2448),
+            };
+            let mut buf = TransientBuffer::new();
+            let mut backend = MockBackend::new();
+
+            let result = step_velocity_validate(
+                &mut phase,
+                &mut buf,
+                CommissionProfile::Balanced,
+                OperatingMode::Nominal,
+                934,
+                160,
+                false,
+                0,
+                &mut backend,
+            )
+            .await;
+
+            assert!(matches!(result, StepResult::Continue));
+            match phase {
+                OuterPhase::VelocityValidate { state, data, .. } => {
+                    assert!(matches!(state, VelocityValidateState::WriteGains));
+                    assert_eq!(
+                        data.step_target,
+                        response::VELOCITY_RESPONSE_STEP_TARGET * 2
+                    );
+                    assert_eq!(data.response_lower_p, 0);
+                    assert_eq!(data.response_upper_p, 0);
+                    assert_eq!(data.gains.velocity_p, 334);
+                }
+                other => panic!("expected raised-target retry, got {:?}", other),
+            }
+        });
+    }
+
+    #[test]
+    fn response_ramp_stops_when_retry_budget_is_exhausted() {
+        pollster::block_on(async {
+            let gains = VelocityGains {
+                velocity_p: 688,
+                velocity_i: 0,
+                velocity_limit: response::RESPONSE_FALLBACK_VELOCITY_LIMIT_COUNTS_PER_MS as u32,
+                effective_bandwidth_hz: 0,
+                lambda_vel_ms: 0,
+            };
+            let mut phase = OuterPhase::VelocityValidate {
+                state: VelocityValidateState::Classify,
+                data: VelocityValidateData {
+                    gains,
+                    accepted_gains: response::response_velocity_gains(),
+                    has_accepted_gains: false,
+                    response_lower_p: 648,
+                    response_upper_p: 729,
+                    model: MechanicalModel {
+                        j_eff: 1,
+                        b_eff: 1,
+                        tau_mech_ms: 50,
+                        theta_mech_us: 1,
+                        t_f: 0,
+                    },
+                    strategy: VelocityTuneStrategy::ResponseRamp,
+                    attempt: 12,
+                    step_target: response::VELOCITY_RESPONSE_STEP_TARGET,
+                    forward_metrics: Some(failing_velocity_metrics()),
+                    reverse_metrics: Some(failing_velocity_metrics()),
+                    max_chatter: 23,
+                    peak_velocity: 18,
+                    prev_encoder_for_velocity: 0,
+                    saturation_count: 277,
+                    torque_limit: 2448,
+                    operational_velocity_limit: 500_000,
+                    diagnostics: zero_diagnostics(),
+                },
+                safety: OuterSafetyLimits::new(0, 2448),
+            };
+            let mut buf = TransientBuffer::new();
+            let mut backend = MockBackend::new();
+
+            let result = step_velocity_validate(
+                &mut phase,
+                &mut buf,
+                CommissionProfile::Balanced,
+                OperatingMode::Nominal,
+                934,
+                160,
+                false,
+                0,
+                &mut backend,
+            )
+            .await;
+
+            assert!(matches!(
+                result,
+                StepResult::OuterFailed(CommissionError::VelocityValidationFailed)
+            ));
+            assert!(matches!(
+                phase,
+                OuterPhase::Failed(CommissionError::VelocityValidationFailed)
+            ));
         });
     }
 }

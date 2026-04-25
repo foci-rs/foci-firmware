@@ -236,17 +236,27 @@ pub(crate) enum VelocityValidateState {
     /// Switch to velocity mode and apply forward velocity step.
     ForwardStep,
     /// Capture forward step response at 1 kHz.
-    ForwardCapture { next_sample_us: u64 },
+    ForwardCapture {
+        next_sample_us: u64,
+        last_sample_us: u64,
+    },
     /// Return to zero velocity and wait for settling.
     ForwardSettle { deadline_us: u64 },
     /// Apply reverse velocity step.
     ReverseStep,
     /// Capture reverse step response.
-    ReverseCapture { next_sample_us: u64 },
+    ReverseCapture {
+        next_sample_us: u64,
+        last_sample_us: u64,
+    },
     /// Return to zero velocity and wait for settling.
     ReverseSettle { deadline_us: u64 },
     /// Monitor zero-speed chatter for 200ms.
-    ChatterCheck { next_sample_us: u64, remaining: u16 },
+    ChatterCheck {
+        next_sample_us: u64,
+        last_sample_us: u64,
+        remaining: u16,
+    },
     /// Extract metrics and classify response.
     Classify,
     /// Restore safe state before finalize or retry.
@@ -272,6 +282,10 @@ pub(crate) struct VelocityValidateData {
     pub(crate) accepted_gains: VelocityGains,
     /// Whether `accepted_gains` came from a passing response-ramp attempt.
     pub(crate) has_accepted_gains: bool,
+    /// Highest response-ramp P that still looked under-driven.
+    pub(crate) response_lower_p: u16,
+    /// Lowest response-ramp P that looked unsafe before any gain passed.
+    pub(crate) response_upper_p: u16,
     /// The mechanical model from Phase 8 (needed for retry re-synthesis).
     pub(crate) model: MechanicalModel,
     /// Velocity tuning strategy for this run.
@@ -345,6 +359,11 @@ pub(crate) struct PositionTuneData {
     pub(crate) j_eff: u32,
     /// Identified effective damping from mechanical ID (internal units).
     pub(crate) b_eff: u32,
+    /// Current limit for saturation detection during the position step capture.
+    pub(crate) torque_limit: u32,
+    /// Saturation counter: samples where the inner-loop torque output is at
+    /// or above 90% of `torque_limit` during the position step capture.
+    pub(crate) saturation_count: u16,
     /// Diagnostics carried into the final result.
     pub(crate) diagnostics: OuterDiagnostics,
 }
@@ -1351,6 +1370,8 @@ mod tests {
                         lambda_vel_ms: 0,
                     },
                     has_accepted_gains: false,
+                    response_lower_p: 0,
+                    response_upper_p: 0,
                     model: MechanicalModel {
                         j_eff: 1,
                         b_eff: 1,

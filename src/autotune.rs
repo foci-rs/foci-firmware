@@ -1424,8 +1424,8 @@ pub fn extract_velocity_metrics(
 
     let period_us = buf.sample_period_us() as u32;
     let target_f = target as f32;
-    let threshold_10 = (target_f * 0.10) as u32;
-    let threshold_90 = (target_f * 0.90) as u32;
+    let threshold_10 = ((target as u64 * 10).div_ceil(100) as u32).max(1);
+    let threshold_90 = ((target as u64 * 90).div_ceil(100) as u32).max(1);
     // Encoder-derived velocity is integer counts per sample. At low targets,
     // a strict 5% band truncates to zero counts and makes a stable +/-1 count
     // response look permanently unsettled.
@@ -1451,6 +1451,7 @@ pub fn extract_velocity_metrics(
         }
     }
 
+    let reached_90 = t_90.is_some();
     let rise_time_us = match (t_10, t_90) {
         (Some(a), Some(b)) => b.saturating_sub(a),
         _ => 0,
@@ -1478,12 +1479,17 @@ pub fn extract_velocity_metrics(
             last_outside = i;
         }
     }
-    let settling_us = if last_outside > 0 {
-        (last_outside as u32 + 1) * period_us
+    let settling_time_ms = if !reached_90 {
+        // A response that never reaches the commanded step cannot be
+        // considered settled, even if the large mechanical tau would
+        // otherwise make the finite capture window look acceptable.
+        u32::MAX
+    } else if last_outside > 0 {
+        let settling_us = (last_outside as u32 + 1).saturating_mul(period_us);
+        (settling_us + 500) / 1000
     } else {
         0
     };
-    let settling_time_ms = (settling_us + 500) / 1000;
 
     // Zero-speed chatter: check the last `chatter_window` samples
     // for velocity oscillations above the noise threshold.
@@ -3288,6 +3294,22 @@ mod tests {
 
         let metrics = extract_velocity_metrics(&buf, 4, 0, 3, 0);
         assert_eq!(metrics.overshoot_pct, 0);
+    }
+
+    #[test]
+    fn velocity_validation_fails_when_low_target_is_never_reached() {
+        let mut buf = TransientBuffer::new();
+        buf.reset(1000);
+        for i in 0..256 {
+            buf.push(if i % 4 == 2 { 1 } else { 0 });
+        }
+
+        let metrics = extract_velocity_metrics(&buf, 2, 0, 3, 0);
+        assert_eq!(metrics.peak_velocity, 1);
+        assert_eq!(
+            classify_velocity_validation(&metrics, 139, 512),
+            ValidationResult::Fail
+        );
     }
 
     #[test]
