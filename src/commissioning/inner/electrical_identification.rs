@@ -137,16 +137,16 @@ fn assemble_electrical_model(data: &ElectricalIdData, samples: &[u32]) -> Option
     let mut theta_e_us = 0u32;
     for (i, &sample) in samples.iter().enumerate() {
         if sample > onset_threshold {
-            theta_e_us = (i as u64 * ELECTRICAL_SAMPLE_PERIOD_US) as u32;
+            theta_e_us = ((i as u64 + 1) * ELECTRICAL_SAMPLE_PERIOD_US) as u32;
             break;
         }
     }
 
     let rise_threshold = (steady_state as u64 * RISE_63_PCT_Q10 as u64 / 1024) as u32;
-    let mut tau_crosscheck_us = 0u32;
+    let mut rise_crossing_us = 0u32;
     for (i, &sample) in samples.iter().enumerate() {
         if sample >= rise_threshold {
-            tau_crosscheck_us = (i as u64 * ELECTRICAL_SAMPLE_PERIOD_US) as u32;
+            rise_crossing_us = ((i as u64 + 1) * ELECTRICAL_SAMPLE_PERIOD_US) as u32;
             break;
         }
     }
@@ -154,6 +154,7 @@ fn assemble_electrical_model(data: &ElectricalIdData, samples: &[u32]) -> Option
     if theta_e_us == 0 {
         theta_e_us = ELECTRICAL_SAMPLE_PERIOD_US as u32;
     }
+    let tau_crosscheck_us = rise_crossing_us.saturating_sub(theta_e_us);
 
     Some(ElectricalModel {
         r_int,
@@ -618,6 +619,27 @@ mod tests {
             (2940..=2960).contains(&model.l_int),
             "l_int should preserve the original internal L scale: {}",
             model.l_int
+        );
+    }
+
+    #[test]
+    fn model_assembly_timestamps_delay_samples_after_step() {
+        let data = representative_data();
+        let mut buf = TransientBuffer::new();
+        buf.reset(ELECTRICAL_SAMPLE_PERIOD_US as u16);
+        for &sample in &[0, 10, 25, 100, 300, 500, 650, 800] {
+            buf.push(sample);
+        }
+        for _ in 0..12 {
+            buf.push(1000);
+        }
+
+        let model = assemble_electrical_model(&data, buf.samples()).unwrap();
+
+        assert_eq!(model.theta_e_us, (3 * ELECTRICAL_SAMPLE_PERIOD_US) as u32);
+        assert_eq!(
+            model.tau_e_crosscheck_us,
+            (4 * ELECTRICAL_SAMPLE_PERIOD_US) as u32
         );
     }
 
