@@ -363,15 +363,19 @@ pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
                 // Determine polarity based on which cycle we're on.
                 let total_done = total_cycles.saturating_sub(*remaining_cycles);
                 let v = if total_done % 2 == 0 { v_pos } else { v_neg };
-                let _ = backend.write_register(UQ_UD_EXT, v).await;
-
-                if let Ok(actual) = backend.read_register(PID_TORQUE_FLUX_ACTUAL).await {
-                    let current = (actual & 0xFFFF) as i16;
-                    let delta = (current as i32 - *prev_current as i32).unsigned_abs();
-                    data.inductance_sum_delta[coil_idx] += delta as u64;
-                    data.inductance_count[coil_idx] += 1;
-                    *prev_current = current;
+                if backend.write_register(UQ_UD_EXT, v).await.is_err() {
+                    return super::fail_inner(phase, CommissionError::Spi);
                 }
+
+                let actual = match backend.read_register(PID_TORQUE_FLUX_ACTUAL).await {
+                    Ok(actual) => actual,
+                    Err(_) => return super::fail_inner(phase, CommissionError::Spi),
+                };
+                let current = (actual & 0xFFFF) as i16;
+                let delta = (current as i32 - *prev_current as i32).unsigned_abs();
+                data.inductance_sum_delta[coil_idx] += delta as u64;
+                data.inductance_count[coil_idx] += 1;
+                *prev_current = current;
                 *remaining_cycles -= 1;
                 cycles_this_step += 1;
             }
@@ -573,7 +577,7 @@ mod tests {
     use crate::commission_dispatch::test_support::{MockBackend, SpiOp};
     use crate::commissioning::inner::ElectricalIdData;
     use crate::commissioning::types::StepResult;
-    use foci_tmc4671::registers::UQ_UD_EXT;
+    use foci_tmc4671::registers::{PID_TORQUE_FLUX_ACTUAL, UQ_UD_EXT};
 
     fn representative_data() -> ElectricalIdData {
         let mut data = ElectricalIdData::new(512);
@@ -672,6 +676,76 @@ mod tests {
             assert_eq!(uq_ud_writes.next(), Some(512));
             assert_eq!(uq_ud_writes.next(), Some(0xFE00));
             assert_eq!(uq_ud_writes.next(), Some(512));
+        });
+    }
+
+    #[test]
+    fn inductance_toggle_write_error_fails_inner_phase() {
+        pollster::block_on(async {
+            let mut phase = InnerPhase::ElectricalId {
+                state: ElectricalIdState::IndToggle {
+                    coil: 0,
+                    total_cycles: 7,
+                    remaining_cycles: 7,
+                    prev_current: 0,
+                    start_us: 0,
+                },
+                data: ElectricalIdData::new(512),
+            };
+            let mut buf = TransientBuffer::new();
+            let mut backend = MockBackend::new();
+            backend.fail_on_write = Some(UQ_UD_EXT.addr());
+            let mut selftest_results = crate::selftest::SelftestResults::default();
+
+            let result = step_electrical_identification(
+                &mut phase,
+                &mut buf,
+                InnerSequence::Commission,
+                &mut selftest_results,
+                &mut backend,
+            )
+            .await;
+
+            assert!(matches!(
+                result,
+                StepResult::InnerFailed(CommissionError::Spi)
+            ));
+            assert!(matches!(phase, InnerPhase::Failed(CommissionError::Spi)));
+        });
+    }
+
+    #[test]
+    fn inductance_toggle_read_error_fails_inner_phase() {
+        pollster::block_on(async {
+            let mut phase = InnerPhase::ElectricalId {
+                state: ElectricalIdState::IndToggle {
+                    coil: 0,
+                    total_cycles: 7,
+                    remaining_cycles: 7,
+                    prev_current: 0,
+                    start_us: 0,
+                },
+                data: ElectricalIdData::new(512),
+            };
+            let mut buf = TransientBuffer::new();
+            let mut backend = MockBackend::new();
+            backend.fail_on_read = Some(PID_TORQUE_FLUX_ACTUAL.addr());
+            let mut selftest_results = crate::selftest::SelftestResults::default();
+
+            let result = step_electrical_identification(
+                &mut phase,
+                &mut buf,
+                InnerSequence::Commission,
+                &mut selftest_results,
+                &mut backend,
+            )
+            .await;
+
+            assert!(matches!(
+                result,
+                StepResult::InnerFailed(CommissionError::Spi)
+            ));
+            assert!(matches!(phase, InnerPhase::Failed(CommissionError::Spi)));
         });
     }
 }
