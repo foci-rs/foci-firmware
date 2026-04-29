@@ -65,6 +65,49 @@ fn tau_crosscheck_valid(model: &ElectricalModel) -> bool {
     diff * 1000 <= model.tau_e_us as u64 * TAU_CROSSCHECK_MAX_ERROR_PERMILLE as u64
 }
 
+fn sample_time_us(index: usize) -> u32 {
+    ((index as u64 + 1) * ELECTRICAL_SAMPLE_PERIOD_US) as u32
+}
+
+fn interpolate_threshold_crossing_us(samples: &[u32], threshold: u32) -> Option<u32> {
+    let mut prev_sample = 0u32;
+    let mut prev_time_us = 0u32;
+    for (i, &sample) in samples.iter().enumerate() {
+        let time_us = sample_time_us(i);
+        if sample >= threshold {
+            if i == 0 || sample <= prev_sample {
+                return Some(time_us);
+            }
+            let span = sample - prev_sample;
+            let above_prev = threshold.saturating_sub(prev_sample).min(span);
+            let offset_us = above_prev as u64 * ELECTRICAL_SAMPLE_PERIOD_US / span as u64;
+            return Some(prev_time_us + offset_us as u32);
+        }
+        prev_sample = sample;
+        prev_time_us = time_us;
+    }
+    None
+}
+
+fn extrapolate_onset_to_baseline_us(samples: &[u32], threshold: u32) -> Option<u32> {
+    let mut prev_sample = 0u32;
+    let mut prev_time_us = 0u32;
+    for (i, &sample) in samples.iter().enumerate() {
+        let time_us = sample_time_us(i);
+        if sample > threshold {
+            if i == 0 || sample <= prev_sample {
+                return Some(time_us);
+            }
+            let span = sample - prev_sample;
+            let offset_us = prev_sample as u64 * ELECTRICAL_SAMPLE_PERIOD_US / span as u64;
+            return Some(prev_time_us.saturating_sub(offset_us as u32).max(1));
+        }
+        prev_sample = sample;
+        prev_time_us = time_us;
+    }
+    None
+}
+
 fn assemble_electrical_model(data: &ElectricalIdData, samples: &[u32]) -> Option<ElectricalModel> {
     let voltage = data.voltage;
 
@@ -144,27 +187,11 @@ fn assemble_electrical_model(data: &ElectricalIdData, samples: &[u32]) -> Option
         return None;
     };
 
-    let onset_threshold = DELAY_ONSET_THRESHOLD as u32;
-    let mut theta_e_us = 0u32;
-    for (i, &sample) in samples.iter().enumerate() {
-        if sample > onset_threshold {
-            theta_e_us = ((i as u64 + 1) * ELECTRICAL_SAMPLE_PERIOD_US) as u32;
-            break;
-        }
-    }
+    let theta_e_us = extrapolate_onset_to_baseline_us(samples, DELAY_ONSET_THRESHOLD as u32)
+        .unwrap_or(ELECTRICAL_SAMPLE_PERIOD_US as u32);
 
     let rise_threshold = (steady_state as u64 * RISE_63_PCT_Q10 as u64 / 1024) as u32;
-    let mut rise_crossing_us = 0u32;
-    for (i, &sample) in samples.iter().enumerate() {
-        if sample >= rise_threshold {
-            rise_crossing_us = ((i as u64 + 1) * ELECTRICAL_SAMPLE_PERIOD_US) as u32;
-            break;
-        }
-    }
-
-    if theta_e_us == 0 {
-        theta_e_us = ELECTRICAL_SAMPLE_PERIOD_US as u32;
-    }
+    let rise_crossing_us = interpolate_threshold_crossing_us(samples, rise_threshold).unwrap_or(0);
     let tau_crosscheck_us = rise_crossing_us.saturating_sub(theta_e_us);
 
     Some(ElectricalModel {
@@ -637,7 +664,7 @@ mod tests {
     }
 
     #[test]
-    fn model_assembly_timestamps_delay_samples_after_step() {
+    fn model_assembly_extrapolates_delay_onset_to_baseline() {
         let data = representative_data();
         let mut buf = TransientBuffer::new();
         buf.reset(ELECTRICAL_SAMPLE_PERIOD_US as u16);
@@ -650,10 +677,15 @@ mod tests {
 
         let model = assemble_electrical_model(&data, buf.samples()).unwrap();
 
-        assert_eq!(model.theta_e_us, (3 * ELECTRICAL_SAMPLE_PERIOD_US) as u32);
-        assert_eq!(
-            model.tau_e_crosscheck_us,
-            (4 * ELECTRICAL_SAMPLE_PERIOD_US) as u32
+        assert!(
+            (210..=220).contains(&model.theta_e_us),
+            "theta should extrapolate the threshold crossing back to baseline: {}",
+            model.theta_e_us
+        );
+        assert!(
+            (880..=890).contains(&model.tau_e_crosscheck_us),
+            "tau crosscheck should use interpolated 63 percent crossing minus onset: {}",
+            model.tau_e_crosscheck_us
         );
     }
 
