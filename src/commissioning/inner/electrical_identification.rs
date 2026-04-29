@@ -54,6 +54,17 @@ const DELAY_ONSET_THRESHOLD: u16 = 20;
 /// 0.632 * 1024 ≈ 647 (Q10 format for integer math).
 const RISE_63_PCT_Q10: u32 = 647;
 
+/// Maximum allowed L/R tau vs transient tau mismatch (50%, in permille).
+const TAU_CROSSCHECK_MAX_ERROR_PERMILLE: u32 = 500;
+
+fn tau_crosscheck_valid(model: &ElectricalModel) -> bool {
+    if model.tau_e_us == 0 || model.tau_e_crosscheck_us == 0 {
+        return false;
+    }
+    let diff = model.tau_e_us.abs_diff(model.tau_e_crosscheck_us) as u64;
+    diff * 1000 <= model.tau_e_us as u64 * TAU_CROSSCHECK_MAX_ERROR_PERMILLE as u64
+}
+
 fn assemble_electrical_model(data: &ElectricalIdData, samples: &[u32]) -> Option<ElectricalModel> {
     let voltage = data.voltage;
 
@@ -529,6 +540,9 @@ pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
             let Some(model) = assemble_electrical_model(data, buf.samples()) else {
                 return super::fail_inner(phase, CommissionError::ElectricalIdFailed);
             };
+            if !tau_crosscheck_valid(&model) {
+                return super::fail_inner(phase, CommissionError::ElectricalIdFailed);
+            }
 
             match sequence {
                 InnerSequence::Selftest => {
@@ -641,6 +655,44 @@ mod tests {
             model.tau_e_crosscheck_us,
             (4 * ELECTRICAL_SAMPLE_PERIOD_US) as u32
         );
+    }
+
+    #[test]
+    fn validate_rejects_tau_crosscheck_mismatch() {
+        pollster::block_on(async {
+            let mut phase = InnerPhase::ElectricalId {
+                state: ElectricalIdState::Validate,
+                data: representative_data(),
+            };
+            let mut buf = TransientBuffer::new();
+            buf.reset(ELECTRICAL_SAMPLE_PERIOD_US as u16);
+            for &sample in &[25, 200, 700, 1000] {
+                buf.push(sample);
+            }
+            for _ in 0..20 {
+                buf.push(1000);
+            }
+            let mut backend = MockBackend::new();
+            let mut selftest_results = crate::selftest::SelftestResults::default();
+
+            let result = step_electrical_identification(
+                &mut phase,
+                &mut buf,
+                InnerSequence::Commission,
+                &mut selftest_results,
+                &mut backend,
+            )
+            .await;
+
+            assert!(matches!(
+                result,
+                StepResult::InnerFailed(CommissionError::ElectricalIdFailed)
+            ));
+            assert!(matches!(
+                phase,
+                InnerPhase::Failed(CommissionError::ElectricalIdFailed)
+            ));
+        });
     }
 
     #[test]
