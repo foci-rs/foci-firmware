@@ -867,6 +867,9 @@ fn trailing_average(samples: &[u32], idx: usize, window_len: usize) -> u32 {
 ///
 /// Returns metrics with `symmetry_pct = 0`. Symmetry requires two captures
 /// (forward + reverse); the caller computes it via [`compute_tail_symmetry_pct`].
+/// Timing fields are durations within the capture, not absolute times since
+/// the command step. Callers that schedule the first sample after one sample
+/// period should keep that origin outside this buffer.
 pub fn extract_step_metrics(
     buf: &TransientBuffer,
     target: u32,
@@ -896,6 +899,8 @@ pub fn extract_step_metrics(
     // otherwise stable response can settle.
     let settle_band = ((target_f * 0.05) as u32).max(1);
 
+    // These are relative crossing offsets; rise_time subtracts them, so the
+    // absolute capture origin does not affect the result.
     let mut t_10: Option<u32> = None;
     let mut t_90: Option<u32> = None;
     let mut peak: u32 = 0;
@@ -931,6 +936,8 @@ pub fn extract_step_metrics(
     };
 
     // Settling: last smoothed sample where |actual - target| > 5% band.
+    // Use (index + 1) because settling time is the duration through the last
+    // out-of-band sample, not the sample's relative crossing offset.
     let mut last_outside: usize = 0;
     for (i, _) in samples.iter().enumerate() {
         let smoothed = trailing_average(samples, i, CURRENT_METRIC_SMOOTHING_SAMPLES);

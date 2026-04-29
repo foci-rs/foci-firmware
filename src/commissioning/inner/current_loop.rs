@@ -241,6 +241,10 @@ pub(crate) async fn step_current_validate<B: CommissioningBackend>(
             // Reset buffer for this capture.
             buf.reset(super::electrical_identification::ELECTRICAL_SAMPLE_PERIOD_US as u16);
 
+            // The first sample is captured one period after the target write.
+            // `extract_step_metrics` reports durations, not absolute crossing
+            // timestamps, so this origin is intentionally not encoded in the
+            // transient buffer.
             let next = backend
                 .elapsed_us()
                 .wrapping_add(super::electrical_identification::ELECTRICAL_SAMPLE_PERIOD_US);
