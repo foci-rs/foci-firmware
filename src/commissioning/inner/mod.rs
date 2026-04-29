@@ -174,6 +174,7 @@ pub(crate) enum ElectricalIdState {
     /// Toggle voltage and accumulate |delta_I| (chunked per step).
     IndToggle {
         coil: u8,
+        total_cycles: u32,
         remaining_cycles: u32,
         prev_current: i16,
         start_us: u64,

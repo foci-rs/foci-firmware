@@ -469,11 +469,11 @@ pub enum InnerSequence {
 /// where `K = 1 / R_int` (DC gain in internal units).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub struct ElectricalModel {
-    /// Winding resistance in internal (ADC/DAC) units.
-    /// R_int = V_excitation / I_steady_state.
+    /// Winding resistance in scaled internal (ADC/DAC) units.
+    /// `R_int = V_excitation / I_steady_state * ELECTRICAL_MODEL_RESISTANCE_SCALE`.
     pub r_int: u32,
-    /// Winding inductance in internal units.
-    /// L_int = V * dt_s / delta_I.
+    /// Winding inductance in internal micro-units.
+    /// `L_int = r_int * tau_e_us / ELECTRICAL_MODEL_RESISTANCE_SCALE`.
     pub l_int: u32,
     /// Electrical time constant L/R in microseconds.
     pub tau_e_us: u32,
@@ -487,6 +487,9 @@ pub struct ElectricalModel {
     /// Compared against L/R tau for plant model validation.
     pub tau_e_crosscheck_us: u32,
 }
+
+/// Fixed-point scale used for [`ElectricalModel::r_int`].
+pub const ELECTRICAL_MODEL_RESISTANCE_SCALE: u32 = 1000;
 
 /// Computed PI gains for the TMC4671 current (flux/torque) loops.
 ///
@@ -739,7 +742,7 @@ pub fn simc_current_gains_with_lambda_checked(
     let tau = model.tau_e_us as f32;
     let theta = model.theta_e_us as f32;
     let lambda = lambda_us as f32;
-    let r_int = model.r_int as f32;
+    let r_int = model.r_int as f32 / ELECTRICAL_MODEL_RESISTANCE_SCALE as f32;
     let k = 1.0 / r_int; // Plant DC gain
 
     let kp = tau / (k * (lambda + theta));
@@ -2089,7 +2092,7 @@ mod tests {
     #[test]
     fn simc_current_i_gain_uses_advanced_pi_zero_parameter() {
         let model = ElectricalModel {
-            r_int: 1,
+            r_int: ELECTRICAL_MODEL_RESISTANCE_SCALE,
             l_int: 1863,
             tau_e_us: 1863,
             theta_e_us: 160,
@@ -2117,7 +2120,7 @@ mod tests {
     #[test]
     fn simc_current_i_gain_starts_near_observed_settling_bracket() {
         let model = ElectricalModel {
-            r_int: 1,
+            r_int: ELECTRICAL_MODEL_RESISTANCE_SCALE,
             l_int: 1868,
             tau_e_us: 1868,
             theta_e_us: 160,
@@ -2154,7 +2157,7 @@ mod tests {
     #[test]
     fn simc_retry_lambda_preserves_measured_theta() {
         let model = ElectricalModel {
-            r_int: 1,
+            r_int: ELECTRICAL_MODEL_RESISTANCE_SCALE,
             l_int: 1917,
             tau_e_us: 1917,
             theta_e_us: 160,
@@ -2346,7 +2349,7 @@ mod tests {
         let tau_s = model.tau_e_us as f64 * 1e-6;
         let theta_s = model.theta_e_us as f64 * 1e-6;
         let lambda_s = ((2 * model.theta_e_us).max(model.tau_e_us / 2)) as f64 * 1e-6;
-        let r_int = model.r_int as f64;
+        let r_int = model.r_int as f64 / ELECTRICAL_MODEL_RESISTANCE_SCALE as f64;
         let k = 1.0 / r_int;
         let f_pwm = config.pwm_freq_hz() as f64;
 

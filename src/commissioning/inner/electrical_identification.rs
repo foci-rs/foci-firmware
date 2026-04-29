@@ -6,8 +6,11 @@
 //! `ElectricalModel` and validates it before transitioning to
 //! `CurrentTune` (commission flow) or emitting `SelftestDone` (selftest).
 
-use super::{ElectricalIdState, InnerPhase};
-use crate::autotune::{CommissionError, ElectricalModel, InnerSequence, PhaseId, TransientBuffer};
+use super::{ElectricalIdData, ElectricalIdState, InnerPhase};
+use crate::autotune::{
+    CommissionError, ELECTRICAL_MODEL_RESISTANCE_SCALE, ElectricalModel, InnerSequence, PhaseId,
+    TransientBuffer,
+};
 use crate::commissioning::types::{CommissioningBackend, StepResult};
 
 /// Number of steady-state current samples for resistance measurement.
@@ -50,6 +53,118 @@ const DELAY_ONSET_THRESHOLD: u16 = 20;
 /// Fraction of steady-state current for 63% rise detection (fixed-point).
 /// 0.632 * 1024 ≈ 647 (Q10 format for integer math).
 const RISE_63_PCT_Q10: u32 = 647;
+
+fn assemble_electrical_model(data: &ElectricalIdData, samples: &[u32]) -> Option<ElectricalModel> {
+    let voltage = data.voltage;
+
+    // --- Resistance ---
+    // Per-coil: R_int = V / |I_avg|, stored with explicit fixed-point scale.
+    let mut r_int_per_coil = [0u32; 2];
+    let mut r_mohm_per_coil = [0u32; 2];
+    for coil_idx in 0..2 {
+        let count = data.resistance_sample_count[coil_idx] as i32;
+        if count == 0 {
+            return None;
+        }
+        let avg_current = (data.resistance_current_sum[coil_idx] / count) as i16;
+        let abs_current = avg_current.unsigned_abs() as u32;
+        if abs_current == 0 {
+            return None;
+        }
+        r_int_per_coil[coil_idx] =
+            (voltage as u64 * ELECTRICAL_MODEL_RESISTANCE_SCALE as u64 / abs_current as u64) as u32;
+        r_mohm_per_coil[coil_idx] = (voltage as u64 * 1000 / abs_current as u64) as u32;
+    }
+    let r_int = (r_int_per_coil[0] + r_int_per_coil[1]) / 2;
+    let r_mohm = (r_mohm_per_coil[0] + r_mohm_per_coil[1]) / 2;
+    if r_int == 0 {
+        return None;
+    }
+
+    // --- Inductance (from di/dt) ---
+    // tau_us = V * dt_per_cycle_us / (avg_delta * R_int_unscaled)
+    //        = V * dt_per_cycle_us * SCALE / (avg_delta * R_int_scaled)
+    let mut tau_per_coil = [0u32; 2];
+    for (tau_result, ((count, sum_delta), elapsed)) in tau_per_coil
+        .iter_mut()
+        .zip(
+            data.inductance_count
+                .iter()
+                .zip(data.inductance_sum_delta.iter()),
+        )
+        .zip(data.inductance_elapsed_us.iter())
+        .map(|((t, (c, s)), e)| (t, ((c, s), e)))
+    {
+        if *count == 0 || *sum_delta == 0 || *elapsed == 0 {
+            continue;
+        }
+        let avg_delta = (*sum_delta / *count as u64) as u32;
+        if avg_delta < INDUCTANCE_MIN_DELTA {
+            continue;
+        }
+        let dt_per_cycle_us = *elapsed / *count;
+        *tau_result =
+            (voltage as u64 * dt_per_cycle_us as u64 * ELECTRICAL_MODEL_RESISTANCE_SCALE as u64
+                / (avg_delta as u64 * r_int as u64)) as u32;
+    }
+
+    let tau_e_us = match (tau_per_coil[0] > 0, tau_per_coil[1] > 0) {
+        (true, true) => (tau_per_coil[0] + tau_per_coil[1]) / 2,
+        (true, false) => tau_per_coil[0],
+        (false, true) => tau_per_coil[1],
+        (false, false) => return None,
+    };
+
+    let l_int = (r_int as u64 * tau_e_us as u64 / ELECTRICAL_MODEL_RESISTANCE_SCALE as u64) as u32;
+    let l_uh = r_mohm as u64 * tau_e_us as u64 / 1000;
+    if l_int == 0 || l_uh == 0 {
+        return None;
+    }
+
+    // --- Delay identification (from transient buffer) ---
+    let sample_count = samples.len();
+    let steady_state = if sample_count >= 20 {
+        let tail_start = sample_count - 10;
+        let tail_sum: u32 = samples[tail_start..].iter().sum();
+        tail_sum / 10
+    } else if !samples.is_empty() {
+        samples[sample_count - 1]
+    } else {
+        return None;
+    };
+
+    let onset_threshold = DELAY_ONSET_THRESHOLD as u32;
+    let mut theta_e_us = 0u32;
+    for (i, &sample) in samples.iter().enumerate() {
+        if sample > onset_threshold {
+            theta_e_us = (i as u64 * ELECTRICAL_SAMPLE_PERIOD_US) as u32;
+            break;
+        }
+    }
+
+    let rise_threshold = (steady_state as u64 * RISE_63_PCT_Q10 as u64 / 1024) as u32;
+    let mut tau_crosscheck_us = 0u32;
+    for (i, &sample) in samples.iter().enumerate() {
+        if sample >= rise_threshold {
+            tau_crosscheck_us = (i as u64 * ELECTRICAL_SAMPLE_PERIOD_US) as u32;
+            break;
+        }
+    }
+
+    if theta_e_us == 0 {
+        theta_e_us = ELECTRICAL_SAMPLE_PERIOD_US as u32;
+    }
+
+    Some(ElectricalModel {
+        r_int,
+        l_int,
+        tau_e_us,
+        theta_e_us,
+        r_mohm,
+        l_uh: l_uh as u32,
+        tau_e_crosscheck_us: tau_crosscheck_us,
+    })
+}
 
 /// Advance electrical identification sub-state.
 ///
@@ -218,10 +333,11 @@ pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
                 Ok(actual) => (actual & 0xFFFF) as i16,
                 Err(_) => return super::fail_inner(phase, CommissionError::Spi),
             };
-            let total_cycles = 5000u32; // From TmcConfig::didt_cycles default
+            let total_cycles = backend.tmc_config().didt_cycles.max(1);
             let start = backend.elapsed_us();
             *electrical_id_state = ElectricalIdState::IndToggle {
                 coil: *coil,
+                total_cycles,
                 remaining_cycles: total_cycles,
                 prev_current: initial_current,
                 start_us: start,
@@ -231,6 +347,7 @@ pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
 
         ElectricalIdState::IndToggle {
             coil,
+            total_cycles,
             remaining_cycles,
             prev_current,
             start_us,
@@ -244,7 +361,7 @@ pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
 
             while *remaining_cycles > 0 && cycles_this_step < INDUCTANCE_CYCLES_PER_STEP {
                 // Determine polarity based on which cycle we're on.
-                let total_done = 5000u32.saturating_sub(*remaining_cycles);
+                let total_done = total_cycles.saturating_sub(*remaining_cycles);
                 let v = if total_done % 2 == 0 { v_pos } else { v_neg };
                 let _ = backend.write_register(UQ_UD_EXT, v).await;
 
@@ -404,139 +521,8 @@ pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
         // Model assembly and validation
         // ---------------------------------------------------------------
         ElectricalIdState::Validate => {
-            let voltage = data.voltage;
-
-            // --- Resistance ---
-            // Per-coil: R_int = V / |I_avg|
-            let mut r_int_per_coil = [0u32; 2];
-            let mut r_mohm_per_coil = [0u32; 2];
-            for coil_idx in 0..2 {
-                let count = data.resistance_sample_count[coil_idx] as i32;
-                if count == 0 {
-                    return super::fail_inner(phase, CommissionError::ElectricalIdFailed);
-                }
-                let avg_current = (data.resistance_current_sum[coil_idx] / count) as i16;
-                let abs_current = avg_current.unsigned_abs() as u32;
-                if abs_current == 0 {
-                    return super::fail_inner(phase, CommissionError::ElectricalIdFailed);
-                }
-                r_int_per_coil[coil_idx] = voltage / abs_current;
-                r_mohm_per_coil[coil_idx] = (voltage as u64 * 1000 / abs_current as u64) as u32;
-            }
-            // Average of both coils.
-            let r_int = (r_int_per_coil[0] + r_int_per_coil[1]) / 2;
-            let r_mohm = (r_mohm_per_coil[0] + r_mohm_per_coil[1]) / 2;
-            if r_int == 0 {
+            let Some(model) = assemble_electrical_model(data, buf.samples()) else {
                 return super::fail_inner(phase, CommissionError::ElectricalIdFailed);
-            }
-
-            // --- Inductance (from di/dt) ---
-            // L_int = V * total_time_s / sum_delta
-            // tau_e_us = L_int / R_int * 1e6
-            // Since L_int = V * elapsed_us * 1e-6 / (sum_delta / count):
-            //   L_int = V * elapsed_us * count / (sum_delta * 1e6)
-            // And tau_e_us = L_int / R_int * 1e6:
-            //   tau_e_us = V * elapsed_us * count / (sum_delta * R_int)
-            let mut tau_per_coil = [0u32; 2];
-            for (tau_result, ((count, sum_delta), elapsed)) in tau_per_coil
-                .iter_mut()
-                .zip(
-                    data.inductance_count
-                        .iter()
-                        .zip(data.inductance_sum_delta.iter()),
-                )
-                .zip(data.inductance_elapsed_us.iter())
-                .map(|((t, (c, s)), e)| (t, ((c, s), e)))
-            {
-                if *count == 0 || *sum_delta == 0 || *elapsed == 0 {
-                    continue;
-                }
-                let avg_delta = (*sum_delta / *count as u64) as u32;
-                if avg_delta < INDUCTANCE_MIN_DELTA {
-                    continue;
-                }
-                // dt_per_cycle_us = elapsed / count
-                // L_int = V * dt_per_cycle_us * 1e-6 / avg_delta
-                // tau_us = L_int / R_int * 1e6 = V * dt_per_cycle_us / (avg_delta * R_int)
-                let dt_per_cycle_us = *elapsed / *count;
-                *tau_result = (voltage as u64 * dt_per_cycle_us as u64
-                    / (avg_delta as u64 * r_int as u64)) as u32;
-            }
-
-            // Use the valid coil(s) for tau.
-            let tau_e_us = match (tau_per_coil[0] > 0, tau_per_coil[1] > 0) {
-                (true, true) => (tau_per_coil[0] + tau_per_coil[1]) / 2,
-                (true, false) => tau_per_coil[0],
-                (false, true) => tau_per_coil[1],
-                (false, false) => {
-                    return super::fail_inner(phase, CommissionError::ElectricalIdFailed);
-                }
-            };
-
-            // L_int from tau: L_int = R_int * tau_e_us (internal units,
-            // such that tau_e_us = L_int / R_int holds directly).
-            let l_int = r_int * tau_e_us;
-
-            // Physical L: L_uh = R_mohm * tau_e_us / 1000
-            // (since L = R*tau; mohm*us = nH; nH/1000 = uH)
-            let l_uh = r_mohm as u64 * tau_e_us as u64 / 1000;
-
-            if l_int == 0 || l_uh == 0 {
-                return super::fail_inner(phase, CommissionError::ElectricalIdFailed);
-            }
-
-            // --- Delay identification (from transient buffer) ---
-            let samples = buf.samples();
-            let sample_count = samples.len();
-
-            // Find steady-state from last 10 samples.
-            let steady_state = if sample_count >= 20 {
-                let tail_start = sample_count - 10;
-                let tail_sum: u32 = samples[tail_start..].iter().sum();
-                tail_sum / 10
-            } else if !samples.is_empty() {
-                // Short capture: use last sample as approximation.
-                samples[sample_count - 1]
-            } else {
-                return super::fail_inner(phase, CommissionError::ElectricalIdFailed);
-            };
-
-            // Onset: first sample above noise threshold.
-            // Result values are bounded by samples.len() * sample period
-            // (< 256 * 160us = 41ms), well within u32 us range.
-            let onset_threshold = DELAY_ONSET_THRESHOLD as u32;
-            let mut theta_e_us = 0u32;
-            for (i, &sample) in samples.iter().enumerate() {
-                if sample > onset_threshold {
-                    theta_e_us = (i as u64 * ELECTRICAL_SAMPLE_PERIOD_US) as u32;
-                    break;
-                }
-            }
-
-            // 63% rise: first sample >= 0.632 * steady_state.
-            let rise_threshold = (steady_state as u64 * RISE_63_PCT_Q10 as u64 / 1024) as u32;
-            let mut tau_crosscheck_us = 0u32;
-            for (i, &sample) in samples.iter().enumerate() {
-                if sample >= rise_threshold {
-                    tau_crosscheck_us = (i as u64 * ELECTRICAL_SAMPLE_PERIOD_US) as u32;
-                    break;
-                }
-            }
-
-            // Default theta_e to at least one sample period if zero.
-            if theta_e_us == 0 {
-                theta_e_us = ELECTRICAL_SAMPLE_PERIOD_US as u32;
-            }
-
-            // --- Assemble ElectricalModel ---
-            let model = ElectricalModel {
-                r_int,
-                l_int,
-                tau_e_us,
-                theta_e_us,
-                r_mohm,
-                l_uh: l_uh as u32,
-                tau_e_crosscheck_us: tau_crosscheck_us,
             };
 
             match sequence {
@@ -545,14 +531,14 @@ pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
                         7,
                         crate::selftest::SelftestStageValue {
                             status: 0,
-                            value: r_mohm,
+                            value: model.r_mohm,
                         },
                     );
                     selftest_results.set(
                         8,
                         crate::selftest::SelftestStageValue {
                             status: 0,
-                            value: l_uh as u32,
+                            value: model.l_uh,
                         },
                     );
                     // Full safe-state restore matching restore_safe_state().
@@ -577,5 +563,115 @@ pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::autotune::TransientBuffer;
+    use crate::commission_dispatch::test_support::{MockBackend, SpiOp};
+    use crate::commissioning::inner::ElectricalIdData;
+    use crate::commissioning::types::StepResult;
+    use foci_tmc4671::registers::UQ_UD_EXT;
+
+    fn representative_data() -> ElectricalIdData {
+        let mut data = ElectricalIdData::new(512);
+        data.resistance_current_sum = [300_000, 300_000];
+        data.resistance_sample_count = [1000, 1000];
+        data.inductance_sum_delta = [85_000, 85_000];
+        data.inductance_count = [5000, 5000];
+        data.inductance_elapsed_us = [490_000, 490_000];
+        data
+    }
+
+    fn representative_transient() -> TransientBuffer {
+        let mut buf = TransientBuffer::new();
+        buf.reset(ELECTRICAL_SAMPLE_PERIOD_US as u16);
+        for &sample in &[0, 10, 25, 90, 180, 260, 330, 380] {
+            buf.push(sample);
+        }
+        for _ in 0..32 {
+            buf.push(400);
+        }
+        buf
+    }
+
+    #[test]
+    fn model_assembly_preserves_fractional_internal_resistance() {
+        let data = representative_data();
+        let buf = representative_transient();
+
+        let model = assemble_electrical_model(&data, buf.samples()).unwrap();
+
+        assert_eq!(model.r_int, 1706);
+        assert!(
+            (1725..=1735).contains(&model.tau_e_us),
+            "tau should use R=1.706, not truncated R=1: {}",
+            model.tau_e_us
+        );
+        assert!(
+            (2940..=2960).contains(&model.l_int),
+            "l_int should preserve the original internal L scale: {}",
+            model.l_int
+        );
+    }
+
+    #[test]
+    fn inductance_phase_uses_configured_didt_cycles() {
+        pollster::block_on(async {
+            let mut phase = InnerPhase::ElectricalId {
+                state: ElectricalIdState::IndSettle {
+                    coil: 0,
+                    deadline_us: 0,
+                },
+                data: ElectricalIdData::new(512),
+            };
+            let mut buf = TransientBuffer::new();
+            let mut backend = MockBackend::new();
+            backend.tmc_config.didt_cycles = 7;
+            let mut selftest_results = crate::selftest::SelftestResults::default();
+
+            let result = step_electrical_identification(
+                &mut phase,
+                &mut buf,
+                InnerSequence::Commission,
+                &mut selftest_results,
+                &mut backend,
+            )
+            .await;
+
+            assert!(matches!(result, StepResult::Continue));
+            let remaining_cycles = match &phase {
+                InnerPhase::ElectricalId {
+                    state:
+                        ElectricalIdState::IndToggle {
+                            remaining_cycles, ..
+                        },
+                    ..
+                } => *remaining_cycles,
+                other => panic!("expected IndToggle, got {other:?}"),
+            };
+            assert_eq!(remaining_cycles, 7);
+
+            backend.spi_log.clear();
+            let result = step_electrical_identification(
+                &mut phase,
+                &mut buf,
+                InnerSequence::Commission,
+                &mut selftest_results,
+                &mut backend,
+            )
+            .await;
+
+            assert!(matches!(result, StepResult::Continue));
+            let mut uq_ud_writes = backend.spi_log.iter().filter_map(|op| match op {
+                SpiOp::Write(addr, val) if *addr == UQ_UD_EXT.addr() => Some(*val),
+                _ => None,
+            });
+            assert_eq!(uq_ud_writes.next(), Some(512));
+            assert_eq!(uq_ud_writes.next(), Some(0xFE00));
+            assert_eq!(uq_ud_writes.next(), Some(512));
+        });
     }
 }
