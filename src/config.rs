@@ -20,6 +20,9 @@ pub struct TmcConfig {
     /// Excitation voltage for R/L measurement (PIDOUT units).
     pub excitation_voltage: u16,
     /// Number of di/dt toggle cycles per coil for L measurement.
+    ///
+    /// Keep this large enough that the initial zero-to-+V step and early L/R
+    /// transient are diluted by steady +V/-V square-wave samples.
     pub didt_cycles: u32,
     /// Current loop bandwidth in Hz (empirically validated per PWM frequency).
     pub bandwidth_hz: f32,

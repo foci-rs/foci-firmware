@@ -400,6 +400,10 @@ pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
 
             while *remaining_cycles > 0 && cycles_this_step < INDUCTANCE_CYCLES_PER_STEP {
                 // Determine polarity based on which cycle we're on.
+                // Cycle 0 starts from the zero-voltage settle state, so the
+                // first delta is a zero-to-+V transition instead of a full
+                // +V/-V swing. Keep didt_cycles high enough that this startup
+                // transient cannot dominate the average.
                 let total_done = total_cycles.saturating_sub(*remaining_cycles);
                 let v = if total_done % 2 == 0 { v_pos } else { v_neg };
                 if backend.write_register(UQ_UD_EXT, v).await.is_err() {
