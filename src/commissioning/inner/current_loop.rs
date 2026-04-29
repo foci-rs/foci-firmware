@@ -51,7 +51,7 @@ pub(crate) struct CurrentValidateData {
     pub(crate) gains: CurrentGains,
     /// Validation attempt (0 = first, 1 = retry).
     pub(crate) attempt: u8,
-    /// Current step amplitude (absolute, PIDOUT units).
+    /// Current step amplitude (absolute torque/flux current target counts).
     pub(crate) step_amplitude: u16,
     /// Forward capture metrics (filled after forward capture).
     pub(crate) forward_metrics: Option<CurrentValidation>,
