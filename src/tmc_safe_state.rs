@@ -10,6 +10,12 @@
 //! safe-state SPI errors as the user-visible result.
 
 use crate::commissioning::types::CommissioningBackend;
+use foci_tmc4671::registers::Register;
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct SafeStateRestoreReport {
+    failed_writes: u8,
+}
 
 /// Restore the TMC4671 to a safe non-energized state via `CommissioningBackend`.
 ///
@@ -25,17 +31,38 @@ pub async fn restore_safe_state_via_backend<B>(backend: &mut B)
 where
     B: CommissioningBackend,
 {
+    let _ = restore_safe_state_via_backend_report(backend).await;
+}
+
+async fn restore_safe_state_via_backend_report<B>(backend: &mut B) -> SafeStateRestoreReport
+where
+    B: CommissioningBackend,
+{
     use foci_tmc4671::registers::*;
 
+    let mut report = SafeStateRestoreReport::default();
     backend.set_enable_pin(false);
-    let _ = backend
-        .write_register(MODE_RAMP_MODE_MOTION, 0x0000_0000)
-        .await;
-    let _ = backend.write_register(PID_TORQUE_FLUX_TARGET, 0).await;
-    let _ = backend.write_register(UQ_UD_EXT, 0).await;
-    let _ = backend.write_register(PWM_SV_CHOP, 0).await;
-    let _ = backend.write_register(PID_VELOCITY_OFFSET, 0).await;
-    let _ = backend.write_register(PIDOUT_UQ_UD_LIMITS, 1024).await;
+    safe_state_write(backend, MODE_RAMP_MODE_MOTION, 0, &mut report).await;
+    safe_state_write(backend, PID_TORQUE_FLUX_TARGET, 0, &mut report).await;
+    safe_state_write(backend, UQ_UD_EXT, 0, &mut report).await;
+    safe_state_write(backend, PWM_SV_CHOP, 0, &mut report).await;
+    safe_state_write(backend, PID_VELOCITY_OFFSET, 0, &mut report).await;
+    safe_state_write(backend, PIDOUT_UQ_UD_LIMITS, 1024, &mut report).await;
+    report
+}
+
+async fn safe_state_write<B>(
+    backend: &mut B,
+    reg: Register,
+    val: u32,
+    report: &mut SafeStateRestoreReport,
+) where
+    B: CommissioningBackend,
+{
+    if backend.write_register(reg, val).await.is_err() {
+        report.failed_writes = report.failed_writes.saturating_add(1);
+        defmt::warn!("safe-state restore write failed: reg={=u8}", reg.addr());
+    }
 }
 
 #[cfg(test)]
@@ -88,6 +115,18 @@ mod tests {
             assert!(attempted.contains(&PWM_SV_CHOP.addr()));
             assert!(attempted.contains(&PID_VELOCITY_OFFSET.addr()));
             assert!(attempted.contains(&PIDOUT_UQ_UD_LIMITS.addr()));
+        });
+    }
+
+    #[test]
+    fn restore_reports_write_failures_for_diagnostics() {
+        pollster::block_on(async {
+            let mut backend = MockBackend::new();
+            backend.fail_on_write = Some(UQ_UD_EXT.addr());
+
+            let report = restore_safe_state_via_backend_report(&mut backend).await;
+
+            assert_eq!(report.failed_writes, 1);
         });
     }
 }
