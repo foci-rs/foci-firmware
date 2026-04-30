@@ -45,47 +45,6 @@ where
     let _ = tmc.write_register(PIDOUT_UQ_UD_LIMITS, 1024).await;
 }
 
-/// Restore the TMC4671 to a safe non-energized state via `CommissioningBackend`.
-///
-/// Mirror of [`restore_safe_state`], which uses a raw `Tmc4671Spi<B>` and a
-/// GPIO pin directly. This variant routes all register writes and the
-/// enable-pin toggle through `CommissioningBackend` so the dispatch layer can
-/// call it without holding the raw SPI device or GPIO.
-///
-/// The register sequence is identical to [`restore_safe_state`]:
-/// 1. Assert enable pin low.
-/// 2. `MODE_RAMP_MODE_MOTION = 0` — stop motion.
-/// 3. `PID_TORQUE_FLUX_TARGET = 0` — zero torque/flux target.
-/// 4. `UQ_UD_EXT = 0` — zero external voltage vector.
-/// 5. `PWM_SV_CHOP = 0` — disable chopper.
-/// 6. `PID_VELOCITY_OFFSET = 0` — zero velocity feed-forward offset.
-/// 7. `PIDOUT_UQ_UD_LIMITS = 1024` — conservative voltage ceiling.
-///
-/// Best-effort: individual SPI failures do not abort the sequence.
-/// The chip is potentially in a suspect state; every step is attempted.
-///
-/// # Parameters
-/// - `backend`: mutable reference to a `CommissioningBackend` implementation.
-pub async fn restore_safe_state_via_backend<B>(backend: &mut B)
-where
-    B: crate::commissioning::types::CommissioningBackend,
-{
-    use foci_tmc4671::registers::*;
-
-    backend.set_enable_pin(false);
-    let _ = backend
-        .write_register(MODE_RAMP_MODE_MOTION, 0x0000_0000)
-        .await;
-    let _ = backend.write_register(PID_TORQUE_FLUX_TARGET, 0).await;
-    let _ = backend.write_register(UQ_UD_EXT, 0).await;
-    let _ = backend.write_register(PWM_SV_CHOP, 0).await;
-    let _ = backend.write_register(PID_VELOCITY_OFFSET, 0).await;
-    // Conservative voltage ceiling matching AdcCalibrate's safety default.
-    // Prevents high-voltage drive authority from leaking across a safe-state
-    // transition into a subsequent partial re-enable.
-    let _ = backend.write_register(PIDOUT_UQ_UD_LIMITS, 1024).await;
-}
-
 /// Measure per-coil resistance with PWM-rate current averaging for autotune.
 ///
 /// Same setup as the old selftest resistance measurement (MODE=8, UQ_UD_EXT,

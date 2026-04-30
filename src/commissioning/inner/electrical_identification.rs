@@ -591,15 +591,7 @@ pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
                             value: model.l_uh,
                         },
                     );
-                    // Full safe-state restore matching restore_safe_state().
-                    backend.set_enable_pin(false);
-                    let _ = backend.write_register(MODE_RAMP_MODE_MOTION, 0).await;
-                    let _ = backend.write_register(PID_TORQUE_FLUX_TARGET, 0).await;
-                    let _ = backend.write_register(UQ_UD_EXT, 0).await;
-                    let _ = backend.write_register(PWM_SV_CHOP, 0).await;
-                    let _ = backend
-                        .write_register(foci_tmc4671::registers::PID_VELOCITY_OFFSET, 0)
-                        .await;
+                    crate::tmc_safe_state::restore_safe_state_via_backend(backend).await;
                     StepResult::SelftestDone
                 }
                 InnerSequence::Commission => {

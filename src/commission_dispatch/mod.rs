@@ -210,7 +210,7 @@ pub async fn drive_commission_result<B: CommissioningBackend>(
             let selftest_results = consumed.take_selftest_results();
             crate::state::tmc::COMMISSION_IN_FLIGHT
                 .store(false, core::sync::atomic::Ordering::Relaxed);
-            crate::selftest::restore_safe_state_via_backend(backend).await;
+            crate::tmc_safe_state::restore_safe_state_via_backend(backend).await;
 
             let reply = match kind {
                 EngineKind::Calibrate => ReplyPayload::CalibrateResult {

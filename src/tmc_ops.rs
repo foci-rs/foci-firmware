@@ -508,7 +508,7 @@ pub async fn apply_stored_filters_via_backend<B: CommissioningBackend>(
 /// De-energize the motor and clear all armed/enabled state.
 ///
 /// Routes the safe-state register sequence through
-/// [`crate::selftest::restore_safe_state_via_backend`], then clears
+/// [`crate::tmc_safe_state::restore_safe_state_via_backend`], then clears
 /// `state.calibrated`, `state.motor_enabled`, and
 /// [`crate::state::tmc::MOTOR_ARMED`].
 ///
@@ -516,7 +516,7 @@ pub async fn apply_stored_filters_via_backend<B: CommissioningBackend>(
 /// Does not touch the stepper queue or invoke `stepper_stop_from_p1` —
 /// those remain board-side responsibilities.
 pub async fn disarm_motor<B: CommissioningBackend>(backend: &mut B, state: &mut DispatchState<'_>) {
-    crate::selftest::restore_safe_state_via_backend(backend).await;
+    crate::tmc_safe_state::restore_safe_state_via_backend(backend).await;
     *state.calibrated = false;
     *state.motor_enabled = false;
     crate::state::tmc::MOTOR_ARMED.store(false, core::sync::atomic::Ordering::Relaxed);
