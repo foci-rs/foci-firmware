@@ -325,7 +325,7 @@ pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
                 *electrical_id_state = ElectricalIdState::ResSetup { coil: 1 };
             } else {
                 // Both resistance measurements done. Start inductance.
-                *electrical_id_state = ElectricalIdState::IndSetup { coil: 0 };
+                *electrical_id_state = ElectricalIdState::InductanceSetup { coil: 0 };
             }
             StepResult::Continue
         }
@@ -333,7 +333,28 @@ pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
         // ---------------------------------------------------------------
         // Inductance measurement (per coil, square-wave dI/dt)
         // ---------------------------------------------------------------
-        ElectricalIdState::IndSetup { coil } => {
+        ElectricalIdState::InductanceSetup { coil } => {
+            // Bound-check `didt_cycles` before any energizing register write.
+            // Phase 1 policy: warmup_cycles = max(8, didt_cycles / 20),
+            // measured_cycles = didt_cycles - warmup_cycles. Reject if the
+            // measured window would be too short to reduce noise, and reject
+            // configurations that would energize the dI/dt sweep beyond ~1.1s.
+            let didt_cycles = backend.tmc_config().didt_cycles;
+            if didt_cycles > 50_000 {
+                defmt::warn!("electrical id: didt_cycles={} > 50000 cap", didt_cycles);
+                return super::fail_inner(phase, CommissionError::ElectricalIdFailed);
+            }
+            let warmup_cycles = core::cmp::max(8, didt_cycles / 20);
+            let measured_cycles = didt_cycles.saturating_sub(warmup_cycles);
+            if measured_cycles < 64 {
+                defmt::warn!(
+                    "electrical id: didt_cycles={} leaves {} measured (need >=64)",
+                    didt_cycles,
+                    measured_cycles
+                );
+                return super::fail_inner(phase, CommissionError::ElectricalIdFailed);
+            }
+
             let coil_idx = *coil;
             if backend.write_register(PHI_E_SELECTION, 1).await.is_err() {
                 return super::fail_inner(phase, CommissionError::Spi);
@@ -356,14 +377,14 @@ pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
             backend.set_enable_pin(true);
 
             let deadline = backend.elapsed_us().wrapping_add(INDUCTANCE_PRE_SETTLE_US);
-            *electrical_id_state = ElectricalIdState::IndSettle {
+            *electrical_id_state = ElectricalIdState::InductanceSettle {
                 coil: coil_idx,
                 deadline_us: deadline,
             };
             StepResult::Continue
         }
 
-        ElectricalIdState::IndSettle { coil, deadline_us } => {
+        ElectricalIdState::InductanceSettle { coil, deadline_us } => {
             if backend.elapsed_us().wrapping_sub(*deadline_us) >= 0x8000_0000 {
                 return StepResult::Continue; // Not yet.
             }
@@ -372,24 +393,36 @@ pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
                 Ok(actual) => (actual & 0xFFFF) as i16,
                 Err(_) => return super::fail_inner(phase, CommissionError::Spi),
             };
-            let total_cycles = backend.tmc_config().didt_cycles.max(1);
+            // Re-read `didt_cycles` here rather than threading it through
+            // the state enum. The `CommissioningBackend` trait does not
+            // promise `tmc_config()` immutability, but `TmcConfig` is
+            // constructed once at engine creation and never mutated by the
+            // commissioning code — this read returns the same value
+            // `InductanceSetup` validated. The `.max(1)` keeps the
+            // arithmetic well-defined even on an unexpected mutation.
+            let didt_cycles = backend.tmc_config().didt_cycles.max(1);
+            let warmup_cycles = core::cmp::max(8, didt_cycles / 20);
             let start = backend.elapsed_us();
-            *electrical_id_state = ElectricalIdState::IndToggle {
+            *electrical_id_state = ElectricalIdState::InductanceToggle {
                 coil: *coil,
-                total_cycles,
-                remaining_cycles: total_cycles,
+                total_cycles: didt_cycles,
+                remaining_cycles: didt_cycles,
                 prev_current: initial_current,
                 start_us: start,
+                warmup_cycles_remaining: warmup_cycles,
+                accumulation_start_us: None,
             };
             StepResult::Continue
         }
 
-        ElectricalIdState::IndToggle {
+        ElectricalIdState::InductanceToggle {
             coil,
             total_cycles,
             remaining_cycles,
             prev_current,
             start_us,
+            warmup_cycles_remaining,
+            accumulation_start_us,
         } => {
             let coil_idx = *coil as usize;
             let voltage = data.voltage;
@@ -399,11 +432,9 @@ pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
             let mut cycles_this_step = 0u32;
 
             while *remaining_cycles > 0 && cycles_this_step < INDUCTANCE_CYCLES_PER_STEP {
-                // Determine polarity based on which cycle we're on.
-                // Cycle 0 starts from the zero-voltage settle state, so the
-                // first delta is a zero-to-+V transition instead of a full
-                // +V/-V swing. Keep didt_cycles high enough that this startup
-                // transient cannot dominate the average.
+                // Polarity alternates by absolute cycle number so the warm-up
+                // window still sees the same +V/-V toggle pattern that the
+                // accumulation window relies on.
                 let total_done = total_cycles.saturating_sub(*remaining_cycles);
                 let v = if total_done % 2 == 0 { v_pos } else { v_neg };
                 if backend.write_register(UQ_UD_EXT, v).await.is_err() {
@@ -415,20 +446,28 @@ pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
                     Err(_) => return super::fail_inner(phase, CommissionError::Spi),
                 };
                 let current = (actual & 0xFFFF) as i16;
-                let delta = (current as i32 - *prev_current as i32).unsigned_abs();
-                data.inductance_sum_delta[coil_idx] += delta as u64;
-                data.inductance_count[coil_idx] += 1;
+                if *warmup_cycles_remaining > 0 {
+                    *warmup_cycles_remaining -= 1;
+                    if *warmup_cycles_remaining == 0 {
+                        // Next iteration is the first measured cycle.
+                        *accumulation_start_us = Some(backend.elapsed_us());
+                    }
+                } else {
+                    let delta = (current as i32 - *prev_current as i32).unsigned_abs();
+                    data.inductance_sum_delta[coil_idx] += delta as u64;
+                    data.inductance_count[coil_idx] += 1;
+                }
                 *prev_current = current;
                 *remaining_cycles -= 1;
                 cycles_this_step += 1;
             }
 
             if *remaining_cycles == 0 {
-                // All cycles done. Record elapsed time.
-                // Duration is bounded by INDUCTANCE_CYCLES * cycle time
-                // (~200ms max), well within u32 us range.
+                // All cycles done. Elapsed is measured from the first
+                // accumulated cycle (warm-up excluded).
                 let end = backend.elapsed_us();
-                data.inductance_elapsed_us[coil_idx] = end.wrapping_sub(*start_us) as u32;
+                let start = accumulation_start_us.unwrap_or(*start_us);
+                data.inductance_elapsed_us[coil_idx] = end.wrapping_sub(start) as u32;
 
                 // Disable motor.
                 let _ = backend.write_register(UQ_UD_EXT, 0).await;
@@ -436,7 +475,7 @@ pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
                 backend.set_enable_pin(false);
 
                 let deadline = backend.elapsed_us().wrapping_add(ELECTRICAL_COOLDOWN_US);
-                *electrical_id_state = ElectricalIdState::IndDisable {
+                *electrical_id_state = ElectricalIdState::InductanceDisable {
                     coil: *coil,
                     deadline_us: deadline,
                 };
@@ -444,14 +483,14 @@ pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
             StepResult::Continue
         }
 
-        ElectricalIdState::IndDisable { coil, deadline_us } => {
+        ElectricalIdState::InductanceDisable { coil, deadline_us } => {
             if backend.elapsed_us().wrapping_sub(*deadline_us) >= 0x8000_0000 {
                 return StepResult::Continue; // Not yet.
             }
             let coil_idx = *coil;
             if coil_idx == 0 {
                 // Move to coil B inductance.
-                *electrical_id_state = ElectricalIdState::IndSetup { coil: 1 };
+                *electrical_id_state = ElectricalIdState::InductanceSetup { coil: 1 };
             } else {
                 // Both inductance measurements done. Start delay capture.
                 *electrical_id_state = ElectricalIdState::DelaySetup;
@@ -740,7 +779,7 @@ mod tests {
     fn inductance_phase_uses_configured_didt_cycles() {
         pollster::block_on(async {
             let mut phase = InnerPhase::ElectricalId {
-                state: ElectricalIdState::IndSettle {
+                state: ElectricalIdState::InductanceSettle {
                     coil: 0,
                     deadline_us: 0,
                 },
@@ -748,7 +787,9 @@ mod tests {
             };
             let mut buf = TransientBuffer::new();
             let mut backend = MockBackend::new();
-            backend.tmc_config.didt_cycles = 7;
+            // Section 2 bound check rejects didt_cycles below 64 + warmup.
+            // 200 → warmup = max(8, 200/20) = 10, measured = 190 ≥ 64.
+            backend.tmc_config.didt_cycles = 200;
             let mut selftest_results = crate::selftest::SelftestResults::default();
 
             let result = step_electrical_identification(
@@ -764,14 +805,14 @@ mod tests {
             let remaining_cycles = match &phase {
                 InnerPhase::ElectricalId {
                     state:
-                        ElectricalIdState::IndToggle {
+                        ElectricalIdState::InductanceToggle {
                             remaining_cycles, ..
                         },
                     ..
                 } => *remaining_cycles,
-                other => panic!("expected IndToggle, got {other:?}"),
+                other => panic!("expected InductanceToggle, got {other:?}"),
             };
-            assert_eq!(remaining_cycles, 7);
+            assert_eq!(remaining_cycles, 200);
 
             backend.spi_log.clear();
             let result = step_electrical_identification(
@@ -784,6 +825,8 @@ mod tests {
             .await;
 
             assert!(matches!(result, StepResult::Continue));
+            // Polarity still alternates by absolute cycle number across
+            // both the warm-up and measured windows.
             let mut uq_ud_writes = backend.spi_log.iter().filter_map(|op| match op {
                 SpiOp::Write(addr, val) if *addr == UQ_UD_EXT.addr() => Some(*val),
                 _ => None,
@@ -798,12 +841,17 @@ mod tests {
     fn inductance_elapsed_time_handles_timer_wrap() {
         pollster::block_on(async {
             let mut phase = InnerPhase::ElectricalId {
-                state: ElectricalIdState::IndToggle {
+                state: ElectricalIdState::InductanceToggle {
                     coil: 0,
                     total_cycles: 1,
                     remaining_cycles: 1,
                     prev_current: 0,
                     start_us: u64::MAX - 10,
+                    // No warm-up remaining: this single cycle is measured,
+                    // and the elapsed window starts at the recorded
+                    // accumulation_start_us, which mirrors start_us.
+                    warmup_cycles_remaining: 0,
+                    accumulation_start_us: Some(u64::MAX - 10),
                 },
                 data: ElectricalIdData::new(512),
             };
@@ -828,13 +876,13 @@ mod tests {
             assert!(matches!(result, StepResult::Continue));
             match &phase {
                 InnerPhase::ElectricalId {
-                    state: ElectricalIdState::IndDisable { .. },
+                    state: ElectricalIdState::InductanceDisable { .. },
                     data,
                 } => {
                     assert_eq!(data.inductance_elapsed_us[0], 31);
                     assert_eq!(data.inductance_count[0], 1);
                 }
-                other => panic!("expected IndDisable, got {other:?}"),
+                other => panic!("expected InductanceDisable, got {other:?}"),
             }
         });
     }
@@ -843,12 +891,14 @@ mod tests {
     fn inductance_toggle_write_error_fails_inner_phase() {
         pollster::block_on(async {
             let mut phase = InnerPhase::ElectricalId {
-                state: ElectricalIdState::IndToggle {
+                state: ElectricalIdState::InductanceToggle {
                     coil: 0,
                     total_cycles: 7,
                     remaining_cycles: 7,
                     prev_current: 0,
                     start_us: 0,
+                    warmup_cycles_remaining: 0,
+                    accumulation_start_us: Some(0),
                 },
                 data: ElectricalIdData::new(512),
             };
@@ -878,12 +928,14 @@ mod tests {
     fn inductance_toggle_read_error_fails_inner_phase() {
         pollster::block_on(async {
             let mut phase = InnerPhase::ElectricalId {
-                state: ElectricalIdState::IndToggle {
+                state: ElectricalIdState::InductanceToggle {
                     coil: 0,
                     total_cycles: 7,
                     remaining_cycles: 7,
                     prev_current: 0,
                     start_us: 0,
+                    warmup_cycles_remaining: 0,
+                    accumulation_start_us: Some(0),
                 },
                 data: ElectricalIdData::new(512),
             };
@@ -916,12 +968,14 @@ mod tests {
             // so an SPI write failure mid-toggle leaves the chip de-energized
             // and the canonical safe-state register sequence applied.
             let mut phase = InnerPhase::ElectricalId {
-                state: ElectricalIdState::IndToggle {
+                state: ElectricalIdState::InductanceToggle {
                     coil: 0,
                     total_cycles: 7,
                     remaining_cycles: 7,
                     prev_current: 0,
                     start_us: 0,
+                    warmup_cycles_remaining: 0,
+                    accumulation_start_us: Some(0),
                 },
                 data: ElectricalIdData::new(512),
             };
@@ -976,6 +1030,114 @@ mod tests {
                     "canonical safe-state register {:#x} not written after failure",
                     canonical
                 );
+            }
+        });
+    }
+
+    #[test]
+    fn inductance_setup_fails_when_didt_cycles_too_small() {
+        pollster::block_on(async {
+            let mut phase = InnerPhase::ElectricalId {
+                state: ElectricalIdState::InductanceSetup { coil: 0 },
+                data: ElectricalIdData::new(512),
+            };
+            let mut buf = TransientBuffer::new();
+            let mut backend = MockBackend::new();
+            // 50 - max(8, 50/20=8) = 42 measured cycles, below the 64 floor.
+            backend.tmc_config.didt_cycles = 50;
+            let mut selftest_results = crate::selftest::SelftestResults::default();
+
+            let result = step_electrical_identification(
+                &mut phase,
+                &mut buf,
+                InnerSequence::Commission,
+                &mut selftest_results,
+                &mut backend,
+            )
+            .await;
+
+            assert!(matches!(
+                result,
+                StepResult::InnerFailed(CommissionError::ElectricalIdFailed)
+            ));
+            assert!(!backend.enable_pin, "must not energize on rejected config");
+        });
+    }
+
+    #[test]
+    fn inductance_setup_fails_when_didt_cycles_overlarge() {
+        pollster::block_on(async {
+            let mut phase = InnerPhase::ElectricalId {
+                state: ElectricalIdState::InductanceSetup { coil: 0 },
+                data: ElectricalIdData::new(512),
+            };
+            let mut buf = TransientBuffer::new();
+            let mut backend = MockBackend::new();
+            backend.tmc_config.didt_cycles = 60_000; // > 50_000 cap
+            let mut selftest_results = crate::selftest::SelftestResults::default();
+
+            let result = step_electrical_identification(
+                &mut phase,
+                &mut buf,
+                InnerSequence::Commission,
+                &mut selftest_results,
+                &mut backend,
+            )
+            .await;
+
+            assert!(matches!(
+                result,
+                StepResult::InnerFailed(CommissionError::ElectricalIdFailed)
+            ));
+            assert!(!backend.enable_pin, "must not energize on rejected config");
+        });
+    }
+
+    #[test]
+    fn inductance_toggle_skips_warmup_cycles_in_accumulator() {
+        pollster::block_on(async {
+            // 4 cycles total, 2 of warm-up. The first 2 cycles must not
+            // contribute to inductance_count or inductance_sum_delta; the
+            // elapsed window starts at the elapsed_us captured between the
+            // last warm-up read and the first measured read.
+            let mut phase = InnerPhase::ElectricalId {
+                state: ElectricalIdState::InductanceToggle {
+                    coil: 0,
+                    total_cycles: 4,
+                    remaining_cycles: 4,
+                    prev_current: 0,
+                    start_us: 0,
+                    warmup_cycles_remaining: 2,
+                    accumulation_start_us: None,
+                },
+                data: ElectricalIdData::new(512),
+            };
+            let mut buf = TransientBuffer::new();
+            let mut backend = MockBackend::new();
+            backend.elapsed_us_value = 100;
+            backend
+                .registers
+                .insert(PID_TORQUE_FLUX_ACTUAL.addr(), 50)
+                .ok();
+            let mut selftest_results = crate::selftest::SelftestResults::default();
+
+            let _ = step_electrical_identification(
+                &mut phase,
+                &mut buf,
+                InnerSequence::Commission,
+                &mut selftest_results,
+                &mut backend,
+            )
+            .await;
+
+            match &phase {
+                InnerPhase::ElectricalId {
+                    state: ElectricalIdState::InductanceDisable { .. },
+                    data,
+                } => {
+                    assert_eq!(data.inductance_count[0], 2);
+                }
+                other => panic!("expected InductanceDisable, got {other:?}"),
             }
         });
     }

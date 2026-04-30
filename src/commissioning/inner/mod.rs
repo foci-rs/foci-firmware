@@ -168,19 +168,26 @@ pub(crate) enum ElectricalIdState {
 
     // --- Inductance measurement (per coil, square-wave di/dt) ---
     /// Configure for di/dt toggling.
-    IndSetup { coil: u8 },
+    InductanceSetup { coil: u8 },
     /// Brief settle before toggling.
-    IndSettle { coil: u8, deadline_us: u64 },
+    InductanceSettle { coil: u8, deadline_us: u64 },
     /// Toggle voltage and accumulate |delta_I| (chunked per step).
-    IndToggle {
+    ///
+    /// `warmup_cycles_remaining` excludes startup transients from the
+    /// accumulation. `accumulation_start_us` records the timestamp of the
+    /// first measured (post-warm-up) cycle so the elapsed window only
+    /// covers accumulated samples.
+    InductanceToggle {
         coil: u8,
         total_cycles: u32,
         remaining_cycles: u32,
         prev_current: i16,
         start_us: u64,
+        warmup_cycles_remaining: u32,
+        accumulation_start_us: Option<u64>,
     },
     /// Disable motor and cool down.
-    IndDisable { coil: u8, deadline_us: u64 },
+    InductanceDisable { coil: u8, deadline_us: u64 },
 
     // --- Delay identification ---
     /// Configure for delay step response capture.
