@@ -238,7 +238,15 @@ pub(crate) enum InnerPhase {
         data: ElectricalIdData,
     },
     /// Phase 6: Current-loop SIMC gain synthesis.
-    CurrentTune { model: ElectricalModel },
+    CurrentTune {
+        model: ElectricalModel,
+        /// Phase 5 model-assembly warning bits (bits 0–3).
+        /// Carried forward so current validation can OR in bits 4–5 and the
+        /// final InnerResult reports the full set.
+        inner_warning_flags: u8,
+        /// L/R-vs-transient tau residual in permille from Phase 5.
+        tau_residual_permille: u16,
+    },
     /// Phase 7: Current-loop step-response validation.
     CurrentValidate {
         state: CurrentValidateState,

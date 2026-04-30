@@ -64,6 +64,12 @@ pub(crate) struct CurrentValidateData {
     pub(crate) saturation_count: u16,
     /// Configured PIDOUT voltage limit for saturation detection.
     pub(crate) pidout_limit: u32,
+    /// Warning bits accumulated through Stage 1 (bits 0–3 from Phase 5,
+    /// bit 4 ORed if a retry was accepted, bit 5 ORed if gains fell back
+    /// to defaults).
+    pub(crate) inner_warning_flags: u8,
+    /// L/R-vs-transient tau residual in permille from Phase 5.
+    pub(crate) tau_residual_permille: u16,
 }
 
 /// Step amplitude as a fraction of run_current (15% = 15/100).
@@ -93,8 +99,12 @@ pub(crate) async fn step_current_tune<B: CommissioningBackend>(
     profile: CommissionProfile,
     backend: &mut B,
 ) -> StepResult {
-    let model = match phase {
-        InnerPhase::CurrentTune { model } => *model,
+    let (model, inner_warning_flags, tau_residual_permille) = match phase {
+        InnerPhase::CurrentTune {
+            model,
+            inner_warning_flags,
+            tau_residual_permille,
+        } => (*model, *inner_warning_flags, *tau_residual_permille),
         _ => return StepResult::Continue,
     };
 
@@ -141,6 +151,8 @@ pub(crate) async fn step_current_tune<B: CommissioningBackend>(
                     .unwrap_or(0)
                     & 0xFFFF
             },
+            inner_warning_flags,
+            tau_residual_permille,
         },
     };
     StepResult::PhaseChanged(PhaseId::CurrentValidate)
@@ -431,6 +443,8 @@ pub(crate) async fn step_current_validate<B: CommissioningBackend>(
                 ValidationResult::Pass => {
                     // Gains accepted.
                     data.final_status = if data.attempt > 0 {
+                        // Bit 4: current-validation retry accepted.
+                        data.inner_warning_flags |= 1 << 4;
                         CommissionStatus::AcceptedWithWarnings
                     } else {
                         CommissionStatus::Accepted
@@ -464,6 +478,13 @@ pub(crate) async fn step_current_validate<B: CommissioningBackend>(
                         defmt::info!(
                             "current validate accept: marginal symmetry only, retry unchanged"
                         );
+                        // This early-accept arm is only reached when
+                        // `should_retry_current_validation` accepted the
+                        // result *and* `data.attempt == 0` (the helper
+                        // requires the first attempt). Bit 4 is reserved
+                        // for retries that actually succeeded, so do not
+                        // set it here.
+                        debug_assert_eq!(data.attempt, 0);
                         data.final_status = CommissionStatus::Accepted;
                     } else {
                         data.attempt = 1;
@@ -492,6 +513,8 @@ pub(crate) async fn step_current_validate<B: CommissioningBackend>(
                         lambda_us: 0,
                     };
                     data.final_status = CommissionStatus::AcceptedWithWarnings;
+                    // Bit 5: current gains fell back to defaults.
+                    data.inner_warning_flags |= 1 << 5;
 
                     // Write the default gains to TMC4671 so outer
                     // commissioning uses the reported conservative gains.
@@ -546,6 +569,10 @@ pub(crate) async fn step_current_validate<B: CommissioningBackend>(
                 theta_e_us: data.model.theta_e_us,
                 ringing_count,
                 bandwidth_hz: data.gains.effective_bandwidth_hz,
+                tau_e_us: data.model.tau_e_us,
+                tau_e_crosscheck_us: data.model.tau_e_crosscheck_us,
+                tau_residual_permille: data.tau_residual_permille,
+                inner_warning_flags: data.inner_warning_flags,
             };
 
             match sequence {

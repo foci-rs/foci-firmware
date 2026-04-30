@@ -176,6 +176,15 @@ pub struct InnerResult {
     pub ringing_count: u8,
     /// Effective current-loop bandwidth in Hz.
     pub bandwidth_hz: u32,
+    /// Electrical time constant L/R in microseconds (Phase 5 measurement).
+    pub tau_e_us: u32,
+    /// Tau crosscheck from the transient onset (microseconds).
+    pub tau_e_crosscheck_us: u32,
+    /// L/R-vs-transient tau residual in permille.
+    pub tau_residual_permille: u16,
+    /// Warning bitfield (bit 0..3 model gates, bit 4 retry accepted,
+    /// bit 5 fallback gains, bit 6 host-default confidence, bit 7 reserved).
+    pub inner_warning_flags: u8,
 }
 
 /// Result of outer (mechanical) commissioning.

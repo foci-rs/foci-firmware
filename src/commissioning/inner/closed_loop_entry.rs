@@ -449,6 +449,10 @@ pub(crate) async fn step_closed_loop_entry<B: CommissioningBackend>(
                         theta_e_us: 0,
                         ringing_count: 0,
                         bandwidth_hz: 0,
+                        tau_e_us: 0,
+                        tau_e_crosscheck_us: 0,
+                        tau_residual_permille: 0,
+                        inner_warning_flags: 0,
                     });
                     StepResult::CommissionDone(CommissionResult {
                         inner,

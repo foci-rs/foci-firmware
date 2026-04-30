@@ -54,15 +54,129 @@ const DELAY_ONSET_THRESHOLD: u16 = 20;
 /// 0.632 * 1024 ≈ 647 (Q10 format for integer math).
 const RISE_63_PCT_Q10: u32 = 647;
 
-/// Maximum allowed L/R tau vs transient tau mismatch (50%, in permille).
-const TAU_CROSSCHECK_MAX_ERROR_PERMILLE: u32 = 500;
+// ---------------------------------------------------------------------------
+// Phase 1 model-assembly gates and warning bits.
+// ---------------------------------------------------------------------------
 
-fn tau_crosscheck_valid(model: &ElectricalModel) -> bool {
-    if model.tau_e_us == 0 || model.tau_e_crosscheck_us == 0 {
-        return false;
+/// Per-coil resistance disagreement >= 5 % (warning).
+pub(crate) const INNER_WARN_BIT_RESISTANCE_MISMATCH: u8 = 1 << 0;
+/// Per-coil tau/L disagreement >= 15 % (warning).
+pub(crate) const INNER_WARN_BIT_TAU_MISMATCH: u8 = 1 << 1;
+/// L/R tau vs transient tau residual >= 25 % (warning).
+pub(crate) const INNER_WARN_BIT_TAU_RESIDUAL: u8 = 1 << 2;
+/// theta_e_us >= tau_e_us / 4 (warning).
+pub(crate) const INNER_WARN_BIT_THETA_TAU: u8 = 1 << 3;
+
+/// Resistance below this is treated as a near-short.
+const RESISTANCE_SHORT_MOHM: u32 = 100;
+/// Resistance above this is treated as open-load or invalid scaling.
+const RESISTANCE_OPEN_MOHM: u32 = 50_000;
+/// Per-coil resistance disagreement fail threshold (permille).
+const RESISTANCE_MISMATCH_FAIL_PERMILLE: u32 = 150;
+/// Per-coil resistance disagreement warn threshold (permille).
+const RESISTANCE_MISMATCH_WARN_PERMILLE: u32 = 50;
+/// Per-coil tau disagreement fail threshold (permille).
+const TAU_MISMATCH_FAIL_PERMILLE: u32 = 300;
+/// Per-coil tau disagreement warn threshold (permille).
+const TAU_MISMATCH_WARN_PERMILLE: u32 = 150;
+/// L/R tau vs transient tau residual fail threshold (permille).
+const TAU_RESIDUAL_FAIL_PERMILLE: u32 = 500;
+/// L/R tau vs transient tau residual warn threshold (permille).
+const TAU_RESIDUAL_WARN_PERMILLE: u32 = 250;
+
+/// Successful model assembly: the assembled `ElectricalModel`, the
+/// non-critical warning bitfield (bits 0–3 from the gates), and the
+/// computed L/R-vs-transient residual in permille for the host to
+/// persist.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+pub(crate) struct ModelAssembly {
+    pub(crate) model: ElectricalModel,
+    pub(crate) warning_flags: u8,
+    pub(crate) tau_residual_permille: u16,
+}
+
+/// Reason a model assembly was rejected. Each variant logs distinct
+/// `defmt::warn!` text and maps to `CommissionError::ElectricalIdFailed`
+/// at the phase boundary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+pub(crate) enum ModelAssemblyError {
+    /// At least one coil had zero samples or zero current.
+    SampleCount,
+    /// Both coils must produce non-zero tau; at least one was zero.
+    SingleCoilTau,
+    /// L_int or L_uh evaluated to zero after the per-coil tau computation.
+    /// Distinct from `SampleCount` so RTT diagnostics name the actual
+    /// failure (likely a fixed-point scale or rounding edge case).
+    ModelScaleZero { l_int: u32, l_uh: u32 },
+    /// Averaged resistance below short-circuit threshold.
+    ResistanceShort { r_mohm: u32 },
+    /// Averaged resistance above open-load threshold.
+    ResistanceOpen { r_mohm: u32 },
+    /// Per-coil resistance disagreement above hard threshold.
+    ResistanceMismatch { permille: u32 },
+    /// Per-coil tau disagreement above hard threshold.
+    TauMismatch { permille: u32 },
+    /// Transient capture produced no usable rise crossing, so the
+    /// crosscheck tau is undefined. Distinct from a non-zero-but-bad
+    /// residual so diagnostics can distinguish "didn't measure" from
+    /// "measured wrong".
+    TauCrosscheckUnmeasurable,
+    /// L/R tau vs transient tau residual above hard threshold.
+    TauResidual { permille: u32 },
+    /// theta_e_us >= tau_e_us / 2.
+    ThetaTooLarge { theta_us: u32, tau_us: u32 },
+}
+
+fn log_model_assembly_failure(err: ModelAssemblyError) {
+    match err {
+        ModelAssemblyError::SampleCount => {
+            defmt::warn!("electrical id: no usable per-coil samples");
+        }
+        ModelAssemblyError::SingleCoilTau => {
+            defmt::warn!("electrical id: only one coil produced non-zero tau");
+        }
+        ModelAssemblyError::ModelScaleZero { l_int, l_uh } => {
+            defmt::warn!(
+                "electrical id: model scale zero (l_int={}, l_uh={})",
+                l_int,
+                l_uh
+            );
+        }
+        ModelAssemblyError::ResistanceShort { r_mohm } => {
+            defmt::warn!("electrical id: r_mohm={} below short threshold", r_mohm);
+        }
+        ModelAssemblyError::ResistanceOpen { r_mohm } => {
+            defmt::warn!("electrical id: r_mohm={} above open threshold", r_mohm);
+        }
+        ModelAssemblyError::ResistanceMismatch { permille } => {
+            defmt::warn!("electrical id: coil R mismatch {} permille", permille);
+        }
+        ModelAssemblyError::TauMismatch { permille } => {
+            defmt::warn!("electrical id: coil tau mismatch {} permille", permille);
+        }
+        ModelAssemblyError::TauCrosscheckUnmeasurable => {
+            defmt::warn!("electrical id: tau crosscheck unmeasurable");
+        }
+        ModelAssemblyError::TauResidual { permille } => {
+            defmt::warn!("electrical id: tau residual {} permille", permille);
+        }
+        ModelAssemblyError::ThetaTooLarge { theta_us, tau_us } => {
+            defmt::warn!(
+                "electrical id: theta={}us >= tau={}us / 2",
+                theta_us,
+                tau_us
+            );
+        }
     }
-    let diff = model.tau_e_us.abs_diff(model.tau_e_crosscheck_us) as u64;
-    diff * 1000 <= model.tau_e_us as u64 * TAU_CROSSCHECK_MAX_ERROR_PERMILLE as u64
+}
+
+fn permille_diff(a: u32, b: u32) -> u32 {
+    let larger = a.max(b);
+    if larger == 0 {
+        return 0;
+    }
+    let diff = a.abs_diff(b) as u64;
+    (diff * 1000 / larger as u64) as u32
 }
 
 fn sample_time_us(index: usize) -> u32 {
@@ -108,22 +222,24 @@ fn extrapolate_onset_to_baseline_us(samples: &[u32], threshold: u32) -> Option<u
     None
 }
 
-fn assemble_electrical_model(data: &ElectricalIdData, samples: &[u32]) -> Option<ElectricalModel> {
+fn assemble_electrical_model(
+    data: &ElectricalIdData,
+    samples: &[u32],
+) -> Result<ModelAssembly, ModelAssemblyError> {
     let voltage = data.voltage;
 
-    // --- Resistance ---
-    // Per-coil: R_int = V / |I_avg|, stored with explicit fixed-point scale.
+    // --- Per-coil resistance ---
     let mut r_int_per_coil = [0u32; 2];
     let mut r_mohm_per_coil = [0u32; 2];
     for coil_idx in 0..2 {
         let count = data.resistance_sample_count[coil_idx] as i32;
         if count == 0 {
-            return None;
+            return Err(ModelAssemblyError::SampleCount);
         }
         let avg_current = data.resistance_current_sum[coil_idx] / count;
         let abs_current = avg_current.unsigned_abs();
         if abs_current == 0 {
-            return None;
+            return Err(ModelAssemblyError::SampleCount);
         }
         r_int_per_coil[coil_idx] =
             (voltage as u64 * ELECTRICAL_MODEL_RESISTANCE_SCALE as u64 / abs_current as u64) as u32;
@@ -131,48 +247,64 @@ fn assemble_electrical_model(data: &ElectricalIdData, samples: &[u32]) -> Option
     }
     let r_int = (r_int_per_coil[0] + r_int_per_coil[1]) / 2;
     let r_mohm = (r_mohm_per_coil[0] + r_mohm_per_coil[1]) / 2;
-    if r_int == 0 || r_mohm == 0 {
-        return None;
-    }
 
-    // --- Inductance (from di/dt) ---
-    // tau_us = V * dt_per_cycle_us / (avg_delta * R_int_unscaled)
-    //        = V * dt_per_cycle_us * SCALE / (avg_delta * R_int_scaled)
+    // --- Per-coil tau (both coils must produce non-zero tau) ---
+    //
+    // Each coil's tau uses its OWN r_int_per_coil entry, not the averaged
+    // r_int. Averaging here would mask coil-asymmetric R/L behavior: two
+    // coils with identical L but different R would report identical tau
+    // and the per-coil tau-mismatch gate would never fire. The per-coil
+    // R disagreement gate independently catches resistance imbalance.
     let mut tau_per_coil = [0u32; 2];
-    for (tau_result, ((count, sum_delta), elapsed)) in tau_per_coil
-        .iter_mut()
-        .zip(
-            data.inductance_count
-                .iter()
-                .zip(data.inductance_sum_delta.iter()),
-        )
-        .zip(data.inductance_elapsed_us.iter())
-        .map(|((t, (c, s)), e)| (t, ((c, s), e)))
-    {
-        if *count == 0 || *sum_delta == 0 || *elapsed == 0 {
+    for (coil_idx, tau_slot) in tau_per_coil.iter_mut().enumerate() {
+        let count = data.inductance_count[coil_idx];
+        let sum_delta = data.inductance_sum_delta[coil_idx];
+        let elapsed = data.inductance_elapsed_us[coil_idx];
+        if count == 0 || sum_delta == 0 || elapsed == 0 {
             continue;
         }
-        let avg_delta = (*sum_delta / *count as u64) as u32;
+        let avg_delta = (sum_delta / count as u64) as u32;
         if avg_delta < INDUCTANCE_MIN_DELTA {
             continue;
         }
-        let dt_per_cycle_us = *elapsed / *count;
-        *tau_result =
+        let dt_per_cycle_us = elapsed / count;
+        let r_int_coil = r_int_per_coil[coil_idx].max(1);
+        *tau_slot =
             (voltage as u64 * dt_per_cycle_us as u64 * ELECTRICAL_MODEL_RESISTANCE_SCALE as u64
-                / (avg_delta as u64 * r_int as u64)) as u32;
+                / (avg_delta as u64 * r_int_coil as u64)) as u32;
+    }
+    if tau_per_coil[0] == 0 || tau_per_coil[1] == 0 {
+        return Err(ModelAssemblyError::SingleCoilTau);
     }
 
-    let tau_e_us = match (tau_per_coil[0] > 0, tau_per_coil[1] > 0) {
-        (true, true) => (tau_per_coil[0] + tau_per_coil[1]) / 2,
-        (true, false) => tau_per_coil[0],
-        (false, true) => tau_per_coil[1],
-        (false, false) => return None,
-    };
+    // --- Hard gates (in spec order) ---
+    if r_mohm < RESISTANCE_SHORT_MOHM {
+        return Err(ModelAssemblyError::ResistanceShort { r_mohm });
+    }
+    if r_mohm > RESISTANCE_OPEN_MOHM {
+        return Err(ModelAssemblyError::ResistanceOpen { r_mohm });
+    }
+    let r_diff_permille = permille_diff(r_mohm_per_coil[0], r_mohm_per_coil[1]);
+    if r_diff_permille >= RESISTANCE_MISMATCH_FAIL_PERMILLE {
+        return Err(ModelAssemblyError::ResistanceMismatch {
+            permille: r_diff_permille,
+        });
+    }
+    let tau_diff_permille = permille_diff(tau_per_coil[0], tau_per_coil[1]);
+    if tau_diff_permille >= TAU_MISMATCH_FAIL_PERMILLE {
+        return Err(ModelAssemblyError::TauMismatch {
+            permille: tau_diff_permille,
+        });
+    }
 
+    let tau_e_us = (tau_per_coil[0] + tau_per_coil[1]) / 2;
     let l_int = (r_int as u64 * tau_e_us as u64 / ELECTRICAL_MODEL_RESISTANCE_SCALE as u64) as u32;
     let l_uh = r_mohm as u64 * tau_e_us as u64 / 1000;
     if l_int == 0 || l_uh == 0 {
-        return None;
+        return Err(ModelAssemblyError::ModelScaleZero {
+            l_int,
+            l_uh: l_uh as u32,
+        });
     }
 
     // --- Delay identification (from transient buffer) ---
@@ -184,7 +316,7 @@ fn assemble_electrical_model(data: &ElectricalIdData, samples: &[u32]) -> Option
     } else if !samples.is_empty() {
         samples[sample_count - 1]
     } else {
-        return None;
+        return Err(ModelAssemblyError::SampleCount);
     };
 
     let theta_e_us = extrapolate_onset_to_baseline_us(samples, DELAY_ONSET_THRESHOLD as u32)
@@ -192,16 +324,53 @@ fn assemble_electrical_model(data: &ElectricalIdData, samples: &[u32]) -> Option
 
     let rise_threshold = (steady_state as u64 * RISE_63_PCT_Q10 as u64 / 1024) as u32;
     let rise_crossing_us = interpolate_threshold_crossing_us(samples, rise_threshold).unwrap_or(0);
-    let tau_crosscheck_us = rise_crossing_us.saturating_sub(theta_e_us);
+    let tau_e_crosscheck_us = rise_crossing_us.saturating_sub(theta_e_us);
 
-    Some(ElectricalModel {
-        r_int,
-        l_int,
-        tau_e_us,
-        theta_e_us,
-        r_mohm,
-        l_uh: l_uh as u32,
-        tau_e_crosscheck_us: tau_crosscheck_us,
+    if tau_e_crosscheck_us == 0 {
+        return Err(ModelAssemblyError::TauCrosscheckUnmeasurable);
+    }
+    // tau_e_us is guaranteed non-zero here (passed SingleCoilTau).
+    let diff = tau_e_us.abs_diff(tau_e_crosscheck_us) as u64;
+    let tau_residual_permille = ((diff * 1000 / tau_e_us as u64) as u32).min(1000);
+    if tau_residual_permille >= TAU_RESIDUAL_FAIL_PERMILLE {
+        return Err(ModelAssemblyError::TauResidual {
+            permille: tau_residual_permille,
+        });
+    }
+    if tau_e_us > 0 && theta_e_us >= tau_e_us / 2 {
+        return Err(ModelAssemblyError::ThetaTooLarge {
+            theta_us: theta_e_us,
+            tau_us: tau_e_us,
+        });
+    }
+
+    // --- Warning flags (same evaluation order as hard gates) ---
+    let mut warning_flags: u8 = 0;
+    if r_diff_permille >= RESISTANCE_MISMATCH_WARN_PERMILLE {
+        warning_flags |= INNER_WARN_BIT_RESISTANCE_MISMATCH;
+    }
+    if tau_diff_permille >= TAU_MISMATCH_WARN_PERMILLE {
+        warning_flags |= INNER_WARN_BIT_TAU_MISMATCH;
+    }
+    if tau_residual_permille >= TAU_RESIDUAL_WARN_PERMILLE {
+        warning_flags |= INNER_WARN_BIT_TAU_RESIDUAL;
+    }
+    if tau_e_us > 0 && theta_e_us >= tau_e_us / 4 {
+        warning_flags |= INNER_WARN_BIT_THETA_TAU;
+    }
+
+    Ok(ModelAssembly {
+        model: ElectricalModel {
+            r_int,
+            l_int,
+            tau_e_us,
+            theta_e_us,
+            r_mohm,
+            l_uh: l_uh as u32,
+            tau_e_crosscheck_us,
+        },
+        warning_flags,
+        tau_residual_permille: tau_residual_permille as u16,
     })
 }
 
@@ -607,12 +776,13 @@ pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
         // Model assembly and validation
         // ---------------------------------------------------------------
         ElectricalIdState::Validate => {
-            let Some(model) = assemble_electrical_model(data, buf.samples()) else {
-                return super::fail_inner(phase, CommissionError::ElectricalIdFailed);
+            let assembly = match assemble_electrical_model(data, buf.samples()) {
+                Ok(assembly) => assembly,
+                Err(err) => {
+                    log_model_assembly_failure(err);
+                    return super::fail_inner(phase, CommissionError::ElectricalIdFailed);
+                }
             };
-            if !tau_crosscheck_valid(&model) {
-                return super::fail_inner(phase, CommissionError::ElectricalIdFailed);
-            }
 
             match sequence {
                 InnerSequence::Selftest => {
@@ -620,22 +790,29 @@ pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
                         7,
                         crate::selftest::SelftestStageValue {
                             status: 0,
-                            value: model.r_mohm,
+                            value: assembly.model.r_mohm,
                         },
                     );
                     selftest_results.set(
                         8,
                         crate::selftest::SelftestStageValue {
                             status: 0,
-                            value: model.l_uh,
+                            value: assembly.model.l_uh,
                         },
                     );
                     crate::tmc_safe_state::restore_safe_state_via_backend(backend).await;
                     StepResult::SelftestDone
                 }
                 InnerSequence::Commission => {
-                    // Transition to CurrentTune carrying the model.
-                    *phase = InnerPhase::CurrentTune { model };
+                    // Carry the model + Phase 5 confidence flags into the
+                    // current-tune phase. Bits 4–6 (retry / fallback / host
+                    // default) are added later by current validation and
+                    // host parameter resolution.
+                    *phase = InnerPhase::CurrentTune {
+                        model: assembly.model,
+                        inner_warning_flags: assembly.warning_flags,
+                        tau_residual_permille: assembly.tau_residual_permille,
+                    };
                     StepResult::PhaseChanged(PhaseId::CurrentTune)
                 }
                 InnerSequence::Calibrate => {
@@ -656,16 +833,23 @@ mod tests {
     use crate::commissioning::types::StepResult;
     use foci_tmc4671::registers::{PID_TORQUE_FLUX_ACTUAL, UQ_UD_EXT};
 
+    /// Per-coil resistance currents that yield r_mohm = 1706 (V=512, I=300).
+    /// Inductance values produce tau_e ≈ 730 us, matching the
+    /// `representative_transient` crosscheck so the new tau-residual gate
+    /// passes.
     fn representative_data() -> ElectricalIdData {
         let mut data = ElectricalIdData::new(512);
         data.resistance_current_sum = [300_000, 300_000];
         data.resistance_sample_count = [1000, 1000];
-        data.inductance_sum_delta = [85_000, 85_000];
+        data.inductance_sum_delta = [200_000, 200_000];
         data.inductance_count = [5000, 5000];
         data.inductance_elapsed_us = [490_000, 490_000];
         data
     }
 
+    /// Captures a step transient that yields theta_e ≈ 214 us and
+    /// tau_e_crosscheck ≈ 730 us (steady state ≈ 400, threshold ≈ 252,
+    /// crossing at index 5 between 180 and 260).
     fn representative_transient() -> TransientBuffer {
         let mut buf = TransientBuffer::new();
         buf.reset(ELECTRICAL_SAMPLE_PERIOD_US as u16);
@@ -679,41 +863,45 @@ mod tests {
     }
 
     #[test]
-    fn model_assembly_preserves_fractional_internal_resistance() {
+    fn model_assembly_uses_full_width_resistance_math() {
         let data = representative_data();
         let buf = representative_transient();
 
-        let model = assemble_electrical_model(&data, buf.samples()).unwrap();
+        let assembly = assemble_electrical_model(&data, buf.samples()).unwrap();
 
-        assert_eq!(model.r_int, 1706);
+        assert_eq!(assembly.model.r_int, 1706);
+        assert_eq!(assembly.model.r_mohm, 1706);
         assert!(
-            (1725..=1735).contains(&model.tau_e_us),
-            "tau should use R=1.706, not truncated R=1: {}",
-            model.tau_e_us
+            (725..=740).contains(&assembly.model.tau_e_us),
+            "tau should use R=1.706, not truncated: {}",
+            assembly.model.tau_e_us
         );
+        // l_int = r_int * tau / SCALE = 1706 * 730 / 1000 ≈ 1245.
         assert!(
-            (2940..=2960).contains(&model.l_int),
-            "l_int should preserve the original internal L scale: {}",
-            model.l_int
+            (1235..=1260).contains(&assembly.model.l_int),
+            "l_int should preserve the internal L scale: {}",
+            assembly.model.l_int
         );
-    }
-
-    #[test]
-    fn model_assembly_uses_full_width_resistance_average() {
-        let mut data = representative_data();
-        data.resistance_current_sum = [40_000_000, 40_000_000];
-        data.resistance_sample_count = [1000, 1000];
-        let buf = representative_transient();
-
-        let model = assemble_electrical_model(&data, buf.samples()).unwrap();
-
-        assert_eq!(model.r_int, 12);
-        assert_eq!(model.r_mohm, 12);
     }
 
     #[test]
     fn model_assembly_extrapolates_delay_onset_to_baseline() {
-        let data = representative_data();
+        // Use a transient with steady state 1000 (threshold 632) and a
+        // sufficiently slow ramp so tau_crosscheck stays close to tau_e.
+        // Adjust per-coil tau via inductance data so the residual gate
+        // does not fire.
+        let mut data = ElectricalIdData::new(512);
+        data.resistance_current_sum = [300_000, 300_000];
+        data.resistance_sample_count = [1000, 1000];
+        // Tune sum_delta so tau_e ≈ 887 us to match the transient
+        // crosscheck below.
+        // avg_delta = V * dt * SCALE / (tau * r_int)
+        //           = 512 * 98 * 1000 / (887 * 1706) ≈ 33
+        // sum_delta = 33 * 5000 = 165_000
+        data.inductance_sum_delta = [165_000, 165_000];
+        data.inductance_count = [5000, 5000];
+        data.inductance_elapsed_us = [490_000, 490_000];
+
         let mut buf = TransientBuffer::new();
         buf.reset(ELECTRICAL_SAMPLE_PERIOD_US as u16);
         for &sample in &[0, 10, 25, 100, 300, 500, 650, 800] {
@@ -723,17 +911,17 @@ mod tests {
             buf.push(1000);
         }
 
-        let model = assemble_electrical_model(&data, buf.samples()).unwrap();
+        let assembly = assemble_electrical_model(&data, buf.samples()).unwrap();
 
         assert!(
-            (210..=220).contains(&model.theta_e_us),
+            (210..=220).contains(&assembly.model.theta_e_us),
             "theta should extrapolate the threshold crossing back to baseline: {}",
-            model.theta_e_us
+            assembly.model.theta_e_us
         );
         assert!(
-            (880..=890).contains(&model.tau_e_crosscheck_us),
+            (880..=890).contains(&assembly.model.tau_e_crosscheck_us),
             "tau crosscheck should use interpolated 63 percent crossing minus onset: {}",
-            model.tau_e_crosscheck_us
+            assembly.model.tau_e_crosscheck_us
         );
     }
 
@@ -1006,7 +1194,7 @@ mod tests {
             // write. Collect the addresses written *after* the failure point.
             use foci_tmc4671::registers::*;
             let mut seen_failure = false;
-            let mut after: std::vec::Vec<u8> = std::vec::Vec::new();
+            let mut after: heapless::Vec<u8, 32> = heapless::Vec::new();
             for op in backend.spi_log.iter() {
                 if let SpiOp::Write(addr, _) = op {
                     if !seen_failure && *addr == UQ_UD_EXT.addr() {
@@ -1014,7 +1202,7 @@ mod tests {
                         continue;
                     }
                     if seen_failure {
-                        after.push(*addr);
+                        after.push(*addr).ok();
                     }
                 }
             }
@@ -1140,5 +1328,140 @@ mod tests {
                 other => panic!("expected InductanceDisable, got {other:?}"),
             }
         });
+    }
+
+    // -----------------------------------------------------------------
+    // Phase 1 model-assembly hard gates
+    // -----------------------------------------------------------------
+
+    /// Build per-coil resistance data for currents `c0`/`c1` (in counts).
+    /// The inductance arms are tuned to give per-coil tau ≈ 730us against
+    /// the resulting `r_int` so other gates do not fire incidentally.
+    fn data_with_per_coil_currents(c0: i32, c1: i32) -> ElectricalIdData {
+        let mut data = ElectricalIdData::new(512);
+        data.resistance_current_sum = [c0 * 1000, c1 * 1000];
+        data.resistance_sample_count = [1000, 1000];
+        let avg_abs = ((c0.unsigned_abs() + c1.unsigned_abs()) / 2).max(1);
+        let r_int = (512u64 * 1000 / avg_abs as u64).max(1) as u32;
+        let dt_us = 98u64;
+        let target_tau_us = 730u64;
+        // avg_delta = V * dt * SCALE / (tau * r_int)
+        let avg_delta = (512u64 * dt_us * 1000 / (target_tau_us * r_int as u64)).max(1);
+        let count: u32 = 5000;
+        let sum_delta = avg_delta * count as u64;
+        data.inductance_sum_delta = [sum_delta, sum_delta];
+        data.inductance_count = [count, count];
+        data.inductance_elapsed_us = [count * dt_us as u32, count * dt_us as u32];
+        data
+    }
+
+    #[test]
+    fn assemble_accepts_representative_data() {
+        let data = representative_data();
+        let buf = representative_transient();
+        let assembly = assemble_electrical_model(&data, buf.samples()).unwrap();
+        // Bit 3 (theta/tau warning) is expected because theta=214, tau≈730,
+        // theta/tau = 0.293 ≥ 0.25. Bits 0–2 should be clean.
+        assert_eq!(
+            assembly.warning_flags & INNER_WARN_BIT_RESISTANCE_MISMATCH,
+            0
+        );
+        assert_eq!(assembly.warning_flags & INNER_WARN_BIT_TAU_MISMATCH, 0);
+    }
+
+    #[test]
+    fn assemble_rejects_short_resistance() {
+        // V=512, I=8000 → r_mohm = 64 (< 100 short threshold).
+        let data = data_with_per_coil_currents(8000, 8000);
+        let buf = representative_transient();
+        let err = assemble_electrical_model(&data, buf.samples()).unwrap_err();
+        assert!(matches!(err, ModelAssemblyError::ResistanceShort { .. }));
+    }
+
+    #[test]
+    fn assemble_rejects_open_resistance() {
+        // V=512, I=10 → r_mohm = 51_200 (> 50_000 open threshold).
+        // Use sum_delta tuned to keep per-coil tau non-zero so the
+        // SingleCoilTau gate doesn't fire first.
+        let mut data = ElectricalIdData::new(512);
+        data.resistance_current_sum = [10_000, 10_000];
+        data.resistance_sample_count = [1000, 1000];
+        // avg_delta = 5 (just above INDUCTANCE_MIN_DELTA), tau ≈ 196 us.
+        data.inductance_sum_delta = [25_000, 25_000];
+        data.inductance_count = [5000, 5000];
+        data.inductance_elapsed_us = [490_000, 490_000];
+        let buf = representative_transient();
+        let err = assemble_electrical_model(&data, buf.samples()).unwrap_err();
+        assert!(matches!(err, ModelAssemblyError::ResistanceOpen { .. }));
+    }
+
+    #[test]
+    fn assemble_rejects_per_coil_resistance_disagreement() {
+        // c0=300 vs c1=800 produces r_mohm of 1706 vs 640 (~62% mismatch).
+        // Per-coil tau also diverges (tau uses per-coil R now), so absent
+        // gate ordering this could fire TauMismatch instead. The spec
+        // requires R-mismatch to be checked first.
+        let data = data_with_per_coil_currents(300, 800);
+        let buf = representative_transient();
+        let err = assemble_electrical_model(&data, buf.samples()).unwrap_err();
+        assert!(matches!(err, ModelAssemblyError::ResistanceMismatch { .. }));
+    }
+
+    #[test]
+    fn assemble_rejects_single_coil_tau() {
+        let mut data = representative_data();
+        data.inductance_sum_delta = [200_000, 0];
+        data.inductance_count = [5000, 0];
+        let buf = representative_transient();
+        let err = assemble_electrical_model(&data, buf.samples()).unwrap_err();
+        assert!(matches!(err, ModelAssemblyError::SingleCoilTau));
+    }
+
+    #[test]
+    fn assemble_rejects_zero_l_int_with_model_scale_zero() {
+        // r_mohm = 100 (just at the short threshold; passes), avg_delta
+        // tuned so per-coil tau rounds to 5us — high enough to clear
+        // SingleCoilTau but low enough that l_int = r_int * tau / 1000
+        // and l_uh = r_mohm * tau / 1000 both round to 0.
+        // tau = V * dt * SCALE / (avg_delta * r_int)
+        //     = 512 * 98 * 1000 / (avg_delta * 100)
+        // avg_delta = 100_352 → tau ≈ 5us → l_int = l_uh = 0.
+        let mut data = ElectricalIdData::new(512);
+        data.resistance_current_sum = [5_120_000, 5_120_000];
+        data.resistance_sample_count = [1000, 1000];
+        data.inductance_sum_delta = [501_760_000, 501_760_000];
+        data.inductance_count = [5000, 5000];
+        data.inductance_elapsed_us = [490_000, 490_000];
+        let buf = representative_transient();
+        let err = assemble_electrical_model(&data, buf.samples()).unwrap_err();
+        assert!(matches!(
+            err,
+            ModelAssemblyError::ModelScaleZero { l_int: 0, l_uh: 0 }
+        ));
+    }
+
+    #[test]
+    fn assemble_rejects_per_coil_tau_disagreement_with_equal_resistance() {
+        // Equal per-coil resistance (both currents = 300) so the
+        // resistance-mismatch gate cannot fire. Skewed sum_delta gives
+        // large per-coil tau divergence, exercising the tau-mismatch
+        // gate independently of resistance.
+        let mut data = representative_data();
+        data.inductance_sum_delta = [200_000, 600_000];
+        let buf = representative_transient();
+        let err = assemble_electrical_model(&data, buf.samples()).unwrap_err();
+        assert!(matches!(err, ModelAssemblyError::TauMismatch { .. }));
+    }
+
+    #[test]
+    fn assemble_warns_on_borderline_resistance_mismatch() {
+        // 300 vs 320 → ~6% (above warn 5%, below fail 15%).
+        let data = data_with_per_coil_currents(300, 320);
+        let buf = representative_transient();
+        let assembly = assemble_electrical_model(&data, buf.samples()).unwrap();
+        assert_ne!(
+            assembly.warning_flags & INNER_WARN_BIT_RESISTANCE_MISMATCH,
+            0
+        );
     }
 }
