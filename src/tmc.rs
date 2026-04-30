@@ -47,6 +47,14 @@ pub enum TmcRequest {
         current_ringing_count: u8,
         /// Current-loop effective bandwidth Hz from inner commissioning.
         current_bandwidth_hz: u32,
+        /// Phase 5 tau_e_us measurement (or persisted default).
+        tau_e_us: u32,
+        /// Phase 5 tau crosscheck (or persisted default).
+        tau_e_crosscheck_us: u32,
+        /// Phase 5 tau residual in permille.
+        tau_residual_permille: u16,
+        /// Inner-confidence warning bitfield carried from Stage 1.
+        inner_warning_flags: u8,
     },
     /// Set velocity biquad low-pass filter cutoff frequency.
     /// 0 = disabled, 10..1000 Hz = enabled.
@@ -150,6 +158,7 @@ pub fn tmc_commission(oid: u8, profile: u8) -> TmcRequest {
 }
 
 /// Build a `Tune` request (Stage 2: mechanical ID + velocity/position + filters).
+#[allow(clippy::too_many_arguments)]
 pub fn tmc_tune(
     oid: u8,
     profile: u8,
@@ -158,6 +167,10 @@ pub fn tmc_tune(
     theta_e_us: u32,
     current_ringing_count: u8,
     current_bandwidth_hz: u32,
+    tau_e_us: u32,
+    tau_e_crosscheck_us: u32,
+    tau_residual_permille: u16,
+    inner_warning_flags: u8,
 ) -> TmcRequest {
     TmcRequest::Tune {
         oid,
@@ -167,6 +180,10 @@ pub fn tmc_tune(
         theta_e_us,
         current_ringing_count,
         current_bandwidth_hz,
+        tau_e_us,
+        tau_e_crosscheck_us,
+        tau_residual_permille,
+        inner_warning_flags,
     }
 }
 
@@ -413,7 +430,7 @@ mod tests {
     #[test]
     fn tmc_tune_builds_request() {
         assert_eq!(
-            tmc_tune(0, 2, 1, 1400, 700, 3, 500),
+            tmc_tune(0, 2, 1, 1400, 700, 3, 500, 730, 720, 50, 0x40),
             TmcRequest::Tune {
                 oid: 0,
                 profile: 2,
@@ -422,6 +439,10 @@ mod tests {
                 theta_e_us: 700,
                 current_ringing_count: 3,
                 current_bandwidth_hz: 500,
+                tau_e_us: 730,
+                tau_e_crosscheck_us: 720,
+                tau_residual_permille: 50,
+                inner_warning_flags: 0x40,
             }
         );
     }

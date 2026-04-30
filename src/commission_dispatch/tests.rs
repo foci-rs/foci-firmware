@@ -588,6 +588,10 @@ fn sample_outer_params() -> crate::commissioning::OuterTuneParams {
         theta_e_us: 50,
         current_ringing: false,
         current_bandwidth_hz: 1000,
+        tau_e_us: 730,
+        tau_e_crosscheck_us: 730,
+        tau_residual_permille: 0,
+        inner_warning_flags: 0,
     }
 }
 

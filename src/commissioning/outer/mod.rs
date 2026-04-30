@@ -595,8 +595,18 @@ pub(crate) async fn step_outer<B: CommissioningBackend>(
     theta_e_us: u32,
     current_ringing: bool,
     current_bandwidth_hz: u32,
+    tau_e_us: u32,
+    tau_e_crosscheck_us: u32,
+    tau_residual_permille: u16,
+    inner_warning_flags: u8,
     backend: &mut B,
 ) -> StepResult {
+    // `tau_e_us` and `tau_e_crosscheck_us` are persisted in the outer
+    // engine for Phase 2 (adaptive measurement / fitted-tau crosscheck);
+    // Phase 1 outer logic uses only `tau_residual_permille` and
+    // `inner_warning_flags`. Keeping the wire/struct contract unchanged
+    // avoids a Phase 2 schema bump.
+    let _ = (tau_e_us, tau_e_crosscheck_us);
     if let Some(safety) = outer_safety_mut(phase)
         && check_outer_safety(safety, backend).await
     {
@@ -616,8 +626,18 @@ pub(crate) async fn step_outer<B: CommissioningBackend>(
             mechanical::step_mechanical_id(phase, buf, backend).await
         }
         OuterPhase::VelocityTune { .. } => {
-            velocity::step_velocity_tune(phase, profile, mode, inner_lambda_us, theta_e_us, backend)
-                .await
+            velocity::step_velocity_tune(
+                phase,
+                profile,
+                mode,
+                inner_lambda_us,
+                theta_e_us,
+                tau_residual_permille,
+                inner_warning_flags,
+                current_bandwidth_hz,
+                backend,
+            )
+            .await
         }
         OuterPhase::VelocityValidate { .. } => {
             velocity::step_velocity_validate(
@@ -725,6 +745,10 @@ mod tests {
                 0,
                 false,
                 0,
+                0,
+                0,
+                0,
+                0,
                 &mut backend,
             )
             .await;
@@ -785,6 +809,10 @@ mod tests {
                 0,
                 false,
                 0,
+                0,
+                0,
+                0,
+                0,
                 &mut backend,
             )
             .await;
@@ -805,6 +833,10 @@ mod tests {
                 0,
                 0,
                 false,
+                0,
+                0,
+                0,
+                0,
                 0,
                 &mut backend,
             )
@@ -850,6 +882,10 @@ mod tests {
                 0,
                 false,
                 0,
+                0,
+                0,
+                0,
+                0,
                 &mut backend,
             )
             .await;
@@ -868,6 +904,10 @@ mod tests {
                 0,
                 0,
                 false,
+                0,
+                0,
+                0,
+                0,
                 0,
                 &mut backend,
             )
@@ -895,6 +935,10 @@ mod tests {
                     0,
                     0,
                     false,
+                    0,
+                    0,
+                    0,
+                    0,
                     0,
                     &mut backend,
                 )
@@ -950,6 +994,10 @@ mod tests {
                 0,
                 false,
                 0,
+                0,
+                0,
+                0,
+                0,
                 &mut backend,
             )
             .await;
@@ -975,6 +1023,10 @@ mod tests {
                     0,
                     false,
                     0,
+                    0,
+                    0,
+                    0,
+                    0,
                     &mut backend,
                 )
                 .await;
@@ -990,6 +1042,10 @@ mod tests {
                 0,
                 0,
                 false,
+                0,
+                0,
+                0,
+                0,
                 0,
                 &mut backend,
             )
