@@ -442,11 +442,7 @@ pub(crate) async fn step_mechanical_id<B: CommissioningBackend>(
             if data.fwd_response.is_high_confidence() && data.rev_response.is_high_confidence() {
                 let j_avg = (data.fwd_response.j_eff + data.rev_response.j_eff) / 2;
                 let j_diff = data.fwd_response.j_eff.abs_diff(data.rev_response.j_eff);
-                let asymmetry_pct = if j_avg == 0 {
-                    100
-                } else {
-                    (j_diff * 100) / j_avg
-                };
+                let asymmetry_pct = (j_diff * 100).checked_div(j_avg).unwrap_or(100);
                 if asymmetry_pct > MECHANICAL_ID_SYMMETRY_THRESHOLD_PCT {
                     if response::retry_mechanical_id(state, data, "asymmetric full response") {
                         return StepResult::Continue;
