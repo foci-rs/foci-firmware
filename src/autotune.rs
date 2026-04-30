@@ -1317,6 +1317,33 @@ pub fn simc_velocity_gains(
     step_width: u32,
     config: &crate::config::TmcConfig,
 ) -> Option<VelocityGains> {
+    simc_velocity_gains_with_lambda_multiplier(
+        model,
+        profile,
+        mode,
+        inner_lambda_us,
+        theta_e_us,
+        peak_velocity,
+        step_width,
+        config,
+        1.0,
+    )
+}
+
+/// Compute SIMC velocity-loop gains with a multiplier applied to the final
+/// selected velocity lambda before the gain-envelope widening step.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn simc_velocity_gains_with_lambda_multiplier(
+    model: &MechanicalModel,
+    profile: CommissionProfile,
+    mode: OperatingMode,
+    inner_lambda_us: u32,
+    theta_e_us: u32,
+    peak_velocity: u32,
+    step_width: u32,
+    config: &crate::config::TmcConfig,
+    lambda_multiplier: f32,
+) -> Option<VelocityGains> {
     if model.j_eff == 0 || model.tau_mech_ms == 0 || model.theta_mech_us == 0 {
         return None;
     }
@@ -1341,6 +1368,8 @@ pub fn simc_velocity_gains(
     // it if the model would synthesize gains outside the accepted register
     // envelope.
     let lambda_us = lambda_us.max(model.theta_mech_us);
+    let lambda_us = ((lambda_us as f32) * lambda_multiplier.max(1.0))
+        .clamp(1.0, u32::MAX as f32) as u32;
     let lambda_us = apply_velocity_gain_envelope(
         lambda_us,
         tau_mech_us,

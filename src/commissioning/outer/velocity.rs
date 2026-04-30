@@ -234,13 +234,11 @@ pub(crate) async fn step_velocity_tune<B: CommissioningBackend>(
     let effective_profile =
         force_conservative_profile(profile, inner_warning_flags, current_bandwidth_hz);
     let widening = outer_lambda_widening(inner_warning_flags, tau_residual_permille);
-    let widened_inner_lambda_us =
-        libm::roundf((inner_lambda_us as f32) * widening).clamp(0.0, u32::MAX as f32) as u32;
     if widening > 1.0 + f32::EPSILON {
+        let widening_permille = (widening * 1000.0) as u32;
         defmt::info!(
-            "outer: widening inner_lambda {}us -> {}us (flags=0x{:02x}, residual={} permille)",
-            inner_lambda_us,
-            widened_inner_lambda_us,
+            "outer: widening velocity lambda by {} permille (flags=0x{:02x}, residual={} permille)",
+            widening_permille,
             inner_warning_flags,
             tau_residual_permille
         );
@@ -257,15 +255,16 @@ pub(crate) async fn step_velocity_tune<B: CommissioningBackend>(
         } else {
             let config = backend.tmc_config();
             let step_width = backend.step_width();
-            let gains = match crate::autotune::simc_velocity_gains(
+            let gains = match crate::autotune::simc_velocity_gains_with_lambda_multiplier(
                 &model,
                 effective_profile,
                 mode,
-                widened_inner_lambda_us,
+                inner_lambda_us,
                 theta_e_us,
                 peak_velocity,
                 step_width,
                 config,
+                widening,
             ) {
                 Some(gains) => gains,
                 None => {
@@ -1081,7 +1080,7 @@ pub(crate) async fn step_velocity_validate<B: CommissioningBackend>(
 mod tests {
     use super::{
         counts_per_ms_to_tmc_velocity, encoder_delta_counts_per_ms, force_conservative_profile,
-        outer_lambda_widening, step_velocity_validate,
+        outer_lambda_widening, step_velocity_tune, step_velocity_validate,
     };
     use crate::autotune::{
         CommissionError, CommissionProfile, MechanicalModel, OperatingMode, TransientBuffer,
@@ -1187,6 +1186,87 @@ mod tests {
             },
             safety: OuterSafetyLimits::new(0, 2448),
         }
+    }
+
+    #[test]
+    fn velocity_tune_model_warning_widens_final_lambda_when_mechanical_lambda_dominates() {
+        pollster::block_on(async {
+            let model = MechanicalModel {
+                j_eff: 1_000_000,
+                b_eff: 1_000,
+                tau_mech_ms: 100,
+                theta_mech_us: 20_000,
+                t_f: 0,
+            };
+            let mut clean_phase = OuterPhase::VelocityTune {
+                model,
+                peak_velocity: 1_000,
+                diagnostics: zero_diagnostics(),
+                safety: OuterSafetyLimits::new(0, 2_448),
+            };
+            let mut warned_phase = OuterPhase::VelocityTune {
+                model,
+                peak_velocity: 1_000,
+                diagnostics: zero_diagnostics(),
+                safety: OuterSafetyLimits::new(0, 2_448),
+            };
+            let mut backend = MockBackend::new();
+            backend.step_width_value = 819;
+            backend.current_limit_value = 2_448;
+
+            let clean_result = step_velocity_tune(
+                &mut clean_phase,
+                CommissionProfile::Balanced,
+                OperatingMode::Nominal,
+                1_000,
+                100,
+                0,
+                0,
+                1_000,
+                &mut backend,
+            )
+            .await;
+            assert!(matches!(
+                clean_result,
+                StepResult::PhaseChanged(crate::autotune::PhaseId::VelocityValidate)
+            ));
+
+            let clean_lambda_ms = match clean_phase {
+                OuterPhase::VelocityValidate { data, .. } => {
+                    assert_eq!(data.strategy, VelocityTuneStrategy::Model);
+                    data.gains.lambda_vel_ms
+                }
+                other => panic!("expected VelocityValidate, got {:?}", other),
+            };
+
+            let warned_result = step_velocity_tune(
+                &mut warned_phase,
+                CommissionProfile::Balanced,
+                OperatingMode::Nominal,
+                1_000,
+                100,
+                0,
+                1 << 3,
+                1_000,
+                &mut backend,
+            )
+            .await;
+            assert!(matches!(
+                warned_result,
+                StepResult::PhaseChanged(crate::autotune::PhaseId::VelocityValidate)
+            ));
+
+            let warned_lambda_ms = match warned_phase {
+                OuterPhase::VelocityValidate { data, .. } => {
+                    assert_eq!(data.strategy, VelocityTuneStrategy::Model);
+                    data.gains.lambda_vel_ms
+                }
+                other => panic!("expected VelocityValidate, got {:?}", other),
+            };
+
+            assert_eq!(clean_lambda_ms, 60);
+            assert_eq!(warned_lambda_ms, 90);
+        });
     }
 
     #[test]
