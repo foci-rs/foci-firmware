@@ -23,6 +23,7 @@ pub mod dump;
 pub mod helpers;
 pub mod pid;
 pub mod platform;
+pub mod sample_timing;
 pub mod selftest;
 pub mod shutdown;
 pub mod state;
