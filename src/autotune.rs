@@ -909,10 +909,10 @@ pub fn extract_step_metrics(
 
     for (i, &s) in samples.iter().enumerate() {
         if t_10.is_none() && s >= threshold_10 {
-            t_10 = Some(i as u32 * period);
+            t_10 = Some(crate::sample_timing::sample_offset_us(i, period));
         }
         if t_90.is_none() && s >= threshold_90 {
-            t_90 = Some(i as u32 * period);
+            t_90 = Some(crate::sample_timing::sample_offset_us(i, period));
         }
         if s > peak {
             peak = s;
@@ -936,20 +936,20 @@ pub fn extract_step_metrics(
     };
 
     // Settling: last smoothed sample where |actual - target| > 5% band.
-    // Use (index + 1) because settling time is the duration through the last
-    // out-of-band sample, not the sample's relative crossing offset.
-    let mut last_outside: usize = 0;
+    // Use (index + 1) * period because settling time is the duration through
+    // the period containing the last out-of-band sample, not its offset
+    // from the capture origin.
+    let mut last_outside: Option<usize> = None;
     for (i, _) in samples.iter().enumerate() {
         let smoothed = trailing_average(samples, i, CURRENT_METRIC_SMOOTHING_SAMPLES);
         let diff = smoothed.abs_diff(target);
         if diff > settle_band {
-            last_outside = i;
+            last_outside = Some(i);
         }
     }
-    let settling_time_us = if last_outside > 0 {
-        (last_outside as u32 + 1) * period
-    } else {
-        0
+    let settling_time_us = match last_outside {
+        Some(idx) => crate::sample_timing::sample_elapsed_us(idx, period),
+        None => 0,
     };
 
     // Ringing: crossings between smoothed excursions outside the settle band.
@@ -1448,10 +1448,10 @@ pub fn extract_velocity_metrics(
 
     for (i, &sample) in samples.iter().enumerate() {
         if t_10.is_none() && sample >= threshold_10 {
-            t_10 = Some(i as u32 * period_us);
+            t_10 = Some(crate::sample_timing::sample_offset_us(i, period_us));
         }
         if t_90.is_none() && sample >= threshold_90 {
-            t_90 = Some(i as u32 * period_us);
+            t_90 = Some(crate::sample_timing::sample_offset_us(i, period_us));
         }
         if sample > peak {
             peak = sample;
@@ -1482,11 +1482,11 @@ pub fn extract_velocity_metrics(
     };
 
     // Settling: last sample where |actual - target| > 5% band.
-    let mut last_outside: usize = 0;
+    let mut last_outside: Option<usize> = None;
     for (i, &sample) in samples.iter().enumerate() {
         let diff = sample.abs_diff(target);
         if diff > settle_band {
-            last_outside = i;
+            last_outside = Some(i);
         }
     }
     let settling_time_ms = if !reached_90 {
@@ -1494,8 +1494,8 @@ pub fn extract_velocity_metrics(
         // considered settled, even if the large mechanical tau would
         // otherwise make the finite capture window look acceptable.
         u32::MAX
-    } else if last_outside > 0 {
-        let settling_us = (last_outside as u32 + 1).saturating_mul(period_us);
+    } else if let Some(idx) = last_outside {
+        let settling_us = crate::sample_timing::sample_elapsed_us(idx, period_us);
         (settling_us + 500) / 1000
     } else {
         0
