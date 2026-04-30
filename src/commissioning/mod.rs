@@ -271,6 +271,11 @@ impl CommissioningEngine {
     pub async fn step<B: CommissioningBackend>(&mut self, backend: &mut B) -> StepResult {
         // E-stop check at the top of every step.
         if backend.is_shutdown_requested() {
+            // Defense in depth: dispatch already restores safe state on
+            // terminal failures, but the shutdown abort path bypasses
+            // step_inner / step_outer entirely. Drive the canonical helper
+            // here so the chip is de-energized before the abort is reported.
+            crate::tmc_safe_state::restore_safe_state_via_backend(backend).await;
             return self.abort(CommissionError::Shutdown);
         }
 
@@ -380,5 +385,28 @@ mod tests {
             CommissioningEngine::new_outer(0, params, snapshot).kind(),
             EngineKind::OuterTune,
         );
+    }
+
+    #[test]
+    fn step_restores_safe_state_when_shutdown_requested_mid_inner() {
+        pollster::block_on(async {
+            let mut engine = CommissioningEngine::new_commission(
+                0,
+                crate::autotune::CommissionProfile::Balanced,
+            );
+            let mut backend = crate::commission_dispatch::test_support::MockBackend::new();
+            backend.shutdown_requested = true;
+            backend.enable_pin = true;
+
+            let result = engine.step(&mut backend).await;
+
+            assert!(matches!(
+                result,
+                crate::commissioning::types::StepResult::InnerFailed(
+                    crate::autotune::CommissionError::Shutdown,
+                )
+            ));
+            assert!(!backend.enable_pin, "shutdown abort must lower enable pin");
+        });
     }
 }
