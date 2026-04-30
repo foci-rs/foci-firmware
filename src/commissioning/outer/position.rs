@@ -155,9 +155,13 @@ pub(crate) async fn step_position_tune<B: CommissioningBackend>(
             }
 
             if buf.is_full() {
-                let _ = backend
+                if backend
                     .write_register(PID_POSITION_TARGET, data.step_start_tmc as u32)
-                    .await;
+                    .await
+                    .is_err()
+                {
+                    return fail_outer(phase, CommissionError::Spi);
+                }
 
                 let deadline = backend.elapsed_us().wrapping_add(POSITION_TUNE_SETTLE_US);
                 *state = PositionTuneState::Settle {
@@ -247,9 +251,13 @@ pub(crate) async fn step_position_tune<B: CommissioningBackend>(
                     data.current_p = new_p;
 
                     let pos_reg = (data.current_p as u32) << 16;
-                    let _ = backend
+                    if backend
                         .write_register(PID_POSITION_P_POSITION_I, pos_reg)
-                        .await;
+                        .await
+                        .is_err()
+                    {
+                        return fail_outer(phase, CommissionError::Spi);
+                    }
 
                     let encoder_raw = match backend.try_read_encoder_count().await {
                         Ok(value) => value,
@@ -264,9 +272,13 @@ pub(crate) async fn step_position_tune<B: CommissioningBackend>(
                     };
                     data.step_start_tmc = position_raw;
                     let target = position_raw.wrapping_add(data.step_target_tmc as i32);
-                    let _ = backend
+                    if backend
                         .write_register(PID_POSITION_TARGET, target as u32)
-                        .await;
+                        .await
+                        .is_err()
+                    {
+                        return fail_outer(phase, CommissionError::Spi);
+                    }
 
                     buf.reset(POSITION_TUNE_SAMPLE_PERIOD_US as u16);
                     data.saturation_count = 0;
@@ -280,7 +292,13 @@ pub(crate) async fn step_position_tune<B: CommissioningBackend>(
         }
 
         PositionTuneState::Finalize => {
-            let _ = backend.write_register(MODE_RAMP_MODE_MOTION, 0).await;
+            if backend
+                .write_register(MODE_RAMP_MODE_MOTION, 0)
+                .await
+                .is_err()
+            {
+                return fail_outer(phase, CommissionError::Spi);
+            }
 
             if data.oscillation_at_minimum {
                 return fail_outer(phase, CommissionError::PositionTuneFailed);

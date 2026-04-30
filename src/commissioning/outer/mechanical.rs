@@ -280,7 +280,13 @@ pub(crate) async fn step_mechanical_id<B: CommissioningBackend>(
 
             if buf.is_full() {
                 // Forward capture complete — zero torque.
-                let _ = backend.write_register(PID_TORQUE_FLUX_TARGET, 0).await;
+                if backend
+                    .write_register(PID_TORQUE_FLUX_TARGET, 0)
+                    .await
+                    .is_err()
+                {
+                    return fail_outer(phase, CommissionError::Spi);
+                }
 
                 // Extract forward metrics from buffer before reset.
                 let metrics = response::extract_mechanical_id_metrics(
@@ -379,7 +385,13 @@ pub(crate) async fn step_mechanical_id<B: CommissioningBackend>(
 
             if buf.is_full() {
                 // Reverse capture complete — zero torque.
-                let _ = backend.write_register(PID_TORQUE_FLUX_TARGET, 0).await;
+                if backend
+                    .write_register(PID_TORQUE_FLUX_TARGET, 0)
+                    .await
+                    .is_err()
+                {
+                    return fail_outer(phase, CommissionError::Spi);
+                }
 
                 // For reverse capture, use the position at capture start
                 // (first sample) as the reference, not the original start.
@@ -442,8 +454,17 @@ pub(crate) async fn step_mechanical_id<B: CommissioningBackend>(
 
         MechanicalIdState::Estimate => {
             // Ensure motor is stopped.
-            let _ = backend.write_register(PID_TORQUE_FLUX_TARGET, 0).await;
-            let _ = backend.write_register(MODE_RAMP_MODE_MOTION, 0).await;
+            if backend
+                .write_register(PID_TORQUE_FLUX_TARGET, 0)
+                .await
+                .is_err()
+                || backend
+                    .write_register(MODE_RAMP_MODE_MOTION, 0)
+                    .await
+                    .is_err()
+            {
+                return fail_outer(phase, CommissionError::Spi);
+            }
 
             *state = MechanicalIdState::Finalize;
             StepResult::Continue

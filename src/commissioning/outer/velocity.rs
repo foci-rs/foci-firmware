@@ -51,6 +51,17 @@ const VELOCITY_RESPONSE_MAX_RETRIES: u8 = 12;
 /// Velocity mode with `MODE_PID_TYPE` set for the TMC4671 advanced PI structure.
 const OUTER_VELOCITY_MODE: u32 = 0x8000_0002;
 
+async fn stop_velocity_motion<B: CommissioningBackend>(backend: &mut B) -> bool {
+    use foci_tmc4671::registers::{MODE_RAMP_MODE_MOTION, PID_VELOCITY_TARGET};
+
+    let target_ok = backend.write_register(PID_VELOCITY_TARGET, 0).await.is_ok();
+    let mode_ok = backend
+        .write_register(MODE_RAMP_MODE_MOTION, 0)
+        .await
+        .is_ok();
+    target_ok && mode_ok
+}
+
 fn counts_per_ms_to_tmc_velocity(counts_per_ms: u32, step_width: u32, f_pwm_hz: u32) -> u32 {
     if counts_per_ms == 0 || step_width == 0 || f_pwm_hz == 0 {
         return 0;
@@ -399,7 +410,13 @@ pub(crate) async fn step_velocity_validate<B: CommissioningBackend>(
                 return fail_outer(phase, CommissionError::Spi);
             }
 
-            let _ = backend.write_register(PID_VELOCITY_TARGET, 0).await;
+            if backend
+                .write_register(PID_VELOCITY_TARGET, 0)
+                .await
+                .is_err()
+            {
+                return fail_outer(phase, CommissionError::Spi);
+            }
 
             defmt::info!(
                 "vel validate: limit={}cpms/{}tmc step={}cpms/{}tmc",
@@ -485,7 +502,13 @@ pub(crate) async fn step_velocity_validate<B: CommissioningBackend>(
             }
 
             if buf.is_full() {
-                let _ = backend.write_register(PID_VELOCITY_TARGET, 0).await;
+                if backend
+                    .write_register(PID_VELOCITY_TARGET, 0)
+                    .await
+                    .is_err()
+                {
+                    return fail_outer(phase, CommissionError::Spi);
+                }
 
                 let samples_slice = buf.samples();
                 let head_len = samples_slice.len().min(16);
@@ -599,7 +622,13 @@ pub(crate) async fn step_velocity_validate<B: CommissioningBackend>(
             }
 
             if buf.is_full() {
-                let _ = backend.write_register(PID_VELOCITY_TARGET, 0).await;
+                if backend
+                    .write_register(PID_VELOCITY_TARGET, 0)
+                    .await
+                    .is_err()
+                {
+                    return fail_outer(phase, CommissionError::Spi);
+                }
 
                 let samples_slice = buf.samples();
                 let head_len = samples_slice.len().min(16);
@@ -772,8 +801,9 @@ pub(crate) async fn step_velocity_validate<B: CommissioningBackend>(
                                 data.accepted_gains.velocity_p,
                                 data.accepted_gains.velocity_i
                             );
-                            let _ = backend.write_register(PID_VELOCITY_TARGET, 0).await;
-                            let _ = backend.write_register(MODE_RAMP_MODE_MOTION, 0).await;
+                            if !stop_velocity_motion(backend).await {
+                                return fail_outer(phase, CommissionError::Spi);
+                            }
                             let deadline = backend
                                 .elapsed_us()
                                 .wrapping_add(VELOCITY_VALIDATE_SETTLE_US);
@@ -795,8 +825,9 @@ pub(crate) async fn step_velocity_validate<B: CommissioningBackend>(
                                 failed_p,
                                 data.attempt
                             );
-                            let _ = backend.write_register(PID_VELOCITY_TARGET, 0).await;
-                            let _ = backend.write_register(MODE_RAMP_MODE_MOTION, 0).await;
+                            if !stop_velocity_motion(backend).await {
+                                return fail_outer(phase, CommissionError::Spi);
+                            }
                             return fail_outer(phase, CommissionError::VelocityValidationFailed);
                         }
                         if !data.has_accepted_gains
@@ -898,8 +929,9 @@ pub(crate) async fn step_velocity_validate<B: CommissioningBackend>(
                                 },
                                 failed_p
                             );
-                            let _ = backend.write_register(PID_VELOCITY_TARGET, 0).await;
-                            let _ = backend.write_register(MODE_RAMP_MODE_MOTION, 0).await;
+                            if !stop_velocity_motion(backend).await {
+                                return fail_outer(phase, CommissionError::Spi);
+                            }
                             return fail_outer(phase, CommissionError::VelocityValidationFailed);
                         }
 
@@ -913,8 +945,9 @@ pub(crate) async fn step_velocity_validate<B: CommissioningBackend>(
                             failed_p,
                             data.accepted_gains.velocity_p
                         );
-                        let _ = backend.write_register(PID_VELOCITY_TARGET, 0).await;
-                        let _ = backend.write_register(MODE_RAMP_MODE_MOTION, 0).await;
+                        if !stop_velocity_motion(backend).await {
+                            return fail_outer(phase, CommissionError::Spi);
+                        }
                         let deadline = backend
                             .elapsed_us()
                             .wrapping_add(VELOCITY_VALIDATE_SETTLE_US);
@@ -928,8 +961,9 @@ pub(crate) async fn step_velocity_validate<B: CommissioningBackend>(
 
             match result {
                 ValidationResult::Pass => {
-                    let _ = backend.write_register(PID_VELOCITY_TARGET, 0).await;
-                    let _ = backend.write_register(MODE_RAMP_MODE_MOTION, 0).await;
+                    if !stop_velocity_motion(backend).await {
+                        return fail_outer(phase, CommissionError::Spi);
+                    }
                     let deadline = backend
                         .elapsed_us()
                         .wrapping_add(VELOCITY_VALIDATE_SETTLE_US);
@@ -1017,8 +1051,9 @@ pub(crate) async fn step_velocity_validate<B: CommissioningBackend>(
                     data.reverse_metrics = None;
                     data.max_chatter = 0;
                     data.saturation_count = 0;
-                    let _ = backend.write_register(PID_VELOCITY_TARGET, 0).await;
-                    let _ = backend.write_register(MODE_RAMP_MODE_MOTION, 0).await;
+                    if !stop_velocity_motion(backend).await {
+                        return fail_outer(phase, CommissionError::Spi);
+                    }
                     *state = VelocityValidateState::WriteGains;
                 }
             }
@@ -1033,8 +1068,9 @@ pub(crate) async fn step_velocity_validate<B: CommissioningBackend>(
         }
 
         VelocityValidateState::Finalize => {
-            let _ = backend.write_register(PID_VELOCITY_TARGET, 0).await;
-            let _ = backend.write_register(MODE_RAMP_MODE_MOTION, 0).await;
+            if !stop_velocity_motion(backend).await {
+                return fail_outer(phase, CommissionError::Spi);
+            }
 
             let carried_safety = *safety;
             let mut accepted_gains = data.gains;
@@ -1102,8 +1138,8 @@ mod tests {
         outer_lambda_widening, step_velocity_tune, step_velocity_validate,
     };
     use crate::autotune::{
-        CommissionError, CommissionProfile, MechanicalModel, OperatingMode, TransientBuffer,
-        VelocityGains, VelocityValidation,
+        CommissionError, CommissionProfile, MechanicalModel, OperatingMode, TRANSIENT_LEN,
+        TransientBuffer, VelocityGains, VelocityValidation,
     };
     use crate::commission_dispatch::test_support::MockBackend;
     use crate::commissioning::outer::{
@@ -1384,6 +1420,82 @@ mod tests {
                 }
                 other => panic!("expected velocity validate phase, got {:?}", other),
             }
+        });
+    }
+
+    #[test]
+    fn velocity_forward_capture_cleanup_write_failure_fails_spi() {
+        pollster::block_on(async {
+            let gains = VelocityGains {
+                velocity_p: 1152,
+                velocity_i: 0,
+                velocity_limit: 16,
+                effective_bandwidth_hz: 0,
+                lambda_vel_ms: 0,
+            };
+            let mut safety = OuterSafetyLimits::new(0, 2448);
+            safety.configure_encoder_resolution(4_000);
+            let mut phase = OuterPhase::VelocityValidate {
+                state: VelocityValidateState::ForwardCapture {
+                    next_sample_us: 1_000,
+                    last_sample_us: 0,
+                },
+                data: VelocityValidateData {
+                    gains,
+                    accepted_gains: gains,
+                    has_accepted_gains: false,
+                    response_lower_p: 0,
+                    response_upper_p: 0,
+                    model: MechanicalModel {
+                        j_eff: 1,
+                        b_eff: 1,
+                        tau_mech_ms: 50,
+                        theta_mech_us: 1,
+                        t_f: 0,
+                    },
+                    strategy: VelocityTuneStrategy::Model,
+                    attempt: 0,
+                    step_target: 4,
+                    forward_metrics: None,
+                    reverse_metrics: None,
+                    max_chatter: 0,
+                    peak_velocity: 20,
+                    prev_encoder_for_velocity: 1_000,
+                    saturation_count: 0,
+                    torque_limit: 0,
+                    operational_velocity_limit: 500_000,
+                    diagnostics: zero_diagnostics(),
+                },
+                safety,
+            };
+            let mut buf = TransientBuffer::new();
+            buf.reset(1000);
+            for _ in 0..(TRANSIENT_LEN - 1) {
+                assert!(buf.push(0));
+            }
+            let mut backend = MockBackend::new();
+            backend.elapsed_us_value = 1_000;
+            backend.encoder_count_value = 1_004;
+            backend.fail_on_write = Some(PID_VELOCITY_TARGET.addr());
+
+            let result = step_velocity_validate(
+                &mut phase,
+                &mut buf,
+                CommissionProfile::Balanced,
+                OperatingMode::Nominal,
+                0,
+                0,
+                false,
+                0,
+                &mut backend,
+            )
+            .await;
+
+            assert!(matches!(
+                result,
+                StepResult::OuterFailed(CommissionError::Spi)
+            ));
+            assert!(matches!(phase, OuterPhase::Failed(CommissionError::Spi)));
         });
     }
 
