@@ -131,7 +131,7 @@ fn assemble_electrical_model(data: &ElectricalIdData, samples: &[u32]) -> Option
     }
     let r_int = (r_int_per_coil[0] + r_int_per_coil[1]) / 2;
     let r_mohm = (r_mohm_per_coil[0] + r_mohm_per_coil[1]) / 2;
-    if r_int == 0 {
+    if r_int == 0 || r_mohm == 0 {
         return None;
     }
 
