@@ -428,7 +428,7 @@ pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
                 // Duration is bounded by INDUCTANCE_CYCLES * cycle time
                 // (~200ms max), well within u32 us range.
                 let end = backend.elapsed_us();
-                data.inductance_elapsed_us[coil_idx] = (end - *start_us) as u32;
+                data.inductance_elapsed_us[coil_idx] = end.wrapping_sub(*start_us) as u32;
 
                 // Disable motor.
                 let _ = backend.write_register(UQ_UD_EXT, 0).await;
@@ -786,6 +786,51 @@ mod tests {
             assert_eq!(uq_ud_writes.next(), Some(512));
             assert_eq!(uq_ud_writes.next(), Some(0xFE00));
             assert_eq!(uq_ud_writes.next(), Some(512));
+        });
+    }
+
+    #[test]
+    fn inductance_elapsed_time_handles_timer_wrap() {
+        pollster::block_on(async {
+            let mut phase = InnerPhase::ElectricalId {
+                state: ElectricalIdState::IndToggle {
+                    coil: 0,
+                    total_cycles: 1,
+                    remaining_cycles: 1,
+                    prev_current: 0,
+                    start_us: u64::MAX - 10,
+                },
+                data: ElectricalIdData::new(512),
+            };
+            let mut buf = TransientBuffer::new();
+            let mut backend = MockBackend::new();
+            backend.elapsed_us_value = 20;
+            backend
+                .registers
+                .insert(PID_TORQUE_FLUX_ACTUAL.addr(), 10)
+                .ok();
+            let mut selftest_results = crate::selftest::SelftestResults::default();
+
+            let result = step_electrical_identification(
+                &mut phase,
+                &mut buf,
+                InnerSequence::Commission,
+                &mut selftest_results,
+                &mut backend,
+            )
+            .await;
+
+            assert!(matches!(result, StepResult::Continue));
+            match &phase {
+                InnerPhase::ElectricalId {
+                    state: ElectricalIdState::IndDisable { .. },
+                    data,
+                } => {
+                    assert_eq!(data.inductance_elapsed_us[0], 31);
+                    assert_eq!(data.inductance_count[0], 1);
+                }
+                other => panic!("expected IndDisable, got {other:?}"),
+            }
         });
     }
 
