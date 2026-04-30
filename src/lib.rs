@@ -28,6 +28,7 @@ pub mod shutdown;
 pub mod state;
 pub mod tmc;
 pub mod tmc_ops;
+pub mod tmc_safe_state;
 pub mod trace;
 
 /// Backwards-compatibility shim. The implementation lives in
