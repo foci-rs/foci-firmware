@@ -83,7 +83,10 @@ pub(crate) async fn step_mechanical_id<B: CommissioningBackend>(
     match state {
         MechanicalIdState::Setup => {
             // Read current encoder position as the reference point.
-            let encoder_raw = backend.read_encoder_count().await;
+            let encoder_raw = match backend.try_read_encoder_count().await {
+                Ok(value) => value,
+                Err(_) => return fail_outer(phase, CommissionError::Spi),
+            };
             let start_position = encoder_raw as i32;
 
             // Compute torque step from configured run_current.
@@ -138,13 +141,19 @@ pub(crate) async fn step_mechanical_id<B: CommissioningBackend>(
             buf.reset(response::MECHANICAL_ID_SAMPLE_PERIOD_US as u16);
 
             // Read encoder PPR for wrap-aware delta computation.
-            let ppr_raw = backend.read_register(ABN_DECODER_PPR).await.unwrap_or(4000);
+            let ppr_raw = match backend.read_register(ABN_DECODER_PPR).await {
+                Ok(value) => value,
+                Err(_) => return fail_outer(phase, CommissionError::Spi),
+            };
             let counts_per_rev = (ppr_raw as i32).max(4);
             safety.counts_per_rev = counts_per_rev;
 
             // Seed the safety baseline from the post-switch position, but keep
             // safety disarmed until a brief zero-torque settle completes.
-            let post_switch_pos = backend.read_encoder_count().await as i32;
+            let post_switch_pos = match backend.try_read_encoder_count().await {
+                Ok(value) => value as i32,
+                Err(_) => return fail_outer(phase, CommissionError::Spi),
+            };
             safety.prev_encoder_count = post_switch_pos;
             safety.unwrapped_position = 0;
             data.start_position = post_switch_pos;
@@ -170,7 +179,10 @@ pub(crate) async fn step_mechanical_id<B: CommissioningBackend>(
                 return StepResult::Continue;
             }
 
-            let settled_pos = backend.read_encoder_count().await as i32;
+            let settled_pos = match backend.try_read_encoder_count().await {
+                Ok(value) => value as i32,
+                Err(_) => return fail_outer(phase, CommissionError::Spi),
+            };
             let delta_counts = response::encoder_delta(
                 settled_pos,
                 safety.prev_encoder_count,
@@ -258,7 +270,10 @@ pub(crate) async fn step_mechanical_id<B: CommissioningBackend>(
             }
 
             // Sample encoder position.
-            let encoder_raw = backend.read_encoder_count().await;
+            let encoder_raw = match backend.try_read_encoder_count().await {
+                Ok(value) => value,
+                Err(_) => return fail_outer(phase, CommissionError::Spi),
+            };
             buf.push(encoder_raw);
             data.push_sample_timestamp(now);
 
@@ -354,7 +369,10 @@ pub(crate) async fn step_mechanical_id<B: CommissioningBackend>(
                 return StepResult::Continue;
             }
 
-            let encoder_raw = backend.read_encoder_count().await;
+            let encoder_raw = match backend.try_read_encoder_count().await {
+                Ok(value) => value,
+                Err(_) => return fail_outer(phase, CommissionError::Spi),
+            };
             buf.push(encoder_raw);
             data.push_sample_timestamp(now);
 

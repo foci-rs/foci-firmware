@@ -434,7 +434,10 @@ pub(crate) async fn step_velocity_validate<B: CommissioningBackend>(
                 return fail_outer(phase, CommissionError::Spi);
             }
 
-            data.prev_encoder_for_velocity = backend.read_encoder_count().await;
+            data.prev_encoder_for_velocity = match backend.try_read_encoder_count().await {
+                Ok(value) => value,
+                Err(_) => return fail_outer(phase, CommissionError::Spi),
+            };
 
             let next_sample_us = backend
                 .elapsed_us()
@@ -455,7 +458,10 @@ pub(crate) async fn step_velocity_validate<B: CommissioningBackend>(
                 return StepResult::Continue;
             }
 
-            let encoder_raw = backend.read_encoder_count().await;
+            let encoder_raw = match backend.try_read_encoder_count().await {
+                Ok(value) => value,
+                Err(_) => return fail_outer(phase, CommissionError::Spi),
+            };
             let prev_encoder = data.prev_encoder_for_velocity;
             data.prev_encoder_for_velocity = encoder_raw;
             let velocity = encoder_delta_counts_per_ms(
@@ -542,7 +548,10 @@ pub(crate) async fn step_velocity_validate<B: CommissioningBackend>(
                 return fail_outer(phase, CommissionError::Spi);
             }
 
-            data.prev_encoder_for_velocity = backend.read_encoder_count().await;
+            data.prev_encoder_for_velocity = match backend.try_read_encoder_count().await {
+                Ok(value) => value,
+                Err(_) => return fail_outer(phase, CommissionError::Spi),
+            };
 
             let next_sample_us = backend
                 .elapsed_us()
@@ -563,7 +572,10 @@ pub(crate) async fn step_velocity_validate<B: CommissioningBackend>(
                 return StepResult::Continue;
             }
 
-            let encoder_raw = backend.read_encoder_count().await;
+            let encoder_raw = match backend.try_read_encoder_count().await {
+                Ok(value) => value,
+                Err(_) => return fail_outer(phase, CommissionError::Spi),
+            };
             let prev_encoder = data.prev_encoder_for_velocity;
             data.prev_encoder_for_velocity = encoder_raw;
             let velocity = encoder_delta_counts_per_ms(
@@ -627,7 +639,10 @@ pub(crate) async fn step_velocity_validate<B: CommissioningBackend>(
 
         VelocityValidateState::ReverseSettle { deadline_us } => {
             if backend.elapsed_us().wrapping_sub(*deadline_us) < 0x8000_0000 {
-                data.prev_encoder_for_velocity = backend.read_encoder_count().await;
+                data.prev_encoder_for_velocity = match backend.try_read_encoder_count().await {
+                    Ok(value) => value,
+                    Err(_) => return fail_outer(phase, CommissionError::Spi),
+                };
                 buf.reset(VELOCITY_VALIDATE_SAMPLE_PERIOD_US as u16);
                 let next_sample_us = backend
                     .elapsed_us()
@@ -651,7 +666,10 @@ pub(crate) async fn step_velocity_validate<B: CommissioningBackend>(
                 return StepResult::Continue;
             }
 
-            let count = backend.read_encoder_count().await;
+            let count = match backend.try_read_encoder_count().await {
+                Ok(value) => value,
+                Err(_) => return fail_outer(phase, CommissionError::Spi),
+            };
             let prev_encoder = data.prev_encoder_for_velocity;
             data.prev_encoder_for_velocity = count;
             let velocity = encoder_delta_counts_per_ms(

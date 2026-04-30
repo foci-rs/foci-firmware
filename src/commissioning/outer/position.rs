@@ -77,7 +77,10 @@ pub(crate) async fn step_position_tune<B: CommissioningBackend>(
             // Record both position domains. ABN counts are used for response
             // measurement; PID_POSITION_ACTUAL is the TMC target domain used
             // by PID_POSITION_TARGET.
-            let encoder_raw = backend.read_encoder_count().await;
+            let encoder_raw = match backend.try_read_encoder_count().await {
+                Ok(value) => value,
+                Err(_) => return fail_outer(phase, CommissionError::Spi),
+            };
             data.step_start_counts = encoder_raw as i32;
             let position_raw = match backend.read_register(PID_POSITION_ACTUAL).await {
                 Ok(v) => v as i32,
@@ -124,7 +127,10 @@ pub(crate) async fn step_position_tune<B: CommissioningBackend>(
                 return StepResult::Continue;
             }
 
-            let encoder_raw = backend.read_encoder_count().await;
+            let encoder_raw = match backend.try_read_encoder_count().await {
+                Ok(value) => value,
+                Err(_) => return fail_outer(phase, CommissionError::Spi),
+            };
             // Wrap-aware displacement from step start, normalized to
             // [-counts_per_rev/2, +counts_per_rev/2). Stored unsigned for
             // comparison against the unsigned step target_abs in the
@@ -245,7 +251,10 @@ pub(crate) async fn step_position_tune<B: CommissioningBackend>(
                         .write_register(PID_POSITION_P_POSITION_I, pos_reg)
                         .await;
 
-                    let encoder_raw = backend.read_encoder_count().await;
+                    let encoder_raw = match backend.try_read_encoder_count().await {
+                        Ok(value) => value,
+                        Err(_) => return fail_outer(phase, CommissionError::Spi),
+                    };
                     data.step_start_counts = encoder_raw as i32;
                     let position_raw = match backend.read_register(PID_POSITION_ACTUAL).await {
                         Ok(v) => v as i32,

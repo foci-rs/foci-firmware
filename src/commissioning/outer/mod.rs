@@ -506,14 +506,14 @@ pub(crate) fn safety_error_for_phase(_phase: &OuterPhase) -> CommissionError {
 pub(crate) async fn check_outer_safety<B: CommissioningBackend>(
     safety: &mut OuterSafetyLimits,
     backend: &mut B,
-) -> bool {
+) -> Result<bool, B::Error> {
     // Safety limits are initialized by MechanicalId::Setup after it reads
     // the real encoder baseline. Skip the pre-setup placeholder values.
     if safety.torque_cap == 0 {
-        return false;
+        return Ok(false);
     }
 
-    let encoder_raw = backend.read_encoder_count().await;
+    let encoder_raw = backend.try_read_encoder_count().await?;
     let encoder_count = encoder_raw as i32;
     let now_us = backend.elapsed_us();
 
@@ -543,7 +543,7 @@ pub(crate) async fn check_outer_safety<B: CommissioningBackend>(
             delta_counts,
             dt_us,
         );
-        return true;
+        return Ok(true);
     }
 
     // Check position window against unwrapped accumulator.
@@ -554,10 +554,10 @@ pub(crate) async fn check_outer_safety<B: CommissioningBackend>(
             abs_position,
             safety.position_window
         );
-        return true;
+        return Ok(true);
     }
 
-    false
+    Ok(false)
 }
 
 /// Get a mutable reference to the safety limits for the current phase.
@@ -607,18 +607,25 @@ pub(crate) async fn step_outer<B: CommissioningBackend>(
     // `inner_warning_flags`. Keeping the wire/struct contract unchanged
     // avoids a Phase 2 schema bump.
     let _ = (tau_e_us, tau_e_crosscheck_us);
-    if let Some(safety) = outer_safety_mut(phase)
-        && check_outer_safety(safety, backend).await
-    {
-        // Zero excitation immediately on any safety violation.
-        let _ = backend
-            .write_register(foci_tmc4671::registers::PID_TORQUE_FLUX_TARGET, 0)
-            .await;
-        let _ = backend
-            .write_register(foci_tmc4671::registers::MODE_RAMP_MODE_MOTION, 0)
-            .await;
-        let err = safety_error_for_phase(phase);
-        return fail_outer(phase, err);
+    if let Some(safety) = outer_safety_mut(phase) {
+        match check_outer_safety(safety, backend).await {
+            Ok(true) => {
+                // Zero excitation immediately on any safety violation.
+                let _ = backend
+                    .write_register(foci_tmc4671::registers::PID_TORQUE_FLUX_TARGET, 0)
+                    .await;
+                let _ = backend
+                    .write_register(foci_tmc4671::registers::MODE_RAMP_MODE_MOTION, 0)
+                    .await;
+                let err = safety_error_for_phase(phase);
+                return fail_outer(phase, err);
+            }
+            Ok(false) => {}
+            Err(_) => {
+                defmt::warn!("outer safety: encoder read failed");
+                return fail_outer(phase, CommissionError::Spi);
+            }
+        }
     }
 
     match phase {
@@ -679,7 +686,9 @@ mod tests {
     };
     use crate::commission_dispatch::test_support::{MockBackend, SpiOp};
     use crate::commissioning::types::StepResult;
-    use foci_tmc4671::registers::{ABN_DECODER_PPR, MODE_RAMP_MODE_MOTION, PID_TORQUE_FLUX_TARGET};
+    use foci_tmc4671::registers::{
+        ABN_DECODER_COUNT, ABN_DECODER_PPR, MODE_RAMP_MODE_MOTION, PID_TORQUE_FLUX_TARGET,
+    };
 
     #[test]
     fn outer_safety_uses_mechanical_id_velocity_cap() {
@@ -710,7 +719,9 @@ mod tests {
             backend.elapsed_us_value = 124_909;
             backend.encoder_count_value = 2525; // delta=197 over 24.909ms => ~7 counts/ms
 
-            let violated = check_outer_safety(&mut safety, &mut backend).await;
+            let violated = check_outer_safety(&mut safety, &mut backend)
+                .await
+                .expect("encoder read should succeed");
 
             assert!(
                 !violated,
@@ -719,6 +730,47 @@ mod tests {
             assert_eq!(safety.prev_encoder_count, 2525);
             assert_eq!(safety.last_sample_us, 124_909);
             assert_eq!(safety.unwrapped_position, 197);
+        });
+    }
+
+    #[test]
+    fn outer_safety_read_error_fails_with_spi() {
+        pollster::block_on(async {
+            let mut safety = OuterSafetyLimits::new(0, 2448);
+            safety.counts_per_rev = 4000;
+            safety.last_sample_us = 1_000;
+            let mut phase = OuterPhase::MechanicalId {
+                state: MechanicalIdState::ForwardCapture {
+                    next_sample_us: 2_000,
+                    capture_start_us: 1_000,
+                },
+                data: MechanicalIdData::new(0, 367),
+                safety,
+            };
+            let mut buf = TransientBuffer::new();
+            let mut backend = MockBackend::new();
+            backend.elapsed_us_value = 2_000;
+            backend.fail_on_read = Some(ABN_DECODER_COUNT.addr());
+
+            let result = step_outer(
+                &mut phase,
+                &mut buf,
+                CommissionProfile::Balanced,
+                OperatingMode::Nominal,
+                0,
+                0,
+                false,
+                0,
+                0,
+                0,
+                0,
+                0,
+                &mut backend,
+            )
+            .await;
+
+            assert!(matches!(result, StepResult::OuterFailed(CommissionError::Spi)));
+            assert!(matches!(phase, OuterPhase::Failed(CommissionError::Spi)));
         });
     }
 

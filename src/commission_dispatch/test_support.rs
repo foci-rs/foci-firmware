@@ -132,6 +132,15 @@ impl CommissioningBackend for MockBackend {
         self.encoder_count_value
     }
 
+    async fn try_read_encoder_count(&mut self) -> Result<u32, Self::Error> {
+        let addr = foci_tmc4671::registers::ABN_DECODER_COUNT.addr();
+        self.spi_log.push(SpiOp::Read(addr)).ok();
+        if self.fail_on_read == Some(addr) {
+            return Err(MockSpiError);
+        }
+        Ok(self.encoder_count_value)
+    }
+
     fn elapsed_us(&self) -> u64 {
         self.elapsed_us_value
     }

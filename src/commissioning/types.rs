@@ -50,6 +50,16 @@ pub trait CommissioningBackend {
     /// Read the current ABN encoder count.
     async fn read_encoder_count(&mut self) -> u32;
 
+    /// Read the current ABN encoder count and preserve backend read failures.
+    ///
+    /// Outer commissioning uses this fallible path because encoder samples feed
+    /// safety limits and mechanical/velocity/position models. Implementations
+    /// that cannot observe read errors may rely on the default infallible
+    /// adapter.
+    async fn try_read_encoder_count(&mut self) -> Result<u32, Self::Error> {
+        Ok(self.read_encoder_count().await)
+    }
+
     /// Microseconds elapsed since an arbitrary monotonic reference point.
     ///
     /// Used for deadline-driven sub-state timing within `step()`.
