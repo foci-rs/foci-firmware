@@ -120,8 +120,8 @@ fn assemble_electrical_model(data: &ElectricalIdData, samples: &[u32]) -> Option
         if count == 0 {
             return None;
         }
-        let avg_current = (data.resistance_current_sum[coil_idx] / count) as i16;
-        let abs_current = avg_current.unsigned_abs() as u32;
+        let avg_current = data.resistance_current_sum[coil_idx] / count;
+        let abs_current = avg_current.unsigned_abs();
         if abs_current == 0 {
             return None;
         }
@@ -665,6 +665,19 @@ mod tests {
             "l_int should preserve the original internal L scale: {}",
             model.l_int
         );
+    }
+
+    #[test]
+    fn model_assembly_uses_full_width_resistance_average() {
+        let mut data = representative_data();
+        data.resistance_current_sum = [40_000_000, 40_000_000];
+        data.resistance_sample_count = [1000, 1000];
+        let buf = representative_transient();
+
+        let model = assemble_electrical_model(&data, buf.samples()).unwrap();
+
+        assert_eq!(model.r_int, 12);
+        assert_eq!(model.r_mohm, 12);
     }
 
     #[test]
