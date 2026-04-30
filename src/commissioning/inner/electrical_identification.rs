@@ -606,6 +606,9 @@ pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
                 // accumulation window relies on.
                 let total_done = total_cycles.saturating_sub(*remaining_cycles);
                 let v = if total_done % 2 == 0 { v_pos } else { v_neg };
+                if *warmup_cycles_remaining == 0 && accumulation_start_us.is_none() {
+                    *accumulation_start_us = Some(backend.elapsed_us());
+                }
                 if backend.write_register(UQ_UD_EXT, v).await.is_err() {
                     return super::fail_inner(phase, CommissionError::Spi);
                 }
@@ -617,10 +620,6 @@ pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
                 let current = (actual & 0xFFFF) as i16;
                 if *warmup_cycles_remaining > 0 {
                     *warmup_cycles_remaining -= 1;
-                    if *warmup_cycles_remaining == 0 {
-                        // Next iteration is the first measured cycle.
-                        *accumulation_start_us = Some(backend.elapsed_us());
-                    }
                 } else {
                     let delta = (current as i32 - *prev_current as i32).unsigned_abs();
                     data.inductance_sum_delta[coil_idx] += delta as u64;
@@ -1324,6 +1323,81 @@ mod tests {
                     data,
                 } => {
                     assert_eq!(data.inductance_count[0], 2);
+                }
+                other => panic!("expected InductanceDisable, got {other:?}"),
+            }
+        });
+    }
+
+    #[test]
+    fn inductance_toggle_starts_elapsed_window_on_first_measured_cycle() {
+        pollster::block_on(async {
+            let mut phase = InnerPhase::ElectricalId {
+                state: ElectricalIdState::InductanceToggle {
+                    coil: 0,
+                    total_cycles: 31,
+                    remaining_cycles: 31,
+                    prev_current: 0,
+                    start_us: 1_000,
+                    warmup_cycles_remaining: 30,
+                    accumulation_start_us: None,
+                },
+                data: ElectricalIdData::new(512),
+            };
+            let mut buf = TransientBuffer::new();
+            let mut backend = MockBackend::new();
+            backend.elapsed_us_value = 1_000;
+            backend
+                .registers
+                .insert(PID_TORQUE_FLUX_ACTUAL.addr(), 50)
+                .ok();
+            let mut selftest_results = crate::selftest::SelftestResults::default();
+
+            let _ = step_electrical_identification(
+                &mut phase,
+                &mut buf,
+                InnerSequence::Commission,
+                &mut selftest_results,
+                &mut backend,
+            )
+            .await;
+
+            match &phase {
+                InnerPhase::ElectricalId {
+                    state:
+                        ElectricalIdState::InductanceToggle {
+                            remaining_cycles,
+                            warmup_cycles_remaining,
+                            accumulation_start_us,
+                            ..
+                        },
+                    data,
+                } => {
+                    assert_eq!(*remaining_cycles, 1);
+                    assert_eq!(*warmup_cycles_remaining, 0);
+                    assert_eq!(*accumulation_start_us, None);
+                    assert_eq!(data.inductance_count[0], 0);
+                }
+                other => panic!("expected InductanceToggle, got {other:?}"),
+            }
+
+            backend.elapsed_us_value = 2_000;
+            let _ = step_electrical_identification(
+                &mut phase,
+                &mut buf,
+                InnerSequence::Commission,
+                &mut selftest_results,
+                &mut backend,
+            )
+            .await;
+
+            match &phase {
+                InnerPhase::ElectricalId {
+                    state: ElectricalIdState::InductanceDisable { .. },
+                    data,
+                } => {
+                    assert_eq!(data.inductance_count[0], 1);
+                    assert_eq!(data.inductance_elapsed_us[0], 0);
                 }
                 other => panic!("expected InductanceDisable, got {other:?}"),
             }
