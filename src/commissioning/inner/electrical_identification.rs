@@ -66,7 +66,7 @@ fn tau_crosscheck_valid(model: &ElectricalModel) -> bool {
 }
 
 fn sample_time_us(index: usize) -> u32 {
-    ((index as u64 + 1) * ELECTRICAL_SAMPLE_PERIOD_US) as u32
+    crate::sample_timing::sample_elapsed_us(index, ELECTRICAL_SAMPLE_PERIOD_US as u32)
 }
 
 fn interpolate_threshold_crossing_us(samples: &[u32], threshold: u32) -> Option<u32> {
