@@ -2226,6 +2226,87 @@ mod tests {
         assert!(metrics.rise_time_us > 0, "rise time must be nonzero");
     }
 
+    /// Phase 1 timing invariants — pin the current sample-timing
+    /// convention so a later measurement redesign updates these tests
+    /// deliberately. See `docs/specs/2026-04-30-inner-commissioning-stability.md`
+    /// §5.
+
+    #[test]
+    fn step_metrics_t10_at_or_before_t90() {
+        let mut buf = TransientBuffer::new();
+        buf.reset(160);
+        for &v in &[0u32, 50, 200, 600, 950, 1000, 1000, 1000] {
+            buf.push(v);
+        }
+        let metrics = extract_step_metrics(&buf, 1000, 0);
+        // rise_time = t90 - t10; nonzero rise_time implies t90 >= t10.
+        assert!(metrics.rise_time_us > 0);
+    }
+
+    #[test]
+    fn step_metrics_rise_time_invariant_under_capture_origin_offset() {
+        // Adding zero-valued samples *before* the meaningful step must not
+        // change rise_time, because t90 - t10 cancels the capture-origin
+        // offset.
+        let mut early = TransientBuffer::new();
+        early.reset(160);
+        for &v in &[0u32, 50, 200, 600, 950, 1000, 1000, 1000] {
+            early.push(v);
+        }
+        let mut delayed = TransientBuffer::new();
+        delayed.reset(160);
+        for &v in &[0u32, 0, 0, 50, 200, 600, 950, 1000, 1000, 1000] {
+            delayed.push(v);
+        }
+        let early_m = extract_step_metrics(&early, 1000, 0);
+        let delayed_m = extract_step_metrics(&delayed, 1000, 0);
+        assert_eq!(early_m.rise_time_us, delayed_m.rise_time_us);
+    }
+
+    #[test]
+    fn step_metrics_settling_time_uses_last_outside_plus_one_period() {
+        // Settling time uses smoothed (8-sample trailing average) values, so
+        // pin the formula by inserting one zero at index 15. The trailing
+        // average then stays out-of-band through index 22 and recovers at
+        // index 23 — last_outside == 22, settling == (22 + 1) * 160 = 3680us.
+        let mut buf = TransientBuffer::new();
+        buf.reset(160);
+        for i in 0..24u32 {
+            if i == 15 {
+                buf.push(0);
+            } else {
+                buf.push(1000);
+            }
+        }
+        let metrics = extract_step_metrics(&buf, 1000, 0);
+        assert_eq!(metrics.settling_time_us, 23 * 160);
+    }
+
+    #[test]
+    fn step_metrics_zero_target_stays_bounded() {
+        let mut buf = TransientBuffer::new();
+        buf.reset(160);
+        for _ in 0..16 {
+            buf.push(100);
+        }
+        let metrics = extract_step_metrics(&buf, 0, 0);
+        assert_eq!(metrics.rise_time_us, 0);
+        assert_eq!(metrics.settling_time_us, 0);
+    }
+
+    #[test]
+    fn step_metrics_low_target_stays_bounded() {
+        let mut buf = TransientBuffer::new();
+        buf.reset(160);
+        for _ in 0..16 {
+            buf.push(0);
+        }
+        let metrics = extract_step_metrics(&buf, 5, 0);
+        // settle_band is clamped to >=1 count; an all-zero capture cannot
+        // reach the band but the metric must stay bounded, not panic.
+        assert!(metrics.settling_time_us <= 16 * 160);
+    }
+
     #[test]
     fn step_metrics_with_overshoot() {
         let buf = synthetic_step_response(100.0);
