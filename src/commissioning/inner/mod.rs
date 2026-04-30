@@ -286,7 +286,45 @@ pub(crate) fn fail_inner(phase: &mut InnerPhase, err: CommissionError) -> StepRe
 /// handler advances its sub-state by one chunk of work (bounded to ~1ms).
 /// Phase transitions are signalled by replacing `*phase` and returning
 /// `StepResult::PhaseChanged`.
+///
+/// On any `StepResult::InnerFailed(_)` returned by a phase handler, this
+/// wrapper runs the canonical safe-state restore so failures cannot leave
+/// the TMC4671 energized. Phase-local handlers must not call the
+/// safe-state helper directly — let this wrapper own the cleanup boundary.
 pub(crate) async fn step_inner<B: CommissioningBackend>(
+    phase: &mut InnerPhase,
+    buf: &mut TransientBuffer,
+    profile: CommissionProfile,
+    sequence: InnerSequence,
+    adc_cal: &mut Option<AdcCalResult>,
+    selftest_results: &mut crate::selftest::SelftestResults,
+    backend: &mut B,
+) -> StepResult {
+    let result = step_inner_dispatch(
+        phase,
+        buf,
+        profile,
+        sequence,
+        adc_cal,
+        selftest_results,
+        backend,
+    )
+    .await;
+    if matches!(result, StepResult::InnerFailed(_)) {
+        // Defense in depth: `commission_dispatch::drive_commission_result`
+        // already runs the canonical safe-state helper on
+        // `StepResult::InnerFailed`. We run it again here so the chip is
+        // guaranteed de-energized before the failure even leaves the
+        // engine — the dispatcher boundary is one layer up. The duplicate
+        // 6 SPI writes are harmless on the failure path; if a deferred
+        // drive of the dispatcher is added later, this layer keeps the
+        // safety contract intact.
+        crate::tmc_safe_state::restore_safe_state_via_backend(backend).await;
+    }
+    result
+}
+
+async fn step_inner_dispatch<B: CommissioningBackend>(
     phase: &mut InnerPhase,
     buf: &mut TransientBuffer,
     profile: CommissionProfile,

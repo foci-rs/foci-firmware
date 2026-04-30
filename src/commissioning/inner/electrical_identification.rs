@@ -908,4 +908,75 @@ mod tests {
             assert!(matches!(phase, InnerPhase::Failed(CommissionError::Spi)));
         });
     }
+
+    #[test]
+    fn step_inner_restores_safe_state_on_inner_failure() {
+        pollster::block_on(async {
+            // Drive through `step_inner` (the un-bypassable cleanup boundary)
+            // so an SPI write failure mid-toggle leaves the chip de-energized
+            // and the canonical safe-state register sequence applied.
+            let mut phase = InnerPhase::ElectricalId {
+                state: ElectricalIdState::IndToggle {
+                    coil: 0,
+                    total_cycles: 7,
+                    remaining_cycles: 7,
+                    prev_current: 0,
+                    start_us: 0,
+                },
+                data: ElectricalIdData::new(512),
+            };
+            let mut buf = TransientBuffer::new();
+            let mut backend = MockBackend::new();
+            backend.enable_pin = true;
+            backend.fail_on_write = Some(UQ_UD_EXT.addr());
+            let mut selftest_results = crate::selftest::SelftestResults::default();
+            let mut adc_cal = None;
+
+            let result = crate::commissioning::inner::step_inner(
+                &mut phase,
+                &mut buf,
+                crate::autotune::CommissionProfile::Balanced,
+                InnerSequence::Commission,
+                &mut adc_cal,
+                &mut selftest_results,
+                &mut backend,
+            )
+            .await;
+
+            assert!(matches!(
+                result,
+                StepResult::InnerFailed(CommissionError::Spi)
+            ));
+            assert!(!backend.enable_pin, "enable pin must be lowered");
+            // The canonical safe-state writes must follow the failing UQ_UD_EXT
+            // write. Collect the addresses written *after* the failure point.
+            use foci_tmc4671::registers::*;
+            let mut seen_failure = false;
+            let mut after: std::vec::Vec<u8> = std::vec::Vec::new();
+            for op in backend.spi_log.iter() {
+                if let SpiOp::Write(addr, _) = op {
+                    if !seen_failure && *addr == UQ_UD_EXT.addr() {
+                        seen_failure = true;
+                        continue;
+                    }
+                    if seen_failure {
+                        after.push(*addr);
+                    }
+                }
+            }
+            for canonical in [
+                MODE_RAMP_MODE_MOTION.addr(),
+                PID_TORQUE_FLUX_TARGET.addr(),
+                PWM_SV_CHOP.addr(),
+                PID_VELOCITY_OFFSET.addr(),
+                PIDOUT_UQ_UD_LIMITS.addr(),
+            ] {
+                assert!(
+                    after.contains(&canonical),
+                    "canonical safe-state register {:#x} not written after failure",
+                    canonical
+                );
+            }
+        });
+    }
 }
