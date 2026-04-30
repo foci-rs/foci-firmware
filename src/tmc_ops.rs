@@ -384,9 +384,7 @@ pub fn arm_motor_for_steps(state: &mut DispatchState<'_>) {
 ///
 /// Mirror of [`apply_stored_filters`] (which uses raw `Tmc4671Spi<B>`),
 /// but routes all writes through the backend trait so the dispatch can
-/// call it without holding a raw SPI device. Best-effort: SPI failures
-/// are ignored (filters affect loop shaping; the loop runs unfiltered
-/// if writes fail).
+/// call it without holding a raw SPI device.
 ///
 /// Each `SubRegister` write reproduces the addr-then-data sequence that
 /// `Tmc4671Spi::write_sub_register` does internally: write `sub_addr`
@@ -401,7 +399,7 @@ pub fn arm_motor_for_steps(state: &mut DispatchState<'_>) {
 pub async fn apply_stored_filters_via_backend<B: CommissioningBackend>(
     backend: &mut B,
     pwm_maxcnt: u16,
-) {
+) -> Result<(), B::Error> {
     use core::sync::atomic::Ordering::Relaxed;
     use foci_tmc4671::registers::{SubRegister, *};
 
@@ -432,19 +430,20 @@ pub async fn apply_stored_filters_via_backend<B: CommissioningBackend>(
         filter_hz: u16,
         pwm_maxcnt: u16,
         regs: BiquadFilterSubRegs,
-    ) {
+    ) -> Result<(), B::Error> {
         if filter_hz == 0 {
-            return;
+            return Ok(());
         }
         let Some(coeffs) = crate::biquad::butterworth_lowpass(filter_hz, pwm_maxcnt) else {
-            return;
+            return Ok(());
         };
-        let _ = write_sub(backend, regs.a_1, coeffs.a_1 as u32).await;
-        let _ = write_sub(backend, regs.a_2, coeffs.a_2 as u32).await;
-        let _ = write_sub(backend, regs.b_0, coeffs.b_0 as u32).await;
-        let _ = write_sub(backend, regs.b_1, coeffs.b_1 as u32).await;
-        let _ = write_sub(backend, regs.b_2, coeffs.b_2 as u32).await;
-        let _ = write_sub(backend, regs.enable, 1).await;
+        write_sub(backend, regs.a_1, coeffs.a_1 as u32).await?;
+        write_sub(backend, regs.a_2, coeffs.a_2 as u32).await?;
+        write_sub(backend, regs.b_0, coeffs.b_0 as u32).await?;
+        write_sub(backend, regs.b_1, coeffs.b_1 as u32).await?;
+        write_sub(backend, regs.b_2, coeffs.b_2 as u32).await?;
+        write_sub(backend, regs.enable, 1).await?;
+        Ok(())
     }
 
     apply_one(
@@ -460,7 +459,7 @@ pub async fn apply_stored_filters_via_backend<B: CommissioningBackend>(
             enable: CONFIG_BIQUAD_V_ENABLE,
         },
     )
-    .await;
+    .await?;
     apply_one(
         backend,
         crate::state::tmc::TORQUE_FILTER_HZ.load(Relaxed),
@@ -474,7 +473,7 @@ pub async fn apply_stored_filters_via_backend<B: CommissioningBackend>(
             enable: CONFIG_BIQUAD_T_ENABLE,
         },
     )
-    .await;
+    .await?;
     apply_one(
         backend,
         crate::state::tmc::POSITION_FILTER_HZ.load(Relaxed),
@@ -488,7 +487,7 @@ pub async fn apply_stored_filters_via_backend<B: CommissioningBackend>(
             enable: CONFIG_BIQUAD_X_ENABLE,
         },
     )
-    .await;
+    .await?;
     apply_one(
         backend,
         crate::state::tmc::FLUX_FILTER_HZ.load(Relaxed),
@@ -502,7 +501,8 @@ pub async fn apply_stored_filters_via_backend<B: CommissioningBackend>(
             enable: CONFIG_BIQUAD_F_ENABLE,
         },
     )
-    .await;
+    .await?;
+    Ok(())
 }
 
 /// De-energize the motor and clear all armed/enabled state.
@@ -756,7 +756,9 @@ mod tests {
             crate::state::tmc::FLUX_FILTER_HZ.store(0, Ordering::Relaxed);
 
             let mut backend = MockBackend::new();
-            apply_stored_filters_via_backend(&mut backend, 4095).await;
+            apply_stored_filters_via_backend(&mut backend, 4095)
+                .await
+                .expect("filter writes should succeed");
 
             // All four biquad SubRegisters share the same data register (0x4D)
             // and the same addr register (0x4E). The only way to distinguish

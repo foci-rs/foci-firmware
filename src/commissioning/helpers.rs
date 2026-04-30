@@ -53,16 +53,26 @@ pub(crate) async fn write_biquad_velocity<B: CommissioningBackend>(
     cutoff_hz: u16,
     pwm_maxcnt: u16,
 ) {
+    let _ = write_biquad_velocity_checked(backend, cutoff_hz, pwm_maxcnt).await;
+}
+
+/// Write velocity biquad filter coefficients and report SPI failures.
+pub(crate) async fn write_biquad_velocity_checked<B: CommissioningBackend>(
+    backend: &mut B,
+    cutoff_hz: u16,
+    pwm_maxcnt: u16,
+) -> Result<(), ()> {
     use foci_tmc4671::registers::*;
     if let Some(coeffs) = crate::biquad::butterworth_lowpass(cutoff_hz, pwm_maxcnt) {
-        write_sub_register(backend, CONFIG_BIQUAD_V_A_1, coeffs.a_1 as u32).await;
-        write_sub_register(backend, CONFIG_BIQUAD_V_A_2, coeffs.a_2 as u32).await;
-        write_sub_register(backend, CONFIG_BIQUAD_V_B_0, coeffs.b_0 as u32).await;
-        write_sub_register(backend, CONFIG_BIQUAD_V_B_1, coeffs.b_1 as u32).await;
-        write_sub_register(backend, CONFIG_BIQUAD_V_B_2, coeffs.b_2 as u32).await;
-        write_sub_register(backend, CONFIG_BIQUAD_V_ENABLE, 1).await;
+        write_sub_register_checked(backend, CONFIG_BIQUAD_V_A_1, coeffs.a_1 as u32).await?;
+        write_sub_register_checked(backend, CONFIG_BIQUAD_V_A_2, coeffs.a_2 as u32).await?;
+        write_sub_register_checked(backend, CONFIG_BIQUAD_V_B_0, coeffs.b_0 as u32).await?;
+        write_sub_register_checked(backend, CONFIG_BIQUAD_V_B_1, coeffs.b_1 as u32).await?;
+        write_sub_register_checked(backend, CONFIG_BIQUAD_V_B_2, coeffs.b_2 as u32).await?;
+        write_sub_register_checked(backend, CONFIG_BIQUAD_V_ENABLE, 1).await?;
         defmt::info!("biquad velocity: {}Hz enabled", cutoff_hz);
     }
+    Ok(())
 }
 
 /// Write position biquad filter coefficients.
@@ -71,16 +81,26 @@ pub(crate) async fn write_biquad_position<B: CommissioningBackend>(
     cutoff_hz: u16,
     pwm_maxcnt: u16,
 ) {
+    let _ = write_biquad_position_checked(backend, cutoff_hz, pwm_maxcnt).await;
+}
+
+/// Write position biquad filter coefficients and report SPI failures.
+pub(crate) async fn write_biquad_position_checked<B: CommissioningBackend>(
+    backend: &mut B,
+    cutoff_hz: u16,
+    pwm_maxcnt: u16,
+) -> Result<(), ()> {
     use foci_tmc4671::registers::*;
     if let Some(coeffs) = crate::biquad::butterworth_lowpass(cutoff_hz, pwm_maxcnt) {
-        write_sub_register(backend, CONFIG_BIQUAD_X_A_1, coeffs.a_1 as u32).await;
-        write_sub_register(backend, CONFIG_BIQUAD_X_A_2, coeffs.a_2 as u32).await;
-        write_sub_register(backend, CONFIG_BIQUAD_X_B_0, coeffs.b_0 as u32).await;
-        write_sub_register(backend, CONFIG_BIQUAD_X_B_1, coeffs.b_1 as u32).await;
-        write_sub_register(backend, CONFIG_BIQUAD_X_B_2, coeffs.b_2 as u32).await;
-        write_sub_register(backend, CONFIG_BIQUAD_X_ENABLE, 1).await;
+        write_sub_register_checked(backend, CONFIG_BIQUAD_X_A_1, coeffs.a_1 as u32).await?;
+        write_sub_register_checked(backend, CONFIG_BIQUAD_X_A_2, coeffs.a_2 as u32).await?;
+        write_sub_register_checked(backend, CONFIG_BIQUAD_X_B_0, coeffs.b_0 as u32).await?;
+        write_sub_register_checked(backend, CONFIG_BIQUAD_X_B_1, coeffs.b_1 as u32).await?;
+        write_sub_register_checked(backend, CONFIG_BIQUAD_X_B_2, coeffs.b_2 as u32).await?;
+        write_sub_register_checked(backend, CONFIG_BIQUAD_X_ENABLE, 1).await?;
         defmt::info!("biquad position: {}Hz enabled", cutoff_hz);
     }
+    Ok(())
 }
 
 /// Write flux biquad filter coefficients.
@@ -89,16 +109,26 @@ pub(crate) async fn write_biquad_flux<B: CommissioningBackend>(
     cutoff_hz: u16,
     pwm_maxcnt: u16,
 ) {
+    let _ = write_biquad_flux_checked(backend, cutoff_hz, pwm_maxcnt).await;
+}
+
+/// Write flux biquad filter coefficients and report SPI failures.
+pub(crate) async fn write_biquad_flux_checked<B: CommissioningBackend>(
+    backend: &mut B,
+    cutoff_hz: u16,
+    pwm_maxcnt: u16,
+) -> Result<(), ()> {
     use foci_tmc4671::registers::*;
     if let Some(coeffs) = crate::biquad::butterworth_lowpass(cutoff_hz, pwm_maxcnt) {
-        write_sub_register(backend, CONFIG_BIQUAD_F_A_1, coeffs.a_1 as u32).await;
-        write_sub_register(backend, CONFIG_BIQUAD_F_A_2, coeffs.a_2 as u32).await;
-        write_sub_register(backend, CONFIG_BIQUAD_F_B_0, coeffs.b_0 as u32).await;
-        write_sub_register(backend, CONFIG_BIQUAD_F_B_1, coeffs.b_1 as u32).await;
-        write_sub_register(backend, CONFIG_BIQUAD_F_B_2, coeffs.b_2 as u32).await;
-        write_sub_register(backend, CONFIG_BIQUAD_F_ENABLE, 1).await;
+        write_sub_register_checked(backend, CONFIG_BIQUAD_F_A_1, coeffs.a_1 as u32).await?;
+        write_sub_register_checked(backend, CONFIG_BIQUAD_F_A_2, coeffs.a_2 as u32).await?;
+        write_sub_register_checked(backend, CONFIG_BIQUAD_F_B_0, coeffs.b_0 as u32).await?;
+        write_sub_register_checked(backend, CONFIG_BIQUAD_F_B_1, coeffs.b_1 as u32).await?;
+        write_sub_register_checked(backend, CONFIG_BIQUAD_F_B_2, coeffs.b_2 as u32).await?;
+        write_sub_register_checked(backend, CONFIG_BIQUAD_F_ENABLE, 1).await?;
         defmt::info!("biquad flux: {}Hz enabled", cutoff_hz);
     }
+    Ok(())
 }
 
 /// Write torque biquad filter coefficients.
@@ -107,14 +137,24 @@ pub(crate) async fn write_biquad_torque<B: CommissioningBackend>(
     cutoff_hz: u16,
     pwm_maxcnt: u16,
 ) {
+    let _ = write_biquad_torque_checked(backend, cutoff_hz, pwm_maxcnt).await;
+}
+
+/// Write torque biquad filter coefficients and report SPI failures.
+pub(crate) async fn write_biquad_torque_checked<B: CommissioningBackend>(
+    backend: &mut B,
+    cutoff_hz: u16,
+    pwm_maxcnt: u16,
+) -> Result<(), ()> {
     use foci_tmc4671::registers::*;
     if let Some(coeffs) = crate::biquad::butterworth_lowpass(cutoff_hz, pwm_maxcnt) {
-        write_sub_register(backend, CONFIG_BIQUAD_T_A_1, coeffs.a_1 as u32).await;
-        write_sub_register(backend, CONFIG_BIQUAD_T_A_2, coeffs.a_2 as u32).await;
-        write_sub_register(backend, CONFIG_BIQUAD_T_B_0, coeffs.b_0 as u32).await;
-        write_sub_register(backend, CONFIG_BIQUAD_T_B_1, coeffs.b_1 as u32).await;
-        write_sub_register(backend, CONFIG_BIQUAD_T_B_2, coeffs.b_2 as u32).await;
-        write_sub_register(backend, CONFIG_BIQUAD_T_ENABLE, 1).await;
+        write_sub_register_checked(backend, CONFIG_BIQUAD_T_A_1, coeffs.a_1 as u32).await?;
+        write_sub_register_checked(backend, CONFIG_BIQUAD_T_A_2, coeffs.a_2 as u32).await?;
+        write_sub_register_checked(backend, CONFIG_BIQUAD_T_B_0, coeffs.b_0 as u32).await?;
+        write_sub_register_checked(backend, CONFIG_BIQUAD_T_B_1, coeffs.b_1 as u32).await?;
+        write_sub_register_checked(backend, CONFIG_BIQUAD_T_B_2, coeffs.b_2 as u32).await?;
+        write_sub_register_checked(backend, CONFIG_BIQUAD_T_ENABLE, 1).await?;
         defmt::info!("biquad torque: {}Hz enabled", cutoff_hz);
     }
+    Ok(())
 }

@@ -467,6 +467,54 @@ fn outer_done_spi_failure_disarms() {
     });
 }
 
+#[test]
+fn outer_done_filter_apply_failure_disarms() {
+    pollster::block_on(async {
+        use core::sync::atomic::Ordering;
+        let _guard = test_support::SHARED_STATE_MUTEX.lock().unwrap();
+        let mut backend = MockBackend::new();
+        backend.fail_on_write = Some(foci_tmc4671::registers::CONFIG_BIQUAD_V_ENABLE.data.addr());
+        let (mut cal, mut en, mut gains) = fresh_state_locals();
+        let mut state = DispatchState {
+            calibrated: &mut cal,
+            motor_enabled: &mut en,
+            stored_gains: &mut gains,
+        };
+        let mut engine = Some(CommissioningEngine::new_commission(
+            0,
+            CommissionProfile::Balanced,
+        ));
+        let mut outer = sample_outer_result_for_dispatch();
+        outer.velocity_filter_hz = 100;
+
+        let outcome = drive_commission_result(
+            StepResult::OuterDone(outer),
+            &mut engine,
+            &mut backend,
+            &mut state,
+            4095,
+        )
+        .await;
+
+        assert!(!*state.calibrated);
+        assert!(!*state.motor_enabled);
+        assert!(!backend.enable_pin);
+        assert!(!crate::state::tmc::MOTOR_ARMED.load(Ordering::Relaxed));
+
+        match outcome {
+            CommissionOutcome::Terminal {
+                reply: ReplyPayload::TuneResult { status, .. },
+                actions,
+            } => {
+                assert_eq!(status, crate::autotune::CommissionError::Spi.status_code());
+                assert!(actions.stop_trace);
+                assert!(actions.stop_stepper);
+            }
+            _ => panic!("expected TuneResult error"),
+        }
+    });
+}
+
 fn sample_commission_result() -> crate::commissioning::types::CommissionResult {
     use crate::autotune::CommissionStatus;
     use crate::commissioning::types::{CommissionResult, InnerResult};

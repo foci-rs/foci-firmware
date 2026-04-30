@@ -7,8 +7,9 @@
 //! host configuration.
 
 use super::OuterPhase;
-use crate::autotune::PhaseId;
+use crate::autotune::{CommissionError, PhaseId};
 use crate::commissioning::helpers;
+use crate::commissioning::outer::fail_outer;
 use crate::commissioning::types::{CommissioningBackend, StepResult};
 
 /// Implement filter selection from prior validation metrics.
@@ -67,31 +68,83 @@ pub(crate) async fn step_filter_tune<B: CommissioningBackend>(
     let pwm_maxcnt = backend.pwm_maxcnt();
 
     if let Some(cutoff_hz) = filter_config.velocity_filter_hz {
-        helpers::write_biquad_velocity(backend, cutoff_hz as u16, pwm_maxcnt).await;
+        if helpers::write_biquad_velocity_checked(backend, cutoff_hz as u16, pwm_maxcnt)
+            .await
+            .is_err()
+        {
+            return fail_outer(phase, CommissionError::Spi);
+        }
     } else {
-        helpers::write_sub_register(backend, foci_tmc4671::registers::CONFIG_BIQUAD_V_ENABLE, 0)
-            .await;
+        if helpers::write_sub_register_checked(
+            backend,
+            foci_tmc4671::registers::CONFIG_BIQUAD_V_ENABLE,
+            0,
+        )
+        .await
+        .is_err()
+        {
+            return fail_outer(phase, CommissionError::Spi);
+        }
     }
 
     if let Some(cutoff_hz) = filter_config.position_filter_hz {
-        helpers::write_biquad_position(backend, cutoff_hz as u16, pwm_maxcnt).await;
+        if helpers::write_biquad_position_checked(backend, cutoff_hz as u16, pwm_maxcnt)
+            .await
+            .is_err()
+        {
+            return fail_outer(phase, CommissionError::Spi);
+        }
     } else {
-        helpers::write_sub_register(backend, foci_tmc4671::registers::CONFIG_BIQUAD_X_ENABLE, 0)
-            .await;
+        if helpers::write_sub_register_checked(
+            backend,
+            foci_tmc4671::registers::CONFIG_BIQUAD_X_ENABLE,
+            0,
+        )
+        .await
+        .is_err()
+        {
+            return fail_outer(phase, CommissionError::Spi);
+        }
     }
 
     if let Some(cutoff_hz) = filter_config.flux_filter_hz {
-        helpers::write_biquad_flux(backend, cutoff_hz as u16, pwm_maxcnt).await;
+        if helpers::write_biquad_flux_checked(backend, cutoff_hz as u16, pwm_maxcnt)
+            .await
+            .is_err()
+        {
+            return fail_outer(phase, CommissionError::Spi);
+        }
     } else {
-        helpers::write_sub_register(backend, foci_tmc4671::registers::CONFIG_BIQUAD_F_ENABLE, 0)
-            .await;
+        if helpers::write_sub_register_checked(
+            backend,
+            foci_tmc4671::registers::CONFIG_BIQUAD_F_ENABLE,
+            0,
+        )
+        .await
+        .is_err()
+        {
+            return fail_outer(phase, CommissionError::Spi);
+        }
     }
 
     if let Some(cutoff_hz) = filter_config.torque_filter_hz {
-        helpers::write_biquad_torque(backend, cutoff_hz as u16, pwm_maxcnt).await;
+        if helpers::write_biquad_torque_checked(backend, cutoff_hz as u16, pwm_maxcnt)
+            .await
+            .is_err()
+        {
+            return fail_outer(phase, CommissionError::Spi);
+        }
     } else {
-        helpers::write_sub_register(backend, foci_tmc4671::registers::CONFIG_BIQUAD_T_ENABLE, 0)
-            .await;
+        if helpers::write_sub_register_checked(
+            backend,
+            foci_tmc4671::registers::CONFIG_BIQUAD_T_ENABLE,
+            0,
+        )
+        .await
+        .is_err()
+        {
+            return fail_outer(phase, CommissionError::Spi);
+        }
     }
 
     defmt::info!(
@@ -111,4 +164,68 @@ pub(crate) async fn step_filter_tune<B: CommissioningBackend>(
         diagnostics,
     };
     StepResult::PhaseChanged(PhaseId::Commit)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::step_filter_tune;
+    use crate::autotune::{CommissionError, PositionGains, VelocityGains};
+    use crate::commission_dispatch::test_support::MockBackend;
+    use crate::commissioning::outer::{OuterDiagnostics, OuterPhase, OuterSafetyLimits};
+    use crate::commissioning::types::StepResult;
+
+    fn zero_diagnostics() -> OuterDiagnostics {
+        OuterDiagnostics {
+            warning_code: 0,
+            mech_torque_step: 0,
+            mech_fwd_accel: 0,
+            mech_rev_accel: 0,
+            mech_fwd_peak_velocity: 0,
+            mech_rev_peak_velocity: 0,
+            mech_fwd_travel: 0,
+            mech_rev_travel: 0,
+            synth_velocity_p: 0,
+            synth_velocity_i: 0,
+            synth_position_p: 0,
+            synth_position_i: 0,
+        }
+    }
+
+    #[test]
+    fn selected_filter_write_failure_fails_outer_with_spi() {
+        pollster::block_on(async {
+            let mut phase = OuterPhase::FilterTune {
+                velocity_gains: VelocityGains {
+                    velocity_p: 1152,
+                    velocity_i: 0,
+                    velocity_limit: 16,
+                    effective_bandwidth_hz: 100,
+                    lambda_vel_ms: 10,
+                },
+                position_gains: PositionGains {
+                    position_p: 640,
+                    position_i: 0,
+                },
+                position_oscillation_early: false,
+                velocity_chatter: true,
+                current_ringing: false,
+                current_bandwidth_hz: 0,
+                j_eff: 1,
+                b_eff: 1,
+                diagnostics: zero_diagnostics(),
+                safety: OuterSafetyLimits::new(0, 2448),
+            };
+            let mut backend = MockBackend::new();
+            backend.fail_on_write =
+                Some(foci_tmc4671::registers::CONFIG_BIQUAD_V_ENABLE.data.addr());
+
+            let result = step_filter_tune(&mut phase, &mut backend).await;
+
+            assert!(matches!(
+                result,
+                StepResult::OuterFailed(CommissionError::Spi)
+            ));
+            assert!(matches!(phase, OuterPhase::Failed(CommissionError::Spi)));
+        });
+    }
 }

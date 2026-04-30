@@ -262,7 +262,27 @@ pub async fn drive_commission_result<B: CommissioningBackend>(
                 };
             }
 
-            crate::tmc_ops::apply_stored_filters_via_backend(backend, pwm_maxcnt).await;
+            if crate::tmc_ops::apply_stored_filters_via_backend(backend, pwm_maxcnt)
+                .await
+                .is_err()
+            {
+                defmt::error!("CalibrateDone: stored filter restore SPI failed");
+                crate::tmc_ops::disarm_motor(backend, state).await;
+                crate::state::tmc::COMMISSION_IN_FLIGHT
+                    .store(false, core::sync::atomic::Ordering::Relaxed);
+                return CommissionOutcome::Terminal {
+                    reply: ReplyPayload::CalibrateResult {
+                        oid,
+                        status: crate::calibration::CalibrationError::SpiError.status_code(),
+                        result: zero_adc_cal_result(),
+                    },
+                    actions: PostActions {
+                        stop_trace: false,
+                        stop_stepper: true,
+                        spawn_arm_check: false,
+                    },
+                };
+            }
 
             *state.calibrated = true;
             crate::tmc_ops::arm_motor_electrical(backend, state);
@@ -392,7 +412,26 @@ pub async fn drive_commission_result<B: CommissioningBackend>(
                 };
             }
 
-            crate::tmc_ops::apply_stored_filters_via_backend(backend, pwm_maxcnt).await;
+            if crate::tmc_ops::apply_stored_filters_via_backend(backend, pwm_maxcnt)
+                .await
+                .is_err()
+            {
+                defmt::error!("OuterDone: stored filter apply SPI failed");
+                crate::tmc_ops::disarm_motor(backend, state).await;
+                crate::state::tmc::COMMISSION_IN_FLIGHT.store(false, Relaxed);
+                return CommissionOutcome::Terminal {
+                    reply: ReplyPayload::TuneResult {
+                        oid,
+                        status: crate::autotune::CommissionError::Spi.status_code(),
+                        result: zero_outer_result(),
+                    },
+                    actions: PostActions {
+                        stop_trace: true,
+                        stop_stepper: true,
+                        spawn_arm_check: false,
+                    },
+                };
+            }
 
             *state.calibrated = true;
             crate::tmc_ops::arm_motor_electrical(backend, state);
