@@ -23,21 +23,35 @@ pub(crate) const MECHANICAL_ID_MAX_ATTEMPTS: u8 = 3;
 /// 1 kHz = 1000us between samples.
 pub(crate) const MECHANICAL_ID_SAMPLE_PERIOD_US: u64 = 1000;
 
-/// Velocity threshold (encoder counts per ms) above which a sample is
-/// considered to mark the start of the rotor's response to the torque step.
-pub(crate) const MECHANICAL_ID_VELOCITY_ONSET_THRESHOLD: i32 = 2;
-/// Velocity threshold (encoder counts per ms) below which the zero-torque
-/// post-switch settle is considered stationary enough to arm MechanicalId.
+/// Velocity threshold below which the zero-torque post-switch settle is
+/// considered stationary enough to arm MechanicalId.
 ///
-/// Kept as a dedicated alias so settle qualification can diverge from onset
-/// detection later without a cross-cutting rename.
-pub(crate) const MECHANICAL_ID_SETTLE_VELOCITY_THRESHOLD: i32 =
-    MECHANICAL_ID_VELOCITY_ONSET_THRESHOLD;
+/// The physical threshold is 0.5 rev/s, rounded up to whole counts/ms for
+/// the settle path's integer velocity samples.
+pub(crate) const fn mechanical_id_settle_velocity_threshold_counts_per_ms(
+    counts_per_rev: i32,
+) -> i32 {
+    let counts_per_rev = if counts_per_rev > 0 {
+        counts_per_rev
+    } else {
+        super::REFERENCE_ENCODER_COUNTS_PER_REV
+    };
+    let threshold = (counts_per_rev + 1999) / 2000;
+    if threshold > 0 { threshold } else { 1 }
+}
 
-/// Onset threshold converted to milli-counts/ms for comparison against the
+/// Onset threshold in milli-counts/ms for comparison against the
 /// time-normalized velocity estimator used by MechanicalId metric extraction.
-pub(crate) const fn mechanical_id_velocity_onset_threshold_mcpms() -> i32 {
-    MECHANICAL_ID_VELOCITY_ONSET_THRESHOLD * 1000
+///
+/// The physical threshold is 0.5 rev/s.
+pub(crate) const fn mechanical_id_velocity_onset_threshold_mcpms(counts_per_rev: i32) -> i32 {
+    let counts_per_rev = if counts_per_rev > 0 {
+        counts_per_rev
+    } else {
+        super::REFERENCE_ENCODER_COUNTS_PER_REV
+    };
+    let threshold = (counts_per_rev + 1) / 2;
+    if threshold > 0 { threshold } else { 1 }
 }
 
 /// Quality gates for accepting mechanical-ID estimates.
@@ -66,7 +80,7 @@ const FULL_RESPONSE_MAX_TAIL_RESIDUAL_PCT: u32 = 15;
 // `commission.rs` because the still-resident outer step functions reference
 // them. They are re-exported here so the response helpers can name them
 // without reaching across modules at every site.
-pub(crate) use super::{OUTER_FALLBACK_VELOCITY_I, RESPONSE_FALLBACK_VELOCITY_LIMIT_COUNTS_PER_MS};
+pub(crate) use super::{OUTER_FALLBACK_VELOCITY_I, position_tune_step_counts};
 
 /// Diagnostic warning code: low-confidence mechanical ID, response ramp
 /// fallback was used.
@@ -163,11 +177,11 @@ pub(crate) fn retry_mechanical_id(
 }
 
 /// Default velocity gains used by the response-ramp fallback.
-pub(crate) fn response_velocity_gains() -> VelocityGains {
+pub(crate) fn response_velocity_gains(counts_per_rev: i32) -> VelocityGains {
     VelocityGains {
         velocity_p: VELOCITY_RESPONSE_INITIAL_P,
         velocity_i: OUTER_FALLBACK_VELOCITY_I,
-        velocity_limit: RESPONSE_FALLBACK_VELOCITY_LIMIT_COUNTS_PER_MS as u32,
+        velocity_limit: super::response_fallback_velocity_limit_counts_per_ms(counts_per_rev),
         effective_bandwidth_hz: 0,
         lambda_vel_ms: 0,
     }
@@ -315,7 +329,7 @@ pub(crate) fn extract_mechanical_response_model(
     let mut onset_idx: Option<usize> = None;
     let mut unwrapped_travel: i32 = 0;
     let mut max_travel: u32 = 0;
-    let threshold_mcpms = mechanical_id_velocity_onset_threshold_mcpms();
+    let threshold_mcpms = mechanical_id_velocity_onset_threshold_mcpms(counts_per_rev);
 
     for i in 0..samples.len() {
         let previous_count = if i == 0 {
@@ -488,7 +502,8 @@ pub(crate) fn extract_mechanical_id_metrics(
             peak_velocity_mcpms = v_mcpms;
         }
         if onset_idx.is_none()
-            && v_mcpms.unsigned_abs() >= mechanical_id_velocity_onset_threshold_mcpms() as u32
+            && v_mcpms.unsigned_abs()
+                >= mechanical_id_velocity_onset_threshold_mcpms(counts_per_rev) as u32
         {
             onset_idx = Some(i);
         }
@@ -530,24 +545,33 @@ fn round_div_signed_i128(numerator: i128, denominator: i128) -> i128 {
 mod tests {
     use super::{
         extract_mechanical_id_metrics, extract_mechanical_response_model,
-        mechanical_id_torque_percent, response_velocity_gains,
+        mechanical_id_torque_percent, mechanical_id_velocity_onset_threshold_mcpms,
+        response_velocity_gains,
     };
     use crate::autotune::TransientBuffer;
-    use crate::commissioning::outer::{
-        MECHANICAL_ID_VELOCITY_CAP_COUNTS_PER_MS, RESPONSE_FALLBACK_VELOCITY_LIMIT_COUNTS_PER_MS,
-    };
+    use crate::commissioning::outer::MECHANICAL_ID_VELOCITY_CAP_COUNTS_PER_MS;
 
     #[test]
     fn response_velocity_gains_keep_conservative_runtime_limit() {
-        let gains = response_velocity_gains();
-        assert_eq!(
-            gains.velocity_limit,
-            RESPONSE_FALLBACK_VELOCITY_LIMIT_COUNTS_PER_MS as u32
-        );
+        let gains = response_velocity_gains(4_000);
+        assert_eq!(gains.velocity_limit, 16);
         assert_ne!(
             gains.velocity_limit,
             MECHANICAL_ID_VELOCITY_CAP_COUNTS_PER_MS as u32
         );
+    }
+
+    #[test]
+    fn response_velocity_gains_scale_runtime_limit_from_encoder_resolution() {
+        let gains = response_velocity_gains(8_000);
+
+        assert_eq!(gains.velocity_limit, 32);
+    }
+
+    #[test]
+    fn mechanical_id_onset_threshold_scales_from_encoder_resolution() {
+        assert_eq!(mechanical_id_velocity_onset_threshold_mcpms(4_000), 2_000);
+        assert_eq!(mechanical_id_velocity_onset_threshold_mcpms(8_000), 4_000);
     }
 
     #[test]

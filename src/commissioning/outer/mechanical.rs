@@ -146,7 +146,7 @@ pub(crate) async fn step_mechanical_id<B: CommissioningBackend>(
                 Err(_) => return fail_outer(phase, CommissionError::Spi),
             };
             let counts_per_rev = (ppr_raw as i32).max(4);
-            safety.counts_per_rev = counts_per_rev;
+            safety.configure_encoder_resolution(counts_per_rev);
 
             // Seed the safety baseline from the post-switch position, but keep
             // safety disarmed until a brief zero-torque settle completes.
@@ -197,9 +197,10 @@ pub(crate) async fn step_mechanical_id<B: CommissioningBackend>(
             safety.prev_encoder_count = settled_pos;
             safety.last_sample_us = now;
 
-            if velocity_cpms.unsigned_abs() as i32
-                <= response::MECHANICAL_ID_SETTLE_VELOCITY_THRESHOLD
-            {
+            let settle_threshold = response::mechanical_id_settle_velocity_threshold_counts_per_ms(
+                safety.counts_per_rev,
+            );
+            if velocity_cpms.unsigned_abs() as i32 <= settle_threshold {
                 *stable_ticks = stable_ticks.saturating_add(1);
             } else {
                 *stable_ticks = 0;

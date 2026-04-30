@@ -24,20 +24,19 @@ use crate::commissioning::types::{CommissioningBackend, OuterResult, StepResult}
 // Outer safety-envelope constants
 // ---------------------------------------------------------------------------
 
-/// MechanicalId safety velocity cap in encoder counts per millisecond.
-/// 6 rev/s at 4000 counts/rev = 24000 counts/s = 24 counts/ms.
-/// Kept separate from the conservative runtime fallback velocity limit so
-/// outer safety tuning does not silently retune response-ramp behavior.
-pub(crate) const MECHANICAL_ID_VELOCITY_CAP_COUNTS_PER_MS: i32 = 24;
+/// Reference encoder resolution used only for default values before
+/// MechanicalId reads the real ABN decoder PPR register.
+pub(crate) const REFERENCE_ENCODER_COUNTS_PER_REV: i32 = 4000;
 
-/// Conservative commissioning fallback velocity limit in encoder counts/ms.
-/// The velocity-validation phase converts this to TMC velocity-register units
-/// before writing PID_VELOCITY_LIMIT.
-pub(crate) const RESPONSE_FALLBACK_VELOCITY_LIMIT_COUNTS_PER_MS: i32 = 16;
+/// MechanicalId safety velocity cap in encoder counts per millisecond.
+/// The physical limit is 6 rev/s; MechanicalId setup rescales this once the
+/// real encoder resolution is known.
+pub(crate) const MECHANICAL_ID_VELOCITY_CAP_COUNTS_PER_MS: i32 =
+    mechanical_id_velocity_cap_counts_per_ms(REFERENCE_ENCODER_COUNTS_PER_REV);
 
 /// Default position window: ± encoder counts from start position.
-/// 2 revolutions at 4096 counts/rev = 8192 counts.
-const POSITION_WINDOW_COUNTS: i32 = 8192;
+/// The physical limit is 2 revolutions.
+const POSITION_WINDOW_COUNTS: i32 = position_window_counts(REFERENCE_ENCODER_COUNTS_PER_REV);
 
 /// Conservative velocity-loop runtime fallback used when autotuned outer
 /// gains exceed the accepted safety envelope. These are the same defaults
@@ -65,12 +64,42 @@ pub(crate) const OUTER_WARNING_UNSAFE_SYNTH_GAINS: u8 = 2;
 /// Starting position P gain: 128 = 0.5 in Q8.8 (conservative).
 pub(crate) const POS_TUNE_INITIAL_P: u16 = 128;
 
-/// Motor-local position step for position-loop tuning, in ABN encoder
-/// counts. The TMC position target is written in electrical-position
-/// units, while response capture uses ABN counts. Keep the commanded move
-/// small enough for installed mechanics but larger than one-count
-/// quantization noise.
-pub(crate) const POS_TUNE_STEP_COUNTS: u32 = 8;
+const fn normalized_counts_per_rev(counts_per_rev: i32) -> i32 {
+    if counts_per_rev > 0 {
+        counts_per_rev
+    } else {
+        REFERENCE_ENCODER_COUNTS_PER_REV
+    }
+}
+
+const fn counts_per_ms_for_revs_per_second(counts_per_rev: i32, revs_per_second: i32) -> i32 {
+    let counts_per_rev = normalized_counts_per_rev(counts_per_rev);
+    let counts_per_second = counts_per_rev.saturating_mul(revs_per_second);
+    let rounded = (counts_per_second + 500) / 1000;
+    if rounded > 0 { rounded } else { 1 }
+}
+
+pub(crate) const fn mechanical_id_velocity_cap_counts_per_ms(counts_per_rev: i32) -> i32 {
+    counts_per_ms_for_revs_per_second(counts_per_rev, 6)
+}
+
+pub(crate) const fn response_fallback_velocity_limit_counts_per_ms(counts_per_rev: i32) -> u32 {
+    counts_per_ms_for_revs_per_second(counts_per_rev, 4) as u32
+}
+
+pub(crate) const fn position_window_counts(counts_per_rev: i32) -> i32 {
+    normalized_counts_per_rev(counts_per_rev).saturating_mul(2)
+}
+
+/// Motor-local position step for position-loop tuning, in ABN encoder counts.
+///
+/// The physical step is 0.002 revolutions. The TMC position target is written
+/// in electrical-position units, while response capture uses ABN counts.
+pub(crate) const fn position_tune_step_counts(counts_per_rev: i32) -> u32 {
+    let counts_per_rev = normalized_counts_per_rev(counts_per_rev) as u32;
+    let step = (counts_per_rev + 250) / 500;
+    if step > 0 { step } else { 1 }
+}
 
 // ---------------------------------------------------------------------------
 // Outer sub-state types
@@ -401,6 +430,13 @@ impl OuterSafetyLimits {
             last_sample_us: 0,
         }
     }
+
+    pub(crate) fn configure_encoder_resolution(&mut self, counts_per_rev: i32) {
+        let counts_per_rev = normalized_counts_per_rev(counts_per_rev);
+        self.counts_per_rev = counts_per_rev;
+        self.velocity_cap = mechanical_id_velocity_cap_counts_per_ms(counts_per_rev);
+        self.position_window = position_window_counts(counts_per_rev);
+    }
 }
 
 /// Outer commissioning phase state machine.
@@ -700,6 +736,17 @@ mod tests {
     }
 
     #[test]
+    fn outer_safety_limits_scale_with_encoder_resolution() {
+        let mut safety = OuterSafetyLimits::new(0, 100);
+
+        safety.configure_encoder_resolution(8_000);
+
+        assert_eq!(safety.counts_per_rev, 8_000);
+        assert_eq!(safety.velocity_cap, 48);
+        assert_eq!(safety.position_window, 16_000);
+    }
+
+    #[test]
     fn outer_phase_size_stays_within_reasonable_stack_budget() {
         assert!(
             size_of::<OuterPhase>() <= 4096,
@@ -769,7 +816,10 @@ mod tests {
             )
             .await;
 
-            assert!(matches!(result, StepResult::OuterFailed(CommissionError::Spi)));
+            assert!(matches!(
+                result,
+                StepResult::OuterFailed(CommissionError::Spi)
+            ));
             assert!(matches!(phase, OuterPhase::Failed(CommissionError::Spi)));
         });
     }

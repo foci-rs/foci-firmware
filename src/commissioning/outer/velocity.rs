@@ -9,8 +9,8 @@
 
 use super::{
     OUTER_MAX_VELOCITY_I, OUTER_MAX_VELOCITY_P, OUTER_WARNING_UNSAFE_SYNTH_GAINS, OuterPhase,
-    POS_TUNE_INITIAL_P, POS_TUNE_STEP_COUNTS, PositionTuneData, PositionTuneState,
-    VelocityTuneStrategy, VelocityValidateData, VelocityValidateState,
+    POS_TUNE_INITIAL_P, PositionTuneData, PositionTuneState, VelocityTuneStrategy,
+    VelocityValidateData, VelocityValidateState,
 };
 use crate::autotune::{
     CommissionError, CommissionProfile, OperatingMode, PhaseId, TransientBuffer, ValidationResult,
@@ -246,7 +246,7 @@ pub(crate) async fn step_velocity_tune<B: CommissioningBackend>(
 
     let (gains, strategy, step_target) =
         if diagnostics.warning_code == response::OUTER_WARNING_LOW_CONFIDENCE_MECHANICAL_ID {
-            let gains = response::response_velocity_gains();
+            let gains = response::response_velocity_gains(safety.counts_per_rev);
             (
                 gains,
                 VelocityTuneStrategy::ResponseRamp,
@@ -284,7 +284,7 @@ pub(crate) async fn step_velocity_tune<B: CommissioningBackend>(
                     gains.velocity_i
                 );
                 (
-                    response::response_velocity_gains(),
+                    response::response_velocity_gains(safety.counts_per_rev),
                     VelocityTuneStrategy::ResponseRamp,
                     response::VELOCITY_RESPONSE_STEP_TARGET,
                 )
@@ -970,7 +970,8 @@ pub(crate) async fn step_velocity_validate<B: CommissioningBackend>(
                                     new_gains.velocity_p,
                                     new_gains.velocity_i
                                 );
-                                new_gains = response::response_velocity_gains();
+                                new_gains =
+                                    response::response_velocity_gains(safety.counts_per_rev);
                                 data.strategy = VelocityTuneStrategy::ResponseRamp;
                                 data.step_target = response::VELOCITY_RESPONSE_STEP_TARGET;
                             }
@@ -1004,7 +1005,7 @@ pub(crate) async fn step_velocity_validate<B: CommissioningBackend>(
                         data.attempt
                     );
                     data.diagnostics.warning_code = OUTER_WARNING_UNSAFE_SYNTH_GAINS;
-                    data.gains = response::response_velocity_gains();
+                    data.gains = response::response_velocity_gains(safety.counts_per_rev);
                     data.accepted_gains = data.gains;
                     data.has_accepted_gains = false;
                     data.response_lower_p = 0;
@@ -1059,7 +1060,7 @@ pub(crate) async fn step_velocity_validate<B: CommissioningBackend>(
             // units. Convert the small motor-local test move through the
             // configured STEP_WIDTH so the command and measurement agree.
             let step_width = backend.step_width().max(1);
-            let step_target_counts = POS_TUNE_STEP_COUNTS;
+            let step_target_counts = response::position_tune_step_counts(safety.counts_per_rev);
             let step_target_tmc = step_width.saturating_mul(step_target_counts);
 
             let j_eff = data.model.j_eff;
@@ -1139,6 +1140,12 @@ mod tests {
             saturation_samples: 0,
             symmetry_pct: 0,
         }
+    }
+
+    #[test]
+    fn position_tune_step_scales_from_encoder_resolution() {
+        assert_eq!(response::position_tune_step_counts(4_000), 8);
+        assert_eq!(response::position_tune_step_counts(8_000), 16);
     }
 
     fn low_energy_marginal_velocity_metrics() -> VelocityValidation {
@@ -1639,7 +1646,7 @@ mod tests {
     #[test]
     fn response_ramp_marginal_without_accepted_gain_keeps_searching() {
         pollster::block_on(async {
-            let gains = response::response_velocity_gains();
+            let gains = response::response_velocity_gains(4_000);
             let mut phase = OuterPhase::VelocityValidate {
                 state: VelocityValidateState::Classify,
                 data: VelocityValidateData {
@@ -1707,7 +1714,7 @@ mod tests {
     #[test]
     fn response_ramp_stiction_breakaway_without_accepted_gain_keeps_searching() {
         pollster::block_on(async {
-            let gains = response::response_velocity_gains();
+            let gains = response::response_velocity_gains(4_000);
             let mut phase = OuterPhase::VelocityValidate {
                 state: VelocityValidateState::Classify,
                 data: VelocityValidateData {
@@ -1778,7 +1785,7 @@ mod tests {
             let gains = VelocityGains {
                 velocity_p: 648,
                 velocity_i: 0,
-                velocity_limit: response::RESPONSE_FALLBACK_VELOCITY_LIMIT_COUNTS_PER_MS as u32,
+                velocity_limit: 16,
                 effective_bandwidth_hz: 0,
                 lambda_vel_ms: 0,
             };
@@ -1786,7 +1793,7 @@ mod tests {
                 state: VelocityValidateState::Classify,
                 data: VelocityValidateData {
                     gains,
-                    accepted_gains: response::response_velocity_gains(),
+                    accepted_gains: response::response_velocity_gains(4_000),
                     has_accepted_gains: false,
                     response_lower_p: 432,
                     response_upper_p: 0,
@@ -1849,7 +1856,7 @@ mod tests {
             let gains = VelocityGains {
                 velocity_p: 485,
                 velocity_i: 0,
-                velocity_limit: response::RESPONSE_FALLBACK_VELOCITY_LIMIT_COUNTS_PER_MS as u32,
+                velocity_limit: 16,
                 effective_bandwidth_hz: 0,
                 lambda_vel_ms: 0,
             };
@@ -1857,7 +1864,7 @@ mod tests {
                 state: VelocityValidateState::Classify,
                 data: VelocityValidateData {
                     gains,
-                    accepted_gains: response::response_velocity_gains(),
+                    accepted_gains: response::response_velocity_gains(4_000),
                     has_accepted_gains: false,
                     response_lower_p: 484,
                     response_upper_p: 486,
@@ -1927,7 +1934,7 @@ mod tests {
             let gains = VelocityGains {
                 velocity_p: 645,
                 velocity_i: 0,
-                velocity_limit: response::RESPONSE_FALLBACK_VELOCITY_LIMIT_COUNTS_PER_MS as u32,
+                velocity_limit: 16,
                 effective_bandwidth_hz: 0,
                 lambda_vel_ms: 0,
             };
@@ -1935,7 +1942,7 @@ mod tests {
                 state: VelocityValidateState::Classify,
                 data: VelocityValidateData {
                     gains,
-                    accepted_gains: response::response_velocity_gains(),
+                    accepted_gains: response::response_velocity_gains(4_000),
                     has_accepted_gains: false,
                     response_lower_p: 580,
                     response_upper_p: 774,
@@ -1998,7 +2005,7 @@ mod tests {
             let gains = VelocityGains {
                 velocity_p: 668,
                 velocity_i: 0,
-                velocity_limit: response::RESPONSE_FALLBACK_VELOCITY_LIMIT_COUNTS_PER_MS as u32,
+                velocity_limit: 16,
                 effective_bandwidth_hz: 0,
                 lambda_vel_ms: 0,
             };
@@ -2006,7 +2013,7 @@ mod tests {
                 state: VelocityValidateState::Classify,
                 data: VelocityValidateData {
                     gains,
-                    accepted_gains: response::response_velocity_gains(),
+                    accepted_gains: response::response_velocity_gains(4_000),
                     has_accepted_gains: false,
                     response_lower_p: 648,
                     response_upper_p: 688,
@@ -2071,7 +2078,7 @@ mod tests {
             let gains = VelocityGains {
                 velocity_p: 688,
                 velocity_i: 0,
-                velocity_limit: response::RESPONSE_FALLBACK_VELOCITY_LIMIT_COUNTS_PER_MS as u32,
+                velocity_limit: 16,
                 effective_bandwidth_hz: 0,
                 lambda_vel_ms: 0,
             };
@@ -2079,7 +2086,7 @@ mod tests {
                 state: VelocityValidateState::Classify,
                 data: VelocityValidateData {
                     gains,
-                    accepted_gains: response::response_velocity_gains(),
+                    accepted_gains: response::response_velocity_gains(4_000),
                     has_accepted_gains: false,
                     response_lower_p: 648,
                     response_upper_p: 729,

@@ -108,7 +108,7 @@ pub(crate) fn estimate_early_slope(
 
     // Stage 1: onset detection — first sample with per-sample velocity
     // above the onset threshold (in milli-counts per millisecond).
-    let threshold_mcpms = mechanical_id_velocity_onset_threshold_mcpms() as i64;
+    let threshold_mcpms = mechanical_id_velocity_onset_threshold_mcpms(counts_per_rev) as i64;
     let onset_idx = {
         let mut found: Option<usize> = None;
         for i in 0..samples.len() {
