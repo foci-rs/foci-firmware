@@ -171,12 +171,12 @@ fn log_model_assembly_failure(err: ModelAssemblyError) {
 }
 
 fn permille_diff(a: u32, b: u32) -> u32 {
-    let larger = a.max(b);
-    if larger == 0 {
+    let average = (a as u64 + b as u64) / 2;
+    if average == 0 {
         return 0;
     }
     let diff = a.abs_diff(b) as u64;
-    (diff * 1000 / larger as u64) as u32
+    (diff * 1000 / average) as u32
 }
 
 fn sample_time_us(index: usize) -> u32 {
@@ -1427,6 +1427,12 @@ mod tests {
         data.inductance_count = [count, count];
         data.inductance_elapsed_us = [count * dt_us as u32, count * dt_us as u32];
         data
+    }
+
+    #[test]
+    fn permille_diff_uses_average_denominator_for_coil_disagreement() {
+        // |130 - 100| / ((130 + 100) / 2) = 30 / 115 = 260 permille.
+        assert_eq!(permille_diff(100, 130), 260);
     }
 
     #[test]
