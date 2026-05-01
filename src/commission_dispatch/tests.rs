@@ -100,8 +100,7 @@ fn selftest_done_zero_stages_emits_done_only() {
         match outcome {
             CommissionOutcome::Terminal { reply, actions } => {
                 assert!(!actions.stop_trace);
-                assert!(!actions.stop_stepper);
-                assert!(!actions.spawn_arm_check);
+                assert_eq!(actions.stepper, StepperPostAction::None);
                 match reply {
                     ReplyPayload::Selftest {
                         oid, done_status, ..
@@ -149,8 +148,7 @@ fn inner_failed_commission_emits_phase_reply() {
         match outcome {
             CommissionOutcome::Terminal { reply, actions } => {
                 assert!(actions.stop_trace);
-                assert!(!actions.stop_stepper);
-                assert!(!actions.spawn_arm_check);
+                assert_eq!(actions.stepper, StepperPostAction::None);
                 match reply {
                     ReplyPayload::CommissionPhase { oid, phase, status } => {
                         assert_eq!(oid, 5);
@@ -288,15 +286,13 @@ fn calibrate_done_arms_after_gain_restore() {
         )
         .await;
 
-        // Motor armed via electrical+for_steps.
+        // Motor electrically enabled; board owns stepper arming.
         assert!(backend.enable_pin);
         assert!(*state.motor_enabled);
         assert!(*state.calibrated);
-        assert!(crate::state::tmc::MOTOR_ARMED.load(Ordering::Relaxed));
-        // STEPPER_POSITION is NOT zeroed by the dispatch — the board's
-        // SetEnable(true) path owns the zero. Dispatch must not touch it,
-        // to avoid racing with queued homing moves that start as soon as
-        // MOTOR_ARMED is set.
+        assert!(!crate::state::tmc::MOTOR_ARMED.load(Ordering::Relaxed));
+        // Dispatch must not mutate the firmware step epoch directly; the
+        // returned board action owns the zero-before-arm ordering.
         assert_eq!(
             crate::state::stepper::STEPPER_POSITION.load(Ordering::Relaxed),
             42
@@ -304,9 +300,8 @@ fn calibrate_done_arms_after_gain_restore() {
 
         match outcome {
             CommissionOutcome::Terminal { reply, actions } => {
-                assert!(actions.spawn_arm_check);
                 assert!(!actions.stop_trace);
-                assert!(!actions.stop_stepper);
+                assert_eq!(actions.stepper, StepperPostAction::ArmZeroPosition);
                 match reply {
                     ReplyPayload::CalibrateResult {
                         oid,
@@ -398,9 +393,9 @@ fn outer_done_success_arms_motor() {
             outer.velocity_limit
         );
 
-        // Motor armed
+        // Motor electrically enabled; board owns stepper arming.
         assert!(backend.enable_pin);
-        assert!(crate::state::tmc::MOTOR_ARMED.load(Ordering::Relaxed));
+        assert!(!crate::state::tmc::MOTOR_ARMED.load(Ordering::Relaxed));
 
         match outcome {
             CommissionOutcome::Terminal {
@@ -409,8 +404,7 @@ fn outer_done_success_arms_motor() {
             } => {
                 assert_eq!(status, 0);
                 assert!(actions.stop_trace);
-                assert!(!actions.stop_stepper);
-                assert!(!actions.spawn_arm_check); // OuterDone doesn't spawn arm_check
+                assert_eq!(actions.stepper, StepperPostAction::ArmPreservePosition);
             }
             _ => panic!("expected TuneResult"),
         }
@@ -460,7 +454,7 @@ fn outer_done_spi_failure_disarms() {
             } => {
                 assert_eq!(status, crate::autotune::CommissionError::Spi.status_code());
                 assert!(actions.stop_trace);
-                assert!(actions.stop_stepper);
+                assert_eq!(actions.stepper, StepperPostAction::Stop);
             }
             _ => panic!("expected TuneResult error"),
         }
@@ -508,7 +502,7 @@ fn outer_done_filter_apply_failure_disarms() {
             } => {
                 assert_eq!(status, crate::autotune::CommissionError::Spi.status_code());
                 assert!(actions.stop_trace);
-                assert!(actions.stop_stepper);
+                assert_eq!(actions.stepper, StepperPostAction::Stop);
             }
             _ => panic!("expected TuneResult error"),
         }
@@ -576,9 +570,9 @@ fn commission_done_finalize_path() {
         assert!(state.stored_gains.is_some());
         assert!(*state.calibrated);
         assert!(backend.enable_pin);
-        assert!(crate::state::tmc::MOTOR_ARMED.load(Ordering::Relaxed));
-        // STEPPER_POSITION must NOT be zeroed by the dispatch — the board's
-        // SetEnable(true) path owns the zero. See CalibrateDone test comment.
+        assert!(!crate::state::tmc::MOTOR_ARMED.load(Ordering::Relaxed));
+        // Dispatch must not mutate the firmware step epoch directly; the
+        // returned board action owns the zero-before-arm ordering.
         assert_eq!(
             crate::state::stepper::STEPPER_POSITION.load(Ordering::Relaxed),
             99
@@ -600,8 +594,7 @@ fn commission_done_finalize_path() {
         match outcome {
             CommissionOutcome::Terminal { actions, .. } => {
                 assert!(actions.stop_trace);
-                assert!(actions.spawn_arm_check);
-                assert!(!actions.stop_stepper);
+                assert_eq!(actions.stepper, StepperPostAction::ArmZeroPosition);
             }
             _ => panic!("expected Terminal"),
         }
@@ -609,6 +602,56 @@ fn commission_done_finalize_path() {
         // Cleanup
         crate::state::tmc::MOTOR_ARMED.store(false, Ordering::Relaxed);
         crate::state::stepper::STEPPER_POSITION.store(0, Ordering::Relaxed);
+        crate::state::tmc::CURRENT_LIMIT_REG.store(0, Ordering::Relaxed);
+    });
+}
+
+#[test]
+fn commission_done_current_limit_restore_failure_disarms() {
+    pollster::block_on(async {
+        use core::sync::atomic::Ordering;
+        let _guard = test_support::SHARED_STATE_MUTEX.lock().unwrap();
+        let mut backend = MockBackend::new();
+        backend.fail_on_write = Some(foci_tmc4671::registers::PID_TORQUE_FLUX_LIMITS.addr());
+        let (mut cal, mut en, mut gains) = fresh_state_locals();
+        let mut state = DispatchState {
+            calibrated: &mut cal,
+            motor_enabled: &mut en,
+            stored_gains: &mut gains,
+        };
+        crate::state::tmc::CURRENT_LIMIT_REG.store(0x0010_0010, Ordering::Relaxed);
+        crate::state::tmc::MOTOR_ARMED.store(true, Ordering::Relaxed);
+        let mut engine = Some(CommissioningEngine::new_commission(
+            6,
+            CommissionProfile::Balanced,
+        ));
+
+        let outcome = drive_commission_result(
+            StepResult::CommissionDone(sample_commission_result()),
+            &mut engine,
+            &mut backend,
+            &mut state,
+            4095,
+        )
+        .await;
+
+        assert!(!*state.calibrated);
+        assert!(!*state.motor_enabled);
+        assert!(!backend.enable_pin);
+        assert!(!crate::state::tmc::MOTOR_ARMED.load(Ordering::Relaxed));
+
+        match outcome {
+            CommissionOutcome::Terminal {
+                reply: ReplyPayload::CommissionResult { status, .. },
+                actions,
+            } => {
+                assert_eq!(status, crate::autotune::CommissionError::Spi.status_code());
+                assert!(actions.stop_trace);
+                assert_eq!(actions.stepper, StepperPostAction::Stop);
+            }
+            _ => panic!("expected CommissionResult error"),
+        }
+
         crate::state::tmc::CURRENT_LIMIT_REG.store(0, Ordering::Relaxed);
     });
 }
@@ -687,8 +730,8 @@ fn outer_failed_safety_fault_full_disarm() {
                 actions,
             } => {
                 assert_eq!(status, err.status_code());
-                assert!(actions.stop_stepper);
                 assert!(actions.stop_trace);
+                assert_eq!(actions.stepper, StepperPostAction::Stop);
             }
             _ => panic!("expected TuneResult"),
         }
@@ -746,7 +789,7 @@ fn outer_failed_soft_failure_holds_motor() {
                 actions,
             } => {
                 assert_eq!(status, err.status_code());
-                assert!(!actions.stop_stepper);
+                assert_eq!(actions.stepper, StepperPostAction::ArmPreservePosition);
             }
             _ => panic!("expected TuneResult"),
         }

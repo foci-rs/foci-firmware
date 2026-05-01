@@ -54,7 +54,8 @@ ankyra::ankyra_provider! {
         crate::ankyra::handlers::spi::spi_send,
         crate::ankyra::handlers::spi::spi_set_bus,
         crate::ankyra::handlers::spi::spi_transfer,
-        // TMC plain (11)
+        // TMC plain (12)
+        crate::ankyra::handlers::tmc::tmc_set_auto_calibrate_on_enable,
         crate::ankyra::handlers::tmc::tmc_set_current,
         crate::ankyra::handlers::tmc::tmc_set_encoder,
         crate::ankyra::handlers::tmc::tmc_set_encoder_dir,
@@ -153,7 +154,8 @@ ankyra::ankyra_provider! {
         crate::ankyra::handlers::spi::spi_send,
         crate::ankyra::handlers::spi::spi_set_bus,
         crate::ankyra::handlers::spi::spi_transfer,
-        // TMC plain (11) — dev-gated entries omitted when feature is off
+        // TMC plain (12) — dev-gated entries omitted when feature is off
+        crate::ankyra::handlers::tmc::tmc_set_auto_calibrate_on_enable,
         crate::ankyra::handlers::tmc::tmc_set_current,
         crate::ankyra::handlers::tmc::tmc_set_encoder,
         crate::ankyra::handlers::tmc::tmc_set_encoder_dir,

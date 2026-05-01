@@ -3,7 +3,8 @@
 //! `tmc_set_encoder_dir`, `tmc_set_flux_filter`, `tmc_set_pid_gains`,
 //! `tmc_set_position_filter`, `tmc_set_position_gains`,
 //! `tmc_set_torque_filter`, `tmc_set_velocity_feedforward`,
-//! `tmc_set_velocity_filter`, `tmc_set_velocity_limit`, `tmc_test_spin`.
+//! `tmc_set_velocity_filter`, `tmc_set_velocity_limit`,
+//! `tmc_set_auto_calibrate_on_enable`, `tmc_test_spin`.
 //!
 //! Lifted from `boards/openffboard-fw/src/ankyra/handlers/tmc.rs` in
 //! Task 16 of the foci-firmware handler-lift plan. Handler bodies bind to
@@ -217,6 +218,13 @@ pub fn tmc_set_velocity_feedforward(_ctx: &mut dyn StateAccess, _oid: u8, enable
 pub fn tmc_set_velocity_limit(_ctx: &mut dyn StateAccess, _oid: u8, limit: u32) {
     VELOCITY_LIMIT_CFG.store(limit, Ordering::Relaxed);
     defmt::info!("Velocity limit: {}", limit);
+}
+
+/// Set whether a raw enable may trigger firmware-side auto-calibration.
+#[klipper_command]
+pub fn tmc_set_auto_calibrate_on_enable(_ctx: &mut dyn StateAccess, _oid: u8, enable: u8) {
+    crate::tmc::set_auto_calibrate_on_enable_allowed(enable != 0);
+    defmt::info!("Auto-calibrate on enable: {}", enable != 0);
 }
 
 /// Composite bound for handlers that both enqueue TMC requests and may

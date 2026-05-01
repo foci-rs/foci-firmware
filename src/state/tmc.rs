@@ -64,6 +64,13 @@ pub static ENCODER_REVERSED: AtomicBool = AtomicBool::new(false);
 /// cleared after commissioning completes or fails (P1).
 pub static COMMISSION_IN_FLIGHT: AtomicBool = AtomicBool::new(false);
 
+/// Host-controlled gate for the fallback auto-calibrate-on-enable path.
+///
+/// Defaults closed so a raw Klipper enable cannot energize an uncommissioned
+/// motor unless the host has loaded valid commissioning state or explicitly
+/// opened the gate for a calibration attempt.
+pub static AUTO_CALIBRATE_ON_ENABLE_ALLOWED: AtomicBool = AtomicBool::new(false);
+
 /// Signal tmc_control to drain all pending requests. Set by config_reset
 /// (P2), cleared by tmc_control (P1) after draining.
 pub static TMC_QUEUE_FLUSH: AtomicBool = AtomicBool::new(false);

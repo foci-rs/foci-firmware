@@ -4,6 +4,8 @@
 //! send to their board-specific SPI task. The actual SPI communication
 //! and motor control is handled by the firmware, not this crate.
 
+use core::sync::atomic::Ordering;
+
 /// Request type for TMC4671 task communication.
 ///
 /// Firmware crates send these to their board-specific SPI task via a
@@ -227,6 +229,16 @@ pub fn tmc_set_velocity_feedforward(enable: bool) -> TmcRequest {
     TmcRequest::SetVelocityFeedforward { enable }
 }
 
+/// Set whether a raw enable may trigger firmware-side auto-calibration.
+pub fn set_auto_calibrate_on_enable_allowed(enable: bool) {
+    crate::state::tmc::AUTO_CALIBRATE_ON_ENABLE_ALLOWED.store(enable, Ordering::Relaxed);
+}
+
+/// Return whether raw enable auto-calibration is currently allowed.
+pub fn auto_calibrate_on_enable_allowed() -> bool {
+    crate::state::tmc::AUTO_CALIBRATE_ON_ENABLE_ALLOWED.load(Ordering::Relaxed)
+}
+
 /// Build a `TraceInfo` request.
 pub fn tmc_trace_info(oid: u8) -> TmcRequest {
     TmcRequest::TraceInfo { oid }
@@ -417,6 +429,18 @@ mod tests {
             tmc_set_velocity_feedforward(true),
             TmcRequest::SetVelocityFeedforward { enable: true }
         );
+    }
+
+    #[test]
+    fn auto_calibrate_on_enable_policy_can_be_toggled() {
+        set_auto_calibrate_on_enable_allowed(false);
+        assert!(!auto_calibrate_on_enable_allowed());
+
+        set_auto_calibrate_on_enable_allowed(true);
+        assert!(auto_calibrate_on_enable_allowed());
+
+        set_auto_calibrate_on_enable_allowed(false);
+        assert!(!auto_calibrate_on_enable_allowed());
     }
 
     #[test]

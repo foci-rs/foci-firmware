@@ -58,27 +58,34 @@ pub enum CommissionOutcome {
     },
 }
 
+/// Stepper-runtime transition the board performs after a terminal outcome.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+pub enum StepperPostAction {
+    /// Leave the stepper runtime unchanged.
+    None,
+    /// Zero the firmware step epoch, then arm step-timer processing.
+    ArmZeroPosition,
+    /// Preserve the firmware step epoch, then arm step-timer processing.
+    ArmPreservePosition,
+    /// Stop and drain step-timer processing.
+    Stop,
+}
+
 /// RTIC-bound primitives the board fires after a Terminal outcome.
-/// Order: stop_trace -> stop_stepper -> spawn_arm_check -> emit reply.
+/// Order: stop_trace -> stepper action -> emit reply.
 #[derive(Debug, Clone, Copy, defmt::Format)]
 pub struct PostActions {
     /// Stop the trace buffer. True for InnerFailed, OuterDone, OuterFailed,
     /// CommissionDone. False for CalibrateDone, SelftestDone.
     pub stop_trace: bool,
-    /// Hard-stop the stepper across tasks. True for OuterFailed safety
-    /// faults (Spi, Shutdown, SafetyEnvelopeViolation) and OuterDone
-    /// restore SPI failure.
-    pub stop_stepper: bool,
-    /// Spawn arm_check to re-arm step-timer processing. True for
-    /// CalibrateDone and CommissionDone (motor newly armed).
-    pub spawn_arm_check: bool,
+    /// Board-owned stepper runtime transition.
+    pub stepper: StepperPostAction,
 }
 
 impl PostActions {
     pub const NONE: Self = Self {
         stop_trace: false,
-        stop_stepper: false,
-        spawn_arm_check: false,
+        stepper: StepperPostAction::None,
     };
 }
 
@@ -233,8 +240,7 @@ pub async fn drive_commission_result<B: CommissioningBackend>(
                 reply,
                 actions: PostActions {
                     stop_trace: true,
-                    stop_stepper: false,
-                    spawn_arm_check: false,
+                    stepper: StepperPostAction::None,
                 },
             }
         }
@@ -256,8 +262,7 @@ pub async fn drive_commission_result<B: CommissioningBackend>(
                     },
                     actions: PostActions {
                         stop_trace: false,
-                        stop_stepper: true,
-                        spawn_arm_check: false,
+                        stepper: StepperPostAction::Stop,
                     },
                 };
             }
@@ -278,20 +283,13 @@ pub async fn drive_commission_result<B: CommissioningBackend>(
                     },
                     actions: PostActions {
                         stop_trace: false,
-                        stop_stepper: true,
-                        spawn_arm_check: false,
+                        stepper: StepperPostAction::Stop,
                     },
                 };
             }
 
             *state.calibrated = true;
             crate::tmc_ops::arm_motor_electrical(backend, state);
-            // Do NOT zero STEPPER_POSITION here. The board's SetEnable(true)
-            // calibrated branch already zeroes it at the right time (right
-            // before the motion resumes). Double-zeroing from the firmware
-            // dispatch races with queued homing moves that start as soon as
-            // arm_motor_for_steps sets MOTOR_ARMED and arm_check::spawn fires.
-            crate::tmc_ops::arm_motor_for_steps(state);
 
             crate::state::tmc::COMMISSION_IN_FLIGHT
                 .store(false, core::sync::atomic::Ordering::Relaxed);
@@ -304,8 +302,7 @@ pub async fn drive_commission_result<B: CommissioningBackend>(
                 },
                 actions: PostActions {
                     stop_trace: false,
-                    stop_stepper: false,
-                    spawn_arm_check: true,
+                    stepper: StepperPostAction::ArmZeroPosition,
                 },
             }
         }
@@ -318,12 +315,29 @@ pub async fn drive_commission_result<B: CommissioningBackend>(
             // filters, and entered position mode. Re-apply current limit because
             // the mode change resets PID_TORQUE_FLUX_LIMITS.
             let current_limit = crate::state::tmc::CURRENT_LIMIT_REG.load(Relaxed);
-            let _ = backend
+            if backend
                 .write_register(
                     foci_tmc4671::registers::PID_TORQUE_FLUX_LIMITS,
                     current_limit,
                 )
-                .await;
+                .await
+                .is_err()
+            {
+                defmt::error!("CommissionDone: current-limit restore SPI failed");
+                crate::tmc_ops::disarm_motor(backend, state).await;
+                crate::state::tmc::COMMISSION_IN_FLIGHT.store(false, Relaxed);
+                return CommissionOutcome::Terminal {
+                    reply: ReplyPayload::CommissionResult {
+                        oid,
+                        status: crate::autotune::CommissionError::Spi.status_code(),
+                        result: commission_result,
+                    },
+                    actions: PostActions {
+                        stop_trace: true,
+                        stepper: StepperPostAction::Stop,
+                    },
+                };
+            }
 
             // Persist inner gains so future calibrate uses them.
             let inner = &commission_result.inner;
@@ -348,9 +362,6 @@ pub async fn drive_commission_result<B: CommissioningBackend>(
 
             *state.calibrated = true;
             crate::tmc_ops::arm_motor_electrical(backend, state);
-            // Do NOT zero STEPPER_POSITION here (parity with CalibrateDone).
-            // The board's SetEnable(true) path handles zeroing.
-            crate::tmc_ops::arm_motor_for_steps(state);
 
             crate::state::tmc::COMMISSION_IN_FLIGHT.store(false, Relaxed);
 
@@ -369,8 +380,7 @@ pub async fn drive_commission_result<B: CommissioningBackend>(
                 },
                 actions: PostActions {
                     stop_trace: true,
-                    stop_stepper: false,
-                    spawn_arm_check: true,
+                    stepper: StepperPostAction::ArmZeroPosition,
                 },
             }
         }
@@ -406,8 +416,7 @@ pub async fn drive_commission_result<B: CommissioningBackend>(
                     },
                     actions: PostActions {
                         stop_trace: true,
-                        stop_stepper: true,
-                        spawn_arm_check: false,
+                        stepper: StepperPostAction::Stop,
                     },
                 };
             }
@@ -427,16 +436,13 @@ pub async fn drive_commission_result<B: CommissioningBackend>(
                     },
                     actions: PostActions {
                         stop_trace: true,
-                        stop_stepper: true,
-                        spawn_arm_check: false,
+                        stepper: StepperPostAction::Stop,
                     },
                 };
             }
 
             *state.calibrated = true;
             crate::tmc_ops::arm_motor_electrical(backend, state);
-            // OuterDone does NOT zero STEPPER_POSITION (Stage 2 holds existing position).
-            crate::tmc_ops::arm_motor_for_steps(state);
 
             crate::state::tmc::COMMISSION_IN_FLIGHT.store(false, Relaxed);
 
@@ -454,8 +460,7 @@ pub async fn drive_commission_result<B: CommissioningBackend>(
                 },
                 actions: PostActions {
                     stop_trace: true,
-                    stop_stepper: false,
-                    spawn_arm_check: false,
+                    stepper: StepperPostAction::ArmPreservePosition,
                 },
             }
         }
@@ -532,14 +537,12 @@ pub async fn drive_commission_result<B: CommissioningBackend>(
                     fault.status_code(),
                     PostActions {
                         stop_trace: true,
-                        stop_stepper: true,
-                        spawn_arm_check: false,
+                        stepper: StepperPostAction::Stop,
                     },
                 )
             } else {
                 *state.calibrated = true;
                 crate::tmc_ops::arm_motor_electrical(backend, state);
-                crate::tmc_ops::arm_motor_for_steps(state);
                 defmt::warn!(
                     "OuterFailed: soft failure ({}), entry gains restored",
                     error
@@ -548,8 +551,7 @@ pub async fn drive_commission_result<B: CommissioningBackend>(
                     error.status_code(),
                     PostActions {
                         stop_trace: true,
-                        stop_stepper: false,
-                        spawn_arm_check: false,
+                        stepper: StepperPostAction::ArmPreservePosition,
                     },
                 )
             };
