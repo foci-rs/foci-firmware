@@ -172,11 +172,11 @@ pub struct InnerResult {
     pub l_uh: u32,
     /// Computed flux P gain (Q8.8).
     pub flux_p: u16,
-    /// Computed flux I gain (Q8.8).
+    /// Computed flux I gain (advanced PI zero scale: I/65536 per PWM sample).
     pub flux_i: u16,
     /// Computed torque P gain (Q8.8).
     pub torque_p: u16,
-    /// Computed torque I gain (Q8.8).
+    /// Computed torque I gain (advanced PI zero scale: I/65536 per PWM sample).
     pub torque_i: u16,
     /// Inner-loop closed-loop lambda in microseconds.
     pub lambda_us: u32,

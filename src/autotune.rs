@@ -382,11 +382,11 @@ impl PhaseId {
 pub struct SavedGains {
     /// Current-loop flux P gain (Q8.8).
     pub flux_p: u16,
-    /// Current-loop flux I gain (Q8.8).
+    /// Current-loop flux I gain (advanced PI zero scale: I/65536 per PWM sample).
     pub flux_i: u16,
     /// Current-loop torque P gain (Q8.8).
     pub torque_p: u16,
-    /// Current-loop torque I gain (Q8.8).
+    /// Current-loop torque I gain (advanced PI zero scale: I/65536 per PWM sample).
     pub torque_i: u16,
     /// Velocity P gain (Q8.8).
     pub velocity_p: u16,
@@ -500,11 +500,11 @@ pub const ELECTRICAL_MODEL_RESISTANCE_SCALE: u32 = 1000;
 pub struct CurrentGains {
     /// Flux P gain — TMC4671 Q8.8 register value.
     pub flux_p: u16,
-    /// Flux I gain — TMC4671 Q8.8 register value.
+    /// Flux I gain — advanced PI zero scale: I/65536 per PWM sample.
     pub flux_i: u16,
     /// Torque P gain — TMC4671 Q8.8 register value.
     pub torque_p: u16,
-    /// Torque I gain — TMC4671 Q8.8 register value.
+    /// Torque I gain — advanced PI zero scale: I/65536 per PWM sample.
     pub torque_i: u16,
     /// Effective closed-loop bandwidth in Hz.
     pub effective_bandwidth_hz: u32,

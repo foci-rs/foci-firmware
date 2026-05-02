@@ -30,11 +30,11 @@ pub struct InternalMeasurement {
 pub struct InnerLoopGains {
     /// Flux P gain — raw TMC4671 register value (Q8.8 format).
     pub flux_p: u16,
-    /// Flux I gain — raw TMC4671 register value (Q8.8 format, advanced mode).
+    /// Flux I gain — raw TMC4671 register value (advanced PI zero scale).
     pub flux_i: u16,
     /// Torque P gain — raw TMC4671 register value (Q8.8 format).
     pub torque_p: u16,
-    /// Torque I gain — raw TMC4671 register value (Q8.8 format, advanced mode).
+    /// Torque I gain — raw TMC4671 register value (advanced PI zero scale).
     pub torque_i: u16,
 }
 
@@ -63,9 +63,9 @@ pub const I_GAIN_EMPIRICAL_FACTOR: f32 = 1024.0;
 /// These are intentionally low — stable but sluggish.
 pub const DEFAULT_INNER_GAINS: InnerLoopGains = InnerLoopGains {
     flux_p: 256,   // 1.0 in Q8.8
-    flux_i: 26,    // ~0.1 in Q8.8 (matches firmware hardcoded value)
+    flux_i: 26,    // Raw advanced-PI zero parameter.
     torque_p: 256, // 1.0 in Q8.8
-    torque_i: 26,  // ~0.1 in Q8.8 (matches firmware hardcoded value)
+    torque_i: 26,  // Raw advanced-PI zero parameter.
 };
 
 /// Compute PI gains from internal-unit measurements.
