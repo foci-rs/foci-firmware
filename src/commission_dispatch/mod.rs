@@ -289,6 +289,7 @@ pub async fn drive_commission_result<B: CommissioningBackend>(
         StepResult::CalibrateDone(cal_result) => {
             let consumed = engine.take().expect("engine slot None on CalibrateDone");
             let oid = consumed.oid();
+            crate::state::tmc::MOTOR_ARMED.store(false, core::sync::atomic::Ordering::Relaxed);
             let restore_result =
                 crate::tmc_ops::restore_calibrate_gains(backend, *state.stored_gains).await;
             if restore_result.is_err() {
@@ -430,6 +431,7 @@ pub async fn drive_commission_result<B: CommissioningBackend>(
             use core::sync::atomic::Ordering::Relaxed;
             let consumed = engine.take().expect("engine slot None on OuterDone");
             let oid = consumed.oid();
+            crate::state::tmc::MOTOR_ARMED.store(false, Relaxed);
 
             // Persist outer gains to atomics for closed-loop entry.
             crate::state::tmc::POSITION_P_VALUE.store(outer.position_p, Relaxed);

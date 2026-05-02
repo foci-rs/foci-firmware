@@ -66,6 +66,8 @@ pub struct MockBackend {
     pub read_position_actual_sequence: Vec<u32, 8>,
     /// Current index into `read_position_actual_sequence`.
     pub read_position_actual_pos: usize,
+    /// If true, every SPI write asserts that step processing has already been gated off.
+    pub assert_motor_armed_false_on_write: bool,
 }
 
 impl MockBackend {
@@ -91,6 +93,7 @@ impl MockBackend {
             encoder_count_value: 0,
             read_position_actual_sequence: Vec::new(),
             read_position_actual_pos: 0,
+            assert_motor_armed_false_on_write: false,
         }
     }
 }
@@ -116,6 +119,12 @@ impl CommissioningBackend for MockBackend {
 
     async fn write_register(&mut self, reg: Register, val: u32) -> Result<(), Self::Error> {
         let addr = reg.addr();
+        if self.assert_motor_armed_false_on_write {
+            assert!(
+                !crate::state::tmc::MOTOR_ARMED.load(core::sync::atomic::Ordering::Relaxed),
+                "dispatch SPI write ran while step processing was armed"
+            );
+        }
         self.spi_log.push(SpiOp::Write(addr, val)).ok();
         if self.fail_on_write == Some(addr) {
             return Err(MockSpiError);

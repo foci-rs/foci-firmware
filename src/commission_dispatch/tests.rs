@@ -257,6 +257,7 @@ fn calibrate_done_arms_after_gain_restore() {
         use core::sync::atomic::Ordering;
         let _guard = test_support::SHARED_STATE_MUTEX.lock().unwrap();
         let mut backend = MockBackend::new();
+        backend.assert_motor_armed_false_on_write = true;
         let (mut cal, mut en, mut gains) = fresh_state_locals();
         gains = Some(crate::pid::InnerLoopGains {
             flux_p: 100,
@@ -276,6 +277,7 @@ fn calibrate_done_arms_after_gain_restore() {
             encoder_count: 999,
         };
         crate::state::stepper::STEPPER_POSITION.store(42, Ordering::Relaxed);
+        crate::state::tmc::MOTOR_ARMED.store(true, Ordering::Relaxed);
 
         let outcome = drive_commission_result(
             StepResult::CalibrateDone(cal_result.clone()),
@@ -362,6 +364,7 @@ fn outer_done_success_arms_motor() {
         use core::sync::atomic::Ordering;
         let _guard = test_support::SHARED_STATE_MUTEX.lock().unwrap();
         let mut backend = MockBackend::new();
+        backend.assert_motor_armed_false_on_write = true;
         let (mut cal, mut en, mut gains) = fresh_state_locals();
         let mut state = DispatchState {
             calibrated: &mut cal,
@@ -373,6 +376,7 @@ fn outer_done_success_arms_motor() {
             CommissionProfile::Balanced,
         ));
         let outer = sample_outer_result_for_dispatch();
+        crate::state::tmc::MOTOR_ARMED.store(true, Ordering::Relaxed);
 
         let outcome = drive_commission_result(
             StepResult::OuterDone(outer.clone()),
