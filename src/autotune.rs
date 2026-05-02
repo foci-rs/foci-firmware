@@ -1241,12 +1241,16 @@ fn simc_velocity_lambda_us(
 
     // Bandwidth constraint: lambda_vel >= 4 * (lambda_i + theta_e).
     // Ensures inner loop settles before outer loop reacts.
-    let bandwidth_floor = 4 * (inner_lambda_us + theta_e_us);
+    let bandwidth_floor = velocity_bandwidth_floor_us(inner_lambda_us, theta_e_us);
     if lambda >= bandwidth_floor {
         lambda
     } else {
         bandwidth_floor
     }
+}
+
+fn velocity_bandwidth_floor_us(inner_lambda_us: u32, theta_e_us: u32) -> u32 {
+    4 * (inner_lambda_us + theta_e_us)
 }
 
 /// Apply operating-mode adjustment to velocity-loop lambda.
@@ -1368,8 +1372,9 @@ pub(crate) fn simc_velocity_gains_with_lambda_multiplier(
     // it if the model would synthesize gains outside the accepted register
     // envelope.
     let lambda_us = lambda_us.max(model.theta_mech_us);
-    let lambda_us = ((lambda_us as f32) * lambda_multiplier.max(1.0))
-        .clamp(1.0, u32::MAX as f32) as u32;
+    let lambda_us =
+        ((lambda_us as f32) * lambda_multiplier.max(1.0)).clamp(1.0, u32::MAX as f32) as u32;
+    let lambda_us = lambda_us.max(velocity_bandwidth_floor_us(inner_lambda_us, theta_e_us));
     let lambda_us = apply_velocity_gain_envelope(
         lambda_us,
         tau_mech_us,
@@ -3234,6 +3239,34 @@ mod tests {
             "high_inertia lambda {} should be <= nominal {}",
             high_inertia.lambda_vel_ms,
             nominal.lambda_vel_ms
+        );
+    }
+
+    #[test]
+    fn velocity_gains_high_inertia_preserves_inner_bandwidth_floor() {
+        let model = test_mechanical_model();
+        let config = autotune_test_config();
+        let inner_lambda_us = 5000;
+        let theta_e_us = 1000;
+        let bandwidth_floor_ms = 4 * (inner_lambda_us + theta_e_us) / 1000;
+
+        let gains = simc_velocity_gains(
+            &model,
+            CommissionProfile::Stiff,
+            OperatingMode::HighInertia,
+            inner_lambda_us,
+            theta_e_us,
+            1000,
+            TEST_STEP_WIDTH,
+            &config,
+        )
+        .unwrap();
+
+        assert!(
+            gains.lambda_vel_ms >= bandwidth_floor_ms,
+            "high-inertia lambda {}ms should preserve inner bandwidth floor {}ms",
+            gains.lambda_vel_ms,
+            bandwidth_floor_ms
         );
     }
 
