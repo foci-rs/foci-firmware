@@ -26,7 +26,7 @@
 //! restructure.md`). See the extraction blueprint in this session's
 //! logbook entry for commit-by-commit scope.
 
-use crate::commission_dispatch::DispatchState;
+use crate::commission_dispatch::{DispatchState, StepperPostAction};
 use crate::commissioning::types::CommissioningBackend;
 use embedded_hal_async::spi::SpiDevice;
 use foci_tmc4671::spi::Tmc4671Spi;
@@ -378,6 +378,44 @@ pub fn arm_motor_for_steps(state: &mut DispatchState<'_>) {
         "FATAL: arm_motor_for_steps called with motor_enabled=false"
     );
     crate::state::tmc::MOTOR_ARMED.store(true, core::sync::atomic::Ordering::Relaxed);
+}
+
+/// Board task to run after a stepper post-action state transition.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+pub enum StepperTaskDirective {
+    /// No board task should be spawned.
+    None,
+    /// Spawn the board-local arm-check task.
+    ArmCheck,
+    /// Spawn the board-local stop-check task.
+    StopCheck,
+}
+
+/// Apply P1-visible stepper state for a terminal commissioning action.
+///
+/// Returns the board task directive only after all shared atomics and step
+/// epoch state are updated, so the board cannot spawn `arm_check` or
+/// `stop_check` before those tasks can observe the intended state.
+pub fn apply_stepper_post_action_state(
+    action: StepperPostAction,
+    state: &mut DispatchState<'_>,
+) -> StepperTaskDirective {
+    match action {
+        StepperPostAction::None => StepperTaskDirective::None,
+        StepperPostAction::Stop => {
+            crate::state::tmc::MOTOR_ARMED.store(false, core::sync::atomic::Ordering::Relaxed);
+            StepperTaskDirective::StopCheck
+        }
+        StepperPostAction::ArmZeroPosition => {
+            crate::state::stepper::STEPPER_POSITION.store(0, core::sync::atomic::Ordering::Relaxed);
+            arm_motor_for_steps(state);
+            StepperTaskDirective::ArmCheck
+        }
+        StepperPostAction::ArmPreservePosition => {
+            arm_motor_for_steps(state);
+            StepperTaskDirective::ArmCheck
+        }
+    }
 }
 
 /// Apply biquad filters via `CommissioningBackend`.
@@ -741,6 +779,59 @@ mod tests {
         assert!(crate::state::tmc::MOTOR_ARMED.load(Ordering::Relaxed));
         // Reset the static for downstream tests.
         crate::state::tmc::MOTOR_ARMED.store(false, Ordering::Relaxed);
+    }
+
+    #[test]
+    fn stepper_post_action_zeroes_before_arm_check_directive() {
+        use core::sync::atomic::Ordering;
+        let _guard = crate::commission_dispatch::test_support::SHARED_STATE_MUTEX
+            .lock()
+            .unwrap();
+        let (mut cal, mut en, mut gains) = fresh_state_locals();
+        en = true;
+        crate::state::stepper::STEPPER_POSITION.store(123, Ordering::Relaxed);
+        crate::state::tmc::MOTOR_ARMED.store(false, Ordering::Relaxed);
+        let mut state = DispatchState {
+            calibrated: &mut cal,
+            motor_enabled: &mut en,
+            stored_gains: &mut gains,
+        };
+
+        let directive = apply_stepper_post_action_state(
+            crate::commission_dispatch::StepperPostAction::ArmZeroPosition,
+            &mut state,
+        );
+
+        assert_eq!(directive, StepperTaskDirective::ArmCheck);
+        assert_eq!(
+            crate::state::stepper::STEPPER_POSITION.load(Ordering::Relaxed),
+            0
+        );
+        assert!(crate::state::tmc::MOTOR_ARMED.load(Ordering::Relaxed));
+        crate::state::tmc::MOTOR_ARMED.store(false, Ordering::Relaxed);
+    }
+
+    #[test]
+    fn stepper_post_action_stop_clears_before_stop_check_directive() {
+        use core::sync::atomic::Ordering;
+        let _guard = crate::commission_dispatch::test_support::SHARED_STATE_MUTEX
+            .lock()
+            .unwrap();
+        let (mut cal, mut en, mut gains) = fresh_state_locals();
+        crate::state::tmc::MOTOR_ARMED.store(true, Ordering::Relaxed);
+        let mut state = DispatchState {
+            calibrated: &mut cal,
+            motor_enabled: &mut en,
+            stored_gains: &mut gains,
+        };
+
+        let directive = apply_stepper_post_action_state(
+            crate::commission_dispatch::StepperPostAction::Stop,
+            &mut state,
+        );
+
+        assert_eq!(directive, StepperTaskDirective::StopCheck);
+        assert!(!crate::state::tmc::MOTOR_ARMED.load(Ordering::Relaxed));
     }
 
     #[test]
