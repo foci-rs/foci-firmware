@@ -770,9 +770,9 @@ fn outer_failed_soft_failure_holds_motor() {
         )
         .await;
 
-        // Two delay_us(10_000) calls expected (one before each stability read).
-        assert_eq!(backend.delay_us_log.len(), 2);
-        assert!(backend.delay_us_log.iter().all(|d| *d == 10_000));
+        // Five-sample restore stability window.
+        assert_eq!(backend.delay_us_log.len(), 5);
+        assert!(backend.delay_us_log.iter().all(|d| *d == 5_000));
 
         // Motor still armed (soft failure, stable).
         assert!(*state.calibrated);
@@ -849,8 +849,65 @@ fn outer_failed_unstable_drift_preserves_upstream_error() {
             }
             _ => panic!("expected TuneResult error"),
         }
-        assert_eq!(backend.delay_us_log.len(), 2);
+        assert_eq!(backend.delay_us_log.len(), 5);
+        assert!(backend.delay_us_log.iter().all(|d| *d == 5_000));
 
         crate::state::tmc::MOTOR_ARMED.store(false, Ordering::Relaxed);
+    });
+}
+
+#[test]
+fn outer_failed_restore_rejects_aliased_position_oscillation() {
+    pollster::block_on(async {
+        let _guard = test_support::SHARED_STATE_MUTEX.lock().unwrap();
+        let mut backend = MockBackend::new();
+        backend.step_width_value = 10;
+        // First two samples match, so the old two-read check accepts this.
+        // The full window spans 31 TMC position units: more than two
+        // encoder counts at step_width=10.
+        backend.read_position_actual_sequence.push(1000).unwrap();
+        backend.read_position_actual_sequence.push(1000).unwrap();
+        backend.read_position_actual_sequence.push(1031).unwrap();
+        backend.read_position_actual_sequence.push(1001).unwrap();
+        backend.read_position_actual_sequence.push(1000).unwrap();
+
+        let (mut cal, mut en, mut gains) = fresh_state_locals();
+        cal = true;
+        en = true;
+        let mut state = DispatchState {
+            calibrated: &mut cal,
+            motor_enabled: &mut en,
+            stored_gains: &mut gains,
+        };
+        let mut engine = Some(CommissioningEngine::new_outer(
+            0,
+            sample_outer_params(),
+            sample_entry_snapshot(),
+        ));
+        let err = crate::autotune::CommissionError::VelocityValidationFailed;
+
+        let outcome = drive_commission_result(
+            StepResult::OuterFailed(err),
+            &mut engine,
+            &mut backend,
+            &mut state,
+            4095,
+        )
+        .await;
+
+        assert!(!*state.calibrated);
+        assert!(!*state.motor_enabled);
+        assert!(!backend.enable_pin);
+
+        match outcome {
+            CommissionOutcome::Terminal {
+                reply: ReplyPayload::TuneResult { status, .. },
+                actions,
+            } => {
+                assert_eq!(status, err.status_code());
+                assert_eq!(actions.stepper, StepperPostAction::Stop);
+            }
+            _ => panic!("expected TuneResult"),
+        }
     });
 }

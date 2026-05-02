@@ -89,6 +89,48 @@ impl PostActions {
     };
 }
 
+const OUTER_RESTORE_STABILITY_SAMPLES: usize = 5;
+const OUTER_RESTORE_STABILITY_INTERVAL_US: u32 = 5_000;
+const OUTER_RESTORE_STABILITY_ENCODER_COUNTS: u32 = 2;
+
+async fn outer_restore_position_stable<B: CommissioningBackend>(
+    backend: &mut B,
+) -> Result<bool, B::Error> {
+    let mut first = 0i32;
+    let mut min_delta = 0i32;
+    let mut max_delta = 0i32;
+
+    for index in 0..OUTER_RESTORE_STABILITY_SAMPLES {
+        backend.delay_us(OUTER_RESTORE_STABILITY_INTERVAL_US).await;
+        let position = backend
+            .read_register(foci_tmc4671::registers::PID_POSITION_ACTUAL)
+            .await? as i32;
+
+        if index == 0 {
+            first = position;
+        }
+        let delta = position.wrapping_sub(first);
+        min_delta = min_delta.min(delta);
+        max_delta = max_delta.max(delta);
+    }
+
+    let span = (max_delta as i64 - min_delta as i64).unsigned_abs();
+    let threshold = backend
+        .step_width()
+        .max(1)
+        .saturating_mul(OUTER_RESTORE_STABILITY_ENCODER_COUNTS);
+    if span > threshold as u64 {
+        defmt::error!(
+            "OuterFailed restore: unstable span={} threshold={}",
+            span,
+            threshold,
+        );
+        Ok(false)
+    } else {
+        Ok(true)
+    }
+}
+
 /// Wire-reply payload for the board to emit via `klipper_reply_from!`.
 pub enum ReplyPayload {
     /// FociCommissionPhase: phase change reply (foci_commission failures
@@ -480,38 +522,17 @@ pub async fn drive_commission_result<B: CommissioningBackend>(
             } else if let Some(ref snap) = snapshot {
                 match crate::commissioning::inner::restore_entry_gains(snap, backend).await {
                     Ok(()) => {
-                        // Two-read stability check: wait 10ms, read position, wait 10ms, read again.
-                        backend.delay_us(10_000).await;
-                        let pos1 = backend
-                            .read_register(foci_tmc4671::registers::PID_POSITION_ACTUAL)
-                            .await;
-                        backend.delay_us(10_000).await;
-                        let pos2 = backend
-                            .read_register(foci_tmc4671::registers::PID_POSITION_ACTUAL)
-                            .await;
-                        match (pos1, pos2) {
-                            (Ok(p1), Ok(p2)) => {
-                                let p1_signed = p1 as i32;
-                                let p2_signed = p2 as i32;
-                                let drift = p2_signed.wrapping_sub(p1_signed).unsigned_abs();
-                                if drift > 2 {
-                                    defmt::error!(
-                                        "OuterFailed restore: unstable p1={} p2={} drift={}",
-                                        p1_signed,
-                                        p2_signed,
-                                        drift,
-                                    );
-                                    // Preserve the upstream error; the drift
-                                    // log is the secondary diagnostic. Overriding
-                                    // with CurrentValidationFailed would mask
-                                    // the meaningful failure (e.g.
-                                    // VelocityValidationFailed).
-                                    Some(error)
-                                } else {
-                                    None
-                                }
+                        match outer_restore_position_stable(backend).await {
+                            Ok(true) => None,
+                            Ok(false) => {
+                                // Preserve the upstream error; the stability
+                                // log is the secondary diagnostic. Overriding
+                                // with CurrentValidationFailed would mask the
+                                // meaningful failure (e.g.
+                                // VelocityValidationFailed).
+                                Some(error)
                             }
-                            _ => {
+                            Err(_) => {
                                 defmt::error!("OuterFailed restore: stability read SPI failed");
                                 Some(CE::Spi)
                             }
