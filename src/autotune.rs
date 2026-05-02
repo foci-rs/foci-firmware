@@ -1500,7 +1500,7 @@ pub fn extract_velocity_metrics(
         (Some(a), Some(b)) => b.saturating_sub(a),
         _ => 0,
     };
-    // Convert to milliseconds (rounding up).
+    // Convert to milliseconds (rounding to nearest).
     let rise_time_ms = (rise_time_us + 500) / 1000;
 
     // Overshoot: (peak - target) / target in 0.1% units. The absolute
@@ -1530,6 +1530,7 @@ pub fn extract_velocity_metrics(
         u32::MAX
     } else if let Some(idx) = last_outside {
         let settling_us = crate::sample_timing::sample_elapsed_us(idx, period_us);
+        // Convert to milliseconds (rounding to nearest).
         (settling_us + 500) / 1000
     } else {
         0
