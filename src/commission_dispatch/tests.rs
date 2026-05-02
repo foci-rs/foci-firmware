@@ -911,3 +911,112 @@ fn outer_failed_restore_rejects_aliased_position_oscillation() {
         }
     });
 }
+
+#[test]
+fn outer_failed_restore_accepts_scaled_encoder_jitter() {
+    pollster::block_on(async {
+        use core::sync::atomic::Ordering;
+        let _guard = test_support::SHARED_STATE_MUTEX.lock().unwrap();
+        let mut backend = MockBackend::new();
+        backend.step_width_value = 819;
+        backend.read_position_actual_sequence.push(1000).unwrap();
+        backend.read_position_actual_sequence.push(1001).unwrap();
+        backend.read_position_actual_sequence.push(1000).unwrap();
+        backend.read_position_actual_sequence.push(999).unwrap();
+        backend.read_position_actual_sequence.push(1000).unwrap();
+
+        let (mut cal, mut en, mut gains) = fresh_state_locals();
+        cal = true;
+        en = true;
+        let mut state = DispatchState {
+            calibrated: &mut cal,
+            motor_enabled: &mut en,
+            stored_gains: &mut gains,
+        };
+        let mut engine = Some(CommissioningEngine::new_outer(
+            0,
+            sample_outer_params(),
+            sample_entry_snapshot(),
+        ));
+        let err = crate::autotune::CommissionError::VelocityValidationFailed;
+
+        let outcome = drive_commission_result(
+            StepResult::OuterFailed(err),
+            &mut engine,
+            &mut backend,
+            &mut state,
+            4095,
+        )
+        .await;
+
+        assert!(*state.calibrated);
+        assert!(*state.motor_enabled);
+        assert!(backend.enable_pin);
+
+        match outcome {
+            CommissionOutcome::Terminal {
+                reply: ReplyPayload::TuneResult { status, .. },
+                actions,
+            } => {
+                assert_eq!(status, err.status_code());
+                assert_eq!(actions.stepper, StepperPostAction::ArmPreservePosition);
+            }
+            _ => panic!("expected TuneResult"),
+        }
+
+        crate::state::tmc::MOTOR_ARMED.store(false, Ordering::Relaxed);
+    });
+}
+
+#[test]
+fn outer_failed_restore_rejects_monotonic_creep() {
+    pollster::block_on(async {
+        let _guard = test_support::SHARED_STATE_MUTEX.lock().unwrap();
+        let mut backend = MockBackend::new();
+        backend.step_width_value = 10;
+        backend.read_position_actual_sequence.push(1000).unwrap();
+        backend.read_position_actual_sequence.push(1006).unwrap();
+        backend.read_position_actual_sequence.push(1012).unwrap();
+        backend.read_position_actual_sequence.push(1018).unwrap();
+        backend.read_position_actual_sequence.push(1024).unwrap();
+
+        let (mut cal, mut en, mut gains) = fresh_state_locals();
+        cal = true;
+        en = true;
+        let mut state = DispatchState {
+            calibrated: &mut cal,
+            motor_enabled: &mut en,
+            stored_gains: &mut gains,
+        };
+        let mut engine = Some(CommissioningEngine::new_outer(
+            0,
+            sample_outer_params(),
+            sample_entry_snapshot(),
+        ));
+        let err = crate::autotune::CommissionError::VelocityValidationFailed;
+
+        let outcome = drive_commission_result(
+            StepResult::OuterFailed(err),
+            &mut engine,
+            &mut backend,
+            &mut state,
+            4095,
+        )
+        .await;
+
+        assert!(!*state.calibrated);
+        assert!(!*state.motor_enabled);
+        assert!(!backend.enable_pin);
+
+        match outcome {
+            CommissionOutcome::Terminal {
+                reply: ReplyPayload::TuneResult { status, .. },
+                actions,
+            } => {
+                assert_eq!(status, err.status_code());
+                assert_eq!(actions.stepper, StepperPostAction::Stop);
+            }
+            _ => panic!("expected TuneResult"),
+        }
+    });
+}
