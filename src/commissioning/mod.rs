@@ -298,7 +298,9 @@ impl CommissioningEngine {
             // Defense in depth: dispatch already restores safe state on
             // terminal failures, but the shutdown abort path bypasses
             // step_inner / step_outer entirely. Drive the canonical helper
-            // here so the chip is de-energized before the abort is reported.
+            // here so step processing is gated and the chip is de-energized
+            // before the abort is reported.
+            crate::state::tmc::MOTOR_ARMED.store(false, core::sync::atomic::Ordering::Relaxed);
             crate::tmc_safe_state::restore_safe_state_via_backend(backend).await;
             return self.abort(CommissionError::Shutdown);
         }
@@ -426,6 +428,10 @@ mod tests {
     #[test]
     fn step_restores_safe_state_when_shutdown_requested_mid_inner() {
         pollster::block_on(async {
+            use core::sync::atomic::Ordering;
+            let _guard = crate::commission_dispatch::test_support::SHARED_STATE_MUTEX
+                .lock()
+                .unwrap();
             let mut engine = CommissioningEngine::new_commission(
                 0,
                 crate::autotune::CommissionProfile::Balanced,
@@ -433,6 +439,7 @@ mod tests {
             let mut backend = crate::commission_dispatch::test_support::MockBackend::new();
             backend.shutdown_requested = true;
             backend.enable_pin = true;
+            crate::state::tmc::MOTOR_ARMED.store(true, Ordering::Relaxed);
 
             let result = engine.step(&mut backend).await;
 
@@ -443,6 +450,10 @@ mod tests {
                 )
             ));
             assert!(!backend.enable_pin, "shutdown abort must lower enable pin");
+            assert!(
+                !crate::state::tmc::MOTOR_ARMED.load(Ordering::Relaxed),
+                "shutdown abort must gate step processing before reporting failure"
+            );
         });
     }
 }
