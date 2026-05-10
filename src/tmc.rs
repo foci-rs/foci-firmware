@@ -11,7 +11,23 @@ use core::sync::atomic::Ordering;
 /// Firmware crates send these to their board-specific SPI task via a
 /// channel (e.g., `heapless::spsc` or `rtic_sync::channel`).
 #[derive(Debug, Clone, PartialEq, Eq, defmt::Format)]
-pub enum TmcRequest {
+pub struct TmcRequest {
+    /// Board-local TMC4671 channel index.
+    pub channel: u8,
+    /// Requested TMC operation.
+    pub kind: TmcRequestKind,
+}
+
+impl TmcRequest {
+    /// Build a TMC request for `channel`.
+    pub const fn new(channel: u8, kind: TmcRequestKind) -> Self {
+        Self { channel, kind }
+    }
+}
+
+/// Operation carried by a [`TmcRequest`].
+#[derive(Debug, Clone, PartialEq, Eq, defmt::Format)]
+pub enum TmcRequestKind {
     /// Set motor enable/disable.
     SetEnable(bool),
     /// Run ADC offset calibration, encoder alignment, closed-loop entry.
@@ -103,8 +119,8 @@ pub enum TmcRequest {
 }
 
 /// Build a `SetCurrent` request.
-pub fn tmc_set_current(run_ma: u32) -> TmcRequest {
-    TmcRequest::SetCurrent { run_ma }
+pub fn tmc_set_current(channel: u8, run_ma: u32) -> TmcRequest {
+    TmcRequest::new(channel, TmcRequestKind::SetCurrent { run_ma })
 }
 
 /// Compute step width from encoder PPR and pole pairs for hardware step/dir.
@@ -114,54 +130,67 @@ pub fn tmc_set_current(run_ma: u32) -> TmcRequest {
 /// the step width directly to the TMC4671 register.
 ///
 /// Step width formula: `65536 * pole_pairs / (ppr * 4)`
-pub fn tmc_set_encoder_hw(ppr: u32, pole_pairs: u32) -> (TmcRequest, i32) {
+pub fn tmc_set_encoder_hw(channel: u8, ppr: u32, pole_pairs: u32) -> (TmcRequest, i32) {
     let step_width = if ppr > 0 {
         let quad_ppr = (ppr as u64) * 4;
         (65536u64 * pole_pairs as u64 / quad_ppr) as i32
     } else {
         0
     };
-    (TmcRequest::SetEncoder { ppr }, step_width)
+    (
+        TmcRequest::new(channel, TmcRequestKind::SetEncoder { ppr }),
+        step_width,
+    )
 }
 
 /// Build a `SetEncoderDir` request.
-pub fn tmc_set_encoder_dir(invert: bool) -> TmcRequest {
-    TmcRequest::SetEncoderDir { invert }
+pub fn tmc_set_encoder_dir(channel: u8, invert: bool) -> TmcRequest {
+    TmcRequest::new(channel, TmcRequestKind::SetEncoderDir { invert })
 }
 
 /// Build a `SelfTest` request.
-pub fn tmc_selftest(oid: u8) -> TmcRequest {
-    TmcRequest::SelfTest { oid }
+pub fn tmc_selftest(channel: u8, oid: u8) -> TmcRequest {
+    TmcRequest::new(channel, TmcRequestKind::SelfTest { oid })
 }
 
 /// Build a `Calibrate` request.
-pub fn tmc_calibrate(oid: u8) -> TmcRequest {
-    TmcRequest::Calibrate { oid }
+pub fn tmc_calibrate(channel: u8, oid: u8) -> TmcRequest {
+    TmcRequest::new(channel, TmcRequestKind::Calibrate { oid })
 }
 
 /// Build a `DumpRegisters` request.
-pub fn tmc_dump_registers(oid: u8) -> TmcRequest {
-    TmcRequest::DumpRegisters { oid }
+pub fn tmc_dump_registers(channel: u8, oid: u8) -> TmcRequest {
+    TmcRequest::new(channel, TmcRequestKind::DumpRegisters { oid })
 }
 
 /// Build a `SetPidGains` request.
-pub fn tmc_set_pid_gains(flux_p: u16, flux_i: u16, torque_p: u16, torque_i: u16) -> TmcRequest {
-    TmcRequest::SetPidGains {
-        flux_p,
-        flux_i,
-        torque_p,
-        torque_i,
-    }
+pub fn tmc_set_pid_gains(
+    channel: u8,
+    flux_p: u16,
+    flux_i: u16,
+    torque_p: u16,
+    torque_i: u16,
+) -> TmcRequest {
+    TmcRequest::new(
+        channel,
+        TmcRequestKind::SetPidGains {
+            flux_p,
+            flux_i,
+            torque_p,
+            torque_i,
+        },
+    )
 }
 
 /// Build a `Commission` request (Stage 1: diagnostics + current tune + closed-loop entry).
-pub fn tmc_commission(oid: u8, profile: u8) -> TmcRequest {
-    TmcRequest::Commission { oid, profile }
+pub fn tmc_commission(channel: u8, oid: u8, profile: u8) -> TmcRequest {
+    TmcRequest::new(channel, TmcRequestKind::Commission { oid, profile })
 }
 
 /// Build a `Tune` request (Stage 2: mechanical ID + velocity/position + filters).
 #[allow(clippy::too_many_arguments)]
 pub fn tmc_tune(
+    channel: u8,
     oid: u8,
     profile: u8,
     mode: u8,
@@ -174,59 +203,71 @@ pub fn tmc_tune(
     tau_residual_permille: u16,
     inner_warning_flags: u8,
 ) -> TmcRequest {
-    TmcRequest::Tune {
-        oid,
-        profile,
-        mode,
-        inner_lambda_us,
-        theta_e_us,
-        current_ringing_count,
-        current_bandwidth_hz,
-        tau_e_us,
-        tau_e_crosscheck_us,
-        tau_residual_permille,
-        inner_warning_flags,
-    }
+    TmcRequest::new(
+        channel,
+        TmcRequestKind::Tune {
+            oid,
+            profile,
+            mode,
+            inner_lambda_us,
+            theta_e_us,
+            current_ringing_count,
+            current_bandwidth_hz,
+            tau_e_us,
+            tau_e_crosscheck_us,
+            tau_residual_permille,
+            inner_warning_flags,
+        },
+    )
 }
 
 /// Build a `SetVelocityFilter` request.
-pub fn tmc_set_velocity_filter(filter_hz: u16) -> TmcRequest {
-    TmcRequest::SetVelocityFilter { filter_hz }
+pub fn tmc_set_velocity_filter(channel: u8, filter_hz: u16) -> TmcRequest {
+    TmcRequest::new(channel, TmcRequestKind::SetVelocityFilter { filter_hz })
 }
 
 /// Build a `SetTorqueFilter` request.
-pub fn tmc_set_torque_filter(filter_hz: u16) -> TmcRequest {
-    TmcRequest::SetTorqueFilter { filter_hz }
+pub fn tmc_set_torque_filter(channel: u8, filter_hz: u16) -> TmcRequest {
+    TmcRequest::new(channel, TmcRequestKind::SetTorqueFilter { filter_hz })
 }
 
 /// Build a `SetPositionFilter` request.
-pub fn tmc_set_position_filter(filter_hz: u16) -> TmcRequest {
-    TmcRequest::SetPositionFilter { filter_hz }
+pub fn tmc_set_position_filter(channel: u8, filter_hz: u16) -> TmcRequest {
+    TmcRequest::new(channel, TmcRequestKind::SetPositionFilter { filter_hz })
 }
 
 /// Build a `SetFluxFilter` request.
-pub fn tmc_set_flux_filter(filter_hz: u16) -> TmcRequest {
-    TmcRequest::SetFluxFilter { filter_hz }
+pub fn tmc_set_flux_filter(channel: u8, filter_hz: u16) -> TmcRequest {
+    TmcRequest::new(channel, TmcRequestKind::SetFluxFilter { filter_hz })
 }
 
 /// Build a `SetPositionGains` request.
 pub fn tmc_set_position_gains(
+    channel: u8,
     position_p: u16,
     position_i: u16,
     velocity_p: u16,
     velocity_i: u16,
 ) -> TmcRequest {
-    TmcRequest::SetPositionGains {
-        position_p,
-        position_i,
-        velocity_p,
-        velocity_i,
-    }
+    TmcRequest::new(
+        channel,
+        TmcRequestKind::SetPositionGains {
+            position_p,
+            position_i,
+            velocity_p,
+            velocity_i,
+        },
+    )
 }
 
 /// Build a `SetVelocityFeedforward` request.
-pub fn tmc_set_velocity_feedforward(enable: bool) -> TmcRequest {
-    TmcRequest::SetVelocityFeedforward { enable }
+pub fn tmc_set_velocity_feedforward(channel: u8, enable: bool) -> TmcRequest {
+    TmcRequest::new(channel, TmcRequestKind::SetVelocityFeedforward { enable })
+}
+
+/// Build a `SetEnable` request.
+pub fn tmc_set_enable(channel: u8, enable: bool) -> TmcRequest {
+    TmcRequest::new(channel, TmcRequestKind::SetEnable(enable))
 }
 
 /// Set whether a raw enable may trigger firmware-side auto-calibration.
@@ -240,17 +281,20 @@ pub fn auto_calibrate_on_enable_allowed() -> bool {
 }
 
 /// Build a `TraceInfo` request.
-pub fn tmc_trace_info(oid: u8) -> TmcRequest {
-    TmcRequest::TraceInfo { oid }
+pub fn tmc_trace_info(channel: u8, oid: u8) -> TmcRequest {
+    TmcRequest::new(channel, TmcRequestKind::TraceInfo { oid })
 }
 
 /// Build a `TraceFetch` request.
-pub fn tmc_trace_fetch(oid: u8, offset: u16, generation: u8) -> TmcRequest {
-    TmcRequest::TraceFetch {
-        oid,
-        offset,
-        generation,
-    }
+pub fn tmc_trace_fetch(channel: u8, oid: u8, offset: u16, generation: u8) -> TmcRequest {
+    TmcRequest::new(
+        channel,
+        TmcRequestKind::TraceFetch {
+            oid,
+            offset,
+            generation,
+        },
+    )
 }
 
 /// Precompute the velocity feedforward scale factor.
@@ -297,26 +341,26 @@ pub fn compute_velocity_offset(scale_factor: u32, step_interval: u32, forward: b
 
 /// Build a `Write` request (dev-only).
 #[cfg(feature = "dev")]
-pub fn tmc_write_register(addr: u8, value: u32) -> TmcRequest {
-    TmcRequest::Write { addr, value }
+pub fn tmc_write_register(channel: u8, addr: u8, value: u32) -> TmcRequest {
+    TmcRequest::new(channel, TmcRequestKind::Write { addr, value })
 }
 
 /// Build a `Read` request (dev-only).
 #[cfg(feature = "dev")]
-pub fn tmc_read_register(oid: u8, addr: u8) -> TmcRequest {
-    TmcRequest::Read { oid, addr }
+pub fn tmc_read_register(channel: u8, oid: u8, addr: u8) -> TmcRequest {
+    TmcRequest::new(channel, TmcRequestKind::Read { oid, addr })
 }
 
 /// Build an `Init` request (dev-only).
 #[cfg(feature = "dev")]
-pub fn tmc_init() -> TmcRequest {
-    TmcRequest::Init
+pub fn tmc_init(channel: u8) -> TmcRequest {
+    TmcRequest::new(channel, TmcRequestKind::Init)
 }
 
 /// Build a `TestSpin` request (dev-only).
 #[cfg(feature = "dev")]
-pub fn tmc_test_spin(revolutions: u8) -> TmcRequest {
-    TmcRequest::TestSpin { revolutions }
+pub fn tmc_test_spin(channel: u8, revolutions: u8) -> TmcRequest {
+    TmcRequest::new(channel, TmcRequestKind::TestSpin { revolutions })
 }
 
 #[cfg(test)]
@@ -324,110 +368,145 @@ mod tests {
     use super::*;
 
     #[test]
+    fn tmc_set_current_includes_channel() {
+        let req = tmc_set_current(1, 800);
+
+        assert_eq!(req.channel, 1);
+        assert!(matches!(
+            req.kind,
+            TmcRequestKind::SetCurrent { run_ma: 800 }
+        ));
+    }
+
+    #[test]
     fn tmc_set_current_builds_request() {
-        assert_eq!(tmc_set_current(500), TmcRequest::SetCurrent { run_ma: 500 });
+        assert_eq!(
+            tmc_set_current(0, 500),
+            TmcRequest::new(0, TmcRequestKind::SetCurrent { run_ma: 500 })
+        );
     }
 
     #[test]
     fn tmc_set_encoder_hw_computes_step_width() {
-        let (req, step_width) = tmc_set_encoder_hw(1000, 50);
-        assert_eq!(req, TmcRequest::SetEncoder { ppr: 1000 });
+        let (req, step_width) = tmc_set_encoder_hw(0, 1000, 50);
+        assert_eq!(
+            req,
+            TmcRequest::new(0, TmcRequestKind::SetEncoder { ppr: 1000 })
+        );
         assert_eq!(step_width, 819);
     }
 
     #[test]
     fn tmc_set_encoder_hw_zero_ppr() {
-        let (req, step_width) = tmc_set_encoder_hw(0, 50);
-        assert_eq!(req, TmcRequest::SetEncoder { ppr: 0 });
+        let (req, step_width) = tmc_set_encoder_hw(0, 0, 50);
+        assert_eq!(
+            req,
+            TmcRequest::new(0, TmcRequestKind::SetEncoder { ppr: 0 })
+        );
         assert_eq!(step_width, 0);
     }
 
     #[test]
     fn tmc_set_encoder_dir_builds_request() {
         assert_eq!(
-            tmc_set_encoder_dir(true),
-            TmcRequest::SetEncoderDir { invert: true }
+            tmc_set_encoder_dir(0, true),
+            TmcRequest::new(0, TmcRequestKind::SetEncoderDir { invert: true })
         );
     }
 
     #[test]
     fn tmc_selftest_builds_request() {
-        assert_eq!(tmc_selftest(5), TmcRequest::SelfTest { oid: 5 });
+        assert_eq!(
+            tmc_selftest(0, 5),
+            TmcRequest::new(0, TmcRequestKind::SelfTest { oid: 5 })
+        );
     }
 
     #[test]
     fn tmc_calibrate_builds_request() {
-        assert_eq!(tmc_calibrate(0), TmcRequest::Calibrate { oid: 0 });
+        assert_eq!(
+            tmc_calibrate(0, 7),
+            TmcRequest::new(0, TmcRequestKind::Calibrate { oid: 7 })
+        );
     }
 
     #[test]
     fn tmc_dump_registers_builds_request() {
-        assert_eq!(tmc_dump_registers(1), TmcRequest::DumpRegisters { oid: 1 });
+        assert_eq!(
+            tmc_dump_registers(0, 1),
+            TmcRequest::new(0, TmcRequestKind::DumpRegisters { oid: 1 })
+        );
     }
 
     #[test]
     fn tmc_set_pid_gains_builds_request() {
         assert_eq!(
-            tmc_set_pid_gains(100, 200, 300, 400),
-            TmcRequest::SetPidGains {
-                flux_p: 100,
-                flux_i: 200,
-                torque_p: 300,
-                torque_i: 400,
-            }
+            tmc_set_pid_gains(0, 100, 200, 300, 400),
+            TmcRequest::new(
+                0,
+                TmcRequestKind::SetPidGains {
+                    flux_p: 100,
+                    flux_i: 200,
+                    torque_p: 300,
+                    torque_i: 400,
+                }
+            )
         );
     }
 
     #[test]
     fn tmc_set_velocity_filter_builds_request() {
         assert_eq!(
-            tmc_set_velocity_filter(200),
-            TmcRequest::SetVelocityFilter { filter_hz: 200 }
+            tmc_set_velocity_filter(0, 200),
+            TmcRequest::new(0, TmcRequestKind::SetVelocityFilter { filter_hz: 200 })
         );
     }
 
     #[test]
     fn tmc_set_torque_filter_builds_request() {
         assert_eq!(
-            tmc_set_torque_filter(500),
-            TmcRequest::SetTorqueFilter { filter_hz: 500 }
+            tmc_set_torque_filter(0, 500),
+            TmcRequest::new(0, TmcRequestKind::SetTorqueFilter { filter_hz: 500 })
         );
     }
 
     #[test]
     fn tmc_set_position_filter_builds_request() {
         assert_eq!(
-            tmc_set_position_filter(100),
-            TmcRequest::SetPositionFilter { filter_hz: 100 }
+            tmc_set_position_filter(0, 100),
+            TmcRequest::new(0, TmcRequestKind::SetPositionFilter { filter_hz: 100 })
         );
     }
 
     #[test]
     fn tmc_set_flux_filter_builds_request() {
         assert_eq!(
-            tmc_set_flux_filter(300),
-            TmcRequest::SetFluxFilter { filter_hz: 300 }
+            tmc_set_flux_filter(0, 300),
+            TmcRequest::new(0, TmcRequestKind::SetFluxFilter { filter_hz: 300 })
         );
     }
 
     #[test]
     fn tmc_set_position_gains_builds_request() {
         assert_eq!(
-            tmc_set_position_gains(640, 5, 1152, 0),
-            TmcRequest::SetPositionGains {
-                position_p: 640,
-                position_i: 5,
-                velocity_p: 1152,
-                velocity_i: 0,
-            }
+            tmc_set_position_gains(0, 640, 5, 1152, 0),
+            TmcRequest::new(
+                0,
+                TmcRequestKind::SetPositionGains {
+                    position_p: 640,
+                    position_i: 5,
+                    velocity_p: 1152,
+                    velocity_i: 0,
+                }
+            )
         );
     }
 
     #[test]
     fn tmc_set_velocity_feedforward_builds_request() {
         assert_eq!(
-            tmc_set_velocity_feedforward(true),
-            TmcRequest::SetVelocityFeedforward { enable: true }
+            tmc_set_velocity_feedforward(0, true),
+            TmcRequest::new(0, TmcRequestKind::SetVelocityFeedforward { enable: true })
         );
     }
 
@@ -446,28 +525,31 @@ mod tests {
     #[test]
     fn tmc_commission_builds_request() {
         assert_eq!(
-            tmc_commission(0, 1),
-            TmcRequest::Commission { oid: 0, profile: 1 }
+            tmc_commission(0, 7, 1),
+            TmcRequest::new(0, TmcRequestKind::Commission { oid: 7, profile: 1 })
         );
     }
 
     #[test]
     fn tmc_tune_builds_request() {
         assert_eq!(
-            tmc_tune(0, 2, 1, 1400, 700, 3, 500, 730, 720, 50, 0x40),
-            TmcRequest::Tune {
-                oid: 0,
-                profile: 2,
-                mode: 1,
-                inner_lambda_us: 1400,
-                theta_e_us: 700,
-                current_ringing_count: 3,
-                current_bandwidth_hz: 500,
-                tau_e_us: 730,
-                tau_e_crosscheck_us: 720,
-                tau_residual_permille: 50,
-                inner_warning_flags: 0x40,
-            }
+            tmc_tune(0, 7, 2, 1, 1400, 700, 3, 500, 730, 720, 50, 0x40),
+            TmcRequest::new(
+                0,
+                TmcRequestKind::Tune {
+                    oid: 7,
+                    profile: 2,
+                    mode: 1,
+                    inner_lambda_us: 1400,
+                    theta_e_us: 700,
+                    current_ringing_count: 3,
+                    current_bandwidth_hz: 500,
+                    tau_e_us: 730,
+                    tau_e_crosscheck_us: 720,
+                    tau_residual_permille: 50,
+                    inner_warning_flags: 0x40,
+                }
+            )
         );
     }
 

@@ -25,12 +25,6 @@ use crate::state::tmc::{
     VELOCITY_FILTER_HZ, VELOCITY_LIMIT_CFG,
 };
 
-/// Number of TMC4671 motor channels supported by this firmware.
-///
-/// Single-channel even on future multi-motor boards; parameterize if that
-/// ever changes.
-const TMC_MOTOR_COUNT: u8 = 1;
-
 /// Bind a FOCI TMC driver OID to a configured stepper and board channel.
 #[klipper_command]
 pub fn config_foci_tmc(ctx: &mut dyn FociConfigHost, oid: u8, stepper_oid: u8, channel: u8) {
@@ -53,22 +47,31 @@ pub fn config_foci_tmc(ctx: &mut dyn FociConfigHost, oid: u8, stepper_oid: u8, c
 /// Trigger TMC4671 initialization sequence (dev-only).
 #[cfg(feature = "dev")]
 #[klipper_command]
-pub fn tmc_init(_ctx: &mut dyn TmcHost, _oid: u8) {
-    let _ = _ctx.enqueue_request(crate::tmc::tmc_init());
+pub fn tmc_init(ctx: &mut dyn TmcWriteHost, oid: u8) {
+    let Some(channel) = foci_channel_or_shutdown(ctx, oid) else {
+        return;
+    };
+    let _ = ctx.enqueue_request(crate::tmc::tmc_init(channel));
 }
 
 /// Test motor rotation by sweeping PHI_E_EXT through N revolutions (dev-only).
 #[cfg(feature = "dev")]
 #[klipper_command]
-pub fn tmc_test_spin(_ctx: &mut dyn TmcHost, _oid: u8, revolutions: u8) {
-    let _ = _ctx.enqueue_request(crate::tmc::tmc_test_spin(revolutions));
+pub fn tmc_test_spin(ctx: &mut dyn TmcWriteHost, oid: u8, revolutions: u8) {
+    let Some(channel) = foci_channel_or_shutdown(ctx, oid) else {
+        return;
+    };
+    let _ = ctx.enqueue_request(crate::tmc::tmc_test_spin(channel, revolutions));
 }
 
 /// Write a TMC4671 register via SPI (dev-only).
 #[cfg(feature = "dev")]
 #[klipper_command]
-pub fn tmc_write_register(_ctx: &mut dyn TmcHost, _oid: u8, addr: u8, value: u32) {
-    let _ = _ctx.enqueue_request(crate::tmc::tmc_write_register(addr, value));
+pub fn tmc_write_register(ctx: &mut dyn TmcWriteHost, oid: u8, addr: u8, value: u32) {
+    let Some(channel) = foci_channel_or_shutdown(ctx, oid) else {
+        return;
+    };
+    let _ = ctx.enqueue_request(crate::tmc::tmc_write_register(channel, addr, value));
 }
 
 /// Read a TMC4671 register via SPI (dev-only).
@@ -78,9 +81,12 @@ pub fn tmc_write_register(_ctx: &mut dyn TmcHost, _oid: u8, addr: u8, value: u32
 /// query_command timeout handles the missing reply naturally.
 #[cfg(feature = "dev")]
 #[klipper_command]
-pub fn tmc_read_register(_ctx: &mut dyn TmcHost, oid: u8, addr: u8) {
-    if _ctx
-        .enqueue_request(crate::tmc::tmc_read_register(oid, addr))
+pub fn tmc_read_register(ctx: &mut dyn TmcWriteHost, oid: u8, addr: u8) {
+    let Some(channel) = foci_channel_or_shutdown(ctx, oid) else {
+        return;
+    };
+    if ctx
+        .enqueue_request(crate::tmc::tmc_read_register(channel, oid, addr))
         .is_err()
     {
         defmt::warn!("tmc_read_register dropped: addr={:#04x}", addr);
@@ -91,9 +97,12 @@ pub fn tmc_read_register(_ctx: &mut dyn TmcHost, oid: u8, addr: u8) {
 /// `PID_TORQUE_FLUX_LIMITS` register counts using the board-specific
 /// current scaling factor.
 #[klipper_command]
-pub fn tmc_set_current(ctx: &mut dyn TmcWriteHost, _oid: u8, run_ma: u32) {
+pub fn tmc_set_current(ctx: &mut dyn TmcWriteHost, oid: u8, run_ma: u32) {
+    let Some(channel) = foci_channel_or_shutdown(ctx, oid) else {
+        return;
+    };
     if ctx
-        .enqueue_request(crate::tmc::tmc_set_current(run_ma))
+        .enqueue_request(crate::tmc::tmc_set_current(channel, run_ma))
         .is_err()
         && ctx.enter_shutdown()
     {
@@ -110,15 +119,11 @@ pub fn tmc_set_current(ctx: &mut dyn TmcWriteHost, _oid: u8, run_ma: u32) {
 /// on phi_e, not encoder counts:
 ///   `step_width = 65536 * pole_pairs / quadrature_ppr`
 #[klipper_command]
-pub fn tmc_set_encoder(ctx: &mut dyn TmcWriteHost, _oid: u8, channel: u8, ppr: u32) {
-    if channel >= TMC_MOTOR_COUNT {
-        if ctx.enter_shutdown() {
-            let clock = ctx.now();
-            ctx.send_shutdown(ShutdownReason::InvalidTmcChannel, clock);
-        }
+pub fn tmc_set_encoder(ctx: &mut dyn TmcWriteHost, oid: u8, channel: u8, ppr: u32) {
+    let Some(channel) = foci_channel_matching_or_shutdown(ctx, oid, channel) else {
         return;
-    }
-    let (req, step_width) = crate::tmc::tmc_set_encoder_hw(ppr, 50);
+    };
+    let (req, step_width) = crate::tmc::tmc_set_encoder_hw(channel, ppr, 50);
     STEP_WIDTH_VALUE.store(step_width, Ordering::Relaxed);
     defmt::info!("channel={} ppr={} step_width={}", channel, ppr, step_width);
     if ctx.enqueue_request(req).is_err() && ctx.enter_shutdown() {
@@ -131,16 +136,12 @@ pub fn tmc_set_encoder(ctx: &mut dyn TmcWriteHost, _oid: u8, channel: u8, ppr: u
 /// so the position PID has correct (negative) feedback. Depends on
 /// motor/encoder wiring — not board-specific.
 #[klipper_command]
-pub fn tmc_set_encoder_dir(ctx: &mut dyn TmcWriteHost, _oid: u8, channel: u8, invert: u8) {
-    if channel >= TMC_MOTOR_COUNT {
-        if ctx.enter_shutdown() {
-            let clock = ctx.now();
-            ctx.send_shutdown(ShutdownReason::InvalidTmcChannel, clock);
-        }
+pub fn tmc_set_encoder_dir(ctx: &mut dyn TmcWriteHost, oid: u8, channel: u8, invert: u8) {
+    let Some(channel) = foci_channel_matching_or_shutdown(ctx, oid, channel) else {
         return;
-    }
+    };
     if ctx
-        .enqueue_request(crate::tmc::tmc_set_encoder_dir(invert != 0))
+        .enqueue_request(crate::tmc::tmc_set_encoder_dir(channel, invert != 0))
         .is_err()
         && ctx.enter_shutdown()
     {
@@ -153,15 +154,18 @@ pub fn tmc_set_encoder_dir(ctx: &mut dyn TmcWriteHost, _oid: u8, channel: u8, in
 #[klipper_command]
 pub fn tmc_set_pid_gains(
     ctx: &mut dyn TmcWriteHost,
-    _oid: u8,
+    oid: u8,
     flux_p: u16,
     flux_i: u16,
     torque_p: u16,
     torque_i: u16,
 ) {
+    let Some(channel) = foci_channel_or_shutdown(ctx, oid) else {
+        return;
+    };
     if ctx
         .enqueue_request(crate::tmc::tmc_set_pid_gains(
-            flux_p, flux_i, torque_p, torque_i,
+            channel, flux_p, flux_i, torque_p, torque_i,
         ))
         .is_err()
         && ctx.enter_shutdown()
@@ -203,15 +207,18 @@ pub fn tmc_set_flux_filter(_ctx: &mut dyn StateAccess, _oid: u8, filter_hz: u16)
 #[klipper_command]
 pub fn tmc_set_position_gains(
     ctx: &mut dyn TmcWriteHost,
-    _oid: u8,
+    oid: u8,
     position_p: u16,
     position_i: u16,
     velocity_p: u16,
     velocity_i: u16,
 ) {
+    let Some(channel) = foci_channel_or_shutdown(ctx, oid) else {
+        return;
+    };
     if ctx
         .enqueue_request(crate::tmc::tmc_set_position_gains(
-            position_p, position_i, velocity_p, velocity_i,
+            channel, position_p, position_i, velocity_p, velocity_i,
         ))
         .is_err()
         && ctx.enter_shutdown()
@@ -261,17 +268,49 @@ impl<T: ?Sized + ShutdownRecovery + TmcHost> TmcWriteHost for T {}
 pub trait FociConfigHost: ShutdownRecovery + BoardChannels {}
 impl<T: ?Sized + ShutdownRecovery + BoardChannels> FociConfigHost for T {}
 
+fn foci_channel_or_shutdown(ctx: &mut dyn ShutdownRecovery, oid: u8) -> Option<u8> {
+    match ctx.state().foci_channel_for_oid(oid) {
+        Some(channel) => Some(channel),
+        None => {
+            shutdown_invalid_tmc_channel(ctx);
+            None
+        }
+    }
+}
+
+fn foci_channel_matching_or_shutdown(
+    ctx: &mut dyn ShutdownRecovery,
+    oid: u8,
+    requested_channel: u8,
+) -> Option<u8> {
+    let channel = foci_channel_or_shutdown(ctx, oid)?;
+    if channel != requested_channel {
+        shutdown_invalid_tmc_channel(ctx);
+        return None;
+    }
+    Some(channel)
+}
+
+fn shutdown_invalid_tmc_channel(ctx: &mut dyn ShutdownRecovery) {
+    if ctx.enter_shutdown() {
+        let clock = ctx.now();
+        ctx.send_shutdown(ShutdownReason::InvalidTmcChannel, clock);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::context::{BoardChannels, ClockSource, StateAccess};
+    use crate::context::{BoardChannels, ClockSource, QueueFull, StateAccess, TmcHost};
     use crate::shutdown::ShutdownReason;
     use foci_klipper::commands::foci::config_stepper_channel;
     use foci_klipper::state::State;
+    use std::cell::RefCell;
 
     struct MockCtx {
         state: State,
         channel_count: u8,
+        last_request: RefCell<Option<crate::tmc::TmcRequest>>,
         last_shutdown: Option<ShutdownReason>,
     }
 
@@ -280,6 +319,7 @@ mod tests {
             Self {
                 state: State::new(),
                 channel_count,
+                last_request: RefCell::new(None),
                 last_shutdown: None,
             }
         }
@@ -329,6 +369,13 @@ mod tests {
         }
     }
 
+    impl TmcHost for MockCtx {
+        fn enqueue_request(&self, req: crate::tmc::TmcRequest) -> Result<(), QueueFull> {
+            self.last_request.replace(Some(req));
+            Ok(())
+        }
+    }
+
     #[test]
     fn config_foci_tmc_registers_matching_channel() {
         let mut ctx = MockCtx::new(2);
@@ -351,5 +398,36 @@ mod tests {
 
         assert_eq!(ctx.state.foci_channel_for_oid(20), None);
         assert_eq!(ctx.last_shutdown, Some(ShutdownReason::ConfigFociTmcFailed));
+    }
+
+    #[test]
+    fn tmc_set_current_routes_by_foci_oid() {
+        let mut ctx = MockCtx::new(2);
+        let mut sender = ();
+        config_stepper_channel(ctx.state(), 10, 1).unwrap();
+        foci_klipper::commands::foci::config_foci_tmc(ctx.state(), 20, 10, 1, 2).unwrap();
+
+        tmc_set_current(&mut ctx, &mut sender, 20, 800);
+
+        let req = ctx.last_request.borrow().clone().unwrap();
+        assert_eq!(req.channel, 1);
+        assert!(matches!(
+            req.kind,
+            crate::tmc::TmcRequestKind::SetCurrent { run_ma: 800 }
+        ));
+        assert_eq!(ctx.last_shutdown, None);
+    }
+
+    #[test]
+    fn tmc_set_encoder_rejects_channel_mismatch_for_foci_oid() {
+        let mut ctx = MockCtx::new(2);
+        let mut sender = ();
+        config_stepper_channel(ctx.state(), 10, 1).unwrap();
+        foci_klipper::commands::foci::config_foci_tmc(ctx.state(), 20, 10, 1, 2).unwrap();
+
+        tmc_set_encoder(&mut ctx, &mut sender, 20, 0, 1000);
+
+        assert!(ctx.last_request.borrow().is_none());
+        assert_eq!(ctx.last_shutdown, Some(ShutdownReason::InvalidTmcChannel));
     }
 }

@@ -20,7 +20,8 @@
 use ankyra::prelude::klipper_command;
 use core::sync::atomic::Ordering::Relaxed;
 
-use crate::context::TmcHost;
+use crate::context::{ShutdownRecovery, TmcHost};
+use crate::shutdown::ShutdownReason;
 use crate::state::tmc::{COMMISSION_IN_FLIGHT, STEP_WIDTH_VALUE};
 
 /// Trigger TMC4671 self-test diagnostic via the commissioning engine.
@@ -28,7 +29,10 @@ use crate::state::tmc::{COMMISSION_IN_FLIGHT, STEP_WIDTH_VALUE};
 /// Only one commissioning operation may be in flight at a time.
 /// Concurrent requests are rejected with `CommissionError::AlreadyRunning`.
 #[klipper_command]
-pub fn foci_selftest(ctx: &mut dyn TmcHost, oid: u8) {
+pub fn foci_selftest(ctx: &mut dyn FociRuntimeHost, oid: u8) {
+    let Some(channel) = foci_channel_or_shutdown(ctx, oid) else {
+        return;
+    };
     if COMMISSION_IN_FLIGHT.swap(true, Relaxed) {
         defmt::warn!("foci_selftest rejected: commission in flight");
         ::ankyra::klipper_reply!(
@@ -38,7 +42,10 @@ pub fn foci_selftest(ctx: &mut dyn TmcHost, oid: u8) {
         );
         return;
     }
-    if ctx.enqueue_request(crate::tmc::tmc_selftest(oid)).is_err() {
+    if ctx
+        .enqueue_request(crate::tmc::tmc_selftest(channel, oid))
+        .is_err()
+    {
         COMMISSION_IN_FLIGHT.store(false, Relaxed);
         ::ankyra::klipper_reply!(
             crate::ankyra::replies::FociSelftestDone,
@@ -55,7 +62,10 @@ pub fn foci_selftest(ctx: &mut dyn TmcHost, oid: u8) {
 /// Rejected if `STEP_WIDTH_VALUE` is unset, or if another commissioning
 /// operation is already in flight.
 #[klipper_command]
-pub fn foci_calibrate(ctx: &mut dyn TmcHost, oid: u8) {
+pub fn foci_calibrate(ctx: &mut dyn FociRuntimeHost, oid: u8) {
+    let Some(channel) = foci_channel_or_shutdown(ctx, oid) else {
+        return;
+    };
     // Pre-flight: STEP_WIDTH_VALUE must have been populated by a prior
     // tmc_set_encoder command. If it hasn't, fail before touching hardware
     // — otherwise calibration would succeed but the motor would silently
@@ -87,7 +97,10 @@ pub fn foci_calibrate(ctx: &mut dyn TmcHost, oid: u8) {
         );
         return;
     }
-    if ctx.enqueue_request(crate::tmc::tmc_calibrate(oid)).is_err() {
+    if ctx
+        .enqueue_request(crate::tmc::tmc_calibrate(channel, oid))
+        .is_err()
+    {
         COMMISSION_IN_FLIGHT.store(false, Relaxed);
         ::ankyra::klipper_reply!(
             crate::ankyra::replies::FociCalibrateResult,
@@ -108,9 +121,12 @@ pub fn foci_calibrate(ctx: &mut dyn TmcHost, oid: u8) {
 /// dropped silently; the Python wait loop timeout handles the missing
 /// reply naturally.
 #[klipper_command]
-pub fn foci_dump_registers(ctx: &mut dyn TmcHost, oid: u8) {
+pub fn foci_dump_registers(ctx: &mut dyn FociRuntimeHost, oid: u8) {
+    let Some(channel) = foci_channel_or_shutdown(ctx, oid) else {
+        return;
+    };
     if ctx
-        .enqueue_request(crate::tmc::tmc_dump_registers(oid))
+        .enqueue_request(crate::tmc::tmc_dump_registers(channel, oid))
         .is_err()
     {
         defmt::warn!("foci_dump_registers dropped");
@@ -122,9 +138,12 @@ pub fn foci_dump_registers(ctx: &mut dyn TmcHost, oid: u8) {
 /// On queue-full the request is dropped silently; the Python wait loop
 /// timeout handles the missing reply naturally.
 #[klipper_command]
-pub fn foci_trace_info(ctx: &mut dyn TmcHost, oid: u8) {
+pub fn foci_trace_info(ctx: &mut dyn FociRuntimeHost, oid: u8) {
+    let Some(channel) = foci_channel_or_shutdown(ctx, oid) else {
+        return;
+    };
     if ctx
-        .enqueue_request(crate::tmc::tmc_trace_info(oid))
+        .enqueue_request(crate::tmc::tmc_trace_info(channel, oid))
         .is_err()
     {
         defmt::warn!("trace_info: TMC channel full");
@@ -136,9 +155,14 @@ pub fn foci_trace_info(ctx: &mut dyn TmcHost, oid: u8) {
 /// On queue-full the request is dropped silently; the Python wait loop
 /// timeout handles the missing reply naturally.
 #[klipper_command]
-pub fn foci_trace_fetch(ctx: &mut dyn TmcHost, oid: u8, offset: u16, generation: u8) {
+pub fn foci_trace_fetch(ctx: &mut dyn FociRuntimeHost, oid: u8, offset: u16, generation: u8) {
+    let Some(channel) = foci_channel_or_shutdown(ctx, oid) else {
+        return;
+    };
     if ctx
-        .enqueue_request(crate::tmc::tmc_trace_fetch(oid, offset, generation))
+        .enqueue_request(crate::tmc::tmc_trace_fetch(
+            channel, oid, offset, generation,
+        ))
         .is_err()
     {
         defmt::warn!("trace_fetch: TMC channel full");
@@ -150,7 +174,10 @@ pub fn foci_trace_fetch(ctx: &mut dyn TmcHost, oid: u8, offset: u16, generation:
 /// Only one commissioning operation may be in flight at a time.
 /// Concurrent requests are rejected with `CommissionError::AlreadyRunning`.
 #[klipper_command]
-pub fn foci_commission(ctx: &mut dyn TmcHost, oid: u8, profile: u8) {
+pub fn foci_commission(ctx: &mut dyn FociRuntimeHost, oid: u8, profile: u8) {
+    let Some(channel) = foci_channel_or_shutdown(ctx, oid) else {
+        return;
+    };
     if COMMISSION_IN_FLIGHT.swap(true, Relaxed) {
         ::ankyra::klipper_reply!(
             crate::ankyra::replies::FociCommissionPhase,
@@ -161,7 +188,7 @@ pub fn foci_commission(ctx: &mut dyn TmcHost, oid: u8, profile: u8) {
         return;
     }
     if ctx
-        .enqueue_request(crate::tmc::tmc_commission(oid, profile))
+        .enqueue_request(crate::tmc::tmc_commission(channel, oid, profile))
         .is_err()
     {
         COMMISSION_IN_FLIGHT.store(false, Relaxed);
@@ -171,5 +198,23 @@ pub fn foci_commission(ctx: &mut dyn TmcHost, oid: u8, profile: u8) {
             phase: u8 = 0,
             status: u8 = crate::autotune::CommissionError::QueueFull.status_code()
         );
+    }
+}
+
+/// Composite bound for runtime FOCI handlers: they enqueue TMC requests
+/// and enter shutdown when an OID has no configured channel binding.
+pub trait FociRuntimeHost: ShutdownRecovery + TmcHost {}
+impl<T: ?Sized + ShutdownRecovery + TmcHost> FociRuntimeHost for T {}
+
+fn foci_channel_or_shutdown(ctx: &mut dyn ShutdownRecovery, oid: u8) -> Option<u8> {
+    match ctx.state().foci_channel_for_oid(oid) {
+        Some(channel) => Some(channel),
+        None => {
+            if ctx.enter_shutdown() {
+                let clock = ctx.now();
+                ctx.send_shutdown(ShutdownReason::InvalidTmcChannel, clock);
+            }
+            None
+        }
     }
 }

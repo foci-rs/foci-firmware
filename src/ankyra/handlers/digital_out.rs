@@ -15,7 +15,7 @@ use ankyra::prelude::klipper_command;
 
 use crate::context::{BoardChannels, ShutdownRecovery, TmcHost};
 use crate::shutdown::ShutdownReason;
-use crate::tmc::TmcRequest;
+use crate::tmc::tmc_set_enable;
 
 /// Register a digital output object for motor enable/disable.
 ///
@@ -67,7 +67,13 @@ pub fn queue_digital_out(ctx: &mut dyn DigitalOutHost, oid: u8, clock: u32, on_t
     let _ = clock;
     match foci_klipper::commands::digital_out::queue_digital_out(ctx.state(), oid, on_ticks) {
         Ok(enabled) => {
-            if ctx.enqueue_request(TmcRequest::SetEnable(enabled)).is_err() && ctx.enter_shutdown()
+            let Some(channel) = enable_channel_or_shutdown(ctx, oid) else {
+                return;
+            };
+            if ctx
+                .enqueue_request(tmc_set_enable(channel, enabled))
+                .is_err()
+                && ctx.enter_shutdown()
             {
                 let c = ctx.now();
                 ctx.send_shutdown(ShutdownReason::MotorEnableDisableLostQueueFull, c);
@@ -88,7 +94,13 @@ pub fn queue_digital_out(ctx: &mut dyn DigitalOutHost, oid: u8, clock: u32, on_t
 pub fn update_digital_out(ctx: &mut dyn DigitalOutHost, oid: u8, value: u8) {
     match foci_klipper::commands::digital_out::update_digital_out(ctx.state(), oid, value) {
         Ok(enabled) => {
-            if ctx.enqueue_request(TmcRequest::SetEnable(enabled)).is_err() && ctx.enter_shutdown()
+            let Some(channel) = enable_channel_or_shutdown(ctx, oid) else {
+                return;
+            };
+            if ctx
+                .enqueue_request(tmc_set_enable(channel, enabled))
+                .is_err()
+                && ctx.enter_shutdown()
             {
                 let c = ctx.now();
                 ctx.send_shutdown(ShutdownReason::MotorEnableDisableLostQueueFull, c);
@@ -119,6 +131,19 @@ impl<T: ?Sized + ShutdownRecovery + TmcHost> DigitalOutHost for T {}
 /// board's virtual enable pin-to-channel mapping.
 pub trait DigitalOutConfigHost: ShutdownRecovery + BoardChannels {}
 impl<T: ?Sized + ShutdownRecovery + BoardChannels> DigitalOutConfigHost for T {}
+
+fn enable_channel_or_shutdown(ctx: &mut dyn ShutdownRecovery, oid: u8) -> Option<u8> {
+    match ctx.state().enable_channel(oid) {
+        Some(channel) => Some(channel),
+        None => {
+            if ctx.enter_shutdown() {
+                let clock = ctx.now();
+                ctx.send_shutdown(ShutdownReason::InvalidTmcChannel, clock);
+            }
+            None
+        }
+    }
+}
 
 #[cfg(test)]
 mod tests {
