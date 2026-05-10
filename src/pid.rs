@@ -191,10 +191,12 @@ mod tests {
 
     #[test]
     fn default_gains_are_valid() {
-        assert!(DEFAULT_INNER_GAINS.flux_p > 0);
-        assert!(DEFAULT_INNER_GAINS.flux_i > 0);
-        assert!(DEFAULT_INNER_GAINS.torque_p > 0);
-        assert!(DEFAULT_INNER_GAINS.torque_i > 0);
+        const {
+            assert!(DEFAULT_INNER_GAINS.flux_p > 0);
+            assert!(DEFAULT_INNER_GAINS.flux_i > 0);
+            assert!(DEFAULT_INNER_GAINS.torque_p > 0);
+            assert!(DEFAULT_INNER_GAINS.torque_i > 0);
+        }
     }
 
     #[test]

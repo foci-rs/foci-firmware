@@ -2833,7 +2833,7 @@ mod tests {
         // |600 - 500| / 550 ≈ 18.2% → 181 in 0.1% units
         let result = compute_symmetry_pct(600, 500);
         assert!(
-            result >= 170 && result <= 190,
+            (170..=190).contains(&result),
             "symmetry {result} expected ~181"
         );
     }
@@ -2855,7 +2855,7 @@ mod tests {
         // |351 - 358| / avg(351, 358) = 7 / 354.5 ≈ 19.7‰ → 19 in permille
         let result = compute_tail_symmetry_pct(351, 358);
         assert!(
-            result >= 15 && result <= 25,
+            (15..=25).contains(&result),
             "tail symmetry {result} expected ~20‰"
         );
     }
@@ -2865,7 +2865,7 @@ mod tests {
         // |200 - 400| / avg(200, 400) = 200 / 300 ≈ 666.7‰
         let result = compute_tail_symmetry_pct(200, 400);
         assert!(
-            result >= 660 && result <= 670,
+            (660..=670).contains(&result),
             "tail symmetry {result} expected ~667‰"
         );
     }

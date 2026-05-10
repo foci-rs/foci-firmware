@@ -736,10 +736,10 @@ mod tests {
             use core::sync::atomic::Ordering;
             let _guard = crate::commission_dispatch::test_support::SHARED_STATE_MUTEX
                 .lock()
-                .unwrap();
+                .await;
             let mut backend = MockBackend::new();
-            let (mut cal, mut en, mut gains) = fresh_state_locals();
-            cal = true;
+            let (_, mut en, mut gains) = fresh_state_locals();
+            let mut cal = true;
             let mut state = DispatchState {
                 calibrated: &mut cal,
                 motor_enabled: &mut en,
@@ -760,12 +760,10 @@ mod tests {
     #[test]
     fn arm_motor_success_path() {
         use core::sync::atomic::Ordering;
-        let _guard = crate::commission_dispatch::test_support::SHARED_STATE_MUTEX
-            .lock()
-            .unwrap();
+        let _guard = crate::commission_dispatch::test_support::SHARED_STATE_MUTEX.blocking_lock();
         let mut backend = MockBackend::new();
-        let (mut cal, mut en, mut gains) = fresh_state_locals();
-        cal = true;
+        let (_, mut en, mut gains) = fresh_state_locals();
+        let mut cal = true;
         let mut state = DispatchState {
             calibrated: &mut cal,
             motor_enabled: &mut en,
@@ -784,11 +782,9 @@ mod tests {
     #[test]
     fn stepper_post_action_zeroes_before_arm_check_directive() {
         use core::sync::atomic::Ordering;
-        let _guard = crate::commission_dispatch::test_support::SHARED_STATE_MUTEX
-            .lock()
-            .unwrap();
-        let (mut cal, mut en, mut gains) = fresh_state_locals();
-        en = true;
+        let _guard = crate::commission_dispatch::test_support::SHARED_STATE_MUTEX.blocking_lock();
+        let (mut cal, _, mut gains) = fresh_state_locals();
+        let mut en = true;
         crate::state::stepper::STEPPER_POSITION.store(123, Ordering::Relaxed);
         crate::state::tmc::MOTOR_ARMED.store(false, Ordering::Relaxed);
         let mut state = DispatchState {
@@ -814,9 +810,7 @@ mod tests {
     #[test]
     fn stepper_post_action_stop_clears_before_stop_check_directive() {
         use core::sync::atomic::Ordering;
-        let _guard = crate::commission_dispatch::test_support::SHARED_STATE_MUTEX
-            .lock()
-            .unwrap();
+        let _guard = crate::commission_dispatch::test_support::SHARED_STATE_MUTEX.blocking_lock();
         let (mut cal, mut en, mut gains) = fresh_state_locals();
         crate::state::tmc::MOTOR_ARMED.store(true, Ordering::Relaxed);
         let mut state = DispatchState {
@@ -840,7 +834,7 @@ mod tests {
             use core::sync::atomic::Ordering;
             let _guard = crate::commission_dispatch::test_support::SHARED_STATE_MUTEX
                 .lock()
-                .unwrap();
+                .await;
             // Set the velocity filter to a non-zero Hz so it gets applied.
             crate::state::tmc::VELOCITY_FILTER_HZ.store(100, Ordering::Relaxed);
             crate::state::tmc::TORQUE_FILTER_HZ.store(0, Ordering::Relaxed);
@@ -914,7 +908,7 @@ mod tests {
             use foci_tmc4671::registers::*;
             let _guard = crate::commission_dispatch::test_support::SHARED_STATE_MUTEX
                 .lock()
-                .unwrap();
+                .await;
             let mut backend = MockBackend::new();
             crate::state::tmc::CURRENT_LIMIT_REG
                 .store(0x0010_0010, core::sync::atomic::Ordering::Relaxed);
@@ -957,7 +951,7 @@ mod tests {
             use foci_tmc4671::registers::*;
             let _guard = crate::commission_dispatch::test_support::SHARED_STATE_MUTEX
                 .lock()
-                .unwrap();
+                .await;
             let mut backend = MockBackend::new();
             backend.fail_on_write = Some(MODE_RAMP_MODE_MOTION.addr());
             let outer = sample_outer_result();
@@ -1002,7 +996,7 @@ mod tests {
             use foci_tmc4671::registers::*;
             let _guard = crate::commission_dispatch::test_support::SHARED_STATE_MUTEX
                 .lock()
-                .unwrap();
+                .await;
             let mut backend = MockBackend::new();
             let stored = Some(crate::pid::InnerLoopGains {
                 flux_p: 100,
@@ -1039,7 +1033,7 @@ mod tests {
             use foci_tmc4671::registers::*;
             let _guard = crate::commission_dispatch::test_support::SHARED_STATE_MUTEX
                 .lock()
-                .unwrap();
+                .await;
             let mut backend = MockBackend::new();
             let result = restore_calibrate_gains(&mut backend, None).await;
             assert!(result.is_ok());

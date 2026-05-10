@@ -431,7 +431,7 @@ mod tests {
             use core::sync::atomic::Ordering;
             let _guard = crate::commission_dispatch::test_support::SHARED_STATE_MUTEX
                 .lock()
-                .unwrap();
+                .await;
             let mut engine = CommissioningEngine::new_commission(
                 0,
                 crate::autotune::CommissionProfile::Balanced,

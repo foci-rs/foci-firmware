@@ -14,7 +14,7 @@ pub struct MockSpiError;
 /// A single SPI operation recorded by `MockBackend`.
 #[derive(Debug, Clone, Copy)]
 pub enum SpiOp {
-    Read(u8),
+    Read,
     Write(u8, u32),
 }
 
@@ -103,7 +103,7 @@ impl CommissioningBackend for MockBackend {
 
     async fn read_register(&mut self, reg: Register) -> Result<u32, Self::Error> {
         let addr = reg.addr();
-        self.spi_log.push(SpiOp::Read(addr)).ok();
+        self.spi_log.push(SpiOp::Read).ok();
         if self.fail_on_read == Some(addr) {
             return Err(MockSpiError);
         }
@@ -143,7 +143,7 @@ impl CommissioningBackend for MockBackend {
 
     async fn try_read_encoder_count(&mut self) -> Result<u32, Self::Error> {
         let addr = foci_tmc4671::registers::ABN_DECODER_COUNT.addr();
-        self.spi_log.push(SpiOp::Read(addr)).ok();
+        self.spi_log.push(SpiOp::Read).ok();
         if self.fail_on_read == Some(addr) {
             return Err(MockSpiError);
         }
@@ -205,13 +205,14 @@ impl CommissioningBackend for MockBackend {
 ///
 /// Usage:
 /// ```ignore
-/// let _guard = SHARED_STATE_MUTEX.lock();
+/// let _guard = SHARED_STATE_MUTEX.lock().await;
 /// crate::state::tmc::MOTOR_ARMED.store(false, Ordering::Relaxed);
 /// // ... test body ...
 /// ```
 ///
-/// Use `std::sync::Mutex` (host-side `cargo test` always has std).
-pub static SHARED_STATE_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
+/// Use Tokio's async mutex so async tests can intentionally hold the guard
+/// across awaited firmware calls without blocking an executor thread.
+pub static SHARED_STATE_MUTEX: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 /// Build locals for a fresh dispatch state.
 ///

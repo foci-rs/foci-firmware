@@ -552,8 +552,10 @@ mod tests {
         buf.start(1, PRESET_FAST);
         // Fill buffer + 1 extra
         for i in 0..=(FAST_CAPACITY as u16) {
-            let mut s = TraceSampleFast::default();
-            s.position_actual = i as i32;
+            let s = TraceSampleFast {
+                position_actual: i as i32,
+                ..TraceSampleFast::default()
+            };
             buf.push_fast(s);
         }
         assert_eq!(buf.count, FAST_CAPACITY as u16);
@@ -704,8 +706,10 @@ mod tests {
     fn full_preset_push_and_fetch() {
         let mut buf = make_buffer();
         buf.start(1, PRESET_FULL);
-        let mut s = TraceSampleFull::default();
-        s.error_sum_position = 42;
+        let s = TraceSampleFull {
+            error_sum_position: 42,
+            ..TraceSampleFull::default()
+        };
         buf.push_full(s);
         buf.stop();
         assert_eq!(buf.count, 1);

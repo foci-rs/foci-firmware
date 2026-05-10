@@ -8,7 +8,7 @@ use crate::autotune::CommissionProfile;
 #[test]
 fn continue_returns_minimal_outcome() {
     pollster::block_on(async {
-        let _guard = test_support::SHARED_STATE_MUTEX.lock().unwrap();
+        let _guard = test_support::SHARED_STATE_MUTEX.lock().await;
         let mut backend = MockBackend::new();
         let (mut cal, mut en, mut gains) = fresh_state_locals();
         let mut state = DispatchState {
@@ -34,7 +34,7 @@ fn continue_returns_minimal_outcome() {
 #[test]
 fn phase_changed_returns_oid_phase_kind() {
     pollster::block_on(async {
-        let _guard = test_support::SHARED_STATE_MUTEX.lock().unwrap();
+        let _guard = test_support::SHARED_STATE_MUTEX.lock().await;
         let mut backend = MockBackend::new();
         let (mut cal, mut en, mut gains) = fresh_state_locals();
         let mut state = DispatchState {
@@ -78,7 +78,7 @@ fn phase_changed_returns_oid_phase_kind() {
 #[test]
 fn selftest_done_zero_stages_emits_done_only() {
     pollster::block_on(async {
-        let _guard = test_support::SHARED_STATE_MUTEX.lock().unwrap();
+        let _guard = test_support::SHARED_STATE_MUTEX.lock().await;
         // Reset COMMISSION_IN_FLIGHT to a known state before the test.
         crate::state::tmc::COMMISSION_IN_FLIGHT.store(true, core::sync::atomic::Ordering::Relaxed);
         let mut backend = MockBackend::new();
@@ -123,7 +123,7 @@ fn selftest_done_zero_stages_emits_done_only() {
 #[test]
 fn inner_failed_commission_emits_phase_reply() {
     pollster::block_on(async {
-        let _guard = test_support::SHARED_STATE_MUTEX.lock().unwrap();
+        let _guard = test_support::SHARED_STATE_MUTEX.lock().await;
         crate::state::tmc::COMMISSION_IN_FLIGHT.store(true, core::sync::atomic::Ordering::Relaxed);
         let mut backend = MockBackend::new();
         let (mut cal, mut en, mut gains) = fresh_state_locals();
@@ -173,7 +173,7 @@ fn inner_failed_commission_emits_phase_reply() {
 #[test]
 fn inner_failed_calibrate_emits_calibrate_reply() {
     pollster::block_on(async {
-        let _guard = test_support::SHARED_STATE_MUTEX.lock().unwrap();
+        let _guard = test_support::SHARED_STATE_MUTEX.lock().await;
         crate::state::tmc::COMMISSION_IN_FLIGHT.store(true, core::sync::atomic::Ordering::Relaxed);
         let mut backend = MockBackend::new();
         let (mut cal, mut en, mut gains) = fresh_state_locals();
@@ -212,7 +212,7 @@ fn inner_failed_calibrate_emits_calibrate_reply() {
 #[test]
 fn inner_failed_selftest_emits_selftest_pair() {
     pollster::block_on(async {
-        let _guard = test_support::SHARED_STATE_MUTEX.lock().unwrap();
+        let _guard = test_support::SHARED_STATE_MUTEX.lock().await;
         crate::state::tmc::COMMISSION_IN_FLIGHT.store(true, core::sync::atomic::Ordering::Relaxed);
         let mut backend = MockBackend::new();
         let (mut cal, mut en, mut gains) = fresh_state_locals();
@@ -255,11 +255,11 @@ fn inner_failed_selftest_emits_selftest_pair() {
 fn calibrate_done_arms_after_gain_restore() {
     pollster::block_on(async {
         use core::sync::atomic::Ordering;
-        let _guard = test_support::SHARED_STATE_MUTEX.lock().unwrap();
+        let _guard = test_support::SHARED_STATE_MUTEX.lock().await;
         let mut backend = MockBackend::new();
         backend.assert_motor_armed_false_on_write = true;
-        let (mut cal, mut en, mut gains) = fresh_state_locals();
-        gains = Some(crate::pid::InnerLoopGains {
+        let (mut cal, mut en, _) = fresh_state_locals();
+        let mut gains = Some(crate::pid::InnerLoopGains {
             flux_p: 100,
             flux_i: 10,
             torque_p: 200,
@@ -362,7 +362,7 @@ fn sample_outer_result_for_dispatch() -> OuterResult {
 fn outer_done_success_arms_motor() {
     pollster::block_on(async {
         use core::sync::atomic::Ordering;
-        let _guard = test_support::SHARED_STATE_MUTEX.lock().unwrap();
+        let _guard = test_support::SHARED_STATE_MUTEX.lock().await;
         let mut backend = MockBackend::new();
         backend.assert_motor_armed_false_on_write = true;
         let (mut cal, mut en, mut gains) = fresh_state_locals();
@@ -421,7 +421,7 @@ fn outer_done_success_arms_motor() {
 fn outer_done_spi_failure_disarms() {
     pollster::block_on(async {
         use core::sync::atomic::Ordering;
-        let _guard = test_support::SHARED_STATE_MUTEX.lock().unwrap();
+        let _guard = test_support::SHARED_STATE_MUTEX.lock().await;
         let mut backend = MockBackend::new();
         backend.fail_on_write = Some(foci_tmc4671::registers::MODE_RAMP_MODE_MOTION.addr());
         let (mut cal, mut en, mut gains) = fresh_state_locals();
@@ -469,7 +469,7 @@ fn outer_done_spi_failure_disarms() {
 fn outer_done_filter_apply_failure_disarms() {
     pollster::block_on(async {
         use core::sync::atomic::Ordering;
-        let _guard = test_support::SHARED_STATE_MUTEX.lock().unwrap();
+        let _guard = test_support::SHARED_STATE_MUTEX.lock().await;
         let mut backend = MockBackend::new();
         backend.fail_on_write = Some(foci_tmc4671::registers::CONFIG_BIQUAD_V_ENABLE.data.addr());
         let (mut cal, mut en, mut gains) = fresh_state_locals();
@@ -546,7 +546,7 @@ fn sample_commission_result() -> crate::commissioning::types::CommissionResult {
 fn commission_done_finalize_path() {
     pollster::block_on(async {
         use core::sync::atomic::Ordering;
-        let _guard = test_support::SHARED_STATE_MUTEX.lock().unwrap();
+        let _guard = test_support::SHARED_STATE_MUTEX.lock().await;
         let mut backend = MockBackend::new();
         let (mut cal, mut en, mut gains) = fresh_state_locals();
         let mut state = DispatchState {
@@ -614,7 +614,7 @@ fn commission_done_finalize_path() {
 fn commission_done_current_limit_restore_failure_disarms() {
     pollster::block_on(async {
         use core::sync::atomic::Ordering;
-        let _guard = test_support::SHARED_STATE_MUTEX.lock().unwrap();
+        let _guard = test_support::SHARED_STATE_MUTEX.lock().await;
         let mut backend = MockBackend::new();
         backend.fail_on_write = Some(foci_tmc4671::registers::PID_TORQUE_FLUX_LIMITS.addr());
         let (mut cal, mut en, mut gains) = fresh_state_locals();
@@ -694,11 +694,11 @@ fn sample_outer_params() -> crate::commissioning::OuterTuneParams {
 fn outer_failed_safety_fault_full_disarm() {
     pollster::block_on(async {
         use core::sync::atomic::Ordering;
-        let _guard = test_support::SHARED_STATE_MUTEX.lock().unwrap();
+        let _guard = test_support::SHARED_STATE_MUTEX.lock().await;
         let mut backend = MockBackend::new();
-        let (mut cal, mut en, mut gains) = fresh_state_locals();
-        cal = true;
-        en = true; // simulate motor was previously armed
+        let (_, _, mut gains) = fresh_state_locals();
+        let mut cal = true;
+        let mut en = true; // simulate motor was previously armed
         crate::state::tmc::MOTOR_ARMED.store(true, Ordering::Relaxed);
         let mut state = DispatchState {
             calibrated: &mut cal,
@@ -746,11 +746,11 @@ fn outer_failed_safety_fault_full_disarm() {
 fn outer_failed_soft_failure_holds_motor() {
     pollster::block_on(async {
         use core::sync::atomic::Ordering;
-        let _guard = test_support::SHARED_STATE_MUTEX.lock().unwrap();
+        let _guard = test_support::SHARED_STATE_MUTEX.lock().await;
         let mut backend = MockBackend::new();
-        let (mut cal, mut en, mut gains) = fresh_state_locals();
-        cal = true;
-        en = true;
+        let (_, _, mut gains) = fresh_state_locals();
+        let mut cal = true;
+        let mut en = true;
         crate::state::stepper::STEPPER_POSITION.store(99, Ordering::Relaxed);
         let mut state = DispatchState {
             calibrated: &mut cal,
@@ -807,15 +807,15 @@ fn outer_failed_soft_failure_holds_motor() {
 fn outer_failed_unstable_drift_preserves_upstream_error() {
     pollster::block_on(async {
         use core::sync::atomic::Ordering;
-        let _guard = test_support::SHARED_STATE_MUTEX.lock().unwrap();
+        let _guard = test_support::SHARED_STATE_MUTEX.lock().await;
         let mut backend = MockBackend::new();
         // Pre-load drifting position values (drift > 2 => unstable).
         backend.read_position_actual_sequence.push(100).unwrap();
         backend.read_position_actual_sequence.push(120).unwrap();
 
-        let (mut cal, mut en, mut gains) = fresh_state_locals();
-        cal = true;
-        en = true;
+        let (_, _, mut gains) = fresh_state_locals();
+        let mut cal = true;
+        let mut en = true;
         let mut state = DispatchState {
             calibrated: &mut cal,
             motor_enabled: &mut en,
@@ -863,7 +863,7 @@ fn outer_failed_unstable_drift_preserves_upstream_error() {
 #[test]
 fn outer_failed_restore_rejects_aliased_position_oscillation() {
     pollster::block_on(async {
-        let _guard = test_support::SHARED_STATE_MUTEX.lock().unwrap();
+        let _guard = test_support::SHARED_STATE_MUTEX.lock().await;
         let mut backend = MockBackend::new();
         backend.step_width_value = 10;
         // First two samples match, so the old two-read check accepts this.
@@ -875,9 +875,9 @@ fn outer_failed_restore_rejects_aliased_position_oscillation() {
         backend.read_position_actual_sequence.push(1001).unwrap();
         backend.read_position_actual_sequence.push(1000).unwrap();
 
-        let (mut cal, mut en, mut gains) = fresh_state_locals();
-        cal = true;
-        en = true;
+        let (_, _, mut gains) = fresh_state_locals();
+        let mut cal = true;
+        let mut en = true;
         let mut state = DispatchState {
             calibrated: &mut cal,
             motor_enabled: &mut en,
@@ -920,7 +920,7 @@ fn outer_failed_restore_rejects_aliased_position_oscillation() {
 fn outer_failed_restore_accepts_scaled_encoder_jitter() {
     pollster::block_on(async {
         use core::sync::atomic::Ordering;
-        let _guard = test_support::SHARED_STATE_MUTEX.lock().unwrap();
+        let _guard = test_support::SHARED_STATE_MUTEX.lock().await;
         let mut backend = MockBackend::new();
         backend.step_width_value = 819;
         backend.read_position_actual_sequence.push(1000).unwrap();
@@ -929,9 +929,9 @@ fn outer_failed_restore_accepts_scaled_encoder_jitter() {
         backend.read_position_actual_sequence.push(999).unwrap();
         backend.read_position_actual_sequence.push(1000).unwrap();
 
-        let (mut cal, mut en, mut gains) = fresh_state_locals();
-        cal = true;
-        en = true;
+        let (_, _, mut gains) = fresh_state_locals();
+        let mut cal = true;
+        let mut en = true;
         let mut state = DispatchState {
             calibrated: &mut cal,
             motor_enabled: &mut en,
@@ -975,7 +975,7 @@ fn outer_failed_restore_accepts_scaled_encoder_jitter() {
 #[test]
 fn outer_failed_restore_rejects_monotonic_creep() {
     pollster::block_on(async {
-        let _guard = test_support::SHARED_STATE_MUTEX.lock().unwrap();
+        let _guard = test_support::SHARED_STATE_MUTEX.lock().await;
         let mut backend = MockBackend::new();
         backend.step_width_value = 10;
         backend.read_position_actual_sequence.push(1000).unwrap();
@@ -984,9 +984,9 @@ fn outer_failed_restore_rejects_monotonic_creep() {
         backend.read_position_actual_sequence.push(1018).unwrap();
         backend.read_position_actual_sequence.push(1024).unwrap();
 
-        let (mut cal, mut en, mut gains) = fresh_state_locals();
-        cal = true;
-        en = true;
+        let (_, _, mut gains) = fresh_state_locals();
+        let mut cal = true;
+        let mut en = true;
         let mut state = DispatchState {
             calibrated: &mut cal,
             motor_enabled: &mut en,
