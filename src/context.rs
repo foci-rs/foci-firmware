@@ -40,6 +40,39 @@ impl<T: ?Sized + StateAccess> StateAccess for &mut T {
     }
 }
 
+/// Board-local motor channel and virtual pin mapping.
+pub trait BoardChannels {
+    /// Number of TMC4671 motor channels supported by this board.
+    fn tmc_channel_count(&self) -> u8;
+
+    /// Return the motor channel represented by a virtual STEP pin.
+    fn step_pin_channel(&self, pin: u8) -> Option<u8>;
+
+    /// Return the motor channel represented by a virtual DIR pin.
+    fn dir_pin_channel(&self, pin: u8) -> Option<u8>;
+
+    /// Return the motor channel represented by a virtual enable pin.
+    fn enable_pin_channel(&self, pin: u32) -> Option<u8>;
+}
+
+impl<T: ?Sized + BoardChannels> BoardChannels for &mut T {
+    fn tmc_channel_count(&self) -> u8 {
+        (**self).tmc_channel_count()
+    }
+
+    fn step_pin_channel(&self, pin: u8) -> Option<u8> {
+        (**self).step_pin_channel(pin)
+    }
+
+    fn dir_pin_channel(&self, pin: u8) -> Option<u8> {
+        (**self).dir_pin_channel(pin)
+    }
+
+    fn enable_pin_channel(&self, pin: u32) -> Option<u8> {
+        (**self).enable_pin_channel(pin)
+    }
+}
+
 /// Klipper MCU clock source (typically a CPU timer counter).
 ///
 /// Separated from `ShutdownRecovery` so the pure clock-reporting

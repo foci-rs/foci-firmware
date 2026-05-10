@@ -43,6 +43,7 @@ pub enum ShutdownReason {
     ConfigResetOnlyAvailableWhenShutdown,
     CommandRequest,
     ConfigDigitalOutFailed,
+    ConfigFociTmcFailed,
     MotorEnableDisableLostQueueFull,
     QueueDigitalOutFailed,
     UpdateDigitalOutFailed,
@@ -84,6 +85,7 @@ impl ShutdownReason {
             }
             Self::CommandRequest => "Command request",
             Self::ConfigDigitalOutFailed => "config_digital_out failed",
+            Self::ConfigFociTmcFailed => "config_foci_tmc failed",
             Self::MotorEnableDisableLostQueueFull => "Motor enable/disable lost (queue full)",
             Self::QueueDigitalOutFailed => "queue_digital_out failed",
             Self::UpdateDigitalOutFailed => "update_digital_out failed",
@@ -156,6 +158,9 @@ macro_rules! dispatch_shutdown {
             }
             $crate::shutdown::ShutdownReason::ConfigDigitalOutFailed => {
                 ::ankyra::klipper_shutdown_from!($sender, "config_digital_out failed", $clock);
+            }
+            $crate::shutdown::ShutdownReason::ConfigFociTmcFailed => {
+                ::ankyra::klipper_shutdown_from!($sender, "config_foci_tmc failed", $clock);
             }
             $crate::shutdown::ShutdownReason::MotorEnableDisableLostQueueFull => {
                 ::ankyra::klipper_shutdown_from!(
@@ -326,6 +331,7 @@ macro_rules! foci_ankyra_config {
                 "config_reset only available when shutdown",
                 "Command request",
                 "config_digital_out failed",
+                "config_foci_tmc failed",
                 "Motor enable/disable lost (queue full)",
                 "queue_digital_out failed",
                 "update_digital_out failed",

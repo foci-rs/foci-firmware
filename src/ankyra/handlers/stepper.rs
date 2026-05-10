@@ -14,25 +14,62 @@
 
 use ankyra::prelude::klipper_command;
 
-use crate::context::{ShutdownRecovery, StateAccess, StepperHost, TrsyncHost};
+use crate::context::{BoardChannels, ShutdownRecovery, StateAccess, StepperHost, TrsyncHost};
 use crate::shutdown::ShutdownReason;
 use crate::state::stepper::STEPPER_POSITION;
 use crate::state::trsync::HOMING_STATE;
 
 /// Register a stepper motor object.
 ///
-/// Pin parameters are accepted for protocol compatibility but ignored;
-/// the TMC4671 handles stepping internally.
+/// STEP/DIR pins must be FOCI virtual pins that map to the same board-local
+/// TMC4671 channel. The TMC4671 handles stepping internally after config.
 #[klipper_command]
 pub fn config_stepper(
-    ctx: &mut dyn ShutdownRecovery,
+    ctx: &mut dyn StepperConfigHost,
     oid: u8,
-    _step_pin: u8,
-    _dir_pin: u8,
+    step_pin: u8,
+    dir_pin: u8,
     _invert_step: u8,
     _step_pulse_ticks: u32,
 ) {
-    if let Err(e) = foci_klipper::commands::stepper::config_stepper(ctx.state(), oid) {
+    let step_channel = match ctx.step_pin_channel(step_pin) {
+        Some(channel) => channel,
+        None => {
+            defmt::error!("config_stepper: unknown STEP pin {}", step_pin);
+            if ctx.enter_shutdown() {
+                let clock = ctx.now();
+                ctx.send_shutdown(ShutdownReason::ConfigStepperFailed, clock);
+            }
+            return;
+        }
+    };
+    let dir_channel = match ctx.dir_pin_channel(dir_pin) {
+        Some(channel) => channel,
+        None => {
+            defmt::error!("config_stepper: unknown DIR pin {}", dir_pin);
+            if ctx.enter_shutdown() {
+                let clock = ctx.now();
+                ctx.send_shutdown(ShutdownReason::ConfigStepperFailed, clock);
+            }
+            return;
+        }
+    };
+    if step_channel != dir_channel {
+        defmt::error!(
+            "config_stepper: STEP/DIR channel mismatch step={} dir={}",
+            step_channel,
+            dir_channel
+        );
+        if ctx.enter_shutdown() {
+            let clock = ctx.now();
+            ctx.send_shutdown(ShutdownReason::ConfigStepperFailed, clock);
+        }
+        return;
+    }
+
+    if let Err(e) =
+        foci_klipper::commands::stepper::config_stepper_channel(ctx.state(), oid, step_channel)
+    {
         defmt::error!("config_stepper: {}", e);
         if ctx.enter_shutdown() {
             let clock = ctx.now();
@@ -40,7 +77,11 @@ pub fn config_stepper(
         }
         return;
     }
-    defmt::info!("config_stepper: oid={} (pins ignored, TMC4671 mode)", oid);
+    defmt::info!(
+        "config_stepper: oid={} channel={} (TMC4671 mode)",
+        oid,
+        step_channel
+    );
 }
 
 /// Enqueue a trapezoidal move segment for a stepper.
@@ -161,6 +202,11 @@ pub fn stepper_stop_on_trigger(ctx: &mut dyn StepperStopOnTrigger, oid: u8, trsy
 pub trait StepperQueue: ShutdownRecovery + StepperHost {}
 impl<T: ?Sized + ShutdownRecovery + StepperHost> StepperQueue for T {}
 
+/// Composite bound for `config_stepper`: needs shutdown recovery and the
+/// board's virtual STEP/DIR pin-to-channel mapping.
+pub trait StepperConfigHost: ShutdownRecovery + BoardChannels {}
+impl<T: ?Sized + ShutdownRecovery + BoardChannels> StepperConfigHost for T {}
+
 /// Composite bound for `reset_step_clock`: needs shutdown recovery (to
 /// enter shutdown on error) and the stepper host (to delegate the
 /// clock-reset operation).
@@ -180,3 +226,99 @@ impl<T: ?Sized + ShutdownRecovery + StepperHost> StepperReset for T {}
 /// the dyn-safe way to compose the capabilities.
 pub trait StepperStopOnTrigger: ShutdownRecovery + TrsyncHost {}
 impl<T: ?Sized + ShutdownRecovery + TrsyncHost> StepperStopOnTrigger for T {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::context::{BoardChannels, ClockSource, StateAccess};
+    use crate::shutdown::ShutdownReason;
+    use foci_klipper::state::State;
+
+    struct MockCtx {
+        state: State,
+        last_shutdown: Option<ShutdownReason>,
+    }
+
+    impl MockCtx {
+        fn new() -> Self {
+            Self {
+                state: State::new(),
+                last_shutdown: None,
+            }
+        }
+    }
+
+    impl StateAccess for MockCtx {
+        fn state(&mut self) -> &mut State {
+            &mut self.state
+        }
+    }
+
+    impl ClockSource for MockCtx {
+        fn now(&self) -> u32 {
+            123
+        }
+    }
+
+    impl ShutdownRecovery for MockCtx {
+        fn enter_shutdown(&mut self) -> bool {
+            true
+        }
+
+        fn reset_to_bootloader(&mut self) -> ! {
+            panic!("reset_to_bootloader not used in tests")
+        }
+
+        fn send_shutdown(&mut self, reason: ShutdownReason, _clock: u32) {
+            self.last_shutdown = Some(reason);
+        }
+    }
+
+    impl BoardChannels for MockCtx {
+        fn tmc_channel_count(&self) -> u8 {
+            2
+        }
+
+        fn step_pin_channel(&self, pin: u8) -> Option<u8> {
+            match pin {
+                1 => Some(0),
+                3 => Some(1),
+                _ => None,
+            }
+        }
+
+        fn dir_pin_channel(&self, pin: u8) -> Option<u8> {
+            match pin {
+                2 => Some(0),
+                4 => Some(1),
+                _ => None,
+            }
+        }
+
+        fn enable_pin_channel(&self, _pin: u32) -> Option<u8> {
+            None
+        }
+    }
+
+    #[test]
+    fn config_stepper_registers_matching_step_dir_channel() {
+        let mut ctx = MockCtx::new();
+        let mut sender = ();
+
+        config_stepper(&mut ctx, &mut sender, 10, 1, 2, 0, 0);
+
+        assert_eq!(ctx.state.stepper_channel(10), Some(0));
+        assert_eq!(ctx.last_shutdown, None);
+    }
+
+    #[test]
+    fn config_stepper_rejects_step_dir_channel_mismatch() {
+        let mut ctx = MockCtx::new();
+        let mut sender = ();
+
+        config_stepper(&mut ctx, &mut sender, 10, 1, 4, 0, 0);
+
+        assert_eq!(ctx.state.stepper_channel(10), None);
+        assert_eq!(ctx.last_shutdown, Some(ShutdownReason::ConfigStepperFailed));
+    }
+}

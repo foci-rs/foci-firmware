@@ -18,7 +18,7 @@
 use ankyra::prelude::klipper_command;
 use core::sync::atomic::Ordering;
 
-use crate::context::{ShutdownRecovery, StateAccess, TmcHost};
+use crate::context::{BoardChannels, ShutdownRecovery, StateAccess, TmcHost};
 use crate::shutdown::ShutdownReason;
 use crate::state::tmc::{
     FLUX_FILTER_HZ, POSITION_FILTER_HZ, STEP_WIDTH_VALUE, TORQUE_FILTER_HZ, VELOCITY_FEEDFORWARD,
@@ -30,6 +30,25 @@ use crate::state::tmc::{
 /// Single-channel even on future multi-motor boards; parameterize if that
 /// ever changes.
 const TMC_MOTOR_COUNT: u8 = 1;
+
+/// Bind a FOCI TMC driver OID to a configured stepper and board channel.
+#[klipper_command]
+pub fn config_foci_tmc(ctx: &mut dyn FociConfigHost, oid: u8, stepper_oid: u8, channel: u8) {
+    let channel_count = ctx.tmc_channel_count();
+    if let Err(e) = foci_klipper::commands::foci::config_foci_tmc(
+        ctx.state(),
+        oid,
+        stepper_oid,
+        channel,
+        channel_count,
+    ) {
+        defmt::error!("config_foci_tmc: {}", e);
+        if ctx.enter_shutdown() {
+            let clock = ctx.now();
+            ctx.send_shutdown(ShutdownReason::ConfigFociTmcFailed, clock);
+        }
+    }
+}
 
 /// Trigger TMC4671 initialization sequence (dev-only).
 #[cfg(feature = "dev")]
@@ -236,3 +255,101 @@ pub fn tmc_set_auto_calibrate_on_enable(_ctx: &mut dyn StateAccess, _oid: u8, en
 /// enqueue). Mirrors the `LifecycleReset` pattern introduced in Task 12.
 pub trait TmcWriteHost: ShutdownRecovery + TmcHost {}
 impl<T: ?Sized + ShutdownRecovery + TmcHost> TmcWriteHost for T {}
+
+/// Composite bound for `config_foci_tmc`: needs shutdown recovery and the
+/// board's TMC channel count.
+pub trait FociConfigHost: ShutdownRecovery + BoardChannels {}
+impl<T: ?Sized + ShutdownRecovery + BoardChannels> FociConfigHost for T {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::context::{BoardChannels, ClockSource, StateAccess};
+    use crate::shutdown::ShutdownReason;
+    use foci_klipper::commands::foci::config_stepper_channel;
+    use foci_klipper::state::State;
+
+    struct MockCtx {
+        state: State,
+        channel_count: u8,
+        last_shutdown: Option<ShutdownReason>,
+    }
+
+    impl MockCtx {
+        fn new(channel_count: u8) -> Self {
+            Self {
+                state: State::new(),
+                channel_count,
+                last_shutdown: None,
+            }
+        }
+    }
+
+    impl StateAccess for MockCtx {
+        fn state(&mut self) -> &mut State {
+            &mut self.state
+        }
+    }
+
+    impl ClockSource for MockCtx {
+        fn now(&self) -> u32 {
+            123
+        }
+    }
+
+    impl ShutdownRecovery for MockCtx {
+        fn enter_shutdown(&mut self) -> bool {
+            true
+        }
+
+        fn reset_to_bootloader(&mut self) -> ! {
+            panic!("reset_to_bootloader not used in tests")
+        }
+
+        fn send_shutdown(&mut self, reason: ShutdownReason, _clock: u32) {
+            self.last_shutdown = Some(reason);
+        }
+    }
+
+    impl BoardChannels for MockCtx {
+        fn tmc_channel_count(&self) -> u8 {
+            self.channel_count
+        }
+
+        fn step_pin_channel(&self, _pin: u8) -> Option<u8> {
+            None
+        }
+
+        fn dir_pin_channel(&self, _pin: u8) -> Option<u8> {
+            None
+        }
+
+        fn enable_pin_channel(&self, _pin: u32) -> Option<u8> {
+            None
+        }
+    }
+
+    #[test]
+    fn config_foci_tmc_registers_matching_channel() {
+        let mut ctx = MockCtx::new(2);
+        let mut sender = ();
+        config_stepper_channel(ctx.state(), 10, 1).unwrap();
+
+        config_foci_tmc(&mut ctx, &mut sender, 20, 10, 1);
+
+        assert_eq!(ctx.state.foci_channel_for_oid(20), Some(1));
+        assert_eq!(ctx.last_shutdown, None);
+    }
+
+    #[test]
+    fn config_foci_tmc_rejects_channel_outside_board_range() {
+        let mut ctx = MockCtx::new(1);
+        let mut sender = ();
+        config_stepper_channel(ctx.state(), 10, 1).unwrap();
+
+        config_foci_tmc(&mut ctx, &mut sender, 20, 10, 1);
+
+        assert_eq!(ctx.state.foci_channel_for_oid(20), None);
+        assert_eq!(ctx.last_shutdown, Some(ShutdownReason::ConfigFociTmcFailed));
+    }
+}
