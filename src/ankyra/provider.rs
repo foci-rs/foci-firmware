@@ -95,13 +95,11 @@ ankyra::ankyra_provider! {
         crate::ankyra::replies::FociTraceInfoResult,
         crate::ankyra::replies::FociTuneResult,
         crate::ankyra::replies::SpiTransferResponse<'_>,
+        crate::ankyra::replies::Stats,
         crate::ankyra::replies::StepperPosition,
         crate::ankyra::replies::TmcRegisterValue,
         crate::ankyra::replies::TrsyncState,
         crate::ankyra::replies::Uptime,
-    ],
-    outputs: [
-        crate::ankyra::outputs::Stats,
     ],
     enumerations: [],
     constants: [
@@ -190,13 +188,11 @@ ankyra::ankyra_provider! {
         crate::ankyra::replies::FociTraceInfoResult,
         crate::ankyra::replies::FociTuneResult,
         crate::ankyra::replies::SpiTransferResponse<'_>,
+        crate::ankyra::replies::Stats,
         crate::ankyra::replies::StepperPosition,
         crate::ankyra::replies::TmcRegisterValue,
         crate::ankyra::replies::TrsyncState,
         crate::ankyra::replies::Uptime,
-    ],
-    outputs: [
-        crate::ankyra::outputs::Stats,
     ],
     enumerations: [],
     constants: [

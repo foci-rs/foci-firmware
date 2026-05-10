@@ -3,7 +3,6 @@
 //! - `handlers::*` — `#[klipper_command]` handlers taking capability
 //!   trait objects. Each subsystem has its own module.
 //! - `replies.rs` — `#[klipper_reply]` struct declarations.
-//! - `outputs.rs` — `#[klipper_output]` struct declarations.
 //! - `constants.rs` — firmware-wide `#[klipper_constant]` items.
 //! - `provider.rs` — `FOCI_FIRMWARE_PROVIDER` (added in Stage 6).
 //!
@@ -12,6 +11,5 @@
 
 pub mod constants;
 pub mod handlers;
-pub mod outputs;
 pub mod provider;
 pub mod replies;
