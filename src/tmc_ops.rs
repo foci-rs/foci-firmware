@@ -13,13 +13,13 @@
 //!   measured actual position when within the deadband, then clear PID
 //!   error accumulators and STATUS_FLAGS.
 //! - [`apply_stored_filters`] — write the four biquad filter sections from
-//!   the `state::tmc` filter-Hz atomics back to TMC4671 registers.
+//!   the channel filter-Hz atomics back to TMC4671 registers.
 //! - [`apply_set_current`] — convert RMS current to TMC4671 peak counts and
-//!   write `PID_TORQUE_FLUX_LIMITS`; stores the result in `CURRENT_LIMIT_REG`.
+//!   write `PID_TORQUE_FLUX_LIMITS`; stores the result in channel state.
 //! - [`apply_set_encoder`] — validate PPR, write `ABN_DECODER_PPR` (×4 for
 //!   quadrature), and log the computed step width.
 //! - [`apply_set_encoder_dir`] — write `ABN_DECODER_MODE` and update the
-//!   `ENCODER_REVERSED` / `FEEDFORWARD_RESET` atomics.
+//!   channel encoder direction / feedforward reset atomics.
 //!
 //! Populated progressively by Phase A-7 Tasks 26–27 of the internal-
 //! restructure plan (`docs/plans/archive/2026-04-20-phase-a-internal-
@@ -28,6 +28,7 @@
 
 use crate::commission_dispatch::{DispatchState, StepperPostAction};
 use crate::commissioning::types::CommissioningBackend;
+use crate::state::tmc::TmcChannelState;
 use embedded_hal_async::spi::SpiDevice;
 use foci_tmc4671::spi::Tmc4671Spi;
 
@@ -72,7 +73,10 @@ where
 /// measured actual position keeps firmware and Klipper logical step counts
 /// unchanged while preventing stale error sums from driving unnecessary
 /// corrective current.
-pub async fn settle_hold_and_clear_pid_errors<B>(tmc: &mut Tmc4671Spi<B>) -> Result<(), ()>
+pub async fn settle_hold_and_clear_pid_errors<B>(
+    tmc: &mut Tmc4671Spi<B>,
+    tmc_state: &TmcChannelState,
+) -> Result<(), ()>
 where
     B: SpiDevice<u8>,
 {
@@ -87,7 +91,8 @@ where
         .read_register(PID_POSITION_ACTUAL)
         .await
         .map_err(|_| ())?;
-    let step_width = crate::state::tmc::STEP_WIDTH_VALUE
+    let step_width = tmc_state
+        .step_width_value
         .load(Relaxed)
         .unsigned_abs()
         .max(1);
@@ -116,15 +121,18 @@ where
 ///
 /// `pwm_maxcnt` is board-specific and must be supplied by the caller
 /// (e.g. `TMC_CONFIG.pwm_maxcnt`).
-pub async fn apply_stored_filters<B>(tmc: &mut Tmc4671Spi<B>, pwm_maxcnt: u16)
-where
+pub async fn apply_stored_filters<B>(
+    tmc: &mut Tmc4671Spi<B>,
+    tmc_state: &TmcChannelState,
+    pwm_maxcnt: u16,
+) where
     B: SpiDevice<u8>,
 {
     use core::sync::atomic::Ordering::Relaxed;
     use foci_tmc4671::registers::*;
 
     // Velocity biquad.
-    let filter_hz = crate::state::tmc::VELOCITY_FILTER_HZ.load(Relaxed);
+    let filter_hz = tmc_state.velocity_filter_hz.load(Relaxed);
     if filter_hz > 0
         && let Some(coeffs) = crate::biquad::butterworth_lowpass(filter_hz, pwm_maxcnt)
     {
@@ -147,7 +155,7 @@ where
     }
 
     // Torque biquad.
-    let filter_hz = crate::state::tmc::TORQUE_FILTER_HZ.load(Relaxed);
+    let filter_hz = tmc_state.torque_filter_hz.load(Relaxed);
     if filter_hz > 0
         && let Some(coeffs) = crate::biquad::butterworth_lowpass(filter_hz, pwm_maxcnt)
     {
@@ -170,7 +178,7 @@ where
     }
 
     // Position biquad.
-    let filter_hz = crate::state::tmc::POSITION_FILTER_HZ.load(Relaxed);
+    let filter_hz = tmc_state.position_filter_hz.load(Relaxed);
     if filter_hz > 0
         && let Some(coeffs) = crate::biquad::butterworth_lowpass(filter_hz, pwm_maxcnt)
     {
@@ -193,7 +201,7 @@ where
     }
 
     // Flux biquad.
-    let filter_hz = crate::state::tmc::FLUX_FILTER_HZ.load(Relaxed);
+    let filter_hz = tmc_state.flux_filter_hz.load(Relaxed);
     if filter_hz > 0
         && let Some(coeffs) = crate::biquad::butterworth_lowpass(filter_hz, pwm_maxcnt)
     {
@@ -221,7 +229,7 @@ where
 /// Converts the Klipper-convention RMS milliamp value to the TMC4671 peak
 /// amplitude count (datasheet eq. 19/21: `I_phase = I_D * sin(phi_e)`),
 /// writes `PID_TORQUE_FLUX_LIMITS`, and stores the packed register value in
-/// `CURRENT_LIMIT_REG` for use by the commissioning engine.
+/// channel current-limit state for use by the commissioning engine.
 ///
 /// # Parameters
 ///
@@ -235,6 +243,7 @@ where
 /// Returns `Err(())` if the SPI write fails.
 pub async fn apply_set_current<B>(
     tmc: &mut Tmc4671Spi<B>,
+    tmc_state: &TmcChannelState,
     run_ma: u32,
     current_scale_ma_per_lsb: f32,
 ) -> Result<(), ()>
@@ -258,7 +267,9 @@ where
         defmt::error!("TMC4671 SPI write failed: PID_TORQUE_FLUX_LIMITS");
         return Err(());
     }
-    crate::state::tmc::CURRENT_LIMIT_REG.store(limit, core::sync::atomic::Ordering::Relaxed);
+    tmc_state
+        .current_limit_reg
+        .store(limit, core::sync::atomic::Ordering::Relaxed);
     defmt::info!(
         "TMC4671 current: {}mA RMS -> {} counts (peak)",
         run_ma,
@@ -308,8 +319,8 @@ where
 /// Apply an encoder direction setting to the TMC4671.
 ///
 /// Writes `ABN_DECODER_MODE` (bit 12 selects reversed/default direction),
-/// stores the inversion flag in `ENCODER_REVERSED`, and sets `FEEDFORWARD_RESET`
-/// to prevent a one-tick velocity impulse from the sign-flipped delta in the
+/// stores the inversion flag, and sets the channel feedforward reset flag to
+/// prevent a one-tick velocity impulse from the sign-flipped delta in the
 /// feedforward path on the next tick.
 ///
 /// # Parameters
@@ -320,7 +331,11 @@ where
 /// # Errors
 ///
 /// Returns `Err(())` if the SPI write fails.
-pub async fn apply_set_encoder_dir<B>(tmc: &mut Tmc4671Spi<B>, invert: bool) -> Result<(), ()>
+pub async fn apply_set_encoder_dir<B>(
+    tmc: &mut Tmc4671Spi<B>,
+    tmc_state: &TmcChannelState,
+    invert: bool,
+) -> Result<(), ()>
 where
     B: SpiDevice<u8>,
 {
@@ -331,11 +346,15 @@ where
         defmt::error!("TMC4671 SPI write failed: ABN_DECODER_MODE");
         return Err(());
     }
-    crate::state::tmc::ENCODER_REVERSED.store(invert, core::sync::atomic::Ordering::Relaxed);
+    tmc_state
+        .encoder_reversed
+        .store(invert, core::sync::atomic::Ordering::Relaxed);
     // Signal the tick loop to reset feedforward state: prev_position_target
     // has the wrong sign after a direction flip, which would produce a
     // one-tick velocity impulse in the feedforward delta computation.
-    crate::state::tmc::FEEDFORWARD_RESET.store(true, core::sync::atomic::Ordering::Relaxed);
+    tmc_state
+        .feedforward_reset
+        .store(true, core::sync::atomic::Ordering::Relaxed);
     defmt::info!(
         "TMC4671 encoder direction: {}",
         if invert { "reversed" } else { "default" }
@@ -346,7 +365,7 @@ where
 /// Mark the motor electrically energized after verified calibration.
 ///
 /// Asserts `state.calibrated`; sets the enable pin high; updates
-/// `state.motor_enabled`. Does NOT touch `MOTOR_ARMED` — stepper
+/// `state.motor_enabled`. Does NOT touch channel motor arming — stepper
 /// arming is a separate concern (see `arm_motor_for_steps`).
 ///
 /// `assert!`, not `debug_assert!`: this is a hard motor-safety
@@ -369,15 +388,18 @@ pub fn arm_motor_electrical<B: CommissioningBackend>(
 /// Arm the stepper for step-timer processing.
 ///
 /// Asserts `state.motor_enabled` (set only by `arm_motor_electrical`);
-/// stores `MOTOR_ARMED=true`. Caller is responsible for any
-/// prerequisite state (e.g. zeroing `STEPPER_POSITION`) before
+/// stores the channel motor-armed flag. Caller is responsible for any
+/// prerequisite state (e.g. zeroing the stepper channel position) before
 /// invoking. Always-on assert.
 pub fn arm_motor_for_steps(state: &mut DispatchState<'_>) {
     assert!(
         *state.motor_enabled,
         "FATAL: arm_motor_for_steps called with motor_enabled=false"
     );
-    crate::state::tmc::MOTOR_ARMED.store(true, core::sync::atomic::Ordering::Relaxed);
+    state
+        .tmc
+        .motor_armed
+        .store(true, core::sync::atomic::Ordering::Relaxed);
 }
 
 /// Board task to run after a stepper post-action state transition.
@@ -403,11 +425,17 @@ pub fn apply_stepper_post_action_state(
     match action {
         StepperPostAction::None => StepperTaskDirective::None,
         StepperPostAction::Stop => {
-            crate::state::tmc::MOTOR_ARMED.store(false, core::sync::atomic::Ordering::Relaxed);
+            state
+                .tmc
+                .motor_armed
+                .store(false, core::sync::atomic::Ordering::Relaxed);
             StepperTaskDirective::StopCheck
         }
         StepperPostAction::ArmZeroPosition => {
-            crate::state::stepper::STEPPER_POSITION.store(0, core::sync::atomic::Ordering::Relaxed);
+            state
+                .stepper
+                .position
+                .store(0, core::sync::atomic::Ordering::Relaxed);
             arm_motor_for_steps(state);
             StepperTaskDirective::ArmCheck
         }
@@ -436,6 +464,7 @@ pub fn apply_stepper_post_action_state(
 ///   the biquad sampling frequency for coefficient calculation.
 pub async fn apply_stored_filters_via_backend<B: CommissioningBackend>(
     backend: &mut B,
+    tmc_state: &TmcChannelState,
     pwm_maxcnt: u16,
 ) -> Result<(), B::Error> {
     use core::sync::atomic::Ordering::Relaxed;
@@ -486,7 +515,7 @@ pub async fn apply_stored_filters_via_backend<B: CommissioningBackend>(
 
     apply_one(
         backend,
-        crate::state::tmc::VELOCITY_FILTER_HZ.load(Relaxed),
+        tmc_state.velocity_filter_hz.load(Relaxed),
         pwm_maxcnt,
         BiquadFilterSubRegs {
             a_1: CONFIG_BIQUAD_V_A_1,
@@ -500,7 +529,7 @@ pub async fn apply_stored_filters_via_backend<B: CommissioningBackend>(
     .await?;
     apply_one(
         backend,
-        crate::state::tmc::TORQUE_FILTER_HZ.load(Relaxed),
+        tmc_state.torque_filter_hz.load(Relaxed),
         pwm_maxcnt,
         BiquadFilterSubRegs {
             a_1: CONFIG_BIQUAD_T_A_1,
@@ -514,7 +543,7 @@ pub async fn apply_stored_filters_via_backend<B: CommissioningBackend>(
     .await?;
     apply_one(
         backend,
-        crate::state::tmc::POSITION_FILTER_HZ.load(Relaxed),
+        tmc_state.position_filter_hz.load(Relaxed),
         pwm_maxcnt,
         BiquadFilterSubRegs {
             a_1: CONFIG_BIQUAD_X_A_1,
@@ -528,7 +557,7 @@ pub async fn apply_stored_filters_via_backend<B: CommissioningBackend>(
     .await?;
     apply_one(
         backend,
-        crate::state::tmc::FLUX_FILTER_HZ.load(Relaxed),
+        tmc_state.flux_filter_hz.load(Relaxed),
         pwm_maxcnt,
         BiquadFilterSubRegs {
             a_1: CONFIG_BIQUAD_F_A_1,
@@ -545,7 +574,7 @@ pub async fn apply_stored_filters_via_backend<B: CommissioningBackend>(
 
 /// De-energize the motor and clear all armed/enabled state.
 ///
-/// Clears [`crate::state::tmc::MOTOR_ARMED`] first so the step-timer ISR stops
+/// Clears the channel motor-armed flag first so the step-timer ISR stops
 /// accepting step events before async SPI cleanup begins, then routes the
 /// safe-state register sequence through
 /// [`crate::tmc_safe_state::restore_safe_state_via_backend`] and clears
@@ -555,7 +584,10 @@ pub async fn apply_stored_filters_via_backend<B: CommissioningBackend>(
 /// Does not touch the stepper queue or invoke `stepper_stop_from_p1` —
 /// those remain board-side responsibilities.
 pub async fn disarm_motor<B: CommissioningBackend>(backend: &mut B, state: &mut DispatchState<'_>) {
-    crate::state::tmc::MOTOR_ARMED.store(false, core::sync::atomic::Ordering::Relaxed);
+    state
+        .tmc
+        .motor_armed
+        .store(false, core::sync::atomic::Ordering::Relaxed);
     crate::tmc_safe_state::restore_safe_state_via_backend(backend).await;
     *state.calibrated = false;
     *state.motor_enabled = false;
@@ -564,10 +596,10 @@ pub async fn disarm_motor<B: CommissioningBackend>(backend: &mut B, state: &mut 
 /// SPI restore sequence for the OuterDone success path.
 ///
 /// Writes tuned velocity and position gains, the operational velocity limit,
-/// current limit (from [`crate::state::tmc::CURRENT_LIMIT_REG`]), the
+/// current limit from channel state, the
 /// safety-net `PIDOUT_UQ_UD_LIMITS` cap (1024 counts), clears the
 /// position-actual integrator, snaps the position target to the current
-/// encoder count scaled by [`crate::state::tmc::STEP_WIDTH_VALUE`], and
+/// encoder count scaled by the channel step width, and
 /// enters position mode via `MODE_RAMP_MODE_MOTION = 0x8000_0003`.
 ///
 /// The write order matches the OuterDone restore block in `main.rs` exactly.
@@ -584,6 +616,7 @@ pub async fn disarm_motor<B: CommissioningBackend>(backend: &mut B, state: &mut 
 /// Returns the backend's SPI error on the first failed write.
 pub async fn restore_position_mode_after_outer<B: CommissioningBackend>(
     backend: &mut B,
+    tmc_state: &TmcChannelState,
     outer: &crate::commissioning::types::OuterResult,
 ) -> Result<(), B::Error> {
     use core::sync::atomic::Ordering::Relaxed;
@@ -605,7 +638,7 @@ pub async fn restore_position_mode_after_outer<B: CommissioningBackend>(
         .write_register(PID_VELOCITY_LIMIT, outer.velocity_limit)
         .await?;
 
-    let current_limit = crate::state::tmc::CURRENT_LIMIT_REG.load(Relaxed);
+    let current_limit = tmc_state.current_limit_reg.load(Relaxed);
     backend
         .write_register(PID_TORQUE_FLUX_LIMITS, current_limit)
         .await?;
@@ -617,8 +650,7 @@ pub async fn restore_position_mode_after_outer<B: CommissioningBackend>(
     backend.write_register(PID_POSITION_ACTUAL, 0).await?;
 
     let target = backend.read_register(ABN_DECODER_COUNT).await?;
-    let target_scaled =
-        target.wrapping_mul(crate::state::tmc::STEP_WIDTH_VALUE.load(Relaxed) as u32);
+    let target_scaled = target.wrapping_mul(tmc_state.step_width_value.load(Relaxed) as u32);
     backend
         .write_register(PID_POSITION_TARGET, target_scaled)
         .await?;
@@ -652,6 +684,7 @@ pub async fn restore_position_mode_after_outer<B: CommissioningBackend>(
 /// Returns the backend's SPI error on the first failed write.
 pub async fn restore_calibrate_gains<B: CommissioningBackend>(
     backend: &mut B,
+    tmc_state: &TmcChannelState,
     stored: Option<crate::pid::InnerLoopGains>,
 ) -> Result<(), B::Error> {
     use core::sync::atomic::Ordering::Relaxed;
@@ -667,29 +700,29 @@ pub async fn restore_calibrate_gains<B: CommissioningBackend>(
     }
 
     // Velocity gains.
-    let velocity_p = crate::state::tmc::VELOCITY_P_VALUE.load(Relaxed);
-    let velocity_i = crate::state::tmc::VELOCITY_I_VALUE.load(Relaxed);
+    let velocity_p = tmc_state.velocity_p_value.load(Relaxed);
+    let velocity_i = tmc_state.velocity_i_value.load(Relaxed);
     let velocity_reg = (velocity_p as u32) << 16 | velocity_i as u32;
     backend
         .write_register(PID_VELOCITY_P_VELOCITY_I, velocity_reg)
         .await?;
 
     // Position gains.
-    let position_p = crate::state::tmc::POSITION_P_VALUE.load(Relaxed);
-    let position_i = crate::state::tmc::POSITION_I_VALUE.load(Relaxed);
+    let position_p = tmc_state.position_p_value.load(Relaxed);
+    let position_i = tmc_state.position_i_value.load(Relaxed);
     let position_reg = (position_p as u32) << 16 | position_i as u32;
     backend
         .write_register(PID_POSITION_P_POSITION_I, position_reg)
         .await?;
 
     // Velocity limit.
-    let velocity_limit = crate::state::tmc::VELOCITY_LIMIT_CFG.load(Relaxed);
+    let velocity_limit = tmc_state.velocity_limit_cfg.load(Relaxed);
     backend
         .write_register(PID_VELOCITY_LIMIT, velocity_limit)
         .await?;
 
     // Current limit (TMC4671 resets on mode change).
-    let current_limit = crate::state::tmc::CURRENT_LIMIT_REG.load(Relaxed);
+    let current_limit = tmc_state.current_limit_reg.load(Relaxed);
     backend
         .write_register(PID_TORQUE_FLUX_LIMITS, current_limit)
         .await?;
@@ -703,16 +736,34 @@ mod tests {
     use crate::commission_dispatch::DispatchState;
     use crate::commission_dispatch::test_support::{MockBackend, fresh_state_locals};
 
+    fn dispatch_state<'a>(
+        calibrated: &'a mut bool,
+        motor_enabled: &'a mut bool,
+        stored_gains: &'a mut Option<crate::pid::InnerLoopGains>,
+    ) -> DispatchState<'a> {
+        DispatchState::new(
+            crate::state::tmc::tmc_channel0(),
+            crate::state::stepper::stepper_channel0(),
+            calibrated,
+            motor_enabled,
+            stored_gains,
+        )
+    }
+
+    fn tmc_state() -> &'static crate::state::tmc::TmcChannelState {
+        crate::state::tmc::tmc_channel0()
+    }
+
+    fn stepper_state() -> &'static crate::state::stepper::StepperChannelState {
+        crate::state::stepper::stepper_channel0()
+    }
+
     #[test]
     #[should_panic(expected = "calibrated=false")]
     fn arm_motor_electrical_panics_when_uncalibrated() {
         let mut backend = MockBackend::new();
         let (mut cal, mut en, mut gains) = fresh_state_locals();
-        let mut state = DispatchState {
-            calibrated: &mut cal,
-            motor_enabled: &mut en,
-            stored_gains: &mut gains,
-        };
+        let mut state = dispatch_state(&mut cal, &mut en, &mut gains);
         // calibrated is false; this MUST panic.
         arm_motor_electrical(&mut backend, &mut state);
     }
@@ -721,11 +772,7 @@ mod tests {
     #[should_panic(expected = "motor_enabled=false")]
     fn arm_motor_for_steps_panics_when_motor_disabled() {
         let (mut cal, mut en, mut gains) = fresh_state_locals();
-        let mut state = DispatchState {
-            calibrated: &mut cal,
-            motor_enabled: &mut en,
-            stored_gains: &mut gains,
-        };
+        let mut state = dispatch_state(&mut cal, &mut en, &mut gains);
         // motor_enabled is false; this MUST panic.
         arm_motor_for_steps(&mut state);
     }
@@ -740,20 +787,16 @@ mod tests {
             let mut backend = MockBackend::new();
             let (_, mut en, mut gains) = fresh_state_locals();
             let mut cal = true;
-            let mut state = DispatchState {
-                calibrated: &mut cal,
-                motor_enabled: &mut en,
-                stored_gains: &mut gains,
-            };
+            let mut state = dispatch_state(&mut cal, &mut en, &mut gains);
             arm_motor_electrical(&mut backend, &mut state);
             arm_motor_for_steps(&mut state);
             assert!(backend.enable_pin);
-            assert!(crate::state::tmc::MOTOR_ARMED.load(Ordering::Relaxed));
+            assert!(tmc_state().motor_armed.load(Ordering::Relaxed));
             disarm_motor(&mut backend, &mut state).await;
             assert!(!backend.enable_pin);
             assert!(!*state.calibrated);
             assert!(!*state.motor_enabled);
-            assert!(!crate::state::tmc::MOTOR_ARMED.load(Ordering::Relaxed));
+            assert!(!tmc_state().motor_armed.load(Ordering::Relaxed));
         });
     }
 
@@ -764,19 +807,15 @@ mod tests {
         let mut backend = MockBackend::new();
         let (_, mut en, mut gains) = fresh_state_locals();
         let mut cal = true;
-        let mut state = DispatchState {
-            calibrated: &mut cal,
-            motor_enabled: &mut en,
-            stored_gains: &mut gains,
-        };
+        let mut state = dispatch_state(&mut cal, &mut en, &mut gains);
         arm_motor_electrical(&mut backend, &mut state);
         assert!(backend.enable_pin);
         assert!(*state.motor_enabled);
-        assert!(!crate::state::tmc::MOTOR_ARMED.load(Ordering::Relaxed));
+        assert!(!tmc_state().motor_armed.load(Ordering::Relaxed));
         arm_motor_for_steps(&mut state);
-        assert!(crate::state::tmc::MOTOR_ARMED.load(Ordering::Relaxed));
+        assert!(tmc_state().motor_armed.load(Ordering::Relaxed));
         // Reset the static for downstream tests.
-        crate::state::tmc::MOTOR_ARMED.store(false, Ordering::Relaxed);
+        tmc_state().motor_armed.store(false, Ordering::Relaxed);
     }
 
     #[test]
@@ -785,13 +824,9 @@ mod tests {
         let _guard = crate::commission_dispatch::test_support::SHARED_STATE_MUTEX.blocking_lock();
         let (mut cal, _, mut gains) = fresh_state_locals();
         let mut en = true;
-        crate::state::stepper::STEPPER_POSITION.store(123, Ordering::Relaxed);
-        crate::state::tmc::MOTOR_ARMED.store(false, Ordering::Relaxed);
-        let mut state = DispatchState {
-            calibrated: &mut cal,
-            motor_enabled: &mut en,
-            stored_gains: &mut gains,
-        };
+        stepper_state().position.store(123, Ordering::Relaxed);
+        tmc_state().motor_armed.store(false, Ordering::Relaxed);
+        let mut state = dispatch_state(&mut cal, &mut en, &mut gains);
 
         let directive = apply_stepper_post_action_state(
             crate::commission_dispatch::StepperPostAction::ArmZeroPosition,
@@ -799,12 +834,9 @@ mod tests {
         );
 
         assert_eq!(directive, StepperTaskDirective::ArmCheck);
-        assert_eq!(
-            crate::state::stepper::STEPPER_POSITION.load(Ordering::Relaxed),
-            0
-        );
-        assert!(crate::state::tmc::MOTOR_ARMED.load(Ordering::Relaxed));
-        crate::state::tmc::MOTOR_ARMED.store(false, Ordering::Relaxed);
+        assert_eq!(stepper_state().position.load(Ordering::Relaxed), 0);
+        assert!(tmc_state().motor_armed.load(Ordering::Relaxed));
+        tmc_state().motor_armed.store(false, Ordering::Relaxed);
     }
 
     #[test]
@@ -812,12 +844,8 @@ mod tests {
         use core::sync::atomic::Ordering;
         let _guard = crate::commission_dispatch::test_support::SHARED_STATE_MUTEX.blocking_lock();
         let (mut cal, mut en, mut gains) = fresh_state_locals();
-        crate::state::tmc::MOTOR_ARMED.store(true, Ordering::Relaxed);
-        let mut state = DispatchState {
-            calibrated: &mut cal,
-            motor_enabled: &mut en,
-            stored_gains: &mut gains,
-        };
+        tmc_state().motor_armed.store(true, Ordering::Relaxed);
+        let mut state = dispatch_state(&mut cal, &mut en, &mut gains);
 
         let directive = apply_stepper_post_action_state(
             crate::commission_dispatch::StepperPostAction::Stop,
@@ -825,7 +853,7 @@ mod tests {
         );
 
         assert_eq!(directive, StepperTaskDirective::StopCheck);
-        assert!(!crate::state::tmc::MOTOR_ARMED.load(Ordering::Relaxed));
+        assert!(!tmc_state().motor_armed.load(Ordering::Relaxed));
     }
 
     #[test]
@@ -836,13 +864,13 @@ mod tests {
                 .lock()
                 .await;
             // Set the velocity filter to a non-zero Hz so it gets applied.
-            crate::state::tmc::VELOCITY_FILTER_HZ.store(100, Ordering::Relaxed);
-            crate::state::tmc::TORQUE_FILTER_HZ.store(0, Ordering::Relaxed);
-            crate::state::tmc::POSITION_FILTER_HZ.store(0, Ordering::Relaxed);
-            crate::state::tmc::FLUX_FILTER_HZ.store(0, Ordering::Relaxed);
+            tmc_state().velocity_filter_hz.store(100, Ordering::Relaxed);
+            tmc_state().torque_filter_hz.store(0, Ordering::Relaxed);
+            tmc_state().position_filter_hz.store(0, Ordering::Relaxed);
+            tmc_state().flux_filter_hz.store(0, Ordering::Relaxed);
 
             let mut backend = MockBackend::new();
-            apply_stored_filters_via_backend(&mut backend, 4095)
+            apply_stored_filters_via_backend(&mut backend, tmc_state(), 4095)
                 .await
                 .expect("filter writes should succeed");
 
@@ -897,7 +925,7 @@ mod tests {
             );
 
             // Cleanup.
-            crate::state::tmc::VELOCITY_FILTER_HZ.store(0, Ordering::Relaxed);
+            tmc_state().velocity_filter_hz.store(0, Ordering::Relaxed);
         });
     }
 
@@ -910,15 +938,18 @@ mod tests {
                 .lock()
                 .await;
             let mut backend = MockBackend::new();
-            crate::state::tmc::CURRENT_LIMIT_REG
+            tmc_state()
+                .current_limit_reg
                 .store(0x0010_0010, core::sync::atomic::Ordering::Relaxed);
-            crate::state::tmc::STEP_WIDTH_VALUE.store(50, core::sync::atomic::Ordering::Relaxed);
+            tmc_state()
+                .step_width_value
+                .store(50, core::sync::atomic::Ordering::Relaxed);
             // Pre-seed ABN_DECODER_COUNT for the position-target compute.
             let _ = backend.write_register(ABN_DECODER_COUNT, 1234).await;
             backend.spi_log.clear();
 
             let outer = sample_outer_result();
-            let result = restore_position_mode_after_outer(&mut backend, &outer).await;
+            let result = restore_position_mode_after_outer(&mut backend, tmc_state(), &outer).await;
             assert!(result.is_ok());
 
             let writes: heapless::Vec<u8, 32> = backend
@@ -940,8 +971,12 @@ mod tests {
             assert!(writes.contains(&MODE_RAMP_MODE_MOTION.addr()));
 
             // Cleanup atomics.
-            crate::state::tmc::CURRENT_LIMIT_REG.store(0, core::sync::atomic::Ordering::Relaxed);
-            crate::state::tmc::STEP_WIDTH_VALUE.store(0, core::sync::atomic::Ordering::Relaxed);
+            tmc_state()
+                .current_limit_reg
+                .store(0, core::sync::atomic::Ordering::Relaxed);
+            tmc_state()
+                .step_width_value
+                .store(0, core::sync::atomic::Ordering::Relaxed);
         });
     }
 
@@ -955,7 +990,7 @@ mod tests {
             let mut backend = MockBackend::new();
             backend.fail_on_write = Some(MODE_RAMP_MODE_MOTION.addr());
             let outer = sample_outer_result();
-            let result = restore_position_mode_after_outer(&mut backend, &outer).await;
+            let result = restore_position_mode_after_outer(&mut backend, tmc_state(), &outer).await;
             assert!(result.is_err());
         });
     }
@@ -1004,7 +1039,7 @@ mod tests {
                 torque_p: 200,
                 torque_i: 20,
             });
-            let result = restore_calibrate_gains(&mut backend, stored).await;
+            let result = restore_calibrate_gains(&mut backend, tmc_state(), stored).await;
             assert!(result.is_ok());
             let writes: heapless::Vec<u8, 32> = backend
                 .spi_log
@@ -1035,7 +1070,7 @@ mod tests {
                 .lock()
                 .await;
             let mut backend = MockBackend::new();
-            let result = restore_calibrate_gains(&mut backend, None).await;
+            let result = restore_calibrate_gains(&mut backend, tmc_state(), None).await;
             assert!(result.is_ok());
             let writes: heapless::Vec<u8, 32> = backend
                 .spi_log

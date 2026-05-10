@@ -121,7 +121,9 @@ impl CommissioningBackend for MockBackend {
         let addr = reg.addr();
         if self.assert_motor_armed_false_on_write {
             assert!(
-                !crate::state::tmc::MOTOR_ARMED.load(core::sync::atomic::Ordering::Relaxed),
+                !crate::state::tmc::tmc_channel0()
+                    .motor_armed
+                    .load(core::sync::atomic::Ordering::Relaxed),
                 "dispatch SPI write ran while step processing was armed"
             );
         }
@@ -196,7 +198,8 @@ impl CommissioningBackend for MockBackend {
 }
 
 /// Mutex for tests that mutate firmware-shared statics
-/// (`MOTOR_ARMED`, `COMMISSION_IN_FLIGHT`, the gain/filter atomics in `state::tmc`).
+/// (channel motor-armed / in-flight flags, and the gain/filter atomics in
+/// `state::tmc`).
 ///
 /// Tests acquire this guard before any read-modify-write sequence on a shared
 /// static, and hold it for the duration of the assertion phase. Cargo runs
@@ -206,7 +209,7 @@ impl CommissioningBackend for MockBackend {
 /// Usage:
 /// ```ignore
 /// let _guard = SHARED_STATE_MUTEX.lock().await;
-/// crate::state::tmc::MOTOR_ARMED.store(false, Ordering::Relaxed);
+/// crate::state::tmc::tmc_channel0().motor_armed.store(false, Ordering::Relaxed);
 /// // ... test body ...
 /// ```
 ///

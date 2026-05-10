@@ -5,17 +5,35 @@ use super::test_support::{MockBackend, SpiOp, fresh_state_locals};
 use super::*;
 use crate::autotune::CommissionProfile;
 
+fn dispatch_state<'a>(
+    calibrated: &'a mut bool,
+    motor_enabled: &'a mut bool,
+    stored_gains: &'a mut Option<crate::pid::InnerLoopGains>,
+) -> DispatchState<'a> {
+    DispatchState::new(
+        crate::state::tmc::tmc_channel0(),
+        crate::state::stepper::stepper_channel0(),
+        calibrated,
+        motor_enabled,
+        stored_gains,
+    )
+}
+
+fn tmc_state() -> &'static crate::state::tmc::TmcChannelState {
+    crate::state::tmc::tmc_channel0()
+}
+
+fn stepper_state() -> &'static crate::state::stepper::StepperChannelState {
+    crate::state::stepper::stepper_channel0()
+}
+
 #[test]
 fn continue_returns_minimal_outcome() {
     pollster::block_on(async {
         let _guard = test_support::SHARED_STATE_MUTEX.lock().await;
         let mut backend = MockBackend::new();
         let (mut cal, mut en, mut gains) = fresh_state_locals();
-        let mut state = DispatchState {
-            calibrated: &mut cal,
-            motor_enabled: &mut en,
-            stored_gains: &mut gains,
-        };
+        let mut state = dispatch_state(&mut cal, &mut en, &mut gains);
         let mut engine = Some(CommissioningEngine::new_calibrate(0));
         let outcome = drive_commission_result(
             crate::commissioning::types::StepResult::Continue,
@@ -37,11 +55,7 @@ fn phase_changed_returns_oid_phase_kind() {
         let _guard = test_support::SHARED_STATE_MUTEX.lock().await;
         let mut backend = MockBackend::new();
         let (mut cal, mut en, mut gains) = fresh_state_locals();
-        let mut state = DispatchState {
-            calibrated: &mut cal,
-            motor_enabled: &mut en,
-            stored_gains: &mut gains,
-        };
+        let mut state = dispatch_state(&mut cal, &mut en, &mut gains);
         let mut engine = Some(CommissioningEngine::new_commission(
             7,
             CommissionProfile::Balanced,
@@ -79,15 +93,13 @@ fn phase_changed_returns_oid_phase_kind() {
 fn selftest_done_zero_stages_emits_done_only() {
     pollster::block_on(async {
         let _guard = test_support::SHARED_STATE_MUTEX.lock().await;
-        // Reset COMMISSION_IN_FLIGHT to a known state before the test.
-        crate::state::tmc::COMMISSION_IN_FLIGHT.store(true, core::sync::atomic::Ordering::Relaxed);
+        // Reset the in-flight guard to a known state before the test.
+        tmc_state()
+            .commission_in_flight
+            .store(true, core::sync::atomic::Ordering::Relaxed);
         let mut backend = MockBackend::new();
         let (mut cal, mut en, mut gains) = fresh_state_locals();
-        let mut state = DispatchState {
-            calibrated: &mut cal,
-            motor_enabled: &mut en,
-            stored_gains: &mut gains,
-        };
+        let mut state = dispatch_state(&mut cal, &mut en, &mut gains);
         let mut engine = Some(CommissioningEngine::new_selftest(3));
         let outcome = drive_commission_result(
             crate::commissioning::types::StepResult::SelftestDone,
@@ -115,7 +127,9 @@ fn selftest_done_zero_stages_emits_done_only() {
         }
         assert!(engine.is_none()); // consumed
         assert!(
-            !crate::state::tmc::COMMISSION_IN_FLIGHT.load(core::sync::atomic::Ordering::Relaxed)
+            !tmc_state()
+                .commission_in_flight
+                .load(core::sync::atomic::Ordering::Relaxed)
         );
     });
 }
@@ -124,14 +138,12 @@ fn selftest_done_zero_stages_emits_done_only() {
 fn inner_failed_commission_emits_phase_reply() {
     pollster::block_on(async {
         let _guard = test_support::SHARED_STATE_MUTEX.lock().await;
-        crate::state::tmc::COMMISSION_IN_FLIGHT.store(true, core::sync::atomic::Ordering::Relaxed);
+        tmc_state()
+            .commission_in_flight
+            .store(true, core::sync::atomic::Ordering::Relaxed);
         let mut backend = MockBackend::new();
         let (mut cal, mut en, mut gains) = fresh_state_locals();
-        let mut state = DispatchState {
-            calibrated: &mut cal,
-            motor_enabled: &mut en,
-            stored_gains: &mut gains,
-        };
+        let mut state = dispatch_state(&mut cal, &mut en, &mut gains);
         let mut engine = Some(CommissioningEngine::new_commission(
             5,
             CommissionProfile::Balanced,
@@ -165,7 +177,9 @@ fn inner_failed_commission_emits_phase_reply() {
         // engine consumed
         assert!(engine.is_none());
         assert!(
-            !crate::state::tmc::COMMISSION_IN_FLIGHT.load(core::sync::atomic::Ordering::Relaxed)
+            !tmc_state()
+                .commission_in_flight
+                .load(core::sync::atomic::Ordering::Relaxed)
         );
     });
 }
@@ -174,14 +188,12 @@ fn inner_failed_commission_emits_phase_reply() {
 fn inner_failed_calibrate_emits_calibrate_reply() {
     pollster::block_on(async {
         let _guard = test_support::SHARED_STATE_MUTEX.lock().await;
-        crate::state::tmc::COMMISSION_IN_FLIGHT.store(true, core::sync::atomic::Ordering::Relaxed);
+        tmc_state()
+            .commission_in_flight
+            .store(true, core::sync::atomic::Ordering::Relaxed);
         let mut backend = MockBackend::new();
         let (mut cal, mut en, mut gains) = fresh_state_locals();
-        let mut state = DispatchState {
-            calibrated: &mut cal,
-            motor_enabled: &mut en,
-            stored_gains: &mut gains,
-        };
+        let mut state = dispatch_state(&mut cal, &mut en, &mut gains);
         let mut engine = Some(CommissioningEngine::new_calibrate(2));
         let err = crate::autotune::CommissionError::NoCurrent;
         let outcome = drive_commission_result(
@@ -204,7 +216,9 @@ fn inner_failed_calibrate_emits_calibrate_reply() {
         }
         assert!(engine.is_none());
         assert!(
-            !crate::state::tmc::COMMISSION_IN_FLIGHT.load(core::sync::atomic::Ordering::Relaxed)
+            !tmc_state()
+                .commission_in_flight
+                .load(core::sync::atomic::Ordering::Relaxed)
         );
     });
 }
@@ -213,14 +227,12 @@ fn inner_failed_calibrate_emits_calibrate_reply() {
 fn inner_failed_selftest_emits_selftest_pair() {
     pollster::block_on(async {
         let _guard = test_support::SHARED_STATE_MUTEX.lock().await;
-        crate::state::tmc::COMMISSION_IN_FLIGHT.store(true, core::sync::atomic::Ordering::Relaxed);
+        tmc_state()
+            .commission_in_flight
+            .store(true, core::sync::atomic::Ordering::Relaxed);
         let mut backend = MockBackend::new();
         let (mut cal, mut en, mut gains) = fresh_state_locals();
-        let mut state = DispatchState {
-            calibrated: &mut cal,
-            motor_enabled: &mut en,
-            stored_gains: &mut gains,
-        };
+        let mut state = dispatch_state(&mut cal, &mut en, &mut gains);
         let mut engine = Some(CommissioningEngine::new_selftest(8));
         let err = crate::autotune::CommissionError::Spi;
         let outcome = drive_commission_result(
@@ -246,7 +258,9 @@ fn inner_failed_selftest_emits_selftest_pair() {
         }
         assert!(engine.is_none());
         assert!(
-            !crate::state::tmc::COMMISSION_IN_FLIGHT.load(core::sync::atomic::Ordering::Relaxed)
+            !tmc_state()
+                .commission_in_flight
+                .load(core::sync::atomic::Ordering::Relaxed)
         );
     });
 }
@@ -265,19 +279,15 @@ fn calibrate_done_arms_after_gain_restore() {
             torque_p: 200,
             torque_i: 20,
         });
-        let mut state = DispatchState {
-            calibrated: &mut cal,
-            motor_enabled: &mut en,
-            stored_gains: &mut gains,
-        };
+        let mut state = dispatch_state(&mut cal, &mut en, &mut gains);
         let mut engine = Some(CommissioningEngine::new_calibrate(4));
         let cal_result = crate::commissioning::types::AdcCalResult {
             adc_i0: 1234,
             adc_i1: 5678,
             encoder_count: 999,
         };
-        crate::state::stepper::STEPPER_POSITION.store(42, Ordering::Relaxed);
-        crate::state::tmc::MOTOR_ARMED.store(true, Ordering::Relaxed);
+        stepper_state().position.store(42, Ordering::Relaxed);
+        tmc_state().motor_armed.store(true, Ordering::Relaxed);
 
         let outcome = drive_commission_result(
             StepResult::CalibrateDone(cal_result.clone()),
@@ -292,13 +302,10 @@ fn calibrate_done_arms_after_gain_restore() {
         assert!(backend.enable_pin);
         assert!(*state.motor_enabled);
         assert!(*state.calibrated);
-        assert!(!crate::state::tmc::MOTOR_ARMED.load(Ordering::Relaxed));
+        assert!(!tmc_state().motor_armed.load(Ordering::Relaxed));
         // Dispatch must not mutate the firmware step epoch directly; the
         // returned board action owns the zero-before-arm ordering.
-        assert_eq!(
-            crate::state::stepper::STEPPER_POSITION.load(Ordering::Relaxed),
-            42
-        );
+        assert_eq!(stepper_state().position.load(Ordering::Relaxed), 42);
 
         match outcome {
             CommissionOutcome::Terminal { reply, actions } => {
@@ -322,8 +329,8 @@ fn calibrate_done_arms_after_gain_restore() {
         }
 
         // Cleanup statics for downstream tests.
-        crate::state::tmc::MOTOR_ARMED.store(false, Ordering::Relaxed);
-        crate::state::stepper::STEPPER_POSITION.store(0, Ordering::Relaxed);
+        tmc_state().motor_armed.store(false, Ordering::Relaxed);
+        stepper_state().position.store(0, Ordering::Relaxed);
     });
 }
 
@@ -366,17 +373,13 @@ fn outer_done_success_arms_motor() {
         let mut backend = MockBackend::new();
         backend.assert_motor_armed_false_on_write = true;
         let (mut cal, mut en, mut gains) = fresh_state_locals();
-        let mut state = DispatchState {
-            calibrated: &mut cal,
-            motor_enabled: &mut en,
-            stored_gains: &mut gains,
-        };
+        let mut state = dispatch_state(&mut cal, &mut en, &mut gains);
         let mut engine = Some(CommissioningEngine::new_commission(
             0,
             CommissionProfile::Balanced,
         ));
         let outer = sample_outer_result_for_dispatch();
-        crate::state::tmc::MOTOR_ARMED.store(true, Ordering::Relaxed);
+        tmc_state().motor_armed.store(true, Ordering::Relaxed);
 
         let outcome = drive_commission_result(
             StepResult::OuterDone(outer.clone()),
@@ -389,17 +392,17 @@ fn outer_done_success_arms_motor() {
 
         // Atomics persisted
         assert_eq!(
-            crate::state::tmc::POSITION_P_VALUE.load(Ordering::Relaxed),
+            tmc_state().position_p_value.load(Ordering::Relaxed),
             outer.position_p
         );
         assert_eq!(
-            crate::state::tmc::VELOCITY_LIMIT_CFG.load(Ordering::Relaxed),
+            tmc_state().velocity_limit_cfg.load(Ordering::Relaxed),
             outer.velocity_limit
         );
 
         // Motor electrically enabled; board owns stepper arming.
         assert!(backend.enable_pin);
-        assert!(!crate::state::tmc::MOTOR_ARMED.load(Ordering::Relaxed));
+        assert!(!tmc_state().motor_armed.load(Ordering::Relaxed));
 
         match outcome {
             CommissionOutcome::Terminal {
@@ -413,7 +416,7 @@ fn outer_done_success_arms_motor() {
             _ => panic!("expected TuneResult"),
         }
 
-        crate::state::tmc::MOTOR_ARMED.store(false, Ordering::Relaxed);
+        tmc_state().motor_armed.store(false, Ordering::Relaxed);
     });
 }
 
@@ -425,11 +428,7 @@ fn outer_done_spi_failure_disarms() {
         let mut backend = MockBackend::new();
         backend.fail_on_write = Some(foci_tmc4671::registers::MODE_RAMP_MODE_MOTION.addr());
         let (mut cal, mut en, mut gains) = fresh_state_locals();
-        let mut state = DispatchState {
-            calibrated: &mut cal,
-            motor_enabled: &mut en,
-            stored_gains: &mut gains,
-        };
+        let mut state = dispatch_state(&mut cal, &mut en, &mut gains);
         let mut engine = Some(CommissioningEngine::new_commission(
             0,
             CommissionProfile::Balanced,
@@ -449,7 +448,7 @@ fn outer_done_spi_failure_disarms() {
         assert!(!*state.calibrated);
         assert!(!*state.motor_enabled);
         assert!(!backend.enable_pin);
-        assert!(!crate::state::tmc::MOTOR_ARMED.load(Ordering::Relaxed));
+        assert!(!tmc_state().motor_armed.load(Ordering::Relaxed));
 
         match outcome {
             CommissionOutcome::Terminal {
@@ -473,11 +472,7 @@ fn outer_done_filter_apply_failure_disarms() {
         let mut backend = MockBackend::new();
         backend.fail_on_write = Some(foci_tmc4671::registers::CONFIG_BIQUAD_V_ENABLE.data.addr());
         let (mut cal, mut en, mut gains) = fresh_state_locals();
-        let mut state = DispatchState {
-            calibrated: &mut cal,
-            motor_enabled: &mut en,
-            stored_gains: &mut gains,
-        };
+        let mut state = dispatch_state(&mut cal, &mut en, &mut gains);
         let mut engine = Some(CommissioningEngine::new_commission(
             0,
             CommissionProfile::Balanced,
@@ -497,7 +492,7 @@ fn outer_done_filter_apply_failure_disarms() {
         assert!(!*state.calibrated);
         assert!(!*state.motor_enabled);
         assert!(!backend.enable_pin);
-        assert!(!crate::state::tmc::MOTOR_ARMED.load(Ordering::Relaxed));
+        assert!(!tmc_state().motor_armed.load(Ordering::Relaxed));
 
         match outcome {
             CommissionOutcome::Terminal {
@@ -549,13 +544,11 @@ fn commission_done_finalize_path() {
         let _guard = test_support::SHARED_STATE_MUTEX.lock().await;
         let mut backend = MockBackend::new();
         let (mut cal, mut en, mut gains) = fresh_state_locals();
-        let mut state = DispatchState {
-            calibrated: &mut cal,
-            motor_enabled: &mut en,
-            stored_gains: &mut gains,
-        };
-        crate::state::tmc::CURRENT_LIMIT_REG.store(0x0010_0010, Ordering::Relaxed);
-        crate::state::stepper::STEPPER_POSITION.store(99, Ordering::Relaxed);
+        let mut state = dispatch_state(&mut cal, &mut en, &mut gains);
+        tmc_state()
+            .current_limit_reg
+            .store(0x0010_0010, Ordering::Relaxed);
+        stepper_state().position.store(99, Ordering::Relaxed);
         let mut engine = Some(CommissioningEngine::new_commission(
             6,
             CommissionProfile::Balanced,
@@ -574,13 +567,10 @@ fn commission_done_finalize_path() {
         assert!(state.stored_gains.is_some());
         assert!(*state.calibrated);
         assert!(backend.enable_pin);
-        assert!(!crate::state::tmc::MOTOR_ARMED.load(Ordering::Relaxed));
+        assert!(!tmc_state().motor_armed.load(Ordering::Relaxed));
         // Dispatch must not mutate the firmware step epoch directly; the
         // returned board action owns the zero-before-arm ordering.
-        assert_eq!(
-            crate::state::stepper::STEPPER_POSITION.load(Ordering::Relaxed),
-            99
-        );
+        assert_eq!(stepper_state().position.load(Ordering::Relaxed), 99);
         // PID_TORQUE_FLUX_LIMITS write expected: current limit re-apply.
         let writes: heapless::Vec<u8, 32> = backend
             .spi_log
@@ -604,9 +594,9 @@ fn commission_done_finalize_path() {
         }
 
         // Cleanup
-        crate::state::tmc::MOTOR_ARMED.store(false, Ordering::Relaxed);
-        crate::state::stepper::STEPPER_POSITION.store(0, Ordering::Relaxed);
-        crate::state::tmc::CURRENT_LIMIT_REG.store(0, Ordering::Relaxed);
+        tmc_state().motor_armed.store(false, Ordering::Relaxed);
+        stepper_state().position.store(0, Ordering::Relaxed);
+        tmc_state().current_limit_reg.store(0, Ordering::Relaxed);
     });
 }
 
@@ -618,13 +608,11 @@ fn commission_done_current_limit_restore_failure_disarms() {
         let mut backend = MockBackend::new();
         backend.fail_on_write = Some(foci_tmc4671::registers::PID_TORQUE_FLUX_LIMITS.addr());
         let (mut cal, mut en, mut gains) = fresh_state_locals();
-        let mut state = DispatchState {
-            calibrated: &mut cal,
-            motor_enabled: &mut en,
-            stored_gains: &mut gains,
-        };
-        crate::state::tmc::CURRENT_LIMIT_REG.store(0x0010_0010, Ordering::Relaxed);
-        crate::state::tmc::MOTOR_ARMED.store(true, Ordering::Relaxed);
+        let mut state = dispatch_state(&mut cal, &mut en, &mut gains);
+        tmc_state()
+            .current_limit_reg
+            .store(0x0010_0010, Ordering::Relaxed);
+        tmc_state().motor_armed.store(true, Ordering::Relaxed);
         let mut engine = Some(CommissioningEngine::new_commission(
             6,
             CommissionProfile::Balanced,
@@ -642,7 +630,7 @@ fn commission_done_current_limit_restore_failure_disarms() {
         assert!(!*state.calibrated);
         assert!(!*state.motor_enabled);
         assert!(!backend.enable_pin);
-        assert!(!crate::state::tmc::MOTOR_ARMED.load(Ordering::Relaxed));
+        assert!(!tmc_state().motor_armed.load(Ordering::Relaxed));
 
         match outcome {
             CommissionOutcome::Terminal {
@@ -656,7 +644,7 @@ fn commission_done_current_limit_restore_failure_disarms() {
             _ => panic!("expected CommissionResult error"),
         }
 
-        crate::state::tmc::CURRENT_LIMIT_REG.store(0, Ordering::Relaxed);
+        tmc_state().current_limit_reg.store(0, Ordering::Relaxed);
     });
 }
 
@@ -699,12 +687,8 @@ fn outer_failed_safety_fault_full_disarm() {
         let (_, _, mut gains) = fresh_state_locals();
         let mut cal = true;
         let mut en = true; // simulate motor was previously armed
-        crate::state::tmc::MOTOR_ARMED.store(true, Ordering::Relaxed);
-        let mut state = DispatchState {
-            calibrated: &mut cal,
-            motor_enabled: &mut en,
-            stored_gains: &mut gains,
-        };
+        tmc_state().motor_armed.store(true, Ordering::Relaxed);
+        let mut state = dispatch_state(&mut cal, &mut en, &mut gains);
         let mut engine = Some(CommissioningEngine::new_outer(
             0,
             sample_outer_params(),
@@ -724,7 +708,7 @@ fn outer_failed_safety_fault_full_disarm() {
         assert!(!*state.calibrated);
         assert!(!*state.motor_enabled);
         assert!(!backend.enable_pin);
-        assert!(!crate::state::tmc::MOTOR_ARMED.load(Ordering::Relaxed));
+        assert!(!tmc_state().motor_armed.load(Ordering::Relaxed));
         // Safety fault skips stability check — no delays.
         assert!(backend.delay_us_log.is_empty());
 
@@ -751,12 +735,8 @@ fn outer_failed_soft_failure_holds_motor() {
         let (_, _, mut gains) = fresh_state_locals();
         let mut cal = true;
         let mut en = true;
-        crate::state::stepper::STEPPER_POSITION.store(99, Ordering::Relaxed);
-        let mut state = DispatchState {
-            calibrated: &mut cal,
-            motor_enabled: &mut en,
-            stored_gains: &mut gains,
-        };
+        stepper_state().position.store(99, Ordering::Relaxed);
+        let mut state = dispatch_state(&mut cal, &mut en, &mut gains);
         let mut engine = Some(CommissioningEngine::new_outer(
             0,
             sample_outer_params(),
@@ -781,11 +761,8 @@ fn outer_failed_soft_failure_holds_motor() {
         // Motor still armed (soft failure, stable).
         assert!(*state.calibrated);
         assert!(backend.enable_pin);
-        // STEPPER_POSITION NOT zeroed (motor held position).
-        assert_eq!(
-            crate::state::stepper::STEPPER_POSITION.load(Ordering::Relaxed),
-            99
-        );
+        // Stepper position NOT zeroed (motor held position).
+        assert_eq!(stepper_state().position.load(Ordering::Relaxed), 99);
 
         match outcome {
             CommissionOutcome::Terminal {
@@ -798,8 +775,8 @@ fn outer_failed_soft_failure_holds_motor() {
             _ => panic!("expected TuneResult"),
         }
 
-        crate::state::tmc::MOTOR_ARMED.store(false, Ordering::Relaxed);
-        crate::state::stepper::STEPPER_POSITION.store(0, Ordering::Relaxed);
+        tmc_state().motor_armed.store(false, Ordering::Relaxed);
+        stepper_state().position.store(0, Ordering::Relaxed);
     });
 }
 
@@ -816,11 +793,7 @@ fn outer_failed_unstable_drift_preserves_upstream_error() {
         let (_, _, mut gains) = fresh_state_locals();
         let mut cal = true;
         let mut en = true;
-        let mut state = DispatchState {
-            calibrated: &mut cal,
-            motor_enabled: &mut en,
-            stored_gains: &mut gains,
-        };
+        let mut state = dispatch_state(&mut cal, &mut en, &mut gains);
         let mut engine = Some(CommissioningEngine::new_outer(
             0,
             sample_outer_params(),
@@ -856,7 +829,7 @@ fn outer_failed_unstable_drift_preserves_upstream_error() {
         assert_eq!(backend.delay_us_log.len(), 5);
         assert!(backend.delay_us_log.iter().all(|d| *d == 5_000));
 
-        crate::state::tmc::MOTOR_ARMED.store(false, Ordering::Relaxed);
+        tmc_state().motor_armed.store(false, Ordering::Relaxed);
     });
 }
 
@@ -878,11 +851,7 @@ fn outer_failed_restore_rejects_aliased_position_oscillation() {
         let (_, _, mut gains) = fresh_state_locals();
         let mut cal = true;
         let mut en = true;
-        let mut state = DispatchState {
-            calibrated: &mut cal,
-            motor_enabled: &mut en,
-            stored_gains: &mut gains,
-        };
+        let mut state = dispatch_state(&mut cal, &mut en, &mut gains);
         let mut engine = Some(CommissioningEngine::new_outer(
             0,
             sample_outer_params(),
@@ -932,11 +901,7 @@ fn outer_failed_restore_accepts_scaled_encoder_jitter() {
         let (_, _, mut gains) = fresh_state_locals();
         let mut cal = true;
         let mut en = true;
-        let mut state = DispatchState {
-            calibrated: &mut cal,
-            motor_enabled: &mut en,
-            stored_gains: &mut gains,
-        };
+        let mut state = dispatch_state(&mut cal, &mut en, &mut gains);
         let mut engine = Some(CommissioningEngine::new_outer(
             0,
             sample_outer_params(),
@@ -968,7 +933,7 @@ fn outer_failed_restore_accepts_scaled_encoder_jitter() {
             _ => panic!("expected TuneResult"),
         }
 
-        crate::state::tmc::MOTOR_ARMED.store(false, Ordering::Relaxed);
+        tmc_state().motor_armed.store(false, Ordering::Relaxed);
     });
 }
 
@@ -987,11 +952,7 @@ fn outer_failed_restore_rejects_monotonic_creep() {
         let (_, _, mut gains) = fresh_state_locals();
         let mut cal = true;
         let mut en = true;
-        let mut state = DispatchState {
-            calibrated: &mut cal,
-            motor_enabled: &mut en,
-            stored_gains: &mut gains,
-        };
+        let mut state = dispatch_state(&mut cal, &mut en, &mut gains);
         let mut engine = Some(CommissioningEngine::new_outer(
             0,
             sample_outer_params(),

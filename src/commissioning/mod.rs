@@ -21,6 +21,7 @@ use crate::commissioning::outer::{
     MechanicalIdData, MechanicalIdState, OuterPhase, OuterSafetyLimits,
 };
 use crate::commissioning::types::{AdcCalResult, CommissioningBackend, EngineKind, StepResult};
+use crate::state::tmc::TmcChannelState;
 
 // Re-export public API surface for downstream consumers.
 pub use crate::commissioning::types::{
@@ -130,6 +131,7 @@ pub(crate) enum EngineMode {
 /// P1 `tmc_control` task. Each 1kHz tick calls `step()`.
 pub struct CommissioningEngine {
     oid: u8,
+    tmc_state: &'static TmcChannelState,
     engine_mode: EngineMode,
     buf: TransientBuffer,
     /// Per-stage results collected during a selftest run. Populated only
@@ -144,8 +146,14 @@ impl CommissioningEngine {
     /// with saved gains. Skips coil/wiring/encoder diagnostics.
     /// Returns `StepResult::CalibrateDone` on success.
     pub fn new_calibrate(oid: u8) -> Self {
+        Self::new_calibrate_for_tmc(oid, crate::state::tmc::tmc_channel0())
+    }
+
+    /// Create a calibration engine bound to a TMC channel state.
+    pub fn new_calibrate_for_tmc(oid: u8, tmc_state: &'static TmcChannelState) -> Self {
         Self {
             oid,
+            tmc_state,
             engine_mode: EngineMode::Inner {
                 phase: InnerPhase::AdcCalibrate(inner::AdcCalState::Setup),
                 profile: CommissionProfile::Balanced,
@@ -163,8 +171,14 @@ impl CommissioningEngine {
     /// encoder alignment, and electrical identification, then stops with
     /// `StepResult::SelftestDone` after restoring safe state.
     pub fn new_selftest(oid: u8) -> Self {
+        Self::new_selftest_for_tmc(oid, crate::state::tmc::tmc_channel0())
+    }
+
+    /// Create a selftest engine bound to a TMC channel state.
+    pub fn new_selftest_for_tmc(oid: u8, tmc_state: &'static TmcChannelState) -> Self {
         Self {
             oid,
+            tmc_state,
             engine_mode: EngineMode::Inner {
                 phase: InnerPhase::AdcCalibrate(inner::AdcCalState::Setup),
                 profile: CommissionProfile::Balanced,
@@ -182,8 +196,18 @@ impl CommissioningEngine {
     /// closed-loop entry with fallback outer gains.
     /// Returns `StepResult::CommissionDone` on success.
     pub fn new_commission(oid: u8, profile: CommissionProfile) -> Self {
+        Self::new_commission_for_tmc(oid, crate::state::tmc::tmc_channel0(), profile)
+    }
+
+    /// Create a Stage 1 commissioning engine bound to a TMC channel state.
+    pub fn new_commission_for_tmc(
+        oid: u8,
+        tmc_state: &'static TmcChannelState,
+        profile: CommissionProfile,
+    ) -> Self {
         Self {
             oid,
+            tmc_state,
             engine_mode: EngineMode::Inner {
                 phase: InnerPhase::AdcCalibrate(inner::AdcCalState::Setup),
                 profile,
@@ -200,6 +224,21 @@ impl CommissioningEngine {
     /// `entry_snapshot` captures the active outer gains at entry for
     /// soft-failure restoration. Built by the caller from firmware atomics.
     pub fn new_outer(oid: u8, params: OuterTuneParams, entry_snapshot: EntrySnapshot) -> Self {
+        Self::new_outer_for_tmc(
+            oid,
+            crate::state::tmc::tmc_channel0(),
+            params,
+            entry_snapshot,
+        )
+    }
+
+    /// Create an outer commissioning engine bound to a TMC channel state.
+    pub fn new_outer_for_tmc(
+        oid: u8,
+        tmc_state: &'static TmcChannelState,
+        params: OuterTuneParams,
+        entry_snapshot: EntrySnapshot,
+    ) -> Self {
         // Safety limits and data are initialized with placeholder values.
         // The MechanicalIdState::Setup sub-state reads the actual encoder
         // position and current limit from the backend on the first step().
@@ -219,6 +258,7 @@ impl CommissioningEngine {
         } = params;
         Self {
             oid,
+            tmc_state,
             engine_mode: EngineMode::Outer {
                 phase: OuterPhase::MechanicalId {
                     state: MechanicalIdState::Setup,
@@ -300,7 +340,9 @@ impl CommissioningEngine {
             // step_inner / step_outer entirely. Drive the canonical helper
             // here so step processing is gated and the chip is de-energized
             // before the abort is reported.
-            crate::state::tmc::MOTOR_ARMED.store(false, core::sync::atomic::Ordering::Relaxed);
+            self.tmc_state
+                .motor_armed
+                .store(false, core::sync::atomic::Ordering::Relaxed);
             crate::tmc_safe_state::restore_safe_state_via_backend(backend).await;
             return self.abort(CommissionError::Shutdown);
         }
@@ -372,6 +414,10 @@ mod tests {
     use super::*;
     use crate::commissioning::types::EngineKind;
 
+    fn tmc_state() -> &'static crate::state::tmc::TmcChannelState {
+        crate::state::tmc::tmc_channel0()
+    }
+
     fn sample_outer_params() -> OuterTuneParams {
         OuterTuneParams {
             profile: crate::autotune::CommissionProfile::Balanced,
@@ -439,7 +485,7 @@ mod tests {
             let mut backend = crate::commission_dispatch::test_support::MockBackend::new();
             backend.shutdown_requested = true;
             backend.enable_pin = true;
-            crate::state::tmc::MOTOR_ARMED.store(true, Ordering::Relaxed);
+            tmc_state().motor_armed.store(true, Ordering::Relaxed);
 
             let result = engine.step(&mut backend).await;
 
@@ -451,7 +497,7 @@ mod tests {
             ));
             assert!(!backend.enable_pin, "shutdown abort must lower enable pin");
             assert!(
-                !crate::state::tmc::MOTOR_ARMED.load(Ordering::Relaxed),
+                !tmc_state().motor_armed.load(Ordering::Relaxed),
                 "shutdown abort must gate step processing before reporting failure"
             );
         });

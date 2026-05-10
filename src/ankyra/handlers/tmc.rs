@@ -18,12 +18,9 @@
 use ankyra::prelude::klipper_command;
 use core::sync::atomic::Ordering;
 
-use crate::context::{BoardChannels, ShutdownRecovery, StateAccess, TmcHost};
+use crate::context::{BoardChannels, ShutdownRecovery, TmcHost};
 use crate::shutdown::ShutdownReason;
-use crate::state::tmc::{
-    FLUX_FILTER_HZ, POSITION_FILTER_HZ, STEP_WIDTH_VALUE, TORQUE_FILTER_HZ, VELOCITY_FEEDFORWARD,
-    VELOCITY_FILTER_HZ, VELOCITY_LIMIT_CFG,
-};
+use crate::state::tmc::TmcChannelState;
 
 /// Bind a FOCI TMC driver OID to a configured stepper and board channel.
 #[klipper_command]
@@ -48,7 +45,7 @@ pub fn config_foci_tmc(ctx: &mut dyn FociConfigHost, oid: u8, stepper_oid: u8, c
 #[cfg(feature = "dev")]
 #[klipper_command]
 pub fn tmc_init(ctx: &mut dyn TmcWriteHost, oid: u8) {
-    let Some(channel) = foci_channel_or_shutdown(ctx, oid) else {
+    let Some((channel, _state)) = foci_tmc_state_or_shutdown(ctx, oid) else {
         return;
     };
     let _ = ctx.enqueue_request(crate::tmc::tmc_init(channel));
@@ -58,7 +55,7 @@ pub fn tmc_init(ctx: &mut dyn TmcWriteHost, oid: u8) {
 #[cfg(feature = "dev")]
 #[klipper_command]
 pub fn tmc_test_spin(ctx: &mut dyn TmcWriteHost, oid: u8, revolutions: u8) {
-    let Some(channel) = foci_channel_or_shutdown(ctx, oid) else {
+    let Some((channel, _state)) = foci_tmc_state_or_shutdown(ctx, oid) else {
         return;
     };
     let _ = ctx.enqueue_request(crate::tmc::tmc_test_spin(channel, revolutions));
@@ -68,7 +65,7 @@ pub fn tmc_test_spin(ctx: &mut dyn TmcWriteHost, oid: u8, revolutions: u8) {
 #[cfg(feature = "dev")]
 #[klipper_command]
 pub fn tmc_write_register(ctx: &mut dyn TmcWriteHost, oid: u8, addr: u8, value: u32) {
-    let Some(channel) = foci_channel_or_shutdown(ctx, oid) else {
+    let Some((channel, _state)) = foci_tmc_state_or_shutdown(ctx, oid) else {
         return;
     };
     let _ = ctx.enqueue_request(crate::tmc::tmc_write_register(channel, addr, value));
@@ -82,7 +79,7 @@ pub fn tmc_write_register(ctx: &mut dyn TmcWriteHost, oid: u8, addr: u8, value: 
 #[cfg(feature = "dev")]
 #[klipper_command]
 pub fn tmc_read_register(ctx: &mut dyn TmcWriteHost, oid: u8, addr: u8) {
-    let Some(channel) = foci_channel_or_shutdown(ctx, oid) else {
+    let Some((channel, _state)) = foci_tmc_state_or_shutdown(ctx, oid) else {
         return;
     };
     if ctx
@@ -98,7 +95,7 @@ pub fn tmc_read_register(ctx: &mut dyn TmcWriteHost, oid: u8, addr: u8) {
 /// current scaling factor.
 #[klipper_command]
 pub fn tmc_set_current(ctx: &mut dyn TmcWriteHost, oid: u8, run_ma: u32) {
-    let Some(channel) = foci_channel_or_shutdown(ctx, oid) else {
+    let Some((channel, _state)) = foci_tmc_state_or_shutdown(ctx, oid) else {
         return;
     };
     if ctx
@@ -114,17 +111,17 @@ pub fn tmc_set_current(ctx: &mut dyn TmcWriteHost, oid: u8, run_ma: u32) {
 /// Configure ABN encoder resolution and compute step width.
 ///
 /// Uses `tmc_set_encoder_hw` to compute the step width from PPR and
-/// pole pairs, then stores it in the `STEP_WIDTH_VALUE` atomic for
+/// pole pairs, then stores it in the channel runtime state for
 /// the TMC4671 STEP_WIDTH register. The TMC4671 position PID operates
 /// on phi_e, not encoder counts:
 ///   `step_width = 65536 * pole_pairs / quadrature_ppr`
 #[klipper_command]
 pub fn tmc_set_encoder(ctx: &mut dyn TmcWriteHost, oid: u8, channel: u8, ppr: u32) {
-    let Some(channel) = foci_channel_matching_or_shutdown(ctx, oid, channel) else {
+    let Some((channel, state)) = foci_tmc_state_matching_or_shutdown(ctx, oid, channel) else {
         return;
     };
     let (req, step_width) = crate::tmc::tmc_set_encoder_hw(channel, ppr, 50);
-    STEP_WIDTH_VALUE.store(step_width, Ordering::Relaxed);
+    state.step_width_value.store(step_width, Ordering::Relaxed);
     defmt::info!("channel={} ppr={} step_width={}", channel, ppr, step_width);
     if ctx.enqueue_request(req).is_err() && ctx.enter_shutdown() {
         let clock = ctx.now();
@@ -137,7 +134,7 @@ pub fn tmc_set_encoder(ctx: &mut dyn TmcWriteHost, oid: u8, channel: u8, ppr: u3
 /// motor/encoder wiring — not board-specific.
 #[klipper_command]
 pub fn tmc_set_encoder_dir(ctx: &mut dyn TmcWriteHost, oid: u8, channel: u8, invert: u8) {
-    let Some(channel) = foci_channel_matching_or_shutdown(ctx, oid, channel) else {
+    let Some((channel, _state)) = foci_tmc_state_matching_or_shutdown(ctx, oid, channel) else {
         return;
     };
     if ctx
@@ -160,7 +157,7 @@ pub fn tmc_set_pid_gains(
     torque_p: u16,
     torque_i: u16,
 ) {
-    let Some(channel) = foci_channel_or_shutdown(ctx, oid) else {
+    let Some((channel, _state)) = foci_tmc_state_or_shutdown(ctx, oid) else {
         return;
     };
     if ctx
@@ -177,29 +174,41 @@ pub fn tmc_set_pid_gains(
 
 /// Set velocity biquad filter cutoff frequency from host config.
 #[klipper_command]
-pub fn tmc_set_velocity_filter(_ctx: &mut dyn StateAccess, _oid: u8, filter_hz: u16) {
-    VELOCITY_FILTER_HZ.store(filter_hz, Ordering::Relaxed);
+pub fn tmc_set_velocity_filter(ctx: &mut dyn ShutdownRecovery, oid: u8, filter_hz: u16) {
+    let Some((_channel, state)) = foci_tmc_state_or_shutdown(ctx, oid) else {
+        return;
+    };
+    state.velocity_filter_hz.store(filter_hz, Ordering::Relaxed);
     defmt::info!("Velocity filter: {} Hz", filter_hz);
 }
 
 /// Set torque biquad filter cutoff frequency from host config.
 #[klipper_command]
-pub fn tmc_set_torque_filter(_ctx: &mut dyn StateAccess, _oid: u8, filter_hz: u16) {
-    TORQUE_FILTER_HZ.store(filter_hz, Ordering::Relaxed);
+pub fn tmc_set_torque_filter(ctx: &mut dyn ShutdownRecovery, oid: u8, filter_hz: u16) {
+    let Some((_channel, state)) = foci_tmc_state_or_shutdown(ctx, oid) else {
+        return;
+    };
+    state.torque_filter_hz.store(filter_hz, Ordering::Relaxed);
     defmt::info!("Torque filter: {} Hz", filter_hz);
 }
 
 /// Set position target biquad filter cutoff frequency from host config.
 #[klipper_command]
-pub fn tmc_set_position_filter(_ctx: &mut dyn StateAccess, _oid: u8, filter_hz: u16) {
-    POSITION_FILTER_HZ.store(filter_hz, Ordering::Relaxed);
+pub fn tmc_set_position_filter(ctx: &mut dyn ShutdownRecovery, oid: u8, filter_hz: u16) {
+    let Some((_channel, state)) = foci_tmc_state_or_shutdown(ctx, oid) else {
+        return;
+    };
+    state.position_filter_hz.store(filter_hz, Ordering::Relaxed);
     defmt::info!("Position filter: {} Hz", filter_hz);
 }
 
 /// Set flux biquad filter cutoff frequency from host config.
 #[klipper_command]
-pub fn tmc_set_flux_filter(_ctx: &mut dyn StateAccess, _oid: u8, filter_hz: u16) {
-    FLUX_FILTER_HZ.store(filter_hz, Ordering::Relaxed);
+pub fn tmc_set_flux_filter(ctx: &mut dyn ShutdownRecovery, oid: u8, filter_hz: u16) {
+    let Some((_channel, state)) = foci_tmc_state_or_shutdown(ctx, oid) else {
+        return;
+    };
+    state.flux_filter_hz.store(filter_hz, Ordering::Relaxed);
     defmt::info!("Flux filter: {} Hz", filter_hz);
 }
 
@@ -213,7 +222,7 @@ pub fn tmc_set_position_gains(
     velocity_p: u16,
     velocity_i: u16,
 ) {
-    let Some(channel) = foci_channel_or_shutdown(ctx, oid) else {
+    let Some((channel, _state)) = foci_tmc_state_or_shutdown(ctx, oid) else {
         return;
     };
     if ctx
@@ -230,8 +239,13 @@ pub fn tmc_set_position_gains(
 
 /// Enable or disable velocity feedforward from host config.
 #[klipper_command]
-pub fn tmc_set_velocity_feedforward(_ctx: &mut dyn StateAccess, _oid: u8, enable: u8) {
-    VELOCITY_FEEDFORWARD.store(enable != 0, Ordering::Relaxed);
+pub fn tmc_set_velocity_feedforward(ctx: &mut dyn ShutdownRecovery, oid: u8, enable: u8) {
+    let Some((_channel, state)) = foci_tmc_state_or_shutdown(ctx, oid) else {
+        return;
+    };
+    state
+        .velocity_feedforward
+        .store(enable != 0, Ordering::Relaxed);
     defmt::info!("Velocity feedforward: {}", enable != 0);
 }
 
@@ -241,15 +255,23 @@ pub fn tmc_set_velocity_feedforward(_ctx: &mut dyn StateAccess, _oid: u8, enable
 /// Firmware default: 500,000. Override via `pid_velocity_limit` in
 /// `printer.cfg`.
 #[klipper_command]
-pub fn tmc_set_velocity_limit(_ctx: &mut dyn StateAccess, _oid: u8, limit: u32) {
-    VELOCITY_LIMIT_CFG.store(limit, Ordering::Relaxed);
+pub fn tmc_set_velocity_limit(ctx: &mut dyn ShutdownRecovery, oid: u8, limit: u32) {
+    let Some((_channel, state)) = foci_tmc_state_or_shutdown(ctx, oid) else {
+        return;
+    };
+    state.velocity_limit_cfg.store(limit, Ordering::Relaxed);
     defmt::info!("Velocity limit: {}", limit);
 }
 
 /// Set whether a raw enable may trigger firmware-side auto-calibration.
 #[klipper_command]
-pub fn tmc_set_auto_calibrate_on_enable(_ctx: &mut dyn StateAccess, _oid: u8, enable: u8) {
-    crate::tmc::set_auto_calibrate_on_enable_allowed(enable != 0);
+pub fn tmc_set_auto_calibrate_on_enable(ctx: &mut dyn ShutdownRecovery, oid: u8, enable: u8) {
+    let Some((_channel, state)) = foci_tmc_state_or_shutdown(ctx, oid) else {
+        return;
+    };
+    state
+        .auto_calibrate_on_enable_allowed
+        .store(enable != 0, Ordering::Relaxed);
     defmt::info!("Auto-calibrate on enable: {}", enable != 0);
 }
 
@@ -268,9 +290,14 @@ impl<T: ?Sized + ShutdownRecovery + TmcHost> TmcWriteHost for T {}
 pub trait FociConfigHost: ShutdownRecovery + BoardChannels {}
 impl<T: ?Sized + ShutdownRecovery + BoardChannels> FociConfigHost for T {}
 
-fn foci_channel_or_shutdown(ctx: &mut dyn ShutdownRecovery, oid: u8) -> Option<u8> {
+fn foci_tmc_state_or_shutdown(
+    ctx: &mut dyn ShutdownRecovery,
+    oid: u8,
+) -> Option<(u8, &'static TmcChannelState)> {
     match ctx.state().foci_channel_for_oid(oid) {
-        Some(channel) => Some(channel),
+        Some(channel) => {
+            tmc_state_for_channel_or_shutdown(ctx, channel).map(|state| (channel, state))
+        }
         None => {
             shutdown_invalid_tmc_channel(ctx);
             None
@@ -278,17 +305,30 @@ fn foci_channel_or_shutdown(ctx: &mut dyn ShutdownRecovery, oid: u8) -> Option<u
     }
 }
 
-fn foci_channel_matching_or_shutdown(
+fn foci_tmc_state_matching_or_shutdown(
     ctx: &mut dyn ShutdownRecovery,
     oid: u8,
     requested_channel: u8,
-) -> Option<u8> {
-    let channel = foci_channel_or_shutdown(ctx, oid)?;
+) -> Option<(u8, &'static TmcChannelState)> {
+    let (channel, state) = foci_tmc_state_or_shutdown(ctx, oid)?;
     if channel != requested_channel {
         shutdown_invalid_tmc_channel(ctx);
         return None;
     }
-    Some(channel)
+    Some((channel, state))
+}
+
+fn tmc_state_for_channel_or_shutdown(
+    ctx: &mut dyn ShutdownRecovery,
+    channel: u8,
+) -> Option<&'static TmcChannelState> {
+    match crate::state::tmc::tmc_channel(channel) {
+        Some(state) => Some(state),
+        None => {
+            shutdown_invalid_tmc_channel(ctx);
+            None
+        }
+    }
 }
 
 fn shutdown_invalid_tmc_channel(ctx: &mut dyn ShutdownRecovery) {

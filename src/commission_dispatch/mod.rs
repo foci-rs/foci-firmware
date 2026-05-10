@@ -25,6 +25,8 @@ use crate::commissioning::{
 };
 use crate::pid::InnerLoopGains;
 use crate::selftest::SelftestResults;
+use crate::state::stepper::StepperChannelState;
+use crate::state::tmc::TmcChannelState;
 
 /// Borrowed view of the per-engine task locals the dispatch needs to mutate.
 ///
@@ -32,9 +34,32 @@ use crate::selftest::SelftestResults;
 /// it constructs a `DispatchState` so the firmware can mutate them in
 /// place without copy-back.
 pub struct DispatchState<'a> {
+    /// Channel-local TMC runtime atomics for the active motor.
+    pub tmc: &'static TmcChannelState,
+    /// Channel-local stepper runtime atomics for the active motor.
+    pub stepper: &'static StepperChannelState,
     pub calibrated: &'a mut bool,
     pub motor_enabled: &'a mut bool,
     pub stored_gains: &'a mut Option<InnerLoopGains>,
+}
+
+impl<'a> DispatchState<'a> {
+    /// Build a dispatch-state view for one board-local motor channel.
+    pub fn new(
+        tmc: &'static TmcChannelState,
+        stepper: &'static StepperChannelState,
+        calibrated: &'a mut bool,
+        motor_enabled: &'a mut bool,
+        stored_gains: &'a mut Option<InnerLoopGains>,
+    ) -> Self {
+        Self {
+            tmc,
+            stepper,
+            calibrated,
+            motor_enabled,
+            stored_gains,
+        }
+    }
 }
 
 /// What the board should do after the dispatch returns.
@@ -241,7 +266,9 @@ pub async fn drive_commission_result<B: CommissioningBackend>(
             let mut consumed = engine.take().expect("engine slot None on SelftestDone");
             let oid = consumed.oid();
             let results = consumed.take_selftest_results();
-            crate::state::tmc::COMMISSION_IN_FLIGHT
+            state
+                .tmc
+                .commission_in_flight
                 .store(false, core::sync::atomic::Ordering::Relaxed);
             CommissionOutcome::Terminal {
                 reply: ReplyPayload::Selftest {
@@ -257,7 +284,9 @@ pub async fn drive_commission_result<B: CommissioningBackend>(
             let oid = consumed.oid();
             let kind = consumed.kind();
             let selftest_results = consumed.take_selftest_results();
-            crate::state::tmc::COMMISSION_IN_FLIGHT
+            state
+                .tmc
+                .commission_in_flight
                 .store(false, core::sync::atomic::Ordering::Relaxed);
             crate::tmc_safe_state::restore_safe_state_via_backend(backend).await;
 
@@ -289,13 +318,19 @@ pub async fn drive_commission_result<B: CommissioningBackend>(
         StepResult::CalibrateDone(cal_result) => {
             let consumed = engine.take().expect("engine slot None on CalibrateDone");
             let oid = consumed.oid();
-            crate::state::tmc::MOTOR_ARMED.store(false, core::sync::atomic::Ordering::Relaxed);
+            state
+                .tmc
+                .motor_armed
+                .store(false, core::sync::atomic::Ordering::Relaxed);
             let restore_result =
-                crate::tmc_ops::restore_calibrate_gains(backend, *state.stored_gains).await;
+                crate::tmc_ops::restore_calibrate_gains(backend, state.tmc, *state.stored_gains)
+                    .await;
             if restore_result.is_err() {
                 defmt::error!("CalibrateDone: saved gain restore SPI failed");
                 crate::tmc_ops::disarm_motor(backend, state).await;
-                crate::state::tmc::COMMISSION_IN_FLIGHT
+                state
+                    .tmc
+                    .commission_in_flight
                     .store(false, core::sync::atomic::Ordering::Relaxed);
                 return CommissionOutcome::Terminal {
                     reply: ReplyPayload::CalibrateResult {
@@ -310,13 +345,15 @@ pub async fn drive_commission_result<B: CommissioningBackend>(
                 };
             }
 
-            if crate::tmc_ops::apply_stored_filters_via_backend(backend, pwm_maxcnt)
+            if crate::tmc_ops::apply_stored_filters_via_backend(backend, state.tmc, pwm_maxcnt)
                 .await
                 .is_err()
             {
                 defmt::error!("CalibrateDone: stored filter restore SPI failed");
                 crate::tmc_ops::disarm_motor(backend, state).await;
-                crate::state::tmc::COMMISSION_IN_FLIGHT
+                state
+                    .tmc
+                    .commission_in_flight
                     .store(false, core::sync::atomic::Ordering::Relaxed);
                 return CommissionOutcome::Terminal {
                     reply: ReplyPayload::CalibrateResult {
@@ -334,7 +371,9 @@ pub async fn drive_commission_result<B: CommissioningBackend>(
             *state.calibrated = true;
             crate::tmc_ops::arm_motor_electrical(backend, state);
 
-            crate::state::tmc::COMMISSION_IN_FLIGHT
+            state
+                .tmc
+                .commission_in_flight
                 .store(false, core::sync::atomic::Ordering::Relaxed);
 
             CommissionOutcome::Terminal {
@@ -357,7 +396,7 @@ pub async fn drive_commission_result<B: CommissioningBackend>(
             // The engine's ClosedLoopEntry phase already set PID gains, limits,
             // filters, and entered position mode. Re-apply current limit because
             // the mode change resets PID_TORQUE_FLUX_LIMITS.
-            let current_limit = crate::state::tmc::CURRENT_LIMIT_REG.load(Relaxed);
+            let current_limit = state.tmc.current_limit_reg.load(Relaxed);
             if backend
                 .write_register(
                     foci_tmc4671::registers::PID_TORQUE_FLUX_LIMITS,
@@ -368,7 +407,7 @@ pub async fn drive_commission_result<B: CommissioningBackend>(
             {
                 defmt::error!("CommissionDone: current-limit restore SPI failed");
                 crate::tmc_ops::disarm_motor(backend, state).await;
-                crate::state::tmc::COMMISSION_IN_FLIGHT.store(false, Relaxed);
+                state.tmc.commission_in_flight.store(false, Relaxed);
                 return CommissionOutcome::Terminal {
                     reply: ReplyPayload::CommissionResult {
                         oid,
@@ -392,21 +431,31 @@ pub async fn drive_commission_result<B: CommissioningBackend>(
             });
 
             // Sync outer-gain atomics to the fallback values the engine wrote.
-            crate::state::tmc::POSITION_P_VALUE
+            state
+                .tmc
+                .position_p_value
                 .store(commission_result.fallback_position_p, Relaxed);
-            crate::state::tmc::POSITION_I_VALUE
+            state
+                .tmc
+                .position_i_value
                 .store(commission_result.fallback_position_i, Relaxed);
-            crate::state::tmc::VELOCITY_P_VALUE
+            state
+                .tmc
+                .velocity_p_value
                 .store(commission_result.fallback_velocity_p, Relaxed);
-            crate::state::tmc::VELOCITY_I_VALUE
+            state
+                .tmc
+                .velocity_i_value
                 .store(commission_result.fallback_velocity_i, Relaxed);
-            crate::state::tmc::VELOCITY_LIMIT_CFG
+            state
+                .tmc
+                .velocity_limit_cfg
                 .store(commission_result.fallback_velocity_limit, Relaxed);
 
             *state.calibrated = true;
             crate::tmc_ops::arm_motor_electrical(backend, state);
 
-            crate::state::tmc::COMMISSION_IN_FLIGHT.store(false, Relaxed);
+            state.tmc.commission_in_flight.store(false, Relaxed);
 
             let status = match inner.status {
                 crate::autotune::CommissionStatus::Accepted => 0u8,
@@ -431,27 +480,42 @@ pub async fn drive_commission_result<B: CommissioningBackend>(
             use core::sync::atomic::Ordering::Relaxed;
             let consumed = engine.take().expect("engine slot None on OuterDone");
             let oid = consumed.oid();
-            crate::state::tmc::MOTOR_ARMED.store(false, Relaxed);
+            state.tmc.motor_armed.store(false, Relaxed);
 
             // Persist outer gains to atomics for closed-loop entry.
-            crate::state::tmc::POSITION_P_VALUE.store(outer.position_p, Relaxed);
-            crate::state::tmc::POSITION_I_VALUE.store(outer.position_i, Relaxed);
-            crate::state::tmc::VELOCITY_P_VALUE.store(outer.velocity_p, Relaxed);
-            crate::state::tmc::VELOCITY_I_VALUE.store(outer.velocity_i, Relaxed);
-            crate::state::tmc::VELOCITY_LIMIT_CFG.store(outer.velocity_limit, Relaxed);
-            crate::state::tmc::VELOCITY_FILTER_HZ.store(outer.velocity_filter_hz, Relaxed);
-            crate::state::tmc::POSITION_FILTER_HZ.store(outer.position_filter_hz, Relaxed);
-            crate::state::tmc::FLUX_FILTER_HZ.store(outer.flux_filter_hz, Relaxed);
-            crate::state::tmc::TORQUE_FILTER_HZ.store(outer.torque_filter_hz, Relaxed);
+            state.tmc.position_p_value.store(outer.position_p, Relaxed);
+            state.tmc.position_i_value.store(outer.position_i, Relaxed);
+            state.tmc.velocity_p_value.store(outer.velocity_p, Relaxed);
+            state.tmc.velocity_i_value.store(outer.velocity_i, Relaxed);
+            state
+                .tmc
+                .velocity_limit_cfg
+                .store(outer.velocity_limit, Relaxed);
+            state
+                .tmc
+                .velocity_filter_hz
+                .store(outer.velocity_filter_hz, Relaxed);
+            state
+                .tmc
+                .position_filter_hz
+                .store(outer.position_filter_hz, Relaxed);
+            state
+                .tmc
+                .flux_filter_hz
+                .store(outer.flux_filter_hz, Relaxed);
+            state
+                .tmc
+                .torque_filter_hz
+                .store(outer.torque_filter_hz, Relaxed);
 
             // SPI restore — enter position mode with the tuned gains.
-            if crate::tmc_ops::restore_position_mode_after_outer(backend, &outer)
+            if crate::tmc_ops::restore_position_mode_after_outer(backend, state.tmc, &outer)
                 .await
                 .is_err()
             {
                 defmt::error!("OuterDone: position-mode restore SPI failed");
                 crate::tmc_ops::disarm_motor(backend, state).await;
-                crate::state::tmc::COMMISSION_IN_FLIGHT.store(false, Relaxed);
+                state.tmc.commission_in_flight.store(false, Relaxed);
                 return CommissionOutcome::Terminal {
                     reply: ReplyPayload::TuneResult {
                         oid,
@@ -465,13 +529,13 @@ pub async fn drive_commission_result<B: CommissioningBackend>(
                 };
             }
 
-            if crate::tmc_ops::apply_stored_filters_via_backend(backend, pwm_maxcnt)
+            if crate::tmc_ops::apply_stored_filters_via_backend(backend, state.tmc, pwm_maxcnt)
                 .await
                 .is_err()
             {
                 defmt::error!("OuterDone: stored filter apply SPI failed");
                 crate::tmc_ops::disarm_motor(backend, state).await;
-                crate::state::tmc::COMMISSION_IN_FLIGHT.store(false, Relaxed);
+                state.tmc.commission_in_flight.store(false, Relaxed);
                 return CommissionOutcome::Terminal {
                     reply: ReplyPayload::TuneResult {
                         oid,
@@ -488,7 +552,7 @@ pub async fn drive_commission_result<B: CommissioningBackend>(
             *state.calibrated = true;
             crate::tmc_ops::arm_motor_electrical(backend, state);
 
-            crate::state::tmc::COMMISSION_IN_FLIGHT.store(false, Relaxed);
+            state.tmc.commission_in_flight.store(false, Relaxed);
 
             let status = match outer.status {
                 crate::autotune::CommissionStatus::Accepted => 0u8,
@@ -579,7 +643,7 @@ pub async fn drive_commission_result<B: CommissioningBackend>(
                 )
             };
 
-            crate::state::tmc::COMMISSION_IN_FLIGHT.store(false, Relaxed);
+            state.tmc.commission_in_flight.store(false, Relaxed);
 
             CommissionOutcome::Terminal {
                 reply: ReplyPayload::TuneResult {

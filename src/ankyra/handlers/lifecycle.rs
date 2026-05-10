@@ -21,12 +21,8 @@ use crate::shutdown::ShutdownReason;
 use crate::state::lifecycle::{
     REPORT_PENDING, SHUTDOWN_ACTIVE, STATS_SEND_TIME, STATS_SEND_TIME_HIGH,
 };
-use crate::state::stepper::STEPPER_POSITION_TARGET;
-use crate::state::tmc::{
-    COMMISSION_IN_FLIGHT, CURRENT_LIMIT_REG, ENCODER_REVERSED, FEEDFORWARD_RESET, FLUX_FILTER_HZ,
-    PID_ERROR_SUMS_CLEAR, POSITION_FILTER_HZ, TMC_QUEUE_FLUSH, TORQUE_FILTER_HZ,
-    VELOCITY_FEEDFORWARD, VELOCITY_FILTER_HZ, VELOCITY_LIMIT_CFG,
-};
+use crate::state::stepper::reset_all_stepper_channels;
+use crate::state::tmc::{TMC_QUEUE_FLUSH, reset_all_tmc_channels};
 use crate::state::trsync::{ENDSTOP_PIN_IDS, HOMING_STATE, HOMING_TRIGGERED};
 
 #[klipper_command(in_shutdown)]
@@ -102,18 +98,8 @@ pub fn config_reset(ctx: &mut dyn LifecycleReset) {
         pin_id.store(0xFF, Relaxed);
     }
     // Reset board-local control and protocol state
-    CURRENT_LIMIT_REG.store(0, Relaxed);
-    VELOCITY_FILTER_HZ.store(0, Relaxed);
-    TORQUE_FILTER_HZ.store(0, Relaxed);
-    POSITION_FILTER_HZ.store(0, Relaxed);
-    FLUX_FILTER_HZ.store(0, Relaxed);
-    VELOCITY_FEEDFORWARD.store(false, Relaxed);
-    VELOCITY_LIMIT_CFG.store(500_000, Relaxed);
-    FEEDFORWARD_RESET.store(false, Relaxed);
-    PID_ERROR_SUMS_CLEAR.store(false, Relaxed);
-    ENCODER_REVERSED.store(false, Relaxed);
-    STEPPER_POSITION_TARGET.store(0, Relaxed);
-    COMMISSION_IN_FLIGHT.store(false, Relaxed);
+    reset_all_tmc_channels();
+    reset_all_stepper_channels();
     STATS_SEND_TIME.store(0, Relaxed);
     STATS_SEND_TIME_HIGH.store(0, Relaxed);
     // Signal tmc_control to drain stale requests from the pre-reset epoch

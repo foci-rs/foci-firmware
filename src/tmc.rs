@@ -271,13 +271,25 @@ pub fn tmc_set_enable(channel: u8, enable: bool) -> TmcRequest {
 }
 
 /// Set whether a raw enable may trigger firmware-side auto-calibration.
-pub fn set_auto_calibrate_on_enable_allowed(enable: bool) {
-    crate::state::tmc::AUTO_CALIBRATE_ON_ENABLE_ALLOWED.store(enable, Ordering::Relaxed);
+pub fn set_auto_calibrate_on_enable_allowed(channel: u8, enable: bool) -> bool {
+    let Some(state) = crate::state::tmc::tmc_channel(channel) else {
+        return false;
+    };
+    state
+        .auto_calibrate_on_enable_allowed
+        .store(enable, Ordering::Relaxed);
+    true
 }
 
 /// Return whether raw enable auto-calibration is currently allowed.
-pub fn auto_calibrate_on_enable_allowed() -> bool {
-    crate::state::tmc::AUTO_CALIBRATE_ON_ENABLE_ALLOWED.load(Ordering::Relaxed)
+pub fn auto_calibrate_on_enable_allowed(channel: u8) -> bool {
+    crate::state::tmc::tmc_channel(channel)
+        .map(|state| {
+            state
+                .auto_calibrate_on_enable_allowed
+                .load(Ordering::Relaxed)
+        })
+        .unwrap_or(false)
 }
 
 /// Build a `TraceInfo` request.
@@ -512,14 +524,14 @@ mod tests {
 
     #[test]
     fn auto_calibrate_on_enable_policy_can_be_toggled() {
-        set_auto_calibrate_on_enable_allowed(false);
-        assert!(!auto_calibrate_on_enable_allowed());
+        set_auto_calibrate_on_enable_allowed(0, false);
+        assert!(!auto_calibrate_on_enable_allowed(0));
 
-        set_auto_calibrate_on_enable_allowed(true);
-        assert!(auto_calibrate_on_enable_allowed());
+        set_auto_calibrate_on_enable_allowed(0, true);
+        assert!(auto_calibrate_on_enable_allowed(0));
 
-        set_auto_calibrate_on_enable_allowed(false);
-        assert!(!auto_calibrate_on_enable_allowed());
+        set_auto_calibrate_on_enable_allowed(0, false);
+        assert!(!auto_calibrate_on_enable_allowed(0));
     }
 
     #[test]

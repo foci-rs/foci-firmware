@@ -16,7 +16,7 @@ use ankyra::prelude::klipper_command;
 
 use crate::context::{BoardChannels, ShutdownRecovery, StateAccess, StepperHost, TrsyncHost};
 use crate::shutdown::ShutdownReason;
-use crate::state::stepper::STEPPER_POSITION;
+use crate::state::stepper::stepper_channel;
 use crate::state::trsync::HOMING_STATE;
 
 /// Register a stepper motor object.
@@ -129,8 +129,8 @@ pub fn reset_step_clock(ctx: &mut dyn StepperReset, _oid: u8, clock: u32) {
 
 /// Report the current position of a stepper.
 #[klipper_command]
-pub fn stepper_get_position(_ctx: &mut dyn StateAccess, oid: u8) {
-    let pos = STEPPER_POSITION.load(core::sync::atomic::Ordering::Relaxed);
+pub fn stepper_get_position(ctx: &mut dyn StateAccess, oid: u8) {
+    let pos = stepper_position(ctx, oid);
     ::ankyra::klipper_reply!(
         crate::ankyra::replies::StepperPosition,
         oid: u8 = oid,
@@ -143,13 +143,31 @@ pub fn stepper_get_position(_ctx: &mut dyn StateAccess, oid: u8) {
 /// For hardware step/dir this is equivalent to `stepper_get_position`
 /// since the firmware tracks only the logical step count.
 #[klipper_command]
-pub fn stepper_get_commanded_position(_ctx: &mut dyn StateAccess, oid: u8) {
-    let pos = STEPPER_POSITION.load(core::sync::atomic::Ordering::Relaxed);
+pub fn stepper_get_commanded_position(ctx: &mut dyn StateAccess, oid: u8) {
+    let pos = stepper_position(ctx, oid);
     ::ankyra::klipper_reply!(
         crate::ankyra::replies::StepperPosition,
         oid: u8 = oid,
         pos: i32 = pos
     );
+}
+
+fn stepper_position(ctx: &mut dyn StateAccess, oid: u8) -> i32 {
+    let channel = match ctx.state().stepper_channel(oid) {
+        Some(channel) => channel,
+        None => {
+            defmt::error!("stepper_get_position: unknown stepper oid={}", oid);
+            return 0;
+        }
+    };
+    let state = match stepper_channel(channel) {
+        Some(state) => state,
+        None => {
+            defmt::error!("stepper_get_position: invalid channel={}", channel);
+            return 0;
+        }
+    };
+    state.position.load(core::sync::atomic::Ordering::Relaxed)
 }
 
 /// Link a stepper to a TrSync so the stepper stops when the TrSync triggers.
