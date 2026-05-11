@@ -202,7 +202,7 @@ pub fn foci_commission(ctx: &mut dyn FociRuntimeHost, oid: u8, profile: u8) {
 }
 
 /// Composite bound for runtime FOCI handlers: they enqueue TMC requests
-/// and enter shutdown when an OID has no configured channel binding.
+/// and enter shutdown when an OID has no configured stepper channel.
 pub trait FociRuntimeHost: ShutdownRecovery + TmcHost {}
 impl<T: ?Sized + ShutdownRecovery + TmcHost> FociRuntimeHost for T {}
 
@@ -210,7 +210,7 @@ fn foci_tmc_state_or_shutdown(
     ctx: &mut dyn ShutdownRecovery,
     oid: u8,
 ) -> Option<(u8, &'static TmcChannelState)> {
-    match ctx.state().foci_channel_for_oid(oid) {
+    match ctx.state().stepper_channel(oid) {
         Some(channel) => match crate::state::tmc::tmc_channel(channel) {
             Some(state) => Some((channel, state)),
             None => {

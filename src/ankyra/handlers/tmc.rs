@@ -18,28 +18,9 @@
 use ankyra::prelude::klipper_command;
 use core::sync::atomic::Ordering;
 
-use crate::context::{BoardChannels, ShutdownRecovery, TmcHost};
+use crate::context::{ShutdownRecovery, TmcHost};
 use crate::shutdown::ShutdownReason;
 use crate::state::tmc::TmcChannelState;
-
-/// Bind a FOCI TMC driver OID to a configured stepper and board channel.
-#[klipper_command]
-pub fn config_foci_tmc(ctx: &mut dyn FociConfigHost, oid: u8, stepper_oid: u8, channel: u8) {
-    let channel_count = ctx.tmc_channel_count();
-    if let Err(e) = foci_klipper::commands::foci::config_foci_tmc(
-        ctx.state(),
-        oid,
-        stepper_oid,
-        channel,
-        channel_count,
-    ) {
-        defmt::error!("config_foci_tmc: {}", e);
-        if ctx.enter_shutdown() {
-            let clock = ctx.now();
-            ctx.send_shutdown(ShutdownReason::ConfigFociTmcFailed, clock);
-        }
-    }
-}
 
 /// Trigger TMC4671 initialization sequence (dev-only).
 #[cfg(feature = "dev")]
@@ -285,16 +266,11 @@ pub fn tmc_set_auto_calibrate_on_enable(ctx: &mut dyn ShutdownRecovery, oid: u8,
 pub trait TmcWriteHost: ShutdownRecovery + TmcHost {}
 impl<T: ?Sized + ShutdownRecovery + TmcHost> TmcWriteHost for T {}
 
-/// Composite bound for `config_foci_tmc`: needs shutdown recovery and the
-/// board's TMC channel count.
-pub trait FociConfigHost: ShutdownRecovery + BoardChannels {}
-impl<T: ?Sized + ShutdownRecovery + BoardChannels> FociConfigHost for T {}
-
 fn foci_tmc_state_or_shutdown(
     ctx: &mut dyn ShutdownRecovery,
     oid: u8,
 ) -> Option<(u8, &'static TmcChannelState)> {
-    match ctx.state().foci_channel_for_oid(oid) {
+    match ctx.state().stepper_channel(oid) {
         Some(channel) => {
             tmc_state_for_channel_or_shutdown(ctx, channel).map(|state| (channel, state))
         }
@@ -343,7 +319,7 @@ mod tests {
     use super::*;
     use crate::context::{BoardChannels, ClockSource, QueueFull, StateAccess, TmcHost};
     use crate::shutdown::ShutdownReason;
-    use foci_klipper::commands::foci::config_stepper_channel;
+    use foci_klipper::commands::stepper::config_stepper_channel;
     use foci_klipper::state::State;
     use std::cell::RefCell;
 
@@ -417,37 +393,12 @@ mod tests {
     }
 
     #[test]
-    fn config_foci_tmc_registers_matching_channel() {
+    fn tmc_set_current_routes_by_stepper_oid() {
         let mut ctx = MockCtx::new(2);
         let mut sender = ();
         config_stepper_channel(ctx.state(), 10, 1).unwrap();
 
-        config_foci_tmc(&mut ctx, &mut sender, 20, 10, 1);
-
-        assert_eq!(ctx.state.foci_channel_for_oid(20), Some(1));
-        assert_eq!(ctx.last_shutdown, None);
-    }
-
-    #[test]
-    fn config_foci_tmc_rejects_channel_outside_board_range() {
-        let mut ctx = MockCtx::new(1);
-        let mut sender = ();
-        config_stepper_channel(ctx.state(), 10, 1).unwrap();
-
-        config_foci_tmc(&mut ctx, &mut sender, 20, 10, 1);
-
-        assert_eq!(ctx.state.foci_channel_for_oid(20), None);
-        assert_eq!(ctx.last_shutdown, Some(ShutdownReason::ConfigFociTmcFailed));
-    }
-
-    #[test]
-    fn tmc_set_current_routes_by_foci_oid() {
-        let mut ctx = MockCtx::new(2);
-        let mut sender = ();
-        config_stepper_channel(ctx.state(), 10, 1).unwrap();
-        foci_klipper::commands::foci::config_foci_tmc(ctx.state(), 20, 10, 1, 2).unwrap();
-
-        tmc_set_current(&mut ctx, &mut sender, 20, 800);
+        tmc_set_current(&mut ctx, &mut sender, 10, 800);
 
         let req = ctx.last_request.borrow().clone().unwrap();
         assert_eq!(req.channel, 1);
@@ -459,13 +410,12 @@ mod tests {
     }
 
     #[test]
-    fn tmc_set_encoder_rejects_channel_mismatch_for_foci_oid() {
+    fn tmc_set_encoder_rejects_channel_mismatch_for_stepper_oid() {
         let mut ctx = MockCtx::new(2);
         let mut sender = ();
         config_stepper_channel(ctx.state(), 10, 1).unwrap();
-        foci_klipper::commands::foci::config_foci_tmc(ctx.state(), 20, 10, 1, 2).unwrap();
 
-        tmc_set_encoder(&mut ctx, &mut sender, 20, 0, 1000);
+        tmc_set_encoder(&mut ctx, &mut sender, 10, 0, 1000);
 
         assert!(ctx.last_request.borrow().is_none());
         assert_eq!(ctx.last_shutdown, Some(ShutdownReason::InvalidTmcChannel));
