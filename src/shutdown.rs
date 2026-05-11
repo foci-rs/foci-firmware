@@ -47,6 +47,8 @@ pub enum ShutdownReason {
     QueueDigitalOutFailed,
     UpdateDigitalOutFailed,
     ConfigStepperFailed,
+    UnknownStepperOid,
+    InvalidStepperChannel,
     QueueStepFailed,
     CannotResetTimeWhenStepperActive,
     StepperStopOnTriggerUnknownStepper,
@@ -88,6 +90,8 @@ impl ShutdownReason {
             Self::QueueDigitalOutFailed => "queue_digital_out failed",
             Self::UpdateDigitalOutFailed => "update_digital_out failed",
             Self::ConfigStepperFailed => "config_stepper failed",
+            Self::UnknownStepperOid => "Unknown stepper OID",
+            Self::InvalidStepperChannel => "Invalid stepper channel",
             Self::QueueStepFailed => "queue_step failed",
             Self::CannotResetTimeWhenStepperActive => "Can't reset time when stepper active",
             Self::StepperStopOnTriggerUnknownStepper => "stepper_stop_on_trigger: unknown stepper",
@@ -172,6 +176,12 @@ macro_rules! dispatch_shutdown {
             }
             $crate::shutdown::ShutdownReason::ConfigStepperFailed => {
                 ::ankyra::klipper_shutdown_from!($sender, "config_stepper failed", $clock);
+            }
+            $crate::shutdown::ShutdownReason::UnknownStepperOid => {
+                ::ankyra::klipper_shutdown_from!($sender, "Unknown stepper OID", $clock);
+            }
+            $crate::shutdown::ShutdownReason::InvalidStepperChannel => {
+                ::ankyra::klipper_shutdown_from!($sender, "Invalid stepper channel", $clock);
             }
             $crate::shutdown::ShutdownReason::QueueStepFailed => {
                 ::ankyra::klipper_shutdown_from!($sender, "queue_step failed", $clock);
@@ -330,6 +340,8 @@ macro_rules! foci_ankyra_config {
                 "queue_digital_out failed",
                 "update_digital_out failed",
                 "config_stepper failed",
+                "Unknown stepper OID",
+                "Invalid stepper channel",
                 "queue_step failed",
                 "Can't reset time when stepper active",
                 "stepper_stop_on_trigger: unknown stepper",

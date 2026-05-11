@@ -128,36 +128,43 @@ impl<T: ?Sized + ShutdownRecovery> ShutdownRecovery for &mut T {
 /// task graph are intentionally absent — they are not reachable via
 /// `&mut dyn StepperHost`.
 pub trait StepperHost: StateAccess {
-    /// Capture the direction bit for the next enqueued move.
-    fn set_next_step_dir(&mut self, forward: bool);
+    /// Capture the direction bit for the next enqueued move on `channel`.
+    fn set_next_step_dir(&mut self, channel: u8, forward: bool);
 
-    /// Enqueue a trapezoidal move onto the hardware step queue under
-    /// the trigger-domain critical section. Folds the need-reset
-    /// check, direction preparation, queue push, and step-timer
-    /// arming into a single fallible operation.
+    /// Enqueue a trapezoidal move onto the hardware step queue for `channel`.
     fn queue_step_move(
         &mut self,
+        channel: u8,
         move_: foci_klipper::stepper::StepMove,
     ) -> Result<(), foci_klipper::commands::CommandError>;
 
-    /// Reset the step-clock reference on both stepper halves under
-    /// the trigger-domain critical section. Drains any residual
-    /// queue entries and updates the need-reset flag.
-    fn reset_step_clock(&mut self, clock: u32) -> Result<(), foci_klipper::commands::CommandError>;
+    /// Reset the step-clock reference for `channel`.
+    fn reset_step_clock(
+        &mut self,
+        channel: u8,
+        clock: u32,
+    ) -> Result<(), foci_klipper::commands::CommandError>;
 }
 
 impl<T: ?Sized + StepperHost> StepperHost for &mut T {
-    fn set_next_step_dir(&mut self, forward: bool) {
-        (**self).set_next_step_dir(forward)
+    fn set_next_step_dir(&mut self, channel: u8, forward: bool) {
+        (**self).set_next_step_dir(channel, forward)
     }
+
     fn queue_step_move(
         &mut self,
+        channel: u8,
         move_: foci_klipper::stepper::StepMove,
     ) -> Result<(), foci_klipper::commands::CommandError> {
-        (**self).queue_step_move(move_)
+        (**self).queue_step_move(channel, move_)
     }
-    fn reset_step_clock(&mut self, clock: u32) -> Result<(), foci_klipper::commands::CommandError> {
-        (**self).reset_step_clock(clock)
+
+    fn reset_step_clock(
+        &mut self,
+        channel: u8,
+        clock: u32,
+    ) -> Result<(), foci_klipper::commands::CommandError> {
+        (**self).reset_step_clock(channel, clock)
     }
 }
 

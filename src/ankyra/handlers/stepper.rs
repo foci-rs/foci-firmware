@@ -91,9 +91,12 @@ pub fn config_stepper(
 /// preparation, SPSC queue push, and step-timer arming.
 #[klipper_command]
 pub fn queue_step(ctx: &mut dyn StepperQueue, oid: u8, interval: u32, count: u16, add: i16) {
+    let Some(channel) = stepper_channel_or_shutdown(ctx, oid) else {
+        return;
+    };
     let move_ = foci_klipper::stepper::StepMove::new(interval, count, add);
-    if let Err(e) = ctx.queue_step_move(move_) {
-        defmt::error!("queue_step: oid={} {}", oid, e);
+    if let Err(e) = ctx.queue_step_move(channel, move_) {
+        defmt::error!("queue_step: oid={} channel={} {}", oid, channel, e);
         if ctx.enter_shutdown() {
             let clock = ctx.now();
             ctx.send_shutdown(ShutdownReason::QueueStepFailed, clock);
@@ -105,8 +108,11 @@ pub fn queue_step(ctx: &mut dyn StepperQueue, oid: u8, interval: u32, count: u16
 ///
 /// Direction is captured per-move in `queue_step` via `prepare_move()`.
 #[klipper_command]
-pub fn set_next_step_dir(ctx: &mut dyn StepperHost, _oid: u8, dir: u8) {
-    ctx.set_next_step_dir(dir != 0);
+pub fn set_next_step_dir(ctx: &mut dyn StepperDirection, oid: u8, dir: u8) {
+    let Some(channel) = stepper_channel_or_shutdown(ctx, oid) else {
+        return;
+    };
+    ctx.set_next_step_dir(channel, dir != 0);
 }
 
 /// Reset the step clock reference for a stepper.
@@ -114,15 +120,32 @@ pub fn set_next_step_dir(ctx: &mut dyn StepperHost, _oid: u8, dir: u8) {
 /// Only valid when the stepper is inactive (timer not armed).
 /// Triggers shutdown if called while active (matches Klipper stepper.c).
 #[klipper_command]
-pub fn reset_step_clock(ctx: &mut dyn StepperReset, _oid: u8, clock: u32) {
-    if let Err(e) = ctx.reset_step_clock(clock) {
-        defmt::error!("reset_step_clock: {}", e);
+pub fn reset_step_clock(ctx: &mut dyn StepperReset, oid: u8, clock: u32) {
+    let Some(channel) = stepper_channel_or_shutdown(ctx, oid) else {
+        return;
+    };
+    if let Err(e) = ctx.reset_step_clock(channel, clock) {
+        defmt::error!("reset_step_clock: oid={} channel={} {}", oid, channel, e);
         if ctx.enter_shutdown() {
             let shutdown_clock = ctx.now();
             ctx.send_shutdown(
                 ShutdownReason::CannotResetTimeWhenStepperActive,
                 shutdown_clock,
             );
+        }
+    }
+}
+
+fn stepper_channel_or_shutdown(ctx: &mut dyn ShutdownRecovery, oid: u8) -> Option<u8> {
+    match ctx.state().stepper_channel(oid) {
+        Some(channel) => Some(channel),
+        None => {
+            defmt::error!("stepper command: unknown stepper oid={}", oid);
+            if ctx.enter_shutdown() {
+                let clock = ctx.now();
+                ctx.send_shutdown(ShutdownReason::UnknownStepperOid, clock);
+            }
+            None
         }
     }
 }
@@ -220,6 +243,12 @@ pub fn stepper_stop_on_trigger(ctx: &mut dyn StepperStopOnTrigger, oid: u8, trsy
 pub trait StepperQueue: ShutdownRecovery + StepperHost {}
 impl<T: ?Sized + ShutdownRecovery + StepperHost> StepperQueue for T {}
 
+/// Composite bound for `set_next_step_dir`: needs shutdown recovery (to
+/// resolve unknown stepper OIDs through the common shutdown path) and the
+/// stepper host (to delegate direction capture).
+pub trait StepperDirection: ShutdownRecovery + StepperHost {}
+impl<T: ?Sized + ShutdownRecovery + StepperHost> StepperDirection for T {}
+
 /// Composite bound for `config_stepper`: needs shutdown recovery and the
 /// board's virtual STEP/DIR pin-to-channel mapping.
 pub trait StepperConfigHost: ShutdownRecovery + BoardChannels {}
@@ -252,9 +281,17 @@ mod tests {
     use crate::shutdown::ShutdownReason;
     use foci_klipper::state::State;
 
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum StepperCall {
+        SetDir { channel: u8, forward: bool },
+        Queue { channel: u8, count: u16 },
+        Reset { channel: u8, clock: u32 },
+    }
+
     struct MockCtx {
         state: State,
         last_shutdown: Option<ShutdownReason>,
+        stepper_calls: std::cell::RefCell<std::vec::Vec<StepperCall>>,
     }
 
     impl MockCtx {
@@ -262,6 +299,7 @@ mod tests {
             Self {
                 state: State::new(),
                 last_shutdown: None,
+                stepper_calls: std::cell::RefCell::new(std::vec::Vec::new()),
             }
         }
     }
@@ -318,6 +356,37 @@ mod tests {
         }
     }
 
+    impl StepperHost for MockCtx {
+        fn set_next_step_dir(&mut self, channel: u8, forward: bool) {
+            self.stepper_calls
+                .borrow_mut()
+                .push(StepperCall::SetDir { channel, forward });
+        }
+
+        fn queue_step_move(
+            &mut self,
+            channel: u8,
+            move_: foci_klipper::stepper::StepMove,
+        ) -> Result<(), foci_klipper::commands::CommandError> {
+            self.stepper_calls.borrow_mut().push(StepperCall::Queue {
+                channel,
+                count: move_.count,
+            });
+            Ok(())
+        }
+
+        fn reset_step_clock(
+            &mut self,
+            channel: u8,
+            clock: u32,
+        ) -> Result<(), foci_klipper::commands::CommandError> {
+            self.stepper_calls
+                .borrow_mut()
+                .push(StepperCall::Reset { channel, clock });
+            Ok(())
+        }
+    }
+
     #[test]
     fn config_stepper_registers_matching_step_dir_channel() {
         let mut ctx = MockCtx::new();
@@ -338,5 +407,90 @@ mod tests {
 
         assert_eq!(ctx.state.stepper_channel(10), None);
         assert_eq!(ctx.last_shutdown, Some(ShutdownReason::ConfigStepperFailed));
+    }
+
+    #[test]
+    fn queue_step_routes_by_stepper_oid_channel() {
+        let mut ctx = MockCtx::new();
+        let mut sender = ();
+        foci_klipper::commands::stepper::config_stepper_channel(ctx.state(), 10, 1).unwrap();
+
+        queue_step(&mut ctx, &mut sender, 10, 100, 7, 0);
+
+        assert_eq!(
+            ctx.stepper_calls.borrow().as_slice(),
+            &[StepperCall::Queue {
+                channel: 1,
+                count: 7
+            }]
+        );
+        assert_eq!(ctx.last_shutdown, None);
+    }
+
+    #[test]
+    fn set_next_step_dir_routes_by_stepper_oid_channel() {
+        let mut ctx = MockCtx::new();
+        let mut sender = ();
+        foci_klipper::commands::stepper::config_stepper_channel(ctx.state(), 10, 1).unwrap();
+
+        set_next_step_dir(&mut ctx, &mut sender, 10, 0);
+
+        assert_eq!(
+            ctx.stepper_calls.borrow().as_slice(),
+            &[StepperCall::SetDir {
+                channel: 1,
+                forward: false
+            }]
+        );
+    }
+
+    #[test]
+    fn reset_step_clock_routes_by_stepper_oid_channel() {
+        let mut ctx = MockCtx::new();
+        let mut sender = ();
+        foci_klipper::commands::stepper::config_stepper_channel(ctx.state(), 10, 1).unwrap();
+
+        reset_step_clock(&mut ctx, &mut sender, 10, 1234);
+
+        assert_eq!(
+            ctx.stepper_calls.borrow().as_slice(),
+            &[StepperCall::Reset {
+                channel: 1,
+                clock: 1234
+            }]
+        );
+    }
+
+    #[test]
+    fn queue_step_unknown_stepper_oid_uses_stepper_shutdown_reason() {
+        let mut ctx = MockCtx::new();
+        let mut sender = ();
+
+        queue_step(&mut ctx, &mut sender, 99, 100, 7, 0);
+
+        assert_eq!(ctx.stepper_calls.borrow().as_slice(), &[]);
+        assert_eq!(ctx.last_shutdown, Some(ShutdownReason::UnknownStepperOid));
+    }
+
+    #[test]
+    fn set_next_step_dir_unknown_stepper_oid_uses_stepper_shutdown_reason() {
+        let mut ctx = MockCtx::new();
+        let mut sender = ();
+
+        set_next_step_dir(&mut ctx, &mut sender, 99, 0);
+
+        assert_eq!(ctx.stepper_calls.borrow().as_slice(), &[]);
+        assert_eq!(ctx.last_shutdown, Some(ShutdownReason::UnknownStepperOid));
+    }
+
+    #[test]
+    fn reset_step_clock_unknown_stepper_oid_uses_stepper_shutdown_reason() {
+        let mut ctx = MockCtx::new();
+        let mut sender = ();
+
+        reset_step_clock(&mut ctx, &mut sender, 99, 1234);
+
+        assert_eq!(ctx.stepper_calls.borrow().as_slice(), &[]);
+        assert_eq!(ctx.last_shutdown, Some(ShutdownReason::UnknownStepperOid));
     }
 }
