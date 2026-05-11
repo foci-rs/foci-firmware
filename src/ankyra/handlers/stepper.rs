@@ -91,7 +91,17 @@ pub fn config_stepper(
 /// preparation, SPSC queue push, and step-timer arming.
 #[klipper_command]
 pub fn queue_step(ctx: &mut dyn StepperQueue, oid: u8, interval: u32, count: u16, add: i16) {
-    let Some(channel) = stepper_channel_or_shutdown(ctx, oid) else {
+    let Some(channel) = stepper_channel_or_shutdown(ctx, oid, || {
+        ::ankyra::klipper_reply!(
+            crate::ankyra::replies::FociDiagnostic,
+            fault: u8 = crate::diagnostic::FaultClass::UnknownOid as u8,
+            operation: u8 = crate::diagnostic::operation::STEPPER_LOOKUP,
+            oid: u8 = oid,
+            channel: u8 = 255,
+            data0: u32 = 0,
+            data1: u32 = 0,
+        );
+    }) else {
         return;
     };
     let move_ = foci_klipper::stepper::StepMove::new(interval, count, add);
@@ -109,7 +119,17 @@ pub fn queue_step(ctx: &mut dyn StepperQueue, oid: u8, interval: u32, count: u16
 /// Direction is captured per-move in `queue_step` via `prepare_move()`.
 #[klipper_command]
 pub fn set_next_step_dir(ctx: &mut dyn StepperDirection, oid: u8, dir: u8) {
-    let Some(channel) = stepper_channel_or_shutdown(ctx, oid) else {
+    let Some(channel) = stepper_channel_or_shutdown(ctx, oid, || {
+        ::ankyra::klipper_reply!(
+            crate::ankyra::replies::FociDiagnostic,
+            fault: u8 = crate::diagnostic::FaultClass::UnknownOid as u8,
+            operation: u8 = crate::diagnostic::operation::STEPPER_LOOKUP,
+            oid: u8 = oid,
+            channel: u8 = 255,
+            data0: u32 = 0,
+            data1: u32 = 0,
+        );
+    }) else {
         return;
     };
     ctx.set_next_step_dir(channel, dir != 0);
@@ -121,7 +141,17 @@ pub fn set_next_step_dir(ctx: &mut dyn StepperDirection, oid: u8, dir: u8) {
 /// Triggers shutdown if called while active (matches Klipper stepper.c).
 #[klipper_command]
 pub fn reset_step_clock(ctx: &mut dyn StepperReset, oid: u8, clock: u32) {
-    let Some(channel) = stepper_channel_or_shutdown(ctx, oid) else {
+    let Some(channel) = stepper_channel_or_shutdown(ctx, oid, || {
+        ::ankyra::klipper_reply!(
+            crate::ankyra::replies::FociDiagnostic,
+            fault: u8 = crate::diagnostic::FaultClass::UnknownOid as u8,
+            operation: u8 = crate::diagnostic::operation::STEPPER_LOOKUP,
+            oid: u8 = oid,
+            channel: u8 = 255,
+            data0: u32 = 0,
+            data1: u32 = 0,
+        );
+    }) else {
         return;
     };
     if let Err(e) = ctx.reset_step_clock(channel, clock) {
@@ -136,11 +166,16 @@ pub fn reset_step_clock(ctx: &mut dyn StepperReset, oid: u8, clock: u32) {
     }
 }
 
-fn stepper_channel_or_shutdown(ctx: &mut dyn ShutdownRecovery, oid: u8) -> Option<u8> {
+fn stepper_channel_or_shutdown(
+    ctx: &mut dyn ShutdownRecovery,
+    oid: u8,
+    emit_diagnostic: impl FnOnce(),
+) -> Option<u8> {
     match ctx.state().stepper_channel(oid) {
         Some(channel) => Some(channel),
         None => {
             defmt::error!("stepper command: unknown stepper oid={}", oid);
+            emit_diagnostic();
             if ctx.enter_shutdown() {
                 let clock = ctx.now();
                 ctx.send_shutdown(ShutdownReason::UnknownStepperOid, clock);
@@ -288,6 +323,41 @@ mod tests {
         Reset { channel: u8, clock: u32 },
     }
 
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    struct DiagnosticReply {
+        fault: u8,
+        operation: u8,
+        oid: u8,
+        channel: u8,
+        data0: u32,
+        data1: u32,
+    }
+
+    struct MockSender {
+        diagnostics: std::vec::Vec<DiagnosticReply>,
+    }
+
+    impl MockSender {
+        fn new() -> Self {
+            Self {
+                diagnostics: std::vec::Vec::new(),
+            }
+        }
+    }
+
+    impl ::ankyra::SendReply<crate::ankyra::replies::FociDiagnostic> for MockSender {
+        fn send(&mut self, payload: crate::ankyra::replies::FociDiagnostic) {
+            self.diagnostics.push(DiagnosticReply {
+                fault: payload.fault,
+                operation: payload.operation,
+                oid: payload.oid,
+                channel: payload.channel,
+                data0: payload.data0,
+                data1: payload.data1,
+            });
+        }
+    }
+
     struct MockCtx {
         state: State,
         last_shutdown: Option<ShutdownReason>,
@@ -390,18 +460,19 @@ mod tests {
     #[test]
     fn config_stepper_registers_matching_step_dir_channel() {
         let mut ctx = MockCtx::new();
-        let mut sender = ();
+        let mut sender = MockSender::new();
 
         config_stepper(&mut ctx, &mut sender, 10, 1, 2, 0, 0);
 
         assert_eq!(ctx.state.stepper_channel(10), Some(0));
         assert_eq!(ctx.last_shutdown, None);
+        assert_eq!(sender.diagnostics.as_slice(), &[]);
     }
 
     #[test]
     fn config_stepper_rejects_step_dir_channel_mismatch() {
         let mut ctx = MockCtx::new();
-        let mut sender = ();
+        let mut sender = MockSender::new();
 
         config_stepper(&mut ctx, &mut sender, 10, 1, 4, 0, 0);
 
@@ -412,7 +483,7 @@ mod tests {
     #[test]
     fn queue_step_routes_by_stepper_oid_channel() {
         let mut ctx = MockCtx::new();
-        let mut sender = ();
+        let mut sender = MockSender::new();
         foci_klipper::commands::stepper::config_stepper_channel(ctx.state(), 10, 1).unwrap();
 
         queue_step(&mut ctx, &mut sender, 10, 100, 7, 0);
@@ -425,12 +496,13 @@ mod tests {
             }]
         );
         assert_eq!(ctx.last_shutdown, None);
+        assert_eq!(sender.diagnostics.as_slice(), &[]);
     }
 
     #[test]
     fn set_next_step_dir_routes_by_stepper_oid_channel() {
         let mut ctx = MockCtx::new();
-        let mut sender = ();
+        let mut sender = MockSender::new();
         foci_klipper::commands::stepper::config_stepper_channel(ctx.state(), 10, 1).unwrap();
 
         set_next_step_dir(&mut ctx, &mut sender, 10, 0);
@@ -442,12 +514,13 @@ mod tests {
                 forward: false
             }]
         );
+        assert_eq!(sender.diagnostics.as_slice(), &[]);
     }
 
     #[test]
     fn reset_step_clock_routes_by_stepper_oid_channel() {
         let mut ctx = MockCtx::new();
-        let mut sender = ();
+        let mut sender = MockSender::new();
         foci_klipper::commands::stepper::config_stepper_channel(ctx.state(), 10, 1).unwrap();
 
         reset_step_clock(&mut ctx, &mut sender, 10, 1234);
@@ -459,38 +532,72 @@ mod tests {
                 clock: 1234
             }]
         );
+        assert_eq!(sender.diagnostics.as_slice(), &[]);
     }
 
     #[test]
     fn queue_step_unknown_stepper_oid_uses_stepper_shutdown_reason() {
         let mut ctx = MockCtx::new();
-        let mut sender = ();
+        let mut sender = MockSender::new();
 
         queue_step(&mut ctx, &mut sender, 99, 100, 7, 0);
 
         assert_eq!(ctx.stepper_calls.borrow().as_slice(), &[]);
         assert_eq!(ctx.last_shutdown, Some(ShutdownReason::UnknownStepperOid));
+        assert_eq!(
+            sender.diagnostics.as_slice(),
+            &[DiagnosticReply {
+                fault: crate::diagnostic::FaultClass::UnknownOid as u8,
+                operation: crate::diagnostic::operation::STEPPER_LOOKUP,
+                oid: 99,
+                channel: 255,
+                data0: 0,
+                data1: 0,
+            }]
+        );
     }
 
     #[test]
     fn set_next_step_dir_unknown_stepper_oid_uses_stepper_shutdown_reason() {
         let mut ctx = MockCtx::new();
-        let mut sender = ();
+        let mut sender = MockSender::new();
 
         set_next_step_dir(&mut ctx, &mut sender, 99, 0);
 
         assert_eq!(ctx.stepper_calls.borrow().as_slice(), &[]);
         assert_eq!(ctx.last_shutdown, Some(ShutdownReason::UnknownStepperOid));
+        assert_eq!(
+            sender.diagnostics.as_slice(),
+            &[DiagnosticReply {
+                fault: crate::diagnostic::FaultClass::UnknownOid as u8,
+                operation: crate::diagnostic::operation::STEPPER_LOOKUP,
+                oid: 99,
+                channel: 255,
+                data0: 0,
+                data1: 0,
+            }]
+        );
     }
 
     #[test]
     fn reset_step_clock_unknown_stepper_oid_uses_stepper_shutdown_reason() {
         let mut ctx = MockCtx::new();
-        let mut sender = ();
+        let mut sender = MockSender::new();
 
         reset_step_clock(&mut ctx, &mut sender, 99, 1234);
 
         assert_eq!(ctx.stepper_calls.borrow().as_slice(), &[]);
         assert_eq!(ctx.last_shutdown, Some(ShutdownReason::UnknownStepperOid));
+        assert_eq!(
+            sender.diagnostics.as_slice(),
+            &[DiagnosticReply {
+                fault: crate::diagnostic::FaultClass::UnknownOid as u8,
+                operation: crate::diagnostic::operation::STEPPER_LOOKUP,
+                oid: 99,
+                channel: 255,
+                data0: 0,
+                data1: 0,
+            }]
+        );
     }
 }

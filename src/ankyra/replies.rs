@@ -165,6 +165,25 @@ pub struct FociDumpValue {
     pub value: u32,
 }
 
+/// `foci_diagnostic` reply - best-effort detail before fatal shutdown.
+///
+/// Wire name: `foci_diagnostic`.
+#[klipper_reply]
+pub struct FociDiagnostic {
+    /// Fault class from `foci_firmware::diagnostic::FaultClass`.
+    pub fault: u8,
+    /// Operation code from `foci_firmware::diagnostic::operation`.
+    pub operation: u8,
+    /// Stepper or FOCI OID when available, otherwise 255.
+    pub oid: u8,
+    /// Board-local channel when available, otherwise 255.
+    pub channel: u8,
+    /// First operation-specific value, such as queue depth.
+    pub data0: u32,
+    /// Second operation-specific value, such as queue capacity.
+    pub data1: u32,
+}
+
 /// `foci_selftest_done` reply — emitted at the end of a self-test run.
 ///
 /// Wire name: `foci_selftest_done`.
