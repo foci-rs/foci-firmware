@@ -313,6 +313,7 @@ pub(crate) async fn step_inner<B: CommissioningBackend>(
     sequence: InnerSequence,
     adc_cal: &mut Option<AdcCalResult>,
     selftest_results: &mut crate::selftest::SelftestResults,
+    diagnostics: &mut crate::selftest::CommissionDiagnostics,
     backend: &mut B,
 ) -> StepResult {
     let result = step_inner_dispatch(
@@ -322,6 +323,7 @@ pub(crate) async fn step_inner<B: CommissioningBackend>(
         sequence,
         adc_cal,
         selftest_results,
+        diagnostics,
         backend,
     )
     .await;
@@ -346,6 +348,7 @@ async fn step_inner_dispatch<B: CommissioningBackend>(
     sequence: InnerSequence,
     adc_cal: &mut Option<AdcCalResult>,
     selftest_results: &mut crate::selftest::SelftestResults,
+    diagnostics: &mut crate::selftest::CommissionDiagnostics,
     backend: &mut B,
 ) -> StepResult {
     match phase {
@@ -372,6 +375,7 @@ async fn step_inner_dispatch<B: CommissioningBackend>(
                 buf,
                 sequence,
                 selftest_results,
+                diagnostics,
                 backend,
             )
             .await

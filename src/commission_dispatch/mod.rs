@@ -160,7 +160,12 @@ async fn outer_restore_position_stable<B: CommissioningBackend>(
 pub enum ReplyPayload {
     /// FociCommissionPhase: phase change reply (foci_commission failures
     /// during inner phases).
-    CommissionPhase { oid: u8, phase: u8, status: u8 },
+    CommissionPhase {
+        oid: u8,
+        phase: u8,
+        status: u8,
+        diagnostics: crate::selftest::CommissionDiagnostics,
+    },
     /// FociCommissionResult: Stage 1 commission complete.
     CommissionResult {
         oid: u8,
@@ -185,6 +190,7 @@ pub enum ReplyPayload {
     Selftest {
         oid: u8,
         results: SelftestResults,
+        diagnostics: crate::selftest::CommissionDiagnostics,
         done_status: u8,
     },
 }
@@ -266,6 +272,7 @@ pub async fn drive_commission_result<B: CommissioningBackend>(
             let mut consumed = engine.take().expect("engine slot None on SelftestDone");
             let oid = consumed.oid();
             let results = consumed.take_selftest_results();
+            let diagnostics = consumed.take_diagnostics();
             state
                 .tmc
                 .commission_in_flight
@@ -274,6 +281,7 @@ pub async fn drive_commission_result<B: CommissioningBackend>(
                 reply: ReplyPayload::Selftest {
                     oid,
                     results,
+                    diagnostics,
                     done_status: 0,
                 },
                 actions: PostActions::NONE,
@@ -284,6 +292,7 @@ pub async fn drive_commission_result<B: CommissioningBackend>(
             let oid = consumed.oid();
             let kind = consumed.kind();
             let selftest_results = consumed.take_selftest_results();
+            let diagnostics = consumed.take_diagnostics();
             state
                 .tmc
                 .commission_in_flight
@@ -299,12 +308,14 @@ pub async fn drive_commission_result<B: CommissioningBackend>(
                 EngineKind::Selftest => ReplyPayload::Selftest {
                     oid,
                     results: selftest_results,
+                    diagnostics,
                     done_status: error.status_code(),
                 },
                 EngineKind::Commission | EngineKind::OuterTune => ReplyPayload::CommissionPhase {
                     oid,
                     phase: 0,
                     status: error.status_code(),
+                    diagnostics,
                 },
             };
             CommissionOutcome::Terminal {

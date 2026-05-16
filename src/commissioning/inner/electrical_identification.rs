@@ -54,6 +54,23 @@ const DELAY_ONSET_THRESHOLD: u16 = 20;
 /// 0.632 * 1024 ≈ 647 (Q10 format for integer math).
 const RISE_63_PCT_Q10: u32 = 647;
 
+const DIAG_ELECTRICAL_ID_EXCITATION: u8 = 1;
+const DIAG_ELECTRICAL_ID_RESISTANCE_A: u8 = 2;
+const DIAG_ELECTRICAL_ID_RESISTANCE_B: u8 = 3;
+const DIAG_ELECTRICAL_ID_INDUCTANCE_A: u8 = 4;
+const DIAG_ELECTRICAL_ID_INDUCTANCE_B: u8 = 5;
+const DIAG_ELECTRICAL_ID_TRANSIENT: u8 = 6;
+const DIAG_ELECTRICAL_ID_REJECT_NO_SAMPLES: u8 = 20;
+const DIAG_ELECTRICAL_ID_REJECT_SINGLE_COIL_TAU: u8 = 21;
+const DIAG_ELECTRICAL_ID_REJECT_MODEL_SCALE_ZERO: u8 = 22;
+const DIAG_ELECTRICAL_ID_REJECT_RESISTANCE_SHORT: u8 = 23;
+const DIAG_ELECTRICAL_ID_REJECT_RESISTANCE_OPEN: u8 = 24;
+const DIAG_ELECTRICAL_ID_REJECT_RESISTANCE_MISMATCH: u8 = 25;
+const DIAG_ELECTRICAL_ID_REJECT_TAU_MISMATCH: u8 = 26;
+const DIAG_ELECTRICAL_ID_REJECT_TAU_CROSSCHECK_UNMEASURABLE: u8 = 27;
+const DIAG_ELECTRICAL_ID_REJECT_TAU_RESIDUAL: u8 = 28;
+const DIAG_ELECTRICAL_ID_REJECT_THETA_TOO_LARGE: u8 = 29;
+
 // ---------------------------------------------------------------------------
 // Phase 1 model-assembly gates and warning bits.
 // ---------------------------------------------------------------------------
@@ -122,7 +139,11 @@ pub(crate) enum ModelAssemblyError {
     /// "measured wrong".
     TauCrosscheckUnmeasurable,
     /// L/R tau vs transient tau residual above hard threshold.
-    TauResidual { permille: u32 },
+    TauResidual {
+        permille: u32,
+        tau_us: u32,
+        crosscheck_us: u32,
+    },
     /// theta_e_us >= tau_e_us / 2.
     ThetaTooLarge { theta_us: u32, tau_us: u32 },
 }
@@ -157,7 +178,7 @@ fn log_model_assembly_failure(err: ModelAssemblyError) {
         ModelAssemblyError::TauCrosscheckUnmeasurable => {
             defmt::warn!("electrical id: tau crosscheck unmeasurable");
         }
-        ModelAssemblyError::TauResidual { permille } => {
+        ModelAssemblyError::TauResidual { permille, .. } => {
             defmt::warn!("electrical id: tau residual {} permille", permille);
         }
         ModelAssemblyError::ThetaTooLarge { theta_us, tau_us } => {
@@ -167,6 +188,72 @@ fn log_model_assembly_failure(err: ModelAssemblyError) {
                 tau_us
             );
         }
+    }
+}
+
+fn diagnostic_for_model_assembly_failure(
+    err: ModelAssemblyError,
+) -> crate::selftest::CommissionDiagnostic {
+    let (code, value0, value1, value2) = match err {
+        ModelAssemblyError::SampleCount => (DIAG_ELECTRICAL_ID_REJECT_NO_SAMPLES, 0, 0, 0),
+        ModelAssemblyError::SingleCoilTau => (DIAG_ELECTRICAL_ID_REJECT_SINGLE_COIL_TAU, 0, 0, 0),
+        ModelAssemblyError::ModelScaleZero { l_int, l_uh } => {
+            (DIAG_ELECTRICAL_ID_REJECT_MODEL_SCALE_ZERO, l_int, l_uh, 0)
+        }
+        ModelAssemblyError::ResistanceShort { r_mohm } => (
+            DIAG_ELECTRICAL_ID_REJECT_RESISTANCE_SHORT,
+            r_mohm,
+            RESISTANCE_SHORT_MOHM,
+            0,
+        ),
+        ModelAssemblyError::ResistanceOpen { r_mohm } => (
+            DIAG_ELECTRICAL_ID_REJECT_RESISTANCE_OPEN,
+            r_mohm,
+            RESISTANCE_OPEN_MOHM,
+            0,
+        ),
+        ModelAssemblyError::ResistanceMismatch { permille } => (
+            DIAG_ELECTRICAL_ID_REJECT_RESISTANCE_MISMATCH,
+            permille,
+            RESISTANCE_MISMATCH_FAIL_PERMILLE,
+            0,
+        ),
+        ModelAssemblyError::TauMismatch { permille } => (
+            DIAG_ELECTRICAL_ID_REJECT_TAU_MISMATCH,
+            permille,
+            TAU_MISMATCH_FAIL_PERMILLE,
+            0,
+        ),
+        ModelAssemblyError::TauCrosscheckUnmeasurable => (
+            DIAG_ELECTRICAL_ID_REJECT_TAU_CROSSCHECK_UNMEASURABLE,
+            0,
+            0,
+            0,
+        ),
+        ModelAssemblyError::TauResidual {
+            permille,
+            tau_us,
+            crosscheck_us,
+        } => (
+            DIAG_ELECTRICAL_ID_REJECT_TAU_RESIDUAL,
+            permille,
+            tau_us,
+            crosscheck_us,
+        ),
+        ModelAssemblyError::ThetaTooLarge { theta_us, tau_us } => (
+            DIAG_ELECTRICAL_ID_REJECT_THETA_TOO_LARGE,
+            theta_us,
+            tau_us,
+            0,
+        ),
+    };
+    crate::selftest::CommissionDiagnostic {
+        phase: PhaseId::ElectricalId.to_u8(),
+        code,
+        status: 1,
+        value0,
+        value1,
+        value2,
     }
 }
 
@@ -201,6 +288,133 @@ fn interpolate_threshold_crossing_us(samples: &[u32], threshold: u32) -> Option<
         prev_time_us = time_us;
     }
     None
+}
+
+fn electrical_id_measurement_diagnostic(
+    code: u8,
+    value0: u32,
+    value1: u32,
+    value2: u32,
+) -> crate::selftest::CommissionDiagnostic {
+    crate::selftest::CommissionDiagnostic {
+        phase: PhaseId::ElectricalId.to_u8(),
+        code,
+        status: 0,
+        value0,
+        value1,
+        value2,
+    }
+}
+
+fn resistance_measurement(data: &ElectricalIdData, coil_idx: usize) -> Option<(u32, u32, u32)> {
+    let count = data.resistance_sample_count[coil_idx] as i32;
+    if count == 0 {
+        return None;
+    }
+    let avg_current = data.resistance_current_sum[coil_idx] / count;
+    let abs_current = avg_current.unsigned_abs();
+    if abs_current == 0 {
+        return None;
+    }
+    let r_mohm = (data.voltage as u64 * 1000 / abs_current as u64) as u32;
+    Some((abs_current, r_mohm, count as u32))
+}
+
+fn resistance_model_scale(data: &ElectricalIdData, coil_idx: usize) -> Option<u32> {
+    let (abs_current, _, _) = resistance_measurement(data, coil_idx)?;
+    Some(
+        (data.voltage as u64 * ELECTRICAL_MODEL_RESISTANCE_SCALE as u64 / abs_current as u64)
+            as u32,
+    )
+}
+
+fn inductance_measurement(data: &ElectricalIdData, coil_idx: usize) -> Option<(u32, u32, u32)> {
+    let count = data.inductance_count[coil_idx];
+    let sum_delta = data.inductance_sum_delta[coil_idx];
+    let elapsed = data.inductance_elapsed_us[coil_idx];
+    if count == 0 || sum_delta == 0 || elapsed == 0 {
+        return None;
+    }
+    let avg_delta = (sum_delta / count as u64) as u32;
+    let r_int = resistance_model_scale(data, coil_idx).unwrap_or(0);
+    let tau_us = if avg_delta >= INDUCTANCE_MIN_DELTA && r_int != 0 {
+        let dt_per_cycle_us = elapsed / count;
+        (data.voltage as u64 * dt_per_cycle_us as u64 * ELECTRICAL_MODEL_RESISTANCE_SCALE as u64
+            / (avg_delta as u64 * r_int as u64)) as u32
+    } else {
+        0
+    };
+    Some((avg_delta, tau_us, count))
+}
+
+fn transient_measurement(samples: &[u32]) -> Option<(u32, u32, u32)> {
+    let sample_count = samples.len();
+    if sample_count == 0 {
+        return None;
+    }
+    let steady_state = if sample_count >= 20 {
+        let tail_start = sample_count - 10;
+        let tail_sum: u32 = samples[tail_start..].iter().sum();
+        tail_sum / 10
+    } else {
+        samples[sample_count - 1]
+    };
+    let theta_us = extrapolate_onset_to_baseline_us(samples, DELAY_ONSET_THRESHOLD as u32)
+        .unwrap_or(ELECTRICAL_SAMPLE_PERIOD_US as u32);
+    let rise_threshold = (steady_state as u64 * RISE_63_PCT_Q10 as u64 / 1024) as u32;
+    let rise_crossing_us = interpolate_threshold_crossing_us(samples, rise_threshold).unwrap_or(0);
+    let crosscheck_us = rise_crossing_us.saturating_sub(theta_us);
+    Some((steady_state, theta_us, crosscheck_us))
+}
+
+fn record_electrical_id_measurement_diagnostics(
+    data: &ElectricalIdData,
+    samples: &[u32],
+    didt_cycles: u32,
+    diagnostics: &mut crate::selftest::CommissionDiagnostics,
+) {
+    diagnostics.push(electrical_id_measurement_diagnostic(
+        DIAG_ELECTRICAL_ID_EXCITATION,
+        data.voltage,
+        didt_cycles,
+        ELECTRICAL_SAMPLE_PERIOD_US as u32,
+    ));
+    for coil_idx in 0..2 {
+        if let Some((avg_current, r_mohm, count)) = resistance_measurement(data, coil_idx) {
+            diagnostics.push(electrical_id_measurement_diagnostic(
+                if coil_idx == 0 {
+                    DIAG_ELECTRICAL_ID_RESISTANCE_A
+                } else {
+                    DIAG_ELECTRICAL_ID_RESISTANCE_B
+                },
+                avg_current,
+                r_mohm,
+                count,
+            ));
+        }
+    }
+    for coil_idx in 0..2 {
+        if let Some((avg_delta, tau_us, count)) = inductance_measurement(data, coil_idx) {
+            diagnostics.push(electrical_id_measurement_diagnostic(
+                if coil_idx == 0 {
+                    DIAG_ELECTRICAL_ID_INDUCTANCE_A
+                } else {
+                    DIAG_ELECTRICAL_ID_INDUCTANCE_B
+                },
+                avg_delta,
+                tau_us,
+                count,
+            ));
+        }
+    }
+    if let Some((steady_state, theta_us, crosscheck_us)) = transient_measurement(samples) {
+        diagnostics.push(electrical_id_measurement_diagnostic(
+            DIAG_ELECTRICAL_ID_TRANSIENT,
+            steady_state,
+            theta_us,
+            crosscheck_us,
+        ));
+    }
 }
 
 fn extrapolate_onset_to_baseline_us(samples: &[u32], threshold: u32) -> Option<u32> {
@@ -335,6 +549,8 @@ fn assemble_electrical_model(
     if tau_residual_permille >= TAU_RESIDUAL_FAIL_PERMILLE {
         return Err(ModelAssemblyError::TauResidual {
             permille: tau_residual_permille,
+            tau_us: tau_e_us,
+            crosscheck_us: tau_e_crosscheck_us,
         });
     }
     if tau_e_us > 0 && theta_e_us >= tau_e_us / 2 {
@@ -385,6 +601,7 @@ pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
     buf: &mut TransientBuffer,
     sequence: InnerSequence,
     selftest_results: &mut crate::selftest::SelftestResults,
+    diagnostics: &mut crate::selftest::CommissionDiagnostics,
     backend: &mut B,
 ) -> StepResult {
     use foci_tmc4671::registers::*;
@@ -779,6 +996,13 @@ pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
                 Ok(assembly) => assembly,
                 Err(err) => {
                     log_model_assembly_failure(err);
+                    record_electrical_id_measurement_diagnostics(
+                        data,
+                        buf.samples(),
+                        backend.tmc_config().didt_cycles,
+                        diagnostics,
+                    );
+                    diagnostics.push(diagnostic_for_model_assembly_failure(err));
                     return super::fail_inner(phase, CommissionError::ElectricalIdFailed);
                 }
             };
@@ -941,12 +1165,14 @@ mod tests {
             }
             let mut backend = MockBackend::new();
             let mut selftest_results = crate::selftest::SelftestResults::default();
+            let mut diagnostics = crate::selftest::CommissionDiagnostics::default();
 
             let result = step_electrical_identification(
                 &mut phase,
                 &mut buf,
                 InnerSequence::Commission,
                 &mut selftest_results,
+                &mut diagnostics,
                 &mut backend,
             )
             .await;
@@ -959,6 +1185,27 @@ mod tests {
                 phase,
                 InnerPhase::Failed(CommissionError::ElectricalIdFailed)
             ));
+            let items: heapless::Vec<_, 8> = diagnostics.iter().collect();
+            assert_eq!(items.len(), 7);
+            assert_eq!(items[0].phase, PhaseId::ElectricalId.to_u8());
+            assert_eq!(items[0].code, 1);
+            assert_eq!(items[0].value0, 512);
+            assert_eq!(items[0].value2, ELECTRICAL_SAMPLE_PERIOD_US as u32);
+            assert_eq!(items[1].code, 2);
+            assert_eq!(items[1].value0, 300);
+            assert_eq!(items[1].value1, 1706);
+            assert_eq!(items[1].value2, 1000);
+            assert_eq!(items[2].code, 3);
+            assert_eq!(items[3].code, 4);
+            assert!(
+                (725..=740).contains(&items[3].value1),
+                "coil A tau should be reported: {}",
+                items[3].value1
+            );
+            assert_eq!(items[4].code, 5);
+            assert_eq!(items[5].code, 6);
+            assert_eq!(items[5].value0, 1000);
+            assert_eq!(items[6].code, DIAG_ELECTRICAL_ID_REJECT_TAU_RESIDUAL);
         });
     }
 
@@ -978,12 +1225,14 @@ mod tests {
             // 200 → warmup = max(8, 200/20) = 10, measured = 190 ≥ 64.
             backend.tmc_config.didt_cycles = 200;
             let mut selftest_results = crate::selftest::SelftestResults::default();
+            let mut diagnostics = crate::selftest::CommissionDiagnostics::default();
 
             let result = step_electrical_identification(
                 &mut phase,
                 &mut buf,
                 InnerSequence::Commission,
                 &mut selftest_results,
+                &mut diagnostics,
                 &mut backend,
             )
             .await;
@@ -1007,6 +1256,7 @@ mod tests {
                 &mut buf,
                 InnerSequence::Commission,
                 &mut selftest_results,
+                &mut diagnostics,
                 &mut backend,
             )
             .await;
@@ -1050,12 +1300,14 @@ mod tests {
                 .insert(PID_TORQUE_FLUX_ACTUAL.addr(), 10)
                 .ok();
             let mut selftest_results = crate::selftest::SelftestResults::default();
+            let mut diagnostics = crate::selftest::CommissionDiagnostics::default();
 
             let result = step_electrical_identification(
                 &mut phase,
                 &mut buf,
                 InnerSequence::Commission,
                 &mut selftest_results,
+                &mut diagnostics,
                 &mut backend,
             )
             .await;
@@ -1093,12 +1345,14 @@ mod tests {
             let mut backend = MockBackend::new();
             backend.fail_on_write = Some(UQ_UD_EXT.addr());
             let mut selftest_results = crate::selftest::SelftestResults::default();
+            let mut diagnostics = crate::selftest::CommissionDiagnostics::default();
 
             let result = step_electrical_identification(
                 &mut phase,
                 &mut buf,
                 InnerSequence::Commission,
                 &mut selftest_results,
+                &mut diagnostics,
                 &mut backend,
             )
             .await;
@@ -1130,12 +1384,14 @@ mod tests {
             let mut backend = MockBackend::new();
             backend.fail_on_read = Some(PID_TORQUE_FLUX_ACTUAL.addr());
             let mut selftest_results = crate::selftest::SelftestResults::default();
+            let mut diagnostics = crate::selftest::CommissionDiagnostics::default();
 
             let result = step_electrical_identification(
                 &mut phase,
                 &mut buf,
                 InnerSequence::Commission,
                 &mut selftest_results,
+                &mut diagnostics,
                 &mut backend,
             )
             .await;
@@ -1171,6 +1427,7 @@ mod tests {
             backend.enable_pin = true;
             backend.fail_on_write = Some(UQ_UD_EXT.addr());
             let mut selftest_results = crate::selftest::SelftestResults::default();
+            let mut diagnostics = crate::selftest::CommissionDiagnostics::default();
             let mut adc_cal = None;
 
             let result = crate::commissioning::inner::step_inner(
@@ -1180,6 +1437,7 @@ mod tests {
                 InnerSequence::Commission,
                 &mut adc_cal,
                 &mut selftest_results,
+                &mut diagnostics,
                 &mut backend,
             )
             .await;
@@ -1233,12 +1491,14 @@ mod tests {
             // 50 - max(8, 50/20=8) = 42 measured cycles, below the 64 floor.
             backend.tmc_config.didt_cycles = 50;
             let mut selftest_results = crate::selftest::SelftestResults::default();
+            let mut diagnostics = crate::selftest::CommissionDiagnostics::default();
 
             let result = step_electrical_identification(
                 &mut phase,
                 &mut buf,
                 InnerSequence::Commission,
                 &mut selftest_results,
+                &mut diagnostics,
                 &mut backend,
             )
             .await;
@@ -1262,12 +1522,14 @@ mod tests {
             let mut backend = MockBackend::new();
             backend.tmc_config.didt_cycles = 60_000; // > 50_000 cap
             let mut selftest_results = crate::selftest::SelftestResults::default();
+            let mut diagnostics = crate::selftest::CommissionDiagnostics::default();
 
             let result = step_electrical_identification(
                 &mut phase,
                 &mut buf,
                 InnerSequence::Commission,
                 &mut selftest_results,
+                &mut diagnostics,
                 &mut backend,
             )
             .await;
@@ -1307,12 +1569,14 @@ mod tests {
                 .insert(PID_TORQUE_FLUX_ACTUAL.addr(), 50)
                 .ok();
             let mut selftest_results = crate::selftest::SelftestResults::default();
+            let mut diagnostics = crate::selftest::CommissionDiagnostics::default();
 
             let _ = step_electrical_identification(
                 &mut phase,
                 &mut buf,
                 InnerSequence::Commission,
                 &mut selftest_results,
+                &mut diagnostics,
                 &mut backend,
             )
             .await;
@@ -1352,12 +1616,14 @@ mod tests {
                 .insert(PID_TORQUE_FLUX_ACTUAL.addr(), 50)
                 .ok();
             let mut selftest_results = crate::selftest::SelftestResults::default();
+            let mut diagnostics = crate::selftest::CommissionDiagnostics::default();
 
             let _ = step_electrical_identification(
                 &mut phase,
                 &mut buf,
                 InnerSequence::Commission,
                 &mut selftest_results,
+                &mut diagnostics,
                 &mut backend,
             )
             .await;
@@ -1387,6 +1653,7 @@ mod tests {
                 &mut buf,
                 InnerSequence::Commission,
                 &mut selftest_results,
+                &mut diagnostics,
                 &mut backend,
             )
             .await;
@@ -1427,6 +1694,31 @@ mod tests {
         data.inductance_count = [count, count];
         data.inductance_elapsed_us = [count * dt_us as u32, count * dt_us as u32];
         data
+    }
+
+    #[test]
+    fn model_failure_diagnostic_codes_are_stable() {
+        let single_tau = diagnostic_for_model_assembly_failure(ModelAssemblyError::SingleCoilTau);
+        assert_eq!(single_tau.phase, PhaseId::ElectricalId.to_u8());
+        assert_eq!(single_tau.code, 21);
+        assert_eq!(single_tau.status, 1);
+
+        let mismatch =
+            diagnostic_for_model_assembly_failure(ModelAssemblyError::ResistanceMismatch {
+                permille: 151,
+            });
+        assert_eq!(mismatch.code, 25);
+        assert_eq!(mismatch.value0, 151);
+
+        let tau_residual = diagnostic_for_model_assembly_failure(ModelAssemblyError::TauResidual {
+            permille: 820,
+            tau_us: 730,
+            crosscheck_us: 1328,
+        });
+        assert_eq!(tau_residual.code, 28);
+        assert_eq!(tau_residual.value0, 820);
+        assert_eq!(tau_residual.value1, 730);
+        assert_eq!(tau_residual.value2, 1328);
     }
 
     #[test]

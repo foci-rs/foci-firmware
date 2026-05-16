@@ -148,6 +148,16 @@ fn inner_failed_commission_emits_phase_reply() {
             5,
             CommissionProfile::Balanced,
         ));
+        engine.as_mut().expect("engine").diagnostics_mut().push(
+            crate::selftest::CommissionDiagnostic {
+                phase: crate::autotune::PhaseId::ElectricalId.to_u8(),
+                code: 28,
+                status: 1,
+                value0: 820,
+                value1: 500,
+                value2: 0,
+            },
+        );
         let err = crate::autotune::CommissionError::NoCurrent;
         let outcome = drive_commission_result(
             crate::commissioning::types::StepResult::InnerFailed(err),
@@ -162,10 +172,19 @@ fn inner_failed_commission_emits_phase_reply() {
                 assert!(actions.stop_trace);
                 assert_eq!(actions.stepper, StepperPostAction::None);
                 match reply {
-                    ReplyPayload::CommissionPhase { oid, phase, status } => {
+                    ReplyPayload::CommissionPhase {
+                        oid,
+                        phase,
+                        status,
+                        diagnostics,
+                    } => {
                         assert_eq!(oid, 5);
                         assert_eq!(phase, 0);
                         assert_eq!(status, err.status_code());
+                        let items: heapless::Vec<_, 4> = diagnostics.iter().collect();
+                        assert_eq!(items.len(), 1);
+                        assert_eq!(items[0].code, 28);
+                        assert_eq!(items[0].value0, 820);
                     }
                     _ => panic!("expected CommissionPhase"),
                 }
@@ -234,6 +253,16 @@ fn inner_failed_selftest_emits_selftest_pair() {
         let (mut cal, mut en, mut gains) = fresh_state_locals();
         let mut state = dispatch_state(&mut cal, &mut en, &mut gains);
         let mut engine = Some(CommissioningEngine::new_selftest(8));
+        engine.as_mut().expect("engine").diagnostics_mut().push(
+            crate::selftest::CommissionDiagnostic {
+                phase: crate::autotune::PhaseId::ElectricalId.to_u8(),
+                code: 27,
+                status: 1,
+                value0: 0,
+                value1: 0,
+                value2: 0,
+            },
+        );
         let err = crate::autotune::CommissionError::Spi;
         let outcome = drive_commission_result(
             crate::commissioning::types::StepResult::InnerFailed(err),
@@ -247,12 +276,18 @@ fn inner_failed_selftest_emits_selftest_pair() {
             CommissionOutcome::Terminal {
                 reply:
                     ReplyPayload::Selftest {
-                        oid, done_status, ..
+                        oid,
+                        done_status,
+                        diagnostics,
+                        ..
                     },
                 ..
             } => {
                 assert_eq!(oid, 8);
                 assert_eq!(done_status, err.status_code());
+                let items: heapless::Vec<_, 4> = diagnostics.iter().collect();
+                assert_eq!(items.len(), 1);
+                assert_eq!(items[0].code, 27);
             }
             _ => panic!("expected Selftest"),
         }

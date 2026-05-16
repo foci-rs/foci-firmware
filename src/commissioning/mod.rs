@@ -137,6 +137,8 @@ pub struct CommissioningEngine {
     /// Per-stage results collected during a selftest run. Populated only
     /// when `sequence == InnerSequence::Selftest`; unused otherwise.
     selftest_results: crate::selftest::SelftestResults,
+    /// Structured diagnostics retained for host-visible troubleshooting.
+    diagnostics: crate::selftest::CommissionDiagnostics,
 }
 
 impl CommissioningEngine {
@@ -162,6 +164,7 @@ impl CommissioningEngine {
             },
             buf: TransientBuffer::new(),
             selftest_results: crate::selftest::SelftestResults::default(),
+            diagnostics: crate::selftest::CommissionDiagnostics::default(),
         }
     }
 
@@ -187,6 +190,7 @@ impl CommissioningEngine {
             },
             buf: TransientBuffer::new(),
             selftest_results: crate::selftest::SelftestResults::default(),
+            diagnostics: crate::selftest::CommissionDiagnostics::default(),
         }
     }
 
@@ -216,6 +220,7 @@ impl CommissioningEngine {
             },
             buf: TransientBuffer::new(),
             selftest_results: crate::selftest::SelftestResults::default(),
+            diagnostics: crate::selftest::CommissionDiagnostics::default(),
         }
     }
 
@@ -279,6 +284,7 @@ impl CommissioningEngine {
             },
             buf: TransientBuffer::new(),
             selftest_results: crate::selftest::SelftestResults::default(),
+            diagnostics: crate::selftest::CommissionDiagnostics::default(),
         }
     }
 
@@ -325,6 +331,16 @@ impl CommissioningEngine {
         core::mem::take(&mut self.selftest_results)
     }
 
+    /// Mutably borrow the diagnostics collected during this run.
+    pub fn diagnostics_mut(&mut self) -> &mut crate::selftest::CommissionDiagnostics {
+        &mut self.diagnostics
+    }
+
+    /// Consume diagnostics collected during this run.
+    pub fn take_diagnostics(&mut self) -> crate::selftest::CommissionDiagnostics {
+        core::mem::take(&mut self.diagnostics)
+    }
+
     /// Advance the state machine by one tick (max 1ms).
     ///
     /// Returns a [`StepResult`] indicating whether to continue, report
@@ -348,6 +364,7 @@ impl CommissioningEngine {
         }
 
         let selftest_results = &mut self.selftest_results;
+        let diagnostics = &mut self.diagnostics;
         match &mut self.engine_mode {
             EngineMode::Inner {
                 phase,
@@ -362,6 +379,7 @@ impl CommissioningEngine {
                     *sequence,
                     adc_cal,
                     selftest_results,
+                    diagnostics,
                     backend,
                 )
                 .await

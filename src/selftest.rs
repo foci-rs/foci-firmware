@@ -54,6 +54,44 @@ pub struct SelftestStageValue {
     pub value: u32,
 }
 
+/// Maximum number of commissioning diagnostic events retained per run.
+pub const COMMISSION_DIAGNOSTIC_CAPACITY: usize = 16;
+
+/// Structured commissioning diagnostic event streamed to the host.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, defmt::Format)]
+pub struct CommissionDiagnostic {
+    /// Commissioning phase identifier.
+    pub phase: u8,
+    /// Phase-local diagnostic code.
+    pub code: u8,
+    /// Diagnostic status (0 = measurement, non-zero = rejection/failure).
+    pub status: u8,
+    /// First code-specific value.
+    pub value0: u32,
+    /// Second code-specific value.
+    pub value1: u32,
+    /// Third code-specific value.
+    pub value2: u32,
+}
+
+/// Bounded commissioning diagnostic event buffer.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct CommissionDiagnostics {
+    events: heapless::Vec<CommissionDiagnostic, COMMISSION_DIAGNOSTIC_CAPACITY>,
+}
+
+impl CommissionDiagnostics {
+    /// Append one event. Events beyond capacity are dropped.
+    pub fn push(&mut self, event: CommissionDiagnostic) {
+        let _ = self.events.push(event);
+    }
+
+    /// Iterate retained events in insertion order.
+    pub fn iter(&self) -> impl Iterator<Item = CommissionDiagnostic> + '_ {
+        self.events.iter().copied()
+    }
+}
+
 impl SelftestStageValue {
     /// Pack two ADC channel offsets into a single u32 for stage 1.
     pub fn adc_offsets(offset_i0: u16, offset_i1: u16) -> Self {
@@ -173,5 +211,55 @@ mod selftest_results_tests {
         let v = SelftestStageValue::skip();
         assert_eq!(v.status, 2);
         assert_eq!(v.value, 0);
+    }
+
+    #[test]
+    fn commission_diagnostics_iterate_in_push_order() {
+        let mut diagnostics = CommissionDiagnostics::default();
+        let first = CommissionDiagnostic {
+            phase: 5,
+            code: 1,
+            status: 0,
+            value0: 10,
+            value1: 20,
+            value2: 30,
+        };
+        let second = CommissionDiagnostic {
+            phase: 5,
+            code: 29,
+            status: 1,
+            value0: 40,
+            value1: 50,
+            value2: 60,
+        };
+
+        diagnostics.push(first);
+        diagnostics.push(second);
+
+        let items: heapless::Vec<_, 4> = diagnostics.iter().collect();
+        assert_eq!(items.as_slice(), &[first, second]);
+    }
+
+    #[test]
+    fn commission_diagnostics_drop_events_after_capacity() {
+        let mut diagnostics = CommissionDiagnostics::default();
+        for code in 0..(COMMISSION_DIAGNOSTIC_CAPACITY as u8 + 2) {
+            diagnostics.push(CommissionDiagnostic {
+                phase: 5,
+                code,
+                status: 0,
+                value0: code as u32,
+                value1: 0,
+                value2: 0,
+            });
+        }
+
+        let items: heapless::Vec<_, COMMISSION_DIAGNOSTIC_CAPACITY> = diagnostics.iter().collect();
+        assert_eq!(items.len(), COMMISSION_DIAGNOSTIC_CAPACITY);
+        assert_eq!(items[0].code, 0);
+        assert_eq!(
+            items[COMMISSION_DIAGNOSTIC_CAPACITY - 1].code,
+            COMMISSION_DIAGNOSTIC_CAPACITY as u8 - 1
+        );
     }
 }

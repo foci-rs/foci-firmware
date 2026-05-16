@@ -91,6 +91,27 @@ pub struct FociCommissionPhase {
     pub status: u8,
 }
 
+/// `foci_commission_detail` reply — structured commissioning diagnostic.
+///
+/// Wire name: `foci_commission_detail`.
+#[klipper_reply]
+pub struct FociCommissionDetail {
+    /// Object id of the FOCI endpoint.
+    pub oid: u8,
+    /// Commissioning phase identifier.
+    pub phase: u8,
+    /// Phase-local diagnostic code.
+    pub code: u8,
+    /// Diagnostic status (0 = measurement, non-zero = failure/rejection).
+    pub status: u8,
+    /// First code-specific value.
+    pub value0: u32,
+    /// Second code-specific value.
+    pub value1: u32,
+    /// Third code-specific value.
+    pub value2: u32,
+}
+
 /// `foci_commission_result` reply — emitted at the end of inner
 /// commissioning with measured electrical and fallback gain values.
 ///
