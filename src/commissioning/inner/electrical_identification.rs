@@ -68,7 +68,7 @@ const DIAG_ELECTRICAL_ID_REJECT_RESISTANCE_OPEN: u8 = 24;
 const DIAG_ELECTRICAL_ID_REJECT_RESISTANCE_MISMATCH: u8 = 25;
 const DIAG_ELECTRICAL_ID_REJECT_TAU_MISMATCH: u8 = 26;
 const DIAG_ELECTRICAL_ID_REJECT_TAU_CROSSCHECK_UNMEASURABLE: u8 = 27;
-const DIAG_ELECTRICAL_ID_REJECT_TAU_RESIDUAL: u8 = 28;
+const DIAG_ELECTRICAL_ID_TAU_RESIDUAL: u8 = 28;
 const DIAG_ELECTRICAL_ID_REJECT_THETA_TOO_LARGE: u8 = 29;
 
 // ---------------------------------------------------------------------------
@@ -96,8 +96,6 @@ const RESISTANCE_MISMATCH_WARN_PERMILLE: u32 = 50;
 const TAU_MISMATCH_FAIL_PERMILLE: u32 = 300;
 /// Per-coil tau disagreement warn threshold (permille).
 const TAU_MISMATCH_WARN_PERMILLE: u32 = 150;
-/// L/R tau vs transient tau residual fail threshold (permille).
-const TAU_RESIDUAL_FAIL_PERMILLE: u32 = 500;
 /// L/R tau vs transient tau residual warn threshold (permille).
 const TAU_RESIDUAL_WARN_PERMILLE: u32 = 250;
 
@@ -138,12 +136,6 @@ pub(crate) enum ModelAssemblyError {
     /// residual so diagnostics can distinguish "didn't measure" from
     /// "measured wrong".
     TauCrosscheckUnmeasurable,
-    /// L/R tau vs transient tau residual above hard threshold.
-    TauResidual {
-        permille: u32,
-        tau_us: u32,
-        crosscheck_us: u32,
-    },
     /// theta_e_us >= tau_e_us / 2.
     ThetaTooLarge { theta_us: u32, tau_us: u32 },
 }
@@ -177,9 +169,6 @@ fn log_model_assembly_failure(err: ModelAssemblyError) {
         }
         ModelAssemblyError::TauCrosscheckUnmeasurable => {
             defmt::warn!("electrical id: tau crosscheck unmeasurable");
-        }
-        ModelAssemblyError::TauResidual { permille, .. } => {
-            defmt::warn!("electrical id: tau residual {} permille", permille);
         }
         ModelAssemblyError::ThetaTooLarge { theta_us, tau_us } => {
             defmt::warn!(
@@ -230,16 +219,6 @@ fn diagnostic_for_model_assembly_failure(
             0,
             0,
         ),
-        ModelAssemblyError::TauResidual {
-            permille,
-            tau_us,
-            crosscheck_us,
-        } => (
-            DIAG_ELECTRICAL_ID_REJECT_TAU_RESIDUAL,
-            permille,
-            tau_us,
-            crosscheck_us,
-        ),
         ModelAssemblyError::ThetaTooLarge { theta_us, tau_us } => (
             DIAG_ELECTRICAL_ID_REJECT_THETA_TOO_LARGE,
             theta_us,
@@ -254,6 +233,19 @@ fn diagnostic_for_model_assembly_failure(
         value0,
         value1,
         value2,
+    }
+}
+
+fn diagnostic_for_tau_residual_warning(
+    assembly: ModelAssembly,
+) -> crate::selftest::CommissionDiagnostic {
+    crate::selftest::CommissionDiagnostic {
+        phase: PhaseId::ElectricalId.to_u8(),
+        code: DIAG_ELECTRICAL_ID_TAU_RESIDUAL,
+        status: 2,
+        value0: assembly.tau_residual_permille as u32,
+        value1: assembly.model.tau_e_us,
+        value2: assembly.model.tau_e_crosscheck_us,
     }
 }
 
@@ -546,13 +538,6 @@ fn assemble_electrical_model(
     // tau_e_us is guaranteed non-zero here (passed SingleCoilTau).
     let diff = tau_e_us.abs_diff(tau_e_crosscheck_us) as u64;
     let tau_residual_permille = ((diff * 1000 / tau_e_us as u64) as u32).min(1000);
-    if tau_residual_permille >= TAU_RESIDUAL_FAIL_PERMILLE {
-        return Err(ModelAssemblyError::TauResidual {
-            permille: tau_residual_permille,
-            tau_us: tau_e_us,
-            crosscheck_us: tau_e_crosscheck_us,
-        });
-    }
     if tau_e_us > 0 && theta_e_us >= tau_e_us / 2 {
         return Err(ModelAssemblyError::ThetaTooLarge {
             theta_us: theta_e_us,
@@ -1007,6 +992,16 @@ pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
                 }
             };
 
+            if assembly.warning_flags & INNER_WARN_BIT_TAU_RESIDUAL != 0 {
+                record_electrical_id_measurement_diagnostics(
+                    data,
+                    buf.samples(),
+                    backend.tmc_config().didt_cycles,
+                    diagnostics,
+                );
+                diagnostics.push(diagnostic_for_tau_residual_warning(assembly));
+            }
+
             match sequence {
                 InnerSequence::Selftest => {
                     selftest_results.set(
@@ -1149,7 +1144,7 @@ mod tests {
     }
 
     #[test]
-    fn validate_rejects_tau_crosscheck_mismatch() {
+    fn validate_warns_on_tau_crosscheck_mismatch() {
         pollster::block_on(async {
             let mut phase = InnerPhase::ElectricalId {
                 state: ElectricalIdState::Validate,
@@ -1179,12 +1174,35 @@ mod tests {
 
             assert!(matches!(
                 result,
-                StepResult::InnerFailed(CommissionError::ElectricalIdFailed)
+                StepResult::PhaseChanged(PhaseId::CurrentTune)
             ));
-            assert!(matches!(
-                phase,
-                InnerPhase::Failed(CommissionError::ElectricalIdFailed)
-            ));
+            let InnerPhase::CurrentTune {
+                model,
+                inner_warning_flags,
+                tau_residual_permille,
+            } = phase
+            else {
+                panic!("expected CurrentTune, got {phase:?}");
+            };
+            assert!(
+                (725..=740).contains(&model.tau_e_us),
+                "tau should be reported from the per-coil L/R model: {}",
+                model.tau_e_us
+            );
+            assert!(
+                (290..=305).contains(&model.tau_e_crosscheck_us),
+                "crosscheck should come from the transient fixture: {}",
+                model.tau_e_crosscheck_us
+            );
+            assert_eq!(
+                inner_warning_flags & INNER_WARN_BIT_TAU_RESIDUAL,
+                INNER_WARN_BIT_TAU_RESIDUAL
+            );
+            assert!(
+                (580..=610).contains(&tau_residual_permille),
+                "residual should capture L/R-vs-transient disagreement: {}",
+                tau_residual_permille
+            );
             let items: heapless::Vec<_, 8> = diagnostics.iter().collect();
             assert_eq!(items.len(), 7);
             assert_eq!(items[0].phase, PhaseId::ElectricalId.to_u8());
@@ -1205,7 +1223,23 @@ mod tests {
             assert_eq!(items[4].code, 5);
             assert_eq!(items[5].code, 6);
             assert_eq!(items[5].value0, 1000);
-            assert_eq!(items[6].code, DIAG_ELECTRICAL_ID_REJECT_TAU_RESIDUAL);
+            assert_eq!(items[6].code, DIAG_ELECTRICAL_ID_TAU_RESIDUAL);
+            assert_eq!(items[6].status, 2);
+            assert!(
+                (580..=610).contains(&items[6].value0),
+                "diagnostic residual should match assembly residual: {}",
+                items[6].value0
+            );
+            assert!(
+                (725..=740).contains(&items[6].value1),
+                "diagnostic tau should match assembly tau: {}",
+                items[6].value1
+            );
+            assert!(
+                (290..=305).contains(&items[6].value2),
+                "diagnostic crosscheck should match assembly crosscheck: {}",
+                items[6].value2
+            );
         });
     }
 
@@ -1710,15 +1744,7 @@ mod tests {
         assert_eq!(mismatch.code, 25);
         assert_eq!(mismatch.value0, 151);
 
-        let tau_residual = diagnostic_for_model_assembly_failure(ModelAssemblyError::TauResidual {
-            permille: 820,
-            tau_us: 730,
-            crosscheck_us: 1328,
-        });
-        assert_eq!(tau_residual.code, 28);
-        assert_eq!(tau_residual.value0, 820);
-        assert_eq!(tau_residual.value1, 730);
-        assert_eq!(tau_residual.value2, 1328);
+        assert_eq!(DIAG_ELECTRICAL_ID_TAU_RESIDUAL, 28);
     }
 
     #[test]

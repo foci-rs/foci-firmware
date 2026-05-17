@@ -64,7 +64,7 @@ pub struct CommissionDiagnostic {
     pub phase: u8,
     /// Phase-local diagnostic code.
     pub code: u8,
-    /// Diagnostic status (0 = measurement, non-zero = rejection/failure).
+    /// Diagnostic status (0 = measurement, 1 = rejection/failure, 2 = warning).
     pub status: u8,
     /// First code-specific value.
     pub value0: u32,
