@@ -91,17 +91,16 @@ pub fn tmc_set_current(ctx: &mut dyn TmcWriteHost, oid: u8, run_ma: u32) {
 
 /// Configure ABN encoder resolution and compute step width.
 ///
-/// Uses `tmc_set_encoder_hw` to compute the step width from PPR and
-/// pole pairs, then stores it in the channel runtime state for
-/// the TMC4671 STEP_WIDTH register. The TMC4671 position PID operates
-/// on phi_e, not encoder counts:
-///   `step_width = 65536 * pole_pairs / quadrature_ppr`
+/// The closed-loop position PID currently operates in `phi_m_abn`
+/// mechanical-angle space (`POSITION_SELECTION=9`), so STEP_WIDTH is one
+/// mechanical revolution divided by the quadrature encoder count:
+/// `step_width = 65536 / quadrature_ppr`.
 #[klipper_command]
 pub fn tmc_set_encoder(ctx: &mut dyn TmcWriteHost, oid: u8, channel: u8, ppr: u32) {
     let Some((channel, state)) = foci_tmc_state_matching_or_shutdown(ctx, oid, channel) else {
         return;
     };
-    let (req, step_width) = crate::tmc::tmc_set_encoder_hw(channel, ppr, 50);
+    let (req, step_width) = crate::tmc::tmc_set_encoder_hw(channel, ppr, 1);
     state.step_width_value.store(step_width, Ordering::Relaxed);
     defmt::info!("channel={} ppr={} step_width={}", channel, ppr, step_width);
     if ctx.enqueue_request(req).is_err() && ctx.enter_shutdown() {
@@ -442,6 +441,28 @@ mod tests {
                 velocity_p: 768,
                 velocity_i: 4,
             }
+        ));
+        assert_eq!(ctx.last_shutdown, None);
+    }
+
+    #[test]
+    fn tmc_set_encoder_stores_mechanical_step_width() {
+        use core::sync::atomic::Ordering::Relaxed;
+
+        let mut ctx = MockCtx::new(2);
+        let mut sender = ();
+        config_stepper_channel(ctx.state(), 10, 1).unwrap();
+        let tmc_state = crate::state::tmc::tmc_channel(1).unwrap();
+        tmc_state.step_width_value.store(819, Relaxed);
+
+        tmc_set_encoder(&mut ctx, &mut sender, 10, 1, 1000);
+
+        assert_eq!(tmc_state.step_width_value.load(Relaxed), 16);
+        let req = ctx.last_request.borrow().clone().unwrap();
+        assert_eq!(req.channel, 1);
+        assert!(matches!(
+            req.kind,
+            crate::tmc::TmcRequestKind::SetEncoder { ppr: 1000 }
         ));
         assert_eq!(ctx.last_shutdown, None);
     }

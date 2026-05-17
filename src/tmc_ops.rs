@@ -282,7 +282,7 @@ where
 ///
 /// Validates that `ppr` is non-zero, multiplies by 4 to obtain the
 /// quadrature count (ABN encoders produce four edges per mechanical cycle),
-/// writes `ABN_DECODER_PPR`, and logs the derived step width.
+/// writes `ABN_DECODER_PPR`, and logs the mechanical-angle step width.
 ///
 /// # Parameters
 ///
@@ -311,7 +311,7 @@ where
         defmt::error!("TMC4671 SPI write failed: ABN_DECODER_PPR");
         return Err(());
     }
-    let step_width = 65536u64 * 50 / quadrature_ppr as u64;
+    let step_width = 65536u64 / quadrature_ppr as u64;
     defmt::info!("TMC4671 encoder: {} PPR, step_width={}", ppr, step_width);
     Ok(())
 }

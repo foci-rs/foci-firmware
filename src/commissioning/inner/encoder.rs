@@ -40,6 +40,14 @@ const ENCODER_MOVEMENT_CURRENT_MIN: u32 = 100;
 
 /// Maximum D-axis current target used while forcing encoder movement.
 const ENCODER_MOVEMENT_CURRENT_MAX: u32 = 1000;
+/// OpenFFBoard bringup motors use 50 pole pairs.
+const ENCODER_ALIGNMENT_POLE_PAIRS: u32 = 50;
+
+fn encoder_alignment_min_movement(step_width: u32) -> u32 {
+    let electrical_step_width = step_width.saturating_mul(ENCODER_ALIGNMENT_POLE_PAIRS);
+    let denominator = 20u32.saturating_mul(electrical_step_width).max(1);
+    (65536u32 / denominator).max(2)
+}
 
 /// Start current-regulated open-loop encoder movement.
 ///
@@ -117,6 +125,16 @@ pub(crate) async fn start_encoder_current_drive<B: CommissioningBackend>(
         .map_err(|_| CommissionError::Spi)?;
     backend.set_enable_pin(true);
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn encoder_alignment_min_movement_uses_electrical_fraction() {
+        assert_eq!(encoder_alignment_min_movement(16), 4);
+    }
 }
 
 /// Stop current-regulated open-loop encoder movement.
@@ -312,7 +330,7 @@ pub(crate) async fn step_encoder_align<B: CommissioningBackend>(
             backend.set_enable_pin(true);
 
             let step_width = backend.step_width().max(1);
-            let min_movement = (65536u32 / (20 * step_width)).max(2);
+            let min_movement = encoder_alignment_min_movement(step_width);
             let deadline = backend
                 .elapsed_us()
                 .wrapping_add(ENCODER_ALIGNMENT_SETTLE_US);

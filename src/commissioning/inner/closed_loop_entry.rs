@@ -13,8 +13,8 @@ use crate::commissioning::types::{
     AdcCalResult, CommissionResult, CommissioningBackend, InnerResult, StepResult,
 };
 
-const CLOSED_LOOP_VELOCITY_SELECTION: u32 = 0x0000_0100;
-const CLOSED_LOOP_POSITION_SELECTION: u32 = 0;
+const CLOSED_LOOP_VELOCITY_SELECTION: u32 = 0x0000_0109;
+const CLOSED_LOOP_POSITION_SELECTION: u32 = 9;
 
 /// Advance closed-loop entry sub-state by one cooperative tick.
 pub(crate) async fn step_closed_loop_entry<B: CommissioningBackend>(
@@ -226,9 +226,9 @@ pub(crate) async fn step_closed_loop_entry<B: CommissioningBackend>(
 
         ClosedLoopEntryState::WritePositionConfig => {
             // 7. Explicit selection setup:
-            // - velocity source 0 follows PHI_E_SELECTION
+            // - velocity source 9 uses ABN mechanical angle
             // - velocity meter 1 uses the advanced/PWM-synchronized meter
-            // - position source 0 follows PHI_E_SELECTION
+            // - position source 9 uses ABN mechanical angle
             if backend
                 .write_register(VELOCITY_SELECTION, CLOSED_LOOP_VELOCITY_SELECTION)
                 .await
@@ -514,7 +514,7 @@ mod tests {
             };
             let mut adc_cal = None;
             let mut backend = MockBackend::new();
-            backend.step_width_value = 819;
+            backend.step_width_value = 16;
 
             let result = step_closed_loop_entry(
                 &mut phase,
@@ -534,15 +534,15 @@ mod tests {
             ));
             assert!(backend.spi_log.iter().any(|op| matches!(
                 op,
-                SpiOp::Write(addr, 0x0000_0100) if *addr == VELOCITY_SELECTION.addr()
+                SpiOp::Write(addr, 0x0000_0109) if *addr == VELOCITY_SELECTION.addr()
             )));
             assert!(backend.spi_log.iter().any(|op| matches!(
                 op,
-                SpiOp::Write(addr, 0) if *addr == POSITION_SELECTION.addr()
+                SpiOp::Write(addr, 9) if *addr == POSITION_SELECTION.addr()
             )));
             assert!(backend.spi_log.iter().any(|op| matches!(
                 op,
-                SpiOp::Write(addr, 819) if *addr == STEP_WIDTH.addr()
+                SpiOp::Write(addr, 16) if *addr == STEP_WIDTH.addr()
             )));
         });
     }

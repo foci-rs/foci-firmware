@@ -409,6 +409,16 @@ mod tests {
     }
 
     #[test]
+    fn tmc_set_encoder_hw_computes_mechanical_step_width() {
+        let (req, step_width) = tmc_set_encoder_hw(0, 1000, 1);
+        assert_eq!(
+            req,
+            TmcRequest::new(0, TmcRequestKind::SetEncoder { ppr: 1000 })
+        );
+        assert_eq!(step_width, 16);
+    }
+
+    #[test]
     fn tmc_set_encoder_hw_zero_ppr() {
         let (req, step_width) = tmc_set_encoder_hw(0, 0, 50);
         assert_eq!(
