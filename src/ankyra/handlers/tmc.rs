@@ -203,9 +203,13 @@ pub fn tmc_set_position_gains(
     velocity_p: u16,
     velocity_i: u16,
 ) {
-    let Some((channel, _state)) = foci_tmc_state_or_shutdown(ctx, oid) else {
+    let Some((channel, state)) = foci_tmc_state_or_shutdown(ctx, oid) else {
         return;
     };
+    state.position_p_value.store(position_p, Ordering::Relaxed);
+    state.position_i_value.store(position_i, Ordering::Relaxed);
+    state.velocity_p_value.store(velocity_p, Ordering::Relaxed);
+    state.velocity_i_value.store(velocity_i, Ordering::Relaxed);
     if ctx
         .enqueue_request(crate::tmc::tmc_set_position_gains(
             channel, position_p, position_i, velocity_p, velocity_i,
@@ -405,6 +409,39 @@ mod tests {
         assert!(matches!(
             req.kind,
             crate::tmc::TmcRequestKind::SetCurrent { run_ma: 800 }
+        ));
+        assert_eq!(ctx.last_shutdown, None);
+    }
+
+    #[test]
+    fn tmc_set_position_gains_updates_saved_state_before_worker_runs() {
+        use core::sync::atomic::Ordering::Relaxed;
+
+        let mut ctx = MockCtx::new(2);
+        let mut sender = ();
+        config_stepper_channel(ctx.state(), 10, 1).unwrap();
+        let tmc_state = crate::state::tmc::tmc_channel(1).unwrap();
+        tmc_state.position_p_value.store(640, Relaxed);
+        tmc_state.position_i_value.store(0, Relaxed);
+        tmc_state.velocity_p_value.store(1152, Relaxed);
+        tmc_state.velocity_i_value.store(0, Relaxed);
+
+        tmc_set_position_gains(&mut ctx, &mut sender, 10, 256, 3, 768, 4);
+
+        assert_eq!(tmc_state.position_p_value.load(Relaxed), 256);
+        assert_eq!(tmc_state.position_i_value.load(Relaxed), 3);
+        assert_eq!(tmc_state.velocity_p_value.load(Relaxed), 768);
+        assert_eq!(tmc_state.velocity_i_value.load(Relaxed), 4);
+        let req = ctx.last_request.borrow().clone().unwrap();
+        assert_eq!(req.channel, 1);
+        assert!(matches!(
+            req.kind,
+            crate::tmc::TmcRequestKind::SetPositionGains {
+                position_p: 256,
+                position_i: 3,
+                velocity_p: 768,
+                velocity_i: 4,
+            }
         ));
         assert_eq!(ctx.last_shutdown, None);
     }
