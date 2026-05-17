@@ -14,8 +14,8 @@
 //!   error accumulators and STATUS_FLAGS.
 //! - [`apply_stored_filters`] — write the four biquad filter sections from
 //!   the channel filter-Hz atomics back to TMC4671 registers.
-//! - [`apply_set_current`] — convert RMS current to TMC4671 peak counts and
-//!   write `PID_TORQUE_FLUX_LIMITS`; stores the result in channel state.
+//! - [`apply_set_current`] — convert RMS current to TMC4671 peak counts, write
+//!   `PID_TORQUE_FLUX_LIMITS`, and store the result in channel state.
 //! - [`apply_set_encoder`] — validate PPR, write `ABN_DECODER_PPR` (×4 for
 //!   quadrature), and log the computed step width.
 //! - [`apply_set_encoder_dir`] — write `ABN_DECODER_MODE` and update the
@@ -228,7 +228,7 @@ pub async fn apply_stored_filters<B>(
 ///
 /// Converts the Klipper-convention RMS milliamp value to the TMC4671 peak
 /// amplitude count (datasheet eq. 19/21: `I_phase = I_D * sin(phi_e)`),
-/// writes `PID_TORQUE_FLUX_LIMITS`, and stores the packed register value in
+/// writes `PID_TORQUE_FLUX_LIMITS`, and stores the register value in
 /// channel current-limit state for use by the commissioning engine.
 ///
 /// # Parameters
@@ -258,7 +258,7 @@ where
     // Convert: peak = RMS * sqrt(2).
     let peak_ma = run_ma as f32 * core::f32::consts::SQRT_2;
     let counts = (peak_ma / current_scale_ma_per_lsb) as u32;
-    let limit = (counts << 16) | counts;
+    let limit = counts;
     if tmc
         .write_register(PID_TORQUE_FLUX_LIMITS, limit)
         .await
@@ -785,6 +785,69 @@ mod tests {
 
     fn stepper_state() -> &'static crate::state::stepper::StepperChannelState {
         crate::state::stepper::stepper_channel0()
+    }
+
+    #[derive(Default)]
+    struct MockRawSpi {
+        writes: std::vec::Vec<std::vec::Vec<u8>>,
+    }
+
+    impl embedded_hal_async::spi::ErrorType for MockRawSpi {
+        type Error = core::convert::Infallible;
+    }
+
+    impl SpiDevice<u8> for MockRawSpi {
+        async fn transaction(
+            &mut self,
+            operations: &mut [embedded_hal_async::spi::Operation<'_, u8>],
+        ) -> Result<(), Self::Error> {
+            for op in operations {
+                match op {
+                    embedded_hal_async::spi::Operation::Read(buf) => buf.fill(0),
+                    embedded_hal_async::spi::Operation::Write(buf) => {
+                        self.writes.push(buf.to_vec())
+                    }
+                    embedded_hal_async::spi::Operation::Transfer(read, write) => {
+                        read.copy_from_slice(write);
+                    }
+                    embedded_hal_async::spi::Operation::TransferInPlace(_) => {}
+                    embedded_hal_async::spi::Operation::DelayNs(_) => {}
+                }
+            }
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn apply_set_current_writes_single_current_limit_register() {
+        pollster::block_on(async {
+            use core::sync::atomic::Ordering;
+            use foci_tmc4671::registers::PID_TORQUE_FLUX_LIMITS;
+
+            let _guard = crate::commission_dispatch::test_support::SHARED_STATE_MUTEX
+                .lock()
+                .await;
+            tmc_state().current_limit_reg.store(0, Ordering::Relaxed);
+
+            let raw_spi = MockRawSpi::default();
+            let mut tmc = Tmc4671Spi::new(raw_spi);
+            apply_set_current(&mut tmc, tmc_state(), 1500, 1.155)
+                .await
+                .expect("current write should succeed");
+
+            assert_eq!(
+                tmc_state().current_limit_reg.load(Ordering::Relaxed),
+                0x0000_072c
+            );
+            let raw_spi = tmc.into_inner();
+            assert_eq!(raw_spi.writes.len(), 1);
+            assert_eq!(
+                raw_spi.writes[0],
+                [PID_TORQUE_FLUX_LIMITS.addr() | 0x80, 0x00, 0x00, 0x07, 0x2c]
+            );
+
+            tmc_state().current_limit_reg.store(0, Ordering::Relaxed);
+        });
     }
 
     #[test]
