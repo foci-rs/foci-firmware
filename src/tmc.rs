@@ -332,22 +332,25 @@ pub fn compute_velocity_scale_factor(step_width: u32, clock_freq: u32, f_pwm: u3
 /// # Parameters
 /// - `scale_factor`: precomputed by [`compute_velocity_scale_factor`]
 /// - `step_interval`: current step interval in TIM5 clock ticks (from atomic)
-/// - `forward`: true if stepping in the forward direction
+/// - `dir_high`: true if the TMC4671 DIR input is high
 ///
 /// Returns 0 if `step_interval == 0` (motor idle) or `scale_factor == 0`
 /// (feedforward not configured).
 ///
 /// The result is in TMC4671 velocity units (position change per PWM period)
 /// and is written directly to PID_VELOCITY_OFFSET (0x67, s32).
-pub fn compute_velocity_offset(scale_factor: u32, step_interval: u32, forward: bool) -> i32 {
+///
+/// With a positive STEP_WIDTH, the TMC4671 STEP/DIR input reports a
+/// negative velocity for DIR high and a positive velocity for DIR low.
+pub fn compute_velocity_offset(scale_factor: u32, step_interval: u32, dir_high: bool) -> i32 {
     if step_interval == 0 || scale_factor == 0 {
         return 0;
     }
     let magnitude = scale_factor / step_interval;
-    if forward {
-        magnitude as i32
-    } else {
+    if dir_high {
         -(magnitude as i32)
+    } else {
+        magnitude as i32
     }
 }
 
@@ -594,17 +597,17 @@ mod tests {
     }
 
     #[test]
-    fn velocity_offset_worked_example() {
+    fn velocity_offset_dir_high_matches_tmc_negative_velocity() {
         let scale = compute_velocity_scale_factor(81, 84_000_000, 25_000);
         let offset = compute_velocity_offset(scale, 420, true);
-        assert_eq!(offset, 648);
+        assert_eq!(offset, -648);
     }
 
     #[test]
-    fn velocity_offset_reverse_direction() {
+    fn velocity_offset_dir_low_matches_tmc_positive_velocity() {
         let scale = compute_velocity_scale_factor(81, 84_000_000, 25_000);
         let offset = compute_velocity_offset(scale, 420, false);
-        assert_eq!(offset, -648);
+        assert_eq!(offset, 648);
     }
 
     #[test]
@@ -624,13 +627,13 @@ mod tests {
     fn velocity_offset_high_speed() {
         let scale = compute_velocity_scale_factor(81, 84_000_000, 25_000);
         let offset = compute_velocity_offset(scale, 84, true);
-        assert_eq!(offset, 3240);
+        assert_eq!(offset, -3240);
     }
 
     #[test]
     fn velocity_offset_low_speed() {
         let scale = compute_velocity_scale_factor(81, 84_000_000, 25_000);
         let offset = compute_velocity_offset(scale, 84_000, true);
-        assert_eq!(offset, 3);
+        assert_eq!(offset, -3);
     }
 }
