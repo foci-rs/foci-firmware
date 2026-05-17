@@ -593,6 +593,21 @@ pub async fn disarm_motor<B: CommissioningBackend>(backend: &mut B, state: &mut 
     *state.motor_enabled = false;
 }
 
+/// Pack TMC4671 outer-loop gain registers from raw Q8.8 gain values.
+///
+/// The TMC4671 stores the P term in the upper 16 bits and the I term in the
+/// lower 16 bits for both velocity and position outer-loop registers.
+pub fn pack_outer_gain_registers(
+    position_p: u16,
+    position_i: u16,
+    velocity_p: u16,
+    velocity_i: u16,
+) -> (u32, u32) {
+    let velocity_reg = ((velocity_p as u32) << 16) | velocity_i as u32;
+    let position_reg = ((position_p as u32) << 16) | position_i as u32;
+    (velocity_reg, position_reg)
+}
+
 /// SPI restore sequence for the OuterDone success path.
 ///
 /// Writes tuned velocity and position gains, the operational velocity limit,
@@ -623,12 +638,15 @@ pub async fn restore_position_mode_after_outer<B: CommissioningBackend>(
     use foci_tmc4671::registers::*;
 
     // Tuned velocity + position gains.
-    let velocity_reg = (outer.velocity_p as u32) << 16 | outer.velocity_i as u32;
+    let (velocity_reg, position_reg) = pack_outer_gain_registers(
+        outer.position_p,
+        outer.position_i,
+        outer.velocity_p,
+        outer.velocity_i,
+    );
     backend
         .write_register(PID_VELOCITY_P_VELOCITY_I, velocity_reg)
         .await?;
-
-    let position_reg = (outer.position_p as u32) << 16 | outer.position_i as u32;
     backend
         .write_register(PID_POSITION_P_POSITION_I, position_reg)
         .await?;
@@ -699,18 +717,19 @@ pub async fn restore_calibrate_gains<B: CommissioningBackend>(
             .await?;
     }
 
-    // Velocity gains.
     let velocity_p = tmc_state.velocity_p_value.load(Relaxed);
     let velocity_i = tmc_state.velocity_i_value.load(Relaxed);
-    let velocity_reg = (velocity_p as u32) << 16 | velocity_i as u32;
+    let position_p = tmc_state.position_p_value.load(Relaxed);
+    let position_i = tmc_state.position_i_value.load(Relaxed);
+    let (velocity_reg, position_reg) =
+        pack_outer_gain_registers(position_p, position_i, velocity_p, velocity_i);
+
+    // Velocity gains.
     backend
         .write_register(PID_VELOCITY_P_VELOCITY_I, velocity_reg)
         .await?;
 
     // Position gains.
-    let position_p = tmc_state.position_p_value.load(Relaxed);
-    let position_i = tmc_state.position_i_value.load(Relaxed);
-    let position_reg = (position_p as u32) << 16 | position_i as u32;
     backend
         .write_register(PID_POSITION_P_POSITION_I, position_reg)
         .await?;
@@ -1086,5 +1105,13 @@ mod tests {
             assert!(!writes.contains(&PID_FLUX_P_FLUX_I.addr()));
             assert!(writes.contains(&PID_VELOCITY_P_VELOCITY_I.addr()));
         });
+    }
+
+    #[test]
+    fn pack_outer_gain_registers_places_p_in_upper_half() {
+        let (velocity_reg, position_reg) = pack_outer_gain_registers(256, 3, 6656, 4);
+
+        assert_eq!(velocity_reg, 0x1a00_0004);
+        assert_eq!(position_reg, 0x0100_0003);
     }
 }
