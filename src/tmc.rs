@@ -96,6 +96,10 @@ pub enum TmcRequestKind {
     },
     /// Enable or disable velocity feedforward in the 1ms tick loop.
     SetVelocityFeedforward { enable: bool },
+    /// Start the per-tick trace buffer with the selected preset.
+    TraceStart { oid: u8, preset: u8 },
+    /// Stop the per-tick trace buffer, preserving samples for fetch.
+    TraceStop { oid: u8 },
     /// Query trace buffer metadata.
     TraceInfo { oid: u8 },
     /// Fetch a trace sample by offset. generation must match current generation.
@@ -292,6 +296,16 @@ pub fn auto_calibrate_on_enable_allowed(channel: u8) -> bool {
         .unwrap_or(false)
 }
 
+/// Build a `TraceStart` request.
+pub fn tmc_trace_start(channel: u8, oid: u8, preset: u8) -> TmcRequest {
+    TmcRequest::new(channel, TmcRequestKind::TraceStart { oid, preset })
+}
+
+/// Build a `TraceStop` request.
+pub fn tmc_trace_stop(channel: u8, oid: u8) -> TmcRequest {
+    TmcRequest::new(channel, TmcRequestKind::TraceStop { oid })
+}
+
 /// Build a `TraceInfo` request.
 pub fn tmc_trace_info(channel: u8, oid: u8) -> TmcRequest {
     TmcRequest::new(channel, TmcRequestKind::TraceInfo { oid })
@@ -460,6 +474,28 @@ mod tests {
         assert_eq!(
             tmc_dump_registers(0, 1),
             TmcRequest::new(0, TmcRequestKind::DumpRegisters { oid: 1 })
+        );
+    }
+
+    #[test]
+    fn tmc_trace_start_builds_request() {
+        assert_eq!(
+            tmc_trace_start(0, 7, crate::trace::PRESET_FULL),
+            TmcRequest::new(
+                0,
+                TmcRequestKind::TraceStart {
+                    oid: 7,
+                    preset: crate::trace::PRESET_FULL,
+                }
+            )
+        );
+    }
+
+    #[test]
+    fn tmc_trace_stop_builds_request() {
+        assert_eq!(
+            tmc_trace_stop(0, 7),
+            TmcRequest::new(0, TmcRequestKind::TraceStop { oid: 7 })
         );
     }
 
