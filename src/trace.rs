@@ -9,7 +9,7 @@ use static_assertions::const_assert;
 
 /// Fast preset: 28 bytes/sample, 1 kHz, 5 reg + 1 sub-reg read.
 pub const FAST_CAPACITY: usize = 512;
-/// Full/velocity presets: 48 bytes/sample, 500 Hz (decimated), 7 reg + 4 sub-reg.
+/// Full/velocity presets: 48 bytes/sample, 500 Hz (decimated).
 pub const FULL_CAPACITY: usize = 256;
 
 const_assert!(FAST_CAPACITY.is_power_of_two());
@@ -71,11 +71,11 @@ const_assert!(core::mem::size_of::<TraceSampleFull>() == 48);
 #[derive(Clone, Copy, Default)]
 pub struct TraceSampleVelocity {
     pub fast: TraceSampleFast,
-    pub torque_flux_target: u32,
+    pub pidout_target_torque: i32,
+    pub pidout_target_flux: i32,
     pub pidin_target_velocity: i32,
     pub pid_velocity_actual: i32,
     pub velocity_offset: i32,
-    pub error_sum_velocity: i32,
 }
 
 const_assert!(core::mem::size_of::<TraceSampleVelocity>() == 48);
@@ -505,13 +505,14 @@ pub async fn sample_tick<B, F1, F2>(
             error_sum_torque,
         });
     } else if preset == PRESET_VELOCITY {
-        let torque_flux_target = read_or_drop!(tmc.read_register(PID_TORQUE_FLUX_TARGET));
+        let pidout_target_torque =
+            read_or_drop!(tmc.read_sub_register(INTERIM_PIDOUT_TARGET_TORQUE)) as i32;
+        let pidout_target_flux =
+            read_or_drop!(tmc.read_sub_register(INTERIM_PIDOUT_TARGET_FLUX)) as i32;
         let pidin_target_velocity =
             read_or_drop!(tmc.read_sub_register(INTERIM_PIDIN_TARGET_VELOCITY)) as i32;
         let pid_velocity_actual = read_or_drop!(tmc.read_register(PID_VELOCITY_ACTUAL)) as i32;
         let velocity_offset = read_or_drop!(tmc.read_register(PID_VELOCITY_OFFSET)) as i32;
-        let error_sum_velocity =
-            read_or_drop!(tmc.read_sub_register(PID_ERROR_PID_VELOCITY_ERROR_SUM)) as i32;
 
         // First sample: log measured SPI duration
         if is_first_sample {
@@ -551,11 +552,11 @@ pub async fn sample_tick<B, F1, F2>(
                 status_flags,
                 abn_count,
             },
-            torque_flux_target,
+            pidout_target_torque,
+            pidout_target_flux,
             pidin_target_velocity,
             pid_velocity_actual,
             velocity_offset,
-            error_sum_velocity,
         });
     } else {
         // First sample: log measured SPI duration
@@ -844,10 +845,11 @@ mod tests {
         let mut buf = make_buffer();
         buf.start(1, PRESET_VELOCITY);
         let s = TraceSampleVelocity {
+            pidout_target_torque: 42,
+            pidout_target_flux: -3,
             pidin_target_velocity: 120,
             pid_velocity_actual: 108,
             velocity_offset: 3,
-            error_sum_velocity: -7,
             ..TraceSampleVelocity::default()
         };
 
@@ -858,10 +860,11 @@ mod tests {
         match buf.fetch(1, 0, buf.generation) {
             FetchResult::Ok(idx) => {
                 let fetched = unsafe { buf.storage.velocity[idx as usize] };
+                assert_eq!(fetched.pidout_target_torque, 42);
+                assert_eq!(fetched.pidout_target_flux, -3);
                 assert_eq!(fetched.pidin_target_velocity, 120);
                 assert_eq!(fetched.pid_velocity_actual, 108);
                 assert_eq!(fetched.velocity_offset, 3);
-                assert_eq!(fetched.error_sum_velocity, -7);
             }
             _ => panic!("expected Ok"),
         }
