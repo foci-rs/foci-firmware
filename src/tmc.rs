@@ -95,7 +95,7 @@ pub enum TmcRequestKind {
         velocity_i: u16,
     },
     /// Enable or disable velocity feedforward in the 1ms tick loop.
-    SetVelocityFeedforward { enable: bool },
+    SetVelocityFeedforward { enable: bool, multiplier: u16 },
     /// Start the per-tick trace buffer with the selected preset.
     TraceStart { oid: u8, preset: u8 },
     /// Stop the per-tick trace buffer, preserving samples for fetch.
@@ -265,8 +265,11 @@ pub fn tmc_set_position_gains(
 }
 
 /// Build a `SetVelocityFeedforward` request.
-pub fn tmc_set_velocity_feedforward(channel: u8, enable: bool) -> TmcRequest {
-    TmcRequest::new(channel, TmcRequestKind::SetVelocityFeedforward { enable })
+pub fn tmc_set_velocity_feedforward(channel: u8, enable: bool, multiplier: u16) -> TmcRequest {
+    TmcRequest::new(
+        channel,
+        TmcRequestKind::SetVelocityFeedforward { enable, multiplier },
+    )
 }
 
 /// Build a `SetEnable` request.
@@ -357,15 +360,26 @@ pub fn compute_velocity_scale_factor(step_width: u32, clock_freq: u32, f_pwm: u3
 /// With a positive STEP_WIDTH, the TMC4671 STEP/DIR input reports a
 /// negative velocity for DIR high and a positive velocity for DIR low.
 pub fn compute_velocity_offset(scale_factor: u32, step_interval: u32, dir_high: bool) -> i32 {
+    compute_velocity_offset_scaled(scale_factor, step_interval, dir_high, 1)
+}
+
+/// Compute the velocity feedforward offset with a runtime multiplier.
+///
+/// `multiplier == 0` disables the offset. Positive products saturate to
+/// `i32::MAX`; negative products use the same magnitude limit so the value
+/// remains symmetric around zero.
+pub fn compute_velocity_offset_scaled(
+    scale_factor: u32,
+    step_interval: u32,
+    dir_high: bool,
+    multiplier: u16,
+) -> i32 {
     if step_interval == 0 || scale_factor == 0 {
         return 0;
     }
-    let magnitude = scale_factor / step_interval;
-    if dir_high {
-        -(magnitude as i32)
-    } else {
-        magnitude as i32
-    }
+    let magnitude = (scale_factor / step_interval) as u64 * multiplier as u64;
+    let magnitude = magnitude.min(i32::MAX as u64) as i32;
+    if dir_high { -magnitude } else { magnitude }
 }
 
 /// Build a `Write` request (dev-only).
@@ -566,8 +580,14 @@ mod tests {
     #[test]
     fn tmc_set_velocity_feedforward_builds_request() {
         assert_eq!(
-            tmc_set_velocity_feedforward(0, true),
-            TmcRequest::new(0, TmcRequestKind::SetVelocityFeedforward { enable: true })
+            tmc_set_velocity_feedforward(0, true, 4),
+            TmcRequest::new(
+                0,
+                TmcRequestKind::SetVelocityFeedforward {
+                    enable: true,
+                    multiplier: 4,
+                }
+            )
         );
     }
 
@@ -671,5 +691,28 @@ mod tests {
         let scale = compute_velocity_scale_factor(81, 84_000_000, 25_000);
         let offset = compute_velocity_offset(scale, 84_000, true);
         assert_eq!(offset, -3);
+    }
+
+    #[test]
+    fn velocity_offset_applies_multiplier() {
+        let scale = compute_velocity_scale_factor(81, 84_000_000, 25_000);
+        let offset = compute_velocity_offset_scaled(scale, 84_000, false, 8);
+        assert_eq!(offset, 24);
+    }
+
+    #[test]
+    fn velocity_offset_multiplier_zero_disables_offset() {
+        let scale = compute_velocity_scale_factor(81, 84_000_000, 25_000);
+        let offset = compute_velocity_offset_scaled(scale, 84_000, false, 0);
+        assert_eq!(offset, 0);
+    }
+
+    #[test]
+    fn velocity_offset_multiplier_saturates_to_i32_range() {
+        let offset = compute_velocity_offset_scaled(u32::MAX, 1, false, u16::MAX);
+        assert_eq!(offset, i32::MAX);
+
+        let offset = compute_velocity_offset_scaled(u32::MAX, 1, true, u16::MAX);
+        assert_eq!(offset, i32::MIN + 1);
     }
 }

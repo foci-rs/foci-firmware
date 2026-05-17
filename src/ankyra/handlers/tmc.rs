@@ -223,14 +223,26 @@ pub fn tmc_set_position_gains(
 
 /// Enable or disable velocity feedforward from host config.
 #[klipper_command]
-pub fn tmc_set_velocity_feedforward(ctx: &mut dyn ShutdownRecovery, oid: u8, enable: u8) {
+pub fn tmc_set_velocity_feedforward(
+    ctx: &mut dyn ShutdownRecovery,
+    oid: u8,
+    enable: u8,
+    multiplier: u16,
+) {
     let Some((_channel, state)) = foci_tmc_state_or_shutdown(ctx, oid) else {
         return;
     };
     state
         .velocity_feedforward
         .store(enable != 0, Ordering::Relaxed);
-    defmt::info!("Velocity feedforward: {}", enable != 0);
+    state
+        .velocity_feedforward_multiplier
+        .store(multiplier, Ordering::Relaxed);
+    defmt::info!(
+        "Velocity feedforward: {} multiplier={}",
+        enable != 0,
+        multiplier
+    );
 }
 
 /// Set PID velocity limit from host config.

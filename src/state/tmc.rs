@@ -28,6 +28,8 @@ pub struct TmcChannelState {
     pub flux_filter_hz: AtomicU16,
     /// Velocity feedforward enable flag.
     pub velocity_feedforward: AtomicBool,
+    /// Runtime multiplier for the computed velocity feedforward offset.
+    pub velocity_feedforward_multiplier: AtomicU16,
     /// One-tick feedforward reset request after direction changes.
     pub feedforward_reset: AtomicBool,
     /// PID error-sum clear request after motion drains.
@@ -62,6 +64,7 @@ impl TmcChannelState {
             position_filter_hz: AtomicU16::new(0),
             flux_filter_hz: AtomicU16::new(0),
             velocity_feedforward: AtomicBool::new(false),
+            velocity_feedforward_multiplier: AtomicU16::new(1),
             feedforward_reset: AtomicBool::new(false),
             pid_error_sums_clear: AtomicBool::new(false),
             velocity_limit_cfg: AtomicU32::new(500_000),
@@ -87,6 +90,7 @@ impl TmcChannelState {
         self.position_filter_hz.store(0, Relaxed);
         self.flux_filter_hz.store(0, Relaxed);
         self.velocity_feedforward.store(false, Relaxed);
+        self.velocity_feedforward_multiplier.store(1, Relaxed);
         self.feedforward_reset.store(false, Relaxed);
         self.pid_error_sums_clear.store(false, Relaxed);
         self.velocity_limit_cfg.store(500_000, Relaxed);
