@@ -608,6 +608,16 @@ pub fn pack_outer_gain_registers(
     (velocity_reg, position_reg)
 }
 
+/// Pack TMC4671 inner current-loop gain registers from raw gain values.
+///
+/// The TMC4671 stores the P term in the upper 16 bits and the I term in the
+/// lower 16 bits for both flux and torque PI registers.
+pub fn pack_inner_gain_registers(gains: crate::pid::InnerLoopGains) -> (u32, u32) {
+    let flux_reg = ((gains.flux_p as u32) << 16) | gains.flux_i as u32;
+    let torque_reg = ((gains.torque_p as u32) << 16) | gains.torque_i as u32;
+    (flux_reg, torque_reg)
+}
+
 /// SPI restore sequence for the OuterDone success path.
 ///
 /// Writes tuned velocity and position gains, the operational velocity limit,
@@ -710,7 +720,7 @@ pub async fn restore_calibrate_gains<B: CommissioningBackend>(
 
     // Current-loop gains from prior commissioning.
     if let Some(gains) = stored {
-        let (flux_reg, torque_reg) = gains.to_registers();
+        let (flux_reg, torque_reg) = pack_inner_gain_registers(gains);
         backend.write_register(PID_FLUX_P_FLUX_I, flux_reg).await?;
         backend
             .write_register(PID_TORQUE_P_TORQUE_I, torque_reg)
@@ -1113,5 +1123,20 @@ mod tests {
 
         assert_eq!(velocity_reg, 0x1a00_0004);
         assert_eq!(position_reg, 0x0100_0003);
+    }
+
+    #[test]
+    fn pack_inner_gain_registers_places_p_in_upper_half() {
+        let gains = crate::pid::InnerLoopGains {
+            flux_p: 707,
+            flux_i: 162,
+            torque_p: 707,
+            torque_i: 162,
+        };
+
+        let (flux_reg, torque_reg) = pack_inner_gain_registers(gains);
+
+        assert_eq!(flux_reg, 0x02c3_00a2);
+        assert_eq!(torque_reg, 0x02c3_00a2);
     }
 }
