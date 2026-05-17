@@ -9,7 +9,7 @@ use static_assertions::const_assert;
 
 /// Fast preset: 28 bytes/sample, 1 kHz, 5 reg + 1 sub-reg read.
 pub const FAST_CAPACITY: usize = 512;
-/// Full preset: 48 bytes/sample, 500 Hz (decimated), 7 reg + 4 sub-reg.
+/// Full/velocity presets: 48 bytes/sample, 500 Hz (decimated), 7 reg + 4 sub-reg.
 pub const FULL_CAPACITY: usize = 256;
 
 const_assert!(FAST_CAPACITY.is_power_of_two());
@@ -22,6 +22,8 @@ pub const TRACE_MAGIC: u32 = 0xF0C1_78CE;
 pub const PRESET_FAST: u8 = 0;
 /// Trace preset selector.
 pub const PRESET_FULL: u8 = 1;
+/// Trace preset selector.
+pub const PRESET_VELOCITY: u8 = 2;
 
 /// Trace buffer state.
 pub const STATE_IDLE: u8 = 0;
@@ -64,11 +66,26 @@ pub struct TraceSampleFull {
 
 const_assert!(core::mem::size_of::<TraceSampleFull>() == 48);
 
+/// Velocity preset sample: 48 bytes.
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+pub struct TraceSampleVelocity {
+    pub fast: TraceSampleFast,
+    pub torque_flux_target: u32,
+    pub pidin_target_velocity: i32,
+    pub pid_velocity_actual: i32,
+    pub velocity_offset: i32,
+    pub error_sum_velocity: i32,
+}
+
+const_assert!(core::mem::size_of::<TraceSampleVelocity>() == 48);
+
 /// Storage union: sized to the larger variant (`fast[512]` = 14336 bytes).
 #[repr(C)]
 pub union TraceStorage {
     pub fast: [TraceSampleFast; FAST_CAPACITY],
     pub full: [TraceSampleFull; FULL_CAPACITY],
+    pub velocity: [TraceSampleVelocity; FULL_CAPACITY],
 }
 
 /// Trace ring buffer. All fields are integer types for MaybeUninit safety.
@@ -148,7 +165,7 @@ impl TraceBuffer {
     }
 
     fn capacity(&self) -> u16 {
-        if self.preset == PRESET_FULL {
+        if is_full_capacity_preset(self.preset) {
             FULL_CAPACITY as u16
         } else {
             FAST_CAPACITY as u16
@@ -214,6 +231,30 @@ impl TraceBuffer {
         self.engine_tick = self.engine_tick.wrapping_add(1);
     }
 
+    /// Store a velocity-preset sample and advance engine_tick.
+    pub fn push_velocity(&mut self, mut sample: TraceSampleVelocity) {
+        sample.fast.engine_tick = self.engine_tick;
+        sample.fast.phase_id = self.phase_id;
+        sample.fast.flags = if self.prev_dropped != 0 {
+            FLAG_PREV_DROPPED
+        } else {
+            0
+        };
+        self.prev_dropped = 0;
+
+        let cap = FULL_CAPACITY as u16;
+        let idx = self.head % cap;
+        // SAFETY: idx < FULL_CAPACITY, velocity variant is active for PRESET_VELOCITY.
+        unsafe {
+            self.storage.velocity[idx as usize] = sample;
+        }
+        self.head = self.head.wrapping_add(1) % cap;
+        if self.count < cap {
+            self.count += 1;
+        }
+        self.engine_tick = self.engine_tick.wrapping_add(1);
+    }
+
     /// Query buffer metadata. Returns all-zero defaults if invalid.
     pub fn info(&self, requesting_oid: u8) -> TraceInfo {
         if self.magic != TRACE_MAGIC || self.owner_oid != requesting_oid {
@@ -265,6 +306,17 @@ impl TraceBuffer {
         let ptr = sample as *const TraceSampleFull as *const u8;
         unsafe { core::slice::from_raw_parts(ptr, 48) }
     }
+
+    /// Get raw bytes for a velocity sample at ring index.
+    pub fn sample_bytes_velocity(&self, ring_idx: u16) -> &[u8] {
+        let sample = unsafe { &self.storage.velocity[ring_idx as usize] };
+        let ptr = sample as *const TraceSampleVelocity as *const u8;
+        unsafe { core::slice::from_raw_parts(ptr, 48) }
+    }
+}
+
+fn is_full_capacity_preset(preset: u8) -> bool {
+    matches!(preset, PRESET_FULL | PRESET_VELOCITY)
 }
 
 /// Metadata returned by info().
@@ -350,14 +402,14 @@ pub async fn sample_tick<B, F1, F2>(
     let preset = buf.preset();
     let engine_tick = buf.engine_tick();
 
-    // Full preset decimation: skip odd ticks (500 Hz effective)
-    if preset == PRESET_FULL && !engine_tick.is_multiple_of(2) {
+    // Full-capacity presets decimate: skip odd ticks (500 Hz effective)
+    if is_full_capacity_preset(preset) && !engine_tick.is_multiple_of(2) {
         buf.tick_no_sample(false); // intentional decimation, not a drop
         return;
     }
 
     // Pre-read deadline check
-    let budget_us = if preset == PRESET_FULL {
+    let budget_us = if is_full_capacity_preset(preset) {
         SPI_BUDGET_FULL_US
     } else {
         SPI_BUDGET_FAST_US
@@ -452,6 +504,59 @@ pub async fn sample_tick<B, F1, F2>(
             error_sum_velocity,
             error_sum_torque,
         });
+    } else if preset == PRESET_VELOCITY {
+        let torque_flux_target = read_or_drop!(tmc.read_register(PID_TORQUE_FLUX_TARGET));
+        let pidin_target_velocity =
+            read_or_drop!(tmc.read_sub_register(INTERIM_PIDIN_TARGET_VELOCITY)) as i32;
+        let pid_velocity_actual = read_or_drop!(tmc.read_register(PID_VELOCITY_ACTUAL)) as i32;
+        let velocity_offset = read_or_drop!(tmc.read_register(PID_VELOCITY_OFFSET)) as i32;
+        let error_sum_velocity =
+            read_or_drop!(tmc.read_sub_register(PID_ERROR_PID_VELOCITY_ERROR_SUM)) as i32;
+
+        // First sample: log measured SPI duration
+        if is_first_sample {
+            let elapsed_cycles =
+                cortex_m::peripheral::DWT::cycle_count().wrapping_sub(cyccnt_before);
+            let elapsed_us = elapsed_cycles / cpu_freq_mhz;
+            defmt::info!(
+                "trace: velocity SPI read {} us ({} cycles)",
+                elapsed_us,
+                elapsed_cycles
+            );
+            if elapsed_us as u64 > SPI_BUDGET_FULL_US {
+                defmt::warn!(
+                    "trace: velocity SPI read {} us exceeds budget {} us",
+                    elapsed_us,
+                    SPI_BUDGET_FULL_US
+                );
+            }
+        }
+
+        // Post-read deadline check
+        if past_deadline() {
+            buf.tick_no_sample(true);
+            defmt::warn!("trace: tick overrun, velocity sample discarded");
+            return;
+        }
+
+        buf.push_velocity(TraceSampleVelocity {
+            fast: TraceSampleFast {
+                engine_tick: 0, // set by push
+                phase_id: 0,    // set by push
+                flags: 0,       // set by push
+                position_target,
+                position_actual,
+                torque_flux_actual,
+                velocity_actual,
+                status_flags,
+                abn_count,
+            },
+            torque_flux_target,
+            pidin_target_velocity,
+            pid_velocity_actual,
+            velocity_offset,
+            error_sum_velocity,
+        });
     } else {
         // First sample: log measured SPI duration
         if is_first_sample {
@@ -508,6 +613,7 @@ mod tests {
     fn sample_sizes() {
         assert_eq!(core::mem::size_of::<TraceSampleFast>(), 28);
         assert_eq!(core::mem::size_of::<TraceSampleFull>(), 48);
+        assert_eq!(core::mem::size_of::<TraceSampleVelocity>(), 48);
     }
 
     #[test]
@@ -717,6 +823,45 @@ mod tests {
             FetchResult::Ok(idx) => {
                 let fetched = unsafe { buf.storage.full[idx as usize] };
                 assert_eq!(fetched.error_sum_position, 42);
+            }
+            _ => panic!("expected Ok"),
+        }
+    }
+
+    #[test]
+    fn velocity_preset_uses_full_capacity() {
+        let buf = {
+            let mut buf = make_buffer();
+            buf.start(1, PRESET_VELOCITY);
+            buf
+        };
+
+        assert_eq!(buf.capacity(), FULL_CAPACITY as u16);
+    }
+
+    #[test]
+    fn velocity_preset_push_and_fetch() {
+        let mut buf = make_buffer();
+        buf.start(1, PRESET_VELOCITY);
+        let s = TraceSampleVelocity {
+            pidin_target_velocity: 120,
+            pid_velocity_actual: 108,
+            velocity_offset: 3,
+            error_sum_velocity: -7,
+            ..TraceSampleVelocity::default()
+        };
+
+        buf.push_velocity(s);
+        buf.stop();
+
+        assert_eq!(buf.count, 1);
+        match buf.fetch(1, 0, buf.generation) {
+            FetchResult::Ok(idx) => {
+                let fetched = unsafe { buf.storage.velocity[idx as usize] };
+                assert_eq!(fetched.pidin_target_velocity, 120);
+                assert_eq!(fetched.pid_velocity_actual, 108);
+                assert_eq!(fetched.velocity_offset, 3);
+                assert_eq!(fetched.error_sum_velocity, -7);
             }
             _ => panic!("expected Ok"),
         }
