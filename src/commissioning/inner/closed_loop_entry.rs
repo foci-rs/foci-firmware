@@ -13,6 +13,9 @@ use crate::commissioning::types::{
     AdcCalResult, CommissionResult, CommissioningBackend, InnerResult, StepResult,
 };
 
+const CLOSED_LOOP_VELOCITY_SELECTION: u32 = 0x0000_0100;
+const CLOSED_LOOP_POSITION_SELECTION: u32 = 0;
+
 /// Advance closed-loop entry sub-state by one cooperative tick.
 pub(crate) async fn step_closed_loop_entry<B: CommissioningBackend>(
     phase: &mut InnerPhase,
@@ -222,8 +225,19 @@ pub(crate) async fn step_closed_loop_entry<B: CommissioningBackend>(
         }
 
         ClosedLoopEntryState::WritePositionConfig => {
-            // 7. Explicit POSITION_SELECTION=0 (phi_e).
-            if backend.write_register(POSITION_SELECTION, 0).await.is_err() {
+            // 7. Explicit selection setup:
+            // - velocity source 0 follows PHI_E_SELECTION
+            // - velocity meter 1 uses the advanced/PWM-synchronized meter
+            // - position source 0 follows PHI_E_SELECTION
+            if backend
+                .write_register(VELOCITY_SELECTION, CLOSED_LOOP_VELOCITY_SELECTION)
+                .await
+                .is_err()
+                || backend
+                    .write_register(POSITION_SELECTION, CLOSED_LOOP_POSITION_SELECTION)
+                    .await
+                    .is_err()
+            {
                 return super::fail_inner(phase, CommissionError::Spi);
             }
 
@@ -469,5 +483,67 @@ pub(crate) async fn step_closed_loop_entry<B: CommissioningBackend>(
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::commission_dispatch::test_support::{MockBackend, SpiOp};
+    use foci_tmc4671::registers::{POSITION_SELECTION, STEP_WIDTH, VELOCITY_SELECTION};
+
+    #[test]
+    fn write_position_config_programs_selection_registers() {
+        pollster::block_on(async {
+            let mut phase = InnerPhase::ClosedLoopEntry {
+                state: ClosedLoopEntryState::WritePositionConfig,
+                flux_p: 0,
+                flux_i: 0,
+                torque_p: 0,
+                torque_i: 0,
+                velocity_p: 0,
+                velocity_i: 0,
+                position_p: 0,
+                position_i: 0,
+                velocity_limit: 0,
+                velocity_filter_hz: 0,
+                torque_filter_hz: 0,
+                position_filter_hz: 0,
+                flux_filter_hz: 0,
+                inner_result: None,
+            };
+            let mut adc_cal = None;
+            let mut backend = MockBackend::new();
+            backend.step_width_value = 819;
+
+            let result = step_closed_loop_entry(
+                &mut phase,
+                InnerSequence::Calibrate,
+                &mut adc_cal,
+                &mut backend,
+            )
+            .await;
+
+            assert!(matches!(result, StepResult::Continue));
+            assert!(matches!(
+                phase,
+                InnerPhase::ClosedLoopEntry {
+                    state: ClosedLoopEntryState::WriteFilters,
+                    ..
+                }
+            ));
+            assert!(backend.spi_log.iter().any(|op| matches!(
+                op,
+                SpiOp::Write(addr, 0x0000_0100) if *addr == VELOCITY_SELECTION.addr()
+            )));
+            assert!(backend.spi_log.iter().any(|op| matches!(
+                op,
+                SpiOp::Write(addr, 0) if *addr == POSITION_SELECTION.addr()
+            )));
+            assert!(backend.spi_log.iter().any(|op| matches!(
+                op,
+                SpiOp::Write(addr, 819) if *addr == STEP_WIDTH.addr()
+            )));
+        });
     }
 }

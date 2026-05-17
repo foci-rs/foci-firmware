@@ -24,7 +24,9 @@ pub const DUMP_REGISTERS: &[u8] = &[
     0x26, // ABN_DECODER_PPR
     0x27, // ABN_DECODER_COUNT
     0x2A, // ABN_DECODER_PHI_E_PHI_M
-    // PHI_E selection
+    // Selection registers
+    0x50, // VELOCITY_SELECTION
+    0x51, // POSITION_SELECTION
     0x52, // PHI_E_SELECTION
     // PID gains
     0x54, // PID_FLUX_P_FLUX_I
@@ -95,6 +97,13 @@ mod tests {
         for &addr in DUMP_REGISTERS {
             assert!(addr <= 0x7F, "addr {:#04X} exceeds 7-bit range", addr);
         }
+    }
+
+    #[test]
+    fn dump_registers_include_selection_registers() {
+        assert!(DUMP_REGISTERS.contains(&0x50), "missing VELOCITY_SELECTION");
+        assert!(DUMP_REGISTERS.contains(&0x51), "missing POSITION_SELECTION");
+        assert!(DUMP_REGISTERS.contains(&0x52), "missing PHI_E_SELECTION");
     }
 
     #[test]
