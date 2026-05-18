@@ -11,6 +11,7 @@ use static_assertions::const_assert;
 pub const FAST_CAPACITY: usize = 512;
 /// Full preset: 48 bytes/sample, 500 Hz (decimated).
 /// Velocity preset: 52 bytes/sample, 500 Hz (decimated).
+/// Hold preset: 52 bytes/sample, 100 Hz (decimated).
 pub const FULL_CAPACITY: usize = 256;
 
 const_assert!(FAST_CAPACITY.is_power_of_two());
@@ -25,6 +26,8 @@ pub const PRESET_FAST: u8 = 0;
 pub const PRESET_FULL: u8 = 1;
 /// Trace preset selector.
 pub const PRESET_VELOCITY: u8 = 2;
+/// Trace preset selector.
+pub const PRESET_HOLD: u8 = 3;
 
 /// Trace buffer state.
 pub const STATE_IDLE: u8 = 0;
@@ -82,12 +85,28 @@ pub struct TraceSampleVelocity {
 
 const_assert!(core::mem::size_of::<TraceSampleVelocity>() == 52);
 
+/// Hold-current preset sample: 52 bytes.
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+pub struct TraceSampleHold {
+    pub fast: TraceSampleFast,
+    pub pidout_target_torque: i32,
+    pub pidout_target_flux: i32,
+    pub foc_uq_ud: u32,
+    pub foc_uq_ud_limited: u32,
+    pub error_sum_torque: i32,
+    pub error_sum_flux: i32,
+}
+
+const_assert!(core::mem::size_of::<TraceSampleHold>() == 52);
+
 /// Storage union: sized to the larger variant (`fast[512]` = 14336 bytes).
 #[repr(C)]
 pub union TraceStorage {
     pub fast: [TraceSampleFast; FAST_CAPACITY],
     pub full: [TraceSampleFull; FULL_CAPACITY],
     pub velocity: [TraceSampleVelocity; FULL_CAPACITY],
+    pub hold: [TraceSampleHold; FULL_CAPACITY],
 }
 
 /// Trace ring buffer. All fields are integer types for MaybeUninit safety.
@@ -257,6 +276,30 @@ impl TraceBuffer {
         self.engine_tick = self.engine_tick.wrapping_add(1);
     }
 
+    /// Store a hold-preset sample and advance engine_tick.
+    pub fn push_hold(&mut self, mut sample: TraceSampleHold) {
+        sample.fast.engine_tick = self.engine_tick;
+        sample.fast.phase_id = self.phase_id;
+        sample.fast.flags = if self.prev_dropped != 0 {
+            FLAG_PREV_DROPPED
+        } else {
+            0
+        };
+        self.prev_dropped = 0;
+
+        let cap = FULL_CAPACITY as u16;
+        let idx = self.head % cap;
+        // SAFETY: idx < FULL_CAPACITY, hold variant is active for PRESET_HOLD.
+        unsafe {
+            self.storage.hold[idx as usize] = sample;
+        }
+        self.head = self.head.wrapping_add(1) % cap;
+        if self.count < cap {
+            self.count += 1;
+        }
+        self.engine_tick = self.engine_tick.wrapping_add(1);
+    }
+
     /// Query buffer metadata. Returns all-zero defaults if invalid.
     pub fn info(&self, requesting_oid: u8) -> TraceInfo {
         if self.magic != TRACE_MAGIC || self.owner_oid != requesting_oid {
@@ -315,10 +358,25 @@ impl TraceBuffer {
         let ptr = sample as *const TraceSampleVelocity as *const u8;
         unsafe { core::slice::from_raw_parts(ptr, 52) }
     }
+
+    /// Get raw bytes for a hold sample at ring index.
+    pub fn sample_bytes_hold(&self, ring_idx: u16) -> &[u8] {
+        let sample = unsafe { &self.storage.hold[ring_idx as usize] };
+        let ptr = sample as *const TraceSampleHold as *const u8;
+        unsafe { core::slice::from_raw_parts(ptr, 52) }
+    }
 }
 
 fn is_full_capacity_preset(preset: u8) -> bool {
-    matches!(preset, PRESET_FULL | PRESET_VELOCITY)
+    matches!(preset, PRESET_FULL | PRESET_VELOCITY | PRESET_HOLD)
+}
+
+fn sample_tick_step(preset: u8) -> u16 {
+    match preset {
+        PRESET_FULL | PRESET_VELOCITY => 2,
+        PRESET_HOLD => 10,
+        _ => 1,
+    }
 }
 
 /// Metadata returned by info().
@@ -367,6 +425,12 @@ pub const SPI_BUDGET_FAST_US: u64 = 300;
 /// 4 sub-registers versus 5 + 1 for fast.
 pub const SPI_BUDGET_FULL_US: u64 = 550;
 
+/// SPI time budget for the hold trace preset (microseconds).
+///
+/// Hold reads the same 52-byte sample envelope as velocity plus current-loop
+/// and FOC internals. It is sampled at 100 Hz, but must still fit in one tick.
+pub const SPI_BUDGET_HOLD_US: u64 = 650;
+
 /// Read trace registers from the TMC4671 and push one sample into `buf`.
 ///
 /// Called once per 1 kHz tick from the TMC control task. Handles decimation
@@ -404,17 +468,19 @@ pub async fn sample_tick<B, F1, F2>(
     let preset = buf.preset();
     let engine_tick = buf.engine_tick();
 
-    // Full-capacity presets decimate: skip odd ticks (500 Hz effective)
-    if is_full_capacity_preset(preset) && !engine_tick.is_multiple_of(2) {
+    let tick_step = sample_tick_step(preset);
+
+    // Decimated presets skip non-sample ticks without counting them as drops.
+    if tick_step > 1 && !engine_tick.is_multiple_of(tick_step) {
         buf.tick_no_sample(false); // intentional decimation, not a drop
         return;
     }
 
     // Pre-read deadline check
-    let budget_us = if is_full_capacity_preset(preset) {
-        SPI_BUDGET_FULL_US
-    } else {
-        SPI_BUDGET_FAST_US
+    let budget_us = match preset {
+        PRESET_FULL | PRESET_VELOCITY => SPI_BUDGET_FULL_US,
+        PRESET_HOLD => SPI_BUDGET_HOLD_US,
+        _ => SPI_BUDGET_FAST_US,
     };
     if remaining_budget_us().is_none_or(|d| d < budget_us) {
         buf.tick_no_sample(true); // budget drop
@@ -563,6 +629,63 @@ pub async fn sample_tick<B, F1, F2>(
             pid_velocity_actual,
             velocity_offset,
         });
+    } else if preset == PRESET_HOLD {
+        let pidout_target_torque =
+            read_or_drop!(tmc.read_sub_register(INTERIM_PIDOUT_TARGET_TORQUE)) as i32;
+        let pidout_target_flux =
+            read_or_drop!(tmc.read_sub_register(INTERIM_PIDOUT_TARGET_FLUX)) as i32;
+        let foc_uq_ud = read_or_drop!(tmc.read_sub_register(INTERIM_FOC_UQ_UD));
+        let foc_uq_ud_limited = read_or_drop!(tmc.read_sub_register(INTERIM_FOC_UQ_UD_LIMITED));
+        let error_sum_torque =
+            read_or_drop!(tmc.read_sub_register(PID_ERROR_PID_TORQUE_ERROR_SUM)) as i32;
+        let error_sum_flux =
+            read_or_drop!(tmc.read_sub_register(PID_ERROR_PID_FLUX_ERROR_SUM)) as i32;
+
+        // First sample: log measured SPI duration
+        if is_first_sample {
+            let elapsed_cycles =
+                cortex_m::peripheral::DWT::cycle_count().wrapping_sub(cyccnt_before);
+            let elapsed_us = elapsed_cycles / cpu_freq_mhz;
+            defmt::info!(
+                "trace: hold SPI read {} us ({} cycles)",
+                elapsed_us,
+                elapsed_cycles
+            );
+            if elapsed_us as u64 > SPI_BUDGET_HOLD_US {
+                defmt::warn!(
+                    "trace: hold SPI read {} us exceeds budget {} us",
+                    elapsed_us,
+                    SPI_BUDGET_HOLD_US
+                );
+            }
+        }
+
+        // Post-read deadline check
+        if past_deadline() {
+            buf.tick_no_sample(true);
+            defmt::warn!("trace: tick overrun, hold sample discarded");
+            return;
+        }
+
+        buf.push_hold(TraceSampleHold {
+            fast: TraceSampleFast {
+                engine_tick: 0, // set by push
+                phase_id: 0,    // set by push
+                flags: 0,       // set by push
+                position_target,
+                position_actual,
+                torque_flux_actual,
+                velocity_actual,
+                status_flags,
+                abn_count,
+            },
+            pidout_target_torque,
+            pidout_target_flux,
+            foc_uq_ud,
+            foc_uq_ud_limited,
+            error_sum_torque,
+            error_sum_flux,
+        });
     } else {
         // First sample: log measured SPI duration
         if is_first_sample {
@@ -620,6 +743,7 @@ mod tests {
         assert_eq!(core::mem::size_of::<TraceSampleFast>(), 28);
         assert_eq!(core::mem::size_of::<TraceSampleFull>(), 48);
         assert_eq!(core::mem::size_of::<TraceSampleVelocity>(), 52);
+        assert_eq!(core::mem::size_of::<TraceSampleHold>(), 52);
     }
 
     #[test]
@@ -846,6 +970,18 @@ mod tests {
     }
 
     #[test]
+    fn hold_preset_uses_full_capacity_and_100hz_decimation() {
+        let buf = {
+            let mut buf = make_buffer();
+            buf.start(1, PRESET_HOLD);
+            buf
+        };
+
+        assert_eq!(buf.capacity(), FULL_CAPACITY as u16);
+        assert_eq!(sample_tick_step(PRESET_HOLD), 10);
+    }
+
+    #[test]
     fn velocity_preset_push_and_fetch() {
         let mut buf = make_buffer();
         buf.start(1, PRESET_VELOCITY);
@@ -872,6 +1008,38 @@ mod tests {
                 assert_eq!(fetched.pidin_target_velocity, 120);
                 assert_eq!(fetched.pid_velocity_actual, 108);
                 assert_eq!(fetched.velocity_offset, 3);
+            }
+            _ => panic!("expected Ok"),
+        }
+    }
+
+    #[test]
+    fn hold_preset_push_and_fetch() {
+        let mut buf = make_buffer();
+        buf.start(1, PRESET_HOLD);
+        let s = TraceSampleHold {
+            pidout_target_torque: 42,
+            pidout_target_flux: -3,
+            foc_uq_ud: 0x0004_FFFE,
+            foc_uq_ud_limited: 0x0003_FFFD,
+            error_sum_torque: 120,
+            error_sum_flux: -75,
+            ..TraceSampleHold::default()
+        };
+
+        buf.push_hold(s);
+        buf.stop();
+
+        assert_eq!(buf.count, 1);
+        match buf.fetch(1, 0, buf.generation) {
+            FetchResult::Ok(idx) => {
+                let fetched = unsafe { buf.storage.hold[idx as usize] };
+                assert_eq!(fetched.pidout_target_torque, 42);
+                assert_eq!(fetched.pidout_target_flux, -3);
+                assert_eq!(fetched.foc_uq_ud, 0x0004_FFFE);
+                assert_eq!(fetched.foc_uq_ud_limited, 0x0003_FFFD);
+                assert_eq!(fetched.error_sum_torque, 120);
+                assert_eq!(fetched.error_sum_flux, -75);
             }
             _ => panic!("expected Ok"),
         }
