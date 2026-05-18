@@ -35,7 +35,7 @@ use foci_tmc4671::spi::Tmc4671Spi;
 /// Acceptable residual following error after a completed move, in ABN encoder
 /// counts. Within this window the controller is fighting encoder quantization
 /// and belt/motor compliance more than useful position error.
-pub const HOLD_SETTLE_DEADBAND_COUNTS: u32 = 4;
+pub const HOLD_SETTLE_DEADBAND_COUNTS: u32 = 5;
 
 /// Clear TMC4671 PID error accumulators.
 ///
@@ -71,8 +71,10 @@ where
 /// With ABN feedback active, `PID_POSITION_ACTUAL` is driven by encoder phase.
 /// Accepting tiny settled error by moving the internal TMC hold target to the
 /// measured actual position keeps firmware and Klipper logical step counts
-/// unchanged while preventing stale error sums from driving unnecessary
-/// corrective current.
+/// unchanged while preventing stale controller state from driving unnecessary
+/// corrective current. Per the TMC4671 datasheet, writing `PID_POSITION_ACTUAL`
+/// also writes the same value into `PID_POSITION_TARGET`, avoiding an unwanted
+/// move while re-synchronizing the position accumulator.
 pub async fn settle_hold_and_clear_pid_errors<B>(
     tmc: &mut Tmc4671Spi<B>,
     tmc_state: &TmcChannelState,
@@ -99,11 +101,10 @@ where
     let deadband = step_width.saturating_mul(HOLD_SETTLE_DEADBAND_COUNTS);
     let error = (actual as i32).wrapping_sub(target as i32);
     if error.unsigned_abs() <= deadband {
-        // With ABN feedback active, PID_POSITION_ACTUAL is driven by
-        // encoder phase. Accept tiny settled error by moving the internal
-        // TMC hold target to the measured actual position; firmware and
-        // Klipper logical step counts remain unchanged.
-        tmc.write_register(PID_POSITION_TARGET, actual)
+        // Writing PID_POSITION_ACTUAL also writes PID_POSITION_TARGET per the
+        // datasheet. Use that path here because it resets the TMC position
+        // accumulator and target together instead of only moving the target.
+        tmc.write_register(PID_POSITION_ACTUAL, actual)
             .await
             .map_err(|_| ())?;
     }
@@ -790,6 +791,7 @@ mod tests {
     #[derive(Default)]
     struct MockRawSpi {
         writes: std::vec::Vec<std::vec::Vec<u8>>,
+        reads: std::collections::VecDeque<u32>,
     }
 
     impl embedded_hal_async::spi::ErrorType for MockRawSpi {
@@ -803,7 +805,10 @@ mod tests {
         ) -> Result<(), Self::Error> {
             for op in operations {
                 match op {
-                    embedded_hal_async::spi::Operation::Read(buf) => buf.fill(0),
+                    embedded_hal_async::spi::Operation::Read(buf) => {
+                        let value = self.reads.pop_front().unwrap_or(0);
+                        buf.copy_from_slice(&value.to_be_bytes());
+                    }
                     embedded_hal_async::spi::Operation::Write(buf) => {
                         self.writes.push(buf.to_vec())
                     }
@@ -847,6 +852,38 @@ mod tests {
             );
 
             tmc_state().current_limit_reg.store(0, Ordering::Relaxed);
+        });
+    }
+
+    #[test]
+    fn settle_hold_snaps_observed_small_residual_to_actual() {
+        pollster::block_on(async {
+            use core::sync::atomic::Ordering;
+            use foci_tmc4671::registers::PID_POSITION_ACTUAL;
+
+            let _guard = crate::commission_dispatch::test_support::SHARED_STATE_MUTEX
+                .lock()
+                .await;
+            tmc_state().step_width_value.store(4, Ordering::Relaxed);
+
+            let mut raw_spi = MockRawSpi::default();
+            raw_spi.reads.push_back(0x0000_bb95);
+            raw_spi.reads.push_back(0x0000_bba6);
+            let mut tmc = Tmc4671Spi::new(raw_spi);
+
+            settle_hold_and_clear_pid_errors(&mut tmc, tmc_state())
+                .await
+                .expect("settle should succeed");
+
+            let raw_spi = tmc.into_inner();
+            assert!(
+                raw_spi.writes.iter().any(|write| {
+                    write == &[PID_POSITION_ACTUAL.addr() | 0x80, 0x00, 0x00, 0xbb, 0xa6]
+                }),
+                "expected PID_POSITION_ACTUAL to be rewritten with the observed actual"
+            );
+
+            tmc_state().step_width_value.store(0, Ordering::Relaxed);
         });
     }
 
