@@ -9,7 +9,8 @@ use static_assertions::const_assert;
 
 /// Fast preset: 28 bytes/sample, 1 kHz, 5 reg + 1 sub-reg read.
 pub const FAST_CAPACITY: usize = 512;
-/// Full/velocity presets: 48 bytes/sample, 500 Hz (decimated).
+/// Full preset: 48 bytes/sample, 500 Hz (decimated).
+/// Velocity preset: 52 bytes/sample, 500 Hz (decimated).
 pub const FULL_CAPACITY: usize = 256;
 
 const_assert!(FAST_CAPACITY.is_power_of_two());
@@ -66,11 +67,12 @@ pub struct TraceSampleFull {
 
 const_assert!(core::mem::size_of::<TraceSampleFull>() == 48);
 
-/// Velocity preset sample: 48 bytes.
+/// Velocity preset sample: 52 bytes.
 #[repr(C)]
 #[derive(Clone, Copy, Default)]
 pub struct TraceSampleVelocity {
     pub fast: TraceSampleFast,
+    pub position_error: i32,
     pub pidout_target_torque: i32,
     pub pidout_target_flux: i32,
     pub pidin_target_velocity: i32,
@@ -78,7 +80,7 @@ pub struct TraceSampleVelocity {
     pub velocity_offset: i32,
 }
 
-const_assert!(core::mem::size_of::<TraceSampleVelocity>() == 48);
+const_assert!(core::mem::size_of::<TraceSampleVelocity>() == 52);
 
 /// Storage union: sized to the larger variant (`fast[512]` = 14336 bytes).
 #[repr(C)]
@@ -311,7 +313,7 @@ impl TraceBuffer {
     pub fn sample_bytes_velocity(&self, ring_idx: u16) -> &[u8] {
         let sample = unsafe { &self.storage.velocity[ring_idx as usize] };
         let ptr = sample as *const TraceSampleVelocity as *const u8;
-        unsafe { core::slice::from_raw_parts(ptr, 48) }
+        unsafe { core::slice::from_raw_parts(ptr, 52) }
     }
 }
 
@@ -347,9 +349,9 @@ pub const MESSAGE_PAYLOAD_MAX: usize = 59;
 
 /// Worst-case encoded size for foci_trace_data response.
 /// Fields: reply_id VLQ (1) + oid u8 (1) + offset u16 VLQ (2) + status u8 (1) +
-/// data length VLQ (1) + data bytes (48 for full preset) = 54 bytes.
-/// Conservative estimate uses 2-byte VLQ for data length: 55 bytes.
-pub const TRACE_DATA_RESPONSE_MAX: usize = 1 + 1 + 2 + 1 + 2 + 48;
+/// data length VLQ (1) + data bytes (52 for velocity preset) = 58 bytes.
+/// Conservative estimate uses 2-byte VLQ for data length: 59 bytes.
+pub const TRACE_DATA_RESPONSE_MAX: usize = 1 + 1 + 2 + 1 + 2 + 52;
 
 const_assert!(TRACE_DATA_RESPONSE_MAX <= MESSAGE_PAYLOAD_MAX);
 
@@ -505,6 +507,8 @@ pub async fn sample_tick<B, F1, F2>(
             error_sum_torque,
         });
     } else if preset == PRESET_VELOCITY {
+        let position_error =
+            read_or_drop!(tmc.read_sub_register(PID_ERROR_PID_POSITION_ERROR)) as i32;
         let pidout_target_torque =
             read_or_drop!(tmc.read_sub_register(INTERIM_PIDOUT_TARGET_TORQUE)) as i32;
         let pidout_target_flux =
@@ -552,6 +556,7 @@ pub async fn sample_tick<B, F1, F2>(
                 status_flags,
                 abn_count,
             },
+            position_error,
             pidout_target_torque,
             pidout_target_flux,
             pidin_target_velocity,
@@ -614,7 +619,7 @@ mod tests {
     fn sample_sizes() {
         assert_eq!(core::mem::size_of::<TraceSampleFast>(), 28);
         assert_eq!(core::mem::size_of::<TraceSampleFull>(), 48);
-        assert_eq!(core::mem::size_of::<TraceSampleVelocity>(), 48);
+        assert_eq!(core::mem::size_of::<TraceSampleVelocity>(), 52);
     }
 
     #[test]
@@ -845,6 +850,7 @@ mod tests {
         let mut buf = make_buffer();
         buf.start(1, PRESET_VELOCITY);
         let s = TraceSampleVelocity {
+            position_error: -6,
             pidout_target_torque: 42,
             pidout_target_flux: -3,
             pidin_target_velocity: 120,
@@ -860,6 +866,7 @@ mod tests {
         match buf.fetch(1, 0, buf.generation) {
             FetchResult::Ok(idx) => {
                 let fetched = unsafe { buf.storage.velocity[idx as usize] };
+                assert_eq!(fetched.position_error, -6);
                 assert_eq!(fetched.pidout_target_torque, 42);
                 assert_eq!(fetched.pidout_target_flux, -3);
                 assert_eq!(fetched.pidin_target_velocity, 120);
