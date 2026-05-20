@@ -205,6 +205,141 @@ pub struct FociDiagnostic {
     pub data1: u32,
 }
 
+/// `foci_stepper_event` reply - bounded stepper runtime diagnostic.
+///
+/// Wire name: `foci_stepper_event`.
+#[klipper_reply]
+pub struct FociStepperEvent {
+    /// Reason code from `foci_firmware::diagnostic::StepperEventReason`.
+    pub reason: u8,
+    /// Board-local channel.
+    pub channel: u8,
+    /// Firmware step counter at event time.
+    pub position: i32,
+    /// TIM5/Klipper clock at event time.
+    pub clock: u32,
+    /// Non-zero when the board believes the step timer is active.
+    pub timer_active: u8,
+    /// Board-local queue length, or 65535 when unknown.
+    pub queue_len: u16,
+    /// Current direction state.
+    pub direction: u8,
+    /// Reason-specific value.
+    pub data0: u32,
+    /// Reason-specific value.
+    pub data1: u32,
+}
+
+/// `foci_stepper_stats_result` reply - step queue/execution counters.
+///
+/// Wire name: `foci_stepper_stats_result`.
+#[klipper_reply]
+pub struct FociStepperStatsResult {
+    /// Object id of the queried FOCI endpoint.
+    pub oid: u8,
+    /// Board-local channel.
+    pub channel: u8,
+    /// Firmware step counter at query time.
+    pub position: i32,
+    /// Accepted `queue_step` segments since boot.
+    pub queued_segments: u32,
+    /// Accepted motor steps since boot.
+    pub queued_steps: u32,
+    /// Segments loaded by the timer ISR since boot.
+    pub loaded_segments: u32,
+    /// Motor steps loaded by the timer ISR since boot.
+    pub loaded_steps: u32,
+    /// Segments discarded because the stepper awaited `reset_step_clock`.
+    pub discarded_segments: u32,
+    /// Motor steps discarded because the stepper awaited `reset_step_clock`.
+    pub discarded_steps: u32,
+    /// Non-zero when the board believes the step timer is active.
+    pub timer_active: u8,
+    /// Current board-local queue length.
+    pub queue_len: u16,
+}
+
+/// `foci_stepper_exec_stats_result` reply - step execution counters.
+///
+/// Wire name: `foci_stepper_exec_stats_result`.
+#[klipper_reply]
+pub struct FociStepperExecStatsResult {
+    /// Object id of the queried FOCI endpoint.
+    pub oid: u8,
+    /// Board-local channel.
+    pub channel: u8,
+    /// Executed positive-direction motor steps since boot.
+    pub executed_pos_steps: u32,
+    /// Executed negative-direction motor steps since boot.
+    pub executed_neg_steps: u32,
+    /// Times the step timer went idle because the queue was empty.
+    pub queue_empty_count: u32,
+    /// Combined missed-deadline count from segment-load and in-segment checks.
+    pub missed_deadline_count: u32,
+}
+
+/// `foci_stepper_timing_stats_result` reply - first-step timing counters.
+///
+/// Wire name: `foci_stepper_timing_stats_result`.
+#[klipper_reply]
+pub struct FociStepperTimingStatsResult {
+    /// Object id of the queried FOCI endpoint.
+    pub oid: u8,
+    /// Board-local channel.
+    pub channel: u8,
+    /// Number of times the board armed the step timer.
+    pub activation_count: u32,
+    /// TIM5 clock when the step timer was most recently armed.
+    pub last_activation_clock: u32,
+    /// TIM5 clock when the first segment of the last activation loaded.
+    pub first_load_now: u32,
+    /// Scheduled first-step clock from the first loaded segment.
+    pub first_load_scheduled: u32,
+    /// Compare clock selected for the first loaded segment.
+    pub first_load_compare: u32,
+    /// `first_load_scheduled - first_load_now`, interpreted as signed ticks.
+    pub first_load_lead_ticks: i32,
+    /// `first_load_compare - first_load_now`, interpreted as signed ticks.
+    pub first_load_compare_delay_ticks: i32,
+    /// TIM5 clock observed at the first rising edge of the last activation.
+    pub first_step_clock: u32,
+    /// `first_step_clock - last_activation_clock`, interpreted as signed ticks.
+    pub first_step_delay_ticks: i32,
+}
+
+/// `foci_stepper_stop_stats_result` reply - physical stop/reset counters.
+///
+/// Wire name: `foci_stepper_stop_stats_result`.
+#[klipper_reply]
+pub struct FociStepperStopStatsResult {
+    /// Object id of the queried FOCI endpoint.
+    pub oid: u8,
+    /// Board-local channel.
+    pub channel: u8,
+    /// Physical stepper stop count from TrSync or P1 stop paths.
+    pub stop_count: u32,
+    /// Queued segments drained by physical stop paths since boot.
+    pub stop_drained_segments: u32,
+    /// Queued motor steps drained by physical stop paths since boot.
+    pub stop_drained_steps: u32,
+    /// Accepted `reset_step_clock` count.
+    pub reset_count: u32,
+    /// Queued segments drained by `reset_step_clock` since boot.
+    pub reset_drained_segments: u32,
+    /// Queued motor steps drained by `reset_step_clock` since boot.
+    pub reset_drained_steps: u32,
+    /// `StepperEventReason` code for the most recent physical stop.
+    pub last_stop_reason: u8,
+    /// Active timer events remaining at the most recent physical stop.
+    pub last_stop_remaining_events: u32,
+    /// Queue length observed at the most recent physical stop.
+    pub last_stop_queue_len: u16,
+    /// Queued segments drained by the most recent physical stop.
+    pub last_stop_drained_segments: u32,
+    /// Queued motor steps drained by the most recent physical stop.
+    pub last_stop_drained_steps: u32,
+}
+
 /// `foci_selftest_done` reply — emitted at the end of a self-test run.
 ///
 /// Wire name: `foci_selftest_done`.
