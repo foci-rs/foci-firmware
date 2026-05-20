@@ -395,7 +395,7 @@ pub async fn drive_commission_result<B: CommissioningBackend>(
                 },
                 actions: PostActions {
                     stop_trace: false,
-                    stepper: StepperPostAction::ArmZeroPosition,
+                    stepper: StepperPostAction::ArmPreservePosition,
                 },
             }
         }

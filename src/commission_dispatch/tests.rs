@@ -301,7 +301,7 @@ fn inner_failed_selftest_emits_selftest_pair() {
 }
 
 #[test]
-fn calibrate_done_arms_after_gain_restore() {
+fn calibrate_done_preserves_step_epoch_after_gain_restore() {
     pollster::block_on(async {
         use core::sync::atomic::Ordering;
         let _guard = test_support::SHARED_STATE_MUTEX.lock().await;
@@ -338,14 +338,14 @@ fn calibrate_done_arms_after_gain_restore() {
         assert!(*state.motor_enabled);
         assert!(*state.calibrated);
         assert!(!tmc_state().motor_armed.load(Ordering::Relaxed));
-        // Dispatch must not mutate the firmware step epoch directly; the
-        // returned board action owns the zero-before-arm ordering.
+        // Calibrate runs after M84 and before homing, so it must not create a
+        // new MCU step-position origin behind Klipper's cached position.
         assert_eq!(stepper_state().position.load(Ordering::Relaxed), 42);
 
         match outcome {
             CommissionOutcome::Terminal { reply, actions } => {
                 assert!(!actions.stop_trace);
-                assert_eq!(actions.stepper, StepperPostAction::ArmZeroPosition);
+                assert_eq!(actions.stepper, StepperPostAction::ArmPreservePosition);
                 match reply {
                     ReplyPayload::CalibrateResult {
                         oid,
