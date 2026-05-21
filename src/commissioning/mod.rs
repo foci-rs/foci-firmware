@@ -21,6 +21,7 @@ use crate::commissioning::outer::{
     MechanicalIdData, MechanicalIdState, OuterPhase, OuterSafetyLimits,
 };
 use crate::commissioning::types::{AdcCalResult, CommissioningBackend, EngineKind, StepResult};
+use crate::pid::InnerLoopGains;
 use crate::state::tmc::TmcChannelState;
 
 // Re-export public API surface for downstream consumers.
@@ -86,6 +87,50 @@ pub struct EntrySnapshot {
     pub flux_filter_hz: u16,
 }
 
+/// Gain snapshot used by the calibrate-on-enable closed-loop entry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+pub(crate) struct CalibrateEntryGains {
+    /// Inner current-loop gains to use during closed-loop entry.
+    pub inner: InnerLoopGains,
+    /// Velocity P gain (Q8.8).
+    pub velocity_p: u16,
+    /// Velocity I gain (Q8.8).
+    pub velocity_i: u16,
+    /// Position P gain (Q8.8).
+    pub position_p: u16,
+    /// Position I gain (Q8.8).
+    pub position_i: u16,
+    /// PID velocity limit register value.
+    pub velocity_limit: u32,
+    /// Velocity biquad filter cutoff (Hz), 0 = disabled.
+    pub velocity_filter_hz: u16,
+    /// Torque biquad filter cutoff (Hz), 0 = disabled.
+    pub torque_filter_hz: u16,
+    /// Position biquad filter cutoff (Hz), 0 = disabled.
+    pub position_filter_hz: u16,
+    /// Flux biquad filter cutoff (Hz), 0 = disabled.
+    pub flux_filter_hz: u16,
+}
+
+impl CalibrateEntryGains {
+    fn from_tmc_state(tmc_state: &'static TmcChannelState, inner: Option<InnerLoopGains>) -> Self {
+        use core::sync::atomic::Ordering::Relaxed;
+
+        Self {
+            inner: inner.unwrap_or(crate::pid::DEFAULT_INNER_GAINS),
+            velocity_p: tmc_state.velocity_p_value.load(Relaxed),
+            velocity_i: tmc_state.velocity_i_value.load(Relaxed),
+            position_p: tmc_state.position_p_value.load(Relaxed),
+            position_i: tmc_state.position_i_value.load(Relaxed),
+            velocity_limit: tmc_state.velocity_limit_cfg.load(Relaxed),
+            velocity_filter_hz: tmc_state.velocity_filter_hz.load(Relaxed),
+            torque_filter_hz: tmc_state.torque_filter_hz.load(Relaxed),
+            position_filter_hz: tmc_state.position_filter_hz.load(Relaxed),
+            flux_filter_hz: tmc_state.flux_filter_hz.load(Relaxed),
+        }
+    }
+}
+
 /// Which commissioning mode is active.
 #[derive(Debug, defmt::Format)]
 #[allow(clippy::large_enum_variant)]
@@ -98,6 +143,7 @@ pub(crate) enum EngineMode {
         profile: CommissionProfile,
         sequence: InnerSequence,
         adc_cal: Option<AdcCalResult>,
+        calibrate_entry_gains: Option<CalibrateEntryGains>,
     },
     Outer {
         phase: OuterPhase,
@@ -153,6 +199,17 @@ impl CommissioningEngine {
 
     /// Create a calibration engine bound to a TMC channel state.
     pub fn new_calibrate_for_tmc(oid: u8, tmc_state: &'static TmcChannelState) -> Self {
+        Self::new_calibrate_for_tmc_with_gains(oid, tmc_state, None)
+    }
+
+    /// Create a calibration engine bound to a TMC channel state and stored gains.
+    pub fn new_calibrate_for_tmc_with_gains(
+        oid: u8,
+        tmc_state: &'static TmcChannelState,
+        inner_gains: Option<InnerLoopGains>,
+    ) -> Self {
+        let calibrate_entry_gains =
+            Some(CalibrateEntryGains::from_tmc_state(tmc_state, inner_gains));
         Self {
             oid,
             tmc_state,
@@ -161,6 +218,7 @@ impl CommissioningEngine {
                 profile: CommissionProfile::Balanced,
                 sequence: InnerSequence::Calibrate,
                 adc_cal: None,
+                calibrate_entry_gains,
             },
             buf: TransientBuffer::new(),
             selftest_results: crate::selftest::SelftestResults::default(),
@@ -187,6 +245,7 @@ impl CommissioningEngine {
                 profile: CommissionProfile::Balanced,
                 sequence: InnerSequence::Selftest,
                 adc_cal: None,
+                calibrate_entry_gains: None,
             },
             buf: TransientBuffer::new(),
             selftest_results: crate::selftest::SelftestResults::default(),
@@ -217,6 +276,7 @@ impl CommissioningEngine {
                 profile,
                 sequence: InnerSequence::Commission,
                 adc_cal: None,
+                calibrate_entry_gains: None,
             },
             buf: TransientBuffer::new(),
             selftest_results: crate::selftest::SelftestResults::default(),
@@ -371,6 +431,7 @@ impl CommissioningEngine {
                 profile,
                 sequence,
                 adc_cal,
+                calibrate_entry_gains,
             } => {
                 inner::step_inner(
                     phase,
@@ -378,6 +439,7 @@ impl CommissioningEngine {
                     *profile,
                     *sequence,
                     adc_cal,
+                    *calibrate_entry_gains,
                     selftest_results,
                     diagnostics,
                     backend,
@@ -464,6 +526,56 @@ mod tests {
             position_filter_hz: 0,
             flux_filter_hz: 0,
         }
+    }
+
+    #[test]
+    fn calibrate_constructor_uses_stored_gains_for_closed_loop_entry() {
+        pollster::block_on(async {
+            use core::sync::atomic::Ordering::Relaxed;
+
+            let _guard = crate::commission_dispatch::test_support::SHARED_STATE_MUTEX
+                .lock()
+                .await;
+            let tmc_state = tmc_state();
+            tmc_state.velocity_p_value.store(1434, Relaxed);
+            tmc_state.velocity_i_value.store(2, Relaxed);
+            tmc_state.position_p_value.store(627, Relaxed);
+            tmc_state.position_i_value.store(1, Relaxed);
+            tmc_state.velocity_limit_cfg.store(500_000, Relaxed);
+            tmc_state.velocity_filter_hz.store(11, Relaxed);
+            tmc_state.torque_filter_hz.store(13, Relaxed);
+            tmc_state.position_filter_hz.store(17, Relaxed);
+            tmc_state.flux_filter_hz.store(19, Relaxed);
+
+            let inner = crate::pid::InnerLoopGains {
+                flux_p: 711,
+                flux_i: 159,
+                torque_p: 711,
+                torque_i: 159,
+            };
+
+            let engine =
+                CommissioningEngine::new_calibrate_for_tmc_with_gains(0, tmc_state, Some(inner));
+
+            let EngineMode::Inner {
+                calibrate_entry_gains: Some(gains),
+                ..
+            } = engine.engine_mode
+            else {
+                panic!("calibrate constructor should snapshot entry gains");
+            };
+
+            assert_eq!(gains.inner, inner);
+            assert_eq!(gains.velocity_p, 1434);
+            assert_eq!(gains.velocity_i, 2);
+            assert_eq!(gains.position_p, 627);
+            assert_eq!(gains.position_i, 1);
+            assert_eq!(gains.velocity_limit, 500_000);
+            assert_eq!(gains.velocity_filter_hz, 11);
+            assert_eq!(gains.torque_filter_hz, 13);
+            assert_eq!(gains.position_filter_hz, 17);
+            assert_eq!(gains.flux_filter_hz, 19);
+        });
     }
 
     #[test]

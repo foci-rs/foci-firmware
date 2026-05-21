@@ -8,6 +8,7 @@ use super::{
     ElectricalIdData, ElectricalIdState, EncoderAlignState, EncoderCheckState, InnerPhase,
 };
 use crate::autotune::{ClosedLoopEntryState, CommissionError, InnerSequence, PhaseId};
+use crate::commissioning::CalibrateEntryGains;
 use crate::commissioning::types::{AdcCalResult, CommissioningBackend, StepResult};
 
 /// Number of PHI_E steps for encoder direction sweep.
@@ -125,16 +126,6 @@ pub(crate) async fn start_encoder_current_drive<B: CommissioningBackend>(
         .map_err(|_| CommissionError::Spi)?;
     backend.set_enable_pin(true);
     Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn encoder_alignment_min_movement_uses_electrical_fraction() {
-        assert_eq!(encoder_alignment_min_movement(16), 4);
-    }
 }
 
 /// Stop current-regulated open-loop encoder movement.
@@ -295,6 +286,7 @@ pub(crate) async fn step_encoder_align<B: CommissioningBackend>(
     phase: &mut InnerPhase,
     sequence: InnerSequence,
     adc_cal: &mut Option<AdcCalResult>,
+    calibrate_entry_gains: Option<CalibrateEntryGains>,
     _selftest_results: &mut crate::selftest::SelftestResults,
     backend: &mut B,
 ) -> StepResult {
@@ -451,28 +443,37 @@ pub(crate) async fn step_encoder_align<B: CommissioningBackend>(
 
             match sequence {
                 InnerSequence::Calibrate => {
-                    // Transition to ClosedLoopEntry with conservative
-                    // default gains. The CalibrateDone handler in
-                    // main.rs will overwrite current-loop gains with
-                    // stored_gains (from prior commissioning) and
-                    // re-apply filters from atomics.
-                    let defaults = crate::pid::DEFAULT_INNER_GAINS;
-                    let vel_limit = backend.operational_velocity_limit();
-                    *phase = InnerPhase::ClosedLoopEntry {
-                        state: ClosedLoopEntryState::WriteGains,
-                        flux_p: defaults.flux_p,
-                        flux_i: defaults.flux_i,
-                        torque_p: defaults.torque_p,
-                        torque_i: defaults.torque_i,
-                        velocity_p: 1152, // 4.5 in Q8.8 (conservative default)
+                    // Use the gain snapshot captured when calibration started.
+                    // Falling back to defaults keeps direct unit construction
+                    // and legacy callers conservative, but production re-enable
+                    // paths should provide the host-stored tuned values.
+                    let gains = calibrate_entry_gains.unwrap_or(CalibrateEntryGains {
+                        inner: crate::pid::DEFAULT_INNER_GAINS,
+                        velocity_p: 1152,
                         velocity_i: 0,
-                        position_p: 640, // 2.5 in Q8.8 (conservative default)
+                        position_p: 640,
                         position_i: 0,
-                        velocity_limit: vel_limit,
+                        velocity_limit: backend.operational_velocity_limit(),
                         velocity_filter_hz: 0,
                         torque_filter_hz: 0,
                         position_filter_hz: 0,
                         flux_filter_hz: 0,
+                    });
+                    *phase = InnerPhase::ClosedLoopEntry {
+                        state: ClosedLoopEntryState::WriteGains,
+                        flux_p: gains.inner.flux_p,
+                        flux_i: gains.inner.flux_i,
+                        torque_p: gains.inner.torque_p,
+                        torque_i: gains.inner.torque_i,
+                        velocity_p: gains.velocity_p,
+                        velocity_i: gains.velocity_i,
+                        position_p: gains.position_p,
+                        position_i: gains.position_i,
+                        velocity_limit: gains.velocity_limit,
+                        velocity_filter_hz: gains.velocity_filter_hz,
+                        torque_filter_hz: gains.torque_filter_hz,
+                        position_filter_hz: gains.position_filter_hz,
+                        flux_filter_hz: gains.flux_filter_hz,
                         inner_result: None,
                     };
                     StepResult::PhaseChanged(PhaseId::ClosedLoopEntry)
@@ -487,5 +488,99 @@ pub(crate) async fn step_encoder_align<B: CommissioningBackend>(
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::commission_dispatch::test_support::{MockBackend, SHARED_STATE_MUTEX};
+
+    #[test]
+    fn encoder_alignment_min_movement_uses_electrical_fraction() {
+        assert_eq!(encoder_alignment_min_movement(16), 4);
+    }
+
+    #[test]
+    fn calibrate_stop_drive_enters_closed_loop_with_entry_gains() {
+        pollster::block_on(async {
+            let _guard = SHARED_STATE_MUTEX.lock().await;
+            let mut phase = InnerPhase::EncoderAlign {
+                state: EncoderAlignState::StopDrive { old_count: 42 },
+            };
+            let mut adc_cal = Some(AdcCalResult {
+                adc_i0: 1,
+                adc_i1: 2,
+                encoder_count: 0,
+            });
+            let mut selftest_results = crate::selftest::SelftestResults::default();
+            let mut backend = MockBackend::new();
+            let gains = CalibrateEntryGains {
+                inner: crate::pid::InnerLoopGains {
+                    flux_p: 711,
+                    flux_i: 159,
+                    torque_p: 712,
+                    torque_i: 160,
+                },
+                velocity_p: 1434,
+                velocity_i: 2,
+                position_p: 627,
+                position_i: 1,
+                velocity_limit: 500_000,
+                velocity_filter_hz: 11,
+                torque_filter_hz: 13,
+                position_filter_hz: 17,
+                flux_filter_hz: 19,
+            };
+
+            let result = step_encoder_align(
+                &mut phase,
+                InnerSequence::Calibrate,
+                &mut adc_cal,
+                Some(gains),
+                &mut selftest_results,
+                &mut backend,
+            )
+            .await;
+
+            assert!(matches!(
+                result,
+                StepResult::PhaseChanged(PhaseId::ClosedLoopEntry)
+            ));
+            assert_eq!(adc_cal.as_ref().unwrap().encoder_count, 42);
+            let InnerPhase::ClosedLoopEntry {
+                flux_p,
+                flux_i,
+                torque_p,
+                torque_i,
+                velocity_p,
+                velocity_i,
+                position_p,
+                position_i,
+                velocity_limit,
+                velocity_filter_hz,
+                torque_filter_hz,
+                position_filter_hz,
+                flux_filter_hz,
+                ..
+            } = phase
+            else {
+                panic!("calibrate StopDrive should enter ClosedLoopEntry");
+            };
+
+            assert_eq!(flux_p, gains.inner.flux_p);
+            assert_eq!(flux_i, gains.inner.flux_i);
+            assert_eq!(torque_p, gains.inner.torque_p);
+            assert_eq!(torque_i, gains.inner.torque_i);
+            assert_eq!(velocity_p, gains.velocity_p);
+            assert_eq!(velocity_i, gains.velocity_i);
+            assert_eq!(position_p, gains.position_p);
+            assert_eq!(position_i, gains.position_i);
+            assert_eq!(velocity_limit, gains.velocity_limit);
+            assert_eq!(velocity_filter_hz, gains.velocity_filter_hz);
+            assert_eq!(torque_filter_hz, gains.torque_filter_hz);
+            assert_eq!(position_filter_hz, gains.position_filter_hz);
+            assert_eq!(flux_filter_hz, gains.flux_filter_hz);
+        });
     }
 }

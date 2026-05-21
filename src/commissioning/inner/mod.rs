@@ -312,6 +312,7 @@ pub(crate) async fn step_inner<B: CommissioningBackend>(
     profile: CommissionProfile,
     sequence: InnerSequence,
     adc_cal: &mut Option<AdcCalResult>,
+    calibrate_entry_gains: Option<crate::commissioning::CalibrateEntryGains>,
     selftest_results: &mut crate::selftest::SelftestResults,
     diagnostics: &mut crate::selftest::CommissionDiagnostics,
     backend: &mut B,
@@ -322,6 +323,7 @@ pub(crate) async fn step_inner<B: CommissioningBackend>(
         profile,
         sequence,
         adc_cal,
+        calibrate_entry_gains,
         selftest_results,
         diagnostics,
         backend,
@@ -347,6 +349,7 @@ async fn step_inner_dispatch<B: CommissioningBackend>(
     profile: CommissionProfile,
     sequence: InnerSequence,
     adc_cal: &mut Option<AdcCalResult>,
+    calibrate_entry_gains: Option<crate::commissioning::CalibrateEntryGains>,
     selftest_results: &mut crate::selftest::SelftestResults,
     diagnostics: &mut crate::selftest::CommissionDiagnostics,
     backend: &mut B,
@@ -367,7 +370,15 @@ async fn step_inner_dispatch<B: CommissioningBackend>(
             encoder::step_encoder_check(phase, sequence, selftest_results, backend).await
         }
         InnerPhase::EncoderAlign { .. } => {
-            encoder::step_encoder_align(phase, sequence, adc_cal, selftest_results, backend).await
+            encoder::step_encoder_align(
+                phase,
+                sequence,
+                adc_cal,
+                calibrate_entry_gains,
+                selftest_results,
+                backend,
+            )
+            .await
         }
         InnerPhase::ElectricalId { .. } => {
             electrical_identification::step_electrical_identification(

@@ -1470,6 +1470,7 @@ mod tests {
                 crate::autotune::CommissionProfile::Balanced,
                 InnerSequence::Commission,
                 &mut adc_cal,
+                None,
                 &mut selftest_results,
                 &mut diagnostics,
                 &mut backend,
