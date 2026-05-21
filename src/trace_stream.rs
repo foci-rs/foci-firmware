@@ -144,6 +144,25 @@ impl Default for FrameBuf {
     }
 }
 
+/// Return the global per-device sequence from a frame envelope.
+pub fn frame_sequence(frame: &FrameBuf) -> u32 {
+    u32::from_le_bytes([
+        frame.bytes[12],
+        frame.bytes[13],
+        frame.bytes[14],
+        frame.bytes[15],
+    ])
+}
+
+/// Return true when `candidate` should be emitted no later than `other`.
+///
+/// Sequence numbers are compared in the RFC 1982 style half-range window. The
+/// trace queues are tiny relative to `u32::MAX`, so values exactly half a range
+/// apart are treated as not before to avoid guessing.
+pub fn sequence_before_or_equal(candidate: u32, other: u32) -> bool {
+    candidate == other || other.wrapping_sub(candidate) < (1u32 << 31)
+}
+
 /// Critical 1 kHz sample.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct CriticalSample {
@@ -413,5 +432,31 @@ mod tests {
         assert_eq!(EVENT_PAYLOAD_LEN, 24);
         assert!(HEADER_LEN + CRITICAL_PAYLOAD_LEN <= CRITICAL_FRAME_BUDGET);
         assert!(HEADER_LEN + METADATA_PAYLOAD_MAX <= FRAME_BUF_CAPACITY);
+    }
+
+    #[test]
+    fn frame_sequence_reads_envelope_sequence() {
+        let mut frame = FrameBuf::new();
+        frame.write_header(FrameHeader {
+            frame_type: FRAME_TYPE_EVENT,
+            flags: 0,
+            payload_len: EVENT_PAYLOAD_LEN as u16,
+            source_kind: SOURCE_KIND_BOARD,
+            source_index: SOURCE_INDEX_NA,
+            sequence: 0xA1B2_C3D4,
+            timestamp_ticks: 0,
+            boot_id: 0,
+        });
+
+        assert_eq!(frame_sequence(&frame), 0xA1B2_C3D4);
+    }
+
+    #[test]
+    fn sequence_before_or_equal_orders_with_wraparound() {
+        assert!(sequence_before_or_equal(41, 42));
+        assert!(sequence_before_or_equal(42, 42));
+        assert!(!sequence_before_or_equal(43, 42));
+        assert!(sequence_before_or_equal(u32::MAX, 0));
+        assert!(!sequence_before_or_equal(0, u32::MAX));
     }
 }
