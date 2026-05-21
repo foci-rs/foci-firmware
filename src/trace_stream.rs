@@ -163,6 +163,31 @@ pub fn sequence_before_or_equal(candidate: u32, other: u32) -> bool {
     candidate == other || other.wrapping_sub(candidate) < (1u32 << 31)
 }
 
+/// Return true when the control-detail sample is due for this tick.
+///
+/// The normal cadence is 500 Hz (`tick % 2 == 0`). Queue pressure decimates
+/// deterministically to 250 Hz above half depth and 100 Hz above three-quarter
+/// depth. A deadline-pressure skip suppresses exactly this opportunity.
+pub fn control_detail_due(
+    control_tick: u32,
+    queue_len: usize,
+    queue_depth: usize,
+    deadline_skip: bool,
+) -> bool {
+    if deadline_skip {
+        return false;
+    }
+
+    let divisor = if queue_depth > 0 && queue_len >= (queue_depth * 3) / 4 {
+        10
+    } else if queue_depth > 0 && queue_len >= queue_depth / 2 {
+        4
+    } else {
+        2
+    };
+    control_tick % divisor == 0
+}
+
 /// Critical 1 kHz sample.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct CriticalSample {
@@ -458,5 +483,20 @@ mod tests {
         assert!(!sequence_before_or_equal(43, 42));
         assert!(sequence_before_or_equal(u32::MAX, 0));
         assert!(!sequence_before_or_equal(0, u32::MAX));
+    }
+
+    #[test]
+    fn control_detail_due_uses_full_rate_without_pressure() {
+        assert!(!control_detail_due(1, 0, 32, false));
+        assert!(control_detail_due(2, 0, 32, false));
+        assert!(!control_detail_due(2, 0, 32, true));
+    }
+
+    #[test]
+    fn control_detail_due_decimates_under_queue_pressure() {
+        assert!(!control_detail_due(2, 16, 32, false));
+        assert!(control_detail_due(4, 16, 32, false));
+        assert!(!control_detail_due(4, 24, 32, false));
+        assert!(control_detail_due(10, 24, 32, false));
     }
 }
