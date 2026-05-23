@@ -30,11 +30,11 @@ pub struct InternalMeasurement {
 pub struct InnerLoopGains {
     /// Flux P gain — raw TMC4671 register value (Q8.8 format).
     pub flux_p: u16,
-    /// Flux I gain — raw TMC4671 register value (advanced PI zero scale).
+    /// Flux I gain — raw TMC4671 Q8.8 register value.
     pub flux_i: u16,
     /// Torque P gain — raw TMC4671 register value (Q8.8 format).
     pub torque_p: u16,
-    /// Torque I gain — raw TMC4671 register value (advanced PI zero scale).
+    /// Torque I gain — raw TMC4671 Q8.8 register value.
     pub torque_i: u16,
 }
 
@@ -43,6 +43,8 @@ pub struct InnerLoopGains {
 /// The theoretical discrete-time derivation from the TMC4671's advanced PI
 /// structure (datasheet Table 22, section 4.7.4) gives:
 ///   I = 65536 * R / (L * f_PWM)
+/// for the effective PI-zero factor. The raw register remains Q8.8 while
+/// CONFIG_ADVANCED_PI_REPRESENT is left at its default value.
 ///
 /// But empirically validated gains are 64x lower:
 ///   I = 1024 * R / (L * f_PWM)
@@ -63,9 +65,9 @@ pub const I_GAIN_EMPIRICAL_FACTOR: f32 = 1024.0;
 /// These are intentionally low — stable but sluggish.
 pub const DEFAULT_INNER_GAINS: InnerLoopGains = InnerLoopGains {
     flux_p: 256,   // 1.0 in Q8.8
-    flux_i: 26,    // Raw advanced-PI zero parameter.
+    flux_i: 26,    // Raw Q8.8 current-I register value.
     torque_p: 256, // 1.0 in Q8.8
-    torque_i: 26,  // Raw advanced-PI zero parameter.
+    torque_i: 26,  // Raw Q8.8 current-I register value.
 };
 
 /// Compute PI gains from internal-unit measurements.
@@ -183,6 +185,7 @@ mod tests {
             bbm_h: 10,
             bbm_l: 10,
             dsadc_mdec: 331,
+            adc_i_select: 0x1800_0100,
             excitation_voltage: 512,
             didt_cycles: 5000,
             bandwidth_hz: 50.0,

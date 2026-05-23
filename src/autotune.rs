@@ -382,11 +382,11 @@ impl PhaseId {
 pub struct SavedGains {
     /// Current-loop flux P gain (Q8.8).
     pub flux_p: u16,
-    /// Current-loop flux I gain (advanced PI zero scale: I/65536 per PWM sample).
+    /// Current-loop flux I gain (raw Q8.8; effective advanced-PI zero is I/65536).
     pub flux_i: u16,
     /// Current-loop torque P gain (Q8.8).
     pub torque_p: u16,
-    /// Current-loop torque I gain (advanced PI zero scale: I/65536 per PWM sample).
+    /// Current-loop torque I gain (raw Q8.8; effective advanced-PI zero is I/65536).
     pub torque_i: u16,
     /// Velocity P gain (Q8.8).
     pub velocity_p: u16,
@@ -500,11 +500,11 @@ pub const ELECTRICAL_MODEL_RESISTANCE_SCALE: u32 = 1000;
 pub struct CurrentGains {
     /// Flux P gain — TMC4671 Q8.8 register value.
     pub flux_p: u16,
-    /// Flux I gain — advanced PI zero scale: I/65536 per PWM sample.
+    /// Flux I gain — raw Q8.8; effective advanced-PI zero is I/65536.
     pub flux_i: u16,
     /// Torque P gain — TMC4671 Q8.8 register value.
     pub torque_p: u16,
-    /// Torque I gain — advanced PI zero scale: I/65536 per PWM sample.
+    /// Torque I gain — raw Q8.8; effective advanced-PI zero is I/65536.
     pub torque_i: u16,
     /// Effective closed-loop bandwidth in Hz.
     pub effective_bandwidth_hz: u32,
@@ -752,11 +752,13 @@ pub fn simc_current_gains_with_lambda_checked(
     };
     let ti_s = ti * 1e-6; // Convert Ti from microseconds to seconds
 
-    // Convert to TMC4671 advanced PI register format.
+    // Convert to the TMC4671 current-loop register format.
     //
-    // In advanced PI mode the integrator is series/interacting:
+    // OpenFFBoard leaves CONFIG_ADVANCED_PI_REPRESENT at its default 0, so the
+    // current-loop I register field is raw Q8.8. In advanced PI mode the
+    // integrator is series/interacting:
     //   x[k+1] = x[k] + Kp * (I/65536) * e[k]
-    // so the I register places the PI zero as I/65536 per PWM sample.
+    // so the raw Q8.8 I register places the PI zero as I/65536 per PWM sample.
     // A continuous Ti maps to I ~= 65536 / (Ti * f_pwm).
     let f_pwm = config.pwm_freq_hz() as f32;
     let p_reg = (kp * 256.0).clamp(1.0, u16::MAX as f32) as u16;
@@ -1948,6 +1950,7 @@ mod tests {
             bbm_h: 10,
             bbm_l: 10,
             dsadc_mdec: 331,
+            adc_i_select: 0x1800_0100,
             excitation_voltage: 512,
             didt_cycles: 5000,
             bandwidth_hz: 150.0,
@@ -2147,9 +2150,9 @@ mod tests {
 
         // Balanced current-loop lambda is floored at tau/2 for robustness:
         // max(2*theta=320us, tau/2=931us). The damped SIMC integrator time is
-        // max(tau, CURRENT_SIMC_TI_MULTIPLIER*(lambda+theta)). In TMC4671
-        // advanced PI mode the I register places the series PI zero as
-        // I/65536 per PWM sample.
+        // max(tau, CURRENT_SIMC_TI_MULTIPLIER*(lambda+theta)). With the
+        // default Q8.8 representation, TMC4671 advanced PI places the series
+        // PI zero as I/65536 per PWM sample.
         assert_eq!(gains.lambda_us, model.tau_e_us / 2);
         let ti_s =
             CURRENT_SIMC_TI_MULTIPLIER as f64 * (gains.lambda_us + model.theta_e_us) as f64 * 1e-6;

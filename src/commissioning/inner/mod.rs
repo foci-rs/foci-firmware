@@ -258,11 +258,11 @@ pub(crate) enum InnerPhase {
         state: ClosedLoopEntryState,
         /// Current-loop flux P gain (Q8.8) to write.
         flux_p: u16,
-        /// Current-loop flux I gain (advanced PI zero scale) to write.
+        /// Current-loop flux I gain (raw Q8.8) to write.
         flux_i: u16,
         /// Current-loop torque P gain (Q8.8) to write.
         torque_p: u16,
-        /// Current-loop torque I gain (advanced PI zero scale) to write.
+        /// Current-loop torque I gain (raw Q8.8) to write.
         torque_i: u16,
         /// Outer velocity P gain (Q8.8) to write.
         velocity_p: u16,
