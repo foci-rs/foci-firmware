@@ -175,9 +175,10 @@ pub fn sequence_before_or_equal(candidate: u32, other: u32) -> bool {
 
 /// Return true when the control-detail sample is due for this tick.
 ///
-/// The normal cadence is 500 Hz (`tick % 2 == 0`). Queue pressure decimates
-/// deterministically to 250 Hz above half depth and 100 Hz above three-quarter
-/// depth. A deadline-pressure skip suppresses exactly this opportunity.
+/// The normal motion-tuning cadence is 100 Hz (`tick % 10 == 0`). Queue
+/// pressure decimates deterministically to 50 Hz above half depth and 20 Hz
+/// above three-quarter depth. A deadline-pressure skip suppresses exactly this
+/// opportunity.
 pub fn control_detail_due(
     control_tick: u32,
     queue_len: usize,
@@ -189,21 +190,32 @@ pub fn control_detail_due(
     }
 
     let divisor = if queue_depth > 0 && queue_len >= (queue_depth * 3) / 4 {
-        10
+        50
     } else if queue_depth > 0 && queue_len >= queue_depth / 2 {
-        4
+        20
     } else {
-        2
+        10
     };
     control_tick % divisor == 0
 }
 
 /// Return true when the low-rate current-path sample is due for this tick.
 ///
-/// The normal cadence is 100 Hz. Samples are emitted on `tick % 10 == 5` so
-/// the extra INTERIM subregister reads do not coincide with the 500 Hz
-/// control-detail cadence. Queue pressure decimates deterministically.
-pub fn current_path_due(control_tick: u32, queue_len: usize, queue_depth: usize) -> bool {
+/// Current-path sampling is disabled by default in the motion-tuning profile.
+/// When a diagnostic profile enables it, the normal cadence is 100 Hz. Samples
+/// are emitted on `tick % 10 == 5` so the extra INTERIM subregister reads do
+/// not coincide with the control-detail cadence. Queue pressure decimates
+/// deterministically.
+pub fn current_path_due(
+    enabled: bool,
+    control_tick: u32,
+    queue_len: usize,
+    queue_depth: usize,
+) -> bool {
+    if !enabled {
+        return false;
+    }
+
     let divisor = if queue_depth > 0 && queue_len >= (queue_depth * 3) / 4 {
         50
     } else if queue_depth > 0 && queue_len >= queue_depth / 2 {
@@ -576,29 +588,36 @@ mod tests {
     }
 
     #[test]
-    fn control_detail_due_uses_full_rate_without_pressure() {
-        assert!(!control_detail_due(1, 0, 32, false));
-        assert!(control_detail_due(2, 0, 32, false));
-        assert!(!control_detail_due(2, 0, 32, true));
+    fn control_detail_due_uses_motion_tuning_rate_without_pressure() {
+        assert!(!control_detail_due(5, 0, 32, false));
+        assert!(control_detail_due(10, 0, 32, false));
+        assert!(!control_detail_due(10, 0, 32, true));
     }
 
     #[test]
     fn control_detail_due_decimates_under_queue_pressure() {
-        assert!(!control_detail_due(2, 16, 32, false));
-        assert!(control_detail_due(4, 16, 32, false));
-        assert!(!control_detail_due(4, 24, 32, false));
-        assert!(control_detail_due(10, 24, 32, false));
+        assert!(!control_detail_due(10, 16, 32, false));
+        assert!(control_detail_due(20, 16, 32, false));
+        assert!(!control_detail_due(20, 24, 32, false));
+        assert!(control_detail_due(50, 24, 32, false));
     }
 
     #[test]
-    fn current_path_due_uses_odd_ticks_and_decimates_under_pressure() {
-        assert!(!current_path_due(4, 0, 32));
-        assert!(current_path_due(5, 0, 32));
-        assert!(!current_path_due(10, 0, 32));
-        assert!(current_path_due(15, 0, 32));
-        assert!(!current_path_due(15, 16, 32));
-        assert!(current_path_due(25, 16, 32));
-        assert!(!current_path_due(25, 24, 32));
-        assert!(current_path_due(55, 24, 32));
+    fn current_path_due_is_disabled_in_motion_tuning_profile() {
+        assert!(!current_path_due(false, 5, 0, 32));
+        assert!(!current_path_due(false, 25, 16, 32));
+        assert!(!current_path_due(false, 55, 24, 32));
+    }
+
+    #[test]
+    fn current_path_due_uses_odd_ticks_when_enabled() {
+        assert!(!current_path_due(true, 4, 0, 32));
+        assert!(current_path_due(true, 5, 0, 32));
+        assert!(!current_path_due(true, 10, 0, 32));
+        assert!(current_path_due(true, 15, 0, 32));
+        assert!(!current_path_due(true, 15, 16, 32));
+        assert!(current_path_due(true, 25, 16, 32));
+        assert!(!current_path_due(true, 25, 24, 32));
+        assert!(current_path_due(true, 55, 24, 32));
     }
 }
