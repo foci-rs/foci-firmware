@@ -240,6 +240,47 @@ pub struct FociCurrentStepResult {
     pub uq_limited: i16,
     /// Limited UD while the step is applied.
     pub ud_limited: i16,
+    /// ABN decoder count before applying the step.
+    pub encoder_before: u32,
+    /// ABN decoder count after returning target to zero.
+    pub encoder_after: u32,
+    /// Signed encoder delta from before to after.
+    pub encoder_delta: i32,
+    /// Raw TMC4671 supply-voltage ADC sample during the dwell.
+    pub adc_vm_raw: u16,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::FociCurrentStepResult;
+
+    #[test]
+    fn current_step_result_carries_motion_and_supply_observability() {
+        let reply = FociCurrentStepResult {
+            oid: 7,
+            status: 0,
+            target: 250,
+            duration_ms: 80,
+            voltage_limit: 12_000,
+            torque_before: -3,
+            torque_during: 240,
+            torque_after: 18,
+            flux_during: 4,
+            iq_during: 239,
+            id_during: -5,
+            uq_limited: 1500,
+            ud_limited: -20,
+            encoder_before: 3900,
+            encoder_after: 12,
+            encoder_delta: 112,
+            adc_vm_raw: 40099,
+        };
+
+        assert_eq!(reply.encoder_before, 3900);
+        assert_eq!(reply.encoder_after, 12);
+        assert_eq!(reply.encoder_delta, 112);
+        assert_eq!(reply.adc_vm_raw, 40099);
+    }
 }
 
 /// `foci_stepper_event` reply - bounded stepper runtime diagnostic.
