@@ -104,6 +104,17 @@ pub enum TmcRequestKind {
     },
     /// Set operational PIDOUT_UQ_UD_LIMITS for authority diagnostics.
     SetVoltageLimit { voltage_limit: u32 },
+    /// Run a bounded current-loop step diagnostic while already enabled.
+    CurrentStepTest {
+        /// Object id used by the reply.
+        oid: u8,
+        /// Signed torque-current target in TMC4671 current counts.
+        target: i16,
+        /// Hold duration for the applied target.
+        duration_ms: u16,
+        /// Temporary PIDOUT_UQ_UD_LIMITS value for the diagnostic.
+        voltage_limit: u16,
+    },
     /// Start the per-tick trace buffer with the selected preset.
     TraceStart { oid: u8, preset: u8 },
     /// Stop the per-tick trace buffer, preserving samples for fetch.
@@ -296,6 +307,25 @@ pub fn tmc_set_voltage_limit(channel: u8, voltage_limit: u32) -> TmcRequest {
     TmcRequest::new(channel, TmcRequestKind::SetVoltageLimit { voltage_limit })
 }
 
+/// Build a `CurrentStepTest` request.
+pub fn tmc_current_step_test(
+    channel: u8,
+    oid: u8,
+    target: i16,
+    duration_ms: u16,
+    voltage_limit: u16,
+) -> TmcRequest {
+    TmcRequest::new(
+        channel,
+        TmcRequestKind::CurrentStepTest {
+            oid,
+            target,
+            duration_ms,
+            voltage_limit,
+        },
+    )
+}
+
 /// Build a `SetEnable` request.
 pub fn tmc_set_enable(channel: u8, enable: bool) -> TmcRequest {
     TmcRequest::new(channel, TmcRequestKind::SetEnable(enable))
@@ -463,6 +493,21 @@ pub fn compute_accel_torque_offset(
     }
 }
 
+/// Pack signed torque and flux targets for PID_TORQUE_FLUX_TARGET.
+pub fn pack_torque_flux_target(torque: i16, flux: i16) -> u32 {
+    ((torque as u16 as u32) << 16) | flux as u16 as u32
+}
+
+/// Decode the signed upper 16 bits of a TMC4671 packed register.
+pub fn decode_signed_upper_half(value: u32) -> i16 {
+    ((value >> 16) & 0xffff) as u16 as i16
+}
+
+/// Decode the signed lower 16 bits of a TMC4671 packed register.
+pub fn decode_signed_lower_half(value: u32) -> i16 {
+    (value & 0xffff) as u16 as i16
+}
+
 /// Build a `Write` request (dev-only).
 #[cfg(feature = "dev")]
 pub fn tmc_write_register(channel: u8, addr: u8, value: u32) -> TmcRequest {
@@ -608,6 +653,37 @@ mod tests {
                 }
             )
         );
+    }
+
+    #[test]
+    fn tmc_current_step_test_builds_request() {
+        assert_eq!(
+            tmc_current_step_test(0, 7, 250, 80, 12_000),
+            TmcRequest::new(
+                0,
+                TmcRequestKind::CurrentStepTest {
+                    oid: 7,
+                    target: 250,
+                    duration_ms: 80,
+                    voltage_limit: 12_000,
+                }
+            )
+        );
+    }
+
+    #[test]
+    fn pack_torque_target_places_signed_torque_in_upper_half() {
+        assert_eq!(pack_torque_flux_target(250, 0), 0x00fa_0000);
+        assert_eq!(pack_torque_flux_target(-250, 0), 0xff06_0000);
+        assert_eq!(pack_torque_flux_target(0, -3), 0x0000_fffd);
+    }
+
+    #[test]
+    fn signed_half_decoders_extract_torque_and_flux() {
+        let value = 0xff06_0005;
+
+        assert_eq!(decode_signed_upper_half(value), -250);
+        assert_eq!(decode_signed_lower_half(value), 5);
     }
 
     #[test]
