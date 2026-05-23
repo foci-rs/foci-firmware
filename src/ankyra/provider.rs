@@ -69,6 +69,7 @@ ankyra::ankyra_provider! {
         crate::ankyra::handlers::tmc::tmc_set_velocity_filter,
         crate::ankyra::handlers::tmc::tmc_set_velocity_limit,
         crate::ankyra::handlers::tmc::tmc_set_voltage_limit,
+        crate::ankyra::handlers::tmc::tmc_current_step_test,
         // TMC dev-gated (4)
         crate::ankyra::handlers::tmc::tmc_init,
         crate::ankyra::handlers::tmc::tmc_test_spin,
@@ -95,6 +96,7 @@ ankyra::ankyra_provider! {
         crate::ankyra::replies::FociDumpDone,
         crate::ankyra::replies::FociDumpValue,
         crate::ankyra::replies::FociDiagnostic,
+        crate::ankyra::replies::FociCurrentStepResult,
         crate::ankyra::replies::FociStepperEvent,
         crate::ankyra::replies::FociStepperExecStatsResult,
         crate::ankyra::replies::FociStepperStatsResult,
@@ -178,6 +180,7 @@ ankyra::ankyra_provider! {
         crate::ankyra::handlers::tmc::tmc_set_velocity_filter,
         crate::ankyra::handlers::tmc::tmc_set_velocity_limit,
         crate::ankyra::handlers::tmc::tmc_set_voltage_limit,
+        crate::ankyra::handlers::tmc::tmc_current_step_test,
         // FOCI (8 — foci_tune stays board-local)
         crate::ankyra::handlers::foci::foci_calibrate,
         crate::ankyra::handlers::foci::foci_commission,
@@ -199,6 +202,7 @@ ankyra::ankyra_provider! {
         crate::ankyra::replies::FociDumpDone,
         crate::ankyra::replies::FociDumpValue,
         crate::ankyra::replies::FociDiagnostic,
+        crate::ankyra::replies::FociCurrentStepResult,
         crate::ankyra::replies::FociStepperEvent,
         crate::ankyra::replies::FociStepperExecStatsResult,
         crate::ankyra::replies::FociStepperStatsResult,
