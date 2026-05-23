@@ -359,7 +359,7 @@ async fn step_inner_dispatch<B: CommissioningBackend>(
             adc::step_adc_calibrate(phase, sequence, adc_cal, selftest_results, backend).await
         }
         InnerPhase::CoilCheck { .. } => {
-            coil::step_coil_check(phase, sequence, selftest_results, backend).await
+            coil::step_coil_check(phase, sequence, selftest_results, diagnostics, backend).await
         }
         InnerPhase::PhaseWiringCheck { coil_a, coil_b } => {
             let a = *coil_a;

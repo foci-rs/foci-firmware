@@ -7,6 +7,10 @@
 use super::{CoilCheckState, CoilObservation, CoilTestState, InnerPhase};
 use crate::autotune::{CommissionError, InnerSequence, PhaseId};
 use crate::commissioning::types::{CommissioningBackend, StepResult};
+use crate::selftest::{CommissionDiagnostic, CommissionDiagnostics};
+
+const DIAG_COIL_CHECK_A_SAMPLE: u8 = 1;
+const DIAG_COIL_CHECK_B_SAMPLE: u8 = 2;
 
 /// Minimum ADC current to consider a coil present (raw ADC units).
 const MOTOR_CURRENT_THRESHOLD: u16 = 200;
@@ -27,6 +31,7 @@ pub(crate) async fn step_coil_check<B: CommissioningBackend>(
     phase: &mut InnerPhase,
     sequence: InnerSequence,
     selftest_results: &mut crate::selftest::SelftestResults,
+    diagnostics: &mut CommissionDiagnostics,
     backend: &mut B,
 ) -> StepResult {
     use foci_tmc4671::registers::*;
@@ -117,8 +122,22 @@ pub(crate) async fn step_coil_check<B: CommissioningBackend>(
                     }
                 };
 
+                let sample_failed = obs.expected.unsigned_abs() <= MOTOR_CURRENT_THRESHOLD;
+                diagnostics.push(CommissionDiagnostic {
+                    phase: PhaseId::CoilCheck.to_u8(),
+                    code: if p == 0 {
+                        DIAG_COIL_CHECK_A_SAMPLE
+                    } else {
+                        DIAG_COIL_CHECK_B_SAMPLE
+                    },
+                    status: if sample_failed { 1 } else { 0 },
+                    value0: obs.expected as u16 as u32,
+                    value1: obs.other as u16 as u32,
+                    value2: raw,
+                });
+
                 // Validate coil presence.
-                if obs.expected.unsigned_abs() <= MOTOR_CURRENT_THRESHOLD {
+                if sample_failed {
                     if matches!(sequence, InnerSequence::Selftest) {
                         let stage = if is_coil_b { 3 } else { 2 };
                         selftest_results.set(stage, crate::selftest::SelftestStageValue::fail(0));
@@ -173,5 +192,57 @@ pub(crate) async fn step_coil_check<B: CommissioningBackend>(
                 StepResult::Continue
             }
         },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::autotune::{CommissionProfile, InnerSequence};
+    use crate::commission_dispatch::test_support::MockBackend;
+    use crate::commissioning::types::StepResult;
+    use crate::selftest::CommissionDiagnostics;
+    use foci_tmc4671::registers::ADC_IWY_IUX;
+
+    #[test]
+    fn coil_fault_records_raw_current_sample() {
+        pollster::block_on(async {
+            let mut phase = InnerPhase::CoilCheck {
+                state: CoilCheckState::CoilA(CoilTestState::Read { phase: 0 }),
+                coil_a: None,
+            };
+            let mut buf = crate::autotune::TransientBuffer::new();
+            let mut adc_cal = None;
+            let mut selftest_results = crate::selftest::SelftestResults::default();
+            let mut diagnostics = CommissionDiagnostics::default();
+            let mut backend = MockBackend::new();
+            let raw = ((-20i16 as u16 as u32) << 16) | 120u16 as u32;
+            backend.registers.insert(ADC_IWY_IUX.addr(), raw).unwrap();
+
+            let result = super::super::step_inner(
+                &mut phase,
+                &mut buf,
+                CommissionProfile::Balanced,
+                InnerSequence::Commission,
+                &mut adc_cal,
+                None,
+                &mut selftest_results,
+                &mut diagnostics,
+                &mut backend,
+            )
+            .await;
+
+            assert!(matches!(
+                result,
+                StepResult::InnerFailed(CommissionError::CoilFault)
+            ));
+            let items: heapless::Vec<_, 4> = diagnostics.iter().collect();
+            assert_eq!(items.len(), 1);
+            assert_eq!(items[0].phase, PhaseId::CoilCheck.to_u8());
+            assert_eq!(items[0].status, 1);
+            assert_eq!(items[0].value0, 120);
+            assert_eq!(items[0].value1, -20i16 as u16 as u32);
+            assert_eq!(items[0].value2, raw);
+        });
     }
 }
