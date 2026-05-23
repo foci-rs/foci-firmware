@@ -23,6 +23,13 @@ use crate::context::{ShutdownRecovery, TmcHost};
 use crate::shutdown::ShutdownReason;
 use crate::state::tmc::TmcChannelState;
 
+const MAX_CURRENT_STEP_TARGET: i16 = 1_000;
+const MIN_CURRENT_STEP_DURATION_MS: u16 = 20;
+const MAX_CURRENT_STEP_DURATION_MS: u16 = 200;
+const MIN_CURRENT_STEP_VOLTAGE_LIMIT: u16 =
+    crate::state::tmc::MIN_OPERATIONAL_PIDOUT_UQ_UD_LIMIT as u16;
+const MAX_CURRENT_STEP_VOLTAGE_LIMIT: u16 = 29_000;
+
 /// Trigger TMC4671 initialization sequence (dev-only).
 #[cfg(feature = "dev")]
 #[klipper_command]
@@ -313,6 +320,49 @@ pub fn tmc_set_voltage_limit(ctx: &mut dyn TmcWriteHost, oid: u8, voltage_limit:
     }
 }
 
+/// Run a bounded current-loop step diagnostic.
+///
+/// This command only queues a fixed diagnostic sequence. The board task
+/// rejects it unless the motor is already enabled and calibrated by the
+/// production path.
+#[klipper_command]
+pub fn tmc_current_step_test(
+    ctx: &mut dyn TmcWriteHost,
+    oid: u8,
+    target: i16,
+    duration_ms: u16,
+    voltage_limit: u16,
+) {
+    let Some((channel, _state)) = foci_tmc_state_or_shutdown(ctx, oid) else {
+        return;
+    };
+    if target.unsigned_abs() > MAX_CURRENT_STEP_TARGET as u16
+        || !(MIN_CURRENT_STEP_DURATION_MS..=MAX_CURRENT_STEP_DURATION_MS).contains(&duration_ms)
+        || !(MIN_CURRENT_STEP_VOLTAGE_LIMIT..=MAX_CURRENT_STEP_VOLTAGE_LIMIT)
+            .contains(&voltage_limit)
+    {
+        if ctx.enter_shutdown() {
+            let clock = ctx.now();
+            ctx.send_shutdown(ShutdownReason::TmcRequestValidationFailed, clock);
+        }
+        return;
+    }
+    if ctx
+        .enqueue_request(crate::tmc::tmc_current_step_test(
+            channel,
+            oid,
+            target,
+            duration_ms,
+            voltage_limit,
+        ))
+        .is_err()
+        && ctx.enter_shutdown()
+    {
+        let clock = ctx.now();
+        ctx.send_shutdown(ShutdownReason::TmcRequestValidationFailed, clock);
+    }
+}
+
 /// Set whether a raw enable may trigger firmware-side auto-calibration.
 #[klipper_command]
 pub fn tmc_set_auto_calibrate_on_enable(ctx: &mut dyn ShutdownRecovery, oid: u8, enable: u8) {
@@ -533,6 +583,58 @@ mod tests {
             }
         ));
         assert_eq!(ctx.last_shutdown, None);
+    }
+
+    #[test]
+    fn tmc_current_step_test_routes_by_stepper_oid() {
+        let mut ctx = MockCtx::new(2);
+        let mut sender = ();
+        config_stepper_channel(ctx.state(), 10, 1).unwrap();
+
+        tmc_current_step_test(&mut ctx, &mut sender, 10, 250, 80, 12_000);
+
+        let req = ctx.last_request.borrow().clone().unwrap();
+        assert_eq!(req.channel, 1);
+        assert!(matches!(
+            req.kind,
+            crate::tmc::TmcRequestKind::CurrentStepTest {
+                oid: 10,
+                target: 250,
+                duration_ms: 80,
+                voltage_limit: 12_000,
+            }
+        ));
+        assert_eq!(ctx.last_shutdown, None);
+    }
+
+    #[test]
+    fn tmc_current_step_test_rejects_excessive_target() {
+        let mut ctx = MockCtx::new(2);
+        let mut sender = ();
+        config_stepper_channel(ctx.state(), 10, 1).unwrap();
+
+        tmc_current_step_test(&mut ctx, &mut sender, 10, 1_001, 80, 12_000);
+
+        assert!(ctx.last_request.borrow().is_none());
+        assert_eq!(
+            ctx.last_shutdown,
+            Some(crate::shutdown::ShutdownReason::TmcRequestValidationFailed)
+        );
+    }
+
+    #[test]
+    fn tmc_current_step_test_rejects_too_long_duration() {
+        let mut ctx = MockCtx::new(2);
+        let mut sender = ();
+        config_stepper_channel(ctx.state(), 10, 1).unwrap();
+
+        tmc_current_step_test(&mut ctx, &mut sender, 10, 250, 201, 12_000);
+
+        assert!(ctx.last_request.borrow().is_none());
+        assert_eq!(
+            ctx.last_shutdown,
+            Some(crate::shutdown::ShutdownReason::TmcRequestValidationFailed)
+        );
     }
 
     #[test]
