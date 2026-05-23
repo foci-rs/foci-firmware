@@ -1,14 +1,14 @@
 //! USB trace stream protocol encoding.
 //!
-//! This module owns the version-1 FTRC wire format. It performs no USB I/O and
+//! This module owns the FTRC wire format. It performs no USB I/O and
 //! no TMC register reads; board crates provide samples and transport.
 
 #![cfg(feature = "trace")]
 
 /// FTRC little-endian magic.
 pub const FRAME_MAGIC: u32 = 0x4352_5446;
-/// Version-1 firmware trace protocol.
-pub const PROTOCOL_VERSION: u8 = 1;
+/// Version-5 firmware trace protocol.
+pub const PROTOCOL_VERSION: u8 = 5;
 /// Fixed envelope length in bytes.
 pub const HEADER_LEN: usize = 32;
 /// Maximum critical frame transport budget in bytes.
@@ -26,6 +26,8 @@ pub const FRAME_TYPE_STATUS: u8 = 3;
 pub const FRAME_TYPE_EVENT: u8 = 4;
 /// Stream metadata frame type.
 pub const FRAME_TYPE_METADATA: u8 = 5;
+/// Low-rate current-path diagnostic frame type.
+pub const FRAME_TYPE_CURRENT_PATH: u8 = 6;
 
 /// Board-level source kind.
 pub const SOURCE_KIND_BOARD: u8 = 0;
@@ -44,9 +46,17 @@ pub const FLAG_DROP_GAP_BEFORE_THIS_FRAME: u8 = 1 << 0;
 pub const FLAG_PAYLOAD_TRUNCATED: u8 = 1 << 1;
 /// Critical sample contains at least one invalid field due to SPI failure.
 pub const SAMPLE_FLAG_SPI_ERROR: u8 = 1 << 0;
+/// Acceleration feedforward was enabled and ungated for this critical sample.
+pub const ACCEL_FF_FLAG_ENABLED: u8 = 1 << 0;
+/// Acceleration feedforward wrote a non-zero torque offset for this sample.
+pub const ACCEL_FF_FLAG_NONZERO: u8 = 1 << 1;
+/// Acceleration feedforward torque offset reached the configured torque limit.
+pub const ACCEL_FF_FLAG_CLAMPED: u8 = 1 << 2;
 
-/// Version-1 critical payload length.
+/// Version-5 critical payload length.
 pub const CRITICAL_PAYLOAD_LEN: usize = 84;
+/// Version-5 current-path payload length.
+pub const CURRENT_PATH_PAYLOAD_LEN: usize = 16;
 /// Version-1 control-detail payload length.
 pub const CONTROL_DETAIL_PAYLOAD_LEN: usize = 28;
 /// Version-1 status payload length.
@@ -65,7 +75,7 @@ pub const METADATA_PAYLOAD_MAX: usize = 192;
 /// exists for low-rate metadata frames and for 64-byte USB packet chunking.
 pub const FRAME_BUF_CAPACITY: usize = 256;
 
-/// Version-1 trace frame header fields excluding fixed magic/version values.
+/// Trace frame header fields excluding fixed magic/version values.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct FrameHeader {
     /// Frame type.
@@ -188,6 +198,22 @@ pub fn control_detail_due(
     control_tick % divisor == 0
 }
 
+/// Return true when the low-rate current-path sample is due for this tick.
+///
+/// The normal cadence is 100 Hz. Samples are emitted on `tick % 10 == 5` so
+/// the extra INTERIM subregister reads do not coincide with the 500 Hz
+/// control-detail cadence. Queue pressure decimates deterministically.
+pub fn current_path_due(control_tick: u32, queue_len: usize, queue_depth: usize) -> bool {
+    let divisor = if queue_depth > 0 && queue_len >= (queue_depth * 3) / 4 {
+        50
+    } else if queue_depth > 0 && queue_len >= queue_depth / 2 {
+        20
+    } else {
+        10
+    };
+    control_tick % divisor == 5
+}
+
 /// Critical 1 kHz sample.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct CriticalSample {
@@ -221,14 +247,33 @@ pub struct CriticalSample {
     pub last_klipper_command_service_tick: u64,
     /// Wrapping missed/deferred step counter.
     pub missed_or_deferred_step_counter: u32,
-    /// TMC torque/flux target register.
-    pub pid_torque_flux_target: u32,
-    /// TMC torque/flux actual register.
-    pub pid_torque_flux_actual: u32,
+    /// TMC clipped current-loop input target torque from INTERIM_ADDR 0.
+    pub interim_pidin_target_torque: u32,
+    /// TMC packed torque target/actual current monitor from INTERIM_ADDR 21.
+    pub interim_pid_torque_target_actual: u32,
     /// TMC interim FOC voltage request.
     pub interim_foc_uq_ud: u32,
     /// TMC interim limited FOC voltage output.
     pub interim_foc_uq_ud_limited: u32,
+    /// Cached software acceleration feedforward torque offset.
+    pub cached_accel_torque_offset: i32,
+    /// Runtime acceleration feedforward gain in permille.
+    pub accel_feedforward_gain_permille: u16,
+    /// Acceleration feedforward diagnostic flags.
+    pub accel_feedforward_flags: u8,
+}
+
+/// Low-rate current-path diagnostic sample.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct CurrentPathSample {
+    /// Sample/drop flags.
+    pub sample_flags: u8,
+    /// TMC interim FOC dq current monitor.
+    pub interim_foc_iq_id: u32,
+    /// TMC interim FOC phase-current monitor.
+    pub interim_foc_iwy_iux: u32,
+    /// TMC interim raw ADC current monitor.
+    pub interim_adc_i1_i0: u32,
 }
 
 /// Control-detail sample.
@@ -326,10 +371,25 @@ pub fn encode_critical_payload(sample: &CriticalSample, out: &mut [u8; CRITICAL_
     put_u64(out, 40, sample.last_served_step_tick);
     put_u64(out, 48, sample.last_klipper_command_service_tick);
     put_u32(out, 56, sample.missed_or_deferred_step_counter);
-    put_u32(out, 60, sample.pid_torque_flux_target);
-    put_u32(out, 64, sample.pid_torque_flux_actual);
+    put_u32(out, 60, sample.interim_pidin_target_torque);
+    put_u32(out, 64, sample.interim_pid_torque_target_actual);
     put_u32(out, 68, sample.interim_foc_uq_ud);
     put_u32(out, 72, sample.interim_foc_uq_ud_limited);
+    put_i32(out, 76, sample.cached_accel_torque_offset);
+    put_u16(out, 80, sample.accel_feedforward_gain_permille);
+    out[82] = sample.accel_feedforward_flags;
+}
+
+/// Encode a current-path payload.
+pub fn encode_current_path_payload(
+    sample: &CurrentPathSample,
+    out: &mut [u8; CURRENT_PATH_PAYLOAD_LEN],
+) {
+    *out = [0; CURRENT_PATH_PAYLOAD_LEN];
+    out[0] = sample.sample_flags;
+    put_u32(out, 4, sample.interim_foc_iq_id);
+    put_u32(out, 8, sample.interim_foc_iwy_iux);
+    put_u32(out, 12, sample.interim_adc_i1_i0);
 }
 
 /// Encode a control-detail payload.
@@ -431,10 +491,13 @@ mod tests {
             last_served_step_tick: 12,
             last_klipper_command_service_tick: 13,
             missed_or_deferred_step_counter: 14,
-            pid_torque_flux_target: 15,
-            pid_torque_flux_actual: 16,
+            interim_pidin_target_torque: 15,
+            interim_pid_torque_target_actual: 16,
             interim_foc_uq_ud: 17,
             interim_foc_uq_ud_limited: 18,
+            cached_accel_torque_offset: -19,
+            accel_feedforward_gain_permille: 2000,
+            accel_feedforward_flags: 0x03,
         };
 
         let mut payload = [0xAA; CRITICAL_PAYLOAD_LEN];
@@ -446,17 +509,44 @@ mod tests {
         assert_eq!(&payload[30..32], &9u16.to_le_bytes());
         assert_eq!(&payload[40..48], &12u64.to_le_bytes());
         assert_eq!(&payload[48..56], &13u64.to_le_bytes());
-        assert_eq!(&payload[76..84], &[0; 8]);
+        assert_eq!(&payload[60..64], &15u32.to_le_bytes());
+        assert_eq!(&payload[64..68], &16u32.to_le_bytes());
+        assert_eq!(&payload[76..80], &(-19i32).to_le_bytes());
+        assert_eq!(&payload[80..82], &2000u16.to_le_bytes());
+        assert_eq!(&payload[82..83], &[0x03]);
+        assert_eq!(&payload[83..84], &[0]);
     }
 
     #[test]
     fn fixed_payload_lengths_match_spec() {
+        assert_eq!(PROTOCOL_VERSION, 5);
         assert_eq!(CRITICAL_PAYLOAD_LEN, 84);
+        assert_eq!(CURRENT_PATH_PAYLOAD_LEN, 16);
         assert_eq!(CONTROL_DETAIL_PAYLOAD_LEN, 28);
         assert_eq!(STATUS_PAYLOAD_LEN, 40);
         assert_eq!(EVENT_PAYLOAD_LEN, 24);
         assert!(HEADER_LEN + CRITICAL_PAYLOAD_LEN <= CRITICAL_FRAME_BUDGET);
+        assert!(HEADER_LEN + CURRENT_PATH_PAYLOAD_LEN <= CONTROL_DETAIL_FRAME_BUDGET);
         assert!(HEADER_LEN + METADATA_PAYLOAD_MAX <= FRAME_BUF_CAPACITY);
+    }
+
+    #[test]
+    fn current_path_payload_has_exact_offsets() {
+        let sample = CurrentPathSample {
+            sample_flags: 0x02,
+            interim_foc_iq_id: 20,
+            interim_foc_iwy_iux: 21,
+            interim_adc_i1_i0: 22,
+        };
+
+        let mut payload = [0xAA; CURRENT_PATH_PAYLOAD_LEN];
+        encode_current_path_payload(&sample, &mut payload);
+
+        assert_eq!(&payload[0..1], &[0x02]);
+        assert_eq!(&payload[1..4], &[0; 3]);
+        assert_eq!(&payload[4..8], &20u32.to_le_bytes());
+        assert_eq!(&payload[8..12], &21u32.to_le_bytes());
+        assert_eq!(&payload[12..16], &22u32.to_le_bytes());
     }
 
     #[test]
@@ -498,5 +588,17 @@ mod tests {
         assert!(control_detail_due(4, 16, 32, false));
         assert!(!control_detail_due(4, 24, 32, false));
         assert!(control_detail_due(10, 24, 32, false));
+    }
+
+    #[test]
+    fn current_path_due_uses_odd_ticks_and_decimates_under_pressure() {
+        assert!(!current_path_due(4, 0, 32));
+        assert!(current_path_due(5, 0, 32));
+        assert!(!current_path_due(10, 0, 32));
+        assert!(current_path_due(15, 0, 32));
+        assert!(!current_path_due(15, 16, 32));
+        assert!(current_path_due(25, 16, 32));
+        assert!(!current_path_due(25, 24, 32));
+        assert!(current_path_due(55, 24, 32));
     }
 }
