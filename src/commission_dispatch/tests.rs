@@ -549,6 +549,8 @@ fn sample_commission_result() -> crate::commissioning::types::CommissionResult {
     CommissionResult {
         inner: InnerResult {
             status: CommissionStatus::Accepted,
+            r_int: 1706,
+            l_int: 1245,
             r_mohm: 1700,
             l_uh: 3100,
             flux_p: 100,
@@ -621,13 +623,21 @@ fn commission_done_finalize_path() {
         assert!(writes.contains(&foci_tmc4671::registers::PID_TORQUE_FLUX_LIMITS.addr()));
 
         match outcome {
-            CommissionOutcome::Terminal { actions, .. } => {
+            CommissionOutcome::Terminal {
+                reply:
+                    ReplyPayload::CommissionResult {
+                        result: reply_result,
+                        ..
+                    },
+                actions,
+            } => {
+                assert_eq!(reply_result.inner.r_int, 1706);
+                assert_eq!(reply_result.inner.l_int, 1245);
                 assert!(actions.stop_trace);
                 assert_eq!(actions.stepper, StepperPostAction::ArmZeroPosition);
             }
-            _ => panic!("expected Terminal"),
+            _ => panic!("expected CommissionResult"),
         }
-
         // Cleanup
         tmc_state().motor_armed.store(false, Ordering::Relaxed);
         stepper_state().position.store(0, Ordering::Relaxed);

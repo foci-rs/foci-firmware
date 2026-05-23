@@ -454,6 +454,8 @@ pub(crate) async fn step_closed_loop_entry<B: CommissioningBackend>(
                 InnerSequence::Commission => {
                     let inner = inner_result.take().unwrap_or(InnerResult {
                         status: CommissionStatus::Accepted,
+                        r_int: 0,
+                        l_int: 0,
                         r_mohm: 0,
                         l_uh: 0,
                         flux_p: 0,

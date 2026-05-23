@@ -173,6 +173,10 @@ pub enum StepResult {
 pub struct InnerResult {
     /// Overall status.
     pub status: CommissionStatus,
+    /// Resistance in scaled internal ADC/DAC units.
+    pub r_int: u32,
+    /// Inductance in internal micro-units.
+    pub l_int: u32,
     /// Resistance in milliohms (for host display/persistence).
     pub r_mohm: u32,
     /// Inductance in microhenries (for host display/persistence).

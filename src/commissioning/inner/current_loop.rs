@@ -559,6 +559,8 @@ pub(crate) async fn step_current_validate<B: CommissioningBackend>(
 
             let result = InnerResult {
                 status: data.final_status,
+                r_int: data.model.r_int,
+                l_int: data.model.l_int,
                 r_mohm: data.model.r_mohm,
                 l_uh: data.model.l_uh,
                 flux_p: data.gains.flux_p,

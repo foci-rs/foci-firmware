@@ -122,6 +122,10 @@ pub struct FociCommissionResult {
     pub oid: u8,
     /// Status code (0 = success, non-zero = error code).
     pub status: u8,
+    /// Resistance in scaled internal ADC/DAC units.
+    pub r_int: u32,
+    /// Inductance in internal micro-units.
+    pub l_int: u32,
     /// Phase resistance in milliohms.
     pub r_mohm: u32,
     /// Phase inductance in microhenries.
