@@ -9,6 +9,12 @@ use embassy_sync::signal::Signal;
 
 /// Maximum number of board-local TMC4671 channels supported by shared firmware.
 pub const MAX_TMC_CHANNELS: usize = 2;
+/// Conservative operational PIDOUT_UQ_UD_LIMITS value used after closed-loop entry.
+pub const DEFAULT_OPERATIONAL_PIDOUT_UQ_UD_LIMIT: u32 = 16_000;
+/// Lowest accepted operational PIDOUT_UQ_UD_LIMITS value.
+pub const MIN_OPERATIONAL_PIDOUT_UQ_UD_LIMIT: u32 = 1_024;
+/// Highest accepted diagnostic PIDOUT_UQ_UD_LIMITS value.
+pub const MAX_OPERATIONAL_PIDOUT_UQ_UD_LIMIT: u32 = 32_767;
 
 /// Runtime state for one board-local TMC4671 channel.
 pub struct TmcChannelState {
@@ -30,12 +36,18 @@ pub struct TmcChannelState {
     pub velocity_feedforward: AtomicBool,
     /// Runtime multiplier for the computed velocity feedforward offset.
     pub velocity_feedforward_multiplier: AtomicU16,
+    /// Acceleration feedforward enable flag.
+    pub accel_feedforward: AtomicBool,
+    /// Runtime gain in permille for the computed acceleration torque offset.
+    pub accel_feedforward_gain_permille: AtomicU16,
     /// One-tick feedforward reset request after direction changes.
     pub feedforward_reset: AtomicBool,
     /// PID error-sum clear request after motion drains.
     pub pid_error_sums_clear: AtomicBool,
     /// Configurable PID velocity limit.
     pub velocity_limit_cfg: AtomicU32,
+    /// Configurable operational PIDOUT_UQ_UD_LIMITS value.
+    pub voltage_limit_cfg: AtomicU32,
     /// Whether the encoder direction is reversed.
     pub encoder_reversed: AtomicBool,
     /// Guard for single-in-flight commissioning on this channel.
@@ -65,9 +77,12 @@ impl TmcChannelState {
             flux_filter_hz: AtomicU16::new(0),
             velocity_feedforward: AtomicBool::new(false),
             velocity_feedforward_multiplier: AtomicU16::new(1),
+            accel_feedforward: AtomicBool::new(false),
+            accel_feedforward_gain_permille: AtomicU16::new(1000),
             feedforward_reset: AtomicBool::new(false),
             pid_error_sums_clear: AtomicBool::new(false),
             velocity_limit_cfg: AtomicU32::new(500_000),
+            voltage_limit_cfg: AtomicU32::new(DEFAULT_OPERATIONAL_PIDOUT_UQ_UD_LIMIT),
             encoder_reversed: AtomicBool::new(false),
             commission_in_flight: AtomicBool::new(false),
             auto_calibrate_on_enable_allowed: AtomicBool::new(false),
@@ -91,9 +106,13 @@ impl TmcChannelState {
         self.flux_filter_hz.store(0, Relaxed);
         self.velocity_feedforward.store(false, Relaxed);
         self.velocity_feedforward_multiplier.store(1, Relaxed);
+        self.accel_feedforward.store(false, Relaxed);
+        self.accel_feedforward_gain_permille.store(1000, Relaxed);
         self.feedforward_reset.store(false, Relaxed);
         self.pid_error_sums_clear.store(false, Relaxed);
         self.velocity_limit_cfg.store(500_000, Relaxed);
+        self.voltage_limit_cfg
+            .store(DEFAULT_OPERATIONAL_PIDOUT_UQ_UD_LIMIT, Relaxed);
         self.encoder_reversed.store(false, Relaxed);
         self.commission_in_flight.store(false, Relaxed);
         self.auto_calibrate_on_enable_allowed.store(false, Relaxed);

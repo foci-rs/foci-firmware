@@ -17,6 +17,8 @@ pub struct TmcConfig {
     pub bbm_l: u8,
     /// DSADC decimation parameter (both ADC groups).
     pub dsadc_mdec: u16,
+    /// ADC_I_SELECT register value for phase-current routing.
+    pub adc_i_select: u32,
     /// Excitation voltage for R/L measurement (PIDOUT units).
     pub excitation_voltage: u16,
     /// Number of di/dt toggle cycles per coil for L measurement.
@@ -56,9 +58,9 @@ impl TmcConfig {
 impl TmcConfig {
     /// Minimal valid configuration for host-side unit tests.
     ///
-    /// Uses OpenFFBoard v1.2.4 hardware constants (25 MHz clock, 4 kHz PWM)
-    /// so computed values match the reference board. Tests that need different
-    /// parameters should construct `TmcConfig` directly.
+    /// Uses representative 25 MHz TMC clock and 25 kHz PWM parameters.
+    /// Tests that need different parameters should construct `TmcConfig`
+    /// directly.
     pub fn default_for_test() -> Self {
         Self {
             pwm_maxcnt: 3999,
@@ -66,6 +68,7 @@ impl TmcConfig {
             bbm_h: 10,
             bbm_l: 10,
             dsadc_mdec: 331,
+            adc_i_select: 0x1800_0100,
             excitation_voltage: 512,
             didt_cycles: 5000,
             bandwidth_hz: 50.0,
@@ -77,13 +80,14 @@ impl TmcConfig {
 mod tests {
     use super::*;
 
-    fn openffboard_config() -> TmcConfig {
+    fn test_config() -> TmcConfig {
         TmcConfig {
             pwm_maxcnt: 3999,
             tmc_clock_hz: 25_000_000,
             bbm_h: 10,
             bbm_l: 10,
             dsadc_mdec: 331,
+            adc_i_select: 0x1800_0100,
             excitation_voltage: 512,
             didt_cycles: 5000,
             bandwidth_hz: 50.0,
@@ -92,25 +96,25 @@ mod tests {
 
     #[test]
     fn pwm_freq_hz_datasheet_formula() {
-        let cfg = openffboard_config();
+        let cfg = test_config();
         assert_eq!(cfg.pwm_freq_hz(), 25_000);
     }
 
     #[test]
     fn pwm_period_ns_matches_freq() {
-        let cfg = openffboard_config();
+        let cfg = test_config();
         assert_eq!(cfg.pwm_period_ns(), 40_000);
     }
 
     #[test]
     fn bbm_register_packs_correctly() {
-        let cfg = openffboard_config();
+        let cfg = test_config();
         assert_eq!(cfg.bbm_register(), (10 << 8) | 10);
     }
 
     #[test]
     fn dsadc_mdec_register_packs_correctly() {
-        let cfg = openffboard_config();
+        let cfg = test_config();
         assert_eq!(cfg.dsadc_mdec_register(), (331 << 16) | 331);
     }
 
@@ -122,6 +126,7 @@ mod tests {
             bbm_h: 10,
             bbm_l: 10,
             dsadc_mdec: 331,
+            adc_i_select: 0x1800_0100,
             excitation_voltage: 512,
             didt_cycles: 5000,
             bandwidth_hz: 50.0,
@@ -137,6 +142,7 @@ mod tests {
             bbm_h: 10,
             bbm_l: 10,
             dsadc_mdec: 331,
+            adc_i_select: 0x1800_0100,
             excitation_voltage: 512,
             didt_cycles: 5000,
             bandwidth_hz: 50.0,

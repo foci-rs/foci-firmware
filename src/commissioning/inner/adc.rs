@@ -92,7 +92,7 @@ pub(crate) async fn step_adc_calibrate<B: CommissioningBackend>(
                 .write_register(DSADC_MDEC_B_MDEC_A, backend.dsadc_mdec_register())
                 .await;
             let _ = backend
-                .write_register(ADC_I_SELECT, (1 << 28) | (1 << 8))
+                .write_register(ADC_I_SELECT, backend.tmc_config().adc_i_select)
                 .await;
 
             // Motor type: 2-phase stepper, 50 pole pairs.
@@ -214,5 +214,42 @@ pub(crate) async fn step_adc_calibrate<B: CommissioningBackend>(
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::commission_dispatch::test_support::{MockBackend, SpiOp};
+    use crate::commissioning::types::StepResult;
+
+    #[test]
+    fn setup_writes_board_configured_adc_i_select() {
+        pollster::block_on(async {
+            let mut backend = MockBackend::new();
+            backend.tmc_config.adc_i_select = 0x1234_5678;
+            let mut phase = InnerPhase::AdcCalibrate(AdcCalState::Setup);
+            let mut adc_cal = None;
+            let mut selftest_results = crate::selftest::SelftestResults::default();
+
+            let result = step_adc_calibrate(
+                &mut phase,
+                InnerSequence::Calibrate,
+                &mut adc_cal,
+                &mut selftest_results,
+                &mut backend,
+            )
+            .await;
+
+            assert!(matches!(result, StepResult::Continue));
+            assert!(
+                backend.spi_log.iter().any(|op| matches!(
+                    op,
+                    SpiOp::Write(addr, 0x1234_5678)
+                        if *addr == foci_tmc4671::registers::ADC_I_SELECT.addr()
+                )),
+                "ADC setup must use the board-provided ADC_I_SELECT value"
+            );
+        });
     }
 }

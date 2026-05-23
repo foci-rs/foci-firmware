@@ -131,8 +131,9 @@ pub(crate) async fn step_closed_loop_entry<B: CommissioningBackend>(
 
             // 5. Raise voltage limit for actual operation.
             // ADC cal sets it to 1024 as a safety measure.
+            let voltage_limit = backend.operational_voltage_limit();
             if backend
-                .write_register(PIDOUT_UQ_UD_LIMITS, 16000)
+                .write_register(PIDOUT_UQ_UD_LIMITS, voltage_limit)
                 .await
                 .is_err()
             {
@@ -140,7 +141,7 @@ pub(crate) async fn step_closed_loop_entry<B: CommissioningBackend>(
             }
             let voltage_limit_readback = backend.read_register(PIDOUT_UQ_UD_LIMITS).await;
             match voltage_limit_readback {
-                Ok(16000) => {}
+                Ok(value) if value == voltage_limit => {}
                 _ => {
                     defmt::error!("closed-loop: PIDOUT_UQ_UD_LIMITS readback mismatch");
                     return super::fail_inner(phase, CommissionError::Spi);
@@ -490,7 +491,9 @@ pub(crate) async fn step_closed_loop_entry<B: CommissioningBackend>(
 mod tests {
     use super::*;
     use crate::commission_dispatch::test_support::{MockBackend, SpiOp};
-    use foci_tmc4671::registers::{POSITION_SELECTION, STEP_WIDTH, VELOCITY_SELECTION};
+    use foci_tmc4671::registers::{
+        PIDOUT_UQ_UD_LIMITS, POSITION_SELECTION, STEP_WIDTH, VELOCITY_SELECTION,
+    };
 
     #[test]
     fn write_position_config_programs_selection_registers() {
@@ -543,6 +546,46 @@ mod tests {
             assert!(backend.spi_log.iter().any(|op| matches!(
                 op,
                 SpiOp::Write(addr, 16) if *addr == STEP_WIDTH.addr()
+            )));
+        });
+    }
+
+    #[test]
+    fn write_limits_uses_configured_operational_voltage_limit() {
+        pollster::block_on(async {
+            let mut phase = InnerPhase::ClosedLoopEntry {
+                state: ClosedLoopEntryState::WriteLimits,
+                flux_p: 0,
+                flux_i: 0,
+                torque_p: 0,
+                torque_i: 0,
+                velocity_p: 0,
+                velocity_i: 0,
+                position_p: 0,
+                position_i: 0,
+                velocity_limit: 500_000,
+                velocity_filter_hz: 0,
+                torque_filter_hz: 0,
+                position_filter_hz: 0,
+                flux_filter_hz: 0,
+                inner_result: None,
+            };
+            let mut adc_cal = None;
+            let mut backend = MockBackend::new();
+            backend.operational_voltage_limit_value = 20_000;
+
+            let result = step_closed_loop_entry(
+                &mut phase,
+                InnerSequence::Calibrate,
+                &mut adc_cal,
+                &mut backend,
+            )
+            .await;
+
+            assert!(matches!(result, StepResult::Continue));
+            assert!(backend.spi_log.iter().any(|op| matches!(
+                op,
+                SpiOp::Write(addr, 20_000) if *addr == PIDOUT_UQ_UD_LIMITS.addr()
             )));
         });
     }

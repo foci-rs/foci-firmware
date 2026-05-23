@@ -54,8 +54,9 @@ ankyra::ankyra_provider! {
         crate::ankyra::handlers::spi::spi_send,
         crate::ankyra::handlers::spi::spi_set_bus,
         crate::ankyra::handlers::spi::spi_transfer,
-        // TMC plain (12)
+        // TMC plain (14)
         crate::ankyra::handlers::tmc::tmc_set_auto_calibrate_on_enable,
+        crate::ankyra::handlers::tmc::tmc_set_accel_feedforward,
         crate::ankyra::handlers::tmc::tmc_set_current,
         crate::ankyra::handlers::tmc::tmc_set_encoder,
         crate::ankyra::handlers::tmc::tmc_set_encoder_dir,
@@ -67,6 +68,7 @@ ankyra::ankyra_provider! {
         crate::ankyra::handlers::tmc::tmc_set_velocity_feedforward,
         crate::ankyra::handlers::tmc::tmc_set_velocity_filter,
         crate::ankyra::handlers::tmc::tmc_set_velocity_limit,
+        crate::ankyra::handlers::tmc::tmc_set_voltage_limit,
         // TMC dev-gated (4)
         crate::ankyra::handlers::tmc::tmc_init,
         crate::ankyra::handlers::tmc::tmc_test_spin,
@@ -161,8 +163,9 @@ ankyra::ankyra_provider! {
         crate::ankyra::handlers::spi::spi_send,
         crate::ankyra::handlers::spi::spi_set_bus,
         crate::ankyra::handlers::spi::spi_transfer,
-        // TMC plain (12) — dev-gated entries omitted when feature is off
+        // TMC plain (14) — dev-gated entries omitted when feature is off
         crate::ankyra::handlers::tmc::tmc_set_auto_calibrate_on_enable,
+        crate::ankyra::handlers::tmc::tmc_set_accel_feedforward,
         crate::ankyra::handlers::tmc::tmc_set_current,
         crate::ankyra::handlers::tmc::tmc_set_encoder,
         crate::ankyra::handlers::tmc::tmc_set_encoder_dir,
@@ -174,6 +177,7 @@ ankyra::ankyra_provider! {
         crate::ankyra::handlers::tmc::tmc_set_velocity_feedforward,
         crate::ankyra::handlers::tmc::tmc_set_velocity_filter,
         crate::ankyra::handlers::tmc::tmc_set_velocity_limit,
+        crate::ankyra::handlers::tmc::tmc_set_voltage_limit,
         // FOCI (8 — foci_tune stays board-local)
         crate::ankyra::handlers::foci::foci_calibrate,
         crate::ankyra::handlers::foci::foci_commission,

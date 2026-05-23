@@ -4,6 +4,7 @@
 //! `tmc_set_position_filter`, `tmc_set_position_gains`,
 //! `tmc_set_torque_filter`, `tmc_set_velocity_feedforward`,
 //! `tmc_set_velocity_filter`, `tmc_set_velocity_limit`,
+//! `tmc_set_voltage_limit`,
 //! `tmc_set_auto_calibrate_on_enable`, `tmc_test_spin`.
 //!
 //! Lifted from `boards/openffboard-fw/src/ankyra/handlers/tmc.rs` in
@@ -245,6 +246,30 @@ pub fn tmc_set_velocity_feedforward(
     );
 }
 
+/// Enable or disable acceleration feedforward from a live diagnostic command.
+#[klipper_command]
+pub fn tmc_set_accel_feedforward(
+    ctx: &mut dyn ShutdownRecovery,
+    oid: u8,
+    enable: u8,
+    gain_permille: u16,
+) {
+    let Some((_channel, state)) = foci_tmc_state_or_shutdown(ctx, oid) else {
+        return;
+    };
+    state
+        .accel_feedforward
+        .store(enable != 0, Ordering::Relaxed);
+    state
+        .accel_feedforward_gain_permille
+        .store(gain_permille, Ordering::Relaxed);
+    defmt::info!(
+        "Acceleration feedforward: {} gain_permille={}",
+        enable != 0,
+        gain_permille
+    );
+}
+
 /// Set PID velocity limit from host config.
 ///
 /// Caps position PID output to prevent integrator-driven velocity runaway.
@@ -257,6 +282,35 @@ pub fn tmc_set_velocity_limit(ctx: &mut dyn ShutdownRecovery, oid: u8, limit: u3
     };
     state.velocity_limit_cfg.store(limit, Ordering::Relaxed);
     defmt::info!("Velocity limit: {}", limit);
+}
+
+/// Set PIDOUT_UQ_UD_LIMITS from a live diagnostic command.
+#[klipper_command]
+pub fn tmc_set_voltage_limit(ctx: &mut dyn TmcWriteHost, oid: u8, voltage_limit: u32) {
+    let Some((channel, state)) = foci_tmc_state_or_shutdown(ctx, oid) else {
+        return;
+    };
+    if !(crate::state::tmc::MIN_OPERATIONAL_PIDOUT_UQ_UD_LIMIT
+        ..=crate::state::tmc::MAX_OPERATIONAL_PIDOUT_UQ_UD_LIMIT)
+        .contains(&voltage_limit)
+    {
+        if ctx.enter_shutdown() {
+            let clock = ctx.now();
+            ctx.send_shutdown(ShutdownReason::TmcRequestValidationFailed, clock);
+        }
+        return;
+    }
+    state
+        .voltage_limit_cfg
+        .store(voltage_limit, Ordering::Relaxed);
+    if ctx
+        .enqueue_request(crate::tmc::tmc_set_voltage_limit(channel, voltage_limit))
+        .is_err()
+        && ctx.enter_shutdown()
+    {
+        let clock = ctx.now();
+        ctx.send_shutdown(ShutdownReason::TmcSetVoltageLimitLostQueueFull, clock);
+    }
 }
 
 /// Set whether a raw enable may trigger firmware-side auto-calibration.
@@ -452,6 +506,30 @@ mod tests {
                 position_i: 3,
                 velocity_p: 768,
                 velocity_i: 4,
+            }
+        ));
+        assert_eq!(ctx.last_shutdown, None);
+    }
+
+    #[test]
+    fn tmc_set_voltage_limit_updates_saved_state_before_worker_runs() {
+        use core::sync::atomic::Ordering::Relaxed;
+
+        let mut ctx = MockCtx::new(2);
+        let mut sender = ();
+        config_stepper_channel(ctx.state(), 10, 1).unwrap();
+        let tmc_state = crate::state::tmc::tmc_channel(1).unwrap();
+        tmc_state.voltage_limit_cfg.store(16_000, Relaxed);
+
+        tmc_set_voltage_limit(&mut ctx, &mut sender, 10, 20_000);
+
+        assert_eq!(tmc_state.voltage_limit_cfg.load(Relaxed), 20_000);
+        let req = ctx.last_request.borrow().clone().unwrap();
+        assert_eq!(req.channel, 1);
+        assert!(matches!(
+            req.kind,
+            crate::tmc::TmcRequestKind::SetVoltageLimit {
+                voltage_limit: 20_000,
             }
         ));
         assert_eq!(ctx.last_shutdown, None);

@@ -520,7 +520,7 @@ mod tests {
             position_p: 640,
             position_i: 0,
             velocity_limit: 500_000,
-            voltage_limit: 16000,
+            voltage_limit: crate::state::tmc::DEFAULT_OPERATIONAL_PIDOUT_UQ_UD_LIMIT,
             velocity_filter_hz: 0,
             torque_filter_hz: 0,
             position_filter_hz: 0,

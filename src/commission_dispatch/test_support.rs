@@ -54,6 +54,8 @@ pub struct MockBackend {
     pub step_width_value: u32,
     /// Value returned by `operational_velocity_limit()`.
     pub operational_velocity_limit_value: u32,
+    /// Value returned by `operational_voltage_limit()`.
+    pub operational_voltage_limit_value: u32,
     /// Value returned by `tmc_config()`.
     pub tmc_config: TmcConfig,
     /// Value returned by `read_encoder_count()`.
@@ -89,6 +91,8 @@ impl MockBackend {
             excitation_voltage_value: 1024,
             step_width_value: 0,
             operational_velocity_limit_value: 500_000,
+            operational_voltage_limit_value:
+                crate::state::tmc::DEFAULT_OPERATIONAL_PIDOUT_UQ_UD_LIMIT,
             tmc_config: TmcConfig::default_for_test(),
             encoder_count_value: 0,
             read_position_actual_sequence: Vec::new(),
@@ -190,6 +194,10 @@ impl CommissioningBackend for MockBackend {
 
     fn operational_velocity_limit(&self) -> u32 {
         self.operational_velocity_limit_value
+    }
+
+    fn operational_voltage_limit(&self) -> u32 {
+        self.operational_voltage_limit_value
     }
 
     async fn delay_us(&mut self, us: u32) {

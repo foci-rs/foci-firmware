@@ -15,6 +15,8 @@ pub struct StepperChannelState {
     pub position: AtomicI32,
     /// Current step interval in board timer ticks.
     pub interval: AtomicU32,
+    /// Current segment interval delta in board timer ticks per step.
+    pub interval_add: AtomicI32,
     /// Current step direction.
     pub direction: AtomicBool,
     /// P1-readable mirror of board-local step timer activity.
@@ -28,6 +30,7 @@ impl StepperChannelState {
             position_target: AtomicI32::new(0),
             position: AtomicI32::new(0),
             interval: AtomicU32::new(0),
+            interval_add: AtomicI32::new(0),
             direction: AtomicBool::new(true),
             timer_active_mirror: AtomicBool::new(false),
         }
@@ -40,6 +43,7 @@ impl StepperChannelState {
         self.position_target.store(0, Relaxed);
         self.position.store(0, Relaxed);
         self.interval.store(0, Relaxed);
+        self.interval_add.store(0, Relaxed);
         self.direction.store(true, Relaxed);
         self.timer_active_mirror.store(false, Relaxed);
     }

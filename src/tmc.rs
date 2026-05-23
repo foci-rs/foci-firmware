@@ -96,6 +96,14 @@ pub enum TmcRequestKind {
     },
     /// Enable or disable velocity feedforward in the 1ms tick loop.
     SetVelocityFeedforward { enable: bool, multiplier: u16 },
+    /// Enable or disable acceleration feedforward in the 1ms tick loop.
+    SetAccelFeedforward {
+        enable: bool,
+        /// Gain in permille applied to the computed acceleration torque offset.
+        gain_permille: u16,
+    },
+    /// Set operational PIDOUT_UQ_UD_LIMITS for authority diagnostics.
+    SetVoltageLimit { voltage_limit: u32 },
     /// Start the per-tick trace buffer with the selected preset.
     TraceStart { oid: u8, preset: u8 },
     /// Stop the per-tick trace buffer, preserving samples for fetch.
@@ -272,6 +280,22 @@ pub fn tmc_set_velocity_feedforward(channel: u8, enable: bool, multiplier: u16) 
     )
 }
 
+/// Build a `SetAccelFeedforward` request.
+pub fn tmc_set_accel_feedforward(channel: u8, enable: bool, gain_permille: u16) -> TmcRequest {
+    TmcRequest::new(
+        channel,
+        TmcRequestKind::SetAccelFeedforward {
+            enable,
+            gain_permille,
+        },
+    )
+}
+
+/// Build a `SetVoltageLimit` request.
+pub fn tmc_set_voltage_limit(channel: u8, voltage_limit: u32) -> TmcRequest {
+    TmcRequest::new(channel, TmcRequestKind::SetVoltageLimit { voltage_limit })
+}
+
 /// Build a `SetEnable` request.
 pub fn tmc_set_enable(channel: u8, enable: bool) -> TmcRequest {
     TmcRequest::new(channel, TmcRequestKind::SetEnable(enable))
@@ -380,6 +404,63 @@ pub fn compute_velocity_offset_scaled(
     let magnitude = (scale_factor / step_interval) as u64 * multiplier as u64;
     let magnitude = magnitude.min(i32::MAX as u64) as i32;
     if dir_high { -magnitude } else { magnitude }
+}
+
+/// Compute the diagnostic acceleration feedforward torque offset.
+///
+/// The input `interval_add` is Klipper's `queue_step add`: the interval change
+/// in TIM5 ticks per step. A negative add means the step interval is shrinking,
+/// so velocity is increasing along the current TMC STEP/DIR velocity direction.
+///
+/// `gain_permille` is a live diagnostic gain. `1000` applies the raw
+/// acceleration estimate, `500` applies half, and `0` disables the offset.
+/// The result is clamped to `torque_limit` and is intended for the torque field
+/// of `PID_TORQUE_FLUX_OFFSET`.
+pub fn compute_accel_torque_offset(
+    scale_factor: u32,
+    clock_freq: u32,
+    step_interval: u32,
+    interval_add: i16,
+    dir_high: bool,
+    gain_permille: u16,
+    torque_limit: u32,
+) -> i16 {
+    if scale_factor == 0
+        || clock_freq == 0
+        || step_interval == 0
+        || interval_add == 0
+        || gain_permille == 0
+        || torque_limit == 0
+    {
+        return 0;
+    }
+
+    let interval = step_interval as u128;
+    let denominator = interval
+        .saturating_mul(interval)
+        .saturating_mul(interval)
+        .saturating_mul(1000);
+    if denominator == 0 {
+        return 0;
+    }
+
+    let numerator = interval_add.unsigned_abs() as u128
+        * scale_factor as u128
+        * clock_freq as u128
+        * gain_permille as u128;
+    let current_limit = torque_limit.min(i16::MAX as u32) as u128;
+    let magnitude = (numerator / denominator).min(current_limit) as i16;
+    if magnitude == 0 {
+        return 0;
+    }
+
+    let accel_sign = if interval_add < 0 { 1 } else { -1 };
+    let direction_sign = if dir_high { -1 } else { 1 };
+    if accel_sign * direction_sign < 0 {
+        -magnitude
+    } else {
+        magnitude
+    }
 }
 
 /// Build a `Write` request (dev-only).
@@ -592,6 +673,33 @@ mod tests {
     }
 
     #[test]
+    fn tmc_set_accel_feedforward_builds_request() {
+        assert_eq!(
+            tmc_set_accel_feedforward(0, true, 1000),
+            TmcRequest::new(
+                0,
+                TmcRequestKind::SetAccelFeedforward {
+                    enable: true,
+                    gain_permille: 1000,
+                }
+            )
+        );
+    }
+
+    #[test]
+    fn tmc_set_voltage_limit_builds_request() {
+        assert_eq!(
+            tmc_set_voltage_limit(0, 20_000),
+            TmcRequest::new(
+                0,
+                TmcRequestKind::SetVoltageLimit {
+                    voltage_limit: 20_000,
+                },
+            )
+        );
+    }
+
+    #[test]
     fn auto_calibrate_on_enable_policy_can_be_toggled() {
         set_auto_calibrate_on_enable_allowed(0, false);
         assert!(!auto_calibrate_on_enable_allowed(0));
@@ -714,5 +822,47 @@ mod tests {
 
         let offset = compute_velocity_offset_scaled(u32::MAX, 1, true, u16::MAX);
         assert_eq!(offset, i32::MIN + 1);
+    }
+
+    #[test]
+    fn acceleration_feedforward_zero_cases_disable_offset() {
+        let scale = compute_velocity_scale_factor(16, 84_000_000, 25_000);
+        assert_eq!(
+            compute_accel_torque_offset(scale, 84_000_000, 2800, 0, false, 1000, 2816),
+            0
+        );
+        assert_eq!(
+            compute_accel_torque_offset(scale, 84_000_000, 0, -9, false, 1000, 2816),
+            0
+        );
+        assert_eq!(
+            compute_accel_torque_offset(scale, 84_000_000, 2800, -9, false, 0, 2816),
+            0
+        );
+    }
+
+    #[test]
+    fn acceleration_feedforward_uses_add_direction_and_gain() {
+        let scale = compute_velocity_scale_factor(16, 84_000_000, 25_000);
+
+        let forward = compute_accel_torque_offset(scale, 84_000_000, 2800, -9, false, 1000, 2816);
+        assert_eq!(forward, 1851);
+
+        let half = compute_accel_torque_offset(scale, 84_000_000, 2800, -9, false, 500, 2816);
+        assert_eq!(half, 925);
+
+        let reversed_dir =
+            compute_accel_torque_offset(scale, 84_000_000, 2800, -9, true, 1000, 2816);
+        assert_eq!(reversed_dir, -1851);
+
+        let decel = compute_accel_torque_offset(scale, 84_000_000, 2800, 9, false, 1000, 2816);
+        assert_eq!(decel, -1851);
+    }
+
+    #[test]
+    fn acceleration_feedforward_clamps_to_current_limit() {
+        let scale = compute_velocity_scale_factor(16, 84_000_000, 25_000);
+        let offset = compute_accel_torque_offset(scale, 84_000_000, 2800, -90, false, 1000, 1200);
+        assert_eq!(offset, 1200);
     }
 }

@@ -279,6 +279,47 @@ where
     Ok(())
 }
 
+/// Apply a new operational PIDOUT_UQ_UD_LIMITS value.
+///
+/// This is a live bringup diagnostic for current-loop voltage authority. It
+/// does not energize the motor and does not change current limits; it only
+/// adjusts the q/d voltage-output clamp used by the TMC4671 PID cascade.
+///
+/// # Errors
+///
+/// Returns `Err(())` if `voltage_limit` is outside the accepted diagnostic
+/// window or if the SPI write fails.
+pub async fn apply_set_voltage_limit<B>(
+    tmc: &mut Tmc4671Spi<B>,
+    tmc_state: &TmcChannelState,
+    voltage_limit: u32,
+) -> Result<(), ()>
+where
+    B: SpiDevice<u8>,
+{
+    use core::sync::atomic::Ordering::Relaxed;
+    use foci_tmc4671::registers::*;
+
+    if !(crate::state::tmc::MIN_OPERATIONAL_PIDOUT_UQ_UD_LIMIT
+        ..=crate::state::tmc::MAX_OPERATIONAL_PIDOUT_UQ_UD_LIMIT)
+        .contains(&voltage_limit)
+    {
+        defmt::error!("Invalid PIDOUT_UQ_UD_LIMITS: {}", voltage_limit);
+        return Err(());
+    }
+    if tmc
+        .write_register(PIDOUT_UQ_UD_LIMITS, voltage_limit)
+        .await
+        .is_err()
+    {
+        defmt::error!("TMC4671 SPI write failed: PIDOUT_UQ_UD_LIMITS");
+        return Err(());
+    }
+    tmc_state.voltage_limit_cfg.store(voltage_limit, Relaxed);
+    defmt::info!("TMC4671 voltage limit: {}", voltage_limit);
+    Ok(())
+}
+
 /// Apply a new encoder pulses-per-revolution value to the TMC4671.
 ///
 /// Validates that `ppr` is non-zero, multiplies by 4 to obtain the
@@ -852,6 +893,42 @@ mod tests {
             );
 
             tmc_state().current_limit_reg.store(0, Ordering::Relaxed);
+        });
+    }
+
+    #[test]
+    fn apply_set_voltage_limit_writes_pidout_limit_register() {
+        pollster::block_on(async {
+            use core::sync::atomic::Ordering;
+            use foci_tmc4671::registers::PIDOUT_UQ_UD_LIMITS;
+
+            let _guard = crate::commission_dispatch::test_support::SHARED_STATE_MUTEX
+                .lock()
+                .await;
+            tmc_state()
+                .voltage_limit_cfg
+                .store(16_000, Ordering::Relaxed);
+
+            let raw_spi = MockRawSpi::default();
+            let mut tmc = Tmc4671Spi::new(raw_spi);
+            apply_set_voltage_limit(&mut tmc, tmc_state(), 32_767)
+                .await
+                .expect("voltage-limit write should succeed");
+
+            assert_eq!(
+                tmc_state().voltage_limit_cfg.load(Ordering::Relaxed),
+                32_767
+            );
+            let raw_spi = tmc.into_inner();
+            assert_eq!(raw_spi.writes.len(), 1);
+            assert_eq!(
+                raw_spi.writes[0],
+                [PIDOUT_UQ_UD_LIMITS.addr() | 0x80, 0x00, 0x00, 0x7f, 0xff]
+            );
+
+            tmc_state()
+                .voltage_limit_cfg
+                .store(16_000, Ordering::Relaxed);
         });
     }
 

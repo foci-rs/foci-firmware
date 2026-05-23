@@ -23,10 +23,11 @@ struct SafeStateRestoreReport {
 /// 1. `set_enable_pin(false)`
 /// 2. `MODE_RAMP_MODE_MOTION = 0`
 /// 3. `PID_TORQUE_FLUX_TARGET = 0`
-/// 4. `UQ_UD_EXT = 0`
-/// 5. `PWM_SV_CHOP = 0`
-/// 6. `PID_VELOCITY_OFFSET = 0`
-/// 7. `PIDOUT_UQ_UD_LIMITS = 1024`
+/// 4. `PID_TORQUE_FLUX_OFFSET = 0`
+/// 5. `UQ_UD_EXT = 0`
+/// 6. `PWM_SV_CHOP = 0`
+/// 7. `PID_VELOCITY_OFFSET = 0`
+/// 8. `PIDOUT_UQ_UD_LIMITS = 1024`
 pub async fn restore_safe_state_via_backend<B>(backend: &mut B)
 where
     B: CommissioningBackend,
@@ -44,6 +45,7 @@ where
     backend.set_enable_pin(false);
     safe_state_write(backend, MODE_RAMP_MODE_MOTION, 0, &mut report).await;
     safe_state_write(backend, PID_TORQUE_FLUX_TARGET, 0, &mut report).await;
+    safe_state_write(backend, PID_TORQUE_FLUX_OFFSET, 0, &mut report).await;
     safe_state_write(backend, UQ_UD_EXT, 0, &mut report).await;
     safe_state_write(backend, PWM_SV_CHOP, 0, &mut report).await;
     safe_state_write(backend, PID_VELOCITY_OFFSET, 0, &mut report).await;
@@ -90,6 +92,7 @@ mod tests {
                 &[
                     (MODE_RAMP_MODE_MOTION.addr(), 0),
                     (PID_TORQUE_FLUX_TARGET.addr(), 0),
+                    (PID_TORQUE_FLUX_OFFSET.addr(), 0),
                     (UQ_UD_EXT.addr(), 0),
                     (PWM_SV_CHOP.addr(), 0),
                     (PID_VELOCITY_OFFSET.addr(), 0),
@@ -112,6 +115,7 @@ mod tests {
                     attempted.push(*addr).ok();
                 }
             }
+            assert!(attempted.contains(&PID_TORQUE_FLUX_OFFSET.addr()));
             assert!(attempted.contains(&PWM_SV_CHOP.addr()));
             assert!(attempted.contains(&PID_VELOCITY_OFFSET.addr()));
             assert!(attempted.contains(&PIDOUT_UQ_UD_LIMITS.addr()));
