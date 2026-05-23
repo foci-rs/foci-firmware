@@ -15,8 +15,10 @@ pub struct TmcConfig {
     pub bbm_h: u8,
     /// Break-before-make dead-time, low-side (PWM clock cycles, 10ns each).
     pub bbm_l: u8,
-    /// DSADC decimation parameter (both ADC groups).
-    pub dsadc_mdec: u16,
+    /// DSADC decimation parameter for ADC group A.
+    pub dsadc_mdec_a: u16,
+    /// DSADC decimation parameter for ADC group B.
+    pub dsadc_mdec_b: u16,
     /// ADC_I_SELECT register value for phase-current routing.
     pub adc_i_select: u32,
     /// Excitation voltage for R/L measurement (PIDOUT units).
@@ -48,9 +50,9 @@ impl TmcConfig {
         ((self.bbm_h as u32) << 8) | (self.bbm_l as u32)
     }
 
-    /// DSADC_MDEC_B_MDEC_A register value (same MDEC for both groups).
+    /// DSADC_MDEC_B_MDEC_A register value: group A in bits 15:0, group B in bits 31:16.
     pub const fn dsadc_mdec_register(&self) -> u32 {
-        ((self.dsadc_mdec as u32) << 16) | (self.dsadc_mdec as u32)
+        ((self.dsadc_mdec_b as u32) << 16) | (self.dsadc_mdec_a as u32)
     }
 }
 
@@ -67,7 +69,8 @@ impl TmcConfig {
             tmc_clock_hz: 25_000_000,
             bbm_h: 10,
             bbm_l: 10,
-            dsadc_mdec: 331,
+            dsadc_mdec_a: 331,
+            dsadc_mdec_b: 331,
             adc_i_select: 0x1800_0100,
             excitation_voltage: 512,
             didt_cycles: 5000,
@@ -86,7 +89,8 @@ mod tests {
             tmc_clock_hz: 25_000_000,
             bbm_h: 10,
             bbm_l: 10,
-            dsadc_mdec: 331,
+            dsadc_mdec_a: 331,
+            dsadc_mdec_b: 331,
             adc_i_select: 0x1800_0100,
             excitation_voltage: 512,
             didt_cycles: 5000,
@@ -119,13 +123,31 @@ mod tests {
     }
 
     #[test]
+    fn dsadc_mdec_register_packs_group_b_high_group_a_low() {
+        let cfg = TmcConfig {
+            pwm_maxcnt: 3999,
+            tmc_clock_hz: 25_000_000,
+            bbm_h: 40,
+            bbm_l: 40,
+            dsadc_mdec_a: 660,
+            dsadc_mdec_b: 331,
+            adc_i_select: 0x1800_0100,
+            excitation_voltage: 512,
+            didt_cycles: 5000,
+            bandwidth_hz: 150.0,
+        };
+        assert_eq!(cfg.dsadc_mdec_register(), (331 << 16) | 660);
+    }
+
+    #[test]
     fn pwm_freq_hz_at_maxcnt_999() {
         let cfg = TmcConfig {
             pwm_maxcnt: 999,
             tmc_clock_hz: 25_000_000,
             bbm_h: 10,
             bbm_l: 10,
-            dsadc_mdec: 331,
+            dsadc_mdec_a: 331,
+            dsadc_mdec_b: 331,
             adc_i_select: 0x1800_0100,
             excitation_voltage: 512,
             didt_cycles: 5000,
@@ -141,7 +163,8 @@ mod tests {
             tmc_clock_hz: 25_000_000,
             bbm_h: 10,
             bbm_l: 10,
-            dsadc_mdec: 331,
+            dsadc_mdec_a: 331,
+            dsadc_mdec_b: 331,
             adc_i_select: 0x1800_0100,
             excitation_voltage: 512,
             didt_cycles: 5000,
