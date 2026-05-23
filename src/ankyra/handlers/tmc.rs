@@ -363,6 +363,52 @@ pub fn tmc_current_step_test(
     }
 }
 
+/// Run a bounded current-vector step diagnostic.
+///
+/// This command only queues a fixed diagnostic sequence. The board task
+/// rejects it unless the motor is already enabled and calibrated by the
+/// production path.
+#[klipper_command]
+pub fn tmc_current_vector_step_test(
+    ctx: &mut dyn TmcWriteHost,
+    oid: u8,
+    torque_target: i16,
+    flux_target: i16,
+    duration_ms: u16,
+    voltage_limit: u16,
+) {
+    let Some((channel, _state)) = foci_tmc_state_or_shutdown(ctx, oid) else {
+        return;
+    };
+    if torque_target.unsigned_abs() > MAX_CURRENT_STEP_TARGET as u16
+        || flux_target.unsigned_abs() > MAX_CURRENT_STEP_TARGET as u16
+        || !(MIN_CURRENT_STEP_DURATION_MS..=MAX_CURRENT_STEP_DURATION_MS).contains(&duration_ms)
+        || !(MIN_CURRENT_STEP_VOLTAGE_LIMIT..=MAX_CURRENT_STEP_VOLTAGE_LIMIT)
+            .contains(&voltage_limit)
+    {
+        if ctx.enter_shutdown() {
+            let clock = ctx.now();
+            ctx.send_shutdown(ShutdownReason::TmcRequestValidationFailed, clock);
+        }
+        return;
+    }
+    if ctx
+        .enqueue_request(crate::tmc::tmc_current_vector_step_test(
+            channel,
+            oid,
+            torque_target,
+            flux_target,
+            duration_ms,
+            voltage_limit,
+        ))
+        .is_err()
+        && ctx.enter_shutdown()
+    {
+        let clock = ctx.now();
+        ctx.send_shutdown(ShutdownReason::TmcRequestValidationFailed, clock);
+    }
+}
+
 /// Set whether a raw enable may trigger firmware-side auto-calibration.
 #[klipper_command]
 pub fn tmc_set_auto_calibrate_on_enable(ctx: &mut dyn ShutdownRecovery, oid: u8, enable: u8) {
@@ -605,6 +651,44 @@ mod tests {
             }
         ));
         assert_eq!(ctx.last_shutdown, None);
+    }
+
+    #[test]
+    fn tmc_current_vector_step_test_routes_by_stepper_oid() {
+        let mut ctx = MockCtx::new(2);
+        let mut sender = ();
+        config_stepper_channel(ctx.state(), 10, 1).unwrap();
+
+        tmc_current_vector_step_test(&mut ctx, &mut sender, 10, 0, 250, 80, 12_000);
+
+        let req = ctx.last_request.borrow().clone().unwrap();
+        assert_eq!(req.channel, 1);
+        assert!(matches!(
+            req.kind,
+            crate::tmc::TmcRequestKind::CurrentVectorStepTest {
+                oid: 10,
+                torque_target: 0,
+                flux_target: 250,
+                duration_ms: 80,
+                voltage_limit: 12_000,
+            }
+        ));
+        assert_eq!(ctx.last_shutdown, None);
+    }
+
+    #[test]
+    fn tmc_current_vector_step_test_rejects_excessive_flux_target() {
+        let mut ctx = MockCtx::new(2);
+        let mut sender = ();
+        config_stepper_channel(ctx.state(), 10, 1).unwrap();
+
+        tmc_current_vector_step_test(&mut ctx, &mut sender, 10, 0, 1_001, 80, 12_000);
+
+        assert!(ctx.last_request.borrow().is_none());
+        assert_eq!(
+            ctx.last_shutdown,
+            Some(crate::shutdown::ShutdownReason::TmcRequestValidationFailed)
+        );
     }
 
     #[test]

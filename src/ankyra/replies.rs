@@ -250,9 +250,52 @@ pub struct FociCurrentStepResult {
     pub adc_vm_raw: u16,
 }
 
+/// `foci_current_vector_step_result` reply - bounded current-vector diagnostic.
+///
+/// Wire name: `foci_current_vector_step_result`.
+#[klipper_reply]
+pub struct FociCurrentVectorStepResult {
+    /// Object id of the FOCI endpoint.
+    pub oid: u8,
+    /// Status code: 0 success, 1 not enabled/calibrated, 2 SPI failure.
+    pub status: u8,
+    /// Requested signed torque-current target in TMC4671 current counts.
+    pub torque_target: i16,
+    /// Requested signed flux-current target in TMC4671 current counts.
+    pub flux_target: i16,
+    /// Hold duration in milliseconds.
+    pub duration_ms: u16,
+    /// Temporary PIDOUT_UQ_UD_LIMITS used during the diagnostic.
+    pub voltage_limit: u16,
+    /// Torque actual before applying the step.
+    pub torque_before: i16,
+    /// Torque actual while the step is applied.
+    pub torque_during: i16,
+    /// Torque actual after returning target to zero.
+    pub torque_after: i16,
+    /// Flux actual while the step is applied.
+    pub flux_during: i16,
+    /// FOC IQ while the step is applied.
+    pub iq_during: i16,
+    /// FOC ID while the step is applied.
+    pub id_during: i16,
+    /// Limited UQ while the step is applied.
+    pub uq_limited: i16,
+    /// Limited UD while the step is applied.
+    pub ud_limited: i16,
+    /// ABN decoder count before applying the step.
+    pub encoder_before: u32,
+    /// ABN decoder count after returning target to zero.
+    pub encoder_after: u32,
+    /// Signed encoder delta from before to after.
+    pub encoder_delta: i32,
+    /// Raw TMC4671 supply-voltage ADC sample during the dwell.
+    pub adc_vm_raw: u16,
+}
+
 #[cfg(test)]
 mod tests {
-    use super::FociCurrentStepResult;
+    use super::{FociCurrentStepResult, FociCurrentVectorStepResult};
 
     #[test]
     fn current_step_result_carries_motion_and_supply_observability() {
@@ -280,6 +323,35 @@ mod tests {
         assert_eq!(reply.encoder_after, 12);
         assert_eq!(reply.encoder_delta, 112);
         assert_eq!(reply.adc_vm_raw, 40099);
+    }
+
+    #[test]
+    fn current_vector_step_result_carries_axis_targets() {
+        let reply = FociCurrentVectorStepResult {
+            oid: 7,
+            status: 0,
+            torque_target: 0,
+            flux_target: 250,
+            duration_ms: 80,
+            voltage_limit: 12_000,
+            torque_before: -3,
+            torque_during: 8,
+            torque_after: 18,
+            flux_during: 240,
+            iq_during: 12,
+            id_during: 238,
+            uq_limited: 20,
+            ud_limited: 1500,
+            encoder_before: 3900,
+            encoder_after: 3912,
+            encoder_delta: 12,
+            adc_vm_raw: 40099,
+        };
+
+        assert_eq!(reply.torque_target, 0);
+        assert_eq!(reply.flux_target, 250);
+        assert_eq!(reply.flux_during, 240);
+        assert_eq!(reply.encoder_delta, 12);
     }
 }
 

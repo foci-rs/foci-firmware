@@ -115,6 +115,19 @@ pub enum TmcRequestKind {
         /// Temporary PIDOUT_UQ_UD_LIMITS value for the diagnostic.
         voltage_limit: u16,
     },
+    /// Run a bounded current-vector step diagnostic while already enabled.
+    CurrentVectorStepTest {
+        /// Object id used by the reply.
+        oid: u8,
+        /// Signed torque-current target in TMC4671 current counts.
+        torque_target: i16,
+        /// Signed flux-current target in TMC4671 current counts.
+        flux_target: i16,
+        /// Hold duration for the applied target.
+        duration_ms: u16,
+        /// Temporary PIDOUT_UQ_UD_LIMITS value for the diagnostic.
+        voltage_limit: u16,
+    },
     /// Start the per-tick trace buffer with the selected preset.
     TraceStart { oid: u8, preset: u8 },
     /// Stop the per-tick trace buffer, preserving samples for fetch.
@@ -320,6 +333,27 @@ pub fn tmc_current_step_test(
         TmcRequestKind::CurrentStepTest {
             oid,
             target,
+            duration_ms,
+            voltage_limit,
+        },
+    )
+}
+
+/// Build a `CurrentVectorStepTest` request.
+pub fn tmc_current_vector_step_test(
+    channel: u8,
+    oid: u8,
+    torque_target: i16,
+    flux_target: i16,
+    duration_ms: u16,
+    voltage_limit: u16,
+) -> TmcRequest {
+    TmcRequest::new(
+        channel,
+        TmcRequestKind::CurrentVectorStepTest {
+            oid,
+            torque_target,
+            flux_target,
             duration_ms,
             voltage_limit,
         },
@@ -664,6 +698,23 @@ mod tests {
                 TmcRequestKind::CurrentStepTest {
                     oid: 7,
                     target: 250,
+                    duration_ms: 80,
+                    voltage_limit: 12_000,
+                }
+            )
+        );
+    }
+
+    #[test]
+    fn tmc_current_vector_step_test_builds_request() {
+        assert_eq!(
+            tmc_current_vector_step_test(0, 7, 0, 250, 80, 12_000),
+            TmcRequest::new(
+                0,
+                TmcRequestKind::CurrentVectorStepTest {
+                    oid: 7,
+                    torque_target: 0,
+                    flux_target: 250,
                     duration_ms: 80,
                     voltage_limit: 12_000,
                 }
