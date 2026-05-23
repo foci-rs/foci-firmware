@@ -15,7 +15,9 @@ pub const DUMP_REGISTERS: &[u8] = &[
     // ADC calibration
     0x08, // ADC_I1_SCALE_OFFSET
     0x09, // ADC_I0_SCALE_OFFSET
+    0x0A, // ADC_I_SELECT
     // PWM
+    0x19, // PWM_BBM_H_BBM_L
     0x1A, // PWM_SV_CHOP
     // Motor config
     0x1B, // MOTOR_TYPE_N_POLE_PAIRS
@@ -82,6 +84,8 @@ pub const DUMP_SUB_REGISTERS: &[(u8, SubRegister)] = &[
         0x85,
         foci_tmc4671::registers::PID_ERROR_PID_VELOCITY_ERROR_SUM,
     ),
+    // CONFIG: advanced PI gain representation bits (datasheet section 7.2)
+    (0x86, foci_tmc4671::registers::CONFIG_ADVANCED_PI_REPRESENT),
 ];
 
 #[cfg(test)]
@@ -102,9 +106,15 @@ mod tests {
 
     #[test]
     fn dump_registers_include_selection_registers() {
+        assert!(DUMP_REGISTERS.contains(&0x0A), "missing ADC_I_SELECT");
         assert!(DUMP_REGISTERS.contains(&0x50), "missing VELOCITY_SELECTION");
         assert!(DUMP_REGISTERS.contains(&0x51), "missing POSITION_SELECTION");
         assert!(DUMP_REGISTERS.contains(&0x52), "missing PHI_E_SELECTION");
+    }
+
+    #[test]
+    fn dump_registers_include_pwm_bbm() {
+        assert!(DUMP_REGISTERS.contains(&0x19), "missing PWM_BBM_H_BBM_L");
     }
 
     #[test]
@@ -125,5 +135,14 @@ mod tests {
                 assert_ne!(a, b, "duplicate synthetic addr {:#04X}", a);
             }
         }
+    }
+
+    #[test]
+    fn dump_sub_registers_include_advanced_pi_representation() {
+        let found = DUMP_SUB_REGISTERS.iter().any(|&(addr, sub)| {
+            addr == 0x86 && sub == foci_tmc4671::registers::CONFIG_ADVANCED_PI_REPRESENT
+        });
+
+        assert!(found, "missing CONFIG_ADVANCED_PI_REPRESENT dump field");
     }
 }
