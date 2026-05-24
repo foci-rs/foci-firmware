@@ -235,7 +235,9 @@ pub struct CriticalSample {
     pub tmc_position_actual: i32,
     /// Position error.
     pub position_error: i32,
-    /// TMC PID velocity target.
+    /// Software command-velocity reference in TMC velocity-offset sign convention.
+    ///
+    /// This is derived from Klipper STEP/DIR timing. It is not a TMC register read.
     pub target_velocity: i32,
     /// TMC velocity actual.
     pub pid_velocity_actual: i32,
