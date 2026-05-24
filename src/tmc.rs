@@ -545,6 +545,20 @@ pub fn compute_velocity_offset(scale_factor: u32, step_interval: u32, dir_high: 
     compute_velocity_offset_scaled(scale_factor, step_interval, dir_high, 1)
 }
 
+/// Compute the signed command-velocity reference used by trace diagnostics.
+///
+/// This uses the same TMC4671 sign convention as `PID_VELOCITY_OFFSET`, but it
+/// intentionally does not apply the runtime feedforward multiplier. The value
+/// is a software reference derived from Klipper STEP/DIR timing, not a TMC
+/// register read.
+pub fn compute_command_velocity_reference(
+    scale_factor: u32,
+    step_interval: u32,
+    dir_high: bool,
+) -> i32 {
+    compute_velocity_offset_scaled(scale_factor, step_interval, dir_high, 1)
+}
+
 /// Compute the velocity feedforward offset with a runtime multiplier.
 ///
 /// `multiplier == 0` disables the offset. Positive products saturate to
@@ -1092,6 +1106,32 @@ mod tests {
 
         let offset = compute_velocity_offset_scaled(u32::MAX, 1, true, u16::MAX);
         assert_eq!(offset, i32::MIN + 1);
+    }
+
+    #[test]
+    fn command_velocity_reference_uses_step_direction_sign() {
+        let scale = compute_velocity_scale_factor(16, 84_000_000, 25_000);
+
+        let forward = compute_command_velocity_reference(scale, 2800, false);
+        let reversed = compute_command_velocity_reference(scale, 2800, true);
+
+        assert_eq!(forward, 19);
+        assert_eq!(reversed, -19);
+    }
+
+    #[test]
+    fn command_velocity_reference_zero_cases_disable_reference() {
+        assert_eq!(compute_command_velocity_reference(0, 2800, false), 0);
+        assert_eq!(compute_command_velocity_reference(19, 0, false), 0);
+    }
+
+    #[test]
+    fn command_velocity_reference_is_unmultiplied_velocity_offset() {
+        let scale = compute_velocity_scale_factor(16, 84_000_000, 25_000);
+        let reference = compute_command_velocity_reference(scale, 2800, false);
+        let offset = compute_velocity_offset_scaled(scale, 2800, false, 40);
+
+        assert_eq!(offset, reference * 40);
     }
 
     #[test]
