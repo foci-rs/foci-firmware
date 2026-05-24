@@ -293,9 +293,169 @@ pub struct FociCurrentVectorStepResult {
     pub adc_vm_raw: u16,
 }
 
+/// `foci_current_torque_sample_result` reply - early torque-pulse sample result.
+///
+/// Wire name: `foci_current_torque_sample_result`.
+#[klipper_reply]
+pub struct FociCurrentTorqueSampleResult {
+    /// Object id of the FOCI endpoint.
+    pub oid: u8,
+    /// Status code: 0 success, 1 not enabled/calibrated, 2 SPI failure.
+    pub status: u8,
+    /// Requested signed torque target in TMC4671 current counts.
+    pub target: i16,
+    /// Requested signed flux target in TMC4671 current counts.
+    pub flux_target: i16,
+    /// Delay between applying the target and sampling, in milliseconds.
+    pub sample_delay_ms: u16,
+    /// Temporary PIDOUT_UQ_UD_LIMITS used during the diagnostic.
+    pub voltage_limit: u16,
+    /// Torque actual before applying the pulse.
+    pub torque_before: i16,
+    /// Torque actual at the sample point.
+    pub torque_sample: i16,
+    /// Torque actual after returning target to zero.
+    pub torque_after: i16,
+    /// Flux actual at the sample point.
+    pub flux_sample: i16,
+    /// FOC IQ at the sample point.
+    pub iq_sample: i16,
+    /// FOC ID at the sample point.
+    pub id_sample: i16,
+    /// Limited UQ at the sample point.
+    pub uq_limited: i16,
+    /// Limited UD at the sample point.
+    pub ud_limited: i16,
+    /// ABN decoder count before applying the pulse.
+    pub encoder_before: u32,
+    /// ABN decoder count at the sample point.
+    pub encoder_sample: u32,
+    /// ABN decoder count after returning target to zero.
+    pub encoder_after: u32,
+    /// Signed encoder delta from before to sample.
+    pub encoder_delta_sample: i32,
+    /// Signed encoder delta from before to after.
+    pub encoder_delta_after: i32,
+    /// Raw TMC4671 supply-voltage ADC sample at the sample point.
+    pub adc_vm_raw: u16,
+    /// TMC clipped torque input target at the sample point.
+    pub pidin_target_torque: i32,
+    /// TMC clipped flux input target at the sample point.
+    pub pidin_target_flux: i32,
+    /// TMC torque-controller output target at the sample point.
+    pub pidout_target_torque: i32,
+    /// TMC flux-controller output target at the sample point.
+    pub pidout_target_flux: i32,
+    /// TMC packed monitor's torque-target half at the sample point.
+    pub pid_torque_target_monitor: i16,
+    /// TMC4671 status flags at the sample point.
+    pub status_flags: u32,
+}
+
+/// `foci_current_torque_sample_detail_result` reply - extended early sample data.
+///
+/// Wire name: `foci_current_torque_sample_detail_result`.
+#[klipper_reply]
+pub struct FociCurrentTorqueSampleDetailResult {
+    /// Object id of the FOCI endpoint.
+    pub oid: u8,
+    /// Requested signed torque target in TMC4671 current counts.
+    pub target: i16,
+    /// Requested signed flux target in TMC4671 current counts.
+    pub flux_target: i16,
+    /// Delay between applying the target and sampling, in milliseconds.
+    pub sample_delay_ms: u16,
+    /// Temporary PIDOUT_UQ_UD_LIMITS used during the diagnostic.
+    pub voltage_limit: u16,
+    /// TMC torque current-loop error at the sample point.
+    pub torque_error: i32,
+    /// TMC flux current-loop error at the sample point.
+    pub flux_error: i32,
+    /// TMC torque current-loop error sum at the sample point.
+    pub torque_error_sum: i32,
+    /// TMC flux current-loop error sum at the sample point.
+    pub flux_error_sum: i32,
+    /// Pre-limit UQ at the sample point.
+    pub uq_prelimit: i16,
+    /// Pre-limit UD at the sample point.
+    pub ud_prelimit: i16,
+    /// TMC velocity feedforward monitor at the sample point.
+    pub ff_velocity: i32,
+    /// TMC torque feedforward monitor at the sample point.
+    pub ff_torque: i16,
+}
+
+/// `foci_voltage_step_result` reply - bounded open-loop voltage diagnostic.
+///
+/// Wire name: `foci_voltage_step_result`.
+#[klipper_reply]
+pub struct FociVoltageStepResult {
+    /// Object id of the FOCI endpoint.
+    pub oid: u8,
+    /// Status code: 0 success, 1 not enabled/calibrated, 2 SPI failure.
+    pub status: u8,
+    /// Requested signed q-axis voltage component for UQ_UD_EXT.
+    pub uq_ext: i16,
+    /// Requested signed d-axis voltage component for UQ_UD_EXT.
+    pub ud_ext: i16,
+    /// Delay between applying the voltage vector and sampling, in milliseconds.
+    pub sample_delay_ms: u16,
+    /// Torque actual before applying the pulse.
+    pub torque_before: i16,
+    /// Torque actual at the sample point.
+    pub torque_sample: i16,
+    /// Torque actual after returning to position mode.
+    pub torque_after: i16,
+    /// Flux actual at the sample point.
+    pub flux_sample: i16,
+    /// FOC IQ at the sample point.
+    pub iq_sample: i16,
+    /// FOC ID at the sample point.
+    pub id_sample: i16,
+    /// Limited UQ at the sample point.
+    pub uq_limited: i16,
+    /// Limited UD at the sample point.
+    pub ud_limited: i16,
+    /// FOC2 X/UX phase-voltage command at the sample point.
+    pub uux_sample: i16,
+    /// FOC2 Y/WY phase-voltage command at the sample point.
+    pub uwy_sample: i16,
+    /// PWM UX command at the sample point.
+    pub pwm_ux_sample: i16,
+    /// PWM WY command at the sample point.
+    pub pwm_wy_sample: i16,
+    /// PWM_SV_CHOP register value at the sample point.
+    pub pwm_sv_chop: u32,
+    /// PWM_BBM_H_BBM_L register value at the sample point.
+    pub pwm_bbm: u32,
+    /// PWM_MAXCNT register value at the sample point.
+    pub pwm_maxcnt: u32,
+    /// ABN electrical angle at the sample point.
+    pub phi_e_sample: i16,
+    /// ABN mechanical angle at the sample point.
+    pub phi_m_sample: i16,
+    /// ABN decoder count before applying the pulse.
+    pub encoder_before: u32,
+    /// ABN decoder count at the sample point.
+    pub encoder_sample: u32,
+    /// ABN decoder count after returning to position mode.
+    pub encoder_after: u32,
+    /// Signed encoder delta from before to sample.
+    pub encoder_delta_sample: i32,
+    /// Signed encoder delta from before to after.
+    pub encoder_delta_after: i32,
+    /// Raw TMC4671 supply-voltage ADC sample at the sample point.
+    pub adc_vm_raw: u16,
+    /// TMC4671 status flags at the sample point.
+    pub status_flags: u32,
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{FociCurrentStepResult, FociCurrentVectorStepResult};
+    use super::{
+        FociCurrentStepResult, FociCurrentTorqueSampleDetailResult, FociCurrentTorqueSampleResult,
+        FociCurrentVectorStepResult, FociVoltageStepResult,
+    };
 
     #[test]
     fn current_step_result_carries_motion_and_supply_observability() {
@@ -352,6 +512,136 @@ mod tests {
         assert_eq!(reply.flux_target, 250);
         assert_eq!(reply.flux_during, 240);
         assert_eq!(reply.encoder_delta, 12);
+    }
+
+    #[test]
+    fn current_torque_sample_result_carries_sample_observability() {
+        let reply = FociCurrentTorqueSampleResult {
+            oid: 7,
+            status: 0,
+            target: 500,
+            flux_target: -125,
+            sample_delay_ms: 5,
+            voltage_limit: 29_000,
+            torque_before: -3,
+            torque_sample: 310,
+            torque_after: 18,
+            flux_sample: 4,
+            iq_sample: 309,
+            id_sample: -5,
+            uq_limited: 3200,
+            ud_limited: -20,
+            encoder_before: 3900,
+            encoder_sample: 3902,
+            encoder_after: 3912,
+            encoder_delta_sample: 2,
+            encoder_delta_after: 12,
+            adc_vm_raw: 40099,
+            pidin_target_torque: 500,
+            pidin_target_flux: -125,
+            pidout_target_torque: 3199,
+            pidout_target_flux: -25,
+            pid_torque_target_monitor: 500,
+            status_flags: 0x0000_8000,
+        };
+
+        assert_eq!(reply.target, 500);
+        assert_eq!(reply.flux_target, -125);
+        assert_eq!(reply.sample_delay_ms, 5);
+        assert_eq!(reply.encoder_sample, 3902);
+        assert_eq!(reply.encoder_delta_sample, 2);
+        assert_eq!(reply.encoder_delta_after, 12);
+        assert_eq!(reply.pidin_target_torque, 500);
+        assert_eq!(reply.pidin_target_flux, -125);
+        assert_eq!(reply.pidout_target_torque, 3199);
+        assert_eq!(reply.pidout_target_flux, -25);
+        assert_eq!(reply.pid_torque_target_monitor, 500);
+        assert_eq!(reply.status_flags, 0x0000_8000);
+    }
+
+    #[test]
+    fn current_torque_sample_detail_result_carries_extended_observability() {
+        let reply = FociCurrentTorqueSampleDetailResult {
+            oid: 7,
+            target: 500,
+            flux_target: -125,
+            sample_delay_ms: 5,
+            voltage_limit: 29_000,
+            torque_error: 190,
+            flux_error: -129,
+            torque_error_sum: 12_345,
+            flux_error_sum: -2_345,
+            uq_prelimit: 3210,
+            ud_prelimit: -30,
+            ff_velocity: 17,
+            ff_torque: -42,
+        };
+
+        assert_eq!(reply.target, 500);
+        assert_eq!(reply.flux_target, -125);
+        assert_eq!(reply.sample_delay_ms, 5);
+        assert_eq!(reply.voltage_limit, 29_000);
+        assert_eq!(reply.torque_error, 190);
+        assert_eq!(reply.flux_error, -129);
+        assert_eq!(reply.torque_error_sum, 12_345);
+        assert_eq!(reply.flux_error_sum, -2_345);
+        assert_eq!(reply.uq_prelimit, 3210);
+        assert_eq!(reply.ud_prelimit, -30);
+        assert_eq!(reply.ff_velocity, 17);
+        assert_eq!(reply.ff_torque, -42);
+    }
+
+    #[test]
+    fn voltage_step_result_carries_open_loop_observability() {
+        let reply = FociVoltageStepResult {
+            oid: 7,
+            status: 0,
+            uq_ext: 512,
+            ud_ext: -256,
+            sample_delay_ms: 2,
+            torque_before: -3,
+            torque_sample: 42,
+            torque_after: 4,
+            flux_sample: -21,
+            iq_sample: 44,
+            id_sample: -19,
+            uq_limited: 500,
+            ud_limited: -251,
+            uux_sample: 123,
+            uwy_sample: -456,
+            pwm_ux_sample: 120,
+            pwm_wy_sample: -450,
+            pwm_sv_chop: 0x0000_0007,
+            pwm_bbm: 0x0000_2828,
+            pwm_maxcnt: 3999,
+            phi_e_sample: 3000,
+            phi_m_sample: -1200,
+            encoder_before: 3900,
+            encoder_sample: 3901,
+            encoder_after: 3900,
+            encoder_delta_sample: 1,
+            encoder_delta_after: 0,
+            adc_vm_raw: 40099,
+            status_flags: 0x7000_0000,
+        };
+
+        assert_eq!(reply.uq_ext, 512);
+        assert_eq!(reply.ud_ext, -256);
+        assert_eq!(reply.sample_delay_ms, 2);
+        assert_eq!(reply.iq_sample, 44);
+        assert_eq!(reply.id_sample, -19);
+        assert_eq!(reply.uux_sample, 123);
+        assert_eq!(reply.uwy_sample, -456);
+        assert_eq!(reply.pwm_ux_sample, 120);
+        assert_eq!(reply.pwm_wy_sample, -450);
+        assert_eq!(reply.pwm_sv_chop, 0x0000_0007);
+        assert_eq!(reply.pwm_bbm, 0x0000_2828);
+        assert_eq!(reply.pwm_maxcnt, 3999);
+        assert_eq!(reply.phi_e_sample, 3000);
+        assert_eq!(reply.phi_m_sample, -1200);
+        assert_eq!(reply.encoder_delta_sample, 1);
+        assert_eq!(reply.encoder_delta_after, 0);
+        assert_eq!(reply.status_flags, 0x7000_0000);
     }
 }
 

@@ -128,6 +128,41 @@ pub enum TmcRequestKind {
         /// Temporary PIDOUT_UQ_UD_LIMITS value for the diagnostic.
         voltage_limit: u16,
     },
+    /// Run a bounded torque-current pulse and sample it before the old dwell floor.
+    CurrentTorqueSampleTest {
+        /// Object id used by the reply.
+        oid: u8,
+        /// Signed torque-current target in TMC4671 current counts.
+        target: i16,
+        /// Signed flux-current target in TMC4671 current counts.
+        flux_target: i16,
+        /// Delay between applying the target and sampling, in milliseconds.
+        sample_delay_ms: u16,
+        /// Temporary PIDOUT_UQ_UD_LIMITS value for the diagnostic.
+        voltage_limit: u16,
+    },
+    /// Run a bounded torque-offset pulse in position mode and sample it.
+    PositionTorqueOffsetSampleTest {
+        /// Object id used by the reply.
+        oid: u8,
+        /// Signed torque offset in TMC4671 current counts.
+        target: i16,
+        /// Delay between applying the offset and sampling, in milliseconds.
+        sample_delay_ms: u16,
+        /// Temporary PIDOUT_UQ_UD_LIMITS value for the diagnostic.
+        voltage_limit: u16,
+    },
+    /// Run a bounded open-loop voltage pulse and sample it.
+    VoltageStepTest {
+        /// Object id used by the reply.
+        oid: u8,
+        /// Signed q-axis voltage component for UQ_UD_EXT.
+        uq_ext: i16,
+        /// Signed d-axis voltage component for UQ_UD_EXT.
+        ud_ext: i16,
+        /// Delay between applying the voltage vector and sampling, in milliseconds.
+        sample_delay_ms: u16,
+    },
     /// Start the per-tick trace buffer with the selected preset.
     TraceStart { oid: u8, preset: u8 },
     /// Stop the per-tick trace buffer, preserving samples for fetch.
@@ -356,6 +391,65 @@ pub fn tmc_current_vector_step_test(
             flux_target,
             duration_ms,
             voltage_limit,
+        },
+    )
+}
+
+/// Build a `CurrentTorqueSampleTest` request.
+pub fn tmc_current_torque_sample_test(
+    channel: u8,
+    oid: u8,
+    target: i16,
+    flux_target: i16,
+    sample_delay_ms: u16,
+    voltage_limit: u16,
+) -> TmcRequest {
+    TmcRequest::new(
+        channel,
+        TmcRequestKind::CurrentTorqueSampleTest {
+            oid,
+            target,
+            flux_target,
+            sample_delay_ms,
+            voltage_limit,
+        },
+    )
+}
+
+/// Build a `PositionTorqueOffsetSampleTest` request.
+pub fn tmc_position_torque_offset_sample_test(
+    channel: u8,
+    oid: u8,
+    target: i16,
+    sample_delay_ms: u16,
+    voltage_limit: u16,
+) -> TmcRequest {
+    TmcRequest::new(
+        channel,
+        TmcRequestKind::PositionTorqueOffsetSampleTest {
+            oid,
+            target,
+            sample_delay_ms,
+            voltage_limit,
+        },
+    )
+}
+
+/// Build a `VoltageStepTest` request.
+pub fn tmc_voltage_step_test(
+    channel: u8,
+    oid: u8,
+    uq_ext: i16,
+    ud_ext: i16,
+    sample_delay_ms: u16,
+) -> TmcRequest {
+    TmcRequest::new(
+        channel,
+        TmcRequestKind::VoltageStepTest {
+            oid,
+            uq_ext,
+            ud_ext,
+            sample_delay_ms,
         },
     )
 }
@@ -717,6 +811,55 @@ mod tests {
                     flux_target: 250,
                     duration_ms: 80,
                     voltage_limit: 12_000,
+                }
+            )
+        );
+    }
+
+    #[test]
+    fn tmc_current_torque_sample_test_builds_vector_request() {
+        assert_eq!(
+            tmc_current_torque_sample_test(0, 7, 500, -125, 5, 29_000),
+            TmcRequest::new(
+                0,
+                TmcRequestKind::CurrentTorqueSampleTest {
+                    oid: 7,
+                    target: 500,
+                    flux_target: -125,
+                    sample_delay_ms: 5,
+                    voltage_limit: 29_000,
+                }
+            )
+        );
+    }
+
+    #[test]
+    fn tmc_position_torque_offset_sample_test_builds_request() {
+        assert_eq!(
+            tmc_position_torque_offset_sample_test(0, 7, 500, 2, 29_000),
+            TmcRequest::new(
+                0,
+                TmcRequestKind::PositionTorqueOffsetSampleTest {
+                    oid: 7,
+                    target: 500,
+                    sample_delay_ms: 2,
+                    voltage_limit: 29_000,
+                }
+            )
+        );
+    }
+
+    #[test]
+    fn tmc_voltage_step_test_builds_request() {
+        assert_eq!(
+            tmc_voltage_step_test(0, 7, 512, -256, 2),
+            TmcRequest::new(
+                0,
+                TmcRequestKind::VoltageStepTest {
+                    oid: 7,
+                    uq_ext: 512,
+                    ud_ext: -256,
+                    sample_delay_ms: 2,
                 }
             )
         );

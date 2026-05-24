@@ -4,7 +4,8 @@
 //! `tmc_set_position_filter`, `tmc_set_position_gains`,
 //! `tmc_set_torque_filter`, `tmc_set_velocity_feedforward`,
 //! `tmc_set_velocity_filter`, `tmc_set_velocity_limit`,
-//! `tmc_set_voltage_limit`,
+//! `tmc_set_voltage_limit`, `tmc_current_torque_sample_test`,
+//! `tmc_position_torque_offset_sample_test`, `tmc_voltage_step_test`,
 //! `tmc_set_auto_calibrate_on_enable`, `tmc_test_spin`.
 //!
 //! Lifted from `boards/openffboard-fw/src/ankyra/handlers/tmc.rs` in
@@ -26,6 +27,9 @@ use crate::state::tmc::TmcChannelState;
 const MAX_CURRENT_STEP_TARGET: i16 = 1_000;
 const MIN_CURRENT_STEP_DURATION_MS: u16 = 20;
 const MAX_CURRENT_STEP_DURATION_MS: u16 = 200;
+const MIN_CURRENT_SAMPLE_DELAY_MS: u16 = 1;
+const MAX_CURRENT_SAMPLE_DELAY_MS: u16 = 20;
+const MAX_VOLTAGE_STEP_EXT: i16 = 1_024;
 const MIN_CURRENT_STEP_VOLTAGE_LIMIT: u16 =
     crate::state::tmc::MIN_OPERATIONAL_PIDOUT_UQ_UD_LIMIT as u16;
 const MAX_CURRENT_STEP_VOLTAGE_LIMIT: u16 = 29_000;
@@ -409,6 +413,137 @@ pub fn tmc_current_vector_step_test(
     }
 }
 
+/// Run a bounded torque-current pulse and sample it before the old dwell floor.
+///
+/// This command only queues a fixed diagnostic sequence. The board task
+/// rejects it unless the motor is already enabled and calibrated by the
+/// production path.
+#[klipper_command]
+pub fn tmc_current_torque_sample_test(
+    ctx: &mut dyn TmcWriteHost,
+    oid: u8,
+    target: i16,
+    flux_target: i16,
+    sample_delay_ms: u16,
+    voltage_limit: u16,
+) {
+    let Some((channel, _state)) = foci_tmc_state_or_shutdown(ctx, oid) else {
+        return;
+    };
+    if target.unsigned_abs() > MAX_CURRENT_STEP_TARGET as u16
+        || flux_target.unsigned_abs() > MAX_CURRENT_STEP_TARGET as u16
+        || !(MIN_CURRENT_SAMPLE_DELAY_MS..=MAX_CURRENT_SAMPLE_DELAY_MS).contains(&sample_delay_ms)
+        || !(MIN_CURRENT_STEP_VOLTAGE_LIMIT..=MAX_CURRENT_STEP_VOLTAGE_LIMIT)
+            .contains(&voltage_limit)
+    {
+        if ctx.enter_shutdown() {
+            let clock = ctx.now();
+            ctx.send_shutdown(ShutdownReason::TmcRequestValidationFailed, clock);
+        }
+        return;
+    }
+    if ctx
+        .enqueue_request(crate::tmc::tmc_current_torque_sample_test(
+            channel,
+            oid,
+            target,
+            flux_target,
+            sample_delay_ms,
+            voltage_limit,
+        ))
+        .is_err()
+        && ctx.enter_shutdown()
+    {
+        let clock = ctx.now();
+        ctx.send_shutdown(ShutdownReason::TmcRequestValidationFailed, clock);
+    }
+}
+
+/// Run a bounded position-mode torque-offset pulse and sample it.
+///
+/// This command only queues a fixed diagnostic sequence. The board task rejects
+/// it unless the motor is already enabled, calibrated, idle, outside a homing
+/// move, and still in production position mode.
+#[klipper_command]
+pub fn tmc_position_torque_offset_sample_test(
+    ctx: &mut dyn TmcWriteHost,
+    oid: u8,
+    target: i16,
+    sample_delay_ms: u16,
+    voltage_limit: u16,
+) {
+    let Some((channel, _state)) = foci_tmc_state_or_shutdown(ctx, oid) else {
+        return;
+    };
+    if target.unsigned_abs() > MAX_CURRENT_STEP_TARGET as u16
+        || !(MIN_CURRENT_SAMPLE_DELAY_MS..=MAX_CURRENT_SAMPLE_DELAY_MS).contains(&sample_delay_ms)
+        || !(MIN_CURRENT_STEP_VOLTAGE_LIMIT..=MAX_CURRENT_STEP_VOLTAGE_LIMIT)
+            .contains(&voltage_limit)
+    {
+        if ctx.enter_shutdown() {
+            let clock = ctx.now();
+            ctx.send_shutdown(ShutdownReason::TmcRequestValidationFailed, clock);
+        }
+        return;
+    }
+    if ctx
+        .enqueue_request(crate::tmc::tmc_position_torque_offset_sample_test(
+            channel,
+            oid,
+            target,
+            sample_delay_ms,
+            voltage_limit,
+        ))
+        .is_err()
+        && ctx.enter_shutdown()
+    {
+        let clock = ctx.now();
+        ctx.send_shutdown(ShutdownReason::TmcRequestValidationFailed, clock);
+    }
+}
+
+/// Run a bounded open-loop voltage-vector pulse and sample it.
+///
+/// This command only queues a fixed diagnostic sequence. The board task rejects
+/// it unless the motor is already enabled, calibrated, idle, outside a homing
+/// move, and still in production position mode.
+#[klipper_command]
+pub fn tmc_voltage_step_test(
+    ctx: &mut dyn TmcWriteHost,
+    oid: u8,
+    uq_ext: i16,
+    ud_ext: i16,
+    sample_delay_ms: u16,
+) {
+    let Some((channel, _state)) = foci_tmc_state_or_shutdown(ctx, oid) else {
+        return;
+    };
+    if uq_ext.unsigned_abs() > MAX_VOLTAGE_STEP_EXT as u16
+        || ud_ext.unsigned_abs() > MAX_VOLTAGE_STEP_EXT as u16
+        || !(MIN_CURRENT_SAMPLE_DELAY_MS..=MAX_CURRENT_SAMPLE_DELAY_MS).contains(&sample_delay_ms)
+    {
+        if ctx.enter_shutdown() {
+            let clock = ctx.now();
+            ctx.send_shutdown(ShutdownReason::TmcRequestValidationFailed, clock);
+        }
+        return;
+    }
+    if ctx
+        .enqueue_request(crate::tmc::tmc_voltage_step_test(
+            channel,
+            oid,
+            uq_ext,
+            ud_ext,
+            sample_delay_ms,
+        ))
+        .is_err()
+        && ctx.enter_shutdown()
+    {
+        let clock = ctx.now();
+        ctx.send_shutdown(ShutdownReason::TmcRequestValidationFailed, clock);
+    }
+}
+
 /// Set whether a raw enable may trigger firmware-side auto-calibration.
 #[klipper_command]
 pub fn tmc_set_auto_calibrate_on_enable(ctx: &mut dyn ShutdownRecovery, oid: u8, enable: u8) {
@@ -674,6 +809,97 @@ mod tests {
             }
         ));
         assert_eq!(ctx.last_shutdown, None);
+    }
+
+    #[test]
+    fn tmc_current_torque_sample_test_routes_by_stepper_oid() {
+        let mut ctx = MockCtx::new(2);
+        let mut sender = ();
+        config_stepper_channel(ctx.state(), 10, 1).unwrap();
+
+        tmc_current_torque_sample_test(&mut ctx, &mut sender, 10, 500, -125, 5, 29_000);
+
+        let req = ctx.last_request.borrow().clone().unwrap();
+        assert_eq!(req.channel, 1);
+        assert!(matches!(
+            req.kind,
+            crate::tmc::TmcRequestKind::CurrentTorqueSampleTest {
+                oid: 10,
+                target: 500,
+                flux_target: -125,
+                sample_delay_ms: 5,
+                voltage_limit: 29_000,
+            }
+        ));
+        assert_eq!(ctx.last_shutdown, None);
+    }
+
+    #[test]
+    fn tmc_current_torque_sample_test_rejects_zero_delay() {
+        let mut ctx = MockCtx::new(2);
+        let mut sender = ();
+        config_stepper_channel(ctx.state(), 10, 1).unwrap();
+
+        tmc_current_torque_sample_test(&mut ctx, &mut sender, 10, 500, 0, 0, 29_000);
+
+        assert!(ctx.last_request.borrow().is_none());
+        assert_eq!(
+            ctx.last_shutdown,
+            Some(crate::shutdown::ShutdownReason::TmcRequestValidationFailed)
+        );
+    }
+
+    #[test]
+    fn tmc_position_torque_offset_sample_test_routes_by_stepper_oid() {
+        let mut ctx = MockCtx::new(2);
+        let mut sender = ();
+        config_stepper_channel(ctx.state(), 10, 1).unwrap();
+
+        tmc_position_torque_offset_sample_test(&mut ctx, &mut sender, 10, 500, 2, 29_000);
+
+        assert_eq!(
+            ctx.last_request.borrow().as_ref().unwrap().kind,
+            crate::tmc::TmcRequestKind::PositionTorqueOffsetSampleTest {
+                oid: 10,
+                target: 500,
+                sample_delay_ms: 2,
+                voltage_limit: 29_000,
+            }
+        );
+    }
+
+    #[test]
+    fn tmc_voltage_step_test_routes_by_stepper_oid() {
+        let mut ctx = MockCtx::new(2);
+        let mut sender = ();
+        config_stepper_channel(ctx.state(), 10, 1).unwrap();
+
+        tmc_voltage_step_test(&mut ctx, &mut sender, 10, 512, -256, 2);
+
+        assert_eq!(
+            ctx.last_request.borrow().as_ref().unwrap().kind,
+            crate::tmc::TmcRequestKind::VoltageStepTest {
+                oid: 10,
+                uq_ext: 512,
+                ud_ext: -256,
+                sample_delay_ms: 2,
+            }
+        );
+    }
+
+    #[test]
+    fn tmc_voltage_step_test_rejects_large_voltage() {
+        let mut ctx = MockCtx::new(2);
+        let mut sender = ();
+        config_stepper_channel(ctx.state(), 10, 1).unwrap();
+
+        tmc_voltage_step_test(&mut ctx, &mut sender, 10, 1025, 0, 2);
+
+        assert!(ctx.last_request.borrow().is_none());
+        assert_eq!(
+            ctx.last_shutdown,
+            Some(crate::shutdown::ShutdownReason::TmcRequestValidationFailed)
+        );
     }
 
     #[test]
