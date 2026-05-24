@@ -174,7 +174,7 @@ ankyra::ankyra_provider! {
         crate::ankyra::handlers::spi::spi_send,
         crate::ankyra::handlers::spi::spi_set_bus,
         crate::ankyra::handlers::spi::spi_transfer,
-        // TMC plain (16) — dev-gated entries omitted when feature is off
+        // TMC plain — dev-gated entries omitted when feature is off
         crate::ankyra::handlers::tmc::tmc_set_auto_calibrate_on_enable,
         crate::ankyra::handlers::tmc::tmc_set_accel_feedforward,
         crate::ankyra::handlers::tmc::tmc_set_current,
@@ -184,6 +184,7 @@ ankyra::ankyra_provider! {
         crate::ankyra::handlers::tmc::tmc_set_pid_gains,
         crate::ankyra::handlers::tmc::tmc_set_position_filter,
         crate::ankyra::handlers::tmc::tmc_set_position_gains,
+        crate::ankyra::handlers::tmc::tmc_set_position_lead,
         crate::ankyra::handlers::tmc::tmc_set_torque_filter,
         crate::ankyra::handlers::tmc::tmc_set_velocity_feedforward,
         crate::ankyra::handlers::tmc::tmc_set_velocity_filter,
