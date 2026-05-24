@@ -286,6 +286,33 @@ pub fn tmc_set_accel_feedforward(
     );
 }
 
+/// Enable or disable diagnostic position-target lead from a live command.
+#[klipper_command]
+pub fn tmc_set_position_lead(
+    ctx: &mut dyn ShutdownRecovery,
+    oid: u8,
+    enable: u8,
+    gain_permille: u16,
+    max_counts: u16,
+) {
+    let Some((_channel, state)) = foci_tmc_state_or_shutdown(ctx, oid) else {
+        return;
+    };
+    state.position_lead.store(enable != 0, Ordering::Relaxed);
+    state
+        .position_lead_gain_permille
+        .store(gain_permille, Ordering::Relaxed);
+    state
+        .position_lead_max_counts
+        .store(max_counts, Ordering::Relaxed);
+    defmt::info!(
+        "Position lead: {} gain_permille={} max_counts={}",
+        enable != 0,
+        gain_permille,
+        max_counts
+    );
+}
+
 /// Set PID velocity limit from host config.
 ///
 /// Caps position PID output to prevent integrator-driven velocity runaway.

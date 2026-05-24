@@ -113,6 +113,14 @@ pub enum TmcRequestKind {
         /// Gain in permille applied while step intervals grow.
         decel_gain_permille: u16,
     },
+    /// Enable or disable diagnostic position-target lead in the 1ms tick loop.
+    SetPositionLead {
+        enable: bool,
+        /// Lead gain in permille of the unmultiplied velocity reference.
+        gain_permille: u16,
+        /// Maximum absolute lead in logical step counts.
+        max_counts: u16,
+    },
     /// Set operational PIDOUT_UQ_UD_LIMITS for authority diagnostics.
     SetVoltageLimit { voltage_limit: u32 },
     /// Run a bounded current-loop step diagnostic while already enabled.
@@ -367,6 +375,23 @@ pub fn tmc_set_accel_feedforward(
     )
 }
 
+/// Build a `SetPositionLead` request.
+pub fn tmc_set_position_lead(
+    channel: u8,
+    enable: bool,
+    gain_permille: u16,
+    max_counts: u16,
+) -> TmcRequest {
+    TmcRequest::new(
+        channel,
+        TmcRequestKind::SetPositionLead {
+            enable,
+            gain_permille,
+            max_counts,
+        },
+    )
+}
+
 /// Build a `SetVoltageLimit` request.
 pub fn tmc_set_voltage_limit(channel: u8, voltage_limit: u32) -> TmcRequest {
     TmcRequest::new(channel, TmcRequestKind::SetVoltageLimit { voltage_limit })
@@ -593,6 +618,34 @@ pub fn compute_velocity_offset_scaled(
     let magnitude = (scale_factor / step_interval) as u64 * multiplier as u64;
     let magnitude = magnitude.min(i32::MAX as u64) as i32;
     if dir_high { -magnitude } else { magnitude }
+}
+
+/// Compute a bounded logical position-target lead from the command velocity.
+///
+/// The returned value is in firmware logical step counts, not TMC4671
+/// electrical-position counts. With OpenFFBoard's current hardware STEP/DIR
+/// path, DIR high increments the firmware step counter even though the TMC
+/// velocity monitor reports a negative velocity for that same direction.
+pub fn compute_position_lead_counts(
+    scale_factor: u32,
+    step_interval: u32,
+    dir_high: bool,
+    gain_permille: u16,
+    max_counts: u16,
+) -> i16 {
+    if scale_factor == 0 || step_interval == 0 || gain_permille == 0 || max_counts == 0 {
+        return 0;
+    }
+
+    let velocity = compute_command_velocity_reference(scale_factor, step_interval, dir_high);
+    let magnitude = (velocity.unsigned_abs() as u64 * gain_permille as u64 / 1000)
+        .min(max_counts as u64)
+        .min(i16::MAX as u64) as i16;
+    if magnitude == 0 {
+        return 0;
+    }
+
+    if dir_high { magnitude } else { -magnitude }
 }
 
 /// Compute the diagnostic acceleration feedforward torque offset.
@@ -1017,6 +1070,21 @@ mod tests {
     }
 
     #[test]
+    fn tmc_set_position_lead_builds_request() {
+        assert_eq!(
+            tmc_set_position_lead(0, true, 10, 20),
+            TmcRequest::new(
+                0,
+                TmcRequestKind::SetPositionLead {
+                    enable: true,
+                    gain_permille: 10,
+                    max_counts: 20,
+                }
+            )
+        );
+    }
+
+    #[test]
     fn tmc_set_voltage_limit_builds_request() {
         assert_eq!(
             tmc_set_voltage_limit(0, 20_000),
@@ -1178,6 +1246,41 @@ mod tests {
         let offset = compute_velocity_offset_scaled(scale, 2800, false, 40);
 
         assert_eq!(offset, reference * 40);
+    }
+
+    #[test]
+    fn position_lead_zero_cases_disable_lead() {
+        let scale = compute_velocity_scale_factor(16, 84_000_000, 25_000);
+
+        assert_eq!(compute_position_lead_counts(0, 2800, true, 10, 20), 0);
+        assert_eq!(compute_position_lead_counts(scale, 0, true, 10, 20), 0);
+        assert_eq!(compute_position_lead_counts(scale, 2800, true, 0, 20), 0);
+        assert_eq!(compute_position_lead_counts(scale, 2800, true, 10, 0), 0);
+    }
+
+    #[test]
+    fn position_lead_uses_logical_step_direction() {
+        let scale = compute_velocity_scale_factor(16, 84_000_000, 25_000);
+
+        let dir_high = compute_position_lead_counts(scale, 2800, true, 1000, 20);
+        let dir_low = compute_position_lead_counts(scale, 2800, false, 1000, 20);
+
+        assert_eq!(dir_high, 19);
+        assert_eq!(dir_low, -19);
+    }
+
+    #[test]
+    fn position_lead_caps_magnitude() {
+        let scale = compute_velocity_scale_factor(16, 84_000_000, 25_000);
+
+        assert_eq!(
+            compute_position_lead_counts(scale, 2800, true, 4000, 20),
+            20
+        );
+        assert_eq!(
+            compute_position_lead_counts(scale, 2800, false, 4000, 20),
+            -20
+        );
     }
 
     #[test]

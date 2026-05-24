@@ -64,6 +64,7 @@ ankyra::ankyra_provider! {
         crate::ankyra::handlers::tmc::tmc_set_pid_gains,
         crate::ankyra::handlers::tmc::tmc_set_position_filter,
         crate::ankyra::handlers::tmc::tmc_set_position_gains,
+        crate::ankyra::handlers::tmc::tmc_set_position_lead,
         crate::ankyra::handlers::tmc::tmc_set_torque_filter,
         crate::ankyra::handlers::tmc::tmc_set_velocity_feedforward,
         crate::ankyra::handlers::tmc::tmc_set_velocity_filter,

@@ -44,6 +44,12 @@ pub struct TmcChannelState {
     pub accel_feedforward_decel_gain_permille: AtomicU16,
     /// One-tick feedforward reset request after direction changes.
     pub feedforward_reset: AtomicBool,
+    /// Position-target lead diagnostic enable flag.
+    pub position_lead: AtomicBool,
+    /// Position-target lead gain in permille of the velocity reference.
+    pub position_lead_gain_permille: AtomicU16,
+    /// Maximum absolute position-target lead in logical step counts.
+    pub position_lead_max_counts: AtomicU16,
     /// PID error-sum clear request after motion drains.
     pub pid_error_sums_clear: AtomicBool,
     /// Configurable PID velocity limit.
@@ -83,6 +89,9 @@ impl TmcChannelState {
             accel_feedforward_accel_gain_permille: AtomicU16::new(1000),
             accel_feedforward_decel_gain_permille: AtomicU16::new(1000),
             feedforward_reset: AtomicBool::new(false),
+            position_lead: AtomicBool::new(false),
+            position_lead_gain_permille: AtomicU16::new(0),
+            position_lead_max_counts: AtomicU16::new(0),
             pid_error_sums_clear: AtomicBool::new(false),
             velocity_limit_cfg: AtomicU32::new(500_000),
             voltage_limit_cfg: AtomicU32::new(DEFAULT_OPERATIONAL_PIDOUT_UQ_UD_LIMIT),
@@ -115,6 +124,9 @@ impl TmcChannelState {
         self.accel_feedforward_decel_gain_permille
             .store(1000, Relaxed);
         self.feedforward_reset.store(false, Relaxed);
+        self.position_lead.store(false, Relaxed);
+        self.position_lead_gain_permille.store(0, Relaxed);
+        self.position_lead_max_counts.store(0, Relaxed);
         self.pid_error_sums_clear.store(false, Relaxed);
         self.velocity_limit_cfg.store(500_000, Relaxed);
         self.voltage_limit_cfg
