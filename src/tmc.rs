@@ -648,6 +648,29 @@ pub fn compute_position_lead_counts(
     if dir_high { magnitude } else { -magnitude }
 }
 
+/// Compute a relative `PID_POSITION_TARGET` with diagnostic lead applied.
+///
+/// `current_target` is the live TMC4671 target register value. The function
+/// removes the previously applied diagnostic delta before applying the new
+/// lead, so repeated calls do not accumulate lead into the TMC's target frame.
+/// It returns the register value to write and the new applied delta in raw
+/// TMC4671 position counts.
+pub fn compute_position_lead_target(
+    current_target: u32,
+    previous_lead_scaled: i32,
+    lead_counts: i16,
+    step_width: u32,
+) -> (u32, i32) {
+    if step_width == 0 {
+        return (current_target, 0);
+    }
+
+    let new_lead_scaled = i32::from(lead_counts).wrapping_mul(step_width as i32);
+    let base_target = (current_target as i32).wrapping_sub(previous_lead_scaled);
+    let target = base_target.wrapping_add(new_lead_scaled);
+    (target as u32, new_lead_scaled)
+}
+
 /// Compute the diagnostic acceleration feedforward torque offset.
 ///
 /// The input `interval_add` is Klipper's `queue_step add`: the interval change
@@ -1281,6 +1304,45 @@ mod tests {
             compute_position_lead_counts(scale, 2800, false, 4000, 20),
             -20
         );
+    }
+
+    #[test]
+    fn position_lead_target_does_not_jump_at_rest() {
+        let (target, applied) = compute_position_lead_target(12_345, 0, 0, 16);
+
+        assert_eq!(target, 12_345);
+        assert_eq!(applied, 0);
+    }
+
+    #[test]
+    fn position_lead_target_is_relative_to_current_tmc_target() {
+        let (target, applied) = compute_position_lead_target(1_000, 0, 2, 16);
+
+        assert_eq!(target, 1_032);
+        assert_eq!(applied, 32);
+    }
+
+    #[test]
+    fn position_lead_target_does_not_accumulate_existing_lead() {
+        let previous_applied = 32;
+
+        let (unchanged, still_applied) =
+            compute_position_lead_target(1_192, previous_applied, 2, 16);
+        let (changed, changed_applied) =
+            compute_position_lead_target(1_192, previous_applied, 3, 16);
+
+        assert_eq!(unchanged, 1_192);
+        assert_eq!(still_applied, 32);
+        assert_eq!(changed, 1_208);
+        assert_eq!(changed_applied, 48);
+    }
+
+    #[test]
+    fn position_lead_target_clears_previous_relative_lead() {
+        let (target, applied) = compute_position_lead_target(1_192, 32, 0, 16);
+
+        assert_eq!(target, 1_160);
+        assert_eq!(applied, 0);
     }
 
     #[test]
