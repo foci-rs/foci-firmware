@@ -25,6 +25,15 @@ impl TmcRequest {
     }
 }
 
+/// Runtime acceleration feedforward gains in permille.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+pub struct AccelFeedforwardGains {
+    /// Gain applied while step intervals shrink.
+    pub accel_permille: u16,
+    /// Gain applied while step intervals grow.
+    pub decel_permille: u16,
+}
+
 /// Operation carried by a [`TmcRequest`].
 #[derive(Debug, Clone, PartialEq, Eq, defmt::Format)]
 pub enum TmcRequestKind {
@@ -99,8 +108,10 @@ pub enum TmcRequestKind {
     /// Enable or disable acceleration feedforward in the 1ms tick loop.
     SetAccelFeedforward {
         enable: bool,
-        /// Gain in permille applied to the computed acceleration torque offset.
-        gain_permille: u16,
+        /// Gain in permille applied while step intervals shrink.
+        accel_gain_permille: u16,
+        /// Gain in permille applied while step intervals grow.
+        decel_gain_permille: u16,
     },
     /// Set operational PIDOUT_UQ_UD_LIMITS for authority diagnostics.
     SetVoltageLimit { voltage_limit: u32 },
@@ -340,12 +351,18 @@ pub fn tmc_set_velocity_feedforward(channel: u8, enable: bool, multiplier: u16) 
 }
 
 /// Build a `SetAccelFeedforward` request.
-pub fn tmc_set_accel_feedforward(channel: u8, enable: bool, gain_permille: u16) -> TmcRequest {
+pub fn tmc_set_accel_feedforward(
+    channel: u8,
+    enable: bool,
+    accel_gain_permille: u16,
+    decel_gain_permille: u16,
+) -> TmcRequest {
     TmcRequest::new(
         channel,
         TmcRequestKind::SetAccelFeedforward {
             enable,
-            gain_permille,
+            accel_gain_permille,
+            decel_gain_permille,
         },
     )
 }
@@ -633,6 +650,34 @@ pub fn compute_accel_torque_offset(
     } else {
         magnitude
     }
+}
+
+/// Compute acceleration feedforward with independent accel/decel gains.
+pub fn compute_accel_torque_offset_split(
+    scale_factor: u32,
+    clock_freq: u32,
+    step_interval: u32,
+    interval_add: i16,
+    dir_high: bool,
+    gains: AccelFeedforwardGains,
+    torque_limit: u32,
+) -> i16 {
+    let gain_permille = if interval_add < 0 {
+        gains.accel_permille
+    } else if interval_add > 0 {
+        gains.decel_permille
+    } else {
+        0
+    };
+    compute_accel_torque_offset(
+        scale_factor,
+        clock_freq,
+        step_interval,
+        interval_add,
+        dir_high,
+        gain_permille,
+        torque_limit,
+    )
 }
 
 /// Pack signed torque and flux targets for PID_TORQUE_FLUX_TARGET.
@@ -959,12 +1004,13 @@ mod tests {
     #[test]
     fn tmc_set_accel_feedforward_builds_request() {
         assert_eq!(
-            tmc_set_accel_feedforward(0, true, 1000),
+            tmc_set_accel_feedforward(0, true, 1000, 500),
             TmcRequest::new(
                 0,
                 TmcRequestKind::SetAccelFeedforward {
                     enable: true,
-                    gain_permille: 1000,
+                    accel_gain_permille: 1000,
+                    decel_gain_permille: 500,
                 }
             )
         );
@@ -1167,6 +1213,76 @@ mod tests {
 
         let decel = compute_accel_torque_offset(scale, 84_000_000, 2800, 9, false, 1000, 2816);
         assert_eq!(decel, -1851);
+    }
+
+    #[test]
+    fn acceleration_feedforward_split_uses_accel_gain_for_shrinking_interval() {
+        let scale = compute_velocity_scale_factor(16, 84_000_000, 25_000);
+        assert_eq!(
+            compute_accel_torque_offset_split(
+                scale,
+                84_000_000,
+                2800,
+                -9,
+                false,
+                AccelFeedforwardGains {
+                    accel_permille: 1000,
+                    decel_permille: 0,
+                },
+                2816
+            ),
+            compute_accel_torque_offset(scale, 84_000_000, 2800, -9, false, 1000, 2816)
+        );
+        assert_eq!(
+            compute_accel_torque_offset_split(
+                scale,
+                84_000_000,
+                2800,
+                -9,
+                false,
+                AccelFeedforwardGains {
+                    accel_permille: 0,
+                    decel_permille: 500,
+                },
+                2816
+            ),
+            0
+        );
+    }
+
+    #[test]
+    fn acceleration_feedforward_split_uses_decel_gain_for_growing_interval() {
+        let scale = compute_velocity_scale_factor(16, 84_000_000, 25_000);
+        assert_eq!(
+            compute_accel_torque_offset_split(
+                scale,
+                84_000_000,
+                2800,
+                9,
+                false,
+                AccelFeedforwardGains {
+                    accel_permille: 0,
+                    decel_permille: 500,
+                },
+                2816
+            ),
+            compute_accel_torque_offset(scale, 84_000_000, 2800, 9, false, 500, 2816)
+        );
+        assert_eq!(
+            compute_accel_torque_offset_split(
+                scale,
+                84_000_000,
+                2800,
+                9,
+                false,
+                AccelFeedforwardGains {
+                    accel_permille: 1000,
+                    decel_permille: 0,
+                },
+                2816
+            ),
+            0
+        );
     }
 
     #[test]

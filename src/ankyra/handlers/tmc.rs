@@ -263,7 +263,8 @@ pub fn tmc_set_accel_feedforward(
     ctx: &mut dyn ShutdownRecovery,
     oid: u8,
     enable: u8,
-    gain_permille: u16,
+    accel_gain_permille: u16,
+    decel_gain_permille: u16,
 ) {
     let Some((_channel, state)) = foci_tmc_state_or_shutdown(ctx, oid) else {
         return;
@@ -272,12 +273,16 @@ pub fn tmc_set_accel_feedforward(
         .accel_feedforward
         .store(enable != 0, Ordering::Relaxed);
     state
-        .accel_feedforward_gain_permille
-        .store(gain_permille, Ordering::Relaxed);
+        .accel_feedforward_accel_gain_permille
+        .store(accel_gain_permille, Ordering::Relaxed);
+    state
+        .accel_feedforward_decel_gain_permille
+        .store(decel_gain_permille, Ordering::Relaxed);
     defmt::info!(
-        "Acceleration feedforward: {} gain_permille={}",
+        "Acceleration feedforward: {} accel_gain_permille={} decel_gain_permille={}",
         enable != 0,
-        gain_permille
+        accel_gain_permille,
+        decel_gain_permille
     );
 }
 

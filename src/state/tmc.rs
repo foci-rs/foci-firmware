@@ -38,8 +38,10 @@ pub struct TmcChannelState {
     pub velocity_feedforward_multiplier: AtomicU16,
     /// Acceleration feedforward enable flag.
     pub accel_feedforward: AtomicBool,
-    /// Runtime gain in permille for the computed acceleration torque offset.
-    pub accel_feedforward_gain_permille: AtomicU16,
+    /// Runtime gain in permille while step intervals shrink.
+    pub accel_feedforward_accel_gain_permille: AtomicU16,
+    /// Runtime gain in permille while step intervals grow.
+    pub accel_feedforward_decel_gain_permille: AtomicU16,
     /// One-tick feedforward reset request after direction changes.
     pub feedforward_reset: AtomicBool,
     /// PID error-sum clear request after motion drains.
@@ -78,7 +80,8 @@ impl TmcChannelState {
             velocity_feedforward: AtomicBool::new(false),
             velocity_feedforward_multiplier: AtomicU16::new(1),
             accel_feedforward: AtomicBool::new(false),
-            accel_feedforward_gain_permille: AtomicU16::new(1000),
+            accel_feedforward_accel_gain_permille: AtomicU16::new(1000),
+            accel_feedforward_decel_gain_permille: AtomicU16::new(1000),
             feedforward_reset: AtomicBool::new(false),
             pid_error_sums_clear: AtomicBool::new(false),
             velocity_limit_cfg: AtomicU32::new(500_000),
@@ -107,7 +110,10 @@ impl TmcChannelState {
         self.velocity_feedforward.store(false, Relaxed);
         self.velocity_feedforward_multiplier.store(1, Relaxed);
         self.accel_feedforward.store(false, Relaxed);
-        self.accel_feedforward_gain_permille.store(1000, Relaxed);
+        self.accel_feedforward_accel_gain_permille
+            .store(1000, Relaxed);
+        self.accel_feedforward_decel_gain_permille
+            .store(1000, Relaxed);
         self.feedforward_reset.store(false, Relaxed);
         self.pid_error_sums_clear.store(false, Relaxed);
         self.velocity_limit_cfg.store(500_000, Relaxed);
