@@ -7,8 +7,8 @@
 
 /// FTRC little-endian magic.
 pub const FRAME_MAGIC: u32 = 0x4352_5446;
-/// Version-5 firmware trace protocol.
-pub const PROTOCOL_VERSION: u8 = 5;
+/// Version-6 firmware trace protocol.
+pub const PROTOCOL_VERSION: u8 = 6;
 /// Fixed envelope length in bytes.
 pub const HEADER_LEN: usize = 32;
 /// Maximum critical frame transport budget in bytes.
@@ -53,8 +53,8 @@ pub const ACCEL_FF_FLAG_NONZERO: u8 = 1 << 1;
 /// Acceleration feedforward torque offset reached the configured torque limit.
 pub const ACCEL_FF_FLAG_CLAMPED: u8 = 1 << 2;
 
-/// Version-5 critical payload length.
-pub const CRITICAL_PAYLOAD_LEN: usize = 84;
+/// Version-6 critical payload length.
+pub const CRITICAL_PAYLOAD_LEN: usize = 88;
 /// Version-5 current-path payload length.
 pub const CURRENT_PATH_PAYLOAD_LEN: usize = 16;
 /// Version-1 control-detail payload length.
@@ -275,6 +275,8 @@ pub struct CriticalSample {
     pub accel_feedforward_gain_permille: u16,
     /// Acceleration feedforward diagnostic flags.
     pub accel_feedforward_flags: u8,
+    /// Cached velocity-surface transient feedforward component.
+    pub cached_velocity_transient_offset: i32,
 }
 
 /// Low-rate current-path diagnostic sample.
@@ -392,6 +394,7 @@ pub fn encode_critical_payload(sample: &CriticalSample, out: &mut [u8; CRITICAL_
     put_i32(out, 76, sample.cached_accel_torque_offset);
     put_u16(out, 80, sample.accel_feedforward_gain_permille);
     out[82] = sample.accel_feedforward_flags;
+    put_i32(out, 84, sample.cached_velocity_transient_offset);
 }
 
 /// Encode a current-path payload.
@@ -512,6 +515,7 @@ mod tests {
             cached_accel_torque_offset: -19,
             accel_feedforward_gain_permille: 2000,
             accel_feedforward_flags: 0x03,
+            cached_velocity_transient_offset: 21,
         };
 
         let mut payload = [0xAA; CRITICAL_PAYLOAD_LEN];
@@ -529,12 +533,13 @@ mod tests {
         assert_eq!(&payload[80..82], &2000u16.to_le_bytes());
         assert_eq!(&payload[82..83], &[0x03]);
         assert_eq!(&payload[83..84], &[0]);
+        assert_eq!(&payload[84..88], &21i32.to_le_bytes());
     }
 
     #[test]
     fn fixed_payload_lengths_match_spec() {
-        assert_eq!(PROTOCOL_VERSION, 5);
-        assert_eq!(CRITICAL_PAYLOAD_LEN, 84);
+        assert_eq!(PROTOCOL_VERSION, 6);
+        assert_eq!(CRITICAL_PAYLOAD_LEN, 88);
         assert_eq!(CURRENT_PATH_PAYLOAD_LEN, 16);
         assert_eq!(CONTROL_DETAIL_PAYLOAD_LEN, 28);
         assert_eq!(STATUS_PAYLOAD_LEN, 40);

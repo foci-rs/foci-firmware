@@ -36,6 +36,14 @@ pub struct TmcChannelState {
     pub velocity_feedforward: AtomicBool,
     /// Runtime multiplier for the computed velocity feedforward offset.
     pub velocity_feedforward_multiplier: AtomicU16,
+    /// Velocity-surface transient feedforward enable flag.
+    pub velocity_transient_feedforward: AtomicBool,
+    /// Transient feedforward lead time in microseconds.
+    pub velocity_transient_lead_time_us: AtomicU16,
+    /// Transient feedforward gain in permille.
+    pub velocity_transient_gain_permille: AtomicU16,
+    /// Maximum absolute transient contribution in raw velocity-offset counts.
+    pub velocity_transient_max_offset: AtomicU16,
     /// Acceleration feedforward enable flag.
     pub accel_feedforward: AtomicBool,
     /// Runtime gain in permille while step intervals shrink.
@@ -85,6 +93,10 @@ impl TmcChannelState {
             flux_filter_hz: AtomicU16::new(0),
             velocity_feedforward: AtomicBool::new(false),
             velocity_feedforward_multiplier: AtomicU16::new(1),
+            velocity_transient_feedforward: AtomicBool::new(false),
+            velocity_transient_lead_time_us: AtomicU16::new(0),
+            velocity_transient_gain_permille: AtomicU16::new(0),
+            velocity_transient_max_offset: AtomicU16::new(0),
             accel_feedforward: AtomicBool::new(false),
             accel_feedforward_accel_gain_permille: AtomicU16::new(1000),
             accel_feedforward_decel_gain_permille: AtomicU16::new(1000),
@@ -118,6 +130,10 @@ impl TmcChannelState {
         self.flux_filter_hz.store(0, Relaxed);
         self.velocity_feedforward.store(false, Relaxed);
         self.velocity_feedforward_multiplier.store(1, Relaxed);
+        self.velocity_transient_feedforward.store(false, Relaxed);
+        self.velocity_transient_lead_time_us.store(0, Relaxed);
+        self.velocity_transient_gain_permille.store(0, Relaxed);
+        self.velocity_transient_max_offset.store(0, Relaxed);
         self.accel_feedforward.store(false, Relaxed);
         self.accel_feedforward_accel_gain_permille
             .store(1000, Relaxed);

@@ -34,6 +34,32 @@ pub struct AccelFeedforwardGains {
     pub decel_permille: u16,
 }
 
+/// Command-acceleration inputs for velocity-surface transient feedforward.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+pub struct VelocityTransientFeedforwardInput {
+    /// Precomputed velocity scale factor.
+    pub scale_factor: u32,
+    /// Step-timer clock frequency in Hz.
+    pub clock_freq: u32,
+    /// Current step interval in timer ticks.
+    pub step_interval: u32,
+    /// Klipper interval delta in timer ticks per step.
+    pub interval_add: i16,
+    /// True when the TMC4671 DIR input is high.
+    pub dir_high: bool,
+}
+
+/// Runtime configuration for velocity-surface transient feedforward.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+pub struct VelocityTransientFeedforwardConfig {
+    /// Commanded lead time in microseconds.
+    pub lead_time_us: u16,
+    /// Gain in permille applied to the predicted velocity delta.
+    pub gain_permille: u16,
+    /// Maximum absolute offset in raw `PID_VELOCITY_OFFSET` counts.
+    pub max_offset: u16,
+}
+
 /// Operation carried by a [`TmcRequest`].
 #[derive(Debug, Clone, PartialEq, Eq, defmt::Format)]
 pub enum TmcRequestKind {
@@ -105,6 +131,16 @@ pub enum TmcRequestKind {
     },
     /// Enable or disable velocity feedforward in the 1ms tick loop.
     SetVelocityFeedforward { enable: bool, multiplier: u16 },
+    /// Enable or disable velocity-surface transient feedforward in the 1ms tick loop.
+    SetVelocityTransientFeedforward {
+        enable: bool,
+        /// Lead time in microseconds applied to command acceleration.
+        lead_time_us: u16,
+        /// Gain in permille applied to the predicted velocity delta.
+        gain_permille: u16,
+        /// Maximum absolute raw velocity-offset contribution.
+        max_offset: u16,
+    },
     /// Enable or disable acceleration feedforward in the 1ms tick loop.
     SetAccelFeedforward {
         enable: bool,
@@ -355,6 +391,25 @@ pub fn tmc_set_velocity_feedforward(channel: u8, enable: bool, multiplier: u16) 
     TmcRequest::new(
         channel,
         TmcRequestKind::SetVelocityFeedforward { enable, multiplier },
+    )
+}
+
+/// Build a `SetVelocityTransientFeedforward` request.
+pub fn tmc_set_velocity_transient_feedforward(
+    channel: u8,
+    enable: bool,
+    lead_time_us: u16,
+    gain_permille: u16,
+    max_offset: u16,
+) -> TmcRequest {
+    TmcRequest::new(
+        channel,
+        TmcRequestKind::SetVelocityTransientFeedforward {
+            enable,
+            lead_time_us,
+            gain_permille,
+            max_offset,
+        },
     )
 }
 
@@ -669,6 +724,59 @@ pub fn compute_position_lead_target(
     let base_target = (current_target as i32).wrapping_sub(previous_lead_scaled);
     let target = base_target.wrapping_add(new_lead_scaled);
     (target as u32, new_lead_scaled)
+}
+
+/// Compute a bounded velocity-loop transient offset from command acceleration.
+///
+/// The value predicts how much the command velocity will change over
+/// `lead_time_us`, scales it by `gain_permille`, and applies it through the
+/// same sign convention as `PID_VELOCITY_OFFSET`. It is intended to be added to
+/// the existing velocity feedforward offset and written as one combined
+/// register value.
+pub fn compute_velocity_transient_offset(
+    input: VelocityTransientFeedforwardInput,
+    config: VelocityTransientFeedforwardConfig,
+) -> i32 {
+    if input.scale_factor == 0
+        || input.clock_freq == 0
+        || input.step_interval == 0
+        || input.interval_add == 0
+        || config.lead_time_us == 0
+        || config.gain_permille == 0
+        || config.max_offset == 0
+    {
+        return 0;
+    }
+
+    let interval = input.step_interval as u128;
+    let denominator = interval
+        .saturating_mul(interval)
+        .saturating_mul(interval)
+        .saturating_mul(1_000_000)
+        .saturating_mul(1000);
+    if denominator == 0 {
+        return 0;
+    }
+
+    let numerator = input.interval_add.unsigned_abs() as u128
+        * input.scale_factor as u128
+        * input.clock_freq as u128
+        * config.lead_time_us as u128
+        * config.gain_permille as u128;
+    let magnitude = (numerator / denominator)
+        .min(config.max_offset as u128)
+        .min(i32::MAX as u128) as i32;
+    if magnitude == 0 {
+        return 0;
+    }
+
+    let accel_sign = if input.interval_add < 0 { 1 } else { -1 };
+    let direction_sign = if input.dir_high { -1 } else { 1 };
+    if accel_sign * direction_sign < 0 {
+        -magnitude
+    } else {
+        magnitude
+    }
 }
 
 /// Compute the diagnostic acceleration feedforward torque offset.
@@ -1078,6 +1186,22 @@ mod tests {
     }
 
     #[test]
+    fn tmc_set_velocity_transient_feedforward_builds_request() {
+        assert_eq!(
+            tmc_set_velocity_transient_feedforward(0, true, 750, 1000, 2000),
+            TmcRequest::new(
+                0,
+                TmcRequestKind::SetVelocityTransientFeedforward {
+                    enable: true,
+                    lead_time_us: 750,
+                    gain_permille: 1000,
+                    max_offset: 2000,
+                }
+            )
+        );
+    }
+
+    #[test]
     fn tmc_set_accel_feedforward_builds_request() {
         assert_eq!(
             tmc_set_accel_feedforward(0, true, 1000, 500),
@@ -1343,6 +1467,155 @@ mod tests {
 
         assert_eq!(target, 1_160);
         assert_eq!(applied, 0);
+    }
+
+    #[test]
+    fn velocity_transient_zero_cases_disable_offset() {
+        let config = VelocityTransientFeedforwardConfig {
+            lead_time_us: 1_000,
+            gain_permille: 1_000,
+            max_offset: 1_000,
+        };
+        assert_eq!(
+            compute_velocity_transient_offset(
+                velocity_transient_input(0, 1_000, 1_000, -10, false),
+                config,
+            ),
+            0
+        );
+        assert_eq!(
+            compute_velocity_transient_offset(
+                velocity_transient_input(1_000, 0, 1_000, -10, false),
+                config,
+            ),
+            0
+        );
+        assert_eq!(
+            compute_velocity_transient_offset(
+                velocity_transient_input(1_000, 1_000, 0, -10, false),
+                config,
+            ),
+            0
+        );
+        assert_eq!(
+            compute_velocity_transient_offset(
+                velocity_transient_input(1_000, 1_000, 1_000, 0, false),
+                config,
+            ),
+            0
+        );
+        assert_eq!(
+            compute_velocity_transient_offset(
+                velocity_transient_input(1_000, 1_000, 1_000, -10, false),
+                VelocityTransientFeedforwardConfig {
+                    lead_time_us: 0,
+                    gain_permille: 1_000,
+                    max_offset: 1_000,
+                },
+            ),
+            0
+        );
+        assert_eq!(
+            compute_velocity_transient_offset(
+                velocity_transient_input(1_000, 1_000, 1_000, -10, false),
+                VelocityTransientFeedforwardConfig {
+                    lead_time_us: 1_000,
+                    gain_permille: 0,
+                    max_offset: 1_000,
+                },
+            ),
+            0
+        );
+        assert_eq!(
+            compute_velocity_transient_offset(
+                velocity_transient_input(1_000, 1_000, 1_000, -10, false),
+                VelocityTransientFeedforwardConfig {
+                    lead_time_us: 1_000,
+                    gain_permille: 1_000,
+                    max_offset: 0,
+                },
+            ),
+            0
+        );
+    }
+
+    #[test]
+    fn velocity_transient_uses_accel_direction_and_dir_sign() {
+        let config = VelocityTransientFeedforwardConfig {
+            lead_time_us: 1_000,
+            gain_permille: 1_000,
+            max_offset: 10_000,
+        };
+        assert_eq!(
+            compute_velocity_transient_offset(
+                velocity_transient_input(1_000_000, 1_000_000, 1_000, -1_000, false),
+                config,
+            ),
+            1_000
+        );
+        assert_eq!(
+            compute_velocity_transient_offset(
+                velocity_transient_input(1_000_000, 1_000_000, 1_000, 1_000, false),
+                config,
+            ),
+            -1_000
+        );
+        assert_eq!(
+            compute_velocity_transient_offset(
+                velocity_transient_input(1_000_000, 1_000_000, 1_000, -1_000, true),
+                config,
+            ),
+            -1_000
+        );
+        assert_eq!(
+            compute_velocity_transient_offset(
+                velocity_transient_input(1_000_000, 1_000_000, 1_000, 1_000, true),
+                config,
+            ),
+            1_000
+        );
+    }
+
+    #[test]
+    fn velocity_transient_applies_gain_and_clamp() {
+        assert_eq!(
+            compute_velocity_transient_offset(
+                velocity_transient_input(1_000_000, 1_000_000, 1_000, -1_000, false),
+                VelocityTransientFeedforwardConfig {
+                    lead_time_us: 1_000,
+                    gain_permille: 500,
+                    max_offset: 10_000,
+                },
+            ),
+            500
+        );
+        assert_eq!(
+            compute_velocity_transient_offset(
+                velocity_transient_input(1_000_000, 1_000_000, 1_000, -1_000, false),
+                VelocityTransientFeedforwardConfig {
+                    lead_time_us: 1_000,
+                    gain_permille: 2_000,
+                    max_offset: 750,
+                },
+            ),
+            750
+        );
+    }
+
+    fn velocity_transient_input(
+        scale_factor: u32,
+        clock_freq: u32,
+        step_interval: u32,
+        interval_add: i16,
+        dir_high: bool,
+    ) -> VelocityTransientFeedforwardInput {
+        VelocityTransientFeedforwardInput {
+            scale_factor,
+            clock_freq,
+            step_interval,
+            interval_add,
+            dir_high,
+        }
     }
 
     #[test]
