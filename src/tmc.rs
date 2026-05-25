@@ -60,6 +60,28 @@ pub struct VelocityTransientFeedforwardConfig {
     pub max_offset: u16,
 }
 
+/// Default velocity-transient update rate in Hz.
+pub const VELOCITY_TRANSIENT_DEFAULT_RATE_HZ: u16 = 1_000;
+/// Highest supported velocity-transient update rate in Hz.
+pub const VELOCITY_TRANSIENT_MAX_RATE_HZ: u16 = 10_000;
+
+/// Normalize a requested velocity-transient update rate.
+pub fn normalize_velocity_transient_rate_hz(rate_hz: u16) -> u16 {
+    if rate_hz == 0 {
+        VELOCITY_TRANSIENT_DEFAULT_RATE_HZ
+    } else {
+        rate_hz.clamp(
+            VELOCITY_TRANSIENT_DEFAULT_RATE_HZ,
+            VELOCITY_TRANSIENT_MAX_RATE_HZ,
+        )
+    }
+}
+
+/// Return the control period in microseconds for a transient update rate.
+pub fn velocity_transient_period_us(rate_hz: u16) -> u32 {
+    1_000_000 / u32::from(normalize_velocity_transient_rate_hz(rate_hz))
+}
+
 /// Operation carried by a [`TmcRequest`].
 #[derive(Debug, Clone, PartialEq, Eq, defmt::Format)]
 pub enum TmcRequestKind {
@@ -131,7 +153,7 @@ pub enum TmcRequestKind {
     },
     /// Enable or disable velocity feedforward in the 1ms tick loop.
     SetVelocityFeedforward { enable: bool, multiplier: u16 },
-    /// Enable or disable velocity-surface transient feedforward in the 1ms tick loop.
+    /// Enable or disable velocity-surface transient feedforward.
     SetVelocityTransientFeedforward {
         enable: bool,
         /// Lead time in microseconds applied to command acceleration.
@@ -140,6 +162,8 @@ pub enum TmcRequestKind {
         gain_permille: u16,
         /// Maximum absolute raw velocity-offset contribution.
         max_offset: u16,
+        /// Requested update rate in Hz.
+        rate_hz: u16,
     },
     /// Enable or disable acceleration feedforward in the 1ms tick loop.
     SetAccelFeedforward {
@@ -401,6 +425,7 @@ pub fn tmc_set_velocity_transient_feedforward(
     lead_time_us: u16,
     gain_permille: u16,
     max_offset: u16,
+    rate_hz: u16,
 ) -> TmcRequest {
     TmcRequest::new(
         channel,
@@ -409,6 +434,7 @@ pub fn tmc_set_velocity_transient_feedforward(
             lead_time_us,
             gain_permille,
             max_offset,
+            rate_hz: normalize_velocity_transient_rate_hz(rate_hz),
         },
     )
 }
@@ -1188,7 +1214,7 @@ mod tests {
     #[test]
     fn tmc_set_velocity_transient_feedforward_builds_request() {
         assert_eq!(
-            tmc_set_velocity_transient_feedforward(0, true, 750, 1000, 2000),
+            tmc_set_velocity_transient_feedforward(0, true, 750, 1000, 2000, 10_000),
             TmcRequest::new(
                 0,
                 TmcRequestKind::SetVelocityTransientFeedforward {
@@ -1196,9 +1222,22 @@ mod tests {
                     lead_time_us: 750,
                     gain_permille: 1000,
                     max_offset: 2000,
+                    rate_hz: 10_000,
                 }
             )
         );
+    }
+
+    #[test]
+    fn velocity_transient_rate_is_normalized_to_supported_periods() {
+        assert_eq!(normalize_velocity_transient_rate_hz(0), 1_000);
+        assert_eq!(normalize_velocity_transient_rate_hz(500), 1_000);
+        assert_eq!(normalize_velocity_transient_rate_hz(10_000), 10_000);
+        assert_eq!(normalize_velocity_transient_rate_hz(25_000), 10_000);
+
+        assert_eq!(velocity_transient_period_us(1_000), 1_000);
+        assert_eq!(velocity_transient_period_us(10_000), 100);
+        assert_eq!(velocity_transient_period_us(25_000), 100);
     }
 
     #[test]

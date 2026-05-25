@@ -44,6 +44,8 @@ pub struct TmcChannelState {
     pub velocity_transient_gain_permille: AtomicU16,
     /// Maximum absolute transient contribution in raw velocity-offset counts.
     pub velocity_transient_max_offset: AtomicU16,
+    /// Requested transient feedforward update rate in Hz.
+    pub velocity_transient_rate_hz: AtomicU16,
     /// Acceleration feedforward enable flag.
     pub accel_feedforward: AtomicBool,
     /// Runtime gain in permille while step intervals shrink.
@@ -97,6 +99,7 @@ impl TmcChannelState {
             velocity_transient_lead_time_us: AtomicU16::new(0),
             velocity_transient_gain_permille: AtomicU16::new(0),
             velocity_transient_max_offset: AtomicU16::new(0),
+            velocity_transient_rate_hz: AtomicU16::new(1000),
             accel_feedforward: AtomicBool::new(false),
             accel_feedforward_accel_gain_permille: AtomicU16::new(1000),
             accel_feedforward_decel_gain_permille: AtomicU16::new(1000),
@@ -134,6 +137,7 @@ impl TmcChannelState {
         self.velocity_transient_lead_time_us.store(0, Relaxed);
         self.velocity_transient_gain_permille.store(0, Relaxed);
         self.velocity_transient_max_offset.store(0, Relaxed);
+        self.velocity_transient_rate_hz.store(1000, Relaxed);
         self.accel_feedforward.store(false, Relaxed);
         self.accel_feedforward_accel_gain_permille
             .store(1000, Relaxed);

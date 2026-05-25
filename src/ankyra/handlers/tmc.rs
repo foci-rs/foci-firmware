@@ -266,10 +266,12 @@ pub fn tmc_set_velocity_transient_feedforward(
     lead_time_us: u16,
     gain_permille: u16,
     max_offset: u16,
+    rate_hz: u16,
 ) {
     let Some((_channel, state)) = foci_tmc_state_or_shutdown(ctx, oid) else {
         return;
     };
+    let rate_hz = crate::tmc::normalize_velocity_transient_rate_hz(rate_hz);
     state
         .velocity_transient_feedforward
         .store(enable != 0, Ordering::Relaxed);
@@ -282,12 +284,16 @@ pub fn tmc_set_velocity_transient_feedforward(
     state
         .velocity_transient_max_offset
         .store(max_offset, Ordering::Relaxed);
+    state
+        .velocity_transient_rate_hz
+        .store(rate_hz, Ordering::Relaxed);
     defmt::info!(
-        "Velocity transient feedforward: {} lead_time_us={} gain_permille={} max_offset={}",
+        "Velocity transient feedforward: {} lead_time_us={} gain_permille={} max_offset={} rate_hz={}",
         enable != 0,
         lead_time_us,
         gain_permille,
-        max_offset
+        max_offset,
+        rate_hz
     );
 }
 
