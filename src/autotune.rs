@@ -733,7 +733,7 @@ pub fn simc_current_gains_with_lambda_checked(
 
     // SIMC PI tuning law for FOPDT plant G(s) = K / (tau*s+1) * e^(-theta*s):
     //   Kp = tau / (K * (lambda + theta))
-    //   Ti = max(tau, 16 * (lambda + theta))
+    //   Ti = max(tau, CURRENT_SIMC_TI_MULTIPLIER * (lambda + theta))
     //   Ki = Kp / Ti
     //
     // For current loop: K = 1/R_int (DC gain: current per unit voltage).
