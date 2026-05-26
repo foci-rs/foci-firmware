@@ -839,10 +839,6 @@ pub struct FociStepperPerfStatsResult {
     pub oid: u8,
     /// Board-local channel.
     pub channel: u8,
-    /// Total profiler samples accumulated since the last reset.
-    pub sample_count: u32,
-    /// Trigger-domain critical sections measured since the last reset.
-    pub crit_count: u32,
     /// Longest trigger-domain critical section in CPU cycles.
     pub crit_max_cycles: u32,
     /// Site code that produced `crit_max_cycles`.
@@ -873,12 +869,6 @@ pub struct FociStepperPerfStatsResult {
     pub tim5_event_count_total: u32,
     /// TIM5 activations that hit the repeat guard and deferred.
     pub tim5_defer_count: u32,
-    /// TIM5 activations that processed no scheduler event.
-    pub tim5_empty_count: u32,
-    /// Events processed in the most recent TIM5 activation.
-    pub tim5_events_last_activation: u32,
-    /// Max per-activation `dispatch_cycles / processed_events`.
-    pub tim5_burst_cycles_per_event_max: u32,
     /// Raw dispatch cycles for the activation that set `tim5_burst_cycles_per_event_max`.
     pub tim5_burst_cycles_per_event_max_cycles: u32,
     /// Events processed by the activation that set `tim5_burst_cycles_per_event_max`.
@@ -895,10 +885,6 @@ pub struct FociStepperPerfStatsResult {
     pub scheduler_cycles_events_at_max: u32,
     /// Max per-activation `scheduler_cycles / processed_events`.
     pub scheduler_cycles_per_event_max: u32,
-    /// Raw scheduler cycles for the activation that set the per-event max.
-    pub scheduler_cycles_per_event_max_cycles: u32,
-    /// Events processed by the activation that set the per-event max.
-    pub scheduler_cycles_per_event_max_events: u32,
     /// Max scheduler cycles/event for activations with at least three events.
     pub scheduler_cycles_per_event_floor3_max: u32,
     /// Scheduler insertions dropped because the fixed table was full.
