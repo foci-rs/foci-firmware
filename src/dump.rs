@@ -25,6 +25,7 @@ pub const DUMP_REGISTERS: &[u8] = &[
     0x25, // ABN_DECODER_MODE
     0x26, // ABN_DECODER_PPR
     0x27, // ABN_DECODER_COUNT
+    0x29, // ABN_DECODER_PHI_E_PHI_M_OFFSET
     0x2A, // ABN_DECODER_PHI_E_PHI_M
     // Selection registers
     0x50, // VELOCITY_SELECTION
@@ -110,6 +111,14 @@ mod tests {
         assert!(DUMP_REGISTERS.contains(&0x50), "missing VELOCITY_SELECTION");
         assert!(DUMP_REGISTERS.contains(&0x51), "missing POSITION_SELECTION");
         assert!(DUMP_REGISTERS.contains(&0x52), "missing PHI_E_SELECTION");
+    }
+
+    #[test]
+    fn dump_registers_include_abn_phase_offset() {
+        assert!(
+            DUMP_REGISTERS.contains(&0x29),
+            "missing ABN_DECODER_PHI_E_PHI_M_OFFSET"
+        );
     }
 
     #[test]

@@ -74,6 +74,14 @@ pub struct TmcChannelState {
     pub position_lead_gain_permille: AtomicU16,
     /// Maximum absolute position-target lead in logical step counts.
     pub position_lead_max_counts: AtomicU16,
+    /// Runtime commutation phase-advance diagnostic enable flag.
+    pub phase_advance: AtomicBool,
+    /// Signed gain in ppm of command velocity reference.
+    pub phase_advance_gain_ppm: AtomicI32,
+    /// Maximum absolute ABN PHI_E advance in electrical-angle counts.
+    pub phase_advance_max_counts: AtomicU16,
+    /// TMC velocity-reference deadband in counts.
+    pub phase_advance_deadband: AtomicU16,
     /// PID error-sum clear request after motion drains.
     pub pid_error_sums_clear: AtomicBool,
     /// Configurable PID velocity limit.
@@ -128,6 +136,10 @@ impl TmcChannelState {
             position_lead: AtomicBool::new(false),
             position_lead_gain_permille: AtomicU16::new(0),
             position_lead_max_counts: AtomicU16::new(0),
+            phase_advance: AtomicBool::new(false),
+            phase_advance_gain_ppm: AtomicI32::new(0),
+            phase_advance_max_counts: AtomicU16::new(0),
+            phase_advance_deadband: AtomicU16::new(16),
             pid_error_sums_clear: AtomicBool::new(false),
             velocity_limit_cfg: AtomicU32::new(500_000),
             voltage_limit_cfg: AtomicU32::new(DEFAULT_OPERATIONAL_PIDOUT_UQ_UD_LIMIT),
@@ -175,6 +187,10 @@ impl TmcChannelState {
         self.position_lead.store(false, Relaxed);
         self.position_lead_gain_permille.store(0, Relaxed);
         self.position_lead_max_counts.store(0, Relaxed);
+        self.phase_advance.store(false, Relaxed);
+        self.phase_advance_gain_ppm.store(0, Relaxed);
+        self.phase_advance_max_counts.store(0, Relaxed);
+        self.phase_advance_deadband.store(16, Relaxed);
         self.pid_error_sums_clear.store(false, Relaxed);
         self.velocity_limit_cfg.store(500_000, Relaxed);
         self.voltage_limit_cfg
@@ -248,5 +264,21 @@ mod tests {
     #[test]
     fn tmc_channel_rejects_out_of_range_index() {
         assert!(tmc_channel(MAX_TMC_CHANNELS as u8).is_none());
+    }
+
+    #[test]
+    fn reset_clears_phase_advance_state() {
+        let channel = TmcChannelState::new();
+        channel.phase_advance.store(true, Relaxed);
+        channel.phase_advance_gain_ppm.store(60_000, Relaxed);
+        channel.phase_advance_max_counts.store(64, Relaxed);
+        channel.phase_advance_deadband.store(4, Relaxed);
+
+        channel.reset();
+
+        assert!(!channel.phase_advance.load(Relaxed));
+        assert_eq!(channel.phase_advance_gain_ppm.load(Relaxed), 0);
+        assert_eq!(channel.phase_advance_max_counts.load(Relaxed), 0);
+        assert_eq!(channel.phase_advance_deadband.load(Relaxed), 16);
     }
 }

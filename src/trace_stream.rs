@@ -28,6 +28,8 @@ pub const FRAME_TYPE_EVENT: u8 = 4;
 pub const FRAME_TYPE_METADATA: u8 = 5;
 /// Low-rate current-path diagnostic frame type.
 pub const FRAME_TYPE_CURRENT_PATH: u8 = 6;
+/// Runtime phase-advance diagnostic frame type.
+pub const FRAME_TYPE_PHASE_ADVANCE: u8 = 7;
 
 /// Board-level source kind.
 pub const SOURCE_KIND_BOARD: u8 = 0;
@@ -52,11 +54,25 @@ pub const ACCEL_FF_FLAG_ENABLED: u8 = 1 << 0;
 pub const ACCEL_FF_FLAG_NONZERO: u8 = 1 << 1;
 /// Acceleration feedforward torque offset reached the configured torque limit.
 pub const ACCEL_FF_FLAG_CLAMPED: u8 = 1 << 2;
+/// Phase advance was enabled and ungated for this sample.
+pub const PHASE_ADVANCE_FLAG_ENABLED: u8 = 1 << 0;
+/// Phase advance requested a non-zero electrical-angle offset.
+pub const PHASE_ADVANCE_FLAG_NONZERO: u8 = 1 << 1;
+/// Phase advance reached the configured cap.
+pub const PHASE_ADVANCE_FLAG_CLAMPED: u8 = 1 << 2;
+/// Phase advance output was zeroed by velocity deadband.
+pub const PHASE_ADVANCE_FLAG_DEADBAND: u8 = 1 << 3;
+/// Phase advance was gated by homing, reset, or disabled state.
+pub const PHASE_ADVANCE_FLAG_GATED: u8 = 1 << 4;
+/// Last phase-advance register write failed; hardware state may be stale.
+pub const PHASE_ADVANCE_FLAG_WRITE_FAILED: u8 = 1 << 5;
 
 /// Version-6 critical payload length.
 pub const CRITICAL_PAYLOAD_LEN: usize = 88;
 /// Version-5 current-path payload length.
 pub const CURRENT_PATH_PAYLOAD_LEN: usize = 16;
+/// Version-1 phase-advance payload length.
+pub const PHASE_ADVANCE_PAYLOAD_LEN: usize = 12;
 /// Version-1 control-detail payload length.
 pub const CONTROL_DETAIL_PAYLOAD_LEN: usize = 28;
 /// Version-1 status payload length.
@@ -292,6 +308,23 @@ pub struct CurrentPathSample {
     pub interim_adc_i1_i0: u32,
 }
 
+/// Low-rate runtime phase-advance diagnostic sample.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct PhaseAdvanceSample {
+    /// Requested signed electrical-angle advance in PHI_E counts.
+    pub phase_advance_counts: i16,
+    /// Phase-advance diagnostic flags.
+    pub phase_advance_flags: u8,
+    /// Reserved alignment byte.
+    pub reserved: u8,
+    /// Configured signed gain in ppm.
+    pub gain_ppm: i32,
+    /// Configured maximum absolute advance in PHI_E counts.
+    pub max_counts: u16,
+    /// Configured target-velocity deadband.
+    pub deadband: u16,
+}
+
 /// Control-detail sample.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ControlDetailSample {
@@ -357,6 +390,10 @@ fn put_i32(out: &mut [u8], offset: usize, value: i32) {
     out[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
 }
 
+fn put_i16(out: &mut [u8], offset: usize, value: i16) {
+    out[offset..offset + 2].copy_from_slice(&value.to_le_bytes());
+}
+
 fn put_u16(out: &mut [u8], offset: usize, value: u16) {
     out[offset..offset + 2].copy_from_slice(&value.to_le_bytes());
 }
@@ -407,6 +444,20 @@ pub fn encode_current_path_payload(
     put_u32(out, 4, sample.interim_foc_iq_id);
     put_u32(out, 8, sample.interim_foc_iwy_iux);
     put_u32(out, 12, sample.interim_adc_i1_i0);
+}
+
+/// Encode a phase-advance payload.
+pub fn encode_phase_advance_payload(
+    sample: &PhaseAdvanceSample,
+    out: &mut [u8; PHASE_ADVANCE_PAYLOAD_LEN],
+) {
+    *out = [0; PHASE_ADVANCE_PAYLOAD_LEN];
+    put_i16(out, 0, sample.phase_advance_counts);
+    out[2] = sample.phase_advance_flags;
+    out[3] = sample.reserved;
+    put_i32(out, 4, sample.gain_ppm);
+    put_u16(out, 8, sample.max_counts);
+    put_u16(out, 10, sample.deadband);
 }
 
 /// Encode a control-detail payload.
@@ -541,11 +592,13 @@ mod tests {
         assert_eq!(PROTOCOL_VERSION, 6);
         assert_eq!(CRITICAL_PAYLOAD_LEN, 88);
         assert_eq!(CURRENT_PATH_PAYLOAD_LEN, 16);
+        assert_eq!(PHASE_ADVANCE_PAYLOAD_LEN, 12);
         assert_eq!(CONTROL_DETAIL_PAYLOAD_LEN, 28);
         assert_eq!(STATUS_PAYLOAD_LEN, 40);
         assert_eq!(EVENT_PAYLOAD_LEN, 24);
         assert!(HEADER_LEN + CRITICAL_PAYLOAD_LEN <= CRITICAL_FRAME_BUDGET);
         assert!(HEADER_LEN + CURRENT_PATH_PAYLOAD_LEN <= CONTROL_DETAIL_FRAME_BUDGET);
+        assert!(HEADER_LEN + PHASE_ADVANCE_PAYLOAD_LEN <= 64);
         assert!(HEADER_LEN + METADATA_PAYLOAD_MAX <= FRAME_BUF_CAPACITY);
     }
 
@@ -566,6 +619,34 @@ mod tests {
         assert_eq!(&payload[4..8], &20u32.to_le_bytes());
         assert_eq!(&payload[8..12], &21u32.to_le_bytes());
         assert_eq!(&payload[12..16], &22u32.to_le_bytes());
+    }
+
+    #[test]
+    fn phase_advance_payload_layout_is_fixed() {
+        let sample = PhaseAdvanceSample {
+            phase_advance_counts: -64,
+            phase_advance_flags: PHASE_ADVANCE_FLAG_ENABLED
+                | PHASE_ADVANCE_FLAG_NONZERO
+                | PHASE_ADVANCE_FLAG_CLAMPED,
+            reserved: 0,
+            gain_ppm: -60_000,
+            max_counts: 64,
+            deadband: 16,
+        };
+        let mut payload = [0xAA; PHASE_ADVANCE_PAYLOAD_LEN];
+        encode_phase_advance_payload(&sample, &mut payload);
+
+        assert_eq!(PHASE_ADVANCE_PAYLOAD_LEN, 12);
+        assert_eq!(i16::from_le_bytes([payload[0], payload[1]]), -64);
+        assert_eq!(payload[2], 0b0000_0111);
+        assert_eq!(payload[3], 0);
+        assert_eq!(
+            i32::from_le_bytes(payload[4..8].try_into().unwrap()),
+            -60_000
+        );
+        assert_eq!(u16::from_le_bytes([payload[8], payload[9]]), 64);
+        assert_eq!(u16::from_le_bytes([payload[10], payload[11]]), 16);
+        assert!(HEADER_LEN + PHASE_ADVANCE_PAYLOAD_LEN <= 64);
     }
 
     #[test]
