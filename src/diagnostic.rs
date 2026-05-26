@@ -161,6 +161,52 @@ pub struct StepperExecutionSnapshot {
     pub queue_len: u16,
 }
 
+/// Snapshot of board-local step-dispatch performance counters.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+pub struct StepperPerfSnapshot {
+    /// Board-local stepper channel associated with the query.
+    pub channel: u8,
+    /// Total profiler samples accumulated since the last reset.
+    pub sample_count: u32,
+    /// Trigger-domain critical sections measured since the last reset.
+    pub crit_count: u32,
+    /// Longest trigger-domain critical section in CPU cycles.
+    pub crit_max_cycles: u32,
+    /// Site code that produced `crit_max_cycles`.
+    pub crit_max_site: u8,
+    /// Critical sections longer than 10 us.
+    pub crit_over_10us: u32,
+    /// Critical sections longer than 50 us.
+    pub crit_over_50us: u32,
+    /// Critical sections longer than 100 us.
+    pub crit_over_100us: u32,
+    /// Critical sections longer than 1000 us.
+    pub crit_over_1000us: u32,
+    /// `queue_step` trigger-domain sections measured since the last reset.
+    pub queue_step_count: u32,
+    /// Longest `queue_step` trigger-domain section in CPU cycles.
+    pub queue_step_max_cycles: u32,
+    /// TIM5 IRQ entries measured since the last reset.
+    pub tim5_irq_count: u32,
+    /// Longest TIM5 IRQ handler duration in CPU cycles.
+    pub tim5_irq_max_cycles: u32,
+    /// Longest TIM5 scheduler dispatch duration in CPU cycles.
+    pub tim5_dispatch_max_cycles: u32,
+    /// Largest number of due events processed by one TIM5 IRQ.
+    pub tim5_events_max_per_irq: u32,
+}
+
+/// Fatal step-dispatch event with a performance-counter snapshot.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+pub struct StepperPerfDiagnosticEvent {
+    /// Event reason that caused the snapshot.
+    pub reason: StepperEventReason,
+    /// TIM5/Klipper clock at event time.
+    pub clock: u32,
+    /// Dispatch performance counters captured near event time.
+    pub snapshot: StepperPerfSnapshot,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -273,5 +319,61 @@ mod tests {
         assert_eq!(snapshot.last_stop_remaining_events, 61596);
         assert_eq!(snapshot.last_stop_drained_steps, 11_128);
         assert!(!snapshot.timer_active);
+    }
+
+    #[test]
+    fn stepper_perf_snapshot_reports_dispatch_counters() {
+        let snapshot = StepperPerfSnapshot {
+            channel: 0,
+            sample_count: 42,
+            crit_count: 37,
+            crit_max_cycles: 190_000,
+            crit_max_site: 1,
+            crit_over_10us: 9,
+            crit_over_50us: 4,
+            crit_over_100us: 2,
+            crit_over_1000us: 1,
+            queue_step_count: 23,
+            queue_step_max_cycles: 175_000,
+            tim5_irq_count: 400,
+            tim5_irq_max_cycles: 2_400,
+            tim5_dispatch_max_cycles: 2_100,
+            tim5_events_max_per_irq: 3,
+        };
+
+        assert_eq!(snapshot.channel, 0);
+        assert_eq!(snapshot.crit_max_cycles, 190_000);
+        assert_eq!(snapshot.queue_step_max_cycles, 175_000);
+        assert_eq!(snapshot.tim5_events_max_per_irq, 3);
+    }
+
+    #[test]
+    fn stepper_perf_event_carries_reason_clock_and_snapshot() {
+        let snapshot = StepperPerfSnapshot {
+            channel: 0,
+            sample_count: 42,
+            crit_count: 37,
+            crit_max_cycles: 190_000,
+            crit_max_site: 1,
+            crit_over_10us: 9,
+            crit_over_50us: 4,
+            crit_over_100us: 2,
+            crit_over_1000us: 1,
+            queue_step_count: 23,
+            queue_step_max_cycles: 175_000,
+            tim5_irq_count: 400,
+            tim5_irq_max_cycles: 2_400,
+            tim5_dispatch_max_cycles: 2_100,
+            tim5_events_max_per_irq: 3,
+        };
+        let event = StepperPerfDiagnosticEvent {
+            reason: StepperEventReason::MissedDeadlineLoad,
+            clock: 123_456,
+            snapshot,
+        };
+
+        assert_eq!(event.reason, StepperEventReason::MissedDeadlineLoad);
+        assert_eq!(event.clock, 123_456);
+        assert_eq!(event.snapshot.crit_over_1000us, 1);
     }
 }

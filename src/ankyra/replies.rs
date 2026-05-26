@@ -670,6 +670,47 @@ pub struct FociStepperEvent {
     pub data1: u32,
 }
 
+/// `foci_stepper_perf_event` reply - fatal dispatch performance snapshot.
+///
+/// Wire name: `foci_stepper_perf_event`.
+#[klipper_reply]
+pub struct FociStepperPerfEvent {
+    /// Reason code from `foci_firmware::diagnostic::StepperEventReason`.
+    pub reason: u8,
+    /// Board-local channel.
+    pub channel: u8,
+    /// TIM5/Klipper clock at event time.
+    pub clock: u32,
+    /// Total profiler samples accumulated since the last reset.
+    pub sample_count: u32,
+    /// Trigger-domain critical sections measured since the last reset.
+    pub crit_count: u32,
+    /// Longest trigger-domain critical section in CPU cycles.
+    pub crit_max_cycles: u32,
+    /// Site code that produced `crit_max_cycles`.
+    pub crit_max_site: u8,
+    /// Critical sections longer than 10 us.
+    pub crit_over_10us: u32,
+    /// Critical sections longer than 50 us.
+    pub crit_over_50us: u32,
+    /// Critical sections longer than 100 us.
+    pub crit_over_100us: u32,
+    /// Critical sections longer than 1000 us.
+    pub crit_over_1000us: u32,
+    /// `queue_step` trigger-domain sections measured since the last reset.
+    pub queue_step_count: u32,
+    /// Longest `queue_step` trigger-domain section in CPU cycles.
+    pub queue_step_max_cycles: u32,
+    /// TIM5 IRQ entries measured since the last reset.
+    pub tim5_irq_count: u32,
+    /// Longest TIM5 IRQ handler duration in CPU cycles.
+    pub tim5_irq_max_cycles: u32,
+    /// Longest TIM5 scheduler dispatch duration in CPU cycles.
+    pub tim5_dispatch_max_cycles: u32,
+    /// Largest number of due events processed by one TIM5 IRQ.
+    pub tim5_events_max_per_irq: u32,
+}
+
 /// `foci_stepper_stats_result` reply - step queue/execution counters.
 ///
 /// Wire name: `foci_stepper_stats_result`.
@@ -745,6 +786,45 @@ pub struct FociStepperTimingStatsResult {
     pub first_step_clock: u32,
     /// `first_step_clock - last_activation_clock`, interpreted as signed ticks.
     pub first_step_delay_ticks: i32,
+}
+
+/// `foci_stepper_perf_stats_result` reply - dispatch performance counters.
+///
+/// Wire name: `foci_stepper_perf_stats_result`.
+#[klipper_reply]
+pub struct FociStepperPerfStatsResult {
+    /// Object id of the queried FOCI endpoint.
+    pub oid: u8,
+    /// Board-local channel.
+    pub channel: u8,
+    /// Total profiler samples accumulated since the last reset.
+    pub sample_count: u32,
+    /// Trigger-domain critical sections measured since the last reset.
+    pub crit_count: u32,
+    /// Longest trigger-domain critical section in CPU cycles.
+    pub crit_max_cycles: u32,
+    /// Site code that produced `crit_max_cycles`.
+    pub crit_max_site: u8,
+    /// Critical sections longer than 10 us.
+    pub crit_over_10us: u32,
+    /// Critical sections longer than 50 us.
+    pub crit_over_50us: u32,
+    /// Critical sections longer than 100 us.
+    pub crit_over_100us: u32,
+    /// Critical sections longer than 1000 us.
+    pub crit_over_1000us: u32,
+    /// `queue_step` trigger-domain sections measured since the last reset.
+    pub queue_step_count: u32,
+    /// Longest `queue_step` trigger-domain section in CPU cycles.
+    pub queue_step_max_cycles: u32,
+    /// TIM5 IRQ entries measured since the last reset.
+    pub tim5_irq_count: u32,
+    /// Longest TIM5 IRQ handler duration in CPU cycles.
+    pub tim5_irq_max_cycles: u32,
+    /// Longest TIM5 scheduler dispatch duration in CPU cycles.
+    pub tim5_dispatch_max_cycles: u32,
+    /// Largest number of due events processed by one TIM5 IRQ.
+    pub tim5_events_max_per_irq: u32,
 }
 
 /// `foci_stepper_stop_stats_result` reply - physical stop/reset counters.
