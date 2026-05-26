@@ -707,6 +707,8 @@ pub struct FociStepperPerfEvent {
     pub tim5_irq_max_cycles: u32,
     /// Longest TIM5 scheduler dispatch duration in CPU cycles.
     pub tim5_dispatch_max_cycles: u32,
+    /// Events processed in the activation that set `tim5_dispatch_max_cycles`.
+    pub tim5_dispatch_max_cycles_events: u32,
     /// Largest number of due events processed by one TIM5 IRQ.
     pub tim5_events_max_per_irq: u32,
     /// Total scheduler events processed by TIM5 since the last reset.
@@ -719,6 +721,12 @@ pub struct FociStepperPerfEvent {
     pub tim5_events_last_activation: u32,
     /// Max per-activation `dispatch_cycles / processed_events`.
     pub tim5_burst_cycles_per_event_max: u32,
+    /// Raw dispatch cycles for the activation that set `tim5_burst_cycles_per_event_max`.
+    pub tim5_burst_cycles_per_event_max_cycles: u32,
+    /// Events processed by the activation that set `tim5_burst_cycles_per_event_max`.
+    pub tim5_burst_cycles_per_event_max_events: u32,
+    /// Max per-activation cycles/event for activations with at least three events.
+    pub tim5_burst_cycles_per_event_floor3_max: u32,
     /// Max TIM5 entry lateness in TIM5 ticks.
     pub tim5_entry_latency_max_ticks: u32,
     /// Max positive scheduler pop lateness in TIM5 ticks.
@@ -843,6 +851,8 @@ pub struct FociStepperPerfStatsResult {
     pub tim5_irq_max_cycles: u32,
     /// Longest TIM5 scheduler dispatch duration in CPU cycles.
     pub tim5_dispatch_max_cycles: u32,
+    /// Events processed in the activation that set `tim5_dispatch_max_cycles`.
+    pub tim5_dispatch_max_cycles_events: u32,
     /// Largest number of due events processed by one TIM5 IRQ.
     pub tim5_events_max_per_irq: u32,
     /// Total scheduler events processed by TIM5 since the last reset.
@@ -855,6 +865,12 @@ pub struct FociStepperPerfStatsResult {
     pub tim5_events_last_activation: u32,
     /// Max per-activation `dispatch_cycles / processed_events`.
     pub tim5_burst_cycles_per_event_max: u32,
+    /// Raw dispatch cycles for the activation that set `tim5_burst_cycles_per_event_max`.
+    pub tim5_burst_cycles_per_event_max_cycles: u32,
+    /// Events processed by the activation that set `tim5_burst_cycles_per_event_max`.
+    pub tim5_burst_cycles_per_event_max_events: u32,
+    /// Max per-activation cycles/event for activations with at least three events.
+    pub tim5_burst_cycles_per_event_floor3_max: u32,
     /// Max TIM5 entry lateness in TIM5 ticks.
     pub tim5_entry_latency_max_ticks: u32,
     /// Max positive scheduler pop lateness in TIM5 ticks.
