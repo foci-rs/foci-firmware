@@ -216,6 +216,20 @@ pub struct StepperPerfSnapshot {
     pub tim5_entry_latency_max_ticks: u32,
     /// Max positive scheduler pop lateness in TIM5 ticks.
     pub tim5_pop_lateness_max_ticks: u32,
+    /// Longest TIM5-dispatch scheduler bookkeeping duration in CPU cycles.
+    pub scheduler_cycles_max: u32,
+    /// Events processed in the activation that set `scheduler_cycles_max`.
+    pub scheduler_cycles_events_at_max: u32,
+    /// Max per-activation `scheduler_cycles / processed_events`.
+    pub scheduler_cycles_per_event_max: u32,
+    /// Raw scheduler cycles for the activation that set the per-event max.
+    pub scheduler_cycles_per_event_max_cycles: u32,
+    /// Events processed by the activation that set the per-event max.
+    pub scheduler_cycles_per_event_max_events: u32,
+    /// Max scheduler cycles/event for activations with at least three events.
+    pub scheduler_cycles_per_event_floor3_max: u32,
+    /// Scheduler insertions dropped because the fixed table was full.
+    pub scheduler_full_count: u32,
     /// Max positive stepper segment-load lateness in TIM5 ticks.
     pub stepper_load_lateness_max_ticks: u32,
     /// Last stepper segment-load lateness as signed TIM5 ticks.
@@ -378,6 +392,13 @@ mod tests {
             tim5_burst_cycles_per_event_floor3_max: 900,
             tim5_entry_latency_max_ticks: 512,
             tim5_pop_lateness_max_ticks: 128,
+            scheduler_cycles_max: 777,
+            scheduler_cycles_events_at_max: 4,
+            scheduler_cycles_per_event_max: 333,
+            scheduler_cycles_per_event_max_cycles: 999,
+            scheduler_cycles_per_event_max_events: 3,
+            scheduler_cycles_per_event_floor3_max: 333,
+            scheduler_full_count: 2,
             stepper_load_lateness_max_ticks: 256,
             stepper_load_lateness_last_ticks: -32,
             build_trace_enabled: cfg!(feature = "trace"),
@@ -399,6 +420,13 @@ mod tests {
         assert_eq!(snapshot.tim5_burst_cycles_per_event_floor3_max, 900);
         assert_eq!(snapshot.tim5_entry_latency_max_ticks, 512);
         assert_eq!(snapshot.tim5_pop_lateness_max_ticks, 128);
+        assert_eq!(snapshot.scheduler_cycles_max, 777);
+        assert_eq!(snapshot.scheduler_cycles_events_at_max, 4);
+        assert_eq!(snapshot.scheduler_cycles_per_event_max, 333);
+        assert_eq!(snapshot.scheduler_cycles_per_event_max_cycles, 999);
+        assert_eq!(snapshot.scheduler_cycles_per_event_max_events, 3);
+        assert_eq!(snapshot.scheduler_cycles_per_event_floor3_max, 333);
+        assert_eq!(snapshot.scheduler_full_count, 2);
         assert_eq!(snapshot.stepper_load_lateness_max_ticks, 256);
         assert_eq!(snapshot.stepper_load_lateness_last_ticks, -32);
         assert_eq!(snapshot.build_trace_enabled, cfg!(feature = "trace"));
@@ -433,6 +461,13 @@ mod tests {
             tim5_burst_cycles_per_event_floor3_max: 900,
             tim5_entry_latency_max_ticks: 512,
             tim5_pop_lateness_max_ticks: 128,
+            scheduler_cycles_max: 777,
+            scheduler_cycles_events_at_max: 4,
+            scheduler_cycles_per_event_max: 333,
+            scheduler_cycles_per_event_max_cycles: 999,
+            scheduler_cycles_per_event_max_events: 3,
+            scheduler_cycles_per_event_floor3_max: 333,
+            scheduler_full_count: 2,
             stepper_load_lateness_max_ticks: 256,
             stepper_load_lateness_last_ticks: -32,
             build_trace_enabled: cfg!(feature = "trace"),

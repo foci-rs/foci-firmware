@@ -731,6 +731,20 @@ pub struct FociStepperPerfEvent {
     pub tim5_entry_latency_max_ticks: u32,
     /// Max positive scheduler pop lateness in TIM5 ticks.
     pub tim5_pop_lateness_max_ticks: u32,
+    /// Longest TIM5-dispatch scheduler bookkeeping duration in CPU cycles.
+    pub scheduler_cycles_max: u32,
+    /// Events processed in the activation that set `scheduler_cycles_max`.
+    pub scheduler_cycles_events_at_max: u32,
+    /// Max per-activation `scheduler_cycles / processed_events`.
+    pub scheduler_cycles_per_event_max: u32,
+    /// Raw scheduler cycles for the activation that set the per-event max.
+    pub scheduler_cycles_per_event_max_cycles: u32,
+    /// Events processed by the activation that set the per-event max.
+    pub scheduler_cycles_per_event_max_events: u32,
+    /// Max scheduler cycles/event for activations with at least three events.
+    pub scheduler_cycles_per_event_floor3_max: u32,
+    /// Scheduler insertions dropped because the fixed table was full.
+    pub scheduler_full_count: u32,
     /// Max positive stepper segment-load lateness in TIM5 ticks.
     pub stepper_load_lateness_max_ticks: u32,
     /// Last stepper segment-load lateness as signed TIM5 ticks.
@@ -875,6 +889,20 @@ pub struct FociStepperPerfStatsResult {
     pub tim5_entry_latency_max_ticks: u32,
     /// Max positive scheduler pop lateness in TIM5 ticks.
     pub tim5_pop_lateness_max_ticks: u32,
+    /// Longest TIM5-dispatch scheduler bookkeeping duration in CPU cycles.
+    pub scheduler_cycles_max: u32,
+    /// Events processed in the activation that set `scheduler_cycles_max`.
+    pub scheduler_cycles_events_at_max: u32,
+    /// Max per-activation `scheduler_cycles / processed_events`.
+    pub scheduler_cycles_per_event_max: u32,
+    /// Raw scheduler cycles for the activation that set the per-event max.
+    pub scheduler_cycles_per_event_max_cycles: u32,
+    /// Events processed by the activation that set the per-event max.
+    pub scheduler_cycles_per_event_max_events: u32,
+    /// Max scheduler cycles/event for activations with at least three events.
+    pub scheduler_cycles_per_event_floor3_max: u32,
+    /// Scheduler insertions dropped because the fixed table was full.
+    pub scheduler_full_count: u32,
     /// Max positive stepper segment-load lateness in TIM5 ticks.
     pub stepper_load_lateness_max_ticks: u32,
     /// Last stepper segment-load lateness as signed TIM5 ticks.
