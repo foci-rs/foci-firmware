@@ -701,14 +701,34 @@ pub struct FociStepperPerfEvent {
     pub queue_step_count: u32,
     /// Longest `queue_step` trigger-domain section in CPU cycles.
     pub queue_step_max_cycles: u32,
-    /// TIM5 IRQ entries measured since the last reset.
-    pub tim5_irq_count: u32,
+    /// TIM5 IRQ dispatch activations since the last reset.
+    pub tim5_activation_count: u32,
     /// Longest TIM5 IRQ handler duration in CPU cycles.
     pub tim5_irq_max_cycles: u32,
     /// Longest TIM5 scheduler dispatch duration in CPU cycles.
     pub tim5_dispatch_max_cycles: u32,
     /// Largest number of due events processed by one TIM5 IRQ.
     pub tim5_events_max_per_irq: u32,
+    /// Total scheduler events processed by TIM5 since the last reset.
+    pub tim5_event_count_total: u32,
+    /// TIM5 activations that hit the repeat guard and deferred.
+    pub tim5_defer_count: u32,
+    /// TIM5 activations that processed no scheduler event.
+    pub tim5_empty_count: u32,
+    /// Events processed in the most recent TIM5 activation.
+    pub tim5_events_last_activation: u32,
+    /// Max per-activation `dispatch_cycles / processed_events`.
+    pub tim5_burst_cycles_per_event_max: u32,
+    /// Max TIM5 entry lateness in TIM5 ticks.
+    pub tim5_entry_latency_max_ticks: u32,
+    /// Max positive scheduler pop lateness in TIM5 ticks.
+    pub tim5_pop_lateness_max_ticks: u32,
+    /// Max positive stepper segment-load lateness in TIM5 ticks.
+    pub stepper_load_lateness_max_ticks: u32,
+    /// Last stepper segment-load lateness as signed TIM5 ticks.
+    pub stepper_load_lateness_last_ticks: i32,
+    /// Non-zero when firmware was built with trace instrumentation.
+    pub build_trace_enabled: u8,
 }
 
 /// `foci_stepper_stats_result` reply - step queue/execution counters.
@@ -817,14 +837,34 @@ pub struct FociStepperPerfStatsResult {
     pub queue_step_count: u32,
     /// Longest `queue_step` trigger-domain section in CPU cycles.
     pub queue_step_max_cycles: u32,
-    /// TIM5 IRQ entries measured since the last reset.
-    pub tim5_irq_count: u32,
+    /// TIM5 IRQ dispatch activations since the last reset.
+    pub tim5_activation_count: u32,
     /// Longest TIM5 IRQ handler duration in CPU cycles.
     pub tim5_irq_max_cycles: u32,
     /// Longest TIM5 scheduler dispatch duration in CPU cycles.
     pub tim5_dispatch_max_cycles: u32,
     /// Largest number of due events processed by one TIM5 IRQ.
     pub tim5_events_max_per_irq: u32,
+    /// Total scheduler events processed by TIM5 since the last reset.
+    pub tim5_event_count_total: u32,
+    /// TIM5 activations that hit the repeat guard and deferred.
+    pub tim5_defer_count: u32,
+    /// TIM5 activations that processed no scheduler event.
+    pub tim5_empty_count: u32,
+    /// Events processed in the most recent TIM5 activation.
+    pub tim5_events_last_activation: u32,
+    /// Max per-activation `dispatch_cycles / processed_events`.
+    pub tim5_burst_cycles_per_event_max: u32,
+    /// Max TIM5 entry lateness in TIM5 ticks.
+    pub tim5_entry_latency_max_ticks: u32,
+    /// Max positive scheduler pop lateness in TIM5 ticks.
+    pub tim5_pop_lateness_max_ticks: u32,
+    /// Max positive stepper segment-load lateness in TIM5 ticks.
+    pub stepper_load_lateness_max_ticks: u32,
+    /// Last stepper segment-load lateness as signed TIM5 ticks.
+    pub stepper_load_lateness_last_ticks: i32,
+    /// Non-zero when firmware was built with trace instrumentation.
+    pub build_trace_enabled: u8,
 }
 
 /// `foci_stepper_stop_stats_result` reply - physical stop/reset counters.

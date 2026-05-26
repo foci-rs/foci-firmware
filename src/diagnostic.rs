@@ -186,14 +186,34 @@ pub struct StepperPerfSnapshot {
     pub queue_step_count: u32,
     /// Longest `queue_step` trigger-domain section in CPU cycles.
     pub queue_step_max_cycles: u32,
-    /// TIM5 IRQ entries measured since the last reset.
-    pub tim5_irq_count: u32,
+    /// TIM5 IRQ dispatch activations since the last reset.
+    pub tim5_activation_count: u32,
     /// Longest TIM5 IRQ handler duration in CPU cycles.
     pub tim5_irq_max_cycles: u32,
     /// Longest TIM5 scheduler dispatch duration in CPU cycles.
     pub tim5_dispatch_max_cycles: u32,
     /// Largest number of due events processed by one TIM5 IRQ.
     pub tim5_events_max_per_irq: u32,
+    /// Total scheduler events processed by TIM5 since the last reset.
+    pub tim5_event_count_total: u32,
+    /// TIM5 activations that hit the repeat guard and deferred.
+    pub tim5_defer_count: u32,
+    /// TIM5 activations that processed no scheduler event.
+    pub tim5_empty_count: u32,
+    /// Events processed in the most recent TIM5 activation.
+    pub tim5_events_last_activation: u32,
+    /// Max per-activation `dispatch_cycles / processed_events`.
+    pub tim5_burst_cycles_per_event_max: u32,
+    /// Max TIM5 entry lateness in TIM5 ticks.
+    pub tim5_entry_latency_max_ticks: u32,
+    /// Max positive scheduler pop lateness in TIM5 ticks.
+    pub tim5_pop_lateness_max_ticks: u32,
+    /// Max positive stepper segment-load lateness in TIM5 ticks.
+    pub stepper_load_lateness_max_ticks: u32,
+    /// Last stepper segment-load lateness as signed TIM5 ticks.
+    pub stepper_load_lateness_last_ticks: i32,
+    /// Non-zero when the board was built with trace instrumentation.
+    pub build_trace_enabled: bool,
 }
 
 /// Fatal step-dispatch event with a performance-counter snapshot.
@@ -335,16 +355,37 @@ mod tests {
             crit_over_1000us: 1,
             queue_step_count: 23,
             queue_step_max_cycles: 175_000,
-            tim5_irq_count: 400,
+            tim5_activation_count: 203,
             tim5_irq_max_cycles: 2_400,
             tim5_dispatch_max_cycles: 2_100,
             tim5_events_max_per_irq: 3,
+            tim5_event_count_total: 401,
+            tim5_defer_count: 7,
+            tim5_empty_count: 2,
+            tim5_events_last_activation: 4,
+            tim5_burst_cycles_per_event_max: 900,
+            tim5_entry_latency_max_ticks: 512,
+            tim5_pop_lateness_max_ticks: 128,
+            stepper_load_lateness_max_ticks: 256,
+            stepper_load_lateness_last_ticks: -32,
+            build_trace_enabled: cfg!(feature = "trace"),
         };
 
         assert_eq!(snapshot.channel, 0);
         assert_eq!(snapshot.crit_max_cycles, 190_000);
         assert_eq!(snapshot.queue_step_max_cycles, 175_000);
         assert_eq!(snapshot.tim5_events_max_per_irq, 3);
+        assert_eq!(snapshot.tim5_event_count_total, 401);
+        assert_eq!(snapshot.tim5_activation_count, 203);
+        assert_eq!(snapshot.tim5_defer_count, 7);
+        assert_eq!(snapshot.tim5_empty_count, 2);
+        assert_eq!(snapshot.tim5_events_last_activation, 4);
+        assert_eq!(snapshot.tim5_burst_cycles_per_event_max, 900);
+        assert_eq!(snapshot.tim5_entry_latency_max_ticks, 512);
+        assert_eq!(snapshot.tim5_pop_lateness_max_ticks, 128);
+        assert_eq!(snapshot.stepper_load_lateness_max_ticks, 256);
+        assert_eq!(snapshot.stepper_load_lateness_last_ticks, -32);
+        assert_eq!(snapshot.build_trace_enabled, cfg!(feature = "trace"));
     }
 
     #[test]
@@ -361,10 +402,20 @@ mod tests {
             crit_over_1000us: 1,
             queue_step_count: 23,
             queue_step_max_cycles: 175_000,
-            tim5_irq_count: 400,
+            tim5_activation_count: 203,
             tim5_irq_max_cycles: 2_400,
             tim5_dispatch_max_cycles: 2_100,
             tim5_events_max_per_irq: 3,
+            tim5_event_count_total: 401,
+            tim5_defer_count: 7,
+            tim5_empty_count: 2,
+            tim5_events_last_activation: 4,
+            tim5_burst_cycles_per_event_max: 900,
+            tim5_entry_latency_max_ticks: 512,
+            tim5_pop_lateness_max_ticks: 128,
+            stepper_load_lateness_max_ticks: 256,
+            stepper_load_lateness_last_ticks: -32,
+            build_trace_enabled: cfg!(feature = "trace"),
         };
         let event = StepperPerfDiagnosticEvent {
             reason: StepperEventReason::MissedDeadlineLoad,
