@@ -27,6 +27,27 @@ fn stepper_state() -> &'static crate::state::stepper::StepperChannelState {
     crate::state::stepper::stepper_channel0()
 }
 
+const TEST_MOTOR_SENTINEL: u32 = 0x0002_0032;
+
+async fn seed_motor_sentinel(backend: &mut MockBackend) {
+    tmc_state()
+        .motor_sentinel
+        .store(TEST_MOTOR_SENTINEL, core::sync::atomic::Ordering::Relaxed);
+    backend
+        .write_register(
+            foci_tmc4671::registers::MOTOR_TYPE_N_POLE_PAIRS,
+            TEST_MOTOR_SENTINEL,
+        )
+        .await
+        .expect("test MOTOR_TYPE sentinel write should succeed");
+}
+
+fn clear_motor_sentinel() {
+    tmc_state()
+        .motor_sentinel
+        .store(0, core::sync::atomic::Ordering::Relaxed);
+}
+
 #[test]
 fn continue_returns_minimal_outcome() {
     pollster::block_on(async {
@@ -307,6 +328,8 @@ fn calibrate_done_preserves_step_epoch_after_gain_restore() {
         let _guard = test_support::SHARED_STATE_MUTEX.lock().await;
         let mut backend = MockBackend::new();
         backend.assert_motor_armed_false_on_write = true;
+        tmc_state().motor_armed.store(false, Ordering::Relaxed);
+        seed_motor_sentinel(&mut backend).await;
         let (mut cal, mut en, _) = fresh_state_locals();
         let mut gains = Some(crate::pid::InnerLoopGains {
             flux_p: 100,
@@ -366,6 +389,7 @@ fn calibrate_done_preserves_step_epoch_after_gain_restore() {
         // Cleanup statics for downstream tests.
         tmc_state().motor_armed.store(false, Ordering::Relaxed);
         stepper_state().position.store(0, Ordering::Relaxed);
+        clear_motor_sentinel();
     });
 }
 
@@ -414,6 +438,8 @@ fn outer_done_success_arms_motor() {
             CommissionProfile::Balanced,
         ));
         let outer = sample_outer_result_for_dispatch();
+        tmc_state().motor_armed.store(false, Ordering::Relaxed);
+        seed_motor_sentinel(&mut backend).await;
         tmc_state().motor_armed.store(true, Ordering::Relaxed);
 
         let outcome = drive_commission_result(
@@ -452,6 +478,7 @@ fn outer_done_success_arms_motor() {
         }
 
         tmc_state().motor_armed.store(false, Ordering::Relaxed);
+        clear_motor_sentinel();
     });
 }
 
@@ -591,6 +618,7 @@ fn commission_done_finalize_path() {
             CommissionProfile::Balanced,
         ));
         let commission_result = sample_commission_result();
+        seed_motor_sentinel(&mut backend).await;
 
         let outcome = drive_commission_result(
             StepResult::CommissionDone(commission_result.clone()),
@@ -642,6 +670,7 @@ fn commission_done_finalize_path() {
         tmc_state().motor_armed.store(false, Ordering::Relaxed);
         stepper_state().position.store(0, Ordering::Relaxed);
         tmc_state().current_limit_reg.store(0, Ordering::Relaxed);
+        clear_motor_sentinel();
     });
 }
 
@@ -789,6 +818,7 @@ fn outer_failed_soft_failure_holds_motor() {
         ));
         // NoCurrent is not a safety-fault variant.
         let err = crate::autotune::CommissionError::NoCurrent;
+        seed_motor_sentinel(&mut backend).await;
 
         let outcome = drive_commission_result(
             StepResult::OuterFailed(err),
@@ -822,6 +852,7 @@ fn outer_failed_soft_failure_holds_motor() {
 
         tmc_state().motor_armed.store(false, Ordering::Relaxed);
         stepper_state().position.store(0, Ordering::Relaxed);
+        clear_motor_sentinel();
     });
 }
 
@@ -953,6 +984,7 @@ fn outer_failed_restore_accepts_scaled_encoder_jitter() {
             sample_entry_snapshot(),
         ));
         let err = crate::autotune::CommissionError::VelocityValidationFailed;
+        seed_motor_sentinel(&mut backend).await;
 
         let outcome = drive_commission_result(
             StepResult::OuterFailed(err),
@@ -979,6 +1011,7 @@ fn outer_failed_restore_accepts_scaled_encoder_jitter() {
         }
 
         tmc_state().motor_armed.store(false, Ordering::Relaxed);
+        clear_motor_sentinel();
     });
 }
 

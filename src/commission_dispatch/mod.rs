@@ -380,7 +380,31 @@ pub async fn drive_commission_result<B: CommissioningBackend>(
             }
 
             *state.calibrated = true;
-            crate::tmc_ops::arm_motor_electrical(backend, state);
+            if let Err(error) = crate::tmc_ops::arm_motor_electrical(backend, state).await {
+                defmt::error!("CalibrateDone: arm sentinel verify failed: {}", error);
+                crate::tmc_ops::disarm_motor(backend, state).await;
+                state
+                    .tmc
+                    .commission_in_flight
+                    .store(false, core::sync::atomic::Ordering::Relaxed);
+                let status = match error {
+                    crate::autotune::CommissionError::ChipResetDetected => {
+                        crate::calibration::CalibrationError::ChipResetDetected.status_code()
+                    }
+                    _ => crate::calibration::CalibrationError::SpiError.status_code(),
+                };
+                return CommissionOutcome::Terminal {
+                    reply: ReplyPayload::CalibrateResult {
+                        oid,
+                        status,
+                        result: zero_adc_cal_result(),
+                    },
+                    actions: PostActions {
+                        stop_trace: false,
+                        stepper: StepperPostAction::Stop,
+                    },
+                };
+            }
 
             state
                 .tmc
@@ -464,7 +488,22 @@ pub async fn drive_commission_result<B: CommissioningBackend>(
                 .store(commission_result.fallback_velocity_limit, Relaxed);
 
             *state.calibrated = true;
-            crate::tmc_ops::arm_motor_electrical(backend, state);
+            if let Err(error) = crate::tmc_ops::arm_motor_electrical(backend, state).await {
+                defmt::error!("CommissionDone: arm sentinel verify failed: {}", error);
+                crate::tmc_ops::disarm_motor(backend, state).await;
+                state.tmc.commission_in_flight.store(false, Relaxed);
+                return CommissionOutcome::Terminal {
+                    reply: ReplyPayload::CommissionResult {
+                        oid,
+                        status: error.status_code(),
+                        result: commission_result,
+                    },
+                    actions: PostActions {
+                        stop_trace: true,
+                        stepper: StepperPostAction::Stop,
+                    },
+                };
+            }
 
             state.tmc.commission_in_flight.store(false, Relaxed);
 
@@ -561,7 +600,22 @@ pub async fn drive_commission_result<B: CommissioningBackend>(
             }
 
             *state.calibrated = true;
-            crate::tmc_ops::arm_motor_electrical(backend, state);
+            if let Err(error) = crate::tmc_ops::arm_motor_electrical(backend, state).await {
+                defmt::error!("OuterDone: arm sentinel verify failed: {}", error);
+                crate::tmc_ops::disarm_motor(backend, state).await;
+                state.tmc.commission_in_flight.store(false, Relaxed);
+                return CommissionOutcome::Terminal {
+                    reply: ReplyPayload::TuneResult {
+                        oid,
+                        status: error.status_code(),
+                        result: outer,
+                    },
+                    actions: PostActions {
+                        stop_trace: true,
+                        stepper: StepperPostAction::Stop,
+                    },
+                };
+            }
 
             state.tmc.commission_in_flight.store(false, Relaxed);
 
@@ -640,18 +694,32 @@ pub async fn drive_commission_result<B: CommissioningBackend>(
                 )
             } else {
                 *state.calibrated = true;
-                crate::tmc_ops::arm_motor_electrical(backend, state);
-                defmt::warn!(
-                    "OuterFailed: soft failure ({}), entry gains restored",
-                    error
-                );
-                (
-                    error.status_code(),
-                    PostActions {
-                        stop_trace: true,
-                        stepper: StepperPostAction::ArmPreservePosition,
-                    },
-                )
+                if let Err(arm_error) = crate::tmc_ops::arm_motor_electrical(backend, state).await {
+                    crate::tmc_ops::disarm_motor(backend, state).await;
+                    defmt::error!(
+                        "OuterFailed: arm sentinel verify failed after soft failure: {}",
+                        arm_error
+                    );
+                    (
+                        arm_error.status_code(),
+                        PostActions {
+                            stop_trace: true,
+                            stepper: StepperPostAction::Stop,
+                        },
+                    )
+                } else {
+                    defmt::warn!(
+                        "OuterFailed: soft failure ({}), entry gains restored",
+                        error
+                    );
+                    (
+                        error.status_code(),
+                        PostActions {
+                            stop_trace: true,
+                            stepper: StepperPostAction::ArmPreservePosition,
+                        },
+                    )
+                }
             };
 
             state.tmc.commission_in_flight.store(false, Relaxed);
