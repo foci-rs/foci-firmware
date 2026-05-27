@@ -52,6 +52,8 @@ pub struct MockBackend {
     pub excitation_voltage_value: u16,
     /// Value returned by `step_width()`.
     pub step_width_value: u32,
+    /// Expected ABN_DECODER_PPR quadrature count for readback tests.
+    pub encoder_quadrature_ppr_value: u32,
     /// Value returned by `operational_velocity_limit()`.
     pub operational_velocity_limit_value: u32,
     /// Value returned by `operational_voltage_limit()`.
@@ -90,6 +92,7 @@ impl MockBackend {
             dsadc_mdec_register_value: 0,
             excitation_voltage_value: 1024,
             step_width_value: 0,
+            encoder_quadrature_ppr_value: 4000,
             operational_velocity_limit_value: 500_000,
             operational_voltage_limit_value:
                 crate::state::tmc::DEFAULT_OPERATIONAL_PIDOUT_UQ_UD_LIMIT,
@@ -190,6 +193,10 @@ impl CommissioningBackend for MockBackend {
 
     fn step_width(&self) -> u32 {
         self.step_width_value
+    }
+
+    fn encoder_quadrature_ppr(&self) -> u32 {
+        self.encoder_quadrature_ppr_value
     }
 
     fn operational_velocity_limit(&self) -> u32 {

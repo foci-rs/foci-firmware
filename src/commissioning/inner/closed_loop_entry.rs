@@ -15,6 +15,56 @@ use crate::commissioning::types::{
 
 const CLOSED_LOOP_VELOCITY_SELECTION: u32 = 0x0000_0109;
 const CLOSED_LOOP_POSITION_SELECTION: u32 = 9;
+const CLOSED_LOOP_PWM_SV_CHOP: u32 = 7;
+const CLOSED_LOOP_MOTOR_TYPE_N_POLE_PAIRS: u32 = (2 << 16) | 50;
+const CLOSED_LOOP_PHI_E_SELECTION: u32 = 3;
+const CLOSED_LOOP_POSITION_MODE: u32 = 0x8000_0003;
+
+async fn verify_closed_loop_armed_state<B: CommissioningBackend>(
+    backend: &mut B,
+) -> Result<(), ()> {
+    use foci_tmc4671::registers::*;
+
+    let encoder_ppr = backend.encoder_quadrature_ppr();
+    if encoder_ppr == 0 {
+        defmt::error!("closed-loop: ABN_DECODER_PPR expected value is zero");
+        return Err(());
+    }
+
+    let checks = [
+        (PIDOUT_UQ_UD_LIMITS, backend.operational_voltage_limit()),
+        (PWM_SV_CHOP, CLOSED_LOOP_PWM_SV_CHOP),
+        (MODE_RAMP_MODE_MOTION, CLOSED_LOOP_POSITION_MODE),
+        (MOTOR_TYPE_N_POLE_PAIRS, CLOSED_LOOP_MOTOR_TYPE_N_POLE_PAIRS),
+        (PHI_E_SELECTION, CLOSED_LOOP_PHI_E_SELECTION),
+        (POSITION_SELECTION, CLOSED_LOOP_POSITION_SELECTION),
+        (VELOCITY_SELECTION, CLOSED_LOOP_VELOCITY_SELECTION),
+        (ABN_DECODER_PPR, encoder_ppr),
+        (ADC_I_SELECT, backend.tmc_config().adc_i_select),
+        (PID_TORQUE_FLUX_LIMITS, backend.current_limit()),
+    ];
+
+    for (register, expected) in checks {
+        match backend.read_register(register).await {
+            Ok(value) if value == expected => {}
+            Ok(value) => {
+                defmt::error!(
+                    "closed-loop: register {} readback {}, expected {}",
+                    register.addr(),
+                    value,
+                    expected
+                );
+                return Err(());
+            }
+            Err(_) => {
+                defmt::error!("closed-loop: register {} read failed", register.addr());
+                return Err(());
+            }
+        }
+    }
+
+    Ok(())
+}
 
 /// Advance closed-loop entry sub-state by one cooperative tick.
 pub(crate) async fn step_closed_loop_entry<B: CommissioningBackend>(
@@ -157,11 +207,15 @@ pub(crate) async fn step_closed_loop_entry<B: CommissioningBackend>(
             // is already 3 from EncoderAlign::Commit; for Commission the
             // intervening ElectricalId/CurrentTune phases reset it to 1
             // (external phi_e for voltage-mode sweeps).
-            if backend.write_register(PHI_E_SELECTION, 3).await.is_err() {
+            if backend
+                .write_register(PHI_E_SELECTION, CLOSED_LOOP_PHI_E_SELECTION)
+                .await
+                .is_err()
+            {
                 return super::fail_inner(phase, CommissionError::Spi);
             }
             match backend.read_register(PHI_E_SELECTION).await {
-                Ok(3) => {}
+                Ok(CLOSED_LOOP_PHI_E_SELECTION) => {}
                 Ok(val) => {
                     defmt::error!("closed-loop: PHI_E_SELECTION={}, expected 3", val);
                     return super::fail_inner(phase, CommissionError::Spi);
@@ -344,19 +398,14 @@ pub(crate) async fn step_closed_loop_entry<B: CommissioningBackend>(
         ClosedLoopEntryState::EnterPositionMode => {
             // MODE_PID_TYPE=1 (bit 31), MODE_MOTION=3 (position).
             if backend
-                .write_register(MODE_RAMP_MODE_MOTION, 0x8000_0003)
+                .write_register(MODE_RAMP_MODE_MOTION, CLOSED_LOOP_POSITION_MODE)
                 .await
                 .is_err()
             {
                 return super::fail_inner(phase, CommissionError::Spi);
             }
-            // Readback verification.
-            match backend.read_register(MODE_RAMP_MODE_MOTION).await {
-                Ok(0x8000_0003) => {}
-                _ => {
-                    defmt::error!("closed-loop: MODE_RAMP_MODE_MOTION readback mismatch");
-                    return super::fail_inner(phase, CommissionError::Spi);
-                }
+            if verify_closed_loop_armed_state(backend).await.is_err() {
+                return super::fail_inner(phase, CommissionError::Spi);
             }
 
             // Schedule stability check after 10ms.
@@ -494,29 +543,59 @@ mod tests {
     use super::*;
     use crate::commission_dispatch::test_support::{MockBackend, SpiOp};
     use foci_tmc4671::registers::{
-        PIDOUT_UQ_UD_LIMITS, POSITION_SELECTION, STEP_WIDTH, VELOCITY_SELECTION,
+        ABN_DECODER_PPR, ADC_I_SELECT, MODE_RAMP_MODE_MOTION, MOTOR_TYPE_N_POLE_PAIRS,
+        PHI_E_SELECTION, PID_TORQUE_FLUX_LIMITS, PIDOUT_UQ_UD_LIMITS, POSITION_SELECTION,
+        PWM_SV_CHOP, STEP_WIDTH, VELOCITY_SELECTION,
     };
+
+    fn closed_loop_phase_at(state: ClosedLoopEntryState) -> InnerPhase {
+        InnerPhase::ClosedLoopEntry {
+            state,
+            flux_p: 0,
+            flux_i: 0,
+            torque_p: 0,
+            torque_i: 0,
+            velocity_p: 0,
+            velocity_i: 0,
+            position_p: 0,
+            position_i: 0,
+            velocity_limit: 500_000,
+            velocity_filter_hz: 0,
+            torque_filter_hz: 0,
+            position_filter_hz: 0,
+            flux_filter_hz: 0,
+            inner_result: None,
+        }
+    }
+
+    fn seed_armed_state_registers(backend: &mut MockBackend) {
+        backend.current_limit_value = 2816;
+        backend.operational_voltage_limit_value = 29_000;
+
+        let registers = [
+            (PWM_SV_CHOP.addr(), 7),
+            (MOTOR_TYPE_N_POLE_PAIRS.addr(), (2 << 16) | 50),
+            (PHI_E_SELECTION.addr(), 3),
+            (POSITION_SELECTION.addr(), CLOSED_LOOP_POSITION_SELECTION),
+            (VELOCITY_SELECTION.addr(), CLOSED_LOOP_VELOCITY_SELECTION),
+            (ABN_DECODER_PPR.addr(), backend.encoder_quadrature_ppr_value),
+            (ADC_I_SELECT.addr(), backend.tmc_config.adc_i_select),
+            (PID_TORQUE_FLUX_LIMITS.addr(), backend.current_limit_value),
+            (
+                PIDOUT_UQ_UD_LIMITS.addr(),
+                backend.operational_voltage_limit_value,
+            ),
+            (MODE_RAMP_MODE_MOTION.addr(), 0x8000_0003),
+        ];
+        for (addr, value) in registers {
+            backend.registers.insert(addr, value).ok();
+        }
+    }
 
     #[test]
     fn write_position_config_programs_selection_registers() {
         pollster::block_on(async {
-            let mut phase = InnerPhase::ClosedLoopEntry {
-                state: ClosedLoopEntryState::WritePositionConfig,
-                flux_p: 0,
-                flux_i: 0,
-                torque_p: 0,
-                torque_i: 0,
-                velocity_p: 0,
-                velocity_i: 0,
-                position_p: 0,
-                position_i: 0,
-                velocity_limit: 0,
-                velocity_filter_hz: 0,
-                torque_filter_hz: 0,
-                position_filter_hz: 0,
-                flux_filter_hz: 0,
-                inner_result: None,
-            };
+            let mut phase = closed_loop_phase_at(ClosedLoopEntryState::WritePositionConfig);
             let mut adc_cal = None;
             let mut backend = MockBackend::new();
             backend.step_width_value = 16;
@@ -555,23 +634,7 @@ mod tests {
     #[test]
     fn write_limits_uses_configured_operational_voltage_limit() {
         pollster::block_on(async {
-            let mut phase = InnerPhase::ClosedLoopEntry {
-                state: ClosedLoopEntryState::WriteLimits,
-                flux_p: 0,
-                flux_i: 0,
-                torque_p: 0,
-                torque_i: 0,
-                velocity_p: 0,
-                velocity_i: 0,
-                position_p: 0,
-                position_i: 0,
-                velocity_limit: 500_000,
-                velocity_filter_hz: 0,
-                torque_filter_hz: 0,
-                position_filter_hz: 0,
-                flux_filter_hz: 0,
-                inner_result: None,
-            };
+            let mut phase = closed_loop_phase_at(ClosedLoopEntryState::WriteLimits);
             let mut adc_cal = None;
             let mut backend = MockBackend::new();
             backend.operational_voltage_limit_value = 20_000;
@@ -589,6 +652,71 @@ mod tests {
                 op,
                 SpiOp::Write(addr, 20_000) if *addr == PIDOUT_UQ_UD_LIMITS.addr()
             )));
+        });
+    }
+
+    #[test]
+    fn enter_position_mode_accepts_expected_armed_state_readbacks() {
+        pollster::block_on(async {
+            let mut phase = closed_loop_phase_at(ClosedLoopEntryState::EnterPositionMode);
+            let mut adc_cal = None;
+            let mut backend = MockBackend::new();
+            seed_armed_state_registers(&mut backend);
+
+            let result = step_closed_loop_entry(
+                &mut phase,
+                InnerSequence::Calibrate,
+                &mut adc_cal,
+                &mut backend,
+            )
+            .await;
+
+            assert!(matches!(result, StepResult::Continue));
+            assert!(matches!(
+                phase,
+                InnerPhase::ClosedLoopEntry {
+                    state: ClosedLoopEntryState::StabilityCheck1 { .. },
+                    ..
+                }
+            ));
+        });
+    }
+
+    #[test]
+    fn enter_position_mode_rejects_stale_armed_state_readbacks() {
+        pollster::block_on(async {
+            let stale_registers = [
+                (PWM_SV_CHOP.addr(), 0),
+                (MOTOR_TYPE_N_POLE_PAIRS.addr(), 3 << 16),
+                (PHI_E_SELECTION.addr(), 1),
+                (POSITION_SELECTION.addr(), 8),
+                (VELOCITY_SELECTION.addr(), 9),
+                (ABN_DECODER_PPR.addr(), 3999),
+                (ADC_I_SELECT.addr(), 0),
+                (PID_TORQUE_FLUX_LIMITS.addr(), 1024),
+                (PIDOUT_UQ_UD_LIMITS.addr(), 16_000),
+            ];
+
+            for (addr, stale_value) in stale_registers {
+                let mut phase = closed_loop_phase_at(ClosedLoopEntryState::EnterPositionMode);
+                let mut adc_cal = None;
+                let mut backend = MockBackend::new();
+                seed_armed_state_registers(&mut backend);
+                backend.registers.insert(addr, stale_value).ok();
+
+                let result = step_closed_loop_entry(
+                    &mut phase,
+                    InnerSequence::Calibrate,
+                    &mut adc_cal,
+                    &mut backend,
+                )
+                .await;
+
+                assert!(
+                    matches!(result, StepResult::InnerFailed(CommissionError::Spi)),
+                    "register 0x{addr:02x} stale value 0x{stale_value:08x} was accepted"
+                );
+            }
         });
     }
 }

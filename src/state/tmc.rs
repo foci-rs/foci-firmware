@@ -11,8 +11,8 @@ use embassy_sync::signal::Signal;
 pub const MAX_TMC_CHANNELS: usize = 2;
 /// Conservative operational PIDOUT_UQ_UD_LIMITS value used after closed-loop entry.
 pub const DEFAULT_OPERATIONAL_PIDOUT_UQ_UD_LIMIT: u32 = 16_000;
-/// Lowest accepted operational PIDOUT_UQ_UD_LIMITS value.
-pub const MIN_OPERATIONAL_PIDOUT_UQ_UD_LIMIT: u32 = 1_024;
+/// Lowest accepted raw PIDOUT_UQ_UD_LIMITS value.
+pub const MIN_OPERATIONAL_PIDOUT_UQ_UD_LIMIT: u32 = 0;
 /// Highest accepted diagnostic PIDOUT_UQ_UD_LIMITS value.
 pub const MAX_OPERATIONAL_PIDOUT_UQ_UD_LIMIT: u32 = 32_767;
 
@@ -24,6 +24,8 @@ pub struct TmcChannelState {
     pub motor_armed: AtomicBool,
     /// STEP_WIDTH value computed by tmc_set_encoder_hw.
     pub step_width_value: AtomicI32,
+    /// Configured mechanical ABN encoder pulses per revolution.
+    pub encoder_ppr: AtomicU32,
     /// Velocity biquad filter cutoff frequency in Hz.
     pub velocity_filter_hz: AtomicU16,
     /// Torque biquad filter cutoff frequency in Hz.
@@ -111,6 +113,7 @@ impl TmcChannelState {
             current_limit_reg: AtomicU32::new(0),
             motor_armed: AtomicBool::new(false),
             step_width_value: AtomicI32::new(0),
+            encoder_ppr: AtomicU32::new(0),
             velocity_filter_hz: AtomicU16::new(0),
             torque_filter_hz: AtomicU16::new(0),
             position_filter_hz: AtomicU16::new(0),
@@ -160,6 +163,7 @@ impl TmcChannelState {
         self.current_limit_reg.store(0, Relaxed);
         self.motor_armed.store(false, Relaxed);
         self.step_width_value.store(0, Relaxed);
+        self.encoder_ppr.store(0, Relaxed);
         self.velocity_filter_hz.store(0, Relaxed);
         self.torque_filter_hz.store(0, Relaxed);
         self.position_filter_hz.store(0, Relaxed);

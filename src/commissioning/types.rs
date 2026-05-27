@@ -112,6 +112,12 @@ pub trait CommissioningBackend {
     /// Returns 0 if the encoder has not been configured.
     fn step_width(&self) -> u32;
 
+    /// Configured ABN decoder quadrature count per mechanical revolution.
+    ///
+    /// This is the value that must be present in `ABN_DECODER_PPR` before
+    /// closed-loop step/dir motion is considered armed.
+    fn encoder_quadrature_ppr(&self) -> u32;
+
     /// Configured operational PID_VELOCITY_LIMIT value.
     ///
     /// Phase 10 may use a small limit derived from mechanical ID to keep the

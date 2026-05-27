@@ -933,6 +933,39 @@ mod tests {
     }
 
     #[test]
+    fn apply_set_voltage_limit_accepts_raw_chip_minimum() {
+        pollster::block_on(async {
+            use core::sync::atomic::Ordering;
+            use foci_tmc4671::registers::PIDOUT_UQ_UD_LIMITS;
+
+            let _guard = crate::commission_dispatch::test_support::SHARED_STATE_MUTEX
+                .lock()
+                .await;
+            tmc_state()
+                .voltage_limit_cfg
+                .store(16_000, Ordering::Relaxed);
+
+            let raw_spi = MockRawSpi::default();
+            let mut tmc = Tmc4671Spi::new(raw_spi);
+            apply_set_voltage_limit(&mut tmc, tmc_state(), 0)
+                .await
+                .expect("raw minimum voltage-limit write should succeed");
+
+            assert_eq!(tmc_state().voltage_limit_cfg.load(Ordering::Relaxed), 0);
+            let raw_spi = tmc.into_inner();
+            assert_eq!(raw_spi.writes.len(), 1);
+            assert_eq!(
+                raw_spi.writes[0],
+                [PIDOUT_UQ_UD_LIMITS.addr() | 0x80, 0x00, 0x00, 0x00, 0x00]
+            );
+
+            tmc_state()
+                .voltage_limit_cfg
+                .store(16_000, Ordering::Relaxed);
+        });
+    }
+
+    #[test]
     fn settle_hold_snaps_observed_small_residual_to_actual() {
         pollster::block_on(async {
             use core::sync::atomic::Ordering;

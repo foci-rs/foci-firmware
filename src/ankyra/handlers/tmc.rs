@@ -114,6 +114,7 @@ pub fn tmc_set_encoder(ctx: &mut dyn TmcWriteHost, oid: u8, channel: u8, ppr: u3
     };
     let (req, step_width) = crate::tmc::tmc_set_encoder_hw(channel, ppr, 1);
     state.step_width_value.store(step_width, Ordering::Relaxed);
+    state.encoder_ppr.store(ppr, Ordering::Relaxed);
     defmt::info!("channel={} ppr={} step_width={}", channel, ppr, step_width);
     if ctx.enqueue_request(req).is_err() && ctx.enter_shutdown() {
         let clock = ctx.now();
@@ -894,6 +895,7 @@ mod tests {
     fn tmc_set_voltage_limit_updates_saved_state_before_worker_runs() {
         use core::sync::atomic::Ordering::Relaxed;
 
+        let _guard = crate::commission_dispatch::test_support::SHARED_STATE_MUTEX.blocking_lock();
         let mut ctx = MockCtx::new(2);
         let mut sender = ();
         config_stepper_channel(ctx.state(), 10, 1).unwrap();
@@ -910,6 +912,29 @@ mod tests {
             crate::tmc::TmcRequestKind::SetVoltageLimit {
                 voltage_limit: 20_000,
             }
+        ));
+        assert_eq!(ctx.last_shutdown, None);
+    }
+
+    #[test]
+    fn tmc_set_voltage_limit_accepts_raw_chip_minimum() {
+        use core::sync::atomic::Ordering::Relaxed;
+
+        let _guard = crate::commission_dispatch::test_support::SHARED_STATE_MUTEX.blocking_lock();
+        let mut ctx = MockCtx::new(2);
+        let mut sender = ();
+        config_stepper_channel(ctx.state(), 10, 1).unwrap();
+        let tmc_state = crate::state::tmc::tmc_channel(1).unwrap();
+        tmc_state.voltage_limit_cfg.store(16_000, Relaxed);
+
+        tmc_set_voltage_limit(&mut ctx, &mut sender, 10, 0);
+
+        assert_eq!(tmc_state.voltage_limit_cfg.load(Relaxed), 0);
+        let req = ctx.last_request.borrow().clone().unwrap();
+        assert_eq!(req.channel, 1);
+        assert!(matches!(
+            req.kind,
+            crate::tmc::TmcRequestKind::SetVoltageLimit { voltage_limit: 0 }
         ));
         assert_eq!(ctx.last_shutdown, None);
     }
