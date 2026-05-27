@@ -22,6 +22,11 @@ pub struct TmcChannelState {
     pub current_limit_reg: AtomicU32,
     /// Set by P1 after calibration, cleared on disable/fault.
     pub motor_armed: AtomicBool,
+    /// Captured at commission time from the actual `MOTOR_TYPE_N_POLE_PAIRS`
+    /// write. Zero means "no commission has happened yet — sentinel check
+    /// inactive". Used by `arm_motor_electrical` to detect silent chip
+    /// resets between commission and arm.
+    pub motor_sentinel: AtomicU32,
     /// STEP_WIDTH value computed by tmc_set_encoder_hw.
     pub step_width_value: AtomicI32,
     /// Configured mechanical ABN encoder pulses per revolution.
@@ -112,6 +117,7 @@ impl TmcChannelState {
         Self {
             current_limit_reg: AtomicU32::new(0),
             motor_armed: AtomicBool::new(false),
+            motor_sentinel: AtomicU32::new(0),
             step_width_value: AtomicI32::new(0),
             encoder_ppr: AtomicU32::new(0),
             velocity_filter_hz: AtomicU16::new(0),
@@ -162,6 +168,7 @@ impl TmcChannelState {
 
         self.current_limit_reg.store(0, Relaxed);
         self.motor_armed.store(false, Relaxed);
+        self.motor_sentinel.store(0, Relaxed);
         self.step_width_value.store(0, Relaxed);
         self.encoder_ppr.store(0, Relaxed);
         self.velocity_filter_hz.store(0, Relaxed);
@@ -284,5 +291,16 @@ mod tests {
         assert_eq!(channel.phase_advance_gain_ppm.load(Relaxed), 0);
         assert_eq!(channel.phase_advance_max_counts.load(Relaxed), 0);
         assert_eq!(channel.phase_advance_deadband.load(Relaxed), 16);
+    }
+
+    #[test]
+    fn motor_sentinel_defaults_to_zero_and_reset_clears_it() {
+        let channel = TmcChannelState::new();
+        assert_eq!(channel.motor_sentinel.load(Relaxed), 0);
+
+        channel.motor_sentinel.store(0x0002_0032, Relaxed);
+        channel.reset();
+
+        assert_eq!(channel.motor_sentinel.load(Relaxed), 0);
     }
 }
