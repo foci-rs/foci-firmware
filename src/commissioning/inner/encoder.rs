@@ -367,15 +367,15 @@ pub(crate) async fn step_encoder_align<B: CommissioningBackend>(
                 return super::fail_inner(phase, error);
             }
 
-            let phi_ok = backend
-                .read_register(PHI_E_SELECTION)
+            if backend
+                .read_register_verified(PHI_E_SELECTION, 1)
                 .await
-                .is_ok_and(|v| v == 1);
-            let mode_ok = backend
-                .read_register(MODE_RAMP_MODE_MOTION)
-                .await
-                .is_ok_and(|v| v == 0x8000_0001);
-            if !phi_ok || !mode_ok {
+                .is_err()
+                || backend
+                    .read_register_verified(MODE_RAMP_MODE_MOTION, 0x8000_0001)
+                    .await
+                    .is_err()
+            {
                 return super::fail_inner(phase, CommissionError::Spi);
             }
 
@@ -478,11 +478,11 @@ pub(crate) async fn step_encoder_align<B: CommissioningBackend>(
                 return super::fail_inner(phase, CommissionError::Spi);
             }
 
-            let phi_ok = backend
-                .read_register(PHI_E_SELECTION)
+            if backend
+                .read_register_verified(PHI_E_SELECTION, 3)
                 .await
-                .is_ok_and(|v| v == 3);
-            if !phi_ok {
+                .is_err()
+            {
                 return super::fail_inner(phase, CommissionError::Spi);
             }
 

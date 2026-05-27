@@ -75,15 +75,15 @@ pub(crate) async fn step_adc_calibrate<B: CommissioningBackend>(
             }
 
             // Verify MODE=0 and PWM_SV_CHOP=0.
-            let mode_ok = backend
-                .read_register(MODE_RAMP_MODE_MOTION)
+            if backend
+                .read_register_verified(MODE_RAMP_MODE_MOTION, 0)
                 .await
-                .is_ok_and(|v| v == 0);
-            let chop_ok = backend
-                .read_register(PWM_SV_CHOP)
-                .await
-                .is_ok_and(|v| v == 0);
-            if !mode_ok || !chop_ok {
+                .is_err()
+                || backend
+                    .read_register_verified(PWM_SV_CHOP, 0)
+                    .await
+                    .is_err()
+            {
                 return super::fail_inner(phase, CommissionError::Spi);
             }
 
