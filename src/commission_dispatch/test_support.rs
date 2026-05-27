@@ -36,6 +36,12 @@ pub struct MockBackend {
     pub fail_on_write: Option<u8>,
     /// If `Some(addr)`, `read_register` returns `Err(MockSpiError)` for that address.
     pub fail_on_read: Option<u8>,
+    /// Last value passed to `store_motor_sentinel`. None until first call.
+    pub last_motor_sentinel_stored: core::cell::Cell<Option<u32>>,
+    /// When Some((addr, value)), `read_register(reg)` for that addr returns
+    /// `value` instead of consulting `registers`. Used by verify tests to
+    /// inject a mismatch.
+    pub read_override: Option<(u8, u32)>,
     /// Value returned by `elapsed_us()`.
     pub elapsed_us_value: u64,
     /// Value returned by `is_shutdown_requested()`.
@@ -84,6 +90,8 @@ impl MockBackend {
             delay_us_log: Vec::new(),
             fail_on_write: None,
             fail_on_read: None,
+            last_motor_sentinel_stored: core::cell::Cell::new(None),
+            read_override: None,
             elapsed_us_value: 0,
             shutdown_requested: false,
             current_limit_value: 0,
@@ -108,11 +116,24 @@ impl MockBackend {
 impl CommissioningBackend for MockBackend {
     type Error = MockSpiError;
 
+    fn synthesize_verify_error(&self, _expected: u32, _actual: u32) -> Self::Error {
+        MockSpiError
+    }
+
+    fn store_motor_sentinel(&self, value: u32) {
+        self.last_motor_sentinel_stored.set(Some(value));
+    }
+
     async fn read_register(&mut self, reg: Register) -> Result<u32, Self::Error> {
         let addr = reg.addr();
         self.spi_log.push(SpiOp::Read).ok();
         if self.fail_on_read == Some(addr) {
             return Err(MockSpiError);
+        }
+        if let Some((addr_override, val)) = self.read_override
+            && addr_override == addr
+        {
+            return Ok(val);
         }
         if addr == foci_tmc4671::registers::PID_POSITION_ACTUAL.addr()
             && self.read_position_actual_pos < self.read_position_actual_sequence.len()
@@ -239,4 +260,47 @@ pub static SHARED_STATE_MUTEX: tokio::sync::Mutex<()> = tokio::sync::Mutex::cons
 /// (added in Task 11+) per call site.
 pub fn fresh_state_locals() -> (bool, bool, Option<crate::pid::InnerLoopGains>) {
     (false, false, None)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mock_store_motor_sentinel_writes_field() {
+        let backend = MockBackend::new();
+        backend.store_motor_sentinel(0x0002_0032);
+        assert_eq!(backend.last_motor_sentinel_stored.get(), Some(0x0002_0032));
+    }
+
+    #[test]
+    fn mock_write_register_verified_succeeds_on_match() {
+        pollster::block_on(async {
+            let mut backend = MockBackend::new();
+            let result = backend
+                .write_register_verified(foci_tmc4671::registers::PID_POSITION_TARGET, 42)
+                .await;
+            assert!(result.is_ok());
+            assert_eq!(
+                backend
+                    .registers
+                    .get(&foci_tmc4671::registers::PID_POSITION_TARGET.addr())
+                    .copied(),
+                Some(42),
+            );
+        });
+    }
+
+    #[test]
+    fn mock_write_register_verified_returns_error_on_mismatch() {
+        pollster::block_on(async {
+            let mut backend = MockBackend::new();
+            backend.read_override =
+                Some((foci_tmc4671::registers::PID_POSITION_TARGET.addr(), 999));
+            let result = backend
+                .write_register_verified(foci_tmc4671::registers::PID_POSITION_TARGET, 42)
+                .await;
+            assert!(result.is_err(), "expected verify mismatch");
+        });
+    }
 }

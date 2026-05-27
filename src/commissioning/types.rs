@@ -44,6 +44,54 @@ pub trait CommissioningBackend {
     /// Write a TMC4671 register.
     async fn write_register(&mut self, reg: Register, val: u32) -> Result<(), Self::Error>;
 
+    /// Write a register, read it back, compare against `val`. Default impl
+    /// performs one attempt with no retry. Real board impls should override
+    /// to trampoline to `Tmc4671Spi::write_register_verified`, which applies
+    /// the configured `RetryPolicy`.
+    async fn write_register_verified(
+        &mut self,
+        reg: Register,
+        val: u32,
+    ) -> Result<(), Self::Error> {
+        self.write_register(reg, val).await?;
+        let actual = self.read_register(reg).await?;
+        if actual == val {
+            Ok(())
+        } else {
+            Err(self.synthesize_verify_error(val, actual))
+        }
+    }
+
+    /// Read a register and compare against `expected`. Default impl performs
+    /// one attempt with no retry. Real board impls override to trampoline to
+    /// `Tmc4671Spi::read_register_verified`.
+    async fn read_register_verified(
+        &mut self,
+        reg: Register,
+        expected: u32,
+    ) -> Result<u32, Self::Error> {
+        let actual = self.read_register(reg).await?;
+        if actual == expected {
+            Ok(actual)
+        } else {
+            Err(self.synthesize_verify_error(expected, actual))
+        }
+    }
+
+    /// Store the captured `MOTOR_TYPE_N_POLE_PAIRS` value into the channel's
+    /// `motor_sentinel` atomic. Called by AdcCal immediately after the
+    /// MOTOR_TYPE write succeeds. Used by `arm_motor_electrical` to detect
+    /// silent chip resets. Default impl is a no-op (for mocks that don't
+    /// care about lifecycle); board impls override to write the channel state.
+    fn store_motor_sentinel(&self, _value: u32) {}
+
+    /// Helper for default verify impls. Real impls bypass this. Default
+    /// impl: returns a synthetic `Self::Error`. The verify defaults are
+    /// used only by mocks and tests; production paths override the whole
+    /// verified method. Required because verify-fail signalling requires an
+    /// `Self::Error` value, which the trait can't construct generically.
+    fn synthesize_verify_error(&self, _expected: u32, _actual: u32) -> Self::Error;
+
     /// Set the TMC4671 enable pin state.
     fn set_enable_pin(&mut self, state: bool);
 
