@@ -95,10 +95,21 @@ pub(crate) async fn step_adc_calibrate<B: CommissioningBackend>(
                 .write_register(ADC_I_SELECT, backend.tmc_config().adc_i_select)
                 .await;
 
-            // Motor type: 2-phase stepper, 50 pole pairs.
-            let _ = backend
-                .write_register(MOTOR_TYPE_N_POLE_PAIRS, (2 << 16) | 50)
-                .await;
+            // Motor type: 2-phase stepper, 50 pole pairs. The MOTOR_TYPE write
+            // must be verified before storing the sentinel — silently continuing
+            // past a failed write here would let arm_motor_electrical see a
+            // sentinel that doesn't match what's actually on the chip and trip
+            // the safety check, but worse, MOTOR_TYPE=0 plus stepper PWM
+            // excitation is the AGENTS.md "destroys steppers" case.
+            const MOTOR_TYPE_VALUE: u32 = (2 << 16) | 50;
+            if backend
+                .write_register_verified(MOTOR_TYPE_N_POLE_PAIRS, MOTOR_TYPE_VALUE)
+                .await
+                .is_err()
+            {
+                return super::fail_inner(phase, CommissionError::Spi);
+            }
+            backend.store_motor_sentinel(MOTOR_TYPE_VALUE);
 
             // Clear offsets, enable outputs.
             let _ = backend.write_register(ADC_I0_SCALE_OFFSET, 256 << 16).await;
@@ -249,6 +260,31 @@ mod tests {
                         if *addr == foci_tmc4671::registers::ADC_I_SELECT.addr()
                 )),
                 "ADC setup must use the board-provided ADC_I_SELECT value"
+            );
+        });
+    }
+
+    #[test]
+    fn adc_cal_stores_sentinel_after_motor_type_write() {
+        pollster::block_on(async {
+            let mut backend = MockBackend::new();
+            let mut phase = InnerPhase::AdcCalibrate(AdcCalState::Setup);
+            let mut adc_cal = None;
+            let mut selftest_results = crate::selftest::SelftestResults::default();
+
+            let result = step_adc_calibrate(
+                &mut phase,
+                InnerSequence::Calibrate,
+                &mut adc_cal,
+                &mut selftest_results,
+                &mut backend,
+            )
+            .await;
+
+            assert!(matches!(result, StepResult::Continue));
+            assert_eq!(
+                backend.last_motor_sentinel_stored.get(),
+                Some((2 << 16) | 50),
             );
         });
     }
