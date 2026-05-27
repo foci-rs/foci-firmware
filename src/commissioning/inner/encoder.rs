@@ -44,11 +44,8 @@ const ENCODER_MOVEMENT_CURRENT_MAX: u32 = 1000;
 /// OpenFFBoard bringup motors use 50 pole pairs.
 const ENCODER_ALIGNMENT_POLE_PAIRS: u32 = 50;
 
-#[allow(dead_code)]
 const ENCODER_READ_SAMPLES: usize = 3;
-#[allow(dead_code)]
 const ENCODER_READ_MAX_JITTER: u32 = 2;
-#[allow(dead_code)]
 const ENCODER_READ_ATTEMPTS: usize = 3;
 
 fn encoder_alignment_min_movement(step_width: u32) -> u32 {
@@ -68,7 +65,6 @@ fn encoder_alignment_min_movement(step_width: u32) -> u32 {
 ///
 /// Returns `CommissionError::EncoderFault` when attempts are exhausted.
 /// Propagates `CommissionError::Spi` if the underlying register read fails.
-#[allow(dead_code)]
 async fn read_encoder_count_stable<B: CommissioningBackend>(
     backend: &mut B,
 ) -> Result<u32, CommissionError> {
@@ -224,7 +220,10 @@ pub(crate) async fn step_encoder_check<B: CommissioningBackend>(
 
     match state {
         EncoderCheckState::Setup => {
-            let count_start = backend.read_encoder_count().await as i32;
+            let count_start = match read_encoder_count_stable(backend).await {
+                Ok(value) => value as i32,
+                Err(error) => return super::fail_inner(phase, error),
+            };
 
             if let Err(error) = start_encoder_current_drive(backend, 0).await {
                 return super::fail_inner(phase, error);
@@ -268,7 +267,13 @@ pub(crate) async fn step_encoder_check<B: CommissioningBackend>(
         }
 
         EncoderCheckState::Finalize { count_start } => {
-            let count_end = backend.read_encoder_count().await as i32;
+            let count_end = match read_encoder_count_stable(backend).await {
+                Ok(value) => value as i32,
+                Err(error) => {
+                    let _ = stop_encoder_current_drive(backend).await;
+                    return super::fail_inner(phase, error);
+                }
+            };
 
             // Stop and disable (always, regardless of result).
             let _ = stop_encoder_current_drive(backend).await;
@@ -407,9 +412,9 @@ pub(crate) async fn step_encoder_align<B: CommissioningBackend>(
             count_before,
             min_movement,
         } => {
-            let count1 = match backend.read_register(ABN_DECODER_COUNT).await {
-                Ok(v) => v,
-                Err(_) => return super::fail_inner(phase, CommissionError::Spi),
+            let count1 = match read_encoder_count_stable(backend).await {
+                Ok(value) => value,
+                Err(error) => return super::fail_inner(phase, error),
             };
             let deadline = backend
                 .elapsed_us()
@@ -433,9 +438,9 @@ pub(crate) async fn step_encoder_align<B: CommissioningBackend>(
                 return StepResult::Continue;
             }
 
-            let count2 = match backend.read_register(ABN_DECODER_COUNT).await {
-                Ok(v) => v,
-                Err(_) => return super::fail_inner(phase, CommissionError::Spi),
+            let count2 = match read_encoder_count_stable(backend).await {
+                Ok(value) => value,
+                Err(error) => return super::fail_inner(phase, error),
             };
 
             let movement1 = (*count1 as i32 - *count_before as i32).unsigned_abs();
