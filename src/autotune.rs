@@ -246,6 +246,10 @@ pub enum CommissionError {
     /// Outer safety envelope violated (velocity/position/torque limit exceeded). Code 17.
     /// Always a safety fault: motor must be hard-disabled.
     SafetyEnvelopeViolation,
+    /// Sentinel register mismatch at arm time — chip silently lost the
+    /// state established at commission. Channel must be re-commissioned
+    /// before any further arm attempt. Code 18.
+    ChipResetDetected,
 }
 
 impl CommissionError {
@@ -272,6 +276,7 @@ impl CommissionError {
             Self::AlreadyRunning => 15,
             Self::QueueFull => 16,
             Self::SafetyEnvelopeViolation => 17,
+            Self::ChipResetDetected => 18,
         }
     }
 }
@@ -1883,6 +1888,7 @@ mod tests {
             CommissionError::AlreadyRunning,
             CommissionError::QueueFull,
             CommissionError::SafetyEnvelopeViolation,
+            CommissionError::ChipResetDetected,
         ];
         let mut seen = [false; 256];
         for e in errors {
@@ -1891,6 +1897,11 @@ mod tests {
             assert!(!seen[code], "duplicate status_code {code} for {e:?}");
             seen[code] = true;
         }
+    }
+
+    #[test]
+    fn commission_chip_reset_detected_has_status_code_18() {
+        assert_eq!(CommissionError::ChipResetDetected.status_code(), 18);
     }
 
     // --- PhaseId ---
