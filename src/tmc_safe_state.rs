@@ -12,9 +12,11 @@
 use crate::commissioning::types::CommissioningBackend;
 use foci_tmc4671::registers::Register;
 
+/// Diagnostic summary for a safe-state restore attempt.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-struct SafeStateRestoreReport {
-    failed_writes: u8,
+pub(crate) struct SafeStateRestoreReport {
+    /// Number of verified safe-state writes that exhausted retries.
+    pub(crate) failed_writes: u8,
 }
 
 /// Restore the TMC4671 to a safe non-energized state via `CommissioningBackend`.
@@ -25,17 +27,27 @@ struct SafeStateRestoreReport {
 /// 3. `PID_TORQUE_FLUX_TARGET = 0`
 /// 4. `PID_TORQUE_FLUX_OFFSET = 0`
 /// 5. `UQ_UD_EXT = 0`
-/// 6. `PWM_SV_CHOP = 0`
-/// 7. `PID_VELOCITY_OFFSET = 0`
-/// 8. `PIDOUT_UQ_UD_LIMITS = 1024`
+/// 6. `PHI_E_SELECTION = 0`
+/// 7. `PWM_SV_CHOP = 0`
+/// 8. `PID_VELOCITY_OFFSET = 0`
+/// 9. `PIDOUT_UQ_UD_LIMITS = 1024`
+/// 10. Clear PID error sums
 pub async fn restore_safe_state_via_backend<B>(backend: &mut B)
 where
     B: CommissioningBackend,
 {
-    let _ = restore_safe_state_via_backend_report(backend).await;
+    let report = restore_safe_state_via_backend_report(backend).await;
+    if report.failed_writes > 0 {
+        defmt::error!(
+            "safe-state restore had {=u8} verified-write failures after retries",
+            report.failed_writes
+        );
+    }
 }
 
-async fn restore_safe_state_via_backend_report<B>(backend: &mut B) -> SafeStateRestoreReport
+pub(crate) async fn restore_safe_state_via_backend_report<B>(
+    backend: &mut B,
+) -> SafeStateRestoreReport
 where
     B: CommissioningBackend,
 {
@@ -47,9 +59,11 @@ where
     safe_state_write(backend, PID_TORQUE_FLUX_TARGET, 0, &mut report).await;
     safe_state_write(backend, PID_TORQUE_FLUX_OFFSET, 0, &mut report).await;
     safe_state_write(backend, UQ_UD_EXT, 0, &mut report).await;
+    safe_state_write(backend, PHI_E_SELECTION, 0, &mut report).await;
     safe_state_write(backend, PWM_SV_CHOP, 0, &mut report).await;
     safe_state_write(backend, PID_VELOCITY_OFFSET, 0, &mut report).await;
     safe_state_write(backend, PIDOUT_UQ_UD_LIMITS, 1024, &mut report).await;
+    let _ = crate::tmc_ops::clear_pid_error_sums_via_backend(backend).await;
     report
 }
 
@@ -61,9 +75,12 @@ async fn safe_state_write<B>(
 ) where
     B: CommissioningBackend,
 {
-    if backend.write_register(reg, val).await.is_err() {
+    if backend.write_register_verified(reg, val).await.is_err() {
         report.failed_writes = report.failed_writes.saturating_add(1);
-        defmt::warn!("safe-state restore write failed: reg={=u8}", reg.addr());
+        defmt::warn!(
+            "safe-state restore write failed after retries: reg={=u8}",
+            reg.addr()
+        );
     }
 }
 
@@ -94,9 +111,30 @@ mod tests {
                     (PID_TORQUE_FLUX_TARGET.addr(), 0),
                     (PID_TORQUE_FLUX_OFFSET.addr(), 0),
                     (UQ_UD_EXT.addr(), 0),
+                    (PHI_E_SELECTION.addr(), 0),
                     (PWM_SV_CHOP.addr(), 0),
                     (PID_VELOCITY_OFFSET.addr(), 0),
                     (PIDOUT_UQ_UD_LIMITS.addr(), 1024),
+                    (
+                        PID_ERROR_PID_TORQUE_ERROR_SUM.addr.addr(),
+                        PID_ERROR_PID_TORQUE_ERROR_SUM.sub_addr as u32,
+                    ),
+                    (PID_ERROR_PID_TORQUE_ERROR_SUM.data.addr(), 0),
+                    (
+                        PID_ERROR_PID_FLUX_ERROR_SUM.addr.addr(),
+                        PID_ERROR_PID_FLUX_ERROR_SUM.sub_addr as u32,
+                    ),
+                    (PID_ERROR_PID_FLUX_ERROR_SUM.data.addr(), 0),
+                    (
+                        PID_ERROR_PID_VELOCITY_ERROR_SUM.addr.addr(),
+                        PID_ERROR_PID_VELOCITY_ERROR_SUM.sub_addr as u32,
+                    ),
+                    (PID_ERROR_PID_VELOCITY_ERROR_SUM.data.addr(), 0),
+                    (
+                        PID_ERROR_PID_POSITION_ERROR_SUM.addr.addr(),
+                        PID_ERROR_PID_POSITION_ERROR_SUM.sub_addr as u32,
+                    ),
+                    (PID_ERROR_PID_POSITION_ERROR_SUM.data.addr(), 0),
                 ]
             );
         });
@@ -131,6 +169,78 @@ mod tests {
             let report = restore_safe_state_via_backend_report(&mut backend).await;
 
             assert_eq!(report.failed_writes, 1);
+        });
+    }
+
+    #[test]
+    fn safe_state_writes_phi_e_selection_zero() {
+        pollster::block_on(async {
+            let mut backend = MockBackend::new();
+            backend.enable_pin = true;
+
+            restore_safe_state_via_backend(&mut backend).await;
+
+            let writes: heapless::Vec<(u8, u32), 16> = backend
+                .spi_log
+                .iter()
+                .filter_map(|op| {
+                    if let SpiOp::Write(addr, val) = op {
+                        Some((*addr, *val))
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            assert!(
+                writes
+                    .iter()
+                    .any(|(addr, val)| *addr == PHI_E_SELECTION.addr() && *val == 0),
+                "expected PHI_E_SELECTION=0 in safe-state sequence, log={writes:?}",
+            );
+        });
+    }
+
+    #[test]
+    fn safe_state_clears_pid_error_sums() {
+        pollster::block_on(async {
+            let mut backend = MockBackend::new();
+            backend.enable_pin = true;
+
+            restore_safe_state_via_backend(&mut backend).await;
+
+            let writes: heapless::Vec<(u8, u32), 32> = backend
+                .spi_log
+                .iter()
+                .filter_map(|op| {
+                    if let SpiOp::Write(addr, val) = op {
+                        Some((*addr, *val))
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            let position_err_sum_addr = PID_ERROR_PID_POSITION_ERROR_SUM.addr.addr();
+            assert!(
+                writes
+                    .iter()
+                    .any(|(addr, _)| *addr == position_err_sum_addr),
+                "expected PID_ERROR sub-register access for clear; log={writes:?}",
+            );
+        });
+    }
+
+    #[test]
+    fn safe_state_uses_verified_writes() {
+        pollster::block_on(async {
+            let mut backend = MockBackend::new();
+            backend.read_override = Some((MODE_RAMP_MODE_MOTION.addr(), 0xFFFF_FFFF));
+
+            let report = restore_safe_state_via_backend_report(&mut backend).await;
+
+            assert!(
+                report.failed_writes >= 1,
+                "expected at least one failed verified write"
+            );
         });
     }
 }

@@ -65,6 +65,40 @@ where
     Ok(())
 }
 
+/// Backend-trait variant of [`clear_pid_error_sums`] for safe-state recovery.
+///
+/// Each sub-register write is best-effort. The returned error only indicates
+/// whether any selector/data write failed; callers that are already in a
+/// disarmed safe-state path may intentionally ignore it.
+pub async fn clear_pid_error_sums_via_backend<B>(backend: &mut B) -> Result<(), ()>
+where
+    B: CommissioningBackend,
+{
+    use foci_tmc4671::registers::*;
+
+    let mut failed = false;
+    let pairs = [
+        PID_ERROR_PID_TORQUE_ERROR_SUM,
+        PID_ERROR_PID_FLUX_ERROR_SUM,
+        PID_ERROR_PID_VELOCITY_ERROR_SUM,
+        PID_ERROR_PID_POSITION_ERROR_SUM,
+    ];
+    for sub in pairs {
+        if backend
+            .write_register(sub.addr, sub.sub_addr as u32)
+            .await
+            .is_err()
+        {
+            failed = true;
+        }
+        if backend.write_register(sub.data, 0).await.is_err() {
+            failed = true;
+        }
+    }
+
+    if failed { Err(()) } else { Ok(()) }
+}
+
 /// Snap the TMC4671 hold target to the measured actual position when within
 /// the settle deadband, then clear all PID error accumulators and STATUS_FLAGS.
 ///
