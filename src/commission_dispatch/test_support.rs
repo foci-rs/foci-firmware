@@ -76,6 +76,10 @@ pub struct MockBackend {
     pub read_position_actual_sequence: Vec<u32, 8>,
     /// Current index into `read_position_actual_sequence`.
     pub read_position_actual_pos: usize,
+    /// Sequential values to return for consecutive `ABN_DECODER_COUNT` reads.
+    pub abn_decoder_count_sequence: Vec<u32, 16>,
+    /// Current index into `abn_decoder_count_sequence`.
+    pub abn_decoder_count_pos: usize,
     /// If true, every SPI write asserts that step processing has already been gated off.
     pub assert_motor_armed_false_on_write: bool,
 }
@@ -108,8 +112,19 @@ impl MockBackend {
             encoder_count_value: 0,
             read_position_actual_sequence: Vec::new(),
             read_position_actual_pos: 0,
+            abn_decoder_count_sequence: Vec::new(),
+            abn_decoder_count_pos: 0,
             assert_motor_armed_false_on_write: false,
         }
+    }
+
+    /// Set sequential `ABN_DECODER_COUNT` values for read-register tests.
+    pub fn set_abn_decoder_count_sequence(&mut self, values: &[u32]) {
+        self.abn_decoder_count_sequence.clear();
+        for &value in values {
+            let _ = self.abn_decoder_count_sequence.push(value);
+        }
+        self.abn_decoder_count_pos = 0;
     }
 }
 
@@ -140,6 +155,13 @@ impl CommissioningBackend for MockBackend {
         {
             let val = self.read_position_actual_sequence[self.read_position_actual_pos];
             self.read_position_actual_pos += 1;
+            return Ok(val);
+        }
+        if addr == foci_tmc4671::registers::ABN_DECODER_COUNT.addr()
+            && self.abn_decoder_count_pos < self.abn_decoder_count_sequence.len()
+        {
+            let val = self.abn_decoder_count_sequence[self.abn_decoder_count_pos];
+            self.abn_decoder_count_pos += 1;
             return Ok(val);
         }
         Ok(*self.registers.get(&addr).unwrap_or(&0))

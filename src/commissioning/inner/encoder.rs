@@ -44,10 +44,65 @@ const ENCODER_MOVEMENT_CURRENT_MAX: u32 = 1000;
 /// OpenFFBoard bringup motors use 50 pole pairs.
 const ENCODER_ALIGNMENT_POLE_PAIRS: u32 = 50;
 
+#[allow(dead_code)]
+const ENCODER_READ_SAMPLES: usize = 3;
+#[allow(dead_code)]
+const ENCODER_READ_MAX_JITTER: u32 = 2;
+#[allow(dead_code)]
+const ENCODER_READ_ATTEMPTS: usize = 3;
+
 fn encoder_alignment_min_movement(step_width: u32) -> u32 {
     let electrical_step_width = step_width.saturating_mul(ENCODER_ALIGNMENT_POLE_PAIRS);
     let denominator = 20u32.saturating_mul(electrical_step_width).max(1);
     (65536u32 / denominator).max(2)
+}
+
+/// Read `ABN_DECODER_COUNT` multiple times and return a stable value.
+///
+/// Reads `ENCODER_READ_SAMPLES` samples per attempt and accepts when the
+/// pairwise wrap-aware spread is <= `ENCODER_READ_MAX_JITTER`. Retries up
+/// to `ENCODER_READ_ATTEMPTS` times. The wrap-awareness uses
+/// `commissioning::outer::response::encoder_delta` against the configured
+/// ABN quadrature PPR because a rotor near the wrap point can produce samples
+/// that look unstable to a naive max - min check.
+///
+/// Returns `CommissionError::EncoderFault` when attempts are exhausted.
+/// Propagates `CommissionError::Spi` if the underlying register read fails.
+#[allow(dead_code)]
+async fn read_encoder_count_stable<B: CommissioningBackend>(
+    backend: &mut B,
+) -> Result<u32, CommissionError> {
+    use foci_tmc4671::registers::ABN_DECODER_COUNT;
+
+    let counts_per_rev = backend.encoder_quadrature_ppr() as i32;
+    for _ in 0..ENCODER_READ_ATTEMPTS {
+        let mut buf: heapless::Vec<u32, ENCODER_READ_SAMPLES> = heapless::Vec::new();
+        for _ in 0..ENCODER_READ_SAMPLES {
+            let value = backend
+                .read_register(ABN_DECODER_COUNT)
+                .await
+                .map_err(|_| CommissionError::Spi)?;
+            let _ = buf.push(value);
+        }
+        let spread = buf
+            .iter()
+            .flat_map(|a| {
+                buf.iter().map(move |b| {
+                    crate::commissioning::outer::response::encoder_delta(
+                        *a as i32,
+                        *b as i32,
+                        counts_per_rev,
+                    )
+                    .unsigned_abs()
+                })
+            })
+            .max()
+            .unwrap_or(0);
+        if spread <= ENCODER_READ_MAX_JITTER {
+            return Ok(*buf.last().unwrap());
+        }
+    }
+    Err(CommissionError::EncoderFault)
 }
 
 /// Start current-regulated open-loop encoder movement.
@@ -499,6 +554,51 @@ mod tests {
     #[test]
     fn encoder_alignment_min_movement_uses_electrical_fraction() {
         assert_eq!(encoder_alignment_min_movement(16), 4);
+    }
+
+    #[test]
+    fn stable_helper_accepts_when_all_samples_agree() {
+        pollster::block_on(async {
+            let _guard = SHARED_STATE_MUTEX.lock().await;
+            let mut backend = MockBackend::new();
+            backend.encoder_quadrature_ppr_value = 4000;
+            let _ = backend
+                .write_register(foci_tmc4671::registers::ABN_DECODER_COUNT, 1234)
+                .await;
+            let result = read_encoder_count_stable(&mut backend).await;
+            assert_eq!(result, Ok(1234));
+        });
+    }
+
+    #[test]
+    fn stable_helper_accepts_near_wrap() {
+        pollster::block_on(async {
+            let _guard = SHARED_STATE_MUTEX.lock().await;
+            let mut backend = MockBackend::new();
+            backend.encoder_quadrature_ppr_value = 4000;
+            backend.set_abn_decoder_count_sequence(&[3999, 0, 1]);
+            let result = read_encoder_count_stable(&mut backend).await;
+            assert!(
+                result.is_ok(),
+                "wrap-near samples should be accepted, got {:?}",
+                result
+            );
+        });
+    }
+
+    #[test]
+    fn stable_helper_rejects_after_exhausted_attempts() {
+        pollster::block_on(async {
+            let _guard = SHARED_STATE_MUTEX.lock().await;
+            let mut backend = MockBackend::new();
+            backend.encoder_quadrature_ppr_value = 4000;
+            backend.set_abn_decoder_count_sequence(&[500, 600, 500, 600, 500, 600, 500, 600, 500]);
+            let result = read_encoder_count_stable(&mut backend).await;
+            match result {
+                Err(crate::autotune::CommissionError::EncoderFault) => {}
+                other => panic!("expected EncoderFault, got {:?}", other),
+            }
+        });
     }
 
     #[test]
