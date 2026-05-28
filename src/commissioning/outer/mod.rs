@@ -15,7 +15,7 @@ pub mod slope_estimator;
 pub mod velocity;
 
 use crate::autotune::{
-    CommissionError, CommissionProfile, FilterConfig, MechanicalModel, OperatingMode,
+    CommissionError, CommissionProfile, FilterConfig, MechanicalModel, OperatingMode, PhaseId,
     PositionGains, TRANSIENT_LEN, TransientBuffer, VelocityGains, VelocityValidation,
 };
 use crate::commissioning::types::{CommissioningBackend, OuterResult, StepResult};
@@ -511,6 +511,22 @@ pub(crate) enum OuterPhase {
     Failed(CommissionError),
 }
 
+impl OuterPhase {
+    /// Return the stable phase ID for the active non-terminal outer phase.
+    pub(crate) fn current_phase_id(&self) -> Option<PhaseId> {
+        match self {
+            Self::MechanicalId { .. } => Some(PhaseId::MechanicalId),
+            Self::VelocityTune { .. } => Some(PhaseId::VelocityTune),
+            Self::VelocityValidate { .. } => Some(PhaseId::VelocityValidate),
+            Self::PositionTune { .. } => Some(PhaseId::PositionTune),
+            Self::FilterTune { .. } => Some(PhaseId::FilterTune),
+            Self::Commit { .. } => Some(PhaseId::Commit),
+            Self::Done(_) => Some(PhaseId::OuterDone),
+            Self::Failed(_) => None,
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Safety helpers
 // ---------------------------------------------------------------------------
@@ -752,6 +768,23 @@ mod tests {
             size_of::<OuterPhase>() <= 4096,
             "OuterPhase grew to {} bytes",
             size_of::<OuterPhase>()
+        );
+    }
+
+    #[test]
+    fn outer_phase_id_maps_active_and_failed_phases() {
+        assert_eq!(
+            OuterPhase::MechanicalId {
+                state: MechanicalIdState::Setup,
+                data: MechanicalIdData::new(0, 0),
+                safety: OuterSafetyLimits::new(0, 0),
+            }
+            .current_phase_id(),
+            Some(PhaseId::MechanicalId)
+        );
+        assert_eq!(
+            OuterPhase::Failed(CommissionError::Spi).current_phase_id(),
+            None
         );
     }
 

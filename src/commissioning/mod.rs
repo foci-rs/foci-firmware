@@ -14,7 +14,8 @@ pub mod outer;
 pub mod types;
 
 use crate::autotune::{
-    CommissionError, CommissionProfile, InnerSequence, OperatingMode, TransientBuffer,
+    CommissionError, CommissionProfile, CommissionStatus, InnerSequence, OperatingMode, PhaseId,
+    TransientBuffer,
 };
 use crate::commissioning::inner::InnerPhase;
 use crate::commissioning::outer::{
@@ -23,6 +24,10 @@ use crate::commissioning::outer::{
 use crate::commissioning::types::{AdcCalResult, CommissioningBackend, EngineKind, StepResult};
 use crate::pid::InnerLoopGains;
 use crate::state::tmc::TmcChannelState;
+use crate::trace_events::{
+    CommissionTraceEvent, EVENT_COMMISSION_ENGINE_START, EVENT_COMMISSION_ENGINE_TERMINAL,
+    EVENT_COMMISSION_PHASE_END, EVENT_COMMISSION_PHASE_START, TraceEventLevel, u32_arg,
+};
 
 // Re-export public API surface for downstream consumers.
 pub use crate::commissioning::types::{
@@ -170,6 +175,27 @@ pub(crate) enum EngineMode {
     },
 }
 
+#[derive(Debug, Clone, Copy, defmt::Format)]
+struct TraceRunState {
+    engine_seq: u32,
+    phase_seq: u32,
+    started: bool,
+    terminal: bool,
+    current_phase: Option<PhaseId>,
+}
+
+impl TraceRunState {
+    const fn new(engine_seq: u32) -> Self {
+        Self {
+            engine_seq,
+            phase_seq: 0,
+            started: false,
+            terminal: false,
+            current_phase: None,
+        }
+    }
+}
+
 /// Cooperative commissioning state machine.
 ///
 /// Created when a `foci_commission`, `foci_tune`, or `foci_calibrate`
@@ -185,6 +211,7 @@ pub struct CommissioningEngine {
     selftest_results: crate::selftest::SelftestResults,
     /// Structured diagnostics retained for host-visible troubleshooting.
     diagnostics: crate::selftest::CommissionDiagnostics,
+    trace_run: TraceRunState,
 }
 
 impl CommissioningEngine {
@@ -194,12 +221,30 @@ impl CommissioningEngine {
     /// with saved gains. Skips coil/wiring/encoder diagnostics.
     /// Returns `StepResult::CalibrateDone` on success.
     pub fn new_calibrate(oid: u8) -> Self {
-        Self::new_calibrate_for_tmc(oid, crate::state::tmc::tmc_channel0())
+        Self::new_calibrate_with_trace_seq(oid, 0)
+    }
+
+    /// Create an engine for calibration with a caller-assigned trace sequence.
+    pub fn new_calibrate_with_trace_seq(oid: u8, trace_engine_seq: u32) -> Self {
+        Self::new_calibrate_for_tmc_with_trace_seq(
+            oid,
+            crate::state::tmc::tmc_channel0(),
+            trace_engine_seq,
+        )
     }
 
     /// Create a calibration engine bound to a TMC channel state.
     pub fn new_calibrate_for_tmc(oid: u8, tmc_state: &'static TmcChannelState) -> Self {
-        Self::new_calibrate_for_tmc_with_gains(oid, tmc_state, None)
+        Self::new_calibrate_for_tmc_with_trace_seq(oid, tmc_state, 0)
+    }
+
+    /// Create a calibration engine bound to a TMC channel state with a trace sequence.
+    pub fn new_calibrate_for_tmc_with_trace_seq(
+        oid: u8,
+        tmc_state: &'static TmcChannelState,
+        trace_engine_seq: u32,
+    ) -> Self {
+        Self::new_calibrate_for_tmc_with_gains_and_trace_seq(oid, tmc_state, None, trace_engine_seq)
     }
 
     /// Create a calibration engine bound to a TMC channel state and stored gains.
@@ -207,6 +252,16 @@ impl CommissioningEngine {
         oid: u8,
         tmc_state: &'static TmcChannelState,
         inner_gains: Option<InnerLoopGains>,
+    ) -> Self {
+        Self::new_calibrate_for_tmc_with_gains_and_trace_seq(oid, tmc_state, inner_gains, 0)
+    }
+
+    /// Create a calibration engine bound to a TMC channel state, stored gains, and trace sequence.
+    pub fn new_calibrate_for_tmc_with_gains_and_trace_seq(
+        oid: u8,
+        tmc_state: &'static TmcChannelState,
+        inner_gains: Option<InnerLoopGains>,
+        trace_engine_seq: u32,
     ) -> Self {
         let calibrate_entry_gains =
             Some(CalibrateEntryGains::from_tmc_state(tmc_state, inner_gains));
@@ -223,6 +278,7 @@ impl CommissioningEngine {
             buf: TransientBuffer::new(),
             selftest_results: crate::selftest::SelftestResults::default(),
             diagnostics: crate::selftest::CommissionDiagnostics::default(),
+            trace_run: TraceRunState::new(trace_engine_seq),
         }
     }
 
@@ -232,11 +288,29 @@ impl CommissioningEngine {
     /// encoder alignment, and electrical identification, then stops with
     /// `StepResult::SelftestDone` after restoring safe state.
     pub fn new_selftest(oid: u8) -> Self {
-        Self::new_selftest_for_tmc(oid, crate::state::tmc::tmc_channel0())
+        Self::new_selftest_with_trace_seq(oid, 0)
+    }
+
+    /// Create a selftest engine with a caller-assigned trace sequence.
+    pub fn new_selftest_with_trace_seq(oid: u8, trace_engine_seq: u32) -> Self {
+        Self::new_selftest_for_tmc_with_trace_seq(
+            oid,
+            crate::state::tmc::tmc_channel0(),
+            trace_engine_seq,
+        )
     }
 
     /// Create a selftest engine bound to a TMC channel state.
     pub fn new_selftest_for_tmc(oid: u8, tmc_state: &'static TmcChannelState) -> Self {
+        Self::new_selftest_for_tmc_with_trace_seq(oid, tmc_state, 0)
+    }
+
+    /// Create a selftest engine bound to a TMC channel state with a trace sequence.
+    pub fn new_selftest_for_tmc_with_trace_seq(
+        oid: u8,
+        tmc_state: &'static TmcChannelState,
+        trace_engine_seq: u32,
+    ) -> Self {
         Self {
             oid,
             tmc_state,
@@ -250,6 +324,7 @@ impl CommissioningEngine {
             buf: TransientBuffer::new(),
             selftest_results: crate::selftest::SelftestResults::default(),
             diagnostics: crate::selftest::CommissionDiagnostics::default(),
+            trace_run: TraceRunState::new(trace_engine_seq),
         }
     }
 
@@ -259,7 +334,21 @@ impl CommissioningEngine {
     /// closed-loop entry with fallback outer gains.
     /// Returns `StepResult::CommissionDone` on success.
     pub fn new_commission(oid: u8, profile: CommissionProfile) -> Self {
-        Self::new_commission_for_tmc(oid, crate::state::tmc::tmc_channel0(), profile)
+        Self::new_commission_with_trace_seq(oid, profile, 0)
+    }
+
+    /// Create a Stage 1 commissioning engine with a caller-assigned trace sequence.
+    pub fn new_commission_with_trace_seq(
+        oid: u8,
+        profile: CommissionProfile,
+        trace_engine_seq: u32,
+    ) -> Self {
+        Self::new_commission_for_tmc_with_trace_seq(
+            oid,
+            crate::state::tmc::tmc_channel0(),
+            profile,
+            trace_engine_seq,
+        )
     }
 
     /// Create a Stage 1 commissioning engine bound to a TMC channel state.
@@ -267,6 +356,16 @@ impl CommissioningEngine {
         oid: u8,
         tmc_state: &'static TmcChannelState,
         profile: CommissionProfile,
+    ) -> Self {
+        Self::new_commission_for_tmc_with_trace_seq(oid, tmc_state, profile, 0)
+    }
+
+    /// Create a Stage 1 commissioning engine bound to a TMC channel state and trace sequence.
+    pub fn new_commission_for_tmc_with_trace_seq(
+        oid: u8,
+        tmc_state: &'static TmcChannelState,
+        profile: CommissionProfile,
+        trace_engine_seq: u32,
     ) -> Self {
         Self {
             oid,
@@ -281,6 +380,7 @@ impl CommissioningEngine {
             buf: TransientBuffer::new(),
             selftest_results: crate::selftest::SelftestResults::default(),
             diagnostics: crate::selftest::CommissionDiagnostics::default(),
+            trace_run: TraceRunState::new(trace_engine_seq),
         }
     }
 
@@ -289,11 +389,22 @@ impl CommissioningEngine {
     /// `entry_snapshot` captures the active outer gains at entry for
     /// soft-failure restoration. Built by the caller from firmware atomics.
     pub fn new_outer(oid: u8, params: OuterTuneParams, entry_snapshot: EntrySnapshot) -> Self {
-        Self::new_outer_for_tmc(
+        Self::new_outer_with_trace_seq(oid, params, entry_snapshot, 0)
+    }
+
+    /// Create an outer commissioning engine with a caller-assigned trace sequence.
+    pub fn new_outer_with_trace_seq(
+        oid: u8,
+        params: OuterTuneParams,
+        entry_snapshot: EntrySnapshot,
+        trace_engine_seq: u32,
+    ) -> Self {
+        Self::new_outer_for_tmc_with_trace_seq(
             oid,
             crate::state::tmc::tmc_channel0(),
             params,
             entry_snapshot,
+            trace_engine_seq,
         )
     }
 
@@ -303,6 +414,17 @@ impl CommissioningEngine {
         tmc_state: &'static TmcChannelState,
         params: OuterTuneParams,
         entry_snapshot: EntrySnapshot,
+    ) -> Self {
+        Self::new_outer_for_tmc_with_trace_seq(oid, tmc_state, params, entry_snapshot, 0)
+    }
+
+    /// Create an outer commissioning engine bound to a TMC channel state and trace sequence.
+    pub fn new_outer_for_tmc_with_trace_seq(
+        oid: u8,
+        tmc_state: &'static TmcChannelState,
+        params: OuterTuneParams,
+        entry_snapshot: EntrySnapshot,
+        trace_engine_seq: u32,
     ) -> Self {
         // Safety limits and data are initialized with placeholder values.
         // The MechanicalIdState::Setup sub-state reads the actual encoder
@@ -345,6 +467,7 @@ impl CommissioningEngine {
             buf: TransientBuffer::new(),
             selftest_results: crate::selftest::SelftestResults::default(),
             diagnostics: crate::selftest::CommissionDiagnostics::default(),
+            trace_run: TraceRunState::new(trace_engine_seq),
         }
     }
 
@@ -401,6 +524,156 @@ impl CommissioningEngine {
         core::mem::take(&mut self.diagnostics)
     }
 
+    fn current_phase_id(&self) -> Option<PhaseId> {
+        match &self.engine_mode {
+            EngineMode::Inner { phase, .. } => phase.current_phase_id(),
+            EngineMode::Outer { phase, .. } => phase.current_phase_id(),
+        }
+    }
+
+    fn trace_profile_or_mode(&self) -> i32 {
+        match &self.engine_mode {
+            EngineMode::Inner {
+                profile,
+                sequence: InnerSequence::Commission,
+                ..
+            } => i32::from(profile.to_u8()),
+            EngineMode::Outer { profile, .. } => i32::from(profile.to_u8()),
+            EngineMode::Inner { .. } => 0,
+        }
+    }
+
+    fn trace_event(
+        &self,
+        level: TraceEventLevel,
+        event_id: u16,
+        payload: [i32; 2],
+        payload_count: u8,
+    ) -> CommissionTraceEvent {
+        CommissionTraceEvent {
+            level,
+            event_id,
+            engine_kind: self.kind(),
+            payload,
+            payload_count,
+        }
+    }
+
+    fn emit_trace_start<B: CommissioningBackend>(&mut self, backend: &mut B) {
+        if self.trace_run.started {
+            return;
+        }
+
+        self.trace_run.started = true;
+        backend.record_commission_trace_event(self.trace_event(
+            TraceEventLevel::Info,
+            EVENT_COMMISSION_ENGINE_START,
+            [
+                self.trace_profile_or_mode(),
+                u32_arg(self.trace_run.engine_seq),
+            ],
+            2,
+        ));
+
+        if let Some(phase) = self.current_phase_id() {
+            self.trace_run.current_phase = Some(phase);
+            backend.record_commission_trace_event(self.trace_event(
+                TraceEventLevel::Info,
+                EVENT_COMMISSION_PHASE_START,
+                [i32::from(phase.to_u8()), u32_arg(self.trace_run.phase_seq)],
+                2,
+            ));
+        }
+    }
+
+    fn emit_trace_phase_end<B: CommissioningBackend>(
+        &mut self,
+        backend: &mut B,
+        status_code: u8,
+        level: TraceEventLevel,
+    ) {
+        if let Some(phase) = self.trace_run.current_phase.take() {
+            backend.record_commission_trace_event(self.trace_event(
+                level,
+                EVENT_COMMISSION_PHASE_END,
+                [i32::from(phase.to_u8()), i32::from(status_code)],
+                2,
+            ));
+        }
+    }
+
+    fn emit_trace_phase_start<B: CommissioningBackend>(&mut self, backend: &mut B, phase: PhaseId) {
+        self.trace_run.current_phase = Some(phase);
+        backend.record_commission_trace_event(self.trace_event(
+            TraceEventLevel::Info,
+            EVENT_COMMISSION_PHASE_START,
+            [i32::from(phase.to_u8()), u32_arg(self.trace_run.phase_seq)],
+            2,
+        ));
+    }
+
+    fn emit_trace_terminal<B: CommissioningBackend>(
+        &mut self,
+        backend: &mut B,
+        status_code: u8,
+        level: TraceEventLevel,
+    ) {
+        if self.trace_run.terminal {
+            return;
+        }
+        self.trace_run.terminal = true;
+        backend.record_commission_trace_event(self.trace_event(
+            level,
+            EVENT_COMMISSION_ENGINE_TERMINAL,
+            [i32::from(status_code), u32_arg(self.trace_run.engine_seq)],
+            2,
+        ));
+    }
+
+    fn status_level(status: CommissionStatus) -> TraceEventLevel {
+        match status {
+            CommissionStatus::Accepted => TraceEventLevel::Info,
+            CommissionStatus::AcceptedWithWarnings | CommissionStatus::InnerOnly => {
+                TraceEventLevel::Warn
+            }
+            CommissionStatus::Failed(_) => TraceEventLevel::Error,
+        }
+    }
+
+    fn emit_trace_after_step<B: CommissioningBackend>(
+        &mut self,
+        backend: &mut B,
+        result: &StepResult,
+    ) {
+        match result {
+            StepResult::Continue => {}
+            StepResult::PhaseChanged(phase) => {
+                self.emit_trace_phase_end(backend, 0, TraceEventLevel::Info);
+                self.trace_run.phase_seq = self.trace_run.phase_seq.wrapping_add(1);
+                self.emit_trace_phase_start(backend, *phase);
+            }
+            StepResult::CommissionDone(result) => {
+                self.emit_trace_phase_end(backend, 0, TraceEventLevel::Info);
+                let level = Self::status_level(result.inner.status);
+                self.emit_trace_terminal(backend, result.inner.status.to_u8(), level);
+            }
+            StepResult::OuterDone(result) => {
+                self.emit_trace_phase_end(backend, 0, TraceEventLevel::Info);
+                let level = Self::status_level(result.status);
+                self.emit_trace_terminal(backend, result.status.to_u8(), level);
+            }
+            StepResult::CalibrateDone(_) | StepResult::SelftestDone => {
+                self.emit_trace_phase_end(backend, 0, TraceEventLevel::Info);
+                self.emit_trace_terminal(backend, 0, TraceEventLevel::Info);
+            }
+            StepResult::InnerFailed(err) | StepResult::OuterFailed(err) => {
+                let status = err.status_code();
+                self.emit_trace_phase_end(backend, status, TraceEventLevel::Error);
+                self.emit_trace_terminal(backend, status, TraceEventLevel::Error);
+            }
+        }
+    }
+
     /// Advance the state machine by one tick (max 1ms).
     ///
     /// Returns a [`StepResult`] indicating whether to continue, report
@@ -423,9 +696,11 @@ impl CommissioningEngine {
             return self.abort(CommissionError::Shutdown);
         }
 
+        self.emit_trace_start(backend);
+
         let selftest_results = &mut self.selftest_results;
         let diagnostics = &mut self.diagnostics;
-        match &mut self.engine_mode {
+        let result = match &mut self.engine_mode {
             EngineMode::Inner {
                 phase,
                 profile,
@@ -477,7 +752,9 @@ impl CommissioningEngine {
                 )
                 .await
             }
-        }
+        };
+        self.emit_trace_after_step(backend, &result);
+        result
     }
 
     /// Abort commissioning, restoring safe state.
@@ -599,6 +876,43 @@ mod tests {
             CommissioningEngine::new_outer(0, params, snapshot).kind(),
             EngineKind::OuterTune,
         );
+    }
+
+    #[test]
+    fn commission_step_emits_engine_start_and_initial_phase_start() {
+        pollster::block_on(async {
+            let mut engine = CommissioningEngine::new_commission_with_trace_seq(
+                0,
+                crate::autotune::CommissionProfile::Balanced,
+                42,
+            );
+            let mut backend = crate::commission_dispatch::test_support::MockBackend::new();
+
+            let _ = engine.step(&mut backend).await;
+
+            let events = &backend.trace_events;
+            assert_eq!(
+                events[0].event_id,
+                crate::trace_events::EVENT_COMMISSION_ENGINE_START
+            );
+            assert_eq!(events[0].engine_kind, EngineKind::Commission);
+            assert_eq!(
+                events[0].payload,
+                [
+                    crate::autotune::CommissionProfile::Balanced.to_u8() as i32,
+                    42,
+                ]
+            );
+            assert_eq!(
+                events[1].event_id,
+                crate::trace_events::EVENT_COMMISSION_PHASE_START
+            );
+            assert_eq!(
+                events[1].payload[0],
+                crate::autotune::PhaseId::AdcCalibrate.to_u8() as i32
+            );
+            assert_eq!(events[1].payload[1], 0);
+        });
     }
 
     #[test]

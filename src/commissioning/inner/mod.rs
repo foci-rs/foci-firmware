@@ -289,6 +289,26 @@ pub(crate) enum InnerPhase {
     Failed(CommissionError),
 }
 
+impl InnerPhase {
+    /// Return the stable phase ID for the active non-terminal inner phase.
+    pub(crate) fn current_phase_id(&self) -> Option<crate::autotune::PhaseId> {
+        use crate::autotune::PhaseId;
+
+        match self {
+            Self::AdcCalibrate(_) => Some(PhaseId::AdcCalibrate),
+            Self::CoilCheck { .. } => Some(PhaseId::CoilCheck),
+            Self::PhaseWiringCheck { .. } => Some(PhaseId::PhaseWiringCheck),
+            Self::EncoderCheck { .. } => Some(PhaseId::EncoderCheck),
+            Self::EncoderAlign { .. } => Some(PhaseId::EncoderAlign),
+            Self::ElectricalId { .. } => Some(PhaseId::ElectricalId),
+            Self::CurrentTune { .. } => Some(PhaseId::CurrentTune),
+            Self::CurrentValidate { .. } => Some(PhaseId::CurrentValidate),
+            Self::ClosedLoopEntry { .. } => Some(PhaseId::ClosedLoopEntry),
+            Self::Failed(_) => None,
+        }
+    }
+}
+
 /// Transition the inner phase to `Failed` and emit an `InnerFailed` result.
 pub(crate) fn fail_inner(phase: &mut InnerPhase, err: CommissionError) -> StepResult {
     *phase = InnerPhase::Failed(err);
@@ -552,4 +572,22 @@ pub async fn restore_entry_gains<B: CommissioningBackend>(
         .map_err(|_| CommissionError::Spi)?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{AdcCalState, InnerPhase};
+    use crate::autotune::{CommissionError, PhaseId};
+
+    #[test]
+    fn inner_phase_id_maps_active_and_failed_phases() {
+        assert_eq!(
+            InnerPhase::AdcCalibrate(AdcCalState::Setup).current_phase_id(),
+            Some(PhaseId::AdcCalibrate)
+        );
+        assert_eq!(
+            InnerPhase::Failed(CommissionError::Spi).current_phase_id(),
+            None
+        );
+    }
 }

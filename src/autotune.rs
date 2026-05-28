@@ -300,6 +300,18 @@ pub enum CommissionStatus {
     Failed(CommissionError),
 }
 
+impl CommissionStatus {
+    /// Encode to the stable status code used in host replies and trace events.
+    pub fn to_u8(self) -> u8 {
+        match self {
+            Self::Accepted => 0,
+            Self::AcceptedWithWarnings => 1,
+            Self::InnerOnly => 2,
+            Self::Failed(e) => e.status_code(),
+        }
+    }
+}
+
 /// Identifies a single commissioning phase for progress reporting.
 ///
 /// Sent in the `foci_commission_phase` message on each phase transition.
@@ -1902,6 +1914,17 @@ mod tests {
     #[test]
     fn commission_chip_reset_detected_has_status_code_18() {
         assert_eq!(CommissionError::ChipResetDetected.status_code(), 18);
+    }
+
+    #[test]
+    fn commission_status_to_u8_uses_stable_status_codes() {
+        assert_eq!(CommissionStatus::Accepted.to_u8(), 0);
+        assert_eq!(CommissionStatus::AcceptedWithWarnings.to_u8(), 1);
+        assert_eq!(CommissionStatus::InnerOnly.to_u8(), 2);
+        assert_eq!(
+            CommissionStatus::Failed(CommissionError::ChipResetDetected).to_u8(),
+            18
+        );
     }
 
     // --- PhaseId ---
