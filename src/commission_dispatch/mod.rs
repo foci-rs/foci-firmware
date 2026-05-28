@@ -63,6 +63,7 @@ impl<'a> DispatchState<'a> {
 }
 
 /// What the board should do after the dispatch returns.
+#[allow(clippy::large_enum_variant)]
 pub enum CommissionOutcome {
     /// Engine wants more time. Board: trace_tick, Mono::delay(1ms), continue.
     Continue,

@@ -540,6 +540,7 @@ pub fn tmc_set_accel_feedforward(
 }
 
 /// Build a `SetDecouplingFeedforward` request.
+#[allow(clippy::too_many_arguments)]
 pub fn tmc_set_decoupling_feedforward(
     channel: u8,
     enable: bool,

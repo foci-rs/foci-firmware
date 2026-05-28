@@ -259,6 +259,7 @@ pub fn tmc_set_velocity_feedforward(
 }
 
 /// Enable or disable velocity-surface transient feedforward from a live command.
+#[allow(clippy::too_many_arguments)]
 #[klipper_command]
 pub fn tmc_set_velocity_transient_feedforward(
     ctx: &mut dyn ShutdownRecovery,
@@ -328,6 +329,7 @@ pub fn tmc_set_accel_feedforward(
 }
 
 /// Enable or disable q/d decoupling proxy feedforward from a live diagnostic command.
+#[allow(clippy::too_many_arguments)]
 #[klipper_command]
 pub fn tmc_set_decoupling_feedforward(
     ctx: &mut dyn ShutdownRecovery,

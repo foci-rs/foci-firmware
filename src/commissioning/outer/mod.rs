@@ -735,7 +735,6 @@ fn outer_safety_mut(phase: &mut OuterPhase) -> Option<&mut OuterSafetyLimits> {
 /// a violation aborts to `Failed(SafetyEnvelopeViolation)` after zeroing
 /// excitation.
 #[allow(clippy::too_many_arguments)]
-#[allow(clippy::too_many_arguments)]
 #[allow(dead_code)]
 pub(crate) async fn step_outer<B: CommissioningBackend>(
     phase: &mut OuterPhase,

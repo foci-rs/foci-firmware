@@ -7,6 +7,8 @@
 //! larger torque step (up to `MECHANICAL_ID_MAX_ATTEMPTS`) before
 //! falling back to the response-ramp velocity tuning.
 
+#![allow(clippy::items_after_test_module)]
+
 use super::{
     MechanicalIdData, MechanicalIdState, OUTER_WARNING_NONE, OuterDiagnostics, OuterPhase,
     TraceSummarySeqs, trace_diagnostic_warning, trace_pack_i16_pair, trace_pack_u16_pair,

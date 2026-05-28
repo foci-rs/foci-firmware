@@ -326,6 +326,7 @@ pub(crate) fn fail_inner(phase: &mut InnerPhase, err: CommissionError) -> StepRe
 /// wrapper runs the canonical safe-state restore so failures cannot leave
 /// the TMC4671 energized. Phase-local handlers must not call the
 /// safe-state helper directly — let this wrapper own the cleanup boundary.
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn step_inner<B: CommissioningBackend>(
     phase: &mut InnerPhase,
     buf: &mut TransientBuffer,
@@ -363,6 +364,7 @@ pub(crate) async fn step_inner<B: CommissioningBackend>(
     result
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn step_inner_dispatch<B: CommissioningBackend>(
     phase: &mut InnerPhase,
     buf: &mut TransientBuffer,

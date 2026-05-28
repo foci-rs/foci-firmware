@@ -212,7 +212,7 @@ pub fn control_detail_due(
     } else {
         10
     };
-    control_tick % divisor == 0
+    control_tick.is_multiple_of(divisor)
 }
 
 /// Return true when the low-rate current-path sample is due for this tick.
@@ -596,10 +596,12 @@ mod tests {
         assert_eq!(CONTROL_DETAIL_PAYLOAD_LEN, 28);
         assert_eq!(STATUS_PAYLOAD_LEN, 40);
         assert_eq!(EVENT_PAYLOAD_LEN, 24);
-        assert!(HEADER_LEN + CRITICAL_PAYLOAD_LEN <= CRITICAL_FRAME_BUDGET);
-        assert!(HEADER_LEN + CURRENT_PATH_PAYLOAD_LEN <= CONTROL_DETAIL_FRAME_BUDGET);
-        assert!(HEADER_LEN + PHASE_ADVANCE_PAYLOAD_LEN <= 64);
-        assert!(HEADER_LEN + METADATA_PAYLOAD_MAX <= FRAME_BUF_CAPACITY);
+        const {
+            assert!(HEADER_LEN + CRITICAL_PAYLOAD_LEN <= CRITICAL_FRAME_BUDGET);
+            assert!(HEADER_LEN + CURRENT_PATH_PAYLOAD_LEN <= CONTROL_DETAIL_FRAME_BUDGET);
+            assert!(HEADER_LEN + PHASE_ADVANCE_PAYLOAD_LEN <= 64);
+            assert!(HEADER_LEN + METADATA_PAYLOAD_MAX <= FRAME_BUF_CAPACITY);
+        }
     }
 
     #[test]
@@ -646,7 +648,9 @@ mod tests {
         );
         assert_eq!(u16::from_le_bytes([payload[8], payload[9]]), 64);
         assert_eq!(u16::from_le_bytes([payload[10], payload[11]]), 16);
-        assert!(HEADER_LEN + PHASE_ADVANCE_PAYLOAD_LEN <= 64);
+        const {
+            assert!(HEADER_LEN + PHASE_ADVANCE_PAYLOAD_LEN <= 64);
+        }
     }
 
     #[test]
