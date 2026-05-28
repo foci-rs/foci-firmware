@@ -325,18 +325,6 @@ pub enum TmcRequestKind {
         /// Delay between applying the voltage vector and sampling, in milliseconds.
         sample_delay_ms: u16,
     },
-    /// Start the per-tick trace buffer with the selected preset.
-    TraceStart { oid: u8, preset: u8 },
-    /// Stop the per-tick trace buffer, preserving samples for fetch.
-    TraceStop { oid: u8 },
-    /// Query trace buffer metadata.
-    TraceInfo { oid: u8 },
-    /// Fetch a trace sample by offset. generation must match current generation.
-    TraceFetch {
-        oid: u8,
-        offset: u16,
-        generation: u8,
-    },
     /// Write a TMC4671 register via SPI (dev-only).
     #[cfg(feature = "dev")]
     Write { addr: u8, value: u32 },
@@ -730,33 +718,6 @@ pub fn auto_calibrate_on_enable_allowed(channel: u8) -> bool {
                 .load(Ordering::Relaxed)
         })
         .unwrap_or(false)
-}
-
-/// Build a `TraceStart` request.
-pub fn tmc_trace_start(channel: u8, oid: u8, preset: u8) -> TmcRequest {
-    TmcRequest::new(channel, TmcRequestKind::TraceStart { oid, preset })
-}
-
-/// Build a `TraceStop` request.
-pub fn tmc_trace_stop(channel: u8, oid: u8) -> TmcRequest {
-    TmcRequest::new(channel, TmcRequestKind::TraceStop { oid })
-}
-
-/// Build a `TraceInfo` request.
-pub fn tmc_trace_info(channel: u8, oid: u8) -> TmcRequest {
-    TmcRequest::new(channel, TmcRequestKind::TraceInfo { oid })
-}
-
-/// Build a `TraceFetch` request.
-pub fn tmc_trace_fetch(channel: u8, oid: u8, offset: u16, generation: u8) -> TmcRequest {
-    TmcRequest::new(
-        channel,
-        TmcRequestKind::TraceFetch {
-            oid,
-            offset,
-            generation,
-        },
-    )
 }
 
 /// Precompute the velocity feedforward scale factor.
@@ -1254,28 +1215,6 @@ mod tests {
         assert_eq!(
             tmc_dump_registers(0, 1),
             TmcRequest::new(0, TmcRequestKind::DumpRegisters { oid: 1 })
-        );
-    }
-
-    #[test]
-    fn tmc_trace_start_builds_request() {
-        assert_eq!(
-            tmc_trace_start(0, 7, crate::trace::PRESET_FULL),
-            TmcRequest::new(
-                0,
-                TmcRequestKind::TraceStart {
-                    oid: 7,
-                    preset: crate::trace::PRESET_FULL,
-                }
-            )
-        );
-    }
-
-    #[test]
-    fn tmc_trace_stop_builds_request() {
-        assert_eq!(
-            tmc_trace_stop(0, 7),
-            TmcRequest::new(0, TmcRequestKind::TraceStop { oid: 7 })
         );
     }
 

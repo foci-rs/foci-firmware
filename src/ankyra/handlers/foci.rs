@@ -1,6 +1,5 @@
 //! FOCI-specific command handlers: `foci_selftest`, `foci_calibrate`,
-//! `foci_dump_registers`, `foci_trace_start`, `foci_trace_stop`,
-//! `foci_trace_info`, `foci_trace_fetch`, `foci_commission`.
+//! `foci_dump_registers`, `foci_commission`.
 //!
 //! Lifted out of `boards/openffboard-fw/src/ankyra/handlers/foci.rs` in
 //! Task 17 of the foci-firmware handler-lift plan. Handler bodies now
@@ -130,76 +129,6 @@ pub fn foci_dump_registers(ctx: &mut dyn FociRuntimeHost, oid: u8) {
         .is_err()
     {
         defmt::warn!("foci_dump_registers dropped");
-    }
-}
-
-/// Start trace capture with the requested preset.
-///
-/// On queue-full the request is dropped silently; the Python wait loop
-/// timeout handles the missing reply naturally.
-#[klipper_command]
-pub fn foci_trace_start(ctx: &mut dyn FociRuntimeHost, oid: u8, preset: u8) {
-    let Some((channel, _state)) = foci_tmc_state_or_shutdown(ctx, oid) else {
-        return;
-    };
-    if ctx
-        .enqueue_request(crate::tmc::tmc_trace_start(channel, oid, preset))
-        .is_err()
-    {
-        defmt::warn!("trace_start: TMC channel full");
-    }
-}
-
-/// Stop trace capture, preserving samples for later `foci_trace_fetch`.
-///
-/// On queue-full the request is dropped silently; `FOCI_TRACE` will continue
-/// to report the active capture as busy.
-#[klipper_command]
-pub fn foci_trace_stop(ctx: &mut dyn FociRuntimeHost, oid: u8) {
-    let Some((channel, _state)) = foci_tmc_state_or_shutdown(ctx, oid) else {
-        return;
-    };
-    if ctx
-        .enqueue_request(crate::tmc::tmc_trace_stop(channel, oid))
-        .is_err()
-    {
-        defmt::warn!("trace_stop: TMC channel full");
-    }
-}
-
-/// Query trace buffer metadata.
-///
-/// On queue-full the request is dropped silently; the Python wait loop
-/// timeout handles the missing reply naturally.
-#[klipper_command]
-pub fn foci_trace_info(ctx: &mut dyn FociRuntimeHost, oid: u8) {
-    let Some((channel, _state)) = foci_tmc_state_or_shutdown(ctx, oid) else {
-        return;
-    };
-    if ctx
-        .enqueue_request(crate::tmc::tmc_trace_info(channel, oid))
-        .is_err()
-    {
-        defmt::warn!("trace_info: TMC channel full");
-    }
-}
-
-/// Fetch a trace sample by offset. `generation` must match current generation.
-///
-/// On queue-full the request is dropped silently; the Python wait loop
-/// timeout handles the missing reply naturally.
-#[klipper_command]
-pub fn foci_trace_fetch(ctx: &mut dyn FociRuntimeHost, oid: u8, offset: u16, generation: u8) {
-    let Some((channel, _state)) = foci_tmc_state_or_shutdown(ctx, oid) else {
-        return;
-    };
-    if ctx
-        .enqueue_request(crate::tmc::tmc_trace_fetch(
-            channel, oid, offset, generation,
-        ))
-        .is_err()
-    {
-        defmt::warn!("trace_fetch: TMC channel full");
     }
 }
 

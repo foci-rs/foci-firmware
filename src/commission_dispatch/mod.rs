@@ -65,11 +65,10 @@ impl<'a> DispatchState<'a> {
 /// What the board should do after the dispatch returns.
 #[allow(clippy::large_enum_variant)]
 pub enum CommissionOutcome {
-    /// Engine wants more time. Board: trace_tick, Mono::delay(1ms), continue.
+    /// Engine wants more time. Board: Mono::delay(1ms), continue.
     Continue,
-    /// A phase transition occurred. Board: update trace_buf phase (and
-    /// conditionally start trace at ClosedLoopEntry for Commission), emit
-    /// FociCommissionPhase reply, Mono::delay(1ms), continue.
+    /// A phase transition occurred. Board: emit FociCommissionPhase reply,
+    /// Mono::delay(1ms), continue.
     PhaseChanged {
         oid: u8,
         phase_id: PhaseId,

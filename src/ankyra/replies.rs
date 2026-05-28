@@ -957,47 +957,6 @@ pub struct FociSelftestResult {
     pub value: u32,
 }
 
-/// `foci_trace_data` reply — chunked trace payload delivery.
-///
-/// Carries an arbitrary `&[u8]` chunk, so the struct is generic over
-/// the borrow lifetime.
-///
-/// Wire name: `foci_trace_data`.
-#[klipper_reply]
-pub struct FociTraceData<'a> {
-    /// Object id of the FOCI endpoint.
-    pub oid: u8,
-    /// Byte offset of this chunk within the trace buffer.
-    pub offset: u16,
-    /// Status code (0 = more chunks follow, 1/2 = terminal status).
-    pub status: u8,
-    /// Raw trace-chunk bytes (empty on terminal-status replies).
-    pub data: &'a [u8],
-}
-
-/// `foci_trace_info_result` reply — metadata for the active trace.
-///
-/// Wire name: `foci_trace_info_result`.
-#[klipper_reply]
-pub struct FociTraceInfoResult {
-    /// Object id of the FOCI endpoint.
-    pub oid: u8,
-    /// Trace state (IDLE / RUNNING / COMPLETE).
-    pub state: u8,
-    /// Generation number for the current trace buffer.
-    pub generation: u8,
-    /// Trace preset selector.
-    pub preset: u8,
-    /// Number of samples captured.
-    pub count: u16,
-    /// Commissioning phase identifier at the time of the trace.
-    pub phase: u8,
-    /// Sampling period in microseconds.
-    pub sample_period_us: u16,
-    /// Number of samples that were dropped due to buffer pressure.
-    pub dropped: u16,
-}
-
 /// `foci_tune_result` reply — final outer-loop tune output.
 ///
 /// Wire name: `foci_tune_result`.
