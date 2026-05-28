@@ -118,9 +118,15 @@ const OUTER_RESTORE_STABILITY_SAMPLES: usize = 5;
 const OUTER_RESTORE_STABILITY_INTERVAL_US: u32 = 5_000;
 const OUTER_RESTORE_STABILITY_ENCODER_COUNTS: u32 = 2;
 
+#[derive(Debug, Clone, Copy, defmt::Format)]
+struct RestoreStability {
+    stable: bool,
+    span_counts: u32,
+}
+
 async fn outer_restore_position_stable<B: CommissioningBackend>(
     backend: &mut B,
-) -> Result<bool, B::Error> {
+) -> Result<RestoreStability, B::Error> {
     let mut first = 0i32;
     let mut min_delta = 0i32;
     let mut max_delta = 0i32;
@@ -144,16 +150,59 @@ async fn outer_restore_position_stable<B: CommissioningBackend>(
         .step_width()
         .max(1)
         .saturating_mul(OUTER_RESTORE_STABILITY_ENCODER_COUNTS);
+    let span_counts = span.min(u32::MAX as u64) as u32;
     if span > threshold as u64 {
         defmt::error!(
             "OuterFailed restore: unstable span={} threshold={}",
             span,
             threshold,
         );
-        Ok(false)
+        Ok(RestoreStability {
+            stable: false,
+            span_counts,
+        })
     } else {
-        Ok(true)
+        Ok(RestoreStability {
+            stable: true,
+            span_counts,
+        })
     }
+}
+
+fn record_restore_summary<B: CommissioningBackend>(
+    backend: &mut B,
+    trace_summary_seqs: &mut crate::commissioning::outer::TraceSummarySeqs,
+    restore_status: u8,
+    upstream_status: u8,
+    drift_counts: u32,
+    disposition: i32,
+    level: crate::trace_events::TraceEventLevel,
+) {
+    let summary_seq = trace_summary_seqs.next_restore();
+    crate::commissioning::outer::trace_summary_event(
+        backend,
+        level,
+        crate::trace_events::EVENT_COMMISSION_RESTORE_RESULT,
+        summary_seq,
+        i32::from(restore_status),
+    );
+    crate::commissioning::outer::trace_summary_event(
+        backend,
+        level,
+        crate::trace_events::EVENT_COMMISSION_RESTORE_ERROR_DRIFT,
+        summary_seq,
+        crate::commissioning::outer::trace_pack_i16_pair(
+            i32::from(upstream_status),
+            drift_counts.min(i16::MAX as u32) as i32,
+        ),
+    );
+    crate::commissioning::outer::trace_summary_event(
+        backend,
+        level,
+        crate::trace_events::EVENT_COMMISSION_RESTORE_DISPOSITION,
+        summary_seq,
+        disposition,
+    );
 }
 
 /// Wire-reply payload for the board to emit via `klipper_reply_from!`.
@@ -640,22 +689,25 @@ pub async fn drive_commission_result<B: CommissioningBackend>(
         StepResult::OuterFailed(error) => {
             use crate::autotune::CommissionError as CE;
             use core::sync::atomic::Ordering::Relaxed;
-            let consumed = engine.take().expect("engine slot None on OuterFailed");
+            let mut consumed = engine.take().expect("engine slot None on OuterFailed");
             let oid = consumed.oid();
             let snapshot = consumed.entry_snapshot();
 
             let is_safety_fault =
                 matches!(error, CE::Spi | CE::Shutdown | CE::SafetyEnvelopeViolation);
 
+            let mut restore_drift_counts = 0u32;
             let restore_failure: Option<CE> = if is_safety_fault {
                 // Safety faults skip restore — motor state unknown, disarm immediately.
                 Some(error)
             } else if let Some(ref snap) = snapshot {
                 match crate::commissioning::inner::restore_entry_gains(snap, backend).await {
-                    Ok(()) => {
-                        match outer_restore_position_stable(backend).await {
-                            Ok(true) => None,
-                            Ok(false) => {
+                    Ok(()) => match outer_restore_position_stable(backend).await {
+                        Ok(stability) => {
+                            restore_drift_counts = stability.span_counts;
+                            if stability.stable {
+                                None
+                            } else {
                                 // Preserve the upstream error; the stability
                                 // log is the secondary diagnostic. Overriding
                                 // with CurrentValidationFailed would mask the
@@ -663,12 +715,12 @@ pub async fn drive_commission_result<B: CommissioningBackend>(
                                 // VelocityValidationFailed).
                                 Some(error)
                             }
-                            Err(_) => {
-                                defmt::error!("OuterFailed restore: stability read SPI failed");
-                                Some(CE::Spi)
-                            }
                         }
-                    }
+                        Err(_) => {
+                            defmt::error!("OuterFailed restore: stability read SPI failed");
+                            Some(CE::Spi)
+                        }
+                    },
                     Err(restore_err) => {
                         defmt::error!("OuterFailed: Stage 2 restore failed: {}", restore_err);
                         Some(restore_err)
@@ -678,6 +730,7 @@ pub async fn drive_commission_result<B: CommissioningBackend>(
                 // No snapshot available — treat as unrecoverable.
                 Some(CE::Spi)
             };
+            let restore_status = restore_failure.map_or(0, |fault| fault.status_code());
 
             let (reply_status, actions) = if let Some(fault) = restore_failure {
                 let _ = backend
@@ -721,6 +774,27 @@ pub async fn drive_commission_result<B: CommissioningBackend>(
                     )
                 }
             };
+
+            let disposition = match actions.stepper {
+                StepperPostAction::ArmPreservePosition => 0,
+                StepperPostAction::Stop if is_safety_fault => 2,
+                StepperPostAction::Stop => 1,
+                StepperPostAction::ArmZeroPosition | StepperPostAction::None => 0,
+            };
+            let restore_level = if restore_status == 0 {
+                crate::trace_events::TraceEventLevel::Warn
+            } else {
+                crate::trace_events::TraceEventLevel::Error
+            };
+            record_restore_summary(
+                backend,
+                consumed.trace_summary_seqs_mut(),
+                restore_status,
+                error.status_code(),
+                restore_drift_counts,
+                disposition,
+                restore_level,
+            );
 
             state.tmc.commission_in_flight.store(false, Relaxed);
 

@@ -9,11 +9,17 @@
 
 use super::{
     OUTER_FALLBACK_POSITION_P, OUTER_MAX_POSITION_P, OuterPhase, POS_TUNE_INITIAL_P,
-    PositionTuneState,
+    PositionTuneData, PositionTuneState, TraceSummarySeqs, trace_pack_u16_pair,
+    trace_summary_event,
 };
 use crate::autotune::{CommissionError, OperatingMode, PhaseId, PositionGains, TransientBuffer};
 use crate::commissioning::outer::fail_outer;
 use crate::commissioning::types::{CommissioningBackend, StepResult};
+use crate::trace_events::{
+    EVENT_COMMISSION_POSITION_TUNE_LIMITS, EVENT_COMMISSION_POSITION_TUNE_METRICS,
+    EVENT_COMMISSION_POSITION_TUNE_RESULT, EVENT_COMMISSION_POSITION_TUNE_TARGET, TraceEventLevel,
+    u32_arg,
+};
 
 /// Position-tune P-gain growth ratio between attempts.
 const POSITION_TUNE_P_MUL_NUM: u32 = 3;
@@ -37,11 +43,64 @@ const POSITION_TUNE_SETTLE_US: u64 = 200_000;
 /// Position mode with `MODE_PID_TYPE` set, matching production closed-loop entry.
 const OUTER_POSITION_MODE: u32 = 0x8000_0003;
 
+fn record_position_tune_summary<B: CommissioningBackend>(
+    backend: &mut B,
+    trace_summary_seqs: &mut TraceSummarySeqs,
+    data: &PositionTuneData,
+    result_status: u8,
+    level: TraceEventLevel,
+) {
+    let summary_seq = trace_summary_seqs.next_position_tune();
+    trace_summary_event(
+        backend,
+        level,
+        EVENT_COMMISSION_POSITION_TUNE_RESULT,
+        summary_seq,
+        i32::from(result_status),
+    );
+    trace_summary_event(
+        backend,
+        level,
+        EVENT_COMMISSION_POSITION_TUNE_TARGET,
+        summary_seq,
+        u32_arg(data.step_target_counts),
+    );
+    trace_summary_event(
+        backend,
+        level,
+        EVENT_COMMISSION_POSITION_TUNE_METRICS,
+        summary_seq,
+        trace_pack_u16_pair(u32::from(data.stable_p), u32::from(data.current_p)),
+    );
+    trace_summary_event(
+        backend,
+        level,
+        EVENT_COMMISSION_POSITION_TUNE_LIMITS,
+        summary_seq,
+        trace_pack_u16_pair(
+            u32::from(data.saturation_count),
+            u32::from(data.oscillation_at_minimum as u8),
+        ),
+    );
+}
+
 /// Advance position-tune sub-state machine.
+#[allow(dead_code)]
 pub(crate) async fn step_position_tune<B: CommissioningBackend>(
     phase: &mut OuterPhase,
     buf: &mut TransientBuffer,
     mode: OperatingMode,
+    backend: &mut B,
+) -> StepResult {
+    let mut trace_summary_seqs = TraceSummarySeqs::new();
+    step_position_tune_with_trace(phase, buf, mode, &mut trace_summary_seqs, backend).await
+}
+
+pub(crate) async fn step_position_tune_with_trace<B: CommissioningBackend>(
+    phase: &mut OuterPhase,
+    buf: &mut TransientBuffer,
+    mode: OperatingMode,
+    trace_summary_seqs: &mut TraceSummarySeqs,
     backend: &mut B,
 ) -> StepResult {
     use foci_tmc4671::registers::*;
@@ -240,6 +299,13 @@ pub(crate) async fn step_position_tune<B: CommissioningBackend>(
                     defmt::info!("pos tune: P cap reached at {}", data.stable_p);
                     *state = PositionTuneState::Finalize;
                 } else {
+                    record_position_tune_summary(
+                        backend,
+                        trace_summary_seqs,
+                        data,
+                        0,
+                        TraceEventLevel::Warn,
+                    );
                     let new_p = (data.current_p as u32 * POSITION_TUNE_P_MUL_NUM
                         / POSITION_TUNE_P_MUL_DEN)
                         .min(max_p as u32) as u16;
@@ -301,6 +367,13 @@ pub(crate) async fn step_position_tune<B: CommissioningBackend>(
             }
 
             if data.oscillation_at_minimum {
+                record_position_tune_summary(
+                    backend,
+                    trace_summary_seqs,
+                    data,
+                    CommissionError::PositionTuneFailed.status_code(),
+                    TraceEventLevel::Error,
+                );
                 return fail_outer(phase, CommissionError::PositionTuneFailed);
             }
 
@@ -342,6 +415,13 @@ pub(crate) async fn step_position_tune<B: CommissioningBackend>(
             let position_oscillation_early =
                 final_p == POS_TUNE_INITIAL_P && data.current_p > POS_TUNE_INITIAL_P;
 
+            record_position_tune_summary(
+                backend,
+                trace_summary_seqs,
+                data,
+                0,
+                TraceEventLevel::Info,
+            );
             *phase = OuterPhase::FilterTune {
                 velocity_gains,
                 position_gains,
@@ -356,5 +436,101 @@ pub(crate) async fn step_position_tune<B: CommissioningBackend>(
             };
             StepResult::PhaseChanged(PhaseId::FilterTune)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::autotune::VelocityGains;
+    use crate::commission_dispatch::test_support::MockBackend;
+    use crate::commissioning::outer::OuterDiagnostics;
+
+    fn zero_diagnostics() -> OuterDiagnostics {
+        OuterDiagnostics {
+            warning_code: 0,
+            mech_torque_step: 0,
+            mech_fwd_accel: 0,
+            mech_rev_accel: 0,
+            mech_fwd_peak_velocity: 0,
+            mech_rev_peak_velocity: 0,
+            mech_fwd_travel: 0,
+            mech_rev_travel: 0,
+            synth_velocity_p: 0,
+            synth_velocity_i: 0,
+            synth_position_p: 0,
+            synth_position_i: 0,
+        }
+    }
+
+    #[test]
+    fn position_tune_summary_packs_exact_fragments() {
+        let mut backend = MockBackend::new();
+        let mut seqs = TraceSummarySeqs::new();
+        let data = PositionTuneData {
+            current_p: 256,
+            stable_p: 128,
+            step_target_counts: 400,
+            step_target_tmc: 800,
+            step_start_counts: 0,
+            step_start_tmc: 0,
+            oscillation_at_minimum: true,
+            velocity_gains: VelocityGains {
+                velocity_p: 512,
+                velocity_i: 0,
+                velocity_limit: 10_000,
+                effective_bandwidth_hz: 50,
+                lambda_vel_ms: 20,
+            },
+            velocity_chatter: false,
+            current_ringing: false,
+            current_bandwidth_hz: 100,
+            j_eff: 1,
+            b_eff: 2,
+            torque_limit: 1000,
+            saturation_count: 3,
+            diagnostics: zero_diagnostics(),
+        };
+
+        record_position_tune_summary(
+            &mut backend,
+            &mut seqs,
+            &data,
+            CommissionError::PositionTuneFailed.status_code(),
+            TraceEventLevel::Error,
+        );
+
+        assert_eq!(
+            backend.trace_events[0].event_id,
+            EVENT_COMMISSION_POSITION_TUNE_RESULT
+        );
+        assert_eq!(
+            backend.trace_events[0].payload,
+            [
+                0,
+                i32::from(CommissionError::PositionTuneFailed.status_code())
+            ]
+        );
+        assert_eq!(
+            backend.trace_events[1].event_id,
+            EVENT_COMMISSION_POSITION_TUNE_TARGET
+        );
+        assert_eq!(backend.trace_events[1].payload, [0, u32_arg(400)]);
+        assert_eq!(
+            backend.trace_events[2].event_id,
+            EVENT_COMMISSION_POSITION_TUNE_METRICS
+        );
+        assert_eq!(
+            backend.trace_events[2].payload,
+            [0, trace_pack_u16_pair(128, 256)]
+        );
+        assert_eq!(
+            backend.trace_events[3].event_id,
+            EVENT_COMMISSION_POSITION_TUNE_LIMITS
+        );
+        assert_eq!(
+            backend.trace_events[3].payload,
+            [0, trace_pack_u16_pair(3, 1)]
+        );
     }
 }

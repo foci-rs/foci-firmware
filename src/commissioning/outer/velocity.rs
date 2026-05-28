@@ -9,8 +9,9 @@
 
 use super::{
     OUTER_MAX_VELOCITY_I, OUTER_MAX_VELOCITY_P, OUTER_WARNING_UNSAFE_SYNTH_GAINS, OuterPhase,
-    POS_TUNE_INITIAL_P, PositionTuneData, PositionTuneState, VelocityTuneStrategy,
-    VelocityValidateData, VelocityValidateState,
+    POS_TUNE_INITIAL_P, PositionTuneData, PositionTuneState, TraceSummarySeqs,
+    VelocityTuneStrategy, VelocityValidateData, VelocityValidateState, trace_pack_i16_pair,
+    trace_pack_u16_pair, trace_summary_event,
 };
 use crate::autotune::{
     CommissionError, CommissionProfile, OperatingMode, PhaseId, TransientBuffer, ValidationResult,
@@ -18,6 +19,11 @@ use crate::autotune::{
 };
 use crate::commissioning::outer::{fail_outer, response};
 use crate::commissioning::types::{CommissioningBackend, StepResult};
+use crate::trace_events::{
+    EVENT_COMMISSION_VELOCITY_VALIDATE_GAIN, EVENT_COMMISSION_VELOCITY_VALIDATE_LIMITS,
+    EVENT_COMMISSION_VELOCITY_VALIDATE_METRICS, EVENT_COMMISSION_VELOCITY_VALIDATE_RESULT,
+    TraceEventLevel,
+};
 
 /// Velocity step as a fraction of velocity_limit (15% = 15/100).
 /// Spec says 10-20%.
@@ -169,6 +175,49 @@ fn response_result_is_gain_limited(
     (metrics.overshoot_pct <= 200 || breakaway_stiction)
         && sat_pct <= 10
         && !metrics.zero_speed_chatter
+}
+
+fn record_velocity_validate_summary<B: CommissioningBackend>(
+    backend: &mut B,
+    trace_summary_seqs: &mut TraceSummarySeqs,
+    data: &VelocityValidateData,
+    fwd: &VelocityValidation,
+    rev: &VelocityValidation,
+    result_status: u8,
+    level: TraceEventLevel,
+) {
+    let summary_seq = trace_summary_seqs.next_velocity_validate();
+    trace_summary_event(
+        backend,
+        level,
+        EVENT_COMMISSION_VELOCITY_VALIDATE_RESULT,
+        summary_seq,
+        i32::from(result_status),
+    );
+    trace_summary_event(
+        backend,
+        level,
+        EVENT_COMMISSION_VELOCITY_VALIDATE_GAIN,
+        summary_seq,
+        trace_pack_u16_pair(
+            u32::from(data.gains.velocity_p),
+            u32::from(data.gains.velocity_i),
+        ),
+    );
+    trace_summary_event(
+        backend,
+        level,
+        EVENT_COMMISSION_VELOCITY_VALIDATE_METRICS,
+        summary_seq,
+        trace_pack_i16_pair(fwd.peak_velocity as i32, rev.peak_velocity as i32),
+    );
+    trace_summary_event(
+        backend,
+        level,
+        EVENT_COMMISSION_VELOCITY_VALIDATE_LIMITS,
+        summary_seq,
+        trace_pack_u16_pair(u32::from(data.saturation_count), data.max_chatter),
+    );
 }
 
 /// Phase 9: synthesize velocity gains and transition to validation.
@@ -353,6 +402,7 @@ pub(crate) async fn step_velocity_tune<B: CommissioningBackend>(
 
 /// Phase 10: bidirectional velocity step-response validation.
 #[allow(clippy::too_many_arguments)]
+#[allow(dead_code)]
 pub(crate) async fn step_velocity_validate<B: CommissioningBackend>(
     phase: &mut OuterPhase,
     buf: &mut TransientBuffer,
@@ -362,6 +412,35 @@ pub(crate) async fn step_velocity_validate<B: CommissioningBackend>(
     theta_e_us: u32,
     current_ringing: bool,
     current_bandwidth_hz: u32,
+    backend: &mut B,
+) -> StepResult {
+    let mut trace_summary_seqs = TraceSummarySeqs::new();
+    step_velocity_validate_with_trace(
+        phase,
+        buf,
+        profile,
+        mode,
+        inner_lambda_us,
+        theta_e_us,
+        current_ringing,
+        current_bandwidth_hz,
+        &mut trace_summary_seqs,
+        backend,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn step_velocity_validate_with_trace<B: CommissioningBackend>(
+    phase: &mut OuterPhase,
+    buf: &mut TransientBuffer,
+    profile: CommissionProfile,
+    mode: OperatingMode,
+    inner_lambda_us: u32,
+    theta_e_us: u32,
+    current_ringing: bool,
+    current_bandwidth_hz: u32,
+    trace_summary_seqs: &mut TraceSummarySeqs,
     backend: &mut B,
 ) -> StepResult {
     use foci_tmc4671::registers::*;
@@ -778,6 +857,36 @@ pub(crate) async fn step_velocity_validate<B: CommissioningBackend>(
                 symmetry
             );
 
+            let exhausted_response_budget = data.strategy == VelocityTuneStrategy::ResponseRamp
+                && !data.has_accepted_gains
+                && data.attempt >= VELOCITY_RESPONSE_MAX_RETRIES
+                && result != ValidationResult::Pass;
+            let (summary_level, summary_status) = if exhausted_response_budget {
+                (
+                    TraceEventLevel::Error,
+                    CommissionError::VelocityValidationFailed.status_code(),
+                )
+            } else {
+                (
+                    match result {
+                        ValidationResult::Pass => TraceEventLevel::Info,
+                        ValidationResult::Marginal | ValidationResult::Fail => {
+                            TraceEventLevel::Warn
+                        }
+                    },
+                    0,
+                )
+            };
+            record_velocity_validate_summary(
+                backend,
+                trace_summary_seqs,
+                data,
+                &fwd,
+                &rev,
+                summary_status,
+                summary_level,
+            );
+
             if data.strategy == VelocityTuneStrategy::ResponseRamp {
                 match result {
                     ValidationResult::Pass => {
@@ -1135,7 +1244,8 @@ pub(crate) async fn step_velocity_validate<B: CommissioningBackend>(
 mod tests {
     use super::{
         counts_per_ms_to_tmc_velocity, encoder_delta_counts_per_ms, force_conservative_profile,
-        outer_lambda_widening, step_velocity_tune, step_velocity_validate,
+        outer_lambda_widening, record_velocity_validate_summary, step_velocity_tune,
+        step_velocity_validate,
     };
     use crate::autotune::{
         CommissionError, CommissionProfile, MechanicalModel, OperatingMode, TRANSIENT_LEN,
@@ -1143,8 +1253,9 @@ mod tests {
     };
     use crate::commission_dispatch::test_support::MockBackend;
     use crate::commissioning::outer::{
-        OuterDiagnostics, OuterPhase, OuterSafetyLimits, VelocityTuneStrategy,
-        VelocityValidateData, VelocityValidateState, response,
+        OuterDiagnostics, OuterPhase, OuterSafetyLimits, TraceSummarySeqs, VelocityTuneStrategy,
+        VelocityValidateData, VelocityValidateState, response, trace_pack_i16_pair,
+        trace_pack_u16_pair,
     };
     use crate::commissioning::types::StepResult;
     use foci_tmc4671::registers::{PID_VELOCITY_LIMIT, PID_VELOCITY_TARGET};
@@ -1176,6 +1287,98 @@ mod tests {
             saturation_samples: 0,
             symmetry_pct: 0,
         }
+    }
+
+    #[test]
+    fn velocity_validate_summary_packs_exact_fragments() {
+        let mut backend = MockBackend::new();
+        let mut seqs = TraceSummarySeqs::new();
+        let data = VelocityValidateData {
+            gains: VelocityGains {
+                velocity_p: 512,
+                velocity_i: 32,
+                velocity_limit: 10_000,
+                effective_bandwidth_hz: 50,
+                lambda_vel_ms: 20,
+            },
+            accepted_gains: VelocityGains {
+                velocity_p: 0,
+                velocity_i: 0,
+                velocity_limit: 0,
+                effective_bandwidth_hz: 0,
+                lambda_vel_ms: 0,
+            },
+            has_accepted_gains: false,
+            response_lower_p: 0,
+            response_upper_p: 0,
+            model: MechanicalModel {
+                j_eff: 1,
+                b_eff: 1,
+                tau_mech_ms: 1,
+                theta_mech_us: 1,
+                t_f: 0,
+            },
+            strategy: VelocityTuneStrategy::Model,
+            attempt: 0,
+            step_target: 100,
+            forward_metrics: None,
+            reverse_metrics: None,
+            max_chatter: 7,
+            peak_velocity: 0,
+            prev_encoder_for_velocity: 0,
+            saturation_count: 3,
+            torque_limit: 1000,
+            operational_velocity_limit: 20_000,
+            diagnostics: zero_diagnostics(),
+        };
+        let fwd = VelocityValidation {
+            peak_velocity: 123,
+            ..failing_velocity_metrics()
+        };
+        let rev = VelocityValidation {
+            peak_velocity: 45,
+            ..failing_velocity_metrics()
+        };
+
+        record_velocity_validate_summary(
+            &mut backend,
+            &mut seqs,
+            &data,
+            &fwd,
+            &rev,
+            0,
+            crate::trace_events::TraceEventLevel::Info,
+        );
+
+        assert_eq!(
+            backend.trace_events[0].event_id,
+            crate::trace_events::EVENT_COMMISSION_VELOCITY_VALIDATE_RESULT
+        );
+        assert_eq!(backend.trace_events[0].payload, [0, 0]);
+        assert_eq!(
+            backend.trace_events[1].event_id,
+            crate::trace_events::EVENT_COMMISSION_VELOCITY_VALIDATE_GAIN
+        );
+        assert_eq!(
+            backend.trace_events[1].payload,
+            [0, trace_pack_u16_pair(512, 32)]
+        );
+        assert_eq!(
+            backend.trace_events[2].event_id,
+            crate::trace_events::EVENT_COMMISSION_VELOCITY_VALIDATE_METRICS
+        );
+        assert_eq!(
+            backend.trace_events[2].payload,
+            [0, trace_pack_i16_pair(123, 45)]
+        );
+        assert_eq!(
+            backend.trace_events[3].event_id,
+            crate::trace_events::EVENT_COMMISSION_VELOCITY_VALIDATE_LIMITS
+        );
+        assert_eq!(
+            backend.trace_events[3].payload,
+            [0, trace_pack_u16_pair(3, 7)]
+        );
     }
 
     #[test]

@@ -29,6 +29,47 @@ fn stepper_state() -> &'static crate::state::stepper::StepperChannelState {
 
 const TEST_MOTOR_SENTINEL: u32 = 0x0002_0032;
 
+#[test]
+fn restore_summary_packs_exact_fragments() {
+    let mut backend = MockBackend::new();
+    let mut seqs = crate::commissioning::outer::TraceSummarySeqs::new();
+
+    record_restore_summary(
+        &mut backend,
+        &mut seqs,
+        0,
+        crate::autotune::CommissionError::VelocityValidationFailed.status_code(),
+        17,
+        1,
+        crate::trace_events::TraceEventLevel::Warn,
+    );
+
+    assert_eq!(
+        backend.trace_events[0].event_id,
+        crate::trace_events::EVENT_COMMISSION_RESTORE_RESULT
+    );
+    assert_eq!(backend.trace_events[0].payload, [0, 0]);
+    assert_eq!(
+        backend.trace_events[1].event_id,
+        crate::trace_events::EVENT_COMMISSION_RESTORE_ERROR_DRIFT
+    );
+    assert_eq!(
+        backend.trace_events[1].payload,
+        [
+            0,
+            crate::commissioning::outer::trace_pack_i16_pair(
+                i32::from(crate::autotune::CommissionError::VelocityValidationFailed.status_code()),
+                17,
+            )
+        ]
+    );
+    assert_eq!(
+        backend.trace_events[2].event_id,
+        crate::trace_events::EVENT_COMMISSION_RESTORE_DISPOSITION
+    );
+    assert_eq!(backend.trace_events[2].payload, [0, 1]);
+}
+
 async fn seed_motor_sentinel(backend: &mut MockBackend) {
     tmc_state()
         .motor_sentinel

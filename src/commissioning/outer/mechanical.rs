@@ -7,10 +7,19 @@
 //! larger torque step (up to `MECHANICAL_ID_MAX_ATTEMPTS`) before
 //! falling back to the response-ramp velocity tuning.
 
-use super::{MechanicalIdState, OuterDiagnostics, OuterPhase};
+use super::{
+    MechanicalIdData, MechanicalIdState, OUTER_WARNING_NONE, OuterDiagnostics, OuterPhase,
+    TraceSummarySeqs, trace_diagnostic_warning, trace_pack_i16_pair, trace_pack_u16_pair,
+    trace_summary_event,
+};
 use crate::autotune::{CommissionError, MechanicalModel, PhaseId, TransientBuffer};
 use crate::commissioning::outer::{fail_outer, response};
 use crate::commissioning::types::{CommissioningBackend, StepResult};
+use crate::trace_events::{
+    EVENT_COMMISSION_MECHANICAL_ID_ATTEMPT, EVENT_COMMISSION_MECHANICAL_ID_CLASSIFICATION,
+    EVENT_COMMISSION_MECHANICAL_ID_RESPONSE, EVENT_COMMISSION_MECHANICAL_ID_RESULT,
+    TraceEventLevel,
+};
 
 /// Settling time after removing torque (microseconds).
 /// Allow the motor to decelerate and stop before reverse capture.
@@ -53,6 +62,124 @@ const OUTER_PIDOUT_LIMIT: u32 = 16000;
 /// validation and mechanical ID must exercise that same controller path.
 const CURRENT_TORQUE_MODE: u32 = 0x8000_0001;
 
+fn record_mechanical_id_summary<B: CommissioningBackend>(
+    backend: &mut B,
+    trace_summary_seqs: &mut TraceSummarySeqs,
+    data: &MechanicalIdData,
+    warning_code: u8,
+    result_status: u8,
+    level: TraceEventLevel,
+) {
+    let summary_seq = trace_summary_seqs.next_mechanical_id();
+    trace_summary_event(
+        backend,
+        level,
+        EVENT_COMMISSION_MECHANICAL_ID_RESULT,
+        summary_seq,
+        i32::from(result_status),
+    );
+    trace_summary_event(
+        backend,
+        level,
+        EVENT_COMMISSION_MECHANICAL_ID_ATTEMPT,
+        summary_seq,
+        i32::from(data.attempt),
+    );
+    trace_summary_event(
+        backend,
+        level,
+        EVENT_COMMISSION_MECHANICAL_ID_RESPONSE,
+        summary_seq,
+        trace_pack_i16_pair(data.forward_peak_velocity, data.reverse_peak_velocity),
+    );
+    trace_summary_event(
+        backend,
+        level,
+        EVENT_COMMISSION_MECHANICAL_ID_CLASSIFICATION,
+        summary_seq,
+        trace_pack_u16_pair(u32::from(warning_code), u32::from(data.torque_step)),
+    );
+    trace_diagnostic_warning(backend, warning_code, data.torque_step);
+}
+
+fn mechanical_retry_warning_code(data: &MechanicalIdData) -> u8 {
+    if data.attempt + 1 >= response::MECHANICAL_ID_MAX_ATTEMPTS {
+        response::OUTER_WARNING_LOW_CONFIDENCE_MECHANICAL_ID
+    } else {
+        OUTER_WARNING_NONE
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::commission_dispatch::test_support::MockBackend;
+    use crate::trace_events::EVENT_COMMISSION_DIAGNOSTIC_WARNING;
+
+    #[test]
+    fn mechanical_id_summary_packs_exact_fragments() {
+        let mut backend = MockBackend::new();
+        let mut seqs = TraceSummarySeqs::new();
+        let mut data = MechanicalIdData::new(0, 300);
+        data.attempt = 2;
+        data.forward_peak_velocity = 123;
+        data.reverse_peak_velocity = -45;
+
+        record_mechanical_id_summary(
+            &mut backend,
+            &mut seqs,
+            &data,
+            response::OUTER_WARNING_LOW_CONFIDENCE_MECHANICAL_ID,
+            0,
+            TraceEventLevel::Warn,
+        );
+
+        assert_eq!(
+            backend.trace_events[0].event_id,
+            EVENT_COMMISSION_MECHANICAL_ID_RESULT
+        );
+        assert_eq!(backend.trace_events[0].payload, [0, 0]);
+        assert_eq!(
+            backend.trace_events[1].event_id,
+            EVENT_COMMISSION_MECHANICAL_ID_ATTEMPT
+        );
+        assert_eq!(backend.trace_events[1].payload, [0, 2]);
+        assert_eq!(
+            backend.trace_events[2].event_id,
+            EVENT_COMMISSION_MECHANICAL_ID_RESPONSE
+        );
+        assert_eq!(
+            backend.trace_events[2].payload,
+            [0, trace_pack_i16_pair(123, -45)]
+        );
+        assert_eq!(
+            backend.trace_events[3].event_id,
+            EVENT_COMMISSION_MECHANICAL_ID_CLASSIFICATION
+        );
+        assert_eq!(
+            backend.trace_events[3].payload,
+            [
+                0,
+                trace_pack_u16_pair(
+                    u32::from(response::OUTER_WARNING_LOW_CONFIDENCE_MECHANICAL_ID),
+                    300,
+                )
+            ]
+        );
+        assert_eq!(
+            backend.trace_events[4].event_id,
+            EVENT_COMMISSION_DIAGNOSTIC_WARNING
+        );
+        assert_eq!(
+            backend.trace_events[4].payload,
+            [
+                i32::from(response::OUTER_WARNING_LOW_CONFIDENCE_MECHANICAL_ID),
+                300,
+            ]
+        );
+    }
+}
+
 /// Advance mechanical identification sub-state.
 ///
 /// Bidirectional torque step procedure:
@@ -64,9 +191,20 @@ const CURRENT_TORQUE_MODE: u32 = 0x8000_0001;
 /// 6. Estimate `J_eff`, `B_eff`, `tau_mech`, `theta_mech`.
 /// 7. Validate gates; on failure either retry with stronger torque or
 ///    fall back to response-ramp velocity tuning.
+#[allow(dead_code)]
 pub(crate) async fn step_mechanical_id<B: CommissioningBackend>(
     phase: &mut OuterPhase,
     buf: &mut TransientBuffer,
+    backend: &mut B,
+) -> StepResult {
+    let mut trace_summary_seqs = TraceSummarySeqs::new();
+    step_mechanical_id_with_trace(phase, buf, &mut trace_summary_seqs, backend).await
+}
+
+pub(crate) async fn step_mechanical_id_with_trace<B: CommissioningBackend>(
+    phase: &mut OuterPhase,
+    buf: &mut TransientBuffer,
+    trace_summary_seqs: &mut TraceSummarySeqs,
     backend: &mut B,
 ) -> StepResult {
     use foci_tmc4671::registers::*;
@@ -484,6 +622,14 @@ pub(crate) async fn step_mechanical_id<B: CommissioningBackend>(
                 let j_diff = data.fwd_response.j_eff.abs_diff(data.rev_response.j_eff);
                 let asymmetry_pct = (j_diff * 100).checked_div(j_avg).unwrap_or(100);
                 if asymmetry_pct > MECHANICAL_ID_SYMMETRY_THRESHOLD_PCT {
+                    record_mechanical_id_summary(
+                        backend,
+                        trace_summary_seqs,
+                        data,
+                        mechanical_retry_warning_code(data),
+                        0,
+                        TraceEventLevel::Warn,
+                    );
                     if response::retry_mechanical_id(state, data, "asymmetric full response") {
                         return StepResult::Continue;
                     }
@@ -525,6 +671,14 @@ pub(crate) async fn step_mechanical_id<B: CommissioningBackend>(
                         data.fwd_response.steady_velocity_cpms,
                         data.rev_response.steady_velocity_cpms,
                     );
+                    record_mechanical_id_summary(
+                        backend,
+                        trace_summary_seqs,
+                        data,
+                        OUTER_WARNING_NONE,
+                        0,
+                        TraceEventLevel::Info,
+                    );
                     let carried_safety = match phase {
                         OuterPhase::MechanicalId { safety, .. } => *safety,
                         _ => unreachable!(),
@@ -558,6 +712,14 @@ pub(crate) async fn step_mechanical_id<B: CommissioningBackend>(
                 let avg_delay_us = (data.forward_delay_us + data.reverse_delay_us) / 2;
                 let (model, peak_velocity) =
                     response::response_mechanical_model_low_confidence(peak_avg, avg_delay_us);
+                record_mechanical_id_summary(
+                    backend,
+                    trace_summary_seqs,
+                    data,
+                    response::OUTER_WARNING_LOW_CONFIDENCE_MECHANICAL_ID,
+                    0,
+                    TraceEventLevel::Warn,
+                );
                 *phase = response::response_velocity_phase(
                     model,
                     peak_velocity,
@@ -572,6 +734,14 @@ pub(crate) async fn step_mechanical_id<B: CommissioningBackend>(
 
             // Gate: both accelerations must be non-zero.
             if fwd_accel == 0 || rev_accel == 0 {
+                record_mechanical_id_summary(
+                    backend,
+                    trace_summary_seqs,
+                    data,
+                    mechanical_retry_warning_code(data),
+                    0,
+                    TraceEventLevel::Warn,
+                );
                 if response::retry_mechanical_id(state, data, "zero acceleration") {
                     return StepResult::Continue;
                 }
@@ -600,11 +770,27 @@ pub(crate) async fn step_mechanical_id<B: CommissioningBackend>(
             let j_avg = (j_eff_fwd + j_eff_rev) / 2;
             if j_avg == 0 {
                 defmt::warn!("mechanical-id: zero average inertia");
+                record_mechanical_id_summary(
+                    backend,
+                    trace_summary_seqs,
+                    data,
+                    OUTER_WARNING_NONE,
+                    CommissionError::MechanicalIdFailed.status_code(),
+                    TraceEventLevel::Error,
+                );
                 return fail_outer(phase, CommissionError::MechanicalIdFailed);
             }
             let j_diff = j_eff_fwd.abs_diff(j_eff_rev);
             let asymmetry_pct = (j_diff * 100) / j_avg;
             if asymmetry_pct > MECHANICAL_ID_SYMMETRY_THRESHOLD_PCT {
+                record_mechanical_id_summary(
+                    backend,
+                    trace_summary_seqs,
+                    data,
+                    mechanical_retry_warning_code(data),
+                    0,
+                    TraceEventLevel::Warn,
+                );
                 if response::retry_mechanical_id(state, data, "asymmetric response") {
                     return StepResult::Continue;
                 }
@@ -664,6 +850,14 @@ pub(crate) async fn step_mechanical_id<B: CommissioningBackend>(
                 data.forward_travel,
                 data.reverse_travel,
             ) {
+                record_mechanical_id_summary(
+                    backend,
+                    trace_summary_seqs,
+                    data,
+                    mechanical_retry_warning_code(data),
+                    0,
+                    TraceEventLevel::Warn,
+                );
                 if response::retry_mechanical_id(state, data, "low-confidence response") {
                     return StepResult::Continue;
                 }
@@ -672,6 +866,15 @@ pub(crate) async fn step_mechanical_id<B: CommissioningBackend>(
                 *phase = response::response_velocity_phase(model, peak_avg, diagnostics, *safety);
                 return StepResult::PhaseChanged(PhaseId::VelocityTune);
             }
+
+            record_mechanical_id_summary(
+                backend,
+                trace_summary_seqs,
+                data,
+                OUTER_WARNING_NONE,
+                0,
+                TraceEventLevel::Info,
+            );
 
             // Carry safety limits forward to VelocityTune.
             let carried_safety = match phase {

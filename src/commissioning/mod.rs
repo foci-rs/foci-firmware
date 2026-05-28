@@ -19,7 +19,7 @@ use crate::autotune::{
 };
 use crate::commissioning::inner::InnerPhase;
 use crate::commissioning::outer::{
-    MechanicalIdData, MechanicalIdState, OuterPhase, OuterSafetyLimits,
+    MechanicalIdData, MechanicalIdState, OuterPhase, OuterSafetyLimits, TraceSummarySeqs,
 };
 use crate::commissioning::types::{AdcCalResult, CommissioningBackend, EngineKind, StepResult};
 use crate::pid::InnerLoopGains;
@@ -212,6 +212,7 @@ pub struct CommissioningEngine {
     /// Structured diagnostics retained for host-visible troubleshooting.
     diagnostics: crate::selftest::CommissionDiagnostics,
     trace_run: TraceRunState,
+    trace_summary_seqs: TraceSummarySeqs,
 }
 
 impl CommissioningEngine {
@@ -279,6 +280,7 @@ impl CommissioningEngine {
             selftest_results: crate::selftest::SelftestResults::default(),
             diagnostics: crate::selftest::CommissionDiagnostics::default(),
             trace_run: TraceRunState::new(trace_engine_seq),
+            trace_summary_seqs: TraceSummarySeqs::new(),
         }
     }
 
@@ -325,6 +327,7 @@ impl CommissioningEngine {
             selftest_results: crate::selftest::SelftestResults::default(),
             diagnostics: crate::selftest::CommissionDiagnostics::default(),
             trace_run: TraceRunState::new(trace_engine_seq),
+            trace_summary_seqs: TraceSummarySeqs::new(),
         }
     }
 
@@ -381,6 +384,7 @@ impl CommissioningEngine {
             selftest_results: crate::selftest::SelftestResults::default(),
             diagnostics: crate::selftest::CommissionDiagnostics::default(),
             trace_run: TraceRunState::new(trace_engine_seq),
+            trace_summary_seqs: TraceSummarySeqs::new(),
         }
     }
 
@@ -468,6 +472,7 @@ impl CommissioningEngine {
             selftest_results: crate::selftest::SelftestResults::default(),
             diagnostics: crate::selftest::CommissionDiagnostics::default(),
             trace_run: TraceRunState::new(trace_engine_seq),
+            trace_summary_seqs: TraceSummarySeqs::new(),
         }
     }
 
@@ -522,6 +527,10 @@ impl CommissioningEngine {
     /// Consume diagnostics collected during this run.
     pub fn take_diagnostics(&mut self) -> crate::selftest::CommissionDiagnostics {
         core::mem::take(&mut self.diagnostics)
+    }
+
+    pub(crate) fn trace_summary_seqs_mut(&mut self) -> &mut TraceSummarySeqs {
+        &mut self.trace_summary_seqs
     }
 
     fn current_phase_id(&self) -> Option<PhaseId> {
@@ -700,6 +709,7 @@ impl CommissioningEngine {
 
         let selftest_results = &mut self.selftest_results;
         let diagnostics = &mut self.diagnostics;
+        let trace_summary_seqs = &mut self.trace_summary_seqs;
         let result = match &mut self.engine_mode {
             EngineMode::Inner {
                 phase,
@@ -735,7 +745,7 @@ impl CommissioningEngine {
                 inner_warning_flags,
                 ..
             } => {
-                outer::step_outer(
+                outer::step_outer_with_trace(
                     phase,
                     &mut self.buf,
                     *profile,
@@ -748,6 +758,7 @@ impl CommissioningEngine {
                     *tau_e_crosscheck_us,
                     *tau_residual_permille,
                     *inner_warning_flags,
+                    trace_summary_seqs,
                     backend,
                 )
                 .await
