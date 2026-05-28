@@ -28,6 +28,8 @@ pub struct MockBackend {
     pub registers: heapless::LinearMap<u8, u32, 64>,
     /// Ordered log of every SPI read/write issued during the test.
     pub spi_log: Vec<SpiOp, 128>,
+    /// Ordered trace events recorded by the commissioning engine.
+    pub trace_events: Vec<crate::trace_events::CommissionTraceEvent, 64>,
     /// Current state of the TMC4671 enable pin.
     pub enable_pin: bool,
     /// Log of every `delay_us` call, in order.
@@ -90,6 +92,7 @@ impl MockBackend {
         Self {
             registers: heapless::LinearMap::new(),
             spi_log: Vec::new(),
+            trace_events: Vec::new(),
             enable_pin: false,
             delay_us_log: Vec::new(),
             fail_on_write: None,
@@ -130,6 +133,10 @@ impl MockBackend {
 
 impl CommissioningBackend for MockBackend {
     type Error = MockSpiError;
+
+    fn record_commission_trace_event(&mut self, event: crate::trace_events::CommissionTraceEvent) {
+        self.trace_events.push(event).ok();
+    }
 
     fn synthesize_verify_error(&self, _expected: u32, _actual: u32) -> Self::Error {
         MockSpiError

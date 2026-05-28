@@ -1,0 +1,191 @@
+//! Shared commissioning trace event contract.
+
+use crate::commissioning::types::EngineKind;
+
+/// USB trace subsystem ID for commissioning, calibration, selftest, and tune events.
+pub const SUBSYSTEM_COMMISSIONING: u8 = 7;
+
+/// Engine lifecycle start event.
+pub const EVENT_COMMISSION_ENGINE_START: u16 = 100;
+/// Phase lifecycle start event.
+pub const EVENT_COMMISSION_PHASE_START: u16 = 101;
+/// Phase lifecycle end event.
+pub const EVENT_COMMISSION_PHASE_END: u16 = 102;
+/// Engine lifecycle terminal event.
+pub const EVENT_COMMISSION_ENGINE_TERMINAL: u16 = 103;
+
+/// Mechanical-ID summary result fragment.
+pub const EVENT_COMMISSION_MECHANICAL_ID_RESULT: u16 = 110;
+/// Mechanical-ID summary attempt fragment.
+pub const EVENT_COMMISSION_MECHANICAL_ID_ATTEMPT: u16 = 111;
+/// Mechanical-ID summary response fragment.
+pub const EVENT_COMMISSION_MECHANICAL_ID_RESPONSE: u16 = 112;
+/// Mechanical-ID summary classification fragment.
+pub const EVENT_COMMISSION_MECHANICAL_ID_CLASSIFICATION: u16 = 113;
+
+/// Velocity-validation summary result fragment.
+pub const EVENT_COMMISSION_VELOCITY_VALIDATE_RESULT: u16 = 120;
+/// Velocity-validation summary gain fragment.
+pub const EVENT_COMMISSION_VELOCITY_VALIDATE_GAIN: u16 = 121;
+/// Velocity-validation summary metrics fragment.
+pub const EVENT_COMMISSION_VELOCITY_VALIDATE_METRICS: u16 = 122;
+/// Velocity-validation summary limits fragment.
+pub const EVENT_COMMISSION_VELOCITY_VALIDATE_LIMITS: u16 = 123;
+
+/// Position-tune summary result fragment.
+pub const EVENT_COMMISSION_POSITION_TUNE_RESULT: u16 = 130;
+/// Position-tune summary target fragment.
+pub const EVENT_COMMISSION_POSITION_TUNE_TARGET: u16 = 131;
+/// Position-tune summary metrics fragment.
+pub const EVENT_COMMISSION_POSITION_TUNE_METRICS: u16 = 132;
+/// Position-tune summary limits fragment.
+pub const EVENT_COMMISSION_POSITION_TUNE_LIMITS: u16 = 133;
+
+/// Restore summary result fragment.
+pub const EVENT_COMMISSION_RESTORE_RESULT: u16 = 140;
+/// Restore summary error/drift fragment.
+pub const EVENT_COMMISSION_RESTORE_ERROR_DRIFT: u16 = 141;
+/// Restore summary final disposition fragment.
+pub const EVENT_COMMISSION_RESTORE_DISPOSITION: u16 = 142;
+
+/// Single-frame commissioning diagnostic warning event.
+pub const EVENT_COMMISSION_DIAGNOSTIC_WARNING: u16 = 200;
+
+/// USB trace event severity level.
+#[repr(u8)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+pub enum TraceEventLevel {
+    /// Informational lifecycle or summary event.
+    Info = 1,
+    /// Warning event that does not necessarily terminate the engine.
+    Warn = 2,
+    /// Error or terminal-failure event.
+    Error = 3,
+}
+
+/// Transport-neutral commissioning trace event emitted by shared engine code.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+pub struct CommissionTraceEvent {
+    /// Event severity level.
+    pub level: TraceEventLevel,
+    /// Stable USB event ID from this module.
+    pub event_id: u16,
+    /// Engine kind associated with this event.
+    pub engine_kind: EngineKind,
+    /// Two transport-neutral payload slots appended after source and engine kind by boards.
+    pub payload: [i32; 2],
+    /// Number of populated payload slots, from 0 to 2.
+    pub payload_count: u8,
+}
+
+/// Return the stable USB trace wire code for an engine kind.
+pub fn engine_kind_wire_code(kind: EngineKind) -> u8 {
+    match kind {
+        EngineKind::Commission => 1,
+        EngineKind::Calibrate => 2,
+        EngineKind::Selftest => 3,
+        EngineKind::OuterTune => 4,
+    }
+}
+
+/// Convert an unsigned value into a positive i32 trace argument with saturation.
+pub fn u32_arg(value: u32) -> i32 {
+    value.min(i32::MAX as u32) as i32
+}
+
+/// Extend a wrapping 32-bit hardware clock into the u64 trace timestamp domain.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+pub struct TraceClockExt {
+    last_low: u32,
+    high: u64,
+}
+
+impl TraceClockExt {
+    /// Create a zero-initialized trace clock extension state.
+    pub const fn new() -> Self {
+        Self {
+            last_low: 0,
+            high: 0,
+        }
+    }
+
+    /// Extend one sampled low word into the current u64 timestamp epoch.
+    pub fn extend_low(&mut self, low: u32) -> u64 {
+        const WRAP_THRESHOLD: u32 = 1 << 31;
+        let last_low = self.last_low;
+        if low < last_low && last_low.wrapping_sub(low) > WRAP_THRESHOLD {
+            self.high = self.high.wrapping_add(1u64 << 32);
+            self.last_low = low;
+        } else if low >= last_low {
+            self.last_low = low;
+        }
+        self.high | u64::from(low)
+    }
+}
+
+impl Default for TraceClockExt {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Pack two u16 values into one compact i32 trace argument.
+pub fn pack_u16_pair(low: u16, high: u16) -> i32 {
+    i32::from_ne_bytes(((low as u32) | ((high as u32) << 16)).to_ne_bytes())
+}
+
+/// Pack two i16 values into one compact i32 trace argument.
+pub fn pack_i16_pair(low: i16, high: i16) -> i32 {
+    pack_u16_pair(low as u16, high as u16)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::commissioning::types::EngineKind;
+
+    #[test]
+    fn commissioning_event_ids_are_stable() {
+        assert_eq!(EVENT_COMMISSION_ENGINE_START, 100);
+        assert_eq!(EVENT_COMMISSION_PHASE_START, 101);
+        assert_eq!(EVENT_COMMISSION_PHASE_END, 102);
+        assert_eq!(EVENT_COMMISSION_ENGINE_TERMINAL, 103);
+        assert_eq!(EVENT_COMMISSION_MECHANICAL_ID_RESULT, 110);
+        assert_eq!(EVENT_COMMISSION_VELOCITY_VALIDATE_RESULT, 120);
+        assert_eq!(EVENT_COMMISSION_POSITION_TUNE_RESULT, 130);
+        assert_eq!(EVENT_COMMISSION_RESTORE_RESULT, 140);
+        assert_eq!(EVENT_COMMISSION_DIAGNOSTIC_WARNING, 200);
+    }
+
+    #[test]
+    fn trace_event_level_has_wire_repr() {
+        assert_eq!(TraceEventLevel::Info as u8, 1);
+        assert_eq!(TraceEventLevel::Warn as u8, 2);
+        assert_eq!(TraceEventLevel::Error as u8, 3);
+    }
+
+    #[test]
+    fn engine_kind_wire_code_does_not_use_enum_discriminants() {
+        assert_eq!(engine_kind_wire_code(EngineKind::Commission), 1);
+        assert_eq!(engine_kind_wire_code(EngineKind::Calibrate), 2);
+        assert_eq!(engine_kind_wire_code(EngineKind::Selftest), 3);
+        assert_eq!(engine_kind_wire_code(EngineKind::OuterTune), 4);
+    }
+
+    #[test]
+    fn unsigned_to_i32_saturates() {
+        assert_eq!(u32_arg(7), 7);
+        assert_eq!(u32_arg(i32::MAX as u32), i32::MAX);
+        assert_eq!(u32_arg(u32::MAX), i32::MAX);
+    }
+
+    #[test]
+    fn trace_clock_extension_handles_interleaved_contexts() {
+        let mut ext = TraceClockExt::new();
+
+        assert_eq!(ext.extend_low(0xffff_ff00), 0xffff_ff00);
+        assert_eq!(ext.extend_low(0xffff_ff80), 0xffff_ff80);
+        assert_eq!(ext.extend_low(0x0000_0040), 0x1_0000_0040);
+        assert_eq!(ext.extend_low(0x0000_0080), 0x1_0000_0080);
+    }
+}

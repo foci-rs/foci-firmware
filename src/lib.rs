@@ -33,6 +33,7 @@ pub mod tmc;
 pub mod tmc_ops;
 pub mod tmc_safe_state;
 pub mod trace;
+pub mod trace_events;
 #[cfg(feature = "trace")]
 pub mod trace_stream;
 

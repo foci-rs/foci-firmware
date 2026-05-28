@@ -38,6 +38,15 @@ pub trait CommissioningBackend {
     /// SPI/hardware error type.
     type Error;
 
+    /// Record a transport-neutral commissioning trace event.
+    ///
+    /// Board implementations with USB trace enabled translate this into a
+    /// board-local event frame. The default is intentionally a no-op so
+    /// no-trace builds and tests that do not care about trace behavior keep
+    /// their existing semantics.
+    fn record_commission_trace_event(&mut self, _event: crate::trace_events::CommissionTraceEvent) {
+    }
+
     /// Read a TMC4671 register.
     async fn read_register(&mut self, reg: Register) -> Result<u32, Self::Error>;
 
