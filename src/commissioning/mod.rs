@@ -35,6 +35,9 @@ pub use crate::commissioning::types::{
     InnerResult, OuterResult, StepResult as Step,
 };
 
+/// Trace status code for a phase that ended without an error.
+const PHASE_END_OK: u8 = 0;
+
 /// Parameters for outer (mechanical) commissioning engine construction.
 ///
 /// Groups the inner-loop characterization results and operating mode
@@ -657,23 +660,23 @@ impl CommissioningEngine {
         match result {
             StepResult::Continue => {}
             StepResult::PhaseChanged(phase) => {
-                self.emit_trace_phase_end(backend, 0, TraceEventLevel::Info);
+                self.emit_trace_phase_end(backend, PHASE_END_OK, TraceEventLevel::Info);
                 self.trace_run.phase_seq = self.trace_run.phase_seq.wrapping_add(1);
                 self.emit_trace_phase_start(backend, *phase);
             }
             StepResult::CommissionDone(result) => {
-                self.emit_trace_phase_end(backend, 0, TraceEventLevel::Info);
+                self.emit_trace_phase_end(backend, PHASE_END_OK, TraceEventLevel::Info);
                 let level = Self::status_level(result.inner.status);
                 self.emit_trace_terminal(backend, result.inner.status.to_u8(), level);
             }
             StepResult::OuterDone(result) => {
-                self.emit_trace_phase_end(backend, 0, TraceEventLevel::Info);
+                self.emit_trace_phase_end(backend, PHASE_END_OK, TraceEventLevel::Info);
                 let level = Self::status_level(result.status);
                 self.emit_trace_terminal(backend, result.status.to_u8(), level);
             }
             StepResult::CalibrateDone(_) | StepResult::SelftestDone => {
-                self.emit_trace_phase_end(backend, 0, TraceEventLevel::Info);
-                self.emit_trace_terminal(backend, 0, TraceEventLevel::Info);
+                self.emit_trace_phase_end(backend, PHASE_END_OK, TraceEventLevel::Info);
+                self.emit_trace_terminal(backend, PHASE_END_OK, TraceEventLevel::Info);
             }
             StepResult::InnerFailed(err) | StepResult::OuterFailed(err) => {
                 let status = err.status_code();
@@ -816,6 +819,121 @@ mod tests {
         }
     }
 
+    fn sample_inner_result(status: crate::autotune::CommissionStatus) -> InnerResult {
+        InnerResult {
+            status,
+            r_int: 1706,
+            l_int: 1245,
+            r_mohm: 1700,
+            l_uh: 3100,
+            flux_p: 100,
+            flux_i: 10,
+            torque_p: 200,
+            torque_i: 20,
+            lambda_us: 100,
+            theta_e_us: 50,
+            ringing_count: 0,
+            bandwidth_hz: 1000,
+            tau_e_us: 730,
+            tau_e_crosscheck_us: 730,
+            tau_residual_permille: 0,
+            inner_warning_flags: 0,
+        }
+    }
+
+    fn sample_commission_result(status: crate::autotune::CommissionStatus) -> CommissionResult {
+        CommissionResult {
+            inner: sample_inner_result(status),
+            fallback_velocity_p: 1152,
+            fallback_velocity_i: 0,
+            fallback_position_p: 640,
+            fallback_position_i: 0,
+            fallback_velocity_limit: 500_000,
+        }
+    }
+
+    fn sample_outer_result(status: crate::autotune::CommissionStatus) -> OuterResult {
+        OuterResult {
+            status,
+            velocity_p: 1152,
+            velocity_i: 0,
+            velocity_limit: 500_000,
+            position_p: 640,
+            position_i: 0,
+            velocity_filter_hz: 0,
+            position_filter_hz: 0,
+            flux_filter_hz: 0,
+            torque_filter_hz: 0,
+            j_eff: 0,
+            b_eff: 0,
+            warning_code: 0,
+            mech_torque_step: 0,
+            mech_fwd_accel: 0,
+            mech_rev_accel: 0,
+            mech_fwd_peak_velocity: 0,
+            mech_rev_peak_velocity: 0,
+            mech_fwd_travel: 0,
+            mech_rev_travel: 0,
+            synth_velocity_p: 0,
+            synth_velocity_i: 0,
+            synth_position_p: 0,
+            synth_position_i: 0,
+        }
+    }
+
+    fn sample_adc_cal_result() -> AdcCalResult {
+        AdcCalResult {
+            adc_i0: 11,
+            adc_i1: 13,
+            encoder_count: 17,
+        }
+    }
+
+    fn assert_trace_event(
+        event: &CommissionTraceEvent,
+        event_id: u16,
+        engine_kind: EngineKind,
+        level: TraceEventLevel,
+        payload: [i32; 2],
+    ) {
+        assert_eq!(event.event_id, event_id);
+        assert_eq!(event.engine_kind, engine_kind);
+        assert_eq!(event.level, level);
+        assert_eq!(event.payload, payload);
+        assert_eq!(event.payload_count, 2);
+    }
+
+    fn assert_terminal_trace(
+        mut engine: CommissioningEngine,
+        result: StepResult,
+        engine_kind: EngineKind,
+        phase_id: PhaseId,
+        terminal_status_code: u8,
+        phase_level: TraceEventLevel,
+        terminal_level: TraceEventLevel,
+    ) {
+        let mut backend = crate::commission_dispatch::test_support::MockBackend::new();
+        engine.emit_trace_start(&mut backend);
+        engine.emit_trace_after_step(&mut backend, &result);
+
+        let events = &backend.trace_events;
+        assert_eq!(events.len(), 4);
+        assert_trace_event(
+            &events[2],
+            crate::trace_events::EVENT_COMMISSION_PHASE_END,
+            engine_kind,
+            phase_level,
+            [i32::from(phase_id.to_u8()), i32::from(PHASE_END_OK)],
+        );
+        assert_trace_event(
+            &events[3],
+            crate::trace_events::EVENT_COMMISSION_ENGINE_TERMINAL,
+            engine_kind,
+            terminal_level,
+            [i32::from(terminal_status_code), 0],
+        );
+    }
+
     #[test]
     fn calibrate_constructor_uses_stored_gains_for_closed_loop_entry() {
         pollster::block_on(async {
@@ -924,6 +1042,211 @@ mod tests {
             );
             assert_eq!(events[1].payload[1], 0);
         });
+    }
+
+    #[test]
+    fn phase_changed_trace_ends_previous_phase_and_starts_next_sequence() {
+        let mut engine = CommissioningEngine::new_commission_with_trace_seq(
+            0,
+            crate::autotune::CommissionProfile::Balanced,
+            12,
+        );
+        let mut backend = crate::commission_dispatch::test_support::MockBackend::new();
+
+        engine.emit_trace_start(&mut backend);
+        engine.emit_trace_after_step(
+            &mut backend,
+            &StepResult::PhaseChanged(crate::autotune::PhaseId::CoilCheck),
+        );
+
+        let events = &backend.trace_events;
+        assert_eq!(events.len(), 4);
+        assert_trace_event(
+            &events[2],
+            crate::trace_events::EVENT_COMMISSION_PHASE_END,
+            EngineKind::Commission,
+            TraceEventLevel::Info,
+            [crate::autotune::PhaseId::AdcCalibrate.to_u8() as i32, 0],
+        );
+        assert_trace_event(
+            &events[3],
+            crate::trace_events::EVENT_COMMISSION_PHASE_START,
+            EngineKind::Commission,
+            TraceEventLevel::Info,
+            [crate::autotune::PhaseId::CoilCheck.to_u8() as i32, 1],
+        );
+    }
+
+    #[test]
+    fn terminal_success_trace_covers_all_engine_paths() {
+        assert_terminal_trace(
+            CommissioningEngine::new_commission(0, crate::autotune::CommissionProfile::Balanced),
+            StepResult::CommissionDone(sample_commission_result(
+                crate::autotune::CommissionStatus::Accepted,
+            )),
+            EngineKind::Commission,
+            crate::autotune::PhaseId::AdcCalibrate,
+            0,
+            TraceEventLevel::Info,
+            TraceEventLevel::Info,
+        );
+        assert_terminal_trace(
+            CommissioningEngine::new_outer(0, sample_outer_params(), sample_entry_snapshot()),
+            StepResult::OuterDone(sample_outer_result(
+                crate::autotune::CommissionStatus::Accepted,
+            )),
+            EngineKind::OuterTune,
+            crate::autotune::PhaseId::MechanicalId,
+            0,
+            TraceEventLevel::Info,
+            TraceEventLevel::Info,
+        );
+        assert_terminal_trace(
+            CommissioningEngine::new_calibrate(0),
+            StepResult::CalibrateDone(sample_adc_cal_result()),
+            EngineKind::Calibrate,
+            crate::autotune::PhaseId::AdcCalibrate,
+            0,
+            TraceEventLevel::Info,
+            TraceEventLevel::Info,
+        );
+        assert_terminal_trace(
+            CommissioningEngine::new_selftest(0),
+            StepResult::SelftestDone,
+            EngineKind::Selftest,
+            crate::autotune::PhaseId::AdcCalibrate,
+            0,
+            TraceEventLevel::Info,
+            TraceEventLevel::Info,
+        );
+    }
+
+    #[test]
+    fn failure_trace_ends_active_inner_phase_and_is_idempotent() {
+        let mut engine = CommissioningEngine::new_commission_with_trace_seq(
+            0,
+            crate::autotune::CommissionProfile::Balanced,
+            21,
+        );
+        let mut backend = crate::commission_dispatch::test_support::MockBackend::new();
+        let err = crate::autotune::CommissionError::ChipResetDetected;
+
+        engine.emit_trace_start(&mut backend);
+        engine.emit_trace_after_step(&mut backend, &StepResult::InnerFailed(err));
+
+        let status = err.status_code();
+        let events = &backend.trace_events;
+        assert_eq!(events.len(), 4);
+        assert_trace_event(
+            &events[2],
+            crate::trace_events::EVENT_COMMISSION_PHASE_END,
+            EngineKind::Commission,
+            TraceEventLevel::Error,
+            [
+                crate::autotune::PhaseId::AdcCalibrate.to_u8() as i32,
+                i32::from(status),
+            ],
+        );
+        assert_trace_event(
+            &events[3],
+            crate::trace_events::EVENT_COMMISSION_ENGINE_TERMINAL,
+            EngineKind::Commission,
+            TraceEventLevel::Error,
+            [i32::from(status), 21],
+        );
+
+        engine.emit_trace_after_step(&mut backend, &StepResult::InnerFailed(err));
+        assert_eq!(backend.trace_events.len(), 4);
+    }
+
+    #[test]
+    fn failure_trace_ends_active_outer_phase_and_is_idempotent() {
+        let mut engine = CommissioningEngine::new_outer_with_trace_seq(
+            0,
+            sample_outer_params(),
+            sample_entry_snapshot(),
+            22,
+        );
+        let mut backend = crate::commission_dispatch::test_support::MockBackend::new();
+        let err = crate::autotune::CommissionError::VelocityValidationFailed;
+
+        engine.emit_trace_start(&mut backend);
+        engine.emit_trace_after_step(&mut backend, &StepResult::OuterFailed(err));
+
+        let status = err.status_code();
+        let events = &backend.trace_events;
+        assert_eq!(events.len(), 4);
+        assert_trace_event(
+            &events[2],
+            crate::trace_events::EVENT_COMMISSION_PHASE_END,
+            EngineKind::OuterTune,
+            TraceEventLevel::Error,
+            [
+                crate::autotune::PhaseId::MechanicalId.to_u8() as i32,
+                i32::from(status),
+            ],
+        );
+        assert_trace_event(
+            &events[3],
+            crate::trace_events::EVENT_COMMISSION_ENGINE_TERMINAL,
+            EngineKind::OuterTune,
+            TraceEventLevel::Error,
+            [i32::from(status), 22],
+        );
+
+        engine.emit_trace_after_step(&mut backend, &StepResult::OuterFailed(err));
+        assert_eq!(backend.trace_events.len(), 4);
+    }
+
+    #[test]
+    fn calibrate_and_selftest_trace_start_use_zero_profile_or_mode() {
+        let mut backend = crate::commission_dispatch::test_support::MockBackend::new();
+        let mut calibrate = CommissioningEngine::new_calibrate_with_trace_seq(0, 31);
+        calibrate.emit_trace_start(&mut backend);
+        assert_trace_event(
+            &backend.trace_events[0],
+            crate::trace_events::EVENT_COMMISSION_ENGINE_START,
+            EngineKind::Calibrate,
+            TraceEventLevel::Info,
+            [0, 31],
+        );
+
+        backend.trace_events.clear();
+        let mut selftest = CommissioningEngine::new_selftest_with_trace_seq(0, 32);
+        selftest.emit_trace_start(&mut backend);
+        assert_trace_event(
+            &backend.trace_events[0],
+            crate::trace_events::EVENT_COMMISSION_ENGINE_START,
+            EngineKind::Selftest,
+            TraceEventLevel::Info,
+            [0, 32],
+        );
+    }
+
+    #[test]
+    fn warning_terminal_statuses_emit_warn_level() {
+        assert_terminal_trace(
+            CommissioningEngine::new_commission(0, crate::autotune::CommissionProfile::Balanced),
+            StepResult::CommissionDone(sample_commission_result(
+                crate::autotune::CommissionStatus::AcceptedWithWarnings,
+            )),
+            EngineKind::Commission,
+            crate::autotune::PhaseId::AdcCalibrate,
+            crate::autotune::CommissionStatus::AcceptedWithWarnings.to_u8(),
+            TraceEventLevel::Info,
+            TraceEventLevel::Warn,
+        );
+        assert_terminal_trace(
+            CommissioningEngine::new_outer(0, sample_outer_params(), sample_entry_snapshot()),
+            StepResult::OuterDone(sample_outer_result(
+                crate::autotune::CommissionStatus::InnerOnly,
+            )),
+            EngineKind::OuterTune,
+            crate::autotune::PhaseId::MechanicalId,
+            crate::autotune::CommissionStatus::InnerOnly.to_u8(),
+            TraceEventLevel::Info,
+            TraceEventLevel::Warn,
+        );
     }
 
     #[test]
