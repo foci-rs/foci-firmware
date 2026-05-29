@@ -303,4 +303,46 @@ mod tests {
 
         assert_eq!(channel.motor_sentinel.load(Relaxed), 0);
     }
+
+    /// No-auto-energize invariant: a freshly constructed channel (the boot
+    /// state) must be disarmed and must not permit enable-driven
+    /// auto-calibration. A motor can only be energized after an explicit
+    /// host command flips these fields, never on power-on.
+    #[test]
+    fn fresh_channel_is_disarmed_and_auto_energize_gated() {
+        let channel = TmcChannelState::new();
+
+        assert!(
+            !channel.motor_armed.load(Relaxed),
+            "boot state must leave the motor disarmed"
+        );
+        assert!(
+            !channel.commission_in_flight.load(Relaxed),
+            "boot state must not have commissioning in flight"
+        );
+        assert!(
+            !channel.auto_calibrate_on_enable_allowed.load(Relaxed),
+            "auto-calibrate-on-enable must be gated closed at boot; only an \
+             explicit host command may open it"
+        );
+    }
+
+    /// `reset()` (the path config_reset funnels through) must re-close every
+    /// energize gate, so a shutdown/reset cycle can never leave the motor
+    /// armed or auto-calibration enabled.
+    #[test]
+    fn reset_recloses_auto_energize_gates() {
+        let channel = TmcChannelState::new();
+        channel.motor_armed.store(true, Relaxed);
+        channel.commission_in_flight.store(true, Relaxed);
+        channel
+            .auto_calibrate_on_enable_allowed
+            .store(true, Relaxed);
+
+        channel.reset();
+
+        assert!(!channel.motor_armed.load(Relaxed));
+        assert!(!channel.commission_in_flight.load(Relaxed));
+        assert!(!channel.auto_calibrate_on_enable_allowed.load(Relaxed));
+    }
 }
