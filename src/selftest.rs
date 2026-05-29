@@ -11,17 +11,28 @@ use embedded_hal::digital::OutputPin;
 use embedded_hal_async::spi::SpiDevice;
 use foci_tmc4671::spi::Tmc4671Spi;
 
-/// Put the TMC4671 into a safe state: MODE=0, targets zeroed, enable pin LOW.
+/// Put the TMC4671 into a safe state: enable pin LOW, all drive inputs and
+/// integrator state zeroed, voltage authority capped.
+///
+/// Raw `Tmc4671Spi` + GPIO variant of the canonical
+/// [`crate::tmc_safe_state::restore_safe_state_via_backend`]. It writes the
+/// same register sequence in the same order so a caller holding only a raw
+/// SPI device and the enable pin (e.g. a board fault path with no
+/// `CommissioningBackend`) lands in an identical safe state. Keep the two
+/// sequences in lockstep: a divergence is a latent safety gap.
 ///
 /// Best-effort: SPI errors are silently ignored. The enable pin is always
-/// driven low regardless of prior TMC4671 state.
+/// driven low first, before any register write, so the half-bridges are
+/// gated regardless of prior TMC4671 state.
 ///
-/// Also resets `PIDOUT_UQ_UD_LIMITS` to the conservative default (1024)
-/// so that any subsequent partial re-enable path inherits a low voltage
-/// ceiling instead of whatever closed-loop entry last raised it to. This
-/// mirrors the value AdcCalibrate writes as its safety default, and
-/// prevents runaway current in fault recovery paths that re-assert PWM
-/// without running full closed-loop initialization.
+/// Zeroing `PID_TORQUE_FLUX_OFFSET` matters as much as zeroing the target:
+/// a stale non-zero offset is added to the current-loop PID output and would
+/// inject torque/flux current the instant a later path re-asserts a motion
+/// mode. `PHI_E_SELECTION` is forced to a deterministic source and the PID
+/// error accumulators are cleared so integrator windup cannot drive current
+/// on re-enable. `PIDOUT_UQ_UD_LIMITS` is reset to the conservative default
+/// (1024) matching AdcCalibrate so high voltage authority cannot leak across
+/// a safe-state transition into a subsequent partial re-enable.
 ///
 /// # Parameters
 /// - `tmc`: mutable reference to the TMC4671 SPI driver
@@ -36,13 +47,29 @@ where
     let _ = enable_pin.set_low();
     let _ = tmc.write_register(MODE_RAMP_MODE_MOTION, 0x0000_0000).await;
     let _ = tmc.write_register(PID_TORQUE_FLUX_TARGET, 0).await;
+    let _ = tmc.write_register(PID_TORQUE_FLUX_OFFSET, 0).await;
     let _ = tmc.write_register(UQ_UD_EXT, 0).await;
+    let _ = tmc.write_register(PHI_E_SELECTION, 0).await;
     let _ = tmc.write_register(PWM_SV_CHOP, 0).await;
     let _ = tmc.write_register(PID_VELOCITY_OFFSET, 0).await;
     // Conservative voltage ceiling matching AdcCalibrate's safety default.
     // Prevents high-voltage drive authority from leaking across a safe-state
     // transition into a subsequent partial re-enable.
     let _ = tmc.write_register(PIDOUT_UQ_UD_LIMITS, 1024).await;
+    // Clear PID error accumulators so integrator windup from the last active
+    // mode cannot drive corrective current when outputs are re-enabled.
+    let _ = tmc
+        .write_sub_register(PID_ERROR_PID_TORQUE_ERROR_SUM, 0)
+        .await;
+    let _ = tmc
+        .write_sub_register(PID_ERROR_PID_FLUX_ERROR_SUM, 0)
+        .await;
+    let _ = tmc
+        .write_sub_register(PID_ERROR_PID_VELOCITY_ERROR_SUM, 0)
+        .await;
+    let _ = tmc
+        .write_sub_register(PID_ERROR_PID_POSITION_ERROR_SUM, 0)
+        .await;
 }
 
 /// Result of one selftest stage, streamed to the host.
@@ -261,5 +288,112 @@ mod selftest_results_tests {
             items[COMMISSION_DIAGNOSTIC_CAPACITY - 1].code,
             COMMISSION_DIAGNOSTIC_CAPACITY as u8 - 1
         );
+    }
+}
+
+#[cfg(test)]
+mod restore_safe_state_tests {
+    use super::*;
+    use embedded_hal_async::spi::{ErrorType, Operation, SpiDevice};
+    use foci_tmc4671::registers::*;
+
+    /// Records every 5-byte register write as `(addr, value)` in order.
+    #[derive(Default)]
+    struct RecordingSpi {
+        writes: std::vec::Vec<(u8, u32)>,
+    }
+
+    impl ErrorType for RecordingSpi {
+        type Error = core::convert::Infallible;
+    }
+
+    impl SpiDevice<u8> for RecordingSpi {
+        async fn transaction(
+            &mut self,
+            operations: &mut [Operation<'_, u8>],
+        ) -> Result<(), Self::Error> {
+            for op in operations {
+                if let Operation::Write(buf) = op
+                    && buf.len() == 5
+                {
+                    let addr = buf[0] & 0x7F;
+                    let value = u32::from_be_bytes([buf[1], buf[2], buf[3], buf[4]]);
+                    self.writes.push((addr, value));
+                }
+            }
+            Ok(())
+        }
+    }
+
+    struct RecordingPin {
+        is_high: bool,
+    }
+
+    impl embedded_hal::digital::ErrorType for RecordingPin {
+        type Error = core::convert::Infallible;
+    }
+
+    impl embedded_hal::digital::OutputPin for RecordingPin {
+        fn set_low(&mut self) -> Result<(), Self::Error> {
+            self.is_high = false;
+            Ok(())
+        }
+
+        fn set_high(&mut self) -> Result<(), Self::Error> {
+            self.is_high = true;
+            Ok(())
+        }
+    }
+
+    /// The raw safe-state must write the same register sequence, in the same
+    /// order, as the canonical `restore_safe_state_via_backend`. A divergence
+    /// is a latent safety gap: a board fault path wired to this primitive would
+    /// otherwise leave a non-zero torque/flux offset or stale integrator that
+    /// re-energizes the motor on the next partial re-enable.
+    #[test]
+    fn restore_safe_state_matches_canonical_register_sequence() {
+        pollster::block_on(async {
+            let mut tmc = Tmc4671Spi::new(RecordingSpi::default());
+            let mut enable_pin = RecordingPin { is_high: true };
+
+            restore_safe_state(&mut tmc, &mut enable_pin).await;
+
+            assert!(!enable_pin.is_high, "enable pin must be driven low");
+
+            let writes = tmc.into_inner().writes;
+            assert_eq!(
+                writes,
+                std::vec![
+                    (MODE_RAMP_MODE_MOTION.addr(), 0),
+                    (PID_TORQUE_FLUX_TARGET.addr(), 0),
+                    (PID_TORQUE_FLUX_OFFSET.addr(), 0),
+                    (UQ_UD_EXT.addr(), 0),
+                    (PHI_E_SELECTION.addr(), 0),
+                    (PWM_SV_CHOP.addr(), 0),
+                    (PID_VELOCITY_OFFSET.addr(), 0),
+                    (PIDOUT_UQ_UD_LIMITS.addr(), 1024),
+                    (
+                        PID_ERROR_PID_TORQUE_ERROR_SUM.addr.addr(),
+                        PID_ERROR_PID_TORQUE_ERROR_SUM.sub_addr as u32,
+                    ),
+                    (PID_ERROR_PID_TORQUE_ERROR_SUM.data.addr(), 0),
+                    (
+                        PID_ERROR_PID_FLUX_ERROR_SUM.addr.addr(),
+                        PID_ERROR_PID_FLUX_ERROR_SUM.sub_addr as u32,
+                    ),
+                    (PID_ERROR_PID_FLUX_ERROR_SUM.data.addr(), 0),
+                    (
+                        PID_ERROR_PID_VELOCITY_ERROR_SUM.addr.addr(),
+                        PID_ERROR_PID_VELOCITY_ERROR_SUM.sub_addr as u32,
+                    ),
+                    (PID_ERROR_PID_VELOCITY_ERROR_SUM.data.addr(), 0),
+                    (
+                        PID_ERROR_PID_POSITION_ERROR_SUM.addr.addr(),
+                        PID_ERROR_PID_POSITION_ERROR_SUM.sub_addr as u32,
+                    ),
+                    (PID_ERROR_PID_POSITION_ERROR_SUM.data.addr(), 0),
+                ],
+            );
+        });
     }
 }
