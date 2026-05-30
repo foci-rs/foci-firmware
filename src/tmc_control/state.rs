@@ -7,8 +7,9 @@ use crate::commissioning::CommissioningEngine;
 use crate::pid::InnerLoopGains;
 use crate::state::stepper::StepperChannelState;
 use crate::state::tmc::TmcChannelState;
+use crate::tmc::{TmcRequest, TmcRequestKind};
 use crate::tmc_control::actions::{
-    BoardAction, BoardActions, ShutdownReason, StepperAction, push_action,
+    BoardAction, BoardActions, DelegatedDiagnostic, ShutdownReason, StepperAction, push_action,
 };
 use crate::tmc_control::signals::TmcControlSignals;
 
@@ -251,6 +252,38 @@ impl TmcControlRuntime {
             ShutdownReason::TmcFault
         };
         push_action(&mut actions, BoardAction::Shutdown(reason));
+        actions
+    }
+
+    /// Classify a [`TmcRequest`] before SPI-heavy handling.
+    ///
+    /// Returns shutdown actions for wrong-channel requests and delegates active
+    /// diagnostic requests to the board shell via [`BoardAction::DelegatedDiagnostic`].
+    /// Non-diagnostic, correct-channel requests return an empty action list and
+    /// are processed by the caller's SPI path.
+    pub fn classify_request(&mut self, req: TmcRequest) -> BoardActions {
+        let mut actions = BoardActions::new();
+        if req.channel != self.channel {
+            push_action(
+                &mut actions,
+                BoardAction::Shutdown(ShutdownReason::InvalidTmcChannel),
+            );
+            return actions;
+        }
+
+        match req.kind {
+            TmcRequestKind::CurrentStepTest { .. }
+            | TmcRequestKind::CurrentVectorStepTest { .. }
+            | TmcRequestKind::CurrentTorqueSampleTest { .. }
+            | TmcRequestKind::PositionTorqueOffsetSampleTest { .. }
+            | TmcRequestKind::VoltageStepTest { .. } => {
+                push_action(
+                    &mut actions,
+                    BoardAction::DelegatedDiagnostic(DelegatedDiagnostic { request: req }),
+                );
+            }
+            _ => {}
+        }
         actions
     }
 

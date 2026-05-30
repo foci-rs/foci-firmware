@@ -1,6 +1,7 @@
 use super::*;
 use crate::config::TmcConfig;
 use crate::pid::InnerLoopGains;
+use crate::tmc::{TmcRequest, TmcRequestKind};
 use core::sync::atomic::AtomicBool;
 use core::sync::atomic::Ordering::Relaxed;
 
@@ -160,4 +161,40 @@ fn emergency_disable_signal_is_consumed_by_runtime() {
             .any(|a| matches!(a, BoardAction::Shutdown(ShutdownReason::AdcCurrentClipped)))
     );
     assert!(disable_signal.try_take().is_none());
+}
+
+#[test]
+fn diagnostic_requests_are_delegated() {
+    let mut runtime = TmcControlRuntime::new_for_channel(0);
+    let req = TmcRequest::new(
+        0,
+        TmcRequestKind::VoltageStepTest {
+            oid: 9,
+            uq_ext: 10,
+            ud_ext: -10,
+            sample_delay_ms: 3,
+        },
+    );
+
+    let actions = runtime.classify_request(req);
+
+    assert!(
+        actions
+            .iter()
+            .any(|a| matches!(a, BoardAction::DelegatedDiagnostic(_)))
+    );
+}
+
+#[test]
+fn invalid_channel_request_emits_shutdown_action() {
+    let mut runtime = TmcControlRuntime::new_for_channel(0);
+    let req = TmcRequest::new(1, TmcRequestKind::SetEnable(false));
+
+    let actions = runtime.classify_request(req);
+
+    assert!(
+        actions
+            .iter()
+            .any(|a| matches!(a, BoardAction::Shutdown(ShutdownReason::InvalidTmcChannel)))
+    );
 }
