@@ -7,6 +7,89 @@ use core::sync::atomic::Ordering::Relaxed;
 
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::signal::Signal;
+use embedded_hal_async::spi::{ErrorKind, ErrorType, Operation, SpiDevice};
+use foci_tmc4671::registers::{ABN_DECODER_PHI_E_PHI_M_OFFSET, PID_POSITION_TARGET};
+use foci_tmc4671::spi::Tmc4671Spi;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct MockSpiError;
+
+impl embedded_hal_async::spi::Error for MockSpiError {
+    fn kind(&self) -> ErrorKind {
+        ErrorKind::Other
+    }
+}
+
+#[derive(Default)]
+struct RuntimeMockSpi {
+    writes: std::vec::Vec<(u8, u32)>,
+    write_attempts: std::vec::Vec<(u8, u32)>,
+    read_requests: std::vec::Vec<u8>,
+    reads: std::collections::VecDeque<u32>,
+    fail_writes_to: Option<u8>,
+}
+
+impl RuntimeMockSpi {
+    fn with_read(mut self, value: u32) -> Self {
+        self.reads.push_back(value);
+        self
+    }
+
+    fn fail_writes_to(mut self, addr: u8) -> Self {
+        self.fail_writes_to = Some(addr);
+        self
+    }
+
+    fn attempted_write_to(&self, register: foci_tmc4671::registers::Register) -> bool {
+        self.write_attempts
+            .iter()
+            .any(|(addr, _)| *addr == register.addr())
+    }
+
+    fn read_requested(&self, register: foci_tmc4671::registers::Register) -> bool {
+        self.read_requests
+            .iter()
+            .any(|addr| *addr == register.addr())
+    }
+}
+
+impl ErrorType for RuntimeMockSpi {
+    type Error = MockSpiError;
+}
+
+impl SpiDevice<u8> for RuntimeMockSpi {
+    async fn transaction(
+        &mut self,
+        operations: &mut [Operation<'_, u8>],
+    ) -> Result<(), Self::Error> {
+        for op in operations {
+            match op {
+                Operation::Write(buf) if buf.len() == 5 => {
+                    let addr = buf[0] & 0x7f;
+                    let value = u32::from_be_bytes([buf[1], buf[2], buf[3], buf[4]]);
+                    self.write_attempts.push((addr, value));
+                    if self.fail_writes_to == Some(addr) {
+                        return Err(MockSpiError);
+                    }
+                    self.writes.push((addr, value));
+                }
+                Operation::Write(buf) if buf.len() == 1 => {
+                    self.read_requests.push(buf[0]);
+                }
+                Operation::Read(buf) => {
+                    let value = self.reads.pop_front().unwrap_or(0);
+                    buf.copy_from_slice(&value.to_be_bytes());
+                }
+                Operation::Write(_) | Operation::DelayNs(_) => {}
+                Operation::Transfer(read, write) => {
+                    read.copy_from_slice(write);
+                }
+                Operation::TransferInPlace(_) => {}
+            }
+        }
+        Ok(())
+    }
+}
 
 #[test]
 fn runtime_starts_disarmed_and_uncalibrated() {
@@ -361,4 +444,129 @@ fn velocity_scale_accessors_round_trip() {
     assert_eq!(runtime.velocity_scale(), 0);
     runtime.set_velocity_scale(123_456);
     assert_eq!(runtime.velocity_scale(), 123_456);
+}
+
+#[test]
+fn phase_advance_state_tracks_restore_to_base_register() {
+    let mut runtime = TmcControlRuntime::new_for_channel(0);
+    runtime.set_phase_advance_for_test(true, 0x1111_2222, 0x3333_4444);
+
+    runtime.mark_phase_advance_restored_for_test();
+
+    assert!(!runtime.phase_advance_active_for_test());
+    assert_eq!(runtime.phase_advance_last_register_for_test(), 0x1111_2222);
+}
+
+#[test]
+fn phase_advance_restore_now_writes_base_and_clears_active_state() {
+    pollster::block_on(async {
+        let mut runtime = TmcControlRuntime::new_for_channel(0);
+        runtime.set_phase_advance_for_test(true, 0x1111_2222, 0x3333_4444);
+        let mut tmc = Tmc4671Spi::new(RuntimeMockSpi::default());
+
+        let restored = runtime.restore_phase_advance_now(&mut tmc).await;
+
+        assert!(restored);
+        assert!(!runtime.phase_advance_active_for_test());
+        assert_eq!(runtime.phase_advance_last_register_for_test(), 0x1111_2222);
+        assert_eq!(
+            tmc.into_inner().writes,
+            std::vec![(ABN_DECODER_PHI_E_PHI_M_OFFSET.addr(), 0x1111_2222)]
+        );
+    });
+}
+
+#[test]
+fn phase_advance_restore_now_failure_preserves_retry_state() {
+    pollster::block_on(async {
+        let mut runtime = TmcControlRuntime::new_for_channel(0);
+        runtime.set_phase_advance_for_test(true, 0x1111_2222, 0x3333_4444);
+        let raw_spi =
+            RuntimeMockSpi::default().fail_writes_to(ABN_DECODER_PHI_E_PHI_M_OFFSET.addr());
+        let mut tmc = Tmc4671Spi::new(raw_spi);
+
+        let restored = runtime.restore_phase_advance_now(&mut tmc).await;
+
+        assert!(!restored);
+        assert!(runtime.phase_advance_active_for_test());
+        assert_eq!(runtime.phase_advance_last_register_for_test(), 0x3333_4444);
+        let raw_spi = tmc.into_inner();
+        assert_eq!(
+            raw_spi.write_attempts,
+            std::vec![(ABN_DECODER_PHI_E_PHI_M_OFFSET.addr(), 0x1111_2222)]
+        );
+        assert!(raw_spi.writes.is_empty());
+    });
+}
+
+#[test]
+fn phase_advance_tick_reset_gate_skips_abn_snapshot_and_write() {
+    pollster::block_on(async {
+        let mut runtime = TmcControlRuntime::new_for_channel(0);
+        runtime.set_motor_enabled_for_test(true);
+        runtime.set_velocity_scale_for_test(84_000_000);
+        let tmc_state = crate::state::tmc::TmcChannelState::new();
+        let stepper_state = crate::state::stepper::StepperChannelState::new();
+        tmc_state.phase_advance.store(true, Relaxed);
+        tmc_state.position_lead.store(true, Relaxed);
+        tmc_state.step_width_value.store(16, Relaxed);
+        stepper_state.interval.store(2_800, Relaxed);
+        let mut tmc = Tmc4671Spi::new(RuntimeMockSpi::default().with_read(1_000));
+
+        runtime
+            .apply_phase_and_position_tick(
+                &mut tmc,
+                TmcControlStateRefs::new(&tmc_state, &stepper_state),
+                123,
+                false,
+                true,
+            )
+            .await;
+
+        assert!(!runtime.phase_advance_active_for_test());
+        let raw_spi = tmc.into_inner();
+        assert!(!raw_spi.read_requested(ABN_DECODER_PHI_E_PHI_M_OFFSET));
+        assert!(!raw_spi.attempted_write_to(ABN_DECODER_PHI_E_PHI_M_OFFSET));
+    });
+}
+
+#[test]
+fn position_lead_tick_writes_target_and_tracks_applied_scaled() {
+    pollster::block_on(async {
+        let mut runtime = TmcControlRuntime::new_for_channel(0);
+        runtime.set_motor_enabled_for_test(true);
+        runtime.set_velocity_scale_for_test(84_000_000);
+        let tmc_state = crate::state::tmc::TmcChannelState::new();
+        let stepper_state = crate::state::stepper::StepperChannelState::new();
+        tmc_state.position_lead.store(true, Relaxed);
+        tmc_state.position_lead_gain_permille.store(1000, Relaxed);
+        tmc_state.position_lead_max_counts.store(20, Relaxed);
+        tmc_state.step_width_value.store(16, Relaxed);
+        stepper_state.interval.store(2_800, Relaxed);
+        stepper_state.direction.store(false, Relaxed);
+        let lead_counts =
+            crate::tmc::compute_position_lead_counts(84_000_000, 2_800, false, 1000, 20);
+        let (expected_target, expected_applied_scaled) =
+            crate::tmc::compute_position_lead_target(1_000, 0, lead_counts, 16);
+        let mut tmc = Tmc4671Spi::new(RuntimeMockSpi::default().with_read(1_000));
+
+        runtime
+            .apply_phase_and_position_tick(
+                &mut tmc,
+                TmcControlStateRefs::new(&tmc_state, &stepper_state),
+                0,
+                false,
+                false,
+            )
+            .await;
+
+        assert_eq!(
+            runtime.position_lead_applied_scaled_for_test(),
+            expected_applied_scaled
+        );
+        assert_eq!(
+            tmc.into_inner().writes,
+            std::vec![(PID_POSITION_TARGET.addr(), expected_target)]
+        );
+    });
 }
