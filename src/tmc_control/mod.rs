@@ -5,6 +5,7 @@
 //! spawning.
 
 pub mod actions;
+pub mod config;
 pub mod signals;
 pub mod state;
 
@@ -14,5 +15,6 @@ mod tests;
 pub use actions::{
     BoardAction, BoardActions, DelegatedDiagnostic, ShutdownReason, StepperAction, push_action,
 };
+pub use config::{TmcControlConfig, TmcControlHomingRefs, TmcControlStateRefs};
 pub use signals::TmcControlSignals;
 pub use state::{TmcControlRuntime, TmcControlTraceState};
