@@ -194,6 +194,43 @@ fn config_reset_channel_state_restores_known_defaults() {
 }
 
 #[test]
+fn queue_flush_signal_resets_runtime_and_channel_state() {
+    let shutdown_active = AtomicBool::new(false);
+    let queue_flush = AtomicBool::new(false);
+    let fault_active = AtomicBool::new(true);
+    let disable_signal = Signal::<CriticalSectionRawMutex, ()>::new();
+    let signals = TmcControlSignals::new(
+        &shutdown_active,
+        &queue_flush,
+        &fault_active,
+        &disable_signal,
+    );
+    let tmc = crate::state::tmc::TmcChannelState::new();
+    let stepper = crate::state::stepper::StepperChannelState::new();
+    let mut runtime = TmcControlRuntime::new_for_channel(0);
+
+    runtime.set_calibrated_for_test(true);
+    runtime.set_motor_enabled_for_test(true);
+    tmc.current_limit_reg.store(88, Relaxed);
+    stepper.position.store(55, Relaxed);
+    queue_flush.store(true, Relaxed);
+
+    let actions = runtime.poll_queue_flush(&signals, &tmc, &stepper);
+
+    assert!(!queue_flush.load(Relaxed));
+    assert!(!runtime.is_calibrated());
+    assert!(!runtime.is_motor_enabled());
+    assert_eq!(tmc.current_limit_reg.load(Relaxed), 0);
+    assert_eq!(stepper.position.load(Relaxed), 0);
+    assert!(!fault_active.load(Relaxed));
+    assert!(
+        actions
+            .iter()
+            .any(|a| { matches!(a, BoardAction::Stepper(StepperAction::StopNow)) })
+    );
+}
+
+#[test]
 fn shutdown_signal_emits_one_stop_action_until_reset() {
     let shutdown_active = AtomicBool::new(true);
     let queue_flush = AtomicBool::new(false);

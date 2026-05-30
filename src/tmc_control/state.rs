@@ -202,6 +202,30 @@ impl TmcControlRuntime {
         stepper.reset();
     }
 
+    /// Consume a config-reset queue flush request and return board actions.
+    ///
+    /// Returns an empty action list when no queue flush was requested. When a
+    /// flush is pending, this consumes the signal, resets runtime-local and
+    /// channel-local state, clears the fault latch, and emits `StopNow` so the
+    /// board shell can stop physical stepping.
+    pub fn poll_queue_flush(
+        &mut self,
+        signals: &TmcControlSignals,
+        tmc: &TmcChannelState,
+        stepper: &StepperChannelState,
+    ) -> BoardActions {
+        let mut actions = BoardActions::new();
+        if !signals.queue_flush.swap(false, Relaxed) {
+            return actions;
+        }
+
+        self.reset_runtime_state();
+        Self::reset_channel_state(tmc, stepper);
+        signals.fault_active.store(false, Relaxed);
+        push_action(&mut actions, BoardAction::Stepper(StepperAction::StopNow));
+        actions
+    }
+
     /// Poll shutdown state and emit one-shot safe-state actions.
     ///
     /// Returns a `StopNow` stepper action on the first call while shutdown is
