@@ -1,10 +1,16 @@
 //! Persistent state for the shared TMC control runtime.
 
+use core::sync::atomic::Ordering::Relaxed;
+
 use crate::commission_dispatch::DispatchState;
 use crate::commissioning::CommissioningEngine;
 use crate::pid::InnerLoopGains;
 use crate::state::stepper::StepperChannelState;
 use crate::state::tmc::TmcChannelState;
+use crate::tmc_control::actions::{
+    BoardAction, BoardActions, ShutdownReason, StepperAction, push_action,
+};
+use crate::tmc_control::signals::TmcControlSignals;
 
 /// Trace-only cached state. Core safety state stays in `TmcControlRuntime`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
@@ -192,6 +198,60 @@ impl TmcControlRuntime {
     pub fn reset_channel_state(tmc: &TmcChannelState, stepper: &StepperChannelState) {
         tmc.reset();
         stepper.reset();
+    }
+
+    /// Poll shutdown state and emit one-shot safe-state actions.
+    ///
+    /// Returns a `StopNow` stepper action on the first call while shutdown is
+    /// active, clearing `motor_enabled`, `calibrated`, and the commission
+    /// engine. Subsequent calls while shutdown remains active return an empty
+    /// action list. Clears `shutdown_handled` when shutdown is no longer active
+    /// so the next shutdown cycle fires again.
+    pub fn poll_shutdown(&mut self, signals: &TmcControlSignals) -> BoardActions {
+        let mut actions = BoardActions::new();
+        if signals.shutdown_active.load(Relaxed) {
+            if !self.shutdown_handled {
+                self.commission_engine = None;
+                push_action(&mut actions, BoardAction::Stepper(StepperAction::StopNow));
+                self.motor_enabled = false;
+                self.calibrated = false;
+                self.shutdown_handled = true;
+            }
+            return actions;
+        }
+
+        self.shutdown_handled = false;
+        actions
+    }
+
+    /// Consume an emergency-disable signal and emit shutdown actions.
+    ///
+    /// Returns nothing when the signal has not been raised. When the signal is
+    /// present, clears `fault_active`, disarms the motor, and returns a
+    /// `StopNow` action followed by a `Shutdown` action whose reason is
+    /// `AdcCurrentClipped` when bit 26 of `status_flags` is set, or
+    /// `TmcFault` otherwise.
+    pub fn poll_emergency_disable(
+        &mut self,
+        signals: &TmcControlSignals,
+        status_flags: u32,
+    ) -> BoardActions {
+        let mut actions = BoardActions::new();
+        if signals.disable_signal.try_take().is_none() {
+            return actions;
+        }
+
+        signals.fault_active.store(false, Relaxed);
+        self.motor_enabled = false;
+        self.calibrated = false;
+        push_action(&mut actions, BoardAction::Stepper(StepperAction::StopNow));
+        let reason = if status_flags & (1 << 26) != 0 {
+            ShutdownReason::AdcCurrentClipped
+        } else {
+            ShutdownReason::TmcFault
+        };
+        push_action(&mut actions, BoardAction::Shutdown(reason));
+        actions
     }
 
     #[cfg(test)]

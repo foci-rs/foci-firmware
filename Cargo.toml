@@ -25,6 +25,7 @@ libm = "0.2"
 static_assertions = "1.1"
 
 [dev-dependencies]
+critical-section = { version = "1.2", features = ["std"] }
 defmt = { version = "1.0", features = ["unstable-test"] }
 embedded-hal-mock = { version = "0.11", features = ["eh1", "embedded-hal-async"] }
 pollster = "0.4"

@@ -1,7 +1,11 @@
 use super::*;
 use crate::config::TmcConfig;
 use crate::pid::InnerLoopGains;
+use core::sync::atomic::AtomicBool;
 use core::sync::atomic::Ordering::Relaxed;
+
+use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
+use embassy_sync::signal::Signal;
 
 #[test]
 fn runtime_starts_disarmed_and_uncalibrated() {
@@ -103,4 +107,57 @@ fn config_reset_channel_state_restores_known_defaults() {
     assert_eq!(tmc.current_limit_reg.load(Relaxed), 0);
     assert_eq!(tmc.velocity_limit_cfg.load(Relaxed), 500_000);
     assert_eq!(stepper.position.load(Relaxed), 0);
+}
+
+#[test]
+fn shutdown_signal_emits_one_stop_action_until_reset() {
+    let shutdown_active = AtomicBool::new(true);
+    let queue_flush = AtomicBool::new(false);
+    let fault_active = AtomicBool::new(false);
+    let disable_signal = Signal::<CriticalSectionRawMutex, ()>::new();
+    let signals = TmcControlSignals::new(
+        &shutdown_active,
+        &queue_flush,
+        &fault_active,
+        &disable_signal,
+    );
+    let mut runtime = TmcControlRuntime::new_for_channel(0);
+
+    let first = runtime.poll_shutdown(&signals);
+    let second = runtime.poll_shutdown(&signals);
+
+    assert!(
+        first
+            .iter()
+            .any(|a| matches!(a, BoardAction::Stepper(StepperAction::StopNow)))
+    );
+    assert!(second.is_empty());
+
+    shutdown_active.store(false, Relaxed);
+    runtime.poll_shutdown(&signals);
+}
+
+#[test]
+fn emergency_disable_signal_is_consumed_by_runtime() {
+    let shutdown_active = AtomicBool::new(false);
+    let queue_flush = AtomicBool::new(false);
+    let fault_active = AtomicBool::new(false);
+    let disable_signal = Signal::<CriticalSectionRawMutex, ()>::new();
+    let signals = TmcControlSignals::new(
+        &shutdown_active,
+        &queue_flush,
+        &fault_active,
+        &disable_signal,
+    );
+    let mut runtime = TmcControlRuntime::new_for_channel(0);
+
+    disable_signal.signal(());
+    let actions = runtime.poll_emergency_disable(&signals, 1 << 26);
+
+    assert!(
+        actions
+            .iter()
+            .any(|a| matches!(a, BoardAction::Shutdown(ShutdownReason::AdcCurrentClipped)))
+    );
+    assert!(disable_signal.try_take().is_none());
 }
