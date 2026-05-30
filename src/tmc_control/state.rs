@@ -60,6 +60,12 @@ impl TmcControlTraceState {
     }
 }
 
+impl Default for TmcControlTraceState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// Trace timing decisions for one USB/FTRC slow-control emission pass.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub struct TmcControlTraceTick {
@@ -504,9 +510,9 @@ impl TmcControlRuntime {
         let reference = if !self.motor_enabled
             || self.velocity_scale == 0
             || self.commission_engine.is_some()
+            || homing_active
+            || reset
         {
-            0
-        } else if homing_active || reset {
             0
         } else {
             let interval = refs.stepper.interval.load(Relaxed);

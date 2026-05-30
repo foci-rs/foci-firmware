@@ -46,6 +46,10 @@ pub struct DelegatedDiagnostic {
 }
 
 /// One immediate effect for the board shell to apply.
+///
+/// The large reply variants are intentionally stored inline. This crate is
+/// `no_std`/no-heap, so boxing would violate the firmware memory model.
+#[allow(clippy::large_enum_variant)]
 pub enum BoardAction {
     /// Enter Klipper shutdown with the provided reason.
     Shutdown(ShutdownReason),
@@ -75,6 +79,10 @@ pub fn push_action(actions: &mut BoardActions, action: BoardAction) {
 }
 
 /// Runtime result after one commissioning-engine tick.
+///
+/// The terminal reply payload stays inline for the same no-heap reason as
+/// [`BoardAction`].
+#[allow(clippy::large_enum_variant)]
 pub enum CommissionTickAction {
     /// Engine continues; board should delay before the next loop iteration.
     Continue,
