@@ -213,3 +213,48 @@ fn clear_calibrated_resets_flag() {
     runtime.clear_calibrated();
     assert!(!runtime.is_calibrated());
 }
+
+#[test]
+fn enable_before_calibration_without_gate_is_noop() {
+    let mut runtime = TmcControlRuntime::new_for_channel(0);
+    let tmc = crate::state::tmc::TmcChannelState::new();
+    tmc.auto_calibrate_on_enable_allowed.store(false, Relaxed);
+
+    let actions = runtime.prepare_enable_request(&tmc);
+
+    assert!(actions.is_empty());
+    assert!(!runtime.is_motor_enabled());
+}
+
+#[test]
+fn enable_after_calibration_emits_arm_check_action() {
+    let mut runtime = TmcControlRuntime::new_for_channel(0);
+    let tmc = crate::state::tmc::TmcChannelState::new();
+    runtime.set_calibrated_for_test(true);
+
+    let actions = runtime.prepare_enable_request(&tmc);
+
+    assert!(actions.iter().any(|a| matches!(
+        a,
+        BoardAction::Stepper(StepperAction::ArmCheck {
+            post_action: crate::commission_dispatch::StepperPostAction::ArmPreservePosition,
+        })
+    )));
+}
+
+#[test]
+fn disable_request_stops_and_clears_runtime_flags() {
+    let mut runtime = TmcControlRuntime::new_for_channel(0);
+    runtime.set_calibrated_for_test(true);
+    runtime.set_motor_enabled_for_test(true);
+
+    let actions = runtime.prepare_disable_request();
+
+    assert!(
+        actions
+            .iter()
+            .any(|a| matches!(a, BoardAction::Stepper(StepperAction::StopNow)))
+    );
+    assert!(!runtime.is_motor_enabled());
+    assert!(!runtime.is_calibrated());
+}

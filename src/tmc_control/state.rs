@@ -369,6 +369,56 @@ impl TmcControlRuntime {
         }
     }
 
+    /// Prepare an enable request up to the point where SPI or backend work begins.
+    ///
+    /// Returns an empty action list when the motor is already enabled, or when
+    /// the motor is uncalibrated and `auto_calibrate_on_enable_allowed` is not
+    /// set. Returns an [`StepperAction::ArmCheck`] action when the motor is
+    /// calibrated, so the board shell can drive the electrical arm verification
+    /// and step/dir arming.
+    ///
+    /// This helper intentionally does not energize the motor; the caller's SPI
+    /// path and the auto-calibrate commissioning construction remain in the
+    /// request handler.
+    pub fn prepare_enable_request(&mut self, tmc: &TmcChannelState) -> BoardActions {
+        let mut actions = BoardActions::new();
+        if self.motor_enabled {
+            return actions;
+        }
+        if !self.calibrated {
+            if !tmc
+                .auto_calibrate_on_enable_allowed
+                .load(core::sync::atomic::Ordering::Relaxed)
+            {
+                return actions;
+            }
+            // Auto-calibrate construction stays in the request handler.
+            // This preflight helper must not energize the motor.
+            return actions;
+        }
+        push_action(
+            &mut actions,
+            BoardAction::Stepper(StepperAction::ArmCheck {
+                post_action: crate::commission_dispatch::StepperPostAction::ArmPreservePosition,
+            }),
+        );
+        actions
+    }
+
+    /// Prepare a disable request, emitting an immediate board stop action.
+    ///
+    /// Clears `motor_enabled` and `calibrated` so the next enable request
+    /// requires a new calibration pass before it can arm. The returned
+    /// [`StepperAction::StopNow`] action must be processed by the board shell
+    /// before issuing any further SPI commands.
+    pub fn prepare_disable_request(&mut self) -> BoardActions {
+        let mut actions = BoardActions::new();
+        push_action(&mut actions, BoardAction::Stepper(StepperAction::StopNow));
+        self.motor_enabled = false;
+        self.calibrated = false;
+        actions
+    }
+
     #[cfg(test)]
     pub(crate) fn set_calibrated_for_test(&mut self, value: bool) {
         self.calibrated = value;
