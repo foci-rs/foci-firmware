@@ -265,3 +265,30 @@ fn disable_request_stops_and_clears_runtime_flags() {
     assert!(!runtime.is_motor_enabled());
     assert!(!runtime.is_calibrated());
 }
+
+#[test]
+fn slow_control_tick_fires_every_millisecond_under_fast_period() {
+    let mut runtime = TmcControlRuntime::new_for_channel(0);
+
+    assert!(!runtime.update_slow_control_for_test(250));
+    assert!(!runtime.update_slow_control_for_test(250));
+    assert!(!runtime.update_slow_control_for_test(250));
+    assert!(runtime.update_slow_control_for_test(250));
+    assert_eq!(runtime.slow_control_accum_us_for_test(), 0);
+}
+
+#[test]
+fn slow_control_tick_fires_immediately_for_default_period() {
+    let mut runtime = TmcControlRuntime::new_for_channel(0);
+
+    assert!(runtime.update_slow_control_for_test(1_000));
+    assert_eq!(runtime.slow_control_accum_us_for_test(), 0);
+}
+
+#[test]
+fn velocity_scale_accessors_round_trip() {
+    let mut runtime = TmcControlRuntime::new_for_channel(0);
+    assert_eq!(runtime.velocity_scale(), 0);
+    runtime.set_velocity_scale(123_456);
+    assert_eq!(runtime.velocity_scale(), 123_456);
+}

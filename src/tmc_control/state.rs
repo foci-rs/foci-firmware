@@ -11,6 +11,7 @@ use crate::tmc::{TmcRequest, TmcRequestKind};
 use crate::tmc_control::actions::{
     BoardAction, BoardActions, DelegatedDiagnostic, ShutdownReason, StepperAction, push_action,
 };
+use crate::tmc_control::config::TmcControlStateRefs;
 use crate::tmc_control::signals::TmcControlSignals;
 
 /// Trace-only cached state. Core safety state stays in `TmcControlRuntime`.
@@ -424,6 +425,79 @@ impl TmcControlRuntime {
         actions
     }
 
+    /// Return the velocity feedforward scale factor.
+    ///
+    /// Zero until encoder PPR arrives and `compute_velocity_scale_factor` runs.
+    pub fn velocity_scale(&self) -> u32 {
+        self.velocity_scale
+    }
+
+    /// Set the velocity feedforward scale factor.
+    ///
+    /// Called when encoder PPR is received to store the pre-computed constant
+    /// used by the velocity transient feedforward path.
+    pub fn set_velocity_scale(&mut self, value: u32) {
+        self.velocity_scale = value;
+    }
+
+    /// Compute the requested control period in microseconds from current state.
+    ///
+    /// Returns the fast transient period when all of the following hold:
+    /// - the motor is electrically enabled,
+    /// - `velocity_scale` is non-zero (encoder PPR has been received),
+    /// - no commissioning engine is active, and
+    /// - the `velocity_transient_feedforward` atomic in channel state is `true`.
+    ///
+    /// Otherwise returns `velocity_transient_period_us(VELOCITY_TRANSIENT_DEFAULT_RATE_HZ)`.
+    ///
+    /// # Parameters
+    /// - `refs`: Borrowed channel atomics for this motor.
+    pub fn control_period_us(&self, refs: TmcControlStateRefs<'_>) -> u32 {
+        let fast_active = self.motor_enabled
+            && self.velocity_scale != 0
+            && self.commission_engine.is_none()
+            && refs
+                .tmc
+                .velocity_transient_feedforward
+                .load(core::sync::atomic::Ordering::Relaxed);
+        let rate_hz = if fast_active {
+            refs.tmc
+                .velocity_transient_rate_hz
+                .load(core::sync::atomic::Ordering::Relaxed)
+        } else {
+            crate::tmc::VELOCITY_TRANSIENT_DEFAULT_RATE_HZ
+        };
+        crate::tmc::velocity_transient_period_us(rate_hz)
+    }
+
+    /// Update the slow-control decimation accumulator and return whether slow
+    /// work is due this tick.
+    ///
+    /// The slow path fires at approximately 1 kHz regardless of the fast
+    /// transient period. When `control_period_us` is already at or above 1 ms
+    /// the accumulator is reset and the slow path fires immediately. For faster
+    /// periods the method accumulates microseconds and fires once the total
+    /// reaches 1 000 µs, subtracting 1 000 from the accumulator rather than
+    /// clearing it so that any overshoot carries forward.
+    ///
+    /// # Parameters
+    /// - `control_period_us`: Current control period in microseconds.
+    pub fn update_slow_control(&mut self, control_period_us: u32) -> bool {
+        if control_period_us >= 1_000 {
+            self.slow_control_accum_us = 0;
+            return true;
+        }
+        self.slow_control_accum_us = self
+            .slow_control_accum_us
+            .saturating_add(u16::try_from(control_period_us).unwrap_or(u16::MAX));
+        if self.slow_control_accum_us >= 1_000 {
+            self.slow_control_accum_us -= 1_000;
+            true
+        } else {
+            false
+        }
+    }
+
     #[cfg(test)]
     pub(crate) fn set_calibrated_for_test(&mut self, value: bool) {
         self.calibrated = value;
@@ -452,5 +526,10 @@ impl TmcControlRuntime {
     #[cfg(test)]
     pub(crate) fn slow_control_accum_us_for_test(&self) -> u16 {
         self.slow_control_accum_us
+    }
+
+    #[cfg(test)]
+    pub(crate) fn update_slow_control_for_test(&mut self, control_period_us: u32) -> bool {
+        self.update_slow_control(control_period_us)
     }
 }
