@@ -1,6 +1,7 @@
 use super::*;
 use crate::config::TmcConfig;
 use crate::pid::InnerLoopGains;
+use core::sync::atomic::Ordering::Relaxed;
 
 #[test]
 fn runtime_starts_disarmed_and_uncalibrated() {
@@ -47,4 +48,59 @@ fn state_refs_carry_channel_state_without_ownership() {
 
     assert!(core::ptr::eq(refs.tmc, &tmc));
     assert!(core::ptr::eq(refs.stepper, &stepper));
+}
+
+#[test]
+fn dispatch_state_view_mutates_runtime_owned_flags() {
+    let mut runtime = TmcControlRuntime::new_for_channel(0);
+    let tmc: &'static crate::state::tmc::TmcChannelState = std::boxed::Box::leak(
+        std::boxed::Box::new(crate::state::tmc::TmcChannelState::new()),
+    );
+    let stepper: &'static crate::state::stepper::StepperChannelState = std::boxed::Box::leak(
+        std::boxed::Box::new(crate::state::stepper::StepperChannelState::new()),
+    );
+
+    {
+        let dispatch = runtime.dispatch_state(tmc, stepper);
+        *dispatch.calibrated = true;
+        *dispatch.motor_enabled = true;
+    }
+
+    assert!(runtime.is_calibrated());
+    assert!(runtime.is_motor_enabled());
+
+    runtime.set_calibrated_for_test(false);
+    runtime.set_motor_enabled_for_test(false);
+}
+
+#[test]
+fn config_reset_runtime_state_clears_owned_flags_and_defaults() {
+    let mut runtime = TmcControlRuntime::new_for_channel(0);
+    runtime.set_calibrated_for_test(true);
+    runtime.set_motor_enabled_for_test(true);
+    runtime.set_velocity_scale_for_test(1234);
+    runtime.set_slow_control_accum_us_for_test(750);
+
+    runtime.reset_runtime_state();
+
+    assert!(!runtime.is_calibrated());
+    assert!(!runtime.is_motor_enabled());
+    assert_eq!(runtime.velocity_scale_for_test(), 0);
+    assert_eq!(runtime.slow_control_accum_us_for_test(), 0);
+}
+
+#[test]
+fn config_reset_channel_state_restores_known_defaults() {
+    let tmc = crate::state::tmc::TmcChannelState::new();
+    let stepper = crate::state::stepper::StepperChannelState::new();
+
+    tmc.current_limit_reg.store(99, Relaxed);
+    tmc.velocity_limit_cfg.store(123, Relaxed);
+    stepper.position.store(44, Relaxed);
+
+    TmcControlRuntime::reset_channel_state(&tmc, &stepper);
+
+    assert_eq!(tmc.current_limit_reg.load(Relaxed), 0);
+    assert_eq!(tmc.velocity_limit_cfg.load(Relaxed), 500_000);
+    assert_eq!(stepper.position.load(Relaxed), 0);
 }

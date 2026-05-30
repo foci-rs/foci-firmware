@@ -1,7 +1,10 @@
 //! Persistent state for the shared TMC control runtime.
 
+use crate::commission_dispatch::DispatchState;
 use crate::commissioning::CommissioningEngine;
 use crate::pid::InnerLoopGains;
+use crate::state::stepper::StepperChannelState;
+use crate::state::tmc::TmcChannelState;
 
 /// Trace-only cached state. Core safety state stays in `TmcControlRuntime`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
@@ -138,5 +141,86 @@ impl TmcControlRuntime {
     #[cfg(feature = "trace")]
     pub fn trace_state_mut(&mut self) -> &mut TmcControlTraceState {
         &mut self.trace
+    }
+
+    /// Build a borrowed dispatch view over runtime-owned state.
+    ///
+    /// The `tmc` and `stepper` args must be `'static` because `DispatchState`
+    /// borrows them as `&'static`; the three flag fields are borrowed mutably
+    /// for the lifetime of the returned view.
+    pub fn dispatch_state<'a>(
+        &'a mut self,
+        tmc: &'static TmcChannelState,
+        stepper: &'static StepperChannelState,
+    ) -> DispatchState<'a> {
+        DispatchState::new(
+            tmc,
+            stepper,
+            &mut self.calibrated,
+            &mut self.motor_enabled,
+            &mut self.stored_gains,
+        )
+    }
+
+    /// Reset runtime-local state after a config reset or shutdown clear.
+    ///
+    /// Channel atomics (`TmcChannelState`, `StepperChannelState`) are separate;
+    /// call `reset_channel_state` for those.
+    pub fn reset_runtime_state(&mut self) {
+        self.motor_enabled = false;
+        self.calibrated = false;
+        self.stored_gains = None;
+        self.commission_engine = None;
+        self.shutdown_handled = false;
+        self.velocity_scale = 0;
+        self.feedforward_was_active = false;
+        self.torque_flux_offset_was_active = false;
+        self.position_lead_applied_scaled = 0;
+        self.phase_advance_was_active = false;
+        self.phase_advance_base_register = 0;
+        self.phase_advance_last_register = 0;
+        self.pid_error_clear_countdown_ms = 0;
+        self.status_poll_counter = 0;
+        self.slow_control_accum_us = 0;
+        #[cfg(feature = "trace")]
+        {
+            self.trace = TmcControlTraceState::new();
+        }
+    }
+
+    /// Reset channel atomics to firmware defaults after a config reset.
+    pub fn reset_channel_state(tmc: &TmcChannelState, stepper: &StepperChannelState) {
+        tmc.reset();
+        stepper.reset();
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_calibrated_for_test(&mut self, value: bool) {
+        self.calibrated = value;
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_motor_enabled_for_test(&mut self, value: bool) {
+        self.motor_enabled = value;
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_velocity_scale_for_test(&mut self, value: u32) {
+        self.velocity_scale = value;
+    }
+
+    #[cfg(test)]
+    pub(crate) fn velocity_scale_for_test(&self) -> u32 {
+        self.velocity_scale
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_slow_control_accum_us_for_test(&mut self, value: u16) {
+        self.slow_control_accum_us = value;
+    }
+
+    #[cfg(test)]
+    pub(crate) fn slow_control_accum_us_for_test(&self) -> u16 {
+        self.slow_control_accum_us
     }
 }
