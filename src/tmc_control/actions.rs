@@ -49,6 +49,8 @@ pub struct DelegatedDiagnostic {
 pub enum BoardAction {
     /// Enter Klipper shutdown with the provided reason.
     Shutdown(ShutdownReason),
+    /// Signal the board-local emergency-disable path.
+    SignalEmergencyDisable,
     /// Perform board-local stepper work.
     Stepper(StepperAction),
     /// Emit a commissioning/self-test/calibration reply.

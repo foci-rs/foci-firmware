@@ -18,4 +18,7 @@ pub use actions::{
 };
 pub use config::{TmcControlConfig, TmcControlHomingRefs, TmcControlStateRefs};
 pub use signals::TmcControlSignals;
-pub use state::{TmcControlRuntime, TmcControlTraceState};
+pub use state::{TmcControlRuntime, TmcControlTraceState, TmcControlTraceTick};
+
+/// Slow-control ticks to wait before clearing settled PID error sums.
+pub const HOLD_SETTLE_DELAY_MS: u8 = 100;

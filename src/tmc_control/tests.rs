@@ -231,6 +231,20 @@ fn queue_flush_signal_resets_runtime_and_channel_state() {
 }
 
 #[test]
+fn pid_error_clear_request_loads_hold_settle_countdown() {
+    let mut runtime = TmcControlRuntime::new_for_channel(0);
+    let tmc = crate::state::tmc::TmcChannelState::new();
+
+    tmc.pid_error_sums_clear.store(true, Relaxed);
+    runtime.poll_pid_error_clear_request(&tmc);
+
+    assert_eq!(
+        runtime.pid_error_clear_countdown_for_test(),
+        crate::tmc_control::HOLD_SETTLE_DELAY_MS
+    );
+}
+
+#[test]
 fn shutdown_signal_emits_one_stop_action_until_reset() {
     let shutdown_active = AtomicBool::new(true);
     let queue_flush = AtomicBool::new(false);

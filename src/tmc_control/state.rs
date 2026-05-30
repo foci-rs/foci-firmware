@@ -11,7 +11,7 @@ use crate::tmc::{TmcRequest, TmcRequestKind};
 use crate::tmc_control::actions::{
     BoardAction, BoardActions, DelegatedDiagnostic, ShutdownReason, StepperAction, push_action,
 };
-use crate::tmc_control::config::{TmcControlConfig, TmcControlStateRefs};
+use crate::tmc_control::config::{TmcControlConfig, TmcControlHomingRefs, TmcControlStateRefs};
 use crate::tmc_control::signals::TmcControlSignals;
 
 /// Trace-only cached state. Core safety state stays in `TmcControlRuntime`.
@@ -58,6 +58,25 @@ impl TmcControlTraceState {
             phase_advance_write_failed: false,
         }
     }
+}
+
+/// Trace timing decisions for one USB/FTRC slow-control emission pass.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+pub struct TmcControlTraceTick {
+    /// Tick value to pass to `sample_tick`.
+    pub sample_tick: u32,
+    /// Incremented trace control tick for status frames and metadata cadence.
+    pub control_tick: u32,
+    /// Whether a phase-advance frame should be emitted this tick.
+    pub phase_advance_due: bool,
+    /// Phase-advance counts cached by the runtime tick.
+    pub phase_advance_counts: i16,
+    /// Phase-advance flags cached by the runtime tick.
+    pub phase_advance_flags: u8,
+    /// Whether detailed status frames are due.
+    pub status_detail_due: bool,
+    /// Whether trace metadata is due.
+    pub metadata_due: bool,
 }
 
 /// Long-lived board-agnostic TMC control state.
@@ -224,6 +243,13 @@ impl TmcControlRuntime {
         signals.fault_active.store(false, Relaxed);
         push_action(&mut actions, BoardAction::Stepper(StepperAction::StopNow));
         actions
+    }
+
+    /// Poll host request to clear PID error sums after hold settles.
+    pub fn poll_pid_error_clear_request(&mut self, tmc: &TmcChannelState) {
+        if tmc.pid_error_sums_clear.swap(false, Relaxed) {
+            self.pid_error_clear_countdown_ms = crate::tmc_control::HOLD_SETTLE_DELAY_MS;
+        }
     }
 
     /// Poll shutdown state and emit one-shot safe-state actions.
@@ -993,6 +1019,144 @@ impl TmcControlRuntime {
         }
     }
 
+    /// Apply slow maintenance tick work.
+    ///
+    /// This covers host-requested PID error clear settling, homing position-I
+    /// suppression/restoration, and periodic `STATUS_FLAGS` polling. USB trace
+    /// transport remains board-local.
+    ///
+    /// # Parameters
+    /// - `tmc_spi`: TMC4671 SPI transport for register reads and writes.
+    /// - `refs`: Borrowed channel atomics for this motor.
+    /// - `config`: Runtime control configuration, reserved for future slow
+    ///   maintenance policies.
+    /// - `homing`: Board-owned homing state atomics.
+    pub async fn apply_slow_maintenance_tick<B>(
+        &mut self,
+        tmc_spi: &mut foci_tmc4671::spi::Tmc4671Spi<B>,
+        refs: TmcControlStateRefs<'_>,
+        config: &TmcControlConfig,
+        homing: TmcControlHomingRefs<'_>,
+    ) -> BoardActions
+    where
+        B: embedded_hal_async::spi::SpiDevice<u8>,
+    {
+        let _ = config;
+        let mut actions = BoardActions::new();
+
+        self.poll_pid_error_clear_request(refs.tmc);
+        let timer_active = refs.stepper.timer_active_mirror.load(Relaxed);
+        if self.motor_enabled
+            && self.commission_engine.is_none()
+            && !timer_active
+            && self.pid_error_clear_countdown_ms > 0
+        {
+            self.pid_error_clear_countdown_ms -= 1;
+            if self.pid_error_clear_countdown_ms == 0 {
+                if crate::tmc_ops::settle_hold_and_clear_pid_errors(tmc_spi, refs.tmc)
+                    .await
+                    .is_err()
+                {
+                    defmt::warn!("TMC4671 PID settle/clear failed");
+                } else {
+                    defmt::info!("TMC4671 PID settled and cleared after motion");
+                }
+            }
+        }
+
+        match homing.state.load(Relaxed) {
+            1 => {
+                if !self.restore_phase_advance_now(tmc_spi).await {
+                    defmt::warn!("phase advance: failed to restore ABN offset before homing");
+                    return actions;
+                }
+
+                let pos_p = refs.tmc.position_p_value.load(Relaxed);
+                let reg = (pos_p as u32) << 16;
+                let _ = tmc_spi
+                    .write_register(foci_tmc4671::registers::PID_POSITION_P_POSITION_I, reg)
+                    .await;
+                homing.state.store(2, Relaxed);
+                defmt::info!("homing: position I suppressed");
+            }
+            2 if homing.triggered.load(Relaxed) != 0xFF => {
+                homing.state.store(3, Relaxed);
+            }
+            3 => {
+                let pos_p = refs.tmc.position_p_value.load(Relaxed);
+                let pos_i = refs.tmc.position_i_value.load(Relaxed);
+                let reg = ((pos_p as u32) << 16) | pos_i as u32;
+                let _ = tmc_spi
+                    .write_register(foci_tmc4671::registers::PID_POSITION_P_POSITION_I, reg)
+                    .await;
+                let _ = tmc_spi
+                    .write_sub_register(
+                        foci_tmc4671::registers::PID_ERROR_PID_POSITION_ERROR_SUM,
+                        0,
+                    )
+                    .await;
+                homing.state.store(0, Relaxed);
+                defmt::info!("homing: position I restored, integrator cleared");
+            }
+            _ => {}
+        }
+
+        self.status_poll_counter += 1;
+        if self.status_poll_counter >= 1000 {
+            self.status_poll_counter = 0;
+            if let Ok(flags) = tmc_spi
+                .read_register(foci_tmc4671::registers::STATUS_FLAGS)
+                .await
+            {
+                const PID_LIMIT_MASK: u32 = 0x0000_FFFF;
+                const PWM_LIMIT_MASK: u32 = (1 << 24) | (1 << 25);
+                const FAULT_MASK: u32 = 1 << 26;
+
+                if flags & FAULT_MASK != 0 {
+                    defmt::error!("TMC4671 STATUS fault: {:#010x}", flags);
+                    push_action(&mut actions, BoardAction::SignalEmergencyDisable);
+                } else if self.motor_enabled && flags & (PID_LIMIT_MASK | PWM_LIMIT_MASK) != 0 {
+                    defmt::warn!("TMC4671 STATUS: {:#010x}", flags);
+                }
+            }
+        }
+
+        actions
+    }
+
+    /// Advance the trace control tick for a board-local trace sample.
+    #[cfg(feature = "trace")]
+    pub fn advance_trace_sample_tick(&mut self) -> u32 {
+        let sample_tick = self.trace.control_tick;
+        self.trace.control_tick = self.trace.control_tick.wrapping_add(1);
+        sample_tick
+    }
+
+    /// Advance trace timing and return transport emission decisions.
+    #[cfg(feature = "trace")]
+    pub fn advance_trace_tick(&mut self) -> TmcControlTraceTick {
+        let sample_tick = self.advance_trace_sample_tick();
+        let control_tick = self.trace.control_tick;
+        let phase_advance_counts = self.trace.phase_advance_last_counts;
+        let phase_advance_flags = self.trace.phase_advance_last_flags;
+        let phase_advance_periodic = control_tick.is_multiple_of(10)
+            && (phase_advance_flags != 0 || phase_advance_counts != 0);
+        let phase_advance_due = self.trace.phase_advance_emit_once || phase_advance_periodic;
+        if phase_advance_due {
+            self.trace.phase_advance_emit_once = false;
+        }
+
+        TmcControlTraceTick {
+            sample_tick,
+            control_tick,
+            phase_advance_due,
+            phase_advance_counts,
+            phase_advance_flags,
+            status_detail_due: control_tick.is_multiple_of(100),
+            metadata_due: control_tick.is_multiple_of(1000),
+        }
+    }
+
     /// Compute the requested control period in microseconds from current state.
     ///
     /// Returns the fast transient period when all of the following hold:
@@ -1079,6 +1243,11 @@ impl TmcControlRuntime {
     #[cfg(test)]
     pub(crate) fn slow_control_accum_us_for_test(&self) -> u16 {
         self.slow_control_accum_us
+    }
+
+    #[cfg(test)]
+    pub(crate) fn pid_error_clear_countdown_for_test(&self) -> u8 {
+        self.pid_error_clear_countdown_ms
     }
 
     #[cfg(test)]
