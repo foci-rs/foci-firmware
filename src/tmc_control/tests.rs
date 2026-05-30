@@ -207,6 +207,13 @@ fn commission_tick_without_engine_is_empty() {
 }
 
 #[test]
+fn take_commission_engine_is_none_when_idle() {
+    let mut runtime = TmcControlRuntime::new_for_channel(0);
+    assert!(runtime.take_commission_engine().is_none());
+    assert!(!runtime.is_commission_active());
+}
+
+#[test]
 fn clear_calibrated_resets_flag() {
     let mut runtime = TmcControlRuntime::new_for_channel(0);
     runtime.set_calibrated_for_test(true);

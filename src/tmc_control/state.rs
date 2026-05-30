@@ -297,6 +297,11 @@ impl TmcControlRuntime {
         self.commission_engine = Some(engine);
     }
 
+    /// Remove and return the active commissioning engine, if any.
+    pub fn take_commission_engine(&mut self) -> Option<CommissioningEngine> {
+        self.commission_engine.take()
+    }
+
     /// Clear the calibrated flag before launching a (re)calibration run.
     pub fn clear_calibrated(&mut self) {
         self.calibrated = false;
