@@ -286,6 +286,76 @@ fn slow_control_tick_fires_immediately_for_default_period() {
 }
 
 #[test]
+fn command_velocity_reference_zeroes_when_reset_is_requested() {
+    let mut runtime = TmcControlRuntime::new_for_channel(0);
+    let tmc = crate::state::tmc::TmcChannelState::new();
+    let stepper = crate::state::stepper::StepperChannelState::new();
+    runtime.set_motor_enabled_for_test(true);
+    runtime.set_velocity_scale_for_test(84_000_000);
+    stepper.interval.store(2_800, Relaxed);
+    stepper.direction.store(false, Relaxed);
+
+    let reference =
+        runtime.command_velocity_reference(TmcControlStateRefs::new(&tmc, &stepper), false, true);
+
+    assert_eq!(reference, 0);
+}
+
+#[test]
+fn command_velocity_reference_can_use_single_consumed_reset_latch() {
+    let mut runtime = TmcControlRuntime::new_for_channel(0);
+    let tmc = crate::state::tmc::TmcChannelState::new();
+    let stepper = crate::state::stepper::StepperChannelState::new();
+    runtime.set_motor_enabled_for_test(true);
+    runtime.set_velocity_scale_for_test(84_000_000);
+    tmc.feedforward_reset.store(true, Relaxed);
+    stepper.interval.store(2_800, Relaxed);
+    stepper.direction.store(false, Relaxed);
+
+    let reset = tmc.feedforward_reset.swap(false, Relaxed);
+    let reference =
+        runtime.command_velocity_reference(TmcControlStateRefs::new(&tmc, &stepper), false, reset);
+
+    assert!(reset);
+    assert_eq!(reference, 0);
+    assert!(!tmc.feedforward_reset.load(Relaxed));
+}
+
+#[test]
+fn command_velocity_reference_uses_motion_when_reset_false() {
+    let mut runtime = TmcControlRuntime::new_for_channel(0);
+    let tmc = crate::state::tmc::TmcChannelState::new();
+    let stepper = crate::state::stepper::StepperChannelState::new();
+    runtime.set_motor_enabled_for_test(true);
+    runtime.set_velocity_scale_for_test(84_000_000);
+    stepper.interval.store(2_800, Relaxed);
+    stepper.direction.store(false, Relaxed);
+
+    let reference =
+        runtime.command_velocity_reference(TmcControlStateRefs::new(&tmc, &stepper), false, false);
+
+    assert_eq!(
+        reference,
+        crate::tmc::compute_command_velocity_reference(84_000_000, 2_800, false)
+    );
+}
+
+#[test]
+fn command_velocity_reference_zeroes_when_runtime_inactive() {
+    let mut runtime = TmcControlRuntime::new_for_channel(0);
+    let tmc = crate::state::tmc::TmcChannelState::new();
+    let stepper = crate::state::stepper::StepperChannelState::new();
+    runtime.set_velocity_scale_for_test(84_000_000);
+    stepper.interval.store(2_800, Relaxed);
+    stepper.direction.store(false, Relaxed);
+
+    let reference =
+        runtime.command_velocity_reference(TmcControlStateRefs::new(&tmc, &stepper), false, false);
+
+    assert_eq!(reference, 0);
+}
+
+#[test]
 fn velocity_scale_accessors_round_trip() {
     let mut runtime = TmcControlRuntime::new_for_channel(0);
     assert_eq!(runtime.velocity_scale(), 0);

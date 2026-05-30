@@ -11,7 +11,7 @@ use crate::tmc::{TmcRequest, TmcRequestKind};
 use crate::tmc_control::actions::{
     BoardAction, BoardActions, DelegatedDiagnostic, ShutdownReason, StepperAction, push_action,
 };
-use crate::tmc_control::config::TmcControlStateRefs;
+use crate::tmc_control::config::{TmcControlConfig, TmcControlStateRefs};
 use crate::tmc_control::signals::TmcControlSignals;
 
 /// Trace-only cached state. Core safety state stays in `TmcControlRuntime`.
@@ -438,6 +438,288 @@ impl TmcControlRuntime {
     /// used by the velocity transient feedforward path.
     pub fn set_velocity_scale(&mut self, value: u32) {
         self.velocity_scale = value;
+    }
+
+    /// Compute current command velocity reference for feedforward surfaces.
+    ///
+    /// Returns zero while the motor is disabled, velocity scaling has not been
+    /// configured, commissioning is active, homing is active, or the caller has
+    /// consumed a one-tick feedforward reset latch.
+    pub fn command_velocity_reference(
+        &mut self,
+        refs: TmcControlStateRefs<'_>,
+        homing_active: bool,
+        reset: bool,
+    ) -> i32 {
+        let reference = if !self.motor_enabled
+            || self.velocity_scale == 0
+            || self.commission_engine.is_some()
+        {
+            0
+        } else if homing_active || reset {
+            0
+        } else {
+            let interval = refs.stepper.interval.load(Relaxed);
+            let forward = refs.stepper.direction.load(Relaxed);
+            crate::tmc::compute_command_velocity_reference(self.velocity_scale, interval, forward)
+        };
+        #[cfg(feature = "trace")]
+        {
+            self.trace_state_mut().cached_velocity_reference = reference;
+        }
+        reference
+    }
+
+    /// Apply velocity, transient, acceleration, and decoupling feedforward.
+    ///
+    /// Velocity and transient offsets run on every control tick. Acceleration
+    /// and decoupling offsets run only when `slow_control_tick` is true, matching
+    /// the board-local decimation used by the surrounding maintenance path.
+    ///
+    /// Individual SPI operations are best-effort to preserve existing board
+    /// behavior; write/read failures do not abort later control work.
+    pub async fn apply_feedforward_tick<B>(
+        &mut self,
+        tmc_spi: &mut foci_tmc4671::spi::Tmc4671Spi<B>,
+        refs: TmcControlStateRefs<'_>,
+        config: &TmcControlConfig,
+        homing_active: bool,
+        reset: bool,
+        slow_control_tick: bool,
+    ) -> Result<(), ()>
+    where
+        B: embedded_hal_async::spi::SpiDevice<u8>,
+    {
+        let ff_active = self.motor_enabled
+            && self.velocity_scale != 0
+            && refs.tmc.velocity_feedforward.load(Relaxed)
+            && self.commission_engine.is_none();
+        let velocity_transient_active = self.motor_enabled
+            && self.velocity_scale != 0
+            && refs.tmc.velocity_transient_feedforward.load(Relaxed)
+            && self.commission_engine.is_none();
+        let accel_ff_active = self.motor_enabled
+            && self.velocity_scale != 0
+            && refs.tmc.accel_feedforward.load(Relaxed)
+            && self.commission_engine.is_none();
+        let decoupling_ff_active = self.motor_enabled
+            && self.velocity_scale != 0
+            && refs.tmc.decoupling_feedforward.load(Relaxed)
+            && self.commission_engine.is_none();
+
+        let velocity_offset_active = ff_active || velocity_transient_active;
+        if velocity_offset_active {
+            let interval = refs.stepper.interval.load(Relaxed);
+            let interval_add = refs
+                .stepper
+                .interval_add
+                .load(Relaxed)
+                .clamp(i16::MIN as i32, i16::MAX as i32) as i16;
+            let forward = refs.stepper.direction.load(Relaxed);
+            let base_offset = if ff_active && !homing_active && !reset {
+                let multiplier = refs.tmc.velocity_feedforward_multiplier.load(Relaxed);
+                crate::tmc::compute_velocity_offset_scaled(
+                    self.velocity_scale,
+                    interval,
+                    forward,
+                    multiplier,
+                )
+            } else {
+                0
+            };
+            let transient_offset = if velocity_transient_active && !homing_active && !reset {
+                crate::tmc::compute_velocity_transient_offset(
+                    crate::tmc::VelocityTransientFeedforwardInput {
+                        scale_factor: self.velocity_scale,
+                        clock_freq: config.clock_freq,
+                        step_interval: interval,
+                        interval_add,
+                        dir_high: forward,
+                    },
+                    crate::tmc::VelocityTransientFeedforwardConfig {
+                        lead_time_us: refs.tmc.velocity_transient_lead_time_us.load(Relaxed),
+                        gain_permille: refs.tmc.velocity_transient_gain_permille.load(Relaxed),
+                        max_offset: refs.tmc.velocity_transient_max_offset.load(Relaxed),
+                    },
+                )
+            } else {
+                0
+            };
+            let offset = base_offset.saturating_add(transient_offset);
+
+            let _ = tmc_spi
+                .write_register(foci_tmc4671::registers::PID_VELOCITY_OFFSET, offset as u32)
+                .await;
+            #[cfg(feature = "trace")]
+            {
+                let trace = self.trace_state_mut();
+                trace.cached_velocity_offset = offset;
+                trace.cached_velocity_transient_offset = transient_offset;
+            }
+        } else if self.feedforward_was_active {
+            let _ = tmc_spi
+                .write_register(foci_tmc4671::registers::PID_VELOCITY_OFFSET, 0)
+                .await;
+            #[cfg(feature = "trace")]
+            {
+                let trace = self.trace_state_mut();
+                trace.cached_velocity_offset = 0;
+                trace.cached_velocity_transient_offset = 0;
+            }
+        }
+        self.feedforward_was_active = velocity_offset_active;
+
+        if !slow_control_tick {
+            return Ok(());
+        }
+
+        if decoupling_ff_active {
+            let max_offset = refs.tmc.decoupling_max_offset.load(Relaxed);
+            let (torque_offset, flux_offset) = if homing_active || reset {
+                (0, 0)
+            } else {
+                let interval = refs.stepper.interval.load(Relaxed);
+                let forward = refs.stepper.direction.load(Relaxed);
+                let target_velocity = crate::tmc::compute_command_velocity_reference(
+                    self.velocity_scale,
+                    interval,
+                    forward,
+                );
+                let iq_id = if target_velocity == 0 {
+                    None
+                } else {
+                    tmc_spi
+                        .read_sub_register(foci_tmc4671::registers::INTERIM_FOC_IQ_ID)
+                        .await
+                        .ok()
+                };
+                if let Some(iq_id) = iq_id {
+                    let foc_iq = crate::tmc::decode_signed_upper_half(iq_id);
+                    let foc_id = crate::tmc::decode_signed_lower_half(iq_id);
+                    crate::tmc::compute_decoupling_current_offsets(
+                        crate::tmc::DecouplingFeedforwardInput {
+                            target_velocity,
+                            foc_iq,
+                            foc_id,
+                        },
+                        crate::tmc::DecouplingFeedforwardConfig {
+                            r_int: refs.tmc.decoupling_r_int.load(Relaxed),
+                            l_int: refs.tmc.decoupling_l_int.load(Relaxed),
+                            pole_pairs: refs.tmc.decoupling_pole_pairs.load(Relaxed),
+                            position_units_per_rev: refs
+                                .tmc
+                                .decoupling_position_units_per_rev
+                                .load(Relaxed),
+                            f_pwm_hz: refs.tmc.decoupling_f_pwm_hz.load(Relaxed),
+                            max_offset,
+                        },
+                    )
+                } else {
+                    (0, 0)
+                }
+            };
+            #[cfg(feature = "trace")]
+            {
+                let mut flags = if homing_active || reset {
+                    0
+                } else {
+                    crate::trace_stream::ACCEL_FF_FLAG_ENABLED
+                };
+                if torque_offset != 0 || flux_offset != 0 {
+                    flags |= crate::trace_stream::ACCEL_FF_FLAG_NONZERO;
+                }
+                if max_offset != 0
+                    && (torque_offset.unsigned_abs() >= max_offset
+                        || flux_offset.unsigned_abs() >= max_offset)
+                {
+                    flags |= crate::trace_stream::ACCEL_FF_FLAG_CLAMPED;
+                }
+                let trace = self.trace_state_mut();
+                trace.cached_accel_torque_offset = torque_offset as i32;
+                trace.cached_accel_gain_permille = 0;
+                trace.cached_accel_flags = flags;
+            }
+            let offset_reg = crate::tmc::pack_torque_flux_target(torque_offset, flux_offset);
+            let _ = tmc_spi
+                .write_register(foci_tmc4671::registers::PID_TORQUE_FLUX_OFFSET, offset_reg)
+                .await;
+        } else if accel_ff_active {
+            let accel_gain_permille = refs.tmc.accel_feedforward_accel_gain_permille.load(Relaxed);
+            let decel_gain_permille = refs.tmc.accel_feedforward_decel_gain_permille.load(Relaxed);
+            let torque_limit = refs.tmc.current_limit_reg.load(Relaxed);
+            let interval = refs.stepper.interval.load(Relaxed);
+            let interval_add = refs
+                .stepper
+                .interval_add
+                .load(Relaxed)
+                .clamp(i16::MIN as i32, i16::MAX as i32) as i16;
+            #[cfg(feature = "trace")]
+            let selected_gain_permille = if interval_add < 0 {
+                accel_gain_permille
+            } else if interval_add > 0 {
+                decel_gain_permille
+            } else {
+                0
+            };
+            let offset = if homing_active || reset {
+                0i16
+            } else {
+                let forward = refs.stepper.direction.load(Relaxed);
+                crate::tmc::compute_accel_torque_offset_split(
+                    self.velocity_scale,
+                    config.clock_freq,
+                    interval,
+                    interval_add,
+                    forward,
+                    crate::tmc::AccelFeedforwardGains {
+                        accel_permille: accel_gain_permille,
+                        decel_permille: decel_gain_permille,
+                    },
+                    torque_limit,
+                )
+            };
+            #[cfg(feature = "trace")]
+            {
+                let mut flags = if homing_active || reset {
+                    0
+                } else {
+                    crate::trace_stream::ACCEL_FF_FLAG_ENABLED
+                };
+                if offset != 0 {
+                    flags |= crate::trace_stream::ACCEL_FF_FLAG_NONZERO;
+                }
+                if offset != 0 && offset.unsigned_abs() as u32 >= torque_limit.min(i16::MAX as u32)
+                {
+                    flags |= crate::trace_stream::ACCEL_FF_FLAG_CLAMPED;
+                }
+                let trace = self.trace_state_mut();
+                trace.cached_accel_torque_offset = offset as i32;
+                trace.cached_accel_gain_permille = if homing_active || reset {
+                    0
+                } else {
+                    selected_gain_permille
+                };
+                trace.cached_accel_flags = flags;
+            }
+            let offset_reg = u32::from(offset as u16) << 16;
+            let _ = tmc_spi
+                .write_register(foci_tmc4671::registers::PID_TORQUE_FLUX_OFFSET, offset_reg)
+                .await;
+        } else if self.torque_flux_offset_was_active {
+            let _ = tmc_spi
+                .write_register(foci_tmc4671::registers::PID_TORQUE_FLUX_OFFSET, 0)
+                .await;
+            #[cfg(feature = "trace")]
+            {
+                let trace = self.trace_state_mut();
+                trace.cached_accel_torque_offset = 0;
+                trace.cached_accel_gain_permille = 0;
+                trace.cached_accel_flags = 0;
+            }
+        }
+        self.torque_flux_offset_was_active = accel_ff_active || decoupling_ff_active;
+
+        Ok(())
     }
 
     /// Compute the requested control period in microseconds from current state.
