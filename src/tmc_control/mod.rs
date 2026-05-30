@@ -13,7 +13,8 @@ pub mod state;
 mod tests;
 
 pub use actions::{
-    BoardAction, BoardActions, DelegatedDiagnostic, ShutdownReason, StepperAction, push_action,
+    BoardAction, BoardActions, CommissionTickAction, DelegatedDiagnostic, ShutdownReason,
+    StepperAction, push_action,
 };
 pub use config::{TmcControlConfig, TmcControlHomingRefs, TmcControlStateRefs};
 pub use signals::TmcControlSignals;

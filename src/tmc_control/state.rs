@@ -287,6 +287,88 @@ impl TmcControlRuntime {
         actions
     }
 
+    /// Returns true when a commissioning engine is currently active.
+    pub fn is_commission_active(&self) -> bool {
+        self.commission_engine.is_some()
+    }
+
+    /// Install a new commissioning engine, replacing any existing one.
+    pub fn set_commission_engine(&mut self, engine: CommissioningEngine) {
+        self.commission_engine = Some(engine);
+    }
+
+    /// Clear the calibrated flag before launching a (re)calibration run.
+    pub fn clear_calibrated(&mut self) {
+        self.calibrated = false;
+    }
+
+    /// Tick the active commissioning engine once and return the outcome.
+    ///
+    /// Drives `engine.step(backend)` then feeds the result into
+    /// `drive_commission_result`, which performs any required SPI restore,
+    /// atomic stores, filter re-apply, and arm/disarm work. Returns `None`
+    /// immediately when no engine is installed.
+    ///
+    /// # Parameters
+    /// - `backend`: SPI + GPIO backend for register access.
+    /// - `tmc`: Static reference to the TMC channel atomics for this motor.
+    /// - `stepper`: Static reference to the stepper channel atomics.
+    /// - `config`: Board-level TMC control configuration (provides `pwm_maxcnt`).
+    pub async fn tick_commissioning<B>(
+        &mut self,
+        backend: &mut B,
+        tmc: &'static crate::state::tmc::TmcChannelState,
+        stepper: &'static crate::state::stepper::StepperChannelState,
+        config: &crate::tmc_control::config::TmcControlConfig,
+    ) -> Option<crate::tmc_control::actions::CommissionTickAction>
+    where
+        B: crate::commissioning::types::CommissioningBackend,
+    {
+        let result = {
+            let engine = self.commission_engine.as_mut()?;
+            engine.step(backend).await
+        };
+        // Construct DispatchState from direct field references so that Rust can
+        // see the field borrows as disjoint from &mut self.commission_engine.
+        // Calling self.dispatch_state(...) would re-borrow all of &mut self and
+        // create a conflict with the engine slot above.
+        let mut dispatch = crate::commission_dispatch::DispatchState::new(
+            tmc,
+            stepper,
+            &mut self.calibrated,
+            &mut self.motor_enabled,
+            &mut self.stored_gains,
+        );
+        let outcome = crate::commission_dispatch::drive_commission_result(
+            result,
+            &mut self.commission_engine,
+            backend,
+            &mut dispatch,
+            config.tmc.pwm_maxcnt,
+        )
+        .await;
+
+        match outcome {
+            crate::commission_dispatch::CommissionOutcome::Continue => {
+                Some(crate::tmc_control::actions::CommissionTickAction::Continue)
+            }
+            crate::commission_dispatch::CommissionOutcome::PhaseChanged {
+                oid,
+                phase_id,
+                engine_kind,
+            } => Some(
+                crate::tmc_control::actions::CommissionTickAction::PhaseChanged {
+                    oid,
+                    phase_id,
+                    engine_kind,
+                },
+            ),
+            crate::commission_dispatch::CommissionOutcome::Terminal { reply, actions } => {
+                Some(crate::tmc_control::actions::CommissionTickAction::Terminal { reply, actions })
+            }
+        }
+    }
+
     #[cfg(test)]
     pub(crate) fn set_calibrated_for_test(&mut self, value: bool) {
         self.calibrated = value;

@@ -1,6 +1,8 @@
 //! Board-visible actions returned by the shared TMC control runtime.
 
-use crate::commission_dispatch::{ReplyPayload, StepperPostAction};
+use crate::autotune::PhaseId;
+use crate::commission_dispatch::{PostActions, ReplyPayload, StepperPostAction};
+use crate::commissioning::types::EngineKind;
 use crate::tmc::TmcRequest;
 
 /// Shutdown reason emitted by board-local Klipper shutdown glue.
@@ -68,4 +70,26 @@ pub fn push_action(actions: &mut BoardActions, action: BoardAction) {
         actions.push(action).is_ok(),
         "TMC runtime action buffer capacity exhausted"
     );
+}
+
+/// Runtime result after one commissioning-engine tick.
+pub enum CommissionTickAction {
+    /// Engine continues; board should delay before the next loop iteration.
+    Continue,
+    /// Engine transitioned to a new phase.
+    PhaseChanged {
+        /// Object id of the commissioning channel.
+        oid: u8,
+        /// New phase id.
+        phase_id: PhaseId,
+        /// Engine kind for reply routing.
+        engine_kind: EngineKind,
+    },
+    /// Engine reached a terminal outcome.
+    Terminal {
+        /// Reply payload for the board to emit.
+        reply: ReplyPayload,
+        /// Post-actions the board must execute after emitting the reply.
+        actions: PostActions,
+    },
 }

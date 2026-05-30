@@ -198,3 +198,18 @@ fn invalid_channel_request_emits_shutdown_action() {
             .any(|a| matches!(a, BoardAction::Shutdown(ShutdownReason::InvalidTmcChannel)))
     );
 }
+
+#[test]
+fn commission_tick_without_engine_is_empty() {
+    let runtime = TmcControlRuntime::new_for_channel(0);
+    assert!(runtime.pending_commission_kind().is_none());
+    assert!(!runtime.is_commission_active());
+}
+
+#[test]
+fn clear_calibrated_resets_flag() {
+    let mut runtime = TmcControlRuntime::new_for_channel(0);
+    runtime.set_calibrated_for_test(true);
+    runtime.clear_calibrated();
+    assert!(!runtime.is_calibrated());
+}
