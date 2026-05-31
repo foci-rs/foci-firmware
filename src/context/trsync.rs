@@ -256,6 +256,69 @@ pub trait TrsyncBoard: TriggerDispatchBoard {
     fn disarm_trigger_timer(&mut self, state: &mut TriggerDomainState);
 }
 
+/// Board effects required by shutdown trigger-domain quiesce.
+///
+/// This is narrower than `TrsyncBoard` so new shared shutdown policy does not
+/// depend on command-path-only hooks such as stepper mapping, endstop pin
+/// lookup, scheduler-full diagnostics, or timer reprogramming.
+pub trait TriggerQuiesceBoard: TriggerDispatchBoard {
+    /// Physical stepper indexes controlled by this board.
+    fn physical_steppers(&self) -> &'static [usize];
+
+    /// Disarm the board trigger timer using board-correct compare-channel
+    /// semantics.
+    fn disarm_trigger_timer(&mut self, state: &mut TriggerDomainState);
+}
+
+impl<T: TrsyncBoard + ?Sized> TriggerQuiesceBoard for T {
+    fn physical_steppers(&self) -> &'static [usize] {
+        TrsyncBoard::physical_steppers(self)
+    }
+
+    fn disarm_trigger_timer(&mut self, state: &mut TriggerDomainState) {
+        TrsyncBoard::disarm_trigger_timer(self, state);
+    }
+}
+
+/// Quiesce trigger-domain state during shutdown.
+///
+/// This preserves trsync and endstop OID maps while clearing transient runtime
+/// state that could otherwise survive into shutdown recovery.
+pub fn shutdown_quiesce<B: TriggerQuiesceBoard + ?Sized>(
+    state: &mut TriggerDomainState,
+    board: &mut B,
+) {
+    state.scheduler.clear();
+    board.disarm_trigger_timer(state);
+    for &idx in board.physical_steppers() {
+        board.stop_physical_stepper(state, idx, StepperEventReason::TmcDisableSignal);
+        board.set_timer_active(state, idx, false);
+    }
+    for stepper in state.stepper_stop.iter_mut() {
+        stepper.need_reset = true;
+        stepper.blocked_by_trigger = false;
+        stepper.blocked_by_trsync = None;
+    }
+    for trsync_idx in 0..state.trsync.len() {
+        let oid = state
+            .trsync_by_oid
+            .iter()
+            .find(|&(_, &idx)| idx == trsync_idx)
+            .map(|(&oid, _)| oid)
+            .unwrap_or(0);
+        let trsync = &mut state.trsync[trsync_idx];
+        trsync.trigger(oid, 0, 0);
+        trsync.cancel_timers();
+        trsync.clear_pending_report();
+    }
+    for signal in state.stop_signals.iter_mut() {
+        *signal = None;
+    }
+    for endstop in state.endstops.iter_mut() {
+        endstop.reset();
+    }
+}
+
 /// Reset config-time trsync, endstop, scheduler, and stepper-stop state.
 pub fn reset_all<B: TrsyncBoard + ?Sized>(state: &mut TriggerDomainState, board: &mut B) {
     state.scheduler.clear();
@@ -921,5 +984,75 @@ mod tests {
             board.stopped.as_slice(),
             &[(0, StepperEventReason::TmcDisableSignal, true)]
         );
+    }
+
+    #[test]
+    fn shutdown_quiesce_preserves_maps_and_resets_transient_state() {
+        let mut state = fresh_state();
+        let mut board = MockBoard::new();
+        board.pin_ids[0] = 0x42;
+
+        register_trsync(&mut state, 2).unwrap();
+        assert_eq!(register_endstop(&mut state, 4), Ok(0));
+        trsync_arm(&mut state, &mut board, 2, 100, 5, 7).unwrap();
+        trsync_set_timeout(&mut state, &mut board, 2, 200).unwrap();
+        endstop_start_homing(&mut state, &mut board, 4, 300, 10, 2, 30, true, 2, 8).unwrap();
+        link_stepper_stop(&mut state, &board, 0, 2).unwrap();
+
+        let trsync_idx = state.trsync_by_oid.get(&2).copied().unwrap();
+        let endstop_idx = state.endstop_by_oid.get(&4).copied().unwrap();
+        assert!(state.trsync[trsync_idx].can_trigger());
+        assert!(state.trsync[trsync_idx].expire_active());
+        assert_eq!(state.trsync[trsync_idx].report_ticks(), 5);
+        assert!(state.trsync[trsync_idx].set_liveness_report(2, 150));
+        assert!(state.trsync[trsync_idx].report_pending());
+        assert!(state.endstops[endstop_idx].is_homing());
+
+        state.stepper_stop[0].timer_active = true;
+        state.stepper_stop[0].blocked_by_trigger = true;
+        state.stepper_stop[0].blocked_by_trsync = Some(2);
+
+        let non_physical_idx = state
+            .stepper_stop
+            .iter()
+            .enumerate()
+            .find(|(idx, _)| !board.physical_steppers.contains(idx))
+            .map(|(idx, _)| idx)
+            .expect("test requires a non-physical stepper slot");
+        state.stepper_stop[non_physical_idx].timer_active = true;
+        state.stepper_stop[non_physical_idx].blocked_by_trigger = true;
+        state.stepper_stop[non_physical_idx].blocked_by_trsync = Some(2);
+
+        let reprogram_calls_before = board.reprogram_calls;
+
+        shutdown_quiesce(&mut state, &mut board);
+
+        assert_eq!(state.scheduler.earliest_deadline(), None);
+        assert_eq!(board.disarm_calls, 1);
+        assert_eq!(board.reprogram_calls, reprogram_calls_before);
+        assert_eq!(
+            board.stopped.as_slice(),
+            &[(0, StepperEventReason::TmcDisableSignal, true)]
+        );
+        assert!(board.timer_active_sets.contains(&(0, false)));
+
+        for stepper in &state.stepper_stop {
+            assert!(stepper.need_reset);
+            assert!(!stepper.blocked_by_trigger);
+            assert_eq!(stepper.blocked_by_trsync, None);
+        }
+        assert!(!state.stepper_stop[0].timer_active);
+        assert!(state.stepper_stop[non_physical_idx].timer_active);
+
+        assert_eq!(state.trsync_by_oid.get(&2).copied(), Some(trsync_idx));
+        assert_eq!(state.endstop_by_oid.get(&4).copied(), Some(endstop_idx));
+        assert!(!state.trsync[trsync_idx].can_trigger());
+        assert!(!state.trsync[trsync_idx].expire_active());
+        assert_eq!(state.trsync[trsync_idx].report_ticks(), 0);
+        assert!(!state.trsync[trsync_idx].report_pending());
+        assert_eq!(state.trsync[trsync_idx].trigger_reason(), 0);
+
+        assert!(state.stop_signals.iter().all(Option::is_none));
+        assert_eq!(state.endstops[endstop_idx].query_state(), (false, 0));
     }
 }
