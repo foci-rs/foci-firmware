@@ -42,8 +42,9 @@ pub mod trace_stream;
 /// under the legacy `foci_firmware::commission::*` path so existing board
 /// binaries continue to compile through the renaming transition.
 pub mod commission {
+    pub use crate::commissioning::backend::CommissioningBackend;
     pub use crate::commissioning::types::{
-        AdcCalResult, CommissionResult, CommissioningBackend, InnerResult, OuterResult, StepResult,
+        AdcCalResult, CommissionResult, InnerResult, OuterResult, StepResult,
     };
     pub use crate::commissioning::{CommissioningEngine, EntrySnapshot, OuterTuneParams};
 }

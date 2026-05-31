@@ -18,7 +18,8 @@ use crate::autotune::{
     CommissionError, CommissionProfile, FilterConfig, MechanicalModel, OperatingMode, PhaseId,
     PositionGains, TRANSIENT_LEN, TransientBuffer, VelocityGains, VelocityValidation,
 };
-use crate::commissioning::types::{CommissioningBackend, OuterResult, StepResult};
+use crate::commissioning::backend::{CommissionTrace, CommissioningBackend};
+use crate::commissioning::types::{OuterResult, StepResult};
 use crate::trace_events::{
     CommissionTraceEvent, EVENT_COMMISSION_DIAGNOSTIC_WARNING, TraceEventLevel, pack_i16_pair,
     pack_u16_pair, u32_arg,
@@ -156,7 +157,7 @@ fn i16_trace_arg(value: i32) -> i16 {
     value.clamp(i16::MIN as i32, i16::MAX as i32) as i16
 }
 
-pub(crate) fn trace_summary_event<B: CommissioningBackend>(
+pub(crate) fn trace_summary_event<B: CommissionTrace>(
     backend: &mut B,
     level: TraceEventLevel,
     event_id: u16,
@@ -172,7 +173,7 @@ pub(crate) fn trace_summary_event<B: CommissioningBackend>(
     });
 }
 
-pub(crate) fn trace_diagnostic_warning<B: CommissioningBackend>(
+pub(crate) fn trace_diagnostic_warning<B: CommissionTrace>(
     backend: &mut B,
     warning_code: u8,
     detail: u16,

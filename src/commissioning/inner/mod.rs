@@ -431,8 +431,8 @@ async fn step_inner_dispatch<B: CommissioningBackend>(
 /// Zeros torque/velocity targets, disables motion mode, clears all PID
 /// integrators and status flags, reloads the snapshotted velocity/position
 /// gains, velocity limit, and biquad filters, then re-enters position
-/// mode. The caller is responsible for the post-restore stability check
-/// because `CommissioningBackend` does not expose a delay primitive.
+/// mode. The caller owns the post-restore stability policy so this helper
+/// remains limited to the register restore sequence.
 pub async fn restore_entry_gains<B: CommissioningBackend>(
     snapshot: &EntrySnapshot,
     backend: &mut B,

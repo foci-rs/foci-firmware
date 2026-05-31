@@ -4,10 +4,11 @@
 //! diagnostics, electrical identification, current-loop tuning, and
 //! closed-loop entry live in [`inner`]. Stage 2 (outer-loop) mechanical
 //! identification, velocity / position / filter tuning live in [`outer`].
-//! Shared low-level register helpers live in [`helpers`]; the public
-//! data types (and the [`types::CommissioningBackend`] trait) live in
-//! [`types`].
+//! Shared low-level register helpers live in [`helpers`]. The public data
+//! types live in [`types`], while hardware capability traits live in
+//! [`backend`].
 
+pub mod backend;
 pub mod helpers;
 pub mod inner;
 pub mod outer;
@@ -21,7 +22,7 @@ use crate::commissioning::inner::InnerPhase;
 use crate::commissioning::outer::{
     MechanicalIdData, MechanicalIdState, OuterPhase, OuterSafetyLimits, TraceSummarySeqs,
 };
-use crate::commissioning::types::{AdcCalResult, CommissioningBackend, EngineKind, StepResult};
+use crate::commissioning::types::{AdcCalResult, EngineKind, StepResult};
 use crate::pid::InnerLoopGains;
 use crate::state::tmc::TmcChannelState;
 use crate::trace_events::{
@@ -30,9 +31,13 @@ use crate::trace_events::{
 };
 
 // Re-export public API surface for downstream consumers.
+pub use crate::commissioning::backend::{
+    CommissionBoardConfig, CommissionEncoderRead, CommissionMotorControl, CommissionRegisterIo,
+    CommissionTiming, CommissionTrace, CommissioningBackend, CommissioningBackend as Backend,
+};
 pub use crate::commissioning::types::{
-    AdcCalResult as AdcCalResultExport, CommissionResult, CommissioningBackend as Backend,
-    InnerResult, OuterResult, StepResult as Step,
+    AdcCalResult as AdcCalResultExport, CommissionResult, InnerResult, OuterResult,
+    StepResult as Step,
 };
 
 /// Trace status code for a phase that ended without an error.

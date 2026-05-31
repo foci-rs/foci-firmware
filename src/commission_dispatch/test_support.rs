@@ -2,7 +2,10 @@
 //! with injectable SPI failures, register-write log, delay log, and
 //! enable-pin tracking.
 
-use crate::commissioning::types::CommissioningBackend;
+use crate::commissioning::backend::{
+    CommissionBoardConfig, CommissionEncoderRead, CommissionMotorControl, CommissionRegisterIo,
+    CommissionTiming, CommissionTrace,
+};
 use crate::config::TmcConfig;
 use foci_tmc4671::registers::Register;
 use heapless::Vec;
@@ -129,21 +132,18 @@ impl MockBackend {
         }
         self.abn_decoder_count_pos = 0;
     }
+
+    /// Write a register through the mock's register-I/O trait implementation.
+    pub async fn write_register(&mut self, reg: Register, val: u32) -> Result<(), MockSpiError> {
+        <Self as CommissionRegisterIo>::write_register(self, reg, val).await
+    }
 }
 
-impl CommissioningBackend for MockBackend {
+impl CommissionRegisterIo for MockBackend {
     type Error = MockSpiError;
-
-    fn record_commission_trace_event(&mut self, event: crate::trace_events::CommissionTraceEvent) {
-        self.trace_events.push(event).ok();
-    }
 
     fn synthesize_verify_error(&self, _expected: u32, _actual: u32) -> Self::Error {
         MockSpiError
-    }
-
-    fn store_motor_sentinel(&self, value: u32) {
-        self.last_motor_sentinel_stored.set(Some(value));
     }
 
     async fn read_register(&mut self, reg: Register) -> Result<u32, Self::Error> {
@@ -191,11 +191,19 @@ impl CommissioningBackend for MockBackend {
         let _ = self.registers.insert(addr, val);
         Ok(())
     }
+}
+
+impl CommissionMotorControl for MockBackend {
+    fn store_motor_sentinel(&self, value: u32) {
+        self.last_motor_sentinel_stored.set(Some(value));
+    }
 
     fn set_enable_pin(&mut self, state: bool) {
         self.enable_pin = state;
     }
+}
 
+impl CommissionEncoderRead for MockBackend {
     async fn read_encoder_count(&mut self) -> u32 {
         self.encoder_count_value
     }
@@ -208,7 +216,9 @@ impl CommissioningBackend for MockBackend {
         }
         Ok(self.encoder_count_value)
     }
+}
 
+impl CommissionTiming for MockBackend {
     fn elapsed_us(&self) -> u64 {
         self.elapsed_us_value
     }
@@ -217,6 +227,12 @@ impl CommissioningBackend for MockBackend {
         self.shutdown_requested
     }
 
+    async fn delay_us(&mut self, us: u32) {
+        self.delay_us_log.push(us).ok();
+    }
+}
+
+impl CommissionBoardConfig for MockBackend {
     fn current_limit(&self) -> u32 {
         self.current_limit_value
     }
@@ -256,9 +272,11 @@ impl CommissioningBackend for MockBackend {
     fn operational_voltage_limit(&self) -> u32 {
         self.operational_voltage_limit_value
     }
+}
 
-    async fn delay_us(&mut self, us: u32) {
-        self.delay_us_log.push(us).ok();
+impl CommissionTrace for MockBackend {
+    fn record_commission_trace_event(&mut self, event: crate::trace_events::CommissionTraceEvent) {
+        self.trace_events.push(event).ok();
     }
 }
 
@@ -294,6 +312,25 @@ pub fn fresh_state_locals() -> (bool, bool, Option<crate::pid::InnerLoopGains>) 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn mock_backend_satisfies_split_backend_traits() {
+        fn assert_register_io<T: crate::commissioning::backend::CommissionRegisterIo>() {}
+        fn assert_motor_control<T: crate::commissioning::backend::CommissionMotorControl>() {}
+        fn assert_encoder_read<T: crate::commissioning::backend::CommissionEncoderRead>() {}
+        fn assert_timing<T: crate::commissioning::backend::CommissionTiming>() {}
+        fn assert_board_config<T: crate::commissioning::backend::CommissionBoardConfig>() {}
+        fn assert_trace<T: crate::commissioning::backend::CommissionTrace>() {}
+        fn assert_backend<T: crate::commissioning::backend::CommissioningBackend>() {}
+
+        assert_register_io::<MockBackend>();
+        assert_motor_control::<MockBackend>();
+        assert_encoder_read::<MockBackend>();
+        assert_timing::<MockBackend>();
+        assert_board_config::<MockBackend>();
+        assert_trace::<MockBackend>();
+        assert_backend::<MockBackend>();
+    }
 
     #[test]
     fn mock_store_motor_sentinel_writes_field() {
