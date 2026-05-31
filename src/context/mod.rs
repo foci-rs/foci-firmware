@@ -15,9 +15,11 @@
 //! removed.
 
 pub mod stepper;
+pub mod tmc;
 pub mod trsync;
 
 pub use stepper::StepperHost;
+pub use tmc::TmcHost;
 pub use trsync::TrsyncHost;
 
 use foci_klipper::state::State;
@@ -141,19 +143,6 @@ impl<T: ?Sized + EndstopHost> EndstopHost for &mut T {
     }
     fn read_pin(&self, pin: u8) -> bool {
         (**self).read_pin(pin)
-    }
-}
-
-/// TMC4671 request bus. Send-only; the `tmc_control` task on the
-/// board side consumes from the channel and performs the actual
-/// register writes.
-pub trait TmcHost: StateAccess {
-    fn enqueue_request(&self, req: crate::tmc::TmcRequest) -> Result<(), QueueFull>;
-}
-
-impl<T: ?Sized + TmcHost> TmcHost for &mut T {
-    fn enqueue_request(&self, req: crate::tmc::TmcRequest) -> Result<(), QueueFull> {
-        (**self).enqueue_request(req)
     }
 }
 
