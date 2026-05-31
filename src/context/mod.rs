@@ -14,8 +14,10 @@
 //! methods from the initial scaffold that no handler used have been
 //! removed.
 
+pub mod stepper;
 pub mod trsync;
 
+pub use stepper::StepperHost;
 pub use trsync::TrsyncHost;
 
 use foci_klipper::state::State;
@@ -122,53 +124,6 @@ impl<T: ?Sized + ShutdownRecovery> ShutdownRecovery for &mut T {
     }
     fn send_shutdown(&mut self, reason: crate::shutdown::ShutdownReason, clock: u32) {
         (**self).send_shutdown(reason, clock)
-    }
-}
-
-/// Stepper subsystem: direction/queue/clock operations exposed at the
-/// granularity the handler bodies actually need.
-///
-/// The step-timer / stop-check helpers exercised only by the RTIC
-/// task graph are intentionally absent — they are not reachable via
-/// `&mut dyn StepperHost`.
-pub trait StepperHost: StateAccess {
-    /// Capture the direction bit for the next enqueued move on `channel`.
-    fn set_next_step_dir(&mut self, channel: u8, forward: bool);
-
-    /// Enqueue a trapezoidal move onto the hardware step queue for `channel`.
-    fn queue_step_move(
-        &mut self,
-        channel: u8,
-        move_: foci_klipper::stepper::StepMove,
-    ) -> Result<(), foci_klipper::commands::CommandError>;
-
-    /// Reset the step-clock reference for `channel`.
-    fn reset_step_clock(
-        &mut self,
-        channel: u8,
-        clock: u32,
-    ) -> Result<(), foci_klipper::commands::CommandError>;
-}
-
-impl<T: ?Sized + StepperHost> StepperHost for &mut T {
-    fn set_next_step_dir(&mut self, channel: u8, forward: bool) {
-        (**self).set_next_step_dir(channel, forward)
-    }
-
-    fn queue_step_move(
-        &mut self,
-        channel: u8,
-        move_: foci_klipper::stepper::StepMove,
-    ) -> Result<(), foci_klipper::commands::CommandError> {
-        (**self).queue_step_move(channel, move_)
-    }
-
-    fn reset_step_clock(
-        &mut self,
-        channel: u8,
-        clock: u32,
-    ) -> Result<(), foci_klipper::commands::CommandError> {
-        (**self).reset_step_clock(channel, clock)
     }
 }
 
