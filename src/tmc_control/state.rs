@@ -258,6 +258,24 @@ impl TmcControlRuntime {
         }
     }
 
+    /// Prepare immediate shutdown/fault quiesce for one channel.
+    ///
+    /// Clears runtime-owned energized and transient maintenance state without
+    /// resetting configuration such as stored gains or velocity scale. The
+    /// board shell must apply the returned stepper action and lower enable
+    /// pins before any awaited SPI safe-state cleanup.
+    pub fn prepare_shutdown_quiesce(&mut self) -> BoardActions {
+        let mut actions = BoardActions::new();
+        self.commission_engine = None;
+        self.motor_enabled = false;
+        self.calibrated = false;
+        self.feedforward_was_active = false;
+        self.torque_flux_offset_was_active = false;
+        self.pid_error_clear_countdown_ms = 0;
+        push_action(&mut actions, BoardAction::Stepper(StepperAction::StopNow));
+        actions
+    }
+
     /// Poll shutdown state and emit one-shot safe-state actions.
     ///
     /// Returns a `StopNow` stepper action on the first call while shutdown is
@@ -494,6 +512,26 @@ impl TmcControlRuntime {
     /// used by the velocity transient feedforward path.
     pub fn set_velocity_scale(&mut self, value: u32) {
         self.velocity_scale = value;
+    }
+
+    /// Return whether velocity feedforward was active on the previous control tick.
+    pub const fn feedforward_was_active(&self) -> bool {
+        self.feedforward_was_active
+    }
+
+    /// Store whether velocity feedforward is active for the current control tick.
+    pub fn set_feedforward_was_active(&mut self, active: bool) {
+        self.feedforward_was_active = active;
+    }
+
+    /// Return the remaining PID error-clear settle countdown in milliseconds.
+    pub const fn pid_error_clear_countdown_ms(&self) -> u8 {
+        self.pid_error_clear_countdown_ms
+    }
+
+    /// Store the remaining PID error-clear settle countdown in milliseconds.
+    pub fn set_pid_error_clear_countdown_ms(&mut self, value: u8) {
+        self.pid_error_clear_countdown_ms = value;
     }
 
     /// Compute current command velocity reference for feedforward surfaces.

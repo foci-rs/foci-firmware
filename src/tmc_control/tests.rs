@@ -245,6 +245,77 @@ fn pid_error_clear_request_loads_hold_settle_countdown() {
 }
 
 #[test]
+fn shutdown_quiesce_clears_safe_state_without_config_reset() {
+    let mut runtime = TmcControlRuntime::new_for_channel(0);
+    let gains = InnerLoopGains {
+        flux_p: 11,
+        flux_i: 12,
+        torque_p: 13,
+        torque_i: 14,
+    };
+
+    runtime.set_calibrated_for_test(true);
+    runtime.set_motor_enabled_for_test(true);
+    runtime.set_commission_engine(crate::commissioning::CommissioningEngine::new_calibrate(0));
+    runtime.set_stored_gains(gains);
+    runtime.set_velocity_scale(123_456);
+    runtime.set_feedforward_was_active(true);
+    runtime.set_pid_error_clear_countdown_ms(9);
+
+    let actions = runtime.prepare_shutdown_quiesce();
+
+    assert!(
+        actions
+            .iter()
+            .any(|a| matches!(a, BoardAction::Stepper(StepperAction::StopNow)))
+    );
+    assert!(!runtime.is_motor_enabled());
+    assert!(!runtime.is_calibrated());
+    assert!(!runtime.is_commission_active());
+    assert!(!runtime.feedforward_was_active());
+    assert_eq!(runtime.pid_error_clear_countdown_ms(), 0);
+    assert_eq!(runtime.stored_gains(), Some(gains));
+    assert_eq!(runtime.velocity_scale(), 123_456);
+}
+
+#[test]
+fn feedforward_and_pid_settle_accessors_round_trip() {
+    let mut runtime = TmcControlRuntime::new_for_channel(0);
+
+    assert!(!runtime.feedforward_was_active());
+    runtime.set_feedforward_was_active(true);
+    assert!(runtime.feedforward_was_active());
+
+    assert_eq!(runtime.pid_error_clear_countdown_ms(), 0);
+    runtime.set_pid_error_clear_countdown_ms(5);
+    assert_eq!(runtime.pid_error_clear_countdown_ms(), 5);
+}
+
+#[test]
+fn dispatch_state_remains_usable_after_shutdown_quiesce() {
+    let mut runtime = TmcControlRuntime::new_for_channel(0);
+    let tmc: &'static crate::state::tmc::TmcChannelState = std::boxed::Box::leak(
+        std::boxed::Box::new(crate::state::tmc::TmcChannelState::new()),
+    );
+    let stepper: &'static crate::state::stepper::StepperChannelState = std::boxed::Box::leak(
+        std::boxed::Box::new(crate::state::stepper::StepperChannelState::new()),
+    );
+
+    runtime.set_calibrated_for_test(true);
+    runtime.set_motor_enabled_for_test(true);
+    runtime.prepare_shutdown_quiesce();
+
+    {
+        let dispatch = runtime.dispatch_state(tmc, stepper);
+        *dispatch.calibrated = true;
+        *dispatch.motor_enabled = true;
+    }
+
+    assert!(runtime.is_calibrated());
+    assert!(runtime.is_motor_enabled());
+}
+
+#[test]
 fn shutdown_signal_emits_one_stop_action_until_reset() {
     let shutdown_active = AtomicBool::new(true);
     let queue_flush = AtomicBool::new(false);
