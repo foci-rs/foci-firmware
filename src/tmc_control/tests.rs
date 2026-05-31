@@ -1,4 +1,6 @@
 use super::*;
+use crate::commission_dispatch::test_support::MockBackend;
+use crate::commissioning::{CommissioningEngine, types::StepResult};
 use crate::config::TmcConfig;
 use crate::pid::InnerLoopGains;
 use crate::tmc::{TmcRequest, TmcRequestKind};
@@ -126,6 +128,96 @@ fn runtime_config_carries_board_constants() {
     assert_eq!(config.pwm_freq_hz, 25_000);
     assert_eq!(config.current_scale_ma_per_lsb, 0.03125);
     assert_eq!(config.tmc, tmc);
+}
+
+fn commissioning_runtime_config() -> TmcControlConfig {
+    let tmc = TmcConfig::default_for_test();
+    TmcControlConfig::new(84_000_000, tmc.pwm_freq_hz(), 0.03125, tmc)
+}
+
+#[test]
+fn step_commissioning_returns_none_without_engine() {
+    pollster::block_on(async {
+        let mut runtime = TmcControlRuntime::new_for_channel(0);
+        let mut backend = MockBackend::new();
+
+        let result = runtime.step_commissioning(&mut backend).await;
+
+        assert!(result.is_none());
+        assert!(!runtime.is_commission_active());
+    });
+}
+
+#[test]
+fn drive_commissioning_result_returns_none_without_engine() {
+    pollster::block_on(async {
+        let mut runtime = TmcControlRuntime::new_for_channel(0);
+        let mut backend = MockBackend::new();
+        let config = commissioning_runtime_config();
+
+        let action = runtime
+            .drive_commissioning_result(
+                StepResult::Continue,
+                &mut backend,
+                crate::state::tmc::tmc_channel0(),
+                crate::state::stepper::stepper_channel0(),
+                &config,
+            )
+            .await;
+
+        assert!(action.is_none());
+        assert!(!runtime.is_commission_active());
+    });
+}
+
+#[test]
+fn tick_commissioning_returns_none_without_engine() {
+    pollster::block_on(async {
+        let mut runtime = TmcControlRuntime::new_for_channel(0);
+        let mut backend = MockBackend::new();
+        let config = commissioning_runtime_config();
+
+        let action = runtime
+            .tick_commissioning(
+                &mut backend,
+                crate::state::tmc::tmc_channel0(),
+                crate::state::stepper::stepper_channel0(),
+                &config,
+            )
+            .await;
+
+        assert!(action.is_none());
+        assert!(!runtime.is_commission_active());
+    });
+}
+
+#[test]
+fn split_commissioning_tick_maps_continue_without_consuming_engine() {
+    pollster::block_on(async {
+        let tmc = crate::state::tmc::tmc_channel0();
+        let stepper = crate::state::stepper::stepper_channel0();
+        let mut runtime = TmcControlRuntime::new_for_channel(0);
+        let mut backend = MockBackend::new();
+        let config = commissioning_runtime_config();
+
+        runtime.set_commission_engine(CommissioningEngine::new_selftest_for_tmc(7, tmc));
+
+        let result = runtime
+            .step_commissioning(&mut backend)
+            .await
+            .expect("engine should be active");
+
+        assert!(matches!(result, StepResult::Continue));
+        assert!(runtime.is_commission_active());
+
+        let action = runtime
+            .drive_commissioning_result(result, &mut backend, tmc, stepper, &config)
+            .await
+            .expect("engine should still be active for dispatch");
+
+        assert!(matches!(action, CommissionTickAction::Continue));
+        assert!(runtime.is_commission_active());
+    });
 }
 
 #[test]
