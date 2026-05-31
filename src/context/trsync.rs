@@ -5,7 +5,9 @@
 
 use core::sync::atomic::Ordering;
 
-use foci_klipper::scheduler::{ScheduleResult, SchedulerEventKind, TriggerScheduler};
+use foci_klipper::scheduler::{
+    ScheduleResult, SchedulerEvent, SchedulerEventKind, TriggerScheduler,
+};
 use foci_klipper::state::{NUM_ENDSTOPS, NUM_STEPPERS, NUM_TRSYNC};
 use foci_klipper::trigger::{StopSignal, TriggerResult};
 
@@ -356,68 +358,568 @@ pub fn dispatch_trigger<B: TriggerDispatchBoard + ?Sized>(
 
 /// Arm a trsync for synchronized triggering.
 pub fn trsync_arm<B: TrsyncBoard + ?Sized>(
-    _state: &mut TriggerDomainState,
-    _board: &mut B,
-    _oid: u8,
-    _report_clock: u32,
-    _report_ticks: u32,
-    _expire_reason: u8,
+    state: &mut TriggerDomainState,
+    board: &mut B,
+    oid: u8,
+    report_clock: u32,
+    report_ticks: u32,
+    expire_reason: u8,
 ) -> Result<(), TrsyncPolicyError> {
-    unimplemented!("Task 3 implements trsync_arm")
+    let idx = trsync_idx(state, oid)?;
+    clear_stop_signals_for_oid(state, oid);
+    unblock_steppers_for_oid(state, oid);
+    state.scheduler.cancel(|kind| {
+        matches!(
+            kind,
+            SchedulerEventKind::TrSyncExpire(i) | SchedulerEventKind::TrSyncReport(i)
+                if *i == idx
+        )
+    });
+    state.trsync[idx].arm(report_clock, report_ticks, expire_reason);
+    if report_ticks > 0 {
+        let result = state.scheduler.try_schedule(SchedulerEvent {
+            wake_clock: report_clock,
+            kind: SchedulerEventKind::TrSyncReport(idx),
+        });
+        board.record_schedule_result(result);
+    }
+    board.reprogram_trigger_timer(state);
+    Ok(())
 }
 
 /// Update the expiry deadline for a trsync.
 pub fn trsync_set_timeout<B: TrsyncBoard + ?Sized>(
-    _state: &mut TriggerDomainState,
-    _board: &mut B,
-    _oid: u8,
-    _clock: u32,
+    state: &mut TriggerDomainState,
+    board: &mut B,
+    oid: u8,
+    clock: u32,
 ) -> Result<(), TrsyncPolicyError> {
-    unimplemented!("Task 3 implements trsync_set_timeout")
+    let idx = trsync_idx(state, oid)?;
+    if state.trsync[idx].can_trigger() {
+        state.trsync[idx].set_timeout(clock);
+        state
+            .scheduler
+            .cancel(|kind| matches!(kind, SchedulerEventKind::TrSyncExpire(i) if *i == idx));
+        let result = state.scheduler.try_schedule(SchedulerEvent {
+            wake_clock: clock,
+            kind: SchedulerEventKind::TrSyncExpire(idx),
+        });
+        board.record_schedule_result(result);
+        board.reprogram_trigger_timer(state);
+    }
+    Ok(())
 }
 
 /// Manually fire a trsync and return the effective trigger reason.
 pub fn trsync_trigger<B: TrsyncBoard + ?Sized>(
-    _state: &mut TriggerDomainState,
-    _board: &mut B,
-    _oid: u8,
-    _reason: u8,
+    state: &mut TriggerDomainState,
+    board: &mut B,
+    oid: u8,
+    reason: u8,
 ) -> Result<u8, TrsyncPolicyError> {
-    unimplemented!("Task 3 implements trsync_trigger")
+    let idx = trsync_idx(state, oid)?;
+    let _ = dispatch_trigger(state, board, oid, reason, 0);
+    let trigger_reason = state.trsync[idx].trigger_reason();
+
+    state.scheduler.cancel(|kind| {
+        matches!(
+            kind,
+            SchedulerEventKind::TrSyncExpire(i) | SchedulerEventKind::TrSyncReport(i)
+                if *i == idx
+        )
+    });
+    state.trsync[idx].clear_pending_report();
+    state.trsync[idx].cancel_timers();
+    clear_stop_signals_for_oid(state, oid);
+    unblock_steppers_for_oid(state, oid);
+    board.reprogram_trigger_timer(state);
+    Ok(trigger_reason)
 }
 
 /// Configure an endstop runtime for homing.
 #[allow(clippy::too_many_arguments)]
 pub fn endstop_start_homing<B: TrsyncBoard + ?Sized>(
-    _state: &mut TriggerDomainState,
-    _board: &mut B,
-    _oid: u8,
-    _clock: u32,
-    _sample_ticks: u32,
-    _sample_count: u8,
-    _rest_ticks: u32,
-    _pin_value_expected: bool,
-    _trsync_oid: u8,
-    _trigger_reason: u8,
+    state: &mut TriggerDomainState,
+    board: &mut B,
+    oid: u8,
+    clock: u32,
+    sample_ticks: u32,
+    sample_count: u8,
+    rest_ticks: u32,
+    pin_value_expected: bool,
+    trsync_oid: u8,
+    trigger_reason: u8,
 ) -> Result<(), TrsyncPolicyError> {
-    unimplemented!("Task 3 implements endstop_start_homing")
+    let idx = endstop_idx(state, oid)?;
+    if sample_count != 0 && !state.trsync_by_oid.contains_key(&trsync_oid) {
+        return Err(TrsyncPolicyError::MissingTrsyncForHoming);
+    }
+    let pin_id = board.endstop_pin_id(idx);
+    state
+        .scheduler
+        .cancel(|kind| matches!(kind, SchedulerEventKind::EndstopSample(i) if *i == idx));
+    state.endstops[idx].start_homing(
+        clock,
+        sample_ticks,
+        sample_count,
+        rest_ticks,
+        pin_value_expected,
+        trsync_oid,
+        trigger_reason,
+        pin_id,
+    );
+    if sample_count > 0 {
+        let result = state.scheduler.try_schedule(SchedulerEvent {
+            wake_clock: clock,
+            kind: SchedulerEventKind::EndstopSample(idx),
+        });
+        board.record_schedule_result(result);
+    }
+    board.reprogram_trigger_timer(state);
+    Ok(())
 }
 
 /// Read the endstop runtime state tuple `(is_homing, next_clock, pin_id)`.
 pub fn endstop_query<B: TrsyncBoard + ?Sized>(
-    _state: &TriggerDomainState,
-    _board: &B,
-    _oid: u8,
+    state: &TriggerDomainState,
+    board: &B,
+    oid: u8,
 ) -> Result<(bool, u32, u8), TrsyncPolicyError> {
-    unimplemented!("Task 3 implements endstop_query")
+    let idx = endstop_idx(state, oid)?;
+    let (homing, next_clock) = state.endstops[idx].query_state();
+    Ok((homing, next_clock, board.endstop_pin_id(idx)))
 }
 
 /// Link a physical stepper to a trsync stop signal.
 pub fn link_stepper_stop<B: TrsyncBoard + ?Sized>(
-    _state: &mut TriggerDomainState,
-    _board: &B,
-    _stepper_idx: usize,
-    _trsync_oid: u8,
+    state: &mut TriggerDomainState,
+    board: &B,
+    stepper_idx: usize,
+    trsync_oid: u8,
 ) -> Result<(), TrsyncPolicyError> {
-    unimplemented!("Task 3 implements link_stepper_stop")
+    if !state.trsync_by_oid.contains_key(&trsync_oid) {
+        return Err(TrsyncPolicyError::UnknownTrsyncOid);
+    }
+    let physical_idx = board
+        .map_physical_stepper(stepper_idx)
+        .ok_or(TrsyncPolicyError::InvalidStepper)?;
+    for signal in state.stop_signals.iter().flatten() {
+        if signal.stepper_idx == physical_idx {
+            return Err(TrsyncPolicyError::DuplicateStopSignal);
+        }
+    }
+    for slot in state.stop_signals.iter_mut() {
+        if slot.is_none() {
+            *slot = Some(StopSignal {
+                trsync_oid,
+                stepper_idx: physical_idx,
+            });
+            return Ok(());
+        }
+    }
+    Err(TrsyncPolicyError::StopSignalCapacity)
+}
+
+fn trsync_idx(state: &TriggerDomainState, oid: u8) -> Result<usize, TrsyncPolicyError> {
+    state
+        .trsync_by_oid
+        .get(&oid)
+        .copied()
+        .ok_or(TrsyncPolicyError::UnknownTrsyncOid)
+}
+
+fn endstop_idx(state: &TriggerDomainState, oid: u8) -> Result<usize, TrsyncPolicyError> {
+    state
+        .endstop_by_oid
+        .get(&oid)
+        .copied()
+        .ok_or(TrsyncPolicyError::UnknownEndstopOid)
+}
+
+fn clear_stop_signals_for_oid(state: &mut TriggerDomainState, oid: u8) {
+    for slot in state.stop_signals.iter_mut() {
+        if let Some(signal) = slot
+            && signal.trsync_oid == oid
+        {
+            *slot = None;
+        }
+    }
+}
+
+fn unblock_steppers_for_oid(state: &mut TriggerDomainState, oid: u8) {
+    for stepper in state.stepper_stop.iter_mut() {
+        if stepper.blocked_by_trsync == Some(oid) {
+            stepper.blocked_by_trigger = false;
+            stepper.blocked_by_trsync = None;
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use foci_klipper::scheduler::{SchedulerEvent, SchedulerEventKind};
+    use std::sync::{Mutex, MutexGuard};
+    use std::vec::Vec;
+
+    static HOMING_TEST_LOCK: Mutex<()> = Mutex::new(());
+
+    #[derive(Default)]
+    struct MockBoard {
+        physical_steppers: &'static [usize],
+        valid_mapping: bool,
+        pin_ids: [u8; NUM_ENDSTOPS],
+        schedule_results: usize,
+        disarm_calls: usize,
+        stopped: Vec<(usize, StepperEventReason, bool)>,
+        trsync_stops: Vec<(usize, u32, u8, u8)>,
+        timer_active_sets: Vec<(usize, bool)>,
+        reprogram_calls: usize,
+    }
+
+    impl MockBoard {
+        fn new() -> Self {
+            Self {
+                physical_steppers: &[0],
+                valid_mapping: true,
+                pin_ids: [0xFF; NUM_ENDSTOPS],
+                schedule_results: 0,
+                disarm_calls: 0,
+                stopped: Vec::new(),
+                trsync_stops: Vec::new(),
+                timer_active_sets: Vec::new(),
+                reprogram_calls: 0,
+            }
+        }
+    }
+
+    impl TriggerDispatchBoard for MockBoard {
+        fn stop_physical_stepper(
+            &mut self,
+            state: &TriggerDomainState,
+            stepper_idx: usize,
+            reason: StepperEventReason,
+        ) {
+            self.stopped.push((
+                stepper_idx,
+                reason,
+                state.stepper_stop[stepper_idx].blocked_by_trigger,
+            ));
+        }
+
+        fn record_trsync_stop(
+            &mut self,
+            stepper_idx: usize,
+            clock: u32,
+            trsync_oid: u8,
+            reason: u8,
+        ) {
+            self.trsync_stops
+                .push((stepper_idx, clock, trsync_oid, reason));
+        }
+
+        fn set_timer_active(
+            &mut self,
+            state: &mut TriggerDomainState,
+            stepper_idx: usize,
+            active: bool,
+        ) {
+            state.stepper_stop[stepper_idx].timer_active = active;
+            self.timer_active_sets.push((stepper_idx, active));
+        }
+    }
+
+    impl TrsyncBoard for MockBoard {
+        fn physical_steppers(&self) -> &'static [usize] {
+            self.physical_steppers
+        }
+
+        fn map_physical_stepper(&self, klipper_stepper_idx: usize) -> Option<usize> {
+            self.valid_mapping.then_some(klipper_stepper_idx)
+        }
+
+        fn endstop_pin_id(&self, endstop_idx: usize) -> u8 {
+            self.pin_ids[endstop_idx]
+        }
+
+        fn record_schedule_result(&mut self, _result: ScheduleResult) {
+            self.schedule_results += 1;
+        }
+
+        fn reprogram_trigger_timer(&mut self, _state: &mut TriggerDomainState) {
+            self.reprogram_calls += 1;
+        }
+
+        fn disarm_trigger_timer(&mut self, state: &mut TriggerDomainState) {
+            state.scheduler.set_cc2_active(false);
+            self.disarm_calls += 1;
+        }
+    }
+
+    fn homing_test_guard() -> MutexGuard<'static, ()> {
+        HOMING_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    fn reset_homing_triggered() {
+        HOMING_TRIGGERED.store(0xFF, Ordering::Relaxed);
+    }
+
+    // Keep global HOMING_TRIGGERED resets out of fresh_state(); tests run in
+    // parallel and only global-touching tests may reset or assert it while
+    // holding HOMING_TEST_LOCK.
+    fn fresh_state() -> TriggerDomainState {
+        TriggerDomainState::new()
+    }
+
+    #[test]
+    fn duplicate_trsync_oid_returns_exact_error() {
+        let mut state = fresh_state();
+        assert_eq!(register_trsync(&mut state, 7), Ok(()));
+        assert_eq!(
+            register_trsync(&mut state, 7),
+            Err(TrsyncPolicyError::DuplicateTrsyncOid)
+        );
+    }
+
+    #[test]
+    fn full_trsync_map_returns_capacity() {
+        let mut state = fresh_state();
+        for oid in 0..NUM_TRSYNC as u8 {
+            assert_eq!(register_trsync(&mut state, oid), Ok(()));
+        }
+        assert_eq!(
+            register_trsync(&mut state, 99),
+            Err(TrsyncPolicyError::TrsyncCapacity)
+        );
+    }
+
+    #[test]
+    fn unknown_trsync_oids_fail_for_arm_timeout_and_trigger() {
+        let mut state = fresh_state();
+        let mut board = MockBoard::new();
+        assert_eq!(
+            trsync_arm(&mut state, &mut board, 4, 100, 10, 5),
+            Err(TrsyncPolicyError::UnknownTrsyncOid)
+        );
+        assert_eq!(
+            trsync_set_timeout(&mut state, &mut board, 4, 200),
+            Err(TrsyncPolicyError::UnknownTrsyncOid)
+        );
+        assert_eq!(
+            trsync_trigger(&mut state, &mut board, 4, 6),
+            Err(TrsyncPolicyError::UnknownTrsyncOid)
+        );
+    }
+
+    #[test]
+    fn duplicate_and_full_endstop_maps_return_exact_errors() {
+        let mut state = fresh_state();
+        assert_eq!(register_endstop(&mut state, 9), Ok(0));
+        assert_eq!(
+            register_endstop(&mut state, 9),
+            Err(TrsyncPolicyError::DuplicateEndstopOid)
+        );
+
+        let mut state = fresh_state();
+        for oid in 0..NUM_ENDSTOPS as u8 {
+            assert_eq!(register_endstop(&mut state, oid), Ok(oid as usize));
+        }
+        assert_eq!(
+            register_endstop(&mut state, 99),
+            Err(TrsyncPolicyError::EndstopCapacity)
+        );
+    }
+
+    #[test]
+    fn unknown_endstop_oids_fail_for_homing_and_query() {
+        let mut state = fresh_state();
+        let mut board = MockBoard::new();
+        assert_eq!(
+            endstop_start_homing(&mut state, &mut board, 12, 100, 10, 1, 30, true, 1, 8),
+            Err(TrsyncPolicyError::UnknownEndstopOid)
+        );
+        assert_eq!(
+            endstop_query(&state, &board, 12),
+            Err(TrsyncPolicyError::UnknownEndstopOid)
+        );
+    }
+
+    #[test]
+    fn zero_sample_homing_does_not_require_trsync() {
+        let mut state = fresh_state();
+        let mut board = MockBoard::new();
+        assert_eq!(register_endstop(&mut state, 3), Ok(0));
+        assert_eq!(
+            endstop_start_homing(&mut state, &mut board, 3, 100, 10, 0, 30, true, 99, 8),
+            Ok(())
+        );
+    }
+
+    #[test]
+    fn active_homing_requires_registered_trsync() {
+        let mut state = fresh_state();
+        let mut board = MockBoard::new();
+        assert_eq!(register_endstop(&mut state, 3), Ok(0));
+        assert_eq!(
+            endstop_start_homing(&mut state, &mut board, 3, 100, 10, 1, 30, true, 99, 8),
+            Err(TrsyncPolicyError::MissingTrsyncForHoming)
+        );
+    }
+
+    #[test]
+    fn trsync_arm_clears_old_stop_links_and_unblocks_matching_steppers() {
+        let mut state = fresh_state();
+        let mut board = MockBoard::new();
+        register_trsync(&mut state, 2).unwrap();
+        state.stop_signals[0] = Some(StopSignal {
+            trsync_oid: 2,
+            stepper_idx: 0,
+        });
+        state.stepper_stop[0].blocked_by_trigger = true;
+        state.stepper_stop[0].blocked_by_trsync = Some(2);
+
+        assert_eq!(trsync_arm(&mut state, &mut board, 2, 100, 10, 7), Ok(()));
+
+        assert_eq!(state.stop_signals[0], None);
+        assert!(!state.stepper_stop[0].blocked_by_trigger);
+        assert_eq!(state.stepper_stop[0].blocked_by_trsync, None);
+    }
+
+    #[test]
+    fn trsync_set_timeout_noops_after_trigger() {
+        let mut state = fresh_state();
+        let mut board = MockBoard::new();
+        register_trsync(&mut state, 2).unwrap();
+        trsync_arm(&mut state, &mut board, 2, 100, 0, 7).unwrap();
+        assert_eq!(
+            dispatch_trigger(&mut state, &mut board, 2, 42, 1234),
+            TriggerResult::First {
+                snapshot: foci_klipper::trigger::ReportSnapshot {
+                    oid: 2,
+                    can_trigger: 0,
+                    trigger_reason: 42,
+                    clock: 1234,
+                }
+            }
+        );
+
+        assert_eq!(trsync_set_timeout(&mut state, &mut board, 2, 999), Ok(()));
+        assert_eq!(state.scheduler.earliest_deadline(), None);
+    }
+
+    #[test]
+    fn trsync_trigger_sets_homing_only_when_stop_signal_fires() {
+        let _guard = homing_test_guard();
+        reset_homing_triggered();
+        let mut state = fresh_state();
+        let mut board = MockBoard::new();
+        register_trsync(&mut state, 2).unwrap();
+        trsync_arm(&mut state, &mut board, 2, 100, 0, 7).unwrap();
+        assert_eq!(trsync_trigger(&mut state, &mut board, 2, 9), Ok(9));
+        assert_eq!(HOMING_TRIGGERED.load(Ordering::Relaxed), 0xFF);
+
+        register_trsync(&mut state, 3).unwrap();
+        trsync_arm(&mut state, &mut board, 3, 100, 0, 7).unwrap();
+        link_stepper_stop(&mut state, &board, 0, 3).unwrap();
+        assert_eq!(trsync_trigger(&mut state, &mut board, 3, 10), Ok(10));
+        assert_eq!(HOMING_TRIGGERED.load(Ordering::Relaxed), 3);
+    }
+
+    #[test]
+    fn dispatch_stops_stepper_before_marking_it_blocked() {
+        let _guard = homing_test_guard();
+        reset_homing_triggered();
+        let mut state = fresh_state();
+        let mut board = MockBoard::new();
+        register_trsync(&mut state, 2).unwrap();
+        trsync_arm(&mut state, &mut board, 2, 100, 0, 7).unwrap();
+        link_stepper_stop(&mut state, &board, 0, 2).unwrap();
+
+        let result = dispatch_trigger(&mut state, &mut board, 2, 9, 123);
+
+        assert!(matches!(result, TriggerResult::First { .. }));
+        assert_eq!(
+            board.stopped.as_slice(),
+            &[(0, StepperEventReason::TrsyncStop, false)]
+        );
+        assert!(state.stepper_stop[0].blocked_by_trigger);
+        assert_eq!(state.stepper_stop[0].blocked_by_trsync, Some(2));
+    }
+
+    #[test]
+    fn link_stepper_stop_reports_mapping_duplicate_and_capacity_errors() {
+        let mut state = fresh_state();
+        let mut board = MockBoard::new();
+        register_trsync(&mut state, 1).unwrap();
+
+        board.valid_mapping = false;
+        assert_eq!(
+            link_stepper_stop(&mut state, &board, 0, 1),
+            Err(TrsyncPolicyError::InvalidStepper)
+        );
+
+        board.valid_mapping = true;
+        assert_eq!(link_stepper_stop(&mut state, &board, 0, 1), Ok(()));
+        assert_eq!(
+            link_stepper_stop(&mut state, &board, 0, 1),
+            Err(TrsyncPolicyError::DuplicateStopSignal)
+        );
+
+        let mut state = fresh_state();
+        register_trsync(&mut state, 1).unwrap();
+        for idx in 0..STOP_SIGNAL_CAPACITY {
+            assert_eq!(link_stepper_stop(&mut state, &board, idx, 1), Ok(()));
+        }
+        assert_eq!(
+            link_stepper_stop(&mut state, &board, STOP_SIGNAL_CAPACITY, 1),
+            Err(TrsyncPolicyError::StopSignalCapacity)
+        );
+    }
+
+    #[test]
+    fn endstop_query_returns_live_tuple() {
+        let mut state = fresh_state();
+        let mut board = MockBoard::new();
+        board.pin_ids[0] = 0x31;
+        register_trsync(&mut state, 2).unwrap();
+        assert_eq!(register_endstop(&mut state, 4), Ok(0));
+        endstop_start_homing(&mut state, &mut board, 4, 100, 10, 2, 30, true, 2, 8).unwrap();
+
+        assert_eq!(endstop_query(&state, &board, 4), Ok((true, 100, 0x31)));
+    }
+
+    #[test]
+    fn reset_all_clears_state_and_disarms_timer() {
+        let mut state = fresh_state();
+        let mut board = MockBoard::new();
+        register_trsync(&mut state, 2).unwrap();
+        register_endstop(&mut state, 4).unwrap();
+        state.stop_signals[0] = Some(StopSignal {
+            trsync_oid: 2,
+            stepper_idx: 0,
+        });
+        state.stepper_stop[0].need_reset = true;
+        state.stepper_stop[0].blocked_by_trigger = true;
+        state.scheduler.try_schedule(SchedulerEvent {
+            wake_clock: 10,
+            kind: SchedulerEventKind::Stepper(0),
+        });
+
+        reset_all(&mut state, &mut board);
+
+        assert_eq!(state.trsync_by_oid.len(), 0);
+        assert_eq!(state.endstop_by_oid.len(), 0);
+        assert!(state.stop_signals.iter().all(Option::is_none));
+        assert_eq!(
+            state.stepper_stop[0],
+            foci_klipper::trigger::StepperStopRuntime::new()
+        );
+        assert_eq!(board.disarm_calls, 1);
+        assert_eq!(
+            board.stopped.as_slice(),
+            &[(0, StepperEventReason::TmcDisableSignal, true)]
+        );
+    }
 }
