@@ -7,3 +7,6 @@ pub mod pressure;
 
 #[cfg(feature = "trace")]
 pub mod stream;
+
+#[cfg(feature = "trace")]
+pub mod transport;
