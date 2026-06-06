@@ -20,7 +20,7 @@ use crate::autotune::{
 };
 use crate::commissioning::backend::{CommissionTrace, CommissioningBackend};
 use crate::commissioning::types::{OuterResult, StepResult};
-use crate::trace_events::{
+use crate::trace::events::{
     CommissionTraceEvent, EVENT_COMMISSION_DIAGNOSTIC_WARNING, TraceEventLevel, pack_i16_pair,
     pack_u16_pair, u32_arg,
 };

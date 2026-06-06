@@ -19,7 +19,7 @@ use crate::autotune::{
 };
 use crate::commissioning::outer::{fail_outer, response};
 use crate::commissioning::types::{CommissioningBackend, StepResult};
-use crate::trace_events::{
+use crate::trace::events::{
     EVENT_COMMISSION_VELOCITY_VALIDATE_GAIN, EVENT_COMMISSION_VELOCITY_VALIDATE_LIMITS,
     EVENT_COMMISSION_VELOCITY_VALIDATE_METRICS, EVENT_COMMISSION_VELOCITY_VALIDATE_RESULT,
     TraceEventLevel,
@@ -1347,17 +1347,17 @@ mod tests {
             &fwd,
             &rev,
             0,
-            crate::trace_events::TraceEventLevel::Info,
+            crate::trace::events::TraceEventLevel::Info,
         );
 
         assert_eq!(
             backend.trace_events[0].event_id,
-            crate::trace_events::EVENT_COMMISSION_VELOCITY_VALIDATE_RESULT
+            crate::trace::events::EVENT_COMMISSION_VELOCITY_VALIDATE_RESULT
         );
         assert_eq!(backend.trace_events[0].payload, [0, 0]);
         assert_eq!(
             backend.trace_events[1].event_id,
-            crate::trace_events::EVENT_COMMISSION_VELOCITY_VALIDATE_GAIN
+            crate::trace::events::EVENT_COMMISSION_VELOCITY_VALIDATE_GAIN
         );
         assert_eq!(
             backend.trace_events[1].payload,
@@ -1365,7 +1365,7 @@ mod tests {
         );
         assert_eq!(
             backend.trace_events[2].event_id,
-            crate::trace_events::EVENT_COMMISSION_VELOCITY_VALIDATE_METRICS
+            crate::trace::events::EVENT_COMMISSION_VELOCITY_VALIDATE_METRICS
         );
         assert_eq!(
             backend.trace_events[2].payload,
@@ -1373,7 +1373,7 @@ mod tests {
         );
         assert_eq!(
             backend.trace_events[3].event_id,
-            crate::trace_events::EVENT_COMMISSION_VELOCITY_VALIDATE_LIMITS
+            crate::trace::events::EVENT_COMMISSION_VELOCITY_VALIDATE_LIMITS
         );
         assert_eq!(
             backend.trace_events[3].payload,

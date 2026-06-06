@@ -6,7 +6,7 @@
 
 use core::sync::atomic::{AtomicBool, AtomicU16, AtomicU32, Ordering};
 
-use crate::trace_events::{EVENT_LEVEL_INFO, EVENT_SPI_SAMPLE_DURATION, SUBSYSTEM_TMC_CONTROL};
+use crate::trace::events::{EVENT_LEVEL_INFO, EVENT_SPI_SAMPLE_DURATION, SUBSYSTEM_TMC_CONTROL};
 
 /// Board-global trace pressure and status-throttle runtime.
 pub struct TracePressureRuntime {
@@ -313,14 +313,14 @@ mod tests {
         runtime.record_spi_sample_cycles(55, 100);
         let event = runtime.take_spi_duration_event().unwrap();
 
-        assert_eq!(event.level, crate::trace_events::EVENT_LEVEL_INFO);
+        assert_eq!(event.level, crate::trace::events::EVENT_LEVEL_INFO);
         assert_eq!(
             event.subsystem_id,
-            crate::trace_events::SUBSYSTEM_TMC_CONTROL
+            crate::trace::events::SUBSYSTEM_TMC_CONTROL
         );
         assert_eq!(
             event.event_id,
-            crate::trace_events::EVENT_SPI_SAMPLE_DURATION
+            crate::trace::events::EVENT_SPI_SAMPLE_DURATION
         );
         assert_eq!(event.args, [55, 55, 0, 0]);
         assert_eq!(event.arg_count, 2);

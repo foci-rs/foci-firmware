@@ -37,7 +37,7 @@ pub struct MockBackend {
     /// Ordered log of every SPI read/write issued during the test.
     pub spi_log: Vec<SpiOp, 128>,
     /// Ordered trace events recorded by the commissioning engine.
-    pub trace_events: Vec<crate::trace_events::CommissionTraceEvent, 64>,
+    pub trace_events: Vec<crate::trace::events::CommissionTraceEvent, 64>,
     /// Current state of the TMC4671 enable pin.
     pub enable_pin: bool,
     /// Log of every `delay_us` call, in order.
@@ -303,7 +303,7 @@ impl CommissionBoardConfig for MockBackend {
 }
 
 impl CommissionTrace for MockBackend {
-    fn record_commission_trace_event(&mut self, event: crate::trace_events::CommissionTraceEvent) {
+    fn record_commission_trace_event(&mut self, event: crate::trace::events::CommissionTraceEvent) {
         self.trace_events.push(event).ok();
     }
 }

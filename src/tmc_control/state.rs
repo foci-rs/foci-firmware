@@ -806,16 +806,16 @@ impl TmcControlRuntime {
                 let mut flags = if homing_active || reset {
                     0
                 } else {
-                    crate::trace_stream::ACCEL_FF_FLAG_ENABLED
+                    crate::trace::stream::ACCEL_FF_FLAG_ENABLED
                 };
                 if torque_offset != 0 || flux_offset != 0 {
-                    flags |= crate::trace_stream::ACCEL_FF_FLAG_NONZERO;
+                    flags |= crate::trace::stream::ACCEL_FF_FLAG_NONZERO;
                 }
                 if max_offset != 0
                     && (torque_offset.unsigned_abs() >= max_offset
                         || flux_offset.unsigned_abs() >= max_offset)
                 {
-                    flags |= crate::trace_stream::ACCEL_FF_FLAG_CLAMPED;
+                    flags |= crate::trace::stream::ACCEL_FF_FLAG_CLAMPED;
                 }
                 let trace = self.trace_state_mut();
                 trace.cached_accel_torque_offset = torque_offset as i32;
@@ -866,14 +866,14 @@ impl TmcControlRuntime {
                 let mut flags = if homing_active || reset {
                     0
                 } else {
-                    crate::trace_stream::ACCEL_FF_FLAG_ENABLED
+                    crate::trace::stream::ACCEL_FF_FLAG_ENABLED
                 };
                 if offset != 0 {
-                    flags |= crate::trace_stream::ACCEL_FF_FLAG_NONZERO;
+                    flags |= crate::trace::stream::ACCEL_FF_FLAG_NONZERO;
                 }
                 if offset != 0 && offset.unsigned_abs() as u32 >= torque_limit.min(i16::MAX as u32)
                 {
-                    flags |= crate::trace_stream::ACCEL_FF_FLAG_CLAMPED;
+                    flags |= crate::trace::stream::ACCEL_FF_FLAG_CLAMPED;
                 }
                 let trace = self.trace_state_mut();
                 trace.cached_accel_torque_offset = offset as i32;
@@ -1059,23 +1059,23 @@ impl TmcControlRuntime {
         {
             let write_failed = self.trace_state().phase_advance_write_failed;
             let mut flags = if phase_advance_active && self.phase_advance_was_active {
-                crate::trace_stream::PHASE_ADVANCE_FLAG_ENABLED
+                crate::trace::stream::PHASE_ADVANCE_FLAG_ENABLED
             } else if phase_advance_requested {
-                crate::trace_stream::PHASE_ADVANCE_FLAG_GATED
+                crate::trace::stream::PHASE_ADVANCE_FLAG_GATED
             } else {
                 0
             };
             if trace_phase_output.counts != 0 {
-                flags |= crate::trace_stream::PHASE_ADVANCE_FLAG_NONZERO;
+                flags |= crate::trace::stream::PHASE_ADVANCE_FLAG_NONZERO;
             }
             if trace_phase_output.clamped {
-                flags |= crate::trace_stream::PHASE_ADVANCE_FLAG_CLAMPED;
+                flags |= crate::trace::stream::PHASE_ADVANCE_FLAG_CLAMPED;
             }
             if trace_phase_output.deadbanded {
-                flags |= crate::trace_stream::PHASE_ADVANCE_FLAG_DEADBAND;
+                flags |= crate::trace::stream::PHASE_ADVANCE_FLAG_DEADBAND;
             }
             if write_failed {
-                flags |= crate::trace_stream::PHASE_ADVANCE_FLAG_WRITE_FAILED;
+                flags |= crate::trace::stream::PHASE_ADVANCE_FLAG_WRITE_FAILED;
             }
 
             let trace = self.trace_state_mut();

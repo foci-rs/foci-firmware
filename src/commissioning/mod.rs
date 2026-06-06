@@ -25,7 +25,7 @@ use crate::commissioning::outer::{
 use crate::commissioning::types::{AdcCalResult, EngineKind, StepResult};
 use crate::pid::InnerLoopGains;
 use crate::state::tmc::TmcChannelState;
-use crate::trace_events::{
+use crate::trace::events::{
     CommissionTraceEvent, EVENT_COMMISSION_ENGINE_START, EVENT_COMMISSION_ENGINE_TERMINAL,
     EVENT_COMMISSION_PHASE_END, EVENT_COMMISSION_PHASE_START, TraceEventLevel, u32_arg,
 };
@@ -925,14 +925,14 @@ mod tests {
         assert_eq!(events.len(), 4);
         assert_trace_event(
             &events[2],
-            crate::trace_events::EVENT_COMMISSION_PHASE_END,
+            crate::trace::events::EVENT_COMMISSION_PHASE_END,
             engine_kind,
             phase_level,
             [i32::from(phase_id.to_u8()), i32::from(PHASE_END_OK)],
         );
         assert_trace_event(
             &events[3],
-            crate::trace_events::EVENT_COMMISSION_ENGINE_TERMINAL,
+            crate::trace::events::EVENT_COMMISSION_ENGINE_TERMINAL,
             engine_kind,
             terminal_level,
             [i32::from(terminal_status_code), 0],
@@ -1027,7 +1027,7 @@ mod tests {
             let events = &backend.trace_events;
             assert_eq!(
                 events[0].event_id,
-                crate::trace_events::EVENT_COMMISSION_ENGINE_START
+                crate::trace::events::EVENT_COMMISSION_ENGINE_START
             );
             assert_eq!(events[0].engine_kind, EngineKind::Commission);
             assert_eq!(
@@ -1039,7 +1039,7 @@ mod tests {
             );
             assert_eq!(
                 events[1].event_id,
-                crate::trace_events::EVENT_COMMISSION_PHASE_START
+                crate::trace::events::EVENT_COMMISSION_PHASE_START
             );
             assert_eq!(
                 events[1].payload[0],
@@ -1068,14 +1068,14 @@ mod tests {
         assert_eq!(events.len(), 4);
         assert_trace_event(
             &events[2],
-            crate::trace_events::EVENT_COMMISSION_PHASE_END,
+            crate::trace::events::EVENT_COMMISSION_PHASE_END,
             EngineKind::Commission,
             TraceEventLevel::Info,
             [crate::autotune::PhaseId::AdcCalibrate.to_u8() as i32, 0],
         );
         assert_trace_event(
             &events[3],
-            crate::trace_events::EVENT_COMMISSION_PHASE_START,
+            crate::trace::events::EVENT_COMMISSION_PHASE_START,
             EngineKind::Commission,
             TraceEventLevel::Info,
             [crate::autotune::PhaseId::CoilCheck.to_u8() as i32, 1],
@@ -1144,7 +1144,7 @@ mod tests {
         assert_eq!(events.len(), 4);
         assert_trace_event(
             &events[2],
-            crate::trace_events::EVENT_COMMISSION_PHASE_END,
+            crate::trace::events::EVENT_COMMISSION_PHASE_END,
             EngineKind::Commission,
             TraceEventLevel::Error,
             [
@@ -1154,7 +1154,7 @@ mod tests {
         );
         assert_trace_event(
             &events[3],
-            crate::trace_events::EVENT_COMMISSION_ENGINE_TERMINAL,
+            crate::trace::events::EVENT_COMMISSION_ENGINE_TERMINAL,
             EngineKind::Commission,
             TraceEventLevel::Error,
             [i32::from(status), 21],
@@ -1183,7 +1183,7 @@ mod tests {
         assert_eq!(events.len(), 4);
         assert_trace_event(
             &events[2],
-            crate::trace_events::EVENT_COMMISSION_PHASE_END,
+            crate::trace::events::EVENT_COMMISSION_PHASE_END,
             EngineKind::OuterTune,
             TraceEventLevel::Error,
             [
@@ -1193,7 +1193,7 @@ mod tests {
         );
         assert_trace_event(
             &events[3],
-            crate::trace_events::EVENT_COMMISSION_ENGINE_TERMINAL,
+            crate::trace::events::EVENT_COMMISSION_ENGINE_TERMINAL,
             EngineKind::OuterTune,
             TraceEventLevel::Error,
             [i32::from(status), 22],
@@ -1210,7 +1210,7 @@ mod tests {
         calibrate.emit_trace_start(&mut backend);
         assert_trace_event(
             &backend.trace_events[0],
-            crate::trace_events::EVENT_COMMISSION_ENGINE_START,
+            crate::trace::events::EVENT_COMMISSION_ENGINE_START,
             EngineKind::Calibrate,
             TraceEventLevel::Info,
             [0, 31],
@@ -1221,7 +1221,7 @@ mod tests {
         selftest.emit_trace_start(&mut backend);
         assert_trace_event(
             &backend.trace_events[0],
-            crate::trace_events::EVENT_COMMISSION_ENGINE_START,
+            crate::trace::events::EVENT_COMMISSION_ENGINE_START,
             EngineKind::Selftest,
             TraceEventLevel::Info,
             [0, 32],

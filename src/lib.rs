@@ -33,11 +33,7 @@ pub mod tmc;
 pub mod tmc_control;
 pub mod tmc_ops;
 pub mod tmc_safe_state;
-pub mod trace_events;
-#[cfg(feature = "trace")]
-pub mod trace_pressure;
-#[cfg(feature = "trace")]
-pub mod trace_stream;
+pub mod trace;
 
 /// Backwards-compatibility shim. The implementation lives in
 /// [`commissioning`]; this module exposes the engine and result types

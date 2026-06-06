@@ -41,17 +41,17 @@ fn restore_summary_packs_exact_fragments() {
         crate::autotune::CommissionError::VelocityValidationFailed.status_code(),
         17,
         1,
-        crate::trace_events::TraceEventLevel::Warn,
+        crate::trace::events::TraceEventLevel::Warn,
     );
 
     assert_eq!(
         backend.trace_events[0].event_id,
-        crate::trace_events::EVENT_COMMISSION_RESTORE_RESULT
+        crate::trace::events::EVENT_COMMISSION_RESTORE_RESULT
     );
     assert_eq!(backend.trace_events[0].payload, [0, 0]);
     assert_eq!(
         backend.trace_events[1].event_id,
-        crate::trace_events::EVENT_COMMISSION_RESTORE_ERROR_DRIFT
+        crate::trace::events::EVENT_COMMISSION_RESTORE_ERROR_DRIFT
     );
     assert_eq!(
         backend.trace_events[1].payload,
@@ -65,7 +65,7 @@ fn restore_summary_packs_exact_fragments() {
     );
     assert_eq!(
         backend.trace_events[2].event_id,
-        crate::trace_events::EVENT_COMMISSION_RESTORE_DISPOSITION
+        crate::trace::events::EVENT_COMMISSION_RESTORE_DISPOSITION
     );
     assert_eq!(backend.trace_events[2].payload, [0, 1]);
 }

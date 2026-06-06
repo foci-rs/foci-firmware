@@ -15,7 +15,7 @@ use super::{
 use crate::autotune::{CommissionError, OperatingMode, PhaseId, PositionGains, TransientBuffer};
 use crate::commissioning::outer::fail_outer;
 use crate::commissioning::types::{CommissioningBackend, StepResult};
-use crate::trace_events::{
+use crate::trace::events::{
     EVENT_COMMISSION_POSITION_TUNE_LIMITS, EVENT_COMMISSION_POSITION_TUNE_METRICS,
     EVENT_COMMISSION_POSITION_TUNE_RESULT, EVENT_COMMISSION_POSITION_TUNE_TARGET, TraceEventLevel,
     u32_arg,

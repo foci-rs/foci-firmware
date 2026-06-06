@@ -17,7 +17,7 @@ use super::{
 use crate::autotune::{CommissionError, MechanicalModel, PhaseId, TransientBuffer};
 use crate::commissioning::outer::{fail_outer, response};
 use crate::commissioning::types::{CommissioningBackend, StepResult};
-use crate::trace_events::{
+use crate::trace::events::{
     EVENT_COMMISSION_MECHANICAL_ID_ATTEMPT, EVENT_COMMISSION_MECHANICAL_ID_CLASSIFICATION,
     EVENT_COMMISSION_MECHANICAL_ID_RESPONSE, EVENT_COMMISSION_MECHANICAL_ID_RESULT,
     TraceEventLevel,
@@ -116,7 +116,7 @@ fn mechanical_retry_warning_code(data: &MechanicalIdData) -> u8 {
 mod tests {
     use super::*;
     use crate::commission_dispatch::test_support::MockBackend;
-    use crate::trace_events::EVENT_COMMISSION_DIAGNOSTIC_WARNING;
+    use crate::trace::events::EVENT_COMMISSION_DIAGNOSTIC_WARNING;
 
     #[test]
     fn mechanical_id_summary_packs_exact_fragments() {

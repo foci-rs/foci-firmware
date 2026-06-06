@@ -176,20 +176,20 @@ fn record_restore_summary<B: CommissioningBackend>(
     upstream_status: u8,
     drift_counts: u32,
     disposition: i32,
-    level: crate::trace_events::TraceEventLevel,
+    level: crate::trace::events::TraceEventLevel,
 ) {
     let summary_seq = trace_summary_seqs.next_restore();
     crate::commissioning::outer::trace_summary_event(
         backend,
         level,
-        crate::trace_events::EVENT_COMMISSION_RESTORE_RESULT,
+        crate::trace::events::EVENT_COMMISSION_RESTORE_RESULT,
         summary_seq,
         i32::from(restore_status),
     );
     crate::commissioning::outer::trace_summary_event(
         backend,
         level,
-        crate::trace_events::EVENT_COMMISSION_RESTORE_ERROR_DRIFT,
+        crate::trace::events::EVENT_COMMISSION_RESTORE_ERROR_DRIFT,
         summary_seq,
         crate::commissioning::outer::trace_pack_i16_pair(
             i32::from(upstream_status),
@@ -199,7 +199,7 @@ fn record_restore_summary<B: CommissioningBackend>(
     crate::commissioning::outer::trace_summary_event(
         backend,
         level,
-        crate::trace_events::EVENT_COMMISSION_RESTORE_DISPOSITION,
+        crate::trace::events::EVENT_COMMISSION_RESTORE_DISPOSITION,
         summary_seq,
         disposition,
     );
@@ -782,9 +782,9 @@ pub async fn drive_commission_result<B: CommissioningBackend>(
                 StepperPostAction::ArmZeroPosition | StepperPostAction::None => 0,
             };
             let restore_level = if restore_status == 0 {
-                crate::trace_events::TraceEventLevel::Warn
+                crate::trace::events::TraceEventLevel::Warn
             } else {
-                crate::trace_events::TraceEventLevel::Error
+                crate::trace::events::TraceEventLevel::Error
             };
             record_restore_summary(
                 backend,

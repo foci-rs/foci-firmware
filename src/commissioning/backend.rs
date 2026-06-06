@@ -138,7 +138,10 @@ pub trait CommissionBoardConfig {
 /// Commissioning trace emission capability.
 pub trait CommissionTrace {
     /// Record a transport-neutral commissioning trace event.
-    fn record_commission_trace_event(&mut self, _event: crate::trace_events::CommissionTraceEvent) {
+    fn record_commission_trace_event(
+        &mut self,
+        _event: crate::trace::events::CommissionTraceEvent,
+    ) {
     }
 }
 
@@ -190,7 +193,7 @@ pub trait CommissionTraceAccess {
     /// Record a transport-neutral commissioning trace event.
     fn record_commission_trace_event_impl(
         &mut self,
-        _event: crate::trace_events::CommissionTraceEvent,
+        _event: crate::trace::events::CommissionTraceEvent,
     ) {
     }
 }
@@ -335,7 +338,7 @@ impl<T> CommissionTrace for T
 where
     T: CommissionTraceAccess,
 {
-    fn record_commission_trace_event(&mut self, event: crate::trace_events::CommissionTraceEvent) {
+    fn record_commission_trace_event(&mut self, event: crate::trace::events::CommissionTraceEvent) {
         self.record_commission_trace_event_impl(event);
     }
 }
