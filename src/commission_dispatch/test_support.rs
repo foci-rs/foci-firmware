@@ -26,6 +26,11 @@ pub enum SpiOp {
 /// Stores register state in a linear map keyed by register address, records
 /// every SPI operation, and supports per-address failure injection for both
 /// reads and writes.
+///
+/// Do not implement the `Commission*Access` helper traits for this type.
+/// `MockBackend` intentionally keeps explicit capability impls so tests can
+/// inject register-map mismatches, SPI failures, and delay observations without
+/// colliding with production blanket impls.
 pub struct MockBackend {
     /// Current register values, keyed by TMC4671 address byte.
     pub registers: heapless::LinearMap<u8, u32, 64>,
@@ -142,10 +147,6 @@ impl MockBackend {
 impl CommissionRegisterIo for MockBackend {
     type Error = MockSpiError;
 
-    fn synthesize_verify_error(&self, _expected: u32, _actual: u32) -> Self::Error {
-        MockSpiError
-    }
-
     async fn read_register(&mut self, reg: Register) -> Result<u32, Self::Error> {
         let addr = reg.addr();
         self.spi_log.push(SpiOp::Read).ok();
@@ -190,6 +191,33 @@ impl CommissionRegisterIo for MockBackend {
         }
         let _ = self.registers.insert(addr, val);
         Ok(())
+    }
+
+    async fn write_register_verified(
+        &mut self,
+        reg: Register,
+        val: u32,
+    ) -> Result<(), Self::Error> {
+        self.write_register(reg, val).await?;
+        let actual = self.read_register(reg).await?;
+        if actual == val {
+            Ok(())
+        } else {
+            Err(MockSpiError)
+        }
+    }
+
+    async fn read_register_verified(
+        &mut self,
+        reg: Register,
+        expected: u32,
+    ) -> Result<u32, Self::Error> {
+        let actual = self.read_register(reg).await?;
+        if actual == expected {
+            Ok(actual)
+        } else {
+            Err(MockSpiError)
+        }
     }
 }
 
@@ -367,6 +395,50 @@ mod tests {
                 .write_register_verified(foci_tmc4671::registers::PID_POSITION_TARGET, 42)
                 .await;
             assert!(result.is_err(), "expected verify mismatch");
+        });
+    }
+
+    #[test]
+    fn mock_read_register_verified_succeeds_on_match() {
+        pollster::block_on(async {
+            let mut backend = MockBackend::new();
+            let _ = backend
+                .registers
+                .insert(foci_tmc4671::registers::PID_POSITION_TARGET.addr(), 42);
+
+            let result = backend
+                .read_register_verified(foci_tmc4671::registers::PID_POSITION_TARGET, 42)
+                .await;
+
+            assert_eq!(result, Ok(42));
+        });
+    }
+
+    #[test]
+    fn mock_read_register_verified_returns_error_on_mismatch() {
+        pollster::block_on(async {
+            let mut backend = MockBackend::new();
+            let _ = backend
+                .registers
+                .insert(foci_tmc4671::registers::PID_POSITION_TARGET.addr(), 999);
+
+            let result = backend
+                .read_register_verified(foci_tmc4671::registers::PID_POSITION_TARGET, 42)
+                .await;
+
+            assert!(result.is_err(), "expected verify mismatch");
+        });
+    }
+
+    #[test]
+    fn mock_try_read_encoder_count_propagates_read_failure() {
+        pollster::block_on(async {
+            let mut backend = MockBackend::new();
+            backend.fail_on_read = Some(foci_tmc4671::registers::ABN_DECODER_COUNT.addr());
+
+            let result = backend.try_read_encoder_count().await;
+
+            assert_eq!(result, Err(MockSpiError));
         });
     }
 }
