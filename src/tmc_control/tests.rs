@@ -10,7 +10,10 @@ use core::sync::atomic::Ordering::Relaxed;
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::signal::Signal;
 use embedded_hal_async::spi::{ErrorKind, ErrorType, Operation, SpiDevice};
-use foci_tmc4671::registers::{ABN_DECODER_PHI_E_PHI_M_OFFSET, PID_POSITION_TARGET};
+use foci_tmc4671::registers::{
+    ABN_DECODER_PHI_E_PHI_M_OFFSET, PID_ERROR_PID_POSITION_ERROR_SUM, PID_POSITION_ACTUAL,
+    PID_POSITION_P_POSITION_I, PID_POSITION_TARGET, STATUS_FLAGS,
+};
 use foci_tmc4671::spi::Tmc4671Spi;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -334,6 +337,214 @@ fn pid_error_clear_request_loads_hold_settle_countdown() {
         runtime.pid_error_clear_countdown_for_test(),
         crate::tmc_control::HOLD_SETTLE_DELAY_MS
     );
+}
+
+#[test]
+fn pid_error_settle_tick_waits_for_inactive_timer_then_clears() {
+    pollster::block_on(async {
+        let mut runtime = TmcControlRuntime::new_for_channel(0);
+        let tmc_state = crate::state::tmc::TmcChannelState::new();
+        let stepper_state = crate::state::stepper::StepperChannelState::new();
+        runtime.set_motor_enabled_for_test(true);
+        tmc_state.step_width_value.store(16, Relaxed);
+        tmc_state.pid_error_sums_clear.store(true, Relaxed);
+        stepper_state.timer_active_mirror.store(true, Relaxed);
+
+        let mut busy_tmc = Tmc4671Spi::new(RuntimeMockSpi::default());
+        runtime
+            .apply_pid_error_settle_tick(
+                &mut busy_tmc,
+                TmcControlStateRefs::new(&tmc_state, &stepper_state),
+            )
+            .await;
+
+        assert!(!tmc_state.pid_error_sums_clear.load(Relaxed));
+        assert_eq!(
+            runtime.pid_error_clear_countdown_for_test(),
+            crate::tmc_control::HOLD_SETTLE_DELAY_MS
+        );
+        assert!(busy_tmc.into_inner().writes.is_empty());
+
+        stepper_state.timer_active_mirror.store(false, Relaxed);
+        runtime.set_pid_error_clear_countdown_ms(1);
+        let mut settle_tmc =
+            Tmc4671Spi::new(RuntimeMockSpi::default().with_read(1_000).with_read(1_000));
+
+        runtime
+            .apply_pid_error_settle_tick(
+                &mut settle_tmc,
+                TmcControlStateRefs::new(&tmc_state, &stepper_state),
+            )
+            .await;
+
+        assert_eq!(runtime.pid_error_clear_countdown_for_test(), 0);
+        let raw_spi = settle_tmc.into_inner();
+        assert!(raw_spi.attempted_write_to(PID_POSITION_ACTUAL));
+        assert!(raw_spi.attempted_write_to(STATUS_FLAGS));
+    });
+}
+
+#[test]
+fn homing_channel_tick_suppresses_position_i_without_global_advance() {
+    pollster::block_on(async {
+        let mut runtime = TmcControlRuntime::new_for_channel(0);
+        let tmc_state = crate::state::tmc::TmcChannelState::new();
+        let stepper_state = crate::state::stepper::StepperChannelState::new();
+        tmc_state.position_p_value.store(123, Relaxed);
+        let mut tmc = Tmc4671Spi::new(RuntimeMockSpi::default());
+
+        let result = runtime
+            .apply_homing_channel_tick(
+                &mut tmc,
+                TmcControlStateRefs::new(&tmc_state, &stepper_state),
+                1,
+            )
+            .await;
+
+        assert_eq!(result, HomingMaintenanceResult::ReadyToAdvance);
+        assert_eq!(
+            tmc.into_inner().writes,
+            std::vec![(PID_POSITION_P_POSITION_I.addr(), 123u32 << 16)]
+        );
+    });
+}
+
+#[test]
+fn homing_channel_tick_preserves_openffboard_ungated_suppression() {
+    pollster::block_on(async {
+        let mut runtime = TmcControlRuntime::new_for_channel(0);
+        let tmc_state = crate::state::tmc::TmcChannelState::new();
+        let stepper_state = crate::state::stepper::StepperChannelState::new();
+        tmc_state.position_p_value.store(77, Relaxed);
+        let mut tmc = Tmc4671Spi::new(RuntimeMockSpi::default());
+
+        let result = runtime
+            .apply_homing_channel_tick(
+                &mut tmc,
+                TmcControlStateRefs::new(&tmc_state, &stepper_state),
+                1,
+            )
+            .await;
+
+        assert_eq!(result, HomingMaintenanceResult::ReadyToAdvance);
+        assert_eq!(
+            tmc.into_inner().writes,
+            std::vec![(PID_POSITION_P_POSITION_I.addr(), 77u32 << 16)]
+        );
+    });
+}
+
+#[test]
+fn homing_channel_tick_restores_position_i_and_clears_integrator() {
+    pollster::block_on(async {
+        let mut runtime = TmcControlRuntime::new_for_channel(0);
+        let tmc_state = crate::state::tmc::TmcChannelState::new();
+        let stepper_state = crate::state::stepper::StepperChannelState::new();
+        tmc_state.position_p_value.store(12, Relaxed);
+        tmc_state.position_i_value.store(34, Relaxed);
+        let mut tmc = Tmc4671Spi::new(RuntimeMockSpi::default());
+
+        let result = runtime
+            .apply_homing_channel_tick(
+                &mut tmc,
+                TmcControlStateRefs::new(&tmc_state, &stepper_state),
+                3,
+            )
+            .await;
+
+        assert_eq!(result, HomingMaintenanceResult::ReadyToAdvance);
+        let writes = tmc.into_inner().writes;
+        assert!(writes.contains(&(PID_POSITION_P_POSITION_I.addr(), (12u32 << 16) | 34)));
+        assert!(writes.contains(&(
+            PID_ERROR_PID_POSITION_ERROR_SUM.addr.addr(),
+            PID_ERROR_PID_POSITION_ERROR_SUM.sub_addr as u32,
+        )));
+        assert!(writes.contains(&(PID_ERROR_PID_POSITION_ERROR_SUM.data.addr(), 0)));
+    });
+}
+
+#[test]
+fn homing_channel_tick_preserves_openffboard_ungated_restore() {
+    pollster::block_on(async {
+        let mut runtime = TmcControlRuntime::new_for_channel(0);
+        let tmc_state = crate::state::tmc::TmcChannelState::new();
+        let stepper_state = crate::state::stepper::StepperChannelState::new();
+        tmc_state.position_p_value.store(7, Relaxed);
+        tmc_state.position_i_value.store(9, Relaxed);
+        let mut tmc = Tmc4671Spi::new(RuntimeMockSpi::default());
+
+        let result = runtime
+            .apply_homing_channel_tick(
+                &mut tmc,
+                TmcControlStateRefs::new(&tmc_state, &stepper_state),
+                3,
+            )
+            .await;
+
+        assert_eq!(result, HomingMaintenanceResult::ReadyToAdvance);
+        let writes = tmc.into_inner().writes;
+        assert!(writes.contains(&(PID_POSITION_P_POSITION_I.addr(), (7u32 << 16) | 9)));
+        assert!(writes.contains(&(
+            PID_ERROR_PID_POSITION_ERROR_SUM.addr.addr(),
+            PID_ERROR_PID_POSITION_ERROR_SUM.sub_addr as u32,
+        )));
+        assert!(writes.contains(&(PID_ERROR_PID_POSITION_ERROR_SUM.data.addr(), 0)));
+    });
+}
+
+#[test]
+fn homing_channel_tick_restore_failure_blocks_advance() {
+    pollster::block_on(async {
+        let mut runtime = TmcControlRuntime::new_for_channel(0);
+        let tmc_state = crate::state::tmc::TmcChannelState::new();
+        let stepper_state = crate::state::stepper::StepperChannelState::new();
+        runtime.set_phase_advance_for_test(true, 0x1111_2222, 0x3333_4444);
+        let raw_spi =
+            RuntimeMockSpi::default().fail_writes_to(ABN_DECODER_PHI_E_PHI_M_OFFSET.addr());
+        let mut tmc = Tmc4671Spi::new(raw_spi);
+
+        let result = runtime
+            .apply_homing_channel_tick(
+                &mut tmc,
+                TmcControlStateRefs::new(&tmc_state, &stepper_state),
+                1,
+            )
+            .await;
+
+        assert_eq!(result, HomingMaintenanceResult::RetryCurrentState);
+        assert!(runtime.phase_advance_active_for_test());
+        assert!(
+            !tmc.into_inner()
+                .attempted_write_to(PID_POSITION_P_POSITION_I)
+        );
+    });
+}
+
+#[test]
+fn advance_homing_state_after_channels_waits_for_all_channels() {
+    let homing_state = core::sync::atomic::AtomicU8::new(1);
+    let homing_triggered = core::sync::atomic::AtomicU8::new(0xFF);
+    let homing = TmcControlHomingRefs::new(&homing_state, &homing_triggered);
+
+    TmcControlRuntime::advance_homing_state_after_channels(homing, 1, false);
+    assert_eq!(homing_state.load(Relaxed), 1);
+
+    let homing = TmcControlHomingRefs::new(&homing_state, &homing_triggered);
+    TmcControlRuntime::advance_homing_state_after_channels(homing, 1, true);
+    assert_eq!(homing_state.load(Relaxed), 2);
+
+    let homing = TmcControlHomingRefs::new(&homing_state, &homing_triggered);
+    TmcControlRuntime::advance_homing_state_after_channels(homing, 2, true);
+    assert_eq!(homing_state.load(Relaxed), 2);
+
+    homing_triggered.store(0, Relaxed);
+    let homing = TmcControlHomingRefs::new(&homing_state, &homing_triggered);
+    TmcControlRuntime::advance_homing_state_after_channels(homing, 2, true);
+    assert_eq!(homing_state.load(Relaxed), 3);
+
+    let homing = TmcControlHomingRefs::new(&homing_state, &homing_triggered);
+    TmcControlRuntime::advance_homing_state_after_channels(homing, 3, true);
+    assert_eq!(homing_state.load(Relaxed), 0);
 }
 
 #[test]

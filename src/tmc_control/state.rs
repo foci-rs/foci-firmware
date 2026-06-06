@@ -85,6 +85,15 @@ pub struct TmcControlTraceTick {
     pub metadata_due: bool,
 }
 
+/// Result of applying one channel's homing maintenance for a frozen state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+pub enum HomingMaintenanceResult {
+    /// This channel completed or did not need work for the frozen state.
+    ReadyToAdvance,
+    /// This channel could not complete work; keep the global homing state.
+    RetryCurrentState,
+}
+
 /// Long-lived board-agnostic TMC control state.
 pub struct TmcControlRuntime {
     channel: u8,
@@ -255,6 +264,39 @@ impl TmcControlRuntime {
     pub fn poll_pid_error_clear_request(&mut self, tmc: &TmcChannelState) {
         if tmc.pid_error_sums_clear.swap(false, Relaxed) {
             self.pid_error_clear_countdown_ms = crate::tmc_control::HOLD_SETTLE_DELAY_MS;
+        }
+    }
+
+    /// Apply host-requested PID error-sum settle and clear maintenance.
+    ///
+    /// Consumes the request latch, waits for the hold timer to become inactive,
+    /// then snaps the hold target and clears PID error accumulators when the
+    /// runtime countdown expires. SPI failures are best-effort and logged.
+    pub async fn apply_pid_error_settle_tick<B>(
+        &mut self,
+        tmc_spi: &mut foci_tmc4671::spi::Tmc4671Spi<B>,
+        refs: TmcControlStateRefs<'_>,
+    ) where
+        B: embedded_hal_async::spi::SpiDevice<u8>,
+    {
+        self.poll_pid_error_clear_request(refs.tmc);
+        let timer_active = refs.stepper.timer_active_mirror.load(Relaxed);
+        if self.motor_enabled
+            && self.commission_engine.is_none()
+            && !timer_active
+            && self.pid_error_clear_countdown_ms > 0
+        {
+            self.pid_error_clear_countdown_ms -= 1;
+            if self.pid_error_clear_countdown_ms == 0 {
+                if crate::tmc_ops::settle_hold_and_clear_pid_errors(tmc_spi, refs.tmc)
+                    .await
+                    .is_err()
+                {
+                    defmt::warn!("TMC4671 PID settle/clear failed");
+                } else {
+                    defmt::info!("TMC4671 PID settled and cleared after motion");
+                }
+            }
         }
     }
 
@@ -1110,6 +1152,72 @@ impl TmcControlRuntime {
         }
     }
 
+    /// Apply one channel's homing maintenance for a frozen homing state.
+    ///
+    /// The caller owns global homing state advancement. This method only
+    /// performs per-channel TMC register work for the provided snapshot.
+    pub async fn apply_homing_channel_tick<B>(
+        &mut self,
+        tmc_spi: &mut foci_tmc4671::spi::Tmc4671Spi<B>,
+        refs: TmcControlStateRefs<'_>,
+        homing_state: u8,
+    ) -> HomingMaintenanceResult
+    where
+        B: embedded_hal_async::spi::SpiDevice<u8>,
+    {
+        match homing_state {
+            1 => {
+                if !self.restore_phase_advance_now(tmc_spi).await {
+                    defmt::warn!("phase advance: failed to restore ABN offset before homing");
+                    return HomingMaintenanceResult::RetryCurrentState;
+                }
+
+                let pos_p = refs.tmc.position_p_value.load(Relaxed);
+                let reg = (pos_p as u32) << 16;
+                let _ = tmc_spi
+                    .write_register(foci_tmc4671::registers::PID_POSITION_P_POSITION_I, reg)
+                    .await;
+                defmt::info!("homing: position I suppressed");
+                HomingMaintenanceResult::ReadyToAdvance
+            }
+            3 => {
+                let pos_p = refs.tmc.position_p_value.load(Relaxed);
+                let pos_i = refs.tmc.position_i_value.load(Relaxed);
+                let reg = ((pos_p as u32) << 16) | pos_i as u32;
+                let _ = tmc_spi
+                    .write_register(foci_tmc4671::registers::PID_POSITION_P_POSITION_I, reg)
+                    .await;
+                let _ = tmc_spi
+                    .write_sub_register(
+                        foci_tmc4671::registers::PID_ERROR_PID_POSITION_ERROR_SUM,
+                        0,
+                    )
+                    .await;
+                defmt::info!("homing: position I restored, integrator cleared");
+                HomingMaintenanceResult::ReadyToAdvance
+            }
+            _ => HomingMaintenanceResult::ReadyToAdvance,
+        }
+    }
+
+    /// Advance the global homing state after every channel observed a snapshot.
+    pub fn advance_homing_state_after_channels(
+        homing: TmcControlHomingRefs<'_>,
+        snapshot: u8,
+        all_channels_ready: bool,
+    ) {
+        if !all_channels_ready {
+            return;
+        }
+
+        match snapshot {
+            1 => homing.state.store(2, Relaxed),
+            2 if homing.triggered.load(Relaxed) != 0xFF => homing.state.store(3, Relaxed),
+            3 => homing.state.store(0, Relaxed),
+            _ => {}
+        }
+    }
+
     /// Apply slow maintenance tick work.
     ///
     /// This covers host-requested PID error clear settling, homing position-I
@@ -1135,62 +1243,17 @@ impl TmcControlRuntime {
         let _ = config;
         let mut actions = BoardActions::new();
 
-        self.poll_pid_error_clear_request(refs.tmc);
-        let timer_active = refs.stepper.timer_active_mirror.load(Relaxed);
-        if self.motor_enabled
-            && self.commission_engine.is_none()
-            && !timer_active
-            && self.pid_error_clear_countdown_ms > 0
-        {
-            self.pid_error_clear_countdown_ms -= 1;
-            if self.pid_error_clear_countdown_ms == 0 {
-                if crate::tmc_ops::settle_hold_and_clear_pid_errors(tmc_spi, refs.tmc)
-                    .await
-                    .is_err()
-                {
-                    defmt::warn!("TMC4671 PID settle/clear failed");
-                } else {
-                    defmt::info!("TMC4671 PID settled and cleared after motion");
-                }
-            }
-        }
+        self.apply_pid_error_settle_tick(tmc_spi, refs).await;
 
-        match homing.state.load(Relaxed) {
-            1 => {
-                if !self.restore_phase_advance_now(tmc_spi).await {
-                    defmt::warn!("phase advance: failed to restore ABN offset before homing");
-                    return actions;
-                }
-
-                let pos_p = refs.tmc.position_p_value.load(Relaxed);
-                let reg = (pos_p as u32) << 16;
-                let _ = tmc_spi
-                    .write_register(foci_tmc4671::registers::PID_POSITION_P_POSITION_I, reg)
-                    .await;
-                homing.state.store(2, Relaxed);
-                defmt::info!("homing: position I suppressed");
-            }
-            2 if homing.triggered.load(Relaxed) != 0xFF => {
-                homing.state.store(3, Relaxed);
-            }
-            3 => {
-                let pos_p = refs.tmc.position_p_value.load(Relaxed);
-                let pos_i = refs.tmc.position_i_value.load(Relaxed);
-                let reg = ((pos_p as u32) << 16) | pos_i as u32;
-                let _ = tmc_spi
-                    .write_register(foci_tmc4671::registers::PID_POSITION_P_POSITION_I, reg)
-                    .await;
-                let _ = tmc_spi
-                    .write_sub_register(
-                        foci_tmc4671::registers::PID_ERROR_PID_POSITION_ERROR_SUM,
-                        0,
-                    )
-                    .await;
-                homing.state.store(0, Relaxed);
-                defmt::info!("homing: position I restored, integrator cleared");
-            }
-            _ => {}
+        let homing_snapshot = homing.state.load(Relaxed);
+        let homing_ready = self
+            .apply_homing_channel_tick(tmc_spi, refs, homing_snapshot)
+            .await
+            == HomingMaintenanceResult::ReadyToAdvance;
+        if !homing_ready {
+            return actions;
         }
+        Self::advance_homing_state_after_channels(homing, homing_snapshot, true);
 
         self.status_poll_counter += 1;
         if self.status_poll_counter >= 1000 {
