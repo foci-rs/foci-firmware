@@ -1341,6 +1341,37 @@ impl TmcControlRuntime {
         crate::tmc::velocity_transient_period_us(rate_hz)
     }
 
+    /// Return the fastest requested control period across channel runtimes.
+    pub fn minimum_control_period_us(
+        runtimes: &[TmcControlRuntime],
+        refs: &[TmcControlStateRefs<'_>],
+    ) -> u32 {
+        runtimes
+            .iter()
+            .zip(refs.iter().copied())
+            .map(|(runtime, refs)| runtime.control_period_us(refs))
+            .min()
+            .unwrap_or(1_000)
+    }
+
+    /// Update a caller-owned slow-control accumulator.
+    ///
+    /// This is the board-level form used by multi-channel boards that need one
+    /// shared slow tick for all channels.
+    pub fn update_slow_control_accumulator(accum_us: &mut u16, control_period_us: u32) -> bool {
+        if control_period_us >= 1_000 {
+            *accum_us = 0;
+            return true;
+        }
+        *accum_us = accum_us.saturating_add(u16::try_from(control_period_us).unwrap_or(u16::MAX));
+        if *accum_us >= 1_000 {
+            *accum_us -= 1_000;
+            true
+        } else {
+            false
+        }
+    }
+
     /// Update the slow-control decimation accumulator and return whether slow
     /// work is due this tick.
     ///
@@ -1354,19 +1385,7 @@ impl TmcControlRuntime {
     /// # Parameters
     /// - `control_period_us`: Current control period in microseconds.
     pub fn update_slow_control(&mut self, control_period_us: u32) -> bool {
-        if control_period_us >= 1_000 {
-            self.slow_control_accum_us = 0;
-            return true;
-        }
-        self.slow_control_accum_us = self
-            .slow_control_accum_us
-            .saturating_add(u16::try_from(control_period_us).unwrap_or(u16::MAX));
-        if self.slow_control_accum_us >= 1_000 {
-            self.slow_control_accum_us -= 1_000;
-            true
-        } else {
-            false
-        }
+        Self::update_slow_control_accumulator(&mut self.slow_control_accum_us, control_period_us)
     }
 
     #[cfg(test)]
