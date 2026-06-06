@@ -1,9 +1,32 @@
-//! Shared commissioning trace event contract.
+//! Shared trace event contract.
 
 use crate::commissioning::types::EngineKind;
 
-/// USB trace subsystem ID for commissioning, calibration, selftest, and tune events.
+/// Informational USB trace event severity level.
+pub const EVENT_LEVEL_INFO: u8 = 1;
+/// Warning USB trace event severity level.
+pub const EVENT_LEVEL_WARN: u8 = 2;
+/// Error USB trace event severity level.
+pub const EVENT_LEVEL_ERROR: u8 = 3;
+
+/// USB trace subsystem ID for TMC control events.
+pub const SUBSYSTEM_TMC_CONTROL: u8 = 1;
+/// USB trace subsystem ID for step timer events.
+pub const SUBSYSTEM_STEP_TIMER: u8 = 2;
+/// USB trace subsystem ID for USB trace transport events.
+pub const SUBSYSTEM_USB_TRACE: u8 = 3;
+/// USB trace subsystem ID for Klipper protocol events.
+pub const SUBSYSTEM_KLIPPER: u8 = 4;
+/// USB trace subsystem ID for homing and endstop events.
+pub const SUBSYSTEM_HOMING_ENDSTOP: u8 = 5;
+/// USB trace subsystem ID for safety shutdown events.
+pub const SUBSYSTEM_SAFETY_SHUTDOWN: u8 = 6;
+/// USB trace subsystem ID for commissioning, calibration, selftest, and tune
+/// events.
 pub const SUBSYSTEM_COMMISSIONING: u8 = 7;
+
+/// One-shot event reporting trace SPI sample duration.
+pub const EVENT_SPI_SAMPLE_DURATION: u16 = 11;
 
 /// Engine lifecycle start event.
 pub const EVENT_COMMISSION_ENGINE_START: u16 = 100;
@@ -159,9 +182,24 @@ mod tests {
 
     #[test]
     fn trace_event_level_has_wire_repr() {
-        assert_eq!(TraceEventLevel::Info as u8, 1);
-        assert_eq!(TraceEventLevel::Warn as u8, 2);
-        assert_eq!(TraceEventLevel::Error as u8, 3);
+        assert_eq!(EVENT_LEVEL_INFO, 1);
+        assert_eq!(EVENT_LEVEL_WARN, 2);
+        assert_eq!(EVENT_LEVEL_ERROR, 3);
+        assert_eq!(TraceEventLevel::Info as u8, EVENT_LEVEL_INFO);
+        assert_eq!(TraceEventLevel::Warn as u8, EVENT_LEVEL_WARN);
+        assert_eq!(TraceEventLevel::Error as u8, EVENT_LEVEL_ERROR);
+    }
+
+    #[test]
+    fn trace_subsystem_ids_are_stable() {
+        assert_eq!(SUBSYSTEM_TMC_CONTROL, 1);
+        assert_eq!(SUBSYSTEM_STEP_TIMER, 2);
+        assert_eq!(SUBSYSTEM_USB_TRACE, 3);
+        assert_eq!(SUBSYSTEM_KLIPPER, 4);
+        assert_eq!(SUBSYSTEM_HOMING_ENDSTOP, 5);
+        assert_eq!(SUBSYSTEM_SAFETY_SHUTDOWN, 6);
+        assert_eq!(SUBSYSTEM_COMMISSIONING, 7);
+        assert_eq!(EVENT_SPI_SAMPLE_DURATION, 11);
     }
 
     #[test]
