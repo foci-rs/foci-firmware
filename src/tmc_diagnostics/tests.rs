@@ -1,9 +1,12 @@
 use super::*;
-use crate::tmc::{tmc_current_step_test, tmc_current_vector_step_test};
+use crate::tmc::{
+    tmc_current_step_test, tmc_current_torque_sample_test, tmc_current_vector_step_test,
+    tmc_position_torque_offset_sample_test,
+};
 use crate::tmc_control::TmcControlRuntime;
 use foci_tmc4671::registers::{
-    ADC_AGPI_A_RAW_ADC_VM_RAW, INTERIM_FOC_IQ_ID, INTERIM_FOC_UQ_UD_LIMITED, PID_POSITION_TARGET,
-    PID_TORQUE_FLUX_TARGET, PIDOUT_UQ_UD_LIMITS,
+    ADC_AGPI_A_RAW_ADC_VM_RAW, INTERIM_FOC_IQ_ID, INTERIM_FOC_UQ_UD_LIMITED, MODE_RAMP_MODE_MOTION,
+    PID_POSITION_TARGET, PID_TORQUE_FLUX_OFFSET, PID_TORQUE_FLUX_TARGET, PIDOUT_UQ_UD_LIMITS,
 };
 use foci_tmc4671::spi::Tmc4671Spi;
 
@@ -298,6 +301,121 @@ fn current_step_success_records_settle_delays_and_restores_limit() {
             raw_spi
                 .read_requests
                 .contains(&INTERIM_FOC_UQ_UD_LIMITED.data.addr())
+        );
+    });
+}
+
+#[test]
+fn torque_sample_not_ready_does_not_emit_detail() {
+    pollster::block_on(async {
+        let mut runtime = TmcControlRuntime::new_for_channel(0);
+        let mut delay = MockDelay::default();
+        let mut tmc = Tmc4671Spi::new(DiagnosticMockSpi::default());
+
+        let outcome = run_current_torque_sample_request(
+            tmc_current_torque_sample_test(0, 4, 22, 0, 3, 444),
+            DiagnosticContext {
+                tmc: &mut tmc,
+                runtime: &mut runtime,
+                delay: &mut delay,
+                readiness: DiagnosticReadiness {
+                    homing_active: false,
+                    stepper_active: false,
+                    saved_voltage_limit: 777,
+                },
+            },
+        )
+        .await;
+
+        let DiagnosticOutcome::Handled(DiagnosticReport::CurrentTorqueSample {
+            report,
+            emit_detail,
+        }) = outcome
+        else {
+            panic!("expected torque sample report");
+        };
+        assert_eq!(report.status, CURRENT_STEP_STATUS_NOT_READY);
+        assert!(!emit_detail);
+    });
+}
+
+#[test]
+fn position_offset_rejects_non_position_mode() {
+    pollster::block_on(async {
+        let mut runtime = ready_runtime();
+        let mut delay = MockDelay::default();
+        let raw_spi = DiagnosticMockSpi::default().with_read(0x8000_0001);
+        let mut tmc = Tmc4671Spi::new(raw_spi);
+
+        let outcome = run_position_torque_offset_sample_request(
+            tmc_position_torque_offset_sample_test(0, 4, 33, 3, 444),
+            DiagnosticContext {
+                tmc: &mut tmc,
+                runtime: &mut runtime,
+                delay: &mut delay,
+                readiness: DiagnosticReadiness {
+                    homing_active: false,
+                    stepper_active: false,
+                    saved_voltage_limit: 777,
+                },
+            },
+        )
+        .await;
+
+        let DiagnosticOutcome::Handled(DiagnosticReport::CurrentTorqueSample {
+            report,
+            emit_detail,
+        }) = outcome
+        else {
+            panic!("expected position offset report");
+        };
+        assert_eq!(report.status, CURRENT_STEP_STATUS_NOT_READY);
+        assert!(!emit_detail);
+        assert!(
+            tmc.into_inner()
+                .read_requests
+                .contains(&MODE_RAMP_MODE_MOTION.addr())
+        );
+    });
+}
+
+#[test]
+fn position_offset_spi_failure_attempts_offset_restore() {
+    pollster::block_on(async {
+        let raw_spi = DiagnosticMockSpi::default()
+            .with_read(0x8000_0003) // saved mode
+            .with_read(0x1234_5678) // saved offset
+            .fail_writes_to(PIDOUT_UQ_UD_LIMITS.addr());
+        let mut tmc = Tmc4671Spi::new(raw_spi);
+        let mut runtime = ready_runtime();
+        let mut delay = MockDelay::default();
+
+        let outcome = run_position_torque_offset_sample_request(
+            tmc_position_torque_offset_sample_test(0, 4, 33, 3, 444),
+            DiagnosticContext {
+                tmc: &mut tmc,
+                runtime: &mut runtime,
+                delay: &mut delay,
+                readiness: DiagnosticReadiness {
+                    homing_active: false,
+                    stepper_active: false,
+                    saved_voltage_limit: 777,
+                },
+            },
+        )
+        .await;
+
+        let DiagnosticOutcome::Handled(DiagnosticReport::CurrentTorqueSample { report, .. }) =
+            outcome
+        else {
+            panic!("expected position offset report");
+        };
+        assert_eq!(report.status, CURRENT_STEP_STATUS_SPI);
+        let raw_spi = tmc.into_inner();
+        assert!(
+            raw_spi
+                .write_attempts
+                .contains(&(PID_TORQUE_FLUX_OFFSET.addr(), 0x1234_5678))
         );
     });
 }

@@ -7,6 +7,7 @@
 mod current_step;
 mod helpers;
 mod reports;
+mod torque_sample;
 
 #[cfg(test)]
 mod tests;
@@ -17,6 +18,9 @@ pub use reports::{
     CURRENT_STEP_STATUS_NOT_READY, CURRENT_STEP_STATUS_SPI, CurrentStepReport,
     CurrentTorqueSampleReport, VoltageStepReport, empty_current_torque_sample_report,
     empty_voltage_step_report,
+};
+pub use torque_sample::{
+    run_current_torque_sample_request, run_position_torque_offset_sample_request,
 };
 
 use foci_tmc4671::spi::Tmc4671Spi;
