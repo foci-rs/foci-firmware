@@ -7,9 +7,242 @@ use core::sync::atomic::{AtomicU16, Ordering};
 
 use crate::trace::stream::{
     EVENT_PAYLOAD_LEN, EventSample, FRAME_TYPE_EVENT, FRAME_TYPE_STATUS, FrameBuf, FrameHeader,
-    STATUS_PAYLOAD_LEN, StatusSample, encode_event_payload, encode_status_payload,
-    sequence_before_or_equal,
+    METADATA_PAYLOAD_MAX, METADATA_SOURCE_MAX, METADATA_STRING_MAX, SOURCE_INDEX_NA,
+    SOURCE_KIND_BOARD, SOURCE_KIND_FOCI, SOURCE_KIND_KLIPPER, SOURCE_KIND_USB, STATUS_PAYLOAD_LEN,
+    StatusSample, encode_event_payload, encode_status_payload, sequence_before_or_equal,
 };
+
+/// One trace source advertised by metadata and used by source-scoped frames.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, defmt::Format)]
+pub struct TraceSourceDescriptor {
+    /// Trace source kind.
+    pub source_kind: u8,
+    /// Trace source index, or [`SOURCE_INDEX_NA`] for global sources.
+    pub source_index: u8,
+    /// Stable human-readable source label.
+    pub label: &'static str,
+}
+
+/// Board-global trace source.
+pub const BOARD_SOURCE: TraceSourceDescriptor = TraceSourceDescriptor {
+    source_kind: SOURCE_KIND_BOARD,
+    source_index: SOURCE_INDEX_NA,
+    label: "board",
+};
+
+/// USB trace transport source.
+pub const USB_SOURCE: TraceSourceDescriptor = TraceSourceDescriptor {
+    source_kind: SOURCE_KIND_USB,
+    source_index: SOURCE_INDEX_NA,
+    label: "usb",
+};
+
+/// Klipper/protocol source.
+pub const KLIPPER_SOURCE: TraceSourceDescriptor = TraceSourceDescriptor {
+    source_kind: SOURCE_KIND_KLIPPER,
+    source_index: SOURCE_INDEX_NA,
+    label: "klipper",
+};
+
+/// Return the canonical FOCI/TMC source descriptor for `channel`.
+pub const fn foci_source(channel: u8) -> Option<TraceSourceDescriptor> {
+    match channel {
+        0 => Some(TraceSourceDescriptor {
+            source_kind: SOURCE_KIND_FOCI,
+            source_index: 0,
+            label: "channel0",
+        }),
+        1 => Some(TraceSourceDescriptor {
+            source_kind: SOURCE_KIND_FOCI,
+            source_index: 1,
+            label: "channel1",
+        }),
+        _ => None,
+    }
+}
+
+/// Metadata fields supplied by board trace integrations.
+pub struct TraceMetadataInputs<'a> {
+    /// Number of skipped-sample counters encoded before configuration.
+    pub skipped_sample_counter_count: u8,
+    /// Firmware clock rate in trace ticks per second.
+    pub clock_freq: u32,
+    /// Advertised critical sample rate in Hz, or zero when variable.
+    pub critical_hz: u32,
+    /// Advertised control-detail sample rate in Hz, or zero when variable.
+    pub control_detail_hz: u32,
+    /// Advertised status sample rate in Hz, or zero when variable.
+    pub status_hz: u32,
+    /// Elapsed milliseconds before trace configuration.
+    pub pre_configuration_elapsed_ms: u32,
+    /// Critical samples skipped before trace configuration.
+    pub pre_configuration_skipped_critical: u32,
+    /// Control-detail samples skipped before trace configuration.
+    pub pre_configuration_skipped_control_detail: u32,
+    /// Status samples skipped before trace configuration.
+    pub pre_configuration_skipped_status: u32,
+    /// Firmware identifier string.
+    pub firmware_id: &'a str,
+    /// Product identifier string.
+    pub product: &'a str,
+    /// USB serial string, when available.
+    pub serial: &'a str,
+    /// Canonical source descriptors.
+    pub sources: &'a [TraceSourceDescriptor],
+}
+
+/// Error while building a trace metadata payload.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, defmt::Format)]
+pub enum TraceMetadataError {
+    /// The source list is longer than the protocol metadata budget.
+    TooManySources,
+    /// A FOCI channel has no shared canonical descriptor.
+    UnsupportedFociChannel,
+    /// A source label exceeds the metadata string limit.
+    SourceLabelTooLong,
+    /// The complete metadata payload does not fit in one frame buffer.
+    PayloadTooLarge,
+}
+
+/// Return canonical sources for a board with `channel_count` FOCI channels.
+pub fn canonical_sources(
+    channel_count: u8,
+) -> Result<heapless::Vec<TraceSourceDescriptor, METADATA_SOURCE_MAX>, TraceMetadataError> {
+    if usize::from(channel_count) + 3 > METADATA_SOURCE_MAX {
+        return Err(TraceMetadataError::TooManySources);
+    }
+
+    let mut sources = heapless::Vec::new();
+    sources
+        .push(BOARD_SOURCE)
+        .map_err(|_| TraceMetadataError::TooManySources)?;
+    sources
+        .push(USB_SOURCE)
+        .map_err(|_| TraceMetadataError::TooManySources)?;
+    sources
+        .push(KLIPPER_SOURCE)
+        .map_err(|_| TraceMetadataError::TooManySources)?;
+
+    let mut channel = 0;
+    while channel < channel_count {
+        let source = foci_source(channel).ok_or(TraceMetadataError::UnsupportedFociChannel)?;
+        sources
+            .push(source)
+            .map_err(|_| TraceMetadataError::TooManySources)?;
+        channel += 1;
+    }
+
+    Ok(sources)
+}
+
+/// Canonical board status cache slot.
+pub const fn board_status_slot() -> usize {
+    0
+}
+
+/// Canonical USB status cache slot.
+pub const fn usb_status_slot() -> usize {
+    1
+}
+
+/// Canonical Klipper status cache slot.
+pub const fn klipper_status_slot() -> usize {
+    2
+}
+
+/// Canonical FOCI/TMC status cache slot for `channel`.
+pub const fn foci_status_slot(channel: u8) -> usize {
+    3 + channel as usize
+}
+
+/// Total canonical status cache slots for `channel_count` FOCI channels.
+pub const fn status_slot_count(channel_count: usize) -> usize {
+    3 + channel_count
+}
+
+fn metadata_push(
+    out: &mut heapless::Vec<u8, METADATA_PAYLOAD_MAX>,
+    bytes: &[u8],
+) -> Result<(), TraceMetadataError> {
+    out.extend_from_slice(bytes)
+        .map_err(|_| TraceMetadataError::PayloadTooLarge)
+}
+
+fn metadata_push_capped_str(
+    out: &mut heapless::Vec<u8, METADATA_PAYLOAD_MAX>,
+    value: &str,
+) -> Result<(), TraceMetadataError> {
+    let bytes = value.as_bytes();
+    let len = bytes.len().min(METADATA_STRING_MAX);
+    out.push(len as u8)
+        .map_err(|_| TraceMetadataError::PayloadTooLarge)?;
+    metadata_push(out, &bytes[..len])
+}
+
+fn metadata_push_source_label(
+    out: &mut heapless::Vec<u8, METADATA_PAYLOAD_MAX>,
+    label: &str,
+) -> Result<(), TraceMetadataError> {
+    let bytes = label.as_bytes();
+    if bytes.len() > METADATA_STRING_MAX {
+        return Err(TraceMetadataError::SourceLabelTooLong);
+    }
+    out.push(bytes.len() as u8)
+        .map_err(|_| TraceMetadataError::PayloadTooLarge)?;
+    metadata_push(out, bytes)
+}
+
+/// Build a schema-1 metadata payload from board-supplied values.
+pub fn build_metadata_payload(
+    inputs: TraceMetadataInputs<'_>,
+) -> Result<heapless::Vec<u8, METADATA_PAYLOAD_MAX>, TraceMetadataError> {
+    if inputs.sources.len() > METADATA_SOURCE_MAX {
+        return Err(TraceMetadataError::TooManySources);
+    }
+
+    let mut payload = heapless::Vec::<u8, METADATA_PAYLOAD_MAX>::new();
+    metadata_push(
+        &mut payload,
+        &[
+            1, // metadata schema
+            1, // trace feature revision
+            inputs.sources.len() as u8,
+            inputs.skipped_sample_counter_count,
+        ],
+    )?;
+    metadata_push(&mut payload, &inputs.clock_freq.to_le_bytes())?;
+    metadata_push(&mut payload, &inputs.critical_hz.to_le_bytes())?;
+    metadata_push(&mut payload, &inputs.control_detail_hz.to_le_bytes())?;
+    metadata_push(&mut payload, &inputs.status_hz.to_le_bytes())?;
+    metadata_push(
+        &mut payload,
+        &inputs.pre_configuration_elapsed_ms.to_le_bytes(),
+    )?;
+    metadata_push(
+        &mut payload,
+        &inputs.pre_configuration_skipped_critical.to_le_bytes(),
+    )?;
+    metadata_push(
+        &mut payload,
+        &inputs
+            .pre_configuration_skipped_control_detail
+            .to_le_bytes(),
+    )?;
+    metadata_push(
+        &mut payload,
+        &inputs.pre_configuration_skipped_status.to_le_bytes(),
+    )?;
+    metadata_push_capped_str(&mut payload, inputs.firmware_id)?;
+    metadata_push_capped_str(&mut payload, inputs.product)?;
+    metadata_push_capped_str(&mut payload, inputs.serial)?;
+
+    for source in inputs.sources {
+        metadata_push(&mut payload, &[source.source_kind, source.source_index])?;
+        metadata_push_source_label(&mut payload, source.label)?;
+    }
+
+    Ok(payload)
+}
 
 /// Last emitted status sample for one source slot.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -166,7 +399,9 @@ pub fn select_next_queue(
 mod tests {
     use super::*;
     use crate::trace::stream::{
-        HEADER_LEN, SOURCE_INDEX_NA, SOURCE_KIND_BOARD, SOURCE_KIND_FOCI, SOURCE_KIND_USB,
+        EVENT_PAYLOAD_LEN, FRAME_TYPE_EVENT, FRAME_TYPE_STATUS, HEADER_LEN, METADATA_PAYLOAD_MAX,
+        METADATA_STRING_MAX, SOURCE_INDEX_NA, SOURCE_KIND_BOARD, SOURCE_KIND_FOCI,
+        SOURCE_KIND_KLIPPER, SOURCE_KIND_USB, STATUS_PAYLOAD_LEN,
     };
 
     fn header(frame_type: u8, payload_len: usize, flags: u8) -> FrameHeader {
@@ -285,6 +520,221 @@ mod tests {
             },
             false,
         ));
+    }
+
+    #[test]
+    fn canonical_sources_are_global_sources_then_foci_channels() {
+        let sources = canonical_sources(2).expect("two-channel source layout fits");
+
+        assert_eq!(
+            sources.as_slice(),
+            &[
+                TraceSourceDescriptor {
+                    source_kind: SOURCE_KIND_BOARD,
+                    source_index: SOURCE_INDEX_NA,
+                    label: "board",
+                },
+                TraceSourceDescriptor {
+                    source_kind: SOURCE_KIND_USB,
+                    source_index: SOURCE_INDEX_NA,
+                    label: "usb",
+                },
+                TraceSourceDescriptor {
+                    source_kind: SOURCE_KIND_KLIPPER,
+                    source_index: SOURCE_INDEX_NA,
+                    label: "klipper",
+                },
+                TraceSourceDescriptor {
+                    source_kind: SOURCE_KIND_FOCI,
+                    source_index: 0,
+                    label: "channel0",
+                },
+                TraceSourceDescriptor {
+                    source_kind: SOURCE_KIND_FOCI,
+                    source_index: 1,
+                    label: "channel1",
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn canonical_sources_reject_unsupported_foci_channel() {
+        assert_eq!(
+            canonical_sources(3),
+            Err(TraceMetadataError::UnsupportedFociChannel)
+        );
+    }
+
+    #[test]
+    fn status_slots_match_canonical_source_order() {
+        assert_eq!(board_status_slot(), 0);
+        assert_eq!(usb_status_slot(), 1);
+        assert_eq!(klipper_status_slot(), 2);
+        assert_eq!(foci_status_slot(0), 3);
+        assert_eq!(foci_status_slot(1), 4);
+        assert_eq!(status_slot_count(0), 3);
+        assert_eq!(status_slot_count(1), 4);
+        assert_eq!(status_slot_count(2), 5);
+    }
+
+    fn expected_metadata_payload_for_two_channels() -> heapless::Vec<u8, METADATA_PAYLOAD_MAX> {
+        let mut expected = heapless::Vec::<u8, METADATA_PAYLOAD_MAX>::new();
+        expected
+            .extend_from_slice(&[
+                1, // metadata schema
+                1, // trace feature revision
+                5, // source count
+                3, // skipped sample counter count
+            ])
+            .unwrap();
+        expected
+            .extend_from_slice(&260_000_000u32.to_le_bytes())
+            .unwrap();
+        expected.extend_from_slice(&1000u32.to_le_bytes()).unwrap();
+        expected.extend_from_slice(&100u32.to_le_bytes()).unwrap();
+        expected.extend_from_slice(&10u32.to_le_bytes()).unwrap();
+        expected.extend_from_slice(&7u32.to_le_bytes()).unwrap();
+        expected.extend_from_slice(&70u32.to_le_bytes()).unwrap();
+        expected.extend_from_slice(&700u32.to_le_bytes()).unwrap();
+        expected.extend_from_slice(&7000u32.to_le_bytes()).unwrap();
+        expected.extend_from_slice(b"\x0couroboros-fw").unwrap();
+        expected
+            .extend_from_slice(b"\x16FOCI Ouroboros (trace)")
+            .unwrap();
+        expected.extend_from_slice(b"\x00").unwrap();
+        expected
+            .extend_from_slice(&[SOURCE_KIND_BOARD, SOURCE_INDEX_NA, 5])
+            .unwrap();
+        expected.extend_from_slice(b"board").unwrap();
+        expected
+            .extend_from_slice(&[SOURCE_KIND_USB, SOURCE_INDEX_NA, 3])
+            .unwrap();
+        expected.extend_from_slice(b"usb").unwrap();
+        expected
+            .extend_from_slice(&[SOURCE_KIND_KLIPPER, SOURCE_INDEX_NA, 7])
+            .unwrap();
+        expected.extend_from_slice(b"klipper").unwrap();
+        expected
+            .extend_from_slice(&[SOURCE_KIND_FOCI, 0, 8])
+            .unwrap();
+        expected.extend_from_slice(b"channel0").unwrap();
+        expected
+            .extend_from_slice(&[SOURCE_KIND_FOCI, 1, 8])
+            .unwrap();
+        expected.extend_from_slice(b"channel1").unwrap();
+        expected
+    }
+
+    #[test]
+    fn metadata_builder_matches_schema_one_wire_order() {
+        let sources = canonical_sources(2).expect("two-channel source layout fits");
+
+        let payload = build_metadata_payload(TraceMetadataInputs {
+            skipped_sample_counter_count: 3,
+            clock_freq: 260_000_000,
+            critical_hz: 1000,
+            control_detail_hz: 100,
+            status_hz: 10,
+            pre_configuration_elapsed_ms: 7,
+            pre_configuration_skipped_critical: 70,
+            pre_configuration_skipped_control_detail: 700,
+            pre_configuration_skipped_status: 7000,
+            firmware_id: "ouroboros-fw",
+            product: "FOCI Ouroboros (trace)",
+            serial: "",
+            sources: sources.as_slice(),
+        })
+        .expect("metadata payload fits");
+
+        assert_eq!(payload, expected_metadata_payload_for_two_channels());
+    }
+
+    #[test]
+    fn metadata_builder_truncates_board_strings_but_not_source_labels() {
+        let mut long_string = heapless::String::<64>::new();
+        for _ in 0..64 {
+            long_string.push('x').unwrap();
+        }
+        let source = TraceSourceDescriptor {
+            source_kind: SOURCE_KIND_BOARD,
+            source_index: SOURCE_INDEX_NA,
+            label: "board",
+        };
+
+        let payload = build_metadata_payload(TraceMetadataInputs {
+            skipped_sample_counter_count: 0,
+            clock_freq: 1,
+            critical_hz: 0,
+            control_detail_hz: 0,
+            status_hz: 0,
+            pre_configuration_elapsed_ms: 0,
+            pre_configuration_skipped_critical: 0,
+            pre_configuration_skipped_control_detail: 0,
+            pre_configuration_skipped_status: 0,
+            firmware_id: long_string.as_str(),
+            product: long_string.as_str(),
+            serial: long_string.as_str(),
+            sources: &[source],
+        })
+        .expect("truncated strings fit");
+
+        let strings_offset = 4 + (8 * 4);
+        assert_eq!(payload[strings_offset], METADATA_STRING_MAX as u8);
+    }
+
+    #[test]
+    fn metadata_builder_rejects_too_many_sources() {
+        let sources = [BOARD_SOURCE; 17];
+
+        assert_eq!(
+            build_metadata_payload(TraceMetadataInputs {
+                skipped_sample_counter_count: 0,
+                clock_freq: 1,
+                critical_hz: 0,
+                control_detail_hz: 0,
+                status_hz: 0,
+                pre_configuration_elapsed_ms: 0,
+                pre_configuration_skipped_critical: 0,
+                pre_configuration_skipped_control_detail: 0,
+                pre_configuration_skipped_status: 0,
+                firmware_id: "fw",
+                product: "product",
+                serial: "",
+                sources: &sources,
+            }),
+            Err(TraceMetadataError::TooManySources)
+        );
+    }
+
+    #[test]
+    fn metadata_builder_rejects_overlong_source_labels() {
+        let overlong_label = "abcdefghijklmnopqrstuvwxyz012345";
+        let source = TraceSourceDescriptor {
+            source_kind: SOURCE_KIND_BOARD,
+            source_index: SOURCE_INDEX_NA,
+            label: overlong_label,
+        };
+        assert!(overlong_label.len() > METADATA_STRING_MAX);
+
+        assert_eq!(
+            build_metadata_payload(TraceMetadataInputs {
+                skipped_sample_counter_count: 0,
+                clock_freq: 1,
+                critical_hz: 0,
+                control_detail_hz: 0,
+                status_hz: 0,
+                pre_configuration_elapsed_ms: 0,
+                pre_configuration_skipped_critical: 0,
+                pre_configuration_skipped_control_detail: 0,
+                pre_configuration_skipped_status: 0,
+                firmware_id: "fw",
+                product: "product",
+                serial: "",
+                sources: &[source],
+            }),
+            Err(TraceMetadataError::SourceLabelTooLong)
+        );
     }
 
     #[test]
