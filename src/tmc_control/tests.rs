@@ -4,6 +4,7 @@ use crate::commissioning::{CommissioningEngine, types::StepResult};
 use crate::config::TmcConfig;
 use crate::pid::{InnerLoopGains, OuterLoopGains};
 use crate::tmc::{TmcRequest, TmcRequestKind};
+use crate::tmc_control::dispatch::{SharedTmcDispatch, apply_shared_tmc_request};
 use crate::tmc_control::helpers::{
     apply_live_inner_gains, apply_live_outer_gains, refresh_velocity_scale_from_state,
 };
@@ -14,9 +15,10 @@ use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::signal::Signal;
 use embedded_hal_async::spi::{ErrorKind, ErrorType, Operation, SpiDevice};
 use foci_tmc4671::registers::{
-    ABN_DECODER_PHI_E_PHI_M_OFFSET, PID_ERROR_PID_POSITION_ERROR_SUM, PID_FLUX_P_FLUX_I,
-    PID_POSITION_ACTUAL, PID_POSITION_P_POSITION_I, PID_POSITION_TARGET, PID_TORQUE_P_TORQUE_I,
-    PID_VELOCITY_P_VELOCITY_I, STATUS_FLAGS,
+    ABN_DECODER_MODE, ABN_DECODER_PHI_E_PHI_M_OFFSET, ABN_DECODER_PPR,
+    PID_ERROR_PID_POSITION_ERROR_SUM, PID_FLUX_P_FLUX_I, PID_POSITION_ACTUAL,
+    PID_POSITION_P_POSITION_I, PID_POSITION_TARGET, PID_TORQUE_FLUX_LIMITS, PID_TORQUE_P_TORQUE_I,
+    PID_VELOCITY_P_VELOCITY_I, PIDOUT_UQ_UD_LIMITS, STATUS_FLAGS,
 };
 use foci_tmc4671::spi::Tmc4671Spi;
 
@@ -307,6 +309,164 @@ fn apply_live_outer_gains_attempts_both_writes_on_partial_failure() {
         assert!(spi.attempted_write_to(PID_POSITION_P_POSITION_I));
         assert_eq!(tmc_state.position_p_value.load(Relaxed), 201);
         assert_eq!(tmc_state.velocity_p_value.load(Relaxed), 203);
+    });
+}
+
+#[test]
+fn shared_dispatch_set_current_writes_current_limit_and_updates_state() {
+    pollster::block_on(async {
+        let tmc_state = crate::state::tmc::TmcChannelState::new();
+        let mut tmc = Tmc4671Spi::new(RuntimeMockSpi::default());
+        let expected_limit = ((1155.0_f32 * core::f32::consts::SQRT_2) / 1.155_f32) as u32;
+
+        let result = apply_shared_tmc_request(
+            &TmcRequestKind::SetCurrent { run_ma: 1155 },
+            &mut tmc,
+            &tmc_state,
+            1.155,
+        )
+        .await;
+        let spi = tmc.into_inner();
+
+        assert_eq!(result, Ok(SharedTmcDispatch::Handled));
+        assert_eq!(
+            spi.write_attempts,
+            std::vec![(PID_TORQUE_FLUX_LIMITS.addr(), expected_limit)]
+        );
+        assert_eq!(tmc_state.current_limit_reg.load(Relaxed), expected_limit);
+    });
+}
+
+#[test]
+fn shared_dispatch_set_encoder_writes_quadrature_ppr() {
+    pollster::block_on(async {
+        let tmc_state = crate::state::tmc::TmcChannelState::new();
+        let mut tmc = Tmc4671Spi::new(RuntimeMockSpi::default());
+
+        let result = apply_shared_tmc_request(
+            &TmcRequestKind::SetEncoder { ppr: 1000 },
+            &mut tmc,
+            &tmc_state,
+            1.155,
+        )
+        .await;
+        let spi = tmc.into_inner();
+
+        assert_eq!(result, Ok(SharedTmcDispatch::Handled));
+        assert_eq!(
+            spi.write_attempts,
+            std::vec![(ABN_DECODER_PPR.addr(), 4000)]
+        );
+    });
+}
+
+#[test]
+fn shared_dispatch_set_encoder_rejects_zero_ppr() {
+    pollster::block_on(async {
+        let tmc_state = crate::state::tmc::TmcChannelState::new();
+        let mut tmc = Tmc4671Spi::new(RuntimeMockSpi::default());
+
+        let result = apply_shared_tmc_request(
+            &TmcRequestKind::SetEncoder { ppr: 0 },
+            &mut tmc,
+            &tmc_state,
+            1.155,
+        )
+        .await;
+        let spi = tmc.into_inner();
+
+        assert_eq!(result, Err(()));
+        assert!(spi.write_attempts.is_empty());
+    });
+}
+
+#[test]
+fn shared_dispatch_set_encoder_dir_writes_mode_and_marks_reset() {
+    pollster::block_on(async {
+        let tmc_state = crate::state::tmc::TmcChannelState::new();
+        let mut tmc = Tmc4671Spi::new(RuntimeMockSpi::default());
+
+        let result = apply_shared_tmc_request(
+            &TmcRequestKind::SetEncoderDir { invert: true },
+            &mut tmc,
+            &tmc_state,
+            1.155,
+        )
+        .await;
+        let spi = tmc.into_inner();
+
+        assert_eq!(result, Ok(SharedTmcDispatch::Handled));
+        assert_eq!(
+            spi.write_attempts,
+            std::vec![(ABN_DECODER_MODE.addr(), 1 << 12)]
+        );
+        assert!(tmc_state.encoder_reversed.load(Relaxed));
+        assert!(tmc_state.feedforward_reset.load(Relaxed));
+    });
+}
+
+#[test]
+fn shared_dispatch_set_voltage_limit_propagates_write_failure() {
+    pollster::block_on(async {
+        let tmc_state = crate::state::tmc::TmcChannelState::new();
+        let mut tmc =
+            Tmc4671Spi::new(RuntimeMockSpi::default().fail_writes_to(PIDOUT_UQ_UD_LIMITS.addr()));
+
+        let result = apply_shared_tmc_request(
+            &TmcRequestKind::SetVoltageLimit {
+                voltage_limit: 32_000,
+            },
+            &mut tmc,
+            &tmc_state,
+            1.155,
+        )
+        .await;
+        let spi = tmc.into_inner();
+
+        assert_eq!(result, Err(()));
+        assert!(spi.attempted_write_to(PIDOUT_UQ_UD_LIMITS));
+    });
+}
+
+#[test]
+fn shared_dispatch_silent_noop_returns_handled_without_spi() {
+    pollster::block_on(async {
+        let tmc_state = crate::state::tmc::TmcChannelState::new();
+        let mut tmc = Tmc4671Spi::new(RuntimeMockSpi::default());
+
+        let result = apply_shared_tmc_request(
+            &TmcRequestKind::SetVelocityFilter { filter_hz: 200 },
+            &mut tmc,
+            &tmc_state,
+            1.155,
+        )
+        .await;
+        let spi = tmc.into_inner();
+
+        assert_eq!(result, Ok(SharedTmcDispatch::Handled));
+        assert!(spi.write_attempts.is_empty());
+        assert!(spi.read_requests.is_empty());
+    });
+}
+
+#[test]
+fn shared_dispatch_main_shell_request_returns_unhandled_without_spi() {
+    pollster::block_on(async {
+        let tmc_state = crate::state::tmc::TmcChannelState::new();
+        let mut tmc = Tmc4671Spi::new(RuntimeMockSpi::default());
+
+        let result = apply_shared_tmc_request(
+            &TmcRequestKind::Calibrate { oid: 7 },
+            &mut tmc,
+            &tmc_state,
+            1.155,
+        )
+        .await;
+        let spi = tmc.into_inner();
+
+        assert_eq!(result, Ok(SharedTmcDispatch::Unhandled));
+        assert!(spi.write_attempts.is_empty());
+        assert!(spi.read_requests.is_empty());
     });
 }
 
