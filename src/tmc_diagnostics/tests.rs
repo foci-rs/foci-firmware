@@ -1,4 +1,110 @@
 use super::*;
+use crate::tmc::{tmc_current_step_test, tmc_current_vector_step_test};
+use crate::tmc_control::TmcControlRuntime;
+use foci_tmc4671::registers::{
+    ADC_AGPI_A_RAW_ADC_VM_RAW, INTERIM_FOC_IQ_ID, INTERIM_FOC_UQ_UD_LIMITED, PID_POSITION_TARGET,
+    PID_TORQUE_FLUX_TARGET, PIDOUT_UQ_UD_LIMITS,
+};
+use foci_tmc4671::spi::Tmc4671Spi;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct MockSpiError;
+
+impl embedded_hal_async::spi::Error for MockSpiError {
+    fn kind(&self) -> embedded_hal_async::spi::ErrorKind {
+        embedded_hal_async::spi::ErrorKind::Other
+    }
+}
+
+#[derive(Default)]
+struct DiagnosticMockSpi {
+    writes: std::vec::Vec<(u8, u32)>,
+    write_attempts: std::vec::Vec<(u8, u32)>,
+    read_requests: std::vec::Vec<u8>,
+    reads: std::collections::VecDeque<u32>,
+    fail_writes_to: Option<u8>,
+    fail_reads_from: Option<u8>,
+}
+
+impl DiagnosticMockSpi {
+    fn with_read(mut self, value: u32) -> Self {
+        self.reads.push_back(value);
+        self
+    }
+
+    #[allow(dead_code)]
+    fn fail_reads_from(mut self, addr: u8) -> Self {
+        self.fail_reads_from = Some(addr);
+        self
+    }
+
+    #[allow(dead_code)]
+    fn fail_writes_to(mut self, addr: u8) -> Self {
+        self.fail_writes_to = Some(addr);
+        self
+    }
+}
+
+impl embedded_hal_async::spi::ErrorType for DiagnosticMockSpi {
+    type Error = MockSpiError;
+}
+
+impl embedded_hal_async::spi::SpiDevice<u8> for DiagnosticMockSpi {
+    async fn transaction(
+        &mut self,
+        operations: &mut [embedded_hal_async::spi::Operation<'_, u8>],
+    ) -> Result<(), Self::Error> {
+        for op in operations {
+            match op {
+                embedded_hal_async::spi::Operation::Write(buf) if buf.len() == 5 => {
+                    let addr = buf[0] & 0x7f;
+                    let value = u32::from_be_bytes([buf[1], buf[2], buf[3], buf[4]]);
+                    self.write_attempts.push((addr, value));
+                    if self.fail_writes_to == Some(addr) {
+                        return Err(MockSpiError);
+                    }
+                    self.writes.push((addr, value));
+                }
+                embedded_hal_async::spi::Operation::Write(buf) if buf.len() == 1 => {
+                    let addr = buf[0];
+                    self.read_requests.push(addr);
+                    if self.fail_reads_from == Some(addr) {
+                        return Err(MockSpiError);
+                    }
+                }
+                embedded_hal_async::spi::Operation::Read(buf) => {
+                    let value = self.reads.pop_front().unwrap_or(0);
+                    buf.copy_from_slice(&value.to_be_bytes());
+                }
+                embedded_hal_async::spi::Operation::Write(_)
+                | embedded_hal_async::spi::Operation::DelayNs(_) => {}
+                embedded_hal_async::spi::Operation::Transfer(read, write) => {
+                    read.copy_from_slice(write);
+                }
+                embedded_hal_async::spi::Operation::TransferInPlace(_) => {}
+            }
+        }
+        Ok(())
+    }
+}
+
+#[derive(Default)]
+struct MockDelay {
+    delays_ms: std::vec::Vec<u64>,
+}
+
+impl DiagnosticDelay for MockDelay {
+    async fn delay_ms(&mut self, ms: u64) {
+        self.delays_ms.push(ms);
+    }
+}
+
+fn ready_runtime() -> TmcControlRuntime {
+    let mut runtime = TmcControlRuntime::new_for_channel(0);
+    runtime.set_motor_enabled_for_test(true);
+    runtime.set_calibrated_for_test(true);
+    runtime
+}
 
 #[test]
 fn current_step_encoder_delta_wraps_by_counts_per_rev() {
@@ -35,4 +141,163 @@ fn empty_reports_preserve_headers_and_zero_samples() {
     assert_eq!(voltage.ud_ext, 44);
     assert_eq!(voltage.sample_delay_ms, 5);
     assert_eq!(voltage.encoder_delta_after, 0);
+}
+
+#[test]
+fn current_step_not_ready_returns_status_without_writes() {
+    pollster::block_on(async {
+        let mut runtime = TmcControlRuntime::new_for_channel(0);
+        let mut delay = MockDelay::default();
+        let mut tmc = Tmc4671Spi::new(DiagnosticMockSpi::default());
+        let req = tmc_current_step_test(0, 7, 123, 4, 500);
+
+        let outcome = run_current_step_request(
+            req,
+            DiagnosticContext {
+                tmc: &mut tmc,
+                runtime: &mut runtime,
+                delay: &mut delay,
+                readiness: DiagnosticReadiness {
+                    homing_active: false,
+                    stepper_active: false,
+                    saved_voltage_limit: 999,
+                },
+            },
+        )
+        .await;
+
+        let DiagnosticOutcome::Handled(DiagnosticReport::CurrentStep {
+            vector_reply,
+            report,
+        }) = outcome
+        else {
+            panic!("expected current step report");
+        };
+        assert!(!vector_reply);
+        assert_eq!(report.status, CURRENT_STEP_STATUS_NOT_READY);
+        assert_eq!(report.oid, 7);
+        assert_eq!(report.torque_target, 123);
+        assert!(tmc.into_inner().writes.is_empty());
+        assert!(delay.delays_ms.is_empty());
+    });
+}
+
+#[test]
+fn current_vector_uses_vector_report_flag() {
+    pollster::block_on(async {
+        let mut runtime = TmcControlRuntime::new_for_channel(0);
+        let mut delay = MockDelay::default();
+        let mut tmc = Tmc4671Spi::new(DiagnosticMockSpi::default());
+        let req = tmc_current_vector_step_test(0, 9, 11, -12, 4, 500);
+
+        let outcome = run_current_step_request(
+            req,
+            DiagnosticContext {
+                tmc: &mut tmc,
+                runtime: &mut runtime,
+                delay: &mut delay,
+                readiness: DiagnosticReadiness {
+                    homing_active: true,
+                    stepper_active: false,
+                    saved_voltage_limit: 999,
+                },
+            },
+        )
+        .await;
+
+        let DiagnosticOutcome::Handled(DiagnosticReport::CurrentStep {
+            vector_reply,
+            report,
+        }) = outcome
+        else {
+            panic!("expected current vector report");
+        };
+        assert!(vector_reply);
+        assert_eq!(report.status, CURRENT_STEP_STATUS_NOT_READY);
+        assert_eq!(report.torque_target, 11);
+        assert_eq!(report.flux_target, -12);
+    });
+}
+
+#[test]
+fn current_step_success_records_settle_delays_and_restores_limit() {
+    pollster::block_on(async {
+        let raw_spi = DiagnosticMockSpi::default()
+            .with_read(0) // saved MODE_RAMP_MODE_MOTION
+            .with_read(0xaaaa_bbbb) // PID_POSITION_ACTUAL
+            .with_read(100) // ABN_DECODER_COUNT before
+            .with_read(1000) // ABN_DECODER_PPR
+            .with_read(0x0005_0000) // PID_TORQUE_FLUX_ACTUAL before
+            .with_read(0x0009_000a) // PID_TORQUE_FLUX_ACTUAL during
+            .with_read(0x000b_000c) // INTERIM_FOC_IQ_ID
+            .with_read(0x000d_000e) // INTERIM_FOC_UQ_UD_LIMITED
+            .with_read(0x0000_1234) // ADC_AGPI_A_RAW_ADC_VM_RAW
+            .with_read(120) // ABN_DECODER_COUNT after
+            .with_read(0x0006_0000); // PID_TORQUE_FLUX_ACTUAL after
+        let mut tmc = Tmc4671Spi::new(raw_spi);
+        let mut runtime = ready_runtime();
+        let mut delay = MockDelay::default();
+
+        let outcome = run_current_step_request(
+            tmc_current_step_test(0, 7, 20, 3, 555),
+            DiagnosticContext {
+                tmc: &mut tmc,
+                runtime: &mut runtime,
+                delay: &mut delay,
+                readiness: DiagnosticReadiness {
+                    homing_active: false,
+                    stepper_active: false,
+                    saved_voltage_limit: 777,
+                },
+            },
+        )
+        .await;
+
+        let DiagnosticOutcome::Handled(DiagnosticReport::CurrentStep { report, .. }) = outcome
+        else {
+            panic!("expected current step report");
+        };
+        assert_eq!(report.status, 0);
+        assert_eq!(report.encoder_before, 100);
+        assert_eq!(report.encoder_after, 120);
+        assert_eq!(report.encoder_delta, 20);
+        assert_eq!(report.adc_vm_raw, 0x1234);
+        assert_eq!(delay.delays_ms, std::vec![20, 3, 20]);
+
+        let raw_spi = tmc.into_inner();
+        assert!(raw_spi.writes.contains(&(PID_TORQUE_FLUX_TARGET.addr(), 0)));
+        assert!(raw_spi.writes.contains(&(PIDOUT_UQ_UD_LIMITS.addr(), 777)));
+        assert!(
+            raw_spi
+                .writes
+                .contains(&(PID_POSITION_TARGET.addr(), 0xaaaa_bbbb))
+        );
+        assert!(raw_spi.write_attempts.contains(&(
+            ADC_AGPI_A_RAW_ADC_VM_RAW.addr.addr(),
+            u32::from(ADC_AGPI_A_RAW_ADC_VM_RAW.sub_addr),
+        )));
+        assert!(
+            raw_spi
+                .read_requests
+                .contains(&ADC_AGPI_A_RAW_ADC_VM_RAW.data.addr())
+        );
+        assert!(raw_spi.write_attempts.contains(&(
+            INTERIM_FOC_IQ_ID.addr.addr(),
+            u32::from(INTERIM_FOC_IQ_ID.sub_addr),
+        )));
+        assert!(
+            raw_spi
+                .read_requests
+                .contains(&INTERIM_FOC_IQ_ID.data.addr())
+        );
+        assert!(raw_spi.write_attempts.contains(&(
+            INTERIM_FOC_UQ_UD_LIMITED.addr.addr(),
+            u32::from(INTERIM_FOC_UQ_UD_LIMITED.sub_addr),
+        )));
+        assert!(
+            raw_spi
+                .read_requests
+                .contains(&INTERIM_FOC_UQ_UD_LIMITED.data.addr())
+        );
+    });
 }
