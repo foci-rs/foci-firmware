@@ -8,6 +8,7 @@ mod current_step;
 mod helpers;
 mod reports;
 mod torque_sample;
+mod voltage_step;
 
 #[cfg(test)]
 mod tests;
@@ -22,6 +23,7 @@ pub use reports::{
 pub use torque_sample::{
     run_current_torque_sample_request, run_position_torque_offset_sample_request,
 };
+pub use voltage_step::run_voltage_step_request;
 
 use foci_tmc4671::spi::Tmc4671Spi;
 
@@ -83,4 +85,31 @@ pub enum DiagnosticOutcome {
     Handled(DiagnosticReport),
     /// The request was not one of the active diagnostic request kinds.
     NotDiagnostic(crate::tmc::TmcRequest),
+}
+
+/// Dispatch one active diagnostic request through the shared runner set.
+pub async fn handle_diagnostic_request<B, D>(
+    req: crate::tmc::TmcRequest,
+    ctx: DiagnosticContext<'_, B, D>,
+) -> DiagnosticOutcome
+where
+    B: embedded_hal_async::spi::SpiDevice<u8>,
+    D: DiagnosticDelay,
+{
+    match &req.kind {
+        crate::tmc::TmcRequestKind::CurrentStepTest { .. }
+        | crate::tmc::TmcRequestKind::CurrentVectorStepTest { .. } => {
+            current_step::run_current_step_request(req, ctx).await
+        }
+        crate::tmc::TmcRequestKind::CurrentTorqueSampleTest { .. } => {
+            torque_sample::run_current_torque_sample_request(req, ctx).await
+        }
+        crate::tmc::TmcRequestKind::PositionTorqueOffsetSampleTest { .. } => {
+            torque_sample::run_position_torque_offset_sample_request(req, ctx).await
+        }
+        crate::tmc::TmcRequestKind::VoltageStepTest { .. } => {
+            voltage_step::run_voltage_step_request(req, ctx).await
+        }
+        _ => DiagnosticOutcome::NotDiagnostic(req),
+    }
 }

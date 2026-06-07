@@ -1,12 +1,13 @@
 use super::*;
 use crate::tmc::{
     tmc_current_step_test, tmc_current_torque_sample_test, tmc_current_vector_step_test,
-    tmc_position_torque_offset_sample_test,
+    tmc_position_torque_offset_sample_test, tmc_voltage_step_test,
 };
 use crate::tmc_control::TmcControlRuntime;
 use foci_tmc4671::registers::{
     ADC_AGPI_A_RAW_ADC_VM_RAW, INTERIM_FOC_IQ_ID, INTERIM_FOC_UQ_UD_LIMITED, MODE_RAMP_MODE_MOTION,
     PID_POSITION_TARGET, PID_TORQUE_FLUX_OFFSET, PID_TORQUE_FLUX_TARGET, PIDOUT_UQ_UD_LIMITS,
+    UQ_UD_EXT,
 };
 use foci_tmc4671::spi::Tmc4671Spi;
 
@@ -417,5 +418,109 @@ fn position_offset_spi_failure_attempts_offset_restore() {
                 .write_attempts
                 .contains(&(PID_TORQUE_FLUX_OFFSET.addr(), 0x1234_5678))
         );
+    });
+}
+
+#[test]
+fn voltage_step_rejects_non_position_mode() {
+    pollster::block_on(async {
+        let raw_spi = DiagnosticMockSpi::default().with_read(0x8000_0001);
+        let mut tmc = Tmc4671Spi::new(raw_spi);
+        let mut runtime = ready_runtime();
+        let mut delay = MockDelay::default();
+
+        let outcome = run_voltage_step_request(
+            tmc_voltage_step_test(0, 3, 44, -55, 6),
+            DiagnosticContext {
+                tmc: &mut tmc,
+                runtime: &mut runtime,
+                delay: &mut delay,
+                readiness: DiagnosticReadiness {
+                    homing_active: false,
+                    stepper_active: false,
+                    saved_voltage_limit: 777,
+                },
+            },
+        )
+        .await;
+
+        let DiagnosticOutcome::Handled(DiagnosticReport::VoltageStep(report)) = outcome else {
+            panic!("expected voltage step report");
+        };
+        assert_eq!(report.status, CURRENT_STEP_STATUS_NOT_READY);
+        assert_eq!(report.uq_ext, 44);
+        assert_eq!(report.ud_ext, -55);
+    });
+}
+
+#[test]
+fn voltage_step_failure_clears_external_voltage_and_restores_mode() {
+    pollster::block_on(async {
+        let raw_spi = DiagnosticMockSpi::default()
+            .with_read(0x8000_0003) // saved mode
+            .with_read(100) // encoder before
+            .with_read(1000) // ppr
+            .with_read(0x0001_0000) // torque before
+            .fail_writes_to(UQ_UD_EXT.addr());
+        let mut tmc = Tmc4671Spi::new(raw_spi);
+        let mut runtime = ready_runtime();
+        let mut delay = MockDelay::default();
+
+        let outcome = run_voltage_step_request(
+            tmc_voltage_step_test(0, 3, 44, -55, 6),
+            DiagnosticContext {
+                tmc: &mut tmc,
+                runtime: &mut runtime,
+                delay: &mut delay,
+                readiness: DiagnosticReadiness {
+                    homing_active: false,
+                    stepper_active: false,
+                    saved_voltage_limit: 777,
+                },
+            },
+        )
+        .await;
+
+        let DiagnosticOutcome::Handled(DiagnosticReport::VoltageStep(report)) = outcome else {
+            panic!("expected voltage step report");
+        };
+        assert_eq!(report.status, CURRENT_STEP_STATUS_SPI);
+        let raw_spi = tmc.into_inner();
+        assert!(raw_spi.write_attempts.contains(&(UQ_UD_EXT.addr(), 0)));
+        assert!(
+            raw_spi
+                .write_attempts
+                .contains(&(MODE_RAMP_MODE_MOTION.addr(), 0x8000_0003))
+        );
+    });
+}
+
+#[test]
+fn dispatcher_returns_not_diagnostic_for_normal_request() {
+    pollster::block_on(async {
+        let mut runtime = TmcControlRuntime::new_for_channel(0);
+        let mut delay = MockDelay::default();
+        let mut tmc = Tmc4671Spi::new(DiagnosticMockSpi::default());
+        let req = crate::tmc::tmc_set_current(0, 1000);
+
+        let outcome = handle_diagnostic_request(
+            req.clone(),
+            DiagnosticContext {
+                tmc: &mut tmc,
+                runtime: &mut runtime,
+                delay: &mut delay,
+                readiness: DiagnosticReadiness {
+                    homing_active: false,
+                    stepper_active: false,
+                    saved_voltage_limit: 777,
+                },
+            },
+        )
+        .await;
+
+        let DiagnosticOutcome::NotDiagnostic(returned) = outcome else {
+            panic!("expected NotDiagnostic");
+        };
+        assert_eq!(returned, req);
     });
 }
