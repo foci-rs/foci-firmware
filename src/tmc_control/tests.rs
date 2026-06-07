@@ -2,8 +2,11 @@ use super::*;
 use crate::commission_dispatch::test_support::MockBackend;
 use crate::commissioning::{CommissioningEngine, types::StepResult};
 use crate::config::TmcConfig;
-use crate::pid::InnerLoopGains;
+use crate::pid::{InnerLoopGains, OuterLoopGains};
 use crate::tmc::{TmcRequest, TmcRequestKind};
+use crate::tmc_control::helpers::{
+    apply_live_inner_gains, apply_live_outer_gains, refresh_velocity_scale_from_state,
+};
 use core::sync::atomic::AtomicBool;
 use core::sync::atomic::Ordering::Relaxed;
 
@@ -11,8 +14,9 @@ use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::signal::Signal;
 use embedded_hal_async::spi::{ErrorKind, ErrorType, Operation, SpiDevice};
 use foci_tmc4671::registers::{
-    ABN_DECODER_PHI_E_PHI_M_OFFSET, PID_ERROR_PID_POSITION_ERROR_SUM, PID_POSITION_ACTUAL,
-    PID_POSITION_P_POSITION_I, PID_POSITION_TARGET, STATUS_FLAGS,
+    ABN_DECODER_PHI_E_PHI_M_OFFSET, PID_ERROR_PID_POSITION_ERROR_SUM, PID_FLUX_P_FLUX_I,
+    PID_POSITION_ACTUAL, PID_POSITION_P_POSITION_I, PID_POSITION_TARGET, PID_TORQUE_P_TORQUE_I,
+    PID_VELOCITY_P_VELOCITY_I, STATUS_FLAGS,
 };
 use foci_tmc4671::spi::Tmc4671Spi;
 
@@ -131,6 +135,179 @@ fn runtime_config_carries_board_constants() {
     assert_eq!(config.pwm_freq_hz, 25_000);
     assert_eq!(config.current_scale_ma_per_lsb, 0.03125);
     assert_eq!(config.tmc, tmc);
+}
+
+#[test]
+fn request_outcome_constructors_encode_tail_shutdown_and_refresh() {
+    let fall_through = TmcControlRequestOutcome::fall_through();
+    assert_eq!(fall_through.tail, TmcControlRequestTail::FallThrough);
+    assert_eq!(fall_through.shutdown, None);
+    assert!(!fall_through.should_refresh_velocity_scale);
+
+    let skip = TmcControlRequestOutcome::skip_tick_tail();
+    assert_eq!(skip.tail, TmcControlRequestTail::SkipTickTail);
+    assert_eq!(skip.shutdown, None);
+    assert!(!skip.should_refresh_velocity_scale);
+
+    let shutdown = TmcControlRequestOutcome::shutdown(
+        ShutdownReason::RequestValidationFailed,
+        TmcControlRequestTail::FallThrough,
+    );
+    assert_eq!(shutdown.tail, TmcControlRequestTail::FallThrough);
+    assert_eq!(
+        shutdown.shutdown,
+        Some(ShutdownReason::RequestValidationFailed)
+    );
+    assert!(!shutdown.should_refresh_velocity_scale);
+
+    let refresh =
+        TmcControlRequestOutcome::refresh_velocity_scale(TmcControlRequestTail::SkipTickTail);
+    assert_eq!(refresh.tail, TmcControlRequestTail::SkipTickTail);
+    assert_eq!(refresh.shutdown, None);
+    assert!(refresh.should_refresh_velocity_scale);
+
+    let both = TmcControlRequestOutcome::shutdown_then_refresh_velocity_scale(
+        ShutdownReason::InvalidTmcChannel,
+        TmcControlRequestTail::FallThrough,
+    );
+    assert_eq!(both.tail, TmcControlRequestTail::FallThrough);
+    assert_eq!(both.shutdown, Some(ShutdownReason::InvalidTmcChannel));
+    assert!(both.should_refresh_velocity_scale);
+}
+
+#[test]
+fn refresh_velocity_scale_reads_step_width_from_state() {
+    let mut runtime = TmcControlRuntime::new_for_channel(0);
+    let tmc_state = crate::state::tmc::TmcChannelState::new();
+    tmc_state.step_width_value.store(-3200, Relaxed);
+
+    refresh_velocity_scale_from_state(&mut runtime, &tmc_state, 84_000_000, 25_000);
+
+    assert_eq!(
+        runtime.velocity_scale(),
+        crate::tmc::compute_velocity_scale_factor(3200, 84_000_000, 25_000)
+    );
+}
+
+#[test]
+fn apply_live_inner_gains_stores_gains_and_writes_flux_then_torque() {
+    pollster::block_on(async {
+        let mut runtime = TmcControlRuntime::new_for_channel(0);
+        let mut tmc = Tmc4671Spi::new(RuntimeMockSpi::default());
+        let gains = InnerLoopGains {
+            flux_p: 11,
+            flux_i: 12,
+            torque_p: 13,
+            torque_i: 14,
+        };
+
+        let status = apply_live_inner_gains(&mut runtime, &mut tmc, gains).await;
+        let spi = tmc.into_inner();
+
+        assert!(status.all_ok());
+        assert_eq!(runtime.stored_gains(), Some(gains));
+        assert_eq!(
+            spi.write_attempts,
+            std::vec![
+                (
+                    PID_FLUX_P_FLUX_I.addr(),
+                    crate::pid::pack_pid_register(11, 12)
+                ),
+                (
+                    PID_TORQUE_P_TORQUE_I.addr(),
+                    crate::pid::pack_pid_register(13, 14)
+                ),
+            ]
+        );
+    });
+}
+
+#[test]
+fn apply_live_inner_gains_attempts_second_write_after_first_failure() {
+    pollster::block_on(async {
+        let mut runtime = TmcControlRuntime::new_for_channel(0);
+        let mut tmc =
+            Tmc4671Spi::new(RuntimeMockSpi::default().fail_writes_to(PID_FLUX_P_FLUX_I.addr()));
+        let gains = InnerLoopGains {
+            flux_p: 21,
+            flux_i: 22,
+            torque_p: 23,
+            torque_i: 24,
+        };
+
+        let status = apply_live_inner_gains(&mut runtime, &mut tmc, gains).await;
+        let spi = tmc.into_inner();
+
+        assert!(!status.all_ok());
+        assert!(!status.first_write_ok);
+        assert!(status.second_write_ok);
+        assert_eq!(runtime.stored_gains(), Some(gains));
+        assert!(spi.attempted_write_to(PID_FLUX_P_FLUX_I));
+        assert!(spi.attempted_write_to(PID_TORQUE_P_TORQUE_I));
+    });
+}
+
+#[test]
+fn apply_live_outer_gains_updates_state_and_writes_velocity_then_position() {
+    pollster::block_on(async {
+        let tmc_state = crate::state::tmc::TmcChannelState::new();
+        let mut tmc = Tmc4671Spi::new(RuntimeMockSpi::default());
+        let gains = OuterLoopGains {
+            position_p: 101,
+            position_i: 102,
+            velocity_p: 103,
+            velocity_i: 104,
+        };
+
+        let status = apply_live_outer_gains(&tmc_state, &mut tmc, gains).await;
+        let spi = tmc.into_inner();
+
+        assert!(status.all_ok());
+        assert_eq!(tmc_state.position_p_value.load(Relaxed), 101);
+        assert_eq!(tmc_state.position_i_value.load(Relaxed), 102);
+        assert_eq!(tmc_state.velocity_p_value.load(Relaxed), 103);
+        assert_eq!(tmc_state.velocity_i_value.load(Relaxed), 104);
+        assert_eq!(
+            spi.write_attempts,
+            std::vec![
+                (
+                    PID_VELOCITY_P_VELOCITY_I.addr(),
+                    crate::pid::pack_pid_register(103, 104)
+                ),
+                (
+                    PID_POSITION_P_POSITION_I.addr(),
+                    crate::pid::pack_pid_register(101, 102)
+                ),
+            ]
+        );
+    });
+}
+
+#[test]
+fn apply_live_outer_gains_attempts_both_writes_on_partial_failure() {
+    pollster::block_on(async {
+        let tmc_state = crate::state::tmc::TmcChannelState::new();
+        let mut tmc = Tmc4671Spi::new(
+            RuntimeMockSpi::default().fail_writes_to(PID_POSITION_P_POSITION_I.addr()),
+        );
+        let gains = OuterLoopGains {
+            position_p: 201,
+            position_i: 202,
+            velocity_p: 203,
+            velocity_i: 204,
+        };
+
+        let status = apply_live_outer_gains(&tmc_state, &mut tmc, gains).await;
+        let spi = tmc.into_inner();
+
+        assert!(!status.all_ok());
+        assert!(status.first_write_ok);
+        assert!(!status.second_write_ok);
+        assert!(spi.attempted_write_to(PID_VELOCITY_P_VELOCITY_I));
+        assert!(spi.attempted_write_to(PID_POSITION_P_POSITION_I));
+        assert_eq!(tmc_state.position_p_value.load(Relaxed), 201);
+        assert_eq!(tmc_state.velocity_p_value.load(Relaxed), 203);
+    });
 }
 
 fn commissioning_runtime_config() -> TmcControlConfig {

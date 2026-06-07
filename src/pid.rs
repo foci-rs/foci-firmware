@@ -38,6 +38,19 @@ pub struct InnerLoopGains {
     pub torque_i: u16,
 }
 
+/// Computed PI gains for TMC4671 position and velocity outer loops.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+pub struct OuterLoopGains {
+    /// Position P gain — raw TMC4671 register value (Q8.8 format).
+    pub position_p: u16,
+    /// Position I gain — raw TMC4671 register value (Q8.8 format).
+    pub position_i: u16,
+    /// Velocity P gain — raw TMC4671 register value (Q8.8 format).
+    pub velocity_p: u16,
+    /// Velocity I gain — raw TMC4671 register value (Q8.8 format).
+    pub velocity_i: u16,
+}
+
 /// Empirical correction factor for the I gain formula.
 ///
 /// The theoretical discrete-time derivation from the TMC4671's advanced PI

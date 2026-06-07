@@ -6,6 +6,7 @@
 
 pub mod actions;
 pub mod config;
+pub mod helpers;
 pub mod signals;
 pub mod state;
 
@@ -14,7 +15,7 @@ mod tests;
 
 pub use actions::{
     BoardAction, BoardActions, CommissionTickAction, DelegatedDiagnostic, ShutdownReason,
-    StepperAction, push_action,
+    StepperAction, TmcControlRequestOutcome, TmcControlRequestTail, push_action,
 };
 pub use config::{TmcControlConfig, TmcControlHomingRefs, TmcControlStateRefs};
 pub use signals::TmcControlSignals;

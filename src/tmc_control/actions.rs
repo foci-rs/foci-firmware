@@ -22,6 +22,76 @@ pub enum ShutdownReason {
     TmcFault,
 }
 
+/// Whether a board-local request handler should run the tick tail after a request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+pub enum TmcControlRequestTail {
+    /// Preserve the board's normal post-request tick-tail work.
+    FallThrough,
+    /// Skip the tick tail for this control-loop iteration.
+    SkipTickTail,
+}
+
+/// Board-local TMC request outcome shared by OpenFFBoard and Ouroboros shells.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+pub struct TmcControlRequestOutcome {
+    /// Tick-tail behavior after request handling.
+    pub tail: TmcControlRequestTail,
+    /// Optional board-local Klipper shutdown reason to emit from the caller.
+    pub shutdown: Option<ShutdownReason>,
+    /// Whether the caller should refresh the runtime velocity scale.
+    pub should_refresh_velocity_scale: bool,
+}
+
+impl TmcControlRequestOutcome {
+    /// Continue through the board tick tail with no shutdown or refresh.
+    pub const fn fall_through() -> Self {
+        Self {
+            tail: TmcControlRequestTail::FallThrough,
+            shutdown: None,
+            should_refresh_velocity_scale: false,
+        }
+    }
+
+    /// Skip the board tick tail with no shutdown or refresh.
+    pub const fn skip_tick_tail() -> Self {
+        Self {
+            tail: TmcControlRequestTail::SkipTickTail,
+            shutdown: None,
+            should_refresh_velocity_scale: false,
+        }
+    }
+
+    /// Emit a board-local shutdown, then apply the requested tick-tail behavior.
+    pub const fn shutdown(reason: ShutdownReason, tail: TmcControlRequestTail) -> Self {
+        Self {
+            tail,
+            shutdown: Some(reason),
+            should_refresh_velocity_scale: false,
+        }
+    }
+
+    /// Refresh velocity scale, then apply the requested tick-tail behavior.
+    pub const fn refresh_velocity_scale(tail: TmcControlRequestTail) -> Self {
+        Self {
+            tail,
+            shutdown: None,
+            should_refresh_velocity_scale: true,
+        }
+    }
+
+    /// Emit shutdown and refresh velocity scale, then apply the requested tick-tail behavior.
+    pub const fn shutdown_then_refresh_velocity_scale(
+        reason: ShutdownReason,
+        tail: TmcControlRequestTail,
+    ) -> Self {
+        Self {
+            tail,
+            shutdown: Some(reason),
+            should_refresh_velocity_scale: true,
+        }
+    }
+}
+
 /// Board-owned stepper follow-up work.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub enum StepperAction {
