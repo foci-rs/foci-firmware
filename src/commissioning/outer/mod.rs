@@ -7,6 +7,7 @@
 //! so each per-phase submodule can pattern-match and construct them.
 
 pub mod commit;
+mod dispatch;
 pub mod filter;
 mod limits;
 pub mod mechanical;
@@ -18,10 +19,7 @@ mod state;
 mod trace;
 pub mod velocity;
 
-use crate::autotune::{CommissionError, CommissionProfile, OperatingMode, TransientBuffer};
-use crate::commissioning::backend::CommissioningBackend;
-use crate::commissioning::types::StepResult;
-
+pub(crate) use dispatch::{fail_outer, step_outer, step_outer_with_trace};
 pub(crate) use limits::{
     MECHANICAL_ID_VELOCITY_CAP_COUNTS_PER_MS, OUTER_FALLBACK_POSITION_I, OUTER_FALLBACK_POSITION_P,
     OUTER_FALLBACK_VELOCITY_I, OUTER_FALLBACK_VELOCITY_P, OUTER_MAX_POSITION_I,
@@ -30,7 +28,6 @@ pub(crate) use limits::{
     mechanical_id_velocity_cap_counts_per_ms, position_tune_step_counts, position_window_counts,
     response_fallback_velocity_limit_counts_per_ms,
 };
-use safety::outer_safety_mut;
 pub(crate) use safety::{OuterSafetyLimits, check_outer_safety, safety_error_for_phase};
 pub(crate) use state::{
     MechanicalIdData, MechanicalIdState, OuterDiagnostics, OuterPhase, PositionTuneData,
@@ -40,147 +37,6 @@ pub(crate) use trace::{
     TraceSummarySeqs, trace_diagnostic_warning, trace_pack_i16_pair, trace_pack_u16_pair,
     trace_summary_event,
 };
-
-/// Transition the outer phase to `Failed` and emit an `OuterFailed` result.
-pub(crate) fn fail_outer(phase: &mut OuterPhase, err: CommissionError) -> StepResult {
-    *phase = OuterPhase::Failed(err);
-    StepResult::OuterFailed(err)
-}
-
-// ---------------------------------------------------------------------------
-// Dispatcher
-// ---------------------------------------------------------------------------
-
-/// Step outer phase state machine by one cooperative tick.
-///
-/// Dispatches to the per-phase handler in the matching submodule. Every
-/// tick runs the safety envelope check before the phase-specific logic;
-/// a violation aborts to `Failed(SafetyEnvelopeViolation)` after zeroing
-/// excitation.
-#[allow(clippy::too_many_arguments)]
-#[allow(dead_code)]
-pub(crate) async fn step_outer<B: CommissioningBackend>(
-    phase: &mut OuterPhase,
-    buf: &mut TransientBuffer,
-    profile: CommissionProfile,
-    mode: OperatingMode,
-    inner_lambda_us: u32,
-    theta_e_us: u32,
-    current_ringing: bool,
-    current_bandwidth_hz: u32,
-    tau_e_us: u32,
-    tau_e_crosscheck_us: u32,
-    tau_residual_permille: u16,
-    inner_warning_flags: u8,
-    backend: &mut B,
-) -> StepResult {
-    let mut trace_summary_seqs = TraceSummarySeqs::new();
-    step_outer_with_trace(
-        phase,
-        buf,
-        profile,
-        mode,
-        inner_lambda_us,
-        theta_e_us,
-        current_ringing,
-        current_bandwidth_hz,
-        tau_e_us,
-        tau_e_crosscheck_us,
-        tau_residual_permille,
-        inner_warning_flags,
-        &mut trace_summary_seqs,
-        backend,
-    )
-    .await
-}
-
-#[allow(clippy::too_many_arguments)]
-pub(crate) async fn step_outer_with_trace<B: CommissioningBackend>(
-    phase: &mut OuterPhase,
-    buf: &mut TransientBuffer,
-    profile: CommissionProfile,
-    mode: OperatingMode,
-    inner_lambda_us: u32,
-    theta_e_us: u32,
-    current_ringing: bool,
-    current_bandwidth_hz: u32,
-    tau_e_us: u32,
-    tau_e_crosscheck_us: u32,
-    tau_residual_permille: u16,
-    inner_warning_flags: u8,
-    trace_summary_seqs: &mut TraceSummarySeqs,
-    backend: &mut B,
-) -> StepResult {
-    // `tau_e_us` and `tau_e_crosscheck_us` are persisted in the outer
-    // engine for Phase 2 (adaptive measurement / fitted-tau crosscheck);
-    // Phase 1 outer logic uses only `tau_residual_permille` and
-    // `inner_warning_flags`. Keeping the wire/struct contract unchanged
-    // avoids a Phase 2 schema bump.
-    let _ = (tau_e_us, tau_e_crosscheck_us);
-    if let Some(safety) = outer_safety_mut(phase) {
-        match check_outer_safety(safety, backend).await {
-            Ok(true) => {
-                // Zero excitation immediately on any safety violation.
-                let _ = backend
-                    .write_register(foci_tmc4671::registers::PID_TORQUE_FLUX_TARGET, 0)
-                    .await;
-                let _ = backend
-                    .write_register(foci_tmc4671::registers::MODE_RAMP_MODE_MOTION, 0)
-                    .await;
-                let err = safety_error_for_phase(phase);
-                return fail_outer(phase, err);
-            }
-            Ok(false) => {}
-            Err(_) => {
-                defmt::warn!("outer safety: encoder read failed");
-                return fail_outer(phase, CommissionError::Spi);
-            }
-        }
-    }
-
-    match phase {
-        OuterPhase::MechanicalId { .. } => {
-            mechanical::step_mechanical_id_with_trace(phase, buf, trace_summary_seqs, backend).await
-        }
-        OuterPhase::VelocityTune { .. } => {
-            velocity::step_velocity_tune(
-                phase,
-                profile,
-                mode,
-                inner_lambda_us,
-                theta_e_us,
-                tau_residual_permille,
-                inner_warning_flags,
-                current_bandwidth_hz,
-                backend,
-            )
-            .await
-        }
-        OuterPhase::VelocityValidate { .. } => {
-            velocity::step_velocity_validate_with_trace(
-                phase,
-                buf,
-                profile,
-                mode,
-                inner_lambda_us,
-                theta_e_us,
-                current_ringing,
-                current_bandwidth_hz,
-                trace_summary_seqs,
-                backend,
-            )
-            .await
-        }
-        OuterPhase::PositionTune { .. } => {
-            position::step_position_tune_with_trace(phase, buf, mode, trace_summary_seqs, backend)
-                .await
-        }
-        OuterPhase::FilterTune { .. } => filter::step_filter_tune(phase, backend).await,
-        OuterPhase::Commit { .. } => commit::step_commit(phase),
-        OuterPhase::Done(result) => StepResult::OuterDone(result.clone()),
-        OuterPhase::Failed(err) => StepResult::OuterFailed(*err),
-    }
-}
 
 #[cfg(test)]
 mod tests {
