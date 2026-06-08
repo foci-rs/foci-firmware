@@ -6,7 +6,8 @@ use crate::autotune::{
 };
 use crate::commissioning::types::OuterResult;
 
-use super::{OUTER_WARNING_NONE, OuterSafetyLimits};
+use super::OUTER_WARNING_NONE;
+use super::safety::OuterSafetyLimits;
 
 /// Mechanical identification sub-state machine (Phase 8).
 #[derive(Debug, defmt::Format)]
