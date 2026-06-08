@@ -7,6 +7,8 @@
 //! accepts the gains, retries with a relaxed lambda, or falls back to
 //! conservative response-ramp tuning.
 
+mod response_ramp;
+
 use super::{
     OUTER_MAX_VELOCITY_I, OUTER_MAX_VELOCITY_P, OUTER_WARNING_UNSAFE_SYNTH_GAINS, OuterPhase,
     POS_TUNE_INITIAL_P, PositionTuneData, PositionTuneState, TraceSummarySeqs,
@@ -45,14 +47,6 @@ const VELOCITY_VALIDATE_CHATTER_THRESHOLD: u32 = 3;
 /// Lambda multiplier (numerator/denominator) applied on a marginal retry.
 const VELOCITY_RETRY_LAMBDA_MUL_NUM: u32 = 3;
 const VELOCITY_RETRY_LAMBDA_MUL_DEN: u32 = 2;
-
-/// Response-ramp P gain multiplier between attempts.
-const VELOCITY_RESPONSE_P_MUL_NUM: u32 = 3;
-const VELOCITY_RESPONSE_P_MUL_DEN: u32 = 2;
-const VELOCITY_RESPONSE_BREAKAWAY_OVERSHOOT_COUNTS: u32 = 4;
-const VELOCITY_RESPONSE_MAX_STEP_PERCENT: u32 = 50;
-const VELOCITY_RESPONSE_MIN_BRACKET_P: u16 = 64;
-const VELOCITY_RESPONSE_MAX_RETRIES: u8 = 12;
 
 /// Velocity mode with `MODE_PID_TYPE` set for the TMC4671 advanced PI structure.
 const OUTER_VELOCITY_MODE: u32 = 0x8000_0002;
@@ -98,83 +92,6 @@ fn encoder_delta_counts_per_ms(
 
     let numerator = delta_counts as u128 * 1000;
     ((numerator + elapsed_us as u128 / 2) / elapsed_us as u128).min(u32::MAX as u128) as u32
-}
-
-fn response_next_velocity_p(current_p: u16) -> Option<u16> {
-    let next_p = current_p as u32 * VELOCITY_RESPONSE_P_MUL_NUM / VELOCITY_RESPONSE_P_MUL_DEN;
-    if next_p > OUTER_MAX_VELOCITY_P as u32 || next_p <= current_p as u32 {
-        None
-    } else {
-        Some(next_p as u16)
-    }
-}
-
-fn response_midpoint_p(lower_p: u16, upper_p: u16) -> Option<u16> {
-    if lower_p == 0 || upper_p <= lower_p.saturating_add(VELOCITY_RESPONSE_MIN_BRACKET_P) {
-        return None;
-    }
-
-    Some(lower_p + (upper_p - lower_p) / 2)
-}
-
-fn response_next_gain_limited_p(current_p: u16, upper_p: u16) -> Option<u16> {
-    if let Some(mid_p) = response_midpoint_p(current_p, upper_p) {
-        Some(mid_p)
-    } else if upper_p == 0 {
-        response_next_velocity_p(current_p)
-    } else {
-        None
-    }
-}
-
-fn response_next_step_target(current_target: u32, velocity_limit: u32) -> Option<u32> {
-    if current_target == 0 || velocity_limit == 0 {
-        return None;
-    }
-
-    let max_target = (velocity_limit * VELOCITY_RESPONSE_MAX_STEP_PERCENT / 100).max(1);
-    let next_target = current_target.saturating_mul(2).min(max_target);
-    (next_target > current_target).then_some(next_target)
-}
-
-fn response_scaled_p_for_target(lower_p: u16, old_target: u32, new_target: u32) -> u16 {
-    if old_target == 0 || new_target == 0 {
-        return response::VELOCITY_RESPONSE_INITIAL_P;
-    }
-
-    let reference_p = lower_p.max(response::VELOCITY_RESPONSE_INITIAL_P);
-    let scaled = (reference_p as u32 * old_target).div_ceil(new_target);
-    scaled
-        .max(response::VELOCITY_RESPONSE_INITIAL_P as u32)
-        .min(OUTER_MAX_VELOCITY_P as u32) as u16
-}
-
-fn response_result_is_gain_limited(
-    metrics: &VelocityValidation,
-    fwd: &VelocityValidation,
-    rev: &VelocityValidation,
-    target: u32,
-    total_samples: u16,
-) -> bool {
-    let sat_pct = if total_samples > 0 {
-        (metrics.saturation_samples as u32 * 100) / total_samples as u32
-    } else {
-        0
-    };
-
-    let min_peak = fwd.peak_velocity.min(rev.peak_velocity);
-    let max_peak = fwd.peak_velocity.max(rev.peak_velocity);
-    let breakaway_peak_cap =
-        target.saturating_add(target.max(VELOCITY_RESPONSE_BREAKAWAY_OVERSHOOT_COUNTS));
-    let breakaway_stiction = min_peak < target && max_peak <= breakaway_peak_cap;
-
-    // Before the first passing response, only keep increasing P when the
-    // capture looks under-driven. A one-sided breakaway hop is also
-    // gain-limited: one direction moved a little, the other never overcame
-    // stiction. Saturation/chatter still mean the gain is unsafe.
-    (metrics.overshoot_pct <= 200 || breakaway_stiction)
-        && sat_pct <= 10
-        && !metrics.zero_speed_chatter
 }
 
 fn record_velocity_validate_summary<B: CommissioningBackend>(
@@ -859,7 +776,7 @@ pub(crate) async fn step_velocity_validate_with_trace<B: CommissioningBackend>(
 
             let exhausted_response_budget = data.strategy == VelocityTuneStrategy::ResponseRamp
                 && !data.has_accepted_gains
-                && data.attempt >= VELOCITY_RESPONSE_MAX_RETRIES
+                && data.attempt >= response_ramp::VELOCITY_RESPONSE_MAX_RETRIES
                 && result != ValidationResult::Pass;
             let (summary_level, summary_status) = if exhausted_response_budget {
                 (
@@ -893,8 +810,9 @@ pub(crate) async fn step_velocity_validate_with_trace<B: CommissioningBackend>(
                         data.accepted_gains = data.gains;
                         data.has_accepted_gains = true;
 
-                        if data.attempt < VELOCITY_RESPONSE_MAX_RETRIES
-                            && let Some(next_p) = response_next_velocity_p(data.gains.velocity_p)
+                        if data.attempt < response_ramp::VELOCITY_RESPONSE_MAX_RETRIES
+                            && let Some(next_p) =
+                                response_ramp::response_next_velocity_p(data.gains.velocity_p)
                         {
                             data.attempt = data.attempt.saturating_add(1);
                             data.gains.velocity_p = next_p;
@@ -923,7 +841,8 @@ pub(crate) async fn step_velocity_validate_with_trace<B: CommissioningBackend>(
                     }
                     ValidationResult::Marginal | ValidationResult::Fail => {
                         let failed_p = data.gains.velocity_p;
-                        if !data.has_accepted_gains && data.attempt >= VELOCITY_RESPONSE_MAX_RETRIES
+                        if !data.has_accepted_gains
+                            && data.attempt >= response_ramp::VELOCITY_RESPONSE_MAX_RETRIES
                         {
                             defmt::warn!(
                                 "vel response: {} at P={} exhausted retry budget ({})",
@@ -940,15 +859,17 @@ pub(crate) async fn step_velocity_validate_with_trace<B: CommissioningBackend>(
                             return fail_outer(phase, CommissionError::VelocityValidationFailed);
                         }
                         if !data.has_accepted_gains
-                            && response_result_is_gain_limited(
+                            && response_ramp::response_result_is_gain_limited(
                                 &merged,
                                 &fwd,
                                 &rev,
                                 data.step_target,
                                 total_samples,
                             )
-                            && let Some(next_p) =
-                                response_next_gain_limited_p(failed_p, data.response_upper_p)
+                            && let Some(next_p) = response_ramp::response_next_gain_limited_p(
+                                failed_p,
+                                data.response_upper_p,
+                            )
                         {
                             data.response_lower_p = failed_p;
                             data.attempt = data.attempt.saturating_add(1);
@@ -967,7 +888,7 @@ pub(crate) async fn step_velocity_validate_with_trace<B: CommissioningBackend>(
                             return StepResult::Continue;
                         }
                         if !data.has_accepted_gains {
-                            let gain_limited = response_result_is_gain_limited(
+                            let gain_limited = response_ramp::response_result_is_gain_limited(
                                 &merged,
                                 &fwd,
                                 &rev,
@@ -983,9 +904,10 @@ pub(crate) async fn step_velocity_validate_with_trace<B: CommissioningBackend>(
                                     data.response_upper_p.min(failed_p)
                                 };
                             }
-                            if let Some(next_p) =
-                                response_midpoint_p(data.response_lower_p, data.response_upper_p)
-                            {
+                            if let Some(next_p) = response_ramp::response_midpoint_p(
+                                data.response_lower_p,
+                                data.response_upper_p,
+                            ) {
                                 data.attempt = data.attempt.saturating_add(1);
                                 data.gains.velocity_p = next_p;
                                 data.gains.velocity_i = 0;
@@ -1005,13 +927,13 @@ pub(crate) async fn step_velocity_validate_with_trace<B: CommissioningBackend>(
                             }
                             if data.response_lower_p > 0
                                 && data.response_upper_p > data.response_lower_p
-                                && let Some(next_target) = response_next_step_target(
+                                && let Some(next_target) = response_ramp::response_next_step_target(
                                     data.step_target,
                                     data.gains.velocity_limit,
                                 )
                             {
                                 let old_target = data.step_target;
-                                data.gains.velocity_p = response_scaled_p_for_target(
+                                data.gains.velocity_p = response_ramp::response_scaled_p_for_target(
                                     data.response_lower_p,
                                     old_target,
                                     next_target,
