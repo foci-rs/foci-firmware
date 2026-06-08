@@ -7,6 +7,7 @@
 pub mod actions;
 pub mod config;
 pub mod dispatch;
+pub mod filters;
 pub mod helpers;
 pub mod request_writes;
 pub mod settle;

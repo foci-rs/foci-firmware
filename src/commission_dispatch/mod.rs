@@ -405,9 +405,11 @@ pub async fn drive_commission_result<B: CommissioningBackend>(
                 };
             }
 
-            if crate::tmc_ops::apply_stored_filters_via_backend(backend, state.tmc, pwm_maxcnt)
-                .await
-                .is_err()
+            if crate::tmc_control::filters::apply_stored_filters_via_backend(
+                backend, state.tmc, pwm_maxcnt,
+            )
+            .await
+            .is_err()
             {
                 defmt::error!("CalibrateDone: stored filter restore SPI failed");
                 crate::tmc_ops::disarm_motor(backend, state).await;
@@ -628,9 +630,11 @@ pub async fn drive_commission_result<B: CommissioningBackend>(
                 };
             }
 
-            if crate::tmc_ops::apply_stored_filters_via_backend(backend, state.tmc, pwm_maxcnt)
-                .await
-                .is_err()
+            if crate::tmc_control::filters::apply_stored_filters_via_backend(
+                backend, state.tmc, pwm_maxcnt,
+            )
+            .await
+            .is_err()
             {
                 defmt::error!("OuterDone: stored filter apply SPI failed");
                 crate::tmc_ops::disarm_motor(backend, state).await;
