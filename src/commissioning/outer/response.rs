@@ -546,7 +546,7 @@ mod tests {
     use super::{
         extract_mechanical_id_metrics, extract_mechanical_response_model,
         mechanical_id_torque_percent, mechanical_id_velocity_onset_threshold_mcpms,
-        response_velocity_gains,
+        position_tune_step_counts, response_velocity_gains,
     };
     use crate::autotune::TransientBuffer;
     use crate::commissioning::outer::MECHANICAL_ID_VELOCITY_CAP_COUNTS_PER_MS;
@@ -566,6 +566,12 @@ mod tests {
         let gains = response_velocity_gains(8_000);
 
         assert_eq!(gains.velocity_limit, 32);
+    }
+
+    #[test]
+    fn position_tune_step_scales_from_encoder_resolution() {
+        assert_eq!(position_tune_step_counts(4_000), 8);
+        assert_eq!(position_tune_step_counts(8_000), 16);
     }
 
     #[test]

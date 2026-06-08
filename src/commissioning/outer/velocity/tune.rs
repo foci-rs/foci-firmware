@@ -4,7 +4,7 @@ use super::super::{
     OUTER_MAX_VELOCITY_I, OUTER_MAX_VELOCITY_P, OUTER_WARNING_UNSAFE_SYNTH_GAINS, OuterPhase,
     VelocityTuneStrategy, VelocityValidateData, VelocityValidateState,
 };
-use super::VELOCITY_VALIDATE_STEP_PERCENT;
+use super::validate::VELOCITY_VALIDATE_STEP_PERCENT;
 use crate::autotune::{CommissionError, CommissionProfile, OperatingMode, PhaseId};
 use crate::commissioning::outer::{fail_outer, response};
 use crate::commissioning::types::{CommissioningBackend, StepResult};
