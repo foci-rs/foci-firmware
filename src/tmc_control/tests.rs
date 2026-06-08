@@ -102,6 +102,91 @@ impl SpiDevice<u8> for RuntimeMockSpi {
     }
 }
 
+fn assert_no_actions(actions: &BoardActions) {
+    assert_eq!(actions.len(), 0, "expected no board actions");
+}
+
+fn assert_single_stop_now(actions: &BoardActions) {
+    assert_eq!(actions.len(), 1, "expected one StopNow action");
+    assert_stop_now_at(actions, 0);
+}
+
+fn assert_stop_now_at(actions: &BoardActions, index: usize) {
+    match &actions[index] {
+        BoardAction::Stepper(StepperAction::StopNow) => {}
+        BoardAction::Stepper(_) => panic!("expected StopNow stepper action at index {index}"),
+        BoardAction::Shutdown(_) => panic!("expected StopNow, got Shutdown at index {index}"),
+        BoardAction::SignalEmergencyDisable => {
+            panic!("expected StopNow, got SignalEmergencyDisable at index {index}")
+        }
+        BoardAction::Reply(_) => panic!("expected StopNow, got Reply at index {index}"),
+        BoardAction::DelegatedDiagnostic(_) => {
+            panic!("expected StopNow, got DelegatedDiagnostic at index {index}")
+        }
+    }
+}
+
+fn assert_shutdown_at(actions: &BoardActions, index: usize, reason: ShutdownReason) {
+    match &actions[index] {
+        BoardAction::Shutdown(actual) => assert_eq!(*actual, reason),
+        BoardAction::Stepper(_) => panic!("expected Shutdown at index {index}, got Stepper"),
+        BoardAction::SignalEmergencyDisable => {
+            panic!("expected Shutdown at index {index}, got SignalEmergencyDisable")
+        }
+        BoardAction::Reply(_) => panic!("expected Shutdown at index {index}, got Reply"),
+        BoardAction::DelegatedDiagnostic(_) => {
+            panic!("expected Shutdown at index {index}, got DelegatedDiagnostic")
+        }
+    }
+}
+
+fn assert_single_shutdown(actions: &BoardActions, reason: ShutdownReason) {
+    assert_eq!(actions.len(), 1, "expected one Shutdown action");
+    assert_shutdown_at(actions, 0, reason);
+}
+
+fn assert_stop_then_shutdown(actions: &BoardActions, reason: ShutdownReason) {
+    assert_eq!(actions.len(), 2, "expected StopNow then Shutdown actions");
+    assert_stop_now_at(actions, 0);
+    assert_shutdown_at(actions, 1, reason);
+}
+
+fn assert_single_arm_preserve_position(actions: &BoardActions) {
+    assert_eq!(actions.len(), 1, "expected one ArmCheck action");
+    match &actions[0] {
+        BoardAction::Stepper(StepperAction::ArmCheck { post_action }) => {
+            assert_eq!(
+                *post_action,
+                crate::commission_dispatch::StepperPostAction::ArmPreservePosition
+            );
+        }
+        BoardAction::Stepper(_) => panic!("expected ArmCheck action"),
+        BoardAction::Shutdown(_) => panic!("expected ArmCheck, got Shutdown"),
+        BoardAction::SignalEmergencyDisable => {
+            panic!("expected ArmCheck, got SignalEmergencyDisable")
+        }
+        BoardAction::Reply(_) => panic!("expected ArmCheck, got Reply"),
+        BoardAction::DelegatedDiagnostic(_) => {
+            panic!("expected ArmCheck, got DelegatedDiagnostic")
+        }
+    }
+}
+
+fn assert_single_delegated_request(actions: &BoardActions, expected: &TmcRequest) {
+    assert_eq!(actions.len(), 1, "expected one DelegatedDiagnostic action");
+    match &actions[0] {
+        BoardAction::DelegatedDiagnostic(delegated) => {
+            assert_eq!(&delegated.request, expected);
+        }
+        BoardAction::Stepper(_) => panic!("expected DelegatedDiagnostic, got Stepper"),
+        BoardAction::Shutdown(_) => panic!("expected DelegatedDiagnostic, got Shutdown"),
+        BoardAction::SignalEmergencyDisable => {
+            panic!("expected DelegatedDiagnostic, got SignalEmergencyDisable")
+        }
+        BoardAction::Reply(_) => panic!("expected DelegatedDiagnostic, got Reply"),
+    }
+}
+
 #[test]
 fn runtime_starts_disarmed_and_uncalibrated() {
     let runtime = TmcControlRuntime::new_for_channel(0);
@@ -141,40 +226,52 @@ fn runtime_config_carries_board_constants() {
 
 #[test]
 fn request_outcome_constructors_encode_tail_shutdown_and_refresh() {
-    let fall_through = TmcControlRequestOutcome::fall_through();
-    assert_eq!(fall_through.tail, TmcControlRequestTail::FallThrough);
-    assert_eq!(fall_through.shutdown, None);
-    assert!(!fall_through.should_refresh_velocity_scale);
-
-    let skip = TmcControlRequestOutcome::skip_tick_tail();
-    assert_eq!(skip.tail, TmcControlRequestTail::SkipTickTail);
-    assert_eq!(skip.shutdown, None);
-    assert!(!skip.should_refresh_velocity_scale);
-
-    let shutdown = TmcControlRequestOutcome::shutdown(
-        ShutdownReason::RequestValidationFailed,
-        TmcControlRequestTail::FallThrough,
-    );
-    assert_eq!(shutdown.tail, TmcControlRequestTail::FallThrough);
     assert_eq!(
-        shutdown.shutdown,
-        Some(ShutdownReason::RequestValidationFailed)
+        TmcControlRequestOutcome::fall_through(),
+        TmcControlRequestOutcome {
+            tail: TmcControlRequestTail::FallThrough,
+            shutdown: None,
+            should_refresh_velocity_scale: false,
+        }
     );
-    assert!(!shutdown.should_refresh_velocity_scale);
-
-    let refresh =
-        TmcControlRequestOutcome::refresh_velocity_scale(TmcControlRequestTail::SkipTickTail);
-    assert_eq!(refresh.tail, TmcControlRequestTail::SkipTickTail);
-    assert_eq!(refresh.shutdown, None);
-    assert!(refresh.should_refresh_velocity_scale);
-
-    let both = TmcControlRequestOutcome::shutdown_then_refresh_velocity_scale(
-        ShutdownReason::InvalidTmcChannel,
-        TmcControlRequestTail::FallThrough,
+    assert_eq!(
+        TmcControlRequestOutcome::skip_tick_tail(),
+        TmcControlRequestOutcome {
+            tail: TmcControlRequestTail::SkipTickTail,
+            shutdown: None,
+            should_refresh_velocity_scale: false,
+        }
     );
-    assert_eq!(both.tail, TmcControlRequestTail::FallThrough);
-    assert_eq!(both.shutdown, Some(ShutdownReason::InvalidTmcChannel));
-    assert!(both.should_refresh_velocity_scale);
+    assert_eq!(
+        TmcControlRequestOutcome::shutdown(
+            ShutdownReason::RequestValidationFailed,
+            TmcControlRequestTail::FallThrough,
+        ),
+        TmcControlRequestOutcome {
+            tail: TmcControlRequestTail::FallThrough,
+            shutdown: Some(ShutdownReason::RequestValidationFailed),
+            should_refresh_velocity_scale: false,
+        }
+    );
+    assert_eq!(
+        TmcControlRequestOutcome::refresh_velocity_scale(TmcControlRequestTail::SkipTickTail),
+        TmcControlRequestOutcome {
+            tail: TmcControlRequestTail::SkipTickTail,
+            shutdown: None,
+            should_refresh_velocity_scale: true,
+        }
+    );
+    assert_eq!(
+        TmcControlRequestOutcome::shutdown_then_refresh_velocity_scale(
+            ShutdownReason::InvalidTmcChannel,
+            TmcControlRequestTail::FallThrough,
+        ),
+        TmcControlRequestOutcome {
+            tail: TmcControlRequestTail::FallThrough,
+            shutdown: Some(ShutdownReason::InvalidTmcChannel),
+            should_refresh_velocity_scale: true,
+        }
+    );
 }
 
 #[test]
@@ -968,26 +1065,33 @@ fn shutdown_signal_emits_one_stop_action_until_reset() {
         &disable_signal,
     );
     let mut runtime = TmcControlRuntime::new_for_channel(0);
+    runtime.set_calibrated_for_test(true);
+    runtime.set_motor_enabled_for_test(true);
+    runtime.set_commission_engine(CommissioningEngine::new_calibrate(7));
 
     let first = runtime.poll_shutdown(&signals);
-    let second = runtime.poll_shutdown(&signals);
 
-    assert!(
-        first
-            .iter()
-            .any(|a| matches!(a, BoardAction::Stepper(StepperAction::StopNow)))
-    );
-    assert!(second.is_empty());
+    assert_single_stop_now(&first);
+    assert!(!runtime.is_motor_enabled());
+    assert!(!runtime.is_calibrated());
+    assert!(!runtime.is_commission_active());
+
+    let second = runtime.poll_shutdown(&signals);
+    assert_no_actions(&second);
 
     shutdown_active.store(false, Relaxed);
-    runtime.poll_shutdown(&signals);
+    assert_no_actions(&runtime.poll_shutdown(&signals));
+
+    shutdown_active.store(true, Relaxed);
+    let third = runtime.poll_shutdown(&signals);
+    assert_single_stop_now(&third);
 }
 
 #[test]
-fn emergency_disable_signal_is_consumed_by_runtime() {
+fn emergency_disable_without_signal_is_empty() {
     let shutdown_active = AtomicBool::new(false);
     let queue_flush = AtomicBool::new(false);
-    let fault_active = AtomicBool::new(false);
+    let fault_active = AtomicBool::new(true);
     let disable_signal = Signal::<CriticalSectionRawMutex, ()>::new();
     let signals = TmcControlSignals::new(
         &shutdown_active,
@@ -996,52 +1100,111 @@ fn emergency_disable_signal_is_consumed_by_runtime() {
         &disable_signal,
     );
     let mut runtime = TmcControlRuntime::new_for_channel(0);
+    runtime.set_calibrated_for_test(true);
+    runtime.set_motor_enabled_for_test(true);
 
-    disable_signal.signal(());
     let actions = runtime.poll_emergency_disable(&signals, 1 << 26);
 
-    assert!(
-        actions
-            .iter()
-            .any(|a| matches!(a, BoardAction::Shutdown(ShutdownReason::AdcCurrentClipped)))
-    );
-    assert!(disable_signal.try_take().is_none());
+    assert_no_actions(&actions);
+    assert!(runtime.is_motor_enabled());
+    assert!(runtime.is_calibrated());
+    assert!(fault_active.load(Relaxed));
 }
 
 #[test]
-fn diagnostic_requests_are_delegated() {
-    let mut runtime = TmcControlRuntime::new_for_channel(0);
-    let req = TmcRequest::new(
-        0,
-        TmcRequestKind::VoltageStepTest {
-            oid: 9,
-            uq_ext: 10,
-            ud_ext: -10,
-            sample_delay_ms: 3,
-        },
+fn emergency_disable_consumes_signal_and_orders_stop_before_shutdown() {
+    let shutdown_active = AtomicBool::new(false);
+    let queue_flush = AtomicBool::new(false);
+    let fault_active = AtomicBool::new(true);
+    let disable_signal = Signal::<CriticalSectionRawMutex, ()>::new();
+    let signals = TmcControlSignals::new(
+        &shutdown_active,
+        &queue_flush,
+        &fault_active,
+        &disable_signal,
     );
+    let mut runtime = TmcControlRuntime::new_for_channel(0);
+    runtime.set_calibrated_for_test(true);
+    runtime.set_motor_enabled_for_test(true);
+
+    disable_signal.signal(());
+    let clipped = runtime.poll_emergency_disable(&signals, 1 << 26);
+
+    assert_stop_then_shutdown(&clipped, ShutdownReason::AdcCurrentClipped);
+    assert!(disable_signal.try_take().is_none());
+    assert!(!fault_active.load(Relaxed));
+    assert!(!runtime.is_motor_enabled());
+    assert!(!runtime.is_calibrated());
+
+    runtime.set_calibrated_for_test(true);
+    runtime.set_motor_enabled_for_test(true);
+    fault_active.store(true, Relaxed);
+    disable_signal.signal(());
+    let non_clipping_fault = runtime.poll_emergency_disable(&signals, 0);
+
+    assert_stop_then_shutdown(&non_clipping_fault, ShutdownReason::TmcFault);
+    assert!(disable_signal.try_take().is_none());
+    assert!(!fault_active.load(Relaxed));
+    assert!(!runtime.is_motor_enabled());
+    assert!(!runtime.is_calibrated());
+}
+
+#[test]
+fn same_channel_regular_request_is_unhandled_without_mutating_runtime() {
+    let mut runtime = TmcControlRuntime::new_for_channel(0);
+    runtime.set_calibrated_for_test(true);
+    runtime.set_motor_enabled_for_test(true);
+    runtime.set_commission_engine(CommissioningEngine::new_calibrate(8));
+    let req = TmcRequest::new(0, TmcRequestKind::SetCurrent { run_ma: 750 });
 
     let actions = runtime.classify_request(req);
 
-    assert!(
-        actions
-            .iter()
-            .any(|a| matches!(a, BoardAction::DelegatedDiagnostic(_)))
-    );
+    assert_no_actions(&actions);
+    assert!(runtime.is_motor_enabled());
+    assert!(runtime.is_calibrated());
+    assert!(runtime.is_commission_active());
 }
 
 #[test]
-fn invalid_channel_request_emits_shutdown_action() {
+fn wrong_channel_request_emits_only_invalid_channel_shutdown_without_mutation() {
     let mut runtime = TmcControlRuntime::new_for_channel(0);
+    runtime.set_calibrated_for_test(true);
+    runtime.set_motor_enabled_for_test(true);
+    runtime.set_commission_engine(CommissioningEngine::new_calibrate(9));
     let req = TmcRequest::new(1, TmcRequestKind::SetEnable(false));
 
     let actions = runtime.classify_request(req);
 
-    assert!(
-        actions
-            .iter()
-            .any(|a| matches!(a, BoardAction::Shutdown(ShutdownReason::InvalidTmcChannel)))
-    );
+    assert_single_shutdown(&actions, ShutdownReason::InvalidTmcChannel);
+    assert!(runtime.is_motor_enabled());
+    assert!(runtime.is_calibrated());
+    assert!(runtime.is_commission_active());
+}
+
+#[test]
+fn all_active_diagnostic_requests_are_delegated_without_mutation() {
+    let requests = [
+        crate::tmc::tmc_current_step_test(0, 10, 111, 12, 13),
+        crate::tmc::tmc_current_vector_step_test(0, 11, 112, -113, 14, 15),
+        crate::tmc::tmc_current_torque_sample_test(0, 12, 114, -115, 16, 17),
+        crate::tmc::tmc_position_torque_offset_sample_test(0, 13, 116, 18, 19),
+        crate::tmc::tmc_voltage_step_test(0, 14, 120, -121, 20),
+    ];
+
+    for req in requests {
+        let mut runtime = TmcControlRuntime::new_for_channel(0);
+        runtime.set_calibrated_for_test(true);
+        runtime.set_motor_enabled_for_test(true);
+        runtime.set_commission_engine(CommissioningEngine::new_calibrate(10));
+        let expected = req.clone();
+
+        let actions = runtime.classify_request(req);
+
+        assert_single_delegated_request(&actions, &expected);
+        assert!(runtime.is_motor_enabled());
+        assert!(runtime.is_calibrated());
+        assert!(runtime.is_commission_active());
+    }
 }
 
 #[test]
@@ -1074,24 +1237,49 @@ fn enable_before_calibration_without_gate_is_noop() {
 
     let actions = runtime.prepare_enable_request(&tmc);
 
-    assert!(actions.is_empty());
+    assert_no_actions(&actions);
     assert!(!runtime.is_motor_enabled());
+    assert!(!runtime.is_calibrated());
 }
 
 #[test]
-fn enable_after_calibration_emits_arm_check_action() {
+fn enable_before_calibration_with_auto_calibrate_gate_still_does_not_energize() {
+    let mut runtime = TmcControlRuntime::new_for_channel(0);
+    let tmc = crate::state::tmc::TmcChannelState::new();
+    tmc.auto_calibrate_on_enable_allowed.store(true, Relaxed);
+
+    let actions = runtime.prepare_enable_request(&tmc);
+
+    assert_no_actions(&actions);
+    assert!(!runtime.is_motor_enabled());
+    assert!(!runtime.is_calibrated());
+}
+
+#[test]
+fn enable_after_calibration_emits_only_arm_preserve_position_check() {
     let mut runtime = TmcControlRuntime::new_for_channel(0);
     let tmc = crate::state::tmc::TmcChannelState::new();
     runtime.set_calibrated_for_test(true);
 
     let actions = runtime.prepare_enable_request(&tmc);
 
-    assert!(actions.iter().any(|a| matches!(
-        a,
-        BoardAction::Stepper(StepperAction::ArmCheck {
-            post_action: crate::commission_dispatch::StepperPostAction::ArmPreservePosition,
-        })
-    )));
+    assert_single_arm_preserve_position(&actions);
+    assert!(!runtime.is_motor_enabled());
+    assert!(runtime.is_calibrated());
+}
+
+#[test]
+fn enable_when_already_enabled_is_noop() {
+    let mut runtime = TmcControlRuntime::new_for_channel(0);
+    let tmc = crate::state::tmc::TmcChannelState::new();
+    runtime.set_calibrated_for_test(true);
+    runtime.set_motor_enabled_for_test(true);
+
+    let actions = runtime.prepare_enable_request(&tmc);
+
+    assert_no_actions(&actions);
+    assert!(runtime.is_motor_enabled());
+    assert!(runtime.is_calibrated());
 }
 
 #[test]
@@ -1102,11 +1290,7 @@ fn disable_request_stops_and_clears_runtime_flags() {
 
     let actions = runtime.prepare_disable_request();
 
-    assert!(
-        actions
-            .iter()
-            .any(|a| matches!(a, BoardAction::Stepper(StepperAction::StopNow)))
-    );
+    assert_single_stop_now(&actions);
     assert!(!runtime.is_motor_enabled());
     assert!(!runtime.is_calibrated());
 }
