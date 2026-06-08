@@ -288,7 +288,7 @@ impl TmcControlRuntime {
         {
             self.pid_error_clear_countdown_ms -= 1;
             if self.pid_error_clear_countdown_ms == 0 {
-                if crate::tmc_ops::settle_hold_and_clear_pid_errors(tmc_spi, refs.tmc)
+                if crate::tmc_control::settle::settle_hold_and_clear_pid_errors(tmc_spi, refs.tmc)
                     .await
                     .is_err()
                 {

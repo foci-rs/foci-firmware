@@ -2,8 +2,8 @@
 //!
 //! State-neutral: writes the well-known safe-state register sequence and
 //! lowers the enable pin via [`crate::commissioning::types::CommissioningBackend`].
-//! Higher-level lifecycle helpers like [`crate::tmc_ops::disarm_motor`] still
-//! own `DispatchState` updates; this helper only touches the chip.
+//! Higher-level lifecycle helpers like `tmc_control::lifecycle::disarm_motor`
+//! still own `DispatchState` updates; this helper only touches the chip.
 //!
 //! Best-effort: every write is attempted even if an earlier write fails.
 //! Returns `()` so commissioning failure paths cannot accidentally surface
@@ -63,8 +63,42 @@ where
     safe_state_write(backend, PWM_SV_CHOP, 0, &mut report).await;
     safe_state_write(backend, PID_VELOCITY_OFFSET, 0, &mut report).await;
     safe_state_write(backend, PIDOUT_UQ_UD_LIMITS, 1024, &mut report).await;
-    let _ = crate::tmc_ops::clear_pid_error_sums_via_backend(backend).await;
+    let _ = clear_pid_error_sums_via_backend(backend).await;
     report
+}
+
+/// Backend-trait variant of PID error-sum clearing for safe-state recovery.
+///
+/// Each sub-register write is best-effort. The returned error only indicates
+/// whether any selector/data write failed; callers that are already in a
+/// disarmed safe-state path may intentionally ignore it.
+async fn clear_pid_error_sums_via_backend<B>(backend: &mut B) -> Result<(), ()>
+where
+    B: CommissioningBackend,
+{
+    use foci_tmc4671::registers::*;
+
+    let mut failed = false;
+    let pairs = [
+        PID_ERROR_PID_TORQUE_ERROR_SUM,
+        PID_ERROR_PID_FLUX_ERROR_SUM,
+        PID_ERROR_PID_VELOCITY_ERROR_SUM,
+        PID_ERROR_PID_POSITION_ERROR_SUM,
+    ];
+    for sub in pairs {
+        if backend
+            .write_register(sub.addr, sub.sub_addr as u32)
+            .await
+            .is_err()
+        {
+            failed = true;
+        }
+        if backend.write_register(sub.data, 0).await.is_err() {
+            failed = true;
+        }
+    }
+
+    if failed { Err(()) } else { Ok(()) }
 }
 
 async fn safe_state_write<B>(
