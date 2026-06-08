@@ -387,7 +387,7 @@ pub async fn drive_commission_result<B: CommissioningBackend>(
                     .await;
             if restore_result.is_err() {
                 defmt::error!("CalibrateDone: saved gain restore SPI failed");
-                crate::tmc_ops::disarm_motor(backend, state).await;
+                crate::tmc_control::lifecycle::disarm_motor(backend, state).await;
                 state
                     .tmc
                     .commission_in_flight
@@ -412,7 +412,7 @@ pub async fn drive_commission_result<B: CommissioningBackend>(
             .is_err()
             {
                 defmt::error!("CalibrateDone: stored filter restore SPI failed");
-                crate::tmc_ops::disarm_motor(backend, state).await;
+                crate::tmc_control::lifecycle::disarm_motor(backend, state).await;
                 state
                     .tmc
                     .commission_in_flight
@@ -431,9 +431,11 @@ pub async fn drive_commission_result<B: CommissioningBackend>(
             }
 
             *state.calibrated = true;
-            if let Err(error) = crate::tmc_ops::arm_motor_electrical(backend, state).await {
+            if let Err(error) =
+                crate::tmc_control::lifecycle::arm_motor_electrical(backend, state).await
+            {
                 defmt::error!("CalibrateDone: arm sentinel verify failed: {}", error);
-                crate::tmc_ops::disarm_motor(backend, state).await;
+                crate::tmc_control::lifecycle::disarm_motor(backend, state).await;
                 state
                     .tmc
                     .commission_in_flight
@@ -492,7 +494,7 @@ pub async fn drive_commission_result<B: CommissioningBackend>(
                 .is_err()
             {
                 defmt::error!("CommissionDone: current-limit restore SPI failed");
-                crate::tmc_ops::disarm_motor(backend, state).await;
+                crate::tmc_control::lifecycle::disarm_motor(backend, state).await;
                 state.tmc.commission_in_flight.store(false, Relaxed);
                 return CommissionOutcome::Terminal {
                     reply: ReplyPayload::CommissionResult {
@@ -539,9 +541,11 @@ pub async fn drive_commission_result<B: CommissioningBackend>(
                 .store(commission_result.fallback_velocity_limit, Relaxed);
 
             *state.calibrated = true;
-            if let Err(error) = crate::tmc_ops::arm_motor_electrical(backend, state).await {
+            if let Err(error) =
+                crate::tmc_control::lifecycle::arm_motor_electrical(backend, state).await
+            {
                 defmt::error!("CommissionDone: arm sentinel verify failed: {}", error);
-                crate::tmc_ops::disarm_motor(backend, state).await;
+                crate::tmc_control::lifecycle::disarm_motor(backend, state).await;
                 state.tmc.commission_in_flight.store(false, Relaxed);
                 return CommissionOutcome::Terminal {
                     reply: ReplyPayload::CommissionResult {
@@ -615,7 +619,7 @@ pub async fn drive_commission_result<B: CommissioningBackend>(
                 .is_err()
             {
                 defmt::error!("OuterDone: position-mode restore SPI failed");
-                crate::tmc_ops::disarm_motor(backend, state).await;
+                crate::tmc_control::lifecycle::disarm_motor(backend, state).await;
                 state.tmc.commission_in_flight.store(false, Relaxed);
                 return CommissionOutcome::Terminal {
                     reply: ReplyPayload::TuneResult {
@@ -637,7 +641,7 @@ pub async fn drive_commission_result<B: CommissioningBackend>(
             .is_err()
             {
                 defmt::error!("OuterDone: stored filter apply SPI failed");
-                crate::tmc_ops::disarm_motor(backend, state).await;
+                crate::tmc_control::lifecycle::disarm_motor(backend, state).await;
                 state.tmc.commission_in_flight.store(false, Relaxed);
                 return CommissionOutcome::Terminal {
                     reply: ReplyPayload::TuneResult {
@@ -653,9 +657,11 @@ pub async fn drive_commission_result<B: CommissioningBackend>(
             }
 
             *state.calibrated = true;
-            if let Err(error) = crate::tmc_ops::arm_motor_electrical(backend, state).await {
+            if let Err(error) =
+                crate::tmc_control::lifecycle::arm_motor_electrical(backend, state).await
+            {
                 defmt::error!("OuterDone: arm sentinel verify failed: {}", error);
-                crate::tmc_ops::disarm_motor(backend, state).await;
+                crate::tmc_control::lifecycle::disarm_motor(backend, state).await;
                 state.tmc.commission_in_flight.store(false, Relaxed);
                 return CommissionOutcome::Terminal {
                     reply: ReplyPayload::TuneResult {
@@ -740,7 +746,7 @@ pub async fn drive_commission_result<B: CommissioningBackend>(
                 let _ = backend
                     .write_register(foci_tmc4671::registers::MODE_RAMP_MODE_MOTION, 0)
                     .await;
-                crate::tmc_ops::disarm_motor(backend, state).await;
+                crate::tmc_control::lifecycle::disarm_motor(backend, state).await;
                 defmt::error!("OuterFailed: safety fault ({}), motor disabled", fault);
                 (
                     fault.status_code(),
@@ -751,8 +757,10 @@ pub async fn drive_commission_result<B: CommissioningBackend>(
                 )
             } else {
                 *state.calibrated = true;
-                if let Err(arm_error) = crate::tmc_ops::arm_motor_electrical(backend, state).await {
-                    crate::tmc_ops::disarm_motor(backend, state).await;
+                if let Err(arm_error) =
+                    crate::tmc_control::lifecycle::arm_motor_electrical(backend, state).await
+                {
+                    crate::tmc_control::lifecycle::disarm_motor(backend, state).await;
                     defmt::error!(
                         "OuterFailed: arm sentinel verify failed after soft failure: {}",
                         arm_error

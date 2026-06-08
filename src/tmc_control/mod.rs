@@ -9,6 +9,7 @@ pub mod config;
 pub mod dispatch;
 pub mod filters;
 pub mod helpers;
+pub mod lifecycle;
 pub mod request_writes;
 pub mod settle;
 pub mod signals;
