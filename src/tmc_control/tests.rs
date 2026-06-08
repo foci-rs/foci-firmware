@@ -17,8 +17,8 @@ use embedded_hal_async::spi::{ErrorKind, ErrorType, Operation, SpiDevice};
 use foci_tmc4671::registers::{
     ABN_DECODER_MODE, ABN_DECODER_PHI_E_PHI_M_OFFSET, ABN_DECODER_PPR,
     PID_ERROR_PID_POSITION_ERROR_SUM, PID_FLUX_P_FLUX_I, PID_POSITION_ACTUAL,
-    PID_POSITION_P_POSITION_I, PID_POSITION_TARGET, PID_TORQUE_FLUX_LIMITS, PID_TORQUE_P_TORQUE_I,
-    PID_VELOCITY_P_VELOCITY_I, PIDOUT_UQ_UD_LIMITS, STATUS_FLAGS,
+    PID_POSITION_P_POSITION_I, PID_POSITION_TARGET, PID_TORQUE_FLUX_LIMITS, PID_TORQUE_FLUX_OFFSET,
+    PID_TORQUE_P_TORQUE_I, PID_VELOCITY_P_VELOCITY_I, PIDOUT_UQ_UD_LIMITS, STATUS_FLAGS,
 };
 use foci_tmc4671::spi::Tmc4671Spi;
 
@@ -1001,11 +1001,7 @@ fn shutdown_quiesce_clears_safe_state_without_config_reset() {
 
     let actions = runtime.prepare_shutdown_quiesce();
 
-    assert!(
-        actions
-            .iter()
-            .any(|a| matches!(a, BoardAction::Stepper(StepperAction::StopNow)))
-    );
+    assert_single_stop_now(&actions);
     assert!(!runtime.is_motor_enabled());
     assert!(!runtime.is_calibrated());
     assert!(!runtime.is_commission_active());
@@ -1013,6 +1009,67 @@ fn shutdown_quiesce_clears_safe_state_without_config_reset() {
     assert_eq!(runtime.pid_error_clear_countdown_ms(), 0);
     assert_eq!(runtime.stored_gains(), Some(gains));
     assert_eq!(runtime.velocity_scale(), 123_456);
+}
+
+#[test]
+fn shutdown_quiesce_clears_torque_flux_offset_activity() {
+    pollster::block_on(async {
+        let mut runtime = TmcControlRuntime::new_for_channel(0);
+        runtime.set_motor_enabled_for_test(true);
+        runtime.set_velocity_scale_for_test(84_000_000);
+        let tmc_state = crate::state::tmc::TmcChannelState::new();
+        let stepper_state = crate::state::stepper::StepperChannelState::new();
+        let config = commissioning_runtime_config();
+        let refs = TmcControlStateRefs::new(&tmc_state, &stepper_state);
+        tmc_state.accel_feedforward.store(true, Relaxed);
+        tmc_state
+            .accel_feedforward_accel_gain_permille
+            .store(1_000, Relaxed);
+        tmc_state
+            .accel_feedforward_decel_gain_permille
+            .store(1_000, Relaxed);
+        tmc_state.current_limit_reg.store(10_000, Relaxed);
+        stepper_state.interval.store(2_800, Relaxed);
+        stepper_state.interval_add.store(-10, Relaxed);
+        let mut active_tmc = Tmc4671Spi::new(RuntimeMockSpi::default());
+
+        assert_eq!(
+            runtime
+                .apply_feedforward_tick(&mut active_tmc, refs, &config, false, false, true)
+                .await,
+            Ok(())
+        );
+        assert!(
+            active_tmc
+                .into_inner()
+                .attempted_write_to(PID_TORQUE_FLUX_OFFSET)
+        );
+
+        assert_single_stop_now(&runtime.prepare_shutdown_quiesce());
+        tmc_state.accel_feedforward.store(false, Relaxed);
+        let mut inactive_tmc = Tmc4671Spi::new(RuntimeMockSpi::default());
+
+        assert_eq!(
+            runtime
+                .apply_feedforward_tick(
+                    &mut inactive_tmc,
+                    TmcControlStateRefs::new(&tmc_state, &stepper_state),
+                    &config,
+                    false,
+                    false,
+                    true,
+                )
+                .await,
+            Ok(())
+        );
+
+        assert!(
+            !inactive_tmc
+                .into_inner()
+                .attempted_write_to(PID_TORQUE_FLUX_OFFSET),
+            "shutdown quiesce should clear the offset-active latch so the next inactive tick does not emit a cleanup write"
+        );
+    });
 }
 
 #[test]
