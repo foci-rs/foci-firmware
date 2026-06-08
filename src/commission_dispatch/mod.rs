@@ -7,7 +7,7 @@
 //! types it returns. The board calls this once per engine.step() result
 //! and matches `CommissionOutcome` to fire RTIC primitives + emit replies.
 
-// pub(crate) so sibling test modules (tmc_ops, commissioning, …) can
+// pub(crate) so sibling test modules (commissioning, diagnostics, ...) can
 // import MockBackend + helpers via crate::commission_dispatch::test_support::*.
 pub mod post_actions;
 mod restore;
