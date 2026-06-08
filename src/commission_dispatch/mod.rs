@@ -10,6 +10,7 @@
 // pub(crate) so sibling test modules (tmc_ops, commissioning, …) can
 // import MockBackend + helpers via crate::commission_dispatch::test_support::*.
 pub mod post_actions;
+mod restore;
 #[cfg(test)]
 pub(crate) mod test_support;
 #[cfg(test)]
@@ -386,8 +387,7 @@ pub async fn drive_commission_result<B: CommissioningBackend>(
                 .motor_armed
                 .store(false, core::sync::atomic::Ordering::Relaxed);
             let restore_result =
-                crate::tmc_ops::restore_calibrate_gains(backend, state.tmc, *state.stored_gains)
-                    .await;
+                restore::restore_calibrate_gains(backend, state.tmc, *state.stored_gains).await;
             if restore_result.is_err() {
                 defmt::error!("CalibrateDone: saved gain restore SPI failed");
                 crate::tmc_control::lifecycle::disarm_motor(backend, state).await;
@@ -617,7 +617,7 @@ pub async fn drive_commission_result<B: CommissioningBackend>(
                 .store(outer.torque_filter_hz, Relaxed);
 
             // SPI restore — enter position mode with the tuned gains.
-            if crate::tmc_ops::restore_position_mode_after_outer(backend, state.tmc, &outer)
+            if restore::restore_position_mode_after_outer(backend, state.tmc, &outer)
                 .await
                 .is_err()
             {
