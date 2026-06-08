@@ -5,6 +5,9 @@ use foci_tmc4671::spi::Tmc4671Spi;
 
 use crate::state::tmc::TmcChannelState;
 use crate::tmc::TmcRequestKind;
+use crate::tmc_control::request_writes::{
+    apply_set_current, apply_set_encoder, apply_set_encoder_dir, apply_set_voltage_limit,
+};
 
 /// Result of attempting board-agnostic TMC request dispatch.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
@@ -32,20 +35,19 @@ where
 {
     match kind {
         TmcRequestKind::SetCurrent { run_ma } => {
-            crate::tmc_ops::apply_set_current(tmc, tmc_state, *run_ma, current_scale_ma_per_lsb)
-                .await?;
+            apply_set_current(tmc, tmc_state, *run_ma, current_scale_ma_per_lsb).await?;
             Ok(SharedTmcDispatch::Handled)
         }
         TmcRequestKind::SetEncoder { ppr } => {
-            crate::tmc_ops::apply_set_encoder(tmc, *ppr).await?;
+            apply_set_encoder(tmc, *ppr).await?;
             Ok(SharedTmcDispatch::Handled)
         }
         TmcRequestKind::SetEncoderDir { invert } => {
-            crate::tmc_ops::apply_set_encoder_dir(tmc, tmc_state, *invert).await?;
+            apply_set_encoder_dir(tmc, tmc_state, *invert).await?;
             Ok(SharedTmcDispatch::Handled)
         }
         TmcRequestKind::SetVoltageLimit { voltage_limit } => {
-            crate::tmc_ops::apply_set_voltage_limit(tmc, tmc_state, *voltage_limit).await?;
+            apply_set_voltage_limit(tmc, tmc_state, *voltage_limit).await?;
             Ok(SharedTmcDispatch::Handled)
         }
         TmcRequestKind::SetVelocityFilter { .. }
