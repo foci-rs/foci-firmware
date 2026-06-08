@@ -1,0 +1,1430 @@
+use super::{
+    CommissionProfile, CurrentGains, ELECTRICAL_MODEL_RESISTANCE_SCALE, ElectricalModel,
+    TransientBuffer, ValidationResult,
+};
+
+/// Current-loop SIMC integrator damping factor.
+///
+/// The documented advanced-PI zero placement is correct in isolation, but on
+/// the target hardware the raw `4*(lambda+theta)` SIMC integral time winds up
+/// during the current-step rise. Use a slower integral time while keeping the
+/// proportional SIMC damping unchanged.
+const CURRENT_SIMC_TI_MULTIPLIER: f32 = 11.0;
+
+/// Samples used to smooth current validation settling/ringing checks.
+///
+/// Current captures include PWM/ADC ripple around the regulated value. A short
+/// trailing average keeps the validation focused on the controller envelope
+/// while preserving raw samples for rise time and overshoot.
+const CURRENT_METRIC_SMOOTHING_SAMPLES: usize = 8;
+
+/// Metrics from a current-loop step-response validation test.
+///
+/// Extracted from the [`TransientBuffer`] after a torque step.
+/// Used by [`classify_current_validation`] to determine pass/marginal/fail.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+pub struct CurrentValidation {
+    /// Time from 10% to 90% of target, in microseconds.
+    pub rise_time_us: u32,
+    /// Peak overshoot above target, in 0.1% units (150 = 15.0%).
+    pub overshoot_pct: u16,
+    /// Time to settle within +/-5% of target, in microseconds.
+    pub settling_time_us: u32,
+    /// Zero-crossings of (actual - target) after peak.
+    pub ringing_count: u8,
+    /// Samples where value hit the saturation limit.
+    pub saturation_samples: u16,
+    /// |fwd_tail - rev_tail| / avg, in 0.1% units (permille).
+    /// Set to 0 by extract_step_metrics (requires two captures).
+    pub symmetry_pct: u16,
+    /// Robust tail level: median of last 32 samples (or fewer if buffer is
+    /// shorter). Used to compute steady-state signed-current symmetry between
+    /// forward and reverse captures.
+    pub tail_level: u32,
+    /// |tail_level - target| / target, in 0.1% units (permille).
+    /// Measures whether the current loop actually reached the commanded
+    /// target. Set to 0 by extract_step_metrics; the caller computes it
+    /// from the combined (worst-case) tail_level and commanded target.
+    pub target_error_pct: u16,
+}
+
+/// Compute the SIMC lambda (closed-loop time constant) for a given profile.
+///
+/// All profiles guarantee `lambda >= theta_e` (SIMC stability boundary).
+fn simc_lambda_us(profile: CommissionProfile, tau_e_us: u32, theta_e_us: u32) -> u32 {
+    let lambda = match profile {
+        CommissionProfile::Conservative => (4 * theta_e_us).max(tau_e_us),
+        CommissionProfile::Balanced => (2 * theta_e_us).max(tau_e_us / 2),
+        CommissionProfile::Stiff => {
+            let from_theta = theta_e_us;
+            let from_tau = tau_e_us / 4;
+            if from_theta > from_tau {
+                from_theta
+            } else {
+                from_tau
+            }
+        }
+    };
+    // Enforce stability boundary: lambda >= theta_e
+    if lambda >= theta_e_us {
+        lambda
+    } else {
+        theta_e_us
+    }
+}
+
+/// Compute SIMC PI gains for the current loop, returning `None` if the
+/// electrical model is invalid (zero R, zero L, or zero theta).
+pub fn simc_current_gains_checked(
+    model: &ElectricalModel,
+    profile: CommissionProfile,
+    config: &crate::config::TmcConfig,
+) -> Option<CurrentGains> {
+    let lambda_us = simc_lambda_us(profile, model.tau_e_us, model.theta_e_us);
+    simc_current_gains_with_lambda_checked(model, lambda_us, config)
+}
+
+/// Compute SIMC PI gains for the current loop using an explicit lambda.
+pub fn simc_current_gains_with_lambda_checked(
+    model: &ElectricalModel,
+    lambda_us: u32,
+    config: &crate::config::TmcConfig,
+) -> Option<CurrentGains> {
+    if model.r_int == 0 || model.l_int == 0 || model.theta_e_us == 0 {
+        return None;
+    }
+
+    let lambda_us = lambda_us.max(model.theta_e_us);
+
+    // SIMC PI tuning law for FOPDT plant G(s) = K / (tau*s+1) * e^(-theta*s):
+    //   Kp = tau / (K * (lambda + theta))
+    //   Ti = max(tau, CURRENT_SIMC_TI_MULTIPLIER * (lambda + theta))
+    //   Ki = Kp / Ti
+    //
+    // For current loop: K = 1/R_int (DC gain: current per unit voltage).
+    // All in internal units — no board-specific scaling needed.
+
+    let tau = model.tau_e_us as f32;
+    let theta = model.theta_e_us as f32;
+    let lambda = lambda_us as f32;
+    let r_int = model.r_int as f32 / ELECTRICAL_MODEL_RESISTANCE_SCALE as f32;
+    let k = 1.0 / r_int; // Plant DC gain
+
+    let kp = tau / (k * (lambda + theta));
+    let ti = {
+        let candidate = CURRENT_SIMC_TI_MULTIPLIER * (lambda + theta);
+        if tau > candidate { tau } else { candidate }
+    };
+    let ti_s = ti * 1e-6; // Convert Ti from microseconds to seconds
+
+    // Convert to the TMC4671 current-loop register format.
+    //
+    // OpenFFBoard leaves CONFIG_ADVANCED_PI_REPRESENT at its default 0, so the
+    // current-loop I register field is raw Q8.8. In advanced PI mode the
+    // integrator is series/interacting:
+    //   x[k+1] = x[k] + Kp * (I/65536) * e[k]
+    // so the raw Q8.8 I register places the PI zero as I/65536 per PWM sample.
+    // A continuous Ti maps to I ~= 65536 / (Ti * f_pwm).
+    let f_pwm = config.pwm_freq_hz() as f32;
+    let p_reg = (kp * 256.0).clamp(1.0, u16::MAX as f32) as u16;
+    let i_reg = (65_536.0 / (ti_s * f_pwm)).clamp(1.0, u16::MAX as f32) as u16;
+
+    // Effective bandwidth = 1 / (2*pi*(lambda+theta)) in Hz
+    let bw_hz = 1_000_000.0 / (2.0 * core::f32::consts::PI * (lambda + theta));
+
+    Some(CurrentGains {
+        flux_p: p_reg,
+        flux_i: i_reg,
+        torque_p: p_reg,
+        torque_i: i_reg,
+        effective_bandwidth_hz: bw_hz as u32,
+        lambda_us,
+    })
+}
+
+/// Compute SIMC PI gains for the current loop.
+///
+/// Returns default conservative gains if the electrical model is invalid.
+pub fn simc_current_gains(
+    model: &ElectricalModel,
+    profile: CommissionProfile,
+    config: &crate::config::TmcConfig,
+) -> CurrentGains {
+    simc_current_gains_checked(model, profile, config).unwrap_or(CurrentGains {
+        flux_p: crate::pid::DEFAULT_INNER_GAINS.flux_p,
+        flux_i: crate::pid::DEFAULT_INNER_GAINS.flux_i,
+        torque_p: crate::pid::DEFAULT_INNER_GAINS.torque_p,
+        torque_i: crate::pid::DEFAULT_INNER_GAINS.torque_i,
+        effective_bandwidth_hz: 0,
+        lambda_us: 0,
+    })
+}
+
+/// Compute SIMC current-loop gains with an explicit lambda, falling back to defaults.
+pub fn simc_current_gains_with_lambda(
+    model: &ElectricalModel,
+    lambda_us: u32,
+    config: &crate::config::TmcConfig,
+) -> CurrentGains {
+    simc_current_gains_with_lambda_checked(model, lambda_us, config).unwrap_or(CurrentGains {
+        flux_p: crate::pid::DEFAULT_INNER_GAINS.flux_p,
+        flux_i: crate::pid::DEFAULT_INNER_GAINS.flux_i,
+        torque_p: crate::pid::DEFAULT_INNER_GAINS.torque_p,
+        torque_i: crate::pid::DEFAULT_INNER_GAINS.torque_i,
+        effective_bandwidth_hz: 0,
+        lambda_us: 0,
+    })
+}
+
+/// Settling reference for current-loop validation, in microseconds.
+///
+/// Advanced PI uses the `I` register as the controller zero location. When the
+/// current-loop integrator is intentionally damped, electrical tau is no longer
+/// the dominant settling reference; the configured PI zero time is.
+pub fn current_settling_reference_us(
+    gains: &CurrentGains,
+    config: &crate::config::TmcConfig,
+) -> u32 {
+    let i_reg = gains.flux_i.min(gains.torque_i).max(1) as u64;
+    let f_pwm = config.pwm_freq_hz().max(1) as u64;
+    (65_536_000_000u64 / (i_reg * f_pwm)).min(u32::MAX as u64) as u32
+}
+
+/// Number of tail samples used for the robust tail-level statistic.
+const TAIL_LEVEL_WINDOW: usize = 32;
+
+/// Compute the median of a slice of u32 values.
+///
+/// Uses a stack-allocated scratch buffer (max 32 elements). Returns 0 for
+/// empty slices. For even-length slices, returns the mean of the two middle
+/// values.
+fn median_u32(values: &[u32]) -> u32 {
+    let len = values.len();
+    if len == 0 {
+        return 0;
+    }
+    let mut scratch = [0u32; TAIL_LEVEL_WINDOW];
+    let n = len.min(TAIL_LEVEL_WINDOW);
+    scratch[..n].copy_from_slice(&values[..n]);
+    scratch[..n].sort_unstable();
+    if n % 2 == 1 {
+        scratch[n / 2]
+    } else {
+        (scratch[n / 2 - 1] + scratch[n / 2]) / 2
+    }
+}
+
+fn trailing_average(samples: &[u32], idx: usize, window_len: usize) -> u32 {
+    let start = idx.saturating_add(1).saturating_sub(window_len);
+    let window = &samples[start..=idx];
+    let sum: u64 = window.iter().map(|&sample| sample as u64).sum();
+    (sum / window.len() as u64) as u32
+}
+
+/// Extract step-response metrics from a transient buffer capture.
+///
+/// Analyzes a captured step response to measure rise time, overshoot,
+/// settling time, ringing, and saturation. These metrics are then
+/// classified by [`classify_current_validation`].
+///
+/// # Parameters
+/// - `buf`: captured step response samples (raw ADC or encoder values)
+/// - `target`: the target value that was commanded (step amplitude)
+/// - `pidout_limit`: saturation threshold (0 to skip saturation check)
+///
+/// Returns metrics with `symmetry_pct = 0`. Symmetry requires two captures
+/// (forward + reverse); the caller computes it via [`compute_tail_symmetry_pct`].
+/// Timing fields are durations within the capture, not absolute times since
+/// the command step. Callers that schedule the first sample after one sample
+/// period should keep that origin outside this buffer.
+pub fn extract_step_metrics(
+    buf: &TransientBuffer,
+    target: u32,
+    pidout_limit: u32,
+) -> CurrentValidation {
+    let samples = buf.samples();
+    if samples.is_empty() || target == 0 {
+        return CurrentValidation {
+            rise_time_us: 0,
+            overshoot_pct: 0,
+            settling_time_us: 0,
+            ringing_count: 0,
+            saturation_samples: 0,
+            symmetry_pct: 0,
+            tail_level: 0,
+            target_error_pct: 0,
+        };
+    }
+
+    let period = buf.sample_period_us() as u32;
+    let target_f = target as f32;
+    let threshold_10 = (target_f * 0.10) as u32;
+    let threshold_90 = (target_f * 0.90) as u32;
+    // Current validation samples quantized ADC values. At low targets, a
+    // strict 5% band can truncate to zero counts, which would require every
+    // sample to equal the target exactly. Allow at least one count so a small,
+    // otherwise stable response can settle.
+    let settle_band = ((target_f * 0.05) as u32).max(1);
+
+    // These are relative crossing offsets; rise_time subtracts them, so the
+    // absolute capture origin does not affect the result.
+    let mut t_10: Option<u32> = None;
+    let mut t_90: Option<u32> = None;
+    let mut peak: u32 = 0;
+    let mut peak_idx: usize = 0;
+    let mut saturation_count: u16 = 0;
+
+    for (i, &s) in samples.iter().enumerate() {
+        if t_10.is_none() && s >= threshold_10 {
+            t_10 = Some(crate::sample_timing::sample_offset_us(i, period));
+        }
+        if t_90.is_none() && s >= threshold_90 {
+            t_90 = Some(crate::sample_timing::sample_offset_us(i, period));
+        }
+        if s > peak {
+            peak = s;
+            peak_idx = i;
+        }
+        if pidout_limit > 0 && s >= pidout_limit {
+            saturation_count += 1;
+        }
+    }
+
+    let rise_time_us = match (t_10, t_90) {
+        (Some(a), Some(b)) => b.saturating_sub(a),
+        _ => 0,
+    };
+
+    // Overshoot: (peak - target) / target in 0.1% units
+    let overshoot_pct = if peak > target {
+        ((peak - target) as u64 * 1000 / target as u64) as u16
+    } else {
+        0
+    };
+
+    // Settling: last smoothed sample where |actual - target| > 5% band.
+    // Use (index + 1) * period because settling time is the duration through
+    // the period containing the last out-of-band sample, not its offset
+    // from the capture origin.
+    let mut last_outside: Option<usize> = None;
+    for (i, _) in samples.iter().enumerate() {
+        let smoothed = trailing_average(samples, i, CURRENT_METRIC_SMOOTHING_SAMPLES);
+        let diff = smoothed.abs_diff(target);
+        if diff > settle_band {
+            last_outside = Some(i);
+        }
+    }
+    let settling_time_us = match last_outside {
+        Some(idx) => crate::sample_timing::sample_elapsed_us(idx, period),
+        None => 0,
+    };
+
+    // Ringing: crossings between smoothed excursions outside the settle band.
+    // Samples inside the accepted band are ignored so ADC noise around the
+    // target does not look like sustained oscillation.
+    let mut ringing_count: u8 = 0;
+    if peak_idx + 1 < samples.len() {
+        let upper = target.saturating_add(settle_band);
+        let lower = target.saturating_sub(settle_band);
+        let mut above: Option<bool> = None;
+        for i in peak_idx + 1..samples.len() {
+            let smoothed = trailing_average(samples, i, CURRENT_METRIC_SMOOTHING_SAMPLES);
+            let now_above = if smoothed > upper {
+                Some(true)
+            } else if smoothed < lower {
+                Some(false)
+            } else {
+                None
+            };
+            if let Some(now) = now_above {
+                if let Some(prev) = above
+                    && now != prev
+                {
+                    ringing_count = ringing_count.saturating_add(1);
+                }
+                above = Some(now);
+            }
+        }
+    }
+
+    // Tail level: median of last TAIL_LEVEL_WINDOW samples.
+    let tail_start = samples.len().saturating_sub(TAIL_LEVEL_WINDOW);
+    let tail_level = median_u32(&samples[tail_start..]);
+
+    CurrentValidation {
+        rise_time_us,
+        overshoot_pct,
+        settling_time_us,
+        ringing_count,
+        saturation_samples: saturation_count,
+        symmetry_pct: 0,
+        tail_level,
+        target_error_pct: 0,
+    }
+}
+
+/// Classify current-loop validation metrics against thresholds.
+///
+/// Thresholds (starting points, subject to hardware validation):
+///
+/// | Metric | Pass | Marginal | Fail |
+/// |--------|------|----------|------|
+/// | Overshoot | < 15% | 15-30% | > 30% |
+/// | Ringing | 0-1 | 2-3 | > 3 |
+/// | Settling | < 5*settle_ref | 5-10*settle_ref | > 10*settle_ref |
+/// | Symmetry | <= 10% | 10-25% | > 25% |
+/// | Saturation | < 10% | 10-25% | > 25% |
+/// | Target error | <= 10% | 10-50% | > 50% |
+///
+/// `total_samples` is the total number of capture samples across both
+/// directions, used for computing the saturation percentage.
+/// Returns the worst classification across all metrics.
+pub fn classify_current_validation(
+    metrics: &CurrentValidation,
+    settle_reference_us: u32,
+    total_samples: u16,
+) -> ValidationResult {
+    let mut worst = ValidationResult::Pass;
+
+    // Overshoot (0.1% units: 150 = 15.0%, 300 = 30.0%)
+    if metrics.overshoot_pct > 300 {
+        return ValidationResult::Fail;
+    } else if metrics.overshoot_pct > 150 {
+        worst = ValidationResult::Marginal;
+    }
+
+    // Ringing
+    if metrics.ringing_count > 3 {
+        return ValidationResult::Fail;
+    } else if metrics.ringing_count > 1 {
+        worst = ValidationResult::Marginal;
+    }
+
+    // Settling (relative to the dominant current-loop reference).
+    let settle_5x = 5 * settle_reference_us;
+    let settle_10x = 10 * settle_reference_us;
+    if metrics.settling_time_us > settle_10x {
+        return ValidationResult::Fail;
+    } else if metrics.settling_time_us > settle_5x {
+        worst = ValidationResult::Marginal;
+    }
+
+    // Symmetry (0.1% units: 100 = 10.0%, 250 = 25.0%)
+    // Tail-level symmetry is much less noisy than the old rise-time metric,
+    // so tighter thresholds are appropriate.
+    if metrics.symmetry_pct > 250 {
+        return ValidationResult::Fail;
+    } else if metrics.symmetry_pct > 100 {
+        worst = ValidationResult::Marginal;
+    }
+
+    // Saturation (fraction of total samples): pass <10%, marginal 10-25%, fail >25%
+    if total_samples > 0 {
+        let sat_pct = (metrics.saturation_samples as u32 * 100) / total_samples as u32;
+        if sat_pct > 25 {
+            return ValidationResult::Fail;
+        } else if sat_pct > 10 {
+            worst = ValidationResult::Marginal;
+        }
+    }
+
+    // Target attainment: did the current loop actually reach the commanded
+    // target? Catches zero-current, wrong-sign, and under-target responses
+    // that would otherwise pass all other checks.
+    // 0.1% units: 500 = 50.0%, 100 = 10.0%
+    if metrics.target_error_pct > 500 {
+        return ValidationResult::Fail;
+    } else if metrics.target_error_pct > 100 {
+        worst = ValidationResult::Marginal;
+    }
+
+    worst
+}
+
+/// Return whether current validation should retry with adjusted gains.
+pub fn should_retry_current_validation(result: ValidationResult, attempt: u8) -> bool {
+    attempt == 0 && result != ValidationResult::Pass
+}
+
+/// Return whether a marginal current validation can be accepted without retry.
+///
+/// This is intentionally narrow: it only accepts the case where all metrics
+/// except bidirectional rise-time symmetry are already in the pass range, and
+/// the computed retry would not change the gains. That covers measurement
+/// variability in the symmetry metric without hiding overshoot, ringing,
+/// settling, or saturation issues.
+pub fn should_accept_current_validation_without_retry(
+    metrics: &CurrentValidation,
+    settle_reference_us: u32,
+    total_samples: u16,
+    previous: CurrentGains,
+    retry: CurrentGains,
+) -> bool {
+    if previous != retry {
+        return false;
+    }
+    if metrics.overshoot_pct > 150 || metrics.ringing_count > 1 {
+        return false;
+    }
+    if metrics.settling_time_us > 5 * settle_reference_us {
+        return false;
+    }
+    if total_samples > 0 {
+        let sat_pct = (metrics.saturation_samples as u32 * 100) / total_samples as u32;
+        if sat_pct > 10 {
+            return false;
+        }
+    }
+
+    metrics.symmetry_pct > 100 && metrics.symmetry_pct <= 250
+}
+
+/// Adjust current-loop integrator gain for a validation retry while retaining P damping.
+pub fn current_validation_retry_gains(
+    previous: CurrentGains,
+    target: u32,
+    settle_band: u32,
+    forward_tail_level: u32,
+    reverse_tail_level: u32,
+    overshoot_pct: u16,
+) -> CurrentGains {
+    let min_tail = forward_tail_level.min(reverse_tail_level);
+    let max_tail = forward_tail_level.max(reverse_tail_level);
+    let upper = target.saturating_add(settle_band);
+    let lower = target.saturating_sub(settle_band);
+    let i = if overshoot_pct > 150 || max_tail > upper {
+        (previous.flux_i / 2).max(1)
+    } else if min_tail < lower {
+        previous.flux_i.saturating_add((previous.flux_i / 2).max(1))
+    } else {
+        previous.flux_i
+    };
+    CurrentGains {
+        flux_p: previous.flux_p,
+        flux_i: i,
+        torque_p: previous.torque_p,
+        torque_i: i,
+        effective_bandwidth_hz: previous.effective_bandwidth_hz,
+        lambda_us: previous.lambda_us,
+    }
+}
+
+/// Compute symmetry metric from forward and reverse tail levels.
+///
+/// Returns `|fwd - rev| / avg(fwd, rev)` in 0.1% units (permille).
+/// This measures steady-state signed-current symmetry — whether both
+/// directions produce the same actual current magnitude. Returns 0 if
+/// both values are zero.
+pub fn compute_tail_symmetry_pct(fwd_tail: u32, rev_tail: u32) -> u16 {
+    let avg = (fwd_tail as u64 + rev_tail as u64) / 2;
+    if avg == 0 {
+        return 0;
+    }
+    let diff = fwd_tail.abs_diff(rev_tail);
+    (diff as u64 * 1000 / avg) as u16
+}
+
+/// Compute target-attainment error from a tail level and commanded target.
+///
+/// Returns `|tail_level - target| / target` in 0.1% units (permille).
+/// Returns 1000 (100%) if `target` is zero to avoid division by zero.
+pub fn compute_target_error_pct(tail_level: u32, target: u32) -> u16 {
+    if target == 0 {
+        return 1000;
+    }
+    let diff = tail_level.abs_diff(target);
+    (diff as u64 * 1000 / target as u64) as u16
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::test_support::{autotune_test_config, test_electrical_model};
+    use super::*;
+
+    // --- SIMC current gains ---
+
+    #[test]
+    fn simc_balanced_gains_nonzero() {
+        let model = test_electrical_model();
+        let config = autotune_test_config();
+        let gains = simc_current_gains(&model, CommissionProfile::Balanced, &config);
+        assert!(gains.flux_p > 0, "flux_p must be nonzero");
+        assert!(gains.flux_i > 0, "flux_i must be nonzero");
+        assert_eq!(gains.flux_p, gains.torque_p, "flux/torque P must match");
+        assert_eq!(gains.flux_i, gains.torque_i, "flux/torque I must match");
+        assert!(gains.lambda_us > 0, "lambda must be nonzero");
+        assert!(
+            gains.effective_bandwidth_hz > 0,
+            "bandwidth must be nonzero"
+        );
+    }
+
+    #[test]
+    fn simc_delay_dominated_plant_stiff_below_balanced() {
+        // Delay-dominated: theta is large relative to tau.
+        // Stiff = max(theta, tau/4) = max(700, 655) = 700
+        // Balanced = 2*theta = 1400
+        // So stiff < balanced here.
+        let model = test_electrical_model(); // theta=700, tau=2622
+        let config = autotune_test_config();
+        let balanced = simc_current_gains(&model, CommissionProfile::Balanced, &config);
+        let stiff = simc_current_gains(&model, CommissionProfile::Stiff, &config);
+        assert!(
+            stiff.lambda_us < balanced.lambda_us,
+            "delay-dominated: stiff lambda {} should be < balanced {}",
+            stiff.lambda_us,
+            balanced.lambda_us
+        );
+    }
+
+    #[test]
+    fn simc_tau_dominated_plant_profiles_remain_ordered() {
+        // Tau-dominated current plants still need tau-based lambda floors:
+        // Conservative >= Balanced >= Stiff.
+        let model = ElectricalModel {
+            r_int: 1125,
+            l_int: 2950,
+            tau_e_us: 4000,
+            theta_e_us: 100,
+            r_mohm: 1125,
+            l_uh: 450,
+            tau_e_crosscheck_us: 3800,
+        };
+        let config = autotune_test_config();
+        let conservative = simc_current_gains(&model, CommissionProfile::Conservative, &config);
+        let balanced = simc_current_gains(&model, CommissionProfile::Balanced, &config);
+        let stiff = simc_current_gains(&model, CommissionProfile::Stiff, &config);
+        assert_eq!(conservative.lambda_us, 4000);
+        assert_eq!(balanced.lambda_us, 2000);
+        assert_eq!(stiff.lambda_us, 1000);
+    }
+
+    #[test]
+    fn simc_invariants_hold_for_all_profiles() {
+        // Universal SIMC invariants that hold regardless of plant shape:
+        // 1. conservative >= balanced >= stiff
+        // 2. conservative >= tau, balanced >= tau/2, stiff >= tau/4
+        // 3. all profiles >= theta (SIMC stability boundary)
+        for model in [
+            test_electrical_model(),
+            ElectricalModel {
+                tau_e_us: 4000,
+                theta_e_us: 100,
+                ..test_electrical_model()
+            },
+            ElectricalModel {
+                tau_e_us: 200,
+                theta_e_us: 500,
+                ..test_electrical_model()
+            },
+        ] {
+            let config = autotune_test_config();
+            let con = simc_current_gains(&model, CommissionProfile::Conservative, &config);
+            let bal = simc_current_gains(&model, CommissionProfile::Balanced, &config);
+            let stf = simc_current_gains(&model, CommissionProfile::Stiff, &config);
+
+            assert!(
+                con.lambda_us >= bal.lambda_us,
+                "tau={} theta={}: conservative {} must be >= balanced {}",
+                model.tau_e_us,
+                model.theta_e_us,
+                con.lambda_us,
+                bal.lambda_us
+            );
+            assert!(
+                bal.lambda_us >= stf.lambda_us,
+                "tau={} theta={}: balanced {} must be >= stiff {}",
+                model.tau_e_us,
+                model.theta_e_us,
+                bal.lambda_us,
+                stf.lambda_us
+            );
+            assert!(
+                con.lambda_us >= model.tau_e_us,
+                "tau={} theta={}: conservative {} must be >= tau",
+                model.tau_e_us,
+                model.theta_e_us,
+                con.lambda_us
+            );
+            assert!(
+                bal.lambda_us >= model.tau_e_us / 2,
+                "tau={} theta={}: balanced {} must be >= tau/2={}",
+                model.tau_e_us,
+                model.theta_e_us,
+                bal.lambda_us,
+                model.tau_e_us / 2
+            );
+            assert!(
+                stf.lambda_us >= model.theta_e_us,
+                "tau={} theta={}: stiff {} must be >= theta {}",
+                model.tau_e_us,
+                model.theta_e_us,
+                stf.lambda_us,
+                model.theta_e_us
+            );
+            assert!(
+                stf.lambda_us >= model.tau_e_us / 4,
+                "tau={} theta={}: stiff {} must be >= tau/4={}",
+                model.tau_e_us,
+                model.theta_e_us,
+                stf.lambda_us,
+                model.tau_e_us / 4
+            );
+            for (name, gains) in [("conservative", &con), ("balanced", &bal), ("stiff", &stf)] {
+                assert!(
+                    gains.lambda_us >= model.theta_e_us,
+                    "tau={} theta={}: {} lambda {} must satisfy stability floor theta {}",
+                    model.tau_e_us,
+                    model.theta_e_us,
+                    name,
+                    gains.lambda_us,
+                    model.theta_e_us
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn simc_zero_r_returns_none() {
+        let mut model = test_electrical_model();
+        model.r_int = 0;
+        let config = autotune_test_config();
+        assert!(simc_current_gains_checked(&model, CommissionProfile::Balanced, &config).is_none());
+    }
+
+    #[test]
+    fn simc_i_gain_not_trivial() {
+        // With typical motor parameters, the I gain should be significantly
+        // above the minimum clamp of 1. A value of 1 indicates a units bug.
+        let model = test_electrical_model();
+        let config = autotune_test_config();
+        let gains = simc_current_gains(&model, CommissionProfile::Balanced, &config);
+        assert!(
+            gains.flux_i > 10,
+            "flux_i={} is suspiciously low (units bug?)",
+            gains.flux_i
+        );
+    }
+
+    #[test]
+    fn simc_current_i_gain_uses_advanced_pi_zero_parameter() {
+        let model = ElectricalModel {
+            r_int: ELECTRICAL_MODEL_RESISTANCE_SCALE,
+            l_int: 1863,
+            tau_e_us: 1863,
+            theta_e_us: 160,
+            r_mohm: 1000,
+            l_uh: 1863,
+            tau_e_crosscheck_us: 1863,
+        };
+        let config = autotune_test_config();
+        let gains = simc_current_gains(&model, CommissionProfile::Balanced, &config);
+
+        // Balanced current-loop lambda is floored at tau/2 for robustness:
+        // max(2*theta=320us, tau/2=931us). The damped SIMC integrator time is
+        // max(tau, CURRENT_SIMC_TI_MULTIPLIER*(lambda+theta)). With the
+        // default Q8.8 representation, TMC4671 advanced PI places the series
+        // PI zero as I/65536 per PWM sample.
+        assert_eq!(gains.lambda_us, model.tau_e_us / 2);
+        let ti_s =
+            CURRENT_SIMC_TI_MULTIPLIER as f64 * (gains.lambda_us + model.theta_e_us) as f64 * 1e-6;
+        let expected_i = (65_536.0 / (ti_s * config.pwm_freq_hz() as f64)) as u16;
+
+        assert_eq!(gains.flux_i, expected_i);
+        assert_eq!(gains.torque_i, expected_i);
+    }
+
+    #[test]
+    fn simc_current_i_gain_starts_near_observed_settling_bracket() {
+        let model = ElectricalModel {
+            r_int: ELECTRICAL_MODEL_RESISTANCE_SCALE,
+            l_int: 1868,
+            tau_e_us: 1868,
+            theta_e_us: 160,
+            r_mohm: 1000,
+            l_uh: 1868,
+            tau_e_crosscheck_us: 1868,
+        };
+        let config = autotune_test_config();
+        let gains = simc_current_gains(&model, CommissionProfile::Balanced, &config);
+
+        assert!(
+            (215..=225).contains(&gains.flux_i),
+            "initial I should start near the measured stable retry value, got {}",
+            gains.flux_i
+        );
+        assert_eq!(gains.flux_i, gains.torque_i);
+    }
+
+    #[test]
+    fn current_settling_reference_uses_advanced_pi_zero_time() {
+        let gains = CurrentGains {
+            flux_p: 436,
+            flux_i: 220,
+            torque_p: 436,
+            torque_i: 220,
+            effective_bandwidth_hz: 146,
+            lambda_us: 923,
+        };
+        let config = autotune_test_config();
+
+        assert_eq!(current_settling_reference_us(&gains, &config), 11915);
+    }
+
+    #[test]
+    fn simc_retry_lambda_preserves_measured_theta() {
+        let model = ElectricalModel {
+            r_int: ELECTRICAL_MODEL_RESISTANCE_SCALE,
+            l_int: 1917,
+            tau_e_us: 1917,
+            theta_e_us: 160,
+            r_mohm: 1000,
+            l_uh: 1917,
+            tau_e_crosscheck_us: 1917,
+        };
+        let config = autotune_test_config();
+        let gains = simc_current_gains_with_lambda(&model, 1436, &config);
+
+        let p_expected =
+            (1917.0_f64 / (1436.0_f64 + 160.0_f64) * 256.0_f64).clamp(1.0, u16::MAX as f64) as u16;
+        let ti_s = CURRENT_SIMC_TI_MULTIPLIER as f64 * (1436.0 + 160.0) * 1e-6;
+        let i_expected =
+            (65_536.0 / (ti_s * config.pwm_freq_hz() as f64)).clamp(1.0, u16::MAX as f64) as u16;
+
+        assert_eq!(gains.lambda_us, 1436);
+        assert_eq!(gains.flux_p, p_expected);
+        assert_eq!(gains.flux_i, i_expected);
+        assert!(gains.flux_p > 227, "retry P should not use inflated theta");
+        assert!(gains.flux_i > 76, "retry I should not use inflated theta");
+    }
+
+    // --- Step metrics extraction ---
+
+    /// Build a synthetic first-order step response for testing.
+    /// Fills 256 samples at 100us intervals.
+    fn synthetic_step_response(overshoot_pct: f32) -> TransientBuffer {
+        let mut buf = TransientBuffer::new();
+        buf.reset(100);
+        let target = 1000.0f32;
+        for i in 0..256u32 {
+            let t = i as f32;
+            let base = target * (1.0 - (-t / 10.0).exp());
+            let overshoot_term = if overshoot_pct > 0.0 {
+                target * overshoot_pct / 100.0 * (-t / 20.0).exp() * (t / 5.0).sin()
+            } else {
+                0.0
+            };
+            buf.push((base + overshoot_term).max(0.0) as u32);
+        }
+        buf
+    }
+
+    #[test]
+    fn step_metrics_clean_response() {
+        let buf = synthetic_step_response(0.0);
+        let metrics = extract_step_metrics(&buf, 1000, 0);
+        assert!(
+            metrics.overshoot_pct < 20,
+            "overshoot {} should be <2%",
+            metrics.overshoot_pct
+        );
+        assert!(
+            metrics.ringing_count <= 1,
+            "ringing {} should be <=1",
+            metrics.ringing_count
+        );
+        assert!(metrics.rise_time_us > 0, "rise time must be nonzero");
+    }
+
+    /// Phase 1 timing invariants — pin the current sample-timing
+    /// convention so a later measurement redesign updates these tests
+    /// deliberately. See `docs/specs/2026-04-30-inner-commissioning-stability.md`
+    /// §5.
+
+    #[test]
+    fn step_metrics_t10_at_or_before_t90() {
+        let mut buf = TransientBuffer::new();
+        buf.reset(160);
+        for &v in &[0u32, 50, 200, 600, 950, 1000, 1000, 1000] {
+            buf.push(v);
+        }
+        let metrics = extract_step_metrics(&buf, 1000, 0);
+        // rise_time = t90 - t10; nonzero rise_time implies t90 >= t10.
+        assert!(metrics.rise_time_us > 0);
+    }
+
+    #[test]
+    fn step_metrics_rise_time_invariant_under_capture_origin_offset() {
+        // Adding zero-valued samples *before* the meaningful step must not
+        // change rise_time, because t90 - t10 cancels the capture-origin
+        // offset.
+        let mut early = TransientBuffer::new();
+        early.reset(160);
+        for &v in &[0u32, 50, 200, 600, 950, 1000, 1000, 1000] {
+            early.push(v);
+        }
+        let mut delayed = TransientBuffer::new();
+        delayed.reset(160);
+        for &v in &[0u32, 0, 0, 50, 200, 600, 950, 1000, 1000, 1000] {
+            delayed.push(v);
+        }
+        let early_m = extract_step_metrics(&early, 1000, 0);
+        let delayed_m = extract_step_metrics(&delayed, 1000, 0);
+        assert_eq!(early_m.rise_time_us, delayed_m.rise_time_us);
+    }
+
+    #[test]
+    fn step_metrics_settling_time_uses_last_outside_plus_one_period() {
+        // Settling time uses smoothed (8-sample trailing average) values, so
+        // pin the formula by inserting one zero at index 15. The trailing
+        // average then stays out-of-band through index 22 and recovers at
+        // index 23 — last_outside == 22, settling == (22 + 1) * 160 = 3680us.
+        let mut buf = TransientBuffer::new();
+        buf.reset(160);
+        for i in 0..24u32 {
+            if i == 15 {
+                buf.push(0);
+            } else {
+                buf.push(1000);
+            }
+        }
+        let metrics = extract_step_metrics(&buf, 1000, 0);
+        assert_eq!(metrics.settling_time_us, 23 * 160);
+    }
+
+    #[test]
+    fn step_metrics_zero_target_stays_bounded() {
+        let mut buf = TransientBuffer::new();
+        buf.reset(160);
+        for _ in 0..16 {
+            buf.push(100);
+        }
+        let metrics = extract_step_metrics(&buf, 0, 0);
+        assert_eq!(metrics.rise_time_us, 0);
+        assert_eq!(metrics.settling_time_us, 0);
+    }
+
+    #[test]
+    fn step_metrics_low_target_stays_bounded() {
+        let mut buf = TransientBuffer::new();
+        buf.reset(160);
+        for _ in 0..16 {
+            buf.push(0);
+        }
+        let metrics = extract_step_metrics(&buf, 5, 0);
+        // settle_band is clamped to >=1 count; an all-zero capture cannot
+        // reach the band but the metric must stay bounded, not panic.
+        assert!(metrics.settling_time_us <= 16 * 160);
+    }
+
+    #[test]
+    fn step_metrics_with_overshoot() {
+        let buf = synthetic_step_response(100.0);
+        let metrics = extract_step_metrics(&buf, 1000, 0);
+        assert!(
+            metrics.overshoot_pct > 100,
+            "should detect significant overshoot: {}",
+            metrics.overshoot_pct
+        );
+    }
+
+    #[test]
+    fn step_metrics_ignore_in_band_noise_for_ringing() {
+        let mut buf = TransientBuffer::new();
+        buf.reset(160);
+        for &sample in &[0, 120, 500, 900, 1220, 1100, 1040] {
+            buf.push(sample);
+        }
+        for i in 0..96 {
+            let sample = if i % 2 == 0 { 960 } else { 1040 };
+            buf.push(sample);
+        }
+
+        let metrics = extract_step_metrics(&buf, 1000, 0);
+        assert_eq!(metrics.ringing_count, 0);
+    }
+
+    #[test]
+    fn current_metrics_ignore_tail_ripple_after_settling() {
+        let mut buf = TransientBuffer::new();
+        buf.reset(160);
+        for &sample in &[53, 98, 180, 260, 330, 390, 416, 370] {
+            buf.push(sample);
+        }
+        for i in 0..248 {
+            let sample = if i % 2 == 0 { 345 } else { 416 };
+            buf.push(sample);
+        }
+
+        let metrics = extract_step_metrics(&buf, 367, 0);
+
+        assert!(
+            metrics.settling_time_us < 10 * 1868,
+            "tail ripple around target should not force full-window settling"
+        );
+        assert_eq!(metrics.ringing_count, 0);
+        assert_eq!(
+            classify_current_validation(&metrics, 1868, 512),
+            ValidationResult::Pass
+        );
+    }
+
+    #[test]
+    fn step_metrics_empty_buffer() {
+        let buf = TransientBuffer::new();
+        let metrics = extract_step_metrics(&buf, 1000, 0);
+        assert_eq!(metrics.rise_time_us, 0);
+        assert_eq!(metrics.overshoot_pct, 0);
+        assert_eq!(metrics.tail_level, 0);
+    }
+
+    #[test]
+    fn step_metrics_tail_level_from_last_32_samples() {
+        // Build a buffer that rises quickly to ~950, then stays there.
+        // The tail_level (median of last 32 samples) should be ~950.
+        let mut buf = TransientBuffer::new();
+        buf.reset(160);
+        // 10 rising samples
+        for &sample in &[0u32, 100, 300, 500, 700, 850, 920, 940, 945, 948] {
+            buf.push(sample);
+        }
+        // 246 steady-state samples at 950
+        for _ in 0..246 {
+            buf.push(950);
+        }
+        let metrics = extract_step_metrics(&buf, 1000, 0);
+        assert_eq!(
+            metrics.tail_level, 950,
+            "tail_level should be median of last 32 samples"
+        );
+    }
+
+    #[test]
+    fn step_metrics_tail_level_resists_outliers() {
+        // Last 32 samples: 30 at 950, 2 outliers at 0. Median should be 950.
+        let mut buf = TransientBuffer::new();
+        buf.reset(160);
+        // Fill first 224 samples as steady state
+        for _ in 0..224 {
+            buf.push(950);
+        }
+        // Last 32 samples: 2 outliers, then 30 at 950
+        buf.push(0);
+        buf.push(0);
+        for _ in 0..30 {
+            buf.push(950);
+        }
+        let metrics = extract_step_metrics(&buf, 1000, 0);
+        assert_eq!(metrics.tail_level, 950, "median should resist outliers");
+    }
+
+    #[test]
+    fn step_metrics_tail_level_short_buffer() {
+        // Buffer with only 10 samples — tail_level uses all of them.
+        let mut buf = TransientBuffer::new();
+        buf.reset(160);
+        for &sample in &[100u32, 200, 300, 400, 500, 600, 700, 800, 900, 950] {
+            buf.push(sample);
+        }
+        let metrics = extract_step_metrics(&buf, 1000, 0);
+        // Median of [100,200,300,400,500,600,700,800,900,950] = (500+600)/2 = 550
+        assert_eq!(
+            metrics.tail_level, 550,
+            "tail_level should use all samples when buffer < 32"
+        );
+    }
+
+    #[test]
+    fn simc_dimensional_consistency() {
+        // Compute gains using the microsecond-based function, then verify
+        // against a manual calculation using seconds throughout. The final
+        // Q8.8 register values must match, proving no units conversion error.
+        let model = test_electrical_model();
+        let config = autotune_test_config();
+        let gains = simc_current_gains(&model, CommissionProfile::Balanced, &config);
+
+        // Manual calculation in SI (seconds):
+        let tau_s = model.tau_e_us as f64 * 1e-6;
+        let theta_s = model.theta_e_us as f64 * 1e-6;
+        let lambda_s = ((2 * model.theta_e_us).max(model.tau_e_us / 2)) as f64 * 1e-6;
+        let r_int = model.r_int as f64 / ELECTRICAL_MODEL_RESISTANCE_SCALE as f64;
+        let k = 1.0 / r_int;
+        let f_pwm = config.pwm_freq_hz() as f64;
+
+        let kp_si = tau_s / (k * (lambda_s + theta_s));
+        let ti_s = {
+            let candidate = CURRENT_SIMC_TI_MULTIPLIER as f64 * (lambda_s + theta_s);
+            if tau_s > candidate { tau_s } else { candidate }
+        };
+        let p_reg_expected = (kp_si * 256.0).clamp(1.0, u16::MAX as f64) as u16;
+        let i_reg_expected = (65_536.0 / (ti_s * f_pwm)).clamp(1.0, u16::MAX as f64) as u16;
+
+        assert_eq!(
+            gains.flux_p, p_reg_expected,
+            "P gain mismatch: got {} expected {}",
+            gains.flux_p, p_reg_expected
+        );
+        // Allow +/- 1 for f32 vs f64 rounding
+        let i_diff = (gains.flux_i as i32 - i_reg_expected as i32).unsigned_abs();
+        assert!(
+            i_diff <= 1,
+            "I gain mismatch: got {} expected {} (diff {})",
+            gains.flux_i,
+            i_reg_expected,
+            i_diff
+        );
+    }
+
+    // --- Validation classification ---
+
+    #[test]
+    fn classify_pass() {
+        let metrics = CurrentValidation {
+            rise_time_us: 500,
+            overshoot_pct: 100, // 10.0%
+            settling_time_us: 2000,
+            ringing_count: 1,
+            saturation_samples: 5,
+            symmetry_pct: 100, // 10.0%
+            tail_level: 0,
+            target_error_pct: 0,
+        };
+        assert_eq!(
+            classify_current_validation(&metrics, 1000, 512),
+            ValidationResult::Pass
+        );
+    }
+
+    #[test]
+    fn classify_marginal_overshoot() {
+        let metrics = CurrentValidation {
+            rise_time_us: 500,
+            overshoot_pct: 200, // 20.0%
+            settling_time_us: 2000,
+            ringing_count: 1,
+            saturation_samples: 5,
+            symmetry_pct: 100,
+            tail_level: 0,
+            target_error_pct: 0,
+        };
+        assert_eq!(
+            classify_current_validation(&metrics, 1000, 512),
+            ValidationResult::Marginal
+        );
+    }
+
+    #[test]
+    fn classify_fail_overshoot() {
+        let metrics = CurrentValidation {
+            rise_time_us: 500,
+            overshoot_pct: 350, // 35.0%
+            settling_time_us: 2000,
+            ringing_count: 1,
+            saturation_samples: 5,
+            symmetry_pct: 100,
+            tail_level: 0,
+            target_error_pct: 0,
+        };
+        assert_eq!(
+            classify_current_validation(&metrics, 1000, 512),
+            ValidationResult::Fail
+        );
+    }
+
+    #[test]
+    fn classify_fail_ringing() {
+        let metrics = CurrentValidation {
+            rise_time_us: 500,
+            overshoot_pct: 50,
+            settling_time_us: 2000,
+            ringing_count: 4,
+            saturation_samples: 0,
+            symmetry_pct: 0,
+            tail_level: 0,
+            target_error_pct: 0,
+        };
+        assert_eq!(
+            classify_current_validation(&metrics, 1000, 512),
+            ValidationResult::Fail
+        );
+    }
+
+    #[test]
+    fn classify_marginal_settling() {
+        let metrics = CurrentValidation {
+            rise_time_us: 500,
+            overshoot_pct: 50,
+            settling_time_us: 7000, // 7x tau=1000
+            ringing_count: 0,
+            saturation_samples: 0,
+            symmetry_pct: 0,
+            tail_level: 0,
+            target_error_pct: 0,
+        };
+        assert_eq!(
+            classify_current_validation(&metrics, 1000, 512),
+            ValidationResult::Marginal
+        );
+    }
+
+    #[test]
+    fn classify_current_validation_settling_uses_controller_reference() {
+        let metrics = CurrentValidation {
+            rise_time_us: 500,
+            overshoot_pct: 141,
+            settling_time_us: 39360,
+            ringing_count: 0,
+            saturation_samples: 0,
+            symmetry_pct: 83,
+            tail_level: 0,
+            target_error_pct: 0,
+        };
+
+        assert_eq!(
+            classify_current_validation(&metrics, 11915, 512),
+            ValidationResult::Pass
+        );
+    }
+
+    #[test]
+    fn accept_noop_retry_when_marginal_is_symmetry_only() {
+        let previous = CurrentGains {
+            flux_p: 437,
+            flux_i: 217,
+            torque_p: 437,
+            torque_i: 217,
+            effective_bandwidth_hz: 145,
+            lambda_us: 934,
+        };
+        let retry = current_validation_retry_gains(previous, 367, 18, 351, 358, 119);
+        // 180 permille: Marginal under tail-level thresholds (Pass <= 100, Fail > 250).
+        let metrics = CurrentValidation {
+            rise_time_us: 500,
+            overshoot_pct: 119,
+            settling_time_us: 40480,
+            ringing_count: 0,
+            saturation_samples: 0,
+            symmetry_pct: 180,
+            tail_level: 0,
+            target_error_pct: 0,
+        };
+
+        assert_eq!(
+            classify_current_validation(&metrics, 12080, 512),
+            ValidationResult::Marginal
+        );
+        assert!(should_accept_current_validation_without_retry(
+            &metrics, 12080, 512, previous, retry,
+        ));
+    }
+
+    #[test]
+    fn classify_marginal_symmetry_at_150_permille() {
+        // With tail-level symmetry thresholds (Pass <= 100, Marginal <= 250),
+        // 150 permille should be Marginal (not Pass as with old 200 threshold).
+        let metrics = CurrentValidation {
+            rise_time_us: 500,
+            overshoot_pct: 50,
+            settling_time_us: 2000,
+            ringing_count: 0,
+            saturation_samples: 0,
+            symmetry_pct: 150,
+            tail_level: 0,
+            target_error_pct: 0,
+        };
+        assert_eq!(
+            classify_current_validation(&metrics, 1000, 512),
+            ValidationResult::Marginal
+        );
+    }
+
+    #[test]
+    fn classify_fail_symmetry_at_300_permille() {
+        // With tail-level thresholds (Fail > 250), 300 should be Fail
+        // (not Marginal as with old 400 threshold).
+        let metrics = CurrentValidation {
+            rise_time_us: 500,
+            overshoot_pct: 50,
+            settling_time_us: 2000,
+            ringing_count: 0,
+            saturation_samples: 0,
+            symmetry_pct: 300,
+            tail_level: 0,
+            target_error_pct: 0,
+        };
+        assert_eq!(
+            classify_current_validation(&metrics, 1000, 512),
+            ValidationResult::Fail
+        );
+    }
+
+    #[test]
+    fn classify_pass_symmetry_at_boundary() {
+        // Exactly 100 permille should still pass.
+        let metrics = CurrentValidation {
+            rise_time_us: 500,
+            overshoot_pct: 50,
+            settling_time_us: 2000,
+            ringing_count: 0,
+            saturation_samples: 0,
+            symmetry_pct: 100,
+            tail_level: 0,
+            target_error_pct: 0,
+        };
+        assert_eq!(
+            classify_current_validation(&metrics, 1000, 512),
+            ValidationResult::Pass
+        );
+    }
+
+    // --- Target attainment ---
+
+    #[test]
+    fn classify_fails_when_both_tails_zero() {
+        // Zero current in both directions: target_error = 1000‰ (100% off).
+        let metrics = CurrentValidation {
+            rise_time_us: 0,
+            overshoot_pct: 0,
+            settling_time_us: 0,
+            ringing_count: 0,
+            saturation_samples: 0,
+            symmetry_pct: 0,
+            tail_level: 0,
+            target_error_pct: 1000, // 100% off target
+        };
+        assert_eq!(
+            classify_current_validation(&metrics, 12000, 512),
+            ValidationResult::Fail
+        );
+    }
+
+    #[test]
+    fn classify_fails_when_tails_below_lower_band() {
+        // tail_level=200 vs target=367 → error ≈ 455‰ (45.5% off).
+        // |200 - 367| / 367 * 1000 = 455
+        let metrics = CurrentValidation {
+            rise_time_us: 500,
+            overshoot_pct: 0,
+            settling_time_us: 2000,
+            ringing_count: 0,
+            saturation_samples: 0,
+            symmetry_pct: 20,
+            tail_level: 200,
+            target_error_pct: 455,
+        };
+        assert_eq!(
+            classify_current_validation(&metrics, 12000, 512),
+            ValidationResult::Marginal
+        );
+    }
+
+    #[test]
+    fn classify_passes_when_tails_in_band() {
+        // tail_level=360 vs target=367 → error ≈ 19‰ (1.9% off).
+        let metrics = CurrentValidation {
+            rise_time_us: 500,
+            overshoot_pct: 50,
+            settling_time_us: 2000,
+            ringing_count: 0,
+            saturation_samples: 0,
+            symmetry_pct: 20,
+            tail_level: 360,
+            target_error_pct: 19,
+        };
+        assert_eq!(
+            classify_current_validation(&metrics, 12000, 512),
+            ValidationResult::Pass
+        );
+    }
+
+    #[test]
+    fn current_validation_retries_first_failed_attempt() {
+        assert!(should_retry_current_validation(ValidationResult::Fail, 0));
+        assert!(should_retry_current_validation(
+            ValidationResult::Marginal,
+            0
+        ));
+        assert!(!should_retry_current_validation(ValidationResult::Pass, 0));
+        assert!(!should_retry_current_validation(ValidationResult::Fail, 1));
+    }
+
+    #[test]
+    fn current_validation_retry_reduces_integrator_when_tail_high() {
+        let previous = CurrentGains {
+            flux_p: 437,
+            flux_i: 592,
+            torque_p: 437,
+            torque_i: 592,
+            effective_bandwidth_hz: 143,
+            lambda_us: 947,
+        };
+
+        let retry = current_validation_retry_gains(previous, 367, 18, 372, 403, 294);
+
+        assert_eq!(retry.flux_p, previous.flux_p);
+        assert_eq!(retry.torque_p, previous.torque_p);
+        assert_eq!(retry.flux_i, 296);
+        assert_eq!(retry.torque_i, 296);
+        assert_eq!(retry.lambda_us, previous.lambda_us);
+        assert_eq!(
+            retry.effective_bandwidth_hz,
+            previous.effective_bandwidth_hz
+        );
+    }
+
+    #[test]
+    fn current_validation_retry_increases_integrator_when_tail_low() {
+        let previous = CurrentGains {
+            flux_p: 436,
+            flux_i: 151,
+            torque_p: 436,
+            torque_i: 151,
+            effective_bandwidth_hz: 146,
+            lambda_us: 923,
+        };
+
+        let retry = current_validation_retry_gains(previous, 367, 18, 354, 321, 35);
+
+        assert_eq!(retry.flux_p, previous.flux_p);
+        assert_eq!(retry.torque_p, previous.torque_p);
+        assert_eq!(retry.flux_i, 226);
+        assert_eq!(retry.torque_i, 226);
+        assert_eq!(retry.lambda_us, previous.lambda_us);
+        assert_eq!(
+            retry.effective_bandwidth_hz,
+            previous.effective_bandwidth_hz
+        );
+    }
+
+    // --- Tail-level symmetry ---
+
+    #[test]
+    fn tail_symmetry_identical_is_zero() {
+        assert_eq!(compute_tail_symmetry_pct(367, 367), 0);
+    }
+
+    #[test]
+    fn tail_symmetry_small_mismatch() {
+        // |351 - 358| / avg(351, 358) = 7 / 354.5 ≈ 19.7‰ → 19 in permille
+        let result = compute_tail_symmetry_pct(351, 358);
+        assert!(
+            (15..=25).contains(&result),
+            "tail symmetry {result} expected ~20‰"
+        );
+    }
+
+    #[test]
+    fn tail_symmetry_large_mismatch() {
+        // |200 - 400| / avg(200, 400) = 200 / 300 ≈ 666.7‰
+        let result = compute_tail_symmetry_pct(200, 400);
+        assert!(
+            (660..=670).contains(&result),
+            "tail symmetry {result} expected ~667‰"
+        );
+    }
+
+    #[test]
+    fn tail_symmetry_zero_avg() {
+        assert_eq!(compute_tail_symmetry_pct(0, 0), 0);
+    }
+}
