@@ -53,7 +53,7 @@ where
     Spi: SpiDevice<u8>,
 {
     runtime.set_stored_gains(gains);
-    let (flux_reg, torque_reg) = crate::tmc_ops::pack_inner_gain_registers(gains);
+    let (flux_reg, torque_reg) = gains.to_registers();
     let first_write_ok = tmc
         .write_register(PID_FLUX_P_FLUX_I, flux_reg)
         .await
@@ -83,12 +83,7 @@ where
     tmc_state.velocity_p_value.store(gains.velocity_p, Relaxed);
     tmc_state.velocity_i_value.store(gains.velocity_i, Relaxed);
 
-    let (velocity_reg, position_reg) = crate::tmc_ops::pack_outer_gain_registers(
-        gains.position_p,
-        gains.position_i,
-        gains.velocity_p,
-        gains.velocity_i,
-    );
+    let (velocity_reg, position_reg) = gains.to_registers();
     let first_write_ok = tmc
         .write_register(PID_VELOCITY_P_VELOCITY_I, velocity_reg)
         .await

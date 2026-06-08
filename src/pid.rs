@@ -187,6 +187,18 @@ impl InnerLoopGains {
     }
 }
 
+impl OuterLoopGains {
+    /// Pack gains into TMC4671 register values.
+    ///
+    /// Returns `(velocity_register, position_register)` ready for
+    /// `PID_VELOCITY_P_VELOCITY_I` and `PID_POSITION_P_POSITION_I`.
+    pub fn to_registers(&self) -> (u32, u32) {
+        let velocity = pack_pid_register(self.velocity_p, self.velocity_i);
+        let position = pack_pid_register(self.position_p, self.position_i);
+        (velocity, position)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -227,6 +239,36 @@ mod tests {
         let (flux_reg, torque_reg) = gains.to_registers();
         let restored = InnerLoopGains::from_registers(flux_reg, torque_reg);
         assert_eq!(gains, restored);
+    }
+
+    #[test]
+    fn inner_loop_gains_to_registers_places_p_in_upper_half() {
+        let gains = InnerLoopGains {
+            flux_p: 707,
+            flux_i: 162,
+            torque_p: 707,
+            torque_i: 162,
+        };
+
+        let (flux_reg, torque_reg) = gains.to_registers();
+
+        assert_eq!(flux_reg, 0x02c3_00a2);
+        assert_eq!(torque_reg, 0x02c3_00a2);
+    }
+
+    #[test]
+    fn outer_loop_gains_to_registers_places_p_in_upper_half() {
+        let gains = OuterLoopGains {
+            position_p: 256,
+            position_i: 3,
+            velocity_p: 6656,
+            velocity_i: 4,
+        };
+
+        let (velocity_reg, position_reg) = gains.to_registers();
+
+        assert_eq!(velocity_reg, 0x1a00_0004);
+        assert_eq!(position_reg, 0x0100_0003);
     }
 
     #[test]
