@@ -459,6 +459,406 @@ impl<const CHANNELS: usize> Default for StepperExecutionStats<CHANNELS> {
     }
 }
 
+const PERF_SITE_QUEUE_STEP: u8 = 1;
+
+struct StepperPerfCounterState {
+    sample_count: AtomicU32,
+    crit_count: AtomicU32,
+    crit_max_cycles: AtomicU32,
+    crit_max_site: AtomicU32,
+    crit_over_10us: AtomicU32,
+    crit_over_50us: AtomicU32,
+    crit_over_100us: AtomicU32,
+    crit_over_1000us: AtomicU32,
+    queue_step_count: AtomicU32,
+    queue_step_max_cycles: AtomicU32,
+    tim5_activation_count: AtomicU32,
+    tim5_irq_max_cycles: AtomicU32,
+    tim5_dispatch_max_cycles: AtomicU32,
+    tim5_dispatch_max_cycles_events: AtomicU32,
+    tim5_events_max_per_irq: AtomicU32,
+    tim5_event_count_total: AtomicU32,
+    tim5_defer_count: AtomicU32,
+    tim5_empty_count: AtomicU32,
+    tim5_events_last_activation: AtomicU32,
+    tim5_burst_cycles_per_event_max: AtomicU32,
+    tim5_burst_cycles_per_event_max_cycles: AtomicU32,
+    tim5_burst_cycles_per_event_max_events: AtomicU32,
+    tim5_burst_cycles_per_event_floor3_max: AtomicU32,
+    tim5_entry_latency_max_ticks: AtomicU32,
+    tim5_pop_lateness_max_ticks: AtomicU32,
+    scheduler_cycles_max: AtomicU32,
+    scheduler_cycles_events_at_max: AtomicU32,
+    scheduler_cycles_per_event_max: AtomicU32,
+    scheduler_cycles_per_event_max_cycles: AtomicU32,
+    scheduler_cycles_per_event_max_events: AtomicU32,
+    scheduler_cycles_per_event_floor3_max: AtomicU32,
+    scheduler_full_count: AtomicU32,
+    stepper_load_lateness_max_ticks: AtomicU32,
+    stepper_load_lateness_last_ticks: AtomicI32,
+}
+
+impl StepperPerfCounterState {
+    const fn new() -> Self {
+        Self {
+            sample_count: AtomicU32::new(0),
+            crit_count: AtomicU32::new(0),
+            crit_max_cycles: AtomicU32::new(0),
+            crit_max_site: AtomicU32::new(0),
+            crit_over_10us: AtomicU32::new(0),
+            crit_over_50us: AtomicU32::new(0),
+            crit_over_100us: AtomicU32::new(0),
+            crit_over_1000us: AtomicU32::new(0),
+            queue_step_count: AtomicU32::new(0),
+            queue_step_max_cycles: AtomicU32::new(0),
+            tim5_activation_count: AtomicU32::new(0),
+            tim5_irq_max_cycles: AtomicU32::new(0),
+            tim5_dispatch_max_cycles: AtomicU32::new(0),
+            tim5_dispatch_max_cycles_events: AtomicU32::new(0),
+            tim5_events_max_per_irq: AtomicU32::new(0),
+            tim5_event_count_total: AtomicU32::new(0),
+            tim5_defer_count: AtomicU32::new(0),
+            tim5_empty_count: AtomicU32::new(0),
+            tim5_events_last_activation: AtomicU32::new(0),
+            tim5_burst_cycles_per_event_max: AtomicU32::new(0),
+            tim5_burst_cycles_per_event_max_cycles: AtomicU32::new(0),
+            tim5_burst_cycles_per_event_max_events: AtomicU32::new(0),
+            tim5_burst_cycles_per_event_floor3_max: AtomicU32::new(0),
+            tim5_entry_latency_max_ticks: AtomicU32::new(0),
+            tim5_pop_lateness_max_ticks: AtomicU32::new(0),
+            scheduler_cycles_max: AtomicU32::new(0),
+            scheduler_cycles_events_at_max: AtomicU32::new(0),
+            scheduler_cycles_per_event_max: AtomicU32::new(0),
+            scheduler_cycles_per_event_max_cycles: AtomicU32::new(0),
+            scheduler_cycles_per_event_max_events: AtomicU32::new(0),
+            scheduler_cycles_per_event_floor3_max: AtomicU32::new(0),
+            scheduler_full_count: AtomicU32::new(0),
+            stepper_load_lateness_max_ticks: AtomicU32::new(0),
+            stepper_load_lateness_last_ticks: AtomicI32::new(0),
+        }
+    }
+
+    fn reset(&self) {
+        self.sample_count.store(0, Relaxed);
+        self.crit_count.store(0, Relaxed);
+        self.crit_max_cycles.store(0, Relaxed);
+        self.crit_max_site.store(0, Relaxed);
+        self.crit_over_10us.store(0, Relaxed);
+        self.crit_over_50us.store(0, Relaxed);
+        self.crit_over_100us.store(0, Relaxed);
+        self.crit_over_1000us.store(0, Relaxed);
+        self.queue_step_count.store(0, Relaxed);
+        self.queue_step_max_cycles.store(0, Relaxed);
+        self.tim5_activation_count.store(0, Relaxed);
+        self.tim5_irq_max_cycles.store(0, Relaxed);
+        self.tim5_dispatch_max_cycles.store(0, Relaxed);
+        self.tim5_dispatch_max_cycles_events.store(0, Relaxed);
+        self.tim5_events_max_per_irq.store(0, Relaxed);
+        self.tim5_event_count_total.store(0, Relaxed);
+        self.tim5_defer_count.store(0, Relaxed);
+        self.tim5_empty_count.store(0, Relaxed);
+        self.tim5_events_last_activation.store(0, Relaxed);
+        self.tim5_burst_cycles_per_event_max.store(0, Relaxed);
+        self.tim5_burst_cycles_per_event_max_cycles
+            .store(0, Relaxed);
+        self.tim5_burst_cycles_per_event_max_events
+            .store(0, Relaxed);
+        self.tim5_burst_cycles_per_event_floor3_max
+            .store(0, Relaxed);
+        self.tim5_entry_latency_max_ticks.store(0, Relaxed);
+        self.tim5_pop_lateness_max_ticks.store(0, Relaxed);
+        self.scheduler_cycles_max.store(0, Relaxed);
+        self.scheduler_cycles_events_at_max.store(0, Relaxed);
+        self.scheduler_cycles_per_event_max.store(0, Relaxed);
+        self.scheduler_cycles_per_event_max_cycles.store(0, Relaxed);
+        self.scheduler_cycles_per_event_max_events.store(0, Relaxed);
+        self.scheduler_cycles_per_event_floor3_max.store(0, Relaxed);
+        self.scheduler_full_count.store(0, Relaxed);
+        self.stepper_load_lateness_max_ticks.store(0, Relaxed);
+        self.stepper_load_lateness_last_ticks.store(0, Relaxed);
+    }
+}
+
+/// Shared board-agnostic step-dispatch performance counters.
+///
+/// The counters are diagnostic best-effort views over relaxed atomics. Snapshot
+/// callers may observe fields from different instants while P3 updates them;
+/// this avoids adding locks or critical sections to stepper hot paths.
+pub struct StepperPerfCounters<const CPU_CYCLES_PER_US: u32> {
+    counters: StepperPerfCounterState,
+}
+
+impl<const CPU_CYCLES_PER_US: u32> StepperPerfCounters<CPU_CYCLES_PER_US> {
+    /// Create zeroed step-dispatch performance counters.
+    pub const fn new() -> Self {
+        Self {
+            counters: StepperPerfCounterState::new(),
+        }
+    }
+
+    /// Record one trigger-domain critical-section duration.
+    pub fn record_critical_section(&self, site: u8, cycles: u32) {
+        let counters = &self.counters;
+        counters.sample_count.fetch_add(1, Relaxed);
+        counters.crit_count.fetch_add(1, Relaxed);
+        record_max_with_site(
+            &counters.crit_max_cycles,
+            &counters.crit_max_site,
+            cycles,
+            site,
+        );
+        if cycles >= 10 * CPU_CYCLES_PER_US {
+            counters.crit_over_10us.fetch_add(1, Relaxed);
+        }
+        if cycles >= 50 * CPU_CYCLES_PER_US {
+            counters.crit_over_50us.fetch_add(1, Relaxed);
+        }
+        if cycles >= 100 * CPU_CYCLES_PER_US {
+            counters.crit_over_100us.fetch_add(1, Relaxed);
+        }
+        if cycles >= 1000 * CPU_CYCLES_PER_US {
+            counters.crit_over_1000us.fetch_add(1, Relaxed);
+        }
+        if site == PERF_SITE_QUEUE_STEP {
+            counters.queue_step_count.fetch_add(1, Relaxed);
+            record_max(&counters.queue_step_max_cycles, cycles);
+        }
+    }
+
+    /// Record lateness observed at TIM5 ISR body entry before dispatch starts.
+    pub fn record_tim5_entry_latency(&self, lateness_ticks: u32) {
+        record_max(&self.counters.tim5_entry_latency_max_ticks, lateness_ticks);
+    }
+
+    /// Record that TIM5 dispatch deferred after hitting the repeat guard.
+    pub fn record_tim5_defer(&self) {
+        self.counters.tim5_defer_count.fetch_add(1, Relaxed);
+    }
+
+    /// Record scheduler pop lateness measured before event callback work.
+    pub fn record_scheduler_pop_lateness(&self, lateness_ticks: u32) {
+        record_max(&self.counters.tim5_pop_lateness_max_ticks, lateness_ticks);
+    }
+
+    /// Record a failed scheduler insertion caused by a full event table.
+    pub fn record_scheduler_full(&self) {
+        self.counters.scheduler_full_count.fetch_add(1, Relaxed);
+    }
+
+    /// Record TIM5-dispatch scheduler bookkeeping cycles.
+    pub fn record_scheduler_cycles(&self, scheduler_cycles: u32, event_count: u32) {
+        let counters = &self.counters;
+        record_max_with_event_count(
+            &counters.scheduler_cycles_max,
+            &counters.scheduler_cycles_events_at_max,
+            scheduler_cycles,
+            event_count,
+        );
+        if let Some(cycles_per_event) = scheduler_cycles.checked_div(event_count) {
+            record_max_burst_ratio(
+                &counters.scheduler_cycles_per_event_max,
+                &counters.scheduler_cycles_per_event_max_cycles,
+                &counters.scheduler_cycles_per_event_max_events,
+                cycles_per_event,
+                scheduler_cycles,
+                event_count,
+            );
+            if event_count >= 3 {
+                record_max(
+                    &counters.scheduler_cycles_per_event_floor3_max,
+                    cycles_per_event,
+                );
+            }
+        }
+    }
+
+    /// Record one TIM5 IRQ dispatch sample.
+    pub fn record_tim5_irq(&self, irq_cycles: u32, dispatch_cycles: u32, event_count: u32) {
+        let counters = &self.counters;
+        counters.sample_count.fetch_add(1, Relaxed);
+        counters.tim5_activation_count.fetch_add(1, Relaxed);
+        counters
+            .tim5_event_count_total
+            .fetch_add(event_count, Relaxed);
+        counters
+            .tim5_events_last_activation
+            .store(event_count, Relaxed);
+        if let Some(cycles_per_event) = dispatch_cycles.checked_div(event_count) {
+            record_max_burst_ratio(
+                &counters.tim5_burst_cycles_per_event_max,
+                &counters.tim5_burst_cycles_per_event_max_cycles,
+                &counters.tim5_burst_cycles_per_event_max_events,
+                cycles_per_event,
+                dispatch_cycles,
+                event_count,
+            );
+            if event_count >= 3 {
+                record_max(
+                    &counters.tim5_burst_cycles_per_event_floor3_max,
+                    cycles_per_event,
+                );
+            }
+        } else {
+            counters.tim5_empty_count.fetch_add(1, Relaxed);
+        }
+        record_max(&counters.tim5_irq_max_cycles, irq_cycles);
+        record_max_with_event_count(
+            &counters.tim5_dispatch_max_cycles,
+            &counters.tim5_dispatch_max_cycles_events,
+            dispatch_cycles,
+            event_count,
+        );
+        record_max(&counters.tim5_events_max_per_irq, event_count);
+    }
+
+    /// Record signed segment-load lateness observed by the stepper ISR.
+    pub fn record_stepper_load_lateness(&self, lateness_ticks: i32) {
+        self.counters
+            .stepper_load_lateness_last_ticks
+            .store(lateness_ticks, Relaxed);
+        if lateness_ticks > 0 {
+            record_max(
+                &self.counters.stepper_load_lateness_max_ticks,
+                lateness_ticks as u32,
+            );
+        }
+    }
+
+    /// Return a no-motion snapshot of step-dispatch performance counters.
+    pub fn snapshot(
+        &self,
+        channel: u8,
+        clear: bool,
+        build_trace_enabled: bool,
+    ) -> StepperPerfSnapshot {
+        let counters = &self.counters;
+        let snapshot = StepperPerfSnapshot {
+            channel,
+            sample_count: counters.sample_count.load(Relaxed),
+            crit_count: counters.crit_count.load(Relaxed),
+            crit_max_cycles: counters.crit_max_cycles.load(Relaxed),
+            crit_max_site: counters.crit_max_site.load(Relaxed) as u8,
+            crit_over_10us: counters.crit_over_10us.load(Relaxed),
+            crit_over_50us: counters.crit_over_50us.load(Relaxed),
+            crit_over_100us: counters.crit_over_100us.load(Relaxed),
+            crit_over_1000us: counters.crit_over_1000us.load(Relaxed),
+            queue_step_count: counters.queue_step_count.load(Relaxed),
+            queue_step_max_cycles: counters.queue_step_max_cycles.load(Relaxed),
+            tim5_activation_count: counters.tim5_activation_count.load(Relaxed),
+            tim5_irq_max_cycles: counters.tim5_irq_max_cycles.load(Relaxed),
+            tim5_dispatch_max_cycles: counters.tim5_dispatch_max_cycles.load(Relaxed),
+            tim5_dispatch_max_cycles_events: counters.tim5_dispatch_max_cycles_events.load(Relaxed),
+            tim5_events_max_per_irq: counters.tim5_events_max_per_irq.load(Relaxed),
+            tim5_event_count_total: counters.tim5_event_count_total.load(Relaxed),
+            tim5_defer_count: counters.tim5_defer_count.load(Relaxed),
+            tim5_empty_count: counters.tim5_empty_count.load(Relaxed),
+            tim5_events_last_activation: counters.tim5_events_last_activation.load(Relaxed),
+            tim5_burst_cycles_per_event_max: counters.tim5_burst_cycles_per_event_max.load(Relaxed),
+            tim5_burst_cycles_per_event_max_cycles: counters
+                .tim5_burst_cycles_per_event_max_cycles
+                .load(Relaxed),
+            tim5_burst_cycles_per_event_max_events: counters
+                .tim5_burst_cycles_per_event_max_events
+                .load(Relaxed),
+            tim5_burst_cycles_per_event_floor3_max: counters
+                .tim5_burst_cycles_per_event_floor3_max
+                .load(Relaxed),
+            tim5_entry_latency_max_ticks: counters.tim5_entry_latency_max_ticks.load(Relaxed),
+            tim5_pop_lateness_max_ticks: counters.tim5_pop_lateness_max_ticks.load(Relaxed),
+            scheduler_cycles_max: counters.scheduler_cycles_max.load(Relaxed),
+            scheduler_cycles_events_at_max: counters.scheduler_cycles_events_at_max.load(Relaxed),
+            scheduler_cycles_per_event_max: counters.scheduler_cycles_per_event_max.load(Relaxed),
+            scheduler_cycles_per_event_max_cycles: counters
+                .scheduler_cycles_per_event_max_cycles
+                .load(Relaxed),
+            scheduler_cycles_per_event_max_events: counters
+                .scheduler_cycles_per_event_max_events
+                .load(Relaxed),
+            scheduler_cycles_per_event_floor3_max: counters
+                .scheduler_cycles_per_event_floor3_max
+                .load(Relaxed),
+            scheduler_full_count: counters.scheduler_full_count.load(Relaxed),
+            stepper_load_lateness_max_ticks: counters.stepper_load_lateness_max_ticks.load(Relaxed),
+            stepper_load_lateness_last_ticks: counters
+                .stepper_load_lateness_last_ticks
+                .load(Relaxed),
+            build_trace_enabled,
+        };
+        if clear {
+            counters.reset();
+        }
+        snapshot
+    }
+}
+
+impl<const CPU_CYCLES_PER_US: u32> Default for StepperPerfCounters<CPU_CYCLES_PER_US> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+fn record_max(max: &AtomicU32, value: u32) {
+    let mut current = max.load(Relaxed);
+    while value > current {
+        match max.compare_exchange_weak(current, value, Relaxed, Relaxed) {
+            Ok(_) => return,
+            Err(next) => current = next,
+        }
+    }
+}
+
+fn record_max_with_event_count(
+    max: &AtomicU32,
+    events_at_max: &AtomicU32,
+    value: u32,
+    event_count: u32,
+) {
+    let mut current = max.load(Relaxed);
+    while value > current {
+        match max.compare_exchange_weak(current, value, Relaxed, Relaxed) {
+            Ok(_) => {
+                events_at_max.store(event_count, Relaxed);
+                return;
+            }
+            Err(next) => current = next,
+        }
+    }
+}
+
+fn record_max_burst_ratio(
+    max: &AtomicU32,
+    cycles_at_max: &AtomicU32,
+    events_at_max: &AtomicU32,
+    ratio: u32,
+    cycles: u32,
+    event_count: u32,
+) {
+    let mut current = max.load(Relaxed);
+    while ratio > current {
+        match max.compare_exchange_weak(current, ratio, Relaxed, Relaxed) {
+            Ok(_) => {
+                cycles_at_max.store(cycles, Relaxed);
+                events_at_max.store(event_count, Relaxed);
+                return;
+            }
+            Err(next) => current = next,
+        }
+    }
+}
+
+fn record_max_with_site(max: &AtomicU32, site: &AtomicU32, value: u32, site_code: u8) {
+    let mut current = max.load(Relaxed);
+    while value > current {
+        match max.compare_exchange_weak(current, value, Relaxed, Relaxed) {
+            Ok(_) => {
+                site.store(u32::from(site_code), Relaxed);
+                return;
+            }
+            Err(next) => current = next,
+        }
+    }
+}
+
 /// Snapshot of board-local step-dispatch performance counters.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub struct StepperPerfSnapshot {
@@ -899,5 +1299,105 @@ mod tests {
         assert_eq!(event.reason, StepperEventReason::MissedDeadlineLoad);
         assert_eq!(event.clock, 123_456);
         assert_eq!(event.snapshot.crit_over_1000us, 1);
+    }
+
+    #[test]
+    fn stepper_perf_counters_track_critical_sections_and_queue_site() {
+        let counters = StepperPerfCounters::<520>::new();
+
+        counters.record_critical_section(0, 999);
+        counters.record_critical_section(1, 10_000);
+        counters.record_critical_section(2, 100_000);
+
+        let snapshot = counters.snapshot(3, false, true);
+        assert_eq!(snapshot.channel, 3);
+        assert_eq!(snapshot.sample_count, 3);
+        assert_eq!(snapshot.crit_count, 3);
+        assert_eq!(snapshot.crit_max_cycles, 100_000);
+        assert_eq!(snapshot.crit_max_site, 2);
+        assert_eq!(snapshot.crit_over_10us, 2);
+        assert_eq!(snapshot.crit_over_50us, 1);
+        assert_eq!(snapshot.crit_over_100us, 1);
+        assert_eq!(snapshot.crit_over_1000us, 0);
+        assert_eq!(snapshot.queue_step_count, 1);
+        assert_eq!(snapshot.queue_step_max_cycles, 10_000);
+        assert!(snapshot.build_trace_enabled);
+    }
+
+    #[test]
+    fn stepper_perf_counters_track_tim5_irq_and_empty_samples() {
+        let counters = StepperPerfCounters::<168>::new();
+
+        counters.record_tim5_irq(500, 300, 3);
+        counters.record_tim5_irq(900, 450, 0);
+        counters.record_tim5_defer();
+        counters.record_tim5_entry_latency(27);
+
+        let snapshot = counters.snapshot(0, false, false);
+        assert_eq!(snapshot.sample_count, 2);
+        assert_eq!(snapshot.tim5_activation_count, 2);
+        assert_eq!(snapshot.tim5_irq_max_cycles, 900);
+        assert_eq!(snapshot.tim5_dispatch_max_cycles, 450);
+        assert_eq!(snapshot.tim5_dispatch_max_cycles_events, 0);
+        assert_eq!(snapshot.tim5_events_max_per_irq, 3);
+        assert_eq!(snapshot.tim5_event_count_total, 3);
+        assert_eq!(snapshot.tim5_defer_count, 1);
+        assert_eq!(snapshot.tim5_empty_count, 1);
+        assert_eq!(snapshot.tim5_events_last_activation, 0);
+        assert_eq!(snapshot.tim5_burst_cycles_per_event_max, 100);
+        assert_eq!(snapshot.tim5_burst_cycles_per_event_max_cycles, 300);
+        assert_eq!(snapshot.tim5_burst_cycles_per_event_max_events, 3);
+        assert_eq!(snapshot.tim5_burst_cycles_per_event_floor3_max, 100);
+        assert_eq!(snapshot.tim5_entry_latency_max_ticks, 27);
+        assert!(!snapshot.build_trace_enabled);
+    }
+
+    #[test]
+    fn stepper_perf_counters_track_scheduler_and_load_lateness() {
+        let counters = StepperPerfCounters::<168>::new();
+
+        counters.record_scheduler_cycles(120, 2);
+        counters.record_scheduler_cycles(330, 3);
+        counters.record_scheduler_full();
+        counters.record_scheduler_pop_lateness(44);
+        counters.record_stepper_load_lateness(-7);
+        counters.record_stepper_load_lateness(19);
+
+        let snapshot = counters.snapshot(1, false, false);
+        assert_eq!(snapshot.scheduler_cycles_max, 330);
+        assert_eq!(snapshot.scheduler_cycles_events_at_max, 3);
+        assert_eq!(snapshot.scheduler_cycles_per_event_max, 110);
+        assert_eq!(snapshot.scheduler_cycles_per_event_max_cycles, 330);
+        assert_eq!(snapshot.scheduler_cycles_per_event_max_events, 3);
+        assert_eq!(snapshot.scheduler_cycles_per_event_floor3_max, 110);
+        assert_eq!(snapshot.scheduler_full_count, 1);
+        assert_eq!(snapshot.tim5_pop_lateness_max_ticks, 44);
+        assert_eq!(snapshot.stepper_load_lateness_last_ticks, 19);
+        assert_eq!(snapshot.stepper_load_lateness_max_ticks, 19);
+    }
+
+    #[test]
+    fn stepper_perf_counters_clear_after_snapshot_when_requested() {
+        let counters = StepperPerfCounters::<168>::new();
+
+        counters.record_critical_section(1, 20_000);
+        counters.record_tim5_irq(700, 600, 2);
+        counters.record_scheduler_full();
+        counters.record_stepper_load_lateness(11);
+
+        let before_clear = counters.snapshot(7, true, true);
+        assert_eq!(before_clear.channel, 7);
+        assert_eq!(before_clear.crit_count, 1);
+        assert_eq!(before_clear.tim5_activation_count, 1);
+        assert_eq!(before_clear.scheduler_full_count, 1);
+        assert_eq!(before_clear.stepper_load_lateness_max_ticks, 11);
+        assert!(before_clear.build_trace_enabled);
+
+        let after_clear = counters.snapshot(7, false, false);
+        assert_eq!(after_clear.crit_count, 0);
+        assert_eq!(after_clear.tim5_activation_count, 0);
+        assert_eq!(after_clear.scheduler_full_count, 0);
+        assert_eq!(after_clear.stepper_load_lateness_max_ticks, 0);
+        assert!(!after_clear.build_trace_enabled);
     }
 }
