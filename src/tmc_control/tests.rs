@@ -16,11 +16,11 @@ use embassy_sync::signal::Signal;
 use embedded_hal_async::spi::{ErrorKind, ErrorType, Operation, SpiDevice};
 use foci_tmc4671::registers::{
     ABN_DECODER_MODE, ABN_DECODER_PHI_E_PHI_M_OFFSET, ABN_DECODER_PPR,
-    PID_ERROR_PID_FLUX_ERROR_SUM, PID_ERROR_PID_POSITION_ERROR_SUM,
-    PID_ERROR_PID_TORQUE_ERROR_SUM, PID_ERROR_PID_VELOCITY_ERROR_SUM, PID_FLUX_P_FLUX_I,
-    PID_POSITION_ACTUAL, PID_POSITION_P_POSITION_I, PID_POSITION_TARGET,
-    PID_TORQUE_FLUX_LIMITS, PID_TORQUE_FLUX_OFFSET, PID_TORQUE_P_TORQUE_I,
-    PID_VELOCITY_OFFSET, PID_VELOCITY_P_VELOCITY_I, PIDOUT_UQ_UD_LIMITS, STATUS_FLAGS,
+    PID_ERROR_PID_FLUX_ERROR_SUM, PID_ERROR_PID_POSITION_ERROR_SUM, PID_ERROR_PID_TORQUE_ERROR_SUM,
+    PID_ERROR_PID_VELOCITY_ERROR_SUM, PID_FLUX_P_FLUX_I, PID_POSITION_ACTUAL,
+    PID_POSITION_P_POSITION_I, PID_POSITION_TARGET, PID_TORQUE_FLUX_LIMITS, PID_TORQUE_FLUX_OFFSET,
+    PID_TORQUE_P_TORQUE_I, PID_VELOCITY_OFFSET, PID_VELOCITY_P_VELOCITY_I, PIDOUT_UQ_UD_LIMITS,
+    STATUS_FLAGS,
 };
 use foci_tmc4671::spi::Tmc4671Spi;
 
@@ -1923,8 +1923,7 @@ fn phase_advance_tick_snapshots_base_and_writes_adjusted_offset() {
                 deadband_velocity: 0,
             },
         );
-        let expected_register =
-            crate::tmc::pack_abn_phi_offset(base_register, phase_output.counts);
+        let expected_register = crate::tmc::pack_abn_phi_offset(base_register, phase_output.counts);
         let mut tmc = Tmc4671Spi::new(RuntimeMockSpi::default().with_read(base_register));
 
         runtime
@@ -2053,4 +2052,92 @@ fn position_lead_tick_writes_target_and_tracks_applied_scaled() {
             std::vec![(PID_POSITION_TARGET.addr(), expected_target)]
         );
     });
+}
+
+#[cfg(feature = "trace")]
+#[test]
+fn trace_tick_returns_sample_before_incremented_control_tick() {
+    let mut runtime = TmcControlRuntime::new_for_channel(0);
+
+    let tick = runtime.advance_trace_tick();
+
+    assert_eq!(tick.sample_tick, 0);
+    assert_eq!(tick.control_tick, 1);
+    assert!(!tick.status_detail_due);
+    assert!(!tick.metadata_due);
+    assert!(!tick.phase_advance_due);
+}
+
+#[cfg(feature = "trace")]
+#[test]
+fn trace_tick_marks_status_detail_due_at_100() {
+    let mut runtime = TmcControlRuntime::new_for_channel(0);
+    runtime.set_trace_control_tick_for_test(99);
+
+    let tick = runtime.advance_trace_tick();
+
+    assert_eq!(tick.sample_tick, 99);
+    assert_eq!(tick.control_tick, 100);
+    assert!(tick.status_detail_due);
+    assert!(!tick.metadata_due);
+}
+
+#[cfg(feature = "trace")]
+#[test]
+fn trace_tick_marks_metadata_due_at_1000() {
+    let mut runtime = TmcControlRuntime::new_for_channel(0);
+    runtime.set_trace_control_tick_for_test(999);
+
+    let tick = runtime.advance_trace_tick();
+
+    assert_eq!(tick.sample_tick, 999);
+    assert_eq!(tick.control_tick, 1000);
+    assert!(tick.status_detail_due);
+    assert!(tick.metadata_due);
+}
+
+#[cfg(feature = "trace")]
+#[test]
+fn trace_tick_consumes_phase_advance_one_shot_once() {
+    let mut runtime = TmcControlRuntime::new_for_channel(0);
+    runtime.set_trace_phase_advance_for_test(true, 0x01, 7);
+
+    let first = runtime.advance_trace_tick();
+    let second = runtime.advance_trace_tick();
+
+    assert!(first.phase_advance_due);
+    assert_eq!(first.phase_advance_flags, 0x01);
+    assert_eq!(first.phase_advance_counts, 7);
+    assert!(!second.phase_advance_due);
+}
+
+#[cfg(feature = "trace")]
+#[test]
+fn trace_tick_emits_phase_advance_periodically_when_nonzero() {
+    let mut runtime = TmcControlRuntime::new_for_channel(0);
+    runtime.set_trace_control_tick_for_test(9);
+    runtime.set_trace_phase_advance_for_test(false, 0x02, 5);
+
+    let due = runtime.advance_trace_tick();
+    let not_due = runtime.advance_trace_tick();
+
+    assert_eq!(due.control_tick, 10);
+    assert!(due.phase_advance_due);
+    assert_eq!(due.phase_advance_flags, 0x02);
+    assert_eq!(due.phase_advance_counts, 5);
+    assert_eq!(not_due.control_tick, 11);
+    assert!(!not_due.phase_advance_due);
+}
+
+#[cfg(feature = "trace")]
+#[test]
+fn trace_tick_does_not_emit_periodic_phase_advance_when_zero() {
+    let mut runtime = TmcControlRuntime::new_for_channel(0);
+    runtime.set_trace_control_tick_for_test(9);
+    runtime.set_trace_phase_advance_for_test(false, 0, 0);
+
+    let tick = runtime.advance_trace_tick();
+
+    assert_eq!(tick.control_tick, 10);
+    assert!(!tick.phase_advance_due);
 }

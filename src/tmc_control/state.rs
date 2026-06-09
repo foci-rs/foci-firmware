@@ -1464,4 +1464,21 @@ impl TmcControlRuntime {
     pub(crate) fn position_lead_applied_scaled_for_test(&self) -> i32 {
         self.position_lead_applied_scaled
     }
+
+    #[cfg(all(test, feature = "trace"))]
+    pub(crate) fn set_trace_control_tick_for_test(&mut self, value: u32) {
+        self.trace.control_tick = value;
+    }
+
+    #[cfg(all(test, feature = "trace"))]
+    pub(crate) fn set_trace_phase_advance_for_test(
+        &mut self,
+        emit_once: bool,
+        last_flags: u8,
+        last_counts: i16,
+    ) {
+        self.trace.phase_advance_emit_once = emit_once;
+        self.trace.phase_advance_last_flags = last_flags;
+        self.trace.phase_advance_last_counts = last_counts;
+    }
 }
