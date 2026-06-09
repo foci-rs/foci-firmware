@@ -5,9 +5,11 @@ use crate::tmc::{
 };
 use crate::tmc_control::TmcControlRuntime;
 use foci_tmc4671::registers::{
-    ADC_AGPI_A_RAW_ADC_VM_RAW, INTERIM_FOC_IQ_ID, INTERIM_FOC_UQ_UD_LIMITED, MODE_RAMP_MODE_MOTION,
-    PID_POSITION_TARGET, PID_TORQUE_FLUX_OFFSET, PID_TORQUE_FLUX_TARGET, PIDOUT_UQ_UD_LIMITS,
-    UQ_UD_EXT,
+    ABN_DECODER_COUNT, ABN_DECODER_PPR, ADC_AGPI_A_RAW_ADC_VM_RAW, INTERIM_FOC_IQ_ID,
+    INTERIM_FOC_UQ_UD_LIMITED, MODE_RAMP_MODE_MOTION, PID_ERROR_PID_FLUX_ERROR_SUM,
+    PID_ERROR_PID_TORQUE_ERROR_SUM, PID_POSITION_ACTUAL, PID_POSITION_TARGET,
+    PID_TORQUE_FLUX_ACTUAL, PID_TORQUE_FLUX_OFFSET, PID_TORQUE_FLUX_TARGET, PIDOUT_UQ_UD_LIMITS,
+    STATUS_FLAGS, UQ_UD_EXT,
 };
 use foci_tmc4671::spi::Tmc4671Spi;
 
@@ -269,39 +271,59 @@ fn current_step_success_records_settle_delays_and_restores_limit() {
         assert_eq!(delay.delays_ms, std::vec![20, 3, 20]);
 
         let raw_spi = tmc.into_inner();
-        assert!(raw_spi.writes.contains(&(PID_TORQUE_FLUX_TARGET.addr(), 0)));
-        assert!(raw_spi.writes.contains(&(PIDOUT_UQ_UD_LIMITS.addr(), 777)));
-        assert!(
-            raw_spi
-                .writes
-                .contains(&(PID_POSITION_TARGET.addr(), 0xaaaa_bbbb))
-        );
-        assert!(raw_spi.write_attempts.contains(&(
-            ADC_AGPI_A_RAW_ADC_VM_RAW.addr.addr(),
-            u32::from(ADC_AGPI_A_RAW_ADC_VM_RAW.sub_addr),
-        )));
-        assert!(
-            raw_spi
-                .read_requests
-                .contains(&ADC_AGPI_A_RAW_ADC_VM_RAW.data.addr())
-        );
-        assert!(raw_spi.write_attempts.contains(&(
-            INTERIM_FOC_IQ_ID.addr.addr(),
-            u32::from(INTERIM_FOC_IQ_ID.sub_addr),
-        )));
-        assert!(
-            raw_spi
-                .read_requests
-                .contains(&INTERIM_FOC_IQ_ID.data.addr())
-        );
-        assert!(raw_spi.write_attempts.contains(&(
-            INTERIM_FOC_UQ_UD_LIMITED.addr.addr(),
-            u32::from(INTERIM_FOC_UQ_UD_LIMITED.sub_addr),
-        )));
-        assert!(
-            raw_spi
-                .read_requests
-                .contains(&INTERIM_FOC_UQ_UD_LIMITED.data.addr())
+        let expected_writes = std::vec![
+            (PID_TORQUE_FLUX_TARGET.addr(), 0),
+            (PIDOUT_UQ_UD_LIMITS.addr(), 555),
+            (
+                PID_ERROR_PID_TORQUE_ERROR_SUM.addr.addr(),
+                u32::from(PID_ERROR_PID_TORQUE_ERROR_SUM.sub_addr),
+            ),
+            (PID_ERROR_PID_TORQUE_ERROR_SUM.data.addr(), 0),
+            (
+                PID_ERROR_PID_FLUX_ERROR_SUM.addr.addr(),
+                u32::from(PID_ERROR_PID_FLUX_ERROR_SUM.sub_addr),
+            ),
+            (PID_ERROR_PID_FLUX_ERROR_SUM.data.addr(), 0),
+            (MODE_RAMP_MODE_MOTION.addr(), 0x8000_0001),
+            (
+                PID_TORQUE_FLUX_TARGET.addr(),
+                crate::tmc::pack_torque_flux_target(20, 0),
+            ),
+            (
+                INTERIM_FOC_IQ_ID.addr.addr(),
+                u32::from(INTERIM_FOC_IQ_ID.sub_addr),
+            ),
+            (
+                INTERIM_FOC_UQ_UD_LIMITED.addr.addr(),
+                u32::from(INTERIM_FOC_UQ_UD_LIMITED.sub_addr),
+            ),
+            (
+                ADC_AGPI_A_RAW_ADC_VM_RAW.addr.addr(),
+                u32::from(ADC_AGPI_A_RAW_ADC_VM_RAW.sub_addr),
+            ),
+            (PID_TORQUE_FLUX_TARGET.addr(), 0),
+            (PID_TORQUE_FLUX_TARGET.addr(), 0),
+            (PIDOUT_UQ_UD_LIMITS.addr(), 777),
+            (PID_POSITION_TARGET.addr(), 0xaaaa_bbbb),
+            (MODE_RAMP_MODE_MOTION.addr(), 0x8000_0003),
+        ];
+        assert_eq!(raw_spi.write_attempts, expected_writes);
+        assert_eq!(raw_spi.writes, raw_spi.write_attempts);
+        assert_eq!(
+            raw_spi.read_requests,
+            std::vec![
+                MODE_RAMP_MODE_MOTION.addr(),
+                PID_POSITION_ACTUAL.addr(),
+                ABN_DECODER_COUNT.addr(),
+                ABN_DECODER_PPR.addr(),
+                PID_TORQUE_FLUX_ACTUAL.addr(),
+                PID_TORQUE_FLUX_ACTUAL.addr(),
+                INTERIM_FOC_IQ_ID.data.addr(),
+                INTERIM_FOC_UQ_UD_LIMITED.data.addr(),
+                ADC_AGPI_A_RAW_ADC_VM_RAW.data.addr(),
+                ABN_DECODER_COUNT.addr(),
+                PID_TORQUE_FLUX_ACTUAL.addr(),
+            ]
         );
     });
 }
@@ -413,10 +435,25 @@ fn position_offset_spi_failure_attempts_offset_restore() {
         };
         assert_eq!(report.status, CURRENT_STEP_STATUS_SPI);
         let raw_spi = tmc.into_inner();
-        assert!(
-            raw_spi
-                .write_attempts
-                .contains(&(PID_TORQUE_FLUX_OFFSET.addr(), 0x1234_5678))
+        assert_eq!(
+            raw_spi.write_attempts,
+            std::vec![
+                (PIDOUT_UQ_UD_LIMITS.addr(), 444),
+                (PID_TORQUE_FLUX_OFFSET.addr(), 0x1234_5678),
+                (PIDOUT_UQ_UD_LIMITS.addr(), 777),
+                (MODE_RAMP_MODE_MOTION.addr(), 0x8000_0003),
+            ]
+        );
+        assert_eq!(
+            raw_spi.writes,
+            std::vec![
+                (PID_TORQUE_FLUX_OFFSET.addr(), 0x1234_5678),
+                (MODE_RAMP_MODE_MOTION.addr(), 0x8000_0003),
+            ]
+        );
+        assert_eq!(
+            raw_spi.read_requests,
+            std::vec![MODE_RAMP_MODE_MOTION.addr(), PID_TORQUE_FLUX_OFFSET.addr()]
         );
     });
 }
@@ -486,11 +523,32 @@ fn voltage_step_failure_clears_external_voltage_and_restores_mode() {
         };
         assert_eq!(report.status, CURRENT_STEP_STATUS_SPI);
         let raw_spi = tmc.into_inner();
-        assert!(raw_spi.write_attempts.contains(&(UQ_UD_EXT.addr(), 0)));
-        assert!(
-            raw_spi
-                .write_attempts
-                .contains(&(MODE_RAMP_MODE_MOTION.addr(), 0x8000_0003))
+        assert_eq!(
+            raw_spi.write_attempts,
+            std::vec![
+                (STATUS_FLAGS.addr(), 0),
+                (UQ_UD_EXT.addr(), pack_voltage_ext(44, -55)),
+                (MODE_RAMP_MODE_MOTION.addr(), 0),
+                (UQ_UD_EXT.addr(), 0),
+                (MODE_RAMP_MODE_MOTION.addr(), 0x8000_0003),
+            ]
+        );
+        assert_eq!(
+            raw_spi.writes,
+            std::vec![
+                (STATUS_FLAGS.addr(), 0),
+                (MODE_RAMP_MODE_MOTION.addr(), 0),
+                (MODE_RAMP_MODE_MOTION.addr(), 0x8000_0003),
+            ]
+        );
+        assert_eq!(
+            raw_spi.read_requests,
+            std::vec![
+                MODE_RAMP_MODE_MOTION.addr(),
+                ABN_DECODER_COUNT.addr(),
+                ABN_DECODER_PPR.addr(),
+                PID_TORQUE_FLUX_ACTUAL.addr(),
+            ]
         );
     });
 }
