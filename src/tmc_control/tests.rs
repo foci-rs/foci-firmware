@@ -20,7 +20,7 @@ use foci_tmc4671::registers::{
     PID_ERROR_PID_TORQUE_ERROR_SUM, PID_ERROR_PID_VELOCITY_ERROR_SUM, PID_FLUX_P_FLUX_I,
     PID_POSITION_ACTUAL, PID_POSITION_P_POSITION_I, PID_POSITION_TARGET,
     PID_TORQUE_FLUX_LIMITS, PID_TORQUE_FLUX_OFFSET, PID_TORQUE_P_TORQUE_I,
-    PID_VELOCITY_P_VELOCITY_I, PIDOUT_UQ_UD_LIMITS, STATUS_FLAGS,
+    PID_VELOCITY_OFFSET, PID_VELOCITY_P_VELOCITY_I, PIDOUT_UQ_UD_LIMITS, STATUS_FLAGS,
 };
 use foci_tmc4671::spi::Tmc4671Spi;
 
@@ -1642,6 +1642,134 @@ fn shared_slow_control_accumulator_fires_immediately_at_default_period() {
 }
 
 #[test]
+fn feedforward_tick_writes_velocity_offset_and_marks_active() {
+    pollster::block_on(async {
+        let mut runtime = TmcControlRuntime::new_for_channel(0);
+        runtime.set_motor_enabled_for_test(true);
+        runtime.set_velocity_scale_for_test(84_000_000);
+        let tmc_state = crate::state::tmc::TmcChannelState::new();
+        let stepper_state = crate::state::stepper::StepperChannelState::new();
+        let config = commissioning_runtime_config();
+        tmc_state.velocity_feedforward.store(true, Relaxed);
+        tmc_state.velocity_feedforward_multiplier.store(40, Relaxed);
+        stepper_state.interval.store(2_800, Relaxed);
+        stepper_state.direction.store(false, Relaxed);
+        let expected =
+            crate::tmc::compute_velocity_offset_scaled(84_000_000, 2_800, false, 40) as u32;
+        let mut tmc = Tmc4671Spi::new(RuntimeMockSpi::default());
+
+        assert_eq!(
+            runtime
+                .apply_feedforward_tick(
+                    &mut tmc,
+                    TmcControlStateRefs::new(&tmc_state, &stepper_state),
+                    &config,
+                    false,
+                    false,
+                    true,
+                )
+                .await,
+            Ok(())
+        );
+
+        assert_eq!(
+            tmc.into_inner().writes,
+            std::vec![(PID_VELOCITY_OFFSET.addr(), expected)]
+        );
+        assert!(runtime.feedforward_was_active());
+    });
+}
+
+#[test]
+fn feedforward_tick_clears_velocity_offset_once_after_deactivation() {
+    pollster::block_on(async {
+        let mut runtime = TmcControlRuntime::new_for_channel(0);
+        runtime.set_motor_enabled_for_test(true);
+        runtime.set_velocity_scale_for_test(84_000_000);
+        runtime.set_feedforward_was_active(true);
+        let tmc_state = crate::state::tmc::TmcChannelState::new();
+        let stepper_state = crate::state::stepper::StepperChannelState::new();
+        let config = commissioning_runtime_config();
+        let mut first_tmc = Tmc4671Spi::new(RuntimeMockSpi::default());
+
+        assert_eq!(
+            runtime
+                .apply_feedforward_tick(
+                    &mut first_tmc,
+                    TmcControlStateRefs::new(&tmc_state, &stepper_state),
+                    &config,
+                    false,
+                    false,
+                    true,
+                )
+                .await,
+            Ok(())
+        );
+
+        assert_eq!(
+            first_tmc.into_inner().writes,
+            std::vec![(PID_VELOCITY_OFFSET.addr(), 0)]
+        );
+        assert!(!runtime.feedforward_was_active());
+
+        let mut second_tmc = Tmc4671Spi::new(RuntimeMockSpi::default());
+        assert_eq!(
+            runtime
+                .apply_feedforward_tick(
+                    &mut second_tmc,
+                    TmcControlStateRefs::new(&tmc_state, &stepper_state),
+                    &config,
+                    false,
+                    false,
+                    true,
+                )
+                .await,
+            Ok(())
+        );
+        assert!(second_tmc.into_inner().writes.is_empty());
+    });
+}
+
+#[test]
+fn feedforward_fast_tick_skips_torque_flux_offset_slow_work() {
+    pollster::block_on(async {
+        let mut runtime = TmcControlRuntime::new_for_channel(0);
+        runtime.set_motor_enabled_for_test(true);
+        runtime.set_velocity_scale_for_test(84_000_000);
+        let tmc_state = crate::state::tmc::TmcChannelState::new();
+        let stepper_state = crate::state::stepper::StepperChannelState::new();
+        let config = commissioning_runtime_config();
+        tmc_state.accel_feedforward.store(true, Relaxed);
+        tmc_state
+            .accel_feedforward_accel_gain_permille
+            .store(1_000, Relaxed);
+        tmc_state
+            .accel_feedforward_decel_gain_permille
+            .store(1_000, Relaxed);
+        tmc_state.current_limit_reg.store(10_000, Relaxed);
+        stepper_state.interval.store(2_800, Relaxed);
+        stepper_state.interval_add.store(-10, Relaxed);
+        let mut tmc = Tmc4671Spi::new(RuntimeMockSpi::default());
+
+        assert_eq!(
+            runtime
+                .apply_feedforward_tick(
+                    &mut tmc,
+                    TmcControlStateRefs::new(&tmc_state, &stepper_state),
+                    &config,
+                    false,
+                    false,
+                    false,
+                )
+                .await,
+            Ok(())
+        );
+
+        assert!(!tmc.into_inner().attempted_write_to(PID_TORQUE_FLUX_OFFSET));
+    });
+}
+
+#[test]
 fn command_velocity_reference_zeroes_when_reset_is_requested() {
     let mut runtime = TmcControlRuntime::new_for_channel(0);
     let tmc = crate::state::tmc::TmcChannelState::new();
@@ -1773,6 +1901,57 @@ fn phase_advance_restore_now_failure_preserves_retry_state() {
 }
 
 #[test]
+fn phase_advance_tick_snapshots_base_and_writes_adjusted_offset() {
+    pollster::block_on(async {
+        let mut runtime = TmcControlRuntime::new_for_channel(0);
+        runtime.set_motor_enabled_for_test(true);
+        runtime.set_velocity_scale_for_test(84_000_000);
+        let tmc_state = crate::state::tmc::TmcChannelState::new();
+        let stepper_state = crate::state::stepper::StepperChannelState::new();
+        tmc_state.phase_advance.store(true, Relaxed);
+        tmc_state.phase_advance_gain_ppm.store(1_000, Relaxed);
+        tmc_state.phase_advance_max_counts.store(20, Relaxed);
+        tmc_state.phase_advance_deadband.store(0, Relaxed);
+        let base_register = 0x0100_2345;
+        let command_velocity_reference = 10_000;
+        let phase_output = crate::tmc::compute_phase_advance_counts(
+            command_velocity_reference,
+            crate::tmc::PhaseAdvanceConfig {
+                enable: true,
+                gain_ppm: 1_000,
+                max_counts: 20,
+                deadband_velocity: 0,
+            },
+        );
+        let expected_register =
+            crate::tmc::pack_abn_phi_offset(base_register, phase_output.counts);
+        let mut tmc = Tmc4671Spi::new(RuntimeMockSpi::default().with_read(base_register));
+
+        runtime
+            .apply_phase_and_position_tick(
+                &mut tmc,
+                TmcControlStateRefs::new(&tmc_state, &stepper_state),
+                command_velocity_reference,
+                false,
+                false,
+            )
+            .await;
+
+        let raw_spi = tmc.into_inner();
+        assert!(raw_spi.read_requested(ABN_DECODER_PHI_E_PHI_M_OFFSET));
+        assert_eq!(
+            raw_spi.write_attempts,
+            std::vec![(ABN_DECODER_PHI_E_PHI_M_OFFSET.addr(), expected_register)]
+        );
+        assert!(runtime.phase_advance_active_for_test());
+        assert_eq!(
+            runtime.phase_advance_last_register_for_test(),
+            expected_register
+        );
+    });
+}
+
+#[test]
 fn phase_advance_tick_reset_gate_skips_abn_snapshot_and_write() {
     pollster::block_on(async {
         let mut runtime = TmcControlRuntime::new_for_channel(0);
@@ -1800,6 +1979,38 @@ fn phase_advance_tick_reset_gate_skips_abn_snapshot_and_write() {
         let raw_spi = tmc.into_inner();
         assert!(!raw_spi.read_requested(ABN_DECODER_PHI_E_PHI_M_OFFSET));
         assert!(!raw_spi.attempted_write_to(ABN_DECODER_PHI_E_PHI_M_OFFSET));
+    });
+}
+
+#[test]
+fn phase_and_position_tick_disabled_runtime_writes_nothing() {
+    pollster::block_on(async {
+        let mut runtime = TmcControlRuntime::new_for_channel(0);
+        runtime.set_velocity_scale_for_test(84_000_000);
+        let tmc_state = crate::state::tmc::TmcChannelState::new();
+        let stepper_state = crate::state::stepper::StepperChannelState::new();
+        tmc_state.phase_advance.store(true, Relaxed);
+        tmc_state.position_lead.store(true, Relaxed);
+        tmc_state.position_lead_gain_permille.store(1000, Relaxed);
+        tmc_state.position_lead_max_counts.store(20, Relaxed);
+        tmc_state.step_width_value.store(16, Relaxed);
+        stepper_state.interval.store(2_800, Relaxed);
+        let mut tmc = Tmc4671Spi::new(RuntimeMockSpi::default().with_read(1_000));
+
+        runtime
+            .apply_phase_and_position_tick(
+                &mut tmc,
+                TmcControlStateRefs::new(&tmc_state, &stepper_state),
+                123,
+                false,
+                false,
+            )
+            .await;
+
+        let raw_spi = tmc.into_inner();
+        assert!(raw_spi.read_requests.is_empty());
+        assert!(raw_spi.write_attempts.is_empty());
+        assert_eq!(runtime.position_lead_applied_scaled_for_test(), 0);
     });
 }
 
