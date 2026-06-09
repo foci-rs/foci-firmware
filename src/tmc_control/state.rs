@@ -1419,6 +1419,11 @@ impl TmcControlRuntime {
     }
 
     #[cfg(test)]
+    pub(crate) fn set_status_poll_counter_for_test(&mut self, value: u16) {
+        self.status_poll_counter = value;
+    }
+
+    #[cfg(test)]
     pub(crate) fn pid_error_clear_countdown_for_test(&self) -> u8 {
         self.pid_error_clear_countdown_ms
     }

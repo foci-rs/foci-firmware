@@ -16,9 +16,11 @@ use embassy_sync::signal::Signal;
 use embedded_hal_async::spi::{ErrorKind, ErrorType, Operation, SpiDevice};
 use foci_tmc4671::registers::{
     ABN_DECODER_MODE, ABN_DECODER_PHI_E_PHI_M_OFFSET, ABN_DECODER_PPR,
-    PID_ERROR_PID_POSITION_ERROR_SUM, PID_FLUX_P_FLUX_I, PID_POSITION_ACTUAL,
-    PID_POSITION_P_POSITION_I, PID_POSITION_TARGET, PID_TORQUE_FLUX_LIMITS, PID_TORQUE_FLUX_OFFSET,
-    PID_TORQUE_P_TORQUE_I, PID_VELOCITY_P_VELOCITY_I, PIDOUT_UQ_UD_LIMITS, STATUS_FLAGS,
+    PID_ERROR_PID_FLUX_ERROR_SUM, PID_ERROR_PID_POSITION_ERROR_SUM,
+    PID_ERROR_PID_TORQUE_ERROR_SUM, PID_ERROR_PID_VELOCITY_ERROR_SUM, PID_FLUX_P_FLUX_I,
+    PID_POSITION_ACTUAL, PID_POSITION_P_POSITION_I, PID_POSITION_TARGET,
+    PID_TORQUE_FLUX_LIMITS, PID_TORQUE_FLUX_OFFSET, PID_TORQUE_P_TORQUE_I,
+    PID_VELOCITY_P_VELOCITY_I, PIDOUT_UQ_UD_LIMITS, STATUS_FLAGS,
 };
 use foci_tmc4671::spi::Tmc4671Spi;
 
@@ -149,6 +151,23 @@ fn assert_stop_then_shutdown(actions: &BoardActions, reason: ShutdownReason) {
     assert_eq!(actions.len(), 2, "expected StopNow then Shutdown actions");
     assert_stop_now_at(actions, 0);
     assert_shutdown_at(actions, 1, reason);
+}
+
+fn assert_single_signal_emergency_disable(actions: &BoardActions) {
+    assert_eq!(
+        actions.len(),
+        1,
+        "expected one SignalEmergencyDisable action"
+    );
+    match &actions[0] {
+        BoardAction::SignalEmergencyDisable => {}
+        BoardAction::Stepper(_) => panic!("expected SignalEmergencyDisable, got Stepper"),
+        BoardAction::Shutdown(_) => panic!("expected SignalEmergencyDisable, got Shutdown"),
+        BoardAction::Reply(_) => panic!("expected SignalEmergencyDisable, got Reply"),
+        BoardAction::DelegatedDiagnostic(_) => {
+            panic!("expected SignalEmergencyDisable, got DelegatedDiagnostic")
+        }
+    }
 }
 
 fn assert_single_arm_preserve_position(actions: &BoardActions) {
@@ -844,8 +863,147 @@ fn pid_error_settle_tick_waits_for_inactive_timer_then_clears() {
 
         assert_eq!(runtime.pid_error_clear_countdown_for_test(), 0);
         let raw_spi = settle_tmc.into_inner();
-        assert!(raw_spi.attempted_write_to(PID_POSITION_ACTUAL));
-        assert!(raw_spi.attempted_write_to(STATUS_FLAGS));
+        assert_eq!(
+            raw_spi.write_attempts,
+            std::vec![
+                (PID_POSITION_ACTUAL.addr(), 1_000),
+                (
+                    PID_ERROR_PID_TORQUE_ERROR_SUM.addr.addr(),
+                    PID_ERROR_PID_TORQUE_ERROR_SUM.sub_addr as u32,
+                ),
+                (PID_ERROR_PID_TORQUE_ERROR_SUM.data.addr(), 0),
+                (
+                    PID_ERROR_PID_FLUX_ERROR_SUM.addr.addr(),
+                    PID_ERROR_PID_FLUX_ERROR_SUM.sub_addr as u32,
+                ),
+                (PID_ERROR_PID_FLUX_ERROR_SUM.data.addr(), 0),
+                (
+                    PID_ERROR_PID_VELOCITY_ERROR_SUM.addr.addr(),
+                    PID_ERROR_PID_VELOCITY_ERROR_SUM.sub_addr as u32,
+                ),
+                (PID_ERROR_PID_VELOCITY_ERROR_SUM.data.addr(), 0),
+                (
+                    PID_ERROR_PID_POSITION_ERROR_SUM.addr.addr(),
+                    PID_ERROR_PID_POSITION_ERROR_SUM.sub_addr as u32,
+                ),
+                (PID_ERROR_PID_POSITION_ERROR_SUM.data.addr(), 0),
+                (STATUS_FLAGS.addr(), 0),
+            ]
+        );
+    });
+}
+
+#[test]
+fn slow_maintenance_before_status_cadence_returns_empty_without_status_read() {
+    pollster::block_on(async {
+        let mut runtime = TmcControlRuntime::new_for_channel(0);
+        let tmc_state = crate::state::tmc::TmcChannelState::new();
+        let stepper_state = crate::state::stepper::StepperChannelState::new();
+        let config = commissioning_runtime_config();
+        let homing_state = core::sync::atomic::AtomicU8::new(0);
+        let homing_triggered = core::sync::atomic::AtomicU8::new(0xFF);
+        let homing = TmcControlHomingRefs::new(&homing_state, &homing_triggered);
+        runtime.set_status_poll_counter_for_test(998);
+        let mut tmc = Tmc4671Spi::new(RuntimeMockSpi::default().with_read(1 << 26));
+
+        let actions = runtime
+            .apply_slow_maintenance_tick(
+                &mut tmc,
+                TmcControlStateRefs::new(&tmc_state, &stepper_state),
+                &config,
+                homing,
+            )
+            .await;
+
+        assert_no_actions(&actions);
+        assert!(!tmc.into_inner().read_requested(STATUS_FLAGS));
+    });
+}
+
+#[test]
+fn slow_maintenance_status_poll_non_fault_returns_empty() {
+    pollster::block_on(async {
+        let mut runtime = TmcControlRuntime::new_for_channel(0);
+        let tmc_state = crate::state::tmc::TmcChannelState::new();
+        let stepper_state = crate::state::stepper::StepperChannelState::new();
+        let config = commissioning_runtime_config();
+        let homing_state = core::sync::atomic::AtomicU8::new(0);
+        let homing_triggered = core::sync::atomic::AtomicU8::new(0xFF);
+        let homing = TmcControlHomingRefs::new(&homing_state, &homing_triggered);
+        runtime.set_status_poll_counter_for_test(999);
+        let mut tmc = Tmc4671Spi::new(RuntimeMockSpi::default().with_read(0));
+
+        let actions = runtime
+            .apply_slow_maintenance_tick(
+                &mut tmc,
+                TmcControlStateRefs::new(&tmc_state, &stepper_state),
+                &config,
+                homing,
+            )
+            .await;
+
+        assert_no_actions(&actions);
+        assert!(tmc.into_inner().read_requested(STATUS_FLAGS));
+    });
+}
+
+#[test]
+fn slow_maintenance_status_fault_emits_emergency_disable() {
+    pollster::block_on(async {
+        let mut runtime = TmcControlRuntime::new_for_channel(0);
+        let tmc_state = crate::state::tmc::TmcChannelState::new();
+        let stepper_state = crate::state::stepper::StepperChannelState::new();
+        let config = commissioning_runtime_config();
+        let homing_state = core::sync::atomic::AtomicU8::new(0);
+        let homing_triggered = core::sync::atomic::AtomicU8::new(0xFF);
+        let homing = TmcControlHomingRefs::new(&homing_state, &homing_triggered);
+        runtime.set_status_poll_counter_for_test(999);
+        let mut tmc = Tmc4671Spi::new(RuntimeMockSpi::default().with_read(1 << 26));
+
+        let actions = runtime
+            .apply_slow_maintenance_tick(
+                &mut tmc,
+                TmcControlStateRefs::new(&tmc_state, &stepper_state),
+                &config,
+                homing,
+            )
+            .await;
+
+        assert_single_signal_emergency_disable(&actions);
+        assert!(tmc.into_inner().read_requested(STATUS_FLAGS));
+    });
+}
+
+#[test]
+fn slow_maintenance_homing_retry_skips_status_poll() {
+    pollster::block_on(async {
+        let mut runtime = TmcControlRuntime::new_for_channel(0);
+        let tmc_state = crate::state::tmc::TmcChannelState::new();
+        let stepper_state = crate::state::stepper::StepperChannelState::new();
+        let config = commissioning_runtime_config();
+        let homing_state = core::sync::atomic::AtomicU8::new(1);
+        let homing_triggered = core::sync::atomic::AtomicU8::new(0xFF);
+        let homing = TmcControlHomingRefs::new(&homing_state, &homing_triggered);
+        runtime.set_phase_advance_for_test(true, 0x1111_2222, 0x3333_4444);
+        runtime.set_status_poll_counter_for_test(999);
+        let raw_spi =
+            RuntimeMockSpi::default().fail_writes_to(ABN_DECODER_PHI_E_PHI_M_OFFSET.addr());
+        let mut tmc = Tmc4671Spi::new(raw_spi);
+
+        let actions = runtime
+            .apply_slow_maintenance_tick(
+                &mut tmc,
+                TmcControlStateRefs::new(&tmc_state, &stepper_state),
+                &config,
+                homing,
+            )
+            .await;
+
+        assert_no_actions(&actions);
+        assert_eq!(homing_state.load(Relaxed), 1);
+        let raw_spi = tmc.into_inner();
+        assert!(raw_spi.attempted_write_to(ABN_DECODER_PHI_E_PHI_M_OFFSET));
+        assert!(!raw_spi.read_requested(STATUS_FLAGS));
     });
 }
 
@@ -918,13 +1076,17 @@ fn homing_channel_tick_restores_position_i_and_clears_integrator() {
             .await;
 
         assert_eq!(result, HomingMaintenanceResult::ReadyToAdvance);
-        let writes = tmc.into_inner().writes;
-        assert!(writes.contains(&(PID_POSITION_P_POSITION_I.addr(), (12u32 << 16) | 34)));
-        assert!(writes.contains(&(
-            PID_ERROR_PID_POSITION_ERROR_SUM.addr.addr(),
-            PID_ERROR_PID_POSITION_ERROR_SUM.sub_addr as u32,
-        )));
-        assert!(writes.contains(&(PID_ERROR_PID_POSITION_ERROR_SUM.data.addr(), 0)));
+        assert_eq!(
+            tmc.into_inner().writes,
+            std::vec![
+                (PID_POSITION_P_POSITION_I.addr(), (12u32 << 16) | 34),
+                (
+                    PID_ERROR_PID_POSITION_ERROR_SUM.addr.addr(),
+                    PID_ERROR_PID_POSITION_ERROR_SUM.sub_addr as u32,
+                ),
+                (PID_ERROR_PID_POSITION_ERROR_SUM.data.addr(), 0),
+            ]
+        );
     });
 }
 
@@ -947,13 +1109,17 @@ fn homing_channel_tick_preserves_openffboard_ungated_restore() {
             .await;
 
         assert_eq!(result, HomingMaintenanceResult::ReadyToAdvance);
-        let writes = tmc.into_inner().writes;
-        assert!(writes.contains(&(PID_POSITION_P_POSITION_I.addr(), (7u32 << 16) | 9)));
-        assert!(writes.contains(&(
-            PID_ERROR_PID_POSITION_ERROR_SUM.addr.addr(),
-            PID_ERROR_PID_POSITION_ERROR_SUM.sub_addr as u32,
-        )));
-        assert!(writes.contains(&(PID_ERROR_PID_POSITION_ERROR_SUM.data.addr(), 0)));
+        assert_eq!(
+            tmc.into_inner().writes,
+            std::vec![
+                (PID_POSITION_P_POSITION_I.addr(), (7u32 << 16) | 9),
+                (
+                    PID_ERROR_PID_POSITION_ERROR_SUM.addr.addr(),
+                    PID_ERROR_PID_POSITION_ERROR_SUM.sub_addr as u32,
+                ),
+                (PID_ERROR_PID_POSITION_ERROR_SUM.data.addr(), 0),
+            ]
+        );
     });
 }
 
