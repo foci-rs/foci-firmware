@@ -2,6 +2,7 @@
 
 pub mod commissioning;
 pub mod events;
+pub mod sampling;
 
 #[cfg(feature = "trace")]
 pub mod pressure;
