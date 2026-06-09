@@ -1,5 +1,7 @@
 //! Structured diagnostic codes emitted before fatal shutdowns when transport is usable.
 
+use core::sync::atomic::{AtomicI32, AtomicU32, Ordering::Relaxed};
+
 /// Fatal fault class carried by `foci_diagnostic`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 #[repr(u8)]
@@ -159,6 +161,302 @@ pub struct StepperExecutionSnapshot {
     pub timer_active: bool,
     /// Current board-local queue length.
     pub queue_len: u16,
+}
+
+struct StepperExecutionCounters {
+    queued_segments: AtomicU32,
+    queued_steps: AtomicU32,
+    loaded_segments: AtomicU32,
+    loaded_steps: AtomicU32,
+    executed_pos_steps: AtomicU32,
+    executed_neg_steps: AtomicU32,
+    activation_count: AtomicU32,
+    last_activation_clock: AtomicU32,
+    activation_loaded_segments: AtomicU32,
+    activation_executed_steps: AtomicU32,
+    first_load_now: AtomicU32,
+    first_load_scheduled: AtomicU32,
+    first_load_compare: AtomicU32,
+    first_load_lead_ticks: AtomicI32,
+    first_load_compare_delay_ticks: AtomicI32,
+    first_step_clock: AtomicU32,
+    first_step_delay_ticks: AtomicI32,
+    discarded_segments: AtomicU32,
+    discarded_steps: AtomicU32,
+    queue_empty_count: AtomicU32,
+    missed_deadline_count: AtomicU32,
+    stop_count: AtomicU32,
+    stop_drained_segments: AtomicU32,
+    stop_drained_steps: AtomicU32,
+    reset_count: AtomicU32,
+    reset_drained_segments: AtomicU32,
+    reset_drained_steps: AtomicU32,
+    last_stop_reason: AtomicU32,
+    last_stop_remaining_events: AtomicU32,
+    last_stop_queue_len: AtomicU32,
+    last_stop_drained_segments: AtomicU32,
+    last_stop_drained_steps: AtomicU32,
+}
+
+impl StepperExecutionCounters {
+    const fn new() -> Self {
+        Self {
+            queued_segments: AtomicU32::new(0),
+            queued_steps: AtomicU32::new(0),
+            loaded_segments: AtomicU32::new(0),
+            loaded_steps: AtomicU32::new(0),
+            executed_pos_steps: AtomicU32::new(0),
+            executed_neg_steps: AtomicU32::new(0),
+            activation_count: AtomicU32::new(0),
+            last_activation_clock: AtomicU32::new(0),
+            activation_loaded_segments: AtomicU32::new(0),
+            activation_executed_steps: AtomicU32::new(0),
+            first_load_now: AtomicU32::new(0),
+            first_load_scheduled: AtomicU32::new(0),
+            first_load_compare: AtomicU32::new(0),
+            first_load_lead_ticks: AtomicI32::new(0),
+            first_load_compare_delay_ticks: AtomicI32::new(0),
+            first_step_clock: AtomicU32::new(0),
+            first_step_delay_ticks: AtomicI32::new(0),
+            discarded_segments: AtomicU32::new(0),
+            discarded_steps: AtomicU32::new(0),
+            queue_empty_count: AtomicU32::new(0),
+            missed_deadline_count: AtomicU32::new(0),
+            stop_count: AtomicU32::new(0),
+            stop_drained_segments: AtomicU32::new(0),
+            stop_drained_steps: AtomicU32::new(0),
+            reset_count: AtomicU32::new(0),
+            reset_drained_segments: AtomicU32::new(0),
+            reset_drained_steps: AtomicU32::new(0),
+            last_stop_reason: AtomicU32::new(0),
+            last_stop_remaining_events: AtomicU32::new(0),
+            last_stop_queue_len: AtomicU32::new(0),
+            last_stop_drained_segments: AtomicU32::new(0),
+            last_stop_drained_steps: AtomicU32::new(0),
+        }
+    }
+}
+
+/// Shared board-agnostic step queue and execution counters.
+///
+/// The counters are diagnostic best-effort views over relaxed atomics. Snapshot
+/// callers may observe fields from different instants while P3 is updating
+/// them; this avoids adding locks or critical sections to the stepper hot path.
+pub struct StepperExecutionStats<const CHANNELS: usize> {
+    counters: [StepperExecutionCounters; CHANNELS],
+}
+
+impl<const CHANNELS: usize> StepperExecutionStats<CHANNELS> {
+    /// Create zeroed execution counters for `CHANNELS` stepper channels.
+    pub const fn new() -> Self {
+        Self {
+            counters: [const { StepperExecutionCounters::new() }; CHANNELS],
+        }
+    }
+
+    fn counters(&self, channel: u8) -> Option<&StepperExecutionCounters> {
+        self.counters.get(channel as usize)
+    }
+
+    /// Record that the board armed the step timer for a new activation.
+    pub fn record_timer_activation(&self, channel: u8, clock: u32) {
+        if let Some(counters) = self.counters(channel) {
+            counters.activation_count.fetch_add(1, Relaxed);
+            counters.last_activation_clock.store(clock, Relaxed);
+            counters.activation_loaded_segments.store(0, Relaxed);
+            counters.activation_executed_steps.store(0, Relaxed);
+            counters.first_load_now.store(0, Relaxed);
+            counters.first_load_scheduled.store(0, Relaxed);
+            counters.first_load_compare.store(0, Relaxed);
+            counters.first_load_lead_ticks.store(0, Relaxed);
+            counters.first_load_compare_delay_ticks.store(0, Relaxed);
+            counters.first_step_clock.store(0, Relaxed);
+            counters.first_step_delay_ticks.store(0, Relaxed);
+        }
+    }
+
+    /// Record an accepted `queue_step` segment.
+    pub fn record_queued_segment(&self, channel: u8, steps: u32) {
+        if let Some(counters) = self.counters(channel) {
+            counters.queued_segments.fetch_add(1, Relaxed);
+            counters.queued_steps.fetch_add(steps, Relaxed);
+        }
+    }
+
+    /// Record a segment loaded by the timer ISR.
+    pub fn record_loaded_segment(&self, channel: u8, steps: u32) {
+        if let Some(counters) = self.counters(channel) {
+            counters.loaded_segments.fetch_add(1, Relaxed);
+            counters.loaded_steps.fetch_add(steps, Relaxed);
+        }
+    }
+
+    /// Record a segment loaded by the timer ISR with scheduling context.
+    pub fn record_loaded_segment_timing(
+        &self,
+        channel: u8,
+        steps: u32,
+        now: u32,
+        scheduled: u32,
+        compare: u32,
+    ) {
+        self.record_loaded_segment(channel, steps);
+        if let Some(counters) = self.counters(channel)
+            && counters.activation_loaded_segments.fetch_add(1, Relaxed) == 0
+        {
+            counters.first_load_now.store(now, Relaxed);
+            counters.first_load_scheduled.store(scheduled, Relaxed);
+            counters.first_load_compare.store(compare, Relaxed);
+            counters
+                .first_load_lead_ticks
+                .store(scheduled.wrapping_sub(now) as i32, Relaxed);
+            counters
+                .first_load_compare_delay_ticks
+                .store(compare.wrapping_sub(now) as i32, Relaxed);
+        }
+    }
+
+    /// Record one executed motor step and first-step timing for the activation.
+    pub fn record_executed_step(&self, channel: u8, forward: bool, clock: u32) {
+        if let Some(counters) = self.counters(channel) {
+            if forward {
+                counters.executed_pos_steps.fetch_add(1, Relaxed);
+            } else {
+                counters.executed_neg_steps.fetch_add(1, Relaxed);
+            }
+            if counters.activation_executed_steps.fetch_add(1, Relaxed) == 0 {
+                let activation_clock = counters.last_activation_clock.load(Relaxed);
+                counters.first_step_clock.store(clock, Relaxed);
+                counters
+                    .first_step_delay_ticks
+                    .store(clock.wrapping_sub(activation_clock) as i32, Relaxed);
+            }
+        }
+    }
+
+    /// Record a `queue_step` segment discarded while awaiting reset.
+    pub fn record_discarded_segment(&self, channel: u8, steps: u32) {
+        if let Some(counters) = self.counters(channel) {
+            counters.discarded_segments.fetch_add(1, Relaxed);
+            counters.discarded_steps.fetch_add(steps, Relaxed);
+        }
+    }
+
+    /// Record a queue-empty step timer stop.
+    pub fn record_queue_empty(&self, channel: u8) {
+        if let Some(counters) = self.counters(channel) {
+            counters.queue_empty_count.fetch_add(1, Relaxed);
+        }
+    }
+
+    /// Record a missed step deadline.
+    pub fn record_missed_deadline(&self, channel: u8) {
+        if let Some(counters) = self.counters(channel) {
+            counters.missed_deadline_count.fetch_add(1, Relaxed);
+        }
+    }
+
+    /// Record a physical stop snapshot before the active segment is reset.
+    pub fn record_physical_stop(
+        &self,
+        channel: u8,
+        reason: StepperEventReason,
+        remaining_events: u32,
+        queue_len: u16,
+        drained_segments: u32,
+        drained_steps: u32,
+    ) {
+        if let Some(counters) = self.counters(channel) {
+            counters.stop_count.fetch_add(1, Relaxed);
+            counters
+                .stop_drained_segments
+                .fetch_add(drained_segments, Relaxed);
+            counters
+                .stop_drained_steps
+                .fetch_add(drained_steps, Relaxed);
+            counters.last_stop_reason.store(reason as u32, Relaxed);
+            counters
+                .last_stop_remaining_events
+                .store(remaining_events, Relaxed);
+            counters
+                .last_stop_queue_len
+                .store(u32::from(queue_len), Relaxed);
+            counters
+                .last_stop_drained_segments
+                .store(drained_segments, Relaxed);
+            counters
+                .last_stop_drained_steps
+                .store(drained_steps, Relaxed);
+        }
+    }
+
+    /// Record an accepted step-clock reset.
+    pub fn record_reset(&self, channel: u8, drained_segments: u32, drained_steps: u32) {
+        if let Some(counters) = self.counters(channel) {
+            counters.reset_count.fetch_add(1, Relaxed);
+            counters
+                .reset_drained_segments
+                .fetch_add(drained_segments, Relaxed);
+            counters
+                .reset_drained_steps
+                .fetch_add(drained_steps, Relaxed);
+        }
+    }
+
+    /// Return a no-motion snapshot of stepper execution counters.
+    pub fn snapshot(
+        &self,
+        channel: u8,
+        position: i32,
+        timer_active: bool,
+        queue_len: u16,
+    ) -> Option<StepperExecutionSnapshot> {
+        self.counters(channel)
+            .map(|counters| StepperExecutionSnapshot {
+                channel,
+                position,
+                queued_segments: counters.queued_segments.load(Relaxed),
+                queued_steps: counters.queued_steps.load(Relaxed),
+                loaded_segments: counters.loaded_segments.load(Relaxed),
+                loaded_steps: counters.loaded_steps.load(Relaxed),
+                executed_pos_steps: counters.executed_pos_steps.load(Relaxed),
+                executed_neg_steps: counters.executed_neg_steps.load(Relaxed),
+                activation_count: counters.activation_count.load(Relaxed),
+                last_activation_clock: counters.last_activation_clock.load(Relaxed),
+                first_load_now: counters.first_load_now.load(Relaxed),
+                first_load_scheduled: counters.first_load_scheduled.load(Relaxed),
+                first_load_compare: counters.first_load_compare.load(Relaxed),
+                first_load_lead_ticks: counters.first_load_lead_ticks.load(Relaxed),
+                first_load_compare_delay_ticks: counters
+                    .first_load_compare_delay_ticks
+                    .load(Relaxed),
+                first_step_clock: counters.first_step_clock.load(Relaxed),
+                first_step_delay_ticks: counters.first_step_delay_ticks.load(Relaxed),
+                discarded_segments: counters.discarded_segments.load(Relaxed),
+                discarded_steps: counters.discarded_steps.load(Relaxed),
+                queue_empty_count: counters.queue_empty_count.load(Relaxed),
+                missed_deadline_count: counters.missed_deadline_count.load(Relaxed),
+                stop_count: counters.stop_count.load(Relaxed),
+                stop_drained_segments: counters.stop_drained_segments.load(Relaxed),
+                stop_drained_steps: counters.stop_drained_steps.load(Relaxed),
+                reset_count: counters.reset_count.load(Relaxed),
+                reset_drained_segments: counters.reset_drained_segments.load(Relaxed),
+                reset_drained_steps: counters.reset_drained_steps.load(Relaxed),
+                last_stop_reason: counters.last_stop_reason.load(Relaxed) as u8,
+                last_stop_remaining_events: counters.last_stop_remaining_events.load(Relaxed),
+                last_stop_queue_len: counters.last_stop_queue_len.load(Relaxed) as u16,
+                last_stop_drained_segments: counters.last_stop_drained_segments.load(Relaxed),
+                last_stop_drained_steps: counters.last_stop_drained_steps.load(Relaxed),
+                timer_active,
+                queue_len,
+            })
+    }
+}
+
+impl<const CHANNELS: usize> Default for StepperExecutionStats<CHANNELS> {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 /// Snapshot of board-local step-dispatch performance counters.
@@ -361,6 +659,126 @@ mod tests {
         assert_eq!(snapshot.last_stop_remaining_events, 61596);
         assert_eq!(snapshot.last_stop_drained_steps, 11_128);
         assert!(!snapshot.timer_active);
+    }
+
+    #[test]
+    fn stepper_execution_stats_tracks_per_channel_motion_and_stop_state() {
+        let stats = StepperExecutionStats::<2>::new();
+
+        stats.record_queued_segment(0, 12);
+        stats.record_queued_segment(0, 8);
+        stats.record_discarded_segment(1, 5);
+        stats.record_loaded_segment(0, 7);
+        stats.record_executed_step(0, true, 1200);
+        stats.record_executed_step(0, false, 1250);
+        stats.record_queue_empty(0);
+        stats.record_missed_deadline(1);
+        stats.record_reset(1, 2, 44);
+        stats.record_physical_stop(1, StepperEventReason::TrsyncStop, 6, 9, 3, 77);
+
+        let channel0 = stats
+            .snapshot(0, -11, true, 4)
+            .expect("channel 0 snapshot exists");
+        assert_eq!(channel0.channel, 0);
+        assert_eq!(channel0.position, -11);
+        assert_eq!(channel0.queued_segments, 2);
+        assert_eq!(channel0.queued_steps, 20);
+        assert_eq!(channel0.loaded_segments, 1);
+        assert_eq!(channel0.loaded_steps, 7);
+        assert_eq!(channel0.executed_pos_steps, 1);
+        assert_eq!(channel0.executed_neg_steps, 1);
+        assert_eq!(channel0.queue_empty_count, 1);
+        assert!(channel0.timer_active);
+        assert_eq!(channel0.queue_len, 4);
+
+        let channel1 = stats
+            .snapshot(1, 33, false, 0)
+            .expect("channel 1 snapshot exists");
+        assert_eq!(channel1.channel, 1);
+        assert_eq!(channel1.position, 33);
+        assert_eq!(channel1.queued_segments, 0);
+        assert_eq!(channel1.discarded_segments, 1);
+        assert_eq!(channel1.discarded_steps, 5);
+        assert_eq!(channel1.missed_deadline_count, 1);
+        assert_eq!(channel1.reset_count, 1);
+        assert_eq!(channel1.reset_drained_segments, 2);
+        assert_eq!(channel1.reset_drained_steps, 44);
+        assert_eq!(channel1.stop_count, 1);
+        assert_eq!(channel1.stop_drained_segments, 3);
+        assert_eq!(channel1.stop_drained_steps, 77);
+        assert_eq!(
+            channel1.last_stop_reason,
+            StepperEventReason::TrsyncStop as u8
+        );
+        assert_eq!(channel1.last_stop_remaining_events, 6);
+        assert_eq!(channel1.last_stop_queue_len, 9);
+        assert_eq!(channel1.last_stop_drained_segments, 3);
+        assert_eq!(channel1.last_stop_drained_steps, 77);
+        assert!(!channel1.timer_active);
+        assert_eq!(channel1.queue_len, 0);
+
+        assert!(stats.snapshot(2, 0, false, 0).is_none());
+        stats.record_queued_segment(2, 99);
+        assert!(stats.snapshot(2, 0, false, 0).is_none());
+    }
+
+    #[test]
+    fn stepper_execution_stats_re_latches_per_activation_timing() {
+        let stats = StepperExecutionStats::<1>::new();
+
+        stats.record_timer_activation(0, 1000);
+        stats.record_loaded_segment_timing(0, 3, 1010, 1030, 1040);
+        stats.record_loaded_segment_timing(0, 4, 1020, 1050, 1060);
+        stats.record_executed_step(0, true, 1070);
+        stats.record_executed_step(0, true, 1080);
+
+        let first = stats
+            .snapshot(0, 0, true, 0)
+            .expect("first activation snapshot exists");
+        assert_eq!(first.activation_count, 1);
+        assert_eq!(first.last_activation_clock, 1000);
+        assert_eq!(first.loaded_segments, 2);
+        assert_eq!(first.loaded_steps, 7);
+        assert_eq!(first.executed_pos_steps, 2);
+        assert_eq!(first.first_load_now, 1010);
+        assert_eq!(first.first_load_scheduled, 1030);
+        assert_eq!(first.first_load_compare, 1040);
+        assert_eq!(first.first_load_lead_ticks, 20);
+        assert_eq!(first.first_load_compare_delay_ticks, 30);
+        assert_eq!(first.first_step_clock, 1070);
+        assert_eq!(first.first_step_delay_ticks, 70);
+
+        stats.record_timer_activation(0, 2000);
+        let reset = stats
+            .snapshot(0, 0, true, 0)
+            .expect("reset activation snapshot exists");
+        assert_eq!(reset.activation_count, 2);
+        assert_eq!(reset.last_activation_clock, 2000);
+        assert_eq!(reset.first_load_now, 0);
+        assert_eq!(reset.first_load_scheduled, 0);
+        assert_eq!(reset.first_load_compare, 0);
+        assert_eq!(reset.first_load_lead_ticks, 0);
+        assert_eq!(reset.first_load_compare_delay_ticks, 0);
+        assert_eq!(reset.first_step_clock, 0);
+        assert_eq!(reset.first_step_delay_ticks, 0);
+
+        stats.record_loaded_segment_timing(0, 5, 2010, 2060, 2075);
+        stats.record_executed_step(0, false, 2090);
+        let second = stats
+            .snapshot(0, 0, true, 0)
+            .expect("second activation snapshot exists");
+        assert_eq!(second.activation_count, 2);
+        assert_eq!(second.loaded_segments, 3);
+        assert_eq!(second.loaded_steps, 12);
+        assert_eq!(second.executed_pos_steps, 2);
+        assert_eq!(second.executed_neg_steps, 1);
+        assert_eq!(second.first_load_now, 2010);
+        assert_eq!(second.first_load_scheduled, 2060);
+        assert_eq!(second.first_load_compare, 2075);
+        assert_eq!(second.first_load_lead_ticks, 50);
+        assert_eq!(second.first_load_compare_delay_ticks, 65);
+        assert_eq!(second.first_step_clock, 2090);
+        assert_eq!(second.first_step_delay_ticks, 90);
     }
 
     #[test]
