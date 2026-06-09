@@ -152,16 +152,40 @@ pub async fn restore_calibrate_gains<B: CommissioningBackend>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::commission_dispatch::test_support::MockBackend;
+    use crate::commission_dispatch::test_support::{MockBackend, SpiOp};
 
     fn tmc_state() -> &'static crate::state::tmc::TmcChannelState {
         crate::state::tmc::tmc_channel0()
     }
 
+    fn write_log(backend: &MockBackend) -> heapless::Vec<(u8, u32), 128> {
+        let write_count = backend
+            .spi_log
+            .iter()
+            .filter(|op| matches!(op, SpiOp::Write(_, _)))
+            .count();
+        let writes = backend
+            .spi_log
+            .iter()
+            .filter_map(|op| {
+                if let SpiOp::Write(addr, val) = op {
+                    Some((*addr, *val))
+                } else {
+                    None
+                }
+            })
+            .collect::<heapless::Vec<_, 128>>();
+        assert_eq!(
+            writes.len(),
+            write_count,
+            "write_log helper capacity truncated the SPI log"
+        );
+        writes
+    }
+
     #[test]
-    fn restore_position_mode_after_outer_writes_six_registers() {
+    fn restore_position_mode_after_outer_writes_exact_sequence() {
         pollster::block_on(async {
-            use crate::commission_dispatch::test_support::SpiOp;
             use foci_tmc4671::registers::*;
             let _guard = crate::commission_dispatch::test_support::SHARED_STATE_MUTEX
                 .lock()
@@ -181,23 +205,26 @@ mod tests {
             let result = restore_position_mode_after_outer(&mut backend, tmc_state(), &outer).await;
             assert!(result.is_ok());
 
-            let writes: heapless::Vec<u8, 32> = backend
-                .spi_log
-                .iter()
-                .filter_map(|op| {
-                    if let SpiOp::Write(a, _) = op {
-                        Some(*a)
-                    } else {
-                        None
-                    }
-                })
-                .collect();
-            assert!(writes.contains(&PID_VELOCITY_P_VELOCITY_I.addr()));
-            assert!(writes.contains(&PID_POSITION_P_POSITION_I.addr()));
-            assert!(writes.contains(&PID_VELOCITY_LIMIT.addr()));
-            assert!(writes.contains(&PID_TORQUE_FLUX_LIMITS.addr()));
-            assert!(writes.contains(&PIDOUT_UQ_UD_LIMITS.addr()));
-            assert!(writes.contains(&MODE_RAMP_MODE_MOTION.addr()));
+            let (velocity_reg, position_reg) = crate::pid::OuterLoopGains {
+                position_p: outer.position_p,
+                position_i: outer.position_i,
+                velocity_p: outer.velocity_p,
+                velocity_i: outer.velocity_i,
+            }
+            .to_registers();
+            assert_eq!(
+                write_log(&backend).as_slice(),
+                &[
+                    (PID_VELOCITY_P_VELOCITY_I.addr(), velocity_reg),
+                    (PID_POSITION_P_POSITION_I.addr(), position_reg),
+                    (PID_VELOCITY_LIMIT.addr(), outer.velocity_limit),
+                    (PID_TORQUE_FLUX_LIMITS.addr(), 0x0010_0010),
+                    (PIDOUT_UQ_UD_LIMITS.addr(), 1024),
+                    (PID_POSITION_ACTUAL.addr(), 0),
+                    (PID_POSITION_TARGET.addr(), 1234 * 50),
+                    (MODE_RAMP_MODE_MOTION.addr(), 0x8000_0003),
+                ]
+            );
 
             // Cleanup atomics.
             tmc_state()
@@ -256,64 +283,94 @@ mod tests {
     #[test]
     fn restore_calibrate_gains_writes_all_gains_when_stored_present() {
         pollster::block_on(async {
-            use crate::commission_dispatch::test_support::SpiOp;
+            use core::sync::atomic::Ordering::Relaxed;
             use foci_tmc4671::registers::*;
             let _guard = crate::commission_dispatch::test_support::SHARED_STATE_MUTEX
                 .lock()
                 .await;
             let mut backend = MockBackend::new();
-            let stored = Some(crate::pid::InnerLoopGains {
+            tmc_state().velocity_p_value.store(111, Relaxed);
+            tmc_state().velocity_i_value.store(22, Relaxed);
+            tmc_state().position_p_value.store(333, Relaxed);
+            tmc_state().position_i_value.store(44, Relaxed);
+            tmc_state().velocity_limit_cfg.store(555_000, Relaxed);
+            tmc_state().current_limit_reg.store(0x0020_0030, Relaxed);
+            let stored_gains = crate::pid::InnerLoopGains {
                 flux_p: 100,
                 flux_i: 10,
                 torque_p: 200,
                 torque_i: 20,
-            });
-            let result = restore_calibrate_gains(&mut backend, tmc_state(), stored).await;
+            };
+            let (flux_reg, torque_reg) = stored_gains.to_registers();
+            let result =
+                restore_calibrate_gains(&mut backend, tmc_state(), Some(stored_gains)).await;
             assert!(result.is_ok());
-            let writes: heapless::Vec<u8, 32> = backend
-                .spi_log
-                .iter()
-                .filter_map(|op| {
-                    if let SpiOp::Write(a, _) = op {
-                        Some(*a)
-                    } else {
-                        None
-                    }
-                })
-                .collect();
-            assert!(writes.contains(&PID_FLUX_P_FLUX_I.addr()));
-            assert!(writes.contains(&PID_TORQUE_P_TORQUE_I.addr()));
-            assert!(writes.contains(&PID_VELOCITY_P_VELOCITY_I.addr()));
-            assert!(writes.contains(&PID_POSITION_P_POSITION_I.addr()));
-            assert!(writes.contains(&PID_VELOCITY_LIMIT.addr()));
-            assert!(writes.contains(&PID_TORQUE_FLUX_LIMITS.addr()));
+            let (velocity_reg, position_reg) = crate::pid::OuterLoopGains {
+                position_p: 333,
+                position_i: 44,
+                velocity_p: 111,
+                velocity_i: 22,
+            }
+            .to_registers();
+            assert_eq!(
+                write_log(&backend).as_slice(),
+                &[
+                    (PID_FLUX_P_FLUX_I.addr(), flux_reg),
+                    (PID_TORQUE_P_TORQUE_I.addr(), torque_reg),
+                    (PID_VELOCITY_P_VELOCITY_I.addr(), velocity_reg),
+                    (PID_POSITION_P_POSITION_I.addr(), position_reg),
+                    (PID_VELOCITY_LIMIT.addr(), 555_000),
+                    (PID_TORQUE_FLUX_LIMITS.addr(), 0x0020_0030),
+                ]
+            );
+            tmc_state().velocity_p_value.store(0, Relaxed);
+            tmc_state().velocity_i_value.store(0, Relaxed);
+            tmc_state().position_p_value.store(0, Relaxed);
+            tmc_state().position_i_value.store(0, Relaxed);
+            tmc_state().velocity_limit_cfg.store(0, Relaxed);
+            tmc_state().current_limit_reg.store(0, Relaxed);
         });
     }
 
     #[test]
     fn restore_calibrate_gains_skips_inner_when_stored_none() {
         pollster::block_on(async {
-            use crate::commission_dispatch::test_support::SpiOp;
+            use core::sync::atomic::Ordering::Relaxed;
             use foci_tmc4671::registers::*;
             let _guard = crate::commission_dispatch::test_support::SHARED_STATE_MUTEX
                 .lock()
                 .await;
             let mut backend = MockBackend::new();
+            tmc_state().velocity_p_value.store(211, Relaxed);
+            tmc_state().velocity_i_value.store(33, Relaxed);
+            tmc_state().position_p_value.store(377, Relaxed);
+            tmc_state().position_i_value.store(55, Relaxed);
+            tmc_state().velocity_limit_cfg.store(666_000, Relaxed);
+            tmc_state().current_limit_reg.store(0x0040_0050, Relaxed);
             let result = restore_calibrate_gains(&mut backend, tmc_state(), None).await;
             assert!(result.is_ok());
-            let writes: heapless::Vec<u8, 32> = backend
-                .spi_log
-                .iter()
-                .filter_map(|op| {
-                    if let SpiOp::Write(a, _) = op {
-                        Some(*a)
-                    } else {
-                        None
-                    }
-                })
-                .collect();
-            assert!(!writes.contains(&PID_FLUX_P_FLUX_I.addr()));
-            assert!(writes.contains(&PID_VELOCITY_P_VELOCITY_I.addr()));
+            let (velocity_reg, position_reg) = crate::pid::OuterLoopGains {
+                position_p: 377,
+                position_i: 55,
+                velocity_p: 211,
+                velocity_i: 33,
+            }
+            .to_registers();
+            assert_eq!(
+                write_log(&backend).as_slice(),
+                &[
+                    (PID_VELOCITY_P_VELOCITY_I.addr(), velocity_reg),
+                    (PID_POSITION_P_POSITION_I.addr(), position_reg),
+                    (PID_VELOCITY_LIMIT.addr(), 666_000),
+                    (PID_TORQUE_FLUX_LIMITS.addr(), 0x0040_0050),
+                ]
+            );
+            tmc_state().velocity_p_value.store(0, Relaxed);
+            tmc_state().velocity_i_value.store(0, Relaxed);
+            tmc_state().position_p_value.store(0, Relaxed);
+            tmc_state().position_i_value.store(0, Relaxed);
+            tmc_state().velocity_limit_cfg.store(0, Relaxed);
+            tmc_state().current_limit_reg.store(0, Relaxed);
         });
     }
 }
