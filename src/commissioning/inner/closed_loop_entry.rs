@@ -544,8 +544,8 @@ mod tests {
     use crate::commission_dispatch::test_support::{MockBackend, SpiOp};
     use foci_tmc4671::registers::{
         ABN_DECODER_PPR, ADC_I_SELECT, MODE_RAMP_MODE_MOTION, MOTOR_TYPE_N_POLE_PAIRS,
-        PHI_E_SELECTION, PID_TORQUE_FLUX_LIMITS, PIDOUT_UQ_UD_LIMITS, POSITION_SELECTION,
-        PWM_SV_CHOP, STEP_WIDTH, VELOCITY_SELECTION,
+        PHI_E_SELECTION, PID_TORQUE_FLUX_LIMITS, PID_VELOCITY_LIMIT, PIDOUT_UQ_UD_LIMITS,
+        POSITION_SELECTION, PWM_SV_CHOP, STEP_WIDTH, VELOCITY_SELECTION,
     };
 
     fn closed_loop_phase_at(state: ClosedLoopEntryState) -> InnerPhase {
@@ -592,6 +592,31 @@ mod tests {
         }
     }
 
+    fn write_log(backend: &MockBackend) -> heapless::Vec<(u8, u32), 128> {
+        let write_count = backend
+            .spi_log
+            .iter()
+            .filter(|op| matches!(op, SpiOp::Write(_, _)))
+            .count();
+        let writes = backend
+            .spi_log
+            .iter()
+            .filter_map(|op| {
+                if let SpiOp::Write(addr, val) = op {
+                    Some((*addr, *val))
+                } else {
+                    None
+                }
+            })
+            .collect::<heapless::Vec<_, 128>>();
+        assert_eq!(
+            writes.len(),
+            write_count,
+            "write_log helper capacity truncated the SPI log"
+        );
+        writes
+    }
+
     #[test]
     fn write_position_config_programs_selection_registers() {
         pollster::block_on(async {
@@ -616,18 +641,14 @@ mod tests {
                     ..
                 }
             ));
-            assert!(backend.spi_log.iter().any(|op| matches!(
-                op,
-                SpiOp::Write(addr, 0x0000_0109) if *addr == VELOCITY_SELECTION.addr()
-            )));
-            assert!(backend.spi_log.iter().any(|op| matches!(
-                op,
-                SpiOp::Write(addr, 9) if *addr == POSITION_SELECTION.addr()
-            )));
-            assert!(backend.spi_log.iter().any(|op| matches!(
-                op,
-                SpiOp::Write(addr, 16) if *addr == STEP_WIDTH.addr()
-            )));
+            assert_eq!(
+                write_log(&backend).as_slice(),
+                &[
+                    (VELOCITY_SELECTION.addr(), 0x0000_0109),
+                    (POSITION_SELECTION.addr(), 9),
+                    (STEP_WIDTH.addr(), 16),
+                ]
+            );
         });
     }
 
@@ -648,10 +669,28 @@ mod tests {
             .await;
 
             assert!(matches!(result, StepResult::Continue));
-            assert!(backend.spi_log.iter().any(|op| matches!(
-                op,
-                SpiOp::Write(addr, 20_000) if *addr == PIDOUT_UQ_UD_LIMITS.addr()
-            )));
+            assert_eq!(
+                write_log(&backend).as_slice(),
+                &[
+                    (PID_VELOCITY_LIMIT.addr(), 500_000),
+                    (PIDOUT_UQ_UD_LIMITS.addr(), 20_000),
+                ]
+            );
+            assert_eq!(
+                backend
+                    .spi_log
+                    .iter()
+                    .filter(|op| matches!(op, SpiOp::Read))
+                    .count(),
+                1
+            );
+            assert!(matches!(
+                phase,
+                InnerPhase::ClosedLoopEntry {
+                    state: ClosedLoopEntryState::VerifyPhiE,
+                    ..
+                }
+            ));
         });
     }
 
