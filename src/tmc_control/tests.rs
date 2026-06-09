@@ -652,7 +652,10 @@ fn split_commissioning_tick_maps_continue_without_consuming_engine() {
             .await
             .expect("engine should still be active for dispatch");
 
-        assert!(matches!(action, CommissionTickAction::Continue));
+        assert!(
+            matches!(action, CommissionTickAction::Continue),
+            "expected split commissioning dispatch to preserve Continue outcome"
+        );
         assert!(runtime.is_commission_active());
     });
 }
@@ -723,6 +726,38 @@ fn config_reset_channel_state_restores_known_defaults() {
 }
 
 #[test]
+fn queue_flush_without_signal_does_not_mutate_state() {
+    let shutdown_active = AtomicBool::new(false);
+    let queue_flush = AtomicBool::new(false);
+    let fault_active = AtomicBool::new(true);
+    let disable_signal = Signal::<CriticalSectionRawMutex, ()>::new();
+    let signals = TmcControlSignals::new(
+        &shutdown_active,
+        &queue_flush,
+        &fault_active,
+        &disable_signal,
+    );
+    let tmc = crate::state::tmc::TmcChannelState::new();
+    let stepper = crate::state::stepper::StepperChannelState::new();
+    let mut runtime = TmcControlRuntime::new_for_channel(0);
+
+    runtime.set_calibrated_for_test(true);
+    runtime.set_motor_enabled_for_test(true);
+    tmc.current_limit_reg.store(88, Relaxed);
+    stepper.position.store(55, Relaxed);
+
+    let actions = runtime.poll_queue_flush(&signals, &tmc, &stepper);
+
+    assert_no_actions(&actions);
+    assert!(!queue_flush.load(Relaxed));
+    assert!(runtime.is_calibrated());
+    assert!(runtime.is_motor_enabled());
+    assert_eq!(tmc.current_limit_reg.load(Relaxed), 88);
+    assert_eq!(stepper.position.load(Relaxed), 55);
+    assert!(fault_active.load(Relaxed));
+}
+
+#[test]
 fn queue_flush_signal_resets_runtime_and_channel_state() {
     let shutdown_active = AtomicBool::new(false);
     let queue_flush = AtomicBool::new(false);
@@ -752,11 +787,7 @@ fn queue_flush_signal_resets_runtime_and_channel_state() {
     assert_eq!(tmc.current_limit_reg.load(Relaxed), 0);
     assert_eq!(stepper.position.load(Relaxed), 0);
     assert!(!fault_active.load(Relaxed));
-    assert!(
-        actions
-            .iter()
-            .any(|a| { matches!(a, BoardAction::Stepper(StepperAction::StopNow)) })
-    );
+    assert_single_stop_now(&actions);
 }
 
 #[test]
