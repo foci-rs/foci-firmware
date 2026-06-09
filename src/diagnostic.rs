@@ -947,6 +947,60 @@ pub struct StepperPerfDiagnosticEvent {
     pub snapshot: StepperPerfSnapshot,
 }
 
+/// Bounded FIFO diagnostic queue with oldest-drop overflow policy.
+///
+/// This type owns only pure queue behavior. Board crates own the static
+/// storage, critical sections, task spawning, and reply emission around it.
+pub struct StepperDiagnosticQueue<T, const N: usize> {
+    queue: heapless::Deque<T, N>,
+}
+
+impl<T, const N: usize> StepperDiagnosticQueue<T, N> {
+    /// Create an empty queue.
+    pub const fn new() -> Self {
+        Self {
+            queue: heapless::Deque::new(),
+        }
+    }
+
+    /// Push a new event, dropping the oldest retained event on overflow.
+    pub fn push_drop_oldest(&mut self, event: T) {
+        if self.queue.is_full() {
+            let _ = self.queue.pop_front();
+        }
+        let _ = self.queue.push_back(event);
+    }
+
+    /// Pop the oldest retained event.
+    pub fn pop(&mut self) -> Option<T> {
+        self.queue.pop_front()
+    }
+
+    /// Return the number of retained events.
+    pub fn len(&self) -> usize {
+        self.queue.len()
+    }
+
+    /// Return true when no events are retained.
+    pub fn is_empty(&self) -> bool {
+        self.queue.is_empty()
+    }
+}
+
+impl<T, const N: usize> Default for StepperDiagnosticQueue<T, N> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Return true when a stepper runtime event should also carry a perf snapshot.
+pub const fn stepper_event_pairs_perf_snapshot(reason: StepperEventReason) -> bool {
+    matches!(
+        reason,
+        StepperEventReason::MissedDeadlineLoad | StepperEventReason::MissedDeadlineStep
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -967,6 +1021,73 @@ mod tests {
         assert_eq!(operation::TMC_CONTROL, 4);
         assert_eq!(operation::STEPPER_STOP, 5);
         assert_eq!(operation::STEPPER_LOOKUP, 6);
+    }
+
+    #[test]
+    fn stepper_diagnostic_queue_preserves_fifo_order() {
+        let mut queue = StepperDiagnosticQueue::<u8, 4>::new();
+
+        queue.push_drop_oldest(10);
+        queue.push_drop_oldest(11);
+        queue.push_drop_oldest(12);
+
+        assert_eq!(queue.len(), 3);
+        assert_eq!(queue.pop(), Some(10));
+        assert_eq!(queue.pop(), Some(11));
+        assert_eq!(queue.pop(), Some(12));
+        assert_eq!(queue.pop(), None);
+        assert!(queue.is_empty());
+    }
+
+    #[test]
+    fn stepper_diagnostic_queue_drops_oldest_when_full() {
+        let mut queue = StepperDiagnosticQueue::<u8, 3>::new();
+
+        queue.push_drop_oldest(1);
+        queue.push_drop_oldest(2);
+        queue.push_drop_oldest(3);
+        queue.push_drop_oldest(4);
+        queue.push_drop_oldest(5);
+
+        assert_eq!(queue.len(), 3);
+        assert_eq!(queue.pop(), Some(3));
+        assert_eq!(queue.pop(), Some(4));
+        assert_eq!(queue.pop(), Some(5));
+        assert_eq!(queue.pop(), None);
+    }
+
+    #[test]
+    fn stepper_diagnostic_queue_empty_pop_returns_none() {
+        let mut queue = StepperDiagnosticQueue::<u8, 2>::new();
+
+        assert_eq!(queue.pop(), None);
+        assert!(queue.is_empty());
+        assert_eq!(queue.len(), 0);
+    }
+
+    #[test]
+    fn stepper_event_pairs_perf_snapshot_only_for_deadline_reasons() {
+        assert!(!stepper_event_pairs_perf_snapshot(
+            StepperEventReason::QueueEmpty
+        ));
+        assert!(stepper_event_pairs_perf_snapshot(
+            StepperEventReason::MissedDeadlineLoad
+        ));
+        assert!(stepper_event_pairs_perf_snapshot(
+            StepperEventReason::MissedDeadlineStep
+        ));
+        assert!(!stepper_event_pairs_perf_snapshot(
+            StepperEventReason::TrsyncStop
+        ));
+        assert!(!stepper_event_pairs_perf_snapshot(
+            StepperEventReason::P1Stop
+        ));
+        assert!(!stepper_event_pairs_perf_snapshot(
+            StepperEventReason::ResetStepClock
+        ));
+        assert!(!stepper_event_pairs_perf_snapshot(
+            StepperEventReason::TmcDisableSignal
+        ));
     }
 
     #[test]
