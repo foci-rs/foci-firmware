@@ -948,6 +948,43 @@ impl TmcControlRuntime {
         }
     }
 
+    /// Restore the ABN phase-offset register through a commissioning backend.
+    ///
+    /// This has the same retry-state semantics as [`Self::restore_phase_advance_now`],
+    /// but writes through [`crate::commissioning::CommissionRegisterIo`] so
+    /// shared lifecycle helpers can restore phase advance while holding a
+    /// board backend.
+    pub async fn restore_phase_advance_via_backend<B>(&mut self, backend: &mut B) -> bool
+    where
+        B: crate::commissioning::CommissionRegisterIo,
+    {
+        if !self.phase_advance_was_active {
+            return true;
+        }
+
+        match backend
+            .write_register(
+                foci_tmc4671::registers::ABN_DECODER_PHI_E_PHI_M_OFFSET,
+                self.phase_advance_base_register,
+            )
+            .await
+        {
+            Ok(()) => {
+                self.mark_phase_advance_restored();
+                true
+            }
+            Err(_) => {
+                #[cfg(feature = "trace")]
+                {
+                    let trace = self.trace_state_mut();
+                    trace.phase_advance_write_failed = true;
+                    trace.phase_advance_emit_once = true;
+                }
+                false
+            }
+        }
+    }
+
     /// Apply slow phase-advance and position-lead tick work.
     ///
     /// The caller must pass the single consumed feedforward-reset latch used by

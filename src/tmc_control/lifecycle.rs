@@ -86,6 +86,30 @@ pub async fn disarm_motor<B: CommissioningBackend>(backend: &mut B, state: &mut 
     *state.motor_enabled = false;
 }
 
+/// Apply the shared shutdown safe-state policy for one TMC channel.
+///
+/// Stops any active commissioning engine, restores phase advance before
+/// disarming, then de-energizes the motor through [`disarm_motor`].
+///
+/// Returns `true` when the phase-advance restore either was unnecessary or
+/// succeeded. Returns `false` when restore failed; callers should keep retrying
+/// this helper while shutdown remains active.
+pub async fn apply_shutdown_safe_state<B: CommissioningBackend>(
+    runtime: &mut crate::tmc_control::TmcControlRuntime,
+    backend: &mut B,
+    tmc: &'static crate::state::tmc::TmcChannelState,
+    stepper: &'static crate::state::stepper::StepperChannelState,
+) -> bool {
+    runtime.take_commission_engine();
+    let phase_advance_restored = runtime.restore_phase_advance_via_backend(backend).await;
+    if !phase_advance_restored {
+        defmt::warn!("phase advance: failed to restore ABN offset on shutdown");
+    }
+    let mut state = runtime.dispatch_state(tmc, stepper);
+    disarm_motor(backend, &mut state).await;
+    phase_advance_restored
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -251,6 +275,90 @@ mod tests {
             tmc_state()
                 .motor_sentinel
                 .store(0, core::sync::atomic::Ordering::Relaxed);
+        });
+    }
+
+    #[test]
+    fn shutdown_safe_state_restores_phase_advance_and_disarms() {
+        pollster::block_on(async {
+            use core::sync::atomic::Ordering;
+
+            let _guard = crate::commission_dispatch::test_support::SHARED_STATE_MUTEX
+                .lock()
+                .await;
+            let mut runtime = crate::tmc_control::TmcControlRuntime::new_for_channel(0);
+            runtime.set_phase_advance_for_test(true, 0x1111_2222, 0x3333_4444);
+            let mut backend = MockBackend::new();
+            {
+                let state = runtime.dispatch_state(
+                    crate::state::tmc::tmc_channel0(),
+                    crate::state::stepper::stepper_channel0(),
+                );
+                *state.calibrated = true;
+                *state.motor_enabled = true;
+            }
+            tmc_state().motor_armed.store(true, Ordering::Relaxed);
+
+            let complete = apply_shutdown_safe_state(
+                &mut runtime,
+                &mut backend,
+                crate::state::tmc::tmc_channel0(),
+                crate::state::stepper::stepper_channel0(),
+            )
+            .await;
+
+            assert!(complete);
+            assert!(!runtime.phase_advance_active_for_test());
+            assert_eq!(runtime.phase_advance_last_register_for_test(), 0x1111_2222);
+            assert_eq!(
+                backend
+                    .registers
+                    .get(&foci_tmc4671::registers::ABN_DECODER_PHI_E_PHI_M_OFFSET.addr()),
+                Some(&0x1111_2222)
+            );
+            assert!(!tmc_state().motor_armed.load(Ordering::Relaxed));
+            assert!(!runtime.is_calibrated());
+            assert!(!runtime.is_motor_enabled());
+        });
+    }
+
+    #[test]
+    fn shutdown_safe_state_reports_incomplete_when_phase_restore_fails() {
+        pollster::block_on(async {
+            use core::sync::atomic::Ordering;
+
+            let _guard = crate::commission_dispatch::test_support::SHARED_STATE_MUTEX
+                .lock()
+                .await;
+            let mut runtime = crate::tmc_control::TmcControlRuntime::new_for_channel(0);
+            runtime.set_phase_advance_for_test(true, 0x1111_2222, 0x3333_4444);
+            let mut backend = MockBackend::new();
+            backend.fail_on_write =
+                Some(foci_tmc4671::registers::ABN_DECODER_PHI_E_PHI_M_OFFSET.addr());
+            {
+                let state = runtime.dispatch_state(
+                    crate::state::tmc::tmc_channel0(),
+                    crate::state::stepper::stepper_channel0(),
+                );
+                *state.calibrated = true;
+                *state.motor_enabled = true;
+            }
+            tmc_state().motor_armed.store(true, Ordering::Relaxed);
+
+            let complete = apply_shutdown_safe_state(
+                &mut runtime,
+                &mut backend,
+                crate::state::tmc::tmc_channel0(),
+                crate::state::stepper::stepper_channel0(),
+            )
+            .await;
+
+            assert!(!complete);
+            assert!(runtime.phase_advance_active_for_test());
+            assert_eq!(runtime.phase_advance_last_register_for_test(), 0x3333_4444);
+            assert!(!tmc_state().motor_armed.load(Ordering::Relaxed));
+            assert!(!runtime.is_calibrated());
+            assert!(!runtime.is_motor_enabled());
         });
     }
 }

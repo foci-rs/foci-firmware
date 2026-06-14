@@ -1901,6 +1901,53 @@ fn phase_advance_restore_now_failure_preserves_retry_state() {
 }
 
 #[test]
+fn phase_advance_restore_via_backend_writes_base_and_clears_active_state() {
+    pollster::block_on(async {
+        let mut runtime = TmcControlRuntime::new_for_channel(0);
+        runtime.set_phase_advance_for_test(true, 0x1111_2222, 0x3333_4444);
+        let mut backend = MockBackend::new();
+
+        let restored = runtime
+            .restore_phase_advance_via_backend(&mut backend)
+            .await;
+
+        assert!(restored);
+        assert!(!runtime.phase_advance_active_for_test());
+        assert_eq!(runtime.phase_advance_last_register_for_test(), 0x1111_2222);
+        assert_eq!(
+            backend
+                .registers
+                .get(&ABN_DECODER_PHI_E_PHI_M_OFFSET.addr()),
+            Some(&0x1111_2222)
+        );
+    });
+}
+
+#[test]
+fn phase_advance_restore_via_backend_failure_preserves_retry_state() {
+    pollster::block_on(async {
+        let mut runtime = TmcControlRuntime::new_for_channel(0);
+        runtime.set_phase_advance_for_test(true, 0x1111_2222, 0x3333_4444);
+        let mut backend = MockBackend::new();
+        backend.fail_on_write = Some(ABN_DECODER_PHI_E_PHI_M_OFFSET.addr());
+
+        let restored = runtime
+            .restore_phase_advance_via_backend(&mut backend)
+            .await;
+
+        assert!(!restored);
+        assert!(runtime.phase_advance_active_for_test());
+        assert_eq!(runtime.phase_advance_last_register_for_test(), 0x3333_4444);
+        assert_eq!(
+            backend
+                .registers
+                .get(&ABN_DECODER_PHI_E_PHI_M_OFFSET.addr()),
+            None
+        );
+    });
+}
+
+#[test]
 fn phase_advance_tick_snapshots_base_and_writes_adjusted_offset() {
     pollster::block_on(async {
         let mut runtime = TmcControlRuntime::new_for_channel(0);
