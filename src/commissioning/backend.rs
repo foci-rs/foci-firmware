@@ -5,7 +5,11 @@
 //! surface explicit and allow later helpers to depend on narrower behavior
 //! without changing board semantics.
 
+use core::convert::Infallible;
+use core::marker::PhantomData;
+
 use crate::config::TmcConfig;
+use embedded_hal::digital::OutputPin;
 use embedded_hal_async::spi::{ErrorType, SpiDevice};
 use foci_tmc4671::registers::{ABN_DECODER_COUNT, Register};
 use foci_tmc4671::spi::{SpiError, Tmc4671Spi};
@@ -198,6 +202,128 @@ pub trait CommissionTraceAccess {
     }
 }
 
+/// Board-specific hooks used by [`SharedCommissioningBackend`].
+#[allow(async_fn_in_trait)]
+pub trait CommissionBackendHooks {
+    /// Board-specific TMC4671 configuration.
+    fn commission_tmc_config() -> &'static TmcConfig;
+
+    /// Microseconds elapsed since the board monotonic epoch.
+    fn commission_elapsed_us() -> u64;
+
+    /// Whether a shutdown has been requested.
+    fn commission_is_shutdown_requested() -> bool;
+
+    /// Cooperative microsecond delay.
+    async fn commission_delay_us(us: u32);
+
+    /// Record a transport-neutral commissioning trace event.
+    fn record_commission_trace_event(
+        _channel: u8,
+        _event: crate::trace::events::CommissionTraceEvent,
+    ) {
+    }
+}
+
+/// Shared production commissioning backend core used by board crates.
+pub struct SharedCommissioningBackend<'a, Spi, Pin, Hooks> {
+    channel: u8,
+    tmc: &'a mut Tmc4671Spi<Spi>,
+    enable_pin: &'a mut Pin,
+    tmc_state: &'static crate::state::tmc::TmcChannelState,
+    _hooks: PhantomData<fn() -> Hooks>,
+}
+
+impl<'a, Spi, Pin, Hooks> SharedCommissioningBackend<'a, Spi, Pin, Hooks> {
+    /// Create a shared commissioning backend from board-owned hardware handles.
+    #[must_use]
+    pub fn new(
+        channel: u8,
+        tmc: &'a mut Tmc4671Spi<Spi>,
+        enable_pin: &'a mut Pin,
+        tmc_state: &'static crate::state::tmc::TmcChannelState,
+    ) -> Self {
+        Self {
+            channel,
+            tmc,
+            enable_pin,
+            tmc_state,
+            _hooks: PhantomData,
+        }
+    }
+}
+
+impl<'a, Spi, Pin, Hooks> CommissionTmcSpiAccess for SharedCommissioningBackend<'a, Spi, Pin, Hooks>
+where
+    Spi: SpiDevice<u8>,
+{
+    type Spi = Spi;
+
+    fn tmc_spi(&mut self) -> &mut Tmc4671Spi<Self::Spi> {
+        self.tmc
+    }
+}
+
+impl<'a, Spi, Pin, Hooks> CommissionTmcStateAccess
+    for SharedCommissioningBackend<'a, Spi, Pin, Hooks>
+{
+    fn tmc_state(&self) -> &'static crate::state::tmc::TmcChannelState {
+        self.tmc_state
+    }
+}
+
+impl<'a, Spi, Pin, Hooks> CommissionEnablePinAccess
+    for SharedCommissioningBackend<'a, Spi, Pin, Hooks>
+where
+    Pin: OutputPin<Error = Infallible>,
+{
+    fn set_commission_enable_pin(&mut self, state: bool) {
+        if state {
+            let _ = self.enable_pin.set_high();
+        } else {
+            let _ = self.enable_pin.set_low();
+        }
+    }
+}
+
+impl<'a, Spi, Pin, Hooks> CommissionConfigAccess for SharedCommissioningBackend<'a, Spi, Pin, Hooks>
+where
+    Hooks: CommissionBackendHooks,
+{
+    fn commission_tmc_config(&self) -> &'static TmcConfig {
+        Hooks::commission_tmc_config()
+    }
+}
+
+impl<'a, Spi, Pin, Hooks> CommissionTimingAccess for SharedCommissioningBackend<'a, Spi, Pin, Hooks>
+where
+    Hooks: CommissionBackendHooks,
+{
+    fn commission_elapsed_us(&self) -> u64 {
+        Hooks::commission_elapsed_us()
+    }
+
+    fn commission_is_shutdown_requested(&self) -> bool {
+        Hooks::commission_is_shutdown_requested()
+    }
+
+    async fn commission_delay_us(&mut self, us: u32) {
+        Hooks::commission_delay_us(us).await;
+    }
+}
+
+impl<'a, Spi, Pin, Hooks> CommissionTraceAccess for SharedCommissioningBackend<'a, Spi, Pin, Hooks>
+where
+    Hooks: CommissionBackendHooks,
+{
+    fn record_commission_trace_event_impl(
+        &mut self,
+        event: crate::trace::events::CommissionTraceEvent,
+    ) {
+        Hooks::record_commission_trace_event(self.channel, event);
+    }
+}
+
 impl<T> CommissionRegisterIo for T
 where
     T: CommissionTmcSpiAccess,
@@ -362,4 +488,204 @@ impl<T> CommissioningBackend for T where
         + CommissionBoardConfig
         + CommissionTrace
 {
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use core::convert::Infallible;
+    use core::sync::atomic::{
+        AtomicBool, AtomicU8, AtomicU16, AtomicU32, AtomicU64, Ordering::Relaxed,
+    };
+
+    use embedded_hal_async::spi::Operation;
+    use foci_tmc4671::registers::PID_POSITION_TARGET;
+    use std::sync::Mutex;
+    use std::vec::Vec;
+
+    use crate::commissioning::types::EngineKind;
+    use crate::trace::events::{
+        CommissionTraceEvent, EVENT_COMMISSION_DIAGNOSTIC_WARNING, TraceEventLevel,
+    };
+
+    static TEST_LOCK: Mutex<()> = Mutex::new(());
+    static TEST_TMC_STATE: crate::state::tmc::TmcChannelState =
+        crate::state::tmc::TmcChannelState::new();
+    static TEST_CONFIG: TmcConfig = TmcConfig {
+        pwm_maxcnt: 3999,
+        tmc_clock_hz: 25_000_000,
+        bbm_h: 10,
+        bbm_l: 10,
+        dsadc_mdec_a: 331,
+        dsadc_mdec_b: 331,
+        adc_i_select: 0x1800_0100,
+        excitation_voltage: 512,
+        didt_cycles: 5000,
+        bandwidth_hz: 50.0,
+    };
+    static ELAPSED_US: AtomicU64 = AtomicU64::new(0);
+    static SHUTDOWN_REQUESTED: AtomicBool = AtomicBool::new(false);
+    static LAST_DELAY_US: AtomicU32 = AtomicU32::new(0);
+    static LAST_TRACE_CHANNEL: AtomicU8 = AtomicU8::new(u8::MAX);
+    static LAST_TRACE_EVENT_ID: AtomicU16 = AtomicU16::new(0);
+
+    #[derive(Default)]
+    struct RecordingSpi {
+        writes: Vec<(u8, u32)>,
+    }
+
+    impl embedded_hal_async::spi::ErrorType for RecordingSpi {
+        type Error = Infallible;
+    }
+
+    impl embedded_hal_async::spi::SpiDevice<u8> for RecordingSpi {
+        async fn transaction(
+            &mut self,
+            operations: &mut [Operation<'_, u8>],
+        ) -> Result<(), Self::Error> {
+            for operation in operations {
+                match operation {
+                    Operation::Write(buf) if buf.len() == 5 && (buf[0] & 0x80) != 0 => {
+                        let addr = buf[0] & 0x7F;
+                        let value = u32::from_be_bytes([buf[1], buf[2], buf[3], buf[4]]);
+                        self.writes.push((addr, value));
+                    }
+                    Operation::Read(buf) => {
+                        buf.fill(0);
+                    }
+                    _ => {}
+                }
+            }
+            Ok(())
+        }
+    }
+
+    #[derive(Default)]
+    struct RecordingPin {
+        is_high: bool,
+    }
+
+    impl embedded_hal::digital::ErrorType for RecordingPin {
+        type Error = Infallible;
+    }
+
+    impl embedded_hal::digital::OutputPin for RecordingPin {
+        fn set_low(&mut self) -> Result<(), Self::Error> {
+            self.is_high = false;
+            Ok(())
+        }
+
+        fn set_high(&mut self) -> Result<(), Self::Error> {
+            self.is_high = true;
+            Ok(())
+        }
+    }
+
+    struct RecordingHooks;
+
+    impl CommissionBackendHooks for RecordingHooks {
+        fn commission_tmc_config() -> &'static TmcConfig {
+            &TEST_CONFIG
+        }
+
+        fn commission_elapsed_us() -> u64 {
+            ELAPSED_US.load(Relaxed)
+        }
+
+        fn commission_is_shutdown_requested() -> bool {
+            SHUTDOWN_REQUESTED.load(Relaxed)
+        }
+
+        async fn commission_delay_us(us: u32) {
+            LAST_DELAY_US.store(us, Relaxed);
+        }
+
+        fn record_commission_trace_event(channel: u8, event: CommissionTraceEvent) {
+            LAST_TRACE_CHANNEL.store(channel, Relaxed);
+            LAST_TRACE_EVENT_ID.store(event.event_id, Relaxed);
+        }
+    }
+
+    fn reset_hooks() {
+        ELAPSED_US.store(0, Relaxed);
+        SHUTDOWN_REQUESTED.store(false, Relaxed);
+        LAST_DELAY_US.store(0, Relaxed);
+        LAST_TRACE_CHANNEL.store(u8::MAX, Relaxed);
+        LAST_TRACE_EVENT_ID.store(0, Relaxed);
+    }
+
+    #[test]
+    fn shared_backend_satisfies_commissioning_backend_bundle() {
+        fn assert_backend<T: CommissioningBackend>() {}
+
+        assert_backend::<
+            SharedCommissioningBackend<'static, RecordingSpi, RecordingPin, RecordingHooks>,
+        >();
+    }
+
+    #[test]
+    fn shared_backend_delegates_access_traits() {
+        let _guard = TEST_LOCK
+            .lock()
+            .expect("commissioning backend test lock is available");
+        reset_hooks();
+
+        pollster::block_on(async {
+            ELAPSED_US.store(123_456, Relaxed);
+            SHUTDOWN_REQUESTED.store(true, Relaxed);
+
+            let mut tmc = Tmc4671Spi::new(RecordingSpi::default());
+            let mut enable_pin = RecordingPin::default();
+            let trace_event = CommissionTraceEvent {
+                level: TraceEventLevel::Warn,
+                event_id: EVENT_COMMISSION_DIAGNOSTIC_WARNING,
+                engine_kind: EngineKind::Commission,
+                payload: [7, 8],
+                payload_count: 2,
+            };
+
+            {
+                let mut backend = SharedCommissioningBackend::<
+                    RecordingSpi,
+                    RecordingPin,
+                    RecordingHooks,
+                >::new(
+                    7, &mut tmc, &mut enable_pin, &TEST_TMC_STATE
+                );
+
+                assert!(core::ptr::eq(backend.tmc_state(), &TEST_TMC_STATE));
+                assert_eq!(
+                    backend.commission_tmc_config().pwm_maxcnt,
+                    TEST_CONFIG.pwm_maxcnt
+                );
+                assert_eq!(backend.commission_elapsed_us(), 123_456);
+                assert!(backend.commission_is_shutdown_requested());
+
+                backend.commission_delay_us(250).await;
+                backend.record_commission_trace_event_impl(trace_event);
+                backend.set_commission_enable_pin(true);
+                backend.set_commission_enable_pin(false);
+                backend
+                    .tmc_spi()
+                    .write_register(PID_POSITION_TARGET, 0x0102_0304)
+                    .await
+                    .expect("recording SPI write succeeds");
+            }
+
+            assert!(!enable_pin.is_high);
+            assert_eq!(LAST_DELAY_US.load(Relaxed), 250);
+            assert_eq!(LAST_TRACE_CHANNEL.load(Relaxed), 7);
+            assert_eq!(
+                LAST_TRACE_EVENT_ID.load(Relaxed),
+                EVENT_COMMISSION_DIAGNOSTIC_WARNING
+            );
+
+            let spi = tmc.into_inner();
+            assert_eq!(
+                spi.writes,
+                std::vec![(PID_POSITION_TARGET.addr(), 0x0102_0304)]
+            );
+        });
+    }
 }
