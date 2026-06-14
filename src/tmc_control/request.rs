@@ -716,8 +716,6 @@ mod tests {
     use crate::tmc::{TmcRequestKind, set_auto_calibrate_on_enable_allowed};
     use crate::tmc_control::actions::{BoardAction, ShutdownReason, StepperAction};
 
-    static TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     struct MockSpiError;
 
@@ -908,10 +906,12 @@ mod tests {
     }
 
     fn run_request_test(future: impl core::future::Future<Output = ()>) {
-        let _guard = TEST_LOCK
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        pollster::block_on(future);
+        pollster::block_on(async {
+            let _guard = crate::commission_dispatch::test_support::SHARED_STATE_MUTEX
+                .lock()
+                .await;
+            future.await;
+        });
     }
 
     fn stored_gains() -> crate::pid::InnerLoopGains {
