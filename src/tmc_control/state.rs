@@ -1255,6 +1255,26 @@ impl TmcControlRuntime {
         }
     }
 
+    /// Apply the shared per-channel slow PID and homing policy.
+    ///
+    /// Board shells with multi-channel loops can use this helper before their
+    /// own status polling and trace transport logic. A non-ready homing result
+    /// means the caller should skip later slow-maintenance work for this
+    /// channel until the next slow tick.
+    pub async fn apply_slow_channel_maintenance_tick<B>(
+        &mut self,
+        tmc_spi: &mut foci_tmc4671::spi::Tmc4671Spi<B>,
+        refs: TmcControlStateRefs<'_>,
+        homing_snapshot: u8,
+    ) -> HomingMaintenanceResult
+    where
+        B: embedded_hal_async::spi::SpiDevice<u8>,
+    {
+        self.apply_pid_error_settle_tick(tmc_spi, refs).await;
+        self.apply_homing_channel_tick(tmc_spi, refs, homing_snapshot)
+            .await
+    }
+
     /// Apply slow maintenance tick work.
     ///
     /// This covers host-requested PID error clear settling, homing position-I
@@ -1280,11 +1300,9 @@ impl TmcControlRuntime {
         let _ = config;
         let mut actions = BoardActions::new();
 
-        self.apply_pid_error_settle_tick(tmc_spi, refs).await;
-
         let homing_snapshot = homing.state.load(Relaxed);
         let homing_ready = self
-            .apply_homing_channel_tick(tmc_spi, refs, homing_snapshot)
+            .apply_slow_channel_maintenance_tick(tmc_spi, refs, homing_snapshot)
             .await
             == HomingMaintenanceResult::ReadyToAdvance;
         if !homing_ready {
