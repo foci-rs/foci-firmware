@@ -34,6 +34,7 @@ pub mod tmc_control;
 pub mod tmc_diagnostics;
 pub mod tmc_safe_state;
 pub mod trace;
+pub mod transport;
 
 /// Backwards-compatibility shim. The implementation lives in
 /// [`commissioning`]; this module exposes the engine and result types
