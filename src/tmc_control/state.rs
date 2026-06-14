@@ -1461,6 +1461,15 @@ impl TmcControlRuntime {
     }
 
     #[cfg(test)]
+    pub(crate) fn pending_calibrate_inner_gains_for_test(
+        &self,
+    ) -> Option<crate::pid::InnerLoopGains> {
+        self.commission_engine.as_ref().and_then(
+            crate::commissioning::CommissioningEngine::calibrate_entry_inner_gains_for_test,
+        )
+    }
+
+    #[cfg(test)]
     pub(crate) fn position_lead_applied_scaled_for_test(&self) -> i32 {
         self.position_lead_applied_scaled
     }

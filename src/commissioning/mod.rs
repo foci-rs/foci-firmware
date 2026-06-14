@@ -511,6 +511,20 @@ impl CommissioningEngine {
         }
     }
 
+    #[cfg(test)]
+    pub(crate) fn calibrate_entry_inner_gains_for_test(
+        &self,
+    ) -> Option<crate::pid::InnerLoopGains> {
+        match &self.engine_mode {
+            EngineMode::Inner {
+                sequence: InnerSequence::Calibrate,
+                calibrate_entry_gains,
+                ..
+            } => calibrate_entry_gains.map(|gains| gains.inner),
+            _ => None,
+        }
+    }
+
     /// Return the entry snapshot for the outer engine, if active.
     pub fn entry_snapshot(&self) -> Option<EntrySnapshot> {
         match &self.engine_mode {

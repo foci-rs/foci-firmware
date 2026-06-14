@@ -10,6 +10,7 @@ pub mod dispatch;
 pub mod filters;
 pub mod helpers;
 pub mod lifecycle;
+pub mod request;
 pub mod request_writes;
 pub mod settle;
 pub mod signals;
@@ -23,6 +24,7 @@ pub use actions::{
     StepperAction, TmcControlRequestOutcome, TmcControlRequestTail, push_action,
 };
 pub use config::{TmcControlConfig, TmcControlHomingRefs, TmcControlStateRefs};
+pub use request::{TmcPreRequestDisposition, TmcRequestBoard, handle_tmc_control_request};
 pub use signals::TmcControlSignals;
 pub use state::{
     HomingMaintenanceResult, TmcControlRuntime, TmcControlTraceState, TmcControlTraceTick,
