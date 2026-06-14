@@ -10,6 +10,7 @@
 // pub(crate) so sibling test modules (commissioning, diagnostics, ...) can
 // import MockBackend + helpers via crate::commission_dispatch::test_support::*.
 pub mod post_actions;
+pub mod replies;
 mod restore;
 #[cfg(test)]
 pub(crate) mod test_support;
@@ -17,6 +18,7 @@ pub(crate) mod test_support;
 mod tests;
 
 pub use post_actions::{StepperTaskDirective, apply_stepper_post_action_state};
+pub use replies::{CommissionReplySink, emit_phase_reply, emit_terminal_reply};
 
 use crate::autotune::PhaseId;
 // CommissioningEngine lives in commissioning/mod.rs (the engine impl); the
