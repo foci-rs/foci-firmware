@@ -1,5 +1,22 @@
 //! Board-specific TMC4671 hardware configuration.
 
+/// Return the DSADC MDEC value for a TMC4671 PWM period.
+///
+/// Datasheet section 4.11.2 defines the DSADC sample timing as:
+/// `MDEC = round(tPWM / (3 * 40ns) - 2)`.
+///
+/// `PWM_MAXCNT` counts 10ns ticks, so this is equivalent to:
+/// `round((PWM_MAXCNT + 1) / 12) - 2`.
+pub const fn dsadc_mdec_from_pwm_maxcnt(pwm_maxcnt: u16) -> u16 {
+    let pwm_ticks = pwm_maxcnt as u32 + 1;
+    let rounded_div_12 = (pwm_ticks + 6) / 12;
+    if rounded_div_12 <= 2 {
+        0
+    } else {
+        (rounded_div_12 - 2) as u16
+    }
+}
+
 /// Board-specific TMC4671 hardware configuration.
 ///
 /// Constructed as a `const` by each firmware crate. Passed to all
@@ -171,5 +188,12 @@ mod tests {
             bandwidth_hz: 50.0,
         };
         assert_eq!(cfg.pwm_freq_hz(), 50_000);
+    }
+
+    #[test]
+    fn dsadc_mdec_from_pwm_maxcnt_uses_datasheet_formula() {
+        assert_eq!(dsadc_mdec_from_pwm_maxcnt(3999), 331);
+        assert_eq!(dsadc_mdec_from_pwm_maxcnt(2047), 169);
+        assert_eq!(dsadc_mdec_from_pwm_maxcnt(1023), 83);
     }
 }
