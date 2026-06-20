@@ -54,6 +54,11 @@ fn encoder_alignment_min_movement(step_width: u32) -> u32 {
     (65536u32 / denominator).max(2)
 }
 
+fn encoder_delta_abs(a: u32, b: u32, counts_per_rev: i32) -> u32 {
+    crate::commissioning::outer::response::encoder_delta(a as i32, b as i32, counts_per_rev)
+        .unsigned_abs()
+}
+
 /// Read `ABN_DECODER_COUNT` multiple times and return a stable value.
 ///
 /// Reads `ENCODER_READ_SAMPLES` samples per attempt and accepts when the
@@ -83,14 +88,8 @@ async fn read_encoder_count_stable<B: CommissioningBackend>(
         let spread = buf
             .iter()
             .flat_map(|a| {
-                buf.iter().map(move |b| {
-                    crate::commissioning::outer::response::encoder_delta(
-                        *a as i32,
-                        *b as i32,
-                        counts_per_rev,
-                    )
-                    .unsigned_abs()
-                })
+                buf.iter()
+                    .map(move |b| encoder_delta_abs(*a, *b, counts_per_rev))
             })
             .max()
             .unwrap_or(0);
@@ -443,10 +442,11 @@ pub(crate) async fn step_encoder_align<B: CommissioningBackend>(
                 Err(error) => return super::fail_inner(phase, error),
             };
 
-            let movement1 = (*count1 as i32 - *count_before as i32).unsigned_abs();
-            let movement2 = (count2 as i32 - *count_before as i32).unsigned_abs();
+            let counts_per_rev = backend.encoder_quadrature_ppr() as i32;
+            let movement1 = encoder_delta_abs(*count1, *count_before, counts_per_rev);
+            let movement2 = encoder_delta_abs(count2, *count_before, counts_per_rev);
             let movement = movement1.max(movement2);
-            let stable = (*count1 as i32 - count2 as i32).unsigned_abs()
+            let stable = encoder_delta_abs(*count1, count2, counts_per_rev)
                 <= ENCODER_ALIGNMENT_STABILITY_COUNTS;
             if movement < *min_movement || !stable {
                 defmt::warn!(
@@ -603,6 +603,48 @@ mod tests {
                 Err(crate::autotune::CommissionError::EncoderFault) => {}
                 other => panic!("expected EncoderFault, got {:?}", other),
             }
+        });
+    }
+
+    #[test]
+    fn encoder_align_stability_accepts_wrap_boundary() {
+        pollster::block_on(async {
+            let _guard = SHARED_STATE_MUTEX.lock().await;
+            let mut phase = InnerPhase::EncoderAlign {
+                state: EncoderAlignState::StabilityCheck2 {
+                    count_before: 3998,
+                    count1: 3999,
+                    deadline_us: 0,
+                    min_movement: 2,
+                },
+            };
+            let mut adc_cal = Some(AdcCalResult {
+                adc_i0: 1,
+                adc_i1: 2,
+                encoder_count: 0,
+            });
+            let mut selftest_results = crate::selftest::SelftestResults::default();
+            let mut backend = MockBackend::new();
+            backend.encoder_quadrature_ppr_value = 4000;
+            backend.set_abn_decoder_count_sequence(&[0, 0, 0]);
+
+            let result = step_encoder_align(
+                &mut phase,
+                InnerSequence::Calibrate,
+                &mut adc_cal,
+                None,
+                &mut selftest_results,
+                &mut backend,
+            )
+            .await;
+
+            assert!(matches!(result, StepResult::Continue));
+            assert!(matches!(
+                phase,
+                InnerPhase::EncoderAlign {
+                    state: EncoderAlignState::Commit { old_count: 3999 }
+                }
+            ));
         });
     }
 
