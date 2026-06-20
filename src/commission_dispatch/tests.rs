@@ -276,7 +276,7 @@ fn inner_failed_calibrate_emits_calibrate_reply() {
         let (mut cal, mut en, mut gains) = fresh_state_locals();
         let mut state = dispatch_state(&mut cal, &mut en, &mut gains);
         let mut engine = Some(CommissioningEngine::new_calibrate(2));
-        let err = crate::autotune::CommissionError::NoCurrent;
+        let err = crate::autotune::CommissionError::Spi;
         let outcome = drive_commission_result(
             crate::commissioning::types::StepResult::InnerFailed(err),
             &mut engine,
@@ -291,7 +291,10 @@ fn inner_failed_calibrate_emits_calibrate_reply() {
                 ..
             } => {
                 assert_eq!(oid, 2);
-                assert_eq!(status, err.status_code());
+                assert_eq!(
+                    status,
+                    crate::calibration::CalibrationError::SpiError.status_code()
+                );
             }
             _ => panic!("expected CalibrateResult"),
         }

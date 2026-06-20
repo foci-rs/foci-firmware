@@ -289,6 +289,19 @@ fn zero_adc_cal_result() -> AdcCalResult {
     }
 }
 
+fn calibration_status_from_commission_error(error: crate::autotune::CommissionError) -> u8 {
+    use crate::autotune::CommissionError;
+    use crate::calibration::CalibrationError;
+
+    let calibration_error = match error {
+        CommissionError::Spi => CalibrationError::SpiError,
+        CommissionError::ChipResetDetected => CalibrationError::ChipResetDetected,
+        CommissionError::MotorEnabled => CalibrationError::AlreadyEnabled,
+        _ => CalibrationError::InternalError,
+    };
+    calibration_error.status_code()
+}
+
 /// Dispatch a single `StepResult` from `CommissioningEngine::step()` to the
 /// appropriate outcome, executing any required SPI work, state mutations, and
 /// atomic stores along the way.
@@ -357,7 +370,7 @@ pub async fn drive_commission_result<B: CommissioningBackend>(
             let reply = match kind {
                 EngineKind::Calibrate => ReplyPayload::CalibrateResult {
                     oid,
-                    status: error.status_code(),
+                    status: calibration_status_from_commission_error(error),
                     result: zero_adc_cal_result(),
                 },
                 EngineKind::Selftest => ReplyPayload::Selftest {
