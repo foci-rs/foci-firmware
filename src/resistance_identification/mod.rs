@@ -2,10 +2,17 @@
 
 pub mod fit;
 pub mod profile;
+pub mod runner;
 pub mod types;
+
+#[cfg(test)]
+mod tests;
 
 pub use fit::{evaluate_resistance_result, fit_resistance_axis};
 pub use profile::{ResistanceProfile, STANDARD_UD_POINTS};
+pub use runner::{
+    ResistanceBackend, ResistanceBackendError, ResistanceRunMode, run_resistance_identification,
+};
 pub use types::{
     ElectricalAxis, ResistanceAxisResult, ResistanceError, ResistancePoint, ResistanceRunResult,
     ResistanceWarningFlags, SignedAnchorEvidence,
