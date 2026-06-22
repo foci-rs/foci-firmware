@@ -62,6 +62,44 @@ impl ResistanceWarningFlags {
     }
 }
 
+/// Signed anchor evidence for one electrical axis.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+pub struct SignedAnchorEvidence {
+    pub positive_current_count: i32,
+    pub negative_current_count: i32,
+    pub signed_count_slope_milli: i32,
+    pub asymmetry_permille: u16,
+    pub repeated_positive_current_count: i32,
+    pub drift_permille: u16,
+}
+
+/// Fitted result for one electrical axis.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+pub struct ResistanceAxisResult {
+    pub axis: ElectricalAxis,
+    pub r_count_slope_milli: i32,
+    pub slope_num: i64,
+    pub slope_den: i64,
+    pub intercept_count: i32,
+    pub rmse_permille: u16,
+    pub selected_mask: u16,
+    pub excluded_point_mask: u16,
+    pub selected_count: u8,
+    pub signed_anchor: Option<SignedAnchorEvidence>,
+    pub warning_flags: ResistanceWarningFlags,
+}
+
+/// Complete two-axis resistance run result.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+pub struct ResistanceRunResult {
+    pub profile_version: u16,
+    pub selected_r_count_slope_milli: i32,
+    pub status_flags_or: u32,
+    pub axis0: ResistanceAxisResult,
+    pub axis1: ResistanceAxisResult,
+    pub warning_flags: ResistanceWarningFlags,
+}
+
 /// Hard-failure reason for resistance identification.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub enum ResistanceError {
