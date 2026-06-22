@@ -277,7 +277,11 @@ mod tests {
             phi_e_ext: u16,
             r_count_slope_milli: i32,
             intercept_count: i32,
+            rmse_permille: u16,
+            selected_mask: u16,
             signed_count_slope_milli: i32,
+            signed_asymmetry_permille: u16,
+            drift_permille: u16,
         },
         Tune {
             oid: u8,
@@ -347,7 +351,11 @@ mod tests {
                 phi_e_ext: report.phi_e_ext,
                 r_count_slope_milli: report.r_count_slope_milli,
                 intercept_count: report.intercept_count,
+                rmse_permille: report.rmse_permille,
+                selected_mask: report.selected_mask,
                 signed_count_slope_milli: report.signed_count_slope_milli,
+                signed_asymmetry_permille: report.signed_asymmetry_permille,
+                drift_permille: report.drift_permille,
             });
         }
 
@@ -434,7 +442,7 @@ mod tests {
                 resistance_axis0_rmse_permille: 7,
                 resistance_axis1_rmse_permille: 8,
                 resistance_selected_mask_axis0: 0b1111_1000,
-                resistance_selected_mask_axis1: 0b1111_1000,
+                resistance_selected_mask_axis1: 0b0111_1100,
                 resistance_axis0_signed_count_slope_milli: 1045,
                 resistance_axis1_signed_count_slope_milli: 1055,
                 resistance_axis0_signed_asymmetry_permille: 9,
@@ -679,7 +687,11 @@ mod tests {
                     phi_e_ext: 0,
                     r_count_slope_milli: 1040,
                     intercept_count: 5,
+                    rmse_permille: 7,
+                    selected_mask: 0b1111_1000,
                     signed_count_slope_milli: 1045,
+                    signed_asymmetry_permille: 9,
+                    drift_permille: 11,
                 },
                 Event::ResistanceAxis {
                     oid: 6,
@@ -687,7 +699,11 @@ mod tests {
                     phi_e_ext: 16_384,
                     r_count_slope_milli: 1060,
                     intercept_count: 6,
+                    rmse_permille: 8,
+                    selected_mask: 0b0111_1100,
                     signed_count_slope_milli: 1055,
+                    signed_asymmetry_permille: 10,
+                    drift_permille: 12,
                 },
                 Event::ResistanceRun {
                     oid: 6,
