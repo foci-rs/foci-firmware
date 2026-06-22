@@ -135,6 +135,9 @@ pub enum CommissionError {
     /// state established at commission. Channel must be re-commissioned
     /// before any further arm attempt. Code 18.
     ChipResetDetected,
+    /// Shared multi-point resistance identification failed a quality gate or
+    /// backend transaction during electrical identification. Code 19.
+    ResistanceIdFailed,
 }
 
 impl CommissionError {
@@ -162,6 +165,7 @@ impl CommissionError {
             Self::QueueFull => 16,
             Self::SafetyEnvelopeViolation => 17,
             Self::ChipResetDetected => 18,
+            Self::ResistanceIdFailed => 19,
         }
     }
 }

@@ -128,10 +128,10 @@ pub(crate) enum EncoderAlignState {
 pub(crate) struct ElectricalIdData {
     /// Excitation voltage used for all measurements (PIDOUT units).
     pub(crate) voltage: u32,
-    /// Per-coil accumulated signed current for resistance (sum of i16 readings).
-    pub(crate) resistance_current_sum: [i32; 2],
-    /// Per-coil number of resistance samples collected.
-    pub(crate) resistance_sample_count: [u16; 2],
+    /// Shared multi-point resistance-identification result. `Some` once the
+    /// `ResistanceIdentify` sub-state has run the shared runner; the legacy
+    /// inductance/delay/gain path reads its count-slope-milli values from here.
+    pub(crate) resistance_result: Option<crate::resistance_identification::ResistanceRunResult>,
     /// Per-coil accumulated |delta_I| for di/dt inductance measurement.
     pub(crate) inductance_sum_delta: [u64; 2],
     /// Per-coil number of valid di/dt cycles.
@@ -144,8 +144,7 @@ impl ElectricalIdData {
     pub(crate) fn new(voltage: u32) -> Self {
         Self {
             voltage,
-            resistance_current_sum: [0; 2],
-            resistance_sample_count: [0; 2],
+            resistance_result: None,
             inductance_sum_delta: [0; 2],
             inductance_count: [0; 2],
             inductance_elapsed_us: [0; 2],
@@ -156,15 +155,9 @@ impl ElectricalIdData {
 /// Electrical identification sub-state machine (Phase 5).
 #[derive(Debug, defmt::Format)]
 pub(crate) enum ElectricalIdState {
-    // --- Resistance measurement (per coil) ---
-    /// Configure open-loop voltage mode for resistance measurement.
-    ResSetup { coil: u8 },
-    /// Wait for steady-state current.
-    ResSettle { coil: u8, deadline_us: u64 },
-    /// Sample PID_TORQUE_FLUX_ACTUAL at 160us intervals (multiple per step).
-    ResSample { coil: u8, next_sample_us: u64 },
-    /// Disable motor and cool down before next measurement.
-    ResDisable { coil: u8, deadline_us: u64 },
+    // --- Resistance identification ---
+    /// Run shared multi-point resistance identification before legacy L work.
+    ResistanceIdentify,
 
     // --- Inductance measurement (per coil, square-wave di/dt) ---
     /// Configure for di/dt toggling.
@@ -246,6 +239,10 @@ pub(crate) enum InnerPhase {
         inner_warning_flags: u8,
         /// L/R-vs-transient tau residual in permille from Phase 5.
         tau_residual_permille: u16,
+        /// Shared multi-point resistance-identification result from Phase 5.
+        /// Carried forward so the final InnerResult can persist the count-space
+        /// fit evidence and the 64x count-slope-milli audit comparison.
+        resistance_result: crate::resistance_identification::ResistanceRunResult,
     },
     /// Phase 7: Current-loop step-response validation.
     CurrentValidate {

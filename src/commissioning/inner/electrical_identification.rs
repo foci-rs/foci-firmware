@@ -12,9 +12,7 @@ use crate::autotune::{
     TransientBuffer,
 };
 use crate::commissioning::types::{CommissioningBackend, StepResult};
-
-/// Number of steady-state current samples for resistance measurement.
-const RESISTANCE_SAMPLE_COUNT: u16 = 1000;
+use foci_tmc4671::registers::Register;
 
 /// Sampling interval for resistance and transient captures (microseconds).
 /// Matches PWM rate (~160us at 25 kHz) for Nyquist-rate current sampling.
@@ -22,9 +20,6 @@ const RESISTANCE_SAMPLE_COUNT: u16 = 1000;
 /// Re-exported for the validation phase, which captures step responses at
 /// the same cadence.
 pub(crate) const ELECTRICAL_SAMPLE_PERIOD_US: u64 = 160;
-
-/// Settling time after applying excitation voltage (microseconds).
-const RESISTANCE_SETTLE_US: u64 = 100_000;
 
 /// Cooldown time after disabling a per-coil measurement (microseconds).
 const ELECTRICAL_COOLDOWN_US: u64 = 50_000;
@@ -63,9 +58,8 @@ const DIAG_ELECTRICAL_ID_TRANSIENT: u8 = 6;
 const DIAG_ELECTRICAL_ID_REJECT_NO_SAMPLES: u8 = 20;
 const DIAG_ELECTRICAL_ID_REJECT_SINGLE_COIL_TAU: u8 = 21;
 const DIAG_ELECTRICAL_ID_REJECT_MODEL_SCALE_ZERO: u8 = 22;
-const DIAG_ELECTRICAL_ID_REJECT_RESISTANCE_SHORT: u8 = 23;
-const DIAG_ELECTRICAL_ID_REJECT_RESISTANCE_OPEN: u8 = 24;
-const DIAG_ELECTRICAL_ID_REJECT_RESISTANCE_MISMATCH: u8 = 25;
+// Codes 23–25 (resistance short/open/mismatch) are retired: the shared
+// resistance runner now owns those quality gates.
 const DIAG_ELECTRICAL_ID_REJECT_TAU_MISMATCH: u8 = 26;
 const DIAG_ELECTRICAL_ID_REJECT_TAU_CROSSCHECK_UNMEASURABLE: u8 = 27;
 const DIAG_ELECTRICAL_ID_TAU_RESIDUAL: u8 = 28;
@@ -84,13 +78,9 @@ pub(crate) const INNER_WARN_BIT_TAU_RESIDUAL: u8 = 1 << 2;
 /// theta_e_us >= tau_e_us / 4 (warning).
 pub(crate) const INNER_WARN_BIT_THETA_TAU: u8 = 1 << 3;
 
-/// Resistance below this is treated as a near-short.
-const RESISTANCE_SHORT_MOHM: u32 = 100;
-/// Resistance above this is treated as open-load or invalid scaling.
-const RESISTANCE_OPEN_MOHM: u32 = 50_000;
-/// Per-coil resistance disagreement fail threshold (permille).
-const RESISTANCE_MISMATCH_FAIL_PERMILLE: u32 = 150;
 /// Per-coil resistance disagreement warn threshold (permille).
+/// The hard resistance gates now live in the shared runner; this remains as a
+/// non-critical confidence warning computed from the runner's per-axis slopes.
 const RESISTANCE_MISMATCH_WARN_PERMILLE: u32 = 50;
 /// Per-coil tau disagreement fail threshold (permille).
 const TAU_MISMATCH_FAIL_PERMILLE: u32 = 300;
@@ -123,12 +113,6 @@ pub(crate) enum ModelAssemblyError {
     /// Distinct from `SampleCount` so RTT diagnostics name the actual
     /// failure (likely a fixed-point scale or rounding edge case).
     ModelScaleZero { l_int: u32, l_uh: u32 },
-    /// Averaged resistance below short-circuit threshold.
-    ResistanceShort { r_mohm: u32 },
-    /// Averaged resistance above open-load threshold.
-    ResistanceOpen { r_mohm: u32 },
-    /// Per-coil resistance disagreement above hard threshold.
-    ResistanceMismatch { permille: u32 },
     /// Per-coil tau disagreement above hard threshold.
     TauMismatch { permille: u32 },
     /// Transient capture produced no usable rise crossing, so the
@@ -155,15 +139,6 @@ fn log_model_assembly_failure(err: ModelAssemblyError) {
                 l_uh
             );
         }
-        ModelAssemblyError::ResistanceShort { r_mohm } => {
-            defmt::warn!("electrical id: r_mohm={} below short threshold", r_mohm);
-        }
-        ModelAssemblyError::ResistanceOpen { r_mohm } => {
-            defmt::warn!("electrical id: r_mohm={} above open threshold", r_mohm);
-        }
-        ModelAssemblyError::ResistanceMismatch { permille } => {
-            defmt::warn!("electrical id: coil R mismatch {} permille", permille);
-        }
         ModelAssemblyError::TauMismatch { permille } => {
             defmt::warn!("electrical id: coil tau mismatch {} permille", permille);
         }
@@ -189,24 +164,6 @@ fn diagnostic_for_model_assembly_failure(
         ModelAssemblyError::ModelScaleZero { l_int, l_uh } => {
             (DIAG_ELECTRICAL_ID_REJECT_MODEL_SCALE_ZERO, l_int, l_uh, 0)
         }
-        ModelAssemblyError::ResistanceShort { r_mohm } => (
-            DIAG_ELECTRICAL_ID_REJECT_RESISTANCE_SHORT,
-            r_mohm,
-            RESISTANCE_SHORT_MOHM,
-            0,
-        ),
-        ModelAssemblyError::ResistanceOpen { r_mohm } => (
-            DIAG_ELECTRICAL_ID_REJECT_RESISTANCE_OPEN,
-            r_mohm,
-            RESISTANCE_OPEN_MOHM,
-            0,
-        ),
-        ModelAssemblyError::ResistanceMismatch { permille } => (
-            DIAG_ELECTRICAL_ID_REJECT_RESISTANCE_MISMATCH,
-            permille,
-            RESISTANCE_MISMATCH_FAIL_PERMILLE,
-            0,
-        ),
         ModelAssemblyError::TauMismatch { permille } => (
             DIAG_ELECTRICAL_ID_REJECT_TAU_MISMATCH,
             permille,
@@ -298,26 +255,34 @@ fn electrical_id_measurement_diagnostic(
     }
 }
 
+/// Per-coil resistance count-slope (milli-units) and RMSE (permille) from the
+/// shared runner result. `None` until the resistance sweep has populated
+/// `data.resistance_result`.
+///
+/// The count-slope is in the same unit space as the legacy `r_int` resistance
+/// scale (`dV_count / dI_count * 1000`), so it feeds the per-coil tau and gain
+/// math directly without conversion.
 fn resistance_measurement(data: &ElectricalIdData, coil_idx: usize) -> Option<(u32, u32, u32)> {
-    let count = data.resistance_sample_count[coil_idx] as i32;
-    if count == 0 {
+    let result = data.resistance_result?;
+    let axis = if coil_idx == 0 {
+        result.axis0
+    } else {
+        result.axis1
+    };
+    let r_int = axis.r_count_slope_milli.max(0) as u32;
+    if r_int == 0 {
         return None;
     }
-    let avg_current = data.resistance_current_sum[coil_idx] / count;
-    let abs_current = avg_current.unsigned_abs();
-    if abs_current == 0 {
-        return None;
-    }
-    let r_mohm = (data.voltage as u64 * 1000 / abs_current as u64) as u32;
-    Some((abs_current, r_mohm, count as u32))
+    // `r_mohm` diagnostic value is the count-slope-milli reused as derived
+    // display evidence; the runner owns the physical-scale gating.
+    Some((r_int, r_int, u32::from(axis.selected_count)))
 }
 
+/// Per-coil resistance count-slope in the `ELECTRICAL_MODEL_RESISTANCE_SCALE`
+/// (milli) unit space, taken from the runner's per-axis fit.
 fn resistance_model_scale(data: &ElectricalIdData, coil_idx: usize) -> Option<u32> {
-    let (abs_current, _, _) = resistance_measurement(data, coil_idx)?;
-    Some(
-        (data.voltage as u64 * ELECTRICAL_MODEL_RESISTANCE_SCALE as u64 / abs_current as u64)
-            as u32,
-    )
+    let (r_int, _, _) = resistance_measurement(data, coil_idx)?;
+    Some(r_int)
 }
 
 fn inductance_measurement(data: &ElectricalIdData, coil_idx: usize) -> Option<(u32, u32, u32)> {
@@ -434,25 +399,32 @@ fn assemble_electrical_model(
 ) -> Result<ModelAssembly, ModelAssemblyError> {
     let voltage = data.voltage;
 
-    // --- Per-coil resistance ---
+    // --- Per-coil resistance (from the shared multi-point runner) ---
+    //
+    // `r_int` and the per-coil entries come from the runner's count-space fit,
+    // in `ELECTRICAL_MODEL_RESISTANCE_SCALE` (milli) units. The runner already
+    // enforces the resistance quality gates (short/open/per-axis mismatch,
+    // residual, drift); this path only translates its slopes into the model.
+    let result = data
+        .resistance_result
+        .ok_or(ModelAssemblyError::SampleCount)?;
     let mut r_int_per_coil = [0u32; 2];
-    let mut r_mohm_per_coil = [0u32; 2];
-    for coil_idx in 0..2 {
-        let count = data.resistance_sample_count[coil_idx] as i32;
-        if count == 0 {
+    let axis_results = [result.axis0, result.axis1];
+    for (coil_idx, axis) in axis_results.iter().enumerate() {
+        let r_int_coil = axis.r_count_slope_milli.max(0) as u32;
+        if r_int_coil == 0 {
             return Err(ModelAssemblyError::SampleCount);
         }
-        let avg_current = data.resistance_current_sum[coil_idx] / count;
-        let abs_current = avg_current.unsigned_abs();
-        if abs_current == 0 {
-            return Err(ModelAssemblyError::SampleCount);
-        }
-        r_int_per_coil[coil_idx] =
-            (voltage as u64 * ELECTRICAL_MODEL_RESISTANCE_SCALE as u64 / abs_current as u64) as u32;
-        r_mohm_per_coil[coil_idx] = (voltage as u64 * 1000 / abs_current as u64) as u32;
+        r_int_per_coil[coil_idx] = r_int_coil;
     }
-    let r_int = (r_int_per_coil[0] + r_int_per_coil[1]) / 2;
-    let r_mohm = (r_mohm_per_coil[0] + r_mohm_per_coil[1]) / 2;
+    // Averaged model resistance is the run-selected count-slope.
+    let r_int = result.selected_r_count_slope_milli.max(0) as u32;
+    if r_int == 0 {
+        return Err(ModelAssemblyError::SampleCount);
+    }
+    // `r_mohm` is derived display evidence only: the count-slope-milli reused
+    // as a physical-display stand-in. The host applies real scale metadata.
+    let r_mohm = r_int;
 
     // --- Per-coil tau (both coils must produce non-zero tau) ---
     //
@@ -484,18 +456,12 @@ fn assemble_electrical_model(
     }
 
     // --- Hard gates (in spec order) ---
-    if r_mohm < RESISTANCE_SHORT_MOHM {
-        return Err(ModelAssemblyError::ResistanceShort { r_mohm });
-    }
-    if r_mohm > RESISTANCE_OPEN_MOHM {
-        return Err(ModelAssemblyError::ResistanceOpen { r_mohm });
-    }
-    let r_diff_permille = permille_diff(r_mohm_per_coil[0], r_mohm_per_coil[1]);
-    if r_diff_permille >= RESISTANCE_MISMATCH_FAIL_PERMILLE {
-        return Err(ModelAssemblyError::ResistanceMismatch {
-            permille: r_diff_permille,
-        });
-    }
+    //
+    // Resistance short/open/per-axis-mismatch gates are owned by the shared
+    // runner's count-space quality gates; only the inductance/delay gates run
+    // here. The per-coil resistance disagreement is still surfaced as a
+    // confidence warning below, computed from the runner's per-axis slopes.
+    let r_diff_permille = permille_diff(r_int_per_coil[0], r_int_per_coil[1]);
     let tau_diff_permille = permille_diff(tau_per_coil[0], tau_per_coil[1]);
     if tau_diff_permille >= TAU_MISMATCH_FAIL_PERMILLE {
         return Err(ModelAssemblyError::TauMismatch {
@@ -575,12 +541,90 @@ fn assemble_electrical_model(
     })
 }
 
+/// Adapter that exposes a [`CommissioningBackend`] as a
+/// [`crate::resistance_identification::ResistanceBackend`] for the shared
+/// resistance runner during commissioning.
+///
+/// This is the sanctioned commissioning managed-enable exception to the
+/// direct-enable rule: the runner owns enable-pin assertion, so
+/// [`is_armed_for_open_loop_voltage`](Self::is_armed_for_open_loop_voltage)
+/// reports `true` and [`set_enable_pin`](Self::set_enable_pin) forwards to the
+/// real backend.
+struct CommissionResistanceBackend<'a, B: CommissioningBackend> {
+    backend: &'a mut B,
+}
+
+impl<B: CommissioningBackend> crate::resistance_identification::ResistanceBackend
+    for CommissionResistanceBackend<'_, B>
+{
+    async fn read_register(
+        &mut self,
+        addr: u8,
+    ) -> Result<u32, crate::resistance_identification::ResistanceBackendError> {
+        self.backend
+            .read_register(Register::new(addr))
+            .await
+            .map_err(|_| crate::resistance_identification::ResistanceBackendError::Spi)
+    }
+
+    async fn write_register(
+        &mut self,
+        addr: u8,
+        value: u32,
+    ) -> Result<(), crate::resistance_identification::ResistanceBackendError> {
+        self.backend
+            .write_register(Register::new(addr), value)
+            .await
+            .map_err(|_| crate::resistance_identification::ResistanceBackendError::Spi)
+    }
+
+    async fn delay_ms(&mut self, ms: u64) {
+        // Cooperative wait through the backend monotonic. `delay_us` is the
+        // sanctioned commissioning yield; loop in <=1s chunks to keep the u32
+        // microsecond argument well within range for long settle windows.
+        let mut remaining_ms = ms;
+        while remaining_ms > 0 {
+            let chunk_ms = remaining_ms.min(1_000);
+            self.backend.delay_us((chunk_ms * 1_000) as u32).await;
+            remaining_ms -= chunk_ms;
+        }
+    }
+
+    fn elapsed_us(&self) -> u64 {
+        self.backend.elapsed_us()
+    }
+
+    fn set_enable_pin(&mut self, enabled: bool) {
+        self.backend.set_enable_pin(enabled);
+    }
+
+    fn is_armed_for_open_loop_voltage(&self) -> bool {
+        true
+    }
+
+    fn profile(&self) -> crate::resistance_identification::ResistanceProfile {
+        self.backend.tmc_config().resistance_profile(
+            self.backend
+                .tmc_config()
+                .resistance_scale_metadata_validated,
+        )
+    }
+
+    fn encoder_counts_per_rev(&self) -> u32 {
+        self.backend.encoder_counts_per_rev()
+    }
+
+    fn adc_offsets_ready(&self) -> bool {
+        self.backend.adc_offsets_ready()
+    }
+}
+
 /// Advance electrical identification sub-state.
 ///
-/// Measures per-coil resistance (1000 samples at 160us in steady
-/// state), per-coil inductance (square-wave dI/dt), and delay
-/// (transient capture with two-point fit). Assembles an
-/// `ElectricalModel` and validates before transitioning.
+/// Runs shared multi-point resistance identification, then per-coil
+/// inductance (square-wave dI/dt) and delay (transient capture with a
+/// two-point fit). Assembles an `ElectricalModel` and validates before
+/// transitioning.
 pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
     phase: &mut InnerPhase,
     buf: &mut TransientBuffer,
@@ -598,107 +642,31 @@ pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
 
     match electrical_id_state {
         // ---------------------------------------------------------------
-        // Resistance measurement (per coil)
+        // Resistance identification (shared multi-point runner)
         // ---------------------------------------------------------------
-        ElectricalIdState::ResSetup { coil } => {
-            let coil_idx = *coil;
-            // Configure open-loop voltage mode.
-            if backend.write_register(PHI_E_SELECTION, 1).await.is_err() {
-                return super::fail_inner(phase, CommissionError::Spi);
-            }
-            let phi_e = if coil_idx == 0 { 0u32 } else { 16384 };
-            if backend.write_register(PHI_E_EXT, phi_e).await.is_err() {
-                return super::fail_inner(phase, CommissionError::Spi);
-            }
-            if backend
-                .write_register(UQ_UD_EXT, data.voltage & 0xFFFF)
-                .await
-                .is_err()
-            {
-                return super::fail_inner(phase, CommissionError::Spi);
-            }
-            if backend
-                .write_register(MODE_RAMP_MODE_MOTION, 8)
-                .await
-                .is_err()
-            {
-                return super::fail_inner(phase, CommissionError::Spi);
-            }
-            backend.set_enable_pin(true);
+        ElectricalIdState::ResistanceIdentify => {
+            // The shared runner owns the full count-space sweep and the
+            // managed-enable exception (it asserts/clears the enable pin and
+            // restores safe state on every exit path). On success, store the
+            // result and hand off to the legacy inductance path; on any
+            // quality-gate or backend failure, fail the inner phase.
+            let result = crate::resistance_identification::run_resistance_identification(
+                &mut CommissionResistanceBackend { backend },
+                crate::resistance_identification::ResistanceRunMode::CommissioningManagedEnable,
+            )
+            .await;
 
-            let deadline = backend.elapsed_us().wrapping_add(RESISTANCE_SETTLE_US);
-            *electrical_id_state = ElectricalIdState::ResSettle {
-                coil: coil_idx,
-                deadline_us: deadline,
-            };
-            StepResult::Continue
-        }
-
-        ElectricalIdState::ResSettle { coil, deadline_us } => {
-            if backend.elapsed_us().wrapping_sub(*deadline_us) < 0x8000_0000 {
-                let next = backend
-                    .elapsed_us()
-                    .wrapping_add(ELECTRICAL_SAMPLE_PERIOD_US);
-                *electrical_id_state = ElectricalIdState::ResSample {
-                    coil: *coil,
-                    next_sample_us: next,
-                };
-            }
-            StepResult::Continue
-        }
-
-        ElectricalIdState::ResSample {
-            coil,
-            next_sample_us,
-        } => {
-            let coil_idx = *coil as usize;
-            // Take as many samples as fit within this step's time budget.
-            loop {
-                if data.resistance_sample_count[coil_idx] >= RESISTANCE_SAMPLE_COUNT {
-                    // All samples collected. Disable motor.
-                    let _ = backend.write_register(MODE_RAMP_MODE_MOTION, 0).await;
-                    let _ = backend.write_register(UQ_UD_EXT, 0).await;
-                    backend.set_enable_pin(false);
-                    let deadline = backend.elapsed_us().wrapping_add(ELECTRICAL_COOLDOWN_US);
-                    *electrical_id_state = ElectricalIdState::ResDisable {
-                        coil: *coil,
-                        deadline_us: deadline,
-                    };
-                    return StepResult::Continue;
+            match result {
+                Ok(resistance) => {
+                    data.resistance_result = Some(resistance);
+                    *electrical_id_state = ElectricalIdState::InductanceSetup { coil: 0 };
+                    StepResult::Continue
                 }
-                // Wait for next sample deadline.
-                if backend.elapsed_us().wrapping_sub(*next_sample_us) >= 0x8000_0000 {
-                    break; // Not yet time, yield.
+                Err(err) => {
+                    defmt::warn!("resistance id failed: {}", err);
+                    super::fail_inner(phase, CommissionError::ResistanceIdFailed)
                 }
-                // Take one sample.
-                match backend.read_register(PID_TORQUE_FLUX_ACTUAL).await {
-                    Ok(actual) => {
-                        let current = (actual & 0xFFFF) as i16;
-                        data.resistance_current_sum[coil_idx] += current as i32;
-                        data.resistance_sample_count[coil_idx] += 1;
-                    }
-                    Err(_) => {
-                        return super::fail_inner(phase, CommissionError::Spi);
-                    }
-                }
-                *next_sample_us = next_sample_us.wrapping_add(ELECTRICAL_SAMPLE_PERIOD_US);
             }
-            StepResult::Continue
-        }
-
-        ElectricalIdState::ResDisable { coil, deadline_us } => {
-            if backend.elapsed_us().wrapping_sub(*deadline_us) >= 0x8000_0000 {
-                return StepResult::Continue; // Not yet.
-            }
-            let coil_idx = *coil;
-            if coil_idx == 0 {
-                // Move to coil B resistance.
-                *electrical_id_state = ElectricalIdState::ResSetup { coil: 1 };
-            } else {
-                // Both resistance measurements done. Start inductance.
-                *electrical_id_state = ElectricalIdState::InductanceSetup { coil: 0 };
-            }
-            StepResult::Continue
         }
 
         // ---------------------------------------------------------------
@@ -1025,11 +993,19 @@ pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
                     // Carry the model + Phase 5 confidence flags into the
                     // current-tune phase. Bits 4–6 (retry / fallback / host
                     // default) are added later by current validation and
-                    // host parameter resolution.
+                    // host parameter resolution. The resistance result is
+                    // carried so the final InnerResult can persist the
+                    // count-space fit and the 64x audit comparison. It is
+                    // `Some` here because `ResistanceIdentify` always runs
+                    // before `Validate` in the commission sequence.
+                    let resistance_result = data
+                        .resistance_result
+                        .expect("resistance result populated before Validate");
                     *phase = InnerPhase::CurrentTune {
                         model: assembly.model,
                         inner_warning_flags: assembly.warning_flags,
                         tau_residual_permille: assembly.tau_residual_permille,
+                        resistance_result,
                     };
                     StepResult::PhaseChanged(PhaseId::CurrentTune)
                 }
@@ -1047,18 +1023,59 @@ mod tests {
     use super::*;
     use crate::autotune::TransientBuffer;
     use crate::commission_dispatch::test_support::{MockBackend, SpiOp};
+    use crate::commissioning::backend::CommissionBoardConfig;
     use crate::commissioning::inner::ElectricalIdData;
     use crate::commissioning::types::StepResult;
+    use crate::resistance_identification::{
+        ElectricalAxis, ResistanceAxisResult, ResistanceRunResult, ResistanceWarningFlags,
+        SignedAnchorEvidence,
+    };
     use foci_tmc4671::registers::{PID_TORQUE_FLUX_ACTUAL, UQ_UD_EXT};
 
-    /// Per-coil resistance currents that yield r_mohm = 1706 (V=512, I=300).
+    /// Build a synthetic per-axis fit at the given count-slope (milli-units).
+    fn axis_result(axis: ElectricalAxis, slope_milli: i32) -> ResistanceAxisResult {
+        ResistanceAxisResult {
+            axis,
+            r_count_slope_milli: slope_milli,
+            slope_num: i64::from(slope_milli),
+            slope_den: 1000,
+            intercept_count: 0,
+            rmse_permille: 0,
+            selected_mask: 0b1111_1000,
+            excluded_point_mask: 0b0000_0111,
+            selected_count: 5,
+            signed_anchor: Some(SignedAnchorEvidence {
+                positive_current_count: 900,
+                negative_current_count: -900,
+                signed_count_slope_milli: slope_milli,
+                asymmetry_permille: 0,
+                repeated_positive_current_count: 900,
+                drift_permille: 0,
+            }),
+            warning_flags: ResistanceWarningFlags::NONE,
+        }
+    }
+
+    /// Build a synthetic two-axis resistance result with the given per-axis
+    /// count-slopes (milli-units). The selected slope is their average, matching
+    /// the runner's `evaluate_resistance_result` behavior.
+    fn resistance_result(slope0_milli: i32, slope1_milli: i32) -> ResistanceRunResult {
+        ResistanceRunResult {
+            profile_version: 1,
+            selected_r_count_slope_milli: (slope0_milli + slope1_milli) / 2,
+            status_flags_or: 0,
+            axis0: axis_result(ElectricalAxis::PHASE0, slope0_milli),
+            axis1: axis_result(ElectricalAxis::PHASE90, slope1_milli),
+            warning_flags: ResistanceWarningFlags::NONE,
+        }
+    }
+
+    /// Per-coil resistance count-slopes of 1706 milli (V=512, I=300 → 1706).
     /// Inductance values produce tau_e ≈ 730 us, matching the
-    /// `representative_transient` crosscheck so the new tau-residual gate
-    /// passes.
+    /// `representative_transient` crosscheck so the tau-residual gate passes.
     fn representative_data() -> ElectricalIdData {
         let mut data = ElectricalIdData::new(512);
-        data.resistance_current_sum = [300_000, 300_000];
-        data.resistance_sample_count = [1000, 1000];
+        data.resistance_result = Some(resistance_result(1706, 1706));
         data.inductance_sum_delta = [200_000, 200_000];
         data.inductance_count = [5000, 5000];
         data.inductance_elapsed_us = [490_000, 490_000];
@@ -1109,8 +1126,10 @@ mod tests {
         // Adjust per-coil tau via inductance data so the residual gate
         // does not fire.
         let mut data = ElectricalIdData::new(512);
-        data.resistance_current_sum = [300_000, 300_000];
-        data.resistance_sample_count = [1000, 1000];
+        // r_count_slope_milli = 1706 (V=512, I=300 -> matches the old
+        // resistance_current_sum=[300_000,300_000]/sample_count=[1000,1000]
+        // single-point average this fixture replaced).
+        data.resistance_result = Some(resistance_result(1706, 1706));
         // Tune sum_delta so tau_e ≈ 887 us to match the transient
         // crosscheck below.
         // avg_delta = V * dt * SCALE / (tau * r_int)
@@ -1180,10 +1199,15 @@ mod tests {
                 model,
                 inner_warning_flags,
                 tau_residual_permille,
+                resistance_result,
             } = phase
             else {
                 panic!("expected CurrentTune, got {phase:?}");
             };
+            assert_eq!(
+                resistance_result.selected_r_count_slope_milli, 1706,
+                "resistance result from Phase 5 should carry forward unchanged"
+            );
             assert!(
                 (725..=740).contains(&model.tau_e_us),
                 "tau should be reported from the per-coil L/R model: {}",
@@ -1210,9 +1234,14 @@ mod tests {
             assert_eq!(items[0].value0, 512);
             assert_eq!(items[0].value2, ELECTRICAL_SAMPLE_PERIOD_US as u32);
             assert_eq!(items[1].code, 2);
-            assert_eq!(items[1].value0, 300);
+            // value0 and value1 are both the count-slope-milli (1706): the
+            // shared runner's per-axis fit no longer carries a separate raw
+            // average current, so the diagnostic reuses the same r_int value
+            // for both fields. value2 is the fit's selected-point count (5
+            // in `axis_result`), not a legacy 1000-sample count.
+            assert_eq!(items[1].value0, 1706);
             assert_eq!(items[1].value1, 1706);
-            assert_eq!(items[1].value2, 1000);
+            assert_eq!(items[1].value2, 5);
             assert_eq!(items[2].code, 3);
             assert_eq!(items[3].code, 4);
             assert!(
@@ -1239,6 +1268,138 @@ mod tests {
                 (290..=305).contains(&items[6].value2),
                 "diagnostic crosscheck should match assembly crosscheck: {}",
                 items[6].value2
+            );
+        });
+    }
+
+    /// Pack a `MOTOR_TYPE_N_POLE_PAIRS` value reporting a two-phase stepper,
+    /// matching the runner's `InvalidMotorType` entry check.
+    fn two_phase_motor_type_n_pole_pairs() -> u32 {
+        foci_tmc4671::registers::MotorTypeNPolePairs::new()
+            .with_motor_type(foci_tmc4671::registers::MotorType::TwoPhase as u8)
+            .with_n_pole_pairs(50)
+            .into()
+    }
+
+    /// Seed the power-stage readback registers the shared resistance runner
+    /// verifies against `backend.tmc_config()`'s profile (`PWM_MAXCNT`,
+    /// `PWM_BBM_H_BBM_L`, `DSADC_MDEC_B_MDEC_A`), plus `MOTOR_TYPE_N_POLE_PAIRS`.
+    /// `PWM_SV_CHOP` is written and read back by the runner itself, so it does
+    /// not need pre-seeding.
+    fn seed_resistance_power_stage_registers(backend: &mut MockBackend) {
+        use foci_tmc4671::registers::{
+            DSADC_MDEC_B_MDEC_A, MOTOR_TYPE_N_POLE_PAIRS, PWM_BBM_H_BBM_L, PWM_MAXCNT,
+        };
+        let config = backend.tmc_config().clone();
+        backend
+            .registers
+            .insert(
+                MOTOR_TYPE_N_POLE_PAIRS.addr(),
+                two_phase_motor_type_n_pole_pairs(),
+            )
+            .ok();
+        backend
+            .registers
+            .insert(PWM_MAXCNT.addr(), u32::from(config.pwm_maxcnt))
+            .ok();
+        backend
+            .registers
+            .insert(
+                PWM_BBM_H_BBM_L.addr(),
+                (u32::from(config.bbm_h) << 8) | u32::from(config.bbm_l),
+            )
+            .ok();
+        backend
+            .registers
+            .insert(
+                DSADC_MDEC_B_MDEC_A.addr(),
+                (u32::from(config.dsadc_mdec_b) << 16) | u32::from(config.dsadc_mdec_a),
+            )
+            .ok();
+    }
+
+    #[test]
+    fn electrical_id_uses_resistance_runner_before_legacy_inductance() {
+        pollster::block_on(async {
+            let mut backend = MockBackend::new();
+            seed_resistance_power_stage_registers(&mut backend);
+            backend.script_resistance_current_proportional_to_ud = true;
+
+            let mut phase = InnerPhase::ElectricalId {
+                state: ElectricalIdState::ResistanceIdentify,
+                data: ElectricalIdData::new(u32::from(backend.tmc_config().excitation_voltage)),
+            };
+            let mut buf = TransientBuffer::default();
+            let mut selftest_results = crate::selftest::SelftestResults::default();
+            let mut diagnostics = crate::selftest::CommissionDiagnostics::default();
+
+            let step = step_electrical_identification(
+                &mut phase,
+                &mut buf,
+                InnerSequence::Commission,
+                &mut selftest_results,
+                &mut diagnostics,
+                &mut backend,
+            )
+            .await;
+
+            assert!(
+                matches!(step, StepResult::Continue),
+                "expected Continue, got {step:?}"
+            );
+            assert!(
+                matches!(
+                    phase,
+                    InnerPhase::ElectricalId {
+                        state: ElectricalIdState::InductanceSetup { coil: 0 },
+                        ..
+                    }
+                ),
+                "expected InductanceSetup after a successful resistance run, got {phase:?}"
+            );
+            let InnerPhase::ElectricalId { data, .. } = &phase else {
+                panic!("expected ElectricalId, got {phase:?}");
+            };
+            assert!(
+                data.resistance_result.is_some(),
+                "resistance result should be stored on success"
+            );
+        });
+    }
+
+    #[test]
+    fn electrical_id_fails_when_resistance_quality_gate_fails() {
+        pollster::block_on(async {
+            let mut backend = MockBackend::new();
+            seed_resistance_power_stage_registers(&mut backend);
+            // No current scripting: ADC_IWY_IUX always reads back 0, so no
+            // point clears `linear_current_threshold_count` and the shared
+            // runner's fit rejects with `InsufficientLinearPoints`.
+
+            let mut phase = InnerPhase::ElectricalId {
+                state: ElectricalIdState::ResistanceIdentify,
+                data: ElectricalIdData::new(u32::from(backend.tmc_config().excitation_voltage)),
+            };
+            let mut buf = TransientBuffer::default();
+            let mut selftest_results = crate::selftest::SelftestResults::default();
+            let mut diagnostics = crate::selftest::CommissionDiagnostics::default();
+
+            let step = step_electrical_identification(
+                &mut phase,
+                &mut buf,
+                InnerSequence::Commission,
+                &mut selftest_results,
+                &mut diagnostics,
+                &mut backend,
+            )
+            .await;
+
+            assert!(
+                matches!(
+                    step,
+                    StepResult::InnerFailed(CommissionError::ResistanceIdFailed)
+                ),
+                "expected ResistanceIdFailed, got {step:?}"
             );
         });
     }
@@ -1707,25 +1868,27 @@ mod tests {
     }
 
     // -----------------------------------------------------------------
-    // Phase 1 model-assembly hard gates
+    // Phase 1 model-assembly gates (inductance / delay)
     // -----------------------------------------------------------------
 
-    /// Build per-coil resistance data for currents `c0`/`c1` (in counts).
-    /// The inductance arms are tuned to give per-coil tau ≈ 730us against
-    /// the resulting `r_int` so other gates do not fire incidentally.
+    /// Build model data for per-coil resistance currents `c0`/`c1` (counts).
+    ///
+    /// The per-axis count-slopes are `512000/c` (V=512 in count-slope-milli),
+    /// and the inductance arms are tuned per coil to give tau ≈ 730us against
+    /// each coil's own slope, so the tau-mismatch gate does not fire
+    /// incidentally when only resistance differs.
     fn data_with_per_coil_currents(c0: i32, c1: i32) -> ElectricalIdData {
+        let slope0 = (512_000 / c0.max(1)).max(1);
+        let slope1 = (512_000 / c1.max(1)).max(1);
         let mut data = ElectricalIdData::new(512);
-        data.resistance_current_sum = [c0 * 1000, c1 * 1000];
-        data.resistance_sample_count = [1000, 1000];
-        let avg_abs = ((c0.unsigned_abs() + c1.unsigned_abs()) / 2).max(1);
-        let r_int = (512u64 * 1000 / avg_abs as u64).max(1) as u32;
+        data.resistance_result = Some(resistance_result(slope0, slope1));
         let dt_us = 98u64;
         let target_tau_us = 730u64;
-        // avg_delta = V * dt * SCALE / (tau * r_int)
-        let avg_delta = (512u64 * dt_us * 1000 / (target_tau_us * r_int as u64)).max(1);
         let count: u32 = 5000;
-        let sum_delta = avg_delta * count as u64;
-        data.inductance_sum_delta = [sum_delta, sum_delta];
+        // avg_delta = V * dt * SCALE / (tau * r_int_coil), tuned per coil.
+        let avg_delta0 = (512u64 * dt_us * 1000 / (target_tau_us * slope0 as u64)).max(1);
+        let avg_delta1 = (512u64 * dt_us * 1000 / (target_tau_us * slope1 as u64)).max(1);
+        data.inductance_sum_delta = [avg_delta0 * count as u64, avg_delta1 * count as u64];
         data.inductance_count = [count, count];
         data.inductance_elapsed_us = [count * dt_us as u32, count * dt_us as u32];
         data
@@ -1738,12 +1901,11 @@ mod tests {
         assert_eq!(single_tau.code, 21);
         assert_eq!(single_tau.status, 1);
 
-        let mismatch =
-            diagnostic_for_model_assembly_failure(ModelAssemblyError::ResistanceMismatch {
-                permille: 151,
-            });
-        assert_eq!(mismatch.code, 25);
-        assert_eq!(mismatch.value0, 151);
+        let tau_mismatch = diagnostic_for_model_assembly_failure(ModelAssemblyError::TauMismatch {
+            permille: 301,
+        });
+        assert_eq!(tau_mismatch.code, 26);
+        assert_eq!(tau_mismatch.value0, 301);
 
         assert_eq!(DIAG_ELECTRICAL_ID_TAU_RESIDUAL, 28);
     }
@@ -1769,44 +1931,6 @@ mod tests {
     }
 
     #[test]
-    fn assemble_rejects_short_resistance() {
-        // V=512, I=8000 → r_mohm = 64 (< 100 short threshold).
-        let data = data_with_per_coil_currents(8000, 8000);
-        let buf = representative_transient();
-        let err = assemble_electrical_model(&data, buf.samples()).unwrap_err();
-        assert!(matches!(err, ModelAssemblyError::ResistanceShort { .. }));
-    }
-
-    #[test]
-    fn assemble_rejects_open_resistance() {
-        // V=512, I=10 → r_mohm = 51_200 (> 50_000 open threshold).
-        // Use sum_delta tuned to keep per-coil tau non-zero so the
-        // SingleCoilTau gate doesn't fire first.
-        let mut data = ElectricalIdData::new(512);
-        data.resistance_current_sum = [10_000, 10_000];
-        data.resistance_sample_count = [1000, 1000];
-        // avg_delta = 5 (just above INDUCTANCE_MIN_DELTA), tau ≈ 196 us.
-        data.inductance_sum_delta = [25_000, 25_000];
-        data.inductance_count = [5000, 5000];
-        data.inductance_elapsed_us = [490_000, 490_000];
-        let buf = representative_transient();
-        let err = assemble_electrical_model(&data, buf.samples()).unwrap_err();
-        assert!(matches!(err, ModelAssemblyError::ResistanceOpen { .. }));
-    }
-
-    #[test]
-    fn assemble_rejects_per_coil_resistance_disagreement() {
-        // c0=300 vs c1=800 produces r_mohm of 1706 vs 640 (~62% mismatch).
-        // Per-coil tau also diverges (tau uses per-coil R now), so absent
-        // gate ordering this could fire TauMismatch instead. The spec
-        // requires R-mismatch to be checked first.
-        let data = data_with_per_coil_currents(300, 800);
-        let buf = representative_transient();
-        let err = assemble_electrical_model(&data, buf.samples()).unwrap_err();
-        assert!(matches!(err, ModelAssemblyError::ResistanceMismatch { .. }));
-    }
-
-    #[test]
     fn assemble_rejects_single_coil_tau() {
         let mut data = representative_data();
         data.inductance_sum_delta = [200_000, 0];
@@ -1818,16 +1942,17 @@ mod tests {
 
     #[test]
     fn assemble_rejects_zero_l_int_with_model_scale_zero() {
-        // r_mohm = 100 (just at the short threshold; passes), avg_delta
-        // tuned so per-coil tau rounds to 5us — high enough to clear
-        // SingleCoilTau but low enough that l_int = r_int * tau / 1000
-        // and l_uh = r_mohm * tau / 1000 both round to 0.
+        // r_count_slope_milli = 100 (V=512, I=5120 -> matches the old
+        // resistance_current_sum=[5_120_000,5_120_000]/sample_count=[1000,1000]
+        // single-point average this fixture replaced). avg_delta tuned so
+        // per-coil tau rounds to 5us — high enough to clear SingleCoilTau but
+        // low enough that l_int = r_int * tau / 1000 and l_uh = r_mohm * tau /
+        // 1000 both round to 0.
         // tau = V * dt * SCALE / (avg_delta * r_int)
         //     = 512 * 98 * 1000 / (avg_delta * 100)
         // avg_delta = 100_352 → tau ≈ 5us → l_int = l_uh = 0.
         let mut data = ElectricalIdData::new(512);
-        data.resistance_current_sum = [5_120_000, 5_120_000];
-        data.resistance_sample_count = [1000, 1000];
+        data.resistance_result = Some(resistance_result(100, 100));
         data.inductance_sum_delta = [501_760_000, 501_760_000];
         data.inductance_count = [5000, 5000];
         data.inductance_elapsed_us = [490_000, 490_000];

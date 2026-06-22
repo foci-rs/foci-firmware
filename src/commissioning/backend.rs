@@ -132,6 +132,23 @@ pub trait CommissionBoardConfig {
     /// Configured ABN decoder quadrature count per mechanical revolution.
     fn encoder_quadrature_ppr(&self) -> u32;
 
+    /// Encoder counts per mechanical revolution.
+    ///
+    /// Used by the shared resistance runner to wrap the per-window encoder-move
+    /// delta. Identical to [`Self::encoder_quadrature_ppr`]; provided under the
+    /// runner-facing name expected by the `ResistanceBackend` adapter.
+    fn encoder_counts_per_rev(&self) -> u32 {
+        self.encoder_quadrature_ppr()
+    }
+
+    /// Whether ADC current-offset calibration has been established.
+    ///
+    /// Backs the resistance runner's `adc_offsets_ready` entry pre-check. True
+    /// once the commissioning ADC-calibration phase has captured the motor
+    /// sentinel, which the engine always does before electrical identification
+    /// runs the sweep.
+    fn adc_offsets_ready(&self) -> bool;
+
     /// Configured operational PID_VELOCITY_LIMIT value.
     fn operational_velocity_limit(&self) -> u32;
 
@@ -428,6 +445,17 @@ where
             .encoder_ppr
             .load(core::sync::atomic::Ordering::Relaxed)
             .saturating_mul(4)
+    }
+
+    fn adc_offsets_ready(&self) -> bool {
+        // The ADC-calibration phase captures a non-zero motor sentinel before
+        // any later phase energizes. Electrical identification (which runs the
+        // resistance sweep) is sequenced strictly after that phase, so a
+        // non-zero sentinel reflects that ADC offsets have been established.
+        self.tmc_state()
+            .motor_sentinel
+            .load(core::sync::atomic::Ordering::Relaxed)
+            != 0
     }
 
     fn operational_velocity_limit(&self) -> u32 {

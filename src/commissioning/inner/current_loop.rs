@@ -70,6 +70,13 @@ pub(crate) struct CurrentValidateData {
     pub(crate) inner_warning_flags: u8,
     /// L/R-vs-transient tau residual in permille from Phase 5.
     pub(crate) tau_residual_permille: u16,
+    /// Shared multi-point resistance-identification result from Phase 5.
+    pub(crate) resistance_result: crate::resistance_identification::ResistanceRunResult,
+    /// Resistance count-slope (milli-units) consumed by the gain-formula path.
+    /// Captured before any averaging so the final InnerResult can record the
+    /// same-run 64x count-slope-milli audit counterpart against
+    /// `selected_r_count_slope_milli`.
+    pub(crate) resistance_gain_path_count_slope_milli: i32,
 }
 
 /// Step amplitude as a fraction of run_current (15% = 15/100).
@@ -99,12 +106,18 @@ pub(crate) async fn step_current_tune<B: CommissioningBackend>(
     profile: CommissionProfile,
     backend: &mut B,
 ) -> StepResult {
-    let (model, inner_warning_flags, tau_residual_permille) = match phase {
+    let (model, inner_warning_flags, tau_residual_permille, resistance_result) = match phase {
         InnerPhase::CurrentTune {
             model,
             inner_warning_flags,
             tau_residual_permille,
-        } => (*model, *inner_warning_flags, *tau_residual_permille),
+            resistance_result,
+        } => (
+            *model,
+            *inner_warning_flags,
+            *tau_residual_permille,
+            *resistance_result,
+        ),
         _ => return StepResult::Continue,
     };
 
@@ -153,6 +166,12 @@ pub(crate) async fn step_current_tune<B: CommissioningBackend>(
             },
             inner_warning_flags,
             tau_residual_permille,
+            resistance_result,
+            // The gain-formula path consumes `model.r_int`, already in the
+            // `ELECTRICAL_MODEL_RESISTANCE_SCALE` (milli) count-slope unit
+            // space — identical to `selected_r_count_slope_milli`, so the 64x
+            // mismatch is directly readable from the persisted artifacts.
+            resistance_gain_path_count_slope_milli: model.r_int as i32,
         },
     };
     StepResult::PhaseChanged(PhaseId::CurrentValidate)
@@ -557,6 +576,9 @@ pub(crate) async fn step_current_validate<B: CommissioningBackend>(
                 (None, None) => 0,
             };
 
+            let resistance = data.resistance_result;
+            let axis0 = resistance.axis0;
+            let axis1 = resistance.axis1;
             let result = InnerResult {
                 status: data.final_status,
                 r_int: data.model.r_int,
@@ -575,6 +597,37 @@ pub(crate) async fn step_current_validate<B: CommissioningBackend>(
                 tau_e_crosscheck_us: data.model.tau_e_crosscheck_us,
                 tau_residual_permille: data.tau_residual_permille,
                 inner_warning_flags: data.inner_warning_flags,
+                resistance_profile_version: resistance.profile_version,
+                resistance_selected_count_slope_milli: resistance.selected_r_count_slope_milli,
+                resistance_gain_path_count_slope_milli: data.resistance_gain_path_count_slope_milli,
+                resistance_axis0_count_slope_milli: axis0.r_count_slope_milli,
+                resistance_axis1_count_slope_milli: axis1.r_count_slope_milli,
+                resistance_axis0_intercept_count: axis0.intercept_count,
+                resistance_axis1_intercept_count: axis1.intercept_count,
+                resistance_axis0_rmse_permille: axis0.rmse_permille,
+                resistance_axis1_rmse_permille: axis1.rmse_permille,
+                resistance_selected_mask_axis0: axis0.selected_mask,
+                resistance_selected_mask_axis1: axis1.selected_mask,
+                resistance_axis0_signed_count_slope_milli: axis0
+                    .signed_anchor
+                    .map_or(0, |anchor| anchor.signed_count_slope_milli),
+                resistance_axis1_signed_count_slope_milli: axis1
+                    .signed_anchor
+                    .map_or(0, |anchor| anchor.signed_count_slope_milli),
+                resistance_axis0_signed_asymmetry_permille: axis0
+                    .signed_anchor
+                    .map_or(0, |anchor| anchor.asymmetry_permille),
+                resistance_axis1_signed_asymmetry_permille: axis1
+                    .signed_anchor
+                    .map_or(0, |anchor| anchor.asymmetry_permille),
+                resistance_axis0_drift_permille: axis0
+                    .signed_anchor
+                    .map_or(0, |anchor| anchor.drift_permille),
+                resistance_axis1_drift_permille: axis1
+                    .signed_anchor
+                    .map_or(0, |anchor| anchor.drift_permille),
+                resistance_status_flags_or: resistance.status_flags_or,
+                resistance_warning_flags: resistance.warning_flags.0,
             };
 
             match sequence {

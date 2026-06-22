@@ -70,6 +70,8 @@ pub struct MockBackend {
     pub step_width_value: u32,
     /// Expected ABN_DECODER_PPR quadrature count for readback tests.
     pub encoder_quadrature_ppr_value: u32,
+    /// Value returned by `adc_offsets_ready()`.
+    pub adc_offsets_ready_value: bool,
     /// Value returned by `operational_velocity_limit()`.
     pub operational_velocity_limit_value: u32,
     /// Value returned by `operational_voltage_limit()`.
@@ -92,6 +94,16 @@ pub struct MockBackend {
     pub abn_decoder_count_pos: usize,
     /// If true, every SPI write asserts that step processing has already been gated off.
     pub assert_motor_armed_false_on_write: bool,
+    /// If true, `read_register(ADC_IWY_IUX)` reports a phase current
+    /// proportional 1:1 to the most recent `UQ_UD_EXT` write (packed into
+    /// both axis halves), and `read_register(STATUS_FLAGS)` reports `0`.
+    /// Used by the shared resistance-identification runner's integration
+    /// tests to script a clean linear current response without needing a
+    /// dedicated fake backend.
+    pub script_resistance_current_proportional_to_ud: bool,
+    /// Last value written to `UQ_UD_EXT`, tracked only when
+    /// `script_resistance_current_proportional_to_ud` is set.
+    last_uq_ud_ext_write: u32,
 }
 
 impl MockBackend {
@@ -116,6 +128,7 @@ impl MockBackend {
             excitation_voltage_value: 1024,
             step_width_value: 0,
             encoder_quadrature_ppr_value: 4000,
+            adc_offsets_ready_value: true,
             operational_velocity_limit_value: 500_000,
             operational_voltage_limit_value:
                 crate::state::tmc::DEFAULT_OPERATIONAL_PIDOUT_UQ_UD_LIMIT,
@@ -126,6 +139,8 @@ impl MockBackend {
             abn_decoder_count_sequence: Vec::new(),
             abn_decoder_count_pos: 0,
             assert_motor_armed_false_on_write: false,
+            script_resistance_current_proportional_to_ud: false,
+            last_uq_ud_ext_write: 0,
         }
     }
 
@@ -172,6 +187,17 @@ impl CommissionRegisterIo for MockBackend {
             self.abn_decoder_count_pos += 1;
             return Ok(val);
         }
+        if self.script_resistance_current_proportional_to_ud {
+            if addr == foci_tmc4671::registers::ADC_IWY_IUX.addr() {
+                // Pack the same proportional current into both axis halves so
+                // either electrical axis channel reads the intended value.
+                let half = (self.last_uq_ud_ext_write & 0xffff) as u16 as u32;
+                return Ok((half << 16) | half);
+            }
+            if addr == foci_tmc4671::registers::STATUS_FLAGS.addr() {
+                return Ok(0);
+            }
+        }
         Ok(*self.registers.get(&addr).unwrap_or(&0))
     }
 
@@ -184,6 +210,11 @@ impl CommissionRegisterIo for MockBackend {
                     .load(core::sync::atomic::Ordering::Relaxed),
                 "dispatch SPI write ran while step processing was armed"
             );
+        }
+        if self.script_resistance_current_proportional_to_ud
+            && addr == foci_tmc4671::registers::UQ_UD_EXT.addr()
+        {
+            self.last_uq_ud_ext_write = val;
         }
         self.spi_log.push(SpiOp::Write(addr, val)).ok();
         if self.fail_on_write == Some(addr) {
@@ -291,6 +322,10 @@ impl CommissionBoardConfig for MockBackend {
 
     fn encoder_quadrature_ppr(&self) -> u32 {
         self.encoder_quadrature_ppr_value
+    }
+
+    fn adc_offsets_ready(&self) -> bool {
+        self.adc_offsets_ready_value
     }
 
     fn operational_velocity_limit(&self) -> u32 {

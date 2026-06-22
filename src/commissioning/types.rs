@@ -85,6 +85,52 @@ pub struct InnerResult {
     /// Warning bitfield (bit 0..3 model gates, bit 4 retry accepted,
     /// bit 5 fallback gains, bit 6 host-default confidence, bit 7 reserved).
     pub inner_warning_flags: u8,
+
+    // --- Shared multi-point resistance-identification evidence ---
+    //
+    // Persisted so the host can audit the count-space fit and the 64x
+    // count-slope-milli mismatch directly from artifacts. All slope fields
+    // are in the same count-slope-milli unit space (dV_count/dI_count * 1000),
+    // identical to the legacy `r_int` resistance scale.
+    /// Resistance profile version that produced the run.
+    pub resistance_profile_version: u16,
+    /// Run-selected resistance count-slope in milli-units.
+    pub resistance_selected_count_slope_milli: i32,
+    /// Resistance count-slope (milli-units) actually consumed by the gain path.
+    /// Same-run comparison counterpart for the 64x count-slope-milli audit.
+    pub resistance_gain_path_count_slope_milli: i32,
+    /// Axis 0 (PHASE0) fitted count-slope in milli-units.
+    pub resistance_axis0_count_slope_milli: i32,
+    /// Axis 1 (PHASE90) fitted count-slope in milli-units.
+    pub resistance_axis1_count_slope_milli: i32,
+    /// Axis 0 fit intercept in current counts.
+    pub resistance_axis0_intercept_count: i32,
+    /// Axis 1 fit intercept in current counts.
+    pub resistance_axis1_intercept_count: i32,
+    /// Axis 0 fit RMSE in permille.
+    pub resistance_axis0_rmse_permille: u16,
+    /// Axis 1 fit RMSE in permille.
+    pub resistance_axis1_rmse_permille: u16,
+    /// Axis 0 selected-point mask.
+    pub resistance_selected_mask_axis0: u16,
+    /// Axis 1 selected-point mask.
+    pub resistance_selected_mask_axis1: u16,
+    /// Axis 0 signed-anchor count-slope in milli-units.
+    pub resistance_axis0_signed_count_slope_milli: i32,
+    /// Axis 1 signed-anchor count-slope in milli-units.
+    pub resistance_axis1_signed_count_slope_milli: i32,
+    /// Axis 0 signed-anchor asymmetry in permille.
+    pub resistance_axis0_signed_asymmetry_permille: u16,
+    /// Axis 1 signed-anchor asymmetry in permille.
+    pub resistance_axis1_signed_asymmetry_permille: u16,
+    /// Axis 0 signed-anchor thermal-drift in permille.
+    pub resistance_axis0_drift_permille: u16,
+    /// Axis 1 signed-anchor thermal-drift in permille.
+    pub resistance_axis1_drift_permille: u16,
+    /// OR of all sampled `STATUS_FLAGS` during the resistance run.
+    pub resistance_status_flags_or: u32,
+    /// Resistance run warning bitfield (`ResistanceWarningFlags`).
+    pub resistance_warning_flags: u32,
 }
 
 /// Result of outer (mechanical) commissioning.
