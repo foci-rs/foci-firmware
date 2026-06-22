@@ -742,8 +742,20 @@ mod resistance_reply_size_tests {
 
     /// Klipper's wire-frame payload budget: `MESSAGE_MAX` (64) minus the
     /// 2-byte header and 3-byte trailer. See
-    /// `ankyra/ankyra/src/transport.rs` `max_valid_frame_emits_bytes`.
+    /// `ankyra/ankyra/src/transport.rs` `max_valid_frame_emits_bytes`. This
+    /// budget covers the full frame body that `encode_frame` writes, which is
+    /// the reply-id `u16` followed by the reply payload (see
+    /// `ankyra-assemble/src/senders.rs::emit_sender_impl`), so the asserted
+    /// total below includes a worst-case id encoding, not payload alone.
     const KLIPPER_MESSAGE_PAYLOAD_MAX: usize = 59;
+
+    /// Worst-case VLQ width, in bytes, of the `u16` reply id that
+    /// `encode_frame` prepends to every reply payload. Klipper's VLQ encoder
+    /// (`ankyra::encoding::encode_vlq_int`) reinterprets its `u32` input as
+    /// `i32` and range-checks that signed value, so the worst case for a
+    /// `u16`-typed value is `u16::MAX` (65535), which falls outside the
+    /// 2-byte range `[-4096, 12288)` and encodes to 3 bytes.
+    const REPLY_ID_WORST_CASE_BYTES: usize = 3;
 
     /// Encode `reply` and return the actual wire-payload byte count.
     fn encoded_len<T: Writable>(reply: &T) -> usize {
@@ -752,10 +764,29 @@ mod resistance_reply_size_tests {
         scratch.result().len()
     }
 
+    /// Assert that `reply`'s encoded payload, plus a worst-case reply-id
+    /// prefix, fits Klipper's wire-frame budget.
+    fn assert_fits_with_id<T: Writable>(reply: &T, reply_kind: &str) {
+        let payload_len = encoded_len(reply);
+        let total_len = payload_len + REPLY_ID_WORST_CASE_BYTES;
+        assert!(
+            total_len <= KLIPPER_MESSAGE_PAYLOAD_MAX,
+            "{reply_kind} encodes to {payload_len} payload bytes + {REPLY_ID_WORST_CASE_BYTES} \
+             worst-case id bytes = {total_len}, exceeds {KLIPPER_MESSAGE_PAYLOAD_MAX}"
+        );
+    }
+
     #[test]
     fn resistance_profile_reply_fits_klipper_message_limit() {
-        // Worst-case VLQ encoding: every signed/unsigned field at its
-        // extreme magnitude.
+        // True worst-case VLQ encoding per field type. Klipper's VLQ encoder
+        // reinterprets the `u32`/`i32` payload as `i32` and range-checks
+        // that signed value (`encode_vlq_int`), so `u32::MAX as i32 == -1`
+        // collapses to a 1-byte encoding rather than the genuine 5-byte
+        // worst case. `0x7FFF_FFFF` (`i32::MAX`) is outside all four VLQ
+        // range checks and genuinely encodes to 5 bytes. `u16::MAX` and
+        // `u8::MAX` are already correct worst cases for their domains (3
+        // and 2 bytes respectively) because those types' maximum values
+        // cannot reach the wider per-length VLQ thresholds.
         let reply = FociResistanceProfile {
             oid: u8::MAX,
             profile_version: u16::MAX,
@@ -766,41 +797,39 @@ mod resistance_reply_size_tests {
             dsadc_mdec_b: u16::MAX,
             linear_current_threshold_count: u16::MAX,
             encoder_move_warn_counts: u16::MAX,
-            status_flags_warn_mask: u32::MAX,
+            status_flags_warn_mask: 0x7FFF_FFFF,
             scale_metadata_validated: u8::MAX,
         };
 
-        let len = encoded_len(&reply);
-        assert!(
-            len <= KLIPPER_MESSAGE_PAYLOAD_MAX,
-            "foci_resistance_profile encodes to {len} bytes, exceeds {KLIPPER_MESSAGE_PAYLOAD_MAX}"
-        );
+        assert_fits_with_id(&reply, "foci_resistance_profile");
     }
 
     #[test]
     fn resistance_run_reply_fits_klipper_message_limit() {
+        // See `resistance_profile_reply_fits_klipper_message_limit` for why
+        // `u32` fields use `0x7FFF_FFFF` instead of `u32::MAX`. `i32::MIN` is
+        // already a genuine 5-byte worst case for `i32` fields (it sits
+        // outside all four VLQ range checks on the signed side).
         let reply = FociResistanceRun {
             oid: u8::MAX,
             status: u8::MAX,
             profile_version: u16::MAX,
             selected_r_count_slope_milli: i32::MIN,
-            warning_flags: u32::MAX,
-            status_flags_or: u32::MAX,
+            warning_flags: 0x7FFF_FFFF,
+            status_flags_or: 0x7FFF_FFFF,
             pwm_maxcnt_readback: u16::MAX,
             bbm_readback: u16::MAX,
-            dsadc_mdec_readback: u32::MAX,
-            pwm_sv_chop_readback: u32::MAX,
+            dsadc_mdec_readback: 0x7FFF_FFFF,
+            pwm_sv_chop_readback: 0x7FFF_FFFF,
         };
 
-        let len = encoded_len(&reply);
-        assert!(
-            len <= KLIPPER_MESSAGE_PAYLOAD_MAX,
-            "foci_resistance_run encodes to {len} bytes, exceeds {KLIPPER_MESSAGE_PAYLOAD_MAX}"
-        );
+        assert_fits_with_id(&reply, "foci_resistance_run");
     }
 
     #[test]
     fn resistance_axis_reply_fits_klipper_message_limit() {
+        // See `resistance_profile_reply_fits_klipper_message_limit` for why
+        // `u32` fields use `0x7FFF_FFFF` instead of `u32::MAX`.
         let reply = FociResistanceAxis {
             oid: u8::MAX,
             electrical_axis: u8::MAX,
@@ -814,14 +843,10 @@ mod resistance_reply_size_tests {
             signed_count_slope_milli: i32::MIN,
             signed_asymmetry_permille: u16::MAX,
             drift_permille: u16::MAX,
-            warning_flags: u32::MAX,
+            warning_flags: 0x7FFF_FFFF,
         };
 
-        let len = encoded_len(&reply);
-        assert!(
-            len <= KLIPPER_MESSAGE_PAYLOAD_MAX,
-            "foci_resistance_axis encodes to {len} bytes, exceeds {KLIPPER_MESSAGE_PAYLOAD_MAX}"
-        );
+        assert_fits_with_id(&reply, "foci_resistance_axis");
     }
 }
 
