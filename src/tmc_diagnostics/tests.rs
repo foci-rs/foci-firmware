@@ -812,10 +812,11 @@ fn resistance_test_rejects_during_homing_without_invoking_runner() {
             panic!("expected resistance test report");
         };
         assert_eq!(profile.oid, 11);
-        assert_eq!(
-            run.status,
-            crate::resistance_identification::ResistanceError::NotArmed.status_code()
-        );
+        // Homing/active-stepping is a "busy, not ready" rejection, the same
+        // semantics the sibling voltage_step/current_step diagnostics report
+        // via `CURRENT_STEP_STATUS_NOT_READY` -- not `NotArmed`, which means
+        // the motor itself is not armed/calibrated for open-loop voltage.
+        assert_eq!(run.status, CURRENT_STEP_STATUS_NOT_READY);
         assert!(axes.is_none());
         assert!(
             tmc.into_inner().writes.is_empty(),

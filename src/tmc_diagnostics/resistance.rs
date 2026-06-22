@@ -6,14 +6,15 @@ use core::sync::atomic::Ordering::Relaxed;
 use foci_tmc4671::registers::Register;
 
 use crate::resistance_identification::{
-    ResistanceAxisResult, ResistanceBackend, ResistanceBackendError, ResistanceError,
-    ResistanceProfile, ResistanceRunMode, ResistanceRunResult, run_resistance_identification,
+    ResistanceAxisResult, ResistanceBackend, ResistanceBackendError, ResistanceProfile,
+    ResistanceRunMode, ResistanceRunResult, run_resistance_identification,
 };
 use crate::tmc::{TmcRequest, TmcRequestKind};
 
 use super::{
-    DiagnosticContext, DiagnosticDelay, DiagnosticOutcome, DiagnosticReport, ResistanceAxisReport,
-    ResistanceProfileReport, ResistanceRunReport, empty_resistance_run_report,
+    CURRENT_STEP_STATUS_NOT_READY, DiagnosticContext, DiagnosticDelay, DiagnosticOutcome,
+    DiagnosticReport, ResistanceAxisReport, ResistanceProfileReport, ResistanceRunReport,
+    empty_resistance_run_report,
 };
 
 /// Adapter exposing the board-agnostic [`DiagnosticContext`] as a
@@ -214,7 +215,7 @@ where
     if ctx.readiness.homing_active || ctx.readiness.stepper_active {
         return handled(
             profile_report,
-            empty_resistance_run_report(oid, ResistanceError::NotArmed.status_code()),
+            empty_resistance_run_report(oid, CURRENT_STEP_STATUS_NOT_READY),
             None,
         );
     }
