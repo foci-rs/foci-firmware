@@ -311,6 +311,13 @@ async fn measure_axis<B: ResistanceBackend>(
 
     let mut first_anchor_current: Option<i32> = None;
 
+    // Rolling leading zero, advanced to each point's trailing zero so every
+    // point is bracketed against its ADJACENT zero windows (prior trailing and
+    // own trailing). Bracketing against the global initial zero would bias late
+    // points against a stale start-of-sweep offset and defeat the per-point
+    // trailing zeros' drift compensation.
+    let mut leading_zero = initial_zero.phase_current_count;
+
     for (index, &ud) in profile.ud_points.iter().enumerate() {
         let energized = capture_window(
             backend,
@@ -325,10 +332,6 @@ async fn measure_axis<B: ResistanceBackend>(
 
         check_peak_current(profile, energized.phase_current_count)?;
 
-        if ud == profile.signed_anchor_ud {
-            first_anchor_current = Some(energized.phase_current_count);
-        }
-
         // Adjacent zero window after the energized point.
         let trailing_zero = capture_window(
             backend,
@@ -341,15 +344,28 @@ async fn measure_axis<B: ResistanceBackend>(
         )
         .await?;
 
-        // Zero-subtract against the mean of the bracketing zero windows.
-        let zero_current =
-            (initial_zero.phase_current_count + trailing_zero.phase_current_count) / 2;
+        // Zero-subtract against the mean of the adjacent bracketing zero
+        // windows (prior trailing and own trailing).
+        let zero_current = (leading_zero + trailing_zero.phase_current_count) / 2;
+        let current_delta_count = energized.phase_current_count - zero_current;
+
+        // The first positive anchor must feed `build_signed_anchor` with the
+        // same zero-subtraction as every other point and the negative anchor,
+        // otherwise the signed slope, asymmetry, and drift mix raw and
+        // zero-subtracted currents.
+        if ud == profile.signed_anchor_ud {
+            first_anchor_current = Some(current_delta_count);
+        }
+
         points[index] = ResistancePoint {
             requested_ud: ud,
             voltage_delta_count: i32::from(ud),
-            current_delta_count: energized.phase_current_count - zero_current,
+            current_delta_count,
             selected: false,
         };
+
+        // Advance the rolling bracket to this point's trailing zero.
+        leading_zero = trailing_zero.phase_current_count;
     }
 
     // Repeated positive anchor near the end of the axis for drift evidence.
@@ -376,6 +392,13 @@ async fn measure_axis<B: ResistanceBackend>(
     )
     .await?;
 
+    // Bracket the repeated anchor against its adjacent zeros (the last sweep
+    // point's trailing zero and the repeated anchor's own trailing zero), then
+    // advance the rolling bracket past it.
+    let repeated_zero_mean = (leading_zero + repeated_zero.phase_current_count) / 2;
+    let repeated_zero_subtracted = repeated_anchor.phase_current_count - repeated_zero_mean;
+    leading_zero = repeated_zero.phase_current_count;
+
     // One negative signed anchor.
     let negative_anchor = capture_window(
         backend,
@@ -400,12 +423,15 @@ async fn measure_axis<B: ResistanceBackend>(
     )
     .await?;
 
-    let positive_anchor_current =
-        first_anchor_current.unwrap_or(repeated_anchor.phase_current_count);
-    let repeated_zero_subtracted = repeated_anchor.phase_current_count
-        - (initial_zero.phase_current_count + repeated_zero.phase_current_count) / 2;
-    let negative_zero_subtracted = negative_anchor.phase_current_count
-        - (initial_zero.phase_current_count + negative_zero.phase_current_count) / 2;
+    // Bracket the negative anchor against its adjacent zeros (the repeated
+    // anchor's trailing zero and the negative anchor's own trailing zero).
+    let negative_zero_mean = (leading_zero + negative_zero.phase_current_count) / 2;
+    let negative_zero_subtracted = negative_anchor.phase_current_count - negative_zero_mean;
+
+    // The positive anchor is always the zero-subtracted value: either the first
+    // matching sweep point or, if none matched, the zero-subtracted repeated
+    // anchor. It must never be a raw energized current.
+    let positive_anchor_current = first_anchor_current.unwrap_or(repeated_zero_subtracted);
 
     let signed_anchor = build_signed_anchor(
         positive_anchor_current,
