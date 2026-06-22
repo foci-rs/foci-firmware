@@ -9,8 +9,16 @@
 //!
 //! Safety invariants enforced here:
 //!
-//! - `PIDOUT_UQ_UD_LIMITS` is bounded before any open-loop voltage command and
-//!   before the chopper is enabled.
+//! - `PIDOUT_UQ_UD_LIMITS` is set to the profile's full sweep authority
+//!   (`profile.max_abs_ud()`) before any open-loop voltage command and before
+//!   the chopper is enabled, in both run modes, so no sweep point is silently
+//!   clamped. The pre-existing value is only a restore baseline, not an
+//!   authority cap, in [`ResistanceRunMode::CommissioningManagedEnable`]
+//!   (commissioning's ADC calibration phase leaves `PIDOUT_UQ_UD_LIMITS=1024`
+//!   behind as such a baseline). In [`ResistanceRunMode::ExternallyArmed`] the
+//!   pre-existing value is the motor's operational voltage authority, so a
+//!   pre-sweep check rejects with [`ResistanceError::OutOfBoundsParameter`]
+//!   when it cannot cover the sweep, instead of energizing past it.
 //! - `PWM_SV_CHOP=7` is written only during energized operation; the safe-state
 //!   restore sets it back to `0`.
 //! - In [`ResistanceRunMode::ExternallyArmed`] the runner never asserts the
@@ -107,6 +115,9 @@ struct WindowMean {
 /// - [`ResistanceError::NotAdcReady`] when ADC offsets are not ready.
 /// - [`ResistanceError::NotArmed`] in [`ResistanceRunMode::ExternallyArmed`]
 ///   when the motor is not armed for open-loop voltage.
+/// - [`ResistanceError::OutOfBoundsParameter`] in
+///   [`ResistanceRunMode::ExternallyArmed`] when the saved operational voltage
+///   limit cannot cover the profile's full sweep authority.
 /// - [`ResistanceError::InvalidMotorType`] when `MOTOR_TYPE` is not the
 ///   two-phase stepper type.
 /// - [`ResistanceError::UnsupportedProfile`] when the fixed profile would exceed
@@ -119,15 +130,16 @@ struct WindowMean {
 /// - Any fit/evaluation error from [`fit_resistance_axis`] or
 ///   [`evaluate_resistance_result`].
 ///
-/// All errors except the two entry pre-checks restore safe TMC4671 state before
+/// All errors except the two entry pre-checks ([`ResistanceError::NotAdcReady`]
+/// and [`ResistanceError::NotArmed`]) restore safe TMC4671 state before
 /// returning.
 pub async fn run_resistance_identification<B: ResistanceBackend>(
     backend: &mut B,
     mode: ResistanceRunMode,
 ) -> Result<ResistanceRunResult, ResistanceError> {
-    // Entry pre-checks. These run before any register is touched, so a rejection
-    // here cannot leave the power stage in a disturbed state and must not write
-    // a safe-state restore over an externally armed motor.
+    // Entry pre-checks. These run before any register is written, so a
+    // rejection here cannot leave the power stage in a disturbed state and
+    // must not write a safe-state restore over an externally armed motor.
     if !backend.adc_offsets_ready() {
         return Err(ResistanceError::NotAdcReady);
     }
@@ -165,6 +177,22 @@ async fn run_energized_body<B: ResistanceBackend>(
     profile: &ResistanceProfile,
     saved_voltage_limit: u32,
 ) -> Result<ResistanceRunResult, ResistanceError> {
+    // In `ExternallyArmed` mode the saved limit is the motor's operational
+    // voltage authority, not a restore baseline (commissioning's ADC
+    // calibration intentionally leaves PIDOUT_UQ_UD_LIMITS=1024 as such a
+    // baseline; see `step_adc_calibrate`). The sweep must never exceed that
+    // authority for a diagnostic run over an externally armed motor, so
+    // reject here, before any energizing register write, rather than silently
+    // clamping sweep points below the requested UD. This is a pre-sweep
+    // rejection like the motor-type and exposure-budget checks below it, so
+    // the unconditional restore in `run_resistance_identification` still
+    // restores safe state on this exit.
+    if mode == ResistanceRunMode::ExternallyArmed
+        && saved_voltage_limit < u32::from(profile.max_abs_ud().unsigned_abs())
+    {
+        return Err(ResistanceError::OutOfBoundsParameter);
+    }
+
     // Verify the typed/masked MOTOR_TYPE through the register wrapper.
     let motor_type_raw = read(backend, MOTOR_TYPE_N_POLE_PAIRS.addr()).await?;
     let motor_type = MotorTypeNPolePairs::from(motor_type_raw).motor_type();
@@ -181,8 +209,13 @@ async fn run_energized_body<B: ResistanceBackend>(
         return Err(ResistanceError::UnsupportedProfile);
     }
 
-    // Power-stage setup. Voltage limit is bounded before the chopper is enabled
-    // and before any open-loop voltage command.
+    // Power-stage setup. The sweep voltage limit is set to the profile's full
+    // sweep authority (not clamped against the saved baseline) before the
+    // chopper is enabled and before any open-loop voltage command, so no
+    // sweep point is silently clamped. `ExternallyArmed` mode already
+    // rejected above when the saved operational limit could not cover this;
+    // `CommissioningManagedEnable` always uses the full authority because the
+    // saved value there is only a restore baseline, not an authority cap.
     write(
         backend,
         MODE_RAMP_MODE_MOTION.addr(),
@@ -193,7 +226,7 @@ async fn run_energized_body<B: ResistanceBackend>(
     write(
         backend,
         PIDOUT_UQ_UD_LIMITS.addr(),
-        bounded_voltage_limit(profile, saved_voltage_limit),
+        u32::from(profile.max_abs_ud().unsigned_abs()),
     )
     .await?;
     write(backend, PWM_SV_CHOP.addr(), profile.pwm_sv_chop).await?;
@@ -505,13 +538,6 @@ fn build_signed_anchor(
         repeated_positive_current_count,
         drift_permille,
     }
-}
-
-/// Bounded voltage limit for the sweep: large enough that the largest profile UD
-/// point is applied unclamped, but never above the saved operational limit.
-fn bounded_voltage_limit(profile: &ResistanceProfile, saved_voltage_limit: u32) -> u32 {
-    let needed = u32::from(profile.max_abs_ud().unsigned_abs());
-    needed.min(saved_voltage_limit)
 }
 
 /// Restore safe TMC4671 state. Always called before the runner returns past the

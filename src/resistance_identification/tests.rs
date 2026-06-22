@@ -376,6 +376,77 @@ fn runner_sets_status_flags_warning_when_sampled_status_matches_mask() {
     assert_eq!(result.status_flags_or, expected_status_flags);
 }
 
+/// Assert that `addr` was written with `value` before the safe-state restore
+/// pass (i.e. somewhere among the first `writes.len() - 4` entries, since
+/// `restore_safe_state` issues exactly 4 writes at the end of every run).
+fn assert_written_before_restore(writes: &[RecordedWrite], addr: u8, value: u32) {
+    let restore_start = writes.len().saturating_sub(4);
+    assert!(
+        writes[..restore_start]
+            .iter()
+            .any(|write| write.addr == addr && write.value == value),
+        "expected addr {addr:#x}={value} written before the safe-state restore, got {writes:?}"
+    );
+}
+
+#[test]
+fn commissioning_mode_uses_full_sweep_authority_despite_low_saved_baseline() {
+    // ADC calibration intentionally leaves PIDOUT_UQ_UD_LIMITS=1024 as a
+    // restore baseline (see commissioning::inner::adc::step_adc_calibrate).
+    // The runner must not clamp the sweep's PIDOUT limit to that baseline:
+    // doing so silently clamps every sweep point below the baseline,
+    // corrupting the fit while still recording the unclamped requested UD.
+    let mut backend = FakeResistanceBackend::standard();
+    backend.saved_voltage_limit = 1024;
+    let max_abs_ud = u32::from(backend.profile().max_abs_ud().unsigned_abs());
+    assert!(
+        max_abs_ud > backend.saved_voltage_limit,
+        "fixture must exercise the corrupted-clamp scenario"
+    );
+
+    let result = block_on(run_resistance_identification(
+        &mut backend,
+        ResistanceRunMode::CommissioningManagedEnable,
+    ));
+
+    assert!(result.is_ok(), "expected ok, got {result:?}");
+    assert_written_before_restore(&backend.writes, PIDOUT_UQ_UD_LIMITS.addr(), max_abs_ud);
+    assert!(backend.wrote_safe_state());
+}
+
+#[test]
+fn externally_armed_mode_rejects_when_saved_limit_is_below_sweep_authority() {
+    // For a diagnostic run over an externally-armed motor, the operational
+    // voltage limit is the authority and must not be exceeded by the sweep.
+    let mut backend = FakeResistanceBackend::standard();
+    let max_abs_ud = u32::from(backend.profile().max_abs_ud().unsigned_abs());
+    backend.saved_voltage_limit = max_abs_ud - 1;
+
+    let err = block_on(run_resistance_identification(
+        &mut backend,
+        ResistanceRunMode::ExternallyArmed,
+    ))
+    .unwrap_err();
+
+    assert_eq!(err, ResistanceError::OutOfBoundsParameter);
+    assert!(backend.wrote_safe_state());
+}
+
+#[test]
+fn externally_armed_mode_proceeds_when_saved_limit_meets_sweep_authority() {
+    let mut backend = FakeResistanceBackend::standard();
+    let max_abs_ud = u32::from(backend.profile().max_abs_ud().unsigned_abs());
+    backend.saved_voltage_limit = max_abs_ud;
+
+    let result = block_on(run_resistance_identification(
+        &mut backend,
+        ResistanceRunMode::ExternallyArmed,
+    ));
+
+    assert!(result.is_ok(), "expected ok, got {result:?}");
+    assert_written_before_restore(&backend.writes, PIDOUT_UQ_UD_LIMITS.addr(), max_abs_ud);
+}
+
 #[test]
 fn runner_rejects_profile_exceeding_exposure_budget() {
     let mut backend = FakeResistanceBackend::standard();
