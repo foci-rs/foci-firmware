@@ -24,9 +24,13 @@
 //! - In [`ResistanceRunMode::ExternallyArmed`] the runner never asserts the
 //!   enable pin; it rejects with [`ResistanceError::NotArmed`] when the motor is
 //!   not already armed for open-loop voltage.
-//! - Every exit path past the entry pre-checks restores safe state through one
-//!   shared helper, so no `Err` return or `?` failure can leave the power stage
-//!   energized.
+//! - Every exit path past the entry pre-checks and pre-energize validations
+//!   ([`ResistanceError::OutOfBoundsParameter`], [`ResistanceError::InvalidMotorType`],
+//!   [`ResistanceError::UnsupportedProfile`]) restores safe state through one
+//!   shared helper, so no `Err` return or `?` failure can leave the power
+//!   stage energized. The pre-energize validations themselves run before any
+//!   energizing register write, so a rejection there must not write the
+//!   restore sequence over an externally armed motor.
 
 use foci_tmc4671::registers::{
     ABN_DECODER_COUNT, ADC_IWY_IUX, DSADC_MDEC_B_MDEC_A, MODE_RAMP_MODE_MOTION,
@@ -130,9 +134,11 @@ struct WindowMean {
 /// - Any fit/evaluation error from [`fit_resistance_axis`] or
 ///   [`evaluate_resistance_result`].
 ///
-/// All errors except the two entry pre-checks ([`ResistanceError::NotAdcReady`]
-/// and [`ResistanceError::NotArmed`]) restore safe TMC4671 state before
-/// returning.
+/// All errors except the entry pre-checks and pre-energize validations
+/// ([`ResistanceError::NotAdcReady`], [`ResistanceError::NotArmed`],
+/// [`ResistanceError::OutOfBoundsParameter`], [`ResistanceError::InvalidMotorType`],
+/// and [`ResistanceError::UnsupportedProfile`]) restore safe TMC4671 state
+/// before returning.
 pub async fn run_resistance_identification<B: ResistanceBackend>(
     backend: &mut B,
     mode: ResistanceRunMode,
@@ -147,8 +153,10 @@ pub async fn run_resistance_identification<B: ResistanceBackend>(
         return Err(ResistanceError::NotArmed);
     }
 
-    // Save the pre-existing voltage limit so the restore can put it back. From
-    // here on every exit path funnels through `restore_safe_state`.
+    // Save the pre-existing voltage limit so the restore can put it back. This
+    // read is a register read, not an energizing write, so it stays in the
+    // no-restore zone: a backend failure here returns `BackendIo` directly,
+    // matching the entry pre-checks above.
     let saved_voltage_limit = match backend.read_register(PIDOUT_UQ_UD_LIMITS.addr()).await {
         Ok(value) => value,
         Err(_) => return Err(ResistanceError::BackendIo),
@@ -156,45 +164,33 @@ pub async fn run_resistance_identification<B: ResistanceBackend>(
 
     let profile = backend.profile();
 
-    // Run the energizing body, then unconditionally restore safe state. The
-    // body's `Err` is preserved; a restore failure is reported only when the
-    // body itself succeeded.
-    let body_result = run_energized_body(backend, mode, &profile, saved_voltage_limit).await;
-    let restore_result = restore_safe_state(backend, mode, saved_voltage_limit).await;
-
-    match (body_result, restore_result) {
-        (Ok(result), Ok(())) => Ok(result),
-        (Ok(_), Err(())) => Err(ResistanceError::BackendIo),
-        (Err(error), _) => Err(error),
-    }
-}
-
-/// Energizing body. Any early return here is caught by the unconditional
-/// restore in [`run_resistance_identification`].
-async fn run_energized_body<B: ResistanceBackend>(
-    backend: &mut B,
-    mode: ResistanceRunMode,
-    profile: &ResistanceProfile,
-    saved_voltage_limit: u32,
-) -> Result<ResistanceRunResult, ResistanceError> {
+    // Pre-energize validations. Like the entry pre-checks above, these run
+    // before any energizing register write, so a rejection here must not
+    // write a safe-state restore over an externally armed motor: the runner
+    // has not touched the power stage yet, so there is nothing to restore,
+    // and writing the restore sequence anyway would de-energize a motor the
+    // runner never energized.
+    //
     // In `ExternallyArmed` mode the saved limit is the motor's operational
     // voltage authority, not a restore baseline (commissioning's ADC
     // calibration intentionally leaves PIDOUT_UQ_UD_LIMITS=1024 as such a
     // baseline; see `step_adc_calibrate`). The sweep must never exceed that
     // authority for a diagnostic run over an externally armed motor, so
     // reject here, before any energizing register write, rather than silently
-    // clamping sweep points below the requested UD. This is a pre-sweep
-    // rejection like the motor-type and exposure-budget checks below it, so
-    // the unconditional restore in `run_resistance_identification` still
-    // restores safe state on this exit.
+    // clamping sweep points below the requested UD.
     if mode == ResistanceRunMode::ExternallyArmed
         && saved_voltage_limit < u32::from(profile.max_abs_ud().unsigned_abs())
     {
         return Err(ResistanceError::OutOfBoundsParameter);
     }
 
-    // Verify the typed/masked MOTOR_TYPE through the register wrapper.
-    let motor_type_raw = read(backend, MOTOR_TYPE_N_POLE_PAIRS.addr()).await?;
+    // Verify the typed/masked MOTOR_TYPE through the register wrapper. This is
+    // a register read, not an energizing write, so a backend failure here
+    // maps to `BackendIo` with no restore, like the voltage-limit read above.
+    let motor_type_raw = match backend.read_register(MOTOR_TYPE_N_POLE_PAIRS.addr()).await {
+        Ok(value) => value,
+        Err(_) => return Err(ResistanceError::BackendIo),
+    };
     let motor_type = MotorTypeNPolePairs::from(motor_type_raw).motor_type();
     if motor_type != MotorType::TwoPhase as u8 {
         return Err(ResistanceError::InvalidMotorType);
@@ -209,13 +205,36 @@ async fn run_energized_body<B: ResistanceBackend>(
         return Err(ResistanceError::UnsupportedProfile);
     }
 
+    // Run the energizing body, then unconditionally restore safe state. The
+    // body's `Err` is preserved; a restore failure is reported only when the
+    // body itself succeeded.
+    let body_result = run_energized_body(backend, mode, &profile).await;
+    let restore_result = restore_safe_state(backend, mode, saved_voltage_limit).await;
+
+    match (body_result, restore_result) {
+        (Ok(result), Ok(())) => Ok(result),
+        (Ok(_), Err(())) => Err(ResistanceError::BackendIo),
+        (Err(error), _) => Err(error),
+    }
+}
+
+/// Energizing body. Every entry to this function follows the pre-energize
+/// validations in [`run_resistance_identification`], so any early return here
+/// is correctly caught by that caller's unconditional restore: every exit path
+/// past this point is post-energize.
+async fn run_energized_body<B: ResistanceBackend>(
+    backend: &mut B,
+    mode: ResistanceRunMode,
+    profile: &ResistanceProfile,
+) -> Result<ResistanceRunResult, ResistanceError> {
     // Power-stage setup. The sweep voltage limit is set to the profile's full
     // sweep authority (not clamped against the saved baseline) before the
     // chopper is enabled and before any open-loop voltage command, so no
-    // sweep point is silently clamped. `ExternallyArmed` mode already
-    // rejected above when the saved operational limit could not cover this;
-    // `CommissioningManagedEnable` always uses the full authority because the
-    // saved value there is only a restore baseline, not an authority cap.
+    // sweep point is silently clamped. `ExternallyArmed` mode's caller already
+    // rejected, as a pre-energize validation, when the saved operational
+    // limit could not cover this; `CommissioningManagedEnable` always uses the
+    // full authority because the saved value there is only a restore
+    // baseline, not an authority cap.
     write(
         backend,
         MODE_RAMP_MODE_MOTION.addr(),

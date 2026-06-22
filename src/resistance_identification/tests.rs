@@ -155,6 +155,18 @@ impl FakeResistanceBackend {
         has(mode, 0) && has(uq_ud, 0) && has(chop, 0) && has(limits, self.saved_voltage_limit)
     }
 
+    /// Returns true when the backend recorded no register writes at all.
+    ///
+    /// A pre-energize validation reject (authority/motor-type/exposure) runs
+    /// before the runner has written anything -- not even the power-stage
+    /// setup writes the safe-state restore would otherwise undo -- so the
+    /// write log must be completely empty. This is a stronger assertion than
+    /// "no restore writes": it also proves the runner never reached the
+    /// energizing body.
+    fn wrote_nothing(&self) -> bool {
+        self.writes.is_empty()
+    }
+
     /// Current sampled for the active energized window, proportional to UD.
     fn energized_current_for_ud(&self) -> i32 {
         if self.scripted_energized_current_count != 0 {
@@ -482,6 +494,12 @@ fn commissioning_mode_uses_full_sweep_authority_despite_low_saved_baseline() {
 fn externally_armed_mode_rejects_when_saved_limit_is_below_sweep_authority() {
     // For a diagnostic run over an externally-armed motor, the operational
     // voltage limit is the authority and must not be exceeded by the sweep.
+    //
+    // This is a pre-energize validation: it runs before any power-stage
+    // setup write, so the rejection must not disturb a motor the runner
+    // never energized. Asserting `wrote_nothing` (not `wrote_safe_state`)
+    // proves the runner did not write the safe-state restore sequence over
+    // an externally armed motor it left untouched.
     let mut backend = FakeResistanceBackend::standard();
     let max_abs_ud = u32::from(backend.profile().max_abs_ud().unsigned_abs());
     backend.saved_voltage_limit = max_abs_ud - 1;
@@ -493,7 +511,34 @@ fn externally_armed_mode_rejects_when_saved_limit_is_below_sweep_authority() {
     .unwrap_err();
 
     assert_eq!(err, ResistanceError::OutOfBoundsParameter);
-    assert!(backend.wrote_safe_state());
+    assert!(
+        backend.wrote_nothing(),
+        "an authority-reject must not touch the externally-armed motor: {:?}",
+        backend.writes
+    );
+}
+
+#[test]
+fn externally_armed_mode_rejects_wrong_motor_type_without_restore() {
+    // The MOTOR_TYPE check is a pre-energize validation (a register read, no
+    // energizing write): rejecting here must not write the safe-state
+    // restore sequence over an externally armed motor the runner never
+    // energized.
+    let mut backend = FakeResistanceBackend::standard();
+    backend.motor_type = foci_tmc4671::registers::MotorType::ThreePhase as u8;
+
+    let err = block_on(run_resistance_identification(
+        &mut backend,
+        ResistanceRunMode::ExternallyArmed,
+    ))
+    .unwrap_err();
+
+    assert_eq!(err, ResistanceError::InvalidMotorType);
+    assert!(
+        backend.wrote_nothing(),
+        "a motor-type reject must not touch the externally-armed motor: {:?}",
+        backend.writes
+    );
 }
 
 #[test]
@@ -513,6 +558,13 @@ fn externally_armed_mode_proceeds_when_saved_limit_meets_sweep_authority() {
 
 #[test]
 fn runner_rejects_profile_exceeding_exposure_budget() {
+    // The exposure-budget gate is a pre-energize validation: it runs before
+    // any power-stage setup write, so the rejection must not write the
+    // safe-state restore sequence -- there is nothing to restore, and a
+    // restore write would disturb a motor (in `ExternallyArmed` mode) the
+    // runner never energized. Use `ExternallyArmed` here specifically so the
+    // assertion proves the externally-armed motor is left untouched, not
+    // merely that commissioning's enable pin was never asserted.
     let mut backend = FakeResistanceBackend::standard();
     // Drop the total-exposure budget below the fixed per-axis exposure so the
     // static budget gate must reject before any energizing.
@@ -520,12 +572,16 @@ fn runner_rejects_profile_exceeding_exposure_budget() {
 
     let err = block_on(run_resistance_identification(
         &mut backend,
-        ResistanceRunMode::CommissioningManagedEnable,
+        ResistanceRunMode::ExternallyArmed,
     ))
     .unwrap_err();
 
     assert_eq!(err, ResistanceError::UnsupportedProfile);
-    assert!(backend.wrote_safe_state());
+    assert!(
+        backend.wrote_nothing(),
+        "an exposure-budget reject must not touch the externally-armed motor: {:?}",
+        backend.writes
+    );
 }
 
 #[test]
