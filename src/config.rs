@@ -47,6 +47,10 @@ pub struct TmcConfig {
     pub didt_cycles: u32,
     /// Current loop bandwidth in Hz (empirically validated per PWM frequency).
     pub bandwidth_hz: f32,
+    /// Maximum expected resistance-profile current in TMC current counts.
+    pub resistance_max_expected_current_count: u16,
+    /// True when board scale metadata is hardware-validated for physical display.
+    pub resistance_scale_metadata_validated: bool,
 }
 
 impl TmcConfig {
@@ -71,6 +75,22 @@ impl TmcConfig {
     pub const fn dsadc_mdec_register(&self) -> u32 {
         ((self.dsadc_mdec_b as u32) << 16) | (self.dsadc_mdec_a as u32)
     }
+
+    /// Build the board's standard resistance-identification profile.
+    pub const fn resistance_profile(
+        &self,
+        scale_metadata_validated: bool,
+    ) -> crate::resistance_identification::ResistanceProfile {
+        let mut profile = crate::resistance_identification::ResistanceProfile::standard();
+        profile.pwm_maxcnt = self.pwm_maxcnt;
+        profile.bbm_h = self.bbm_h;
+        profile.bbm_l = self.bbm_l;
+        profile.dsadc_mdec_a = self.dsadc_mdec_a;
+        profile.dsadc_mdec_b = self.dsadc_mdec_b;
+        profile.max_expected_current_count = self.resistance_max_expected_current_count;
+        profile.scale_metadata_validated = scale_metadata_validated;
+        profile
+    }
 }
 
 #[cfg(test)]
@@ -92,6 +112,8 @@ impl TmcConfig {
             excitation_voltage: 512,
             didt_cycles: 5000,
             bandwidth_hz: 50.0,
+            resistance_max_expected_current_count: 1600,
+            resistance_scale_metadata_validated: false,
         }
     }
 }
@@ -112,6 +134,8 @@ mod tests {
             excitation_voltage: 512,
             didt_cycles: 5000,
             bandwidth_hz: 50.0,
+            resistance_max_expected_current_count: 1600,
+            resistance_scale_metadata_validated: false,
         }
     }
 
@@ -152,6 +176,8 @@ mod tests {
             excitation_voltage: 512,
             didt_cycles: 5000,
             bandwidth_hz: 150.0,
+            resistance_max_expected_current_count: 1600,
+            resistance_scale_metadata_validated: false,
         };
         assert_eq!(cfg.dsadc_mdec_register(), (331 << 16) | 660);
     }
@@ -169,6 +195,8 @@ mod tests {
             excitation_voltage: 512,
             didt_cycles: 5000,
             bandwidth_hz: 50.0,
+            resistance_max_expected_current_count: 1600,
+            resistance_scale_metadata_validated: false,
         };
         assert_eq!(cfg.pwm_freq_hz(), 100_000);
     }
@@ -186,6 +214,8 @@ mod tests {
             excitation_voltage: 512,
             didt_cycles: 5000,
             bandwidth_hz: 50.0,
+            resistance_max_expected_current_count: 1600,
+            resistance_scale_metadata_validated: false,
         };
         assert_eq!(cfg.pwm_freq_hz(), 50_000);
     }
@@ -195,5 +225,17 @@ mod tests {
         assert_eq!(dsadc_mdec_from_pwm_maxcnt(3999), 331);
         assert_eq!(dsadc_mdec_from_pwm_maxcnt(2047), 169);
         assert_eq!(dsadc_mdec_from_pwm_maxcnt(1023), 83);
+    }
+
+    #[test]
+    fn openffboard_resistance_profile_matches_power_stage() {
+        let cfg = TmcConfig::default_for_test();
+        let profile = cfg.resistance_profile(true);
+
+        assert_eq!(profile.pwm_maxcnt, cfg.pwm_maxcnt);
+        assert_eq!(profile.bbm_h, cfg.bbm_h);
+        assert_eq!(profile.bbm_l, cfg.bbm_l);
+        assert_eq!(profile.dsadc_mdec_a, cfg.dsadc_mdec_a);
+        assert_eq!(profile.dsadc_mdec_b, cfg.dsadc_mdec_b);
     }
 }
