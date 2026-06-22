@@ -310,6 +310,10 @@ pub struct ResistanceRunReport {
     pub profile_version: u16,
     /// Selected count-space resistance slope, scaled by 1000.
     pub selected_r_count_slope_milli: i32,
+    /// Resistance count-slope (milli-units) actually consumed by the gain
+    /// path, for the same-run 64x count-slope-milli audit. Commission-only;
+    /// always 0 on the standalone diagnostic path.
+    pub gain_path_count_slope_milli: i32,
     /// Run-level warning bitfield.
     pub warning_flags: u32,
     /// STATUS_FLAGS accumulated (OR) across the run.
@@ -363,6 +367,7 @@ pub fn empty_resistance_run_report(oid: u8, status: u8) -> ResistanceRunReport {
         status,
         profile_version: 0,
         selected_r_count_slope_milli: 0,
+        gain_path_count_slope_milli: 0,
         warning_flags: 0,
         status_flags_or: 0,
         pwm_maxcnt_readback: 0,

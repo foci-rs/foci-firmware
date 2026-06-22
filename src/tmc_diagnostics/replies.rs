@@ -442,6 +442,7 @@ mod tests {
             status,
             profile_version: 1,
             selected_r_count_slope_milli: 1010,
+            gain_path_count_slope_milli: 0,
             warning_flags: 0,
             status_flags_or: 0,
             pwm_maxcnt_readback: 3999,

@@ -155,6 +155,9 @@ fn success_run_report(
         status: 0,
         profile_version: result.profile_version,
         selected_r_count_slope_milli: result.selected_r_count_slope_milli,
+        // The diagnostic path's `ResistanceRunResult` has no gain-path
+        // concept; only the commission path populates this field.
+        gain_path_count_slope_milli: 0,
         warning_flags: result.warning_flags.0,
         status_flags_or: result.status_flags_or,
         pwm_maxcnt_readback,

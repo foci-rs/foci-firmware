@@ -492,6 +492,10 @@ pub struct FociResistanceRun {
     pub profile_version: u16,
     /// Selected count-space resistance slope, scaled by 1000.
     pub selected_r_count_slope_milli: i32,
+    /// Resistance count-slope (milli-units) actually consumed by the gain
+    /// path, for the same-run 64x count-slope-milli audit. Commission-only;
+    /// always 0 on the standalone diagnostic path.
+    pub gain_path_count_slope_milli: i32,
     /// Run-level warning bitfield.
     pub warning_flags: u32,
     /// STATUS_FLAGS accumulated (OR) across the run.
@@ -815,6 +819,7 @@ mod resistance_reply_size_tests {
             status: u8::MAX,
             profile_version: u16::MAX,
             selected_r_count_slope_milli: i32::MIN,
+            gain_path_count_slope_milli: i32::MIN,
             warning_flags: 0x7FFF_FFFF,
             status_flags_or: 0x7FFF_FFFF,
             pwm_maxcnt_readback: u16::MAX,

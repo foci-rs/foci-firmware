@@ -7,8 +7,15 @@
 
 use crate::autotune::PhaseId;
 use crate::commission_dispatch::ReplyPayload;
-use crate::commissioning::types::{AdcCalResult, CommissionResult, OuterResult};
+use crate::commissioning::types::{AdcCalResult, CommissionResult, InnerResult, OuterResult};
 use crate::selftest::{CommissionDiagnostic, CommissionDiagnostics, SelftestStageValue};
+use crate::tmc_diagnostics::{ResistanceAxisReport, ResistanceRunReport};
+
+/// TMC4671 external electrical angle for electrical axis 0 (PHASE0).
+const RESISTANCE_AXIS0_PHI_E_EXT: u16 = 0;
+
+/// TMC4671 external electrical angle for electrical axis 1 (PHASE90).
+const RESISTANCE_AXIS1_PHI_E_EXT: u16 = 16_384;
 
 /// Board-local sink for commissioning-family Klipper replies.
 ///
@@ -23,6 +30,17 @@ pub trait CommissionReplySink {
 
     /// Emit the Stage 1 commissioning result.
     fn foci_commission_result(&mut self, oid: u8, status: u8, result: &CommissionResult);
+
+    /// Emit the resistance-identification per-run evidence captured during
+    /// Stage 1 commissioning. `FociCommissionResult` is size-capped, so this
+    /// reuses the `foci_resistance_run` reply (Task 6) to carry the evidence
+    /// that lives on `InnerResult` to the host.
+    fn foci_resistance_run(&mut self, report: ResistanceRunReport);
+
+    /// Emit one resistance-identification per-axis fit result captured
+    /// during Stage 1 commissioning. Reuses the `foci_resistance_axis` reply
+    /// (Task 6) for the same reason as [`Self::foci_resistance_run`].
+    fn foci_resistance_axis(&mut self, report: ResistanceAxisReport);
 
     /// Emit the Stage 2 tune result.
     fn foci_tune_result(&mut self, oid: u8, status: u8, result: &OuterResult);
@@ -58,7 +76,32 @@ pub fn emit_terminal_reply<S: CommissionReplySink>(sink: &mut S, payload: ReplyP
             oid,
             status,
             result,
-        } => sink.foci_commission_result(oid, status, &result),
+        } => {
+            // FociCommissionResult is size-capped (23 fields, near the
+            // 64-byte Klipper message limit) and cannot carry the
+            // resistance-identification evidence that lives on
+            // `InnerResult`. Emit it separately through the existing
+            // resistance replies (Task 6) so the host can persist it.
+            // Axes before run, mirroring the diagnostic path's
+            // axes-then-run ordering (`emit_diagnostic_report`); the
+            // commission result stays the true terminal/"done" signal for
+            // the whole commission flow, so it is emitted last.
+            let inner = &result.inner;
+            sink.foci_resistance_axis(commission_resistance_axis_report(
+                oid,
+                0,
+                RESISTANCE_AXIS0_PHI_E_EXT,
+                inner,
+            ));
+            sink.foci_resistance_axis(commission_resistance_axis_report(
+                oid,
+                1,
+                RESISTANCE_AXIS1_PHI_E_EXT,
+                inner,
+            ));
+            sink.foci_resistance_run(commission_resistance_run_report(oid, inner));
+            sink.foci_commission_result(oid, status, &result);
+        }
         ReplyPayload::TuneResult {
             oid,
             status,
@@ -91,6 +134,90 @@ fn emit_commission_diagnostics<S: CommissionReplySink>(
 ) {
     for event in diagnostics.iter() {
         sink.foci_commission_detail(oid, event);
+    }
+}
+
+/// Build the resistance-identification run report carried by the
+/// commission flow's `foci_resistance_run` emission.
+///
+/// `status` is always 0: this report is only built once `InnerResult` has
+/// already reached `CommissionDone`, which implies the resistance run
+/// that produced it succeeded. Power-stage readback fields
+/// (`pwm_maxcnt_readback`, `bbm_readback`, `dsadc_mdec_readback`,
+/// `pwm_sv_chop_readback`) have no counterpart on `InnerResult` and are set
+/// to 0; only the standalone diagnostic path (`foci_resistance_test`)
+/// retains those readbacks.
+fn commission_resistance_run_report(oid: u8, inner: &InnerResult) -> ResistanceRunReport {
+    ResistanceRunReport {
+        oid,
+        status: 0,
+        profile_version: inner.resistance_profile_version,
+        selected_r_count_slope_milli: inner.resistance_selected_count_slope_milli,
+        gain_path_count_slope_milli: inner.resistance_gain_path_count_slope_milli,
+        warning_flags: inner.resistance_warning_flags,
+        status_flags_or: inner.resistance_status_flags_or,
+        pwm_maxcnt_readback: 0,
+        bbm_readback: 0,
+        dsadc_mdec_readback: 0,
+        pwm_sv_chop_readback: 0,
+    }
+}
+
+/// Build one electrical-axis resistance fit report carried by the
+/// commission flow's `foci_resistance_axis` emission.
+///
+/// `excluded_point_mask`, `selected_count`, and per-axis `warning_flags`
+/// have no counterpart on `InnerResult` (only a run-level
+/// `resistance_warning_flags` is retained) and are set to 0.
+fn commission_resistance_axis_report(
+    oid: u8,
+    electrical_axis: u8,
+    phi_e_ext: u16,
+    inner: &InnerResult,
+) -> ResistanceAxisReport {
+    let (r_count_slope_milli, intercept_count, rmse_permille, selected_mask) = match electrical_axis
+    {
+        0 => (
+            inner.resistance_axis0_count_slope_milli,
+            inner.resistance_axis0_intercept_count,
+            inner.resistance_axis0_rmse_permille,
+            inner.resistance_selected_mask_axis0,
+        ),
+        _ => (
+            inner.resistance_axis1_count_slope_milli,
+            inner.resistance_axis1_intercept_count,
+            inner.resistance_axis1_rmse_permille,
+            inner.resistance_selected_mask_axis1,
+        ),
+    };
+    let (signed_count_slope_milli, signed_asymmetry_permille, drift_permille) =
+        match electrical_axis {
+            0 => (
+                inner.resistance_axis0_signed_count_slope_milli,
+                inner.resistance_axis0_signed_asymmetry_permille,
+                inner.resistance_axis0_drift_permille,
+            ),
+            _ => (
+                inner.resistance_axis1_signed_count_slope_milli,
+                inner.resistance_axis1_signed_asymmetry_permille,
+                inner.resistance_axis1_drift_permille,
+            ),
+        };
+
+    ResistanceAxisReport {
+        oid,
+        electrical_axis,
+        phi_e_ext,
+        r_count_slope_milli,
+        intercept_count,
+        rmse_permille,
+        selected_mask,
+        excluded_point_mask: 0,
+        selected_count: 0,
+        signed_count_slope_milli,
+        signed_asymmetry_permille,
+        drift_permille,
+        warning_flags: 0,
     }
 }
 
@@ -135,6 +262,22 @@ mod tests {
             status: u8,
             r_int: u32,
             fallback_velocity_limit: u32,
+        },
+        ResistanceRun {
+            oid: u8,
+            status: u8,
+            selected_r_count_slope_milli: i32,
+            gain_path_count_slope_milli: i32,
+            warning_flags: u32,
+            status_flags_or: u32,
+        },
+        ResistanceAxis {
+            oid: u8,
+            electrical_axis: u8,
+            phi_e_ext: u16,
+            r_count_slope_milli: i32,
+            intercept_count: i32,
+            signed_count_slope_milli: i32,
         },
         Tune {
             oid: u8,
@@ -183,6 +326,28 @@ mod tests {
                 status,
                 r_int: result.inner.r_int,
                 fallback_velocity_limit: result.fallback_velocity_limit,
+            });
+        }
+
+        fn foci_resistance_run(&mut self, report: crate::tmc_diagnostics::ResistanceRunReport) {
+            self.events.push(Event::ResistanceRun {
+                oid: report.oid,
+                status: report.status,
+                selected_r_count_slope_milli: report.selected_r_count_slope_milli,
+                gain_path_count_slope_milli: report.gain_path_count_slope_milli,
+                warning_flags: report.warning_flags,
+                status_flags_or: report.status_flags_or,
+            });
+        }
+
+        fn foci_resistance_axis(&mut self, report: crate::tmc_diagnostics::ResistanceAxisReport) {
+            self.events.push(Event::ResistanceAxis {
+                oid: report.oid,
+                electrical_axis: report.electrical_axis,
+                phi_e_ext: report.phi_e_ext,
+                r_count_slope_milli: report.r_count_slope_milli,
+                intercept_count: report.intercept_count,
+                signed_count_slope_milli: report.signed_count_slope_milli,
             });
         }
 
@@ -507,6 +672,30 @@ mod tests {
                     adc_i0: 3,
                     adc_i1: 4,
                     encoder_count: 5,
+                },
+                Event::ResistanceAxis {
+                    oid: 6,
+                    electrical_axis: 0,
+                    phi_e_ext: 0,
+                    r_count_slope_milli: 1040,
+                    intercept_count: 5,
+                    signed_count_slope_milli: 1045,
+                },
+                Event::ResistanceAxis {
+                    oid: 6,
+                    electrical_axis: 1,
+                    phi_e_ext: 16_384,
+                    r_count_slope_milli: 1060,
+                    intercept_count: 6,
+                    signed_count_slope_milli: 1055,
+                },
+                Event::ResistanceRun {
+                    oid: 6,
+                    status: 0,
+                    selected_r_count_slope_milli: 1050,
+                    gain_path_count_slope_milli: 16,
+                    warning_flags: 0,
+                    status_flags_or: 0,
                 },
                 Event::Commission {
                     oid: 6,
