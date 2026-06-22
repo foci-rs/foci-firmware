@@ -760,3 +760,66 @@ fn resistance_test_not_armed_reports_no_axes() {
         assert!(axes.is_none());
     });
 }
+
+#[test]
+fn resistance_test_rejects_during_homing_without_invoking_runner() {
+    pollster::block_on(async {
+        // Mirrors `current_step_not_ready_returns_status_without_writes`:
+        // sibling diagnostics reject on `readiness.homing_active` /
+        // `readiness.stepper_active` before touching SPI. The resistance-test
+        // dispatch must do the same instead of only gating on
+        // enabled+calibrated, or a resistance test can switch the motor to
+        // open-loop voltage while homing or active stepping is in progress.
+        let _guard = crate::commission_dispatch::test_support::SHARED_STATE_MUTEX
+            .lock()
+            .await;
+        let channel_state = crate::state::tmc::tmc_channel(0).unwrap();
+        // Non-zero sentinel and an enabled+calibrated runtime: every other
+        // entry gate (`NotAdcReady`, `NotArmed`) is satisfied, isolating the
+        // homing-readiness rejection this test exercises.
+        channel_state
+            .motor_sentinel
+            .store(0x0002_0032, core::sync::atomic::Ordering::Relaxed);
+
+        let mut runtime = ready_runtime();
+        let mut delay = MockDelay::default();
+        let mut tmc = Tmc4671Spi::new(DiagnosticMockSpi::default());
+        let req = crate::tmc::tmc_resistance_test(0, 11, 0);
+
+        let outcome = handle_diagnostic_request(
+            req,
+            DiagnosticContext {
+                tmc: &mut tmc,
+                runtime: &mut runtime,
+                delay: &mut delay,
+                tmc_config: &TEST_TMC_CONFIG,
+                readiness: DiagnosticReadiness {
+                    homing_active: true,
+                    stepper_active: false,
+                    saved_voltage_limit: 777,
+                },
+            },
+        )
+        .await;
+
+        channel_state
+            .motor_sentinel
+            .store(0, core::sync::atomic::Ordering::Relaxed);
+
+        let DiagnosticOutcome::Handled(DiagnosticReport::ResistanceTest { profile, run, axes }) =
+            outcome
+        else {
+            panic!("expected resistance test report");
+        };
+        assert_eq!(profile.oid, 11);
+        assert_eq!(
+            run.status,
+            crate::resistance_identification::ResistanceError::NotArmed.status_code()
+        );
+        assert!(axes.is_none());
+        assert!(
+            tmc.into_inner().writes.is_empty(),
+            "expected no SPI writes (no energizing) while homing is active"
+        );
+    });
+}

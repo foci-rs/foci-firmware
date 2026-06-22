@@ -6,8 +6,8 @@ use core::sync::atomic::Ordering::Relaxed;
 use foci_tmc4671::registers::Register;
 
 use crate::resistance_identification::{
-    ResistanceAxisResult, ResistanceBackend, ResistanceBackendError, ResistanceProfile,
-    ResistanceRunMode, ResistanceRunResult, run_resistance_identification,
+    ResistanceAxisResult, ResistanceBackend, ResistanceBackendError, ResistanceError,
+    ResistanceProfile, ResistanceRunMode, ResistanceRunResult, run_resistance_identification,
 };
 use crate::tmc::{TmcRequest, TmcRequestKind};
 
@@ -180,6 +180,16 @@ fn handled(
 /// Runs the shared engine in [`ResistanceRunMode::ExternallyArmed`] over the
 /// motor the normal lifecycle path has already armed and enabled. Never
 /// touches commissioning state.
+///
+/// Rejects with the same not-ready status the sibling
+/// [`voltage_step`](super::run_voltage_step_request) and
+/// [`current_step`](super::run_current_step_request) diagnostics use when
+/// `readiness.homing_active` or `readiness.stepper_active` is set, before
+/// invoking the shared runner. The runner's own entry pre-checks only see
+/// enabled/calibrated/ADC-ready state through
+/// [`ResistanceBackend::is_armed_for_open_loop_voltage`]; without this
+/// dispatch-level gate a resistance test could switch the motor to open-loop
+/// voltage while homing or active stepping is in progress.
 pub async fn run_resistance_test_request<B, D>(
     req: TmcRequest,
     mut ctx: DiagnosticContext<'_, B, D>,
@@ -200,6 +210,14 @@ where
         .tmc_config
         .resistance_profile(ctx.tmc_config.resistance_scale_metadata_validated);
     let profile_report = profile_report(oid, &profile);
+
+    if ctx.readiness.homing_active || ctx.readiness.stepper_active {
+        return handled(
+            profile_report,
+            empty_resistance_run_report(oid, ResistanceError::NotArmed.status_code()),
+            None,
+        );
+    }
 
     let mut backend = DiagnosticResistanceBackend { ctx: &mut ctx };
     let result =
