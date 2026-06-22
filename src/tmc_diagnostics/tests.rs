@@ -105,6 +105,24 @@ impl DiagnosticDelay for MockDelay {
     }
 }
 
+/// Board config fixture for diagnostics that need `DiagnosticContext::tmc_config`.
+/// Mirrors a board's own `const TMC_CONFIG`; values match
+/// `crate::config::TmcConfig::default_for_test`.
+static TEST_TMC_CONFIG: crate::config::TmcConfig = crate::config::TmcConfig {
+    pwm_maxcnt: 3999,
+    tmc_clock_hz: 25_000_000,
+    bbm_h: 9,
+    bbm_l: 9,
+    dsadc_mdec_a: 331,
+    dsadc_mdec_b: 331,
+    adc_i_select: 0x1800_0100,
+    excitation_voltage: 512,
+    didt_cycles: 5000,
+    bandwidth_hz: 50.0,
+    resistance_max_expected_current_count: 1600,
+    resistance_scale_metadata_validated: true,
+};
+
 fn ready_runtime() -> TmcControlRuntime {
     let mut runtime = TmcControlRuntime::new_for_channel(0);
     runtime.set_motor_enabled_for_test(true);
@@ -163,6 +181,7 @@ fn current_step_not_ready_returns_status_without_writes() {
                 tmc: &mut tmc,
                 runtime: &mut runtime,
                 delay: &mut delay,
+                tmc_config: &TEST_TMC_CONFIG,
                 readiness: DiagnosticReadiness {
                     homing_active: false,
                     stepper_active: false,
@@ -202,6 +221,7 @@ fn current_vector_uses_vector_report_flag() {
                 tmc: &mut tmc,
                 runtime: &mut runtime,
                 delay: &mut delay,
+                tmc_config: &TEST_TMC_CONFIG,
                 readiness: DiagnosticReadiness {
                     homing_active: true,
                     stepper_active: false,
@@ -250,6 +270,7 @@ fn current_step_success_records_settle_delays_and_restores_limit() {
                 tmc: &mut tmc,
                 runtime: &mut runtime,
                 delay: &mut delay,
+                tmc_config: &TEST_TMC_CONFIG,
                 readiness: DiagnosticReadiness {
                     homing_active: false,
                     stepper_active: false,
@@ -341,6 +362,7 @@ fn torque_sample_not_ready_does_not_emit_detail() {
                 tmc: &mut tmc,
                 runtime: &mut runtime,
                 delay: &mut delay,
+                tmc_config: &TEST_TMC_CONFIG,
                 readiness: DiagnosticReadiness {
                     homing_active: false,
                     stepper_active: false,
@@ -376,6 +398,7 @@ fn position_offset_rejects_non_position_mode() {
                 tmc: &mut tmc,
                 runtime: &mut runtime,
                 delay: &mut delay,
+                tmc_config: &TEST_TMC_CONFIG,
                 readiness: DiagnosticReadiness {
                     homing_active: false,
                     stepper_active: false,
@@ -419,6 +442,7 @@ fn position_offset_spi_failure_attempts_offset_restore() {
                 tmc: &mut tmc,
                 runtime: &mut runtime,
                 delay: &mut delay,
+                tmc_config: &TEST_TMC_CONFIG,
                 readiness: DiagnosticReadiness {
                     homing_active: false,
                     stepper_active: false,
@@ -472,6 +496,7 @@ fn voltage_step_rejects_non_position_mode() {
                 tmc: &mut tmc,
                 runtime: &mut runtime,
                 delay: &mut delay,
+                tmc_config: &TEST_TMC_CONFIG,
                 readiness: DiagnosticReadiness {
                     homing_active: false,
                     stepper_active: false,
@@ -509,6 +534,7 @@ fn voltage_step_failure_clears_external_voltage_and_restores_mode() {
                 tmc: &mut tmc,
                 runtime: &mut runtime,
                 delay: &mut delay,
+                tmc_config: &TEST_TMC_CONFIG,
                 readiness: DiagnosticReadiness {
                     homing_active: false,
                     stepper_active: false,
@@ -567,6 +593,7 @@ fn dispatcher_returns_not_diagnostic_for_normal_request() {
                 tmc: &mut tmc,
                 runtime: &mut runtime,
                 delay: &mut delay,
+                tmc_config: &TEST_TMC_CONFIG,
                 readiness: DiagnosticReadiness {
                     homing_active: false,
                     stepper_active: false,
@@ -580,5 +607,156 @@ fn dispatcher_returns_not_diagnostic_for_normal_request() {
             panic!("expected NotDiagnostic");
         };
         assert_eq!(returned, req);
+    });
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum RecordedResistanceEvent {
+    Profile { oid: u8 },
+    Axis { oid: u8, electrical_axis: u8 },
+    Done { oid: u8, status: u8 },
+}
+
+#[derive(Default)]
+struct RecordingDiagnosticSink {
+    events: std::vec::Vec<RecordedResistanceEvent>,
+}
+
+impl DiagnosticReplySink for RecordingDiagnosticSink {
+    fn foci_current_step_result(&mut self, _report: CurrentStepReport) {}
+    fn foci_current_vector_step_result(&mut self, _report: CurrentStepReport) {}
+    fn foci_current_torque_sample_result(&mut self, _report: CurrentTorqueSampleReport) {}
+    fn foci_current_torque_sample_detail_result(&mut self, _report: &CurrentTorqueSampleReport) {}
+    fn foci_voltage_step_result(&mut self, _report: VoltageStepReport) {}
+
+    fn foci_resistance_profile(&mut self, report: ResistanceProfileReport) {
+        self.events
+            .push(RecordedResistanceEvent::Profile { oid: report.oid });
+    }
+
+    fn foci_resistance_axis(&mut self, report: ResistanceAxisReport) {
+        self.events.push(RecordedResistanceEvent::Axis {
+            oid: report.oid,
+            electrical_axis: report.electrical_axis,
+        });
+    }
+
+    fn foci_resistance_run(&mut self, report: ResistanceRunReport) {
+        self.events.push(RecordedResistanceEvent::Done {
+            oid: report.oid,
+            status: report.status,
+        });
+    }
+}
+
+#[test]
+fn resistance_test_request_dispatches_to_shared_runner() {
+    pollster::block_on(async {
+        // Global per-channel state (`motor_sentinel`) is shared across the
+        // whole test binary; serialize against other suites that touch it.
+        let _guard = crate::commission_dispatch::test_support::SHARED_STATE_MUTEX
+            .lock()
+            .await;
+        let channel_state = crate::state::tmc::tmc_channel(0).unwrap();
+        // Non-zero sentinel: ADC offsets are "ready", isolating the
+        // `NotArmed` rejection this test exercises from the `NotAdcReady`
+        // entry pre-check that runs first.
+        channel_state
+            .motor_sentinel
+            .store(0x0002_0032, core::sync::atomic::Ordering::Relaxed);
+
+        // Motor not enabled/calibrated: the shared runner's
+        // `ExternallyArmed` entry pre-check rejects with `NotArmed` before
+        // touching SPI. This proves the request reaches the shared runner
+        // (rather than being silently dropped) without needing the full
+        // register-level mock already covered by
+        // `resistance_identification::tests`.
+        let mut runtime = TmcControlRuntime::new_for_channel(0);
+        let mut delay = MockDelay::default();
+        let mut tmc = Tmc4671Spi::new(DiagnosticMockSpi::default());
+        let req = crate::tmc::tmc_resistance_test(0, 7, 0);
+
+        let outcome = handle_diagnostic_request(
+            req,
+            DiagnosticContext {
+                tmc: &mut tmc,
+                runtime: &mut runtime,
+                delay: &mut delay,
+                tmc_config: &TEST_TMC_CONFIG,
+                readiness: DiagnosticReadiness {
+                    homing_active: false,
+                    stepper_active: false,
+                    saved_voltage_limit: 777,
+                },
+            },
+        )
+        .await;
+
+        channel_state
+            .motor_sentinel
+            .store(0, core::sync::atomic::Ordering::Relaxed);
+
+        let DiagnosticOutcome::Handled(report) = outcome else {
+            panic!("expected resistance test report");
+        };
+
+        let mut sink = RecordingDiagnosticSink::default();
+        emit_diagnostic_report(&mut sink, report);
+
+        assert!(
+            sink.events
+                .iter()
+                .any(|event| matches!(event, RecordedResistanceEvent::Done { oid: 7, .. }))
+        );
+    });
+}
+
+#[test]
+fn resistance_test_not_armed_reports_no_axes() {
+    pollster::block_on(async {
+        let _guard = crate::commission_dispatch::test_support::SHARED_STATE_MUTEX
+            .lock()
+            .await;
+        let channel_state = crate::state::tmc::tmc_channel(0).unwrap();
+        channel_state
+            .motor_sentinel
+            .store(0x0002_0032, core::sync::atomic::Ordering::Relaxed);
+
+        let mut runtime = TmcControlRuntime::new_for_channel(0);
+        let mut delay = MockDelay::default();
+        let mut tmc = Tmc4671Spi::new(DiagnosticMockSpi::default());
+        let req = crate::tmc::tmc_resistance_test(0, 9, 0);
+
+        let outcome = handle_diagnostic_request(
+            req,
+            DiagnosticContext {
+                tmc: &mut tmc,
+                runtime: &mut runtime,
+                delay: &mut delay,
+                tmc_config: &TEST_TMC_CONFIG,
+                readiness: DiagnosticReadiness {
+                    homing_active: false,
+                    stepper_active: false,
+                    saved_voltage_limit: 777,
+                },
+            },
+        )
+        .await;
+
+        channel_state
+            .motor_sentinel
+            .store(0, core::sync::atomic::Ordering::Relaxed);
+
+        let DiagnosticOutcome::Handled(DiagnosticReport::ResistanceTest { profile, run, axes }) =
+            outcome
+        else {
+            panic!("expected resistance test report");
+        };
+        assert_eq!(profile.oid, 9);
+        assert_eq!(
+            run.status,
+            crate::resistance_identification::ResistanceError::NotArmed.status_code()
+        );
+        assert!(axes.is_none());
     });
 }

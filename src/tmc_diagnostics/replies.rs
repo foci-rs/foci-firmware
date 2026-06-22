@@ -1,6 +1,9 @@
 //! Shared active diagnostic reply emission.
 
-use super::{CurrentStepReport, CurrentTorqueSampleReport, DiagnosticReport, VoltageStepReport};
+use super::{
+    CurrentStepReport, CurrentTorqueSampleReport, DiagnosticReport, ResistanceAxisReport,
+    ResistanceProfileReport, ResistanceRunReport, VoltageStepReport,
+};
 
 /// Board-local active diagnostic reply sink.
 pub trait DiagnosticReplySink {
@@ -18,6 +21,16 @@ pub trait DiagnosticReplySink {
 
     /// Emit an open-loop voltage-step diagnostic result.
     fn foci_voltage_step_result(&mut self, report: VoltageStepReport);
+
+    /// Emit resistance-test board/profile metadata.
+    fn foci_resistance_profile(&mut self, report: ResistanceProfileReport);
+
+    /// Emit a resistance-test per-axis fit result.
+    fn foci_resistance_axis(&mut self, report: ResistanceAxisReport);
+
+    /// Emit the resistance-test per-run status/warnings/readbacks result.
+    /// This is the diagnostic's terminal reply.
+    fn foci_resistance_run(&mut self, report: ResistanceRunReport);
 }
 
 /// Emit active diagnostic replies for a completed diagnostic report.
@@ -43,6 +56,15 @@ pub fn emit_diagnostic_report<S: DiagnosticReplySink>(sink: &mut S, report: Diag
             sink.foci_current_torque_sample_result(report);
         }
         DiagnosticReport::VoltageStep(report) => sink.foci_voltage_step_result(report),
+        DiagnosticReport::ResistanceTest { profile, run, axes } => {
+            sink.foci_resistance_profile(profile);
+            if let Some([axis0, axis1]) = axes {
+                sink.foci_resistance_axis(axis0);
+                sink.foci_resistance_axis(axis1);
+            }
+            // Run reply last: it is the diagnostic's terminal/"done" signal.
+            sink.foci_resistance_run(run);
+        }
     }
 }
 
@@ -81,6 +103,18 @@ mod tests {
             status: u8,
             uq_ext: i16,
             status_flags: u32,
+        },
+        ResistanceProfile {
+            oid: u8,
+            profile_version: u16,
+        },
+        ResistanceAxis {
+            oid: u8,
+            electrical_axis: u8,
+        },
+        ResistanceDone {
+            oid: u8,
+            status: u8,
         },
     }
 
@@ -131,6 +165,27 @@ mod tests {
                 status: report.status,
                 uq_ext: report.uq_ext,
                 status_flags: report.status_flags,
+            });
+        }
+
+        fn foci_resistance_profile(&mut self, report: ResistanceProfileReport) {
+            self.events.push(Event::ResistanceProfile {
+                oid: report.oid,
+                profile_version: report.profile_version,
+            });
+        }
+
+        fn foci_resistance_axis(&mut self, report: ResistanceAxisReport) {
+            self.events.push(Event::ResistanceAxis {
+                oid: report.oid,
+                electrical_axis: report.electrical_axis,
+            });
+        }
+
+        fn foci_resistance_run(&mut self, report: ResistanceRunReport) {
+            self.events.push(Event::ResistanceDone {
+                oid: report.oid,
+                status: report.status,
             });
         }
     }
@@ -344,6 +399,113 @@ mod tests {
                 uq_ext: -300,
                 status_flags: 0x5678,
             }]
+        );
+    }
+
+    fn resistance_profile_report() -> ResistanceProfileReport {
+        ResistanceProfileReport {
+            oid: 7,
+            profile_version: 1,
+            pwm_maxcnt: 3999,
+            bbm_h: 9,
+            bbm_l: 9,
+            dsadc_mdec_a: 331,
+            dsadc_mdec_b: 331,
+            linear_current_threshold_count: 750,
+            encoder_move_warn_counts: 128,
+            status_flags_warn_mask: u32::MAX,
+            scale_metadata_validated: true,
+        }
+    }
+
+    fn resistance_axis_report(electrical_axis: u8) -> ResistanceAxisReport {
+        ResistanceAxisReport {
+            oid: 7,
+            electrical_axis,
+            phi_e_ext: if electrical_axis == 0 { 0 } else { 16_384 },
+            r_count_slope_milli: 1010,
+            intercept_count: 5,
+            rmse_permille: 12,
+            selected_mask: 0x00FF,
+            excluded_point_mask: 0,
+            selected_count: 8,
+            signed_count_slope_milli: 1005,
+            signed_asymmetry_permille: 10,
+            drift_permille: 5,
+            warning_flags: 0,
+        }
+    }
+
+    fn resistance_run_report(status: u8) -> ResistanceRunReport {
+        ResistanceRunReport {
+            oid: 7,
+            status,
+            profile_version: 1,
+            selected_r_count_slope_milli: 1010,
+            warning_flags: 0,
+            status_flags_or: 0,
+            pwm_maxcnt_readback: 3999,
+            bbm_readback: 0x0909,
+            dsadc_mdec_readback: 0x014B_014B,
+            pwm_sv_chop_readback: 7,
+        }
+    }
+
+    #[test]
+    fn resistance_success_emits_profile_then_axes_then_run_last() {
+        let mut sink = RecordingSink::default();
+
+        emit_diagnostic_report(
+            &mut sink,
+            DiagnosticReport::ResistanceTest {
+                profile: resistance_profile_report(),
+                run: resistance_run_report(0),
+                axes: Some([resistance_axis_report(0), resistance_axis_report(1)]),
+            },
+        );
+
+        assert_eq!(
+            sink.events,
+            std::vec![
+                Event::ResistanceProfile {
+                    oid: 7,
+                    profile_version: 1,
+                },
+                Event::ResistanceAxis {
+                    oid: 7,
+                    electrical_axis: 0,
+                },
+                Event::ResistanceAxis {
+                    oid: 7,
+                    electrical_axis: 1,
+                },
+                Event::ResistanceDone { oid: 7, status: 0 },
+            ]
+        );
+    }
+
+    #[test]
+    fn resistance_failure_emits_profile_then_run_without_axes() {
+        let mut sink = RecordingSink::default();
+
+        emit_diagnostic_report(
+            &mut sink,
+            DiagnosticReport::ResistanceTest {
+                profile: resistance_profile_report(),
+                run: resistance_run_report(19),
+                axes: None,
+            },
+        );
+
+        assert_eq!(
+            sink.events,
+            std::vec![
+                Event::ResistanceProfile {
+                    oid: 7,
+                    profile_version: 1,
+                },
+                Event::ResistanceDone { oid: 7, status: 19 },
+            ]
         );
     }
 }

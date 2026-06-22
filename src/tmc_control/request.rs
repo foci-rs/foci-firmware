@@ -619,7 +619,8 @@ where
                 | TmcRequestKind::CurrentVectorStepTest { .. }
                 | TmcRequestKind::CurrentTorqueSampleTest { .. }
                 | TmcRequestKind::PositionTorqueOffsetSampleTest { .. }
-                | TmcRequestKind::VoltageStepTest { .. },
+                | TmcRequestKind::VoltageStepTest { .. }
+                | TmcRequestKind::ResistanceTest { .. },
             ..
         } => {
             board

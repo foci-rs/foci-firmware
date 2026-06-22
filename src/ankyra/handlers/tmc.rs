@@ -6,7 +6,7 @@
 //! `tmc_set_velocity_filter`, `tmc_set_velocity_limit`,
 //! `tmc_set_voltage_limit`, `tmc_current_torque_sample_test`,
 //! `tmc_position_torque_offset_sample_test`, `tmc_voltage_step_test`,
-//! `tmc_set_auto_calibrate_on_enable`, `tmc_test_spin`.
+//! `tmc_resistance_test`, `tmc_set_auto_calibrate_on_enable`, `tmc_test_spin`.
 //!
 //! Lifted from `boards/openffboard-fw/src/ankyra/handlers/tmc.rs` in
 //! Task 16 of the foci-firmware handler-lift plan. Handler bodies bind to
@@ -695,6 +695,26 @@ pub fn tmc_voltage_step_test(
     }
 }
 
+/// Run the shared resistance-identification sweep over an already-armed motor.
+///
+/// This command only queues a fixed diagnostic sequence. The board task
+/// rejects it unless the motor is already enabled, calibrated, and ADC
+/// offsets are ready; it does not touch commissioning state.
+#[klipper_command]
+pub fn tmc_resistance_test(ctx: &mut dyn TmcWriteHost, oid: u8, detail: u8) {
+    let Some((channel, _state)) = foci_tmc_state_or_shutdown(ctx, oid) else {
+        return;
+    };
+    if ctx
+        .enqueue_request(crate::tmc::tmc_resistance_test(channel, oid, detail))
+        .is_err()
+        && ctx.enter_shutdown()
+    {
+        let clock = ctx.now();
+        ctx.send_shutdown(ShutdownReason::TmcDiagnosticLostQueueFull, clock);
+    }
+}
+
 /// Set whether a raw enable may trigger firmware-side auto-calibration.
 #[klipper_command]
 pub fn tmc_set_auto_calibrate_on_enable(ctx: &mut dyn ShutdownRecovery, oid: u8, enable: u8) {
@@ -1074,6 +1094,34 @@ mod tests {
         assert_eq!(
             ctx.last_shutdown,
             Some(crate::shutdown::ShutdownReason::TmcRequestValidationFailed)
+        );
+    }
+
+    #[test]
+    fn tmc_resistance_test_routes_by_stepper_oid() {
+        let mut ctx = MockCtx::new(2);
+        let mut sender = ();
+        config_stepper_channel(ctx.state(), 10, 1).unwrap();
+
+        tmc_resistance_test(&mut ctx, &mut sender, 10, 0);
+
+        assert_eq!(
+            ctx.last_request.borrow().as_ref().unwrap().kind,
+            crate::tmc::TmcRequestKind::ResistanceTest { oid: 10, detail: 0 }
+        );
+    }
+
+    #[test]
+    fn tmc_resistance_test_rejects_unknown_oid() {
+        let mut ctx = MockCtx::new(2);
+        let mut sender = ();
+
+        tmc_resistance_test(&mut ctx, &mut sender, 99, 0);
+
+        assert!(ctx.last_request.borrow().is_none());
+        assert_eq!(
+            ctx.last_shutdown,
+            Some(crate::shutdown::ShutdownReason::InvalidTmcChannel)
         );
     }
 

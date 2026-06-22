@@ -67,6 +67,7 @@ pub enum ShutdownReason {
     TmcSetPidGainsLostQueueFull,
     TmcSetPositionGainsLostQueueFull,
     TmcSetVoltageLimitLostQueueFull,
+    TmcDiagnosticLostQueueFull,
     Tmc4671ChipIdMismatch,
     Tmc4671SpiFailedAtBoot,
     TmcRequestValidationFailed,
@@ -111,6 +112,7 @@ impl ShutdownReason {
             Self::TmcSetPidGainsLostQueueFull => "tmc_set_pid_gains lost (queue full)",
             Self::TmcSetPositionGainsLostQueueFull => "tmc_set_position_gains lost (queue full)",
             Self::TmcSetVoltageLimitLostQueueFull => "tmc_set_voltage_limit lost (queue full)",
+            Self::TmcDiagnosticLostQueueFull => "TMC diagnostic lost (queue full)",
             Self::Tmc4671ChipIdMismatch => "TMC4671 chip ID mismatch",
             Self::Tmc4671SpiFailedAtBoot => "TMC4671 SPI failed at boot",
             Self::TmcRequestValidationFailed => "TMC request validation failed",
@@ -271,6 +273,13 @@ macro_rules! dispatch_shutdown {
                     $clock
                 );
             }
+            $crate::shutdown::ShutdownReason::TmcDiagnosticLostQueueFull => {
+                ::ankyra::klipper_shutdown_from!(
+                    $sender,
+                    "TMC diagnostic lost (queue full)",
+                    $clock
+                );
+            }
             $crate::shutdown::ShutdownReason::Tmc4671ChipIdMismatch => {
                 ::ankyra::klipper_shutdown_from!($sender, "TMC4671 chip ID mismatch", $clock);
             }
@@ -369,6 +378,7 @@ macro_rules! foci_ankyra_config {
                 "tmc_set_pid_gains lost (queue full)",
                 "tmc_set_position_gains lost (queue full)",
                 "tmc_set_voltage_limit lost (queue full)",
+                "TMC diagnostic lost (queue full)",
                 "TMC4671 chip ID mismatch",
                 "TMC4671 SPI failed at boot",
                 "TMC request validation failed",

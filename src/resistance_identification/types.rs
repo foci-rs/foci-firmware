@@ -116,3 +116,73 @@ pub enum ResistanceError {
     UnsupportedProfile,
     OutOfBoundsParameter,
 }
+
+impl ResistanceError {
+    /// Non-zero status code for the Klipper protocol message.
+    ///
+    /// Reuses [`crate::autotune::CommissionError`]'s stable numbering: a
+    /// backend I/O failure maps to the same code as commissioning's
+    /// [`crate::autotune::CommissionError::Spi`], and every resistance-fit
+    /// quality-gate or configuration failure maps to the same code
+    /// commissioning's electrical-identification phase reports for any
+    /// `ResistanceError` ([`crate::autotune::CommissionError::ResistanceIdFailed`]).
+    /// `NotAdcReady` and `NotArmed` have no commissioning analog (the
+    /// commissioning engine's phase ordering makes both unreachable there),
+    /// so the diagnostic-only caller gets two new codes appended after the
+    /// existing stable table; these are stable once shipped.
+    pub fn status_code(self) -> u8 {
+        match self {
+            Self::BackendIo => crate::autotune::CommissionError::Spi.status_code(),
+            Self::NotAdcReady => 20,
+            Self::NotArmed => 21,
+            Self::WrongPowerStage
+            | Self::InsufficientLinearPoints
+            | Self::ThermalDrift
+            | Self::ElectricalAxisMismatch
+            | Self::HighResidual
+            | Self::InvalidMotorType
+            | Self::PeakCurrentExceeded
+            | Self::UnsupportedProfile
+            | Self::OutOfBoundsParameter => {
+                crate::autotune::CommissionError::ResistanceIdFailed.status_code()
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ResistanceError;
+
+    #[test]
+    fn backend_io_reuses_commissioning_spi_code() {
+        assert_eq!(
+            ResistanceError::BackendIo.status_code(),
+            crate::autotune::CommissionError::Spi.status_code()
+        );
+    }
+
+    #[test]
+    fn quality_gate_failures_reuse_commissioning_resistance_id_failed_code() {
+        let expected = crate::autotune::CommissionError::ResistanceIdFailed.status_code();
+        for error in [
+            ResistanceError::WrongPowerStage,
+            ResistanceError::InsufficientLinearPoints,
+            ResistanceError::ThermalDrift,
+            ResistanceError::ElectricalAxisMismatch,
+            ResistanceError::HighResidual,
+            ResistanceError::InvalidMotorType,
+            ResistanceError::PeakCurrentExceeded,
+            ResistanceError::UnsupportedProfile,
+            ResistanceError::OutOfBoundsParameter,
+        ] {
+            assert_eq!(error.status_code(), expected, "{error:?}");
+        }
+    }
+
+    #[test]
+    fn diagnostic_only_preconditions_get_distinct_stable_codes() {
+        assert_eq!(ResistanceError::NotAdcReady.status_code(), 20);
+        assert_eq!(ResistanceError::NotArmed.status_code(), 21);
+    }
+}

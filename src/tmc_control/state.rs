@@ -393,7 +393,8 @@ impl TmcControlRuntime {
             | TmcRequestKind::CurrentVectorStepTest { .. }
             | TmcRequestKind::CurrentTorqueSampleTest { .. }
             | TmcRequestKind::PositionTorqueOffsetSampleTest { .. }
-            | TmcRequestKind::VoltageStepTest { .. } => {
+            | TmcRequestKind::VoltageStepTest { .. }
+            | TmcRequestKind::ResistanceTest { .. } => {
                 push_action(
                     &mut actions,
                     BoardAction::DelegatedDiagnostic(DelegatedDiagnostic { request: req }),

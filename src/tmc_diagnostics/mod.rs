@@ -8,6 +8,7 @@ mod current_step;
 mod helpers;
 mod replies;
 mod reports;
+mod resistance;
 mod torque_sample;
 mod voltage_step;
 
@@ -19,9 +20,11 @@ pub use helpers::{current_step_encoder_delta, pack_voltage_ext};
 pub use replies::{DiagnosticReplySink, emit_diagnostic_report};
 pub use reports::{
     CURRENT_STEP_STATUS_NOT_READY, CURRENT_STEP_STATUS_SPI, CurrentStepReport,
-    CurrentTorqueSampleReport, VoltageStepReport, empty_current_torque_sample_report,
+    CurrentTorqueSampleReport, ResistanceAxisReport, ResistanceProfileReport, ResistanceRunReport,
+    VoltageStepReport, empty_current_torque_sample_report, empty_resistance_run_report,
     empty_voltage_step_report,
 };
+pub use resistance::run_resistance_test_request;
 pub use torque_sample::{
     run_current_torque_sample_request, run_position_torque_offset_sample_request,
 };
@@ -57,6 +60,9 @@ pub struct DiagnosticContext<'a, B, D> {
     pub delay: &'a mut D,
     /// Board readiness snapshot for the selected request channel.
     pub readiness: DiagnosticReadiness,
+    /// Board-specific TMC4671 hardware configuration, used by the
+    /// resistance-test diagnostic to build the board's resistance profile.
+    pub tmc_config: &'static crate::config::TmcConfig,
 }
 
 /// Report produced by a handled active diagnostic request.
@@ -78,6 +84,17 @@ pub enum DiagnosticReport {
     },
     /// Open-loop voltage-step diagnostic.
     VoltageStep(VoltageStepReport),
+    /// Shared resistance-identification diagnostic. Axis reports are absent
+    /// when the run failed before producing per-axis fit results (entry
+    /// pre-check rejection or a mid-run backend/quality-gate failure).
+    ResistanceTest {
+        /// Board/profile metadata, always present.
+        profile: ResistanceProfileReport,
+        /// Per-run status, warnings, and readbacks.
+        run: ResistanceRunReport,
+        /// Per-axis fit results, present only on a successful run.
+        axes: Option<[ResistanceAxisReport; 2]>,
+    },
 }
 
 /// Result of shared diagnostic request dispatch.
@@ -111,6 +128,9 @@ where
         }
         crate::tmc::TmcRequestKind::VoltageStepTest { .. } => {
             voltage_step::run_voltage_step_request(req, ctx).await
+        }
+        crate::tmc::TmcRequestKind::ResistanceTest { .. } => {
+            resistance::run_resistance_test_request(req, ctx).await
         }
         _ => DiagnosticOutcome::NotDiagnostic(req),
     }

@@ -450,6 +450,95 @@ pub struct FociVoltageStepResult {
     pub status_flags: u32,
 }
 
+/// `foci_resistance_profile` reply - board/profile constants for display.
+///
+/// Wire name: `foci_resistance_profile`.
+#[klipper_reply]
+pub struct FociResistanceProfile {
+    /// Object id of the FOCI endpoint.
+    pub oid: u8,
+    /// Resistance-identification profile schema version.
+    pub profile_version: u16,
+    /// PWM_MAXCNT register value used during the sweep.
+    pub pwm_maxcnt: u16,
+    /// Break-before-make high-side count.
+    pub bbm_h: u8,
+    /// Break-before-make low-side count.
+    pub bbm_l: u8,
+    /// DSADC_MDEC_A decimation/filter setting.
+    pub dsadc_mdec_a: u16,
+    /// DSADC_MDEC_B decimation/filter setting.
+    pub dsadc_mdec_b: u16,
+    /// Linear-region current threshold in counts.
+    pub linear_current_threshold_count: u16,
+    /// Encoder-move warning threshold in counts.
+    pub encoder_move_warn_counts: u16,
+    /// STATUS_FLAGS bitmask that raises the warning flag during a window.
+    pub status_flags_warn_mask: u32,
+    /// Non-zero when the board's scale metadata has been validated.
+    pub scale_metadata_validated: u8,
+}
+
+/// `foci_resistance_run` reply - per-run status, warnings, and readbacks.
+///
+/// Wire name: `foci_resistance_run`.
+#[klipper_reply]
+pub struct FociResistanceRun {
+    /// Object id of the FOCI endpoint.
+    pub oid: u8,
+    /// Status code: 0 success, non-zero stable failure reason.
+    pub status: u8,
+    /// Resistance-identification profile schema version.
+    pub profile_version: u16,
+    /// Selected count-space resistance slope, scaled by 1000.
+    pub selected_r_count_slope_milli: i32,
+    /// Run-level warning bitfield.
+    pub warning_flags: u32,
+    /// STATUS_FLAGS accumulated (OR) across the run.
+    pub status_flags_or: u32,
+    /// PWM_MAXCNT readback captured during the run.
+    pub pwm_maxcnt_readback: u16,
+    /// Packed PWM_BBM_H_BBM_L readback captured during the run.
+    pub bbm_readback: u16,
+    /// Packed DSADC_MDEC_B_MDEC_A readback captured during the run.
+    pub dsadc_mdec_readback: u32,
+    /// PWM_SV_CHOP readback captured during the run.
+    pub pwm_sv_chop_readback: u32,
+}
+
+/// `foci_resistance_axis` reply - per-electrical-axis fit result.
+///
+/// Wire name: `foci_resistance_axis`.
+#[klipper_reply]
+pub struct FociResistanceAxis {
+    /// Object id of the FOCI endpoint.
+    pub oid: u8,
+    /// Stable per-result electrical-axis index.
+    pub electrical_axis: u8,
+    /// TMC4671 external electrical angle used for this axis.
+    pub phi_e_ext: u16,
+    /// Fitted count-space resistance slope, scaled by 1000.
+    pub r_count_slope_milli: i32,
+    /// Fitted intercept in current counts.
+    pub intercept_count: i32,
+    /// Fit residual in permille.
+    pub rmse_permille: u16,
+    /// Bitmask of points selected for the production linear-region fit.
+    pub selected_mask: u16,
+    /// Bitmask of points excluded from the fit.
+    pub excluded_point_mask: u16,
+    /// Count of points selected for the fit.
+    pub selected_count: u8,
+    /// Signed anchor slope across the +/-UD pair, scaled by 1000.
+    pub signed_count_slope_milli: i32,
+    /// Signed anchor current asymmetry in permille.
+    pub signed_asymmetry_permille: u16,
+    /// Repeated positive anchor drift in permille.
+    pub drift_permille: u16,
+    /// Per-axis warning bitfield.
+    pub warning_flags: u32,
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
@@ -642,6 +731,97 @@ mod tests {
         assert_eq!(reply.encoder_delta_sample, 1);
         assert_eq!(reply.encoder_delta_after, 0);
         assert_eq!(reply.status_flags, 0x7000_0000);
+    }
+}
+
+#[cfg(test)]
+mod resistance_reply_size_tests {
+    use super::{FociResistanceAxis, FociResistanceProfile, FociResistanceRun};
+    use ankyra::ScratchOutput;
+    use ankyra::encoding::Writable;
+
+    /// Klipper's wire-frame payload budget: `MESSAGE_MAX` (64) minus the
+    /// 2-byte header and 3-byte trailer. See
+    /// `ankyra/ankyra/src/transport.rs` `max_valid_frame_emits_bytes`.
+    const KLIPPER_MESSAGE_PAYLOAD_MAX: usize = 59;
+
+    /// Encode `reply` and return the actual wire-payload byte count.
+    fn encoded_len<T: Writable>(reply: &T) -> usize {
+        let mut scratch = ScratchOutput::<64>::new();
+        reply.write(&mut scratch);
+        scratch.result().len()
+    }
+
+    #[test]
+    fn resistance_profile_reply_fits_klipper_message_limit() {
+        // Worst-case VLQ encoding: every signed/unsigned field at its
+        // extreme magnitude.
+        let reply = FociResistanceProfile {
+            oid: u8::MAX,
+            profile_version: u16::MAX,
+            pwm_maxcnt: u16::MAX,
+            bbm_h: u8::MAX,
+            bbm_l: u8::MAX,
+            dsadc_mdec_a: u16::MAX,
+            dsadc_mdec_b: u16::MAX,
+            linear_current_threshold_count: u16::MAX,
+            encoder_move_warn_counts: u16::MAX,
+            status_flags_warn_mask: u32::MAX,
+            scale_metadata_validated: u8::MAX,
+        };
+
+        let len = encoded_len(&reply);
+        assert!(
+            len <= KLIPPER_MESSAGE_PAYLOAD_MAX,
+            "foci_resistance_profile encodes to {len} bytes, exceeds {KLIPPER_MESSAGE_PAYLOAD_MAX}"
+        );
+    }
+
+    #[test]
+    fn resistance_run_reply_fits_klipper_message_limit() {
+        let reply = FociResistanceRun {
+            oid: u8::MAX,
+            status: u8::MAX,
+            profile_version: u16::MAX,
+            selected_r_count_slope_milli: i32::MIN,
+            warning_flags: u32::MAX,
+            status_flags_or: u32::MAX,
+            pwm_maxcnt_readback: u16::MAX,
+            bbm_readback: u16::MAX,
+            dsadc_mdec_readback: u32::MAX,
+            pwm_sv_chop_readback: u32::MAX,
+        };
+
+        let len = encoded_len(&reply);
+        assert!(
+            len <= KLIPPER_MESSAGE_PAYLOAD_MAX,
+            "foci_resistance_run encodes to {len} bytes, exceeds {KLIPPER_MESSAGE_PAYLOAD_MAX}"
+        );
+    }
+
+    #[test]
+    fn resistance_axis_reply_fits_klipper_message_limit() {
+        let reply = FociResistanceAxis {
+            oid: u8::MAX,
+            electrical_axis: u8::MAX,
+            phi_e_ext: u16::MAX,
+            r_count_slope_milli: i32::MIN,
+            intercept_count: i32::MIN,
+            rmse_permille: u16::MAX,
+            selected_mask: u16::MAX,
+            excluded_point_mask: u16::MAX,
+            selected_count: u8::MAX,
+            signed_count_slope_milli: i32::MIN,
+            signed_asymmetry_permille: u16::MAX,
+            drift_permille: u16::MAX,
+            warning_flags: u32::MAX,
+        };
+
+        let len = encoded_len(&reply);
+        assert!(
+            len <= KLIPPER_MESSAGE_PAYLOAD_MAX,
+            "foci_resistance_axis encodes to {len} bytes, exceeds {KLIPPER_MESSAGE_PAYLOAD_MAX}"
+        );
     }
 }
 

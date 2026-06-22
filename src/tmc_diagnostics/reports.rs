@@ -268,3 +268,106 @@ pub fn empty_voltage_step_report(
         status_flags: 0,
     }
 }
+
+/// Board/profile constants reported for display by the resistance-test
+/// diagnostic. Carries no per-run status; always emitted once per request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ResistanceProfileReport {
+    /// Object id of the FOCI endpoint.
+    pub oid: u8,
+    /// Resistance-identification profile schema version.
+    pub profile_version: u16,
+    /// PWM_MAXCNT register value used during the sweep.
+    pub pwm_maxcnt: u16,
+    /// Break-before-make high-side count.
+    pub bbm_h: u8,
+    /// Break-before-make low-side count.
+    pub bbm_l: u8,
+    /// DSADC_MDEC_A decimation/filter setting.
+    pub dsadc_mdec_a: u16,
+    /// DSADC_MDEC_B decimation/filter setting.
+    pub dsadc_mdec_b: u16,
+    /// Linear-region current threshold in counts.
+    pub linear_current_threshold_count: u16,
+    /// Encoder-move warning threshold in counts.
+    pub encoder_move_warn_counts: u16,
+    /// STATUS_FLAGS bitmask that raises the warning flag during a window.
+    pub status_flags_warn_mask: u32,
+    /// Whether the board's scale metadata has been validated.
+    pub scale_metadata_validated: bool,
+}
+
+/// Per-run status, warnings, and power-stage readbacks for the
+/// resistance-test diagnostic.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ResistanceRunReport {
+    /// Object id of the FOCI endpoint.
+    pub oid: u8,
+    /// Status code: 0 success, non-zero stable failure reason from
+    /// [`crate::resistance_identification::ResistanceError::status_code`].
+    pub status: u8,
+    /// Resistance-identification profile schema version.
+    pub profile_version: u16,
+    /// Selected count-space resistance slope, scaled by 1000.
+    pub selected_r_count_slope_milli: i32,
+    /// Run-level warning bitfield.
+    pub warning_flags: u32,
+    /// STATUS_FLAGS accumulated (OR) across the run.
+    pub status_flags_or: u32,
+    /// PWM_MAXCNT readback captured during the run.
+    pub pwm_maxcnt_readback: u16,
+    /// Packed PWM_BBM_H_BBM_L readback captured during the run.
+    pub bbm_readback: u16,
+    /// Packed DSADC_MDEC_B_MDEC_A readback captured during the run.
+    pub dsadc_mdec_readback: u32,
+    /// PWM_SV_CHOP readback captured during the run.
+    pub pwm_sv_chop_readback: u32,
+}
+
+/// Per-electrical-axis fit result for the resistance-test diagnostic.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ResistanceAxisReport {
+    /// Object id of the FOCI endpoint.
+    pub oid: u8,
+    /// Stable per-result electrical-axis index.
+    pub electrical_axis: u8,
+    /// TMC4671 external electrical angle used for this axis.
+    pub phi_e_ext: u16,
+    /// Fitted count-space resistance slope, scaled by 1000.
+    pub r_count_slope_milli: i32,
+    /// Fitted intercept in current counts.
+    pub intercept_count: i32,
+    /// Fit residual in permille.
+    pub rmse_permille: u16,
+    /// Bitmask of points selected for the production linear-region fit.
+    pub selected_mask: u16,
+    /// Bitmask of points excluded from the fit.
+    pub excluded_point_mask: u16,
+    /// Count of points selected for the fit.
+    pub selected_count: u8,
+    /// Signed anchor slope across the +/-UD pair, scaled by 1000.
+    pub signed_count_slope_milli: i32,
+    /// Signed anchor current asymmetry in permille.
+    pub signed_asymmetry_permille: u16,
+    /// Repeated positive anchor drift in permille.
+    pub drift_permille: u16,
+    /// Per-axis warning bitfield.
+    pub warning_flags: u32,
+}
+
+/// Construct a zero-filled [`ResistanceRunReport`] carrying only the header
+/// status, used on entry-precheck rejection before any profile is read.
+pub fn empty_resistance_run_report(oid: u8, status: u8) -> ResistanceRunReport {
+    ResistanceRunReport {
+        oid,
+        status,
+        profile_version: 0,
+        selected_r_count_slope_milli: 0,
+        warning_flags: 0,
+        status_flags_or: 0,
+        pwm_maxcnt_readback: 0,
+        bbm_readback: 0,
+        dsadc_mdec_readback: 0,
+        pwm_sv_chop_readback: 0,
+    }
+}

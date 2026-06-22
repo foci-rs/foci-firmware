@@ -325,6 +325,15 @@ pub enum TmcRequestKind {
         /// Delay between applying the voltage vector and sampling, in milliseconds.
         sample_delay_ms: u16,
     },
+    /// Run the shared resistance-identification sweep over an already-armed
+    /// motor (diagnostic caller of the shared `ResistanceRunMode::ExternallyArmed`
+    /// engine; commissioning state is untouched).
+    ResistanceTest {
+        /// Object id used by the reply.
+        oid: u8,
+        /// Reserved verbosity/selector byte for future detail replies.
+        detail: u8,
+    },
     /// Write a TMC4671 register via SPI (dev-only).
     #[cfg(feature = "dev")]
     Write { addr: u8, value: u32 },
@@ -691,6 +700,11 @@ pub fn tmc_voltage_step_test(
             sample_delay_ms,
         },
     )
+}
+
+/// Build a `ResistanceTest` request.
+pub fn tmc_resistance_test(channel: u8, oid: u8, detail: u8) -> TmcRequest {
+    TmcRequest::new(channel, TmcRequestKind::ResistanceTest { oid, detail })
 }
 
 /// Build a `SetEnable` request.
@@ -1313,6 +1327,14 @@ mod tests {
                     sample_delay_ms: 2,
                 }
             )
+        );
+    }
+
+    #[test]
+    fn tmc_resistance_test_builds_request() {
+        assert_eq!(
+            tmc_resistance_test(0, 7, 0),
+            TmcRequest::new(0, TmcRequestKind::ResistanceTest { oid: 7, detail: 0 })
         );
     }
 
