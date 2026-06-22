@@ -19,6 +19,10 @@ pub struct MockSpiError;
 pub enum SpiOp {
     Read,
     Write(u8, u32),
+    /// `set_enable_pin` call, recorded in the same ordered log as register
+    /// writes so tests can assert relative ordering (e.g. a register must be
+    /// written before the enable pin is asserted).
+    EnablePin(bool),
 }
 
 /// Mock implementation of `CommissioningBackend` for host-side unit tests.
@@ -259,6 +263,7 @@ impl CommissionMotorControl for MockBackend {
 
     fn set_enable_pin(&mut self, state: bool) {
         self.enable_pin = state;
+        self.spi_log.push(SpiOp::EnablePin(state)).ok();
     }
 }
 

@@ -713,6 +713,15 @@ pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
             {
                 return super::fail_inner(phase, CommissionError::Spi);
             }
+            // The preceding resistance-identification phase leaves
+            // PWM_SV_CHOP=0 on its safe-state exit (see
+            // resistance_identification::runner::restore_safe_state). Re-enable
+            // the chopper here so the dI/dt sweep is self-sufficient regardless
+            // of the chopper state left behind, instead of silently measuring
+            // zero current with no PWM drive.
+            if backend.write_register(PWM_SV_CHOP, 7).await.is_err() {
+                return super::fail_inner(phase, CommissionError::Spi);
+            }
             backend.set_enable_pin(true);
 
             let deadline = backend.elapsed_us().wrapping_add(INDUCTANCE_PRE_SETTLE_US);
@@ -1735,6 +1744,62 @@ mod tests {
                 StepResult::InnerFailed(CommissionError::ElectricalIdFailed)
             ));
             assert!(!backend.enable_pin, "must not energize on rejected config");
+        });
+    }
+
+    #[test]
+    fn inductance_setup_re_enables_chopper_before_asserting_enable_pin() {
+        // The resistance-identification phase that precedes InductanceSetup
+        // leaves PWM_SV_CHOP=0 on its safe-state exit (see
+        // resistance_identification::runner::restore_safe_state). InductanceSetup
+        // must restore the chopper itself before energizing, or the dI/dt sweep
+        // runs with no PWM drive and measures zero current.
+        pollster::block_on(async {
+            let mut phase = InnerPhase::ElectricalId {
+                state: ElectricalIdState::InductanceSetup { coil: 0 },
+                data: ElectricalIdData::new(512),
+            };
+            let mut buf = TransientBuffer::new();
+            let mut backend = MockBackend::new();
+            // Model the chopper-disabled state the resistance runner leaves
+            // behind on its commission-success exit path.
+            let _ = backend
+                .registers
+                .insert(foci_tmc4671::registers::PWM_SV_CHOP.addr(), 0);
+            let mut selftest_results = crate::selftest::SelftestResults::default();
+            let mut diagnostics = crate::selftest::CommissionDiagnostics::default();
+
+            let result = step_electrical_identification(
+                &mut phase,
+                &mut buf,
+                InnerSequence::Commission,
+                &mut selftest_results,
+                &mut diagnostics,
+                &mut backend,
+            )
+            .await;
+
+            assert!(matches!(result, StepResult::Continue));
+            assert!(backend.enable_pin, "expected the enable pin to be asserted");
+
+            use foci_tmc4671::registers::PWM_SV_CHOP;
+            let chop_write_index = backend
+                .spi_log
+                .iter()
+                .position(|op| matches!(op, SpiOp::Write(addr, 7) if *addr == PWM_SV_CHOP.addr()))
+                .expect("expected a PWM_SV_CHOP=7 write");
+            let enable_pin_index = backend
+                .spi_log
+                .iter()
+                .position(|op| matches!(op, SpiOp::EnablePin(true)))
+                .expect("expected set_enable_pin(true)");
+            assert!(
+                chop_write_index < enable_pin_index,
+                "expected PWM_SV_CHOP=7 before set_enable_pin(true), got chop at {} \
+                 and enable at {}",
+                chop_write_index,
+                enable_pin_index
+            );
         });
     }
 
