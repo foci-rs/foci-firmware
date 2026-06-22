@@ -24,6 +24,7 @@ pub mod dump;
 pub mod helpers;
 pub mod pid;
 pub mod platform;
+pub mod resistance_identification;
 pub mod sample_timing;
 pub mod selftest;
 pub mod shutdown;

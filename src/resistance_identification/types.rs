@@ -1,0 +1,80 @@
+//! Public data types for the resistance-identification engine.
+
+/// Electrical axis sampled by the resistance-identification profile.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+pub struct ElectricalAxis {
+    /// Stable per-result index.
+    pub index: u8,
+    /// TMC4671 external electrical angle.
+    pub phi_e_ext: u16,
+    /// Human-facing phase label used by Klipper output.
+    pub label: u8,
+}
+
+impl ElectricalAxis {
+    /// Electrical-axis index 0: PHI_E_EXT=0, human label phase0.
+    pub const PHASE0: Self = Self {
+        index: 0,
+        phi_e_ext: 0,
+        label: 0,
+    };
+
+    /// Electrical-axis index 1: PHI_E_EXT=16384, human label phase90.
+    pub const PHASE90: Self = Self {
+        index: 1,
+        phi_e_ext: 16_384,
+        label: 90,
+    };
+}
+
+/// One zero-subtracted resistance point in count space.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+pub struct ResistancePoint {
+    /// Requested UD_EXT count.
+    pub requested_ud: i16,
+    /// Mean limited UD count minus adjacent zero-window UD count.
+    pub voltage_delta_count: i32,
+    /// Mean physical phase current count minus adjacent zero-window count.
+    pub current_delta_count: i32,
+    /// True when selected for the production linear-region fit.
+    pub selected: bool,
+}
+
+/// Warning bitfield returned by the engine.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+pub struct ResistanceWarningFlags(pub u32);
+
+impl ResistanceWarningFlags {
+    pub const NONE: Self = Self(0);
+    pub const SIGNED_CURRENT_ASYMMETRY: Self = Self(1 << 0);
+    pub const THERMAL_DRIFT: Self = Self(1 << 1);
+    pub const HIGH_RESIDUAL: Self = Self(1 << 2);
+    pub const SCALE_METADATA_UNVALIDATED: Self = Self(1 << 3);
+    pub const ENCODER_MOVED: Self = Self(1 << 4);
+    pub const STATUS_FLAGS: Self = Self(1 << 5);
+
+    pub const fn contains(self, other: Self) -> bool {
+        self.0 & other.0 != 0
+    }
+
+    pub fn insert(&mut self, other: Self) {
+        self.0 |= other.0;
+    }
+}
+
+/// Hard-failure reason for resistance identification.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+pub enum ResistanceError {
+    WrongPowerStage,
+    InsufficientLinearPoints,
+    ThermalDrift,
+    ElectricalAxisMismatch,
+    HighResidual,
+    BackendIo,
+    InvalidMotorType,
+    NotAdcReady,
+    NotArmed,
+    PeakCurrentExceeded,
+    UnsupportedProfile,
+    OutOfBoundsParameter,
+}
