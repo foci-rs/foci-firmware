@@ -1,6 +1,6 @@
 //! Standard impedance-identification profile defaults.
 
-use super::types::{ImpedanceInjectionPoint, IMPEDANCE_PROFILE_POINTS, IMPEDANCE_SAMPLE_COUNT};
+use super::types::{IMPEDANCE_PROFILE_POINTS, IMPEDANCE_SAMPLE_COUNT, ImpedanceInjectionPoint};
 
 /// Temporary OpenFFBoard fail mask used until the unsafe diagnostic status
 /// policy is audited into named TMC4671 status bits.

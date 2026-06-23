@@ -9,7 +9,7 @@ pub mod types;
 mod tests;
 
 pub use fit::{
-    evaluate_impedance_result, fit_impedance_point, ImpedanceFitPoint, ImpedanceFitSummary,
+    ImpedanceFitPoint, ImpedanceFitSummary, evaluate_impedance_result, fit_impedance_point,
 };
 pub use profile::{
     ImpedanceProfile, OPENFFBOARD_IMPEDANCE_STATUS_FAIL_MASK,
@@ -19,6 +19,6 @@ pub use runner::{
     ImpedanceBackend, ImpedanceBackendError, ImpedanceRunResult, run_impedance_identification,
 };
 pub use types::{
-    ImpedanceError, ImpedanceInjectionPoint, ImpedanceSample, ImpedanceWarningFlags,
-    IMPEDANCE_PROFILE_POINTS, IMPEDANCE_SAMPLE_COUNT,
+    IMPEDANCE_PROFILE_POINTS, IMPEDANCE_SAMPLE_COUNT, ImpedanceError, ImpedanceInjectionPoint,
+    ImpedanceSample, ImpedanceWarningFlags,
 };

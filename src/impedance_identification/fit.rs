@@ -2,8 +2,8 @@
 
 use super::profile::ImpedanceProfile;
 use super::types::{
-    ImpedanceError, ImpedanceInjectionPoint, ImpedanceSample, ImpedanceWarningFlags,
-    IMPEDANCE_PROFILE_POINTS, IMPEDANCE_SAMPLE_COUNT,
+    IMPEDANCE_PROFILE_POINTS, IMPEDANCE_SAMPLE_COUNT, ImpedanceError, ImpedanceInjectionPoint,
+    ImpedanceSample, ImpedanceWarningFlags,
 };
 
 const TURN_RADIANS: f64 = core::f64::consts::PI * 2.0;
