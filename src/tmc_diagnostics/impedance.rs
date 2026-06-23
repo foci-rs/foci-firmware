@@ -89,13 +89,8 @@ fn run_report(oid: u8, result: &ImpedanceRunResult) -> ImpedanceRunReport {
         oid,
         status: 0,
         profile_version: result.profile.profile_version,
-        selected_axis_max_count_per_ud_milli: result
-            .summary
-            .selected_axis_max_count_per_ud_milli,
-        selected_axis_min_count_per_ud_milli: result
-            .summary
-            .selected_axis_min_count_per_ud_milli,
-        selected_axis_angle_electrical_counts: result.point_fits[0].axis_angle_electrical_counts,
+        selected_axis_max_count_per_ud_milli: result.summary.selected_axis_max_count_per_ud_milli,
+        selected_axis_min_count_per_ud_milli: result.summary.selected_axis_min_count_per_ud_milli,
         repeatability_permille: result.summary.repeatability_permille,
         warning_flags: result.warning_flags.0,
         status_flags_or: result.status_flags_or,
@@ -124,7 +119,10 @@ fn fit_report(
     }
 }
 
-fn fit_reports(oid: u8, result: &ImpedanceRunResult) -> [ImpedanceFitReport; IMPEDANCE_PROFILE_POINTS] {
+fn fit_reports(
+    oid: u8,
+    result: &ImpedanceRunResult,
+) -> [ImpedanceFitReport; IMPEDANCE_PROFILE_POINTS] {
     core::array::from_fn(|index| fit_report(oid, index, &result.profile, result.point_fits[index]))
 }
 

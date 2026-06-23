@@ -583,8 +583,6 @@ pub struct FociImpedanceRun {
     pub selected_axis_max_count_per_ud_milli: u32,
     /// Selected minor response axis normalized to counts per 1000 UD counts.
     pub selected_axis_min_count_per_ud_milli: u32,
-    /// Selected major-axis stationary-frame electrical angle in turn counts.
-    pub selected_axis_angle_electrical_counts: u16,
     /// Worse cross-point spread of normalized major/minor axes.
     pub repeatability_permille: u16,
     /// Run-level warning bitfield.
@@ -958,7 +956,6 @@ mod resistance_reply_size_tests {
             profile_version: u16::MAX,
             selected_axis_max_count_per_ud_milli: 0x7FFF_FFFF,
             selected_axis_min_count_per_ud_milli: 0x7FFF_FFFF,
-            selected_axis_angle_electrical_counts: u16::MAX,
             repeatability_permille: u16::MAX,
             warning_flags: 0x7FFF_FFFF,
             status_flags_or: 0x7FFF_FFFF,

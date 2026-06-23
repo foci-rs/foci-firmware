@@ -612,10 +612,20 @@ fn dispatcher_returns_not_diagnostic_for_normal_request() {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum RecordedResistanceEvent {
-    Profile { oid: u8 },
-    Axis { oid: u8, electrical_axis: u8 },
-    Done { oid: u8, status: u8 },
-    ImpedanceProfile { oid: u8 },
+    Profile {
+        oid: u8,
+    },
+    Axis {
+        oid: u8,
+        electrical_axis: u8,
+    },
+    Done {
+        oid: u8,
+        status: u8,
+    },
+    ImpedanceProfile {
+        oid: u8,
+    },
     ImpedanceFit {
         oid: u8,
         point_index: u8,

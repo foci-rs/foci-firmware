@@ -705,8 +705,7 @@ impl FakeImpedanceBackend {
             return self.pidout_limit;
         }
         if addr == UQ_UD_EXT.addr() {
-            if self.ac_zero_voltage_readback_mismatch && nonzero_uq_written && self.uq_ud_ext == 0
-            {
+            if self.ac_zero_voltage_readback_mismatch && nonzero_uq_written && self.uq_ud_ext == 0 {
                 return 0xffff_ffff;
             }
             return self.uq_ud_ext;

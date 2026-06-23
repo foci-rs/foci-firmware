@@ -24,13 +24,13 @@ pub use reports::{
     CURRENT_STEP_STATUS_NOT_READY, CURRENT_STEP_STATUS_SPI, CurrentStepReport,
     CurrentTorqueSampleReport, IMPEDANCE_STATUS_CURRENT_LIMIT, IMPEDANCE_STATUS_ENCODER_MOVED,
     IMPEDANCE_STATUS_HIGH_RESIDUAL, IMPEDANCE_STATUS_INSUFFICIENT_VOLTAGE,
-    IMPEDANCE_STATUS_LOW_SIGNAL, IMPEDANCE_STATUS_POOR_COVERAGE,
-    IMPEDANCE_STATUS_PROFILE_READBACK, IMPEDANCE_STATUS_REPEATABILITY,
-    IMPEDANCE_STATUS_SCALAR_2F_MISMATCH, IMPEDANCE_STATUS_UNSUPPORTED_MOTOR_TYPE,
-    IMPEDANCE_STATUS_UNSUPPORTED_PROFILE, ImpedanceFitReport, ImpedanceProfileReport,
-    ImpedanceRunReport, ResistanceAxisReport, ResistanceProfileReport, ResistanceRunReport,
-    VoltageStepReport, empty_current_torque_sample_report, empty_impedance_run_report,
-    empty_resistance_run_report, empty_voltage_step_report,
+    IMPEDANCE_STATUS_LOW_SIGNAL, IMPEDANCE_STATUS_POOR_COVERAGE, IMPEDANCE_STATUS_PROFILE_READBACK,
+    IMPEDANCE_STATUS_REPEATABILITY, IMPEDANCE_STATUS_SCALAR_2F_MISMATCH,
+    IMPEDANCE_STATUS_UNSUPPORTED_MOTOR_TYPE, IMPEDANCE_STATUS_UNSUPPORTED_PROFILE,
+    ImpedanceFitReport, ImpedanceProfileReport, ImpedanceRunReport, ResistanceAxisReport,
+    ResistanceProfileReport, ResistanceRunReport, VoltageStepReport,
+    empty_current_torque_sample_report, empty_impedance_run_report, empty_resistance_run_report,
+    empty_voltage_step_report,
 };
 pub use resistance::run_resistance_test_request;
 pub use torque_sample::{
@@ -116,7 +116,8 @@ pub enum DiagnosticReport {
         /// Per-run status, warnings, and aggregate selected axes.
         run: ImpedanceRunReport,
         /// Per-point fit results, present only on a successful run.
-        fits: Option<[ImpedanceFitReport; crate::impedance_identification::IMPEDANCE_PROFILE_POINTS]>,
+        fits:
+            Option<[ImpedanceFitReport; crate::impedance_identification::IMPEDANCE_PROFILE_POINTS]>,
         /// Normalized detail level from the command request.
         detail: u8,
     },

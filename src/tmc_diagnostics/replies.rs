@@ -34,14 +34,14 @@ pub trait DiagnosticReplySink {
     fn foci_resistance_run(&mut self, report: ResistanceRunReport);
 
     /// Emit impedance-test board/profile metadata.
-    fn foci_impedance_profile(&mut self, report: ImpedanceProfileReport);
+    fn foci_impedance_profile(&mut self, _report: ImpedanceProfileReport) {}
 
     /// Emit one impedance-test per-point fit result.
-    fn foci_impedance_fit(&mut self, report: ImpedanceFitReport);
+    fn foci_impedance_fit(&mut self, _report: ImpedanceFitReport) {}
 
     /// Emit the impedance-test per-run status/warnings result.
     /// This is the diagnostic's terminal reply.
-    fn foci_impedance_run(&mut self, report: ImpedanceRunReport);
+    fn foci_impedance_run(&mut self, _report: ImpedanceRunReport) {}
 }
 
 /// Emit active diagnostic replies for a completed diagnostic report.
@@ -602,7 +602,6 @@ mod tests {
             profile_version: 1,
             selected_axis_max_count_per_ud_milli: 1234,
             selected_axis_min_count_per_ud_milli: 567,
-            selected_axis_angle_electrical_counts: 99,
             repeatability_permille: 12,
             warning_flags: 0x24,
             status_flags_or: 0x55aa,
