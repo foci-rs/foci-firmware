@@ -331,6 +331,59 @@ fn scalar_2f_mismatch_clean_ellipse_with_large_dc_offsets_stays_below_warn_thres
 }
 
 #[test]
+fn scalar_2f_mismatch_clean_circular_ellipse_with_large_dc_offsets_stays_below_warn_threshold() {
+    let profile = ImpedanceProfile::standard_openffboard();
+    let point = test_point(37_000, 800);
+    let samples =
+        single_period_samples_with_offsets(point, 600.0, 600.0, 0.62, 0.0, 5_000.0, -4_000.0);
+
+    let fit = unwrap_fit(fit_impedance_point(&profile, point, &samples));
+
+    assert!(fit.scalar_2f_mismatch_permille < profile.scalar_2f_mismatch_warn_permille);
+    assert!(!fit
+        .warning_flags
+        .contains(ImpedanceWarningFlags::SCALAR_2F_MISMATCH));
+}
+
+#[test]
+fn scalar_2f_mismatch_clean_near_circular_ellipse_with_large_dc_offsets_stays_below_warn_threshold()
+{
+    let profile = ImpedanceProfile::standard_openffboard();
+    let point = test_point(37_000, 800);
+    let samples =
+        single_period_samples_with_offsets(point, 608.0, 600.0, 0.62, 0.0, 5_000.0, -4_000.0);
+
+    let fit = unwrap_fit(fit_impedance_point(&profile, point, &samples));
+
+    assert!(fit.scalar_2f_mismatch_permille < profile.scalar_2f_mismatch_warn_permille);
+    assert!(!fit
+        .warning_flags
+        .contains(ImpedanceWarningFlags::SCALAR_2F_MISMATCH));
+}
+
+#[test]
+fn scalar_2f_mismatch_distorted_high_saliency_still_warns_and_fails() {
+    let mut warning_profile = ImpedanceProfile::standard_openffboard();
+    warning_profile.residual_fail_permille = 1000;
+    warning_profile.scalar_2f_mismatch_warn_permille = 20;
+    warning_profile.scalar_2f_mismatch_fail_permille = 900;
+    let point = test_point(37_000, 800);
+    let samples = single_period_samples(point, 900.0, 300.0, 0.62, 250.0);
+
+    let fit = unwrap_fit(fit_impedance_point(&warning_profile, point, &samples));
+    assert!(fit
+        .warning_flags
+        .contains(ImpedanceWarningFlags::SCALAR_2F_MISMATCH));
+
+    let mut failing_profile = warning_profile;
+    failing_profile.scalar_2f_mismatch_fail_permille = 20;
+    assert_eq!(
+        fit_impedance_point(&failing_profile, point, &samples),
+        Err(ImpedanceError::Scalar2fMismatch)
+    );
+}
+
+#[test]
 fn scalar_2f_mismatch_sets_warning() {
     let mut profile = ImpedanceProfile::standard_openffboard();
     profile.residual_fail_permille = 1000;

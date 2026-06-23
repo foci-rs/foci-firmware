@@ -9,6 +9,9 @@ use super::types::{
 const TURN_RADIANS: f64 = core::f64::consts::PI * 2.0;
 const NANOS_PER_SECOND: f64 = 1_000_000_000.0;
 const COVERAGE_FAIL_PERMILLE: u16 = 100;
+/// Relative scalar/vector `2f` mismatch is not meaningful below this saliency
+/// because count-space quantization can dominate both fitted saliency values.
+const SCALAR_2F_SALIENCY_FLOOR: f64 = 0.02;
 const EPSILON: f64 = 1.0e-9;
 
 /// Fitted count-space response for one impedance injection point.
@@ -37,7 +40,7 @@ pub struct ImpedanceFitSummary {
     pub selected_axis_max_count_per_ud_milli: u32,
     /// Selected minor response axis normalized to counts per 1000 UD counts.
     pub selected_axis_min_count_per_ud_milli: u32,
-    /// Cross-point axis repeatability spread as permille of the selected major axis.
+    /// Worse cross-point spread of independently normalized major and minor axes.
     pub repeatability_permille: u16,
     /// Aggregate non-fatal quality warnings.
     pub warning_flags: ImpedanceWarningFlags,
@@ -345,8 +348,11 @@ fn scalar_2f_mismatch_permille(
         ch1.offset,
     );
     let scalar_saliency = scalar_amplitude / mean_mag_sq.max(EPSILON);
-    let mismatch = libm::fabs(vector_saliency - scalar_saliency)
-        / vector_saliency.max(scalar_saliency).max(EPSILON);
+    let saliency = vector_saliency.max(scalar_saliency);
+    if saliency < SCALAR_2F_SALIENCY_FLOOR {
+        return 0;
+    }
+    let mismatch = libm::fabs(vector_saliency - scalar_saliency) / saliency.max(EPSILON);
 
     permille(mismatch)
 }
