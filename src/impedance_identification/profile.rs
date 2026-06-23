@@ -10,6 +10,17 @@ pub const OPENFFBOARD_IMPEDANCE_STATUS_FAIL_MASK: u32 = 0x7000_4480;
 /// policy exists for impedance identification.
 pub const OPENFFBOARD_IMPEDANCE_STATUS_WARN_MASK: u32 = 0x0000_0000;
 
+const OPENFFBOARD_IMPEDANCE_OPENLOOP_ACCELERATION_RPM_PER_S: u32 = 3_000;
+
+const fn frequency_millihz_to_openloop_velocity_rpm(frequency_millihz: u32) -> i32 {
+    let rpm = frequency_millihz.saturating_mul(60) / 1_000;
+    if rpm > i32::MAX as u32 {
+        i32::MAX
+    } else {
+        rpm as i32
+    }
+}
+
 /// Profile constants for one impedance-identification run.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub struct ImpedanceProfile {
@@ -33,16 +44,15 @@ pub struct ImpedanceProfile {
     pub max_window_exposure_budget: u64,
     pub max_total_exposure_budget: u64,
     pub scale_metadata_validated: bool,
-    pub openloop_acceleration_rpm_per_s: u32,
 }
 
 impl ImpedanceProfile {
     /// Build the starting OpenFFBoard impedance-identification profile.
     ///
-    /// The acceleration default is intentionally conservative: 3000 electrical
-    /// rpm/s ramps to the profile's highest 50 Hz injection point
-    /// (3000 electrical rpm) in about one second without depending on any raw
-    /// TMC clock conversion.
+    /// The per-point acceleration default is intentionally conservative:
+    /// 3000 electrical rpm/s ramps to the profile's highest 50 Hz injection
+    /// point (3000 electrical rpm) in about one second without depending on
+    /// any raw TMC clock conversion.
     pub const fn standard_openffboard() -> Self {
         Self {
             profile_version: 1,
@@ -50,11 +60,17 @@ impl ImpedanceProfile {
                 ImpedanceInjectionPoint {
                     ud_abs: 640,
                     frequency_millihz: 25_000,
+                    openloop_velocity_rpm: frequency_millihz_to_openloop_velocity_rpm(25_000),
+                    openloop_acceleration_rpm_per_s:
+                        OPENFFBOARD_IMPEDANCE_OPENLOOP_ACCELERATION_RPM_PER_S,
                     settle_ms: 250,
                 },
                 ImpedanceInjectionPoint {
                     ud_abs: 960,
                     frequency_millihz: 50_000,
+                    openloop_velocity_rpm: frequency_millihz_to_openloop_velocity_rpm(50_000),
+                    openloop_acceleration_rpm_per_s:
+                        OPENFFBOARD_IMPEDANCE_OPENLOOP_ACCELERATION_RPM_PER_S,
                     settle_ms: 250,
                 },
             ],
@@ -76,7 +92,6 @@ impl ImpedanceProfile {
             max_window_exposure_budget: 250_000_000,
             max_total_exposure_budget: 500_000_000,
             scale_metadata_validated: false,
-            openloop_acceleration_rpm_per_s: 3_000,
         }
     }
 

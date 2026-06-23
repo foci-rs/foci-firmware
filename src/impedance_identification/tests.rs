@@ -13,6 +13,14 @@ fn standard_profile_is_bounded_and_physical_projection_is_not_validated_by_defau
     assert!(profile.max_window_exposure() <= profile.max_window_exposure_budget);
     assert!(profile.max_total_exposure() <= profile.max_total_exposure_budget);
     assert!(!profile.scale_metadata_validated);
+    for point in profile.injection_points {
+        assert!(point.openloop_velocity_rpm > 0);
+        assert_eq!(
+            point.openloop_velocity_rpm,
+            ((u64::from(point.frequency_millihz) * 60) / 1000) as i32
+        );
+        assert!(point.openloop_acceleration_rpm_per_s > 0);
+    }
 }
 
 #[test]

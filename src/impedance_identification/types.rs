@@ -13,6 +13,10 @@ pub struct ImpedanceInjectionPoint {
     pub ud_abs: u16,
     /// Electrical injection frequency in millihertz.
     pub frequency_millihz: u32,
+    /// Open-loop electrical velocity in rpm derived from the injection frequency.
+    pub openloop_velocity_rpm: i32,
+    /// Bounded open-loop acceleration used when ramping into the injection point.
+    pub openloop_acceleration_rpm_per_s: u32,
     /// Settling time before the sample capture starts.
     pub settle_ms: u16,
 }
