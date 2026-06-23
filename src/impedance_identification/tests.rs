@@ -1,9 +1,17 @@
 use super::profile::{frequency_millihz_to_openloop_velocity_rpm, ImpedanceProfile};
+use super::runner::{ImpedanceBackend, ImpedanceBackendError, run_impedance_identification};
 use super::types::{
     ImpedanceError, ImpedanceInjectionPoint, ImpedanceSample, ImpedanceWarningFlags,
     IMPEDANCE_PROFILE_POINTS, IMPEDANCE_SAMPLE_COUNT,
 };
 use super::{evaluate_impedance_result, fit_impedance_point, ImpedanceFitPoint};
+use foci_tmc4671::registers::{
+    ABN_DECODER_COUNT, ADC_IWY_IUX, MODE_RAMP_MODE_MOTION, MOTOR_TYPE_N_POLE_PAIRS, MotorType,
+    MotorTypeNPolePairs, OPENLOOP_ACCELERATION, OPENLOOP_MODE, OPENLOOP_PHI,
+    OPENLOOP_VELOCITY_ACTUAL, OPENLOOP_VELOCITY_TARGET, PHI_E_EXT, PHI_E_SELECTION,
+    PIDOUT_UQ_UD_LIMITS, PWM_SV_CHOP, STATUS_FLAGS, UQ_UD_EXT,
+};
+use pollster::block_on;
 
 const TURN: f64 = core::f64::consts::PI * 2.0;
 
@@ -540,4 +548,442 @@ fn aggregate_repeatability_sets_physical_projection_unavailable_without_scale_me
     assert!(summary
         .warning_flags
         .contains(ImpedanceWarningFlags::PHYSICAL_PROJECTION_UNAVAILABLE));
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct RecordedWrite {
+    addr: u8,
+    value: u32,
+}
+
+struct FakeImpedanceBackend {
+    writes: heapless::Vec<RecordedWrite, 512>,
+    profile: ImpedanceProfile,
+    armed_for_open_loop_voltage: bool,
+    motor_type: u8,
+    saved_voltage_limit: u32,
+    pidout_limit: u32,
+    uq_ud_ext: u32,
+    mode_ramp_mode_motion: u32,
+    openloop_mode: u32,
+    openloop_acceleration: u32,
+    openloop_velocity_target: u32,
+    openloop_velocity_actual: u32,
+    openloop_phi: u32,
+    phi_e_selection: u32,
+    phi_e_ext: u32,
+    pwm_sv_chop: u32,
+    timestamp_us: u32,
+    encoder_count: u32,
+    baseline_current_count: i16,
+    status_flags: u32,
+    readback_mismatch_addr: Option<u8>,
+    ac_over_current_sample: Option<usize>,
+    fail_ac_adc_read_at: Option<usize>,
+    ac_adc_reads: usize,
+    ac_sample_timestamps: heapless::Vec<u32, 512>,
+    encoder_delta_per_energized_delay: u32,
+}
+
+impl FakeImpedanceBackend {
+    fn standard() -> Self {
+        let profile = ImpedanceProfile::standard_openffboard();
+        let saved_voltage_limit = 16_000;
+        Self {
+            writes: heapless::Vec::new(),
+            profile,
+            armed_for_open_loop_voltage: true,
+            motor_type: MotorType::TwoPhase as u8,
+            saved_voltage_limit,
+            pidout_limit: saved_voltage_limit,
+            uq_ud_ext: 0,
+            mode_ramp_mode_motion: 0,
+            openloop_mode: 0,
+            openloop_acceleration: 0,
+            openloop_velocity_target: 0,
+            openloop_velocity_actual: 0,
+            openloop_phi: 0,
+            phi_e_selection: 1,
+            phi_e_ext: 0,
+            pwm_sv_chop: 0,
+            timestamp_us: 0,
+            encoder_count: 0,
+            baseline_current_count: 0,
+            status_flags: 0,
+            readback_mismatch_addr: None,
+            ac_over_current_sample: None,
+            fail_ac_adc_read_at: None,
+            ac_adc_reads: 0,
+            ac_sample_timestamps: heapless::Vec::new(),
+            encoder_delta_per_energized_delay: 0,
+        }
+    }
+
+    fn wrote_nothing(&self) -> bool {
+        self.writes.is_empty()
+    }
+
+    fn wrote_safe_state(&self) -> bool {
+        let expected = [
+            (UQ_UD_EXT.addr(), 0),
+            (OPENLOOP_VELOCITY_TARGET.addr(), 0),
+            (OPENLOOP_VELOCITY_ACTUAL.addr(), 0),
+            (OPENLOOP_ACCELERATION.addr(), 0),
+            (OPENLOOP_PHI.addr(), 0),
+            (OPENLOOP_MODE.addr(), 0),
+            (MODE_RAMP_MODE_MOTION.addr(), 0),
+            (PWM_SV_CHOP.addr(), 0),
+            (PIDOUT_UQ_UD_LIMITS.addr(), self.saved_voltage_limit),
+        ];
+        if self.writes.len() < expected.len() {
+            return false;
+        }
+        let offset = self.writes.len() - expected.len();
+        expected.iter().enumerate().all(|(index, (addr, value))| {
+            self.writes[offset + index].addr == *addr && self.writes[offset + index].value == *value
+        })
+    }
+
+    fn energized(&self) -> bool {
+        self.mode_ramp_mode_motion == foci_tmc4671::registers::MotionMode::UqUdExt as u32
+            && self.uq_ud_ext != 0
+    }
+
+    fn last_ud(&self) -> i16 {
+        (self.uq_ud_ext & 0xffff) as u16 as i16
+    }
+
+    fn packed_current(ch0: i16, ch1: i16) -> u32 {
+        ((ch1 as u16 as u32) << 16) | ch0 as u16 as u32
+    }
+
+    fn ac_current(&self) -> u32 {
+        let frequency_millihz = self.openloop_velocity_target.saturating_mul(1000) / 60;
+        let phase = TURN * f64::from(frequency_millihz) * f64::from(self.timestamp_us)
+            / 1_000_000_000.0;
+        let ud = f64::from(self.last_ud());
+        let ch0 = (ud * libm::cos(phase)).round() as i16;
+        let ch1 = ((ud / 2.0) * libm::sin(phase)).round() as i16;
+        Self::packed_current(ch0, ch1)
+    }
+
+    fn readback_value(&self, addr: u8) -> u32 {
+        if Some(addr) == self.readback_mismatch_addr {
+            return 0xffff_ffff;
+        }
+        if addr == PIDOUT_UQ_UD_LIMITS.addr() {
+            return self.pidout_limit;
+        }
+        if addr == UQ_UD_EXT.addr() {
+            return self.uq_ud_ext;
+        }
+        if addr == MODE_RAMP_MODE_MOTION.addr() {
+            return self.mode_ramp_mode_motion;
+        }
+        if addr == OPENLOOP_MODE.addr() {
+            return self.openloop_mode;
+        }
+        if addr == OPENLOOP_ACCELERATION.addr() {
+            return self.openloop_acceleration;
+        }
+        if addr == OPENLOOP_VELOCITY_TARGET.addr() {
+            return self.openloop_velocity_target;
+        }
+        if addr == OPENLOOP_VELOCITY_ACTUAL.addr() {
+            return self.openloop_velocity_actual;
+        }
+        if addr == OPENLOOP_PHI.addr() {
+            return self.openloop_phi;
+        }
+        if addr == PHI_E_SELECTION.addr() {
+            return self.phi_e_selection;
+        }
+        if addr == PHI_E_EXT.addr() {
+            return self.phi_e_ext;
+        }
+        if addr == PWM_SV_CHOP.addr() {
+            return self.pwm_sv_chop;
+        }
+        0
+    }
+}
+
+impl ImpedanceBackend for FakeImpedanceBackend {
+    async fn read_register(&mut self, addr: u8) -> Result<u32, ImpedanceBackendError> {
+        if addr == MOTOR_TYPE_N_POLE_PAIRS.addr() {
+            return Ok(MotorTypeNPolePairs::new()
+                .with_motor_type(self.motor_type)
+                .with_n_pole_pairs(50)
+                .into());
+        }
+        if addr == ABN_DECODER_COUNT.addr() {
+            return Ok(self.encoder_count);
+        }
+        if addr == STATUS_FLAGS.addr() {
+            return Ok(self.status_flags);
+        }
+        if addr == ADC_IWY_IUX.addr() {
+            if self.phi_e_selection == 2 && self.energized() {
+                let next_sample = self.ac_adc_reads + 1;
+                if self.fail_ac_adc_read_at == Some(next_sample) {
+                    return Err(ImpedanceBackendError::Spi);
+                }
+                self.ac_adc_reads = next_sample;
+                self.ac_sample_timestamps
+                    .push(self.timestamp_us)
+                    .expect("AC sample timestamp log overflow");
+                if self.ac_over_current_sample == Some(next_sample) {
+                    let over = self.profile.max_expected_current_count as i16 + 1;
+                    return Ok(Self::packed_current(over, 0));
+                }
+                return Ok(self.ac_current());
+            }
+            return Ok(Self::packed_current(self.baseline_current_count, 0));
+        }
+        Ok(self.readback_value(addr))
+    }
+
+    async fn write_register(&mut self, addr: u8, value: u32) -> Result<(), ImpedanceBackendError> {
+        self.writes
+            .push(RecordedWrite { addr, value })
+            .expect("write log overflow");
+        if addr == PIDOUT_UQ_UD_LIMITS.addr() {
+            self.pidout_limit = value;
+        } else if addr == UQ_UD_EXT.addr() {
+            self.uq_ud_ext = value;
+        } else if addr == MODE_RAMP_MODE_MOTION.addr() {
+            self.mode_ramp_mode_motion = value;
+        } else if addr == OPENLOOP_MODE.addr() {
+            self.openloop_mode = value;
+        } else if addr == OPENLOOP_ACCELERATION.addr() {
+            self.openloop_acceleration = value;
+        } else if addr == OPENLOOP_VELOCITY_TARGET.addr() {
+            self.openloop_velocity_target = value;
+        } else if addr == OPENLOOP_VELOCITY_ACTUAL.addr() {
+            self.openloop_velocity_actual = value;
+        } else if addr == OPENLOOP_PHI.addr() {
+            self.openloop_phi = value;
+        } else if addr == PHI_E_SELECTION.addr() {
+            self.phi_e_selection = value;
+        } else if addr == PHI_E_EXT.addr() {
+            self.phi_e_ext = value;
+        } else if addr == PWM_SV_CHOP.addr() {
+            self.pwm_sv_chop = value;
+        }
+        Ok(())
+    }
+
+    async fn delay_us(&mut self, us: u32) {
+        self.timestamp_us = self.timestamp_us.wrapping_add(us);
+    }
+
+    async fn delay_ms(&mut self, ms: u64) {
+        self.timestamp_us = self.timestamp_us.wrapping_add((ms as u32).saturating_mul(1000));
+        if self.energized() {
+            self.encoder_count = self
+                .encoder_count
+                .wrapping_add(self.encoder_delta_per_energized_delay);
+        }
+    }
+
+    fn timestamp_us(&self) -> u32 {
+        self.timestamp_us
+    }
+
+    fn is_armed_for_open_loop_voltage(&self) -> bool {
+        self.armed_for_open_loop_voltage
+    }
+
+    fn profile(&self) -> ImpedanceProfile {
+        self.profile
+    }
+}
+
+fn assert_write_order(writes: &[RecordedWrite], first_addr: u8, second_addr: u8) {
+    let first = writes
+        .iter()
+        .position(|write| write.addr == first_addr)
+        .expect("first address never written");
+    let second = writes
+        .iter()
+        .position(|write| write.addr == second_addr)
+        .expect("second address never written");
+    assert!(first < second, "expected {first_addr:#x} before {second_addr:#x}");
+}
+
+fn assert_write_before_nonzero_uq(writes: &[RecordedWrite], first_addr: u8) {
+    let first = writes
+        .iter()
+        .position(|write| write.addr == first_addr)
+        .expect("first address never written");
+    let uq = writes
+        .iter()
+        .position(|write| write.addr == UQ_UD_EXT.addr() && write.value != 0)
+        .expect("non-zero UQ_UD_EXT never written");
+    assert!(first < uq, "expected {first_addr:#x} before non-zero UQ_UD_EXT");
+}
+
+#[test]
+fn runner_unarmed_externally_armed_mode_writes_nothing() {
+    let mut backend = FakeImpedanceBackend::standard();
+    backend.armed_for_open_loop_voltage = false;
+
+    let err = block_on(run_impedance_identification(&mut backend)).unwrap_err();
+
+    assert_eq!(err, ImpedanceError::NotArmed);
+    assert!(backend.wrote_nothing());
+}
+
+#[test]
+fn runner_low_saved_pidout_limit_writes_nothing() {
+    let mut backend = FakeImpedanceBackend::standard();
+    backend.saved_voltage_limit = u32::from(backend.profile.max_abs_ud()) - 1;
+    backend.pidout_limit = backend.saved_voltage_limit;
+
+    let err = block_on(run_impedance_identification(&mut backend)).unwrap_err();
+
+    assert_eq!(err, ImpedanceError::InsufficientVoltageAuthority);
+    assert!(backend.wrote_nothing());
+}
+
+#[test]
+fn runner_unsupported_motor_type_writes_nothing() {
+    let mut backend = FakeImpedanceBackend::standard();
+    backend.motor_type = MotorType::ThreePhase as u8;
+
+    let err = block_on(run_impedance_identification(&mut backend)).unwrap_err();
+
+    assert_eq!(err, ImpedanceError::UnsupportedMotorType);
+    assert!(backend.wrote_nothing());
+}
+
+#[test]
+fn runner_unsupported_profile_exposure_writes_nothing() {
+    let mut backend = FakeImpedanceBackend::standard();
+    backend.profile.max_total_exposure_budget = backend.profile.max_total_exposure() - 1;
+
+    let err = block_on(run_impedance_identification(&mut backend)).unwrap_err();
+
+    assert_eq!(err, ImpedanceError::UnsupportedProfile);
+    assert!(backend.wrote_nothing());
+}
+
+#[test]
+fn runner_voltage_limit_write_happens_before_chopper_and_open_loop_voltage() {
+    let mut backend = FakeImpedanceBackend::standard();
+
+    let result = block_on(run_impedance_identification(&mut backend));
+
+    assert!(result.is_ok(), "expected ok, got {result:?}");
+    assert_write_order(&backend.writes, PIDOUT_UQ_UD_LIMITS.addr(), PWM_SV_CHOP.addr());
+    assert_write_before_nonzero_uq(&backend.writes, PIDOUT_UQ_UD_LIMITS.addr());
+}
+
+#[test]
+fn runner_profile_critical_readback_mismatch_returns_profile_readback_mismatch() {
+    let mut backend = FakeImpedanceBackend::standard();
+    backend.readback_mismatch_addr = Some(OPENLOOP_MODE.addr());
+
+    let err = block_on(run_impedance_identification(&mut backend)).unwrap_err();
+
+    assert_eq!(err, ImpedanceError::ProfileReadbackMismatch);
+    assert!(backend.wrote_safe_state());
+}
+
+#[test]
+fn runner_dc_baseline_over_current_returns_current_limit_exceeded_and_restores() {
+    let mut backend = FakeImpedanceBackend::standard();
+    backend.baseline_current_count = backend.profile.max_expected_current_count as i16 + 1;
+
+    let err = block_on(run_impedance_identification(&mut backend)).unwrap_err();
+
+    assert_eq!(err, ImpedanceError::CurrentLimitExceeded);
+    assert!(backend.wrote_safe_state());
+}
+
+#[test]
+fn runner_sampled_ac_over_current_returns_current_limit_exceeded_and_restores() {
+    let mut backend = FakeImpedanceBackend::standard();
+    backend.ac_over_current_sample = Some(1);
+
+    let err = block_on(run_impedance_identification(&mut backend)).unwrap_err();
+
+    assert_eq!(err, ImpedanceError::CurrentLimitExceeded);
+    assert!(backend.wrote_safe_state());
+}
+
+#[test]
+fn runner_sampled_fail_status_flags_return_unsafe_status_flags_and_restore() {
+    let mut backend = FakeImpedanceBackend::standard();
+    backend.status_flags = backend.profile.status_flags_fail_mask;
+
+    let err = block_on(run_impedance_identification(&mut backend)).unwrap_err();
+
+    assert_eq!(err, ImpedanceError::UnsafeStatusFlags);
+    assert!(backend.wrote_safe_state());
+}
+
+#[test]
+fn runner_sampled_warn_status_flags_record_warning_without_failing() {
+    let mut backend = FakeImpedanceBackend::standard();
+    backend.profile.status_flags_fail_mask = 0;
+    backend.profile.status_flags_warn_mask = 0x20;
+    backend.status_flags = 0x20;
+
+    let result = block_on(run_impedance_identification(&mut backend)).unwrap();
+
+    assert_eq!(result.status_flags_or, 0x20);
+    assert!(result.warning_flags.contains(ImpedanceWarningFlags::STATUS_FLAGS));
+}
+
+#[test]
+fn runner_encoder_delta_over_fail_limit_returns_encoder_moved_and_restores() {
+    let mut backend = FakeImpedanceBackend::standard();
+    backend.encoder_delta_per_energized_delay = u32::from(backend.profile.encoder_move_fail_counts) + 1;
+
+    let err = block_on(run_impedance_identification(&mut backend)).unwrap_err();
+
+    assert_eq!(err, ImpedanceError::EncoderMoved);
+    assert!(backend.wrote_safe_state());
+}
+
+#[test]
+fn runner_sample_read_failure_returns_backend_io_and_restores() {
+    let mut backend = FakeImpedanceBackend::standard();
+    backend.fail_ac_adc_read_at = Some(1);
+
+    let err = block_on(run_impedance_identification(&mut backend)).unwrap_err();
+
+    assert_eq!(err, ImpedanceError::BackendIo);
+    assert!(backend.wrote_safe_state());
+}
+
+#[test]
+fn runner_success_reports_nonzero_status_flags_or_when_observed_status_is_safe() {
+    let mut backend = FakeImpedanceBackend::standard();
+    backend.profile.status_flags_fail_mask = 0;
+    backend.profile.status_flags_warn_mask = 0;
+    backend.status_flags = 0x20;
+
+    let result = block_on(run_impedance_identification(&mut backend)).unwrap();
+
+    assert_eq!(result.status_flags_or, 0x20);
+    assert!(!result.warning_flags.contains(ImpedanceWarningFlags::STATUS_FLAGS));
+}
+
+#[test]
+fn runner_success_uses_profile_sample_count_and_sample_interval_us() {
+    let mut backend = FakeImpedanceBackend::standard();
+    backend.profile.sample_interval_us = 375;
+
+    let result = block_on(run_impedance_identification(&mut backend));
+
+    assert!(result.is_ok(), "expected ok, got {result:?}");
+    let expected_samples = backend.profile.sample_count as usize * IMPEDANCE_PROFILE_POINTS;
+    assert_eq!(backend.ac_adc_reads, expected_samples);
+    assert_eq!(backend.ac_sample_timestamps.len(), expected_samples);
+    for index in 1..backend.profile.sample_count as usize {
+        let delta = backend.ac_sample_timestamps[index] - backend.ac_sample_timestamps[index - 1];
+        assert_eq!(delta, u32::from(backend.profile.sample_interval_us));
+    }
 }

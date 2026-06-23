@@ -2,6 +2,7 @@
 
 pub mod fit;
 pub mod profile;
+pub mod runner;
 pub mod types;
 
 #[cfg(test)]
@@ -13,6 +14,9 @@ pub use fit::{
 pub use profile::{
     ImpedanceProfile, OPENFFBOARD_IMPEDANCE_STATUS_FAIL_MASK,
     OPENFFBOARD_IMPEDANCE_STATUS_WARN_MASK,
+};
+pub use runner::{
+    ImpedanceBackend, ImpedanceBackendError, ImpedanceRunResult, run_impedance_identification,
 };
 pub use types::{
     ImpedanceError, ImpedanceInjectionPoint, ImpedanceSample, ImpedanceWarningFlags,
