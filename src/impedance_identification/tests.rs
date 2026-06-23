@@ -580,6 +580,8 @@ struct FakeImpedanceBackend {
     readback_mismatch_addr: Option<u8>,
     ac_over_current_sample: Option<usize>,
     fail_ac_adc_read_at: Option<usize>,
+    restore_fail_addr: Option<u8>,
+    restore_failure_armed: bool,
     ac_adc_reads: usize,
     ac_sample_timestamps: heapless::Vec<u32, 512>,
     encoder_delta_per_energized_delay: u32,
@@ -613,6 +615,8 @@ impl FakeImpedanceBackend {
             readback_mismatch_addr: None,
             ac_over_current_sample: None,
             fail_ac_adc_read_at: None,
+            restore_fail_addr: None,
+            restore_failure_armed: false,
             ac_adc_reads: 0,
             ac_sample_timestamps: heapless::Vec::new(),
             encoder_delta_per_energized_delay: 0,
@@ -734,9 +738,15 @@ impl ImpedanceBackend for FakeImpedanceBackend {
                     .expect("AC sample timestamp log overflow");
                 if self.ac_over_current_sample == Some(next_sample) {
                     let over = self.profile.max_expected_current_count as i16 + 1;
+                    self.restore_failure_armed = true;
                     return Ok(Self::packed_current(over, 0));
                 }
                 return Ok(self.ac_current());
+            }
+            if i32::from(self.baseline_current_count).unsigned_abs()
+                > u32::from(self.profile.max_expected_current_count)
+            {
+                self.restore_failure_armed = true;
             }
             return Ok(Self::packed_current(self.baseline_current_count, 0));
         }
@@ -769,6 +779,9 @@ impl ImpedanceBackend for FakeImpedanceBackend {
             self.phi_e_ext = value;
         } else if addr == PWM_SV_CHOP.addr() {
             self.pwm_sv_chop = value;
+        }
+        if self.restore_failure_armed && self.restore_fail_addr == Some(addr) {
+            return Err(ImpedanceBackendError::Spi);
         }
         Ok(())
     }
@@ -869,6 +882,18 @@ fn runner_unsupported_profile_exposure_writes_nothing() {
 }
 
 #[test]
+fn runner_unsupported_profile_sample_count_writes_nothing() {
+    let mut backend = FakeImpedanceBackend::standard();
+    backend.profile.sample_count = IMPEDANCE_SAMPLE_COUNT as u16 - 1;
+
+    let err = block_on(run_impedance_identification(&mut backend)).unwrap_err();
+
+    assert_eq!(err, ImpedanceError::UnsupportedProfile);
+    assert!(backend.wrote_nothing());
+    assert!(!backend.wrote_safe_state());
+}
+
+#[test]
 fn runner_voltage_limit_write_happens_before_chopper_and_open_loop_voltage() {
     let mut backend = FakeImpedanceBackend::standard();
 
@@ -898,6 +923,18 @@ fn runner_dc_baseline_over_current_returns_current_limit_exceeded_and_restores()
     let err = block_on(run_impedance_identification(&mut backend)).unwrap_err();
 
     assert_eq!(err, ImpedanceError::CurrentLimitExceeded);
+    assert!(backend.wrote_safe_state());
+}
+
+#[test]
+fn runner_restore_write_failure_takes_precedence_over_body_failure() {
+    let mut backend = FakeImpedanceBackend::standard();
+    backend.baseline_current_count = backend.profile.max_expected_current_count as i16 + 1;
+    backend.restore_fail_addr = Some(OPENLOOP_MODE.addr());
+
+    let err = block_on(run_impedance_identification(&mut backend)).unwrap_err();
+
+    assert_eq!(err, ImpedanceError::RestoreFailed);
     assert!(backend.wrote_safe_state());
 }
 
