@@ -6,6 +6,7 @@
 
 mod current_step;
 mod helpers;
+mod impedance;
 mod replies;
 mod reports;
 mod resistance;
@@ -17,12 +18,19 @@ mod tests;
 
 pub use current_step::run_current_step_request;
 pub use helpers::{current_step_encoder_delta, pack_voltage_ext};
+pub use impedance::run_impedance_test_request;
 pub use replies::{DiagnosticReplySink, emit_diagnostic_report};
 pub use reports::{
     CURRENT_STEP_STATUS_NOT_READY, CURRENT_STEP_STATUS_SPI, CurrentStepReport,
-    CurrentTorqueSampleReport, ResistanceAxisReport, ResistanceProfileReport, ResistanceRunReport,
-    VoltageStepReport, empty_current_torque_sample_report, empty_resistance_run_report,
-    empty_voltage_step_report,
+    CurrentTorqueSampleReport, IMPEDANCE_STATUS_CURRENT_LIMIT, IMPEDANCE_STATUS_ENCODER_MOVED,
+    IMPEDANCE_STATUS_HIGH_RESIDUAL, IMPEDANCE_STATUS_INSUFFICIENT_VOLTAGE,
+    IMPEDANCE_STATUS_LOW_SIGNAL, IMPEDANCE_STATUS_POOR_COVERAGE,
+    IMPEDANCE_STATUS_PROFILE_READBACK, IMPEDANCE_STATUS_REPEATABILITY,
+    IMPEDANCE_STATUS_SCALAR_2F_MISMATCH, IMPEDANCE_STATUS_UNSUPPORTED_MOTOR_TYPE,
+    IMPEDANCE_STATUS_UNSUPPORTED_PROFILE, ImpedanceFitReport, ImpedanceProfileReport,
+    ImpedanceRunReport, ResistanceAxisReport, ResistanceProfileReport, ResistanceRunReport,
+    VoltageStepReport, empty_current_torque_sample_report, empty_impedance_run_report,
+    empty_resistance_run_report, empty_voltage_step_report,
 };
 pub use resistance::run_resistance_test_request;
 pub use torque_sample::{
@@ -48,6 +56,11 @@ pub struct DiagnosticReadiness {
 pub trait DiagnosticDelay {
     /// Delay by `ms` milliseconds.
     async fn delay_ms(&mut self, ms: u64);
+
+    /// Delay by `us` microseconds.
+    async fn delay_us(&mut self, us: u32) {
+        self.delay_ms(u64::from(us).div_ceil(1_000)).await;
+    }
 }
 
 /// Mutable resources borrowed by one active diagnostic request.
@@ -95,6 +108,18 @@ pub enum DiagnosticReport {
         /// Per-axis fit results, present only on a successful run.
         axes: Option<[ResistanceAxisReport; 2]>,
     },
+    /// Shared impedance-identification diagnostic. Fit reports are absent
+    /// when the run failed before producing per-point fit results.
+    ImpedanceTest {
+        /// Board/profile metadata, always present.
+        profile: ImpedanceProfileReport,
+        /// Per-run status, warnings, and aggregate selected axes.
+        run: ImpedanceRunReport,
+        /// Per-point fit results, present only on a successful run.
+        fits: Option<[ImpedanceFitReport; crate::impedance_identification::IMPEDANCE_PROFILE_POINTS]>,
+        /// Normalized detail level from the command request.
+        detail: u8,
+    },
 }
 
 /// Result of shared diagnostic request dispatch.
@@ -131,6 +156,9 @@ where
         }
         crate::tmc::TmcRequestKind::ResistanceTest { .. } => {
             resistance::run_resistance_test_request(req, ctx).await
+        }
+        crate::tmc::TmcRequestKind::ImpedanceTest { .. } => {
+            impedance::run_impedance_test_request(req, ctx).await
         }
         _ => DiagnosticOutcome::NotDiagnostic(req),
     }

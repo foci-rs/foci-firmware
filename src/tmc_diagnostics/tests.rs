@@ -1,7 +1,7 @@
 use super::*;
 use crate::tmc::{
     tmc_current_step_test, tmc_current_torque_sample_test, tmc_current_vector_step_test,
-    tmc_position_torque_offset_sample_test, tmc_voltage_step_test,
+    tmc_impedance_test, tmc_position_torque_offset_sample_test, tmc_voltage_step_test,
 };
 use crate::tmc_control::TmcControlRuntime;
 use foci_tmc4671::registers::{
@@ -615,6 +615,20 @@ enum RecordedResistanceEvent {
     Profile { oid: u8 },
     Axis { oid: u8, electrical_axis: u8 },
     Done { oid: u8, status: u8 },
+    ImpedanceProfile { oid: u8 },
+    ImpedanceFit {
+        oid: u8,
+        point_index: u8,
+        scalar_2f_mismatch_permille: u16,
+        residual_permille: u16,
+        coverage_permille: u16,
+    },
+    ImpedanceDone {
+        oid: u8,
+        status: u8,
+        status_flags_or: u32,
+        warning_flags: u32,
+    },
 }
 
 #[derive(Default)]
@@ -645,6 +659,30 @@ impl DiagnosticReplySink for RecordingDiagnosticSink {
         self.events.push(RecordedResistanceEvent::Done {
             oid: report.oid,
             status: report.status,
+        });
+    }
+
+    fn foci_impedance_profile(&mut self, report: ImpedanceProfileReport) {
+        self.events
+            .push(RecordedResistanceEvent::ImpedanceProfile { oid: report.oid });
+    }
+
+    fn foci_impedance_fit(&mut self, report: ImpedanceFitReport) {
+        self.events.push(RecordedResistanceEvent::ImpedanceFit {
+            oid: report.oid,
+            point_index: report.point_index,
+            scalar_2f_mismatch_permille: report.scalar_2f_mismatch_permille,
+            residual_permille: report.residual_permille,
+            coverage_permille: report.coverage_permille,
+        });
+    }
+
+    fn foci_impedance_run(&mut self, report: ImpedanceRunReport) {
+        self.events.push(RecordedResistanceEvent::ImpedanceDone {
+            oid: report.oid,
+            status: report.status,
+            status_flags_or: report.status_flags_or,
+            warning_flags: report.warning_flags,
         });
     }
 }
@@ -821,6 +859,188 @@ fn resistance_test_rejects_during_homing_without_invoking_runner() {
         assert!(
             tmc.into_inner().writes.is_empty(),
             "expected no SPI writes (no energizing) while homing is active"
+        );
+    });
+}
+
+#[test]
+fn impedance_test_request_dispatches_to_shared_runner() {
+    pollster::block_on(async {
+        let mut runtime = TmcControlRuntime::new_for_channel(0);
+        let mut delay = MockDelay::default();
+        let mut tmc = Tmc4671Spi::new(DiagnosticMockSpi::default());
+        let req = tmc_impedance_test(0, 7, 0);
+
+        let outcome = handle_diagnostic_request(
+            req,
+            DiagnosticContext {
+                tmc: &mut tmc,
+                runtime: &mut runtime,
+                delay: &mut delay,
+                tmc_config: &TEST_TMC_CONFIG,
+                readiness: DiagnosticReadiness {
+                    homing_active: false,
+                    stepper_active: false,
+                    saved_voltage_limit: 777,
+                },
+            },
+        )
+        .await;
+
+        let DiagnosticOutcome::Handled(DiagnosticReport::ImpedanceTest { run, .. }) = outcome
+        else {
+            panic!("expected impedance test report");
+        };
+        assert_eq!(run.oid, 7);
+    });
+}
+
+#[test]
+fn impedance_test_rejects_during_homing_without_invoking_runner() {
+    pollster::block_on(async {
+        let mut runtime = ready_runtime();
+        let mut delay = MockDelay::default();
+        let mut tmc = Tmc4671Spi::new(DiagnosticMockSpi::default());
+        let req = tmc_impedance_test(0, 11, 1);
+
+        let outcome = handle_diagnostic_request(
+            req,
+            DiagnosticContext {
+                tmc: &mut tmc,
+                runtime: &mut runtime,
+                delay: &mut delay,
+                tmc_config: &TEST_TMC_CONFIG,
+                readiness: DiagnosticReadiness {
+                    homing_active: true,
+                    stepper_active: false,
+                    saved_voltage_limit: 777,
+                },
+            },
+        )
+        .await;
+
+        let DiagnosticOutcome::Handled(DiagnosticReport::ImpedanceTest { run, fits, .. }) = outcome
+        else {
+            panic!("expected impedance test report");
+        };
+        assert_eq!(run.status, CURRENT_STEP_STATUS_NOT_READY);
+        assert!(fits.is_none());
+        assert!(tmc.into_inner().writes.is_empty());
+        assert!(delay.delays_ms.is_empty());
+    });
+}
+
+#[test]
+fn impedance_test_rejects_during_active_stepping_without_invoking_runner() {
+    pollster::block_on(async {
+        let mut runtime = ready_runtime();
+        let mut delay = MockDelay::default();
+        let mut tmc = Tmc4671Spi::new(DiagnosticMockSpi::default());
+        let req = tmc_impedance_test(0, 12, 1);
+
+        let outcome = handle_diagnostic_request(
+            req,
+            DiagnosticContext {
+                tmc: &mut tmc,
+                runtime: &mut runtime,
+                delay: &mut delay,
+                tmc_config: &TEST_TMC_CONFIG,
+                readiness: DiagnosticReadiness {
+                    homing_active: false,
+                    stepper_active: true,
+                    saved_voltage_limit: 777,
+                },
+            },
+        )
+        .await;
+
+        let DiagnosticOutcome::Handled(DiagnosticReport::ImpedanceTest { run, fits, .. }) = outcome
+        else {
+            panic!("expected impedance test report");
+        };
+        assert_eq!(run.status, CURRENT_STEP_STATUS_NOT_READY);
+        assert!(fits.is_none());
+        assert!(tmc.into_inner().writes.is_empty());
+        assert!(delay.delays_ms.is_empty());
+    });
+}
+
+#[test]
+fn impedance_test_not_ready_writes_nothing() {
+    pollster::block_on(async {
+        let mut runtime = TmcControlRuntime::new_for_channel(0);
+        let mut delay = MockDelay::default();
+        let mut tmc = Tmc4671Spi::new(DiagnosticMockSpi::default());
+        let req = tmc_impedance_test(0, 13, 1);
+
+        let outcome = handle_diagnostic_request(
+            req,
+            DiagnosticContext {
+                tmc: &mut tmc,
+                runtime: &mut runtime,
+                delay: &mut delay,
+                tmc_config: &TEST_TMC_CONFIG,
+                readiness: DiagnosticReadiness {
+                    homing_active: false,
+                    stepper_active: false,
+                    saved_voltage_limit: 777,
+                },
+            },
+        )
+        .await;
+
+        let DiagnosticOutcome::Handled(DiagnosticReport::ImpedanceTest { run, fits, .. }) = outcome
+        else {
+            panic!("expected impedance test report");
+        };
+        assert_eq!(run.status, CURRENT_STEP_STATUS_NOT_READY);
+        assert!(fits.is_none());
+        assert!(tmc.into_inner().writes.is_empty());
+    });
+}
+
+#[test]
+fn impedance_runner_failure_emits_profile_then_run_without_fits() {
+    pollster::block_on(async {
+        let raw_spi = DiagnosticMockSpi::default().fail_reads_from(PIDOUT_UQ_UD_LIMITS.addr());
+        let mut tmc = Tmc4671Spi::new(raw_spi);
+        let mut runtime = ready_runtime();
+        let mut delay = MockDelay::default();
+
+        let outcome = handle_diagnostic_request(
+            tmc_impedance_test(0, 14, 2),
+            DiagnosticContext {
+                tmc: &mut tmc,
+                runtime: &mut runtime,
+                delay: &mut delay,
+                tmc_config: &TEST_TMC_CONFIG,
+                readiness: DiagnosticReadiness {
+                    homing_active: false,
+                    stepper_active: false,
+                    saved_voltage_limit: 777,
+                },
+            },
+        )
+        .await;
+
+        let DiagnosticOutcome::Handled(report) = outcome else {
+            panic!("expected impedance test report");
+        };
+
+        let mut sink = RecordingDiagnosticSink::default();
+        emit_diagnostic_report(&mut sink, report);
+
+        assert_eq!(
+            sink.events,
+            std::vec![
+                RecordedResistanceEvent::ImpedanceProfile { oid: 14 },
+                RecordedResistanceEvent::ImpedanceDone {
+                    oid: 14,
+                    status: CURRENT_STEP_STATUS_SPI,
+                    status_flags_or: 0,
+                    warning_flags: 0,
+                },
+            ]
         );
     });
 }

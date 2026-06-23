@@ -89,6 +89,18 @@ pub struct PhaseAdvanceOutput {
 /// Maximum phase-advance cap accepted by firmware for live diagnostics.
 pub const PHASE_ADVANCE_MAX_SAFE_COUNTS: u16 = 512;
 
+/// Highest diagnostic detail level accepted by firmware command surfaces.
+pub const MAX_DIAGNOSTIC_DETAIL: u8 = 2;
+
+/// Normalize host-provided diagnostic detail bytes into the supported range.
+pub const fn normalize_diagnostic_detail(detail: u8) -> u8 {
+    if detail > MAX_DIAGNOSTIC_DETAIL {
+        MAX_DIAGNOSTIC_DETAIL
+    } else {
+        detail
+    }
+}
+
 /// Commanded-velocity and current inputs for q/d decoupling proxy feedforward.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub struct DecouplingFeedforwardInput {
@@ -332,6 +344,14 @@ pub enum TmcRequestKind {
         /// Object id used by the reply.
         oid: u8,
         /// Reserved verbosity/selector byte for future detail replies.
+        detail: u8,
+    },
+    /// Run the shared impedance-identification sweep over an already-armed
+    /// motor without touching commissioning state.
+    ImpedanceTest {
+        /// Object id used by the reply.
+        oid: u8,
+        /// Detail level. 0 emits profile+run; 1 and 2 also emit per-point fits.
         detail: u8,
     },
     /// Write a TMC4671 register via SPI (dev-only).
@@ -705,6 +725,17 @@ pub fn tmc_voltage_step_test(
 /// Build a `ResistanceTest` request.
 pub fn tmc_resistance_test(channel: u8, oid: u8, detail: u8) -> TmcRequest {
     TmcRequest::new(channel, TmcRequestKind::ResistanceTest { oid, detail })
+}
+
+/// Build an `ImpedanceTest` request.
+pub fn tmc_impedance_test(channel: u8, oid: u8, detail: u8) -> TmcRequest {
+    TmcRequest::new(
+        channel,
+        TmcRequestKind::ImpedanceTest {
+            oid,
+            detail: normalize_diagnostic_detail(detail),
+        },
+    )
 }
 
 /// Build a `SetEnable` request.

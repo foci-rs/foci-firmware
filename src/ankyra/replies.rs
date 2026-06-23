@@ -543,6 +543,85 @@ pub struct FociResistanceAxis {
     pub warning_flags: u32,
 }
 
+/// `foci_impedance_profile` reply - impedance profile constants for display.
+///
+/// Wire name: `foci_impedance_profile`.
+#[klipper_reply]
+pub struct FociImpedanceProfile {
+    /// Object id of the FOCI endpoint.
+    pub oid: u8,
+    /// Impedance-identification profile schema version.
+    pub profile_version: u16,
+    /// Number of injection points in this profile.
+    pub point_count: u8,
+    /// Number of samples captured per injection point.
+    pub sample_count: u16,
+    /// Sampling interval in microseconds.
+    pub sample_interval_us: u16,
+    /// Maximum absolute UD voltage request used by the profile.
+    pub max_ud: u16,
+    /// STATUS_FLAGS bitmask that hard-fails the run.
+    pub status_flags_fail_mask: u32,
+    /// STATUS_FLAGS bitmask that raises the warning flag during a window.
+    pub status_flags_warn_mask: u32,
+    /// Non-zero when physical scale projection metadata has been validated.
+    pub scale_metadata_validated: u8,
+}
+
+/// `foci_impedance_run` reply - impedance run status and aggregate fit result.
+///
+/// Wire name: `foci_impedance_run`.
+#[klipper_reply]
+pub struct FociImpedanceRun {
+    /// Object id of the FOCI endpoint.
+    pub oid: u8,
+    /// Status code: 0 success, non-zero stable failure reason.
+    pub status: u8,
+    /// Impedance-identification profile schema version.
+    pub profile_version: u16,
+    /// Selected major response axis normalized to counts per 1000 UD counts.
+    pub selected_axis_max_count_per_ud_milli: u32,
+    /// Selected minor response axis normalized to counts per 1000 UD counts.
+    pub selected_axis_min_count_per_ud_milli: u32,
+    /// Selected major-axis stationary-frame electrical angle in turn counts.
+    pub selected_axis_angle_electrical_counts: u16,
+    /// Worse cross-point spread of normalized major/minor axes.
+    pub repeatability_permille: u16,
+    /// Run-level warning bitfield.
+    pub warning_flags: u32,
+    /// STATUS_FLAGS accumulated (OR) across the run.
+    pub status_flags_or: u32,
+}
+
+/// `foci_impedance_fit` reply - per-injection impedance fit result.
+///
+/// Wire name: `foci_impedance_fit`.
+#[klipper_reply]
+pub struct FociImpedanceFit {
+    /// Object id of the FOCI endpoint.
+    pub oid: u8,
+    /// Stable point index within the profile.
+    pub point_index: u8,
+    /// Electrical injection frequency in millihertz.
+    pub frequency_millihz: u32,
+    /// Absolute UD magnitude applied during the window.
+    pub ud_abs: u16,
+    /// Major response axis normalized to counts per 1000 UD counts.
+    pub axis_max_count_per_ud_milli: u32,
+    /// Minor response axis normalized to counts per 1000 UD counts.
+    pub axis_min_count_per_ud_milli: u32,
+    /// Major-axis stationary-frame electrical angle in 16-bit turn counts.
+    pub axis_angle_electrical_counts: u16,
+    /// Fitted-model residual as permille of fitted signal RMS.
+    pub residual_permille: u16,
+    /// Phase coverage determinant score, where 1000 is ideal circular coverage.
+    pub coverage_permille: u16,
+    /// Scalar `2f` saliency mismatch as permille.
+    pub scalar_2f_mismatch_permille: u16,
+    /// Per-point warning bitfield.
+    pub warning_flags: u32,
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
@@ -852,6 +931,59 @@ mod resistance_reply_size_tests {
         };
 
         assert_fits_with_id(&reply, "foci_resistance_axis");
+    }
+
+    #[test]
+    fn impedance_profile_reply_fits_klipper_message_limit() {
+        let reply = super::FociImpedanceProfile {
+            oid: u8::MAX,
+            profile_version: u16::MAX,
+            point_count: u8::MAX,
+            sample_count: u16::MAX,
+            sample_interval_us: u16::MAX,
+            max_ud: u16::MAX,
+            status_flags_fail_mask: 0x7FFF_FFFF,
+            status_flags_warn_mask: 0x7FFF_FFFF,
+            scale_metadata_validated: u8::MAX,
+        };
+
+        assert_fits_with_id(&reply, "foci_impedance_profile");
+    }
+
+    #[test]
+    fn impedance_run_reply_fits_klipper_message_limit() {
+        let reply = super::FociImpedanceRun {
+            oid: u8::MAX,
+            status: u8::MAX,
+            profile_version: u16::MAX,
+            selected_axis_max_count_per_ud_milli: 0x7FFF_FFFF,
+            selected_axis_min_count_per_ud_milli: 0x7FFF_FFFF,
+            selected_axis_angle_electrical_counts: u16::MAX,
+            repeatability_permille: u16::MAX,
+            warning_flags: 0x7FFF_FFFF,
+            status_flags_or: 0x7FFF_FFFF,
+        };
+
+        assert_fits_with_id(&reply, "foci_impedance_run");
+    }
+
+    #[test]
+    fn impedance_fit_reply_fits_klipper_message_limit() {
+        let reply = super::FociImpedanceFit {
+            oid: u8::MAX,
+            point_index: u8::MAX,
+            frequency_millihz: 0x7FFF_FFFF,
+            ud_abs: u16::MAX,
+            axis_max_count_per_ud_milli: 0x7FFF_FFFF,
+            axis_min_count_per_ud_milli: 0x7FFF_FFFF,
+            axis_angle_electrical_counts: u16::MAX,
+            residual_permille: u16::MAX,
+            coverage_permille: u16::MAX,
+            scalar_2f_mismatch_permille: u16::MAX,
+            warning_flags: 0x7FFF_FFFF,
+        };
+
+        assert_fits_with_id(&reply, "foci_impedance_fit");
     }
 }
 

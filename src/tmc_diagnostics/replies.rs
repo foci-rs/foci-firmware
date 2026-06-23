@@ -1,8 +1,9 @@
 //! Shared active diagnostic reply emission.
 
 use super::{
-    CurrentStepReport, CurrentTorqueSampleReport, DiagnosticReport, ResistanceAxisReport,
-    ResistanceProfileReport, ResistanceRunReport, VoltageStepReport,
+    CurrentStepReport, CurrentTorqueSampleReport, DiagnosticReport, ImpedanceFitReport,
+    ImpedanceProfileReport, ImpedanceRunReport, ResistanceAxisReport, ResistanceProfileReport,
+    ResistanceRunReport, VoltageStepReport,
 };
 
 /// Board-local active diagnostic reply sink.
@@ -31,6 +32,16 @@ pub trait DiagnosticReplySink {
     /// Emit the resistance-test per-run status/warnings/readbacks result.
     /// This is the diagnostic's terminal reply.
     fn foci_resistance_run(&mut self, report: ResistanceRunReport);
+
+    /// Emit impedance-test board/profile metadata.
+    fn foci_impedance_profile(&mut self, report: ImpedanceProfileReport);
+
+    /// Emit one impedance-test per-point fit result.
+    fn foci_impedance_fit(&mut self, report: ImpedanceFitReport);
+
+    /// Emit the impedance-test per-run status/warnings result.
+    /// This is the diagnostic's terminal reply.
+    fn foci_impedance_run(&mut self, report: ImpedanceRunReport);
 }
 
 /// Emit active diagnostic replies for a completed diagnostic report.
@@ -64,6 +75,23 @@ pub fn emit_diagnostic_report<S: DiagnosticReplySink>(sink: &mut S, report: Diag
             }
             // Run reply last: it is the diagnostic's terminal/"done" signal.
             sink.foci_resistance_run(run);
+        }
+        DiagnosticReport::ImpedanceTest {
+            profile,
+            run,
+            fits,
+            detail,
+        } => {
+            sink.foci_impedance_profile(profile);
+            if detail >= 1 {
+                if let Some(fits) = fits {
+                    for fit in fits {
+                        sink.foci_impedance_fit(fit);
+                    }
+                }
+            }
+            // Run reply last: it is the diagnostic's terminal/"done" signal.
+            sink.foci_impedance_run(run);
         }
     }
 }
@@ -115,6 +143,23 @@ mod tests {
         ResistanceDone {
             oid: u8,
             status: u8,
+        },
+        ImpedanceProfile {
+            oid: u8,
+            profile_version: u16,
+        },
+        ImpedanceFit {
+            oid: u8,
+            point_index: u8,
+            residual_permille: u16,
+            coverage_permille: u16,
+            scalar_2f_mismatch_permille: u16,
+        },
+        ImpedanceDone {
+            oid: u8,
+            status: u8,
+            status_flags_or: u32,
+            warning_flags: u32,
         },
     }
 
@@ -186,6 +231,32 @@ mod tests {
             self.events.push(Event::ResistanceDone {
                 oid: report.oid,
                 status: report.status,
+            });
+        }
+
+        fn foci_impedance_profile(&mut self, report: ImpedanceProfileReport) {
+            self.events.push(Event::ImpedanceProfile {
+                oid: report.oid,
+                profile_version: report.profile_version,
+            });
+        }
+
+        fn foci_impedance_fit(&mut self, report: ImpedanceFitReport) {
+            self.events.push(Event::ImpedanceFit {
+                oid: report.oid,
+                point_index: report.point_index,
+                residual_permille: report.residual_permille,
+                coverage_permille: report.coverage_permille,
+                scalar_2f_mismatch_permille: report.scalar_2f_mismatch_permille,
+            });
+        }
+
+        fn foci_impedance_run(&mut self, report: ImpedanceRunReport) {
+            self.events.push(Event::ImpedanceDone {
+                oid: report.oid,
+                status: report.status,
+                status_flags_or: report.status_flags_or,
+                warning_flags: report.warning_flags,
             });
         }
     }
@@ -506,6 +577,157 @@ mod tests {
                     profile_version: 1,
                 },
                 Event::ResistanceDone { oid: 7, status: 19 },
+            ]
+        );
+    }
+
+    fn impedance_profile_report() -> ImpedanceProfileReport {
+        ImpedanceProfileReport {
+            oid: 6,
+            profile_version: 1,
+            point_count: 2,
+            sample_count: 128,
+            sample_interval_us: 250,
+            max_ud: 960,
+            status_flags_fail_mask: 0x7000_4480,
+            status_flags_warn_mask: 0,
+            scale_metadata_validated: false,
+        }
+    }
+
+    fn impedance_run_report(status: u8) -> ImpedanceRunReport {
+        ImpedanceRunReport {
+            oid: 6,
+            status,
+            profile_version: 1,
+            selected_axis_max_count_per_ud_milli: 1234,
+            selected_axis_min_count_per_ud_milli: 567,
+            selected_axis_angle_electrical_counts: 99,
+            repeatability_permille: 12,
+            warning_flags: 0x24,
+            status_flags_or: 0x55aa,
+        }
+    }
+
+    fn impedance_fit_report(point_index: u8) -> ImpedanceFitReport {
+        ImpedanceFitReport {
+            oid: 6,
+            point_index,
+            frequency_millihz: if point_index == 0 { 25_000 } else { 50_000 },
+            ud_abs: if point_index == 0 { 640 } else { 960 },
+            axis_max_count_per_ud_milli: 1234,
+            axis_min_count_per_ud_milli: 567,
+            axis_angle_electrical_counts: 99,
+            residual_permille: 10 + u16::from(point_index),
+            coverage_permille: 900,
+            scalar_2f_mismatch_permille: 20 + u16::from(point_index),
+            warning_flags: 0x8,
+        }
+    }
+
+    #[test]
+    fn impedance_success_detail_zero_emits_profile_then_run_only() {
+        let mut sink = RecordingSink::default();
+
+        emit_diagnostic_report(
+            &mut sink,
+            DiagnosticReport::ImpedanceTest {
+                profile: impedance_profile_report(),
+                run: impedance_run_report(0),
+                fits: Some([impedance_fit_report(0), impedance_fit_report(1)]),
+                detail: 0,
+            },
+        );
+
+        assert_eq!(
+            sink.events,
+            std::vec![
+                Event::ImpedanceProfile {
+                    oid: 6,
+                    profile_version: 1,
+                },
+                Event::ImpedanceDone {
+                    oid: 6,
+                    status: 0,
+                    status_flags_or: 0x55aa,
+                    warning_flags: 0x24,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn impedance_success_detail_one_emits_profile_fits_then_run_last() {
+        let mut sink = RecordingSink::default();
+
+        emit_diagnostic_report(
+            &mut sink,
+            DiagnosticReport::ImpedanceTest {
+                profile: impedance_profile_report(),
+                run: impedance_run_report(0),
+                fits: Some([impedance_fit_report(0), impedance_fit_report(1)]),
+                detail: 1,
+            },
+        );
+
+        assert_eq!(
+            sink.events,
+            std::vec![
+                Event::ImpedanceProfile {
+                    oid: 6,
+                    profile_version: 1,
+                },
+                Event::ImpedanceFit {
+                    oid: 6,
+                    point_index: 0,
+                    residual_permille: 10,
+                    coverage_permille: 900,
+                    scalar_2f_mismatch_permille: 20,
+                },
+                Event::ImpedanceFit {
+                    oid: 6,
+                    point_index: 1,
+                    residual_permille: 11,
+                    coverage_permille: 900,
+                    scalar_2f_mismatch_permille: 21,
+                },
+                Event::ImpedanceDone {
+                    oid: 6,
+                    status: 0,
+                    status_flags_or: 0x55aa,
+                    warning_flags: 0x24,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn impedance_failure_emits_profile_then_run_without_fits() {
+        let mut sink = RecordingSink::default();
+
+        emit_diagnostic_report(
+            &mut sink,
+            DiagnosticReport::ImpedanceTest {
+                profile: impedance_profile_report(),
+                run: impedance_run_report(2),
+                fits: None,
+                detail: 2,
+            },
+        );
+
+        assert_eq!(
+            sink.events,
+            std::vec![
+                Event::ImpedanceProfile {
+                    oid: 6,
+                    profile_version: 1,
+                },
+                Event::ImpedanceDone {
+                    oid: 6,
+                    status: 2,
+                    status_flags_or: 0x55aa,
+                    warning_flags: 0x24,
+                },
             ]
         );
     }

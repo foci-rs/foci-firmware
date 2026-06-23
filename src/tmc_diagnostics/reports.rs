@@ -359,6 +359,121 @@ pub struct ResistanceAxisReport {
     pub warning_flags: u32,
 }
 
+/// Impedance diagnostic failed because the motor type is unsupported.
+pub const IMPEDANCE_STATUS_UNSUPPORTED_MOTOR_TYPE: u8 = 10;
+/// Impedance diagnostic failed because the voltage limit cannot cover max UD.
+pub const IMPEDANCE_STATUS_INSUFFICIENT_VOLTAGE: u8 = 11;
+/// Impedance diagnostic failed because the profile is invalid for firmware.
+pub const IMPEDANCE_STATUS_UNSUPPORTED_PROFILE: u8 = 12;
+/// Impedance diagnostic failed because a required readback mismatched.
+pub const IMPEDANCE_STATUS_PROFILE_READBACK: u8 = 13;
+/// Impedance diagnostic failed because current exceeded the profile limit.
+pub const IMPEDANCE_STATUS_CURRENT_LIMIT: u8 = 14;
+/// Impedance diagnostic failed because the encoder moved too far.
+pub const IMPEDANCE_STATUS_ENCODER_MOVED: u8 = 15;
+/// Impedance diagnostic failed because the captured signal was too small.
+pub const IMPEDANCE_STATUS_LOW_SIGNAL: u8 = 16;
+/// Impedance diagnostic failed because phase coverage was insufficient.
+pub const IMPEDANCE_STATUS_POOR_COVERAGE: u8 = 17;
+/// Impedance diagnostic failed because scalar 2f mismatch exceeded the hard gate.
+pub const IMPEDANCE_STATUS_SCALAR_2F_MISMATCH: u8 = 18;
+/// Impedance diagnostic failed because fit residual exceeded the hard gate.
+pub const IMPEDANCE_STATUS_HIGH_RESIDUAL: u8 = 19;
+/// Impedance diagnostic failed because cross-point repeatability exceeded the hard gate.
+pub const IMPEDANCE_STATUS_REPEATABILITY: u8 = 20;
+
+/// Board/profile constants reported for display by the impedance-test
+/// diagnostic. Carries no per-run status; always emitted once per request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ImpedanceProfileReport {
+    /// Object id of the FOCI endpoint.
+    pub oid: u8,
+    /// Impedance-identification profile schema version.
+    pub profile_version: u16,
+    /// Number of injection points in this profile.
+    pub point_count: u8,
+    /// Number of samples captured per injection point.
+    pub sample_count: u16,
+    /// Sampling interval in microseconds.
+    pub sample_interval_us: u16,
+    /// Maximum absolute UD voltage request used by the profile.
+    pub max_ud: u16,
+    /// STATUS_FLAGS bitmask that hard-fails the run.
+    pub status_flags_fail_mask: u32,
+    /// STATUS_FLAGS bitmask that raises the warning flag during a window.
+    pub status_flags_warn_mask: u32,
+    /// Whether physical scale projection metadata has been validated.
+    pub scale_metadata_validated: bool,
+}
+
+/// Per-run status, warnings, and aggregate fit result for the impedance-test
+/// diagnostic.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ImpedanceRunReport {
+    /// Object id of the FOCI endpoint.
+    pub oid: u8,
+    /// Status code: 0 success, non-zero stable failure reason.
+    pub status: u8,
+    /// Impedance-identification profile schema version.
+    pub profile_version: u16,
+    /// Selected major response axis normalized to counts per 1000 UD counts.
+    pub selected_axis_max_count_per_ud_milli: u32,
+    /// Selected minor response axis normalized to counts per 1000 UD counts.
+    pub selected_axis_min_count_per_ud_milli: u32,
+    /// Selected major-axis stationary-frame electrical angle in turn counts.
+    pub selected_axis_angle_electrical_counts: u16,
+    /// Worse cross-point spread of normalized major/minor axes.
+    pub repeatability_permille: u16,
+    /// Run-level warning bitfield.
+    pub warning_flags: u32,
+    /// STATUS_FLAGS accumulated (OR) across the run.
+    pub status_flags_or: u32,
+}
+
+/// Per-injection-point fit result for the impedance-test diagnostic.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ImpedanceFitReport {
+    /// Object id of the FOCI endpoint.
+    pub oid: u8,
+    /// Stable point index within the profile.
+    pub point_index: u8,
+    /// Electrical injection frequency in millihertz.
+    pub frequency_millihz: u32,
+    /// Absolute UD magnitude applied during the window.
+    pub ud_abs: u16,
+    /// Major response axis normalized to counts per 1000 UD counts.
+    pub axis_max_count_per_ud_milli: u32,
+    /// Minor response axis normalized to counts per 1000 UD counts.
+    pub axis_min_count_per_ud_milli: u32,
+    /// Major-axis stationary-frame electrical angle in 16-bit turn counts.
+    pub axis_angle_electrical_counts: u16,
+    /// Fitted-model residual as permille of fitted signal RMS.
+    pub residual_permille: u16,
+    /// Phase coverage determinant score, where 1000 is ideal circular coverage.
+    pub coverage_permille: u16,
+    /// Scalar `2f` saliency mismatch as permille.
+    pub scalar_2f_mismatch_permille: u16,
+    /// Per-point warning bitfield.
+    pub warning_flags: u32,
+}
+
+/// Construct a zero-filled [`ImpedanceRunReport`] carrying only the header
+/// status, used on entry-precheck rejection or runner failure before a
+/// successful aggregate fit exists.
+pub fn empty_impedance_run_report(oid: u8, status: u8) -> ImpedanceRunReport {
+    ImpedanceRunReport {
+        oid,
+        status,
+        profile_version: 0,
+        selected_axis_max_count_per_ud_milli: 0,
+        selected_axis_min_count_per_ud_milli: 0,
+        selected_axis_angle_electrical_counts: 0,
+        repeatability_permille: 0,
+        warning_flags: 0,
+        status_flags_or: 0,
+    }
+}
+
 /// Construct a zero-filled [`ResistanceRunReport`] carrying only the header
 /// status, used on entry-precheck rejection before any profile is read.
 pub fn empty_resistance_run_report(oid: u8, status: u8) -> ResistanceRunReport {
