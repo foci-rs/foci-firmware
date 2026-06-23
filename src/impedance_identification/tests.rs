@@ -216,6 +216,26 @@ fn standard_profile_sample_count_controls_capture_size() {
 }
 
 #[test]
+fn exposure_budget_counts_dc_ac_settle_and_capture_duration() {
+    let mut profile = ImpedanceProfile::standard_openffboard();
+    profile.sample_count = 4;
+    profile.max_sample_count = 4;
+    profile.sample_interval_us = 251;
+    profile.injection_points[0].ud_abs = 10;
+    profile.injection_points[0].settle_ms = 3;
+    profile.injection_points[1].ud_abs = 20;
+    profile.injection_points[1].settle_ms = 5;
+
+    // ceil(4 * 251 us / 1000) = 2 ms.  Each point contributes a DC settle
+    // window plus an AC settle-and-capture window.
+    assert_eq!(profile.max_window_exposure(), 20 * 20 * (5 + 2));
+    assert_eq!(
+        profile.max_total_exposure(),
+        10 * 10 * (3 + 3 + 2) + 20 * 20 * (5 + 5 + 2)
+    );
+}
+
+#[test]
 fn warning_flags_contains_requires_all_bits() {
     let flags = ImpedanceWarningFlags::HIGH_RESIDUAL;
 
