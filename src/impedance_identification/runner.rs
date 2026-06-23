@@ -96,7 +96,7 @@ pub async fn run_impedance_identification<B: ImpedanceBackend>(
     };
 
     let profile = backend.profile();
-    if saved_voltage_limit < u32::from(profile.max_abs_ud()) {
+    if pidout_ud_limit(saved_voltage_limit) < profile.max_abs_ud() {
         return Err(ImpedanceError::InsufficientVoltageAuthority);
     }
 
@@ -129,6 +129,7 @@ fn validate_profile(profile: &ImpedanceProfile) -> Result<(), ImpedanceError> {
         || profile.encoder_move_fail_counts == 0
         || profile.encoder_move_warn_counts > profile.encoder_move_fail_counts
         || profile.max_abs_ud() == 0
+        || profile.max_abs_ud() > i16::MAX as u16
         || profile.max_window_exposure() > profile.max_window_exposure_budget
         || profile.max_total_exposure() > profile.max_total_exposure_budget
     {
@@ -137,6 +138,7 @@ fn validate_profile(profile: &ImpedanceProfile) -> Result<(), ImpedanceError> {
 
     for point in profile.injection_points {
         if point.ud_abs == 0
+            || point.ud_abs > i16::MAX as u16
             || point.frequency_millihz == 0
             || point.openloop_velocity_rpm <= 0
             || point.openloop_acceleration_rpm_per_s == 0
@@ -159,12 +161,23 @@ async fn run_energized_body<B: ImpedanceBackend>(
     let mut point_fits = [EMPTY_FIT; IMPEDANCE_PROFILE_POINTS];
 
     for (index, point) in profile.injection_points.iter().copied().enumerate() {
-        run_dc_baseline_check(backend, &profile, point, &mut warning_flags, &mut status_flags_or)
-            .await?;
+        run_dc_baseline_check(
+            backend,
+            &profile,
+            point,
+            &mut warning_flags,
+            &mut status_flags_or,
+        )
+        .await?;
 
-        let samples =
-            capture_ac_window(backend, &profile, point, &mut warning_flags, &mut status_flags_or)
-                .await?;
+        let samples = capture_ac_window(
+            backend,
+            &profile,
+            point,
+            &mut warning_flags,
+            &mut status_flags_or,
+        )
+        .await?;
         write(backend, UQ_UD_EXT.addr(), 0).await?;
         write(
             backend,
@@ -197,7 +210,7 @@ async fn prepare_zero_voltage_setup<B: ImpedanceBackend>(
     write(
         backend,
         PIDOUT_UQ_UD_LIMITS.addr(),
-        u32::from(profile.max_abs_ud()),
+        pack_pidout_limits(profile.max_abs_ud()),
     )
     .await?;
     write(backend, UQ_UD_EXT.addr(), 0).await?;
@@ -211,7 +224,12 @@ async fn prepare_zero_voltage_setup<B: ImpedanceBackend>(
     write(backend, PHI_E_SELECTION.addr(), PHI_E_EXTERNAL).await?;
     write(backend, PHI_E_EXT.addr(), 0).await?;
 
-    verify_readback(backend, PIDOUT_UQ_UD_LIMITS.addr(), u32::from(profile.max_abs_ud())).await?;
+    verify_readback(
+        backend,
+        PIDOUT_UQ_UD_LIMITS.addr(),
+        pack_pidout_limits(profile.max_abs_ud()),
+    )
+    .await?;
     verify_readback(backend, UQ_UD_EXT.addr(), 0).await?;
     verify_readback(backend, OPENLOOP_MODE.addr(), OPENLOOP_MODE_STOPPED).await?;
     verify_readback(backend, OPENLOOP_ACCELERATION.addr(), 0).await?;
@@ -225,6 +243,7 @@ async fn prepare_zero_voltage_setup<B: ImpedanceBackend>(
     )
     .await?;
     verify_readback(backend, PHI_E_SELECTION.addr(), PHI_E_EXTERNAL).await?;
+    verify_readback(backend, PHI_E_EXT.addr(), 0).await?;
 
     write(backend, PWM_SV_CHOP.addr(), PWM_CHOP_ENABLED).await?;
     verify_readback(backend, PWM_SV_CHOP.addr(), PWM_CHOP_ENABLED).await
@@ -241,6 +260,7 @@ async fn run_dc_baseline_check<B: ImpedanceBackend>(
 
     write(backend, PHI_E_SELECTION.addr(), PHI_E_EXTERNAL).await?;
     write(backend, PHI_E_EXT.addr(), 0).await?;
+    verify_readback(backend, PHI_E_EXT.addr(), 0).await?;
     write(backend, UQ_UD_EXT.addr(), pack_ud(point.ud_abs as i16)).await?;
     write(
         backend,
@@ -309,7 +329,9 @@ async fn capture_ac_window<B: ImpedanceBackend>(
         samples[index] = sample;
         sample_status(backend, profile, warning_flags, status_flags_or).await?;
         if index + 1 < sample_count {
-            backend.delay_us(u32::from(profile.sample_interval_us)).await;
+            backend
+                .delay_us(u32::from(profile.sample_interval_us))
+                .await;
         }
     }
 
@@ -436,6 +458,14 @@ async fn write<B: ImpedanceBackend>(
 
 fn pack_ud(ud: i16) -> u32 {
     UqUdExt::new().with_ud_ext(ud).with_uq_ext(0).into()
+}
+
+fn pack_pidout_limits(limit: u16) -> u32 {
+    (u32::from(limit) << 16) | u32::from(limit)
+}
+
+fn pidout_ud_limit(value: u32) -> u16 {
+    (value & 0xffff) as u16
 }
 
 fn decode_adc_sample(t_us: u32, packed: u32) -> ImpedanceSample {

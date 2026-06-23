@@ -1,10 +1,10 @@
-use super::profile::{frequency_millihz_to_openloop_velocity_rpm, ImpedanceProfile};
+use super::profile::{ImpedanceProfile, frequency_millihz_to_openloop_velocity_rpm};
 use super::runner::{ImpedanceBackend, ImpedanceBackendError, run_impedance_identification};
 use super::types::{
-    ImpedanceError, ImpedanceInjectionPoint, ImpedanceSample, ImpedanceWarningFlags,
-    IMPEDANCE_PROFILE_POINTS, IMPEDANCE_SAMPLE_COUNT,
+    IMPEDANCE_PROFILE_POINTS, IMPEDANCE_SAMPLE_COUNT, ImpedanceError, ImpedanceInjectionPoint,
+    ImpedanceSample, ImpedanceWarningFlags,
 };
-use super::{evaluate_impedance_result, fit_impedance_point, ImpedanceFitPoint};
+use super::{ImpedanceFitPoint, evaluate_impedance_result, fit_impedance_point};
 use foci_tmc4671::registers::{
     ABN_DECODER_COUNT, ADC_IWY_IUX, MODE_RAMP_MODE_MOTION, MOTOR_TYPE_N_POLE_PAIRS, MotorType,
     MotorTypeNPolePairs, OPENLOOP_ACCELERATION, OPENLOOP_MODE, OPENLOOP_PHI,
@@ -318,9 +318,10 @@ fn scalar_2f_mismatch_clean_ellipse_stays_below_warn_threshold() {
     let fit = unwrap_fit(fit_impedance_point(&profile, point, &samples));
 
     assert!(fit.scalar_2f_mismatch_permille < profile.scalar_2f_mismatch_warn_permille);
-    assert!(!fit
-        .warning_flags
-        .contains(ImpedanceWarningFlags::SCALAR_2F_MISMATCH));
+    assert!(
+        !fit.warning_flags
+            .contains(ImpedanceWarningFlags::SCALAR_2F_MISMATCH)
+    );
 }
 
 #[test]
@@ -333,9 +334,10 @@ fn scalar_2f_mismatch_clean_ellipse_with_large_dc_offsets_stays_below_warn_thres
     let fit = unwrap_fit(fit_impedance_point(&profile, point, &samples));
 
     assert!(fit.scalar_2f_mismatch_permille < profile.scalar_2f_mismatch_warn_permille);
-    assert!(!fit
-        .warning_flags
-        .contains(ImpedanceWarningFlags::SCALAR_2F_MISMATCH));
+    assert!(
+        !fit.warning_flags
+            .contains(ImpedanceWarningFlags::SCALAR_2F_MISMATCH)
+    );
 }
 
 #[test]
@@ -348,9 +350,10 @@ fn scalar_2f_mismatch_clean_circular_ellipse_with_large_dc_offsets_stays_below_w
     let fit = unwrap_fit(fit_impedance_point(&profile, point, &samples));
 
     assert!(fit.scalar_2f_mismatch_permille < profile.scalar_2f_mismatch_warn_permille);
-    assert!(!fit
-        .warning_flags
-        .contains(ImpedanceWarningFlags::SCALAR_2F_MISMATCH));
+    assert!(
+        !fit.warning_flags
+            .contains(ImpedanceWarningFlags::SCALAR_2F_MISMATCH)
+    );
 }
 
 #[test]
@@ -364,9 +367,10 @@ fn scalar_2f_mismatch_clean_near_circular_ellipse_with_large_dc_offsets_stays_be
     let fit = unwrap_fit(fit_impedance_point(&profile, point, &samples));
 
     assert!(fit.scalar_2f_mismatch_permille < profile.scalar_2f_mismatch_warn_permille);
-    assert!(!fit
-        .warning_flags
-        .contains(ImpedanceWarningFlags::SCALAR_2F_MISMATCH));
+    assert!(
+        !fit.warning_flags
+            .contains(ImpedanceWarningFlags::SCALAR_2F_MISMATCH)
+    );
 }
 
 #[test]
@@ -379,9 +383,10 @@ fn scalar_2f_mismatch_distorted_high_saliency_still_warns_and_fails() {
     let samples = single_period_samples(point, 900.0, 300.0, 0.62, 250.0);
 
     let fit = unwrap_fit(fit_impedance_point(&warning_profile, point, &samples));
-    assert!(fit
-        .warning_flags
-        .contains(ImpedanceWarningFlags::SCALAR_2F_MISMATCH));
+    assert!(
+        fit.warning_flags
+            .contains(ImpedanceWarningFlags::SCALAR_2F_MISMATCH)
+    );
 
     let mut failing_profile = warning_profile;
     failing_profile.scalar_2f_mismatch_fail_permille = 20;
@@ -403,9 +408,10 @@ fn scalar_2f_mismatch_sets_warning() {
     let fit = unwrap_fit(fit_impedance_point(&profile, point, &samples));
 
     assert!(fit.scalar_2f_mismatch_permille >= profile.scalar_2f_mismatch_warn_permille);
-    assert!(fit
-        .warning_flags
-        .contains(ImpedanceWarningFlags::SCALAR_2F_MISMATCH));
+    assert!(
+        fit.warning_flags
+            .contains(ImpedanceWarningFlags::SCALAR_2F_MISMATCH)
+    );
 }
 
 #[test]
@@ -490,9 +496,11 @@ fn aggregate_repeatability_warning_sets_repeatability_flag() {
     let summary = evaluate_impedance_result(&profile, &fits).expect("summary should warn");
 
     assert!(summary.repeatability_permille > profile.repeatability_warn_permille);
-    assert!(summary
-        .warning_flags
-        .contains(ImpedanceWarningFlags::REPEATABILITY));
+    assert!(
+        summary
+            .warning_flags
+            .contains(ImpedanceWarningFlags::REPEATABILITY)
+    );
 }
 
 #[test]
@@ -530,12 +538,16 @@ fn aggregate_repeatability_ors_point_warning_flags() {
 
     let summary = evaluate_impedance_result(&profile, &fits).expect("summary should pass");
 
-    assert!(summary
-        .warning_flags
-        .contains(ImpedanceWarningFlags::HIGH_RESIDUAL));
-    assert!(summary
-        .warning_flags
-        .contains(ImpedanceWarningFlags::SCALAR_2F_MISMATCH));
+    assert!(
+        summary
+            .warning_flags
+            .contains(ImpedanceWarningFlags::HIGH_RESIDUAL)
+    );
+    assert!(
+        summary
+            .warning_flags
+            .contains(ImpedanceWarningFlags::SCALAR_2F_MISMATCH)
+    );
 }
 
 #[test]
@@ -545,9 +557,11 @@ fn aggregate_repeatability_sets_physical_projection_unavailable_without_scale_me
 
     let summary = evaluate_impedance_result(&profile, &fits).expect("summary should pass");
 
-    assert!(summary
-        .warning_flags
-        .contains(ImpedanceWarningFlags::PHYSICAL_PROJECTION_UNAVAILABLE));
+    assert!(
+        summary
+            .warning_flags
+            .contains(ImpedanceWarningFlags::PHYSICAL_PROJECTION_UNAVAILABLE)
+    );
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -663,8 +677,8 @@ impl FakeImpedanceBackend {
 
     fn ac_current(&self) -> u32 {
         let frequency_millihz = self.openloop_velocity_target.saturating_mul(1000) / 60;
-        let phase = TURN * f64::from(frequency_millihz) * f64::from(self.timestamp_us)
-            / 1_000_000_000.0;
+        let phase =
+            TURN * f64::from(frequency_millihz) * f64::from(self.timestamp_us) / 1_000_000_000.0;
         let ud = f64::from(self.last_ud());
         let ch0 = (ud * libm::cos(phase)).round() as i16;
         let ch1 = ((ud / 2.0) * libm::sin(phase)).round() as i16;
@@ -791,7 +805,9 @@ impl ImpedanceBackend for FakeImpedanceBackend {
     }
 
     async fn delay_ms(&mut self, ms: u64) {
-        self.timestamp_us = self.timestamp_us.wrapping_add((ms as u32).saturating_mul(1000));
+        self.timestamp_us = self
+            .timestamp_us
+            .wrapping_add((ms as u32).saturating_mul(1000));
         if self.energized() {
             self.encoder_count = self
                 .encoder_count
@@ -821,7 +837,10 @@ fn assert_write_order(writes: &[RecordedWrite], first_addr: u8, second_addr: u8)
         .iter()
         .position(|write| write.addr == second_addr)
         .expect("second address never written");
-    assert!(first < second, "expected {first_addr:#x} before {second_addr:#x}");
+    assert!(
+        first < second,
+        "expected {first_addr:#x} before {second_addr:#x}"
+    );
 }
 
 fn assert_write_before_nonzero_uq(writes: &[RecordedWrite], first_addr: u8) {
@@ -833,7 +852,14 @@ fn assert_write_before_nonzero_uq(writes: &[RecordedWrite], first_addr: u8) {
         .iter()
         .position(|write| write.addr == UQ_UD_EXT.addr() && write.value != 0)
         .expect("non-zero UQ_UD_EXT never written");
-    assert!(first < uq, "expected {first_addr:#x} before non-zero UQ_UD_EXT");
+    assert!(
+        first < uq,
+        "expected {first_addr:#x} before non-zero UQ_UD_EXT"
+    );
+}
+
+fn pack_pidout_limits(limit: u16) -> u32 {
+    (u32::from(limit) << 16) | u32::from(limit)
 }
 
 #[test]
@@ -857,6 +883,29 @@ fn runner_low_saved_pidout_limit_writes_nothing() {
 
     assert_eq!(err, ImpedanceError::InsufficientVoltageAuthority);
     assert!(backend.wrote_nothing());
+}
+
+#[test]
+fn runner_saved_pidout_with_only_uq_authority_writes_nothing() {
+    let mut backend = FakeImpedanceBackend::standard();
+    backend.saved_voltage_limit = 0x0001_0000;
+    backend.pidout_limit = backend.saved_voltage_limit;
+
+    let err = block_on(run_impedance_identification(&mut backend)).unwrap_err();
+
+    assert_eq!(err, ImpedanceError::InsufficientVoltageAuthority);
+    assert!(backend.wrote_nothing());
+}
+
+#[test]
+fn runner_valid_packed_saved_pidout_limit_passes_authority_gate() {
+    let mut backend = FakeImpedanceBackend::standard();
+    backend.saved_voltage_limit = pack_pidout_limits(backend.profile.max_abs_ud());
+    backend.pidout_limit = backend.saved_voltage_limit;
+
+    let result = block_on(run_impedance_identification(&mut backend));
+
+    assert!(result.is_ok(), "expected ok, got {result:?}");
 }
 
 #[test]
@@ -894,13 +943,35 @@ fn runner_unsupported_profile_sample_count_writes_nothing() {
 }
 
 #[test]
+fn runner_unsupported_profile_ud_range_writes_nothing() {
+    let mut backend = FakeImpedanceBackend::standard();
+    backend.profile.injection_points[0].ud_abs = i16::MAX as u16 + 1;
+    backend.saved_voltage_limit = pack_pidout_limits(backend.profile.injection_points[0].ud_abs);
+    backend.pidout_limit = backend.saved_voltage_limit;
+
+    let err = block_on(run_impedance_identification(&mut backend)).unwrap_err();
+
+    assert_eq!(err, ImpedanceError::UnsupportedProfile);
+    assert!(backend.wrote_nothing());
+    assert!(!backend.wrote_safe_state());
+}
+
+#[test]
 fn runner_voltage_limit_write_happens_before_chopper_and_open_loop_voltage() {
     let mut backend = FakeImpedanceBackend::standard();
 
     let result = block_on(run_impedance_identification(&mut backend));
 
     assert!(result.is_ok(), "expected ok, got {result:?}");
-    assert_write_order(&backend.writes, PIDOUT_UQ_UD_LIMITS.addr(), PWM_SV_CHOP.addr());
+    assert!(backend.writes.iter().any(|write| {
+        write.addr == PIDOUT_UQ_UD_LIMITS.addr()
+            && write.value == pack_pidout_limits(backend.profile.max_abs_ud())
+    }));
+    assert_write_order(
+        &backend.writes,
+        PIDOUT_UQ_UD_LIMITS.addr(),
+        PWM_SV_CHOP.addr(),
+    );
     assert_write_before_nonzero_uq(&backend.writes, PIDOUT_UQ_UD_LIMITS.addr());
 }
 
@@ -908,6 +979,17 @@ fn runner_voltage_limit_write_happens_before_chopper_and_open_loop_voltage() {
 fn runner_profile_critical_readback_mismatch_returns_profile_readback_mismatch() {
     let mut backend = FakeImpedanceBackend::standard();
     backend.readback_mismatch_addr = Some(OPENLOOP_MODE.addr());
+
+    let err = block_on(run_impedance_identification(&mut backend)).unwrap_err();
+
+    assert_eq!(err, ImpedanceError::ProfileReadbackMismatch);
+    assert!(backend.wrote_safe_state());
+}
+
+#[test]
+fn runner_phi_e_ext_readback_mismatch_returns_profile_readback_mismatch() {
+    let mut backend = FakeImpedanceBackend::standard();
+    backend.readback_mismatch_addr = Some(PHI_E_EXT.addr());
 
     let err = block_on(run_impedance_identification(&mut backend)).unwrap_err();
 
@@ -970,13 +1052,18 @@ fn runner_sampled_warn_status_flags_record_warning_without_failing() {
     let result = block_on(run_impedance_identification(&mut backend)).unwrap();
 
     assert_eq!(result.status_flags_or, 0x20);
-    assert!(result.warning_flags.contains(ImpedanceWarningFlags::STATUS_FLAGS));
+    assert!(
+        result
+            .warning_flags
+            .contains(ImpedanceWarningFlags::STATUS_FLAGS)
+    );
 }
 
 #[test]
 fn runner_encoder_delta_over_fail_limit_returns_encoder_moved_and_restores() {
     let mut backend = FakeImpedanceBackend::standard();
-    backend.encoder_delta_per_energized_delay = u32::from(backend.profile.encoder_move_fail_counts) + 1;
+    backend.encoder_delta_per_energized_delay =
+        u32::from(backend.profile.encoder_move_fail_counts) + 1;
 
     let err = block_on(run_impedance_identification(&mut backend)).unwrap_err();
 
@@ -1005,7 +1092,11 @@ fn runner_success_reports_nonzero_status_flags_or_when_observed_status_is_safe()
     let result = block_on(run_impedance_identification(&mut backend)).unwrap();
 
     assert_eq!(result.status_flags_or, 0x20);
-    assert!(!result.warning_flags.contains(ImpedanceWarningFlags::STATUS_FLAGS));
+    assert!(
+        !result
+            .warning_flags
+            .contains(ImpedanceWarningFlags::STATUS_FLAGS)
+    );
 }
 
 #[test]
