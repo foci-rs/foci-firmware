@@ -83,11 +83,9 @@ pub fn emit_diagnostic_report<S: DiagnosticReplySink>(sink: &mut S, report: Diag
             detail,
         } => {
             sink.foci_impedance_profile(profile);
-            if detail >= 1 {
-                if let Some(fits) = fits {
-                    for fit in fits {
-                        sink.foci_impedance_fit(fit);
-                    }
+            if detail >= 1 && let Some(fits) = fits {
+                for fit in fits {
+                    sink.foci_impedance_fit(fit);
                 }
             }
             // Run reply last: it is the diagnostic's terminal/"done" signal.

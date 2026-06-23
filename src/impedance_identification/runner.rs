@@ -347,11 +347,11 @@ async fn capture_ac_window<B: ImpedanceBackend>(
         i_ch1: 0,
     }; IMPEDANCE_SAMPLE_COUNT];
     let sample_count = profile.sample_count as usize;
-    for index in 0..sample_count {
+    for (index, sample) in samples.iter_mut().take(sample_count).enumerate() {
         let packed = read(backend, ADC_IWY_IUX.addr()).await?;
-        let sample = decode_adc_sample(backend.timestamp_us().wrapping_sub(start_us), packed);
-        check_current_limit(profile, sample)?;
-        samples[index] = sample;
+        let decoded = decode_adc_sample(backend.timestamp_us().wrapping_sub(start_us), packed);
+        check_current_limit(profile, decoded)?;
+        *sample = decoded;
         sample_status(backend, profile, warning_flags, status_flags_or).await?;
         if index + 1 < sample_count {
             backend
