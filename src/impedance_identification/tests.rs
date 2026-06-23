@@ -596,6 +596,9 @@ struct FakeImpedanceBackend {
     dc_stopped_mode_readback_mismatch: bool,
     ac_stopped_mode_readback_mismatch: bool,
     ac_zero_voltage_readback_mismatch: bool,
+    ac_openloop_acceleration_readback_mismatch: bool,
+    ac_openloop_velocity_target_readback_mismatch: bool,
+    ac_openloop_mode_readback_mismatch: bool,
     open_loop_phi_e_selection_readback_mismatch: bool,
     ac_over_current_sample: Option<usize>,
     fail_ac_adc_read_at: Option<usize>,
@@ -636,6 +639,9 @@ impl FakeImpedanceBackend {
             dc_stopped_mode_readback_mismatch: false,
             ac_stopped_mode_readback_mismatch: false,
             ac_zero_voltage_readback_mismatch: false,
+            ac_openloop_acceleration_readback_mismatch: false,
+            ac_openloop_velocity_target_readback_mismatch: false,
+            ac_openloop_mode_readback_mismatch: false,
             open_loop_phi_e_selection_readback_mismatch: false,
             ac_over_current_sample: None,
             fail_ac_adc_read_at: None,
@@ -726,12 +732,30 @@ impl FakeImpedanceBackend {
             return self.mode_ramp_mode_motion;
         }
         if addr == OPENLOOP_MODE.addr() {
+            if self.ac_openloop_mode_readback_mismatch
+                && nonzero_uq_written
+                && self.openloop_mode == 1
+            {
+                return 0xffff_ffff;
+            }
             return self.openloop_mode;
         }
         if addr == OPENLOOP_ACCELERATION.addr() {
+            if self.ac_openloop_acceleration_readback_mismatch
+                && nonzero_uq_written
+                && self.openloop_acceleration != 0
+            {
+                return 0xffff_ffff;
+            }
             return self.openloop_acceleration;
         }
         if addr == OPENLOOP_VELOCITY_TARGET.addr() {
+            if self.ac_openloop_velocity_target_readback_mismatch
+                && nonzero_uq_written
+                && self.openloop_velocity_target != 0
+            {
+                return 0xffff_ffff;
+            }
             return self.openloop_velocity_target;
         }
         if addr == OPENLOOP_VELOCITY_ACTUAL.addr() {
@@ -1137,6 +1161,45 @@ fn runner_ac_stopped_mode_readback_mismatch_blocks_ac_nonzero_uq() {
 fn runner_ac_zero_voltage_readback_mismatch_blocks_ac_nonzero_uq() {
     let mut backend = FakeImpedanceBackend::standard();
     backend.ac_zero_voltage_readback_mismatch = true;
+
+    let err = block_on(run_impedance_identification(&mut backend)).unwrap_err();
+
+    assert_eq!(err, ImpedanceError::ProfileReadbackMismatch);
+    assert!(backend.wrote_safe_state());
+    assert_eq!(backend.nonzero_uq_write_count(), 1);
+    assert_no_nonzero_uq_after_open_loop_selection(&backend.writes);
+}
+
+#[test]
+fn runner_ac_openloop_acceleration_readback_mismatch_blocks_ac_nonzero_uq() {
+    let mut backend = FakeImpedanceBackend::standard();
+    backend.ac_openloop_acceleration_readback_mismatch = true;
+
+    let err = block_on(run_impedance_identification(&mut backend)).unwrap_err();
+
+    assert_eq!(err, ImpedanceError::ProfileReadbackMismatch);
+    assert!(backend.wrote_safe_state());
+    assert_eq!(backend.nonzero_uq_write_count(), 1);
+    assert_no_nonzero_uq_after_open_loop_selection(&backend.writes);
+}
+
+#[test]
+fn runner_ac_openloop_velocity_target_readback_mismatch_blocks_ac_nonzero_uq() {
+    let mut backend = FakeImpedanceBackend::standard();
+    backend.ac_openloop_velocity_target_readback_mismatch = true;
+
+    let err = block_on(run_impedance_identification(&mut backend)).unwrap_err();
+
+    assert_eq!(err, ImpedanceError::ProfileReadbackMismatch);
+    assert!(backend.wrote_safe_state());
+    assert_eq!(backend.nonzero_uq_write_count(), 1);
+    assert_no_nonzero_uq_after_open_loop_selection(&backend.writes);
+}
+
+#[test]
+fn runner_ac_openloop_mode_readback_mismatch_blocks_ac_nonzero_uq() {
+    let mut backend = FakeImpedanceBackend::standard();
+    backend.ac_openloop_mode_readback_mismatch = true;
 
     let err = block_on(run_impedance_identification(&mut backend)).unwrap_err();
 

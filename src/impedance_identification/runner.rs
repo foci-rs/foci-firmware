@@ -329,6 +329,19 @@ async fn capture_ac_window<B: ImpedanceBackend>(
     .await?;
     verify_readback(backend, PHI_E_SELECTION.addr(), PHI_E_OPEN_LOOP).await?;
     verify_readback(backend, OPENLOOP_PHI.addr(), 0).await?;
+    verify_readback(
+        backend,
+        OPENLOOP_ACCELERATION.addr(),
+        point.openloop_acceleration_rpm_per_s,
+    )
+    .await?;
+    verify_readback(
+        backend,
+        OPENLOOP_VELOCITY_TARGET.addr(),
+        point.openloop_velocity_rpm as u32,
+    )
+    .await?;
+    verify_readback(backend, OPENLOOP_MODE.addr(), OPENLOOP_MODE_VELOCITY).await?;
     sample_status(backend, profile, warning_flags, status_flags_or).await?;
     write(backend, UQ_UD_EXT.addr(), pack_ud(point.ud_abs as i16)).await?;
     write(
