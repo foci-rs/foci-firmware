@@ -592,6 +592,10 @@ struct FakeImpedanceBackend {
     baseline_current_count: i16,
     status_flags: u32,
     readback_mismatch_addr: Option<u8>,
+    dc_external_phi_e_selection_readback_mismatch: bool,
+    dc_stopped_mode_readback_mismatch: bool,
+    ac_stopped_mode_readback_mismatch: bool,
+    ac_zero_voltage_readback_mismatch: bool,
     open_loop_phi_e_selection_readback_mismatch: bool,
     ac_over_current_sample: Option<usize>,
     fail_ac_adc_read_at: Option<usize>,
@@ -628,6 +632,10 @@ impl FakeImpedanceBackend {
             baseline_current_count: 0,
             status_flags: 0,
             readback_mismatch_addr: None,
+            dc_external_phi_e_selection_readback_mismatch: false,
+            dc_stopped_mode_readback_mismatch: false,
+            ac_stopped_mode_readback_mismatch: false,
+            ac_zero_voltage_readback_mismatch: false,
             open_loop_phi_e_selection_readback_mismatch: false,
             ac_over_current_sample: None,
             fail_ac_adc_read_at: None,
@@ -689,6 +697,7 @@ impl FakeImpedanceBackend {
     }
 
     fn readback_value(&self, addr: u8) -> u32 {
+        let nonzero_uq_written = self.nonzero_uq_write_count() != 0;
         if Some(addr) == self.readback_mismatch_addr {
             return 0xffff_ffff;
         }
@@ -696,9 +705,25 @@ impl FakeImpedanceBackend {
             return self.pidout_limit;
         }
         if addr == UQ_UD_EXT.addr() {
+            if self.ac_zero_voltage_readback_mismatch && nonzero_uq_written && self.uq_ud_ext == 0
+            {
+                return 0xffff_ffff;
+            }
             return self.uq_ud_ext;
         }
         if addr == MODE_RAMP_MODE_MOTION.addr() {
+            if self.dc_stopped_mode_readback_mismatch
+                && !nonzero_uq_written
+                && self.pwm_sv_chop == 7
+            {
+                return 0xffff_ffff;
+            }
+            if self.ac_stopped_mode_readback_mismatch
+                && nonzero_uq_written
+                && self.mode_ramp_mode_motion == 0
+            {
+                return 0xffff_ffff;
+            }
             return self.mode_ramp_mode_motion;
         }
         if addr == OPENLOOP_MODE.addr() {
@@ -717,6 +742,13 @@ impl FakeImpedanceBackend {
             return self.openloop_phi;
         }
         if addr == PHI_E_SELECTION.addr() {
+            if self.dc_external_phi_e_selection_readback_mismatch
+                && !nonzero_uq_written
+                && self.pwm_sv_chop == 7
+                && self.phi_e_selection == 1
+            {
+                return 0xffff_ffff;
+            }
             if self.open_loop_phi_e_selection_readback_mismatch && self.phi_e_selection == 2 {
                 return 0xffff_ffff;
             }
@@ -729,6 +761,13 @@ impl FakeImpedanceBackend {
             return self.pwm_sv_chop;
         }
         0
+    }
+
+    fn nonzero_uq_write_count(&self) -> usize {
+        self.writes
+            .iter()
+            .filter(|write| write.addr == UQ_UD_EXT.addr() && write.value != 0)
+            .count()
     }
 }
 
@@ -1047,6 +1086,30 @@ fn runner_phi_e_ext_readback_mismatch_returns_profile_readback_mismatch() {
 }
 
 #[test]
+fn runner_dc_phi_e_selection_readback_mismatch_blocks_nonzero_uq() {
+    let mut backend = FakeImpedanceBackend::standard();
+    backend.dc_external_phi_e_selection_readback_mismatch = true;
+
+    let err = block_on(run_impedance_identification(&mut backend)).unwrap_err();
+
+    assert_eq!(err, ImpedanceError::ProfileReadbackMismatch);
+    assert!(backend.wrote_safe_state());
+    assert_no_nonzero_uq_writes(&backend.writes);
+}
+
+#[test]
+fn runner_dc_stopped_mode_readback_mismatch_blocks_nonzero_uq() {
+    let mut backend = FakeImpedanceBackend::standard();
+    backend.dc_stopped_mode_readback_mismatch = true;
+
+    let err = block_on(run_impedance_identification(&mut backend)).unwrap_err();
+
+    assert_eq!(err, ImpedanceError::ProfileReadbackMismatch);
+    assert!(backend.wrote_safe_state());
+    assert_no_nonzero_uq_writes(&backend.writes);
+}
+
+#[test]
 fn runner_open_loop_phi_e_selection_readback_mismatch_blocks_ac_voltage() {
     let mut backend = FakeImpedanceBackend::standard();
     backend.open_loop_phi_e_selection_readback_mismatch = true;
@@ -1055,6 +1118,32 @@ fn runner_open_loop_phi_e_selection_readback_mismatch_blocks_ac_voltage() {
 
     assert_eq!(err, ImpedanceError::ProfileReadbackMismatch);
     assert!(backend.wrote_safe_state());
+    assert_no_nonzero_uq_after_open_loop_selection(&backend.writes);
+}
+
+#[test]
+fn runner_ac_stopped_mode_readback_mismatch_blocks_ac_nonzero_uq() {
+    let mut backend = FakeImpedanceBackend::standard();
+    backend.ac_stopped_mode_readback_mismatch = true;
+
+    let err = block_on(run_impedance_identification(&mut backend)).unwrap_err();
+
+    assert_eq!(err, ImpedanceError::ProfileReadbackMismatch);
+    assert!(backend.wrote_safe_state());
+    assert_eq!(backend.nonzero_uq_write_count(), 1);
+    assert_no_nonzero_uq_after_open_loop_selection(&backend.writes);
+}
+
+#[test]
+fn runner_ac_zero_voltage_readback_mismatch_blocks_ac_nonzero_uq() {
+    let mut backend = FakeImpedanceBackend::standard();
+    backend.ac_zero_voltage_readback_mismatch = true;
+
+    let err = block_on(run_impedance_identification(&mut backend)).unwrap_err();
+
+    assert_eq!(err, ImpedanceError::ProfileReadbackMismatch);
+    assert!(backend.wrote_safe_state());
+    assert_eq!(backend.nonzero_uq_write_count(), 1);
     assert_no_nonzero_uq_after_open_loop_selection(&backend.writes);
 }
 
