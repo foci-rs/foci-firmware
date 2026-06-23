@@ -1,9 +1,9 @@
 use super::profile::{frequency_millihz_to_openloop_velocity_rpm, ImpedanceProfile};
 use super::types::{
     ImpedanceError, ImpedanceInjectionPoint, ImpedanceSample, ImpedanceWarningFlags,
-    IMPEDANCE_SAMPLE_COUNT,
+    IMPEDANCE_PROFILE_POINTS, IMPEDANCE_SAMPLE_COUNT,
 };
-use super::{fit_impedance_point, ImpedanceFitPoint};
+use super::{evaluate_impedance_result, fit_impedance_point, ImpedanceFitPoint};
 
 const TURN: f64 = core::f64::consts::PI * 2.0;
 
@@ -91,6 +91,38 @@ fn unwrap_fit(result: Result<ImpedanceFitPoint, ImpedanceError>) -> ImpedanceFit
         Ok(fit) => fit,
         Err(error) => panic!("fit failed: {:?}", error),
     }
+}
+
+fn aggregate_fit(
+    axis_max_count_per_ud_milli: u32,
+    axis_min_count_per_ud_milli: u32,
+    warning_flags: ImpedanceWarningFlags,
+) -> ImpedanceFitPoint {
+    ImpedanceFitPoint {
+        axis_max_count_per_ud_milli,
+        axis_min_count_per_ud_milli,
+        axis_angle_electrical_counts: 0,
+        residual_permille: 0,
+        coverage_permille: 1000,
+        scalar_2f_mismatch_permille: 0,
+        warning_flags,
+    }
+}
+
+fn aggregate_fits(
+    first_axis_max: u32,
+    first_axis_min: u32,
+    second_axis_max: u32,
+    second_axis_min: u32,
+) -> [ImpedanceFitPoint; IMPEDANCE_PROFILE_POINTS] {
+    [
+        aggregate_fit(first_axis_max, first_axis_min, ImpedanceWarningFlags::NONE),
+        aggregate_fit(
+            second_axis_max,
+            second_axis_min,
+            ImpedanceWarningFlags::NONE,
+        ),
+    ]
 }
 
 #[test]
@@ -311,4 +343,77 @@ fn vector_lockin_gate_order_reports_high_residual_before_scalar_2f_mismatch() {
         fit_impedance_point(&profile, point, &samples),
         Err(ImpedanceError::HighResidual)
     );
+}
+
+#[test]
+fn aggregate_repeatability_accepts_two_similar_fit_points() {
+    let mut profile = ImpedanceProfile::standard_openffboard();
+    profile.scale_metadata_validated = true;
+    let fits = aggregate_fits(900, 300, 910, 295);
+
+    let summary = evaluate_impedance_result(&profile, &fits).expect("summary should pass");
+
+    assert_eq!(summary.selected_axis_max_count_per_ud_milli, 905);
+    assert_eq!(summary.selected_axis_min_count_per_ud_milli, 298);
+    assert!(summary.repeatability_permille < profile.repeatability_warn_permille);
+    assert_eq!(summary.warning_flags, ImpedanceWarningFlags::NONE);
+}
+
+#[test]
+fn aggregate_repeatability_warning_sets_repeatability_flag() {
+    let mut profile = ImpedanceProfile::standard_openffboard();
+    profile.scale_metadata_validated = true;
+    profile.repeatability_warn_permille = 20;
+    profile.repeatability_fail_permille = 200;
+    let fits = aggregate_fits(900, 300, 950, 300);
+
+    let summary = evaluate_impedance_result(&profile, &fits).expect("summary should warn");
+
+    assert!(summary.repeatability_permille > profile.repeatability_warn_permille);
+    assert!(summary
+        .warning_flags
+        .contains(ImpedanceWarningFlags::REPEATABILITY));
+}
+
+#[test]
+fn aggregate_repeatability_failure_returns_repeatability_mismatch() {
+    let mut profile = ImpedanceProfile::standard_openffboard();
+    profile.repeatability_fail_permille = 100;
+    let fits = aggregate_fits(900, 300, 1200, 300);
+
+    assert_eq!(
+        evaluate_impedance_result(&profile, &fits),
+        Err(ImpedanceError::RepeatabilityMismatch)
+    );
+}
+
+#[test]
+fn aggregate_repeatability_ors_point_warning_flags() {
+    let mut profile = ImpedanceProfile::standard_openffboard();
+    profile.scale_metadata_validated = true;
+    let fits = [
+        aggregate_fit(900, 300, ImpedanceWarningFlags::HIGH_RESIDUAL),
+        aggregate_fit(910, 295, ImpedanceWarningFlags::SCALAR_2F_MISMATCH),
+    ];
+
+    let summary = evaluate_impedance_result(&profile, &fits).expect("summary should pass");
+
+    assert!(summary
+        .warning_flags
+        .contains(ImpedanceWarningFlags::HIGH_RESIDUAL));
+    assert!(summary
+        .warning_flags
+        .contains(ImpedanceWarningFlags::SCALAR_2F_MISMATCH));
+}
+
+#[test]
+fn aggregate_repeatability_sets_physical_projection_unavailable_without_scale_metadata() {
+    let profile = ImpedanceProfile::standard_openffboard();
+    let fits = aggregate_fits(900, 300, 910, 295);
+
+    let summary = evaluate_impedance_result(&profile, &fits).expect("summary should pass");
+
+    assert!(summary
+        .warning_flags
+        .contains(ImpedanceWarningFlags::PHYSICAL_PROJECTION_UNAVAILABLE));
 }

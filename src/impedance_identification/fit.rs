@@ -3,7 +3,7 @@
 use super::profile::ImpedanceProfile;
 use super::types::{
     ImpedanceError, ImpedanceInjectionPoint, ImpedanceSample, ImpedanceWarningFlags,
-    IMPEDANCE_SAMPLE_COUNT,
+    IMPEDANCE_PROFILE_POINTS, IMPEDANCE_SAMPLE_COUNT,
 };
 
 const TURN_RADIANS: f64 = core::f64::consts::PI * 2.0;
@@ -27,6 +27,19 @@ pub struct ImpedanceFitPoint {
     /// Scalar `2f` saliency mismatch as permille.
     pub scalar_2f_mismatch_permille: u16,
     /// Non-fatal quality warnings accumulated after hard gates pass.
+    pub warning_flags: ImpedanceWarningFlags,
+}
+
+/// Aggregate impedance result across all fitted injection points.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+pub struct ImpedanceFitSummary {
+    /// Selected major response axis normalized to counts per 1000 UD counts.
+    pub selected_axis_max_count_per_ud_milli: u32,
+    /// Selected minor response axis normalized to counts per 1000 UD counts.
+    pub selected_axis_min_count_per_ud_milli: u32,
+    /// Cross-point axis repeatability spread as permille of the selected major axis.
+    pub repeatability_permille: u16,
+    /// Aggregate non-fatal quality warnings.
     pub warning_flags: ImpedanceWarningFlags,
 }
 
@@ -109,6 +122,44 @@ pub fn fit_impedance_point(
     })
 }
 
+/// Evaluate fitted impedance points into one aggregate diagnostic summary.
+pub fn evaluate_impedance_result(
+    profile: &ImpedanceProfile,
+    fits: &[ImpedanceFitPoint; IMPEDANCE_PROFILE_POINTS],
+) -> Result<ImpedanceFitSummary, ImpedanceError> {
+    let selected_axis_max_count_per_ud_milli =
+        average_axis_count_per_ud_milli(fits, AxisSelector::Max);
+    let selected_axis_min_count_per_ud_milli =
+        average_axis_count_per_ud_milli(fits, AxisSelector::Min);
+    let repeatability_permille = repeatability_permille(
+        fits,
+        selected_axis_max_count_per_ud_milli,
+        selected_axis_min_count_per_ud_milli,
+    );
+
+    if repeatability_permille > profile.repeatability_fail_permille {
+        return Err(ImpedanceError::RepeatabilityMismatch);
+    }
+
+    let mut warning_flags = ImpedanceWarningFlags::NONE;
+    for fit in fits {
+        warning_flags.insert(fit.warning_flags);
+    }
+    if repeatability_permille > profile.repeatability_warn_permille {
+        warning_flags.insert(ImpedanceWarningFlags::REPEATABILITY);
+    }
+    if !profile.scale_metadata_validated {
+        warning_flags.insert(ImpedanceWarningFlags::PHYSICAL_PROJECTION_UNAVAILABLE);
+    }
+
+    Ok(ImpedanceFitSummary {
+        selected_axis_max_count_per_ud_milli,
+        selected_axis_min_count_per_ud_milli,
+        repeatability_permille,
+        warning_flags,
+    })
+}
+
 #[derive(Clone, Copy)]
 enum Channel {
     Ch0,
@@ -120,6 +171,12 @@ struct ResponseAxes {
     axis_max_count: f64,
     axis_min_count: f64,
     axis_angle_radians: f64,
+}
+
+#[derive(Clone, Copy)]
+enum AxisSelector {
+    Max,
+    Min,
 }
 
 fn phase_radians(frequency_millihz: u32, harmonic: f64, t_us: u32) -> f64 {
@@ -354,5 +411,58 @@ fn round_to_u32(value: f64) -> u32 {
         u32::MAX
     } else {
         libm::floor(value + 0.5) as u32
+    }
+}
+
+fn average_axis_count_per_ud_milli(
+    fits: &[ImpedanceFitPoint; IMPEDANCE_PROFILE_POINTS],
+    selector: AxisSelector,
+) -> u32 {
+    let mut sum = 0u64;
+    for fit in fits {
+        sum += u64::from(axis_count_per_ud_milli(*fit, selector));
+    }
+
+    ((sum + (IMPEDANCE_PROFILE_POINTS as u64 / 2)) / IMPEDANCE_PROFILE_POINTS as u64) as u32
+}
+
+fn repeatability_permille(
+    fits: &[ImpedanceFitPoint; IMPEDANCE_PROFILE_POINTS],
+    selected_axis_max_count_per_ud_milli: u32,
+    selected_axis_min_count_per_ud_milli: u32,
+) -> u16 {
+    let max_axis_spread = axis_spread_count_per_ud_milli(fits, AxisSelector::Max);
+    let min_axis_spread = axis_spread_count_per_ud_milli(fits, AxisSelector::Min);
+    let spread = max_axis_spread.max(min_axis_spread);
+    let denominator = selected_axis_max_count_per_ud_milli
+        .max(selected_axis_min_count_per_ud_milli)
+        .max(1);
+
+    permille(f64::from(spread) / f64::from(denominator))
+}
+
+fn axis_spread_count_per_ud_milli(
+    fits: &[ImpedanceFitPoint; IMPEDANCE_PROFILE_POINTS],
+    selector: AxisSelector,
+) -> u32 {
+    let mut min = u32::MAX;
+    let mut max = 0u32;
+    for fit in fits {
+        let axis = axis_count_per_ud_milli(*fit, selector);
+        if axis < min {
+            min = axis;
+        }
+        if axis > max {
+            max = axis;
+        }
+    }
+
+    max - min
+}
+
+fn axis_count_per_ud_milli(fit: ImpedanceFitPoint, selector: AxisSelector) -> u32 {
+    match selector {
+        AxisSelector::Max => fit.axis_max_count_per_ud_milli,
+        AxisSelector::Min => fit.axis_min_count_per_ud_milli,
     }
 }
