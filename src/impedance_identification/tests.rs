@@ -592,6 +592,7 @@ struct FakeImpedanceBackend {
     baseline_current_count: i16,
     status_flags: u32,
     readback_mismatch_addr: Option<u8>,
+    open_loop_phi_e_selection_readback_mismatch: bool,
     ac_over_current_sample: Option<usize>,
     fail_ac_adc_read_at: Option<usize>,
     restore_fail_addr: Option<u8>,
@@ -627,6 +628,7 @@ impl FakeImpedanceBackend {
             baseline_current_count: 0,
             status_flags: 0,
             readback_mismatch_addr: None,
+            open_loop_phi_e_selection_readback_mismatch: false,
             ac_over_current_sample: None,
             fail_ac_adc_read_at: None,
             restore_fail_addr: None,
@@ -650,6 +652,7 @@ impl FakeImpedanceBackend {
             (OPENLOOP_PHI.addr(), 0),
             (OPENLOOP_MODE.addr(), 0),
             (MODE_RAMP_MODE_MOTION.addr(), 0),
+            (PHI_E_SELECTION.addr(), 0),
             (PWM_SV_CHOP.addr(), 0),
             (PIDOUT_UQ_UD_LIMITS.addr(), self.saved_voltage_limit),
         ];
@@ -714,6 +717,9 @@ impl FakeImpedanceBackend {
             return self.openloop_phi;
         }
         if addr == PHI_E_SELECTION.addr() {
+            if self.open_loop_phi_e_selection_readback_mismatch && self.phi_e_selection == 2 {
+                return 0xffff_ffff;
+            }
             return self.phi_e_selection;
         }
         if addr == PHI_E_EXT.addr() {
@@ -862,6 +868,38 @@ fn pack_pidout_limits(limit: u16) -> u32 {
     (u32::from(limit) << 16) | u32::from(limit)
 }
 
+fn assert_no_nonzero_uq_writes(writes: &[RecordedWrite]) {
+    assert!(
+        !writes
+            .iter()
+            .any(|write| write.addr == UQ_UD_EXT.addr() && write.value != 0),
+        "expected no non-zero UQ_UD_EXT writes, got {writes:?}"
+    );
+}
+
+fn assert_no_nonzero_uq_after_open_loop_selection(writes: &[RecordedWrite]) {
+    let open_loop_selection = writes
+        .iter()
+        .position(|write| write.addr == PHI_E_SELECTION.addr() && write.value == 2)
+        .expect("open-loop PHI_E_SELECTION write missing");
+    assert!(
+        !writes[open_loop_selection + 1..]
+            .iter()
+            .any(|write| write.addr == UQ_UD_EXT.addr() && write.value != 0),
+        "expected no AC non-zero UQ_UD_EXT after open-loop selection, got {writes:?}"
+    );
+}
+
+fn assert_restore_wrote_phi_e_selection_zero(writes: &[RecordedWrite]) {
+    assert!(
+        writes
+            .iter()
+            .rev()
+            .any(|write| write.addr == PHI_E_SELECTION.addr() && write.value == 0),
+        "expected restore PHI_E_SELECTION=0 write, got {writes:?}"
+    );
+}
+
 #[test]
 fn runner_unarmed_externally_armed_mode_writes_nothing() {
     let mut backend = FakeImpedanceBackend::standard();
@@ -976,6 +1014,17 @@ fn runner_voltage_limit_write_happens_before_chopper_and_open_loop_voltage() {
 }
 
 #[test]
+fn runner_restore_includes_phi_e_selection_zero_after_success() {
+    let mut backend = FakeImpedanceBackend::standard();
+
+    let result = block_on(run_impedance_identification(&mut backend));
+
+    assert!(result.is_ok(), "expected ok, got {result:?}");
+    assert!(backend.wrote_safe_state());
+    assert_restore_wrote_phi_e_selection_zero(&backend.writes);
+}
+
+#[test]
 fn runner_profile_critical_readback_mismatch_returns_profile_readback_mismatch() {
     let mut backend = FakeImpedanceBackend::standard();
     backend.readback_mismatch_addr = Some(OPENLOOP_MODE.addr());
@@ -998,6 +1047,18 @@ fn runner_phi_e_ext_readback_mismatch_returns_profile_readback_mismatch() {
 }
 
 #[test]
+fn runner_open_loop_phi_e_selection_readback_mismatch_blocks_ac_voltage() {
+    let mut backend = FakeImpedanceBackend::standard();
+    backend.open_loop_phi_e_selection_readback_mismatch = true;
+
+    let err = block_on(run_impedance_identification(&mut backend)).unwrap_err();
+
+    assert_eq!(err, ImpedanceError::ProfileReadbackMismatch);
+    assert!(backend.wrote_safe_state());
+    assert_no_nonzero_uq_after_open_loop_selection(&backend.writes);
+}
+
+#[test]
 fn runner_dc_baseline_over_current_returns_current_limit_exceeded_and_restores() {
     let mut backend = FakeImpedanceBackend::standard();
     backend.baseline_current_count = backend.profile.max_expected_current_count as i16 + 1;
@@ -1006,6 +1067,7 @@ fn runner_dc_baseline_over_current_returns_current_limit_exceeded_and_restores()
 
     assert_eq!(err, ImpedanceError::CurrentLimitExceeded);
     assert!(backend.wrote_safe_state());
+    assert_restore_wrote_phi_e_selection_zero(&backend.writes);
 }
 
 #[test]
@@ -1040,6 +1102,18 @@ fn runner_sampled_fail_status_flags_return_unsafe_status_flags_and_restore() {
 
     assert_eq!(err, ImpedanceError::UnsafeStatusFlags);
     assert!(backend.wrote_safe_state());
+}
+
+#[test]
+fn runner_initial_fail_status_blocks_nonzero_voltage_injection() {
+    let mut backend = FakeImpedanceBackend::standard();
+    backend.status_flags = backend.profile.status_flags_fail_mask;
+
+    let err = block_on(run_impedance_identification(&mut backend)).unwrap_err();
+
+    assert_eq!(err, ImpedanceError::UnsafeStatusFlags);
+    assert!(backend.wrote_safe_state());
+    assert_no_nonzero_uq_writes(&backend.writes);
 }
 
 #[test]

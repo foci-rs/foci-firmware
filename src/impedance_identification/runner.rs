@@ -261,6 +261,7 @@ async fn run_dc_baseline_check<B: ImpedanceBackend>(
     write(backend, PHI_E_SELECTION.addr(), PHI_E_EXTERNAL).await?;
     write(backend, PHI_E_EXT.addr(), 0).await?;
     verify_readback(backend, PHI_E_EXT.addr(), 0).await?;
+    sample_status(backend, profile, warning_flags, status_flags_or).await?;
     write(backend, UQ_UD_EXT.addr(), pack_ud(point.ud_abs as i16)).await?;
     write(
         backend,
@@ -290,6 +291,12 @@ async fn capture_ac_window<B: ImpedanceBackend>(
     let encoder_before = read(backend, ABN_DECODER_COUNT.addr()).await?;
 
     write(backend, UQ_UD_EXT.addr(), 0).await?;
+    write(
+        backend,
+        MODE_RAMP_MODE_MOTION.addr(),
+        MotionMode::Stopped as u32,
+    )
+    .await?;
     write(backend, OPENLOOP_PHI.addr(), 0).await?;
     write(
         backend,
@@ -305,6 +312,8 @@ async fn capture_ac_window<B: ImpedanceBackend>(
     .await?;
     write(backend, OPENLOOP_MODE.addr(), OPENLOOP_MODE_VELOCITY).await?;
     write(backend, PHI_E_SELECTION.addr(), PHI_E_OPEN_LOOP).await?;
+    verify_readback(backend, PHI_E_SELECTION.addr(), PHI_E_OPEN_LOOP).await?;
+    sample_status(backend, profile, warning_flags, status_flags_or).await?;
     write(backend, UQ_UD_EXT.addr(), pack_ud(point.ud_abs as i16)).await?;
     write(
         backend,
@@ -402,6 +411,7 @@ async fn restore_safe_state<B: ImpedanceBackend>(
         (OPENLOOP_PHI.addr(), 0),
         (OPENLOOP_MODE.addr(), OPENLOOP_MODE_STOPPED),
         (MODE_RAMP_MODE_MOTION.addr(), MotionMode::Stopped as u32),
+        (PHI_E_SELECTION.addr(), 0),
         (PWM_SV_CHOP.addr(), 0),
         (PIDOUT_UQ_UD_LIMITS.addr(), saved_voltage_limit),
     ];
