@@ -1,8 +1,8 @@
 //! Safe register-sequenced impedance-identification runner.
 //!
-//! This module is intentionally not wired to host or board command surfaces.
-//! It provides the shared diagnostic skeleton and safety gates for a future
-//! active impedance diagnostic.
+//! This module provides the shared firmware logic used by the active impedance
+//! diagnostic dispatch. It centralizes the register sequencing and safety
+//! gates, while hardware validation remains a separate workflow.
 
 use foci_tmc4671::registers::{
     ABN_DECODER_COUNT, ADC_IWY_IUX, MODE_RAMP_MODE_MOTION, MOTOR_TYPE_N_POLE_PAIRS, MotionMode,
@@ -63,7 +63,7 @@ pub trait ImpedanceBackend {
     fn profile(&self) -> ImpedanceProfile;
 }
 
-/// Complete runner output intended for the future active diagnostic surface.
+/// Complete runner output returned through the active diagnostic surface.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub struct ImpedanceRunResult {
     /// Profile used for the run.
