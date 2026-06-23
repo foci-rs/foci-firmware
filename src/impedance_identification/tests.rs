@@ -1,5 +1,5 @@
-use super::profile::ImpedanceProfile;
-use super::types::IMPEDANCE_SAMPLE_COUNT;
+use super::profile::{frequency_millihz_to_openloop_velocity_rpm, ImpedanceProfile};
+use super::types::{ImpedanceWarningFlags, IMPEDANCE_SAMPLE_COUNT};
 
 #[test]
 fn standard_profile_is_bounded_and_physical_projection_is_not_validated_by_default() {
@@ -37,4 +37,48 @@ fn standard_profile_sample_count_controls_capture_size() {
     let profile = ImpedanceProfile::standard_openffboard();
 
     assert_eq!(profile.sample_count as usize, IMPEDANCE_SAMPLE_COUNT);
+}
+
+#[test]
+fn warning_flags_contains_requires_all_bits() {
+    let flags =
+        ImpedanceWarningFlags::HIGH_RESIDUAL;
+
+    assert!(flags.contains(ImpedanceWarningFlags::HIGH_RESIDUAL));
+    assert!(!flags.contains(
+        ImpedanceWarningFlags(
+            ImpedanceWarningFlags::HIGH_RESIDUAL.0 | ImpedanceWarningFlags::HIGH_NOISE.0,
+        ),
+    ));
+}
+
+#[test]
+fn warning_flags_intersects_reports_any_overlap() {
+    let flags = ImpedanceWarningFlags(
+        ImpedanceWarningFlags::HIGH_RESIDUAL.0 | ImpedanceWarningFlags::ENCODER_MOVED.0,
+    );
+
+    assert!(flags.intersects(ImpedanceWarningFlags::HIGH_RESIDUAL));
+    assert!(!flags.intersects(ImpedanceWarningFlags::SCALAR_2F_MISMATCH));
+}
+
+#[test]
+fn warning_flags_status_bit_is_distinct_and_nonzero() {
+    assert_ne!(ImpedanceWarningFlags::STATUS_FLAGS.0, 0);
+    assert_ne!(
+        ImpedanceWarningFlags::STATUS_FLAGS.0,
+        ImpedanceWarningFlags::ENCODER_MOVED.0
+    );
+    assert_ne!(
+        ImpedanceWarningFlags::STATUS_FLAGS.0,
+        ImpedanceWarningFlags::HIGH_NOISE.0
+    );
+}
+
+#[test]
+fn high_frequency_openloop_velocity_clamps_to_i32_max() {
+    assert_eq!(
+        frequency_millihz_to_openloop_velocity_rpm(u64::MAX),
+        i32::MAX
+    );
 }

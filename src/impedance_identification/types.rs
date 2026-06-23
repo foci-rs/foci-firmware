@@ -44,8 +44,13 @@ impl ImpedanceWarningFlags {
     pub const SCALAR_2F_MISMATCH: Self = Self(1 << 3);
     pub const HIGH_NOISE: Self = Self(1 << 4);
     pub const ENCODER_MOVED: Self = Self(1 << 5);
+    pub const STATUS_FLAGS: Self = Self(1 << 6);
 
     pub const fn contains(self, other: Self) -> bool {
+        (self.0 & other.0) == other.0
+    }
+
+    pub const fn intersects(self, other: Self) -> bool {
         self.0 & other.0 != 0
     }
 
