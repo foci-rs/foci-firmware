@@ -110,7 +110,8 @@ impl ImpedanceProfile {
     pub fn max_window_exposure(&self) -> u64 {
         let mut max = 0u64;
         for point in self.injection_points {
-            let exposure = u64::from(point.ud_abs) * u64::from(point.ud_abs) * u64::from(point.settle_ms);
+            let exposure =
+                u64::from(point.ud_abs) * u64::from(point.ud_abs) * u64::from(point.settle_ms);
             if exposure > max {
                 max = exposure;
             }
@@ -122,7 +123,8 @@ impl ImpedanceProfile {
     pub fn max_total_exposure(&self) -> u64 {
         let mut total = 0u64;
         for point in self.injection_points {
-            let exposure = u64::from(point.ud_abs) * u64::from(point.ud_abs) * u64::from(point.settle_ms);
+            let exposure =
+                u64::from(point.ud_abs) * u64::from(point.ud_abs) * u64::from(point.settle_ms);
             total = total.saturating_add(exposure);
         }
         total
