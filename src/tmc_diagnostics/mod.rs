@@ -26,9 +26,10 @@ pub use reports::{
     IMPEDANCE_STATUS_HIGH_RESIDUAL, IMPEDANCE_STATUS_INSUFFICIENT_VOLTAGE,
     IMPEDANCE_STATUS_LOW_SIGNAL, IMPEDANCE_STATUS_POOR_COVERAGE, IMPEDANCE_STATUS_PROFILE_READBACK,
     IMPEDANCE_STATUS_REPEATABILITY, IMPEDANCE_STATUS_SCALAR_2F_MISMATCH,
-    IMPEDANCE_STATUS_UNSUPPORTED_MOTOR_TYPE, IMPEDANCE_STATUS_UNSUPPORTED_PROFILE,
-    ImpedanceFitReport, ImpedanceProfileReport, ImpedanceRunReport, ResistanceAxisReport,
-    ResistanceProfileReport, ResistanceRunReport, VoltageStepReport,
+    IMPEDANCE_STATUS_UNSAFE_STATUS_FLAGS, IMPEDANCE_STATUS_UNSUPPORTED_MOTOR_TYPE,
+    IMPEDANCE_STATUS_UNSUPPORTED_PROFILE, ImpedanceFitReport, ImpedanceProfileReport,
+    ImpedanceRunReport, ResistanceAxisReport, ResistanceProfileReport, ResistanceRunReport,
+    VoltageStepReport,
     empty_current_torque_sample_report, empty_impedance_run_report, empty_resistance_run_report,
     empty_voltage_step_report,
 };

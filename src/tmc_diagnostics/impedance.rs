@@ -1,7 +1,7 @@
 //! `FOCI_IMPEDANCE_TEST` diagnostic: runs the shared impedance-identification
 //! engine over an already-armed motor without touching commissioning state.
 
-use foci_tmc4671::registers::Register;
+use foci_tmc4671::registers::{Register, STATUS_FLAGS};
 
 use crate::impedance_identification::{
     IMPEDANCE_PROFILE_POINTS, ImpedanceBackend, ImpedanceBackendError, ImpedanceError,
@@ -16,13 +16,15 @@ use super::{
     IMPEDANCE_STATUS_INSUFFICIENT_VOLTAGE, IMPEDANCE_STATUS_LOW_SIGNAL,
     IMPEDANCE_STATUS_POOR_COVERAGE, IMPEDANCE_STATUS_PROFILE_READBACK,
     IMPEDANCE_STATUS_REPEATABILITY, IMPEDANCE_STATUS_SCALAR_2F_MISMATCH,
-    IMPEDANCE_STATUS_UNSUPPORTED_MOTOR_TYPE, IMPEDANCE_STATUS_UNSUPPORTED_PROFILE,
-    ImpedanceFitReport, ImpedanceProfileReport, ImpedanceRunReport, empty_impedance_run_report,
+    IMPEDANCE_STATUS_UNSAFE_STATUS_FLAGS, IMPEDANCE_STATUS_UNSUPPORTED_MOTOR_TYPE,
+    IMPEDANCE_STATUS_UNSUPPORTED_PROFILE, ImpedanceFitReport, ImpedanceProfileReport,
+    ImpedanceRunReport, empty_impedance_run_report,
 };
 
 struct DiagnosticImpedanceBackend<'ctx, 'a, B, D> {
     ctx: &'ctx mut DiagnosticContext<'a, B, D>,
     elapsed_us: u32,
+    status_flags_or: u32,
 }
 
 impl<B, D> ImpedanceBackend for DiagnosticImpedanceBackend<'_, '_, B, D>
@@ -31,11 +33,16 @@ where
     D: DiagnosticDelay,
 {
     async fn read_register(&mut self, addr: u8) -> Result<u32, ImpedanceBackendError> {
-        self.ctx
+        let value = self
+            .ctx
             .tmc
             .read_register(Register::new(addr))
             .await
-            .map_err(|_| ImpedanceBackendError::Spi)
+            .map_err(|_| ImpedanceBackendError::Spi)?;
+        if addr == STATUS_FLAGS.addr() {
+            self.status_flags_or |= value;
+        }
+        Ok(value)
     }
 
     async fn write_register(&mut self, addr: u8, value: u32) -> Result<(), ImpedanceBackendError> {
@@ -97,6 +104,12 @@ fn run_report(oid: u8, result: &ImpedanceRunResult) -> ImpedanceRunReport {
     }
 }
 
+fn failed_run_report(oid: u8, status: u8, status_flags_or: u32) -> ImpedanceRunReport {
+    let mut report = empty_impedance_run_report(oid, status);
+    report.status_flags_or = status_flags_or;
+    report
+}
+
 fn fit_report(
     oid: u8,
     point_index: usize,
@@ -137,7 +150,7 @@ fn status_code(error: ImpedanceError) -> u8 {
         ImpedanceError::ProfileReadbackMismatch => IMPEDANCE_STATUS_PROFILE_READBACK,
         ImpedanceError::CurrentLimitExceeded => IMPEDANCE_STATUS_CURRENT_LIMIT,
         ImpedanceError::EncoderMoved => IMPEDANCE_STATUS_ENCODER_MOVED,
-        ImpedanceError::UnsafeStatusFlags => CURRENT_STEP_STATUS_SPI,
+        ImpedanceError::UnsafeStatusFlags => IMPEDANCE_STATUS_UNSAFE_STATUS_FLAGS,
         ImpedanceError::LowSignal => IMPEDANCE_STATUS_LOW_SIGNAL,
         ImpedanceError::PoorCoverage => IMPEDANCE_STATUS_POOR_COVERAGE,
         ImpedanceError::Scalar2fMismatch => IMPEDANCE_STATUS_SCALAR_2F_MISMATCH,
@@ -200,6 +213,7 @@ where
     let mut backend = DiagnosticImpedanceBackend {
         ctx: &mut ctx,
         elapsed_us: 0,
+        status_flags_or: 0,
     };
 
     match run_impedance_identification(&mut backend).await {
@@ -210,7 +224,7 @@ where
         }
         Err(error) => handled(
             profile_report,
-            empty_impedance_run_report(oid, status_code(error)),
+            failed_run_report(oid, status_code(error), backend.status_flags_or),
             None,
             detail,
         ),

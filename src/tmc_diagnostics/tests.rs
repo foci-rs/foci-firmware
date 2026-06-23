@@ -1054,3 +1054,69 @@ fn impedance_runner_failure_emits_profile_then_run_without_fits() {
         );
     });
 }
+
+#[test]
+fn impedance_unsafe_status_failure_reports_status_flags_evidence() {
+    pollster::block_on(async {
+        let unsafe_status_flags = 0x0000_4000;
+        let raw_spi = DiagnosticMockSpi::default()
+            .with_read(0x07d0_07d0) // saved PIDOUT_UQ_UD_LIMITS
+            .with_read((2 << 16) | 50) // MOTOR_TYPE_N_POLE_PAIRS: two-phase stepper
+            .with_read(0x03c0_03c0) // PIDOUT_UQ_UD_LIMITS readback
+            .with_read(0) // UQ_UD_EXT readback
+            .with_read(0) // OPENLOOP_MODE readback
+            .with_read(0) // OPENLOOP_ACCELERATION readback
+            .with_read(0) // OPENLOOP_VELOCITY_TARGET readback
+            .with_read(0) // OPENLOOP_VELOCITY_ACTUAL readback
+            .with_read(0) // OPENLOOP_PHI readback
+            .with_read(0) // MODE_RAMP_MODE_MOTION readback
+            .with_read(1) // PHI_E_SELECTION readback
+            .with_read(0) // PHI_E_EXT readback
+            .with_read(7) // PWM_SV_CHOP readback
+            .with_read(0) // ABN_DECODER_COUNT before DC baseline
+            .with_read(0) // UQ_UD_EXT DC baseline readback
+            .with_read(0) // MODE_RAMP_MODE_MOTION DC baseline readback
+            .with_read(1) // PHI_E_SELECTION DC baseline readback
+            .with_read(0) // PHI_E_EXT DC baseline readback
+            .with_read(unsafe_status_flags); // STATUS_FLAGS hard-fail sample
+        let mut tmc = Tmc4671Spi::new(raw_spi);
+        let mut runtime = ready_runtime();
+        let mut delay = MockDelay::default();
+
+        let outcome = handle_diagnostic_request(
+            tmc_impedance_test(0, 15, 2),
+            DiagnosticContext {
+                tmc: &mut tmc,
+                runtime: &mut runtime,
+                delay: &mut delay,
+                tmc_config: &TEST_TMC_CONFIG,
+                readiness: DiagnosticReadiness {
+                    homing_active: false,
+                    stepper_active: false,
+                    saved_voltage_limit: 777,
+                },
+            },
+        )
+        .await;
+
+        let DiagnosticOutcome::Handled(report) = outcome else {
+            panic!("expected impedance test report");
+        };
+
+        let mut sink = RecordingDiagnosticSink::default();
+        emit_diagnostic_report(&mut sink, report);
+
+        assert_eq!(
+            sink.events,
+            std::vec![
+                RecordedResistanceEvent::ImpedanceProfile { oid: 15 },
+                RecordedResistanceEvent::ImpedanceDone {
+                    oid: 15,
+                    status: IMPEDANCE_STATUS_UNSAFE_STATUS_FLAGS,
+                    status_flags_or: unsafe_status_flags,
+                    warning_flags: 0,
+                },
+            ]
+        );
+    });
+}
