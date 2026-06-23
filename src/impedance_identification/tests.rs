@@ -27,6 +27,28 @@ fn response_sample(
     angle_rad: f64,
     scalar_2f_distortion_count: f64,
 ) -> ImpedanceSample {
+    response_sample_with_offsets(
+        point,
+        t_us,
+        axis_max_count_per_ud_milli,
+        axis_min_count_per_ud_milli,
+        angle_rad,
+        scalar_2f_distortion_count,
+        17.0,
+        -23.0,
+    )
+}
+
+fn response_sample_with_offsets(
+    point: ImpedanceInjectionPoint,
+    t_us: u32,
+    axis_max_count_per_ud_milli: f64,
+    axis_min_count_per_ud_milli: f64,
+    angle_rad: f64,
+    scalar_2f_distortion_count: f64,
+    offset_ch0: f64,
+    offset_ch1: f64,
+) -> ImpedanceSample {
     let phase = TURN * f64::from(point.frequency_millihz) * f64::from(t_us) / 1_000_000_000.0;
     let major = axis_max_count_per_ud_milli * f64::from(point.ud_abs) / 1_000.0;
     let minor = axis_min_count_per_ud_milli * f64::from(point.ud_abs) / 1_000.0;
@@ -35,8 +57,8 @@ fn response_sample(
     let cos_angle = libm::cos(angle_rad);
     let sin_angle = libm::sin(angle_rad);
     let distortion = scalar_2f_distortion_count * libm::cos(phase * 2.0);
-    let i_ch0 = 17.0 + major_signal * cos_angle - minor_signal * sin_angle + distortion;
-    let i_ch1 = -23.0 + major_signal * sin_angle + minor_signal * cos_angle;
+    let i_ch0 = offset_ch0 + major_signal * cos_angle - minor_signal * sin_angle + distortion;
+    let i_ch1 = offset_ch1 + major_signal * sin_angle + minor_signal * cos_angle;
 
     ImpedanceSample {
         t_us,
@@ -52,16 +74,38 @@ fn single_period_samples(
     angle_rad: f64,
     scalar_2f_distortion_count: f64,
 ) -> [ImpedanceSample; IMPEDANCE_SAMPLE_COUNT] {
+    single_period_samples_with_offsets(
+        point,
+        axis_max_count_per_ud_milli,
+        axis_min_count_per_ud_milli,
+        angle_rad,
+        scalar_2f_distortion_count,
+        17.0,
+        -23.0,
+    )
+}
+
+fn single_period_samples_with_offsets(
+    point: ImpedanceInjectionPoint,
+    axis_max_count_per_ud_milli: f64,
+    axis_min_count_per_ud_milli: f64,
+    angle_rad: f64,
+    scalar_2f_distortion_count: f64,
+    offset_ch0: f64,
+    offset_ch1: f64,
+) -> [ImpedanceSample; IMPEDANCE_SAMPLE_COUNT] {
     let period_us = 1_000_000_000u64 / u64::from(point.frequency_millihz);
     core::array::from_fn(|index| {
         let t_us = ((index as u64) * period_us / IMPEDANCE_SAMPLE_COUNT as u64) as u32;
-        response_sample(
+        response_sample_with_offsets(
             point,
             t_us,
             axis_max_count_per_ud_milli,
             axis_min_count_per_ud_milli,
             angle_rad,
             scalar_2f_distortion_count,
+            offset_ch0,
+            offset_ch1,
         )
     })
 }
@@ -272,6 +316,21 @@ fn scalar_2f_mismatch_clean_ellipse_stays_below_warn_threshold() {
 }
 
 #[test]
+fn scalar_2f_mismatch_clean_ellipse_with_large_dc_offsets_stays_below_warn_threshold() {
+    let profile = ImpedanceProfile::standard_openffboard();
+    let point = test_point(37_000, 800);
+    let samples =
+        single_period_samples_with_offsets(point, 900.0, 300.0, 0.62, 0.0, 5_000.0, -4_000.0);
+
+    let fit = unwrap_fit(fit_impedance_point(&profile, point, &samples));
+
+    assert!(fit.scalar_2f_mismatch_permille < profile.scalar_2f_mismatch_warn_permille);
+    assert!(!fit
+        .warning_flags
+        .contains(ImpedanceWarningFlags::SCALAR_2F_MISMATCH));
+}
+
+#[test]
 fn scalar_2f_mismatch_sets_warning() {
     let mut profile = ImpedanceProfile::standard_openffboard();
     profile.residual_fail_permille = 1000;
@@ -380,6 +439,18 @@ fn aggregate_repeatability_failure_returns_repeatability_mismatch() {
     let mut profile = ImpedanceProfile::standard_openffboard();
     profile.repeatability_fail_permille = 100;
     let fits = aggregate_fits(900, 300, 1200, 300);
+
+    assert_eq!(
+        evaluate_impedance_result(&profile, &fits),
+        Err(ImpedanceError::RepeatabilityMismatch)
+    );
+}
+
+#[test]
+fn aggregate_repeatability_failure_detects_minor_axis_mismatch() {
+    let mut profile = ImpedanceProfile::standard_openffboard();
+    profile.repeatability_fail_permille = 200;
+    let fits = aggregate_fits(10_000, 100, 10_000, 200);
 
     assert_eq!(
         evaluate_impedance_result(&profile, &fits),

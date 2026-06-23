@@ -98,7 +98,7 @@ pub fn fit_impedance_point(
         return Err(ImpedanceError::HighResidual);
     }
 
-    let scalar_2f_mismatch_permille = scalar_2f_mismatch_permille(point, samples, axes);
+    let scalar_2f_mismatch_permille = scalar_2f_mismatch_permille(point, samples, axes, ch0, ch1);
     if scalar_2f_mismatch_permille > profile.scalar_2f_mismatch_fail_permille {
         return Err(ImpedanceError::Scalar2fMismatch);
     }
@@ -330,12 +330,20 @@ fn scalar_2f_mismatch_permille(
     point: ImpedanceInjectionPoint,
     samples: &[ImpedanceSample; IMPEDANCE_SAMPLE_COUNT],
     axes: ResponseAxes,
+    ch0: ChannelFit,
+    ch1: ChannelFit,
 ) -> u16 {
     let axis_max_sq = axes.axis_max_count * axes.axis_max_count;
     let axis_min_sq = axes.axis_min_count * axes.axis_min_count;
     let vector_saliency = (axis_max_sq - axis_min_sq) / (axis_max_sq + axis_min_sq).max(EPSILON);
-    let mean_mag_sq = mean_magnitude_squared(samples);
-    let scalar_amplitude = scalar_2f_amplitude(point.frequency_millihz, samples, mean_mag_sq);
+    let mean_mag_sq = mean_ac_magnitude_squared(samples, ch0.offset, ch1.offset);
+    let scalar_amplitude = scalar_2f_amplitude(
+        point.frequency_millihz,
+        samples,
+        mean_mag_sq,
+        ch0.offset,
+        ch1.offset,
+    );
     let scalar_saliency = scalar_amplitude / mean_mag_sq.max(EPSILON);
     let mismatch = libm::fabs(vector_saliency - scalar_saliency)
         / vector_saliency.max(scalar_saliency).max(EPSILON);
@@ -343,11 +351,15 @@ fn scalar_2f_mismatch_permille(
     permille(mismatch)
 }
 
-fn mean_magnitude_squared(samples: &[ImpedanceSample; IMPEDANCE_SAMPLE_COUNT]) -> f64 {
+fn mean_ac_magnitude_squared(
+    samples: &[ImpedanceSample; IMPEDANCE_SAMPLE_COUNT],
+    offset_ch0: f64,
+    offset_ch1: f64,
+) -> f64 {
     let mut sum = 0.0;
     for sample in samples {
-        let ch0 = f64::from(sample.i_ch0);
-        let ch1 = f64::from(sample.i_ch1);
+        let ch0 = f64::from(sample.i_ch0) - offset_ch0;
+        let ch1 = f64::from(sample.i_ch1) - offset_ch1;
         sum += ch0 * ch0 + ch1 * ch1;
     }
     sum / IMPEDANCE_SAMPLE_COUNT as f64
@@ -357,6 +369,8 @@ fn scalar_2f_amplitude(
     frequency_millihz: u32,
     samples: &[ImpedanceSample; IMPEDANCE_SAMPLE_COUNT],
     mean_mag_sq: f64,
+    offset_ch0: f64,
+    offset_ch1: f64,
 ) -> f64 {
     let basis = harmonic_basis(frequency_millihz, 2.0, samples);
     if basis.determinant <= EPSILON {
@@ -367,8 +381,8 @@ fn scalar_2f_amplitude(
     let mut mag_sin = 0.0;
     for sample in samples {
         let phase = phase_radians(frequency_millihz, 2.0, sample.t_us);
-        let ch0 = f64::from(sample.i_ch0);
-        let ch1 = f64::from(sample.i_ch1);
+        let ch0 = f64::from(sample.i_ch0) - offset_ch0;
+        let ch1 = f64::from(sample.i_ch1) - offset_ch1;
         let centered_mag_sq = ch0 * ch0 + ch1 * ch1 - mean_mag_sq;
         let centered_cos = libm::cos(phase) - basis.mean_cos;
         let centered_sin = libm::sin(phase) - basis.mean_sin;
@@ -431,12 +445,25 @@ fn repeatability_permille(
     selected_axis_max_count_per_ud_milli: u32,
     selected_axis_min_count_per_ud_milli: u32,
 ) -> u16 {
-    let max_axis_spread = axis_spread_count_per_ud_milli(fits, AxisSelector::Max);
-    let min_axis_spread = axis_spread_count_per_ud_milli(fits, AxisSelector::Min);
-    let spread = max_axis_spread.max(min_axis_spread);
-    let denominator = selected_axis_max_count_per_ud_milli
-        .max(selected_axis_min_count_per_ud_milli)
-        .max(1);
+    axis_spread_permille(
+        fits,
+        AxisSelector::Max,
+        selected_axis_max_count_per_ud_milli,
+    )
+    .max(axis_spread_permille(
+        fits,
+        AxisSelector::Min,
+        selected_axis_min_count_per_ud_milli,
+    ))
+}
+
+fn axis_spread_permille(
+    fits: &[ImpedanceFitPoint; IMPEDANCE_PROFILE_POINTS],
+    selector: AxisSelector,
+    selected_axis_count_per_ud_milli: u32,
+) -> u16 {
+    let spread = axis_spread_count_per_ud_milli(fits, selector);
+    let denominator = selected_axis_count_per_ud_milli.max(1);
 
     permille(f64::from(spread) / f64::from(denominator))
 }
