@@ -370,7 +370,6 @@ async fn capture_ac_window<B: ImpedanceBackend>(
     )
     .await?;
     verify_readback(backend, PHI_E_SELECTION.addr(), PHI_E_OPEN_LOOP).await?;
-    verify_readback(backend, OPENLOOP_PHI.addr(), 0).await?;
     verify_readback(
         backend,
         OPENLOOP_ACCELERATION.addr(),

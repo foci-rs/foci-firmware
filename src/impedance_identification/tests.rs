@@ -639,6 +639,7 @@ struct FakeImpedanceBackend {
     ac_openloop_acceleration_readback_mismatch: bool,
     ac_openloop_velocity_target_readback_mismatch: bool,
     ac_openloop_mode_readback_mismatch: bool,
+    ac_openloop_phi_advances_after_setup: bool,
     open_loop_phi_e_selection_readback_mismatch: bool,
     ac_over_current_sample: Option<usize>,
     fail_ac_adc_read_at: Option<usize>,
@@ -685,6 +686,7 @@ impl FakeImpedanceBackend {
             ac_openloop_acceleration_readback_mismatch: false,
             ac_openloop_velocity_target_readback_mismatch: false,
             ac_openloop_mode_readback_mismatch: false,
+            ac_openloop_phi_advances_after_setup: false,
             open_loop_phi_e_selection_readback_mismatch: false,
             ac_over_current_sample: None,
             fail_ac_adc_read_at: None,
@@ -805,6 +807,12 @@ impl FakeImpedanceBackend {
             return self.openloop_velocity_actual;
         }
         if addr == OPENLOOP_PHI.addr() {
+            if self.ac_openloop_phi_advances_after_setup
+                && self.phi_e_selection == 2
+                && self.openloop_velocity_target != 0
+            {
+                return self.openloop_phi.wrapping_add(1);
+            }
             return self.openloop_phi;
         }
         if addr == PHI_E_SELECTION.addr() {
@@ -1325,6 +1333,16 @@ fn runner_ac_openloop_mode_readback_mismatch_blocks_ac_nonzero_uq() {
     assert!(backend.wrote_safe_state());
     assert_eq!(backend.nonzero_uq_write_count(), 1);
     assert_no_nonzero_uq_after_open_loop_selection(&backend.writes);
+}
+
+#[test]
+fn runner_ac_openloop_phi_drift_does_not_fail_profile_readback() {
+    let mut backend = FakeImpedanceBackend::standard();
+    backend.ac_openloop_phi_advances_after_setup = true;
+
+    let result = block_on(run_impedance_identification(&mut backend));
+
+    assert!(result.is_ok(), "expected ok, got {result:?}");
 }
 
 #[test]
