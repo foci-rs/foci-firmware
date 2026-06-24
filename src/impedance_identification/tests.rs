@@ -1139,13 +1139,7 @@ fn runner_power_stage_readback_mismatch_blocks_nonzero_uq() {
 
     let err = block_on(run_impedance_identification(&mut backend)).unwrap_err();
 
-    let ImpedanceError::PowerStageReadbackMismatch(readback) = err else {
-        panic!("expected power-stage readback mismatch, got {err:?}");
-    };
-    assert_eq!(readback.pwm_maxcnt_readback, 2047);
-    assert_eq!(readback.bbm_readback, backend.bbm_readback);
-    assert_eq!(readback.dsadc_mdec_readback, backend.dsadc_mdec_readback);
-    assert_eq!(readback.pwm_sv_chop_readback, backend.profile.pwm_sv_chop);
+    assert_eq!(err, ImpedanceError::ProfileReadbackMismatch);
     assert!(backend.wrote_safe_state());
     assert_no_nonzero_uq_writes(&backend.writes);
 }

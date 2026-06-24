@@ -92,7 +92,6 @@ pub enum ImpedanceError {
     InsufficientVoltageAuthority,
     UnsupportedProfile,
     ProfileReadbackMismatch,
-    PowerStageReadbackMismatch(ImpedancePowerStageReadback),
     CurrentLimitExceeded,
     EncoderMoved,
     UnsafeStatusFlags,

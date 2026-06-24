@@ -255,9 +255,7 @@ async fn prepare_zero_voltage_setup<B: ImpedanceBackend>(
         || power_stage_readback.bbm_readback != expected_bbm_readback(profile)
         || power_stage_readback.dsadc_mdec_readback != expected_dsadc_readback(profile)
     {
-        Err(ImpedanceError::PowerStageReadbackMismatch(
-            power_stage_readback,
-        ))
+        Err(ImpedanceError::ProfileReadbackMismatch)
     } else {
         Ok(power_stage_readback)
     }
