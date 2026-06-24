@@ -1100,6 +1100,20 @@ fn runner_unsupported_profile_sub_millisecond_sample_interval_writes_nothing() {
 }
 
 #[test]
+fn runner_unsupported_profile_non_millisecond_sample_interval_writes_nothing() {
+    let mut backend = FakeImpedanceBackend::standard();
+    backend.profile.sample_interval_us = 1500;
+    backend.profile.max_window_exposure_budget = u64::MAX;
+    backend.profile.max_total_exposure_budget = u64::MAX;
+
+    let err = block_on(run_impedance_identification(&mut backend)).unwrap_err();
+
+    assert_eq!(err, ImpedanceError::UnsupportedProfile);
+    assert!(backend.wrote_nothing());
+    assert!(!backend.wrote_safe_state());
+}
+
+#[test]
 fn runner_unsupported_profile_ud_range_writes_nothing() {
     let mut backend = FakeImpedanceBackend::standard();
     backend.profile.injection_points[0].ud_abs = i16::MAX as u16 + 1;

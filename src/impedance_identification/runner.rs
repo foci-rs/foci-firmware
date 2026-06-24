@@ -128,6 +128,7 @@ fn validate_profile(profile: &ImpedanceProfile) -> Result<(), ImpedanceError> {
     if profile.sample_count as usize != IMPEDANCE_SAMPLE_COUNT
         || profile.sample_count > profile.max_sample_count
         || profile.sample_interval_us < MIN_SAMPLE_INTERVAL_US
+        || profile.sample_interval_us % MIN_SAMPLE_INTERVAL_US != 0
         || profile.max_expected_current_count == 0
         || profile.encoder_move_fail_counts == 0
         || profile.encoder_move_warn_counts > profile.encoder_move_fail_counts
