@@ -13,6 +13,12 @@ pub const OPENFFBOARD_IMPEDANCE_STATUS_WARN_MASK: u32 = 0x0000_0000;
 const OPENFFBOARD_IMPEDANCE_OPENLOOP_ACCELERATION_RPM_PER_S: u32 = 24_000;
 const MICROS_PER_MILLISECOND: u64 = 1_000;
 
+/// Conservative per-sample overhead charged to the exposure budget on top of the
+/// requested sample interval. It accounts for the SPI register reads and safety
+/// gate checks the runner performs between sample delays while voltage is
+/// applied, which consume real energized time the requested delays do not model.
+const PER_SAMPLE_OVERHEAD_US: u16 = 250;
+
 pub(crate) const fn frequency_millihz_to_openloop_velocity_rpm(frequency_millihz: u64) -> i32 {
     let rpm = ((frequency_millihz as u128) * 60) / 1_000;
     if rpm > i32::MAX as u128 {
@@ -104,13 +110,16 @@ impl ImpedanceProfile {
             status_flags_fail_mask: OPENFFBOARD_IMPEDANCE_STATUS_FAIL_MASK,
             status_flags_warn_mask: OPENFFBOARD_IMPEDANCE_STATUS_WARN_MASK,
             // Allows the largest 960-count UD point through DC settle, AC settle,
-            // and the standard 128 ms capture at the 1 ms firmware cadence:
-            // 960^2 * (250 ms + 250 ms + 128 ms).
-            max_window_exposure_budget: 580_000_000,
+            // and the standard 128-sample capture. The capture window counts the
+            // 128 ms of requested delay plus a conservative per-sample read/check
+            // overhead, ~160 ms at the 1 ms firmware cadence:
+            // 960^2 * (250 ms + 250 ms + 160 ms).
+            max_window_exposure_budget: 610_000_000,
             // Allows both standard points through DC settle and AC settle/capture
-            // windows at the 1 ms firmware cadence:
-            // sum(ud^2 * (250 ms + 250 ms + 128 ms)).
-            max_total_exposure_budget: 840_000_000,
+            // windows at the 1 ms firmware cadence, including the per-sample
+            // overhead in the capture window:
+            // sum(ud^2 * (250 ms + 250 ms + 160 ms)).
+            max_total_exposure_budget: 880_000_000,
             scale_metadata_validated: false,
         }
     }
@@ -149,8 +158,9 @@ impl ImpedanceProfile {
     }
 
     fn capture_duration_ms(&self) -> u64 {
-        let capture_us =
-            u64::from(self.sample_count).saturating_mul(u64::from(self.sample_interval_us));
+        let per_sample_us =
+            u64::from(self.sample_interval_us).saturating_add(u64::from(PER_SAMPLE_OVERHEAD_US));
+        let capture_us = u64::from(self.sample_count).saturating_mul(per_sample_us);
         capture_us.saturating_add(MICROS_PER_MILLISECOND - 1) / MICROS_PER_MILLISECOND
     }
 
