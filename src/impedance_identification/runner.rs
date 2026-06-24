@@ -13,7 +13,7 @@ use foci_tmc4671::registers::{
 };
 
 use super::fit::{ImpedanceFitPoint, ImpedanceFitSummary};
-use super::profile::ImpedanceProfile;
+use super::profile::{ImpedanceProfile, frequency_millihz_to_openloop_velocity_rpm};
 use super::types::{
     IMPEDANCE_PROFILE_POINTS, IMPEDANCE_SAMPLE_COUNT, ImpedanceError, ImpedancePowerStageReadback,
     ImpedanceSample, ImpedanceWarningFlags,
@@ -24,6 +24,7 @@ const PHI_E_EXTERNAL: u32 = 1;
 const PHI_E_OPEN_LOOP: u32 = 2;
 const OPENLOOP_PHI_DIRECTION_POSITIVE: u32 = 0;
 const MIN_SAMPLE_INTERVAL_US: u16 = 1_000;
+const MILLIS_PER_SECOND: u64 = 1_000;
 
 const EMPTY_FIT: ImpedanceFitPoint = ImpedanceFitPoint {
     axis_max_count_per_ud_milli: 0,
@@ -140,11 +141,22 @@ fn validate_profile(profile: &ImpedanceProfile) -> Result<(), ImpedanceError> {
     }
 
     for point in profile.injection_points {
+        let expected_velocity_rpm =
+            frequency_millihz_to_openloop_velocity_rpm(u64::from(point.frequency_millihz));
+        // Reject if the open-loop ramp cannot reach the injection velocity within
+        // the settle window: velocity_rpm / accel_rpm_per_s seconds must be no
+        // longer than settle_ms, i.e. velocity_rpm * 1000 <= settle_ms * accel.
+        let ramp_demand =
+            u64::from(point.openloop_velocity_rpm.max(0) as u32).saturating_mul(MILLIS_PER_SECOND);
+        let ramp_capacity = u64::from(point.settle_ms)
+            .saturating_mul(u64::from(point.openloop_acceleration_rpm_per_s));
         if point.ud_abs == 0
             || point.ud_abs > i16::MAX as u16
             || point.frequency_millihz == 0
             || point.openloop_velocity_rpm <= 0
+            || point.openloop_velocity_rpm != expected_velocity_rpm
             || point.openloop_acceleration_rpm_per_s == 0
+            || ramp_demand > ramp_capacity
         {
             return Err(ImpedanceError::UnsupportedProfile);
         }

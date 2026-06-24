@@ -1146,6 +1146,30 @@ fn runner_unsupported_profile_ud_range_writes_nothing() {
 }
 
 #[test]
+fn runner_unsupported_profile_openloop_velocity_mismatch_writes_nothing() {
+    let mut backend = FakeImpedanceBackend::standard();
+    backend.profile.injection_points[0].openloop_velocity_rpm += 1;
+
+    let err = block_on(run_impedance_identification(&mut backend)).unwrap_err();
+
+    assert_eq!(err, ImpedanceError::UnsupportedProfile);
+    assert!(backend.wrote_nothing());
+    assert!(!backend.wrote_safe_state());
+}
+
+#[test]
+fn runner_unsupported_profile_acceleration_cannot_reach_velocity_writes_nothing() {
+    let mut backend = FakeImpedanceBackend::standard();
+    backend.profile.injection_points[0].openloop_acceleration_rpm_per_s = 1;
+
+    let err = block_on(run_impedance_identification(&mut backend)).unwrap_err();
+
+    assert_eq!(err, ImpedanceError::UnsupportedProfile);
+    assert!(backend.wrote_nothing());
+    assert!(!backend.wrote_safe_state());
+}
+
+#[test]
 fn runner_voltage_limit_write_happens_before_chopper_and_open_loop_voltage() {
     let mut backend = FakeImpedanceBackend::standard();
 
