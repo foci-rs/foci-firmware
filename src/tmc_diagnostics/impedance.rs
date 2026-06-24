@@ -113,10 +113,6 @@ fn run_report(oid: u8, result: &ImpedanceRunResult) -> ImpedanceRunReport {
         repeatability_permille: result.summary.repeatability_permille,
         warning_flags: result.warning_flags.0,
         status_flags_or: result.status_flags_or,
-        pwm_maxcnt_readback: result.power_stage_readback.pwm_maxcnt_readback,
-        bbm_readback: result.power_stage_readback.bbm_readback,
-        dsadc_mdec_readback: result.power_stage_readback.dsadc_mdec_readback,
-        pwm_sv_chop_readback: result.power_stage_readback.pwm_sv_chop_readback,
     }
 }
 
@@ -124,14 +120,10 @@ fn failed_run_report(
     oid: u8,
     status: u8,
     status_flags_or: u32,
-    power_stage_readback: ImpedancePowerStageReadback,
+    _power_stage_readback: ImpedancePowerStageReadback,
 ) -> ImpedanceRunReport {
     let mut report = empty_impedance_run_report(oid, status);
     report.status_flags_or = status_flags_or;
-    report.pwm_maxcnt_readback = power_stage_readback.pwm_maxcnt_readback;
-    report.bbm_readback = power_stage_readback.bbm_readback;
-    report.dsadc_mdec_readback = power_stage_readback.dsadc_mdec_readback;
-    report.pwm_sv_chop_readback = power_stage_readback.pwm_sv_chop_readback;
     report
 }
 

@@ -605,10 +605,6 @@ mod tests {
             repeatability_permille: 12,
             warning_flags: 0x24,
             status_flags_or: 0x55aa,
-            pwm_maxcnt_readback: 3999,
-            bbm_readback: 0x0909,
-            dsadc_mdec_readback: 0x014B_014B,
-            pwm_sv_chop_readback: 7,
         }
     }
 
