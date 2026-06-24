@@ -408,8 +408,8 @@ pub struct ImpedanceProfileReport {
     pub scale_metadata_validated: bool,
 }
 
-/// Per-run status, warnings, aggregate fit result, and power-stage readbacks for
-/// the impedance-test diagnostic.
+/// Per-run status, warnings, and aggregate fit result for the impedance-test
+/// diagnostic.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ImpedanceRunReport {
     /// Object id of the FOCI endpoint.

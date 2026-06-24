@@ -120,7 +120,6 @@ fn failed_run_report(
     oid: u8,
     status: u8,
     status_flags_or: u32,
-    _power_stage_readback: ImpedancePowerStageReadback,
 ) -> ImpedanceRunReport {
     let mut report = empty_impedance_run_report(oid, status);
     report.status_flags_or = status_flags_or;
@@ -246,7 +245,6 @@ where
                 oid,
                 status_code(error),
                 backend.status_flags_or,
-                backend.power_stage_readback,
             ),
             None,
             detail,
