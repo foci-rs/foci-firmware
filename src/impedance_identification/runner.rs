@@ -5,21 +5,21 @@
 //! gates, while hardware validation remains a separate workflow.
 
 use foci_tmc4671::registers::{
-    ABN_DECODER_COUNT, ADC_IWY_IUX, MODE_RAMP_MODE_MOTION, MOTOR_TYPE_N_POLE_PAIRS, MotionMode,
-    MotorType, MotorTypeNPolePairs, OPENLOOP_ACCELERATION, OPENLOOP_MODE, OPENLOOP_PHI,
-    OPENLOOP_VELOCITY_ACTUAL, OPENLOOP_VELOCITY_TARGET, PHI_E_EXT, PHI_E_SELECTION,
-    PIDOUT_UQ_UD_LIMITS, PWM_SV_CHOP, STATUS_FLAGS, UQ_UD_EXT, UqUdExt,
+    ABN_DECODER_COUNT, ADC_IWY_IUX, DSADC_MDEC_B_MDEC_A, MODE_RAMP_MODE_MOTION,
+    MOTOR_TYPE_N_POLE_PAIRS, MotionMode, MotorType, MotorTypeNPolePairs, OPENLOOP_ACCELERATION,
+    OPENLOOP_MODE, OPENLOOP_PHI, OPENLOOP_VELOCITY_ACTUAL, OPENLOOP_VELOCITY_TARGET, PHI_E_EXT,
+    PHI_E_SELECTION, PIDOUT_UQ_UD_LIMITS, PWM_BBM_H_BBM_L, PWM_MAXCNT, PWM_SV_CHOP, STATUS_FLAGS,
+    UQ_UD_EXT, UqUdExt,
 };
 
 use super::fit::{ImpedanceFitPoint, ImpedanceFitSummary};
 use super::profile::ImpedanceProfile;
 use super::types::{
-    IMPEDANCE_PROFILE_POINTS, IMPEDANCE_SAMPLE_COUNT, ImpedanceError, ImpedanceSample,
-    ImpedanceWarningFlags,
+    IMPEDANCE_PROFILE_POINTS, IMPEDANCE_SAMPLE_COUNT, ImpedanceError, ImpedancePowerStageReadback,
+    ImpedanceSample, ImpedanceWarningFlags,
 };
 use crate::impedance_identification::fit::{evaluate_impedance_result, fit_impedance_point};
 
-const PWM_CHOP_ENABLED: u32 = 7;
 const PHI_E_EXTERNAL: u32 = 1;
 const PHI_E_OPEN_LOOP: u32 = 2;
 const OPENLOOP_MODE_STOPPED: u32 = 0;
@@ -76,6 +76,8 @@ pub struct ImpedanceRunResult {
     pub warning_flags: ImpedanceWarningFlags,
     /// OR of every sampled `STATUS_FLAGS` value.
     pub status_flags_or: u32,
+    /// Power-stage readbacks verified before the first nonzero voltage command.
+    pub power_stage_readback: ImpedancePowerStageReadback,
 }
 
 /// Run impedance identification over an already armed motor.
@@ -154,7 +156,7 @@ async fn run_energized_body<B: ImpedanceBackend>(
     backend: &mut B,
     profile: ImpedanceProfile,
 ) -> Result<ImpedanceRunResult, ImpedanceError> {
-    prepare_zero_voltage_setup(backend, &profile).await?;
+    let power_stage_readback = prepare_zero_voltage_setup(backend, &profile).await?;
 
     let mut warning_flags = ImpedanceWarningFlags::NONE;
     let mut status_flags_or = 0u32;
@@ -200,13 +202,14 @@ async fn run_energized_body<B: ImpedanceBackend>(
         summary,
         warning_flags,
         status_flags_or,
+        power_stage_readback,
     })
 }
 
 async fn prepare_zero_voltage_setup<B: ImpedanceBackend>(
     backend: &mut B,
     profile: &ImpedanceProfile,
-) -> Result<(), ImpedanceError> {
+) -> Result<ImpedancePowerStageReadback, ImpedanceError> {
     write(
         backend,
         PIDOUT_UQ_UD_LIMITS.addr(),
@@ -245,8 +248,36 @@ async fn prepare_zero_voltage_setup<B: ImpedanceBackend>(
     verify_readback(backend, PHI_E_SELECTION.addr(), PHI_E_EXTERNAL).await?;
     verify_readback(backend, PHI_E_EXT.addr(), 0).await?;
 
-    write(backend, PWM_SV_CHOP.addr(), PWM_CHOP_ENABLED).await?;
-    verify_readback(backend, PWM_SV_CHOP.addr(), PWM_CHOP_ENABLED).await
+    write(backend, PWM_SV_CHOP.addr(), profile.pwm_sv_chop).await?;
+    let power_stage_readback = read_power_stage_setup(backend).await?;
+    if power_stage_readback.pwm_sv_chop_readback != profile.pwm_sv_chop
+        || power_stage_readback.pwm_maxcnt_readback != u32::from(profile.pwm_maxcnt)
+        || power_stage_readback.bbm_readback != expected_bbm_readback(profile)
+        || power_stage_readback.dsadc_mdec_readback != expected_dsadc_readback(profile)
+    {
+        Err(ImpedanceError::ProfileReadbackMismatch)
+    } else {
+        Ok(power_stage_readback)
+    }
+}
+
+async fn read_power_stage_setup<B: ImpedanceBackend>(
+    backend: &mut B,
+) -> Result<ImpedancePowerStageReadback, ImpedanceError> {
+    Ok(ImpedancePowerStageReadback {
+        pwm_maxcnt_readback: read(backend, PWM_MAXCNT.addr()).await?,
+        bbm_readback: read(backend, PWM_BBM_H_BBM_L.addr()).await?,
+        dsadc_mdec_readback: read(backend, DSADC_MDEC_B_MDEC_A.addr()).await?,
+        pwm_sv_chop_readback: read(backend, PWM_SV_CHOP.addr()).await?,
+    })
+}
+
+fn expected_bbm_readback(profile: &ImpedanceProfile) -> u32 {
+    (u32::from(profile.bbm_h) << 8) | u32::from(profile.bbm_l)
+}
+
+fn expected_dsadc_readback(profile: &ImpedanceProfile) -> u32 {
+    (u32::from(profile.dsadc_mdec_b) << 16) | u32::from(profile.dsadc_mdec_a)
 }
 
 async fn run_dc_baseline_check<B: ImpedanceBackend>(

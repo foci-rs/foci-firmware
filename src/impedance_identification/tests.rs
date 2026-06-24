@@ -6,10 +6,10 @@ use super::types::{
 };
 use super::{ImpedanceFitPoint, evaluate_impedance_result, fit_impedance_point};
 use foci_tmc4671::registers::{
-    ABN_DECODER_COUNT, ADC_IWY_IUX, MODE_RAMP_MODE_MOTION, MOTOR_TYPE_N_POLE_PAIRS, MotorType,
-    MotorTypeNPolePairs, OPENLOOP_ACCELERATION, OPENLOOP_MODE, OPENLOOP_PHI,
-    OPENLOOP_VELOCITY_ACTUAL, OPENLOOP_VELOCITY_TARGET, PHI_E_EXT, PHI_E_SELECTION,
-    PIDOUT_UQ_UD_LIMITS, PWM_SV_CHOP, STATUS_FLAGS, UQ_UD_EXT,
+    ABN_DECODER_COUNT, ADC_IWY_IUX, DSADC_MDEC_B_MDEC_A, MODE_RAMP_MODE_MOTION,
+    MOTOR_TYPE_N_POLE_PAIRS, MotorType, MotorTypeNPolePairs, OPENLOOP_ACCELERATION, OPENLOOP_MODE,
+    OPENLOOP_PHI, OPENLOOP_VELOCITY_ACTUAL, OPENLOOP_VELOCITY_TARGET, PHI_E_EXT, PHI_E_SELECTION,
+    PIDOUT_UQ_UD_LIMITS, PWM_BBM_H_BBM_L, PWM_MAXCNT, PWM_SV_CHOP, STATUS_FLAGS, UQ_UD_EXT,
 };
 use pollster::block_on;
 
@@ -607,6 +607,9 @@ struct FakeImpedanceBackend {
     phi_e_selection: u32,
     phi_e_ext: u32,
     pwm_sv_chop: u32,
+    pwm_maxcnt_readback: u32,
+    bbm_readback: u32,
+    dsadc_mdec_readback: u32,
     timestamp_us: u32,
     encoder_count: u32,
     baseline_current_count: i16,
@@ -650,6 +653,9 @@ impl FakeImpedanceBackend {
             phi_e_selection: 1,
             phi_e_ext: 0,
             pwm_sv_chop: 0,
+            pwm_maxcnt_readback: 3999,
+            bbm_readback: 0x0909,
+            dsadc_mdec_readback: 0x014B_014B,
             timestamp_us: 0,
             encoder_count: 0,
             baseline_current_count: 0,
@@ -802,6 +808,15 @@ impl FakeImpedanceBackend {
         }
         if addr == PWM_SV_CHOP.addr() {
             return self.pwm_sv_chop;
+        }
+        if addr == PWM_MAXCNT.addr() {
+            return self.pwm_maxcnt_readback;
+        }
+        if addr == PWM_BBM_H_BBM_L.addr() {
+            return self.bbm_readback;
+        }
+        if addr == DSADC_MDEC_B_MDEC_A.addr() {
+            return self.dsadc_mdec_readback;
         }
         0
     }
@@ -1115,6 +1130,18 @@ fn runner_profile_critical_readback_mismatch_returns_profile_readback_mismatch()
 
     assert_eq!(err, ImpedanceError::ProfileReadbackMismatch);
     assert!(backend.wrote_safe_state());
+}
+
+#[test]
+fn runner_power_stage_readback_mismatch_blocks_nonzero_uq() {
+    let mut backend = FakeImpedanceBackend::standard();
+    backend.pwm_maxcnt_readback = 2047;
+
+    let err = block_on(run_impedance_identification(&mut backend)).unwrap_err();
+
+    assert_eq!(err, ImpedanceError::ProfileReadbackMismatch);
+    assert!(backend.wrote_safe_state());
+    assert_no_nonzero_uq_writes(&backend.writes);
 }
 
 #[test]

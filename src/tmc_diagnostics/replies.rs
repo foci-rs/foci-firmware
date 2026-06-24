@@ -39,7 +39,7 @@ pub trait DiagnosticReplySink {
     /// Emit one impedance-test per-point fit result.
     fn foci_impedance_fit(&mut self, _report: ImpedanceFitReport) {}
 
-    /// Emit the impedance-test per-run status/warnings result.
+    /// Emit the impedance-test per-run status/warnings/readbacks result.
     /// This is the diagnostic's terminal reply.
     fn foci_impedance_run(&mut self, _report: ImpedanceRunReport) {}
 }
@@ -83,7 +83,9 @@ pub fn emit_diagnostic_report<S: DiagnosticReplySink>(sink: &mut S, report: Diag
             detail,
         } => {
             sink.foci_impedance_profile(profile);
-            if detail >= 1 && let Some(fits) = fits {
+            if detail >= 1
+                && let Some(fits) = fits
+            {
                 for fit in fits {
                     sink.foci_impedance_fit(fit);
                 }
@@ -603,6 +605,10 @@ mod tests {
             repeatability_permille: 12,
             warning_flags: 0x24,
             status_flags_or: 0x55aa,
+            pwm_maxcnt_readback: 3999,
+            bbm_readback: 0x0909,
+            dsadc_mdec_readback: 0x014B_014B,
+            pwm_sv_chop_readback: 7,
         }
     }
 

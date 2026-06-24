@@ -32,6 +32,29 @@ pub struct ImpedanceSample {
     pub i_ch1: i16,
 }
 
+/// Power-stage setup read back before impedance identification energizes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+pub struct ImpedancePowerStageReadback {
+    /// Raw `PWM_MAXCNT` register readback.
+    pub pwm_maxcnt_readback: u32,
+    /// Raw `PWM_BBM_H_BBM_L` register readback.
+    pub bbm_readback: u32,
+    /// Raw `DSADC_MDEC_B_MDEC_A` register readback.
+    pub dsadc_mdec_readback: u32,
+    /// Raw `PWM_SV_CHOP` register readback.
+    pub pwm_sv_chop_readback: u32,
+}
+
+impl ImpedancePowerStageReadback {
+    /// Empty readback evidence used before power-stage verification runs.
+    pub const EMPTY: Self = Self {
+        pwm_maxcnt_readback: 0,
+        bbm_readback: 0,
+        dsadc_mdec_readback: 0,
+        pwm_sv_chop_readback: 0,
+    };
+}
+
 /// Warning bitfield returned by impedance identification.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub struct ImpedanceWarningFlags(pub u32);

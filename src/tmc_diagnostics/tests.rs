@@ -1072,6 +1072,9 @@ fn impedance_unsafe_status_failure_reports_status_flags_evidence() {
             .with_read(0) // MODE_RAMP_MODE_MOTION readback
             .with_read(1) // PHI_E_SELECTION readback
             .with_read(0) // PHI_E_EXT readback
+            .with_read(3999) // PWM_MAXCNT readback
+            .with_read(0x0909) // PWM_BBM_H_BBM_L readback
+            .with_read(0x014B_014B) // DSADC_MDEC_B_MDEC_A readback
             .with_read(7) // PWM_SV_CHOP readback
             .with_read(0) // ABN_DECODER_COUNT before DC baseline
             .with_read(0) // UQ_UD_EXT DC baseline readback

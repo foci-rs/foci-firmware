@@ -1,11 +1,14 @@
 //! `FOCI_IMPEDANCE_TEST` diagnostic: runs the shared impedance-identification
 //! engine over an already-armed motor without touching commissioning state.
 
-use foci_tmc4671::registers::{Register, STATUS_FLAGS};
+use foci_tmc4671::registers::{
+    DSADC_MDEC_B_MDEC_A, PWM_BBM_H_BBM_L, PWM_MAXCNT, PWM_SV_CHOP, Register, STATUS_FLAGS,
+};
 
 use crate::impedance_identification::{
     IMPEDANCE_PROFILE_POINTS, ImpedanceBackend, ImpedanceBackendError, ImpedanceError,
-    ImpedanceFitPoint, ImpedanceProfile, ImpedanceRunResult, run_impedance_identification,
+    ImpedanceFitPoint, ImpedancePowerStageReadback, ImpedanceProfile, ImpedanceRunResult,
+    run_impedance_identification,
 };
 use crate::tmc::{TmcRequest, TmcRequestKind, normalize_diagnostic_detail};
 
@@ -25,6 +28,7 @@ struct DiagnosticImpedanceBackend<'ctx, 'a, B, D> {
     ctx: &'ctx mut DiagnosticContext<'a, B, D>,
     elapsed_us: u32,
     status_flags_or: u32,
+    power_stage_readback: ImpedancePowerStageReadback,
 }
 
 impl<B, D> ImpedanceBackend for DiagnosticImpedanceBackend<'_, '_, B, D>
@@ -41,6 +45,14 @@ where
             .map_err(|_| ImpedanceBackendError::Spi)?;
         if addr == STATUS_FLAGS.addr() {
             self.status_flags_or |= value;
+        } else if addr == PWM_MAXCNT.addr() {
+            self.power_stage_readback.pwm_maxcnt_readback = value;
+        } else if addr == PWM_BBM_H_BBM_L.addr() {
+            self.power_stage_readback.bbm_readback = value;
+        } else if addr == DSADC_MDEC_B_MDEC_A.addr() {
+            self.power_stage_readback.dsadc_mdec_readback = value;
+        } else if addr == PWM_SV_CHOP.addr() {
+            self.power_stage_readback.pwm_sv_chop_readback = value;
         }
         Ok(value)
     }
@@ -101,12 +113,25 @@ fn run_report(oid: u8, result: &ImpedanceRunResult) -> ImpedanceRunReport {
         repeatability_permille: result.summary.repeatability_permille,
         warning_flags: result.warning_flags.0,
         status_flags_or: result.status_flags_or,
+        pwm_maxcnt_readback: result.power_stage_readback.pwm_maxcnt_readback,
+        bbm_readback: result.power_stage_readback.bbm_readback,
+        dsadc_mdec_readback: result.power_stage_readback.dsadc_mdec_readback,
+        pwm_sv_chop_readback: result.power_stage_readback.pwm_sv_chop_readback,
     }
 }
 
-fn failed_run_report(oid: u8, status: u8, status_flags_or: u32) -> ImpedanceRunReport {
+fn failed_run_report(
+    oid: u8,
+    status: u8,
+    status_flags_or: u32,
+    power_stage_readback: ImpedancePowerStageReadback,
+) -> ImpedanceRunReport {
     let mut report = empty_impedance_run_report(oid, status);
     report.status_flags_or = status_flags_or;
+    report.pwm_maxcnt_readback = power_stage_readback.pwm_maxcnt_readback;
+    report.bbm_readback = power_stage_readback.bbm_readback;
+    report.dsadc_mdec_readback = power_stage_readback.dsadc_mdec_readback;
+    report.pwm_sv_chop_readback = power_stage_readback.pwm_sv_chop_readback;
     report
 }
 
@@ -214,6 +239,7 @@ where
         ctx: &mut ctx,
         elapsed_us: 0,
         status_flags_or: 0,
+        power_stage_readback: ImpedancePowerStageReadback::EMPTY,
     };
 
     match run_impedance_identification(&mut backend).await {
@@ -224,7 +250,12 @@ where
         }
         Err(error) => handled(
             profile_report,
-            failed_run_report(oid, status_code(error), backend.status_flags_or),
+            failed_run_report(
+                oid,
+                status_code(error),
+                backend.status_flags_or,
+                backend.power_stage_readback,
+            ),
             None,
             detail,
         ),

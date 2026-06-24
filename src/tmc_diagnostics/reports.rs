@@ -408,8 +408,8 @@ pub struct ImpedanceProfileReport {
     pub scale_metadata_validated: bool,
 }
 
-/// Per-run status, warnings, and aggregate fit result for the impedance-test
-/// diagnostic.
+/// Per-run status, warnings, aggregate fit result, and power-stage readbacks for
+/// the impedance-test diagnostic.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ImpedanceRunReport {
     /// Object id of the FOCI endpoint.
@@ -428,6 +428,14 @@ pub struct ImpedanceRunReport {
     pub warning_flags: u32,
     /// STATUS_FLAGS accumulated (OR) across the run.
     pub status_flags_or: u32,
+    /// PWM_MAXCNT readback captured during power-stage verification.
+    pub pwm_maxcnt_readback: u32,
+    /// Packed PWM_BBM_H_BBM_L readback captured during power-stage verification.
+    pub bbm_readback: u32,
+    /// Packed DSADC_MDEC_B_MDEC_A readback captured during power-stage verification.
+    pub dsadc_mdec_readback: u32,
+    /// PWM_SV_CHOP readback captured during power-stage verification.
+    pub pwm_sv_chop_readback: u32,
 }
 
 /// Per-injection-point fit result for the impedance-test diagnostic.
@@ -470,6 +478,10 @@ pub fn empty_impedance_run_report(oid: u8, status: u8) -> ImpedanceRunReport {
         repeatability_permille: 0,
         warning_flags: 0,
         status_flags_or: 0,
+        pwm_maxcnt_readback: 0,
+        bbm_readback: 0,
+        dsadc_mdec_readback: 0,
+        pwm_sv_chop_readback: 0,
     }
 }
 

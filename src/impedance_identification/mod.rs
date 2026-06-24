@@ -20,5 +20,5 @@ pub use runner::{
 };
 pub use types::{
     IMPEDANCE_PROFILE_POINTS, IMPEDANCE_SAMPLE_COUNT, ImpedanceError, ImpedanceInjectionPoint,
-    ImpedanceSample, ImpedanceWarningFlags,
+    ImpedancePowerStageReadback, ImpedanceSample, ImpedanceWarningFlags,
 };

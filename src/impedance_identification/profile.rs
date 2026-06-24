@@ -1,6 +1,6 @@
 //! Standard impedance-identification profile defaults.
 
-use super::types::{IMPEDANCE_PROFILE_POINTS, IMPEDANCE_SAMPLE_COUNT, ImpedanceInjectionPoint};
+use super::types::{ImpedanceInjectionPoint, IMPEDANCE_PROFILE_POINTS, IMPEDANCE_SAMPLE_COUNT};
 
 /// Temporary OpenFFBoard fail mask used until the unsafe diagnostic status
 /// policy is audited into named TMC4671 status bits.
@@ -30,6 +30,12 @@ pub struct ImpedanceProfile {
     pub sample_count: u16,
     pub max_sample_count: u16,
     pub sample_interval_us: u16,
+    pub pwm_maxcnt: u16,
+    pub bbm_h: u8,
+    pub bbm_l: u8,
+    pub dsadc_mdec_a: u16,
+    pub dsadc_mdec_b: u16,
+    pub pwm_sv_chop: u32,
     pub min_signal_count: u16,
     pub max_expected_current_count: u16,
     pub encoder_move_warn_counts: u16,
@@ -78,6 +84,12 @@ impl ImpedanceProfile {
             sample_count: IMPEDANCE_SAMPLE_COUNT as u16,
             max_sample_count: IMPEDANCE_SAMPLE_COUNT as u16,
             sample_interval_us: 250,
+            pwm_maxcnt: 3999,
+            bbm_h: 9,
+            bbm_l: 9,
+            dsadc_mdec_a: 331,
+            dsadc_mdec_b: 331,
+            pwm_sv_chop: 7,
             min_signal_count: 96,
             max_expected_current_count: 1600,
             encoder_move_warn_counts: 64,
@@ -136,7 +148,9 @@ impl ImpedanceProfile {
         for point in self.injection_points {
             let dc_exposure = exposure_for_ms(point.ud_abs, dc_nonzero_ms(point));
             let ac_exposure = exposure_for_ms(point.ud_abs, self.ac_nonzero_ms(point));
-            total = total.saturating_add(dc_exposure).saturating_add(ac_exposure);
+            total = total
+                .saturating_add(dc_exposure)
+                .saturating_add(ac_exposure);
         }
         total
     }
