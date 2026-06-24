@@ -560,6 +560,18 @@ pub struct FociImpedanceProfile {
     pub sample_interval_us: u16,
     /// Maximum absolute UD voltage request used by the profile.
     pub max_ud: u16,
+    /// Expected PWM_MAXCNT register value for this profile.
+    pub pwm_maxcnt: u16,
+    /// Expected high-side break-before-make setting.
+    pub bbm_h: u8,
+    /// Expected low-side break-before-make setting.
+    pub bbm_l: u8,
+    /// Expected DSADC_MDEC_A decimation/filter setting.
+    pub dsadc_mdec_a: u16,
+    /// Expected DSADC_MDEC_B decimation/filter setting.
+    pub dsadc_mdec_b: u16,
+    /// Expected PWM_SV_CHOP register value during energized windows.
+    pub pwm_sv_chop: u32,
     /// STATUS_FLAGS bitmask that hard-fails the run.
     pub status_flags_fail_mask: u32,
     /// STATUS_FLAGS bitmask that raises the warning flag during a window.
@@ -589,6 +601,14 @@ pub struct FociImpedanceRun {
     pub warning_flags: u32,
     /// STATUS_FLAGS accumulated (OR) across the run.
     pub status_flags_or: u32,
+    /// PWM_MAXCNT readback captured during power-stage verification.
+    pub pwm_maxcnt_readback: u32,
+    /// Packed PWM_BBM_H_BBM_L readback captured during power-stage verification.
+    pub bbm_readback: u32,
+    /// Packed DSADC_MDEC_B_MDEC_A readback captured during power-stage verification.
+    pub dsadc_mdec_readback: u32,
+    /// PWM_SV_CHOP readback captured during power-stage verification.
+    pub pwm_sv_chop_readback: u32,
 }
 
 /// `foci_impedance_fit` reply - per-injection impedance fit result.
@@ -940,6 +960,12 @@ mod resistance_reply_size_tests {
             sample_count: u16::MAX,
             sample_interval_us: u16::MAX,
             max_ud: u16::MAX,
+            pwm_maxcnt: u16::MAX,
+            bbm_h: u8::MAX,
+            bbm_l: u8::MAX,
+            dsadc_mdec_a: u16::MAX,
+            dsadc_mdec_b: u16::MAX,
+            pwm_sv_chop: 0x7FFF_FFFF,
             status_flags_fail_mask: 0x7FFF_FFFF,
             status_flags_warn_mask: 0x7FFF_FFFF,
             scale_metadata_validated: u8::MAX,
@@ -959,6 +985,10 @@ mod resistance_reply_size_tests {
             repeatability_permille: u16::MAX,
             warning_flags: 0x7FFF_FFFF,
             status_flags_or: 0x7FFF_FFFF,
+            pwm_maxcnt_readback: 0x7FFF_FFFF,
+            bbm_readback: 0x7FFF_FFFF,
+            dsadc_mdec_readback: 0x7FFF_FFFF,
+            pwm_sv_chop_readback: 0x7FFF_FFFF,
         };
 
         assert_fits_with_id(&reply, "foci_impedance_run");
