@@ -29,9 +29,8 @@ pub use reports::{
     IMPEDANCE_STATUS_UNSAFE_STATUS_FLAGS, IMPEDANCE_STATUS_UNSUPPORTED_MOTOR_TYPE,
     IMPEDANCE_STATUS_UNSUPPORTED_PROFILE, ImpedanceFitReport, ImpedanceProfileReport,
     ImpedanceRunReport, ResistanceAxisReport, ResistanceProfileReport, ResistanceRunReport,
-    VoltageStepReport,
-    empty_current_torque_sample_report, empty_impedance_run_report, empty_resistance_run_report,
-    empty_voltage_step_report,
+    VoltageStepReport, empty_current_torque_sample_report, empty_impedance_run_report,
+    empty_resistance_run_report, empty_voltage_step_report,
 };
 pub use resistance::run_resistance_test_request;
 pub use torque_sample::{
@@ -62,6 +61,13 @@ pub trait DiagnosticDelay {
     async fn delay_us(&mut self, us: u32) {
         self.delay_ms(u64::from(us).div_ceil(1_000)).await;
     }
+
+    /// Monotonic microsecond timestamp from the board clock.
+    ///
+    /// Diagnostics use this to stamp samples with the real time each measurement
+    /// was taken, including register-read and gate-check overhead between
+    /// requested delays. Boards back it with their microsecond monotonic.
+    fn now_us(&self) -> u64;
 }
 
 /// Mutable resources borrowed by one active diagnostic request.

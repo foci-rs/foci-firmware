@@ -24,11 +24,20 @@ use super::{
     ImpedanceRunReport, empty_impedance_run_report,
 };
 
-struct DiagnosticImpedanceBackend<'ctx, 'a, B, D> {
+pub(crate) struct DiagnosticImpedanceBackend<'ctx, 'a, B, D> {
     ctx: &'ctx mut DiagnosticContext<'a, B, D>,
-    elapsed_us: u32,
     status_flags_or: u32,
     power_stage_readback: ImpedancePowerStageReadback,
+}
+
+impl<'ctx, 'a, B, D> DiagnosticImpedanceBackend<'ctx, 'a, B, D> {
+    pub(crate) fn new(ctx: &'ctx mut DiagnosticContext<'a, B, D>) -> Self {
+        Self {
+            ctx,
+            status_flags_or: 0,
+            power_stage_readback: ImpedancePowerStageReadback::EMPTY,
+        }
+    }
 }
 
 impl<B, D> ImpedanceBackend for DiagnosticImpedanceBackend<'_, '_, B, D>
@@ -67,17 +76,17 @@ where
 
     async fn delay_us(&mut self, us: u32) {
         self.ctx.delay.delay_us(us).await;
-        self.elapsed_us = self.elapsed_us.wrapping_add(us);
     }
 
     async fn delay_ms(&mut self, ms: u64) {
         self.ctx.delay.delay_ms(ms).await;
-        let us = ms.saturating_mul(1_000).min(u64::from(u32::MAX)) as u32;
-        self.elapsed_us = self.elapsed_us.wrapping_add(us);
     }
 
     fn timestamp_us(&self) -> u32 {
-        self.elapsed_us
+        // Low 32 bits of the board monotonic. The runner only takes start-relative
+        // wrapping differences within a capture window far shorter than the u32 us
+        // wrap (~71 min), so truncation is safe and captures real read overhead.
+        self.ctx.delay.now_us() as u32
     }
 
     fn is_armed_for_open_loop_voltage(&self) -> bool {
@@ -116,11 +125,7 @@ fn run_report(oid: u8, result: &ImpedanceRunResult) -> ImpedanceRunReport {
     }
 }
 
-fn failed_run_report(
-    oid: u8,
-    status: u8,
-    status_flags_or: u32,
-) -> ImpedanceRunReport {
+fn failed_run_report(oid: u8, status: u8, status_flags_or: u32) -> ImpedanceRunReport {
     let mut report = empty_impedance_run_report(oid, status);
     report.status_flags_or = status_flags_or;
     report
@@ -226,12 +231,7 @@ where
         );
     }
 
-    let mut backend = DiagnosticImpedanceBackend {
-        ctx: &mut ctx,
-        elapsed_us: 0,
-        status_flags_or: 0,
-        power_stage_readback: ImpedancePowerStageReadback::EMPTY,
-    };
+    let mut backend = DiagnosticImpedanceBackend::new(&mut ctx);
 
     match run_impedance_identification(&mut backend).await {
         Ok(result) => {
@@ -241,11 +241,7 @@ where
         }
         Err(error) => handled(
             profile_report,
-            failed_run_report(
-                oid,
-                status_code(error),
-                backend.status_flags_or,
-            ),
+            failed_run_report(oid, status_code(error), backend.status_flags_or),
             None,
             detail,
         ),

@@ -1,4 +1,5 @@
 use super::*;
+use crate::impedance_identification::ImpedanceBackend;
 use crate::tmc::{
     tmc_current_step_test, tmc_current_torque_sample_test, tmc_current_vector_step_test,
     tmc_impedance_test, tmc_position_torque_offset_sample_test, tmc_voltage_step_test,
@@ -97,11 +98,16 @@ impl embedded_hal_async::spi::SpiDevice<u8> for DiagnosticMockSpi {
 #[derive(Default)]
 struct MockDelay {
     delays_ms: std::vec::Vec<u64>,
+    now_us: u64,
 }
 
 impl DiagnosticDelay for MockDelay {
     async fn delay_ms(&mut self, ms: u64) {
         self.delays_ms.push(ms);
+    }
+
+    fn now_us(&self) -> u64 {
+        self.now_us
     }
 }
 
@@ -902,6 +908,38 @@ fn impedance_test_request_dispatches_to_shared_runner() {
             panic!("expected impedance test report");
         };
         assert_eq!(run.oid, 7);
+    });
+}
+
+#[test]
+fn impedance_backend_timestamp_tracks_clock_not_requested_delays() {
+    pollster::block_on(async {
+        let mut runtime = ready_runtime();
+        let mut delay = MockDelay {
+            now_us: 5_000,
+            ..MockDelay::default()
+        };
+        let mut tmc = Tmc4671Spi::new(DiagnosticMockSpi::default());
+        let mut ctx = DiagnosticContext {
+            tmc: &mut tmc,
+            runtime: &mut runtime,
+            delay: &mut delay,
+            tmc_config: &TEST_TMC_CONFIG,
+            readiness: DiagnosticReadiness {
+                homing_active: false,
+                stepper_active: false,
+                saved_voltage_limit: 0,
+            },
+        };
+        let mut backend = super::impedance::DiagnosticImpedanceBackend::new(&mut ctx);
+
+        // The diagnostic timestamp must come from the board clock.
+        assert_eq!(backend.timestamp_us(), 5_000);
+
+        // Requested delays must not advance it; only the board clock does.
+        backend.delay_ms(250).await;
+        backend.delay_us(1_000).await;
+        assert_eq!(backend.timestamp_us(), 5_000);
     });
 }
 
