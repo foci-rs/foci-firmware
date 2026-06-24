@@ -1,6 +1,6 @@
 //! Standard impedance-identification profile defaults.
 
-use super::types::{ImpedanceInjectionPoint, IMPEDANCE_PROFILE_POINTS, IMPEDANCE_SAMPLE_COUNT};
+use super::types::{IMPEDANCE_PROFILE_POINTS, IMPEDANCE_SAMPLE_COUNT, ImpedanceInjectionPoint};
 
 /// Temporary OpenFFBoard fail mask used until the unsafe diagnostic status
 /// policy is audited into named TMC4671 status bits.
@@ -10,7 +10,7 @@ pub const OPENFFBOARD_IMPEDANCE_STATUS_FAIL_MASK: u32 = 0x7000_4480;
 /// policy exists for impedance identification.
 pub const OPENFFBOARD_IMPEDANCE_STATUS_WARN_MASK: u32 = 0x0000_0000;
 
-const OPENFFBOARD_IMPEDANCE_OPENLOOP_ACCELERATION_RPM_PER_S: u32 = 3_000;
+const OPENFFBOARD_IMPEDANCE_OPENLOOP_ACCELERATION_RPM_PER_S: u32 = 24_000;
 const MICROS_PER_MILLISECOND: u64 = 1_000;
 
 pub(crate) const fn frequency_millihz_to_openloop_velocity_rpm(frequency_millihz: u64) -> i32 {
@@ -56,10 +56,9 @@ pub struct ImpedanceProfile {
 impl ImpedanceProfile {
     /// Build the starting OpenFFBoard impedance-identification profile.
     ///
-    /// The per-point acceleration default is intentionally conservative:
-    /// 3000 electrical rpm/s ramps to the profile's highest 50 Hz injection
-    /// point (3000 electrical rpm) in about one second without depending on
-    /// any raw TMC clock conversion.
+    /// The per-point acceleration default keeps the ramp to the profile's
+    /// highest 50 Hz injection point inside the 250 ms settle window without
+    /// increasing energized exposure.
     pub const fn standard_openffboard() -> Self {
         Self {
             profile_version: 1,
@@ -83,7 +82,7 @@ impl ImpedanceProfile {
             ],
             sample_count: IMPEDANCE_SAMPLE_COUNT as u16,
             max_sample_count: IMPEDANCE_SAMPLE_COUNT as u16,
-            sample_interval_us: 250,
+            sample_interval_us: 1000,
             pwm_maxcnt: 3999,
             bbm_h: 9,
             bbm_l: 9,
@@ -102,14 +101,14 @@ impl ImpedanceProfile {
             scalar_2f_mismatch_fail_permille: 200,
             status_flags_fail_mask: OPENFFBOARD_IMPEDANCE_STATUS_FAIL_MASK,
             status_flags_warn_mask: OPENFFBOARD_IMPEDANCE_STATUS_WARN_MASK,
-            // Allows the largest 960-count UD point through its 250 ms AC settle
-            // plus the existing supported 128-sample cadence test at 375 us,
-            // conservatively rounded to 48 ms.
-            max_window_exposure_budget: 280_000_000,
+            // Allows the largest 960-count UD point through DC settle, AC settle,
+            // and the standard 128 ms capture at the 1 ms firmware cadence:
+            // 960^2 * (250 ms + 250 ms + 128 ms).
+            max_window_exposure_budget: 580_000_000,
             // Allows both standard points through DC settle and AC settle/capture
-            // windows at the existing supported 375 us cadence:
-            // sum(ud^2 * (250 ms + 250 ms + 48 ms)).
-            max_total_exposure_budget: 735_000_000,
+            // windows at the 1 ms firmware cadence:
+            // sum(ud^2 * (250 ms + 250 ms + 128 ms)).
+            max_total_exposure_budget: 840_000_000,
             scale_metadata_validated: false,
         }
     }
@@ -129,14 +128,9 @@ impl ImpedanceProfile {
     pub fn max_window_exposure(&self) -> u64 {
         let mut max = 0u64;
         for point in self.injection_points {
-            let dc_exposure = exposure_for_ms(point.ud_abs, dc_nonzero_ms(point));
-            if dc_exposure > max {
-                max = dc_exposure;
-            }
-
-            let ac_exposure = exposure_for_ms(point.ud_abs, self.ac_nonzero_ms(point));
-            if ac_exposure > max {
-                max = ac_exposure;
+            let exposure = exposure_for_ms(point.ud_abs, self.point_nonzero_ms(point));
+            if exposure > max {
+                max = exposure;
             }
         }
         max
@@ -146,11 +140,8 @@ impl ImpedanceProfile {
     pub fn max_total_exposure(&self) -> u64 {
         let mut total = 0u64;
         for point in self.injection_points {
-            let dc_exposure = exposure_for_ms(point.ud_abs, dc_nonzero_ms(point));
-            let ac_exposure = exposure_for_ms(point.ud_abs, self.ac_nonzero_ms(point));
-            total = total
-                .saturating_add(dc_exposure)
-                .saturating_add(ac_exposure);
+            total =
+                total.saturating_add(exposure_for_ms(point.ud_abs, self.point_nonzero_ms(point)));
         }
         total
     }
@@ -164,10 +155,10 @@ impl ImpedanceProfile {
     fn ac_nonzero_ms(&self, point: ImpedanceInjectionPoint) -> u64 {
         u64::from(point.settle_ms).saturating_add(self.capture_duration_ms())
     }
-}
 
-fn dc_nonzero_ms(point: ImpedanceInjectionPoint) -> u64 {
-    u64::from(point.settle_ms)
+    fn point_nonzero_ms(&self, point: ImpedanceInjectionPoint) -> u64 {
+        u64::from(point.settle_ms).saturating_add(self.ac_nonzero_ms(point))
+    }
 }
 
 fn exposure_for_ms(ud_abs: u16, duration_ms: u64) -> u64 {

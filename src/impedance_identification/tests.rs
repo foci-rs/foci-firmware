@@ -182,6 +182,7 @@ fn standard_profile_is_bounded_and_physical_projection_is_not_validated_by_defau
     let profile = ImpedanceProfile::standard_openffboard();
 
     assert_eq!(profile.profile_version, 1);
+    assert_eq!(profile.sample_interval_us, 1000);
     assert!(profile.sample_count >= 64);
     assert!(profile.sample_count <= profile.max_sample_count);
     assert_eq!(profile.injection_points.len(), 2);
@@ -196,6 +197,12 @@ fn standard_profile_is_bounded_and_physical_projection_is_not_validated_by_defau
             ((u64::from(point.frequency_millihz) * 60) / 1000) as i32
         );
         assert!(point.openloop_acceleration_rpm_per_s > 0);
+        assert!(
+            u64::from(point.openloop_acceleration_rpm_per_s)
+                .saturating_mul(u64::from(point.settle_ms))
+                >= (point.openloop_velocity_rpm as u64).saturating_mul(1000),
+            "open-loop acceleration should reach target before capture starts"
+        );
     }
 }
 
@@ -227,8 +234,9 @@ fn exposure_budget_counts_dc_ac_settle_and_capture_duration() {
     profile.injection_points[1].settle_ms = 5;
 
     // ceil(4 * 251 us / 1000) = 2 ms.  Each point contributes a DC settle
-    // window plus an AC settle-and-capture window.
-    assert_eq!(profile.max_window_exposure(), 20 * 20 * (5 + 2));
+    // window plus an AC settle-and-capture window, and the per-window gate
+    // must count the full exposure of one injection point.
+    assert_eq!(profile.max_window_exposure(), 20 * 20 * (5 + 5 + 2));
     assert_eq!(
         profile.max_total_exposure(),
         10 * 10 * (3 + 3 + 2) + 20 * 20 * (5 + 5 + 2)
@@ -1078,6 +1086,20 @@ fn runner_unsupported_profile_sample_count_writes_nothing() {
 }
 
 #[test]
+fn runner_unsupported_profile_sub_millisecond_sample_interval_writes_nothing() {
+    let mut backend = FakeImpedanceBackend::standard();
+    backend.profile.sample_interval_us = 999;
+    backend.profile.max_window_exposure_budget = u64::MAX;
+    backend.profile.max_total_exposure_budget = u64::MAX;
+
+    let err = block_on(run_impedance_identification(&mut backend)).unwrap_err();
+
+    assert_eq!(err, ImpedanceError::UnsupportedProfile);
+    assert!(backend.wrote_nothing());
+    assert!(!backend.wrote_safe_state());
+}
+
+#[test]
 fn runner_unsupported_profile_ud_range_writes_nothing() {
     let mut backend = FakeImpedanceBackend::standard();
     backend.profile.injection_points[0].ud_abs = i16::MAX as u16 + 1;
@@ -1374,11 +1396,11 @@ fn runner_success_reports_nonzero_status_flags_or_when_observed_status_is_safe()
 #[test]
 fn runner_success_uses_profile_sample_count_and_sample_interval_us() {
     let mut backend = FakeImpedanceBackend::standard();
-    backend.profile.sample_interval_us = 375;
 
     let result = block_on(run_impedance_identification(&mut backend));
 
     assert!(result.is_ok(), "expected ok, got {result:?}");
+    assert_eq!(backend.profile.sample_interval_us, 1000);
     let expected_samples = backend.profile.sample_count as usize * IMPEDANCE_PROFILE_POINTS;
     assert_eq!(backend.ac_adc_reads, expected_samples);
     assert_eq!(backend.ac_sample_timestamps.len(), expected_samples);

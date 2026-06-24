@@ -1010,7 +1010,7 @@ fn impedance_test_not_ready_writes_nothing() {
 }
 
 #[test]
-fn impedance_runner_failure_emits_profile_then_run_without_fits() {
+fn impedance_runner_failure_detail_two_emits_run_without_fits() {
     pollster::block_on(async {
         let raw_spi = DiagnosticMockSpi::default().fail_reads_from(PIDOUT_UQ_UD_LIMITS.addr());
         let mut tmc = Tmc4671Spi::new(raw_spi);
@@ -1042,15 +1042,12 @@ fn impedance_runner_failure_emits_profile_then_run_without_fits() {
 
         assert_eq!(
             sink.events,
-            std::vec![
-                RecordedResistanceEvent::ImpedanceProfile { oid: 14 },
-                RecordedResistanceEvent::ImpedanceDone {
-                    oid: 14,
-                    status: CURRENT_STEP_STATUS_SPI,
-                    status_flags_or: 0,
-                    warning_flags: 0,
-                },
-            ]
+            std::vec![RecordedResistanceEvent::ImpedanceDone {
+                oid: 14,
+                status: CURRENT_STEP_STATUS_SPI,
+                status_flags_or: 0,
+                warning_flags: 0,
+            },]
         );
     });
 }
@@ -1111,15 +1108,12 @@ fn impedance_unsafe_status_failure_reports_status_flags_evidence() {
 
         assert_eq!(
             sink.events,
-            std::vec![
-                RecordedResistanceEvent::ImpedanceProfile { oid: 15 },
-                RecordedResistanceEvent::ImpedanceDone {
-                    oid: 15,
-                    status: IMPEDANCE_STATUS_UNSAFE_STATUS_FLAGS,
-                    status_flags_or: unsafe_status_flags,
-                    warning_flags: 0,
-                },
-            ]
+            std::vec![RecordedResistanceEvent::ImpedanceDone {
+                oid: 15,
+                status: IMPEDANCE_STATUS_UNSAFE_STATUS_FLAGS,
+                status_flags_or: unsafe_status_flags,
+                warning_flags: 0,
+            },]
         );
     });
 }

@@ -82,8 +82,10 @@ pub fn emit_diagnostic_report<S: DiagnosticReplySink>(sink: &mut S, report: Diag
             fits,
             detail,
         } => {
-            sink.foci_impedance_profile(profile);
-            if detail >= 1
+            if detail == 1 {
+                sink.foci_impedance_profile(profile);
+            }
+            if detail == 1
                 && let Some(fits) = fits
             {
                 for fit in fits {
@@ -625,7 +627,7 @@ mod tests {
     }
 
     #[test]
-    fn impedance_success_detail_zero_emits_profile_then_run_only() {
+    fn impedance_success_detail_zero_emits_run_only() {
         let mut sink = RecordingSink::default();
 
         emit_diagnostic_report(
@@ -640,18 +642,12 @@ mod tests {
 
         assert_eq!(
             sink.events,
-            std::vec![
-                Event::ImpedanceProfile {
-                    oid: 6,
-                    profile_version: 1,
-                },
-                Event::ImpedanceDone {
-                    oid: 6,
-                    status: 0,
-                    status_flags_or: 0x55aa,
-                    warning_flags: 0x24,
-                },
-            ]
+            std::vec![Event::ImpedanceDone {
+                oid: 6,
+                status: 0,
+                status_flags_or: 0x55aa,
+                warning_flags: 0x24,
+            },]
         );
     }
 
@@ -701,7 +697,32 @@ mod tests {
     }
 
     #[test]
-    fn impedance_failure_emits_profile_then_run_without_fits() {
+    fn impedance_detail_two_emits_run_only_until_reserved_detail_is_defined() {
+        let mut sink = RecordingSink::default();
+
+        emit_diagnostic_report(
+            &mut sink,
+            DiagnosticReport::ImpedanceTest {
+                profile: impedance_profile_report(),
+                run: impedance_run_report(0),
+                fits: Some([impedance_fit_report(0), impedance_fit_report(1)]),
+                detail: 2,
+            },
+        );
+
+        assert_eq!(
+            sink.events,
+            std::vec![Event::ImpedanceDone {
+                oid: 6,
+                status: 0,
+                status_flags_or: 0x55aa,
+                warning_flags: 0x24,
+            },]
+        );
+    }
+
+    #[test]
+    fn impedance_failure_detail_one_emits_profile_then_run_without_fits() {
         let mut sink = RecordingSink::default();
 
         emit_diagnostic_report(
@@ -710,7 +731,7 @@ mod tests {
                 profile: impedance_profile_report(),
                 run: impedance_run_report(2),
                 fits: None,
-                detail: 2,
+                detail: 1,
             },
         );
 

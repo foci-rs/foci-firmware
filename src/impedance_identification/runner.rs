@@ -24,6 +24,7 @@ const PHI_E_EXTERNAL: u32 = 1;
 const PHI_E_OPEN_LOOP: u32 = 2;
 const OPENLOOP_MODE_STOPPED: u32 = 0;
 const OPENLOOP_MODE_VELOCITY: u32 = 1;
+const MIN_SAMPLE_INTERVAL_US: u16 = 1_000;
 
 const EMPTY_FIT: ImpedanceFitPoint = ImpedanceFitPoint {
     axis_max_count_per_ud_milli: 0,
@@ -126,7 +127,7 @@ pub async fn run_impedance_identification<B: ImpedanceBackend>(
 fn validate_profile(profile: &ImpedanceProfile) -> Result<(), ImpedanceError> {
     if profile.sample_count as usize != IMPEDANCE_SAMPLE_COUNT
         || profile.sample_count > profile.max_sample_count
-        || profile.sample_interval_us == 0
+        || profile.sample_interval_us < MIN_SAMPLE_INTERVAL_US
         || profile.max_expected_current_count == 0
         || profile.encoder_move_fail_counts == 0
         || profile.encoder_move_warn_counts > profile.encoder_move_fail_counts
