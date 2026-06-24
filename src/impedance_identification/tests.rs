@@ -190,6 +190,15 @@ fn standard_profile_is_bounded_and_physical_projection_is_not_validated_by_defau
     assert!(profile.max_window_exposure() <= profile.max_window_exposure_budget);
     assert!(profile.max_total_exposure() <= profile.max_total_exposure_budget);
     assert!(!profile.scale_metadata_validated);
+    assert_eq!(
+        profile.injection_points[0].frequency_millihz,
+        profile.injection_points[1].frequency_millihz,
+        "standard repeatability must compare amplitudes at one frequency"
+    );
+    assert_ne!(
+        profile.injection_points[0].ud_abs, profile.injection_points[1].ud_abs,
+        "standard repeatability should compare distinct amplitudes"
+    );
     for point in profile.injection_points {
         assert!(point.openloop_velocity_rpm > 0);
         assert_eq!(
@@ -768,7 +777,7 @@ impl FakeImpedanceBackend {
         if addr == OPENLOOP_MODE.addr() {
             if self.ac_openloop_mode_readback_mismatch
                 && nonzero_uq_written
-                && self.openloop_mode == 1
+                && self.openloop_mode == 0
             {
                 return 0xffff_ffff;
             }
@@ -1155,6 +1164,32 @@ fn runner_restore_includes_phi_e_selection_zero_after_success() {
     assert!(result.is_ok(), "expected ok, got {result:?}");
     assert!(backend.wrote_safe_state());
     assert_restore_wrote_phi_e_selection_zero(&backend.writes);
+}
+
+#[test]
+fn runner_openloop_mode_uses_positive_direction_bit_value() {
+    let mut backend = FakeImpedanceBackend::standard();
+
+    let result = block_on(run_impedance_identification(&mut backend));
+
+    assert!(result.is_ok(), "expected ok, got {result:?}");
+    assert!(
+        backend
+            .writes
+            .iter()
+            .any(|write| write.addr == OPENLOOP_MODE.addr()),
+        "expected OPENLOOP_MODE writes, got {:?}",
+        backend.writes
+    );
+    assert!(
+        backend
+            .writes
+            .iter()
+            .filter(|write| write.addr == OPENLOOP_MODE.addr())
+            .all(|write| write.value == 0),
+        "expected audited positive direction OPENLOOP_MODE=0 writes, got {:?}",
+        backend.writes
+    );
 }
 
 #[test]

@@ -22,8 +22,7 @@ use crate::impedance_identification::fit::{evaluate_impedance_result, fit_impeda
 
 const PHI_E_EXTERNAL: u32 = 1;
 const PHI_E_OPEN_LOOP: u32 = 2;
-const OPENLOOP_MODE_STOPPED: u32 = 0;
-const OPENLOOP_MODE_VELOCITY: u32 = 1;
+const OPENLOOP_PHI_DIRECTION_POSITIVE: u32 = 0;
 const MIN_SAMPLE_INTERVAL_US: u16 = 1_000;
 
 const EMPTY_FIT: ImpedanceFitPoint = ImpedanceFitPoint {
@@ -236,7 +235,12 @@ async fn prepare_zero_voltage_setup<B: ImpedanceBackend>(
     )
     .await?;
     verify_readback(backend, UQ_UD_EXT.addr(), 0).await?;
-    verify_readback(backend, OPENLOOP_MODE.addr(), OPENLOOP_MODE_STOPPED).await?;
+    verify_readback(
+        backend,
+        OPENLOOP_MODE.addr(),
+        OPENLOOP_PHI_DIRECTION_POSITIVE,
+    )
+    .await?;
     verify_readback(backend, OPENLOOP_ACCELERATION.addr(), 0).await?;
     verify_readback(backend, OPENLOOP_VELOCITY_TARGET.addr(), 0).await?;
     verify_readback(backend, OPENLOOP_VELOCITY_ACTUAL.addr(), 0).await?;
@@ -351,7 +355,12 @@ async fn capture_ac_window<B: ImpedanceBackend>(
         point.openloop_velocity_rpm as u32,
     )
     .await?;
-    write(backend, OPENLOOP_MODE.addr(), OPENLOOP_MODE_VELOCITY).await?;
+    write(
+        backend,
+        OPENLOOP_MODE.addr(),
+        OPENLOOP_PHI_DIRECTION_POSITIVE,
+    )
+    .await?;
     write(backend, PHI_E_SELECTION.addr(), PHI_E_OPEN_LOOP).await?;
     verify_readback(backend, UQ_UD_EXT.addr(), 0).await?;
     verify_readback(
@@ -374,7 +383,12 @@ async fn capture_ac_window<B: ImpedanceBackend>(
         point.openloop_velocity_rpm as u32,
     )
     .await?;
-    verify_readback(backend, OPENLOOP_MODE.addr(), OPENLOOP_MODE_VELOCITY).await?;
+    verify_readback(
+        backend,
+        OPENLOOP_MODE.addr(),
+        OPENLOOP_PHI_DIRECTION_POSITIVE,
+    )
+    .await?;
     sample_status(backend, profile, warning_flags, status_flags_or).await?;
     write(backend, UQ_UD_EXT.addr(), pack_ud(point.ud_abs as i16)).await?;
     write(
@@ -471,7 +485,7 @@ async fn restore_safe_state<B: ImpedanceBackend>(
         (OPENLOOP_VELOCITY_ACTUAL.addr(), 0),
         (OPENLOOP_ACCELERATION.addr(), 0),
         (OPENLOOP_PHI.addr(), 0),
-        (OPENLOOP_MODE.addr(), OPENLOOP_MODE_STOPPED),
+        (OPENLOOP_MODE.addr(), OPENLOOP_PHI_DIRECTION_POSITIVE),
         (MODE_RAMP_MODE_MOTION.addr(), MotionMode::Stopped as u32),
         (PHI_E_SELECTION.addr(), 0),
         (PWM_SV_CHOP.addr(), 0),
@@ -494,7 +508,12 @@ async fn stop_openloop_generator<B: ImpedanceBackend>(
     write(backend, OPENLOOP_VELOCITY_ACTUAL.addr(), 0).await?;
     write(backend, OPENLOOP_ACCELERATION.addr(), 0).await?;
     write(backend, OPENLOOP_PHI.addr(), 0).await?;
-    write(backend, OPENLOOP_MODE.addr(), OPENLOOP_MODE_STOPPED).await
+    write(
+        backend,
+        OPENLOOP_MODE.addr(),
+        OPENLOOP_PHI_DIRECTION_POSITIVE,
+    )
+    .await
 }
 
 async fn verify_readback<B: ImpedanceBackend>(

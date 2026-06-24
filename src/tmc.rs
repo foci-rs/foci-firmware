@@ -351,7 +351,8 @@ pub enum TmcRequestKind {
     ImpedanceTest {
         /// Object id used by the reply.
         oid: u8,
-        /// Detail level. 0 emits profile+run; 1 and 2 also emit per-point fits.
+        /// Detail level. 0 emits run summary only; 1 emits profile, fit detail,
+        /// and run summary; 2 is reserved and currently emits run summary only.
         detail: u8,
     },
     /// Write a TMC4671 register via SPI (dev-only).

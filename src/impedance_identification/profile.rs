@@ -56,9 +56,11 @@ pub struct ImpedanceProfile {
 impl ImpedanceProfile {
     /// Build the starting OpenFFBoard impedance-identification profile.
     ///
+    /// The standard points use one frequency with distinct voltage amplitudes
+    /// so the repeatability check compares like-for-like normalized currents.
     /// The per-point acceleration default keeps the ramp to the profile's
-    /// highest 50 Hz injection point inside the 250 ms settle window without
-    /// increasing energized exposure.
+    /// 25 Hz injection point inside the 250 ms settle window without increasing
+    /// energized exposure.
     pub const fn standard_openffboard() -> Self {
         Self {
             profile_version: 1,
@@ -73,8 +75,8 @@ impl ImpedanceProfile {
                 },
                 ImpedanceInjectionPoint {
                     ud_abs: 960,
-                    frequency_millihz: 50_000,
-                    openloop_velocity_rpm: frequency_millihz_to_openloop_velocity_rpm(50_000),
+                    frequency_millihz: 25_000,
+                    openloop_velocity_rpm: frequency_millihz_to_openloop_velocity_rpm(25_000),
                     openloop_acceleration_rpm_per_s:
                         OPENFFBOARD_IMPEDANCE_OPENLOOP_ACCELERATION_RPM_PER_S,
                     settle_ms: 250,
