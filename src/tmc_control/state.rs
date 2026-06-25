@@ -394,7 +394,8 @@ impl TmcControlRuntime {
             | TmcRequestKind::CurrentTorqueSampleTest { .. }
             | TmcRequestKind::PositionTorqueOffsetSampleTest { .. }
             | TmcRequestKind::VoltageStepTest { .. }
-            | TmcRequestKind::ResistanceTest { .. } => {
+            | TmcRequestKind::ResistanceTest { .. }
+            | TmcRequestKind::ImpedanceTest { .. } => {
                 push_action(
                     &mut actions,
                     BoardAction::DelegatedDiagnostic(DelegatedDiagnostic { request: req }),
@@ -1545,5 +1546,25 @@ impl TmcControlRuntime {
         self.trace.phase_advance_emit_once = emit_once;
         self.trace.phase_advance_last_flags = last_flags;
         self.trace.phase_advance_last_counts = last_counts;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::tmc::tmc_impedance_test;
+
+    #[test]
+    fn classify_request_delegates_impedance_test() {
+        let mut runtime = TmcControlRuntime::new_for_channel(0);
+        let request = tmc_impedance_test(0, 7, 1);
+
+        let actions = runtime.classify_request(request.clone());
+
+        assert_eq!(actions.len(), 1);
+        let BoardAction::DelegatedDiagnostic(diagnostic) = &actions[0] else {
+            panic!("expected delegated diagnostic action");
+        };
+        assert_eq!(diagnostic.request, request);
     }
 }

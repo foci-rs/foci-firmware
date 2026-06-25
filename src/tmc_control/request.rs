@@ -620,7 +620,8 @@ where
                 | TmcRequestKind::CurrentTorqueSampleTest { .. }
                 | TmcRequestKind::PositionTorqueOffsetSampleTest { .. }
                 | TmcRequestKind::VoltageStepTest { .. }
-                | TmcRequestKind::ResistanceTest { .. },
+                | TmcRequestKind::ResistanceTest { .. }
+                | TmcRequestKind::ImpedanceTest { .. },
             ..
         } => {
             board
@@ -1281,6 +1282,28 @@ mod tests {
                         voltage_limit: 12000,
                     },
                 )),
+                &mut runtime,
+                &mut tmc,
+                &mut board,
+            )
+            .await;
+
+            assert_eq!(board.diagnostic_calls, 1);
+            assert!(board.replies.is_empty());
+            assert_eq!(outcome.tail, TmcControlRequestTail::FallThrough);
+        });
+    }
+
+    #[test]
+    fn impedance_test_runs_diagnostic_request() {
+        run_request_test(async {
+            let mut runtime = TmcControlRuntime::new_for_channel(0);
+            let mut board = RecordingBoard::fall_through();
+            let mut tmc = Tmc4671Spi::new(RuntimeMockSpi::default());
+
+            let outcome = handle_tmc_control_request(
+                TmcRequest::new(0, TmcRequestKind::ImpedanceTest { oid: 7, detail: 1 }),
+                TmcPreRequestDisposition::ContinueRequest,
                 &mut runtime,
                 &mut tmc,
                 &mut board,
