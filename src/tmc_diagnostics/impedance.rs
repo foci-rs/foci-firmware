@@ -7,8 +7,8 @@ use foci_tmc4671::registers::{
 
 use crate::impedance_identification::{
     IMPEDANCE_PROFILE_POINTS, ImpedanceBackend, ImpedanceBackendError, ImpedanceError,
-    ImpedanceFitPoint, ImpedancePowerStageReadback, ImpedanceProfile, ImpedanceRunResult,
-    run_impedance_identification,
+    ImpedanceFitPoint, ImpedancePointObservation, ImpedancePowerStageReadback, ImpedanceProfile,
+    ImpedanceReadbackMismatch, ImpedanceRunResult, run_impedance_identification,
 };
 use crate::tmc::{TmcRequest, TmcRequestKind, normalize_diagnostic_detail};
 
@@ -20,14 +20,20 @@ use super::{
     IMPEDANCE_STATUS_POOR_COVERAGE, IMPEDANCE_STATUS_PROFILE_READBACK,
     IMPEDANCE_STATUS_REPEATABILITY, IMPEDANCE_STATUS_SCALAR_2F_MISMATCH,
     IMPEDANCE_STATUS_UNSAFE_STATUS_FLAGS, IMPEDANCE_STATUS_UNSUPPORTED_MOTOR_TYPE,
-    IMPEDANCE_STATUS_UNSUPPORTED_PROFILE, ImpedanceFitReport, ImpedanceProfileReport,
-    ImpedanceRunReport, empty_impedance_run_report,
+    IMPEDANCE_STATUS_UNSUPPORTED_PROFILE, ImpedanceBaselineReport, ImpedanceFitReport,
+    ImpedanceObservationReport, ImpedanceProfileReport, ImpedanceRunReport,
+    empty_impedance_run_report,
 };
 
 pub(crate) struct DiagnosticImpedanceBackend<'ctx, 'a, B, D> {
     ctx: &'ctx mut DiagnosticContext<'a, B, D>,
     status_flags_or: u32,
     power_stage_readback: ImpedancePowerStageReadback,
+    fit_attempts: [Option<ImpedanceFitPoint>; IMPEDANCE_PROFILE_POINTS],
+    baselines: [Option<crate::impedance_identification::ImpedanceBaselineObservation>;
+        IMPEDANCE_PROFILE_POINTS],
+    observations: [Option<ImpedancePointObservation>; IMPEDANCE_PROFILE_POINTS],
+    readback_mismatch: ImpedanceReadbackMismatch,
 }
 
 impl<'ctx, 'a, B, D> DiagnosticImpedanceBackend<'ctx, 'a, B, D> {
@@ -36,6 +42,10 @@ impl<'ctx, 'a, B, D> DiagnosticImpedanceBackend<'ctx, 'a, B, D> {
             ctx,
             status_flags_or: 0,
             power_stage_readback: ImpedancePowerStageReadback::EMPTY,
+            fit_attempts: [None; IMPEDANCE_PROFILE_POINTS],
+            baselines: [None; IMPEDANCE_PROFILE_POINTS],
+            observations: [None; IMPEDANCE_PROFILE_POINTS],
+            readback_mismatch: ImpedanceReadbackMismatch::EMPTY,
         }
     }
 }
@@ -96,6 +106,40 @@ where
     fn profile(&self) -> ImpedanceProfile {
         ImpedanceProfile::standard_openffboard()
     }
+
+    fn record_point_observation(
+        &mut self,
+        point_index: usize,
+        observation: ImpedancePointObservation,
+    ) {
+        if let Some(slot) = self.observations.get_mut(point_index) {
+            *slot = Some(observation);
+        }
+    }
+
+    fn record_baseline_observation(
+        &mut self,
+        point_index: usize,
+        observation: crate::impedance_identification::ImpedanceBaselineObservation,
+    ) {
+        if let Some(slot) = self.baselines.get_mut(point_index) {
+            *slot = Some(observation);
+        }
+    }
+
+    fn record_fit_attempt(&mut self, point_index: usize, fit: ImpedanceFitPoint) {
+        if let Some(slot) = self.fit_attempts.get_mut(point_index) {
+            *slot = Some(fit);
+        }
+    }
+
+    fn record_profile_readback_mismatch(&mut self, addr: u8, expected: u32, actual: u32) {
+        self.readback_mismatch = ImpedanceReadbackMismatch {
+            addr,
+            expected,
+            actual,
+        };
+    }
 }
 
 fn profile_report(oid: u8, profile: &ImpedanceProfile) -> ImpedanceProfileReport {
@@ -122,12 +166,23 @@ fn run_report(oid: u8, result: &ImpedanceRunResult) -> ImpedanceRunReport {
         repeatability_permille: result.summary.repeatability_permille,
         warning_flags: result.warning_flags.0,
         status_flags_or: result.status_flags_or,
+        readback_mismatch_addr: result.readback_mismatch.addr,
+        readback_expected: result.readback_mismatch.expected,
+        readback_actual: result.readback_mismatch.actual,
     }
 }
 
-fn failed_run_report(oid: u8, status: u8, status_flags_or: u32) -> ImpedanceRunReport {
+fn failed_run_report(
+    oid: u8,
+    status: u8,
+    status_flags_or: u32,
+    readback_mismatch: ImpedanceReadbackMismatch,
+) -> ImpedanceRunReport {
     let mut report = empty_impedance_run_report(oid, status);
     report.status_flags_or = status_flags_or;
+    report.readback_mismatch_addr = readback_mismatch.addr;
+    report.readback_expected = readback_mismatch.expected;
+    report.readback_actual = readback_mismatch.actual;
     report
 }
 
@@ -149,6 +204,10 @@ fn fit_report(
         residual_permille: fit.residual_permille,
         coverage_permille: fit.coverage_permille,
         scalar_2f_mismatch_permille: fit.scalar_2f_mismatch_permille,
+        magnitude_mean_count_per_ud_milli: fit.magnitude_mean_count_per_ud_milli,
+        magnitude_2f_count_per_ud_milli: fit.magnitude_2f_count_per_ud_milli,
+        magnitude_2f_residual_permille: fit.magnitude_2f_residual_permille,
+        magnitude_2f_coverage_permille: fit.magnitude_2f_coverage_permille,
         warning_flags: fit.warning_flags.0,
     }
 }
@@ -156,8 +215,133 @@ fn fit_report(
 fn fit_reports(
     oid: u8,
     result: &ImpedanceRunResult,
-) -> [ImpedanceFitReport; IMPEDANCE_PROFILE_POINTS] {
-    core::array::from_fn(|index| fit_report(oid, index, &result.profile, result.point_fits[index]))
+) -> [Option<ImpedanceFitReport>; IMPEDANCE_PROFILE_POINTS] {
+    core::array::from_fn(|index| {
+        Some(fit_report(
+            oid,
+            index,
+            &result.profile,
+            result.point_fits[index],
+        ))
+    })
+}
+
+fn fit_attempt_reports(
+    oid: u8,
+    profile: &ImpedanceProfile,
+    attempts: &[Option<ImpedanceFitPoint>; IMPEDANCE_PROFILE_POINTS],
+) -> [Option<ImpedanceFitReport>; IMPEDANCE_PROFILE_POINTS] {
+    core::array::from_fn(|index| attempts[index].map(|fit| fit_report(oid, index, profile, fit)))
+}
+
+fn observation_report(
+    oid: u8,
+    point_index: usize,
+    profile: &ImpedanceProfile,
+    observation: ImpedancePointObservation,
+) -> ImpedanceObservationReport {
+    let point = profile.injection_points[point_index];
+    ImpedanceObservationReport {
+        oid,
+        point_index: point_index as u8,
+        frequency_millihz: point.frequency_millihz,
+        ud_abs: point.ud_abs,
+        status_flags_or: observation.status_flags_or,
+        openloop_phi_sample: observation.openloop_phi_sample,
+        openloop_velocity_actual: observation.openloop_velocity_actual,
+        adc_iux_sample: observation.adc_iux_sample,
+        adc_iwy_sample: observation.adc_iwy_sample,
+        foc_iux_sample: observation.foc_iux_sample,
+        foc_iwy_sample: observation.foc_iwy_sample,
+        foc_uq_sample: observation.foc_uq_sample,
+        foc_ud_sample: observation.foc_ud_sample,
+        foc_uq_limited_sample: observation.foc_uq_limited_sample,
+        foc_ud_limited_sample: observation.foc_ud_limited_sample,
+        foc_iq_sample: observation.foc_iq_sample,
+        foc_id_sample: observation.foc_id_sample,
+    }
+}
+
+fn observation_reports(
+    oid: u8,
+    result: &ImpedanceRunResult,
+) -> [Option<ImpedanceObservationReport>; IMPEDANCE_PROFILE_POINTS] {
+    core::array::from_fn(|index| {
+        Some(observation_report(
+            oid,
+            index,
+            &result.profile,
+            result.point_observations[index],
+        ))
+    })
+}
+
+fn baseline_report(
+    oid: u8,
+    point_index: usize,
+    profile: &ImpedanceProfile,
+    baseline: crate::impedance_identification::ImpedanceBaselineObservation,
+) -> ImpedanceBaselineReport {
+    let point = profile.injection_points[point_index];
+    ImpedanceBaselineReport {
+        oid,
+        point_index: point_index as u8,
+        frequency_millihz: point.frequency_millihz,
+        ud_abs: point.ud_abs,
+        dc_adc_iux_sample: baseline.dc_adc_iux_sample,
+        dc_adc_iwy_sample: baseline.dc_adc_iwy_sample,
+        dc_foc_iux_sample: baseline.dc_foc_iux_sample,
+        dc_foc_iwy_sample: baseline.dc_foc_iwy_sample,
+        dc_foc_iq_sample: baseline.dc_foc_iq_sample,
+        dc_foc_id_sample: baseline.dc_foc_id_sample,
+    }
+}
+
+fn baseline_reports(
+    oid: u8,
+    result: &ImpedanceRunResult,
+) -> [Option<ImpedanceBaselineReport>; IMPEDANCE_PROFILE_POINTS] {
+    core::array::from_fn(|index| {
+        Some(baseline_report(
+            oid,
+            index,
+            &result.profile,
+            result.point_baselines[index],
+        ))
+    })
+}
+
+fn baseline_attempt_reports(
+    oid: u8,
+    profile: &ImpedanceProfile,
+    baselines: &[Option<crate::impedance_identification::ImpedanceBaselineObservation>;
+         IMPEDANCE_PROFILE_POINTS],
+) -> [Option<ImpedanceBaselineReport>; IMPEDANCE_PROFILE_POINTS] {
+    core::array::from_fn(|index| {
+        baselines[index].map(|baseline| baseline_report(oid, index, profile, baseline))
+    })
+}
+
+fn observation_attempt_reports(
+    oid: u8,
+    profile: &ImpedanceProfile,
+    observations: &[Option<ImpedancePointObservation>; IMPEDANCE_PROFILE_POINTS],
+) -> [Option<ImpedanceObservationReport>; IMPEDANCE_PROFILE_POINTS] {
+    core::array::from_fn(|index| {
+        observations[index].map(|observation| observation_report(oid, index, profile, observation))
+    })
+}
+
+fn empty_fit_reports() -> [Option<ImpedanceFitReport>; IMPEDANCE_PROFILE_POINTS] {
+    [None; IMPEDANCE_PROFILE_POINTS]
+}
+
+fn empty_baseline_reports() -> [Option<ImpedanceBaselineReport>; IMPEDANCE_PROFILE_POINTS] {
+    [None; IMPEDANCE_PROFILE_POINTS]
+}
+
+fn empty_observation_reports() -> [Option<ImpedanceObservationReport>; IMPEDANCE_PROFILE_POINTS] {
+    [None; IMPEDANCE_PROFILE_POINTS]
 }
 
 fn status_code(error: ImpedanceError) -> u8 {
@@ -183,13 +367,17 @@ fn status_code(error: ImpedanceError) -> u8 {
 fn handled(
     profile: ImpedanceProfileReport,
     run: ImpedanceRunReport,
-    fits: Option<[ImpedanceFitReport; IMPEDANCE_PROFILE_POINTS]>,
+    fits: [Option<ImpedanceFitReport>; IMPEDANCE_PROFILE_POINTS],
+    baselines: [Option<ImpedanceBaselineReport>; IMPEDANCE_PROFILE_POINTS],
+    observations: [Option<ImpedanceObservationReport>; IMPEDANCE_PROFILE_POINTS],
     detail: u8,
 ) -> DiagnosticOutcome {
     DiagnosticOutcome::Handled(DiagnosticReport::ImpedanceTest {
         profile,
         run,
         fits,
+        baselines,
+        observations,
         detail,
     })
 }
@@ -226,7 +414,9 @@ where
         return handled(
             profile_report,
             empty_impedance_run_report(oid, CURRENT_STEP_STATUS_NOT_READY),
-            None,
+            empty_fit_reports(),
+            empty_baseline_reports(),
+            empty_observation_reports(),
             detail,
         );
     }
@@ -237,12 +427,21 @@ where
         Ok(result) => {
             let run = run_report(oid, &result);
             let fits = fit_reports(oid, &result);
-            handled(profile_report, run, Some(fits), detail)
+            let baselines = baseline_reports(oid, &result);
+            let observations = observation_reports(oid, &result);
+            handled(profile_report, run, fits, baselines, observations, detail)
         }
         Err(error) => handled(
             profile_report,
-            failed_run_report(oid, status_code(error), backend.status_flags_or),
-            None,
+            failed_run_report(
+                oid,
+                status_code(error),
+                backend.status_flags_or,
+                backend.readback_mismatch,
+            ),
+            fit_attempt_reports(oid, &profile, &backend.fit_attempts),
+            baseline_attempt_reports(oid, &profile, &backend.baselines),
+            observation_attempt_reports(oid, &profile, &backend.observations),
             detail,
         ),
     }

@@ -27,10 +27,11 @@ pub use reports::{
     IMPEDANCE_STATUS_LOW_SIGNAL, IMPEDANCE_STATUS_POOR_COVERAGE, IMPEDANCE_STATUS_PROFILE_READBACK,
     IMPEDANCE_STATUS_REPEATABILITY, IMPEDANCE_STATUS_SCALAR_2F_MISMATCH,
     IMPEDANCE_STATUS_UNSAFE_STATUS_FLAGS, IMPEDANCE_STATUS_UNSUPPORTED_MOTOR_TYPE,
-    IMPEDANCE_STATUS_UNSUPPORTED_PROFILE, ImpedanceFitReport, ImpedanceProfileReport,
-    ImpedanceRunReport, ResistanceAxisReport, ResistanceProfileReport, ResistanceRunReport,
-    VoltageStepReport, empty_current_torque_sample_report, empty_impedance_run_report,
-    empty_resistance_run_report, empty_voltage_step_report,
+    IMPEDANCE_STATUS_UNSUPPORTED_PROFILE, ImpedanceBaselineReport, ImpedanceFitReport,
+    ImpedanceObservationReport, ImpedanceProfileReport, ImpedanceRunReport, ResistanceAxisReport,
+    ResistanceProfileReport, ResistanceRunReport, VoltageStepReport,
+    empty_current_torque_sample_report, empty_impedance_run_report, empty_resistance_run_report,
+    empty_voltage_step_report,
 };
 pub use resistance::run_resistance_test_request;
 pub use torque_sample::{
@@ -115,16 +116,22 @@ pub enum DiagnosticReport {
         /// Per-axis fit results, present only on a successful run.
         axes: Option<[ResistanceAxisReport; 2]>,
     },
-    /// Shared impedance-identification diagnostic. Fit reports are absent
-    /// when the run failed before producing per-point fit results.
+    /// Shared impedance-identification diagnostic. Per-point fit reports are
+    /// optional so failed fit gates can still expose bounded fit evidence.
     ImpedanceTest {
         /// Board/profile metadata, always present.
         profile: ImpedanceProfileReport,
         /// Per-run status, warnings, and aggregate selected axes.
         run: ImpedanceRunReport,
-        /// Per-point fit results, present only on a successful run.
+        /// Per-point fit results or fit-gate evidence.
         fits:
-            Option<[ImpedanceFitReport; crate::impedance_identification::IMPEDANCE_PROFILE_POINTS]>,
+            [Option<ImpedanceFitReport>; crate::impedance_identification::IMPEDANCE_PROFILE_POINTS],
+        /// Per-point DC baseline observations captured before AC injection.
+        baselines: [Option<ImpedanceBaselineReport>;
+            crate::impedance_identification::IMPEDANCE_PROFILE_POINTS],
+        /// Per-point chip observations captured while voltage was active.
+        observations: [Option<ImpedanceObservationReport>;
+            crate::impedance_identification::IMPEDANCE_PROFILE_POINTS],
         /// Normalized detail level from the command request.
         detail: u8,
     },

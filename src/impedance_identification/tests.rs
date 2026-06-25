@@ -4,16 +4,29 @@ use super::types::{
     IMPEDANCE_PROFILE_POINTS, IMPEDANCE_SAMPLE_COUNT, ImpedanceError, ImpedanceInjectionPoint,
     ImpedanceSample, ImpedanceWarningFlags,
 };
-use super::{ImpedanceFitPoint, evaluate_impedance_result, fit_impedance_point};
+use super::{
+    ImpedanceFitPoint, evaluate_impedance_result, fit_impedance_point,
+    fit_impedance_point_with_transformed_current,
+};
 use foci_tmc4671::registers::{
-    ABN_DECODER_COUNT, ADC_IWY_IUX, DSADC_MDEC_B_MDEC_A, MODE_RAMP_MODE_MOTION,
-    MOTOR_TYPE_N_POLE_PAIRS, MotorType, MotorTypeNPolePairs, OPENLOOP_ACCELERATION, OPENLOOP_MODE,
-    OPENLOOP_PHI, OPENLOOP_VELOCITY_ACTUAL, OPENLOOP_VELOCITY_TARGET, PHI_E_EXT, PHI_E_SELECTION,
-    PIDOUT_UQ_UD_LIMITS, PWM_BBM_H_BBM_L, PWM_MAXCNT, PWM_SV_CHOP, STATUS_FLAGS, UQ_UD_EXT,
+    ABN_DECODER_COUNT, ADC_IWY_IUX, DSADC_MDEC_B_MDEC_A, INTERIM_FOC_IQ_ID, INTERIM_FOC_IWY_IUX,
+    INTERIM_FOC_UQ_UD, INTERIM_FOC_UQ_UD_LIMITED, MODE_RAMP_MODE_MOTION, MOTOR_TYPE_N_POLE_PAIRS,
+    MotorType, MotorTypeNPolePairs, OPENLOOP_ACCELERATION, OPENLOOP_MODE, OPENLOOP_PHI,
+    OPENLOOP_VELOCITY_ACTUAL, OPENLOOP_VELOCITY_TARGET, PHI_E_EXT, PHI_E_SELECTION,
+    PID_TORQUE_FLUX_ACTUAL, PIDOUT_UQ_UD_LIMITS, PWM_BBM_H_BBM_L, PWM_MAXCNT, PWM_SV_CHOP,
+    STATUS_FLAGS, UQ_UD_EXT,
 };
 use pollster::block_on;
 
 const TURN: f64 = core::f64::consts::PI * 2.0;
+
+fn openloop_phi_from_time(frequency_millihz: u32, t_us: u32) -> u16 {
+    let counts = u128::from(frequency_millihz)
+        .saturating_mul(u128::from(t_us))
+        .saturating_mul(65_536)
+        / 1_000_000_000u128;
+    (counts & 0xffff) as u16
+}
 
 fn test_point(frequency_millihz: u32, ud_abs: u16) -> ImpedanceInjectionPoint {
     ImpedanceInjectionPoint {
@@ -70,8 +83,33 @@ fn response_sample_with_offsets(
 
     ImpedanceSample {
         t_us,
+        openloop_phi: openloop_phi_from_time(point.frequency_millihz, t_us),
         i_ch0: i_ch0.round() as i16,
         i_ch1: i_ch1.round() as i16,
+    }
+}
+
+fn response_sample_at_phi(
+    point: ImpedanceInjectionPoint,
+    t_us: u32,
+    openloop_phi: u16,
+    axis_max_count_per_ud_milli: f64,
+    axis_min_count_per_ud_milli: f64,
+    angle_rad: f64,
+) -> ImpedanceSample {
+    let phase = TURN * f64::from(openloop_phi) / 65_536.0;
+    let major = axis_max_count_per_ud_milli * f64::from(point.ud_abs) / 1_000.0;
+    let minor = axis_min_count_per_ud_milli * f64::from(point.ud_abs) / 1_000.0;
+    let major_signal = major * libm::cos(phase);
+    let minor_signal = minor * libm::sin(phase);
+    let cos_angle = libm::cos(angle_rad);
+    let sin_angle = libm::sin(angle_rad);
+
+    ImpedanceSample {
+        t_us,
+        openloop_phi,
+        i_ch0: (17.0 + major_signal * cos_angle - minor_signal * sin_angle).round() as i16,
+        i_ch1: (-23.0 + major_signal * sin_angle + minor_signal * cos_angle).round() as i16,
     }
 }
 
@@ -138,6 +176,28 @@ fn profile_cadence_samples(
     })
 }
 
+fn transformed_magnitude_samples(
+    profile: &ImpedanceProfile,
+    point: ImpedanceInjectionPoint,
+    mean_count_per_ud_milli: f64,
+    ripple_2f_count_per_ud_milli: f64,
+) -> [ImpedanceSample; IMPEDANCE_SAMPLE_COUNT] {
+    core::array::from_fn(|index| {
+        let t_us = index as u32 * u32::from(profile.sample_interval_us);
+        let phase_2f =
+            2.0 * TURN * f64::from(point.frequency_millihz) * f64::from(t_us) / 1_000_000_000.0;
+        let mean = mean_count_per_ud_milli * f64::from(point.ud_abs) / 1_000.0;
+        let ripple = ripple_2f_count_per_ud_milli * f64::from(point.ud_abs) / 1_000.0;
+        let magnitude = mean + ripple * libm::cos(phase_2f);
+        ImpedanceSample {
+            t_us,
+            openloop_phi: openloop_phi_from_time(point.frequency_millihz, t_us),
+            i_ch0: magnitude.round() as i16,
+            i_ch1: 0,
+        }
+    })
+}
+
 fn unwrap_fit(result: Result<ImpedanceFitPoint, ImpedanceError>) -> ImpedanceFitPoint {
     match result {
         Ok(fit) => fit,
@@ -157,6 +217,10 @@ fn aggregate_fit(
         residual_permille: 0,
         coverage_permille: 1000,
         scalar_2f_mismatch_permille: 0,
+        magnitude_mean_count_per_ud_milli: 0,
+        magnitude_2f_count_per_ud_milli: 0,
+        magnitude_2f_residual_permille: 0,
+        magnitude_2f_coverage_permille: 0,
         warning_flags,
     }
 }
@@ -228,7 +292,16 @@ fn standard_profile_uses_explicit_status_masks() {
 fn standard_profile_sample_count_controls_capture_size() {
     let profile = ImpedanceProfile::standard_openffboard();
 
+    assert_eq!(profile.sample_count, 128);
     assert_eq!(profile.sample_count as usize, IMPEDANCE_SAMPLE_COUNT);
+}
+
+#[test]
+fn standard_profile_uses_observation_capture_exposure_budget() {
+    let profile = ImpedanceProfile::standard_openffboard();
+
+    assert_eq!(profile.max_window_exposure_budget, 640_000_000);
+    assert_eq!(profile.max_total_exposure_budget, 925_000_000);
 }
 
 #[test]
@@ -236,20 +309,20 @@ fn exposure_budget_counts_dc_ac_settle_capture_and_sample_overhead() {
     let mut profile = ImpedanceProfile::standard_openffboard();
     profile.sample_count = 4;
     profile.max_sample_count = 4;
-    profile.sample_interval_us = 251;
+    profile.sample_interval_us = 130;
     profile.injection_points[0].ud_abs = 10;
     profile.injection_points[0].settle_ms = 3;
     profile.injection_points[1].ud_abs = 20;
     profile.injection_points[1].settle_ms = 5;
 
-    // ceil(4 * (251 us + standard conservative overhead) / 1000) = 3 ms.
-    // Each point contributes a DC settle window plus an AC settle-and-capture
-    // window, and the per-window gate must count the full exposure of one
-    // injection point.
-    assert_eq!(profile.max_window_exposure(), 20 * 20 * (5 + 5 + 3));
+    // ceil(4 * (130 us + standard conservative overhead) / 1000) = 3 ms.
+    // Each point contributes a DC settle window plus an AC settle, point
+    // observation, and capture window. The per-window gate must count the full
+    // exposure of one injection point.
+    assert_eq!(profile.max_window_exposure(), 20 * 20 * (5 + 5 + 2 + 3));
     assert_eq!(
         profile.max_total_exposure(),
-        10 * 10 * (3 + 3 + 3) + 20 * 20 * (5 + 5 + 3)
+        10 * 10 * (3 + 3 + 2 + 3) + 20 * 20 * (5 + 5 + 2 + 3)
     );
 }
 
@@ -345,6 +418,45 @@ fn vector_lockin_recovers_response_at_profile_cadence() {
     assert!(fit.axis_max_count_per_ud_milli.abs_diff(700) <= 3);
     assert!(fit.axis_min_count_per_ud_milli.abs_diff(250) <= 3);
     assert!(fit.coverage_permille >= 990);
+}
+
+#[test]
+fn vector_lockin_uses_sampled_openloop_phi_when_timestamp_reference_drifts() {
+    let profile = ImpedanceProfile::standard_openffboard();
+    let point = profile.injection_points[0];
+    let samples = core::array::from_fn(|index| {
+        let t_us = index as u32 * u32::from(profile.sample_interval_us);
+        let openloop_phi = ((index as u32 * 2_750) & 0xffff) as u16;
+        response_sample_at_phi(point, t_us, openloop_phi, 700.0, 250.0, 0.31)
+    });
+
+    let fit = unwrap_fit(fit_impedance_point(&profile, point, &samples));
+
+    assert!(fit.axis_max_count_per_ud_milli.abs_diff(700) <= 3);
+    assert!(fit.axis_min_count_per_ud_milli.abs_diff(250) <= 3);
+    assert!(fit.residual_permille <= 10);
+    assert!(fit.coverage_permille >= 990);
+}
+
+#[test]
+fn magnitude_2f_fit_recovers_transformed_current_ripple() {
+    let mut profile = ImpedanceProfile::standard_openffboard();
+    profile.min_signal_count = 1;
+    let point = profile.injection_points[0];
+    let raw_samples = profile_cadence_samples(&profile, point, 700.0, 250.0, 0.31);
+    let transformed_samples = transformed_magnitude_samples(&profile, point, 840.0, 125.0);
+
+    let fit = unwrap_fit(fit_impedance_point_with_transformed_current(
+        &profile,
+        point,
+        &raw_samples,
+        &transformed_samples,
+    ));
+
+    assert!(fit.magnitude_mean_count_per_ud_milli.abs_diff(840) <= 3);
+    assert!(fit.magnitude_2f_count_per_ud_milli.abs_diff(125) <= 3);
+    assert!(fit.magnitude_2f_residual_permille <= 10);
+    assert!(fit.magnitude_2f_coverage_permille >= 990);
 }
 
 #[test]
@@ -472,6 +584,7 @@ fn vector_lockin_gate_order_reports_poor_coverage_before_low_signal() {
     let point = test_point(37_000, 800);
     let samples = [ImpedanceSample {
         t_us: 0,
+        openloop_phi: 0,
         i_ch0: 0,
         i_ch1: 0,
     }; IMPEDANCE_SAMPLE_COUNT];
@@ -608,6 +721,8 @@ struct RecordedWrite {
     value: u32,
 }
 
+const AC_SAMPLE_TIMESTAMP_CAPACITY: usize = (IMPEDANCE_SAMPLE_COUNT + 1) * IMPEDANCE_PROFILE_POINTS;
+
 struct FakeImpedanceBackend {
     writes: heapless::Vec<RecordedWrite, 512>,
     profile: ImpedanceProfile,
@@ -628,6 +743,7 @@ struct FakeImpedanceBackend {
     pwm_maxcnt_readback: u32,
     bbm_readback: u32,
     dsadc_mdec_readback: u32,
+    interim_sub_addr: u8,
     timestamp_us: u32,
     encoder_count: u32,
     baseline_current_count: i16,
@@ -644,10 +760,14 @@ struct FakeImpedanceBackend {
     open_loop_phi_e_selection_readback_mismatch: bool,
     ac_over_current_sample: Option<usize>,
     fail_ac_adc_read_at: Option<usize>,
+    low_signal_ud_abs: Option<u16>,
     restore_fail_addr: Option<u8>,
     restore_failure_armed: bool,
+    readback_mismatch: Option<(u8, u32, u32)>,
     ac_adc_reads: usize,
-    ac_sample_timestamps: heapless::Vec<u32, 512>,
+    ac_transformed_reads: usize,
+    ac_sample_timestamps: heapless::Vec<u32, AC_SAMPLE_TIMESTAMP_CAPACITY>,
+    fit_attempts: [Option<ImpedanceFitPoint>; IMPEDANCE_PROFILE_POINTS],
     encoder_delta_per_energized_delay: u32,
 }
 
@@ -675,6 +795,7 @@ impl FakeImpedanceBackend {
             pwm_maxcnt_readback: 3999,
             bbm_readback: 0x0909,
             dsadc_mdec_readback: 0x014B_014B,
+            interim_sub_addr: 0,
             timestamp_us: 0,
             encoder_count: 0,
             baseline_current_count: 0,
@@ -691,10 +812,14 @@ impl FakeImpedanceBackend {
             open_loop_phi_e_selection_readback_mismatch: false,
             ac_over_current_sample: None,
             fail_ac_adc_read_at: None,
+            low_signal_ud_abs: None,
             restore_fail_addr: None,
             restore_failure_armed: false,
+            readback_mismatch: None,
             ac_adc_reads: 0,
+            ac_transformed_reads: 0,
             ac_sample_timestamps: heapless::Vec::new(),
+            fit_attempts: [None; IMPEDANCE_PROFILE_POINTS],
             encoder_delta_per_energized_delay: 0,
         }
     }
@@ -738,10 +863,20 @@ impl FakeImpedanceBackend {
         ((ch1 as u16 as u32) << 16) | ch0 as u16 as u32
     }
 
-    fn ac_current(&self) -> u32 {
+    fn packed_halves(high: i16, low: i16) -> u32 {
+        ((high as u16 as u32) << 16) | low as u16 as u32
+    }
+
+    fn ac_openloop_phi(&self) -> u16 {
         let frequency_millihz = self.openloop_velocity_target.saturating_mul(1000) / 60;
-        let phase =
-            TURN * f64::from(frequency_millihz) * f64::from(self.timestamp_us) / 1_000_000_000.0;
+        openloop_phi_from_time(frequency_millihz, self.timestamp_us)
+    }
+
+    fn ac_current(&self) -> u32 {
+        let phase = TURN * f64::from(self.ac_openloop_phi()) / 65_536.0;
+        if self.low_signal_ud_abs == Some(self.last_ud().unsigned_abs()) {
+            return Self::packed_current(0, 0);
+        }
         let ud = f64::from(self.last_ud());
         let ch0 = (ud * libm::cos(phase)).round() as i16;
         let ch1 = ((ud / 2.0) * libm::sin(phase)).round() as i16;
@@ -805,14 +940,17 @@ impl FakeImpedanceBackend {
             return self.openloop_velocity_target;
         }
         if addr == OPENLOOP_VELOCITY_ACTUAL.addr() {
+            if self.phi_e_selection == 2 && self.openloop_velocity_target != 0 {
+                return self.openloop_velocity_target;
+            }
             return self.openloop_velocity_actual;
         }
         if addr == OPENLOOP_PHI.addr() {
-            if self.ac_openloop_phi_advances_after_setup
-                && self.phi_e_selection == 2
-                && self.openloop_velocity_target != 0
-            {
-                return self.openloop_phi.wrapping_add(1);
+            if self.phi_e_selection == 2 && self.openloop_velocity_target != 0 {
+                if self.ac_openloop_phi_advances_after_setup {
+                    return self.ac_openloop_phi().max(1).into();
+                }
+                return self.ac_openloop_phi().into();
             }
             return self.openloop_phi;
         }
@@ -893,6 +1031,33 @@ impl ImpedanceBackend for FakeImpedanceBackend {
             }
             return Ok(Self::packed_current(self.baseline_current_count, 0));
         }
+        if addr == PID_TORQUE_FLUX_ACTUAL.addr() {
+            if self.phi_e_selection == 2 && self.energized() {
+                self.ac_transformed_reads += 1;
+                return Ok(self.ac_current());
+            }
+            return Ok(Self::packed_current(0, self.baseline_current_count));
+        }
+        if addr == INTERIM_FOC_UQ_UD.data.addr() {
+            if self.interim_sub_addr == INTERIM_FOC_IWY_IUX.sub_addr {
+                return Ok(Self::packed_halves(
+                    self.last_ud().abs() / 3,
+                    self.last_ud().abs() / 2,
+                ));
+            }
+            if self.interim_sub_addr == INTERIM_FOC_UQ_UD.sub_addr {
+                return Ok(Self::packed_halves(0, self.last_ud()));
+            }
+            if self.interim_sub_addr == INTERIM_FOC_UQ_UD_LIMITED.sub_addr {
+                return Ok(Self::packed_halves(0, self.last_ud()));
+            }
+            if self.interim_sub_addr == INTERIM_FOC_IQ_ID.sub_addr {
+                return Ok(Self::packed_halves(
+                    self.last_ud().abs() / 4,
+                    self.last_ud().abs() / 8,
+                ));
+            }
+        }
         Ok(self.readback_value(addr))
     }
 
@@ -922,6 +1087,8 @@ impl ImpedanceBackend for FakeImpedanceBackend {
             self.phi_e_ext = value;
         } else if addr == PWM_SV_CHOP.addr() {
             self.pwm_sv_chop = value;
+        } else if addr == INTERIM_FOC_UQ_UD.addr.addr() {
+            self.interim_sub_addr = value as u8;
         }
         if self.restore_failure_armed && self.restore_fail_addr == Some(addr) {
             return Err(ImpedanceBackendError::Spi);
@@ -955,6 +1122,14 @@ impl ImpedanceBackend for FakeImpedanceBackend {
     fn profile(&self) -> ImpedanceProfile {
         self.profile
     }
+
+    fn record_fit_attempt(&mut self, point_index: usize, fit: ImpedanceFitPoint) {
+        self.fit_attempts[point_index] = Some(fit);
+    }
+
+    fn record_profile_readback_mismatch(&mut self, addr: u8, expected: u32, actual: u32) {
+        self.readback_mismatch = Some((addr, expected, actual));
+    }
 }
 
 fn assert_write_order(writes: &[RecordedWrite], first_addr: u8, second_addr: u8) {
@@ -985,10 +1160,6 @@ fn assert_write_before_nonzero_uq(writes: &[RecordedWrite], first_addr: u8) {
         first < uq,
         "expected {first_addr:#x} before non-zero UQ_UD_EXT"
     );
-}
-
-fn pack_pidout_limits(limit: u16) -> u32 {
-    (u32::from(limit) << 16) | u32::from(limit)
 }
 
 fn assert_no_nonzero_uq_writes(writes: &[RecordedWrite]) {
@@ -1059,9 +1230,9 @@ fn runner_saved_pidout_with_only_uq_authority_writes_nothing() {
 }
 
 #[test]
-fn runner_valid_packed_saved_pidout_limit_passes_authority_gate() {
+fn runner_valid_saved_pidout_limit_passes_authority_gate() {
     let mut backend = FakeImpedanceBackend::standard();
-    backend.saved_voltage_limit = pack_pidout_limits(backend.profile.max_abs_ud());
+    backend.saved_voltage_limit = u32::from(backend.profile.max_abs_ud());
     backend.pidout_limit = backend.saved_voltage_limit;
 
     let result = block_on(run_impedance_identification(&mut backend));
@@ -1135,7 +1306,7 @@ fn runner_unsupported_profile_non_millisecond_sample_interval_writes_nothing() {
 fn runner_unsupported_profile_ud_range_writes_nothing() {
     let mut backend = FakeImpedanceBackend::standard();
     backend.profile.injection_points[0].ud_abs = i16::MAX as u16 + 1;
-    backend.saved_voltage_limit = pack_pidout_limits(backend.profile.injection_points[0].ud_abs);
+    backend.saved_voltage_limit = u32::from(backend.profile.injection_points[0].ud_abs);
     backend.pidout_limit = backend.saved_voltage_limit;
 
     let err = block_on(run_impedance_identification(&mut backend)).unwrap_err();
@@ -1178,7 +1349,7 @@ fn runner_voltage_limit_write_happens_before_chopper_and_open_loop_voltage() {
     assert!(result.is_ok(), "expected ok, got {result:?}");
     assert!(backend.writes.iter().any(|write| {
         write.addr == PIDOUT_UQ_UD_LIMITS.addr()
-            && write.value == pack_pidout_limits(backend.profile.max_abs_ud())
+            && write.value == u32::from(backend.profile.max_abs_ud())
     }));
     assert_write_order(
         &backend.writes,
@@ -1233,6 +1404,10 @@ fn runner_profile_critical_readback_mismatch_returns_profile_readback_mismatch()
     let err = block_on(run_impedance_identification(&mut backend)).unwrap_err();
 
     assert_eq!(err, ImpedanceError::ProfileReadbackMismatch);
+    assert_eq!(
+        backend.readback_mismatch,
+        Some((OPENLOOP_MODE.addr(), 0, 0xffff_ffff))
+    );
     assert!(backend.wrote_safe_state());
 }
 
@@ -1417,6 +1592,61 @@ fn runner_sampled_fail_status_flags_return_unsafe_status_flags_and_restore() {
 }
 
 #[test]
+fn runner_fit_quality_failure_samples_all_points_before_returning_error() {
+    let mut backend = FakeImpedanceBackend::standard();
+    backend.low_signal_ud_abs = Some(backend.profile.injection_points[0].ud_abs);
+
+    let err = block_on(run_impedance_identification(&mut backend)).unwrap_err();
+
+    assert_eq!(err, ImpedanceError::LowSignal);
+    let expected_raw_samples =
+        (backend.profile.sample_count as usize + 1) * IMPEDANCE_PROFILE_POINTS;
+    let expected_transformed_samples =
+        backend.profile.sample_count as usize * IMPEDANCE_PROFILE_POINTS;
+    assert_eq!(backend.ac_adc_reads, expected_raw_samples);
+    assert_eq!(backend.ac_transformed_reads, expected_transformed_samples);
+    assert!(backend.fit_attempts[0].is_some());
+    assert!(backend.fit_attempts[1].is_some());
+    assert_eq!(
+        backend.fit_attempts[0].unwrap().axis_max_count_per_ud_milli,
+        0
+    );
+    assert!(
+        backend.fit_attempts[1].unwrap().axis_max_count_per_ud_milli
+            > u32::from(backend.profile.min_signal_count)
+    );
+    assert!(backend.wrote_safe_state());
+}
+
+#[test]
+fn runner_standard_profile_treats_latched_hold_status_as_warning_only() {
+    let mut backend = FakeImpedanceBackend::standard();
+    let observed_hold_status = 0x7000_4480;
+    backend.status_flags = observed_hold_status;
+
+    let result = block_on(run_impedance_identification(&mut backend)).unwrap();
+
+    assert_eq!(result.status_flags_or, observed_hold_status);
+    assert!(
+        result
+            .warning_flags
+            .contains(ImpedanceWarningFlags::STATUS_FLAGS)
+    );
+    assert!(backend.wrote_safe_state());
+}
+
+#[test]
+fn runner_standard_profile_adc_clipped_status_remains_unsafe() {
+    let mut backend = FakeImpedanceBackend::standard();
+    backend.status_flags = 1 << 26;
+
+    let err = block_on(run_impedance_identification(&mut backend)).unwrap_err();
+
+    assert_eq!(err, ImpedanceError::UnsafeStatusFlags);
+    assert!(backend.wrote_safe_state());
+}
+
+#[test]
 fn runner_initial_fail_status_blocks_nonzero_voltage_injection() {
     let mut backend = FakeImpedanceBackend::standard();
     backend.status_flags = backend.profile.status_flags_fail_mask;
@@ -1493,11 +1723,54 @@ fn runner_success_uses_profile_sample_count_and_sample_interval_us() {
 
     assert!(result.is_ok(), "expected ok, got {result:?}");
     assert_eq!(backend.profile.sample_interval_us, 1000);
-    let expected_samples = backend.profile.sample_count as usize * IMPEDANCE_PROFILE_POINTS;
-    assert_eq!(backend.ac_adc_reads, expected_samples);
-    assert_eq!(backend.ac_sample_timestamps.len(), expected_samples);
-    for index in 1..backend.profile.sample_count as usize {
-        let delta = backend.ac_sample_timestamps[index] - backend.ac_sample_timestamps[index - 1];
-        assert_eq!(delta, u32::from(backend.profile.sample_interval_us));
+    let capture_samples = backend.profile.sample_count as usize;
+    let raw_samples_per_point = capture_samples + 1;
+    let expected_raw_samples = raw_samples_per_point * IMPEDANCE_PROFILE_POINTS;
+    let expected_transformed_samples = capture_samples * IMPEDANCE_PROFILE_POINTS;
+    assert_eq!(backend.ac_adc_reads, expected_raw_samples);
+    assert_eq!(backend.ac_transformed_reads, expected_transformed_samples);
+    assert_eq!(backend.ac_sample_timestamps.len(), expected_raw_samples);
+    for point_index in 0..IMPEDANCE_PROFILE_POINTS {
+        let base = point_index * raw_samples_per_point;
+        for sample_index in 2..raw_samples_per_point {
+            let index = base + sample_index;
+            let delta =
+                backend.ac_sample_timestamps[index] - backend.ac_sample_timestamps[index - 1];
+            assert_eq!(delta, u32::from(backend.profile.sample_interval_us));
+        }
     }
+}
+
+#[test]
+fn runner_success_records_point_observations() {
+    let mut backend = FakeImpedanceBackend::standard();
+    backend.openloop_velocity_actual = 1_500;
+    backend.ac_openloop_phi_advances_after_setup = true;
+    backend.baseline_current_count = 123;
+
+    let result = block_on(run_impedance_identification(&mut backend)).unwrap();
+
+    assert_eq!(result.point_observations[0].status_flags_or, 0);
+    assert_eq!(result.point_observations[0].foc_uq_sample, 0);
+    assert_eq!(
+        result.point_observations[0].foc_ud_sample,
+        backend.profile.injection_points[0].ud_abs as i16
+    );
+    assert_eq!(result.point_observations[0].foc_uq_limited_sample, 0);
+    assert_eq!(
+        result.point_observations[0].foc_ud_limited_sample,
+        backend.profile.injection_points[0].ud_abs as i16
+    );
+    assert!(result.point_observations[0].foc_iq_sample > 0);
+    assert!(result.point_observations[0].foc_id_sample > 0);
+    assert_eq!(result.point_observations[0].openloop_phi_sample, 32_768);
+    assert_eq!(result.point_observations[0].openloop_velocity_actual, 1_500);
+    assert_ne!(result.point_observations[0].adc_iux_sample, 0);
+    assert_ne!(result.point_observations[0].foc_iux_sample, 0);
+    assert_ne!(result.point_baselines[0].dc_adc_iux_sample, 0);
+    assert_ne!(result.point_baselines[0].dc_foc_iux_sample, 0);
+    assert_eq!(
+        result.point_observations[1].foc_ud_sample,
+        backend.profile.injection_points[1].ud_abs as i16
+    );
 }

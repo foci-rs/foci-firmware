@@ -2,22 +2,35 @@
 
 use super::types::{IMPEDANCE_PROFILE_POINTS, IMPEDANCE_SAMPLE_COUNT, ImpedanceInjectionPoint};
 
-/// Temporary OpenFFBoard fail mask used until the unsafe diagnostic status
-/// policy is audited into named TMC4671 status bits.
-pub const OPENFFBOARD_IMPEDANCE_STATUS_FAIL_MASK: u32 = 0x7000_4480;
+const STATUS_PID_V_OUTPUT_LIMIT: u32 = 1 << 7;
+const STATUS_PID_ID_ERRSUM_LIMIT: u32 = 1 << 10;
+const STATUS_PID_IQ_ERRSUM_LIMIT: u32 = 1 << 14;
+const STATUS_ADC_I_CLIPPED: u32 = 1 << 26;
+const STATUS_ENC_N: u32 = 1 << 28;
+const STATUS_ENC_2_N: u32 = 1 << 29;
+const STATUS_AENC_N: u32 = 1 << 30;
 
-/// OpenFFBoard warning mask starts at zero until a reviewed warning-only status
-/// policy exists for impedance identification.
-pub const OPENFFBOARD_IMPEDANCE_STATUS_WARN_MASK: u32 = 0x0000_0000;
+/// OpenFFBoard impedance status bits that abort the diagnostic immediately.
+pub const OPENFFBOARD_IMPEDANCE_STATUS_FAIL_MASK: u32 = STATUS_ADC_I_CLIPPED;
+
+/// OpenFFBoard impedance status bits that are reported as non-fatal evidence.
+pub const OPENFFBOARD_IMPEDANCE_STATUS_WARN_MASK: u32 = STATUS_ENC_N
+    | STATUS_ENC_2_N
+    | STATUS_AENC_N
+    | STATUS_PID_V_OUTPUT_LIMIT
+    | STATUS_PID_ID_ERRSUM_LIMIT
+    | STATUS_PID_IQ_ERRSUM_LIMIT;
 
 const OPENFFBOARD_IMPEDANCE_OPENLOOP_ACCELERATION_RPM_PER_S: u32 = 24_000;
 const MICROS_PER_MILLISECOND: u64 = 1_000;
+const POINT_OBSERVATION_OVERHEAD_MS: u64 = 2;
 
 /// Conservative per-sample overhead charged to the exposure budget on top of the
-/// requested sample interval. It accounts for the SPI register reads and safety
-/// gate checks the runner performs between sample delays while voltage is
-/// applied, which consume real energized time the requested delays do not model.
-const PER_SAMPLE_OVERHEAD_US: u16 = 250;
+/// requested sample interval. It accounts for the raw ADC, transformed-current,
+/// sampled open-loop phase, and status SPI register reads plus the safety gate
+/// checks the runner performs between sample delays while voltage is applied,
+/// which consume real energized time the requested delays do not model.
+const PER_SAMPLE_OVERHEAD_US: u16 = 500;
 
 pub(crate) const fn frequency_millihz_to_openloop_velocity_rpm(frequency_millihz: u64) -> i32 {
     let rpm = ((frequency_millihz as u128) * 60) / 1_000;
@@ -112,14 +125,16 @@ impl ImpedanceProfile {
             // Allows the largest 960-count UD point through DC settle, AC settle,
             // and the standard 128-sample capture. The capture window counts the
             // 128 ms of requested delay plus a conservative per-sample read/check
-            // overhead, ~160 ms at the 1 ms firmware cadence:
-            // 960^2 * (250 ms + 250 ms + 160 ms).
-            max_window_exposure_budget: 610_000_000,
+            // overhead, 192 ms at the 1 ms firmware cadence, plus 2 ms for the
+            // point-local observation reads:
+            // 960^2 * (250 ms + 250 ms + 2 ms + 192 ms).
+            max_window_exposure_budget: 640_000_000,
             // Allows both standard points through DC settle and AC settle/capture
             // windows at the 1 ms firmware cadence, including the per-sample
-            // overhead in the capture window:
-            // sum(ud^2 * (250 ms + 250 ms + 160 ms)).
-            max_total_exposure_budget: 880_000_000,
+            // overhead in the capture window and the point-local observation
+            // reads:
+            // sum(ud^2 * (250 ms + 250 ms + 2 ms + 192 ms)).
+            max_total_exposure_budget: 925_000_000,
             scale_metadata_validated: false,
         }
     }
@@ -165,7 +180,9 @@ impl ImpedanceProfile {
     }
 
     fn ac_nonzero_ms(&self, point: ImpedanceInjectionPoint) -> u64 {
-        u64::from(point.settle_ms).saturating_add(self.capture_duration_ms())
+        u64::from(point.settle_ms)
+            .saturating_add(POINT_OBSERVATION_OVERHEAD_MS)
+            .saturating_add(self.capture_duration_ms())
     }
 
     fn point_nonzero_ms(&self, point: ImpedanceInjectionPoint) -> u64 {

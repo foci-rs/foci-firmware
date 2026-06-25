@@ -428,6 +428,12 @@ pub struct ImpedanceRunReport {
     pub warning_flags: u32,
     /// STATUS_FLAGS accumulated (OR) across the run.
     pub status_flags_or: u32,
+    /// Register address for the last profile readback mismatch, or zero.
+    pub readback_mismatch_addr: u8,
+    /// Expected value for the last profile readback mismatch.
+    pub readback_expected: u32,
+    /// Actual value for the last profile readback mismatch.
+    pub readback_actual: u32,
 }
 
 /// Per-injection-point fit result for the impedance-test diagnostic.
@@ -453,8 +459,80 @@ pub struct ImpedanceFitReport {
     pub coverage_permille: u16,
     /// Scalar `2f` saliency mismatch as permille.
     pub scalar_2f_mismatch_permille: u16,
+    /// Mean transformed-current magnitude normalized to counts per 1000 UD counts.
+    pub magnitude_mean_count_per_ud_milli: u32,
+    /// `2f` transformed-current magnitude ripple normalized to counts per 1000 UD counts.
+    pub magnitude_2f_count_per_ud_milli: u32,
+    /// Transformed-current magnitude `2f` fit residual in permille.
+    pub magnitude_2f_residual_permille: u16,
+    /// Transformed-current magnitude `2f` coverage score.
+    pub magnitude_2f_coverage_permille: u16,
     /// Per-point warning bitfield.
     pub warning_flags: u32,
+}
+
+/// Per-injection-point chip observation for the impedance-test diagnostic.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ImpedanceObservationReport {
+    /// Object id of the FOCI endpoint.
+    pub oid: u8,
+    /// Stable point index within the profile.
+    pub point_index: u8,
+    /// Electrical injection frequency in millihertz.
+    pub frequency_millihz: u32,
+    /// Absolute UD magnitude requested during the window.
+    pub ud_abs: u16,
+    /// STATUS_FLAGS observed during this point's DC and AC windows.
+    pub status_flags_or: u32,
+    /// OPENLOOP_PHI sampled while AC voltage is active.
+    pub openloop_phi_sample: u16,
+    /// OPENLOOP_VELOCITY_ACTUAL sampled while AC voltage is active.
+    pub openloop_velocity_actual: i32,
+    /// Direct ADC IUX sample from `ADC_IWY_IUX`.
+    pub adc_iux_sample: i16,
+    /// Direct ADC IWY sample from `ADC_IWY_IUX`.
+    pub adc_iwy_sample: i16,
+    /// Stationary-frame FOC IUX sample from `INTERIM_FOC_IWY_IUX`.
+    pub foc_iux_sample: i16,
+    /// Stationary-frame FOC IWY sample from `INTERIM_FOC_IWY_IUX`.
+    pub foc_iwy_sample: i16,
+    /// Pre-limit FOC UQ sample from `INTERIM_FOC_UQ_UD`.
+    pub foc_uq_sample: i16,
+    /// Pre-limit FOC UD sample from `INTERIM_FOC_UQ_UD`.
+    pub foc_ud_sample: i16,
+    /// Limited FOC UQ sample from `INTERIM_FOC_UQ_UD_LIMITED`.
+    pub foc_uq_limited_sample: i16,
+    /// Limited FOC UD sample from `INTERIM_FOC_UQ_UD_LIMITED`.
+    pub foc_ud_limited_sample: i16,
+    /// Park-transformed q-axis current sample from `INTERIM_FOC_IQ_ID`.
+    pub foc_iq_sample: i16,
+    /// Park-transformed d-axis current sample from `INTERIM_FOC_IQ_ID`.
+    pub foc_id_sample: i16,
+}
+
+/// Per-injection-point DC baseline observation for the impedance diagnostic.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ImpedanceBaselineReport {
+    /// Object id of the FOCI endpoint.
+    pub oid: u8,
+    /// Stable point index within the profile.
+    pub point_index: u8,
+    /// Electrical injection frequency in millihertz.
+    pub frequency_millihz: u32,
+    /// Absolute UD magnitude requested for this point.
+    pub ud_abs: u16,
+    /// Direct ADC IUX sample from the static-UD DC baseline.
+    pub dc_adc_iux_sample: i16,
+    /// Direct ADC IWY sample from the static-UD DC baseline.
+    pub dc_adc_iwy_sample: i16,
+    /// Stationary-frame FOC IUX sample from the static-UD DC baseline.
+    pub dc_foc_iux_sample: i16,
+    /// Stationary-frame FOC IWY sample from the static-UD DC baseline.
+    pub dc_foc_iwy_sample: i16,
+    /// Park-transformed q-axis current sample from the static-UD DC baseline.
+    pub dc_foc_iq_sample: i16,
+    /// Park-transformed d-axis current sample from the static-UD DC baseline.
+    pub dc_foc_id_sample: i16,
 }
 
 /// Construct a zero-filled [`ImpedanceRunReport`] carrying only the header
@@ -470,6 +548,9 @@ pub fn empty_impedance_run_report(oid: u8, status: u8) -> ImpedanceRunReport {
         repeatability_permille: 0,
         warning_flags: 0,
         status_flags_or: 0,
+        readback_mismatch_addr: 0,
+        readback_expected: 0,
+        readback_actual: 0,
     }
 }
 

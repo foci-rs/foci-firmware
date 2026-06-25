@@ -26,6 +26,8 @@ pub struct ImpedanceInjectionPoint {
 pub struct ImpedanceSample {
     /// Relative sample timestamp in microseconds.
     pub t_us: u32,
+    /// `OPENLOOP_PHI` sampled with this current sample, in 16-bit turn counts.
+    pub openloop_phi: u16,
     /// Raw TMC current count for channel 0.
     pub i_ch0: i16,
     /// Raw TMC current count for channel 1.
@@ -52,6 +54,105 @@ impl ImpedancePowerStageReadback {
         bbm_readback: 0,
         dsadc_mdec_readback: 0,
         pwm_sv_chop_readback: 0,
+    };
+}
+
+/// Last profile readback mismatch observed before a profile-readback failure.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+pub struct ImpedanceReadbackMismatch {
+    /// TMC4671 register address that failed readback, or zero if none.
+    pub addr: u8,
+    /// Expected raw register value.
+    pub expected: u32,
+    /// Actual raw register value read from the chip.
+    pub actual: u32,
+}
+
+impl ImpedanceReadbackMismatch {
+    /// Empty mismatch evidence used when no profile readback failed.
+    pub const EMPTY: Self = Self {
+        addr: 0,
+        expected: 0,
+        actual: 0,
+    };
+}
+
+/// DC baseline current observation sampled during the static-UD precheck.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+pub struct ImpedanceBaselineObservation {
+    /// Direct ADC IUX sample from `ADC_IWY_IUX`.
+    pub dc_adc_iux_sample: i16,
+    /// Direct ADC IWY sample from `ADC_IWY_IUX`.
+    pub dc_adc_iwy_sample: i16,
+    /// Stationary-frame FOC IUX sample from `INTERIM_FOC_IWY_IUX`.
+    pub dc_foc_iux_sample: i16,
+    /// Stationary-frame FOC IWY sample from `INTERIM_FOC_IWY_IUX`.
+    pub dc_foc_iwy_sample: i16,
+    /// Park-transformed q-axis current sample from `INTERIM_FOC_IQ_ID`.
+    pub dc_foc_iq_sample: i16,
+    /// Park-transformed d-axis current sample from `INTERIM_FOC_IQ_ID`.
+    pub dc_foc_id_sample: i16,
+}
+
+impl ImpedanceBaselineObservation {
+    /// Empty observation used before a baseline has been sampled.
+    pub const EMPTY: Self = Self {
+        dc_adc_iux_sample: 0,
+        dc_adc_iwy_sample: 0,
+        dc_foc_iux_sample: 0,
+        dc_foc_iwy_sample: 0,
+        dc_foc_iq_sample: 0,
+        dc_foc_id_sample: 0,
+    };
+}
+
+/// Per-injection-point chip observability sampled while AC voltage is active.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+pub struct ImpedancePointObservation {
+    /// STATUS_FLAGS observed during this point's DC and AC windows.
+    pub status_flags_or: u32,
+    /// OPENLOOP_PHI sampled while AC voltage is active.
+    pub openloop_phi_sample: u16,
+    /// OPENLOOP_VELOCITY_ACTUAL sampled while AC voltage is active.
+    pub openloop_velocity_actual: i32,
+    /// Direct ADC IUX sample from `ADC_IWY_IUX`.
+    pub adc_iux_sample: i16,
+    /// Direct ADC IWY sample from `ADC_IWY_IUX`.
+    pub adc_iwy_sample: i16,
+    /// Stationary-frame FOC IUX sample from `INTERIM_FOC_IWY_IUX`.
+    pub foc_iux_sample: i16,
+    /// Stationary-frame FOC IWY sample from `INTERIM_FOC_IWY_IUX`.
+    pub foc_iwy_sample: i16,
+    /// Pre-limit FOC UQ sample from `INTERIM_FOC_UQ_UD`.
+    pub foc_uq_sample: i16,
+    /// Pre-limit FOC UD sample from `INTERIM_FOC_UQ_UD`.
+    pub foc_ud_sample: i16,
+    /// Limited FOC UQ sample from `INTERIM_FOC_UQ_UD_LIMITED`.
+    pub foc_uq_limited_sample: i16,
+    /// Limited FOC UD sample from `INTERIM_FOC_UQ_UD_LIMITED`.
+    pub foc_ud_limited_sample: i16,
+    /// Park-transformed q-axis current sample from `INTERIM_FOC_IQ_ID`.
+    pub foc_iq_sample: i16,
+    /// Park-transformed d-axis current sample from `INTERIM_FOC_IQ_ID`.
+    pub foc_id_sample: i16,
+}
+
+impl ImpedancePointObservation {
+    /// Empty observation used before a point has been sampled.
+    pub const EMPTY: Self = Self {
+        status_flags_or: 0,
+        openloop_phi_sample: 0,
+        openloop_velocity_actual: 0,
+        adc_iux_sample: 0,
+        adc_iwy_sample: 0,
+        foc_iux_sample: 0,
+        foc_iwy_sample: 0,
+        foc_uq_sample: 0,
+        foc_ud_sample: 0,
+        foc_uq_limited_sample: 0,
+        foc_ud_limited_sample: 0,
+        foc_iq_sample: 0,
+        foc_id_sample: 0,
     };
 }
 

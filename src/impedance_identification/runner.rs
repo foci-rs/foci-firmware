@@ -5,20 +5,22 @@
 //! gates, while hardware validation remains a separate workflow.
 
 use foci_tmc4671::registers::{
-    ABN_DECODER_COUNT, ADC_IWY_IUX, DSADC_MDEC_B_MDEC_A, MODE_RAMP_MODE_MOTION,
-    MOTOR_TYPE_N_POLE_PAIRS, MotionMode, MotorType, MotorTypeNPolePairs, OPENLOOP_ACCELERATION,
-    OPENLOOP_MODE, OPENLOOP_PHI, OPENLOOP_VELOCITY_ACTUAL, OPENLOOP_VELOCITY_TARGET, PHI_E_EXT,
-    PHI_E_SELECTION, PIDOUT_UQ_UD_LIMITS, PWM_BBM_H_BBM_L, PWM_MAXCNT, PWM_SV_CHOP, STATUS_FLAGS,
-    UQ_UD_EXT, UqUdExt,
+    ABN_DECODER_COUNT, ADC_IWY_IUX, DSADC_MDEC_B_MDEC_A, INTERIM_FOC_IQ_ID, INTERIM_FOC_IWY_IUX,
+    INTERIM_FOC_UQ_UD, INTERIM_FOC_UQ_UD_LIMITED, MODE_RAMP_MODE_MOTION, MOTOR_TYPE_N_POLE_PAIRS,
+    MotionMode, MotorType, MotorTypeNPolePairs, OPENLOOP_ACCELERATION, OPENLOOP_MODE, OPENLOOP_PHI,
+    OPENLOOP_VELOCITY_ACTUAL, OPENLOOP_VELOCITY_TARGET, PHI_E_EXT, PHI_E_SELECTION,
+    PID_TORQUE_FLUX_ACTUAL, PIDOUT_UQ_UD_LIMITS, PWM_BBM_H_BBM_L, PWM_MAXCNT, PWM_SV_CHOP,
+    STATUS_FLAGS, SubRegister, UQ_UD_EXT, UqUdExt,
 };
 
-use super::fit::{ImpedanceFitPoint, ImpedanceFitSummary};
+use super::fit::{ImpedanceFitPoint, ImpedanceFitSummary, fit_impedance_point_with_evidence};
 use super::profile::{ImpedanceProfile, frequency_millihz_to_openloop_velocity_rpm};
 use super::types::{
-    IMPEDANCE_PROFILE_POINTS, IMPEDANCE_SAMPLE_COUNT, ImpedanceError, ImpedancePowerStageReadback,
+    IMPEDANCE_PROFILE_POINTS, IMPEDANCE_SAMPLE_COUNT, ImpedanceBaselineObservation, ImpedanceError,
+    ImpedancePointObservation, ImpedancePowerStageReadback, ImpedanceReadbackMismatch,
     ImpedanceSample, ImpedanceWarningFlags,
 };
-use crate::impedance_identification::fit::{evaluate_impedance_result, fit_impedance_point};
+use crate::impedance_identification::fit::evaluate_impedance_result;
 
 const PHI_E_EXTERNAL: u32 = 1;
 const PHI_E_OPEN_LOOP: u32 = 2;
@@ -33,8 +35,23 @@ const EMPTY_FIT: ImpedanceFitPoint = ImpedanceFitPoint {
     residual_permille: 0,
     coverage_permille: 0,
     scalar_2f_mismatch_permille: 0,
+    magnitude_mean_count_per_ud_milli: 0,
+    magnitude_2f_count_per_ud_milli: 0,
+    magnitude_2f_residual_permille: 0,
+    magnitude_2f_coverage_permille: 0,
     warning_flags: ImpedanceWarningFlags::NONE,
 };
+
+struct ImpedanceCapture {
+    raw_samples: [ImpedanceSample; IMPEDANCE_SAMPLE_COUNT],
+    transformed_samples: [ImpedanceSample; IMPEDANCE_SAMPLE_COUNT],
+    observation: ImpedancePointObservation,
+}
+
+struct DcBaselineCapture {
+    status_flags_or: u32,
+    observation: ImpedanceBaselineObservation,
+}
 
 /// Error returned by backend register I/O during impedance identification.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
@@ -62,6 +79,24 @@ pub trait ImpedanceBackend {
     fn is_armed_for_open_loop_voltage(&self) -> bool;
     /// Board-specific impedance-identification profile.
     fn profile(&self) -> ImpedanceProfile;
+    /// Record bounded point observability before a fit-gate failure is returned.
+    fn record_point_observation(
+        &mut self,
+        _point_index: usize,
+        _observation: ImpedancePointObservation,
+    ) {
+    }
+    /// Record bounded DC baseline observability before later AC/fit failures.
+    fn record_baseline_observation(
+        &mut self,
+        _point_index: usize,
+        _observation: ImpedanceBaselineObservation,
+    ) {
+    }
+    /// Record bounded fit evidence before a fit-gate failure is returned.
+    fn record_fit_attempt(&mut self, _point_index: usize, _fit: ImpedanceFitPoint) {}
+    /// Record the exact register mismatch behind `ProfileReadbackMismatch`.
+    fn record_profile_readback_mismatch(&mut self, _addr: u8, _expected: u32, _actual: u32) {}
 }
 
 /// Complete runner output returned through the active diagnostic surface.
@@ -71,6 +106,10 @@ pub struct ImpedanceRunResult {
     pub profile: ImpedanceProfile,
     /// Per-injection fitted impedance points.
     pub point_fits: [ImpedanceFitPoint; IMPEDANCE_PROFILE_POINTS],
+    /// Per-injection chip observability sampled while voltage was active.
+    pub point_observations: [ImpedancePointObservation; IMPEDANCE_PROFILE_POINTS],
+    /// Per-injection DC baseline current observations sampled before AC capture.
+    pub point_baselines: [ImpedanceBaselineObservation; IMPEDANCE_PROFILE_POINTS],
     /// Aggregate impedance summary.
     pub summary: ImpedanceFitSummary,
     /// Aggregate warning flags from fit, status, and encoder gates.
@@ -79,6 +118,8 @@ pub struct ImpedanceRunResult {
     pub status_flags_or: u32,
     /// Power-stage readbacks verified before the first nonzero voltage command.
     pub power_stage_readback: ImpedancePowerStageReadback,
+    /// Last profile-readback mismatch observed before failure, if any.
+    pub readback_mismatch: ImpedanceReadbackMismatch,
 }
 
 /// Run impedance identification over an already armed motor.
@@ -176,9 +217,12 @@ async fn run_energized_body<B: ImpedanceBackend>(
     let mut warning_flags = ImpedanceWarningFlags::NONE;
     let mut status_flags_or = 0u32;
     let mut point_fits = [EMPTY_FIT; IMPEDANCE_PROFILE_POINTS];
+    let mut point_observations = [ImpedancePointObservation::EMPTY; IMPEDANCE_PROFILE_POINTS];
+    let mut point_baselines = [ImpedanceBaselineObservation::EMPTY; IMPEDANCE_PROFILE_POINTS];
+    let mut fit_quality_error = None;
 
     for (index, point) in profile.injection_points.iter().copied().enumerate() {
-        run_dc_baseline_check(
+        let dc_baseline = run_dc_baseline_check(
             backend,
             &profile,
             point,
@@ -186,8 +230,10 @@ async fn run_energized_body<B: ImpedanceBackend>(
             &mut status_flags_or,
         )
         .await?;
+        backend.record_baseline_observation(index, dc_baseline.observation);
+        point_baselines[index] = dc_baseline.observation;
 
-        let samples = capture_ac_window(
+        let capture = capture_ac_window(
             backend,
             &profile,
             point,
@@ -202,9 +248,40 @@ async fn run_energized_body<B: ImpedanceBackend>(
             MotionMode::Stopped as u32,
         )
         .await?;
+        let mut observation = capture.observation;
+        observation.status_flags_or |= dc_baseline.status_flags_or;
+        backend.record_point_observation(index, observation);
+        point_observations[index] = observation;
 
-        point_fits[index] = fit_impedance_point(&profile, point, &samples)?;
+        let fit = match fit_impedance_point_with_evidence(
+            &profile,
+            point,
+            &capture.raw_samples,
+            &capture.transformed_samples,
+        ) {
+            Ok(fit) => fit,
+            Err(failure) => {
+                if let Some(fit) = failure.fit {
+                    backend.record_fit_attempt(index, fit);
+                    point_fits[index] = fit;
+                    warning_flags.insert(fit.warning_flags);
+                }
+                if is_deferred_fit_quality_error(failure.error) {
+                    if fit_quality_error.is_none() {
+                        fit_quality_error = Some(failure.error);
+                    }
+                    continue;
+                }
+                return Err(failure.error);
+            }
+        };
+        backend.record_fit_attempt(index, fit);
+        point_fits[index] = fit;
         warning_flags.insert(point_fits[index].warning_flags);
+    }
+
+    if let Some(error) = fit_quality_error {
+        return Err(error);
     }
 
     let mut summary = evaluate_impedance_result(&profile, &point_fits)?;
@@ -214,11 +291,24 @@ async fn run_energized_body<B: ImpedanceBackend>(
     Ok(ImpedanceRunResult {
         profile,
         point_fits,
+        point_observations,
+        point_baselines,
         summary,
         warning_flags,
         status_flags_or,
         power_stage_readback,
+        readback_mismatch: ImpedanceReadbackMismatch::EMPTY,
     })
+}
+
+fn is_deferred_fit_quality_error(error: ImpedanceError) -> bool {
+    matches!(
+        error,
+        ImpedanceError::LowSignal
+            | ImpedanceError::PoorCoverage
+            | ImpedanceError::Scalar2fMismatch
+            | ImpedanceError::HighResidual
+    )
 }
 
 async fn prepare_zero_voltage_setup<B: ImpedanceBackend>(
@@ -228,7 +318,7 @@ async fn prepare_zero_voltage_setup<B: ImpedanceBackend>(
     write(
         backend,
         PIDOUT_UQ_UD_LIMITS.addr(),
-        pack_pidout_limits(profile.max_abs_ud()),
+        pidout_limit_word(profile.max_abs_ud()),
     )
     .await?;
     write(backend, UQ_UD_EXT.addr(), 0).await?;
@@ -245,7 +335,7 @@ async fn prepare_zero_voltage_setup<B: ImpedanceBackend>(
     verify_readback(
         backend,
         PIDOUT_UQ_UD_LIMITS.addr(),
-        pack_pidout_limits(profile.max_abs_ud()),
+        pidout_limit_word(profile.max_abs_ud()),
     )
     .await?;
     verify_readback(backend, UQ_UD_EXT.addr(), 0).await?;
@@ -270,15 +360,12 @@ async fn prepare_zero_voltage_setup<B: ImpedanceBackend>(
 
     write(backend, PWM_SV_CHOP.addr(), profile.pwm_sv_chop).await?;
     let power_stage_readback = read_power_stage_setup(backend).await?;
-    if power_stage_readback.pwm_sv_chop_readback != profile.pwm_sv_chop
-        || power_stage_readback.pwm_maxcnt_readback != u32::from(profile.pwm_maxcnt)
-        || power_stage_readback.bbm_readback != expected_bbm_readback(profile)
-        || power_stage_readback.dsadc_mdec_readback != expected_dsadc_readback(profile)
-    {
-        Err(ImpedanceError::ProfileReadbackMismatch)
-    } else {
-        Ok(power_stage_readback)
+    if let Some(mismatch) = power_stage_mismatch(profile, power_stage_readback) {
+        backend.record_profile_readback_mismatch(mismatch.addr, mismatch.expected, mismatch.actual);
+        return Err(ImpedanceError::ProfileReadbackMismatch);
     }
+
+    Ok(power_stage_readback)
 }
 
 async fn read_power_stage_setup<B: ImpedanceBackend>(
@@ -300,13 +387,52 @@ fn expected_dsadc_readback(profile: &ImpedanceProfile) -> u32 {
     (u32::from(profile.dsadc_mdec_b) << 16) | u32::from(profile.dsadc_mdec_a)
 }
 
+fn power_stage_mismatch(
+    profile: &ImpedanceProfile,
+    readback: ImpedancePowerStageReadback,
+) -> Option<ImpedanceReadbackMismatch> {
+    let checks = [
+        (
+            PWM_SV_CHOP.addr(),
+            profile.pwm_sv_chop,
+            readback.pwm_sv_chop_readback,
+        ),
+        (
+            PWM_MAXCNT.addr(),
+            u32::from(profile.pwm_maxcnt),
+            readback.pwm_maxcnt_readback,
+        ),
+        (
+            PWM_BBM_H_BBM_L.addr(),
+            expected_bbm_readback(profile),
+            readback.bbm_readback,
+        ),
+        (
+            DSADC_MDEC_B_MDEC_A.addr(),
+            expected_dsadc_readback(profile),
+            readback.dsadc_mdec_readback,
+        ),
+    ];
+    for (addr, expected, actual) in checks {
+        if actual != expected {
+            return Some(ImpedanceReadbackMismatch {
+                addr,
+                expected,
+                actual,
+            });
+        }
+    }
+    None
+}
+
 async fn run_dc_baseline_check<B: ImpedanceBackend>(
     backend: &mut B,
     profile: &ImpedanceProfile,
     point: super::types::ImpedanceInjectionPoint,
     warning_flags: &mut ImpedanceWarningFlags,
     status_flags_or: &mut u32,
-) -> Result<(), ImpedanceError> {
+) -> Result<DcBaselineCapture, ImpedanceError> {
+    let mut point_status_flags_or = 0u32;
     let encoder_before = read(backend, ABN_DECODER_COUNT.addr()).await?;
 
     write(backend, PHI_E_SELECTION.addr(), PHI_E_EXTERNAL).await?;
@@ -320,7 +446,8 @@ async fn run_dc_baseline_check<B: ImpedanceBackend>(
     .await?;
     verify_readback(backend, PHI_E_SELECTION.addr(), PHI_E_EXTERNAL).await?;
     verify_readback(backend, PHI_E_EXT.addr(), 0).await?;
-    sample_status(backend, profile, warning_flags, status_flags_or).await?;
+    point_status_flags_or |=
+        sample_status(backend, profile, warning_flags, status_flags_or).await?;
     write(backend, UQ_UD_EXT.addr(), pack_ud(point.ud_abs as i16)).await?;
     write(
         backend,
@@ -332,12 +459,28 @@ async fn run_dc_baseline_check<B: ImpedanceBackend>(
     backend.delay_ms(u64::from(point.settle_ms)).await;
 
     let packed = read(backend, ADC_IWY_IUX.addr()).await?;
-    let sample = decode_adc_sample(0, packed);
+    let sample = decode_adc_sample(0, 0, packed);
     check_current_limit(profile, sample)?;
-    sample_status(backend, profile, warning_flags, status_flags_or).await?;
+    let (dc_foc_iwy_sample, dc_foc_iux_sample) =
+        split_signed_halves(read_sub(backend, INTERIM_FOC_IWY_IUX).await?);
+    let (dc_foc_iq_sample, dc_foc_id_sample) =
+        split_signed_halves(read_sub(backend, INTERIM_FOC_IQ_ID).await?);
+    point_status_flags_or |=
+        sample_status(backend, profile, warning_flags, status_flags_or).await?;
 
     let encoder_after = read(backend, ABN_DECODER_COUNT.addr()).await?;
-    check_encoder_delta(profile, encoder_before, encoder_after, warning_flags)
+    check_encoder_delta(profile, encoder_before, encoder_after, warning_flags)?;
+    Ok(DcBaselineCapture {
+        status_flags_or: point_status_flags_or,
+        observation: ImpedanceBaselineObservation {
+            dc_adc_iux_sample: sample.i_ch0,
+            dc_adc_iwy_sample: sample.i_ch1,
+            dc_foc_iux_sample,
+            dc_foc_iwy_sample,
+            dc_foc_iq_sample,
+            dc_foc_id_sample,
+        },
+    })
 }
 
 async fn capture_ac_window<B: ImpedanceBackend>(
@@ -346,7 +489,7 @@ async fn capture_ac_window<B: ImpedanceBackend>(
     point: super::types::ImpedanceInjectionPoint,
     warning_flags: &mut ImpedanceWarningFlags,
     status_flags_or: &mut u32,
-) -> Result<[ImpedanceSample; IMPEDANCE_SAMPLE_COUNT], ImpedanceError> {
+) -> Result<ImpedanceCapture, ImpedanceError> {
     let encoder_before = read(backend, ABN_DECODER_COUNT.addr()).await?;
 
     write(backend, UQ_UD_EXT.addr(), 0).await?;
@@ -402,7 +545,8 @@ async fn capture_ac_window<B: ImpedanceBackend>(
         OPENLOOP_PHI_DIRECTION_POSITIVE,
     )
     .await?;
-    sample_status(backend, profile, warning_flags, status_flags_or).await?;
+    let mut point_status_flags_or =
+        sample_status(backend, profile, warning_flags, status_flags_or).await?;
     write(backend, UQ_UD_EXT.addr(), pack_ud(point.ud_abs as i16)).await?;
     write(
         backend,
@@ -413,19 +557,35 @@ async fn capture_ac_window<B: ImpedanceBackend>(
 
     backend.delay_ms(u64::from(point.settle_ms)).await;
 
+    let mut observation = sample_point_observation(backend, profile).await?;
+    point_status_flags_or |=
+        sample_status(backend, profile, warning_flags, status_flags_or).await?;
+
     let start_us = backend.timestamp_us();
-    let mut samples = [ImpedanceSample {
+    let mut raw_samples = [ImpedanceSample {
         t_us: 0,
+        openloop_phi: 0,
+        i_ch0: 0,
+        i_ch1: 0,
+    }; IMPEDANCE_SAMPLE_COUNT];
+    let mut transformed_samples = [ImpedanceSample {
+        t_us: 0,
+        openloop_phi: 0,
         i_ch0: 0,
         i_ch1: 0,
     }; IMPEDANCE_SAMPLE_COUNT];
     let sample_count = profile.sample_count as usize;
-    for (index, sample) in samples.iter_mut().take(sample_count).enumerate() {
-        let packed = read(backend, ADC_IWY_IUX.addr()).await?;
-        let decoded = decode_adc_sample(backend.timestamp_us().wrapping_sub(start_us), packed);
-        check_current_limit(profile, decoded)?;
-        *sample = decoded;
-        sample_status(backend, profile, warning_flags, status_flags_or).await?;
+    for index in 0..sample_count {
+        let openloop_phi = read(backend, OPENLOOP_PHI.addr()).await? as u16;
+        let raw_packed = read(backend, ADC_IWY_IUX.addr()).await?;
+        let transformed_packed = read(backend, PID_TORQUE_FLUX_ACTUAL.addr()).await?;
+        let t_us = backend.timestamp_us().wrapping_sub(start_us);
+        let raw_sample = decode_adc_sample(t_us, openloop_phi, raw_packed);
+        check_current_limit(profile, raw_sample)?;
+        raw_samples[index] = raw_sample;
+        transformed_samples[index] = decode_adc_sample(t_us, openloop_phi, transformed_packed);
+        point_status_flags_or |=
+            sample_status(backend, profile, warning_flags, status_flags_or).await?;
         if index + 1 < sample_count {
             backend
                 .delay_us(u32::from(profile.sample_interval_us))
@@ -435,8 +595,13 @@ async fn capture_ac_window<B: ImpedanceBackend>(
 
     let encoder_after = read(backend, ABN_DECODER_COUNT.addr()).await?;
     check_encoder_delta(profile, encoder_before, encoder_after, warning_flags)?;
+    observation.status_flags_or = point_status_flags_or;
 
-    Ok(samples)
+    Ok(ImpedanceCapture {
+        raw_samples,
+        transformed_samples,
+        observation,
+    })
 }
 
 async fn sample_status<B: ImpedanceBackend>(
@@ -444,7 +609,7 @@ async fn sample_status<B: ImpedanceBackend>(
     profile: &ImpedanceProfile,
     warning_flags: &mut ImpedanceWarningFlags,
     status_flags_or: &mut u32,
-) -> Result<(), ImpedanceError> {
+) -> Result<u32, ImpedanceError> {
     let status_flags = read(backend, STATUS_FLAGS.addr()).await?;
     *status_flags_or |= status_flags;
     if status_flags & profile.status_flags_warn_mask != 0 {
@@ -453,7 +618,41 @@ async fn sample_status<B: ImpedanceBackend>(
     if status_flags & profile.status_flags_fail_mask != 0 {
         return Err(ImpedanceError::UnsafeStatusFlags);
     }
-    Ok(())
+    Ok(status_flags)
+}
+
+async fn sample_point_observation<B: ImpedanceBackend>(
+    backend: &mut B,
+    profile: &ImpedanceProfile,
+) -> Result<ImpedancePointObservation, ImpedanceError> {
+    let openloop_phi_sample = read(backend, OPENLOOP_PHI.addr()).await? as u16;
+    let openloop_velocity_actual = read(backend, OPENLOOP_VELOCITY_ACTUAL.addr()).await? as i32;
+    let adc_sample = decode_adc_sample(0, 0, read(backend, ADC_IWY_IUX.addr()).await?);
+    check_current_limit(profile, adc_sample)?;
+    let (foc_iwy_sample, foc_iux_sample) =
+        split_signed_halves(read_sub(backend, INTERIM_FOC_IWY_IUX).await?);
+    let (foc_uq_sample, foc_ud_sample) =
+        split_signed_halves(read_sub(backend, INTERIM_FOC_UQ_UD).await?);
+    let (foc_uq_limited_sample, foc_ud_limited_sample) =
+        split_signed_halves(read_sub(backend, INTERIM_FOC_UQ_UD_LIMITED).await?);
+    let (foc_iq_sample, foc_id_sample) =
+        split_signed_halves(read_sub(backend, INTERIM_FOC_IQ_ID).await?);
+
+    Ok(ImpedancePointObservation {
+        status_flags_or: 0,
+        openloop_phi_sample,
+        openloop_velocity_actual,
+        adc_iux_sample: adc_sample.i_ch0,
+        adc_iwy_sample: adc_sample.i_ch1,
+        foc_iux_sample,
+        foc_iwy_sample,
+        foc_uq_sample,
+        foc_ud_sample,
+        foc_uq_limited_sample,
+        foc_ud_limited_sample,
+        foc_iq_sample,
+        foc_id_sample,
+    })
 }
 
 fn check_current_limit(
@@ -538,6 +737,7 @@ async fn verify_readback<B: ImpedanceBackend>(
     if actual == expected {
         Ok(())
     } else {
+        backend.record_profile_readback_mismatch(addr, expected, actual);
         Err(ImpedanceError::ProfileReadbackMismatch)
     }
 }
@@ -547,6 +747,14 @@ async fn read<B: ImpedanceBackend>(backend: &mut B, addr: u8) -> Result<u32, Imp
         .read_register(addr)
         .await
         .map_err(|_| ImpedanceError::BackendIo)
+}
+
+async fn read_sub<B: ImpedanceBackend>(
+    backend: &mut B,
+    sub: SubRegister,
+) -> Result<u32, ImpedanceError> {
+    write(backend, sub.addr.addr(), u32::from(sub.sub_addr)).await?;
+    read(backend, sub.data.addr()).await
 }
 
 async fn write<B: ImpedanceBackend>(
@@ -560,21 +768,26 @@ async fn write<B: ImpedanceBackend>(
         .map_err(|_| ImpedanceError::BackendIo)
 }
 
+fn split_signed_halves(packed: u32) -> (i16, i16) {
+    ((packed >> 16) as u16 as i16, packed as u16 as i16)
+}
+
 fn pack_ud(ud: i16) -> u32 {
     UqUdExt::new().with_ud_ext(ud).with_uq_ext(0).into()
 }
 
-fn pack_pidout_limits(limit: u16) -> u32 {
-    (u32::from(limit) << 16) | u32::from(limit)
+fn pidout_limit_word(limit: u16) -> u32 {
+    u32::from(limit)
 }
 
 fn pidout_ud_limit(value: u32) -> u16 {
     (value & 0xffff) as u16
 }
 
-fn decode_adc_sample(t_us: u32, packed: u32) -> ImpedanceSample {
+fn decode_adc_sample(t_us: u32, openloop_phi: u16, packed: u32) -> ImpedanceSample {
     ImpedanceSample {
         t_us,
+        openloop_phi,
         i_ch0: (packed & 0xffff) as u16 as i16,
         i_ch1: (packed >> 16) as u16 as i16,
     }

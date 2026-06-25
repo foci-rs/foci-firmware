@@ -1,9 +1,9 @@
 //! Shared active diagnostic reply emission.
 
 use super::{
-    CurrentStepReport, CurrentTorqueSampleReport, DiagnosticReport, ImpedanceFitReport,
-    ImpedanceProfileReport, ImpedanceRunReport, ResistanceAxisReport, ResistanceProfileReport,
-    ResistanceRunReport, VoltageStepReport,
+    CurrentStepReport, CurrentTorqueSampleReport, DiagnosticReport, ImpedanceBaselineReport,
+    ImpedanceFitReport, ImpedanceObservationReport, ImpedanceProfileReport, ImpedanceRunReport,
+    ResistanceAxisReport, ResistanceProfileReport, ResistanceRunReport, VoltageStepReport,
 };
 
 /// Board-local active diagnostic reply sink.
@@ -38,6 +38,12 @@ pub trait DiagnosticReplySink {
 
     /// Emit one impedance-test per-point fit result.
     fn foci_impedance_fit(&mut self, _report: ImpedanceFitReport) {}
+
+    /// Emit one impedance-test per-point chip observation captured under voltage.
+    fn foci_impedance_observation(&mut self, _report: ImpedanceObservationReport) {}
+
+    /// Emit one impedance-test per-point DC baseline observation.
+    fn foci_impedance_baseline(&mut self, _report: ImpedanceBaselineReport) {}
 
     /// Emit the impedance-test per-run status/warnings/readbacks result.
     /// This is the diagnostic's terminal reply.
@@ -80,16 +86,24 @@ pub fn emit_diagnostic_report<S: DiagnosticReplySink>(sink: &mut S, report: Diag
             profile,
             run,
             fits,
+            baselines,
+            observations,
             detail,
         } => {
             if detail == 1 {
                 sink.foci_impedance_profile(profile);
-            }
-            if detail == 1
-                && let Some(fits) = fits
-            {
-                for fit in fits {
-                    sink.foci_impedance_fit(fit);
+                for ((baseline, observation), fit) in
+                    baselines.iter().zip(observations.iter()).zip(fits.iter())
+                {
+                    if let Some(baseline) = baseline {
+                        sink.foci_impedance_baseline(*baseline);
+                    }
+                    if let Some(observation) = observation {
+                        sink.foci_impedance_observation(*observation);
+                    }
+                    if let Some(fit) = fit {
+                        sink.foci_impedance_fit(*fit);
+                    }
                 }
             }
             // Run reply last: it is the diagnostic's terminal/"done" signal.
@@ -156,6 +170,19 @@ mod tests {
             residual_permille: u16,
             coverage_permille: u16,
             scalar_2f_mismatch_permille: u16,
+        },
+        ImpedanceObservation {
+            oid: u8,
+            point_index: u8,
+            status_flags_or: u32,
+            foc_ud_sample: i16,
+            foc_iq_sample: i16,
+        },
+        ImpedanceBaseline {
+            oid: u8,
+            point_index: u8,
+            dc_adc_iux_sample: i16,
+            dc_foc_iq_sample: i16,
         },
         ImpedanceDone {
             oid: u8,
@@ -250,6 +277,25 @@ mod tests {
                 residual_permille: report.residual_permille,
                 coverage_permille: report.coverage_permille,
                 scalar_2f_mismatch_permille: report.scalar_2f_mismatch_permille,
+            });
+        }
+
+        fn foci_impedance_observation(&mut self, report: ImpedanceObservationReport) {
+            self.events.push(Event::ImpedanceObservation {
+                oid: report.oid,
+                point_index: report.point_index,
+                status_flags_or: report.status_flags_or,
+                foc_ud_sample: report.foc_ud_sample,
+                foc_iq_sample: report.foc_iq_sample,
+            });
+        }
+
+        fn foci_impedance_baseline(&mut self, report: ImpedanceBaselineReport) {
+            self.events.push(Event::ImpedanceBaseline {
+                oid: report.oid,
+                point_index: report.point_index,
+                dc_adc_iux_sample: report.dc_adc_iux_sample,
+                dc_foc_iq_sample: report.dc_foc_iq_sample,
             });
         }
 
@@ -607,6 +653,9 @@ mod tests {
             repeatability_permille: 12,
             warning_flags: 0x24,
             status_flags_or: 0x55aa,
+            readback_mismatch_addr: 0,
+            readback_expected: 0,
+            readback_actual: 0,
         }
     }
 
@@ -622,7 +671,48 @@ mod tests {
             residual_permille: 10 + u16::from(point_index),
             coverage_permille: 900,
             scalar_2f_mismatch_permille: 20 + u16::from(point_index),
+            magnitude_mean_count_per_ud_milli: 840,
+            magnitude_2f_count_per_ud_milli: 125,
+            magnitude_2f_residual_permille: 11,
+            magnitude_2f_coverage_permille: 997,
             warning_flags: 0x8,
+        }
+    }
+
+    fn impedance_observation_report(point_index: u8) -> ImpedanceObservationReport {
+        ImpedanceObservationReport {
+            oid: 6,
+            point_index,
+            frequency_millihz: if point_index == 0 { 25_000 } else { 50_000 },
+            ud_abs: if point_index == 0 { 640 } else { 960 },
+            status_flags_or: 0x55aa_0000 | u32::from(point_index),
+            openloop_phi_sample: 0x1234 | u16::from(point_index),
+            openloop_velocity_actual: 1_500 + i32::from(point_index),
+            adc_iux_sample: -30 - i16::from(point_index),
+            adc_iwy_sample: 40 + i16::from(point_index),
+            foc_iux_sample: -50 - i16::from(point_index),
+            foc_iwy_sample: 60 + i16::from(point_index),
+            foc_uq_sample: -10,
+            foc_ud_sample: 640 + i16::from(point_index),
+            foc_uq_limited_sample: -8,
+            foc_ud_limited_sample: 638 + i16::from(point_index),
+            foc_iq_sample: 80 + i16::from(point_index),
+            foc_id_sample: 40 + i16::from(point_index),
+        }
+    }
+
+    fn impedance_baseline_report(point_index: u8) -> ImpedanceBaselineReport {
+        ImpedanceBaselineReport {
+            oid: 6,
+            point_index,
+            frequency_millihz: if point_index == 0 { 25_000 } else { 50_000 },
+            ud_abs: if point_index == 0 { 640 } else { 960 },
+            dc_adc_iux_sample: -41 - i16::from(point_index),
+            dc_adc_iwy_sample: 52 + i16::from(point_index),
+            dc_foc_iux_sample: -63 - i16::from(point_index),
+            dc_foc_iwy_sample: 74 + i16::from(point_index),
+            dc_foc_iq_sample: 85 + i16::from(point_index),
+            dc_foc_id_sample: 96 + i16::from(point_index),
         }
     }
 
@@ -635,7 +725,15 @@ mod tests {
             DiagnosticReport::ImpedanceTest {
                 profile: impedance_profile_report(),
                 run: impedance_run_report(0),
-                fits: Some([impedance_fit_report(0), impedance_fit_report(1)]),
+                fits: [Some(impedance_fit_report(0)), Some(impedance_fit_report(1))],
+                baselines: [
+                    Some(impedance_baseline_report(0)),
+                    Some(impedance_baseline_report(1)),
+                ],
+                observations: [
+                    Some(impedance_observation_report(0)),
+                    Some(impedance_observation_report(1)),
+                ],
                 detail: 0,
             },
         );
@@ -652,7 +750,7 @@ mod tests {
     }
 
     #[test]
-    fn impedance_success_detail_one_emits_profile_fits_then_run_last() {
+    fn impedance_success_detail_one_emits_profile_points_then_run_last() {
         let mut sink = RecordingSink::default();
 
         emit_diagnostic_report(
@@ -660,7 +758,15 @@ mod tests {
             DiagnosticReport::ImpedanceTest {
                 profile: impedance_profile_report(),
                 run: impedance_run_report(0),
-                fits: Some([impedance_fit_report(0), impedance_fit_report(1)]),
+                fits: [Some(impedance_fit_report(0)), Some(impedance_fit_report(1))],
+                baselines: [
+                    Some(impedance_baseline_report(0)),
+                    Some(impedance_baseline_report(1)),
+                ],
+                observations: [
+                    Some(impedance_observation_report(0)),
+                    Some(impedance_observation_report(1)),
+                ],
                 detail: 1,
             },
         );
@@ -672,12 +778,38 @@ mod tests {
                     oid: 6,
                     profile_version: 1,
                 },
+                Event::ImpedanceBaseline {
+                    oid: 6,
+                    point_index: 0,
+                    dc_adc_iux_sample: -41,
+                    dc_foc_iq_sample: 85,
+                },
+                Event::ImpedanceObservation {
+                    oid: 6,
+                    point_index: 0,
+                    status_flags_or: 0x55aa_0000,
+                    foc_ud_sample: 640,
+                    foc_iq_sample: 80,
+                },
                 Event::ImpedanceFit {
                     oid: 6,
                     point_index: 0,
                     residual_permille: 10,
                     coverage_permille: 900,
                     scalar_2f_mismatch_permille: 20,
+                },
+                Event::ImpedanceBaseline {
+                    oid: 6,
+                    point_index: 1,
+                    dc_adc_iux_sample: -42,
+                    dc_foc_iq_sample: 86,
+                },
+                Event::ImpedanceObservation {
+                    oid: 6,
+                    point_index: 1,
+                    status_flags_or: 0x55aa_0001,
+                    foc_ud_sample: 641,
+                    foc_iq_sample: 81,
                 },
                 Event::ImpedanceFit {
                     oid: 6,
@@ -705,7 +837,15 @@ mod tests {
             DiagnosticReport::ImpedanceTest {
                 profile: impedance_profile_report(),
                 run: impedance_run_report(0),
-                fits: Some([impedance_fit_report(0), impedance_fit_report(1)]),
+                fits: [Some(impedance_fit_report(0)), Some(impedance_fit_report(1))],
+                baselines: [
+                    Some(impedance_baseline_report(0)),
+                    Some(impedance_baseline_report(1)),
+                ],
+                observations: [
+                    Some(impedance_observation_report(0)),
+                    Some(impedance_observation_report(1)),
+                ],
                 detail: 2,
             },
         );
@@ -730,7 +870,9 @@ mod tests {
             DiagnosticReport::ImpedanceTest {
                 profile: impedance_profile_report(),
                 run: impedance_run_report(2),
-                fits: None,
+                fits: [None, None],
+                baselines: [None, None],
+                observations: [None, None],
                 detail: 1,
             },
         );
