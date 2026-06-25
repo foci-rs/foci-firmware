@@ -1224,8 +1224,6 @@ fn impedance_low_signal_detail_one_emits_fit_evidence_before_run() {
             0,              // OPENLOOP_MODE readback
             0,              // OPENLOOP_ACCELERATION readback
             0,              // OPENLOOP_VELOCITY_TARGET readback
-            0,              // OPENLOOP_VELOCITY_ACTUAL readback
-            0,              // OPENLOOP_PHI readback
             0,              // MODE_RAMP_MODE_MOTION readback
             1,              // PHI_E_SELECTION readback
             0,              // PHI_E_EXT readback
@@ -1417,8 +1415,6 @@ fn impedance_unsafe_status_failure_reports_status_flags_evidence() {
             .with_read(0) // OPENLOOP_MODE readback
             .with_read(0) // OPENLOOP_ACCELERATION readback
             .with_read(0) // OPENLOOP_VELOCITY_TARGET readback
-            .with_read(0) // OPENLOOP_VELOCITY_ACTUAL readback
-            .with_read(0) // OPENLOOP_PHI readback
             .with_read(0) // MODE_RAMP_MODE_MOTION readback
             .with_read(1) // PHI_E_SELECTION readback
             .with_read(0) // PHI_E_EXT readback

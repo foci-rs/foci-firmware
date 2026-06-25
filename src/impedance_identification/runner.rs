@@ -347,8 +347,6 @@ async fn prepare_zero_voltage_setup<B: ImpedanceBackend>(
     .await?;
     verify_readback(backend, OPENLOOP_ACCELERATION.addr(), 0).await?;
     verify_readback(backend, OPENLOOP_VELOCITY_TARGET.addr(), 0).await?;
-    verify_readback(backend, OPENLOOP_VELOCITY_ACTUAL.addr(), 0).await?;
-    verify_readback(backend, OPENLOOP_PHI.addr(), 0).await?;
     verify_readback(
         backend,
         MODE_RAMP_MODE_MOTION.addr(),

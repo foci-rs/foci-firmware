@@ -755,6 +755,7 @@ struct FakeImpedanceBackend {
     ac_zero_voltage_readback_mismatch: bool,
     ac_openloop_acceleration_readback_mismatch: bool,
     ac_openloop_velocity_target_readback_mismatch: bool,
+    stale_dynamic_openloop_state_when_stopped: bool,
     ac_openloop_mode_readback_mismatch: bool,
     ac_openloop_phi_advances_after_setup: bool,
     open_loop_phi_e_selection_readback_mismatch: bool,
@@ -807,6 +808,7 @@ impl FakeImpedanceBackend {
             ac_zero_voltage_readback_mismatch: false,
             ac_openloop_acceleration_readback_mismatch: false,
             ac_openloop_velocity_target_readback_mismatch: false,
+            stale_dynamic_openloop_state_when_stopped: false,
             ac_openloop_mode_readback_mismatch: false,
             ac_openloop_phi_advances_after_setup: false,
             open_loop_phi_e_selection_readback_mismatch: false,
@@ -940,12 +942,20 @@ impl FakeImpedanceBackend {
             return self.openloop_velocity_target;
         }
         if addr == OPENLOOP_VELOCITY_ACTUAL.addr() {
+            if self.openloop_velocity_target == 0 && self.stale_dynamic_openloop_state_when_stopped
+            {
+                return 1_499;
+            }
             if self.phi_e_selection == 2 && self.openloop_velocity_target != 0 {
                 return self.openloop_velocity_target;
             }
             return self.openloop_velocity_actual;
         }
         if addr == OPENLOOP_PHI.addr() {
+            if self.openloop_velocity_target == 0 && self.stale_dynamic_openloop_state_when_stopped
+            {
+                return 0x61c8;
+            }
             if self.phi_e_selection == 2 && self.openloop_velocity_target != 0 {
                 if self.ac_openloop_phi_advances_after_setup {
                     return self.ac_openloop_phi().max(1).into();
@@ -1394,6 +1404,18 @@ fn runner_openloop_mode_uses_positive_direction_bit_value() {
         "expected audited positive direction OPENLOOP_MODE=0 writes, got {:?}",
         backend.writes
     );
+}
+
+#[test]
+fn runner_does_not_gate_zero_setup_on_dynamic_openloop_state_readbacks() {
+    let mut backend = FakeImpedanceBackend::standard();
+    backend.stale_dynamic_openloop_state_when_stopped = true;
+
+    let result = block_on(run_impedance_identification(&mut backend));
+
+    assert!(result.is_ok(), "expected ok, got {result:?}");
+    assert_eq!(backend.readback_mismatch, None);
+    assert!(backend.wrote_safe_state());
 }
 
 #[test]
