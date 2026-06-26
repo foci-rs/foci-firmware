@@ -58,6 +58,22 @@ pub fn fit_pulsating_impedance(
         warning_flags.insert(ImpedanceWarningFlags::AXIS_UNDETERMINED);
     }
 
+    let residual_permille = max_residual_permille(observations);
+    if residual_permille > profile.residual_fail_permille {
+        return Err(ImpedanceError::HighResidual);
+    }
+    if residual_permille > profile.residual_warn_permille {
+        warning_flags.insert(ImpedanceWarningFlags::HIGH_RESIDUAL);
+    }
+
+    let repeatability_permille = duplicate_zero_repeatability(observations);
+    if repeatability_permille > profile.repeatability_fail_permille {
+        return Err(ImpedanceError::RepeatabilityMismatch);
+    }
+    if repeatability_permille > profile.repeatability_warn_permille {
+        warning_flags.insert(ImpedanceWarningFlags::REPEATABILITY);
+    }
+
     let axis_max = mean + saliency;
     let axis_min = mean - saliency;
 
@@ -70,7 +86,7 @@ pub fn fit_pulsating_impedance(
         axis_deviation_counts,
         saliency_determinable,
         angle_coverage_permille,
-        repeatability_permille: duplicate_zero_repeatability(observations),
+        repeatability_permille,
         warning_flags,
     })
 }
@@ -249,6 +265,17 @@ fn duplicate_zero_repeatability(
     }
 
     0
+}
+
+fn max_residual_permille(
+    observations: &[PulsatingAngleObservation; PULSATING_IMPEDANCE_PROFILE_POINTS],
+) -> u16 {
+    observations
+        .iter()
+        .filter(|observation| observation.valid)
+        .map(|observation| observation.residual_permille)
+        .max()
+        .unwrap_or(0)
 }
 
 fn permille(numerator: f64, denominator: f64) -> u16 {

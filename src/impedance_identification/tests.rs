@@ -355,6 +355,56 @@ fn pulsating_fit_rejects_determinable_axis_deviation() {
 }
 
 #[test]
+fn pulsating_fit_rejects_repeatability_failure() {
+    let profile = PulsatingImpedanceProfile::standard_openffboard();
+    let mut observations = synthetic_pulsating_observations(&profile, 80, 24, 0, 0);
+    observations[PULSATING_IMPEDANCE_PROFILE_POINTS - 1].inductive_response_count_per_ud_milli = 60;
+
+    let err = fit_pulsating_impedance(&profile, &observations).unwrap_err();
+
+    assert_eq!(err, ImpedanceError::RepeatabilityMismatch);
+}
+
+#[test]
+fn pulsating_fit_warns_on_repeatability_warning_band() {
+    let profile = PulsatingImpedanceProfile::standard_openffboard();
+    let mut observations = synthetic_pulsating_observations(&profile, 80, 24, 0, 0);
+    observations[PULSATING_IMPEDANCE_PROFILE_POINTS - 1].inductive_response_count_per_ud_milli = 92;
+
+    let summary = fit_pulsating_impedance(&profile, &observations).unwrap();
+
+    assert!(
+        summary
+            .warning_flags
+            .contains(ImpedanceWarningFlags::REPEATABILITY)
+    );
+}
+
+#[test]
+fn pulsating_fit_rejects_high_residual_failure() {
+    let profile = PulsatingImpedanceProfile::standard_openffboard();
+    let observations = synthetic_pulsating_observations(&profile, 80, 24, 0, 800);
+
+    let err = fit_pulsating_impedance(&profile, &observations).unwrap_err();
+
+    assert_eq!(err, ImpedanceError::HighResidual);
+}
+
+#[test]
+fn pulsating_fit_warns_on_high_residual_warning_band() {
+    let profile = PulsatingImpedanceProfile::standard_openffboard();
+    let observations = synthetic_pulsating_observations(&profile, 80, 24, 0, 300);
+
+    let summary = fit_pulsating_impedance(&profile, &observations).unwrap();
+
+    assert!(
+        summary
+            .warning_flags
+            .contains(ImpedanceWarningFlags::HIGH_RESIDUAL)
+    );
+}
+
+#[test]
 fn standard_profile_v2_enforces_carrier_exposure_budget() {
     let profile = PulsatingImpedanceProfile::standard_openffboard();
 

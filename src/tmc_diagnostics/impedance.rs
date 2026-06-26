@@ -347,7 +347,7 @@ fn pulsating_observation_report(
         frequency_millihz: profile.carrier_frequency_millihz,
         ud_abs: point.ud_abs,
         angle_electrical_counts: observation.angle_electrical_counts,
-        status_flags_or: observation.warning_flags.0,
+        status_flags_or: 0,
         openloop_phi_sample: observation.angle_electrical_counts,
         openloop_velocity_actual: 0,
         adc_iux_sample: observation.baseline_adc_ch0_count,
@@ -602,7 +602,7 @@ mod tests {
             encoder_max: 1_010,
             encoder_peak_counts: 12,
             valid: true,
-            warning_flags: ImpedanceWarningFlags::NONE,
+            warning_flags: ImpedanceWarningFlags::ANGLE_LOCAL_MOTION,
         };
         let result = PulsatingImpedanceRunResult {
             profile,
@@ -645,6 +645,7 @@ mod tests {
         assert_eq!(fit.angle_coverage_permille, 1000);
         assert_eq!(fit.secondary_adc_response_count_per_ud_milli, 7);
         assert_eq!(observation.angle_electrical_counts, 0);
+        assert_eq!(observation.status_flags_or, 0);
         assert_eq!(observation.encoder_peak_counts, 12);
         assert_eq!(observation.angle_valid, 1);
         assert_eq!(run.filter_torque_enable_before, 1);
