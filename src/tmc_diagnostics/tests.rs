@@ -178,6 +178,23 @@ fn empty_reports_preserve_headers_and_zero_samples() {
 }
 
 #[test]
+fn impedance_status_codes_preserve_stable_values() {
+    assert_eq!(IMPEDANCE_STATUS_UNSAFE_STATUS_FLAGS, 21);
+    assert_eq!(IMPEDANCE_STATUS_AXIS_DEVIATION, 22);
+    assert_eq!(reports::IMPEDANCE_STATUS_FILTER_STATE, 23);
+
+    let mut seen = [false; 24];
+    for status in [
+        IMPEDANCE_STATUS_UNSAFE_STATUS_FLAGS,
+        IMPEDANCE_STATUS_AXIS_DEVIATION,
+        reports::IMPEDANCE_STATUS_FILTER_STATE,
+    ] {
+        assert!(!seen[usize::from(status)], "duplicate status code {status}");
+        seen[usize::from(status)] = true;
+    }
+}
+
+#[test]
 fn current_step_not_ready_returns_status_without_writes() {
     pollster::block_on(async {
         let mut runtime = TmcControlRuntime::new_for_channel(0);

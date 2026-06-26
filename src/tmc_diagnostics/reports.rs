@@ -381,12 +381,15 @@ pub const IMPEDANCE_STATUS_SCALAR_2F_MISMATCH: u8 = 18;
 pub const IMPEDANCE_STATUS_HIGH_RESIDUAL: u8 = 19;
 /// Impedance diagnostic failed because cross-point repeatability exceeded the hard gate.
 pub const IMPEDANCE_STATUS_REPEATABILITY: u8 = 20;
-/// Impedance diagnostic failed because torque/flux filter state could not be controlled.
-pub const IMPEDANCE_STATUS_FILTER_STATE: u8 = 21;
+/// Impedance diagnostic failed because TMC4671 `STATUS_FLAGS` reported a hard fault.
+pub const IMPEDANCE_STATUS_UNSAFE_STATUS_FLAGS: u8 = 21;
 /// Impedance diagnostic failed because the fitted saliency axis deviated too far.
 pub const IMPEDANCE_STATUS_AXIS_DEVIATION: u8 = 22;
-/// Impedance diagnostic failed because TMC4671 `STATUS_FLAGS` reported a hard fault.
-pub const IMPEDANCE_STATUS_UNSAFE_STATUS_FLAGS: u8 = 23;
+/// Impedance diagnostic failed because torque/flux filter state could not be controlled.
+///
+/// Values 21 and 22 are stable legacy meanings, so filter-state failures use
+/// the next available code to preserve host compatibility.
+pub const IMPEDANCE_STATUS_FILTER_STATE: u8 = 23;
 
 /// Board/profile constants reported for display by the impedance-test
 /// diagnostic. Carries no per-run status; always emitted once per request.
