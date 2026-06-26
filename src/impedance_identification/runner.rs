@@ -148,14 +148,16 @@ pub async fn run_impedance_identification<B: ImpedanceBackend>(
         Ok(value) => value,
         Err(_) => return Err(ImpedanceError::BackendIo),
     };
-    let motor_type = MotorTypeNPolePairs::from(motor_type_raw).motor_type();
-    if motor_type != MotorType::TwoPhase as u8 {
+    let motor_config = MotorTypeNPolePairs::from(motor_type_raw);
+    let motor_type = motor_config.motor_type();
+    let n_pole_pairs = motor_config.n_pole_pairs();
+    if motor_type != MotorType::TwoPhase as u8 || n_pole_pairs == 0 {
         return Err(ImpedanceError::UnsupportedMotorType);
     }
 
-    validate_profile(&profile)?;
+    validate_profile(&profile, n_pole_pairs)?;
 
-    let body_result = run_energized_body(backend, profile).await;
+    let body_result = run_energized_body(backend, profile, n_pole_pairs).await;
     let restore_result = restore_safe_state(backend, saved_voltage_limit).await;
 
     match (body_result, restore_result) {
@@ -165,7 +167,7 @@ pub async fn run_impedance_identification<B: ImpedanceBackend>(
     }
 }
 
-fn validate_profile(profile: &ImpedanceProfile) -> Result<(), ImpedanceError> {
+fn validate_profile(profile: &ImpedanceProfile, n_pole_pairs: u16) -> Result<(), ImpedanceError> {
     if profile.sample_count as usize != IMPEDANCE_SAMPLE_COUNT
         || profile.sample_count > profile.max_sample_count
         || profile.sample_interval_us < MIN_SAMPLE_INTERVAL_US
@@ -184,20 +186,21 @@ fn validate_profile(profile: &ImpedanceProfile) -> Result<(), ImpedanceError> {
     }
 
     for point in profile.injection_points {
-        let expected_velocity_rpm =
-            frequency_millihz_to_openloop_velocity_rpm(u64::from(point.frequency_millihz));
+        let openloop_velocity_rpm = frequency_millihz_to_openloop_velocity_rpm(
+            u64::from(point.frequency_millihz),
+            n_pole_pairs,
+        );
         // Reject if the open-loop ramp cannot reach the injection velocity within
         // the settle window: velocity_rpm / accel_rpm_per_s seconds must be no
         // longer than settle_ms, i.e. velocity_rpm * 1000 <= settle_ms * accel.
         let ramp_demand =
-            u64::from(point.openloop_velocity_rpm.max(0) as u32).saturating_mul(MILLIS_PER_SECOND);
+            u64::from(openloop_velocity_rpm.max(0) as u32).saturating_mul(MILLIS_PER_SECOND);
         let ramp_capacity = u64::from(point.settle_ms)
             .saturating_mul(u64::from(point.openloop_acceleration_rpm_per_s));
         if point.ud_abs == 0
             || point.ud_abs > i16::MAX as u16
             || point.frequency_millihz == 0
-            || point.openloop_velocity_rpm <= 0
-            || point.openloop_velocity_rpm != expected_velocity_rpm
+            || openloop_velocity_rpm <= 0
             || point.openloop_acceleration_rpm_per_s == 0
             || ramp_demand > ramp_capacity
         {
@@ -211,6 +214,7 @@ fn validate_profile(profile: &ImpedanceProfile) -> Result<(), ImpedanceError> {
 async fn run_energized_body<B: ImpedanceBackend>(
     backend: &mut B,
     profile: ImpedanceProfile,
+    n_pole_pairs: u16,
 ) -> Result<ImpedanceRunResult, ImpedanceError> {
     let power_stage_readback = prepare_zero_voltage_setup(backend, &profile).await?;
 
@@ -237,6 +241,7 @@ async fn run_energized_body<B: ImpedanceBackend>(
             backend,
             &profile,
             point,
+            n_pole_pairs,
             &mut warning_flags,
             &mut status_flags_or,
         )
@@ -485,10 +490,15 @@ async fn capture_ac_window<B: ImpedanceBackend>(
     backend: &mut B,
     profile: &ImpedanceProfile,
     point: super::types::ImpedanceInjectionPoint,
+    n_pole_pairs: u16,
     warning_flags: &mut ImpedanceWarningFlags,
     status_flags_or: &mut u32,
 ) -> Result<ImpedanceCapture, ImpedanceError> {
     let encoder_before = read(backend, ABN_DECODER_COUNT.addr()).await?;
+    let openloop_velocity_rpm = frequency_millihz_to_openloop_velocity_rpm(
+        u64::from(point.frequency_millihz),
+        n_pole_pairs,
+    ) as u32;
 
     write(backend, UQ_UD_EXT.addr(), 0).await?;
     write(
@@ -507,7 +517,7 @@ async fn capture_ac_window<B: ImpedanceBackend>(
     write(
         backend,
         OPENLOOP_VELOCITY_TARGET.addr(),
-        point.openloop_velocity_rpm as u32,
+        openloop_velocity_rpm,
     )
     .await?;
     write(
@@ -534,7 +544,7 @@ async fn capture_ac_window<B: ImpedanceBackend>(
     verify_readback(
         backend,
         OPENLOOP_VELOCITY_TARGET.addr(),
-        point.openloop_velocity_rpm as u32,
+        openloop_velocity_rpm,
     )
     .await?;
     verify_readback(

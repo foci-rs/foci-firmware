@@ -32,8 +32,14 @@ const POINT_OBSERVATION_OVERHEAD_MS: u64 = 2;
 /// which consume real energized time the requested delays do not model.
 const PER_SAMPLE_OVERHEAD_US: u16 = 500;
 
-pub(crate) const fn frequency_millihz_to_openloop_velocity_rpm(frequency_millihz: u64) -> i32 {
-    let rpm = ((frequency_millihz as u128) * 60) / 1_000;
+pub(crate) const fn frequency_millihz_to_openloop_velocity_rpm(
+    frequency_millihz: u64,
+    n_pole_pairs: u16,
+) -> i32 {
+    if n_pole_pairs == 0 {
+        return 0;
+    }
+    let rpm = ((frequency_millihz as u128) * 60) / (1_000 * n_pole_pairs as u128);
     if rpm > i32::MAX as u128 {
         i32::MAX
     } else {
@@ -87,7 +93,6 @@ impl ImpedanceProfile {
                 ImpedanceInjectionPoint {
                     ud_abs: 640,
                     frequency_millihz: 25_000,
-                    openloop_velocity_rpm: frequency_millihz_to_openloop_velocity_rpm(25_000),
                     openloop_acceleration_rpm_per_s:
                         OPENFFBOARD_IMPEDANCE_OPENLOOP_ACCELERATION_RPM_PER_S,
                     settle_ms: 250,
@@ -95,7 +100,6 @@ impl ImpedanceProfile {
                 ImpedanceInjectionPoint {
                     ud_abs: 960,
                     frequency_millihz: 25_000,
-                    openloop_velocity_rpm: frequency_millihz_to_openloop_velocity_rpm(25_000),
                     openloop_acceleration_rpm_per_s:
                         OPENFFBOARD_IMPEDANCE_OPENLOOP_ACCELERATION_RPM_PER_S,
                     settle_ms: 250,

@@ -1189,11 +1189,11 @@ fn impedance_low_signal_detail_one_emits_fit_evidence_before_run() {
                 0,           // MODE_RAMP_MODE_MOTION AC stopped readback
                 2,           // PHI_E_SELECTION open-loop readback
                 24_000,      // OPENLOOP_ACCELERATION readback
-                1_500,       // OPENLOOP_VELOCITY_TARGET readback
+                30,          // OPENLOOP_VELOCITY_TARGET readback
                 0,           // OPENLOOP_MODE readback
                 0,           // STATUS_FLAGS before AC voltage
                 0x0000_3039, // OPENLOOP_PHI observation sample
-                1_500,       // OPENLOOP_VELOCITY_ACTUAL observation sample
+                30,          // OPENLOOP_VELOCITY_ACTUAL observation sample
                 0x002c_ffdf, // ADC_IWY_IUX: IWY=44, IUX=-33
                 0x0042_ffc9, // INTERIM_FOC_IWY_IUX: IWY=66, IUX=-55
                 0x0000_0280, // INTERIM_FOC_UQ_UD: UQ=0, UD=640
@@ -1286,7 +1286,7 @@ fn impedance_low_signal_detail_one_emits_fit_evidence_before_run() {
                     point_index: 0,
                     status_flags_or: 0,
                     openloop_phi_sample: 12_345,
-                    openloop_velocity_actual: 1_500,
+                    openloop_velocity_actual: 30,
                     adc_iux_sample: -33,
                     adc_iwy_sample: 44,
                     foc_iux_sample: -55,
@@ -1326,7 +1326,7 @@ fn impedance_low_signal_detail_one_emits_fit_evidence_before_run() {
                     point_index: 1,
                     status_flags_or: 0,
                     openloop_phi_sample: 12_345,
-                    openloop_velocity_actual: 1_500,
+                    openloop_velocity_actual: 30,
                     adc_iux_sample: -33,
                     adc_iwy_sample: 44,
                     foc_iux_sample: -55,

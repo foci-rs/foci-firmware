@@ -32,9 +32,6 @@ fn test_point(frequency_millihz: u32, ud_abs: u16) -> ImpedanceInjectionPoint {
     ImpedanceInjectionPoint {
         ud_abs,
         frequency_millihz,
-        openloop_velocity_rpm: frequency_millihz_to_openloop_velocity_rpm(u64::from(
-            frequency_millihz,
-        )),
         openloop_acceleration_rpm_per_s: 3_000,
         settle_ms: 250,
     }
@@ -264,16 +261,14 @@ fn standard_profile_is_bounded_and_physical_projection_is_not_validated_by_defau
         "standard repeatability should compare distinct amplitudes"
     );
     for point in profile.injection_points {
-        assert!(point.openloop_velocity_rpm > 0);
-        assert_eq!(
-            point.openloop_velocity_rpm,
-            ((u64::from(point.frequency_millihz) * 60) / 1000) as i32
-        );
+        let openloop_velocity_rpm =
+            frequency_millihz_to_openloop_velocity_rpm(u64::from(point.frequency_millihz), 50);
+        assert_eq!(openloop_velocity_rpm, 30);
         assert!(point.openloop_acceleration_rpm_per_s > 0);
         assert!(
             u64::from(point.openloop_acceleration_rpm_per_s)
                 .saturating_mul(u64::from(point.settle_ms))
-                >= (point.openloop_velocity_rpm as u64).saturating_mul(1000),
+                >= (openloop_velocity_rpm as u64).saturating_mul(1000),
             "open-loop acceleration should reach target before capture starts"
         );
     }
@@ -362,7 +357,7 @@ fn warning_flags_status_bit_is_distinct_and_nonzero() {
 #[test]
 fn high_frequency_openloop_velocity_clamps_to_i32_max() {
     assert_eq!(
-        frequency_millihz_to_openloop_velocity_rpm(u64::MAX),
+        frequency_millihz_to_openloop_velocity_rpm(u64::MAX, 1),
         i32::MAX
     );
 }
@@ -728,6 +723,7 @@ struct FakeImpedanceBackend {
     profile: ImpedanceProfile,
     armed_for_open_loop_voltage: bool,
     motor_type: u8,
+    n_pole_pairs: u16,
     saved_voltage_limit: u32,
     pidout_limit: u32,
     uq_ud_ext: u32,
@@ -781,6 +777,7 @@ impl FakeImpedanceBackend {
             profile,
             armed_for_open_loop_voltage: true,
             motor_type: MotorType::TwoPhase as u8,
+            n_pole_pairs: 50,
             saved_voltage_limit,
             pidout_limit: saved_voltage_limit,
             uq_ud_ext: 0,
@@ -870,7 +867,11 @@ impl FakeImpedanceBackend {
     }
 
     fn ac_openloop_phi(&self) -> u16 {
-        let frequency_millihz = self.openloop_velocity_target.saturating_mul(1000) / 60;
+        let frequency_millihz = self
+            .openloop_velocity_target
+            .saturating_mul(1000)
+            .saturating_mul(u32::from(self.n_pole_pairs))
+            / 60;
         openloop_phi_from_time(frequency_millihz, self.timestamp_us)
     }
 
@@ -1008,7 +1009,7 @@ impl ImpedanceBackend for FakeImpedanceBackend {
         if addr == MOTOR_TYPE_N_POLE_PAIRS.addr() {
             return Ok(MotorTypeNPolePairs::new()
                 .with_motor_type(self.motor_type)
-                .with_n_pole_pairs(50)
+                .with_n_pole_pairs(self.n_pole_pairs)
                 .into());
         }
         if addr == ABN_DECODER_COUNT.addr() {
@@ -1327,9 +1328,9 @@ fn runner_unsupported_profile_ud_range_writes_nothing() {
 }
 
 #[test]
-fn runner_unsupported_profile_openloop_velocity_mismatch_writes_nothing() {
+fn runner_unsupported_profile_openloop_velocity_underflow_writes_nothing() {
     let mut backend = FakeImpedanceBackend::standard();
-    backend.profile.injection_points[0].openloop_velocity_rpm += 1;
+    backend.profile.injection_points[0].frequency_millihz = 1;
 
     let err = block_on(run_impedance_identification(&mut backend)).unwrap_err();
 
@@ -1402,6 +1403,31 @@ fn runner_openloop_mode_uses_positive_direction_bit_value() {
             .filter(|write| write.addr == OPENLOOP_MODE.addr())
             .all(|write| write.value == 0),
         "expected audited positive direction OPENLOOP_MODE=0 writes, got {:?}",
+        backend.writes
+    );
+}
+
+#[test]
+fn runner_derives_openloop_velocity_from_electrical_frequency_and_pole_pairs() {
+    let mut backend = FakeImpedanceBackend::standard();
+
+    let result = block_on(run_impedance_identification(&mut backend));
+
+    assert!(result.is_ok(), "expected ok, got {result:?}");
+    assert!(
+        backend
+            .writes
+            .iter()
+            .any(|write| write.addr == OPENLOOP_VELOCITY_TARGET.addr() && write.value == 30),
+        "expected 25 Hz electrical on a 50-pole-pair motor to write 30 mechanical rpm, got {:?}",
+        backend.writes
+    );
+    assert!(
+        !backend
+            .writes
+            .iter()
+            .any(|write| write.addr == OPENLOOP_VELOCITY_TARGET.addr() && write.value == 1_500),
+        "expected runner not to write electrical rpm directly, got {:?}",
         backend.writes
     );
 }
@@ -1766,7 +1792,6 @@ fn runner_success_uses_profile_sample_count_and_sample_interval_us() {
 #[test]
 fn runner_success_records_point_observations() {
     let mut backend = FakeImpedanceBackend::standard();
-    backend.openloop_velocity_actual = 1_500;
     backend.ac_openloop_phi_advances_after_setup = true;
     backend.baseline_current_count = 123;
 
@@ -1786,7 +1811,7 @@ fn runner_success_records_point_observations() {
     assert!(result.point_observations[0].foc_iq_sample > 0);
     assert!(result.point_observations[0].foc_id_sample > 0);
     assert_eq!(result.point_observations[0].openloop_phi_sample, 32_768);
-    assert_eq!(result.point_observations[0].openloop_velocity_actual, 1_500);
+    assert_eq!(result.point_observations[0].openloop_velocity_actual, 30);
     assert_ne!(result.point_observations[0].adc_iux_sample, 0);
     assert_ne!(result.point_observations[0].foc_iux_sample, 0);
     assert_ne!(result.point_baselines[0].dc_adc_iux_sample, 0);
