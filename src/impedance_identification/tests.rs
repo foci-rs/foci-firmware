@@ -1587,6 +1587,32 @@ fn runner_v2_verifies_power_stage_before_first_carrier_write() {
 }
 
 #[test]
+fn runner_v2_setup_readback_mismatches_block_first_carrier_write() {
+    for (addr, expected) in [
+        (OPENLOOP_VELOCITY_TARGET.addr(), 0),
+        (OPENLOOP_VELOCITY_ACTUAL.addr(), 0),
+        (OPENLOOP_ACCELERATION.addr(), 0),
+        (OPENLOOP_PHI.addr(), 0),
+        (OPENLOOP_MODE.addr(), 0),
+        (MODE_RAMP_MODE_MOTION.addr(), 0),
+        (PHI_E_SELECTION.addr(), 1),
+        (PHI_E_EXT.addr(), 0),
+    ] {
+        let mut backend = MockImpedanceBackend::ready_for_success();
+        backend.readback_mismatch_addr = Some(addr);
+
+        let err = block_on(run_pulsating_impedance_identification(&mut backend)).unwrap_err();
+
+        assert_eq!(err, ImpedanceError::ProfileReadbackMismatch);
+        assert_eq!(
+            backend.readback_mismatch,
+            Some((addr, expected, 0xffff_ffff))
+        );
+        assert_no_nonzero_uq_writes(&backend.writes);
+    }
+}
+
+#[test]
 fn runner_v2_uses_encoder_peak_excursion_not_before_after_delta() {
     let mut backend =
         MockImpedanceBackend::ready_for_success().with_encoder_script(&[1000, 1036, 1000]);
@@ -1599,6 +1625,27 @@ fn runner_v2_uses_encoder_peak_excursion_not_before_after_delta() {
             .contains(ImpedanceWarningFlags::ANGLE_LOCAL_MOTION)
     );
     assert_eq!(result.angle_observations[0].encoder_peak_counts, 36);
+}
+
+#[test]
+fn runner_v2_tracks_encoder_peak_across_wraparound() {
+    let mut backend =
+        MockImpedanceBackend::ready_for_success().with_encoder_script(&[3, u32::MAX - 4, 83]);
+
+    let result = block_on(run_pulsating_impedance_identification(&mut backend)).unwrap();
+
+    assert_eq!(result.angle_observations[0].encoder_peak_counts, 88);
+    assert_eq!(result.angle_observations[0].encoder_min, u32::MAX - 4);
+    assert_eq!(result.angle_observations[0].encoder_max, 83);
+    assert!(
+        result
+            .warning_flags
+            .contains(ImpedanceWarningFlags::ENCODER_MOVED)
+    );
+    assert!(
+        backend.v2_angle_starts >= 2,
+        "runner did not continue after wraparound warning"
+    );
 }
 
 #[test]

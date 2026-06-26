@@ -560,6 +560,33 @@ async fn prepare_pulsating_zero_voltage_setup<B: ImpedanceBackend>(
     .await?;
     write(backend, PHI_E_SELECTION.addr(), PHI_E_EXTERNAL).await?;
     write(backend, PHI_E_EXT.addr(), 0).await?;
+
+    verify_readback(
+        backend,
+        PIDOUT_UQ_UD_LIMITS.addr(),
+        pidout_limit_word(profile.max_abs_ud()),
+    )
+    .await?;
+    verify_readback(backend, UQ_UD_EXT.addr(), 0).await?;
+    verify_readback(
+        backend,
+        OPENLOOP_MODE.addr(),
+        OPENLOOP_PHI_DIRECTION_POSITIVE,
+    )
+    .await?;
+    verify_readback(backend, OPENLOOP_ACCELERATION.addr(), 0).await?;
+    verify_readback(backend, OPENLOOP_VELOCITY_TARGET.addr(), 0).await?;
+    verify_readback(backend, OPENLOOP_VELOCITY_ACTUAL.addr(), 0).await?;
+    verify_readback(backend, OPENLOOP_PHI.addr(), 0).await?;
+    verify_readback(
+        backend,
+        MODE_RAMP_MODE_MOTION.addr(),
+        MotionMode::Stopped as u32,
+    )
+    .await?;
+    verify_readback(backend, PHI_E_SELECTION.addr(), PHI_E_EXTERNAL).await?;
+    verify_readback(backend, PHI_E_EXT.addr(), 0).await?;
+
     write(backend, PWM_SV_CHOP.addr(), profile.pwm_sv_chop).await?;
 
     let power_stage_readback = read_power_stage_setup(backend).await?;
@@ -917,8 +944,8 @@ async fn capture_fixed_angle_window<B: ImpedanceBackend>(
     status_flags_or: &mut u32,
 ) -> Result<PulsatingAngleObservation, ImpedanceError> {
     let encoder_before = read(backend, ABN_DECODER_COUNT.addr()).await?;
-    let mut encoder_min = encoder_before;
-    let mut encoder_max = encoder_before;
+    let mut encoder_min_delta = 0i32;
+    let mut encoder_max_delta = 0i32;
     let baseline = sample_zero_voltage_baseline(backend).await?;
 
     write(backend, UQ_UD_EXT.addr(), 0).await?;
@@ -966,9 +993,13 @@ async fn capture_fixed_angle_window<B: ImpedanceBackend>(
         accumulator.accumulate(transformed, raw);
 
         let encoder = read(backend, ABN_DECODER_COUNT.addr()).await?;
-        encoder_min = encoder_min.min(encoder);
-        encoder_max = encoder_max.max(encoder);
-        let peak = encoder_peak_counts(encoder_before, encoder_min, encoder_max);
+        update_encoder_delta_bounds(
+            encoder_before,
+            encoder,
+            &mut encoder_min_delta,
+            &mut encoder_max_delta,
+        );
+        let peak = encoder_peak_from_delta_span(encoder_min_delta, encoder_max_delta);
         if peak > profile.encoder_move_fail_counts {
             let _ = write(backend, UQ_UD_EXT.addr(), 0).await;
             return Err(ImpedanceError::EncoderMoved);
@@ -993,15 +1024,19 @@ async fn capture_fixed_angle_window<B: ImpedanceBackend>(
 
     write(backend, UQ_UD_EXT.addr(), 0).await?;
     let encoder_after = read(backend, ABN_DECODER_COUNT.addr()).await?;
-    encoder_min = encoder_min.min(encoder_after);
-    encoder_max = encoder_max.max(encoder_after);
+    update_encoder_delta_bounds(
+        encoder_before,
+        encoder_after,
+        &mut encoder_min_delta,
+        &mut encoder_max_delta,
+    );
     let observation = accumulator.finish(
         profile,
         baseline,
         encoder_before,
         encoder_after,
-        encoder_min,
-        encoder_max,
+        encoder_before.wrapping_add(encoder_min_delta as u32),
+        encoder_before.wrapping_add(encoder_max_delta as u32),
     );
     warning_flags.insert(observation.warning_flags);
     Ok(observation)
@@ -1288,13 +1323,32 @@ fn check_pulsating_current_limit(
     }
 }
 
+fn update_encoder_delta_bounds(
+    before: u32,
+    current: u32,
+    min_delta: &mut i32,
+    max_delta: &mut i32,
+) {
+    let delta = signed_encoder_delta(before, current);
+    *min_delta = (*min_delta).min(delta);
+    *max_delta = (*max_delta).max(delta);
+}
+
+fn signed_encoder_delta(before: u32, current: u32) -> i32 {
+    current.wrapping_sub(before) as i32
+}
+
 fn encoder_peak_counts(before: u32, min: u32, max: u32) -> u16 {
-    let below = before.wrapping_sub(min) as i32;
-    let above = max.wrapping_sub(before) as i32;
-    below
+    let min_delta = signed_encoder_delta(before, min);
+    let max_delta = signed_encoder_delta(before, max);
+    encoder_peak_from_delta_span(min_delta, max_delta)
+}
+
+fn encoder_peak_from_delta_span(min_delta: i32, max_delta: i32) -> u16 {
+    i64::from(max_delta)
+        .saturating_sub(i64::from(min_delta))
         .unsigned_abs()
-        .max(above.unsigned_abs())
-        .min(u32::from(u16::MAX)) as u16
+        .min(u64::from(u16::MAX)) as u16
 }
 
 /// Streaming lock-in accumulator for one fixed-angle pulsating carrier window.
