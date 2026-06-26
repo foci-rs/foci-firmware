@@ -121,6 +121,13 @@ pub trait ImpedanceBackend {
         _observation: ImpedanceBaselineObservation,
     ) {
     }
+    /// Record bounded fixed-angle observability before a later v2 fit-gate failure.
+    fn record_pulsating_angle_observation(
+        &mut self,
+        _point_index: usize,
+        _observation: PulsatingAngleObservation,
+    ) {
+    }
     /// Record bounded fit evidence before a fit-gate failure is returned.
     fn record_fit_attempt(&mut self, _point_index: usize, _fit: ImpedanceFitPoint) {}
     /// Record the exact register mismatch behind `ProfileReadbackMismatch`.
@@ -457,6 +464,7 @@ async fn run_pulsating_energized_body<B: ImpedanceBackend>(
         .await?;
         warning_flags.insert(observation.warning_flags);
         angle_observations[index] = observation;
+        backend.record_pulsating_angle_observation(index, observation);
     }
 
     let mut summary = fit_pulsating_impedance(&profile, &angle_observations)?;

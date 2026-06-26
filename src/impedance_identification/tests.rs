@@ -928,6 +928,7 @@ struct FakeImpedanceBackend {
     scripted_encoder_counts: heapless::Vec<u32, 64>,
     scripted_encoder_index: usize,
     v2_angle_starts: usize,
+    pulsating_encoder_peak_counts: Option<u32>,
     baseline_current_count: i16,
     status_flags: u32,
     readback_mismatch_addr: Option<u8>,
@@ -951,6 +952,7 @@ struct FakeImpedanceBackend {
     ac_transformed_reads: usize,
     ac_sample_timestamps: heapless::Vec<u32, AC_SAMPLE_TIMESTAMP_CAPACITY>,
     fit_attempts: [Option<ImpedanceFitPoint>; IMPEDANCE_PROFILE_POINTS],
+    pulsating_observations: [Option<PulsatingAngleObservation>; PULSATING_IMPEDANCE_PROFILE_POINTS],
     encoder_delta_per_energized_delay: u32,
 }
 
@@ -990,6 +992,7 @@ impl FakeImpedanceBackend {
             scripted_encoder_counts: heapless::Vec::new(),
             scripted_encoder_index: 0,
             v2_angle_starts: 0,
+            pulsating_encoder_peak_counts: None,
             baseline_current_count: 0,
             status_flags: 0,
             readback_mismatch_addr: None,
@@ -1013,6 +1016,7 @@ impl FakeImpedanceBackend {
             ac_transformed_reads: 0,
             ac_sample_timestamps: heapless::Vec::new(),
             fit_attempts: [None; IMPEDANCE_PROFILE_POINTS],
+            pulsating_observations: [None; PULSATING_IMPEDANCE_PROFILE_POINTS],
             encoder_delta_per_energized_delay: 0,
         }
     }
@@ -1291,6 +1295,11 @@ impl ImpedanceBackend for FakeImpedanceBackend {
                 self.scripted_encoder_index += 1;
                 return Ok(count);
             }
+            if let Some(peak) = self.pulsating_encoder_peak_counts {
+                if self.phi_e_selection == 1 && self.energized() {
+                    return Ok(self.encoder_count.wrapping_add(peak));
+                }
+            }
             return Ok(self.encoder_count);
         }
         if addr == STATUS_FLAGS.addr() {
@@ -1443,6 +1452,14 @@ impl ImpedanceBackend for FakeImpedanceBackend {
 
     fn record_fit_attempt(&mut self, point_index: usize, fit: ImpedanceFitPoint) {
         self.fit_attempts[point_index] = Some(fit);
+    }
+
+    fn record_pulsating_angle_observation(
+        &mut self,
+        point_index: usize,
+        observation: PulsatingAngleObservation,
+    ) {
+        self.pulsating_observations[point_index] = Some(observation);
     }
 
     fn record_profile_readback_mismatch(&mut self, addr: u8, expected: u32, actual: u32) {
@@ -1682,6 +1699,31 @@ fn runner_v2_hard_aborts_when_encoder_peak_exceeds_fail_threshold() {
         "runner did not command zero voltage after encoder peak"
     );
     assert_eq!(backend.v2_angle_starts, 1);
+}
+
+#[test]
+fn runner_v2_fit_quality_failure_records_angle_observations() {
+    let profile = PulsatingImpedanceProfile::standard_openffboard();
+    let mut backend = MockImpedanceBackend::ready_for_success();
+    backend.pulsating_encoder_peak_counts =
+        Some(u32::from(profile.encoder_angle_invalid_counts) + 1);
+
+    let err = block_on(run_pulsating_impedance_identification(&mut backend)).unwrap_err();
+
+    assert_eq!(err, ImpedanceError::PoorCoverage);
+    assert_eq!(backend.v2_angle_starts, PULSATING_IMPEDANCE_PROFILE_POINTS);
+    for (index, observation) in backend.pulsating_observations.iter().enumerate() {
+        let observation = observation.expect("captured angle observation");
+        assert_eq!(
+            observation.angle_electrical_counts,
+            profile.angle_points[index].angle_electrical_counts
+        );
+        assert_eq!(
+            observation.encoder_peak_counts,
+            profile.encoder_angle_invalid_counts + 1
+        );
+        assert!(!observation.valid);
+    }
 }
 
 #[test]

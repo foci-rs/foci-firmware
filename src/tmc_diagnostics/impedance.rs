@@ -35,6 +35,7 @@ pub(crate) struct DiagnosticImpedanceBackend<'ctx, 'a, B, D> {
     baselines: [Option<crate::impedance_identification::ImpedanceBaselineObservation>;
         IMPEDANCE_PROFILE_POINTS],
     observations: [Option<ImpedancePointObservation>; IMPEDANCE_PROFILE_POINTS],
+    pulsating_observations: [Option<PulsatingAngleObservation>; PULSATING_IMPEDANCE_PROFILE_POINTS],
     readback_mismatch: ImpedanceReadbackMismatch,
 }
 
@@ -47,6 +48,7 @@ impl<'ctx, 'a, B, D> DiagnosticImpedanceBackend<'ctx, 'a, B, D> {
             fit_attempts: [None; IMPEDANCE_PROFILE_POINTS],
             baselines: [None; IMPEDANCE_PROFILE_POINTS],
             observations: [None; IMPEDANCE_PROFILE_POINTS],
+            pulsating_observations: [None; PULSATING_IMPEDANCE_PROFILE_POINTS],
             readback_mismatch: ImpedanceReadbackMismatch::EMPTY,
         }
     }
@@ -125,6 +127,16 @@ where
         observation: crate::impedance_identification::ImpedanceBaselineObservation,
     ) {
         if let Some(slot) = self.baselines.get_mut(point_index) {
+            *slot = Some(observation);
+        }
+    }
+
+    fn record_pulsating_angle_observation(
+        &mut self,
+        point_index: usize,
+        observation: PulsatingAngleObservation,
+    ) {
+        if let Some(slot) = self.pulsating_observations.get_mut(point_index) {
             *slot = Some(observation);
         }
     }
@@ -371,6 +383,17 @@ fn observation_reports(
     })
 }
 
+fn pulsating_observation_attempt_reports(
+    oid: u8,
+    profile: &PulsatingImpedanceProfile,
+    observations: &[Option<PulsatingAngleObservation>; PULSATING_IMPEDANCE_PROFILE_POINTS],
+) -> [Option<ImpedanceObservationReport>; PULSATING_IMPEDANCE_PROFILE_POINTS] {
+    core::array::from_fn(|index| {
+        observations[index]
+            .map(|observation| pulsating_observation_report(oid, index, profile, observation))
+    })
+}
+
 #[allow(dead_code)]
 fn baseline_report(
     oid: u8,
@@ -541,7 +564,7 @@ where
             ),
             empty_fit_reports(),
             empty_baseline_reports(),
-            empty_observation_reports(),
+            pulsating_observation_attempt_reports(oid, &profile, &backend.pulsating_observations),
             detail,
         ),
     }
@@ -626,5 +649,44 @@ mod tests {
         assert_eq!(observation.angle_valid, 1);
         assert_eq!(run.filter_torque_enable_before, 1);
         assert_eq!(run.filter_flux_enable_before, 1);
+    }
+
+    #[test]
+    fn pulsating_failure_attempt_reports_preserve_captured_observations() {
+        let profile = PulsatingImpedanceProfile::standard_openffboard();
+        let mut observations = [None; PULSATING_IMPEDANCE_PROFILE_POINTS];
+        observations[0] = Some(PulsatingAngleObservation {
+            angle_electrical_counts: profile.angle_points[0].angle_electrical_counts,
+            ud_abs: profile.angle_points[0].ud_abs,
+            inductive_response_count_per_ud_milli: 0,
+            in_phase_response_count_per_ud_milli: 0,
+            secondary_adc_response_count_per_ud_milli: 0,
+            baseline_d_count: 11,
+            baseline_q_count: 12,
+            baseline_adc_ch0_count: -13,
+            baseline_adc_ch1_count: 14,
+            residual_permille: 0,
+            coverage_permille: 1000,
+            encoder_before: 1_000,
+            encoder_after: 1_004,
+            encoder_min: 998,
+            encoder_max: 1_010,
+            encoder_peak_counts: 12,
+            valid: true,
+            warning_flags: ImpedanceWarningFlags::NONE,
+        });
+
+        let reports = pulsating_observation_attempt_reports(7, &profile, &observations);
+
+        let observation = reports[0].expect("first observation report");
+        assert_eq!(observation.oid, 7);
+        assert_eq!(observation.point_index, 0);
+        assert_eq!(
+            observation.angle_electrical_counts,
+            profile.angle_points[0].angle_electrical_counts
+        );
+        assert_eq!(observation.encoder_peak_counts, 12);
+        assert_eq!(observation.angle_valid, 1);
+        assert!(reports[1..].iter().all(Option::is_none));
     }
 }

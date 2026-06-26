@@ -1001,4 +1001,66 @@ mod tests {
             ]
         );
     }
+
+    #[test]
+    fn impedance_failure_detail_one_emits_observations_before_run() {
+        let mut sink = RecordingSink::default();
+
+        emit_diagnostic_report(
+            &mut sink,
+            DiagnosticReport::ImpedanceTest {
+                profile: impedance_profile_report(),
+                run: impedance_run_report(7),
+                fits: [None; crate::impedance_identification::PULSATING_IMPEDANCE_PROFILE_POINTS],
+                baselines: [None;
+                    crate::impedance_identification::PULSATING_IMPEDANCE_PROFILE_POINTS],
+                observations: impedance_observation_reports(),
+                detail: 1,
+            },
+        );
+
+        assert_eq!(
+            sink.events,
+            std::vec![
+                Event::ImpedanceProfile {
+                    oid: 6,
+                    profile_version: 1,
+                },
+                Event::ImpedanceObservation {
+                    oid: 6,
+                    point_index: 0,
+                    status_flags_or: 0x55aa_0000,
+                    foc_ud_sample: 640,
+                    foc_iq_sample: 80,
+                },
+                Event::ImpedanceObservationV2 {
+                    oid: 6,
+                    point_index: 0,
+                    angle_electrical_counts: 0,
+                    encoder_peak_counts: 12,
+                    angle_valid: 1,
+                },
+                Event::ImpedanceObservation {
+                    oid: 6,
+                    point_index: 1,
+                    status_flags_or: 0x55aa_0001,
+                    foc_ud_sample: 641,
+                    foc_iq_sample: 81,
+                },
+                Event::ImpedanceObservationV2 {
+                    oid: 6,
+                    point_index: 1,
+                    angle_electrical_counts: 8192,
+                    encoder_peak_counts: 12,
+                    angle_valid: 1,
+                },
+                Event::ImpedanceDone {
+                    oid: 6,
+                    status: 7,
+                    status_flags_or: 0x55aa,
+                    warning_flags: 0x24,
+                },
+            ]
+        );
+    }
 }
