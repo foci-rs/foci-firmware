@@ -1,8 +1,11 @@
-use super::profile::{ImpedanceProfile, frequency_millihz_to_openloop_velocity_rpm};
+use super::profile::{
+    ImpedanceProfile, PulsatingImpedanceProfile, frequency_millihz_to_openloop_velocity_rpm,
+};
 use super::runner::{ImpedanceBackend, ImpedanceBackendError, run_impedance_identification};
 use super::types::{
     IMPEDANCE_PROFILE_POINTS, IMPEDANCE_SAMPLE_COUNT, ImpedanceError, ImpedanceInjectionPoint,
-    ImpedanceSample, ImpedanceWarningFlags,
+    ImpedanceSample, ImpedanceWarningFlags, PULSATING_IMPEDANCE_PROFILE_POINTS,
+    PULSATING_IMPEDANCE_SAMPLE_COUNT,
 };
 use super::{
     ImpedanceFitPoint, evaluate_impedance_result, fit_impedance_point,
@@ -236,6 +239,63 @@ fn aggregate_fits(
             ImpedanceWarningFlags::NONE,
         ),
     ]
+}
+
+#[test]
+fn standard_profile_v2_uses_fixed_angle_pulsating_shape() {
+    let profile = PulsatingImpedanceProfile::standard_openffboard();
+
+    assert_eq!(profile.profile_version, 2);
+    assert_eq!(profile.carrier_frequency_millihz, 100_000);
+    assert_eq!(profile.samples_per_cycle, 20);
+    assert_eq!(profile.cycles_per_angle, 8);
+    assert_eq!(profile.sample_interval_us, 500);
+    assert_eq!(
+        profile.sample_count as usize,
+        PULSATING_IMPEDANCE_SAMPLE_COUNT
+    );
+    assert_eq!(PULSATING_IMPEDANCE_SAMPLE_COUNT, 160);
+    assert_eq!(PULSATING_IMPEDANCE_PROFILE_POINTS, 9);
+    assert_eq!(
+        profile
+            .angle_points
+            .map(|point| point.angle_electrical_counts),
+        [0, 8192, 16384, 24576, 32768, 40960, 49152, 57344, 0]
+    );
+    assert!(profile.angle_points.iter().all(|point| point.ud_abs == 640));
+    assert_eq!(profile.max_abs_ud(), 640);
+}
+
+#[test]
+fn standard_profile_v2_enforces_carrier_exposure_budget() {
+    let profile = PulsatingImpedanceProfile::standard_openffboard();
+
+    assert_eq!(profile.nominal_carrier_window_ms(), 80);
+    assert_eq!(profile.energized_window_ms(), 160);
+    assert_eq!(profile.max_window_exposure(), 640 * 640 * 160);
+    assert_eq!(profile.max_total_exposure(), 640 * 640 * 9 * 160);
+    assert!(profile.max_window_exposure() <= profile.max_window_exposure_budget);
+    assert!(profile.max_total_exposure() <= profile.max_total_exposure_budget);
+}
+
+#[test]
+fn profile_v2_rejects_ud_960_without_budget_review() {
+    let mut profile = PulsatingImpedanceProfile::standard_openffboard();
+    for point in &mut profile.angle_points {
+        point.ud_abs = 960;
+    }
+
+    assert!(profile.max_total_exposure() > profile.max_total_exposure_budget);
+}
+
+#[test]
+fn legacy_rotating_profile_still_compiles_for_regression_tests() {
+    let profile = ImpedanceProfile::standard_openffboard();
+
+    assert_eq!(profile.profile_version, 1);
+    assert_eq!(IMPEDANCE_SAMPLE_COUNT, 128);
+    assert_eq!(IMPEDANCE_PROFILE_POINTS, 2);
+    assert_eq!(profile.injection_points[0].frequency_millihz, 25_000);
 }
 
 #[test]

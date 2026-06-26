@@ -6,6 +6,12 @@ pub const IMPEDANCE_PROFILE_POINTS: usize = 2;
 /// Fixed capture size exposed by the standard host-visible profile.
 pub const IMPEDANCE_SAMPLE_COUNT: usize = 128;
 
+/// Fixed number of angle windows in the v2 impedance profile.
+pub const PULSATING_IMPEDANCE_PROFILE_POINTS: usize = 9;
+
+/// Fixed carrier sample count exposed by the standard host-visible profile.
+pub const PULSATING_IMPEDANCE_SAMPLE_COUNT: usize = 160;
+
 /// One open-loop voltage injection window.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub struct ImpedanceInjectionPoint {
@@ -17,6 +23,15 @@ pub struct ImpedanceInjectionPoint {
     pub openloop_acceleration_rpm_per_s: u32,
     /// Settling time before the sample capture starts.
     pub settle_ms: u16,
+}
+
+/// One fixed-angle pulsating voltage window.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+pub struct PulsatingImpedancePoint {
+    /// Electrical angle for `PHI_E_EXT`, in 16-bit turn counts.
+    pub angle_electrical_counts: u16,
+    /// Absolute UD magnitude applied by the square carrier.
+    pub ud_abs: u16,
 }
 
 /// One captured current sample from the impedance window.

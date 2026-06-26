@@ -2,6 +2,11 @@
 
 use super::types::{IMPEDANCE_PROFILE_POINTS, IMPEDANCE_SAMPLE_COUNT, ImpedanceInjectionPoint};
 
+#[path = "pulsating_profile.rs"]
+mod pulsating_profile;
+
+pub use pulsating_profile::PulsatingImpedanceProfile;
+
 const STATUS_PID_V_OUTPUT_LIMIT: u32 = 1 << 7;
 const STATUS_PID_ID_ERRSUM_LIMIT: u32 = 1 << 10;
 const STATUS_PID_IQ_ERRSUM_LIMIT: u32 = 1 << 14;
@@ -30,7 +35,7 @@ const POINT_OBSERVATION_OVERHEAD_MS: u64 = 2;
 /// sampled open-loop phase, and status SPI register reads plus the safety gate
 /// checks the runner performs between sample delays while voltage is applied,
 /// which consume real energized time the requested delays do not model.
-const PER_SAMPLE_OVERHEAD_US: u16 = 500;
+pub(crate) const IMPEDANCE_PER_SAMPLE_OVERHEAD_US: u16 = 500;
 
 pub(crate) const fn frequency_millihz_to_openloop_velocity_rpm(
     frequency_millihz: u64,
@@ -177,8 +182,8 @@ impl ImpedanceProfile {
     }
 
     fn capture_duration_ms(&self) -> u64 {
-        let per_sample_us =
-            u64::from(self.sample_interval_us).saturating_add(u64::from(PER_SAMPLE_OVERHEAD_US));
+        let per_sample_us = u64::from(self.sample_interval_us)
+            .saturating_add(u64::from(IMPEDANCE_PER_SAMPLE_OVERHEAD_US));
         let capture_us = u64::from(self.sample_count).saturating_mul(per_sample_us);
         capture_us.saturating_add(MICROS_PER_MILLISECOND - 1) / MICROS_PER_MILLISECOND
     }
