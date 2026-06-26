@@ -130,8 +130,8 @@ fn solve_3x3(mut matrix: [[f64; 3]; 3], mut rhs: [f64; 3]) -> Option<[f64; 3]> {
     for pivot in 0..3 {
         let mut best = pivot;
         let mut best_abs = libm::fabs(matrix[pivot][pivot]);
-        for row in (pivot + 1)..3 {
-            let candidate_abs = libm::fabs(matrix[row][pivot]);
+        for (row, matrix_row) in matrix.iter().enumerate().skip(pivot + 1) {
+            let candidate_abs = libm::fabs(matrix_row[pivot]);
             if candidate_abs > best_abs {
                 best = row;
                 best_abs = candidate_abs;
@@ -148,21 +148,23 @@ fn solve_3x3(mut matrix: [[f64; 3]; 3], mut rhs: [f64; 3]) -> Option<[f64; 3]> {
         }
 
         let pivot_value = matrix[pivot][pivot];
-        for col in pivot..3 {
-            matrix[pivot][col] /= pivot_value;
+        for value in matrix[pivot].iter_mut().skip(pivot) {
+            *value /= pivot_value;
         }
         rhs[pivot] /= pivot_value;
 
-        for row in 0..3 {
+        let pivot_row = matrix[pivot];
+        let pivot_rhs = rhs[pivot];
+        for (row, matrix_row) in matrix.iter_mut().enumerate() {
             if row == pivot {
                 continue;
             }
 
-            let factor = matrix[row][pivot];
-            for col in pivot..3 {
-                matrix[row][col] -= factor * matrix[pivot][col];
+            let factor = matrix_row[pivot];
+            for (value, pivot_value) in matrix_row.iter_mut().zip(pivot_row).skip(pivot) {
+                *value -= factor * pivot_value;
             }
-            rhs[row] -= factor * rhs[pivot];
+            rhs[row] -= factor * pivot_rhs;
         }
     }
 
