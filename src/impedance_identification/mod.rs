@@ -29,6 +29,7 @@ pub use types::{
     ImpedanceInjectionPoint, ImpedancePointObservation, ImpedancePowerStageReadback,
     ImpedanceReadbackMismatch, ImpedanceSample, ImpedanceWarningFlags,
     PULSATING_IMPEDANCE_PROFILE_POINTS, PULSATING_IMPEDANCE_SAMPLE_COUNT,
-    PulsatingAngleObservation, PulsatingBaselineObservation, PulsatingFilterState,
-    PulsatingFitSummary, PulsatingImpedancePoint,
+    PULSATING_POST_SWEEP_ZERO_INDEX, PULSATING_RETURN_ZERO_SETTLE_INDEX,
+    PULSATING_STABILITY_ZERO_INDEX, PulsatingAngleObservation, PulsatingBaselineObservation,
+    PulsatingFilterState, PulsatingFitSummary, PulsatingImpedancePoint,
 };

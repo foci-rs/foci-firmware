@@ -6,8 +6,17 @@ pub const IMPEDANCE_PROFILE_POINTS: usize = 2;
 /// Fixed capture size exposed by the standard host-visible profile.
 pub const IMPEDANCE_SAMPLE_COUNT: usize = 128;
 
-/// Fixed number of angle windows in the v2 impedance profile.
-pub const PULSATING_IMPEDANCE_PROFILE_POINTS: usize = 9;
+/// Fixed number of angle windows in the pulsating impedance profile.
+pub const PULSATING_IMPEDANCE_PROFILE_POINTS: usize = 10;
+
+/// Zero-angle window used only to let the rotor return after the sweep.
+pub const PULSATING_RETURN_ZERO_SETTLE_INDEX: usize = 7;
+
+/// First settled post-sweep zero-angle measurement window.
+pub const PULSATING_POST_SWEEP_ZERO_INDEX: usize = 8;
+
+/// Second settled post-sweep zero-angle window used for repeatability.
+pub const PULSATING_STABILITY_ZERO_INDEX: usize = 9;
 
 /// Fixed carrier sample count exposed by the standard host-visible profile.
 pub const PULSATING_IMPEDANCE_SAMPLE_COUNT: usize = 160;

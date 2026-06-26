@@ -3,7 +3,8 @@
 use super::PulsatingImpedanceProfile;
 use super::types::{
     ImpedanceError, ImpedanceWarningFlags, PULSATING_IMPEDANCE_PROFILE_POINTS,
-    PulsatingAngleObservation, PulsatingFitSummary,
+    PULSATING_POST_SWEEP_ZERO_INDEX, PULSATING_STABILITY_ZERO_INDEX, PulsatingAngleObservation,
+    PulsatingFitSummary,
 };
 
 const FULL_TWO_THETA_BIN_MASK: u8 = 0b1111;
@@ -27,6 +28,9 @@ pub fn fit_pulsating_impedance(
 
     let valid_count = observations
         .iter()
+        .enumerate()
+        .filter(|(index, _)| participates_in_fit(*index))
+        .map(|(_, observation)| observation)
         .filter(|observation| observation.valid)
         .count();
     if valid_count < 4 {
@@ -105,7 +109,10 @@ fn two_theta_bin_mask(
     observations: &[PulsatingAngleObservation; PULSATING_IMPEDANCE_PROFILE_POINTS],
 ) -> u8 {
     let mut mask = 0u8;
-    for observation in observations {
+    for (index, observation) in observations.iter().enumerate() {
+        if !participates_in_fit(index) {
+            continue;
+        }
         if observation.valid {
             let two_theta_counts =
                 u32::from(observation.angle_electrical_counts).wrapping_mul(2) & 0xffff;
@@ -122,7 +129,10 @@ fn fit_response(
     let mut normal = [[0.0; 3]; 3];
     let mut rhs = [0.0; 3];
 
-    for observation in observations {
+    for (index, observation) in observations.iter().enumerate() {
+        if !participates_in_fit(index) {
+            continue;
+        }
         if !observation.valid {
             continue;
         }
@@ -194,8 +204,8 @@ fn coverage_permille(
     let mut sum_cos = 0.0;
     let mut sum_sin = 0.0;
 
-    for observation in observations {
-        if observation.valid {
+    for (index, observation) in observations.iter().enumerate() {
+        if participates_in_fit(index) && observation.valid {
             let basis = fit_basis(observation.angle_electrical_counts);
             count += 1;
             sum_cos += basis.cos_two_theta;
@@ -213,8 +223,8 @@ fn coverage_permille(
     let mut centered_sin_sin = 0.0;
     let mut centered_cos_sin = 0.0;
 
-    for observation in observations {
-        if observation.valid {
+    for (index, observation) in observations.iter().enumerate() {
+        if participates_in_fit(index) && observation.valid {
             let basis = fit_basis(observation.angle_electrical_counts);
             let cos_centered = basis.cos_two_theta - mean_cos;
             let sin_centered = basis.sin_two_theta - mean_sin;
@@ -243,28 +253,11 @@ fn half_turn_deviation_counts(angle_electrical_counts: u16) -> u16 {
 fn duplicate_zero_repeatability(
     observations: &[PulsatingAngleObservation; PULSATING_IMPEDANCE_PROFILE_POINTS],
 ) -> u16 {
-    let mut first_response: Option<u32> = None;
-    let mut first_angle = 0u16;
-
-    for observation in observations {
-        if !observation.valid {
-            continue;
-        }
-
-        if let Some(response) = first_response {
-            if observation.angle_electrical_counts == first_angle {
-                let current = observation.inductive_response_count_per_ud_milli;
-                let diff = response.abs_diff(current);
-                let mean = (u64::from(response) + u64::from(current)) / 2;
-                return permille(diff as f64, mean as f64);
-            }
-        } else {
-            first_response = Some(observation.inductive_response_count_per_ud_milli);
-            first_angle = observation.angle_electrical_counts;
-        }
-    }
-
-    0
+    indexed_repeatability(
+        observations,
+        PULSATING_POST_SWEEP_ZERO_INDEX,
+        PULSATING_STABILITY_ZERO_INDEX,
+    )
 }
 
 fn max_residual_permille(
@@ -272,10 +265,41 @@ fn max_residual_permille(
 ) -> u16 {
     observations
         .iter()
+        .enumerate()
+        .filter(|(index, _)| participates_in_fit(*index))
+        .map(|(_, observation)| observation)
         .filter(|observation| observation.valid)
         .map(|observation| observation.residual_permille)
         .max()
         .unwrap_or(0)
+}
+
+fn indexed_repeatability(
+    observations: &[PulsatingAngleObservation; PULSATING_IMPEDANCE_PROFILE_POINTS],
+    first_index: usize,
+    second_index: usize,
+) -> u16 {
+    let Some(first) = observations.get(first_index) else {
+        return 0;
+    };
+    let Some(second) = observations.get(second_index) else {
+        return 0;
+    };
+    if first.angle_electrical_counts != second.angle_electrical_counts {
+        return 0;
+    }
+
+    let diff = first
+        .inductive_response_count_per_ud_milli
+        .abs_diff(second.inductive_response_count_per_ud_milli);
+    let mean = (u64::from(first.inductive_response_count_per_ud_milli)
+        + u64::from(second.inductive_response_count_per_ud_milli))
+        / 2;
+    permille(diff as f64, mean as f64)
+}
+
+fn participates_in_fit(index: usize) -> bool {
+    (1..=6).contains(&index)
 }
 
 fn permille(numerator: f64, denominator: f64) -> u16 {

@@ -170,7 +170,6 @@ mod tests {
         },
         ImpedanceProfile {
             oid: u8,
-            profile_version: u16,
         },
         ImpedanceFit {
             oid: u8,
@@ -286,10 +285,8 @@ mod tests {
         }
 
         fn foci_impedance_profile(&mut self, report: ImpedanceProfileReport) {
-            self.events.push(Event::ImpedanceProfile {
-                oid: report.oid,
-                profile_version: report.profile_version,
-            });
+            self.events
+                .push(Event::ImpedanceProfile { oid: report.oid });
         }
 
         fn foci_impedance_fit(&mut self, report: ImpedanceFitReport) {
@@ -675,7 +672,6 @@ mod tests {
     fn impedance_profile_report() -> ImpedanceProfileReport {
         ImpedanceProfileReport {
             oid: 6,
-            profile_version: 1,
             point_count: 2,
             sample_count: 128,
             sample_interval_us: 250,
@@ -683,6 +679,8 @@ mod tests {
             samples_per_cycle: 20,
             cycles_per_angle: 8,
             max_ud: 960,
+            hold_ud: 320,
+            carrier_ud: 320,
             status_flags_fail_mask: 0x7000_4480,
             status_flags_warn_mask: 0,
             scale_metadata_validated: false,
@@ -693,7 +691,6 @@ mod tests {
         ImpedanceRunReport {
             oid: 6,
             status,
-            profile_version: 1,
             selected_axis_max_count_per_ud_milli: 1234,
             selected_axis_min_count_per_ud_milli: 567,
             repeatability_permille: 12,
@@ -706,6 +703,7 @@ mod tests {
             filter_flux_enable_before: 1,
             filter_torque_enable_during: 0,
             filter_flux_enable_during: 0,
+            duplicate_zero_encoder_drift_counts: 4,
         }
     }
 
@@ -726,6 +724,8 @@ mod tests {
             saliency_determinable: 1,
             angle_coverage_permille: 1000,
             axis_deviation_counts: 0,
+            inductive_response_count_per_ud_milli: 1_300,
+            in_phase_response_count_per_ud_milli: 40,
             secondary_adc_response_count_per_ud_milli: 7,
             magnitude_mean_count_per_ud_milli: 840,
             magnitude_2f_count_per_ud_milli: 125,
@@ -755,6 +755,8 @@ mod tests {
             foc_ud_limited_sample: 638 + i16::from(point_index),
             foc_iq_sample: 80 + i16::from(point_index),
             foc_id_sample: 40 + i16::from(point_index),
+            inductive_response_count_per_ud_milli: 1_300 + u32::from(point_index),
+            in_phase_response_count_per_ud_milli: 40 + u32::from(point_index),
             encoder_before: 1_000,
             encoder_after: 1_004,
             encoder_min: 998,
@@ -858,10 +860,7 @@ mod tests {
         assert_eq!(
             sink.events,
             std::vec![
-                Event::ImpedanceProfile {
-                    oid: 6,
-                    profile_version: 1,
-                },
+                Event::ImpedanceProfile { oid: 6 },
                 Event::ImpedanceBaseline {
                     oid: 6,
                     point_index: 0,
@@ -988,10 +987,7 @@ mod tests {
         assert_eq!(
             sink.events,
             std::vec![
-                Event::ImpedanceProfile {
-                    oid: 6,
-                    profile_version: 1,
-                },
+                Event::ImpedanceProfile { oid: 6 },
                 Event::ImpedanceDone {
                     oid: 6,
                     status: 2,
@@ -1022,10 +1018,7 @@ mod tests {
         assert_eq!(
             sink.events,
             std::vec![
-                Event::ImpedanceProfile {
-                    oid: 6,
-                    profile_version: 1,
-                },
+                Event::ImpedanceProfile { oid: 6 },
                 Event::ImpedanceObservation {
                     oid: 6,
                     point_index: 0,

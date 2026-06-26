@@ -8,8 +8,9 @@ use foci_tmc4671::registers::{
 use crate::impedance_identification::{
     IMPEDANCE_PROFILE_POINTS, ImpedanceBackend, ImpedanceBackendError, ImpedanceError,
     ImpedanceFitPoint, ImpedancePointObservation, ImpedancePowerStageReadback, ImpedanceProfile,
-    ImpedanceReadbackMismatch, PULSATING_IMPEDANCE_PROFILE_POINTS, PulsatingAngleObservation,
-    PulsatingImpedanceProfile, PulsatingImpedanceRunResult, run_pulsating_impedance_identification,
+    ImpedanceReadbackMismatch, PULSATING_IMPEDANCE_PROFILE_POINTS, PULSATING_POST_SWEEP_ZERO_INDEX,
+    PULSATING_STABILITY_ZERO_INDEX, PulsatingAngleObservation, PulsatingImpedanceProfile,
+    PulsatingImpedanceRunResult, run_pulsating_impedance_identification,
 };
 use crate::tmc::{TmcRequest, TmcRequestKind, normalize_diagnostic_detail};
 
@@ -159,14 +160,15 @@ where
 fn profile_report(oid: u8, profile: &PulsatingImpedanceProfile) -> ImpedanceProfileReport {
     ImpedanceProfileReport {
         oid,
-        profile_version: profile.profile_version,
         point_count: profile.angle_points.len() as u8,
         sample_count: profile.sample_count,
         sample_interval_us: profile.sample_interval_us,
         carrier_frequency_millihz: profile.carrier_frequency_millihz,
         samples_per_cycle: profile.samples_per_cycle,
         cycles_per_angle: profile.cycles_per_angle,
-        max_ud: profile
+        max_ud: profile.max_abs_ud(),
+        hold_ud: profile.hold_ud_abs,
+        carrier_ud: profile
             .angle_points
             .iter()
             .map(|point| point.ud_abs)
@@ -179,10 +181,12 @@ fn profile_report(oid: u8, profile: &PulsatingImpedanceProfile) -> ImpedanceProf
 }
 
 fn run_report(oid: u8, result: &PulsatingImpedanceRunResult) -> ImpedanceRunReport {
+    let observations = result.angle_observations.map(Some);
+    let duplicate_zero = duplicate_zero_evidence(&observations);
+
     ImpedanceRunReport {
         oid,
         status: 0,
-        profile_version: result.profile.profile_version,
         selected_axis_max_count_per_ud_milli: result.summary.axis_max_count_per_ud_milli,
         selected_axis_min_count_per_ud_milli: result.summary.axis_min_count_per_ud_milli,
         repeatability_permille: result.summary.repeatability_permille,
@@ -195,6 +199,7 @@ fn run_report(oid: u8, result: &PulsatingImpedanceRunResult) -> ImpedanceRunRepo
         filter_flux_enable_before: result.filter_state.flux_enable_before,
         filter_torque_enable_during: result.filter_state.torque_enable_during,
         filter_flux_enable_during: result.filter_state.flux_enable_during,
+        duplicate_zero_encoder_drift_counts: duplicate_zero.encoder_drift,
     }
 }
 
@@ -210,6 +215,77 @@ fn failed_run_report(
     report.readback_expected = readback_mismatch.expected;
     report.readback_actual = readback_mismatch.actual;
     report
+}
+
+fn failed_pulsating_run_report(
+    oid: u8,
+    status: u8,
+    status_flags_or: u32,
+    readback_mismatch: ImpedanceReadbackMismatch,
+    observations: &[Option<PulsatingAngleObservation>; PULSATING_IMPEDANCE_PROFILE_POINTS],
+) -> ImpedanceRunReport {
+    let mut report = failed_run_report(oid, status, status_flags_or, readback_mismatch);
+    let duplicate_zero = duplicate_zero_evidence(observations);
+    report.repeatability_permille = duplicate_zero.repeatability_permille;
+    report.duplicate_zero_encoder_drift_counts = duplicate_zero.encoder_drift;
+    report
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct DuplicateZeroEvidence {
+    repeatability_permille: u16,
+    encoder_drift: u32,
+}
+
+impl DuplicateZeroEvidence {
+    const EMPTY: Self = Self {
+        repeatability_permille: 0,
+        encoder_drift: 0,
+    };
+}
+
+fn duplicate_zero_evidence(
+    observations: &[Option<PulsatingAngleObservation>; PULSATING_IMPEDANCE_PROFILE_POINTS],
+) -> DuplicateZeroEvidence {
+    indexed_duplicate_zero_evidence(
+        observations,
+        PULSATING_POST_SWEEP_ZERO_INDEX,
+        PULSATING_STABILITY_ZERO_INDEX,
+    )
+}
+
+fn indexed_duplicate_zero_evidence(
+    observations: &[Option<PulsatingAngleObservation>; PULSATING_IMPEDANCE_PROFILE_POINTS],
+    first_index: usize,
+    second_index: usize,
+) -> DuplicateZeroEvidence {
+    let Some(Some(first)) = observations.get(first_index) else {
+        return DuplicateZeroEvidence::EMPTY;
+    };
+    let Some(Some(second)) = observations.get(second_index) else {
+        return DuplicateZeroEvidence::EMPTY;
+    };
+    if first.angle_electrical_counts != second.angle_electrical_counts {
+        return DuplicateZeroEvidence::EMPTY;
+    }
+
+    DuplicateZeroEvidence {
+        repeatability_permille: repeatability_permille(
+            first.inductive_response_count_per_ud_milli,
+            second.inductive_response_count_per_ud_milli,
+        ),
+        encoder_drift: first.encoder_before.abs_diff(second.encoder_before),
+    }
+}
+
+fn repeatability_permille(first: u32, second: u32) -> u16 {
+    let mean = (u64::from(first) + u64::from(second)) / 2;
+    if mean == 0 {
+        return 0;
+    }
+
+    let diff = u64::from(first.abs_diff(second));
+    ((diff * 1_000 + mean / 2) / mean).min(u64::from(u16::MAX)) as u16
 }
 
 #[allow(dead_code)]
@@ -236,6 +312,8 @@ fn fit_report(
         saliency_determinable: 0,
         angle_coverage_permille: 0,
         axis_deviation_counts: 0,
+        inductive_response_count_per_ud_milli: 0,
+        in_phase_response_count_per_ud_milli: 0,
         secondary_adc_response_count_per_ud_milli: 0,
         magnitude_mean_count_per_ud_milli: fit.magnitude_mean_count_per_ud_milli,
         magnitude_2f_count_per_ud_milli: fit.magnitude_2f_count_per_ud_milli,
@@ -268,6 +346,8 @@ fn pulsating_fit_report(
         saliency_determinable: u8::from(result.summary.saliency_determinable),
         angle_coverage_permille: result.summary.angle_coverage_permille,
         axis_deviation_counts: result.summary.axis_deviation_counts,
+        inductive_response_count_per_ud_milli: observation.inductive_response_count_per_ud_milli,
+        in_phase_response_count_per_ud_milli: observation.in_phase_response_count_per_ud_milli,
         secondary_adc_response_count_per_ud_milli: observation
             .secondary_adc_response_count_per_ud_milli,
         magnitude_mean_count_per_ud_milli: 0,
@@ -325,6 +405,8 @@ fn observation_report(
         foc_ud_limited_sample: observation.foc_ud_limited_sample,
         foc_iq_sample: observation.foc_iq_sample,
         foc_id_sample: observation.foc_id_sample,
+        inductive_response_count_per_ud_milli: 0,
+        in_phase_response_count_per_ud_milli: 0,
         encoder_before: 0,
         encoder_after: 0,
         encoder_min: 0,
@@ -360,6 +442,8 @@ fn pulsating_observation_report(
         foc_ud_limited_sample: point.ud_abs as i16,
         foc_iq_sample: observation.baseline_q_count,
         foc_id_sample: observation.baseline_d_count,
+        inductive_response_count_per_ud_milli: observation.inductive_response_count_per_ud_milli,
+        in_phase_response_count_per_ud_milli: observation.in_phase_response_count_per_ud_milli,
         encoder_before: observation.encoder_before,
         encoder_after: observation.encoder_after,
         encoder_min: observation.encoder_min,
@@ -556,11 +640,12 @@ where
         }
         Err(error) => handled(
             profile_report,
-            failed_run_report(
+            failed_pulsating_run_report(
                 oid,
                 status_code(error),
                 backend.status_flags_or,
                 backend.readback_mismatch,
+                &backend.pulsating_observations,
             ),
             empty_fit_reports(),
             empty_baseline_reports(),
@@ -574,13 +659,14 @@ where
 mod tests {
     use crate::impedance_identification::{
         ImpedancePowerStageReadback, ImpedanceReadbackMismatch, ImpedanceWarningFlags,
-        PulsatingAngleObservation, PulsatingFilterState, PulsatingFitSummary,
+        PULSATING_RETURN_ZERO_SETTLE_INDEX, PulsatingAngleObservation, PulsatingFilterState,
+        PulsatingFitSummary,
     };
 
     use super::*;
 
     #[test]
-    fn pulsating_result_maps_v2_evidence_into_reports() {
+    fn pulsating_result_maps_held_angle_evidence_into_reports() {
         let profile = PulsatingImpedanceProfile::standard_openffboard();
         let mut observations =
             [PulsatingAngleObservation::EMPTY; PULSATING_IMPEDANCE_PROFILE_POINTS];
@@ -640,6 +726,8 @@ mod tests {
         assert_eq!(profile.samples_per_cycle, 20);
         assert_eq!(profile.cycles_per_angle, 8);
         assert_eq!(fit.mean_response_count_per_ud_milli, 1_000);
+        assert_eq!(fit.inductive_response_count_per_ud_milli, 1_300);
+        assert_eq!(fit.in_phase_response_count_per_ud_milli, 40);
         assert_eq!(fit.saliency_permille, 300);
         assert_eq!(fit.saliency_determinable, 1);
         assert_eq!(fit.angle_coverage_permille, 1000);
@@ -689,5 +777,146 @@ mod tests {
         assert_eq!(observation.encoder_peak_counts, 12);
         assert_eq!(observation.angle_valid, 1);
         assert!(reports[1..].iter().all(Option::is_none));
+    }
+
+    #[test]
+    fn pulsating_failure_run_report_preserves_final_duplicate_zero_evidence() {
+        let profile = PulsatingImpedanceProfile::standard_openffboard();
+        let mut observations = [None; PULSATING_IMPEDANCE_PROFILE_POINTS];
+        observations[PULSATING_POST_SWEEP_ZERO_INDEX] = Some(PulsatingAngleObservation {
+            angle_electrical_counts: profile.angle_points[PULSATING_POST_SWEEP_ZERO_INDEX]
+                .angle_electrical_counts,
+            ud_abs: profile.angle_points[PULSATING_POST_SWEEP_ZERO_INDEX].ud_abs,
+            inductive_response_count_per_ud_milli: 1_000,
+            in_phase_response_count_per_ud_milli: 25,
+            secondary_adc_response_count_per_ud_milli: 9,
+            baseline_d_count: 11,
+            baseline_q_count: 12,
+            baseline_adc_ch0_count: -13,
+            baseline_adc_ch1_count: 14,
+            residual_permille: 0,
+            coverage_permille: 1000,
+            encoder_before: 100,
+            encoder_after: 104,
+            encoder_min: 98,
+            encoder_max: 110,
+            encoder_peak_counts: 12,
+            valid: true,
+            warning_flags: ImpedanceWarningFlags::NONE,
+        });
+        observations[PULSATING_STABILITY_ZERO_INDEX] = Some(PulsatingAngleObservation {
+            angle_electrical_counts: profile.angle_points[PULSATING_STABILITY_ZERO_INDEX]
+                .angle_electrical_counts,
+            ud_abs: profile.angle_points[PULSATING_STABILITY_ZERO_INDEX].ud_abs,
+            inductive_response_count_per_ud_milli: 700,
+            in_phase_response_count_per_ud_milli: 20,
+            secondary_adc_response_count_per_ud_milli: 8,
+            baseline_d_count: 11,
+            baseline_q_count: 12,
+            baseline_adc_ch0_count: -13,
+            baseline_adc_ch1_count: 14,
+            residual_permille: 0,
+            coverage_permille: 1000,
+            encoder_before: 172,
+            encoder_after: 169,
+            encoder_min: 160,
+            encoder_max: 172,
+            encoder_peak_counts: 12,
+            valid: true,
+            warning_flags: ImpedanceWarningFlags::NONE,
+        });
+
+        let report = failed_pulsating_run_report(
+            7,
+            IMPEDANCE_STATUS_REPEATABILITY,
+            0x20,
+            ImpedanceReadbackMismatch::EMPTY,
+            &observations,
+        );
+
+        assert_eq!(report.status, IMPEDANCE_STATUS_REPEATABILITY);
+        assert_eq!(report.repeatability_permille, 353);
+        assert_eq!(report.duplicate_zero_encoder_drift_counts, 72);
+        assert_eq!(report.status_flags_or, 0x20);
+    }
+
+    #[test]
+    fn pulsating_failure_run_report_ignores_return_zero_settle_evidence() {
+        let profile = PulsatingImpedanceProfile::standard_openffboard();
+        let mut observations = [None; PULSATING_IMPEDANCE_PROFILE_POINTS];
+        observations[PULSATING_RETURN_ZERO_SETTLE_INDEX] = Some(PulsatingAngleObservation {
+            angle_electrical_counts: profile.angle_points[PULSATING_RETURN_ZERO_SETTLE_INDEX]
+                .angle_electrical_counts,
+            ud_abs: profile.angle_points[PULSATING_RETURN_ZERO_SETTLE_INDEX].ud_abs,
+            inductive_response_count_per_ud_milli: 124,
+            in_phase_response_count_per_ud_milli: 977,
+            secondary_adc_response_count_per_ud_milli: 0,
+            baseline_d_count: 0,
+            baseline_q_count: 0,
+            baseline_adc_ch0_count: 0,
+            baseline_adc_ch1_count: 0,
+            residual_permille: 0,
+            coverage_permille: 1000,
+            encoder_before: 362,
+            encoder_after: 395,
+            encoder_min: 362,
+            encoder_max: 397,
+            encoder_peak_counts: profile.encoder_angle_invalid_counts + 3,
+            valid: false,
+            warning_flags: ImpedanceWarningFlags::ANGLE_LOCAL_MOTION,
+        });
+        observations[PULSATING_POST_SWEEP_ZERO_INDEX] = Some(PulsatingAngleObservation {
+            angle_electrical_counts: profile.angle_points[PULSATING_POST_SWEEP_ZERO_INDEX]
+                .angle_electrical_counts,
+            ud_abs: profile.angle_points[PULSATING_POST_SWEEP_ZERO_INDEX].ud_abs,
+            inductive_response_count_per_ud_milli: 92,
+            in_phase_response_count_per_ud_milli: 1025,
+            secondary_adc_response_count_per_ud_milli: 0,
+            baseline_d_count: 0,
+            baseline_q_count: 0,
+            baseline_adc_ch0_count: 0,
+            baseline_adc_ch1_count: 0,
+            residual_permille: 0,
+            coverage_permille: 1000,
+            encoder_before: 396,
+            encoder_after: 395,
+            encoder_min: 395,
+            encoder_max: 397,
+            encoder_peak_counts: 2,
+            valid: true,
+            warning_flags: ImpedanceWarningFlags::NONE,
+        });
+        observations[PULSATING_STABILITY_ZERO_INDEX] = Some(PulsatingAngleObservation {
+            angle_electrical_counts: profile.angle_points[PULSATING_STABILITY_ZERO_INDEX]
+                .angle_electrical_counts,
+            ud_abs: profile.angle_points[PULSATING_STABILITY_ZERO_INDEX].ud_abs,
+            inductive_response_count_per_ud_milli: 90,
+            in_phase_response_count_per_ud_milli: 1030,
+            secondary_adc_response_count_per_ud_milli: 0,
+            baseline_d_count: 0,
+            baseline_q_count: 0,
+            baseline_adc_ch0_count: 0,
+            baseline_adc_ch1_count: 0,
+            residual_permille: 0,
+            coverage_permille: 1000,
+            encoder_before: 397,
+            encoder_after: 396,
+            encoder_min: 396,
+            encoder_max: 397,
+            encoder_peak_counts: 1,
+            valid: true,
+            warning_flags: ImpedanceWarningFlags::NONE,
+        });
+
+        let report = failed_pulsating_run_report(
+            7,
+            IMPEDANCE_STATUS_REPEATABILITY,
+            0x20,
+            ImpedanceReadbackMismatch::EMPTY,
+            &observations,
+        );
+
+        assert_eq!(report.repeatability_permille, 22);
+        assert_eq!(report.duplicate_zero_encoder_drift_counts, 1);
     }
 }

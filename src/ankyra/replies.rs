@@ -550,15 +550,13 @@ pub struct FociResistanceAxis {
 pub struct FociImpedanceProfile {
     /// Object id of the FOCI endpoint.
     pub oid: u8,
-    /// Impedance-identification profile schema version.
-    pub profile_version: u16,
     /// Number of injection points in this profile.
     pub point_count: u8,
     /// Number of samples captured per injection point.
     pub sample_count: u16,
     /// Sampling interval in microseconds.
     pub sample_interval_us: u16,
-    /// Square-carrier frequency for v2 fixed-angle sampling, in millihertz.
+    /// Square-carrier frequency for held-angle sampling, in millihertz.
     pub carrier_frequency_millihz: u32,
     /// Number of samples captured for each carrier cycle.
     pub samples_per_cycle: u16,
@@ -566,6 +564,10 @@ pub struct FociImpedanceProfile {
     pub cycles_per_angle: u16,
     /// Maximum absolute UD voltage request used by the profile.
     pub max_ud: u16,
+    /// DC UD magnitude used to hold the rotor at each commanded electrical angle.
+    pub hold_ud: u16,
+    /// Square-carrier UD amplitude around the held angle.
+    pub carrier_ud: u16,
     /// STATUS_FLAGS bitmask that hard-fails the run.
     pub status_flags_fail_mask: u32,
     /// STATUS_FLAGS bitmask that raises the warning flag during a window.
@@ -583,8 +585,6 @@ pub struct FociImpedanceRun {
     pub oid: u8,
     /// Status code: 0 success, non-zero stable failure reason.
     pub status: u8,
-    /// Impedance-identification profile schema version.
-    pub profile_version: u16,
     /// Selected major response axis normalized to counts per 1000 UD counts.
     pub selected_axis_max_count_per_ud_milli: u32,
     /// Selected minor response axis normalized to counts per 1000 UD counts.
@@ -601,14 +601,16 @@ pub struct FociImpedanceRun {
     pub readback_expected: u32,
     /// Actual value for the last profile readback mismatch.
     pub readback_actual: u32,
-    /// Torque filter enable state before v2 sampling.
+    /// Torque filter enable state before held-angle sampling.
     pub filter_torque_enable_before: u8,
-    /// Flux filter enable state before v2 sampling.
+    /// Flux filter enable state before held-angle sampling.
     pub filter_flux_enable_before: u8,
-    /// Torque filter enable state during v2 sampling.
+    /// Torque filter enable state during held-angle sampling.
     pub filter_torque_enable_during: u8,
-    /// Flux filter enable state during v2 sampling.
+    /// Flux filter enable state during held-angle sampling.
     pub filter_flux_enable_during: u8,
+    /// Encoder drift between duplicate-zero observation starts.
+    pub duplicate_zero_encoder_drift_counts: u32,
 }
 
 /// `foci_impedance_fit` reply - per-injection impedance fit result.
@@ -657,17 +659,21 @@ pub struct FociImpedanceFitV2 {
     pub oid: u8,
     /// Stable point index within the profile.
     pub point_index: u8,
-    /// Mean v2 lock-in response normalized to counts per 1000 UD counts.
+    /// Mean supplemental lock-in response normalized to counts per 1000 UD counts.
     pub mean_response_count_per_ud_milli: u32,
-    /// V2 saliency relative to mean response, in permille.
+    /// Supplemental saliency relative to mean response, in permille.
     pub saliency_permille: u16,
-    /// Non-zero when the v2 saliency axis was determinable.
+    /// Non-zero when the supplemental saliency axis was determinable.
     pub saliency_determinable: u8,
-    /// V2 valid fixed-angle coverage, in permille.
+    /// Supplemental valid fixed-angle coverage, in permille.
     pub angle_coverage_permille: u16,
-    /// V2 half-turn folded deviation from expected electrical zero.
+    /// Supplemental half-turn folded deviation from expected electrical zero.
     pub axis_deviation_counts: u16,
-    /// Secondary ADC v2 lock-in response normalized to counts per 1000 UD counts.
+    /// Per-angle supplemental lock-in inductive response normalized to counts per 1000 UD counts.
+    pub inductive_response_count_per_ud_milli: u32,
+    /// Per-angle supplemental in-phase response normalized to counts per 1000 UD counts.
+    pub in_phase_response_count_per_ud_milli: u32,
+    /// Secondary ADC supplemental lock-in response normalized to counts per 1000 UD counts.
     pub secondary_adc_response_count_per_ud_milli: u32,
 }
 
@@ -721,20 +727,24 @@ pub struct FociImpedanceObservationV2 {
     pub oid: u8,
     /// Stable point index within the profile.
     pub point_index: u8,
-    /// Electrical angle for the fixed-angle v2 observation.
+    /// Electrical angle for the fixed-angle supplemental observation.
     pub angle_electrical_counts: u16,
-    /// Encoder count before the v2 observation window.
+    /// Encoder count before the supplemental observation window.
     pub encoder_before: u32,
-    /// Encoder count after the v2 observation window.
+    /// Encoder count after the supplemental observation window.
     pub encoder_after: u32,
-    /// Minimum encoder count observed during the v2 observation window.
+    /// Minimum encoder count observed during the supplemental observation window.
     pub encoder_min: u32,
-    /// Maximum encoder count observed during the v2 observation window.
+    /// Maximum encoder count observed during the supplemental observation window.
     pub encoder_max: u32,
-    /// Peak encoder movement observed during the v2 observation window.
+    /// Peak encoder movement observed during the supplemental observation window.
     pub encoder_peak_counts: u16,
-    /// Non-zero when the v2 fixed-angle observation participated in the fit.
+    /// Non-zero when the supplemental fixed-angle observation participated in the fit.
     pub angle_valid: u8,
+    /// Per-angle supplemental lock-in inductive response normalized to counts per 1000 UD counts.
+    pub inductive_response_count_per_ud_milli: u32,
+    /// Per-angle supplemental in-phase response normalized to counts per 1000 UD counts.
+    pub in_phase_response_count_per_ud_milli: u32,
 }
 
 /// `foci_impedance_baseline` reply - per-injection DC baseline observation.
@@ -1079,7 +1089,6 @@ mod resistance_reply_size_tests {
     fn impedance_profile_reply_fits_klipper_message_limit() {
         let reply = super::FociImpedanceProfile {
             oid: u8::MAX,
-            profile_version: u16::MAX,
             point_count: u8::MAX,
             sample_count: u16::MAX,
             sample_interval_us: u16::MAX,
@@ -1087,6 +1096,8 @@ mod resistance_reply_size_tests {
             samples_per_cycle: u16::MAX,
             cycles_per_angle: u16::MAX,
             max_ud: u16::MAX,
+            hold_ud: u16::MAX,
+            carrier_ud: u16::MAX,
             status_flags_fail_mask: 0x7FFF_FFFF,
             status_flags_warn_mask: 0x7FFF_FFFF,
             scale_metadata_validated: u8::MAX,
@@ -1100,7 +1111,6 @@ mod resistance_reply_size_tests {
         let reply = super::FociImpedanceRun {
             oid: u8::MAX,
             status: u8::MAX,
-            profile_version: u16::MAX,
             selected_axis_max_count_per_ud_milli: 0x7FFF_FFFF,
             selected_axis_min_count_per_ud_milli: 0x7FFF_FFFF,
             repeatability_permille: u16::MAX,
@@ -1113,6 +1123,7 @@ mod resistance_reply_size_tests {
             filter_flux_enable_before: u8::MAX,
             filter_torque_enable_during: u8::MAX,
             filter_flux_enable_during: u8::MAX,
+            duplicate_zero_encoder_drift_counts: 0x7FFF_FFFF,
         };
 
         assert_fits_with_id(&reply, "foci_impedance_run");
@@ -1167,7 +1178,7 @@ mod resistance_reply_size_tests {
     }
 
     #[test]
-    fn impedance_fit_v2_reply_fits_klipper_message_limit() {
+    fn supplemental_impedance_fit_reply_fits_klipper_message_limit() {
         let reply = super::FociImpedanceFitV2 {
             oid: u8::MAX,
             point_index: u8::MAX,
@@ -1176,6 +1187,8 @@ mod resistance_reply_size_tests {
             saliency_determinable: u8::MAX,
             angle_coverage_permille: u16::MAX,
             axis_deviation_counts: u16::MAX,
+            inductive_response_count_per_ud_milli: 0x7FFF_FFFF,
+            in_phase_response_count_per_ud_milli: 0x7FFF_FFFF,
             secondary_adc_response_count_per_ud_milli: 0x7FFF_FFFF,
         };
 
@@ -1183,7 +1196,7 @@ mod resistance_reply_size_tests {
     }
 
     #[test]
-    fn impedance_observation_v2_reply_fits_klipper_message_limit() {
+    fn supplemental_impedance_observation_reply_fits_klipper_message_limit() {
         let reply = super::FociImpedanceObservationV2 {
             oid: u8::MAX,
             point_index: u8::MAX,
@@ -1194,6 +1207,8 @@ mod resistance_reply_size_tests {
             encoder_max: 0x7FFF_FFFF,
             encoder_peak_counts: u16::MAX,
             angle_valid: u8::MAX,
+            inductive_response_count_per_ud_milli: 0x7FFF_FFFF,
+            in_phase_response_count_per_ud_milli: 0x7FFF_FFFF,
         };
 
         assert_fits_with_id(&reply, "foci_impedance_observation_v2");

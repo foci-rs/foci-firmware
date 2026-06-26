@@ -1365,11 +1365,13 @@ fn impedance_unsafe_status_failure_reports_status_flags_evidence() {
             .with_read(7) // PWM_SV_CHOP readback
             .with_read(0) // CONFIG_BIQUAD_T_ENABLE during sampling
             .with_read(0) // CONFIG_BIQUAD_F_ENABLE during sampling
-            .with_read(0) // ABN_DECODER_COUNT before DC baseline
             .with_read(0) // PID_TORQUE_FLUX_ACTUAL baseline
             .with_read(0) // ADC_IWY_IUX baseline
             .with_read(1) // PHI_E_SELECTION angle readback
             .with_read(0) // PHI_E_EXT angle readback
+            .with_read(0) // ADC_IWY_IUX held-angle current check
+            .with_read(0) // STATUS_FLAGS held-angle status check
+            .with_read(0) // ABN_DECODER_COUNT after held-angle settle
             .with_read(0) // PID_TORQUE_FLUX_ACTUAL carrier sample
             .with_read(0) // ADC_IWY_IUX carrier sample
             .with_read(0) // ABN_DECODER_COUNT carrier sample

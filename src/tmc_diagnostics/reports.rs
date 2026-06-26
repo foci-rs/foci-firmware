@@ -397,15 +397,13 @@ pub const IMPEDANCE_STATUS_FILTER_STATE: u8 = 23;
 pub struct ImpedanceProfileReport {
     /// Object id of the FOCI endpoint.
     pub oid: u8,
-    /// Impedance-identification profile schema version.
-    pub profile_version: u16,
     /// Number of injection points in this profile.
     pub point_count: u8,
     /// Number of samples captured per injection point.
     pub sample_count: u16,
     /// Sampling interval in microseconds.
     pub sample_interval_us: u16,
-    /// Square-carrier frequency for v2 fixed-angle sampling, in millihertz.
+    /// Square-carrier frequency for held-angle sampling, in millihertz.
     pub carrier_frequency_millihz: u32,
     /// Number of samples captured for each carrier cycle.
     pub samples_per_cycle: u16,
@@ -413,6 +411,10 @@ pub struct ImpedanceProfileReport {
     pub cycles_per_angle: u16,
     /// Maximum absolute UD voltage request used by the profile.
     pub max_ud: u16,
+    /// DC UD magnitude used to hold the rotor at each commanded electrical angle.
+    pub hold_ud: u16,
+    /// Square-carrier UD amplitude around the held angle.
+    pub carrier_ud: u16,
     /// STATUS_FLAGS bitmask that hard-fails the run.
     pub status_flags_fail_mask: u32,
     /// STATUS_FLAGS bitmask that raises the warning flag during a window.
@@ -429,8 +431,6 @@ pub struct ImpedanceRunReport {
     pub oid: u8,
     /// Status code: 0 success, non-zero stable failure reason.
     pub status: u8,
-    /// Impedance-identification profile schema version.
-    pub profile_version: u16,
     /// Selected major response axis normalized to counts per 1000 UD counts.
     pub selected_axis_max_count_per_ud_milli: u32,
     /// Selected minor response axis normalized to counts per 1000 UD counts.
@@ -447,14 +447,16 @@ pub struct ImpedanceRunReport {
     pub readback_expected: u32,
     /// Actual value for the last profile readback mismatch.
     pub readback_actual: u32,
-    /// Torque filter enable state before v2 sampling.
+    /// Torque filter enable state before held-angle sampling.
     pub filter_torque_enable_before: u8,
-    /// Flux filter enable state before v2 sampling.
+    /// Flux filter enable state before held-angle sampling.
     pub filter_flux_enable_before: u8,
-    /// Torque filter enable state during v2 sampling.
+    /// Torque filter enable state during held-angle sampling.
     pub filter_torque_enable_during: u8,
-    /// Flux filter enable state during v2 sampling.
+    /// Flux filter enable state during held-angle sampling.
     pub filter_flux_enable_during: u8,
+    /// Encoder drift between duplicate-zero observation starts.
+    pub duplicate_zero_encoder_drift_counts: u32,
 }
 
 /// Per-injection-point fit result for the impedance-test diagnostic.
@@ -480,17 +482,21 @@ pub struct ImpedanceFitReport {
     pub coverage_permille: u16,
     /// Scalar `2f` saliency mismatch as permille.
     pub scalar_2f_mismatch_permille: u16,
-    /// Mean v2 lock-in response normalized to counts per 1000 UD counts.
+    /// Mean supplemental lock-in response normalized to counts per 1000 UD counts.
     pub mean_response_count_per_ud_milli: u32,
-    /// V2 saliency relative to mean response, in permille.
+    /// Supplemental saliency relative to mean response, in permille.
     pub saliency_permille: u16,
-    /// Non-zero when the v2 saliency axis was determinable.
+    /// Non-zero when the supplemental saliency axis was determinable.
     pub saliency_determinable: u8,
-    /// V2 valid fixed-angle coverage, in permille.
+    /// Supplemental valid fixed-angle coverage, in permille.
     pub angle_coverage_permille: u16,
-    /// V2 half-turn folded deviation from expected electrical zero.
+    /// Supplemental half-turn folded deviation from expected electrical zero.
     pub axis_deviation_counts: u16,
-    /// Secondary ADC v2 lock-in response normalized to counts per 1000 UD counts.
+    /// Per-angle supplemental lock-in inductive response normalized to counts per 1000 UD counts.
+    pub inductive_response_count_per_ud_milli: u32,
+    /// Per-angle supplemental in-phase response normalized to counts per 1000 UD counts.
+    pub in_phase_response_count_per_ud_milli: u32,
+    /// Secondary ADC supplemental lock-in response normalized to counts per 1000 UD counts.
     pub secondary_adc_response_count_per_ud_milli: u32,
     /// Mean transformed-current magnitude normalized to counts per 1000 UD counts.
     pub magnitude_mean_count_per_ud_milli: u32,
@@ -515,7 +521,7 @@ pub struct ImpedanceObservationReport {
     pub frequency_millihz: u32,
     /// Absolute UD magnitude requested during the window.
     pub ud_abs: u16,
-    /// Electrical angle for the fixed-angle v2 observation.
+    /// Electrical angle for the fixed-angle supplemental observation.
     pub angle_electrical_counts: u16,
     /// STATUS_FLAGS observed during this point's DC and AC windows.
     pub status_flags_or: u32,
@@ -543,17 +549,21 @@ pub struct ImpedanceObservationReport {
     pub foc_iq_sample: i16,
     /// Park-transformed d-axis current sample from `INTERIM_FOC_IQ_ID`.
     pub foc_id_sample: i16,
-    /// Encoder count before the v2 observation window.
+    /// Per-angle supplemental lock-in inductive response normalized to counts per 1000 UD counts.
+    pub inductive_response_count_per_ud_milli: u32,
+    /// Per-angle supplemental in-phase response normalized to counts per 1000 UD counts.
+    pub in_phase_response_count_per_ud_milli: u32,
+    /// Encoder count before the supplemental observation window.
     pub encoder_before: u32,
-    /// Encoder count after the v2 observation window.
+    /// Encoder count after the supplemental observation window.
     pub encoder_after: u32,
-    /// Minimum encoder count observed during the v2 observation window.
+    /// Minimum encoder count observed during the supplemental observation window.
     pub encoder_min: u32,
-    /// Maximum encoder count observed during the v2 observation window.
+    /// Maximum encoder count observed during the supplemental observation window.
     pub encoder_max: u32,
-    /// Peak encoder movement observed during the v2 observation window.
+    /// Peak encoder movement observed during the supplemental observation window.
     pub encoder_peak_counts: u16,
-    /// Non-zero when the v2 fixed-angle observation participated in the fit.
+    /// Non-zero when the supplemental fixed-angle observation participated in the fit.
     pub angle_valid: u8,
 }
 
@@ -589,7 +599,6 @@ pub fn empty_impedance_run_report(oid: u8, status: u8) -> ImpedanceRunReport {
     ImpedanceRunReport {
         oid,
         status,
-        profile_version: 0,
         selected_axis_max_count_per_ud_milli: 0,
         selected_axis_min_count_per_ud_milli: 0,
         repeatability_permille: 0,
@@ -602,6 +611,7 @@ pub fn empty_impedance_run_report(oid: u8, status: u8) -> ImpedanceRunReport {
         filter_flux_enable_before: 0,
         filter_torque_enable_during: 0,
         filter_flux_enable_during: 0,
+        duplicate_zero_encoder_drift_counts: 0,
     }
 }
 

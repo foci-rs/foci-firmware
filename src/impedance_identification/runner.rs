@@ -121,7 +121,7 @@ pub trait ImpedanceBackend {
         _observation: ImpedanceBaselineObservation,
     ) {
     }
-    /// Record bounded fixed-angle observability before a later v2 fit-gate failure.
+    /// Record bounded fixed-angle observability before a later pulsating fit-gate failure.
     fn record_pulsating_angle_observation(
         &mut self,
         _point_index: usize,
@@ -157,7 +157,7 @@ pub struct ImpedanceRunResult {
     pub readback_mismatch: ImpedanceReadbackMismatch,
 }
 
-/// Complete fixed-angle pulsating runner output returned by v2.
+/// Complete fixed-angle pulsating runner output.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub struct PulsatingImpedanceRunResult {
     /// Profile used for the run.
@@ -223,7 +223,7 @@ pub async fn run_impedance_identification<B: ImpedanceBackend>(
     }
 }
 
-/// Run v2 fixed-angle pulsating impedance identification over an already armed motor.
+/// Run fixed-angle pulsating impedance identification over an already armed motor.
 pub async fn run_pulsating_impedance_identification<B: ImpedanceBackend>(
     backend: &mut B,
 ) -> Result<PulsatingImpedanceRunResult, ImpedanceError> {
@@ -311,13 +311,17 @@ fn validate_pulsating_profile(profile: &PulsatingImpedanceProfile) -> Result<(),
     if profile.sample_count as usize != super::types::PULSATING_IMPEDANCE_SAMPLE_COUNT
         || profile.sample_count > profile.max_sample_count
         || profile.sample_interval_us < MIN_PULSATING_SAMPLE_INTERVAL_US
+        || profile.carrier_settle_us >= profile.sample_interval_us
         || profile.samples_per_cycle == 0
         || usize::from(profile.samples_per_cycle) != CARRIER_REF_Q10.len()
         || profile.cycles_per_angle == 0
+        || profile.discard_cycles >= profile.cycles_per_angle
         || profile.sample_count
             != profile
                 .samples_per_cycle
                 .saturating_mul(profile.cycles_per_angle)
+        || profile.hold_ud_abs == 0
+        || profile.hold_settle_ms == 0
         || profile.max_expected_current_count == 0
         || profile.encoder_move_fail_counts == 0
         || profile.encoder_move_warn_counts > profile.encoder_move_fail_counts
@@ -331,7 +335,11 @@ fn validate_pulsating_profile(profile: &PulsatingImpedanceProfile) -> Result<(),
     }
 
     for point in profile.angle_points {
-        if point.ud_abs == 0 || point.ud_abs > i16::MAX as u16 {
+        if point.ud_abs == 0
+            || point.ud_abs > i16::MAX as u16
+            || profile.hold_ud_abs.saturating_add(point.ud_abs) > i16::MAX as u16
+            || profile.hold_ud_abs < point.ud_abs
+        {
             return Err(ImpedanceError::UnsupportedProfile);
         }
     }
@@ -951,9 +959,6 @@ async fn capture_fixed_angle_window<B: ImpedanceBackend>(
     warning_flags: &mut ImpedanceWarningFlags,
     status_flags_or: &mut u32,
 ) -> Result<PulsatingAngleObservation, ImpedanceError> {
-    let encoder_before = read(backend, ABN_DECODER_COUNT.addr()).await?;
-    let mut encoder_min_delta = 0i32;
-    let mut encoder_max_delta = 0i32;
     let baseline = sample_zero_voltage_baseline(backend).await?;
 
     write(backend, UQ_UD_EXT.addr(), 0).await?;
@@ -983,14 +988,41 @@ async fn capture_fixed_angle_window<B: ImpedanceBackend>(
         MotionMode::UqUdExt as u32,
     )
     .await?;
+    write(
+        backend,
+        UQ_UD_EXT.addr(),
+        pack_ud(profile.hold_ud_abs as i16),
+    )
+    .await?;
+    backend
+        .delay_us(u32::from(profile.hold_settle_ms).saturating_mul(1_000))
+        .await;
+    check_pulsating_current_limit(
+        profile,
+        decode_current_pair(
+            backend.timestamp_us(),
+            read(backend, ADC_IWY_IUX.addr()).await?,
+        ),
+    )?;
+    let mut point_warning_flags = ImpedanceWarningFlags::NONE;
+    let _ = sample_pulsating_status(backend, profile, &mut point_warning_flags, status_flags_or)
+        .await?;
+    warning_flags.insert(point_warning_flags);
+
+    let encoder_before = read(backend, ABN_DECODER_COUNT.addr()).await?;
+    let mut encoder_min_delta = 0i32;
+    let mut encoder_max_delta = 0i32;
 
     let mut accumulator =
         PulsatingAngleAccumulator::new(point.angle_electrical_counts, point.ud_abs);
     let sample_count = profile.sample_count as usize;
     let samples_per_cycle = profile.samples_per_cycle as usize;
+    let discarded_samples = usize::from(profile.discard_cycles) * samples_per_cycle;
     for index in 0..sample_count {
-        let carrier_ud = carrier_ud_for_sample(index, samples_per_cycle, point.ud_abs);
+        let carrier_ud =
+            carrier_ud_for_sample(index, samples_per_cycle, profile.hold_ud_abs, point.ud_abs);
         write(backend, UQ_UD_EXT.addr(), pack_ud(carrier_ud)).await?;
+        backend.delay_us(u32::from(profile.carrier_settle_us)).await;
         let t_us = backend.timestamp_us();
         let transformed = decode_transformed_current_sample(
             t_us,
@@ -998,7 +1030,9 @@ async fn capture_fixed_angle_window<B: ImpedanceBackend>(
         );
         let raw = decode_current_pair(t_us, read(backend, ADC_IWY_IUX.addr()).await?);
         check_pulsating_current_limit(profile, raw)?;
-        accumulator.accumulate(transformed, raw);
+        if index >= discarded_samples {
+            accumulator.accumulate(index - discarded_samples, transformed, raw);
+        }
 
         let encoder = read(backend, ABN_DECODER_COUNT.addr()).await?;
         update_encoder_delta_bounds(
@@ -1025,7 +1059,9 @@ async fn capture_fixed_angle_window<B: ImpedanceBackend>(
 
         if index + 1 < sample_count {
             backend
-                .delay_us(u32::from(profile.sample_interval_us))
+                .delay_us(u32::from(
+                    profile.sample_interval_us - profile.carrier_settle_us,
+                ))
                 .await;
         }
     }
@@ -1050,13 +1086,20 @@ async fn capture_fixed_angle_window<B: ImpedanceBackend>(
     Ok(observation)
 }
 
-fn carrier_ud_for_sample(index: usize, samples_per_cycle: usize, ud_abs: u16) -> i16 {
+fn carrier_ud_for_sample(
+    index: usize,
+    samples_per_cycle: usize,
+    hold_ud_abs: u16,
+    carrier_ud_abs: u16,
+) -> i16 {
     let half_cycle = samples_per_cycle / 2;
     let cycle_index = index % samples_per_cycle;
+    let hold = hold_ud_abs as i16;
+    let carrier = carrier_ud_abs as i16;
     if cycle_index < half_cycle {
-        ud_abs as i16
+        hold + carrier
     } else {
-        -(ud_abs as i16)
+        hold - carrier
     }
 }
 
@@ -1388,9 +1431,13 @@ impl PulsatingAngleAccumulator {
     }
 
     /// Add one transformed/raw current sample pair to the lock-in sums.
-    pub fn accumulate(&mut self, transformed: ImpedanceSample, raw: ImpedanceSample) {
-        let (cos_q10, sin_q10) =
-            CARRIER_REF_Q10[self.sample_count as usize % CARRIER_REF_Q10.len()];
+    pub fn accumulate(
+        &mut self,
+        sample_index: usize,
+        transformed: ImpedanceSample,
+        raw: ImpedanceSample,
+    ) {
+        let (cos_q10, sin_q10) = CARRIER_REF_Q10[sample_index % CARRIER_REF_Q10.len()];
         self.d_sin_sum += i64::from(transformed.i_ch0) * i64::from(sin_q10);
         self.d_cos_sum += i64::from(transformed.i_ch0) * i64::from(cos_q10);
         self.raw_sin_sum += i64::from(raw.i_ch0) * i64::from(sin_q10);

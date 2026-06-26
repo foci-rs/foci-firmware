@@ -50,7 +50,6 @@ pub(crate) const fn frequency_millihz_to_openloop_velocity_rpm(
 /// Profile constants for one impedance-identification run.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub struct ImpedanceProfile {
-    pub profile_version: u16,
     pub injection_points: [ImpedanceInjectionPoint; IMPEDANCE_PROFILE_POINTS],
     pub sample_count: u16,
     pub max_sample_count: u16,
@@ -88,7 +87,6 @@ impl ImpedanceProfile {
     /// energized exposure.
     pub const fn standard_openffboard() -> Self {
         Self {
-            profile_version: 1,
             injection_points: [
                 ImpedanceInjectionPoint {
                     ud_abs: 640,

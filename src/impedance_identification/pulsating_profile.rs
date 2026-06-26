@@ -13,8 +13,6 @@ const MICROS_PER_MILLISECOND: u64 = 1_000;
 /// Profile constants for one fixed-angle pulsating impedance-identification run.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub struct PulsatingImpedanceProfile {
-    /// Host-visible profile version.
-    pub profile_version: u16,
     /// Fixed electrical-angle windows sampled by this profile.
     pub angle_points: [PulsatingImpedancePoint; PULSATING_IMPEDANCE_PROFILE_POINTS],
     /// Square-carrier frequency in millihertz.
@@ -29,6 +27,14 @@ pub struct PulsatingImpedanceProfile {
     pub max_sample_count: u16,
     /// Requested interval between samples in microseconds.
     pub sample_interval_us: u16,
+    /// DC UD magnitude used to hold the rotor at each commanded electrical angle.
+    pub hold_ud_abs: u16,
+    /// Settling time after applying the held-angle DC voltage.
+    pub hold_settle_ms: u16,
+    /// Fixed delay after each carrier-voltage write before sampling current.
+    pub carrier_settle_us: u16,
+    /// Initial carrier cycles excluded from lock-in accumulation at each angle.
+    pub discard_cycles: u16,
     /// Expected `PWM_MAXCNT` profile value.
     pub pwm_maxcnt: u16,
     /// Expected high-side break-before-make clocks.
@@ -81,43 +87,48 @@ impl PulsatingImpedanceProfile {
     /// Build the starting OpenFFBoard fixed-angle pulsating impedance profile.
     pub const fn standard_openffboard() -> Self {
         Self {
-            profile_version: 2,
+            // Roles: warmup zero, reference zero, sweep, return-settle zero,
+            // post-sweep zero measurement, stability zero check.
             angle_points: [
                 PulsatingImpedancePoint {
                     angle_electrical_counts: 0,
-                    ud_abs: 640,
-                },
-                PulsatingImpedancePoint {
-                    angle_electrical_counts: 8192,
-                    ud_abs: 640,
-                },
-                PulsatingImpedancePoint {
-                    angle_electrical_counts: 16384,
-                    ud_abs: 640,
-                },
-                PulsatingImpedancePoint {
-                    angle_electrical_counts: 24576,
-                    ud_abs: 640,
-                },
-                PulsatingImpedancePoint {
-                    angle_electrical_counts: 32768,
-                    ud_abs: 640,
-                },
-                PulsatingImpedancePoint {
-                    angle_electrical_counts: 40960,
-                    ud_abs: 640,
-                },
-                PulsatingImpedancePoint {
-                    angle_electrical_counts: 49152,
-                    ud_abs: 640,
-                },
-                PulsatingImpedancePoint {
-                    angle_electrical_counts: 57344,
-                    ud_abs: 640,
+                    ud_abs: 320,
                 },
                 PulsatingImpedancePoint {
                     angle_electrical_counts: 0,
-                    ud_abs: 640,
+                    ud_abs: 320,
+                },
+                PulsatingImpedancePoint {
+                    angle_electrical_counts: 8192,
+                    ud_abs: 320,
+                },
+                PulsatingImpedancePoint {
+                    angle_electrical_counts: 16384,
+                    ud_abs: 320,
+                },
+                PulsatingImpedancePoint {
+                    angle_electrical_counts: 24576,
+                    ud_abs: 320,
+                },
+                PulsatingImpedancePoint {
+                    angle_electrical_counts: 32768,
+                    ud_abs: 320,
+                },
+                PulsatingImpedancePoint {
+                    angle_electrical_counts: 40960,
+                    ud_abs: 320,
+                },
+                PulsatingImpedancePoint {
+                    angle_electrical_counts: 0,
+                    ud_abs: 320,
+                },
+                PulsatingImpedancePoint {
+                    angle_electrical_counts: 0,
+                    ud_abs: 320,
+                },
+                PulsatingImpedancePoint {
+                    angle_electrical_counts: 0,
+                    ud_abs: 320,
                 },
             ],
             carrier_frequency_millihz: 100_000,
@@ -126,6 +137,10 @@ impl PulsatingImpedanceProfile {
             sample_count: PULSATING_IMPEDANCE_SAMPLE_COUNT as u16,
             max_sample_count: PULSATING_IMPEDANCE_SAMPLE_COUNT as u16,
             sample_interval_us: 500,
+            hold_ud_abs: 320,
+            hold_settle_ms: 80,
+            carrier_settle_us: 200,
+            discard_cycles: 1,
             pwm_maxcnt: 3999,
             bbm_h: 9,
             bbm_l: 9,
@@ -135,7 +150,7 @@ impl PulsatingImpedanceProfile {
             min_signal_count_per_ud_milli: 32,
             saliency_axis_determinability_count_per_ud_milli: 16,
             axis_deviation_fail_counts: 4096,
-            angle_coverage_fail_permille: 900,
+            angle_coverage_fail_permille: 850,
             max_expected_current_count: 1600,
             encoder_move_warn_counts: 64,
             encoder_move_fail_counts: 128,
@@ -146,18 +161,19 @@ impl PulsatingImpedanceProfile {
             repeatability_fail_permille: 200,
             status_flags_fail_mask: OPENFFBOARD_IMPEDANCE_STATUS_FAIL_MASK,
             status_flags_warn_mask: OPENFFBOARD_IMPEDANCE_STATUS_WARN_MASK,
-            max_window_exposure_budget: 70_000_000,
-            max_total_exposure_budget: 640_000_000,
+            max_window_exposure_budget: 110_000_000,
+            max_total_exposure_budget: 1_000_000_000,
             scale_metadata_validated: false,
         }
     }
 
     /// Largest requested UD magnitude in the profile.
     pub fn max_abs_ud(&self) -> u16 {
-        let mut max = 0u16;
+        let mut max = self.hold_ud_abs;
         for point in self.angle_points {
-            if point.ud_abs > max {
-                max = point.ud_abs;
+            let high = self.hold_ud_abs.saturating_add(point.ud_abs);
+            if high > max {
+                max = high;
             }
         }
         max
@@ -178,14 +194,19 @@ impl PulsatingImpedanceProfile {
         let per_sample_us = (self.sample_interval_us as u64)
             .saturating_add(IMPEDANCE_PER_SAMPLE_OVERHEAD_US as u64);
         let capture_us = (self.sample_count as u64).saturating_mul(per_sample_us);
-        capture_us.saturating_add(MICROS_PER_MILLISECOND - 1) / MICROS_PER_MILLISECOND
+        let capture_ms =
+            capture_us.saturating_add(MICROS_PER_MILLISECOND - 1) / MICROS_PER_MILLISECOND;
+        capture_ms.saturating_add(self.hold_settle_ms as u64)
     }
 
     /// Largest per-window exposure (`ud^2 * energized_ms`) in the profile.
     pub fn max_window_exposure(&self) -> u64 {
         let mut max = 0u64;
         for point in self.angle_points {
-            let exposure = exposure_for_ms(point.ud_abs, self.energized_window_ms());
+            let exposure = exposure_for_ms(
+                self.hold_ud_abs.saturating_add(point.ud_abs),
+                self.energized_window_ms(),
+            );
             if exposure > max {
                 max = exposure;
             }
@@ -197,7 +218,10 @@ impl PulsatingImpedanceProfile {
     pub fn max_total_exposure(&self) -> u64 {
         let mut total = 0u64;
         for point in self.angle_points {
-            total = total.saturating_add(exposure_for_ms(point.ud_abs, self.energized_window_ms()));
+            total = total.saturating_add(exposure_for_ms(
+                self.hold_ud_abs.saturating_add(point.ud_abs),
+                self.energized_window_ms(),
+            ));
         }
         total
     }
