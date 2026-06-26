@@ -75,6 +75,30 @@ pub struct PulsatingAngleObservation {
     pub warning_flags: ImpedanceWarningFlags,
 }
 
+impl PulsatingAngleObservation {
+    /// Empty observation used before an angle has been sampled.
+    pub const EMPTY: Self = Self {
+        angle_electrical_counts: 0,
+        ud_abs: 0,
+        inductive_response_count_per_ud_milli: 0,
+        in_phase_response_count_per_ud_milli: 0,
+        secondary_adc_response_count_per_ud_milli: 0,
+        baseline_d_count: 0,
+        baseline_q_count: 0,
+        baseline_adc_ch0_count: 0,
+        baseline_adc_ch1_count: 0,
+        residual_permille: 0,
+        coverage_permille: 0,
+        encoder_before: 0,
+        encoder_after: 0,
+        encoder_min: 0,
+        encoder_max: 0,
+        encoder_peak_counts: 0,
+        valid: false,
+        warning_flags: ImpedanceWarningFlags::NONE,
+    };
+}
+
 /// Static baseline observation used by the pulsating lock-in path.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub struct PulsatingBaselineObservation {

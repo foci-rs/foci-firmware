@@ -21,7 +21,8 @@ pub use profile::{
 pub use pulsating_fit::fit_pulsating_impedance;
 pub use pulsating_profile::PulsatingImpedanceProfile;
 pub use runner::{
-    ImpedanceBackend, ImpedanceBackendError, ImpedanceRunResult, run_impedance_identification,
+    ImpedanceBackend, ImpedanceBackendError, ImpedanceRunResult, PulsatingImpedanceRunResult,
+    run_impedance_identification, run_pulsating_impedance_identification,
 };
 pub use types::{
     IMPEDANCE_PROFILE_POINTS, IMPEDANCE_SAMPLE_COUNT, ImpedanceBaselineObservation, ImpedanceError,

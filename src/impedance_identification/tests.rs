@@ -1,8 +1,12 @@
 use super::profile::{ImpedanceProfile, frequency_millihz_to_openloop_velocity_rpm};
-use super::runner::{ImpedanceBackend, ImpedanceBackendError, run_impedance_identification};
+use super::runner::{
+    ImpedanceBackend, ImpedanceBackendError, PulsatingAngleAccumulator,
+    run_impedance_identification, run_pulsating_impedance_identification,
+};
 use super::types::{
     IMPEDANCE_PROFILE_POINTS, IMPEDANCE_SAMPLE_COUNT, ImpedanceError, ImpedanceInjectionPoint,
     ImpedanceSample, ImpedanceWarningFlags, PulsatingAngleObservation,
+    PulsatingBaselineObservation,
 };
 use super::{
     ImpedanceFitPoint, PULSATING_IMPEDANCE_PROFILE_POINTS, PULSATING_IMPEDANCE_SAMPLE_COUNT,
@@ -10,12 +14,13 @@ use super::{
     fit_impedance_point, fit_impedance_point_with_transformed_current, fit_pulsating_impedance,
 };
 use foci_tmc4671::registers::{
-    ABN_DECODER_COUNT, ADC_IWY_IUX, DSADC_MDEC_B_MDEC_A, INTERIM_FOC_IQ_ID, INTERIM_FOC_IWY_IUX,
-    INTERIM_FOC_UQ_UD, INTERIM_FOC_UQ_UD_LIMITED, MODE_RAMP_MODE_MOTION, MOTOR_TYPE_N_POLE_PAIRS,
-    MotorType, MotorTypeNPolePairs, OPENLOOP_ACCELERATION, OPENLOOP_MODE, OPENLOOP_PHI,
+    ABN_DECODER_COUNT, ADC_IWY_IUX, CONFIG_BIQUAD_F_ENABLE, CONFIG_BIQUAD_T_ENABLE,
+    DSADC_MDEC_B_MDEC_A, INTERIM_FOC_IQ_ID, INTERIM_FOC_IWY_IUX, INTERIM_FOC_UQ_UD,
+    INTERIM_FOC_UQ_UD_LIMITED, MODE_RAMP_MODE_MOTION, MOTOR_TYPE_N_POLE_PAIRS, MotorType,
+    MotorTypeNPolePairs, OPENLOOP_ACCELERATION, OPENLOOP_MODE, OPENLOOP_PHI,
     OPENLOOP_VELOCITY_ACTUAL, OPENLOOP_VELOCITY_TARGET, PHI_E_EXT, PHI_E_SELECTION,
     PID_TORQUE_FLUX_ACTUAL, PIDOUT_UQ_UD_LIMITS, PWM_BBM_H_BBM_L, PWM_MAXCNT, PWM_SV_CHOP,
-    STATUS_FLAGS, UQ_UD_EXT,
+    STATUS_FLAGS, SubRegister, UQ_UD_EXT,
 };
 use pollster::block_on;
 
@@ -878,10 +883,23 @@ struct RecordedWrite {
     value: u32,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct RecordedRead {
+    addr: u8,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RecordedOp {
+    Read { addr: u8 },
+    Write { addr: u8, value: u32 },
+}
+
 const AC_SAMPLE_TIMESTAMP_CAPACITY: usize = (IMPEDANCE_SAMPLE_COUNT + 1) * IMPEDANCE_PROFILE_POINTS;
 
 struct FakeImpedanceBackend {
-    writes: heapless::Vec<RecordedWrite, 512>,
+    writes: heapless::Vec<RecordedWrite, 2048>,
+    reads: heapless::Vec<RecordedRead, 1024>,
+    ops: heapless::Vec<RecordedOp, 4096>,
     profile: ImpedanceProfile,
     armed_for_open_loop_voltage: bool,
     motor_type: u8,
@@ -902,8 +920,14 @@ struct FakeImpedanceBackend {
     bbm_readback: u32,
     dsadc_mdec_readback: u32,
     interim_sub_addr: u8,
+    config_sub_addr: u8,
+    torque_filter_enable: u32,
+    flux_filter_enable: u32,
     timestamp_us: u32,
     encoder_count: u32,
+    scripted_encoder_counts: heapless::Vec<u32, 64>,
+    scripted_encoder_index: usize,
+    v2_angle_starts: usize,
     baseline_current_count: i16,
     status_flags: u32,
     readback_mismatch_addr: Option<u8>,
@@ -936,6 +960,8 @@ impl FakeImpedanceBackend {
         let saved_voltage_limit = 16_000;
         Self {
             writes: heapless::Vec::new(),
+            reads: heapless::Vec::new(),
+            ops: heapless::Vec::new(),
             profile,
             armed_for_open_loop_voltage: true,
             motor_type: MotorType::TwoPhase as u8,
@@ -956,8 +982,14 @@ impl FakeImpedanceBackend {
             bbm_readback: 0x0909,
             dsadc_mdec_readback: 0x014B_014B,
             interim_sub_addr: 0,
+            config_sub_addr: 0,
+            torque_filter_enable: 0,
+            flux_filter_enable: 0,
             timestamp_us: 0,
             encoder_count: 0,
+            scripted_encoder_counts: heapless::Vec::new(),
+            scripted_encoder_index: 0,
+            v2_angle_starts: 0,
             baseline_current_count: 0,
             status_flags: 0,
             readback_mismatch_addr: None,
@@ -1164,10 +1196,86 @@ impl FakeImpedanceBackend {
             .filter(|write| write.addr == UQ_UD_EXT.addr() && write.value != 0)
             .count()
     }
+
+    fn ready_for_success() -> Self {
+        Self::standard()
+    }
+
+    fn with_encoder_script(mut self, counts: &[u32]) -> Self {
+        for count in counts {
+            self.scripted_encoder_counts
+                .push(*count)
+                .expect("encoder script overflow");
+        }
+        self
+    }
+
+    fn seed_subregister(&mut self, sub: SubRegister, value: u32) {
+        if sub.sub_addr == CONFIG_BIQUAD_T_ENABLE.sub_addr {
+            self.torque_filter_enable = value;
+        } else if sub.sub_addr == CONFIG_BIQUAD_F_ENABLE.sub_addr {
+            self.flux_filter_enable = value;
+        } else {
+            panic!("unsupported seeded subregister {sub:?}");
+        }
+    }
+
+    fn read_index(&self, addr: u8) -> usize {
+        self.ops
+            .iter()
+            .position(|op| matches!(op, RecordedOp::Read { addr: read_addr } if *read_addr == addr))
+            .expect("read address missing")
+    }
+
+    fn first_nonzero_uq_write_index(&self) -> usize {
+        self.ops
+            .iter()
+            .position(|op| {
+                matches!(
+                    op,
+                    RecordedOp::Write { addr, value }
+                        if *addr == UQ_UD_EXT.addr() && *value != 0
+                )
+            })
+            .expect("nonzero UQ_UD_EXT write missing")
+    }
+
+    fn write_index(&self, addr: u8, value: u32) -> usize {
+        self.writes
+            .iter()
+            .position(|write| write.addr == addr && write.value == value)
+            .expect("write missing")
+    }
+
+    fn sub_write_indices(&self, sub: SubRegister, value: u32) -> heapless::Vec<usize, 16> {
+        let mut indices = heapless::Vec::new();
+        for (index, pair) in self.writes.windows(2).enumerate() {
+            if pair[0].addr == sub.addr.addr()
+                && pair[0].value == u32::from(sub.sub_addr)
+                && pair[1].addr == sub.data.addr()
+                && pair[1].value == value
+            {
+                indices.push(index).expect("sub write index overflow");
+            }
+        }
+        indices
+    }
 }
 
 impl ImpedanceBackend for FakeImpedanceBackend {
     async fn read_register(&mut self, addr: u8) -> Result<u32, ImpedanceBackendError> {
+        if addr == PWM_MAXCNT.addr()
+            || addr == PWM_BBM_H_BBM_L.addr()
+            || addr == DSADC_MDEC_B_MDEC_A.addr()
+            || addr == PWM_SV_CHOP.addr()
+        {
+            self.reads
+                .push(RecordedRead { addr })
+                .expect("read log overflow");
+            self.ops
+                .push(RecordedOp::Read { addr })
+                .expect("op log overflow");
+        }
         if addr == MOTOR_TYPE_N_POLE_PAIRS.addr() {
             return Ok(MotorTypeNPolePairs::new()
                 .with_motor_type(self.motor_type)
@@ -1175,6 +1283,14 @@ impl ImpedanceBackend for FakeImpedanceBackend {
                 .into());
         }
         if addr == ABN_DECODER_COUNT.addr() {
+            if !self.scripted_encoder_counts.is_empty() {
+                let index = self
+                    .scripted_encoder_index
+                    .min(self.scripted_encoder_counts.len() - 1);
+                let count = self.scripted_encoder_counts[index];
+                self.scripted_encoder_index += 1;
+                return Ok(count);
+            }
             return Ok(self.encoder_count);
         }
         if addr == STATUS_FLAGS.addr() {
@@ -1205,6 +1321,10 @@ impl ImpedanceBackend for FakeImpedanceBackend {
             return Ok(Self::packed_current(self.baseline_current_count, 0));
         }
         if addr == PID_TORQUE_FLUX_ACTUAL.addr() {
+            if self.phi_e_selection == 1 && self.energized() {
+                self.ac_transformed_reads += 1;
+                return Ok(self.ac_current());
+            }
             if self.phi_e_selection == 2 && self.energized() {
                 self.ac_transformed_reads += 1;
                 return Ok(self.ac_current());
@@ -1231,6 +1351,14 @@ impl ImpedanceBackend for FakeImpedanceBackend {
                 ));
             }
         }
+        if addr == CONFIG_BIQUAD_T_ENABLE.data.addr() {
+            if self.config_sub_addr == CONFIG_BIQUAD_T_ENABLE.sub_addr {
+                return Ok(self.torque_filter_enable);
+            }
+            if self.config_sub_addr == CONFIG_BIQUAD_F_ENABLE.sub_addr {
+                return Ok(self.flux_filter_enable);
+            }
+        }
         Ok(self.readback_value(addr))
     }
 
@@ -1238,6 +1366,9 @@ impl ImpedanceBackend for FakeImpedanceBackend {
         self.writes
             .push(RecordedWrite { addr, value })
             .expect("write log overflow");
+        self.ops
+            .push(RecordedOp::Write { addr, value })
+            .expect("op log overflow");
         if addr == PIDOUT_UQ_UD_LIMITS.addr() {
             self.pidout_limit = value;
         } else if addr == UQ_UD_EXT.addr() {
@@ -1262,6 +1393,20 @@ impl ImpedanceBackend for FakeImpedanceBackend {
             self.pwm_sv_chop = value;
         } else if addr == INTERIM_FOC_UQ_UD.addr.addr() {
             self.interim_sub_addr = value as u8;
+        } else if addr == CONFIG_BIQUAD_T_ENABLE.addr.addr() {
+            self.config_sub_addr = value as u8;
+        } else if addr == CONFIG_BIQUAD_T_ENABLE.data.addr() {
+            if self.config_sub_addr == CONFIG_BIQUAD_T_ENABLE.sub_addr {
+                self.torque_filter_enable = value;
+            } else if self.config_sub_addr == CONFIG_BIQUAD_F_ENABLE.sub_addr {
+                self.flux_filter_enable = value;
+            }
+        }
+        if addr == MODE_RAMP_MODE_MOTION.addr()
+            && value == foci_tmc4671::registers::MotionMode::UqUdExt as u32
+            && self.phi_e_selection == 1
+        {
+            self.v2_angle_starts += 1;
         }
         if self.restore_failure_armed && self.restore_fail_addr == Some(addr) {
             return Err(ImpedanceBackendError::Spi);
@@ -1364,6 +1509,173 @@ fn assert_restore_wrote_phi_e_selection_zero(writes: &[RecordedWrite]) {
             .rev()
             .any(|write| write.addr == PHI_E_SELECTION.addr() && write.value == 0),
         "expected restore PHI_E_SELECTION=0 write, got {writes:?}"
+    );
+}
+
+type MockImpedanceBackend = FakeImpedanceBackend;
+
+#[test]
+fn runner_v2_never_writes_openloop_velocity_target() {
+    let mut backend = MockImpedanceBackend::ready_for_success();
+
+    let result = block_on(run_pulsating_impedance_identification(&mut backend)).unwrap();
+
+    assert_eq!(result.profile.profile_version, 2);
+    assert!(
+        !backend
+            .writes
+            .iter()
+            .any(|write| write.addr == OPENLOOP_VELOCITY_TARGET.addr() && write.value != 0),
+        "v2 must not command the open-loop velocity generator: {:?}",
+        backend.writes
+    );
+    assert!(
+        backend
+            .writes
+            .iter()
+            .any(|write| write.addr == PHI_E_SELECTION.addr() && write.value == 1),
+        "v2 must select external electrical angle: {:?}",
+        backend.writes
+    );
+}
+
+#[test]
+fn runner_v2_snapshots_disables_and_restores_torque_flux_filters() {
+    let mut backend = MockImpedanceBackend::ready_for_success();
+    backend.seed_subregister(CONFIG_BIQUAD_T_ENABLE, 1);
+    backend.seed_subregister(CONFIG_BIQUAD_F_ENABLE, 1);
+
+    let result = block_on(run_pulsating_impedance_identification(&mut backend)).unwrap();
+
+    assert_eq!(result.filter_state.torque_enable_before, 1);
+    assert_eq!(result.filter_state.flux_enable_before, 1);
+    assert_eq!(result.filter_state.torque_enable_during, 0);
+    assert_eq!(result.filter_state.flux_enable_during, 0);
+    let torque_disable = backend.sub_write_indices(CONFIG_BIQUAD_T_ENABLE, 0);
+    let flux_disable = backend.sub_write_indices(CONFIG_BIQUAD_F_ENABLE, 0);
+    let torque_restore = backend.sub_write_indices(CONFIG_BIQUAD_T_ENABLE, 1);
+    let flux_restore = backend.sub_write_indices(CONFIG_BIQUAD_F_ENABLE, 1);
+    assert!(!torque_disable.is_empty(), "torque filter was not disabled");
+    assert!(!flux_disable.is_empty(), "flux filter was not disabled");
+    assert!(!torque_restore.is_empty(), "torque filter was not restored");
+    assert!(!flux_restore.is_empty(), "flux filter was not restored");
+    assert!(torque_disable[0] < torque_restore[0]);
+    assert!(flux_disable[0] < flux_restore[0]);
+}
+
+#[test]
+fn runner_v2_verifies_power_stage_before_first_carrier_write() {
+    let mut backend = MockImpedanceBackend::ready_for_success();
+
+    let result = block_on(run_pulsating_impedance_identification(&mut backend));
+
+    assert!(result.is_ok(), "expected ok, got {result:?}");
+    let first_carrier = backend.first_nonzero_uq_write_index();
+    let pwm_write = backend.write_index(PWM_SV_CHOP.addr(), 7);
+    assert!(pwm_write < first_carrier);
+    for addr in [
+        PWM_MAXCNT.addr(),
+        PWM_BBM_H_BBM_L.addr(),
+        DSADC_MDEC_B_MDEC_A.addr(),
+        PWM_SV_CHOP.addr(),
+    ] {
+        assert!(
+            backend.read_index(addr) < first_carrier,
+            "read {addr:#x} did not happen before first carrier write"
+        );
+    }
+}
+
+#[test]
+fn runner_v2_uses_encoder_peak_excursion_not_before_after_delta() {
+    let mut backend =
+        MockImpedanceBackend::ready_for_success().with_encoder_script(&[1000, 1036, 1000]);
+
+    let result = block_on(run_pulsating_impedance_identification(&mut backend)).unwrap();
+
+    assert!(
+        result
+            .warning_flags
+            .contains(ImpedanceWarningFlags::ANGLE_LOCAL_MOTION)
+    );
+    assert_eq!(result.angle_observations[0].encoder_peak_counts, 36);
+}
+
+#[test]
+fn runner_v2_warns_but_continues_for_encoder_warn_band() {
+    let mut backend =
+        MockImpedanceBackend::ready_for_success().with_encoder_script(&[1000, 1080, 1000]);
+
+    let result = block_on(run_pulsating_impedance_identification(&mut backend)).unwrap();
+
+    assert!(
+        result
+            .warning_flags
+            .contains(ImpedanceWarningFlags::ENCODER_MOVED)
+    );
+    assert!(
+        backend.v2_angle_starts >= 2,
+        "runner did not continue into the second angle"
+    );
+}
+
+#[test]
+fn runner_v2_hard_aborts_when_encoder_peak_exceeds_fail_threshold() {
+    let mut backend =
+        MockImpedanceBackend::ready_for_success().with_encoder_script(&[1000, 1136, 1136]);
+
+    let err = block_on(run_pulsating_impedance_identification(&mut backend)).unwrap_err();
+
+    assert_eq!(err, ImpedanceError::EncoderMoved);
+    assert!(
+        backend
+            .writes
+            .iter()
+            .any(|write| write.addr == UQ_UD_EXT.addr() && write.value == 0),
+        "runner did not command zero voltage after encoder peak"
+    );
+    assert_eq!(backend.v2_angle_starts, 1);
+}
+
+#[test]
+fn runner_v2_accumulator_puts_phase_lag_in_inductive_channel() {
+    let profile = PulsatingImpedanceProfile::standard_openffboard();
+    let point = profile.angle_points[0];
+    let mut accumulator =
+        PulsatingAngleAccumulator::new(point.angle_electrical_counts, point.ud_abs);
+
+    for index in 0..profile.samples_per_cycle {
+        let phase = TURN * f64::from(index) / f64::from(profile.samples_per_cycle);
+        let resistive = (80.0 * libm::sin(phase)).round() as i16;
+        let inductive = (32.0 * libm::cos(phase)).round() as i16;
+        let sample = ImpedanceSample {
+            t_us: u32::from(index) * u32::from(profile.sample_interval_us),
+            openloop_phi: 0,
+            i_ch0: resistive + inductive,
+            i_ch1: 0,
+        };
+        accumulator.accumulate(sample, sample);
+    }
+
+    let observation = accumulator.finish(
+        &profile,
+        PulsatingBaselineObservation {
+            d_count: 0,
+            q_count: 0,
+            adc_ch0_count: 0,
+            adc_ch1_count: 0,
+        },
+        0,
+        0,
+        0,
+        0,
+    );
+
+    assert!(observation.in_phase_response_count_per_ud_milli > 100);
+    assert!(observation.inductive_response_count_per_ud_milli > 40);
+    assert!(
+        observation.in_phase_response_count_per_ud_milli
+            > observation.inductive_response_count_per_ud_milli
     );
 }
 
