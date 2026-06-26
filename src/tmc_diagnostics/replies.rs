@@ -636,6 +636,9 @@ mod tests {
             point_count: 2,
             sample_count: 128,
             sample_interval_us: 250,
+            carrier_frequency_millihz: 100_000,
+            samples_per_cycle: 20,
+            cycles_per_angle: 8,
             max_ud: 960,
             status_flags_fail_mask: 0x7000_4480,
             status_flags_warn_mask: 0,
@@ -656,6 +659,10 @@ mod tests {
             readback_mismatch_addr: 0,
             readback_expected: 0,
             readback_actual: 0,
+            filter_torque_enable_before: 1,
+            filter_flux_enable_before: 1,
+            filter_torque_enable_during: 0,
+            filter_flux_enable_during: 0,
         }
     }
 
@@ -671,6 +678,12 @@ mod tests {
             residual_permille: 10 + u16::from(point_index),
             coverage_permille: 900,
             scalar_2f_mismatch_permille: 20 + u16::from(point_index),
+            mean_response_count_per_ud_milli: 1_000,
+            saliency_permille: 300,
+            saliency_determinable: 1,
+            angle_coverage_permille: 1000,
+            axis_deviation_counts: 0,
+            secondary_adc_response_count_per_ud_milli: 7,
             magnitude_mean_count_per_ud_milli: 840,
             magnitude_2f_count_per_ud_milli: 125,
             magnitude_2f_residual_permille: 11,
@@ -685,6 +698,7 @@ mod tests {
             point_index,
             frequency_millihz: if point_index == 0 { 25_000 } else { 50_000 },
             ud_abs: if point_index == 0 { 640 } else { 960 },
+            angle_electrical_counts: u16::from(point_index) * 8192,
             status_flags_or: 0x55aa_0000 | u32::from(point_index),
             openloop_phi_sample: 0x1234 | u16::from(point_index),
             openloop_velocity_actual: 1_500 + i32::from(point_index),
@@ -698,6 +712,12 @@ mod tests {
             foc_ud_limited_sample: 638 + i16::from(point_index),
             foc_iq_sample: 80 + i16::from(point_index),
             foc_id_sample: 40 + i16::from(point_index),
+            encoder_before: 1_000,
+            encoder_after: 1_004,
+            encoder_min: 998,
+            encoder_max: 1_010,
+            encoder_peak_counts: 12,
+            angle_valid: 1,
         }
     }
 
@@ -716,6 +736,39 @@ mod tests {
         }
     }
 
+    fn impedance_fit_reports() -> [Option<ImpedanceFitReport>;
+        crate::impedance_identification::PULSATING_IMPEDANCE_PROFILE_POINTS] {
+        core::array::from_fn(|index| {
+            if index < 2 {
+                Some(impedance_fit_report(index as u8))
+            } else {
+                None
+            }
+        })
+    }
+
+    fn impedance_baseline_reports() -> [Option<ImpedanceBaselineReport>;
+        crate::impedance_identification::PULSATING_IMPEDANCE_PROFILE_POINTS] {
+        core::array::from_fn(|index| {
+            if index < 2 {
+                Some(impedance_baseline_report(index as u8))
+            } else {
+                None
+            }
+        })
+    }
+
+    fn impedance_observation_reports() -> [Option<ImpedanceObservationReport>;
+        crate::impedance_identification::PULSATING_IMPEDANCE_PROFILE_POINTS] {
+        core::array::from_fn(|index| {
+            if index < 2 {
+                Some(impedance_observation_report(index as u8))
+            } else {
+                None
+            }
+        })
+    }
+
     #[test]
     fn impedance_success_detail_zero_emits_run_only() {
         let mut sink = RecordingSink::default();
@@ -725,15 +778,9 @@ mod tests {
             DiagnosticReport::ImpedanceTest {
                 profile: impedance_profile_report(),
                 run: impedance_run_report(0),
-                fits: [Some(impedance_fit_report(0)), Some(impedance_fit_report(1))],
-                baselines: [
-                    Some(impedance_baseline_report(0)),
-                    Some(impedance_baseline_report(1)),
-                ],
-                observations: [
-                    Some(impedance_observation_report(0)),
-                    Some(impedance_observation_report(1)),
-                ],
+                fits: impedance_fit_reports(),
+                baselines: impedance_baseline_reports(),
+                observations: impedance_observation_reports(),
                 detail: 0,
             },
         );
@@ -758,15 +805,9 @@ mod tests {
             DiagnosticReport::ImpedanceTest {
                 profile: impedance_profile_report(),
                 run: impedance_run_report(0),
-                fits: [Some(impedance_fit_report(0)), Some(impedance_fit_report(1))],
-                baselines: [
-                    Some(impedance_baseline_report(0)),
-                    Some(impedance_baseline_report(1)),
-                ],
-                observations: [
-                    Some(impedance_observation_report(0)),
-                    Some(impedance_observation_report(1)),
-                ],
+                fits: impedance_fit_reports(),
+                baselines: impedance_baseline_reports(),
+                observations: impedance_observation_reports(),
                 detail: 1,
             },
         );
@@ -837,15 +878,9 @@ mod tests {
             DiagnosticReport::ImpedanceTest {
                 profile: impedance_profile_report(),
                 run: impedance_run_report(0),
-                fits: [Some(impedance_fit_report(0)), Some(impedance_fit_report(1))],
-                baselines: [
-                    Some(impedance_baseline_report(0)),
-                    Some(impedance_baseline_report(1)),
-                ],
-                observations: [
-                    Some(impedance_observation_report(0)),
-                    Some(impedance_observation_report(1)),
-                ],
+                fits: impedance_fit_reports(),
+                baselines: impedance_baseline_reports(),
+                observations: impedance_observation_reports(),
                 detail: 2,
             },
         );
@@ -870,9 +905,11 @@ mod tests {
             DiagnosticReport::ImpedanceTest {
                 profile: impedance_profile_report(),
                 run: impedance_run_report(2),
-                fits: [None, None],
-                baselines: [None, None],
-                observations: [None, None],
+                fits: [None; crate::impedance_identification::PULSATING_IMPEDANCE_PROFILE_POINTS],
+                baselines: [None;
+                    crate::impedance_identification::PULSATING_IMPEDANCE_PROFILE_POINTS],
+                observations: [None;
+                    crate::impedance_identification::PULSATING_IMPEDANCE_PROFILE_POINTS],
                 detail: 1,
             },
         );

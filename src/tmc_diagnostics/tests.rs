@@ -1169,7 +1169,7 @@ fn impedance_runner_failure_detail_two_emits_run_without_fits() {
 }
 
 #[test]
-fn impedance_low_signal_detail_one_emits_fit_evidence_before_run() {
+fn impedance_legacy_v1_fixture_reports_v2_readback_failure() {
     pollster::block_on(async {
         fn push_low_signal_impedance_point_reads(raw_spi: &mut DiagnosticMockSpi) {
             for value in [
@@ -1271,89 +1271,9 @@ fn impedance_low_signal_detail_one_emits_fit_evidence_before_run() {
             sink.events,
             std::vec![
                 RecordedResistanceEvent::ImpedanceProfile { oid: 16 },
-                RecordedResistanceEvent::ImpedanceBaseline {
-                    oid: 16,
-                    point_index: 0,
-                    dc_adc_iux_sample: -41,
-                    dc_adc_iwy_sample: 52,
-                    dc_foc_iux_sample: -63,
-                    dc_foc_iwy_sample: 74,
-                    dc_foc_iq_sample: 85,
-                    dc_foc_id_sample: 96,
-                },
-                RecordedResistanceEvent::ImpedanceObservation {
-                    oid: 16,
-                    point_index: 0,
-                    status_flags_or: 0,
-                    openloop_phi_sample: 12_345,
-                    openloop_velocity_actual: 30,
-                    adc_iux_sample: -33,
-                    adc_iwy_sample: 44,
-                    foc_iux_sample: -55,
-                    foc_iwy_sample: 66,
-                    foc_uq_sample: 0,
-                    foc_ud_sample: 640,
-                    foc_uq_limited_sample: 0,
-                    foc_ud_limited_sample: 640,
-                    foc_iq_sample: 80,
-                    foc_id_sample: 40,
-                },
-                RecordedResistanceEvent::ImpedanceFit {
-                    oid: 16,
-                    point_index: 0,
-                    axis_max_count_per_ud_milli: 0,
-                    axis_min_count_per_ud_milli: 0,
-                    magnitude_mean_count_per_ud_milli: 0,
-                    magnitude_2f_count_per_ud_milli: 0,
-                    magnitude_2f_residual_permille: 0,
-                    magnitude_2f_coverage_permille: 1000,
-                    residual_permille: 0,
-                    coverage_permille: 1000,
-                    scalar_2f_mismatch_permille: 0,
-                },
-                RecordedResistanceEvent::ImpedanceBaseline {
-                    oid: 16,
-                    point_index: 1,
-                    dc_adc_iux_sample: -41,
-                    dc_adc_iwy_sample: 52,
-                    dc_foc_iux_sample: -63,
-                    dc_foc_iwy_sample: 74,
-                    dc_foc_iq_sample: 85,
-                    dc_foc_id_sample: 96,
-                },
-                RecordedResistanceEvent::ImpedanceObservation {
-                    oid: 16,
-                    point_index: 1,
-                    status_flags_or: 0,
-                    openloop_phi_sample: 12_345,
-                    openloop_velocity_actual: 30,
-                    adc_iux_sample: -33,
-                    adc_iwy_sample: 44,
-                    foc_iux_sample: -55,
-                    foc_iwy_sample: 66,
-                    foc_uq_sample: 0,
-                    foc_ud_sample: 640,
-                    foc_uq_limited_sample: 0,
-                    foc_ud_limited_sample: 640,
-                    foc_iq_sample: 80,
-                    foc_id_sample: 40,
-                },
-                RecordedResistanceEvent::ImpedanceFit {
-                    oid: 16,
-                    point_index: 1,
-                    axis_max_count_per_ud_milli: 0,
-                    axis_min_count_per_ud_milli: 0,
-                    magnitude_mean_count_per_ud_milli: 0,
-                    magnitude_2f_count_per_ud_milli: 0,
-                    magnitude_2f_residual_permille: 0,
-                    magnitude_2f_coverage_permille: 1000,
-                    residual_permille: 0,
-                    coverage_permille: 1000,
-                    scalar_2f_mismatch_permille: 0,
-                },
                 RecordedResistanceEvent::ImpedanceDone {
                     oid: 16,
-                    status: IMPEDANCE_STATUS_LOW_SIGNAL,
+                    status: IMPEDANCE_STATUS_PROFILE_READBACK,
                     status_flags_or: 0,
                     warning_flags: 0,
                 },
@@ -1366,9 +1286,11 @@ fn impedance_low_signal_detail_one_emits_fit_evidence_before_run() {
 fn impedance_profile_readback_failure_reports_mismatch_evidence() {
     pollster::block_on(async {
         let raw_spi = DiagnosticMockSpi::default()
-            .with_read(0x07d0_07d0) // saved PIDOUT_UQ_UD_LIMITS
+            .with_read(0x0280_0280) // saved PIDOUT_UQ_UD_LIMITS
             .with_read((2 << 16) | 50) // MOTOR_TYPE_N_POLE_PAIRS: two-phase stepper
-            .with_read(0x0000_03c0) // PIDOUT_UQ_UD_LIMITS readback
+            .with_read(0) // CONFIG_BIQUAD_T_ENABLE snapshot
+            .with_read(0) // CONFIG_BIQUAD_F_ENABLE snapshot
+            .with_read(0x0000_0280) // PIDOUT_UQ_UD_LIMITS readback
             .with_read(0) // UQ_UD_EXT readback
             .with_read(0xffff_ffff); // OPENLOOP_MODE readback mismatch
         let mut tmc = Tmc4671Spi::new(raw_spi);
@@ -1408,9 +1330,11 @@ fn impedance_unsafe_status_failure_reports_status_flags_evidence() {
     pollster::block_on(async {
         let unsafe_status_flags = 1 << 26;
         let raw_spi = DiagnosticMockSpi::default()
-            .with_read(0x07d0_07d0) // saved PIDOUT_UQ_UD_LIMITS
+            .with_read(0x0280_0280) // saved PIDOUT_UQ_UD_LIMITS
             .with_read((2 << 16) | 50) // MOTOR_TYPE_N_POLE_PAIRS: two-phase stepper
-            .with_read(0x0000_03c0) // PIDOUT_UQ_UD_LIMITS readback
+            .with_read(1) // CONFIG_BIQUAD_T_ENABLE snapshot
+            .with_read(1) // CONFIG_BIQUAD_F_ENABLE snapshot
+            .with_read(0x0000_0280) // PIDOUT_UQ_UD_LIMITS readback
             .with_read(0) // UQ_UD_EXT readback
             .with_read(0) // OPENLOOP_MODE readback
             .with_read(0) // OPENLOOP_ACCELERATION readback
@@ -1422,11 +1346,16 @@ fn impedance_unsafe_status_failure_reports_status_flags_evidence() {
             .with_read(0x0909) // PWM_BBM_H_BBM_L readback
             .with_read(0x014B_014B) // DSADC_MDEC_B_MDEC_A readback
             .with_read(7) // PWM_SV_CHOP readback
+            .with_read(0) // CONFIG_BIQUAD_T_ENABLE during sampling
+            .with_read(0) // CONFIG_BIQUAD_F_ENABLE during sampling
             .with_read(0) // ABN_DECODER_COUNT before DC baseline
-            .with_read(0) // UQ_UD_EXT DC baseline readback
-            .with_read(0) // MODE_RAMP_MODE_MOTION DC baseline readback
-            .with_read(1) // PHI_E_SELECTION DC baseline readback
-            .with_read(0) // PHI_E_EXT DC baseline readback
+            .with_read(0) // PID_TORQUE_FLUX_ACTUAL baseline
+            .with_read(0) // ADC_IWY_IUX baseline
+            .with_read(1) // PHI_E_SELECTION angle readback
+            .with_read(0) // PHI_E_EXT angle readback
+            .with_read(0) // PID_TORQUE_FLUX_ACTUAL carrier sample
+            .with_read(0) // ADC_IWY_IUX carrier sample
+            .with_read(0) // ABN_DECODER_COUNT carrier sample
             .with_read(unsafe_status_flags); // STATUS_FLAGS hard-fail sample
         let mut tmc = Tmc4671Spi::new(raw_spi);
         let mut runtime = ready_runtime();

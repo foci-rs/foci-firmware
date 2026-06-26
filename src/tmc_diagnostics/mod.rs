@@ -125,14 +125,14 @@ pub enum DiagnosticReport {
         /// Per-run status, warnings, and aggregate selected axes.
         run: ImpedanceRunReport,
         /// Per-point fit results or fit-gate evidence.
-        fits:
-            [Option<ImpedanceFitReport>; crate::impedance_identification::IMPEDANCE_PROFILE_POINTS],
+        fits: [Option<ImpedanceFitReport>;
+            crate::impedance_identification::PULSATING_IMPEDANCE_PROFILE_POINTS],
         /// Per-point DC baseline observations captured before AC injection.
         baselines: [Option<ImpedanceBaselineReport>;
-            crate::impedance_identification::IMPEDANCE_PROFILE_POINTS],
+            crate::impedance_identification::PULSATING_IMPEDANCE_PROFILE_POINTS],
         /// Per-point chip observations captured while voltage was active.
         observations: [Option<ImpedanceObservationReport>;
-            crate::impedance_identification::IMPEDANCE_PROFILE_POINTS],
+            crate::impedance_identification::PULSATING_IMPEDANCE_PROFILE_POINTS],
         /// Normalized detail level from the command request.
         detail: u8,
     },

@@ -327,6 +327,7 @@ pub enum ImpedanceError {
     ProfileReadbackMismatch,
     CurrentLimitExceeded,
     EncoderMoved,
+    FilterState,
     UnsafeStatusFlags,
     LowSignal,
     PoorCoverage,

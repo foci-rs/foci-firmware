@@ -371,10 +371,6 @@ pub const IMPEDANCE_STATUS_PROFILE_READBACK: u8 = 13;
 pub const IMPEDANCE_STATUS_CURRENT_LIMIT: u8 = 14;
 /// Impedance diagnostic failed because the encoder moved too far.
 pub const IMPEDANCE_STATUS_ENCODER_MOVED: u8 = 15;
-/// Impedance diagnostic failed because TMC4671 `STATUS_FLAGS` reported a hard fault.
-pub const IMPEDANCE_STATUS_UNSAFE_STATUS_FLAGS: u8 = 21;
-/// Impedance diagnostic failed because the fitted saliency axis deviated too far.
-pub const IMPEDANCE_STATUS_AXIS_DEVIATION: u8 = 22;
 /// Impedance diagnostic failed because the captured signal was too small.
 pub const IMPEDANCE_STATUS_LOW_SIGNAL: u8 = 16;
 /// Impedance diagnostic failed because phase coverage was insufficient.
@@ -385,6 +381,12 @@ pub const IMPEDANCE_STATUS_SCALAR_2F_MISMATCH: u8 = 18;
 pub const IMPEDANCE_STATUS_HIGH_RESIDUAL: u8 = 19;
 /// Impedance diagnostic failed because cross-point repeatability exceeded the hard gate.
 pub const IMPEDANCE_STATUS_REPEATABILITY: u8 = 20;
+/// Impedance diagnostic failed because torque/flux filter state could not be controlled.
+pub const IMPEDANCE_STATUS_FILTER_STATE: u8 = 21;
+/// Impedance diagnostic failed because the fitted saliency axis deviated too far.
+pub const IMPEDANCE_STATUS_AXIS_DEVIATION: u8 = 22;
+/// Impedance diagnostic failed because TMC4671 `STATUS_FLAGS` reported a hard fault.
+pub const IMPEDANCE_STATUS_UNSAFE_STATUS_FLAGS: u8 = 23;
 
 /// Board/profile constants reported for display by the impedance-test
 /// diagnostic. Carries no per-run status; always emitted once per request.
@@ -400,6 +402,12 @@ pub struct ImpedanceProfileReport {
     pub sample_count: u16,
     /// Sampling interval in microseconds.
     pub sample_interval_us: u16,
+    /// Square-carrier frequency for v2 fixed-angle sampling, in millihertz.
+    pub carrier_frequency_millihz: u32,
+    /// Number of samples captured for each carrier cycle.
+    pub samples_per_cycle: u16,
+    /// Number of carrier cycles captured at each fixed angle.
+    pub cycles_per_angle: u16,
     /// Maximum absolute UD voltage request used by the profile.
     pub max_ud: u16,
     /// STATUS_FLAGS bitmask that hard-fails the run.
@@ -436,6 +444,14 @@ pub struct ImpedanceRunReport {
     pub readback_expected: u32,
     /// Actual value for the last profile readback mismatch.
     pub readback_actual: u32,
+    /// Torque filter enable state before v2 sampling.
+    pub filter_torque_enable_before: u8,
+    /// Flux filter enable state before v2 sampling.
+    pub filter_flux_enable_before: u8,
+    /// Torque filter enable state during v2 sampling.
+    pub filter_torque_enable_during: u8,
+    /// Flux filter enable state during v2 sampling.
+    pub filter_flux_enable_during: u8,
 }
 
 /// Per-injection-point fit result for the impedance-test diagnostic.
@@ -461,6 +477,18 @@ pub struct ImpedanceFitReport {
     pub coverage_permille: u16,
     /// Scalar `2f` saliency mismatch as permille.
     pub scalar_2f_mismatch_permille: u16,
+    /// Mean v2 lock-in response normalized to counts per 1000 UD counts.
+    pub mean_response_count_per_ud_milli: u32,
+    /// V2 saliency relative to mean response, in permille.
+    pub saliency_permille: u16,
+    /// Non-zero when the v2 saliency axis was determinable.
+    pub saliency_determinable: u8,
+    /// V2 valid fixed-angle coverage, in permille.
+    pub angle_coverage_permille: u16,
+    /// V2 half-turn folded deviation from expected electrical zero.
+    pub axis_deviation_counts: u16,
+    /// Secondary ADC v2 lock-in response normalized to counts per 1000 UD counts.
+    pub secondary_adc_response_count_per_ud_milli: u32,
     /// Mean transformed-current magnitude normalized to counts per 1000 UD counts.
     pub magnitude_mean_count_per_ud_milli: u32,
     /// `2f` transformed-current magnitude ripple normalized to counts per 1000 UD counts.
@@ -484,6 +512,8 @@ pub struct ImpedanceObservationReport {
     pub frequency_millihz: u32,
     /// Absolute UD magnitude requested during the window.
     pub ud_abs: u16,
+    /// Electrical angle for the fixed-angle v2 observation.
+    pub angle_electrical_counts: u16,
     /// STATUS_FLAGS observed during this point's DC and AC windows.
     pub status_flags_or: u32,
     /// OPENLOOP_PHI sampled while AC voltage is active.
@@ -510,6 +540,18 @@ pub struct ImpedanceObservationReport {
     pub foc_iq_sample: i16,
     /// Park-transformed d-axis current sample from `INTERIM_FOC_IQ_ID`.
     pub foc_id_sample: i16,
+    /// Encoder count before the v2 observation window.
+    pub encoder_before: u32,
+    /// Encoder count after the v2 observation window.
+    pub encoder_after: u32,
+    /// Minimum encoder count observed during the v2 observation window.
+    pub encoder_min: u32,
+    /// Maximum encoder count observed during the v2 observation window.
+    pub encoder_max: u32,
+    /// Peak encoder movement observed during the v2 observation window.
+    pub encoder_peak_counts: u16,
+    /// Non-zero when the v2 fixed-angle observation participated in the fit.
+    pub angle_valid: u8,
 }
 
 /// Per-injection-point DC baseline observation for the impedance diagnostic.
@@ -553,6 +595,10 @@ pub fn empty_impedance_run_report(oid: u8, status: u8) -> ImpedanceRunReport {
         readback_mismatch_addr: 0,
         readback_expected: 0,
         readback_actual: 0,
+        filter_torque_enable_before: 0,
+        filter_flux_enable_before: 0,
+        filter_torque_enable_during: 0,
+        filter_flux_enable_during: 0,
     }
 }
 
