@@ -1,15 +1,13 @@
-use super::profile::{
-    ImpedanceProfile, PulsatingImpedanceProfile, frequency_millihz_to_openloop_velocity_rpm,
-};
+use super::profile::{ImpedanceProfile, frequency_millihz_to_openloop_velocity_rpm};
 use super::runner::{ImpedanceBackend, ImpedanceBackendError, run_impedance_identification};
 use super::types::{
     IMPEDANCE_PROFILE_POINTS, IMPEDANCE_SAMPLE_COUNT, ImpedanceError, ImpedanceInjectionPoint,
-    ImpedanceSample, ImpedanceWarningFlags, PULSATING_IMPEDANCE_PROFILE_POINTS,
-    PULSATING_IMPEDANCE_SAMPLE_COUNT,
+    ImpedanceSample, ImpedanceWarningFlags,
 };
 use super::{
-    ImpedanceFitPoint, evaluate_impedance_result, fit_impedance_point,
-    fit_impedance_point_with_transformed_current,
+    ImpedanceFitPoint, PULSATING_IMPEDANCE_PROFILE_POINTS, PULSATING_IMPEDANCE_SAMPLE_COUNT,
+    PulsatingImpedancePoint, PulsatingImpedanceProfile, evaluate_impedance_result,
+    fit_impedance_point, fit_impedance_point_with_transformed_current,
 };
 use foci_tmc4671::registers::{
     ABN_DECODER_COUNT, ADC_IWY_IUX, DSADC_MDEC_B_MDEC_A, INTERIM_FOC_IQ_ID, INTERIM_FOC_IWY_IUX,
@@ -286,6 +284,25 @@ fn profile_v2_rejects_ud_960_without_budget_review() {
     }
 
     assert!(profile.max_total_exposure() > profile.max_total_exposure_budget);
+}
+
+#[test]
+fn profile_v2_zero_carrier_frequency_saturates_nominal_window() {
+    let mut profile = PulsatingImpedanceProfile::standard_openffboard();
+    profile.carrier_frequency_millihz = 0;
+
+    assert_eq!(profile.nominal_carrier_window_ms(), u64::MAX);
+}
+
+#[test]
+fn profile_v2_point_type_is_public_at_module_boundary() {
+    let point = PulsatingImpedancePoint {
+        angle_electrical_counts: 8192,
+        ud_abs: 640,
+    };
+
+    assert_eq!(point.angle_electrical_counts, 8192);
+    assert_eq!(point.ud_abs, 640);
 }
 
 #[test]

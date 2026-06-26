@@ -2,11 +2,6 @@
 
 use super::types::{IMPEDANCE_PROFILE_POINTS, IMPEDANCE_SAMPLE_COUNT, ImpedanceInjectionPoint};
 
-#[path = "pulsating_profile.rs"]
-mod pulsating_profile;
-
-pub use pulsating_profile::PulsatingImpedanceProfile;
-
 const STATUS_PID_V_OUTPUT_LIMIT: u32 = 1 << 7;
 const STATUS_PID_ID_ERRSUM_LIMIT: u32 = 1 << 10;
 const STATUS_PID_IQ_ERRSUM_LIMIT: u32 = 1 << 14;

@@ -2,6 +2,7 @@
 
 pub mod fit;
 pub mod profile;
+mod pulsating_profile;
 pub mod runner;
 pub mod types;
 
@@ -16,6 +17,7 @@ pub use profile::{
     ImpedanceProfile, OPENFFBOARD_IMPEDANCE_STATUS_FAIL_MASK,
     OPENFFBOARD_IMPEDANCE_STATUS_WARN_MASK,
 };
+pub use pulsating_profile::PulsatingImpedanceProfile;
 pub use runner::{
     ImpedanceBackend, ImpedanceBackendError, ImpedanceRunResult, run_impedance_identification,
 };
@@ -23,4 +25,5 @@ pub use types::{
     IMPEDANCE_PROFILE_POINTS, IMPEDANCE_SAMPLE_COUNT, ImpedanceBaselineObservation, ImpedanceError,
     ImpedanceInjectionPoint, ImpedancePointObservation, ImpedancePowerStageReadback,
     ImpedanceReadbackMismatch, ImpedanceSample, ImpedanceWarningFlags,
+    PULSATING_IMPEDANCE_PROFILE_POINTS, PULSATING_IMPEDANCE_SAMPLE_COUNT, PulsatingImpedancePoint,
 };

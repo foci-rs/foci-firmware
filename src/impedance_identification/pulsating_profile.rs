@@ -1,11 +1,11 @@
 //! Fixed-angle pulsating impedance-identification profile defaults.
 
-use super::super::types::{
-    PULSATING_IMPEDANCE_PROFILE_POINTS, PULSATING_IMPEDANCE_SAMPLE_COUNT, PulsatingImpedancePoint,
-};
-use super::{
+use super::profile::{
     IMPEDANCE_PER_SAMPLE_OVERHEAD_US, OPENFFBOARD_IMPEDANCE_STATUS_FAIL_MASK,
     OPENFFBOARD_IMPEDANCE_STATUS_WARN_MASK,
+};
+use super::types::{
+    PULSATING_IMPEDANCE_PROFILE_POINTS, PULSATING_IMPEDANCE_SAMPLE_COUNT, PulsatingImpedancePoint,
 };
 
 const MICROS_PER_MILLISECOND: u64 = 1_000;
@@ -165,6 +165,10 @@ impl PulsatingImpedanceProfile {
 
     /// Nominal carrier-active duration for each angle window, in milliseconds.
     pub const fn nominal_carrier_window_ms(&self) -> u64 {
+        if self.carrier_frequency_millihz == 0 {
+            return u64::MAX;
+        }
+
         (self.cycles_per_angle as u64).saturating_mul(1_000_000)
             / (self.carrier_frequency_millihz as u64)
     }
