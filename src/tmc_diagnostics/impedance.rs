@@ -12,6 +12,7 @@ use crate::impedance_identification::{
 };
 use crate::tmc::{TmcRequest, TmcRequestKind, normalize_diagnostic_detail};
 
+use super::reports::IMPEDANCE_STATUS_AXIS_DEVIATION;
 use super::{
     CURRENT_STEP_STATUS_NOT_READY, CURRENT_STEP_STATUS_SPI, DiagnosticContext, DiagnosticDelay,
     DiagnosticOutcome, DiagnosticReport, IMPEDANCE_STATUS_CURRENT_LIMIT,
@@ -358,6 +359,7 @@ fn status_code(error: ImpedanceError) -> u8 {
         ImpedanceError::UnsafeStatusFlags => IMPEDANCE_STATUS_UNSAFE_STATUS_FLAGS,
         ImpedanceError::LowSignal => IMPEDANCE_STATUS_LOW_SIGNAL,
         ImpedanceError::PoorCoverage => IMPEDANCE_STATUS_POOR_COVERAGE,
+        ImpedanceError::AxisDeviation => IMPEDANCE_STATUS_AXIS_DEVIATION,
         ImpedanceError::Scalar2fMismatch => IMPEDANCE_STATUS_SCALAR_2F_MISMATCH,
         ImpedanceError::HighResidual => IMPEDANCE_STATUS_HIGH_RESIDUAL,
         ImpedanceError::RepeatabilityMismatch => IMPEDANCE_STATUS_REPEATABILITY,

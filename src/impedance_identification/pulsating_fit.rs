@@ -46,6 +46,10 @@ pub fn fit_pulsating_impedance(
     let saliency_determinable =
         saliency_rounded >= u32::from(profile.saliency_axis_determinability_count_per_ud_milli);
 
+    if saliency_determinable && axis_deviation_counts > profile.axis_deviation_fail_counts {
+        return Err(ImpedanceError::AxisDeviation);
+    }
+
     let mut warning_flags = ImpedanceWarningFlags::NONE;
     for observation in observations {
         warning_flags.insert(observation.warning_flags);

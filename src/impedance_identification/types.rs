@@ -306,6 +306,7 @@ pub enum ImpedanceError {
     UnsafeStatusFlags,
     LowSignal,
     PoorCoverage,
+    AxisDeviation,
     Scalar2fMismatch,
     HighResidual,
     RepeatabilityMismatch,

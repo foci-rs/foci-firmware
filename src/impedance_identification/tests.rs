@@ -340,6 +340,16 @@ fn pulsating_fit_rejects_clustered_angle_coverage() {
 }
 
 #[test]
+fn pulsating_fit_rejects_determinable_axis_deviation() {
+    let profile = PulsatingImpedanceProfile::standard_openffboard();
+    let observations = synthetic_pulsating_observations(&profile, 80, 24, 8192, 0);
+
+    let err = fit_pulsating_impedance(&profile, &observations).unwrap_err();
+
+    assert_eq!(err, ImpedanceError::AxisDeviation);
+}
+
+#[test]
 fn standard_profile_v2_enforces_carrier_exposure_budget() {
     let profile = PulsatingImpedanceProfile::standard_openffboard();
 

@@ -373,6 +373,8 @@ pub const IMPEDANCE_STATUS_CURRENT_LIMIT: u8 = 14;
 pub const IMPEDANCE_STATUS_ENCODER_MOVED: u8 = 15;
 /// Impedance diagnostic failed because TMC4671 `STATUS_FLAGS` reported a hard fault.
 pub const IMPEDANCE_STATUS_UNSAFE_STATUS_FLAGS: u8 = 21;
+/// Impedance diagnostic failed because the fitted saliency axis deviated too far.
+pub const IMPEDANCE_STATUS_AXIS_DEVIATION: u8 = 22;
 /// Impedance diagnostic failed because the captured signal was too small.
 pub const IMPEDANCE_STATUS_LOW_SIGNAL: u8 = 16;
 /// Impedance diagnostic failed because phase coverage was insufficient.
