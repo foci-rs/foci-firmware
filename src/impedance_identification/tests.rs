@@ -2,12 +2,12 @@ use super::profile::{ImpedanceProfile, frequency_millihz_to_openloop_velocity_rp
 use super::runner::{ImpedanceBackend, ImpedanceBackendError, run_impedance_identification};
 use super::types::{
     IMPEDANCE_PROFILE_POINTS, IMPEDANCE_SAMPLE_COUNT, ImpedanceError, ImpedanceInjectionPoint,
-    ImpedanceSample, ImpedanceWarningFlags,
+    ImpedanceSample, ImpedanceWarningFlags, PulsatingAngleObservation,
 };
 use super::{
     ImpedanceFitPoint, PULSATING_IMPEDANCE_PROFILE_POINTS, PULSATING_IMPEDANCE_SAMPLE_COUNT,
     PulsatingImpedancePoint, PulsatingImpedanceProfile, evaluate_impedance_result,
-    fit_impedance_point, fit_impedance_point_with_transformed_current,
+    fit_impedance_point, fit_impedance_point_with_transformed_current, fit_pulsating_impedance,
 };
 use foci_tmc4671::registers::{
     ABN_DECODER_COUNT, ADC_IWY_IUX, DSADC_MDEC_B_MDEC_A, INTERIM_FOC_IQ_ID, INTERIM_FOC_IWY_IUX,
@@ -36,6 +36,40 @@ fn test_point(frequency_millihz: u32, ud_abs: u16) -> ImpedanceInjectionPoint {
         openloop_acceleration_rpm_per_s: 3_000,
         settle_ms: 250,
     }
+}
+
+fn synthetic_pulsating_observations(
+    profile: &PulsatingImpedanceProfile,
+    mean: u32,
+    saliency: u32,
+    axis_angle: u16,
+    residual: u16,
+) -> [PulsatingAngleObservation; PULSATING_IMPEDANCE_PROFILE_POINTS] {
+    core::array::from_fn(|index| {
+        let angle = profile.angle_points[index].angle_electrical_counts;
+        let theta = core::f64::consts::TAU * f64::from(angle.wrapping_sub(axis_angle)) / 65_536.0;
+        let response = f64::from(mean) + f64::from(saliency) * libm::cos(2.0 * theta);
+        PulsatingAngleObservation {
+            angle_electrical_counts: angle,
+            ud_abs: profile.angle_points[index].ud_abs,
+            inductive_response_count_per_ud_milli: response.round() as u32,
+            in_phase_response_count_per_ud_milli: mean / 2,
+            secondary_adc_response_count_per_ud_milli: response.round() as u32,
+            baseline_d_count: 0,
+            baseline_q_count: 0,
+            baseline_adc_ch0_count: 0,
+            baseline_adc_ch1_count: 0,
+            residual_permille: residual,
+            coverage_permille: 1000,
+            encoder_before: 0,
+            encoder_after: 0,
+            encoder_min: 0,
+            encoder_max: 0,
+            encoder_peak_counts: 0,
+            valid: true,
+            warning_flags: ImpedanceWarningFlags::NONE,
+        }
+    })
 }
 
 fn response_sample(
@@ -262,6 +296,47 @@ fn standard_profile_v2_uses_fixed_angle_pulsating_shape() {
     );
     assert!(profile.angle_points.iter().all(|point| point.ud_abs == 640));
     assert_eq!(profile.max_abs_ud(), 640);
+}
+
+#[test]
+fn pulsating_fit_recovers_two_theta_saliency() {
+    let profile = PulsatingImpedanceProfile::standard_openffboard();
+    let observations = synthetic_pulsating_observations(&profile, 80, 24, 0, 0);
+
+    let summary = fit_pulsating_impedance(&profile, &observations).unwrap();
+
+    assert!(summary.mean_response_count_per_ud_milli.abs_diff(80) <= 2);
+    assert!(summary.axis_max_count_per_ud_milli.abs_diff(104) <= 3);
+    assert!(summary.axis_min_count_per_ud_milli.abs_diff(56) <= 3);
+    assert!(summary.saliency_determinable);
+    assert!(summary.axis_angle_electrical_counts.abs_diff(0) <= 256);
+}
+
+#[test]
+fn pulsating_fit_warns_when_axis_is_undetermined() {
+    let profile = PulsatingImpedanceProfile::standard_openffboard();
+    let observations = synthetic_pulsating_observations(&profile, 80, 2, 0, 0);
+
+    let summary = fit_pulsating_impedance(&profile, &observations).unwrap();
+
+    assert!(!summary.saliency_determinable);
+    assert!(
+        summary
+            .warning_flags
+            .contains(ImpedanceWarningFlags::AXIS_UNDETERMINED)
+    );
+}
+
+#[test]
+fn pulsating_fit_rejects_clustered_angle_coverage() {
+    let profile = PulsatingImpedanceProfile::standard_openffboard();
+    let mut observations = synthetic_pulsating_observations(&profile, 80, 24, 0, 0);
+    observations[2].valid = false;
+    observations[6].valid = false;
+
+    let err = fit_pulsating_impedance(&profile, &observations).unwrap_err();
+
+    assert_eq!(err, ImpedanceError::PoorCoverage);
 }
 
 #[test]

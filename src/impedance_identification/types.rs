@@ -34,6 +34,98 @@ pub struct PulsatingImpedancePoint {
     pub ud_abs: u16,
 }
 
+/// One reduced fixed-angle observation produced by the pulsating lock-in stage.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+pub struct PulsatingAngleObservation {
+    /// Electrical angle for this fixed-angle observation, in 16-bit turn counts.
+    pub angle_electrical_counts: u16,
+    /// Absolute UD magnitude used during the observation.
+    pub ud_abs: u16,
+    /// Lock-in inductive response normalized to count per UD millivolt-equivalent.
+    pub inductive_response_count_per_ud_milli: u32,
+    /// Lock-in in-phase response normalized to count per UD millivolt-equivalent.
+    pub in_phase_response_count_per_ud_milli: u32,
+    /// Secondary ADC lock-in response normalized to count per UD millivolt-equivalent.
+    pub secondary_adc_response_count_per_ud_milli: u32,
+    /// Baseline d-axis current count sampled before injection.
+    pub baseline_d_count: i16,
+    /// Baseline q-axis current count sampled before injection.
+    pub baseline_q_count: i16,
+    /// Baseline ADC channel 0 count sampled before injection.
+    pub baseline_adc_ch0_count: i16,
+    /// Baseline ADC channel 1 count sampled before injection.
+    pub baseline_adc_ch1_count: i16,
+    /// Fit residual for this angle, in permille.
+    pub residual_permille: u16,
+    /// Lock-in sample coverage for this angle, in permille.
+    pub coverage_permille: u16,
+    /// Encoder count before the observation window.
+    pub encoder_before: u32,
+    /// Encoder count after the observation window.
+    pub encoder_after: u32,
+    /// Minimum encoder count observed during the window.
+    pub encoder_min: u32,
+    /// Maximum encoder count observed during the window.
+    pub encoder_max: u32,
+    /// Peak encoder motion observed during the window.
+    pub encoder_peak_counts: u16,
+    /// Whether this observation should participate in the fit.
+    pub valid: bool,
+    /// Warning evidence collected while sampling this angle.
+    pub warning_flags: ImpedanceWarningFlags,
+}
+
+/// Static baseline observation used by the pulsating lock-in path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+pub struct PulsatingBaselineObservation {
+    /// Baseline d-axis current count.
+    pub d_count: i16,
+    /// Baseline q-axis current count.
+    pub q_count: i16,
+    /// Baseline ADC channel 0 count.
+    pub adc_ch0_count: i16,
+    /// Baseline ADC channel 1 count.
+    pub adc_ch1_count: i16,
+}
+
+/// Pure fixed-angle pulsating impedance fit result.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+pub struct PulsatingFitSummary {
+    /// Mean response normalized to count per UD millivolt-equivalent.
+    pub mean_response_count_per_ud_milli: u32,
+    /// Maximum fitted response axis normalized to count per UD millivolt-equivalent.
+    pub axis_max_count_per_ud_milli: u32,
+    /// Minimum fitted response axis normalized to count per UD millivolt-equivalent.
+    pub axis_min_count_per_ud_milli: u32,
+    /// Fitted saliency relative to the mean response, in permille.
+    pub saliency_permille: u16,
+    /// Fitted saliency axis angle, in 16-bit electrical turn counts.
+    pub axis_angle_electrical_counts: u16,
+    /// Half-turn folded deviation from the expected zero electrical axis.
+    pub axis_deviation_counts: u16,
+    /// Whether saliency is strong enough to determine the axis.
+    pub saliency_determinable: bool,
+    /// Angular coverage of valid observations, in permille.
+    pub angle_coverage_permille: u16,
+    /// Duplicate zero-angle repeatability error, in permille.
+    pub repeatability_permille: u16,
+    /// Warning flags accumulated during sampling and fitting.
+    pub warning_flags: ImpedanceWarningFlags,
+}
+
+/// TMC4671 filter state observed around pulsating lock-in sampling.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+pub struct PulsatingFilterState {
+    /// Torque filter enable state before sampling.
+    pub torque_enable_before: u8,
+    /// Flux filter enable state before sampling.
+    pub flux_enable_before: u8,
+    /// Torque filter enable state during sampling.
+    pub torque_enable_during: u8,
+    /// Flux filter enable state during sampling.
+    pub flux_enable_during: u8,
+}
+
 /// One captured current sample from the impedance window.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub struct ImpedanceSample {
@@ -182,6 +274,9 @@ impl ImpedanceWarningFlags {
     pub const HIGH_NOISE: Self = Self(1 << 4);
     pub const ENCODER_MOVED: Self = Self(1 << 5);
     pub const STATUS_FLAGS: Self = Self(1 << 6);
+    pub const AXIS_UNDETERMINED: Self = Self(1 << 7);
+    pub const ANGLE_LOCAL_MOTION: Self = Self(1 << 8);
+    pub const FILTER_STATE: Self = Self(1 << 9);
 
     pub const fn contains(self, other: Self) -> bool {
         (self.0 & other.0) == other.0
