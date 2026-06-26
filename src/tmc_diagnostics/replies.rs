@@ -39,8 +39,14 @@ pub trait DiagnosticReplySink {
     /// Emit one impedance-test per-point fit result.
     fn foci_impedance_fit(&mut self, _report: ImpedanceFitReport) {}
 
+    /// Emit supplemental v2 impedance fit evidence for one point.
+    fn foci_impedance_fit_v2(&mut self, _report: ImpedanceFitReport) {}
+
     /// Emit one impedance-test per-point chip observation captured under voltage.
     fn foci_impedance_observation(&mut self, _report: ImpedanceObservationReport) {}
+
+    /// Emit supplemental v2 impedance observation evidence for one point.
+    fn foci_impedance_observation_v2(&mut self, _report: ImpedanceObservationReport) {}
 
     /// Emit one impedance-test per-point DC baseline observation.
     fn foci_impedance_baseline(&mut self, _report: ImpedanceBaselineReport) {}
@@ -100,9 +106,11 @@ pub fn emit_diagnostic_report<S: DiagnosticReplySink>(sink: &mut S, report: Diag
                     }
                     if let Some(observation) = observation {
                         sink.foci_impedance_observation(*observation);
+                        sink.foci_impedance_observation_v2(*observation);
                     }
                     if let Some(fit) = fit {
                         sink.foci_impedance_fit(*fit);
+                        sink.foci_impedance_fit_v2(*fit);
                     }
                 }
             }
@@ -171,12 +179,26 @@ mod tests {
             coverage_permille: u16,
             scalar_2f_mismatch_permille: u16,
         },
+        ImpedanceFitV2 {
+            oid: u8,
+            point_index: u8,
+            saliency_permille: u16,
+            angle_coverage_permille: u16,
+            secondary_adc_response_count_per_ud_milli: u32,
+        },
         ImpedanceObservation {
             oid: u8,
             point_index: u8,
             status_flags_or: u32,
             foc_ud_sample: i16,
             foc_iq_sample: i16,
+        },
+        ImpedanceObservationV2 {
+            oid: u8,
+            point_index: u8,
+            angle_electrical_counts: u16,
+            encoder_peak_counts: u16,
+            angle_valid: u8,
         },
         ImpedanceBaseline {
             oid: u8,
@@ -280,6 +302,17 @@ mod tests {
             });
         }
 
+        fn foci_impedance_fit_v2(&mut self, report: ImpedanceFitReport) {
+            self.events.push(Event::ImpedanceFitV2 {
+                oid: report.oid,
+                point_index: report.point_index,
+                saliency_permille: report.saliency_permille,
+                angle_coverage_permille: report.angle_coverage_permille,
+                secondary_adc_response_count_per_ud_milli: report
+                    .secondary_adc_response_count_per_ud_milli,
+            });
+        }
+
         fn foci_impedance_observation(&mut self, report: ImpedanceObservationReport) {
             self.events.push(Event::ImpedanceObservation {
                 oid: report.oid,
@@ -287,6 +320,16 @@ mod tests {
                 status_flags_or: report.status_flags_or,
                 foc_ud_sample: report.foc_ud_sample,
                 foc_iq_sample: report.foc_iq_sample,
+            });
+        }
+
+        fn foci_impedance_observation_v2(&mut self, report: ImpedanceObservationReport) {
+            self.events.push(Event::ImpedanceObservationV2 {
+                oid: report.oid,
+                point_index: report.point_index,
+                angle_electrical_counts: report.angle_electrical_counts,
+                encoder_peak_counts: report.encoder_peak_counts,
+                angle_valid: report.angle_valid,
             });
         }
 
@@ -832,12 +875,26 @@ mod tests {
                     foc_ud_sample: 640,
                     foc_iq_sample: 80,
                 },
+                Event::ImpedanceObservationV2 {
+                    oid: 6,
+                    point_index: 0,
+                    angle_electrical_counts: 0,
+                    encoder_peak_counts: 12,
+                    angle_valid: 1,
+                },
                 Event::ImpedanceFit {
                     oid: 6,
                     point_index: 0,
                     residual_permille: 10,
                     coverage_permille: 900,
                     scalar_2f_mismatch_permille: 20,
+                },
+                Event::ImpedanceFitV2 {
+                    oid: 6,
+                    point_index: 0,
+                    saliency_permille: 300,
+                    angle_coverage_permille: 1000,
+                    secondary_adc_response_count_per_ud_milli: 7,
                 },
                 Event::ImpedanceBaseline {
                     oid: 6,
@@ -852,12 +909,26 @@ mod tests {
                     foc_ud_sample: 641,
                     foc_iq_sample: 81,
                 },
+                Event::ImpedanceObservationV2 {
+                    oid: 6,
+                    point_index: 1,
+                    angle_electrical_counts: 8192,
+                    encoder_peak_counts: 12,
+                    angle_valid: 1,
+                },
                 Event::ImpedanceFit {
                     oid: 6,
                     point_index: 1,
                     residual_permille: 11,
                     coverage_permille: 900,
                     scalar_2f_mismatch_permille: 21,
+                },
+                Event::ImpedanceFitV2 {
+                    oid: 6,
+                    point_index: 1,
+                    saliency_permille: 300,
+                    angle_coverage_permille: 1000,
+                    secondary_adc_response_count_per_ud_milli: 7,
                 },
                 Event::ImpedanceDone {
                     oid: 6,

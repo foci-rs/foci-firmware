@@ -620,6 +620,8 @@ pub struct FociImpedanceFit {
     pub oid: u8,
     /// Stable point index within the profile.
     pub point_index: u8,
+    /// Electrical injection frequency in millihertz.
+    pub frequency_millihz: u32,
     /// Absolute UD magnitude applied during the window.
     pub ud_abs: u16,
     /// Major response axis normalized to counts per 1000 UD counts.
@@ -634,6 +636,27 @@ pub struct FociImpedanceFit {
     pub coverage_permille: u16,
     /// Scalar `2f` saliency mismatch as permille.
     pub scalar_2f_mismatch_permille: u16,
+    /// Mean transformed-current magnitude normalized to counts per 1000 UD counts.
+    pub magnitude_mean_count_per_ud_milli: u32,
+    /// `2f` transformed-current magnitude ripple normalized to counts per 1000 UD counts.
+    pub magnitude_2f_count_per_ud_milli: u32,
+    /// Transformed-current magnitude `2f` fit residual in permille.
+    pub magnitude_2f_residual_permille: u16,
+    /// Transformed-current magnitude `2f` coverage score.
+    pub magnitude_2f_coverage_permille: u16,
+    /// Per-point warning bitfield.
+    pub warning_flags: u32,
+}
+
+/// `foci_impedance_fit_v2` reply - supplemental fixed-angle impedance fit evidence.
+///
+/// Wire name: `foci_impedance_fit_v2`.
+#[klipper_reply]
+pub struct FociImpedanceFitV2 {
+    /// Object id of the FOCI endpoint.
+    pub oid: u8,
+    /// Stable point index within the profile.
+    pub point_index: u8,
     /// Mean v2 lock-in response normalized to counts per 1000 UD counts.
     pub mean_response_count_per_ud_milli: u32,
     /// V2 saliency relative to mean response, in permille.
@@ -646,8 +669,6 @@ pub struct FociImpedanceFit {
     pub axis_deviation_counts: u16,
     /// Secondary ADC v2 lock-in response normalized to counts per 1000 UD counts.
     pub secondary_adc_response_count_per_ud_milli: u32,
-    /// Per-point warning bitfield.
-    pub warning_flags: u32,
 }
 
 /// `foci_impedance_observation` reply - per-injection live chip observation.
@@ -659,10 +680,24 @@ pub struct FociImpedanceObservation {
     pub oid: u8,
     /// Stable point index within the profile.
     pub point_index: u8,
-    /// Electrical angle for the fixed-angle v2 observation.
-    pub angle_electrical_counts: u16,
+    /// Electrical injection frequency in millihertz.
+    pub frequency_millihz: u32,
+    /// Absolute UD magnitude requested during the window.
+    pub ud_abs: u16,
     /// STATUS_FLAGS observed during this point's DC and AC windows.
     pub status_flags_or: u32,
+    /// OPENLOOP_PHI sampled while AC voltage is active.
+    pub openloop_phi_sample: u16,
+    /// OPENLOOP_VELOCITY_ACTUAL sampled while AC voltage is active.
+    pub openloop_velocity_actual: i32,
+    /// Direct ADC IUX sample from `ADC_IWY_IUX`.
+    pub adc_iux_sample: i16,
+    /// Direct ADC IWY sample from `ADC_IWY_IUX`.
+    pub adc_iwy_sample: i16,
+    /// Stationary-frame FOC IUX sample from `INTERIM_FOC_IWY_IUX`.
+    pub foc_iux_sample: i16,
+    /// Stationary-frame FOC IWY sample from `INTERIM_FOC_IWY_IUX`.
+    pub foc_iwy_sample: i16,
     /// Pre-limit FOC UQ sample from `INTERIM_FOC_UQ_UD`.
     pub foc_uq_sample: i16,
     /// Pre-limit FOC UD sample from `INTERIM_FOC_UQ_UD`.
@@ -675,6 +710,19 @@ pub struct FociImpedanceObservation {
     pub foc_iq_sample: i16,
     /// Park-transformed d-axis current sample from `INTERIM_FOC_IQ_ID`.
     pub foc_id_sample: i16,
+}
+
+/// `foci_impedance_observation_v2` reply - supplemental fixed-angle observation evidence.
+///
+/// Wire name: `foci_impedance_observation_v2`.
+#[klipper_reply]
+pub struct FociImpedanceObservationV2 {
+    /// Object id of the FOCI endpoint.
+    pub oid: u8,
+    /// Stable point index within the profile.
+    pub point_index: u8,
+    /// Electrical angle for the fixed-angle v2 observation.
+    pub angle_electrical_counts: u16,
     /// Encoder count before the v2 observation window.
     pub encoder_before: u32,
     /// Encoder count after the v2 observation window.
@@ -1075,6 +1123,7 @@ mod resistance_reply_size_tests {
         let reply = super::FociImpedanceFit {
             oid: u8::MAX,
             point_index: u8::MAX,
+            frequency_millihz: 0x7FFF_FFFF,
             ud_abs: u16::MAX,
             axis_max_count_per_ud_milli: 0x7FFF_FFFF,
             axis_min_count_per_ud_milli: 0x7FFF_FFFF,
@@ -1082,12 +1131,10 @@ mod resistance_reply_size_tests {
             residual_permille: u16::MAX,
             coverage_permille: u16::MAX,
             scalar_2f_mismatch_permille: u16::MAX,
-            mean_response_count_per_ud_milli: 0x7FFF_FFFF,
-            saliency_permille: u16::MAX,
-            saliency_determinable: u8::MAX,
-            angle_coverage_permille: u16::MAX,
-            axis_deviation_counts: u16::MAX,
-            secondary_adc_response_count_per_ud_milli: 0x7FFF_FFFF,
+            magnitude_mean_count_per_ud_milli: 0x7FFF_FFFF,
+            magnitude_2f_count_per_ud_milli: 0x7FFF_FFFF,
+            magnitude_2f_residual_permille: u16::MAX,
+            magnitude_2f_coverage_permille: u16::MAX,
             warning_flags: 0x7FFF_FFFF,
         };
 
@@ -1099,14 +1146,48 @@ mod resistance_reply_size_tests {
         let reply = super::FociImpedanceObservation {
             oid: u8::MAX,
             point_index: u8::MAX,
-            angle_electrical_counts: u16::MAX,
+            frequency_millihz: 0x7FFF_FFFF,
+            ud_abs: u16::MAX,
             status_flags_or: 0x7FFF_FFFF,
+            openloop_phi_sample: u16::MAX,
+            openloop_velocity_actual: i32::MAX,
+            adc_iux_sample: i16::MIN,
+            adc_iwy_sample: i16::MIN,
+            foc_iux_sample: i16::MIN,
+            foc_iwy_sample: i16::MIN,
             foc_uq_sample: i16::MIN,
             foc_ud_sample: i16::MIN,
             foc_uq_limited_sample: i16::MIN,
             foc_ud_limited_sample: i16::MIN,
             foc_iq_sample: i16::MIN,
             foc_id_sample: i16::MIN,
+        };
+
+        assert_fits_with_id(&reply, "foci_impedance_observation");
+    }
+
+    #[test]
+    fn impedance_fit_v2_reply_fits_klipper_message_limit() {
+        let reply = super::FociImpedanceFitV2 {
+            oid: u8::MAX,
+            point_index: u8::MAX,
+            mean_response_count_per_ud_milli: 0x7FFF_FFFF,
+            saliency_permille: u16::MAX,
+            saliency_determinable: u8::MAX,
+            angle_coverage_permille: u16::MAX,
+            axis_deviation_counts: u16::MAX,
+            secondary_adc_response_count_per_ud_milli: 0x7FFF_FFFF,
+        };
+
+        assert_fits_with_id(&reply, "foci_impedance_fit_v2");
+    }
+
+    #[test]
+    fn impedance_observation_v2_reply_fits_klipper_message_limit() {
+        let reply = super::FociImpedanceObservationV2 {
+            oid: u8::MAX,
+            point_index: u8::MAX,
+            angle_electrical_counts: u16::MAX,
             encoder_before: 0x7FFF_FFFF,
             encoder_after: 0x7FFF_FFFF,
             encoder_min: 0x7FFF_FFFF,
@@ -1115,7 +1196,7 @@ mod resistance_reply_size_tests {
             angle_valid: u8::MAX,
         };
 
-        assert_fits_with_id(&reply, "foci_impedance_observation");
+        assert_fits_with_id(&reply, "foci_impedance_observation_v2");
     }
 
     #[test]
