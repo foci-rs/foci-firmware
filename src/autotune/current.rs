@@ -1,3 +1,17 @@
+#[cfg(test)]
+use super::{
+    AXIS_SPLIT_SOURCE_IMPEDANCE, AXIS_SPLIT_SOURCE_NONE, CURRENT_AXIS_FLUX, CURRENT_AXIS_TORQUE,
+    CURRENT_FLUX_VALIDATION_SAMPLE_COUNT, CURRENT_GAINS_SOURCE_FAILED,
+    CURRENT_GAINS_SOURCE_MEASURED, CURRENT_GAINS_TIER_MEASURED_SPLIT,
+    CURRENT_GAINS_TIER_MEASURED_SYMMETRIC, CURRENT_GAINS_TIER_NONE,
+    CURRENT_LOOP_FAILURE_FLUX_VALIDATION, CURRENT_LOOP_FAILURE_GAIN_SYNTHESIS,
+    CURRENT_LOOP_FAILURE_IMPEDANCE_INVALID, CURRENT_LOOP_FAILURE_MOTION, CURRENT_LOOP_FAILURE_NONE,
+    CURRENT_LOOP_FAILURE_RESISTANCE_INVALID, CURRENT_LOOP_FAILURE_RETRY_EXHAUSTED,
+    CURRENT_LOOP_FAILURE_SATURATION, CURRENT_LOOP_FAILURE_SPI, CURRENT_LOOP_FAILURE_STATUS_FLAGS,
+    CURRENT_LOOP_FAILURE_TORQUE_VALIDATION, CURRENT_TORQUE_VALIDATION_SAMPLE_COUNT,
+    CURRENT_VALIDATION_AXIS_FLUX, CURRENT_VALIDATION_AXIS_TORQUE,
+    CURRENT_VALIDATION_MAX_SAMPLES_PER_AXIS, CurrentLoopEvidence,
+};
 use super::{
     CommissionProfile, CurrentGains, ELECTRICAL_MODEL_RESISTANCE_SCALE, ElectricalModel,
     TransientBuffer, ValidationResult,
@@ -540,6 +554,92 @@ pub fn compute_target_error_pct(tail_level: u32, target: u32) -> u16 {
 mod tests {
     use super::super::test_support::{autotune_test_config, test_electrical_model};
     use super::*;
+
+    #[test]
+    fn current_loop_evidence_defaults_to_failed_none() {
+        let evidence = CurrentLoopEvidence::failed(CURRENT_LOOP_FAILURE_GAIN_SYNTHESIS);
+
+        assert_eq!(evidence.gains_source, CURRENT_GAINS_SOURCE_FAILED);
+        assert_eq!(evidence.axis_split_source, AXIS_SPLIT_SOURCE_NONE);
+        assert_eq!(evidence.gains_tier, CURRENT_GAINS_TIER_NONE);
+        assert_eq!(evidence.failure_reason, CURRENT_LOOP_FAILURE_GAIN_SYNTHESIS);
+        assert_eq!(evidence.measured_axis_split_permille, 1000);
+        assert_eq!(evidence.applied_axis_split_permille, 1000);
+        assert_eq!(evidence.axis_split_clamped, 0);
+        assert_eq!(evidence.current_validation_axes, 0);
+        assert_eq!(evidence.retry_budget_exhausted, 0);
+    }
+
+    #[test]
+    fn current_loop_evidence_records_measured_symmetric_defaults() {
+        let evidence = CurrentLoopEvidence::measured_symmetric();
+
+        assert_eq!(evidence.gains_source, CURRENT_GAINS_SOURCE_MEASURED);
+        assert_eq!(evidence.axis_split_source, AXIS_SPLIT_SOURCE_NONE);
+        assert_eq!(evidence.gains_tier, CURRENT_GAINS_TIER_MEASURED_SYMMETRIC);
+        assert_eq!(evidence.failure_reason, CURRENT_LOOP_FAILURE_NONE);
+        assert_eq!(evidence.measured_axis_split_permille, 1000);
+        assert_eq!(evidence.applied_axis_split_permille, 1000);
+        assert_eq!(evidence.axis_split_clamped, 0);
+        assert_eq!(evidence.current_validation_axes, 0);
+        assert_eq!(evidence.retry_budget_exhausted, 0);
+    }
+
+    #[test]
+    fn current_loop_evidence_records_measured_split() {
+        let evidence = CurrentLoopEvidence::measured_split(1850, 1500, true);
+
+        assert_eq!(evidence.gains_source, CURRENT_GAINS_SOURCE_MEASURED);
+        assert_eq!(evidence.axis_split_source, AXIS_SPLIT_SOURCE_IMPEDANCE);
+        assert_eq!(evidence.gains_tier, CURRENT_GAINS_TIER_MEASURED_SPLIT);
+        assert_eq!(evidence.failure_reason, CURRENT_LOOP_FAILURE_NONE);
+        assert_eq!(evidence.measured_axis_split_permille, 1850);
+        assert_eq!(evidence.applied_axis_split_permille, 1500);
+        assert_eq!(evidence.axis_split_clamped, 1);
+        assert_eq!(evidence.current_validation_axes, 0);
+        assert_eq!(evidence.retry_budget_exhausted, 0);
+    }
+
+    #[test]
+    fn current_loop_evidence_pins_gain_source_split_and_tier_codes() {
+        assert_eq!(CURRENT_GAINS_SOURCE_FAILED, 0);
+        assert_eq!(CURRENT_GAINS_SOURCE_MEASURED, 1);
+
+        assert_eq!(AXIS_SPLIT_SOURCE_NONE, 0);
+        assert_eq!(AXIS_SPLIT_SOURCE_IMPEDANCE, 1);
+
+        assert_eq!(CURRENT_GAINS_TIER_NONE, 0);
+        assert_eq!(CURRENT_GAINS_TIER_MEASURED_SYMMETRIC, 1);
+        assert_eq!(CURRENT_GAINS_TIER_MEASURED_SPLIT, 2);
+    }
+
+    #[test]
+    fn current_loop_evidence_pins_axis_and_sample_count_codes() {
+        assert_eq!(CURRENT_VALIDATION_AXIS_FLUX, 1);
+        assert_eq!(CURRENT_VALIDATION_AXIS_TORQUE, 2);
+
+        assert_eq!(CURRENT_AXIS_FLUX, 0);
+        assert_eq!(CURRENT_AXIS_TORQUE, 1);
+
+        assert_eq!(CURRENT_FLUX_VALIDATION_SAMPLE_COUNT, 3);
+        assert_eq!(CURRENT_TORQUE_VALIDATION_SAMPLE_COUNT, 2);
+        assert_eq!(CURRENT_VALIDATION_MAX_SAMPLES_PER_AXIS, 3);
+    }
+
+    #[test]
+    fn current_loop_evidence_pins_failure_reason_codes() {
+        assert_eq!(CURRENT_LOOP_FAILURE_NONE, 0);
+        assert_eq!(CURRENT_LOOP_FAILURE_RESISTANCE_INVALID, 1);
+        assert_eq!(CURRENT_LOOP_FAILURE_IMPEDANCE_INVALID, 2);
+        assert_eq!(CURRENT_LOOP_FAILURE_GAIN_SYNTHESIS, 3);
+        assert_eq!(CURRENT_LOOP_FAILURE_FLUX_VALIDATION, 4);
+        assert_eq!(CURRENT_LOOP_FAILURE_TORQUE_VALIDATION, 5);
+        assert_eq!(CURRENT_LOOP_FAILURE_SATURATION, 6);
+        assert_eq!(CURRENT_LOOP_FAILURE_MOTION, 7);
+        assert_eq!(CURRENT_LOOP_FAILURE_STATUS_FLAGS, 8);
+        assert_eq!(CURRENT_LOOP_FAILURE_RETRY_EXHAUSTED, 9);
+        assert_eq!(CURRENT_LOOP_FAILURE_SPI, 10);
+    }
 
     // --- SIMC current gains ---
 

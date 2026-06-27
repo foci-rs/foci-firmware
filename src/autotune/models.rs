@@ -51,6 +51,142 @@ pub struct CurrentGains {
     pub lambda_us: u32,
 }
 
+// Stable persisted/report numeric codes. Do not renumber existing values;
+// append new codes instead.
+
+/// Gain synthesis failed.
+pub const CURRENT_GAINS_SOURCE_FAILED: u8 = 0;
+/// Gains were synthesized from measured commissioning data.
+pub const CURRENT_GAINS_SOURCE_MEASURED: u8 = 1;
+
+/// No independent axis split source was used.
+pub const AXIS_SPLIT_SOURCE_NONE: u8 = 0;
+/// Axis split came from measured impedance asymmetry.
+pub const AXIS_SPLIT_SOURCE_IMPEDANCE: u8 = 1;
+
+/// No current-loop gain tier was produced.
+pub const CURRENT_GAINS_TIER_NONE: u8 = 0;
+/// Measured symmetric current-loop gains were produced.
+pub const CURRENT_GAINS_TIER_MEASURED_SYMMETRIC: u8 = 1;
+/// Measured split current-loop gains were produced.
+pub const CURRENT_GAINS_TIER_MEASURED_SPLIT: u8 = 2;
+
+/// Flux-axis validation passed.
+pub const CURRENT_VALIDATION_AXIS_FLUX: u8 = 1 << 0;
+/// Torque-axis validation passed.
+pub const CURRENT_VALIDATION_AXIS_TORQUE: u8 = 1 << 1;
+
+/// Flux current-loop axis identifier.
+pub const CURRENT_AXIS_FLUX: u8 = 0;
+/// Torque current-loop axis identifier.
+pub const CURRENT_AXIS_TORQUE: u8 = 1;
+
+/// Validation sample count for the flux current-loop axis.
+pub const CURRENT_FLUX_VALIDATION_SAMPLE_COUNT: usize = 3;
+/// Validation sample count for the torque current-loop axis.
+pub const CURRENT_TORQUE_VALIDATION_SAMPLE_COUNT: usize = 2;
+/// Maximum current-loop validation sample count for any axis.
+pub const CURRENT_VALIDATION_MAX_SAMPLES_PER_AXIS: usize = 3;
+
+/// Current-loop synthesis and validation succeeded.
+pub const CURRENT_LOOP_FAILURE_NONE: u8 = 0;
+/// Resistance measurement data was invalid.
+pub const CURRENT_LOOP_FAILURE_RESISTANCE_INVALID: u8 = 1;
+/// Impedance measurement data was invalid.
+pub const CURRENT_LOOP_FAILURE_IMPEDANCE_INVALID: u8 = 2;
+/// Current-loop gain synthesis failed.
+pub const CURRENT_LOOP_FAILURE_GAIN_SYNTHESIS: u8 = 3;
+/// Flux-axis current-loop validation failed.
+pub const CURRENT_LOOP_FAILURE_FLUX_VALIDATION: u8 = 4;
+/// Torque-axis current-loop validation failed.
+pub const CURRENT_LOOP_FAILURE_TORQUE_VALIDATION: u8 = 5;
+/// Current-loop validation detected saturation.
+pub const CURRENT_LOOP_FAILURE_SATURATION: u8 = 6;
+/// Current-loop validation detected motion.
+pub const CURRENT_LOOP_FAILURE_MOTION: u8 = 7;
+/// Current-loop commissioning failed due to status flags.
+pub const CURRENT_LOOP_FAILURE_STATUS_FLAGS: u8 = 8;
+/// Current-loop validation retry budget was exhausted.
+pub const CURRENT_LOOP_FAILURE_RETRY_EXHAUSTED: u8 = 9;
+/// Current-loop commissioning failed due to SPI communication.
+pub const CURRENT_LOOP_FAILURE_SPI: u8 = 10;
+
+/// Firmware-owned evidence for current-loop gain source, split policy,
+/// validation coverage, and failure reason.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+pub struct CurrentLoopEvidence {
+    /// `CURRENT_GAINS_SOURCE_*`.
+    pub gains_source: u8,
+    /// `AXIS_SPLIT_SOURCE_*`.
+    pub axis_split_source: u8,
+    /// `CURRENT_GAINS_TIER_*`.
+    pub gains_tier: u8,
+    /// Measured axis split ratio, permille where 1000 = 1.000x.
+    pub measured_axis_split_permille: u16,
+    /// Applied axis split ratio after profile clamp, permille.
+    pub applied_axis_split_permille: u16,
+    /// Non-zero when `applied_axis_split_permille` is clamped below measured.
+    pub axis_split_clamped: u8,
+    /// Bitmask of `CURRENT_VALIDATION_AXIS_*` axes that passed validation.
+    pub current_validation_axes: u8,
+    /// Non-zero when the section-level retry budget was consumed before all
+    /// retryable axes passed.
+    pub retry_budget_exhausted: u8,
+    /// `CURRENT_LOOP_FAILURE_*`.
+    pub failure_reason: u8,
+}
+
+impl CurrentLoopEvidence {
+    /// Build a failed evidence record with symmetric ratio defaults.
+    pub const fn failed(failure_reason: u8) -> Self {
+        Self {
+            gains_source: CURRENT_GAINS_SOURCE_FAILED,
+            axis_split_source: AXIS_SPLIT_SOURCE_NONE,
+            gains_tier: CURRENT_GAINS_TIER_NONE,
+            measured_axis_split_permille: 1000,
+            applied_axis_split_permille: 1000,
+            axis_split_clamped: 0,
+            current_validation_axes: 0,
+            retry_budget_exhausted: 0,
+            failure_reason,
+        }
+    }
+
+    /// Build a measured symmetric evidence record.
+    pub const fn measured_symmetric() -> Self {
+        Self {
+            gains_source: CURRENT_GAINS_SOURCE_MEASURED,
+            axis_split_source: AXIS_SPLIT_SOURCE_NONE,
+            gains_tier: CURRENT_GAINS_TIER_MEASURED_SYMMETRIC,
+            measured_axis_split_permille: 1000,
+            applied_axis_split_permille: 1000,
+            axis_split_clamped: 0,
+            current_validation_axes: 0,
+            retry_budget_exhausted: 0,
+            failure_reason: CURRENT_LOOP_FAILURE_NONE,
+        }
+    }
+
+    /// Build a measured split evidence record.
+    pub const fn measured_split(
+        measured_axis_split_permille: u16,
+        applied_axis_split_permille: u16,
+        clamped: bool,
+    ) -> Self {
+        Self {
+            gains_source: CURRENT_GAINS_SOURCE_MEASURED,
+            axis_split_source: AXIS_SPLIT_SOURCE_IMPEDANCE,
+            gains_tier: CURRENT_GAINS_TIER_MEASURED_SPLIT,
+            measured_axis_split_permille,
+            applied_axis_split_permille,
+            axis_split_clamped: clamped as u8,
+            current_validation_axes: 0,
+            retry_budget_exhausted: 0,
+            failure_reason: CURRENT_LOOP_FAILURE_NONE,
+        }
+    }
+}
+
 /// First-order mechanical plant model estimated during Phase 8.
 ///
 /// Represents `G_mech(s) = 1 / (J_eff * s + B_eff)` where J_eff includes
