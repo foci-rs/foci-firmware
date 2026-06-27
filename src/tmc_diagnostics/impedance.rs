@@ -1,6 +1,8 @@
 //! `FOCI_IMPEDANCE_TEST` diagnostic: runs the shared impedance-identification
 //! engine over an already-armed motor without touching commissioning state.
 
+use core::sync::atomic::Ordering::Relaxed;
+
 use foci_tmc4671::registers::{
     DSADC_MDEC_B_MDEC_A, PWM_BBM_H_BBM_L, PWM_MAXCNT, PWM_SV_CHOP, Register, STATUS_FLAGS,
 };
@@ -110,6 +112,12 @@ where
 
     fn profile(&self) -> ImpedanceProfile {
         ImpedanceProfile::standard_openffboard()
+    }
+
+    fn encoder_counts_per_rev(&self) -> u32 {
+        crate::state::tmc::tmc_channel(self.ctx.runtime.channel())
+            .map(|state| state.encoder_ppr.load(Relaxed).saturating_mul(4))
+            .unwrap_or(0)
     }
 
     fn record_point_observation(

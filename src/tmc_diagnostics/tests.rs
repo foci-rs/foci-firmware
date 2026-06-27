@@ -1303,11 +1303,11 @@ fn impedance_legacy_v1_fixture_reports_v2_readback_failure() {
 fn impedance_profile_readback_failure_reports_mismatch_evidence() {
     pollster::block_on(async {
         let raw_spi = DiagnosticMockSpi::default()
-            .with_read(0x0280_0280) // saved PIDOUT_UQ_UD_LIMITS
+            .with_read(0x0450_0450) // saved PIDOUT_UQ_UD_LIMITS
             .with_read((2 << 16) | 50) // MOTOR_TYPE_N_POLE_PAIRS: two-phase stepper
             .with_read(0) // CONFIG_BIQUAD_T_ENABLE snapshot
             .with_read(0) // CONFIG_BIQUAD_F_ENABLE snapshot
-            .with_read(0x0000_0280) // PIDOUT_UQ_UD_LIMITS readback
+            .with_read(0x0000_0450) // PIDOUT_UQ_UD_LIMITS readback
             .with_read(0) // UQ_UD_EXT readback
             .with_read(0xffff_ffff); // OPENLOOP_MODE readback mismatch
         let mut tmc = Tmc4671Spi::new(raw_spi);
@@ -1347,11 +1347,11 @@ fn impedance_unsafe_status_failure_reports_status_flags_evidence() {
     pollster::block_on(async {
         let unsafe_status_flags = 1 << 26;
         let raw_spi = DiagnosticMockSpi::default()
-            .with_read(0x0280_0280) // saved PIDOUT_UQ_UD_LIMITS
+            .with_read(0x0450_0450) // saved PIDOUT_UQ_UD_LIMITS
             .with_read((2 << 16) | 50) // MOTOR_TYPE_N_POLE_PAIRS: two-phase stepper
             .with_read(1) // CONFIG_BIQUAD_T_ENABLE snapshot
             .with_read(1) // CONFIG_BIQUAD_F_ENABLE snapshot
-            .with_read(0x0000_0280) // PIDOUT_UQ_UD_LIMITS readback
+            .with_read(0x0000_0450) // PIDOUT_UQ_UD_LIMITS readback
             .with_read(0) // UQ_UD_EXT readback
             .with_read(0) // OPENLOOP_MODE readback
             .with_read(0) // OPENLOOP_ACCELERATION readback

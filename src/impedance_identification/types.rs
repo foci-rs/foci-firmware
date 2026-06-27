@@ -34,21 +34,21 @@ pub struct ImpedanceInjectionPoint {
     pub settle_ms: u16,
 }
 
-/// One fixed-angle pulsating voltage window.
+/// One held-angle pulsating probe window.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub struct PulsatingImpedancePoint {
-    /// Electrical angle for `PHI_E_EXT`, in 16-bit turn counts.
+    /// Carrier probe angle relative to the fixed held field, in 16-bit turn counts.
     pub angle_electrical_counts: u16,
-    /// Absolute UD magnitude applied by the square carrier.
+    /// Absolute carrier-vector magnitude.
     pub ud_abs: u16,
 }
 
-/// One reduced fixed-angle observation produced by the pulsating lock-in stage.
+/// One reduced held-angle observation produced by the pulsating lock-in stage.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub struct PulsatingAngleObservation {
-    /// Electrical angle for this fixed-angle observation, in 16-bit turn counts.
+    /// Carrier probe angle relative to the fixed held field, in 16-bit turn counts.
     pub angle_electrical_counts: u16,
-    /// Absolute UD magnitude used during the observation.
+    /// Absolute carrier-vector magnitude used during the observation.
     pub ud_abs: u16,
     /// Lock-in inductive response normalized to count per UD millivolt-equivalent.
     pub inductive_response_count_per_ud_milli: u32,
@@ -121,7 +121,7 @@ pub struct PulsatingBaselineObservation {
     pub adc_ch1_count: i16,
 }
 
-/// Pure fixed-angle pulsating impedance fit result.
+/// Pure held-angle pulsating impedance fit result.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub struct PulsatingFitSummary {
     /// Mean response normalized to count per UD millivolt-equivalent.

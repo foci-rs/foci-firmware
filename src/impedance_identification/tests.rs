@@ -288,7 +288,7 @@ fn standard_profile_uses_held_angle_pulsating_shape() {
     assert_eq!(profile.samples_per_cycle, 20);
     assert_eq!(profile.cycles_per_angle, 8);
     assert_eq!(profile.sample_interval_us, 500);
-    assert_eq!(profile.hold_ud_abs, 320);
+    assert_eq!(profile.hold_ud_abs, 640);
     assert_eq!(profile.hold_settle_ms, 80);
     assert_eq!(
         profile.sample_count as usize,
@@ -302,8 +302,8 @@ fn standard_profile_uses_held_angle_pulsating_shape() {
             .map(|point| point.angle_electrical_counts),
         [0, 0, 8192, 16384, 24576, 32768, 40960, 0, 0, 0]
     );
-    assert!(profile.angle_points.iter().all(|point| point.ud_abs == 320));
-    assert_eq!(profile.max_abs_ud(), 640);
+    assert!(profile.angle_points.iter().all(|point| point.ud_abs == 464));
+    assert_eq!(profile.max_abs_ud(), 1104);
 }
 
 #[test]
@@ -348,36 +348,50 @@ fn pulsating_fit_rejects_clustered_angle_coverage() {
 }
 
 #[test]
-fn pulsating_fit_rejects_determinable_axis_deviation() {
+fn pulsating_fit_reports_determinable_nonzero_axis() {
     let profile = PulsatingImpedanceProfile::standard_openffboard();
     let observations = synthetic_pulsating_observations(&profile, 80, 24, 8192, 0);
 
-    let err = fit_pulsating_impedance(&profile, &observations).unwrap_err();
+    let summary = fit_pulsating_impedance(&profile, &observations).unwrap();
 
-    assert_eq!(err, ImpedanceError::AxisDeviation);
+    assert!(summary.saliency_determinable);
+    assert!(summary.axis_angle_electrical_counts.abs_diff(8192) <= 256);
+    assert!(summary.axis_deviation_counts.abs_diff(8192) <= 256);
+    assert!(
+        !summary
+            .warning_flags
+            .contains(ImpedanceWarningFlags::AXIS_UNDETERMINED)
+    );
 }
 
 #[test]
-fn pulsating_fit_rejects_repeatability_failure() {
+fn pulsating_fit_reports_repeatability_without_failing() {
     let profile = PulsatingImpedanceProfile::standard_openffboard();
     let mut observations = synthetic_pulsating_observations(&profile, 80, 24, 0, 0);
     observations[PULSATING_POST_SWEEP_ZERO_INDEX].inductive_response_count_per_ud_milli = 60;
 
-    let err = fit_pulsating_impedance(&profile, &observations).unwrap_err();
+    let summary = fit_pulsating_impedance(&profile, &observations).unwrap();
 
-    assert_eq!(err, ImpedanceError::RepeatabilityMismatch);
+    assert!(summary.repeatability_permille > profile.repeatability_fail_permille);
+    assert!(
+        !summary
+            .warning_flags
+            .contains(ImpedanceWarningFlags::REPEATABILITY)
+    );
 }
 
 #[test]
-fn pulsating_fit_warns_on_repeatability_warning_band() {
+fn pulsating_fit_reports_repeatability_warning_band_without_warning_flag() {
     let profile = PulsatingImpedanceProfile::standard_openffboard();
     let mut observations = synthetic_pulsating_observations(&profile, 80, 24, 0, 0);
     observations[PULSATING_POST_SWEEP_ZERO_INDEX].inductive_response_count_per_ud_milli = 92;
 
     let summary = fit_pulsating_impedance(&profile, &observations).unwrap();
 
+    assert!(summary.repeatability_permille > profile.repeatability_warn_permille);
+    assert!(summary.repeatability_permille < profile.repeatability_fail_permille);
     assert!(
-        summary
+        !summary
             .warning_flags
             .contains(ImpedanceWarningFlags::REPEATABILITY)
     );
@@ -416,18 +430,23 @@ fn pulsating_fit_ignores_pre_sweep_reference_zero_for_repeatability() {
 }
 
 #[test]
-fn pulsating_fit_uses_post_sweep_stability_zero_for_repeatability() {
+fn pulsating_fit_reports_post_sweep_stability_zero_repeatability() {
     let profile = PulsatingImpedanceProfile::standard_openffboard();
     let mut observations = synthetic_pulsating_observations(&profile, 80, 24, 0, 0);
     observations[PULSATING_STABILITY_ZERO_INDEX].inductive_response_count_per_ud_milli = 60;
 
-    let err = fit_pulsating_impedance(&profile, &observations).unwrap_err();
+    let summary = fit_pulsating_impedance(&profile, &observations).unwrap();
 
-    assert_eq!(err, ImpedanceError::RepeatabilityMismatch);
+    assert!(summary.repeatability_permille > profile.repeatability_fail_permille);
+    assert!(
+        !summary
+            .warning_flags
+            .contains(ImpedanceWarningFlags::REPEATABILITY)
+    );
 }
 
 #[test]
-fn pulsating_fit_uses_invalid_post_sweep_zero_for_repeatability() {
+fn pulsating_fit_reports_invalid_post_sweep_zero_repeatability_as_telemetry() {
     let profile = PulsatingImpedanceProfile::standard_openffboard();
     let mut observations = synthetic_pulsating_observations(&profile, 80, 24, 0, 0);
     observations[PULSATING_POST_SWEEP_ZERO_INDEX].valid = false;
@@ -436,9 +455,14 @@ fn pulsating_fit_uses_invalid_post_sweep_zero_for_repeatability() {
     observations[PULSATING_POST_SWEEP_ZERO_INDEX].inductive_response_count_per_ud_milli = 120;
     observations[PULSATING_STABILITY_ZERO_INDEX].inductive_response_count_per_ud_milli = 80;
 
-    let err = fit_pulsating_impedance(&profile, &observations).unwrap_err();
+    let summary = fit_pulsating_impedance(&profile, &observations).unwrap();
 
-    assert_eq!(err, ImpedanceError::RepeatabilityMismatch);
+    assert!(summary.repeatability_permille > profile.repeatability_fail_permille);
+    assert!(
+        !summary
+            .warning_flags
+            .contains(ImpedanceWarningFlags::REPEATABILITY)
+    );
 }
 
 #[test]
@@ -490,8 +514,8 @@ fn standard_profile_enforces_held_carrier_exposure_budget() {
 
     assert_eq!(profile.nominal_carrier_window_ms(), 80);
     assert_eq!(profile.energized_window_ms(), 240);
-    assert_eq!(profile.max_window_exposure(), 640 * 640 * 240);
-    assert_eq!(profile.max_total_exposure(), 640 * 640 * 10 * 240);
+    assert_eq!(profile.max_window_exposure(), 1104 * 1104 * 240);
+    assert_eq!(profile.max_total_exposure(), 1104 * 1104 * 10 * 240);
     assert!(profile.max_window_exposure() <= profile.max_window_exposure_budget);
     assert!(profile.max_total_exposure() <= profile.max_total_exposure_budget);
 }
@@ -1082,6 +1106,7 @@ struct FakeImpedanceBackend {
     ac_sample_timestamps: heapless::Vec<u32, AC_SAMPLE_TIMESTAMP_CAPACITY>,
     fit_attempts: [Option<ImpedanceFitPoint>; IMPEDANCE_PROFILE_POINTS],
     pulsating_observations: [Option<PulsatingAngleObservation>; PULSATING_IMPEDANCE_PROFILE_POINTS],
+    encoder_counts_per_rev: u32,
     encoder_delta_per_energized_delay: u32,
 }
 
@@ -1146,6 +1171,7 @@ impl FakeImpedanceBackend {
             ac_sample_timestamps: heapless::Vec::new(),
             fit_attempts: [None; IMPEDANCE_PROFILE_POINTS],
             pulsating_observations: [None; PULSATING_IMPEDANCE_PROFILE_POINTS],
+            encoder_counts_per_rev: 0,
             encoder_delta_per_energized_delay: 0,
         }
     }
@@ -1185,6 +1211,10 @@ impl FakeImpedanceBackend {
         (self.uq_ud_ext & 0xffff) as u16 as i16
     }
 
+    fn last_uq(&self) -> i16 {
+        (self.uq_ud_ext >> 16) as u16 as i16
+    }
+
     fn packed_current(ch0: i16, ch1: i16) -> u32 {
         ((ch1 as u16 as u32) << 16) | ch0 as u16 as u32
     }
@@ -1203,6 +1233,9 @@ impl FakeImpedanceBackend {
     }
 
     fn ac_current(&self) -> u32 {
+        if self.phi_e_selection == 1 {
+            return Self::packed_current(self.last_ud(), self.last_uq());
+        }
         let phase = TURN * f64::from(self.ac_openloop_phi()) / 65_536.0;
         if self.low_signal_ud_abs == Some(self.last_ud().unsigned_abs()) {
             return Self::packed_current(0, 0);
@@ -1477,16 +1510,14 @@ impl ImpedanceBackend for FakeImpedanceBackend {
                 ));
             }
             if self.interim_sub_addr == INTERIM_FOC_UQ_UD.sub_addr {
-                return Ok(Self::packed_halves(0, self.last_ud()));
+                return Ok(Self::packed_halves(self.last_uq(), self.last_ud()));
             }
             if self.interim_sub_addr == INTERIM_FOC_UQ_UD_LIMITED.sub_addr {
-                return Ok(Self::packed_halves(0, self.last_ud()));
+                return Ok(Self::packed_halves(self.last_uq(), self.last_ud()));
             }
             if self.interim_sub_addr == INTERIM_FOC_IQ_ID.sub_addr {
-                return Ok(Self::packed_halves(
-                    self.last_ud().abs() / 4,
-                    self.last_ud().abs() / 8,
-                ));
+                let iq_sample = self.last_uq().abs().max(self.last_ud().abs()) / 4;
+                return Ok(Self::packed_halves(iq_sample, self.last_ud().abs() / 8));
             }
         }
         if addr == CONFIG_BIQUAD_T_ENABLE.data.addr() {
@@ -1580,6 +1611,10 @@ impl ImpedanceBackend for FakeImpedanceBackend {
 
     fn profile(&self) -> ImpedanceProfile {
         self.profile
+    }
+
+    fn encoder_counts_per_rev(&self) -> u32 {
+        self.encoder_counts_per_rev
     }
 
     fn record_fit_attempt(&mut self, point_index: usize, fit: ImpedanceFitPoint) {
@@ -1761,7 +1796,7 @@ fn runner_setup_readback_mismatches_block_first_carrier_write() {
 }
 
 #[test]
-fn runner_holds_commanded_angle_before_carrier_sampling() {
+fn runner_holds_fixed_angle_before_carrier_sampling() {
     let profile = PulsatingImpedanceProfile::standard_openffboard();
     let mut backend = MockImpedanceBackend::ready_for_success();
 
@@ -1844,6 +1879,88 @@ fn runner_holds_commanded_angle_before_carrier_sampling() {
 }
 
 #[test]
+fn runner_holds_fixed_angle_and_rotates_carrier_vector() {
+    let profile = PulsatingImpedanceProfile::standard_openffboard();
+    let mut backend = MockImpedanceBackend::ready_for_success();
+
+    let result = block_on(run_pulsating_impedance_identification(&mut backend));
+
+    assert!(result.is_ok(), "expected ok, got {result:?}");
+    assert!(
+        !backend
+            .writes
+            .iter()
+            .any(|write| write.addr == PHI_E_EXT.addr() && write.value != 0),
+        "held-angle runner must not sweep PHI_E_EXT"
+    );
+
+    let hold_ud = profile.hold_ud_abs as i16;
+    let carrier_ud = profile.angle_points[3].ud_abs as i16;
+    assert_eq!(profile.angle_points[3].angle_electrical_counts, 16_384);
+    let q_axis_carrier_high: u32 = UqUdExt::new()
+        .with_ud_ext(hold_ud)
+        .with_uq_ext(carrier_ud)
+        .into();
+    let q_axis_carrier_low: u32 = UqUdExt::new()
+        .with_ud_ext(hold_ud)
+        .with_uq_ext(-carrier_ud)
+        .into();
+
+    assert!(
+        backend
+            .writes
+            .iter()
+            .any(|write| write.addr == UQ_UD_EXT.addr() && write.value == q_axis_carrier_high),
+        "90-degree carrier high vector missing"
+    );
+    assert!(
+        backend
+            .writes
+            .iter()
+            .any(|write| write.addr == UQ_UD_EXT.addr() && write.value == q_axis_carrier_low),
+        "90-degree carrier low vector missing"
+    );
+}
+
+#[test]
+fn pulsating_accumulator_projects_current_onto_probe_axis() {
+    let profile = PulsatingImpedanceProfile::standard_openffboard();
+    let mut accumulator = PulsatingAngleAccumulator::new(16_384, 1000);
+
+    accumulator.accumulate(
+        0,
+        ImpedanceSample {
+            t_us: 0,
+            openloop_phi: 0,
+            i_ch0: 0,
+            i_ch1: 1000,
+        },
+        ImpedanceSample {
+            t_us: 0,
+            openloop_phi: 0,
+            i_ch0: 0,
+            i_ch1: 0,
+        },
+    );
+    let observation = accumulator.finish(
+        &profile,
+        PulsatingBaselineObservation {
+            d_count: 0,
+            q_count: 0,
+            adc_ch0_count: 0,
+            adc_ch1_count: 0,
+        },
+        0,
+        0,
+        0,
+        0,
+        0,
+    );
+
+    assert_eq!(observation.inductive_response_count_per_ud_milli, 2000);
+}
+
+#[test]
 fn runner_uses_encoder_peak_excursion_not_before_after_delta() {
     let mut backend =
         MockImpedanceBackend::ready_for_success().with_encoder_script(&[1000, 1036, 1000]);
@@ -1880,6 +1997,21 @@ fn runner_tracks_encoder_peak_across_wraparound() {
 }
 
 #[test]
+fn runner_treats_encoder_count_zero_wrap_as_one_count_motion() {
+    let mut backend = MockImpedanceBackend::ready_for_success().with_encoder_script(&[0, 3999, 0]);
+    backend.encoder_counts_per_rev = 4000;
+
+    let result = block_on(run_pulsating_impedance_identification(&mut backend));
+
+    assert!(result.is_ok(), "expected ok, got {result:?}");
+    let observation = result.unwrap().angle_observations[0];
+    assert_eq!(observation.encoder_peak_counts, 1);
+    assert_eq!(observation.encoder_min, 3999);
+    assert_eq!(observation.encoder_max, 0);
+    assert!(observation.valid);
+}
+
+#[test]
 fn runner_warns_but_continues_for_encoder_warn_band() {
     let mut backend =
         MockImpedanceBackend::ready_for_success().with_encoder_script(&[1000, 1080, 1000]);
@@ -1913,6 +2045,30 @@ fn runner_hard_aborts_when_encoder_peak_exceeds_fail_threshold() {
         "runner did not command zero voltage after encoder peak"
     );
     assert_eq!(backend.pulsating_angle_starts, 1);
+}
+
+#[test]
+fn runner_records_failing_angle_observation_on_encoder_hard_abort() {
+    let profile = PulsatingImpedanceProfile::standard_openffboard();
+    let mut backend = MockImpedanceBackend::ready_for_success().with_encoder_script(&[
+        1000, 1000, 1000, 1000, 1000, 1000, 1000, 1000, 1000, 1000, 1000, 1000, 1000, 1000, 1000,
+        1000, 1000, 1000, 1000, 1000, 1000, 1000, 1000, 1000, 1000, 1000, 1129, 1129,
+    ]);
+
+    let err = block_on(run_pulsating_impedance_identification(&mut backend)).unwrap_err();
+
+    assert_eq!(err, ImpedanceError::EncoderMoved);
+    let observation = backend.pulsating_observations[0].expect("failing observation recorded");
+    assert_eq!(
+        observation.angle_electrical_counts,
+        profile.angle_points[0].angle_electrical_counts
+    );
+    assert_eq!(observation.encoder_before, 1000);
+    assert_eq!(
+        observation.encoder_peak_counts,
+        profile.encoder_move_fail_counts + 1
+    );
+    assert!(!observation.valid);
 }
 
 #[test]
@@ -1971,6 +2127,7 @@ fn runner_accumulator_puts_phase_lag_in_inductive_channel() {
             adc_ch0_count: 0,
             adc_ch1_count: 0,
         },
+        0,
         0,
         0,
         0,

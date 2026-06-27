@@ -1,4 +1,4 @@
-//! Fixed-angle pulsating impedance-identification profile defaults.
+//! Held-angle pulsating impedance-identification profile defaults.
 
 use super::profile::{
     IMPEDANCE_PER_SAMPLE_OVERHEAD_US, OPENFFBOARD_IMPEDANCE_STATUS_FAIL_MASK,
@@ -10,26 +10,26 @@ use super::types::{
 
 const MICROS_PER_MILLISECOND: u64 = 1_000;
 
-/// Profile constants for one fixed-angle pulsating impedance-identification run.
+/// Profile constants for one held-angle pulsating impedance-identification run.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub struct PulsatingImpedanceProfile {
-    /// Fixed electrical-angle windows sampled by this profile.
+    /// Carrier probe-angle windows sampled by this profile.
     pub angle_points: [PulsatingImpedancePoint; PULSATING_IMPEDANCE_PROFILE_POINTS],
     /// Square-carrier frequency in millihertz.
     pub carrier_frequency_millihz: u32,
     /// Number of samples captured for each carrier cycle.
     pub samples_per_cycle: u16,
-    /// Number of carrier cycles captured at each fixed angle.
+    /// Number of carrier cycles captured at each probe angle.
     pub cycles_per_angle: u16,
-    /// Number of samples captured at each fixed angle.
+    /// Number of samples captured at each probe angle.
     pub sample_count: u16,
     /// Maximum accepted sample count for this profile.
     pub max_sample_count: u16,
     /// Requested interval between samples in microseconds.
     pub sample_interval_us: u16,
-    /// DC UD magnitude used to hold the rotor at each commanded electrical angle.
+    /// DC UD magnitude used to hold the rotor at the fixed external electrical angle.
     pub hold_ud_abs: u16,
-    /// Settling time after applying the held-angle DC voltage.
+    /// Settling time after applying the fixed held-angle DC voltage.
     pub hold_settle_ms: u16,
     /// Fixed delay after each carrier-voltage write before sampling current.
     pub carrier_settle_us: u16,
@@ -51,8 +51,6 @@ pub struct PulsatingImpedanceProfile {
     pub min_signal_count_per_ud_milli: u16,
     /// Minimum saliency separation needed to determine the electrical axis.
     pub saliency_axis_determinability_count_per_ud_milli: u16,
-    /// Maximum allowed electrical-axis deviation in 16-bit turn counts.
-    pub axis_deviation_fail_counts: u16,
     /// Minimum accepted angular coverage in permille.
     pub angle_coverage_fail_permille: u16,
     /// Maximum expected current count before aborting.
@@ -75,16 +73,16 @@ pub struct PulsatingImpedanceProfile {
     pub status_flags_fail_mask: u32,
     /// STATUS_FLAGS bits that are reported as warning evidence.
     pub status_flags_warn_mask: u32,
-    /// Maximum allowed exposure for one fixed-angle window.
+    /// Maximum allowed exposure for one probe-angle window.
     pub max_window_exposure_budget: u64,
-    /// Maximum allowed exposure for all fixed-angle windows.
+    /// Maximum allowed exposure for all probe-angle windows.
     pub max_total_exposure_budget: u64,
     /// Whether host scale metadata has been physically validated.
     pub scale_metadata_validated: bool,
 }
 
 impl PulsatingImpedanceProfile {
-    /// Build the starting OpenFFBoard fixed-angle pulsating impedance profile.
+    /// Build the starting OpenFFBoard held-angle pulsating impedance profile.
     pub const fn standard_openffboard() -> Self {
         Self {
             // Roles: warmup zero, reference zero, sweep, return-settle zero,
@@ -92,43 +90,43 @@ impl PulsatingImpedanceProfile {
             angle_points: [
                 PulsatingImpedancePoint {
                     angle_electrical_counts: 0,
-                    ud_abs: 320,
+                    ud_abs: 464,
                 },
                 PulsatingImpedancePoint {
                     angle_electrical_counts: 0,
-                    ud_abs: 320,
+                    ud_abs: 464,
                 },
                 PulsatingImpedancePoint {
                     angle_electrical_counts: 8192,
-                    ud_abs: 320,
+                    ud_abs: 464,
                 },
                 PulsatingImpedancePoint {
                     angle_electrical_counts: 16384,
-                    ud_abs: 320,
+                    ud_abs: 464,
                 },
                 PulsatingImpedancePoint {
                     angle_electrical_counts: 24576,
-                    ud_abs: 320,
+                    ud_abs: 464,
                 },
                 PulsatingImpedancePoint {
                     angle_electrical_counts: 32768,
-                    ud_abs: 320,
+                    ud_abs: 464,
                 },
                 PulsatingImpedancePoint {
                     angle_electrical_counts: 40960,
-                    ud_abs: 320,
+                    ud_abs: 464,
                 },
                 PulsatingImpedancePoint {
                     angle_electrical_counts: 0,
-                    ud_abs: 320,
+                    ud_abs: 464,
                 },
                 PulsatingImpedancePoint {
                     angle_electrical_counts: 0,
-                    ud_abs: 320,
+                    ud_abs: 464,
                 },
                 PulsatingImpedancePoint {
                     angle_electrical_counts: 0,
-                    ud_abs: 320,
+                    ud_abs: 464,
                 },
             ],
             carrier_frequency_millihz: 100_000,
@@ -137,7 +135,7 @@ impl PulsatingImpedanceProfile {
             sample_count: PULSATING_IMPEDANCE_SAMPLE_COUNT as u16,
             max_sample_count: PULSATING_IMPEDANCE_SAMPLE_COUNT as u16,
             sample_interval_us: 500,
-            hold_ud_abs: 320,
+            hold_ud_abs: 640,
             hold_settle_ms: 80,
             carrier_settle_us: 200,
             discard_cycles: 1,
@@ -149,7 +147,6 @@ impl PulsatingImpedanceProfile {
             pwm_sv_chop: 7,
             min_signal_count_per_ud_milli: 32,
             saliency_axis_determinability_count_per_ud_milli: 16,
-            axis_deviation_fail_counts: 4096,
             angle_coverage_fail_permille: 850,
             max_expected_current_count: 1600,
             encoder_move_warn_counts: 64,
@@ -161,8 +158,8 @@ impl PulsatingImpedanceProfile {
             repeatability_fail_permille: 200,
             status_flags_fail_mask: OPENFFBOARD_IMPEDANCE_STATUS_FAIL_MASK,
             status_flags_warn_mask: OPENFFBOARD_IMPEDANCE_STATUS_WARN_MASK,
-            max_window_exposure_budget: 110_000_000,
-            max_total_exposure_budget: 1_000_000_000,
+            max_window_exposure_budget: 293_000_000,
+            max_total_exposure_budget: 2_926_000_000,
             scale_metadata_validated: false,
         }
     }
@@ -214,7 +211,7 @@ impl PulsatingImpedanceProfile {
         max
     }
 
-    /// Total exposure budget consumed by all fixed-angle windows.
+    /// Total exposure budget consumed by all probe-angle windows.
     pub fn max_total_exposure(&self) -> u64 {
         let mut total = 0u64;
         for point in self.angle_points {

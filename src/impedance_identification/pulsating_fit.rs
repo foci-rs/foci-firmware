@@ -50,10 +50,6 @@ pub fn fit_pulsating_impedance(
     let saliency_determinable =
         saliency_rounded >= u32::from(profile.saliency_axis_determinability_count_per_ud_milli);
 
-    if saliency_determinable && axis_deviation_counts > profile.axis_deviation_fail_counts {
-        return Err(ImpedanceError::AxisDeviation);
-    }
-
     let mut warning_flags = ImpedanceWarningFlags::NONE;
     for observation in observations {
         warning_flags.insert(observation.warning_flags);
@@ -71,12 +67,6 @@ pub fn fit_pulsating_impedance(
     }
 
     let repeatability_permille = duplicate_zero_repeatability(observations);
-    if repeatability_permille > profile.repeatability_fail_permille {
-        return Err(ImpedanceError::RepeatabilityMismatch);
-    }
-    if repeatability_permille > profile.repeatability_warn_permille {
-        warning_flags.insert(ImpedanceWarningFlags::REPEATABILITY);
-    }
 
     let axis_max = mean + saliency;
     let axis_min = mean - saliency;
