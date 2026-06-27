@@ -9,10 +9,7 @@ pub mod types;
 mod tests;
 
 pub use fit::fit_impedance;
-pub use profile::{
-    ImpedanceProfile, OPENFFBOARD_IMPEDANCE_STATUS_FAIL_MASK,
-    OPENFFBOARD_IMPEDANCE_STATUS_WARN_MASK,
-};
+pub use profile::{IMPEDANCE_STATUS_FAIL_MASK, IMPEDANCE_STATUS_WARN_MASK, ImpedanceProfile};
 pub use runner::{
     ImpedanceBackend, ImpedanceBackendError, ImpedanceRunResult, run_impedance_identification,
 };

@@ -207,6 +207,7 @@ async fn run_energized_body<B: ImpedanceBackend>(
         torque_enable_during: read_sub(backend, CONFIG_BIQUAD_T_ENABLE).await? as u8,
         flux_enable_during: read_sub(backend, CONFIG_BIQUAD_F_ENABLE).await? as u8,
     };
+    write(backend, STATUS_FLAGS.addr(), 0).await?;
 
     let mut warning_flags = ImpedanceWarningFlags::NONE;
     let mut status_flags_or = 0u32;

@@ -7,20 +7,13 @@ const STATUS_PID_V_OUTPUT_LIMIT: u32 = 1 << 7;
 const STATUS_PID_ID_ERRSUM_LIMIT: u32 = 1 << 10;
 const STATUS_PID_IQ_ERRSUM_LIMIT: u32 = 1 << 14;
 const STATUS_ADC_I_CLIPPED: u32 = 1 << 26;
-const STATUS_ENC_N: u32 = 1 << 28;
-const STATUS_ENC_2_N: u32 = 1 << 29;
-const STATUS_AENC_N: u32 = 1 << 30;
 
-/// OpenFFBoard impedance status bits that abort the diagnostic immediately.
-pub const OPENFFBOARD_IMPEDANCE_STATUS_FAIL_MASK: u32 = STATUS_ADC_I_CLIPPED;
+/// TMC4671 status bits that abort the impedance diagnostic immediately.
+pub const IMPEDANCE_STATUS_FAIL_MASK: u32 = STATUS_ADC_I_CLIPPED;
 
-/// OpenFFBoard impedance status bits that are reported as non-fatal evidence.
-pub const OPENFFBOARD_IMPEDANCE_STATUS_WARN_MASK: u32 = STATUS_ENC_N
-    | STATUS_ENC_2_N
-    | STATUS_AENC_N
-    | STATUS_PID_V_OUTPUT_LIMIT
-    | STATUS_PID_ID_ERRSUM_LIMIT
-    | STATUS_PID_IQ_ERRSUM_LIMIT;
+/// TMC4671 status bits that are reported as actionable impedance warnings.
+pub const IMPEDANCE_STATUS_WARN_MASK: u32 =
+    STATUS_PID_V_OUTPUT_LIMIT | STATUS_PID_ID_ERRSUM_LIMIT | STATUS_PID_IQ_ERRSUM_LIMIT;
 
 /// Conservative per-sample overhead charged to the exposure budget on top of the
 /// requested sample interval. It accounts for the raw ADC, transformed-current,
@@ -170,8 +163,8 @@ impl ImpedanceProfile {
             residual_fail_permille: 750,
             repeatability_warn_permille: 100,
             repeatability_fail_permille: 200,
-            status_flags_fail_mask: OPENFFBOARD_IMPEDANCE_STATUS_FAIL_MASK,
-            status_flags_warn_mask: OPENFFBOARD_IMPEDANCE_STATUS_WARN_MASK,
+            status_flags_fail_mask: IMPEDANCE_STATUS_FAIL_MASK,
+            status_flags_warn_mask: IMPEDANCE_STATUS_WARN_MASK,
             max_window_exposure_budget: 586_000_000,
             max_total_exposure_budget: 5_851_000_000,
             scale_metadata_validated: false,

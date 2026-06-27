@@ -214,6 +214,7 @@ struct FakeImpedanceBackend {
     flux_filter_enable: u32,
     timestamp_us: u32,
     status_flags: u32,
+    status_flags_after_clear: u32,
     readback_mismatch_addr: Option<u8>,
     readback_mismatch: Option<(u8, u32, u32)>,
     scripted_encoder_counts: heapless::Vec<u32, 128>,
@@ -250,6 +251,7 @@ impl FakeImpedanceBackend {
             flux_filter_enable: 0,
             timestamp_us: 0,
             status_flags: 0,
+            status_flags_after_clear: 0,
             readback_mismatch_addr: None,
             readback_mismatch: None,
             scripted_encoder_counts: heapless::Vec::new(),
@@ -500,6 +502,8 @@ impl ImpedanceBackend for FakeImpedanceBackend {
             self.phi_e_ext = value;
         } else if addr == PWM_SV_CHOP.addr() {
             self.pwm_sv_chop = value;
+        } else if addr == STATUS_FLAGS.addr() && value == 0 {
+            self.status_flags = self.status_flags_after_clear;
         } else if addr == CONFIG_BIQUAD_T_ENABLE.addr.addr() {
             self.config_sub_addr = value as u8;
         } else if addr == CONFIG_BIQUAD_T_ENABLE.data.addr() {
@@ -714,16 +718,17 @@ fn runner_records_failing_angle_observation_on_encoder_hard_abort() {
 }
 
 #[test]
-fn runner_standard_profile_treats_latched_hold_status_as_warning_only() {
+fn runner_clears_latched_status_and_keeps_encoder_status_as_evidence() {
     let mut backend = FakeImpedanceBackend::standard();
-    let observed_hold_status = 0x7000_4480;
-    backend.status_flags = observed_hold_status;
+    backend.status_flags = 0x7000_4480;
+    backend.status_flags_after_clear = 0x7000_0000;
 
     let result = block_on(run_impedance_identification(&mut backend)).unwrap();
 
-    assert_eq!(result.status_flags_or, observed_hold_status);
+    assert!(backend.write_index(STATUS_FLAGS.addr(), 0) < backend.read_index(STATUS_FLAGS.addr()));
+    assert_eq!(result.status_flags_or, 0x7000_0000);
     assert!(
-        result
+        !result
             .warning_flags
             .contains(ImpedanceWarningFlags::STATUS_FLAGS)
     );
