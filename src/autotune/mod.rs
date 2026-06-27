@@ -27,6 +27,7 @@ pub use current::{
     extract_step_metrics, should_accept_current_validation_without_retry,
     should_retry_current_validation, simc_current_gains, simc_current_gains_checked,
     simc_current_gains_with_lambda, simc_current_gains_with_lambda_checked,
+    synthesize_current_gains,
 };
 pub use filters::recommend_filters;
 pub(crate) use models::VELOCITY_SIMC_MAX_P_REG;
@@ -41,9 +42,9 @@ pub use models::{
     CURRENT_LOOP_FAILURE_SATURATION, CURRENT_LOOP_FAILURE_SPI, CURRENT_LOOP_FAILURE_STATUS_FLAGS,
     CURRENT_LOOP_FAILURE_TORQUE_VALIDATION, CURRENT_TORQUE_VALIDATION_SAMPLE_COUNT,
     CURRENT_VALIDATION_AXIS_FLUX, CURRENT_VALIDATION_AXIS_TORQUE,
-    CURRENT_VALIDATION_MAX_SAMPLES_PER_AXIS, CurrentGains, CurrentLoopEvidence,
-    ELECTRICAL_MODEL_RESISTANCE_SCALE, ElectricalModel, FilterConfig, MechanicalModel,
-    PositionGains, VelocityGains,
+    CURRENT_VALIDATION_MAX_SAMPLES_PER_AXIS, CurrentGainSynthesis, CurrentGainSynthesisInput,
+    CurrentGains, CurrentLoopEvidence, ELECTRICAL_MODEL_RESISTANCE_SCALE, ElectricalModel,
+    FilterConfig, MechanicalModel, PositionGains, VelocityGains,
 };
 pub use position::{
     PositionOscillationDiagnostics, analyze_position_oscillation, detect_position_oscillation,

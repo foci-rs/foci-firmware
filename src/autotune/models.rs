@@ -1,3 +1,5 @@
+use super::types::CommissionProfile;
+
 /// First-order-plus-dead-time (FOPDT) current plant model.
 ///
 /// Estimated during electrical identification (Phase 5). Contains
@@ -49,6 +51,36 @@ pub struct CurrentGains {
     pub effective_bandwidth_hz: u32,
     /// Closed-loop time constant lambda in microseconds.
     pub lambda_us: u32,
+}
+
+/// Input to production current-loop gain synthesis.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+pub struct CurrentGainSynthesisInput {
+    /// Identified symmetric resistance/inductance model.
+    pub model: ElectricalModel,
+    /// Tuning profile used for SIMC lambda selection.
+    pub profile: CommissionProfile,
+    /// Measured axis split ratio, permille where 1000 = 1.000x.
+    pub measured_axis_split_permille: u16,
+    /// Applied axis split ratio after profile clamping, permille.
+    pub applied_axis_split_permille: u16,
+    /// `AXIS_SPLIT_SOURCE_*`.
+    pub axis_split_source: u8,
+    /// `CURRENT_AXIS_*` axis with the higher inductance.
+    pub high_inductance_axis: u8,
+}
+
+/// Output of production current-loop gain synthesis.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+pub struct CurrentGainSynthesis {
+    /// Synthesized per-axis current-loop gains.
+    pub gains: CurrentGains,
+    /// Firmware-owned evidence for the selected synthesis tier and split policy.
+    pub evidence: CurrentLoopEvidence,
+    /// Flux-axis electrical time constant used for synthesis.
+    pub flux_tau_us: u32,
+    /// Torque-axis electrical time constant used for synthesis.
+    pub torque_tau_us: u32,
 }
 
 // Stable persisted/report numeric codes. Do not renumber existing values;

@@ -1,6 +1,11 @@
-#[cfg(test)]
 use super::{
     AXIS_SPLIT_SOURCE_IMPEDANCE, AXIS_SPLIT_SOURCE_NONE, CURRENT_AXIS_FLUX, CURRENT_AXIS_TORQUE,
+    CommissionProfile, CurrentGainSynthesis, CurrentGainSynthesisInput, CurrentGains,
+    CurrentLoopEvidence, ELECTRICAL_MODEL_RESISTANCE_SCALE, ElectricalModel, TransientBuffer,
+    ValidationResult,
+};
+#[cfg(test)]
+use super::{
     CURRENT_FLUX_VALIDATION_SAMPLE_COUNT, CURRENT_GAINS_SOURCE_FAILED,
     CURRENT_GAINS_SOURCE_MEASURED, CURRENT_GAINS_TIER_MEASURED_SPLIT,
     CURRENT_GAINS_TIER_MEASURED_SYMMETRIC, CURRENT_GAINS_TIER_NONE,
@@ -10,11 +15,7 @@ use super::{
     CURRENT_LOOP_FAILURE_SATURATION, CURRENT_LOOP_FAILURE_SPI, CURRENT_LOOP_FAILURE_STATUS_FLAGS,
     CURRENT_LOOP_FAILURE_TORQUE_VALIDATION, CURRENT_TORQUE_VALIDATION_SAMPLE_COUNT,
     CURRENT_VALIDATION_AXIS_FLUX, CURRENT_VALIDATION_AXIS_TORQUE,
-    CURRENT_VALIDATION_MAX_SAMPLES_PER_AXIS, CurrentLoopEvidence,
-};
-use super::{
-    CommissionProfile, CurrentGains, ELECTRICAL_MODEL_RESISTANCE_SCALE, ElectricalModel,
-    TransientBuffer, ValidationResult,
+    CURRENT_VALIDATION_MAX_SAMPLES_PER_AXIS,
 };
 
 /// Current-loop SIMC integrator damping factor.
@@ -60,6 +61,38 @@ pub struct CurrentValidation {
     /// target. Set to 0 by extract_step_metrics; the caller computes it
     /// from the combined (worst-case) tail_level and commanded target.
     pub target_error_pct: u16,
+}
+
+impl CurrentGainSynthesisInput {
+    /// Build symmetric current-loop synthesis input from a measured electrical model.
+    pub const fn symmetric(model: ElectricalModel, profile: CommissionProfile) -> Self {
+        Self {
+            model,
+            profile,
+            measured_axis_split_permille: 1000,
+            applied_axis_split_permille: 1000,
+            axis_split_source: AXIS_SPLIT_SOURCE_NONE,
+            high_inductance_axis: CURRENT_AXIS_FLUX,
+        }
+    }
+
+    /// Build impedance-split current-loop synthesis input from measured axis asymmetry.
+    pub const fn with_impedance_split(
+        model: ElectricalModel,
+        profile: CommissionProfile,
+        measured_axis_split_permille: u16,
+        applied_axis_split_permille: u16,
+        high_inductance_axis: u8,
+    ) -> Self {
+        Self {
+            model,
+            profile,
+            measured_axis_split_permille,
+            applied_axis_split_permille,
+            axis_split_source: AXIS_SPLIT_SOURCE_IMPEDANCE,
+            high_inductance_axis,
+        }
+    }
 }
 
 /// Compute the SIMC lambda (closed-loop time constant) for a given profile.
@@ -154,6 +187,80 @@ pub fn simc_current_gains_with_lambda_checked(
         effective_bandwidth_hz: bw_hz as u32,
         lambda_us,
     })
+}
+
+/// Synthesize production current-loop gains and gain-source evidence.
+pub fn synthesize_current_gains(
+    input: &CurrentGainSynthesisInput,
+    config: &crate::config::TmcConfig,
+) -> Option<CurrentGainSynthesis> {
+    if input.model.r_int == 0 || input.model.l_int == 0 || input.model.theta_e_us == 0 {
+        return None;
+    }
+
+    match input.axis_split_source {
+        AXIS_SPLIT_SOURCE_NONE => {
+            let lambda_us =
+                simc_lambda_us(input.profile, input.model.tau_e_us, input.model.theta_e_us);
+            let gains = simc_current_gains_with_lambda_checked(&input.model, lambda_us, config)?;
+            return Some(CurrentGainSynthesis {
+                gains,
+                evidence: CurrentLoopEvidence::measured_symmetric(),
+                flux_tau_us: input.model.tau_e_us,
+                torque_tau_us: input.model.tau_e_us,
+            });
+        }
+        AXIS_SPLIT_SOURCE_IMPEDANCE => {}
+        _ => return None,
+    }
+
+    let applied_axis_split_permille = input.applied_axis_split_permille.max(1000);
+    let split = applied_axis_split_permille as u64;
+    let low_tau_us = input.model.tau_e_us;
+    let high_tau_us = ((input.model.tau_e_us as u64 * split) / 1000).min(u32::MAX as u64) as u32;
+    let (flux_tau_us, torque_tau_us) = match input.high_inductance_axis {
+        CURRENT_AXIS_FLUX => (high_tau_us, low_tau_us),
+        CURRENT_AXIS_TORQUE => (low_tau_us, high_tau_us),
+        _ => return None,
+    };
+
+    let flux_model = axis_model(input.model, flux_tau_us);
+    let torque_model = axis_model(input.model, torque_tau_us);
+    let flux_lambda_us = simc_lambda_us(input.profile, flux_tau_us, input.model.theta_e_us);
+    let torque_lambda_us = simc_lambda_us(input.profile, torque_tau_us, input.model.theta_e_us);
+    let flux_gains = simc_current_gains_with_lambda_checked(&flux_model, flux_lambda_us, config)?;
+    let torque_gains =
+        simc_current_gains_with_lambda_checked(&torque_model, torque_lambda_us, config)?;
+
+    Some(CurrentGainSynthesis {
+        gains: CurrentGains {
+            flux_p: flux_gains.flux_p,
+            flux_i: flux_gains.flux_i,
+            torque_p: torque_gains.torque_p,
+            torque_i: torque_gains.torque_i,
+            effective_bandwidth_hz: flux_gains
+                .effective_bandwidth_hz
+                .min(torque_gains.effective_bandwidth_hz),
+            lambda_us: flux_gains.lambda_us.max(torque_gains.lambda_us),
+        },
+        evidence: CurrentLoopEvidence::measured_split(
+            input.measured_axis_split_permille,
+            applied_axis_split_permille,
+            applied_axis_split_permille < input.measured_axis_split_permille,
+        ),
+        flux_tau_us,
+        torque_tau_us,
+    })
+}
+
+fn axis_model(model: ElectricalModel, tau_e_us: u32) -> ElectricalModel {
+    let l_int = ((model.r_int as u64 * tau_e_us as u64) / ELECTRICAL_MODEL_RESISTANCE_SCALE as u64)
+        .min(u32::MAX as u64) as u32;
+    ElectricalModel {
+        l_int,
+        tau_e_us,
+        ..model
+    }
 }
 
 /// Compute SIMC PI gains for the current loop.
@@ -639,6 +746,134 @@ mod tests {
         assert_eq!(CURRENT_LOOP_FAILURE_STATUS_FLAGS, 8);
         assert_eq!(CURRENT_LOOP_FAILURE_RETRY_EXHAUSTED, 9);
         assert_eq!(CURRENT_LOOP_FAILURE_SPI, 10);
+    }
+
+    #[test]
+    fn split_synthesis_uses_measured_symmetric_without_impedance() {
+        let model = test_electrical_model();
+        let config = autotune_test_config();
+        let input = CurrentGainSynthesisInput::symmetric(model, CommissionProfile::Balanced);
+
+        let output = synthesize_current_gains(&input, &config).unwrap();
+
+        assert_eq!(
+            output.evidence.gains_tier,
+            CURRENT_GAINS_TIER_MEASURED_SYMMETRIC
+        );
+        assert_eq!(output.evidence.axis_split_source, AXIS_SPLIT_SOURCE_NONE);
+        assert_eq!(output.gains.flux_p, output.gains.torque_p);
+        assert_eq!(output.gains.flux_i, output.gains.torque_i);
+    }
+
+    #[test]
+    fn split_synthesis_scales_flux_when_flux_is_high_inductance() {
+        let model = test_electrical_model();
+        let config = autotune_test_config();
+        let input = CurrentGainSynthesisInput::with_impedance_split(
+            model,
+            CommissionProfile::Balanced,
+            1800,
+            1800,
+            CURRENT_AXIS_FLUX,
+        );
+
+        let output = synthesize_current_gains(&input, &config).unwrap();
+
+        assert_eq!(
+            output.evidence.gains_tier,
+            CURRENT_GAINS_TIER_MEASURED_SPLIT
+        );
+        assert_eq!(output.evidence.measured_axis_split_permille, 1800);
+        assert_eq!(output.evidence.applied_axis_split_permille, 1800);
+        assert_eq!(output.evidence.axis_split_clamped, 0);
+        assert!(output.flux_tau_us > output.torque_tau_us);
+        assert!(output.gains.flux_p > output.gains.torque_p);
+    }
+
+    #[test]
+    fn split_synthesis_scales_torque_when_torque_is_high_inductance() {
+        let model = test_electrical_model();
+        let config = autotune_test_config();
+        let input = CurrentGainSynthesisInput::with_impedance_split(
+            model,
+            CommissionProfile::Balanced,
+            1800,
+            1800,
+            CURRENT_AXIS_TORQUE,
+        );
+
+        let output = synthesize_current_gains(&input, &config).unwrap();
+
+        assert!(output.torque_tau_us > output.flux_tau_us);
+        assert!(output.gains.torque_p > output.gains.flux_p);
+    }
+
+    #[test]
+    fn split_synthesis_reports_clamped_axis_ratio() {
+        let model = test_electrical_model();
+        let config = autotune_test_config();
+        let input = CurrentGainSynthesisInput::with_impedance_split(
+            model,
+            CommissionProfile::Balanced,
+            2400,
+            1500,
+            CURRENT_AXIS_FLUX,
+        );
+
+        let output = synthesize_current_gains(&input, &config).unwrap();
+
+        assert_eq!(output.evidence.measured_axis_split_permille, 2400);
+        assert_eq!(output.evidence.applied_axis_split_permille, 1500);
+        assert_eq!(output.evidence.axis_split_clamped, 1);
+    }
+
+    #[test]
+    fn split_synthesis_rejects_invalid_axis_split_source() {
+        let model = test_electrical_model();
+        let config = autotune_test_config();
+        let mut input = CurrentGainSynthesisInput::symmetric(model, CommissionProfile::Balanced);
+        input.axis_split_source = 0xff;
+
+        assert!(synthesize_current_gains(&input, &config).is_none());
+    }
+
+    #[test]
+    fn split_synthesis_rejects_invalid_high_inductance_axis() {
+        let model = test_electrical_model();
+        let config = autotune_test_config();
+        let input = CurrentGainSynthesisInput::with_impedance_split(
+            model,
+            CommissionProfile::Balanced,
+            1800,
+            1800,
+            0xff,
+        );
+
+        assert!(synthesize_current_gains(&input, &config).is_none());
+    }
+
+    #[test]
+    fn split_synthesis_floors_under_unity_applied_split_in_evidence_and_math() {
+        let model = test_electrical_model();
+        let config = autotune_test_config();
+        let input = CurrentGainSynthesisInput::with_impedance_split(
+            model,
+            CommissionProfile::Balanced,
+            900,
+            900,
+            CURRENT_AXIS_FLUX,
+        );
+        let symmetric_input =
+            CurrentGainSynthesisInput::symmetric(model, CommissionProfile::Balanced);
+
+        let output = synthesize_current_gains(&input, &config).unwrap();
+        let symmetric = synthesize_current_gains(&symmetric_input, &config).unwrap();
+
+        assert_eq!(output.evidence.measured_axis_split_permille, 900);
+        assert_eq!(output.evidence.applied_axis_split_permille, 1000);
+        assert_eq!(output.flux_tau_us, model.tau_e_us);
+        assert_eq!(output.torque_tau_us, model.tau_e_us);
+        assert_eq!(output.gains, symmetric.gains);
     }
 
     // --- SIMC current gains ---
