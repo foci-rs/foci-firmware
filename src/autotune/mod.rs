@@ -22,12 +22,17 @@ mod velocity;
 
 pub use buffer::{CaptureDirection, TRANSIENT_LEN, TransientBuffer, normalize_capture_sample};
 pub use current::{
-    CurrentValidation, classify_current_validation, compute_tail_symmetry_pct,
-    compute_target_error_pct, current_settling_reference_us, current_validation_retry_gains,
-    extract_step_metrics, should_accept_current_validation_without_retry,
-    should_retry_current_validation, simc_current_gains, simc_current_gains_checked,
-    simc_current_gains_with_lambda, simc_current_gains_with_lambda_checked,
-    synthesize_current_gains,
+    CURRENT_AXIS_VALIDATION_CROSS_AXIS, CURRENT_AXIS_VALIDATION_HIGH_RESPONSE,
+    CURRENT_AXIS_VALIDATION_LOW_RESPONSE, CURRENT_AXIS_VALIDATION_MOTION,
+    CURRENT_AXIS_VALIDATION_PASS, CURRENT_AXIS_VALIDATION_SATURATION,
+    CURRENT_AXIS_VALIDATION_STATUS_FLAGS, CURRENT_AXIS_VALIDATION_WRONG_SIGN,
+    CURRENT_AXIS_VALIDATION_ZERO_TARGET, CurrentAxisGate, CurrentAxisGateResult, CurrentAxisSample,
+    CurrentValidation, classify_current_axis_sample, classify_current_validation,
+    compute_tail_symmetry_pct, compute_target_error_pct, current_settling_reference_us,
+    current_validation_retry_gains, extract_step_metrics,
+    should_accept_current_validation_without_retry, should_retry_current_validation,
+    simc_current_gains, simc_current_gains_checked, simc_current_gains_with_lambda,
+    simc_current_gains_with_lambda_checked, synthesize_current_gains,
 };
 pub use filters::recommend_filters;
 pub(crate) use models::VELOCITY_SIMC_MAX_P_REG;

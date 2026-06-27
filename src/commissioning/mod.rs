@@ -892,6 +892,14 @@ mod tests {
             impedance_fitted_axis_electrical_counts: 0,
             impedance_residual_permille: 0,
             impedance_warning_flags: 0,
+            current_flux_validation_count: 0,
+            current_flux_validation:
+                [crate::commissioning::types::CurrentValidationAxisEvidence::EMPTY;
+                    crate::autotune::CURRENT_VALIDATION_MAX_SAMPLES_PER_AXIS],
+            current_torque_validation_count: 0,
+            current_torque_validation:
+                [crate::commissioning::types::CurrentValidationAxisEvidence::EMPTY;
+                    crate::autotune::CURRENT_VALIDATION_MAX_SAMPLES_PER_AXIS],
         }
     }
 

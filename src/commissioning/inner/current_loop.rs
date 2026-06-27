@@ -4,19 +4,20 @@
 //! `step_current_tune` reads the electrical model from Phase 5 and applies
 //! the SIMC tuning rule to derive flux/torque PI gains plus a step
 //! amplitude for validation. `step_current_validate` then writes those
-//! gains, captures bidirectional torque step responses, classifies them,
-//! retries once if marginal, and falls back to conservative defaults on
-//! failure.
+//! gains, samples flux and torque current responses at short fixed delays,
+//! classifies the per-axis evidence, and falls back to conservative defaults
+//! on validation failure.
 
 use crate::autotune::{
     CaptureDirection, ClosedLoopEntryState, CommissionError, CommissionProfile, CommissionStatus,
-    CurrentGainSynthesisInput, CurrentGains, CurrentLoopEvidence, ElectricalModel, InnerSequence,
-    PhaseId, TransientBuffer, ValidationResult,
+    CurrentAxisGate, CurrentAxisGateResult, CurrentAxisSample, CurrentGainSynthesisInput,
+    CurrentGains, CurrentLoopEvidence, ElectricalModel, InnerSequence, PhaseId, TransientBuffer,
+    classify_current_axis_sample,
 };
 use crate::commissioning::inner::InnerPhase;
-use crate::commissioning::types::{CommissioningBackend, InnerResult, StepResult};
-
-pub(crate) use crate::autotune::CurrentValidation;
+use crate::commissioning::types::{
+    CommissioningBackend, CurrentValidationAxisEvidence, InnerResult, StepResult,
+};
 
 use super::impedance::{CommissioningImpedanceEvidence, run_current_gain_impedance};
 
@@ -25,20 +26,30 @@ use super::impedance::{CommissioningImpedanceEvidence, run_current_gain_impedanc
 pub(crate) enum CurrentValidateState {
     /// Write PI gains to TMC4671 registers.
     WriteGains,
-    /// Switch to torque mode and apply current step.
-    StepSetup { direction: CaptureDirection },
-    /// Wait for transient to develop before capturing.
-    StepSettle {
+    /// Switch to torque mode and apply an axis current target.
+    AxisStepSetup {
+        axis: CurrentValidationAxis,
+        sample_index: u8,
+        sample_delay_ms: u16,
+        direction: CaptureDirection,
+    },
+    /// Wait for the short sample delay to elapse.
+    AxisSampleDelay {
+        axis: CurrentValidationAxis,
+        sample_index: u8,
+        sample_delay_ms: u16,
         direction: CaptureDirection,
         deadline_us: u64,
     },
-    /// Capture step response into TransientBuffer at 160us intervals.
-    StepCapture {
+    /// Read the delayed current/voltage sample and append pair evidence.
+    AxisSampleRead {
+        axis: CurrentValidationAxis,
+        sample_index: u8,
+        sample_delay_ms: u16,
         direction: CaptureDirection,
-        next_sample_us: u64,
     },
-    /// Extract metrics and classify response.
-    Classify,
+    /// Classify one axis after all configured sample delays.
+    AxisClassify { axis: CurrentValidationAxis },
     /// Restore safe state before finalizing.
     SafeState { deadline_us: u64 },
     /// Emit final InnerResult.
@@ -52,23 +63,30 @@ pub(crate) struct CurrentValidateData {
     pub(crate) model: ElectricalModel,
     /// Currently applied gains.
     pub(crate) gains: CurrentGains,
-    /// Validation attempt (0 = first, 1 = retry).
+    /// Current validation attempt index carried in evidence.
     pub(crate) attempt: u8,
     /// Current step amplitude (absolute torque/flux current target counts).
     pub(crate) step_amplitude: u16,
-    /// Forward capture metrics (filled after forward capture).
-    pub(crate) forward_metrics: Option<CurrentValidation>,
-    /// Reverse capture metrics (filled after reverse capture).
-    pub(crate) reverse_metrics: Option<CurrentValidation>,
     /// Final commissioning status to report.
     pub(crate) final_status: CommissionStatus,
-    /// PID-output saturation counter: samples where the current PID's
-    /// voltage output is at or near `PIDOUT_UQ_UD_LIMITS`.
-    pub(crate) saturation_count: u16,
     /// Configured PIDOUT voltage limit for saturation detection.
     pub(crate) pidout_limit: u32,
+    /// Encoder count captured immediately before the active short sample target.
+    pub(crate) sample_encoder_start: u32,
+    /// Positive half of the active positive/negative delay pair.
+    pub(crate) pending_positive_sample: Option<AxisDirectionalEvidence>,
+    /// Number of populated flux-axis validation evidence items.
+    pub(crate) current_flux_validation_count: u8,
+    /// Flux-axis validation evidence by sample delay.
+    pub(crate) current_flux_validation:
+        [CurrentValidationAxisEvidence; crate::autotune::CURRENT_VALIDATION_MAX_SAMPLES_PER_AXIS],
+    /// Number of populated torque-axis validation evidence items.
+    pub(crate) current_torque_validation_count: u8,
+    /// Torque-axis validation evidence by sample delay.
+    pub(crate) current_torque_validation:
+        [CurrentValidationAxisEvidence; crate::autotune::CURRENT_VALIDATION_MAX_SAMPLES_PER_AXIS],
     /// Warning bits accumulated through Stage 1 (bits 0–3 from Phase 5,
-    /// bit 4 ORed if a retry was accepted, bit 5 ORed if gains fell back
+    /// bit 4 reserved for later retry policy, bit 5 ORed if gains fell back
     /// to defaults).
     pub(crate) inner_warning_flags: u8,
     /// L/R-vs-transient tau residual in permille from Phase 5.
@@ -86,11 +104,41 @@ pub(crate) struct CurrentValidateData {
     pub(crate) impedance_evidence: Option<CommissioningImpedanceEvidence>,
 }
 
+/// Current axis under short-sample validation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+pub(crate) enum CurrentValidationAxis {
+    /// Flux / D-axis current validation.
+    Flux,
+    /// Torque / Q-axis current validation.
+    Torque,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+pub(crate) struct AxisDirectionalEvidence {
+    gate: CurrentAxisGateResult,
+    status_flags: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct AxisSampleRegisters {
+    pid_torque_flux_actual: u32,
+    interim_foc_uq_ud_limited: u32,
+    output_limit: u16,
+    encoder_start: u32,
+    encoder_end: u32,
+    status_flags: u32,
+}
+
 /// Step amplitude as a fraction of run_current (15% = 15/100).
 const VALIDATION_STEP_PERCENT: u32 = 15;
 
-/// Settling time after applying or removing current step (microseconds).
+/// Settling time after removing validation current targets (microseconds).
 const VALIDATION_SETTLE_US: u64 = 50_000;
+
+const FLUX_VALIDATION_DELAYS_MS: [u16; crate::autotune::CURRENT_FLUX_VALIDATION_SAMPLE_COUNT] =
+    [1, 2, 5];
+const TORQUE_VALIDATION_DELAYS_MS: [u16; crate::autotune::CURRENT_TORQUE_VALIDATION_SAMPLE_COUNT] =
+    [1, 2];
 
 /// PID output voltage limit used during current-loop validation.
 ///
@@ -106,8 +154,188 @@ const CURRENT_VALIDATE_PIDOUT_LIMIT: u32 = 2000;
 /// current loop; low bits select torque mode.
 const CURRENT_TORQUE_MODE: u32 = 0x8000_0001;
 
-fn fallback_current_loop_evidence(result: ValidationResult, attempt: u8) -> CurrentLoopEvidence {
-    let retry_exhausted = attempt > 0 && result != ValidationResult::Pass;
+fn validation_target_register(axis: CurrentValidationAxis, target: i16) -> u32 {
+    match axis {
+        CurrentValidationAxis::Flux => target as u16 as u32,
+        CurrentValidationAxis::Torque => (target as u16 as u32) << 16,
+    }
+}
+
+fn signed_lower_half(value: u32) -> i16 {
+    crate::tmc::decode_signed_lower_half(value)
+}
+
+fn signed_upper_half(value: u32) -> i16 {
+    crate::tmc::decode_signed_upper_half(value)
+}
+
+fn encoder_delta_counts(start: u32, end: u32) -> i32 {
+    end.wrapping_sub(start) as i32
+}
+
+fn axis_sample_from_registers(
+    axis: CurrentValidationAxis,
+    target: i16,
+    registers: AxisSampleRegisters,
+) -> CurrentAxisSample {
+    let (same_axis_actual, cross_axis_actual, output_limited) = match axis {
+        CurrentValidationAxis::Flux => (
+            signed_lower_half(registers.pid_torque_flux_actual),
+            signed_upper_half(registers.pid_torque_flux_actual),
+            signed_lower_half(registers.interim_foc_uq_ud_limited),
+        ),
+        CurrentValidationAxis::Torque => (
+            signed_upper_half(registers.pid_torque_flux_actual),
+            signed_lower_half(registers.pid_torque_flux_actual),
+            signed_upper_half(registers.interim_foc_uq_ud_limited),
+        ),
+    };
+
+    CurrentAxisSample {
+        target,
+        same_axis_actual,
+        cross_axis_actual,
+        output_limited,
+        output_limit: registers.output_limit,
+        encoder_delta_counts: encoder_delta_counts(registers.encoder_start, registers.encoder_end),
+        status_flags: registers.status_flags,
+    }
+}
+
+fn validation_gate(axis: CurrentValidationAxis, sample_delay_ms: u16) -> CurrentAxisGate {
+    match (axis, sample_delay_ms) {
+        (CurrentValidationAxis::Flux, 1) => CurrentAxisGate::openffboard_flux_1ms(),
+        (CurrentValidationAxis::Flux, 2) => CurrentAxisGate::openffboard_flux_2ms(),
+        (CurrentValidationAxis::Flux, _) => CurrentAxisGate::openffboard_flux_5ms(),
+        (CurrentValidationAxis::Torque, 1) => CurrentAxisGate::openffboard_torque_1ms(),
+        (CurrentValidationAxis::Torque, _) => CurrentAxisGate::openffboard_torque_2ms(),
+    }
+}
+
+fn axis_validation_delays(axis: CurrentValidationAxis) -> &'static [u16] {
+    match axis {
+        CurrentValidationAxis::Flux => &FLUX_VALIDATION_DELAYS_MS,
+        CurrentValidationAxis::Torque => &TORQUE_VALIDATION_DELAYS_MS,
+    }
+}
+
+fn first_axis_step(axis: CurrentValidationAxis) -> CurrentValidateState {
+    let sample_delay_ms = axis_validation_delays(axis)[0];
+    CurrentValidateState::AxisStepSetup {
+        axis,
+        sample_index: 0,
+        sample_delay_ms,
+        direction: CaptureDirection::Forward,
+    }
+}
+
+fn combine_axis_pair_evidence(
+    attempt: u8,
+    target: i16,
+    sample_delay_ms: u16,
+    positive: AxisDirectionalEvidence,
+    negative: AxisDirectionalEvidence,
+) -> CurrentValidationAxisEvidence {
+    let status = merge_axis_pair_status(positive.gate.status, negative.gate.status);
+
+    CurrentValidationAxisEvidence {
+        status,
+        attempt,
+        target,
+        sample_delay_ms,
+        positive_response_permille: positive.gate.response_permille,
+        negative_response_permille: negative.gate.response_permille,
+        cross_axis_permille: positive
+            .gate
+            .cross_axis_permille
+            .max(negative.gate.cross_axis_permille),
+        voltage_output_permille: positive
+            .gate
+            .voltage_output_permille
+            .max(negative.gate.voltage_output_permille),
+        encoder_delta_counts: positive
+            .gate
+            .encoder_delta_counts
+            .max(negative.gate.encoder_delta_counts),
+        status_flags_or: positive.status_flags | negative.status_flags,
+    }
+}
+
+fn merge_axis_pair_status(positive_status: u8, negative_status: u8) -> u8 {
+    if status_priority(negative_status) > status_priority(positive_status) {
+        negative_status
+    } else {
+        positive_status
+    }
+}
+
+fn status_priority(status: u8) -> u8 {
+    match status {
+        crate::autotune::CURRENT_AXIS_VALIDATION_STATUS_FLAGS => 7,
+        crate::autotune::CURRENT_AXIS_VALIDATION_SATURATION => 6,
+        crate::autotune::CURRENT_AXIS_VALIDATION_MOTION => 5,
+        crate::autotune::CURRENT_AXIS_VALIDATION_CROSS_AXIS => 4,
+        crate::autotune::CURRENT_AXIS_VALIDATION_WRONG_SIGN => 3,
+        crate::autotune::CURRENT_AXIS_VALIDATION_ZERO_TARGET => 2,
+        crate::autotune::CURRENT_AXIS_VALIDATION_LOW_RESPONSE
+        | crate::autotune::CURRENT_AXIS_VALIDATION_HIGH_RESPONSE => 1,
+        crate::autotune::CURRENT_AXIS_VALIDATION_PASS => 0,
+        _ => 0,
+    }
+}
+
+fn evidence_axis_passed(samples: &[CurrentValidationAxisEvidence], count: u8) -> bool {
+    samples
+        .iter()
+        .take(count as usize)
+        .all(|sample| sample.status == crate::autotune::CURRENT_AXIS_VALIDATION_PASS)
+}
+
+fn axis_failure_reason(axis: CurrentValidationAxis) -> u8 {
+    match axis {
+        CurrentValidationAxis::Flux => crate::autotune::CURRENT_LOOP_FAILURE_FLUX_VALIDATION,
+        CurrentValidationAxis::Torque => crate::autotune::CURRENT_LOOP_FAILURE_TORQUE_VALIDATION,
+    }
+}
+
+fn axis_failure_reason_for_samples(
+    axis: CurrentValidationAxis,
+    samples: &[CurrentValidationAxisEvidence],
+    count: u8,
+) -> u8 {
+    let status = samples.iter().take(count as usize).fold(
+        crate::autotune::CURRENT_AXIS_VALIDATION_PASS,
+        |worst, sample| merge_axis_pair_status(worst, sample.status),
+    );
+
+    match status {
+        crate::autotune::CURRENT_AXIS_VALIDATION_SATURATION => {
+            crate::autotune::CURRENT_LOOP_FAILURE_SATURATION
+        }
+        crate::autotune::CURRENT_AXIS_VALIDATION_MOTION => {
+            crate::autotune::CURRENT_LOOP_FAILURE_MOTION
+        }
+        crate::autotune::CURRENT_AXIS_VALIDATION_STATUS_FLAGS => {
+            crate::autotune::CURRENT_LOOP_FAILURE_STATUS_FLAGS
+        }
+        crate::autotune::CURRENT_AXIS_VALIDATION_PASS => axis_failure_reason(axis),
+        _ => axis_failure_reason(axis),
+    }
+}
+
+fn fallback_axis_failure_evidence(
+    previous: CurrentLoopEvidence,
+    failure_reason: u8,
+) -> CurrentLoopEvidence {
+    CurrentLoopEvidence::default_gains(failure_reason, false, previous.current_validation_axes)
+}
+
+#[cfg(test)]
+fn fallback_current_loop_evidence(
+    result: crate::autotune::ValidationResult,
+    attempt: u8,
+) -> CurrentLoopEvidence {
+    let retry_exhausted = attempt > 0 && result != crate::autotune::ValidationResult::Pass;
     let failure_reason = if retry_exhausted {
         crate::autotune::CURRENT_LOOP_FAILURE_RETRY_EXHAUSTED
     } else {
@@ -165,7 +393,7 @@ pub(crate) async fn step_current_tune<B: CommissioningBackend>(
             CurrentLoopEvidence::failed(crate::autotune::CURRENT_LOOP_FAILURE_GAIN_SYNTHESIS),
         ),
     };
-    current_loop_evidence.current_validation_axes = crate::autotune::CURRENT_VALIDATION_AXIS_TORQUE;
+    current_loop_evidence.current_validation_axes = 0;
 
     defmt::info!(
         "simc: R={} L={} tau_e={}us theta_e={}us lambda={}us → P={} I={} bw={}Hz",
@@ -195,10 +423,7 @@ pub(crate) async fn step_current_tune<B: CommissioningBackend>(
             gains,
             attempt: 0,
             step_amplitude,
-            forward_metrics: None,
-            reverse_metrics: None,
             final_status: CommissionStatus::Accepted,
-            saturation_count: 0,
             pidout_limit: {
                 // Read PIDOUT_UQ_UD_LIMITS for saturation detection.
                 backend
@@ -207,6 +432,14 @@ pub(crate) async fn step_current_tune<B: CommissioningBackend>(
                     .unwrap_or(0)
                     & 0xFFFF
             },
+            sample_encoder_start: 0,
+            pending_positive_sample: None,
+            current_flux_validation_count: 0,
+            current_flux_validation: [CurrentValidationAxisEvidence::EMPTY;
+                crate::autotune::CURRENT_VALIDATION_MAX_SAMPLES_PER_AXIS],
+            current_torque_validation_count: 0,
+            current_torque_validation: [CurrentValidationAxisEvidence::EMPTY;
+                crate::autotune::CURRENT_VALIDATION_MAX_SAMPLES_PER_AXIS],
             inner_warning_flags,
             tau_residual_permille,
             resistance_result,
@@ -224,12 +457,12 @@ pub(crate) async fn step_current_tune<B: CommissioningBackend>(
 
 /// Advance current-loop validation sub-state.
 ///
-/// Writes SIMC gains, runs bidirectional step-response captures,
-/// classifies the response, retries once if marginal, and falls
-/// back to conservative defaults on failure.
+/// Writes SIMC gains, runs bidirectional short samples for each current axis,
+/// classifies the per-delay evidence, and falls back to conservative defaults
+/// on validation failure.
 pub(crate) async fn step_current_validate<B: CommissioningBackend>(
     phase: &mut InnerPhase,
-    buf: &mut TransientBuffer,
+    _buf: &mut TransientBuffer,
     _profile: CommissionProfile,
     sequence: InnerSequence,
     backend: &mut B,
@@ -268,18 +501,28 @@ pub(crate) async fn step_current_validate<B: CommissioningBackend>(
             }
             data.pidout_limit = CURRENT_VALIDATE_PIDOUT_LIMIT;
 
-            // Clear any previous metrics for this attempt.
-            data.forward_metrics = None;
-            data.reverse_metrics = None;
-            data.saturation_count = 0;
+            // Clear any previous validation evidence for this attempt.
+            data.pending_positive_sample = None;
+            data.current_flux_validation_count = 0;
+            data.current_flux_validation = [CurrentValidationAxisEvidence::EMPTY;
+                crate::autotune::CURRENT_VALIDATION_MAX_SAMPLES_PER_AXIS];
+            data.current_torque_validation_count = 0;
+            data.current_torque_validation = [CurrentValidationAxisEvidence::EMPTY;
+                crate::autotune::CURRENT_VALIDATION_MAX_SAMPLES_PER_AXIS];
 
-            *validate_state = CurrentValidateState::StepSetup {
-                direction: CaptureDirection::Forward,
-            };
+            *validate_state = first_axis_step(CurrentValidationAxis::Flux);
             StepResult::Continue
         }
 
-        CurrentValidateState::StepSetup { direction } => {
+        CurrentValidateState::AxisStepSetup {
+            axis,
+            sample_index,
+            sample_delay_ms,
+            direction,
+        } => {
+            let axis = *axis;
+            let sample_index = *sample_index;
+            let sample_delay_ms = *sample_delay_ms;
             let dir = *direction;
             // Switch to torque mode using the same advanced PI
             // controller structure as the tuned current loop.
@@ -299,299 +542,262 @@ pub(crate) async fn step_current_validate<B: CommissioningBackend>(
                 return super::fail_inner(phase, CommissionError::Spi);
             }
 
-            // Apply current step via PID_TORQUE_FLUX_TARGET.
-            // Torque target in [31:16], flux target in [15:0].
-            let torque_val = match dir {
-                CaptureDirection::Forward => data.step_amplitude as u32,
-                CaptureDirection::Reverse => (-(data.step_amplitude as i16) as u16) as u32,
+            data.sample_encoder_start = match backend.try_read_encoder_count().await {
+                Ok(count) => count,
+                Err(_) => return super::fail_inner(phase, CommissionError::Spi),
             };
-            let target = torque_val << 16;
+
+            let target = match dir {
+                CaptureDirection::Forward => data.step_amplitude as i16,
+                CaptureDirection::Reverse => -(data.step_amplitude as i16),
+            };
             if backend
-                .write_register(PID_TORQUE_FLUX_TARGET, target)
+                .write_register(
+                    PID_TORQUE_FLUX_TARGET,
+                    validation_target_register(axis, target),
+                )
                 .await
                 .is_err()
             {
                 return super::fail_inner(phase, CommissionError::Spi);
             }
 
-            // Reset buffer for this capture.
-            buf.reset(super::electrical_identification::ELECTRICAL_SAMPLE_PERIOD_US as u16);
-
-            // The first sample is captured one period after the target write.
-            // `extract_step_metrics` reports durations, not absolute crossing
-            // timestamps, so this origin is intentionally not encoded in the
-            // transient buffer.
-            let next = backend
+            let deadline = backend
                 .elapsed_us()
-                .wrapping_add(super::electrical_identification::ELECTRICAL_SAMPLE_PERIOD_US);
-            *validate_state = CurrentValidateState::StepCapture {
+                .wrapping_add(u64::from(sample_delay_ms) * 1000);
+            *validate_state = CurrentValidateState::AxisSampleDelay {
+                axis,
+                sample_index,
+                sample_delay_ms,
                 direction: dir,
-                next_sample_us: next,
+                deadline_us: deadline,
             };
             StepResult::Continue
         }
 
-        CurrentValidateState::StepSettle {
+        CurrentValidateState::AxisSampleDelay {
+            axis,
+            sample_index,
+            sample_delay_ms,
             direction,
             deadline_us,
         } => {
-            if backend.elapsed_us().wrapping_sub(*deadline_us) >= 0x8000_0000 {
+            if backend.elapsed_us() < *deadline_us {
                 return StepResult::Continue;
             }
-            // Settling done. Continue based on direction.
+            *validate_state = CurrentValidateState::AxisSampleRead {
+                axis: *axis,
+                sample_index: *sample_index,
+                sample_delay_ms: *sample_delay_ms,
+                direction: *direction,
+            };
+            StepResult::Continue
+        }
+
+        CurrentValidateState::AxisSampleRead {
+            axis,
+            sample_index,
+            sample_delay_ms,
+            direction,
+        } => {
+            let axis = *axis;
+            let sample_index = *sample_index;
+            let sample_delay_ms = *sample_delay_ms;
             let dir = *direction;
+            let pid_actual = match backend.read_register(PID_TORQUE_FLUX_ACTUAL).await {
+                Ok(actual) => actual,
+                Err(_) => return super::fail_inner(phase, CommissionError::Spi),
+            };
+
+            let sub = foci_tmc4671::registers::INTERIM_FOC_UQ_UD_LIMITED;
+            if backend
+                .write_register(sub.addr, sub.sub_addr as u32)
+                .await
+                .is_err()
+            {
+                return super::fail_inner(phase, CommissionError::Spi);
+            }
+            let foc_limited = match backend.read_register(sub.data).await {
+                Ok(value) => value,
+                Err(_) => return super::fail_inner(phase, CommissionError::Spi),
+            };
+            let status_flags = match backend.read_register(STATUS_FLAGS).await {
+                Ok(flags) => flags,
+                Err(_) => return super::fail_inner(phase, CommissionError::Spi),
+            };
+            let encoder_end = match backend.try_read_encoder_count().await {
+                Ok(count) => count,
+                Err(_) => return super::fail_inner(phase, CommissionError::Spi),
+            };
+
+            let target = match dir {
+                CaptureDirection::Forward => data.step_amplitude as i16,
+                CaptureDirection::Reverse => -(data.step_amplitude as i16),
+            };
+            let sample = axis_sample_from_registers(
+                axis,
+                target,
+                AxisSampleRegisters {
+                    pid_torque_flux_actual: pid_actual,
+                    interim_foc_uq_ud_limited: foc_limited,
+                    output_limit: data.pidout_limit.min(u16::MAX as u32) as u16,
+                    encoder_start: data.sample_encoder_start,
+                    encoder_end,
+                    status_flags,
+                },
+            );
+            let gate =
+                classify_current_axis_sample(&sample, &validation_gate(axis, sample_delay_ms));
+            let directional = AxisDirectionalEvidence {
+                gate,
+                status_flags: sample.status_flags,
+            };
+
+            // Return to zero target and clear accumulated current error so
+            // the next short sample starts from a defined controller state.
+            if backend
+                .write_register(PID_TORQUE_FLUX_TARGET, 0)
+                .await
+                .is_err()
+                || crate::commissioning::helpers::clear_current_integrators(backend)
+                    .await
+                    .is_err()
+            {
+                return super::fail_inner(phase, CommissionError::Spi);
+            }
+
             match dir {
                 CaptureDirection::Forward => {
-                    // Move to reverse capture.
-                    *validate_state = CurrentValidateState::StepSetup {
+                    data.pending_positive_sample = Some(directional);
+                    *validate_state = CurrentValidateState::AxisStepSetup {
+                        axis,
+                        sample_index,
+                        sample_delay_ms,
                         direction: CaptureDirection::Reverse,
                     };
                 }
                 CaptureDirection::Reverse => {
-                    // Both captures done. Classify.
-                    *validate_state = CurrentValidateState::Classify;
-                }
-            }
-            StepResult::Continue
-        }
-
-        CurrentValidateState::StepCapture {
-            direction,
-            next_sample_us,
-        } => {
-            let dir = *direction;
-            // Capture samples at 160us intervals.
-            loop {
-                if buf.is_full()
-                    || buf.len() >= super::electrical_identification::DELAY_SAMPLE_COUNT
-                {
-                    // Capture complete. Extract metrics.
-                    // Saturation is counted from the PID output (voltage),
-                    // not from measured current, so disable the helper's
-                    // sample-level saturation check.
-                    let target = data.step_amplitude as u32;
-                    let metrics = crate::autotune::extract_step_metrics(buf, target, 0);
-
-                    match dir {
-                        CaptureDirection::Forward => {
-                            data.forward_metrics = Some(metrics);
+                    let positive = match data.pending_positive_sample.take() {
+                        Some(sample) => sample,
+                        None => {
+                            return super::fail_inner(
+                                phase,
+                                CommissionError::CurrentValidationFailed,
+                            );
                         }
-                        CaptureDirection::Reverse => {
-                            data.reverse_metrics = Some(metrics);
-                        }
-                    }
-
-                    // Return to zero target and clear accumulated current
-                    // error so the next capture starts from a defined
-                    // controller state.
-                    if backend
-                        .write_register(PID_TORQUE_FLUX_TARGET, 0)
-                        .await
-                        .is_err()
-                        || crate::commissioning::helpers::clear_current_integrators(backend)
-                            .await
-                            .is_err()
-                    {
-                        return super::fail_inner(phase, CommissionError::Spi);
-                    }
-                    let deadline = backend.elapsed_us().wrapping_add(VALIDATION_SETTLE_US);
-                    *validate_state = CurrentValidateState::StepSettle {
-                        direction: dir,
-                        deadline_us: deadline,
                     };
-                    return StepResult::Continue;
-                }
-                if backend.elapsed_us().wrapping_sub(*next_sample_us) >= 0x8000_0000 {
-                    break; // Not yet time, yield.
-                }
-                match backend.read_register(PID_TORQUE_FLUX_ACTUAL).await {
-                    Ok(actual) => {
-                        // PID_TORQUE_ACTUAL is in [31:16], PID_FLUX_ACTUAL in [15:0].
-                        // We stepped the torque axis, so read the upper half.
-                        // Normalize by direction so both captures produce
-                        // positive values when the motor responds correctly.
-                        // Wrong-sign current clamps to zero.
-                        let torque_actual = ((actual >> 16) & 0xFFFF) as i16;
-                        let sample = crate::autotune::normalize_capture_sample(torque_actual, dir);
-                        buf.push(sample);
-                    }
-                    Err(_) => {
-                        return super::fail_inner(phase, CommissionError::Spi);
-                    }
-                }
-                // Detect current-PID output saturation: read the limited
-                // FOC voltage output (FOC_UQ_UD_LIMITED) and count when
-                // it's near the PIDOUT_UQ_UD_LIMITS voltage ceiling.
-                if data.pidout_limit > 0 {
-                    let sub = foci_tmc4671::registers::INTERIM_FOC_UQ_UD_LIMITED;
-                    let _ = backend.write_register(sub.addr, sub.sub_addr as u32).await;
-                    if let Ok(foc_limited) = backend.read_register(sub.data).await {
-                        // FOC_UQ_UD_LIMITED packs UQ in [31:16], UD in [15:0].
-                        // Check the torque-axis voltage (UQ) since we stepped torque.
-                        let uq = ((foc_limited >> 16) & 0xFFFF) as i16;
-                        let abs_uq = uq.unsigned_abs() as u32;
-                        if abs_uq >= data.pidout_limit * 9 / 10 {
-                            data.saturation_count += 1;
-                        }
-                    }
-                }
-                *next_sample_us = next_sample_us
-                    .wrapping_add(super::electrical_identification::ELECTRICAL_SAMPLE_PERIOD_US);
-            }
-            StepResult::Continue
-        }
-
-        CurrentValidateState::Classify => {
-            let forward = match data.forward_metrics {
-                Some(m) => m,
-                None => {
-                    return super::fail_inner(phase, CommissionError::CurrentValidationFailed);
-                }
-            };
-            let reverse = match data.reverse_metrics {
-                Some(m) => m,
-                None => {
-                    return super::fail_inner(phase, CommissionError::CurrentValidationFailed);
-                }
-            };
-
-            // Compute symmetry from forward and reverse tail levels
-            // (steady-state current magnitude).
-            let symmetry =
-                crate::autotune::compute_tail_symmetry_pct(forward.tail_level, reverse.tail_level);
-
-            // Use worst-case tail_level (lower = further from target).
-            let worst_tail = forward.tail_level.min(reverse.tail_level);
-            let target = data.step_amplitude as u32;
-            let target_error = crate::autotune::compute_target_error_pct(worst_tail, target);
-
-            let combined = CurrentValidation {
-                symmetry_pct: symmetry,
-                // Use worst-case of forward and reverse for other metrics.
-                overshoot_pct: forward.overshoot_pct.max(reverse.overshoot_pct),
-                ringing_count: forward.ringing_count.max(reverse.ringing_count),
-                settling_time_us: forward.settling_time_us.max(reverse.settling_time_us),
-                // Use firmware-counted PID-output saturation, not the
-                // helper's current-level saturation.
-                saturation_samples: data.saturation_count,
-                rise_time_us: forward.rise_time_us,
-                tail_level: worst_tail,
-                target_error_pct: target_error,
-            };
-
-            let total_samples = crate::autotune::TRANSIENT_LEN as u16 * 2;
-            let settle_reference_us =
-                crate::autotune::current_settling_reference_us(&data.gains, backend.tmc_config());
-            let result = crate::autotune::classify_current_validation(
-                &combined,
-                settle_reference_us,
-                total_samples,
-            );
-
-            defmt::info!(
-                "current validate: overshoot={}‰ ringing={} settle={}us sym={}‰ target_err={}‰ sat={}/{} tau_e={}us settle_ref={}us → {:?} (attempt={})",
-                combined.overshoot_pct,
-                combined.ringing_count,
-                combined.settling_time_us,
-                combined.symmetry_pct,
-                combined.target_error_pct,
-                combined.saturation_samples,
-                total_samples,
-                data.model.tau_e_us,
-                settle_reference_us,
-                result,
-                data.attempt,
-            );
-
-            match result {
-                ValidationResult::Pass => {
-                    // Gains accepted.
-                    data.final_status = if data.attempt > 0 {
-                        // Bit 4: current-validation retry accepted.
-                        data.inner_warning_flags |= 1 << 4;
-                        CommissionStatus::AcceptedWithWarnings
-                    } else {
-                        CommissionStatus::Accepted
-                    };
-                }
-                retry_result
-                    if crate::autotune::should_retry_current_validation(
-                        retry_result,
+                    let evidence = combine_axis_pair_evidence(
                         data.attempt,
-                    ) =>
-                {
-                    // Retry: keep P damping and adjust I based on the
-                    // measured tail response.
-                    let target = data.step_amplitude as u32;
-                    let settle_band = (target * 5 / 100).max(1);
-                    let retry_gains = crate::autotune::current_validation_retry_gains(
-                        data.gains,
-                        target,
-                        settle_band,
-                        forward.tail_level,
-                        reverse.tail_level,
-                        combined.overshoot_pct,
+                        data.step_amplitude as i16,
+                        sample_delay_ms,
+                        positive,
+                        directional,
                     );
-                    if crate::autotune::should_accept_current_validation_without_retry(
-                        &combined,
-                        settle_reference_us,
-                        total_samples,
-                        data.gains,
-                        retry_gains,
-                    ) {
-                        defmt::info!(
-                            "current validate accept: marginal symmetry only, retry unchanged"
-                        );
-                        // This early-accept arm is only reached when
-                        // `should_retry_current_validation` accepted the
-                        // result *and* `data.attempt == 0` (the helper
-                        // requires the first attempt). Bit 4 is reserved
-                        // for retries that actually succeeded, so do not
-                        // set it here.
-                        debug_assert_eq!(data.attempt, 0);
-                        data.final_status = CommissionStatus::Accepted;
+                    match axis {
+                        CurrentValidationAxis::Flux => {
+                            if let Some(slot) =
+                                data.current_flux_validation.get_mut(sample_index as usize)
+                            {
+                                *slot = evidence;
+                            }
+                            data.current_flux_validation_count =
+                                data.current_flux_validation_count.max(sample_index + 1);
+                        }
+                        CurrentValidationAxis::Torque => {
+                            if let Some(slot) = data
+                                .current_torque_validation
+                                .get_mut(sample_index as usize)
+                            {
+                                *slot = evidence;
+                            }
+                            data.current_torque_validation_count =
+                                data.current_torque_validation_count.max(sample_index + 1);
+                        }
+                    }
+
+                    let next_index = sample_index + 1;
+                    let delays = axis_validation_delays(axis);
+                    if next_index as usize >= delays.len() {
+                        *validate_state = CurrentValidateState::AxisClassify { axis };
                     } else {
-                        data.attempt = 1;
-                        defmt::info!(
-                            "current validate retry: previous={:?} lambda={}us → P={} I={} tails={}/{}",
-                            retry_result,
-                            retry_gains.lambda_us,
-                            retry_gains.flux_p,
-                            retry_gains.flux_i,
-                            forward.tail_level,
-                            reverse.tail_level,
-                        );
-                        data.gains = retry_gains;
-                        *validate_state = CurrentValidateState::WriteGains;
+                        *validate_state = CurrentValidateState::AxisStepSetup {
+                            axis,
+                            sample_index: next_index,
+                            sample_delay_ms: delays[next_index as usize],
+                            direction: CaptureDirection::Forward,
+                        };
+                    }
+                }
+            }
+            StepResult::Continue
+        }
+
+        CurrentValidateState::AxisClassify { axis } => {
+            let axis = *axis;
+            let passed = match axis {
+                CurrentValidationAxis::Flux => evidence_axis_passed(
+                    &data.current_flux_validation,
+                    data.current_flux_validation_count,
+                ),
+                CurrentValidationAxis::Torque => evidence_axis_passed(
+                    &data.current_torque_validation,
+                    data.current_torque_validation_count,
+                ),
+            };
+
+            if passed {
+                match axis {
+                    CurrentValidationAxis::Flux => {
+                        data.current_loop_evidence.current_validation_axes |=
+                            crate::autotune::CURRENT_VALIDATION_AXIS_FLUX;
+                        *validate_state = first_axis_step(CurrentValidationAxis::Torque);
                         return StepResult::Continue;
                     }
+                    CurrentValidationAxis::Torque => {
+                        data.current_loop_evidence.current_validation_axes |=
+                            crate::autotune::CURRENT_VALIDATION_AXIS_TORQUE;
+                        data.current_loop_evidence.failure_reason =
+                            crate::autotune::CURRENT_LOOP_FAILURE_NONE;
+                        data.final_status = if data.attempt > 0 {
+                            data.inner_warning_flags |= 1 << 4;
+                            CommissionStatus::AcceptedWithWarnings
+                        } else {
+                            CommissionStatus::Accepted
+                        };
+                    }
                 }
-                ValidationResult::Marginal | ValidationResult::Fail => {
-                    // Fall back to conservative defaults.
-                    data.current_loop_evidence =
-                        fallback_current_loop_evidence(result, data.attempt);
-                    data.gains = CurrentGains {
-                        flux_p: crate::pid::DEFAULT_INNER_GAINS.flux_p,
-                        flux_i: crate::pid::DEFAULT_INNER_GAINS.flux_i,
-                        torque_p: crate::pid::DEFAULT_INNER_GAINS.torque_p,
-                        torque_i: crate::pid::DEFAULT_INNER_GAINS.torque_i,
-                        effective_bandwidth_hz: 0,
-                        lambda_us: 0,
-                    };
-                    data.final_status = CommissionStatus::AcceptedWithWarnings;
-                    // Bit 5: current gains fell back to defaults.
-                    data.inner_warning_flags |= 1 << 5;
+            } else {
+                let failure_reason = match axis {
+                    CurrentValidationAxis::Flux => axis_failure_reason_for_samples(
+                        axis,
+                        &data.current_flux_validation,
+                        data.current_flux_validation_count,
+                    ),
+                    CurrentValidationAxis::Torque => axis_failure_reason_for_samples(
+                        axis,
+                        &data.current_torque_validation,
+                        data.current_torque_validation_count,
+                    ),
+                };
+                data.current_loop_evidence =
+                    fallback_axis_failure_evidence(data.current_loop_evidence, failure_reason);
+                data.gains = CurrentGains {
+                    flux_p: crate::pid::DEFAULT_INNER_GAINS.flux_p,
+                    flux_i: crate::pid::DEFAULT_INNER_GAINS.flux_i,
+                    torque_p: crate::pid::DEFAULT_INNER_GAINS.torque_p,
+                    torque_i: crate::pid::DEFAULT_INNER_GAINS.torque_i,
+                    effective_bandwidth_hz: 0,
+                    lambda_us: 0,
+                };
+                data.final_status = CommissionStatus::AcceptedWithWarnings;
+                data.inner_warning_flags |= 1 << 5;
 
-                    // Write the default gains to TMC4671 so outer
-                    // commissioning uses the reported conservative gains.
-                    let flux_reg = ((data.gains.flux_p as u32) << 16) | data.gains.flux_i as u32;
-                    let torque_reg =
-                        ((data.gains.torque_p as u32) << 16) | data.gains.torque_i as u32;
-                    let _ = backend.write_register(PID_FLUX_P_FLUX_I, flux_reg).await;
-                    let _ = backend
-                        .write_register(PID_TORQUE_P_TORQUE_I, torque_reg)
-                        .await;
-                }
+                let flux_reg = ((data.gains.flux_p as u32) << 16) | data.gains.flux_i as u32;
+                let torque_reg = ((data.gains.torque_p as u32) << 16) | data.gains.torque_i as u32;
+                let _ = backend.write_register(PID_FLUX_P_FLUX_I, flux_reg).await;
+                let _ = backend
+                    .write_register(PID_TORQUE_P_TORQUE_I, torque_reg)
+                    .await;
             }
 
             // Restore safe state.
@@ -615,14 +821,6 @@ pub(crate) async fn step_current_validate<B: CommissioningBackend>(
         }
 
         CurrentValidateState::Finalize => {
-            // Compute max ringing count from forward/reverse metrics.
-            let ringing_count = match (data.forward_metrics, data.reverse_metrics) {
-                (Some(fwd), Some(rev)) => fwd.ringing_count.max(rev.ringing_count),
-                (Some(fwd), None) => fwd.ringing_count,
-                (None, Some(rev)) => rev.ringing_count,
-                (None, None) => 0,
-            };
-
             let resistance = data.resistance_result;
             let axis0 = resistance.axis0;
             let axis1 = resistance.axis1;
@@ -639,7 +837,7 @@ pub(crate) async fn step_current_validate<B: CommissioningBackend>(
                 torque_i: data.gains.torque_i,
                 lambda_us: data.gains.lambda_us,
                 theta_e_us: data.model.theta_e_us,
-                ringing_count,
+                ringing_count: 0,
                 bandwidth_hz: data.gains.effective_bandwidth_hz,
                 tau_e_us: data.model.tau_e_us,
                 tau_e_crosscheck_us: data.model.tau_e_crosscheck_us,
@@ -702,6 +900,10 @@ pub(crate) async fn step_current_validate<B: CommissioningBackend>(
                 impedance_residual_permille: impedance
                     .map_or(0, |evidence| evidence.residual_permille),
                 impedance_warning_flags: impedance.map_or(0, |evidence| evidence.warning_flags),
+                current_flux_validation_count: data.current_flux_validation_count,
+                current_flux_validation: data.current_flux_validation,
+                current_torque_validation_count: data.current_torque_validation_count,
+                current_torque_validation: data.current_torque_validation,
             };
 
             match sequence {
@@ -741,8 +943,8 @@ pub(crate) async fn step_current_validate<B: CommissioningBackend>(
 mod tests {
     use crate::autotune::{
         AXIS_SPLIT_SOURCE_NONE, CURRENT_GAINS_SOURCE_DEFAULT, CURRENT_GAINS_TIER_DEFAULT,
-        CURRENT_LOOP_FAILURE_RETRY_EXHAUSTED, CURRENT_LOOP_FAILURE_TORQUE_VALIDATION,
-        ValidationResult,
+        CURRENT_LOOP_FAILURE_RETRY_EXHAUSTED, CURRENT_LOOP_FAILURE_STATUS_FLAGS,
+        CURRENT_LOOP_FAILURE_TORQUE_VALIDATION, CURRENT_VALIDATION_AXIS_FLUX, ValidationResult,
     };
 
     use super::*;
@@ -776,5 +978,142 @@ mod tests {
             evidence.failure_reason,
             CURRENT_LOOP_FAILURE_RETRY_EXHAUSTED
         );
+    }
+
+    #[test]
+    fn validation_failure_fallback_preserves_prior_axis_coverage() {
+        let mut previous = CurrentLoopEvidence::measured_symmetric();
+        previous.current_validation_axes = CURRENT_VALIDATION_AXIS_FLUX;
+
+        let evidence =
+            fallback_axis_failure_evidence(previous, CURRENT_LOOP_FAILURE_TORQUE_VALIDATION);
+
+        assert_eq!(evidence.gains_source, CURRENT_GAINS_SOURCE_DEFAULT);
+        assert_eq!(
+            evidence.current_validation_axes,
+            CURRENT_VALIDATION_AXIS_FLUX
+        );
+        assert_eq!(
+            evidence.failure_reason,
+            CURRENT_LOOP_FAILURE_TORQUE_VALIDATION
+        );
+    }
+
+    #[test]
+    fn axis_failure_reason_preserves_later_actionable_failure() {
+        let mut samples = [CurrentValidationAxisEvidence::EMPTY;
+            crate::autotune::CURRENT_VALIDATION_MAX_SAMPLES_PER_AXIS];
+        samples[0] =
+            axis_validation_evidence(crate::autotune::CURRENT_AXIS_VALIDATION_LOW_RESPONSE);
+        samples[1] =
+            axis_validation_evidence(crate::autotune::CURRENT_AXIS_VALIDATION_STATUS_FLAGS);
+
+        let reason = axis_failure_reason_for_samples(CurrentValidationAxis::Torque, &samples, 2);
+
+        assert_eq!(reason, CURRENT_LOOP_FAILURE_STATUS_FLAGS);
+    }
+
+    #[test]
+    fn validation_target_register_packs_flux_and_clears_torque() {
+        assert_eq!(
+            validation_target_register(CurrentValidationAxis::Flux, -250),
+            0x0000_ff06
+        );
+    }
+
+    #[test]
+    fn validation_target_register_packs_torque_and_clears_flux() {
+        assert_eq!(
+            validation_target_register(CurrentValidationAxis::Torque, 250),
+            0x00fa_0000
+        );
+    }
+
+    #[test]
+    fn axis_sample_from_registers_reads_flux_halves() {
+        let sample = axis_sample_from_registers(
+            CurrentValidationAxis::Flux,
+            250,
+            AxisSampleRegisters {
+                pid_torque_flux_actual: pack_halves(25, 240),
+                interim_foc_uq_ud_limited: pack_halves(500, 300),
+                output_limit: 2000,
+                encoder_start: 1000,
+                encoder_end: 1002,
+                status_flags: 0x10,
+            },
+        );
+
+        assert_eq!(sample.same_axis_actual, 240);
+        assert_eq!(sample.cross_axis_actual, 25);
+        assert_eq!(sample.output_limited, 300);
+        assert_eq!(sample.encoder_delta_counts, 2);
+        assert_eq!(sample.status_flags, 0x10);
+    }
+
+    #[test]
+    fn axis_sample_from_registers_reads_torque_halves() {
+        let sample = axis_sample_from_registers(
+            CurrentValidationAxis::Torque,
+            -250,
+            AxisSampleRegisters {
+                pid_torque_flux_actual: pack_halves(-240, 25),
+                interim_foc_uq_ud_limited: pack_halves(-300, 500),
+                output_limit: 2000,
+                encoder_start: 1002,
+                encoder_end: 1000,
+                status_flags: 0,
+            },
+        );
+
+        assert_eq!(sample.same_axis_actual, -240);
+        assert_eq!(sample.cross_axis_actual, 25);
+        assert_eq!(sample.output_limited, -300);
+        assert_eq!(sample.encoder_delta_counts, -2);
+    }
+
+    #[test]
+    fn combine_axis_pair_evidence_preserves_actionable_negative_failure() {
+        let evidence = combine_axis_pair_evidence(
+            0,
+            250,
+            2,
+            axis_directional_evidence(crate::autotune::CURRENT_AXIS_VALIDATION_LOW_RESPONSE),
+            axis_directional_evidence(crate::autotune::CURRENT_AXIS_VALIDATION_STATUS_FLAGS),
+        );
+
+        assert_eq!(
+            evidence.status,
+            crate::autotune::CURRENT_AXIS_VALIDATION_STATUS_FLAGS
+        );
+    }
+
+    fn axis_directional_evidence(status: u8) -> AxisDirectionalEvidence {
+        AxisDirectionalEvidence {
+            gate: CurrentAxisGateResult {
+                status,
+                response_permille: 0,
+                cross_axis_permille: 0,
+                voltage_output_permille: 0,
+                encoder_delta_counts: 0,
+                max_cross_axis_permille: 150,
+            },
+            status_flags: if status == crate::autotune::CURRENT_AXIS_VALIDATION_STATUS_FLAGS {
+                1
+            } else {
+                0
+            },
+        }
+    }
+
+    fn axis_validation_evidence(status: u8) -> CurrentValidationAxisEvidence {
+        CurrentValidationAxisEvidence {
+            status,
+            ..CurrentValidationAxisEvidence::EMPTY
+        }
+    }
+
+    fn pack_halves(upper: i16, lower: i16) -> u32 {
+        ((upper as u16 as u32) << 16) | lower as u16 as u32
     }
 }

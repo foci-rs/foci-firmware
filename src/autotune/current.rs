@@ -64,6 +64,176 @@ pub struct CurrentValidation {
     pub target_error_pct: u16,
 }
 
+/// Axis sample passed validation.
+pub const CURRENT_AXIS_VALIDATION_PASS: u8 = 0;
+/// Same-axis current response had the opposite sign from the target.
+pub const CURRENT_AXIS_VALIDATION_WRONG_SIGN: u8 = 1;
+/// Same-axis current response was below the minimum expected response.
+pub const CURRENT_AXIS_VALIDATION_LOW_RESPONSE: u8 = 2;
+/// Same-axis current response exceeded the maximum expected response.
+pub const CURRENT_AXIS_VALIDATION_HIGH_RESPONSE: u8 = 3;
+/// Opposite-axis current response exceeded the allowed coupling limit.
+pub const CURRENT_AXIS_VALIDATION_CROSS_AXIS: u8 = 4;
+/// Voltage output exceeded the configured output limit.
+pub const CURRENT_AXIS_VALIDATION_SATURATION: u8 = 5;
+/// Encoder motion exceeded the allowed current-validation movement.
+pub const CURRENT_AXIS_VALIDATION_MOTION: u8 = 6;
+/// TMC4671 status flags contained an actionable fault bit.
+pub const CURRENT_AXIS_VALIDATION_STATUS_FLAGS: u8 = 7;
+/// Current target was zero, so response ratios cannot be classified.
+pub const CURRENT_AXIS_VALIDATION_ZERO_TARGET: u8 = 8;
+
+/// Raw current-loop sample for one current axis at one delay.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+pub struct CurrentAxisSample {
+    /// Signed current target for the sampled axis.
+    pub target: i16,
+    /// Signed measured current on the commanded axis.
+    pub same_axis_actual: i16,
+    /// Signed measured current on the opposite current axis.
+    pub cross_axis_actual: i16,
+    /// Signed limited voltage output for the commanded axis.
+    pub output_limited: i16,
+    /// Configured voltage output limit used for normalization.
+    pub output_limit: u16,
+    /// Encoder movement observed during the sample window.
+    pub encoder_delta_counts: i32,
+    /// TMC4671 status flags captured at the sample.
+    pub status_flags: u32,
+}
+
+/// Current-loop short-sample validation gate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+pub struct CurrentAxisGate {
+    /// Minimum allowed same-axis response, in permille of target.
+    pub min_response_permille: u16,
+    /// Maximum allowed same-axis response, in permille of target.
+    pub max_response_permille: u16,
+    /// Maximum allowed opposite-axis response, in permille of target.
+    pub max_cross_axis_permille: u16,
+    /// Maximum allowed voltage output, in permille of output limit.
+    pub max_voltage_output_permille: u16,
+    /// Maximum allowed encoder movement during the sample.
+    pub max_encoder_delta_counts: u16,
+    /// Status flags that should fail validation when present.
+    pub actionable_status_mask: u32,
+}
+
+impl CurrentAxisGate {
+    /// OpenFFBoard v1 flux-axis 1 ms sample gate.
+    pub const fn openffboard_flux_1ms() -> Self {
+        Self::openffboard(250, 1250)
+    }
+
+    /// OpenFFBoard v1 flux-axis 2 ms sample gate.
+    pub const fn openffboard_flux_2ms() -> Self {
+        Self::openffboard(700, 1250)
+    }
+
+    /// OpenFFBoard v1 flux-axis 5 ms sample gate.
+    pub const fn openffboard_flux_5ms() -> Self {
+        Self::openffboard(850, 1150)
+    }
+
+    /// OpenFFBoard v1 torque-axis 1 ms sample gate.
+    pub const fn openffboard_torque_1ms() -> Self {
+        Self::openffboard(250, 1250)
+    }
+
+    /// OpenFFBoard v1 torque-axis 2 ms sample gate.
+    pub const fn openffboard_torque_2ms() -> Self {
+        Self::openffboard(700, 1250)
+    }
+
+    const fn openffboard(min_response_permille: u16, max_response_permille: u16) -> Self {
+        Self {
+            min_response_permille,
+            max_response_permille,
+            max_cross_axis_permille: 150,
+            max_voltage_output_permille: 900,
+            max_encoder_delta_counts: 4,
+            actionable_status_mask: u32::MAX,
+        }
+    }
+}
+
+/// Classified current-loop short-sample result.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+pub struct CurrentAxisGateResult {
+    /// `CURRENT_AXIS_VALIDATION_*` status code.
+    pub status: u8,
+    /// Same-axis current response normalized to target, in permille.
+    pub response_permille: u16,
+    /// Opposite-axis current response normalized to target, in permille.
+    pub cross_axis_permille: u16,
+    /// Voltage output normalized to output limit, in permille.
+    pub voltage_output_permille: u16,
+    /// Absolute encoder movement observed during the sample.
+    pub encoder_delta_counts: u16,
+    /// Gate limit copied into evidence for host-side audit.
+    pub max_cross_axis_permille: u16,
+}
+
+/// Classify one current-axis short sample against a fixed gate.
+pub fn classify_current_axis_sample(
+    sample: &CurrentAxisSample,
+    gate: &CurrentAxisGate,
+) -> CurrentAxisGateResult {
+    if sample.target == 0 {
+        return CurrentAxisGateResult {
+            status: CURRENT_AXIS_VALIDATION_ZERO_TARGET,
+            response_permille: 0,
+            cross_axis_permille: 0,
+            voltage_output_permille: 0,
+            encoder_delta_counts: 0,
+            max_cross_axis_permille: gate.max_cross_axis_permille,
+        };
+    }
+
+    let target_abs = sample.target.unsigned_abs().max(1) as u32;
+    let response_permille = ((sample.same_axis_actual.unsigned_abs() as u32 * 1000) / target_abs)
+        .min(u16::MAX as u32) as u16;
+    let cross_axis_permille = ((sample.cross_axis_actual.unsigned_abs() as u32 * 1000) / target_abs)
+        .min(u16::MAX as u32) as u16;
+    let output_limit = sample.output_limit.max(1) as u32;
+    let voltage_output_permille = ((sample.output_limited.unsigned_abs() as u32 * 1000)
+        / output_limit)
+        .min(u16::MAX as u32) as u16;
+    let encoder_delta_counts = sample
+        .encoder_delta_counts
+        .unsigned_abs()
+        .min(u16::MAX as u32) as u16;
+
+    let status = if (sample.target > 0 && sample.same_axis_actual < 0)
+        || (sample.target < 0 && sample.same_axis_actual > 0)
+    {
+        CURRENT_AXIS_VALIDATION_WRONG_SIGN
+    } else if sample.status_flags & gate.actionable_status_mask != 0 {
+        CURRENT_AXIS_VALIDATION_STATUS_FLAGS
+    } else if voltage_output_permille > gate.max_voltage_output_permille {
+        CURRENT_AXIS_VALIDATION_SATURATION
+    } else if encoder_delta_counts > gate.max_encoder_delta_counts {
+        CURRENT_AXIS_VALIDATION_MOTION
+    } else if cross_axis_permille > gate.max_cross_axis_permille {
+        CURRENT_AXIS_VALIDATION_CROSS_AXIS
+    } else if response_permille < gate.min_response_permille {
+        CURRENT_AXIS_VALIDATION_LOW_RESPONSE
+    } else if response_permille > gate.max_response_permille {
+        CURRENT_AXIS_VALIDATION_HIGH_RESPONSE
+    } else {
+        CURRENT_AXIS_VALIDATION_PASS
+    };
+
+    CurrentAxisGateResult {
+        status,
+        response_permille,
+        cross_axis_permille,
+        voltage_output_permille,
+        encoder_delta_counts,
+        max_cross_axis_permille: gate.max_cross_axis_permille,
+    }
+}
+
 impl CurrentGainSynthesisInput {
     /// Build symmetric current-loop synthesis input from a measured electrical model.
     pub const fn symmetric(model: ElectricalModel, profile: CommissionProfile) -> Self {
@@ -1439,6 +1609,108 @@ mod tests {
     }
 
     // --- Validation classification ---
+
+    #[test]
+    fn current_sample_gate_accepts_good_flux_sample() {
+        let sample = CurrentAxisSample {
+            target: 250,
+            same_axis_actual: 240,
+            cross_axis_actual: 8,
+            output_limited: 500,
+            output_limit: 2000,
+            encoder_delta_counts: 0,
+            status_flags: 0,
+        };
+        let gate = classify_current_axis_sample(&sample, &CurrentAxisGate::openffboard_flux_2ms());
+
+        assert_eq!(gate.status, CURRENT_AXIS_VALIDATION_PASS);
+        assert_eq!(gate.response_permille, 960);
+        assert!(gate.cross_axis_permille <= gate.max_cross_axis_permille);
+    }
+
+    #[test]
+    fn current_sample_gate_rejects_zero_target() {
+        let sample = CurrentAxisSample {
+            target: 0,
+            same_axis_actual: 0,
+            cross_axis_actual: 0,
+            output_limited: 0,
+            output_limit: 2000,
+            encoder_delta_counts: 0,
+            status_flags: 0,
+        };
+        let gate = classify_current_axis_sample(&sample, &CurrentAxisGate::openffboard_flux_2ms());
+
+        assert_eq!(gate.status, CURRENT_AXIS_VALIDATION_ZERO_TARGET);
+    }
+
+    #[test]
+    fn current_sample_gate_rejects_wrong_sign() {
+        let sample = CurrentAxisSample {
+            target: 250,
+            same_axis_actual: -20,
+            cross_axis_actual: 0,
+            output_limited: 0,
+            output_limit: 2000,
+            encoder_delta_counts: 0,
+            status_flags: 0,
+        };
+        let gate = classify_current_axis_sample(&sample, &CurrentAxisGate::openffboard_flux_2ms());
+
+        assert_eq!(gate.status, CURRENT_AXIS_VALIDATION_WRONG_SIGN);
+    }
+
+    #[test]
+    fn current_sample_gate_saturates_response_permille_before_classifying() {
+        let sample = CurrentAxisSample {
+            target: 1,
+            same_axis_actual: 132,
+            cross_axis_actual: 0,
+            output_limited: 0,
+            output_limit: 2000,
+            encoder_delta_counts: 0,
+            status_flags: 0,
+        };
+        let gate = classify_current_axis_sample(&sample, &CurrentAxisGate::openffboard_flux_2ms());
+
+        assert_eq!(gate.response_permille, u16::MAX);
+        assert_eq!(gate.status, CURRENT_AXIS_VALIDATION_HIGH_RESPONSE);
+    }
+
+    #[test]
+    fn current_sample_gate_saturates_cross_axis_and_voltage_permille() {
+        let sample = CurrentAxisSample {
+            target: 1,
+            same_axis_actual: 1,
+            cross_axis_actual: 132,
+            output_limited: 132,
+            output_limit: 1,
+            encoder_delta_counts: 0,
+            status_flags: 0,
+        };
+        let gate = classify_current_axis_sample(&sample, &CurrentAxisGate::openffboard_flux_2ms());
+
+        assert_eq!(gate.cross_axis_permille, u16::MAX);
+        assert_eq!(gate.voltage_output_permille, u16::MAX);
+        assert_eq!(gate.status, CURRENT_AXIS_VALIDATION_SATURATION);
+    }
+
+    #[test]
+    fn current_sample_gate_rejects_zero_actual_as_low_response() {
+        let sample = CurrentAxisSample {
+            target: 250,
+            same_axis_actual: 0,
+            cross_axis_actual: 0,
+            output_limited: 0,
+            output_limit: 2000,
+            encoder_delta_counts: 0,
+            status_flags: 0,
+        };
+        let gate = classify_current_axis_sample(&sample, &CurrentAxisGate::openffboard_flux_2ms());
+
+        assert_eq!(gate.response_permille, 0);
+        assert_eq!(gate.status, CURRENT_AXIS_VALIDATION_LOW_RESPONSE);
+    }
 
     #[test]
     fn classify_pass() {

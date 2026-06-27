@@ -9,6 +9,47 @@ use crate::autotune::{CommissionError, CommissionStatus, PhaseId};
 /// Compatibility re-export for existing `commissioning::types` backend users.
 pub use crate::commissioning::backend::CommissioningBackend;
 
+/// One current-axis validation evidence item for a single sample delay.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+pub struct CurrentValidationAxisEvidence {
+    /// `CURRENT_AXIS_VALIDATION_*` status code for this delay.
+    pub status: u8,
+    /// Validation attempt index that produced this evidence.
+    pub attempt: u8,
+    /// Signed current target used for each pulse.
+    pub target: i16,
+    /// Delay between target write and sample, in milliseconds.
+    pub sample_delay_ms: u16,
+    /// Positive-pulse response normalized to target, in permille.
+    pub positive_response_permille: u16,
+    /// Negative-pulse response normalized to target, in permille.
+    pub negative_response_permille: u16,
+    /// Maximum opposite-axis response for the positive/negative pair, in permille.
+    pub cross_axis_permille: u16,
+    /// Maximum voltage output for the positive/negative pair, in permille.
+    pub voltage_output_permille: u16,
+    /// Maximum encoder movement for the positive/negative pair.
+    pub encoder_delta_counts: u16,
+    /// OR of TMC4671 `STATUS_FLAGS` captured for the positive/negative pair.
+    pub status_flags_or: u32,
+}
+
+impl CurrentValidationAxisEvidence {
+    /// Empty evidence slot used for fixed-capacity arrays.
+    pub const EMPTY: Self = Self {
+        status: crate::autotune::CURRENT_AXIS_VALIDATION_ZERO_TARGET,
+        attempt: 0,
+        target: 0,
+        sample_delay_ms: 0,
+        positive_response_permille: 0,
+        negative_response_permille: 0,
+        cross_axis_permille: 0,
+        voltage_output_permille: 0,
+        encoder_delta_counts: 0,
+        status_flags_or: 0,
+    };
+}
+
 /// Discriminant for the four ways a `CommissioningEngine` can be constructed.
 /// Used by the dispatch to choose the right reply payload at terminal arms.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
@@ -25,6 +66,7 @@ pub enum EngineKind {
 
 /// Result of a `step()` call.
 #[derive(Debug, defmt::Format)]
+#[allow(clippy::large_enum_variant)]
 pub enum StepResult {
     /// Engine is still working. Call `step()` again next tick.
     Continue,
@@ -165,6 +207,16 @@ pub struct InnerResult {
     pub impedance_residual_permille: u16,
     /// Impedance warning bitfield (`ImpedanceWarningFlags`).
     pub impedance_warning_flags: u32,
+    /// Number of populated flux-axis validation evidence items.
+    pub current_flux_validation_count: u8,
+    /// Flux-axis validation evidence by sample delay.
+    pub current_flux_validation:
+        [CurrentValidationAxisEvidence; crate::autotune::CURRENT_VALIDATION_MAX_SAMPLES_PER_AXIS],
+    /// Number of populated torque-axis validation evidence items.
+    pub current_torque_validation_count: u8,
+    /// Torque-axis validation evidence by sample delay.
+    pub current_torque_validation:
+        [CurrentValidationAxisEvidence; crate::autotune::CURRENT_VALIDATION_MAX_SAMPLES_PER_AXIS],
 }
 
 /// Result of outer (mechanical) commissioning.

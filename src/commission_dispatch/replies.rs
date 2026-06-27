@@ -7,7 +7,9 @@
 
 use crate::autotune::{CURRENT_AXIS_FLUX, CURRENT_AXIS_TORQUE, PhaseId};
 use crate::commission_dispatch::ReplyPayload;
-use crate::commissioning::types::{AdcCalResult, CommissionResult, InnerResult, OuterResult};
+use crate::commissioning::types::{
+    AdcCalResult, CommissionResult, CurrentValidationAxisEvidence, InnerResult, OuterResult,
+};
 use crate::selftest::{CommissionDiagnostic, CommissionDiagnostics, SelftestStageValue};
 use crate::tmc_diagnostics::{
     CurrentLoopRunReport, CurrentValidationAxisReport, ResistanceAxisReport, ResistanceRunReport,
@@ -18,12 +20,6 @@ const RESISTANCE_AXIS0_PHI_E_EXT: u16 = 0;
 
 /// TMC4671 external electrical angle for electrical axis 1 (PHASE90).
 const RESISTANCE_AXIS1_PHI_E_EXT: u16 = 16_384;
-
-/// Temporary OpenFFBoard v1 flux-axis validation delays emitted by Task 2.
-const CURRENT_LOOP_COMPAT_FLUX_DELAYS_MS: [u16; 3] = [1, 2, 5];
-
-/// Temporary OpenFFBoard v1 torque-axis validation delays emitted by Task 2.
-const CURRENT_LOOP_COMPAT_TORQUE_DELAYS_MS: [u16; 2] = [1, 2];
 
 /// Board-local sink for commissioning-family Klipper replies.
 ///
@@ -117,7 +113,7 @@ pub fn emit_terminal_reply<S: CommissionReplySink>(sink: &mut S, payload: ReplyP
                 inner,
             ));
             sink.foci_resistance_run(commission_resistance_run_report(oid, inner));
-            emit_current_loop_compatibility_evidence(sink, oid, status, inner);
+            emit_current_loop_evidence(sink, oid, status, inner);
             sink.foci_commission_result(oid, status, &result);
         }
         ReplyPayload::TuneResult {
@@ -239,55 +235,61 @@ fn commission_resistance_axis_report(
     }
 }
 
-fn emit_current_loop_compatibility_evidence<S: CommissionReplySink>(
+fn emit_current_loop_evidence<S: CommissionReplySink>(
     sink: &mut S,
     oid: u8,
     status: u8,
     inner: &InnerResult,
 ) {
-    for (sample_index, sample_delay_ms) in
-        CURRENT_LOOP_COMPAT_FLUX_DELAYS_MS.into_iter().enumerate()
+    for (sample_index, evidence) in inner
+        .current_flux_validation
+        .iter()
+        .take(inner.current_flux_validation_count as usize)
+        .enumerate()
     {
-        sink.foci_current_validation_axis(compat_current_validation_axis_report(
+        sink.foci_current_validation_axis(current_validation_axis_report(
             oid,
             CURRENT_AXIS_FLUX,
             sample_index as u8,
-            sample_delay_ms,
+            evidence,
         ));
     }
-    for (sample_index, sample_delay_ms) in
-        CURRENT_LOOP_COMPAT_TORQUE_DELAYS_MS.into_iter().enumerate()
+    for (sample_index, evidence) in inner
+        .current_torque_validation
+        .iter()
+        .take(inner.current_torque_validation_count as usize)
+        .enumerate()
     {
-        sink.foci_current_validation_axis(compat_current_validation_axis_report(
+        sink.foci_current_validation_axis(current_validation_axis_report(
             oid,
             CURRENT_AXIS_TORQUE,
             sample_index as u8,
-            sample_delay_ms,
+            evidence,
         ));
     }
     sink.foci_current_loop_run(commission_current_loop_run_report(oid, status, inner));
 }
 
-fn compat_current_validation_axis_report(
+fn current_validation_axis_report(
     oid: u8,
     axis: u8,
     sample_index: u8,
-    sample_delay_ms: u16,
+    evidence: &CurrentValidationAxisEvidence,
 ) -> CurrentValidationAxisReport {
     CurrentValidationAxisReport {
         oid,
         axis,
         sample_index,
-        status: 0,
-        attempt: 0,
-        target: 0,
-        sample_delay_ms,
-        positive_response_permille: 0,
-        negative_response_permille: 0,
-        cross_axis_permille: 0,
-        voltage_output_permille: 0,
-        encoder_delta_counts: 0,
-        status_flags_or: 0,
+        status: evidence.status,
+        attempt: evidence.attempt,
+        target: evidence.target,
+        sample_delay_ms: evidence.sample_delay_ms,
+        positive_response_permille: evidence.positive_response_permille,
+        negative_response_permille: evidence.negative_response_permille,
+        cross_axis_permille: evidence.cross_axis_permille,
+        voltage_output_permille: evidence.voltage_output_permille,
+        encoder_delta_counts: evidence.encoder_delta_counts,
+        status_flags_or: evidence.status_flags_or,
     }
 }
 
@@ -306,8 +308,8 @@ fn commission_current_loop_run_report(
         applied_axis_split_permille: inner.applied_axis_split_permille,
         axis_split_clamped: inner.axis_split_clamped,
         current_validation_axes: inner.current_validation_axes,
-        flux_validation_sample_count: CURRENT_LOOP_COMPAT_FLUX_DELAYS_MS.len() as u8,
-        torque_validation_sample_count: CURRENT_LOOP_COMPAT_TORQUE_DELAYS_MS.len() as u8,
+        flux_validation_sample_count: inner.current_flux_validation_count,
+        torque_validation_sample_count: inner.current_torque_validation_count,
         retry_budget_exhausted: inner.retry_budget_exhausted,
         failure_reason: inner.current_loop_failure_reason,
     }
@@ -321,10 +323,13 @@ mod tests {
     use crate::autotune::{
         AXIS_SPLIT_SOURCE_NONE, CURRENT_AXIS_FLUX, CURRENT_AXIS_TORQUE,
         CURRENT_GAINS_SOURCE_MEASURED, CURRENT_GAINS_TIER_MEASURED_SYMMETRIC,
-        CURRENT_LOOP_FAILURE_NONE, CURRENT_VALIDATION_AXIS_TORQUE, CommissionStatus, PhaseId,
+        CURRENT_LOOP_FAILURE_NONE, CURRENT_VALIDATION_AXIS_FLUX, CURRENT_VALIDATION_AXIS_TORQUE,
+        CommissionStatus, PhaseId,
     };
     use crate::commission_dispatch::ReplyPayload;
-    use crate::commissioning::types::{AdcCalResult, CommissionResult, InnerResult, OuterResult};
+    use crate::commissioning::types::{
+        AdcCalResult, CommissionResult, CurrentValidationAxisEvidence, InnerResult, OuterResult,
+    };
     use crate::selftest::{
         COMMISSION_DIAGNOSTIC_CAPACITY, CommissionDiagnostic, CommissionDiagnostics,
         SelftestResults, SelftestStageValue,
@@ -578,6 +583,35 @@ mod tests {
     }
 
     fn commission_result() -> CommissionResult {
+        let mut flux_validation = [CurrentValidationAxisEvidence::EMPTY;
+            crate::autotune::CURRENT_VALIDATION_MAX_SAMPLES_PER_AXIS];
+        flux_validation[0] = CurrentValidationAxisEvidence {
+            status: 0,
+            attempt: 0,
+            target: 250,
+            sample_delay_ms: 2,
+            positive_response_permille: 960,
+            negative_response_permille: 940,
+            cross_axis_permille: 32,
+            voltage_output_permille: 250,
+            encoder_delta_counts: 1,
+            status_flags_or: 0,
+        };
+        let mut torque_validation = [CurrentValidationAxisEvidence::EMPTY;
+            crate::autotune::CURRENT_VALIDATION_MAX_SAMPLES_PER_AXIS];
+        torque_validation[0] = CurrentValidationAxisEvidence {
+            status: 0,
+            attempt: 0,
+            target: 250,
+            sample_delay_ms: 1,
+            positive_response_permille: 900,
+            negative_response_permille: 880,
+            cross_axis_permille: 24,
+            voltage_output_permille: 280,
+            encoder_delta_counts: 2,
+            status_flags_or: 4,
+        };
+
         CommissionResult {
             inner: InnerResult {
                 status: CommissionStatus::Accepted,
@@ -622,7 +656,8 @@ mod tests {
                 measured_axis_split_permille: 1000,
                 applied_axis_split_permille: 1000,
                 axis_split_clamped: 0,
-                current_validation_axes: CURRENT_VALIDATION_AXIS_TORQUE,
+                current_validation_axes: CURRENT_VALIDATION_AXIS_FLUX
+                    | CURRENT_VALIDATION_AXIS_TORQUE,
                 retry_budget_exhausted: 0,
                 current_loop_failure_reason: CURRENT_LOOP_FAILURE_NONE,
                 impedance_high_inductance_axis: CURRENT_AXIS_FLUX,
@@ -632,6 +667,10 @@ mod tests {
                 impedance_fitted_axis_electrical_counts: 0,
                 impedance_residual_permille: 0,
                 impedance_warning_flags: 0,
+                current_flux_validation_count: 1,
+                current_flux_validation: flux_validation,
+                current_torque_validation_count: 1,
+                current_torque_validation: torque_validation,
             },
             fallback_velocity_p: 31,
             fallback_velocity_i: 32,
@@ -674,43 +713,61 @@ mod tests {
         oid: u8,
         axis: u8,
         sample_index: u8,
-        sample_delay_ms: u16,
+        evidence: CurrentValidationAxisEvidence,
     ) -> Event {
         Event::CurrentValidationAxis {
             oid,
             axis,
             sample_index,
-            status: 0,
-            attempt: 0,
-            target: 0,
-            sample_delay_ms,
-            positive_response_permille: 0,
-            negative_response_permille: 0,
-            cross_axis_permille: 0,
-            voltage_output_permille: 0,
-            encoder_delta_counts: 0,
-            status_flags_or: 0,
+            status: evidence.status,
+            attempt: evidence.attempt,
+            target: evidence.target,
+            sample_delay_ms: evidence.sample_delay_ms,
+            positive_response_permille: evidence.positive_response_permille,
+            negative_response_permille: evidence.negative_response_permille,
+            cross_axis_permille: evidence.cross_axis_permille,
+            voltage_output_permille: evidence.voltage_output_permille,
+            encoder_delta_counts: evidence.encoder_delta_counts,
+            status_flags_or: evidence.status_flags_or,
         }
     }
 
-    fn current_loop_compatibility_events(oid: u8, status: u8) -> Vec<Event> {
+    fn current_loop_events(oid: u8, status: u8) -> Vec<Event> {
         let mut events = Vec::new();
-        for (sample_index, sample_delay_ms) in [1_u16, 2, 5].into_iter().enumerate() {
-            events.push(current_validation_event(
-                oid,
-                CURRENT_AXIS_FLUX,
-                sample_index as u8,
-                sample_delay_ms,
-            ));
-        }
-        for (sample_index, sample_delay_ms) in [1_u16, 2].into_iter().enumerate() {
-            events.push(current_validation_event(
-                oid,
-                CURRENT_AXIS_TORQUE,
-                sample_index as u8,
-                sample_delay_ms,
-            ));
-        }
+        events.push(current_validation_event(
+            oid,
+            CURRENT_AXIS_FLUX,
+            0,
+            CurrentValidationAxisEvidence {
+                status: 0,
+                attempt: 0,
+                target: 250,
+                sample_delay_ms: 2,
+                positive_response_permille: 960,
+                negative_response_permille: 940,
+                cross_axis_permille: 32,
+                voltage_output_permille: 250,
+                encoder_delta_counts: 1,
+                status_flags_or: 0,
+            },
+        ));
+        events.push(current_validation_event(
+            oid,
+            CURRENT_AXIS_TORQUE,
+            0,
+            CurrentValidationAxisEvidence {
+                status: 0,
+                attempt: 0,
+                target: 250,
+                sample_delay_ms: 1,
+                positive_response_permille: 900,
+                negative_response_permille: 880,
+                cross_axis_permille: 24,
+                voltage_output_permille: 280,
+                encoder_delta_counts: 2,
+                status_flags_or: 4,
+            },
+        ));
         events.push(Event::CurrentLoopRun {
             oid,
             status,
@@ -720,9 +777,9 @@ mod tests {
             measured_axis_split_permille: 1000,
             applied_axis_split_permille: 1000,
             axis_split_clamped: 0,
-            current_validation_axes: CURRENT_VALIDATION_AXIS_TORQUE,
-            flux_validation_sample_count: 3,
-            torque_validation_sample_count: 2,
+            current_validation_axes: CURRENT_VALIDATION_AXIS_FLUX | CURRENT_VALIDATION_AXIS_TORQUE,
+            flux_validation_sample_count: 1,
+            torque_validation_sample_count: 1,
             retry_budget_exhausted: 0,
             failure_reason: CURRENT_LOOP_FAILURE_NONE,
         });
@@ -775,7 +832,7 @@ mod tests {
                 status_flags_or: 0,
             },
         ];
-        expected.extend(current_loop_compatibility_events(6, 7));
+        expected.extend(current_loop_events(6, 7));
         expected.push(Event::Commission {
             oid: 6,
             status: 7,
@@ -1009,7 +1066,7 @@ mod tests {
                 status_flags_or: 0,
             },
         ];
-        expected.extend(current_loop_compatibility_events(6, 7));
+        expected.extend(current_loop_events(6, 7));
         expected.extend([
             Event::Commission {
                 oid: 6,

@@ -544,7 +544,7 @@ pub(crate) async fn step_closed_loop_entry<B: CommissioningBackend>(
                         measured_axis_split_permille: 1000,
                         applied_axis_split_permille: 1000,
                         axis_split_clamped: 0,
-                        current_validation_axes: crate::autotune::CURRENT_VALIDATION_AXIS_TORQUE,
+                        current_validation_axes: 0,
                         retry_budget_exhausted: 0,
                         current_loop_failure_reason: crate::autotune::CURRENT_LOOP_FAILURE_NONE,
                         impedance_high_inductance_axis: crate::autotune::CURRENT_AXIS_FLUX,
@@ -554,6 +554,14 @@ pub(crate) async fn step_closed_loop_entry<B: CommissioningBackend>(
                         impedance_fitted_axis_electrical_counts: 0,
                         impedance_residual_permille: 0,
                         impedance_warning_flags: 0,
+                        current_flux_validation_count: 0,
+                        current_flux_validation:
+                            [crate::commissioning::types::CurrentValidationAxisEvidence::EMPTY;
+                                crate::autotune::CURRENT_VALIDATION_MAX_SAMPLES_PER_AXIS],
+                        current_torque_validation_count: 0,
+                        current_torque_validation:
+                            [crate::commissioning::types::CurrentValidationAxisEvidence::EMPTY;
+                                crate::autotune::CURRENT_VALIDATION_MAX_SAMPLES_PER_AXIS],
                     });
                     StepResult::CommissionDone(CommissionResult {
                         inner,
