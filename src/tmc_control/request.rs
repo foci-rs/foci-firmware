@@ -1277,6 +1277,7 @@ mod tests {
                     0,
                     TmcRequestKind::CurrentStepTest {
                         oid: 1,
+                        axis: crate::tmc::CurrentStepAxis::Torque,
                         target: 10,
                         duration_ms: 20,
                         voltage_limit: 12000,

@@ -92,6 +92,34 @@ pub const PHASE_ADVANCE_MAX_SAFE_COUNTS: u16 = 512;
 /// Highest diagnostic detail level accepted by firmware command surfaces.
 pub const MAX_DIAGNOSTIC_DETAIL: u8 = 2;
 
+/// Axis selected by the scalar current-step diagnostic.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+pub enum CurrentStepAxis {
+    /// TMC4671 torque/q-axis current target and actual.
+    Torque,
+    /// TMC4671 flux/d-axis current target and actual.
+    Flux,
+}
+
+impl CurrentStepAxis {
+    /// Wire value used by `tmc_current_step_test`.
+    pub const fn as_u8(self) -> u8 {
+        match self {
+            Self::Torque => 0,
+            Self::Flux => 1,
+        }
+    }
+
+    /// Decode a `tmc_current_step_test` wire value.
+    pub const fn from_u8(value: u8) -> Option<Self> {
+        match value {
+            0 => Some(Self::Torque),
+            1 => Some(Self::Flux),
+            _ => None,
+        }
+    }
+}
+
 /// Normalize host-provided diagnostic detail bytes into the supported range.
 pub const fn normalize_diagnostic_detail(detail: u8) -> u8 {
     if detail > MAX_DIAGNOSTIC_DETAIL {
@@ -282,7 +310,9 @@ pub enum TmcRequestKind {
     CurrentStepTest {
         /// Object id used by the reply.
         oid: u8,
-        /// Signed torque-current target in TMC4671 current counts.
+        /// Axis driven by the scalar step.
+        axis: CurrentStepAxis,
+        /// Signed current target in TMC4671 current counts.
         target: i16,
         /// Hold duration for the applied target.
         duration_ms: u16,
@@ -628,6 +658,7 @@ pub fn tmc_set_voltage_limit(channel: u8, voltage_limit: u32) -> TmcRequest {
 pub fn tmc_current_step_test(
     channel: u8,
     oid: u8,
+    axis: CurrentStepAxis,
     target: i16,
     duration_ms: u16,
     voltage_limit: u16,
@@ -636,6 +667,7 @@ pub fn tmc_current_step_test(
         channel,
         TmcRequestKind::CurrentStepTest {
             oid,
+            axis,
             target,
             duration_ms,
             voltage_limit,
@@ -1283,11 +1315,12 @@ mod tests {
     #[test]
     fn tmc_current_step_test_builds_request() {
         assert_eq!(
-            tmc_current_step_test(0, 7, 250, 80, 12_000),
+            tmc_current_step_test(0, 7, CurrentStepAxis::Flux, 250, 80, 12_000),
             TmcRequest::new(
                 0,
                 TmcRequestKind::CurrentStepTest {
                     oid: 7,
+                    axis: CurrentStepAxis::Flux,
                     target: 250,
                     duration_ms: 80,
                     voltage_limit: 12_000,

@@ -1438,7 +1438,7 @@ fn wrong_channel_request_emits_only_invalid_channel_shutdown_without_mutation() 
 #[test]
 fn all_active_diagnostic_requests_are_delegated_without_mutation() {
     let requests = [
-        crate::tmc::tmc_current_step_test(0, 10, 111, 12, 13),
+        crate::tmc::tmc_current_step_test(0, 10, crate::tmc::CurrentStepAxis::Torque, 111, 12, 13),
         crate::tmc::tmc_current_vector_step_test(0, 11, 112, -113, 14, 15),
         crate::tmc::tmc_current_torque_sample_test(0, 12, 114, -115, 16, 17),
         crate::tmc::tmc_position_torque_offset_sample_test(0, 13, 116, 18, 19),

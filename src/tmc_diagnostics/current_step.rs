@@ -1,4 +1,4 @@
-use crate::tmc::{TmcRequest, TmcRequestKind};
+use crate::tmc::{CurrentStepAxis, TmcRequest, TmcRequestKind};
 
 use super::helpers::{
     clear_current_step_integrators, current_step_encoder_delta, split_signed_halves,
@@ -49,6 +49,13 @@ fn handled_current_step(vector_reply: bool, report: CurrentStepReport) -> Diagno
     })
 }
 
+fn axis_value(axis: CurrentStepAxis, torque: i16, flux: i16) -> i16 {
+    match axis {
+        CurrentStepAxis::Torque => torque,
+        CurrentStepAxis::Flux => flux,
+    }
+}
+
 /// Run a current-step or current-vector-step diagnostic request.
 pub async fn run_current_step_request<B, D>(
     req: TmcRequest,
@@ -73,30 +80,59 @@ where
                 | TmcRequestKind::CurrentVectorStepTest { .. }),
             ..
         } => {
-            let (oid, torque_target, flux_target, duration_ms, voltage_limit, vector_reply) =
-                match current_step_kind {
-                    TmcRequestKind::CurrentStepTest {
+            let (
+                oid,
+                torque_target,
+                flux_target,
+                drive_torque_target,
+                drive_flux_target,
+                scalar_axis,
+                duration_ms,
+                voltage_limit,
+                vector_reply,
+            ) = match current_step_kind {
+                TmcRequestKind::CurrentStepTest {
+                    oid,
+                    axis,
+                    target,
+                    duration_ms,
+                    voltage_limit,
+                } => {
+                    let (drive_torque_target, drive_flux_target) = match axis {
+                        CurrentStepAxis::Torque => (target, 0),
+                        CurrentStepAxis::Flux => (0, target),
+                    };
+                    (
                         oid,
                         target,
+                        drive_flux_target,
+                        drive_torque_target,
+                        drive_flux_target,
+                        axis,
                         duration_ms,
                         voltage_limit,
-                    } => (oid, target, 0, duration_ms, voltage_limit, false),
-                    TmcRequestKind::CurrentVectorStepTest {
-                        oid,
-                        torque_target,
-                        flux_target,
-                        duration_ms,
-                        voltage_limit,
-                    } => (
-                        oid,
-                        torque_target,
-                        flux_target,
-                        duration_ms,
-                        voltage_limit,
-                        true,
-                    ),
-                    _ => unreachable!(),
-                };
+                        false,
+                    )
+                }
+                TmcRequestKind::CurrentVectorStepTest {
+                    oid,
+                    torque_target,
+                    flux_target,
+                    duration_ms,
+                    voltage_limit,
+                } => (
+                    oid,
+                    torque_target,
+                    flux_target,
+                    torque_target,
+                    flux_target,
+                    CurrentStepAxis::Torque,
+                    duration_ms,
+                    voltage_limit,
+                    true,
+                ),
+                _ => unreachable!(),
+            };
             if !runtime.is_motor_enabled()
                 || !runtime.is_calibrated()
                 || readiness.homing_active
@@ -220,9 +256,11 @@ where
                     .read_register(PID_TORQUE_FLUX_ACTUAL)
                     .await
                     .map_err(|_| ())?;
-                torque_before = crate::tmc::decode_signed_upper_half(before);
+                let (torque, flux) = split_signed_halves(before);
+                torque_before = axis_value(scalar_axis, torque, flux);
 
-                let target_reg = crate::tmc::pack_torque_flux_target(torque_target, flux_target);
+                let target_reg =
+                    crate::tmc::pack_torque_flux_target(drive_torque_target, drive_flux_target);
                 tmc.write_register(PID_TORQUE_FLUX_TARGET, target_reg)
                     .await
                     .map_err(|_| ())?;
@@ -233,7 +271,7 @@ where
                     .await
                     .map_err(|_| ())?;
                 let (torque, flux) = split_signed_halves(actual);
-                torque_during = torque;
+                torque_during = axis_value(scalar_axis, torque, flux);
                 flux_during = flux;
 
                 let iq_id = tmc
@@ -276,7 +314,8 @@ where
                     .read_register(PID_TORQUE_FLUX_ACTUAL)
                     .await
                     .map_err(|_| ())?;
-                torque_after = crate::tmc::decode_signed_upper_half(after);
+                let (torque, flux) = split_signed_halves(after);
+                torque_after = axis_value(scalar_axis, torque, flux);
                 Ok(())
             }
             .await;

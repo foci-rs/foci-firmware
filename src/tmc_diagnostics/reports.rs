@@ -11,19 +11,19 @@ pub struct CurrentStepReport {
     pub oid: u8,
     /// Status code: 0 success, 1 not ready, 2 SPI or restore failure.
     pub status: u8,
-    /// Requested signed torque target in TMC4671 current counts.
+    /// Scalar current-step target, or torque target for current-vector-step.
     pub torque_target: i16,
-    /// Requested signed flux target in TMC4671 current counts.
+    /// Flux target for current-vector-step, or for a flux-axis scalar step.
     pub flux_target: i16,
     /// Requested dwell duration in milliseconds.
     pub duration_ms: u16,
     /// Temporary PIDOUT_UQ_UD_LIMITS value used during the diagnostic.
     pub voltage_limit: u16,
-    /// Torque actual before applying the diagnostic target.
+    /// Scalar current-step actual, or torque actual for current-vector-step, before the target.
     pub torque_before: i16,
-    /// Torque actual while the diagnostic target is applied.
+    /// Scalar current-step actual, or torque actual for current-vector-step, during the target.
     pub torque_during: i16,
-    /// Torque actual after returning target to zero.
+    /// Scalar current-step actual, or torque actual for current-vector-step, after target zero.
     pub torque_after: i16,
     /// Flux actual while the diagnostic target is applied.
     pub flux_during: i16,

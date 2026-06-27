@@ -485,11 +485,19 @@ pub fn tmc_set_voltage_limit(ctx: &mut dyn TmcWriteHost, oid: u8, voltage_limit:
 pub fn tmc_current_step_test(
     ctx: &mut dyn TmcWriteHost,
     oid: u8,
+    axis: u8,
     target: i16,
     duration_ms: u16,
     voltage_limit: u16,
 ) {
     let Some((channel, _state)) = foci_tmc_state_or_shutdown(ctx, oid) else {
+        return;
+    };
+    let Some(axis) = crate::tmc::CurrentStepAxis::from_u8(axis) else {
+        if ctx.enter_shutdown() {
+            let clock = ctx.now();
+            ctx.send_shutdown(ShutdownReason::TmcRequestValidationFailed, clock);
+        }
         return;
     };
     if target.unsigned_abs() > MAX_CURRENT_STEP_TARGET as u16
@@ -507,6 +515,7 @@ pub fn tmc_current_step_test(
         .enqueue_request(crate::tmc::tmc_current_step_test(
             channel,
             oid,
+            axis,
             target,
             duration_ms,
             voltage_limit,
@@ -988,7 +997,7 @@ mod tests {
         let mut sender = ();
         config_stepper_channel(ctx.state(), 10, 1).unwrap();
 
-        tmc_current_step_test(&mut ctx, &mut sender, 10, 250, 80, 12_000);
+        tmc_current_step_test(&mut ctx, &mut sender, 10, 0, 250, 80, 12_000);
 
         let req = ctx.last_request.borrow().clone().unwrap();
         assert_eq!(req.channel, 1);
@@ -996,6 +1005,7 @@ mod tests {
             req.kind,
             crate::tmc::TmcRequestKind::CurrentStepTest {
                 oid: 10,
+                axis: crate::tmc::CurrentStepAxis::Torque,
                 target: 250,
                 duration_ms: 80,
                 voltage_limit: 12_000,
@@ -1195,7 +1205,7 @@ mod tests {
         let mut sender = ();
         config_stepper_channel(ctx.state(), 10, 1).unwrap();
 
-        tmc_current_step_test(&mut ctx, &mut sender, 10, 1_001, 80, 12_000);
+        tmc_current_step_test(&mut ctx, &mut sender, 10, 0, 1_001, 80, 12_000);
 
         assert!(ctx.last_request.borrow().is_none());
         assert_eq!(
@@ -1210,7 +1220,7 @@ mod tests {
         let mut sender = ();
         config_stepper_channel(ctx.state(), 10, 1).unwrap();
 
-        tmc_current_step_test(&mut ctx, &mut sender, 10, 250, 201, 12_000);
+        tmc_current_step_test(&mut ctx, &mut sender, 10, 0, 250, 201, 12_000);
 
         assert!(ctx.last_request.borrow().is_none());
         assert_eq!(

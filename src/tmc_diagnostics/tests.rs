@@ -1,8 +1,9 @@
 use super::*;
 use crate::impedance_identification::ImpedanceBackend;
 use crate::tmc::{
-    tmc_current_step_test, tmc_current_torque_sample_test, tmc_current_vector_step_test,
-    tmc_impedance_test, tmc_position_torque_offset_sample_test, tmc_voltage_step_test,
+    CurrentStepAxis, tmc_current_step_test, tmc_current_torque_sample_test,
+    tmc_current_vector_step_test, tmc_impedance_test, tmc_position_torque_offset_sample_test,
+    tmc_voltage_step_test,
 };
 use crate::tmc_control::TmcControlRuntime;
 use foci_tmc4671::registers::{
@@ -200,7 +201,7 @@ fn current_step_not_ready_returns_status_without_writes() {
         let mut runtime = TmcControlRuntime::new_for_channel(0);
         let mut delay = MockDelay::default();
         let mut tmc = Tmc4671Spi::new(DiagnosticMockSpi::default());
-        let req = tmc_current_step_test(0, 7, 123, 4, 500);
+        let req = tmc_current_step_test(0, 7, CurrentStepAxis::Torque, 123, 4, 500);
 
         let outcome = run_current_step_request(
             req,
@@ -292,7 +293,7 @@ fn current_step_success_records_settle_delays_and_restores_limit() {
         let mut delay = MockDelay::default();
 
         let outcome = run_current_step_request(
-            tmc_current_step_test(0, 7, 20, 3, 555),
+            tmc_current_step_test(0, 7, CurrentStepAxis::Torque, 20, 3, 555),
             DiagnosticContext {
                 tmc: &mut tmc,
                 runtime: &mut runtime,
@@ -373,6 +374,61 @@ fn current_step_success_records_settle_delays_and_restores_limit() {
                 PID_TORQUE_FLUX_ACTUAL.addr(),
             ]
         );
+    });
+}
+
+#[test]
+fn flux_current_step_drives_and_reports_flux_axis() {
+    pollster::block_on(async {
+        let raw_spi = DiagnosticMockSpi::default()
+            .with_read(0) // saved MODE_RAMP_MODE_MOTION
+            .with_read(0xaaaa_bbbb) // PID_POSITION_ACTUAL
+            .with_read(100) // ABN_DECODER_COUNT before
+            .with_read(1000) // ABN_DECODER_PPR
+            .with_read(0x0005_fffe) // PID_TORQUE_FLUX_ACTUAL before
+            .with_read(0x0009_0014) // PID_TORQUE_FLUX_ACTUAL during
+            .with_read(0x000b_000c) // INTERIM_FOC_IQ_ID
+            .with_read(0x000d_000e) // INTERIM_FOC_UQ_UD_LIMITED
+            .with_read(0x0000_1234) // ADC_AGPI_A_RAW_ADC_VM_RAW
+            .with_read(120) // ABN_DECODER_COUNT after
+            .with_read(0x0006_fff9); // PID_TORQUE_FLUX_ACTUAL after
+        let mut tmc = Tmc4671Spi::new(raw_spi);
+        let mut runtime = ready_runtime();
+        let mut delay = MockDelay::default();
+
+        let outcome = run_current_step_request(
+            tmc_current_step_test(0, 7, CurrentStepAxis::Flux, 20, 3, 555),
+            DiagnosticContext {
+                tmc: &mut tmc,
+                runtime: &mut runtime,
+                delay: &mut delay,
+                tmc_config: &TEST_TMC_CONFIG,
+                readiness: DiagnosticReadiness {
+                    homing_active: false,
+                    stepper_active: false,
+                    saved_voltage_limit: 777,
+                },
+            },
+        )
+        .await;
+
+        let DiagnosticOutcome::Handled(DiagnosticReport::CurrentStep { report, .. }) = outcome
+        else {
+            panic!("expected current step report");
+        };
+        assert_eq!(report.status, 0);
+        assert_eq!(report.torque_target, 20);
+        assert_eq!(report.flux_target, 20);
+        assert_eq!(report.torque_before, -2);
+        assert_eq!(report.torque_during, 20);
+        assert_eq!(report.torque_after, -7);
+        assert_eq!(report.flux_during, 20);
+
+        let raw_spi = tmc.into_inner();
+        assert!(raw_spi.write_attempts.contains(&(
+            PID_TORQUE_FLUX_TARGET.addr(),
+            crate::tmc::pack_torque_flux_target(0, 20),
+        )));
     });
 }
 
