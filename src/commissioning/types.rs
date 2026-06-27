@@ -131,6 +131,40 @@ pub struct InnerResult {
     pub resistance_status_flags_or: u32,
     /// Resistance run warning bitfield (`ResistanceWarningFlags`).
     pub resistance_warning_flags: u32,
+
+    // --- Current-loop synthesis and impedance evidence ---
+    /// `CURRENT_GAINS_SOURCE_*`.
+    pub current_gains_source: u8,
+    /// `AXIS_SPLIT_SOURCE_*`.
+    pub axis_split_source: u8,
+    /// `CURRENT_GAINS_TIER_*`.
+    pub gains_tier: u8,
+    /// Measured axis split ratio, permille where 1000 = 1.000x.
+    pub measured_axis_split_permille: u16,
+    /// Applied axis split ratio after profile clamp, permille.
+    pub applied_axis_split_permille: u16,
+    /// Non-zero when the applied axis split was clamped below measured.
+    pub axis_split_clamped: u8,
+    /// Bitmask of `CURRENT_VALIDATION_AXIS_*` axes that passed validation.
+    pub current_validation_axes: u8,
+    /// Non-zero when current-loop retry budget was exhausted.
+    pub retry_budget_exhausted: u8,
+    /// `CURRENT_LOOP_FAILURE_*`.
+    pub current_loop_failure_reason: u8,
+    /// `CURRENT_AXIS_*` high-inductance axis from accepted impedance evidence.
+    pub impedance_high_inductance_axis: u8,
+    /// Maximum fitted current response axis, count per UD millivolt-equivalent.
+    pub impedance_selected_axis_max_count_per_ud_milli: u32,
+    /// Minimum fitted current response axis, count per UD millivolt-equivalent.
+    pub impedance_selected_axis_min_count_per_ud_milli: u32,
+    /// Fitted impedance saliency in permille.
+    pub impedance_saliency_permille: u16,
+    /// Fitted low-inductance axis angle in 16-bit electrical turn counts.
+    pub impedance_fitted_axis_electrical_counts: u16,
+    /// Maximum per-angle impedance residual in permille.
+    pub impedance_residual_permille: u16,
+    /// Impedance warning bitfield (`ImpedanceWarningFlags`).
+    pub impedance_warning_flags: u32,
 }
 
 /// Result of outer (mechanical) commissioning.

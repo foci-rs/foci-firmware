@@ -5,11 +5,7 @@
 //! commissioning payloads to reply events so boards cannot drift by dropping
 //! fields locally.
 
-use crate::autotune::{
-    AXIS_SPLIT_SOURCE_NONE, CURRENT_AXIS_FLUX, CURRENT_AXIS_TORQUE, CURRENT_GAINS_SOURCE_MEASURED,
-    CURRENT_GAINS_TIER_MEASURED_SYMMETRIC, CURRENT_LOOP_FAILURE_NONE,
-    CURRENT_VALIDATION_AXIS_TORQUE, PhaseId,
-};
+use crate::autotune::{CURRENT_AXIS_FLUX, CURRENT_AXIS_TORQUE, PhaseId};
 use crate::commission_dispatch::ReplyPayload;
 use crate::commissioning::types::{AdcCalResult, CommissionResult, InnerResult, OuterResult};
 use crate::selftest::{CommissionDiagnostic, CommissionDiagnostics, SelftestStageValue};
@@ -121,7 +117,7 @@ pub fn emit_terminal_reply<S: CommissionReplySink>(sink: &mut S, payload: ReplyP
                 inner,
             ));
             sink.foci_resistance_run(commission_resistance_run_report(oid, inner));
-            emit_current_loop_compatibility_evidence(sink, oid, status);
+            emit_current_loop_compatibility_evidence(sink, oid, status, inner);
             sink.foci_commission_result(oid, status, &result);
         }
         ReplyPayload::TuneResult {
@@ -247,6 +243,7 @@ fn emit_current_loop_compatibility_evidence<S: CommissionReplySink>(
     sink: &mut S,
     oid: u8,
     status: u8,
+    inner: &InnerResult,
 ) {
     for (sample_index, sample_delay_ms) in
         CURRENT_LOOP_COMPAT_FLUX_DELAYS_MS.into_iter().enumerate()
@@ -268,7 +265,7 @@ fn emit_current_loop_compatibility_evidence<S: CommissionReplySink>(
             sample_delay_ms,
         ));
     }
-    sink.foci_current_loop_run(commission_current_loop_run_report(oid, status));
+    sink.foci_current_loop_run(commission_current_loop_run_report(oid, status, inner));
 }
 
 fn compat_current_validation_axis_report(
@@ -294,21 +291,25 @@ fn compat_current_validation_axis_report(
     }
 }
 
-fn commission_current_loop_run_report(oid: u8, status: u8) -> CurrentLoopRunReport {
+fn commission_current_loop_run_report(
+    oid: u8,
+    status: u8,
+    inner: &InnerResult,
+) -> CurrentLoopRunReport {
     CurrentLoopRunReport {
         oid,
         status,
-        gains_source: CURRENT_GAINS_SOURCE_MEASURED,
-        axis_split_source: AXIS_SPLIT_SOURCE_NONE,
-        gains_tier: CURRENT_GAINS_TIER_MEASURED_SYMMETRIC,
-        measured_axis_split_permille: 1000,
-        applied_axis_split_permille: 1000,
-        axis_split_clamped: 0,
-        current_validation_axes: CURRENT_VALIDATION_AXIS_TORQUE,
+        gains_source: inner.current_gains_source,
+        axis_split_source: inner.axis_split_source,
+        gains_tier: inner.gains_tier,
+        measured_axis_split_permille: inner.measured_axis_split_permille,
+        applied_axis_split_permille: inner.applied_axis_split_permille,
+        axis_split_clamped: inner.axis_split_clamped,
+        current_validation_axes: inner.current_validation_axes,
         flux_validation_sample_count: CURRENT_LOOP_COMPAT_FLUX_DELAYS_MS.len() as u8,
         torque_validation_sample_count: CURRENT_LOOP_COMPAT_TORQUE_DELAYS_MS.len() as u8,
-        retry_budget_exhausted: 0,
-        failure_reason: CURRENT_LOOP_FAILURE_NONE,
+        retry_budget_exhausted: inner.retry_budget_exhausted,
+        failure_reason: inner.current_loop_failure_reason,
     }
 }
 
@@ -615,6 +616,22 @@ mod tests {
                 resistance_axis1_drift_permille: 12,
                 resistance_status_flags_or: 0,
                 resistance_warning_flags: 0,
+                current_gains_source: CURRENT_GAINS_SOURCE_MEASURED,
+                axis_split_source: AXIS_SPLIT_SOURCE_NONE,
+                gains_tier: CURRENT_GAINS_TIER_MEASURED_SYMMETRIC,
+                measured_axis_split_permille: 1000,
+                applied_axis_split_permille: 1000,
+                axis_split_clamped: 0,
+                current_validation_axes: CURRENT_VALIDATION_AXIS_TORQUE,
+                retry_budget_exhausted: 0,
+                current_loop_failure_reason: CURRENT_LOOP_FAILURE_NONE,
+                impedance_high_inductance_axis: CURRENT_AXIS_FLUX,
+                impedance_selected_axis_max_count_per_ud_milli: 0,
+                impedance_selected_axis_min_count_per_ud_milli: 0,
+                impedance_saliency_permille: 0,
+                impedance_fitted_axis_electrical_counts: 0,
+                impedance_residual_permille: 0,
+                impedance_warning_flags: 0,
             },
             fallback_velocity_p: 31,
             fallback_velocity_i: 32,

@@ -10,12 +10,15 @@
 
 use crate::autotune::{
     CaptureDirection, ClosedLoopEntryState, CommissionError, CommissionProfile, CommissionStatus,
-    CurrentGains, ElectricalModel, InnerSequence, PhaseId, TransientBuffer, ValidationResult,
+    CurrentGainSynthesisInput, CurrentGains, CurrentLoopEvidence, ElectricalModel, InnerSequence,
+    PhaseId, TransientBuffer, ValidationResult,
 };
 use crate::commissioning::inner::InnerPhase;
 use crate::commissioning::types::{CommissioningBackend, InnerResult, StepResult};
 
 pub(crate) use crate::autotune::CurrentValidation;
+
+use super::impedance::{CommissioningImpedanceEvidence, run_current_gain_impedance};
 
 /// Current-loop validation sub-state machine (Phase 7).
 #[derive(Debug, defmt::Format)]
@@ -77,6 +80,10 @@ pub(crate) struct CurrentValidateData {
     /// same-run 64x count-slope-milli audit counterpart against
     /// `selected_r_count_slope_milli`.
     pub(crate) resistance_gain_path_count_slope_milli: i32,
+    /// Firmware-owned gain-source and axis-split evidence selected at tune time.
+    pub(crate) current_loop_evidence: CurrentLoopEvidence,
+    /// Accepted rotating-carrier impedance evidence, if it was used for synthesis.
+    pub(crate) impedance_evidence: Option<CommissioningImpedanceEvidence>,
 }
 
 /// Step amplitude as a fraction of run_current (15% = 15/100).
@@ -98,6 +105,16 @@ const CURRENT_VALIDATE_PIDOUT_LIMIT: u32 = 2000;
 /// High bit selects the advanced controller structure used by the tuned
 /// current loop; low bits select torque mode.
 const CURRENT_TORQUE_MODE: u32 = 0x8000_0001;
+
+fn fallback_current_loop_evidence(result: ValidationResult, attempt: u8) -> CurrentLoopEvidence {
+    let retry_exhausted = attempt > 0 && result != ValidationResult::Pass;
+    let failure_reason = if retry_exhausted {
+        crate::autotune::CURRENT_LOOP_FAILURE_RETRY_EXHAUSTED
+    } else {
+        crate::autotune::CURRENT_LOOP_FAILURE_TORQUE_VALIDATION
+    };
+    CurrentLoopEvidence::default_gains(failure_reason, retry_exhausted, 0)
+}
 
 /// Thin phase: read the electrical model, compute SIMC gains, and
 /// transition immediately to validation.
@@ -121,8 +138,34 @@ pub(crate) async fn step_current_tune<B: CommissioningBackend>(
         _ => return StepResult::Continue,
     };
 
+    let impedance_evidence = run_current_gain_impedance(backend).await.ok();
+    let synthesis_input = match impedance_evidence {
+        Some(evidence) => CurrentGainSynthesisInput::with_impedance_split(
+            model,
+            profile,
+            evidence.measured_axis_split_permille,
+            evidence.applied_axis_split_permille,
+            evidence.high_inductance_axis,
+        ),
+        None => CurrentGainSynthesisInput::symmetric(model, profile),
+    };
     let config = backend.tmc_config();
-    let gains = crate::autotune::simc_current_gains(&model, profile, config);
+    let synthesis = crate::autotune::synthesize_current_gains(&synthesis_input, config);
+    let (gains, mut current_loop_evidence) = match synthesis {
+        Some(synthesis) => (synthesis.gains, synthesis.evidence),
+        None => (
+            CurrentGains {
+                flux_p: crate::pid::DEFAULT_INNER_GAINS.flux_p,
+                flux_i: crate::pid::DEFAULT_INNER_GAINS.flux_i,
+                torque_p: crate::pid::DEFAULT_INNER_GAINS.torque_p,
+                torque_i: crate::pid::DEFAULT_INNER_GAINS.torque_i,
+                effective_bandwidth_hz: 0,
+                lambda_us: 0,
+            },
+            CurrentLoopEvidence::failed(crate::autotune::CURRENT_LOOP_FAILURE_GAIN_SYNTHESIS),
+        ),
+    };
+    current_loop_evidence.current_validation_axes = crate::autotune::CURRENT_VALIDATION_AXIS_TORQUE;
 
     defmt::info!(
         "simc: R={} L={} tau_e={}us theta_e={}us lambda={}us → P={} I={} bw={}Hz",
@@ -172,6 +215,8 @@ pub(crate) async fn step_current_tune<B: CommissioningBackend>(
             // space — identical to `selected_r_count_slope_milli`, so the 64x
             // mismatch is directly readable from the persisted artifacts.
             resistance_gain_path_count_slope_milli: model.r_int as i32,
+            current_loop_evidence,
+            impedance_evidence,
         },
     };
     StepResult::PhaseChanged(PhaseId::CurrentValidate)
@@ -523,6 +568,8 @@ pub(crate) async fn step_current_validate<B: CommissioningBackend>(
                 }
                 ValidationResult::Marginal | ValidationResult::Fail => {
                     // Fall back to conservative defaults.
+                    data.current_loop_evidence =
+                        fallback_current_loop_evidence(result, data.attempt);
                     data.gains = CurrentGains {
                         flux_p: crate::pid::DEFAULT_INNER_GAINS.flux_p,
                         flux_i: crate::pid::DEFAULT_INNER_GAINS.flux_i,
@@ -579,6 +626,7 @@ pub(crate) async fn step_current_validate<B: CommissioningBackend>(
             let resistance = data.resistance_result;
             let axis0 = resistance.axis0;
             let axis1 = resistance.axis1;
+            let impedance = data.impedance_evidence;
             let result = InnerResult {
                 status: data.final_status,
                 r_int: data.model.r_int,
@@ -628,6 +676,32 @@ pub(crate) async fn step_current_validate<B: CommissioningBackend>(
                     .map_or(0, |anchor| anchor.drift_permille),
                 resistance_status_flags_or: resistance.status_flags_or,
                 resistance_warning_flags: resistance.warning_flags.0,
+                current_gains_source: data.current_loop_evidence.gains_source,
+                axis_split_source: data.current_loop_evidence.axis_split_source,
+                gains_tier: data.current_loop_evidence.gains_tier,
+                measured_axis_split_permille: data
+                    .current_loop_evidence
+                    .measured_axis_split_permille,
+                applied_axis_split_permille: data.current_loop_evidence.applied_axis_split_permille,
+                axis_split_clamped: data.current_loop_evidence.axis_split_clamped,
+                current_validation_axes: data.current_loop_evidence.current_validation_axes,
+                retry_budget_exhausted: data.current_loop_evidence.retry_budget_exhausted,
+                current_loop_failure_reason: data.current_loop_evidence.failure_reason,
+                impedance_high_inductance_axis: impedance
+                    .map_or(crate::autotune::CURRENT_AXIS_FLUX, |evidence| {
+                        evidence.high_inductance_axis
+                    }),
+                impedance_selected_axis_max_count_per_ud_milli: impedance
+                    .map_or(0, |evidence| evidence.selected_axis_max_count_per_ud_milli),
+                impedance_selected_axis_min_count_per_ud_milli: impedance
+                    .map_or(0, |evidence| evidence.selected_axis_min_count_per_ud_milli),
+                impedance_saliency_permille: impedance
+                    .map_or(0, |evidence| evidence.saliency_permille),
+                impedance_fitted_axis_electrical_counts: impedance
+                    .map_or(0, |evidence| evidence.fitted_axis_electrical_counts),
+                impedance_residual_permille: impedance
+                    .map_or(0, |evidence| evidence.residual_permille),
+                impedance_warning_flags: impedance.map_or(0, |evidence| evidence.warning_flags),
             };
 
             match sequence {
@@ -660,5 +734,47 @@ pub(crate) async fn step_current_validate<B: CommissioningBackend>(
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::autotune::{
+        AXIS_SPLIT_SOURCE_NONE, CURRENT_GAINS_SOURCE_DEFAULT, CURRENT_GAINS_TIER_DEFAULT,
+        CURRENT_LOOP_FAILURE_RETRY_EXHAUSTED, CURRENT_LOOP_FAILURE_TORQUE_VALIDATION,
+        ValidationResult,
+    };
+
+    use super::*;
+
+    #[test]
+    fn fallback_evidence_reports_default_gains_and_validation_failure() {
+        let evidence = fallback_current_loop_evidence(ValidationResult::Fail, 0);
+
+        assert_eq!(evidence.gains_source, CURRENT_GAINS_SOURCE_DEFAULT);
+        assert_eq!(evidence.axis_split_source, AXIS_SPLIT_SOURCE_NONE);
+        assert_eq!(evidence.gains_tier, CURRENT_GAINS_TIER_DEFAULT);
+        assert_eq!(evidence.measured_axis_split_permille, 1000);
+        assert_eq!(evidence.applied_axis_split_permille, 1000);
+        assert_eq!(evidence.axis_split_clamped, 0);
+        assert_eq!(evidence.current_validation_axes, 0);
+        assert_eq!(evidence.retry_budget_exhausted, 0);
+        assert_eq!(
+            evidence.failure_reason,
+            CURRENT_LOOP_FAILURE_TORQUE_VALIDATION
+        );
+    }
+
+    #[test]
+    fn fallback_evidence_reports_retry_exhaustion_after_retry_attempt() {
+        let evidence = fallback_current_loop_evidence(ValidationResult::Marginal, 1);
+
+        assert_eq!(evidence.gains_source, CURRENT_GAINS_SOURCE_DEFAULT);
+        assert_eq!(evidence.current_validation_axes, 0);
+        assert_eq!(evidence.retry_budget_exhausted, 1);
+        assert_eq!(
+            evidence.failure_reason,
+            CURRENT_LOOP_FAILURE_RETRY_EXHAUSTED
+        );
     }
 }

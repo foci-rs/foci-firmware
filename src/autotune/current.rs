@@ -6,11 +6,12 @@ use super::{
 };
 #[cfg(test)]
 use super::{
-    CURRENT_FLUX_VALIDATION_SAMPLE_COUNT, CURRENT_GAINS_SOURCE_FAILED,
-    CURRENT_GAINS_SOURCE_MEASURED, CURRENT_GAINS_TIER_MEASURED_SPLIT,
-    CURRENT_GAINS_TIER_MEASURED_SYMMETRIC, CURRENT_GAINS_TIER_NONE,
-    CURRENT_LOOP_FAILURE_FLUX_VALIDATION, CURRENT_LOOP_FAILURE_GAIN_SYNTHESIS,
-    CURRENT_LOOP_FAILURE_IMPEDANCE_INVALID, CURRENT_LOOP_FAILURE_MOTION, CURRENT_LOOP_FAILURE_NONE,
+    CURRENT_FLUX_VALIDATION_SAMPLE_COUNT, CURRENT_GAINS_SOURCE_DEFAULT,
+    CURRENT_GAINS_SOURCE_FAILED, CURRENT_GAINS_SOURCE_MEASURED, CURRENT_GAINS_TIER_DEFAULT,
+    CURRENT_GAINS_TIER_MEASURED_SPLIT, CURRENT_GAINS_TIER_MEASURED_SYMMETRIC,
+    CURRENT_GAINS_TIER_NONE, CURRENT_LOOP_FAILURE_FLUX_VALIDATION,
+    CURRENT_LOOP_FAILURE_GAIN_SYNTHESIS, CURRENT_LOOP_FAILURE_IMPEDANCE_INVALID,
+    CURRENT_LOOP_FAILURE_MOTION, CURRENT_LOOP_FAILURE_NONE,
     CURRENT_LOOP_FAILURE_RESISTANCE_INVALID, CURRENT_LOOP_FAILURE_RETRY_EXHAUSTED,
     CURRENT_LOOP_FAILURE_SATURATION, CURRENT_LOOP_FAILURE_SPI, CURRENT_LOOP_FAILURE_STATUS_FLAGS,
     CURRENT_LOOP_FAILURE_TORQUE_VALIDATION, CURRENT_TORQUE_VALIDATION_SAMPLE_COUNT,
@@ -708,9 +709,35 @@ mod tests {
     }
 
     #[test]
+    fn current_loop_evidence_records_default_fallback() {
+        let evidence = CurrentLoopEvidence::default_gains(
+            CURRENT_LOOP_FAILURE_TORQUE_VALIDATION,
+            true,
+            CURRENT_VALIDATION_AXIS_TORQUE,
+        );
+
+        assert_eq!(evidence.gains_source, CURRENT_GAINS_SOURCE_DEFAULT);
+        assert_eq!(evidence.axis_split_source, AXIS_SPLIT_SOURCE_NONE);
+        assert_eq!(evidence.gains_tier, CURRENT_GAINS_TIER_DEFAULT);
+        assert_eq!(
+            evidence.failure_reason,
+            CURRENT_LOOP_FAILURE_TORQUE_VALIDATION
+        );
+        assert_eq!(evidence.measured_axis_split_permille, 1000);
+        assert_eq!(evidence.applied_axis_split_permille, 1000);
+        assert_eq!(evidence.axis_split_clamped, 0);
+        assert_eq!(
+            evidence.current_validation_axes,
+            CURRENT_VALIDATION_AXIS_TORQUE
+        );
+        assert_eq!(evidence.retry_budget_exhausted, 1);
+    }
+
+    #[test]
     fn current_loop_evidence_pins_gain_source_split_and_tier_codes() {
         assert_eq!(CURRENT_GAINS_SOURCE_FAILED, 0);
         assert_eq!(CURRENT_GAINS_SOURCE_MEASURED, 1);
+        assert_eq!(CURRENT_GAINS_SOURCE_DEFAULT, 2);
 
         assert_eq!(AXIS_SPLIT_SOURCE_NONE, 0);
         assert_eq!(AXIS_SPLIT_SOURCE_IMPEDANCE, 1);
@@ -718,6 +745,7 @@ mod tests {
         assert_eq!(CURRENT_GAINS_TIER_NONE, 0);
         assert_eq!(CURRENT_GAINS_TIER_MEASURED_SYMMETRIC, 1);
         assert_eq!(CURRENT_GAINS_TIER_MEASURED_SPLIT, 2);
+        assert_eq!(CURRENT_GAINS_TIER_DEFAULT, 3);
     }
 
     #[test]

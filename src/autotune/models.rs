@@ -90,6 +90,8 @@ pub struct CurrentGainSynthesis {
 pub const CURRENT_GAINS_SOURCE_FAILED: u8 = 0;
 /// Gains were synthesized from measured commissioning data.
 pub const CURRENT_GAINS_SOURCE_MEASURED: u8 = 1;
+/// Default conservative gains were applied after validation fallback.
+pub const CURRENT_GAINS_SOURCE_DEFAULT: u8 = 2;
 
 /// No independent axis split source was used.
 pub const AXIS_SPLIT_SOURCE_NONE: u8 = 0;
@@ -102,6 +104,8 @@ pub const CURRENT_GAINS_TIER_NONE: u8 = 0;
 pub const CURRENT_GAINS_TIER_MEASURED_SYMMETRIC: u8 = 1;
 /// Measured split current-loop gains were produced.
 pub const CURRENT_GAINS_TIER_MEASURED_SPLIT: u8 = 2;
+/// Default conservative current-loop gains were applied.
+pub const CURRENT_GAINS_TIER_DEFAULT: u8 = 3;
 
 /// Flux-axis validation passed.
 pub const CURRENT_VALIDATION_AXIS_FLUX: u8 = 1 << 0;
@@ -215,6 +219,25 @@ impl CurrentLoopEvidence {
             current_validation_axes: 0,
             retry_budget_exhausted: 0,
             failure_reason: CURRENT_LOOP_FAILURE_NONE,
+        }
+    }
+
+    /// Build evidence for default conservative gains applied after validation fallback.
+    pub const fn default_gains(
+        failure_reason: u8,
+        retry_budget_exhausted: bool,
+        current_validation_axes: u8,
+    ) -> Self {
+        Self {
+            gains_source: CURRENT_GAINS_SOURCE_DEFAULT,
+            axis_split_source: AXIS_SPLIT_SOURCE_NONE,
+            gains_tier: CURRENT_GAINS_TIER_DEFAULT,
+            measured_axis_split_permille: 1000,
+            applied_axis_split_permille: 1000,
+            axis_split_clamped: 0,
+            current_validation_axes,
+            retry_budget_exhausted: retry_budget_exhausted as u8,
+            failure_reason,
         }
     }
 }
