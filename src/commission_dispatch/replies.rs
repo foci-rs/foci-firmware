@@ -5,17 +5,29 @@
 //! commissioning payloads to reply events so boards cannot drift by dropping
 //! fields locally.
 
-use crate::autotune::PhaseId;
+use crate::autotune::{
+    AXIS_SPLIT_SOURCE_NONE, CURRENT_AXIS_FLUX, CURRENT_AXIS_TORQUE, CURRENT_GAINS_SOURCE_MEASURED,
+    CURRENT_GAINS_TIER_MEASURED_SYMMETRIC, CURRENT_LOOP_FAILURE_NONE,
+    CURRENT_VALIDATION_AXIS_TORQUE, PhaseId,
+};
 use crate::commission_dispatch::ReplyPayload;
 use crate::commissioning::types::{AdcCalResult, CommissionResult, InnerResult, OuterResult};
 use crate::selftest::{CommissionDiagnostic, CommissionDiagnostics, SelftestStageValue};
-use crate::tmc_diagnostics::{ResistanceAxisReport, ResistanceRunReport};
+use crate::tmc_diagnostics::{
+    CurrentLoopRunReport, CurrentValidationAxisReport, ResistanceAxisReport, ResistanceRunReport,
+};
 
 /// TMC4671 external electrical angle for electrical axis 0 (PHASE0).
 const RESISTANCE_AXIS0_PHI_E_EXT: u16 = 0;
 
 /// TMC4671 external electrical angle for electrical axis 1 (PHASE90).
 const RESISTANCE_AXIS1_PHI_E_EXT: u16 = 16_384;
+
+/// Temporary OpenFFBoard v1 flux-axis validation delays emitted by Task 2.
+const CURRENT_LOOP_COMPAT_FLUX_DELAYS_MS: [u16; 3] = [1, 2, 5];
+
+/// Temporary OpenFFBoard v1 torque-axis validation delays emitted by Task 2.
+const CURRENT_LOOP_COMPAT_TORQUE_DELAYS_MS: [u16; 2] = [1, 2];
 
 /// Board-local sink for commissioning-family Klipper replies.
 ///
@@ -41,6 +53,16 @@ pub trait CommissionReplySink {
     /// during Stage 1 commissioning. Reuses the `foci_resistance_axis` reply
     /// (Task 6) for the same reason as [`Self::foci_resistance_run`].
     fn foci_resistance_axis(&mut self, report: ResistanceAxisReport);
+
+    /// Emit run-level current-loop commissioning evidence captured during
+    /// Stage 1 commissioning. `FociCommissionResult` is size-capped, so this
+    /// supplemental reply carries source, tier, split, validation coverage,
+    /// and failure-reason evidence separately.
+    fn foci_current_loop_run(&mut self, report: CurrentLoopRunReport);
+
+    /// Emit one per-axis, per-delay current validation evidence sample
+    /// captured during Stage 1 commissioning.
+    fn foci_current_validation_axis(&mut self, report: CurrentValidationAxisReport);
 
     /// Emit the Stage 2 tune result.
     fn foci_tune_result(&mut self, oid: u8, status: u8, result: &OuterResult);
@@ -78,14 +100,13 @@ pub fn emit_terminal_reply<S: CommissionReplySink>(sink: &mut S, payload: ReplyP
             result,
         } => {
             // FociCommissionResult is size-capped (23 fields, near the
-            // 64-byte Klipper message limit) and cannot carry the
-            // resistance-identification evidence that lives on
-            // `InnerResult`. Emit it separately through the existing
-            // resistance replies (Task 6) so the host can persist it.
-            // Axes before run, mirroring the diagnostic path's
-            // axes-then-run ordering (`emit_diagnostic_report`); the
-            // commission result stays the true terminal/"done" signal for
-            // the whole commission flow, so it is emitted last.
+            // 64-byte Klipper message limit) and cannot carry the evidence
+            // that lives alongside `InnerResult`. Emit supplemental evidence
+            // before the terminal commission result so the result stays the
+            // true terminal/"done" signal for the whole commission flow.
+            //
+            // Resistance axes stay before the resistance run, mirroring the
+            // diagnostic path's axes-then-run ordering (`emit_diagnostic_report`).
             let inner = &result.inner;
             sink.foci_resistance_axis(commission_resistance_axis_report(
                 oid,
@@ -100,6 +121,7 @@ pub fn emit_terminal_reply<S: CommissionReplySink>(sink: &mut S, payload: ReplyP
                 inner,
             ));
             sink.foci_resistance_run(commission_resistance_run_report(oid, inner));
+            emit_current_loop_compatibility_evidence(sink, oid, status);
             sink.foci_commission_result(oid, status, &result);
         }
         ReplyPayload::TuneResult {
@@ -221,12 +243,85 @@ fn commission_resistance_axis_report(
     }
 }
 
+fn emit_current_loop_compatibility_evidence<S: CommissionReplySink>(
+    sink: &mut S,
+    oid: u8,
+    status: u8,
+) {
+    for (sample_index, sample_delay_ms) in
+        CURRENT_LOOP_COMPAT_FLUX_DELAYS_MS.into_iter().enumerate()
+    {
+        sink.foci_current_validation_axis(compat_current_validation_axis_report(
+            oid,
+            CURRENT_AXIS_FLUX,
+            sample_index as u8,
+            sample_delay_ms,
+        ));
+    }
+    for (sample_index, sample_delay_ms) in
+        CURRENT_LOOP_COMPAT_TORQUE_DELAYS_MS.into_iter().enumerate()
+    {
+        sink.foci_current_validation_axis(compat_current_validation_axis_report(
+            oid,
+            CURRENT_AXIS_TORQUE,
+            sample_index as u8,
+            sample_delay_ms,
+        ));
+    }
+    sink.foci_current_loop_run(commission_current_loop_run_report(oid, status));
+}
+
+fn compat_current_validation_axis_report(
+    oid: u8,
+    axis: u8,
+    sample_index: u8,
+    sample_delay_ms: u16,
+) -> CurrentValidationAxisReport {
+    CurrentValidationAxisReport {
+        oid,
+        axis,
+        sample_index,
+        status: 0,
+        attempt: 0,
+        target: 0,
+        sample_delay_ms,
+        positive_response_permille: 0,
+        negative_response_permille: 0,
+        cross_axis_permille: 0,
+        voltage_output_permille: 0,
+        encoder_delta_counts: 0,
+        status_flags_or: 0,
+    }
+}
+
+fn commission_current_loop_run_report(oid: u8, status: u8) -> CurrentLoopRunReport {
+    CurrentLoopRunReport {
+        oid,
+        status,
+        gains_source: CURRENT_GAINS_SOURCE_MEASURED,
+        axis_split_source: AXIS_SPLIT_SOURCE_NONE,
+        gains_tier: CURRENT_GAINS_TIER_MEASURED_SYMMETRIC,
+        measured_axis_split_permille: 1000,
+        applied_axis_split_permille: 1000,
+        axis_split_clamped: 0,
+        current_validation_axes: CURRENT_VALIDATION_AXIS_TORQUE,
+        flux_validation_sample_count: CURRENT_LOOP_COMPAT_FLUX_DELAYS_MS.len() as u8,
+        torque_validation_sample_count: CURRENT_LOOP_COMPAT_TORQUE_DELAYS_MS.len() as u8,
+        retry_budget_exhausted: 0,
+        failure_reason: CURRENT_LOOP_FAILURE_NONE,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::vec::Vec;
 
     use super::*;
-    use crate::autotune::{CommissionStatus, PhaseId};
+    use crate::autotune::{
+        AXIS_SPLIT_SOURCE_NONE, CURRENT_AXIS_FLUX, CURRENT_AXIS_TORQUE,
+        CURRENT_GAINS_SOURCE_MEASURED, CURRENT_GAINS_TIER_MEASURED_SYMMETRIC,
+        CURRENT_LOOP_FAILURE_NONE, CURRENT_VALIDATION_AXIS_TORQUE, CommissionStatus, PhaseId,
+    };
     use crate::commission_dispatch::ReplyPayload;
     use crate::commissioning::types::{AdcCalResult, CommissionResult, InnerResult, OuterResult};
     use crate::selftest::{
@@ -282,6 +377,36 @@ mod tests {
             signed_count_slope_milli: i32,
             signed_asymmetry_permille: u16,
             drift_permille: u16,
+        },
+        CurrentValidationAxis {
+            oid: u8,
+            axis: u8,
+            sample_index: u8,
+            status: u8,
+            attempt: u8,
+            target: i16,
+            sample_delay_ms: u16,
+            positive_response_permille: u16,
+            negative_response_permille: u16,
+            cross_axis_permille: u16,
+            voltage_output_permille: u16,
+            encoder_delta_counts: u16,
+            status_flags_or: u32,
+        },
+        CurrentLoopRun {
+            oid: u8,
+            status: u8,
+            gains_source: u8,
+            axis_split_source: u8,
+            gains_tier: u8,
+            measured_axis_split_permille: u16,
+            applied_axis_split_permille: u16,
+            axis_split_clamped: u8,
+            current_validation_axes: u8,
+            flux_validation_sample_count: u8,
+            torque_validation_sample_count: u8,
+            retry_budget_exhausted: u8,
+            failure_reason: u8,
         },
         Tune {
             oid: u8,
@@ -356,6 +481,45 @@ mod tests {
                 signed_count_slope_milli: report.signed_count_slope_milli,
                 signed_asymmetry_permille: report.signed_asymmetry_permille,
                 drift_permille: report.drift_permille,
+            });
+        }
+
+        fn foci_current_loop_run(&mut self, report: crate::tmc_diagnostics::CurrentLoopRunReport) {
+            self.events.push(Event::CurrentLoopRun {
+                oid: report.oid,
+                status: report.status,
+                gains_source: report.gains_source,
+                axis_split_source: report.axis_split_source,
+                gains_tier: report.gains_tier,
+                measured_axis_split_permille: report.measured_axis_split_permille,
+                applied_axis_split_permille: report.applied_axis_split_permille,
+                axis_split_clamped: report.axis_split_clamped,
+                current_validation_axes: report.current_validation_axes,
+                flux_validation_sample_count: report.flux_validation_sample_count,
+                torque_validation_sample_count: report.torque_validation_sample_count,
+                retry_budget_exhausted: report.retry_budget_exhausted,
+                failure_reason: report.failure_reason,
+            });
+        }
+
+        fn foci_current_validation_axis(
+            &mut self,
+            report: crate::tmc_diagnostics::CurrentValidationAxisReport,
+        ) {
+            self.events.push(Event::CurrentValidationAxis {
+                oid: report.oid,
+                axis: report.axis,
+                sample_index: report.sample_index,
+                status: report.status,
+                attempt: report.attempt,
+                target: report.target,
+                sample_delay_ms: report.sample_delay_ms,
+                positive_response_permille: report.positive_response_permille,
+                negative_response_permille: report.negative_response_permille,
+                cross_axis_permille: report.cross_axis_permille,
+                voltage_output_permille: report.voltage_output_permille,
+                encoder_delta_counts: report.encoder_delta_counts,
+                status_flags_or: report.status_flags_or,
             });
         }
 
@@ -487,6 +651,122 @@ mod tests {
             synth_position_p: 62,
             synth_position_i: 63,
         }
+    }
+
+    fn current_validation_event(
+        oid: u8,
+        axis: u8,
+        sample_index: u8,
+        sample_delay_ms: u16,
+    ) -> Event {
+        Event::CurrentValidationAxis {
+            oid,
+            axis,
+            sample_index,
+            status: 0,
+            attempt: 0,
+            target: 0,
+            sample_delay_ms,
+            positive_response_permille: 0,
+            negative_response_permille: 0,
+            cross_axis_permille: 0,
+            voltage_output_permille: 0,
+            encoder_delta_counts: 0,
+            status_flags_or: 0,
+        }
+    }
+
+    fn current_loop_compatibility_events(oid: u8, status: u8) -> Vec<Event> {
+        let mut events = Vec::new();
+        for (sample_index, sample_delay_ms) in [1_u16, 2, 5].into_iter().enumerate() {
+            events.push(current_validation_event(
+                oid,
+                CURRENT_AXIS_FLUX,
+                sample_index as u8,
+                sample_delay_ms,
+            ));
+        }
+        for (sample_index, sample_delay_ms) in [1_u16, 2].into_iter().enumerate() {
+            events.push(current_validation_event(
+                oid,
+                CURRENT_AXIS_TORQUE,
+                sample_index as u8,
+                sample_delay_ms,
+            ));
+        }
+        events.push(Event::CurrentLoopRun {
+            oid,
+            status,
+            gains_source: CURRENT_GAINS_SOURCE_MEASURED,
+            axis_split_source: AXIS_SPLIT_SOURCE_NONE,
+            gains_tier: CURRENT_GAINS_TIER_MEASURED_SYMMETRIC,
+            measured_axis_split_permille: 1000,
+            applied_axis_split_permille: 1000,
+            axis_split_clamped: 0,
+            current_validation_axes: CURRENT_VALIDATION_AXIS_TORQUE,
+            flux_validation_sample_count: 3,
+            torque_validation_sample_count: 2,
+            retry_budget_exhausted: 0,
+            failure_reason: CURRENT_LOOP_FAILURE_NONE,
+        });
+        events
+    }
+
+    #[test]
+    fn commission_result_emits_current_loop_evidence_before_terminal_result() {
+        let mut sink = RecordingSink::default();
+        emit_terminal_reply(
+            &mut sink,
+            ReplyPayload::CommissionResult {
+                oid: 6,
+                status: 7,
+                result: commission_result(),
+            },
+        );
+
+        let mut expected = std::vec![
+            Event::ResistanceAxis {
+                oid: 6,
+                electrical_axis: 0,
+                phi_e_ext: 0,
+                r_count_slope_milli: 1040,
+                intercept_count: 5,
+                rmse_permille: 7,
+                selected_mask: 0b1111_1000,
+                signed_count_slope_milli: 1045,
+                signed_asymmetry_permille: 9,
+                drift_permille: 11,
+            },
+            Event::ResistanceAxis {
+                oid: 6,
+                electrical_axis: 1,
+                phi_e_ext: 16_384,
+                r_count_slope_milli: 1060,
+                intercept_count: 6,
+                rmse_permille: 8,
+                selected_mask: 0b0111_1100,
+                signed_count_slope_milli: 1055,
+                signed_asymmetry_permille: 10,
+                drift_permille: 12,
+            },
+            Event::ResistanceRun {
+                oid: 6,
+                status: 0,
+                selected_r_count_slope_milli: 1050,
+                gain_path_count_slope_milli: 16,
+                warning_flags: 0,
+                status_flags_or: 0,
+            },
+        ];
+        expected.extend(current_loop_compatibility_events(6, 7));
+        expected.push(Event::Commission {
+            oid: 6,
+            status: 7,
+            r_int: 11,
+            fallback_velocity_limit: 35,
+        });
+
+        assert_eq!(sink.events, expected);
     }
 
     #[test]
@@ -671,63 +951,65 @@ mod tests {
             },
         );
 
-        assert_eq!(
-            sink.events,
-            std::vec![
-                Event::Calibrate {
-                    oid: 1,
-                    status: 2,
-                    adc_i0: 3,
-                    adc_i1: 4,
-                    encoder_count: 5,
-                },
-                Event::ResistanceAxis {
-                    oid: 6,
-                    electrical_axis: 0,
-                    phi_e_ext: 0,
-                    r_count_slope_milli: 1040,
-                    intercept_count: 5,
-                    rmse_permille: 7,
-                    selected_mask: 0b1111_1000,
-                    signed_count_slope_milli: 1045,
-                    signed_asymmetry_permille: 9,
-                    drift_permille: 11,
-                },
-                Event::ResistanceAxis {
-                    oid: 6,
-                    electrical_axis: 1,
-                    phi_e_ext: 16_384,
-                    r_count_slope_milli: 1060,
-                    intercept_count: 6,
-                    rmse_permille: 8,
-                    selected_mask: 0b0111_1100,
-                    signed_count_slope_milli: 1055,
-                    signed_asymmetry_permille: 10,
-                    drift_permille: 12,
-                },
-                Event::ResistanceRun {
-                    oid: 6,
-                    status: 0,
-                    selected_r_count_slope_milli: 1050,
-                    gain_path_count_slope_milli: 16,
-                    warning_flags: 0,
-                    status_flags_or: 0,
-                },
-                Event::Commission {
-                    oid: 6,
-                    status: 7,
-                    r_int: 11,
-                    fallback_velocity_limit: 35,
-                },
-                Event::Tune {
-                    oid: 8,
-                    status: 9,
-                    velocity_p: 41,
-                    position_p: 44,
-                    warning_code: 52,
-                },
-            ]
-        );
+        let mut expected = std::vec![
+            Event::Calibrate {
+                oid: 1,
+                status: 2,
+                adc_i0: 3,
+                adc_i1: 4,
+                encoder_count: 5,
+            },
+            Event::ResistanceAxis {
+                oid: 6,
+                electrical_axis: 0,
+                phi_e_ext: 0,
+                r_count_slope_milli: 1040,
+                intercept_count: 5,
+                rmse_permille: 7,
+                selected_mask: 0b1111_1000,
+                signed_count_slope_milli: 1045,
+                signed_asymmetry_permille: 9,
+                drift_permille: 11,
+            },
+            Event::ResistanceAxis {
+                oid: 6,
+                electrical_axis: 1,
+                phi_e_ext: 16_384,
+                r_count_slope_milli: 1060,
+                intercept_count: 6,
+                rmse_permille: 8,
+                selected_mask: 0b0111_1100,
+                signed_count_slope_milli: 1055,
+                signed_asymmetry_permille: 10,
+                drift_permille: 12,
+            },
+            Event::ResistanceRun {
+                oid: 6,
+                status: 0,
+                selected_r_count_slope_milli: 1050,
+                gain_path_count_slope_milli: 16,
+                warning_flags: 0,
+                status_flags_or: 0,
+            },
+        ];
+        expected.extend(current_loop_compatibility_events(6, 7));
+        expected.extend([
+            Event::Commission {
+                oid: 6,
+                status: 7,
+                r_int: 11,
+                fallback_velocity_limit: 35,
+            },
+            Event::Tune {
+                oid: 8,
+                status: 9,
+                velocity_p: 41,
+                position_p: 44,
+                warning_code: 52,
+            },
+        ]);
+
+        assert_eq!(sink.events, expected);
     }
 
     #[test]

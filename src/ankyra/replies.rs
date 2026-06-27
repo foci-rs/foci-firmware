@@ -168,6 +168,72 @@ pub struct FociCommissionResult {
     pub inner_warning_flags: u8,
 }
 
+/// `foci_current_loop_run` reply - run-level current-loop commissioning evidence.
+///
+/// Wire name: `foci_current_loop_run`.
+#[klipper_reply]
+pub struct FociCurrentLoopRun {
+    /// Object id of the FOCI endpoint.
+    pub oid: u8,
+    /// Terminal commissioning status code.
+    pub status: u8,
+    /// Stable `CURRENT_GAINS_SOURCE_*` code.
+    pub gains_source: u8,
+    /// Stable `AXIS_SPLIT_SOURCE_*` code.
+    pub axis_split_source: u8,
+    /// Stable `CURRENT_GAINS_TIER_*` code.
+    pub gains_tier: u8,
+    /// Measured axis split ratio, permille where 1000 = 1.000x.
+    pub measured_axis_split_permille: u16,
+    /// Applied axis split ratio after profile clamp, permille.
+    pub applied_axis_split_permille: u16,
+    /// Non-zero when the applied split was clamped below the measured split.
+    pub axis_split_clamped: u8,
+    /// Bitmask of `CURRENT_VALIDATION_AXIS_*` axes that passed validation.
+    pub current_validation_axes: u8,
+    /// Number of flux-axis validation samples emitted for this run.
+    pub flux_validation_sample_count: u8,
+    /// Number of torque-axis validation samples emitted for this run.
+    pub torque_validation_sample_count: u8,
+    /// Non-zero when the section-level retry budget was exhausted.
+    pub retry_budget_exhausted: u8,
+    /// Stable `CURRENT_LOOP_FAILURE_*` code.
+    pub failure_reason: u8,
+}
+
+/// `foci_current_validation_axis` reply - per-axis, per-delay current validation evidence.
+///
+/// Wire name: `foci_current_validation_axis`.
+#[klipper_reply]
+pub struct FociCurrentValidationAxis {
+    /// Object id of the FOCI endpoint.
+    pub oid: u8,
+    /// Stable `CURRENT_AXIS_*` axis identifier.
+    pub axis: u8,
+    /// Zero-based sample index for this axis.
+    pub sample_index: u8,
+    /// Validation status for this axis sample.
+    pub status: u8,
+    /// Retry attempt that produced this sample.
+    pub attempt: u8,
+    /// Signed current target used for the validation pulse.
+    pub target: i16,
+    /// Delay between applying the target and sampling, in milliseconds.
+    pub sample_delay_ms: u16,
+    /// Positive-pulse response normalized to target, in permille.
+    pub positive_response_permille: u16,
+    /// Negative-pulse response normalized to target, in permille.
+    pub negative_response_permille: u16,
+    /// Cross-axis response normalized to target, in permille.
+    pub cross_axis_permille: u16,
+    /// Voltage output normalized to the configured limit, in permille.
+    pub voltage_output_permille: u16,
+    /// Absolute encoder movement observed during the sample.
+    pub encoder_delta_counts: u16,
+    /// TMC4671 `STATUS_FLAGS` accumulated across the sample.
+    pub status_flags_or: u32,
+}
+
 /// `foci_dump_done` reply — emitted at the end of a register dump.
 ///
 /// Wire name: `foci_dump_done`.
@@ -1083,6 +1149,46 @@ mod resistance_reply_size_tests {
         };
 
         assert_fits_with_id(&reply, "foci_resistance_axis");
+    }
+
+    #[test]
+    fn current_loop_run_reply_fits_klipper_message_limit() {
+        let reply = super::FociCurrentLoopRun {
+            oid: u8::MAX,
+            status: u8::MAX,
+            gains_source: u8::MAX,
+            axis_split_source: u8::MAX,
+            gains_tier: u8::MAX,
+            measured_axis_split_permille: u16::MAX,
+            applied_axis_split_permille: u16::MAX,
+            axis_split_clamped: u8::MAX,
+            current_validation_axes: u8::MAX,
+            flux_validation_sample_count: u8::MAX,
+            torque_validation_sample_count: u8::MAX,
+            retry_budget_exhausted: u8::MAX,
+            failure_reason: u8::MAX,
+        };
+        assert_fits_with_id(&reply, "foci_current_loop_run");
+    }
+
+    #[test]
+    fn current_validation_axis_reply_fits_klipper_message_limit() {
+        let reply = super::FociCurrentValidationAxis {
+            oid: u8::MAX,
+            axis: u8::MAX,
+            sample_index: u8::MAX,
+            status: u8::MAX,
+            attempt: u8::MAX,
+            target: i16::MAX,
+            sample_delay_ms: u16::MAX,
+            positive_response_permille: u16::MAX,
+            negative_response_permille: u16::MAX,
+            cross_axis_permille: u16::MAX,
+            voltage_output_permille: u16::MAX,
+            encoder_delta_counts: u16::MAX,
+            status_flags_or: 0x7FFF_FFFF,
+        };
+        assert_fits_with_id(&reply, "foci_current_validation_axis");
     }
 
     #[test]
