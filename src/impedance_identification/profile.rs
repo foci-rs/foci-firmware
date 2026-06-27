@@ -32,8 +32,6 @@ pub(crate) const IMPEDANCE_PER_SAMPLE_OVERHEAD_US: u16 = 500;
 pub struct ImpedanceProfile {
     /// Carrier probe-angle windows sampled by this profile.
     pub angle_points: [ImpedancePoint; IMPEDANCE_PROFILE_POINTS],
-    /// Square-carrier frequency in millihertz.
-    pub carrier_frequency_millihz: u32,
     /// Number of samples captured for each carrier cycle.
     pub samples_per_cycle: u16,
     /// Number of carrier cycles captured at each probe angle.
@@ -146,15 +144,14 @@ impl ImpedanceProfile {
                     ud_abs: 464,
                 },
             ],
-            carrier_frequency_millihz: 100_000,
             samples_per_cycle: 20,
             cycles_per_angle: 8,
             sample_count: IMPEDANCE_SAMPLE_COUNT as u16,
             max_sample_count: IMPEDANCE_SAMPLE_COUNT as u16,
-            sample_interval_us: 500,
+            sample_interval_us: 2_000,
             hold_ud_abs: 640,
             hold_settle_ms: 80,
-            carrier_settle_us: 200,
+            carrier_settle_us: 1_000,
             discard_cycles: 1,
             pwm_maxcnt: 3999,
             bbm_h: 9,
@@ -175,8 +172,8 @@ impl ImpedanceProfile {
             repeatability_fail_permille: 200,
             status_flags_fail_mask: OPENFFBOARD_IMPEDANCE_STATUS_FAIL_MASK,
             status_flags_warn_mask: OPENFFBOARD_IMPEDANCE_STATUS_WARN_MASK,
-            max_window_exposure_budget: 293_000_000,
-            max_total_exposure_budget: 2_926_000_000,
+            max_window_exposure_budget: 586_000_000,
+            max_total_exposure_budget: 5_851_000_000,
             scale_metadata_validated: false,
         }
     }
@@ -193,14 +190,26 @@ impl ImpedanceProfile {
         max
     }
 
+    /// Square-carrier frequency in millihertz, derived from the real sample cadence.
+    pub const fn carrier_frequency_millihz(&self) -> u32 {
+        let carrier_period_us =
+            (self.sample_interval_us as u64).saturating_mul(self.samples_per_cycle as u64);
+        if carrier_period_us == 0 {
+            return 0;
+        }
+
+        (1_000_000_000u64 / carrier_period_us) as u32
+    }
+
     /// Nominal carrier-active duration for each angle window, in milliseconds.
     pub const fn nominal_carrier_window_ms(&self) -> u64 {
-        if self.carrier_frequency_millihz == 0 {
+        let carrier_frequency_millihz = self.carrier_frequency_millihz();
+        if carrier_frequency_millihz == 0 {
             return u64::MAX;
         }
 
         (self.cycles_per_angle as u64).saturating_mul(1_000_000)
-            / (self.carrier_frequency_millihz as u64)
+            / (carrier_frequency_millihz as u64)
     }
 
     /// Budgeted energized duration for each angle window, in milliseconds.

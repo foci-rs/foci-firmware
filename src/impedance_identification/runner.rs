@@ -159,6 +159,7 @@ fn validate_profile(profile: &ImpedanceProfile) -> Result<(), ImpedanceError> {
         || profile.sample_interval_us < MIN_SAMPLE_INTERVAL_US
         || profile.carrier_settle_us >= profile.sample_interval_us
         || profile.samples_per_cycle == 0
+        || profile.carrier_frequency_millihz() == 0
         || usize::from(profile.samples_per_cycle) != CARRIER_REF_Q10.len()
         || profile.cycles_per_angle == 0
         || profile.discard_cycles >= profile.cycles_per_angle

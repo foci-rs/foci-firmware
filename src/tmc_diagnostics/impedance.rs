@@ -133,7 +133,7 @@ fn profile_report(oid: u8, profile: &ImpedanceProfile) -> ImpedanceProfileReport
         point_count: profile.angle_points.len() as u8,
         sample_count: profile.sample_count,
         sample_interval_us: profile.sample_interval_us,
-        carrier_frequency_millihz: profile.carrier_frequency_millihz,
+        carrier_frequency_millihz: profile.carrier_frequency_millihz(),
         samples_per_cycle: profile.samples_per_cycle,
         cycles_per_angle: profile.cycles_per_angle,
         max_ud: profile.max_abs_ud(),
@@ -264,7 +264,7 @@ fn fit_report(oid: u8, point_index: usize, result: &ImpedanceRunResult) -> Imped
     ImpedanceFitReport {
         oid,
         point_index: point_index as u8,
-        frequency_millihz: result.profile.carrier_frequency_millihz,
+        frequency_millihz: result.profile.carrier_frequency_millihz(),
         ud_abs: point.ud_abs,
         axis_max_count_per_ud_milli: result.summary.axis_max_count_per_ud_milli,
         axis_min_count_per_ud_milli: result.summary.axis_min_count_per_ud_milli,
@@ -306,7 +306,7 @@ fn observation_report(
     ImpedanceObservationReport {
         oid,
         point_index: point_index as u8,
-        frequency_millihz: profile.carrier_frequency_millihz,
+        frequency_millihz: profile.carrier_frequency_millihz(),
         ud_abs: point.ud_abs,
         angle_electrical_counts: observation.angle_electrical_counts,
         status_flags_or: 0,
@@ -549,7 +549,7 @@ mod tests {
         let observation = observation_reports(7, &result)[0].expect("first observation report");
         let run = run_report(7, &result);
 
-        assert_eq!(profile.carrier_frequency_millihz, 100_000);
+        assert_eq!(profile.carrier_frequency_millihz, 25_000);
         assert_eq!(profile.samples_per_cycle, 20);
         assert_eq!(profile.cycles_per_angle, 8);
         assert_eq!(fit.mean_response_count_per_ud_milli, 1_000);

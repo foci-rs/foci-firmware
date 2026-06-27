@@ -67,11 +67,17 @@ fn standard_profile_uses_rotating_carrier_shape() {
     assert_eq!(profile.angle_points[2].angle_electrical_counts, 8192);
     assert_eq!(profile.angle_points[6].angle_electrical_counts, 40960);
     assert_eq!(profile.angle_points[9].angle_electrical_counts, 0);
-    assert_eq!(profile.carrier_frequency_millihz, 100_000);
+    assert_eq!(profile.carrier_frequency_millihz(), 25_000);
     assert_eq!(profile.samples_per_cycle, 20);
     assert_eq!(profile.cycles_per_angle, 8);
+    assert_eq!(profile.sample_interval_us, 2_000);
+    assert_eq!(profile.carrier_settle_us, 1_000);
     assert_eq!(profile.sample_count, IMPEDANCE_SAMPLE_COUNT as u16);
     assert_eq!(profile.max_abs_ud(), 1104);
+
+    let mut faster_profile = profile;
+    faster_profile.sample_interval_us = 1_000;
+    assert_eq!(faster_profile.carrier_frequency_millihz(), 50_000);
 }
 
 #[test]
