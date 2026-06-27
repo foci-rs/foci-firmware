@@ -126,7 +126,7 @@ pub async fn run_impedance_identification<B: ImpedanceBackend>(
         Err(_) => return Err(ImpedanceError::BackendIo),
     };
 
-    let profile = ImpedanceProfile::standard_openffboard();
+    let profile = ImpedanceProfile::standard_held_angle_rotating_carrier();
     validate_profile(&profile)?;
     if pidout_ud_limit(saved_voltage_limit) < profile.max_abs_ud() {
         return Err(ImpedanceError::InsufficientVoltageAuthority);

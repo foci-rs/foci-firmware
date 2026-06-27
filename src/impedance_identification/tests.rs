@@ -58,7 +58,7 @@ fn synthetic_observations(
 
 #[test]
 fn standard_profile_uses_rotating_carrier_shape() {
-    let profile = ImpedanceProfile::standard_openffboard();
+    let profile = ImpedanceProfile::standard_held_angle_rotating_carrier();
 
     assert_eq!(IMPEDANCE_PROFILE_POINTS, 10);
     assert_eq!(IMPEDANCE_SAMPLE_COUNT, 160);
@@ -82,7 +82,7 @@ fn standard_profile_uses_rotating_carrier_shape() {
 
 #[test]
 fn fit_impedance_recovers_two_theta_saliency() {
-    let profile = ImpedanceProfile::standard_openffboard();
+    let profile = ImpedanceProfile::standard_held_angle_rotating_carrier();
     let observations = synthetic_observations(&profile, 120, 40, 16_384, 0);
 
     let summary = fit_impedance(&profile, &observations).unwrap();
@@ -98,7 +98,7 @@ fn fit_impedance_recovers_two_theta_saliency() {
 
 #[test]
 fn fit_impedance_reports_repeatability_without_warning_flag() {
-    let profile = ImpedanceProfile::standard_openffboard();
+    let profile = ImpedanceProfile::standard_held_angle_rotating_carrier();
     let mut observations = synthetic_observations(&profile, 120, 40, 0, 0);
     observations[IMPEDANCE_POST_SWEEP_ZERO_INDEX].inductive_response_count_per_ud_milli = 90;
     observations[IMPEDANCE_STABILITY_ZERO_INDEX].inductive_response_count_per_ud_milli = 120;
@@ -115,7 +115,7 @@ fn fit_impedance_reports_repeatability_without_warning_flag() {
 
 #[test]
 fn fit_impedance_rejects_clustered_angle_coverage() {
-    let profile = ImpedanceProfile::standard_openffboard();
+    let profile = ImpedanceProfile::standard_held_angle_rotating_carrier();
     let mut observations = synthetic_observations(&profile, 120, 40, 0, 0);
     for observation in &mut observations[2..7] {
         observation.angle_electrical_counts = 0;
@@ -128,7 +128,7 @@ fn fit_impedance_rejects_clustered_angle_coverage() {
 
 #[test]
 fn fit_impedance_rejects_high_residual_failure() {
-    let profile = ImpedanceProfile::standard_openffboard();
+    let profile = ImpedanceProfile::standard_held_angle_rotating_carrier();
     let observations = synthetic_observations(&profile, 120, 40, 0, 800);
 
     let err = fit_impedance(&profile, &observations).unwrap_err();
@@ -138,7 +138,7 @@ fn fit_impedance_rejects_high_residual_failure() {
 
 #[test]
 fn angle_accumulator_projects_current_onto_probe_axis() {
-    let profile = ImpedanceProfile::standard_openffboard();
+    let profile = ImpedanceProfile::standard_held_angle_rotating_carrier();
     let mut accumulator = ImpedanceAngleAccumulator::new(16_384, 1000);
 
     accumulator.accumulate(
@@ -362,7 +362,7 @@ impl FakeImpedanceBackend {
     }
 
     fn current_sample(&self) -> u32 {
-        let profile = ImpedanceProfile::standard_openffboard();
+        let profile = ImpedanceProfile::standard_held_angle_rotating_carrier();
         let carrier_d = i32::from(self.last_ud()) - i32::from(profile.hold_ud_abs);
         let carrier_q = i32::from(self.last_uq());
         let carrier_sq = carrier_d
@@ -633,7 +633,7 @@ fn runner_setup_readback_mismatch_blocks_first_carrier_write() {
 
 #[test]
 fn runner_rotates_carrier_vector_around_fixed_hold_angle() {
-    let profile = ImpedanceProfile::standard_openffboard();
+    let profile = ImpedanceProfile::standard_held_angle_rotating_carrier();
     let mut backend = FakeImpedanceBackend::standard();
 
     let result = block_on(run_impedance_identification(&mut backend));
@@ -693,7 +693,7 @@ fn runner_snapshots_disables_and_restores_torque_flux_filters() {
 
 #[test]
 fn runner_records_failing_angle_observation_on_encoder_hard_abort() {
-    let profile = ImpedanceProfile::standard_openffboard();
+    let profile = ImpedanceProfile::standard_held_angle_rotating_carrier();
     let mut backend = FakeImpedanceBackend::standard().with_encoder_script(&[1000, 1136, 1136]);
 
     let err = block_on(run_impedance_identification(&mut backend)).unwrap_err();

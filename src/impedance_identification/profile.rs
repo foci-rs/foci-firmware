@@ -97,8 +97,8 @@ pub struct ImpedanceProfile {
 }
 
 impl ImpedanceProfile {
-    /// Build the starting OpenFFBoard held-angle rotating-carrier impedance profile.
-    pub const fn standard_openffboard() -> Self {
+    /// Build the standard held-angle rotating-carrier impedance profile.
+    pub const fn standard_held_angle_rotating_carrier() -> Self {
         Self {
             // Roles: warmup zero, reference zero, sweep, return-settle zero,
             // post-sweep zero measurement, stability zero check.

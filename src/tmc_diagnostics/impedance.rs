@@ -438,7 +438,7 @@ where
         return DiagnosticOutcome::NotDiagnostic(req);
     };
     let detail = normalize_diagnostic_detail(detail);
-    let profile = ImpedanceProfile::standard_openffboard();
+    let profile = ImpedanceProfile::standard_held_angle_rotating_carrier();
     let profile_report = profile_report(oid, &profile);
 
     if ctx.readiness.homing_active
@@ -495,7 +495,7 @@ mod tests {
 
     #[test]
     fn result_maps_held_angle_evidence_into_reports() {
-        let profile = ImpedanceProfile::standard_openffboard();
+        let profile = ImpedanceProfile::standard_held_angle_rotating_carrier();
         let mut observations = [ImpedanceAngleObservation::EMPTY; IMPEDANCE_PROFILE_POINTS];
         observations[0] = ImpedanceAngleObservation {
             angle_electrical_counts: 0,
@@ -569,7 +569,7 @@ mod tests {
 
     #[test]
     fn failure_attempt_reports_preserve_captured_observations() {
-        let profile = ImpedanceProfile::standard_openffboard();
+        let profile = ImpedanceProfile::standard_held_angle_rotating_carrier();
         let mut observations = [None; IMPEDANCE_PROFILE_POINTS];
         observations[0] = Some(ImpedanceAngleObservation {
             angle_electrical_counts: profile.angle_points[0].angle_electrical_counts,
@@ -608,7 +608,7 @@ mod tests {
 
     #[test]
     fn failure_run_report_preserves_final_duplicate_zero_evidence() {
-        let profile = ImpedanceProfile::standard_openffboard();
+        let profile = ImpedanceProfile::standard_held_angle_rotating_carrier();
         let mut observations = [None; IMPEDANCE_PROFILE_POINTS];
         observations[IMPEDANCE_POST_SWEEP_ZERO_INDEX] = Some(ImpedanceAngleObservation {
             angle_electrical_counts: profile.angle_points[IMPEDANCE_POST_SWEEP_ZERO_INDEX]
@@ -669,7 +669,7 @@ mod tests {
 
     #[test]
     fn failure_run_report_ignores_return_zero_settle_evidence() {
-        let profile = ImpedanceProfile::standard_openffboard();
+        let profile = ImpedanceProfile::standard_held_angle_rotating_carrier();
         let mut observations = [None; IMPEDANCE_PROFILE_POINTS];
         observations[IMPEDANCE_RETURN_ZERO_SETTLE_INDEX] = Some(ImpedanceAngleObservation {
             angle_electrical_counts: profile.angle_points[IMPEDANCE_RETURN_ZERO_SETTLE_INDEX]
