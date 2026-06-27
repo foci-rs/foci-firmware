@@ -8,11 +8,10 @@ use foci_tmc4671::registers::{
 };
 
 use crate::impedance_identification::{
-    IMPEDANCE_PROFILE_POINTS, ImpedanceBackend, ImpedanceBackendError, ImpedanceError,
-    ImpedanceFitPoint, ImpedancePointObservation, ImpedancePowerStageReadback, ImpedanceProfile,
-    ImpedanceReadbackMismatch, PULSATING_IMPEDANCE_PROFILE_POINTS, PULSATING_POST_SWEEP_ZERO_INDEX,
-    PULSATING_STABILITY_ZERO_INDEX, PulsatingAngleObservation, PulsatingImpedanceProfile,
-    PulsatingImpedanceRunResult, run_pulsating_impedance_identification,
+    IMPEDANCE_POST_SWEEP_ZERO_INDEX, IMPEDANCE_PROFILE_POINTS, IMPEDANCE_STABILITY_ZERO_INDEX,
+    ImpedanceAngleObservation, ImpedanceBackend, ImpedanceBackendError, ImpedanceError,
+    ImpedancePowerStageReadback, ImpedanceProfile, ImpedanceReadbackMismatch, ImpedanceRunResult,
+    run_impedance_identification,
 };
 use crate::tmc::{TmcRequest, TmcRequestKind, normalize_diagnostic_detail};
 
@@ -34,11 +33,7 @@ pub(crate) struct DiagnosticImpedanceBackend<'ctx, 'a, B, D> {
     ctx: &'ctx mut DiagnosticContext<'a, B, D>,
     status_flags_or: u32,
     power_stage_readback: ImpedancePowerStageReadback,
-    fit_attempts: [Option<ImpedanceFitPoint>; IMPEDANCE_PROFILE_POINTS],
-    baselines: [Option<crate::impedance_identification::ImpedanceBaselineObservation>;
-        IMPEDANCE_PROFILE_POINTS],
-    observations: [Option<ImpedancePointObservation>; IMPEDANCE_PROFILE_POINTS],
-    pulsating_observations: [Option<PulsatingAngleObservation>; PULSATING_IMPEDANCE_PROFILE_POINTS],
+    observations: [Option<ImpedanceAngleObservation>; IMPEDANCE_PROFILE_POINTS],
     readback_mismatch: ImpedanceReadbackMismatch,
 }
 
@@ -48,10 +43,7 @@ impl<'ctx, 'a, B, D> DiagnosticImpedanceBackend<'ctx, 'a, B, D> {
             ctx,
             status_flags_or: 0,
             power_stage_readback: ImpedancePowerStageReadback::EMPTY,
-            fit_attempts: [None; IMPEDANCE_PROFILE_POINTS],
-            baselines: [None; IMPEDANCE_PROFILE_POINTS],
             observations: [None; IMPEDANCE_PROFILE_POINTS],
-            pulsating_observations: [None; PULSATING_IMPEDANCE_PROFILE_POINTS],
             readback_mismatch: ImpedanceReadbackMismatch::EMPTY,
         }
     }
@@ -110,49 +102,19 @@ where
         self.ctx.runtime.is_motor_enabled() && self.ctx.runtime.is_calibrated()
     }
 
-    fn profile(&self) -> ImpedanceProfile {
-        ImpedanceProfile::standard_openffboard()
-    }
-
     fn encoder_counts_per_rev(&self) -> u32 {
         crate::state::tmc::tmc_channel(self.ctx.runtime.channel())
             .map(|state| state.encoder_ppr.load(Relaxed).saturating_mul(4))
             .unwrap_or(0)
     }
 
-    fn record_point_observation(
+    fn record_angle_observation(
         &mut self,
         point_index: usize,
-        observation: ImpedancePointObservation,
+        observation: ImpedanceAngleObservation,
     ) {
         if let Some(slot) = self.observations.get_mut(point_index) {
             *slot = Some(observation);
-        }
-    }
-
-    fn record_baseline_observation(
-        &mut self,
-        point_index: usize,
-        observation: crate::impedance_identification::ImpedanceBaselineObservation,
-    ) {
-        if let Some(slot) = self.baselines.get_mut(point_index) {
-            *slot = Some(observation);
-        }
-    }
-
-    fn record_pulsating_angle_observation(
-        &mut self,
-        point_index: usize,
-        observation: PulsatingAngleObservation,
-    ) {
-        if let Some(slot) = self.pulsating_observations.get_mut(point_index) {
-            *slot = Some(observation);
-        }
-    }
-
-    fn record_fit_attempt(&mut self, point_index: usize, fit: ImpedanceFitPoint) {
-        if let Some(slot) = self.fit_attempts.get_mut(point_index) {
-            *slot = Some(fit);
         }
     }
 
@@ -165,7 +127,7 @@ where
     }
 }
 
-fn profile_report(oid: u8, profile: &PulsatingImpedanceProfile) -> ImpedanceProfileReport {
+fn profile_report(oid: u8, profile: &ImpedanceProfile) -> ImpedanceProfileReport {
     ImpedanceProfileReport {
         oid,
         point_count: profile.angle_points.len() as u8,
@@ -188,7 +150,7 @@ fn profile_report(oid: u8, profile: &PulsatingImpedanceProfile) -> ImpedanceProf
     }
 }
 
-fn run_report(oid: u8, result: &PulsatingImpedanceRunResult) -> ImpedanceRunReport {
+fn run_report(oid: u8, result: &ImpedanceRunResult) -> ImpedanceRunReport {
     let observations = result.angle_observations.map(Some);
     let duplicate_zero = duplicate_zero_evidence(&observations);
 
@@ -225,12 +187,12 @@ fn failed_run_report(
     report
 }
 
-fn failed_pulsating_run_report(
+fn failed_observed_run_report(
     oid: u8,
     status: u8,
     status_flags_or: u32,
     readback_mismatch: ImpedanceReadbackMismatch,
-    observations: &[Option<PulsatingAngleObservation>; PULSATING_IMPEDANCE_PROFILE_POINTS],
+    observations: &[Option<ImpedanceAngleObservation>; IMPEDANCE_PROFILE_POINTS],
 ) -> ImpedanceRunReport {
     let mut report = failed_run_report(oid, status, status_flags_or, readback_mismatch);
     let duplicate_zero = duplicate_zero_evidence(observations);
@@ -253,17 +215,17 @@ impl DuplicateZeroEvidence {
 }
 
 fn duplicate_zero_evidence(
-    observations: &[Option<PulsatingAngleObservation>; PULSATING_IMPEDANCE_PROFILE_POINTS],
+    observations: &[Option<ImpedanceAngleObservation>; IMPEDANCE_PROFILE_POINTS],
 ) -> DuplicateZeroEvidence {
     indexed_duplicate_zero_evidence(
         observations,
-        PULSATING_POST_SWEEP_ZERO_INDEX,
-        PULSATING_STABILITY_ZERO_INDEX,
+        IMPEDANCE_POST_SWEEP_ZERO_INDEX,
+        IMPEDANCE_STABILITY_ZERO_INDEX,
     )
 }
 
 fn indexed_duplicate_zero_evidence(
-    observations: &[Option<PulsatingAngleObservation>; PULSATING_IMPEDANCE_PROFILE_POINTS],
+    observations: &[Option<ImpedanceAngleObservation>; IMPEDANCE_PROFILE_POINTS],
     first_index: usize,
     second_index: usize,
 ) -> DuplicateZeroEvidence {
@@ -296,46 +258,7 @@ fn repeatability_permille(first: u32, second: u32) -> u16 {
     ((diff * 1_000 + mean / 2) / mean).min(u64::from(u16::MAX)) as u16
 }
 
-#[allow(dead_code)]
-fn fit_report(
-    oid: u8,
-    point_index: usize,
-    profile: &ImpedanceProfile,
-    fit: ImpedanceFitPoint,
-) -> ImpedanceFitReport {
-    let point = profile.injection_points[point_index];
-    ImpedanceFitReport {
-        oid,
-        point_index: point_index as u8,
-        frequency_millihz: point.frequency_millihz,
-        ud_abs: point.ud_abs,
-        axis_max_count_per_ud_milli: fit.axis_max_count_per_ud_milli,
-        axis_min_count_per_ud_milli: fit.axis_min_count_per_ud_milli,
-        axis_angle_electrical_counts: fit.axis_angle_electrical_counts,
-        residual_permille: fit.residual_permille,
-        coverage_permille: fit.coverage_permille,
-        scalar_2f_mismatch_permille: fit.scalar_2f_mismatch_permille,
-        mean_response_count_per_ud_milli: 0,
-        saliency_permille: 0,
-        saliency_determinable: 0,
-        angle_coverage_permille: 0,
-        axis_deviation_counts: 0,
-        inductive_response_count_per_ud_milli: 0,
-        in_phase_response_count_per_ud_milli: 0,
-        secondary_adc_response_count_per_ud_milli: 0,
-        magnitude_mean_count_per_ud_milli: fit.magnitude_mean_count_per_ud_milli,
-        magnitude_2f_count_per_ud_milli: fit.magnitude_2f_count_per_ud_milli,
-        magnitude_2f_residual_permille: fit.magnitude_2f_residual_permille,
-        magnitude_2f_coverage_permille: fit.magnitude_2f_coverage_permille,
-        warning_flags: fit.warning_flags.0,
-    }
-}
-
-fn pulsating_fit_report(
-    oid: u8,
-    point_index: usize,
-    result: &PulsatingImpedanceRunResult,
-) -> ImpedanceFitReport {
+fn fit_report(oid: u8, point_index: usize, result: &ImpedanceRunResult) -> ImpedanceFitReport {
     let point = result.profile.angle_points[point_index];
     let observation = result.angle_observations[point_index];
     ImpedanceFitReport {
@@ -368,67 +291,16 @@ fn pulsating_fit_report(
 
 fn fit_reports(
     oid: u8,
-    result: &PulsatingImpedanceRunResult,
-) -> [Option<ImpedanceFitReport>; PULSATING_IMPEDANCE_PROFILE_POINTS] {
-    core::array::from_fn(|index| Some(pulsating_fit_report(oid, index, result)))
+    result: &ImpedanceRunResult,
+) -> [Option<ImpedanceFitReport>; IMPEDANCE_PROFILE_POINTS] {
+    core::array::from_fn(|index| Some(fit_report(oid, index, result)))
 }
 
-#[allow(dead_code)]
-fn fit_attempt_reports(
-    oid: u8,
-    profile: &ImpedanceProfile,
-    attempts: &[Option<ImpedanceFitPoint>; IMPEDANCE_PROFILE_POINTS],
-) -> [Option<ImpedanceFitReport>; PULSATING_IMPEDANCE_PROFILE_POINTS] {
-    core::array::from_fn(|index| {
-        attempts
-            .get(index)
-            .and_then(|fit| fit.map(|fit| fit_report(oid, index, profile, fit)))
-    })
-}
-
-#[allow(dead_code)]
 fn observation_report(
     oid: u8,
     point_index: usize,
     profile: &ImpedanceProfile,
-    observation: ImpedancePointObservation,
-) -> ImpedanceObservationReport {
-    let point = profile.injection_points[point_index];
-    ImpedanceObservationReport {
-        oid,
-        point_index: point_index as u8,
-        frequency_millihz: point.frequency_millihz,
-        ud_abs: point.ud_abs,
-        angle_electrical_counts: 0,
-        status_flags_or: observation.status_flags_or,
-        openloop_phi_sample: observation.openloop_phi_sample,
-        openloop_velocity_actual: observation.openloop_velocity_actual,
-        adc_iux_sample: observation.adc_iux_sample,
-        adc_iwy_sample: observation.adc_iwy_sample,
-        foc_iux_sample: observation.foc_iux_sample,
-        foc_iwy_sample: observation.foc_iwy_sample,
-        foc_uq_sample: observation.foc_uq_sample,
-        foc_ud_sample: observation.foc_ud_sample,
-        foc_uq_limited_sample: observation.foc_uq_limited_sample,
-        foc_ud_limited_sample: observation.foc_ud_limited_sample,
-        foc_iq_sample: observation.foc_iq_sample,
-        foc_id_sample: observation.foc_id_sample,
-        inductive_response_count_per_ud_milli: 0,
-        in_phase_response_count_per_ud_milli: 0,
-        encoder_before: 0,
-        encoder_after: 0,
-        encoder_min: 0,
-        encoder_max: 0,
-        encoder_peak_counts: 0,
-        angle_valid: 0,
-    }
-}
-
-fn pulsating_observation_report(
-    oid: u8,
-    point_index: usize,
-    profile: &PulsatingImpedanceProfile,
-    observation: PulsatingAngleObservation,
+    observation: ImpedanceAngleObservation,
 ) -> ImpedanceObservationReport {
     let point = profile.angle_points[point_index];
     ImpedanceObservationReport {
@@ -463,10 +335,10 @@ fn pulsating_observation_report(
 
 fn observation_reports(
     oid: u8,
-    result: &PulsatingImpedanceRunResult,
-) -> [Option<ImpedanceObservationReport>; PULSATING_IMPEDANCE_PROFILE_POINTS] {
+    result: &ImpedanceRunResult,
+) -> [Option<ImpedanceObservationReport>; IMPEDANCE_PROFILE_POINTS] {
     core::array::from_fn(|index| {
-        Some(pulsating_observation_report(
+        Some(observation_report(
             oid,
             index,
             &result.profile,
@@ -475,86 +347,34 @@ fn observation_reports(
     })
 }
 
-fn pulsating_observation_attempt_reports(
+fn observation_attempt_reports(
     oid: u8,
-    profile: &PulsatingImpedanceProfile,
-    observations: &[Option<PulsatingAngleObservation>; PULSATING_IMPEDANCE_PROFILE_POINTS],
-) -> [Option<ImpedanceObservationReport>; PULSATING_IMPEDANCE_PROFILE_POINTS] {
-    core::array::from_fn(|index| {
-        observations[index]
-            .map(|observation| pulsating_observation_report(oid, index, profile, observation))
-    })
-}
-
-#[allow(dead_code)]
-fn baseline_report(
-    oid: u8,
-    point_index: usize,
     profile: &ImpedanceProfile,
-    baseline: crate::impedance_identification::ImpedanceBaselineObservation,
-) -> ImpedanceBaselineReport {
-    let point = profile.injection_points[point_index];
-    ImpedanceBaselineReport {
-        oid,
-        point_index: point_index as u8,
-        frequency_millihz: point.frequency_millihz,
-        ud_abs: point.ud_abs,
-        dc_adc_iux_sample: baseline.dc_adc_iux_sample,
-        dc_adc_iwy_sample: baseline.dc_adc_iwy_sample,
-        dc_foc_iux_sample: baseline.dc_foc_iux_sample,
-        dc_foc_iwy_sample: baseline.dc_foc_iwy_sample,
-        dc_foc_iq_sample: baseline.dc_foc_iq_sample,
-        dc_foc_id_sample: baseline.dc_foc_id_sample,
-    }
+    observations: &[Option<ImpedanceAngleObservation>; IMPEDANCE_PROFILE_POINTS],
+) -> [Option<ImpedanceObservationReport>; IMPEDANCE_PROFILE_POINTS] {
+    core::array::from_fn(|index| {
+        observations[index].map(|observation| observation_report(oid, index, profile, observation))
+    })
 }
 
 fn baseline_reports(
     oid: u8,
-    result: &PulsatingImpedanceRunResult,
-) -> [Option<ImpedanceBaselineReport>; PULSATING_IMPEDANCE_PROFILE_POINTS] {
+    result: &ImpedanceRunResult,
+) -> [Option<ImpedanceBaselineReport>; IMPEDANCE_PROFILE_POINTS] {
     let _ = (oid, result);
-    [None; PULSATING_IMPEDANCE_PROFILE_POINTS]
+    [None; IMPEDANCE_PROFILE_POINTS]
 }
 
-#[allow(dead_code)]
-fn baseline_attempt_reports(
-    oid: u8,
-    profile: &ImpedanceProfile,
-    baselines: &[Option<crate::impedance_identification::ImpedanceBaselineObservation>;
-         IMPEDANCE_PROFILE_POINTS],
-) -> [Option<ImpedanceBaselineReport>; PULSATING_IMPEDANCE_PROFILE_POINTS] {
-    core::array::from_fn(|index| {
-        baselines.get(index).and_then(|baseline| {
-            baseline.map(|baseline| baseline_report(oid, index, profile, baseline))
-        })
-    })
+fn empty_fit_reports() -> [Option<ImpedanceFitReport>; IMPEDANCE_PROFILE_POINTS] {
+    [None; IMPEDANCE_PROFILE_POINTS]
 }
 
-#[allow(dead_code)]
-fn observation_attempt_reports(
-    oid: u8,
-    profile: &ImpedanceProfile,
-    observations: &[Option<ImpedancePointObservation>; IMPEDANCE_PROFILE_POINTS],
-) -> [Option<ImpedanceObservationReport>; PULSATING_IMPEDANCE_PROFILE_POINTS] {
-    core::array::from_fn(|index| {
-        observations.get(index).and_then(|observation| {
-            observation.map(|observation| observation_report(oid, index, profile, observation))
-        })
-    })
+fn empty_baseline_reports() -> [Option<ImpedanceBaselineReport>; IMPEDANCE_PROFILE_POINTS] {
+    [None; IMPEDANCE_PROFILE_POINTS]
 }
 
-fn empty_fit_reports() -> [Option<ImpedanceFitReport>; PULSATING_IMPEDANCE_PROFILE_POINTS] {
-    [None; PULSATING_IMPEDANCE_PROFILE_POINTS]
-}
-
-fn empty_baseline_reports() -> [Option<ImpedanceBaselineReport>; PULSATING_IMPEDANCE_PROFILE_POINTS]
-{
-    [None; PULSATING_IMPEDANCE_PROFILE_POINTS]
-}
-
-fn empty_observation_reports()
--> [Option<ImpedanceObservationReport>; PULSATING_IMPEDANCE_PROFILE_POINTS] {
-    [None; PULSATING_IMPEDANCE_PROFILE_POINTS]
+fn empty_observation_reports() -> [Option<ImpedanceObservationReport>; IMPEDANCE_PROFILE_POINTS] {
+    [None; IMPEDANCE_PROFILE_POINTS]
 }
 
 fn status_code(error: ImpedanceError) -> u8 {
@@ -582,9 +402,9 @@ fn status_code(error: ImpedanceError) -> u8 {
 fn handled(
     profile: ImpedanceProfileReport,
     run: ImpedanceRunReport,
-    fits: [Option<ImpedanceFitReport>; PULSATING_IMPEDANCE_PROFILE_POINTS],
-    baselines: [Option<ImpedanceBaselineReport>; PULSATING_IMPEDANCE_PROFILE_POINTS],
-    observations: [Option<ImpedanceObservationReport>; PULSATING_IMPEDANCE_PROFILE_POINTS],
+    fits: [Option<ImpedanceFitReport>; IMPEDANCE_PROFILE_POINTS],
+    baselines: [Option<ImpedanceBaselineReport>; IMPEDANCE_PROFILE_POINTS],
+    observations: [Option<ImpedanceObservationReport>; IMPEDANCE_PROFILE_POINTS],
     detail: u8,
 ) -> DiagnosticOutcome {
     DiagnosticOutcome::Handled(DiagnosticReport::ImpedanceTest {
@@ -618,7 +438,7 @@ where
         return DiagnosticOutcome::NotDiagnostic(req);
     };
     let detail = normalize_diagnostic_detail(detail);
-    let profile = PulsatingImpedanceProfile::standard_openffboard();
+    let profile = ImpedanceProfile::standard_openffboard();
     let profile_report = profile_report(oid, &profile);
 
     if ctx.readiness.homing_active
@@ -638,7 +458,7 @@ where
 
     let mut backend = DiagnosticImpedanceBackend::new(&mut ctx);
 
-    match run_pulsating_impedance_identification(&mut backend).await {
+    match run_impedance_identification(&mut backend).await {
         Ok(result) => {
             let run = run_report(oid, &result);
             let fits = fit_reports(oid, &result);
@@ -648,16 +468,16 @@ where
         }
         Err(error) => handled(
             profile_report,
-            failed_pulsating_run_report(
+            failed_observed_run_report(
                 oid,
                 status_code(error),
                 backend.status_flags_or,
                 backend.readback_mismatch,
-                &backend.pulsating_observations,
+                &backend.observations,
             ),
             empty_fit_reports(),
             empty_baseline_reports(),
-            pulsating_observation_attempt_reports(oid, &profile, &backend.pulsating_observations),
+            observation_attempt_reports(oid, &profile, &backend.observations),
             detail,
         ),
     }
@@ -666,19 +486,18 @@ where
 #[cfg(test)]
 mod tests {
     use crate::impedance_identification::{
-        ImpedancePowerStageReadback, ImpedanceReadbackMismatch, ImpedanceWarningFlags,
-        PULSATING_RETURN_ZERO_SETTLE_INDEX, PulsatingAngleObservation, PulsatingFilterState,
-        PulsatingFitSummary,
+        IMPEDANCE_RETURN_ZERO_SETTLE_INDEX, ImpedanceAngleObservation, ImpedanceFilterState,
+        ImpedanceFitSummary, ImpedancePowerStageReadback, ImpedanceReadbackMismatch,
+        ImpedanceWarningFlags,
     };
 
     use super::*;
 
     #[test]
-    fn pulsating_result_maps_held_angle_evidence_into_reports() {
-        let profile = PulsatingImpedanceProfile::standard_openffboard();
-        let mut observations =
-            [PulsatingAngleObservation::EMPTY; PULSATING_IMPEDANCE_PROFILE_POINTS];
-        observations[0] = PulsatingAngleObservation {
+    fn result_maps_held_angle_evidence_into_reports() {
+        let profile = ImpedanceProfile::standard_openffboard();
+        let mut observations = [ImpedanceAngleObservation::EMPTY; IMPEDANCE_PROFILE_POINTS];
+        observations[0] = ImpedanceAngleObservation {
             angle_electrical_counts: 0,
             ud_abs: 640,
             inductive_response_count_per_ud_milli: 1_300,
@@ -698,10 +517,10 @@ mod tests {
             valid: true,
             warning_flags: ImpedanceWarningFlags::ANGLE_LOCAL_MOTION,
         };
-        let result = PulsatingImpedanceRunResult {
+        let result = ImpedanceRunResult {
             profile,
             angle_observations: observations,
-            summary: PulsatingFitSummary {
+            summary: ImpedanceFitSummary {
                 mean_response_count_per_ud_milli: 1_000,
                 axis_max_count_per_ud_milli: 1_300,
                 axis_min_count_per_ud_milli: 700,
@@ -717,7 +536,7 @@ mod tests {
             status_flags_or: 0,
             power_stage_readback: ImpedancePowerStageReadback::EMPTY,
             readback_mismatch: ImpedanceReadbackMismatch::EMPTY,
-            filter_state: PulsatingFilterState {
+            filter_state: ImpedanceFilterState {
                 torque_enable_before: 1,
                 flux_enable_before: 1,
                 torque_enable_during: 0,
@@ -749,10 +568,10 @@ mod tests {
     }
 
     #[test]
-    fn pulsating_failure_attempt_reports_preserve_captured_observations() {
-        let profile = PulsatingImpedanceProfile::standard_openffboard();
-        let mut observations = [None; PULSATING_IMPEDANCE_PROFILE_POINTS];
-        observations[0] = Some(PulsatingAngleObservation {
+    fn failure_attempt_reports_preserve_captured_observations() {
+        let profile = ImpedanceProfile::standard_openffboard();
+        let mut observations = [None; IMPEDANCE_PROFILE_POINTS];
+        observations[0] = Some(ImpedanceAngleObservation {
             angle_electrical_counts: profile.angle_points[0].angle_electrical_counts,
             ud_abs: profile.angle_points[0].ud_abs,
             inductive_response_count_per_ud_milli: 0,
@@ -773,7 +592,7 @@ mod tests {
             warning_flags: ImpedanceWarningFlags::NONE,
         });
 
-        let reports = pulsating_observation_attempt_reports(7, &profile, &observations);
+        let reports = observation_attempt_reports(7, &profile, &observations);
 
         let observation = reports[0].expect("first observation report");
         assert_eq!(observation.oid, 7);
@@ -788,13 +607,13 @@ mod tests {
     }
 
     #[test]
-    fn pulsating_failure_run_report_preserves_final_duplicate_zero_evidence() {
-        let profile = PulsatingImpedanceProfile::standard_openffboard();
-        let mut observations = [None; PULSATING_IMPEDANCE_PROFILE_POINTS];
-        observations[PULSATING_POST_SWEEP_ZERO_INDEX] = Some(PulsatingAngleObservation {
-            angle_electrical_counts: profile.angle_points[PULSATING_POST_SWEEP_ZERO_INDEX]
+    fn failure_run_report_preserves_final_duplicate_zero_evidence() {
+        let profile = ImpedanceProfile::standard_openffboard();
+        let mut observations = [None; IMPEDANCE_PROFILE_POINTS];
+        observations[IMPEDANCE_POST_SWEEP_ZERO_INDEX] = Some(ImpedanceAngleObservation {
+            angle_electrical_counts: profile.angle_points[IMPEDANCE_POST_SWEEP_ZERO_INDEX]
                 .angle_electrical_counts,
-            ud_abs: profile.angle_points[PULSATING_POST_SWEEP_ZERO_INDEX].ud_abs,
+            ud_abs: profile.angle_points[IMPEDANCE_POST_SWEEP_ZERO_INDEX].ud_abs,
             inductive_response_count_per_ud_milli: 1_000,
             in_phase_response_count_per_ud_milli: 25,
             secondary_adc_response_count_per_ud_milli: 9,
@@ -812,10 +631,10 @@ mod tests {
             valid: true,
             warning_flags: ImpedanceWarningFlags::NONE,
         });
-        observations[PULSATING_STABILITY_ZERO_INDEX] = Some(PulsatingAngleObservation {
-            angle_electrical_counts: profile.angle_points[PULSATING_STABILITY_ZERO_INDEX]
+        observations[IMPEDANCE_STABILITY_ZERO_INDEX] = Some(ImpedanceAngleObservation {
+            angle_electrical_counts: profile.angle_points[IMPEDANCE_STABILITY_ZERO_INDEX]
                 .angle_electrical_counts,
-            ud_abs: profile.angle_points[PULSATING_STABILITY_ZERO_INDEX].ud_abs,
+            ud_abs: profile.angle_points[IMPEDANCE_STABILITY_ZERO_INDEX].ud_abs,
             inductive_response_count_per_ud_milli: 700,
             in_phase_response_count_per_ud_milli: 20,
             secondary_adc_response_count_per_ud_milli: 8,
@@ -834,7 +653,7 @@ mod tests {
             warning_flags: ImpedanceWarningFlags::NONE,
         });
 
-        let report = failed_pulsating_run_report(
+        let report = failed_observed_run_report(
             7,
             IMPEDANCE_STATUS_REPEATABILITY,
             0x20,
@@ -849,13 +668,13 @@ mod tests {
     }
 
     #[test]
-    fn pulsating_failure_run_report_ignores_return_zero_settle_evidence() {
-        let profile = PulsatingImpedanceProfile::standard_openffboard();
-        let mut observations = [None; PULSATING_IMPEDANCE_PROFILE_POINTS];
-        observations[PULSATING_RETURN_ZERO_SETTLE_INDEX] = Some(PulsatingAngleObservation {
-            angle_electrical_counts: profile.angle_points[PULSATING_RETURN_ZERO_SETTLE_INDEX]
+    fn failure_run_report_ignores_return_zero_settle_evidence() {
+        let profile = ImpedanceProfile::standard_openffboard();
+        let mut observations = [None; IMPEDANCE_PROFILE_POINTS];
+        observations[IMPEDANCE_RETURN_ZERO_SETTLE_INDEX] = Some(ImpedanceAngleObservation {
+            angle_electrical_counts: profile.angle_points[IMPEDANCE_RETURN_ZERO_SETTLE_INDEX]
                 .angle_electrical_counts,
-            ud_abs: profile.angle_points[PULSATING_RETURN_ZERO_SETTLE_INDEX].ud_abs,
+            ud_abs: profile.angle_points[IMPEDANCE_RETURN_ZERO_SETTLE_INDEX].ud_abs,
             inductive_response_count_per_ud_milli: 124,
             in_phase_response_count_per_ud_milli: 977,
             secondary_adc_response_count_per_ud_milli: 0,
@@ -873,10 +692,10 @@ mod tests {
             valid: false,
             warning_flags: ImpedanceWarningFlags::ANGLE_LOCAL_MOTION,
         });
-        observations[PULSATING_POST_SWEEP_ZERO_INDEX] = Some(PulsatingAngleObservation {
-            angle_electrical_counts: profile.angle_points[PULSATING_POST_SWEEP_ZERO_INDEX]
+        observations[IMPEDANCE_POST_SWEEP_ZERO_INDEX] = Some(ImpedanceAngleObservation {
+            angle_electrical_counts: profile.angle_points[IMPEDANCE_POST_SWEEP_ZERO_INDEX]
                 .angle_electrical_counts,
-            ud_abs: profile.angle_points[PULSATING_POST_SWEEP_ZERO_INDEX].ud_abs,
+            ud_abs: profile.angle_points[IMPEDANCE_POST_SWEEP_ZERO_INDEX].ud_abs,
             inductive_response_count_per_ud_milli: 92,
             in_phase_response_count_per_ud_milli: 1025,
             secondary_adc_response_count_per_ud_milli: 0,
@@ -894,10 +713,10 @@ mod tests {
             valid: true,
             warning_flags: ImpedanceWarningFlags::NONE,
         });
-        observations[PULSATING_STABILITY_ZERO_INDEX] = Some(PulsatingAngleObservation {
-            angle_electrical_counts: profile.angle_points[PULSATING_STABILITY_ZERO_INDEX]
+        observations[IMPEDANCE_STABILITY_ZERO_INDEX] = Some(ImpedanceAngleObservation {
+            angle_electrical_counts: profile.angle_points[IMPEDANCE_STABILITY_ZERO_INDEX]
                 .angle_electrical_counts,
-            ud_abs: profile.angle_points[PULSATING_STABILITY_ZERO_INDEX].ud_abs,
+            ud_abs: profile.angle_points[IMPEDANCE_STABILITY_ZERO_INDEX].ud_abs,
             inductive_response_count_per_ud_milli: 90,
             in_phase_response_count_per_ud_milli: 1030,
             secondary_adc_response_count_per_ud_milli: 0,
@@ -916,7 +735,7 @@ mod tests {
             warning_flags: ImpedanceWarningFlags::NONE,
         });
 
-        let report = failed_pulsating_run_report(
+        let report = failed_observed_run_report(
             7,
             IMPEDANCE_STATUS_REPEATABILITY,
             0x20,

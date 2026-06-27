@@ -1,51 +1,32 @@
 //! Public data types for the impedance-identification engine.
 
-/// Fixed number of injection windows in the v1 impedance profile.
-pub const IMPEDANCE_PROFILE_POINTS: usize = 2;
-
-/// Fixed capture size exposed by the standard host-visible profile.
-pub const IMPEDANCE_SAMPLE_COUNT: usize = 128;
-
-/// Fixed number of angle windows in the pulsating impedance profile.
-pub const PULSATING_IMPEDANCE_PROFILE_POINTS: usize = 10;
+/// Fixed number of angle windows in the impedance profile.
+pub const IMPEDANCE_PROFILE_POINTS: usize = 10;
 
 /// Zero-angle window used only to let the rotor return after the sweep.
-pub const PULSATING_RETURN_ZERO_SETTLE_INDEX: usize = 7;
+pub const IMPEDANCE_RETURN_ZERO_SETTLE_INDEX: usize = 7;
 
 /// First settled post-sweep zero-angle measurement window.
-pub const PULSATING_POST_SWEEP_ZERO_INDEX: usize = 8;
+pub const IMPEDANCE_POST_SWEEP_ZERO_INDEX: usize = 8;
 
 /// Second settled post-sweep zero-angle window used for repeatability.
-pub const PULSATING_STABILITY_ZERO_INDEX: usize = 9;
+pub const IMPEDANCE_STABILITY_ZERO_INDEX: usize = 9;
 
 /// Fixed carrier sample count exposed by the standard host-visible profile.
-pub const PULSATING_IMPEDANCE_SAMPLE_COUNT: usize = 160;
+pub const IMPEDANCE_SAMPLE_COUNT: usize = 160;
 
-/// One open-loop voltage injection window.
+/// One held-angle rotating-carrier probe window.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
-pub struct ImpedanceInjectionPoint {
-    /// Absolute UD magnitude applied during the window.
-    pub ud_abs: u16,
-    /// Electrical injection frequency in millihertz.
-    pub frequency_millihz: u32,
-    /// Bounded open-loop acceleration used when ramping into the injection point.
-    pub openloop_acceleration_rpm_per_s: u32,
-    /// Settling time before the sample capture starts.
-    pub settle_ms: u16,
-}
-
-/// One held-angle pulsating probe window.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
-pub struct PulsatingImpedancePoint {
+pub struct ImpedancePoint {
     /// Carrier probe angle relative to the fixed held field, in 16-bit turn counts.
     pub angle_electrical_counts: u16,
     /// Absolute carrier-vector magnitude.
     pub ud_abs: u16,
 }
 
-/// One reduced held-angle observation produced by the pulsating lock-in stage.
+/// One reduced held-angle observation produced by the rotating-carrier lock-in stage.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
-pub struct PulsatingAngleObservation {
+pub struct ImpedanceAngleObservation {
     /// Carrier probe angle relative to the fixed held field, in 16-bit turn counts.
     pub angle_electrical_counts: u16,
     /// Absolute carrier-vector magnitude used during the observation.
@@ -84,7 +65,7 @@ pub struct PulsatingAngleObservation {
     pub warning_flags: ImpedanceWarningFlags,
 }
 
-impl PulsatingAngleObservation {
+impl ImpedanceAngleObservation {
     /// Empty observation used before an angle has been sampled.
     pub const EMPTY: Self = Self {
         angle_electrical_counts: 0,
@@ -108,9 +89,9 @@ impl PulsatingAngleObservation {
     };
 }
 
-/// Static baseline observation used by the pulsating lock-in path.
+/// Static baseline observation used by the rotating-carrier lock-in path.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
-pub struct PulsatingBaselineObservation {
+pub struct ImpedanceBaselineObservation {
     /// Baseline d-axis current count.
     pub d_count: i16,
     /// Baseline q-axis current count.
@@ -121,9 +102,9 @@ pub struct PulsatingBaselineObservation {
     pub adc_ch1_count: i16,
 }
 
-/// Pure held-angle pulsating impedance fit result.
+/// Pure held-angle rotating-carrier impedance fit result.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
-pub struct PulsatingFitSummary {
+pub struct ImpedanceFitSummary {
     /// Mean response normalized to count per UD millivolt-equivalent.
     pub mean_response_count_per_ud_milli: u32,
     /// Maximum fitted response axis normalized to count per UD millivolt-equivalent.
@@ -146,9 +127,9 @@ pub struct PulsatingFitSummary {
     pub warning_flags: ImpedanceWarningFlags,
 }
 
-/// TMC4671 filter state observed around pulsating lock-in sampling.
+/// TMC4671 filter state observed around rotating-carrier lock-in sampling.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
-pub struct PulsatingFilterState {
+pub struct ImpedanceFilterState {
     /// Torque filter enable state before sampling.
     pub torque_enable_before: u8,
     /// Flux filter enable state before sampling.
@@ -212,85 +193,6 @@ impl ImpedanceReadbackMismatch {
         addr: 0,
         expected: 0,
         actual: 0,
-    };
-}
-
-/// DC baseline current observation sampled during the static-UD precheck.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
-pub struct ImpedanceBaselineObservation {
-    /// Direct ADC IUX sample from `ADC_IWY_IUX`.
-    pub dc_adc_iux_sample: i16,
-    /// Direct ADC IWY sample from `ADC_IWY_IUX`.
-    pub dc_adc_iwy_sample: i16,
-    /// Stationary-frame FOC IUX sample from `INTERIM_FOC_IWY_IUX`.
-    pub dc_foc_iux_sample: i16,
-    /// Stationary-frame FOC IWY sample from `INTERIM_FOC_IWY_IUX`.
-    pub dc_foc_iwy_sample: i16,
-    /// Park-transformed q-axis current sample from `INTERIM_FOC_IQ_ID`.
-    pub dc_foc_iq_sample: i16,
-    /// Park-transformed d-axis current sample from `INTERIM_FOC_IQ_ID`.
-    pub dc_foc_id_sample: i16,
-}
-
-impl ImpedanceBaselineObservation {
-    /// Empty observation used before a baseline has been sampled.
-    pub const EMPTY: Self = Self {
-        dc_adc_iux_sample: 0,
-        dc_adc_iwy_sample: 0,
-        dc_foc_iux_sample: 0,
-        dc_foc_iwy_sample: 0,
-        dc_foc_iq_sample: 0,
-        dc_foc_id_sample: 0,
-    };
-}
-
-/// Per-injection-point chip observability sampled while AC voltage is active.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
-pub struct ImpedancePointObservation {
-    /// STATUS_FLAGS observed during this point's DC and AC windows.
-    pub status_flags_or: u32,
-    /// OPENLOOP_PHI sampled while AC voltage is active.
-    pub openloop_phi_sample: u16,
-    /// OPENLOOP_VELOCITY_ACTUAL sampled while AC voltage is active.
-    pub openloop_velocity_actual: i32,
-    /// Direct ADC IUX sample from `ADC_IWY_IUX`.
-    pub adc_iux_sample: i16,
-    /// Direct ADC IWY sample from `ADC_IWY_IUX`.
-    pub adc_iwy_sample: i16,
-    /// Stationary-frame FOC IUX sample from `INTERIM_FOC_IWY_IUX`.
-    pub foc_iux_sample: i16,
-    /// Stationary-frame FOC IWY sample from `INTERIM_FOC_IWY_IUX`.
-    pub foc_iwy_sample: i16,
-    /// Pre-limit FOC UQ sample from `INTERIM_FOC_UQ_UD`.
-    pub foc_uq_sample: i16,
-    /// Pre-limit FOC UD sample from `INTERIM_FOC_UQ_UD`.
-    pub foc_ud_sample: i16,
-    /// Limited FOC UQ sample from `INTERIM_FOC_UQ_UD_LIMITED`.
-    pub foc_uq_limited_sample: i16,
-    /// Limited FOC UD sample from `INTERIM_FOC_UQ_UD_LIMITED`.
-    pub foc_ud_limited_sample: i16,
-    /// Park-transformed q-axis current sample from `INTERIM_FOC_IQ_ID`.
-    pub foc_iq_sample: i16,
-    /// Park-transformed d-axis current sample from `INTERIM_FOC_IQ_ID`.
-    pub foc_id_sample: i16,
-}
-
-impl ImpedancePointObservation {
-    /// Empty observation used before a point has been sampled.
-    pub const EMPTY: Self = Self {
-        status_flags_or: 0,
-        openloop_phi_sample: 0,
-        openloop_velocity_actual: 0,
-        adc_iux_sample: 0,
-        adc_iwy_sample: 0,
-        foc_iux_sample: 0,
-        foc_iwy_sample: 0,
-        foc_uq_sample: 0,
-        foc_ud_sample: 0,
-        foc_uq_limited_sample: 0,
-        foc_ud_limited_sample: 0,
-        foc_iq_sample: 0,
-        foc_id_sample: 0,
     };
 }
 

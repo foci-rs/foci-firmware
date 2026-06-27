@@ -672,17 +672,17 @@ mod tests {
     fn impedance_profile_report() -> ImpedanceProfileReport {
         ImpedanceProfileReport {
             oid: 6,
-            point_count: 2,
-            sample_count: 128,
-            sample_interval_us: 250,
+            point_count: 10,
+            sample_count: 160,
+            sample_interval_us: 500,
             carrier_frequency_millihz: 100_000,
             samples_per_cycle: 20,
             cycles_per_angle: 8,
-            max_ud: 960,
-            hold_ud: 320,
-            carrier_ud: 320,
-            status_flags_fail_mask: 0x7000_4480,
-            status_flags_warn_mask: 0,
+            max_ud: 1104,
+            hold_ud: 640,
+            carrier_ud: 464,
+            status_flags_fail_mask: 0x0400_0000,
+            status_flags_warn_mask: 0x7000_4480,
             scale_metadata_validated: false,
         }
     }
@@ -711,14 +711,14 @@ mod tests {
         ImpedanceFitReport {
             oid: 6,
             point_index,
-            frequency_millihz: if point_index == 0 { 25_000 } else { 50_000 },
-            ud_abs: if point_index == 0 { 640 } else { 960 },
+            frequency_millihz: 100_000,
+            ud_abs: 464,
             axis_max_count_per_ud_milli: 1234,
             axis_min_count_per_ud_milli: 567,
             axis_angle_electrical_counts: 99,
             residual_permille: 10 + u16::from(point_index),
             coverage_permille: 900,
-            scalar_2f_mismatch_permille: 20 + u16::from(point_index),
+            scalar_2f_mismatch_permille: 0,
             mean_response_count_per_ud_milli: 1_000,
             saliency_permille: 300,
             saliency_determinable: 1,
@@ -727,10 +727,10 @@ mod tests {
             inductive_response_count_per_ud_milli: 1_300,
             in_phase_response_count_per_ud_milli: 40,
             secondary_adc_response_count_per_ud_milli: 7,
-            magnitude_mean_count_per_ud_milli: 840,
-            magnitude_2f_count_per_ud_milli: 125,
-            magnitude_2f_residual_permille: 11,
-            magnitude_2f_coverage_permille: 997,
+            magnitude_mean_count_per_ud_milli: 0,
+            magnitude_2f_count_per_ud_milli: 0,
+            magnitude_2f_residual_permille: 0,
+            magnitude_2f_coverage_permille: 0,
             warning_flags: 0x8,
         }
     }
@@ -739,20 +739,20 @@ mod tests {
         ImpedanceObservationReport {
             oid: 6,
             point_index,
-            frequency_millihz: if point_index == 0 { 25_000 } else { 50_000 },
-            ud_abs: if point_index == 0 { 640 } else { 960 },
-            angle_electrical_counts: u16::from(point_index) * 8192,
-            status_flags_or: 0x55aa_0000 | u32::from(point_index),
-            openloop_phi_sample: 0x1234 | u16::from(point_index),
-            openloop_velocity_actual: 1_500 + i32::from(point_index),
+            frequency_millihz: 100_000,
+            ud_abs: 464,
+            angle_electrical_counts: 0,
+            status_flags_or: 0,
+            openloop_phi_sample: 0,
+            openloop_velocity_actual: 0,
             adc_iux_sample: -30 - i16::from(point_index),
             adc_iwy_sample: 40 + i16::from(point_index),
-            foc_iux_sample: -50 - i16::from(point_index),
-            foc_iwy_sample: 60 + i16::from(point_index),
-            foc_uq_sample: -10,
-            foc_ud_sample: 640 + i16::from(point_index),
-            foc_uq_limited_sample: -8,
-            foc_ud_limited_sample: 638 + i16::from(point_index),
+            foc_iux_sample: 0,
+            foc_iwy_sample: 0,
+            foc_uq_sample: 0,
+            foc_ud_sample: 464,
+            foc_uq_limited_sample: 0,
+            foc_ud_limited_sample: 464,
             foc_iq_sample: 80 + i16::from(point_index),
             foc_id_sample: 40 + i16::from(point_index),
             inductive_response_count_per_ud_milli: 1_300 + u32::from(point_index),
@@ -766,23 +766,8 @@ mod tests {
         }
     }
 
-    fn impedance_baseline_report(point_index: u8) -> ImpedanceBaselineReport {
-        ImpedanceBaselineReport {
-            oid: 6,
-            point_index,
-            frequency_millihz: if point_index == 0 { 25_000 } else { 50_000 },
-            ud_abs: if point_index == 0 { 640 } else { 960 },
-            dc_adc_iux_sample: -41 - i16::from(point_index),
-            dc_adc_iwy_sample: 52 + i16::from(point_index),
-            dc_foc_iux_sample: -63 - i16::from(point_index),
-            dc_foc_iwy_sample: 74 + i16::from(point_index),
-            dc_foc_iq_sample: 85 + i16::from(point_index),
-            dc_foc_id_sample: 96 + i16::from(point_index),
-        }
-    }
-
-    fn impedance_fit_reports() -> [Option<ImpedanceFitReport>;
-        crate::impedance_identification::PULSATING_IMPEDANCE_PROFILE_POINTS] {
+    fn impedance_fit_reports()
+    -> [Option<ImpedanceFitReport>; crate::impedance_identification::IMPEDANCE_PROFILE_POINTS] {
         core::array::from_fn(|index| {
             if index < 2 {
                 Some(impedance_fit_report(index as u8))
@@ -792,19 +777,14 @@ mod tests {
         })
     }
 
-    fn impedance_baseline_reports() -> [Option<ImpedanceBaselineReport>;
-        crate::impedance_identification::PULSATING_IMPEDANCE_PROFILE_POINTS] {
-        core::array::from_fn(|index| {
-            if index < 2 {
-                Some(impedance_baseline_report(index as u8))
-            } else {
-                None
-            }
-        })
+    fn impedance_baseline_reports()
+    -> [Option<ImpedanceBaselineReport>; crate::impedance_identification::IMPEDANCE_PROFILE_POINTS]
+    {
+        [None; crate::impedance_identification::IMPEDANCE_PROFILE_POINTS]
     }
 
     fn impedance_observation_reports() -> [Option<ImpedanceObservationReport>;
-        crate::impedance_identification::PULSATING_IMPEDANCE_PROFILE_POINTS] {
+        crate::impedance_identification::IMPEDANCE_PROFILE_POINTS] {
         core::array::from_fn(|index| {
             if index < 2 {
                 Some(impedance_observation_report(index as u8))
@@ -861,17 +841,11 @@ mod tests {
             sink.events,
             std::vec![
                 Event::ImpedanceProfile { oid: 6 },
-                Event::ImpedanceBaseline {
-                    oid: 6,
-                    point_index: 0,
-                    dc_adc_iux_sample: -41,
-                    dc_foc_iq_sample: 85,
-                },
                 Event::ImpedanceObservation {
                     oid: 6,
                     point_index: 0,
-                    status_flags_or: 0x55aa_0000,
-                    foc_ud_sample: 640,
+                    status_flags_or: 0,
+                    foc_ud_sample: 464,
                     foc_iq_sample: 80,
                 },
                 Event::ImpedanceObservationV2 {
@@ -886,7 +860,7 @@ mod tests {
                     point_index: 0,
                     residual_permille: 10,
                     coverage_permille: 900,
-                    scalar_2f_mismatch_permille: 20,
+                    scalar_2f_mismatch_permille: 0,
                 },
                 Event::ImpedanceFitV2 {
                     oid: 6,
@@ -895,23 +869,17 @@ mod tests {
                     angle_coverage_permille: 1000,
                     secondary_adc_response_count_per_ud_milli: 7,
                 },
-                Event::ImpedanceBaseline {
-                    oid: 6,
-                    point_index: 1,
-                    dc_adc_iux_sample: -42,
-                    dc_foc_iq_sample: 86,
-                },
                 Event::ImpedanceObservation {
                     oid: 6,
                     point_index: 1,
-                    status_flags_or: 0x55aa_0001,
-                    foc_ud_sample: 641,
+                    status_flags_or: 0,
+                    foc_ud_sample: 464,
                     foc_iq_sample: 81,
                 },
                 Event::ImpedanceObservationV2 {
                     oid: 6,
                     point_index: 1,
-                    angle_electrical_counts: 8192,
+                    angle_electrical_counts: 0,
                     encoder_peak_counts: 12,
                     angle_valid: 1,
                 },
@@ -920,7 +888,7 @@ mod tests {
                     point_index: 1,
                     residual_permille: 11,
                     coverage_permille: 900,
-                    scalar_2f_mismatch_permille: 21,
+                    scalar_2f_mismatch_permille: 0,
                 },
                 Event::ImpedanceFitV2 {
                     oid: 6,
@@ -975,11 +943,9 @@ mod tests {
             DiagnosticReport::ImpedanceTest {
                 profile: impedance_profile_report(),
                 run: impedance_run_report(2),
-                fits: [None; crate::impedance_identification::PULSATING_IMPEDANCE_PROFILE_POINTS],
-                baselines: [None;
-                    crate::impedance_identification::PULSATING_IMPEDANCE_PROFILE_POINTS],
-                observations: [None;
-                    crate::impedance_identification::PULSATING_IMPEDANCE_PROFILE_POINTS],
+                fits: [None; crate::impedance_identification::IMPEDANCE_PROFILE_POINTS],
+                baselines: [None; crate::impedance_identification::IMPEDANCE_PROFILE_POINTS],
+                observations: [None; crate::impedance_identification::IMPEDANCE_PROFILE_POINTS],
                 detail: 1,
             },
         );
@@ -1007,9 +973,8 @@ mod tests {
             DiagnosticReport::ImpedanceTest {
                 profile: impedance_profile_report(),
                 run: impedance_run_report(7),
-                fits: [None; crate::impedance_identification::PULSATING_IMPEDANCE_PROFILE_POINTS],
-                baselines: [None;
-                    crate::impedance_identification::PULSATING_IMPEDANCE_PROFILE_POINTS],
+                fits: [None; crate::impedance_identification::IMPEDANCE_PROFILE_POINTS],
+                baselines: [None; crate::impedance_identification::IMPEDANCE_PROFILE_POINTS],
                 observations: impedance_observation_reports(),
                 detail: 1,
             },
@@ -1022,8 +987,8 @@ mod tests {
                 Event::ImpedanceObservation {
                     oid: 6,
                     point_index: 0,
-                    status_flags_or: 0x55aa_0000,
-                    foc_ud_sample: 640,
+                    status_flags_or: 0,
+                    foc_ud_sample: 464,
                     foc_iq_sample: 80,
                 },
                 Event::ImpedanceObservationV2 {
@@ -1036,14 +1001,14 @@ mod tests {
                 Event::ImpedanceObservation {
                     oid: 6,
                     point_index: 1,
-                    status_flags_or: 0x55aa_0001,
-                    foc_ud_sample: 641,
+                    status_flags_or: 0,
+                    foc_ud_sample: 464,
                     foc_iq_sample: 81,
                 },
                 Event::ImpedanceObservationV2 {
                     oid: 6,
                     point_index: 1,
-                    angle_electrical_counts: 8192,
+                    angle_electrical_counts: 0,
                     encoder_peak_counts: 12,
                     angle_valid: 1,
                 },
