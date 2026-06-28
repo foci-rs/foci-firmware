@@ -1096,9 +1096,10 @@ mod tests {
     };
     use crate::commission_dispatch::test_support::{MockBackend, SpiOp};
     use foci_tmc4671::registers::{
-        MODE_RAMP_MODE_MOTION, PHI_E_SELECTION, PID_ERROR_PID_FLUX_ERROR_SUM,
-        PID_ERROR_PID_TORQUE_ERROR_SUM, PID_FLUX_P_FLUX_I, PID_TORQUE_FLUX_TARGET,
-        PID_TORQUE_P_TORQUE_I, PIDOUT_UQ_UD_LIMITS, PWM_SV_CHOP, STATUS_FLAGS, UQ_UD_EXT,
+        INTERIM_FOC_UQ_UD_LIMITED, MODE_RAMP_MODE_MOTION, PHI_E_SELECTION,
+        PID_ERROR_PID_FLUX_ERROR_SUM, PID_ERROR_PID_TORQUE_ERROR_SUM, PID_FLUX_P_FLUX_I,
+        PID_TORQUE_FLUX_ACTUAL, PID_TORQUE_FLUX_TARGET, PID_TORQUE_P_TORQUE_I, PIDOUT_UQ_UD_LIMITS,
+        PWM_SV_CHOP, STATUS_FLAGS, UQ_UD_EXT,
     };
 
     use super::*;
@@ -1404,6 +1405,205 @@ mod tests {
     }
 
     #[test]
+    fn current_validation_runs_flux_then_torque_and_records_axis_evidence() {
+        #[derive(Clone, Copy)]
+        enum Action {
+            StepSetup {
+                axis: CurrentValidationAxis,
+                direction: CaptureDirection,
+                step_amplitude: u16,
+                flux_count: u8,
+                torque_count: u8,
+                validation_axes: u8,
+            },
+            SampleDelay {
+                deadline_us: u64,
+            },
+            SampleRead {
+                axis: CurrentValidationAxis,
+                direction: CaptureDirection,
+            },
+            Other,
+            SafeState,
+        }
+
+        pollster::block_on(async {
+            let mut phase = current_validate_phase();
+            let mut buf = TransientBuffer::new();
+            let mut backend = MockBackend::new();
+            let mut first_axis = None;
+            let mut saw_flux_setup = false;
+            let mut saw_torque_after_flux_pass = false;
+
+            for _ in 0..80 {
+                let action = match &phase {
+                    InnerPhase::CurrentValidate {
+                        state:
+                            CurrentValidateState::AxisStepSetup {
+                                axis, direction, ..
+                            },
+                        data,
+                    } => Action::StepSetup {
+                        axis: *axis,
+                        direction: *direction,
+                        step_amplitude: data.step_amplitude,
+                        flux_count: data.current_flux_validation_count,
+                        torque_count: data.current_torque_validation_count,
+                        validation_axes: data.current_loop_evidence.current_validation_axes,
+                    },
+                    InnerPhase::CurrentValidate {
+                        state: CurrentValidateState::AxisSampleDelay { deadline_us, .. },
+                        ..
+                    } => Action::SampleDelay {
+                        deadline_us: *deadline_us,
+                    },
+                    InnerPhase::CurrentValidate {
+                        state:
+                            CurrentValidateState::AxisSampleRead {
+                                axis, direction, ..
+                            },
+                        ..
+                    } => Action::SampleRead {
+                        axis: *axis,
+                        direction: *direction,
+                    },
+                    InnerPhase::CurrentValidate {
+                        state: CurrentValidateState::SafeState { .. },
+                        ..
+                    } => Action::SafeState,
+                    InnerPhase::CurrentValidate { .. } => Action::Other,
+                    other => panic!("expected CurrentValidate phase, got {other:?}"),
+                };
+
+                match action {
+                    Action::StepSetup {
+                        axis,
+                        direction,
+                        step_amplitude,
+                        flux_count,
+                        torque_count,
+                        validation_axes,
+                    } => {
+                        if first_axis.is_none() {
+                            first_axis = Some(axis);
+                        }
+                        match axis {
+                            CurrentValidationAxis::Flux => {
+                                saw_flux_setup = true;
+                                assert_eq!(torque_count, 0);
+                            }
+                            CurrentValidationAxis::Torque => {
+                                assert!(saw_flux_setup);
+                                assert_eq!(flux_count, 3);
+                                if !saw_torque_after_flux_pass {
+                                    assert_eq!(torque_count, 0);
+                                }
+                                assert_eq!(
+                                    validation_axes & CURRENT_VALIDATION_AXIS_FLUX,
+                                    CURRENT_VALIDATION_AXIS_FLUX
+                                );
+                                saw_torque_after_flux_pass = true;
+                            }
+                        }
+
+                        backend.spi_log.clear();
+                        let result = step_current_validate(
+                            &mut phase,
+                            &mut buf,
+                            CommissionProfile::Balanced,
+                            InnerSequence::Commission,
+                            &mut backend,
+                        )
+                        .await;
+                        assert!(matches!(result, StepResult::Continue));
+
+                        let signed_target = match direction {
+                            CaptureDirection::Forward => step_amplitude as i16,
+                            CaptureDirection::Reverse => -(step_amplitude as i16),
+                        };
+                        let target_write = nonzero_validation_target_write(&backend.spi_log);
+                        assert_eq!(
+                            target_write,
+                            validation_target_register(axis, signed_target)
+                        );
+                        match axis {
+                            CurrentValidationAxis::Flux => assert_eq!(target_write >> 16, 0),
+                            CurrentValidationAxis::Torque => assert_eq!(target_write & 0xffff, 0),
+                        }
+                    }
+                    Action::SampleDelay { deadline_us } => {
+                        backend.elapsed_us_value = deadline_us;
+                        backend.spi_log.clear();
+                        let result = step_current_validate(
+                            &mut phase,
+                            &mut buf,
+                            CommissionProfile::Balanced,
+                            InnerSequence::Commission,
+                            &mut backend,
+                        )
+                        .await;
+                        assert!(matches!(result, StepResult::Continue));
+                    }
+                    Action::SampleRead { axis, direction } => {
+                        if axis == CurrentValidationAxis::Torque {
+                            assert!(saw_torque_after_flux_pass);
+                        }
+                        seed_axis_sample_registers(&mut backend, axis, direction);
+                        backend.spi_log.clear();
+                        let result = step_current_validate(
+                            &mut phase,
+                            &mut buf,
+                            CommissionProfile::Balanced,
+                            InnerSequence::Commission,
+                            &mut backend,
+                        )
+                        .await;
+                        assert!(matches!(result, StepResult::Continue));
+                    }
+                    Action::Other => {
+                        backend.spi_log.clear();
+                        let result = step_current_validate(
+                            &mut phase,
+                            &mut buf,
+                            CommissionProfile::Balanced,
+                            InnerSequence::Commission,
+                            &mut backend,
+                        )
+                        .await;
+                        assert!(matches!(result, StepResult::Continue));
+                    }
+                    Action::SafeState => break,
+                }
+            }
+
+            assert_eq!(first_axis, Some(CurrentValidationAxis::Flux));
+            assert!(saw_torque_after_flux_pass);
+            match phase {
+                InnerPhase::CurrentValidate {
+                    state: CurrentValidateState::SafeState { .. },
+                    data,
+                } => {
+                    assert_eq!(
+                        data.current_loop_evidence.current_validation_axes,
+                        CURRENT_VALIDATION_AXIS_FLUX | CURRENT_VALIDATION_AXIS_TORQUE
+                    );
+                    assert_validation_evidence_delays(
+                        &data.current_flux_validation,
+                        data.current_flux_validation_count,
+                        &[1, 2, 5],
+                    );
+                    assert_validation_evidence_delays(
+                        &data.current_torque_validation,
+                        data.current_torque_validation_count,
+                        &[1, 2],
+                    );
+                }
+                other => panic!("expected validation SafeState, got {other:?}"),
+            }
+        });
+    }
+
+    #[test]
     fn safe_state_restore_continues_after_early_spi_failure() {
         pollster::block_on(async {
             let mut backend = MockBackend::new();
@@ -1600,6 +1800,116 @@ mod tests {
 
     fn pack_halves(upper: i16, lower: i16) -> u32 {
         ((upper as u16 as u32) << 16) | lower as u16 as u32
+    }
+
+    fn nonzero_validation_target_write(log: &[SpiOp]) -> u32 {
+        let mut found = None;
+        for op in log {
+            match *op {
+                SpiOp::Write(addr, value)
+                    if addr == PID_TORQUE_FLUX_TARGET.addr() && value != 0 =>
+                {
+                    assert!(
+                        found.is_none(),
+                        "expected one non-zero validation target write"
+                    );
+                    found = Some(value);
+                }
+                _ => {}
+            }
+        }
+        found.expect("validation setup should write a non-zero current target")
+    }
+
+    fn seed_axis_sample_registers(
+        backend: &mut MockBackend,
+        axis: CurrentValidationAxis,
+        direction: CaptureDirection,
+    ) {
+        let same_axis = match direction {
+            CaptureDirection::Forward => 225,
+            CaptureDirection::Reverse => -225,
+        };
+        let cross_axis = match direction {
+            CaptureDirection::Forward => 5,
+            CaptureDirection::Reverse => -5,
+        };
+        let output_limited = match direction {
+            CaptureDirection::Forward => 100,
+            CaptureDirection::Reverse => -100,
+        };
+        let pid_actual = match axis {
+            CurrentValidationAxis::Flux => pack_halves(cross_axis, same_axis),
+            CurrentValidationAxis::Torque => pack_halves(same_axis, cross_axis),
+        };
+        let foc_limited = match axis {
+            CurrentValidationAxis::Flux => pack_halves(0, output_limited),
+            CurrentValidationAxis::Torque => pack_halves(output_limited, 0),
+        };
+
+        let _ = backend
+            .registers
+            .insert(PID_TORQUE_FLUX_ACTUAL.addr(), pid_actual);
+        let _ = backend
+            .registers
+            .insert(INTERIM_FOC_UQ_UD_LIMITED.data.addr(), foc_limited);
+        let _ = backend.registers.insert(STATUS_FLAGS.addr(), 0);
+    }
+
+    fn assert_validation_evidence_delays(
+        evidence: &[CurrentValidationAxisEvidence],
+        count: u8,
+        expected_delays: &[u16],
+    ) {
+        assert_eq!(count as usize, expected_delays.len());
+        for (sample, expected_delay) in evidence.iter().zip(expected_delays.iter()) {
+            assert_eq!(sample.status, crate::autotune::CURRENT_AXIS_VALIDATION_PASS);
+            assert_eq!(sample.sample_delay_ms, *expected_delay);
+        }
+    }
+
+    fn current_validate_phase() -> InnerPhase {
+        InnerPhase::CurrentValidate {
+            state: CurrentValidateState::WriteGains,
+            data: CurrentValidateData {
+                model: ElectricalModel {
+                    r_int: 1000,
+                    l_int: 2000,
+                    tau_e_us: 2000,
+                    theta_e_us: 100,
+                    r_mohm: 1000,
+                    l_uh: 2000,
+                    tau_e_crosscheck_us: 2000,
+                },
+                gains: CurrentGains {
+                    flux_p: 11,
+                    flux_i: 12,
+                    torque_p: 13,
+                    torque_i: 14,
+                    effective_bandwidth_hz: 0,
+                    lambda_us: 0,
+                },
+                flux_attempt: 0,
+                torque_attempt: 0,
+                step_amplitude: 250,
+                final_status: CommissionStatus::Accepted,
+                pidout_limit: CURRENT_SAFE_PIDOUT_LIMIT,
+                sample_encoder_start: 0,
+                pending_positive_sample: None,
+                current_flux_validation_count: 0,
+                current_flux_validation: [CurrentValidationAxisEvidence::EMPTY;
+                    crate::autotune::CURRENT_VALIDATION_MAX_SAMPLES_PER_AXIS],
+                current_torque_validation_count: 0,
+                current_torque_validation: [CurrentValidationAxisEvidence::EMPTY;
+                    crate::autotune::CURRENT_VALIDATION_MAX_SAMPLES_PER_AXIS],
+                inner_warning_flags: 0,
+                tau_residual_permille: 0,
+                resistance_result: resistance_result(),
+                resistance_gain_path_count_slope_milli: 1000,
+                current_loop_evidence: CurrentLoopEvidence::measured_symmetric(),
+                impedance_evidence: None,
+            },
+        }
     }
 
     fn failed_current_validate_phase() -> InnerPhase {
