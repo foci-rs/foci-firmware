@@ -20,19 +20,16 @@ use crate::commissioning::types::{CommissioningBackend, StepResult};
 ///
 /// - bit 0 (per-coil R mismatch) → 1.2x
 /// - bit 1 (per-coil tau/L mismatch) → 1.5x
-/// - bit 2 (tau residual) → (1000 + min(tau_residual_permille, 1000)) / 1000
+/// - bit 2 (tau residual) is telemetry only and does not widen lambda
 /// - bit 3 (theta/tau ratio) → 1.5x
 pub(crate) fn outer_lambda_widening(inner_warning_flags: u8, tau_residual_permille: u16) -> f32 {
+    let _ = tau_residual_permille;
     let mut multiplier: f32 = 1.0;
     if inner_warning_flags & (1 << 0) != 0 {
         multiplier *= 1.2;
     }
     if inner_warning_flags & (1 << 1) != 0 {
         multiplier *= 1.5;
-    }
-    if inner_warning_flags & (1 << 2) != 0 {
-        let permille = tau_residual_permille.min(1000) as f32;
-        multiplier *= (1000.0 + permille) / 1000.0;
     }
     if inner_warning_flags & (1 << 3) != 0 {
         multiplier *= 1.5;
@@ -320,14 +317,11 @@ mod tests {
     }
 
     #[test]
-    fn outer_widening_bit_2_uses_residual_permille() {
-        // (1000 + 250) / 1000 = 1.25
+    fn outer_widening_bit_2_is_telemetry_only() {
         let lo = outer_lambda_widening(1 << 2, 250);
-        assert!((lo - 1.25).abs() < 1e-6);
-        // (1000 + 499) / 1000 = 1.499; permille >= 500 fails earlier so
-        // 1.5x is the practical exclusive upper bound.
+        assert!((lo - 1.0).abs() < 1e-6);
         let hi = outer_lambda_widening(1 << 2, 499);
-        assert!((hi - 1.499).abs() < 1e-3);
+        assert!((hi - 1.0).abs() < 1e-6);
     }
 
     #[test]
@@ -338,10 +332,9 @@ mod tests {
 
     #[test]
     fn outer_widening_clamps_at_four() {
-        // All four model warning bits + max residual would naively give
-        // 1.2 * 1.5 * 2.0 * 1.5 = 5.4x; the clamp must cap at 4.0.
+        // Bits 0, 1, and 3 widen; bit 2 is telemetry only.
         let multiplier = outer_lambda_widening(0x0F, 1000);
-        assert!((multiplier - 4.0).abs() < 1e-6);
+        assert!((multiplier - 2.7).abs() < 1e-6);
     }
 
     #[test]
@@ -397,7 +390,8 @@ mod tests {
 
     #[test]
     fn force_conservative_profile_ignores_model_warning_bits() {
-        // Bits 0–3 do not force conservative — they widen lambda only.
+        // Bits 0, 1, and 3 widen lambda but do not force conservative;
+        // bit 2 is reserved for telemetry only.
         assert_eq!(
             force_conservative_profile(CommissionProfile::Balanced, 0x0F, 1000),
             CommissionProfile::Balanced

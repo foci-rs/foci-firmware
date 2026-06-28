@@ -62,7 +62,6 @@ const DIAG_ELECTRICAL_ID_REJECT_MODEL_SCALE_ZERO: u8 = 22;
 // resistance runner now owns those quality gates.
 const DIAG_ELECTRICAL_ID_REJECT_TAU_MISMATCH: u8 = 26;
 const DIAG_ELECTRICAL_ID_REJECT_TAU_CROSSCHECK_UNMEASURABLE: u8 = 27;
-const DIAG_ELECTRICAL_ID_TAU_RESIDUAL: u8 = 28;
 const DIAG_ELECTRICAL_ID_REJECT_THETA_TOO_LARGE: u8 = 29;
 
 // ---------------------------------------------------------------------------
@@ -73,8 +72,6 @@ const DIAG_ELECTRICAL_ID_REJECT_THETA_TOO_LARGE: u8 = 29;
 pub(crate) const INNER_WARN_BIT_RESISTANCE_MISMATCH: u8 = 1 << 0;
 /// Per-coil tau/L disagreement >= 15 % (warning).
 pub(crate) const INNER_WARN_BIT_TAU_MISMATCH: u8 = 1 << 1;
-/// L/R tau vs transient tau residual >= 25 % (warning).
-pub(crate) const INNER_WARN_BIT_TAU_RESIDUAL: u8 = 1 << 2;
 /// theta_e_us >= tau_e_us / 4 (warning).
 pub(crate) const INNER_WARN_BIT_THETA_TAU: u8 = 1 << 3;
 
@@ -86,13 +83,9 @@ const RESISTANCE_MISMATCH_WARN_PERMILLE: u32 = 50;
 const TAU_MISMATCH_FAIL_PERMILLE: u32 = 300;
 /// Per-coil tau disagreement warn threshold (permille).
 const TAU_MISMATCH_WARN_PERMILLE: u32 = 150;
-/// L/R tau vs transient tau residual warn threshold (permille).
-const TAU_RESIDUAL_WARN_PERMILLE: u32 = 250;
-
 /// Successful model assembly: the assembled `ElectricalModel`, the
-/// non-critical warning bitfield (bits 0–3 from the gates), and the
-/// computed L/R-vs-transient residual in permille for the host to
-/// persist.
+/// non-critical warning bitfield, and the computed L/R-vs-transient residual
+/// in permille for the host to persist.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub(crate) struct ModelAssembly {
     pub(crate) model: ElectricalModel,
@@ -190,19 +183,6 @@ fn diagnostic_for_model_assembly_failure(
         value0,
         value1,
         value2,
-    }
-}
-
-fn diagnostic_for_tau_residual_warning(
-    assembly: ModelAssembly,
-) -> crate::selftest::CommissionDiagnostic {
-    crate::selftest::CommissionDiagnostic {
-        phase: PhaseId::ElectricalId.to_u8(),
-        code: DIAG_ELECTRICAL_ID_TAU_RESIDUAL,
-        status: 2,
-        value0: assembly.tau_residual_permille as u32,
-        value1: assembly.model.tau_e_us,
-        value2: assembly.model.tau_e_crosscheck_us,
     }
 }
 
@@ -396,6 +376,7 @@ fn extrapolate_onset_to_baseline_us(samples: &[u32], threshold: u32) -> Option<u
 fn assemble_electrical_model(
     data: &ElectricalIdData,
     samples: &[u32],
+    configured_theta_e_us: u32,
 ) -> Result<ModelAssembly, ModelAssemblyError> {
     let voltage = data.voltage;
 
@@ -491,12 +472,13 @@ fn assemble_electrical_model(
         return Err(ModelAssemblyError::SampleCount);
     };
 
-    let theta_e_us = extrapolate_onset_to_baseline_us(samples, DELAY_ONSET_THRESHOLD as u32)
-        .unwrap_or(ELECTRICAL_SAMPLE_PERIOD_US as u32);
+    let transient_theta_e_us =
+        extrapolate_onset_to_baseline_us(samples, DELAY_ONSET_THRESHOLD as u32)
+            .unwrap_or(ELECTRICAL_SAMPLE_PERIOD_US as u32);
 
     let rise_threshold = (steady_state as u64 * RISE_63_PCT_Q10 as u64 / 1024) as u32;
     let rise_crossing_us = interpolate_threshold_crossing_us(samples, rise_threshold).unwrap_or(0);
-    let tau_e_crosscheck_us = rise_crossing_us.saturating_sub(theta_e_us);
+    let tau_e_crosscheck_us = rise_crossing_us.saturating_sub(transient_theta_e_us);
 
     if tau_e_crosscheck_us == 0 {
         return Err(ModelAssemblyError::TauCrosscheckUnmeasurable);
@@ -504,9 +486,9 @@ fn assemble_electrical_model(
     // tau_e_us is guaranteed non-zero here (passed SingleCoilTau).
     let diff = tau_e_us.abs_diff(tau_e_crosscheck_us) as u64;
     let tau_residual_permille = ((diff * 1000 / tau_e_us as u64) as u32).min(1000);
-    if tau_e_us > 0 && theta_e_us >= tau_e_us / 2 {
+    if configured_theta_e_us >= tau_e_us / 2 {
         return Err(ModelAssemblyError::ThetaTooLarge {
-            theta_us: theta_e_us,
+            theta_us: configured_theta_e_us,
             tau_us: tau_e_us,
         });
     }
@@ -519,10 +501,7 @@ fn assemble_electrical_model(
     if tau_diff_permille >= TAU_MISMATCH_WARN_PERMILLE {
         warning_flags |= INNER_WARN_BIT_TAU_MISMATCH;
     }
-    if tau_residual_permille >= TAU_RESIDUAL_WARN_PERMILLE {
-        warning_flags |= INNER_WARN_BIT_TAU_RESIDUAL;
-    }
-    if tau_e_us > 0 && theta_e_us >= tau_e_us / 4 {
+    if configured_theta_e_us >= tau_e_us / 4 {
         warning_flags |= INNER_WARN_BIT_THETA_TAU;
     }
 
@@ -531,7 +510,7 @@ fn assemble_electrical_model(
             r_int,
             l_int,
             tau_e_us,
-            theta_e_us,
+            theta_e_us: configured_theta_e_us,
             r_mohm,
             l_uh: l_uh as u32,
             tau_e_crosscheck_us,
@@ -954,7 +933,11 @@ pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
         // Model assembly and validation
         // ---------------------------------------------------------------
         ElectricalIdState::Validate => {
-            let assembly = match assemble_electrical_model(data, buf.samples()) {
+            let assembly = match assemble_electrical_model(
+                data,
+                buf.samples(),
+                backend.tmc_config().electrical_model_theta_e_us,
+            ) {
                 Ok(assembly) => assembly,
                 Err(err) => {
                     log_model_assembly_failure(err);
@@ -968,16 +951,6 @@ pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
                     return super::fail_inner(phase, CommissionError::ElectricalIdFailed);
                 }
             };
-
-            if assembly.warning_flags & INNER_WARN_BIT_TAU_RESIDUAL != 0 {
-                record_electrical_id_measurement_diagnostics(
-                    data,
-                    buf.samples(),
-                    backend.tmc_config().didt_cycles,
-                    diagnostics,
-                );
-                diagnostics.push(diagnostic_for_tau_residual_warning(assembly));
-            }
 
             match sequence {
                 InnerSequence::Selftest => {
@@ -1040,6 +1013,8 @@ mod tests {
         SignedAnchorEvidence,
     };
     use foci_tmc4671::registers::{PID_TORQUE_FLUX_ACTUAL, UQ_UD_EXT};
+
+    const TEST_THETA_E_US: u32 = 160;
 
     /// Build a synthetic per-axis fit at the given count-slope (milli-units).
     fn axis_result(axis: ElectricalAxis, slope_milli: i32) -> ResistanceAxisResult {
@@ -1111,7 +1086,7 @@ mod tests {
         let data = representative_data();
         let buf = representative_transient();
 
-        let assembly = assemble_electrical_model(&data, buf.samples()).unwrap();
+        let assembly = assemble_electrical_model(&data, buf.samples(), TEST_THETA_E_US).unwrap();
 
         assert_eq!(assembly.model.r_int, 1706);
         assert_eq!(assembly.model.r_mohm, 1706);
@@ -1129,7 +1104,7 @@ mod tests {
     }
 
     #[test]
-    fn model_assembly_extrapolates_delay_onset_to_baseline() {
+    fn model_assembly_uses_configured_theta_and_keeps_transient_crosscheck() {
         // Use a transient with steady state 1000 (threshold 632) and a
         // sufficiently slow ramp so tau_crosscheck stays close to tau_e.
         // Adjust per-coil tau via inductance data so the residual gate
@@ -1157,13 +1132,9 @@ mod tests {
             buf.push(1000);
         }
 
-        let assembly = assemble_electrical_model(&data, buf.samples()).unwrap();
+        let assembly = assemble_electrical_model(&data, buf.samples(), 320).unwrap();
 
-        assert!(
-            (210..=220).contains(&assembly.model.theta_e_us),
-            "theta should extrapolate the threshold crossing back to baseline: {}",
-            assembly.model.theta_e_us
-        );
+        assert_eq!(assembly.model.theta_e_us, 320);
         assert!(
             (880..=890).contains(&assembly.model.tau_e_crosscheck_us),
             "tau crosscheck should use interpolated 63 percent crossing minus onset: {}",
@@ -1172,7 +1143,7 @@ mod tests {
     }
 
     #[test]
-    fn validate_warns_on_tau_crosscheck_mismatch() {
+    fn validate_reports_tau_crosscheck_mismatch_as_telemetry() {
         pollster::block_on(async {
             let mut phase = InnerPhase::ElectricalId {
                 state: ElectricalIdState::Validate,
@@ -1227,57 +1198,13 @@ mod tests {
                 "crosscheck should come from the transient fixture: {}",
                 model.tau_e_crosscheck_us
             );
-            assert_eq!(
-                inner_warning_flags & INNER_WARN_BIT_TAU_RESIDUAL,
-                INNER_WARN_BIT_TAU_RESIDUAL
-            );
+            assert_eq!(inner_warning_flags & (1 << 2), 0);
             assert!(
                 (580..=610).contains(&tau_residual_permille),
                 "residual should capture L/R-vs-transient disagreement: {}",
                 tau_residual_permille
             );
-            let items: heapless::Vec<_, 8> = diagnostics.iter().collect();
-            assert_eq!(items.len(), 7);
-            assert_eq!(items[0].phase, PhaseId::ElectricalId.to_u8());
-            assert_eq!(items[0].code, 1);
-            assert_eq!(items[0].value0, 512);
-            assert_eq!(items[0].value2, ELECTRICAL_SAMPLE_PERIOD_US as u32);
-            assert_eq!(items[1].code, 2);
-            // value0 and value1 are both the count-slope-milli (1706): the
-            // shared runner's per-axis fit no longer carries a separate raw
-            // average current, so the diagnostic reuses the same r_int value
-            // for both fields. value2 is the fit's selected-point count (5
-            // in `axis_result`), not a legacy 1000-sample count.
-            assert_eq!(items[1].value0, 1706);
-            assert_eq!(items[1].value1, 1706);
-            assert_eq!(items[1].value2, 5);
-            assert_eq!(items[2].code, 3);
-            assert_eq!(items[3].code, 4);
-            assert!(
-                (725..=740).contains(&items[3].value1),
-                "coil A tau should be reported: {}",
-                items[3].value1
-            );
-            assert_eq!(items[4].code, 5);
-            assert_eq!(items[5].code, 6);
-            assert_eq!(items[5].value0, 1000);
-            assert_eq!(items[6].code, DIAG_ELECTRICAL_ID_TAU_RESIDUAL);
-            assert_eq!(items[6].status, 2);
-            assert!(
-                (580..=610).contains(&items[6].value0),
-                "diagnostic residual should match assembly residual: {}",
-                items[6].value0
-            );
-            assert!(
-                (725..=740).contains(&items[6].value1),
-                "diagnostic tau should match assembly tau: {}",
-                items[6].value1
-            );
-            assert!(
-                (290..=305).contains(&items[6].value2),
-                "diagnostic crosscheck should match assembly crosscheck: {}",
-                items[6].value2
-            );
+            assert_eq!(diagnostics.iter().count(), 0);
         });
     }
 
@@ -1971,8 +1898,6 @@ mod tests {
         });
         assert_eq!(tau_mismatch.code, 26);
         assert_eq!(tau_mismatch.value0, 301);
-
-        assert_eq!(DIAG_ELECTRICAL_ID_TAU_RESIDUAL, 28);
     }
 
     #[test]
@@ -1985,14 +1910,14 @@ mod tests {
     fn assemble_accepts_representative_data() {
         let data = representative_data();
         let buf = representative_transient();
-        let assembly = assemble_electrical_model(&data, buf.samples()).unwrap();
-        // Bit 3 (theta/tau warning) is expected because theta=214, tau≈730,
-        // theta/tau = 0.293 ≥ 0.25. Bits 0–2 should be clean.
+        let assembly = assemble_electrical_model(&data, buf.samples(), TEST_THETA_E_US).unwrap();
+        // Configured theta=160, tau≈730, so the theta/tau warning is clean.
         assert_eq!(
             assembly.warning_flags & INNER_WARN_BIT_RESISTANCE_MISMATCH,
             0
         );
         assert_eq!(assembly.warning_flags & INNER_WARN_BIT_TAU_MISMATCH, 0);
+        assert_eq!(assembly.warning_flags & INNER_WARN_BIT_THETA_TAU, 0);
     }
 
     #[test]
@@ -2001,7 +1926,7 @@ mod tests {
         data.inductance_sum_delta = [200_000, 0];
         data.inductance_count = [5000, 0];
         let buf = representative_transient();
-        let err = assemble_electrical_model(&data, buf.samples()).unwrap_err();
+        let err = assemble_electrical_model(&data, buf.samples(), TEST_THETA_E_US).unwrap_err();
         assert!(matches!(err, ModelAssemblyError::SingleCoilTau));
     }
 
@@ -2022,7 +1947,7 @@ mod tests {
         data.inductance_count = [5000, 5000];
         data.inductance_elapsed_us = [490_000, 490_000];
         let buf = representative_transient();
-        let err = assemble_electrical_model(&data, buf.samples()).unwrap_err();
+        let err = assemble_electrical_model(&data, buf.samples(), TEST_THETA_E_US).unwrap_err();
         assert!(matches!(
             err,
             ModelAssemblyError::ModelScaleZero { l_int: 0, l_uh: 0 }
@@ -2038,7 +1963,7 @@ mod tests {
         let mut data = representative_data();
         data.inductance_sum_delta = [200_000, 600_000];
         let buf = representative_transient();
-        let err = assemble_electrical_model(&data, buf.samples()).unwrap_err();
+        let err = assemble_electrical_model(&data, buf.samples(), TEST_THETA_E_US).unwrap_err();
         assert!(matches!(err, ModelAssemblyError::TauMismatch { .. }));
     }
 
@@ -2047,7 +1972,7 @@ mod tests {
         // 300 vs 320 → ~6% (above warn 5%, below fail 15%).
         let data = data_with_per_coil_currents(300, 320);
         let buf = representative_transient();
-        let assembly = assemble_electrical_model(&data, buf.samples()).unwrap();
+        let assembly = assemble_electrical_model(&data, buf.samples(), TEST_THETA_E_US).unwrap();
         assert_ne!(
             assembly.warning_flags & INNER_WARN_BIT_RESISTANCE_MISMATCH,
             0

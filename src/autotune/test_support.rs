@@ -12,6 +12,7 @@ pub(super) fn autotune_test_config() -> crate::config::TmcConfig {
         excitation_voltage: 512,
         didt_cycles: 5000,
         bandwidth_hz: 150.0,
+        electrical_model_theta_e_us: 160,
         current_validation_flux_max_encoder_delta_counts: 4,
         current_validation_torque_max_encoder_delta_counts: 16,
         resistance_max_expected_current_count: 1600,

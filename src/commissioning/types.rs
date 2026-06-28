@@ -124,8 +124,12 @@ pub struct InnerResult {
     pub tau_e_crosscheck_us: u32,
     /// L/R-vs-transient tau residual in permille.
     pub tau_residual_permille: u16,
-    /// Warning bitfield (bit 0..3 model gates, bit 5 fallback gains,
-    /// bit 6 host-default confidence, bit 7 reserved).
+    /// Warning bitfield.
+    ///
+    /// Bits 0, 1, and 3 report model warnings; bit 2 is reserved for tau
+    /// residual telemetry and is not emitted as a warning. Bit 5 reports
+    /// fallback gains, bit 6 reports host-default confidence, and bit 7 is
+    /// reserved.
     pub inner_warning_flags: u8,
 
     // --- Shared multi-point resistance-identification evidence ---

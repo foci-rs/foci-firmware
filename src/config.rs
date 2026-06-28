@@ -47,6 +47,8 @@ pub struct TmcConfig {
     pub didt_cycles: u32,
     /// Current loop bandwidth in Hz (empirically validated per PWM frequency).
     pub bandwidth_hz: f32,
+    /// Board-derived effective electrical delay for current-loop synthesis.
+    pub electrical_model_theta_e_us: u32,
     /// Maximum encoder movement allowed during flux-axis current validation.
     pub current_validation_flux_max_encoder_delta_counts: u16,
     /// Maximum encoder movement allowed during torque-axis current validation.
@@ -116,6 +118,7 @@ impl TmcConfig {
             excitation_voltage: 512,
             didt_cycles: 5000,
             bandwidth_hz: 50.0,
+            electrical_model_theta_e_us: 160,
             current_validation_flux_max_encoder_delta_counts: 4,
             current_validation_torque_max_encoder_delta_counts: 16,
             resistance_max_expected_current_count: 1600,
@@ -140,6 +143,7 @@ mod tests {
             excitation_voltage: 512,
             didt_cycles: 5000,
             bandwidth_hz: 50.0,
+            electrical_model_theta_e_us: 160,
             current_validation_flux_max_encoder_delta_counts: 4,
             current_validation_torque_max_encoder_delta_counts: 16,
             resistance_max_expected_current_count: 1600,
@@ -184,6 +188,7 @@ mod tests {
             excitation_voltage: 512,
             didt_cycles: 5000,
             bandwidth_hz: 150.0,
+            electrical_model_theta_e_us: 160,
             current_validation_flux_max_encoder_delta_counts: 4,
             current_validation_torque_max_encoder_delta_counts: 16,
             resistance_max_expected_current_count: 1600,
@@ -205,6 +210,7 @@ mod tests {
             excitation_voltage: 512,
             didt_cycles: 5000,
             bandwidth_hz: 50.0,
+            electrical_model_theta_e_us: 160,
             current_validation_flux_max_encoder_delta_counts: 4,
             current_validation_torque_max_encoder_delta_counts: 16,
             resistance_max_expected_current_count: 1600,
@@ -226,6 +232,7 @@ mod tests {
             excitation_voltage: 512,
             didt_cycles: 5000,
             bandwidth_hz: 50.0,
+            electrical_model_theta_e_us: 160,
             current_validation_flux_max_encoder_delta_counts: 4,
             current_validation_torque_max_encoder_delta_counts: 16,
             resistance_max_expected_current_count: 1600,

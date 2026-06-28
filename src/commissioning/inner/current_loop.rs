@@ -88,8 +88,11 @@ pub(crate) struct CurrentValidateData {
     /// Torque-axis validation evidence by sample delay.
     pub(crate) current_torque_validation:
         [CurrentValidationAxisEvidence; crate::autotune::CURRENT_VALIDATION_MAX_SAMPLES_PER_AXIS],
-    /// Warning bits accumulated through Stage 1 (bits 0–3 from Phase 5,
-    /// bit 5 ORed if gains fell back to defaults).
+    /// Warning bits accumulated through Stage 1.
+    ///
+    /// Bits 0, 1, and 3 come from Phase 5 model gates; bit 2 is reserved for
+    /// tau residual telemetry and is not emitted as a warning. Bit 5 is ORed
+    /// if gains fell back to defaults.
     pub(crate) inner_warning_flags: u8,
     /// L/R-vs-transient tau residual in permille from Phase 5.
     pub(crate) tau_residual_permille: u16,
