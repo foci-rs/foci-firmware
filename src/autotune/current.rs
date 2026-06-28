@@ -778,7 +778,9 @@ pub fn should_accept_current_validation_without_retry(
 }
 
 fn retry_low_response_lambda_permille(_profile: CommissionProfile) -> u16 {
-    500
+    // Keep the retry section-wide but bounded. A full 0.5x lambda retry
+    // doubled P on OpenFFBoard and produced sustained holding squeal.
+    750
 }
 
 fn retry_high_response_lambda_permille(_profile: CommissionProfile) -> u16 {
@@ -819,10 +821,14 @@ fn scale_bandwidth_for_lambda(
         as u32
 }
 
-/// Adjust current-loop gains for one failed current axis according to retry policy.
-pub fn retry_current_axis_gains(
+/// Adjust current-loop gains according to the section retry policy.
+///
+/// A retry changes the controller bandwidth for the whole current loop, not
+/// just the axis that first failed the short-sample gate. P tracks the new
+/// bandwidth; I stays fixed so retry does not move the tau-derived integrator
+/// zero.
+pub fn retry_current_loop_gains(
     previous: CurrentGains,
-    axis: u8,
     decision: CurrentAxisRetryDecision,
     profile: CommissionProfile,
 ) -> CurrentGains {
@@ -842,66 +848,17 @@ pub fn retry_current_axis_gains(
     let next_lambda = scale_lambda_permille(previous.lambda_us, lambda_permille)
         .clamp(min_lambda.min(max_lambda), min_lambda.max(max_lambda));
     let mut next = previous;
-    // Higher-bandwidth retry only speeds up the failed axis. The unchanged
-    // axis still bounds the aggregate current-loop metadata, so keeping the
-    // previous lower-bandwidth metadata remains conservative.
-    if decision == CurrentAxisRetryDecision::RetryLowerBandwidth {
-        next.lambda_us = previous.lambda_us.max(next_lambda);
-        next.effective_bandwidth_hz =
-            previous
-                .effective_bandwidth_hz
-                .min(scale_bandwidth_for_lambda(
-                    previous.effective_bandwidth_hz,
-                    previous.lambda_us,
-                    next_lambda,
-                ));
-    }
 
-    match axis {
-        CURRENT_AXIS_FLUX => {
-            next.flux_p = scale_gain_for_lambda(previous.flux_p, previous.lambda_us, next_lambda);
-            next.flux_i = scale_gain_for_lambda(previous.flux_i, previous.lambda_us, next_lambda);
-        }
-        CURRENT_AXIS_TORQUE => {
-            next.torque_p =
-                scale_gain_for_lambda(previous.torque_p, previous.lambda_us, next_lambda);
-            next.torque_i =
-                scale_gain_for_lambda(previous.torque_i, previous.lambda_us, next_lambda);
-        }
-        _ => return previous,
-    }
+    next.lambda_us = next_lambda;
+    next.effective_bandwidth_hz = scale_bandwidth_for_lambda(
+        previous.effective_bandwidth_hz,
+        previous.lambda_us,
+        next_lambda,
+    );
+    next.flux_p = scale_gain_for_lambda(previous.flux_p, previous.lambda_us, next_lambda);
+    next.torque_p = scale_gain_for_lambda(previous.torque_p, previous.lambda_us, next_lambda);
 
     next
-}
-
-/// Adjust current-loop integrator gain for a validation retry while retaining P damping.
-pub fn current_validation_retry_gains(
-    previous: CurrentGains,
-    target: u32,
-    settle_band: u32,
-    forward_tail_level: u32,
-    reverse_tail_level: u32,
-    overshoot_pct: u16,
-) -> CurrentGains {
-    let min_tail = forward_tail_level.min(reverse_tail_level);
-    let max_tail = forward_tail_level.max(reverse_tail_level);
-    let upper = target.saturating_add(settle_band);
-    let lower = target.saturating_sub(settle_band);
-    let i = if overshoot_pct > 150 || max_tail > upper {
-        (previous.flux_i / 2).max(1)
-    } else if min_tail < lower {
-        previous.flux_i.saturating_add((previous.flux_i / 2).max(1))
-    } else {
-        previous.flux_i
-    };
-    CurrentGains {
-        flux_p: previous.flux_p,
-        flux_i: i,
-        torque_p: previous.torque_p,
-        torque_i: i,
-        effective_bandwidth_hz: previous.effective_bandwidth_hz,
-        lambda_us: previous.lambda_us,
-    }
 }
 
 /// Compute symmetry metric from forward and reverse tail levels.
@@ -1084,56 +1041,55 @@ mod tests {
     }
 
     #[test]
-    fn retry_policy_low_response_retry_preserves_conservative_metadata() {
+    fn retry_policy_scales_bandwidth_and_p_but_keeps_i() {
         let previous = CurrentGains {
             flux_p: 120,
-            flux_i: 60,
+            flux_i: 23,
             torque_p: 220,
-            torque_i: 110,
+            torque_i: 19,
             effective_bandwidth_hz: 145,
             lambda_us: 934,
         };
 
-        let retry = retry_current_axis_gains(
+        let retry = retry_current_loop_gains(
             previous,
-            CURRENT_AXIS_FLUX,
             CurrentAxisRetryDecision::RetryHigherBandwidth,
             CommissionProfile::Balanced,
         );
 
         assert!(retry.flux_p > previous.flux_p);
-        assert!(retry.flux_i > previous.flux_i);
-        assert_eq!(retry.torque_p, previous.torque_p);
+        assert!(retry.torque_p > previous.torque_p);
+        assert_eq!(retry.flux_i, previous.flux_i);
         assert_eq!(retry.torque_i, previous.torque_i);
-        assert_eq!(
-            retry.effective_bandwidth_hz,
-            previous.effective_bandwidth_hz
-        );
-        assert_eq!(retry.lambda_us, previous.lambda_us);
+        // These metadata expectations track the retry constants. If hardware
+        // tuning moves those constants, update the expected metadata with them.
+        assert_eq!(retry.effective_bandwidth_hz, 193);
+        assert_eq!(retry.lambda_us, 700);
     }
 
     #[test]
-    fn retry_policy_high_response_retry_reports_slower_aggregate_metadata() {
+    fn retry_policy_lower_bandwidth_keeps_i() {
         let previous = CurrentGains {
             flux_p: 120,
-            flux_i: 60,
+            flux_i: 23,
             torque_p: 220,
-            torque_i: 110,
+            torque_i: 19,
             effective_bandwidth_hz: 145,
             lambda_us: 934,
         };
 
-        let retry = retry_current_axis_gains(
+        let retry = retry_current_loop_gains(
             previous,
-            CURRENT_AXIS_TORQUE,
             CurrentAxisRetryDecision::RetryLowerBandwidth,
             CommissionProfile::Balanced,
         );
 
-        assert_eq!(retry.flux_p, previous.flux_p);
-        assert_eq!(retry.flux_i, previous.flux_i);
+        assert!(retry.flux_p < previous.flux_p);
         assert!(retry.torque_p < previous.torque_p);
-        assert!(retry.torque_i < previous.torque_i);
+        assert_eq!(retry.flux_i, previous.flux_i);
+        assert_eq!(retry.torque_i, previous.torque_i);
+        // These metadata expectations track the retry constants. If hardware
+        // tuning moves those constants, update the expected metadata with them.
         assert_eq!(retry.effective_bandwidth_hz, 72);
         assert_eq!(retry.lambda_us, 1868);
     }
@@ -2133,38 +2089,6 @@ mod tests {
     }
 
     #[test]
-    fn accept_noop_retry_when_marginal_is_symmetry_only() {
-        let previous = CurrentGains {
-            flux_p: 437,
-            flux_i: 217,
-            torque_p: 437,
-            torque_i: 217,
-            effective_bandwidth_hz: 145,
-            lambda_us: 934,
-        };
-        let retry = current_validation_retry_gains(previous, 367, 18, 351, 358, 119);
-        // 180 permille: Marginal under tail-level thresholds (Pass <= 100, Fail > 250).
-        let metrics = CurrentValidation {
-            rise_time_us: 500,
-            overshoot_pct: 119,
-            settling_time_us: 40480,
-            ringing_count: 0,
-            saturation_samples: 0,
-            symmetry_pct: 180,
-            tail_level: 0,
-            target_error_pct: 0,
-        };
-
-        assert_eq!(
-            classify_current_validation(&metrics, 12080, 512),
-            ValidationResult::Marginal
-        );
-        assert!(should_accept_current_validation_without_retry(
-            &metrics, 12080, 512, previous, retry,
-        ));
-    }
-
-    #[test]
     fn classify_marginal_symmetry_at_150_permille() {
         // With tail-level symmetry thresholds (Pass <= 100, Marginal <= 250),
         // 150 permille should be Marginal (not Pass as with old 200 threshold).
@@ -2292,54 +2216,6 @@ mod tests {
         ));
         assert!(!should_retry_current_validation(ValidationResult::Pass, 0));
         assert!(!should_retry_current_validation(ValidationResult::Fail, 1));
-    }
-
-    #[test]
-    fn current_validation_retry_reduces_integrator_when_tail_high() {
-        let previous = CurrentGains {
-            flux_p: 437,
-            flux_i: 592,
-            torque_p: 437,
-            torque_i: 592,
-            effective_bandwidth_hz: 143,
-            lambda_us: 947,
-        };
-
-        let retry = current_validation_retry_gains(previous, 367, 18, 372, 403, 294);
-
-        assert_eq!(retry.flux_p, previous.flux_p);
-        assert_eq!(retry.torque_p, previous.torque_p);
-        assert_eq!(retry.flux_i, 296);
-        assert_eq!(retry.torque_i, 296);
-        assert_eq!(retry.lambda_us, previous.lambda_us);
-        assert_eq!(
-            retry.effective_bandwidth_hz,
-            previous.effective_bandwidth_hz
-        );
-    }
-
-    #[test]
-    fn current_validation_retry_increases_integrator_when_tail_low() {
-        let previous = CurrentGains {
-            flux_p: 436,
-            flux_i: 151,
-            torque_p: 436,
-            torque_i: 151,
-            effective_bandwidth_hz: 146,
-            lambda_us: 923,
-        };
-
-        let retry = current_validation_retry_gains(previous, 367, 18, 354, 321, 35);
-
-        assert_eq!(retry.flux_p, previous.flux_p);
-        assert_eq!(retry.torque_p, previous.torque_p);
-        assert_eq!(retry.flux_i, 226);
-        assert_eq!(retry.torque_i, 226);
-        assert_eq!(retry.lambda_us, previous.lambda_us);
-        assert_eq!(
-            retry.effective_bandwidth_hz,
-            previous.effective_bandwidth_hz
-        );
     }
 
     // --- Tail-level symmetry ---

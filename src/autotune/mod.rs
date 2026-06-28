@@ -29,11 +29,10 @@ pub use current::{
     CURRENT_AXIS_VALIDATION_ZERO_TARGET, CurrentAxisGate, CurrentAxisGateResult,
     CurrentAxisRetryDecision, CurrentAxisSample, CurrentValidation, classify_current_axis_sample,
     classify_current_validation, compute_tail_symmetry_pct, compute_target_error_pct,
-    current_axis_retry_decision, current_validation_retry_gains, extract_step_metrics,
-    retry_current_axis_gains, should_accept_current_validation_without_retry,
-    should_retry_current_validation, simc_current_gains, simc_current_gains_checked,
-    simc_current_gains_with_lambda, simc_current_gains_with_lambda_checked,
-    synthesize_current_gains,
+    current_axis_retry_decision, extract_step_metrics, retry_current_loop_gains,
+    should_accept_current_validation_without_retry, should_retry_current_validation,
+    simc_current_gains, simc_current_gains_checked, simc_current_gains_with_lambda,
+    simc_current_gains_with_lambda_checked, synthesize_current_gains,
 };
 pub use filters::recommend_filters;
 pub(crate) use models::VELOCITY_SIMC_MAX_P_REG;

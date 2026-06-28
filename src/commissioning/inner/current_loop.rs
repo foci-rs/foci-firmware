@@ -13,7 +13,7 @@ use crate::autotune::{
     CurrentAxisGate, CurrentAxisGateResult, CurrentAxisRetryDecision, CurrentAxisSample,
     CurrentGainSynthesisInput, CurrentGains, CurrentLoopEvidence, ElectricalModel, InnerSequence,
     PhaseId, TransientBuffer, classify_current_axis_sample, current_axis_retry_decision,
-    retry_current_axis_gains,
+    retry_current_loop_gains,
 };
 use crate::commissioning::inner::InnerPhase;
 use crate::commissioning::types::{
@@ -375,24 +375,10 @@ fn disabled_state_safe_current_gains() -> CurrentGains {
     }
 }
 
-fn axis_id(axis: CurrentValidationAxis) -> u8 {
-    match axis {
-        CurrentValidationAxis::Flux => crate::autotune::CURRENT_AXIS_FLUX,
-        CurrentValidationAxis::Torque => crate::autotune::CURRENT_AXIS_TORQUE,
-    }
-}
-
 fn axis_attempt(data: &CurrentValidateData, axis: CurrentValidationAxis) -> u8 {
     match axis {
         CurrentValidationAxis::Flux => data.flux_attempt,
         CurrentValidationAxis::Torque => data.torque_attempt,
-    }
-}
-
-fn axis_attempt_mut(data: &mut CurrentValidateData, axis: CurrentValidationAxis) -> &mut u8 {
-    match axis {
-        CurrentValidationAxis::Flux => &mut data.flux_attempt,
-        CurrentValidationAxis::Torque => &mut data.torque_attempt,
     }
 }
 
@@ -924,13 +910,10 @@ pub(crate) async fn step_current_validate<B: CommissioningBackend>(
                 match retry_decision {
                     CurrentAxisRetryDecision::RetryHigherBandwidth
                     | CurrentAxisRetryDecision::RetryLowerBandwidth => {
-                        data.gains = retry_current_axis_gains(
-                            data.gains,
-                            axis_id(axis),
-                            retry_decision,
-                            _profile,
-                        );
-                        *axis_attempt_mut(data, axis) = axis_attempt(data, axis).saturating_add(1);
+                        data.gains = retry_current_loop_gains(data.gains, retry_decision, _profile);
+                        let next_attempt = axis_attempt(data, axis).saturating_add(1);
+                        data.flux_attempt = data.flux_attempt.max(next_attempt);
+                        data.torque_attempt = data.torque_attempt.max(next_attempt);
                         *validate_state = CurrentValidateState::WriteGains;
                         return StepResult::Continue;
                     }
@@ -1231,6 +1214,7 @@ mod tests {
                     assert!(matches!(state, CurrentValidateState::SafeState { .. }));
                     assert_eq!(data.final_status, CommissionStatus::Accepted);
                     assert_eq!(data.inner_warning_flags & (1 << 4), 0);
+                    assert_eq!(data.current_flux_validation[0].attempt, 1);
                     assert_eq!(data.current_torque_validation[0].attempt, 1);
                     assert_eq!(
                         data.current_loop_evidence.current_validation_axes,
@@ -1596,7 +1580,7 @@ mod tests {
                     tau_e_crosscheck_us: 2000,
                 },
                 gains: disabled_state_safe_current_gains(),
-                flux_attempt: 0,
+                flux_attempt: 1,
                 torque_attempt: 1,
                 step_amplitude: 250,
                 final_status: CommissionStatus::Failed(CommissionError::CurrentValidationFailed),
@@ -1606,7 +1590,7 @@ mod tests {
                 current_flux_validation_count: 1,
                 current_flux_validation: [CurrentValidationAxisEvidence {
                     status: crate::autotune::CURRENT_AXIS_VALIDATION_PASS,
-                    attempt: 0,
+                    attempt: 1,
                     target: 250,
                     sample_delay_ms: 2,
                     positive_response_permille: 980,
@@ -1666,7 +1650,7 @@ mod tests {
                     effective_bandwidth_hz: 0,
                     lambda_us: 0,
                 },
-                flux_attempt: 0,
+                flux_attempt: 1,
                 torque_attempt: 1,
                 step_amplitude: 250,
                 final_status: CommissionStatus::Accepted,
@@ -1676,7 +1660,7 @@ mod tests {
                 current_flux_validation_count: 1,
                 current_flux_validation: [CurrentValidationAxisEvidence {
                     status: crate::autotune::CURRENT_AXIS_VALIDATION_PASS,
-                    attempt: 0,
+                    attempt: 1,
                     target: 250,
                     sample_delay_ms: 2,
                     positive_response_permille: 980,
