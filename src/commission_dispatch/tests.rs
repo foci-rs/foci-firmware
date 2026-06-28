@@ -29,6 +29,105 @@ fn stepper_state() -> &'static crate::state::stepper::StepperChannelState {
 
 const TEST_MOTOR_SENTINEL: u32 = 0x0002_0032;
 
+#[derive(Debug, PartialEq, Eq)]
+enum ReplyEvent {
+    Commission {
+        oid: u8,
+        status: u8,
+    },
+    ResistanceRun,
+    ResistanceAxis {
+        electrical_axis: u8,
+    },
+    CurrentValidationAxis {
+        axis: u8,
+        sample_index: u8,
+        sample_delay_ms: u16,
+        positive_response_permille: u16,
+    },
+    CurrentLoopRun {
+        measured_axis_split_permille: u16,
+        applied_axis_split_permille: u16,
+        axis_split_clamped: u8,
+    },
+}
+
+#[derive(Default)]
+struct ReplyRecorder {
+    events: std::vec::Vec<ReplyEvent>,
+}
+
+impl CommissionReplySink for ReplyRecorder {
+    fn foci_commission_detail(&mut self, _oid: u8, _event: crate::selftest::CommissionDiagnostic) {}
+
+    fn foci_commission_phase(&mut self, _oid: u8, _phase: u8, _status: u8) {}
+
+    fn foci_commission_result(
+        &mut self,
+        oid: u8,
+        status: u8,
+        _result: &crate::commissioning::types::CommissionResult,
+    ) {
+        self.events.push(ReplyEvent::Commission { oid, status });
+    }
+
+    fn foci_resistance_run(&mut self, _report: crate::tmc_diagnostics::ResistanceRunReport) {
+        self.events.push(ReplyEvent::ResistanceRun);
+    }
+
+    fn foci_resistance_axis(&mut self, report: crate::tmc_diagnostics::ResistanceAxisReport) {
+        self.events.push(ReplyEvent::ResistanceAxis {
+            electrical_axis: report.electrical_axis,
+        });
+    }
+
+    fn foci_current_loop_run(&mut self, report: crate::tmc_diagnostics::CurrentLoopRunReport) {
+        self.events.push(ReplyEvent::CurrentLoopRun {
+            measured_axis_split_permille: report.measured_axis_split_permille,
+            applied_axis_split_permille: report.applied_axis_split_permille,
+            axis_split_clamped: report.axis_split_clamped,
+        });
+    }
+
+    fn foci_current_validation_axis(
+        &mut self,
+        report: crate::tmc_diagnostics::CurrentValidationAxisReport,
+    ) {
+        self.events.push(ReplyEvent::CurrentValidationAxis {
+            axis: report.axis,
+            sample_index: report.sample_index,
+            sample_delay_ms: report.sample_delay_ms,
+            positive_response_permille: report.positive_response_permille,
+        });
+    }
+
+    fn foci_tune_result(
+        &mut self,
+        _oid: u8,
+        _status: u8,
+        _result: &crate::commissioning::types::OuterResult,
+    ) {
+    }
+
+    fn foci_calibrate_result(
+        &mut self,
+        _oid: u8,
+        _status: u8,
+        _result: &crate::commissioning::types::AdcCalResult,
+    ) {
+    }
+
+    fn foci_selftest_result(
+        &mut self,
+        _oid: u8,
+        _stage: u8,
+        _value: crate::selftest::SelftestStageValue,
+    ) {
+    }
+
+    fn foci_selftest_done(&mut self, _oid: u8, _status: u8) {}
+}
+
 #[test]
 fn restore_summary_packs_exact_fragments() {
     let mut backend = MockBackend::new();
@@ -686,6 +785,146 @@ fn sample_commission_result() -> crate::commissioning::types::CommissionResult {
         fallback_position_i: 0,
         fallback_velocity_limit: 500_000,
     }
+}
+
+#[test]
+fn commission_result_maps_current_loop_evidence() {
+    let evidence = crate::autotune::CurrentLoopEvidence::measured_split(1840, 1500, true);
+    let flux_validation = [
+        crate::commissioning::types::CurrentValidationAxisEvidence {
+            status: crate::autotune::CURRENT_AXIS_VALIDATION_PASS,
+            attempt: 0,
+            target: 250,
+            sample_delay_ms: 1,
+            positive_response_permille: 720,
+            negative_response_permille: 710,
+            cross_axis_permille: 28,
+            voltage_output_permille: 390,
+            encoder_delta_counts: 0,
+            status_flags_or: 0,
+        },
+        crate::commissioning::types::CurrentValidationAxisEvidence {
+            status: crate::autotune::CURRENT_AXIS_VALIDATION_PASS,
+            attempt: 0,
+            target: 250,
+            sample_delay_ms: 2,
+            positive_response_permille: 960,
+            negative_response_permille: 940,
+            cross_axis_permille: 35,
+            voltage_output_permille: 420,
+            encoder_delta_counts: 0,
+            status_flags_or: 0,
+        },
+        crate::commissioning::types::CurrentValidationAxisEvidence {
+            status: crate::autotune::CURRENT_AXIS_VALIDATION_PASS,
+            attempt: 0,
+            target: 250,
+            sample_delay_ms: 5,
+            positive_response_permille: 1010,
+            negative_response_permille: 1000,
+            cross_axis_permille: 40,
+            voltage_output_permille: 430,
+            encoder_delta_counts: 0,
+            status_flags_or: 0,
+        },
+    ];
+    let torque_validation = [
+        crate::commissioning::types::CurrentValidationAxisEvidence {
+            status: crate::autotune::CURRENT_AXIS_VALIDATION_PASS,
+            attempt: 0,
+            target: 250,
+            sample_delay_ms: 1,
+            positive_response_permille: 610,
+            negative_response_permille: 590,
+            cross_axis_permille: 42,
+            voltage_output_permille: 510,
+            encoder_delta_counts: 2,
+            status_flags_or: 0,
+        },
+        crate::commissioning::types::CurrentValidationAxisEvidence {
+            status: crate::autotune::CURRENT_AXIS_VALIDATION_PASS,
+            attempt: 0,
+            target: 250,
+            sample_delay_ms: 2,
+            positive_response_permille: 780,
+            negative_response_permille: 770,
+            cross_axis_permille: 38,
+            voltage_output_permille: 530,
+            encoder_delta_counts: 4,
+            status_flags_or: 0,
+        },
+        crate::commissioning::types::CurrentValidationAxisEvidence::EMPTY,
+    ];
+    let mut result = sample_commission_result();
+    result.inner.current_gains_source = evidence.gains_source;
+    result.inner.axis_split_source = evidence.axis_split_source;
+    result.inner.gains_tier = evidence.gains_tier;
+    result.inner.measured_axis_split_permille = evidence.measured_axis_split_permille;
+    result.inner.applied_axis_split_permille = evidence.applied_axis_split_permille;
+    result.inner.axis_split_clamped = evidence.axis_split_clamped;
+    result.inner.current_validation_axes = crate::autotune::CURRENT_VALIDATION_AXIS_FLUX
+        | crate::autotune::CURRENT_VALIDATION_AXIS_TORQUE;
+    result.inner.retry_budget_exhausted = evidence.retry_budget_exhausted;
+    result.inner.current_loop_failure_reason = evidence.failure_reason;
+    result.inner.current_flux_validation_count = 3;
+    result.inner.current_flux_validation = flux_validation;
+    result.inner.current_torque_validation_count = 2;
+    result.inner.current_torque_validation = torque_validation;
+
+    let mut sink = ReplyRecorder::default();
+    emit_terminal_reply(
+        &mut sink,
+        ReplyPayload::CommissionResult {
+            oid: 6,
+            status: 0,
+            result,
+        },
+    );
+
+    assert_eq!(
+        sink.events,
+        std::vec![
+            ReplyEvent::ResistanceAxis { electrical_axis: 0 },
+            ReplyEvent::ResistanceAxis { electrical_axis: 1 },
+            ReplyEvent::ResistanceRun,
+            ReplyEvent::CurrentValidationAxis {
+                axis: crate::autotune::CURRENT_AXIS_FLUX,
+                sample_index: 0,
+                sample_delay_ms: 1,
+                positive_response_permille: 720,
+            },
+            ReplyEvent::CurrentValidationAxis {
+                axis: crate::autotune::CURRENT_AXIS_FLUX,
+                sample_index: 1,
+                sample_delay_ms: 2,
+                positive_response_permille: 960,
+            },
+            ReplyEvent::CurrentValidationAxis {
+                axis: crate::autotune::CURRENT_AXIS_FLUX,
+                sample_index: 2,
+                sample_delay_ms: 5,
+                positive_response_permille: 1010,
+            },
+            ReplyEvent::CurrentValidationAxis {
+                axis: crate::autotune::CURRENT_AXIS_TORQUE,
+                sample_index: 0,
+                sample_delay_ms: 1,
+                positive_response_permille: 610,
+            },
+            ReplyEvent::CurrentValidationAxis {
+                axis: crate::autotune::CURRENT_AXIS_TORQUE,
+                sample_index: 1,
+                sample_delay_ms: 2,
+                positive_response_permille: 780,
+            },
+            ReplyEvent::CurrentLoopRun {
+                measured_axis_split_permille: 1840,
+                applied_axis_split_permille: 1500,
+                axis_split_clamped: 1,
+            },
+            ReplyEvent::Commission { oid: 6, status: 0 },
+        ]
+    );
 }
 
 #[test]
