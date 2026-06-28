@@ -19,13 +19,13 @@ use super::{
     CURRENT_VALIDATION_MAX_SAMPLES_PER_AXIS,
 };
 
-/// Current-loop SIMC integrator damping factor.
+/// Empirical factor for current-loop I gain synthesis.
 ///
-/// The documented advanced-PI zero placement is correct in isolation, but on
-/// the target hardware the raw `4*(lambda+theta)` SIMC integral time winds up
-/// during the current-step rise. Use a slower integral time while keeping the
-/// proportional SIMC damping unchanged.
-const CURRENT_SIMC_TI_MULTIPLIER: f32 = 11.0;
+/// The theoretical TMC4671 advanced-PI zero gives
+/// `65536 * R / (L * f_pwm)`. Hardware evidence validated a 64x lower
+/// `1024 * R / (L * f_pwm)`. Commissioning stores `tau_e_us = L / R`, so the
+/// Phase 1 formula is `CURRENT_I_EMPIRICAL_FACTOR / (tau_e_seconds * f_pwm)`.
+pub const CURRENT_I_EMPIRICAL_FACTOR: f32 = 1024.0;
 
 /// Samples used to smooth current validation settling/ringing checks.
 ///
@@ -296,7 +296,7 @@ fn simc_lambda_us(profile: CommissionProfile, tau_e_us: u32, theta_e_us: u32) ->
 }
 
 /// Compute SIMC PI gains for the current loop, returning `None` if the
-/// electrical model is invalid (zero R, zero L, or zero theta).
+/// electrical model is invalid (zero R, zero L, zero tau, or zero theta).
 pub fn simc_current_gains_checked(
     model: &ElectricalModel,
     profile: CommissionProfile,
@@ -312,7 +312,7 @@ pub fn simc_current_gains_with_lambda_checked(
     lambda_us: u32,
     config: &crate::config::TmcConfig,
 ) -> Option<CurrentGains> {
-    if model.r_int == 0 || model.l_int == 0 || model.theta_e_us == 0 {
+    if model.r_int == 0 || model.l_int == 0 || model.tau_e_us == 0 || model.theta_e_us == 0 {
         return None;
     }
 
@@ -320,8 +320,6 @@ pub fn simc_current_gains_with_lambda_checked(
 
     // SIMC PI tuning law for FOPDT plant G(s) = K / (tau*s+1) * e^(-theta*s):
     //   Kp = tau / (K * (lambda + theta))
-    //   Ti = max(tau, CURRENT_SIMC_TI_MULTIPLIER * (lambda + theta))
-    //   Ki = Kp / Ti
     //
     // For current loop: K = 1/R_int (DC gain: current per unit voltage).
     // All in internal units — no board-specific scaling needed.
@@ -333,23 +331,12 @@ pub fn simc_current_gains_with_lambda_checked(
     let k = 1.0 / r_int; // Plant DC gain
 
     let kp = tau / (k * (lambda + theta));
-    let ti = {
-        let candidate = CURRENT_SIMC_TI_MULTIPLIER * (lambda + theta);
-        if tau > candidate { tau } else { candidate }
-    };
-    let ti_s = ti * 1e-6; // Convert Ti from microseconds to seconds
 
     // Convert to the TMC4671 current-loop register format.
-    //
-    // OpenFFBoard leaves CONFIG_ADVANCED_PI_REPRESENT at its default 0, so the
-    // current-loop I register field is raw Q8.8. In advanced PI mode the
-    // integrator is series/interacting:
-    //   x[k+1] = x[k] + Kp * (I/65536) * e[k]
-    // so the raw Q8.8 I register places the PI zero as I/65536 per PWM sample.
-    // A continuous Ti maps to I ~= 65536 / (Ti * f_pwm).
+    let tau_s = tau * 1e-6;
     let f_pwm = config.pwm_freq_hz() as f32;
     let p_reg = (kp * 256.0).clamp(1.0, u16::MAX as f32) as u16;
-    let i_reg = (65_536.0 / (ti_s * f_pwm)).clamp(1.0, u16::MAX as f32) as u16;
+    let i_reg = (CURRENT_I_EMPIRICAL_FACTOR / (tau_s * f_pwm)).clamp(1.0, u16::MAX as f32) as u16;
 
     // Effective bandwidth = 1 / (2*pi*(lambda+theta)) in Hz
     let bw_hz = 1_000_000.0 / (2.0 * core::f32::consts::PI * (lambda + theta));
@@ -470,20 +457,6 @@ pub fn simc_current_gains_with_lambda(
         effective_bandwidth_hz: 0,
         lambda_us: 0,
     })
-}
-
-/// Settling reference for current-loop validation, in microseconds.
-///
-/// Advanced PI uses the `I` register as the controller zero location. When the
-/// current-loop integrator is intentionally damped, electrical tau is no longer
-/// the dominant settling reference; the configured PI zero time is.
-pub fn current_settling_reference_us(
-    gains: &CurrentGains,
-    config: &crate::config::TmcConfig,
-) -> u32 {
-    let i_reg = gains.flux_i.min(gains.torque_i).max(1) as u64;
-    let f_pwm = config.pwm_freq_hz().max(1) as u64;
-    (65_536_000_000u64 / (i_reg * f_pwm)).min(u32::MAX as u64) as u32
 }
 
 /// Number of tail samples used for the robust tail-level statistic.
@@ -1445,6 +1418,26 @@ mod tests {
     }
 
     #[test]
+    fn simc_zero_tau_returns_none_and_default_fallback() {
+        let mut model = test_electrical_model();
+        model.tau_e_us = 0;
+        let config = autotune_test_config();
+
+        assert!(simc_current_gains_with_lambda_checked(&model, 950, &config).is_none());
+        assert_eq!(
+            simc_current_gains_with_lambda(&model, 950, &config),
+            CurrentGains {
+                flux_p: crate::pid::DEFAULT_INNER_GAINS.flux_p,
+                flux_i: crate::pid::DEFAULT_INNER_GAINS.flux_i,
+                torque_p: crate::pid::DEFAULT_INNER_GAINS.torque_p,
+                torque_i: crate::pid::DEFAULT_INNER_GAINS.torque_i,
+                effective_bandwidth_hz: 0,
+                lambda_us: 0,
+            }
+        );
+    }
+
+    #[test]
     fn simc_i_gain_not_trivial() {
         // With typical motor parameters, the I gain should be significantly
         // above the minimum clamp of 1. A value of 1 indicates a units bug.
@@ -1459,7 +1452,54 @@ mod tests {
     }
 
     #[test]
-    fn simc_current_i_gain_uses_advanced_pi_zero_parameter() {
+    fn simc_current_i_uses_tau_seconds_and_empirical_factor() {
+        let model = ElectricalModel {
+            r_int: ELECTRICAL_MODEL_RESISTANCE_SCALE,
+            l_int: 1900,
+            tau_e_us: 1900,
+            theta_e_us: 160,
+            r_mohm: 1000,
+            l_uh: 1900,
+            tau_e_crosscheck_us: 2600,
+        };
+        let config = autotune_test_config();
+        let gains = simc_current_gains_with_lambda(&model, 950, &config);
+
+        let tau_s = model.tau_e_us as f32 * 1e-6;
+        let expected_i = (CURRENT_I_EMPIRICAL_FACTOR / (tau_s * config.pwm_freq_hz() as f32))
+            .clamp(1.0, u16::MAX as f32) as u16;
+
+        assert_eq!(gains.flux_i, expected_i);
+        assert_eq!(gains.torque_i, expected_i);
+        assert!(
+            (20..=30).contains(&gains.flux_i),
+            "flux_i={} expected live empirical bracket",
+            gains.flux_i
+        );
+    }
+
+    #[test]
+    fn simc_current_i_is_independent_of_lambda() {
+        let model = ElectricalModel {
+            r_int: ELECTRICAL_MODEL_RESISTANCE_SCALE,
+            l_int: 1900,
+            tau_e_us: 1900,
+            theta_e_us: 160,
+            r_mohm: 1000,
+            l_uh: 1900,
+            tau_e_crosscheck_us: 2600,
+        };
+        let config = autotune_test_config();
+        let fast = simc_current_gains_with_lambda(&model, 950, &config);
+        let slow = simc_current_gains_with_lambda(&model, 1900, &config);
+
+        assert!(fast.flux_p > slow.flux_p);
+        assert_eq!(fast.flux_i, slow.flux_i);
+        assert_eq!(fast.torque_i, slow.torque_i);
+    }
+
+    #[test]
+    fn simc_current_i_uses_tau_seconds_not_advanced_pi_zero() {
         let model = ElectricalModel {
             r_int: ELECTRICAL_MODEL_RESISTANCE_SCALE,
             l_int: 1863,
@@ -1472,55 +1512,16 @@ mod tests {
         let config = autotune_test_config();
         let gains = simc_current_gains(&model, CommissionProfile::Balanced, &config);
 
-        // Balanced current-loop lambda is floored at tau/2 for robustness:
-        // max(2*theta=320us, tau/2=931us). The damped SIMC integrator time is
-        // max(tau, CURRENT_SIMC_TI_MULTIPLIER*(lambda+theta)). With the
-        // default Q8.8 representation, TMC4671 advanced PI places the series
-        // PI zero as I/65536 per PWM sample.
+        // Balanced current-loop lambda is still floored at tau/2 for P:
+        // max(2*theta=320us, tau/2=931us). Current-I uses electrical tau
+        // directly, independent of lambda.
         assert_eq!(gains.lambda_us, model.tau_e_us / 2);
-        let ti_s =
-            CURRENT_SIMC_TI_MULTIPLIER as f64 * (gains.lambda_us + model.theta_e_us) as f64 * 1e-6;
-        let expected_i = (65_536.0 / (ti_s * config.pwm_freq_hz() as f64)) as u16;
+        let tau_s = model.tau_e_us as f32 * 1e-6;
+        let expected_i = (CURRENT_I_EMPIRICAL_FACTOR / (tau_s * config.pwm_freq_hz() as f32))
+            .clamp(1.0, u16::MAX as f32) as u16;
 
         assert_eq!(gains.flux_i, expected_i);
         assert_eq!(gains.torque_i, expected_i);
-    }
-
-    #[test]
-    fn simc_current_i_gain_starts_near_observed_settling_bracket() {
-        let model = ElectricalModel {
-            r_int: ELECTRICAL_MODEL_RESISTANCE_SCALE,
-            l_int: 1868,
-            tau_e_us: 1868,
-            theta_e_us: 160,
-            r_mohm: 1000,
-            l_uh: 1868,
-            tau_e_crosscheck_us: 1868,
-        };
-        let config = autotune_test_config();
-        let gains = simc_current_gains(&model, CommissionProfile::Balanced, &config);
-
-        assert!(
-            (215..=225).contains(&gains.flux_i),
-            "initial I should start near the measured stable retry value, got {}",
-            gains.flux_i
-        );
-        assert_eq!(gains.flux_i, gains.torque_i);
-    }
-
-    #[test]
-    fn current_settling_reference_uses_advanced_pi_zero_time() {
-        let gains = CurrentGains {
-            flux_p: 436,
-            flux_i: 220,
-            torque_p: 436,
-            torque_i: 220,
-            effective_bandwidth_hz: 146,
-            lambda_us: 923,
-        };
-        let config = autotune_test_config();
-
-        assert_eq!(current_settling_reference_us(&gains, &config), 11915);
     }
 
     #[test]
@@ -1539,15 +1540,15 @@ mod tests {
 
         let p_expected =
             (1917.0_f64 / (1436.0_f64 + 160.0_f64) * 256.0_f64).clamp(1.0, u16::MAX as f64) as u16;
-        let ti_s = CURRENT_SIMC_TI_MULTIPLIER as f64 * (1436.0 + 160.0) * 1e-6;
-        let i_expected =
-            (65_536.0 / (ti_s * config.pwm_freq_hz() as f64)).clamp(1.0, u16::MAX as f64) as u16;
+        let tau_s = model.tau_e_us as f64 * 1e-6;
+        let i_expected = (CURRENT_I_EMPIRICAL_FACTOR as f64 / (tau_s * config.pwm_freq_hz() as f64))
+            .clamp(1.0, u16::MAX as f64) as u16;
 
         assert_eq!(gains.lambda_us, 1436);
         assert_eq!(gains.flux_p, p_expected);
         assert_eq!(gains.flux_i, i_expected);
         assert!(gains.flux_p > 227, "retry P should not use inflated theta");
-        assert!(gains.flux_i > 76, "retry I should not use inflated theta");
+        assert_eq!(gains.torque_i, i_expected);
     }
 
     // --- Step metrics extraction ---
@@ -1804,12 +1805,9 @@ mod tests {
         let f_pwm = config.pwm_freq_hz() as f64;
 
         let kp_si = tau_s / (k * (lambda_s + theta_s));
-        let ti_s = {
-            let candidate = CURRENT_SIMC_TI_MULTIPLIER as f64 * (lambda_s + theta_s);
-            if tau_s > candidate { tau_s } else { candidate }
-        };
         let p_reg_expected = (kp_si * 256.0).clamp(1.0, u16::MAX as f64) as u16;
-        let i_reg_expected = (65_536.0 / (ti_s * f_pwm)).clamp(1.0, u16::MAX as f64) as u16;
+        let i_reg_expected = (CURRENT_I_EMPIRICAL_FACTOR as f64 / (tau_s * f_pwm))
+            .clamp(1.0, u16::MAX as f64) as u16;
 
         assert_eq!(
             gains.flux_p, p_reg_expected,
