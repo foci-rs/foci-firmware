@@ -162,9 +162,8 @@ pub struct FociCommissionResult {
     pub tau_e_crosscheck_us: u32,
     /// L/R-vs-transient tau residual in permille.
     pub tau_residual_permille: u16,
-    /// Inner-confidence warning bitfield (bits 0–3 model gates,
-    /// bit 4 retry accepted, bit 5 fallback gains, bit 6 host-default,
-    /// bit 7 reserved).
+    /// Inner-confidence warning bitfield (bits 0–3 model gates, bit 5
+    /// fallback gains, bit 6 host-default, bit 7 reserved).
     pub inner_warning_flags: u8,
 }
 

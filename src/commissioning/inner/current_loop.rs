@@ -89,8 +89,7 @@ pub(crate) struct CurrentValidateData {
     pub(crate) current_torque_validation:
         [CurrentValidationAxisEvidence; crate::autotune::CURRENT_VALIDATION_MAX_SAMPLES_PER_AXIS],
     /// Warning bits accumulated through Stage 1 (bits 0–3 from Phase 5,
-    /// bit 4 reserved for later retry policy, bit 5 ORed if gains fell back
-    /// to defaults).
+    /// bit 5 ORed if gains fell back to defaults).
     pub(crate) inner_warning_flags: u8,
     /// L/R-vs-transient tau residual in permille from Phase 5.
     pub(crate) tau_residual_permille: u16,
@@ -902,12 +901,7 @@ pub(crate) async fn step_current_validate<B: CommissioningBackend>(
                             crate::autotune::CURRENT_VALIDATION_AXIS_TORQUE;
                         data.current_loop_evidence.failure_reason =
                             crate::autotune::CURRENT_LOOP_FAILURE_NONE;
-                        data.final_status = if axis_attempt(data, axis) > 0 {
-                            data.inner_warning_flags |= 1 << 4;
-                            CommissionStatus::AcceptedWithWarnings
-                        } else {
-                            CommissionStatus::Accepted
-                        };
+                        data.final_status = CommissionStatus::Accepted;
                     }
                 }
             } else {
@@ -1120,8 +1114,9 @@ pub(crate) async fn step_current_validate<B: CommissioningBackend>(
 mod tests {
     use crate::autotune::{
         AXIS_SPLIT_SOURCE_NONE, CURRENT_GAINS_SOURCE_FAILED, CURRENT_GAINS_TIER_NONE,
-        CURRENT_LOOP_FAILURE_RETRY_EXHAUSTED, CURRENT_LOOP_FAILURE_STATUS_FLAGS,
-        CURRENT_LOOP_FAILURE_TORQUE_VALIDATION, CURRENT_VALIDATION_AXIS_FLUX,
+        CURRENT_LOOP_FAILURE_NONE, CURRENT_LOOP_FAILURE_RETRY_EXHAUSTED,
+        CURRENT_LOOP_FAILURE_STATUS_FLAGS, CURRENT_LOOP_FAILURE_TORQUE_VALIDATION,
+        CURRENT_VALIDATION_AXIS_FLUX, CURRENT_VALIDATION_AXIS_TORQUE,
     };
     use crate::commission_dispatch::test_support::{MockBackend, SpiOp};
     use foci_tmc4671::registers::{
@@ -1209,6 +1204,43 @@ mod tests {
         let decision = axis_retry_decision_for_samples(&samples, 2, 0);
 
         assert_eq!(decision, CurrentAxisRetryDecision::RetryHigherBandwidth);
+    }
+
+    #[test]
+    fn successful_retry_is_evidence_not_commission_warning() {
+        pollster::block_on(async {
+            let mut phase = passed_after_torque_retry_phase();
+            let mut buf = TransientBuffer::new();
+            let mut backend = MockBackend::new();
+
+            let result = step_current_validate(
+                &mut phase,
+                &mut buf,
+                CommissionProfile::Balanced,
+                InnerSequence::Commission,
+                &mut backend,
+            )
+            .await;
+
+            assert!(matches!(result, StepResult::Continue));
+            match phase {
+                InnerPhase::CurrentValidate { state, data } => {
+                    assert!(matches!(state, CurrentValidateState::SafeState { .. }));
+                    assert_eq!(data.final_status, CommissionStatus::Accepted);
+                    assert_eq!(data.inner_warning_flags & (1 << 4), 0);
+                    assert_eq!(data.current_torque_validation[0].attempt, 1);
+                    assert_eq!(
+                        data.current_loop_evidence.current_validation_axes,
+                        CURRENT_VALIDATION_AXIS_FLUX | CURRENT_VALIDATION_AXIS_TORQUE
+                    );
+                    assert_eq!(
+                        data.current_loop_evidence.failure_reason,
+                        CURRENT_LOOP_FAILURE_NONE
+                    );
+                }
+                other => panic!("expected CurrentValidate phase, got {other:?}"),
+            }
+        });
     }
 
     #[test]
@@ -1594,6 +1626,76 @@ mod tests {
                     voltage_output_permille: 100,
                     encoder_delta_counts: 0,
                     status_flags_or: 0,
+                };
+                    crate::autotune::CURRENT_VALIDATION_MAX_SAMPLES_PER_AXIS],
+                inner_warning_flags: 0,
+                tau_residual_permille: 0,
+                resistance_result: resistance_result(),
+                resistance_gain_path_count_slope_milli: 1000,
+                current_loop_evidence: evidence,
+                impedance_evidence: None,
+            },
+        }
+    }
+
+    fn passed_after_torque_retry_phase() -> InnerPhase {
+        let mut evidence = CurrentLoopEvidence::measured_symmetric();
+        evidence.current_validation_axes = CURRENT_VALIDATION_AXIS_FLUX;
+        InnerPhase::CurrentValidate {
+            state: CurrentValidateState::AxisClassify {
+                axis: CurrentValidationAxis::Torque,
+            },
+            data: CurrentValidateData {
+                model: ElectricalModel {
+                    r_int: 1000,
+                    l_int: 2000,
+                    tau_e_us: 2000,
+                    theta_e_us: 100,
+                    r_mohm: 1000,
+                    l_uh: 2000,
+                    tau_e_crosscheck_us: 2000,
+                },
+                gains: CurrentGains {
+                    flux_p: 11,
+                    flux_i: 12,
+                    torque_p: 13,
+                    torque_i: 14,
+                    effective_bandwidth_hz: 0,
+                    lambda_us: 0,
+                },
+                flux_attempt: 0,
+                torque_attempt: 1,
+                step_amplitude: 250,
+                final_status: CommissionStatus::Accepted,
+                pidout_limit: CURRENT_SAFE_PIDOUT_LIMIT,
+                sample_encoder_start: 0,
+                pending_positive_sample: None,
+                current_flux_validation_count: 1,
+                current_flux_validation: [CurrentValidationAxisEvidence {
+                    status: crate::autotune::CURRENT_AXIS_VALIDATION_PASS,
+                    attempt: 0,
+                    target: 250,
+                    sample_delay_ms: 2,
+                    positive_response_permille: 980,
+                    negative_response_permille: 970,
+                    cross_axis_permille: 10,
+                    voltage_output_permille: 100,
+                    encoder_delta_counts: 0,
+                    status_flags_or: 0,
+                };
+                    crate::autotune::CURRENT_VALIDATION_MAX_SAMPLES_PER_AXIS],
+                current_torque_validation_count: 2,
+                current_torque_validation: [CurrentValidationAxisEvidence {
+                    status: crate::autotune::CURRENT_AXIS_VALIDATION_PASS,
+                    attempt: 1,
+                    target: 250,
+                    sample_delay_ms: 2,
+                    positive_response_permille: 780,
+                    negative_response_permille: 680,
+                    cross_axis_permille: 50,
+                    voltage_output_permille: 450,
+                    encoder_delta_counts: 15,
+                    status_flags_or: 0x7000_8080,
                 };
                     crate::autotune::CURRENT_VALIDATION_MAX_SAMPLES_PER_AXIS],
                 inner_warning_flags: 0,
