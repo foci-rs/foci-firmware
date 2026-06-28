@@ -155,6 +155,8 @@ const CURRENT_SAFE_PIDOUT_LIMIT: u32 = 1024;
 /// High bit selects the advanced controller structure used by the tuned
 /// current loop; low bits select torque mode.
 const CURRENT_TORQUE_MODE: u32 = 0x8000_0001;
+const CURRENT_VALIDATE_PWM_SV_CHOP: u32 = 7;
+const CURRENT_VALIDATE_PHI_E_SELECTION: u32 = 3;
 
 fn validation_target_register(axis: CurrentValidationAxis, target: i16) -> u32 {
     match axis {
@@ -599,6 +601,14 @@ pub(crate) async fn step_current_validate<B: CommissioningBackend>(
                     .is_err()
                 || backend
                     .write_register(PIDOUT_UQ_UD_LIMITS, CURRENT_VALIDATE_PIDOUT_LIMIT)
+                    .await
+                    .is_err()
+                || backend
+                    .write_register(PWM_SV_CHOP, CURRENT_VALIDATE_PWM_SV_CHOP)
+                    .await
+                    .is_err()
+                || backend
+                    .write_register(PHI_E_SELECTION, CURRENT_VALIDATE_PHI_E_SELECTION)
                     .await
                     .is_err()
                 || crate::commissioning::helpers::clear_current_integrators(backend)
@@ -1090,9 +1100,9 @@ mod tests {
     };
     use crate::commission_dispatch::test_support::{MockBackend, SpiOp};
     use foci_tmc4671::registers::{
-        MODE_RAMP_MODE_MOTION, PID_ERROR_PID_FLUX_ERROR_SUM, PID_ERROR_PID_TORQUE_ERROR_SUM,
-        PID_FLUX_P_FLUX_I, PID_TORQUE_FLUX_TARGET, PID_TORQUE_P_TORQUE_I, PIDOUT_UQ_UD_LIMITS,
-        STATUS_FLAGS, UQ_UD_EXT,
+        MODE_RAMP_MODE_MOTION, PHI_E_SELECTION, PID_ERROR_PID_FLUX_ERROR_SUM,
+        PID_ERROR_PID_TORQUE_ERROR_SUM, PID_FLUX_P_FLUX_I, PID_TORQUE_FLUX_TARGET,
+        PID_TORQUE_P_TORQUE_I, PIDOUT_UQ_UD_LIMITS, PWM_SV_CHOP, STATUS_FLAGS, UQ_UD_EXT,
     };
 
     use super::*;
@@ -1244,6 +1254,55 @@ mod tests {
                 assert_spi_op_eq(*actual, *expected);
             }
             assert!(!backend.enable_pin);
+        });
+    }
+
+    #[test]
+    fn write_gains_restores_current_validation_drive_frame() {
+        pollster::block_on(async {
+            let mut phase = failed_current_validate_phase();
+            if let InnerPhase::CurrentValidate { state, data } = &mut phase {
+                *state = CurrentValidateState::WriteGains;
+                data.gains = CurrentGains {
+                    flux_p: 11,
+                    flux_i: 12,
+                    torque_p: 13,
+                    torque_i: 14,
+                    effective_bandwidth_hz: 0,
+                    lambda_us: 0,
+                };
+            }
+            let mut buf = TransientBuffer::new();
+            let mut backend = MockBackend::new();
+
+            let result = step_current_validate(
+                &mut phase,
+                &mut buf,
+                CommissionProfile::Balanced,
+                InnerSequence::Commission,
+                &mut backend,
+            )
+            .await;
+
+            assert!(matches!(result, StepResult::Continue));
+            assert!(backend.spi_log.iter().any(|op| {
+                matches!(op, SpiOp::Write(addr, value) if *addr == PWM_SV_CHOP.addr() && *value == 7)
+            }));
+            assert!(backend.spi_log.iter().any(|op| {
+                matches!(op, SpiOp::Write(addr, value) if *addr == PHI_E_SELECTION.addr() && *value == 3)
+            }));
+            assert!(matches!(
+                phase,
+                InnerPhase::CurrentValidate {
+                    state: CurrentValidateState::AxisStepSetup {
+                        axis: CurrentValidationAxis::Flux,
+                        sample_index: 0,
+                        direction: CaptureDirection::Forward,
+                        ..
+                    },
+                    ..
+                }
+            ));
         });
     }
 
