@@ -83,7 +83,11 @@ pub const CURRENT_AXIS_VALIDATION_STATUS_FLAGS: u8 = 7;
 /// Current target was zero, so response ratios cannot be classified.
 pub const CURRENT_AXIS_VALIDATION_ZERO_TARGET: u8 = 8;
 
-const CURRENT_AXIS_NON_ACTIONABLE_STATUS_MASK: u32 = 0x7000_0000;
+const CURRENT_AXIS_OUTER_CASCADE_STATUS_MASK: u32 =
+    (1 << 0) | (1 << 2) | (1 << 3) | (1 << 4) | (1 << 6) | (1 << 7);
+const CURRENT_AXIS_ENCODER_PRESENCE_STATUS_MASK: u32 = (1 << 28) | (1 << 29) | (1 << 30);
+const CURRENT_AXIS_NON_ACTIONABLE_STATUS_MASK: u32 =
+    CURRENT_AXIS_OUTER_CASCADE_STATUS_MASK | CURRENT_AXIS_ENCODER_PRESENCE_STATUS_MASK;
 
 /// Retry action for one failed current-axis short-sample validation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
@@ -1956,6 +1960,38 @@ mod tests {
         let gate = classify_current_axis_sample(&sample, &CurrentAxisGate::openffboard_flux_2ms());
 
         assert_eq!(gate.status, CURRENT_AXIS_VALIDATION_PASS);
+    }
+
+    #[test]
+    fn current_sample_gate_ignores_outer_cascade_status_bits() {
+        let sample = CurrentAxisSample {
+            target: 250,
+            same_axis_actual: 240,
+            cross_axis_actual: 8,
+            output_limited: 500,
+            output_limit: 2000,
+            encoder_delta_counts: 0,
+            status_flags: 0x0000_00dd,
+        };
+        let gate = classify_current_axis_sample(&sample, &CurrentAxisGate::openffboard_flux_2ms());
+
+        assert_eq!(gate.status, CURRENT_AXIS_VALIDATION_PASS);
+    }
+
+    #[test]
+    fn current_sample_gate_rejects_current_loop_status_bits() {
+        let sample = CurrentAxisSample {
+            target: 250,
+            same_axis_actual: 240,
+            cross_axis_actual: 8,
+            output_limited: 500,
+            output_limit: 2000,
+            encoder_delta_counts: 0,
+            status_flags: 1 << 10,
+        };
+        let gate = classify_current_axis_sample(&sample, &CurrentAxisGate::openffboard_flux_2ms());
+
+        assert_eq!(gate.status, CURRENT_AXIS_VALIDATION_STATUS_FLAGS);
     }
 
     #[test]
