@@ -47,6 +47,10 @@ pub struct TmcConfig {
     pub didt_cycles: u32,
     /// Current loop bandwidth in Hz (empirically validated per PWM frequency).
     pub bandwidth_hz: f32,
+    /// Maximum encoder movement allowed during flux-axis current validation.
+    pub current_validation_flux_max_encoder_delta_counts: u16,
+    /// Maximum encoder movement allowed during torque-axis current validation.
+    pub current_validation_torque_max_encoder_delta_counts: u16,
     /// Maximum expected resistance-profile current in TMC current counts.
     pub resistance_max_expected_current_count: u16,
     /// True when board scale metadata is hardware-validated for physical display.
@@ -112,6 +116,8 @@ impl TmcConfig {
             excitation_voltage: 512,
             didt_cycles: 5000,
             bandwidth_hz: 50.0,
+            current_validation_flux_max_encoder_delta_counts: 4,
+            current_validation_torque_max_encoder_delta_counts: 16,
             resistance_max_expected_current_count: 1600,
             resistance_scale_metadata_validated: false,
         }
@@ -134,6 +140,8 @@ mod tests {
             excitation_voltage: 512,
             didt_cycles: 5000,
             bandwidth_hz: 50.0,
+            current_validation_flux_max_encoder_delta_counts: 4,
+            current_validation_torque_max_encoder_delta_counts: 16,
             resistance_max_expected_current_count: 1600,
             resistance_scale_metadata_validated: false,
         }
@@ -176,6 +184,8 @@ mod tests {
             excitation_voltage: 512,
             didt_cycles: 5000,
             bandwidth_hz: 150.0,
+            current_validation_flux_max_encoder_delta_counts: 4,
+            current_validation_torque_max_encoder_delta_counts: 16,
             resistance_max_expected_current_count: 1600,
             resistance_scale_metadata_validated: false,
         };
@@ -195,6 +205,8 @@ mod tests {
             excitation_voltage: 512,
             didt_cycles: 5000,
             bandwidth_hz: 50.0,
+            current_validation_flux_max_encoder_delta_counts: 4,
+            current_validation_torque_max_encoder_delta_counts: 16,
             resistance_max_expected_current_count: 1600,
             resistance_scale_metadata_validated: false,
         };
@@ -214,6 +226,8 @@ mod tests {
             excitation_voltage: 512,
             didt_cycles: 5000,
             bandwidth_hz: 50.0,
+            current_validation_flux_max_encoder_delta_counts: 4,
+            current_validation_torque_max_encoder_delta_counts: 16,
             resistance_max_expected_current_count: 1600,
             resistance_scale_metadata_validated: false,
         };

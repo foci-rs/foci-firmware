@@ -83,11 +83,16 @@ pub const CURRENT_AXIS_VALIDATION_STATUS_FLAGS: u8 = 7;
 /// Current target was zero, so response ratios cannot be classified.
 pub const CURRENT_AXIS_VALIDATION_ZERO_TARGET: u8 = 8;
 
-const CURRENT_AXIS_OUTER_CASCADE_STATUS_MASK: u32 =
+// Current validation directly gates sustained current-loop voltage from
+// INTERIM_FOC_UQ_UD_LIMITED. The TMC PID output bits latch on step-edge clipping,
+// so they stay as telemetry but are not the pass/fail saturation signal here.
+const CURRENT_AXIS_POSITION_VELOCITY_STATUS_MASK: u32 =
     (1 << 0) | (1 << 2) | (1 << 3) | (1 << 4) | (1 << 6) | (1 << 7);
+const CURRENT_AXIS_PID_OUTPUT_STATUS_MASK: u32 = (1 << 11) | (1 << 15);
 const CURRENT_AXIS_ENCODER_PRESENCE_STATUS_MASK: u32 = (1 << 28) | (1 << 29) | (1 << 30);
-const CURRENT_AXIS_NON_ACTIONABLE_STATUS_MASK: u32 =
-    CURRENT_AXIS_OUTER_CASCADE_STATUS_MASK | CURRENT_AXIS_ENCODER_PRESENCE_STATUS_MASK;
+const CURRENT_AXIS_NON_ACTIONABLE_STATUS_MASK: u32 = CURRENT_AXIS_POSITION_VELOCITY_STATUS_MASK
+    | CURRENT_AXIS_PID_OUTPUT_STATUS_MASK
+    | CURRENT_AXIS_ENCODER_PRESENCE_STATUS_MASK;
 
 /// Retry action for one failed current-axis short-sample validation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
@@ -139,38 +144,18 @@ pub struct CurrentAxisGate {
 }
 
 impl CurrentAxisGate {
-    /// OpenFFBoard v1 flux-axis 1 ms sample gate.
-    pub const fn openffboard_flux_1ms() -> Self {
-        Self::openffboard(250, 1250)
-    }
-
-    /// OpenFFBoard v1 flux-axis 2 ms sample gate.
-    pub const fn openffboard_flux_2ms() -> Self {
-        Self::openffboard(700, 1250)
-    }
-
-    /// OpenFFBoard v1 flux-axis 5 ms sample gate.
-    pub const fn openffboard_flux_5ms() -> Self {
-        Self::openffboard(850, 1150)
-    }
-
-    /// OpenFFBoard v1 torque-axis 1 ms sample gate.
-    pub const fn openffboard_torque_1ms() -> Self {
-        Self::openffboard(250, 1250)
-    }
-
-    /// OpenFFBoard v1 torque-axis 2 ms sample gate.
-    pub const fn openffboard_torque_2ms() -> Self {
-        Self::openffboard(700, 1250)
-    }
-
-    const fn openffboard(min_response_permille: u16, max_response_permille: u16) -> Self {
+    /// Build a commissioning current-validation sample gate.
+    pub const fn commissioning_short_sample(
+        min_response_permille: u16,
+        max_response_permille: u16,
+        max_encoder_delta_counts: u16,
+    ) -> Self {
         Self {
             min_response_permille,
             max_response_permille,
             max_cross_axis_permille: 150,
             max_voltage_output_permille: 900,
-            max_encoder_delta_counts: 4,
+            max_encoder_delta_counts,
             actionable_status_mask: !CURRENT_AXIS_NON_ACTIONABLE_STATUS_MASK,
         }
     }
@@ -1855,7 +1840,10 @@ mod tests {
             encoder_delta_counts: 0,
             status_flags: 0,
         };
-        let gate = classify_current_axis_sample(&sample, &CurrentAxisGate::openffboard_flux_2ms());
+        let gate = classify_current_axis_sample(
+            &sample,
+            &CurrentAxisGate::commissioning_short_sample(700, 1250, 4),
+        );
 
         assert_eq!(gate.status, CURRENT_AXIS_VALIDATION_PASS);
         assert_eq!(gate.response_permille, 960);
@@ -1873,7 +1861,10 @@ mod tests {
             encoder_delta_counts: 0,
             status_flags: 0,
         };
-        let gate = classify_current_axis_sample(&sample, &CurrentAxisGate::openffboard_flux_2ms());
+        let gate = classify_current_axis_sample(
+            &sample,
+            &CurrentAxisGate::commissioning_short_sample(700, 1250, 4),
+        );
 
         assert_eq!(gate.status, CURRENT_AXIS_VALIDATION_ZERO_TARGET);
     }
@@ -1889,7 +1880,10 @@ mod tests {
             encoder_delta_counts: 0,
             status_flags: 0,
         };
-        let gate = classify_current_axis_sample(&sample, &CurrentAxisGate::openffboard_flux_2ms());
+        let gate = classify_current_axis_sample(
+            &sample,
+            &CurrentAxisGate::commissioning_short_sample(700, 1250, 4),
+        );
 
         assert_eq!(gate.status, CURRENT_AXIS_VALIDATION_WRONG_SIGN);
     }
@@ -1905,7 +1899,10 @@ mod tests {
             encoder_delta_counts: 0,
             status_flags: 0,
         };
-        let gate = classify_current_axis_sample(&sample, &CurrentAxisGate::openffboard_flux_2ms());
+        let gate = classify_current_axis_sample(
+            &sample,
+            &CurrentAxisGate::commissioning_short_sample(700, 1250, 4),
+        );
 
         assert_eq!(gate.response_permille, u16::MAX);
         assert_eq!(gate.status, CURRENT_AXIS_VALIDATION_HIGH_RESPONSE);
@@ -1922,7 +1919,10 @@ mod tests {
             encoder_delta_counts: 0,
             status_flags: 0,
         };
-        let gate = classify_current_axis_sample(&sample, &CurrentAxisGate::openffboard_flux_2ms());
+        let gate = classify_current_axis_sample(
+            &sample,
+            &CurrentAxisGate::commissioning_short_sample(700, 1250, 4),
+        );
 
         assert_eq!(gate.cross_axis_permille, u16::MAX);
         assert_eq!(gate.voltage_output_permille, u16::MAX);
@@ -1940,7 +1940,10 @@ mod tests {
             encoder_delta_counts: 0,
             status_flags: 0,
         };
-        let gate = classify_current_axis_sample(&sample, &CurrentAxisGate::openffboard_flux_2ms());
+        let gate = classify_current_axis_sample(
+            &sample,
+            &CurrentAxisGate::commissioning_short_sample(700, 1250, 4),
+        );
 
         assert_eq!(gate.response_permille, 0);
         assert_eq!(gate.status, CURRENT_AXIS_VALIDATION_LOW_RESPONSE);
@@ -1957,7 +1960,10 @@ mod tests {
             encoder_delta_counts: 0,
             status_flags: 0x7000_0000,
         };
-        let gate = classify_current_axis_sample(&sample, &CurrentAxisGate::openffboard_flux_2ms());
+        let gate = classify_current_axis_sample(
+            &sample,
+            &CurrentAxisGate::commissioning_short_sample(700, 1250, 4),
+        );
 
         assert_eq!(gate.status, CURRENT_AXIS_VALIDATION_PASS);
     }
@@ -1973,7 +1979,10 @@ mod tests {
             encoder_delta_counts: 0,
             status_flags: 0x0000_00dd,
         };
-        let gate = classify_current_axis_sample(&sample, &CurrentAxisGate::openffboard_flux_2ms());
+        let gate = classify_current_axis_sample(
+            &sample,
+            &CurrentAxisGate::commissioning_short_sample(700, 1250, 4),
+        );
 
         assert_eq!(gate.status, CURRENT_AXIS_VALIDATION_PASS);
     }
@@ -1989,9 +1998,31 @@ mod tests {
             encoder_delta_counts: 0,
             status_flags: 1 << 10,
         };
-        let gate = classify_current_axis_sample(&sample, &CurrentAxisGate::openffboard_flux_2ms());
+        let gate = classify_current_axis_sample(
+            &sample,
+            &CurrentAxisGate::commissioning_short_sample(700, 1250, 4),
+        );
 
         assert_eq!(gate.status, CURRENT_AXIS_VALIDATION_STATUS_FLAGS);
+    }
+
+    #[test]
+    fn current_sample_gate_ignores_latched_current_pid_output_bits() {
+        let sample = CurrentAxisSample {
+            target: 250,
+            same_axis_actual: 240,
+            cross_axis_actual: 8,
+            output_limited: 500,
+            output_limit: 2000,
+            encoder_delta_counts: 0,
+            status_flags: (1 << 11) | (1 << 15),
+        };
+        let gate = classify_current_axis_sample(
+            &sample,
+            &CurrentAxisGate::commissioning_short_sample(700, 1250, 4),
+        );
+
+        assert_eq!(gate.status, CURRENT_AXIS_VALIDATION_PASS);
     }
 
     #[test]

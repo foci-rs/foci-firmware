@@ -64,8 +64,10 @@ pub(crate) struct CurrentValidateData {
     pub(crate) model: ElectricalModel,
     /// Currently applied gains.
     pub(crate) gains: CurrentGains,
-    /// Current validation attempt index carried in evidence.
-    pub(crate) attempt: u8,
+    /// Flux-axis validation retry attempt index carried in evidence.
+    pub(crate) flux_attempt: u8,
+    /// Torque-axis validation retry attempt index carried in evidence.
+    pub(crate) torque_attempt: u8,
     /// Current step amplitude (absolute torque/flux current target counts).
     pub(crate) step_amplitude: u16,
     /// Final commissioning status to report.
@@ -206,14 +208,27 @@ fn axis_sample_from_registers(
     }
 }
 
-fn validation_gate(axis: CurrentValidationAxis, sample_delay_ms: u16) -> CurrentAxisGate {
-    match (axis, sample_delay_ms) {
-        (CurrentValidationAxis::Flux, 1) => CurrentAxisGate::openffboard_flux_1ms(),
-        (CurrentValidationAxis::Flux, 2) => CurrentAxisGate::openffboard_flux_2ms(),
-        (CurrentValidationAxis::Flux, _) => CurrentAxisGate::openffboard_flux_5ms(),
-        (CurrentValidationAxis::Torque, 1) => CurrentAxisGate::openffboard_torque_1ms(),
-        (CurrentValidationAxis::Torque, _) => CurrentAxisGate::openffboard_torque_2ms(),
-    }
+fn validation_gate(
+    config: &crate::config::TmcConfig,
+    axis: CurrentValidationAxis,
+    sample_delay_ms: u16,
+) -> CurrentAxisGate {
+    let max_encoder_delta_counts = match axis {
+        CurrentValidationAxis::Flux => config.current_validation_flux_max_encoder_delta_counts,
+        CurrentValidationAxis::Torque => config.current_validation_torque_max_encoder_delta_counts,
+    };
+    let (min_response_permille, max_response_permille) = match (axis, sample_delay_ms) {
+        (CurrentValidationAxis::Flux, 1) => (250, 1250),
+        (CurrentValidationAxis::Flux, 2) => (700, 1250),
+        (CurrentValidationAxis::Flux, _) => (850, 1150),
+        (CurrentValidationAxis::Torque, 1) => (250, 1250),
+        (CurrentValidationAxis::Torque, _) => (550, 1250),
+    };
+    CurrentAxisGate::commissioning_short_sample(
+        min_response_permille,
+        max_response_permille,
+        max_encoder_delta_counts,
+    )
 }
 
 fn axis_validation_delays(axis: CurrentValidationAxis) -> &'static [u16] {
@@ -365,18 +380,25 @@ fn axis_id(axis: CurrentValidationAxis) -> u8 {
     }
 }
 
+fn axis_attempt(data: &CurrentValidateData, axis: CurrentValidationAxis) -> u8 {
+    match axis {
+        CurrentValidationAxis::Flux => data.flux_attempt,
+        CurrentValidationAxis::Torque => data.torque_attempt,
+    }
+}
+
+fn axis_attempt_mut(data: &mut CurrentValidateData, axis: CurrentValidationAxis) -> &mut u8 {
+    match axis {
+        CurrentValidationAxis::Flux => &mut data.flux_attempt,
+        CurrentValidationAxis::Torque => &mut data.torque_attempt,
+    }
+}
+
 fn worst_axis_status(samples: &[CurrentValidationAxisEvidence], count: u8) -> u8 {
     samples.iter().take(count as usize).fold(
         crate::autotune::CURRENT_AXIS_VALIDATION_PASS,
         |worst, sample| merge_axis_pair_status(worst, sample.status),
     )
-}
-
-fn status_flags_or(samples: &[CurrentValidationAxisEvidence], count: u8) -> u32 {
-    samples
-        .iter()
-        .take(count as usize)
-        .fold(0, |flags, sample| flags | sample.status_flags_or)
 }
 
 fn axis_retry_decision_for_samples(
@@ -388,8 +410,7 @@ fn axis_retry_decision_for_samples(
     current_axis_retry_decision(
         status,
         attempt,
-        status == crate::autotune::CURRENT_AXIS_VALIDATION_STATUS_FLAGS
-            || status_flags_or(samples, count) != 0,
+        status == crate::autotune::CURRENT_AXIS_VALIDATION_STATUS_FLAGS,
         status == crate::autotune::CURRENT_AXIS_VALIDATION_SATURATION,
         status == crate::autotune::CURRENT_AXIS_VALIDATION_MOTION,
     )
@@ -531,7 +552,8 @@ pub(crate) async fn step_current_tune<B: CommissioningBackend>(
         data: CurrentValidateData {
             model,
             gains,
-            attempt: 0,
+            flux_attempt: 0,
+            torque_attempt: 0,
             step_amplitude,
             final_status: CommissionStatus::Accepted,
             pidout_limit: {
@@ -766,8 +788,10 @@ pub(crate) async fn step_current_validate<B: CommissioningBackend>(
                     status_flags,
                 },
             );
-            let gate =
-                classify_current_axis_sample(&sample, &validation_gate(axis, sample_delay_ms));
+            let gate = classify_current_axis_sample(
+                &sample,
+                &validation_gate(backend.tmc_config(), axis, sample_delay_ms),
+            );
             let directional = AxisDirectionalEvidence {
                 gate,
                 status_flags: sample.status_flags,
@@ -807,7 +831,7 @@ pub(crate) async fn step_current_validate<B: CommissioningBackend>(
                         }
                     };
                     let evidence = combine_axis_pair_evidence(
-                        data.attempt,
+                        axis_attempt(data, axis),
                         data.step_amplitude as i16,
                         sample_delay_ms,
                         positive,
@@ -878,7 +902,7 @@ pub(crate) async fn step_current_validate<B: CommissioningBackend>(
                             crate::autotune::CURRENT_VALIDATION_AXIS_TORQUE;
                         data.current_loop_evidence.failure_reason =
                             crate::autotune::CURRENT_LOOP_FAILURE_NONE;
-                        data.final_status = if data.attempt > 0 {
+                        data.final_status = if axis_attempt(data, axis) > 0 {
                             data.inner_warning_flags |= 1 << 4;
                             CommissionStatus::AcceptedWithWarnings
                         } else {
@@ -898,7 +922,8 @@ pub(crate) async fn step_current_validate<B: CommissioningBackend>(
                     ),
                 };
                 let failure_reason = axis_failure_reason_for_samples(axis, samples, count);
-                let retry_decision = axis_retry_decision_for_samples(samples, count, data.attempt);
+                let retry_decision =
+                    axis_retry_decision_for_samples(samples, count, axis_attempt(data, axis));
                 match retry_decision {
                     CurrentAxisRetryDecision::RetryHigherBandwidth
                     | CurrentAxisRetryDecision::RetryLowerBandwidth => {
@@ -908,7 +933,7 @@ pub(crate) async fn step_current_validate<B: CommissioningBackend>(
                             retry_decision,
                             _profile,
                         );
-                        data.attempt = data.attempt.saturating_add(1);
+                        *axis_attempt_mut(data, axis) = axis_attempt(data, axis).saturating_add(1);
                         *validate_state = CurrentValidateState::WriteGains;
                         return StepResult::Continue;
                     }
@@ -1169,6 +1194,21 @@ mod tests {
         let reason = axis_failure_reason_for_samples(CurrentValidationAxis::Torque, &samples, 2);
 
         assert_eq!(reason, CURRENT_LOOP_FAILURE_STATUS_FLAGS);
+    }
+
+    #[test]
+    fn axis_retry_uses_classified_status_not_raw_non_actionable_flags() {
+        let mut samples = [CurrentValidationAxisEvidence::EMPTY;
+            crate::autotune::CURRENT_VALIDATION_MAX_SAMPLES_PER_AXIS];
+        samples[0] = axis_validation_evidence(crate::autotune::CURRENT_AXIS_VALIDATION_PASS);
+        samples[0].status_flags_or = 0x7000_0080;
+        samples[1] =
+            axis_validation_evidence(crate::autotune::CURRENT_AXIS_VALIDATION_LOW_RESPONSE);
+        samples[1].status_flags_or = 0x7000_0080;
+
+        let decision = axis_retry_decision_for_samples(&samples, 2, 0);
+
+        assert_eq!(decision, CurrentAxisRetryDecision::RetryHigherBandwidth);
     }
 
     #[test]
@@ -1521,7 +1561,8 @@ mod tests {
                     tau_e_crosscheck_us: 2000,
                 },
                 gains: disabled_state_safe_current_gains(),
-                attempt: 1,
+                flux_attempt: 0,
+                torque_attempt: 1,
                 step_amplitude: 250,
                 final_status: CommissionStatus::Failed(CommissionError::CurrentValidationFailed),
                 pidout_limit: CURRENT_SAFE_PIDOUT_LIMIT,
