@@ -5,18 +5,19 @@
 //! the SIMC tuning rule to derive flux/torque PI gains plus a step
 //! amplitude for validation. `step_current_validate` then writes those
 //! gains, samples flux and torque current responses at short fixed delays,
-//! classifies the per-axis evidence, and falls back to conservative defaults
-//! on validation failure.
+//! classifies the per-axis evidence, and fails explicitly on invalid measured
+//! current gains.
 
 use crate::autotune::{
     CaptureDirection, ClosedLoopEntryState, CommissionError, CommissionProfile, CommissionStatus,
-    CurrentAxisGate, CurrentAxisGateResult, CurrentAxisSample, CurrentGainSynthesisInput,
-    CurrentGains, CurrentLoopEvidence, ElectricalModel, InnerSequence, PhaseId, TransientBuffer,
-    classify_current_axis_sample,
+    CurrentAxisGate, CurrentAxisGateResult, CurrentAxisRetryDecision, CurrentAxisSample,
+    CurrentGainSynthesisInput, CurrentGains, CurrentLoopEvidence, ElectricalModel, InnerSequence,
+    PhaseId, TransientBuffer, classify_current_axis_sample, current_axis_retry_decision,
+    retry_current_axis_gains,
 };
 use crate::commissioning::inner::InnerPhase;
 use crate::commissioning::types::{
-    CommissioningBackend, CurrentValidationAxisEvidence, InnerResult, StepResult,
+    CommissionResult, CommissioningBackend, CurrentValidationAxisEvidence, InnerResult, StepResult,
 };
 
 use super::impedance::{CommissioningImpedanceEvidence, run_current_gain_impedance};
@@ -147,6 +148,7 @@ const TORQUE_VALIDATION_DELAYS_MS: [u16; crate::autotune::CURRENT_TORQUE_VALIDAT
 /// reaching the current target. 2000 matches the bounded encoder-alignment
 /// limit and remains well below the operational closed-loop limit.
 const CURRENT_VALIDATE_PIDOUT_LIMIT: u32 = 2000;
+const CURRENT_SAFE_PIDOUT_LIMIT: u32 = 1024;
 
 /// `MODE_RAMP_MODE_MOTION` value for advanced PI torque mode.
 ///
@@ -323,25 +325,131 @@ fn axis_failure_reason_for_samples(
     }
 }
 
-fn fallback_axis_failure_evidence(
+fn failed_axis_failure_evidence(
     previous: CurrentLoopEvidence,
     failure_reason: u8,
+    retry_budget_exhausted: bool,
 ) -> CurrentLoopEvidence {
-    CurrentLoopEvidence::default_gains(failure_reason, false, previous.current_validation_axes)
+    let mut evidence = CurrentLoopEvidence::failed(failure_reason);
+    evidence.current_validation_axes = previous.current_validation_axes;
+    evidence.retry_budget_exhausted = retry_budget_exhausted as u8;
+    evidence
 }
 
 #[cfg(test)]
-fn fallback_current_loop_evidence(
-    result: crate::autotune::ValidationResult,
+fn failed_current_loop_evidence(failure_reason: u8, retry_exhausted: bool) -> CurrentLoopEvidence {
+    failed_axis_failure_evidence(
+        CurrentLoopEvidence::measured_symmetric(),
+        failure_reason,
+        retry_exhausted,
+    )
+}
+
+fn disabled_state_safe_current_gains() -> CurrentGains {
+    CurrentGains {
+        flux_p: crate::pid::DEFAULT_INNER_GAINS.flux_p,
+        flux_i: crate::pid::DEFAULT_INNER_GAINS.flux_i,
+        torque_p: crate::pid::DEFAULT_INNER_GAINS.torque_p,
+        torque_i: crate::pid::DEFAULT_INNER_GAINS.torque_i,
+        effective_bandwidth_hz: 0,
+        lambda_us: 0,
+    }
+}
+
+fn axis_id(axis: CurrentValidationAxis) -> u8 {
+    match axis {
+        CurrentValidationAxis::Flux => crate::autotune::CURRENT_AXIS_FLUX,
+        CurrentValidationAxis::Torque => crate::autotune::CURRENT_AXIS_TORQUE,
+    }
+}
+
+fn worst_axis_status(samples: &[CurrentValidationAxisEvidence], count: u8) -> u8 {
+    samples.iter().take(count as usize).fold(
+        crate::autotune::CURRENT_AXIS_VALIDATION_PASS,
+        |worst, sample| merge_axis_pair_status(worst, sample.status),
+    )
+}
+
+fn status_flags_or(samples: &[CurrentValidationAxisEvidence], count: u8) -> u32 {
+    samples
+        .iter()
+        .take(count as usize)
+        .fold(0, |flags, sample| flags | sample.status_flags_or)
+}
+
+fn axis_retry_decision_for_samples(
+    samples: &[CurrentValidationAxisEvidence],
+    count: u8,
     attempt: u8,
-) -> CurrentLoopEvidence {
-    let retry_exhausted = attempt > 0 && result != crate::autotune::ValidationResult::Pass;
-    let failure_reason = if retry_exhausted {
-        crate::autotune::CURRENT_LOOP_FAILURE_RETRY_EXHAUSTED
-    } else {
-        crate::autotune::CURRENT_LOOP_FAILURE_TORQUE_VALIDATION
-    };
-    CurrentLoopEvidence::default_gains(failure_reason, retry_exhausted, 0)
+) -> CurrentAxisRetryDecision {
+    let status = worst_axis_status(samples, count);
+    current_axis_retry_decision(
+        status,
+        attempt,
+        status == crate::autotune::CURRENT_AXIS_VALIDATION_STATUS_FLAGS
+            || status_flags_or(samples, count) != 0,
+        status == crate::autotune::CURRENT_AXIS_VALIDATION_SATURATION,
+        status == crate::autotune::CURRENT_AXIS_VALIDATION_MOTION,
+    )
+}
+
+async fn restore_current_validation_safe_state<B: CommissioningBackend>(
+    backend: &mut B,
+    gains: CurrentGains,
+) -> Result<(), ()> {
+    use foci_tmc4671::registers::*;
+
+    let mut failed = false;
+    if backend
+        .write_register(PID_TORQUE_FLUX_TARGET, 0)
+        .await
+        .is_err()
+    {
+        failed = true;
+    }
+    if crate::commissioning::helpers::clear_current_integrators(backend)
+        .await
+        .is_err()
+    {
+        failed = true;
+    }
+
+    let flux_reg = ((gains.flux_p as u32) << 16) | gains.flux_i as u32;
+    let torque_reg = ((gains.torque_p as u32) << 16) | gains.torque_i as u32;
+    if backend
+        .write_register(PID_FLUX_P_FLUX_I, flux_reg)
+        .await
+        .is_err()
+    {
+        failed = true;
+    }
+    if backend
+        .write_register(PID_TORQUE_P_TORQUE_I, torque_reg)
+        .await
+        .is_err()
+    {
+        failed = true;
+    }
+    if backend
+        .write_register(PIDOUT_UQ_UD_LIMITS, CURRENT_SAFE_PIDOUT_LIMIT)
+        .await
+        .is_err()
+    {
+        failed = true;
+    }
+    if backend
+        .write_register(MODE_RAMP_MODE_MOTION, 0)
+        .await
+        .is_err()
+    {
+        failed = true;
+    }
+    if backend.write_register(UQ_UD_EXT, 0).await.is_err() {
+        failed = true;
+    }
+    backend.set_enable_pin(false);
+
+    if failed { Err(()) } else { Ok(()) }
 }
 
 /// Thin phase: read the electrical model, compute SIMC gains, and
@@ -458,8 +566,8 @@ pub(crate) async fn step_current_tune<B: CommissioningBackend>(
 /// Advance current-loop validation sub-state.
 ///
 /// Writes SIMC gains, runs bidirectional short samples for each current axis,
-/// classifies the per-delay evidence, and falls back to conservative defaults
-/// on validation failure.
+/// classifies the per-delay evidence, and fails explicitly on invalid measured
+/// current gains.
 pub(crate) async fn step_current_validate<B: CommissioningBackend>(
     phase: &mut InnerPhase,
     _buf: &mut TransientBuffer,
@@ -509,6 +617,7 @@ pub(crate) async fn step_current_validate<B: CommissioningBackend>(
             data.current_torque_validation_count = 0;
             data.current_torque_validation = [CurrentValidationAxisEvidence::EMPTY;
                 crate::autotune::CURRENT_VALIDATION_MAX_SAMPLES_PER_AXIS];
+            data.current_loop_evidence.current_validation_axes = 0;
 
             *validate_state = first_axis_step(CurrentValidationAxis::Flux);
             StepResult::Continue
@@ -767,43 +876,61 @@ pub(crate) async fn step_current_validate<B: CommissioningBackend>(
                     }
                 }
             } else {
-                let failure_reason = match axis {
-                    CurrentValidationAxis::Flux => axis_failure_reason_for_samples(
-                        axis,
+                let (samples, count) = match axis {
+                    CurrentValidationAxis::Flux => (
                         &data.current_flux_validation,
                         data.current_flux_validation_count,
                     ),
-                    CurrentValidationAxis::Torque => axis_failure_reason_for_samples(
-                        axis,
+                    CurrentValidationAxis::Torque => (
                         &data.current_torque_validation,
                         data.current_torque_validation_count,
                     ),
                 };
-                data.current_loop_evidence =
-                    fallback_axis_failure_evidence(data.current_loop_evidence, failure_reason);
-                data.gains = CurrentGains {
-                    flux_p: crate::pid::DEFAULT_INNER_GAINS.flux_p,
-                    flux_i: crate::pid::DEFAULT_INNER_GAINS.flux_i,
-                    torque_p: crate::pid::DEFAULT_INNER_GAINS.torque_p,
-                    torque_i: crate::pid::DEFAULT_INNER_GAINS.torque_i,
-                    effective_bandwidth_hz: 0,
-                    lambda_us: 0,
-                };
-                data.final_status = CommissionStatus::AcceptedWithWarnings;
-                data.inner_warning_flags |= 1 << 5;
-
-                let flux_reg = ((data.gains.flux_p as u32) << 16) | data.gains.flux_i as u32;
-                let torque_reg = ((data.gains.torque_p as u32) << 16) | data.gains.torque_i as u32;
-                let _ = backend.write_register(PID_FLUX_P_FLUX_I, flux_reg).await;
-                let _ = backend
-                    .write_register(PID_TORQUE_P_TORQUE_I, torque_reg)
-                    .await;
+                let failure_reason = axis_failure_reason_for_samples(axis, samples, count);
+                let retry_decision = axis_retry_decision_for_samples(samples, count, data.attempt);
+                match retry_decision {
+                    CurrentAxisRetryDecision::RetryHigherBandwidth
+                    | CurrentAxisRetryDecision::RetryLowerBandwidth => {
+                        data.gains = retry_current_axis_gains(
+                            data.gains,
+                            axis_id(axis),
+                            retry_decision,
+                            _profile,
+                        );
+                        data.attempt = data.attempt.saturating_add(1);
+                        *validate_state = CurrentValidateState::WriteGains;
+                        return StepResult::Continue;
+                    }
+                    CurrentAxisRetryDecision::RetryBudgetExhausted
+                    | CurrentAxisRetryDecision::Fail => {
+                        let retry_exhausted =
+                            retry_decision == CurrentAxisRetryDecision::RetryBudgetExhausted;
+                        let mapped_failure_reason = if retry_exhausted {
+                            crate::autotune::CURRENT_LOOP_FAILURE_RETRY_EXHAUSTED
+                        } else {
+                            failure_reason
+                        };
+                        data.final_status =
+                            CommissionStatus::Failed(CommissionError::CurrentValidationFailed);
+                        data.current_loop_evidence = failed_axis_failure_evidence(
+                            data.current_loop_evidence,
+                            mapped_failure_reason,
+                            retry_exhausted,
+                        );
+                        data.gains = disabled_state_safe_current_gains();
+                    }
+                }
             }
 
             // Restore safe state.
-            let _ = backend.write_register(PID_TORQUE_FLUX_TARGET, 0).await;
-            let _ = backend.write_register(MODE_RAMP_MODE_MOTION, 0).await;
-            backend.set_enable_pin(false);
+            let safe_restore_result =
+                restore_current_validation_safe_state(backend, data.gains).await;
+            if safe_restore_result.is_err()
+                && data.final_status
+                    != CommissionStatus::Failed(CommissionError::CurrentValidationFailed)
+            {
+                return super::fail_inner(phase, CommissionError::Spi);
+            }
 
             let deadline = backend.elapsed_us().wrapping_add(VALIDATION_SETTLE_US);
             *validate_state = CurrentValidateState::SafeState {
@@ -908,6 +1035,20 @@ pub(crate) async fn step_current_validate<B: CommissioningBackend>(
 
             match sequence {
                 InnerSequence::Commission => {
+                    if matches!(
+                        result.status,
+                        CommissionStatus::Failed(CommissionError::CurrentValidationFailed)
+                    ) {
+                        return StepResult::CommissionDone(CommissionResult {
+                            inner: result,
+                            fallback_velocity_p: 0,
+                            fallback_velocity_i: 0,
+                            fallback_position_p: 0,
+                            fallback_position_i: 0,
+                            fallback_velocity_limit: 0,
+                        });
+                    }
+
                     // Transition to ClosedLoopEntry with computed
                     // current-loop gains and fallback outer gains.
                     let vel_limit = backend.operational_velocity_limit();
@@ -942,20 +1083,26 @@ pub(crate) async fn step_current_validate<B: CommissioningBackend>(
 #[cfg(test)]
 mod tests {
     use crate::autotune::{
-        AXIS_SPLIT_SOURCE_NONE, CURRENT_GAINS_SOURCE_DEFAULT, CURRENT_GAINS_TIER_DEFAULT,
+        AXIS_SPLIT_SOURCE_NONE, CURRENT_GAINS_SOURCE_FAILED, CURRENT_GAINS_TIER_NONE,
         CURRENT_LOOP_FAILURE_RETRY_EXHAUSTED, CURRENT_LOOP_FAILURE_STATUS_FLAGS,
-        CURRENT_LOOP_FAILURE_TORQUE_VALIDATION, CURRENT_VALIDATION_AXIS_FLUX, ValidationResult,
+        CURRENT_LOOP_FAILURE_TORQUE_VALIDATION, CURRENT_VALIDATION_AXIS_FLUX,
+    };
+    use crate::commission_dispatch::test_support::{MockBackend, SpiOp};
+    use foci_tmc4671::registers::{
+        MODE_RAMP_MODE_MOTION, PID_ERROR_PID_FLUX_ERROR_SUM, PID_ERROR_PID_TORQUE_ERROR_SUM,
+        PID_FLUX_P_FLUX_I, PID_TORQUE_FLUX_TARGET, PID_TORQUE_P_TORQUE_I, PIDOUT_UQ_UD_LIMITS,
+        UQ_UD_EXT,
     };
 
     use super::*;
 
     #[test]
-    fn fallback_evidence_reports_default_gains_and_validation_failure() {
-        let evidence = fallback_current_loop_evidence(ValidationResult::Fail, 0);
+    fn failed_evidence_reports_failed_gains_and_validation_failure() {
+        let evidence = failed_current_loop_evidence(CURRENT_LOOP_FAILURE_TORQUE_VALIDATION, false);
 
-        assert_eq!(evidence.gains_source, CURRENT_GAINS_SOURCE_DEFAULT);
+        assert_eq!(evidence.gains_source, CURRENT_GAINS_SOURCE_FAILED);
         assert_eq!(evidence.axis_split_source, AXIS_SPLIT_SOURCE_NONE);
-        assert_eq!(evidence.gains_tier, CURRENT_GAINS_TIER_DEFAULT);
+        assert_eq!(evidence.gains_tier, CURRENT_GAINS_TIER_NONE);
         assert_eq!(evidence.measured_axis_split_permille, 1000);
         assert_eq!(evidence.applied_axis_split_permille, 1000);
         assert_eq!(evidence.axis_split_clamped, 0);
@@ -968,10 +1115,10 @@ mod tests {
     }
 
     #[test]
-    fn fallback_evidence_reports_retry_exhaustion_after_retry_attempt() {
-        let evidence = fallback_current_loop_evidence(ValidationResult::Marginal, 1);
+    fn failed_evidence_reports_retry_exhaustion_after_retry_attempt() {
+        let evidence = failed_current_loop_evidence(CURRENT_LOOP_FAILURE_RETRY_EXHAUSTED, true);
 
-        assert_eq!(evidence.gains_source, CURRENT_GAINS_SOURCE_DEFAULT);
+        assert_eq!(evidence.gains_source, CURRENT_GAINS_SOURCE_FAILED);
         assert_eq!(evidence.current_validation_axes, 0);
         assert_eq!(evidence.retry_budget_exhausted, 1);
         assert_eq!(
@@ -981,14 +1128,14 @@ mod tests {
     }
 
     #[test]
-    fn validation_failure_fallback_preserves_prior_axis_coverage() {
+    fn validation_failure_failed_evidence_preserves_prior_axis_coverage() {
         let mut previous = CurrentLoopEvidence::measured_symmetric();
         previous.current_validation_axes = CURRENT_VALIDATION_AXIS_FLUX;
 
         let evidence =
-            fallback_axis_failure_evidence(previous, CURRENT_LOOP_FAILURE_TORQUE_VALIDATION);
+            failed_axis_failure_evidence(previous, CURRENT_LOOP_FAILURE_TORQUE_VALIDATION, false);
 
-        assert_eq!(evidence.gains_source, CURRENT_GAINS_SOURCE_DEFAULT);
+        assert_eq!(evidence.gains_source, CURRENT_GAINS_SOURCE_FAILED);
         assert_eq!(
             evidence.current_validation_axes,
             CURRENT_VALIDATION_AXIS_FLUX
@@ -1011,6 +1158,140 @@ mod tests {
         let reason = axis_failure_reason_for_samples(CurrentValidationAxis::Torque, &samples, 2);
 
         assert_eq!(reason, CURRENT_LOOP_FAILURE_STATUS_FLAGS);
+    }
+
+    #[test]
+    fn failed_current_validation_finalize_returns_commission_result_evidence() {
+        pollster::block_on(async {
+            let mut phase = failed_current_validate_phase();
+            let mut buf = TransientBuffer::new();
+            let mut backend = MockBackend::new();
+
+            let result = step_current_validate(
+                &mut phase,
+                &mut buf,
+                CommissionProfile::Balanced,
+                InnerSequence::Commission,
+                &mut backend,
+            )
+            .await;
+
+            match result {
+                StepResult::CommissionDone(result) => {
+                    assert_eq!(
+                        result.inner.status,
+                        CommissionStatus::Failed(CommissionError::CurrentValidationFailed)
+                    );
+                    assert_eq!(
+                        result.inner.current_gains_source,
+                        crate::autotune::CURRENT_GAINS_SOURCE_FAILED
+                    );
+                    assert_eq!(
+                        result.inner.current_loop_failure_reason,
+                        CURRENT_LOOP_FAILURE_TORQUE_VALIDATION
+                    );
+                    assert_eq!(
+                        result.inner.current_validation_axes,
+                        CURRENT_VALIDATION_AXIS_FLUX
+                    );
+                }
+                other => panic!("expected failed CommissionDone, got {other:?}"),
+            }
+        });
+    }
+
+    #[test]
+    fn safe_state_restore_writes_current_loop_sequence_in_order() {
+        pollster::block_on(async {
+            let mut backend = MockBackend::new();
+            backend.enable_pin = true;
+            let gains = CurrentGains {
+                flux_p: 11,
+                flux_i: 12,
+                torque_p: 13,
+                torque_i: 14,
+                effective_bandwidth_hz: 0,
+                lambda_us: 0,
+            };
+
+            restore_current_validation_safe_state(&mut backend, gains)
+                .await
+                .unwrap();
+
+            let expected = [
+                SpiOp::Write(PID_TORQUE_FLUX_TARGET.addr(), 0),
+                SpiOp::Write(
+                    PID_ERROR_PID_TORQUE_ERROR_SUM.addr.addr(),
+                    PID_ERROR_PID_TORQUE_ERROR_SUM.sub_addr as u32,
+                ),
+                SpiOp::Write(PID_ERROR_PID_TORQUE_ERROR_SUM.data.addr(), 0),
+                SpiOp::Write(
+                    PID_ERROR_PID_FLUX_ERROR_SUM.addr.addr(),
+                    PID_ERROR_PID_FLUX_ERROR_SUM.sub_addr as u32,
+                ),
+                SpiOp::Write(PID_ERROR_PID_FLUX_ERROR_SUM.data.addr(), 0),
+                SpiOp::Write(PID_FLUX_P_FLUX_I.addr(), (11 << 16) | 12),
+                SpiOp::Write(PID_TORQUE_P_TORQUE_I.addr(), (13 << 16) | 14),
+                SpiOp::Write(PIDOUT_UQ_UD_LIMITS.addr(), CURRENT_SAFE_PIDOUT_LIMIT),
+                SpiOp::Write(MODE_RAMP_MODE_MOTION.addr(), 0),
+                SpiOp::Write(UQ_UD_EXT.addr(), 0),
+                SpiOp::EnablePin(false),
+            ];
+
+            assert_eq!(backend.spi_log.len(), expected.len());
+            for (actual, expected) in backend.spi_log.iter().zip(expected.iter()) {
+                assert_spi_op_eq(*actual, *expected);
+            }
+            assert!(!backend.enable_pin);
+        });
+    }
+
+    #[test]
+    fn safe_state_restore_continues_after_early_spi_failure() {
+        pollster::block_on(async {
+            let mut backend = MockBackend::new();
+            backend.enable_pin = true;
+            backend.fail_on_write = Some(PID_TORQUE_FLUX_TARGET.addr());
+            let gains = CurrentGains {
+                flux_p: 11,
+                flux_i: 12,
+                torque_p: 13,
+                torque_i: 14,
+                effective_bandwidth_hz: 0,
+                lambda_us: 0,
+            };
+
+            let result = restore_current_validation_safe_state(&mut backend, gains).await;
+
+            assert!(result.is_err());
+            assert!(!backend.enable_pin);
+            assert!(backend.spi_log.iter().any(|op| {
+                matches!(
+                    op,
+                    SpiOp::Write(addr, value)
+                        if *addr == PID_FLUX_P_FLUX_I.addr() && *value == ((11 << 16) | 12)
+                )
+            }));
+            assert!(backend.spi_log.iter().any(|op| {
+                matches!(
+                    op,
+                    SpiOp::Write(addr, value)
+                        if *addr == PIDOUT_UQ_UD_LIMITS.addr()
+                            && *value == CURRENT_SAFE_PIDOUT_LIMIT
+                )
+            }));
+            assert!(backend.spi_log.iter().any(|op| {
+                matches!(
+                    op,
+                    SpiOp::Write(addr, value)
+                        if *addr == UQ_UD_EXT.addr() && *value == 0
+                )
+            }));
+            assert!(matches!(
+                backend.spi_log.last(),
+                Some(SpiOp::EnablePin(false))
+            ));
+        });
     }
 
     #[test]
@@ -1115,5 +1396,112 @@ mod tests {
 
     fn pack_halves(upper: i16, lower: i16) -> u32 {
         ((upper as u16 as u32) << 16) | lower as u16 as u32
+    }
+
+    fn failed_current_validate_phase() -> InnerPhase {
+        let mut evidence = CurrentLoopEvidence::failed(CURRENT_LOOP_FAILURE_TORQUE_VALIDATION);
+        evidence.current_validation_axes = CURRENT_VALIDATION_AXIS_FLUX;
+        InnerPhase::CurrentValidate {
+            state: CurrentValidateState::Finalize,
+            data: CurrentValidateData {
+                model: ElectricalModel {
+                    r_int: 1000,
+                    l_int: 2000,
+                    tau_e_us: 2000,
+                    theta_e_us: 100,
+                    r_mohm: 1000,
+                    l_uh: 2000,
+                    tau_e_crosscheck_us: 2000,
+                },
+                gains: disabled_state_safe_current_gains(),
+                attempt: 1,
+                step_amplitude: 250,
+                final_status: CommissionStatus::Failed(CommissionError::CurrentValidationFailed),
+                pidout_limit: CURRENT_SAFE_PIDOUT_LIMIT,
+                sample_encoder_start: 0,
+                pending_positive_sample: None,
+                current_flux_validation_count: 1,
+                current_flux_validation: [CurrentValidationAxisEvidence {
+                    status: crate::autotune::CURRENT_AXIS_VALIDATION_PASS,
+                    attempt: 0,
+                    target: 250,
+                    sample_delay_ms: 2,
+                    positive_response_permille: 980,
+                    negative_response_permille: 970,
+                    cross_axis_permille: 10,
+                    voltage_output_permille: 100,
+                    encoder_delta_counts: 0,
+                    status_flags_or: 0,
+                };
+                    crate::autotune::CURRENT_VALIDATION_MAX_SAMPLES_PER_AXIS],
+                current_torque_validation_count: 1,
+                current_torque_validation: [CurrentValidationAxisEvidence {
+                    status: crate::autotune::CURRENT_AXIS_VALIDATION_LOW_RESPONSE,
+                    attempt: 1,
+                    target: 250,
+                    sample_delay_ms: 2,
+                    positive_response_permille: 100,
+                    negative_response_permille: 120,
+                    cross_axis_permille: 10,
+                    voltage_output_permille: 100,
+                    encoder_delta_counts: 0,
+                    status_flags_or: 0,
+                };
+                    crate::autotune::CURRENT_VALIDATION_MAX_SAMPLES_PER_AXIS],
+                inner_warning_flags: 0,
+                tau_residual_permille: 0,
+                resistance_result: resistance_result(),
+                resistance_gain_path_count_slope_milli: 1000,
+                current_loop_evidence: evidence,
+                impedance_evidence: None,
+            },
+        }
+    }
+
+    fn resistance_result() -> crate::resistance_identification::ResistanceRunResult {
+        use crate::resistance_identification::{
+            ElectricalAxis, ResistanceAxisResult, ResistanceRunResult, ResistanceWarningFlags,
+        };
+
+        fn axis_result(axis: ElectricalAxis) -> ResistanceAxisResult {
+            ResistanceAxisResult {
+                axis,
+                r_count_slope_milli: 1000,
+                slope_num: 1000,
+                slope_den: 1000,
+                intercept_count: 0,
+                rmse_permille: 0,
+                selected_mask: 0b1111_1000,
+                excluded_point_mask: 0,
+                selected_count: 5,
+                signed_anchor: None,
+                warning_flags: ResistanceWarningFlags::NONE,
+            }
+        }
+
+        ResistanceRunResult {
+            profile_version: 1,
+            selected_r_count_slope_milli: 1000,
+            status_flags_or: 0,
+            axis0: axis_result(ElectricalAxis::PHASE0),
+            axis1: axis_result(ElectricalAxis::PHASE90),
+            warning_flags: ResistanceWarningFlags::NONE,
+        }
+    }
+
+    fn assert_spi_op_eq(actual: SpiOp, expected: SpiOp) {
+        match (actual, expected) {
+            (SpiOp::Read, SpiOp::Read) => {}
+            (
+                SpiOp::Write(actual_addr, actual_value),
+                SpiOp::Write(expected_addr, expected_value),
+            ) => {
+                assert_eq!((actual_addr, actual_value), (expected_addr, expected_value));
+            }
+            (SpiOp::EnablePin(actual), SpiOp::EnablePin(expected)) => {
+                assert_eq!(actual, expected);
+            }
+            (actual, expected) => panic!("expected {expected:?}, got {actual:?}"),
+        }
     }
 }

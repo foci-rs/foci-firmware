@@ -322,9 +322,10 @@ mod tests {
     use super::*;
     use crate::autotune::{
         AXIS_SPLIT_SOURCE_NONE, CURRENT_AXIS_FLUX, CURRENT_AXIS_TORQUE,
-        CURRENT_GAINS_SOURCE_MEASURED, CURRENT_GAINS_TIER_MEASURED_SYMMETRIC,
-        CURRENT_LOOP_FAILURE_NONE, CURRENT_VALIDATION_AXIS_FLUX, CURRENT_VALIDATION_AXIS_TORQUE,
-        CommissionStatus, PhaseId,
+        CURRENT_GAINS_SOURCE_FAILED, CURRENT_GAINS_SOURCE_MEASURED,
+        CURRENT_GAINS_TIER_MEASURED_SYMMETRIC, CURRENT_GAINS_TIER_NONE, CURRENT_LOOP_FAILURE_NONE,
+        CURRENT_LOOP_FAILURE_SATURATION, CURRENT_VALIDATION_AXIS_FLUX,
+        CURRENT_VALIDATION_AXIS_TORQUE, CommissionError, CommissionStatus, PhaseId,
     };
     use crate::commission_dispatch::ReplyPayload;
     use crate::commissioning::types::{
@@ -841,6 +842,50 @@ mod tests {
         });
 
         assert_eq!(sink.events, expected);
+    }
+
+    #[test]
+    fn failed_commission_result_emits_current_loop_failure_before_terminal_result() {
+        let mut result = commission_result();
+        result.inner.status = CommissionStatus::Failed(CommissionError::CurrentValidationFailed);
+        result.inner.current_gains_source = CURRENT_GAINS_SOURCE_FAILED;
+        result.inner.gains_tier = CURRENT_GAINS_TIER_NONE;
+        result.inner.current_validation_axes = CURRENT_VALIDATION_AXIS_FLUX;
+        result.inner.retry_budget_exhausted = 1;
+        result.inner.current_loop_failure_reason = CURRENT_LOOP_FAILURE_SATURATION;
+        let mut sink = RecordingSink::default();
+
+        emit_terminal_reply(
+            &mut sink,
+            ReplyPayload::CommissionResult {
+                oid: 6,
+                status: CommissionError::CurrentValidationFailed.status_code(),
+                result,
+            },
+        );
+
+        let current_loop_index = sink.events.iter().position(|event| {
+            matches!(
+                event,
+                Event::CurrentLoopRun {
+                    status: 9,
+                    gains_source: CURRENT_GAINS_SOURCE_FAILED,
+                    gains_tier: CURRENT_GAINS_TIER_NONE,
+                    current_validation_axes: CURRENT_VALIDATION_AXIS_FLUX,
+                    retry_budget_exhausted: 1,
+                    failure_reason: CURRENT_LOOP_FAILURE_SATURATION,
+                    ..
+                }
+            )
+        });
+        let terminal_index = sink
+            .events
+            .iter()
+            .position(|event| matches!(event, Event::Commission { status: 9, .. }));
+
+        assert!(current_loop_index.is_some());
+        assert!(terminal_index.is_some());
+        assert!(current_loop_index < terminal_index);
     }
 
     #[test]

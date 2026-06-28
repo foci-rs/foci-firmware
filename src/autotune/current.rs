@@ -83,6 +83,19 @@ pub const CURRENT_AXIS_VALIDATION_STATUS_FLAGS: u8 = 7;
 /// Current target was zero, so response ratios cannot be classified.
 pub const CURRENT_AXIS_VALIDATION_ZERO_TARGET: u8 = 8;
 
+/// Retry action for one failed current-axis short-sample validation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+pub enum CurrentAxisRetryDecision {
+    /// Retry with lower lambda and therefore higher bandwidth.
+    RetryHigherBandwidth,
+    /// Retry with higher lambda and therefore lower bandwidth.
+    RetryLowerBandwidth,
+    /// The axis failure is retryable, but the section retry has already been used.
+    RetryBudgetExhausted,
+    /// Do not retry this failure.
+    Fail,
+}
+
 /// Raw current-loop sample for one current axis at one delay.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub struct CurrentAxisSample {
@@ -738,6 +751,35 @@ pub fn should_retry_current_validation(result: ValidationResult, attempt: u8) ->
     attempt == 0 && result != ValidationResult::Pass
 }
 
+/// Return the retry policy decision for one current-axis validation failure.
+pub fn current_axis_retry_decision(
+    axis_status: u8,
+    section_attempt: u8,
+    status_fault: bool,
+    saturated: bool,
+    motion_fault: bool,
+) -> CurrentAxisRetryDecision {
+    if status_fault || saturated || motion_fault {
+        return CurrentAxisRetryDecision::Fail;
+    }
+
+    let retryable = axis_status == CURRENT_AXIS_VALIDATION_LOW_RESPONSE
+        || axis_status == CURRENT_AXIS_VALIDATION_HIGH_RESPONSE;
+    if !retryable {
+        return CurrentAxisRetryDecision::Fail;
+    }
+
+    if section_attempt > 0 {
+        return CurrentAxisRetryDecision::RetryBudgetExhausted;
+    }
+
+    if axis_status == CURRENT_AXIS_VALIDATION_LOW_RESPONSE {
+        CurrentAxisRetryDecision::RetryHigherBandwidth
+    } else {
+        CurrentAxisRetryDecision::RetryLowerBandwidth
+    }
+}
+
 /// Return whether a marginal current validation can be accepted without retry.
 ///
 /// This is intentionally narrow: it only accepts the case where all metrics
@@ -769,6 +811,103 @@ pub fn should_accept_current_validation_without_retry(
     }
 
     metrics.symmetry_pct > 100 && metrics.symmetry_pct <= 250
+}
+
+fn retry_low_response_lambda_permille(_profile: CommissionProfile) -> u16 {
+    500
+}
+
+fn retry_high_response_lambda_permille(_profile: CommissionProfile) -> u16 {
+    2000
+}
+
+fn retry_min_lambda_permille(_profile: CommissionProfile) -> u16 {
+    250
+}
+
+fn retry_max_lambda_permille(_profile: CommissionProfile) -> u16 {
+    4000
+}
+
+fn scale_lambda_permille(lambda_us: u32, permille: u16) -> u32 {
+    ((lambda_us.max(1) as u64 * permille.max(1) as u64) / 1000).min(u32::MAX as u64) as u32
+}
+
+fn scale_gain_for_lambda(gain: u16, previous_lambda_us: u32, next_lambda_us: u32) -> u16 {
+    if previous_lambda_us == 0 || next_lambda_us == 0 {
+        return gain;
+    }
+
+    ((gain as u64 * previous_lambda_us as u64) / next_lambda_us as u64).clamp(1, u16::MAX as u64)
+        as u16
+}
+
+fn scale_bandwidth_for_lambda(
+    bandwidth_hz: u32,
+    previous_lambda_us: u32,
+    next_lambda_us: u32,
+) -> u32 {
+    if previous_lambda_us == 0 || next_lambda_us == 0 || bandwidth_hz == 0 {
+        return bandwidth_hz;
+    }
+
+    ((bandwidth_hz as u64 * previous_lambda_us as u64) / next_lambda_us as u64).min(u32::MAX as u64)
+        as u32
+}
+
+/// Adjust current-loop gains for one failed current axis according to retry policy.
+pub fn retry_current_axis_gains(
+    previous: CurrentGains,
+    axis: u8,
+    decision: CurrentAxisRetryDecision,
+    profile: CommissionProfile,
+) -> CurrentGains {
+    let lambda_permille = match decision {
+        CurrentAxisRetryDecision::RetryHigherBandwidth => {
+            retry_low_response_lambda_permille(profile)
+        }
+        CurrentAxisRetryDecision::RetryLowerBandwidth => {
+            retry_high_response_lambda_permille(profile)
+        }
+        CurrentAxisRetryDecision::RetryBudgetExhausted | CurrentAxisRetryDecision::Fail => {
+            return previous;
+        }
+    };
+    let min_lambda = scale_lambda_permille(previous.lambda_us, retry_min_lambda_permille(profile));
+    let max_lambda = scale_lambda_permille(previous.lambda_us, retry_max_lambda_permille(profile));
+    let next_lambda = scale_lambda_permille(previous.lambda_us, lambda_permille)
+        .clamp(min_lambda.min(max_lambda), min_lambda.max(max_lambda));
+    let mut next = previous;
+    // Higher-bandwidth retry only speeds up the failed axis. The unchanged
+    // axis still bounds the aggregate current-loop metadata, so keeping the
+    // previous lower-bandwidth metadata remains conservative.
+    if decision == CurrentAxisRetryDecision::RetryLowerBandwidth {
+        next.lambda_us = previous.lambda_us.max(next_lambda);
+        next.effective_bandwidth_hz =
+            previous
+                .effective_bandwidth_hz
+                .min(scale_bandwidth_for_lambda(
+                    previous.effective_bandwidth_hz,
+                    previous.lambda_us,
+                    next_lambda,
+                ));
+    }
+
+    match axis {
+        CURRENT_AXIS_FLUX => {
+            next.flux_p = scale_gain_for_lambda(previous.flux_p, previous.lambda_us, next_lambda);
+            next.flux_i = scale_gain_for_lambda(previous.flux_i, previous.lambda_us, next_lambda);
+        }
+        CURRENT_AXIS_TORQUE => {
+            next.torque_p =
+                scale_gain_for_lambda(previous.torque_p, previous.lambda_us, next_lambda);
+            next.torque_i =
+                scale_gain_for_lambda(previous.torque_i, previous.lambda_us, next_lambda);
+        }
+        _ => return previous,
+    }
+
+    next
 }
 
 /// Adjust current-loop integrator gain for a validation retry while retaining P damping.
@@ -944,6 +1083,95 @@ mod tests {
         assert_eq!(CURRENT_LOOP_FAILURE_STATUS_FLAGS, 8);
         assert_eq!(CURRENT_LOOP_FAILURE_RETRY_EXHAUSTED, 9);
         assert_eq!(CURRENT_LOOP_FAILURE_SPI, 10);
+    }
+
+    #[test]
+    fn retry_policy_allows_one_retry_for_response_magnitude_only() {
+        let decision = current_axis_retry_decision(
+            CURRENT_AXIS_VALIDATION_LOW_RESPONSE,
+            0,
+            false,
+            false,
+            false,
+        );
+
+        assert_eq!(decision, CurrentAxisRetryDecision::RetryHigherBandwidth);
+    }
+
+    #[test]
+    fn retry_policy_rejects_saturation_without_retry() {
+        let decision =
+            current_axis_retry_decision(CURRENT_AXIS_VALIDATION_SATURATION, 0, false, true, false);
+
+        assert_eq!(decision, CurrentAxisRetryDecision::Fail);
+    }
+
+    #[test]
+    fn retry_policy_exhausts_section_budget() {
+        let decision = current_axis_retry_decision(
+            CURRENT_AXIS_VALIDATION_LOW_RESPONSE,
+            1,
+            false,
+            false,
+            false,
+        );
+
+        assert_eq!(decision, CurrentAxisRetryDecision::RetryBudgetExhausted);
+    }
+
+    #[test]
+    fn retry_policy_low_response_retry_preserves_conservative_metadata() {
+        let previous = CurrentGains {
+            flux_p: 120,
+            flux_i: 60,
+            torque_p: 220,
+            torque_i: 110,
+            effective_bandwidth_hz: 145,
+            lambda_us: 934,
+        };
+
+        let retry = retry_current_axis_gains(
+            previous,
+            CURRENT_AXIS_FLUX,
+            CurrentAxisRetryDecision::RetryHigherBandwidth,
+            CommissionProfile::Balanced,
+        );
+
+        assert!(retry.flux_p > previous.flux_p);
+        assert!(retry.flux_i > previous.flux_i);
+        assert_eq!(retry.torque_p, previous.torque_p);
+        assert_eq!(retry.torque_i, previous.torque_i);
+        assert_eq!(
+            retry.effective_bandwidth_hz,
+            previous.effective_bandwidth_hz
+        );
+        assert_eq!(retry.lambda_us, previous.lambda_us);
+    }
+
+    #[test]
+    fn retry_policy_high_response_retry_reports_slower_aggregate_metadata() {
+        let previous = CurrentGains {
+            flux_p: 120,
+            flux_i: 60,
+            torque_p: 220,
+            torque_i: 110,
+            effective_bandwidth_hz: 145,
+            lambda_us: 934,
+        };
+
+        let retry = retry_current_axis_gains(
+            previous,
+            CURRENT_AXIS_TORQUE,
+            CurrentAxisRetryDecision::RetryLowerBandwidth,
+            CommissionProfile::Balanced,
+        );
+
+        assert_eq!(retry.flux_p, previous.flux_p);
+        assert_eq!(retry.flux_i, previous.flux_i);
+        assert!(retry.torque_p < previous.torque_p);
+        assert!(retry.torque_i < previous.torque_i);
+        assert_eq!(retry.effective_bandwidth_hz, 72);
+        assert_eq!(retry.lambda_us, 1868);
     }
 
     #[test]

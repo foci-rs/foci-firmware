@@ -498,6 +498,32 @@ pub async fn drive_commission_result<B: CommissioningBackend>(
             use core::sync::atomic::Ordering::Relaxed;
             let consumed = engine.take().expect("engine slot None on CommissionDone");
             let oid = consumed.oid();
+            let inner = &commission_result.inner;
+            let status = match inner.status {
+                crate::autotune::CommissionStatus::Accepted => 0u8,
+                crate::autotune::CommissionStatus::AcceptedWithWarnings => 1,
+                crate::autotune::CommissionStatus::InnerOnly => 2,
+                crate::autotune::CommissionStatus::Failed(e) => e.status_code(),
+            };
+
+            if matches!(inner.status, crate::autotune::CommissionStatus::Failed(_)) {
+                state.tmc.motor_armed.store(false, Relaxed);
+                *state.calibrated = false;
+                *state.motor_enabled = false;
+                state.tmc.commission_in_flight.store(false, Relaxed);
+                defmt::error!("foci_commission failed: oid={} status={}", oid, status);
+                return CommissionOutcome::Terminal {
+                    reply: ReplyPayload::CommissionResult {
+                        oid,
+                        status,
+                        result: commission_result,
+                    },
+                    actions: PostActions {
+                        stop_trace: true,
+                        stepper: StepperPostAction::Stop,
+                    },
+                };
+            }
 
             // The engine's ClosedLoopEntry phase already set PID gains, limits,
             // filters, and entered position mode. Re-apply current limit because
@@ -528,7 +554,6 @@ pub async fn drive_commission_result<B: CommissioningBackend>(
             }
 
             // Persist inner gains so future calibrate uses them.
-            let inner = &commission_result.inner;
             *state.stored_gains = Some(crate::pid::InnerLoopGains {
                 flux_p: inner.flux_p,
                 flux_i: inner.flux_i,
@@ -580,12 +605,6 @@ pub async fn drive_commission_result<B: CommissioningBackend>(
 
             state.tmc.commission_in_flight.store(false, Relaxed);
 
-            let status = match inner.status {
-                crate::autotune::CommissionStatus::Accepted => 0u8,
-                crate::autotune::CommissionStatus::AcceptedWithWarnings => 1,
-                crate::autotune::CommissionStatus::InnerOnly => 2,
-                crate::autotune::CommissionStatus::Failed(e) => e.status_code(),
-            };
             defmt::info!("foci_commission complete: oid={} status={}", oid, status);
             CommissionOutcome::Terminal {
                 reply: ReplyPayload::CommissionResult {

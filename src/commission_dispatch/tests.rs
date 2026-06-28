@@ -762,6 +762,76 @@ fn commission_done_finalize_path() {
 }
 
 #[test]
+fn commission_done_failed_inner_status_skips_persist_and_arm() {
+    pollster::block_on(async {
+        use core::sync::atomic::Ordering;
+        let _guard = test_support::SHARED_STATE_MUTEX.lock().await;
+        let mut backend = MockBackend::new();
+        let (mut cal, mut en, mut gains) = fresh_state_locals();
+        let mut state = dispatch_state(&mut cal, &mut en, &mut gains);
+        tmc_state()
+            .current_limit_reg
+            .store(0x0010_0010, Ordering::Relaxed);
+        let mut engine = Some(CommissioningEngine::new_commission(
+            6,
+            CommissionProfile::Balanced,
+        ));
+        let mut commission_result = sample_commission_result();
+        commission_result.inner.status = crate::autotune::CommissionStatus::Failed(
+            crate::autotune::CommissionError::CurrentValidationFailed,
+        );
+        commission_result.inner.current_gains_source = crate::autotune::CURRENT_GAINS_SOURCE_FAILED;
+        commission_result.inner.gains_tier = crate::autotune::CURRENT_GAINS_TIER_NONE;
+        commission_result.inner.current_loop_failure_reason =
+            crate::autotune::CURRENT_LOOP_FAILURE_SATURATION;
+        commission_result.inner.current_validation_axes =
+            crate::autotune::CURRENT_VALIDATION_AXIS_FLUX;
+
+        let outcome = drive_commission_result(
+            StepResult::CommissionDone(commission_result),
+            &mut engine,
+            &mut backend,
+            &mut state,
+            4095,
+        )
+        .await;
+
+        assert!(state.stored_gains.is_none());
+        assert!(!*state.calibrated);
+        assert!(!*state.motor_enabled);
+        assert!(!backend.enable_pin);
+        assert!(!tmc_state().motor_armed.load(Ordering::Relaxed));
+        assert!(!backend.spi_log.iter().any(|op| {
+            matches!(
+                op,
+                SpiOp::Write(addr, _) if *addr == foci_tmc4671::registers::PID_TORQUE_FLUX_LIMITS.addr()
+            )
+        }));
+
+        match outcome {
+            CommissionOutcome::Terminal {
+                reply: ReplyPayload::CommissionResult { status, result, .. },
+                actions,
+            } => {
+                assert_eq!(
+                    status,
+                    crate::autotune::CommissionError::CurrentValidationFailed.status_code()
+                );
+                assert_eq!(
+                    result.inner.current_loop_failure_reason,
+                    crate::autotune::CURRENT_LOOP_FAILURE_SATURATION
+                );
+                assert!(actions.stop_trace);
+                assert_eq!(actions.stepper, StepperPostAction::Stop);
+            }
+            _ => panic!("expected failed CommissionResult"),
+        }
+
+        tmc_state().current_limit_reg.store(0, Ordering::Relaxed);
+    });
+}
+
+#[test]
 fn commission_done_current_limit_restore_failure_disarms() {
     pollster::block_on(async {
         use core::sync::atomic::Ordering;
