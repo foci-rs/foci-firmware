@@ -11,7 +11,8 @@ use crate::impedance_identification::{
     ImpedanceWarningFlags, run_impedance_identification,
 };
 
-/// Conservative maximum current-axis split consumed by commissioning v1.
+/// Conservative maximum current-axis split reserved for Phase 2 synthesis.
+#[allow(dead_code)] // Reserved for Phase 2 impedance-split current gain synthesis.
 pub(crate) const CURRENT_GAIN_MAX_AXIS_SPLIT_PERMILLE: u16 = 1500;
 
 /// Accepted rotating-carrier impedance evidence used by current-gain synthesis.
@@ -30,6 +31,7 @@ pub(crate) struct CommissioningImpedanceEvidence {
 }
 
 /// Run commissioning-owned rotating-carrier impedance and map accepted evidence.
+#[allow(dead_code)] // Reserved for Phase 2 impedance-split current gain synthesis.
 pub(crate) async fn run_current_gain_impedance<B: CommissioningBackend>(
     backend: &mut B,
 ) -> Result<CommissioningImpedanceEvidence, ImpedanceError> {

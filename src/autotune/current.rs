@@ -1095,20 +1095,24 @@ mod tests {
     }
 
     #[test]
-    fn split_synthesis_uses_measured_symmetric_without_impedance() {
+    fn phase1_symmetric_synthesis_reports_measured_symmetric() {
         let model = test_electrical_model();
         let config = autotune_test_config();
         let input = CurrentGainSynthesisInput::symmetric(model, CommissionProfile::Balanced);
 
         let output = synthesize_current_gains(&input, &config).unwrap();
 
+        assert_eq!(output.evidence.gains_source, CURRENT_GAINS_SOURCE_MEASURED);
+        assert_eq!(output.evidence.axis_split_source, AXIS_SPLIT_SOURCE_NONE);
         assert_eq!(
             output.evidence.gains_tier,
             CURRENT_GAINS_TIER_MEASURED_SYMMETRIC
         );
-        assert_eq!(output.evidence.axis_split_source, AXIS_SPLIT_SOURCE_NONE);
+        assert_eq!(output.evidence.failure_reason, CURRENT_LOOP_FAILURE_NONE);
         assert_eq!(output.gains.flux_p, output.gains.torque_p);
         assert_eq!(output.gains.flux_i, output.gains.torque_i);
+        assert_eq!(output.flux_tau_us, model.tau_e_us);
+        assert_eq!(output.torque_tau_us, model.tau_e_us);
     }
 
     #[test]

@@ -20,7 +20,7 @@ use crate::commissioning::types::{
     CommissionResult, CommissioningBackend, CurrentValidationAxisEvidence, InnerResult, StepResult,
 };
 
-use super::impedance::{CommissioningImpedanceEvidence, run_current_gain_impedance};
+use super::impedance::CommissioningImpedanceEvidence;
 
 /// Current-loop validation sub-state machine (Phase 7).
 #[derive(Debug, defmt::Format)]
@@ -485,17 +485,7 @@ pub(crate) async fn step_current_tune<B: CommissioningBackend>(
         _ => return StepResult::Continue,
     };
 
-    let impedance_evidence = run_current_gain_impedance(backend).await.ok();
-    let synthesis_input = match impedance_evidence {
-        Some(evidence) => CurrentGainSynthesisInput::with_impedance_split(
-            model,
-            profile,
-            evidence.measured_axis_split_permille,
-            evidence.applied_axis_split_permille,
-            evidence.high_inductance_axis,
-        ),
-        None => CurrentGainSynthesisInput::symmetric(model, profile),
-    };
+    let synthesis_input = CurrentGainSynthesisInput::symmetric(model, profile);
     let config = backend.tmc_config();
     let synthesis = crate::autotune::synthesize_current_gains(&synthesis_input, config);
     let (gains, mut current_loop_evidence) = match synthesis {
@@ -569,7 +559,7 @@ pub(crate) async fn step_current_tune<B: CommissioningBackend>(
             // mismatch is directly readable from the persisted artifacts.
             resistance_gain_path_count_slope_milli: model.r_int as i32,
             current_loop_evidence,
-            impedance_evidence,
+            impedance_evidence: None,
         },
     };
     StepResult::PhaseChanged(PhaseId::CurrentValidate)
@@ -1099,8 +1089,8 @@ pub(crate) async fn step_current_validate<B: CommissioningBackend>(
 #[cfg(test)]
 mod tests {
     use crate::autotune::{
-        AXIS_SPLIT_SOURCE_NONE, CURRENT_GAINS_SOURCE_FAILED, CURRENT_GAINS_TIER_NONE,
-        CURRENT_LOOP_FAILURE_NONE, CURRENT_LOOP_FAILURE_RETRY_EXHAUSTED,
+        AXIS_SPLIT_SOURCE_NONE, CURRENT_GAINS_SOURCE_FAILED, CURRENT_GAINS_TIER_MEASURED_SYMMETRIC,
+        CURRENT_GAINS_TIER_NONE, CURRENT_LOOP_FAILURE_NONE, CURRENT_LOOP_FAILURE_RETRY_EXHAUSTED,
         CURRENT_LOOP_FAILURE_STATUS_FLAGS, CURRENT_LOOP_FAILURE_TORQUE_VALIDATION,
         CURRENT_VALIDATION_AXIS_FLUX, CURRENT_VALIDATION_AXIS_TORQUE,
     };
@@ -1142,6 +1132,54 @@ mod tests {
             evidence.failure_reason,
             CURRENT_LOOP_FAILURE_RETRY_EXHAUSTED
         );
+    }
+
+    #[test]
+    fn current_tune_uses_measured_symmetric_phase1_evidence() {
+        pollster::block_on(async {
+            let mut phase = InnerPhase::CurrentTune {
+                model: ElectricalModel {
+                    r_int: 1000,
+                    l_int: 2000,
+                    tau_e_us: 2000,
+                    theta_e_us: 100,
+                    r_mohm: 1000,
+                    l_uh: 2000,
+                    tau_e_crosscheck_us: 2000,
+                },
+                inner_warning_flags: 0,
+                tau_residual_permille: 0,
+                resistance_result: resistance_result(),
+            };
+            let mut backend = MockBackend::new();
+            backend.current_limit_value = 4000;
+
+            let result =
+                step_current_tune(&mut phase, CommissionProfile::Balanced, &mut backend).await;
+
+            assert!(matches!(
+                result,
+                StepResult::PhaseChanged(PhaseId::CurrentValidate)
+            ));
+            match phase {
+                InnerPhase::CurrentValidate { data, .. } => {
+                    assert_eq!(
+                        data.current_loop_evidence.axis_split_source,
+                        AXIS_SPLIT_SOURCE_NONE
+                    );
+                    assert_eq!(
+                        data.current_loop_evidence.gains_tier,
+                        CURRENT_GAINS_TIER_MEASURED_SYMMETRIC
+                    );
+                    assert!(data.impedance_evidence.is_none());
+                    assert!(
+                        backend.spi_log.iter().all(|op| matches!(op, SpiOp::Read)),
+                        "current tune should not run impedance writes"
+                    );
+                }
+                other => panic!("expected CurrentValidate phase, got {other:?}"),
+            }
+        });
     }
 
     #[test]
