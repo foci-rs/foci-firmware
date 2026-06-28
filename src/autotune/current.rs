@@ -83,6 +83,8 @@ pub const CURRENT_AXIS_VALIDATION_STATUS_FLAGS: u8 = 7;
 /// Current target was zero, so response ratios cannot be classified.
 pub const CURRENT_AXIS_VALIDATION_ZERO_TARGET: u8 = 8;
 
+const CURRENT_AXIS_NON_ACTIONABLE_STATUS_MASK: u32 = 0x7000_0000;
+
 /// Retry action for one failed current-axis short-sample validation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub enum CurrentAxisRetryDecision {
@@ -165,7 +167,7 @@ impl CurrentAxisGate {
             max_cross_axis_permille: 150,
             max_voltage_output_permille: 900,
             max_encoder_delta_counts: 4,
-            actionable_status_mask: u32::MAX,
+            actionable_status_mask: !CURRENT_AXIS_NON_ACTIONABLE_STATUS_MASK,
         }
     }
 }
@@ -1938,6 +1940,22 @@ mod tests {
 
         assert_eq!(gate.response_permille, 0);
         assert_eq!(gate.status, CURRENT_AXIS_VALIDATION_LOW_RESPONSE);
+    }
+
+    #[test]
+    fn current_sample_gate_ignores_encoder_presence_status_bits() {
+        let sample = CurrentAxisSample {
+            target: 250,
+            same_axis_actual: 240,
+            cross_axis_actual: 8,
+            output_limited: 500,
+            output_limit: 2000,
+            encoder_delta_counts: 0,
+            status_flags: 0x7000_0000,
+        };
+        let gate = classify_current_axis_sample(&sample, &CurrentAxisGate::openffboard_flux_2ms());
+
+        assert_eq!(gate.status, CURRENT_AXIS_VALIDATION_PASS);
     }
 
     #[test]

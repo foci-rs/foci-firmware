@@ -647,6 +647,7 @@ pub(crate) async fn step_current_validate<B: CommissioningBackend>(
             if crate::commissioning::helpers::clear_current_integrators(backend)
                 .await
                 .is_err()
+                || backend.write_register(STATUS_FLAGS, 0).await.is_err()
             {
                 return super::fail_inner(phase, CommissionError::Spi);
             }
@@ -1091,7 +1092,7 @@ mod tests {
     use foci_tmc4671::registers::{
         MODE_RAMP_MODE_MOTION, PID_ERROR_PID_FLUX_ERROR_SUM, PID_ERROR_PID_TORQUE_ERROR_SUM,
         PID_FLUX_P_FLUX_I, PID_TORQUE_FLUX_TARGET, PID_TORQUE_P_TORQUE_I, PIDOUT_UQ_UD_LIMITS,
-        UQ_UD_EXT,
+        STATUS_FLAGS, UQ_UD_EXT,
     };
 
     use super::*;
@@ -1291,6 +1292,53 @@ mod tests {
                 backend.spi_log.last(),
                 Some(SpiOp::EnablePin(false))
             ));
+        });
+    }
+
+    #[test]
+    fn axis_step_setup_clears_status_flags_before_validation_target() {
+        pollster::block_on(async {
+            let mut phase = failed_current_validate_phase();
+            if let InnerPhase::CurrentValidate { state, data } = &mut phase {
+                *state = CurrentValidateState::AxisStepSetup {
+                    axis: CurrentValidationAxis::Flux,
+                    sample_index: 0,
+                    sample_delay_ms: 1,
+                    direction: CaptureDirection::Forward,
+                };
+                data.step_amplitude = 250;
+            }
+            let mut buf = TransientBuffer::new();
+            let mut backend = MockBackend::new();
+
+            let result = step_current_validate(
+                &mut phase,
+                &mut buf,
+                CommissionProfile::Balanced,
+                InnerSequence::Commission,
+                &mut backend,
+            )
+            .await;
+
+            assert!(matches!(result, StepResult::Continue));
+            let status_clear_index = backend
+                .spi_log
+                .iter()
+                .position(|op| matches!(op, SpiOp::Write(addr, 0) if *addr == STATUS_FLAGS.addr()))
+                .expect("validation setup should clear latched status flags");
+            let target_index = backend
+                .spi_log
+                .iter()
+                .position(|op| {
+                    matches!(
+                        op,
+                        SpiOp::Write(addr, value)
+                            if *addr == PID_TORQUE_FLUX_TARGET.addr() && *value == 250
+                    )
+                })
+                .expect("validation setup should write the sample target");
+
+            assert!(status_clear_index < target_index);
         });
     }
 
