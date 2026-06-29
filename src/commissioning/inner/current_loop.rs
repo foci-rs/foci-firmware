@@ -78,6 +78,8 @@ pub(crate) struct CurrentValidateData {
     pub(crate) final_status: CommissionStatus,
     /// Configured PIDOUT voltage limit for saturation detection.
     pub(crate) pidout_limit: u32,
+    /// Encoder counts per mechanical revolution for wrap-aware motion checks.
+    pub(crate) encoder_counts_per_rev: u32,
     /// Encoder count captured immediately before the active short sample target.
     pub(crate) sample_encoder_start: u32,
     /// Positive half of the active positive/negative delay pair.
@@ -135,6 +137,7 @@ struct AxisSampleRegisters {
     output_limit: u16,
     encoder_start: u32,
     encoder_end: u32,
+    encoder_counts_per_rev: u32,
     status_flags: u32,
 }
 
@@ -181,8 +184,21 @@ fn signed_upper_half(value: u32) -> i16 {
     crate::tmc::decode_signed_upper_half(value)
 }
 
-fn encoder_delta_counts(start: u32, end: u32) -> i32 {
-    end.wrapping_sub(start) as i32
+fn encoder_delta_counts(start: u32, end: u32, counts_per_rev: u32) -> i32 {
+    let counts_u32 = counts_per_rev.max(1);
+    let counts = i64::from(counts_u32);
+    let half = counts / 2;
+    let start = i64::from(start % counts_u32);
+    let end = i64::from(end % counts_u32);
+    let raw = end - start;
+    let delta = if raw > half {
+        raw - counts
+    } else if raw < -half {
+        raw + counts
+    } else {
+        raw
+    };
+    delta.clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32
 }
 
 fn axis_sample_from_registers(
@@ -209,7 +225,11 @@ fn axis_sample_from_registers(
         cross_axis_actual,
         output_limited,
         output_limit: registers.output_limit,
-        encoder_delta_counts: encoder_delta_counts(registers.encoder_start, registers.encoder_end),
+        encoder_delta_counts: encoder_delta_counts(
+            registers.encoder_start,
+            registers.encoder_end,
+            registers.encoder_counts_per_rev,
+        ),
         status_flags: registers.status_flags,
     }
 }
@@ -592,6 +612,7 @@ pub(crate) async fn step_current_tune<B: CommissioningBackend>(
                     .unwrap_or(0)
                     & 0xFFFF
             },
+            encoder_counts_per_rev: 1,
             sample_encoder_start: 0,
             pending_positive_sample: None,
             current_flux_validation_count: 0,
@@ -668,6 +689,10 @@ pub(crate) async fn step_current_validate<B: CommissioningBackend>(
                 return super::fail_inner(phase, CommissionError::Spi);
             }
             data.pidout_limit = CURRENT_VALIDATE_PIDOUT_LIMIT;
+            data.encoder_counts_per_rev = match backend.read_register(ABN_DECODER_PPR).await {
+                Ok(counts) => counts.max(1),
+                Err(_) => return super::fail_inner(phase, CommissionError::Spi),
+            };
 
             // Clear any previous validation evidence for this attempt.
             data.pending_positive_sample = None;
@@ -813,6 +838,7 @@ pub(crate) async fn step_current_validate<B: CommissioningBackend>(
                     output_limit: data.pidout_limit.min(u16::MAX as u32) as u16,
                     encoder_start: data.sample_encoder_start,
                     encoder_end,
+                    encoder_counts_per_rev: data.encoder_counts_per_rev,
                     status_flags,
                 },
             );
@@ -1167,7 +1193,7 @@ mod tests {
     };
     use crate::commission_dispatch::test_support::{MockBackend, SpiOp};
     use foci_tmc4671::registers::{
-        INTERIM_FOC_UQ_UD_LIMITED, MODE_RAMP_MODE_MOTION, PHI_E_SELECTION,
+        ABN_DECODER_PPR, INTERIM_FOC_UQ_UD_LIMITED, MODE_RAMP_MODE_MOTION, PHI_E_SELECTION,
         PID_ERROR_PID_FLUX_ERROR_SUM, PID_ERROR_PID_TORQUE_ERROR_SUM, PID_FLUX_P_FLUX_I,
         PID_TORQUE_FLUX_ACTUAL, PID_TORQUE_FLUX_TARGET, PID_TORQUE_P_TORQUE_I, PIDOUT_UQ_UD_LIMITS,
         PWM_SV_CHOP, STATUS_FLAGS, UQ_UD_EXT,
@@ -1584,6 +1610,7 @@ mod tests {
             let mut phase = current_validate_phase();
             let mut buf = TransientBuffer::new();
             let mut backend = MockBackend::new();
+            let _ = backend.registers.insert(ABN_DECODER_PPR.addr(), 4000);
             let mut first_axis = None;
             let mut saw_flux_setup = false;
             let mut saw_torque_after_flux_pass = false;
@@ -1878,6 +1905,7 @@ mod tests {
                 output_limit: 2000,
                 encoder_start: 1000,
                 encoder_end: 1002,
+                encoder_counts_per_rev: 4000,
                 status_flags: 0x10,
             },
         );
@@ -1900,6 +1928,7 @@ mod tests {
                 output_limit: 2000,
                 encoder_start: 1002,
                 encoder_end: 1000,
+                encoder_counts_per_rev: 4000,
                 status_flags: 0,
             },
         );
@@ -1908,6 +1937,14 @@ mod tests {
         assert_eq!(sample.cross_axis_actual, 25);
         assert_eq!(sample.output_limited, -300);
         assert_eq!(sample.encoder_delta_counts, -2);
+    }
+
+    #[test]
+    fn current_validation_encoder_delta_uses_shortest_wrap_distance() {
+        assert_eq!(encoder_delta_counts(3998, 2, 4000), 4);
+        assert_eq!(encoder_delta_counts(2, 3998, 4000), -4);
+        assert_eq!(encoder_delta_counts(100, 108, 4000), 8);
+        assert_eq!(encoder_delta_counts(108, 100, 4000), -8);
     }
 
     #[test]
@@ -2056,6 +2093,7 @@ mod tests {
                 step_amplitude: 250,
                 final_status: CommissionStatus::Accepted,
                 pidout_limit: CURRENT_SAFE_PIDOUT_LIMIT,
+                encoder_counts_per_rev: 4000,
                 sample_encoder_start: 0,
                 pending_positive_sample: None,
                 current_flux_validation_count: 0,
@@ -2106,6 +2144,7 @@ mod tests {
                 step_amplitude: 250,
                 final_status: CommissionStatus::Failed(CommissionError::CurrentValidationFailed),
                 pidout_limit: CURRENT_SAFE_PIDOUT_LIMIT,
+                encoder_counts_per_rev: 4000,
                 sample_encoder_start: 0,
                 pending_positive_sample: None,
                 current_flux_validation_count: 1,
@@ -2185,6 +2224,7 @@ mod tests {
                 step_amplitude: 250,
                 final_status: CommissionStatus::Accepted,
                 pidout_limit: CURRENT_SAFE_PIDOUT_LIMIT,
+                encoder_counts_per_rev: 4000,
                 sample_encoder_start: 0,
                 pending_positive_sample: None,
                 current_flux_validation_count: 1,
