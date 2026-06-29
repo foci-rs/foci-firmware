@@ -118,11 +118,11 @@ pub const CURRENT_AXIS_FLUX: u8 = 0;
 pub const CURRENT_AXIS_TORQUE: u8 = 1;
 
 /// Validation sample count for the flux current-loop axis.
-pub const CURRENT_FLUX_VALIDATION_SAMPLE_COUNT: usize = 3;
+pub const CURRENT_FLUX_VALIDATION_SAMPLE_COUNT: usize = 4;
 /// Validation sample count for the torque current-loop axis.
 pub const CURRENT_TORQUE_VALIDATION_SAMPLE_COUNT: usize = 2;
 /// Maximum current-loop validation sample count for any axis.
-pub const CURRENT_VALIDATION_MAX_SAMPLES_PER_AXIS: usize = 3;
+pub const CURRENT_VALIDATION_MAX_SAMPLES_PER_AXIS: usize = 4;
 
 /// Current-loop synthesis and validation succeeded.
 pub const CURRENT_LOOP_FAILURE_NONE: u8 = 0;

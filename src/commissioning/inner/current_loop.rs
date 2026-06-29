@@ -145,7 +145,7 @@ const VALIDATION_STEP_PERCENT: u32 = 15;
 const VALIDATION_SETTLE_US: u64 = 50_000;
 
 const FLUX_VALIDATION_DELAYS_MS: [u16; crate::autotune::CURRENT_FLUX_VALIDATION_SAMPLE_COUNT] =
-    [1, 2, 5];
+    [1, 2, 5, 100];
 const TORQUE_VALIDATION_DELAYS_MS: [u16; crate::autotune::CURRENT_TORQUE_VALIDATION_SAMPLE_COUNT] =
     [1, 2];
 
@@ -226,6 +226,10 @@ fn validation_gate(
     let (min_response_permille, max_response_permille) = match (axis, sample_delay_ms) {
         (CurrentValidationAxis::Flux, 1) => (250, 1250),
         (CurrentValidationAxis::Flux, 2) => (700, 1250),
+        // The 5 ms flux sample remains bandwidth evidence. Response magnitude
+        // is reported, but response-only misses do not block axis acceptance;
+        // the 100 ms sample below is the steady-state closure gate.
+        (CurrentValidationAxis::Flux, 5) => (850, 1150),
         (CurrentValidationAxis::Flux, _) => (850, 1150),
         (CurrentValidationAxis::Torque, 1) => (250, 1250),
         (CurrentValidationAxis::Torque, _) => (550, 1250),
@@ -309,11 +313,33 @@ fn status_priority(status: u8) -> u8 {
     }
 }
 
-fn evidence_axis_passed(samples: &[CurrentValidationAxisEvidence], count: u8) -> bool {
-    samples
-        .iter()
-        .take(count as usize)
-        .all(|sample| sample.status == crate::autotune::CURRENT_AXIS_VALIDATION_PASS)
+fn evidence_axis_passed(
+    axis: CurrentValidationAxis,
+    samples: &[CurrentValidationAxisEvidence],
+    count: u8,
+) -> bool {
+    samples.iter().take(count as usize).all(|sample| {
+        axis_pass_status(axis, sample) == crate::autotune::CURRENT_AXIS_VALIDATION_PASS
+    })
+}
+
+fn axis_pass_status(axis: CurrentValidationAxis, sample: &CurrentValidationAxisEvidence) -> u8 {
+    // Flux short samples are bandwidth telemetry. The long-dwell flux sample
+    // proves steady-state closure; safety/status gates still apply at every
+    // delay. Torque remains short-window gated because it can move the axis.
+    if axis == CurrentValidationAxis::Flux
+        && sample.sample_delay_ms < 100
+        && is_response_magnitude_status(sample.status)
+    {
+        crate::autotune::CURRENT_AXIS_VALIDATION_PASS
+    } else {
+        sample.status
+    }
+}
+
+fn is_response_magnitude_status(status: u8) -> bool {
+    status == crate::autotune::CURRENT_AXIS_VALIDATION_LOW_RESPONSE
+        || status == crate::autotune::CURRENT_AXIS_VALIDATION_HIGH_RESPONSE
 }
 
 fn axis_failure_reason(axis: CurrentValidationAxis) -> u8 {
@@ -330,7 +356,7 @@ fn axis_failure_reason_for_samples(
 ) -> u8 {
     let status = samples.iter().take(count as usize).fold(
         crate::autotune::CURRENT_AXIS_VALIDATION_PASS,
-        |worst, sample| merge_axis_pair_status(worst, sample.status),
+        |worst, sample| merge_axis_pair_status(worst, axis_pass_status(axis, sample)),
     );
 
     match status {
@@ -393,19 +419,24 @@ fn axis_attempt(data: &CurrentValidateData, axis: CurrentValidationAxis) -> u8 {
     }
 }
 
-fn worst_axis_status(samples: &[CurrentValidationAxisEvidence], count: u8) -> u8 {
+fn worst_axis_status(
+    axis: CurrentValidationAxis,
+    samples: &[CurrentValidationAxisEvidence],
+    count: u8,
+) -> u8 {
     samples.iter().take(count as usize).fold(
         crate::autotune::CURRENT_AXIS_VALIDATION_PASS,
-        |worst, sample| merge_axis_pair_status(worst, sample.status),
+        |worst, sample| merge_axis_pair_status(worst, axis_pass_status(axis, sample)),
     )
 }
 
 fn axis_retry_decision_for_samples(
+    axis: CurrentValidationAxis,
     samples: &[CurrentValidationAxisEvidence],
     count: u8,
     attempt: u8,
 ) -> CurrentAxisRetryDecision {
-    let status = worst_axis_status(samples, count);
+    let status = worst_axis_status(axis, samples, count);
     current_axis_retry_decision(
         status,
         attempt,
@@ -877,10 +908,12 @@ pub(crate) async fn step_current_validate<B: CommissioningBackend>(
             let axis = *axis;
             let passed = match axis {
                 CurrentValidationAxis::Flux => evidence_axis_passed(
+                    CurrentValidationAxis::Flux,
                     &data.current_flux_validation,
                     data.current_flux_validation_count,
                 ),
                 CurrentValidationAxis::Torque => evidence_axis_passed(
+                    CurrentValidationAxis::Torque,
                     &data.current_torque_validation,
                     data.current_torque_validation_count,
                 ),
@@ -915,7 +948,7 @@ pub(crate) async fn step_current_validate<B: CommissioningBackend>(
                 };
                 let failure_reason = axis_failure_reason_for_samples(axis, samples, count);
                 let retry_decision =
-                    axis_retry_decision_for_samples(samples, count, axis_attempt(data, axis));
+                    axis_retry_decision_for_samples(axis, samples, count, axis_attempt(data, axis));
                 match retry_decision {
                     CurrentAxisRetryDecision::RetryHigherBandwidth
                     | CurrentAxisRetryDecision::RetryLowerBandwidth => {
@@ -1264,9 +1297,91 @@ mod tests {
             axis_validation_evidence(crate::autotune::CURRENT_AXIS_VALIDATION_LOW_RESPONSE);
         samples[1].status_flags_or = 0x7000_0080;
 
-        let decision = axis_retry_decision_for_samples(&samples, 2, 0);
+        let decision =
+            axis_retry_decision_for_samples(CurrentValidationAxis::Torque, &samples, 2, 0);
 
         assert_eq!(decision, CurrentAxisRetryDecision::RetryHigherBandwidth);
+    }
+
+    #[test]
+    fn flux_five_ms_response_floor_is_bandwidth_evidence() {
+        let mut samples = [CurrentValidationAxisEvidence::EMPTY;
+            crate::autotune::CURRENT_VALIDATION_MAX_SAMPLES_PER_AXIS];
+        samples[0] = axis_validation_evidence(crate::autotune::CURRENT_AXIS_VALIDATION_PASS);
+        samples[0].sample_delay_ms = 1;
+        samples[1] = axis_validation_evidence(crate::autotune::CURRENT_AXIS_VALIDATION_PASS);
+        samples[1].sample_delay_ms = 2;
+        samples[2] =
+            axis_validation_evidence(crate::autotune::CURRENT_AXIS_VALIDATION_LOW_RESPONSE);
+        samples[2].sample_delay_ms = 5;
+        samples[3] = axis_validation_evidence(crate::autotune::CURRENT_AXIS_VALIDATION_PASS);
+        samples[3].sample_delay_ms = 100;
+
+        assert!(evidence_axis_passed(
+            CurrentValidationAxis::Flux,
+            &samples,
+            4
+        ));
+    }
+
+    #[test]
+    fn flux_two_ms_response_floor_is_bandwidth_evidence() {
+        let mut samples = [CurrentValidationAxisEvidence::EMPTY;
+            crate::autotune::CURRENT_VALIDATION_MAX_SAMPLES_PER_AXIS];
+        samples[0] = axis_validation_evidence(crate::autotune::CURRENT_AXIS_VALIDATION_PASS);
+        samples[0].sample_delay_ms = 1;
+        samples[1] =
+            axis_validation_evidence(crate::autotune::CURRENT_AXIS_VALIDATION_LOW_RESPONSE);
+        samples[1].sample_delay_ms = 2;
+        samples[2] =
+            axis_validation_evidence(crate::autotune::CURRENT_AXIS_VALIDATION_LOW_RESPONSE);
+        samples[2].sample_delay_ms = 5;
+        samples[3] = axis_validation_evidence(crate::autotune::CURRENT_AXIS_VALIDATION_PASS);
+        samples[3].sample_delay_ms = 100;
+
+        assert!(evidence_axis_passed(
+            CurrentValidationAxis::Flux,
+            &samples,
+            4
+        ));
+    }
+
+    #[test]
+    fn torque_two_ms_response_floor_still_blocks_validation() {
+        let mut samples = [CurrentValidationAxisEvidence::EMPTY;
+            crate::autotune::CURRENT_VALIDATION_MAX_SAMPLES_PER_AXIS];
+        samples[0] = axis_validation_evidence(crate::autotune::CURRENT_AXIS_VALIDATION_PASS);
+        samples[0].sample_delay_ms = 1;
+        samples[1] =
+            axis_validation_evidence(crate::autotune::CURRENT_AXIS_VALIDATION_LOW_RESPONSE);
+        samples[1].sample_delay_ms = 2;
+
+        assert!(!evidence_axis_passed(
+            CurrentValidationAxis::Torque,
+            &samples,
+            2
+        ));
+    }
+
+    #[test]
+    fn flux_five_ms_safety_fault_still_blocks_validation() {
+        let mut samples = [CurrentValidationAxisEvidence::EMPTY;
+            crate::autotune::CURRENT_VALIDATION_MAX_SAMPLES_PER_AXIS];
+        samples[0] = axis_validation_evidence(crate::autotune::CURRENT_AXIS_VALIDATION_PASS);
+        samples[0].sample_delay_ms = 1;
+        samples[1] = axis_validation_evidence(crate::autotune::CURRENT_AXIS_VALIDATION_PASS);
+        samples[1].sample_delay_ms = 2;
+        samples[2] =
+            axis_validation_evidence(crate::autotune::CURRENT_AXIS_VALIDATION_STATUS_FLAGS);
+        samples[2].sample_delay_ms = 5;
+        samples[3] = axis_validation_evidence(crate::autotune::CURRENT_AXIS_VALIDATION_PASS);
+        samples[3].sample_delay_ms = 100;
+
+        assert!(!evidence_axis_passed(
+            CurrentValidationAxis::Flux,
+            &samples,
+            4
+        ));
     }
 
     #[test]
@@ -1532,7 +1647,7 @@ mod tests {
                             }
                             CurrentValidationAxis::Torque => {
                                 assert!(saw_flux_setup);
-                                assert_eq!(flux_count, 3);
+                                assert_eq!(flux_count, 4);
                                 if !saw_torque_after_flux_pass {
                                     assert_eq!(torque_count, 0);
                                 }
@@ -1628,7 +1743,7 @@ mod tests {
                     assert_validation_evidence_delays(
                         &data.current_flux_validation,
                         data.current_flux_validation_count,
-                        &[1, 2, 5],
+                        &[1, 2, 5, 100],
                     );
                     assert_validation_evidence_delays(
                         &data.current_torque_validation,

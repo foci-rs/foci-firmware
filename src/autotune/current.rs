@@ -1011,9 +1011,9 @@ mod tests {
         assert_eq!(CURRENT_AXIS_FLUX, 0);
         assert_eq!(CURRENT_AXIS_TORQUE, 1);
 
-        assert_eq!(CURRENT_FLUX_VALIDATION_SAMPLE_COUNT, 3);
+        assert_eq!(CURRENT_FLUX_VALIDATION_SAMPLE_COUNT, 4);
         assert_eq!(CURRENT_TORQUE_VALIDATION_SAMPLE_COUNT, 2);
-        assert_eq!(CURRENT_VALIDATION_MAX_SAMPLES_PER_AXIS, 3);
+        assert_eq!(CURRENT_VALIDATION_MAX_SAMPLES_PER_AXIS, 4);
     }
 
     #[test]

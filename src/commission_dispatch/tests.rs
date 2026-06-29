@@ -838,6 +838,18 @@ fn commission_result_maps_current_loop_evidence() {
             encoder_delta_counts: 0,
             status_flags_or: 0,
         },
+        crate::commissioning::types::CurrentValidationAxisEvidence {
+            status: crate::autotune::CURRENT_AXIS_VALIDATION_PASS,
+            attempt: 0,
+            target: 250,
+            sample_delay_ms: 100,
+            positive_response_permille: 1015,
+            negative_response_permille: 1008,
+            cross_axis_permille: 38,
+            voltage_output_permille: 410,
+            encoder_delta_counts: 0,
+            status_flags_or: 0,
+        },
     ];
     let torque_validation = [
         crate::commissioning::types::CurrentValidationAxisEvidence {
@@ -865,6 +877,7 @@ fn commission_result_maps_current_loop_evidence() {
             status_flags_or: 0,
         },
         crate::commissioning::types::CurrentValidationAxisEvidence::EMPTY,
+        crate::commissioning::types::CurrentValidationAxisEvidence::EMPTY,
     ];
     let mut result = sample_commission_result();
     result.inner.current_gains_source = evidence.gains_source;
@@ -877,7 +890,7 @@ fn commission_result_maps_current_loop_evidence() {
         | crate::autotune::CURRENT_VALIDATION_AXIS_TORQUE;
     result.inner.retry_budget_exhausted = evidence.retry_budget_exhausted;
     result.inner.current_loop_failure_reason = evidence.failure_reason;
-    result.inner.current_flux_validation_count = 3;
+    result.inner.current_flux_validation_count = 4;
     result.inner.current_flux_validation = flux_validation;
     result.inner.current_torque_validation_count = 2;
     result.inner.current_torque_validation = torque_validation;
@@ -915,6 +928,12 @@ fn commission_result_maps_current_loop_evidence() {
                 sample_index: 2,
                 sample_delay_ms: 5,
                 positive_response_permille: 1010,
+            },
+            ReplyEvent::CurrentValidationAxis {
+                axis: crate::autotune::CURRENT_AXIS_FLUX,
+                sample_index: 3,
+                sample_delay_ms: 100,
+                positive_response_permille: 1015,
             },
             ReplyEvent::CurrentValidationAxis {
                 axis: crate::autotune::CURRENT_AXIS_TORQUE,
