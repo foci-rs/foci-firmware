@@ -289,6 +289,8 @@ fn current_validation_axis_report(
         cross_axis_permille: evidence.cross_axis_permille,
         voltage_output_permille: evidence.voltage_output_permille,
         encoder_delta_counts: evidence.encoder_delta_counts,
+        positive_encoder_delta_counts: evidence.positive_encoder_delta_counts,
+        negative_encoder_delta_counts: evidence.negative_encoder_delta_counts,
         status_flags_or: evidence.status_flags_or,
     }
 }
@@ -409,6 +411,8 @@ mod tests {
             cross_axis_permille: u16,
             voltage_output_permille: u16,
             encoder_delta_counts: u16,
+            positive_encoder_delta_counts: i32,
+            negative_encoder_delta_counts: i32,
             status_flags_or: u32,
         },
         CurrentLoopRun {
@@ -560,6 +564,8 @@ mod tests {
                 cross_axis_permille: report.cross_axis_permille,
                 voltage_output_permille: report.voltage_output_permille,
                 encoder_delta_counts: report.encoder_delta_counts,
+                positive_encoder_delta_counts: report.positive_encoder_delta_counts,
+                negative_encoder_delta_counts: report.negative_encoder_delta_counts,
                 status_flags_or: report.status_flags_or,
             });
         }
@@ -630,6 +636,8 @@ mod tests {
             cross_axis_permille: 32,
             voltage_output_permille: 250,
             encoder_delta_counts: 1,
+            positive_encoder_delta_counts: 1,
+            negative_encoder_delta_counts: -1,
             status_flags_or: 0,
         };
         let mut torque_validation = [CurrentValidationAxisEvidence::EMPTY;
@@ -644,6 +652,8 @@ mod tests {
             cross_axis_permille: 24,
             voltage_output_permille: 280,
             encoder_delta_counts: 2,
+            positive_encoder_delta_counts: 2,
+            negative_encoder_delta_counts: -2,
             status_flags_or: 4,
         };
 
@@ -774,6 +784,8 @@ mod tests {
             cross_axis_permille: evidence.cross_axis_permille,
             voltage_output_permille: evidence.voltage_output_permille,
             encoder_delta_counts: evidence.encoder_delta_counts,
+            positive_encoder_delta_counts: evidence.positive_encoder_delta_counts,
+            negative_encoder_delta_counts: evidence.negative_encoder_delta_counts,
             status_flags_or: evidence.status_flags_or,
         }
     }
@@ -794,6 +806,8 @@ mod tests {
                 cross_axis_permille: 32,
                 voltage_output_permille: 250,
                 encoder_delta_counts: 1,
+                positive_encoder_delta_counts: 1,
+                negative_encoder_delta_counts: -1,
                 status_flags_or: 0,
             },
         ));
@@ -811,6 +825,8 @@ mod tests {
                 cross_axis_permille: 24,
                 voltage_output_permille: 280,
                 encoder_delta_counts: 2,
+                positive_encoder_delta_counts: 2,
+                negative_encoder_delta_counts: -2,
                 status_flags_or: 4,
             },
         ));

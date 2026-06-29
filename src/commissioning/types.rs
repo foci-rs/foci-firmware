@@ -30,6 +30,10 @@ pub struct CurrentValidationAxisEvidence {
     pub voltage_output_permille: u16,
     /// Maximum encoder movement for the positive/negative pair.
     pub encoder_delta_counts: u16,
+    /// Signed encoder movement observed during the positive pulse.
+    pub positive_encoder_delta_counts: i32,
+    /// Signed encoder movement observed during the negative pulse.
+    pub negative_encoder_delta_counts: i32,
     /// OR of TMC4671 `STATUS_FLAGS` captured for the positive/negative pair.
     pub status_flags_or: u32,
 }
@@ -46,6 +50,8 @@ impl CurrentValidationAxisEvidence {
         cross_axis_permille: 0,
         voltage_output_permille: 0,
         encoder_delta_counts: 0,
+        positive_encoder_delta_counts: 0,
+        negative_encoder_delta_counts: 0,
         status_flags_or: 0,
     };
 }

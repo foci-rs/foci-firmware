@@ -255,6 +255,10 @@ pub struct FociCurrentValidationAxis {
     pub voltage_output_permille: u16,
     /// Absolute encoder movement observed during the sample.
     pub encoder_delta_counts: u16,
+    /// Signed encoder movement observed during the positive pulse.
+    pub positive_encoder_delta_counts: i32,
+    /// Signed encoder movement observed during the negative pulse.
+    pub negative_encoder_delta_counts: i32,
     /// TMC4671 `STATUS_FLAGS` accumulated across the sample.
     pub status_flags_or: u32,
 }
@@ -1222,6 +1226,8 @@ mod resistance_reply_size_tests {
             cross_axis_permille: u16::MAX,
             voltage_output_permille: u16::MAX,
             encoder_delta_counts: u16::MAX,
+            positive_encoder_delta_counts: i32::MAX,
+            negative_encoder_delta_counts: i32::MIN,
             status_flags_or: 0x7FFF_FFFF,
         };
         assert_fits_with_id(&reply, "foci_current_validation_axis");

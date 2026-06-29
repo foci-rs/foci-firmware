@@ -44,6 +44,8 @@ enum ReplyEvent {
         sample_index: u8,
         sample_delay_ms: u16,
         positive_response_permille: u16,
+        positive_encoder_delta_counts: i32,
+        negative_encoder_delta_counts: i32,
     },
     CurrentLoopRun {
         measured_axis_split_permille: u16,
@@ -98,6 +100,8 @@ impl CommissionReplySink for ReplyRecorder {
             sample_index: report.sample_index,
             sample_delay_ms: report.sample_delay_ms,
             positive_response_permille: report.positive_response_permille,
+            positive_encoder_delta_counts: report.positive_encoder_delta_counts,
+            negative_encoder_delta_counts: report.negative_encoder_delta_counts,
         });
     }
 
@@ -812,6 +816,8 @@ fn commission_result_maps_current_loop_evidence() {
             cross_axis_permille: 28,
             voltage_output_permille: 390,
             encoder_delta_counts: 0,
+            positive_encoder_delta_counts: 0,
+            negative_encoder_delta_counts: 0,
             status_flags_or: 0,
         },
         crate::commissioning::types::CurrentValidationAxisEvidence {
@@ -824,6 +830,8 @@ fn commission_result_maps_current_loop_evidence() {
             cross_axis_permille: 35,
             voltage_output_permille: 420,
             encoder_delta_counts: 0,
+            positive_encoder_delta_counts: 0,
+            negative_encoder_delta_counts: 0,
             status_flags_or: 0,
         },
         crate::commissioning::types::CurrentValidationAxisEvidence {
@@ -836,6 +844,8 @@ fn commission_result_maps_current_loop_evidence() {
             cross_axis_permille: 40,
             voltage_output_permille: 430,
             encoder_delta_counts: 0,
+            positive_encoder_delta_counts: 0,
+            negative_encoder_delta_counts: 0,
             status_flags_or: 0,
         },
         crate::commissioning::types::CurrentValidationAxisEvidence {
@@ -848,6 +858,8 @@ fn commission_result_maps_current_loop_evidence() {
             cross_axis_permille: 38,
             voltage_output_permille: 410,
             encoder_delta_counts: 0,
+            positive_encoder_delta_counts: 0,
+            negative_encoder_delta_counts: 0,
             status_flags_or: 0,
         },
     ];
@@ -862,6 +874,8 @@ fn commission_result_maps_current_loop_evidence() {
             cross_axis_permille: 42,
             voltage_output_permille: 510,
             encoder_delta_counts: 2,
+            positive_encoder_delta_counts: 2,
+            negative_encoder_delta_counts: -1,
             status_flags_or: 0,
         },
         crate::commissioning::types::CurrentValidationAxisEvidence {
@@ -874,6 +888,8 @@ fn commission_result_maps_current_loop_evidence() {
             cross_axis_permille: 38,
             voltage_output_permille: 530,
             encoder_delta_counts: 4,
+            positive_encoder_delta_counts: 4,
+            negative_encoder_delta_counts: -2,
             status_flags_or: 0,
         },
         crate::commissioning::types::CurrentValidationAxisEvidence::EMPTY,
@@ -916,36 +932,48 @@ fn commission_result_maps_current_loop_evidence() {
                 sample_index: 0,
                 sample_delay_ms: 1,
                 positive_response_permille: 720,
+                positive_encoder_delta_counts: 0,
+                negative_encoder_delta_counts: 0,
             },
             ReplyEvent::CurrentValidationAxis {
                 axis: crate::autotune::CURRENT_AXIS_FLUX,
                 sample_index: 1,
                 sample_delay_ms: 2,
                 positive_response_permille: 960,
+                positive_encoder_delta_counts: 0,
+                negative_encoder_delta_counts: 0,
             },
             ReplyEvent::CurrentValidationAxis {
                 axis: crate::autotune::CURRENT_AXIS_FLUX,
                 sample_index: 2,
                 sample_delay_ms: 5,
                 positive_response_permille: 1010,
+                positive_encoder_delta_counts: 0,
+                negative_encoder_delta_counts: 0,
             },
             ReplyEvent::CurrentValidationAxis {
                 axis: crate::autotune::CURRENT_AXIS_FLUX,
                 sample_index: 3,
                 sample_delay_ms: 100,
                 positive_response_permille: 1015,
+                positive_encoder_delta_counts: 0,
+                negative_encoder_delta_counts: 0,
             },
             ReplyEvent::CurrentValidationAxis {
                 axis: crate::autotune::CURRENT_AXIS_TORQUE,
                 sample_index: 0,
                 sample_delay_ms: 1,
                 positive_response_permille: 610,
+                positive_encoder_delta_counts: 2,
+                negative_encoder_delta_counts: -1,
             },
             ReplyEvent::CurrentValidationAxis {
                 axis: crate::autotune::CURRENT_AXIS_TORQUE,
                 sample_index: 1,
                 sample_delay_ms: 2,
                 positive_response_permille: 780,
+                positive_encoder_delta_counts: 4,
+                negative_encoder_delta_counts: -2,
             },
             ReplyEvent::CurrentLoopRun {
                 measured_axis_split_permille: 1840,

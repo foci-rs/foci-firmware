@@ -136,6 +136,7 @@ pub(crate) enum CurrentValidationAxis {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub(crate) struct AxisDirectionalEvidence {
     gate: CurrentAxisGateResult,
+    encoder_delta_counts: i32,
     status_flags: u32,
 }
 
@@ -319,6 +320,8 @@ fn combine_axis_pair_evidence(
             .gate
             .encoder_delta_counts
             .max(negative.gate.encoder_delta_counts),
+        positive_encoder_delta_counts: positive.encoder_delta_counts,
+        negative_encoder_delta_counts: negative.encoder_delta_counts,
         status_flags_or: positive.status_flags | negative.status_flags,
     }
 }
@@ -369,6 +372,7 @@ async fn read_axis_directional_evidence<B: CommissioningBackend>(
 
     Ok(AxisDirectionalEvidence {
         gate,
+        encoder_delta_counts: sample.encoder_delta_counts,
         status_flags: sample.status_flags,
     })
 }
@@ -2252,6 +2256,22 @@ mod tests {
         );
     }
 
+    #[test]
+    fn combine_axis_pair_evidence_preserves_signed_encoder_deltas() {
+        let mut positive = axis_directional_evidence(crate::autotune::CURRENT_AXIS_VALIDATION_PASS);
+        positive.encoder_delta_counts = 7;
+        positive.gate.encoder_delta_counts = 7;
+        let mut negative = axis_directional_evidence(crate::autotune::CURRENT_AXIS_VALIDATION_PASS);
+        negative.encoder_delta_counts = -3;
+        negative.gate.encoder_delta_counts = 3;
+
+        let evidence = combine_axis_pair_evidence(0, 250, 2, positive, negative);
+
+        assert_eq!(evidence.encoder_delta_counts, 7);
+        assert_eq!(evidence.positive_encoder_delta_counts, 7);
+        assert_eq!(evidence.negative_encoder_delta_counts, -3);
+    }
+
     fn axis_directional_evidence(status: u8) -> AxisDirectionalEvidence {
         AxisDirectionalEvidence {
             gate: CurrentAxisGateResult {
@@ -2262,6 +2282,7 @@ mod tests {
                 encoder_delta_counts: 0,
                 max_cross_axis_permille: 150,
             },
+            encoder_delta_counts: 0,
             status_flags: if status == crate::autotune::CURRENT_AXIS_VALIDATION_STATUS_FLAGS {
                 1
             } else {
@@ -2473,6 +2494,8 @@ mod tests {
                     cross_axis_permille: 10,
                     voltage_output_permille: 100,
                     encoder_delta_counts: 0,
+                    positive_encoder_delta_counts: 0,
+                    negative_encoder_delta_counts: 0,
                     status_flags_or: 0,
                 };
                     crate::autotune::CURRENT_VALIDATION_MAX_SAMPLES_PER_AXIS],
@@ -2487,6 +2510,8 @@ mod tests {
                     cross_axis_permille: 10,
                     voltage_output_permille: 100,
                     encoder_delta_counts: 0,
+                    positive_encoder_delta_counts: 0,
+                    negative_encoder_delta_counts: 0,
                     status_flags_or: 0,
                 };
                     crate::autotune::CURRENT_VALIDATION_MAX_SAMPLES_PER_AXIS],
@@ -2553,6 +2578,8 @@ mod tests {
                     cross_axis_permille: 10,
                     voltage_output_permille: 100,
                     encoder_delta_counts: 0,
+                    positive_encoder_delta_counts: 0,
+                    negative_encoder_delta_counts: 0,
                     status_flags_or: 0,
                 };
                     crate::autotune::CURRENT_VALIDATION_MAX_SAMPLES_PER_AXIS],
@@ -2567,6 +2594,8 @@ mod tests {
                     cross_axis_permille: 50,
                     voltage_output_permille: 450,
                     encoder_delta_counts: 15,
+                    positive_encoder_delta_counts: 15,
+                    negative_encoder_delta_counts: -8,
                     status_flags_or: 0x7000_8080,
                 };
                     crate::autotune::CURRENT_VALIDATION_MAX_SAMPLES_PER_AXIS],

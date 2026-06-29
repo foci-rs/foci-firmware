@@ -442,6 +442,10 @@ pub struct CurrentValidationAxisReport {
     pub voltage_output_permille: u16,
     /// Absolute encoder movement observed during the sample.
     pub encoder_delta_counts: u16,
+    /// Signed encoder movement observed during the positive pulse.
+    pub positive_encoder_delta_counts: i32,
+    /// Signed encoder movement observed during the negative pulse.
+    pub negative_encoder_delta_counts: i32,
     /// TMC4671 `STATUS_FLAGS` accumulated across the sample.
     pub status_flags_or: u32,
 }
