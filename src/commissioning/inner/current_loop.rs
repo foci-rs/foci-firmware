@@ -504,20 +504,18 @@ fn axis_pass_status(axis: CurrentValidationAxis, sample: &CurrentValidationAxisE
     // proves steady-state closure; safety/status gates still apply at every
     // delay. Torque is motion-limited: zero-delay cross-axis is the at-rest
     // coupling gate, while later cross/response shape is telemetry.
-    if axis == CurrentValidationAxis::Flux
-        && sample.sample_delay_ms < 100
-        && is_transient_current_telemetry_status(sample.status)
-    {
-        crate::autotune::CURRENT_AXIS_VALIDATION_PASS
-    } else if axis == CurrentValidationAxis::Torque
-        && sample.sample_delay_ms == 0
-        && is_zero_delay_torque_telemetry_status(sample.status)
-    {
-        crate::autotune::CURRENT_AXIS_VALIDATION_PASS
-    } else if axis == CurrentValidationAxis::Torque
-        && sample.sample_delay_ms > 0
-        && is_transient_current_telemetry_status(sample.status)
-    {
+    let telemetry_status = match axis {
+        CurrentValidationAxis::Flux => {
+            sample.sample_delay_ms < 100 && is_transient_current_telemetry_status(sample.status)
+        }
+        CurrentValidationAxis::Torque => {
+            (sample.sample_delay_ms == 0 && is_zero_delay_torque_telemetry_status(sample.status))
+                || (sample.sample_delay_ms > 0
+                    && is_transient_current_telemetry_status(sample.status))
+        }
+    };
+
+    if telemetry_status {
         crate::autotune::CURRENT_AXIS_VALIDATION_PASS
     } else {
         sample.status
@@ -823,6 +821,7 @@ pub(crate) async fn step_current_validate<B: CommissioningBackend>(
     _buf: &mut TransientBuffer,
     _profile: CommissionProfile,
     sequence: InnerSequence,
+    adc_cal: &Option<crate::commissioning::types::AdcCalResult>,
     backend: &mut B,
 ) -> StepResult {
     use foci_tmc4671::registers::*;
@@ -1200,6 +1199,7 @@ pub(crate) async fn step_current_validate<B: CommissioningBackend>(
             let axis0 = resistance.axis0;
             let axis1 = resistance.axis1;
             let impedance = data.impedance_evidence;
+            let alignment = adc_cal.as_ref();
             let result = InnerResult {
                 status: data.final_status,
                 r_int: data.model.r_int,
@@ -1266,6 +1266,19 @@ pub(crate) async fn step_current_validate<B: CommissioningBackend>(
                     .map_or(0, |anchor| anchor.drift_permille),
                 resistance_status_flags_or: resistance.status_flags_or,
                 resistance_warning_flags: resistance.warning_flags.0,
+                encoder_alignment_count: alignment.map_or(0, |result| result.encoder_count),
+                encoder_alignment_electrical_residual_counts: alignment.map_or(0, |result| {
+                    result.encoder_alignment_electrical_residual_counts
+                }),
+                encoder_alignment_stability_counts: alignment
+                    .map_or(0, |result| result.encoder_alignment_stability_counts),
+                encoder_alignment_movement_counts: alignment
+                    .map_or(0, |result| result.encoder_alignment_movement_counts),
+                encoder_alignment_min_movement_counts: alignment
+                    .map_or(0, |result| result.encoder_alignment_min_movement_counts),
+                encoder_alignment_counts_per_electrical_rev: alignment.map_or(0, |result| {
+                    result.encoder_alignment_counts_per_electrical_rev
+                }),
                 current_gains_source: data.current_loop_evidence.gains_source,
                 axis_split_source: data.current_loop_evidence.axis_split_source,
                 gains_tier: data.current_loop_evidence.gains_tier,
@@ -1705,6 +1718,7 @@ mod tests {
                 &mut buf,
                 CommissionProfile::Balanced,
                 InnerSequence::Commission,
+                &None,
                 &mut backend,
             )
             .await;
@@ -1737,12 +1751,23 @@ mod tests {
             let mut phase = failed_current_validate_phase();
             let mut buf = TransientBuffer::new();
             let mut backend = MockBackend::new();
+            let adc_cal = Some(crate::commissioning::types::AdcCalResult {
+                adc_i0: 0,
+                adc_i1: 0,
+                encoder_count: 163,
+                encoder_alignment_electrical_residual_counts: 3,
+                encoder_alignment_stability_counts: 1,
+                encoder_alignment_movement_counts: 37,
+                encoder_alignment_min_movement_counts: 2,
+                encoder_alignment_counts_per_electrical_rev: 80,
+            });
 
             let result = step_current_validate(
                 &mut phase,
                 &mut buf,
                 CommissionProfile::Balanced,
                 InnerSequence::Commission,
+                &adc_cal,
                 &mut backend,
             )
             .await;
@@ -1765,6 +1790,10 @@ mod tests {
                         result.inner.current_validation_axes,
                         CURRENT_VALIDATION_AXIS_FLUX
                     );
+                    assert_eq!(result.inner.encoder_alignment_count, 163);
+                    assert_eq!(result.inner.encoder_alignment_electrical_residual_counts, 3);
+                    assert_eq!(result.inner.encoder_alignment_stability_counts, 1);
+                    assert_eq!(result.inner.encoder_alignment_counts_per_electrical_rev, 80);
                 }
                 other => panic!("expected failed CommissionDone, got {other:?}"),
             }
@@ -1840,6 +1869,7 @@ mod tests {
                 &mut buf,
                 CommissionProfile::Balanced,
                 InnerSequence::Commission,
+                &None,
                 &mut backend,
             )
             .await;
@@ -1990,6 +2020,7 @@ mod tests {
                             &mut buf,
                             CommissionProfile::Balanced,
                             InnerSequence::Commission,
+                            &None,
                             &mut backend,
                         )
                         .await;
@@ -2017,6 +2048,7 @@ mod tests {
                             &mut buf,
                             CommissionProfile::Balanced,
                             InnerSequence::Commission,
+                            &None,
                             &mut backend,
                         )
                         .await;
@@ -2033,6 +2065,7 @@ mod tests {
                             &mut buf,
                             CommissionProfile::Balanced,
                             InnerSequence::Commission,
+                            &None,
                             &mut backend,
                         )
                         .await;
@@ -2045,6 +2078,7 @@ mod tests {
                             &mut buf,
                             CommissionProfile::Balanced,
                             InnerSequence::Commission,
+                            &None,
                             &mut backend,
                         )
                         .await;
@@ -2150,6 +2184,7 @@ mod tests {
                 &mut buf,
                 CommissionProfile::Balanced,
                 InnerSequence::Commission,
+                &None,
                 &mut backend,
             )
             .await;

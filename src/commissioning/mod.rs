@@ -887,6 +887,12 @@ mod tests {
             resistance_axis1_drift_permille: 0,
             resistance_status_flags_or: 0,
             resistance_warning_flags: 0,
+            encoder_alignment_count: 0,
+            encoder_alignment_electrical_residual_counts: 0,
+            encoder_alignment_stability_counts: 0,
+            encoder_alignment_movement_counts: 0,
+            encoder_alignment_min_movement_counts: 0,
+            encoder_alignment_counts_per_electrical_rev: 0,
             current_gains_source: crate::autotune::CURRENT_GAINS_SOURCE_MEASURED,
             axis_split_source: crate::autotune::AXIS_SPLIT_SOURCE_NONE,
             gains_tier: crate::autotune::CURRENT_GAINS_TIER_MEASURED_SYMMETRIC,
@@ -959,6 +965,11 @@ mod tests {
             adc_i0: 11,
             adc_i1: 13,
             encoder_count: 17,
+            encoder_alignment_electrical_residual_counts: 0,
+            encoder_alignment_stability_counts: 0,
+            encoder_alignment_movement_counts: 0,
+            encoder_alignment_min_movement_counts: 0,
+            encoder_alignment_counts_per_electrical_rev: 0,
         }
     }
 

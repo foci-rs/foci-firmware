@@ -359,6 +359,26 @@ pub struct ResistanceAxisReport {
     pub warning_flags: u32,
 }
 
+/// Encoder D-axis alignment evidence emitted before the terminal
+/// `foci_commission_result` reply.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EncoderAlignmentReport {
+    /// Object id of the FOCI endpoint.
+    pub oid: u8,
+    /// Encoder count captured immediately before alignment zeroed the ABN count.
+    pub encoder_count: u32,
+    /// Folded residual of `encoder_count` modulo one electrical revolution.
+    pub electrical_residual_counts: u16,
+    /// Difference between the two post-settle alignment reads.
+    pub stability_counts: u16,
+    /// Largest movement from the pre-alignment count to a post-settle read.
+    pub movement_counts: u16,
+    /// Minimum movement required for the alignment to be accepted.
+    pub min_movement_counts: u16,
+    /// Encoder counts per electrical revolution for this motor.
+    pub counts_per_electrical_rev: u16,
+}
+
 /// Run-level current-loop commissioning evidence emitted before the terminal
 /// `foci_commission_result` reply.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

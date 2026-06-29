@@ -171,6 +171,28 @@ pub struct FociCommissionResult {
     pub inner_warning_flags: u8,
 }
 
+/// `foci_encoder_alignment` reply - encoder D-axis alignment evidence emitted before the
+/// terminal `foci_commission_result` reply.
+///
+/// Wire name: `foci_encoder_alignment`.
+#[klipper_reply]
+pub struct FociEncoderAlignment {
+    /// Object id of the FOCI endpoint.
+    pub oid: u8,
+    /// Encoder count captured immediately before alignment zeroed the ABN count.
+    pub encoder_count: u32,
+    /// Folded residual of `encoder_count` modulo one electrical revolution.
+    pub electrical_residual_counts: u16,
+    /// Difference between the two post-settle alignment reads.
+    pub stability_counts: u16,
+    /// Largest movement from the pre-alignment count to a post-settle read.
+    pub movement_counts: u16,
+    /// Minimum movement required for the alignment to be accepted.
+    pub min_movement_counts: u16,
+    /// Encoder counts per electrical revolution for this motor.
+    pub counts_per_electrical_rev: u16,
+}
+
 /// `foci_current_loop_run` reply - run-level current-loop commissioning evidence.
 ///
 /// Wire name: `foci_current_loop_run`.
@@ -1209,6 +1231,20 @@ mod resistance_reply_size_tests {
             failure_reason: u8::MAX,
         };
         assert_fits_with_id(&reply, "foci_current_loop_run");
+    }
+
+    #[test]
+    fn encoder_alignment_reply_fits_klipper_message_limit() {
+        let reply = super::FociEncoderAlignment {
+            oid: u8::MAX,
+            encoder_count: 0x7FFF_FFFF,
+            electrical_residual_counts: u16::MAX,
+            stability_counts: u16::MAX,
+            movement_counts: u16::MAX,
+            min_movement_counts: u16::MAX,
+            counts_per_electrical_rev: u16::MAX,
+        };
+        assert_fits_with_id(&reply, "foci_encoder_alignment");
     }
 
     #[test]

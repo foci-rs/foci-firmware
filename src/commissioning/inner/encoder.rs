@@ -59,6 +59,21 @@ fn encoder_delta_abs(a: u32, b: u32, counts_per_rev: i32) -> u32 {
         .unsigned_abs()
 }
 
+fn saturating_u16(value: u32) -> u16 {
+    value.min(u32::from(u16::MAX)) as u16
+}
+
+fn counts_per_electrical_rev(counts_per_rev: u32) -> u16 {
+    saturating_u16((counts_per_rev / ENCODER_ALIGNMENT_POLE_PAIRS).max(1))
+}
+
+fn folded_electrical_residual_counts(count: u32, counts_per_electrical_rev: u16) -> u16 {
+    let period = u32::from(counts_per_electrical_rev).max(1);
+    let remainder = count % period;
+    let folded = remainder.min(period.saturating_sub(remainder));
+    saturating_u16(folded)
+}
+
 /// Read `ABN_DECODER_COUNT` multiple times and return a stable value.
 ///
 /// Reads `ENCODER_READ_SAMPLES` samples per attempt and accepts when the
@@ -446,8 +461,8 @@ pub(crate) async fn step_encoder_align<B: CommissioningBackend>(
             let movement1 = encoder_delta_abs(*count1, *count_before, counts_per_rev);
             let movement2 = encoder_delta_abs(count2, *count_before, counts_per_rev);
             let movement = movement1.max(movement2);
-            let stable = encoder_delta_abs(*count1, count2, counts_per_rev)
-                <= ENCODER_ALIGNMENT_STABILITY_COUNTS;
+            let stability = encoder_delta_abs(*count1, count2, counts_per_rev);
+            let stable = stability <= ENCODER_ALIGNMENT_STABILITY_COUNTS;
             if movement < *min_movement || !stable {
                 defmt::warn!(
                     "encoder-align FAIL: count_before={} count1={} count2={} \
@@ -463,11 +478,29 @@ pub(crate) async fn step_encoder_align<B: CommissioningBackend>(
                 return super::fail_inner(phase, CommissionError::EncoderFault);
             }
 
-            *state = EncoderAlignState::Commit { old_count: *count1 };
+            let counts_per_elec = counts_per_electrical_rev(backend.encoder_quadrature_ppr());
+            *state = EncoderAlignState::Commit {
+                old_count: *count1,
+                electrical_residual_counts: folded_electrical_residual_counts(
+                    *count1,
+                    counts_per_elec,
+                ),
+                stability_counts: saturating_u16(stability),
+                movement_counts: saturating_u16(movement),
+                min_movement_counts: saturating_u16(*min_movement),
+                counts_per_electrical_rev: counts_per_elec,
+            };
             StepResult::Continue
         }
 
-        EncoderAlignState::Commit { old_count } => {
+        EncoderAlignState::Commit {
+            old_count,
+            electrical_residual_counts,
+            stability_counts,
+            movement_counts,
+            min_movement_counts,
+            counts_per_electrical_rev,
+        } => {
             if backend.write_register(ABN_DECODER_COUNT, 0).await.is_err()
                 || backend
                     .write_register(ABN_DECODER_PHI_E_PHI_M_OFFSET, 0)
@@ -488,17 +521,34 @@ pub(crate) async fn step_encoder_align<B: CommissioningBackend>(
 
             *state = EncoderAlignState::StopDrive {
                 old_count: *old_count,
+                electrical_residual_counts: *electrical_residual_counts,
+                stability_counts: *stability_counts,
+                movement_counts: *movement_counts,
+                min_movement_counts: *min_movement_counts,
+                counts_per_electrical_rev: *counts_per_electrical_rev,
             };
             StepResult::Continue
         }
 
-        EncoderAlignState::StopDrive { old_count } => {
+        EncoderAlignState::StopDrive {
+            old_count,
+            electrical_residual_counts,
+            stability_counts,
+            movement_counts,
+            min_movement_counts,
+            counts_per_electrical_rev,
+        } => {
             if let Err(error) = stop_encoder_current_drive(backend).await {
                 return super::fail_inner(phase, error);
             }
 
             if let Some(result) = adc_cal.as_mut() {
                 result.encoder_count = *old_count;
+                result.encoder_alignment_electrical_residual_counts = *electrical_residual_counts;
+                result.encoder_alignment_stability_counts = *stability_counts;
+                result.encoder_alignment_movement_counts = *movement_counts;
+                result.encoder_alignment_min_movement_counts = *min_movement_counts;
+                result.encoder_alignment_counts_per_electrical_rev = *counts_per_electrical_rev;
             }
 
             match sequence {
@@ -622,6 +672,11 @@ mod tests {
                 adc_i0: 1,
                 adc_i1: 2,
                 encoder_count: 0,
+                encoder_alignment_electrical_residual_counts: 0,
+                encoder_alignment_stability_counts: 0,
+                encoder_alignment_movement_counts: 0,
+                encoder_alignment_min_movement_counts: 0,
+                encoder_alignment_counts_per_electrical_rev: 0,
             });
             let mut selftest_results = crate::selftest::SelftestResults::default();
             let mut backend = MockBackend::new();
@@ -642,7 +697,14 @@ mod tests {
             assert!(matches!(
                 phase,
                 InnerPhase::EncoderAlign {
-                    state: EncoderAlignState::Commit { old_count: 3999 }
+                    state: EncoderAlignState::Commit {
+                        old_count: 3999,
+                        electrical_residual_counts: 1,
+                        stability_counts: 1,
+                        movement_counts: 2,
+                        min_movement_counts: 2,
+                        counts_per_electrical_rev: 80,
+                    }
                 }
             ));
         });
@@ -653,12 +715,24 @@ mod tests {
         pollster::block_on(async {
             let _guard = SHARED_STATE_MUTEX.lock().await;
             let mut phase = InnerPhase::EncoderAlign {
-                state: EncoderAlignState::StopDrive { old_count: 42 },
+                state: EncoderAlignState::StopDrive {
+                    old_count: 42,
+                    electrical_residual_counts: 2,
+                    stability_counts: 1,
+                    movement_counts: 25,
+                    min_movement_counts: 2,
+                    counts_per_electrical_rev: 80,
+                },
             };
             let mut adc_cal = Some(AdcCalResult {
                 adc_i0: 1,
                 adc_i1: 2,
                 encoder_count: 0,
+                encoder_alignment_electrical_residual_counts: 0,
+                encoder_alignment_stability_counts: 0,
+                encoder_alignment_movement_counts: 0,
+                encoder_alignment_min_movement_counts: 0,
+                encoder_alignment_counts_per_electrical_rev: 0,
             });
             let mut selftest_results = crate::selftest::SelftestResults::default();
             let mut backend = MockBackend::new();

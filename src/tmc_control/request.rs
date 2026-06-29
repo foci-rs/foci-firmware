@@ -672,6 +672,11 @@ where
             adc_i0: 0,
             adc_i1: 0,
             encoder_count: 0,
+            encoder_alignment_electrical_residual_counts: 0,
+            encoder_alignment_stability_counts: 0,
+            encoder_alignment_movement_counts: 0,
+            encoder_alignment_min_movement_counts: 0,
+            encoder_alignment_counts_per_electrical_rev: 0,
         },
     });
 }
@@ -954,6 +959,7 @@ mod tests {
                         adc_i0,
                         adc_i1,
                         encoder_count,
+                        ..
                     },
             } => {
                 assert_eq!(*actual_oid, oid);

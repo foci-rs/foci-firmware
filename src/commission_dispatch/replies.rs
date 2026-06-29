@@ -12,7 +12,8 @@ use crate::commissioning::types::{
 };
 use crate::selftest::{CommissionDiagnostic, CommissionDiagnostics, SelftestStageValue};
 use crate::tmc_diagnostics::{
-    CurrentLoopRunReport, CurrentValidationAxisReport, ResistanceAxisReport, ResistanceRunReport,
+    CurrentLoopRunReport, CurrentValidationAxisReport, EncoderAlignmentReport,
+    ResistanceAxisReport, ResistanceRunReport,
 };
 
 /// TMC4671 external electrical angle for electrical axis 0 (PHASE0).
@@ -45,6 +46,12 @@ pub trait CommissionReplySink {
     /// during Stage 1 commissioning. Reuses the `foci_resistance_axis` reply
     /// (Task 6) for the same reason as [`Self::foci_resistance_run`].
     fn foci_resistance_axis(&mut self, report: ResistanceAxisReport);
+
+    /// Emit encoder D-axis alignment evidence captured during Stage 1
+    /// commissioning. This makes settled current-validation cross-axis tails
+    /// correlatable with the alignment residual without expanding the
+    /// size-capped terminal commission result.
+    fn foci_encoder_alignment(&mut self, report: EncoderAlignmentReport);
 
     /// Emit run-level current-loop commissioning evidence captured during
     /// Stage 1 commissioning. `FociCommissionResult` is size-capped, so this
@@ -113,6 +120,7 @@ pub fn emit_terminal_reply<S: CommissionReplySink>(sink: &mut S, payload: ReplyP
                 inner,
             ));
             sink.foci_resistance_run(commission_resistance_run_report(oid, inner));
+            sink.foci_encoder_alignment(commission_encoder_alignment_report(oid, inner));
             emit_current_loop_evidence(sink, oid, status, inner);
             sink.foci_commission_result(oid, status, &result);
         }
@@ -232,6 +240,18 @@ fn commission_resistance_axis_report(
         signed_asymmetry_permille,
         drift_permille,
         warning_flags: 0,
+    }
+}
+
+fn commission_encoder_alignment_report(oid: u8, inner: &InnerResult) -> EncoderAlignmentReport {
+    EncoderAlignmentReport {
+        oid,
+        encoder_count: inner.encoder_alignment_count,
+        electrical_residual_counts: inner.encoder_alignment_electrical_residual_counts,
+        stability_counts: inner.encoder_alignment_stability_counts,
+        movement_counts: inner.encoder_alignment_movement_counts,
+        min_movement_counts: inner.encoder_alignment_min_movement_counts,
+        counts_per_electrical_rev: inner.encoder_alignment_counts_per_electrical_rev,
     }
 }
 
@@ -398,6 +418,15 @@ mod tests {
             signed_asymmetry_permille: u16,
             drift_permille: u16,
         },
+        EncoderAlignment {
+            oid: u8,
+            encoder_count: u32,
+            electrical_residual_counts: u16,
+            stability_counts: u16,
+            movement_counts: u16,
+            min_movement_counts: u16,
+            counts_per_electrical_rev: u16,
+        },
         CurrentValidationAxis {
             oid: u8,
             axis: u8,
@@ -514,6 +543,21 @@ mod tests {
                 signed_count_slope_milli: report.signed_count_slope_milli,
                 signed_asymmetry_permille: report.signed_asymmetry_permille,
                 drift_permille: report.drift_permille,
+            });
+        }
+
+        fn foci_encoder_alignment(
+            &mut self,
+            report: crate::tmc_diagnostics::EncoderAlignmentReport,
+        ) {
+            self.events.push(Event::EncoderAlignment {
+                oid: report.oid,
+                encoder_count: report.encoder_count,
+                electrical_residual_counts: report.electrical_residual_counts,
+                stability_counts: report.stability_counts,
+                movement_counts: report.movement_counts,
+                min_movement_counts: report.min_movement_counts,
+                counts_per_electrical_rev: report.counts_per_electrical_rev,
             });
         }
 
@@ -706,6 +750,12 @@ mod tests {
                 resistance_axis1_drift_permille: 12,
                 resistance_status_flags_or: 0,
                 resistance_warning_flags: 0,
+                encoder_alignment_count: 163,
+                encoder_alignment_electrical_residual_counts: 3,
+                encoder_alignment_stability_counts: 1,
+                encoder_alignment_movement_counts: 37,
+                encoder_alignment_min_movement_counts: 2,
+                encoder_alignment_counts_per_electrical_rev: 80,
                 current_gains_source: CURRENT_GAINS_SOURCE_MEASURED,
                 axis_split_source: AXIS_SPLIT_SOURCE_NONE,
                 gains_tier: CURRENT_GAINS_TIER_MEASURED_SYMMETRIC,
@@ -903,6 +953,15 @@ mod tests {
                 gain_path_count_slope_milli: 16,
                 warning_flags: 0,
                 status_flags_or: 0,
+            },
+            Event::EncoderAlignment {
+                oid: 6,
+                encoder_count: 163,
+                electrical_residual_counts: 3,
+                stability_counts: 1,
+                movement_counts: 37,
+                min_movement_counts: 2,
+                counts_per_electrical_rev: 80,
             },
         ];
         expected.extend(current_loop_events(6, 7));
@@ -1138,6 +1197,11 @@ mod tests {
                     adc_i0: 3,
                     adc_i1: 4,
                     encoder_count: 5,
+                    encoder_alignment_electrical_residual_counts: 0,
+                    encoder_alignment_stability_counts: 0,
+                    encoder_alignment_movement_counts: 0,
+                    encoder_alignment_min_movement_counts: 0,
+                    encoder_alignment_counts_per_electrical_rev: 0,
                 },
             },
         );
@@ -1197,6 +1261,15 @@ mod tests {
                 gain_path_count_slope_milli: 16,
                 warning_flags: 0,
                 status_flags_or: 0,
+            },
+            Event::EncoderAlignment {
+                oid: 6,
+                encoder_count: 163,
+                electrical_residual_counts: 3,
+                stability_counts: 1,
+                movement_counts: 37,
+                min_movement_counts: 2,
+                counts_per_electrical_rev: 80,
             },
         ];
         expected.extend(current_loop_events(6, 7));

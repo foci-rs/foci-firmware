@@ -206,6 +206,20 @@ pub struct InnerResult {
     /// Resistance run warning bitfield (`ResistanceWarningFlags`).
     pub resistance_warning_flags: u32,
 
+    // --- Encoder alignment evidence ---
+    /// Encoder count captured immediately before alignment zeroed the ABN count.
+    pub encoder_alignment_count: u32,
+    /// Folded residual of the alignment count modulo one electrical revolution.
+    pub encoder_alignment_electrical_residual_counts: u16,
+    /// Difference between the two post-settle alignment reads.
+    pub encoder_alignment_stability_counts: u16,
+    /// Largest movement from the pre-alignment count to a post-settle read.
+    pub encoder_alignment_movement_counts: u16,
+    /// Minimum movement required for the alignment to be accepted.
+    pub encoder_alignment_min_movement_counts: u16,
+    /// Encoder counts per electrical revolution.
+    pub encoder_alignment_counts_per_electrical_rev: u16,
+
     // --- Current-loop synthesis and impedance evidence ---
     /// `CURRENT_GAINS_SOURCE_*`.
     pub current_gains_source: u8,
@@ -313,6 +327,16 @@ pub struct AdcCalResult {
     pub adc_i1: u16,
     /// Encoder count captured before the alignment phase zeroed it.
     pub encoder_count: u32,
+    /// Folded residual of `encoder_count` modulo one electrical revolution.
+    pub encoder_alignment_electrical_residual_counts: u16,
+    /// Difference between the two post-settle alignment reads.
+    pub encoder_alignment_stability_counts: u16,
+    /// Largest movement from the pre-alignment count to a post-settle read.
+    pub encoder_alignment_movement_counts: u16,
+    /// Minimum movement required for the alignment to be accepted.
+    pub encoder_alignment_min_movement_counts: u16,
+    /// Encoder counts per electrical revolution.
+    pub encoder_alignment_counts_per_electrical_rev: u16,
 }
 
 /// Result of Stage 1 commissioning.

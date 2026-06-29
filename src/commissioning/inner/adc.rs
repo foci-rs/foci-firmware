@@ -201,6 +201,11 @@ pub(crate) async fn step_adc_calibrate<B: CommissioningBackend>(
                 adc_i0: offset_i0,
                 adc_i1: offset_i1,
                 encoder_count,
+                encoder_alignment_electrical_residual_counts: 0,
+                encoder_alignment_stability_counts: 0,
+                encoder_alignment_movement_counts: 0,
+                encoder_alignment_min_movement_counts: 0,
+                encoder_alignment_counts_per_electrical_rev: 0,
             };
             *adc_cal = Some(result.clone());
 

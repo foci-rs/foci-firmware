@@ -119,9 +119,23 @@ pub(crate) enum EncoderAlignState {
         min_movement: u32,
     },
     /// Zero encoder count and offset while the rotor is still held.
-    Commit { old_count: u32 },
+    Commit {
+        old_count: u32,
+        electrical_residual_counts: u16,
+        stability_counts: u16,
+        movement_counts: u16,
+        min_movement_counts: u16,
+        counts_per_electrical_rev: u16,
+    },
     /// Stop open-loop drive after PHI_E has been locked to ABN.
-    StopDrive { old_count: u32 },
+    StopDrive {
+        old_count: u32,
+        electrical_residual_counts: u16,
+        stability_counts: u16,
+        movement_counts: u16,
+        min_movement_counts: u16,
+        counts_per_electrical_rev: u16,
+    },
 }
 
 /// Accumulated per-coil measurements for electrical identification.
@@ -418,7 +432,8 @@ async fn step_inner_dispatch<B: CommissioningBackend>(
             current_loop::step_current_tune(phase, profile, backend).await
         }
         InnerPhase::CurrentValidate { .. } => {
-            current_loop::step_current_validate(phase, buf, profile, sequence, backend).await
+            current_loop::step_current_validate(phase, buf, profile, sequence, adc_cal, backend)
+                .await
         }
         InnerPhase::ClosedLoopEntry { .. } => {
             closed_loop_entry::step_closed_loop_entry(phase, sequence, adc_cal, backend).await

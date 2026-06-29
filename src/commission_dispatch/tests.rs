@@ -83,6 +83,8 @@ impl CommissionReplySink for ReplyRecorder {
         });
     }
 
+    fn foci_encoder_alignment(&mut self, _report: crate::tmc_diagnostics::EncoderAlignmentReport) {}
+
     fn foci_current_loop_run(&mut self, report: crate::tmc_diagnostics::CurrentLoopRunReport) {
         self.events.push(ReplyEvent::CurrentLoopRun {
             measured_axis_split_permille: report.measured_axis_split_permille,
@@ -490,6 +492,11 @@ fn calibrate_done_preserves_step_epoch_after_gain_restore() {
             adc_i0: 1234,
             adc_i1: 5678,
             encoder_count: 999,
+            encoder_alignment_electrical_residual_counts: 0,
+            encoder_alignment_stability_counts: 0,
+            encoder_alignment_movement_counts: 0,
+            encoder_alignment_min_movement_counts: 0,
+            encoder_alignment_counts_per_electrical_rev: 0,
         };
         stepper_state().position.store(42, Ordering::Relaxed);
         tmc_state().motor_armed.store(true, Ordering::Relaxed);
@@ -769,6 +776,12 @@ fn sample_commission_result() -> crate::commissioning::types::CommissionResult {
             resistance_axis1_drift_permille: 0,
             resistance_status_flags_or: 0,
             resistance_warning_flags: 0,
+            encoder_alignment_count: 0,
+            encoder_alignment_electrical_residual_counts: 0,
+            encoder_alignment_stability_counts: 0,
+            encoder_alignment_movement_counts: 0,
+            encoder_alignment_min_movement_counts: 0,
+            encoder_alignment_counts_per_electrical_rev: 0,
             current_gains_source: crate::autotune::CURRENT_GAINS_SOURCE_MEASURED,
             axis_split_source: crate::autotune::AXIS_SPLIT_SOURCE_NONE,
             gains_tier: crate::autotune::CURRENT_GAINS_TIER_MEASURED_SYMMETRIC,
