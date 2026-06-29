@@ -49,6 +49,15 @@ pub(crate) enum CurrentValidateState {
         sample_delay_ms: u16,
         direction: CaptureDirection,
     },
+    /// Wait for physical current to decay after returning the target to zero.
+    AxisSampleSettle {
+        axis: CurrentValidationAxis,
+        sample_index: u8,
+        sample_delay_ms: u16,
+        direction: CaptureDirection,
+        directional: AxisDirectionalEvidence,
+        deadline_us: u64,
+    },
     /// Classify one axis after all configured sample delays.
     AxisClassify { axis: CurrentValidationAxis },
     /// Restore safe state before finalizing.
@@ -150,7 +159,7 @@ const VALIDATION_SETTLE_US: u64 = 50_000;
 const FLUX_VALIDATION_DELAYS_MS: [u16; crate::autotune::CURRENT_FLUX_VALIDATION_SAMPLE_COUNT] =
     [1, 2, 5, 100];
 const TORQUE_VALIDATION_DELAYS_MS: [u16; crate::autotune::CURRENT_TORQUE_VALIDATION_SAMPLE_COUNT] =
-    [1, 2];
+    [0, 1, 2];
 
 /// PID output voltage limit used during current-loop validation.
 ///
@@ -251,6 +260,10 @@ fn validation_gate(
         // the 100 ms sample below is the steady-state closure gate.
         (CurrentValidationAxis::Flux, 5) => (850, 1150),
         (CurrentValidationAxis::Flux, _) => (850, 1150),
+        // Zero-delay torque is an earliest-possible geometry discriminator.
+        // Keep safety/status/cross-axis gates active, but do not make an
+        // intentionally pre-settle response magnitude block commissioning.
+        (CurrentValidationAxis::Torque, 0) => (0, 1250),
         (CurrentValidationAxis::Torque, 1) => (250, 1250),
         (CurrentValidationAxis::Torque, _) => (550, 1250),
     };
@@ -310,6 +323,145 @@ fn combine_axis_pair_evidence(
     }
 }
 
+async fn read_axis_directional_evidence<B: CommissioningBackend>(
+    backend: &mut B,
+    axis: CurrentValidationAxis,
+    target: i16,
+    sample_delay_ms: u16,
+    encoder_start: u32,
+    output_limit: u32,
+    encoder_counts_per_rev: u32,
+) -> Result<AxisDirectionalEvidence, ()> {
+    use foci_tmc4671::registers::{
+        INTERIM_FOC_UQ_UD_LIMITED, PID_TORQUE_FLUX_ACTUAL, STATUS_FLAGS,
+    };
+
+    let pid_actual = backend
+        .read_register(PID_TORQUE_FLUX_ACTUAL)
+        .await
+        .map_err(|_| ())?;
+    let sub = INTERIM_FOC_UQ_UD_LIMITED;
+    backend
+        .write_register(sub.addr, sub.sub_addr as u32)
+        .await
+        .map_err(|_| ())?;
+    let foc_limited = backend.read_register(sub.data).await.map_err(|_| ())?;
+    let status_flags = backend.read_register(STATUS_FLAGS).await.map_err(|_| ())?;
+    let encoder_end = backend.try_read_encoder_count().await.map_err(|_| ())?;
+
+    let sample = axis_sample_from_registers(
+        axis,
+        target,
+        AxisSampleRegisters {
+            pid_torque_flux_actual: pid_actual,
+            interim_foc_uq_ud_limited: foc_limited,
+            output_limit: output_limit.min(u16::MAX as u32) as u16,
+            encoder_start,
+            encoder_end,
+            encoder_counts_per_rev,
+            status_flags,
+        },
+    );
+    let gate = classify_current_axis_sample(
+        &sample,
+        &validation_gate(backend.tmc_config(), axis, sample_delay_ms),
+    );
+
+    Ok(AxisDirectionalEvidence {
+        gate,
+        status_flags: sample.status_flags,
+    })
+}
+
+fn advance_after_directional_sample(
+    data: &mut CurrentValidateData,
+    validate_state: &mut CurrentValidateState,
+    axis: CurrentValidationAxis,
+    sample_index: u8,
+    sample_delay_ms: u16,
+    direction: CaptureDirection,
+    directional: AxisDirectionalEvidence,
+) -> Result<(), CommissionError> {
+    match direction {
+        CaptureDirection::Forward => {
+            data.pending_positive_sample = Some(directional);
+            *validate_state = CurrentValidateState::AxisStepSetup {
+                axis,
+                sample_index,
+                sample_delay_ms,
+                direction: CaptureDirection::Reverse,
+            };
+        }
+        CaptureDirection::Reverse => {
+            let positive = data
+                .pending_positive_sample
+                .take()
+                .ok_or(CommissionError::CurrentValidationFailed)?;
+            let evidence = combine_axis_pair_evidence(
+                axis_attempt(data, axis),
+                data.step_amplitude as i16,
+                sample_delay_ms,
+                positive,
+                directional,
+            );
+            match axis {
+                CurrentValidationAxis::Flux => {
+                    if let Some(slot) = data.current_flux_validation.get_mut(sample_index as usize)
+                    {
+                        *slot = evidence;
+                    }
+                    data.current_flux_validation_count =
+                        data.current_flux_validation_count.max(sample_index + 1);
+                }
+                CurrentValidationAxis::Torque => {
+                    if let Some(slot) = data
+                        .current_torque_validation
+                        .get_mut(sample_index as usize)
+                    {
+                        *slot = evidence;
+                    }
+                    data.current_torque_validation_count =
+                        data.current_torque_validation_count.max(sample_index + 1);
+                }
+            }
+
+            let next_index = sample_index + 1;
+            let delays = axis_validation_delays(axis);
+            if next_index as usize >= delays.len() {
+                *validate_state = CurrentValidateState::AxisClassify { axis };
+            } else {
+                *validate_state = CurrentValidateState::AxisStepSetup {
+                    axis,
+                    sample_index: next_index,
+                    sample_delay_ms: delays[next_index as usize],
+                    direction: CaptureDirection::Forward,
+                };
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn settle_after_directional_sample(
+    validate_state: &mut CurrentValidateState,
+    now_us: u64,
+    axis: CurrentValidationAxis,
+    sample_index: u8,
+    sample_delay_ms: u16,
+    direction: CaptureDirection,
+    directional: AxisDirectionalEvidence,
+) {
+    *validate_state = CurrentValidateState::AxisSampleSettle {
+        axis,
+        sample_index,
+        sample_delay_ms,
+        direction,
+        directional,
+        deadline_us: now_us.wrapping_add(VALIDATION_SETTLE_US),
+    };
+}
+
 fn merge_axis_pair_status(positive_status: u8, negative_status: u8) -> u8 {
     if status_priority(negative_status) > status_priority(positive_status) {
         negative_status
@@ -346,10 +498,21 @@ fn evidence_axis_passed(
 fn axis_pass_status(axis: CurrentValidationAxis, sample: &CurrentValidationAxisEvidence) -> u8 {
     // Flux short samples are bandwidth telemetry. The long-dwell flux sample
     // proves steady-state closure; safety/status gates still apply at every
-    // delay. Torque remains short-window gated because it can move the axis.
+    // delay. Torque is motion-limited: zero-delay cross-axis is the at-rest
+    // coupling gate, while later cross/response shape is telemetry.
     if axis == CurrentValidationAxis::Flux
         && sample.sample_delay_ms < 100
+        && is_transient_current_telemetry_status(sample.status)
+    {
+        crate::autotune::CURRENT_AXIS_VALIDATION_PASS
+    } else if axis == CurrentValidationAxis::Torque
+        && sample.sample_delay_ms == 0
         && is_response_magnitude_status(sample.status)
+    {
+        crate::autotune::CURRENT_AXIS_VALIDATION_PASS
+    } else if axis == CurrentValidationAxis::Torque
+        && sample.sample_delay_ms > 0
+        && is_transient_current_telemetry_status(sample.status)
     {
         crate::autotune::CURRENT_AXIS_VALIDATION_PASS
     } else {
@@ -360,6 +523,11 @@ fn axis_pass_status(axis: CurrentValidationAxis, sample: &CurrentValidationAxisE
 fn is_response_magnitude_status(status: u8) -> bool {
     status == crate::autotune::CURRENT_AXIS_VALIDATION_LOW_RESPONSE
         || status == crate::autotune::CURRENT_AXIS_VALIDATION_HIGH_RESPONSE
+}
+
+fn is_transient_current_telemetry_status(status: u8) -> bool {
+    is_response_magnitude_status(status)
+        || status == crate::autotune::CURRENT_AXIS_VALIDATION_CROSS_AXIS
 }
 
 fn axis_failure_reason(axis: CurrentValidationAxis) -> u8 {
@@ -757,6 +925,46 @@ pub(crate) async fn step_current_validate<B: CommissioningBackend>(
                 return super::fail_inner(phase, CommissionError::Spi);
             }
 
+            if sample_delay_ms == 0 {
+                let directional = match read_axis_directional_evidence(
+                    backend,
+                    axis,
+                    target,
+                    sample_delay_ms,
+                    data.sample_encoder_start,
+                    data.pidout_limit,
+                    data.encoder_counts_per_rev,
+                )
+                .await
+                {
+                    Ok(sample) => sample,
+                    Err(()) => return super::fail_inner(phase, CommissionError::Spi),
+                };
+
+                if backend
+                    .write_register(PID_TORQUE_FLUX_TARGET, 0)
+                    .await
+                    .is_err()
+                    || crate::commissioning::helpers::clear_current_integrators(backend)
+                        .await
+                        .is_err()
+                {
+                    return super::fail_inner(phase, CommissionError::Spi);
+                }
+
+                settle_after_directional_sample(
+                    validate_state,
+                    backend.elapsed_us(),
+                    axis,
+                    sample_index,
+                    sample_delay_ms,
+                    dir,
+                    directional,
+                );
+
+                return StepResult::Continue;
+            }
+
             let deadline = backend
                 .elapsed_us()
                 .wrapping_add(u64::from(sample_delay_ms) * 1000);
@@ -799,56 +1007,24 @@ pub(crate) async fn step_current_validate<B: CommissioningBackend>(
             let sample_index = *sample_index;
             let sample_delay_ms = *sample_delay_ms;
             let dir = *direction;
-            let pid_actual = match backend.read_register(PID_TORQUE_FLUX_ACTUAL).await {
-                Ok(actual) => actual,
-                Err(_) => return super::fail_inner(phase, CommissionError::Spi),
-            };
-
-            let sub = foci_tmc4671::registers::INTERIM_FOC_UQ_UD_LIMITED;
-            if backend
-                .write_register(sub.addr, sub.sub_addr as u32)
-                .await
-                .is_err()
-            {
-                return super::fail_inner(phase, CommissionError::Spi);
-            }
-            let foc_limited = match backend.read_register(sub.data).await {
-                Ok(value) => value,
-                Err(_) => return super::fail_inner(phase, CommissionError::Spi),
-            };
-            let status_flags = match backend.read_register(STATUS_FLAGS).await {
-                Ok(flags) => flags,
-                Err(_) => return super::fail_inner(phase, CommissionError::Spi),
-            };
-            let encoder_end = match backend.try_read_encoder_count().await {
-                Ok(count) => count,
-                Err(_) => return super::fail_inner(phase, CommissionError::Spi),
-            };
 
             let target = match dir {
                 CaptureDirection::Forward => data.step_amplitude as i16,
                 CaptureDirection::Reverse => -(data.step_amplitude as i16),
             };
-            let sample = axis_sample_from_registers(
+            let directional = match read_axis_directional_evidence(
+                backend,
                 axis,
                 target,
-                AxisSampleRegisters {
-                    pid_torque_flux_actual: pid_actual,
-                    interim_foc_uq_ud_limited: foc_limited,
-                    output_limit: data.pidout_limit.min(u16::MAX as u32) as u16,
-                    encoder_start: data.sample_encoder_start,
-                    encoder_end,
-                    encoder_counts_per_rev: data.encoder_counts_per_rev,
-                    status_flags,
-                },
-            );
-            let gate = classify_current_axis_sample(
-                &sample,
-                &validation_gate(backend.tmc_config(), axis, sample_delay_ms),
-            );
-            let directional = AxisDirectionalEvidence {
-                gate,
-                status_flags: sample.status_flags,
+                sample_delay_ms,
+                data.sample_encoder_start,
+                data.pidout_limit,
+                data.encoder_counts_per_rev,
+            )
+            .await
+            {
+                Ok(sample) => sample,
+                Err(()) => return super::fail_inner(phase, CommissionError::Spi),
             };
 
             // Return to zero target and clear accumulated current error so
@@ -864,68 +1040,45 @@ pub(crate) async fn step_current_validate<B: CommissioningBackend>(
                 return super::fail_inner(phase, CommissionError::Spi);
             }
 
-            match dir {
-                CaptureDirection::Forward => {
-                    data.pending_positive_sample = Some(directional);
-                    *validate_state = CurrentValidateState::AxisStepSetup {
-                        axis,
-                        sample_index,
-                        sample_delay_ms,
-                        direction: CaptureDirection::Reverse,
-                    };
-                }
-                CaptureDirection::Reverse => {
-                    let positive = match data.pending_positive_sample.take() {
-                        Some(sample) => sample,
-                        None => {
-                            return super::fail_inner(
-                                phase,
-                                CommissionError::CurrentValidationFailed,
-                            );
-                        }
-                    };
-                    let evidence = combine_axis_pair_evidence(
-                        axis_attempt(data, axis),
-                        data.step_amplitude as i16,
-                        sample_delay_ms,
-                        positive,
-                        directional,
-                    );
-                    match axis {
-                        CurrentValidationAxis::Flux => {
-                            if let Some(slot) =
-                                data.current_flux_validation.get_mut(sample_index as usize)
-                            {
-                                *slot = evidence;
-                            }
-                            data.current_flux_validation_count =
-                                data.current_flux_validation_count.max(sample_index + 1);
-                        }
-                        CurrentValidationAxis::Torque => {
-                            if let Some(slot) = data
-                                .current_torque_validation
-                                .get_mut(sample_index as usize)
-                            {
-                                *slot = evidence;
-                            }
-                            data.current_torque_validation_count =
-                                data.current_torque_validation_count.max(sample_index + 1);
-                        }
-                    }
+            settle_after_directional_sample(
+                validate_state,
+                backend.elapsed_us(),
+                axis,
+                sample_index,
+                sample_delay_ms,
+                dir,
+                directional,
+            );
+            StepResult::Continue
+        }
 
-                    let next_index = sample_index + 1;
-                    let delays = axis_validation_delays(axis);
-                    if next_index as usize >= delays.len() {
-                        *validate_state = CurrentValidateState::AxisClassify { axis };
-                    } else {
-                        *validate_state = CurrentValidateState::AxisStepSetup {
-                            axis,
-                            sample_index: next_index,
-                            sample_delay_ms: delays[next_index as usize],
-                            direction: CaptureDirection::Forward,
-                        };
-                    }
-                }
+        CurrentValidateState::AxisSampleSettle {
+            axis,
+            sample_index,
+            sample_delay_ms,
+            direction,
+            directional,
+            deadline_us,
+        } => {
+            let axis = *axis;
+            let sample_index = *sample_index;
+            let sample_delay_ms = *sample_delay_ms;
+            let direction = *direction;
+            let directional = *directional;
+            if backend.elapsed_us().wrapping_sub(*deadline_us) >= 0x8000_0000 {
+                return StepResult::Continue;
+            }
+
+            if let Err(err) = advance_after_directional_sample(
+                data,
+                validate_state,
+                axis,
+                sample_index,
+                sample_delay_ms,
+                direction,
+                directional,
+            ) {
+                return super::fail_inner(phase, err);
             }
             StepResult::Continue
         }
@@ -1314,19 +1467,21 @@ mod tests {
     }
 
     #[test]
-    fn axis_retry_uses_classified_status_not_raw_non_actionable_flags() {
+    fn demoted_short_response_does_not_trigger_retry() {
         let mut samples = [CurrentValidationAxisEvidence::EMPTY;
             crate::autotune::CURRENT_VALIDATION_MAX_SAMPLES_PER_AXIS];
         samples[0] = axis_validation_evidence(crate::autotune::CURRENT_AXIS_VALIDATION_PASS);
+        samples[0].sample_delay_ms = 1;
         samples[0].status_flags_or = 0x7000_0080;
         samples[1] =
             axis_validation_evidence(crate::autotune::CURRENT_AXIS_VALIDATION_LOW_RESPONSE);
+        samples[1].sample_delay_ms = 2;
         samples[1].status_flags_or = 0x7000_0080;
 
         let decision =
             axis_retry_decision_for_samples(CurrentValidationAxis::Torque, &samples, 2, 0);
 
-        assert_eq!(decision, CurrentAxisRetryDecision::RetryHigherBandwidth);
+        assert_eq!(decision, CurrentAxisRetryDecision::Fail);
     }
 
     #[test]
@@ -1373,7 +1528,7 @@ mod tests {
     }
 
     #[test]
-    fn torque_two_ms_response_floor_still_blocks_validation() {
+    fn torque_two_ms_response_floor_is_bandwidth_evidence() {
         let mut samples = [CurrentValidationAxisEvidence::EMPTY;
             crate::autotune::CURRENT_VALIDATION_MAX_SAMPLES_PER_AXIS];
         samples[0] = axis_validation_evidence(crate::autotune::CURRENT_AXIS_VALIDATION_PASS);
@@ -1382,11 +1537,130 @@ mod tests {
             axis_validation_evidence(crate::autotune::CURRENT_AXIS_VALIDATION_LOW_RESPONSE);
         samples[1].sample_delay_ms = 2;
 
+        assert!(evidence_axis_passed(
+            CurrentValidationAxis::Torque,
+            &samples,
+            2
+        ));
+    }
+
+    #[test]
+    fn torque_one_ms_response_floor_is_bandwidth_evidence() {
+        let mut samples = [CurrentValidationAxisEvidence::EMPTY;
+            crate::autotune::CURRENT_VALIDATION_MAX_SAMPLES_PER_AXIS];
+        samples[0] =
+            axis_validation_evidence(crate::autotune::CURRENT_AXIS_VALIDATION_LOW_RESPONSE);
+        samples[0].sample_delay_ms = 1;
+        samples[1] =
+            axis_validation_evidence(crate::autotune::CURRENT_AXIS_VALIDATION_LOW_RESPONSE);
+        samples[1].sample_delay_ms = 2;
+
+        assert!(evidence_axis_passed(
+            CurrentValidationAxis::Torque,
+            &samples,
+            2
+        ));
+
+        let decision =
+            axis_retry_decision_for_samples(CurrentValidationAxis::Torque, &samples, 2, 0);
+        assert_eq!(decision, CurrentAxisRetryDecision::Fail);
+    }
+
+    #[test]
+    fn torque_two_ms_safety_fault_still_blocks_validation() {
+        let mut samples = [CurrentValidationAxisEvidence::EMPTY;
+            crate::autotune::CURRENT_VALIDATION_MAX_SAMPLES_PER_AXIS];
+        samples[0] = axis_validation_evidence(crate::autotune::CURRENT_AXIS_VALIDATION_PASS);
+        samples[0].sample_delay_ms = 1;
+        samples[1] =
+            axis_validation_evidence(crate::autotune::CURRENT_AXIS_VALIDATION_STATUS_FLAGS);
+        samples[1].sample_delay_ms = 2;
+
         assert!(!evidence_axis_passed(
             CurrentValidationAxis::Torque,
             &samples,
             2
         ));
+    }
+
+    #[test]
+    fn flux_short_cross_axis_is_telemetry_but_settled_cross_blocks() {
+        let mut samples = [CurrentValidationAxisEvidence::EMPTY;
+            crate::autotune::CURRENT_VALIDATION_MAX_SAMPLES_PER_AXIS];
+        samples[0] = axis_validation_evidence(crate::autotune::CURRENT_AXIS_VALIDATION_PASS);
+        samples[0].sample_delay_ms = 1;
+        samples[1] = axis_validation_evidence(crate::autotune::CURRENT_AXIS_VALIDATION_CROSS_AXIS);
+        samples[1].sample_delay_ms = 2;
+        samples[2] = axis_validation_evidence(crate::autotune::CURRENT_AXIS_VALIDATION_CROSS_AXIS);
+        samples[2].sample_delay_ms = 5;
+        samples[3] = axis_validation_evidence(crate::autotune::CURRENT_AXIS_VALIDATION_PASS);
+        samples[3].sample_delay_ms = 100;
+
+        assert!(evidence_axis_passed(
+            CurrentValidationAxis::Flux,
+            &samples,
+            4
+        ));
+
+        samples[3] = axis_validation_evidence(crate::autotune::CURRENT_AXIS_VALIDATION_CROSS_AXIS);
+        samples[3].sample_delay_ms = 100;
+
+        assert!(!evidence_axis_passed(
+            CurrentValidationAxis::Flux,
+            &samples,
+            4
+        ));
+    }
+
+    #[test]
+    fn torque_late_cross_axis_is_telemetry_but_zero_cross_blocks() {
+        let mut samples = [CurrentValidationAxisEvidence::EMPTY;
+            crate::autotune::CURRENT_VALIDATION_MAX_SAMPLES_PER_AXIS];
+        samples[0] = axis_validation_evidence(crate::autotune::CURRENT_AXIS_VALIDATION_PASS);
+        samples[0].sample_delay_ms = 0;
+        samples[1] = axis_validation_evidence(crate::autotune::CURRENT_AXIS_VALIDATION_CROSS_AXIS);
+        samples[1].sample_delay_ms = 1;
+        samples[2] = axis_validation_evidence(crate::autotune::CURRENT_AXIS_VALIDATION_CROSS_AXIS);
+        samples[2].sample_delay_ms = 2;
+
+        assert!(evidence_axis_passed(
+            CurrentValidationAxis::Torque,
+            &samples,
+            3
+        ));
+
+        samples[0] = axis_validation_evidence(crate::autotune::CURRENT_AXIS_VALIDATION_CROSS_AXIS);
+        samples[0].sample_delay_ms = 0;
+
+        assert!(!evidence_axis_passed(
+            CurrentValidationAxis::Torque,
+            &samples,
+            3
+        ));
+    }
+
+    #[test]
+    fn demoted_gate_windows_preserve_safety_failures() {
+        for status in [
+            crate::autotune::CURRENT_AXIS_VALIDATION_WRONG_SIGN,
+            crate::autotune::CURRENT_AXIS_VALIDATION_SATURATION,
+            crate::autotune::CURRENT_AXIS_VALIDATION_MOTION,
+            crate::autotune::CURRENT_AXIS_VALIDATION_STATUS_FLAGS,
+        ] {
+            let mut flux_sample = axis_validation_evidence(status);
+            flux_sample.sample_delay_ms = 2;
+            assert_eq!(
+                axis_pass_status(CurrentValidationAxis::Flux, &flux_sample),
+                status
+            );
+
+            let mut torque_sample = axis_validation_evidence(status);
+            torque_sample.sample_delay_ms = 2;
+            assert_eq!(
+                axis_pass_status(CurrentValidationAxis::Torque, &torque_sample),
+                status
+            );
+        }
     }
 
     #[test]
@@ -1590,6 +1864,7 @@ mod tests {
             StepSetup {
                 axis: CurrentValidationAxis,
                 direction: CaptureDirection,
+                sample_delay_ms: u16,
                 step_amplitude: u16,
                 flux_count: u8,
                 torque_count: u8,
@@ -1615,17 +1890,21 @@ mod tests {
             let mut saw_flux_setup = false;
             let mut saw_torque_after_flux_pass = false;
 
-            for _ in 0..80 {
+            for _ in 0..120 {
                 let action = match &phase {
                     InnerPhase::CurrentValidate {
                         state:
                             CurrentValidateState::AxisStepSetup {
-                                axis, direction, ..
+                                axis,
+                                direction,
+                                sample_delay_ms,
+                                ..
                             },
                         data,
                     } => Action::StepSetup {
                         axis: *axis,
                         direction: *direction,
+                        sample_delay_ms: *sample_delay_ms,
                         step_amplitude: data.step_amplitude,
                         flux_count: data.current_flux_validation_count,
                         torque_count: data.current_torque_validation_count,
@@ -1633,6 +1912,12 @@ mod tests {
                     },
                     InnerPhase::CurrentValidate {
                         state: CurrentValidateState::AxisSampleDelay { deadline_us, .. },
+                        ..
+                    } => Action::SampleDelay {
+                        deadline_us: *deadline_us,
+                    },
+                    InnerPhase::CurrentValidate {
+                        state: CurrentValidateState::AxisSampleSettle { deadline_us, .. },
                         ..
                     } => Action::SampleDelay {
                         deadline_us: *deadline_us,
@@ -1659,6 +1944,7 @@ mod tests {
                     Action::StepSetup {
                         axis,
                         direction,
+                        sample_delay_ms,
                         step_amplitude,
                         flux_count,
                         torque_count,
@@ -1686,6 +1972,9 @@ mod tests {
                             }
                         }
 
+                        if sample_delay_ms == 0 {
+                            seed_axis_sample_registers(&mut backend, axis, direction);
+                        }
                         backend.spi_log.clear();
                         let result = step_current_validate(
                             &mut phase,
@@ -1775,7 +2064,7 @@ mod tests {
                     assert_validation_evidence_delays(
                         &data.current_torque_validation,
                         data.current_torque_validation_count,
-                        &[1, 2],
+                        &[0, 1, 2],
                     );
                 }
                 other => panic!("expected validation SafeState, got {other:?}"),
@@ -2056,6 +2345,32 @@ mod tests {
             assert_eq!(sample.status, crate::autotune::CURRENT_AXIS_VALIDATION_PASS);
             assert_eq!(sample.sample_delay_ms, *expected_delay);
         }
+    }
+
+    #[test]
+    fn torque_zero_delay_response_magnitude_is_geometry_telemetry() {
+        let mut sample = CurrentValidationAxisEvidence {
+            status: crate::autotune::CURRENT_AXIS_VALIDATION_WRONG_SIGN,
+            sample_delay_ms: 0,
+            ..CurrentValidationAxisEvidence::EMPTY
+        };
+
+        assert_eq!(
+            axis_pass_status(CurrentValidationAxis::Torque, &sample),
+            crate::autotune::CURRENT_AXIS_VALIDATION_WRONG_SIGN
+        );
+
+        sample.status = crate::autotune::CURRENT_AXIS_VALIDATION_LOW_RESPONSE;
+        assert_eq!(
+            axis_pass_status(CurrentValidationAxis::Torque, &sample),
+            crate::autotune::CURRENT_AXIS_VALIDATION_PASS
+        );
+
+        sample.status = crate::autotune::CURRENT_AXIS_VALIDATION_CROSS_AXIS;
+        assert_eq!(
+            axis_pass_status(CurrentValidationAxis::Torque, &sample),
+            crate::autotune::CURRENT_AXIS_VALIDATION_CROSS_AXIS
+        );
     }
 
     fn current_validate_phase() -> InnerPhase {
