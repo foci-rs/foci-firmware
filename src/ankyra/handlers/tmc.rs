@@ -29,7 +29,7 @@ const MAX_CURRENT_STEP_TARGET: i16 = 1_000;
 const MIN_CURRENT_STEP_DURATION_MS: u16 = 20;
 const MAX_CURRENT_STEP_DURATION_MS: u16 = 200;
 const MIN_CURRENT_SAMPLE_DELAY_MS: u16 = 1;
-const MAX_CURRENT_SAMPLE_DELAY_MS: u16 = 20;
+const MAX_CURRENT_SAMPLE_DELAY_MS: u16 = MAX_CURRENT_STEP_DURATION_MS;
 const MAX_VOLTAGE_STEP_EXT: i16 = 1_024;
 const MIN_CURRENT_STEP_VOLTAGE_LIMIT: u16 =
     crate::state::tmc::MIN_OPERATIONAL_PIDOUT_UQ_UD_LIMIT as u16;
@@ -1043,7 +1043,7 @@ mod tests {
         let mut sender = ();
         config_stepper_channel(ctx.state(), 10, 1).unwrap();
 
-        tmc_current_torque_sample_test(&mut ctx, &mut sender, 10, 500, -125, 5, 29_000);
+        tmc_current_torque_sample_test(&mut ctx, &mut sender, 10, 500, -125, 100, 29_000);
 
         let req = ctx.last_request.borrow().clone().unwrap();
         assert_eq!(req.channel, 1);
@@ -1053,7 +1053,7 @@ mod tests {
                 oid: 10,
                 target: 500,
                 flux_target: -125,
-                sample_delay_ms: 5,
+                sample_delay_ms: 100,
                 voltage_limit: 29_000,
             }
         ));
