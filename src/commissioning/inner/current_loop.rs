@@ -64,6 +64,10 @@ pub(crate) struct CurrentValidateData {
     pub(crate) model: ElectricalModel,
     /// Currently applied gains.
     pub(crate) gains: CurrentGains,
+    /// Candidate gains last written for validation, before safe-state restore.
+    pub(crate) candidate_gains: CurrentGains,
+    /// Retry attempt associated with `candidate_gains`.
+    pub(crate) candidate_attempt: u8,
     /// Flux-axis validation retry attempt index carried in evidence.
     pub(crate) flux_attempt: u8,
     /// Torque-axis validation retry attempt index carried in evidence.
@@ -350,6 +354,13 @@ fn failed_axis_failure_evidence(
     retry_budget_exhausted: bool,
 ) -> CurrentLoopEvidence {
     let mut evidence = CurrentLoopEvidence::failed(failure_reason);
+    evidence.candidate_gains_source = previous.candidate_gains_source;
+    evidence.candidate_axis_split_source = previous.candidate_axis_split_source;
+    evidence.candidate_gains_tier = previous.candidate_gains_tier;
+    evidence.candidate_measured_axis_split_permille =
+        previous.candidate_measured_axis_split_permille;
+    evidence.candidate_applied_axis_split_permille = previous.candidate_applied_axis_split_permille;
+    evidence.candidate_axis_split_clamped = previous.candidate_axis_split_clamped;
     evidence.current_validation_axes = previous.current_validation_axes;
     evidence.retry_budget_exhausted = retry_budget_exhausted as u8;
     evidence
@@ -490,17 +501,23 @@ pub(crate) async fn step_current_tune<B: CommissioningBackend>(
     let synthesis = crate::autotune::synthesize_current_gains(&synthesis_input, config);
     let (gains, mut current_loop_evidence) = match synthesis {
         Some(synthesis) => (synthesis.gains, synthesis.evidence),
-        None => (
-            CurrentGains {
-                flux_p: crate::pid::DEFAULT_INNER_GAINS.flux_p,
-                flux_i: crate::pid::DEFAULT_INNER_GAINS.flux_i,
-                torque_p: crate::pid::DEFAULT_INNER_GAINS.torque_p,
-                torque_i: crate::pid::DEFAULT_INNER_GAINS.torque_i,
-                effective_bandwidth_hz: 0,
-                lambda_us: 0,
-            },
-            CurrentLoopEvidence::failed(crate::autotune::CURRENT_LOOP_FAILURE_GAIN_SYNTHESIS),
-        ),
+        None => {
+            let mut evidence =
+                CurrentLoopEvidence::failed(crate::autotune::CURRENT_LOOP_FAILURE_GAIN_SYNTHESIS);
+            evidence.candidate_gains_source = crate::autotune::CURRENT_GAINS_SOURCE_DEFAULT;
+            evidence.candidate_gains_tier = crate::autotune::CURRENT_GAINS_TIER_DEFAULT;
+            (
+                CurrentGains {
+                    flux_p: crate::pid::DEFAULT_INNER_GAINS.flux_p,
+                    flux_i: crate::pid::DEFAULT_INNER_GAINS.flux_i,
+                    torque_p: crate::pid::DEFAULT_INNER_GAINS.torque_p,
+                    torque_i: crate::pid::DEFAULT_INNER_GAINS.torque_i,
+                    effective_bandwidth_hz: 0,
+                    lambda_us: 0,
+                },
+                evidence,
+            )
+        }
     };
     current_loop_evidence.current_validation_axes = 0;
 
@@ -530,6 +547,8 @@ pub(crate) async fn step_current_tune<B: CommissioningBackend>(
         data: CurrentValidateData {
             model,
             gains,
+            candidate_gains: gains,
+            candidate_attempt: 0,
             flux_attempt: 0,
             torque_attempt: 0,
             step_amplitude,
@@ -902,6 +921,8 @@ pub(crate) async fn step_current_validate<B: CommissioningBackend>(
                     | CurrentAxisRetryDecision::RetryLowerBandwidth => {
                         data.gains = retry_current_loop_gains(data.gains, retry_decision, _profile);
                         let next_attempt = axis_attempt(data, axis).saturating_add(1);
+                        data.candidate_gains = data.gains;
+                        data.candidate_attempt = next_attempt;
                         data.flux_attempt = data.flux_attempt.max(next_attempt);
                         data.torque_attempt = data.torque_attempt.max(next_attempt);
                         *validate_state = CurrentValidateState::WriteGains;
@@ -968,6 +989,23 @@ pub(crate) async fn step_current_validate<B: CommissioningBackend>(
                 flux_i: data.gains.flux_i,
                 torque_p: data.gains.torque_p,
                 torque_i: data.gains.torque_i,
+                candidate_gains_source: data.current_loop_evidence.candidate_gains_source,
+                candidate_axis_split_source: data.current_loop_evidence.candidate_axis_split_source,
+                candidate_gains_tier: data.current_loop_evidence.candidate_gains_tier,
+                candidate_measured_axis_split_permille: data
+                    .current_loop_evidence
+                    .candidate_measured_axis_split_permille,
+                candidate_applied_axis_split_permille: data
+                    .current_loop_evidence
+                    .candidate_applied_axis_split_permille,
+                candidate_axis_split_clamped: data
+                    .current_loop_evidence
+                    .candidate_axis_split_clamped,
+                candidate_flux_p: data.candidate_gains.flux_p,
+                candidate_flux_i: data.candidate_gains.flux_i,
+                candidate_torque_p: data.candidate_gains.torque_p,
+                candidate_torque_i: data.candidate_gains.torque_i,
+                candidate_attempt: data.candidate_attempt,
                 lambda_us: data.gains.lambda_us,
                 theta_e_us: data.model.theta_e_us,
                 ringing_count: 0,
@@ -1889,6 +1927,15 @@ mod tests {
                     effective_bandwidth_hz: 0,
                     lambda_us: 0,
                 },
+                candidate_gains: CurrentGains {
+                    flux_p: 11,
+                    flux_i: 12,
+                    torque_p: 13,
+                    torque_i: 14,
+                    effective_bandwidth_hz: 0,
+                    lambda_us: 0,
+                },
+                candidate_attempt: 0,
                 flux_attempt: 0,
                 torque_attempt: 0,
                 step_amplitude: 250,
@@ -1914,6 +1961,8 @@ mod tests {
 
     fn failed_current_validate_phase() -> InnerPhase {
         let mut evidence = CurrentLoopEvidence::failed(CURRENT_LOOP_FAILURE_TORQUE_VALIDATION);
+        evidence.candidate_gains_source = crate::autotune::CURRENT_GAINS_SOURCE_MEASURED;
+        evidence.candidate_gains_tier = crate::autotune::CURRENT_GAINS_TIER_MEASURED_SYMMETRIC;
         evidence.current_validation_axes = CURRENT_VALIDATION_AXIS_FLUX;
         InnerPhase::CurrentValidate {
             state: CurrentValidateState::Finalize,
@@ -1928,6 +1977,15 @@ mod tests {
                     tau_e_crosscheck_us: 2000,
                 },
                 gains: disabled_state_safe_current_gains(),
+                candidate_gains: CurrentGains {
+                    flux_p: 11,
+                    flux_i: 12,
+                    torque_p: 13,
+                    torque_i: 14,
+                    effective_bandwidth_hz: 0,
+                    lambda_us: 0,
+                },
+                candidate_attempt: 1,
                 flux_attempt: 1,
                 torque_attempt: 1,
                 step_amplitude: 250,
@@ -1998,6 +2056,15 @@ mod tests {
                     effective_bandwidth_hz: 0,
                     lambda_us: 0,
                 },
+                candidate_gains: CurrentGains {
+                    flux_p: 11,
+                    flux_i: 12,
+                    torque_p: 13,
+                    torque_i: 14,
+                    effective_bandwidth_hz: 0,
+                    lambda_us: 0,
+                },
+                candidate_attempt: 1,
                 flux_attempt: 1,
                 torque_attempt: 1,
                 step_amplitude: 250,

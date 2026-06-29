@@ -110,6 +110,28 @@ pub struct InnerResult {
     pub torque_p: u16,
     /// Computed torque I gain (raw Q8.8; effective advanced-PI zero is I/65536).
     pub torque_i: u16,
+    /// Candidate `CURRENT_GAINS_SOURCE_*` before validation verdict.
+    pub candidate_gains_source: u8,
+    /// Candidate `AXIS_SPLIT_SOURCE_*` before validation verdict.
+    pub candidate_axis_split_source: u8,
+    /// Candidate `CURRENT_GAINS_TIER_*` before validation verdict.
+    pub candidate_gains_tier: u8,
+    /// Candidate measured axis split ratio before validation verdict.
+    pub candidate_measured_axis_split_permille: u16,
+    /// Candidate applied axis split ratio before validation verdict.
+    pub candidate_applied_axis_split_permille: u16,
+    /// Candidate axis split clamp flag before validation verdict.
+    pub candidate_axis_split_clamped: u8,
+    /// Candidate flux P gain last written for validation.
+    pub candidate_flux_p: u16,
+    /// Candidate flux I gain last written for validation.
+    pub candidate_flux_i: u16,
+    /// Candidate torque P gain last written for validation.
+    pub candidate_torque_p: u16,
+    /// Candidate torque I gain last written for validation.
+    pub candidate_torque_i: u16,
+    /// Retry attempt associated with the candidate gains.
+    pub candidate_attempt: u8,
     /// Inner-loop closed-loop lambda in microseconds.
     pub lambda_us: u32,
     /// Electrical transport delay in microseconds.

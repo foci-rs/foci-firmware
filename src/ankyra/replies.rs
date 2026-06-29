@@ -182,16 +182,38 @@ pub struct FociCurrentLoopRun {
     pub status: u8,
     /// Stable `CURRENT_GAINS_SOURCE_*` code.
     pub gains_source: u8,
+    /// Candidate `CURRENT_GAINS_SOURCE_*` code before validation verdict.
+    pub candidate_gains_source: u8,
     /// Stable `AXIS_SPLIT_SOURCE_*` code.
     pub axis_split_source: u8,
+    /// Candidate `AXIS_SPLIT_SOURCE_*` code before validation verdict.
+    pub candidate_axis_split_source: u8,
     /// Stable `CURRENT_GAINS_TIER_*` code.
     pub gains_tier: u8,
+    /// Candidate `CURRENT_GAINS_TIER_*` code before validation verdict.
+    pub candidate_gains_tier: u8,
     /// Measured axis split ratio, permille where 1000 = 1.000x.
     pub measured_axis_split_permille: u16,
+    /// Candidate measured axis split ratio before validation verdict.
+    pub candidate_measured_axis_split_permille: u16,
     /// Applied axis split ratio after profile clamp, permille.
     pub applied_axis_split_permille: u16,
+    /// Candidate applied axis split ratio before validation verdict.
+    pub candidate_applied_axis_split_permille: u16,
     /// Non-zero when the applied split was clamped below the measured split.
     pub axis_split_clamped: u8,
+    /// Candidate axis split clamp flag before validation verdict.
+    pub candidate_axis_split_clamped: u8,
+    /// Candidate flux P gain last written for validation.
+    pub candidate_flux_p: u16,
+    /// Candidate flux I gain last written for validation.
+    pub candidate_flux_i: u16,
+    /// Candidate torque P gain last written for validation.
+    pub candidate_torque_p: u16,
+    /// Candidate torque I gain last written for validation.
+    pub candidate_torque_i: u16,
+    /// Retry attempt associated with the candidate gains.
+    pub candidate_attempt: u8,
     /// Bitmask of `CURRENT_VALIDATION_AXIS_*` axes that passed validation.
     pub current_validation_axes: u8,
     /// Number of flux-axis validation samples emitted for this run.
@@ -1160,11 +1182,22 @@ mod resistance_reply_size_tests {
             oid: u8::MAX,
             status: u8::MAX,
             gains_source: u8::MAX,
+            candidate_gains_source: u8::MAX,
             axis_split_source: u8::MAX,
+            candidate_axis_split_source: u8::MAX,
             gains_tier: u8::MAX,
+            candidate_gains_tier: u8::MAX,
             measured_axis_split_permille: u16::MAX,
+            candidate_measured_axis_split_permille: u16::MAX,
             applied_axis_split_permille: u16::MAX,
+            candidate_applied_axis_split_permille: u16::MAX,
             axis_split_clamped: u8::MAX,
+            candidate_axis_split_clamped: u8::MAX,
+            candidate_flux_p: u16::MAX,
+            candidate_flux_i: u16::MAX,
+            candidate_torque_p: u16::MAX,
+            candidate_torque_i: u16::MAX,
+            candidate_attempt: u8::MAX,
             current_validation_axes: u8::MAX,
             flux_validation_sample_count: u8::MAX,
             torque_validation_sample_count: u8::MAX,

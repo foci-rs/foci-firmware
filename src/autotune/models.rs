@@ -153,16 +153,28 @@ pub const CURRENT_LOOP_FAILURE_SPI: u8 = 10;
 pub struct CurrentLoopEvidence {
     /// `CURRENT_GAINS_SOURCE_*`.
     pub gains_source: u8,
+    /// Candidate `CURRENT_GAINS_SOURCE_*` before validation verdict.
+    pub candidate_gains_source: u8,
     /// `AXIS_SPLIT_SOURCE_*`.
     pub axis_split_source: u8,
+    /// Candidate `AXIS_SPLIT_SOURCE_*` before validation verdict.
+    pub candidate_axis_split_source: u8,
     /// `CURRENT_GAINS_TIER_*`.
     pub gains_tier: u8,
+    /// Candidate `CURRENT_GAINS_TIER_*` before validation verdict.
+    pub candidate_gains_tier: u8,
     /// Measured axis split ratio, permille where 1000 = 1.000x.
     pub measured_axis_split_permille: u16,
+    /// Candidate measured axis split ratio before validation verdict.
+    pub candidate_measured_axis_split_permille: u16,
     /// Applied axis split ratio after profile clamp, permille.
     pub applied_axis_split_permille: u16,
+    /// Candidate applied axis split ratio before validation verdict.
+    pub candidate_applied_axis_split_permille: u16,
     /// Non-zero when `applied_axis_split_permille` is clamped below measured.
     pub axis_split_clamped: u8,
+    /// Candidate axis split clamp flag before validation verdict.
+    pub candidate_axis_split_clamped: u8,
     /// Bitmask of `CURRENT_VALIDATION_AXIS_*` axes that passed validation.
     pub current_validation_axes: u8,
     /// Non-zero when the section-level retry budget was consumed before all
@@ -177,11 +189,17 @@ impl CurrentLoopEvidence {
     pub const fn failed(failure_reason: u8) -> Self {
         Self {
             gains_source: CURRENT_GAINS_SOURCE_FAILED,
+            candidate_gains_source: CURRENT_GAINS_SOURCE_FAILED,
             axis_split_source: AXIS_SPLIT_SOURCE_NONE,
+            candidate_axis_split_source: AXIS_SPLIT_SOURCE_NONE,
             gains_tier: CURRENT_GAINS_TIER_NONE,
+            candidate_gains_tier: CURRENT_GAINS_TIER_NONE,
             measured_axis_split_permille: 1000,
+            candidate_measured_axis_split_permille: 1000,
             applied_axis_split_permille: 1000,
+            candidate_applied_axis_split_permille: 1000,
             axis_split_clamped: 0,
+            candidate_axis_split_clamped: 0,
             current_validation_axes: 0,
             retry_budget_exhausted: 0,
             failure_reason,
@@ -192,11 +210,17 @@ impl CurrentLoopEvidence {
     pub const fn measured_symmetric() -> Self {
         Self {
             gains_source: CURRENT_GAINS_SOURCE_MEASURED,
+            candidate_gains_source: CURRENT_GAINS_SOURCE_MEASURED,
             axis_split_source: AXIS_SPLIT_SOURCE_NONE,
+            candidate_axis_split_source: AXIS_SPLIT_SOURCE_NONE,
             gains_tier: CURRENT_GAINS_TIER_MEASURED_SYMMETRIC,
+            candidate_gains_tier: CURRENT_GAINS_TIER_MEASURED_SYMMETRIC,
             measured_axis_split_permille: 1000,
+            candidate_measured_axis_split_permille: 1000,
             applied_axis_split_permille: 1000,
+            candidate_applied_axis_split_permille: 1000,
             axis_split_clamped: 0,
+            candidate_axis_split_clamped: 0,
             current_validation_axes: 0,
             retry_budget_exhausted: 0,
             failure_reason: CURRENT_LOOP_FAILURE_NONE,
@@ -211,11 +235,17 @@ impl CurrentLoopEvidence {
     ) -> Self {
         Self {
             gains_source: CURRENT_GAINS_SOURCE_MEASURED,
+            candidate_gains_source: CURRENT_GAINS_SOURCE_MEASURED,
             axis_split_source: AXIS_SPLIT_SOURCE_IMPEDANCE,
+            candidate_axis_split_source: AXIS_SPLIT_SOURCE_IMPEDANCE,
             gains_tier: CURRENT_GAINS_TIER_MEASURED_SPLIT,
+            candidate_gains_tier: CURRENT_GAINS_TIER_MEASURED_SPLIT,
             measured_axis_split_permille,
+            candidate_measured_axis_split_permille: measured_axis_split_permille,
             applied_axis_split_permille,
+            candidate_applied_axis_split_permille: applied_axis_split_permille,
             axis_split_clamped: clamped as u8,
+            candidate_axis_split_clamped: clamped as u8,
             current_validation_axes: 0,
             retry_budget_exhausted: 0,
             failure_reason: CURRENT_LOOP_FAILURE_NONE,
@@ -230,11 +260,17 @@ impl CurrentLoopEvidence {
     ) -> Self {
         Self {
             gains_source: CURRENT_GAINS_SOURCE_DEFAULT,
+            candidate_gains_source: CURRENT_GAINS_SOURCE_DEFAULT,
             axis_split_source: AXIS_SPLIT_SOURCE_NONE,
+            candidate_axis_split_source: AXIS_SPLIT_SOURCE_NONE,
             gains_tier: CURRENT_GAINS_TIER_DEFAULT,
+            candidate_gains_tier: CURRENT_GAINS_TIER_DEFAULT,
             measured_axis_split_permille: 1000,
+            candidate_measured_axis_split_permille: 1000,
             applied_axis_split_permille: 1000,
+            candidate_applied_axis_split_permille: 1000,
             axis_split_clamped: 0,
+            candidate_axis_split_clamped: 0,
             current_validation_axes,
             retry_budget_exhausted: retry_budget_exhausted as u8,
             failure_reason,
