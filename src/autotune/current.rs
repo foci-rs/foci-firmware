@@ -19,13 +19,33 @@ use super::{
     CURRENT_VALIDATION_MAX_SAMPLES_PER_AXIS,
 };
 
-/// Empirical factor for current-loop I gain synthesis.
+/// Advanced-PI current-loop I zero scale.
 ///
-/// The theoretical TMC4671 advanced-PI zero gives
-/// `65536 * R / (L * f_pwm)`. Hardware evidence validated a 64x lower
-/// `1024 * R / (L * f_pwm)`. Commissioning stores `tau_e_us = L / R`, so the
-/// Phase 1 formula is `CURRENT_I_EMPIRICAL_FACTOR / (tau_e_seconds * f_pwm)`.
-pub const CURRENT_I_EMPIRICAL_FACTOR: f32 = 1024.0;
+/// With `CONFIG_ADVANCED_PI_REPRESENT=0`, current-loop I is Q8.8 and the
+/// advanced PI integrator input is divided by another 256, so the effective
+/// integral-zero term is `I_reg / 65536` per PWM sample.
+pub const ADVANCED_PI_I_ZERO_SCALE: f32 = 65_536.0;
+
+/// Stability detune applied to the pole-cancelling current-loop I zero.
+///
+/// `DETUNE=1` is true pole cancellation, but on the OpenFFBoard printer
+/// cascade it would produce `I ~= 1216`, roughly 3x beyond the observed
+/// sustained-hold squeal edge. The 2026-06-28 long-dwell current-loop artifact
+/// showed `DETUNE ~= 3.2` (`I=384`) near the instability boundary, while
+/// `DETUNE=8` (`I ~= 152-159`) closed the flux step cleanly in about 80-100 ms.
+///
+/// This is a fixed Phase-1 cascade stability margin, not a profile tuning knob.
+/// A future sustained-hold gate must catch hardware where this margin is not
+/// enough before any profile-dependent detune is introduced.
+pub const CURRENT_I_STABILITY_DETUNE: f32 = 8.0;
+
+/// Detuned current-loop I zero factor.
+///
+/// Commissioning stores `tau_e_us = L / R`, so Phase 1 uses
+/// `CURRENT_I_DETUNED_ZERO_FACTOR / (tau_e_seconds * f_pwm)`, where this factor
+/// is the advanced-PI zero scale divided by the fixed stability detune.
+pub const CURRENT_I_DETUNED_ZERO_FACTOR: f32 =
+    ADVANCED_PI_I_ZERO_SCALE / CURRENT_I_STABILITY_DETUNE;
 
 /// Samples used to smooth current validation settling/ringing checks.
 ///
@@ -340,7 +360,8 @@ pub fn simc_current_gains_with_lambda_checked(
     let tau_s = tau * 1e-6;
     let f_pwm = config.pwm_freq_hz() as f32;
     let p_reg = (kp * 256.0).clamp(1.0, u16::MAX as f32) as u16;
-    let i_reg = (CURRENT_I_EMPIRICAL_FACTOR / (tau_s * f_pwm)).clamp(1.0, u16::MAX as f32) as u16;
+    let i_reg =
+        (CURRENT_I_DETUNED_ZERO_FACTOR / (tau_s * f_pwm)).clamp(1.0, u16::MAX as f32) as u16;
 
     // Effective bandwidth = 1 / (2*pi*(lambda+theta)) in Hz
     let bw_hz = 1_000_000.0 / (2.0 * core::f32::consts::PI * (lambda + theta));
@@ -1416,7 +1437,7 @@ mod tests {
     }
 
     #[test]
-    fn simc_current_i_uses_tau_seconds_and_empirical_factor() {
+    fn simc_current_i_uses_tau_seconds_and_stability_detune() {
         let model = ElectricalModel {
             r_int: ELECTRICAL_MODEL_RESISTANCE_SCALE,
             l_int: 1900,
@@ -1430,16 +1451,14 @@ mod tests {
         let gains = simc_current_gains_with_lambda(&model, 950, &config);
 
         let tau_s = model.tau_e_us as f32 * 1e-6;
-        let expected_i = (CURRENT_I_EMPIRICAL_FACTOR / (tau_s * config.pwm_freq_hz() as f32))
-            .clamp(1.0, u16::MAX as f32) as u16;
+        let f_pwm = config.pwm_freq_hz() as f32;
+        let expected_i =
+            (CURRENT_I_DETUNED_ZERO_FACTOR / (tau_s * f_pwm)).clamp(1.0, u16::MAX as f32) as u16;
 
         assert_eq!(gains.flux_i, expected_i);
         assert_eq!(gains.torque_i, expected_i);
-        assert!(
-            (20..=30).contains(&gains.flux_i),
-            "flux_i={} expected live empirical bracket",
-            gains.flux_i
-        );
+        let detune = ADVANCED_PI_I_ZERO_SCALE / (gains.flux_i as f32 * tau_s * f_pwm);
+        assert!((7.5..=8.5).contains(&detune), "detune={detune} expected ~8");
     }
 
     #[test]
@@ -1481,7 +1500,7 @@ mod tests {
         // directly, independent of lambda.
         assert_eq!(gains.lambda_us, model.tau_e_us / 2);
         let tau_s = model.tau_e_us as f32 * 1e-6;
-        let expected_i = (CURRENT_I_EMPIRICAL_FACTOR / (tau_s * config.pwm_freq_hz() as f32))
+        let expected_i = (CURRENT_I_DETUNED_ZERO_FACTOR / (tau_s * config.pwm_freq_hz() as f32))
             .clamp(1.0, u16::MAX as f32) as u16;
 
         assert_eq!(gains.flux_i, expected_i);
@@ -1505,7 +1524,8 @@ mod tests {
         let p_expected =
             (1917.0_f64 / (1436.0_f64 + 160.0_f64) * 256.0_f64).clamp(1.0, u16::MAX as f64) as u16;
         let tau_s = model.tau_e_us as f64 * 1e-6;
-        let i_expected = (CURRENT_I_EMPIRICAL_FACTOR as f64 / (tau_s * config.pwm_freq_hz() as f64))
+        let i_expected = (CURRENT_I_DETUNED_ZERO_FACTOR as f64
+            / (tau_s * config.pwm_freq_hz() as f64))
             .clamp(1.0, u16::MAX as f64) as u16;
 
         assert_eq!(gains.lambda_us, 1436);
@@ -1770,7 +1790,7 @@ mod tests {
 
         let kp_si = tau_s / (k * (lambda_s + theta_s));
         let p_reg_expected = (kp_si * 256.0).clamp(1.0, u16::MAX as f64) as u16;
-        let i_reg_expected = (CURRENT_I_EMPIRICAL_FACTOR as f64 / (tau_s * f_pwm))
+        let i_reg_expected = (CURRENT_I_DETUNED_ZERO_FACTOR as f64 / (tau_s * f_pwm))
             .clamp(1.0, u16::MAX as f64) as u16;
 
         assert_eq!(
