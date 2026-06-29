@@ -511,7 +511,7 @@ fn axis_pass_status(axis: CurrentValidationAxis, sample: &CurrentValidationAxisE
         crate::autotune::CURRENT_AXIS_VALIDATION_PASS
     } else if axis == CurrentValidationAxis::Torque
         && sample.sample_delay_ms == 0
-        && is_response_magnitude_status(sample.status)
+        && is_zero_delay_torque_telemetry_status(sample.status)
     {
         crate::autotune::CURRENT_AXIS_VALIDATION_PASS
     } else if axis == CurrentValidationAxis::Torque
@@ -532,6 +532,11 @@ fn is_response_magnitude_status(status: u8) -> bool {
 fn is_transient_current_telemetry_status(status: u8) -> bool {
     is_response_magnitude_status(status)
         || status == crate::autotune::CURRENT_AXIS_VALIDATION_CROSS_AXIS
+}
+
+fn is_zero_delay_torque_telemetry_status(status: u8) -> bool {
+    is_response_magnitude_status(status)
+        || status == crate::autotune::CURRENT_AXIS_VALIDATION_WRONG_SIGN
 }
 
 fn axis_failure_reason(axis: CurrentValidationAxis) -> u8 {
@@ -2378,7 +2383,7 @@ mod tests {
 
         assert_eq!(
             axis_pass_status(CurrentValidationAxis::Torque, &sample),
-            crate::autotune::CURRENT_AXIS_VALIDATION_WRONG_SIGN
+            crate::autotune::CURRENT_AXIS_VALIDATION_PASS
         );
 
         sample.status = crate::autotune::CURRENT_AXIS_VALIDATION_LOW_RESPONSE;
@@ -2391,6 +2396,12 @@ mod tests {
         assert_eq!(
             axis_pass_status(CurrentValidationAxis::Torque, &sample),
             crate::autotune::CURRENT_AXIS_VALIDATION_CROSS_AXIS
+        );
+
+        sample.status = crate::autotune::CURRENT_AXIS_VALIDATION_SATURATION;
+        assert_eq!(
+            axis_pass_status(CurrentValidationAxis::Torque, &sample),
+            crate::autotune::CURRENT_AXIS_VALIDATION_SATURATION
         );
     }
 
