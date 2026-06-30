@@ -14,7 +14,10 @@ use crate::autotune::{
 };
 use crate::commissioning::EntrySnapshot;
 use crate::commissioning::inner::current_loop::{CurrentValidateData, CurrentValidateState};
-use crate::commissioning::types::{AdcCalResult, CommissioningBackend, InnerResult, StepResult};
+use crate::commissioning::types::{
+    AdcCalResult, CommissioningBackend, INDUCTANCE_FIT_POINT_COUNT, InductanceFitEvidence,
+    InductanceFitPoint, InnerResult, StepResult,
+};
 
 pub mod adc;
 pub mod closed_loop_entry;
@@ -147,12 +150,16 @@ pub(crate) struct ElectricalIdData {
     /// `ResistanceIdentify` sub-state has run the shared runner; the legacy
     /// inductance/delay/gain path reads its count-slope-milli values from here.
     pub(crate) resistance_result: Option<crate::resistance_identification::ResistanceRunResult>,
-    /// Per-coil accumulated |delta_I| for di/dt inductance measurement.
+    /// Per-coil legacy accumulated |delta_I| for old absolute-voltage telemetry.
     pub(crate) inductance_sum_delta: [u64; 2],
-    /// Per-coil number of valid di/dt cycles.
+    /// Per-coil number of valid legacy di/dt cycles.
     pub(crate) inductance_count: [u32; 2],
-    /// Per-coil elapsed microseconds during di/dt measurement.
+    /// Per-coil elapsed microseconds during legacy-equivalent di/dt measurement.
     pub(crate) inductance_elapsed_us: [u32; 2],
+    /// Per-coil, per-amplitude fit points for corrected L/tau.
+    pub(crate) inductance_fit_points: [[InductanceFitPoint; INDUCTANCE_FIT_POINT_COUNT]; 2],
+    /// Accepted per-coil fit evidence.
+    pub(crate) inductance_fit: [InductanceFitEvidence; 2],
 }
 
 impl ElectricalIdData {
@@ -163,6 +170,8 @@ impl ElectricalIdData {
             inductance_sum_delta: [0; 2],
             inductance_count: [0; 2],
             inductance_elapsed_us: [0; 2],
+            inductance_fit_points: [[InductanceFitPoint::EMPTY; INDUCTANCE_FIT_POINT_COUNT]; 2],
+            inductance_fit: [InductanceFitEvidence::EMPTY; 2],
         }
     }
 }
@@ -176,9 +185,13 @@ pub(crate) enum ElectricalIdState {
 
     // --- Inductance measurement (per coil, square-wave di/dt) ---
     /// Configure for di/dt toggling.
-    InductanceSetup { coil: u8 },
+    InductanceSetup { coil: u8, point: u8 },
     /// Brief settle before toggling.
-    InductanceSettle { coil: u8, deadline_us: u64 },
+    InductanceSettle {
+        coil: u8,
+        point: u8,
+        deadline_us: u64,
+    },
     /// Toggle voltage and accumulate |delta_I| (chunked per step).
     ///
     /// `warmup_cycles_remaining` excludes startup transients from the
@@ -187,15 +200,24 @@ pub(crate) enum ElectricalIdState {
     /// covers accumulated samples.
     InductanceToggle {
         coil: u8,
+        point: u8,
         total_cycles: u32,
         remaining_cycles: u32,
         prev_current: i16,
+        point_sum_delta: u64,
+        point_sample_count: u32,
+        current_sum: i64,
         start_us: u64,
         warmup_cycles_remaining: u32,
         accumulation_start_us: Option<u64>,
     },
     /// Disable motor and cool down.
-    InductanceDisable { coil: u8, deadline_us: u64 },
+    InductanceDisable {
+        coil: u8,
+        point: u8,
+        deadline_us: u64,
+        skip_remaining_points: bool,
+    },
 
     // --- Delay identification ---
     /// Configure for delay step response capture.
