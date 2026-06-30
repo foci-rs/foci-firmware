@@ -283,6 +283,10 @@ pub(crate) enum InnerPhase {
         /// Carried forward so the final InnerResult can persist the count-space
         /// fit evidence and the 64x count-slope-milli audit comparison.
         resistance_result: crate::resistance_identification::ResistanceRunResult,
+        /// Accepted per-coil corrected inductance fit evidence.
+        inductance_fit: [InductanceFitEvidence; 2],
+        /// Per-amplitude points used by the accepted corrected inductance fits.
+        inductance_fit_points: [[InductanceFitPoint; INDUCTANCE_FIT_POINT_COUNT]; 2],
     },
     /// Phase 7: Current-loop step-response validation.
     CurrentValidate {

@@ -39,41 +39,8 @@ const INDUCTANCE_CYCLES_PER_STEP: u32 = 30;
 /// Below this, the current change is too small to extract L reliably.
 const INDUCTANCE_MIN_DELTA: u32 = 5;
 const INDUCTANCE_FIT_UD_PERMILLE: [u16; INDUCTANCE_FIT_POINT_COUNT] = [1000, 1250, 1500, 1750];
-#[allow(
-    unfulfilled_lint_expectations,
-    reason = "the staged helper references this constant before production capture/model assembly lands"
-)]
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "multi-amplitude inductance capture/model assembly tasks wire this into production",
-    )
-)]
 const INDUCTANCE_FIT_MIN_USABLE_POINTS: u8 = 3;
-#[allow(
-    unfulfilled_lint_expectations,
-    reason = "the staged helper references this constant before production capture/model assembly lands"
-)]
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "multi-amplitude inductance capture/model assembly tasks wire this into production",
-    )
-)]
 const INDUCTANCE_FIT_MAX_DEADTIME_UD: i32 = 400;
-#[allow(
-    unfulfilled_lint_expectations,
-    reason = "the staged helper references this constant before production capture/model assembly lands"
-)]
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "multi-amplitude inductance capture/model assembly tasks wire this into production",
-    )
-)]
 const INDUCTANCE_FIT_MAX_RESIDUAL_PERMILLE: u16 = 120;
 
 /// Number of transient samples for delay identification.
@@ -312,13 +279,6 @@ fn resistance_model_scale(data: &ElectricalIdData, coil_idx: usize) -> Option<u3
     Some(r_int)
 }
 
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "multi-amplitude inductance capture/model assembly tasks wire this into production",
-    )
-)]
 fn fit_inductance_points(
     points: &[InductanceFitPoint; INDUCTANCE_FIT_POINT_COUNT],
     r_int: u32,
@@ -576,6 +536,12 @@ fn assemble_electrical_model(
     // R disagreement gate independently catches resistance imbalance.
     let mut tau_per_coil = [0u32; 2];
     for (coil_idx, tau_slot) in tau_per_coil.iter_mut().enumerate() {
+        let fit = data.inductance_fit[coil_idx];
+        if fit.tau_us != 0 && fit.usable_points >= INDUCTANCE_FIT_MIN_USABLE_POINTS {
+            *tau_slot = fit.tau_us;
+            continue;
+        }
+
         let count = data.inductance_count[coil_idx];
         let sum_delta = data.inductance_sum_delta[coil_idx];
         let elapsed = data.inductance_elapsed_us[coil_idx];
@@ -1060,6 +1026,18 @@ pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
                 return StepResult::Continue; // Not yet.
             }
             let next_point = point.saturating_add(1);
+            if !*skip_remaining_points && usize::from(next_point) == INDUCTANCE_FIT_POINT_COUNT {
+                let coil_idx = usize::from(*coil);
+                let r_int = resistance_model_scale(data, coil_idx).unwrap_or(0);
+                if let Some(mut fit) =
+                    fit_inductance_points(&data.inductance_fit_points[coil_idx], r_int)
+                {
+                    if let Some((_, old_tau, _)) = inductance_measurement(data, coil_idx) {
+                        fit.old_tau_us = old_tau;
+                    }
+                    data.inductance_fit[coil_idx] = fit;
+                }
+            }
             if *skip_remaining_points && *coil == 0 {
                 *electrical_id_state = ElectricalIdState::InductanceSetup { coil: 1, point: 0 };
             } else if *skip_remaining_points {
@@ -1242,6 +1220,8 @@ pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
                         inner_warning_flags: assembly.warning_flags,
                         tau_residual_permille: assembly.tau_residual_permille,
                         resistance_result,
+                        inductance_fit: data.inductance_fit,
+                        inductance_fit_points: data.inductance_fit_points,
                     };
                     StepResult::PhaseChanged(PhaseId::CurrentTune)
                 }
@@ -1354,6 +1334,42 @@ mod tests {
             (1235..=1260).contains(&assembly.model.l_int),
             "l_int should preserve the internal L scale: {}",
             assembly.model.l_int
+        );
+    }
+
+    #[test]
+    fn model_assembly_uses_inductance_fit_tau() {
+        let mut data = representative_data();
+        data.inductance_fit[0] = InductanceFitEvidence {
+            tau_us: 450,
+            old_tau_us: 730,
+            slope_delta_per_ud_milli: 65,
+            intercept_delta_milli: -13_000,
+            deadtime_ud: 200,
+            residual_permille: 12,
+            usable_points: 4,
+            selected_mask: 0b1111,
+        };
+        data.inductance_fit[1] = InductanceFitEvidence {
+            tau_us: 460,
+            old_tau_us: 730,
+            slope_delta_per_ud_milli: 64,
+            intercept_delta_milli: -12_800,
+            deadtime_ud: 200,
+            residual_permille: 14,
+            usable_points: 4,
+            selected_mask: 0b1111,
+        };
+        let buf = representative_transient();
+
+        let assembly = assemble_electrical_model(&data, buf.samples(), TEST_THETA_E_US)
+            .expect("model should assemble");
+
+        assert!((450..=460).contains(&assembly.model.tau_e_us));
+        assert_eq!(
+            assembly.model.l_int,
+            (assembly.model.r_int as u64 * assembly.model.tau_e_us as u64
+                / ELECTRICAL_MODEL_RESISTANCE_SCALE as u64) as u32
         );
     }
 
@@ -1537,6 +1553,8 @@ mod tests {
                 inner_warning_flags,
                 tau_residual_permille,
                 resistance_result,
+                inductance_fit,
+                inductance_fit_points,
             } = phase
             else {
                 panic!("expected CurrentTune, got {phase:?}");
@@ -1560,6 +1578,11 @@ mod tests {
                 (580..=610).contains(&tau_residual_permille),
                 "residual should capture L/R-vs-transient disagreement: {}",
                 tau_residual_permille
+            );
+            assert_eq!(inductance_fit, [InductanceFitEvidence::EMPTY; 2]);
+            assert_eq!(
+                inductance_fit_points,
+                [[InductanceFitPoint::EMPTY; INDUCTANCE_FIT_POINT_COUNT]; 2]
             );
             assert_eq!(diagnostics.iter().count(), 0);
         });

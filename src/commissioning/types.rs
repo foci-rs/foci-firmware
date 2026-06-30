@@ -229,6 +229,10 @@ pub struct InnerResult {
     pub tau_e_crosscheck_us: u32,
     /// L/R-vs-transient tau residual in permille.
     pub tau_residual_permille: u16,
+    /// Accepted per-coil corrected inductance fit evidence.
+    pub inductance_fit: [InductanceFitEvidence; 2],
+    /// Per-amplitude points used by the accepted corrected inductance fits.
+    pub inductance_fit_points: [[InductanceFitPoint; INDUCTANCE_FIT_POINT_COUNT]; 2],
     /// Warning bitfield.
     ///
     /// Bits 0, 1, and 3 report model warnings; bit 2 is reserved for tau

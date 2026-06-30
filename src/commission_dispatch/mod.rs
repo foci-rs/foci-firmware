@@ -212,6 +212,7 @@ fn record_restore_summary<B: CommissioningBackend>(
 }
 
 /// Wire-reply payload for the board to emit via `klipper_reply_from!`.
+#[allow(clippy::large_enum_variant)]
 pub enum ReplyPayload {
     /// FociCommissionPhase: phase change reply (foci_commission failures
     /// during inner phases).

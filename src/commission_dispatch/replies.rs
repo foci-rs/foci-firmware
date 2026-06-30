@@ -735,6 +735,10 @@ mod tests {
                 tau_e_us: 23,
                 tau_e_crosscheck_us: 24,
                 tau_residual_permille: 25,
+                inductance_fit: [crate::commissioning::types::InductanceFitEvidence::EMPTY; 2],
+                inductance_fit_points: [[crate::commissioning::types::InductanceFitPoint::EMPTY;
+                    crate::commissioning::types::INDUCTANCE_FIT_POINT_COUNT];
+                    2],
                 inner_warning_flags: 26,
                 resistance_profile_version: 1,
                 resistance_selected_count_slope_milli: 1050,

@@ -17,7 +17,8 @@ use crate::autotune::{
 };
 use crate::commissioning::inner::InnerPhase;
 use crate::commissioning::types::{
-    CommissionResult, CommissioningBackend, CurrentValidationAxisEvidence, InnerResult, StepResult,
+    CommissionResult, CommissioningBackend, CurrentValidationAxisEvidence,
+    INDUCTANCE_FIT_POINT_COUNT, InductanceFitEvidence, InductanceFitPoint, InnerResult, StepResult,
 };
 
 use super::impedance::CommissioningImpedanceEvidence;
@@ -111,6 +112,10 @@ pub(crate) struct CurrentValidateData {
     pub(crate) inner_warning_flags: u8,
     /// L/R-vs-transient tau residual in permille from Phase 5.
     pub(crate) tau_residual_permille: u16,
+    /// Accepted per-coil corrected inductance fit evidence.
+    pub(crate) inductance_fit: [InductanceFitEvidence; 2],
+    /// Per-amplitude points used by the accepted corrected inductance fits.
+    pub(crate) inductance_fit_points: [[InductanceFitPoint; INDUCTANCE_FIT_POINT_COUNT]; 2],
     /// Shared multi-point resistance-identification result from Phase 5.
     pub(crate) resistance_result: crate::resistance_identification::ResistanceRunResult,
     /// Resistance count-slope (milli-units) consumed by the gain-formula path.
@@ -845,17 +850,28 @@ pub(crate) async fn step_current_tune<B: CommissioningBackend>(
     profile: CommissionProfile,
     backend: &mut B,
 ) -> StepResult {
-    let (model, inner_warning_flags, tau_residual_permille, resistance_result) = match phase {
+    let (
+        model,
+        inner_warning_flags,
+        tau_residual_permille,
+        resistance_result,
+        inductance_fit,
+        inductance_fit_points,
+    ) = match phase {
         InnerPhase::CurrentTune {
             model,
             inner_warning_flags,
             tau_residual_permille,
             resistance_result,
+            inductance_fit,
+            inductance_fit_points,
         } => (
             *model,
             *inner_warning_flags,
             *tau_residual_permille,
             *resistance_result,
+            *inductance_fit,
+            *inductance_fit_points,
         ),
         _ => return StepResult::Continue,
     };
@@ -936,6 +952,8 @@ pub(crate) async fn step_current_tune<B: CommissioningBackend>(
                 crate::autotune::CURRENT_VALIDATION_MAX_SAMPLES_PER_AXIS],
             inner_warning_flags,
             tau_residual_permille,
+            inductance_fit,
+            inductance_fit_points,
             resistance_result,
             // The gain-formula path consumes `model.r_int`, already in the
             // `ELECTRICAL_MODEL_RESISTANCE_SCALE` (milli) count-slope unit
@@ -1372,6 +1390,8 @@ pub(crate) async fn step_current_validate<B: CommissioningBackend>(
                 tau_e_us: data.model.tau_e_us,
                 tau_e_crosscheck_us: data.model.tau_e_crosscheck_us,
                 tau_residual_permille: data.tau_residual_permille,
+                inductance_fit: data.inductance_fit,
+                inductance_fit_points: data.inductance_fit_points,
                 inner_warning_flags: data.inner_warning_flags,
                 resistance_profile_version: resistance.profile_version,
                 resistance_selected_count_slope_milli: resistance.selected_r_count_slope_milli,
@@ -1561,6 +1581,8 @@ mod tests {
                 inner_warning_flags: 0,
                 tau_residual_permille: 0,
                 resistance_result: resistance_result(),
+                inductance_fit: [InductanceFitEvidence::EMPTY; 2],
+                inductance_fit_points: [[InductanceFitPoint::EMPTY; INDUCTANCE_FIT_POINT_COUNT]; 2],
             };
             let mut backend = MockBackend::new();
             backend.current_limit_value = 4000;
@@ -2700,6 +2722,8 @@ mod tests {
                     crate::autotune::CURRENT_VALIDATION_MAX_SAMPLES_PER_AXIS],
                 inner_warning_flags: 0,
                 tau_residual_permille: 0,
+                inductance_fit: [InductanceFitEvidence::EMPTY; 2],
+                inductance_fit_points: [[InductanceFitPoint::EMPTY; INDUCTANCE_FIT_POINT_COUNT]; 2],
                 resistance_result: resistance_result(),
                 resistance_gain_path_count_slope_milli: 1000,
                 current_loop_evidence: CurrentLoopEvidence::measured_symmetric(),
@@ -2779,6 +2803,8 @@ mod tests {
                     crate::autotune::CURRENT_VALIDATION_MAX_SAMPLES_PER_AXIS],
                 inner_warning_flags: 0,
                 tau_residual_permille: 0,
+                inductance_fit: [InductanceFitEvidence::EMPTY; 2],
+                inductance_fit_points: [[InductanceFitPoint::EMPTY; INDUCTANCE_FIT_POINT_COUNT]; 2],
                 resistance_result: resistance_result(),
                 resistance_gain_path_count_slope_milli: 1000,
                 current_loop_evidence: evidence,
@@ -2865,6 +2891,8 @@ mod tests {
                     crate::autotune::CURRENT_VALIDATION_MAX_SAMPLES_PER_AXIS],
                 inner_warning_flags: 0,
                 tau_residual_permille: 0,
+                inductance_fit: [InductanceFitEvidence::EMPTY; 2],
+                inductance_fit_points: [[InductanceFitPoint::EMPTY; INDUCTANCE_FIT_POINT_COUNT]; 2],
                 resistance_result: resistance_result(),
                 resistance_gain_path_count_slope_milli: 1000,
                 current_loop_evidence: evidence,
