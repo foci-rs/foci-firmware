@@ -11,7 +11,10 @@ use crate::autotune::{
     CommissionError, ELECTRICAL_MODEL_RESISTANCE_SCALE, ElectricalModel, InnerSequence, PhaseId,
     TransientBuffer,
 };
-use crate::commissioning::types::{CommissioningBackend, StepResult};
+use crate::commissioning::types::{
+    CommissioningBackend, INDUCTANCE_FIT_POINT_COUNT, InductanceFitEvidence, InductanceFitPoint,
+    StepResult,
+};
 use foci_tmc4671::registers::Register;
 
 /// Sampling interval for resistance and transient captures (microseconds).
@@ -35,6 +38,9 @@ const INDUCTANCE_CYCLES_PER_STEP: u32 = 30;
 /// Minimum average |delta_I| per di/dt cycle to consider inductance valid.
 /// Below this, the current change is too small to extract L reliably.
 const INDUCTANCE_MIN_DELTA: u32 = 5;
+const INDUCTANCE_FIT_MIN_USABLE_POINTS: u8 = 3;
+const INDUCTANCE_FIT_MAX_DEADTIME_UD: i32 = 400;
+const INDUCTANCE_FIT_MAX_RESIDUAL_PERMILLE: u16 = 120;
 
 /// Number of transient samples for delay identification.
 /// Matches TransientBuffer capacity. Re-exported because the current-loop
@@ -263,6 +269,111 @@ fn resistance_measurement(data: &ElectricalIdData, coil_idx: usize) -> Option<(u
 fn resistance_model_scale(data: &ElectricalIdData, coil_idx: usize) -> Option<u32> {
     let (r_int, _, _) = resistance_measurement(data, coil_idx)?;
     Some(r_int)
+}
+
+fn fit_inductance_points(
+    points: &[InductanceFitPoint; INDUCTANCE_FIT_POINT_COUNT],
+    r_int: u32,
+) -> Option<InductanceFitEvidence> {
+    if r_int == 0 {
+        return None;
+    }
+
+    let mut n = 0i64;
+    let mut sum_x = 0i64;
+    let mut sum_y = 0i64;
+    let mut sum_xx = 0i64;
+    let mut sum_xy = 0i64;
+    let mut sum_elapsed_us = 0u64;
+    let mut sum_sample_count = 0u64;
+    let mut min_effective_ud = i32::MAX;
+    let mut selected_mask = 0u16;
+
+    for (idx, point) in points.iter().enumerate() {
+        if point.sample_count == 0 || point.avg_delta < INDUCTANCE_MIN_DELTA {
+            continue;
+        }
+        if point.effective_ud <= 0 {
+            continue;
+        }
+        let x = point.effective_ud as i64;
+        let y = point.avg_delta as i64;
+        n += 1;
+        sum_x += x;
+        sum_y += y;
+        sum_xx += x * x;
+        sum_xy += x * y;
+        sum_elapsed_us += u64::from(point.elapsed_us);
+        sum_sample_count += u64::from(point.sample_count);
+        min_effective_ud = min_effective_ud.min(point.effective_ud);
+        selected_mask |= 1u16 << idx;
+    }
+
+    if n < i64::from(INDUCTANCE_FIT_MIN_USABLE_POINTS) || sum_sample_count == 0 {
+        return None;
+    }
+
+    let denom = n * sum_xx - sum_x * sum_x;
+    if denom <= 0 {
+        return None;
+    }
+
+    let slope_milli = ((n * sum_xy - sum_x * sum_y) * 1000) / denom;
+    if slope_milli <= 0 {
+        return None;
+    }
+    let intercept_milli = ((sum_y * 1000) - slope_milli * sum_x) / n;
+    let deadtime_ud =
+        ((-intercept_milli) / slope_milli).clamp(i16::MIN as i64, i16::MAX as i64) as i16;
+    if deadtime_ud < 0
+        || i32::from(deadtime_ud) > INDUCTANCE_FIT_MAX_DEADTIME_UD
+        || i32::from(deadtime_ud) >= min_effective_ud
+    {
+        return None;
+    }
+
+    let mut max_residual_permille = 0u16;
+    for point in points.iter() {
+        if point.sample_count == 0 || point.avg_delta < INDUCTANCE_MIN_DELTA {
+            continue;
+        }
+        if point.effective_ud <= 0 {
+            continue;
+        }
+        let predicted_milli = slope_milli * point.effective_ud as i64 + intercept_milli;
+        if predicted_milli <= 0 {
+            return None;
+        }
+        let actual_milli = point.avg_delta as i64 * 1000;
+        let diff = actual_milli.abs_diff(predicted_milli) as u64;
+        let residual = (diff * 1000 / predicted_milli as u64).min(1000) as u16;
+        max_residual_permille = max_residual_permille.max(residual);
+    }
+    if max_residual_permille > INDUCTANCE_FIT_MAX_RESIDUAL_PERMILLE {
+        return None;
+    }
+
+    let dt_per_cycle_us = sum_elapsed_us / sum_sample_count;
+    if dt_per_cycle_us == 0 {
+        return None;
+    }
+
+    let tau_us = (dt_per_cycle_us * ELECTRICAL_MODEL_RESISTANCE_SCALE as u64 * 1000
+        / (slope_milli as u64 * r_int as u64)) as u32;
+    if tau_us == 0 {
+        return None;
+    }
+
+    Some(InductanceFitEvidence {
+        tau_us,
+        old_tau_us: 0,
+        slope_delta_per_ud_milli: slope_milli as u32,
+        intercept_delta_milli: intercept_milli.clamp(i32::MIN as i64, i32::MAX as i64) as i32,
+        deadtime_ud,
+        residual_permille: max_residual_permille,
+        usable_points: n as u8,
+        selected_mask,
+    })
 }
 
 fn inductance_measurement(data: &ElectricalIdData, coil_idx: usize) -> Option<(u32, u32, u32)> {
@@ -1100,6 +1211,89 @@ mod tests {
             (1235..=1260).contains(&assembly.model.l_int),
             "l_int should preserve the internal L scale: {}",
             assembly.model.l_int
+        );
+    }
+
+    #[test]
+    fn inductance_fit_uses_slope_not_absolute_ud() {
+        let r_int = 1000;
+        let dt_us = 100;
+        let target_tau_us = 1200;
+        let deadtime_ud = 200i32;
+        let uds = [512u16, 640, 768, 896];
+        let mut points = [InductanceFitPoint::EMPTY; INDUCTANCE_FIT_POINT_COUNT];
+
+        for (idx, ud) in uds.iter().copied().enumerate() {
+            let effective = i32::from(ud) - deadtime_ud;
+            let avg_delta =
+                (effective as u64 * dt_us as u64 * ELECTRICAL_MODEL_RESISTANCE_SCALE as u64
+                    / (target_tau_us as u64 * r_int as u64)) as u32;
+            points[idx] = InductanceFitPoint {
+                ud,
+                avg_delta,
+                avg_current_count: 0,
+                r_drop_ud: 0,
+                effective_ud: i32::from(ud),
+                sample_count: 100,
+                elapsed_us: 10_000,
+            };
+        }
+
+        let fit = fit_inductance_points(&points, r_int).expect("fit should pass");
+
+        assert!((1190..=1210).contains(&fit.tau_us), "tau={}", fit.tau_us);
+        assert!(
+            (190..=210).contains(&fit.deadtime_ud),
+            "deadtime={}",
+            fit.deadtime_ud
+        );
+        assert_eq!(fit.usable_points, 4);
+        assert!(
+            fit.residual_permille <= 20,
+            "residual={}",
+            fit.residual_permille
+        );
+    }
+
+    #[test]
+    fn inductance_fit_subtracts_r_drop_before_slope() {
+        let r_int = 1000;
+        let dt_us = 100;
+        let target_tau_us = 1200;
+        let deadtime_ud = 200i32;
+        let uds = [512u16, 640, 768, 896];
+        let currents = [20i32, 60, 100, 140];
+        let mut points = [InductanceFitPoint::EMPTY; INDUCTANCE_FIT_POINT_COUNT];
+
+        for (idx, ud) in uds.iter().copied().enumerate() {
+            let r_drop = r_int as i32 * currents[idx] / ELECTRICAL_MODEL_RESISTANCE_SCALE as i32;
+            let effective = i32::from(ud) - r_drop - deadtime_ud;
+            let avg_delta =
+                (effective as u64 * dt_us as u64 * ELECTRICAL_MODEL_RESISTANCE_SCALE as u64
+                    / (target_tau_us as u64 * r_int as u64)) as u32;
+            points[idx] = InductanceFitPoint {
+                ud,
+                avg_delta,
+                avg_current_count: currents[idx],
+                r_drop_ud: r_drop,
+                effective_ud: i32::from(ud) - r_drop,
+                sample_count: 100,
+                elapsed_us: 10_000,
+            };
+        }
+
+        let fit = fit_inductance_points(&points, r_int).expect("fit should pass");
+
+        assert!((1190..=1210).contains(&fit.tau_us), "tau={}", fit.tau_us);
+        assert!(
+            (190..=210).contains(&fit.deadtime_ud),
+            "deadtime={}",
+            fit.deadtime_ud
+        );
+        assert!(
+            fit.residual_permille <= 20,
+            "residual={}",
+            fit.residual_permille
         );
     }
 
