@@ -273,6 +273,8 @@ pub struct FociCurrentValidationAxis {
     pub negative_response_permille: u16,
     /// Cross-axis response normalized to target, in permille.
     pub cross_axis_permille: u16,
+    /// Peak instantaneous cross-axis response used as audit telemetry.
+    pub cross_axis_peak_permille: u16,
     /// Voltage output normalized to the configured limit, in permille.
     pub voltage_output_permille: u16,
     /// Absolute encoder movement observed during the sample.
@@ -1260,6 +1262,7 @@ mod resistance_reply_size_tests {
             positive_response_permille: u16::MAX,
             negative_response_permille: u16::MAX,
             cross_axis_permille: u16::MAX,
+            cross_axis_peak_permille: u16::MAX,
             voltage_output_permille: u16::MAX,
             encoder_delta_counts: u16::MAX,
             positive_encoder_delta_counts: i32::MAX,

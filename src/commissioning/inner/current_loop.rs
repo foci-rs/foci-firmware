@@ -137,6 +137,7 @@ pub(crate) enum CurrentValidationAxis {
 pub(crate) struct AxisDirectionalEvidence {
     gate: CurrentAxisGateResult,
     encoder_delta_counts: i32,
+    cross_axis_peak_permille: u16,
     status_flags: u32,
 }
 
@@ -161,6 +162,9 @@ const FLUX_VALIDATION_DELAYS_MS: [u16; crate::autotune::CURRENT_FLUX_VALIDATION_
     [1, 2, 5, 100];
 const TORQUE_VALIDATION_DELAYS_MS: [u16; crate::autotune::CURRENT_TORQUE_VALIDATION_SAMPLE_COUNT] =
     [0, 1, 2];
+const SETTLED_FLUX_SAMPLE_DELAY_MS: u16 = 100;
+const SETTLED_FLUX_AVERAGE_SAMPLES: usize = 4;
+const SETTLED_FLUX_AVERAGE_INTERVAL_US: u32 = 250;
 
 /// PID output voltage limit used during current-loop validation.
 ///
@@ -244,6 +248,32 @@ fn axis_sample_from_registers(
     }
 }
 
+fn cross_axis_permille(sample: &CurrentAxisSample) -> u16 {
+    let target_abs = sample.target.unsigned_abs().max(1) as u32;
+    ((sample.cross_axis_actual.unsigned_abs() as u32 * 1000) / target_abs).min(u16::MAX as u32)
+        as u16
+}
+
+fn max_abs_i16(current: i16, candidate: i16) -> i16 {
+    if candidate.unsigned_abs() > current.unsigned_abs() {
+        candidate
+    } else {
+        current
+    }
+}
+
+fn max_abs_i32(current: i32, candidate: i32) -> i32 {
+    if candidate.unsigned_abs() > current.unsigned_abs() {
+        candidate
+    } else {
+        current
+    }
+}
+
+fn should_average_current_sample(axis: CurrentValidationAxis, sample_delay_ms: u16) -> bool {
+    axis == CurrentValidationAxis::Flux && sample_delay_ms == SETTLED_FLUX_SAMPLE_DELAY_MS
+}
+
 fn validation_gate(
     config: &crate::config::TmcConfig,
     axis: CurrentValidationAxis,
@@ -312,6 +342,9 @@ fn combine_axis_pair_evidence(
             .gate
             .cross_axis_permille
             .max(negative.gate.cross_axis_permille),
+        cross_axis_peak_permille: positive
+            .cross_axis_peak_permille
+            .max(negative.cross_axis_peak_permille),
         voltage_output_permille: positive
             .gate
             .voltage_output_permille
@@ -326,15 +359,14 @@ fn combine_axis_pair_evidence(
     }
 }
 
-async fn read_axis_directional_evidence<B: CommissioningBackend>(
+async fn read_axis_sample<B: CommissioningBackend>(
     backend: &mut B,
     axis: CurrentValidationAxis,
     target: i16,
-    sample_delay_ms: u16,
     encoder_start: u32,
     output_limit: u32,
     encoder_counts_per_rev: u32,
-) -> Result<AxisDirectionalEvidence, ()> {
+) -> Result<CurrentAxisSample, ()> {
     use foci_tmc4671::registers::{
         INTERIM_FOC_UQ_UD_LIMITED, PID_TORQUE_FLUX_ACTUAL, STATUS_FLAGS,
     };
@@ -352,7 +384,7 @@ async fn read_axis_directional_evidence<B: CommissioningBackend>(
     let status_flags = backend.read_register(STATUS_FLAGS).await.map_err(|_| ())?;
     let encoder_end = backend.try_read_encoder_count().await.map_err(|_| ())?;
 
-    let sample = axis_sample_from_registers(
+    Ok(axis_sample_from_registers(
         axis,
         target,
         AxisSampleRegisters {
@@ -364,17 +396,121 @@ async fn read_axis_directional_evidence<B: CommissioningBackend>(
             encoder_counts_per_rev,
             status_flags,
         },
-    );
+    ))
+}
+
+fn directional_evidence_from_sample<B: CommissioningBackend>(
+    backend: &B,
+    axis: CurrentValidationAxis,
+    sample_delay_ms: u16,
+    sample: CurrentAxisSample,
+) -> AxisDirectionalEvidence {
     let gate = classify_current_axis_sample(
         &sample,
         &validation_gate(backend.tmc_config(), axis, sample_delay_ms),
     );
 
-    Ok(AxisDirectionalEvidence {
+    AxisDirectionalEvidence {
+        cross_axis_peak_permille: gate.cross_axis_permille,
         gate,
         encoder_delta_counts: sample.encoder_delta_counts,
         status_flags: sample.status_flags,
-    })
+    }
+}
+
+async fn read_axis_directional_evidence<B: CommissioningBackend>(
+    backend: &mut B,
+    axis: CurrentValidationAxis,
+    target: i16,
+    sample_delay_ms: u16,
+    encoder_start: u32,
+    output_limit: u32,
+    encoder_counts_per_rev: u32,
+) -> Result<AxisDirectionalEvidence, ()> {
+    let sample = read_axis_sample(
+        backend,
+        axis,
+        target,
+        encoder_start,
+        output_limit,
+        encoder_counts_per_rev,
+    )
+    .await?;
+
+    Ok(directional_evidence_from_sample(
+        backend,
+        axis,
+        sample_delay_ms,
+        sample,
+    ))
+}
+
+async fn read_axis_directional_evidence_for_gate<B: CommissioningBackend>(
+    backend: &mut B,
+    axis: CurrentValidationAxis,
+    target: i16,
+    sample_delay_ms: u16,
+    encoder_start: u32,
+    output_limit: u32,
+    encoder_counts_per_rev: u32,
+) -> Result<AxisDirectionalEvidence, ()> {
+    if !should_average_current_sample(axis, sample_delay_ms) {
+        return read_axis_directional_evidence(
+            backend,
+            axis,
+            target,
+            sample_delay_ms,
+            encoder_start,
+            output_limit,
+            encoder_counts_per_rev,
+        )
+        .await;
+    }
+
+    let mut same_axis_total = 0i32;
+    let mut cross_axis_total = 0i32;
+    let mut output_limited_peak = 0i16;
+    let mut encoder_delta_peak = 0i32;
+    let mut status_flags_or = 0u32;
+    let mut cross_axis_peak_permille = 0u16;
+
+    for index in 0..SETTLED_FLUX_AVERAGE_SAMPLES {
+        let sample = read_axis_sample(
+            backend,
+            axis,
+            target,
+            encoder_start,
+            output_limit,
+            encoder_counts_per_rev,
+        )
+        .await?;
+
+        same_axis_total += i32::from(sample.same_axis_actual);
+        cross_axis_total += i32::from(sample.cross_axis_actual);
+        output_limited_peak = max_abs_i16(output_limited_peak, sample.output_limited);
+        encoder_delta_peak = max_abs_i32(encoder_delta_peak, sample.encoder_delta_counts);
+        status_flags_or |= sample.status_flags;
+        cross_axis_peak_permille = cross_axis_peak_permille.max(cross_axis_permille(&sample));
+
+        if index + 1 < SETTLED_FLUX_AVERAGE_SAMPLES {
+            backend.delay_us(SETTLED_FLUX_AVERAGE_INTERVAL_US).await;
+        }
+    }
+
+    let count = SETTLED_FLUX_AVERAGE_SAMPLES as i32;
+    let averaged_sample = CurrentAxisSample {
+        target,
+        same_axis_actual: (same_axis_total / count) as i16,
+        cross_axis_actual: (cross_axis_total / count) as i16,
+        output_limited: output_limited_peak,
+        output_limit: output_limit.min(u16::MAX as u32) as u16,
+        encoder_delta_counts: encoder_delta_peak,
+        status_flags: status_flags_or,
+    };
+    let mut evidence =
+        directional_evidence_from_sample(backend, axis, sample_delay_ms, averaged_sample);
+    evidence.cross_axis_peak_permille = cross_axis_peak_permille;
+    Ok(evidence)
 }
 
 fn advance_after_directional_sample(
@@ -934,7 +1070,7 @@ pub(crate) async fn step_current_validate<B: CommissioningBackend>(
             }
 
             if sample_delay_ms == 0 {
-                let directional = match read_axis_directional_evidence(
+                let directional = match read_axis_directional_evidence_for_gate(
                     backend,
                     axis,
                     target,
@@ -1020,7 +1156,7 @@ pub(crate) async fn step_current_validate<B: CommissioningBackend>(
                 CaptureDirection::Forward => data.step_amplitude as i16,
                 CaptureDirection::Reverse => -(data.step_amplitude as i16),
             };
-            let directional = match read_axis_directional_evidence(
+            let directional = match read_axis_directional_evidence_for_gate(
                 backend,
                 axis,
                 target,
@@ -2312,6 +2448,81 @@ mod tests {
         assert_eq!(evidence.negative_encoder_delta_counts, -3);
     }
 
+    #[test]
+    fn settled_flux_evidence_averages_single_cross_spike_and_reports_peak() {
+        pollster::block_on(async {
+            let mut backend = MockBackend::new();
+            let _ = backend
+                .registers
+                .insert(INTERIM_FOC_UQ_UD_LIMITED.data.addr(), pack_halves(0, 100));
+            let _ = backend.registers.insert(STATUS_FLAGS.addr(), 0);
+            backend.set_pid_torque_flux_actual_sequence(&[
+                pack_halves(45, 250),
+                pack_halves(5, 250),
+                pack_halves(5, 250),
+                pack_halves(5, 250),
+            ]);
+
+            let evidence = read_axis_directional_evidence_for_gate(
+                &mut backend,
+                CurrentValidationAxis::Flux,
+                250,
+                100,
+                0,
+                1024,
+                4000,
+            )
+            .await
+            .expect("settled flux averaging should read cleanly");
+
+            assert_eq!(
+                evidence.gate.status,
+                crate::autotune::CURRENT_AXIS_VALIDATION_PASS
+            );
+            assert_eq!(evidence.gate.response_permille, 1000);
+            assert_eq!(evidence.gate.cross_axis_permille, 60);
+            assert_eq!(evidence.cross_axis_peak_permille, 180);
+            assert_eq!(backend.pid_torque_flux_actual_pos, 4);
+            assert_eq!(backend.delay_us_log.as_slice(), &[250, 250, 250]);
+        });
+    }
+
+    #[test]
+    fn settled_flux_evidence_fails_when_average_cross_stays_high() {
+        pollster::block_on(async {
+            let mut backend = MockBackend::new();
+            let _ = backend
+                .registers
+                .insert(INTERIM_FOC_UQ_UD_LIMITED.data.addr(), pack_halves(0, 100));
+            let _ = backend.registers.insert(STATUS_FLAGS.addr(), 0);
+            backend.set_pid_torque_flux_actual_sequence(&[
+                pack_halves(45, 250),
+                pack_halves(45, 250),
+                pack_halves(45, 250),
+                pack_halves(45, 250),
+            ]);
+
+            let evidence = read_axis_directional_evidence_for_gate(
+                &mut backend,
+                CurrentValidationAxis::Flux,
+                250,
+                100,
+                0,
+                1024,
+                4000,
+            )
+            .await
+            .expect("settled flux averaging should read cleanly");
+
+            assert_eq!(
+                evidence.gate.status,
+                crate::autotune::CURRENT_AXIS_VALIDATION_CROSS_AXIS
+            );
+            assert_eq!(evidence.gate.cross_axis_permille, 180);
+            assert_eq!(evidence.cross_axis_peak_permille, 180);
+        });
+    }
+
     fn axis_directional_evidence(status: u8) -> AxisDirectionalEvidence {
         AxisDirectionalEvidence {
             gate: CurrentAxisGateResult {
@@ -2323,6 +2534,7 @@ mod tests {
                 max_cross_axis_permille: 150,
             },
             encoder_delta_counts: 0,
+            cross_axis_peak_permille: 0,
             status_flags: if status == crate::autotune::CURRENT_AXIS_VALIDATION_STATUS_FLAGS {
                 1
             } else {
@@ -2538,6 +2750,7 @@ mod tests {
                     positive_response_permille: 980,
                     negative_response_permille: 970,
                     cross_axis_permille: 10,
+                    cross_axis_peak_permille: 10,
                     voltage_output_permille: 100,
                     encoder_delta_counts: 0,
                     positive_encoder_delta_counts: 0,
@@ -2554,6 +2767,7 @@ mod tests {
                     positive_response_permille: 100,
                     negative_response_permille: 120,
                     cross_axis_permille: 10,
+                    cross_axis_peak_permille: 10,
                     voltage_output_permille: 100,
                     encoder_delta_counts: 0,
                     positive_encoder_delta_counts: 0,
@@ -2622,6 +2836,7 @@ mod tests {
                     positive_response_permille: 980,
                     negative_response_permille: 970,
                     cross_axis_permille: 10,
+                    cross_axis_peak_permille: 10,
                     voltage_output_permille: 100,
                     encoder_delta_counts: 0,
                     positive_encoder_delta_counts: 0,
@@ -2638,6 +2853,7 @@ mod tests {
                     positive_response_permille: 780,
                     negative_response_permille: 680,
                     cross_axis_permille: 50,
+                    cross_axis_peak_permille: 50,
                     voltage_output_permille: 450,
                     encoder_delta_counts: 15,
                     positive_encoder_delta_counts: 15,

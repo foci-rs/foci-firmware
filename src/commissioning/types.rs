@@ -26,6 +26,12 @@ pub struct CurrentValidationAxisEvidence {
     pub negative_response_permille: u16,
     /// Maximum opposite-axis response for the positive/negative pair, in permille.
     pub cross_axis_permille: u16,
+    /// Maximum instantaneous cross-axis response seen while building this evidence.
+    ///
+    /// Equals `cross_axis_permille` for single-read samples. For averaged
+    /// settled flux samples, `cross_axis_permille` is the averaged gate value
+    /// and this field preserves the raw ripple peak for audit.
+    pub cross_axis_peak_permille: u16,
     /// Maximum voltage output for the positive/negative pair, in permille.
     pub voltage_output_permille: u16,
     /// Maximum encoder movement for the positive/negative pair.
@@ -48,6 +54,7 @@ impl CurrentValidationAxisEvidence {
         positive_response_permille: 0,
         negative_response_permille: 0,
         cross_axis_permille: 0,
+        cross_axis_peak_permille: 0,
         voltage_output_permille: 0,
         encoder_delta_counts: 0,
         positive_encoder_delta_counts: 0,

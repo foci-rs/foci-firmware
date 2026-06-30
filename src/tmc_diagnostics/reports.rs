@@ -458,6 +458,8 @@ pub struct CurrentValidationAxisReport {
     pub negative_response_permille: u16,
     /// Cross-axis response normalized to target, in permille.
     pub cross_axis_permille: u16,
+    /// Peak instantaneous cross-axis response used as audit telemetry.
+    pub cross_axis_peak_permille: u16,
     /// Voltage output normalized to the configured limit, in permille.
     pub voltage_output_permille: u16,
     /// Absolute encoder movement observed during the sample.

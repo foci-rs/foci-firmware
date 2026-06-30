@@ -96,6 +96,10 @@ pub struct MockBackend {
     pub abn_decoder_count_sequence: Vec<u32, 16>,
     /// Current index into `abn_decoder_count_sequence`.
     pub abn_decoder_count_pos: usize,
+    /// Sequential values to return for consecutive `PID_TORQUE_FLUX_ACTUAL` reads.
+    pub pid_torque_flux_actual_sequence: Vec<u32, 32>,
+    /// Current index into `pid_torque_flux_actual_sequence`.
+    pub pid_torque_flux_actual_pos: usize,
     /// If true, every SPI write asserts that step processing has already been gated off.
     pub assert_motor_armed_false_on_write: bool,
     /// If true, `read_register(ADC_IWY_IUX)` reports a phase current
@@ -142,6 +146,8 @@ impl MockBackend {
             read_position_actual_pos: 0,
             abn_decoder_count_sequence: Vec::new(),
             abn_decoder_count_pos: 0,
+            pid_torque_flux_actual_sequence: Vec::new(),
+            pid_torque_flux_actual_pos: 0,
             assert_motor_armed_false_on_write: false,
             script_resistance_current_proportional_to_ud: false,
             last_uq_ud_ext_write: 0,
@@ -155,6 +161,15 @@ impl MockBackend {
             let _ = self.abn_decoder_count_sequence.push(value);
         }
         self.abn_decoder_count_pos = 0;
+    }
+
+    /// Set sequential `PID_TORQUE_FLUX_ACTUAL` values for read-register tests.
+    pub fn set_pid_torque_flux_actual_sequence(&mut self, values: &[u32]) {
+        self.pid_torque_flux_actual_sequence.clear();
+        for &value in values {
+            let _ = self.pid_torque_flux_actual_sequence.push(value);
+        }
+        self.pid_torque_flux_actual_pos = 0;
     }
 
     /// Write a register through the mock's register-I/O trait implementation.
@@ -189,6 +204,13 @@ impl CommissionRegisterIo for MockBackend {
         {
             let val = self.abn_decoder_count_sequence[self.abn_decoder_count_pos];
             self.abn_decoder_count_pos += 1;
+            return Ok(val);
+        }
+        if addr == foci_tmc4671::registers::PID_TORQUE_FLUX_ACTUAL.addr()
+            && self.pid_torque_flux_actual_pos < self.pid_torque_flux_actual_sequence.len()
+        {
+            let val = self.pid_torque_flux_actual_sequence[self.pid_torque_flux_actual_pos];
+            self.pid_torque_flux_actual_pos += 1;
             return Ok(val);
         }
         if self.script_resistance_current_proportional_to_ud {
