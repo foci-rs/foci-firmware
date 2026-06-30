@@ -949,27 +949,26 @@ pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
                     Err(_) => return super::fail_inner(phase, CommissionError::Spi),
                 };
                 let current = (actual & 0xFFFF) as i16;
+                let profile = backend
+                    .tmc_config()
+                    .resistance_profile(backend.tmc_config().resistance_scale_metadata_validated);
+                if u32::from(current.unsigned_abs()) > u32::from(profile.max_expected_current_count)
+                {
+                    let _ = backend.write_register(UQ_UD_EXT, 0).await;
+                    let _ = backend.write_register(MODE_RAMP_MODE_MOTION, 0).await;
+                    backend.set_enable_pin(false);
+                    let deadline = backend.elapsed_us().wrapping_add(ELECTRICAL_COOLDOWN_US);
+                    *electrical_id_state = ElectricalIdState::InductanceDisable {
+                        coil: *coil,
+                        point: *point,
+                        deadline_us: deadline,
+                        skip_remaining_points: true,
+                    };
+                    return StepResult::Continue;
+                }
                 if *warmup_cycles_remaining > 0 {
                     *warmup_cycles_remaining -= 1;
                 } else {
-                    let profile = backend.tmc_config().resistance_profile(
-                        backend.tmc_config().resistance_scale_metadata_validated,
-                    );
-                    if u32::from(current.unsigned_abs())
-                        > u32::from(profile.max_expected_current_count)
-                    {
-                        let _ = backend.write_register(UQ_UD_EXT, 0).await;
-                        let _ = backend.write_register(MODE_RAMP_MODE_MOTION, 0).await;
-                        backend.set_enable_pin(false);
-                        let deadline = backend.elapsed_us().wrapping_add(ELECTRICAL_COOLDOWN_US);
-                        *electrical_id_state = ElectricalIdState::InductanceDisable {
-                            coil: *coil,
-                            point: *point,
-                            deadline_us: deadline,
-                            skip_remaining_points: true,
-                        };
-                        return StepResult::Continue;
-                    }
                     let delta = (current as i32 - *prev_current as i32).unsigned_abs();
                     *point_sum_delta += u64::from(delta);
                     *point_sample_count = point_sample_count.saturating_add(1);
@@ -2314,6 +2313,183 @@ mod tests {
                     ..
                 }
             ));
+
+            backend.elapsed_us_value = ELECTRICAL_COOLDOWN_US;
+            let result = step_electrical_identification(
+                &mut phase,
+                &mut buf,
+                InnerSequence::Commission,
+                &mut selftest_results,
+                &mut diagnostics,
+                &mut backend,
+            )
+            .await;
+
+            assert!(matches!(result, StepResult::Continue));
+            assert!(matches!(
+                phase,
+                InnerPhase::ElectricalId {
+                    state: ElectricalIdState::InductanceSetup { coil: 1, point: 0 },
+                    ..
+                }
+            ));
+        });
+    }
+
+    #[test]
+    fn inductance_over_current_during_warmup_disables_immediately() {
+        pollster::block_on(async {
+            let mut backend = MockBackend::new();
+            backend.enable_pin = true;
+            backend.tmc_config.resistance_scale_metadata_validated = true;
+            backend.tmc_config.resistance_max_expected_current_count = 100;
+            backend.set_pid_torque_flux_actual_sequence(&[101]);
+            let mut phase = InnerPhase::ElectricalId {
+                state: ElectricalIdState::InductanceToggle {
+                    coil: 0,
+                    point: 2,
+                    total_cycles: 31,
+                    remaining_cycles: 31,
+                    prev_current: 0,
+                    point_sum_delta: 0,
+                    point_sample_count: 0,
+                    current_sum: 0,
+                    start_us: 0,
+                    warmup_cycles_remaining: 31,
+                    accumulation_start_us: None,
+                },
+                data: ElectricalIdData::new(512),
+            };
+            let mut buf = TransientBuffer::new();
+            let mut selftest_results = crate::selftest::SelftestResults::default();
+            let mut diagnostics = crate::selftest::CommissionDiagnostics::default();
+
+            let result = step_electrical_identification(
+                &mut phase,
+                &mut buf,
+                InnerSequence::Commission,
+                &mut selftest_results,
+                &mut diagnostics,
+                &mut backend,
+            )
+            .await;
+
+            assert!(matches!(result, StepResult::Continue));
+            assert!(!backend.enable_pin);
+            assert!(matches!(
+                phase,
+                InnerPhase::ElectricalId {
+                    state: ElectricalIdState::InductanceDisable {
+                        coil: 0,
+                        point: 2,
+                        skip_remaining_points: true,
+                        ..
+                    },
+                    ..
+                }
+            ));
+        });
+    }
+
+    #[test]
+    fn inductance_skip_remaining_points_on_second_coil_advances_to_delay() {
+        pollster::block_on(async {
+            let mut backend = MockBackend::new();
+            let mut phase = InnerPhase::ElectricalId {
+                state: ElectricalIdState::InductanceDisable {
+                    coil: 1,
+                    point: 2,
+                    deadline_us: 0,
+                    skip_remaining_points: true,
+                },
+                data: ElectricalIdData::new(512),
+            };
+            let mut buf = TransientBuffer::new();
+            let mut selftest_results = crate::selftest::SelftestResults::default();
+            let mut diagnostics = crate::selftest::CommissionDiagnostics::default();
+
+            let result = step_electrical_identification(
+                &mut phase,
+                &mut buf,
+                InnerSequence::Commission,
+                &mut selftest_results,
+                &mut diagnostics,
+                &mut backend,
+            )
+            .await;
+
+            assert!(matches!(result, StepResult::Continue));
+            assert!(matches!(
+                phase,
+                InnerPhase::ElectricalId {
+                    state: ElectricalIdState::DelaySetup,
+                    ..
+                }
+            ));
+        });
+    }
+
+    #[test]
+    fn inductance_nonzero_point_stores_fit_payload_without_legacy_telemetry() {
+        pollster::block_on(async {
+            let mut data = ElectricalIdData::new(512);
+            data.resistance_result = Some(resistance_result(2000, 2000));
+            data.inductance_sum_delta = [1234, 5678];
+            data.inductance_count = [3, 4];
+            data.inductance_elapsed_us = [55, 66];
+            let mut phase = InnerPhase::ElectricalId {
+                state: ElectricalIdState::InductanceToggle {
+                    coil: 0,
+                    point: 1,
+                    total_cycles: 2,
+                    remaining_cycles: 2,
+                    prev_current: 10,
+                    point_sum_delta: 0,
+                    point_sample_count: 0,
+                    current_sum: 0,
+                    start_us: 100,
+                    warmup_cycles_remaining: 0,
+                    accumulation_start_us: Some(100),
+                },
+                data,
+            };
+            let mut buf = TransientBuffer::new();
+            let mut backend = MockBackend::new();
+            backend.elapsed_us_value = 420;
+            backend.set_pid_torque_flux_actual_sequence(&[20, 30]);
+            let mut selftest_results = crate::selftest::SelftestResults::default();
+            let mut diagnostics = crate::selftest::CommissionDiagnostics::default();
+
+            let result = step_electrical_identification(
+                &mut phase,
+                &mut buf,
+                InnerSequence::Commission,
+                &mut selftest_results,
+                &mut diagnostics,
+                &mut backend,
+            )
+            .await;
+
+            assert!(matches!(result, StepResult::Continue));
+            match &phase {
+                InnerPhase::ElectricalId {
+                    state: ElectricalIdState::InductanceDisable { .. },
+                    data,
+                } => {
+                    let point = data.inductance_fit_points[0][1];
+                    assert_eq!(point.ud, 640);
+                    assert_eq!(point.avg_delta, 10);
+                    assert_eq!(point.avg_current_count, 25);
+                    assert_eq!(point.r_drop_ud, 50);
+                    assert_eq!(point.effective_ud, 590);
+                    assert_eq!(point.sample_count, 2);
+                    assert_eq!(point.elapsed_us, 320);
+                    assert_eq!(data.inductance_sum_delta, [1234, 5678]);
+                    assert_eq!(data.inductance_count, [3, 4]);
+                    assert_eq!(data.inductance_elapsed_us, [55, 66]);
+                }
+                other => panic!("expected InductanceDisable, got {other:?}"),
+            }
         });
     }
 
