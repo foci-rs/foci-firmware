@@ -38,8 +38,41 @@ const INDUCTANCE_CYCLES_PER_STEP: u32 = 30;
 /// Minimum average |delta_I| per di/dt cycle to consider inductance valid.
 /// Below this, the current change is too small to extract L reliably.
 const INDUCTANCE_MIN_DELTA: u32 = 5;
+#[allow(
+    unfulfilled_lint_expectations,
+    reason = "the staged helper references this constant before production capture/model assembly lands"
+)]
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "multi-amplitude inductance capture/model assembly tasks wire this into production",
+    )
+)]
 const INDUCTANCE_FIT_MIN_USABLE_POINTS: u8 = 3;
+#[allow(
+    unfulfilled_lint_expectations,
+    reason = "the staged helper references this constant before production capture/model assembly lands"
+)]
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "multi-amplitude inductance capture/model assembly tasks wire this into production",
+    )
+)]
 const INDUCTANCE_FIT_MAX_DEADTIME_UD: i32 = 400;
+#[allow(
+    unfulfilled_lint_expectations,
+    reason = "the staged helper references this constant before production capture/model assembly lands"
+)]
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "multi-amplitude inductance capture/model assembly tasks wire this into production",
+    )
+)]
 const INDUCTANCE_FIT_MAX_RESIDUAL_PERMILLE: u16 = 120;
 
 /// Number of transient samples for delay identification.
@@ -271,6 +304,13 @@ fn resistance_model_scale(data: &ElectricalIdData, coil_idx: usize) -> Option<u3
     Some(r_int)
 }
 
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "multi-amplitude inductance capture/model assembly tasks wire this into production",
+    )
+)]
 fn fit_inductance_points(
     points: &[InductanceFitPoint; INDUCTANCE_FIT_POINT_COUNT],
     r_int: u32,
@@ -345,7 +385,7 @@ fn fit_inductance_points(
             return None;
         }
         let actual_milli = point.avg_delta as i64 * 1000;
-        let diff = actual_milli.abs_diff(predicted_milli) as u64;
+        let diff = actual_milli.abs_diff(predicted_milli);
         let residual = (diff * 1000 / predicted_milli as u64).min(1000) as u16;
         max_residual_permille = max_residual_permille.max(residual);
     }
@@ -358,8 +398,9 @@ fn fit_inductance_points(
         return None;
     }
 
-    let tau_us = (dt_per_cycle_us * ELECTRICAL_MODEL_RESISTANCE_SCALE as u64 * 1000
-        / (slope_milli as u64 * r_int as u64)) as u32;
+    let tau_us_u64 = dt_per_cycle_us * ELECTRICAL_MODEL_RESISTANCE_SCALE as u64 * 1000
+        / (slope_milli as u64 * r_int as u64);
+    let tau_us = u32::try_from(tau_us_u64).ok()?;
     if tau_us == 0 {
         return None;
     }
@@ -1295,6 +1336,26 @@ mod tests {
             "residual={}",
             fit.residual_permille
         );
+    }
+
+    #[test]
+    fn inductance_fit_rejects_tau_overflow() {
+        let mut points = [InductanceFitPoint::EMPTY; INDUCTANCE_FIT_POINT_COUNT];
+        let uds = [5200u16, 6200, 7200, 8200];
+
+        for (idx, ud) in uds.iter().copied().enumerate() {
+            points[idx] = InductanceFitPoint {
+                ud,
+                avg_delta: idx as u32 + INDUCTANCE_MIN_DELTA,
+                avg_current_count: 0,
+                r_drop_ud: 0,
+                effective_ud: i32::from(ud),
+                sample_count: 1,
+                elapsed_us: u32::MAX,
+            };
+        }
+
+        assert!(fit_inductance_points(&points, 1).is_none());
     }
 
     #[test]
