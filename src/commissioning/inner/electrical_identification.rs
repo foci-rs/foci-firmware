@@ -885,6 +885,24 @@ pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
                 Ok(actual) => (actual & 0xFFFF) as i16,
                 Err(_) => return super::fail_inner(phase, CommissionError::Spi),
             };
+            let profile = backend
+                .tmc_config()
+                .resistance_profile(backend.tmc_config().resistance_scale_metadata_validated);
+            if u32::from(initial_current.unsigned_abs())
+                > u32::from(profile.max_expected_current_count)
+            {
+                let _ = backend.write_register(UQ_UD_EXT, 0).await;
+                let _ = backend.write_register(MODE_RAMP_MODE_MOTION, 0).await;
+                backend.set_enable_pin(false);
+                let deadline = backend.elapsed_us().wrapping_add(ELECTRICAL_COOLDOWN_US);
+                *electrical_id_state = ElectricalIdState::InductanceDisable {
+                    coil: *coil,
+                    point: *point,
+                    deadline_us: deadline,
+                    skip_remaining_points: true,
+                };
+                return StepResult::Continue;
+            }
             // Re-read `didt_cycles` here rather than threading it through
             // the state enum. The `CommissioningBackend` trait does not
             // promise `tmc_config()` immutability, but `TmcConfig` is
@@ -2357,6 +2375,53 @@ mod tests {
                     start_us: 0,
                     warmup_cycles_remaining: 31,
                     accumulation_start_us: None,
+                },
+                data: ElectricalIdData::new(512),
+            };
+            let mut buf = TransientBuffer::new();
+            let mut selftest_results = crate::selftest::SelftestResults::default();
+            let mut diagnostics = crate::selftest::CommissionDiagnostics::default();
+
+            let result = step_electrical_identification(
+                &mut phase,
+                &mut buf,
+                InnerSequence::Commission,
+                &mut selftest_results,
+                &mut diagnostics,
+                &mut backend,
+            )
+            .await;
+
+            assert!(matches!(result, StepResult::Continue));
+            assert!(!backend.enable_pin);
+            assert!(matches!(
+                phase,
+                InnerPhase::ElectricalId {
+                    state: ElectricalIdState::InductanceDisable {
+                        coil: 0,
+                        point: 2,
+                        skip_remaining_points: true,
+                        ..
+                    },
+                    ..
+                }
+            ));
+        });
+    }
+
+    #[test]
+    fn inductance_over_current_initial_sample_disables_immediately() {
+        pollster::block_on(async {
+            let mut backend = MockBackend::new();
+            backend.enable_pin = true;
+            backend.tmc_config.resistance_scale_metadata_validated = true;
+            backend.tmc_config.resistance_max_expected_current_count = 100;
+            backend.set_pid_torque_flux_actual_sequence(&[101]);
+            let mut phase = InnerPhase::ElectricalId {
+                state: ElectricalIdState::InductanceSettle {
+                    coil: 0,
+                    point: 2,
+                    deadline_us: 0,
                 },
                 data: ElectricalIdData::new(512),
             };
