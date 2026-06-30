@@ -1306,16 +1306,16 @@ mod resistance_reply_size_tests {
     #[test]
     fn inductance_fit_reply_fits_klipper_message_limit() {
         let reply = super::FociInductanceFit {
-            oid: 1,
-            coil: 0,
-            tau_us: 450,
-            old_tau_us: 730,
-            slope_delta_per_ud_milli: 65,
-            intercept_delta_milli: -13_000,
-            deadtime_ud: 200,
-            residual_permille: 12,
-            usable_points: 4,
-            selected_mask: 0b1111,
+            oid: u8::MAX,
+            coil: u8::MAX,
+            tau_us: 0x7FFF_FFFF,
+            old_tau_us: 0x7FFF_FFFF,
+            slope_delta_per_ud_milli: 0x7FFF_FFFF,
+            intercept_delta_milli: i32::MIN,
+            deadtime_ud: i16::MIN,
+            residual_permille: u16::MAX,
+            usable_points: u8::MAX,
+            selected_mask: u16::MAX,
         };
         assert_fits_with_id(&reply, "foci_inductance_fit");
     }
@@ -1323,16 +1323,16 @@ mod resistance_reply_size_tests {
     #[test]
     fn inductance_point_reply_fits_klipper_message_limit() {
         let reply = super::FociInductancePoint {
-            oid: 1,
-            coil: 0,
-            point: 0,
-            ud: 512,
-            avg_delta: 18,
-            avg_current_count: 40,
-            r_drop_ud: 40,
-            effective_ud: 472,
-            sample_count: 500,
-            elapsed_us: 50_000,
+            oid: u8::MAX,
+            coil: u8::MAX,
+            point: u8::MAX,
+            ud: u16::MAX,
+            avg_delta: 0x7FFF_FFFF,
+            avg_current_count: i32::MIN,
+            r_drop_ud: i32::MIN,
+            effective_ud: i32::MIN,
+            sample_count: 0x7FFF_FFFF,
+            elapsed_us: 0x7FFF_FFFF,
         };
         assert_fits_with_id(&reply, "foci_inductance_point");
     }

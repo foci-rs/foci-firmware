@@ -482,6 +482,8 @@ mod tests {
             coil: u8,
             tau_us: u32,
             old_tau_us: u32,
+            slope_delta_per_ud_milli: u32,
+            intercept_delta_milli: i32,
             deadtime_ud: i16,
             residual_permille: u16,
             usable_points: u8,
@@ -493,7 +495,11 @@ mod tests {
             point: u8,
             ud: u16,
             avg_delta: u32,
+            avg_current_count: i32,
+            r_drop_ud: i32,
             effective_ud: i32,
+            sample_count: u32,
+            elapsed_us: u32,
         },
         CurrentValidationAxis {
             oid: u8,
@@ -636,6 +642,8 @@ mod tests {
                 coil: report.coil,
                 tau_us: report.tau_us,
                 old_tau_us: report.old_tau_us,
+                slope_delta_per_ud_milli: report.slope_delta_per_ud_milli,
+                intercept_delta_milli: report.intercept_delta_milli,
                 deadtime_ud: report.deadtime_ud,
                 residual_permille: report.residual_permille,
                 usable_points: report.usable_points,
@@ -650,7 +658,11 @@ mod tests {
                 point: report.point,
                 ud: report.ud,
                 avg_delta: report.avg_delta,
+                avg_current_count: report.avg_current_count,
+                r_drop_ud: report.r_drop_ud,
                 effective_ud: report.effective_ud,
+                sample_count: report.sample_count,
+                elapsed_us: report.elapsed_us,
             });
         }
 
@@ -1045,6 +1057,8 @@ mod tests {
                 coil: 0,
                 tau_us: 450,
                 old_tau_us: 730,
+                slope_delta_per_ud_milli: 65,
+                intercept_delta_milli: -13_000,
                 deadtime_ud: 200,
                 residual_permille: 12,
                 usable_points: 4,
@@ -1056,7 +1070,11 @@ mod tests {
                 point: 0,
                 ud: 512,
                 avg_delta: 18,
+                avg_current_count: 40,
+                r_drop_ud: 40,
                 effective_ud: 472,
+                sample_count: 500,
+                elapsed_us: 50_000,
             },
         ]
     }
@@ -1142,6 +1160,11 @@ mod tests {
             },
         );
 
+        let alignment_index = sink
+            .events
+            .iter()
+            .position(|e| matches!(e, Event::EncoderAlignment { .. }))
+            .expect("encoder alignment event");
         let fit_index = sink
             .events
             .iter()
@@ -1152,13 +1175,51 @@ mod tests {
             .iter()
             .position(|e| matches!(e, Event::InductancePoint { .. }))
             .expect("inductance point event");
+        let current_loop_index = sink
+            .events
+            .iter()
+            .position(|e| matches!(e, Event::CurrentLoopRun { .. }))
+            .expect("current loop run event");
         let terminal_index = sink
             .events
             .iter()
             .position(|e| matches!(e, Event::Commission { .. }))
             .expect("terminal commission event");
-        assert!(fit_index < terminal_index);
-        assert!(point_index < terminal_index);
+        assert!(alignment_index < fit_index);
+        assert!(fit_index < point_index);
+        assert!(point_index < current_loop_index);
+        assert!(current_loop_index < terminal_index);
+    }
+
+    #[test]
+    fn commission_result_skips_empty_inductance_evidence() {
+        let mut sink = RecordingSink::default();
+        let mut result = commission_result();
+        result.inner.inductance_fit = [InductanceFitEvidence::EMPTY; 2];
+        result.inner.inductance_fit_points =
+            [[InductanceFitPoint::EMPTY; INDUCTANCE_FIT_POINT_COUNT]; 2];
+
+        emit_terminal_reply(
+            &mut sink,
+            ReplyPayload::CommissionResult {
+                oid: 7,
+                status: 0,
+                result,
+            },
+        );
+
+        assert!(
+            !sink
+                .events
+                .iter()
+                .any(|e| matches!(e, Event::InductanceFit { .. }))
+        );
+        assert!(
+            !sink
+                .events
+                .iter()
+                .any(|e| matches!(e, Event::InductancePoint { .. }))
+        );
     }
 
     #[test]
@@ -1458,6 +1519,7 @@ mod tests {
                 counts_per_electrical_rev: 80,
             },
         ];
+        expected.extend(inductance_events(6));
         expected.extend(current_loop_events(6, 7));
         expected.extend([
             Event::Commission {
