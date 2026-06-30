@@ -998,6 +998,18 @@ pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
                         data.inductance_count[coil_idx] = sample_count;
                         data.inductance_elapsed_us[coil_idx] = elapsed_us;
                     }
+
+                    if usize::from(point.saturating_add(1)) == INDUCTANCE_FIT_POINT_COUNT {
+                        let r_int = resistance_model_scale(data, coil_idx).unwrap_or(0);
+                        if let Some(mut fit) =
+                            fit_inductance_points(&data.inductance_fit_points[coil_idx], r_int)
+                        {
+                            if let Some((_, old_tau, _)) = inductance_measurement(data, coil_idx) {
+                                fit.old_tau_us = old_tau;
+                            }
+                            data.inductance_fit[coil_idx] = fit;
+                        }
+                    }
                 }
 
                 // Disable motor.
@@ -1026,18 +1038,6 @@ pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
                 return StepResult::Continue; // Not yet.
             }
             let next_point = point.saturating_add(1);
-            if !*skip_remaining_points && usize::from(next_point) == INDUCTANCE_FIT_POINT_COUNT {
-                let coil_idx = usize::from(*coil);
-                let r_int = resistance_model_scale(data, coil_idx).unwrap_or(0);
-                if let Some(mut fit) =
-                    fit_inductance_points(&data.inductance_fit_points[coil_idx], r_int)
-                {
-                    if let Some((_, old_tau, _)) = inductance_measurement(data, coil_idx) {
-                        fit.old_tau_us = old_tau;
-                    }
-                    data.inductance_fit[coil_idx] = fit;
-                }
-            }
             if *skip_remaining_points && *coil == 0 {
                 *electrical_id_state = ElectricalIdState::InductanceSetup { coil: 1, point: 0 };
             } else if *skip_remaining_points {
@@ -2577,6 +2577,97 @@ mod tests {
                     assert_eq!(data.inductance_elapsed_us, [55, 66]);
                 }
                 other => panic!("expected InductanceDisable, got {other:?}"),
+            }
+        });
+    }
+
+    #[test]
+    fn inductance_toggle_final_point_populates_fit_before_disable() {
+        pollster::block_on(async {
+            let mut data = ElectricalIdData::new(512);
+            data.resistance_result = Some(resistance_result(1000, 1000));
+            data.inductance_sum_delta[0] = 260;
+            data.inductance_count[0] = 10;
+            data.inductance_elapsed_us[0] = 1_000;
+            data.inductance_fit_points[0][0] = InductanceFitPoint {
+                ud: 512,
+                avg_delta: 26,
+                avg_current_count: 0,
+                r_drop_ud: 0,
+                effective_ud: 512,
+                sample_count: 10,
+                elapsed_us: 1_000,
+            };
+            data.inductance_fit_points[0][1] = InductanceFitPoint {
+                ud: 640,
+                avg_delta: 36,
+                avg_current_count: 0,
+                r_drop_ud: 0,
+                effective_ud: 640,
+                sample_count: 10,
+                elapsed_us: 1_000,
+            };
+            data.inductance_fit_points[0][2] = InductanceFitPoint {
+                ud: 768,
+                avg_delta: 47,
+                avg_current_count: 0,
+                r_drop_ud: 0,
+                effective_ud: 768,
+                sample_count: 10,
+                elapsed_us: 1_000,
+            };
+            let mut phase = InnerPhase::ElectricalId {
+                state: ElectricalIdState::InductanceToggle {
+                    coil: 0,
+                    point: 3,
+                    total_cycles: 10,
+                    remaining_cycles: 10,
+                    prev_current: 0,
+                    point_sum_delta: 0,
+                    point_sample_count: 0,
+                    current_sum: 0,
+                    start_us: 0,
+                    warmup_cycles_remaining: 0,
+                    accumulation_start_us: Some(0),
+                },
+                data,
+            };
+            let mut buf = TransientBuffer::new();
+            let mut backend = MockBackend::new();
+            backend.elapsed_us_value = 1_000;
+            backend.set_pid_torque_flux_actual_sequence(&[56, 0, 56, 0, 56, 0, 56, 0, 56, 0]);
+            let mut selftest_results = crate::selftest::SelftestResults::default();
+            let mut diagnostics = crate::selftest::CommissionDiagnostics::default();
+
+            let result = step_electrical_identification(
+                &mut phase,
+                &mut buf,
+                InnerSequence::Commission,
+                &mut selftest_results,
+                &mut diagnostics,
+                &mut backend,
+            )
+            .await;
+
+            assert!(matches!(result, StepResult::Continue));
+            match &phase {
+                InnerPhase::ElectricalId {
+                    state:
+                        ElectricalIdState::InductanceDisable {
+                            coil: 0,
+                            point: 3,
+                            skip_remaining_points: false,
+                            ..
+                        },
+                    data,
+                } => {
+                    let fit = data.inductance_fit[0];
+                    assert_ne!(fit, InductanceFitEvidence::EMPTY);
+                    assert_eq!(fit.old_tau_us, 1_969);
+                    assert_eq!(fit.usable_points, 4);
+                    assert_eq!(fit.selected_mask, 0b1111);
+                }
+                other => panic!("expected final-point InductanceDisable, got {other:?}"),
             }
         });
     }
