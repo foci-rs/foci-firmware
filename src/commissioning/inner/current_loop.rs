@@ -637,9 +637,10 @@ fn evidence_axis_passed(
 
 fn axis_pass_status(axis: CurrentValidationAxis, sample: &CurrentValidationAxisEvidence) -> u8 {
     // Flux short samples are bandwidth telemetry. The long-dwell flux sample
-    // proves steady-state closure; safety/status gates still apply at every
-    // delay. Torque is motion-limited: zero-delay cross-axis is the at-rest
-    // coupling gate, while later cross/response shape is telemetry.
+    // proves steady-state closure and is the sole hard orientation/coupling
+    // gate; safety/status gates still apply at every delay. Torque is
+    // motion-limited, so its cross/response shape is telemetry while
+    // safety/status gates remain hard.
     let telemetry_status = match axis {
         CurrentValidationAxis::Flux => {
             sample.sample_delay_ms < 100 && is_transient_current_telemetry_status(sample.status)
@@ -671,6 +672,7 @@ fn is_transient_current_telemetry_status(status: u8) -> bool {
 fn is_zero_delay_torque_telemetry_status(status: u8) -> bool {
     is_response_magnitude_status(status)
         || status == crate::autotune::CURRENT_AXIS_VALIDATION_WRONG_SIGN
+        || status == crate::autotune::CURRENT_AXIS_VALIDATION_CROSS_AXIS
 }
 
 fn axis_failure_reason(axis: CurrentValidationAxis) -> u8 {
@@ -1771,7 +1773,7 @@ mod tests {
     }
 
     #[test]
-    fn torque_late_cross_axis_is_telemetry_but_zero_cross_blocks() {
+    fn torque_cross_axis_is_telemetry_at_all_validation_delays() {
         let mut samples = [CurrentValidationAxisEvidence::EMPTY;
             crate::autotune::CURRENT_VALIDATION_MAX_SAMPLES_PER_AXIS];
         samples[0] = axis_validation_evidence(crate::autotune::CURRENT_AXIS_VALIDATION_PASS);
@@ -1790,7 +1792,7 @@ mod tests {
         samples[0] = axis_validation_evidence(crate::autotune::CURRENT_AXIS_VALIDATION_CROSS_AXIS);
         samples[0].sample_delay_ms = 0;
 
-        assert!(!evidence_axis_passed(
+        assert!(evidence_axis_passed(
             CurrentValidationAxis::Torque,
             &samples,
             3
@@ -2642,7 +2644,7 @@ mod tests {
         sample.status = crate::autotune::CURRENT_AXIS_VALIDATION_CROSS_AXIS;
         assert_eq!(
             axis_pass_status(CurrentValidationAxis::Torque, &sample),
-            crate::autotune::CURRENT_AXIS_VALIDATION_CROSS_AXIS
+            crate::autotune::CURRENT_AXIS_VALIDATION_PASS
         );
 
         sample.status = crate::autotune::CURRENT_AXIS_VALIDATION_SATURATION;
