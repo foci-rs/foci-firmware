@@ -85,6 +85,10 @@ impl CommissionReplySink for ReplyRecorder {
 
     fn foci_encoder_alignment(&mut self, _report: crate::tmc_diagnostics::EncoderAlignmentReport) {}
 
+    fn foci_inductance_fit(&mut self, _report: crate::tmc_diagnostics::InductanceFitReport) {}
+
+    fn foci_inductance_point(&mut self, _report: crate::tmc_diagnostics::InductancePointReport) {}
+
     fn foci_current_loop_run(&mut self, report: crate::tmc_diagnostics::CurrentLoopRunReport) {
         self.events.push(ReplyEvent::CurrentLoopRun {
             measured_axis_split_permille: report.measured_axis_split_permille,

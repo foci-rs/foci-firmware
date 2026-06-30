@@ -193,6 +193,60 @@ pub struct FociEncoderAlignment {
     pub counts_per_electrical_rev: u16,
 }
 
+/// `foci_inductance_fit` reply - accepted per-coil inductance fit evidence.
+///
+/// Wire name: `foci_inductance_fit`.
+#[klipper_reply]
+pub struct FociInductanceFit {
+    /// Object id of the FOCI endpoint.
+    pub oid: u8,
+    /// Coil index within the two-phase motor model.
+    pub coil: u8,
+    /// Corrected accepted electrical time constant in microseconds.
+    pub tau_us: u32,
+    /// Previous uncorrected or fallback time constant in microseconds.
+    pub old_tau_us: u32,
+    /// Fitted current delta slope per UD count, scaled by 1000.
+    pub slope_delta_per_ud_milli: u32,
+    /// Fitted current delta intercept, scaled by 1000.
+    pub intercept_delta_milli: i32,
+    /// Estimated voltage deadtime correction in UD counts.
+    pub deadtime_ud: i16,
+    /// Fit residual in permille.
+    pub residual_permille: u16,
+    /// Count of usable points selected for this fit.
+    pub usable_points: u8,
+    /// Bitmask of points selected for this fit.
+    pub selected_mask: u16,
+}
+
+/// `foci_inductance_point` reply - one per-amplitude dI/dt fit point.
+///
+/// Wire name: `foci_inductance_point`.
+#[klipper_reply]
+pub struct FociInductancePoint {
+    /// Object id of the FOCI endpoint.
+    pub oid: u8,
+    /// Coil index within the two-phase motor model.
+    pub coil: u8,
+    /// Zero-based amplitude point index.
+    pub point: u8,
+    /// Requested UD amplitude in TMC4671 voltage counts.
+    pub ud: u16,
+    /// Average current delta for this amplitude point.
+    pub avg_delta: u32,
+    /// Average current count sampled for this amplitude point.
+    pub avg_current_count: i32,
+    /// Estimated resistive voltage drop in UD counts.
+    pub r_drop_ud: i32,
+    /// Effective voltage after correction in UD counts.
+    pub effective_ud: i32,
+    /// Number of samples folded into this point.
+    pub sample_count: u32,
+    /// Elapsed sampling time in microseconds.
+    pub elapsed_us: u32,
+}
+
 /// `foci_current_loop_run` reply - run-level current-loop commissioning evidence.
 ///
 /// Wire name: `foci_current_loop_run`.
@@ -1247,6 +1301,40 @@ mod resistance_reply_size_tests {
             counts_per_electrical_rev: u16::MAX,
         };
         assert_fits_with_id(&reply, "foci_encoder_alignment");
+    }
+
+    #[test]
+    fn inductance_fit_reply_fits_klipper_message_limit() {
+        let reply = super::FociInductanceFit {
+            oid: 1,
+            coil: 0,
+            tau_us: 450,
+            old_tau_us: 730,
+            slope_delta_per_ud_milli: 65,
+            intercept_delta_milli: -13_000,
+            deadtime_ud: 200,
+            residual_permille: 12,
+            usable_points: 4,
+            selected_mask: 0b1111,
+        };
+        assert_fits_with_id(&reply, "foci_inductance_fit");
+    }
+
+    #[test]
+    fn inductance_point_reply_fits_klipper_message_limit() {
+        let reply = super::FociInductancePoint {
+            oid: 1,
+            coil: 0,
+            point: 0,
+            ud: 512,
+            avg_delta: 18,
+            avg_current_count: 40,
+            r_drop_ud: 40,
+            effective_ud: 472,
+            sample_count: 500,
+            elapsed_us: 50_000,
+        };
+        assert_fits_with_id(&reply, "foci_inductance_point");
     }
 
     #[test]

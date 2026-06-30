@@ -433,6 +433,57 @@ pub struct CurrentLoopRunReport {
     pub failure_reason: u8,
 }
 
+/// Accepted per-coil corrected inductance fit evidence emitted before the
+/// terminal `foci_commission_result` reply.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct InductanceFitReport {
+    /// Object id of the FOCI endpoint.
+    pub oid: u8,
+    /// Coil index within the two-phase motor model.
+    pub coil: u8,
+    /// Corrected accepted electrical time constant in microseconds.
+    pub tau_us: u32,
+    /// Previous uncorrected or fallback time constant in microseconds.
+    pub old_tau_us: u32,
+    /// Fitted current delta slope per UD count, scaled by 1000.
+    pub slope_delta_per_ud_milli: u32,
+    /// Fitted current delta intercept, scaled by 1000.
+    pub intercept_delta_milli: i32,
+    /// Estimated voltage deadtime correction in UD counts.
+    pub deadtime_ud: i16,
+    /// Fit residual in permille.
+    pub residual_permille: u16,
+    /// Count of usable points selected for this fit.
+    pub usable_points: u8,
+    /// Bitmask of points selected for this fit.
+    pub selected_mask: u16,
+}
+
+/// Per-amplitude dI/dt point used by a corrected inductance fit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct InductancePointReport {
+    /// Object id of the FOCI endpoint.
+    pub oid: u8,
+    /// Coil index within the two-phase motor model.
+    pub coil: u8,
+    /// Zero-based amplitude point index.
+    pub point: u8,
+    /// Requested UD amplitude in TMC4671 voltage counts.
+    pub ud: u16,
+    /// Average current delta for this amplitude point.
+    pub avg_delta: u32,
+    /// Average current count sampled for this amplitude point.
+    pub avg_current_count: i32,
+    /// Estimated resistive voltage drop in UD counts.
+    pub r_drop_ud: i32,
+    /// Effective voltage after correction in UD counts.
+    pub effective_ud: i32,
+    /// Number of samples folded into this point.
+    pub sample_count: u32,
+    /// Elapsed sampling time in microseconds.
+    pub elapsed_us: u32,
+}
+
 /// Per-axis, per-delay current validation evidence emitted before the terminal
 /// `foci_commission_result` reply. One reply represents the positive and
 /// negative samples at one delay for one axis.

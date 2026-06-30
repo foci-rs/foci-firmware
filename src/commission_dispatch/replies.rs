@@ -12,8 +12,8 @@ use crate::commissioning::types::{
 };
 use crate::selftest::{CommissionDiagnostic, CommissionDiagnostics, SelftestStageValue};
 use crate::tmc_diagnostics::{
-    CurrentLoopRunReport, CurrentValidationAxisReport, EncoderAlignmentReport,
-    ResistanceAxisReport, ResistanceRunReport,
+    CurrentLoopRunReport, CurrentValidationAxisReport, EncoderAlignmentReport, InductanceFitReport,
+    InductancePointReport, ResistanceAxisReport, ResistanceRunReport,
 };
 
 /// TMC4671 external electrical angle for electrical axis 0 (PHASE0).
@@ -52,6 +52,13 @@ pub trait CommissionReplySink {
     /// correlatable with the alignment residual without expanding the
     /// size-capped terminal commission result.
     fn foci_encoder_alignment(&mut self, report: EncoderAlignmentReport);
+
+    /// Emit one accepted per-coil corrected inductance fit captured during
+    /// Stage 1 commissioning.
+    fn foci_inductance_fit(&mut self, report: InductanceFitReport);
+
+    /// Emit one per-amplitude dI/dt point used by a corrected inductance fit.
+    fn foci_inductance_point(&mut self, report: InductancePointReport);
 
     /// Emit run-level current-loop commissioning evidence captured during
     /// Stage 1 commissioning. `FociCommissionResult` is size-capped, so this
@@ -121,6 +128,7 @@ pub fn emit_terminal_reply<S: CommissionReplySink>(sink: &mut S, payload: ReplyP
             ));
             sink.foci_resistance_run(commission_resistance_run_report(oid, inner));
             sink.foci_encoder_alignment(commission_encoder_alignment_report(oid, inner));
+            emit_inductance_evidence(sink, oid, inner);
             emit_current_loop_evidence(sink, oid, status, inner);
             sink.foci_commission_result(oid, status, &result);
         }
@@ -255,6 +263,46 @@ fn commission_encoder_alignment_report(oid: u8, inner: &InnerResult) -> EncoderA
     }
 }
 
+fn emit_inductance_evidence<S: CommissionReplySink>(sink: &mut S, oid: u8, inner: &InnerResult) {
+    for coil in 0..2 {
+        let coil_idx = coil as usize;
+        let fit = inner.inductance_fit[coil_idx];
+        if fit.usable_points == 0 {
+            continue;
+        }
+        sink.foci_inductance_fit(InductanceFitReport {
+            oid,
+            coil,
+            tau_us: fit.tau_us,
+            old_tau_us: fit.old_tau_us,
+            slope_delta_per_ud_milli: fit.slope_delta_per_ud_milli,
+            intercept_delta_milli: fit.intercept_delta_milli,
+            deadtime_ud: fit.deadtime_ud,
+            residual_permille: fit.residual_permille,
+            usable_points: fit.usable_points,
+            selected_mask: fit.selected_mask,
+        });
+
+        for (point_index, point) in inner.inductance_fit_points[coil_idx].iter().enumerate() {
+            if point.sample_count == 0 {
+                continue;
+            }
+            sink.foci_inductance_point(InductancePointReport {
+                oid,
+                coil,
+                point: point_index as u8,
+                ud: point.ud,
+                avg_delta: point.avg_delta,
+                avg_current_count: point.avg_current_count,
+                r_drop_ud: point.r_drop_ud,
+                effective_ud: point.effective_ud,
+                sample_count: point.sample_count,
+                elapsed_us: point.elapsed_us,
+            });
+        }
+    }
+}
+
 fn emit_current_loop_evidence<S: CommissionReplySink>(
     sink: &mut S,
     oid: u8,
@@ -363,7 +411,8 @@ mod tests {
     };
     use crate::commission_dispatch::ReplyPayload;
     use crate::commissioning::types::{
-        AdcCalResult, CommissionResult, CurrentValidationAxisEvidence, InnerResult, OuterResult,
+        AdcCalResult, CommissionResult, CurrentValidationAxisEvidence, INDUCTANCE_FIT_POINT_COUNT,
+        InductanceFitEvidence, InductanceFitPoint, InnerResult, OuterResult,
     };
     use crate::selftest::{
         COMMISSION_DIAGNOSTIC_CAPACITY, CommissionDiagnostic, CommissionDiagnostics,
@@ -427,6 +476,24 @@ mod tests {
             movement_counts: u16,
             min_movement_counts: u16,
             counts_per_electrical_rev: u16,
+        },
+        InductanceFit {
+            oid: u8,
+            coil: u8,
+            tau_us: u32,
+            old_tau_us: u32,
+            deadtime_ud: i16,
+            residual_permille: u16,
+            usable_points: u8,
+            selected_mask: u16,
+        },
+        InductancePoint {
+            oid: u8,
+            coil: u8,
+            point: u8,
+            ud: u16,
+            avg_delta: u32,
+            effective_ud: i32,
         },
         CurrentValidationAxis {
             oid: u8,
@@ -560,6 +627,30 @@ mod tests {
                 movement_counts: report.movement_counts,
                 min_movement_counts: report.min_movement_counts,
                 counts_per_electrical_rev: report.counts_per_electrical_rev,
+            });
+        }
+
+        fn foci_inductance_fit(&mut self, report: crate::tmc_diagnostics::InductanceFitReport) {
+            self.events.push(Event::InductanceFit {
+                oid: report.oid,
+                coil: report.coil,
+                tau_us: report.tau_us,
+                old_tau_us: report.old_tau_us,
+                deadtime_ud: report.deadtime_ud,
+                residual_permille: report.residual_permille,
+                usable_points: report.usable_points,
+                selected_mask: report.selected_mask,
+            });
+        }
+
+        fn foci_inductance_point(&mut self, report: crate::tmc_diagnostics::InductancePointReport) {
+            self.events.push(Event::InductancePoint {
+                oid: report.oid,
+                coil: report.coil,
+                point: report.point,
+                ud: report.ud,
+                avg_delta: report.avg_delta,
+                effective_ud: report.effective_ud,
             });
         }
 
@@ -735,10 +826,36 @@ mod tests {
                 tau_e_us: 23,
                 tau_e_crosscheck_us: 24,
                 tau_residual_permille: 25,
-                inductance_fit: [crate::commissioning::types::InductanceFitEvidence::EMPTY; 2],
-                inductance_fit_points: [[crate::commissioning::types::InductanceFitPoint::EMPTY;
-                    crate::commissioning::types::INDUCTANCE_FIT_POINT_COUNT];
-                    2],
+                inductance_fit: [
+                    InductanceFitEvidence {
+                        tau_us: 450,
+                        old_tau_us: 730,
+                        slope_delta_per_ud_milli: 65,
+                        intercept_delta_milli: -13_000,
+                        deadtime_ud: 200,
+                        residual_permille: 12,
+                        usable_points: 4,
+                        selected_mask: 0b1111,
+                    },
+                    InductanceFitEvidence::EMPTY,
+                ],
+                inductance_fit_points: [
+                    [
+                        InductanceFitPoint {
+                            ud: 512,
+                            avg_delta: 18,
+                            avg_current_count: 40,
+                            r_drop_ud: 40,
+                            effective_ud: 472,
+                            sample_count: 500,
+                            elapsed_us: 50_000,
+                        },
+                        InductanceFitPoint::EMPTY,
+                        InductanceFitPoint::EMPTY,
+                        InductanceFitPoint::EMPTY,
+                    ],
+                    [InductanceFitPoint::EMPTY; INDUCTANCE_FIT_POINT_COUNT],
+                ],
                 inner_warning_flags: 26,
                 resistance_profile_version: 1,
                 resistance_selected_count_slope_milli: 1050,
@@ -921,6 +1038,29 @@ mod tests {
         events
     }
 
+    fn inductance_events(oid: u8) -> Vec<Event> {
+        std::vec![
+            Event::InductanceFit {
+                oid,
+                coil: 0,
+                tau_us: 450,
+                old_tau_us: 730,
+                deadtime_ud: 200,
+                residual_permille: 12,
+                usable_points: 4,
+                selected_mask: 0b1111,
+            },
+            Event::InductancePoint {
+                oid,
+                coil: 0,
+                point: 0,
+                ud: 512,
+                avg_delta: 18,
+                effective_ud: 472,
+            },
+        ]
+    }
+
     #[test]
     fn commission_result_emits_current_loop_evidence_before_terminal_result() {
         let mut sink = RecordingSink::default();
@@ -976,6 +1116,7 @@ mod tests {
                 counts_per_electrical_rev: 80,
             },
         ];
+        expected.extend(inductance_events(6));
         expected.extend(current_loop_events(6, 7));
         expected.push(Event::Commission {
             oid: 6,
@@ -985,6 +1126,39 @@ mod tests {
         });
 
         assert_eq!(sink.events, expected);
+    }
+
+    #[test]
+    fn commission_result_emits_inductance_fit_before_terminal_result() {
+        let mut sink = RecordingSink::default();
+        let result = commission_result();
+
+        emit_terminal_reply(
+            &mut sink,
+            ReplyPayload::CommissionResult {
+                oid: 7,
+                status: 0,
+                result,
+            },
+        );
+
+        let fit_index = sink
+            .events
+            .iter()
+            .position(|e| matches!(e, Event::InductanceFit { .. }))
+            .expect("inductance fit event");
+        let point_index = sink
+            .events
+            .iter()
+            .position(|e| matches!(e, Event::InductancePoint { .. }))
+            .expect("inductance point event");
+        let terminal_index = sink
+            .events
+            .iter()
+            .position(|e| matches!(e, Event::Commission { .. }))
+            .expect("terminal commission event");
+        assert!(fit_index < terminal_index);
+        assert!(point_index < terminal_index);
     }
 
     #[test]
