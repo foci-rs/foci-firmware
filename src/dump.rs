@@ -87,6 +87,8 @@ pub const DUMP_SUB_REGISTERS: &[(u8, SubRegister)] = &[
     ),
     // CONFIG: advanced PI gain representation bits (datasheet section 7.2)
     (0x86, foci_tmc4671::registers::CONFIG_ADVANCED_PI_REPRESENT),
+    // ADC_RAW selector 1: low half is ADC_VM_RAW, high half is ADC_AGPI_A_RAW.
+    (0x87, foci_tmc4671::registers::ADC_AGPI_A_RAW_ADC_VM_RAW),
 ];
 
 #[cfg(test)]
@@ -153,5 +155,14 @@ mod tests {
         });
 
         assert!(found, "missing CONFIG_ADVANCED_PI_REPRESENT dump field");
+    }
+
+    #[test]
+    fn dump_sub_registers_include_adc_vm_raw() {
+        let found = DUMP_SUB_REGISTERS.iter().any(|&(addr, sub)| {
+            addr == 0x87 && sub == foci_tmc4671::registers::ADC_AGPI_A_RAW_ADC_VM_RAW
+        });
+
+        assert!(found, "missing ADC_VM_RAW dump field");
     }
 }
