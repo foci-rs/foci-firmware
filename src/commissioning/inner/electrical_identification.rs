@@ -69,6 +69,7 @@ const DIAG_ELECTRICAL_ID_REJECT_MODEL_SCALE_ZERO: u8 = 22;
 // resistance runner now owns those quality gates.
 const DIAG_ELECTRICAL_ID_REJECT_TAU_MISMATCH: u8 = 26;
 const DIAG_ELECTRICAL_ID_REJECT_TAU_CROSSCHECK_UNMEASURABLE: u8 = 27;
+const DIAG_ELECTRICAL_ID_REJECT_INDUCTANCE_FIT: u8 = 28;
 const DIAG_ELECTRICAL_ID_REJECT_THETA_TOO_LARGE: u8 = 29;
 
 // ---------------------------------------------------------------------------
@@ -127,6 +128,12 @@ pub(crate) enum ModelAssemblyError {
     /// residual so diagnostics can distinguish "didn't measure" from
     /// "measured wrong".
     TauCrosscheckUnmeasurable,
+    /// Corrected inductance fit points were captured but rejected.
+    RejectedInductanceFit {
+        coil: u8,
+        usable_points: u8,
+        selected_mask: u16,
+    },
     /// theta_e_us >= tau_e_us / 2.
     ThetaTooLarge { theta_us: u32, tau_us: u32 },
 }
@@ -151,6 +158,18 @@ fn log_model_assembly_failure(err: ModelAssemblyError) {
         }
         ModelAssemblyError::TauCrosscheckUnmeasurable => {
             defmt::warn!("electrical id: tau crosscheck unmeasurable");
+        }
+        ModelAssemblyError::RejectedInductanceFit {
+            coil,
+            usable_points,
+            selected_mask,
+        } => {
+            defmt::warn!(
+                "electrical id: corrected inductance fit rejected (coil={}, usable_points={}, selected_mask={})",
+                coil,
+                usable_points,
+                selected_mask
+            );
         }
         ModelAssemblyError::ThetaTooLarge { theta_us, tau_us } => {
             defmt::warn!(
@@ -182,6 +201,16 @@ fn diagnostic_for_model_assembly_failure(
             0,
             0,
             0,
+        ),
+        ModelAssemblyError::RejectedInductanceFit {
+            coil,
+            usable_points,
+            selected_mask,
+        } => (
+            DIAG_ELECTRICAL_ID_REJECT_INDUCTANCE_FIT,
+            u32::from(coil),
+            u32::from(usable_points),
+            u32::from(selected_mask),
         ),
         ModelAssemblyError::ThetaTooLarge { theta_us, tau_us } => (
             DIAG_ELECTRICAL_ID_REJECT_THETA_TOO_LARGE,
@@ -540,6 +569,16 @@ fn assemble_electrical_model(
         if fit.tau_us != 0 && fit.usable_points >= INDUCTANCE_FIT_MIN_USABLE_POINTS {
             *tau_slot = fit.tau_us;
             continue;
+        }
+        if data.inductance_fit_points[coil_idx]
+            .iter()
+            .any(|point| point.sample_count != 0)
+        {
+            return Err(ModelAssemblyError::RejectedInductanceFit {
+                coil: coil_idx as u8,
+                usable_points: fit.usable_points,
+                selected_mask: fit.selected_mask,
+            });
         }
 
         let count = data.inductance_count[coil_idx];
@@ -1370,6 +1409,32 @@ mod tests {
             assembly.model.l_int,
             (assembly.model.r_int as u64 * assembly.model.tau_e_us as u64
                 / ELECTRICAL_MODEL_RESISTANCE_SCALE as u64) as u32
+        );
+    }
+
+    #[test]
+    fn model_assembly_rejects_populated_but_unusable_inductance_fit() {
+        let mut data = representative_data();
+        data.inductance_fit_points[0][0] = InductanceFitPoint {
+            ud: 512,
+            avg_delta: INDUCTANCE_MIN_DELTA,
+            avg_current_count: 0,
+            r_drop_ud: 0,
+            effective_ud: 512,
+            sample_count: 10,
+            elapsed_us: 1_000,
+        };
+        let buf = representative_transient();
+
+        let err = assemble_electrical_model(&data, buf.samples(), TEST_THETA_E_US).unwrap_err();
+
+        assert_eq!(
+            err,
+            ModelAssemblyError::RejectedInductanceFit {
+                coil: 0,
+                usable_points: 0,
+                selected_mask: 0
+            }
         );
     }
 
@@ -2711,6 +2776,17 @@ mod tests {
         });
         assert_eq!(tau_mismatch.code, 26);
         assert_eq!(tau_mismatch.value0, 301);
+
+        let rejected_fit =
+            diagnostic_for_model_assembly_failure(ModelAssemblyError::RejectedInductanceFit {
+                coil: 1,
+                usable_points: 2,
+                selected_mask: 0b0101,
+            });
+        assert_eq!(rejected_fit.code, 28);
+        assert_eq!(rejected_fit.value0, 1);
+        assert_eq!(rejected_fit.value1, 2);
+        assert_eq!(rejected_fit.value2, 0b0101);
     }
 
     #[test]
