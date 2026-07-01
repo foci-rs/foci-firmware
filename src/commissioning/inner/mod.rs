@@ -25,7 +25,6 @@ pub mod coil;
 pub mod current_loop;
 pub mod electrical_identification;
 pub mod encoder;
-mod impedance;
 pub mod phase;
 
 // ---------------------------------------------------------------------------

@@ -22,7 +22,6 @@ pub mod context;
 pub mod diagnostic;
 pub mod dump;
 pub mod helpers;
-pub mod impedance_identification;
 pub mod pid;
 pub mod platform;
 pub mod resistance_identification;

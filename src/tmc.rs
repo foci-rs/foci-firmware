@@ -376,15 +376,6 @@ pub enum TmcRequestKind {
         /// Reserved verbosity/selector byte for future detail replies.
         detail: u8,
     },
-    /// Run the shared impedance-identification sweep over an already-armed
-    /// motor without touching commissioning state.
-    ImpedanceTest {
-        /// Object id used by the reply.
-        oid: u8,
-        /// Detail level. 0 emits run summary only; 1 emits profile, fit detail,
-        /// and run summary; 2 is reserved and currently emits run summary only.
-        detail: u8,
-    },
     /// Write a TMC4671 register via SPI (dev-only).
     #[cfg(feature = "dev")]
     Write { addr: u8, value: u32 },
@@ -758,17 +749,6 @@ pub fn tmc_voltage_step_test(
 /// Build a `ResistanceTest` request.
 pub fn tmc_resistance_test(channel: u8, oid: u8, detail: u8) -> TmcRequest {
     TmcRequest::new(channel, TmcRequestKind::ResistanceTest { oid, detail })
-}
-
-/// Build an `ImpedanceTest` request.
-pub fn tmc_impedance_test(channel: u8, oid: u8, detail: u8) -> TmcRequest {
-    TmcRequest::new(
-        channel,
-        TmcRequestKind::ImpedanceTest {
-            oid,
-            detail: normalize_diagnostic_detail(detail),
-        },
-    )
 }
 
 /// Build a `SetEnable` request.

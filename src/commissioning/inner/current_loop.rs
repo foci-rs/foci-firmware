@@ -21,8 +21,6 @@ use crate::commissioning::types::{
     INDUCTANCE_FIT_POINT_COUNT, InductanceFitEvidence, InductanceFitPoint, InnerResult, StepResult,
 };
 
-use super::impedance::CommissioningImpedanceEvidence;
-
 /// Current-loop validation sub-state machine (Phase 7).
 #[derive(Debug, defmt::Format)]
 pub(crate) enum CurrentValidateState {
@@ -125,8 +123,6 @@ pub(crate) struct CurrentValidateData {
     pub(crate) resistance_gain_path_count_slope_milli: i32,
     /// Firmware-owned gain-source and axis-split evidence selected at tune time.
     pub(crate) current_loop_evidence: CurrentLoopEvidence,
-    /// Accepted rotating-carrier impedance evidence, if it was used for synthesis.
-    pub(crate) impedance_evidence: Option<CommissioningImpedanceEvidence>,
 }
 
 /// Current axis under short-sample validation.
@@ -961,7 +957,6 @@ pub(crate) async fn step_current_tune<B: CommissioningBackend>(
             // mismatch is directly readable from the persisted artifacts.
             resistance_gain_path_count_slope_milli: model.r_int as i32,
             current_loop_evidence,
-            impedance_evidence: None,
         },
     };
     StepResult::PhaseChanged(PhaseId::CurrentValidate)
@@ -1354,7 +1349,6 @@ pub(crate) async fn step_current_validate<B: CommissioningBackend>(
             let resistance = data.resistance_result;
             let axis0 = resistance.axis0;
             let axis1 = resistance.axis1;
-            let impedance = data.impedance_evidence;
             let alignment = adc_cal.as_ref();
             let result = InnerResult {
                 status: data.final_status,
@@ -1448,21 +1442,6 @@ pub(crate) async fn step_current_validate<B: CommissioningBackend>(
                 current_validation_axes: data.current_loop_evidence.current_validation_axes,
                 retry_budget_exhausted: data.current_loop_evidence.retry_budget_exhausted,
                 current_loop_failure_reason: data.current_loop_evidence.failure_reason,
-                impedance_high_inductance_axis: impedance
-                    .map_or(crate::autotune::CURRENT_AXIS_FLUX, |evidence| {
-                        evidence.high_inductance_axis
-                    }),
-                impedance_selected_axis_max_count_per_ud_milli: impedance
-                    .map_or(0, |evidence| evidence.selected_axis_max_count_per_ud_milli),
-                impedance_selected_axis_min_count_per_ud_milli: impedance
-                    .map_or(0, |evidence| evidence.selected_axis_min_count_per_ud_milli),
-                impedance_saliency_permille: impedance
-                    .map_or(0, |evidence| evidence.saliency_permille),
-                impedance_fitted_axis_electrical_counts: impedance
-                    .map_or(0, |evidence| evidence.fitted_axis_electrical_counts),
-                impedance_residual_permille: impedance
-                    .map_or(0, |evidence| evidence.residual_permille),
-                impedance_warning_flags: impedance.map_or(0, |evidence| evidence.warning_flags),
                 current_flux_validation_count: data.current_flux_validation_count,
                 current_flux_validation: data.current_flux_validation,
                 current_torque_validation_count: data.current_torque_validation_count,
@@ -1604,10 +1583,9 @@ mod tests {
                         data.current_loop_evidence.gains_tier,
                         CURRENT_GAINS_TIER_MEASURED_SYMMETRIC
                     );
-                    assert!(data.impedance_evidence.is_none());
                     assert!(
                         backend.spi_log.iter().all(|op| matches!(op, SpiOp::Read)),
-                        "current tune should not run impedance writes"
+                        "current tune should not run power-stage writes"
                     );
                 }
                 other => panic!("expected CurrentValidate phase, got {other:?}"),
@@ -2727,7 +2705,6 @@ mod tests {
                 resistance_result: resistance_result(),
                 resistance_gain_path_count_slope_milli: 1000,
                 current_loop_evidence: CurrentLoopEvidence::measured_symmetric(),
-                impedance_evidence: None,
             },
         }
     }
@@ -2808,7 +2785,6 @@ mod tests {
                 resistance_result: resistance_result(),
                 resistance_gain_path_count_slope_milli: 1000,
                 current_loop_evidence: evidence,
-                impedance_evidence: None,
             },
         }
     }
@@ -2896,7 +2872,6 @@ mod tests {
                 resistance_result: resistance_result(),
                 resistance_gain_path_count_slope_milli: 1000,
                 current_loop_evidence: evidence,
-                impedance_evidence: None,
             },
         }
     }

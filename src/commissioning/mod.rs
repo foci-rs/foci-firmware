@@ -906,13 +906,6 @@ mod tests {
             current_validation_axes: crate::autotune::CURRENT_VALIDATION_AXIS_TORQUE,
             retry_budget_exhausted: 0,
             current_loop_failure_reason: crate::autotune::CURRENT_LOOP_FAILURE_NONE,
-            impedance_high_inductance_axis: crate::autotune::CURRENT_AXIS_FLUX,
-            impedance_selected_axis_max_count_per_ud_milli: 0,
-            impedance_selected_axis_min_count_per_ud_milli: 0,
-            impedance_saliency_permille: 0,
-            impedance_fitted_axis_electrical_counts: 0,
-            impedance_residual_permille: 0,
-            impedance_warning_flags: 0,
             current_flux_validation_count: 0,
             current_flux_validation:
                 [crate::commissioning::types::CurrentValidationAxisEvidence::EMPTY;

@@ -298,7 +298,7 @@ pub struct InnerResult {
     /// Encoder counts per electrical revolution.
     pub encoder_alignment_counts_per_electrical_rev: u16,
 
-    // --- Current-loop synthesis and impedance evidence ---
+    // --- Current-loop synthesis evidence ---
     /// `CURRENT_GAINS_SOURCE_*`.
     pub current_gains_source: u8,
     /// `AXIS_SPLIT_SOURCE_*`.
@@ -317,20 +317,6 @@ pub struct InnerResult {
     pub retry_budget_exhausted: u8,
     /// `CURRENT_LOOP_FAILURE_*`.
     pub current_loop_failure_reason: u8,
-    /// `CURRENT_AXIS_*` high-inductance axis from accepted impedance evidence.
-    pub impedance_high_inductance_axis: u8,
-    /// Maximum fitted current response axis, count per UD millivolt-equivalent.
-    pub impedance_selected_axis_max_count_per_ud_milli: u32,
-    /// Minimum fitted current response axis, count per UD millivolt-equivalent.
-    pub impedance_selected_axis_min_count_per_ud_milli: u32,
-    /// Fitted impedance saliency in permille.
-    pub impedance_saliency_permille: u16,
-    /// Fitted low-inductance axis angle in 16-bit electrical turn counts.
-    pub impedance_fitted_axis_electrical_counts: u16,
-    /// Maximum per-angle impedance residual in permille.
-    pub impedance_residual_permille: u16,
-    /// Impedance warning bitfield (`ImpedanceWarningFlags`).
-    pub impedance_warning_flags: u32,
     /// Number of populated flux-axis validation evidence items.
     pub current_flux_validation_count: u8,
     /// Flux-axis validation evidence by sample delay.

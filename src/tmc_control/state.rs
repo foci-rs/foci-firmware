@@ -394,8 +394,7 @@ impl TmcControlRuntime {
             | TmcRequestKind::CurrentTorqueSampleTest { .. }
             | TmcRequestKind::PositionTorqueOffsetSampleTest { .. }
             | TmcRequestKind::VoltageStepTest { .. }
-            | TmcRequestKind::ResistanceTest { .. }
-            | TmcRequestKind::ImpedanceTest { .. } => {
+            | TmcRequestKind::ResistanceTest { .. } => {
                 push_action(
                     &mut actions,
                     BoardAction::DelegatedDiagnostic(DelegatedDiagnostic { request: req }),
@@ -1552,12 +1551,12 @@ impl TmcControlRuntime {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tmc::tmc_impedance_test;
+    use crate::tmc::tmc_resistance_test;
 
     #[test]
-    fn classify_request_delegates_impedance_test() {
+    fn classify_request_delegates_resistance_test() {
         let mut runtime = TmcControlRuntime::new_for_channel(0);
-        let request = tmc_impedance_test(0, 7, 1);
+        let request = tmc_resistance_test(0, 7, 1);
 
         let actions = runtime.classify_request(request.clone());
 
