@@ -262,8 +262,7 @@ pub(crate) enum InnerPhase {
         model: ElectricalModel,
         /// Phase 5 model-assembly warning bits.
         ///
-        /// Bits 0, 1, and 3 are warnings; bit 2 is reserved for tau residual
-        /// telemetry and is not emitted as a warning. Carried forward so
+        /// Bits 0, 1, and 3 are warnings; bit 2 is unused. Carried forward so
         /// current validation can OR in bits 4–5 and the final InnerResult
         /// reports the full set.
         inner_warning_flags: u8,

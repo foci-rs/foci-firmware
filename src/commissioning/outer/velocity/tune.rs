@@ -326,7 +326,7 @@ mod tests {
 
     #[test]
     fn outer_widening_clamps_at_four() {
-        // Bits 0, 1, and 3 widen; bit 2 is telemetry only.
+        // Bits 0, 1, and 3 widen; bit 2 is unused.
         let multiplier = outer_lambda_widening(0x0F);
         assert!((multiplier - 2.7).abs() < 1e-6);
     }
@@ -385,7 +385,7 @@ mod tests {
     #[test]
     fn force_conservative_profile_ignores_model_warning_bits() {
         // Bits 0, 1, and 3 widen lambda but do not force conservative;
-        // bit 2 is reserved for telemetry only.
+        // bit 2 is unused.
         assert_eq!(
             force_conservative_profile(CommissionProfile::Balanced, 0x0F, 1000),
             CommissionProfile::Balanced

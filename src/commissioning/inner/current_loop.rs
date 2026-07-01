@@ -104,9 +104,8 @@ pub(crate) struct CurrentValidateData {
         [CurrentValidationAxisEvidence; crate::autotune::CURRENT_VALIDATION_MAX_SAMPLES_PER_AXIS],
     /// Warning bits accumulated through Stage 1.
     ///
-    /// Bits 0, 1, and 3 come from Phase 5 model gates; bit 2 is reserved for
-    /// tau residual telemetry and is not emitted as a warning. Bit 5 is ORed
-    /// if gains fell back to defaults.
+    /// Bits 0, 1, and 3 come from Phase 5 model gates; bit 2 is unused. Bit 5
+    /// is ORed if gains fell back to defaults.
     pub(crate) inner_warning_flags: u8,
     /// Accepted per-coil corrected inductance fit evidence.
     pub(crate) inductance_fit: [InductanceFitEvidence; 2],

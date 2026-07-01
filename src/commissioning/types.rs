@@ -228,8 +228,7 @@ pub struct InnerResult {
     pub inductance_fit_points: [[InductanceFitPoint; INDUCTANCE_FIT_POINT_COUNT]; 2],
     /// Warning bitfield.
     ///
-    /// Bits 0, 1, and 3 report model warnings; bit 2 is reserved for tau
-    /// residual telemetry and is not emitted as a warning. Bit 5 reports
+    /// Bits 0, 1, and 3 report model warnings; bit 2 is unused. Bit 5 reports
     /// fallback gains, bit 6 reports host-default confidence, and bit 7 is
     /// reserved.
     pub inner_warning_flags: u8,
