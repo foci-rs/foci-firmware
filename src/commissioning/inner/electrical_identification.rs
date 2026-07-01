@@ -71,6 +71,8 @@ const DIAG_ELECTRICAL_ID_REJECT_TAU_MISMATCH: u8 = 26;
 const DIAG_ELECTRICAL_ID_REJECT_TAU_CROSSCHECK_UNMEASURABLE: u8 = 27;
 const DIAG_ELECTRICAL_ID_REJECT_INDUCTANCE_FIT: u8 = 28;
 const DIAG_ELECTRICAL_ID_REJECT_THETA_TOO_LARGE: u8 = 29;
+const DIAG_ELECTRICAL_ID_INDUCTANCE_FIT_POINT: u8 = 30;
+const DIAG_ELECTRICAL_ID_INDUCTANCE_FIT_CORRECTION: u8 = 31;
 
 // ---------------------------------------------------------------------------
 // Phase 1 model-assembly gates and warning bits.
@@ -278,6 +280,39 @@ fn electrical_id_measurement_diagnostic(
     }
 }
 
+fn packed_inductance_fit_point(coil_idx: usize, point_idx: usize) -> u32 {
+    ((coil_idx as u32) << 4) | point_idx as u32
+}
+
+fn record_rejected_inductance_fit_diagnostics(
+    data: &ElectricalIdData,
+    coil: u8,
+    diagnostics: &mut crate::selftest::CommissionDiagnostics,
+) {
+    let coil_idx = usize::from(coil);
+    if coil_idx >= data.inductance_fit_points.len() {
+        return;
+    }
+    for (point_idx, point) in data.inductance_fit_points[coil_idx].iter().enumerate() {
+        if point.sample_count == 0 {
+            continue;
+        }
+        let packed = packed_inductance_fit_point(coil_idx, point_idx);
+        diagnostics.push(electrical_id_measurement_diagnostic(
+            DIAG_ELECTRICAL_ID_INDUCTANCE_FIT_POINT,
+            packed,
+            u32::from(point.ud),
+            point.avg_delta,
+        ));
+        diagnostics.push(electrical_id_measurement_diagnostic(
+            DIAG_ELECTRICAL_ID_INDUCTANCE_FIT_CORRECTION,
+            packed,
+            point.sample_count,
+            point.effective_ud as u32,
+        ));
+    }
+}
+
 /// Per-coil resistance count-slope (milli-units) and RMSE (permille) from the
 /// shared runner result. `None` until the resistance sweep has populated
 /// `data.resistance_result`.
@@ -360,10 +395,9 @@ fn fit_inductance_points(
         return None;
     }
     let intercept_milli = ((sum_y * 1000) - slope_milli * sum_x) / n;
-    let deadtime_ud =
-        ((-intercept_milli) / slope_milli).clamp(i16::MIN as i64, i16::MAX as i64) as i16;
-    if deadtime_ud < 0
-        || i32::from(deadtime_ud) > INDUCTANCE_FIT_MAX_DEADTIME_UD
+    let deadtime_raw = (-intercept_milli) / slope_milli;
+    let deadtime_ud = deadtime_raw.clamp(0, i16::MAX as i64) as i16;
+    if i32::from(deadtime_ud) > INDUCTANCE_FIT_MAX_DEADTIME_UD
         || i32::from(deadtime_ud) >= min_effective_ud
     {
         return None;
@@ -1219,6 +1253,9 @@ pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
                         diagnostics,
                     );
                     diagnostics.push(diagnostic_for_model_assembly_failure(err));
+                    if let ModelAssemblyError::RejectedInductanceFit { coil, .. } = err {
+                        record_rejected_inductance_fit_diagnostics(data, coil, diagnostics);
+                    }
                     return super::fail_inner(phase, CommissionError::ElectricalIdFailed);
                 }
             };
@@ -1439,6 +1476,42 @@ mod tests {
     }
 
     #[test]
+    fn rejected_inductance_fit_diagnostics_include_captured_points() {
+        let mut data = representative_data();
+        data.inductance_fit_points[1][2] = InductanceFitPoint {
+            ud: 768,
+            avg_delta: 39,
+            avg_current_count: 300,
+            r_drop_ud: 1126,
+            effective_ud: -358,
+            sample_count: 4750,
+            elapsed_us: 760_000,
+        };
+        let samples = representative_transient();
+        let mut diagnostics = crate::selftest::CommissionDiagnostics::default();
+
+        record_electrical_id_measurement_diagnostics(
+            &data,
+            samples.samples(),
+            5000,
+            &mut diagnostics,
+        );
+        record_rejected_inductance_fit_diagnostics(&data, 1, &mut diagnostics);
+
+        let events: heapless::Vec<_, { crate::selftest::COMMISSION_DIAGNOSTIC_CAPACITY }> =
+            diagnostics.iter().collect();
+        assert!(events.iter().any(|event| {
+            event.code == 30 && event.value0 == 0x12 && event.value1 == 768 && event.value2 == 39
+        }));
+        assert!(events.iter().any(|event| {
+            event.code == 31
+                && event.value0 == 0x12
+                && event.value1 == 4750
+                && event.value2 == (-358i32) as u32
+        }));
+    }
+
+    #[test]
     fn inductance_fit_uses_slope_not_absolute_ud() {
         let r_int = 1000;
         let dt_us = 100;
@@ -1516,6 +1589,41 @@ mod tests {
         );
         assert!(
             fit.residual_permille <= 20,
+            "residual={}",
+            fit.residual_permille
+        );
+    }
+
+    #[test]
+    fn inductance_fit_clamps_positive_intercept_to_zero_deadtime() {
+        let r_int = 1142;
+        let mut points = [InductanceFitPoint::EMPTY; INDUCTANCE_FIT_POINT_COUNT];
+        let captures = [
+            (1024u16, 38u32, 578i32),
+            (1280, 44, 730),
+            (1536, 52, 871),
+            (1792, 59, 1021),
+        ];
+
+        for (idx, (ud, avg_delta, effective_ud)) in captures.iter().copied().enumerate() {
+            points[idx] = InductanceFitPoint {
+                ud,
+                avg_delta,
+                avg_current_count: 0,
+                r_drop_ud: i32::from(ud) - effective_ud,
+                effective_ud,
+                sample_count: 4750,
+                elapsed_us: 760_000,
+            };
+        }
+
+        let fit = fit_inductance_points(&points, r_int).expect("fit should pass");
+
+        assert_eq!(fit.deadtime_ud, 0);
+        assert_eq!(fit.usable_points, 4);
+        assert_eq!(fit.selected_mask, 0b1111);
+        assert!(
+            fit.residual_permille <= INDUCTANCE_FIT_MAX_RESIDUAL_PERMILLE,
             "residual={}",
             fit.residual_permille
         );
