@@ -147,7 +147,7 @@ pub(crate) struct ElectricalIdData {
     /// Excitation voltage used for all measurements (PIDOUT units).
     pub(crate) voltage: u32,
     /// Shared multi-point resistance-identification result. `Some` once the
-    /// `ResistanceIdentify` sub-state has run the shared runner; the legacy
+    /// `ResistanceIdentify` sub-state has run the shared runner; the
     /// inductance/delay/gain path reads its count-slope-milli values from here.
     pub(crate) resistance_result: Option<crate::resistance_identification::ResistanceRunResult>,
     /// Per-coil, per-amplitude fit points for corrected L/tau.
@@ -171,7 +171,7 @@ impl ElectricalIdData {
 #[derive(Debug, defmt::Format)]
 pub(crate) enum ElectricalIdState {
     // --- Resistance identification ---
-    /// Run shared multi-point resistance identification before legacy L work.
+    /// Run shared multi-point resistance identification before the L work.
     ResistanceIdentify,
 
     // --- Inductance measurement (per coil, square-wave di/dt) ---

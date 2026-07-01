@@ -772,7 +772,7 @@ pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
             // The shared runner owns the full count-space sweep and the
             // managed-enable exception (it asserts/clears the enable pin and
             // restores safe state on every exit path). On success, store the
-            // result and hand off to the legacy inductance path; on any
+            // result and hand off to the inductance path; on any
             // quality-gate or backend failure, fail the inner phase.
             let result = crate::resistance_identification::run_resistance_identification(
                 &mut CommissionResistanceBackend { backend },
@@ -1604,9 +1604,7 @@ mod tests {
         // Adjust per-coil tau via inductance data so the residual gate
         // does not fire.
         let mut data = ElectricalIdData::new(512);
-        // r_count_slope_milli = 1706 (V=512, I=300 -> matches the old
-        // resistance_current_sum=[300_000,300_000]/sample_count=[1000,1000]
-        // single-point average this fixture replaced).
+        // r_count_slope_milli = 1706 (V=512 / I=300 count-slope).
         data.resistance_result = Some(resistance_result(1706, 1706));
         // Per-coil tau ≈ 887 us to match the transient crosscheck below.
         data.inductance_fit = [fit_with_tau(887), fit_with_tau(887)];
@@ -1750,7 +1748,7 @@ mod tests {
     }
 
     #[test]
-    fn electrical_id_uses_resistance_runner_before_legacy_inductance() {
+    fn electrical_id_uses_resistance_runner_before_inductance() {
         pollster::block_on(async {
             let mut backend = MockBackend::new();
             seed_resistance_power_stage_registers(&mut backend);
