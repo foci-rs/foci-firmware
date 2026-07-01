@@ -311,14 +311,14 @@ fn record_rejected_inductance_fit_diagnostics(
     }
 }
 
-/// Per-coil resistance count-slope (milli-units) and RMSE (permille) from the
-/// shared runner result. `None` until the resistance sweep has populated
-/// `data.resistance_result`.
+/// Per-coil resistance count-slope from the shared runner result. `None` until
+/// the resistance sweep has populated `data.resistance_result`.
 ///
-/// The count-slope is in the same unit space as the legacy `r_int` resistance
-/// scale (`dV_count / dI_count * 1000`), so it feeds the per-coil tau and gain
-/// math directly without conversion.
-fn resistance_measurement(data: &ElectricalIdData, coil_idx: usize) -> Option<(u32, u32, u32)> {
+/// The count-slope is in `ELECTRICAL_MODEL_RESISTANCE_SCALE` (milli) units
+/// (`dV_count / dI_count * 1000`), so it feeds the per-coil tau and gain math
+/// directly without conversion. Returns `(count_slope, count_slope, samples)`;
+/// the slope is reused as the display `r_mohm`.
+fn per_coil_resistance_slope(data: &ElectricalIdData, coil_idx: usize) -> Option<(u32, u32, u32)> {
     let result = data.resistance_result?;
     let axis = if coil_idx == 0 {
         result.axis0
@@ -337,7 +337,7 @@ fn resistance_measurement(data: &ElectricalIdData, coil_idx: usize) -> Option<(u
 /// Per-coil resistance count-slope in the `ELECTRICAL_MODEL_RESISTANCE_SCALE`
 /// (milli) unit space, taken from the runner's per-axis fit.
 fn resistance_model_scale(data: &ElectricalIdData, coil_idx: usize) -> Option<u32> {
-    let (r_int, _, _) = resistance_measurement(data, coil_idx)?;
+    let (r_int, _, _) = per_coil_resistance_slope(data, coil_idx)?;
     Some(r_int)
 }
 
@@ -478,7 +478,7 @@ fn record_electrical_id_measurement_diagnostics(
         ELECTRICAL_SAMPLE_PERIOD_US as u32,
     ));
     for coil_idx in 0..2 {
-        if let Some((avg_current, r_mohm, count)) = resistance_measurement(data, coil_idx) {
+        if let Some((avg_current, r_mohm, count)) = per_coil_resistance_slope(data, coil_idx) {
             diagnostics.push(electrical_id_measurement_diagnostic(
                 if coil_idx == 0 {
                     DIAG_ELECTRICAL_ID_RESISTANCE_A
