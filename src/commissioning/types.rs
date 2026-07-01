@@ -222,10 +222,6 @@ pub struct InnerResult {
     pub bandwidth_hz: u32,
     /// Electrical time constant L/R in microseconds (Phase 5 measurement).
     pub tau_e_us: u32,
-    /// Tau crosscheck from the transient onset (microseconds).
-    pub tau_e_crosscheck_us: u32,
-    /// L/R-vs-transient tau residual in permille.
-    pub tau_residual_permille: u16,
     /// Accepted per-coil corrected inductance fit evidence.
     pub inductance_fit: [InductanceFitEvidence; 2],
     /// Per-amplitude points used by the accepted corrected inductance fits.

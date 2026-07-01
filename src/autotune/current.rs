@@ -1298,7 +1298,6 @@ mod tests {
             theta_e_us: 100,
             r_mohm: 1125,
             l_uh: 450,
-            tau_e_crosscheck_us: 3800,
         };
         let config = autotune_test_config();
         let conservative = simc_current_gains(&model, CommissionProfile::Conservative, &config);
@@ -1445,7 +1444,6 @@ mod tests {
             theta_e_us: 160,
             r_mohm: 1000,
             l_uh: 1900,
-            tau_e_crosscheck_us: 2600,
         };
         let config = autotune_test_config();
         let gains = simc_current_gains_with_lambda(&model, 950, &config);
@@ -1470,7 +1468,6 @@ mod tests {
             theta_e_us: 160,
             r_mohm: 1000,
             l_uh: 1900,
-            tau_e_crosscheck_us: 2600,
         };
         let config = autotune_test_config();
         let fast = simc_current_gains_with_lambda(&model, 950, &config);
@@ -1490,7 +1487,6 @@ mod tests {
             theta_e_us: 160,
             r_mohm: 1000,
             l_uh: 1863,
-            tau_e_crosscheck_us: 1863,
         };
         let config = autotune_test_config();
         let gains = simc_current_gains(&model, CommissionProfile::Balanced, &config);
@@ -1516,7 +1512,6 @@ mod tests {
             theta_e_us: 160,
             r_mohm: 1000,
             l_uh: 1917,
-            tau_e_crosscheck_us: 1917,
         };
         let config = autotune_test_config();
         let gains = simc_current_gains_with_lambda(&model, 1436, &config);

@@ -481,8 +481,6 @@ where
                     current_ringing_count,
                     current_bandwidth_hz,
                     tau_e_us,
-                    tau_e_crosscheck_us,
-                    tau_residual_permille,
                     inner_warning_flags,
                 },
             ..
@@ -564,8 +562,6 @@ where
                 current_ringing: current_ringing_count > 1,
                 current_bandwidth_hz,
                 tau_e_us,
-                tau_e_crosscheck_us,
-                tau_residual_permille,
                 inner_warning_flags,
             };
             runtime.set_commission_engine(CommissioningEngine::new_outer_for_tmc_with_trace_seq(
@@ -941,8 +937,6 @@ mod tests {
                 current_ringing_count: 0,
                 current_bandwidth_hz: 1_000,
                 tau_e_us: 10,
-                tau_e_crosscheck_us: 11,
-                tau_residual_permille: 12,
                 inner_warning_flags: 0,
             },
         )

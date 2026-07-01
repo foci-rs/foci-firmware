@@ -30,7 +30,6 @@ pub(super) fn test_electrical_model() -> ElectricalModel {
         theta_e_us: 700,
         r_mohm: 1125,
         l_uh: 450,
-        tau_e_crosscheck_us: 2500,
     }
 }
 

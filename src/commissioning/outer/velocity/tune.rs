@@ -20,10 +20,8 @@ use crate::commissioning::types::{CommissioningBackend, StepResult};
 ///
 /// - bit 0 (per-coil R mismatch) → 1.2x
 /// - bit 1 (per-coil tau/L mismatch) → 1.5x
-/// - bit 2 (tau residual) is telemetry only and does not widen lambda
 /// - bit 3 (theta/tau ratio) → 1.5x
-pub(crate) fn outer_lambda_widening(inner_warning_flags: u8, tau_residual_permille: u16) -> f32 {
-    let _ = tau_residual_permille;
+pub(crate) fn outer_lambda_widening(inner_warning_flags: u8) -> f32 {
     let mut multiplier: f32 = 1.0;
     if inner_warning_flags & (1 << 0) != 0 {
         multiplier *= 1.2;
@@ -62,7 +60,6 @@ pub(crate) async fn step_velocity_tune<B: CommissioningBackend>(
     mode: OperatingMode,
     inner_lambda_us: u32,
     theta_e_us: u32,
-    tau_residual_permille: u16,
     inner_warning_flags: u8,
     current_bandwidth_hz: u32,
     backend: &mut B,
@@ -79,14 +76,13 @@ pub(crate) async fn step_velocity_tune<B: CommissioningBackend>(
 
     let effective_profile =
         force_conservative_profile(profile, inner_warning_flags, current_bandwidth_hz);
-    let widening = outer_lambda_widening(inner_warning_flags, tau_residual_permille);
+    let widening = outer_lambda_widening(inner_warning_flags);
     if widening > 1.0 + f32::EPSILON {
         let widening_permille = (widening * 1000.0) as u32;
         defmt::info!(
-            "outer: widening velocity lambda by {} permille (flags=0x{:02x}, residual={} permille)",
+            "outer: widening velocity lambda by {} permille (flags=0x{:02x})",
             widening_permille,
             inner_warning_flags,
-            tau_residual_permille
         );
     }
 
@@ -245,7 +241,6 @@ mod tests {
                 1_000,
                 100,
                 0,
-                0,
                 1_000,
                 &mut backend,
             )
@@ -269,7 +264,6 @@ mod tests {
                 OperatingMode::Nominal,
                 1_000,
                 100,
-                0,
                 1 << 3,
                 1_000,
                 &mut backend,
@@ -300,40 +294,40 @@ mod tests {
 
     #[test]
     fn outer_widening_zero_when_clean() {
-        let multiplier = outer_lambda_widening(0, 0);
+        let multiplier = outer_lambda_widening(0);
         assert!((multiplier - 1.0).abs() < 1e-6);
     }
 
     #[test]
     fn outer_widening_bit_0_uses_1_2x() {
-        let multiplier = outer_lambda_widening(1 << 0, 0);
+        let multiplier = outer_lambda_widening(1 << 0);
         assert!((multiplier - 1.2).abs() < 1e-6);
     }
 
     #[test]
     fn outer_widening_bit_1_uses_1_5x() {
-        let multiplier = outer_lambda_widening(1 << 1, 0);
+        let multiplier = outer_lambda_widening(1 << 1);
         assert!((multiplier - 1.5).abs() < 1e-6);
     }
 
     #[test]
     fn outer_widening_bit_2_is_telemetry_only() {
-        let lo = outer_lambda_widening(1 << 2, 250);
+        let lo = outer_lambda_widening(1 << 2);
         assert!((lo - 1.0).abs() < 1e-6);
-        let hi = outer_lambda_widening(1 << 2, 499);
+        let hi = outer_lambda_widening(1 << 2);
         assert!((hi - 1.0).abs() < 1e-6);
     }
 
     #[test]
     fn outer_widening_bit_3_uses_1_5x() {
-        let multiplier = outer_lambda_widening(1 << 3, 0);
+        let multiplier = outer_lambda_widening(1 << 3);
         assert!((multiplier - 1.5).abs() < 1e-6);
     }
 
     #[test]
     fn outer_widening_clamps_at_four() {
         // Bits 0, 1, and 3 widen; bit 2 is telemetry only.
-        let multiplier = outer_lambda_widening(0x0F, 1000);
+        let multiplier = outer_lambda_widening(0x0F);
         assert!((multiplier - 2.7).abs() < 1e-6);
     }
 
@@ -341,14 +335,14 @@ mod tests {
     fn outer_widening_ignores_bits_5_and_6() {
         // Bits 5 (fallback gains) and 6 (host-default confidence) drive
         // profile override, NOT lambda widening (spec §4).
-        let multiplier = outer_lambda_widening((1 << 5) | (1 << 6), 1000);
+        let multiplier = outer_lambda_widening((1 << 5) | (1 << 6));
         assert!((multiplier - 1.0).abs() < 1e-6);
     }
 
     #[test]
     fn outer_widening_composes_two_bits_multiplicatively() {
         // bit 0 (1.2x) + bit 3 (1.5x) = 1.8x.
-        let multiplier = outer_lambda_widening((1 << 0) | (1 << 3), 0);
+        let multiplier = outer_lambda_widening((1 << 0) | (1 << 3));
         assert!((multiplier - 1.8).abs() < 1e-6);
     }
 

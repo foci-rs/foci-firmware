@@ -34,8 +34,6 @@ pub(crate) async fn step_outer<B: CommissioningBackend>(
     current_ringing: bool,
     current_bandwidth_hz: u32,
     tau_e_us: u32,
-    tau_e_crosscheck_us: u32,
-    tau_residual_permille: u16,
     inner_warning_flags: u8,
     backend: &mut B,
 ) -> StepResult {
@@ -50,8 +48,6 @@ pub(crate) async fn step_outer<B: CommissioningBackend>(
         current_ringing,
         current_bandwidth_hz,
         tau_e_us,
-        tau_e_crosscheck_us,
-        tau_residual_permille,
         inner_warning_flags,
         &mut trace_summary_seqs,
         backend,
@@ -70,18 +66,14 @@ pub(crate) async fn step_outer_with_trace<B: CommissioningBackend>(
     current_ringing: bool,
     current_bandwidth_hz: u32,
     tau_e_us: u32,
-    tau_e_crosscheck_us: u32,
-    tau_residual_permille: u16,
     inner_warning_flags: u8,
     trace_summary_seqs: &mut TraceSummarySeqs,
     backend: &mut B,
 ) -> StepResult {
-    // `tau_e_us` and `tau_e_crosscheck_us` are persisted in the outer
-    // engine for Phase 2 (adaptive measurement / fitted-tau crosscheck);
-    // Phase 1 outer logic uses only `tau_residual_permille` and
-    // `inner_warning_flags`. Keeping the wire/struct contract unchanged
-    // avoids a Phase 2 schema bump.
-    let _ = (tau_e_us, tau_e_crosscheck_us);
+    // `tau_e_us` is persisted in the outer engine for a future Phase 2
+    // adaptive-measurement path; Phase 1 outer logic uses only
+    // `inner_warning_flags`.
+    let _ = tau_e_us;
     if let Some(safety) = outer_safety_mut(phase) {
         match check_outer_safety(safety, backend).await {
             Ok(true) => {
@@ -114,7 +106,6 @@ pub(crate) async fn step_outer_with_trace<B: CommissioningBackend>(
                 mode,
                 inner_lambda_us,
                 theta_e_us,
-                tau_residual_permille,
                 inner_warning_flags,
                 current_bandwidth_hz,
                 backend,

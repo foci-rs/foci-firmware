@@ -63,10 +63,6 @@ pub struct OuterTuneParams {
     pub current_bandwidth_hz: u32,
     /// Phase 5 tau_e_us measurement (or host-defaulted).
     pub tau_e_us: u32,
-    /// Phase 5 tau crosscheck (or host-defaulted).
-    pub tau_e_crosscheck_us: u32,
-    /// Phase 5 tau residual in permille.
-    pub tau_residual_permille: u16,
     /// Inner-confidence warning bitfield carried from Stage 1.
     pub inner_warning_flags: u8,
 }
@@ -172,10 +168,6 @@ pub(crate) enum EngineMode {
         current_bandwidth_hz: u32,
         /// Phase 5 tau_e_us (or persisted/host default).
         tau_e_us: u32,
-        /// Phase 5 tau crosscheck (or persisted/host default).
-        tau_e_crosscheck_us: u32,
-        /// Phase 5 tau residual in permille.
-        tau_residual_permille: u16,
         /// Inner-confidence warning bitfield carried from Stage 1.
         inner_warning_flags: u8,
         /// Gains snapshot at entry for soft-failure restoration.
@@ -451,8 +443,6 @@ impl CommissioningEngine {
             current_ringing,
             current_bandwidth_hz,
             tau_e_us,
-            tau_e_crosscheck_us,
-            tau_residual_permille,
             inner_warning_flags,
         } = params;
         Self {
@@ -471,8 +461,6 @@ impl CommissioningEngine {
                 current_ringing,
                 current_bandwidth_hz,
                 tau_e_us,
-                tau_e_crosscheck_us,
-                tau_residual_permille,
                 inner_warning_flags,
                 entry_snapshot,
             },
@@ -762,8 +750,6 @@ impl CommissioningEngine {
                 current_ringing,
                 current_bandwidth_hz,
                 tau_e_us,
-                tau_e_crosscheck_us,
-                tau_residual_permille,
                 inner_warning_flags,
                 ..
             } => {
@@ -777,8 +763,6 @@ impl CommissioningEngine {
                     *current_ringing,
                     *current_bandwidth_hz,
                     *tau_e_us,
-                    *tau_e_crosscheck_us,
-                    *tau_residual_permille,
                     *inner_warning_flags,
                     trace_summary_seqs,
                     backend,
@@ -817,8 +801,6 @@ mod tests {
             current_ringing: false,
             current_bandwidth_hz: 1000,
             tau_e_us: 730,
-            tau_e_crosscheck_us: 730,
-            tau_residual_permille: 0,
             inner_warning_flags: 0,
         }
     }
@@ -865,8 +847,6 @@ mod tests {
             ringing_count: 0,
             bandwidth_hz: 1000,
             tau_e_us: 730,
-            tau_e_crosscheck_us: 730,
-            tau_residual_permille: 0,
             inductance_fit: [crate::commissioning::types::InductanceFitEvidence::EMPTY; 2],
             inductance_fit_points: [[crate::commissioning::types::InductanceFitPoint::EMPTY;
                 crate::commissioning::types::INDUCTANCE_FIT_POINT_COUNT];

@@ -229,8 +229,6 @@ mod tests {
                 0,
                 0,
                 0,
-                0,
-                0,
                 &mut backend,
             )
             .await;

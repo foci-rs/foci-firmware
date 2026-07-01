@@ -221,10 +221,6 @@ pub enum TmcRequestKind {
         current_bandwidth_hz: u32,
         /// Phase 5 tau_e_us measurement (or persisted default).
         tau_e_us: u32,
-        /// Phase 5 tau crosscheck (or persisted default).
-        tau_e_crosscheck_us: u32,
-        /// Phase 5 tau residual in permille.
-        tau_residual_permille: u16,
         /// Inner-confidence warning bitfield carried from Stage 1.
         inner_warning_flags: u8,
     },
@@ -471,8 +467,6 @@ pub fn tmc_tune(
     current_ringing_count: u8,
     current_bandwidth_hz: u32,
     tau_e_us: u32,
-    tau_e_crosscheck_us: u32,
-    tau_residual_permille: u16,
     inner_warning_flags: u8,
 ) -> TmcRequest {
     TmcRequest::new(
@@ -486,8 +480,6 @@ pub fn tmc_tune(
             current_ringing_count,
             current_bandwidth_hz,
             tau_e_us,
-            tau_e_crosscheck_us,
-            tau_residual_permille,
             inner_warning_flags,
         },
     )
@@ -1590,7 +1582,7 @@ mod tests {
     #[test]
     fn tmc_tune_builds_request() {
         assert_eq!(
-            tmc_tune(0, 7, 2, 1, 1400, 700, 3, 500, 730, 720, 50, 0x40),
+            tmc_tune(0, 7, 2, 1, 1400, 700, 3, 500, 730, 0x40),
             TmcRequest::new(
                 0,
                 TmcRequestKind::Tune {
@@ -1602,8 +1594,6 @@ mod tests {
                     current_ringing_count: 3,
                     current_bandwidth_hz: 500,
                     tau_e_us: 730,
-                    tau_e_crosscheck_us: 720,
-                    tau_residual_permille: 50,
                     inner_warning_flags: 0x40,
                 }
             )

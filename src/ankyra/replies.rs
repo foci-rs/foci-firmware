@@ -158,10 +158,6 @@ pub struct FociCommissionResult {
     pub fallback_velocity_limit: u32,
     /// Electrical time constant L/R in microseconds (Phase 5 measurement).
     pub tau_e_us: u32,
-    /// Tau crosscheck from the transient onset (microseconds).
-    pub tau_e_crosscheck_us: u32,
-    /// L/R-vs-transient tau residual in permille.
-    pub tau_residual_permille: u16,
     /// Inner-confidence warning bitfield.
     ///
     /// Bits 0, 1, and 3 report model warnings; bit 2 is reserved for tau

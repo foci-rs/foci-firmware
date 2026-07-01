@@ -24,9 +24,6 @@ pub struct ElectricalModel {
     pub r_mohm: u32,
     /// Physical inductance in microhenries (for display/persistence).
     pub l_uh: u32,
-    /// Tau from two-point transient fit in microseconds.
-    /// Compared against L/R tau for plant model validation.
-    pub tau_e_crosscheck_us: u32,
 }
 
 /// Fixed-point scale used for [`ElectricalModel::r_int`].
@@ -371,7 +368,6 @@ mod tests {
             theta_e_us: 10,
             r_mohm: 1125,
             l_uh: 450,
-            tau_e_crosscheck_us: 48,
         };
         assert_eq!(model.r_int, 512);
         assert_eq!(model.tau_e_us, 50);

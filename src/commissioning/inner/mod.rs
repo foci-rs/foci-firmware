@@ -267,8 +267,6 @@ pub(crate) enum InnerPhase {
         /// current validation can OR in bits 4–5 and the final InnerResult
         /// reports the full set.
         inner_warning_flags: u8,
-        /// L/R-vs-transient tau residual in permille from Phase 5.
-        tau_residual_permille: u16,
         /// Shared multi-point resistance-identification result from Phase 5.
         /// Carried forward so the final InnerResult can persist the count-space
         /// fit evidence and the 64x count-slope-milli audit comparison.

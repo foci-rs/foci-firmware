@@ -108,8 +108,6 @@ pub(crate) struct CurrentValidateData {
     /// tau residual telemetry and is not emitted as a warning. Bit 5 is ORed
     /// if gains fell back to defaults.
     pub(crate) inner_warning_flags: u8,
-    /// L/R-vs-transient tau residual in permille from Phase 5.
-    pub(crate) tau_residual_permille: u16,
     /// Accepted per-coil corrected inductance fit evidence.
     pub(crate) inductance_fit: [InductanceFitEvidence; 2],
     /// Per-amplitude points used by the accepted corrected inductance fits.
@@ -846,31 +844,23 @@ pub(crate) async fn step_current_tune<B: CommissioningBackend>(
     profile: CommissionProfile,
     backend: &mut B,
 ) -> StepResult {
-    let (
-        model,
-        inner_warning_flags,
-        tau_residual_permille,
-        resistance_result,
-        inductance_fit,
-        inductance_fit_points,
-    ) = match phase {
-        InnerPhase::CurrentTune {
-            model,
-            inner_warning_flags,
-            tau_residual_permille,
-            resistance_result,
-            inductance_fit,
-            inductance_fit_points,
-        } => (
-            *model,
-            *inner_warning_flags,
-            *tau_residual_permille,
-            *resistance_result,
-            *inductance_fit,
-            *inductance_fit_points,
-        ),
-        _ => return StepResult::Continue,
-    };
+    let (model, inner_warning_flags, resistance_result, inductance_fit, inductance_fit_points) =
+        match phase {
+            InnerPhase::CurrentTune {
+                model,
+                inner_warning_flags,
+                resistance_result,
+                inductance_fit,
+                inductance_fit_points,
+            } => (
+                *model,
+                *inner_warning_flags,
+                *resistance_result,
+                *inductance_fit,
+                *inductance_fit_points,
+            ),
+            _ => return StepResult::Continue,
+        };
 
     let synthesis_input = CurrentGainSynthesisInput::symmetric(model, profile);
     let config = backend.tmc_config();
@@ -947,7 +937,6 @@ pub(crate) async fn step_current_tune<B: CommissioningBackend>(
             current_torque_validation: [CurrentValidationAxisEvidence::EMPTY;
                 crate::autotune::CURRENT_VALIDATION_MAX_SAMPLES_PER_AXIS],
             inner_warning_flags,
-            tau_residual_permille,
             inductance_fit,
             inductance_fit_points,
             resistance_result,
@@ -1382,8 +1371,6 @@ pub(crate) async fn step_current_validate<B: CommissioningBackend>(
                 ringing_count: 0,
                 bandwidth_hz: data.gains.effective_bandwidth_hz,
                 tau_e_us: data.model.tau_e_us,
-                tau_e_crosscheck_us: data.model.tau_e_crosscheck_us,
-                tau_residual_permille: data.tau_residual_permille,
                 inductance_fit: data.inductance_fit,
                 inductance_fit_points: data.inductance_fit_points,
                 inner_warning_flags: data.inner_warning_flags,
@@ -1555,10 +1542,8 @@ mod tests {
                     theta_e_us: 100,
                     r_mohm: 1000,
                     l_uh: 2000,
-                    tau_e_crosscheck_us: 2000,
                 },
                 inner_warning_flags: 0,
-                tau_residual_permille: 0,
                 resistance_result: resistance_result(),
                 inductance_fit: [InductanceFitEvidence::EMPTY; 2],
                 inductance_fit_points: [[InductanceFitPoint::EMPTY; INDUCTANCE_FIT_POINT_COUNT]; 2],
@@ -2665,7 +2650,6 @@ mod tests {
                     theta_e_us: 100,
                     r_mohm: 1000,
                     l_uh: 2000,
-                    tau_e_crosscheck_us: 2000,
                 },
                 gains: CurrentGains {
                     flux_p: 11,
@@ -2699,7 +2683,6 @@ mod tests {
                 current_torque_validation: [CurrentValidationAxisEvidence::EMPTY;
                     crate::autotune::CURRENT_VALIDATION_MAX_SAMPLES_PER_AXIS],
                 inner_warning_flags: 0,
-                tau_residual_permille: 0,
                 inductance_fit: [InductanceFitEvidence::EMPTY; 2],
                 inductance_fit_points: [[InductanceFitPoint::EMPTY; INDUCTANCE_FIT_POINT_COUNT]; 2],
                 resistance_result: resistance_result(),
@@ -2724,7 +2707,6 @@ mod tests {
                     theta_e_us: 100,
                     r_mohm: 1000,
                     l_uh: 2000,
-                    tau_e_crosscheck_us: 2000,
                 },
                 gains: disabled_state_safe_current_gains(),
                 candidate_gains: CurrentGains {
@@ -2779,7 +2761,6 @@ mod tests {
                 };
                     crate::autotune::CURRENT_VALIDATION_MAX_SAMPLES_PER_AXIS],
                 inner_warning_flags: 0,
-                tau_residual_permille: 0,
                 inductance_fit: [InductanceFitEvidence::EMPTY; 2],
                 inductance_fit_points: [[InductanceFitPoint::EMPTY; INDUCTANCE_FIT_POINT_COUNT]; 2],
                 resistance_result: resistance_result(),
@@ -2804,7 +2785,6 @@ mod tests {
                     theta_e_us: 100,
                     r_mohm: 1000,
                     l_uh: 2000,
-                    tau_e_crosscheck_us: 2000,
                 },
                 gains: CurrentGains {
                     flux_p: 11,
@@ -2866,7 +2846,6 @@ mod tests {
                 };
                     crate::autotune::CURRENT_VALIDATION_MAX_SAMPLES_PER_AXIS],
                 inner_warning_flags: 0,
-                tau_residual_permille: 0,
                 inductance_fit: [InductanceFitEvidence::EMPTY; 2],
                 inductance_fit_points: [[InductanceFitPoint::EMPTY; INDUCTANCE_FIT_POINT_COUNT]; 2],
                 resistance_result: resistance_result(),

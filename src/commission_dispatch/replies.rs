@@ -833,8 +833,6 @@ mod tests {
                 ringing_count: 21,
                 bandwidth_hz: 22,
                 tau_e_us: 23,
-                tau_e_crosscheck_us: 24,
-                tau_residual_permille: 25,
                 inductance_fit: [
                     InductanceFitEvidence {
                         tau_us: 450,

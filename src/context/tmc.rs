@@ -105,8 +105,6 @@ mod tests {
                     current_ringing_count: 0,
                     current_bandwidth_hz: 1000,
                     tau_e_us: 40,
-                    tau_e_crosscheck_us: 41,
-                    tau_residual_permille: 5,
                     inner_warning_flags: 0,
                 },
             ),
