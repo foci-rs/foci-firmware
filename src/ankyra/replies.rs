@@ -204,8 +204,6 @@ pub struct FociInductanceFit {
     pub coil: u8,
     /// Corrected accepted electrical time constant in microseconds.
     pub tau_us: u32,
-    /// Previous uncorrected or fallback time constant in microseconds.
-    pub old_tau_us: u32,
     /// Fitted current delta slope per UD count, scaled by 1000.
     pub slope_delta_per_ud_milli: u32,
     /// Fitted current delta intercept, scaled by 1000.
@@ -1309,7 +1307,6 @@ mod resistance_reply_size_tests {
             oid: u8::MAX,
             coil: u8::MAX,
             tau_us: 0x7FFF_FFFF,
-            old_tau_us: 0x7FFF_FFFF,
             slope_delta_per_ud_milli: 0x7FFF_FFFF,
             intercept_delta_milli: i32::MIN,
             deadtime_ud: i16::MIN,

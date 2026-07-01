@@ -59,8 +59,6 @@ const RISE_63_PCT_Q10: u32 = 647;
 const DIAG_ELECTRICAL_ID_EXCITATION: u8 = 1;
 const DIAG_ELECTRICAL_ID_RESISTANCE_A: u8 = 2;
 const DIAG_ELECTRICAL_ID_RESISTANCE_B: u8 = 3;
-const DIAG_ELECTRICAL_ID_INDUCTANCE_A: u8 = 4;
-const DIAG_ELECTRICAL_ID_INDUCTANCE_B: u8 = 5;
 const DIAG_ELECTRICAL_ID_TRANSIENT: u8 = 6;
 const DIAG_ELECTRICAL_ID_REJECT_NO_SAMPLES: u8 = 20;
 const DIAG_ELECTRICAL_ID_REJECT_SINGLE_COIL_TAU: u8 = 21;
@@ -438,7 +436,6 @@ fn fit_inductance_points(
 
     Some(InductanceFitEvidence {
         tau_us,
-        old_tau_us: 0,
         slope_delta_per_ud_milli: slope_milli as u32,
         intercept_delta_milli: intercept_milli.clamp(i32::MIN as i64, i32::MAX as i64) as i32,
         deadtime_ud,
@@ -446,25 +443,6 @@ fn fit_inductance_points(
         usable_points: n as u8,
         selected_mask,
     })
-}
-
-fn inductance_measurement(data: &ElectricalIdData, coil_idx: usize) -> Option<(u32, u32, u32)> {
-    let count = data.inductance_count[coil_idx];
-    let sum_delta = data.inductance_sum_delta[coil_idx];
-    let elapsed = data.inductance_elapsed_us[coil_idx];
-    if count == 0 || sum_delta == 0 || elapsed == 0 {
-        return None;
-    }
-    let avg_delta = (sum_delta / count as u64) as u32;
-    let r_int = resistance_model_scale(data, coil_idx).unwrap_or(0);
-    let tau_us = if avg_delta >= INDUCTANCE_MIN_DELTA && r_int != 0 {
-        let dt_per_cycle_us = elapsed / count;
-        (data.voltage as u64 * dt_per_cycle_us as u64 * ELECTRICAL_MODEL_RESISTANCE_SCALE as u64
-            / (avg_delta as u64 * r_int as u64)) as u32
-    } else {
-        0
-    };
-    Some((avg_delta, tau_us, count))
 }
 
 fn transient_measurement(samples: &[u32]) -> Option<(u32, u32, u32)> {
@@ -513,20 +491,6 @@ fn record_electrical_id_measurement_diagnostics(
             ));
         }
     }
-    for coil_idx in 0..2 {
-        if let Some((avg_delta, tau_us, count)) = inductance_measurement(data, coil_idx) {
-            diagnostics.push(electrical_id_measurement_diagnostic(
-                if coil_idx == 0 {
-                    DIAG_ELECTRICAL_ID_INDUCTANCE_A
-                } else {
-                    DIAG_ELECTRICAL_ID_INDUCTANCE_B
-                },
-                avg_delta,
-                tau_us,
-                count,
-            ));
-        }
-    }
     if let Some((steady_state, theta_us, crosscheck_us)) = transient_measurement(samples) {
         diagnostics.push(electrical_id_measurement_diagnostic(
             DIAG_ELECTRICAL_ID_TRANSIENT,
@@ -561,8 +525,6 @@ fn assemble_electrical_model(
     samples: &[u32],
     configured_theta_e_us: u32,
 ) -> Result<ModelAssembly, ModelAssemblyError> {
-    let voltage = data.voltage;
-
     // --- Per-coil resistance (from the shared multi-point runner) ---
     //
     // `r_int` and the per-coil entries come from the runner's count-space fit,
@@ -614,22 +576,6 @@ fn assemble_electrical_model(
                 selected_mask: fit.selected_mask,
             });
         }
-
-        let count = data.inductance_count[coil_idx];
-        let sum_delta = data.inductance_sum_delta[coil_idx];
-        let elapsed = data.inductance_elapsed_us[coil_idx];
-        if count == 0 || sum_delta == 0 || elapsed == 0 {
-            continue;
-        }
-        let avg_delta = (sum_delta / count as u64) as u32;
-        if avg_delta < INDUCTANCE_MIN_DELTA {
-            continue;
-        }
-        let dt_per_cycle_us = elapsed / count;
-        let r_int_coil = r_int_per_coil[coil_idx].max(1);
-        *tau_slot =
-            (voltage as u64 * dt_per_cycle_us as u64 * ELECTRICAL_MODEL_RESISTANCE_SCALE as u64
-                / (avg_delta as u64 * r_int_coil as u64)) as u32;
     }
     if tau_per_coil[0] == 0 || tau_per_coil[1] == 0 {
         return Err(ModelAssemblyError::SingleCoilTau);
@@ -1066,20 +1012,11 @@ pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
                             elapsed_us,
                         };
 
-                    if *point == 0 {
-                        data.inductance_sum_delta[coil_idx] = *point_sum_delta;
-                        data.inductance_count[coil_idx] = sample_count;
-                        data.inductance_elapsed_us[coil_idx] = elapsed_us;
-                    }
-
                     if usize::from(point.saturating_add(1)) == INDUCTANCE_FIT_POINT_COUNT {
                         let r_int = resistance_model_scale(data, coil_idx).unwrap_or(0);
-                        if let Some(mut fit) =
+                        if let Some(fit) =
                             fit_inductance_points(&data.inductance_fit_points[coil_idx], r_int)
                         {
-                            if let Some((_, old_tau, _)) = inductance_measurement(data, coil_idx) {
-                                fit.old_tau_us = old_tau;
-                            }
                             data.inductance_fit[coil_idx] = fit;
                         }
                     }
@@ -1364,15 +1301,27 @@ mod tests {
         }
     }
 
+    /// A valid per-coil inductance fit with the given tau, enough to satisfy the
+    /// usable-point gate in model assembly.
+    fn fit_with_tau(tau_us: u32) -> InductanceFitEvidence {
+        InductanceFitEvidence {
+            tau_us,
+            slope_delta_per_ud_milli: 65,
+            intercept_delta_milli: 0,
+            deadtime_ud: 0,
+            residual_permille: 10,
+            usable_points: INDUCTANCE_FIT_POINT_COUNT as u8,
+            selected_mask: 0b1111,
+        }
+    }
+
     /// Per-coil resistance count-slopes of 1706 milli (V=512, I=300 → 1706).
-    /// Inductance values produce tau_e ≈ 730 us, matching the
+    /// Per-coil fits produce tau_e ≈ 735 us, matching the
     /// `representative_transient` crosscheck so the tau-residual gate passes.
     fn representative_data() -> ElectricalIdData {
         let mut data = ElectricalIdData::new(512);
         data.resistance_result = Some(resistance_result(1706, 1706));
-        data.inductance_sum_delta = [200_000, 200_000];
-        data.inductance_count = [5000, 5000];
-        data.inductance_elapsed_us = [490_000, 490_000];
+        data.inductance_fit = [fit_with_tau(735), fit_with_tau(735)];
         data
     }
 
@@ -1418,7 +1367,6 @@ mod tests {
         let mut data = representative_data();
         data.inductance_fit[0] = InductanceFitEvidence {
             tau_us: 450,
-            old_tau_us: 730,
             slope_delta_per_ud_milli: 65,
             intercept_delta_milli: -13_000,
             deadtime_ud: 200,
@@ -1428,7 +1376,6 @@ mod tests {
         };
         data.inductance_fit[1] = InductanceFitEvidence {
             tau_us: 460,
-            old_tau_us: 730,
             slope_delta_per_ud_milli: 64,
             intercept_delta_milli: -12_800,
             deadtime_ud: 200,
@@ -1452,6 +1399,7 @@ mod tests {
     #[test]
     fn model_assembly_rejects_populated_but_unusable_inductance_fit() {
         let mut data = representative_data();
+        data.inductance_fit[0] = InductanceFitEvidence::EMPTY;
         data.inductance_fit_points[0][0] = InductanceFitPoint {
             ud: 512,
             avg_delta: INDUCTANCE_MIN_DELTA,
@@ -1660,14 +1608,8 @@ mod tests {
         // resistance_current_sum=[300_000,300_000]/sample_count=[1000,1000]
         // single-point average this fixture replaced).
         data.resistance_result = Some(resistance_result(1706, 1706));
-        // Tune sum_delta so tau_e ≈ 887 us to match the transient
-        // crosscheck below.
-        // avg_delta = V * dt * SCALE / (tau * r_int)
-        //           = 512 * 98 * 1000 / (887 * 1706) ≈ 33
-        // sum_delta = 33 * 5000 = 165_000
-        data.inductance_sum_delta = [165_000, 165_000];
-        data.inductance_count = [5000, 5000];
-        data.inductance_elapsed_us = [490_000, 490_000];
+        // Per-coil tau ≈ 887 us to match the transient crosscheck below.
+        data.inductance_fit = [fit_with_tau(887), fit_with_tau(887)];
 
         let mut buf = TransientBuffer::new();
         buf.reset(ELECTRICAL_SAMPLE_PERIOD_US as u16);
@@ -1752,7 +1694,7 @@ mod tests {
                 "residual should capture L/R-vs-transient disagreement: {}",
                 tau_residual_permille
             );
-            assert_eq!(inductance_fit, [InductanceFitEvidence::EMPTY; 2]);
+            assert_eq!(inductance_fit, [fit_with_tau(735); 2]);
             assert_eq!(
                 inductance_fit_points,
                 [[InductanceFitPoint::EMPTY; INDUCTANCE_FIT_POINT_COUNT]; 2]
@@ -2007,8 +1949,8 @@ mod tests {
                     state: ElectricalIdState::InductanceDisable { .. },
                     data,
                 } => {
-                    assert_eq!(data.inductance_elapsed_us[0], 31);
-                    assert_eq!(data.inductance_count[0], 1);
+                    assert_eq!(data.inductance_fit_points[0][0].elapsed_us, 31);
+                    assert_eq!(data.inductance_fit_points[0][0].sample_count, 1);
                 }
                 other => panic!("expected InductanceDisable, got {other:?}"),
             }
@@ -2304,9 +2246,9 @@ mod tests {
     fn inductance_toggle_skips_warmup_cycles_in_accumulator() {
         pollster::block_on(async {
             // 4 cycles total, 2 of warm-up. The first 2 cycles must not
-            // contribute to inductance_count or inductance_sum_delta; the
-            // elapsed window starts at the elapsed_us captured between the
-            // last warm-up read and the first measured read.
+            // contribute to the point sample count; the elapsed window starts
+            // at the elapsed_us captured between the last warm-up read and the
+            // first measured read.
             let mut phase = InnerPhase::ElectricalId {
                 state: ElectricalIdState::InductanceToggle {
                     coil: 0,
@@ -2348,7 +2290,7 @@ mod tests {
                     state: ElectricalIdState::InductanceDisable { .. },
                     data,
                 } => {
-                    assert_eq!(data.inductance_count[0], 2);
+                    assert_eq!(data.inductance_fit_points[0][0].sample_count, 2);
                 }
                 other => panic!("expected InductanceDisable, got {other:?}"),
             }
@@ -2408,7 +2350,7 @@ mod tests {
                     assert_eq!(*remaining_cycles, 1);
                     assert_eq!(*warmup_cycles_remaining, 0);
                     assert_eq!(*accumulation_start_us, None);
-                    assert_eq!(data.inductance_count[0], 0);
+                    assert_eq!(data.inductance_fit_points[0][0].sample_count, 0);
                 }
                 other => panic!("expected InductanceToggle, got {other:?}"),
             }
@@ -2429,8 +2371,8 @@ mod tests {
                     state: ElectricalIdState::InductanceDisable { .. },
                     data,
                 } => {
-                    assert_eq!(data.inductance_count[0], 1);
-                    assert_eq!(data.inductance_elapsed_us[0], 0);
+                    assert_eq!(data.inductance_fit_points[0][0].sample_count, 1);
+                    assert_eq!(data.inductance_fit_points[0][0].elapsed_us, 0);
                 }
                 other => panic!("expected InductanceDisable, got {other:?}"),
             }
@@ -2691,13 +2633,10 @@ mod tests {
     }
 
     #[test]
-    fn inductance_nonzero_point_stores_fit_payload_without_legacy_telemetry() {
+    fn inductance_nonzero_point_stores_fit_payload() {
         pollster::block_on(async {
             let mut data = ElectricalIdData::new(512);
             data.resistance_result = Some(resistance_result(2000, 2000));
-            data.inductance_sum_delta = [1234, 5678];
-            data.inductance_count = [3, 4];
-            data.inductance_elapsed_us = [55, 66];
             let mut phase = InnerPhase::ElectricalId {
                 state: ElectricalIdState::InductanceToggle {
                     coil: 0,
@@ -2745,9 +2684,6 @@ mod tests {
                     assert_eq!(point.effective_ud, 590);
                     assert_eq!(point.sample_count, 2);
                     assert_eq!(point.elapsed_us, 320);
-                    assert_eq!(data.inductance_sum_delta, [1234, 5678]);
-                    assert_eq!(data.inductance_count, [3, 4]);
-                    assert_eq!(data.inductance_elapsed_us, [55, 66]);
                 }
                 other => panic!("expected InductanceDisable, got {other:?}"),
             }
@@ -2759,9 +2695,6 @@ mod tests {
         pollster::block_on(async {
             let mut data = ElectricalIdData::new(512);
             data.resistance_result = Some(resistance_result(1000, 1000));
-            data.inductance_sum_delta[0] = 260;
-            data.inductance_count[0] = 10;
-            data.inductance_elapsed_us[0] = 1_000;
             data.inductance_fit_points[0][0] = InductanceFitPoint {
                 ud: 512,
                 avg_delta: 26,
@@ -2836,7 +2769,6 @@ mod tests {
                 } => {
                     let fit = data.inductance_fit[0];
                     assert_ne!(fit, InductanceFitEvidence::EMPTY);
-                    assert_eq!(fit.old_tau_us, 1_969);
                     assert_eq!(fit.usable_points, 4);
                     assert_eq!(fit.selected_mask, 0b1111);
                 }
@@ -2851,24 +2783,15 @@ mod tests {
 
     /// Build model data for per-coil resistance currents `c0`/`c1` (counts).
     ///
-    /// The per-axis count-slopes are `512000/c` (V=512 in count-slope-milli),
-    /// and the inductance arms are tuned per coil to give tau ≈ 730us against
-    /// each coil's own slope, so the tau-mismatch gate does not fire
-    /// incidentally when only resistance differs.
+    /// The per-axis count-slopes are `512000/c` (V=512 in count-slope-milli).
+    /// Both coils get an equal tau ≈ 730us fit so the tau-mismatch gate does
+    /// not fire incidentally when only resistance differs.
     fn data_with_per_coil_currents(c0: i32, c1: i32) -> ElectricalIdData {
         let slope0 = (512_000 / c0.max(1)).max(1);
         let slope1 = (512_000 / c1.max(1)).max(1);
         let mut data = ElectricalIdData::new(512);
         data.resistance_result = Some(resistance_result(slope0, slope1));
-        let dt_us = 98u64;
-        let target_tau_us = 730u64;
-        let count: u32 = 5000;
-        // avg_delta = V * dt * SCALE / (tau * r_int_coil), tuned per coil.
-        let avg_delta0 = (512u64 * dt_us * 1000 / (target_tau_us * slope0 as u64)).max(1);
-        let avg_delta1 = (512u64 * dt_us * 1000 / (target_tau_us * slope1 as u64)).max(1);
-        data.inductance_sum_delta = [avg_delta0 * count as u64, avg_delta1 * count as u64];
-        data.inductance_count = [count, count];
-        data.inductance_elapsed_us = [count * dt_us as u32, count * dt_us as u32];
+        data.inductance_fit = [fit_with_tau(730), fit_with_tau(730)];
         data
     }
 
@@ -2920,8 +2843,7 @@ mod tests {
     #[test]
     fn assemble_rejects_single_coil_tau() {
         let mut data = representative_data();
-        data.inductance_sum_delta = [200_000, 0];
-        data.inductance_count = [5000, 0];
+        data.inductance_fit[1] = InductanceFitEvidence::EMPTY;
         let buf = representative_transient();
         let err = assemble_electrical_model(&data, buf.samples(), TEST_THETA_E_US).unwrap_err();
         assert!(matches!(err, ModelAssemblyError::SingleCoilTau));
@@ -2929,20 +2851,12 @@ mod tests {
 
     #[test]
     fn assemble_rejects_zero_l_int_with_model_scale_zero() {
-        // r_count_slope_milli = 100 (V=512, I=5120 -> matches the old
-        // resistance_current_sum=[5_120_000,5_120_000]/sample_count=[1000,1000]
-        // single-point average this fixture replaced). avg_delta tuned so
-        // per-coil tau rounds to 5us — high enough to clear SingleCoilTau but
-        // low enough that l_int = r_int * tau / 1000 and l_uh = r_mohm * tau /
-        // 1000 both round to 0.
-        // tau = V * dt * SCALE / (avg_delta * r_int)
-        //     = 512 * 98 * 1000 / (avg_delta * 100)
-        // avg_delta = 100_352 → tau ≈ 5us → l_int = l_uh = 0.
+        // r_count_slope_milli = 100 with per-coil tau = 5us — high enough to
+        // clear SingleCoilTau but low enough that l_int = r_int * tau / 1000 and
+        // l_uh = r_mohm * tau / 1000 both round to 0.
         let mut data = ElectricalIdData::new(512);
         data.resistance_result = Some(resistance_result(100, 100));
-        data.inductance_sum_delta = [501_760_000, 501_760_000];
-        data.inductance_count = [5000, 5000];
-        data.inductance_elapsed_us = [490_000, 490_000];
+        data.inductance_fit = [fit_with_tau(5), fit_with_tau(5)];
         let buf = representative_transient();
         let err = assemble_electrical_model(&data, buf.samples(), TEST_THETA_E_US).unwrap_err();
         assert!(matches!(
@@ -2953,12 +2867,11 @@ mod tests {
 
     #[test]
     fn assemble_rejects_per_coil_tau_disagreement_with_equal_resistance() {
-        // Equal per-coil resistance (both currents = 300) so the
-        // resistance-mismatch gate cannot fire. Skewed sum_delta gives
-        // large per-coil tau divergence, exercising the tau-mismatch
-        // gate independently of resistance.
+        // Equal per-coil resistance so the resistance-mismatch gate cannot
+        // fire. Divergent per-coil tau exercises the tau-mismatch gate
+        // independently of resistance.
         let mut data = representative_data();
-        data.inductance_sum_delta = [200_000, 600_000];
+        data.inductance_fit = [fit_with_tau(735), fit_with_tau(245)];
         let buf = representative_transient();
         let err = assemble_electrical_model(&data, buf.samples(), TEST_THETA_E_US).unwrap_err();
         assert!(matches!(err, ModelAssemblyError::TauMismatch { .. }));

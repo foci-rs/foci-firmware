@@ -103,8 +103,6 @@ impl InductanceFitPoint {
 pub struct InductanceFitEvidence {
     /// Corrected tau from the slope fit.
     pub tau_us: u32,
-    /// Legacy absolute-voltage tau for comparison.
-    pub old_tau_us: u32,
     /// Fitted `avg_delta / effective_ud`, scaled by 1000.
     pub slope_delta_per_ud_milli: u32,
     /// Fitted intercept in delta-count milli-units.
@@ -123,7 +121,6 @@ impl InductanceFitEvidence {
     /// Empty evidence slot used before the fit has run.
     pub const EMPTY: Self = Self {
         tau_us: 0,
-        old_tau_us: 0,
         slope_delta_per_ud_milli: 0,
         intercept_delta_milli: 0,
         deadtime_ud: 0,

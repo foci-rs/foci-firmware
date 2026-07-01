@@ -150,12 +150,6 @@ pub(crate) struct ElectricalIdData {
     /// `ResistanceIdentify` sub-state has run the shared runner; the legacy
     /// inductance/delay/gain path reads its count-slope-milli values from here.
     pub(crate) resistance_result: Option<crate::resistance_identification::ResistanceRunResult>,
-    /// Per-coil legacy accumulated |delta_I| for old absolute-voltage telemetry.
-    pub(crate) inductance_sum_delta: [u64; 2],
-    /// Per-coil number of valid legacy di/dt cycles.
-    pub(crate) inductance_count: [u32; 2],
-    /// Per-coil elapsed microseconds during legacy-equivalent di/dt measurement.
-    pub(crate) inductance_elapsed_us: [u32; 2],
     /// Per-coil, per-amplitude fit points for corrected L/tau.
     pub(crate) inductance_fit_points: [[InductanceFitPoint; INDUCTANCE_FIT_POINT_COUNT]; 2],
     /// Accepted per-coil fit evidence.
@@ -167,9 +161,6 @@ impl ElectricalIdData {
         Self {
             voltage,
             resistance_result: None,
-            inductance_sum_delta: [0; 2],
-            inductance_count: [0; 2],
-            inductance_elapsed_us: [0; 2],
             inductance_fit_points: [[InductanceFitPoint::EMPTY; INDUCTANCE_FIT_POINT_COUNT]; 2],
             inductance_fit: [InductanceFitEvidence::EMPTY; 2],
         }

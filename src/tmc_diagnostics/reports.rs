@@ -443,8 +443,6 @@ pub struct InductanceFitReport {
     pub coil: u8,
     /// Corrected accepted electrical time constant in microseconds.
     pub tau_us: u32,
-    /// Previous uncorrected or fallback time constant in microseconds.
-    pub old_tau_us: u32,
     /// Fitted current delta slope per UD count, scaled by 1000.
     pub slope_delta_per_ud_milli: u32,
     /// Fitted current delta intercept, scaled by 1000.
