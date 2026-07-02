@@ -6,7 +6,7 @@ use crate::electrical_capture::{
 use crate::tmc::{TmcRequest, TmcRequestKind, normalize_diagnostic_detail};
 use foci_tmc4671::registers::{
     ABN_DECODER_COUNT, ABN_DECODER_PPR, MODE_RAMP_MODE_MOTION, PHI_E_EXT, PHI_E_SELECTION,
-    PID_TORQUE_FLUX_ACTUAL, PIDOUT_UQ_UD_LIMITS, STATUS_FLAGS, UQ_UD_EXT,
+    PID_TORQUE_FLUX_ACTUAL, PIDOUT_UQ_UD_LIMITS, Register, STATUS_FLAGS, UQ_UD_EXT,
 };
 
 use super::helpers::{current_step_encoder_delta, pack_voltage_ext, split_signed_halves};
@@ -102,11 +102,18 @@ struct SavedRegisters {
     pidout_uq_ud_limits: u32,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct RegisterWrite {
+    register: Register,
+    value: u32,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct CaptureResult {
     status: u8,
     samples: CaptureBuffer,
     elapsed_us: u32,
+    max_sample_interval_us: u32,
     encoder_before: u32,
     encoder_after: u32,
     encoder_counts_per_rev: u32,
@@ -244,7 +251,7 @@ pub async fn run_high_rate_capture_request<B, D, S>(
         oid,
         profile_cfg,
         normalize_diagnostic_detail(detail),
-        capture,
+        &capture,
     );
 }
 
@@ -275,23 +282,47 @@ where
     B: embedded_hal_async::spi::SpiDevice<u8>,
 {
     let mut ok = true;
-    ok &= tmc.write_register(UQ_UD_EXT, 0).await.is_ok();
-    ok &= tmc
-        .write_register(MODE_RAMP_MODE_MOTION, saved.mode_ramp_mode_motion)
-        .await
-        .is_ok();
-    ok &= tmc
-        .write_register(PHI_E_SELECTION, saved.phi_e_selection)
-        .await
-        .is_ok();
-    ok &= tmc.write_register(PHI_E_EXT, saved.phi_e_ext).await.is_ok();
-    ok &= tmc.write_register(UQ_UD_EXT, saved.uq_ud_ext).await.is_ok();
-    ok &= tmc
-        .write_register(PIDOUT_UQ_UD_LIMITS, saved.pidout_uq_ud_limits)
-        .await
-        .is_ok();
+    for write in restore_register_sequence(saved) {
+        ok &= tmc
+            .write_register(write.register, write.value)
+            .await
+            .is_ok();
+    }
 
     if ok { Ok(()) } else { Err(()) }
+}
+
+fn restore_register_sequence(saved: SavedRegisters) -> [RegisterWrite; 7] {
+    [
+        RegisterWrite {
+            register: UQ_UD_EXT,
+            value: 0,
+        },
+        RegisterWrite {
+            register: MODE_RAMP_MODE_MOTION,
+            value: 0,
+        },
+        RegisterWrite {
+            register: PHI_E_EXT,
+            value: saved.phi_e_ext,
+        },
+        RegisterWrite {
+            register: PHI_E_SELECTION,
+            value: saved.phi_e_selection,
+        },
+        RegisterWrite {
+            register: PIDOUT_UQ_UD_LIMITS,
+            value: saved.pidout_uq_ud_limits,
+        },
+        RegisterWrite {
+            register: UQ_UD_EXT,
+            value: saved.uq_ud_ext,
+        },
+        RegisterWrite {
+            register: MODE_RAMP_MODE_MOTION,
+            value: saved.mode_ramp_mode_motion,
+        },
+    ]
 }
 
 async fn read_capture_sample<B, D>(
@@ -305,7 +336,6 @@ where
     B: embedded_hal_async::spi::SpiDevice<u8>,
     D: DiagnosticDelay,
 {
-    let _read_start_us = ctx.delay.now_us();
     let actual = ctx
         .tmc
         .read_register(PID_TORQUE_FLUX_ACTUAL)
@@ -343,6 +373,7 @@ where
         status: HIGH_RATE_CAPTURE_STATUS_SPI,
         samples: CaptureBuffer::new(),
         elapsed_us: 0,
+        max_sample_interval_us: 0,
         encoder_before: 0,
         encoder_after: 0,
         encoder_counts_per_rev: 0,
@@ -358,6 +389,7 @@ where
         Ok(()) => HIGH_RATE_CAPTURE_STATUS_OK,
         Err(()) => HIGH_RATE_CAPTURE_STATUS_SPI,
     };
+    finalize_capture_timing(&mut result);
 
     let zero_result = ctx.tmc.write_register(UQ_UD_EXT, 0).await;
     let restore_result = restore_registers(ctx.tmc, saved).await;
@@ -394,20 +426,20 @@ where
         .map_err(|_| ())?;
     let status_before = ctx.tmc.read_register(STATUS_FLAGS).await.map_err(|_| ())?;
     ctx.tmc
-        .write_register(STATUS_FLAGS, 0)
-        .await
-        .map_err(|_| ())?;
-    ctx.tmc
-        .write_register(PIDOUT_UQ_UD_LIMITS, u32::from(profile.voltage_limit))
+        .write_register(MODE_RAMP_MODE_MOTION, 0)
         .await
         .map_err(|_| ())?;
     ctx.tmc.write_register(UQ_UD_EXT, 0).await.map_err(|_| ())?;
     ctx.tmc
-        .write_register(PHI_E_SELECTION, PHI_E_SELECTION_EXT)
+        .write_register(PIDOUT_UQ_UD_LIMITS, u32::from(profile.voltage_limit))
         .await
         .map_err(|_| ())?;
     ctx.tmc
         .write_register(PHI_E_EXT, u32::from(profile.phi_e_ext))
+        .await
+        .map_err(|_| ())?;
+    ctx.tmc
+        .write_register(PHI_E_SELECTION, PHI_E_SELECTION_EXT)
         .await
         .map_err(|_| ())?;
     ctx.tmc
@@ -418,11 +450,15 @@ where
         .write_register(PIDOUT_UQ_UD_LIMITS, u32::from(profile.voltage_limit))
         .await
         .map_err(|_| ())?;
+    ctx.tmc
+        .write_register(STATUS_FLAGS, 0)
+        .await
+        .map_err(|_| ())?;
 
     let start_us = ctx.delay.now_us();
     let primary_is_flux = profile.ud_ext != 0;
     let baseline = read_capture_sample(ctx, start_us, 0, 0, primary_is_flux).await?;
-    result.samples.push(baseline).map_err(|_| ())?;
+    push_capture_sample(result, baseline)?;
 
     ctx.tmc
         .write_register(UQ_UD_EXT, pack_voltage_ext(profile.uq_ext, profile.ud_ext))
@@ -443,18 +479,12 @@ where
         )
         .await?;
         let timestamp_us = u32::try_from(sample.timestamp_us).map_err(|_| ())?;
-        result.samples.push(sample).map_err(|_| ())?;
+        push_capture_sample(result, sample)?;
         if timestamp_us >= profile.max_capture_us {
             break;
         }
     }
 
-    result.elapsed_us = result
-        .samples
-        .as_slice()
-        .last()
-        .and_then(|sample| u32::try_from(sample.timestamp_us).ok())
-        .unwrap_or(0);
     result.encoder_after = ctx
         .tmc
         .read_register(ABN_DECODER_COUNT)
@@ -463,6 +493,29 @@ where
     let status_after = ctx.tmc.read_register(STATUS_FLAGS).await.map_err(|_| ())?;
     result.status_flags_or = status_before | status_after;
     Ok(())
+}
+
+fn push_capture_sample(
+    result: &mut CaptureResult,
+    sample: ElectricalCaptureSample,
+) -> Result<(), ()> {
+    if let Some(previous) = result.samples.as_slice().last() {
+        let interval = sample
+            .timestamp_us
+            .checked_sub(previous.timestamp_us)
+            .ok_or(())?;
+        let interval = u32::try_from(interval).map_err(|_| ())?;
+        result.max_sample_interval_us = result.max_sample_interval_us.max(interval);
+    }
+
+    result.elapsed_us = u32::try_from(sample.timestamp_us).map_err(|_| ())?;
+    result.samples.push(sample).map_err(|_| ())
+}
+
+fn finalize_capture_timing(capture: &mut CaptureResult) {
+    if let Some(last) = capture.samples.as_slice().last() {
+        capture.elapsed_us = u32::try_from(last.timestamp_us).unwrap_or(u32::MAX);
+    }
 }
 
 fn elapsed_since_start_us(start_us: u64, now_us: u64) -> Result<u32, ()> {
@@ -580,7 +633,7 @@ fn build_run_report(
         | samples
             .iter()
             .fold(0_u32, |flags, sample| flags | sample.status_flags);
-    run.max_sample_interval_us = max_sample_interval_us(samples).unwrap_or(0);
+    run.max_sample_interval_us = capture.max_sample_interval_us;
 
     if capture.status != HIGH_RATE_CAPTURE_STATUS_OK {
         return run;
@@ -629,9 +682,9 @@ fn emit_capture_report<S: DiagnosticReplySink>(
     oid: u8,
     profile: HighRateCaptureProfile,
     detail: u8,
-    capture: CaptureResult,
+    capture: &CaptureResult,
 ) {
-    let report = build_report(oid, profile, &capture);
+    let report = build_report(oid, profile, capture);
     let DiagnosticReport::HighRateCapture { profile, run } = report else {
         unreachable!();
     };
@@ -648,9 +701,9 @@ mod tests {
     use crate::tmc_diagnostics::{
         CurrentStepReport, CurrentTorqueSampleReport, DiagnosticReadiness, DiagnosticReplySink,
         HIGH_RATE_CAPTURE_STATUS_BAD_PROFILE, HIGH_RATE_CAPTURE_STATUS_NOT_READY,
-        HIGH_RATE_CAPTURE_STATUS_OK, HighRateCaptureProfileReport, HighRateCaptureRunReport,
-        HighRateCaptureSampleReport, ResistanceAxisReport, ResistanceProfileReport,
-        ResistanceRunReport, VoltageStepReport,
+        HIGH_RATE_CAPTURE_STATUS_OK, HIGH_RATE_CAPTURE_STATUS_SPI, HighRateCaptureProfileReport,
+        HighRateCaptureRunReport, HighRateCaptureSampleReport, ResistanceAxisReport,
+        ResistanceProfileReport, ResistanceRunReport, VoltageStepReport,
     };
     use std::vec::Vec;
 
@@ -819,6 +872,72 @@ mod tests {
     }
 
     #[test]
+    fn restore_sequence_stops_mode_and_restores_saved_mode_last() {
+        let saved = SavedRegisters {
+            mode_ramp_mode_motion: 0x8000_0003,
+            phi_e_selection: 2,
+            phi_e_ext: 0x1234,
+            uq_ud_ext: 0x5678_9abc,
+            pidout_uq_ud_limits: 0x3456,
+        };
+
+        let sequence = restore_register_sequence(saved);
+        let writes: Vec<(u8, u32)> = sequence
+            .iter()
+            .map(|write| (write.register.addr(), write.value))
+            .collect();
+
+        assert_eq!(
+            writes,
+            std::vec![
+                (UQ_UD_EXT.addr(), 0),
+                (MODE_RAMP_MODE_MOTION.addr(), 0),
+                (PHI_E_EXT.addr(), saved.phi_e_ext),
+                (PHI_E_SELECTION.addr(), saved.phi_e_selection),
+                (PIDOUT_UQ_UD_LIMITS.addr(), saved.pidout_uq_ud_limits),
+                (UQ_UD_EXT.addr(), saved.uq_ud_ext),
+                (MODE_RAMP_MODE_MOTION.addr(), saved.mode_ramp_mode_motion),
+            ]
+        );
+    }
+
+    #[test]
+    fn failure_report_preserves_sample_timing_evidence() {
+        let profile = HighRateCaptureProfile::validation_initial_slope();
+        let mut samples = ElectricalCaptureBuffer::new();
+        for (timestamp_us, current) in [(0_u64, 0_i16), (80, 9), (250, 18)] {
+            samples
+                .push(ElectricalCaptureSample::new(
+                    timestamp_us,
+                    profile.uq_ext,
+                    profile.ud_ext,
+                    current,
+                    0,
+                    0,
+                    0,
+                ))
+                .expect("sample should fit in test buffer");
+        }
+        let capture = CaptureResult {
+            status: HIGH_RATE_CAPTURE_STATUS_SPI,
+            samples,
+            elapsed_us: 250,
+            max_sample_interval_us: 170,
+            encoder_before: 0,
+            encoder_after: 0,
+            encoder_counts_per_rev: 0,
+            status_flags_or: 0,
+        };
+
+        let run = build_run_report(9, profile, &capture);
+
+        assert_eq!(run.status, HIGH_RATE_CAPTURE_STATUS_SPI);
+        assert_eq!(run.sample_count, 3);
+        assert_eq!(run.elapsed_us, 250);
+        assert_eq!(run.max_sample_interval_us, 170);
+    }
+
+    #[test]
     fn detail_two_streams_samples_between_profile_and_run() {
         let profile = HighRateCaptureProfile::validation_initial_slope();
         let mut samples = ElectricalCaptureBuffer::new();
@@ -839,6 +958,7 @@ mod tests {
             status: HIGH_RATE_CAPTURE_STATUS_OK,
             samples,
             elapsed_us: 300,
+            max_sample_interval_us: 100,
             encoder_before: 0,
             encoder_after: 0,
             encoder_counts_per_rev: 0,
@@ -846,7 +966,7 @@ mod tests {
         };
         let mut sink = RecordingSink::default();
 
-        emit_capture_report(&mut sink, 9, profile, 2, capture);
+        emit_capture_report(&mut sink, 9, profile, 2, &capture);
 
         assert_eq!(
             sink.events,
