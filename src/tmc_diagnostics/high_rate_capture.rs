@@ -185,18 +185,22 @@ pub struct HighRateCapturePreflightState {
     pub motor_enabled: bool,
 }
 
+/// Marker returned after high-rate preflight emits a terminal rejection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+pub struct HighRateCapturePreflightRejected;
+
 /// Validate a high-rate capture request before board-side voltage-vector arming.
 ///
 /// Returns the original request unchanged when it is not a high-rate capture
 /// request or when the high-rate profile, runtime, and readiness gates pass.
 /// Emits the same terminal profile+run rejection as the runner and returns
-/// `Err(())` when a high-rate request must be rejected before the board can
-/// assert the bridge.
+/// `Err(HighRateCapturePreflightRejected)` when a high-rate request must be
+/// rejected before the board can assert the bridge.
 pub fn preflight_high_rate_capture_request<S: DiagnosticReplySink>(
     req: TmcRequest,
     preflight: HighRateCapturePreflightState,
     sink: &mut S,
-) -> Result<TmcRequest, ()> {
+) -> Result<TmcRequest, HighRateCapturePreflightRejected> {
     let TmcRequest {
         kind:
             TmcRequestKind::HighRateCaptureTest {
@@ -224,7 +228,7 @@ pub fn preflight_high_rate_capture_request<S: DiagnosticReplySink>(
                 *r_count_slope_milli,
             ),
         );
-        return Err(());
+        return Err(HighRateCapturePreflightRejected);
     }
 
     if !preflight.runtime_calibrated || !preflight.motor_enabled {
@@ -237,7 +241,7 @@ pub fn preflight_high_rate_capture_request<S: DiagnosticReplySink>(
                 *r_count_slope_milli,
             ),
         );
-        return Err(());
+        return Err(HighRateCapturePreflightRejected);
     }
 
     if let Some(status) = readiness_status(preflight.readiness) {
@@ -245,7 +249,7 @@ pub fn preflight_high_rate_capture_request<S: DiagnosticReplySink>(
             sink,
             rejected_report(*oid, status, profile_cfg, *r_count_slope_milli),
         );
-        return Err(());
+        return Err(HighRateCapturePreflightRejected);
     }
 
     Ok(req)
