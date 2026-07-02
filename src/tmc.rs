@@ -372,6 +372,18 @@ pub enum TmcRequestKind {
         /// Reserved verbosity/selector byte for future detail replies.
         detail: u8,
     },
+    /// Run the reusable high-rate electrical capture validation profile.
+    HighRateCaptureTest {
+        /// Object id used by the reply.
+        oid: u8,
+        /// Fixed firmware-owned validation profile selector.
+        profile: u8,
+        /// Verbosity level: 0 profile+run, 1 profile+run+window detail,
+        /// 2 profile+sample rows+run.
+        detail: u8,
+        /// Count-space resistance slope used for nominal R and +/-20% perturbation.
+        r_count_slope_milli: i32,
+    },
     /// Write a TMC4671 register via SPI (dev-only).
     #[cfg(feature = "dev")]
     Write { addr: u8, value: u32 },
@@ -741,6 +753,25 @@ pub fn tmc_voltage_step_test(
 /// Build a `ResistanceTest` request.
 pub fn tmc_resistance_test(channel: u8, oid: u8, detail: u8) -> TmcRequest {
     TmcRequest::new(channel, TmcRequestKind::ResistanceTest { oid, detail })
+}
+
+/// Build a `HighRateCaptureTest` request.
+pub fn tmc_high_rate_capture_test(
+    channel: u8,
+    oid: u8,
+    profile: u8,
+    detail: u8,
+    r_count_slope_milli: i32,
+) -> TmcRequest {
+    TmcRequest::new(
+        channel,
+        TmcRequestKind::HighRateCaptureTest {
+            oid,
+            profile,
+            detail: normalize_diagnostic_detail(detail),
+            r_count_slope_milli,
+        },
+    )
 }
 
 /// Build a `SetEnable` request.
@@ -1372,6 +1403,22 @@ mod tests {
         assert_eq!(
             tmc_resistance_test(0, 7, 0),
             TmcRequest::new(0, TmcRequestKind::ResistanceTest { oid: 7, detail: 0 })
+        );
+    }
+
+    #[test]
+    fn tmc_high_rate_capture_test_builds_request() {
+        assert_eq!(
+            tmc_high_rate_capture_test(0, 7, 0, 2, 1_706),
+            TmcRequest::new(
+                0,
+                TmcRequestKind::HighRateCaptureTest {
+                    oid: 7,
+                    profile: 0,
+                    detail: 2,
+                    r_count_slope_milli: 1_706,
+                }
+            )
         );
     }
 

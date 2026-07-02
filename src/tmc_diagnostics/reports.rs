@@ -4,6 +4,19 @@ pub const CURRENT_STEP_STATUS_NOT_READY: u8 = 1;
 /// Diagnostic failed while communicating with or restoring the TMC4671.
 pub const CURRENT_STEP_STATUS_SPI: u8 = 2;
 
+/// High-rate capture completed successfully.
+pub const HIGH_RATE_CAPTURE_STATUS_OK: u8 = 0;
+/// High-rate capture could not run because the channel was not ready.
+pub const HIGH_RATE_CAPTURE_STATUS_NOT_READY: u8 = 1;
+/// High-rate capture failed while communicating with the TMC4671.
+pub const HIGH_RATE_CAPTURE_STATUS_SPI: u8 = 2;
+/// High-rate capture restored safe state but rejected the profile selector.
+pub const HIGH_RATE_CAPTURE_STATUS_BAD_PROFILE: u8 = 3;
+/// High-rate capture restored safe state but the estimator could not fit data.
+pub const HIGH_RATE_CAPTURE_STATUS_ESTIMATOR: u8 = 4;
+/// High-rate capture failed or could not confirm safe-state restore.
+pub const HIGH_RATE_CAPTURE_STATUS_RESTORE: u8 = 5;
+
 /// Collects readings captured during a current-step or current-vector-step test.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CurrentStepReport {
@@ -179,6 +192,91 @@ pub struct VoltageStepReport {
     pub adc_vm_raw: u16,
     /// Raw TMC4671 status flags at the sample point.
     pub status_flags: u32,
+}
+
+/// Metadata for one high-rate capture validation profile.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HighRateCaptureProfileReport {
+    /// Object id of the FOCI endpoint.
+    pub oid: u8,
+    /// High-rate capture profile schema version.
+    pub profile_version: u16,
+    /// Maximum raw sample rows the firmware capture buffer can hold.
+    pub sample_capacity: u16,
+    /// Number of raw samples requested by this profile.
+    pub requested_samples: u16,
+    /// Maximum capture window in microseconds.
+    pub max_capture_us: u32,
+    /// Signed q-axis external voltage component used by the profile.
+    pub uq_ext: i16,
+    /// Signed d-axis external voltage component used by the profile.
+    pub ud_ext: i16,
+    /// External electrical angle used by the profile.
+    pub phi_e_ext: u16,
+    /// Temporary PIDOUT_UQ_UD_LIMITS value used during the profile.
+    pub voltage_limit: u16,
+    /// Count-space resistance slope used for nominal R and +/-20% perturbation.
+    pub r_count_slope_milli: i32,
+    /// Profile-level flags.
+    pub flags: u32,
+}
+
+/// Optional raw sample row for detail level 2.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HighRateCaptureSampleReport {
+    /// Object id of the FOCI endpoint.
+    pub oid: u8,
+    /// Zero-based raw sample index.
+    pub sample_index: u16,
+    /// Monotonic timestamp relative to capture start, in microseconds.
+    pub timestamp_us: u32,
+    /// Signed q-axis external voltage component at this sample.
+    pub uq_ext: i16,
+    /// Signed d-axis external voltage component at this sample.
+    pub ud_ext: i16,
+    /// Primary current sample in TMC4671 current counts.
+    pub current_primary: i16,
+    /// Secondary current sample in TMC4671 current counts.
+    pub current_secondary: i16,
+    /// ABN decoder count at this sample.
+    pub encoder_count: u32,
+    /// Raw TMC4671 status flags at this sample.
+    pub status_flags: u32,
+}
+
+/// Terminal high-rate capture result.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HighRateCaptureRunReport {
+    /// Object id of the FOCI endpoint.
+    pub oid: u8,
+    /// Status code: 0 success, non-zero stable failure reason.
+    pub status: u8,
+    /// High-rate capture profile schema version.
+    pub profile_version: u16,
+    /// Number of samples captured during the run.
+    pub sample_count: u16,
+    /// Elapsed capture time in microseconds.
+    pub elapsed_us: u32,
+    /// Effective sample frequency in Hertz.
+    pub effective_frequency_hz: u32,
+    /// Nominal inductive time estimate in microseconds.
+    pub l_nominal_us: u32,
+    /// Negative perturbation shift from nominal, in permille.
+    pub l_shift_minus_permille: u16,
+    /// Positive perturbation shift from nominal, in permille.
+    pub l_shift_plus_permille: u16,
+    /// Estimated response onset time in microseconds.
+    pub theta_onset_us: u32,
+    /// Estimator residual RMS in current counts.
+    pub residual_rms_count: u32,
+    /// Maximum interval between adjacent samples in microseconds.
+    pub max_sample_interval_us: u32,
+    /// Signed encoder delta across the capture.
+    pub encoder_delta: i32,
+    /// TMC4671 status flags accumulated across the run.
+    pub status_flags_or: u32,
+    /// Run-level warning bitfield.
+    pub warning_flags: u32,
 }
 
 /// Construct a zero-filled [`CurrentTorqueSampleReport`] with header fields.
