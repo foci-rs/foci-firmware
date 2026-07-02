@@ -117,6 +117,12 @@ struct RegisterWrite {
     value: u32,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum EntryModeSavePlan {
+    SaveRemaining,
+    NeutralizeUnsupported,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct CaptureResult {
     status: u8,
@@ -265,15 +271,24 @@ pub async fn run_high_rate_capture_request<B, D, S>(
     );
 }
 
-async fn save_registers<B>(tmc: &mut foci_tmc4671::spi::Tmc4671Spi<B>) -> Result<SavedRegisters, ()>
+async fn read_entry_mode<B>(tmc: &mut foci_tmc4671::spi::Tmc4671Spi<B>) -> Result<u32, ()>
+where
+    B: embedded_hal_async::spi::SpiDevice<u8>,
+{
+    tmc.read_register(MODE_RAMP_MODE_MOTION)
+        .await
+        .map_err(|_| ())
+}
+
+async fn save_remaining_registers<B>(
+    tmc: &mut foci_tmc4671::spi::Tmc4671Spi<B>,
+    mode_ramp_mode_motion: u32,
+) -> Result<SavedRegisters, ()>
 where
     B: embedded_hal_async::spi::SpiDevice<u8>,
 {
     Ok(SavedRegisters {
-        mode_ramp_mode_motion: tmc
-            .read_register(MODE_RAMP_MODE_MOTION)
-            .await
-            .map_err(|_| ())?,
+        mode_ramp_mode_motion,
         phi_e_selection: tmc.read_register(PHI_E_SELECTION).await.map_err(|_| ())?,
         phi_e_ext: tmc.read_register(PHI_E_EXT).await.map_err(|_| ())?,
         uq_ud_ext: tmc.read_register(UQ_UD_EXT).await.map_err(|_| ())?,
@@ -286,6 +301,14 @@ where
 
 fn entry_mode_supported(mode: u32) -> bool {
     mode == STOPPED_MODE || mode == CLOSED_LOOP_POSITION_MODE
+}
+
+fn entry_mode_save_plan(mode: u32) -> EntryModeSavePlan {
+    if entry_mode_supported(mode) {
+        EntryModeSavePlan::SaveRemaining
+    } else {
+        EntryModeSavePlan::NeutralizeUnsupported
+    }
 }
 
 async fn neutralize_unsupported_entry_mode<B>(
@@ -433,15 +456,24 @@ where
         status_flags_or: 0,
     };
 
-    let saved = match save_registers(ctx.tmc).await {
+    let entry_mode = match read_entry_mode(ctx.tmc).await {
+        Ok(entry_mode) => entry_mode,
+        Err(()) => return result,
+    };
+
+    match entry_mode_save_plan(entry_mode) {
+        EntryModeSavePlan::SaveRemaining => {}
+        EntryModeSavePlan::NeutralizeUnsupported => {
+            let neutralize_result = neutralize_unsupported_entry_mode(ctx.tmc).await;
+            result.status = unsupported_entry_mode_status(neutralize_result);
+            return result;
+        }
+    }
+
+    let saved = match save_remaining_registers(ctx.tmc, entry_mode).await {
         Ok(saved) => saved,
         Err(()) => return result,
     };
-    if !entry_mode_supported(saved.mode_ramp_mode_motion) {
-        let neutralize_result = neutralize_unsupported_entry_mode(ctx.tmc).await;
-        result.status = unsupported_entry_mode_status(neutralize_result);
-        return result;
-    }
 
     let capture_status = match run_capture_window(ctx, profile, &mut result).await {
         Ok(()) => HIGH_RATE_CAPTURE_STATUS_OK,
@@ -983,6 +1015,22 @@ mod tests {
             std::vec![(UQ_UD_EXT.addr(), 0), (MODE_RAMP_MODE_MOTION.addr(), 0)]
         );
         assert!(!writes.contains(&(MODE_RAMP_MODE_MOTION.addr(), saved.mode_ramp_mode_motion)));
+    }
+
+    #[test]
+    fn unsupported_entry_mode_neutralizes_without_remaining_save_reads() {
+        assert_eq!(
+            entry_mode_save_plan(OPEN_LOOP_VOLTAGE_MODE),
+            EntryModeSavePlan::NeutralizeUnsupported
+        );
+        assert_eq!(
+            entry_mode_save_plan(STOPPED_MODE),
+            EntryModeSavePlan::SaveRemaining
+        );
+        assert_eq!(
+            entry_mode_save_plan(CLOSED_LOOP_POSITION_MODE),
+            EntryModeSavePlan::SaveRemaining
+        );
     }
 
     #[test]
