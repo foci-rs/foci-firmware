@@ -69,6 +69,19 @@ where
         post_action: StepperPostAction,
     ) -> Result<(), CommissionError>;
 
+    /// Electrically arm the motor for direct voltage-vector diagnostics.
+    ///
+    /// The board implementation must write the diagnostic's bounded
+    /// `PIDOUT_UQ_UD_LIMITS` value before asserting the enable pin. This preserves
+    /// the repository safety rule that the power-on 32767 default is never present
+    /// at the moment the bridge is enabled.
+    async fn arm_motor_for_voltage_vectors(
+        &mut self,
+        runtime: &mut TmcControlRuntime,
+        tmc: &mut Tmc4671Spi<Spi>,
+        voltage_limit: u16,
+    ) -> Result<(), CommissionError>;
+
     /// Electrically disarm the motor in board context.
     async fn disarm_motor(&mut self, runtime: &mut TmcControlRuntime, tmc: &mut Tmc4671Spi<Spi>);
 
@@ -873,6 +886,16 @@ mod tests {
             _runtime: &mut TmcControlRuntime,
             _tmc: &mut Tmc4671Spi<RuntimeMockSpi>,
             _post_action: StepperPostAction,
+        ) -> Result<(), CommissionError> {
+            self.arm_calls = self.arm_calls.saturating_add(1);
+            self.arm_result
+        }
+
+        async fn arm_motor_for_voltage_vectors(
+            &mut self,
+            _runtime: &mut TmcControlRuntime,
+            _tmc: &mut Tmc4671Spi<RuntimeMockSpi>,
+            _voltage_limit: u16,
         ) -> Result<(), CommissionError> {
             self.arm_calls = self.arm_calls.saturating_add(1);
             self.arm_result
