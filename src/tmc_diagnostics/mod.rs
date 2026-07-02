@@ -6,6 +6,7 @@
 
 mod current_step;
 mod helpers;
+mod high_rate_capture;
 mod replies;
 mod reports;
 mod resistance;
@@ -27,6 +28,10 @@ mod report_size_tests {
 
 pub use current_step::run_current_step_request;
 pub use helpers::{current_step_encoder_delta, pack_voltage_ext};
+pub use high_rate_capture::{
+    emit_high_rate_capture_not_ready, high_rate_capture_voltage_limit,
+    run_high_rate_capture_request,
+};
 pub use replies::{DiagnosticReplySink, emit_diagnostic_report};
 pub use reports::{
     CURRENT_STEP_STATUS_NOT_READY, CURRENT_STEP_STATUS_SPI, CurrentLoopRunReport,
