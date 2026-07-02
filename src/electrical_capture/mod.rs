@@ -17,7 +17,7 @@ pub const R_SENSITIVITY_PERTURB_PERMILLE: u16 = 200;
 pub const R_SENSITIVITY_MAX_L_SHIFT_PERMILLE: u16 = 30;
 
 /// One timestamped electrical capture sample.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub struct ElectricalCaptureSample {
     /// Monotonic timestamp in microseconds from the board `Mono::now()` seam.
     pub timestamp_us: u64,

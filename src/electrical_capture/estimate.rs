@@ -21,8 +21,12 @@ pub struct LinearFit {
     pub mean_current_count: i32,
     /// Fitted intercept in current counts at the first fitted timestamp.
     pub intercept_count: i32,
+    /// Fitted intercept in micro-counts at the first fitted timestamp.
+    pub intercept_micro_count: i64,
     /// Root-mean-square fit residual in current counts.
     pub residual_rms_count: u32,
+    /// Root-mean-square fit residual in micro-counts.
+    pub residual_rms_micro_count: u64,
     /// Number of samples included in the fit.
     pub sample_count: u16,
     /// Elapsed capture time covered by the fit.
@@ -147,13 +151,14 @@ pub fn fit_current_slope(
 
     let residual_mean_square = residual_square_sum / u128::try_from(fit_samples.len()).ok()?;
     let residual_rms_micro_count = integer_sqrt(residual_mean_square);
-    let residual_rms_count = residual_rms_micro_count / u128::try_from(MICROS_PER_SECOND).ok()?;
 
     Some(LinearFit {
         slope_count_per_s: i64::try_from(slope_count_per_s).ok()?,
         mean_current_count: i32::try_from(sum_y / sample_count).ok()?,
-        intercept_count: i32::try_from(intercept_micro_count / MICROS_PER_SECOND).ok()?,
-        residual_rms_count: u32::try_from(residual_rms_count).ok()?,
+        intercept_count: round_micro_count_to_count(intercept_micro_count)?,
+        intercept_micro_count: i64::try_from(intercept_micro_count).ok()?,
+        residual_rms_count: round_micro_residual_to_count(residual_rms_micro_count)?,
+        residual_rms_micro_count: u64::try_from(residual_rms_micro_count).ok()?,
         sample_count: u16::try_from(fit_samples.len()).ok()?,
         elapsed_us: u32::try_from(elapsed_us).ok()?,
     })
@@ -161,6 +166,10 @@ pub fn fit_current_slope(
 
 /// Estimate nominal inductance and sensitivity to R-model perturbation.
 pub fn inductance_sensitivity(fit: LinearFit, model: RDropModel) -> Option<InductanceEvidence> {
+    if model.perturb_permille > 1_000 {
+        return None;
+    }
+
     let nominal = inductance_us_for_r_scale_permille(fit, model, 1_000)?;
     if nominal == 0 {
         return None;
@@ -225,6 +234,23 @@ fn div_ceil_u64(numerator: u64, denominator: u64) -> u64 {
     } else {
         1 + ((numerator - 1) / denominator)
     }
+}
+
+fn round_micro_count_to_count(micro_count: i128) -> Option<i32> {
+    let rounded = if micro_count >= 0 {
+        (micro_count + (MICROS_PER_SECOND / 2)) / MICROS_PER_SECOND
+    } else {
+        (micro_count - (MICROS_PER_SECOND / 2)) / MICROS_PER_SECOND
+    };
+
+    i32::try_from(rounded).ok()
+}
+
+fn round_micro_residual_to_count(micro_count: u128) -> Option<u32> {
+    let rounded = (micro_count + u128::try_from(MICROS_PER_SECOND / 2).ok()?)
+        / u128::try_from(MICROS_PER_SECOND).ok()?;
+
+    u32::try_from(rounded).ok()
 }
 
 fn integer_sqrt(value: u128) -> u128 {
@@ -310,12 +336,38 @@ mod tests {
     }
 
     #[test]
+    fn linear_fit_preserves_fractional_residual_evidence() {
+        let samples = [
+            ElectricalCaptureSample::new(0, 0, 1024, 0, 0, 100, 0),
+            ElectricalCaptureSample::new(100, 0, 1024, 1, 0, 100, 0),
+            ElectricalCaptureSample::new(200, 0, 1024, 1, 0, 100, 0),
+            ElectricalCaptureSample::new(300, 0, 1024, 2, 0, 100, 0),
+        ];
+
+        let fit = fit_current_slope(
+            &samples,
+            FitWindow {
+                start_index: 0,
+                end_index: 4,
+            },
+        )
+        .expect("fractional residual samples should fit");
+
+        assert_eq!(fit.intercept_count, 0);
+        assert_eq!(fit.intercept_micro_count, 100_000);
+        assert_eq!(fit.residual_rms_count, 0);
+        assert!(fit.residual_rms_micro_count > 0);
+    }
+
+    #[test]
     fn r_sensitivity_reports_l_shift_permille() {
         let fit = LinearFit {
             slope_count_per_s: 400_000,
             mean_current_count: 100,
             intercept_count: 10,
+            intercept_micro_count: 10_000_000,
             residual_rms_count: 0,
+            residual_rms_micro_count: 0,
             sample_count: 4,
             elapsed_us: 300,
         };
@@ -334,6 +386,58 @@ mod tests {
         assert_eq!(evidence.l_shift_minus_permille, 11);
         assert_eq!(evidence.l_shift_plus_permille, 11);
         assert!(evidence.passes_3_percent_gate());
+    }
+
+    #[test]
+    fn r_sensitivity_accepts_full_negative_perturbation_boundary() {
+        let fit = LinearFit {
+            slope_count_per_s: 400_000,
+            mean_current_count: 100,
+            intercept_count: 10,
+            intercept_micro_count: 10_000_000,
+            residual_rms_count: 0,
+            residual_rms_micro_count: 0,
+            sample_count: 4,
+            elapsed_us: 300,
+        };
+
+        assert!(
+            inductance_sensitivity(
+                fit,
+                RDropModel {
+                    r_count_slope_milli: 1_000,
+                    ud_count: 2_000,
+                    perturb_permille: 1_000,
+                },
+            )
+            .is_some()
+        );
+    }
+
+    #[test]
+    fn r_sensitivity_rejects_over_full_negative_perturbation() {
+        let fit = LinearFit {
+            slope_count_per_s: 400_000,
+            mean_current_count: 100,
+            intercept_count: 10,
+            intercept_micro_count: 10_000_000,
+            residual_rms_count: 0,
+            residual_rms_micro_count: 0,
+            sample_count: 4,
+            elapsed_us: 300,
+        };
+
+        assert_eq!(
+            inductance_sensitivity(
+                fit,
+                RDropModel {
+                    r_count_slope_milli: 1_000,
+                    ud_count: 2_000,
+                    perturb_permille: 1_001,
+                },
+            ),
+            None
+        );
     }
 
     #[test]
