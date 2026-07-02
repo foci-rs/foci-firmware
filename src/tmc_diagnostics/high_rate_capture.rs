@@ -125,6 +125,7 @@ struct CaptureResult {
     max_sample_interval_us: u32,
     encoder_before: u32,
     encoder_after: u32,
+    encoder_after_valid: bool,
     encoder_counts_per_rev: u32,
     status_flags_or: u32,
 }
@@ -427,6 +428,7 @@ where
         max_sample_interval_us: 0,
         encoder_before: 0,
         encoder_after: 0,
+        encoder_after_valid: false,
         encoder_counts_per_rev: 0,
         status_flags_or: 0,
     };
@@ -481,6 +483,7 @@ where
         .await
         .map_err(|_| ())?;
     let status_before = ctx.tmc.read_register(STATUS_FLAGS).await.map_err(|_| ())?;
+    result.status_flags_or = status_before;
     ctx.tmc
         .write_register(MODE_RAMP_MODE_MOTION, 0)
         .await
@@ -541,11 +544,14 @@ where
         }
     }
 
+    // End voltage exposure before collecting tail evidence.
+    ctx.tmc.write_register(UQ_UD_EXT, 0).await.map_err(|_| ())?;
     result.encoder_after = ctx
         .tmc
         .read_register(ABN_DECODER_COUNT)
         .await
         .map_err(|_| ())?;
+    result.encoder_after_valid = true;
     let status_after = ctx.tmc.read_register(STATUS_FLAGS).await.map_err(|_| ())?;
     result.status_flags_or = status_before | status_after;
     Ok(())
@@ -669,11 +675,13 @@ fn build_run_report(
     let mut run = zero_run_report(oid, capture.status, profile.profile_version);
     run.sample_count = u16::try_from(samples.len()).unwrap_or(u16::MAX);
     run.elapsed_us = capture.elapsed_us;
-    run.encoder_delta = current_step_encoder_delta(
-        capture.encoder_before,
-        capture.encoder_after,
-        capture.encoder_counts_per_rev,
-    );
+    if capture.encoder_after_valid {
+        run.encoder_delta = current_step_encoder_delta(
+            capture.encoder_before,
+            capture.encoder_after,
+            capture.encoder_counts_per_rev,
+        );
+    }
     run.status_flags_or = capture.status_flags_or
         | samples
             .iter()
@@ -1001,6 +1009,7 @@ mod tests {
             max_sample_interval_us: 170,
             encoder_before: 0,
             encoder_after: 0,
+            encoder_after_valid: false,
             encoder_counts_per_rev: 0,
             status_flags_or: 0,
         };
@@ -1011,6 +1020,28 @@ mod tests {
         assert_eq!(run.sample_count, 3);
         assert_eq!(run.elapsed_us, 250);
         assert_eq!(run.max_sample_interval_us, 170);
+    }
+
+    #[test]
+    fn failure_without_tail_encoder_read_preserves_status_without_synthetic_delta() {
+        let profile = HighRateCaptureProfile::validation_initial_slope();
+        let capture = CaptureResult {
+            status: HIGH_RATE_CAPTURE_STATUS_SPI,
+            samples: ElectricalCaptureBuffer::new(),
+            elapsed_us: 0,
+            max_sample_interval_us: 0,
+            encoder_before: 90,
+            encoder_after: 0,
+            encoder_after_valid: false,
+            encoder_counts_per_rev: 100,
+            status_flags_or: 0x1234,
+        };
+
+        let run = build_run_report(9, profile, &capture);
+
+        assert_eq!(run.status, HIGH_RATE_CAPTURE_STATUS_SPI);
+        assert_eq!(run.encoder_delta, 0);
+        assert_eq!(run.status_flags_or, 0x1234);
     }
 
     #[test]
@@ -1037,6 +1068,7 @@ mod tests {
             max_sample_interval_us: 100,
             encoder_before: 0,
             encoder_after: 0,
+            encoder_after_valid: true,
             encoder_counts_per_rev: 0,
             status_flags_or: 0,
         };
