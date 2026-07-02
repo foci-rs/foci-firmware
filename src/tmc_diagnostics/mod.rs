@@ -29,8 +29,9 @@ mod report_size_tests {
 pub use current_step::run_current_step_request;
 pub use helpers::{current_step_encoder_delta, pack_voltage_ext};
 pub use high_rate_capture::{
-    emit_high_rate_capture_not_ready, high_rate_capture_voltage_limit,
-    preflight_high_rate_capture_request, run_high_rate_capture_request,
+    HighRateCapturePreflightState, emit_high_rate_capture_not_ready,
+    high_rate_capture_voltage_limit, preflight_high_rate_capture_request,
+    run_high_rate_capture_request,
 };
 pub use replies::{DiagnosticReplySink, emit_diagnostic_report};
 pub use reports::{

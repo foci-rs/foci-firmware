@@ -174,15 +174,27 @@ pub const fn high_rate_capture_voltage_limit() -> u16 {
     VALIDATION_VOLTAGE_LIMIT
 }
 
+/// Pre-arm state required for high-rate capture validation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HighRateCapturePreflightState {
+    /// Board readiness snapshot captured before any phase restore or arming.
+    pub readiness: DiagnosticReadiness,
+    /// Whether the selected runtime has completed calibration.
+    pub runtime_calibrated: bool,
+    /// Whether the selected runtime is already electrically enabled.
+    pub motor_enabled: bool,
+}
+
 /// Validate a high-rate capture request before board-side voltage-vector arming.
 ///
 /// Returns the original request unchanged when it is not a high-rate capture
-/// request or when the high-rate profile/readiness gates pass. Emits the same
-/// terminal profile+run rejection as the runner and returns `Err(())` when a
-/// high-rate request must be rejected before the board can assert the bridge.
+/// request or when the high-rate profile, runtime, and readiness gates pass.
+/// Emits the same terminal profile+run rejection as the runner and returns
+/// `Err(())` when a high-rate request must be rejected before the board can
+/// assert the bridge.
 pub fn preflight_high_rate_capture_request<S: DiagnosticReplySink>(
     req: TmcRequest,
-    readiness: DiagnosticReadiness,
+    preflight: HighRateCapturePreflightState,
     sink: &mut S,
 ) -> Result<TmcRequest, ()> {
     let TmcRequest {
@@ -215,7 +227,20 @@ pub fn preflight_high_rate_capture_request<S: DiagnosticReplySink>(
         return Err(());
     }
 
-    if let Some(status) = readiness_status(readiness) {
+    if !preflight.runtime_calibrated || !preflight.motor_enabled {
+        emit_diagnostic_report(
+            sink,
+            rejected_report(
+                *oid,
+                HIGH_RATE_CAPTURE_STATUS_NOT_READY,
+                profile_cfg,
+                *r_count_slope_milli,
+            ),
+        );
+        return Err(());
+    }
+
+    if let Some(status) = readiness_status(preflight.readiness) {
         emit_diagnostic_report(
             sink,
             rejected_report(*oid, status, profile_cfg, *r_count_slope_milli),
@@ -1017,8 +1042,7 @@ mod tests {
         );
         let mut sink = RecordingSink::default();
 
-        let result =
-            preflight_high_rate_capture_request(req, ready_diagnostic_readiness(), &mut sink);
+        let result = preflight_high_rate_capture_request(req, ready_preflight_state(), &mut sink);
 
         assert!(result.is_err());
         assert_eq!(
@@ -1053,9 +1077,78 @@ mod tests {
 
         let result = preflight_high_rate_capture_request(
             req,
-            DiagnosticReadiness {
-                homing_active: true,
-                ..ready_diagnostic_readiness()
+            HighRateCapturePreflightState {
+                readiness: DiagnosticReadiness {
+                    homing_active: true,
+                    ..ready_diagnostic_readiness()
+                },
+                ..ready_preflight_state()
+            },
+            &mut sink,
+        );
+
+        assert!(result.is_err());
+        assert_eq!(
+            sink.events,
+            std::vec![
+                Event::Profile {
+                    oid: 9,
+                    requested_samples: VALIDATION_REQUESTED_SAMPLES,
+                    max_capture_us: VALIDATION_MAX_CAPTURE_US,
+                },
+                Event::Run {
+                    oid: 9,
+                    status: HIGH_RATE_CAPTURE_STATUS_NOT_READY,
+                    sample_count: 0,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn preflight_uncalibrated_runtime_emits_not_ready() {
+        let req = valid_high_rate_capture_request();
+        let mut sink = RecordingSink::default();
+
+        let result = preflight_high_rate_capture_request(
+            req,
+            HighRateCapturePreflightState {
+                runtime_calibrated: false,
+                motor_enabled: true,
+                ..ready_preflight_state()
+            },
+            &mut sink,
+        );
+
+        assert!(result.is_err());
+        assert_eq!(
+            sink.events,
+            std::vec![
+                Event::Profile {
+                    oid: 9,
+                    requested_samples: VALIDATION_REQUESTED_SAMPLES,
+                    max_capture_us: VALIDATION_MAX_CAPTURE_US,
+                },
+                Event::Run {
+                    oid: 9,
+                    status: HIGH_RATE_CAPTURE_STATUS_NOT_READY,
+                    sample_count: 0,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn preflight_disabled_runtime_emits_not_ready() {
+        let req = valid_high_rate_capture_request();
+        let mut sink = RecordingSink::default();
+
+        let result = preflight_high_rate_capture_request(
+            req,
+            HighRateCapturePreflightState {
+                runtime_calibrated: true,
+                motor_enabled: false,
+                ..ready_preflight_state()
             },
             &mut sink,
         );
@@ -1291,11 +1384,31 @@ mod tests {
         );
     }
 
+    fn valid_high_rate_capture_request() -> crate::tmc::TmcRequest {
+        crate::tmc::TmcRequest::new(
+            0,
+            TmcRequestKind::HighRateCaptureTest {
+                oid: 9,
+                profile: VALIDATION_PROFILE_ID,
+                detail: 0,
+                r_count_slope_milli: 1_706,
+            },
+        )
+    }
+
     fn ready_diagnostic_readiness() -> DiagnosticReadiness {
         DiagnosticReadiness {
             homing_active: false,
             stepper_active: false,
             saved_voltage_limit: 1,
+        }
+    }
+
+    fn ready_preflight_state() -> HighRateCapturePreflightState {
+        HighRateCapturePreflightState {
+            readiness: ready_diagnostic_readiness(),
+            runtime_calibrated: true,
+            motor_enabled: true,
         }
     }
 }
