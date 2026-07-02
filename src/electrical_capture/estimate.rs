@@ -2,6 +2,7 @@ use super::{ElectricalCaptureSample, R_SENSITIVITY_MAX_L_SHIFT_PERMILLE};
 
 const MICROS_PER_SECOND: i128 = 1_000_000;
 const TAU_MILLIRADIANS: u128 = 6_283;
+const MAX_FIT_TIMESTAMP_OFFSET_US: u64 = u32::MAX as u64;
 
 /// Inclusive-exclusive sample range used for estimator fitting.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
@@ -71,6 +72,9 @@ pub struct OnsetThreshold {
 }
 
 /// Estimate electrical frequency from the current ramp slope and mean current.
+///
+/// Returns `None` when the mean current is at or below the supplied noise floor
+/// or when the computed frequency does not fit in `u32`.
 pub fn effective_frequency_hz(
     di_dt_count_per_s: i64,
     mean_current_count: i32,
@@ -92,6 +96,10 @@ pub fn effective_frequency_hz(
 }
 
 /// Fit a primary-current slope over the requested sample window.
+///
+/// Returns `None` for invalid windows, windows with fewer than two samples,
+/// non-monotonic timestamps, timestamp offsets outside the supported arithmetic
+/// domain, degenerate timing, or checked-arithmetic overflow.
 pub fn fit_current_slope(
     samples: &[ElectricalCaptureSample],
     window: FitWindow,
@@ -108,7 +116,7 @@ pub fn fit_current_slope(
     let first_timestamp_us = fit_samples.first()?.timestamp_us;
     let last_timestamp_us = fit_samples.last()?.timestamp_us;
     let elapsed_us = last_timestamp_us.checked_sub(first_timestamp_us)?;
-    if elapsed_us == 0 || elapsed_us > u64::from(u32::MAX) {
+    if elapsed_us == 0 || elapsed_us > MAX_FIT_TIMESTAMP_OFFSET_US {
         return None;
     }
 
@@ -116,37 +124,56 @@ pub fn fit_current_slope(
     let mut sum_x2 = 0_i128;
     let mut sum_y = 0_i128;
     let mut sum_xy = 0_i128;
+    let mut previous_timestamp_us = first_timestamp_us;
 
     for sample in fit_samples {
-        let x = i128::from(sample.timestamp_us.checked_sub(first_timestamp_us)?);
+        if sample.timestamp_us < previous_timestamp_us {
+            return None;
+        }
+        previous_timestamp_us = sample.timestamp_us;
+
+        let offset_us = sample.timestamp_us.checked_sub(first_timestamp_us)?;
+        if offset_us > MAX_FIT_TIMESTAMP_OFFSET_US {
+            return None;
+        }
+
+        let x = i128::from(offset_us);
         let y = i128::from(sample.current_primary);
 
-        sum_x += x;
-        sum_x2 += x * x;
-        sum_y += y;
-        sum_xy += x * y;
+        sum_x = sum_x.checked_add(x)?;
+        sum_x2 = sum_x2.checked_add(x.checked_mul(x)?)?;
+        sum_y = sum_y.checked_add(y)?;
+        sum_xy = sum_xy.checked_add(x.checked_mul(y)?)?;
     }
 
     let sample_count = i128::try_from(fit_samples.len()).ok()?;
-    let slope_numerator = sample_count * sum_xy - sum_x * sum_y;
-    let slope_denominator = sample_count * sum_x2 - sum_x * sum_x;
+    let slope_numerator = sample_count
+        .checked_mul(sum_xy)?
+        .checked_sub(sum_x.checked_mul(sum_y)?)?;
+    let slope_denominator = sample_count
+        .checked_mul(sum_x2)?
+        .checked_sub(sum_x.checked_mul(sum_x)?)?;
     if slope_denominator == 0 {
         return None;
     }
 
-    let slope_count_per_s = (slope_numerator * MICROS_PER_SECOND) / slope_denominator;
-    let intercept_micro_count =
-        (sum_y * MICROS_PER_SECOND - slope_count_per_s * sum_x) / sample_count;
+    let slope_count_per_s = slope_numerator.checked_mul(MICROS_PER_SECOND)? / slope_denominator;
+    let intercept_micro_count = sum_y
+        .checked_mul(MICROS_PER_SECOND)?
+        .checked_sub(slope_count_per_s.checked_mul(sum_x)?)?
+        / sample_count;
 
     let mut residual_square_sum = 0_u128;
     for sample in fit_samples {
         let x = i128::from(sample.timestamp_us.checked_sub(first_timestamp_us)?);
-        let observed_micro_count = i128::from(sample.current_primary) * MICROS_PER_SECOND;
-        let fitted_micro_count = intercept_micro_count + slope_count_per_s * x;
-        let residual = observed_micro_count - fitted_micro_count;
+        let observed_micro_count =
+            i128::from(sample.current_primary).checked_mul(MICROS_PER_SECOND)?;
+        let fitted_micro_count =
+            intercept_micro_count.checked_add(slope_count_per_s.checked_mul(x)?)?;
+        let residual = observed_micro_count.checked_sub(fitted_micro_count)?;
         let residual_abs = residual.unsigned_abs();
         residual_square_sum =
-            residual_square_sum.saturating_add(residual_abs.saturating_mul(residual_abs));
+            residual_square_sum.checked_add(residual_abs.checked_mul(residual_abs)?)?;
     }
 
     let residual_mean_square = residual_square_sum / u128::try_from(fit_samples.len()).ok()?;
@@ -165,6 +192,9 @@ pub fn fit_current_slope(
 }
 
 /// Estimate nominal inductance and sensitivity to R-model perturbation.
+///
+/// Returns `None` when the slope or nominal inductance is zero, the R
+/// perturbation exceeds 1000 permille, or checked arithmetic/conversions fail.
 pub fn inductance_sensitivity(fit: LinearFit, model: RDropModel) -> Option<InductanceEvidence> {
     if model.perturb_permille > 1_000 {
         return None;
@@ -187,6 +217,8 @@ pub fn inductance_sensitivity(fit: LinearFit, model: RDropModel) -> Option<Induc
 }
 
 /// Detect the first timestamp where primary current departs from the initial sample.
+///
+/// Returns `None` when there are no samples or no sample reaches the threshold.
 pub fn detect_theta_onset_us(
     samples: &[ElectricalCaptureSample],
     threshold: OnsetThreshold,
@@ -357,6 +389,46 @@ mod tests {
         assert_eq!(fit.intercept_micro_count, 100_000);
         assert_eq!(fit.residual_rms_count, 0);
         assert!(fit.residual_rms_micro_count > 0);
+    }
+
+    #[test]
+    fn linear_fit_rejects_out_of_order_timestamps() {
+        let samples = [
+            ElectricalCaptureSample::new(0, 0, 1024, 0, 0, 100, 0),
+            ElectricalCaptureSample::new(200, 0, 1024, 1, 0, 100, 0),
+            ElectricalCaptureSample::new(100, 0, 1024, 2, 0, 100, 0),
+        ];
+
+        assert_eq!(
+            fit_current_slope(
+                &samples,
+                FitWindow {
+                    start_index: 0,
+                    end_index: 3,
+                },
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn linear_fit_rejects_oversized_intermediate_timestamp() {
+        let samples = [
+            ElectricalCaptureSample::new(0, 0, 1024, 0, 0, 100, 0),
+            ElectricalCaptureSample::new(u64::MAX, 0, 1024, 1, 0, 100, 0),
+            ElectricalCaptureSample::new(1, 0, 1024, 2, 0, 100, 0),
+        ];
+
+        assert_eq!(
+            fit_current_slope(
+                &samples,
+                FitWindow {
+                    start_index: 0,
+                    end_index: 3,
+                },
+            ),
+            None
+        );
     }
 
     #[test]
