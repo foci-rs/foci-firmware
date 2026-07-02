@@ -30,6 +30,15 @@ const VALIDATION_PHI_E_EXT: u16 = 0;
 const VALIDATION_VOLTAGE_LIMIT: u16 = 2048;
 const CURRENT_NOISE_FLOOR_COUNT: u16 = 5;
 const THETA_ONSET_DELTA_COUNT: u16 = 8;
+const _: () = assert!(HIGH_RATE_CAPTURE_SAMPLE_CAPACITY <= u16::MAX as usize);
+const HIGH_RATE_CAPTURE_SAMPLE_CAPACITY_U16: u16 = HIGH_RATE_CAPTURE_SAMPLE_CAPACITY as u16;
+
+/// TMC4671 stopped mode: no motion controller owns the power-stage command.
+const STOPPED_MODE: u32 = 0;
+
+/// Closed-loop position mode used by the existing active diagnostics as a safe
+/// non-voltage-vector entry state.
+const CLOSED_LOOP_POSITION_MODE: u32 = 0x8000_0003;
 
 /// TMC4671-LA Rev 1, 02/2024, MODE_RAMP_MODE_MOTION bits `[7:0]`:
 /// `MODE_MOTION = 8` selects `UQ_UD_EXT` voltage-vector mode.
@@ -60,7 +69,7 @@ impl HighRateCaptureProfile {
         Self {
             profile_id: VALIDATION_PROFILE_ID,
             profile_version: PROFILE_VERSION,
-            sample_capacity: HIGH_RATE_CAPTURE_SAMPLE_CAPACITY as u16,
+            sample_capacity: HIGH_RATE_CAPTURE_SAMPLE_CAPACITY_U16,
             requested_samples: VALIDATION_REQUESTED_SAMPLES,
             max_capture_us: VALIDATION_MAX_CAPTURE_US,
             uq_ext: VALIDATION_UQ_EXT,
@@ -274,6 +283,48 @@ where
     })
 }
 
+fn entry_mode_supported(mode: u32) -> bool {
+    mode == STOPPED_MODE || mode == CLOSED_LOOP_POSITION_MODE
+}
+
+async fn neutralize_unsupported_entry_mode<B>(
+    tmc: &mut foci_tmc4671::spi::Tmc4671Spi<B>,
+) -> Result<(), ()>
+where
+    B: embedded_hal_async::spi::SpiDevice<u8>,
+{
+    let mut ok = true;
+    for write in unsupported_entry_neutralize_sequence() {
+        ok &= tmc
+            .write_register(write.register, write.value)
+            .await
+            .is_ok();
+    }
+
+    if ok { Ok(()) } else { Err(()) }
+}
+
+fn unsupported_entry_neutralize_sequence() -> [RegisterWrite; 2] {
+    [
+        RegisterWrite {
+            register: UQ_UD_EXT,
+            value: 0,
+        },
+        RegisterWrite {
+            register: MODE_RAMP_MODE_MOTION,
+            value: STOPPED_MODE,
+        },
+    ]
+}
+
+fn unsupported_entry_mode_status(neutralize_result: Result<(), ()>) -> u8 {
+    if neutralize_result.is_ok() {
+        HIGH_RATE_CAPTURE_STATUS_NOT_READY
+    } else {
+        HIGH_RATE_CAPTURE_STATUS_RESTORE
+    }
+}
+
 async fn restore_registers<B>(
     tmc: &mut foci_tmc4671::spi::Tmc4671Spi<B>,
     saved: SavedRegisters,
@@ -384,6 +435,11 @@ where
         Ok(saved) => saved,
         Err(()) => return result,
     };
+    if !entry_mode_supported(saved.mode_ramp_mode_motion) {
+        let neutralize_result = neutralize_unsupported_entry_mode(ctx.tmc).await;
+        result.status = unsupported_entry_mode_status(neutralize_result);
+        return result;
+    }
 
     let capture_status = match run_capture_window(ctx, profile, &mut result).await {
         Ok(()) => HIGH_RATE_CAPTURE_STATUS_OK,
@@ -604,17 +660,6 @@ fn emit_sample_reports<S: DiagnosticReplySink>(
     }
 }
 
-fn build_report(
-    oid: u8,
-    profile: HighRateCaptureProfile,
-    capture: &CaptureResult,
-) -> DiagnosticReport {
-    DiagnosticReport::HighRateCapture {
-        profile: profile.report(oid),
-        run: build_run_report(oid, profile, capture),
-    }
-}
-
 fn build_run_report(
     oid: u8,
     profile: HighRateCaptureProfile,
@@ -684,13 +729,9 @@ fn emit_capture_report<S: DiagnosticReplySink>(
     detail: u8,
     capture: &CaptureResult,
 ) {
-    let report = build_report(oid, profile, capture);
-    let DiagnosticReport::HighRateCapture { profile, run } = report else {
-        unreachable!();
-    };
-    sink.foci_high_rate_capture_profile(profile);
+    sink.foci_high_rate_capture_profile(profile.report(oid));
     emit_sample_reports(sink, oid, capture.samples.as_slice(), detail);
-    sink.foci_high_rate_capture_run(run);
+    sink.foci_high_rate_capture_run(build_run_report(oid, profile, capture));
 }
 
 #[cfg(test)]
@@ -788,7 +829,7 @@ mod tests {
         assert_eq!(profile.profile_version, PROFILE_VERSION);
         assert_eq!(
             profile.sample_capacity,
-            HIGH_RATE_CAPTURE_SAMPLE_CAPACITY as u16
+            HIGH_RATE_CAPTURE_SAMPLE_CAPACITY_U16
         );
         assert_eq!(profile.requested_samples, 256);
         assert_eq!(profile.max_capture_us, 12_000);
@@ -899,6 +940,41 @@ mod tests {
                 (MODE_RAMP_MODE_MOTION.addr(), saved.mode_ramp_mode_motion),
             ]
         );
+    }
+
+    #[test]
+    fn unsupported_voltage_entry_mode_rejects_without_restore() {
+        let saved = SavedRegisters {
+            mode_ramp_mode_motion: OPEN_LOOP_VOLTAGE_MODE,
+            phi_e_selection: PHI_E_SELECTION_EXT,
+            phi_e_ext: 0x1234,
+            uq_ud_ext: 0x5678_9abc,
+            pidout_uq_ud_limits: 0x3456,
+        };
+
+        assert!(entry_mode_supported(STOPPED_MODE));
+        assert!(entry_mode_supported(CLOSED_LOOP_POSITION_MODE));
+        assert!(!entry_mode_supported(saved.mode_ramp_mode_motion));
+        assert_eq!(
+            unsupported_entry_mode_status(Ok(())),
+            HIGH_RATE_CAPTURE_STATUS_NOT_READY
+        );
+        assert_eq!(
+            unsupported_entry_mode_status(Err(())),
+            HIGH_RATE_CAPTURE_STATUS_RESTORE
+        );
+
+        let sequence = unsupported_entry_neutralize_sequence();
+        let writes: Vec<(u8, u32)> = sequence
+            .iter()
+            .map(|write| (write.register.addr(), write.value))
+            .collect();
+
+        assert_eq!(
+            writes,
+            std::vec![(UQ_UD_EXT.addr(), 0), (MODE_RAMP_MODE_MOTION.addr(), 0)]
+        );
+        assert!(!writes.contains(&(MODE_RAMP_MODE_MOTION.addr(), saved.mode_ramp_mode_motion)));
     }
 
     #[test]
