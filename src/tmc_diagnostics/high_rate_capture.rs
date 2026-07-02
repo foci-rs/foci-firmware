@@ -174,6 +174,58 @@ pub const fn high_rate_capture_voltage_limit() -> u16 {
     VALIDATION_VOLTAGE_LIMIT
 }
 
+/// Validate a high-rate capture request before board-side voltage-vector arming.
+///
+/// Returns the original request unchanged when it is not a high-rate capture
+/// request or when the high-rate profile/readiness gates pass. Emits the same
+/// terminal profile+run rejection as the runner and returns `Err(())` when a
+/// high-rate request must be rejected before the board can assert the bridge.
+pub fn preflight_high_rate_capture_request<S: DiagnosticReplySink>(
+    req: TmcRequest,
+    readiness: DiagnosticReadiness,
+    sink: &mut S,
+) -> Result<TmcRequest, ()> {
+    let TmcRequest {
+        kind:
+            TmcRequestKind::HighRateCaptureTest {
+                oid,
+                profile,
+                r_count_slope_milli,
+                ..
+            },
+        ..
+    } = &req
+    else {
+        return Ok(req);
+    };
+
+    let profile_cfg = HighRateCaptureProfile::validation_initial_slope()
+        .with_r_count_slope_milli(*r_count_slope_milli);
+
+    if *profile != VALIDATION_PROFILE_ID {
+        emit_diagnostic_report(
+            sink,
+            rejected_report(
+                *oid,
+                HIGH_RATE_CAPTURE_STATUS_BAD_PROFILE,
+                profile_cfg,
+                *r_count_slope_milli,
+            ),
+        );
+        return Err(());
+    }
+
+    if let Some(status) = readiness_status(readiness) {
+        emit_diagnostic_report(
+            sink,
+            rejected_report(*oid, status, profile_cfg, *r_count_slope_milli),
+        );
+        return Err(());
+    }
+
+    Ok(req)
+}
+
 /// Emit a terminal high-rate capture rejection for board-side readiness gates.
 pub fn emit_high_rate_capture_not_ready<S: DiagnosticReplySink>(req: TmcRequest, sink: &mut S) {
     let TmcRequest {
@@ -953,6 +1005,80 @@ mod tests {
     }
 
     #[test]
+    fn preflight_bad_profile_emits_terminal_rejection() {
+        let req = crate::tmc::TmcRequest::new(
+            0,
+            TmcRequestKind::HighRateCaptureTest {
+                oid: 9,
+                profile: VALIDATION_PROFILE_ID + 1,
+                detail: 2,
+                r_count_slope_milli: 1_706,
+            },
+        );
+        let mut sink = RecordingSink::default();
+
+        let result =
+            preflight_high_rate_capture_request(req, ready_diagnostic_readiness(), &mut sink);
+
+        assert!(result.is_err());
+        assert_eq!(
+            sink.events,
+            std::vec![
+                Event::Profile {
+                    oid: 9,
+                    requested_samples: VALIDATION_REQUESTED_SAMPLES,
+                    max_capture_us: VALIDATION_MAX_CAPTURE_US,
+                },
+                Event::Run {
+                    oid: 9,
+                    status: HIGH_RATE_CAPTURE_STATUS_BAD_PROFILE,
+                    sample_count: 0,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn preflight_readiness_rejection_emits_not_ready_without_board_backend() {
+        let req = crate::tmc::TmcRequest::new(
+            0,
+            TmcRequestKind::HighRateCaptureTest {
+                oid: 9,
+                profile: VALIDATION_PROFILE_ID,
+                detail: 0,
+                r_count_slope_milli: 1_706,
+            },
+        );
+        let mut sink = RecordingSink::default();
+
+        let result = preflight_high_rate_capture_request(
+            req,
+            DiagnosticReadiness {
+                homing_active: true,
+                ..ready_diagnostic_readiness()
+            },
+            &mut sink,
+        );
+
+        assert!(result.is_err());
+        assert_eq!(
+            sink.events,
+            std::vec![
+                Event::Profile {
+                    oid: 9,
+                    requested_samples: VALIDATION_REQUESTED_SAMPLES,
+                    max_capture_us: VALIDATION_MAX_CAPTURE_US,
+                },
+                Event::Run {
+                    oid: 9,
+                    status: HIGH_RATE_CAPTURE_STATUS_NOT_READY,
+                    sample_count: 0,
+                },
+            ]
+        );
+    }
+
+    #[test]
     fn restore_sequence_stops_mode_and_restores_saved_mode_last() {
         let saved = SavedRegisters {
             mode_ramp_mode_motion: 0x8000_0003,
@@ -1163,5 +1289,13 @@ mod tests {
                 },
             ]
         );
+    }
+
+    fn ready_diagnostic_readiness() -> DiagnosticReadiness {
+        DiagnosticReadiness {
+            homing_active: false,
+            stepper_active: false,
+            saved_voltage_limit: 1,
+        }
     }
 }
