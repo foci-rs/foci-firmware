@@ -617,6 +617,8 @@ where
                 | TmcRequestKind::PositionTorqueOffsetSampleTest { .. }
                 | TmcRequestKind::VoltageStepTest { .. }
                 | TmcRequestKind::ResistanceTest { .. }
+                // Board code intercepts high-rate capture before the generic
+                // diagnostic dispatcher; Task 5 wires board-specific emission.
                 | TmcRequestKind::HighRateCaptureTest { .. },
             ..
         } => {

@@ -34,27 +34,12 @@ pub trait DiagnosticReplySink {
     fn foci_resistance_run(&mut self, report: ResistanceRunReport);
 
     /// Emit high-rate capture profile metadata.
-    #[cfg(not(test))]
-    fn foci_high_rate_capture_profile(&mut self, report: HighRateCaptureProfileReport);
-
-    /// Emit high-rate capture profile metadata.
-    #[cfg(test)]
     fn foci_high_rate_capture_profile(&mut self, _report: HighRateCaptureProfileReport) {}
 
     /// Emit one high-rate capture raw sample row.
-    #[cfg(not(test))]
-    fn foci_high_rate_capture_sample(&mut self, report: HighRateCaptureSampleReport);
-
-    /// Emit one high-rate capture raw sample row.
-    #[cfg(test)]
     fn foci_high_rate_capture_sample(&mut self, _report: HighRateCaptureSampleReport) {}
 
     /// Emit the high-rate capture terminal run result.
-    #[cfg(not(test))]
-    fn foci_high_rate_capture_run(&mut self, report: HighRateCaptureRunReport);
-
-    /// Emit the high-rate capture terminal run result.
-    #[cfg(test)]
     fn foci_high_rate_capture_run(&mut self, _report: HighRateCaptureRunReport) {}
 }
 

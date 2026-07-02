@@ -1423,6 +1423,22 @@ mod tests {
     }
 
     #[test]
+    fn tmc_high_rate_capture_test_normalizes_detail() {
+        assert_eq!(
+            tmc_high_rate_capture_test(0, 7, 0, 255, 1_706),
+            TmcRequest::new(
+                0,
+                TmcRequestKind::HighRateCaptureTest {
+                    oid: 7,
+                    profile: 0,
+                    detail: MAX_DIAGNOSTIC_DETAIL,
+                    r_count_slope_milli: 1_706,
+                }
+            )
+        );
+    }
+
+    #[test]
     fn pack_torque_target_places_signed_torque_in_upper_half() {
         assert_eq!(pack_torque_flux_target(250, 0), 0x00fa_0000);
         assert_eq!(pack_torque_flux_target(-250, 0), 0xff06_0000);
