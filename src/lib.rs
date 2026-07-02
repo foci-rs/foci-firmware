@@ -21,6 +21,7 @@ pub mod config;
 pub mod context;
 pub mod diagnostic;
 pub mod dump;
+pub mod electrical_capture;
 pub mod helpers;
 pub mod pid;
 pub mod platform;
