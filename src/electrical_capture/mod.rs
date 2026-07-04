@@ -3,8 +3,11 @@
 mod estimate;
 
 pub use estimate::{
-    FitWindow, InductanceEvidence, LinearFit, OnsetThreshold, RDropModel, detect_theta_onset_us,
+    AcFrameAccumulator, AcFrameEvidence, AcReactanceEvidence, FitWindow, InductanceEvidence,
+    LinearFit, OnsetThreshold, PhiLockedAcInterval, RDropModel, detect_theta_onset_us,
     effective_frequency_hz, fit_current_slope, inductance_sensitivity,
+    interpolate_phi_window_elapsed_us, phi_delta_counts_forward, phi_locked_ac_interval,
+    realized_frequency_millihz, rotating_frame_reactance,
 };
 
 /// Nominal validation raw-sample capacity.

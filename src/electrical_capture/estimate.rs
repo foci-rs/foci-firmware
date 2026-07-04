@@ -71,6 +71,144 @@ pub struct OnsetThreshold {
     pub delta_count: u16,
 }
 
+/// Averaged rotating-frame AC current evidence.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+pub struct AcFrameEvidence {
+    /// Number of post-settle AC samples accumulated.
+    pub sample_count: u16,
+    /// Elapsed AC averaging window in microseconds.
+    pub ac_elapsed_us: u32,
+    /// Realized electrical frequency in millihertz.
+    pub realized_frequency_millihz: u32,
+    /// Measured open-loop phi delta over the averaging window.
+    pub openloop_phi_delta_counts: u32,
+    /// Mean d-axis current in milli-counts.
+    pub id_mean_milli_count: i32,
+    /// Mean q-axis current in milli-counts.
+    pub iq_mean_milli_count: i32,
+    /// RMS d-axis spread around the mean in milli-counts.
+    pub id_rms_milli_count: u32,
+    /// RMS q-axis spread around the mean in milli-counts.
+    pub iq_rms_milli_count: u32,
+}
+
+/// Count-space AC reactance evidence for the rotating-frame estimator.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+pub struct AcReactanceEvidence {
+    /// R-free quadrature reactance ratio in milli count-ratio units.
+    pub x_quad_count_ratio_milli: u32,
+    /// Nominal magnitude-branch reactance ratio in milli count-ratio units.
+    pub x_mag_nominal_count_ratio_milli: u32,
+    /// Magnitude-branch shift with R scaled down by 20%, in permille.
+    pub x_mag_shift_minus_permille: u16,
+    /// Magnitude-branch shift with R scaled up by 20%, in permille.
+    pub x_mag_shift_plus_permille: u16,
+    /// Nominal magnitude-vs-quadrature disagreement in permille.
+    pub x_mag_vs_quad_permille: u16,
+}
+
+/// One weighted interval for a phi-locked AC accumulation window.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+pub struct PhiLockedAcInterval {
+    /// Forward phi movement observed since the previous sample.
+    pub observed_phi_delta_counts: u32,
+    /// Phi-delta weight this sample contributes to the target window.
+    pub sample_weight_counts: u32,
+    /// Accumulated phi movement after applying this interval.
+    pub accumulated_phi_delta_counts: u32,
+    /// True when this interval closes the requested phi window.
+    pub complete: bool,
+}
+
+/// Streaming accumulator for post-settle rotating-frame AC samples.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AcFrameAccumulator {
+    sample_count: u32,
+    weight_sum: u32,
+    sum_id: i64,
+    sum_iq: i64,
+    sum_id_sq: i128,
+    sum_iq_sq: i128,
+}
+
+impl AcFrameAccumulator {
+    /// Construct an empty accumulator.
+    pub const fn new() -> Self {
+        Self {
+            sample_count: 0,
+            weight_sum: 0,
+            sum_id: 0,
+            sum_iq: 0,
+            sum_id_sq: 0,
+            sum_iq_sq: 0,
+        }
+    }
+
+    /// Add one `(Id, Iq)` rotating-frame current sample.
+    pub fn push(&mut self, id_count: i16, iq_count: i16) -> Option<()> {
+        self.push_weighted(id_count, iq_count, 1)
+    }
+
+    /// Add one `(Id, Iq)` rotating-frame current sample with a phi-delta weight.
+    pub fn push_weighted(&mut self, id_count: i16, iq_count: i16, weight: u32) -> Option<()> {
+        if weight == 0 {
+            return None;
+        }
+
+        self.sample_count = self.sample_count.checked_add(1)?;
+        self.weight_sum = self.weight_sum.checked_add(weight)?;
+
+        let weight_i64 = i64::from(weight);
+        self.sum_id = self
+            .sum_id
+            .checked_add(i64::from(id_count).checked_mul(weight_i64)?)?;
+        self.sum_iq = self
+            .sum_iq
+            .checked_add(i64::from(iq_count).checked_mul(weight_i64)?)?;
+
+        let id = i128::from(id_count);
+        let iq = i128::from(iq_count);
+        let weight_i128 = i128::from(weight);
+        self.sum_id_sq = self
+            .sum_id_sq
+            .checked_add(id.checked_mul(id)?.checked_mul(weight_i128)?)?;
+        self.sum_iq_sq = self
+            .sum_iq_sq
+            .checked_add(iq.checked_mul(iq)?.checked_mul(weight_i128)?)?;
+        Some(())
+    }
+
+    /// Finish the accumulation and return averaged AC evidence.
+    pub fn finish(
+        self,
+        ac_elapsed_us: u32,
+        realized_frequency_millihz: u32,
+        openloop_phi_delta_counts: u32,
+    ) -> Option<AcFrameEvidence> {
+        if self.sample_count == 0 || self.sample_count > u32::from(u16::MAX) || self.weight_sum == 0
+        {
+            return None;
+        }
+
+        Some(AcFrameEvidence {
+            sample_count: u16::try_from(self.sample_count).ok()?,
+            ac_elapsed_us,
+            realized_frequency_millihz,
+            openloop_phi_delta_counts,
+            id_mean_milli_count: mean_milli_count(self.sum_id, self.weight_sum)?,
+            iq_mean_milli_count: mean_milli_count(self.sum_iq, self.weight_sum)?,
+            id_rms_milli_count: rms_milli_count(self.sum_id, self.sum_id_sq, self.weight_sum)?,
+            iq_rms_milli_count: rms_milli_count(self.sum_iq, self.sum_iq_sq, self.weight_sum)?,
+        })
+    }
+}
+
+impl Default for AcFrameAccumulator {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// Estimate electrical frequency from the current ramp slope and mean current.
 ///
 /// Returns `None` when the mean current is at or below the supplied noise floor
@@ -233,6 +371,117 @@ pub fn detect_theta_onset_us(
     })
 }
 
+/// Compute rotating-frame AC reactance evidence from averaged current.
+pub fn rotating_frame_reactance(
+    evidence: AcFrameEvidence,
+    ud_count: i16,
+    r_count_slope_milli: i32,
+) -> Option<AcReactanceEvidence> {
+    let u_count = i128::from(ud_count).unsigned_abs();
+    let id = i128::from(evidence.id_mean_milli_count);
+    let iq = i128::from(evidence.iq_mean_milli_count);
+    let id_sq = id.checked_mul(id)?;
+    let iq_sq = iq.checked_mul(iq)?;
+    let current_mag_sq = u128::try_from(id_sq.checked_add(iq_sq)?).ok()?;
+    if u_count == 0 || current_mag_sq == 0 {
+        return None;
+    }
+
+    let x_quad = u_count
+        .checked_mul(iq.unsigned_abs())?
+        .checked_mul(1_000_000)?
+        .checked_div(current_mag_sq)?;
+    if x_quad == 0 {
+        return None;
+    }
+
+    let current_mag = integer_sqrt(current_mag_sq);
+    if current_mag == 0 {
+        return None;
+    }
+
+    let z_milli = u_count.checked_mul(1_000_000)?.checked_div(current_mag)?;
+    let nominal = magnitude_reactance_milli(z_milli, r_count_slope_milli, 1_000)?;
+    if nominal == 0 {
+        return None;
+    }
+
+    let minus = magnitude_reactance_milli(z_milli, r_count_slope_milli, 800)?;
+    let plus = magnitude_reactance_milli(z_milli, r_count_slope_milli, 1_200)?;
+    let x_quad = u64::try_from(x_quad).ok()?;
+
+    Some(AcReactanceEvidence {
+        x_quad_count_ratio_milli: u32::try_from(x_quad).ok()?,
+        x_mag_nominal_count_ratio_milli: u32::try_from(nominal).ok()?,
+        x_mag_shift_minus_permille: shift_permille(nominal, minus)?,
+        x_mag_shift_plus_permille: shift_permille(nominal, plus)?,
+        x_mag_vs_quad_permille: shift_permille(x_quad, nominal)?,
+    })
+}
+
+/// Return the forward 16-bit electrical-angle delta from `previous` to `current`.
+pub fn phi_delta_counts_forward(previous: u16, current: u16) -> u32 {
+    u32::from(current.wrapping_sub(previous))
+}
+
+/// Compute one sample's contribution to a phi-locked AC averaging window.
+pub fn phi_locked_ac_interval(
+    accumulated_phi_delta_counts: u32,
+    target_phi_delta_counts: u32,
+    previous_phi: u16,
+    current_phi: u16,
+) -> Option<PhiLockedAcInterval> {
+    if accumulated_phi_delta_counts >= target_phi_delta_counts {
+        return None;
+    }
+
+    let observed_phi_delta_counts = phi_delta_counts_forward(previous_phi, current_phi);
+    let remaining_phi_delta_counts =
+        target_phi_delta_counts.checked_sub(accumulated_phi_delta_counts)?;
+    let sample_weight_counts = observed_phi_delta_counts.min(remaining_phi_delta_counts);
+    let accumulated_phi_delta_counts =
+        accumulated_phi_delta_counts.checked_add(sample_weight_counts)?;
+
+    Some(PhiLockedAcInterval {
+        observed_phi_delta_counts,
+        sample_weight_counts,
+        accumulated_phi_delta_counts,
+        complete: accumulated_phi_delta_counts >= target_phi_delta_counts,
+    })
+}
+
+/// Interpolate the elapsed time where a phi-locked interval reached its target.
+pub fn interpolate_phi_window_elapsed_us(
+    previous_elapsed_us: u32,
+    current_elapsed_us: u32,
+    interval: PhiLockedAcInterval,
+) -> Option<u32> {
+    if interval.observed_phi_delta_counts == 0 {
+        return None;
+    }
+    let elapsed_delta_us = current_elapsed_us.checked_sub(previous_elapsed_us)?;
+    let elapsed = u128::from(previous_elapsed_us).checked_add(
+        u128::from(elapsed_delta_us)
+            .checked_mul(u128::from(interval.sample_weight_counts))?
+            .checked_add(u128::from(interval.observed_phi_delta_counts / 2))?
+            .checked_div(u128::from(interval.observed_phi_delta_counts))?,
+    )?;
+    u32::try_from(elapsed).ok()
+}
+
+/// Compute realized electrical frequency from measured phi movement and time.
+pub fn realized_frequency_millihz(phi_delta_counts: u32, elapsed_us: u32) -> Option<u32> {
+    if elapsed_us == 0 {
+        return None;
+    }
+    let numerator = u128::from(phi_delta_counts).checked_mul(1_000_000_000)?;
+    let denominator = u128::from(u16::MAX as u32 + 1).checked_mul(u128::from(elapsed_us))?;
+    let millihz = numerator
+        .checked_add(denominator.checked_div(2)?)?
+        .checked_div(denominator)?;
+    u32::try_from(millihz).ok()
+}
+
 fn inductance_us_for_r_scale_permille(
     fit: LinearFit,
     model: RDropModel,
@@ -258,6 +507,43 @@ fn shift_permille(nominal: u64, perturbed: u64) -> Option<u16> {
     let delta = nominal.abs_diff(perturbed);
     let shift = div_ceil_u64(delta.checked_mul(1_000)?, nominal);
     u16::try_from(shift).ok()
+}
+
+fn mean_milli_count(sum: i64, count: u32) -> Option<i32> {
+    let mean = i128::from(sum)
+        .checked_mul(1_000)?
+        .checked_div(i128::from(count))?;
+    i32::try_from(mean).ok()
+}
+
+fn rms_milli_count(sum: i64, sum_sq: i128, count: u32) -> Option<u32> {
+    let count_i128 = i128::from(count);
+    let numerator = count_i128
+        .checked_mul(sum_sq)?
+        .checked_sub(i128::from(sum).checked_mul(i128::from(sum))?)?;
+    let numerator = u128::try_from(numerator).ok()?;
+    let denominator = u128::from(count).checked_mul(u128::from(count))?;
+    let mean_square_milli = numerator.checked_mul(1_000_000)?.checked_div(denominator)?;
+    u32::try_from(integer_sqrt(mean_square_milli)).ok()
+}
+
+fn magnitude_reactance_milli(
+    z_milli: u128,
+    r_count_slope_milli: i32,
+    r_scale_permille: i32,
+) -> Option<u64> {
+    if r_count_slope_milli < 0 || r_scale_permille < 0 {
+        return None;
+    }
+
+    let r_milli = u128::try_from(r_count_slope_milli)
+        .ok()?
+        .checked_mul(u128::try_from(r_scale_permille).ok()?)?
+        .checked_div(1_000)?;
+    let z_sq = z_milli.checked_mul(z_milli)?;
+    let r_sq = r_milli.checked_mul(r_milli)?;
+    let x_sq = z_sq.checked_sub(r_sq)?;
+    u64::try_from(integer_sqrt(x_sq)).ok()
 }
 
 fn div_ceil_u64(numerator: u64, denominator: u64) -> u64 {
@@ -523,5 +809,109 @@ mod tests {
 
         let onset = detect_theta_onset_us(&samples, OnsetThreshold { delta_count: 8 });
         assert_eq!(onset, Some(80));
+    }
+
+    #[test]
+    fn ac_accumulator_reports_milli_count_means_and_rms() {
+        let mut acc = AcFrameAccumulator::new();
+        acc.push(9, -101).expect("first sample");
+        acc.push(11, -99).expect("second sample");
+
+        let evidence = acc.finish(8_000, 1_000_000, 524_288).expect("evidence");
+
+        assert_eq!(evidence.sample_count, 2);
+        assert_eq!(evidence.id_mean_milli_count, 10_000);
+        assert_eq!(evidence.iq_mean_milli_count, -100_000);
+        assert_eq!(evidence.id_rms_milli_count, 1_000);
+        assert_eq!(evidence.iq_rms_milli_count, 1_000);
+        assert_eq!(evidence.ac_elapsed_us, 8_000);
+        assert_eq!(evidence.realized_frequency_millihz, 1_000_000);
+        assert_eq!(evidence.openloop_phi_delta_counts, 524_288);
+    }
+
+    #[test]
+    fn ac_accumulator_weights_samples_by_phi_delta() {
+        let mut acc = AcFrameAccumulator::new();
+        acc.push_weighted(0, 0, 1).expect("first interval");
+        acc.push_weighted(10, -20, 3).expect("second interval");
+
+        let evidence = acc.finish(8_000, 1_000_000, 4).expect("evidence");
+
+        assert_eq!(evidence.sample_count, 2);
+        assert_eq!(evidence.id_mean_milli_count, 7_500);
+        assert_eq!(evidence.iq_mean_milli_count, -15_000);
+        assert_eq!(evidence.id_rms_milli_count, 4_330);
+        assert_eq!(evidence.iq_rms_milli_count, 8_660);
+        assert_eq!(evidence.openloop_phi_delta_counts, 4);
+    }
+
+    #[test]
+    fn ac_accumulator_rejects_empty_window() {
+        let acc = AcFrameAccumulator::new();
+        assert_eq!(acc.finish(8_000, 1_000_000, 524_288), None);
+    }
+
+    #[test]
+    fn rotating_frame_reactance_reports_r_free_primary_and_magnitude_gate() {
+        let evidence = AcFrameEvidence {
+            sample_count: 200,
+            ac_elapsed_us: 8_000,
+            realized_frequency_millihz: 1_000_000,
+            openloop_phi_delta_counts: 524_288,
+            id_mean_milli_count: 10_000,
+            iq_mean_milli_count: -100_000,
+            id_rms_milli_count: 300,
+            iq_rms_milli_count: 500,
+        };
+
+        let reactance = rotating_frame_reactance(evidence, 768, 500).expect("reactance");
+
+        assert_eq!(reactance.x_quad_count_ratio_milli, 7_603);
+        assert!(reactance.x_mag_nominal_count_ratio_milli >= 7_615);
+        assert!(reactance.x_mag_nominal_count_ratio_milli <= 7_635);
+        assert!(reactance.x_mag_shift_minus_permille <= 3);
+        assert!(reactance.x_mag_shift_plus_permille <= 3);
+        assert!(reactance.x_mag_vs_quad_permille <= 3);
+    }
+
+    #[test]
+    fn rotating_frame_reactance_rejects_zero_current_magnitude() {
+        let evidence = AcFrameEvidence {
+            sample_count: 1,
+            ac_elapsed_us: 8_000,
+            realized_frequency_millihz: 1_000_000,
+            openloop_phi_delta_counts: 524_288,
+            id_mean_milli_count: 0,
+            iq_mean_milli_count: 0,
+            id_rms_milli_count: 0,
+            iq_rms_milli_count: 0,
+        };
+
+        assert_eq!(rotating_frame_reactance(evidence, 768, 500), None);
+    }
+
+    #[test]
+    fn phi_locked_ac_interval_truncates_final_wrap_interval() {
+        let interval = phi_locked_ac_interval(400, 512, 0xFF00, 0x0100).expect("window interval");
+
+        assert_eq!(interval.observed_phi_delta_counts, 512);
+        assert_eq!(interval.sample_weight_counts, 112);
+        assert_eq!(interval.accumulated_phi_delta_counts, 512);
+        assert!(interval.complete);
+        assert_eq!(
+            interpolate_phi_window_elapsed_us(1_000, 1_100, interval),
+            Some(1_022)
+        );
+    }
+
+    #[test]
+    fn phi_locked_ac_interval_rejects_completed_window() {
+        assert_eq!(phi_locked_ac_interval(512, 512, 0, 1), None);
+    }
+
+    #[test]
+    fn realized_frequency_uses_phi_delta_and_elapsed_time() {
+        assert_eq!(realized_frequency_millihz(524_288, 8_000), Some(1_000_000));
+        assert_eq!(realized_frequency_millihz(524_288, 0), None);
     }
 }
