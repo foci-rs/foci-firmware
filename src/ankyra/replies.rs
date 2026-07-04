@@ -617,97 +617,6 @@ pub struct FociVoltageStepResult {
     pub status_flags: u32,
 }
 
-/// `foci_high_rate_capture_profile` reply - high-rate capture profile metadata.
-///
-/// Wire name: `foci_high_rate_capture_profile`.
-#[klipper_reply]
-pub struct FociHighRateCaptureProfile {
-    /// Object id of the FOCI endpoint.
-    pub oid: u8,
-    /// High-rate capture profile schema version.
-    pub profile_version: u16,
-    /// Maximum raw sample rows the firmware capture buffer can hold.
-    pub sample_capacity: u16,
-    /// Number of raw samples requested by this profile.
-    pub requested_samples: u16,
-    /// Maximum capture window in microseconds.
-    pub max_capture_us: u32,
-    /// Signed q-axis external voltage component used by the profile.
-    pub uq_ext: i16,
-    /// Signed d-axis external voltage component used by the profile.
-    pub ud_ext: i16,
-    /// External electrical angle used by the profile.
-    pub phi_e_ext: u16,
-    /// Temporary PIDOUT_UQ_UD_LIMITS value used during the profile.
-    pub voltage_limit: u16,
-    /// Count-space resistance slope used for nominal R and +/-20% perturbation.
-    pub r_count_slope_milli: i32,
-    /// Profile-level flags.
-    pub flags: u32,
-}
-
-/// `foci_high_rate_capture_sample` reply - one high-rate raw sample row.
-///
-/// Wire name: `foci_high_rate_capture_sample`.
-#[klipper_reply]
-pub struct FociHighRateCaptureSample {
-    /// Object id of the FOCI endpoint.
-    pub oid: u8,
-    /// Zero-based raw sample index.
-    pub sample_index: u16,
-    /// Monotonic timestamp relative to capture start, in microseconds.
-    pub timestamp_us: u32,
-    /// Signed q-axis external voltage component at this sample.
-    pub uq_ext: i16,
-    /// Signed d-axis external voltage component at this sample.
-    pub ud_ext: i16,
-    /// Primary current sample in TMC4671 current counts.
-    pub current_primary: i16,
-    /// Secondary current sample in TMC4671 current counts.
-    pub current_secondary: i16,
-    /// ABN decoder count at this sample.
-    pub encoder_count: u32,
-    /// Raw TMC4671 status flags at this sample.
-    pub status_flags: u32,
-}
-
-/// `foci_high_rate_capture_run` reply - terminal high-rate capture result.
-///
-/// Wire name: `foci_high_rate_capture_run`.
-#[klipper_reply]
-pub struct FociHighRateCaptureRun {
-    /// Object id of the FOCI endpoint.
-    pub oid: u8,
-    /// Status code: 0 success, non-zero stable failure reason.
-    pub status: u8,
-    /// Bounded/saturated high-rate capture profile schema version.
-    pub profile_version: u8,
-    /// Number of samples captured during the run.
-    pub sample_count: u16,
-    /// Elapsed capture time in microseconds.
-    pub elapsed_us: u32,
-    /// Effective sample frequency in Hertz.
-    pub effective_frequency_hz: u32,
-    /// Nominal inductive time estimate in microseconds.
-    pub l_nominal_us: u32,
-    /// Bounded/saturated negative perturbation shift from nominal, in permille.
-    pub l_shift_minus_permille: u8,
-    /// Bounded/saturated positive perturbation shift from nominal, in permille.
-    pub l_shift_plus_permille: u8,
-    /// Bounded/saturated estimated response onset time in microseconds.
-    pub theta_onset_us: u16,
-    /// Estimator residual RMS in current counts.
-    pub residual_rms_count: u32,
-    /// Bounded/saturated maximum interval between adjacent samples in microseconds.
-    pub max_sample_interval_us: u16,
-    /// Signed encoder delta across the capture.
-    pub encoder_delta: i32,
-    /// TMC4671 status flags accumulated across the run.
-    pub status_flags_or: u32,
-    /// Run-level warning bitfield.
-    pub warning_flags: u32,
-}
-
 /// `foci_resistance_profile` reply - board/profile constants for display.
 ///
 /// Wire name: `foci_resistance_profile`.
@@ -998,10 +907,7 @@ mod tests {
 
 #[cfg(test)]
 mod resistance_reply_size_tests {
-    use super::{
-        FociHighRateCaptureProfile, FociHighRateCaptureRun, FociHighRateCaptureSample,
-        FociResistanceAxis, FociResistanceProfile, FociResistanceRun,
-    };
+    use super::{FociResistanceAxis, FociResistanceProfile, FociResistanceRun};
     use ankyra::ScratchOutput;
     use ankyra::encoding::Writable;
 
@@ -1039,73 +945,6 @@ mod resistance_reply_size_tests {
             "{reply_kind} encodes to {payload_len} payload bytes + {REPLY_ID_WORST_CASE_BYTES} \
              worst-case id bytes = {total_len}, exceeds {KLIPPER_MESSAGE_PAYLOAD_MAX}"
         );
-    }
-
-    #[test]
-    fn high_rate_capture_profile_reply_fits_klipper_message_limit() {
-        // See `resistance_profile_reply_fits_klipper_message_limit` for why
-        // `u32` fields use `0x7FFF_FFFF` instead of `u32::MAX`, and why
-        // `i32::MIN` is the genuine worst case for signed 32-bit fields.
-        let reply = FociHighRateCaptureProfile {
-            oid: u8::MAX,
-            profile_version: u16::MAX,
-            sample_capacity: u16::MAX,
-            requested_samples: u16::MAX,
-            max_capture_us: 0x7FFF_FFFF,
-            uq_ext: i16::MAX,
-            ud_ext: i16::MAX,
-            phi_e_ext: u16::MAX,
-            voltage_limit: u16::MAX,
-            r_count_slope_milli: i32::MIN,
-            flags: 0x7FFF_FFFF,
-        };
-
-        assert_fits_with_id(&reply, "foci_high_rate_capture_profile");
-    }
-
-    #[test]
-    fn high_rate_capture_sample_reply_fits_klipper_message_limit() {
-        // See `resistance_profile_reply_fits_klipper_message_limit` for why
-        // `u32` fields use `0x7FFF_FFFF` instead of `u32::MAX`.
-        let reply = FociHighRateCaptureSample {
-            oid: u8::MAX,
-            sample_index: u16::MAX,
-            timestamp_us: 0x7FFF_FFFF,
-            uq_ext: i16::MAX,
-            ud_ext: i16::MAX,
-            current_primary: i16::MAX,
-            current_secondary: i16::MAX,
-            encoder_count: 0x7FFF_FFFF,
-            status_flags: 0x7FFF_FFFF,
-        };
-
-        assert_fits_with_id(&reply, "foci_high_rate_capture_sample");
-    }
-
-    #[test]
-    fn high_rate_capture_run_reply_fits_klipper_message_limit() {
-        // See `resistance_profile_reply_fits_klipper_message_limit` for why
-        // `u32` fields use `0x7FFF_FFFF` instead of `u32::MAX`, and why
-        // `i32::MIN` is the genuine worst case for signed 32-bit fields.
-        let reply = FociHighRateCaptureRun {
-            oid: u8::MAX,
-            status: u8::MAX,
-            profile_version: u8::MAX,
-            sample_count: u16::MAX,
-            elapsed_us: 0x7FFF_FFFF,
-            effective_frequency_hz: 0x7FFF_FFFF,
-            l_nominal_us: 0x7FFF_FFFF,
-            l_shift_minus_permille: u8::MAX,
-            l_shift_plus_permille: u8::MAX,
-            theta_onset_us: u16::MAX,
-            residual_rms_count: 0x7FFF_FFFF,
-            max_sample_interval_us: u16::MAX,
-            encoder_delta: i32::MIN,
-            status_flags_or: 0x7FFF_FFFF,
-            warning_flags: 0x7FFF_FFFF,
-        };
-
-        assert_fits_with_id(&reply, "foci_high_rate_capture_run");
     }
 
     #[test]

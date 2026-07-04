@@ -6,7 +6,6 @@
 
 mod current_step;
 mod helpers;
-mod high_rate_capture;
 mod replies;
 mod reports;
 mod resistance;
@@ -16,34 +15,15 @@ mod voltage_step;
 #[cfg(test)]
 mod tests;
 
-#[cfg(test)]
-mod report_size_tests {
-    use super::DiagnosticReport;
-
-    #[test]
-    fn diagnostic_report_size_stays_bounded_for_rtic_stack() {
-        assert!(core::mem::size_of::<DiagnosticReport>() <= 4096);
-    }
-}
-
 pub use current_step::run_current_step_request;
 pub use helpers::{current_step_encoder_delta, pack_voltage_ext};
-pub use high_rate_capture::{
-    HighRateCapturePreflightState, emit_high_rate_capture_not_ready,
-    high_rate_capture_voltage_limit, preflight_high_rate_capture_request,
-    run_high_rate_capture_request,
-};
 pub use replies::{DiagnosticReplySink, emit_diagnostic_report};
 pub use reports::{
     CURRENT_STEP_STATUS_NOT_READY, CURRENT_STEP_STATUS_SPI, CurrentLoopRunReport,
     CurrentStepReport, CurrentTorqueSampleReport, CurrentValidationAxisReport,
-    EncoderAlignmentReport, HIGH_RATE_CAPTURE_STATUS_BAD_PROFILE,
-    HIGH_RATE_CAPTURE_STATUS_ESTIMATOR, HIGH_RATE_CAPTURE_STATUS_NOT_READY,
-    HIGH_RATE_CAPTURE_STATUS_OK, HIGH_RATE_CAPTURE_STATUS_RESTORE, HIGH_RATE_CAPTURE_STATUS_SPI,
-    HighRateCaptureProfileReport, HighRateCaptureRunReport, HighRateCaptureSampleReport,
-    InductanceFitReport, InductancePointReport, ResistanceAxisReport, ResistanceProfileReport,
-    ResistanceRunReport, VoltageStepReport, empty_current_torque_sample_report,
-    empty_resistance_run_report, empty_voltage_step_report,
+    EncoderAlignmentReport, InductanceFitReport, InductancePointReport, ResistanceAxisReport,
+    ResistanceProfileReport, ResistanceRunReport, VoltageStepReport,
+    empty_current_torque_sample_report, empty_resistance_run_report, empty_voltage_step_report,
 };
 pub use resistance::run_resistance_test_request;
 pub use torque_sample::{
@@ -127,13 +107,6 @@ pub enum DiagnosticReport {
         run: ResistanceRunReport,
         /// Per-axis fit results, present only on a successful run.
         axes: Option<[ResistanceAxisReport; 2]>,
-    },
-    /// High-rate electrical capture validation diagnostic.
-    HighRateCapture {
-        /// Profile metadata, always emitted first.
-        profile: HighRateCaptureProfileReport,
-        /// Terminal run summary, always emitted last.
-        run: HighRateCaptureRunReport,
     },
 }
 

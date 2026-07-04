@@ -1,8 +1,7 @@
 //! Shared active diagnostic reply emission.
 
 use super::{
-    CurrentStepReport, CurrentTorqueSampleReport, DiagnosticReport, HighRateCaptureProfileReport,
-    HighRateCaptureRunReport, HighRateCaptureSampleReport, ResistanceAxisReport,
+    CurrentStepReport, CurrentTorqueSampleReport, DiagnosticReport, ResistanceAxisReport,
     ResistanceProfileReport, ResistanceRunReport, VoltageStepReport,
 };
 
@@ -32,15 +31,6 @@ pub trait DiagnosticReplySink {
     /// Emit the resistance-test per-run status/warnings/readbacks result.
     /// This is the diagnostic's terminal reply.
     fn foci_resistance_run(&mut self, report: ResistanceRunReport);
-
-    /// Emit high-rate capture profile metadata.
-    fn foci_high_rate_capture_profile(&mut self, _report: HighRateCaptureProfileReport) {}
-
-    /// Emit one high-rate capture raw sample row.
-    fn foci_high_rate_capture_sample(&mut self, _report: HighRateCaptureSampleReport) {}
-
-    /// Emit the high-rate capture terminal run result.
-    fn foci_high_rate_capture_run(&mut self, _report: HighRateCaptureRunReport) {}
 }
 
 /// Emit active diagnostic replies for a completed diagnostic report.
@@ -75,17 +65,12 @@ pub fn emit_diagnostic_report<S: DiagnosticReplySink>(sink: &mut S, report: Diag
             // Run reply last: it is the diagnostic's terminal/"done" signal.
             sink.foci_resistance_run(run);
         }
-        DiagnosticReport::HighRateCapture { profile, run } => {
-            sink.foci_high_rate_capture_profile(profile);
-            sink.foci_high_rate_capture_run(run);
-        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tmc_diagnostics::HIGH_RATE_CAPTURE_STATUS_OK;
     use std::vec::Vec;
 
     #[derive(Debug, Clone, PartialEq, Eq)]
@@ -128,18 +113,6 @@ mod tests {
             electrical_axis: u8,
         },
         ResistanceDone {
-            oid: u8,
-            status: u8,
-        },
-        HighRateProfile {
-            oid: u8,
-            profile_version: u16,
-        },
-        HighRateSample {
-            oid: u8,
-            sample_index: u16,
-        },
-        HighRateDone {
             oid: u8,
             status: u8,
         },
@@ -211,27 +184,6 @@ mod tests {
 
         fn foci_resistance_run(&mut self, report: ResistanceRunReport) {
             self.events.push(Event::ResistanceDone {
-                oid: report.oid,
-                status: report.status,
-            });
-        }
-
-        fn foci_high_rate_capture_profile(&mut self, report: HighRateCaptureProfileReport) {
-            self.events.push(Event::HighRateProfile {
-                oid: report.oid,
-                profile_version: report.profile_version,
-            });
-        }
-
-        fn foci_high_rate_capture_sample(&mut self, report: HighRateCaptureSampleReport) {
-            self.events.push(Event::HighRateSample {
-                oid: report.oid,
-                sample_index: report.sample_index,
-            });
-        }
-
-        fn foci_high_rate_capture_run(&mut self, report: HighRateCaptureRunReport) {
-            self.events.push(Event::HighRateDone {
                 oid: report.oid,
                 status: report.status,
             });
@@ -554,60 +506,6 @@ mod tests {
                     profile_version: 1,
                 },
                 Event::ResistanceDone { oid: 7, status: 19 },
-            ]
-        );
-    }
-
-    #[test]
-    fn high_rate_capture_report_emits_profile_then_run() {
-        let mut sink = RecordingSink::default();
-        emit_diagnostic_report(
-            &mut sink,
-            DiagnosticReport::HighRateCapture {
-                profile: HighRateCaptureProfileReport {
-                    oid: 9,
-                    profile_version: 1,
-                    sample_capacity: 512,
-                    requested_samples: 4,
-                    max_capture_us: 12_000,
-                    uq_ext: 0,
-                    ud_ext: 1024,
-                    phi_e_ext: 0,
-                    voltage_limit: 2048,
-                    r_count_slope_milli: 1706,
-                    flags: 0,
-                },
-                run: HighRateCaptureRunReport {
-                    oid: 9,
-                    status: HIGH_RATE_CAPTURE_STATUS_OK,
-                    profile_version: 1,
-                    sample_count: 2,
-                    elapsed_us: 10,
-                    effective_frequency_hz: 1_000,
-                    l_nominal_us: 4_750,
-                    l_shift_minus_permille: 11,
-                    l_shift_plus_permille: 11,
-                    theta_onset_us: 20,
-                    residual_rms_count: 0,
-                    max_sample_interval_us: 0,
-                    encoder_delta: 0,
-                    status_flags_or: 0,
-                    warning_flags: 0,
-                },
-            },
-        );
-
-        assert_eq!(
-            sink.events,
-            std::vec![
-                Event::HighRateProfile {
-                    oid: 9,
-                    profile_version: 1,
-                },
-                Event::HighRateDone {
-                    oid: 9,
-                    status: HIGH_RATE_CAPTURE_STATUS_OK,
-                },
             ]
         );
     }
