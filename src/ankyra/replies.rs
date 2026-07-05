@@ -204,56 +204,83 @@ pub struct FociEncoderAlignment {
     pub counts_per_electrical_rev: u16,
 }
 
-/// `foci_inductance_fit` reply - accepted per-coil inductance fit evidence.
+/// `foci_inductance_run` reply - run-level production inductance evidence.
 ///
-/// Wire name: `foci_inductance_fit`.
+/// Wire name: `foci_inductance_run`.
 #[klipper_reply]
-pub struct FociInductanceFit {
+pub struct FociInductanceRun {
     /// Object id of the FOCI endpoint.
     pub oid: u8,
-    /// Coil index within the two-phase motor model.
-    pub coil: u8,
-    /// Corrected accepted electrical time constant in microseconds.
-    pub tau_us: u32,
-    /// Fitted current delta slope per UD count, scaled by 1000.
-    pub slope_delta_per_ud_milli: u32,
-    /// Fitted current delta intercept, scaled by 1000.
-    pub intercept_delta_milli: i32,
-    /// Estimated voltage deadtime correction in UD counts.
-    pub deadtime_ud: i16,
-    /// Fit residual in permille.
-    pub residual_permille: u16,
-    /// Count of usable points selected for this fit.
-    pub usable_points: u8,
-    /// Bitmask of points selected for this fit.
-    pub selected_mask: u16,
+    /// Accepted inductance source code.
+    pub source: u8,
+    /// Run status code.
+    pub status: u8,
+    /// Warning bitfield.
+    pub warning_flags: u16,
+    /// Commanded d-axis voltage count.
+    pub ud_count: i16,
+    /// Realized electrical measurement frequency in millihertz.
+    pub realized_frequency_millihz: u32,
+    /// Elapsed AC measurement window in microseconds.
+    pub elapsed_us: u32,
+    /// Observed open-loop phi delta across the accepted window.
+    pub openloop_phi_delta_counts: u32,
+    /// Number of accepted AC samples.
+    pub sample_count: u16,
+    /// Encoder movement during the energized window.
+    pub encoder_delta_counts: i32,
+    /// OR of pre/post TMC status flags.
+    pub status_flags_or: u32,
 }
 
-/// `foci_inductance_point` reply - one per-amplitude dI/dt fit point.
+/// `foci_inductance_frame` reply - rotating-frame current evidence.
 ///
-/// Wire name: `foci_inductance_point`.
+/// Wire name: `foci_inductance_frame`.
 #[klipper_reply]
-pub struct FociInductancePoint {
+pub struct FociInductanceFrame {
     /// Object id of the FOCI endpoint.
     pub oid: u8,
-    /// Coil index within the two-phase motor model.
-    pub coil: u8,
-    /// Zero-based amplitude point index.
-    pub point: u8,
-    /// Requested UD amplitude in TMC4671 voltage counts.
-    pub ud: u16,
-    /// Average current delta for this amplitude point.
-    pub avg_delta: u32,
-    /// Average current count sampled for this amplitude point.
-    pub avg_current_count: i32,
-    /// Estimated resistive voltage drop in UD counts.
-    pub r_drop_ud: i32,
-    /// Effective voltage after correction in UD counts.
-    pub effective_ud: i32,
-    /// Number of samples folded into this point.
-    pub sample_count: u32,
-    /// Elapsed sampling time in microseconds.
-    pub elapsed_us: u32,
+    /// Mean d-axis current in milli-counts.
+    pub id_mean_milli_count: i32,
+    /// Mean q-axis current in milli-counts.
+    pub iq_mean_milli_count: i32,
+    /// RMS d-axis spread around the mean in milli-counts.
+    pub id_rms_milli_count: u32,
+    /// RMS q-axis spread around the mean in milli-counts.
+    pub iq_rms_milli_count: u32,
+    /// Half-window reactance drift in permille.
+    pub drift_permille: u16,
+    /// Pre-drive mean d-axis offset in milli-counts.
+    pub zero_id_mean_milli_count: i32,
+    /// Pre-drive mean q-axis offset in milli-counts.
+    pub zero_iq_mean_milli_count: i32,
+}
+
+/// `foci_inductance_estimate` reply - accepted count-space inductance evidence.
+///
+/// Wire name: `foci_inductance_estimate`.
+#[klipper_reply]
+pub struct FociInductanceEstimate {
+    /// Object id of the FOCI endpoint.
+    pub oid: u8,
+    /// Accepted angle-averaged reactance ratio in milli count-ratio units.
+    pub x_average_count_ratio_milli: u32,
+    /// D-axis reactance ratio in milli count-ratio units.
+    pub x_d_count_ratio_milli: u32,
+    /// Q-axis reactance ratio in milli count-ratio units.
+    pub x_q_count_ratio_milli: u32,
+    /// `AC_SALIENCY_*` status code.
+    pub saliency_status: u8,
+    /// `abs(Ld - Lq) / average(Ld, Lq)` in permille.
+    pub saliency_permille: u16,
+    /// Magnitude-branch nominal reactance in milli count-ratio units.
+    pub x_mag_nominal_count_ratio_milli: u32,
+    /// Magnitude-branch shift with R scaled down by 20%, in permille.
+    pub x_mag_shift_minus_permille: u16,
+    /// Magnitude-branch shift with R scaled up by 20%, in permille.
+    pub x_mag_shift_plus_permille: u16,
+    /// Magnitude-vs-quadrature disagreement in permille.
+    pub x_mag_vs_quad_permille: u16,
 }
 
 /// `foci_current_loop_run` reply - run-level current-loop commissioning evidence.
@@ -1082,36 +1109,53 @@ mod resistance_reply_size_tests {
     }
 
     #[test]
-    fn inductance_fit_reply_fits_klipper_message_limit() {
-        let reply = super::FociInductanceFit {
+    fn inductance_run_reply_fits_klipper_message_limit() {
+        let reply = super::FociInductanceRun {
             oid: u8::MAX,
-            coil: u8::MAX,
-            tau_us: 0x7FFF_FFFF,
-            slope_delta_per_ud_milli: 0x7FFF_FFFF,
-            intercept_delta_milli: i32::MIN,
-            deadtime_ud: i16::MIN,
-            residual_permille: u16::MAX,
-            usable_points: u8::MAX,
-            selected_mask: u16::MAX,
+            source: u8::MAX,
+            status: u8::MAX,
+            warning_flags: u16::MAX,
+            ud_count: i16::MIN,
+            realized_frequency_millihz: 0x7FFF_FFFF,
+            elapsed_us: 0x7FFF_FFFF,
+            openloop_phi_delta_counts: 0x7FFF_FFFF,
+            sample_count: u16::MAX,
+            encoder_delta_counts: i32::MIN,
+            status_flags_or: 0x7FFF_FFFF,
         };
-        assert_fits_with_id(&reply, "foci_inductance_fit");
+        assert_fits_with_id(&reply, "foci_inductance_run");
     }
 
     #[test]
-    fn inductance_point_reply_fits_klipper_message_limit() {
-        let reply = super::FociInductancePoint {
+    fn inductance_frame_reply_fits_klipper_message_limit() {
+        let reply = super::FociInductanceFrame {
             oid: u8::MAX,
-            coil: u8::MAX,
-            point: u8::MAX,
-            ud: u16::MAX,
-            avg_delta: 0x7FFF_FFFF,
-            avg_current_count: i32::MIN,
-            r_drop_ud: i32::MIN,
-            effective_ud: i32::MIN,
-            sample_count: 0x7FFF_FFFF,
-            elapsed_us: 0x7FFF_FFFF,
+            id_mean_milli_count: i32::MIN,
+            iq_mean_milli_count: i32::MIN,
+            id_rms_milli_count: 0x7FFF_FFFF,
+            iq_rms_milli_count: 0x7FFF_FFFF,
+            drift_permille: u16::MAX,
+            zero_id_mean_milli_count: i32::MIN,
+            zero_iq_mean_milli_count: i32::MIN,
         };
-        assert_fits_with_id(&reply, "foci_inductance_point");
+        assert_fits_with_id(&reply, "foci_inductance_frame");
+    }
+
+    #[test]
+    fn inductance_estimate_reply_fits_klipper_message_limit() {
+        let reply = super::FociInductanceEstimate {
+            oid: u8::MAX,
+            x_average_count_ratio_milli: 0x7FFF_FFFF,
+            x_d_count_ratio_milli: 0x7FFF_FFFF,
+            x_q_count_ratio_milli: 0x7FFF_FFFF,
+            saliency_status: u8::MAX,
+            saliency_permille: u16::MAX,
+            x_mag_nominal_count_ratio_milli: 0x7FFF_FFFF,
+            x_mag_shift_minus_permille: u16::MAX,
+            x_mag_shift_plus_permille: u16::MAX,
+            x_mag_vs_quad_permille: u16::MAX,
+        };
+        assert_fits_with_id(&reply, "foci_inductance_estimate");
     }
 
     #[test]

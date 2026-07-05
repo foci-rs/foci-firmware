@@ -8,12 +8,14 @@
 use crate::autotune::{CURRENT_AXIS_FLUX, CURRENT_AXIS_TORQUE, PhaseId};
 use crate::commission_dispatch::ReplyPayload;
 use crate::commissioning::types::{
-    AdcCalResult, CommissionResult, CurrentValidationAxisEvidence, InnerResult, OuterResult,
+    AdcCalResult, CommissionResult, CurrentValidationAxisEvidence, INDUCTANCE_SOURCE_NONE,
+    InnerResult, OuterResult,
 };
 use crate::selftest::{CommissionDiagnostic, CommissionDiagnostics, SelftestStageValue};
 use crate::tmc_diagnostics::{
-    CurrentLoopRunReport, CurrentValidationAxisReport, EncoderAlignmentReport, InductanceFitReport,
-    InductancePointReport, ResistanceAxisReport, ResistanceRunReport,
+    CurrentLoopRunReport, CurrentValidationAxisReport, EncoderAlignmentReport,
+    InductanceEstimateReport, InductanceFrameReport, InductanceRunReport, ResistanceAxisReport,
+    ResistanceRunReport,
 };
 
 /// TMC4671 external electrical angle for electrical axis 0 (PHASE0).
@@ -53,12 +55,17 @@ pub trait CommissionReplySink {
     /// size-capped terminal commission result.
     fn foci_encoder_alignment(&mut self, report: EncoderAlignmentReport);
 
-    /// Emit one accepted per-coil corrected inductance fit captured during
-    /// Stage 1 commissioning.
-    fn foci_inductance_fit(&mut self, report: InductanceFitReport);
+    /// Emit run-level production inductance evidence captured during Stage 1
+    /// commissioning.
+    fn foci_inductance_run(&mut self, report: InductanceRunReport);
 
-    /// Emit one per-amplitude dI/dt point used by a corrected inductance fit.
-    fn foci_inductance_point(&mut self, report: InductancePointReport);
+    /// Emit rotating-frame production inductance current evidence captured
+    /// during Stage 1 commissioning.
+    fn foci_inductance_frame(&mut self, report: InductanceFrameReport);
+
+    /// Emit accepted production inductance estimate evidence captured during
+    /// Stage 1 commissioning.
+    fn foci_inductance_estimate(&mut self, report: InductanceEstimateReport);
 
     /// Emit run-level current-loop commissioning evidence captured during
     /// Stage 1 commissioning. `FociCommissionResult` is size-capped, so this
@@ -264,42 +271,46 @@ fn commission_encoder_alignment_report(oid: u8, inner: &InnerResult) -> EncoderA
 }
 
 fn emit_inductance_evidence<S: CommissionReplySink>(sink: &mut S, oid: u8, inner: &InnerResult) {
-    for coil in 0..2 {
-        let coil_idx = coil as usize;
-        let fit = inner.inductance_fit[coil_idx];
-        if fit.usable_points == 0 {
-            continue;
-        }
-        sink.foci_inductance_fit(InductanceFitReport {
-            oid,
-            coil,
-            tau_us: fit.tau_us,
-            slope_delta_per_ud_milli: fit.slope_delta_per_ud_milli,
-            intercept_delta_milli: fit.intercept_delta_milli,
-            deadtime_ud: fit.deadtime_ud,
-            residual_permille: fit.residual_permille,
-            usable_points: fit.usable_points,
-            selected_mask: fit.selected_mask,
-        });
-
-        for (point_index, point) in inner.inductance_fit_points[coil_idx].iter().enumerate() {
-            if point.sample_count == 0 {
-                continue;
-            }
-            sink.foci_inductance_point(InductancePointReport {
-                oid,
-                coil,
-                point: point_index as u8,
-                ud: point.ud,
-                avg_delta: point.avg_delta,
-                avg_current_count: point.avg_current_count,
-                r_drop_ud: point.r_drop_ud,
-                effective_ud: point.effective_ud,
-                sample_count: point.sample_count,
-                elapsed_us: point.elapsed_us,
-            });
-        }
+    let evidence = inner.inductance;
+    if evidence.run.source == INDUCTANCE_SOURCE_NONE || evidence.run.sample_count == 0 {
+        return;
     }
+
+    sink.foci_inductance_run(InductanceRunReport {
+        oid,
+        source: evidence.run.source,
+        status: evidence.run.status,
+        warning_flags: evidence.run.warning_flags,
+        ud_count: evidence.run.ud_count,
+        realized_frequency_millihz: evidence.run.realized_frequency_millihz,
+        elapsed_us: evidence.run.elapsed_us,
+        openloop_phi_delta_counts: evidence.run.openloop_phi_delta_counts,
+        sample_count: evidence.run.sample_count,
+        encoder_delta_counts: evidence.run.encoder_delta_counts,
+        status_flags_or: evidence.run.status_flags_or,
+    });
+    sink.foci_inductance_frame(InductanceFrameReport {
+        oid,
+        id_mean_milli_count: evidence.frame.id_mean_milli_count,
+        iq_mean_milli_count: evidence.frame.iq_mean_milli_count,
+        id_rms_milli_count: evidence.frame.id_rms_milli_count,
+        iq_rms_milli_count: evidence.frame.iq_rms_milli_count,
+        drift_permille: evidence.frame.drift_permille,
+        zero_id_mean_milli_count: evidence.frame.zero_id_mean_milli_count,
+        zero_iq_mean_milli_count: evidence.frame.zero_iq_mean_milli_count,
+    });
+    sink.foci_inductance_estimate(InductanceEstimateReport {
+        oid,
+        x_average_count_ratio_milli: evidence.estimate.x_average_count_ratio_milli,
+        x_d_count_ratio_milli: evidence.estimate.x_d_count_ratio_milli,
+        x_q_count_ratio_milli: evidence.estimate.x_q_count_ratio_milli,
+        saliency_status: evidence.estimate.saliency_status,
+        saliency_permille: evidence.estimate.saliency_permille,
+        x_mag_nominal_count_ratio_milli: evidence.estimate.x_mag_nominal_count_ratio_milli,
+        x_mag_shift_minus_permille: evidence.estimate.x_mag_shift_minus_permille,
+        x_mag_shift_plus_permille: evidence.estimate.x_mag_shift_plus_permille,
+        x_mag_vs_quad_permille: evidence.estimate.x_mag_vs_quad_permille,
+    });
 }
 
 fn emit_current_loop_evidence<S: CommissionReplySink>(
@@ -411,7 +422,7 @@ mod tests {
     use crate::commission_dispatch::ReplyPayload;
     use crate::commissioning::types::{
         AdcCalResult, CommissionResult, CurrentValidationAxisEvidence, INDUCTANCE_FIT_POINT_COUNT,
-        InductanceFitEvidence, InductanceFitPoint, InnerResult, OuterResult,
+        InductanceEvidence, InductanceFitEvidence, InductanceFitPoint, InnerResult, OuterResult,
     };
     use crate::selftest::{
         COMMISSION_DIAGNOSTIC_CAPACITY, CommissionDiagnostic, CommissionDiagnostics,
@@ -476,28 +487,40 @@ mod tests {
             min_movement_counts: u16,
             counts_per_electrical_rev: u16,
         },
-        InductanceFit {
+        InductanceRun {
             oid: u8,
-            coil: u8,
-            tau_us: u32,
-            slope_delta_per_ud_milli: u32,
-            intercept_delta_milli: i32,
-            deadtime_ud: i16,
-            residual_permille: u16,
-            usable_points: u8,
-            selected_mask: u16,
-        },
-        InductancePoint {
-            oid: u8,
-            coil: u8,
-            point: u8,
-            ud: u16,
-            avg_delta: u32,
-            avg_current_count: i32,
-            r_drop_ud: i32,
-            effective_ud: i32,
-            sample_count: u32,
+            source: u8,
+            status: u8,
+            warning_flags: u16,
+            ud_count: i16,
+            realized_frequency_millihz: u32,
             elapsed_us: u32,
+            openloop_phi_delta_counts: u32,
+            sample_count: u16,
+            encoder_delta_counts: i32,
+            status_flags_or: u32,
+        },
+        InductanceFrame {
+            oid: u8,
+            id_mean_milli_count: i32,
+            iq_mean_milli_count: i32,
+            id_rms_milli_count: u32,
+            iq_rms_milli_count: u32,
+            drift_permille: u16,
+            zero_id_mean_milli_count: i32,
+            zero_iq_mean_milli_count: i32,
+        },
+        InductanceEstimate {
+            oid: u8,
+            x_average_count_ratio_milli: u32,
+            x_d_count_ratio_milli: u32,
+            x_q_count_ratio_milli: u32,
+            saliency_status: u8,
+            saliency_permille: u16,
+            x_mag_nominal_count_ratio_milli: u32,
+            x_mag_shift_minus_permille: u16,
+            x_mag_shift_plus_permille: u16,
+            x_mag_vs_quad_permille: u16,
         },
         CurrentValidationAxis {
             oid: u8,
@@ -634,32 +657,50 @@ mod tests {
             });
         }
 
-        fn foci_inductance_fit(&mut self, report: crate::tmc_diagnostics::InductanceFitReport) {
-            self.events.push(Event::InductanceFit {
+        fn foci_inductance_run(&mut self, report: crate::tmc_diagnostics::InductanceRunReport) {
+            self.events.push(Event::InductanceRun {
                 oid: report.oid,
-                coil: report.coil,
-                tau_us: report.tau_us,
-                slope_delta_per_ud_milli: report.slope_delta_per_ud_milli,
-                intercept_delta_milli: report.intercept_delta_milli,
-                deadtime_ud: report.deadtime_ud,
-                residual_permille: report.residual_permille,
-                usable_points: report.usable_points,
-                selected_mask: report.selected_mask,
+                source: report.source,
+                status: report.status,
+                warning_flags: report.warning_flags,
+                ud_count: report.ud_count,
+                realized_frequency_millihz: report.realized_frequency_millihz,
+                elapsed_us: report.elapsed_us,
+                openloop_phi_delta_counts: report.openloop_phi_delta_counts,
+                sample_count: report.sample_count,
+                encoder_delta_counts: report.encoder_delta_counts,
+                status_flags_or: report.status_flags_or,
             });
         }
 
-        fn foci_inductance_point(&mut self, report: crate::tmc_diagnostics::InductancePointReport) {
-            self.events.push(Event::InductancePoint {
+        fn foci_inductance_frame(&mut self, report: crate::tmc_diagnostics::InductanceFrameReport) {
+            self.events.push(Event::InductanceFrame {
                 oid: report.oid,
-                coil: report.coil,
-                point: report.point,
-                ud: report.ud,
-                avg_delta: report.avg_delta,
-                avg_current_count: report.avg_current_count,
-                r_drop_ud: report.r_drop_ud,
-                effective_ud: report.effective_ud,
-                sample_count: report.sample_count,
-                elapsed_us: report.elapsed_us,
+                id_mean_milli_count: report.id_mean_milli_count,
+                iq_mean_milli_count: report.iq_mean_milli_count,
+                id_rms_milli_count: report.id_rms_milli_count,
+                iq_rms_milli_count: report.iq_rms_milli_count,
+                drift_permille: report.drift_permille,
+                zero_id_mean_milli_count: report.zero_id_mean_milli_count,
+                zero_iq_mean_milli_count: report.zero_iq_mean_milli_count,
+            });
+        }
+
+        fn foci_inductance_estimate(
+            &mut self,
+            report: crate::tmc_diagnostics::InductanceEstimateReport,
+        ) {
+            self.events.push(Event::InductanceEstimate {
+                oid: report.oid,
+                x_average_count_ratio_milli: report.x_average_count_ratio_milli,
+                x_d_count_ratio_milli: report.x_d_count_ratio_milli,
+                x_q_count_ratio_milli: report.x_q_count_ratio_milli,
+                saliency_status: report.saliency_status,
+                saliency_permille: report.saliency_permille,
+                x_mag_nominal_count_ratio_milli: report.x_mag_nominal_count_ratio_milli,
+                x_mag_shift_minus_permille: report.x_mag_shift_minus_permille,
+                x_mag_shift_plus_permille: report.x_mag_shift_plus_permille,
+                x_mag_vs_quad_permille: report.x_mag_vs_quad_permille,
             });
         }
 
@@ -833,7 +874,7 @@ mod tests {
                 ringing_count: 21,
                 bandwidth_hz: 22,
                 tau_e_us: 23,
-                inductance: crate::commissioning::types::InductanceEvidence::EMPTY,
+                inductance: InductanceEvidence::test_fixture(),
                 inductance_fit: [
                     InductanceFitEvidence {
                         tau_us: 450,
@@ -1039,29 +1080,42 @@ mod tests {
     }
 
     fn inductance_events(oid: u8) -> Vec<Event> {
+        let evidence = InductanceEvidence::test_fixture();
         std::vec![
-            Event::InductanceFit {
+            Event::InductanceRun {
                 oid,
-                coil: 0,
-                tau_us: 450,
-                slope_delta_per_ud_milli: 65,
-                intercept_delta_milli: -13_000,
-                deadtime_ud: 200,
-                residual_permille: 12,
-                usable_points: 4,
-                selected_mask: 0b1111,
+                source: evidence.run.source,
+                status: evidence.run.status,
+                warning_flags: evidence.run.warning_flags,
+                ud_count: evidence.run.ud_count,
+                realized_frequency_millihz: evidence.run.realized_frequency_millihz,
+                elapsed_us: evidence.run.elapsed_us,
+                openloop_phi_delta_counts: evidence.run.openloop_phi_delta_counts,
+                sample_count: evidence.run.sample_count,
+                encoder_delta_counts: evidence.run.encoder_delta_counts,
+                status_flags_or: evidence.run.status_flags_or,
             },
-            Event::InductancePoint {
+            Event::InductanceFrame {
                 oid,
-                coil: 0,
-                point: 0,
-                ud: 512,
-                avg_delta: 18,
-                avg_current_count: 40,
-                r_drop_ud: 40,
-                effective_ud: 472,
-                sample_count: 500,
-                elapsed_us: 50_000,
+                id_mean_milli_count: evidence.frame.id_mean_milli_count,
+                iq_mean_milli_count: evidence.frame.iq_mean_milli_count,
+                id_rms_milli_count: evidence.frame.id_rms_milli_count,
+                iq_rms_milli_count: evidence.frame.iq_rms_milli_count,
+                drift_permille: evidence.frame.drift_permille,
+                zero_id_mean_milli_count: evidence.frame.zero_id_mean_milli_count,
+                zero_iq_mean_milli_count: evidence.frame.zero_iq_mean_milli_count,
+            },
+            Event::InductanceEstimate {
+                oid,
+                x_average_count_ratio_milli: evidence.estimate.x_average_count_ratio_milli,
+                x_d_count_ratio_milli: evidence.estimate.x_d_count_ratio_milli,
+                x_q_count_ratio_milli: evidence.estimate.x_q_count_ratio_milli,
+                saliency_status: evidence.estimate.saliency_status,
+                saliency_permille: evidence.estimate.saliency_permille,
+                x_mag_nominal_count_ratio_milli: evidence.estimate.x_mag_nominal_count_ratio_milli,
+                x_mag_shift_minus_permille: evidence.estimate.x_mag_shift_minus_permille,
+                x_mag_shift_plus_permille: evidence.estimate.x_mag_shift_plus_permille,
+                x_mag_vs_quad_permille: evidence.estimate.x_mag_vs_quad_permille,
             },
         ]
     }
@@ -1134,9 +1188,10 @@ mod tests {
     }
 
     #[test]
-    fn commission_result_emits_inductance_fit_before_terminal_result() {
+    fn commission_result_emits_inductance_evidence_before_terminal_result() {
         let mut sink = RecordingSink::default();
-        let result = commission_result();
+        let mut result = commission_result();
+        result.inner.inductance = crate::commissioning::types::InductanceEvidence::test_fixture();
 
         emit_terminal_reply(
             &mut sink,
@@ -1152,16 +1207,21 @@ mod tests {
             .iter()
             .position(|e| matches!(e, Event::EncoderAlignment { .. }))
             .expect("encoder alignment event");
-        let fit_index = sink
+        let run_index = sink
             .events
             .iter()
-            .position(|e| matches!(e, Event::InductanceFit { .. }))
-            .expect("inductance fit event");
-        let point_index = sink
+            .position(|e| matches!(e, Event::InductanceRun { .. }))
+            .expect("inductance run event");
+        let frame_index = sink
             .events
             .iter()
-            .position(|e| matches!(e, Event::InductancePoint { .. }))
-            .expect("inductance point event");
+            .position(|e| matches!(e, Event::InductanceFrame { .. }))
+            .expect("inductance frame event");
+        let estimate_index = sink
+            .events
+            .iter()
+            .position(|e| matches!(e, Event::InductanceEstimate { .. }))
+            .expect("inductance estimate event");
         let current_loop_index = sink
             .events
             .iter()
@@ -1172,9 +1232,10 @@ mod tests {
             .iter()
             .position(|e| matches!(e, Event::Commission { .. }))
             .expect("terminal commission event");
-        assert!(alignment_index < fit_index);
-        assert!(fit_index < point_index);
-        assert!(point_index < current_loop_index);
+        assert!(alignment_index < run_index);
+        assert!(run_index < frame_index);
+        assert!(frame_index < estimate_index);
+        assert!(estimate_index < current_loop_index);
         assert!(current_loop_index < terminal_index);
     }
 
@@ -1182,9 +1243,7 @@ mod tests {
     fn commission_result_skips_empty_inductance_evidence() {
         let mut sink = RecordingSink::default();
         let mut result = commission_result();
-        result.inner.inductance_fit = [InductanceFitEvidence::EMPTY; 2];
-        result.inner.inductance_fit_points =
-            [[InductanceFitPoint::EMPTY; INDUCTANCE_FIT_POINT_COUNT]; 2];
+        result.inner.inductance = InductanceEvidence::EMPTY;
 
         emit_terminal_reply(
             &mut sink,
@@ -1199,13 +1258,19 @@ mod tests {
             !sink
                 .events
                 .iter()
-                .any(|e| matches!(e, Event::InductanceFit { .. }))
+                .any(|e| matches!(e, Event::InductanceRun { .. }))
         );
         assert!(
             !sink
                 .events
                 .iter()
-                .any(|e| matches!(e, Event::InductancePoint { .. }))
+                .any(|e| matches!(e, Event::InductanceFrame { .. }))
+        );
+        assert!(
+            !sink
+                .events
+                .iter()
+                .any(|e| matches!(e, Event::InductanceEstimate { .. }))
         );
     }
 

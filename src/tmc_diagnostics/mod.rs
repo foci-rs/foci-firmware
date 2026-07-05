@@ -21,8 +21,8 @@ pub use replies::{DiagnosticReplySink, emit_diagnostic_report};
 pub use reports::{
     CURRENT_STEP_STATUS_NOT_READY, CURRENT_STEP_STATUS_SPI, CurrentLoopRunReport,
     CurrentStepReport, CurrentTorqueSampleReport, CurrentValidationAxisReport,
-    EncoderAlignmentReport, InductanceFitReport, InductancePointReport, ResistanceAxisReport,
-    ResistanceProfileReport, ResistanceRunReport, VoltageStepReport,
+    EncoderAlignmentReport, InductanceEstimateReport, InductanceFrameReport, InductanceRunReport,
+    ResistanceAxisReport, ResistanceProfileReport, ResistanceRunReport, VoltageStepReport,
     empty_current_torque_sample_report, empty_resistance_run_report, empty_voltage_step_report,
 };
 pub use resistance::run_resistance_test_request;
