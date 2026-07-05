@@ -1,9 +1,8 @@
 //! Phase 5: Electrical identification (R, L, transport delay).
 //!
-//! Per-coil resistance from steady-state current sampling, per-coil
-//! inductance from a bounded square-wave dI/dt sweep, and electrical
-//! transport delay from a 256-sample current transient. Assembles an
-//! `ElectricalModel` and validates it before transitioning to
+//! Shared resistance identification, rotating-field inductance measurement,
+//! and electrical transport delay from a 256-sample current transient.
+//! Assembles an `ElectricalModel` and validates it before transitioning to
 //! `CurrentTune` (commission flow) or emitting `SelftestDone` (selftest).
 
 use super::{ElectricalIdData, ElectricalIdState, InnerPhase};
@@ -12,8 +11,9 @@ use crate::autotune::{
     TransientBuffer,
 };
 use crate::commissioning::types::{
-    CommissioningBackend, INDUCTANCE_FIT_POINT_COUNT, InductanceFitEvidence, InductanceFitPoint,
-    StepResult,
+    CommissioningBackend, INDUCTANCE_SOURCE_ROTATING_FIELD, INDUCTANCE_WARN_DRIFT,
+    INDUCTANCE_WARN_HIGH_RMS, INDUCTANCE_WARN_MAG_CROSSCHECK, InductanceEstimateEvidence,
+    InductanceEvidence, InductanceFrameEvidence, InductanceRunEvidence, StepResult,
 };
 use foci_tmc4671::registers::Register;
 
@@ -27,21 +27,25 @@ pub(crate) const ELECTRICAL_SAMPLE_PERIOD_US: u64 = 160;
 /// Cooldown time after disabling a per-coil measurement (microseconds).
 const ELECTRICAL_COOLDOWN_US: u64 = 50_000;
 
-/// Brief settle before starting di/dt toggling (microseconds).
-const INDUCTANCE_PRE_SETTLE_US: u64 = 10_000;
+/// Brief zero-voltage settle before the delay step response capture.
+const DELAY_PRE_SETTLE_US: u64 = 10_000;
 
-/// Maximum di/dt toggle cycles per step() call.
-/// Each cycle is ~2 SPI transfers (~22us at 8 MHz SPI).
-/// Budget: ~30 cycles/step ≈ 660us, leaving margin within 1ms tick.
-const INDUCTANCE_CYCLES_PER_STEP: u32 = 30;
-
-/// Minimum average |delta_I| per di/dt cycle to consider inductance valid.
-/// Below this, the current change is too small to extract L reliably.
-const INDUCTANCE_MIN_DELTA: u32 = 5;
-const INDUCTANCE_FIT_UD_PERMILLE: [u16; INDUCTANCE_FIT_POINT_COUNT] = [1000, 1250, 1500, 1750];
-const INDUCTANCE_FIT_MIN_USABLE_POINTS: u8 = 3;
-const INDUCTANCE_FIT_MAX_DEADTIME_UD: i32 = 400;
-const INDUCTANCE_FIT_MAX_RESIDUAL_PERMILLE: u16 = 120;
+const INDUCTANCE_AC_UD_EXT: i16 = 768;
+const INDUCTANCE_OPENLOOP_VELOCITY_TARGET_RPM: u32 = 1_200;
+const INDUCTANCE_OPENLOOP_ACCELERATION: u32 = 0x000f_ffff;
+const INDUCTANCE_OPENLOOP_RAMP_TIMEOUT_US: u64 = 2_000;
+const INDUCTANCE_AC_SETTLE_US: u64 = 8_500;
+const INDUCTANCE_AC_TARGET_PHI_DELTA_COUNTS: u32 = 8 * 65_536;
+const INDUCTANCE_MIN_ABS_IQ_MILLI_COUNT: i32 = 30_000;
+const INDUCTANCE_MAX_ENCODER_DELTA_COUNTS: u32 = 8;
+const INDUCTANCE_MAX_DRIFT_WARN_PERMILLE: u16 = 70;
+const INDUCTANCE_MAX_IQ_RMS_WARN_PERMILLE: u16 = 250;
+const INDUCTANCE_MAX_MAG_CROSSCHECK_WARN_PERMILLE: u16 = 100;
+const INDUCTANCE_REALIZED_FREQUENCY_TARGET_MILLIHZ: u32 = 1_000_000;
+const INDUCTANCE_REALIZED_FREQUENCY_TOLERANCE_MILLIHZ: u32 = 50_000;
+const INDUCTANCE_MIN_AC_SAMPLE_COUNT: u16 = 90;
+const PHI_E_SELECTION_OPENLOOP: u32 = 2;
+const L_INT_OMEGA_SCALE_MILLI: u64 = 6_283;
 
 /// Number of transient samples for delay identification.
 /// Matches TransientBuffer capacity. Re-exported because the current-loop
@@ -52,15 +56,10 @@ const DIAG_ELECTRICAL_ID_EXCITATION: u8 = 1;
 const DIAG_ELECTRICAL_ID_RESISTANCE_A: u8 = 2;
 const DIAG_ELECTRICAL_ID_RESISTANCE_B: u8 = 3;
 const DIAG_ELECTRICAL_ID_REJECT_NO_SAMPLES: u8 = 20;
-const DIAG_ELECTRICAL_ID_REJECT_SINGLE_COIL_TAU: u8 = 21;
 const DIAG_ELECTRICAL_ID_REJECT_MODEL_SCALE_ZERO: u8 = 22;
 // Codes 23–25 (resistance short/open/mismatch) are retired: the shared
 // resistance runner now owns those quality gates.
-const DIAG_ELECTRICAL_ID_REJECT_TAU_MISMATCH: u8 = 26;
-const DIAG_ELECTRICAL_ID_REJECT_INDUCTANCE_FIT: u8 = 28;
 const DIAG_ELECTRICAL_ID_REJECT_THETA_TOO_LARGE: u8 = 29;
-const DIAG_ELECTRICAL_ID_INDUCTANCE_FIT_POINT: u8 = 30;
-const DIAG_ELECTRICAL_ID_INDUCTANCE_FIT_CORRECTION: u8 = 31;
 
 // ---------------------------------------------------------------------------
 // Phase 1 model-assembly gates and warning bits.
@@ -68,8 +67,6 @@ const DIAG_ELECTRICAL_ID_INDUCTANCE_FIT_CORRECTION: u8 = 31;
 
 /// Per-coil resistance disagreement >= 5 % (warning).
 pub(crate) const INNER_WARN_BIT_RESISTANCE_MISMATCH: u8 = 1 << 0;
-/// Per-coil tau/L disagreement >= 15 % (warning).
-pub(crate) const INNER_WARN_BIT_TAU_MISMATCH: u8 = 1 << 1;
 /// theta_e_us >= tau_e_us / 4 (warning).
 pub(crate) const INNER_WARN_BIT_THETA_TAU: u8 = 1 << 3;
 
@@ -78,16 +75,6 @@ pub(crate) const INNER_WARN_BIT_THETA_TAU: u8 = 1 << 3;
 /// non-critical confidence warning computed from the runner's per-axis slopes.
 const RESISTANCE_MISMATCH_WARN_PERMILLE: u32 = 50;
 
-fn inductance_fit_ud(base_ud: u32, point: u8) -> u16 {
-    let idx = usize::from(point).min(INDUCTANCE_FIT_POINT_COUNT - 1);
-    ((base_ud as u64 * INDUCTANCE_FIT_UD_PERMILLE[idx] as u64) / 1000).clamp(1, u16::MAX as u64)
-        as u16
-}
-
-/// Per-coil tau disagreement fail threshold (permille).
-const TAU_MISMATCH_FAIL_PERMILLE: u32 = 300;
-/// Per-coil tau disagreement warn threshold (permille).
-const TAU_MISMATCH_WARN_PERMILLE: u32 = 150;
 /// Successful model assembly: the assembled `ElectricalModel` and the
 /// non-critical warning bitfield.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
@@ -103,20 +90,10 @@ pub(crate) struct ModelAssembly {
 pub(crate) enum ModelAssemblyError {
     /// At least one coil had zero samples or zero current.
     SampleCount,
-    /// Both coils must produce non-zero tau; at least one was zero.
-    SingleCoilTau,
-    /// L_int or L_uh evaluated to zero after the per-coil tau computation.
+    /// L_int or L_uh evaluated to zero after AC reactance conversion.
     /// Distinct from `SampleCount` so RTT diagnostics name the actual
     /// failure (likely a fixed-point scale or rounding edge case).
     ModelScaleZero { l_int: u32, l_uh: u32 },
-    /// Per-coil tau disagreement above hard threshold.
-    TauMismatch { permille: u32 },
-    /// Corrected inductance fit points were captured but rejected.
-    RejectedInductanceFit {
-        coil: u8,
-        usable_points: u8,
-        selected_mask: u16,
-    },
     /// theta_e_us >= tau_e_us / 2.
     ThetaTooLarge { theta_us: u32, tau_us: u32 },
 }
@@ -126,29 +103,11 @@ fn log_model_assembly_failure(err: ModelAssemblyError) {
         ModelAssemblyError::SampleCount => {
             defmt::warn!("electrical id: no usable per-coil samples");
         }
-        ModelAssemblyError::SingleCoilTau => {
-            defmt::warn!("electrical id: only one coil produced non-zero tau");
-        }
         ModelAssemblyError::ModelScaleZero { l_int, l_uh } => {
             defmt::warn!(
                 "electrical id: model scale zero (l_int={}, l_uh={})",
                 l_int,
                 l_uh
-            );
-        }
-        ModelAssemblyError::TauMismatch { permille } => {
-            defmt::warn!("electrical id: coil tau mismatch {} permille", permille);
-        }
-        ModelAssemblyError::RejectedInductanceFit {
-            coil,
-            usable_points,
-            selected_mask,
-        } => {
-            defmt::warn!(
-                "electrical id: corrected inductance fit rejected (coil={}, usable_points={}, selected_mask={})",
-                coil,
-                usable_points,
-                selected_mask
             );
         }
         ModelAssemblyError::ThetaTooLarge { theta_us, tau_us } => {
@@ -166,26 +125,9 @@ fn diagnostic_for_model_assembly_failure(
 ) -> crate::selftest::CommissionDiagnostic {
     let (code, value0, value1, value2) = match err {
         ModelAssemblyError::SampleCount => (DIAG_ELECTRICAL_ID_REJECT_NO_SAMPLES, 0, 0, 0),
-        ModelAssemblyError::SingleCoilTau => (DIAG_ELECTRICAL_ID_REJECT_SINGLE_COIL_TAU, 0, 0, 0),
         ModelAssemblyError::ModelScaleZero { l_int, l_uh } => {
             (DIAG_ELECTRICAL_ID_REJECT_MODEL_SCALE_ZERO, l_int, l_uh, 0)
         }
-        ModelAssemblyError::TauMismatch { permille } => (
-            DIAG_ELECTRICAL_ID_REJECT_TAU_MISMATCH,
-            permille,
-            TAU_MISMATCH_FAIL_PERMILLE,
-            0,
-        ),
-        ModelAssemblyError::RejectedInductanceFit {
-            coil,
-            usable_points,
-            selected_mask,
-        } => (
-            DIAG_ELECTRICAL_ID_REJECT_INDUCTANCE_FIT,
-            u32::from(coil),
-            u32::from(usable_points),
-            u32::from(selected_mask),
-        ),
         ModelAssemblyError::ThetaTooLarge { theta_us, tau_us } => (
             DIAG_ELECTRICAL_ID_REJECT_THETA_TOO_LARGE,
             theta_us,
@@ -228,39 +170,6 @@ fn electrical_id_measurement_diagnostic(
     }
 }
 
-fn packed_inductance_fit_point(coil_idx: usize, point_idx: usize) -> u32 {
-    ((coil_idx as u32) << 4) | point_idx as u32
-}
-
-fn record_rejected_inductance_fit_diagnostics(
-    data: &ElectricalIdData,
-    coil: u8,
-    diagnostics: &mut crate::selftest::CommissionDiagnostics,
-) {
-    let coil_idx = usize::from(coil);
-    if coil_idx >= data.inductance_fit_points.len() {
-        return;
-    }
-    for (point_idx, point) in data.inductance_fit_points[coil_idx].iter().enumerate() {
-        if point.sample_count == 0 {
-            continue;
-        }
-        let packed = packed_inductance_fit_point(coil_idx, point_idx);
-        diagnostics.push(electrical_id_measurement_diagnostic(
-            DIAG_ELECTRICAL_ID_INDUCTANCE_FIT_POINT,
-            packed,
-            u32::from(point.ud),
-            point.avg_delta,
-        ));
-        diagnostics.push(electrical_id_measurement_diagnostic(
-            DIAG_ELECTRICAL_ID_INDUCTANCE_FIT_CORRECTION,
-            packed,
-            point.sample_count,
-            point.effective_ud as u32,
-        ));
-    }
-}
-
 /// Per-coil resistance count-slope from the shared runner result. `None` until
 /// the resistance sweep has populated `data.resistance_result`.
 ///
@@ -284,127 +193,28 @@ fn per_coil_resistance_slope(data: &ElectricalIdData, coil_idx: usize) -> Option
     Some((r_int, r_int, u32::from(axis.selected_count)))
 }
 
-/// Per-coil resistance count-slope in the `ELECTRICAL_MODEL_RESISTANCE_SCALE`
-/// (milli) unit space, taken from the runner's per-axis fit.
-fn resistance_model_scale(data: &ElectricalIdData, coil_idx: usize) -> Option<u32> {
-    let (r_int, _, _) = per_coil_resistance_slope(data, coil_idx)?;
-    Some(r_int)
-}
-
-fn fit_inductance_points(
-    points: &[InductanceFitPoint; INDUCTANCE_FIT_POINT_COUNT],
-    r_int: u32,
-) -> Option<InductanceFitEvidence> {
-    if r_int == 0 {
+fn l_int_from_reactance(
+    x_average_count_ratio_milli: u32,
+    realized_frequency_millihz: u32,
+) -> Option<u32> {
+    if x_average_count_ratio_milli == 0 || realized_frequency_millihz == 0 {
         return None;
     }
-
-    let mut n = 0i64;
-    let mut sum_x = 0i64;
-    let mut sum_y = 0i64;
-    let mut sum_xx = 0i64;
-    let mut sum_xy = 0i64;
-    let mut sum_elapsed_us = 0u64;
-    let mut sum_sample_count = 0u64;
-    let mut min_effective_ud = i32::MAX;
-    let mut selected_mask = 0u16;
-
-    for (idx, point) in points.iter().enumerate() {
-        if point.sample_count == 0 || point.avg_delta < INDUCTANCE_MIN_DELTA {
-            continue;
-        }
-        if point.effective_ud <= 0 {
-            continue;
-        }
-        let x = point.effective_ud as i64;
-        let y = point.avg_delta as i64;
-        n += 1;
-        sum_x += x;
-        sum_y += y;
-        sum_xx += x * x;
-        sum_xy += x * y;
-        sum_elapsed_us += u64::from(point.elapsed_us);
-        sum_sample_count += u64::from(point.sample_count);
-        min_effective_ud = min_effective_ud.min(point.effective_ud);
-        selected_mask |= 1u16 << idx;
-    }
-
-    if n < i64::from(INDUCTANCE_FIT_MIN_USABLE_POINTS) || sum_sample_count == 0 {
-        return None;
-    }
-
-    let denom = n * sum_xx - sum_x * sum_x;
-    if denom <= 0 {
-        return None;
-    }
-
-    let slope_milli = ((n * sum_xy - sum_x * sum_y) * 1000) / denom;
-    if slope_milli <= 0 {
-        return None;
-    }
-    let intercept_milli = ((sum_y * 1000) - slope_milli * sum_x) / n;
-    let deadtime_raw = (-intercept_milli) / slope_milli;
-    let deadtime_ud = deadtime_raw.clamp(0, i16::MAX as i64) as i16;
-    if i32::from(deadtime_ud) > INDUCTANCE_FIT_MAX_DEADTIME_UD
-        || i32::from(deadtime_ud) >= min_effective_ud
-    {
-        return None;
-    }
-
-    let mut max_residual_permille = 0u16;
-    for point in points.iter() {
-        if point.sample_count == 0 || point.avg_delta < INDUCTANCE_MIN_DELTA {
-            continue;
-        }
-        if point.effective_ud <= 0 {
-            continue;
-        }
-        let predicted_milli = slope_milli * point.effective_ud as i64 + intercept_milli;
-        if predicted_milli <= 0 {
-            return None;
-        }
-        let actual_milli = point.avg_delta as i64 * 1000;
-        let diff = actual_milli.abs_diff(predicted_milli);
-        let residual = (diff * 1000 / predicted_milli as u64).min(1000) as u16;
-        max_residual_permille = max_residual_permille.max(residual);
-    }
-    if max_residual_permille > INDUCTANCE_FIT_MAX_RESIDUAL_PERMILLE {
-        return None;
-    }
-
-    let dt_per_cycle_us = sum_elapsed_us / sum_sample_count;
-    if dt_per_cycle_us == 0 {
-        return None;
-    }
-
-    let tau_us_u64 = dt_per_cycle_us * ELECTRICAL_MODEL_RESISTANCE_SCALE as u64 * 1000
-        / (slope_milli as u64 * r_int as u64);
-    let tau_us = u32::try_from(tau_us_u64).ok()?;
-    if tau_us == 0 {
-        return None;
-    }
-
-    Some(InductanceFitEvidence {
-        tau_us,
-        slope_delta_per_ud_milli: slope_milli as u32,
-        intercept_delta_milli: intercept_milli.clamp(i32::MIN as i64, i32::MAX as i64) as i32,
-        deadtime_ud,
-        residual_permille: max_residual_permille,
-        usable_points: n as u8,
-        selected_mask,
-    })
+    let numerator = u128::from(x_average_count_ratio_milli).checked_mul(1_000_000_000)?;
+    let denominator =
+        u128::from(L_INT_OMEGA_SCALE_MILLI).checked_mul(u128::from(realized_frequency_millihz))?;
+    u32::try_from(numerator.checked_div(denominator)?).ok()
 }
 
 fn record_electrical_id_measurement_diagnostics(
     data: &ElectricalIdData,
-    didt_cycles: u32,
     diagnostics: &mut crate::selftest::CommissionDiagnostics,
 ) {
     diagnostics.push(electrical_id_measurement_diagnostic(
         DIAG_ELECTRICAL_ID_EXCITATION,
         data.voltage,
-        didt_cycles,
-        ELECTRICAL_SAMPLE_PERIOD_US as u32,
+        INDUCTANCE_AC_UD_EXT as u32,
+        INDUCTANCE_OPENLOOP_VELOCITY_TARGET_RPM,
     ));
     for coil_idx in 0..2 {
         if let Some((avg_current, r_mohm, count)) = per_coil_resistance_slope(data, coil_idx) {
@@ -453,52 +263,23 @@ fn assemble_electrical_model(
     // as a physical-display stand-in. The host applies real scale metadata.
     let r_mohm = r_int;
 
-    // --- Per-coil tau (both coils must produce non-zero tau) ---
-    //
-    // Each coil's tau uses its OWN r_int_per_coil entry, not the averaged
-    // r_int. Averaging here would mask coil-asymmetric R/L behavior: two
-    // coils with identical L but different R would report identical tau
-    // and the per-coil tau-mismatch gate would never fire. The per-coil
-    // R disagreement gate independently catches resistance imbalance.
-    let mut tau_per_coil = [0u32; 2];
-    for (coil_idx, tau_slot) in tau_per_coil.iter_mut().enumerate() {
-        let fit = data.inductance_fit[coil_idx];
-        if fit.tau_us != 0 && fit.usable_points >= INDUCTANCE_FIT_MIN_USABLE_POINTS {
-            *tau_slot = fit.tau_us;
-            continue;
-        }
-        if data.inductance_fit_points[coil_idx]
-            .iter()
-            .any(|point| point.sample_count != 0)
-        {
-            return Err(ModelAssemblyError::RejectedInductanceFit {
-                coil: coil_idx as u8,
-                usable_points: fit.usable_points,
-                selected_mask: fit.selected_mask,
-            });
-        }
-    }
-    if tau_per_coil[0] == 0 || tau_per_coil[1] == 0 {
-        return Err(ModelAssemblyError::SingleCoilTau);
-    }
-
     // --- Hard gates (in spec order) ---
     //
     // Resistance short/open/per-axis-mismatch gates are owned by the shared
-    // runner's count-space quality gates; only the inductance/delay gates run
-    // here. The per-coil resistance disagreement is still surfaced as a
-    // confidence warning below, computed from the runner's per-axis slopes.
+    // runner's count-space quality gates. The per-coil resistance
+    // disagreement is still surfaced as a confidence warning below, computed
+    // from the runner's per-axis slopes.
     let r_diff_permille = permille_diff(r_int_per_coil[0], r_int_per_coil[1]);
-    let tau_diff_permille = permille_diff(tau_per_coil[0], tau_per_coil[1]);
-    if tau_diff_permille >= TAU_MISMATCH_FAIL_PERMILLE {
-        return Err(ModelAssemblyError::TauMismatch {
-            permille: tau_diff_permille,
-        });
-    }
+    let inductance = data.inductance.ok_or(ModelAssemblyError::SampleCount)?;
+    let l_int = l_int_from_reactance(
+        inductance.estimate.x_average_count_ratio_milli,
+        inductance.run.realized_frequency_millihz,
+    )
+    .ok_or(ModelAssemblyError::ModelScaleZero { l_int: 0, l_uh: 0 })?;
 
-    let tau_e_us = (tau_per_coil[0] + tau_per_coil[1]) / 2;
-    let l_int = (r_int as u64 * tau_e_us as u64 / ELECTRICAL_MODEL_RESISTANCE_SCALE as u64) as u32;
-    let l_uh = r_mohm as u64 * tau_e_us as u64 / 1000;
+    let tau_e_us =
+        (u64::from(l_int) * u64::from(ELECTRICAL_MODEL_RESISTANCE_SCALE) / u64::from(r_int)) as u32;
+    let l_uh = u64::from(l_int);
     if l_int == 0 || l_uh == 0 {
         return Err(ModelAssemblyError::ModelScaleZero {
             l_int,
@@ -507,7 +288,7 @@ fn assemble_electrical_model(
     }
 
     // --- Configured transport-delay gate ---
-    // tau_e_us is guaranteed non-zero here (passed SingleCoilTau).
+    // tau_e_us is guaranteed non-zero here (model scale gate passed).
     if configured_theta_e_us >= tau_e_us / 2 {
         return Err(ModelAssemblyError::ThetaTooLarge {
             theta_us: configured_theta_e_us,
@@ -519,9 +300,6 @@ fn assemble_electrical_model(
     let mut warning_flags: u8 = 0;
     if r_diff_permille >= RESISTANCE_MISMATCH_WARN_PERMILLE {
         warning_flags |= INNER_WARN_BIT_RESISTANCE_MISMATCH;
-    }
-    if tau_diff_permille >= TAU_MISMATCH_WARN_PERMILLE {
-        warning_flags |= INNER_WARN_BIT_TAU_MISMATCH;
     }
     if configured_theta_e_us >= tau_e_us / 4 {
         warning_flags |= INNER_WARN_BIT_THETA_TAU;
@@ -618,11 +396,249 @@ impl<B: CommissioningBackend> crate::resistance_identification::ResistanceBacken
     }
 }
 
+async fn restore_inductance_ac_drive<B>(backend: &mut B) -> Result<(), CommissionError>
+where
+    B: CommissioningBackend,
+{
+    use foci_tmc4671::registers::{
+        MODE_RAMP_MODE_MOTION, OPENLOOP_VELOCITY_TARGET, PHI_E_SELECTION, UQ_UD_EXT,
+    };
+
+    let mut failed = false;
+    failed |= backend.write_register_verified(UQ_UD_EXT, 0).await.is_err();
+    failed |= backend
+        .write_register_verified(OPENLOOP_VELOCITY_TARGET, 0)
+        .await
+        .is_err();
+    failed |= backend
+        .write_register_verified(MODE_RAMP_MODE_MOTION, 0)
+        .await
+        .is_err();
+    failed |= backend
+        .write_register_verified(PHI_E_SELECTION, 0)
+        .await
+        .is_err();
+    backend.set_enable_pin(false);
+    crate::tmc_safe_state::restore_safe_state_via_backend(backend).await;
+    if failed {
+        Err(CommissionError::Spi)
+    } else {
+        Ok(())
+    }
+}
+
+async fn fail_inductance_ac_after_restore<B>(
+    phase: &mut InnerPhase,
+    backend: &mut B,
+    error: CommissionError,
+) -> StepResult
+where
+    B: CommissioningBackend,
+{
+    match restore_inductance_ac_drive(backend).await {
+        Ok(()) => super::fail_inner(phase, error),
+        Err(restore_error) => super::fail_inner(phase, restore_error),
+    }
+}
+
+fn wait_deadline_not_reached(now_us: u64, deadline_us: u64) -> bool {
+    now_us.wrapping_sub(deadline_us) >= 0x8000_0000
+}
+
+fn pack_ud_drive(ud_ext: i16) -> u32 {
+    foci_tmc4671::registers::UqUdExt::new()
+        .with_ud_ext(ud_ext)
+        .with_uq_ext(0)
+        .into_bits()
+}
+
+fn decode_rotating_frame_current(actual: u32) -> (i16, i16) {
+    let id_count = (actual & 0xffff) as u16 as i16;
+    let iq_count = (actual >> 16) as u16 as i16;
+    (id_count, iq_count)
+}
+
+fn signed_encoder_delta(start: u32, end: u32) -> i32 {
+    end.wrapping_sub(start) as i32
+}
+
+fn permille_delta(a: u32, b: u32) -> Option<u16> {
+    let base = a.max(b);
+    if base == 0 {
+        return Some(0);
+    }
+    let delta = a.abs_diff(b) as u64;
+    u16::try_from((delta * 1000 / u64::from(base)).min(u64::from(u16::MAX))).ok()
+}
+
+fn ratio_permille(numerator: u32, denominator: u32) -> Option<u16> {
+    if denominator == 0 {
+        return None;
+    }
+    u16::try_from((u64::from(numerator) * 1000 / u64::from(denominator)).min(u64::from(u16::MAX)))
+        .ok()
+}
+
+fn selected_resistance_count_slope(data: &ElectricalIdData) -> Option<i32> {
+    Some(data.resistance_result?.selected_r_count_slope_milli)
+}
+
+fn realized_frequency_in_range(realized_millihz: u32) -> bool {
+    realized_millihz.abs_diff(INDUCTANCE_REALIZED_FREQUENCY_TARGET_MILLIHZ)
+        <= INDUCTANCE_REALIZED_FREQUENCY_TOLERANCE_MILLIHZ
+}
+
+struct InductanceCaptureFinish<'a> {
+    data: &'a ElectricalIdData,
+    encoder_start: u32,
+    encoder_after: u32,
+    elapsed_us: u32,
+    phi_delta_counts: u32,
+    sample_count: u16,
+    status_flags_or: u32,
+    accumulator: crate::electrical_capture::AcFrameAccumulator,
+    first_half: crate::electrical_capture::AcFrameAccumulator,
+    second_half: crate::electrical_capture::AcFrameAccumulator,
+    saliency_accumulator: crate::electrical_capture::AcSaliencyAccumulator,
+}
+
+fn finish_inductance_evidence(input: InductanceCaptureFinish<'_>) -> Option<InductanceEvidence> {
+    let InductanceCaptureFinish {
+        data,
+        encoder_start,
+        encoder_after,
+        elapsed_us,
+        phi_delta_counts,
+        sample_count,
+        status_flags_or,
+        accumulator,
+        first_half,
+        second_half,
+        saliency_accumulator,
+    } = input;
+
+    if phi_delta_counts != INDUCTANCE_AC_TARGET_PHI_DELTA_COUNTS
+        || sample_count < INDUCTANCE_MIN_AC_SAMPLE_COUNT
+    {
+        return None;
+    }
+
+    let realized_frequency =
+        crate::electrical_capture::realized_frequency_millihz(phi_delta_counts, elapsed_us)?;
+    if !realized_frequency_in_range(realized_frequency) {
+        return None;
+    }
+
+    let frame = accumulator.finish(elapsed_us, realized_frequency, phi_delta_counts)?;
+    if frame.sample_count < INDUCTANCE_MIN_AC_SAMPLE_COUNT
+        || frame.iq_mean_milli_count.abs() < INDUCTANCE_MIN_ABS_IQ_MILLI_COUNT
+    {
+        return None;
+    }
+
+    let r_count_slope_milli = selected_resistance_count_slope(data)?;
+    let reactance = crate::electrical_capture::rotating_frame_reactance(
+        frame,
+        INDUCTANCE_AC_UD_EXT,
+        r_count_slope_milli,
+    )?;
+
+    let half_phi_delta = phi_delta_counts / 2;
+    let first_frame = first_half.finish(elapsed_us / 2, realized_frequency, half_phi_delta)?;
+    let second_frame = second_half.finish(elapsed_us / 2, realized_frequency, half_phi_delta)?;
+    let first_reactance = crate::electrical_capture::rotating_frame_reactance(
+        first_frame,
+        INDUCTANCE_AC_UD_EXT,
+        r_count_slope_milli,
+    )?;
+    let second_reactance = crate::electrical_capture::rotating_frame_reactance(
+        second_frame,
+        INDUCTANCE_AC_UD_EXT,
+        r_count_slope_milli,
+    )?;
+    let drift_permille = permille_delta(
+        first_reactance.x_quad_count_ratio_milli,
+        second_reactance.x_quad_count_ratio_milli,
+    )?;
+
+    let saliency = match saliency_accumulator
+        .finish(phi_delta_counts)
+        .and_then(crate::electrical_capture::extract_saliency_from_second_harmonic)
+    {
+        Some(evidence) => evidence,
+        None => crate::electrical_capture::AcSaliencyEvidence::not_determinable(
+            reactance.x_quad_count_ratio_milli,
+        ),
+    };
+    if saliency.status == crate::electrical_capture::AC_SALIENCY_DETERMINABLE
+        && !saliency.brackets_average()
+    {
+        return None;
+    }
+
+    let mut warning_flags = 0u16;
+    let iq_rms_permille = ratio_permille(
+        frame.iq_rms_milli_count,
+        frame.iq_mean_milli_count.unsigned_abs(),
+    )?;
+    if iq_rms_permille > INDUCTANCE_MAX_IQ_RMS_WARN_PERMILLE {
+        warning_flags |= INDUCTANCE_WARN_HIGH_RMS;
+    }
+    if drift_permille > INDUCTANCE_MAX_DRIFT_WARN_PERMILLE {
+        warning_flags |= INDUCTANCE_WARN_DRIFT;
+    }
+    if reactance.x_mag_vs_quad_permille > INDUCTANCE_MAX_MAG_CROSSCHECK_WARN_PERMILLE {
+        warning_flags |= INDUCTANCE_WARN_MAG_CROSSCHECK;
+    }
+
+    let encoder_delta_counts = signed_encoder_delta(encoder_start, encoder_after);
+    if encoder_delta_counts.unsigned_abs() > INDUCTANCE_MAX_ENCODER_DELTA_COUNTS
+        || status_flags_or != 0
+    {
+        return None;
+    }
+
+    Some(InductanceEvidence {
+        run: InductanceRunEvidence {
+            source: INDUCTANCE_SOURCE_ROTATING_FIELD,
+            status: 0,
+            warning_flags,
+            ud_count: INDUCTANCE_AC_UD_EXT,
+            realized_frequency_millihz: realized_frequency,
+            elapsed_us,
+            openloop_phi_delta_counts: phi_delta_counts,
+            sample_count: frame.sample_count,
+            encoder_delta_counts,
+            status_flags_or,
+        },
+        frame: InductanceFrameEvidence {
+            id_mean_milli_count: frame.id_mean_milli_count,
+            iq_mean_milli_count: frame.iq_mean_milli_count,
+            id_rms_milli_count: frame.id_rms_milli_count,
+            iq_rms_milli_count: frame.iq_rms_milli_count,
+            drift_permille,
+            zero_id_mean_milli_count: 0,
+            zero_iq_mean_milli_count: 0,
+        },
+        estimate: InductanceEstimateEvidence {
+            x_average_count_ratio_milli: reactance.x_quad_count_ratio_milli,
+            x_d_count_ratio_milli: saliency.x_d_count_ratio_milli,
+            x_q_count_ratio_milli: saliency.x_q_count_ratio_milli,
+            saliency_status: saliency.status,
+            saliency_permille: saliency.saliency_permille,
+            x_mag_nominal_count_ratio_milli: reactance.x_mag_nominal_count_ratio_milli,
+            x_mag_shift_minus_permille: reactance.x_mag_shift_minus_permille,
+            x_mag_shift_plus_permille: reactance.x_mag_shift_plus_permille,
+            x_mag_vs_quad_permille: reactance.x_mag_vs_quad_permille,
+        },
+    })
+}
+
 /// Advance electrical identification sub-state.
 ///
 /// Runs shared multi-point resistance identification, then per-coil
-/// inductance (square-wave dI/dt) and delay (transient capture with a
-/// two-point fit). Assembles an `ElectricalModel` and validates before
+/// rotating-field inductance and delay (transient capture with a two-point
+/// fit). Assembles an `ElectricalModel` and validates before
 /// transitioning.
 pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
     phase: &mut InnerPhase,
@@ -658,7 +674,7 @@ pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
             match result {
                 Ok(resistance) => {
                     data.resistance_result = Some(resistance);
-                    *electrical_id_state = ElectricalIdState::InductanceSetup { coil: 0, point: 0 };
+                    *electrical_id_state = ElectricalIdState::InductanceSetup;
                     StepResult::Continue
                 }
                 Err(err) => {
@@ -669,275 +685,354 @@ pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
         }
 
         // ---------------------------------------------------------------
-        // Inductance measurement (per coil, square-wave dI/dt)
+        // Inductance measurement (phi-locked rotating field)
         // ---------------------------------------------------------------
-        ElectricalIdState::InductanceSetup { coil, point } => {
-            // Bound-check `didt_cycles` before any energizing register write.
-            // Phase 1 policy: warmup_cycles = max(8, didt_cycles / 20),
-            // measured_cycles = didt_cycles - warmup_cycles. Reject if the
-            // measured window would be too short to reduce noise, and reject
-            // configurations that would energize the dI/dt sweep beyond ~1.1s.
-            let didt_cycles = backend.tmc_config().didt_cycles;
-            if didt_cycles > 50_000 {
-                defmt::warn!("electrical id: didt_cycles={} > 50000 cap", didt_cycles);
-                return super::fail_inner(phase, CommissionError::ElectricalIdFailed);
-            }
-            let warmup_cycles = core::cmp::max(8, didt_cycles / 20);
-            let measured_cycles = didt_cycles.saturating_sub(warmup_cycles);
-            if measured_cycles < 64 {
-                defmt::warn!(
-                    "electrical id: didt_cycles={} leaves {} measured (need >=64)",
-                    didt_cycles,
-                    measured_cycles
-                );
-                return super::fail_inner(phase, CommissionError::ElectricalIdFailed);
+        ElectricalIdState::InductanceSetup => {
+            let pidout_limit = data.voltage.min(INDUCTANCE_AC_UD_EXT as u32);
+            if backend
+                .write_register(PIDOUT_UQ_UD_LIMITS, pidout_limit)
+                .await
+                .is_err()
+                || backend.write_register(UQ_UD_EXT, 0).await.is_err()
+            {
+                return super::fail_inner(phase, CommissionError::Spi);
             }
 
-            let coil_idx = *coil;
-            if backend.write_register(PHI_E_SELECTION, 1).await.is_err() {
-                return super::fail_inner(phase, CommissionError::Spi);
-            }
-            let phi_e = if coil_idx == 0 { 0u32 } else { 16384 };
-            if backend.write_register(PHI_E_EXT, phi_e).await.is_err() {
-                return super::fail_inner(phase, CommissionError::Spi);
-            }
-            // Start at zero voltage.
-            if backend.write_register(UQ_UD_EXT, 0).await.is_err() {
-                return super::fail_inner(phase, CommissionError::Spi);
-            }
             if backend
-                .write_register(MODE_RAMP_MODE_MOTION, 8)
+                .write_register(OPENLOOP_VELOCITY_TARGET, 0)
+                .await
+                .is_err()
+                || backend.write_register(OPENLOOP_MODE, 0).await.is_err()
+                || backend
+                    .write_register(OPENLOOP_ACCELERATION, INDUCTANCE_OPENLOOP_ACCELERATION)
+                    .await
+                    .is_err()
+                || backend
+                    .write_register(
+                        OPENLOOP_VELOCITY_TARGET,
+                        INDUCTANCE_OPENLOOP_VELOCITY_TARGET_RPM,
+                    )
+                    .await
+                    .is_err()
+                || backend
+                    .write_register(PHI_E_SELECTION, PHI_E_SELECTION_OPENLOOP)
+                    .await
+                    .is_err()
+                || backend
+                    .write_register(MODE_RAMP_MODE_MOTION, MotionMode::UqUdExt as u32)
+                    .await
+                    .is_err()
+            {
+                return fail_inductance_ac_after_restore(phase, backend, CommissionError::Spi)
+                    .await;
+            }
+
+            if backend
+                .write_register_verified(PWM_SV_CHOP, 7)
                 .await
                 .is_err()
             {
-                return super::fail_inner(phase, CommissionError::Spi);
-            }
-            // The preceding resistance-identification phase leaves
-            // PWM_SV_CHOP=0 on its safe-state exit (see
-            // resistance_identification::runner::restore_safe_state). Re-enable
-            // the chopper here so the dI/dt sweep is self-sufficient regardless
-            // of the chopper state left behind, instead of silently measuring
-            // zero current with no PWM drive.
-            if backend.write_register(PWM_SV_CHOP, 7).await.is_err() {
-                return super::fail_inner(phase, CommissionError::Spi);
+                return fail_inductance_ac_after_restore(phase, backend, CommissionError::Spi)
+                    .await;
             }
             backend.set_enable_pin(true);
 
-            let deadline = backend.elapsed_us().wrapping_add(INDUCTANCE_PRE_SETTLE_US);
-            *electrical_id_state = ElectricalIdState::InductanceSettle {
-                coil: coil_idx,
-                point: *point,
-                deadline_us: deadline,
+            *electrical_id_state = ElectricalIdState::InductanceWaitVelocity {
+                deadline_us: backend
+                    .elapsed_us()
+                    .wrapping_add(INDUCTANCE_OPENLOOP_RAMP_TIMEOUT_US),
             };
             StepResult::Continue
         }
 
-        ElectricalIdState::InductanceSettle {
-            coil,
-            point,
-            deadline_us,
-        } => {
-            if backend.elapsed_us().wrapping_sub(*deadline_us) >= 0x8000_0000 {
-                return StepResult::Continue; // Not yet.
-            }
-            // Read initial current before toggling.
-            let initial_current = match backend.read_register(PID_TORQUE_FLUX_ACTUAL).await {
-                Ok(actual) => (actual & 0xFFFF) as i16,
-                Err(_) => return super::fail_inner(phase, CommissionError::Spi),
-            };
-            let profile = backend
-                .tmc_config()
-                .resistance_profile(backend.tmc_config().resistance_scale_metadata_validated);
-            if u32::from(initial_current.unsigned_abs())
-                > u32::from(profile.max_expected_current_count)
-            {
-                let _ = backend.write_register(UQ_UD_EXT, 0).await;
-                let _ = backend.write_register(MODE_RAMP_MODE_MOTION, 0).await;
-                backend.set_enable_pin(false);
-                let deadline = backend.elapsed_us().wrapping_add(ELECTRICAL_COOLDOWN_US);
-                *electrical_id_state = ElectricalIdState::InductanceDisable {
-                    coil: *coil,
-                    point: *point,
-                    deadline_us: deadline,
-                    skip_remaining_points: true,
-                };
-                return StepResult::Continue;
-            }
-            // Re-read `didt_cycles` here rather than threading it through
-            // the state enum. The `CommissioningBackend` trait does not
-            // promise `tmc_config()` immutability, but `TmcConfig` is
-            // constructed once at engine creation and never mutated by the
-            // commissioning code — this read returns the same value
-            // `InductanceSetup` validated. The `.max(1)` keeps the
-            // arithmetic well-defined even on an unexpected mutation.
-            let didt_cycles = backend.tmc_config().didt_cycles.max(1);
-            let warmup_cycles = core::cmp::max(8, didt_cycles / 20);
-            let start = backend.elapsed_us();
-            *electrical_id_state = ElectricalIdState::InductanceToggle {
-                coil: *coil,
-                point: *point,
-                total_cycles: didt_cycles,
-                remaining_cycles: didt_cycles,
-                prev_current: initial_current,
-                point_sum_delta: 0,
-                point_sample_count: 0,
-                current_sum: 0,
-                start_us: start,
-                warmup_cycles_remaining: warmup_cycles,
-                accumulation_start_us: None,
-            };
-            StepResult::Continue
-        }
-
-        ElectricalIdState::InductanceToggle {
-            coil,
-            point,
-            total_cycles,
-            remaining_cycles,
-            prev_current,
-            point_sum_delta,
-            point_sample_count,
-            current_sum,
-            start_us,
-            warmup_cycles_remaining,
-            accumulation_start_us,
-        } => {
-            let coil_idx = *coil as usize;
-            let voltage = u32::from(inductance_fit_ud(data.voltage, *point));
-            let v_pos = voltage & 0xFFFF;
-            let v_neg = (-(voltage as i32) as u32) & 0xFFFF;
-
-            let mut cycles_this_step = 0u32;
-
-            while *remaining_cycles > 0 && cycles_this_step < INDUCTANCE_CYCLES_PER_STEP {
-                // Polarity alternates by absolute cycle number so the warm-up
-                // window still sees the same +V/-V toggle pattern that the
-                // accumulation window relies on.
-                let total_done = total_cycles.saturating_sub(*remaining_cycles);
-                let v = if total_done % 2 == 0 { v_pos } else { v_neg };
-                if *warmup_cycles_remaining == 0 && accumulation_start_us.is_none() {
-                    *accumulation_start_us = Some(backend.elapsed_us());
+        ElectricalIdState::InductanceWaitVelocity { deadline_us } => {
+            let velocity = match backend.read_register(OPENLOOP_VELOCITY_ACTUAL).await {
+                Ok(velocity) => velocity,
+                Err(_) => {
+                    return fail_inductance_ac_after_restore(phase, backend, CommissionError::Spi)
+                        .await;
                 }
-                if backend.write_register(UQ_UD_EXT, v).await.is_err() {
-                    return super::fail_inner(phase, CommissionError::Spi);
-                }
-
-                let actual = match backend.read_register(PID_TORQUE_FLUX_ACTUAL).await {
-                    Ok(actual) => actual,
-                    Err(_) => return super::fail_inner(phase, CommissionError::Spi),
-                };
-                let current = (actual & 0xFFFF) as i16;
-                let profile = backend
-                    .tmc_config()
-                    .resistance_profile(backend.tmc_config().resistance_scale_metadata_validated);
-                if u32::from(current.unsigned_abs()) > u32::from(profile.max_expected_current_count)
-                {
-                    let _ = backend.write_register(UQ_UD_EXT, 0).await;
-                    let _ = backend.write_register(MODE_RAMP_MODE_MOTION, 0).await;
-                    backend.set_enable_pin(false);
-                    let deadline = backend.elapsed_us().wrapping_add(ELECTRICAL_COOLDOWN_US);
-                    *electrical_id_state = ElectricalIdState::InductanceDisable {
-                        coil: *coil,
-                        point: *point,
-                        deadline_us: deadline,
-                        skip_remaining_points: true,
-                    };
+            };
+            if velocity != INDUCTANCE_OPENLOOP_VELOCITY_TARGET_RPM {
+                if wait_deadline_not_reached(backend.elapsed_us(), *deadline_us) {
                     return StepResult::Continue;
                 }
-                if *warmup_cycles_remaining > 0 {
-                    *warmup_cycles_remaining -= 1;
-                } else {
-                    let delta = (current as i32 - *prev_current as i32).unsigned_abs();
-                    *point_sum_delta += u64::from(delta);
-                    *point_sample_count = point_sample_count.saturating_add(1);
-                    *current_sum += i64::from(current).abs();
-                }
-                *prev_current = current;
-                *remaining_cycles -= 1;
-                cycles_this_step += 1;
+                return fail_inductance_ac_after_restore(
+                    phase,
+                    backend,
+                    CommissionError::ElectricalIdFailed,
+                )
+                .await;
             }
 
-            if *remaining_cycles == 0 {
-                // All cycles done. Elapsed is measured from the first
-                // accumulated cycle (warm-up excluded).
-                let end = backend.elapsed_us();
-                let sample_count = *point_sample_count;
-                let measured_start = accumulation_start_us.unwrap_or(*start_us);
-                let elapsed_us = end.wrapping_sub(measured_start) as u32;
-                if sample_count > 0 {
-                    let avg_delta = (*point_sum_delta / sample_count as u64) as u32;
-                    let avg_current = (*current_sum / i64::from(sample_count)) as i32;
-                    let r_int = resistance_model_scale(data, coil_idx).unwrap_or(0);
-                    let r_drop = if r_int == 0 {
-                        0
-                    } else {
-                        (i64::from(r_int) * i64::from(avg_current)
-                            / i64::from(ELECTRICAL_MODEL_RESISTANCE_SCALE))
-                            as i32
-                    };
-                    let ud = inductance_fit_ud(data.voltage, *point);
-                    data.inductance_fit_points[coil_idx][usize::from(*point)] =
-                        InductanceFitPoint {
-                            ud,
-                            avg_delta,
-                            avg_current_count: avg_current,
-                            r_drop_ud: r_drop,
-                            effective_ud: i32::from(ud) - r_drop,
-                            sample_count,
-                            elapsed_us,
-                        };
+            let encoder_start = match backend.read_register(ABN_DECODER_COUNT).await {
+                Ok(count) => count,
+                Err(_) => {
+                    return fail_inductance_ac_after_restore(phase, backend, CommissionError::Spi)
+                        .await;
+                }
+            };
+            if backend
+                .write_register(UQ_UD_EXT, pack_ud_drive(INDUCTANCE_AC_UD_EXT))
+                .await
+                .is_err()
+            {
+                return fail_inductance_ac_after_restore(phase, backend, CommissionError::Spi)
+                    .await;
+            }
+            *electrical_id_state = ElectricalIdState::InductanceDriveSettle {
+                deadline_us: backend.elapsed_us().wrapping_add(INDUCTANCE_AC_SETTLE_US),
+                encoder_start,
+            };
+            StepResult::Continue
+        }
 
-                    if usize::from(point.saturating_add(1)) == INDUCTANCE_FIT_POINT_COUNT {
-                        let r_int = resistance_model_scale(data, coil_idx).unwrap_or(0);
-                        if let Some(fit) =
-                            fit_inductance_points(&data.inductance_fit_points[coil_idx], r_int)
-                        {
-                            data.inductance_fit[coil_idx] = fit;
-                        }
+        ElectricalIdState::InductanceDriveSettle {
+            deadline_us,
+            encoder_start,
+        } => {
+            if wait_deadline_not_reached(backend.elapsed_us(), *deadline_us) {
+                return StepResult::Continue;
+            }
+            let status_flags_or = match backend.read_register(STATUS_FLAGS).await {
+                Ok(status) => status,
+                Err(_) => {
+                    return fail_inductance_ac_after_restore(phase, backend, CommissionError::Spi)
+                        .await;
+                }
+            };
+            let start_phi = match backend.read_register(OPENLOOP_PHI).await {
+                Ok(phi) => phi as u16,
+                Err(_) => {
+                    return fail_inductance_ac_after_restore(phase, backend, CommissionError::Spi)
+                        .await;
+                }
+            };
+            *electrical_id_state = ElectricalIdState::InductanceSample {
+                encoder_start: *encoder_start,
+                start_us: backend.elapsed_us(),
+                previous_elapsed_us: 0,
+                start_phi,
+                previous_phi: start_phi,
+                accumulated_phi_delta_counts: 0,
+                accumulator: crate::electrical_capture::AcFrameAccumulator::new(),
+                first_half: crate::electrical_capture::AcFrameAccumulator::new(),
+                second_half: crate::electrical_capture::AcFrameAccumulator::new(),
+                saliency: crate::electrical_capture::AcSaliencyAccumulator::new(),
+                sample_count: 0,
+                status_flags_or,
+            };
+            StepResult::Continue
+        }
+
+        ElectricalIdState::InductanceSample {
+            encoder_start,
+            start_us,
+            previous_elapsed_us,
+            start_phi: _,
+            previous_phi,
+            accumulated_phi_delta_counts,
+            accumulator,
+            first_half,
+            second_half,
+            saliency,
+            sample_count,
+            status_flags_or,
+        } => {
+            let current_phi = match backend.read_register(OPENLOOP_PHI).await {
+                Ok(phi) => phi as u16,
+                Err(_) => {
+                    return fail_inductance_ac_after_restore(phase, backend, CommissionError::Spi)
+                        .await;
+                }
+            };
+            let actual = match backend.read_register(PID_TORQUE_FLUX_ACTUAL).await {
+                Ok(actual) => actual,
+                Err(_) => {
+                    return fail_inductance_ac_after_restore(phase, backend, CommissionError::Spi)
+                        .await;
+                }
+            };
+            let interval = match crate::electrical_capture::phi_locked_ac_interval(
+                *accumulated_phi_delta_counts,
+                INDUCTANCE_AC_TARGET_PHI_DELTA_COUNTS,
+                *previous_phi,
+                current_phi,
+            ) {
+                Some(interval) => interval,
+                None => {
+                    return fail_inductance_ac_after_restore(
+                        phase,
+                        backend,
+                        CommissionError::ElectricalIdFailed,
+                    )
+                    .await;
+                }
+            };
+            let (id_count, iq_count) = decode_rotating_frame_current(actual);
+            if accumulator
+                .push_weighted(id_count, iq_count, interval.sample_weight_counts)
+                .is_none()
+                || saliency
+                    .push_weighted_sample(
+                        current_phi,
+                        interval.sample_weight_counts,
+                        INDUCTANCE_AC_UD_EXT,
+                        id_count,
+                        iq_count,
+                    )
+                    .is_none()
+            {
+                return fail_inductance_ac_after_restore(
+                    phase,
+                    backend,
+                    CommissionError::ElectricalIdFailed,
+                )
+                .await;
+            }
+
+            let half_target = INDUCTANCE_AC_TARGET_PHI_DELTA_COUNTS / 2;
+            let before = *accumulated_phi_delta_counts;
+            let after = interval.accumulated_phi_delta_counts;
+            if before < half_target {
+                let first_weight = interval.sample_weight_counts.min(half_target - before);
+                if first_half
+                    .push_weighted(id_count, iq_count, first_weight)
+                    .is_none()
+                {
+                    return fail_inductance_ac_after_restore(
+                        phase,
+                        backend,
+                        CommissionError::ElectricalIdFailed,
+                    )
+                    .await;
+                }
+                let second_weight = interval.sample_weight_counts - first_weight;
+                if second_weight != 0
+                    && second_half
+                        .push_weighted(id_count, iq_count, second_weight)
+                        .is_none()
+                {
+                    return fail_inductance_ac_after_restore(
+                        phase,
+                        backend,
+                        CommissionError::ElectricalIdFailed,
+                    )
+                    .await;
+                }
+            } else if second_half
+                .push_weighted(id_count, iq_count, interval.sample_weight_counts)
+                .is_none()
+            {
+                return fail_inductance_ac_after_restore(
+                    phase,
+                    backend,
+                    CommissionError::ElectricalIdFailed,
+                )
+                .await;
+            }
+
+            *sample_count = sample_count.saturating_add(1);
+            let current_elapsed_us = backend.elapsed_us().wrapping_sub(*start_us) as u32;
+            let completed_elapsed_us = if interval.complete {
+                match crate::electrical_capture::interpolate_phi_window_elapsed_us(
+                    *previous_elapsed_us,
+                    current_elapsed_us,
+                    interval,
+                ) {
+                    Some(elapsed) => Some(elapsed),
+                    None => {
+                        return fail_inductance_ac_after_restore(
+                            phase,
+                            backend,
+                            CommissionError::ElectricalIdFailed,
+                        )
+                        .await;
                     }
                 }
+            } else {
+                None
+            };
+            *previous_phi = current_phi;
+            *previous_elapsed_us = current_elapsed_us;
+            *accumulated_phi_delta_counts = after;
 
-                // Disable motor.
-                let _ = backend.write_register(UQ_UD_EXT, 0).await;
-                let _ = backend.write_register(MODE_RAMP_MODE_MOTION, 0).await;
-                backend.set_enable_pin(false);
-
-                let deadline = backend.elapsed_us().wrapping_add(ELECTRICAL_COOLDOWN_US);
-                *electrical_id_state = ElectricalIdState::InductanceDisable {
-                    coil: *coil,
-                    point: *point,
-                    deadline_us: deadline,
-                    skip_remaining_points: false,
+            if let Some(elapsed_us) = completed_elapsed_us {
+                let post_status = match backend.read_register(STATUS_FLAGS).await {
+                    Ok(status) => status,
+                    Err(_) => {
+                        return fail_inductance_ac_after_restore(
+                            phase,
+                            backend,
+                            CommissionError::Spi,
+                        )
+                        .await;
+                    }
                 };
+                *status_flags_or |= post_status;
+                let encoder_after = match backend.read_register(ABN_DECODER_COUNT).await {
+                    Ok(count) => count,
+                    Err(_) => {
+                        return fail_inductance_ac_after_restore(
+                            phase,
+                            backend,
+                            CommissionError::Spi,
+                        )
+                        .await;
+                    }
+                };
+                let evidence = match finish_inductance_evidence(InductanceCaptureFinish {
+                    data,
+                    encoder_start: *encoder_start,
+                    encoder_after,
+                    elapsed_us,
+                    phi_delta_counts: *accumulated_phi_delta_counts,
+                    sample_count: *sample_count,
+                    status_flags_or: *status_flags_or,
+                    accumulator: *accumulator,
+                    first_half: *first_half,
+                    second_half: *second_half,
+                    saliency_accumulator: *saliency,
+                }) {
+                    Some(evidence) => evidence,
+                    None => {
+                        return fail_inductance_ac_after_restore(
+                            phase,
+                            backend,
+                            CommissionError::ElectricalIdFailed,
+                        )
+                        .await;
+                    }
+                };
+                if evidence.estimate.saliency_status
+                    == crate::electrical_capture::AC_SALIENCY_DETERMINABLE
+                    && !evidence.estimate.brackets_average()
+                {
+                    return fail_inductance_ac_after_restore(
+                        phase,
+                        backend,
+                        CommissionError::ElectricalIdFailed,
+                    )
+                    .await;
+                }
+                match restore_inductance_ac_drive(backend).await {
+                    Ok(()) => {
+                        data.inductance = Some(evidence);
+                        *electrical_id_state = ElectricalIdState::InductanceDisable {
+                            deadline_us: backend.elapsed_us().wrapping_add(ELECTRICAL_COOLDOWN_US),
+                        };
+                    }
+                    Err(err) => return super::fail_inner(phase, err),
+                }
             }
             StepResult::Continue
         }
 
-        ElectricalIdState::InductanceDisable {
-            coil,
-            point,
-            deadline_us,
-            skip_remaining_points,
-        } => {
-            if backend.elapsed_us().wrapping_sub(*deadline_us) >= 0x8000_0000 {
-                return StepResult::Continue; // Not yet.
+        ElectricalIdState::InductanceDisable { deadline_us } => {
+            if wait_deadline_not_reached(backend.elapsed_us(), *deadline_us) {
+                return StepResult::Continue;
             }
-            let next_point = point.saturating_add(1);
-            if *skip_remaining_points && *coil == 0 {
-                *electrical_id_state = ElectricalIdState::InductanceSetup { coil: 1, point: 0 };
-            } else if *skip_remaining_points {
-                *electrical_id_state = ElectricalIdState::DelaySetup;
-            } else if usize::from(next_point) < INDUCTANCE_FIT_POINT_COUNT {
-                *electrical_id_state = ElectricalIdState::InductanceSetup {
-                    coil: *coil,
-                    point: next_point,
-                };
-            } else if *coil == 0 {
-                *electrical_id_state = ElectricalIdState::InductanceSetup { coil: 1, point: 0 };
-            } else {
-                // Both inductance measurements done. Start delay capture.
-                *electrical_id_state = ElectricalIdState::DelaySetup;
-            }
+            *electrical_id_state = ElectricalIdState::DelaySetup;
             StepResult::Continue
         }
 
@@ -961,7 +1056,7 @@ pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
             // Reset transient buffer for 160us sampling.
             buf.reset(ELECTRICAL_SAMPLE_PERIOD_US as u16);
 
-            let deadline = backend.elapsed_us().wrapping_add(INDUCTANCE_PRE_SETTLE_US);
+            let deadline = backend.elapsed_us().wrapping_add(DELAY_PRE_SETTLE_US);
             *electrical_id_state = ElectricalIdState::DelaySettle {
                 deadline_us: deadline,
             };
@@ -1057,15 +1152,8 @@ pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
                 Ok(assembly) => assembly,
                 Err(err) => {
                     log_model_assembly_failure(err);
-                    record_electrical_id_measurement_diagnostics(
-                        data,
-                        backend.tmc_config().didt_cycles,
-                        diagnostics,
-                    );
+                    record_electrical_id_measurement_diagnostics(data, diagnostics);
                     diagnostics.push(diagnostic_for_model_assembly_failure(err));
-                    if let ModelAssemblyError::RejectedInductanceFit { coil, .. } = err {
-                        record_rejected_inductance_fit_diagnostics(data, coil, diagnostics);
-                    }
                     return super::fail_inner(phase, CommissionError::ElectricalIdFailed);
                 }
             };
@@ -1108,8 +1196,6 @@ pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
                         inductance: data
                             .inductance
                             .unwrap_or(crate::commissioning::types::InductanceEvidence::EMPTY),
-                        inductance_fit: data.inductance_fit,
-                        inductance_fit_points: data.inductance_fit_points,
                     };
                     StepResult::PhaseChanged(PhaseId::CurrentTune)
                 }
@@ -1134,7 +1220,10 @@ mod tests {
         ElectricalAxis, ResistanceAxisResult, ResistanceRunResult, ResistanceWarningFlags,
         SignedAnchorEvidence,
     };
-    use foci_tmc4671::registers::{PID_TORQUE_FLUX_ACTUAL, UQ_UD_EXT};
+    use foci_tmc4671::registers::{
+        MODE_RAMP_MODE_MOTION, OPENLOOP_PHI, OPENLOOP_VELOCITY_TARGET, PHI_E_SELECTION,
+        PID_TORQUE_FLUX_ACTUAL, PIDOUT_UQ_UD_LIMITS, PWM_SV_CHOP, UQ_UD_EXT,
+    };
 
     const TEST_THETA_E_US: u32 = 160;
 
@@ -1176,28 +1265,68 @@ mod tests {
         }
     }
 
-    /// A valid per-coil inductance fit with the given tau, enough to satisfy the
-    /// usable-point gate in model assembly.
-    fn fit_with_tau(tau_us: u32) -> InductanceFitEvidence {
-        InductanceFitEvidence {
-            tau_us,
-            slope_delta_per_ud_milli: 65,
-            intercept_delta_milli: 0,
-            deadtime_ud: 0,
-            residual_permille: 10,
-            usable_points: INDUCTANCE_FIT_POINT_COUNT as u8,
-            selected_mask: 0b1111,
+    fn inductance_evidence_fixture(
+        x_average_count_ratio_milli: u32,
+        realized_frequency_millihz: u32,
+    ) -> InductanceEvidence {
+        InductanceEvidence {
+            run: InductanceRunEvidence {
+                source: INDUCTANCE_SOURCE_ROTATING_FIELD,
+                status: 0,
+                warning_flags: 0,
+                ud_count: INDUCTANCE_AC_UD_EXT,
+                realized_frequency_millihz,
+                elapsed_us: 8_000,
+                openloop_phi_delta_counts: INDUCTANCE_AC_TARGET_PHI_DELTA_COUNTS,
+                sample_count: 104,
+                encoder_delta_counts: 0,
+                status_flags_or: 0,
+            },
+            frame: InductanceFrameEvidence {
+                id_mean_milli_count: 20_000,
+                iq_mean_milli_count: -84_000,
+                id_rms_milli_count: 5_000,
+                iq_rms_milli_count: 21_000,
+                drift_permille: 40,
+                zero_id_mean_milli_count: 0,
+                zero_iq_mean_milli_count: 0,
+            },
+            estimate: InductanceEstimateEvidence {
+                x_average_count_ratio_milli,
+                x_d_count_ratio_milli: x_average_count_ratio_milli + 600,
+                x_q_count_ratio_milli: x_average_count_ratio_milli.saturating_sub(600),
+                saliency_status: crate::electrical_capture::AC_SALIENCY_DETERMINABLE,
+                saliency_permille: 140,
+                x_mag_nominal_count_ratio_milli: x_average_count_ratio_milli + 180,
+                x_mag_shift_minus_permille: 4,
+                x_mag_shift_plus_permille: 4,
+                x_mag_vs_quad_permille: 20,
+            },
         }
     }
 
-    /// Per-coil resistance count-slopes of 1706 milli (V=512, I=300 → 1706).
-    /// Per-coil fits produce tau_e ≈ 735 us, matching the
-    /// `representative_transient` crosscheck so the tau-residual gate passes.
+    /// Per-coil resistance count-slopes of 1706 milli and accepted rotating-
+    /// field reactance evidence from the AC estimator.
     fn representative_data() -> ElectricalIdData {
         let mut data = ElectricalIdData::new(512);
         data.resistance_result = Some(resistance_result(1706, 1706));
-        data.inductance_fit = [fit_with_tau(735), fit_with_tau(735)];
+        data.inductance = Some(inductance_evidence_fixture(8_600, 1_000_000));
         data
+    }
+
+    fn resistance_result_fixture() -> ResistanceRunResult {
+        resistance_result(1706, 1706)
+    }
+
+    #[test]
+    fn electrical_id_enters_rotating_inductance_after_resistance() {
+        let mut data = ElectricalIdData::new(768);
+        data.resistance_result = Some(resistance_result_fixture());
+
+        let state = ElectricalIdState::InductanceSetup;
+
+        assert!(data.resistance_result.is_some());
+        assert!(matches!(state, ElectricalIdState::InductanceSetup));
     }
 
     #[test]
@@ -1209,243 +1338,33 @@ mod tests {
         assert_eq!(assembly.model.r_int, 1706);
         assert_eq!(assembly.model.r_mohm, 1706);
         assert!(
-            (725..=740).contains(&assembly.model.tau_e_us),
+            (795..=805).contains(&assembly.model.tau_e_us),
             "tau should use R=1.706, not truncated: {}",
             assembly.model.tau_e_us
         );
-        // l_int = r_int * tau / SCALE = 1706 * 730 / 1000 ≈ 1245.
+        // l_int = X / omega = 8600e9 / (6283 * 1_000_000) ≈ 1368.
         assert!(
-            (1235..=1260).contains(&assembly.model.l_int),
+            (1360..=1375).contains(&assembly.model.l_int),
             "l_int should preserve the internal L scale: {}",
             assembly.model.l_int
         );
     }
 
     #[test]
-    fn model_assembly_uses_inductance_fit_tau() {
+    fn model_assembly_uses_realized_frequency_rotating_inductance() {
         let mut data = representative_data();
-        data.inductance_fit[0] = InductanceFitEvidence {
-            tau_us: 450,
-            slope_delta_per_ud_milli: 65,
-            intercept_delta_milli: -13_000,
-            deadtime_ud: 200,
-            residual_permille: 12,
-            usable_points: 4,
-            selected_mask: 0b1111,
-        };
-        data.inductance_fit[1] = InductanceFitEvidence {
-            tau_us: 460,
-            slope_delta_per_ud_milli: 64,
-            intercept_delta_milli: -12_800,
-            deadtime_ud: 200,
-            residual_permille: 14,
-            usable_points: 4,
-            selected_mask: 0b1111,
-        };
+        data.inductance = Some(inductance_evidence_fixture(8_600, 900_000));
 
         let assembly =
             assemble_electrical_model(&data, TEST_THETA_E_US).expect("model should assemble");
 
-        assert!((450..=460).contains(&assembly.model.tau_e_us));
+        let expected_l_int = l_int_from_reactance(8_600, 900_000).unwrap();
+        assert_eq!(assembly.model.l_int, expected_l_int);
         assert_eq!(
-            assembly.model.l_int,
-            (assembly.model.r_int as u64 * assembly.model.tau_e_us as u64
-                / ELECTRICAL_MODEL_RESISTANCE_SCALE as u64) as u32
+            assembly.model.tau_e_us,
+            (u64::from(expected_l_int) * u64::from(ELECTRICAL_MODEL_RESISTANCE_SCALE) / 1706)
+                as u32
         );
-    }
-
-    #[test]
-    fn model_assembly_rejects_populated_but_unusable_inductance_fit() {
-        let mut data = representative_data();
-        data.inductance_fit[0] = InductanceFitEvidence::EMPTY;
-        data.inductance_fit_points[0][0] = InductanceFitPoint {
-            ud: 512,
-            avg_delta: INDUCTANCE_MIN_DELTA,
-            avg_current_count: 0,
-            r_drop_ud: 0,
-            effective_ud: 512,
-            sample_count: 10,
-            elapsed_us: 1_000,
-        };
-
-        let err = assemble_electrical_model(&data, TEST_THETA_E_US).unwrap_err();
-
-        assert_eq!(
-            err,
-            ModelAssemblyError::RejectedInductanceFit {
-                coil: 0,
-                usable_points: 0,
-                selected_mask: 0
-            }
-        );
-    }
-
-    #[test]
-    fn rejected_inductance_fit_diagnostics_include_captured_points() {
-        let mut data = representative_data();
-        data.inductance_fit_points[1][2] = InductanceFitPoint {
-            ud: 768,
-            avg_delta: 39,
-            avg_current_count: 300,
-            r_drop_ud: 1126,
-            effective_ud: -358,
-            sample_count: 4750,
-            elapsed_us: 760_000,
-        };
-        let mut diagnostics = crate::selftest::CommissionDiagnostics::default();
-
-        record_electrical_id_measurement_diagnostics(&data, 5000, &mut diagnostics);
-        record_rejected_inductance_fit_diagnostics(&data, 1, &mut diagnostics);
-
-        let events: heapless::Vec<_, { crate::selftest::COMMISSION_DIAGNOSTIC_CAPACITY }> =
-            diagnostics.iter().collect();
-        assert!(events.iter().any(|event| {
-            event.code == 30 && event.value0 == 0x12 && event.value1 == 768 && event.value2 == 39
-        }));
-        assert!(events.iter().any(|event| {
-            event.code == 31
-                && event.value0 == 0x12
-                && event.value1 == 4750
-                && event.value2 == (-358i32) as u32
-        }));
-    }
-
-    #[test]
-    fn inductance_fit_uses_slope_not_absolute_ud() {
-        let r_int = 1000;
-        let dt_us = 100;
-        let target_tau_us = 1200;
-        let deadtime_ud = 200i32;
-        let uds = [512u16, 640, 768, 896];
-        let mut points = [InductanceFitPoint::EMPTY; INDUCTANCE_FIT_POINT_COUNT];
-
-        for (idx, ud) in uds.iter().copied().enumerate() {
-            let effective = i32::from(ud) - deadtime_ud;
-            let avg_delta =
-                (effective as u64 * dt_us as u64 * ELECTRICAL_MODEL_RESISTANCE_SCALE as u64
-                    / (target_tau_us as u64 * r_int as u64)) as u32;
-            points[idx] = InductanceFitPoint {
-                ud,
-                avg_delta,
-                avg_current_count: 0,
-                r_drop_ud: 0,
-                effective_ud: i32::from(ud),
-                sample_count: 100,
-                elapsed_us: 10_000,
-            };
-        }
-
-        let fit = fit_inductance_points(&points, r_int).expect("fit should pass");
-
-        assert!((1190..=1210).contains(&fit.tau_us), "tau={}", fit.tau_us);
-        assert!(
-            (190..=210).contains(&fit.deadtime_ud),
-            "deadtime={}",
-            fit.deadtime_ud
-        );
-        assert_eq!(fit.usable_points, 4);
-        assert!(
-            fit.residual_permille <= 20,
-            "residual={}",
-            fit.residual_permille
-        );
-    }
-
-    #[test]
-    fn inductance_fit_subtracts_r_drop_before_slope() {
-        let r_int = 1000;
-        let dt_us = 100;
-        let target_tau_us = 1200;
-        let deadtime_ud = 200i32;
-        let uds = [512u16, 640, 768, 896];
-        let currents = [20i32, 60, 100, 140];
-        let mut points = [InductanceFitPoint::EMPTY; INDUCTANCE_FIT_POINT_COUNT];
-
-        for (idx, ud) in uds.iter().copied().enumerate() {
-            let r_drop = r_int as i32 * currents[idx] / ELECTRICAL_MODEL_RESISTANCE_SCALE as i32;
-            let effective = i32::from(ud) - r_drop - deadtime_ud;
-            let avg_delta =
-                (effective as u64 * dt_us as u64 * ELECTRICAL_MODEL_RESISTANCE_SCALE as u64
-                    / (target_tau_us as u64 * r_int as u64)) as u32;
-            points[idx] = InductanceFitPoint {
-                ud,
-                avg_delta,
-                avg_current_count: currents[idx],
-                r_drop_ud: r_drop,
-                effective_ud: i32::from(ud) - r_drop,
-                sample_count: 100,
-                elapsed_us: 10_000,
-            };
-        }
-
-        let fit = fit_inductance_points(&points, r_int).expect("fit should pass");
-
-        assert!((1190..=1210).contains(&fit.tau_us), "tau={}", fit.tau_us);
-        assert!(
-            (190..=210).contains(&fit.deadtime_ud),
-            "deadtime={}",
-            fit.deadtime_ud
-        );
-        assert!(
-            fit.residual_permille <= 20,
-            "residual={}",
-            fit.residual_permille
-        );
-    }
-
-    #[test]
-    fn inductance_fit_clamps_positive_intercept_to_zero_deadtime() {
-        let r_int = 1142;
-        let mut points = [InductanceFitPoint::EMPTY; INDUCTANCE_FIT_POINT_COUNT];
-        let captures = [
-            (1024u16, 38u32, 578i32),
-            (1280, 44, 730),
-            (1536, 52, 871),
-            (1792, 59, 1021),
-        ];
-
-        for (idx, (ud, avg_delta, effective_ud)) in captures.iter().copied().enumerate() {
-            points[idx] = InductanceFitPoint {
-                ud,
-                avg_delta,
-                avg_current_count: 0,
-                r_drop_ud: i32::from(ud) - effective_ud,
-                effective_ud,
-                sample_count: 4750,
-                elapsed_us: 760_000,
-            };
-        }
-
-        let fit = fit_inductance_points(&points, r_int).expect("fit should pass");
-
-        assert_eq!(fit.deadtime_ud, 0);
-        assert_eq!(fit.usable_points, 4);
-        assert_eq!(fit.selected_mask, 0b1111);
-        assert!(
-            fit.residual_permille <= INDUCTANCE_FIT_MAX_RESIDUAL_PERMILLE,
-            "residual={}",
-            fit.residual_permille
-        );
-    }
-
-    #[test]
-    fn inductance_fit_rejects_tau_overflow() {
-        let mut points = [InductanceFitPoint::EMPTY; INDUCTANCE_FIT_POINT_COUNT];
-        let uds = [5200u16, 6200, 7200, 8200];
-
-        for (idx, ud) in uds.iter().copied().enumerate() {
-            points[idx] = InductanceFitPoint {
-                ud,
-                avg_delta: idx as u32 + INDUCTANCE_MIN_DELTA,
-                avg_current_count: 0,
-                r_drop_ud: 0,
-                effective_ud: i32::from(ud),
-                sample_count: 1,
-                elapsed_us: u32::MAX,
-            };
-        }
-
-        assert!(fit_inductance_points(&points, 1).is_none());
     }
 
     #[test]
@@ -1453,7 +1372,7 @@ mod tests {
         let mut data = ElectricalIdData::new(512);
         // r_count_slope_milli = 1706 (V=512 / I=300 count-slope).
         data.resistance_result = Some(resistance_result(1706, 1706));
-        data.inductance_fit = [fit_with_tau(887), fit_with_tau(887)];
+        data.inductance = Some(inductance_evidence_fixture(9_500, 1_000_000));
 
         let assembly = assemble_electrical_model(&data, 320).unwrap();
 
@@ -1491,8 +1410,6 @@ mod tests {
                 inner_warning_flags,
                 resistance_result,
                 inductance: _,
-                inductance_fit,
-                inductance_fit_points,
             } = phase
             else {
                 panic!("expected CurrentTune, got {phase:?}");
@@ -1502,16 +1419,11 @@ mod tests {
                 "resistance result from Phase 5 should carry forward unchanged"
             );
             assert!(
-                (725..=740).contains(&model.tau_e_us),
-                "tau should be reported from the per-coil L/R model: {}",
+                (795..=805).contains(&model.tau_e_us),
+                "tau should be reported from the rotating-field L/R model: {}",
                 model.tau_e_us
             );
             assert_eq!(inner_warning_flags & (1 << 2), 0);
-            assert_eq!(inductance_fit, [fit_with_tau(735); 2]);
-            assert_eq!(
-                inductance_fit_points,
-                [[InductanceFitPoint::EMPTY; INDUCTANCE_FIT_POINT_COUNT]; 2]
-            );
             assert_eq!(diagnostics.iter().count(), 0);
         });
     }
@@ -1562,6 +1474,176 @@ mod tests {
             .ok();
     }
 
+    fn write_position(log: &[SpiOp], register: Register, value: u32) -> usize {
+        log.iter()
+            .position(|op| {
+                matches!(op, SpiOp::Write(addr, val) if *addr == register.addr() && *val == value)
+            })
+            .unwrap_or_else(|| {
+                panic!(
+                    "expected write of register {:#x} to {:#x}",
+                    register.addr(),
+                    value
+                )
+            })
+    }
+
+    fn enable_position(log: &[SpiOp], enabled: bool) -> usize {
+        log.iter()
+            .position(|op| matches!(op, SpiOp::EnablePin(state) if *state == enabled))
+            .unwrap_or_else(|| panic!("expected set_enable_pin({enabled})"))
+    }
+
+    fn assert_ac_teardown_after_failure(backend: &MockBackend) {
+        assert!(!backend.enable_pin, "AC failure must lower the enable pin");
+        let enable_low = enable_position(&backend.spi_log, false);
+        for (register, value) in [
+            (UQ_UD_EXT, 0),
+            (OPENLOOP_VELOCITY_TARGET, 0),
+            (MODE_RAMP_MODE_MOTION, 0),
+            (PHI_E_SELECTION, 0),
+        ] {
+            let position = write_position(&backend.spi_log, register, value);
+            assert!(
+                position < enable_low,
+                "register {:#x} teardown write must precede enable-low",
+                register.addr()
+            );
+        }
+    }
+
+    #[test]
+    fn inductance_setup_bounds_voltage_before_enable_and_starts_hardware_ramp() {
+        pollster::block_on(async {
+            let mut phase = InnerPhase::ElectricalId {
+                state: ElectricalIdState::InductanceSetup,
+                data: ElectricalIdData::new(1024),
+            };
+            let mut buf = TransientBuffer::new();
+            let mut backend = MockBackend::new();
+            let mut selftest_results = crate::selftest::SelftestResults::default();
+            let mut diagnostics = crate::selftest::CommissionDiagnostics::default();
+
+            let result = step_electrical_identification(
+                &mut phase,
+                &mut buf,
+                InnerSequence::Commission,
+                &mut selftest_results,
+                &mut diagnostics,
+                &mut backend,
+            )
+            .await;
+
+            assert!(matches!(result, StepResult::Continue));
+            assert!(backend.enable_pin);
+            assert!(matches!(
+                phase,
+                InnerPhase::ElectricalId {
+                    state: ElectricalIdState::InductanceWaitVelocity { .. },
+                    ..
+                }
+            ));
+
+            let enable_high = enable_position(&backend.spi_log, true);
+            for (register, value) in [
+                (PIDOUT_UQ_UD_LIMITS, INDUCTANCE_AC_UD_EXT as u32),
+                (UQ_UD_EXT, 0),
+                (OPENLOOP_VELOCITY_TARGET, 0),
+                (
+                    OPENLOOP_VELOCITY_TARGET,
+                    INDUCTANCE_OPENLOOP_VELOCITY_TARGET_RPM,
+                ),
+                (PHI_E_SELECTION, PHI_E_SELECTION_OPENLOOP),
+                (PWM_SV_CHOP, 7),
+            ] {
+                let position = write_position(&backend.spi_log, register, value);
+                assert!(
+                    position < enable_high,
+                    "register {:#x} setup write must precede enable-high",
+                    register.addr()
+                );
+            }
+        });
+    }
+
+    #[test]
+    fn inductance_velocity_timeout_tears_down_openloop_drive() {
+        pollster::block_on(async {
+            let mut phase = InnerPhase::ElectricalId {
+                state: ElectricalIdState::InductanceWaitVelocity { deadline_us: 10 },
+                data: representative_data(),
+            };
+            let mut buf = TransientBuffer::new();
+            let mut backend = MockBackend::new();
+            backend.enable_pin = true;
+            backend.elapsed_us_value = 20;
+            let mut selftest_results = crate::selftest::SelftestResults::default();
+            let mut diagnostics = crate::selftest::CommissionDiagnostics::default();
+
+            let result = step_electrical_identification(
+                &mut phase,
+                &mut buf,
+                InnerSequence::Commission,
+                &mut selftest_results,
+                &mut diagnostics,
+                &mut backend,
+            )
+            .await;
+
+            assert!(matches!(
+                result,
+                StepResult::InnerFailed(CommissionError::ElectricalIdFailed)
+            ));
+            assert_ac_teardown_after_failure(&backend);
+        });
+    }
+
+    #[test]
+    fn inductance_sample_spi_failure_tears_down_openloop_drive() {
+        pollster::block_on(async {
+            let mut phase = InnerPhase::ElectricalId {
+                state: ElectricalIdState::InductanceSample {
+                    encoder_start: 0,
+                    start_us: 0,
+                    previous_elapsed_us: 0,
+                    start_phi: 0,
+                    previous_phi: 0,
+                    accumulated_phi_delta_counts: 0,
+                    accumulator: crate::electrical_capture::AcFrameAccumulator::new(),
+                    first_half: crate::electrical_capture::AcFrameAccumulator::new(),
+                    second_half: crate::electrical_capture::AcFrameAccumulator::new(),
+                    saliency: crate::electrical_capture::AcSaliencyAccumulator::new(),
+                    sample_count: 0,
+                    status_flags_or: 0,
+                },
+                data: representative_data(),
+            };
+            let mut buf = TransientBuffer::new();
+            let mut backend = MockBackend::new();
+            backend.enable_pin = true;
+            backend.fail_on_read = Some(PID_TORQUE_FLUX_ACTUAL.addr());
+            backend.registers.insert(OPENLOOP_PHI.addr(), 1).ok();
+            let mut selftest_results = crate::selftest::SelftestResults::default();
+            let mut diagnostics = crate::selftest::CommissionDiagnostics::default();
+
+            let result = step_electrical_identification(
+                &mut phase,
+                &mut buf,
+                InnerSequence::Commission,
+                &mut selftest_results,
+                &mut diagnostics,
+                &mut backend,
+            )
+            .await;
+
+            assert!(matches!(
+                result,
+                StepResult::InnerFailed(CommissionError::Spi)
+            ));
+            assert_ac_teardown_after_failure(&backend);
+        });
+    }
+
     #[test]
     fn electrical_id_uses_resistance_runner_before_inductance() {
         pollster::block_on(async {
@@ -1595,7 +1677,7 @@ mod tests {
                 matches!(
                     phase,
                     InnerPhase::ElectricalId {
-                        state: ElectricalIdState::InductanceSetup { coil: 0, point: 0 },
+                        state: ElectricalIdState::InductanceSetup,
                         ..
                     }
                 ),
@@ -1648,948 +1730,6 @@ mod tests {
         });
     }
 
-    #[test]
-    fn inductance_phase_uses_configured_didt_cycles() {
-        pollster::block_on(async {
-            let mut phase = InnerPhase::ElectricalId {
-                state: ElectricalIdState::InductanceSettle {
-                    coil: 0,
-                    point: 0,
-                    deadline_us: 0,
-                },
-                data: ElectricalIdData::new(512),
-            };
-            let mut buf = TransientBuffer::new();
-            let mut backend = MockBackend::new();
-            // Section 2 bound check rejects didt_cycles below 64 + warmup.
-            // 200 → warmup = max(8, 200/20) = 10, measured = 190 ≥ 64.
-            backend.tmc_config.didt_cycles = 200;
-            let mut selftest_results = crate::selftest::SelftestResults::default();
-            let mut diagnostics = crate::selftest::CommissionDiagnostics::default();
-
-            let result = step_electrical_identification(
-                &mut phase,
-                &mut buf,
-                InnerSequence::Commission,
-                &mut selftest_results,
-                &mut diagnostics,
-                &mut backend,
-            )
-            .await;
-
-            assert!(matches!(result, StepResult::Continue));
-            let remaining_cycles = match &phase {
-                InnerPhase::ElectricalId {
-                    state:
-                        ElectricalIdState::InductanceToggle {
-                            remaining_cycles, ..
-                        },
-                    ..
-                } => *remaining_cycles,
-                other => panic!("expected InductanceToggle, got {other:?}"),
-            };
-            assert_eq!(remaining_cycles, 200);
-
-            backend.spi_log.clear();
-            let result = step_electrical_identification(
-                &mut phase,
-                &mut buf,
-                InnerSequence::Commission,
-                &mut selftest_results,
-                &mut diagnostics,
-                &mut backend,
-            )
-            .await;
-
-            assert!(matches!(result, StepResult::Continue));
-            // Polarity still alternates by absolute cycle number across
-            // both the warm-up and measured windows.
-            let mut uq_ud_writes = backend.spi_log.iter().filter_map(|op| match op {
-                SpiOp::Write(addr, val) if *addr == UQ_UD_EXT.addr() => Some(*val),
-                _ => None,
-            });
-            assert_eq!(uq_ud_writes.next(), Some(512));
-            assert_eq!(uq_ud_writes.next(), Some(0xFE00));
-            assert_eq!(uq_ud_writes.next(), Some(512));
-        });
-    }
-
-    #[test]
-    fn inductance_elapsed_time_handles_timer_wrap() {
-        pollster::block_on(async {
-            let mut phase = InnerPhase::ElectricalId {
-                state: ElectricalIdState::InductanceToggle {
-                    coil: 0,
-                    point: 0,
-                    total_cycles: 1,
-                    remaining_cycles: 1,
-                    prev_current: 0,
-                    point_sum_delta: 0,
-                    point_sample_count: 0,
-                    current_sum: 0,
-                    start_us: u64::MAX - 10,
-                    // No warm-up remaining: this single cycle is measured,
-                    // and the elapsed window starts at the recorded
-                    // accumulation_start_us, which mirrors start_us.
-                    warmup_cycles_remaining: 0,
-                    accumulation_start_us: Some(u64::MAX - 10),
-                },
-                data: ElectricalIdData::new(512),
-            };
-            let mut buf = TransientBuffer::new();
-            let mut backend = MockBackend::new();
-            backend.elapsed_us_value = 20;
-            backend
-                .registers
-                .insert(PID_TORQUE_FLUX_ACTUAL.addr(), 10)
-                .ok();
-            let mut selftest_results = crate::selftest::SelftestResults::default();
-            let mut diagnostics = crate::selftest::CommissionDiagnostics::default();
-
-            let result = step_electrical_identification(
-                &mut phase,
-                &mut buf,
-                InnerSequence::Commission,
-                &mut selftest_results,
-                &mut diagnostics,
-                &mut backend,
-            )
-            .await;
-
-            assert!(matches!(result, StepResult::Continue));
-            match &phase {
-                InnerPhase::ElectricalId {
-                    state: ElectricalIdState::InductanceDisable { .. },
-                    data,
-                } => {
-                    assert_eq!(data.inductance_fit_points[0][0].elapsed_us, 31);
-                    assert_eq!(data.inductance_fit_points[0][0].sample_count, 1);
-                }
-                other => panic!("expected InductanceDisable, got {other:?}"),
-            }
-        });
-    }
-
-    #[test]
-    fn inductance_toggle_write_error_fails_inner_phase() {
-        pollster::block_on(async {
-            let mut phase = InnerPhase::ElectricalId {
-                state: ElectricalIdState::InductanceToggle {
-                    coil: 0,
-                    point: 0,
-                    total_cycles: 7,
-                    remaining_cycles: 7,
-                    prev_current: 0,
-                    point_sum_delta: 0,
-                    point_sample_count: 0,
-                    current_sum: 0,
-                    start_us: 0,
-                    warmup_cycles_remaining: 0,
-                    accumulation_start_us: Some(0),
-                },
-                data: ElectricalIdData::new(512),
-            };
-            let mut buf = TransientBuffer::new();
-            let mut backend = MockBackend::new();
-            backend.fail_on_write = Some(UQ_UD_EXT.addr());
-            let mut selftest_results = crate::selftest::SelftestResults::default();
-            let mut diagnostics = crate::selftest::CommissionDiagnostics::default();
-
-            let result = step_electrical_identification(
-                &mut phase,
-                &mut buf,
-                InnerSequence::Commission,
-                &mut selftest_results,
-                &mut diagnostics,
-                &mut backend,
-            )
-            .await;
-
-            assert!(matches!(
-                result,
-                StepResult::InnerFailed(CommissionError::Spi)
-            ));
-            assert!(matches!(phase, InnerPhase::Failed(CommissionError::Spi)));
-        });
-    }
-
-    #[test]
-    fn inductance_toggle_read_error_fails_inner_phase() {
-        pollster::block_on(async {
-            let mut phase = InnerPhase::ElectricalId {
-                state: ElectricalIdState::InductanceToggle {
-                    coil: 0,
-                    point: 0,
-                    total_cycles: 7,
-                    remaining_cycles: 7,
-                    prev_current: 0,
-                    point_sum_delta: 0,
-                    point_sample_count: 0,
-                    current_sum: 0,
-                    start_us: 0,
-                    warmup_cycles_remaining: 0,
-                    accumulation_start_us: Some(0),
-                },
-                data: ElectricalIdData::new(512),
-            };
-            let mut buf = TransientBuffer::new();
-            let mut backend = MockBackend::new();
-            backend.fail_on_read = Some(PID_TORQUE_FLUX_ACTUAL.addr());
-            let mut selftest_results = crate::selftest::SelftestResults::default();
-            let mut diagnostics = crate::selftest::CommissionDiagnostics::default();
-
-            let result = step_electrical_identification(
-                &mut phase,
-                &mut buf,
-                InnerSequence::Commission,
-                &mut selftest_results,
-                &mut diagnostics,
-                &mut backend,
-            )
-            .await;
-
-            assert!(matches!(
-                result,
-                StepResult::InnerFailed(CommissionError::Spi)
-            ));
-            assert!(matches!(phase, InnerPhase::Failed(CommissionError::Spi)));
-        });
-    }
-
-    #[test]
-    fn step_inner_restores_safe_state_on_inner_failure() {
-        pollster::block_on(async {
-            // Drive through `step_inner` (the un-bypassable cleanup boundary)
-            // so an SPI write failure mid-toggle leaves the chip de-energized
-            // and the canonical safe-state register sequence applied.
-            let mut phase = InnerPhase::ElectricalId {
-                state: ElectricalIdState::InductanceToggle {
-                    coil: 0,
-                    point: 0,
-                    total_cycles: 7,
-                    remaining_cycles: 7,
-                    prev_current: 0,
-                    point_sum_delta: 0,
-                    point_sample_count: 0,
-                    current_sum: 0,
-                    start_us: 0,
-                    warmup_cycles_remaining: 0,
-                    accumulation_start_us: Some(0),
-                },
-                data: ElectricalIdData::new(512),
-            };
-            let mut buf = TransientBuffer::new();
-            let mut backend = MockBackend::new();
-            backend.enable_pin = true;
-            backend.fail_on_write = Some(UQ_UD_EXT.addr());
-            let mut selftest_results = crate::selftest::SelftestResults::default();
-            let mut diagnostics = crate::selftest::CommissionDiagnostics::default();
-            let mut adc_cal = None;
-
-            let result = crate::commissioning::inner::step_inner(
-                &mut phase,
-                &mut buf,
-                crate::autotune::CommissionProfile::Balanced,
-                InnerSequence::Commission,
-                &mut adc_cal,
-                None,
-                &mut selftest_results,
-                &mut diagnostics,
-                &mut backend,
-            )
-            .await;
-
-            assert!(matches!(
-                result,
-                StepResult::InnerFailed(CommissionError::Spi)
-            ));
-            assert!(!backend.enable_pin, "enable pin must be lowered");
-            // The canonical safe-state writes must follow the failing UQ_UD_EXT
-            // write. Collect the addresses written *after* the failure point.
-            use foci_tmc4671::registers::*;
-            let mut seen_failure = false;
-            let mut after: heapless::Vec<u8, 32> = heapless::Vec::new();
-            for op in backend.spi_log.iter() {
-                if let SpiOp::Write(addr, _) = op {
-                    if !seen_failure && *addr == UQ_UD_EXT.addr() {
-                        seen_failure = true;
-                        continue;
-                    }
-                    if seen_failure {
-                        after.push(*addr).ok();
-                    }
-                }
-            }
-            for canonical in [
-                MODE_RAMP_MODE_MOTION.addr(),
-                PID_TORQUE_FLUX_TARGET.addr(),
-                PWM_SV_CHOP.addr(),
-                PID_VELOCITY_OFFSET.addr(),
-                PIDOUT_UQ_UD_LIMITS.addr(),
-            ] {
-                assert!(
-                    after.contains(&canonical),
-                    "canonical safe-state register {:#x} not written after failure",
-                    canonical
-                );
-            }
-        });
-    }
-
-    #[test]
-    fn inductance_setup_fails_when_didt_cycles_too_small() {
-        pollster::block_on(async {
-            let mut phase = InnerPhase::ElectricalId {
-                state: ElectricalIdState::InductanceSetup { coil: 0, point: 0 },
-                data: ElectricalIdData::new(512),
-            };
-            let mut buf = TransientBuffer::new();
-            let mut backend = MockBackend::new();
-            // 50 - max(8, 50/20=8) = 42 measured cycles, below the 64 floor.
-            backend.tmc_config.didt_cycles = 50;
-            let mut selftest_results = crate::selftest::SelftestResults::default();
-            let mut diagnostics = crate::selftest::CommissionDiagnostics::default();
-
-            let result = step_electrical_identification(
-                &mut phase,
-                &mut buf,
-                InnerSequence::Commission,
-                &mut selftest_results,
-                &mut diagnostics,
-                &mut backend,
-            )
-            .await;
-
-            assert!(matches!(
-                result,
-                StepResult::InnerFailed(CommissionError::ElectricalIdFailed)
-            ));
-            assert!(!backend.enable_pin, "must not energize on rejected config");
-        });
-    }
-
-    #[test]
-    fn inductance_setup_fails_when_didt_cycles_overlarge() {
-        pollster::block_on(async {
-            let mut phase = InnerPhase::ElectricalId {
-                state: ElectricalIdState::InductanceSetup { coil: 0, point: 0 },
-                data: ElectricalIdData::new(512),
-            };
-            let mut buf = TransientBuffer::new();
-            let mut backend = MockBackend::new();
-            backend.tmc_config.didt_cycles = 60_000; // > 50_000 cap
-            let mut selftest_results = crate::selftest::SelftestResults::default();
-            let mut diagnostics = crate::selftest::CommissionDiagnostics::default();
-
-            let result = step_electrical_identification(
-                &mut phase,
-                &mut buf,
-                InnerSequence::Commission,
-                &mut selftest_results,
-                &mut diagnostics,
-                &mut backend,
-            )
-            .await;
-
-            assert!(matches!(
-                result,
-                StepResult::InnerFailed(CommissionError::ElectricalIdFailed)
-            ));
-            assert!(!backend.enable_pin, "must not energize on rejected config");
-        });
-    }
-
-    #[test]
-    fn inductance_setup_re_enables_chopper_before_asserting_enable_pin() {
-        // The resistance-identification phase that precedes InductanceSetup
-        // leaves PWM_SV_CHOP=0 on its safe-state exit (see
-        // resistance_identification::runner::restore_safe_state). InductanceSetup
-        // must restore the chopper itself before energizing, or the dI/dt sweep
-        // runs with no PWM drive and measures zero current.
-        pollster::block_on(async {
-            let mut phase = InnerPhase::ElectricalId {
-                state: ElectricalIdState::InductanceSetup { coil: 0, point: 0 },
-                data: ElectricalIdData::new(512),
-            };
-            let mut buf = TransientBuffer::new();
-            let mut backend = MockBackend::new();
-            // Model the chopper-disabled state the resistance runner leaves
-            // behind on its commission-success exit path.
-            let _ = backend
-                .registers
-                .insert(foci_tmc4671::registers::PWM_SV_CHOP.addr(), 0);
-            let mut selftest_results = crate::selftest::SelftestResults::default();
-            let mut diagnostics = crate::selftest::CommissionDiagnostics::default();
-
-            let result = step_electrical_identification(
-                &mut phase,
-                &mut buf,
-                InnerSequence::Commission,
-                &mut selftest_results,
-                &mut diagnostics,
-                &mut backend,
-            )
-            .await;
-
-            assert!(matches!(result, StepResult::Continue));
-            assert!(backend.enable_pin, "expected the enable pin to be asserted");
-
-            use foci_tmc4671::registers::PWM_SV_CHOP;
-            let chop_write_index = backend
-                .spi_log
-                .iter()
-                .position(|op| matches!(op, SpiOp::Write(addr, 7) if *addr == PWM_SV_CHOP.addr()))
-                .expect("expected a PWM_SV_CHOP=7 write");
-            let enable_pin_index = backend
-                .spi_log
-                .iter()
-                .position(|op| matches!(op, SpiOp::EnablePin(true)))
-                .expect("expected set_enable_pin(true)");
-            assert!(
-                chop_write_index < enable_pin_index,
-                "expected PWM_SV_CHOP=7 before set_enable_pin(true), got chop at {} \
-                 and enable at {}",
-                chop_write_index,
-                enable_pin_index
-            );
-        });
-    }
-
-    #[test]
-    fn inductance_toggle_skips_warmup_cycles_in_accumulator() {
-        pollster::block_on(async {
-            // 4 cycles total, 2 of warm-up. The first 2 cycles must not
-            // contribute to the point sample count; the elapsed window starts
-            // at the elapsed_us captured between the last warm-up read and the
-            // first measured read.
-            let mut phase = InnerPhase::ElectricalId {
-                state: ElectricalIdState::InductanceToggle {
-                    coil: 0,
-                    point: 0,
-                    total_cycles: 4,
-                    remaining_cycles: 4,
-                    prev_current: 0,
-                    point_sum_delta: 0,
-                    point_sample_count: 0,
-                    current_sum: 0,
-                    start_us: 0,
-                    warmup_cycles_remaining: 2,
-                    accumulation_start_us: None,
-                },
-                data: ElectricalIdData::new(512),
-            };
-            let mut buf = TransientBuffer::new();
-            let mut backend = MockBackend::new();
-            backend.elapsed_us_value = 100;
-            backend
-                .registers
-                .insert(PID_TORQUE_FLUX_ACTUAL.addr(), 50)
-                .ok();
-            let mut selftest_results = crate::selftest::SelftestResults::default();
-            let mut diagnostics = crate::selftest::CommissionDiagnostics::default();
-
-            let _ = step_electrical_identification(
-                &mut phase,
-                &mut buf,
-                InnerSequence::Commission,
-                &mut selftest_results,
-                &mut diagnostics,
-                &mut backend,
-            )
-            .await;
-
-            match &phase {
-                InnerPhase::ElectricalId {
-                    state: ElectricalIdState::InductanceDisable { .. },
-                    data,
-                } => {
-                    assert_eq!(data.inductance_fit_points[0][0].sample_count, 2);
-                }
-                other => panic!("expected InductanceDisable, got {other:?}"),
-            }
-        });
-    }
-
-    #[test]
-    fn inductance_toggle_starts_elapsed_window_on_first_measured_cycle() {
-        pollster::block_on(async {
-            let mut phase = InnerPhase::ElectricalId {
-                state: ElectricalIdState::InductanceToggle {
-                    coil: 0,
-                    point: 0,
-                    total_cycles: 31,
-                    remaining_cycles: 31,
-                    prev_current: 0,
-                    point_sum_delta: 0,
-                    point_sample_count: 0,
-                    current_sum: 0,
-                    start_us: 1_000,
-                    warmup_cycles_remaining: 30,
-                    accumulation_start_us: None,
-                },
-                data: ElectricalIdData::new(512),
-            };
-            let mut buf = TransientBuffer::new();
-            let mut backend = MockBackend::new();
-            backend.elapsed_us_value = 1_000;
-            backend
-                .registers
-                .insert(PID_TORQUE_FLUX_ACTUAL.addr(), 50)
-                .ok();
-            let mut selftest_results = crate::selftest::SelftestResults::default();
-            let mut diagnostics = crate::selftest::CommissionDiagnostics::default();
-
-            let _ = step_electrical_identification(
-                &mut phase,
-                &mut buf,
-                InnerSequence::Commission,
-                &mut selftest_results,
-                &mut diagnostics,
-                &mut backend,
-            )
-            .await;
-
-            match &phase {
-                InnerPhase::ElectricalId {
-                    state:
-                        ElectricalIdState::InductanceToggle {
-                            remaining_cycles,
-                            warmup_cycles_remaining,
-                            accumulation_start_us,
-                            ..
-                        },
-                    data,
-                } => {
-                    assert_eq!(*remaining_cycles, 1);
-                    assert_eq!(*warmup_cycles_remaining, 0);
-                    assert_eq!(*accumulation_start_us, None);
-                    assert_eq!(data.inductance_fit_points[0][0].sample_count, 0);
-                }
-                other => panic!("expected InductanceToggle, got {other:?}"),
-            }
-
-            backend.elapsed_us_value = 2_000;
-            let _ = step_electrical_identification(
-                &mut phase,
-                &mut buf,
-                InnerSequence::Commission,
-                &mut selftest_results,
-                &mut diagnostics,
-                &mut backend,
-            )
-            .await;
-
-            match &phase {
-                InnerPhase::ElectricalId {
-                    state: ElectricalIdState::InductanceDisable { .. },
-                    data,
-                } => {
-                    assert_eq!(data.inductance_fit_points[0][0].sample_count, 1);
-                    assert_eq!(data.inductance_fit_points[0][0].elapsed_us, 0);
-                }
-                other => panic!("expected InductanceDisable, got {other:?}"),
-            }
-        });
-    }
-
-    #[test]
-    fn inductance_disable_advances_all_points_before_next_coil() {
-        pollster::block_on(async {
-            let mut backend = MockBackend::new();
-            let mut phase = InnerPhase::ElectricalId {
-                state: ElectricalIdState::InductanceDisable {
-                    coil: 0,
-                    point: 0,
-                    deadline_us: 0,
-                    skip_remaining_points: false,
-                },
-                data: ElectricalIdData::new(512),
-            };
-            let mut buf = TransientBuffer::new();
-            let mut selftest_results = crate::selftest::SelftestResults::default();
-            let mut diagnostics = crate::selftest::CommissionDiagnostics::default();
-
-            let result = step_electrical_identification(
-                &mut phase,
-                &mut buf,
-                InnerSequence::Commission,
-                &mut selftest_results,
-                &mut diagnostics,
-                &mut backend,
-            )
-            .await;
-
-            assert!(matches!(result, StepResult::Continue));
-            assert!(matches!(
-                phase,
-                InnerPhase::ElectricalId {
-                    state: ElectricalIdState::InductanceSetup { coil: 0, point: 1 },
-                    ..
-                }
-            ));
-        });
-    }
-
-    #[test]
-    fn inductance_over_current_point_skips_remaining_points_for_coil() {
-        pollster::block_on(async {
-            let mut backend = MockBackend::new();
-            backend.enable_pin = true;
-            backend.tmc_config.resistance_scale_metadata_validated = true;
-            backend.tmc_config.resistance_max_expected_current_count = 100;
-            backend.set_pid_torque_flux_actual_sequence(&[101]);
-            let mut phase = InnerPhase::ElectricalId {
-                state: ElectricalIdState::InductanceToggle {
-                    coil: 0,
-                    point: 2,
-                    total_cycles: 30,
-                    remaining_cycles: 30,
-                    prev_current: 0,
-                    point_sum_delta: 0,
-                    point_sample_count: 0,
-                    current_sum: 0,
-                    start_us: 0,
-                    warmup_cycles_remaining: 0,
-                    accumulation_start_us: Some(0),
-                },
-                data: ElectricalIdData::new(512),
-            };
-            let mut buf = TransientBuffer::new();
-            let mut selftest_results = crate::selftest::SelftestResults::default();
-            let mut diagnostics = crate::selftest::CommissionDiagnostics::default();
-
-            let result = step_electrical_identification(
-                &mut phase,
-                &mut buf,
-                InnerSequence::Commission,
-                &mut selftest_results,
-                &mut diagnostics,
-                &mut backend,
-            )
-            .await;
-
-            assert!(matches!(result, StepResult::Continue));
-            assert!(!backend.enable_pin);
-            assert!(matches!(
-                phase,
-                InnerPhase::ElectricalId {
-                    state: ElectricalIdState::InductanceDisable {
-                        coil: 0,
-                        point: 2,
-                        skip_remaining_points: true,
-                        ..
-                    },
-                    ..
-                }
-            ));
-
-            backend.elapsed_us_value = ELECTRICAL_COOLDOWN_US;
-            let result = step_electrical_identification(
-                &mut phase,
-                &mut buf,
-                InnerSequence::Commission,
-                &mut selftest_results,
-                &mut diagnostics,
-                &mut backend,
-            )
-            .await;
-
-            assert!(matches!(result, StepResult::Continue));
-            assert!(matches!(
-                phase,
-                InnerPhase::ElectricalId {
-                    state: ElectricalIdState::InductanceSetup { coil: 1, point: 0 },
-                    ..
-                }
-            ));
-        });
-    }
-
-    #[test]
-    fn inductance_over_current_during_warmup_disables_immediately() {
-        pollster::block_on(async {
-            let mut backend = MockBackend::new();
-            backend.enable_pin = true;
-            backend.tmc_config.resistance_scale_metadata_validated = true;
-            backend.tmc_config.resistance_max_expected_current_count = 100;
-            backend.set_pid_torque_flux_actual_sequence(&[101]);
-            let mut phase = InnerPhase::ElectricalId {
-                state: ElectricalIdState::InductanceToggle {
-                    coil: 0,
-                    point: 2,
-                    total_cycles: 31,
-                    remaining_cycles: 31,
-                    prev_current: 0,
-                    point_sum_delta: 0,
-                    point_sample_count: 0,
-                    current_sum: 0,
-                    start_us: 0,
-                    warmup_cycles_remaining: 31,
-                    accumulation_start_us: None,
-                },
-                data: ElectricalIdData::new(512),
-            };
-            let mut buf = TransientBuffer::new();
-            let mut selftest_results = crate::selftest::SelftestResults::default();
-            let mut diagnostics = crate::selftest::CommissionDiagnostics::default();
-
-            let result = step_electrical_identification(
-                &mut phase,
-                &mut buf,
-                InnerSequence::Commission,
-                &mut selftest_results,
-                &mut diagnostics,
-                &mut backend,
-            )
-            .await;
-
-            assert!(matches!(result, StepResult::Continue));
-            assert!(!backend.enable_pin);
-            assert!(matches!(
-                phase,
-                InnerPhase::ElectricalId {
-                    state: ElectricalIdState::InductanceDisable {
-                        coil: 0,
-                        point: 2,
-                        skip_remaining_points: true,
-                        ..
-                    },
-                    ..
-                }
-            ));
-        });
-    }
-
-    #[test]
-    fn inductance_over_current_initial_sample_disables_immediately() {
-        pollster::block_on(async {
-            let mut backend = MockBackend::new();
-            backend.enable_pin = true;
-            backend.tmc_config.resistance_scale_metadata_validated = true;
-            backend.tmc_config.resistance_max_expected_current_count = 100;
-            backend.set_pid_torque_flux_actual_sequence(&[101]);
-            let mut phase = InnerPhase::ElectricalId {
-                state: ElectricalIdState::InductanceSettle {
-                    coil: 0,
-                    point: 2,
-                    deadline_us: 0,
-                },
-                data: ElectricalIdData::new(512),
-            };
-            let mut buf = TransientBuffer::new();
-            let mut selftest_results = crate::selftest::SelftestResults::default();
-            let mut diagnostics = crate::selftest::CommissionDiagnostics::default();
-
-            let result = step_electrical_identification(
-                &mut phase,
-                &mut buf,
-                InnerSequence::Commission,
-                &mut selftest_results,
-                &mut diagnostics,
-                &mut backend,
-            )
-            .await;
-
-            assert!(matches!(result, StepResult::Continue));
-            assert!(!backend.enable_pin);
-            assert!(matches!(
-                phase,
-                InnerPhase::ElectricalId {
-                    state: ElectricalIdState::InductanceDisable {
-                        coil: 0,
-                        point: 2,
-                        skip_remaining_points: true,
-                        ..
-                    },
-                    ..
-                }
-            ));
-        });
-    }
-
-    #[test]
-    fn inductance_skip_remaining_points_on_second_coil_advances_to_delay() {
-        pollster::block_on(async {
-            let mut backend = MockBackend::new();
-            let mut phase = InnerPhase::ElectricalId {
-                state: ElectricalIdState::InductanceDisable {
-                    coil: 1,
-                    point: 2,
-                    deadline_us: 0,
-                    skip_remaining_points: true,
-                },
-                data: ElectricalIdData::new(512),
-            };
-            let mut buf = TransientBuffer::new();
-            let mut selftest_results = crate::selftest::SelftestResults::default();
-            let mut diagnostics = crate::selftest::CommissionDiagnostics::default();
-
-            let result = step_electrical_identification(
-                &mut phase,
-                &mut buf,
-                InnerSequence::Commission,
-                &mut selftest_results,
-                &mut diagnostics,
-                &mut backend,
-            )
-            .await;
-
-            assert!(matches!(result, StepResult::Continue));
-            assert!(matches!(
-                phase,
-                InnerPhase::ElectricalId {
-                    state: ElectricalIdState::DelaySetup,
-                    ..
-                }
-            ));
-        });
-    }
-
-    #[test]
-    fn inductance_nonzero_point_stores_fit_payload() {
-        pollster::block_on(async {
-            let mut data = ElectricalIdData::new(512);
-            data.resistance_result = Some(resistance_result(2000, 2000));
-            let mut phase = InnerPhase::ElectricalId {
-                state: ElectricalIdState::InductanceToggle {
-                    coil: 0,
-                    point: 1,
-                    total_cycles: 2,
-                    remaining_cycles: 2,
-                    prev_current: 10,
-                    point_sum_delta: 0,
-                    point_sample_count: 0,
-                    current_sum: 0,
-                    start_us: 100,
-                    warmup_cycles_remaining: 0,
-                    accumulation_start_us: Some(100),
-                },
-                data,
-            };
-            let mut buf = TransientBuffer::new();
-            let mut backend = MockBackend::new();
-            backend.elapsed_us_value = 420;
-            backend.set_pid_torque_flux_actual_sequence(&[20, 30]);
-            let mut selftest_results = crate::selftest::SelftestResults::default();
-            let mut diagnostics = crate::selftest::CommissionDiagnostics::default();
-
-            let result = step_electrical_identification(
-                &mut phase,
-                &mut buf,
-                InnerSequence::Commission,
-                &mut selftest_results,
-                &mut diagnostics,
-                &mut backend,
-            )
-            .await;
-
-            assert!(matches!(result, StepResult::Continue));
-            match &phase {
-                InnerPhase::ElectricalId {
-                    state: ElectricalIdState::InductanceDisable { .. },
-                    data,
-                } => {
-                    let point = data.inductance_fit_points[0][1];
-                    assert_eq!(point.ud, 640);
-                    assert_eq!(point.avg_delta, 10);
-                    assert_eq!(point.avg_current_count, 25);
-                    assert_eq!(point.r_drop_ud, 50);
-                    assert_eq!(point.effective_ud, 590);
-                    assert_eq!(point.sample_count, 2);
-                    assert_eq!(point.elapsed_us, 320);
-                }
-                other => panic!("expected InductanceDisable, got {other:?}"),
-            }
-        });
-    }
-
-    #[test]
-    fn inductance_toggle_final_point_populates_fit_before_disable() {
-        pollster::block_on(async {
-            let mut data = ElectricalIdData::new(512);
-            data.resistance_result = Some(resistance_result(1000, 1000));
-            data.inductance_fit_points[0][0] = InductanceFitPoint {
-                ud: 512,
-                avg_delta: 26,
-                avg_current_count: 0,
-                r_drop_ud: 0,
-                effective_ud: 512,
-                sample_count: 10,
-                elapsed_us: 1_000,
-            };
-            data.inductance_fit_points[0][1] = InductanceFitPoint {
-                ud: 640,
-                avg_delta: 36,
-                avg_current_count: 0,
-                r_drop_ud: 0,
-                effective_ud: 640,
-                sample_count: 10,
-                elapsed_us: 1_000,
-            };
-            data.inductance_fit_points[0][2] = InductanceFitPoint {
-                ud: 768,
-                avg_delta: 47,
-                avg_current_count: 0,
-                r_drop_ud: 0,
-                effective_ud: 768,
-                sample_count: 10,
-                elapsed_us: 1_000,
-            };
-            let mut phase = InnerPhase::ElectricalId {
-                state: ElectricalIdState::InductanceToggle {
-                    coil: 0,
-                    point: 3,
-                    total_cycles: 10,
-                    remaining_cycles: 10,
-                    prev_current: 0,
-                    point_sum_delta: 0,
-                    point_sample_count: 0,
-                    current_sum: 0,
-                    start_us: 0,
-                    warmup_cycles_remaining: 0,
-                    accumulation_start_us: Some(0),
-                },
-                data,
-            };
-            let mut buf = TransientBuffer::new();
-            let mut backend = MockBackend::new();
-            backend.elapsed_us_value = 1_000;
-            backend.set_pid_torque_flux_actual_sequence(&[56, 0, 56, 0, 56, 0, 56, 0, 56, 0]);
-            let mut selftest_results = crate::selftest::SelftestResults::default();
-            let mut diagnostics = crate::selftest::CommissionDiagnostics::default();
-
-            let result = step_electrical_identification(
-                &mut phase,
-                &mut buf,
-                InnerSequence::Commission,
-                &mut selftest_results,
-                &mut diagnostics,
-                &mut backend,
-            )
-            .await;
-
-            assert!(matches!(result, StepResult::Continue));
-            match &phase {
-                InnerPhase::ElectricalId {
-                    state:
-                        ElectricalIdState::InductanceDisable {
-                            coil: 0,
-                            point: 3,
-                            skip_remaining_points: false,
-                            ..
-                        },
-                    data,
-                } => {
-                    let fit = data.inductance_fit[0];
-                    assert_ne!(fit, InductanceFitEvidence::EMPTY);
-                    assert_eq!(fit.usable_points, 4);
-                    assert_eq!(fit.selected_mask, 0b1111);
-                }
-                other => panic!("expected final-point InductanceDisable, got {other:?}"),
-            }
-        });
-    }
-
     // -----------------------------------------------------------------
     // Phase 1 model-assembly gates (inductance / delay)
     // -----------------------------------------------------------------
@@ -2597,40 +1737,36 @@ mod tests {
     /// Build model data for per-coil resistance currents `c0`/`c1` (counts).
     ///
     /// The per-axis count-slopes are `512000/c` (V=512 in count-slope-milli).
-    /// Both coils get an equal tau ≈ 730us fit so the tau-mismatch gate does
-    /// not fire incidentally when only resistance differs.
     fn data_with_per_coil_currents(c0: i32, c1: i32) -> ElectricalIdData {
         let slope0 = (512_000 / c0.max(1)).max(1);
         let slope1 = (512_000 / c1.max(1)).max(1);
         let mut data = ElectricalIdData::new(512);
         data.resistance_result = Some(resistance_result(slope0, slope1));
-        data.inductance_fit = [fit_with_tau(730), fit_with_tau(730)];
+        data.inductance = Some(inductance_evidence_fixture(8_600, 1_000_000));
         data
     }
 
     #[test]
     fn model_failure_diagnostic_codes_are_stable() {
-        let single_tau = diagnostic_for_model_assembly_failure(ModelAssemblyError::SingleCoilTau);
-        assert_eq!(single_tau.phase, PhaseId::ElectricalId.to_u8());
-        assert_eq!(single_tau.code, 21);
-        assert_eq!(single_tau.status, 1);
+        let no_samples = diagnostic_for_model_assembly_failure(ModelAssemblyError::SampleCount);
+        assert_eq!(no_samples.phase, PhaseId::ElectricalId.to_u8());
+        assert_eq!(no_samples.code, 20);
+        assert_eq!(no_samples.status, 1);
 
-        let tau_mismatch = diagnostic_for_model_assembly_failure(ModelAssemblyError::TauMismatch {
-            permille: 301,
-        });
-        assert_eq!(tau_mismatch.code, 26);
-        assert_eq!(tau_mismatch.value0, 301);
-
-        let rejected_fit =
-            diagnostic_for_model_assembly_failure(ModelAssemblyError::RejectedInductanceFit {
-                coil: 1,
-                usable_points: 2,
-                selected_mask: 0b0101,
+        let scale_zero =
+            diagnostic_for_model_assembly_failure(ModelAssemblyError::ModelScaleZero {
+                l_int: 0,
+                l_uh: 0,
             });
-        assert_eq!(rejected_fit.code, 28);
-        assert_eq!(rejected_fit.value0, 1);
-        assert_eq!(rejected_fit.value1, 2);
-        assert_eq!(rejected_fit.value2, 0b0101);
+        assert_eq!(scale_zero.code, 22);
+
+        let theta = diagnostic_for_model_assembly_failure(ModelAssemblyError::ThetaTooLarge {
+            theta_us: 320,
+            tau_us: 600,
+        });
+        assert_eq!(theta.code, 29);
+        assert_eq!(theta.value0, 320);
+        assert_eq!(theta.value1, 600);
     }
 
     #[test]
@@ -2643,47 +1779,31 @@ mod tests {
     fn assemble_accepts_representative_data() {
         let data = representative_data();
         let assembly = assemble_electrical_model(&data, TEST_THETA_E_US).unwrap();
-        // Configured theta=160, tau≈730, so the theta/tau warning is clean.
         assert_eq!(
             assembly.warning_flags & INNER_WARN_BIT_RESISTANCE_MISMATCH,
             0
         );
-        assert_eq!(assembly.warning_flags & INNER_WARN_BIT_TAU_MISMATCH, 0);
         assert_eq!(assembly.warning_flags & INNER_WARN_BIT_THETA_TAU, 0);
     }
 
     #[test]
-    fn assemble_rejects_single_coil_tau() {
+    fn assemble_rejects_missing_inductance_evidence() {
         let mut data = representative_data();
-        data.inductance_fit[1] = InductanceFitEvidence::EMPTY;
+        data.inductance = None;
         let err = assemble_electrical_model(&data, TEST_THETA_E_US).unwrap_err();
-        assert!(matches!(err, ModelAssemblyError::SingleCoilTau));
+        assert!(matches!(err, ModelAssemblyError::SampleCount));
     }
 
     #[test]
     fn assemble_rejects_zero_l_int_with_model_scale_zero() {
-        // r_count_slope_milli = 100 with per-coil tau = 5us — high enough to
-        // clear SingleCoilTau but low enough that l_int = r_int * tau / 1000 and
-        // l_uh = r_mohm * tau / 1000 both round to 0.
         let mut data = ElectricalIdData::new(512);
         data.resistance_result = Some(resistance_result(100, 100));
-        data.inductance_fit = [fit_with_tau(5), fit_with_tau(5)];
+        data.inductance = Some(inductance_evidence_fixture(1, 1_000_000));
         let err = assemble_electrical_model(&data, TEST_THETA_E_US).unwrap_err();
         assert!(matches!(
             err,
             ModelAssemblyError::ModelScaleZero { l_int: 0, l_uh: 0 }
         ));
-    }
-
-    #[test]
-    fn assemble_rejects_per_coil_tau_disagreement_with_equal_resistance() {
-        // Equal per-coil resistance so the resistance-mismatch gate cannot
-        // fire. Divergent per-coil tau exercises the tau-mismatch gate
-        // independently of resistance.
-        let mut data = representative_data();
-        data.inductance_fit = [fit_with_tau(735), fit_with_tau(245)];
-        let err = assemble_electrical_model(&data, TEST_THETA_E_US).unwrap_err();
-        assert!(matches!(err, ModelAssemblyError::TauMismatch { .. }));
     }
 
     #[test]

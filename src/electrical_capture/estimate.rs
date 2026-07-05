@@ -249,7 +249,7 @@ impl AcSaliencyAccumulator {
         if self.weight_sum == 0
             || self.weight_sum != phi_delta_counts
             || phi_delta_counts == 0
-            || phi_delta_counts % ELECTRICAL_TURN_COUNTS != 0
+            || !phi_delta_counts.is_multiple_of(ELECTRICAL_TURN_COUNTS)
             || self.sample_count < u32::from(MIN_SALIENCY_SAMPLE_COUNT)
             || self.sample_count > u32::from(u16::MAX)
         {
@@ -284,13 +284,26 @@ impl Default for AcSaliencyAccumulator {
     }
 }
 
+impl defmt::Format for AcSaliencyAccumulator {
+    fn format(&self, fmt: defmt::Formatter) {
+        defmt::write!(
+            fmt,
+            "AcSaliencyAccumulator {{ sample_count: {}, weight_sum: {} }}",
+            self.sample_count,
+            self.weight_sum
+        );
+    }
+}
+
 /// Extract Ld/Lq reactance evidence from normalized 2theta correlation terms.
 pub fn extract_saliency_from_second_harmonic(
     input: SaliencySecondHarmonicInput,
 ) -> Option<AcSaliencyEvidence> {
     if input.sample_count < MIN_SALIENCY_SAMPLE_COUNT
         || input.phi_delta_counts == 0
-        || input.phi_delta_counts % ELECTRICAL_TURN_COUNTS != 0
+        || !input
+            .phi_delta_counts
+            .is_multiple_of(ELECTRICAL_TURN_COUNTS)
         || input.x_average_count_ratio_milli == 0
     {
         return None;
@@ -418,6 +431,17 @@ impl AcFrameAccumulator {
 impl Default for AcFrameAccumulator {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+impl defmt::Format for AcFrameAccumulator {
+    fn format(&self, fmt: defmt::Formatter) {
+        defmt::write!(
+            fmt,
+            "AcFrameAccumulator {{ sample_count: {}, weight_sum: {} }}",
+            self.sample_count,
+            self.weight_sum
+        );
     }
 }
 

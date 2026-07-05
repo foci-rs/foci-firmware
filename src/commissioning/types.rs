@@ -63,73 +63,6 @@ impl CurrentValidationAxisEvidence {
     };
 }
 
-/// Number of per-amplitude points captured for corrected inductance fitting.
-pub const INDUCTANCE_FIT_POINT_COUNT: usize = 4;
-
-/// One per-amplitude dI/dt point used by the corrected inductance fit.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
-pub struct InductanceFitPoint {
-    /// Commanded UD amplitude for this point.
-    pub ud: u16,
-    /// Average absolute current delta per dI/dt cycle.
-    pub avg_delta: u32,
-    /// Average current level during the measured window.
-    pub avg_current_count: i32,
-    /// Count-space R*i voltage drop subtracted before fitting.
-    pub r_drop_ud: i32,
-    /// `ud - r_drop_ud`, used as the fit x value.
-    pub effective_ud: i32,
-    /// Number of measured cycles contributing to this point.
-    pub sample_count: u32,
-    /// Elapsed microseconds over the measured cycles.
-    pub elapsed_us: u32,
-}
-
-impl InductanceFitPoint {
-    /// Empty evidence slot used for fixed-size arrays.
-    pub const EMPTY: Self = Self {
-        ud: 0,
-        avg_delta: 0,
-        avg_current_count: 0,
-        r_drop_ud: 0,
-        effective_ud: 0,
-        sample_count: 0,
-        elapsed_us: 0,
-    };
-}
-
-/// Accepted per-coil dI/dt slope-fit evidence.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
-pub struct InductanceFitEvidence {
-    /// Corrected tau from the slope fit.
-    pub tau_us: u32,
-    /// Fitted `avg_delta / effective_ud`, scaled by 1000.
-    pub slope_delta_per_ud_milli: u32,
-    /// Fitted intercept in delta-count milli-units.
-    pub intercept_delta_milli: i32,
-    /// Equivalent dead-time/knee intercept in UD counts.
-    pub deadtime_ud: i16,
-    /// Maximum fit residual in permille.
-    pub residual_permille: u16,
-    /// Number of usable points in the fit.
-    pub usable_points: u8,
-    /// Bitmask of fit points selected into the fit.
-    pub selected_mask: u16,
-}
-
-impl InductanceFitEvidence {
-    /// Empty evidence slot used before the fit has run.
-    pub const EMPTY: Self = Self {
-        tau_us: 0,
-        slope_delta_per_ud_milli: 0,
-        intercept_delta_milli: 0,
-        deadtime_ud: 0,
-        residual_permille: 1000,
-        usable_points: 0,
-        selected_mask: 0,
-    };
-}
-
 /// No accepted production inductance source.
 pub const INDUCTANCE_SOURCE_NONE: u8 = 0;
 /// Accepted production inductance source: rotating-field estimator.
@@ -404,13 +337,9 @@ pub struct InnerResult {
     pub tau_e_us: u32,
     /// Accepted production inductance evidence.
     pub inductance: InductanceEvidence,
-    /// Accepted per-coil corrected inductance fit evidence.
-    pub inductance_fit: [InductanceFitEvidence; 2],
-    /// Per-amplitude points used by the accepted corrected inductance fits.
-    pub inductance_fit_points: [[InductanceFitPoint; INDUCTANCE_FIT_POINT_COUNT]; 2],
     /// Warning bitfield.
     ///
-    /// Bits 0, 1, and 3 report model warnings; bit 2 is unused. Bit 5 reports
+    /// Bits 0 and 3 report model warnings; bits 1 and 2 are unused. Bit 5 reports
     /// fallback gains, bit 6 reports host-default confidence, and bit 7 is
     /// reserved.
     pub inner_warning_flags: u8,

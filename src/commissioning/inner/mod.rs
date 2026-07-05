@@ -15,8 +15,7 @@ use crate::autotune::{
 use crate::commissioning::EntrySnapshot;
 use crate::commissioning::inner::current_loop::{CurrentValidateData, CurrentValidateState};
 use crate::commissioning::types::{
-    AdcCalResult, CommissioningBackend, INDUCTANCE_FIT_POINT_COUNT, InductanceEvidence,
-    InductanceFitEvidence, InductanceFitPoint, InnerResult, StepResult,
+    AdcCalResult, CommissioningBackend, InductanceEvidence, InnerResult, StepResult,
 };
 
 pub mod adc;
@@ -151,10 +150,6 @@ pub(crate) struct ElectricalIdData {
     pub(crate) resistance_result: Option<crate::resistance_identification::ResistanceRunResult>,
     /// Accepted production inductance evidence from the rotating-field estimator.
     pub(crate) inductance: Option<InductanceEvidence>,
-    /// Per-coil, per-amplitude fit points for corrected L/tau.
-    pub(crate) inductance_fit_points: [[InductanceFitPoint; INDUCTANCE_FIT_POINT_COUNT]; 2],
-    /// Accepted per-coil fit evidence.
-    pub(crate) inductance_fit: [InductanceFitEvidence; 2],
 }
 
 impl ElectricalIdData {
@@ -163,53 +158,67 @@ impl ElectricalIdData {
             voltage,
             resistance_result: None,
             inductance: None,
-            inductance_fit_points: [[InductanceFitPoint::EMPTY; INDUCTANCE_FIT_POINT_COUNT]; 2],
-            inductance_fit: [InductanceFitEvidence::EMPTY; 2],
         }
     }
 }
 
 /// Electrical identification sub-state machine (Phase 5).
 #[derive(Debug, defmt::Format)]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "no heap; AC capture uses fixed-size accumulators in state"
+)]
 pub(crate) enum ElectricalIdState {
     // --- Resistance identification ---
     /// Run shared multi-point resistance identification before the L work.
     ResistanceIdentify,
 
-    // --- Inductance measurement (per coil, square-wave di/dt) ---
-    /// Configure for di/dt toggling.
-    InductanceSetup { coil: u8, point: u8 },
-    /// Brief settle before toggling.
-    InductanceSettle {
-        coil: u8,
-        point: u8,
+    // --- Inductance measurement (phi-locked rotating field) ---
+    /// Configure the open-loop rotating-field generator.
+    InductanceSetup,
+    /// Wait for the open-loop angle generator to reach target velocity.
+    InductanceWaitVelocity {
+        /// Timeout for the velocity ramp.
         deadline_us: u64,
     },
-    /// Toggle voltage and accumulate |delta_I| (chunked per step).
-    ///
-    /// `warmup_cycles_remaining` excludes startup transients from the
-    /// accumulation. `accumulation_start_us` records the timestamp of the
-    /// first measured (post-warm-up) cycle so the elapsed window only
-    /// covers accumulated samples.
-    InductanceToggle {
-        coil: u8,
-        point: u8,
-        total_cycles: u32,
-        remaining_cycles: u32,
-        prev_current: i16,
-        point_sum_delta: u64,
-        point_sample_count: u32,
-        current_sum: i64,
+    /// Wait for electrical current to settle after voltage is applied.
+    InductanceDriveSettle {
+        /// Deadline when the electrical L/R settle period completes.
+        deadline_us: u64,
+        /// Encoder count captured before voltage was applied.
+        encoder_start: u32,
+    },
+    /// Capture one integer-electrical-turn rotating-frame current window.
+    InductanceSample {
+        /// Encoder count captured before voltage was applied.
+        encoder_start: u32,
+        /// Monotonic timestamp at the first phi/current sample.
         start_us: u64,
-        warmup_cycles_remaining: u32,
-        accumulation_start_us: Option<u64>,
+        /// Previous sample elapsed time relative to `start_us`.
+        previous_elapsed_us: u32,
+        /// Open-loop phi at the start of the window.
+        start_phi: u16,
+        /// Previous sampled open-loop phi.
+        previous_phi: u16,
+        /// Accepted phi movement accumulated into the window.
+        accumulated_phi_delta_counts: u32,
+        /// Whole-window rotating-frame current accumulator.
+        accumulator: crate::electrical_capture::AcFrameAccumulator,
+        /// First-half rotating-frame current accumulator.
+        first_half: crate::electrical_capture::AcFrameAccumulator,
+        /// Second-half rotating-frame current accumulator.
+        second_half: crate::electrical_capture::AcFrameAccumulator,
+        /// Phi-domain 2theta saliency accumulator.
+        saliency: crate::electrical_capture::AcSaliencyAccumulator,
+        /// Number of accepted hot-loop samples.
+        sample_count: u16,
+        /// STATUS_FLAGS sampled before the window.
+        status_flags_or: u32,
     },
-    /// Disable motor and cool down.
+    /// Disable AC drive and cool down before delay capture.
     InductanceDisable {
-        coil: u8,
-        point: u8,
+        /// Cooldown deadline after explicit AC drive teardown.
         deadline_us: u64,
-        skip_remaining_points: bool,
     },
 
     // --- Delay identification ---
@@ -275,10 +284,6 @@ pub(crate) enum InnerPhase {
         resistance_result: crate::resistance_identification::ResistanceRunResult,
         /// Accepted production inductance evidence.
         inductance: InductanceEvidence,
-        /// Accepted per-coil corrected inductance fit evidence.
-        inductance_fit: [InductanceFitEvidence; 2],
-        /// Per-amplitude points used by the accepted corrected inductance fits.
-        inductance_fit_points: [[InductanceFitPoint; INDUCTANCE_FIT_POINT_COUNT]; 2],
     },
     /// Phase 7: Current-loop step-response validation.
     CurrentValidate {

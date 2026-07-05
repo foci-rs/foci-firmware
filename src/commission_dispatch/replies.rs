@@ -421,8 +421,8 @@ mod tests {
     };
     use crate::commission_dispatch::ReplyPayload;
     use crate::commissioning::types::{
-        AdcCalResult, CommissionResult, CurrentValidationAxisEvidence, INDUCTANCE_FIT_POINT_COUNT,
-        InductanceEvidence, InductanceFitEvidence, InductanceFitPoint, InnerResult, OuterResult,
+        AdcCalResult, CommissionResult, CurrentValidationAxisEvidence, InductanceEvidence,
+        InnerResult, OuterResult,
     };
     use crate::selftest::{
         COMMISSION_DIAGNOSTIC_CAPACITY, CommissionDiagnostic, CommissionDiagnostics,
@@ -875,35 +875,6 @@ mod tests {
                 bandwidth_hz: 22,
                 tau_e_us: 23,
                 inductance: InductanceEvidence::test_fixture(),
-                inductance_fit: [
-                    InductanceFitEvidence {
-                        tau_us: 450,
-                        slope_delta_per_ud_milli: 65,
-                        intercept_delta_milli: -13_000,
-                        deadtime_ud: 200,
-                        residual_permille: 12,
-                        usable_points: 4,
-                        selected_mask: 0b1111,
-                    },
-                    InductanceFitEvidence::EMPTY,
-                ],
-                inductance_fit_points: [
-                    [
-                        InductanceFitPoint {
-                            ud: 512,
-                            avg_delta: 18,
-                            avg_current_count: 40,
-                            r_drop_ud: 40,
-                            effective_ud: 472,
-                            sample_count: 500,
-                            elapsed_us: 50_000,
-                        },
-                        InductanceFitPoint::EMPTY,
-                        InductanceFitPoint::EMPTY,
-                        InductanceFitPoint::EMPTY,
-                    ],
-                    [InductanceFitPoint::EMPTY; INDUCTANCE_FIT_POINT_COUNT],
-                ],
                 inner_warning_flags: 26,
                 resistance_profile_version: 1,
                 resistance_selected_count_slope_milli: 1050,
