@@ -12,8 +12,9 @@ use crate::autotune::{
 };
 use crate::commissioning::types::{
     CommissioningBackend, INDUCTANCE_SOURCE_ROTATING_FIELD, INDUCTANCE_WARN_DRIFT,
-    INDUCTANCE_WARN_HIGH_RMS, INDUCTANCE_WARN_MAG_CROSSCHECK, InductanceEstimateEvidence,
-    InductanceEvidence, InductanceFrameEvidence, InductanceRunEvidence, StepResult,
+    INDUCTANCE_WARN_HIGH_RMS, INDUCTANCE_WARN_MAG_CROSSCHECK, INDUCTANCE_WARN_STATUS_FLAGS,
+    InductanceEstimateEvidence, InductanceEvidence, InductanceFrameEvidence, InductanceRunEvidence,
+    StepResult,
 };
 use foci_tmc4671::registers::Register;
 
@@ -44,6 +45,7 @@ const INDUCTANCE_MAX_MAG_CROSSCHECK_WARN_PERMILLE: u16 = 100;
 const INDUCTANCE_REALIZED_FREQUENCY_TARGET_MILLIHZ: u32 = 1_000_000;
 const INDUCTANCE_REALIZED_FREQUENCY_TOLERANCE_MILLIHZ: u32 = 50_000;
 const INDUCTANCE_MIN_AC_SAMPLE_COUNT: u16 = 90;
+const INDUCTANCE_MAX_AC_SAMPLE_COUNT: u16 = 256;
 const PHI_E_SELECTION_OPENLOOP: u32 = 2;
 const L_INT_OMEGA_SCALE_MILLI: u64 = 6_283;
 
@@ -60,6 +62,7 @@ const DIAG_ELECTRICAL_ID_REJECT_MODEL_SCALE_ZERO: u8 = 22;
 // Codes 23–25 (resistance short/open/mismatch) are retired: the shared
 // resistance runner now owns those quality gates.
 const DIAG_ELECTRICAL_ID_REJECT_THETA_TOO_LARGE: u8 = 29;
+const DIAG_ELECTRICAL_ID_REJECT_INDUCTANCE_FREQUENCY: u8 = 32;
 
 // ---------------------------------------------------------------------------
 // Phase 1 model-assembly gates and warning bits.
@@ -488,6 +491,187 @@ fn realized_frequency_in_range(realized_millihz: u32) -> bool {
         <= INDUCTANCE_REALIZED_FREQUENCY_TOLERANCE_MILLIHZ
 }
 
+fn inductance_frequency_rejection_diagnostic(
+    realized_frequency_millihz: u32,
+    elapsed_us: u32,
+    sample_count: u16,
+) -> crate::selftest::CommissionDiagnostic {
+    crate::selftest::CommissionDiagnostic {
+        phase: PhaseId::ElectricalId.to_u8(),
+        code: DIAG_ELECTRICAL_ID_REJECT_INDUCTANCE_FREQUENCY,
+        status: 1,
+        value0: realized_frequency_millihz,
+        value1: elapsed_us,
+        value2: u32::from(sample_count),
+    }
+}
+
+struct InductanceCaptureRun<'a> {
+    data: &'a ElectricalIdData,
+    encoder_start: u32,
+    start_us: u64,
+    previous_elapsed_us: u32,
+    previous_phi: u16,
+    accumulated_phi_delta_counts: u32,
+    accumulator: crate::electrical_capture::AcFrameAccumulator,
+    first_half: crate::electrical_capture::AcFrameAccumulator,
+    second_half: crate::electrical_capture::AcFrameAccumulator,
+    saliency: crate::electrical_capture::AcSaliencyAccumulator,
+    sample_count: u16,
+    status_flags_or: u32,
+}
+
+async fn capture_inductance_ac_window<B: CommissioningBackend>(
+    backend: &mut B,
+    diagnostics: &mut crate::selftest::CommissionDiagnostics,
+    mut capture: InductanceCaptureRun<'_>,
+) -> Result<InductanceEvidence, CommissionError> {
+    use foci_tmc4671::registers::{ABN_DECODER_COUNT, OPENLOOP_PHI, PID_TORQUE_FLUX_ACTUAL};
+
+    loop {
+        if backend.is_shutdown_requested() {
+            return Err(CommissionError::Shutdown);
+        }
+        if capture.sample_count >= INDUCTANCE_MAX_AC_SAMPLE_COUNT {
+            return Err(CommissionError::InductanceCaptureWindow);
+        }
+
+        let current_phi = backend
+            .read_register(OPENLOOP_PHI)
+            .await
+            .map_err(|_| CommissionError::Spi)? as u16;
+        let actual = backend
+            .read_register(PID_TORQUE_FLUX_ACTUAL)
+            .await
+            .map_err(|_| CommissionError::Spi)?;
+        let interval = crate::electrical_capture::phi_locked_ac_interval(
+            capture.accumulated_phi_delta_counts,
+            INDUCTANCE_AC_TARGET_PHI_DELTA_COUNTS,
+            capture.previous_phi,
+            current_phi,
+        )
+        .ok_or(CommissionError::InductanceCaptureRejected)?;
+
+        let (id_count, iq_count) = decode_rotating_frame_current(actual);
+        if capture
+            .accumulator
+            .push_weighted(id_count, iq_count, interval.sample_weight_counts)
+            .is_none()
+            || capture
+                .saliency
+                .push_weighted_sample(
+                    current_phi,
+                    interval.sample_weight_counts,
+                    INDUCTANCE_AC_UD_EXT,
+                    id_count,
+                    iq_count,
+                )
+                .is_none()
+        {
+            return Err(CommissionError::InductanceCaptureRejected);
+        }
+
+        let half_target = INDUCTANCE_AC_TARGET_PHI_DELTA_COUNTS / 2;
+        let before = capture.accumulated_phi_delta_counts;
+        let after = interval.accumulated_phi_delta_counts;
+        if before < half_target {
+            let first_weight = interval.sample_weight_counts.min(half_target - before);
+            if capture
+                .first_half
+                .push_weighted(id_count, iq_count, first_weight)
+                .is_none()
+            {
+                return Err(CommissionError::InductanceCaptureRejected);
+            }
+            let second_weight = interval.sample_weight_counts - first_weight;
+            if second_weight != 0
+                && capture
+                    .second_half
+                    .push_weighted(id_count, iq_count, second_weight)
+                    .is_none()
+            {
+                return Err(CommissionError::InductanceCaptureRejected);
+            }
+        } else if capture
+            .second_half
+            .push_weighted(id_count, iq_count, interval.sample_weight_counts)
+            .is_none()
+        {
+            return Err(CommissionError::InductanceCaptureRejected);
+        }
+
+        capture.sample_count = capture.sample_count.saturating_add(1);
+        let current_elapsed_us = backend.elapsed_us().wrapping_sub(capture.start_us) as u32;
+        let completed_elapsed_us = if interval.complete {
+            crate::electrical_capture::interpolate_phi_window_elapsed_us(
+                capture.previous_elapsed_us,
+                current_elapsed_us,
+                interval,
+            )
+            .ok_or(CommissionError::InductanceCaptureRejected)?
+        } else {
+            capture.previous_phi = current_phi;
+            capture.previous_elapsed_us = current_elapsed_us;
+            capture.accumulated_phi_delta_counts = after;
+            continue;
+        };
+
+        capture.previous_phi = current_phi;
+        capture.previous_elapsed_us = current_elapsed_us;
+        capture.accumulated_phi_delta_counts = after;
+
+        let Some(realized_frequency) = crate::electrical_capture::realized_frequency_millihz(
+            capture.accumulated_phi_delta_counts,
+            completed_elapsed_us,
+        ) else {
+            diagnostics.push(inductance_frequency_rejection_diagnostic(
+                0,
+                completed_elapsed_us,
+                capture.sample_count,
+            ));
+            return Err(CommissionError::InductanceFrequencyOutOfRange);
+        };
+        if !realized_frequency_in_range(realized_frequency) {
+            diagnostics.push(inductance_frequency_rejection_diagnostic(
+                realized_frequency,
+                completed_elapsed_us,
+                capture.sample_count,
+            ));
+            return Err(CommissionError::InductanceFrequencyOutOfRange);
+        }
+
+        let post_status = backend
+            .read_register(foci_tmc4671::registers::STATUS_FLAGS)
+            .await
+            .map_err(|_| CommissionError::Spi)?;
+        capture.status_flags_or |= post_status;
+        let encoder_after = backend
+            .read_register(ABN_DECODER_COUNT)
+            .await
+            .map_err(|_| CommissionError::Spi)?;
+        let evidence = finish_inductance_evidence(InductanceCaptureFinish {
+            data: capture.data,
+            encoder_start: capture.encoder_start,
+            encoder_after,
+            elapsed_us: completed_elapsed_us,
+            phi_delta_counts: capture.accumulated_phi_delta_counts,
+            sample_count: capture.sample_count,
+            status_flags_or: capture.status_flags_or,
+            accumulator: capture.accumulator,
+            first_half: capture.first_half,
+            second_half: capture.second_half,
+            saliency_accumulator: capture.saliency,
+        })
+        .map_err(InductanceReject::commission_error)?;
+        if evidence.estimate.saliency_status == crate::electrical_capture::AC_SALIENCY_DETERMINABLE
+            && !evidence.estimate.brackets_average()
+        {
+            return Err(CommissionError::InductanceCaptureRejected);
+        }
+        return Ok(evidence);
+    }
+}
+
 struct InductanceCaptureFinish<'a> {
     data: &'a ElectricalIdData,
     encoder_start: u32,
@@ -502,7 +686,36 @@ struct InductanceCaptureFinish<'a> {
     saliency_accumulator: crate::electrical_capture::AcSaliencyAccumulator,
 }
 
-fn finish_inductance_evidence(input: InductanceCaptureFinish<'_>) -> Option<InductanceEvidence> {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum InductanceReject {
+    CaptureWindow,
+    Frequency,
+    LowQuadratureSignal,
+    MissingResistance,
+    Reactance,
+    Drift,
+    Saliency,
+    EncoderMotion,
+}
+
+impl InductanceReject {
+    fn commission_error(self) -> CommissionError {
+        match self {
+            Self::EncoderMotion => CommissionError::InductanceEncoderMotion,
+            Self::CaptureWindow => CommissionError::InductanceCaptureWindow,
+            Self::Frequency => CommissionError::InductanceFrequencyOutOfRange,
+            Self::LowQuadratureSignal => CommissionError::InductanceLowQuadratureSignal,
+            Self::MissingResistance => CommissionError::InductanceMissingResistanceEvidence,
+            Self::Reactance => CommissionError::InductanceReactanceInvalid,
+            Self::Drift => CommissionError::InductanceDriftInvalid,
+            Self::Saliency => CommissionError::InductanceSaliencyInvalid,
+        }
+    }
+}
+
+fn finish_inductance_evidence(
+    input: InductanceCaptureFinish<'_>,
+) -> Result<InductanceEvidence, InductanceReject> {
     let InductanceCaptureFinish {
         data,
         encoder_start,
@@ -520,46 +733,58 @@ fn finish_inductance_evidence(input: InductanceCaptureFinish<'_>) -> Option<Indu
     if phi_delta_counts != INDUCTANCE_AC_TARGET_PHI_DELTA_COUNTS
         || sample_count < INDUCTANCE_MIN_AC_SAMPLE_COUNT
     {
-        return None;
+        return Err(InductanceReject::CaptureWindow);
     }
 
     let realized_frequency =
-        crate::electrical_capture::realized_frequency_millihz(phi_delta_counts, elapsed_us)?;
+        crate::electrical_capture::realized_frequency_millihz(phi_delta_counts, elapsed_us)
+            .ok_or(InductanceReject::Frequency)?;
     if !realized_frequency_in_range(realized_frequency) {
-        return None;
+        return Err(InductanceReject::Frequency);
     }
 
-    let frame = accumulator.finish(elapsed_us, realized_frequency, phi_delta_counts)?;
+    let frame = accumulator
+        .finish(elapsed_us, realized_frequency, phi_delta_counts)
+        .ok_or(InductanceReject::CaptureWindow)?;
     if frame.sample_count < INDUCTANCE_MIN_AC_SAMPLE_COUNT
         || frame.iq_mean_milli_count.abs() < INDUCTANCE_MIN_ABS_IQ_MILLI_COUNT
     {
-        return None;
+        return Err(InductanceReject::LowQuadratureSignal);
     }
 
-    let r_count_slope_milli = selected_resistance_count_slope(data)?;
+    let r_count_slope_milli =
+        selected_resistance_count_slope(data).ok_or(InductanceReject::MissingResistance)?;
     let reactance = crate::electrical_capture::rotating_frame_reactance(
         frame,
         INDUCTANCE_AC_UD_EXT,
         r_count_slope_milli,
-    )?;
+    )
+    .ok_or(InductanceReject::Reactance)?;
 
     let half_phi_delta = phi_delta_counts / 2;
-    let first_frame = first_half.finish(elapsed_us / 2, realized_frequency, half_phi_delta)?;
-    let second_frame = second_half.finish(elapsed_us / 2, realized_frequency, half_phi_delta)?;
+    let first_frame = first_half
+        .finish(elapsed_us / 2, realized_frequency, half_phi_delta)
+        .ok_or(InductanceReject::Drift)?;
+    let second_frame = second_half
+        .finish(elapsed_us / 2, realized_frequency, half_phi_delta)
+        .ok_or(InductanceReject::Drift)?;
     let first_reactance = crate::electrical_capture::rotating_frame_reactance(
         first_frame,
         INDUCTANCE_AC_UD_EXT,
         r_count_slope_milli,
-    )?;
+    )
+    .ok_or(InductanceReject::Drift)?;
     let second_reactance = crate::electrical_capture::rotating_frame_reactance(
         second_frame,
         INDUCTANCE_AC_UD_EXT,
         r_count_slope_milli,
-    )?;
+    )
+    .ok_or(InductanceReject::Drift)?;
     let drift_permille = permille_delta(
         first_reactance.x_quad_count_ratio_milli,
         second_reactance.x_quad_count_ratio_milli,
-    )?;
+    )
+    .ok_or(InductanceReject::Drift)?;
 
     let saliency = match saliency_accumulator
         .finish(phi_delta_counts)
@@ -573,14 +798,15 @@ fn finish_inductance_evidence(input: InductanceCaptureFinish<'_>) -> Option<Indu
     if saliency.status == crate::electrical_capture::AC_SALIENCY_DETERMINABLE
         && !saliency.brackets_average()
     {
-        return None;
+        return Err(InductanceReject::Saliency);
     }
 
     let mut warning_flags = 0u16;
     let iq_rms_permille = ratio_permille(
         frame.iq_rms_milli_count,
         frame.iq_mean_milli_count.unsigned_abs(),
-    )?;
+    )
+    .ok_or(InductanceReject::LowQuadratureSignal)?;
     if iq_rms_permille > INDUCTANCE_MAX_IQ_RMS_WARN_PERMILLE {
         warning_flags |= INDUCTANCE_WARN_HIGH_RMS;
     }
@@ -590,15 +816,16 @@ fn finish_inductance_evidence(input: InductanceCaptureFinish<'_>) -> Option<Indu
     if reactance.x_mag_vs_quad_permille > INDUCTANCE_MAX_MAG_CROSSCHECK_WARN_PERMILLE {
         warning_flags |= INDUCTANCE_WARN_MAG_CROSSCHECK;
     }
-
-    let encoder_delta_counts = signed_encoder_delta(encoder_start, encoder_after);
-    if encoder_delta_counts.unsigned_abs() > INDUCTANCE_MAX_ENCODER_DELTA_COUNTS
-        || status_flags_or != 0
-    {
-        return None;
+    if status_flags_or != 0 {
+        warning_flags |= INDUCTANCE_WARN_STATUS_FLAGS;
     }
 
-    Some(InductanceEvidence {
+    let encoder_delta_counts = signed_encoder_delta(encoder_start, encoder_after);
+    if encoder_delta_counts.unsigned_abs() > INDUCTANCE_MAX_ENCODER_DELTA_COUNTS {
+        return Err(InductanceReject::EncoderMotion);
+    }
+
+    Ok(InductanceEvidence {
         run: InductanceRunEvidence {
             source: INDUCTANCE_SOURCE_ROTATING_FIELD,
             status: 0,
@@ -731,6 +958,7 @@ pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
                 .write_register_verified(PWM_SV_CHOP, 7)
                 .await
                 .is_err()
+                || backend.write_register(STATUS_FLAGS, 0).await.is_err()
             {
                 return fail_inductance_ac_after_restore(phase, backend, CommissionError::Spi)
                     .await;
@@ -760,7 +988,7 @@ pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
                 return fail_inductance_ac_after_restore(
                     phase,
                     backend,
-                    CommissionError::ElectricalIdFailed,
+                    CommissionError::InductanceVelocityTimeout,
                 )
                 .await;
             }
@@ -794,15 +1022,15 @@ pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
             if wait_deadline_not_reached(backend.elapsed_us(), *deadline_us) {
                 return StepResult::Continue;
             }
-            let status_flags_or = match backend.read_register(STATUS_FLAGS).await {
-                Ok(status) => status,
+            let start_phi = match backend.read_register(OPENLOOP_PHI).await {
+                Ok(phi) => phi as u16,
                 Err(_) => {
                     return fail_inductance_ac_after_restore(phase, backend, CommissionError::Spi)
                         .await;
                 }
             };
-            let start_phi = match backend.read_register(OPENLOOP_PHI).await {
-                Ok(phi) => phi as u16,
+            let status_flags_or = match backend.read_register(STATUS_FLAGS).await {
+                Ok(status) => status,
                 Err(_) => {
                     return fail_inductance_ac_after_restore(phase, backend, CommissionError::Spi)
                         .await;
@@ -839,191 +1067,37 @@ pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
             sample_count,
             status_flags_or,
         } => {
-            let current_phi = match backend.read_register(OPENLOOP_PHI).await {
-                Ok(phi) => phi as u16,
-                Err(_) => {
-                    return fail_inductance_ac_after_restore(phase, backend, CommissionError::Spi)
-                        .await;
-                }
-            };
-            let actual = match backend.read_register(PID_TORQUE_FLUX_ACTUAL).await {
-                Ok(actual) => actual,
-                Err(_) => {
-                    return fail_inductance_ac_after_restore(phase, backend, CommissionError::Spi)
-                        .await;
-                }
-            };
-            let interval = match crate::electrical_capture::phi_locked_ac_interval(
-                *accumulated_phi_delta_counts,
-                INDUCTANCE_AC_TARGET_PHI_DELTA_COUNTS,
-                *previous_phi,
-                current_phi,
-            ) {
-                Some(interval) => interval,
-                None => {
-                    return fail_inductance_ac_after_restore(
-                        phase,
-                        backend,
-                        CommissionError::ElectricalIdFailed,
-                    )
-                    .await;
-                }
-            };
-            let (id_count, iq_count) = decode_rotating_frame_current(actual);
-            if accumulator
-                .push_weighted(id_count, iq_count, interval.sample_weight_counts)
-                .is_none()
-                || saliency
-                    .push_weighted_sample(
-                        current_phi,
-                        interval.sample_weight_counts,
-                        INDUCTANCE_AC_UD_EXT,
-                        id_count,
-                        iq_count,
-                    )
-                    .is_none()
-            {
-                return fail_inductance_ac_after_restore(
-                    phase,
-                    backend,
-                    CommissionError::ElectricalIdFailed,
-                )
-                .await;
-            }
-
-            let half_target = INDUCTANCE_AC_TARGET_PHI_DELTA_COUNTS / 2;
-            let before = *accumulated_phi_delta_counts;
-            let after = interval.accumulated_phi_delta_counts;
-            if before < half_target {
-                let first_weight = interval.sample_weight_counts.min(half_target - before);
-                if first_half
-                    .push_weighted(id_count, iq_count, first_weight)
-                    .is_none()
-                {
-                    return fail_inductance_ac_after_restore(
-                        phase,
-                        backend,
-                        CommissionError::ElectricalIdFailed,
-                    )
-                    .await;
-                }
-                let second_weight = interval.sample_weight_counts - first_weight;
-                if second_weight != 0
-                    && second_half
-                        .push_weighted(id_count, iq_count, second_weight)
-                        .is_none()
-                {
-                    return fail_inductance_ac_after_restore(
-                        phase,
-                        backend,
-                        CommissionError::ElectricalIdFailed,
-                    )
-                    .await;
-                }
-            } else if second_half
-                .push_weighted(id_count, iq_count, interval.sample_weight_counts)
-                .is_none()
-            {
-                return fail_inductance_ac_after_restore(
-                    phase,
-                    backend,
-                    CommissionError::ElectricalIdFailed,
-                )
-                .await;
-            }
-
-            *sample_count = sample_count.saturating_add(1);
-            let current_elapsed_us = backend.elapsed_us().wrapping_sub(*start_us) as u32;
-            let completed_elapsed_us = if interval.complete {
-                match crate::electrical_capture::interpolate_phi_window_elapsed_us(
-                    *previous_elapsed_us,
-                    current_elapsed_us,
-                    interval,
-                ) {
-                    Some(elapsed) => Some(elapsed),
-                    None => {
-                        return fail_inductance_ac_after_restore(
-                            phase,
-                            backend,
-                            CommissionError::ElectricalIdFailed,
-                        )
-                        .await;
-                    }
-                }
-            } else {
-                None
-            };
-            *previous_phi = current_phi;
-            *previous_elapsed_us = current_elapsed_us;
-            *accumulated_phi_delta_counts = after;
-
-            if let Some(elapsed_us) = completed_elapsed_us {
-                let post_status = match backend.read_register(STATUS_FLAGS).await {
-                    Ok(status) => status,
-                    Err(_) => {
-                        return fail_inductance_ac_after_restore(
-                            phase,
-                            backend,
-                            CommissionError::Spi,
-                        )
-                        .await;
-                    }
-                };
-                *status_flags_or |= post_status;
-                let encoder_after = match backend.read_register(ABN_DECODER_COUNT).await {
-                    Ok(count) => count,
-                    Err(_) => {
-                        return fail_inductance_ac_after_restore(
-                            phase,
-                            backend,
-                            CommissionError::Spi,
-                        )
-                        .await;
-                    }
-                };
-                let evidence = match finish_inductance_evidence(InductanceCaptureFinish {
+            let evidence = match capture_inductance_ac_window(
+                backend,
+                diagnostics,
+                InductanceCaptureRun {
                     data,
                     encoder_start: *encoder_start,
-                    encoder_after,
-                    elapsed_us,
-                    phi_delta_counts: *accumulated_phi_delta_counts,
-                    sample_count: *sample_count,
-                    status_flags_or: *status_flags_or,
+                    start_us: *start_us,
+                    previous_elapsed_us: *previous_elapsed_us,
+                    previous_phi: *previous_phi,
+                    accumulated_phi_delta_counts: *accumulated_phi_delta_counts,
                     accumulator: *accumulator,
                     first_half: *first_half,
                     second_half: *second_half,
-                    saliency_accumulator: *saliency,
-                }) {
-                    Some(evidence) => evidence,
-                    None => {
-                        return fail_inductance_ac_after_restore(
-                            phase,
-                            backend,
-                            CommissionError::ElectricalIdFailed,
-                        )
-                        .await;
-                    }
-                };
-                if evidence.estimate.saliency_status
-                    == crate::electrical_capture::AC_SALIENCY_DETERMINABLE
-                    && !evidence.estimate.brackets_average()
-                {
-                    return fail_inductance_ac_after_restore(
-                        phase,
-                        backend,
-                        CommissionError::ElectricalIdFailed,
-                    )
-                    .await;
+                    saliency: *saliency,
+                    sample_count: *sample_count,
+                    status_flags_or: *status_flags_or,
+                },
+            )
+            .await
+            {
+                Ok(evidence) => evidence,
+                Err(err) => return fail_inductance_ac_after_restore(phase, backend, err).await,
+            };
+            match restore_inductance_ac_drive(backend).await {
+                Ok(()) => {
+                    data.inductance = Some(evidence);
+                    *electrical_id_state = ElectricalIdState::InductanceDisable {
+                        deadline_us: backend.elapsed_us().wrapping_add(ELECTRICAL_COOLDOWN_US),
+                    };
                 }
-                match restore_inductance_ac_drive(backend).await {
-                    Ok(()) => {
-                        data.inductance = Some(evidence);
-                        *electrical_id_state = ElectricalIdState::InductanceDisable {
-                            deadline_us: backend.elapsed_us().wrapping_add(ELECTRICAL_COOLDOWN_US),
-                        };
-                    }
-                    Err(err) => return super::fail_inner(phase, err),
-                }
+                Err(err) => return super::fail_inner(phase, err),
             }
             StepResult::Continue
         }
@@ -1215,14 +1289,14 @@ mod tests {
     use crate::commission_dispatch::test_support::{MockBackend, SpiOp};
     use crate::commissioning::backend::CommissionBoardConfig;
     use crate::commissioning::inner::ElectricalIdData;
-    use crate::commissioning::types::StepResult;
+    use crate::commissioning::types::{INDUCTANCE_WARN_STATUS_FLAGS, StepResult};
     use crate::resistance_identification::{
         ElectricalAxis, ResistanceAxisResult, ResistanceRunResult, ResistanceWarningFlags,
         SignedAnchorEvidence,
     };
     use foci_tmc4671::registers::{
         MODE_RAMP_MODE_MOTION, OPENLOOP_PHI, OPENLOOP_VELOCITY_TARGET, PHI_E_SELECTION,
-        PID_TORQUE_FLUX_ACTUAL, PIDOUT_UQ_UD_LIMITS, PWM_SV_CHOP, UQ_UD_EXT,
+        PID_TORQUE_FLUX_ACTUAL, PIDOUT_UQ_UD_LIMITS, PWM_SV_CHOP, STATUS_FLAGS, UQ_UD_EXT,
     };
 
     const TEST_THETA_E_US: u32 = 160;
@@ -1533,7 +1607,10 @@ mod tests {
             )
             .await;
 
-            assert!(matches!(result, StepResult::Continue));
+            assert!(
+                matches!(result, StepResult::Continue),
+                "scheduler gap must not make the AC window fail: {result:?}"
+            );
             assert!(backend.enable_pin);
             assert!(matches!(
                 phase,
@@ -1554,6 +1631,7 @@ mod tests {
                 ),
                 (PHI_E_SELECTION, PHI_E_SELECTION_OPENLOOP),
                 (PWM_SV_CHOP, 7),
+                (STATUS_FLAGS, 0),
             ] {
                 let position = write_position(&backend.spi_log, register, value);
                 assert!(
@@ -1591,7 +1669,7 @@ mod tests {
 
             assert!(matches!(
                 result,
-                StepResult::InnerFailed(CommissionError::ElectricalIdFailed)
+                StepResult::InnerFailed(CommissionError::InductanceVelocityTimeout)
             ));
             assert_ac_teardown_after_failure(&backend);
         });
@@ -1686,10 +1764,237 @@ mod tests {
 
             assert!(matches!(
                 result,
-                StepResult::InnerFailed(CommissionError::ElectricalIdFailed)
+                StepResult::InnerFailed(CommissionError::InductanceCaptureRejected)
             ));
             assert_ac_teardown_after_failure(&backend);
         });
+    }
+
+    #[test]
+    fn inductance_sample_completes_phi_window_in_one_bounded_step() {
+        pollster::block_on(async {
+            let mut phase = InnerPhase::ElectricalId {
+                state: ElectricalIdState::InductanceSample {
+                    encoder_start: 0,
+                    start_us: 0,
+                    previous_elapsed_us: 0,
+                    start_phi: 0,
+                    previous_phi: 0,
+                    accumulated_phi_delta_counts: 0,
+                    accumulator: crate::electrical_capture::AcFrameAccumulator::new(),
+                    first_half: crate::electrical_capture::AcFrameAccumulator::new(),
+                    second_half: crate::electrical_capture::AcFrameAccumulator::new(),
+                    saliency: crate::electrical_capture::AcSaliencyAccumulator::new(),
+                    sample_count: 0,
+                    status_flags_or: 0,
+                },
+                data: representative_data(),
+            };
+            let mut buf = TransientBuffer::new();
+            let mut backend = MockBackend::new();
+            backend.enable_pin = true;
+            backend
+                .registers
+                .insert(foci_tmc4671::registers::STATUS_FLAGS.addr(), 0)
+                .ok();
+
+            let mut phi_samples = heapless::Vec::<u32, 128>::new();
+            let mut current_samples = heapless::Vec::<u32, 128>::new();
+            let actual = ((-84i16 as u16 as u32) << 16) | 20u32;
+            for index in 1..=100u32 {
+                phi_samples.push(index.wrapping_mul(5_243) & 0xffff).ok();
+                current_samples.push(actual).ok();
+            }
+            backend.set_openloop_phi_sequence(phi_samples.as_slice(), 80);
+            backend.set_pid_torque_flux_actual_sequence(current_samples.as_slice());
+
+            let mut selftest_results = crate::selftest::SelftestResults::default();
+            let mut diagnostics = crate::selftest::CommissionDiagnostics::default();
+
+            let result = step_electrical_identification(
+                &mut phase,
+                &mut buf,
+                InnerSequence::Commission,
+                &mut selftest_results,
+                &mut diagnostics,
+                &mut backend,
+            )
+            .await;
+
+            assert!(matches!(result, StepResult::Continue));
+            let InnerPhase::ElectricalId {
+                state: ElectricalIdState::InductanceDisable { .. },
+                data,
+            } = phase
+            else {
+                panic!("expected completed inductance capture, got {phase:?}");
+            };
+            let evidence = data
+                .inductance
+                .expect("inductance evidence should be retained");
+            assert!(evidence.run.sample_count >= INDUCTANCE_MIN_AC_SAMPLE_COUNT);
+            assert_eq!(
+                evidence.run.openloop_phi_delta_counts,
+                INDUCTANCE_AC_TARGET_PHI_DELTA_COUNTS
+            );
+        });
+    }
+
+    #[test]
+    fn inductance_frequency_rejection_records_measured_window_detail() {
+        pollster::block_on(async {
+            let mut phase = InnerPhase::ElectricalId {
+                state: ElectricalIdState::InductanceSample {
+                    encoder_start: 0,
+                    start_us: 0,
+                    previous_elapsed_us: 0,
+                    start_phi: 0,
+                    previous_phi: 0,
+                    accumulated_phi_delta_counts: 0,
+                    accumulator: crate::electrical_capture::AcFrameAccumulator::new(),
+                    first_half: crate::electrical_capture::AcFrameAccumulator::new(),
+                    second_half: crate::electrical_capture::AcFrameAccumulator::new(),
+                    saliency: crate::electrical_capture::AcSaliencyAccumulator::new(),
+                    sample_count: 0,
+                    status_flags_or: 0,
+                },
+                data: representative_data(),
+            };
+            let mut buf = TransientBuffer::new();
+            let mut backend = MockBackend::new();
+            backend.enable_pin = true;
+            backend
+                .registers
+                .insert(foci_tmc4671::registers::STATUS_FLAGS.addr(), 0)
+                .ok();
+
+            let mut phi_samples = heapless::Vec::<u32, 128>::new();
+            let mut current_samples = heapless::Vec::<u32, 128>::new();
+            let actual = ((-84i16 as u16 as u32) << 16) | 20u32;
+            for index in 1..=100u32 {
+                phi_samples.push(index.wrapping_mul(5_243) & 0xffff).ok();
+                current_samples.push(actual).ok();
+            }
+            backend.set_openloop_phi_sequence(phi_samples.as_slice(), 40);
+            backend.set_pid_torque_flux_actual_sequence(current_samples.as_slice());
+
+            let mut selftest_results = crate::selftest::SelftestResults::default();
+            let mut diagnostics = crate::selftest::CommissionDiagnostics::default();
+
+            let result = step_electrical_identification(
+                &mut phase,
+                &mut buf,
+                InnerSequence::Commission,
+                &mut selftest_results,
+                &mut diagnostics,
+                &mut backend,
+            )
+            .await;
+
+            assert!(matches!(
+                result,
+                StepResult::InnerFailed(CommissionError::InductanceFrequencyOutOfRange)
+            ));
+            let detail = diagnostics
+                .iter()
+                .find(|event| event.code == DIAG_ELECTRICAL_ID_REJECT_INDUCTANCE_FREQUENCY)
+                .expect("frequency rejection should retain realized-frequency evidence");
+            assert_eq!(detail.phase, PhaseId::ElectricalId.to_u8());
+            assert_eq!(detail.status, 1);
+            assert!(detail.value0 > INDUCTANCE_REALIZED_FREQUENCY_TARGET_MILLIHZ);
+            assert!(detail.value1 < 5_000);
+            assert!(detail.value2 >= u32::from(INDUCTANCE_MIN_AC_SAMPLE_COUNT));
+            assert_ac_teardown_after_failure(&backend);
+        });
+    }
+
+    #[test]
+    fn inductance_finish_accepts_benign_status_flags_as_warning() {
+        let mut accumulator = crate::electrical_capture::AcFrameAccumulator::new();
+        let mut first_half = crate::electrical_capture::AcFrameAccumulator::new();
+        let mut second_half = crate::electrical_capture::AcFrameAccumulator::new();
+        let mut saliency = crate::electrical_capture::AcSaliencyAccumulator::new();
+
+        for index in 0..100u32 {
+            let weight = if index == 99 { 5_276 } else { 5_243 };
+            let phi = ((index * INDUCTANCE_AC_TARGET_PHI_DELTA_COUNTS / 100) & 0xffff) as u16;
+            accumulator.push_weighted(20, -84, weight).unwrap();
+            saliency
+                .push_weighted_sample(phi, weight, INDUCTANCE_AC_UD_EXT, 20, -84)
+                .unwrap();
+            if index < 50 {
+                first_half.push_weighted(20, -84, weight).unwrap();
+            } else {
+                second_half.push_weighted(20, -84, weight).unwrap();
+            }
+        }
+
+        let evidence = finish_inductance_evidence(InductanceCaptureFinish {
+            data: &representative_data(),
+            encoder_start: 10,
+            encoder_after: 10,
+            elapsed_us: 8_000,
+            phi_delta_counts: INDUCTANCE_AC_TARGET_PHI_DELTA_COUNTS,
+            sample_count: 100,
+            status_flags_or: 0x7000_4400,
+            accumulator,
+            first_half,
+            second_half,
+            saliency_accumulator: saliency,
+        })
+        .expect("non-actionable hardware status flags should not reject inductance evidence");
+
+        assert_eq!(evidence.run.status_flags_or, 0x7000_4400);
+        assert_ne!(evidence.run.warning_flags & INDUCTANCE_WARN_STATUS_FLAGS, 0);
+    }
+
+    #[test]
+    fn inductance_finish_reports_encoder_motion_rejection() {
+        let mut accumulator = crate::electrical_capture::AcFrameAccumulator::new();
+        let mut first_half = crate::electrical_capture::AcFrameAccumulator::new();
+        let mut second_half = crate::electrical_capture::AcFrameAccumulator::new();
+        let mut saliency = crate::electrical_capture::AcSaliencyAccumulator::new();
+
+        for index in 0..100u32 {
+            let weight = if index == 99 { 5_276 } else { 5_243 };
+            let phi = ((index * INDUCTANCE_AC_TARGET_PHI_DELTA_COUNTS / 100) & 0xffff) as u16;
+            accumulator.push_weighted(20, -84, weight).unwrap();
+            saliency
+                .push_weighted_sample(phi, weight, INDUCTANCE_AC_UD_EXT, 20, -84)
+                .unwrap();
+            if index < 50 {
+                first_half.push_weighted(20, -84, weight).unwrap();
+            } else {
+                second_half.push_weighted(20, -84, weight).unwrap();
+            }
+        }
+
+        let rejection = match finish_inductance_evidence(InductanceCaptureFinish {
+            data: &representative_data(),
+            encoder_start: 10,
+            encoder_after: 10 + INDUCTANCE_MAX_ENCODER_DELTA_COUNTS + 1,
+            elapsed_us: 8_000,
+            phi_delta_counts: INDUCTANCE_AC_TARGET_PHI_DELTA_COUNTS,
+            sample_count: 100,
+            status_flags_or: 0,
+            accumulator,
+            first_half,
+            second_half,
+            saliency_accumulator: saliency,
+        }) {
+            Ok(_) => panic!("encoder motion must reject the inductance capture"),
+            Err(rejection) => rejection,
+        };
+
+        assert_eq!(rejection, InductanceReject::EncoderMotion);
+    }
+
+    #[test]
+    fn inductance_low_quadrature_rejection_maps_to_specific_error() {
+        assert_eq!(
+            InductanceReject::LowQuadratureSignal.commission_error(),
+            CommissionError::InductanceLowQuadratureSignal
+        );
     }
 
     #[test]

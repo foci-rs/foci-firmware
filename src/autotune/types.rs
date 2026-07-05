@@ -163,6 +163,26 @@ pub enum CommissionError {
     ResistanceParameterOutOfBounds,
     /// Resistance identification could not find a safe measurement envelope. Code 31.
     ResistanceMeasurementEnvelopeUnsupported,
+    /// Inductance identification did not reach the commanded open-loop velocity. Code 32.
+    InductanceVelocityTimeout,
+    /// Inductance identification rejected the AC capture quality gates. Code 33.
+    InductanceCaptureRejected,
+    /// Inductance identification saw encoder motion during the AC capture. Code 34.
+    InductanceEncoderMotion,
+    /// Inductance identification did not complete the required phi window. Code 35.
+    InductanceCaptureWindow,
+    /// Inductance identification measured an out-of-range field frequency. Code 36.
+    InductanceFrequencyOutOfRange,
+    /// Inductance identification did not measure enough quadrature signal. Code 37.
+    InductanceLowQuadratureSignal,
+    /// Inductance identification was missing resistance evidence. Code 38.
+    InductanceMissingResistanceEvidence,
+    /// Inductance identification could not compute a valid reactance. Code 39.
+    InductanceReactanceInvalid,
+    /// Inductance identification could not compute the drift cross-check. Code 40.
+    InductanceDriftInvalid,
+    /// Inductance identification rejected saliency evidence. Code 41.
+    InductanceSaliencyInvalid,
 }
 
 impl CommissionError {
@@ -203,6 +223,16 @@ impl CommissionError {
             Self::ResistanceUnsupportedProfile => 29,
             Self::ResistanceParameterOutOfBounds => 30,
             Self::ResistanceMeasurementEnvelopeUnsupported => 31,
+            Self::InductanceVelocityTimeout => 32,
+            Self::InductanceCaptureRejected => 33,
+            Self::InductanceEncoderMotion => 34,
+            Self::InductanceCaptureWindow => 35,
+            Self::InductanceFrequencyOutOfRange => 36,
+            Self::InductanceLowQuadratureSignal => 37,
+            Self::InductanceMissingResistanceEvidence => 38,
+            Self::InductanceReactanceInvalid => 39,
+            Self::InductanceDriftInvalid => 40,
+            Self::InductanceSaliencyInvalid => 41,
         }
     }
 }
@@ -491,6 +521,16 @@ mod tests {
             CommissionError::ResistanceUnsupportedProfile,
             CommissionError::ResistanceParameterOutOfBounds,
             CommissionError::ResistanceMeasurementEnvelopeUnsupported,
+            CommissionError::InductanceVelocityTimeout,
+            CommissionError::InductanceCaptureRejected,
+            CommissionError::InductanceEncoderMotion,
+            CommissionError::InductanceCaptureWindow,
+            CommissionError::InductanceFrequencyOutOfRange,
+            CommissionError::InductanceLowQuadratureSignal,
+            CommissionError::InductanceMissingResistanceEvidence,
+            CommissionError::InductanceReactanceInvalid,
+            CommissionError::InductanceDriftInvalid,
+            CommissionError::InductanceSaliencyInvalid,
         ];
         let mut seen = [false; 256];
         for e in errors {

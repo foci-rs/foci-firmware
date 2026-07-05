@@ -39,7 +39,7 @@ pub struct MockBackend {
     /// Current register values, keyed by TMC4671 address byte.
     pub registers: heapless::LinearMap<u8, u32, 64>,
     /// Ordered log of every SPI read/write issued during the test.
-    pub spi_log: Vec<SpiOp, 128>,
+    pub spi_log: Vec<SpiOp, 384>,
     /// Ordered trace events recorded by the commissioning engine.
     pub trace_events: Vec<crate::trace::events::CommissionTraceEvent, 64>,
     /// Current state of the TMC4671 enable pin.
@@ -97,9 +97,15 @@ pub struct MockBackend {
     /// Current index into `abn_decoder_count_sequence`.
     pub abn_decoder_count_pos: usize,
     /// Sequential values to return for consecutive `PID_TORQUE_FLUX_ACTUAL` reads.
-    pub pid_torque_flux_actual_sequence: Vec<u32, 32>,
+    pub pid_torque_flux_actual_sequence: Vec<u32, 128>,
     /// Current index into `pid_torque_flux_actual_sequence`.
     pub pid_torque_flux_actual_pos: usize,
+    /// Sequential values to return for consecutive `OPENLOOP_PHI` reads.
+    pub openloop_phi_sequence: Vec<u32, 128>,
+    /// Current index into `openloop_phi_sequence`.
+    pub openloop_phi_pos: usize,
+    /// Elapsed-time increment applied for each scripted `OPENLOOP_PHI` read.
+    pub openloop_phi_elapsed_step_us: u64,
     /// If true, every SPI write asserts that step processing has already been gated off.
     pub assert_motor_armed_false_on_write: bool,
     /// If true, `read_register(ADC_IWY_IUX)` reports a phase current
@@ -148,6 +154,9 @@ impl MockBackend {
             abn_decoder_count_pos: 0,
             pid_torque_flux_actual_sequence: Vec::new(),
             pid_torque_flux_actual_pos: 0,
+            openloop_phi_sequence: Vec::new(),
+            openloop_phi_pos: 0,
+            openloop_phi_elapsed_step_us: 0,
             assert_motor_armed_false_on_write: false,
             script_resistance_current_proportional_to_ud: false,
             last_uq_ud_ext_write: 0,
@@ -170,6 +179,16 @@ impl MockBackend {
             let _ = self.pid_torque_flux_actual_sequence.push(value);
         }
         self.pid_torque_flux_actual_pos = 0;
+    }
+
+    /// Set sequential `OPENLOOP_PHI` values for read-register tests.
+    pub fn set_openloop_phi_sequence(&mut self, values: &[u32], elapsed_step_us: u64) {
+        self.openloop_phi_sequence.clear();
+        for &value in values {
+            let _ = self.openloop_phi_sequence.push(value);
+        }
+        self.openloop_phi_pos = 0;
+        self.openloop_phi_elapsed_step_us = elapsed_step_us;
     }
 
     /// Write a register through the mock's register-I/O trait implementation.
@@ -211,6 +230,16 @@ impl CommissionRegisterIo for MockBackend {
         {
             let val = self.pid_torque_flux_actual_sequence[self.pid_torque_flux_actual_pos];
             self.pid_torque_flux_actual_pos += 1;
+            return Ok(val);
+        }
+        if addr == foci_tmc4671::registers::OPENLOOP_PHI.addr()
+            && self.openloop_phi_pos < self.openloop_phi_sequence.len()
+        {
+            let val = self.openloop_phi_sequence[self.openloop_phi_pos];
+            self.openloop_phi_pos += 1;
+            self.elapsed_us_value = self
+                .elapsed_us_value
+                .saturating_add(self.openloop_phi_elapsed_step_us);
             return Ok(val);
         }
         if self.script_resistance_current_proportional_to_ud {

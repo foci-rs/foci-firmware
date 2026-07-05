@@ -74,6 +74,8 @@ pub const INDUCTANCE_WARN_HIGH_RMS: u16 = 1 << 0;
 pub const INDUCTANCE_WARN_DRIFT: u16 = 1 << 1;
 /// Magnitude branch disagreed with quadrature but stayed inside tolerance.
 pub const INDUCTANCE_WARN_MAG_CROSSCHECK: u16 = 1 << 2;
+/// TMC4671 status flags were observed during the AC window; warning only.
+pub const INDUCTANCE_WARN_STATUS_FLAGS: u16 = 1 << 3;
 
 /// Run-level production inductance evidence.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
