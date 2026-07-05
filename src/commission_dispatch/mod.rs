@@ -643,19 +643,19 @@ pub async fn drive_commission_result<B: CommissioningBackend>(
             state
                 .tmc
                 .velocity_filter_hz
-                .store(outer.velocity_filter_hz, Relaxed);
+                .store(Some(outer.velocity_filter_hz), Relaxed);
             state
                 .tmc
                 .position_filter_hz
-                .store(outer.position_filter_hz, Relaxed);
+                .store(Some(outer.position_filter_hz), Relaxed);
             state
                 .tmc
                 .flux_filter_hz
-                .store(outer.flux_filter_hz, Relaxed);
+                .store(Some(outer.flux_filter_hz), Relaxed);
             state
                 .tmc
                 .torque_filter_hz
-                .store(outer.torque_filter_hz, Relaxed);
+                .store(Some(outer.torque_filter_hz), Relaxed);
 
             // SPI restore — enter position mode with the tuned gains.
             if restore::restore_position_mode_after_outer(backend, state.tmc, &outer)

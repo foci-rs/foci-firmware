@@ -126,6 +126,16 @@ pub trait CommissionBoardConfig {
     /// Board-specific TMC4671 configuration.
     fn tmc_config(&self) -> &TmcConfig;
 
+    /// Host-configured torque filter cutoff, including explicit zero disable.
+    fn configured_torque_filter_hz(&self) -> Option<u16> {
+        None
+    }
+
+    /// Host-configured flux filter cutoff, including explicit zero disable.
+    fn configured_flux_filter_hz(&self) -> Option<u16> {
+        None
+    }
+
     /// TMC4671 STEP_WIDTH value.
     fn step_width(&self) -> u32;
 
@@ -431,6 +441,18 @@ where
 
     fn tmc_config(&self) -> &TmcConfig {
         self.commission_tmc_config()
+    }
+
+    fn configured_torque_filter_hz(&self) -> Option<u16> {
+        self.tmc_state()
+            .torque_filter_hz
+            .load(core::sync::atomic::Ordering::Relaxed)
+    }
+
+    fn configured_flux_filter_hz(&self) -> Option<u16> {
+        self.tmc_state()
+            .flux_filter_hz
+            .load(core::sync::atomic::Ordering::Relaxed)
     }
 
     fn step_width(&self) -> u32 {

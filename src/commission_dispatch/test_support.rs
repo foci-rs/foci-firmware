@@ -82,6 +82,10 @@ pub struct MockBackend {
     pub operational_voltage_limit_value: u32,
     /// Value returned by `tmc_config()`.
     pub tmc_config: TmcConfig,
+    /// Optional torque-filter override returned by `configured_torque_filter_hz()`.
+    pub configured_torque_filter_hz: Option<u16>,
+    /// Optional flux-filter override returned by `configured_flux_filter_hz()`.
+    pub configured_flux_filter_hz: Option<u16>,
     /// Value returned by `read_encoder_count()`.
     pub encoder_count_value: u32,
     /// Sequential values to return for consecutive `PID_POSITION_ACTUAL` reads.
@@ -147,6 +151,8 @@ impl MockBackend {
             operational_voltage_limit_value:
                 crate::state::tmc::DEFAULT_OPERATIONAL_PIDOUT_UQ_UD_LIMIT,
             tmc_config: TmcConfig::default_for_test(),
+            configured_torque_filter_hz: None,
+            configured_flux_filter_hz: None,
             encoder_count_value: 0,
             read_position_actual_sequence: Vec::new(),
             read_position_actual_pos: 0,
@@ -370,6 +376,14 @@ impl CommissionBoardConfig for MockBackend {
 
     fn tmc_config(&self) -> &TmcConfig {
         &self.tmc_config
+    }
+
+    fn configured_torque_filter_hz(&self) -> Option<u16> {
+        self.configured_torque_filter_hz
+    }
+
+    fn configured_flux_filter_hz(&self) -> Option<u16> {
+        self.configured_flux_filter_hz
     }
 
     fn step_width(&self) -> u32 {

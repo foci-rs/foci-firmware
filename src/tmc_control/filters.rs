@@ -73,10 +73,14 @@ fn store_filter_hz(tmc_state: &TmcChannelState, target: BiquadFilterTarget, filt
     use core::sync::atomic::Ordering::Relaxed;
 
     match target {
-        BiquadFilterTarget::Velocity => tmc_state.velocity_filter_hz.store(filter_hz, Relaxed),
-        BiquadFilterTarget::Torque => tmc_state.torque_filter_hz.store(filter_hz, Relaxed),
-        BiquadFilterTarget::Position => tmc_state.position_filter_hz.store(filter_hz, Relaxed),
-        BiquadFilterTarget::Flux => tmc_state.flux_filter_hz.store(filter_hz, Relaxed),
+        BiquadFilterTarget::Velocity => {
+            tmc_state.velocity_filter_hz.store(Some(filter_hz), Relaxed)
+        }
+        BiquadFilterTarget::Torque => tmc_state.torque_filter_hz.store(Some(filter_hz), Relaxed),
+        BiquadFilterTarget::Position => {
+            tmc_state.position_filter_hz.store(Some(filter_hz), Relaxed)
+        }
+        BiquadFilterTarget::Flux => tmc_state.flux_filter_hz.store(Some(filter_hz), Relaxed),
     }
 }
 
@@ -194,7 +198,7 @@ where
 
     apply_one(
         tmc,
-        tmc_state.velocity_filter_hz.load(Relaxed),
+        tmc_state.velocity_filter_hz.load_or_zero(Relaxed),
         pwm_maxcnt,
         BiquadFilterSubRegs {
             a_1: CONFIG_BIQUAD_V_A_1,
@@ -208,7 +212,7 @@ where
     .await?;
     apply_one(
         tmc,
-        tmc_state.torque_filter_hz.load(Relaxed),
+        tmc_state.torque_filter_hz.load_or_zero(Relaxed),
         pwm_maxcnt,
         BiquadFilterSubRegs {
             a_1: CONFIG_BIQUAD_T_A_1,
@@ -222,7 +226,7 @@ where
     .await?;
     apply_one(
         tmc,
-        tmc_state.position_filter_hz.load(Relaxed),
+        tmc_state.position_filter_hz.load_or_zero(Relaxed),
         pwm_maxcnt,
         BiquadFilterSubRegs {
             a_1: CONFIG_BIQUAD_X_A_1,
@@ -236,7 +240,7 @@ where
     .await?;
     apply_one(
         tmc,
-        tmc_state.flux_filter_hz.load(Relaxed),
+        tmc_state.flux_filter_hz.load_or_zero(Relaxed),
         pwm_maxcnt,
         BiquadFilterSubRegs {
             a_1: CONFIG_BIQUAD_F_A_1,
@@ -320,7 +324,7 @@ pub async fn apply_stored_filters_via_backend<B: CommissioningBackend>(
 
     apply_one(
         backend,
-        tmc_state.velocity_filter_hz.load(Relaxed),
+        tmc_state.velocity_filter_hz.load_or_zero(Relaxed),
         pwm_maxcnt,
         BiquadFilterSubRegs {
             a_1: CONFIG_BIQUAD_V_A_1,
@@ -334,7 +338,7 @@ pub async fn apply_stored_filters_via_backend<B: CommissioningBackend>(
     .await?;
     apply_one(
         backend,
-        tmc_state.torque_filter_hz.load(Relaxed),
+        tmc_state.torque_filter_hz.load_or_zero(Relaxed),
         pwm_maxcnt,
         BiquadFilterSubRegs {
             a_1: CONFIG_BIQUAD_T_A_1,
@@ -348,7 +352,7 @@ pub async fn apply_stored_filters_via_backend<B: CommissioningBackend>(
     .await?;
     apply_one(
         backend,
-        tmc_state.position_filter_hz.load(Relaxed),
+        tmc_state.position_filter_hz.load_or_zero(Relaxed),
         pwm_maxcnt,
         BiquadFilterSubRegs {
             a_1: CONFIG_BIQUAD_X_A_1,
@@ -362,7 +366,7 @@ pub async fn apply_stored_filters_via_backend<B: CommissioningBackend>(
     .await?;
     apply_one(
         backend,
-        tmc_state.flux_filter_hz.load(Relaxed),
+        tmc_state.flux_filter_hz.load_or_zero(Relaxed),
         pwm_maxcnt,
         BiquadFilterSubRegs {
             a_1: CONFIG_BIQUAD_F_A_1,
@@ -442,10 +446,16 @@ mod tests {
             let _guard = crate::commission_dispatch::test_support::SHARED_STATE_MUTEX
                 .lock()
                 .await;
-            tmc_state().velocity_filter_hz.store(100, Ordering::Relaxed);
-            tmc_state().torque_filter_hz.store(0, Ordering::Relaxed);
-            tmc_state().position_filter_hz.store(0, Ordering::Relaxed);
-            tmc_state().flux_filter_hz.store(0, Ordering::Relaxed);
+            tmc_state()
+                .velocity_filter_hz
+                .store(Some(100), Ordering::Relaxed);
+            tmc_state()
+                .torque_filter_hz
+                .store(Some(0), Ordering::Relaxed);
+            tmc_state()
+                .position_filter_hz
+                .store(Some(0), Ordering::Relaxed);
+            tmc_state().flux_filter_hz.store(Some(0), Ordering::Relaxed);
 
             let mut backend = crate::commission_dispatch::test_support::MockBackend::new();
             apply_stored_filters_via_backend(&mut backend, tmc_state(), 4095)
@@ -492,7 +502,9 @@ mod tests {
                 "flux filter should not have been enabled"
             );
 
-            tmc_state().velocity_filter_hz.store(0, Ordering::Relaxed);
+            tmc_state()
+                .velocity_filter_hz
+                .store(None, Ordering::Relaxed);
         });
     }
 
@@ -503,10 +515,16 @@ mod tests {
             let _guard = crate::commission_dispatch::test_support::SHARED_STATE_MUTEX
                 .lock()
                 .await;
-            tmc_state().velocity_filter_hz.store(100, Ordering::Relaxed);
-            tmc_state().torque_filter_hz.store(0, Ordering::Relaxed);
-            tmc_state().position_filter_hz.store(0, Ordering::Relaxed);
-            tmc_state().flux_filter_hz.store(0, Ordering::Relaxed);
+            tmc_state()
+                .velocity_filter_hz
+                .store(Some(100), Ordering::Relaxed);
+            tmc_state()
+                .torque_filter_hz
+                .store(Some(0), Ordering::Relaxed);
+            tmc_state()
+                .position_filter_hz
+                .store(Some(0), Ordering::Relaxed);
+            tmc_state().flux_filter_hz.store(Some(0), Ordering::Relaxed);
 
             let raw_spi = MockRawSpi {
                 fail_write_after: Some(1),
@@ -521,7 +539,9 @@ mod tests {
                 "raw stored-filter restore should report SPI write failures"
             );
 
-            tmc_state().velocity_filter_hz.store(0, Ordering::Relaxed);
+            tmc_state()
+                .velocity_filter_hz
+                .store(None, Ordering::Relaxed);
         });
     }
 }

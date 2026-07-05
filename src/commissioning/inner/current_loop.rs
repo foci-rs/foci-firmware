@@ -1452,6 +1452,14 @@ pub(crate) async fn step_current_validate<B: CommissioningBackend>(
                     // Transition to ClosedLoopEntry with computed
                     // current-loop gains and fallback outer gains.
                     let vel_limit = backend.operational_velocity_limit();
+                    let default_current_filter_hz =
+                        backend.tmc_config().default_current_filter_hz();
+                    let torque_filter_hz = backend
+                        .configured_torque_filter_hz()
+                        .unwrap_or(default_current_filter_hz);
+                    let flux_filter_hz = backend
+                        .configured_flux_filter_hz()
+                        .unwrap_or(default_current_filter_hz);
                     *phase = InnerPhase::ClosedLoopEntry {
                         state: ClosedLoopEntryState::WriteGains,
                         flux_p: result.flux_p,
@@ -1465,9 +1473,9 @@ pub(crate) async fn step_current_validate<B: CommissioningBackend>(
                         position_i: 0,
                         velocity_limit: vel_limit,
                         velocity_filter_hz: 0,
-                        torque_filter_hz: 0,
+                        torque_filter_hz,
                         position_filter_hz: 0,
-                        flux_filter_hz: 0,
+                        flux_filter_hz,
                         inner_result: Some(result),
                     };
                     StepResult::PhaseChanged(PhaseId::ClosedLoopEntry)
@@ -1984,6 +1992,90 @@ mod tests {
                     );
                 }
                 other => panic!("expected CurrentValidate phase, got {other:?}"),
+            }
+        });
+    }
+
+    #[test]
+    fn accepted_current_validation_hands_off_bandwidth_default_current_filters() {
+        pollster::block_on(async {
+            let mut phase = current_validate_phase();
+            if let InnerPhase::CurrentValidate { state, .. } = &mut phase {
+                *state = CurrentValidateState::Finalize;
+            }
+            let mut buf = TransientBuffer::new();
+            let mut backend = MockBackend::new();
+            backend.tmc_config.bandwidth_hz = 1600.0;
+
+            let result = step_current_validate(
+                &mut phase,
+                &mut buf,
+                CommissionProfile::Balanced,
+                InnerSequence::Commission,
+                &None,
+                &mut backend,
+            )
+            .await;
+
+            assert!(matches!(
+                result,
+                StepResult::PhaseChanged(PhaseId::ClosedLoopEntry)
+            ));
+            match phase {
+                InnerPhase::ClosedLoopEntry {
+                    velocity_filter_hz,
+                    torque_filter_hz,
+                    position_filter_hz,
+                    flux_filter_hz,
+                    ..
+                } => {
+                    assert_eq!(velocity_filter_hz, 0);
+                    assert_eq!(torque_filter_hz, 6000);
+                    assert_eq!(position_filter_hz, 0);
+                    assert_eq!(flux_filter_hz, 6000);
+                }
+                other => panic!("expected ClosedLoopEntry phase, got {other:?}"),
+            }
+        });
+    }
+
+    #[test]
+    fn accepted_current_validation_honors_configured_current_filter_overrides() {
+        pollster::block_on(async {
+            let mut phase = current_validate_phase();
+            if let InnerPhase::CurrentValidate { state, .. } = &mut phase {
+                *state = CurrentValidateState::Finalize;
+            }
+            let mut buf = TransientBuffer::new();
+            let mut backend = MockBackend::new();
+            backend.tmc_config.bandwidth_hz = 1600.0;
+            backend.configured_torque_filter_hz = Some(0);
+            backend.configured_flux_filter_hz = Some(3000);
+
+            let result = step_current_validate(
+                &mut phase,
+                &mut buf,
+                CommissionProfile::Balanced,
+                InnerSequence::Commission,
+                &None,
+                &mut backend,
+            )
+            .await;
+
+            assert!(matches!(
+                result,
+                StepResult::PhaseChanged(PhaseId::ClosedLoopEntry)
+            ));
+            match phase {
+                InnerPhase::ClosedLoopEntry {
+                    torque_filter_hz,
+                    flux_filter_hz,
+                    ..
+                } => {
+                    assert_eq!(torque_filter_hz, 0);
+                    assert_eq!(flux_filter_hz, 3000);
+                }
+                other => panic!("expected ClosedLoopEntry phase, got {other:?}"),
             }
         });
     }

@@ -2,7 +2,7 @@
 //! (TMC_REQUEST_SENDER) stays in the board crate — its Sender type's
 //! generic params bind to the board's RTIC app declaration.
 
-use core::sync::atomic::{AtomicBool, AtomicI32, AtomicU8, AtomicU16, AtomicU32};
+use core::sync::atomic::{AtomicBool, AtomicI32, AtomicU8, AtomicU16, AtomicU32, Ordering};
 
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::signal::Signal;
@@ -15,6 +15,51 @@ pub const DEFAULT_OPERATIONAL_PIDOUT_UQ_UD_LIMIT: u32 = 16_000;
 pub const MIN_OPERATIONAL_PIDOUT_UQ_UD_LIMIT: u32 = 0;
 /// Highest accepted diagnostic PIDOUT_UQ_UD_LIMITS value.
 pub const MAX_OPERATIONAL_PIDOUT_UQ_UD_LIMIT: u32 = 32_767;
+
+const OPTIONAL_FILTER_HZ_UNSET: u32 = u32::MAX;
+
+/// Atomic storage for an optional biquad filter cutoff in Hz.
+///
+/// `None` means no host override has been configured, `Some(0)` means the host
+/// explicitly disabled the filter, and `Some(hz)` means the host supplied a
+/// concrete cutoff.
+pub struct AtomicOptionalFilterHz {
+    raw: AtomicU32,
+}
+
+impl AtomicOptionalFilterHz {
+    /// Create optional filter storage with the given initial value.
+    pub const fn new(filter_hz: Option<u16>) -> Self {
+        Self {
+            raw: AtomicU32::new(Self::encode(filter_hz)),
+        }
+    }
+
+    /// Load the optional cutoff value.
+    pub fn load(&self, ordering: Ordering) -> Option<u16> {
+        match self.raw.load(ordering) {
+            OPTIONAL_FILTER_HZ_UNSET => None,
+            raw => Some(raw as u16),
+        }
+    }
+
+    /// Load the cutoff value, treating an unset filter as disabled.
+    pub fn load_or_zero(&self, ordering: Ordering) -> u16 {
+        self.load(ordering).unwrap_or(0)
+    }
+
+    /// Store the optional cutoff value.
+    pub fn store(&self, filter_hz: Option<u16>, ordering: Ordering) {
+        self.raw.store(Self::encode(filter_hz), ordering);
+    }
+
+    const fn encode(filter_hz: Option<u16>) -> u32 {
+        match filter_hz {
+            Some(hz) => hz as u32,
+            None => OPTIONAL_FILTER_HZ_UNSET,
+        }
+    }
+}
 
 /// Runtime state for one board-local TMC4671 channel.
 pub struct TmcChannelState {
@@ -31,14 +76,14 @@ pub struct TmcChannelState {
     pub step_width_value: AtomicI32,
     /// Configured mechanical ABN encoder pulses per revolution.
     pub encoder_ppr: AtomicU32,
-    /// Velocity biquad filter cutoff frequency in Hz.
-    pub velocity_filter_hz: AtomicU16,
-    /// Torque biquad filter cutoff frequency in Hz.
-    pub torque_filter_hz: AtomicU16,
-    /// Position target biquad filter cutoff frequency in Hz.
-    pub position_filter_hz: AtomicU16,
-    /// Flux biquad filter cutoff frequency in Hz.
-    pub flux_filter_hz: AtomicU16,
+    /// Optional velocity biquad filter cutoff frequency in Hz.
+    pub velocity_filter_hz: AtomicOptionalFilterHz,
+    /// Optional torque biquad filter cutoff frequency in Hz.
+    pub torque_filter_hz: AtomicOptionalFilterHz,
+    /// Optional position target biquad filter cutoff frequency in Hz.
+    pub position_filter_hz: AtomicOptionalFilterHz,
+    /// Optional flux biquad filter cutoff frequency in Hz.
+    pub flux_filter_hz: AtomicOptionalFilterHz,
     /// Velocity feedforward enable flag.
     pub velocity_feedforward: AtomicBool,
     /// Runtime multiplier for the computed velocity feedforward offset.
@@ -124,10 +169,10 @@ impl TmcChannelState {
             motor_sentinel: AtomicU32::new(0),
             step_width_value: AtomicI32::new(0),
             encoder_ppr: AtomicU32::new(0),
-            velocity_filter_hz: AtomicU16::new(0),
-            torque_filter_hz: AtomicU16::new(0),
-            position_filter_hz: AtomicU16::new(0),
-            flux_filter_hz: AtomicU16::new(0),
+            velocity_filter_hz: AtomicOptionalFilterHz::new(None),
+            torque_filter_hz: AtomicOptionalFilterHz::new(None),
+            position_filter_hz: AtomicOptionalFilterHz::new(None),
+            flux_filter_hz: AtomicOptionalFilterHz::new(None),
             velocity_feedforward: AtomicBool::new(false),
             velocity_feedforward_multiplier: AtomicU16::new(1),
             velocity_transient_feedforward: AtomicBool::new(false),
@@ -177,10 +222,10 @@ impl TmcChannelState {
         self.motor_sentinel.store(0, Relaxed);
         self.step_width_value.store(0, Relaxed);
         self.encoder_ppr.store(0, Relaxed);
-        self.velocity_filter_hz.store(0, Relaxed);
-        self.torque_filter_hz.store(0, Relaxed);
-        self.position_filter_hz.store(0, Relaxed);
-        self.flux_filter_hz.store(0, Relaxed);
+        self.velocity_filter_hz.store(None, Relaxed);
+        self.torque_filter_hz.store(None, Relaxed);
+        self.position_filter_hz.store(None, Relaxed);
+        self.flux_filter_hz.store(None, Relaxed);
         self.velocity_feedforward.store(false, Relaxed);
         self.velocity_feedforward_multiplier.store(1, Relaxed);
         self.velocity_transient_feedforward.store(false, Relaxed);
@@ -295,6 +340,22 @@ mod tests {
     use core::sync::atomic::Ordering::Relaxed;
 
     #[test]
+    fn optional_filter_hz_distinguishes_unset_disable_and_cutoff() {
+        let filter = AtomicOptionalFilterHz::new(None);
+
+        assert_eq!(filter.load(Relaxed), None);
+
+        filter.store(Some(0), Relaxed);
+        assert_eq!(filter.load(Relaxed), Some(0));
+
+        filter.store(Some(3000), Relaxed);
+        assert_eq!(filter.load(Relaxed), Some(3000));
+
+        filter.store(None, Relaxed);
+        assert_eq!(filter.load(Relaxed), None);
+    }
+
+    #[test]
     fn tmc_channels_have_independent_current_limits() {
         let channel0 = tmc_channel(0).unwrap();
         let channel1 = tmc_channel(1).unwrap();
@@ -406,5 +467,21 @@ mod tests {
         assert!(!channel.motor_armed.load(Relaxed));
         assert!(!channel.commission_in_flight.load(Relaxed));
         assert!(!channel.auto_calibrate_on_enable_allowed.load(Relaxed));
+    }
+
+    #[test]
+    fn reset_clears_optional_filter_values() {
+        let channel = TmcChannelState::new();
+        channel.velocity_filter_hz.store(Some(100), Relaxed);
+        channel.torque_filter_hz.store(Some(0), Relaxed);
+        channel.position_filter_hz.store(Some(200), Relaxed);
+        channel.flux_filter_hz.store(Some(300), Relaxed);
+
+        channel.reset();
+
+        assert_eq!(channel.velocity_filter_hz.load(Relaxed), None);
+        assert_eq!(channel.torque_filter_hz.load(Relaxed), None);
+        assert_eq!(channel.position_filter_hz.load(Relaxed), None);
+        assert_eq!(channel.flux_filter_hz.load(Relaxed), None);
     }
 }

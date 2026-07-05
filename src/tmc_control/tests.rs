@@ -574,7 +574,7 @@ fn shared_dispatch_set_torque_filter_writes_biquad_and_updates_state() {
             spi.write_attempts
                 .contains(&(CONFIG_BIQUAD_T_ENABLE.data.addr(), 1))
         );
-        assert_eq!(tmc_state.torque_filter_hz.load(Relaxed), 3000);
+        assert_eq!(tmc_state.torque_filter_hz.load(Relaxed), Some(3000));
         assert!(spi.read_requests.is_empty());
     });
 }
@@ -583,7 +583,7 @@ fn shared_dispatch_set_torque_filter_writes_biquad_and_updates_state() {
 fn shared_dispatch_set_torque_filter_zero_disables_filter() {
     pollster::block_on(async {
         let tmc_state = crate::state::tmc::TmcChannelState::new();
-        tmc_state.torque_filter_hz.store(3000, Relaxed);
+        tmc_state.torque_filter_hz.store(Some(3000), Relaxed);
         let mut tmc = Tmc4671Spi::new(RuntimeMockSpi::default());
 
         let result = apply_shared_tmc_request(
@@ -605,7 +605,7 @@ fn shared_dispatch_set_torque_filter_zero_disables_filter() {
             spi.write_attempts
                 .contains(&(CONFIG_BIQUAD_T_ENABLE.data.addr(), 0))
         );
-        assert_eq!(tmc_state.torque_filter_hz.load(Relaxed), 0);
+        assert_eq!(tmc_state.torque_filter_hz.load(Relaxed), Some(0));
         assert!(spi.read_requests.is_empty());
     });
 }

@@ -17,6 +17,10 @@ pub const fn dsadc_mdec_from_pwm_maxcnt(pwm_maxcnt: u16) -> u16 {
     }
 }
 
+const CURRENT_FILTER_RATIO_TO_BANDWIDTH: f32 = 4.0;
+const CURRENT_FILTER_FLOOR_HZ: u32 = 1000;
+const CURRENT_FILTER_MAX_HZ: u32 = 6000;
+
 /// Board-specific TMC4671 hardware configuration.
 ///
 /// Constructed as a `const` by each firmware crate. Passed to all
@@ -70,6 +74,23 @@ impl TmcConfig {
     /// `T = (PWM_MAXCNT + 1) * 10ns` (100 MHz internal counter)
     pub const fn pwm_period_ns(&self) -> u32 {
         (self.pwm_maxcnt as u32 + 1) * 10
+    }
+
+    /// Default torque/flux current-measurement filter cutoff in Hz.
+    ///
+    /// The cutoff tracks the current-loop bandwidth so retuning the loop keeps
+    /// roughly the same filter-to-crossover ratio. The upper bound stays below
+    /// the 25 kHz PWM Nyquist region and follows lower PWM frequencies by
+    /// capping at one quarter of the PWM frequency.
+    pub fn default_current_filter_hz(&self) -> u16 {
+        let derived = if self.bandwidth_hz.is_finite() && self.bandwidth_hz > 0.0 {
+            (self.bandwidth_hz * CURRENT_FILTER_RATIO_TO_BANDWIDTH + 0.5) as u32
+        } else {
+            0
+        };
+        let with_floor = derived.max(CURRENT_FILTER_FLOOR_HZ);
+        let pwm_margin = self.pwm_freq_hz() / 4;
+        with_floor.min(CURRENT_FILTER_MAX_HZ).min(pwm_margin) as u16
     }
 
     /// BBM register value: `(bbm_h << 8) | bbm_l`.
@@ -155,6 +176,35 @@ mod tests {
     fn pwm_freq_hz_datasheet_formula() {
         let cfg = test_config();
         assert_eq!(cfg.pwm_freq_hz(), 25_000);
+    }
+
+    #[test]
+    fn current_filter_default_tracks_bandwidth_and_caps_at_six_khz() {
+        let mut cfg = test_config();
+
+        cfg.bandwidth_hz = 400.0;
+        assert_eq!(cfg.default_current_filter_hz(), 1600);
+
+        cfg.bandwidth_hz = 1200.0;
+        assert_eq!(cfg.default_current_filter_hz(), 4800);
+
+        cfg.bandwidth_hz = 1600.0;
+        assert_eq!(cfg.default_current_filter_hz(), 6000);
+
+        cfg.bandwidth_hz = 2000.0;
+        assert_eq!(cfg.default_current_filter_hz(), 6000);
+    }
+
+    #[test]
+    fn current_filter_default_has_floor_and_pwm_margin() {
+        let mut cfg = test_config();
+
+        cfg.bandwidth_hz = 50.0;
+        assert_eq!(cfg.default_current_filter_hz(), 1000);
+
+        cfg.bandwidth_hz = 1600.0;
+        cfg.pwm_maxcnt = 9999;
+        assert_eq!(cfg.default_current_filter_hz(), 2500);
     }
 
     #[test]

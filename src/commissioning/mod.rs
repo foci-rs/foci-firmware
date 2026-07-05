@@ -122,7 +122,11 @@ pub(crate) struct CalibrateEntryGains {
 }
 
 impl CalibrateEntryGains {
-    fn from_tmc_state(tmc_state: &'static TmcChannelState, inner: Option<InnerLoopGains>) -> Self {
+    fn from_tmc_state(
+        tmc_state: &'static TmcChannelState,
+        inner: Option<InnerLoopGains>,
+        current_filter_default_hz: u16,
+    ) -> Self {
         use core::sync::atomic::Ordering::Relaxed;
 
         Self {
@@ -132,10 +136,16 @@ impl CalibrateEntryGains {
             position_p: tmc_state.position_p_value.load(Relaxed),
             position_i: tmc_state.position_i_value.load(Relaxed),
             velocity_limit: tmc_state.velocity_limit_cfg.load(Relaxed),
-            velocity_filter_hz: tmc_state.velocity_filter_hz.load(Relaxed),
-            torque_filter_hz: tmc_state.torque_filter_hz.load(Relaxed),
-            position_filter_hz: tmc_state.position_filter_hz.load(Relaxed),
-            flux_filter_hz: tmc_state.flux_filter_hz.load(Relaxed),
+            velocity_filter_hz: tmc_state.velocity_filter_hz.load_or_zero(Relaxed),
+            torque_filter_hz: tmc_state
+                .torque_filter_hz
+                .load(Relaxed)
+                .unwrap_or(current_filter_default_hz),
+            position_filter_hz: tmc_state.position_filter_hz.load_or_zero(Relaxed),
+            flux_filter_hz: tmc_state
+                .flux_filter_hz
+                .load(Relaxed)
+                .unwrap_or(current_filter_default_hz),
         }
     }
 }
@@ -245,7 +255,13 @@ impl CommissioningEngine {
         tmc_state: &'static TmcChannelState,
         trace_engine_seq: u32,
     ) -> Self {
-        Self::new_calibrate_for_tmc_with_gains_and_trace_seq(oid, tmc_state, None, trace_engine_seq)
+        Self::new_calibrate_for_tmc_with_gains_and_trace_seq(
+            oid,
+            tmc_state,
+            None,
+            0,
+            trace_engine_seq,
+        )
     }
 
     /// Create a calibration engine bound to a TMC channel state and stored gains.
@@ -254,7 +270,7 @@ impl CommissioningEngine {
         tmc_state: &'static TmcChannelState,
         inner_gains: Option<InnerLoopGains>,
     ) -> Self {
-        Self::new_calibrate_for_tmc_with_gains_and_trace_seq(oid, tmc_state, inner_gains, 0)
+        Self::new_calibrate_for_tmc_with_gains_and_trace_seq(oid, tmc_state, inner_gains, 0, 0)
     }
 
     /// Create a calibration engine bound to a TMC channel state, stored gains, and trace sequence.
@@ -262,10 +278,14 @@ impl CommissioningEngine {
         oid: u8,
         tmc_state: &'static TmcChannelState,
         inner_gains: Option<InnerLoopGains>,
+        current_filter_default_hz: u16,
         trace_engine_seq: u32,
     ) -> Self {
-        let calibrate_entry_gains =
-            Some(CalibrateEntryGains::from_tmc_state(tmc_state, inner_gains));
+        let calibrate_entry_gains = Some(CalibrateEntryGains::from_tmc_state(
+            tmc_state,
+            inner_gains,
+            current_filter_default_hz,
+        ));
         Self {
             oid,
             tmc_state,
@@ -1005,10 +1025,10 @@ mod tests {
             tmc_state.position_p_value.store(627, Relaxed);
             tmc_state.position_i_value.store(1, Relaxed);
             tmc_state.velocity_limit_cfg.store(500_000, Relaxed);
-            tmc_state.velocity_filter_hz.store(11, Relaxed);
-            tmc_state.torque_filter_hz.store(13, Relaxed);
-            tmc_state.position_filter_hz.store(17, Relaxed);
-            tmc_state.flux_filter_hz.store(19, Relaxed);
+            tmc_state.velocity_filter_hz.store(Some(11), Relaxed);
+            tmc_state.torque_filter_hz.store(Some(13), Relaxed);
+            tmc_state.position_filter_hz.store(Some(17), Relaxed);
+            tmc_state.flux_filter_hz.store(Some(19), Relaxed);
 
             let inner = crate::pid::InnerLoopGains {
                 flux_p: 711,

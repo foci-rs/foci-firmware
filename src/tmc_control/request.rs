@@ -51,6 +51,8 @@ where
     fn next_commission_trace_seq(&mut self) -> u32;
     /// Return the board's normal request-tail policy.
     fn normal_tail(&self) -> TmcControlRequestTail;
+    /// Return the board default current-filter cutoff for omitted host config.
+    fn default_current_filter_hz(&self) -> u16;
 
     /// Emit a host reply using board-local sender glue.
     fn emit_reply(&mut self, payload: ReplyPayload);
@@ -150,6 +152,7 @@ where
                             0,
                             board.tmc_state(),
                             runtime.stored_gains(),
+                            board.default_current_filter_hz(),
                             board.next_commission_trace_seq(),
                         ),
                     );
@@ -233,6 +236,7 @@ where
                     oid,
                     board.tmc_state(),
                     runtime.stored_gains(),
+                    board.default_current_filter_hz(),
                     board.next_commission_trace_seq(),
                 ),
             );
@@ -541,6 +545,7 @@ where
             let tmc_state = board.tmc_state();
             let entry_snapshot = {
                 use core::sync::atomic::Ordering::Relaxed;
+                let default_current_filter_hz = board.default_current_filter_hz();
                 EntrySnapshot {
                     velocity_p: tmc_state.velocity_p_value.load(Relaxed),
                     velocity_i: tmc_state.velocity_i_value.load(Relaxed),
@@ -548,10 +553,16 @@ where
                     position_i: tmc_state.position_i_value.load(Relaxed),
                     velocity_limit: tmc_state.velocity_limit_cfg.load(Relaxed),
                     voltage_limit: tmc_state.voltage_limit_cfg.load(Relaxed),
-                    velocity_filter_hz: tmc_state.velocity_filter_hz.load(Relaxed),
-                    torque_filter_hz: tmc_state.torque_filter_hz.load(Relaxed),
-                    position_filter_hz: tmc_state.position_filter_hz.load(Relaxed),
-                    flux_filter_hz: tmc_state.flux_filter_hz.load(Relaxed),
+                    velocity_filter_hz: tmc_state.velocity_filter_hz.load_or_zero(Relaxed),
+                    torque_filter_hz: tmc_state
+                        .torque_filter_hz
+                        .load(Relaxed)
+                        .unwrap_or(default_current_filter_hz),
+                    position_filter_hz: tmc_state.position_filter_hz.load_or_zero(Relaxed),
+                    flux_filter_hz: tmc_state
+                        .flux_filter_hz
+                        .load(Relaxed)
+                        .unwrap_or(default_current_filter_hz),
                 }
             };
             let outer_params = OuterTuneParams {
@@ -777,6 +788,7 @@ mod tests {
         channel: u8,
         commissioning_blocked: bool,
         normal_tail: TmcControlRequestTail,
+        default_current_filter_hz: u16,
         next_trace_seq: u32,
         register_result: Result<(), ()>,
         arm_result: Result<(), CommissionError>,
@@ -796,6 +808,7 @@ mod tests {
                 channel: 0,
                 commissioning_blocked: false,
                 normal_tail,
+                default_current_filter_hz: 6000,
                 next_trace_seq: 1,
                 register_result: Ok(()),
                 arm_result: Ok(()),
@@ -843,6 +856,10 @@ mod tests {
 
         fn normal_tail(&self) -> TmcControlRequestTail {
             self.normal_tail
+        }
+
+        fn default_current_filter_hz(&self) -> u16 {
+            self.default_current_filter_hz
         }
 
         fn emit_reply(&mut self, payload: ReplyPayload) {
@@ -1338,6 +1355,39 @@ mod tests {
             assert_eq!(board.disarm_calls, 1);
             assert_eq!(board.motor_arm_events, 0);
             assert_eq!(outcome.tail, TmcControlRequestTail::SkipTickTail);
+        });
+    }
+
+    #[test]
+    fn tune_entry_snapshot_uses_default_current_filters_when_unconfigured() {
+        run_request_test(async {
+            let mut runtime = TmcControlRuntime::new_for_channel(0);
+            runtime.set_motor_enabled_for_test(true);
+            runtime.set_calibrated_for_test(true);
+            let mut board = RecordingBoard::skip_tick_tail();
+            tmc_channel0().current_limit_reg.store(1, Relaxed);
+            let mut tmc = Tmc4671Spi::new(RuntimeMockSpi::default());
+
+            let outcome = handle_tmc_control_request(
+                tune_request(),
+                TmcPreRequestDisposition::ContinueRequest,
+                &mut runtime,
+                &mut tmc,
+                &mut board,
+            )
+            .await;
+
+            assert_eq!(outcome.tail, TmcControlRequestTail::SkipTickTail);
+            let engine = runtime
+                .take_commission_engine()
+                .expect("tune should start outer engine");
+            let snapshot = engine
+                .entry_snapshot()
+                .expect("outer engine should carry entry snapshot");
+            assert_eq!(snapshot.velocity_filter_hz, 0);
+            assert_eq!(snapshot.torque_filter_hz, 6000);
+            assert_eq!(snapshot.position_filter_hz, 0);
+            assert_eq!(snapshot.flux_filter_hz, 6000);
         });
     }
 
