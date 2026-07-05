@@ -103,6 +103,8 @@ pub const CURRENT_GAINS_TIER_MEASURED_SYMMETRIC: u8 = 1;
 pub const CURRENT_GAINS_TIER_MEASURED_SPLIT: u8 = 2;
 /// Default conservative current-loop gains were applied.
 pub const CURRENT_GAINS_TIER_DEFAULT: u8 = 3;
+/// Physical-bandwidth symmetric current-loop gains were produced.
+pub const CURRENT_GAINS_TIER_PHYSICAL_SYMMETRIC: u8 = 4;
 
 /// Flux-axis validation passed.
 pub const CURRENT_VALIDATION_AXIS_FLUX: u8 = 1 << 0;
