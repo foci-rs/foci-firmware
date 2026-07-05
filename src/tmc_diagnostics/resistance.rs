@@ -99,7 +99,6 @@ where
 fn profile_report(oid: u8, profile: &ResistanceProfile) -> ResistanceProfileReport {
     ResistanceProfileReport {
         oid,
-        profile_version: profile.profile_version,
         pwm_maxcnt: profile.pwm_maxcnt,
         bbm_h: profile.bbm_h,
         bbm_l: profile.bbm_l,
@@ -154,7 +153,6 @@ fn success_run_report(
     ResistanceRunReport {
         oid,
         status: 0,
-        profile_version: result.profile_version,
         selected_r_count_slope_milli: result.selected_r_count_slope_milli,
         // The diagnostic path's `ResistanceRunResult` has no gain-path
         // concept; only the commission path populates this field.

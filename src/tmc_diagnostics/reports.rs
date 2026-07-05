@@ -275,8 +275,6 @@ pub fn empty_voltage_step_report(
 pub struct ResistanceProfileReport {
     /// Object id of the FOCI endpoint.
     pub oid: u8,
-    /// Resistance-identification profile schema version.
-    pub profile_version: u16,
     /// PWM_MAXCNT register value used during the sweep.
     pub pwm_maxcnt: u16,
     /// Break-before-make high-side count.
@@ -306,8 +304,6 @@ pub struct ResistanceRunReport {
     /// Status code: 0 success, non-zero stable failure reason from
     /// [`crate::resistance_identification::ResistanceError::status_code`].
     pub status: u8,
-    /// Resistance-identification profile schema version.
-    pub profile_version: u16,
     /// Selected count-space resistance slope, scaled by 1000.
     pub selected_r_count_slope_milli: i32,
     /// Resistance count-slope (milli-units) actually consumed by the gain
@@ -552,7 +548,6 @@ pub fn empty_resistance_run_report(oid: u8, status: u8) -> ResistanceRunReport {
     ResistanceRunReport {
         oid,
         status,
-        profile_version: 0,
         selected_r_count_slope_milli: 0,
         gain_path_count_slope_milli: 0,
         warning_flags: 0,

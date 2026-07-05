@@ -149,7 +149,6 @@ pub fn evaluate_resistance_result(
     }
 
     Ok(ResistanceRunResult {
-        profile_version: profile.profile_version,
         selected_r_count_slope_milli: (axis0.r_count_slope_milli + axis1.r_count_slope_milli) / 2,
         status_flags_or,
         axis0,

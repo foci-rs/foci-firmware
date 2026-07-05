@@ -350,8 +350,6 @@ pub struct InnerResult {
     // count-slope-milli mismatch directly from artifacts. All slope fields
     // are in the same count-slope-milli unit space (dV_count/dI_count * 1000)
     // as the `r_int` resistance scale.
-    /// Resistance profile version that produced the run.
-    pub resistance_profile_version: u16,
     /// Run-selected resistance count-slope in milli-units.
     pub resistance_selected_count_slope_milli: i32,
     /// Resistance count-slope (milli-units) actually consumed by the gain path.

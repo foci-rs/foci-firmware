@@ -666,8 +666,6 @@ pub struct FociVoltageStepResult {
 pub struct FociResistanceProfile {
     /// Object id of the FOCI endpoint.
     pub oid: u8,
-    /// Resistance-identification profile schema version.
-    pub profile_version: u16,
     /// PWM_MAXCNT register value used during the sweep.
     pub pwm_maxcnt: u16,
     /// Break-before-make high-side count.
@@ -697,8 +695,6 @@ pub struct FociResistanceRun {
     pub oid: u8,
     /// Status code: 0 success, non-zero stable failure reason.
     pub status: u8,
-    /// Resistance-identification profile schema version.
-    pub profile_version: u16,
     /// Selected count-space resistance slope, scaled by 1000.
     pub selected_r_count_slope_milli: i32,
     /// Resistance count-slope (milli-units) actually consumed by the gain
@@ -1002,7 +998,6 @@ mod resistance_reply_size_tests {
         // cannot reach the wider per-length VLQ thresholds.
         let reply = FociResistanceProfile {
             oid: u8::MAX,
-            profile_version: u16::MAX,
             pwm_maxcnt: u16::MAX,
             bbm_h: u8::MAX,
             bbm_l: u8::MAX,
@@ -1026,7 +1021,6 @@ mod resistance_reply_size_tests {
         let reply = FociResistanceRun {
             oid: u8::MAX,
             status: u8::MAX,
-            profile_version: u16::MAX,
             selected_r_count_slope_milli: i32::MIN,
             gain_path_count_slope_milli: i32::MIN,
             warning_flags: 0x7FFF_FFFF,

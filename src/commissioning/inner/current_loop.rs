@@ -1366,7 +1366,6 @@ pub(crate) async fn step_current_validate<B: CommissioningBackend>(
                 tau_e_us: data.model.tau_e_us,
                 inductance: data.inductance,
                 inner_warning_flags: data.inner_warning_flags,
-                resistance_profile_version: resistance.profile_version,
                 resistance_selected_count_slope_milli: resistance.selected_r_count_slope_milli,
                 resistance_gain_path_count_slope_milli: data.resistance_gain_path_count_slope_milli,
                 resistance_axis0_count_slope_milli: axis0.r_count_slope_milli,
@@ -2908,7 +2907,6 @@ mod tests {
         }
 
         ResistanceRunResult {
-            profile_version: 1,
             selected_r_count_slope_milli: 1000,
             status_flags_or: 0,
             axis0: axis_result(ElectricalAxis::PHASE0),

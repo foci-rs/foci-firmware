@@ -92,7 +92,6 @@ pub struct ResistanceAxisResult {
 /// Complete two-axis resistance run result.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub struct ResistanceRunResult {
-    pub profile_version: u16,
     pub selected_r_count_slope_milli: i32,
     pub status_flags_or: u32,
     pub axis0: ResistanceAxisResult,

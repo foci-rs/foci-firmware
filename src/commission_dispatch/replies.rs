@@ -188,7 +188,6 @@ fn commission_resistance_run_report(oid: u8, inner: &InnerResult) -> ResistanceR
     ResistanceRunReport {
         oid,
         status: 0,
-        profile_version: inner.resistance_profile_version,
         selected_r_count_slope_milli: inner.resistance_selected_count_slope_milli,
         gain_path_count_slope_milli: inner.resistance_gain_path_count_slope_milli,
         warning_flags: inner.resistance_warning_flags,
@@ -876,7 +875,6 @@ mod tests {
                 tau_e_us: 23,
                 inductance: InductanceEvidence::test_fixture(),
                 inner_warning_flags: 26,
-                resistance_profile_version: 1,
                 resistance_selected_count_slope_milli: 1050,
                 resistance_gain_path_count_slope_milli: 16,
                 resistance_axis0_count_slope_milli: 1040,

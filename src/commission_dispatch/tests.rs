@@ -778,7 +778,6 @@ fn sample_commission_result() -> crate::commissioning::types::CommissionResult {
             tau_e_us: 730,
             inductance: crate::commissioning::types::InductanceEvidence::EMPTY,
             inner_warning_flags: 0,
-            resistance_profile_version: 1,
             resistance_selected_count_slope_milli: 1706,
             resistance_gain_path_count_slope_milli: 1706,
             resistance_axis0_count_slope_milli: 1700,

@@ -106,7 +106,6 @@ mod tests {
         },
         ResistanceProfile {
             oid: u8,
-            profile_version: u16,
         },
         ResistanceAxis {
             oid: u8,
@@ -169,10 +168,8 @@ mod tests {
         }
 
         fn foci_resistance_profile(&mut self, report: ResistanceProfileReport) {
-            self.events.push(Event::ResistanceProfile {
-                oid: report.oid,
-                profile_version: report.profile_version,
-            });
+            self.events
+                .push(Event::ResistanceProfile { oid: report.oid });
         }
 
         fn foci_resistance_axis(&mut self, report: ResistanceAxisReport) {
@@ -405,7 +402,6 @@ mod tests {
     fn resistance_profile_report() -> ResistanceProfileReport {
         ResistanceProfileReport {
             oid: 7,
-            profile_version: 1,
             pwm_maxcnt: 3999,
             bbm_h: 9,
             bbm_l: 9,
@@ -440,7 +436,6 @@ mod tests {
         ResistanceRunReport {
             oid: 7,
             status,
-            profile_version: 1,
             selected_r_count_slope_milli: 1010,
             gain_path_count_slope_milli: 0,
             warning_flags: 0,
@@ -468,10 +463,7 @@ mod tests {
         assert_eq!(
             sink.events,
             std::vec![
-                Event::ResistanceProfile {
-                    oid: 7,
-                    profile_version: 1,
-                },
+                Event::ResistanceProfile { oid: 7 },
                 Event::ResistanceAxis {
                     oid: 7,
                     electrical_axis: 0,
@@ -501,10 +493,7 @@ mod tests {
         assert_eq!(
             sink.events,
             std::vec![
-                Event::ResistanceProfile {
-                    oid: 7,
-                    profile_version: 1,
-                },
+                Event::ResistanceProfile { oid: 7 },
                 Event::ResistanceDone { oid: 7, status: 19 },
             ]
         );

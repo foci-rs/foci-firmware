@@ -1,12 +1,11 @@
 use super::types::ElectricalAxis;
 
-/// Fixed v1 standard positive UD point set.
+/// Standard positive UD point candidates for adaptive resistance identification.
 pub const STANDARD_UD_POINTS: [i16; 8] = [512, 640, 800, 960, 1120, 1280, 1440, 1600];
 
 /// Profile constants for one resistance-identification run.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub struct ResistanceProfile {
-    pub profile_version: u16,
     pub axes: [ElectricalAxis; 2],
     pub ud_points: [i16; 8],
     pub signed_anchor_ud: i16,
@@ -38,7 +37,6 @@ pub struct ResistanceProfile {
 impl ResistanceProfile {
     pub const fn standard() -> Self {
         Self {
-            profile_version: 2,
             axes: [ElectricalAxis::PHASE0, ElectricalAxis::PHASE90],
             ud_points: STANDARD_UD_POINTS,
             signed_anchor_ud: 960,
@@ -129,16 +127,5 @@ mod tests {
         assert!(profile.max_expected_current_count >= 1400);
         assert_eq!(profile.encoder_move_warn_counts, 128);
         assert_ne!(profile.status_flags_warn_mask, 0);
-    }
-
-    #[test]
-    fn standard_profile_version_marks_adjacent_zero_bracketing_semantics() {
-        // v2 records that each sweep point is zero-subtracted against its
-        // adjacent zero windows (prior trailing + own trailing), not the global
-        // initial zero window. Artifacts captured under v1 are not directly
-        // comparable, so the version bump pins the semantics change.
-        let profile = ResistanceProfile::standard();
-
-        assert_eq!(profile.profile_version, 2);
     }
 }

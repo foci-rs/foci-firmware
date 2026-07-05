@@ -1256,7 +1256,6 @@ mod tests {
     /// the runner's `evaluate_resistance_result` behavior.
     fn resistance_result(slope0_milli: i32, slope1_milli: i32) -> ResistanceRunResult {
         ResistanceRunResult {
-            profile_version: 1,
             selected_r_count_slope_milli: (slope0_milli + slope1_milli) / 2,
             status_flags_or: 0,
             axis0: axis_result(ElectricalAxis::PHASE0, slope0_milli),

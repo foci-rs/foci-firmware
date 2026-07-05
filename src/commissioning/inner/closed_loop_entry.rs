@@ -535,7 +535,6 @@ pub(crate) async fn step_closed_loop_entry<B: CommissioningBackend>(
                         tau_e_us: 0,
                         inductance: crate::commissioning::types::InductanceEvidence::EMPTY,
                         inner_warning_flags: 0,
-                        resistance_profile_version: 0,
                         resistance_selected_count_slope_milli: 0,
                         resistance_gain_path_count_slope_milli: 0,
                         resistance_axis0_count_slope_milli: 0,
