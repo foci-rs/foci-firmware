@@ -294,6 +294,77 @@ impl CurrentGainSynthesisInput {
     }
 }
 
+#[cfg_attr(
+    not(test),
+    allow(dead_code, reason = "consumed by physical synthesis in the next task")
+)]
+const CURRENT_P_Q8_8_SCALE: f32 = 256.0;
+#[cfg_attr(
+    not(test),
+    allow(dead_code, reason = "consumed by physical synthesis in the next task")
+)]
+const MAX_PHYSICAL_CURRENT_BANDWIDTH_HZ: f32 = 2_000.0;
+
+#[cfg_attr(
+    not(test),
+    allow(dead_code, reason = "consumed by physical synthesis in the next task")
+)]
+fn finite_positive(value: f32) -> bool {
+    value.is_finite() && value > 0.0
+}
+
+#[cfg_attr(
+    not(test),
+    allow(dead_code, reason = "consumed by physical synthesis in the next task")
+)]
+fn valid_physical_current_bandwidth_hz(value: f32) -> bool {
+    finite_positive(value) && value <= MAX_PHYSICAL_CURRENT_BANDWIDTH_HZ
+}
+
+#[cfg_attr(
+    not(test),
+    allow(dead_code, reason = "consumed by physical synthesis in the next task")
+)]
+fn round_positive_to_u16(value: f32) -> Option<u16> {
+    if !finite_positive(value) {
+        return None;
+    }
+    let rounded = value + 0.5;
+    if rounded >= u16::MAX as f32 + 1.0 {
+        return None;
+    }
+    Some(rounded.max(1.0) as u16)
+}
+
+#[cfg_attr(
+    not(test),
+    allow(dead_code, reason = "consumed by physical synthesis in the next task")
+)]
+fn physical_current_p_raw_from_l_count_micro(l_count_micro: u32, bandwidth_hz: f32) -> Option<u16> {
+    if l_count_micro == 0 || !valid_physical_current_bandwidth_hz(bandwidth_hz) {
+        return None;
+    }
+    let l_count_seconds = l_count_micro as f32 * 1e-6;
+    let p_float =
+        2.0 * core::f32::consts::PI * bandwidth_hz * l_count_seconds * CURRENT_P_Q8_8_SCALE;
+    round_positive_to_u16(p_float)
+}
+
+#[cfg_attr(
+    not(test),
+    allow(
+        dead_code,
+        reason = "used by anchor tests before production use"
+    )
+)]
+fn physical_current_bandwidth_hz_for_p_raw(l_count_micro: u32, p_raw: u16) -> Option<f32> {
+    if l_count_micro == 0 || p_raw == 0 {
+        return None;
+    }
+    let l_count_seconds = l_count_micro as f32 * 1e-6;
+    Some(p_raw as f32 / (2.0 * core::f32::consts::PI * l_count_seconds * CURRENT_P_Q8_8_SCALE))
+}
+
 /// Compute the SIMC lambda (closed-loop time constant) for a given profile.
 ///
 /// All profiles guarantee `lambda >= theta_e` (SIMC stability boundary).
@@ -1030,6 +1101,58 @@ mod tests {
         assert_eq!(CURRENT_LOOP_FAILURE_STATUS_FLAGS, 8);
         assert_eq!(CURRENT_LOOP_FAILURE_RETRY_EXHAUSTED, 9);
         assert_eq!(CURRENT_LOOP_FAILURE_SPI, 10);
+    }
+
+    #[test]
+    fn physical_current_p_uses_count_space_l_and_bandwidth() {
+        assert_eq!(
+            physical_current_p_raw_from_l_count_micro(1_346, 600.0),
+            Some(1_299)
+        );
+        assert_eq!(
+            physical_current_p_raw_from_l_count_micro(1_346, 800.0),
+            Some(1_732)
+        );
+        assert_eq!(
+            physical_current_p_raw_from_l_count_micro(1_366, 650.0),
+            Some(1_428)
+        );
+    }
+
+    #[test]
+    fn physical_current_p_anchor_matches_foc108_evidence() {
+        let x_bw_for_p1422 =
+            physical_current_bandwidth_hz_for_p_raw(1_346, 1_422).expect("valid X anchor");
+        let y_bw_for_p1422 =
+            physical_current_bandwidth_hz_for_p_raw(1_366, 1_422).expect("valid Y anchor");
+
+        assert!(
+            (656.0..=657.5).contains(&x_bw_for_p1422),
+            "X anchor {x_bw_for_p1422}"
+        );
+        assert!(
+            (646.0..=648.5).contains(&y_bw_for_p1422),
+            "Y anchor {y_bw_for_p1422}"
+        );
+    }
+
+    #[test]
+    fn physical_current_p_rejects_invalid_inputs() {
+        assert_eq!(physical_current_p_raw_from_l_count_micro(0, 600.0), None);
+        assert_eq!(physical_current_p_raw_from_l_count_micro(1_346, 0.0), None);
+        assert_eq!(
+            physical_current_p_raw_from_l_count_micro(1_346, f32::NAN),
+            None
+        );
+        assert!(physical_current_p_raw_from_l_count_micro(1_346, 2_000.0).is_some());
+        assert_eq!(
+            physical_current_p_raw_from_l_count_micro(1_346, 2_001.0),
+            None
+        );
+        assert_eq!(
+            physical_current_p_raw_from_l_count_micro(1_346, 12_000.0),
+            None
+        );
     }
 
     #[test]
