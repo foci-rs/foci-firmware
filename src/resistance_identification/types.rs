@@ -115,6 +115,7 @@ pub enum ResistanceError {
     PeakCurrentExceeded,
     UnsupportedProfile,
     OutOfBoundsParameter,
+    MeasurementEnvelopeUnsupported,
 }
 
 impl ResistanceError {
@@ -144,6 +145,9 @@ impl From<ResistanceError> for crate::autotune::CommissionError {
             ResistanceError::PeakCurrentExceeded => Self::ResistancePeakCurrentExceeded,
             ResistanceError::UnsupportedProfile => Self::ResistanceUnsupportedProfile,
             ResistanceError::OutOfBoundsParameter => Self::ResistanceParameterOutOfBounds,
+            ResistanceError::MeasurementEnvelopeUnsupported => {
+                Self::ResistanceMeasurementEnvelopeUnsupported
+            }
         }
     }
 }
@@ -174,6 +178,7 @@ mod tests {
             (ResistanceError::PeakCurrentExceeded, 28),
             (ResistanceError::UnsupportedProfile, 29),
             (ResistanceError::OutOfBoundsParameter, 30),
+            (ResistanceError::MeasurementEnvelopeUnsupported, 31),
         ];
         let mut seen = [false; 256];
         for (error, code) in expected {

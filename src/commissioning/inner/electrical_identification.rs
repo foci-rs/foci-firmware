@@ -1748,8 +1748,9 @@ mod tests {
             let mut backend = MockBackend::new();
             seed_resistance_power_stage_registers(&mut backend);
             // No current scripting: ADC_IWY_IUX always reads back 0, so no
-            // point clears `linear_current_threshold_count` and the shared
-            // runner's fit rejects with `InsufficientLinearPoints`.
+            // measured point can support the fit or the signed anchor. The
+            // adaptive runner reports this as an unsupported measurement
+            // envelope rather than applying unsafe higher excitation.
 
             let mut phase = InnerPhase::ElectricalId {
                 state: ElectricalIdState::ResistanceIdentify,
@@ -1770,7 +1771,7 @@ mod tests {
             .await;
 
             let expected_status =
-                crate::resistance_identification::ResistanceError::InsufficientLinearPoints
+                crate::resistance_identification::ResistanceError::MeasurementEnvelopeUnsupported
                     .status_code();
             let StepResult::InnerFailed(error) = step else {
                 panic!("expected InnerFailed, got {step:?}");

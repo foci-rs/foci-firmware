@@ -161,6 +161,8 @@ pub enum CommissionError {
     ResistanceUnsupportedProfile,
     /// Resistance identification received an out-of-bounds profile parameter. Code 30.
     ResistanceParameterOutOfBounds,
+    /// Resistance identification could not find a safe measurement envelope. Code 31.
+    ResistanceMeasurementEnvelopeUnsupported,
 }
 
 impl CommissionError {
@@ -200,6 +202,7 @@ impl CommissionError {
             Self::ResistancePeakCurrentExceeded => 28,
             Self::ResistanceUnsupportedProfile => 29,
             Self::ResistanceParameterOutOfBounds => 30,
+            Self::ResistanceMeasurementEnvelopeUnsupported => 31,
         }
     }
 }
@@ -487,6 +490,7 @@ mod tests {
             CommissionError::ResistancePeakCurrentExceeded,
             CommissionError::ResistanceUnsupportedProfile,
             CommissionError::ResistanceParameterOutOfBounds,
+            CommissionError::ResistanceMeasurementEnvelopeUnsupported,
         ];
         let mut seen = [false; 256];
         for e in errors {

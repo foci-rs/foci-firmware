@@ -57,6 +57,8 @@ struct FakeResistanceBackend {
     ///
     /// Built proportional to the active UD so the fit produces a clean line.
     scripted_energized_current_count: i32,
+    /// Current gain used by the default UD-proportional script, in milli-counts per UD count.
+    scripted_current_per_ud_milli: i32,
     /// Encoder delta applied across each energized window.
     scripted_encoder_delta_count: u32,
     /// Last UD written via UQ_UD_EXT, used to script current proportional to UD.
@@ -118,6 +120,7 @@ impl FakeResistanceBackend {
             // Scale current ~= UD so the high-current points clear the linear
             // threshold and the fit stays well-conditioned.
             scripted_energized_current_count: 0,
+            scripted_current_per_ud_milli: 1000,
             scripted_encoder_delta_count: 0,
             last_ud: 0,
             last_motion_mode: 0,
@@ -187,8 +190,9 @@ impl FakeResistanceBackend {
         {
             return current;
         }
-        // Clean line: current count tracks UD count one-to-one.
-        i32::from(self.last_ud)
+        // Clean line: current count tracks UD count with a configurable gain
+        // so tests can model higher Vbus without changing the fit linearity.
+        i32::from(self.last_ud) * self.scripted_current_per_ud_milli / 1000
     }
 
     /// Current sampled for the active zero window.
@@ -412,6 +416,62 @@ fn runner_aborts_when_profile_peak_current_is_exceeded() {
 
     assert_eq!(err, ResistanceError::PeakCurrentExceeded);
     assert!(backend.wrote_safe_state());
+}
+
+#[test]
+fn runner_stops_after_good_fit_before_unsafe_high_points() {
+    let mut backend = FakeResistanceBackend::standard();
+    backend.scripted_current_per_ud_milli = 1200;
+
+    let result = block_on(run_resistance_identification(
+        &mut backend,
+        ResistanceRunMode::CommissioningManagedEnable,
+    ));
+
+    assert!(
+        result.is_ok(),
+        "expected adaptive sweep to fit, got {result:?}"
+    );
+    assert!(
+        !backend
+            .writes
+            .iter()
+            .any(|write| write.addr == UQ_UD_EXT.addr() && write.value == u32::from(1440u16)),
+        "adaptive sweep must not apply the first predicted-unsafe high point"
+    );
+    assert!(
+        !backend
+            .writes
+            .iter()
+            .any(|write| write.addr == UQ_UD_EXT.addr() && write.value == u32::from(1600u16)),
+        "adaptive sweep must not continue to the fixed maximum once the fit is good"
+    );
+}
+
+#[test]
+fn runner_skips_predicted_unsafe_point_when_fit_is_not_yet_supported() {
+    let mut backend = FakeResistanceBackend::standard();
+    backend.scripted_current_per_ud_milli = 1400;
+    backend.profile.min_selected_points = 6;
+
+    let err = block_on(run_resistance_identification(
+        &mut backend,
+        ResistanceRunMode::CommissioningManagedEnable,
+    ))
+    .unwrap_err();
+
+    assert_eq!(
+        err,
+        ResistanceError::MeasurementEnvelopeUnsupported,
+        "predicted-unsafe next point should be rejected as an unsupported measurement envelope"
+    );
+    assert!(
+        !backend
+            .writes
+            .iter()
+            .any(|write| write.addr == UQ_UD_EXT.addr() && write.value == u32::from(1280u16)),
+        "next predicted-unsafe point must be skipped before energizing"
+    );
 }
 
 #[test]

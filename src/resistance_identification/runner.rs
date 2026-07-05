@@ -296,6 +296,18 @@ async fn run_energized_body<B: ResistanceBackend>(
     Ok(result)
 }
 
+/// Measured positive point that can be reused as the signed-anchor UD.
+#[derive(Debug, Clone, Copy)]
+struct SafeAnchorCandidate {
+    /// Positive UD count used for the measured point.
+    ud: i16,
+    /// Zero-subtracted current measured at `ud`.
+    positive_current_count: i32,
+    /// Distance from the profile's preferred signed anchor, used to choose the
+    /// closest measured safe point when the sweep has to stop early.
+    preferred_distance: u16,
+}
+
 /// Measure one electrical axis: zero/energized windows, signed anchors, and the
 /// fixed-point fit.
 async fn measure_axis<B: ResistanceBackend>(
@@ -329,6 +341,8 @@ async fn measure_axis<B: ResistanceBackend>(
     }; 8];
 
     let mut first_anchor_current: Option<i32> = None;
+    let mut safe_anchor: Option<SafeAnchorCandidate> = None;
+    let mut last_safe_point: Option<(u16, u32)> = None;
 
     // Rolling leading zero, advanced to each point's trailing zero so every
     // point is bracketed against its ADJACENT zero windows (prior trailing and
@@ -338,6 +352,13 @@ async fn measure_axis<B: ResistanceBackend>(
     let mut leading_zero = initial_zero.phase_current_count;
 
     for (index, &ud) in profile.ud_points.iter().enumerate() {
+        if next_point_predicted_unsafe(profile, last_safe_point, ud) {
+            if fit_resistance_axis(axis, profile, &points, None).is_ok() {
+                break;
+            }
+            return Err(ResistanceError::MeasurementEnvelopeUnsupported);
+        }
+
         let energized = capture_window(
             backend,
             profile,
@@ -350,6 +371,10 @@ async fn measure_axis<B: ResistanceBackend>(
         .await?;
 
         check_peak_current(profile, energized.phase_current_count)?;
+        last_safe_point = Some((
+            ud.unsigned_abs(),
+            energized.phase_current_count.unsigned_abs(),
+        ));
 
         // Adjacent zero window after the energized point.
         let trailing_zero = capture_window(
@@ -375,6 +400,7 @@ async fn measure_axis<B: ResistanceBackend>(
         if ud == profile.signed_anchor_ud {
             first_anchor_current = Some(current_delta_count);
         }
+        update_safe_anchor(profile, &mut safe_anchor, ud, current_delta_count);
 
         points[index] = ResistancePoint {
             requested_ud: ud,
@@ -387,12 +413,15 @@ async fn measure_axis<B: ResistanceBackend>(
         leading_zero = trailing_zero.phase_current_count;
     }
 
+    let anchor = safe_anchor.ok_or(ResistanceError::MeasurementEnvelopeUnsupported)?;
+    let anchor_ud = anchor.ud;
+
     // Repeated positive anchor near the end of the axis for drift evidence.
     let repeated_anchor = capture_window(
         backend,
         profile,
         axis,
-        profile.signed_anchor_ud,
+        anchor_ud,
         profile.settle_ms,
         status_flags_or,
         warning_flags,
@@ -423,7 +452,7 @@ async fn measure_axis<B: ResistanceBackend>(
         backend,
         profile,
         axis,
-        -profile.signed_anchor_ud,
+        -anchor_ud,
         profile.settle_ms,
         status_flags_or,
         warning_flags,
@@ -450,16 +479,59 @@ async fn measure_axis<B: ResistanceBackend>(
     // The positive anchor is always the zero-subtracted value: either the first
     // matching sweep point or, if none matched, the zero-subtracted repeated
     // anchor. It must never be a raw energized current.
-    let positive_anchor_current = first_anchor_current.unwrap_or(repeated_zero_subtracted);
+    let positive_anchor_current = first_anchor_current.unwrap_or(anchor.positive_current_count);
 
     let signed_anchor = build_signed_anchor(
         positive_anchor_current,
         negative_zero_subtracted,
         repeated_zero_subtracted,
-        profile.signed_anchor_ud,
+        anchor_ud,
     );
 
     fit_resistance_axis(axis, profile, &points, Some(signed_anchor))
+}
+
+/// Return true when the next requested point is predicted to exceed the hard
+/// current ceiling based on the last measured safe point.
+fn next_point_predicted_unsafe(
+    profile: &ResistanceProfile,
+    last_safe_point: Option<(u16, u32)>,
+    next_ud: i16,
+) -> bool {
+    let Some((last_ud, last_current)) = last_safe_point else {
+        return false;
+    };
+    if last_ud == 0 {
+        return false;
+    }
+    let predicted = u64::from(last_current).saturating_mul(u64::from(next_ud.unsigned_abs()))
+        / u64::from(last_ud);
+    predicted > u64::from(profile.max_expected_current_count)
+}
+
+/// Track the measured safe point closest to the preferred signed-anchor UD.
+fn update_safe_anchor(
+    profile: &ResistanceProfile,
+    candidate: &mut Option<SafeAnchorCandidate>,
+    ud: i16,
+    current_delta_count: i32,
+) {
+    if current_delta_count.unsigned_abs() < u32::from(profile.linear_current_threshold_count) {
+        return;
+    }
+    let distance = ud
+        .unsigned_abs()
+        .abs_diff(profile.signed_anchor_ud.unsigned_abs());
+    let should_replace = candidate
+        .map(|existing| distance < existing.preferred_distance)
+        .unwrap_or(true);
+    if should_replace {
+        *candidate = Some(SafeAnchorCandidate {
+            ud,
+            positive_current_count: current_delta_count,
+            preferred_distance: distance,
+        });
+    }
 }
 
 /// Capture one window: settle, sample `SAMPLES_PER_WINDOW` times, and return the
