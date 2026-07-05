@@ -1645,6 +1645,55 @@ mod tests {
     }
 
     #[test]
+    fn inductance_estimator_rejection_tears_down_openloop_drive() {
+        pollster::block_on(async {
+            let mut phase = InnerPhase::ElectricalId {
+                state: ElectricalIdState::InductanceSample {
+                    encoder_start: 0,
+                    start_us: 0,
+                    previous_elapsed_us: 0,
+                    start_phi: 0,
+                    previous_phi: 0,
+                    accumulated_phi_delta_counts: 0,
+                    accumulator: crate::electrical_capture::AcFrameAccumulator::new(),
+                    first_half: crate::electrical_capture::AcFrameAccumulator::new(),
+                    second_half: crate::electrical_capture::AcFrameAccumulator::new(),
+                    saliency: crate::electrical_capture::AcSaliencyAccumulator::new(),
+                    sample_count: 0,
+                    status_flags_or: 0,
+                },
+                data: representative_data(),
+            };
+            let mut buf = TransientBuffer::new();
+            let mut backend = MockBackend::new();
+            backend.enable_pin = true;
+            backend.registers.insert(OPENLOOP_PHI.addr(), 1).ok();
+            backend
+                .registers
+                .insert(PID_TORQUE_FLUX_ACTUAL.addr(), 0)
+                .ok();
+            let mut selftest_results = crate::selftest::SelftestResults::default();
+            let mut diagnostics = crate::selftest::CommissionDiagnostics::default();
+
+            let result = step_electrical_identification(
+                &mut phase,
+                &mut buf,
+                InnerSequence::Commission,
+                &mut selftest_results,
+                &mut diagnostics,
+                &mut backend,
+            )
+            .await;
+
+            assert!(matches!(
+                result,
+                StepResult::InnerFailed(CommissionError::ElectricalIdFailed)
+            ));
+            assert_ac_teardown_after_failure(&backend);
+        });
+    }
+
+    #[test]
     fn electrical_id_uses_resistance_runner_before_inductance() {
         pollster::block_on(async {
             let mut backend = MockBackend::new();
