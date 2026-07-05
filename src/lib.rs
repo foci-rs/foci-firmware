@@ -11,6 +11,7 @@
 #[cfg(test)]
 extern crate std;
 
+pub mod adc_vm;
 pub mod ankyra;
 pub mod autotune;
 pub mod biquad;

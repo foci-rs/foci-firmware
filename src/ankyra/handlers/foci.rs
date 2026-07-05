@@ -23,6 +23,9 @@ use crate::context::{ShutdownRecovery, TmcHost};
 use crate::shutdown::ShutdownReason;
 use crate::state::tmc::TmcChannelState;
 
+const ADC_VM_OFFSET_STATUS_OK: u8 = 0;
+const ADC_VM_OFFSET_STATUS_NOT_READY: u8 = 1;
+
 /// Trigger TMC4671 self-test diagnostic via the commissioning engine.
 ///
 /// Only one commissioning operation may be in flight at a time.
@@ -132,6 +135,35 @@ pub fn foci_dump_registers(ctx: &mut dyn FociRuntimeHost, oid: u8) {
     }
 }
 
+/// Return the cached ADC_VM mode-5 startup offset for voltage decoding.
+///
+/// This query is intentionally passive: it does not touch TMC registers or
+/// enqueue a measurement. Board startup captures the offset before any motor
+/// enable path; the host reads that cached evidence during connect.
+#[klipper_command]
+pub fn foci_adc_vm_offset(ctx: &mut dyn FociRuntimeHost, oid: u8) {
+    let Some((_channel, state)) = foci_tmc_state_or_shutdown(ctx, oid) else {
+        return;
+    };
+    let Some(offset) = state.adc_vm_offset_snapshot() else {
+        ::ankyra::klipper_reply!(
+            crate::ankyra::replies::FociAdcVmOffsetResult,
+            oid: u8 = oid,
+            offset_raw: u16 = 0,
+            sample_count: u8 = 0,
+            status: u8 = ADC_VM_OFFSET_STATUS_NOT_READY
+        );
+        return;
+    };
+    ::ankyra::klipper_reply!(
+        crate::ankyra::replies::FociAdcVmOffsetResult,
+        oid: u8 = oid,
+        offset_raw: u16 = offset.offset_raw,
+        sample_count: u8 = offset.sample_count,
+        status: u8 = ADC_VM_OFFSET_STATUS_OK
+    );
+}
+
 /// Start Stage 1 commissioning (diagnostics + current tune + closed-loop entry).
 ///
 /// Only one commissioning operation may be in flight at a time.
@@ -192,5 +224,163 @@ fn shutdown_invalid_tmc_channel(ctx: &mut dyn ShutdownRecovery) {
     if ctx.enter_shutdown() {
         let clock = ctx.now();
         ctx.send_shutdown(ShutdownReason::InvalidTmcChannel, clock);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::context::{BoardChannels, ClockSource, QueueFull, StateAccess, TmcHost};
+    use crate::shutdown::ShutdownReason;
+    use foci_klipper::commands::stepper::config_stepper_channel;
+    use foci_klipper::state::State;
+    use std::cell::RefCell;
+
+    struct MockCtx {
+        state: State,
+        channel_count: u8,
+        last_request: RefCell<Option<crate::tmc::TmcRequest>>,
+        last_shutdown: Option<ShutdownReason>,
+    }
+
+    impl MockCtx {
+        fn new(channel_count: u8) -> Self {
+            Self {
+                state: State::new(),
+                channel_count,
+                last_request: RefCell::new(None),
+                last_shutdown: None,
+            }
+        }
+    }
+
+    impl StateAccess for MockCtx {
+        fn state(&mut self) -> &mut State {
+            &mut self.state
+        }
+    }
+
+    impl ClockSource for MockCtx {
+        fn now(&self) -> u32 {
+            123
+        }
+    }
+
+    impl ShutdownRecovery for MockCtx {
+        fn enter_shutdown(&mut self) -> bool {
+            true
+        }
+
+        fn reset_to_bootloader(&mut self) -> ! {
+            panic!("reset_to_bootloader not used in tests")
+        }
+
+        fn send_shutdown(&mut self, reason: ShutdownReason, _clock: u32) {
+            self.last_shutdown = Some(reason);
+        }
+    }
+
+    impl BoardChannels for MockCtx {
+        fn tmc_channel_count(&self) -> u8 {
+            self.channel_count
+        }
+
+        fn step_pin_channel(&self, _pin: u8) -> Option<u8> {
+            None
+        }
+
+        fn dir_pin_channel(&self, _pin: u8) -> Option<u8> {
+            None
+        }
+
+        fn enable_pin_channel(&self, _pin: u32) -> Option<u8> {
+            None
+        }
+    }
+
+    impl TmcHost for MockCtx {
+        fn enqueue_request(&self, req: crate::tmc::TmcRequest) -> Result<(), QueueFull> {
+            self.last_request.replace(Some(req));
+            Ok(())
+        }
+    }
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    struct AdcVmOffsetReply {
+        oid: u8,
+        offset_raw: u16,
+        sample_count: u8,
+        status: u8,
+    }
+
+    struct MockSender {
+        adc_vm_offsets: std::vec::Vec<AdcVmOffsetReply>,
+    }
+
+    impl MockSender {
+        fn new() -> Self {
+            Self {
+                adc_vm_offsets: std::vec::Vec::new(),
+            }
+        }
+    }
+
+    impl ::ankyra::SendReply<crate::ankyra::replies::FociAdcVmOffsetResult> for MockSender {
+        fn send(&mut self, payload: crate::ankyra::replies::FociAdcVmOffsetResult) {
+            self.adc_vm_offsets.push(AdcVmOffsetReply {
+                oid: payload.oid,
+                offset_raw: payload.offset_raw,
+                sample_count: payload.sample_count,
+                status: payload.status,
+            });
+        }
+    }
+
+    #[test]
+    fn foci_adc_vm_offset_returns_cached_startup_value() {
+        let _guard = crate::commission_dispatch::test_support::SHARED_STATE_MUTEX.blocking_lock();
+        let mut ctx = MockCtx::new(2);
+        let mut sender = MockSender::new();
+        config_stepper_channel(ctx.state(), 10, 1).unwrap();
+        let tmc_state = crate::state::tmc::tmc_channel(1).unwrap();
+        tmc_state.store_adc_vm_offset(33_662, 8);
+
+        foci_adc_vm_offset(&mut ctx, &mut sender, 10);
+
+        assert_eq!(
+            sender.adc_vm_offsets,
+            [AdcVmOffsetReply {
+                oid: 10,
+                offset_raw: 33_662,
+                sample_count: 8,
+                status: 0,
+            }]
+        );
+        assert!(ctx.last_request.borrow().is_none());
+        assert_eq!(ctx.last_shutdown, None);
+    }
+
+    #[test]
+    fn foci_adc_vm_offset_reports_not_ready_without_cached_value() {
+        let _guard = crate::commission_dispatch::test_support::SHARED_STATE_MUTEX.blocking_lock();
+        let mut ctx = MockCtx::new(2);
+        let mut sender = MockSender::new();
+        config_stepper_channel(ctx.state(), 10, 1).unwrap();
+        let tmc_state = crate::state::tmc::tmc_channel(1).unwrap();
+        tmc_state.store_adc_vm_offset(0, 0);
+
+        foci_adc_vm_offset(&mut ctx, &mut sender, 10);
+
+        assert_eq!(
+            sender.adc_vm_offsets,
+            [AdcVmOffsetReply {
+                oid: 10,
+                offset_raw: 0,
+                sample_count: 0,
+                status: 1,
+            }]
+        );
+        assert!(ctx.last_request.borrow().is_none());
+        assert_eq!(ctx.last_shutdown, None);
     }
 }

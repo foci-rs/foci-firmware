@@ -2,7 +2,7 @@
 //! (TMC_REQUEST_SENDER) stays in the board crate — its Sender type's
 //! generic params bind to the board's RTIC app declaration.
 
-use core::sync::atomic::{AtomicBool, AtomicI32, AtomicU16, AtomicU32};
+use core::sync::atomic::{AtomicBool, AtomicI32, AtomicU8, AtomicU16, AtomicU32};
 
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::signal::Signal;
@@ -95,6 +95,10 @@ pub struct TmcChannelState {
     pub velocity_limit_cfg: AtomicU32,
     /// Configurable operational PIDOUT_UQ_UD_LIMITS value.
     pub voltage_limit_cfg: AtomicU32,
+    /// Cached ADC_VM mode-5 startup offset.
+    adc_vm_offset_raw: AtomicU16,
+    /// Number of samples folded into the cached ADC_VM offset.
+    adc_vm_offset_sample_count: AtomicU8,
     /// Whether the encoder direction is reversed.
     pub encoder_reversed: AtomicBool,
     /// Guard for single-in-flight commissioning on this channel.
@@ -152,6 +156,8 @@ impl TmcChannelState {
             pid_error_sums_clear: AtomicBool::new(false),
             velocity_limit_cfg: AtomicU32::new(500_000),
             voltage_limit_cfg: AtomicU32::new(DEFAULT_OPERATIONAL_PIDOUT_UQ_UD_LIMIT),
+            adc_vm_offset_raw: AtomicU16::new(0),
+            adc_vm_offset_sample_count: AtomicU8::new(0),
             encoder_reversed: AtomicBool::new(false),
             commission_in_flight: AtomicBool::new(false),
             auto_calibrate_on_enable_allowed: AtomicBool::new(false),
@@ -214,6 +220,37 @@ impl TmcChannelState {
         self.velocity_p_value.store(1152, Relaxed);
         self.velocity_i_value.store(0, Relaxed);
     }
+
+    /// Store the ADC_VM mode-5 startup offset captured for this channel.
+    pub fn store_adc_vm_offset(&self, offset_raw: u16, sample_count: u8) {
+        use core::sync::atomic::Ordering::Relaxed;
+
+        self.adc_vm_offset_raw.store(offset_raw, Relaxed);
+        self.adc_vm_offset_sample_count.store(sample_count, Relaxed);
+    }
+
+    /// Return the cached ADC_VM startup offset when one has been captured.
+    pub fn adc_vm_offset_snapshot(&self) -> Option<AdcVmOffsetSnapshot> {
+        use core::sync::atomic::Ordering::Relaxed;
+
+        let sample_count = self.adc_vm_offset_sample_count.load(Relaxed);
+        if sample_count == 0 {
+            return None;
+        }
+        Some(AdcVmOffsetSnapshot {
+            offset_raw: self.adc_vm_offset_raw.load(Relaxed),
+            sample_count,
+        })
+    }
+}
+
+/// Cached ADC_VM mode-5 offset evidence for one TMC channel.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+pub struct AdcVmOffsetSnapshot {
+    /// Averaged raw ADC_VM count captured in mode 5 (`VDD/2`).
+    pub offset_raw: u16,
+    /// Number of samples folded into `offset_raw`.
+    pub sample_count: u8,
 }
 
 impl Default for TmcChannelState {
@@ -302,6 +339,31 @@ mod tests {
         channel.reset();
 
         assert_eq!(channel.motor_sentinel.load(Relaxed), 0);
+    }
+
+    #[test]
+    fn adc_vm_offset_cache_starts_empty_and_reset_preserves_it() {
+        let channel = TmcChannelState::new();
+        assert_eq!(channel.adc_vm_offset_snapshot(), None);
+
+        channel.store_adc_vm_offset(33_662, 8);
+        assert_eq!(
+            channel.adc_vm_offset_snapshot(),
+            Some(AdcVmOffsetSnapshot {
+                offset_raw: 33_662,
+                sample_count: 8,
+            })
+        );
+
+        channel.reset();
+
+        assert_eq!(
+            channel.adc_vm_offset_snapshot(),
+            Some(AdcVmOffsetSnapshot {
+                offset_raw: 33_662,
+                sample_count: 8,
+            })
+        );
     }
 
     /// No-auto-energize invariant: a freshly constructed channel (the boot

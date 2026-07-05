@@ -77,6 +77,21 @@ pub struct FociCalibrateResult {
     pub encoder_count: u32,
 }
 
+/// `foci_adc_vm_offset_result` reply - cached ADC_VM mode-5 startup offset.
+///
+/// Wire name: `foci_adc_vm_offset_result`.
+#[klipper_reply]
+pub struct FociAdcVmOffsetResult {
+    /// Object id of the FOCI endpoint.
+    pub oid: u8,
+    /// Averaged raw ADC_VM offset, valid when `status == 0`.
+    pub offset_raw: u16,
+    /// Number of samples folded into `offset_raw`.
+    pub sample_count: u8,
+    /// Status code (0 = cached offset available, 1 = not ready).
+    pub status: u8,
+}
+
 /// `foci_commission_phase` reply — emitted by the autotune cascade on
 /// every phase transition.
 ///
