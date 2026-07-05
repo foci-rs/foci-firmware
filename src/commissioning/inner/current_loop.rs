@@ -1,8 +1,8 @@
-//! Phases 6 and 7: Current-loop SIMC gain synthesis and step-response
+//! Phases 6 and 7: Current-loop gain synthesis and step-response
 //! validation.
 //!
 //! `step_current_tune` reads the electrical model from Phase 5 and applies
-//! the SIMC tuning rule to derive flux/torque PI gains plus a step
+//! the physical-P tuning rule to derive flux/torque PI gains plus a step
 //! amplitude for validation. `step_current_validate` then writes those
 //! gains, samples flux and torque current responses at short fixed delays,
 //! classifies the per-axis evidence, and fails explicitly on invalid measured
@@ -834,8 +834,8 @@ async fn restore_current_validation_safe_state<B: CommissioningBackend>(
     if failed { Err(()) } else { Ok(()) }
 }
 
-/// Thin phase: read the electrical model, compute SIMC gains, and
-/// transition immediately to validation.
+/// Thin phase: read the electrical model, compute physical current-loop gains,
+/// and transition immediately to validation.
 pub(crate) async fn step_current_tune<B: CommissioningBackend>(
     phase: &mut InnerPhase,
     profile: CommissionProfile,
@@ -861,28 +861,12 @@ pub(crate) async fn step_current_tune<B: CommissioningBackend>(
     let synthesis = crate::autotune::synthesize_current_gains(&synthesis_input, config);
     let (gains, mut current_loop_evidence) = match synthesis {
         Some(synthesis) => (synthesis.gains, synthesis.evidence),
-        None => {
-            let mut evidence =
-                CurrentLoopEvidence::failed(crate::autotune::CURRENT_LOOP_FAILURE_GAIN_SYNTHESIS);
-            evidence.candidate_gains_source = crate::autotune::CURRENT_GAINS_SOURCE_DEFAULT;
-            evidence.candidate_gains_tier = crate::autotune::CURRENT_GAINS_TIER_DEFAULT;
-            (
-                CurrentGains {
-                    flux_p: crate::pid::DEFAULT_INNER_GAINS.flux_p,
-                    flux_i: crate::pid::DEFAULT_INNER_GAINS.flux_i,
-                    torque_p: crate::pid::DEFAULT_INNER_GAINS.torque_p,
-                    torque_i: crate::pid::DEFAULT_INNER_GAINS.torque_i,
-                    effective_bandwidth_hz: 0,
-                    lambda_us: 0,
-                },
-                evidence,
-            )
-        }
+        None => return super::fail_inner(phase, CommissionError::CurrentValidationFailed),
     };
     current_loop_evidence.current_validation_axes = 0;
 
     defmt::info!(
-        "simc: R={} L={} tau_e={}us theta_e={}us lambda={}us → P={} I={} bw={}Hz",
+        "physical-p: R={} L={} tau_e={}us theta_e={}us lambda={}us -> P={} I={} bw={}Hz",
         model.r_int,
         model.l_int,
         model.tau_e_us,
@@ -946,9 +930,9 @@ pub(crate) async fn step_current_tune<B: CommissioningBackend>(
 
 /// Advance current-loop validation sub-state.
 ///
-/// Writes SIMC gains, runs bidirectional short samples for each current axis,
-/// classifies the per-delay evidence, and fails explicitly on invalid measured
-/// current gains.
+/// Writes current-loop gains, runs bidirectional short samples for each current
+/// axis, classifies the per-delay evidence, and fails explicitly on invalid
+/// measured current gains.
 pub(crate) async fn step_current_validate<B: CommissioningBackend>(
     phase: &mut InnerPhase,
     _buf: &mut TransientBuffer,
@@ -1476,10 +1460,11 @@ pub(crate) async fn step_current_validate<B: CommissioningBackend>(
 #[cfg(test)]
 mod tests {
     use crate::autotune::{
-        AXIS_SPLIT_SOURCE_NONE, CURRENT_GAINS_SOURCE_FAILED, CURRENT_GAINS_TIER_MEASURED_SYMMETRIC,
-        CURRENT_GAINS_TIER_NONE, CURRENT_LOOP_FAILURE_NONE, CURRENT_LOOP_FAILURE_RETRY_EXHAUSTED,
-        CURRENT_LOOP_FAILURE_STATUS_FLAGS, CURRENT_LOOP_FAILURE_TORQUE_VALIDATION,
-        CURRENT_VALIDATION_AXIS_FLUX, CURRENT_VALIDATION_AXIS_TORQUE,
+        AXIS_SPLIT_SOURCE_NONE, CURRENT_GAINS_SOURCE_FAILED, CURRENT_GAINS_TIER_NONE,
+        CURRENT_GAINS_TIER_PHYSICAL_SYMMETRIC, CURRENT_LOOP_FAILURE_NONE,
+        CURRENT_LOOP_FAILURE_RETRY_EXHAUSTED, CURRENT_LOOP_FAILURE_STATUS_FLAGS,
+        CURRENT_LOOP_FAILURE_TORQUE_VALIDATION, CURRENT_VALIDATION_AXIS_FLUX,
+        CURRENT_VALIDATION_AXIS_TORQUE,
     };
     use crate::commission_dispatch::test_support::{MockBackend, SpiOp};
     use foci_tmc4671::registers::{
@@ -1523,7 +1508,7 @@ mod tests {
     }
 
     #[test]
-    fn current_tune_uses_measured_symmetric_phase1_evidence() {
+    fn current_tune_uses_physical_symmetric_phase1_evidence() {
         pollster::block_on(async {
             let mut phase = InnerPhase::CurrentTune {
                 model: ElectricalModel {
@@ -1556,7 +1541,7 @@ mod tests {
                     );
                     assert_eq!(
                         data.current_loop_evidence.gains_tier,
-                        CURRENT_GAINS_TIER_MEASURED_SYMMETRIC
+                        CURRENT_GAINS_TIER_PHYSICAL_SYMMETRIC
                     );
                     assert!(
                         backend.spi_log.iter().all(|op| matches!(op, SpiOp::Read)),
@@ -1603,11 +1588,49 @@ mod tests {
                     assert!(data.inductance.estimate.brackets_average());
                     assert_eq!(
                         data.current_loop_evidence.gains_tier,
-                        CURRENT_GAINS_TIER_MEASURED_SYMMETRIC
+                        CURRENT_GAINS_TIER_PHYSICAL_SYMMETRIC
                     );
                 }
                 other => panic!("expected CurrentValidate phase, got {other:?}"),
             }
+        });
+    }
+
+    #[test]
+    fn current_tune_rejects_invalid_physical_bandwidth_without_default_gains() {
+        pollster::block_on(async {
+            let mut phase = InnerPhase::CurrentTune {
+                model: ElectricalModel {
+                    r_int: 1000,
+                    l_int: 2000,
+                    tau_e_us: 2000,
+                    theta_e_us: 100,
+                    r_mohm: 1000,
+                    l_uh: 2000,
+                },
+                inner_warning_flags: 0,
+                resistance_result: resistance_result(),
+                inductance: InductanceEvidence::test_fixture(),
+            };
+            let mut backend = MockBackend::new();
+            backend.current_limit_value = 4000;
+            backend.tmc_config.bandwidth_hz = 12_000.0;
+
+            let result =
+                step_current_tune(&mut phase, CommissionProfile::Balanced, &mut backend).await;
+
+            assert!(matches!(
+                result,
+                StepResult::InnerFailed(CommissionError::CurrentValidationFailed)
+            ));
+            assert!(matches!(
+                phase,
+                InnerPhase::Failed(CommissionError::CurrentValidationFailed)
+            ));
+            assert!(
+                backend.spi_log.iter().all(|op| matches!(op, SpiOp::Read)),
+                "invalid physical bandwidth must fail before writing default gains"
+            );
         });
     }
 

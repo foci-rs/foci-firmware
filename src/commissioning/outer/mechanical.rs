@@ -60,7 +60,7 @@ const OUTER_PIDOUT_LIMIT: u32 = 16000;
 
 /// Torque mode with `MODE_PID_TYPE` set for the TMC4671 advanced PI structure.
 ///
-/// Current-loop SIMC writes the advanced flux/torque PI registers, so
+/// Current-loop commissioning writes the advanced flux/torque PI registers, so
 /// validation and mechanical ID must exercise that same controller path.
 const CURRENT_TORQUE_MODE: u32 = 0x8000_0001;
 

@@ -269,7 +269,7 @@ pub(crate) enum InnerPhase {
         state: ElectricalIdState,
         data: ElectricalIdData,
     },
-    /// Phase 6: Current-loop SIMC gain synthesis.
+    /// Phase 6: Current-loop gain synthesis.
     CurrentTune {
         model: ElectricalModel,
         /// Phase 5 model-assembly warning bits.

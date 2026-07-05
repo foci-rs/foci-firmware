@@ -31,9 +31,9 @@ pub const ELECTRICAL_MODEL_RESISTANCE_SCALE: u32 = 1000;
 
 /// Computed PI gains for the TMC4671 current (flux/torque) loops.
 ///
-/// Produced by [`simc_current_gains`] from an [`ElectricalModel`] and
-/// a [`CommissionProfile`]. Includes the effective bandwidth and lambda
-/// for diagnostics and downstream use (velocity loop bandwidth constraint).
+/// Produced by the production physical-P synthesis path or by the retained
+/// SIMC helper functions. Includes the effective bandwidth and the inner-loop
+/// time scale used for diagnostics and downstream bandwidth constraints.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub struct CurrentGains {
     /// Flux P gain — TMC4671 Q8.8 register value.
@@ -46,7 +46,10 @@ pub struct CurrentGains {
     pub torque_i: u16,
     /// Effective closed-loop bandwidth in Hz.
     pub effective_bandwidth_hz: u32,
-    /// Closed-loop time constant lambda in microseconds.
+    /// Inner-loop time scale in microseconds.
+    ///
+    /// Physical-P synthesis reports `1 / (2*pi*bandwidth)`. The retained SIMC
+    /// helper functions report their SIMC lambda in the same field.
     pub lambda_us: u32,
 }
 
@@ -55,7 +58,10 @@ pub struct CurrentGains {
 pub struct CurrentGainSynthesisInput {
     /// Identified symmetric resistance/inductance model.
     pub model: ElectricalModel,
-    /// Tuning profile used for SIMC lambda selection.
+    /// Tuning profile retained for validation and retry policy.
+    ///
+    /// Production physical-P synthesis uses the configured bandwidth instead
+    /// of deriving P from this profile.
     pub profile: CommissionProfile,
     /// Measured axis split ratio, permille where 1000 = 1.000x.
     pub measured_axis_split_permille: u16,

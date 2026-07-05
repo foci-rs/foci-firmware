@@ -137,7 +137,7 @@ fn apply_velocity_gain_envelope(
 /// - `model`: mechanical plant model from Phase 8
 /// - `profile`: tuning aggressiveness
 /// - `mode`: operating condition adjustment
-/// - `inner_lambda_us`: closed-loop lambda from inner (current) loop
+/// - `inner_lambda_us`: inner-loop time scale from current-loop commissioning
 /// - `theta_e_us`: electrical transport delay from inner loop
 /// - `peak_velocity`: peak velocity observed during mechanical ID (for limit)
 /// - `step_width`: TMC position units per encoder count

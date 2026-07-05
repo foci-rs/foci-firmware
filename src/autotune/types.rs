@@ -1,15 +1,17 @@
-/// Tuning aggressiveness profile for SIMC gain synthesis.
+/// Tuning aggressiveness profile for commissioning gain synthesis.
 ///
-/// Controls the closed-loop time constant lambda in the SIMC PI tuning law.
-/// A more aggressive profile yields faster response but requires a more
-/// accurate plant model and leaves less stability margin.
+/// Current-loop P synthesis uses the configured physical bandwidth directly;
+/// retained SIMC helpers and outer-loop synthesis use this profile to select
+/// their closed-loop time scale. A more aggressive profile yields faster
+/// response but requires a more accurate plant model and leaves less stability
+/// margin.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub enum CommissionProfile {
-    /// `lambda = max(4 * theta, tau)` — slow, very robust, minimal audible noise.
+    /// Slow, very robust, minimal audible noise.
     Conservative,
-    /// `lambda = max(2 * theta, tau / 2)` — good default for most motors and print setups.
+    /// Good default for most motors and print setups.
     Balanced,
-    /// `lambda = max(theta, tau/4)` — fastest safe response; may be audible.
+    /// Fastest safe response; may be audible.
     Stiff,
 }
 
@@ -284,7 +286,7 @@ pub enum PhaseId {
     EncoderCheck,
     /// Inner phase 5 — Electrical identification (R, L, theta_e).
     ElectricalId,
-    /// Inner phase 6 — Current-loop SIMC gain synthesis.
+    /// Inner phase 6 — Current-loop gain synthesis.
     CurrentTune,
     /// Inner phase 7 — Current-loop step-response validation.
     CurrentValidate,

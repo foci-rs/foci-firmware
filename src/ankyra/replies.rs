@@ -153,7 +153,7 @@ pub struct FociCommissionResult {
     pub torque_p: u16,
     /// Torque I gain.
     pub torque_i: u16,
-    /// Measured IMC lambda time constant in microseconds.
+    /// Inner-loop time scale in microseconds.
     pub lambda_us: u32,
     /// Measured electrical time constant in microseconds.
     pub theta_e_us: u32,

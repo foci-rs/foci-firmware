@@ -327,7 +327,10 @@ pub struct InnerResult {
     pub candidate_torque_i: u16,
     /// Retry attempt associated with the candidate gains.
     pub candidate_attempt: u8,
-    /// Inner-loop closed-loop lambda in microseconds.
+    /// Inner-loop time scale in microseconds.
+    ///
+    /// Physical-P commissioning reports `1 / (2*pi*bandwidth)`. Older SIMC
+    /// helper output used the same field for SIMC lambda.
     pub lambda_us: u32,
     /// Electrical transport delay in microseconds.
     pub theta_e_us: u32,

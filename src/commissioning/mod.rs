@@ -53,7 +53,7 @@ pub struct OuterTuneParams {
     pub profile: CommissionProfile,
     /// Operating mode (step/dir vs position).
     pub mode: OperatingMode,
-    /// Electrical time constant from Stage 1 (microseconds).
+    /// Inner-loop time scale from Stage 1 (microseconds).
     pub inner_lambda_us: u32,
     /// Theta-E delay from Stage 1 (microseconds).
     pub theta_e_us: u32,
@@ -158,7 +158,7 @@ pub(crate) enum EngineMode {
         phase: OuterPhase,
         profile: CommissionProfile,
         mode: OperatingMode,
-        /// Inner-loop closed-loop lambda in microseconds.
+        /// Inner-loop time scale in microseconds.
         inner_lambda_us: u32,
         /// Electrical transport delay in microseconds.
         theta_e_us: u32,

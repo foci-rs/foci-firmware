@@ -1,17 +1,17 @@
 use super::{
-    AXIS_SPLIT_SOURCE_IMPEDANCE, AXIS_SPLIT_SOURCE_NONE, CURRENT_AXIS_FLUX, CURRENT_AXIS_TORQUE,
-    CommissionProfile, CurrentGainSynthesis, CurrentGainSynthesisInput, CurrentGains,
-    CurrentLoopEvidence, ELECTRICAL_MODEL_RESISTANCE_SCALE, ElectricalModel, TransientBuffer,
-    ValidationResult,
+    AXIS_SPLIT_SOURCE_IMPEDANCE, AXIS_SPLIT_SOURCE_NONE, CURRENT_AXIS_FLUX,
+    CURRENT_GAINS_TIER_PHYSICAL_SYMMETRIC, CommissionProfile, CurrentGainSynthesis,
+    CurrentGainSynthesisInput, CurrentGains, CurrentLoopEvidence,
+    ELECTRICAL_MODEL_RESISTANCE_SCALE, ElectricalModel, TransientBuffer, ValidationResult,
 };
 #[cfg(test)]
 use super::{
-    CURRENT_FLUX_VALIDATION_SAMPLE_COUNT, CURRENT_GAINS_SOURCE_DEFAULT,
+    CURRENT_AXIS_TORQUE, CURRENT_FLUX_VALIDATION_SAMPLE_COUNT, CURRENT_GAINS_SOURCE_DEFAULT,
     CURRENT_GAINS_SOURCE_FAILED, CURRENT_GAINS_SOURCE_MEASURED, CURRENT_GAINS_TIER_DEFAULT,
     CURRENT_GAINS_TIER_MEASURED_SPLIT, CURRENT_GAINS_TIER_MEASURED_SYMMETRIC,
-    CURRENT_GAINS_TIER_NONE, CURRENT_GAINS_TIER_PHYSICAL_SYMMETRIC,
-    CURRENT_LOOP_FAILURE_FLUX_VALIDATION, CURRENT_LOOP_FAILURE_GAIN_SYNTHESIS,
-    CURRENT_LOOP_FAILURE_IMPEDANCE_INVALID, CURRENT_LOOP_FAILURE_MOTION, CURRENT_LOOP_FAILURE_NONE,
+    CURRENT_GAINS_TIER_NONE, CURRENT_LOOP_FAILURE_FLUX_VALIDATION,
+    CURRENT_LOOP_FAILURE_GAIN_SYNTHESIS, CURRENT_LOOP_FAILURE_IMPEDANCE_INVALID,
+    CURRENT_LOOP_FAILURE_MOTION, CURRENT_LOOP_FAILURE_NONE,
     CURRENT_LOOP_FAILURE_RESISTANCE_INVALID, CURRENT_LOOP_FAILURE_RETRY_EXHAUSTED,
     CURRENT_LOOP_FAILURE_SATURATION, CURRENT_LOOP_FAILURE_SPI, CURRENT_LOOP_FAILURE_STATUS_FLAGS,
     CURRENT_LOOP_FAILURE_TORQUE_VALIDATION, CURRENT_TORQUE_VALIDATION_SAMPLE_COUNT,
@@ -294,37 +294,17 @@ impl CurrentGainSynthesisInput {
     }
 }
 
-#[cfg_attr(
-    not(test),
-    allow(dead_code, reason = "consumed by physical synthesis in the next task")
-)]
 const CURRENT_P_Q8_8_SCALE: f32 = 256.0;
-#[cfg_attr(
-    not(test),
-    allow(dead_code, reason = "consumed by physical synthesis in the next task")
-)]
 const MAX_PHYSICAL_CURRENT_BANDWIDTH_HZ: f32 = 2_000.0;
 
-#[cfg_attr(
-    not(test),
-    allow(dead_code, reason = "consumed by physical synthesis in the next task")
-)]
 fn finite_positive(value: f32) -> bool {
     value.is_finite() && value > 0.0
 }
 
-#[cfg_attr(
-    not(test),
-    allow(dead_code, reason = "consumed by physical synthesis in the next task")
-)]
 fn valid_physical_current_bandwidth_hz(value: f32) -> bool {
     finite_positive(value) && value <= MAX_PHYSICAL_CURRENT_BANDWIDTH_HZ
 }
 
-#[cfg_attr(
-    not(test),
-    allow(dead_code, reason = "consumed by physical synthesis in the next task")
-)]
 fn round_positive_to_u16(value: f32) -> Option<u16> {
     if !finite_positive(value) {
         return None;
@@ -336,10 +316,6 @@ fn round_positive_to_u16(value: f32) -> Option<u16> {
     Some(rounded.max(1.0) as u16)
 }
 
-#[cfg_attr(
-    not(test),
-    allow(dead_code, reason = "consumed by physical synthesis in the next task")
-)]
 fn physical_current_p_raw_from_l_count_micro(l_count_micro: u32, bandwidth_hz: f32) -> Option<u16> {
     if l_count_micro == 0 || !valid_physical_current_bandwidth_hz(bandwidth_hz) {
         return None;
@@ -350,19 +326,48 @@ fn physical_current_p_raw_from_l_count_micro(l_count_micro: u32, bandwidth_hz: f
     round_positive_to_u16(p_float)
 }
 
-#[cfg_attr(
-    not(test),
-    allow(
-        dead_code,
-        reason = "used by anchor tests before production use"
-    )
-)]
+#[cfg(test)]
 fn physical_current_bandwidth_hz_for_p_raw(l_count_micro: u32, p_raw: u16) -> Option<f32> {
     if l_count_micro == 0 || p_raw == 0 {
         return None;
     }
     let l_count_seconds = l_count_micro as f32 * 1e-6;
     Some(p_raw as f32 / (2.0 * core::f32::consts::PI * l_count_seconds * CURRENT_P_Q8_8_SCALE))
+}
+
+fn bandwidth_period_us(bandwidth_hz: f32) -> Option<u32> {
+    if !valid_physical_current_bandwidth_hz(bandwidth_hz) {
+        return None;
+    }
+    let period_us = 1_000_000.0 / (2.0 * core::f32::consts::PI * bandwidth_hz);
+    if period_us > u32::MAX as f32 {
+        return None;
+    }
+    Some((period_us + 0.5).max(1.0) as u32)
+}
+
+fn physical_current_gains_checked(
+    model: &ElectricalModel,
+    bandwidth_hz: f32,
+    config: &crate::config::TmcConfig,
+) -> Option<CurrentGains> {
+    if model.r_int == 0 || model.l_int == 0 || model.tau_e_us == 0 {
+        return None;
+    }
+    let p_reg = physical_current_p_raw_from_l_count_micro(model.l_int, bandwidth_hz)?;
+    let tau_s = model.tau_e_us as f32 * 1e-6;
+    let f_pwm = config.pwm_freq_hz() as f32;
+    let i_reg =
+        (CURRENT_I_DETUNED_ZERO_FACTOR / (tau_s * f_pwm)).clamp(1.0, u16::MAX as f32) as u16;
+
+    Some(CurrentGains {
+        flux_p: p_reg,
+        flux_i: i_reg,
+        torque_p: p_reg,
+        torque_i: i_reg,
+        effective_bandwidth_hz: (bandwidth_hz + 0.5).max(1.0) as u32,
+        lambda_us: bandwidth_period_us(bandwidth_hz)?,
+    })
 }
 
 /// Compute the SIMC lambda (closed-loop time constant) for a given profile.
@@ -458,66 +463,20 @@ pub fn synthesize_current_gains(
 
     match input.axis_split_source {
         AXIS_SPLIT_SOURCE_NONE => {
-            let lambda_us =
-                simc_lambda_us(input.profile, input.model.tau_e_us, input.model.theta_e_us);
-            let gains = simc_current_gains_with_lambda_checked(&input.model, lambda_us, config)?;
-            return Some(CurrentGainSynthesis {
+            let gains = physical_current_gains_checked(&input.model, config.bandwidth_hz, config)?;
+            Some(CurrentGainSynthesis {
                 gains,
-                evidence: CurrentLoopEvidence::measured_symmetric(),
+                evidence: CurrentLoopEvidence {
+                    gains_tier: CURRENT_GAINS_TIER_PHYSICAL_SYMMETRIC,
+                    candidate_gains_tier: CURRENT_GAINS_TIER_PHYSICAL_SYMMETRIC,
+                    ..CurrentLoopEvidence::measured_symmetric()
+                },
                 flux_tau_us: input.model.tau_e_us,
                 torque_tau_us: input.model.tau_e_us,
-            });
+            })
         }
-        AXIS_SPLIT_SOURCE_IMPEDANCE => {}
-        _ => return None,
-    }
-
-    let applied_axis_split_permille = input.applied_axis_split_permille.max(1000);
-    let split = applied_axis_split_permille as u64;
-    let low_tau_us = input.model.tau_e_us;
-    let high_tau_us = ((input.model.tau_e_us as u64 * split) / 1000).min(u32::MAX as u64) as u32;
-    let (flux_tau_us, torque_tau_us) = match input.high_inductance_axis {
-        CURRENT_AXIS_FLUX => (high_tau_us, low_tau_us),
-        CURRENT_AXIS_TORQUE => (low_tau_us, high_tau_us),
-        _ => return None,
-    };
-
-    let flux_model = axis_model(input.model, flux_tau_us);
-    let torque_model = axis_model(input.model, torque_tau_us);
-    let flux_lambda_us = simc_lambda_us(input.profile, flux_tau_us, input.model.theta_e_us);
-    let torque_lambda_us = simc_lambda_us(input.profile, torque_tau_us, input.model.theta_e_us);
-    let flux_gains = simc_current_gains_with_lambda_checked(&flux_model, flux_lambda_us, config)?;
-    let torque_gains =
-        simc_current_gains_with_lambda_checked(&torque_model, torque_lambda_us, config)?;
-
-    Some(CurrentGainSynthesis {
-        gains: CurrentGains {
-            flux_p: flux_gains.flux_p,
-            flux_i: flux_gains.flux_i,
-            torque_p: torque_gains.torque_p,
-            torque_i: torque_gains.torque_i,
-            effective_bandwidth_hz: flux_gains
-                .effective_bandwidth_hz
-                .min(torque_gains.effective_bandwidth_hz),
-            lambda_us: flux_gains.lambda_us.max(torque_gains.lambda_us),
-        },
-        evidence: CurrentLoopEvidence::measured_split(
-            input.measured_axis_split_permille,
-            applied_axis_split_permille,
-            applied_axis_split_permille < input.measured_axis_split_permille,
-        ),
-        flux_tau_us,
-        torque_tau_us,
-    })
-}
-
-fn axis_model(model: ElectricalModel, tau_e_us: u32) -> ElectricalModel {
-    let l_int = ((model.r_int as u64 * tau_e_us as u64) / ELECTRICAL_MODEL_RESISTANCE_SCALE as u64)
-        .min(u32::MAX as u64) as u32;
-    ElectricalModel {
-        l_int,
-        tau_e_us,
-        ..model
+        AXIS_SPLIT_SOURCE_IMPEDANCE => None,
+        _ => None,
     }
 }
 
@@ -917,6 +876,24 @@ fn scale_bandwidth_for_lambda(
         as u32
 }
 
+fn cap_higher_retry_at_physical_limit(
+    decision: CurrentAxisRetryDecision,
+    bandwidth_hz: u32,
+    lambda_us: u32,
+) -> (u32, u32) {
+    if decision != CurrentAxisRetryDecision::RetryHigherBandwidth
+        || bandwidth_hz <= MAX_PHYSICAL_CURRENT_BANDWIDTH_HZ as u32
+    {
+        return (bandwidth_hz, lambda_us);
+    }
+
+    let capped_bandwidth_hz = MAX_PHYSICAL_CURRENT_BANDWIDTH_HZ as u32;
+    let capped_lambda_us =
+        bandwidth_period_us(MAX_PHYSICAL_CURRENT_BANDWIDTH_HZ).unwrap_or(lambda_us);
+
+    (capped_bandwidth_hz, capped_lambda_us)
+}
+
 /// Adjust current-loop gains according to the section retry policy.
 ///
 /// A retry changes the controller bandwidth for the whole current loop, not
@@ -943,14 +920,17 @@ pub fn retry_current_loop_gains(
     let max_lambda = scale_lambda_permille(previous.lambda_us, retry_max_lambda_permille(profile));
     let next_lambda = scale_lambda_permille(previous.lambda_us, lambda_permille)
         .clamp(min_lambda.min(max_lambda), min_lambda.max(max_lambda));
-    let mut next = previous;
-
-    next.lambda_us = next_lambda;
-    next.effective_bandwidth_hz = scale_bandwidth_for_lambda(
+    let next_bandwidth = scale_bandwidth_for_lambda(
         previous.effective_bandwidth_hz,
         previous.lambda_us,
         next_lambda,
     );
+    let (next_bandwidth, next_lambda) =
+        cap_higher_retry_at_physical_limit(decision, next_bandwidth, next_lambda);
+    let mut next = previous;
+
+    next.lambda_us = next_lambda;
+    next.effective_bandwidth_hz = next_bandwidth;
     next.flux_p = scale_gain_for_lambda(previous.flux_p, previous.lambda_us, next_lambda);
     next.torque_p = scale_gain_for_lambda(previous.torque_p, previous.lambda_us, next_lambda);
 
@@ -1217,6 +1197,36 @@ mod tests {
     }
 
     #[test]
+    fn retry_policy_caps_higher_bandwidth_at_physical_limit() {
+        let physical_limit_lambda =
+            bandwidth_period_us(MAX_PHYSICAL_CURRENT_BANDWIDTH_HZ).expect("valid limit");
+        let previous = CurrentGains {
+            flux_p: 1500,
+            flux_i: 23,
+            torque_p: 1600,
+            torque_i: 19,
+            effective_bandwidth_hz: MAX_PHYSICAL_CURRENT_BANDWIDTH_HZ as u32,
+            lambda_us: physical_limit_lambda,
+        };
+
+        let retry = retry_current_loop_gains(
+            previous,
+            CurrentAxisRetryDecision::RetryHigherBandwidth,
+            CommissionProfile::Balanced,
+        );
+
+        assert_eq!(
+            retry.effective_bandwidth_hz,
+            previous.effective_bandwidth_hz
+        );
+        assert_eq!(retry.lambda_us, previous.lambda_us);
+        assert_eq!(retry.flux_p, previous.flux_p);
+        assert_eq!(retry.torque_p, previous.torque_p);
+        assert_eq!(retry.flux_i, previous.flux_i);
+        assert_eq!(retry.torque_i, previous.torque_i);
+    }
+
+    #[test]
     fn retry_policy_lower_bandwidth_keeps_i() {
         let previous = CurrentGains {
             flux_p: 120,
@@ -1244,7 +1254,63 @@ mod tests {
     }
 
     #[test]
-    fn phase1_symmetric_synthesis_reports_measured_symmetric() {
+    fn physical_synthesis_uses_configured_bandwidth_for_symmetric_p() {
+        let model = ElectricalModel {
+            r_int: 888,
+            l_int: 1_346,
+            tau_e_us: 1_515,
+            theta_e_us: 160,
+            r_mohm: 888,
+            l_uh: 1_346,
+        };
+        let mut config = autotune_test_config();
+        config.bandwidth_hz = 600.0;
+        let input = CurrentGainSynthesisInput::symmetric(model, CommissionProfile::Balanced);
+
+        let output = synthesize_current_gains(&input, &config).expect("physical gains");
+
+        assert_eq!(output.gains.flux_p, 1_299);
+        assert_eq!(output.gains.torque_p, 1_299);
+        assert_eq!(output.gains.effective_bandwidth_hz, 600);
+        assert_eq!(
+            output.evidence.gains_tier,
+            CURRENT_GAINS_TIER_PHYSICAL_SYMMETRIC
+        );
+        assert_eq!(
+            output.evidence.candidate_gains_tier,
+            CURRENT_GAINS_TIER_PHYSICAL_SYMMETRIC
+        );
+        assert_eq!(output.flux_tau_us, model.tau_e_us);
+        assert_eq!(output.torque_tau_us, model.tau_e_us);
+    }
+
+    #[test]
+    fn physical_synthesis_keeps_i_on_detuned_tau_path() {
+        let model = ElectricalModel {
+            r_int: ELECTRICAL_MODEL_RESISTANCE_SCALE,
+            l_int: 1_366,
+            tau_e_us: 1_366,
+            theta_e_us: 160,
+            r_mohm: 1000,
+            l_uh: 1_366,
+        };
+        let mut config = autotune_test_config();
+        config.bandwidth_hz = 650.0;
+        let input = CurrentGainSynthesisInput::symmetric(model, CommissionProfile::Balanced);
+
+        let output = synthesize_current_gains(&input, &config).expect("physical gains");
+
+        let tau_s = model.tau_e_us as f32 * 1e-6;
+        let expected_i = (CURRENT_I_DETUNED_ZERO_FACTOR / (tau_s * config.pwm_freq_hz() as f32))
+            .clamp(1.0, u16::MAX as f32) as u16;
+
+        assert_eq!(output.gains.flux_i, expected_i);
+        assert_eq!(output.gains.torque_i, expected_i);
+        assert_eq!(output.gains.flux_p, 1_428);
+    }
+
+    #[test]
+    fn phase1_symmetric_synthesis_reports_physical_symmetric() {
         let model = test_electrical_model();
         let config = autotune_test_config();
         let input = CurrentGainSynthesisInput::symmetric(model, CommissionProfile::Balanced);
@@ -1255,7 +1321,7 @@ mod tests {
         assert_eq!(output.evidence.axis_split_source, AXIS_SPLIT_SOURCE_NONE);
         assert_eq!(
             output.evidence.gains_tier,
-            CURRENT_GAINS_TIER_MEASURED_SYMMETRIC
+            CURRENT_GAINS_TIER_PHYSICAL_SYMMETRIC
         );
         assert_eq!(output.evidence.failure_reason, CURRENT_LOOP_FAILURE_NONE);
         assert_eq!(output.gains.flux_p, output.gains.torque_p);
@@ -1265,65 +1331,18 @@ mod tests {
     }
 
     #[test]
-    fn split_synthesis_scales_flux_when_flux_is_high_inductance() {
+    fn physical_synthesis_rejects_unvalidated_axis_split() {
         let model = test_electrical_model();
         let config = autotune_test_config();
         let input = CurrentGainSynthesisInput::with_impedance_split(
             model,
             CommissionProfile::Balanced,
-            1800,
-            1800,
-            CURRENT_AXIS_FLUX,
-        );
-
-        let output = synthesize_current_gains(&input, &config).unwrap();
-
-        assert_eq!(
-            output.evidence.gains_tier,
-            CURRENT_GAINS_TIER_MEASURED_SPLIT
-        );
-        assert_eq!(output.evidence.measured_axis_split_permille, 1800);
-        assert_eq!(output.evidence.applied_axis_split_permille, 1800);
-        assert_eq!(output.evidence.axis_split_clamped, 0);
-        assert!(output.flux_tau_us > output.torque_tau_us);
-        assert!(output.gains.flux_p > output.gains.torque_p);
-    }
-
-    #[test]
-    fn split_synthesis_scales_torque_when_torque_is_high_inductance() {
-        let model = test_electrical_model();
-        let config = autotune_test_config();
-        let input = CurrentGainSynthesisInput::with_impedance_split(
-            model,
-            CommissionProfile::Balanced,
-            1800,
-            1800,
-            CURRENT_AXIS_TORQUE,
-        );
-
-        let output = synthesize_current_gains(&input, &config).unwrap();
-
-        assert!(output.torque_tau_us > output.flux_tau_us);
-        assert!(output.gains.torque_p > output.gains.flux_p);
-    }
-
-    #[test]
-    fn split_synthesis_reports_clamped_axis_ratio() {
-        let model = test_electrical_model();
-        let config = autotune_test_config();
-        let input = CurrentGainSynthesisInput::with_impedance_split(
-            model,
-            CommissionProfile::Balanced,
-            2400,
+            1500,
             1500,
             CURRENT_AXIS_FLUX,
         );
 
-        let output = synthesize_current_gains(&input, &config).unwrap();
-
-        assert_eq!(output.evidence.measured_axis_split_permille, 2400);
-        assert_eq!(output.evidence.applied_axis_split_permille, 1500);
-        assert_eq!(output.evidence.axis_split_clamped, 1);
+        assert!(synthesize_current_gains(&input, &config).is_none());
     }
 
     #[test]
@@ -1334,45 +1353,6 @@ mod tests {
         input.axis_split_source = 0xff;
 
         assert!(synthesize_current_gains(&input, &config).is_none());
-    }
-
-    #[test]
-    fn split_synthesis_rejects_invalid_high_inductance_axis() {
-        let model = test_electrical_model();
-        let config = autotune_test_config();
-        let input = CurrentGainSynthesisInput::with_impedance_split(
-            model,
-            CommissionProfile::Balanced,
-            1800,
-            1800,
-            0xff,
-        );
-
-        assert!(synthesize_current_gains(&input, &config).is_none());
-    }
-
-    #[test]
-    fn split_synthesis_floors_under_unity_applied_split_in_evidence_and_math() {
-        let model = test_electrical_model();
-        let config = autotune_test_config();
-        let input = CurrentGainSynthesisInput::with_impedance_split(
-            model,
-            CommissionProfile::Balanced,
-            900,
-            900,
-            CURRENT_AXIS_FLUX,
-        );
-        let symmetric_input =
-            CurrentGainSynthesisInput::symmetric(model, CommissionProfile::Balanced);
-
-        let output = synthesize_current_gains(&input, &config).unwrap();
-        let symmetric = synthesize_current_gains(&symmetric_input, &config).unwrap();
-
-        assert_eq!(output.evidence.measured_axis_split_permille, 900);
-        assert_eq!(output.evidence.applied_axis_split_permille, 1000);
-        assert_eq!(output.flux_tau_us, model.tau_e_us);
-        assert_eq!(output.torque_tau_us, model.tau_e_us);
-        assert_eq!(output.gains, symmetric.gains);
     }
 
     // --- SIMC current gains ---
