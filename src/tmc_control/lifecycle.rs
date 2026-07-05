@@ -3,6 +3,69 @@
 use crate::commission_dispatch::DispatchState;
 use crate::commissioning::types::CommissioningBackend;
 
+const CLOSED_LOOP_POSITION_MODE: u32 = 0x8000_0003;
+
+async fn settle_closed_loop_hold_before_enable<B: CommissioningBackend>(
+    backend: &mut B,
+) -> Result<(), crate::autotune::CommissionError> {
+    use foci_tmc4671::registers::{
+        MODE_RAMP_MODE_MOTION, PID_ERROR_PID_FLUX_ERROR_SUM, PID_ERROR_PID_POSITION_ERROR_SUM,
+        PID_ERROR_PID_TORQUE_ERROR_SUM, PID_ERROR_PID_VELOCITY_ERROR_SUM, PID_POSITION_ACTUAL,
+        STATUS_FLAGS,
+    };
+
+    let mode = backend
+        .read_register(MODE_RAMP_MODE_MOTION)
+        .await
+        .map_err(|_| crate::autotune::CommissionError::Spi)?;
+    if mode != CLOSED_LOOP_POSITION_MODE {
+        return Ok(());
+    }
+
+    let actual = backend
+        .read_register(PID_POSITION_ACTUAL)
+        .await
+        .map_err(|_| crate::autotune::CommissionError::Spi)?;
+    backend
+        .write_register(PID_POSITION_ACTUAL, actual)
+        .await
+        .map_err(|_| crate::autotune::CommissionError::Spi)?;
+
+    crate::commissioning::helpers::write_sub_register_checked(
+        backend,
+        PID_ERROR_PID_TORQUE_ERROR_SUM,
+        0,
+    )
+    .await
+    .map_err(|_| crate::autotune::CommissionError::Spi)?;
+    crate::commissioning::helpers::write_sub_register_checked(
+        backend,
+        PID_ERROR_PID_FLUX_ERROR_SUM,
+        0,
+    )
+    .await
+    .map_err(|_| crate::autotune::CommissionError::Spi)?;
+    crate::commissioning::helpers::write_sub_register_checked(
+        backend,
+        PID_ERROR_PID_VELOCITY_ERROR_SUM,
+        0,
+    )
+    .await
+    .map_err(|_| crate::autotune::CommissionError::Spi)?;
+    crate::commissioning::helpers::write_sub_register_checked(
+        backend,
+        PID_ERROR_PID_POSITION_ERROR_SUM,
+        0,
+    )
+    .await
+    .map_err(|_| crate::autotune::CommissionError::Spi)?;
+    backend
+        .write_register(STATUS_FLAGS, 0)
+        .await
+        .map_err(|_| crate::autotune::CommissionError::Spi)?;
+    Ok(())
+}
+
 /// Mark the motor electrically energized after verified calibration.
 ///
 /// Asserts `state.calibrated`; verifies the calibration sentinel register;
@@ -42,6 +105,8 @@ pub async fn arm_motor_electrical<B: CommissioningBackend>(
         .read_register_verified(MOTOR_TYPE_N_POLE_PAIRS, expected)
         .await
         .map_err(|_| crate::autotune::CommissionError::ChipResetDetected)?;
+
+    settle_closed_loop_hold_before_enable(backend).await?;
 
     backend.set_enable_pin(true);
     *state.motor_enabled = true;
@@ -330,6 +395,78 @@ mod tests {
             let result = arm_motor_electrical(&mut backend, &mut state).await;
             assert_eq!(result, Ok(()));
             assert!(backend.enable_pin);
+            tmc_state()
+                .motor_sentinel
+                .store(0, core::sync::atomic::Ordering::Relaxed);
+        });
+    }
+
+    #[test]
+    fn arm_motor_electrical_sets_hold_target_before_enable_in_position_mode() {
+        pollster::block_on(async {
+            use foci_tmc4671::registers::{
+                MODE_RAMP_MODE_MOTION, MOTOR_TYPE_N_POLE_PAIRS, PID_POSITION_ACTUAL,
+                PID_POSITION_TARGET, STATUS_FLAGS,
+            };
+
+            let _guard = crate::commission_dispatch::test_support::SHARED_STATE_MUTEX
+                .lock()
+                .await;
+            let mut backend = MockBackend::new();
+            backend.step_width_value = 4;
+            tmc_state()
+                .motor_sentinel
+                .store(0x0002_0032, core::sync::atomic::Ordering::Relaxed);
+            let _ = backend
+                .write_register(MOTOR_TYPE_N_POLE_PAIRS, 0x0002_0032)
+                .await;
+            let _ = backend
+                .write_register(MODE_RAMP_MODE_MOTION, 0x8000_0003)
+                .await;
+            let _ = backend.write_register(PID_POSITION_TARGET, 0).await;
+            let _ = backend.write_register(PID_POSITION_ACTUAL, 11).await;
+            backend.spi_log.clear();
+
+            let (_, mut en, mut gains) = fresh_state_locals();
+            let mut cal = true;
+            let mut state = dispatch_state(&mut cal, &mut en, &mut gains);
+            let result = arm_motor_electrical(&mut backend, &mut state).await;
+
+            assert_eq!(result, Ok(()));
+            let enable_index = backend
+                .spi_log
+                .iter()
+                .position(|op| {
+                    matches!(
+                        op,
+                        crate::commission_dispatch::test_support::SpiOp::EnablePin(true)
+                    )
+                })
+                .expect("arm should assert enable");
+            let target_rewrite_index = backend
+                .spi_log
+                .iter()
+                .position(|op| {
+                    matches!(
+                        op,
+                        crate::commission_dispatch::test_support::SpiOp::Write(addr, 11)
+                            if *addr == PID_POSITION_ACTUAL.addr()
+                    )
+                })
+                .expect("arm should rewrite PID_POSITION_ACTUAL to observed actual");
+            let status_clear_index = backend
+                .spi_log
+                .iter()
+                .position(|op| {
+                    matches!(
+                        op,
+                        crate::commission_dispatch::test_support::SpiOp::Write(addr, 0)
+                            if *addr == STATUS_FLAGS.addr()
+                    )
+                })
+                .expect("arm should clear STATUS_FLAGS");
+            assert!(target_rewrite_index < enable_index);
+            assert!(status_clear_index < enable_index);
             tmc_state()
                 .motor_sentinel
                 .store(0, core::sync::atomic::Ordering::Relaxed);
