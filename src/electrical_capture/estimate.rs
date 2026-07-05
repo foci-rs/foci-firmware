@@ -3,6 +3,25 @@ use super::{ElectricalCaptureSample, R_SENSITIVITY_MAX_L_SHIFT_PERMILLE};
 const MICROS_PER_SECOND: i128 = 1_000_000;
 const TAU_MILLIRADIANS: u128 = 6_283;
 const MAX_FIT_TIMESTAMP_OFFSET_US: u64 = u32::MAX as u64;
+const ELECTRICAL_TURN_COUNTS: u32 = 65_536;
+const SALIENCY_Q15_SCALE: i128 = 32_767;
+const MIN_SALIENCY_SAMPLE_COUNT: u16 = 8;
+
+const COS_2THETA_Q15: [i16; 64] = [
+    32767, 32137, 30273, 27245, 23170, 18204, 12539, 6393, 0, -6393, -12539, -18204, -23170,
+    -27245, -30273, -32137, -32767, -32137, -30273, -27245, -23170, -18204, -12539, -6393, 0, 6393,
+    12539, 18204, 23170, 27245, 30273, 32137, 32767, 32137, 30273, 27245, 23170, 18204, 12539,
+    6393, 0, -6393, -12539, -18204, -23170, -27245, -30273, -32137, -32767, -32137, -30273, -27245,
+    -23170, -18204, -12539, -6393, 0, 6393, 12539, 18204, 23170, 27245, 30273, 32137,
+];
+
+const SIN_2THETA_Q15: [i16; 64] = [
+    0, 6393, 12539, 18204, 23170, 27245, 30273, 32137, 32767, 32137, 30273, 27245, 23170, 18204,
+    12539, 6393, 0, -6393, -12539, -18204, -23170, -27245, -30273, -32137, -32767, -32137, -30273,
+    -27245, -23170, -18204, -12539, -6393, 0, 6393, 12539, 18204, 23170, 27245, 30273, 32137,
+    32767, 32137, 30273, 27245, 23170, 18204, 12539, 6393, 0, -6393, -12539, -18204, -23170,
+    -27245, -30273, -32137, -32767, -32137, -30273, -27245, -23170, -18204, -12539, -6393,
+];
 
 /// Inclusive-exclusive sample range used for estimator fitting.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
@@ -105,6 +124,199 @@ pub struct AcReactanceEvidence {
     pub x_mag_shift_plus_permille: u16,
     /// Nominal magnitude-vs-quadrature disagreement in permille.
     pub x_mag_vs_quad_permille: u16,
+}
+
+/// Saliency evidence could not be extracted from this capture.
+pub const AC_SALIENCY_NOT_DETERMINABLE: u8 = 0;
+/// Saliency evidence was extracted and passed basic sanity checks.
+pub const AC_SALIENCY_DETERMINABLE: u8 = 1;
+
+/// Count-space Ld/Lq reactance evidence extracted from the rotating capture.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+pub struct AcSaliencyEvidence {
+    /// `AC_SALIENCY_*` status code.
+    pub status: u8,
+    /// Accepted angle-averaged reactance ratio in milli count-ratio units.
+    pub x_average_count_ratio_milli: u32,
+    /// D-axis reactance ratio in milli count-ratio units, valid when determinable.
+    pub x_d_count_ratio_milli: u32,
+    /// Q-axis reactance ratio in milli count-ratio units, valid when determinable.
+    pub x_q_count_ratio_milli: u32,
+    /// `abs(Ld - Lq) / average(Ld, Lq)` in permille, valid when determinable.
+    pub saliency_permille: u16,
+}
+
+impl AcSaliencyEvidence {
+    /// Build explicit not-determinable evidence without inventing Ld/Lq values.
+    pub const fn not_determinable(x_average_count_ratio_milli: u32) -> Self {
+        Self {
+            status: AC_SALIENCY_NOT_DETERMINABLE,
+            x_average_count_ratio_milli,
+            x_d_count_ratio_milli: 0,
+            x_q_count_ratio_milli: 0,
+            saliency_permille: 0,
+        }
+    }
+
+    /// Return true when the accepted average is bracketed by the two axes.
+    pub fn brackets_average(&self) -> bool {
+        if self.status != AC_SALIENCY_DETERMINABLE {
+            return false;
+        }
+        let low = self.x_d_count_ratio_milli.min(self.x_q_count_ratio_milli);
+        let high = self.x_d_count_ratio_milli.max(self.x_q_count_ratio_milli);
+        low <= self.x_average_count_ratio_milli && self.x_average_count_ratio_milli <= high
+    }
+}
+
+/// Inputs to the second-harmonic saliency extraction.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+pub struct SaliencySecondHarmonicInput {
+    /// Accepted angle-averaged reactance ratio in milli count-ratio units.
+    pub x_average_count_ratio_milli: u32,
+    /// Normalized `2 * mean((x - avg) * cos(2theta))` coefficient.
+    pub cos2_milli: i32,
+    /// Normalized `2 * mean((x - avg) * sin(2theta))` coefficient.
+    pub sin2_milli: i32,
+    /// Number of samples that fed the harmonic correlation.
+    pub sample_count: u16,
+    /// Phi-domain window width used for the correlation.
+    pub phi_delta_counts: u32,
+}
+
+/// Phi-domain second-harmonic accumulator for saliency evidence.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AcSaliencyAccumulator {
+    sample_count: u32,
+    weight_sum: u32,
+    sum_x_milli: i128,
+    sum_cos_q15: i128,
+    sum_sin_q15: i128,
+    sum_x_cos2: i128,
+    sum_x_sin2: i128,
+}
+
+impl AcSaliencyAccumulator {
+    /// Construct an empty saliency accumulator.
+    pub const fn new() -> Self {
+        Self {
+            sample_count: 0,
+            weight_sum: 0,
+            sum_x_milli: 0,
+            sum_cos_q15: 0,
+            sum_sin_q15: 0,
+            sum_x_cos2: 0,
+            sum_x_sin2: 0,
+        }
+    }
+
+    /// Add one weighted rotating-frame current sample to the 2theta correlation.
+    pub fn push_weighted_sample(
+        &mut self,
+        openloop_phi: u16,
+        sample_weight_counts: u32,
+        ud_count: i16,
+        id_count: i16,
+        iq_count: i16,
+    ) -> Option<()> {
+        if sample_weight_counts == 0 {
+            return None;
+        }
+
+        let x_milli = i128::from(sample_quadrature_reactance_milli(
+            ud_count, id_count, iq_count,
+        )?);
+        let weight = i128::from(sample_weight_counts);
+        let cos = i128::from(cos_2theta_q15(openloop_phi));
+        let sin = i128::from(sin_2theta_q15(openloop_phi));
+
+        self.sample_count = self.sample_count.checked_add(1)?;
+        self.weight_sum = self.weight_sum.checked_add(sample_weight_counts)?;
+        self.sum_x_milli = self.sum_x_milli.checked_add(x_milli.checked_mul(weight)?)?;
+        self.sum_cos_q15 = self.sum_cos_q15.checked_add(cos.checked_mul(weight)?)?;
+        self.sum_sin_q15 = self.sum_sin_q15.checked_add(sin.checked_mul(weight)?)?;
+        self.sum_x_cos2 = self
+            .sum_x_cos2
+            .checked_add(x_milli.checked_mul(cos)?.checked_mul(weight)?)?;
+        self.sum_x_sin2 = self
+            .sum_x_sin2
+            .checked_add(x_milli.checked_mul(sin)?.checked_mul(weight)?)?;
+        Some(())
+    }
+
+    /// Finish the phi-domain correlation.
+    pub fn finish(&self, phi_delta_counts: u32) -> Option<SaliencySecondHarmonicInput> {
+        if self.weight_sum == 0
+            || self.weight_sum != phi_delta_counts
+            || phi_delta_counts == 0
+            || phi_delta_counts % ELECTRICAL_TURN_COUNTS != 0
+            || self.sample_count < u32::from(MIN_SALIENCY_SAMPLE_COUNT)
+            || self.sample_count > u32::from(u16::MAX)
+        {
+            return None;
+        }
+
+        let weight_sum = i128::from(self.weight_sum);
+        let x_average = self.sum_x_milli.checked_div(weight_sum)?;
+        let centered_cos = self
+            .sum_x_cos2
+            .checked_sub(x_average.checked_mul(self.sum_cos_q15)?)?;
+        let centered_sin = self
+            .sum_x_sin2
+            .checked_sub(x_average.checked_mul(self.sum_sin_q15)?)?;
+        let denominator = weight_sum.checked_mul(SALIENCY_Q15_SCALE)?;
+        let cos2 = centered_cos.checked_mul(2)?.checked_div(denominator)?;
+        let sin2 = centered_sin.checked_mul(2)?.checked_div(denominator)?;
+
+        Some(SaliencySecondHarmonicInput {
+            x_average_count_ratio_milli: u32::try_from(x_average).ok()?,
+            cos2_milli: i32::try_from(cos2).ok()?,
+            sin2_milli: i32::try_from(sin2).ok()?,
+            sample_count: u16::try_from(self.sample_count).ok()?,
+            phi_delta_counts,
+        })
+    }
+}
+
+impl Default for AcSaliencyAccumulator {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Extract Ld/Lq reactance evidence from normalized 2theta correlation terms.
+pub fn extract_saliency_from_second_harmonic(
+    input: SaliencySecondHarmonicInput,
+) -> Option<AcSaliencyEvidence> {
+    if input.sample_count < MIN_SALIENCY_SAMPLE_COUNT
+        || input.phi_delta_counts == 0
+        || input.phi_delta_counts % ELECTRICAL_TURN_COUNTS != 0
+        || input.x_average_count_ratio_milli == 0
+    {
+        return None;
+    }
+
+    let cos = i128::from(input.cos2_milli);
+    let sin = i128::from(input.sin2_milli);
+    let amplitude_sq =
+        u128::try_from(cos.checked_mul(cos)?.checked_add(sin.checked_mul(sin)?)?).ok()?;
+    let amplitude = integer_sqrt(amplitude_sq);
+    let average = u128::from(input.x_average_count_ratio_milli);
+    if amplitude > average {
+        return None;
+    }
+
+    let x_d = average.checked_add(amplitude)?;
+    let x_q = average.checked_sub(amplitude)?;
+    let saliency_permille = amplitude.checked_mul(2_000)?.checked_div(average)?;
+
+    Some(AcSaliencyEvidence {
+        status: AC_SALIENCY_DETERMINABLE,
+        x_average_count_ratio_milli: input.x_average_count_ratio_milli,
+        x_d_count_ratio_milli: u32::try_from(x_d).ok()?,
+        x_q_count_ratio_milli: u32::try_from(x_q).ok()?,
+        saliency_permille: u16::try_from(saliency_permille).ok()?,
+    })
 }
 
 /// One weighted interval for a phi-locked AC accumulation window.
@@ -417,6 +629,32 @@ pub fn rotating_frame_reactance(
         x_mag_shift_plus_permille: shift_permille(nominal, plus)?,
         x_mag_vs_quad_permille: shift_permille(x_quad, nominal)?,
     })
+}
+
+fn sample_quadrature_reactance_milli(ud_count: i16, id_count: i16, iq_count: i16) -> Option<u32> {
+    let u_count = u128::from(ud_count.unsigned_abs());
+    let id = i128::from(id_count);
+    let iq = i128::from(iq_count);
+    let id_sq = id.checked_mul(id)?;
+    let iq_sq = iq.checked_mul(iq)?;
+    let current_mag_sq = u128::try_from(id_sq.checked_add(iq_sq)?).ok()?;
+    if u_count == 0 || current_mag_sq == 0 {
+        return None;
+    }
+
+    let x_milli = u_count
+        .checked_mul(iq.unsigned_abs())?
+        .checked_mul(1_000)?
+        .checked_div(current_mag_sq)?;
+    u32::try_from(x_milli).ok()
+}
+
+fn cos_2theta_q15(openloop_phi: u16) -> i16 {
+    COS_2THETA_Q15[usize::from(openloop_phi >> 10)]
+}
+
+fn sin_2theta_q15(openloop_phi: u16) -> i16 {
+    SIN_2THETA_Q15[usize::from(openloop_phi >> 10)]
 }
 
 /// Return the forward 16-bit electrical-angle delta from `previous` to `current`.
@@ -888,6 +1126,103 @@ mod tests {
         };
 
         assert_eq!(rotating_frame_reactance(evidence, 768, 500), None);
+    }
+
+    #[test]
+    fn saliency_reactance_brackets_average_when_determinable() {
+        let evidence = AcSaliencyEvidence {
+            status: AC_SALIENCY_DETERMINABLE,
+            x_average_count_ratio_milli: 8_600,
+            x_d_count_ratio_milli: 9_200,
+            x_q_count_ratio_milli: 8_000,
+            saliency_permille: 140,
+        };
+
+        assert!(evidence.brackets_average());
+    }
+
+    #[test]
+    fn saliency_reactance_rejects_average_outside_ld_lq() {
+        let evidence = AcSaliencyEvidence {
+            status: AC_SALIENCY_DETERMINABLE,
+            x_average_count_ratio_milli: 9_500,
+            x_d_count_ratio_milli: 9_200,
+            x_q_count_ratio_milli: 8_000,
+            saliency_permille: 140,
+        };
+
+        assert!(!evidence.brackets_average());
+    }
+
+    #[test]
+    fn saliency_reactance_allows_not_determinable_without_fake_axes() {
+        let evidence = AcSaliencyEvidence::not_determinable(8_600);
+
+        assert_eq!(evidence.status, AC_SALIENCY_NOT_DETERMINABLE);
+        assert_eq!(evidence.x_average_count_ratio_milli, 8_600);
+        assert_eq!(evidence.x_d_count_ratio_milli, 0);
+        assert_eq!(evidence.x_q_count_ratio_milli, 0);
+        assert!(!evidence.brackets_average());
+    }
+
+    #[test]
+    fn saliency_second_harmonic_extractor_brackets_average() {
+        let evidence = extract_saliency_from_second_harmonic(SaliencySecondHarmonicInput {
+            x_average_count_ratio_milli: 8_600,
+            cos2_milli: 600,
+            sin2_milli: 800,
+            sample_count: 104,
+            phi_delta_counts: 8 * 65_536,
+        })
+        .expect("determinable saliency");
+
+        assert_eq!(evidence.status, AC_SALIENCY_DETERMINABLE);
+        assert_eq!(evidence.x_average_count_ratio_milli, 8_600);
+        assert_eq!(evidence.x_d_count_ratio_milli, 9_600);
+        assert_eq!(evidence.x_q_count_ratio_milli, 7_600);
+        assert_eq!(evidence.saliency_permille, 232);
+        assert!(evidence.brackets_average());
+    }
+
+    #[test]
+    fn saliency_second_harmonic_requires_integer_turn_coverage() {
+        let evidence = extract_saliency_from_second_harmonic(SaliencySecondHarmonicInput {
+            x_average_count_ratio_milli: 8_600,
+            cos2_milli: 600,
+            sin2_milli: 800,
+            sample_count: 104,
+            phi_delta_counts: 7 * 65_536 + 10_000,
+        });
+
+        assert!(evidence.is_none());
+    }
+
+    #[test]
+    fn saliency_accumulator_extracts_second_harmonic_from_phi_samples() {
+        let mut acc = AcSaliencyAccumulator::new();
+        let ud_count = 768;
+        let iq_by_quarter = [-78, -91, -78, -91];
+
+        for _turn in 0..8 {
+            for (quarter, iq_count) in iq_by_quarter.iter().copied().enumerate() {
+                let phi = u16::try_from(quarter).unwrap().wrapping_mul(16_384);
+                acc.push_weighted_sample(phi, 16_384, ud_count, 0, iq_count)
+                    .expect("sample accepted");
+            }
+        }
+
+        let input = acc
+            .finish(8 * 65_536)
+            .expect("determinable second-harmonic input");
+        let evidence = extract_saliency_from_second_harmonic(input).expect("saliency evidence");
+
+        assert_eq!(input.sample_count, 32);
+        assert_eq!(input.x_average_count_ratio_milli, 9_142);
+        assert!(input.cos2_milli >= 1_405);
+        assert!(input.cos2_milli <= 1_410);
+        assert_eq!(input.sin2_milli, 0);
+        assert!(evidence.brackets_average());
+        assert!(evidence.x_d_count_ratio_milli > evidence.x_q_count_ratio_milli);
     }
 
     #[test]
