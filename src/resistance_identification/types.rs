@@ -120,32 +120,30 @@ pub enum ResistanceError {
 impl ResistanceError {
     /// Non-zero status code for the Klipper protocol message.
     ///
-    /// Reuses [`crate::autotune::CommissionError`]'s stable numbering: a
-    /// backend I/O failure maps to the same code as commissioning's
-    /// [`crate::autotune::CommissionError::Spi`], and every resistance-fit
-    /// quality-gate or configuration failure maps to the same code
-    /// commissioning's electrical-identification phase reports for any
-    /// `ResistanceError` ([`crate::autotune::CommissionError::ResistanceIdFailed`]).
-    /// `NotAdcReady` and `NotArmed` have no commissioning analog (the
-    /// commissioning engine's phase ordering makes both unreachable there),
-    /// so the diagnostic-only caller gets two new codes appended after the
-    /// existing stable table; these are stable once shipped.
+    /// Reuses [`crate::autotune::CommissionError`]'s stable numbering. A
+    /// backend I/O failure maps to the shared SPI code, and every resistance
+    /// precondition, quality-gate, or configuration failure gets its own
+    /// resistance-specific code so diagnostics can report the actionable cause.
     pub fn status_code(self) -> u8 {
-        match self {
-            Self::BackendIo => crate::autotune::CommissionError::Spi.status_code(),
-            Self::NotAdcReady => 20,
-            Self::NotArmed => 21,
-            Self::WrongPowerStage
-            | Self::InsufficientLinearPoints
-            | Self::ThermalDrift
-            | Self::ElectricalAxisMismatch
-            | Self::HighResidual
-            | Self::InvalidMotorType
-            | Self::PeakCurrentExceeded
-            | Self::UnsupportedProfile
-            | Self::OutOfBoundsParameter => {
-                crate::autotune::CommissionError::ResistanceIdFailed.status_code()
-            }
+        crate::autotune::CommissionError::from(self).status_code()
+    }
+}
+
+impl From<ResistanceError> for crate::autotune::CommissionError {
+    fn from(value: ResistanceError) -> Self {
+        match value {
+            ResistanceError::BackendIo => Self::Spi,
+            ResistanceError::NotAdcReady => Self::ResistanceAdcNotReady,
+            ResistanceError::NotArmed => Self::ResistanceNotArmed,
+            ResistanceError::WrongPowerStage => Self::ResistanceWrongPowerStage,
+            ResistanceError::InsufficientLinearPoints => Self::ResistanceInsufficientLinearPoints,
+            ResistanceError::ThermalDrift => Self::ResistanceThermalDrift,
+            ResistanceError::ElectricalAxisMismatch => Self::ResistanceElectricalAxisMismatch,
+            ResistanceError::HighResidual => Self::ResistanceHighResidual,
+            ResistanceError::InvalidMotorType => Self::ResistanceInvalidMotorType,
+            ResistanceError::PeakCurrentExceeded => Self::ResistancePeakCurrentExceeded,
+            ResistanceError::UnsupportedProfile => Self::ResistanceUnsupportedProfile,
+            ResistanceError::OutOfBoundsParameter => Self::ResistanceParameterOutOfBounds,
         }
     }
 }
@@ -163,26 +161,25 @@ mod tests {
     }
 
     #[test]
-    fn quality_gate_failures_reuse_commissioning_resistance_id_failed_code() {
-        let expected = crate::autotune::CommissionError::ResistanceIdFailed.status_code();
-        for error in [
-            ResistanceError::WrongPowerStage,
-            ResistanceError::InsufficientLinearPoints,
-            ResistanceError::ThermalDrift,
-            ResistanceError::ElectricalAxisMismatch,
-            ResistanceError::HighResidual,
-            ResistanceError::InvalidMotorType,
-            ResistanceError::PeakCurrentExceeded,
-            ResistanceError::UnsupportedProfile,
-            ResistanceError::OutOfBoundsParameter,
-        ] {
-            assert_eq!(error.status_code(), expected, "{error:?}");
+    fn resistance_errors_get_distinct_actionable_status_codes() {
+        let expected = [
+            (ResistanceError::NotAdcReady, 20),
+            (ResistanceError::NotArmed, 21),
+            (ResistanceError::WrongPowerStage, 22),
+            (ResistanceError::InsufficientLinearPoints, 23),
+            (ResistanceError::ThermalDrift, 24),
+            (ResistanceError::ElectricalAxisMismatch, 25),
+            (ResistanceError::HighResidual, 26),
+            (ResistanceError::InvalidMotorType, 27),
+            (ResistanceError::PeakCurrentExceeded, 28),
+            (ResistanceError::UnsupportedProfile, 29),
+            (ResistanceError::OutOfBoundsParameter, 30),
+        ];
+        let mut seen = [false; 256];
+        for (error, code) in expected {
+            assert_eq!(error.status_code(), code, "{error:?}");
+            assert!(!seen[code as usize], "duplicate status code {code}");
+            seen[code as usize] = true;
         }
-    }
-
-    #[test]
-    fn diagnostic_only_preconditions_get_distinct_stable_codes() {
-        assert_eq!(ResistanceError::NotAdcReady.status_code(), 20);
-        assert_eq!(ResistanceError::NotArmed.status_code(), 21);
     }
 }

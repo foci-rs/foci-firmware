@@ -136,8 +136,31 @@ pub enum CommissionError {
     /// before any further arm attempt. Code 18.
     ChipResetDetected,
     /// Shared multi-point resistance identification failed a quality gate or
-    /// backend transaction during electrical identification. Code 19.
+    /// backend transaction during electrical identification before the
+    /// firmware could classify the specific resistance cause. Code 19.
     ResistanceIdFailed,
+    /// Resistance identification could not run because ADC calibration was not ready. Code 20.
+    ResistanceAdcNotReady,
+    /// Resistance identification could not run because the motor was not armed. Code 21.
+    ResistanceNotArmed,
+    /// Resistance identification found an unexpected power-stage setup. Code 22.
+    ResistanceWrongPowerStage,
+    /// Resistance identification did not find enough linear-region points. Code 23.
+    ResistanceInsufficientLinearPoints,
+    /// Resistance identification rejected thermal drift across the signed anchor. Code 24.
+    ResistanceThermalDrift,
+    /// Resistance identification found mismatched electrical-axis slopes. Code 25.
+    ResistanceElectricalAxisMismatch,
+    /// Resistance identification rejected a high linear-fit residual. Code 26.
+    ResistanceHighResidual,
+    /// Resistance identification ran with an unsupported motor type. Code 27.
+    ResistanceInvalidMotorType,
+    /// Resistance identification exceeded the profile current limit. Code 28.
+    ResistancePeakCurrentExceeded,
+    /// Resistance identification received an unsupported profile. Code 29.
+    ResistanceUnsupportedProfile,
+    /// Resistance identification received an out-of-bounds profile parameter. Code 30.
+    ResistanceParameterOutOfBounds,
 }
 
 impl CommissionError {
@@ -166,6 +189,17 @@ impl CommissionError {
             Self::SafetyEnvelopeViolation => 17,
             Self::ChipResetDetected => 18,
             Self::ResistanceIdFailed => 19,
+            Self::ResistanceAdcNotReady => 20,
+            Self::ResistanceNotArmed => 21,
+            Self::ResistanceWrongPowerStage => 22,
+            Self::ResistanceInsufficientLinearPoints => 23,
+            Self::ResistanceThermalDrift => 24,
+            Self::ResistanceElectricalAxisMismatch => 25,
+            Self::ResistanceHighResidual => 26,
+            Self::ResistanceInvalidMotorType => 27,
+            Self::ResistancePeakCurrentExceeded => 28,
+            Self::ResistanceUnsupportedProfile => 29,
+            Self::ResistanceParameterOutOfBounds => 30,
         }
     }
 }
@@ -441,6 +475,18 @@ mod tests {
             CommissionError::QueueFull,
             CommissionError::SafetyEnvelopeViolation,
             CommissionError::ChipResetDetected,
+            CommissionError::ResistanceIdFailed,
+            CommissionError::ResistanceAdcNotReady,
+            CommissionError::ResistanceNotArmed,
+            CommissionError::ResistanceWrongPowerStage,
+            CommissionError::ResistanceInsufficientLinearPoints,
+            CommissionError::ResistanceThermalDrift,
+            CommissionError::ResistanceElectricalAxisMismatch,
+            CommissionError::ResistanceHighResidual,
+            CommissionError::ResistanceInvalidMotorType,
+            CommissionError::ResistancePeakCurrentExceeded,
+            CommissionError::ResistanceUnsupportedProfile,
+            CommissionError::ResistanceParameterOutOfBounds,
         ];
         let mut seen = [false; 256];
         for e in errors {

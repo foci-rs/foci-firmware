@@ -679,7 +679,7 @@ pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
                 }
                 Err(err) => {
                     defmt::warn!("resistance id failed: {}", err);
-                    super::fail_inner(phase, CommissionError::ResistanceIdFailed)
+                    super::fail_inner(phase, CommissionError::from(err))
                 }
             }
         }
@@ -1743,7 +1743,7 @@ mod tests {
     }
 
     #[test]
-    fn electrical_id_fails_when_resistance_quality_gate_fails() {
+    fn electrical_id_reports_specific_resistance_quality_gate_failure() {
         pollster::block_on(async {
             let mut backend = MockBackend::new();
             seed_resistance_power_stage_registers(&mut backend);
@@ -1769,12 +1769,16 @@ mod tests {
             )
             .await;
 
-            assert!(
-                matches!(
-                    step,
-                    StepResult::InnerFailed(CommissionError::ResistanceIdFailed)
-                ),
-                "expected ResistanceIdFailed, got {step:?}"
+            let expected_status =
+                crate::resistance_identification::ResistanceError::InsufficientLinearPoints
+                    .status_code();
+            let StepResult::InnerFailed(error) = step else {
+                panic!("expected InnerFailed, got {step:?}");
+            };
+            assert_eq!(error.status_code(), expected_status);
+            assert_ne!(
+                error.status_code(),
+                CommissionError::ResistanceIdFailed.status_code()
             );
         });
     }
