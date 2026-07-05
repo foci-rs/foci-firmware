@@ -1,10 +1,139 @@
 //! Stored biquad-filter restore helpers for TMC control state.
 
 use embedded_hal_async::spi::SpiDevice;
+use foci_tmc4671::registers::SubRegister;
 use foci_tmc4671::spi::{SpiError, Tmc4671Spi};
 
 use crate::commissioning::types::CommissioningBackend;
 use crate::state::tmc::TmcChannelState;
+
+/// TMC4671 biquad feedback filter selected by a live filter request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BiquadFilterTarget {
+    /// Velocity feedback filter.
+    Velocity,
+    /// Torque-current feedback filter.
+    Torque,
+    /// Position feedback filter.
+    Position,
+    /// Flux-current feedback filter.
+    Flux,
+}
+
+#[derive(Clone, Copy)]
+struct BiquadFilterSubRegs {
+    a_1: SubRegister,
+    a_2: SubRegister,
+    b_0: SubRegister,
+    b_1: SubRegister,
+    b_2: SubRegister,
+    enable: SubRegister,
+}
+
+fn biquad_filter_regs(target: BiquadFilterTarget) -> BiquadFilterSubRegs {
+    use foci_tmc4671::registers::*;
+
+    match target {
+        BiquadFilterTarget::Velocity => BiquadFilterSubRegs {
+            a_1: CONFIG_BIQUAD_V_A_1,
+            a_2: CONFIG_BIQUAD_V_A_2,
+            b_0: CONFIG_BIQUAD_V_B_0,
+            b_1: CONFIG_BIQUAD_V_B_1,
+            b_2: CONFIG_BIQUAD_V_B_2,
+            enable: CONFIG_BIQUAD_V_ENABLE,
+        },
+        BiquadFilterTarget::Torque => BiquadFilterSubRegs {
+            a_1: CONFIG_BIQUAD_T_A_1,
+            a_2: CONFIG_BIQUAD_T_A_2,
+            b_0: CONFIG_BIQUAD_T_B_0,
+            b_1: CONFIG_BIQUAD_T_B_1,
+            b_2: CONFIG_BIQUAD_T_B_2,
+            enable: CONFIG_BIQUAD_T_ENABLE,
+        },
+        BiquadFilterTarget::Position => BiquadFilterSubRegs {
+            a_1: CONFIG_BIQUAD_X_A_1,
+            a_2: CONFIG_BIQUAD_X_A_2,
+            b_0: CONFIG_BIQUAD_X_B_0,
+            b_1: CONFIG_BIQUAD_X_B_1,
+            b_2: CONFIG_BIQUAD_X_B_2,
+            enable: CONFIG_BIQUAD_X_ENABLE,
+        },
+        BiquadFilterTarget::Flux => BiquadFilterSubRegs {
+            a_1: CONFIG_BIQUAD_F_A_1,
+            a_2: CONFIG_BIQUAD_F_A_2,
+            b_0: CONFIG_BIQUAD_F_B_0,
+            b_1: CONFIG_BIQUAD_F_B_1,
+            b_2: CONFIG_BIQUAD_F_B_2,
+            enable: CONFIG_BIQUAD_F_ENABLE,
+        },
+    }
+}
+
+fn store_filter_hz(tmc_state: &TmcChannelState, target: BiquadFilterTarget, filter_hz: u16) {
+    use core::sync::atomic::Ordering::Relaxed;
+
+    match target {
+        BiquadFilterTarget::Velocity => tmc_state.velocity_filter_hz.store(filter_hz, Relaxed),
+        BiquadFilterTarget::Torque => tmc_state.torque_filter_hz.store(filter_hz, Relaxed),
+        BiquadFilterTarget::Position => tmc_state.position_filter_hz.store(filter_hz, Relaxed),
+        BiquadFilterTarget::Flux => tmc_state.flux_filter_hz.store(filter_hz, Relaxed),
+    }
+}
+
+/// Apply one live biquad low-pass filter request.
+///
+/// A cutoff of `0` disables the selected filter. Non-zero cutoffs are
+/// validated by [`crate::biquad::butterworth_lowpass`] and written before
+/// the cached filter state is updated.
+///
+/// # Errors
+///
+/// Returns `Err(())` if the cutoff is invalid or if any SPI write fails.
+pub async fn apply_live_filter<B>(
+    tmc: &mut Tmc4671Spi<B>,
+    tmc_state: &TmcChannelState,
+    target: BiquadFilterTarget,
+    filter_hz: u16,
+    pwm_maxcnt: u16,
+) -> Result<(), ()>
+where
+    B: SpiDevice<u8>,
+{
+    let regs = biquad_filter_regs(target);
+    if filter_hz == 0 {
+        tmc.write_sub_register(regs.enable, 0)
+            .await
+            .map_err(|_| ())?;
+        store_filter_hz(tmc_state, target, 0);
+        return Ok(());
+    }
+
+    let Some(coeffs) = crate::biquad::butterworth_lowpass(filter_hz, pwm_maxcnt) else {
+        defmt::error!("Invalid biquad filter cutoff: {} Hz", filter_hz);
+        return Err(());
+    };
+
+    tmc.write_sub_register(regs.a_1, coeffs.a_1 as u32)
+        .await
+        .map_err(|_| ())?;
+    tmc.write_sub_register(regs.a_2, coeffs.a_2 as u32)
+        .await
+        .map_err(|_| ())?;
+    tmc.write_sub_register(regs.b_0, coeffs.b_0 as u32)
+        .await
+        .map_err(|_| ())?;
+    tmc.write_sub_register(regs.b_1, coeffs.b_1 as u32)
+        .await
+        .map_err(|_| ())?;
+    tmc.write_sub_register(regs.b_2, coeffs.b_2 as u32)
+        .await
+        .map_err(|_| ())?;
+    tmc.write_sub_register(regs.enable, 1)
+        .await
+        .map_err(|_| ())?;
+    store_filter_hz(tmc_state, target, filter_hz);
+    Ok(())
+}
 
 /// Re-apply biquad filters from stored atomics.
 ///

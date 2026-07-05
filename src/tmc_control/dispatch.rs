@@ -5,6 +5,7 @@ use foci_tmc4671::spi::Tmc4671Spi;
 
 use crate::state::tmc::TmcChannelState;
 use crate::tmc::TmcRequestKind;
+use crate::tmc_control::filters::{BiquadFilterTarget, apply_live_filter};
 use crate::tmc_control::request_writes::{
     apply_set_current, apply_set_encoder, apply_set_encoder_dir, apply_set_voltage_limit,
 };
@@ -29,6 +30,7 @@ pub async fn apply_shared_tmc_request<Spi>(
     tmc: &mut Tmc4671Spi<Spi>,
     tmc_state: &TmcChannelState,
     current_scale_ma_per_lsb: f32,
+    pwm_maxcnt: u16,
 ) -> Result<SharedTmcDispatch, ()>
 where
     Spi: SpiDevice<u8>,
@@ -50,11 +52,51 @@ where
             apply_set_voltage_limit(tmc, tmc_state, *voltage_limit).await?;
             Ok(SharedTmcDispatch::Handled)
         }
-        TmcRequestKind::SetVelocityFilter { .. }
-        | TmcRequestKind::SetTorqueFilter { .. }
-        | TmcRequestKind::SetPositionFilter { .. }
-        | TmcRequestKind::SetFluxFilter { .. }
-        | TmcRequestKind::SetVelocityFeedforward { .. }
+        TmcRequestKind::SetVelocityFilter { filter_hz } => {
+            apply_live_filter(
+                tmc,
+                tmc_state,
+                BiquadFilterTarget::Velocity,
+                *filter_hz,
+                pwm_maxcnt,
+            )
+            .await?;
+            Ok(SharedTmcDispatch::Handled)
+        }
+        TmcRequestKind::SetTorqueFilter { filter_hz } => {
+            apply_live_filter(
+                tmc,
+                tmc_state,
+                BiquadFilterTarget::Torque,
+                *filter_hz,
+                pwm_maxcnt,
+            )
+            .await?;
+            Ok(SharedTmcDispatch::Handled)
+        }
+        TmcRequestKind::SetPositionFilter { filter_hz } => {
+            apply_live_filter(
+                tmc,
+                tmc_state,
+                BiquadFilterTarget::Position,
+                *filter_hz,
+                pwm_maxcnt,
+            )
+            .await?;
+            Ok(SharedTmcDispatch::Handled)
+        }
+        TmcRequestKind::SetFluxFilter { filter_hz } => {
+            apply_live_filter(
+                tmc,
+                tmc_state,
+                BiquadFilterTarget::Flux,
+                *filter_hz,
+                pwm_maxcnt,
+            )
+            .await?;
+            Ok(SharedTmcDispatch::Handled)
+        }
+        TmcRequestKind::SetVelocityFeedforward { .. }
         | TmcRequestKind::SetVelocityTransientFeedforward { .. }
         | TmcRequestKind::SetAccelFeedforward { .. }
         | TmcRequestKind::SetDecouplingFeedforward { .. }

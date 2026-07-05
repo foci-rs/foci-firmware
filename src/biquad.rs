@@ -1,4 +1,4 @@
-//! Biquad filter coefficient computation for TMC4671 velocity feedback filters.
+//! Biquad filter coefficient computation for TMC4671 feedback filters.
 //!
 //! The TMC4671 provides on-chip second-order IIR (biquad) filters for velocity
 //! feedback. Coefficients are stored in Q3.29 fixed-point format.
@@ -8,7 +8,7 @@
 //! pre-warping. The pre-warping ensures the cutoff frequency is preserved
 //! exactly in the discrete domain.
 
-/// Biquad filter coefficients for TMC4671 velocity feedback filter registers.
+/// Biquad filter coefficients for TMC4671 feedback filter registers.
 ///
 /// All fields are Q3.29 fixed-point values as defined by the TMC4671
 /// datasheet (rev 2.08, section 4.8.1). The a-coefficients are negated
@@ -39,7 +39,7 @@ const Q3_29_SCALE: f32 = 536_870_912.0; // 2^29
 const CUTOFF_MIN_HZ: u16 = 10;
 
 /// Maximum valid cutoff frequency in Hz.
-const CUTOFF_MAX_HZ: u16 = 1000;
+const CUTOFF_MAX_HZ: u16 = 6000;
 
 /// Compute Q3.29 biquad coefficients for a second-order Butterworth low-pass filter.
 ///
@@ -65,7 +65,7 @@ const CUTOFF_MAX_HZ: u16 = 1000;
 ///
 /// # Parameters
 ///
-/// - `cutoff_hz`: desired filter cutoff frequency in Hz, must be in `10..=1000`
+/// - `cutoff_hz`: desired filter cutoff frequency in Hz, must be in `10..=6000`
 /// - `pwm_maxcnt`: TMC4671 PWM_MAXCNT register value, must be `> 0`
 ///
 /// # Returns
@@ -157,7 +157,12 @@ mod tests {
 
     #[test]
     fn rejects_cutoff_above_maximum() {
-        assert!(butterworth_lowpass(1001, 3999).is_none());
+        assert!(butterworth_lowpass(6001, 3999).is_none());
+    }
+
+    #[test]
+    fn allows_current_filter_cutoff_at_six_khz() {
+        assert!(butterworth_lowpass(6000, 3999).is_some());
     }
 
     #[test]

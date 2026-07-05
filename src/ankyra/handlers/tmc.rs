@@ -167,42 +167,66 @@ pub fn tmc_set_pid_gains(
 
 /// Set velocity biquad filter cutoff frequency from host config.
 #[klipper_command]
-pub fn tmc_set_velocity_filter(ctx: &mut dyn ShutdownRecovery, oid: u8, filter_hz: u16) {
-    let Some((_channel, state)) = foci_tmc_state_or_shutdown(ctx, oid) else {
+pub fn tmc_set_velocity_filter(ctx: &mut dyn TmcWriteHost, oid: u8, filter_hz: u16) {
+    let Some((channel, _state)) = foci_tmc_state_or_shutdown(ctx, oid) else {
         return;
     };
-    state.velocity_filter_hz.store(filter_hz, Ordering::Relaxed);
-    defmt::info!("Velocity filter: {} Hz", filter_hz);
+    if ctx
+        .enqueue_request(crate::tmc::tmc_set_velocity_filter(channel, filter_hz))
+        .is_err()
+        && ctx.enter_shutdown()
+    {
+        let clock = ctx.now();
+        ctx.send_shutdown(ShutdownReason::TmcSetFilterLostQueueFull, clock);
+    }
 }
 
 /// Set torque biquad filter cutoff frequency from host config.
 #[klipper_command]
-pub fn tmc_set_torque_filter(ctx: &mut dyn ShutdownRecovery, oid: u8, filter_hz: u16) {
-    let Some((_channel, state)) = foci_tmc_state_or_shutdown(ctx, oid) else {
+pub fn tmc_set_torque_filter(ctx: &mut dyn TmcWriteHost, oid: u8, filter_hz: u16) {
+    let Some((channel, _state)) = foci_tmc_state_or_shutdown(ctx, oid) else {
         return;
     };
-    state.torque_filter_hz.store(filter_hz, Ordering::Relaxed);
-    defmt::info!("Torque filter: {} Hz", filter_hz);
+    if ctx
+        .enqueue_request(crate::tmc::tmc_set_torque_filter(channel, filter_hz))
+        .is_err()
+        && ctx.enter_shutdown()
+    {
+        let clock = ctx.now();
+        ctx.send_shutdown(ShutdownReason::TmcSetFilterLostQueueFull, clock);
+    }
 }
 
 /// Set position target biquad filter cutoff frequency from host config.
 #[klipper_command]
-pub fn tmc_set_position_filter(ctx: &mut dyn ShutdownRecovery, oid: u8, filter_hz: u16) {
-    let Some((_channel, state)) = foci_tmc_state_or_shutdown(ctx, oid) else {
+pub fn tmc_set_position_filter(ctx: &mut dyn TmcWriteHost, oid: u8, filter_hz: u16) {
+    let Some((channel, _state)) = foci_tmc_state_or_shutdown(ctx, oid) else {
         return;
     };
-    state.position_filter_hz.store(filter_hz, Ordering::Relaxed);
-    defmt::info!("Position filter: {} Hz", filter_hz);
+    if ctx
+        .enqueue_request(crate::tmc::tmc_set_position_filter(channel, filter_hz))
+        .is_err()
+        && ctx.enter_shutdown()
+    {
+        let clock = ctx.now();
+        ctx.send_shutdown(ShutdownReason::TmcSetFilterLostQueueFull, clock);
+    }
 }
 
 /// Set flux biquad filter cutoff frequency from host config.
 #[klipper_command]
-pub fn tmc_set_flux_filter(ctx: &mut dyn ShutdownRecovery, oid: u8, filter_hz: u16) {
-    let Some((_channel, state)) = foci_tmc_state_or_shutdown(ctx, oid) else {
+pub fn tmc_set_flux_filter(ctx: &mut dyn TmcWriteHost, oid: u8, filter_hz: u16) {
+    let Some((channel, _state)) = foci_tmc_state_or_shutdown(ctx, oid) else {
         return;
     };
-    state.flux_filter_hz.store(filter_hz, Ordering::Relaxed);
-    defmt::info!("Flux filter: {} Hz", filter_hz);
+    if ctx
+        .enqueue_request(crate::tmc::tmc_set_flux_filter(channel, filter_hz))
+        .is_err()
+        && ctx.enter_shutdown()
+    {
+        let clock = ctx.now();
+        ctx.send_shutdown(ShutdownReason::TmcSetFilterLostQueueFull, clock);
+    }
 }
 
 /// Set position/velocity PI gains from host config.

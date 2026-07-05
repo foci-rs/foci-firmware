@@ -15,7 +15,7 @@ use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::signal::Signal;
 use embedded_hal_async::spi::{ErrorKind, ErrorType, Operation, SpiDevice};
 use foci_tmc4671::registers::{
-    ABN_DECODER_MODE, ABN_DECODER_PHI_E_PHI_M_OFFSET, ABN_DECODER_PPR,
+    ABN_DECODER_MODE, ABN_DECODER_PHI_E_PHI_M_OFFSET, ABN_DECODER_PPR, CONFIG_BIQUAD_T_ENABLE,
     PID_ERROR_PID_FLUX_ERROR_SUM, PID_ERROR_PID_POSITION_ERROR_SUM, PID_ERROR_PID_TORQUE_ERROR_SUM,
     PID_ERROR_PID_VELOCITY_ERROR_SUM, PID_FLUX_P_FLUX_I, PID_POSITION_ACTUAL,
     PID_POSITION_P_POSITION_I, PID_POSITION_TARGET, PID_TORQUE_FLUX_LIMITS, PID_TORQUE_FLUX_OFFSET,
@@ -440,6 +440,7 @@ fn shared_dispatch_set_current_writes_current_limit_and_updates_state() {
             &mut tmc,
             &tmc_state,
             1.155,
+            3999,
         )
         .await;
         let spi = tmc.into_inner();
@@ -464,6 +465,7 @@ fn shared_dispatch_set_encoder_writes_quadrature_ppr() {
             &mut tmc,
             &tmc_state,
             1.155,
+            3999,
         )
         .await;
         let spi = tmc.into_inner();
@@ -487,6 +489,7 @@ fn shared_dispatch_set_encoder_rejects_zero_ppr() {
             &mut tmc,
             &tmc_state,
             1.155,
+            3999,
         )
         .await;
         let spi = tmc.into_inner();
@@ -507,6 +510,7 @@ fn shared_dispatch_set_encoder_dir_writes_mode_and_marks_reset() {
             &mut tmc,
             &tmc_state,
             1.155,
+            3999,
         )
         .await;
         let spi = tmc.into_inner();
@@ -535,6 +539,7 @@ fn shared_dispatch_set_voltage_limit_propagates_write_failure() {
             &mut tmc,
             &tmc_state,
             1.155,
+            3999,
         )
         .await;
         let spi = tmc.into_inner();
@@ -545,22 +550,62 @@ fn shared_dispatch_set_voltage_limit_propagates_write_failure() {
 }
 
 #[test]
-fn shared_dispatch_silent_noop_returns_handled_without_spi() {
+fn shared_dispatch_set_torque_filter_writes_biquad_and_updates_state() {
     pollster::block_on(async {
         let tmc_state = crate::state::tmc::TmcChannelState::new();
         let mut tmc = Tmc4671Spi::new(RuntimeMockSpi::default());
 
         let result = apply_shared_tmc_request(
-            &TmcRequestKind::SetVelocityFilter { filter_hz: 200 },
+            &TmcRequestKind::SetTorqueFilter { filter_hz: 3000 },
             &mut tmc,
             &tmc_state,
             1.155,
+            3999,
         )
         .await;
         let spi = tmc.into_inner();
 
         assert_eq!(result, Ok(SharedTmcDispatch::Handled));
-        assert!(spi.write_attempts.is_empty());
+        assert!(spi.write_attempts.contains(&(
+            CONFIG_BIQUAD_T_ENABLE.addr.addr(),
+            CONFIG_BIQUAD_T_ENABLE.sub_addr as u32,
+        )));
+        assert!(
+            spi.write_attempts
+                .contains(&(CONFIG_BIQUAD_T_ENABLE.data.addr(), 1))
+        );
+        assert_eq!(tmc_state.torque_filter_hz.load(Relaxed), 3000);
+        assert!(spi.read_requests.is_empty());
+    });
+}
+
+#[test]
+fn shared_dispatch_set_torque_filter_zero_disables_filter() {
+    pollster::block_on(async {
+        let tmc_state = crate::state::tmc::TmcChannelState::new();
+        tmc_state.torque_filter_hz.store(3000, Relaxed);
+        let mut tmc = Tmc4671Spi::new(RuntimeMockSpi::default());
+
+        let result = apply_shared_tmc_request(
+            &TmcRequestKind::SetTorqueFilter { filter_hz: 0 },
+            &mut tmc,
+            &tmc_state,
+            1.155,
+            3999,
+        )
+        .await;
+        let spi = tmc.into_inner();
+
+        assert_eq!(result, Ok(SharedTmcDispatch::Handled));
+        assert!(spi.write_attempts.contains(&(
+            CONFIG_BIQUAD_T_ENABLE.addr.addr(),
+            CONFIG_BIQUAD_T_ENABLE.sub_addr as u32,
+        )));
+        assert!(
+            spi.write_attempts
+                .contains(&(CONFIG_BIQUAD_T_ENABLE.data.addr(), 0))
+        );
+        assert_eq!(tmc_state.torque_filter_hz.load(Relaxed), 0);
         assert!(spi.read_requests.is_empty());
     });
 }
@@ -576,6 +621,7 @@ fn shared_dispatch_main_shell_request_returns_unhandled_without_spi() {
             &mut tmc,
             &tmc_state,
             1.155,
+            3999,
         )
         .await;
         let spi = tmc.into_inner();

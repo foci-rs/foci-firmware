@@ -66,6 +66,7 @@ pub enum ShutdownReason {
     TmcSetEncoderDirLostQueueFull,
     TmcSetPidGainsLostQueueFull,
     TmcSetPositionGainsLostQueueFull,
+    TmcSetFilterLostQueueFull,
     TmcSetVoltageLimitLostQueueFull,
     TmcDiagnosticLostQueueFull,
     Tmc4671ChipIdMismatch,
@@ -111,6 +112,7 @@ impl ShutdownReason {
             Self::TmcSetEncoderDirLostQueueFull => "tmc_set_encoder_dir lost (queue full)",
             Self::TmcSetPidGainsLostQueueFull => "tmc_set_pid_gains lost (queue full)",
             Self::TmcSetPositionGainsLostQueueFull => "tmc_set_position_gains lost (queue full)",
+            Self::TmcSetFilterLostQueueFull => "tmc_set_filter lost (queue full)",
             Self::TmcSetVoltageLimitLostQueueFull => "tmc_set_voltage_limit lost (queue full)",
             Self::TmcDiagnosticLostQueueFull => "TMC diagnostic lost (queue full)",
             Self::Tmc4671ChipIdMismatch => "TMC4671 chip ID mismatch",
@@ -266,6 +268,13 @@ macro_rules! dispatch_shutdown {
                     $clock
                 );
             }
+            $crate::shutdown::ShutdownReason::TmcSetFilterLostQueueFull => {
+                ::ankyra::klipper_shutdown_from!(
+                    $sender,
+                    "tmc_set_filter lost (queue full)",
+                    $clock
+                );
+            }
             $crate::shutdown::ShutdownReason::TmcSetVoltageLimitLostQueueFull => {
                 ::ankyra::klipper_shutdown_from!(
                     $sender,
@@ -377,6 +386,7 @@ macro_rules! foci_ankyra_config {
                 "tmc_set_encoder_dir lost (queue full)",
                 "tmc_set_pid_gains lost (queue full)",
                 "tmc_set_position_gains lost (queue full)",
+                "tmc_set_filter lost (queue full)",
                 "tmc_set_voltage_limit lost (queue full)",
                 "TMC diagnostic lost (queue full)",
                 "TMC4671 chip ID mismatch",
