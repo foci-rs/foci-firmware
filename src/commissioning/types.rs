@@ -130,6 +130,186 @@ impl InductanceFitEvidence {
     };
 }
 
+/// No accepted production inductance source.
+pub const INDUCTANCE_SOURCE_NONE: u8 = 0;
+/// Accepted production inductance source: rotating-field estimator.
+pub const INDUCTANCE_SOURCE_ROTATING_FIELD: u8 = 1;
+
+/// High RMS saliency/ripple evidence; warning only.
+pub const INDUCTANCE_WARN_HIGH_RMS: u16 = 1 << 0;
+/// Half-window drift exceeded the warning threshold but not the hard failure line.
+pub const INDUCTANCE_WARN_DRIFT: u16 = 1 << 1;
+/// Magnitude branch disagreed with quadrature but stayed inside tolerance.
+pub const INDUCTANCE_WARN_MAG_CROSSCHECK: u16 = 1 << 2;
+
+/// Run-level production inductance evidence.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+pub struct InductanceRunEvidence {
+    /// Accepted inductance source code.
+    pub source: u8,
+    /// Run status code.
+    pub status: u8,
+    /// Warning bitfield.
+    pub warning_flags: u16,
+    /// Commanded d-axis voltage count.
+    pub ud_count: i16,
+    /// Realized electrical measurement frequency in millihertz.
+    pub realized_frequency_millihz: u32,
+    /// Elapsed AC measurement window in microseconds.
+    pub elapsed_us: u32,
+    /// Observed open-loop phi delta across the accepted window.
+    pub openloop_phi_delta_counts: u32,
+    /// Number of accepted AC samples.
+    pub sample_count: u16,
+    /// Encoder movement during the energized window.
+    pub encoder_delta_counts: i32,
+    /// OR of pre/post TMC status flags.
+    pub status_flags_or: u32,
+}
+
+/// Rotating-frame current evidence for production inductance.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+pub struct InductanceFrameEvidence {
+    /// Mean d-axis current in milli-counts.
+    pub id_mean_milli_count: i32,
+    /// Mean q-axis current in milli-counts.
+    pub iq_mean_milli_count: i32,
+    /// RMS d-axis spread around the mean in milli-counts.
+    pub id_rms_milli_count: u32,
+    /// RMS q-axis spread around the mean in milli-counts.
+    pub iq_rms_milli_count: u32,
+    /// Half-window reactance drift in permille.
+    pub drift_permille: u16,
+    /// Pre-drive mean d-axis offset in milli-counts.
+    pub zero_id_mean_milli_count: i32,
+    /// Pre-drive mean q-axis offset in milli-counts.
+    pub zero_iq_mean_milli_count: i32,
+}
+
+/// Accepted count-space inductance estimate and cross-check evidence.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+pub struct InductanceEstimateEvidence {
+    /// Accepted angle-averaged reactance ratio in milli count-ratio units.
+    pub x_average_count_ratio_milli: u32,
+    /// D-axis reactance ratio in milli count-ratio units.
+    pub x_d_count_ratio_milli: u32,
+    /// Q-axis reactance ratio in milli count-ratio units.
+    pub x_q_count_ratio_milli: u32,
+    /// `AC_SALIENCY_*` status code.
+    pub saliency_status: u8,
+    /// `abs(Ld - Lq) / average(Ld, Lq)` in permille.
+    pub saliency_permille: u16,
+    /// Magnitude-branch nominal reactance in milli count-ratio units.
+    pub x_mag_nominal_count_ratio_milli: u32,
+    /// Magnitude-branch shift with R scaled down by 20%, in permille.
+    pub x_mag_shift_minus_permille: u16,
+    /// Magnitude-branch shift with R scaled up by 20%, in permille.
+    pub x_mag_shift_plus_permille: u16,
+    /// Magnitude-vs-quadrature disagreement in permille.
+    pub x_mag_vs_quad_permille: u16,
+}
+
+impl InductanceEstimateEvidence {
+    /// Return true when determinable Ld/Lq bracket the accepted average.
+    pub fn brackets_average(&self) -> bool {
+        if self.saliency_status != crate::electrical_capture::AC_SALIENCY_DETERMINABLE {
+            return false;
+        }
+        let low = self.x_d_count_ratio_milli.min(self.x_q_count_ratio_milli);
+        let high = self.x_d_count_ratio_milli.max(self.x_q_count_ratio_milli);
+        low <= self.x_average_count_ratio_milli && self.x_average_count_ratio_milli <= high
+    }
+}
+
+/// Complete production inductance evidence carried from Phase 5.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+pub struct InductanceEvidence {
+    /// Run-level evidence.
+    pub run: InductanceRunEvidence,
+    /// Rotating-frame current evidence.
+    pub frame: InductanceFrameEvidence,
+    /// Accepted estimate and cross-check evidence.
+    pub estimate: InductanceEstimateEvidence,
+}
+
+impl InductanceEvidence {
+    /// Empty evidence used before the production inductance estimator has run.
+    pub const EMPTY: Self = Self {
+        run: InductanceRunEvidence {
+            source: INDUCTANCE_SOURCE_NONE,
+            status: 0,
+            warning_flags: 0,
+            ud_count: 0,
+            realized_frequency_millihz: 0,
+            elapsed_us: 0,
+            openloop_phi_delta_counts: 0,
+            sample_count: 0,
+            encoder_delta_counts: 0,
+            status_flags_or: 0,
+        },
+        frame: InductanceFrameEvidence {
+            id_mean_milli_count: 0,
+            iq_mean_milli_count: 0,
+            id_rms_milli_count: 0,
+            iq_rms_milli_count: 0,
+            drift_permille: 0,
+            zero_id_mean_milli_count: 0,
+            zero_iq_mean_milli_count: 0,
+        },
+        estimate: InductanceEstimateEvidence {
+            x_average_count_ratio_milli: 0,
+            x_d_count_ratio_milli: 0,
+            x_q_count_ratio_milli: 0,
+            saliency_status: crate::electrical_capture::AC_SALIENCY_NOT_DETERMINABLE,
+            saliency_permille: 0,
+            x_mag_nominal_count_ratio_milli: 0,
+            x_mag_shift_minus_permille: 0,
+            x_mag_shift_plus_permille: 0,
+            x_mag_vs_quad_permille: 0,
+        },
+    };
+}
+
+#[cfg(test)]
+impl InductanceEvidence {
+    pub(crate) const fn test_fixture() -> Self {
+        Self {
+            run: InductanceRunEvidence {
+                source: INDUCTANCE_SOURCE_ROTATING_FIELD,
+                status: 0,
+                warning_flags: 0,
+                ud_count: 768,
+                realized_frequency_millihz: 1_000_000,
+                elapsed_us: 8_000,
+                openloop_phi_delta_counts: 524_288,
+                sample_count: 104,
+                encoder_delta_counts: 0,
+                status_flags_or: 0,
+            },
+            frame: InductanceFrameEvidence {
+                id_mean_milli_count: 20_000,
+                iq_mean_milli_count: -84_000,
+                id_rms_milli_count: 5_000,
+                iq_rms_milli_count: 21_000,
+                drift_permille: 40,
+                zero_id_mean_milli_count: 0,
+                zero_iq_mean_milli_count: 0,
+            },
+            estimate: InductanceEstimateEvidence {
+                x_average_count_ratio_milli: 8_600,
+                x_d_count_ratio_milli: 9_200,
+                x_q_count_ratio_milli: 8_000,
+                saliency_status: crate::electrical_capture::AC_SALIENCY_DETERMINABLE,
+                saliency_permille: 140,
+                x_mag_nominal_count_ratio_milli: 8_780,
+                x_mag_shift_minus_permille: 4,
+                x_mag_shift_plus_permille: 4,
+                x_mag_vs_quad_permille: 20,
+            },
+        }
+    }
+}
+
 /// Discriminant for the four ways a `CommissioningEngine` can be constructed.
 /// Used by the dispatch to choose the right reply payload at terminal arms.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
@@ -222,6 +402,8 @@ pub struct InnerResult {
     pub bandwidth_hz: u32,
     /// Electrical time constant L/R in microseconds (Phase 5 measurement).
     pub tau_e_us: u32,
+    /// Accepted production inductance evidence.
+    pub inductance: InductanceEvidence,
     /// Accepted per-coil corrected inductance fit evidence.
     pub inductance_fit: [InductanceFitEvidence; 2],
     /// Per-amplitude points used by the accepted corrected inductance fits.

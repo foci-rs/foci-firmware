@@ -533,6 +533,7 @@ pub(crate) async fn step_closed_loop_entry<B: CommissioningBackend>(
                         ringing_count: 0,
                         bandwidth_hz: 0,
                         tau_e_us: 0,
+                        inductance: crate::commissioning::types::InductanceEvidence::EMPTY,
                         inductance_fit: [crate::commissioning::types::InductanceFitEvidence::EMPTY;
                             2],
                         inductance_fit_points:

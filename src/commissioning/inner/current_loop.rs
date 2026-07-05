@@ -18,7 +18,8 @@ use crate::autotune::{
 use crate::commissioning::inner::InnerPhase;
 use crate::commissioning::types::{
     CommissionResult, CommissioningBackend, CurrentValidationAxisEvidence,
-    INDUCTANCE_FIT_POINT_COUNT, InductanceFitEvidence, InductanceFitPoint, InnerResult, StepResult,
+    INDUCTANCE_FIT_POINT_COUNT, InductanceEvidence, InductanceFitEvidence, InductanceFitPoint,
+    InnerResult, StepResult,
 };
 
 /// Current-loop validation sub-state machine (Phase 7).
@@ -107,6 +108,8 @@ pub(crate) struct CurrentValidateData {
     /// Bits 0, 1, and 3 come from Phase 5 model gates; bit 2 is unused. Bit 5
     /// is ORed if gains fell back to defaults.
     pub(crate) inner_warning_flags: u8,
+    /// Accepted production inductance evidence.
+    pub(crate) inductance: InductanceEvidence,
     /// Accepted per-coil corrected inductance fit evidence.
     pub(crate) inductance_fit: [InductanceFitEvidence; 2],
     /// Per-amplitude points used by the accepted corrected inductance fits.
@@ -843,23 +846,31 @@ pub(crate) async fn step_current_tune<B: CommissioningBackend>(
     profile: CommissionProfile,
     backend: &mut B,
 ) -> StepResult {
-    let (model, inner_warning_flags, resistance_result, inductance_fit, inductance_fit_points) =
-        match phase {
-            InnerPhase::CurrentTune {
-                model,
-                inner_warning_flags,
-                resistance_result,
-                inductance_fit,
-                inductance_fit_points,
-            } => (
-                *model,
-                *inner_warning_flags,
-                *resistance_result,
-                *inductance_fit,
-                *inductance_fit_points,
-            ),
-            _ => return StepResult::Continue,
-        };
+    let (
+        model,
+        inner_warning_flags,
+        resistance_result,
+        inductance,
+        inductance_fit,
+        inductance_fit_points,
+    ) = match phase {
+        InnerPhase::CurrentTune {
+            model,
+            inner_warning_flags,
+            resistance_result,
+            inductance,
+            inductance_fit,
+            inductance_fit_points,
+        } => (
+            *model,
+            *inner_warning_flags,
+            *resistance_result,
+            *inductance,
+            *inductance_fit,
+            *inductance_fit_points,
+        ),
+        _ => return StepResult::Continue,
+    };
 
     let synthesis_input = CurrentGainSynthesisInput::symmetric(model, profile);
     let config = backend.tmc_config();
@@ -936,6 +947,7 @@ pub(crate) async fn step_current_tune<B: CommissioningBackend>(
             current_torque_validation: [CurrentValidationAxisEvidence::EMPTY;
                 crate::autotune::CURRENT_VALIDATION_MAX_SAMPLES_PER_AXIS],
             inner_warning_flags,
+            inductance,
             inductance_fit,
             inductance_fit_points,
             resistance_result,
@@ -1370,6 +1382,7 @@ pub(crate) async fn step_current_validate<B: CommissioningBackend>(
                 ringing_count: 0,
                 bandwidth_hz: data.gains.effective_bandwidth_hz,
                 tau_e_us: data.model.tau_e_us,
+                inductance: data.inductance,
                 inductance_fit: data.inductance_fit,
                 inductance_fit_points: data.inductance_fit_points,
                 inner_warning_flags: data.inner_warning_flags,
@@ -1544,6 +1557,7 @@ mod tests {
                 },
                 inner_warning_flags: 0,
                 resistance_result: resistance_result(),
+                inductance: InductanceEvidence::test_fixture(),
                 inductance_fit: [InductanceFitEvidence::EMPTY; 2],
                 inductance_fit_points: [[InductanceFitPoint::EMPTY; INDUCTANCE_FIT_POINT_COUNT]; 2],
             };
@@ -1570,6 +1584,51 @@ mod tests {
                     assert!(
                         backend.spi_log.iter().all(|op| matches!(op, SpiOp::Read)),
                         "current tune should not run power-stage writes"
+                    );
+                }
+                other => panic!("expected CurrentValidate phase, got {other:?}"),
+            }
+        });
+    }
+
+    #[test]
+    fn current_tune_carries_inductance_evidence_without_changing_symmetric_gains() {
+        pollster::block_on(async {
+            let evidence = crate::commissioning::types::InductanceEvidence::test_fixture();
+            let mut phase = InnerPhase::CurrentTune {
+                model: ElectricalModel {
+                    r_int: 1000,
+                    l_int: 2000,
+                    tau_e_us: 2000,
+                    theta_e_us: 100,
+                    r_mohm: 1000,
+                    l_uh: 2000,
+                },
+                inner_warning_flags: 0,
+                resistance_result: resistance_result(),
+                inductance: evidence,
+                inductance_fit: [InductanceFitEvidence::EMPTY; 2],
+                inductance_fit_points: [[InductanceFitPoint::EMPTY; INDUCTANCE_FIT_POINT_COUNT]; 2],
+            };
+            let mut backend = MockBackend::new();
+            backend.current_limit_value = 4000;
+
+            let result =
+                step_current_tune(&mut phase, CommissionProfile::Balanced, &mut backend).await;
+
+            assert!(matches!(
+                result,
+                StepResult::PhaseChanged(PhaseId::CurrentValidate)
+            ));
+            match phase {
+                InnerPhase::CurrentValidate { data, .. } => {
+                    assert_eq!(data.inductance.estimate.x_average_count_ratio_milli, 8_600);
+                    assert_eq!(data.inductance.estimate.x_d_count_ratio_milli, 9_200);
+                    assert_eq!(data.inductance.estimate.x_q_count_ratio_milli, 8_000);
+                    assert!(data.inductance.estimate.brackets_average());
+                    assert_eq!(
+                        data.current_loop_evidence.gains_tier,
+                        CURRENT_GAINS_TIER_MEASURED_SYMMETRIC
                     );
                 }
                 other => panic!("expected CurrentValidate phase, got {other:?}"),
@@ -2682,6 +2741,7 @@ mod tests {
                 current_torque_validation: [CurrentValidationAxisEvidence::EMPTY;
                     crate::autotune::CURRENT_VALIDATION_MAX_SAMPLES_PER_AXIS],
                 inner_warning_flags: 0,
+                inductance: InductanceEvidence::test_fixture(),
                 inductance_fit: [InductanceFitEvidence::EMPTY; 2],
                 inductance_fit_points: [[InductanceFitPoint::EMPTY; INDUCTANCE_FIT_POINT_COUNT]; 2],
                 resistance_result: resistance_result(),
@@ -2760,6 +2820,7 @@ mod tests {
                 };
                     crate::autotune::CURRENT_VALIDATION_MAX_SAMPLES_PER_AXIS],
                 inner_warning_flags: 0,
+                inductance: InductanceEvidence::test_fixture(),
                 inductance_fit: [InductanceFitEvidence::EMPTY; 2],
                 inductance_fit_points: [[InductanceFitPoint::EMPTY; INDUCTANCE_FIT_POINT_COUNT]; 2],
                 resistance_result: resistance_result(),
@@ -2845,6 +2906,7 @@ mod tests {
                 };
                     crate::autotune::CURRENT_VALIDATION_MAX_SAMPLES_PER_AXIS],
                 inner_warning_flags: 0,
+                inductance: InductanceEvidence::test_fixture(),
                 inductance_fit: [InductanceFitEvidence::EMPTY; 2],
                 inductance_fit_points: [[InductanceFitPoint::EMPTY; INDUCTANCE_FIT_POINT_COUNT]; 2],
                 resistance_result: resistance_result(),

@@ -758,6 +758,7 @@ fn sample_commission_result() -> crate::commissioning::types::CommissionResult {
             ringing_count: 0,
             bandwidth_hz: 1000,
             tau_e_us: 730,
+            inductance: crate::commissioning::types::InductanceEvidence::EMPTY,
             inductance_fit: [crate::commissioning::types::InductanceFitEvidence::EMPTY; 2],
             inductance_fit_points: [[crate::commissioning::types::InductanceFitPoint::EMPTY;
                 crate::commissioning::types::INDUCTANCE_FIT_POINT_COUNT];

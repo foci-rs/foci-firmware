@@ -1105,6 +1105,9 @@ pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
                         model: assembly.model,
                         inner_warning_flags: assembly.warning_flags,
                         resistance_result,
+                        inductance: data
+                            .inductance
+                            .unwrap_or(crate::commissioning::types::InductanceEvidence::EMPTY),
                         inductance_fit: data.inductance_fit,
                         inductance_fit_points: data.inductance_fit_points,
                     };
@@ -1487,6 +1490,7 @@ mod tests {
                 model,
                 inner_warning_flags,
                 resistance_result,
+                inductance: _,
                 inductance_fit,
                 inductance_fit_points,
             } = phase

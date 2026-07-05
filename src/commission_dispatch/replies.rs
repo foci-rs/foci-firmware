@@ -833,6 +833,7 @@ mod tests {
                 ringing_count: 21,
                 bandwidth_hz: 22,
                 tau_e_us: 23,
+                inductance: crate::commissioning::types::InductanceEvidence::EMPTY,
                 inductance_fit: [
                     InductanceFitEvidence {
                         tau_us: 450,

@@ -15,8 +15,8 @@ use crate::autotune::{
 use crate::commissioning::EntrySnapshot;
 use crate::commissioning::inner::current_loop::{CurrentValidateData, CurrentValidateState};
 use crate::commissioning::types::{
-    AdcCalResult, CommissioningBackend, INDUCTANCE_FIT_POINT_COUNT, InductanceFitEvidence,
-    InductanceFitPoint, InnerResult, StepResult,
+    AdcCalResult, CommissioningBackend, INDUCTANCE_FIT_POINT_COUNT, InductanceEvidence,
+    InductanceFitEvidence, InductanceFitPoint, InnerResult, StepResult,
 };
 
 pub mod adc;
@@ -149,6 +149,8 @@ pub(crate) struct ElectricalIdData {
     /// `ResistanceIdentify` sub-state has run the shared runner; the
     /// inductance/delay/gain path reads its count-slope-milli values from here.
     pub(crate) resistance_result: Option<crate::resistance_identification::ResistanceRunResult>,
+    /// Accepted production inductance evidence from the rotating-field estimator.
+    pub(crate) inductance: Option<InductanceEvidence>,
     /// Per-coil, per-amplitude fit points for corrected L/tau.
     pub(crate) inductance_fit_points: [[InductanceFitPoint; INDUCTANCE_FIT_POINT_COUNT]; 2],
     /// Accepted per-coil fit evidence.
@@ -160,6 +162,7 @@ impl ElectricalIdData {
         Self {
             voltage,
             resistance_result: None,
+            inductance: None,
             inductance_fit_points: [[InductanceFitPoint::EMPTY; INDUCTANCE_FIT_POINT_COUNT]; 2],
             inductance_fit: [InductanceFitEvidence::EMPTY; 2],
         }
@@ -270,6 +273,8 @@ pub(crate) enum InnerPhase {
         /// Carried forward so the final InnerResult can persist the count-space
         /// fit evidence and the 64x count-slope-milli audit comparison.
         resistance_result: crate::resistance_identification::ResistanceRunResult,
+        /// Accepted production inductance evidence.
+        inductance: InductanceEvidence,
         /// Accepted per-coil corrected inductance fit evidence.
         inductance_fit: [InductanceFitEvidence; 2],
         /// Per-amplitude points used by the accepted corrected inductance fits.
