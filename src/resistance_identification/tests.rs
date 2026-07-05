@@ -449,6 +449,29 @@ fn runner_stops_after_good_fit_before_unsafe_high_points() {
 }
 
 #[test]
+fn runner_stops_after_good_fit_before_near_limit_high_point() {
+    let mut backend = FakeResistanceBackend::standard();
+    backend.scripted_current_per_ud_milli = 1100;
+
+    let result = block_on(run_resistance_identification(
+        &mut backend,
+        ResistanceRunMode::CommissioningManagedEnable,
+    ));
+
+    assert!(
+        result.is_ok(),
+        "expected adaptive sweep to fit with near-limit headroom, got {result:?}"
+    );
+    assert!(
+        !backend
+            .writes
+            .iter()
+            .any(|write| write.addr == UQ_UD_EXT.addr() && write.value == u32::from(1440u16)),
+        "adaptive sweep must not energize a point predicted inside the peak-current headroom band"
+    );
+}
+
+#[test]
 fn runner_skips_predicted_unsafe_point_when_fit_is_not_yet_supported() {
     let mut backend = FakeResistanceBackend::standard();
     backend.scripted_current_per_ud_milli = 1400;
@@ -660,11 +683,14 @@ fn sweep_point_is_bracketed_against_adjacent_zero_windows_not_initial_zero() {
     // (0 + 0)/2 = 0, giving a delta of 800 and SELECTING the point. The
     // selected-point mask therefore pins which bracketing math ran.
     let mut backend = FakeResistanceBackend::standard();
-    // Sampled zero windows per axis, in capture order:
-    //   [initial, trailing(p0..p7) x8, repeated_zero, negative_zero] = 11.
-    // Only the trailing zero of point 1 (index 2) carries drift.
-    backend.scripted_zero_currents =
-        heapless::Vec::from_slice(&[0, 0, 120, 0, 0, 0, 0, 0, 0, 0, 0]).unwrap();
+    // Sampled zero windows per axis, in capture order with the 95% headroom stop:
+    //   [initial, trailing(p0..p6) x7, repeated_zero, negative_zero] = 10.
+    // Only the trailing zero of point 1 (index 2) carries drift, on each axis.
+    backend.scripted_zero_currents = heapless::Vec::from_slice(&[
+        0, 0, 120, 0, 0, 0, 0, 0, 0, 0, // axis 0
+        0, 0, 120, 0, 0, 0, 0, 0, 0, 0, // axis 1
+    ])
+    .unwrap();
 
     let result = block_on(run_resistance_identification(
         &mut backend,
@@ -680,11 +706,11 @@ fn sweep_point_is_bracketed_against_adjacent_zero_windows_not_initial_zero() {
         result.axis0.selected_mask
     );
     // The old initial-zero bracket would have selected it (delta 800 >= 750);
-    // assert the remaining high-current points are still selected so the fit is
-    // well-formed and the exclusion is specifically point 2.
+    // assert the remaining measured high-current points are still selected so
+    // the fit is well-formed and the exclusion is specifically point 2.
     assert_eq!(
-        result.axis0.selected_mask, 0b1111_1000,
-        "only the five high-current points clear the threshold under adjacent bracketing"
+        result.axis0.selected_mask, 0b0111_1000,
+        "only the measured high-current points clear the threshold under adjacent bracketing"
     );
 }
 

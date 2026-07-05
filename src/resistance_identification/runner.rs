@@ -96,6 +96,7 @@ pub trait ResistanceBackend {
 /// Number of samples averaged per window. Kept small and fixed; the windows
 /// settle for `settle_ms`/`zero_settle_ms` before sampling.
 const SAMPLES_PER_WINDOW: u8 = 8;
+const PREDICTED_CURRENT_STOP_PERMILLE: u64 = 950;
 
 /// Result of one sampled window.
 ///
@@ -491,7 +492,7 @@ async fn measure_axis<B: ResistanceBackend>(
     fit_resistance_axis(axis, profile, &points, Some(signed_anchor))
 }
 
-/// Return true when the next requested point is predicted to exceed the hard
+/// Return true when the next requested point is predicted too close to the hard
 /// current ceiling based on the last measured safe point.
 fn next_point_predicted_unsafe(
     profile: &ResistanceProfile,
@@ -506,7 +507,9 @@ fn next_point_predicted_unsafe(
     }
     let predicted = u64::from(last_current).saturating_mul(u64::from(next_ud.unsigned_abs()))
         / u64::from(last_ud);
-    predicted > u64::from(profile.max_expected_current_count)
+    let stop_threshold =
+        u64::from(profile.max_expected_current_count) * PREDICTED_CURRENT_STOP_PERMILLE / 1000;
+    predicted >= stop_threshold
 }
 
 /// Track the measured safe point closest to the preferred signed-anchor UD.
