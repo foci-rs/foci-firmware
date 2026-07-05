@@ -20,6 +20,8 @@ pub enum CalibrationError {
     /// input would not advance the position target — the motor would
     /// calibrate successfully but silently not respond to step pulses.
     ConfigFault,
+    /// Encoder presence, movement, or alignment validation failed.
+    EncoderFault,
 }
 
 impl CalibrationError {
@@ -32,6 +34,7 @@ impl CalibrationError {
             Self::AlreadyEnabled => 5,
             Self::InternalError => 6,
             Self::ConfigFault => 7,
+            Self::EncoderFault => 8,
         }
     }
 }

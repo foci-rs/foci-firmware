@@ -381,6 +381,18 @@ fn inner_failed_commission_emits_phase_reply() {
 }
 
 #[test]
+fn calibrate_inner_failure_preserves_encoder_fault_status() {
+    let status =
+        calibration_status_from_commission_error(crate::autotune::CommissionError::EncoderFault);
+
+    assert_eq!(status, 8);
+    assert_ne!(
+        status,
+        crate::calibration::CalibrationError::InternalError.status_code()
+    );
+}
+
+#[test]
 fn inner_failed_calibrate_emits_calibrate_reply() {
     pollster::block_on(async {
         let _guard = test_support::SHARED_STATE_MUTEX.lock().await;

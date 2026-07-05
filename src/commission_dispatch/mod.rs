@@ -303,6 +303,7 @@ fn calibration_status_from_commission_error(error: crate::autotune::CommissionEr
         CommissionError::Spi => CalibrationError::SpiError,
         CommissionError::ChipResetDetected => CalibrationError::ChipResetDetected,
         CommissionError::MotorEnabled => CalibrationError::AlreadyEnabled,
+        CommissionError::EncoderFault => CalibrationError::EncoderFault,
         _ => CalibrationError::InternalError,
     };
     calibration_error.status_code()
