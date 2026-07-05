@@ -150,6 +150,10 @@ struct AxisSampleRegisters {
 
 /// Step amplitude as a fraction of run_current (15% = 15/100).
 const VALIDATION_STEP_PERCENT: u32 = 15;
+/// Keep validation proportional output below the PIDOUT clamp.
+const VALIDATION_PIDOUT_HEADROOM_PERMILLE: u32 = 800;
+/// Minimum useful validation target before quantization dominates the evidence.
+const VALIDATION_MIN_STEP_AMPLITUDE: u16 = 128;
 
 /// Settling time after removing validation current targets (microseconds).
 const VALIDATION_SETTLE_US: u64 = 50_000;
@@ -184,6 +188,26 @@ fn validation_target_register(axis: CurrentValidationAxis, target: i16) -> u32 {
         CurrentValidationAxis::Flux => target as u16 as u32,
         CurrentValidationAxis::Torque => (target as u16 as u32) << 16,
     }
+}
+
+fn validation_step_amplitude(current_limit: u32, gains: CurrentGains) -> Option<u16> {
+    let current_limited = (current_limit * VALIDATION_STEP_PERCENT / 100).max(1);
+    let max_p = u32::from(gains.flux_p.max(gains.torque_p));
+    if current_limit == 0 || max_p == 0 {
+        return None;
+    }
+
+    let voltage_limited = CURRENT_VALIDATE_PIDOUT_LIMIT
+        .saturating_mul(256)
+        .saturating_mul(VALIDATION_PIDOUT_HEADROOM_PERMILLE)
+        / 1000
+        / max_p;
+    let amplitude = current_limited.min(voltage_limited);
+    if amplitude < u32::from(VALIDATION_MIN_STEP_AMPLITUDE) {
+        return None;
+    }
+
+    Some(amplitude.min(u16::MAX as u32) as u16)
 }
 
 fn signed_lower_half(value: u32) -> i16 {
@@ -877,13 +901,12 @@ pub(crate) async fn step_current_tune<B: CommissioningBackend>(
         gains.effective_bandwidth_hz,
     );
 
-    // Compute step amplitude: 15% of run_current.
+    // Compute step amplitude: 15% of run_current, capped so validation does
+    // not saturate PIDOUT before the current-loop response can be measured.
     let current_limit = backend.current_limit() & 0xFFFF;
-    let step_amplitude = if current_limit > 0 {
-        (current_limit * VALIDATION_STEP_PERCENT / 100).max(1) as u16
-    } else {
-        // No current limit configured — cannot validate.
-        return super::fail_inner(phase, CommissionError::CurrentValidationFailed);
+    let step_amplitude = match validation_step_amplitude(current_limit, gains) {
+        Some(step_amplitude) => step_amplitude,
+        None => return super::fail_inner(phase, CommissionError::CurrentValidationFailed),
     };
 
     *phase = InnerPhase::CurrentValidate {
@@ -1546,6 +1569,47 @@ mod tests {
                     assert!(
                         backend.spi_log.iter().all(|op| matches!(op, SpiOp::Read)),
                         "current tune should not run power-stage writes"
+                    );
+                }
+                other => panic!("expected CurrentValidate phase, got {other:?}"),
+            }
+        });
+    }
+
+    #[test]
+    fn current_tune_caps_validation_target_to_pidout_headroom() {
+        pollster::block_on(async {
+            let mut phase = InnerPhase::CurrentTune {
+                model: ElectricalModel {
+                    r_int: 905,
+                    l_int: 1315,
+                    tau_e_us: 1453,
+                    theta_e_us: 160,
+                    r_mohm: 905,
+                    l_uh: 1315,
+                },
+                inner_warning_flags: 0,
+                resistance_result: resistance_result(),
+                inductance: InductanceEvidence::test_fixture(),
+            };
+            let mut backend = MockBackend::new();
+            backend.current_limit_value = 2816;
+            backend.tmc_config.bandwidth_hz = 600.0;
+
+            let result =
+                step_current_tune(&mut phase, CommissionProfile::Balanced, &mut backend).await;
+
+            assert!(matches!(
+                result,
+                StepResult::PhaseChanged(PhaseId::CurrentValidate)
+            ));
+            match phase {
+                InnerPhase::CurrentValidate { data, .. } => {
+                    assert_eq!(data.gains.flux_p, 1269);
+                    assert_eq!(data.step_amplitude, 322);
+                    assert!(
+                        data.gains.flux_p as u32 * data.step_amplitude as u32
+                            <= CURRENT_VALIDATE_PIDOUT_LIMIT * 256 * 8 / 10
                     );
                 }
                 other => panic!("expected CurrentValidate phase, got {other:?}"),
