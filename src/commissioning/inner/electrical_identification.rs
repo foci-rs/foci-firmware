@@ -149,6 +149,16 @@ fn diagnostic_for_model_assembly_failure(
     }
 }
 
+impl From<ModelAssemblyError> for CommissionError {
+    fn from(err: ModelAssemblyError) -> Self {
+        match err {
+            ModelAssemblyError::SampleCount => Self::ElectricalModelNoSamples,
+            ModelAssemblyError::ModelScaleZero { .. } => Self::ElectricalModelScaleZero,
+            ModelAssemblyError::ThetaTooLarge { .. } => Self::ElectricalThetaTooLarge,
+        }
+    }
+}
+
 fn permille_diff(a: u32, b: u32) -> u32 {
     let average = (a as u64 + b as u64) / 2;
     if average == 0 {
@@ -1362,7 +1372,7 @@ pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
                     log_model_assembly_failure(err);
                     record_electrical_id_measurement_diagnostics(data, diagnostics);
                     diagnostics.push(diagnostic_for_model_assembly_failure(err));
-                    return super::fail_inner(phase, CommissionError::ElectricalIdFailed);
+                    return super::fail_inner(phase, CommissionError::from(err));
                 }
             };
 
@@ -2471,6 +2481,25 @@ mod tests {
         data.inductance = None;
         let err = assemble_electrical_model(&data, TEST_THETA_E_US).unwrap_err();
         assert!(matches!(err, ModelAssemblyError::SampleCount));
+    }
+
+    #[test]
+    fn model_assembly_errors_map_to_specific_commission_errors() {
+        assert_eq!(
+            CommissionError::from(ModelAssemblyError::SampleCount),
+            CommissionError::ElectricalModelNoSamples
+        );
+        assert_eq!(
+            CommissionError::from(ModelAssemblyError::ModelScaleZero { l_int: 0, l_uh: 0 }),
+            CommissionError::ElectricalModelScaleZero
+        );
+        assert_eq!(
+            CommissionError::from(ModelAssemblyError::ThetaTooLarge {
+                theta_us: 120,
+                tau_us: 200,
+            }),
+            CommissionError::ElectricalThetaTooLarge
+        );
     }
 
     #[test]

@@ -191,6 +191,12 @@ pub enum CommissionError {
     CurrentHoldFailed,
     /// Closed-loop entry stability check saw runaway or drift. Code 43.
     ClosedLoopEntryUnstable,
+    /// Electrical model assembly had no usable current or inductance samples. Code 44.
+    ElectricalModelNoSamples,
+    /// Electrical model assembly rounded the inductance scale to zero. Code 45.
+    ElectricalModelScaleZero,
+    /// Electrical model assembly rejected theta as too large relative to tau. Code 46.
+    ElectricalThetaTooLarge,
 }
 
 impl CommissionError {
@@ -243,6 +249,9 @@ impl CommissionError {
             Self::InductanceSaliencyInvalid => 41,
             Self::CurrentHoldFailed => 42,
             Self::ClosedLoopEntryUnstable => 43,
+            Self::ElectricalModelNoSamples => 44,
+            Self::ElectricalModelScaleZero => 45,
+            Self::ElectricalThetaTooLarge => 46,
         }
     }
 }
@@ -560,6 +569,9 @@ mod tests {
             CommissionError::InductanceSaliencyInvalid,
             CommissionError::CurrentHoldFailed,
             CommissionError::ClosedLoopEntryUnstable,
+            CommissionError::ElectricalModelNoSamples,
+            CommissionError::ElectricalModelScaleZero,
+            CommissionError::ElectricalThetaTooLarge,
         ];
         let mut seen = [false; 256];
         for e in errors {
@@ -570,6 +582,9 @@ mod tests {
         }
         assert_eq!(CommissionError::CurrentHoldFailed.status_code(), 42);
         assert_eq!(CommissionError::ClosedLoopEntryUnstable.status_code(), 43);
+        assert_eq!(CommissionError::ElectricalModelNoSamples.status_code(), 44);
+        assert_eq!(CommissionError::ElectricalModelScaleZero.status_code(), 45);
+        assert_eq!(CommissionError::ElectricalThetaTooLarge.status_code(), 46);
     }
 
     #[test]
