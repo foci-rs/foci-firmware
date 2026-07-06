@@ -13,7 +13,7 @@ use crate::commissioning::types::{
 };
 use crate::selftest::{CommissionDiagnostic, CommissionDiagnostics, SelftestStageValue};
 use crate::tmc_diagnostics::{
-    CurrentLoopFiltersReport, CurrentLoopHoldReport, CurrentLoopRunReport,
+    ClosedLoopEntryReport, CurrentLoopFiltersReport, CurrentLoopHoldReport, CurrentLoopRunReport,
     CurrentValidationAxisReport, EncoderAlignmentReport, InductanceEstimateReport,
     InductanceFrameReport, InductanceRunReport, ResistanceAxisReport, ResistanceRunReport,
 };
@@ -70,6 +70,10 @@ pub trait CommissionReplySink {
     /// Emit sustained-hold current-loop evidence captured during Stage 1
     /// commissioning before the run-level current-loop summary.
     fn foci_current_loop_hold(&mut self, report: CurrentLoopHoldReport);
+
+    /// Emit fast closed-loop entry stability evidence captured before the
+    /// sustained-hold sampler.
+    fn foci_closed_loop_entry(&mut self, report: ClosedLoopEntryReport);
 
     /// Emit applied filter cutoffs for the commissioned closed-loop frame.
     fn foci_current_loop_filters(&mut self, report: CurrentLoopFiltersReport);
@@ -353,6 +357,7 @@ fn emit_current_loop_evidence<S: CommissionReplySink>(
         ));
     }
     sink.foci_current_loop_hold(commission_current_loop_hold_report(oid, inner));
+    sink.foci_closed_loop_entry(commission_closed_loop_entry_report(oid, inner));
     sink.foci_current_loop_filters(commission_current_loop_filters_report(oid, result));
     sink.foci_current_loop_run(commission_current_loop_run_report(oid, status, inner));
 }
@@ -449,6 +454,18 @@ fn commission_current_loop_hold_report(oid: u8, inner: &InnerResult) -> CurrentL
         flux_crossing_count: inner.current_hold_flux_crossing_count,
         status_flags_or: inner.current_hold_status_flags_or,
         actionable_status_count: inner.current_hold_actionable_status_count,
+    }
+}
+
+fn commission_closed_loop_entry_report(oid: u8, inner: &InnerResult) -> ClosedLoopEntryReport {
+    ClosedLoopEntryReport {
+        oid,
+        entry_status: inner.closed_loop_entry_status,
+        position_1: inner.closed_loop_entry_position_1,
+        position_2: inner.closed_loop_entry_position_2,
+        drift_count: inner.closed_loop_entry_drift_count,
+        threshold_count: inner.closed_loop_entry_threshold_count,
+        runaway: inner.closed_loop_entry_runaway,
     }
 }
 
@@ -591,6 +608,15 @@ mod tests {
             sample_count: u8,
             torque_rms_count: u16,
             flux_rms_count: u16,
+        },
+        ClosedLoopEntry {
+            oid: u8,
+            entry_status: u8,
+            position_1: i32,
+            position_2: i32,
+            drift_count: u16,
+            threshold_count: u16,
+            runaway: u8,
         },
         CurrentLoopFilters {
             oid: u8,
@@ -773,6 +799,21 @@ mod tests {
                 sample_count: report.sample_count,
                 torque_rms_count: report.torque_rms_count,
                 flux_rms_count: report.flux_rms_count,
+            });
+        }
+
+        fn foci_closed_loop_entry(
+            &mut self,
+            report: crate::tmc_diagnostics::ClosedLoopEntryReport,
+        ) {
+            self.events.push(Event::ClosedLoopEntry {
+                oid: report.oid,
+                entry_status: report.entry_status,
+                position_1: report.position_1,
+                position_2: report.position_2,
+                drift_count: report.drift_count,
+                threshold_count: report.threshold_count,
+                runaway: report.runaway,
             });
         }
 
@@ -995,6 +1036,12 @@ mod tests {
                     | CURRENT_VALIDATION_AXIS_TORQUE,
                 retry_budget_exhausted: 0,
                 current_loop_failure_reason: CURRENT_LOOP_FAILURE_NONE,
+                closed_loop_entry_status: crate::autotune::CLOSED_LOOP_ENTRY_STATUS_NOT_RUN,
+                closed_loop_entry_position_1: 0,
+                closed_loop_entry_position_2: 0,
+                closed_loop_entry_drift_count: 0,
+                closed_loop_entry_threshold_count: 0,
+                closed_loop_entry_runaway: 0,
                 current_hold_status: crate::autotune::HOLD_GATE_STATUS_NOT_RUN,
                 current_hold_warning_flags: 0,
                 current_hold_elapsed_us: 0,
@@ -1133,6 +1180,15 @@ mod tests {
             sample_count: 0,
             torque_rms_count: 0,
             flux_rms_count: 0,
+        });
+        events.push(Event::ClosedLoopEntry {
+            oid,
+            entry_status: crate::autotune::CLOSED_LOOP_ENTRY_STATUS_NOT_RUN,
+            position_1: 0,
+            position_2: 0,
+            drift_count: 0,
+            threshold_count: 0,
+            runaway: 0,
         });
         events.push(Event::CurrentLoopFilters {
             oid,

@@ -426,6 +426,18 @@ pub struct InnerResult {
     pub retry_budget_exhausted: u8,
     /// `CURRENT_LOOP_FAILURE_*`.
     pub current_loop_failure_reason: u8,
+    /// Closed-loop entry fast stability status (`CLOSED_LOOP_ENTRY_STATUS_*`).
+    pub closed_loop_entry_status: u8,
+    /// First closed-loop entry position sample after entering position mode.
+    pub closed_loop_entry_position_1: i32,
+    /// Second closed-loop entry position sample after the stability delay.
+    pub closed_loop_entry_position_2: i32,
+    /// Absolute drift between the two closed-loop entry position samples.
+    pub closed_loop_entry_drift_count: u16,
+    /// Closed-loop entry drift threshold used for this run.
+    pub closed_loop_entry_threshold_count: u16,
+    /// Non-zero when the closed-loop entry rejection was runaway growth.
+    pub closed_loop_entry_runaway: u8,
     /// Sustained-hold gate status (`HOLD_GATE_STATUS_*`).
     pub current_hold_status: u8,
     /// Sustained-hold warning bitfield (`HOLD_GATE_WARNING_*`).

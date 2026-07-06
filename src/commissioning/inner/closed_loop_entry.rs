@@ -9,9 +9,11 @@
 
 use super::InnerPhase;
 use crate::autotune::{
-    ClosedLoopEntryState, CommissionError, CommissionStatus, HOLD_GATE_DWELL_US,
-    HOLD_GATE_MAX_SAMPLES, HOLD_GATE_SAMPLE_PERIOD_US, HOLD_GATE_STATUS_PASS, HoldGateAccumulator,
-    HoldGateMetrics, HoldGateSample, InnerSequence, hold_status_failure_reason,
+    CLOSED_LOOP_ENTRY_STATUS_FAIL_DRIFT, CLOSED_LOOP_ENTRY_STATUS_FAIL_RUNAWAY,
+    CLOSED_LOOP_ENTRY_STATUS_PASS, ClosedLoopEntryState, CommissionError, CommissionStatus,
+    HOLD_GATE_DWELL_US, HOLD_GATE_MAX_SAMPLES, HOLD_GATE_SAMPLE_PERIOD_US, HOLD_GATE_STATUS_PASS,
+    HoldGateAccumulator, HoldGateMetrics, HoldGateSample, InnerSequence,
+    hold_status_failure_reason,
 };
 use crate::commissioning::types::{
     AdcCalResult, CommissionResult, CommissioningBackend, InnerResult, StepResult,
@@ -24,6 +26,8 @@ const CLOSED_LOOP_PWM_SV_CHOP: u32 = 7;
 const CLOSED_LOOP_MOTOR_TYPE_N_POLE_PAIRS: u32 = (2 << 16) | 50;
 const CLOSED_LOOP_PHI_E_SELECTION: u32 = 3;
 const CLOSED_LOOP_POSITION_MODE: u32 = 0x8000_0003;
+const CLOSED_LOOP_ENTRY_STABILITY_THRESHOLD: u32 = 2;
+const CLOSED_LOOP_ENTRY_RUNAWAY_THRESHOLD: u32 = 32760; // ~40 steps
 
 async fn verify_closed_loop_armed_state<B: CommissioningBackend>(
     backend: &mut B,
@@ -162,6 +166,71 @@ async fn fail_sustained_hold<B: CommissioningBackend>(
         position_filter_hz,
         flux_filter_hz,
     )
+}
+
+fn copy_closed_loop_entry_metrics(
+    inner: &mut InnerResult,
+    entry_status: u8,
+    position_1: i32,
+    position_2: i32,
+    drift: u32,
+    runaway: bool,
+) {
+    inner.closed_loop_entry_status = entry_status;
+    inner.closed_loop_entry_position_1 = position_1;
+    inner.closed_loop_entry_position_2 = position_2;
+    inner.closed_loop_entry_drift_count = saturating_u16(drift);
+    inner.closed_loop_entry_threshold_count = CLOSED_LOOP_ENTRY_STABILITY_THRESHOLD as u16;
+    inner.closed_loop_entry_runaway = u8::from(runaway);
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "failure helper preserves the same terminal state as success"
+)]
+async fn fail_closed_loop_entry<B: CommissioningBackend>(
+    inner_result: &mut Option<InnerResult>,
+    backend: &mut B,
+    entry_status: u8,
+    position_1: i32,
+    position_2: i32,
+    drift: u32,
+    runaway: bool,
+    velocity_p: u16,
+    velocity_i: u16,
+    position_p: u16,
+    position_i: u16,
+    velocity_limit: u32,
+    velocity_filter_hz: u16,
+    torque_filter_hz: u16,
+    position_filter_hz: u16,
+    flux_filter_hz: u16,
+) -> Option<StepResult> {
+    let mut inner = inner_result.take()?;
+
+    crate::tmc_safe_state::restore_safe_state_via_backend(backend).await;
+    inner.status = CommissionStatus::Failed(CommissionError::ClosedLoopEntryUnstable);
+    inner.current_loop_failure_reason = crate::autotune::CURRENT_LOOP_FAILURE_CLOSED_LOOP_ENTRY;
+    copy_closed_loop_entry_metrics(
+        &mut inner,
+        entry_status,
+        position_1,
+        position_2,
+        drift,
+        runaway,
+    );
+    Some(finish_commission(
+        inner,
+        velocity_p,
+        velocity_i,
+        position_p,
+        position_i,
+        velocity_limit,
+        velocity_filter_hz,
+        torque_filter_hz,
+        position_filter_hz,
+        flux_filter_hz,
+    ))
 }
 
 /// Advance closed-loop entry sub-state by one cooperative tick.
@@ -565,8 +634,7 @@ pub(crate) async fn step_closed_loop_entry<B: CommissioningBackend>(
 
             // Runaway detection: if position error is large and growing,
             // the feedback sign is wrong.
-            const RUNAWAY_THRESHOLD: u32 = 32760; // ~40 steps
-            if pos2.unsigned_abs() > RUNAWAY_THRESHOLD
+            if pos2.unsigned_abs() > CLOSED_LOOP_ENTRY_RUNAWAY_THRESHOLD
                 && pos2.unsigned_abs() > position_1.unsigned_abs()
             {
                 defmt::error!(
@@ -574,6 +642,30 @@ pub(crate) async fn step_closed_loop_entry<B: CommissioningBackend>(
                     position_1,
                     pos2
                 );
+                let drift = (pos2.wrapping_sub(*position_1)).unsigned_abs();
+                if matches!(sequence, InnerSequence::Commission)
+                    && let Some(result) = fail_closed_loop_entry(
+                        inner_result,
+                        backend,
+                        CLOSED_LOOP_ENTRY_STATUS_FAIL_RUNAWAY,
+                        *position_1,
+                        pos2,
+                        drift,
+                        true,
+                        velocity_p,
+                        velocity_i,
+                        position_p,
+                        position_i,
+                        velocity_limit,
+                        velocity_filter_hz,
+                        torque_filter_hz,
+                        position_filter_hz,
+                        flux_filter_hz,
+                    )
+                    .await
+                {
+                    return result;
+                }
                 let _ = backend.write_register(MODE_RAMP_MODE_MOTION, 0).await;
                 return super::fail_inner(phase, CommissionError::ClosedLoopEntryUnstable);
             }
@@ -581,15 +673,37 @@ pub(crate) async fn step_closed_loop_entry<B: CommissioningBackend>(
             // Stability check: position must not be drifting.
             // Threshold of 2 encoder counts between 10ms and 30ms
             // readings indicates the motor is holding position.
-            const STABILITY_THRESHOLD: u32 = 2;
             let drift = (pos2.wrapping_sub(*position_1)).unsigned_abs();
-            if drift > STABILITY_THRESHOLD {
+            if drift > CLOSED_LOOP_ENTRY_STABILITY_THRESHOLD {
                 defmt::error!(
                     "closed-loop: unstable: pos1={}, pos2={}, drift={}",
                     position_1,
                     pos2,
                     drift
                 );
+                if matches!(sequence, InnerSequence::Commission)
+                    && let Some(result) = fail_closed_loop_entry(
+                        inner_result,
+                        backend,
+                        CLOSED_LOOP_ENTRY_STATUS_FAIL_DRIFT,
+                        *position_1,
+                        pos2,
+                        drift,
+                        false,
+                        velocity_p,
+                        velocity_i,
+                        position_p,
+                        position_i,
+                        velocity_limit,
+                        velocity_filter_hz,
+                        torque_filter_hz,
+                        position_filter_hz,
+                        flux_filter_hz,
+                    )
+                    .await
+                {
+                    return result;
+                }
                 let _ = backend.write_register(MODE_RAMP_MODE_MOTION, 0).await;
                 return super::fail_inner(phase, CommissionError::ClosedLoopEntryUnstable);
             }
@@ -611,6 +725,16 @@ pub(crate) async fn step_closed_loop_entry<B: CommissioningBackend>(
                     StepResult::CalibrateDone(adc_result)
                 }
                 InnerSequence::Commission => {
+                    if let Some(inner) = inner_result.as_mut() {
+                        copy_closed_loop_entry_metrics(
+                            inner,
+                            CLOSED_LOOP_ENTRY_STATUS_PASS,
+                            *position_1,
+                            pos2,
+                            drift,
+                            false,
+                        );
+                    }
                     *cle_state = ClosedLoopEntryState::SustainedHoldStart;
                     StepResult::Continue
                 }
@@ -838,6 +962,12 @@ mod tests {
             current_validation_axes: CURRENT_VALIDATION_AXIS_TORQUE,
             retry_budget_exhausted: 0,
             current_loop_failure_reason: crate::autotune::CURRENT_LOOP_FAILURE_NONE,
+            closed_loop_entry_status: crate::autotune::CLOSED_LOOP_ENTRY_STATUS_NOT_RUN,
+            closed_loop_entry_position_1: 0,
+            closed_loop_entry_position_2: 0,
+            closed_loop_entry_drift_count: 0,
+            closed_loop_entry_threshold_count: 0,
+            closed_loop_entry_runaway: 0,
             current_hold_status: crate::autotune::HOLD_GATE_STATUS_NOT_RUN,
             current_hold_warning_flags: 0,
             current_hold_elapsed_us: 0,
@@ -1192,7 +1322,7 @@ mod tests {
 
             let result = step_closed_loop_entry(
                 &mut phase,
-                InnerSequence::Commission,
+                InnerSequence::Calibrate,
                 &mut adc_cal,
                 &mut backend,
             )
@@ -1202,6 +1332,48 @@ mod tests {
                 result,
                 StepResult::InnerFailed(CommissionError::ClosedLoopEntryUnstable)
             ));
+        });
+    }
+
+    #[test]
+    fn commission_stability_drift_returns_failed_result_with_entry_evidence() {
+        pollster::block_on(async {
+            let mut phase = closed_loop_phase_at(ClosedLoopEntryState::StabilityCheck2 {
+                position_1: -3,
+                deadline_us: 0,
+            });
+            let mut adc_cal = None;
+            let mut backend = MockBackend::new();
+            backend.registers.insert(PID_POSITION_ACTUAL.addr(), 4).ok();
+
+            let result = step_closed_loop_entry(
+                &mut phase,
+                InnerSequence::Commission,
+                &mut adc_cal,
+                &mut backend,
+            )
+            .await;
+
+            let StepResult::CommissionDone(result) = result else {
+                panic!("expected failed CommissionDone with closed-loop entry evidence");
+            };
+            assert_eq!(
+                result.inner.status,
+                CommissionStatus::Failed(CommissionError::ClosedLoopEntryUnstable)
+            );
+            assert_eq!(result.inner.current_loop_failure_reason, 17);
+            assert_eq!(result.inner.closed_loop_entry_status, 3);
+            assert_eq!(result.inner.closed_loop_entry_position_1, -3);
+            assert_eq!(result.inner.closed_loop_entry_position_2, 4);
+            assert_eq!(result.inner.closed_loop_entry_drift_count, 7);
+            assert_eq!(result.inner.closed_loop_entry_threshold_count, 2);
+            assert_eq!(result.inner.closed_loop_entry_runaway, 0);
+            assert!(
+                write_log(&backend)
+                    .as_slice()
+                    .contains(&(MODE_RAMP_MODE_MOTION.addr(), 0)),
+                "unstable entry must stop position mode before returning evidence"
+            );
         });
     }
 

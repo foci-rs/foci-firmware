@@ -56,6 +56,10 @@ enum ReplyEvent {
         hold_status: u8,
         sample_count: u8,
     },
+    ClosedLoopEntry {
+        entry_status: u8,
+        drift_count: u16,
+    },
 }
 
 #[derive(Default)]
@@ -111,6 +115,13 @@ impl CommissionReplySink for ReplyRecorder {
         self.events.push(ReplyEvent::CurrentLoopHold {
             hold_status: report.hold_status,
             sample_count: report.sample_count,
+        });
+    }
+
+    fn foci_closed_loop_entry(&mut self, report: crate::tmc_diagnostics::ClosedLoopEntryReport) {
+        self.events.push(ReplyEvent::ClosedLoopEntry {
+            entry_status: report.entry_status,
+            drift_count: report.drift_count,
         });
     }
 
@@ -828,6 +839,12 @@ fn sample_commission_result() -> crate::commissioning::types::CommissionResult {
             current_validation_axes: crate::autotune::CURRENT_VALIDATION_AXIS_TORQUE,
             retry_budget_exhausted: 0,
             current_loop_failure_reason: crate::autotune::CURRENT_LOOP_FAILURE_NONE,
+            closed_loop_entry_status: crate::autotune::CLOSED_LOOP_ENTRY_STATUS_NOT_RUN,
+            closed_loop_entry_position_1: 0,
+            closed_loop_entry_position_2: 0,
+            closed_loop_entry_drift_count: 0,
+            closed_loop_entry_threshold_count: 0,
+            closed_loop_entry_runaway: 0,
             current_hold_status: crate::autotune::HOLD_GATE_STATUS_NOT_RUN,
             current_hold_warning_flags: 0,
             current_hold_elapsed_us: 0,
@@ -1049,6 +1066,10 @@ fn commission_result_maps_current_loop_evidence() {
             ReplyEvent::CurrentLoopHold {
                 hold_status: crate::autotune::HOLD_GATE_STATUS_NOT_RUN,
                 sample_count: 0,
+            },
+            ReplyEvent::ClosedLoopEntry {
+                entry_status: crate::autotune::CLOSED_LOOP_ENTRY_STATUS_NOT_RUN,
+                drift_count: 0,
             },
             ReplyEvent::CurrentLoopRun {
                 measured_axis_split_permille: 1840,

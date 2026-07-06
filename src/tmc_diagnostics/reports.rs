@@ -444,6 +444,25 @@ pub struct CurrentLoopFiltersReport {
     pub flux_filter_hz: u16,
 }
 
+/// Fast closed-loop entry stability evidence emitted before the run report.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ClosedLoopEntryReport {
+    /// Object id of the FOCI endpoint.
+    pub oid: u8,
+    /// `CLOSED_LOOP_ENTRY_STATUS_*`.
+    pub entry_status: u8,
+    /// First position sample after entering position mode.
+    pub position_1: i32,
+    /// Second position sample after the stability delay.
+    pub position_2: i32,
+    /// Absolute drift between the two position samples.
+    pub drift_count: u16,
+    /// Drift threshold used by the fast entry check.
+    pub threshold_count: u16,
+    /// Non-zero when the check rejected runaway growth.
+    pub runaway: u8,
+}
+
 /// Sustained current-loop hold evidence emitted before the current-loop run report.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CurrentLoopHoldReport {

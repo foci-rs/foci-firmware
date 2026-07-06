@@ -356,6 +356,27 @@ pub struct FociCurrentLoopFilters {
     pub flux_filter_hz: u16,
 }
 
+/// `foci_closed_loop_entry` reply - fast closed-loop entry stability evidence.
+///
+/// Wire name: `foci_closed_loop_entry`.
+#[klipper_reply]
+pub struct FociClosedLoopEntry {
+    /// Object id of the FOCI endpoint.
+    pub oid: u8,
+    /// `CLOSED_LOOP_ENTRY_STATUS_*`.
+    pub entry_status: u8,
+    /// First position sample after entering position mode.
+    pub position_1: i32,
+    /// Second position sample after the stability delay.
+    pub position_2: i32,
+    /// Absolute drift between the two position samples.
+    pub drift_count: u16,
+    /// Drift threshold used by the fast entry check.
+    pub threshold_count: u16,
+    /// Non-zero when the check rejected runaway growth.
+    pub runaway: u8,
+}
+
 /// `foci_current_loop_hold` reply - sustained current-loop hold evidence.
 ///
 /// Wire name: `foci_current_loop_hold`.
@@ -1007,8 +1028,8 @@ mod tests {
 #[cfg(test)]
 mod resistance_reply_size_tests {
     use super::{
-        FociCurrentLoopFilters, FociCurrentLoopHold, FociResistanceAxis, FociResistanceProfile,
-        FociResistanceRun,
+        FociClosedLoopEntry, FociCurrentLoopFilters, FociCurrentLoopHold, FociResistanceAxis,
+        FociResistanceProfile, FociResistanceRun,
     };
     use ankyra::ScratchOutput;
     use ankyra::encoding::Writable;
@@ -1162,6 +1183,20 @@ mod resistance_reply_size_tests {
             flux_filter_hz: u16::MAX,
         };
         assert_fits_with_id(&reply, "foci_current_loop_filters");
+    }
+
+    #[test]
+    fn closed_loop_entry_reply_fits_klipper_message_limit() {
+        let reply = FociClosedLoopEntry {
+            oid: u8::MAX,
+            entry_status: u8::MAX,
+            position_1: i32::MIN,
+            position_2: i32::MIN,
+            drift_count: u16::MAX,
+            threshold_count: u16::MAX,
+            runaway: u8::MAX,
+        };
+        assert_fits_with_id(&reply, "foci_closed_loop_entry");
     }
 
     #[test]
