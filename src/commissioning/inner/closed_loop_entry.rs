@@ -8,10 +8,15 @@
 //! stability check that aborts on runaway or drift.
 
 use super::InnerPhase;
-use crate::autotune::{ClosedLoopEntryState, CommissionError, CommissionStatus, InnerSequence};
+use crate::autotune::{
+    ClosedLoopEntryState, CommissionError, CommissionStatus, HOLD_GATE_DWELL_US,
+    HOLD_GATE_MAX_SAMPLES, HOLD_GATE_SAMPLE_PERIOD_US, HOLD_GATE_STATUS_PASS, HoldGateAccumulator,
+    HoldGateMetrics, HoldGateSample, InnerSequence, hold_status_failure_reason,
+};
 use crate::commissioning::types::{
     AdcCalResult, CommissionResult, CommissioningBackend, InnerResult, StepResult,
 };
+use crate::tmc::{decode_signed_lower_half, decode_signed_upper_half};
 
 const CLOSED_LOOP_VELOCITY_SELECTION: u32 = 0x0000_0109;
 const CLOSED_LOOP_POSITION_SELECTION: u32 = 9;
@@ -64,6 +69,75 @@ async fn verify_closed_loop_armed_state<B: CommissioningBackend>(
     }
 
     Ok(())
+}
+
+fn saturating_u8(value: u16) -> u8 {
+    u8::try_from(value).unwrap_or(u8::MAX)
+}
+
+fn saturating_u16(value: u32) -> u16 {
+    u16::try_from(value).unwrap_or(u16::MAX)
+}
+
+fn copy_hold_metrics(inner: &mut InnerResult, metrics: HoldGateMetrics) {
+    inner.current_hold_status = metrics.status;
+    inner.current_hold_warning_flags = metrics.warning_flags;
+    inner.current_hold_elapsed_us = metrics.elapsed_us;
+    inner.current_hold_requested_sample_period_us = metrics.requested_sample_period_us;
+    inner.current_hold_sample_count = saturating_u8(metrics.sample_count);
+    inner.current_hold_position_span_count = saturating_u16(metrics.position_span_count);
+    inner.current_hold_position_drift_count = saturating_u16(metrics.position_drift_count);
+    inner.current_hold_torque_mean_count = metrics.torque_mean_count;
+    inner.current_hold_torque_rms_count = metrics.torque_rms_count;
+    inner.current_hold_torque_peak_to_peak_count = metrics.torque_peak_to_peak_count;
+    inner.current_hold_torque_crossing_count = saturating_u8(metrics.torque_crossing_count);
+    inner.current_hold_flux_mean_count = metrics.flux_mean_count;
+    inner.current_hold_flux_rms_count = metrics.flux_rms_count;
+    inner.current_hold_flux_peak_to_peak_count = metrics.flux_peak_to_peak_count;
+    inner.current_hold_flux_crossing_count = saturating_u8(metrics.flux_crossing_count);
+    inner.current_hold_status_flags_or = metrics.status_flags_or;
+    inner.current_hold_actionable_status_count = saturating_u8(metrics.actionable_status_count);
+}
+
+fn finish_commission(
+    inner: InnerResult,
+    velocity_p: u16,
+    velocity_i: u16,
+    position_p: u16,
+    position_i: u16,
+    velocity_limit: u32,
+) -> StepResult {
+    StepResult::CommissionDone(CommissionResult {
+        inner,
+        fallback_velocity_p: velocity_p,
+        fallback_velocity_i: velocity_i,
+        fallback_position_p: position_p,
+        fallback_position_i: position_i,
+        fallback_velocity_limit: velocity_limit,
+    })
+}
+
+async fn fail_sustained_hold<B: CommissioningBackend>(
+    mut inner: InnerResult,
+    backend: &mut B,
+    failure_reason: u8,
+    velocity_p: u16,
+    velocity_i: u16,
+    position_p: u16,
+    position_i: u16,
+    velocity_limit: u32,
+) -> StepResult {
+    crate::tmc_safe_state::restore_safe_state_via_backend(backend).await;
+    inner.status = CommissionStatus::Failed(CommissionError::CurrentHoldFailed);
+    inner.current_loop_failure_reason = failure_reason;
+    finish_commission(
+        inner,
+        velocity_p,
+        velocity_i,
+        position_p,
+        position_i,
+        velocity_limit,
+    )
 }
 
 /// Advance closed-loop entry sub-state by one cooperative tick.
@@ -407,6 +481,7 @@ pub(crate) async fn step_closed_loop_entry<B: CommissioningBackend>(
             if verify_closed_loop_armed_state(backend).await.is_err() {
                 return super::fail_inner(phase, CommissionError::Spi);
             }
+            backend.set_enable_pin(true);
 
             // Schedule stability check after 10ms.
             let now = backend.elapsed_us();
@@ -506,103 +581,8 @@ pub(crate) async fn step_closed_loop_entry<B: CommissioningBackend>(
                     StepResult::CalibrateDone(adc_result)
                 }
                 InnerSequence::Commission => {
-                    let inner = inner_result.take().unwrap_or(InnerResult {
-                        status: CommissionStatus::Accepted,
-                        r_int: 0,
-                        l_int: 0,
-                        r_mohm: 0,
-                        l_uh: 0,
-                        flux_p: 0,
-                        flux_i: 0,
-                        torque_p: 0,
-                        torque_i: 0,
-                        candidate_gains_source: crate::autotune::CURRENT_GAINS_SOURCE_MEASURED,
-                        candidate_axis_split_source: crate::autotune::AXIS_SPLIT_SOURCE_NONE,
-                        candidate_gains_tier:
-                            crate::autotune::CURRENT_GAINS_TIER_MEASURED_SYMMETRIC,
-                        candidate_measured_axis_split_permille: 1000,
-                        candidate_applied_axis_split_permille: 1000,
-                        candidate_axis_split_clamped: 0,
-                        candidate_flux_p: 0,
-                        candidate_flux_i: 0,
-                        candidate_torque_p: 0,
-                        candidate_torque_i: 0,
-                        candidate_attempt: 0,
-                        lambda_us: 0,
-                        theta_e_us: 0,
-                        ringing_count: 0,
-                        bandwidth_hz: 0,
-                        tau_e_us: 0,
-                        inductance: crate::commissioning::types::InductanceEvidence::EMPTY,
-                        inner_warning_flags: 0,
-                        resistance_selected_count_slope_milli: 0,
-                        resistance_gain_path_count_slope_milli: 0,
-                        resistance_axis0_count_slope_milli: 0,
-                        resistance_axis1_count_slope_milli: 0,
-                        resistance_axis0_intercept_count: 0,
-                        resistance_axis1_intercept_count: 0,
-                        resistance_axis0_rmse_permille: 0,
-                        resistance_axis1_rmse_permille: 0,
-                        resistance_selected_mask_axis0: 0,
-                        resistance_selected_mask_axis1: 0,
-                        resistance_axis0_signed_count_slope_milli: 0,
-                        resistance_axis1_signed_count_slope_milli: 0,
-                        resistance_axis0_signed_asymmetry_permille: 0,
-                        resistance_axis1_signed_asymmetry_permille: 0,
-                        resistance_axis0_drift_permille: 0,
-                        resistance_axis1_drift_permille: 0,
-                        resistance_status_flags_or: 0,
-                        resistance_warning_flags: 0,
-                        encoder_alignment_count: 0,
-                        encoder_alignment_electrical_residual_counts: 0,
-                        encoder_alignment_stability_counts: 0,
-                        encoder_alignment_movement_counts: 0,
-                        encoder_alignment_min_movement_counts: 0,
-                        encoder_alignment_counts_per_electrical_rev: 0,
-                        current_gains_source: crate::autotune::CURRENT_GAINS_SOURCE_MEASURED,
-                        axis_split_source: crate::autotune::AXIS_SPLIT_SOURCE_NONE,
-                        gains_tier: crate::autotune::CURRENT_GAINS_TIER_MEASURED_SYMMETRIC,
-                        measured_axis_split_permille: 1000,
-                        applied_axis_split_permille: 1000,
-                        axis_split_clamped: 0,
-                        current_validation_axes: 0,
-                        retry_budget_exhausted: 0,
-                        current_loop_failure_reason: crate::autotune::CURRENT_LOOP_FAILURE_NONE,
-                        current_hold_status: crate::autotune::HOLD_GATE_STATUS_NOT_RUN,
-                        current_hold_warning_flags: 0,
-                        current_hold_elapsed_us: 0,
-                        current_hold_requested_sample_period_us:
-                            crate::autotune::HOLD_GATE_SAMPLE_PERIOD_US as u16,
-                        current_hold_sample_count: 0,
-                        current_hold_position_span_count: 0,
-                        current_hold_position_drift_count: 0,
-                        current_hold_torque_mean_count: 0,
-                        current_hold_torque_rms_count: 0,
-                        current_hold_torque_peak_to_peak_count: 0,
-                        current_hold_torque_crossing_count: 0,
-                        current_hold_flux_mean_count: 0,
-                        current_hold_flux_rms_count: 0,
-                        current_hold_flux_peak_to_peak_count: 0,
-                        current_hold_flux_crossing_count: 0,
-                        current_hold_status_flags_or: 0,
-                        current_hold_actionable_status_count: 0,
-                        current_flux_validation_count: 0,
-                        current_flux_validation:
-                            [crate::commissioning::types::CurrentValidationAxisEvidence::EMPTY;
-                                crate::autotune::CURRENT_VALIDATION_MAX_SAMPLES_PER_AXIS],
-                        current_torque_validation_count: 0,
-                        current_torque_validation:
-                            [crate::commissioning::types::CurrentValidationAxisEvidence::EMPTY;
-                                crate::autotune::CURRENT_VALIDATION_MAX_SAMPLES_PER_AXIS],
-                    });
-                    StepResult::CommissionDone(CommissionResult {
-                        inner,
-                        fallback_velocity_p: velocity_p,
-                        fallback_velocity_i: velocity_i,
-                        fallback_position_p: position_p,
-                        fallback_position_i: position_i,
-                        fallback_velocity_limit: velocity_limit,
-                    })
+                    *cle_state = ClosedLoopEntryState::SustainedHoldStart;
+                    StepResult::Continue
                 }
                 InnerSequence::Selftest => {
                     // Selftest never reaches ClosedLoopEntry.
@@ -610,17 +590,124 @@ pub(crate) async fn step_closed_loop_entry<B: CommissioningBackend>(
                 }
             }
         }
+
+        ClosedLoopEntryState::SustainedHoldStart => {
+            let now = backend.elapsed_us();
+            *cle_state = ClosedLoopEntryState::SustainedHoldSample {
+                accumulator: HoldGateAccumulator::commissioning(HOLD_GATE_SAMPLE_PERIOD_US as u16),
+                started_us: now,
+                next_sample_us: now,
+                deadline_us: now + HOLD_GATE_DWELL_US as u64,
+                requested_sample_period_us: HOLD_GATE_SAMPLE_PERIOD_US as u16,
+                sample_overrun: false,
+            };
+            StepResult::Continue
+        }
+
+        ClosedLoopEntryState::SustainedHoldSample {
+            accumulator,
+            started_us,
+            next_sample_us,
+            deadline_us,
+            requested_sample_period_us,
+            sample_overrun,
+        } => {
+            let now = backend.elapsed_us();
+            if now < *next_sample_us {
+                return StepResult::Continue;
+            }
+
+            let pid_torque_flux_actual = match backend.read_register(PID_TORQUE_FLUX_ACTUAL).await {
+                Ok(value) => value,
+                Err(_) => {
+                    let _ = backend.write_register(MODE_RAMP_MODE_MOTION, 0).await;
+                    return super::fail_inner(phase, CommissionError::Spi);
+                }
+            };
+            let position_count = match backend.read_register(PID_POSITION_ACTUAL).await {
+                Ok(value) => value as i32,
+                Err(_) => {
+                    let _ = backend.write_register(MODE_RAMP_MODE_MOTION, 0).await;
+                    return super::fail_inner(phase, CommissionError::Spi);
+                }
+            };
+            let status_flags = match backend.read_register(STATUS_FLAGS).await {
+                Ok(value) => value,
+                Err(_) => {
+                    let _ = backend.write_register(MODE_RAMP_MODE_MOTION, 0).await;
+                    return super::fail_inner(phase, CommissionError::Spi);
+                }
+            };
+
+            accumulator.push(HoldGateSample {
+                elapsed_us: now.saturating_sub(*started_us).min(u64::from(u32::MAX)) as u32,
+                position_count,
+                torque_count: decode_signed_upper_half(pid_torque_flux_actual),
+                flux_count: decode_signed_lower_half(pid_torque_flux_actual),
+                status_flags,
+            });
+
+            if now > *next_sample_us {
+                *sample_overrun = true;
+            }
+
+            if now < *deadline_us && accumulator.sample_count() < HOLD_GATE_MAX_SAMPLES {
+                *next_sample_us = now.saturating_add(u64::from(*requested_sample_period_us));
+                return StepResult::Continue;
+            }
+
+            let elapsed_us = now.saturating_sub(*started_us).min(u64::from(u32::MAX)) as u32;
+            let metrics = accumulator.finish(elapsed_us, *sample_overrun);
+            let Some(mut inner) = inner_result.take() else {
+                let _ = backend.write_register(MODE_RAMP_MODE_MOTION, 0).await;
+                return super::fail_inner(phase, CommissionError::Spi);
+            };
+            copy_hold_metrics(&mut inner, metrics);
+
+            if metrics.status != HOLD_GATE_STATUS_PASS {
+                let failure_reason = hold_status_failure_reason(metrics.status)
+                    .unwrap_or(crate::autotune::CURRENT_LOOP_FAILURE_HOLD_SAMPLE);
+                return fail_sustained_hold(
+                    inner,
+                    backend,
+                    failure_reason,
+                    velocity_p,
+                    velocity_i,
+                    position_p,
+                    position_i,
+                    velocity_limit,
+                )
+                .await;
+            }
+
+            finish_commission(
+                inner,
+                velocity_p,
+                velocity_i,
+                position_p,
+                position_i,
+                velocity_limit,
+            )
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::autotune::{
+        CURRENT_LOOP_FAILURE_HOLD_POSITION_SPAN, CURRENT_LOOP_FAILURE_HOLD_SAMPLE,
+        CURRENT_VALIDATION_AXIS_TORQUE, HOLD_GATE_SAMPLE_PERIOD_US,
+        HOLD_GATE_STATUS_FAIL_SAMPLE_ERROR, HOLD_GATE_STATUS_PASS, HoldGateAccumulator,
+        HoldGateSample, current_loop_actionable_status_mask,
+    };
     use crate::commission_dispatch::test_support::{MockBackend, SpiOp};
+    use crate::commissioning::types::{CurrentValidationAxisEvidence, InductanceEvidence};
     use foci_tmc4671::registers::{
         ABN_DECODER_PPR, ADC_I_SELECT, MODE_RAMP_MODE_MOTION, MOTOR_TYPE_N_POLE_PAIRS,
-        PHI_E_SELECTION, PID_TORQUE_FLUX_LIMITS, PID_VELOCITY_LIMIT, PIDOUT_UQ_UD_LIMITS,
-        POSITION_SELECTION, PWM_SV_CHOP, STEP_WIDTH, VELOCITY_SELECTION,
+        PHI_E_SELECTION, PID_POSITION_ACTUAL, PID_TORQUE_FLUX_ACTUAL, PID_TORQUE_FLUX_LIMITS,
+        PID_VELOCITY_LIMIT, PIDOUT_UQ_UD_LIMITS, POSITION_SELECTION, PWM_SV_CHOP, STATUS_FLAGS,
+        STEP_WIDTH, VELOCITY_SELECTION,
     };
 
     fn closed_loop_phase_at(state: ClosedLoopEntryState) -> InnerPhase {
@@ -639,8 +726,110 @@ mod tests {
             torque_filter_hz: 0,
             position_filter_hz: 0,
             flux_filter_hz: 0,
-            inner_result: None,
+            inner_result: Some(sample_inner_result(CommissionStatus::Accepted)),
         }
+    }
+
+    fn closed_loop_phase_at_without_inner(state: ClosedLoopEntryState) -> InnerPhase {
+        let mut phase = closed_loop_phase_at(state);
+        let InnerPhase::ClosedLoopEntry { inner_result, .. } = &mut phase else {
+            unreachable!();
+        };
+        *inner_result = None;
+        phase
+    }
+
+    fn sample_inner_result(status: CommissionStatus) -> InnerResult {
+        InnerResult {
+            status,
+            r_int: 1706,
+            l_int: 1245,
+            r_mohm: 1700,
+            l_uh: 3100,
+            flux_p: 100,
+            flux_i: 10,
+            torque_p: 200,
+            torque_i: 20,
+            candidate_gains_source: crate::autotune::CURRENT_GAINS_SOURCE_MEASURED,
+            candidate_axis_split_source: crate::autotune::AXIS_SPLIT_SOURCE_NONE,
+            candidate_gains_tier: crate::autotune::CURRENT_GAINS_TIER_MEASURED_SYMMETRIC,
+            candidate_measured_axis_split_permille: 1000,
+            candidate_applied_axis_split_permille: 1000,
+            candidate_axis_split_clamped: 0,
+            candidate_flux_p: 100,
+            candidate_flux_i: 10,
+            candidate_torque_p: 200,
+            candidate_torque_i: 20,
+            candidate_attempt: 0,
+            lambda_us: 100,
+            theta_e_us: 50,
+            ringing_count: 0,
+            bandwidth_hz: 1000,
+            tau_e_us: 730,
+            inductance: InductanceEvidence::EMPTY,
+            inner_warning_flags: 0,
+            resistance_selected_count_slope_milli: 1706,
+            resistance_gain_path_count_slope_milli: 1706,
+            resistance_axis0_count_slope_milli: 1700,
+            resistance_axis1_count_slope_milli: 1712,
+            resistance_axis0_intercept_count: 0,
+            resistance_axis1_intercept_count: 0,
+            resistance_axis0_rmse_permille: 0,
+            resistance_axis1_rmse_permille: 0,
+            resistance_selected_mask_axis0: 0b1111_1000,
+            resistance_selected_mask_axis1: 0b1111_1000,
+            resistance_axis0_signed_count_slope_milli: 1702,
+            resistance_axis1_signed_count_slope_milli: 1710,
+            resistance_axis0_signed_asymmetry_permille: 0,
+            resistance_axis1_signed_asymmetry_permille: 0,
+            resistance_axis0_drift_permille: 0,
+            resistance_axis1_drift_permille: 0,
+            resistance_status_flags_or: 0,
+            resistance_warning_flags: 0,
+            encoder_alignment_count: 0,
+            encoder_alignment_electrical_residual_counts: 0,
+            encoder_alignment_stability_counts: 0,
+            encoder_alignment_movement_counts: 0,
+            encoder_alignment_min_movement_counts: 0,
+            encoder_alignment_counts_per_electrical_rev: 0,
+            current_gains_source: crate::autotune::CURRENT_GAINS_SOURCE_MEASURED,
+            axis_split_source: crate::autotune::AXIS_SPLIT_SOURCE_NONE,
+            gains_tier: crate::autotune::CURRENT_GAINS_TIER_MEASURED_SYMMETRIC,
+            measured_axis_split_permille: 1000,
+            applied_axis_split_permille: 1000,
+            axis_split_clamped: 0,
+            current_validation_axes: CURRENT_VALIDATION_AXIS_TORQUE,
+            retry_budget_exhausted: 0,
+            current_loop_failure_reason: crate::autotune::CURRENT_LOOP_FAILURE_NONE,
+            current_hold_status: crate::autotune::HOLD_GATE_STATUS_NOT_RUN,
+            current_hold_warning_flags: 0,
+            current_hold_elapsed_us: 0,
+            current_hold_requested_sample_period_us: crate::autotune::HOLD_GATE_SAMPLE_PERIOD_US
+                as u16,
+            current_hold_sample_count: 0,
+            current_hold_position_span_count: 0,
+            current_hold_position_drift_count: 0,
+            current_hold_torque_mean_count: 0,
+            current_hold_torque_rms_count: 0,
+            current_hold_torque_peak_to_peak_count: 0,
+            current_hold_torque_crossing_count: 0,
+            current_hold_flux_mean_count: 0,
+            current_hold_flux_rms_count: 0,
+            current_hold_flux_peak_to_peak_count: 0,
+            current_hold_flux_crossing_count: 0,
+            current_hold_status_flags_or: 0,
+            current_hold_actionable_status_count: 0,
+            current_flux_validation_count: 0,
+            current_flux_validation: [CurrentValidationAxisEvidence::EMPTY;
+                crate::autotune::CURRENT_VALIDATION_MAX_SAMPLES_PER_AXIS],
+            current_torque_validation_count: 0,
+            current_torque_validation: [CurrentValidationAxisEvidence::EMPTY;
+                crate::autotune::CURRENT_VALIDATION_MAX_SAMPLES_PER_AXIS],
+        }
+    }
+
+    fn pack_torque_flux_actual(torque: i16, flux: i16) -> u32 {
+        ((torque as u16 as u32) << 16) | flux as u16 as u32
     }
 
     fn seed_armed_state_registers(backend: &mut MockBackend) {
@@ -793,6 +982,14 @@ mod tests {
                     ..
                 }
             ));
+            assert!(
+                backend.enable_pin,
+                "position-mode checks must run energized"
+            );
+            assert!(
+                matches!(backend.spi_log.last(), Some(SpiOp::EnablePin(true))),
+                "enable pin must be asserted after closed-loop register verification"
+            );
         });
     }
 
@@ -831,6 +1028,461 @@ mod tests {
                     "register 0x{addr:02x} stale value 0x{stale_value:08x} was accepted"
                 );
             }
+        });
+    }
+
+    #[test]
+    fn commission_runs_sustained_hold_after_fast_stability_check() {
+        pollster::block_on(async {
+            let mut phase = closed_loop_phase_at(ClosedLoopEntryState::StabilityCheck2 {
+                position_1: 0,
+                deadline_us: 0,
+            });
+            let mut adc_cal = None;
+            let mut backend = MockBackend::new();
+            backend.registers.insert(PID_POSITION_ACTUAL.addr(), 0).ok();
+
+            let result = step_closed_loop_entry(
+                &mut phase,
+                InnerSequence::Commission,
+                &mut adc_cal,
+                &mut backend,
+            )
+            .await;
+
+            assert!(matches!(
+                phase,
+                InnerPhase::ClosedLoopEntry {
+                    state: ClosedLoopEntryState::SustainedHoldStart,
+                    ..
+                }
+            ));
+            assert!(matches!(result, StepResult::Continue));
+        });
+    }
+
+    #[test]
+    fn calibrate_skips_sustained_hold_after_fast_stability_check() {
+        pollster::block_on(async {
+            let mut phase = closed_loop_phase_at(ClosedLoopEntryState::StabilityCheck2 {
+                position_1: 0,
+                deadline_us: 0,
+            });
+            let mut adc_cal = None;
+            let mut backend = MockBackend::new();
+            backend.registers.insert(PID_POSITION_ACTUAL.addr(), 0).ok();
+
+            let result = step_closed_loop_entry(
+                &mut phase,
+                InnerSequence::Calibrate,
+                &mut adc_cal,
+                &mut backend,
+            )
+            .await;
+
+            assert!(matches!(result, StepResult::CalibrateDone(_)));
+        });
+    }
+
+    #[test]
+    fn sustained_hold_position_span_fails_with_specific_reason() {
+        pollster::block_on(async {
+            let mut accumulator =
+                HoldGateAccumulator::new(0, current_loop_actionable_status_mask());
+            accumulator.push(HoldGateSample {
+                elapsed_us: 0,
+                position_count: 0,
+                torque_count: 0,
+                flux_count: 0,
+                status_flags: 0,
+            });
+            let mut phase = closed_loop_phase_at(ClosedLoopEntryState::SustainedHoldSample {
+                accumulator,
+                started_us: 0,
+                next_sample_us: HOLD_GATE_SAMPLE_PERIOD_US as u64,
+                deadline_us: HOLD_GATE_SAMPLE_PERIOD_US as u64,
+                requested_sample_period_us: HOLD_GATE_SAMPLE_PERIOD_US as u16,
+                sample_overrun: false,
+            });
+            let mut adc_cal = None;
+            let mut backend = MockBackend::new();
+            backend.enable_pin = true;
+            backend.elapsed_us_value = HOLD_GATE_SAMPLE_PERIOD_US as u64;
+            backend
+                .registers
+                .insert(PID_POSITION_ACTUAL.addr(), 17)
+                .ok();
+            backend
+                .registers
+                .insert(PID_TORQUE_FLUX_ACTUAL.addr(), 0)
+                .ok();
+            backend.registers.insert(STATUS_FLAGS.addr(), 0).ok();
+
+            let result = step_closed_loop_entry(
+                &mut phase,
+                InnerSequence::Commission,
+                &mut adc_cal,
+                &mut backend,
+            )
+            .await;
+
+            let StepResult::CommissionDone(result) = result else {
+                panic!("expected failed CommissionDone with hold evidence");
+            };
+            assert_eq!(
+                result.inner.status,
+                CommissionStatus::Failed(CommissionError::CurrentHoldFailed)
+            );
+            assert_eq!(
+                result.inner.current_loop_failure_reason,
+                CURRENT_LOOP_FAILURE_HOLD_POSITION_SPAN
+            );
+            assert!(
+                !backend.enable_pin,
+                "hold failure must leave the enable pin lowered"
+            );
+            assert!(
+                write_log(&backend)
+                    .as_slice()
+                    .contains(&(MODE_RAMP_MODE_MOTION.addr(), 0)),
+                "hold failure must stop position mode before returning the error"
+            );
+        });
+    }
+
+    #[test]
+    fn sustained_hold_pass_returns_commission_done_with_metrics_and_upstream_evidence() {
+        pollster::block_on(async {
+            let mut accumulator =
+                HoldGateAccumulator::new(0, current_loop_actionable_status_mask());
+            accumulator.push(HoldGateSample {
+                elapsed_us: 0,
+                position_count: 4,
+                torque_count: 20,
+                flux_count: -4,
+                status_flags: 0,
+            });
+            let mut phase = closed_loop_phase_at(ClosedLoopEntryState::SustainedHoldSample {
+                accumulator,
+                started_us: 0,
+                next_sample_us: HOLD_GATE_SAMPLE_PERIOD_US as u64,
+                deadline_us: HOLD_GATE_SAMPLE_PERIOD_US as u64,
+                requested_sample_period_us: HOLD_GATE_SAMPLE_PERIOD_US as u16,
+                sample_overrun: false,
+            });
+            let mut adc_cal = None;
+            let mut backend = MockBackend::new();
+            backend.enable_pin = true;
+            backend.elapsed_us_value = HOLD_GATE_SAMPLE_PERIOD_US as u64;
+            backend.registers.insert(PID_POSITION_ACTUAL.addr(), 6).ok();
+            backend
+                .registers
+                .insert(
+                    PID_TORQUE_FLUX_ACTUAL.addr(),
+                    pack_torque_flux_actual(24, -2),
+                )
+                .ok();
+            backend.registers.insert(STATUS_FLAGS.addr(), 0).ok();
+
+            let result = step_closed_loop_entry(
+                &mut phase,
+                InnerSequence::Commission,
+                &mut adc_cal,
+                &mut backend,
+            )
+            .await;
+
+            let StepResult::CommissionDone(result) = result else {
+                panic!("expected CommissionDone");
+            };
+            assert_eq!(result.inner.status, CommissionStatus::Accepted);
+            assert_eq!(result.inner.r_int, 1706);
+            assert_eq!(
+                result.inner.current_validation_axes,
+                CURRENT_VALIDATION_AXIS_TORQUE
+            );
+            assert_eq!(result.inner.current_hold_status, HOLD_GATE_STATUS_PASS);
+            assert_eq!(result.inner.current_hold_sample_count, 2);
+            assert_eq!(
+                result.inner.current_hold_elapsed_us,
+                HOLD_GATE_SAMPLE_PERIOD_US
+            );
+            assert_eq!(result.inner.current_hold_position_span_count, 2);
+            assert_eq!(result.inner.current_hold_torque_mean_count, 22);
+            assert_eq!(result.inner.current_hold_flux_mean_count, -3);
+        });
+    }
+
+    #[test]
+    fn sustained_hold_position_span_returns_failed_commission_result_with_evidence() {
+        pollster::block_on(async {
+            let mut accumulator =
+                HoldGateAccumulator::new(0, current_loop_actionable_status_mask());
+            accumulator.push(HoldGateSample {
+                elapsed_us: 0,
+                position_count: 0,
+                torque_count: 0,
+                flux_count: 0,
+                status_flags: 0,
+            });
+            let mut phase = closed_loop_phase_at(ClosedLoopEntryState::SustainedHoldSample {
+                accumulator,
+                started_us: 0,
+                next_sample_us: HOLD_GATE_SAMPLE_PERIOD_US as u64,
+                deadline_us: HOLD_GATE_SAMPLE_PERIOD_US as u64,
+                requested_sample_period_us: HOLD_GATE_SAMPLE_PERIOD_US as u16,
+                sample_overrun: false,
+            });
+            let mut adc_cal = None;
+            let mut backend = MockBackend::new();
+            backend.elapsed_us_value = HOLD_GATE_SAMPLE_PERIOD_US as u64;
+            backend
+                .registers
+                .insert(PID_POSITION_ACTUAL.addr(), 17)
+                .ok();
+            backend
+                .registers
+                .insert(PID_TORQUE_FLUX_ACTUAL.addr(), 0)
+                .ok();
+            backend.registers.insert(STATUS_FLAGS.addr(), 0).ok();
+
+            let result = step_closed_loop_entry(
+                &mut phase,
+                InnerSequence::Commission,
+                &mut adc_cal,
+                &mut backend,
+            )
+            .await;
+
+            let StepResult::CommissionDone(result) = result else {
+                panic!("expected failed CommissionDone with hold evidence");
+            };
+            assert_eq!(
+                result.inner.status,
+                CommissionStatus::Failed(CommissionError::CurrentHoldFailed)
+            );
+            assert_eq!(
+                result.inner.current_loop_failure_reason,
+                CURRENT_LOOP_FAILURE_HOLD_POSITION_SPAN
+            );
+            assert_eq!(result.inner.current_hold_sample_count, 2);
+            assert_eq!(result.inner.current_hold_position_span_count, 17);
+            assert!(
+                !backend.enable_pin,
+                "hold failure must leave the enable pin lowered"
+            );
+            assert!(
+                write_log(&backend)
+                    .as_slice()
+                    .contains(&(MODE_RAMP_MODE_MOTION.addr(), 0)),
+                "hold failure must stop position mode before returning the result"
+            );
+        });
+    }
+
+    #[test]
+    fn sustained_hold_missing_inner_result_fails_without_default_evidence() {
+        pollster::block_on(async {
+            let mut accumulator =
+                HoldGateAccumulator::new(0, current_loop_actionable_status_mask());
+            accumulator.push(HoldGateSample {
+                elapsed_us: 0,
+                position_count: 4,
+                torque_count: 20,
+                flux_count: -4,
+                status_flags: 0,
+            });
+            let mut phase =
+                closed_loop_phase_at_without_inner(ClosedLoopEntryState::SustainedHoldSample {
+                    accumulator,
+                    started_us: 0,
+                    next_sample_us: HOLD_GATE_SAMPLE_PERIOD_US as u64,
+                    deadline_us: HOLD_GATE_SAMPLE_PERIOD_US as u64,
+                    requested_sample_period_us: HOLD_GATE_SAMPLE_PERIOD_US as u16,
+                    sample_overrun: false,
+                });
+            let mut adc_cal = None;
+            let mut backend = MockBackend::new();
+            backend.elapsed_us_value = HOLD_GATE_SAMPLE_PERIOD_US as u64;
+            backend.registers.insert(PID_POSITION_ACTUAL.addr(), 4).ok();
+            backend
+                .registers
+                .insert(
+                    PID_TORQUE_FLUX_ACTUAL.addr(),
+                    pack_torque_flux_actual(20, -4),
+                )
+                .ok();
+            backend.registers.insert(STATUS_FLAGS.addr(), 0).ok();
+
+            let result = step_closed_loop_entry(
+                &mut phase,
+                InnerSequence::Commission,
+                &mut adc_cal,
+                &mut backend,
+            )
+            .await;
+
+            assert!(matches!(
+                result,
+                StepResult::InnerFailed(CommissionError::Spi)
+            ));
+            assert!(
+                write_log(&backend)
+                    .as_slice()
+                    .contains(&(MODE_RAMP_MODE_MOTION.addr(), 0)),
+                "missing inner result must stop position mode before failing"
+            );
+        });
+    }
+
+    #[test]
+    fn sustained_hold_spi_read_failure_stops_motion_mode() {
+        pollster::block_on(async {
+            let mut phase = closed_loop_phase_at(ClosedLoopEntryState::SustainedHoldSample {
+                accumulator: HoldGateAccumulator::new(
+                    HOLD_GATE_SAMPLE_PERIOD_US as u16,
+                    current_loop_actionable_status_mask(),
+                ),
+                started_us: 0,
+                next_sample_us: 0,
+                deadline_us: HOLD_GATE_SAMPLE_PERIOD_US as u64,
+                requested_sample_period_us: HOLD_GATE_SAMPLE_PERIOD_US as u16,
+                sample_overrun: false,
+            });
+            let mut adc_cal = None;
+            let mut backend = MockBackend::new();
+            backend.fail_on_read = Some(PID_TORQUE_FLUX_ACTUAL.addr());
+
+            let result = step_closed_loop_entry(
+                &mut phase,
+                InnerSequence::Commission,
+                &mut adc_cal,
+                &mut backend,
+            )
+            .await;
+
+            assert!(matches!(
+                result,
+                StepResult::InnerFailed(CommissionError::Spi)
+            ));
+            assert!(
+                write_log(&backend)
+                    .as_slice()
+                    .contains(&(MODE_RAMP_MODE_MOTION.addr(), 0)),
+                "SPI read failure must stop position mode before returning the error"
+            );
+        });
+    }
+
+    #[test]
+    fn sustained_hold_late_sample_marks_overrun_and_reschedules_from_now() {
+        pollster::block_on(async {
+            let mut phase = closed_loop_phase_at(ClosedLoopEntryState::SustainedHoldSample {
+                accumulator: HoldGateAccumulator::new(
+                    HOLD_GATE_SAMPLE_PERIOD_US as u16,
+                    current_loop_actionable_status_mask(),
+                ),
+                started_us: 0,
+                next_sample_us: HOLD_GATE_SAMPLE_PERIOD_US as u64,
+                deadline_us: (HOLD_GATE_SAMPLE_PERIOD_US * 3) as u64,
+                requested_sample_period_us: HOLD_GATE_SAMPLE_PERIOD_US as u16,
+                sample_overrun: false,
+            });
+            let mut adc_cal = None;
+            let mut backend = MockBackend::new();
+            backend.elapsed_us_value = HOLD_GATE_SAMPLE_PERIOD_US as u64 + 1;
+            backend.registers.insert(PID_POSITION_ACTUAL.addr(), 0).ok();
+            backend
+                .registers
+                .insert(PID_TORQUE_FLUX_ACTUAL.addr(), 0)
+                .ok();
+            backend.registers.insert(STATUS_FLAGS.addr(), 0).ok();
+
+            let result = step_closed_loop_entry(
+                &mut phase,
+                InnerSequence::Commission,
+                &mut adc_cal,
+                &mut backend,
+            )
+            .await;
+
+            assert!(matches!(result, StepResult::Continue));
+            assert!(matches!(
+                phase,
+                InnerPhase::ClosedLoopEntry {
+                    state: ClosedLoopEntryState::SustainedHoldSample {
+                        next_sample_us,
+                        sample_overrun: true,
+                        ..
+                    },
+                    ..
+                } if next_sample_us
+                    == (HOLD_GATE_SAMPLE_PERIOD_US as u64 + 1)
+                        + HOLD_GATE_SAMPLE_PERIOD_US as u64
+            ));
+        });
+    }
+
+    #[test]
+    fn sustained_hold_overrun_finishes_as_sample_error_failure() {
+        pollster::block_on(async {
+            let mut accumulator = HoldGateAccumulator::new(
+                HOLD_GATE_SAMPLE_PERIOD_US as u16,
+                current_loop_actionable_status_mask(),
+            );
+            accumulator.push(HoldGateSample {
+                elapsed_us: 0,
+                position_count: 0,
+                torque_count: 0,
+                flux_count: 0,
+                status_flags: 0,
+            });
+            let mut phase = closed_loop_phase_at(ClosedLoopEntryState::SustainedHoldSample {
+                accumulator,
+                started_us: 0,
+                next_sample_us: HOLD_GATE_SAMPLE_PERIOD_US as u64,
+                deadline_us: HOLD_GATE_SAMPLE_PERIOD_US as u64 + 1,
+                requested_sample_period_us: HOLD_GATE_SAMPLE_PERIOD_US as u16,
+                sample_overrun: false,
+            });
+            let mut adc_cal = None;
+            let mut backend = MockBackend::new();
+            backend.enable_pin = true;
+            backend.elapsed_us_value = HOLD_GATE_SAMPLE_PERIOD_US as u64 + 1;
+            backend.registers.insert(PID_POSITION_ACTUAL.addr(), 0).ok();
+            backend
+                .registers
+                .insert(PID_TORQUE_FLUX_ACTUAL.addr(), 0)
+                .ok();
+            backend.registers.insert(STATUS_FLAGS.addr(), 0).ok();
+
+            let result = step_closed_loop_entry(
+                &mut phase,
+                InnerSequence::Commission,
+                &mut adc_cal,
+                &mut backend,
+            )
+            .await;
+
+            let StepResult::CommissionDone(result) = result else {
+                panic!("expected failed CommissionDone with hold evidence");
+            };
+            assert_eq!(
+                result.inner.status,
+                CommissionStatus::Failed(CommissionError::CurrentHoldFailed)
+            );
+            assert_eq!(
+                result.inner.current_hold_status,
+                HOLD_GATE_STATUS_FAIL_SAMPLE_ERROR
+            );
+            assert_eq!(
+                result.inner.current_loop_failure_reason,
+                CURRENT_LOOP_FAILURE_HOLD_SAMPLE
+            );
+            assert!(
+                !backend.enable_pin,
+                "sample-error failure must restore canonical safe state"
+            );
         });
     }
 }

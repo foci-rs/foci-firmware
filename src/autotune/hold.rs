@@ -235,6 +235,11 @@ impl HoldGateAccumulator {
         }
     }
 
+    /// Return the number of accepted samples.
+    pub const fn sample_count(&self) -> u16 {
+        self.sample_count
+    }
+
     /// Finish the run and return accumulated metrics.
     pub fn finish(&self, elapsed_us: u32, sample_error: bool) -> HoldGateMetrics {
         let position_span_count = self.position_max_count.abs_diff(self.position_min_count);

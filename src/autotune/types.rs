@@ -1,3 +1,5 @@
+use super::HoldGateAccumulator;
+
 /// Tuning aggressiveness profile for commissioning gain synthesis.
 ///
 /// Current-loop P synthesis uses the configured physical bandwidth directly;
@@ -420,6 +422,23 @@ pub enum ClosedLoopEntryState {
         position_1: i32,
         /// Deadline in microseconds for second reading.
         deadline_us: u64,
+    },
+    /// Prepare the commissioning-only sustained hold accumulator.
+    SustainedHoldStart,
+    /// Sample closed-loop hold current, position, and status until the deadline.
+    SustainedHoldSample {
+        /// Sustained-hold metrics accumulator.
+        accumulator: HoldGateAccumulator,
+        /// Hold window start timestamp in microseconds.
+        started_us: u64,
+        /// Next requested sample timestamp in microseconds.
+        next_sample_us: u64,
+        /// Hold window deadline in microseconds.
+        deadline_us: u64,
+        /// Requested sample period in microseconds.
+        requested_sample_period_us: u16,
+        /// True when the cooperative sampler missed the requested cadence.
+        sample_overrun: bool,
     },
 }
 
