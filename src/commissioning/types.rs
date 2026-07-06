@@ -426,6 +426,40 @@ pub struct InnerResult {
     pub retry_budget_exhausted: u8,
     /// `CURRENT_LOOP_FAILURE_*`.
     pub current_loop_failure_reason: u8,
+    /// Sustained-hold gate status (`HOLD_GATE_STATUS_*`).
+    pub current_hold_status: u8,
+    /// Sustained-hold warning bitfield (`HOLD_GATE_WARNING_*`).
+    pub current_hold_warning_flags: u16,
+    /// Sustained-hold elapsed time in microseconds.
+    pub current_hold_elapsed_us: u32,
+    /// Sustained-hold sample period requested by firmware.
+    pub current_hold_requested_sample_period_us: u16,
+    /// Sustained-hold samples collected.
+    pub current_hold_sample_count: u8,
+    /// Sustained-hold position span.
+    pub current_hold_position_span_count: u16,
+    /// Absolute difference between first and last sustained-hold position.
+    pub current_hold_position_drift_count: u16,
+    /// Mean torque current during sustained hold.
+    pub current_hold_torque_mean_count: i16,
+    /// RMS torque current about the mean.
+    pub current_hold_torque_rms_count: u16,
+    /// Peak-to-peak torque current span.
+    pub current_hold_torque_peak_to_peak_count: u16,
+    /// Raw torque-current zero-crossing count.
+    pub current_hold_torque_crossing_count: u8,
+    /// Mean flux current during sustained hold.
+    pub current_hold_flux_mean_count: i16,
+    /// RMS flux current about the mean.
+    pub current_hold_flux_rms_count: u16,
+    /// Peak-to-peak flux current span.
+    pub current_hold_flux_peak_to_peak_count: u16,
+    /// Raw flux-current zero-crossing count.
+    pub current_hold_flux_crossing_count: u8,
+    /// OR of all sampled TMC4671 `STATUS_FLAGS`.
+    pub current_hold_status_flags_or: u32,
+    /// Count of samples with actionable status bits.
+    pub current_hold_actionable_status_count: u8,
     /// Number of populated flux-axis validation evidence items.
     pub current_flux_validation_count: u8,
     /// Flux-axis validation evidence by sample delay.

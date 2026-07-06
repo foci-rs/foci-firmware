@@ -151,6 +151,12 @@ pub const CURRENT_LOOP_FAILURE_STATUS_FLAGS: u8 = 8;
 pub const CURRENT_LOOP_FAILURE_RETRY_EXHAUSTED: u8 = 9;
 /// Current-loop commissioning failed due to SPI communication.
 pub const CURRENT_LOOP_FAILURE_SPI: u8 = 10;
+/// Sustained-hold validation failed due to excessive position span.
+pub const CURRENT_LOOP_FAILURE_HOLD_POSITION_SPAN: u8 = 11;
+/// Sustained-hold validation failed due to actionable status flags.
+pub const CURRENT_LOOP_FAILURE_HOLD_STATUS_FLAGS: u8 = 12;
+/// Sustained-hold validation failed while sampling.
+pub const CURRENT_LOOP_FAILURE_HOLD_SAMPLE: u8 = 13;
 
 /// Firmware-owned evidence for current-loop gain source, split policy,
 /// validation coverage, and failure reason.

@@ -1,4 +1,7 @@
-use super::current::current_loop_actionable_status_mask;
+use super::{
+    CURRENT_LOOP_FAILURE_HOLD_POSITION_SPAN, CURRENT_LOOP_FAILURE_HOLD_SAMPLE,
+    CURRENT_LOOP_FAILURE_HOLD_STATUS_FLAGS, current::current_loop_actionable_status_mask,
+};
 
 /// Default sustained-hold dwell duration.
 pub const HOLD_GATE_DWELL_US: u32 = 250_000;
@@ -40,6 +43,16 @@ pub const HOLD_GATE_WARNING_FLUX_SPAN: u16 = 1 << 5;
 pub const HOLD_GATE_WARNING_TORQUE_CROSSINGS: u16 = 1 << 6;
 /// Flux current had diagnostic crossing activity.
 pub const HOLD_GATE_WARNING_FLUX_CROSSINGS: u16 = 1 << 7;
+
+/// Map a sustained-hold status code to a stable current-loop failure reason.
+pub const fn hold_status_failure_reason(status: u8) -> Option<u8> {
+    match status {
+        HOLD_GATE_STATUS_FAIL_POSITION_SPAN => Some(CURRENT_LOOP_FAILURE_HOLD_POSITION_SPAN),
+        HOLD_GATE_STATUS_FAIL_STATUS_FLAGS => Some(CURRENT_LOOP_FAILURE_HOLD_STATUS_FLAGS),
+        HOLD_GATE_STATUS_FAIL_SAMPLE_ERROR => Some(CURRENT_LOOP_FAILURE_HOLD_SAMPLE),
+        _ => None,
+    }
+}
 
 /// One sustained-hold sample.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
@@ -392,6 +405,23 @@ mod tests {
         assert_eq!(HOLD_GATE_STATUS_FAIL_POSITION_SPAN, 2);
         assert_eq!(HOLD_GATE_STATUS_FAIL_STATUS_FLAGS, 3);
         assert_eq!(HOLD_GATE_STATUS_FAIL_SAMPLE_ERROR, 4);
+    }
+
+    #[test]
+    fn status_failure_maps_to_current_loop_reason() {
+        assert_eq!(
+            hold_status_failure_reason(HOLD_GATE_STATUS_FAIL_POSITION_SPAN),
+            Some(CURRENT_LOOP_FAILURE_HOLD_POSITION_SPAN)
+        );
+        assert_eq!(
+            hold_status_failure_reason(HOLD_GATE_STATUS_FAIL_STATUS_FLAGS),
+            Some(CURRENT_LOOP_FAILURE_HOLD_STATUS_FLAGS)
+        );
+        assert_eq!(
+            hold_status_failure_reason(HOLD_GATE_STATUS_FAIL_SAMPLE_ERROR),
+            Some(CURRENT_LOOP_FAILURE_HOLD_SAMPLE)
+        );
+        assert_eq!(hold_status_failure_reason(HOLD_GATE_STATUS_PASS), None);
     }
 
     #[test]

@@ -185,6 +185,8 @@ pub enum CommissionError {
     InductanceDriftInvalid,
     /// Inductance identification rejected saliency evidence. Code 41.
     InductanceSaliencyInvalid,
+    /// Sustained current-loop hold validation failed. Code 42.
+    CurrentHoldFailed,
 }
 
 impl CommissionError {
@@ -235,6 +237,7 @@ impl CommissionError {
             Self::InductanceReactanceInvalid => 39,
             Self::InductanceDriftInvalid => 40,
             Self::InductanceSaliencyInvalid => 41,
+            Self::CurrentHoldFailed => 42,
         }
     }
 }
@@ -533,6 +536,7 @@ mod tests {
             CommissionError::InductanceReactanceInvalid,
             CommissionError::InductanceDriftInvalid,
             CommissionError::InductanceSaliencyInvalid,
+            CommissionError::CurrentHoldFailed,
         ];
         let mut seen = [false; 256];
         for e in errors {
@@ -541,6 +545,7 @@ mod tests {
             assert!(!seen[code], "duplicate status_code {code} for {e:?}");
             seen[code] = true;
         }
+        assert_eq!(CommissionError::CurrentHoldFailed.status_code(), 42);
     }
 
     #[test]
