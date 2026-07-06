@@ -262,6 +262,14 @@ fn validation_envelope(current_limit: u32, gains: CurrentGains) -> Option<Valida
     })
 }
 
+fn apply_validation_envelope(data: &mut CurrentValidateData, validation: ValidationEnvelope) {
+    data.step_amplitude = validation.step_amplitude;
+    data.pidout_limit = validation.pidout_limit;
+    data.current_limited = validation.current_limited;
+    data.voltage_limited = validation.voltage_limited;
+    data.max_p = validation.max_p;
+}
+
 fn signed_lower_half(value: u32) -> i16 {
     crate::tmc::decode_signed_lower_half(value)
 }
@@ -1338,13 +1346,25 @@ pub(crate) async fn step_current_validate<B: CommissioningBackend>(
                     CurrentAxisRetryDecision::RetryHigherBandwidth
                     | CurrentAxisRetryDecision::RetryLowerBandwidth => {
                         data.gains = retry_current_loop_gains(data.gains, retry_decision, _profile);
-                        let next_attempt = axis_attempt(data, axis).saturating_add(1);
-                        data.candidate_gains = data.gains;
-                        data.candidate_attempt = next_attempt;
-                        data.flux_attempt = data.flux_attempt.max(next_attempt);
-                        data.torque_attempt = data.torque_attempt.max(next_attempt);
-                        *validate_state = CurrentValidateState::WriteGains;
-                        return StepResult::Continue;
+                        let current_limit = backend.current_limit() & 0xFFFF;
+                        if let Some(validation) = validation_envelope(current_limit, data.gains) {
+                            apply_validation_envelope(data, validation);
+                            let next_attempt = axis_attempt(data, axis).saturating_add(1);
+                            data.candidate_gains = data.gains;
+                            data.candidate_attempt = next_attempt;
+                            data.flux_attempt = data.flux_attempt.max(next_attempt);
+                            data.torque_attempt = data.torque_attempt.max(next_attempt);
+                            *validate_state = CurrentValidateState::WriteGains;
+                            return StepResult::Continue;
+                        }
+                        data.final_status =
+                            CommissionStatus::Failed(CommissionError::CurrentValidationFailed);
+                        data.current_loop_evidence = failed_axis_failure_evidence(
+                            data.current_loop_evidence,
+                            failure_reason,
+                            false,
+                        );
+                        data.gains = disabled_state_safe_current_gains();
                     }
                     CurrentAxisRetryDecision::RetryBudgetExhausted
                     | CurrentAxisRetryDecision::Fail => {
@@ -2432,6 +2452,75 @@ mod tests {
                     ..
                 }
             ));
+        });
+    }
+
+    #[test]
+    fn retry_recomputes_validation_envelope_for_new_candidate_gains() {
+        pollster::block_on(async {
+            let mut phase = current_validate_phase();
+            if let InnerPhase::CurrentValidate { state, data } = &mut phase {
+                *state = CurrentValidateState::AxisClassify {
+                    axis: CurrentValidationAxis::Flux,
+                };
+                data.gains = CurrentGains {
+                    flux_p: 3504,
+                    flux_i: 220,
+                    torque_p: 3504,
+                    torque_i: 220,
+                    effective_bandwidth_hz: 1600,
+                    lambda_us: 100,
+                };
+                data.candidate_gains = data.gains;
+                data.step_amplitude = VALIDATION_MIN_STEP_AMPLITUDE;
+                data.pidout_limit = 2190;
+                data.current_limited = 422;
+                data.voltage_limited = u32::from(VALIDATION_MIN_STEP_AMPLITUDE);
+                data.max_p = 3504;
+                data.current_flux_validation_count = 4;
+                data.current_flux_validation = [CurrentValidationAxisEvidence::EMPTY;
+                    crate::autotune::CURRENT_VALIDATION_MAX_SAMPLES_PER_AXIS];
+                data.current_flux_validation[0] =
+                    axis_validation_evidence(crate::autotune::CURRENT_AXIS_VALIDATION_PASS);
+                data.current_flux_validation[0].sample_delay_ms = 1;
+                data.current_flux_validation[1] =
+                    axis_validation_evidence(crate::autotune::CURRENT_AXIS_VALIDATION_PASS);
+                data.current_flux_validation[1].sample_delay_ms = 2;
+                data.current_flux_validation[2] =
+                    axis_validation_evidence(crate::autotune::CURRENT_AXIS_VALIDATION_PASS);
+                data.current_flux_validation[2].sample_delay_ms = 5;
+                data.current_flux_validation[3] = axis_validation_evidence(
+                    crate::autotune::CURRENT_AXIS_VALIDATION_HIGH_RESPONSE,
+                );
+                data.current_flux_validation[3].sample_delay_ms = 100;
+            }
+            let mut buf = TransientBuffer::new();
+            let mut backend = MockBackend::new();
+            backend.current_limit_value = 2816;
+
+            let result = step_current_validate(
+                &mut phase,
+                &mut buf,
+                CommissionProfile::Balanced,
+                InnerSequence::Commission,
+                &None,
+                &mut backend,
+            )
+            .await;
+
+            assert!(matches!(result, StepResult::Continue));
+            match phase {
+                InnerPhase::CurrentValidate { state, data } => {
+                    assert!(matches!(state, CurrentValidateState::WriteGains));
+                    assert_eq!(data.candidate_attempt, 1);
+                    assert_eq!(data.gains.flux_p, 1752);
+                    assert_eq!(data.max_p, 1752);
+                    assert_eq!(data.pidout_limit, CURRENT_VALIDATE_PIDOUT_LIMIT);
+                    assert_eq!(data.voltage_limited, 233);
+                    assert_eq!(data.step_amplitude, 233);
+                }
+                other => panic!("expected CurrentValidate phase, got {other:?}"),
+            }
         });
     }
 
