@@ -11,7 +11,7 @@ pub const HOLD_GATE_FINE_DWELL_US: u32 = 50_000;
 pub const HOLD_GATE_FINE_SAMPLE_PERIOD_US: u32 = 250;
 /// Maximum bounded samples in the sustained-hold accumulator.
 pub const HOLD_GATE_MAX_SAMPLES: u16 = 250;
-/// Hard position-span limit for sustained-hold validation.
+/// Evidence threshold for sustained-hold position span.
 pub const HOLD_GATE_POSITION_SPAN_LIMIT_COUNTS: u32 = 16;
 /// Default sustained-hold sample period.
 pub const HOLD_GATE_SAMPLE_PERIOD_US: u32 = 1_000;
@@ -20,7 +20,7 @@ pub const HOLD_GATE_SAMPLE_PERIOD_US: u32 = 1_000;
 pub const HOLD_GATE_STATUS_NOT_RUN: u8 = 0;
 /// Hold gate passed hard validation.
 pub const HOLD_GATE_STATUS_PASS: u8 = 1;
-/// Hold gate failed because position span exceeded the hard limit.
+/// Reserved legacy code; sustained-hold position span is warning-only.
 pub const HOLD_GATE_STATUS_FAIL_POSITION_SPAN: u8 = 2;
 /// Hold gate failed because actionable status flags were sampled.
 pub const HOLD_GATE_STATUS_FAIL_STATUS_FLAGS: u8 = 3;
@@ -43,6 +43,8 @@ pub const HOLD_GATE_WARNING_FLUX_SPAN: u16 = 1 << 5;
 pub const HOLD_GATE_WARNING_TORQUE_CROSSINGS: u16 = 1 << 6;
 /// Flux current had diagnostic crossing activity.
 pub const HOLD_GATE_WARNING_FLUX_CROSSINGS: u16 = 1 << 7;
+/// Position span exceeded the evidence threshold.
+pub const HOLD_GATE_WARNING_POSITION_SPAN: u16 = 1 << 8;
 
 /// Map a sustained-hold status code to a stable current-loop failure reason.
 pub const fn hold_status_failure_reason(status: u8) -> Option<u8> {
@@ -263,8 +265,6 @@ impl HoldGateAccumulator {
             HOLD_GATE_STATUS_FAIL_SAMPLE_ERROR
         } else if self.sample_count == 0 {
             HOLD_GATE_STATUS_NOT_RUN
-        } else if position_span_count > HOLD_GATE_POSITION_SPAN_LIMIT_COUNTS {
-            HOLD_GATE_STATUS_FAIL_POSITION_SPAN
         } else if self.actionable_status_count > 0 {
             HOLD_GATE_STATUS_FAIL_STATUS_FLAGS
         } else {
@@ -304,6 +304,11 @@ impl HoldGateAccumulator {
         }
         if self.sample_overrun {
             flags |= HOLD_GATE_WARNING_SAMPLE_OVERRUN;
+        }
+        if self.position_max_count.abs_diff(self.position_min_count)
+            > HOLD_GATE_POSITION_SPAN_LIMIT_COUNTS
+        {
+            flags |= HOLD_GATE_WARNING_POSITION_SPAN;
         }
 
         flags
@@ -439,6 +444,7 @@ mod tests {
         assert_eq!(HOLD_GATE_WARNING_FLUX_SPAN, 1 << 5);
         assert_eq!(HOLD_GATE_WARNING_TORQUE_CROSSINGS, 1 << 6);
         assert_eq!(HOLD_GATE_WARNING_FLUX_CROSSINGS, 1 << 7);
+        assert_eq!(HOLD_GATE_WARNING_POSITION_SPAN, 1 << 8);
     }
 
     #[test]
@@ -663,7 +669,7 @@ mod tests {
     }
 
     #[test]
-    fn position_span_above_limit_is_hard_failure() {
+    fn position_span_above_limit_is_evidence_warning() {
         let mut acc = HoldGateAccumulator::new(0, current_loop_actionable_status_mask());
         acc.push(HoldGateSample {
             elapsed_us: 0,
@@ -682,7 +688,8 @@ mod tests {
 
         let metrics = acc.finish(1_000, false);
 
-        assert_eq!(metrics.status, HOLD_GATE_STATUS_FAIL_POSITION_SPAN);
+        assert_eq!(metrics.status, HOLD_GATE_STATUS_PASS);
+        assert_eq!(metrics.warning_flags, HOLD_GATE_WARNING_POSITION_SPAN);
         assert_eq!(metrics.position_span_count, 17);
     }
 

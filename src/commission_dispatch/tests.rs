@@ -114,6 +114,12 @@ impl CommissionReplySink for ReplyRecorder {
         });
     }
 
+    fn foci_current_loop_filters(
+        &mut self,
+        _report: crate::tmc_diagnostics::CurrentLoopFiltersReport,
+    ) {
+    }
+
     fn foci_current_validation_axis(
         &mut self,
         report: crate::tmc_diagnostics::CurrentValidationAxisReport,
@@ -854,6 +860,10 @@ fn sample_commission_result() -> crate::commissioning::types::CommissionResult {
         fallback_position_p: 640,
         fallback_position_i: 0,
         fallback_velocity_limit: 500_000,
+        velocity_filter_hz: 0,
+        torque_filter_hz: 0,
+        position_filter_hz: 0,
+        flux_filter_hz: 0,
     }
 }
 

@@ -19,8 +19,8 @@ pub use current_step::run_current_step_request;
 pub use helpers::{current_step_encoder_delta, pack_voltage_ext};
 pub use replies::{DiagnosticReplySink, emit_diagnostic_report};
 pub use reports::{
-    CURRENT_STEP_STATUS_NOT_READY, CURRENT_STEP_STATUS_SPI, CurrentLoopHoldReport,
-    CurrentLoopRunReport, CurrentStepReport, CurrentTorqueSampleReport,
+    CURRENT_STEP_STATUS_NOT_READY, CURRENT_STEP_STATUS_SPI, CurrentLoopFiltersReport,
+    CurrentLoopHoldReport, CurrentLoopRunReport, CurrentStepReport, CurrentTorqueSampleReport,
     CurrentValidationAxisReport, EncoderAlignmentReport, InductanceEstimateReport,
     InductanceFrameReport, InductanceRunReport, ResistanceAxisReport, ResistanceProfileReport,
     ResistanceRunReport, VoltageStepReport, empty_current_torque_sample_report,

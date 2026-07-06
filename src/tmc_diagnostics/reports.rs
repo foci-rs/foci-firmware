@@ -429,6 +429,21 @@ pub struct CurrentLoopRunReport {
     pub failure_reason: u8,
 }
 
+/// Applied current-loop filter cutoffs emitted before the run report.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CurrentLoopFiltersReport {
+    /// Object id of the FOCI endpoint.
+    pub oid: u8,
+    /// Applied velocity-filter cutoff in Hz (0 = disabled).
+    pub velocity_filter_hz: u16,
+    /// Applied torque-filter cutoff in Hz (0 = disabled).
+    pub torque_filter_hz: u16,
+    /// Applied position-filter cutoff in Hz (0 = disabled).
+    pub position_filter_hz: u16,
+    /// Applied flux-filter cutoff in Hz (0 = disabled).
+    pub flux_filter_hz: u16,
+}
+
 /// Sustained current-loop hold evidence emitted before the current-loop run report.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CurrentLoopHoldReport {

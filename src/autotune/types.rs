@@ -189,6 +189,8 @@ pub enum CommissionError {
     InductanceSaliencyInvalid,
     /// Sustained current-loop hold validation failed. Code 42.
     CurrentHoldFailed,
+    /// Closed-loop entry stability check saw runaway or drift. Code 43.
+    ClosedLoopEntryUnstable,
 }
 
 impl CommissionError {
@@ -240,6 +242,7 @@ impl CommissionError {
             Self::InductanceDriftInvalid => 40,
             Self::InductanceSaliencyInvalid => 41,
             Self::CurrentHoldFailed => 42,
+            Self::ClosedLoopEntryUnstable => 43,
         }
     }
 }
@@ -556,6 +559,7 @@ mod tests {
             CommissionError::InductanceDriftInvalid,
             CommissionError::InductanceSaliencyInvalid,
             CommissionError::CurrentHoldFailed,
+            CommissionError::ClosedLoopEntryUnstable,
         ];
         let mut seen = [false; 256];
         for e in errors {
@@ -565,6 +569,7 @@ mod tests {
             seen[code] = true;
         }
         assert_eq!(CommissionError::CurrentHoldFailed.status_code(), 42);
+        assert_eq!(CommissionError::ClosedLoopEntryUnstable.status_code(), 43);
     }
 
     #[test]

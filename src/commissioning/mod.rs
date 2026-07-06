@@ -939,6 +939,10 @@ mod tests {
             fallback_position_p: 640,
             fallback_position_i: 0,
             fallback_velocity_limit: 500_000,
+            velocity_filter_hz: 0,
+            torque_filter_hz: 0,
+            position_filter_hz: 0,
+            flux_filter_hz: 0,
         }
     }
 

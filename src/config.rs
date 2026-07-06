@@ -78,8 +78,14 @@ impl TmcConfig {
     /// the 25 kHz PWM Nyquist region and follows lower PWM frequencies by
     /// capping at one quarter of the PWM frequency.
     pub fn default_current_filter_hz(&self) -> u16 {
-        let derived = if self.bandwidth_hz.is_finite() && self.bandwidth_hz > 0.0 {
-            (self.bandwidth_hz * CURRENT_FILTER_RATIO_TO_BANDWIDTH + 0.5) as u32
+        self.default_current_filter_hz_for_bandwidth(self.bandwidth_hz)
+    }
+
+    /// Default torque/flux current-measurement filter cutoff for an accepted
+    /// current-loop bandwidth in Hz.
+    pub fn default_current_filter_hz_for_bandwidth(&self, bandwidth_hz: f32) -> u16 {
+        let derived = if bandwidth_hz.is_finite() && bandwidth_hz > 0.0 {
+            (bandwidth_hz * CURRENT_FILTER_RATIO_TO_BANDWIDTH + 0.5) as u32
         } else {
             0
         };

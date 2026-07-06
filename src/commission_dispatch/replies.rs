@@ -13,9 +13,9 @@ use crate::commissioning::types::{
 };
 use crate::selftest::{CommissionDiagnostic, CommissionDiagnostics, SelftestStageValue};
 use crate::tmc_diagnostics::{
-    CurrentLoopHoldReport, CurrentLoopRunReport, CurrentValidationAxisReport,
-    EncoderAlignmentReport, InductanceEstimateReport, InductanceFrameReport, InductanceRunReport,
-    ResistanceAxisReport, ResistanceRunReport,
+    CurrentLoopFiltersReport, CurrentLoopHoldReport, CurrentLoopRunReport,
+    CurrentValidationAxisReport, EncoderAlignmentReport, InductanceEstimateReport,
+    InductanceFrameReport, InductanceRunReport, ResistanceAxisReport, ResistanceRunReport,
 };
 
 /// TMC4671 external electrical angle for electrical axis 0 (PHASE0).
@@ -70,6 +70,9 @@ pub trait CommissionReplySink {
     /// Emit sustained-hold current-loop evidence captured during Stage 1
     /// commissioning before the run-level current-loop summary.
     fn foci_current_loop_hold(&mut self, report: CurrentLoopHoldReport);
+
+    /// Emit applied filter cutoffs for the commissioned closed-loop frame.
+    fn foci_current_loop_filters(&mut self, report: CurrentLoopFiltersReport);
 
     /// Emit run-level current-loop commissioning evidence captured during
     /// Stage 1 commissioning. `FociCommissionResult` is size-capped, so this
@@ -140,7 +143,7 @@ pub fn emit_terminal_reply<S: CommissionReplySink>(sink: &mut S, payload: ReplyP
             sink.foci_resistance_run(commission_resistance_run_report(oid, inner));
             sink.foci_encoder_alignment(commission_encoder_alignment_report(oid, inner));
             emit_inductance_evidence(sink, oid, inner);
-            emit_current_loop_evidence(sink, oid, status, inner);
+            emit_current_loop_evidence(sink, oid, status, &result);
             sink.foci_commission_result(oid, status, &result);
         }
         ReplyPayload::TuneResult {
@@ -320,8 +323,9 @@ fn emit_current_loop_evidence<S: CommissionReplySink>(
     sink: &mut S,
     oid: u8,
     status: u8,
-    inner: &InnerResult,
+    result: &CommissionResult,
 ) {
+    let inner = &result.inner;
     for (sample_index, evidence) in inner
         .current_flux_validation
         .iter()
@@ -349,6 +353,7 @@ fn emit_current_loop_evidence<S: CommissionReplySink>(
         ));
     }
     sink.foci_current_loop_hold(commission_current_loop_hold_report(oid, inner));
+    sink.foci_current_loop_filters(commission_current_loop_filters_report(oid, result));
     sink.foci_current_loop_run(commission_current_loop_run_report(oid, status, inner));
 }
 
@@ -408,6 +413,19 @@ fn commission_current_loop_run_report(
         torque_validation_sample_count: inner.current_torque_validation_count,
         retry_budget_exhausted: inner.retry_budget_exhausted,
         failure_reason: inner.current_loop_failure_reason,
+    }
+}
+
+fn commission_current_loop_filters_report(
+    oid: u8,
+    result: &CommissionResult,
+) -> CurrentLoopFiltersReport {
+    CurrentLoopFiltersReport {
+        oid,
+        velocity_filter_hz: result.velocity_filter_hz,
+        torque_filter_hz: result.torque_filter_hz,
+        position_filter_hz: result.position_filter_hz,
+        flux_filter_hz: result.flux_filter_hz,
     }
 }
 
@@ -573,6 +591,13 @@ mod tests {
             sample_count: u8,
             torque_rms_count: u16,
             flux_rms_count: u16,
+        },
+        CurrentLoopFilters {
+            oid: u8,
+            velocity_filter_hz: u16,
+            torque_filter_hz: u16,
+            position_filter_hz: u16,
+            flux_filter_hz: u16,
         },
         CurrentLoopRun {
             oid: u8,
@@ -748,6 +773,19 @@ mod tests {
                 sample_count: report.sample_count,
                 torque_rms_count: report.torque_rms_count,
                 flux_rms_count: report.flux_rms_count,
+            });
+        }
+
+        fn foci_current_loop_filters(
+            &mut self,
+            report: crate::tmc_diagnostics::CurrentLoopFiltersReport,
+        ) {
+            self.events.push(Event::CurrentLoopFilters {
+                oid: report.oid,
+                velocity_filter_hz: report.velocity_filter_hz,
+                torque_filter_hz: report.torque_filter_hz,
+                position_filter_hz: report.position_filter_hz,
+                flux_filter_hz: report.flux_filter_hz,
             });
         }
 
@@ -985,6 +1023,10 @@ mod tests {
             fallback_position_p: 33,
             fallback_position_i: 34,
             fallback_velocity_limit: 35,
+            velocity_filter_hz: 0,
+            torque_filter_hz: 3000,
+            position_filter_hz: 0,
+            flux_filter_hz: 3000,
         }
     }
 
@@ -1091,6 +1133,13 @@ mod tests {
             sample_count: 0,
             torque_rms_count: 0,
             flux_rms_count: 0,
+        });
+        events.push(Event::CurrentLoopFilters {
+            oid,
+            velocity_filter_hz: 0,
+            torque_filter_hz: 3000,
+            position_filter_hz: 0,
+            flux_filter_hz: 3000,
         });
         events.push(Event::CurrentLoopRun {
             oid,
@@ -1258,6 +1307,48 @@ mod tests {
             .position(|e| matches!(e, Event::CurrentLoopRun { .. }))
             .expect("current loop run event");
         assert!(hold_index < run_index);
+    }
+
+    #[test]
+    fn current_loop_filters_emit_before_current_loop_run() {
+        let mut sink = RecordingSink::default();
+        let mut result = commission_result();
+        result.velocity_filter_hz = 0;
+        result.torque_filter_hz = 3000;
+        result.position_filter_hz = 0;
+        result.flux_filter_hz = 3000;
+
+        emit_terminal_reply(
+            &mut sink,
+            ReplyPayload::CommissionResult {
+                oid: 6,
+                status: 0,
+                result,
+            },
+        );
+
+        let filters_index = sink
+            .events
+            .iter()
+            .position(|e| {
+                matches!(
+                    e,
+                    Event::CurrentLoopFilters {
+                        oid: 6,
+                        velocity_filter_hz: 0,
+                        torque_filter_hz: 3000,
+                        position_filter_hz: 0,
+                        flux_filter_hz: 3000,
+                    }
+                )
+            })
+            .expect("current loop filters event");
+        let run_index = sink
+            .events
+            .iter()
+            .position(|e| matches!(e, Event::CurrentLoopRun { .. }))
+            .expect("current loop run event");
+        assert!(filters_index < run_index);
     }
 
     #[test]

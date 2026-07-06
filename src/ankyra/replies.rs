@@ -338,6 +338,24 @@ pub struct FociCurrentLoopRun {
     pub failure_reason: u8,
 }
 
+/// `foci_current_loop_filters` reply - applied filter cutoffs for the
+/// commissioned closed-loop current frame.
+///
+/// Wire name: `foci_current_loop_filters`.
+#[klipper_reply]
+pub struct FociCurrentLoopFilters {
+    /// Object id of the FOCI endpoint.
+    pub oid: u8,
+    /// Applied velocity-filter cutoff in Hz (0 = disabled).
+    pub velocity_filter_hz: u16,
+    /// Applied torque-filter cutoff in Hz (0 = disabled).
+    pub torque_filter_hz: u16,
+    /// Applied position-filter cutoff in Hz (0 = disabled).
+    pub position_filter_hz: u16,
+    /// Applied flux-filter cutoff in Hz (0 = disabled).
+    pub flux_filter_hz: u16,
+}
+
 /// `foci_current_loop_hold` reply - sustained current-loop hold evidence.
 ///
 /// Wire name: `foci_current_loop_hold`.
@@ -989,7 +1007,8 @@ mod tests {
 #[cfg(test)]
 mod resistance_reply_size_tests {
     use super::{
-        FociCurrentLoopHold, FociResistanceAxis, FociResistanceProfile, FociResistanceRun,
+        FociCurrentLoopFilters, FociCurrentLoopHold, FociResistanceAxis, FociResistanceProfile,
+        FociResistanceRun,
     };
     use ankyra::ScratchOutput;
     use ankyra::encoding::Writable;
@@ -1131,6 +1150,18 @@ mod resistance_reply_size_tests {
             failure_reason: u8::MAX,
         };
         assert_fits_with_id(&reply, "foci_current_loop_run");
+    }
+
+    #[test]
+    fn current_loop_filters_reply_fits_klipper_message_limit() {
+        let reply = FociCurrentLoopFilters {
+            oid: u8::MAX,
+            velocity_filter_hz: u16::MAX,
+            torque_filter_hz: u16::MAX,
+            position_filter_hz: u16::MAX,
+            flux_filter_hz: u16::MAX,
+        };
+        assert_fits_with_id(&reply, "foci_current_loop_filters");
     }
 
     #[test]

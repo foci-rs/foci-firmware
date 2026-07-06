@@ -173,6 +173,9 @@ const SETTLED_FLUX_AVERAGE_INTERVAL_US: u32 = 250;
 /// reaching the current target. 2000 matches the bounded encoder-alignment
 /// limit and remains well below the operational closed-loop limit.
 const CURRENT_VALIDATE_PIDOUT_LIMIT: u32 = 2000;
+/// Highest validation PIDOUT limit the tune phase may request to keep the
+/// minimum current signal above the quantization floor at high physical P.
+const CURRENT_VALIDATE_PIDOUT_MAX_LIMIT: u32 = 2400;
 const CURRENT_SAFE_PIDOUT_LIMIT: u32 = 1024;
 
 /// `MODE_RAMP_MODE_MOTION` value for advanced PI torque mode.
@@ -190,24 +193,61 @@ fn validation_target_register(axis: CurrentValidationAxis, target: i16) -> u32 {
     }
 }
 
-fn validation_step_amplitude(current_limit: u32, gains: CurrentGains) -> Option<u16> {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ValidationEnvelope {
+    step_amplitude: u16,
+    pidout_limit: u32,
+}
+
+fn voltage_limited_validation_target(pidout_limit: u32, max_p: u32) -> u32 {
+    pidout_limit
+        .saturating_mul(256)
+        .saturating_mul(VALIDATION_PIDOUT_HEADROOM_PERMILLE)
+        / 1000
+        / max_p
+}
+
+fn required_pidout_limit_for_validation_target(target: u32, max_p: u32) -> Option<u32> {
+    let numerator = u64::from(target)
+        .checked_mul(u64::from(max_p))?
+        .checked_mul(1000)?;
+    let denominator = 256_u64.checked_mul(u64::from(VALIDATION_PIDOUT_HEADROOM_PERMILLE))?;
+    let required = numerator.div_ceil(denominator);
+    u32::try_from(required).ok()
+}
+
+fn validation_envelope(current_limit: u32, gains: CurrentGains) -> Option<ValidationEnvelope> {
     let current_limited = (current_limit * VALIDATION_STEP_PERCENT / 100).max(1);
     let max_p = u32::from(gains.flux_p.max(gains.torque_p));
     if current_limit == 0 || max_p == 0 {
         return None;
     }
+    if current_limited < u32::from(VALIDATION_MIN_STEP_AMPLITUDE) {
+        return None;
+    }
 
-    let voltage_limited = CURRENT_VALIDATE_PIDOUT_LIMIT
-        .saturating_mul(256)
-        .saturating_mul(VALIDATION_PIDOUT_HEADROOM_PERMILLE)
-        / 1000
-        / max_p;
+    let mut pidout_limit = CURRENT_VALIDATE_PIDOUT_LIMIT;
+    let mut voltage_limited = voltage_limited_validation_target(pidout_limit, max_p);
+    if voltage_limited < u32::from(VALIDATION_MIN_STEP_AMPLITUDE) {
+        pidout_limit = required_pidout_limit_for_validation_target(
+            u32::from(VALIDATION_MIN_STEP_AMPLITUDE),
+            max_p,
+        )?
+        .max(CURRENT_VALIDATE_PIDOUT_LIMIT);
+        if pidout_limit > CURRENT_VALIDATE_PIDOUT_MAX_LIMIT {
+            return None;
+        }
+        voltage_limited = voltage_limited_validation_target(pidout_limit, max_p);
+    }
     let amplitude = current_limited.min(voltage_limited);
     if amplitude < u32::from(VALIDATION_MIN_STEP_AMPLITUDE) {
         return None;
     }
 
-    Some(amplitude.min(u16::MAX as u32) as u16)
+    Some(ValidationEnvelope {
+        step_amplitude: amplitude.min(u16::MAX as u32) as u16,
+        pidout_limit,
+    })
 }
 
 fn signed_lower_half(value: u32) -> i16 {
@@ -904,8 +944,8 @@ pub(crate) async fn step_current_tune<B: CommissioningBackend>(
     // Compute step amplitude: 15% of run_current, capped so validation does
     // not saturate PIDOUT before the current-loop response can be measured.
     let current_limit = backend.current_limit() & 0xFFFF;
-    let step_amplitude = match validation_step_amplitude(current_limit, gains) {
-        Some(step_amplitude) => step_amplitude,
+    let validation = match validation_envelope(current_limit, gains) {
+        Some(validation) => validation,
         None => return super::fail_inner(phase, CommissionError::CurrentValidationFailed),
     };
 
@@ -918,16 +958,9 @@ pub(crate) async fn step_current_tune<B: CommissioningBackend>(
             candidate_attempt: 0,
             flux_attempt: 0,
             torque_attempt: 0,
-            step_amplitude,
+            step_amplitude: validation.step_amplitude,
             final_status: CommissionStatus::Accepted,
-            pidout_limit: {
-                // Read PIDOUT_UQ_UD_LIMITS for saturation detection.
-                backend
-                    .read_register(foci_tmc4671::registers::PIDOUT_UQ_UD_LIMITS)
-                    .await
-                    .unwrap_or(0)
-                    & 0xFFFF
-            },
+            pidout_limit: validation.pidout_limit,
             encoder_counts_per_rev: 1,
             sample_encoder_start: 0,
             pending_positive_sample: None,
@@ -987,7 +1020,7 @@ pub(crate) async fn step_current_validate<B: CommissioningBackend>(
                     .await
                     .is_err()
                 || backend
-                    .write_register(PIDOUT_UQ_UD_LIMITS, CURRENT_VALIDATE_PIDOUT_LIMIT)
+                    .write_register(PIDOUT_UQ_UD_LIMITS, data.pidout_limit)
                     .await
                     .is_err()
                 || backend
@@ -1004,7 +1037,6 @@ pub(crate) async fn step_current_validate<B: CommissioningBackend>(
             {
                 return super::fail_inner(phase, CommissionError::Spi);
             }
-            data.pidout_limit = CURRENT_VALIDATE_PIDOUT_LIMIT;
             data.encoder_counts_per_rev = match backend.read_register(ABN_DECODER_PPR).await {
                 Ok(counts) => counts.max(1),
                 Err(_) => return super::fail_inner(phase, CommissionError::Spi),
@@ -1464,14 +1496,25 @@ pub(crate) async fn step_current_validate<B: CommissioningBackend>(
                             fallback_position_p: 0,
                             fallback_position_i: 0,
                             fallback_velocity_limit: 0,
+                            velocity_filter_hz: 0,
+                            torque_filter_hz: 0,
+                            position_filter_hz: 0,
+                            flux_filter_hz: 0,
                         });
                     }
 
                     // Transition to ClosedLoopEntry with computed
                     // current-loop gains and fallback outer gains.
                     let vel_limit = backend.operational_velocity_limit();
-                    let default_current_filter_hz =
-                        backend.tmc_config().default_current_filter_hz();
+                    let default_current_filter_hz = if data.gains.effective_bandwidth_hz > 0 {
+                        backend
+                            .tmc_config()
+                            .default_current_filter_hz_for_bandwidth(
+                                data.gains.effective_bandwidth_hz as f32,
+                            )
+                    } else {
+                        backend.tmc_config().default_current_filter_hz()
+                    };
                     let torque_filter_hz = backend
                         .configured_torque_filter_hz()
                         .unwrap_or(default_current_filter_hz);
@@ -1636,6 +1679,50 @@ mod tests {
                     assert!(
                         data.gains.flux_p as u32 * data.step_amplitude as u32
                             <= CURRENT_VALIDATE_PIDOUT_LIMIT * 256 * 8 / 10
+                    );
+                }
+                other => panic!("expected CurrentValidate phase, got {other:?}"),
+            }
+        });
+    }
+
+    #[test]
+    fn current_tune_accepts_openffboard_1600hz_validation_envelope() {
+        pollster::block_on(async {
+            let mut phase = InnerPhase::CurrentTune {
+                model: ElectricalModel {
+                    r_int: 1163,
+                    l_int: 1350,
+                    tau_e_us: 1705,
+                    theta_e_us: 160,
+                    r_mohm: 1163,
+                    l_uh: 1350,
+                },
+                inner_warning_flags: 0,
+                resistance_result: resistance_result(),
+                inductance: InductanceEvidence::test_fixture(),
+            };
+            let mut backend = MockBackend::new();
+            backend.current_limit_value = 2816;
+            backend.tmc_config.bandwidth_hz = 1600.0;
+
+            let result =
+                step_current_tune(&mut phase, CommissionProfile::Balanced, &mut backend).await;
+
+            assert!(matches!(
+                result,
+                StepResult::PhaseChanged(PhaseId::CurrentValidate)
+            ));
+            match phase {
+                InnerPhase::CurrentValidate { data, .. } => {
+                    assert_eq!(data.gains.flux_p, 3474);
+                    assert!(
+                        data.step_amplitude >= VALIDATION_MIN_STEP_AMPLITUDE,
+                        "1600 Hz validation target must stay above the signal floor"
+                    );
+                    assert!(
+                        data.gains.flux_p as u32 * data.step_amplitude as u32
+                            <= data.pidout_limit * 256 * VALIDATION_PIDOUT_HEADROOM_PERMILLE / 1000
                     );
                 }
                 other => panic!("expected CurrentValidate phase, got {other:?}"),
@@ -2018,8 +2105,9 @@ mod tests {
     fn accepted_current_validation_hands_off_bandwidth_default_current_filters() {
         pollster::block_on(async {
             let mut phase = current_validate_phase();
-            if let InnerPhase::CurrentValidate { state, .. } = &mut phase {
+            if let InnerPhase::CurrentValidate { state, data } = &mut phase {
                 *state = CurrentValidateState::Finalize;
+                data.gains.effective_bandwidth_hz = 800;
             }
             let mut buf = TransientBuffer::new();
             let mut backend = MockBackend::new();
@@ -2048,9 +2136,9 @@ mod tests {
                     ..
                 } => {
                     assert_eq!(velocity_filter_hz, 0);
-                    assert_eq!(torque_filter_hz, 6000);
+                    assert_eq!(torque_filter_hz, 3200);
                     assert_eq!(position_filter_hz, 0);
-                    assert_eq!(flux_filter_hz, 6000);
+                    assert_eq!(flux_filter_hz, 3200);
                 }
                 other => panic!("expected ClosedLoopEntry phase, got {other:?}"),
             }
@@ -2213,6 +2301,7 @@ mod tests {
                     effective_bandwidth_hz: 0,
                     lambda_us: 0,
                 };
+                data.pidout_limit = 2172;
             }
             let mut buf = TransientBuffer::new();
             let mut backend = MockBackend::new();
@@ -2233,6 +2322,9 @@ mod tests {
             }));
             assert!(backend.spi_log.iter().any(|op| {
                 matches!(op, SpiOp::Write(addr, value) if *addr == PHI_E_SELECTION.addr() && *value == 3)
+            }));
+            assert!(backend.spi_log.iter().any(|op| {
+                matches!(op, SpiOp::Write(addr, value) if *addr == PIDOUT_UQ_UD_LIMITS.addr() && *value == 2172)
             }));
             assert!(matches!(
                 phase,

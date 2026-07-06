@@ -106,6 +106,10 @@ fn finish_commission(
     position_p: u16,
     position_i: u16,
     velocity_limit: u32,
+    velocity_filter_hz: u16,
+    torque_filter_hz: u16,
+    position_filter_hz: u16,
+    flux_filter_hz: u16,
 ) -> StepResult {
     StepResult::CommissionDone(CommissionResult {
         inner,
@@ -114,6 +118,10 @@ fn finish_commission(
         fallback_position_p: position_p,
         fallback_position_i: position_i,
         fallback_velocity_limit: velocity_limit,
+        velocity_filter_hz,
+        torque_filter_hz,
+        position_filter_hz,
+        flux_filter_hz,
     })
 }
 
@@ -126,6 +134,10 @@ async fn fail_sustained_hold<B: CommissioningBackend>(
     position_p: u16,
     position_i: u16,
     velocity_limit: u32,
+    velocity_filter_hz: u16,
+    torque_filter_hz: u16,
+    position_filter_hz: u16,
+    flux_filter_hz: u16,
 ) -> StepResult {
     crate::tmc_safe_state::restore_safe_state_via_backend(backend).await;
     inner.status = CommissionStatus::Failed(CommissionError::CurrentHoldFailed);
@@ -137,6 +149,10 @@ async fn fail_sustained_hold<B: CommissioningBackend>(
         position_p,
         position_i,
         velocity_limit,
+        velocity_filter_hz,
+        torque_filter_hz,
+        position_filter_hz,
+        flux_filter_hz,
     )
 }
 
@@ -481,6 +497,12 @@ pub(crate) async fn step_closed_loop_entry<B: CommissioningBackend>(
             if verify_closed_loop_armed_state(backend).await.is_err() {
                 return super::fail_inner(phase, CommissionError::Spi);
             }
+            if crate::tmc_control::lifecycle::settle_closed_loop_hold_before_enable(backend)
+                .await
+                .is_err()
+            {
+                return super::fail_inner(phase, CommissionError::Spi);
+            }
             backend.set_enable_pin(true);
 
             // Schedule stability check after 10ms.
@@ -545,7 +567,7 @@ pub(crate) async fn step_closed_loop_entry<B: CommissioningBackend>(
                     pos2
                 );
                 let _ = backend.write_register(MODE_RAMP_MODE_MOTION, 0).await;
-                return super::fail_inner(phase, CommissionError::Spi);
+                return super::fail_inner(phase, CommissionError::ClosedLoopEntryUnstable);
             }
 
             // Stability check: position must not be drifting.
@@ -561,7 +583,7 @@ pub(crate) async fn step_closed_loop_entry<B: CommissioningBackend>(
                     drift
                 );
                 let _ = backend.write_register(MODE_RAMP_MODE_MOTION, 0).await;
-                return super::fail_inner(phase, CommissionError::Spi);
+                return super::fail_inner(phase, CommissionError::ClosedLoopEntryUnstable);
             }
 
             defmt::info!("closed-loop position mode active (engine)");
@@ -657,7 +679,7 @@ pub(crate) async fn step_closed_loop_entry<B: CommissioningBackend>(
             }
 
             let elapsed_us = now.saturating_sub(*started_us).min(u64::from(u32::MAX)) as u32;
-            let metrics = accumulator.finish(elapsed_us, *sample_overrun);
+            let metrics = accumulator.finish(elapsed_us, false);
             let Some(mut inner) = inner_result.take() else {
                 let _ = backend.write_register(MODE_RAMP_MODE_MOTION, 0).await;
                 return super::fail_inner(phase, CommissionError::Spi);
@@ -676,6 +698,10 @@ pub(crate) async fn step_closed_loop_entry<B: CommissioningBackend>(
                     position_p,
                     position_i,
                     velocity_limit,
+                    velocity_filter_hz,
+                    torque_filter_hz,
+                    position_filter_hz,
+                    flux_filter_hz,
                 )
                 .await;
             }
@@ -687,6 +713,10 @@ pub(crate) async fn step_closed_loop_entry<B: CommissioningBackend>(
                 position_p,
                 position_i,
                 velocity_limit,
+                velocity_filter_hz,
+                torque_filter_hz,
+                position_filter_hz,
+                flux_filter_hz,
             )
         }
     }
@@ -696,10 +726,9 @@ pub(crate) async fn step_closed_loop_entry<B: CommissioningBackend>(
 mod tests {
     use super::*;
     use crate::autotune::{
-        CURRENT_LOOP_FAILURE_HOLD_POSITION_SPAN, CURRENT_LOOP_FAILURE_HOLD_SAMPLE,
-        CURRENT_VALIDATION_AXIS_TORQUE, HOLD_GATE_SAMPLE_PERIOD_US,
-        HOLD_GATE_STATUS_FAIL_SAMPLE_ERROR, HOLD_GATE_STATUS_PASS, HoldGateAccumulator,
-        HoldGateSample, current_loop_actionable_status_mask,
+        CURRENT_VALIDATION_AXIS_TORQUE, HOLD_GATE_SAMPLE_PERIOD_US, HOLD_GATE_STATUS_PASS,
+        HOLD_GATE_WARNING_SAMPLE_OVERRUN, HoldGateAccumulator, HoldGateSample,
+        current_loop_actionable_status_mask,
     };
     use crate::commission_dispatch::test_support::{MockBackend, SpiOp};
     use crate::commissioning::types::{CurrentValidationAxisEvidence, InductanceEvidence};
@@ -994,6 +1023,61 @@ mod tests {
     }
 
     #[test]
+    fn enter_position_mode_sets_hold_target_before_enable() {
+        pollster::block_on(async {
+            let mut phase = closed_loop_phase_at(ClosedLoopEntryState::EnterPositionMode);
+            let mut adc_cal = None;
+            let mut backend = MockBackend::new();
+            seed_armed_state_registers(&mut backend);
+            backend
+                .registers
+                .insert(PID_POSITION_ACTUAL.addr(), 11)
+                .ok();
+            backend
+                .registers
+                .insert(STATUS_FLAGS.addr(), 0xffff_ffff)
+                .ok();
+
+            let result = step_closed_loop_entry(
+                &mut phase,
+                InnerSequence::Calibrate,
+                &mut adc_cal,
+                &mut backend,
+            )
+            .await;
+
+            assert!(matches!(result, StepResult::Continue));
+            let enable_index = backend
+                .spi_log
+                .iter()
+                .position(|op| matches!(op, SpiOp::EnablePin(true)))
+                .expect("closed-loop entry should assert enable");
+            let target_rewrite_index = backend
+                .spi_log
+                .iter()
+                .position(|op| {
+                    matches!(
+                        op,
+                        SpiOp::Write(addr, 11) if *addr == PID_POSITION_ACTUAL.addr()
+                    )
+                })
+                .expect("closed-loop entry should rewrite PID_POSITION_ACTUAL to observed actual");
+            let status_clear_index = backend
+                .spi_log
+                .iter()
+                .position(|op| {
+                    matches!(
+                        op,
+                        SpiOp::Write(addr, 0) if *addr == STATUS_FLAGS.addr()
+                    )
+                })
+                .expect("closed-loop entry should clear STATUS_FLAGS before enable");
+            assert!(target_rewrite_index < enable_index);
+            assert!(status_clear_index < enable_index);
+        });
+    }
+
+    #[test]
     fn enter_position_mode_rejects_stale_armed_state_readbacks() {
         pollster::block_on(async {
             let stale_registers = [
@@ -1085,7 +1169,36 @@ mod tests {
     }
 
     #[test]
-    fn sustained_hold_position_span_fails_with_specific_reason() {
+    fn stability_drift_reports_closed_loop_unstable_not_spi() {
+        pollster::block_on(async {
+            let mut phase = closed_loop_phase_at(ClosedLoopEntryState::StabilityCheck2 {
+                position_1: 0,
+                deadline_us: 0,
+            });
+            let mut adc_cal = None;
+            let mut backend = MockBackend::new();
+            backend
+                .registers
+                .insert(PID_POSITION_ACTUAL.addr(), 10)
+                .ok();
+
+            let result = step_closed_loop_entry(
+                &mut phase,
+                InnerSequence::Commission,
+                &mut adc_cal,
+                &mut backend,
+            )
+            .await;
+
+            assert!(matches!(
+                result,
+                StepResult::InnerFailed(CommissionError::ClosedLoopEntryUnstable)
+            ));
+        });
+    }
+
+    #[test]
+    fn sustained_hold_position_span_accepts_with_warning_evidence() {
         pollster::block_on(async {
             let mut accumulator =
                 HoldGateAccumulator::new(0, current_loop_actionable_status_mask());
@@ -1127,26 +1240,19 @@ mod tests {
             .await;
 
             let StepResult::CommissionDone(result) = result else {
-                panic!("expected failed CommissionDone with hold evidence");
+                panic!("expected accepted CommissionDone with hold evidence");
             };
-            assert_eq!(
-                result.inner.status,
-                CommissionStatus::Failed(CommissionError::CurrentHoldFailed)
-            );
+            assert_eq!(result.inner.status, CommissionStatus::Accepted);
             assert_eq!(
                 result.inner.current_loop_failure_reason,
-                CURRENT_LOOP_FAILURE_HOLD_POSITION_SPAN
+                crate::autotune::CURRENT_LOOP_FAILURE_NONE
             );
-            assert!(
-                !backend.enable_pin,
-                "hold failure must leave the enable pin lowered"
+            assert_eq!(result.inner.current_hold_status, HOLD_GATE_STATUS_PASS);
+            assert_eq!(
+                result.inner.current_hold_warning_flags,
+                crate::autotune::HOLD_GATE_WARNING_POSITION_SPAN
             );
-            assert!(
-                write_log(&backend)
-                    .as_slice()
-                    .contains(&(MODE_RAMP_MODE_MOTION.addr(), 0)),
-                "hold failure must stop position mode before returning the error"
-            );
+            assert!(backend.enable_pin);
         });
     }
 
@@ -1214,7 +1320,7 @@ mod tests {
     }
 
     #[test]
-    fn sustained_hold_position_span_returns_failed_commission_result_with_evidence() {
+    fn sustained_hold_position_span_returns_accepted_result_with_evidence() {
         pollster::block_on(async {
             let mut accumulator =
                 HoldGateAccumulator::new(0, current_loop_actionable_status_mask());
@@ -1235,6 +1341,7 @@ mod tests {
             });
             let mut adc_cal = None;
             let mut backend = MockBackend::new();
+            backend.enable_pin = true;
             backend.elapsed_us_value = HOLD_GATE_SAMPLE_PERIOD_US as u64;
             backend
                 .registers
@@ -1255,28 +1362,21 @@ mod tests {
             .await;
 
             let StepResult::CommissionDone(result) = result else {
-                panic!("expected failed CommissionDone with hold evidence");
+                panic!("expected accepted CommissionDone with hold evidence");
             };
-            assert_eq!(
-                result.inner.status,
-                CommissionStatus::Failed(CommissionError::CurrentHoldFailed)
-            );
+            assert_eq!(result.inner.status, CommissionStatus::Accepted);
             assert_eq!(
                 result.inner.current_loop_failure_reason,
-                CURRENT_LOOP_FAILURE_HOLD_POSITION_SPAN
+                crate::autotune::CURRENT_LOOP_FAILURE_NONE
+            );
+            assert_eq!(result.inner.current_hold_status, HOLD_GATE_STATUS_PASS);
+            assert_eq!(
+                result.inner.current_hold_warning_flags,
+                crate::autotune::HOLD_GATE_WARNING_POSITION_SPAN
             );
             assert_eq!(result.inner.current_hold_sample_count, 2);
             assert_eq!(result.inner.current_hold_position_span_count, 17);
-            assert!(
-                !backend.enable_pin,
-                "hold failure must leave the enable pin lowered"
-            );
-            assert!(
-                write_log(&backend)
-                    .as_slice()
-                    .contains(&(MODE_RAMP_MODE_MOTION.addr(), 0)),
-                "hold failure must stop position mode before returning the result"
-            );
+            assert!(backend.enable_pin);
         });
     }
 
@@ -1424,7 +1524,7 @@ mod tests {
     }
 
     #[test]
-    fn sustained_hold_overrun_finishes_as_sample_error_failure() {
+    fn sustained_hold_overrun_finishes_with_warning_not_failure() {
         pollster::block_on(async {
             let mut accumulator = HoldGateAccumulator::new(
                 HOLD_GATE_SAMPLE_PERIOD_US as u16,
@@ -1465,23 +1565,17 @@ mod tests {
             .await;
 
             let StepResult::CommissionDone(result) = result else {
-                panic!("expected failed CommissionDone with hold evidence");
+                panic!("expected accepted CommissionDone with hold evidence");
             };
+            assert_eq!(result.inner.status, CommissionStatus::Accepted);
+            assert_eq!(result.inner.current_hold_status, HOLD_GATE_STATUS_PASS);
             assert_eq!(
-                result.inner.status,
-                CommissionStatus::Failed(CommissionError::CurrentHoldFailed)
-            );
-            assert_eq!(
-                result.inner.current_hold_status,
-                HOLD_GATE_STATUS_FAIL_SAMPLE_ERROR
-            );
-            assert_eq!(
-                result.inner.current_loop_failure_reason,
-                CURRENT_LOOP_FAILURE_HOLD_SAMPLE
+                result.inner.current_hold_warning_flags,
+                HOLD_GATE_WARNING_SAMPLE_OVERRUN
             );
             assert!(
-                !backend.enable_pin,
-                "sample-error failure must restore canonical safe state"
+                backend.enable_pin,
+                "warning-only overrun must leave the accepted hold enabled"
             );
         });
     }

@@ -549,8 +549,9 @@ pub struct AdcCalResult {
 /// Result of Stage 1 commissioning.
 ///
 /// Combines the inner result (current-loop gains, electrical model) with
-/// the fallback outer gains applied during closed-loop entry. Matches the
-/// wire result `foci_commission_result`.
+/// the fallback outer gains applied during closed-loop entry. The terminal
+/// `foci_commission_result` wire reply carries the gains; supplemental
+/// replies carry evidence fields such as the applied filters.
 #[derive(Debug, Clone, defmt::Format)]
 pub struct CommissionResult {
     /// Inner commissioning result (current-loop gains, electrical model).
@@ -565,4 +566,12 @@ pub struct CommissionResult {
     pub fallback_position_i: u16,
     /// Fallback PID velocity limit register value.
     pub fallback_velocity_limit: u32,
+    /// Applied velocity-filter cutoff in Hz (0 = disabled).
+    pub velocity_filter_hz: u16,
+    /// Applied torque-filter cutoff in Hz (0 = disabled).
+    pub torque_filter_hz: u16,
+    /// Applied position-filter cutoff in Hz (0 = disabled).
+    pub position_filter_hz: u16,
+    /// Applied flux-filter cutoff in Hz (0 = disabled).
+    pub flux_filter_hz: u16,
 }

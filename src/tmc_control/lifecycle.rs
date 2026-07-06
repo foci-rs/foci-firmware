@@ -5,7 +5,7 @@ use crate::commissioning::types::CommissioningBackend;
 
 const CLOSED_LOOP_POSITION_MODE: u32 = 0x8000_0003;
 
-async fn settle_closed_loop_hold_before_enable<B: CommissioningBackend>(
+pub(crate) async fn settle_closed_loop_hold_before_enable<B: CommissioningBackend>(
     backend: &mut B,
 ) -> Result<(), crate::autotune::CommissionError> {
     use foci_tmc4671::registers::{
