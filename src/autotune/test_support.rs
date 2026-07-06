@@ -10,7 +10,6 @@ pub(super) fn autotune_test_config() -> crate::config::TmcConfig {
         dsadc_mdec_b: 331,
         adc_i_select: 0x1800_0100,
         excitation_voltage: 512,
-        didt_cycles: 5000,
         bandwidth_hz: 150.0,
         electrical_model_theta_e_us: 160,
         current_validation_flux_max_encoder_delta_counts: 4,

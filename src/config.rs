@@ -44,11 +44,6 @@ pub struct TmcConfig {
     pub adc_i_select: u32,
     /// Excitation voltage for R/L measurement (PIDOUT units).
     pub excitation_voltage: u16,
-    /// Number of di/dt toggle cycles per coil for L measurement.
-    ///
-    /// Keep this large enough that the initial zero-to-+V step and early L/R
-    /// transient are diluted by steady +V/-V square-wave samples.
-    pub didt_cycles: u32,
     /// Current loop bandwidth in Hz (empirically validated per PWM frequency).
     pub bandwidth_hz: f32,
     /// Board-derived effective electrical delay for current-loop synthesis.
@@ -137,7 +132,6 @@ impl TmcConfig {
             dsadc_mdec_b: 331,
             adc_i_select: 0x1800_0100,
             excitation_voltage: 512,
-            didt_cycles: 5000,
             bandwidth_hz: 50.0,
             electrical_model_theta_e_us: 160,
             current_validation_flux_max_encoder_delta_counts: 4,
@@ -162,7 +156,6 @@ mod tests {
             dsadc_mdec_b: 331,
             adc_i_select: 0x1800_0100,
             excitation_voltage: 512,
-            didt_cycles: 5000,
             bandwidth_hz: 50.0,
             electrical_model_theta_e_us: 160,
             current_validation_flux_max_encoder_delta_counts: 4,
@@ -236,7 +229,6 @@ mod tests {
             dsadc_mdec_b: 331,
             adc_i_select: 0x1800_0100,
             excitation_voltage: 512,
-            didt_cycles: 5000,
             bandwidth_hz: 150.0,
             electrical_model_theta_e_us: 160,
             current_validation_flux_max_encoder_delta_counts: 4,
@@ -258,7 +250,6 @@ mod tests {
             dsadc_mdec_b: 331,
             adc_i_select: 0x1800_0100,
             excitation_voltage: 512,
-            didt_cycles: 5000,
             bandwidth_hz: 50.0,
             electrical_model_theta_e_us: 160,
             current_validation_flux_max_encoder_delta_counts: 4,
@@ -280,7 +271,6 @@ mod tests {
             dsadc_mdec_b: 331,
             adc_i_select: 0x1800_0100,
             excitation_voltage: 512,
-            didt_cycles: 5000,
             bandwidth_hz: 50.0,
             electrical_model_theta_e_us: 160,
             current_validation_flux_max_encoder_delta_counts: 4,
