@@ -157,6 +157,12 @@ pub const CURRENT_LOOP_FAILURE_HOLD_POSITION_SPAN: u8 = 11;
 pub const CURRENT_LOOP_FAILURE_HOLD_STATUS_FLAGS: u8 = 12;
 /// Sustained-hold validation failed while sampling.
 pub const CURRENT_LOOP_FAILURE_HOLD_SAMPLE: u8 = 13;
+/// Current-loop validation response magnitude was outside the accepted envelope.
+pub const CURRENT_LOOP_FAILURE_RESPONSE_MAGNITUDE: u8 = 14;
+/// Current-loop validation detected cross-axis coupling.
+pub const CURRENT_LOOP_FAILURE_CROSS_AXIS_COUPLING: u8 = 15;
+/// Current-loop validation detected a wrong-sign current response.
+pub const CURRENT_LOOP_FAILURE_WRONG_SIGN: u8 = 16;
 
 /// Firmware-owned evidence for current-loop gain source, split policy,
 /// validation coverage, and failure reason.

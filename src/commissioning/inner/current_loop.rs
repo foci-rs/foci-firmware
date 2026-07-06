@@ -733,6 +733,7 @@ fn is_zero_delay_torque_telemetry_status(status: u8) -> bool {
     is_response_magnitude_status(status)
         || status == crate::autotune::CURRENT_AXIS_VALIDATION_WRONG_SIGN
         || status == crate::autotune::CURRENT_AXIS_VALIDATION_CROSS_AXIS
+        || status == crate::autotune::CURRENT_AXIS_VALIDATION_SATURATION
 }
 
 fn axis_failure_reason(axis: CurrentValidationAxis) -> u8 {
@@ -761,6 +762,16 @@ fn axis_failure_reason_for_samples(
         }
         crate::autotune::CURRENT_AXIS_VALIDATION_STATUS_FLAGS => {
             crate::autotune::CURRENT_LOOP_FAILURE_STATUS_FLAGS
+        }
+        crate::autotune::CURRENT_AXIS_VALIDATION_CROSS_AXIS => {
+            crate::autotune::CURRENT_LOOP_FAILURE_CROSS_AXIS_COUPLING
+        }
+        crate::autotune::CURRENT_AXIS_VALIDATION_WRONG_SIGN => {
+            crate::autotune::CURRENT_LOOP_FAILURE_WRONG_SIGN
+        }
+        crate::autotune::CURRENT_AXIS_VALIDATION_LOW_RESPONSE
+        | crate::autotune::CURRENT_AXIS_VALIDATION_HIGH_RESPONSE => {
+            crate::autotune::CURRENT_LOOP_FAILURE_RESPONSE_MAGNITUDE
         }
         crate::autotune::CURRENT_AXIS_VALIDATION_PASS => axis_failure_reason(axis),
         _ => axis_failure_reason(axis),
@@ -1842,6 +1853,49 @@ mod tests {
         let reason = axis_failure_reason_for_samples(CurrentValidationAxis::Torque, &samples, 2);
 
         assert_eq!(reason, CURRENT_LOOP_FAILURE_STATUS_FLAGS);
+    }
+
+    #[test]
+    fn axis_failure_reason_reports_response_magnitude_fault() {
+        let mut samples = [CurrentValidationAxisEvidence::EMPTY;
+            crate::autotune::CURRENT_VALIDATION_MAX_SAMPLES_PER_AXIS];
+        samples[0] =
+            axis_validation_evidence(crate::autotune::CURRENT_AXIS_VALIDATION_HIGH_RESPONSE);
+        samples[0].sample_delay_ms = 100;
+
+        let reason = axis_failure_reason_for_samples(CurrentValidationAxis::Flux, &samples, 1);
+
+        assert_eq!(
+            reason,
+            crate::autotune::CURRENT_LOOP_FAILURE_RESPONSE_MAGNITUDE
+        );
+    }
+
+    #[test]
+    fn axis_failure_reason_reports_cross_axis_fault() {
+        let mut samples = [CurrentValidationAxisEvidence::EMPTY;
+            crate::autotune::CURRENT_VALIDATION_MAX_SAMPLES_PER_AXIS];
+        samples[0] = axis_validation_evidence(crate::autotune::CURRENT_AXIS_VALIDATION_CROSS_AXIS);
+        samples[0].sample_delay_ms = 100;
+
+        let reason = axis_failure_reason_for_samples(CurrentValidationAxis::Flux, &samples, 1);
+
+        assert_eq!(
+            reason,
+            crate::autotune::CURRENT_LOOP_FAILURE_CROSS_AXIS_COUPLING
+        );
+    }
+
+    #[test]
+    fn axis_failure_reason_reports_wrong_sign_fault() {
+        let mut samples = [CurrentValidationAxisEvidence::EMPTY;
+            crate::autotune::CURRENT_VALIDATION_MAX_SAMPLES_PER_AXIS];
+        samples[0] = axis_validation_evidence(crate::autotune::CURRENT_AXIS_VALIDATION_WRONG_SIGN);
+        samples[0].sample_delay_ms = 100;
+
+        let reason = axis_failure_reason_for_samples(CurrentValidationAxis::Flux, &samples, 1);
+
+        assert_eq!(reason, crate::autotune::CURRENT_LOOP_FAILURE_WRONG_SIGN);
     }
 
     #[test]
@@ -2930,7 +2984,7 @@ mod tests {
     }
 
     #[test]
-    fn torque_zero_delay_response_magnitude_is_geometry_telemetry() {
+    fn torque_zero_delay_transient_shape_is_geometry_telemetry() {
         let mut sample = CurrentValidationAxisEvidence {
             status: crate::autotune::CURRENT_AXIS_VALIDATION_WRONG_SIGN,
             sample_delay_ms: 0,
@@ -2955,6 +3009,12 @@ mod tests {
         );
 
         sample.status = crate::autotune::CURRENT_AXIS_VALIDATION_SATURATION;
+        assert_eq!(
+            axis_pass_status(CurrentValidationAxis::Torque, &sample),
+            crate::autotune::CURRENT_AXIS_VALIDATION_PASS
+        );
+
+        sample.sample_delay_ms = 1;
         assert_eq!(
             axis_pass_status(CurrentValidationAxis::Torque, &sample),
             crate::autotune::CURRENT_AXIS_VALIDATION_SATURATION

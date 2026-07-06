@@ -163,8 +163,14 @@ pub struct CurrentAxisGate {
     pub min_response_permille: u16,
     /// Maximum allowed same-axis response, in permille of target.
     pub max_response_permille: u16,
+    /// Minimum absolute same-axis current error before the relative response
+    /// gate can become a hard fault.
+    pub min_response_fault_delta_count: u16,
     /// Maximum allowed opposite-axis response, in permille of target.
     pub max_cross_axis_permille: u16,
+    /// Minimum absolute opposite-axis current count before the relative
+    /// cross-axis gate can become a hard fault.
+    pub min_cross_axis_fault_count: u16,
     /// Maximum allowed voltage output, in permille of output limit.
     pub max_voltage_output_permille: u16,
     /// Maximum allowed encoder movement during the sample.
@@ -183,7 +189,9 @@ impl CurrentAxisGate {
         Self {
             min_response_permille,
             max_response_permille,
+            min_response_fault_delta_count: 32,
             max_cross_axis_permille: 150,
+            min_cross_axis_fault_count: 32,
             max_voltage_output_permille: 900,
             max_encoder_delta_counts,
             actionable_status_mask: current_loop_actionable_status_mask(),
@@ -225,8 +233,11 @@ pub fn classify_current_axis_sample(
     }
 
     let target_abs = sample.target.unsigned_abs().max(1) as u32;
-    let response_permille = ((sample.same_axis_actual.unsigned_abs() as u32 * 1000) / target_abs)
-        .min(u16::MAX as u32) as u16;
+    let same_axis_count = sample.same_axis_actual.unsigned_abs();
+    let response_permille =
+        ((same_axis_count as u32 * 1000) / target_abs).min(u16::MAX as u32) as u16;
+    let response_error_count = same_axis_count.abs_diff(sample.target.unsigned_abs());
+    let cross_axis_count = sample.cross_axis_actual.unsigned_abs();
     let cross_axis_permille = ((sample.cross_axis_actual.unsigned_abs() as u32 * 1000) / target_abs)
         .min(u16::MAX as u32) as u16;
     let output_limit = sample.output_limit.max(1) as u32;
@@ -248,11 +259,17 @@ pub fn classify_current_axis_sample(
         CURRENT_AXIS_VALIDATION_SATURATION
     } else if encoder_delta_counts > gate.max_encoder_delta_counts {
         CURRENT_AXIS_VALIDATION_MOTION
-    } else if cross_axis_permille > gate.max_cross_axis_permille {
+    } else if cross_axis_count > gate.min_cross_axis_fault_count
+        && cross_axis_permille > gate.max_cross_axis_permille
+    {
         CURRENT_AXIS_VALIDATION_CROSS_AXIS
-    } else if response_permille < gate.min_response_permille {
+    } else if response_error_count > gate.min_response_fault_delta_count
+        && response_permille < gate.min_response_permille
+    {
         CURRENT_AXIS_VALIDATION_LOW_RESPONSE
-    } else if response_permille > gate.max_response_permille {
+    } else if response_error_count > gate.min_response_fault_delta_count
+        && response_permille > gate.max_response_permille
+    {
         CURRENT_AXIS_VALIDATION_HIGH_RESPONSE
     } else {
         CURRENT_AXIS_VALIDATION_PASS
@@ -1090,6 +1107,12 @@ mod tests {
         assert_eq!(CURRENT_LOOP_FAILURE_HOLD_POSITION_SPAN, 11);
         assert_eq!(CURRENT_LOOP_FAILURE_HOLD_STATUS_FLAGS, 12);
         assert_eq!(CURRENT_LOOP_FAILURE_HOLD_SAMPLE, 13);
+        assert_eq!(crate::autotune::CURRENT_LOOP_FAILURE_RESPONSE_MAGNITUDE, 14);
+        assert_eq!(
+            crate::autotune::CURRENT_LOOP_FAILURE_CROSS_AXIS_COUPLING,
+            15
+        );
+        assert_eq!(crate::autotune::CURRENT_LOOP_FAILURE_WRONG_SIGN, 16);
     }
 
     #[test]
@@ -2017,6 +2040,106 @@ mod tests {
         assert_eq!(gate.cross_axis_permille, u16::MAX);
         assert_eq!(gate.voltage_output_permille, u16::MAX);
         assert_eq!(gate.status, CURRENT_AXIS_VALIDATION_SATURATION);
+    }
+
+    #[test]
+    fn current_sample_gate_accepts_low_target_cross_axis_noise_floor() {
+        let sample = CurrentAxisSample {
+            target: 128,
+            same_axis_actual: 128,
+            cross_axis_actual: 20,
+            output_limited: 500,
+            output_limit: 2000,
+            encoder_delta_counts: 0,
+            status_flags: 0,
+        };
+        let gate = classify_current_axis_sample(
+            &sample,
+            &CurrentAxisGate::commissioning_short_sample(850, 1150, 4),
+        );
+
+        assert_eq!(gate.cross_axis_permille, 156);
+        assert_eq!(gate.status, CURRENT_AXIS_VALIDATION_PASS);
+    }
+
+    #[test]
+    fn current_sample_gate_rejects_low_target_cross_axis_above_noise_floor() {
+        let sample = CurrentAxisSample {
+            target: 128,
+            same_axis_actual: 128,
+            cross_axis_actual: 33,
+            output_limited: 500,
+            output_limit: 2000,
+            encoder_delta_counts: 0,
+            status_flags: 0,
+        };
+        let gate = classify_current_axis_sample(
+            &sample,
+            &CurrentAxisGate::commissioning_short_sample(850, 1150, 4),
+        );
+
+        assert_eq!(gate.cross_axis_permille, 257);
+        assert_eq!(gate.status, CURRENT_AXIS_VALIDATION_CROSS_AXIS);
+    }
+
+    #[test]
+    fn current_sample_gate_accepts_low_target_response_noise_floor() {
+        let sample = CurrentAxisSample {
+            target: 128,
+            same_axis_actual: 151,
+            cross_axis_actual: 0,
+            output_limited: 500,
+            output_limit: 2000,
+            encoder_delta_counts: 0,
+            status_flags: 0,
+        };
+        let gate = classify_current_axis_sample(
+            &sample,
+            &CurrentAxisGate::commissioning_short_sample(850, 1150, 4),
+        );
+
+        assert_eq!(gate.response_permille, 1179);
+        assert_eq!(gate.status, CURRENT_AXIS_VALIDATION_PASS);
+    }
+
+    #[test]
+    fn current_sample_gate_rejects_low_target_response_above_noise_floor() {
+        let sample = CurrentAxisSample {
+            target: 128,
+            same_axis_actual: 161,
+            cross_axis_actual: 0,
+            output_limited: 500,
+            output_limit: 2000,
+            encoder_delta_counts: 0,
+            status_flags: 0,
+        };
+        let gate = classify_current_axis_sample(
+            &sample,
+            &CurrentAxisGate::commissioning_short_sample(850, 1150, 4),
+        );
+
+        assert_eq!(gate.response_permille, 1257);
+        assert_eq!(gate.status, CURRENT_AXIS_VALIDATION_HIGH_RESPONSE);
+    }
+
+    #[test]
+    fn current_sample_gate_rejects_low_target_response_below_noise_floor() {
+        let sample = CurrentAxisSample {
+            target: 128,
+            same_axis_actual: 95,
+            cross_axis_actual: 0,
+            output_limited: 500,
+            output_limit: 2000,
+            encoder_delta_counts: 0,
+            status_flags: 0,
+        };
+        let gate = classify_current_axis_sample(
+            &sample,
+            &CurrentAxisGate::commissioning_short_sample(850, 1150, 4),
+        );
+
+        assert_eq!(gate.response_permille, 742);
+        assert_eq!(gate.status, CURRENT_AXIS_VALIDATION_LOW_RESPONSE);
     }
 
     #[test]

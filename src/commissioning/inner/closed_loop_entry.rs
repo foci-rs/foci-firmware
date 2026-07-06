@@ -99,6 +99,10 @@ fn copy_hold_metrics(inner: &mut InnerResult, metrics: HoldGateMetrics) {
     inner.current_hold_actionable_status_count = saturating_u8(metrics.actionable_status_count);
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "closed-loop terminal result mirrors the carried state fields"
+)]
 fn finish_commission(
     inner: InnerResult,
     velocity_p: u16,
@@ -125,6 +129,10 @@ fn finish_commission(
     })
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "failure helper preserves the same terminal state as success"
+)]
 async fn fail_sustained_hold<B: CommissioningBackend>(
     mut inner: InnerResult,
     backend: &mut B,
