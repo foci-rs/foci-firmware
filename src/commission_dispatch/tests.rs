@@ -52,6 +52,10 @@ enum ReplyEvent {
         applied_axis_split_permille: u16,
         axis_split_clamped: u8,
     },
+    CurrentLoopHold {
+        hold_status: u8,
+        sample_count: u8,
+    },
 }
 
 #[derive(Default)]
@@ -100,6 +104,13 @@ impl CommissionReplySink for ReplyRecorder {
             measured_axis_split_permille: report.measured_axis_split_permille,
             applied_axis_split_permille: report.applied_axis_split_permille,
             axis_split_clamped: report.axis_split_clamped,
+        });
+    }
+
+    fn foci_current_loop_hold(&mut self, report: crate::tmc_diagnostics::CurrentLoopHoldReport) {
+        self.events.push(ReplyEvent::CurrentLoopHold {
+            hold_status: report.hold_status,
+            sample_count: report.sample_count,
         });
     }
 
@@ -1024,6 +1035,10 @@ fn commission_result_maps_current_loop_evidence() {
                 positive_response_permille: 780,
                 positive_encoder_delta_counts: 4,
                 negative_encoder_delta_counts: -2,
+            },
+            ReplyEvent::CurrentLoopHold {
+                hold_status: crate::autotune::HOLD_GATE_STATUS_NOT_RUN,
+                sample_count: 0,
             },
             ReplyEvent::CurrentLoopRun {
                 measured_axis_split_permille: 1840,

@@ -429,6 +429,47 @@ pub struct CurrentLoopRunReport {
     pub failure_reason: u8,
 }
 
+/// Sustained current-loop hold evidence emitted before the current-loop run report.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CurrentLoopHoldReport {
+    /// Object id of the FOCI endpoint.
+    pub oid: u8,
+    /// Sustained-hold gate status (`HOLD_GATE_STATUS_*`).
+    pub hold_status: u8,
+    /// Sustained-hold warning bitfield (`HOLD_GATE_WARNING_*`).
+    pub warning_flags: u16,
+    /// Sustained-hold elapsed time in microseconds.
+    pub elapsed_us: u32,
+    /// Sustained-hold sample period requested by firmware.
+    pub requested_sample_period_us: u16,
+    /// Sustained-hold samples collected.
+    pub sample_count: u8,
+    /// Sustained-hold position span.
+    pub position_span_count: u16,
+    /// Absolute difference between first and last sustained-hold position.
+    pub position_drift_count: u16,
+    /// Mean torque current during sustained hold.
+    pub torque_mean_count: i16,
+    /// RMS torque current about the mean.
+    pub torque_rms_count: u16,
+    /// Peak-to-peak torque current span.
+    pub torque_peak_to_peak_count: u16,
+    /// Raw torque-current zero-crossing count.
+    pub torque_crossing_count: u8,
+    /// Mean flux current during sustained hold.
+    pub flux_mean_count: i16,
+    /// RMS flux current about the mean.
+    pub flux_rms_count: u16,
+    /// Peak-to-peak flux current span.
+    pub flux_peak_to_peak_count: u16,
+    /// Raw flux-current zero-crossing count.
+    pub flux_crossing_count: u8,
+    /// OR of all sampled TMC4671 `STATUS_FLAGS`.
+    pub status_flags_or: u32,
+    /// Count of samples with actionable status bits.
+    pub actionable_status_count: u8,
+}
+
 /// Run-level production inductance evidence emitted before the terminal
 /// `foci_commission_result` reply.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

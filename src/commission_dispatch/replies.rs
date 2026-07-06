@@ -13,9 +13,9 @@ use crate::commissioning::types::{
 };
 use crate::selftest::{CommissionDiagnostic, CommissionDiagnostics, SelftestStageValue};
 use crate::tmc_diagnostics::{
-    CurrentLoopRunReport, CurrentValidationAxisReport, EncoderAlignmentReport,
-    InductanceEstimateReport, InductanceFrameReport, InductanceRunReport, ResistanceAxisReport,
-    ResistanceRunReport,
+    CurrentLoopHoldReport, CurrentLoopRunReport, CurrentValidationAxisReport,
+    EncoderAlignmentReport, InductanceEstimateReport, InductanceFrameReport, InductanceRunReport,
+    ResistanceAxisReport, ResistanceRunReport,
 };
 
 /// TMC4671 external electrical angle for electrical axis 0 (PHASE0).
@@ -66,6 +66,10 @@ pub trait CommissionReplySink {
     /// Emit accepted production inductance estimate evidence captured during
     /// Stage 1 commissioning.
     fn foci_inductance_estimate(&mut self, report: InductanceEstimateReport);
+
+    /// Emit sustained-hold current-loop evidence captured during Stage 1
+    /// commissioning before the run-level current-loop summary.
+    fn foci_current_loop_hold(&mut self, report: CurrentLoopHoldReport);
 
     /// Emit run-level current-loop commissioning evidence captured during
     /// Stage 1 commissioning. `FociCommissionResult` is size-capped, so this
@@ -344,6 +348,7 @@ fn emit_current_loop_evidence<S: CommissionReplySink>(
             evidence,
         ));
     }
+    sink.foci_current_loop_hold(commission_current_loop_hold_report(oid, inner));
     sink.foci_current_loop_run(commission_current_loop_run_report(oid, status, inner));
 }
 
@@ -403,6 +408,29 @@ fn commission_current_loop_run_report(
         torque_validation_sample_count: inner.current_torque_validation_count,
         retry_budget_exhausted: inner.retry_budget_exhausted,
         failure_reason: inner.current_loop_failure_reason,
+    }
+}
+
+fn commission_current_loop_hold_report(oid: u8, inner: &InnerResult) -> CurrentLoopHoldReport {
+    CurrentLoopHoldReport {
+        oid,
+        hold_status: inner.current_hold_status,
+        warning_flags: inner.current_hold_warning_flags,
+        elapsed_us: inner.current_hold_elapsed_us,
+        requested_sample_period_us: inner.current_hold_requested_sample_period_us,
+        sample_count: inner.current_hold_sample_count,
+        position_span_count: inner.current_hold_position_span_count,
+        position_drift_count: inner.current_hold_position_drift_count,
+        torque_mean_count: inner.current_hold_torque_mean_count,
+        torque_rms_count: inner.current_hold_torque_rms_count,
+        torque_peak_to_peak_count: inner.current_hold_torque_peak_to_peak_count,
+        torque_crossing_count: inner.current_hold_torque_crossing_count,
+        flux_mean_count: inner.current_hold_flux_mean_count,
+        flux_rms_count: inner.current_hold_flux_rms_count,
+        flux_peak_to_peak_count: inner.current_hold_flux_peak_to_peak_count,
+        flux_crossing_count: inner.current_hold_flux_crossing_count,
+        status_flags_or: inner.current_hold_status_flags_or,
+        actionable_status_count: inner.current_hold_actionable_status_count,
     }
 }
 
@@ -538,6 +566,13 @@ mod tests {
             positive_encoder_delta_counts: i32,
             negative_encoder_delta_counts: i32,
             status_flags_or: u32,
+        },
+        CurrentLoopHold {
+            oid: u8,
+            hold_status: u8,
+            sample_count: u8,
+            torque_rms_count: u16,
+            flux_rms_count: u16,
         },
         CurrentLoopRun {
             oid: u8,
@@ -700,6 +735,19 @@ mod tests {
                 x_mag_shift_minus_permille: report.x_mag_shift_minus_permille,
                 x_mag_shift_plus_permille: report.x_mag_shift_plus_permille,
                 x_mag_vs_quad_permille: report.x_mag_vs_quad_permille,
+            });
+        }
+
+        fn foci_current_loop_hold(
+            &mut self,
+            report: crate::tmc_diagnostics::CurrentLoopHoldReport,
+        ) {
+            self.events.push(Event::CurrentLoopHold {
+                oid: report.oid,
+                hold_status: report.hold_status,
+                sample_count: report.sample_count,
+                torque_rms_count: report.torque_rms_count,
+                flux_rms_count: report.flux_rms_count,
             });
         }
 
@@ -1037,6 +1085,13 @@ mod tests {
                 status_flags_or: 4,
             },
         ));
+        events.push(Event::CurrentLoopHold {
+            oid,
+            hold_status: crate::autotune::HOLD_GATE_STATUS_NOT_RUN,
+            sample_count: 0,
+            torque_rms_count: 0,
+            flux_rms_count: 0,
+        });
         events.push(Event::CurrentLoopRun {
             oid,
             status,
@@ -1172,6 +1227,37 @@ mod tests {
         });
 
         assert_eq!(sink.events, expected);
+    }
+
+    #[test]
+    fn current_loop_hold_emits_before_current_loop_run() {
+        let mut sink = RecordingSink::default();
+        let mut result = commission_result();
+        result.inner.current_hold_status = crate::autotune::HOLD_GATE_STATUS_PASS;
+        result.inner.current_hold_sample_count = 250;
+        result.inner.current_hold_torque_rms_count = 12;
+        result.inner.current_hold_flux_rms_count = 9;
+
+        emit_terminal_reply(
+            &mut sink,
+            ReplyPayload::CommissionResult {
+                oid: 6,
+                status: 0,
+                result,
+            },
+        );
+
+        let hold_index = sink
+            .events
+            .iter()
+            .position(|e| matches!(e, Event::CurrentLoopHold { .. }))
+            .expect("current loop hold event");
+        let run_index = sink
+            .events
+            .iter()
+            .position(|e| matches!(e, Event::CurrentLoopRun { .. }))
+            .expect("current loop run event");
+        assert!(hold_index < run_index);
     }
 
     #[test]

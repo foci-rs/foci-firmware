@@ -338,6 +338,49 @@ pub struct FociCurrentLoopRun {
     pub failure_reason: u8,
 }
 
+/// `foci_current_loop_hold` reply - sustained current-loop hold evidence.
+///
+/// Wire name: `foci_current_loop_hold`.
+#[klipper_reply]
+pub struct FociCurrentLoopHold {
+    /// Object id of the FOCI endpoint.
+    pub oid: u8,
+    /// Sustained-hold gate status (`HOLD_GATE_STATUS_*`).
+    pub hold_status: u8,
+    /// Sustained-hold warning bitfield (`HOLD_GATE_WARNING_*`).
+    pub warning_flags: u16,
+    /// Sustained-hold elapsed time in microseconds.
+    pub elapsed_us: u32,
+    /// Sustained-hold sample period requested by firmware.
+    pub requested_sample_period_us: u16,
+    /// Sustained-hold samples collected.
+    pub sample_count: u8,
+    /// Sustained-hold position span.
+    pub position_span_count: u16,
+    /// Absolute difference between first and last sustained-hold position.
+    pub position_drift_count: u16,
+    /// Mean torque current during sustained hold.
+    pub torque_mean_count: i16,
+    /// RMS torque current about the mean.
+    pub torque_rms_count: u16,
+    /// Peak-to-peak torque current span.
+    pub torque_peak_to_peak_count: u16,
+    /// Raw torque-current zero-crossing count.
+    pub torque_crossing_count: u8,
+    /// Mean flux current during sustained hold.
+    pub flux_mean_count: i16,
+    /// RMS flux current about the mean.
+    pub flux_rms_count: u16,
+    /// Peak-to-peak flux current span.
+    pub flux_peak_to_peak_count: u16,
+    /// Raw flux-current zero-crossing count.
+    pub flux_crossing_count: u8,
+    /// OR of all sampled TMC4671 `STATUS_FLAGS`.
+    pub status_flags_or: u32,
+    /// Count of samples with actionable status bits.
+    pub actionable_status_count: u8,
+}
+
 /// `foci_current_validation_axis` reply - per-axis, per-delay current validation evidence.
 ///
 /// Wire name: `foci_current_validation_axis`.
@@ -945,7 +988,9 @@ mod tests {
 
 #[cfg(test)]
 mod resistance_reply_size_tests {
-    use super::{FociResistanceAxis, FociResistanceProfile, FociResistanceRun};
+    use super::{
+        FociCurrentLoopHold, FociResistanceAxis, FociResistanceProfile, FociResistanceRun,
+    };
     use ankyra::ScratchOutput;
     use ankyra::encoding::Writable;
 
@@ -1086,6 +1131,31 @@ mod resistance_reply_size_tests {
             failure_reason: u8::MAX,
         };
         assert_fits_with_id(&reply, "foci_current_loop_run");
+    }
+
+    #[test]
+    fn current_loop_hold_reply_fits_klipper_message_limit() {
+        let reply = FociCurrentLoopHold {
+            oid: u8::MAX,
+            hold_status: u8::MAX,
+            warning_flags: u16::MAX,
+            elapsed_us: 0x7FFF_FFFF,
+            requested_sample_period_us: u16::MAX,
+            sample_count: u8::MAX,
+            position_span_count: u16::MAX,
+            position_drift_count: u16::MAX,
+            torque_mean_count: i16::MIN,
+            torque_rms_count: u16::MAX,
+            torque_peak_to_peak_count: u16::MAX,
+            torque_crossing_count: u8::MAX,
+            flux_mean_count: i16::MIN,
+            flux_rms_count: u16::MAX,
+            flux_peak_to_peak_count: u16::MAX,
+            flux_crossing_count: u8::MAX,
+            status_flags_or: 0x7FFF_FFFF,
+            actionable_status_count: u8::MAX,
+        };
+        assert_fits_with_id(&reply, "foci_current_loop_hold");
     }
 
     #[test]
