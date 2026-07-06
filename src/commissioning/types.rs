@@ -472,6 +472,16 @@ pub struct InnerResult {
     pub current_hold_status_flags_or: u32,
     /// Count of samples with actionable status bits.
     pub current_hold_actionable_status_count: u8,
+    /// Final current-validation target after all safety caps.
+    pub current_validation_step_amplitude: u16,
+    /// PIDOUT limit used while collecting current-validation samples.
+    pub current_validation_pidout_limit: u16,
+    /// Target cap derived from the configured current limit.
+    pub current_validation_current_limited: u16,
+    /// Target cap derived from PIDOUT headroom and the candidate P gain.
+    pub current_validation_voltage_limited: u16,
+    /// Maximum candidate P gain used for voltage-limited target sizing.
+    pub current_validation_max_p: u16,
     /// Number of populated flux-axis validation evidence items.
     pub current_flux_validation_count: u8,
     /// Flux-axis validation evidence by sample delay.

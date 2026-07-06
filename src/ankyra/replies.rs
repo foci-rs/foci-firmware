@@ -459,6 +459,25 @@ pub struct FociCurrentValidationAxis {
     pub status_flags_or: u32,
 }
 
+/// `foci_current_validation_envelope` reply - current-validation target limits.
+///
+/// Wire name: `foci_current_validation_envelope`.
+#[klipper_reply]
+pub struct FociCurrentValidationEnvelope {
+    /// Object id of the FOCI endpoint.
+    pub oid: u8,
+    /// Final validation target after all safety caps.
+    pub step_amplitude: u16,
+    /// PIDOUT limit active while collecting validation samples.
+    pub pidout_limit: u16,
+    /// Target cap derived from the configured current limit.
+    pub current_limited: u16,
+    /// Target cap derived from PIDOUT headroom and candidate P gain.
+    pub voltage_limited: u16,
+    /// Maximum candidate P gain used for voltage-limited target sizing.
+    pub max_p: u16,
+}
+
 /// `foci_dump_done` reply — emitted at the end of a register dump.
 ///
 /// Wire name: `foci_dump_done`.
@@ -1309,6 +1328,19 @@ mod resistance_reply_size_tests {
             status_flags_or: 0x7FFF_FFFF,
         };
         assert_fits_with_id(&reply, "foci_current_validation_axis");
+    }
+
+    #[test]
+    fn current_validation_envelope_reply_fits_klipper_message_limit() {
+        let reply = super::FociCurrentValidationEnvelope {
+            oid: u8::MAX,
+            step_amplitude: u16::MAX,
+            pidout_limit: u16::MAX,
+            current_limited: u16::MAX,
+            voltage_limited: u16::MAX,
+            max_p: u16::MAX,
+        };
+        assert_fits_with_id(&reply, "foci_current_validation_envelope");
     }
 }
 

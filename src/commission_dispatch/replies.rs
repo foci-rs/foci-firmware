@@ -14,8 +14,9 @@ use crate::commissioning::types::{
 use crate::selftest::{CommissionDiagnostic, CommissionDiagnostics, SelftestStageValue};
 use crate::tmc_diagnostics::{
     ClosedLoopEntryReport, CurrentLoopFiltersReport, CurrentLoopHoldReport, CurrentLoopRunReport,
-    CurrentValidationAxisReport, EncoderAlignmentReport, InductanceEstimateReport,
-    InductanceFrameReport, InductanceRunReport, ResistanceAxisReport, ResistanceRunReport,
+    CurrentValidationAxisReport, CurrentValidationEnvelopeReport, EncoderAlignmentReport,
+    InductanceEstimateReport, InductanceFrameReport, InductanceRunReport, ResistanceAxisReport,
+    ResistanceRunReport,
 };
 
 /// TMC4671 external electrical angle for electrical axis 0 (PHASE0).
@@ -87,6 +88,10 @@ pub trait CommissionReplySink {
     /// Emit one per-axis, per-delay current validation evidence sample
     /// captured during Stage 1 commissioning.
     fn foci_current_validation_axis(&mut self, report: CurrentValidationAxisReport);
+
+    /// Emit the current-validation target envelope captured during Stage 1
+    /// commissioning.
+    fn foci_current_validation_envelope(&mut self, report: CurrentValidationEnvelopeReport);
 
     /// Emit the Stage 2 tune result.
     fn foci_tune_result(&mut self, oid: u8, status: u8, result: &OuterResult);
@@ -330,6 +335,7 @@ fn emit_current_loop_evidence<S: CommissionReplySink>(
     result: &CommissionResult,
 ) {
     let inner = &result.inner;
+    sink.foci_current_validation_envelope(current_validation_envelope_report(oid, inner));
     for (sample_index, evidence) in inner
         .current_flux_validation
         .iter()
@@ -360,6 +366,20 @@ fn emit_current_loop_evidence<S: CommissionReplySink>(
     sink.foci_closed_loop_entry(commission_closed_loop_entry_report(oid, inner));
     sink.foci_current_loop_filters(commission_current_loop_filters_report(oid, result));
     sink.foci_current_loop_run(commission_current_loop_run_report(oid, status, inner));
+}
+
+fn current_validation_envelope_report(
+    oid: u8,
+    inner: &InnerResult,
+) -> CurrentValidationEnvelopeReport {
+    CurrentValidationEnvelopeReport {
+        oid,
+        step_amplitude: inner.current_validation_step_amplitude,
+        pidout_limit: inner.current_validation_pidout_limit,
+        current_limited: inner.current_validation_current_limited,
+        voltage_limited: inner.current_validation_voltage_limited,
+        max_p: inner.current_validation_max_p,
+    }
 }
 
 fn current_validation_axis_report(
@@ -601,6 +621,14 @@ mod tests {
             positive_encoder_delta_counts: i32,
             negative_encoder_delta_counts: i32,
             status_flags_or: u32,
+        },
+        CurrentValidationEnvelope {
+            oid: u8,
+            step_amplitude: u16,
+            pidout_limit: u16,
+            current_limited: u16,
+            voltage_limited: u16,
+            max_p: u16,
         },
         CurrentLoopHold {
             oid: u8,
@@ -884,6 +912,20 @@ mod tests {
             });
         }
 
+        fn foci_current_validation_envelope(
+            &mut self,
+            report: crate::tmc_diagnostics::CurrentValidationEnvelopeReport,
+        ) {
+            self.events.push(Event::CurrentValidationEnvelope {
+                oid: report.oid,
+                step_amplitude: report.step_amplitude,
+                pidout_limit: report.pidout_limit,
+                current_limited: report.current_limited,
+                voltage_limited: report.voltage_limited,
+                max_p: report.max_p,
+            });
+        }
+
         fn foci_tune_result(&mut self, oid: u8, status: u8, result: &OuterResult) {
             self.events.push(Event::Tune {
                 oid,
@@ -1060,6 +1102,11 @@ mod tests {
                 current_hold_flux_crossing_count: 0,
                 current_hold_status_flags_or: 0,
                 current_hold_actionable_status_count: 0,
+                current_validation_step_amplitude: 128,
+                current_validation_pidout_limit: 2400,
+                current_validation_current_limited: 422,
+                current_validation_voltage_limited: 128,
+                current_validation_max_p: 3474,
                 current_flux_validation_count: 1,
                 current_flux_validation: flux_validation,
                 current_torque_validation_count: 1,
@@ -1134,6 +1181,14 @@ mod tests {
 
     fn current_loop_events(oid: u8, status: u8) -> Vec<Event> {
         let mut events = Vec::new();
+        events.push(Event::CurrentValidationEnvelope {
+            oid,
+            step_amplitude: 128,
+            pidout_limit: 2400,
+            current_limited: 422,
+            voltage_limited: 128,
+            max_p: 3474,
+        });
         events.push(current_validation_event(
             oid,
             CURRENT_AXIS_FLUX,

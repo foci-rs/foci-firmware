@@ -926,6 +926,11 @@ mod tests {
             current_hold_flux_crossing_count: 0,
             current_hold_status_flags_or: 0,
             current_hold_actionable_status_count: 0,
+            current_validation_step_amplitude: 128,
+            current_validation_pidout_limit: 2400,
+            current_validation_current_limited: 422,
+            current_validation_voltage_limited: 128,
+            current_validation_max_p: 3474,
             current_flux_validation_count: 0,
             current_flux_validation:
                 [crate::commissioning::types::CurrentValidationAxisEvidence::EMPTY;

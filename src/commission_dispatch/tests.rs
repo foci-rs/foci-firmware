@@ -145,6 +145,12 @@ impl CommissionReplySink for ReplyRecorder {
         });
     }
 
+    fn foci_current_validation_envelope(
+        &mut self,
+        _report: crate::tmc_diagnostics::CurrentValidationEnvelopeReport,
+    ) {
+    }
+
     fn foci_tune_result(
         &mut self,
         _oid: u8,
@@ -863,6 +869,11 @@ fn sample_commission_result() -> crate::commissioning::types::CommissionResult {
             current_hold_flux_crossing_count: 0,
             current_hold_status_flags_or: 0,
             current_hold_actionable_status_count: 0,
+            current_validation_step_amplitude: 128,
+            current_validation_pidout_limit: 2400,
+            current_validation_current_limited: 422,
+            current_validation_voltage_limited: 128,
+            current_validation_max_p: 3474,
             current_flux_validation_count: 0,
             current_flux_validation:
                 [crate::commissioning::types::CurrentValidationAxisEvidence::EMPTY;

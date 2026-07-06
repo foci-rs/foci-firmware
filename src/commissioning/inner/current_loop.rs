@@ -86,6 +86,12 @@ pub(crate) struct CurrentValidateData {
     pub(crate) final_status: CommissionStatus,
     /// Configured PIDOUT voltage limit for saturation detection.
     pub(crate) pidout_limit: u32,
+    /// Target cap derived from the configured current limit.
+    pub(crate) current_limited: u32,
+    /// Target cap derived from PIDOUT headroom and candidate P gain.
+    pub(crate) voltage_limited: u32,
+    /// Maximum candidate P gain used for voltage-limited target sizing.
+    pub(crate) max_p: u32,
     /// Encoder counts per mechanical revolution for wrap-aware motion checks.
     pub(crate) encoder_counts_per_rev: u32,
     /// Encoder count captured immediately before the active short sample target.
@@ -197,6 +203,9 @@ fn validation_target_register(axis: CurrentValidationAxis, target: i16) -> u32 {
 struct ValidationEnvelope {
     step_amplitude: u16,
     pidout_limit: u32,
+    current_limited: u32,
+    voltage_limited: u32,
+    max_p: u32,
 }
 
 fn voltage_limited_validation_target(pidout_limit: u32, max_p: u32) -> u32 {
@@ -247,6 +256,9 @@ fn validation_envelope(current_limit: u32, gains: CurrentGains) -> Option<Valida
     Some(ValidationEnvelope {
         step_amplitude: amplitude.min(u16::MAX as u32) as u16,
         pidout_limit,
+        current_limited,
+        voltage_limited,
+        max_p,
     })
 }
 
@@ -972,6 +984,9 @@ pub(crate) async fn step_current_tune<B: CommissioningBackend>(
             step_amplitude: validation.step_amplitude,
             final_status: CommissionStatus::Accepted,
             pidout_limit: validation.pidout_limit,
+            current_limited: validation.current_limited,
+            voltage_limited: validation.voltage_limited,
+            max_p: validation.max_p,
             encoder_counts_per_rev: 1,
             sample_encoder_start: 0,
             pending_positive_sample: None,
@@ -1494,6 +1509,13 @@ pub(crate) async fn step_current_validate<B: CommissioningBackend>(
                 current_hold_flux_crossing_count: 0,
                 current_hold_status_flags_or: 0,
                 current_hold_actionable_status_count: 0,
+                current_validation_step_amplitude: data.step_amplitude,
+                current_validation_pidout_limit: data.pidout_limit.min(u16::MAX as u32) as u16,
+                current_validation_current_limited: data.current_limited.min(u16::MAX as u32)
+                    as u16,
+                current_validation_voltage_limited: data.voltage_limited.min(u16::MAX as u32)
+                    as u16,
+                current_validation_max_p: data.max_p.min(u16::MAX as u32) as u16,
                 current_flux_validation_count: data.current_flux_validation_count,
                 current_flux_validation: data.current_flux_validation,
                 current_torque_validation_count: data.current_torque_validation_count,
@@ -1693,6 +1715,10 @@ mod tests {
                 InnerPhase::CurrentValidate { data, .. } => {
                     assert_eq!(data.gains.flux_p, 1269);
                     assert_eq!(data.step_amplitude, 322);
+                    assert_eq!(data.pidout_limit, CURRENT_VALIDATE_PIDOUT_LIMIT);
+                    assert_eq!(data.current_limited, 422);
+                    assert_eq!(data.voltage_limited, 322);
+                    assert_eq!(data.max_p, 1269);
                     assert!(
                         data.gains.flux_p as u32 * data.step_amplitude as u32
                             <= CURRENT_VALIDATE_PIDOUT_LIMIT * 256 * 8 / 10
@@ -1733,6 +1759,14 @@ mod tests {
             match phase {
                 InnerPhase::CurrentValidate { data, .. } => {
                     assert_eq!(data.gains.flux_p, 3474);
+                    assert_eq!(data.step_amplitude, VALIDATION_MIN_STEP_AMPLITUDE);
+                    assert_eq!(data.pidout_limit, 2172);
+                    assert_eq!(data.current_limited, 422);
+                    assert_eq!(
+                        data.voltage_limited,
+                        u32::from(VALIDATION_MIN_STEP_AMPLITUDE)
+                    );
+                    assert_eq!(data.max_p, 3474);
                     assert!(
                         data.step_amplitude >= VALIDATION_MIN_STEP_AMPLITUDE,
                         "1600 Hz validation target must stay above the signal floor"
@@ -3061,6 +3095,9 @@ mod tests {
                 step_amplitude: 250,
                 final_status: CommissionStatus::Accepted,
                 pidout_limit: CURRENT_SAFE_PIDOUT_LIMIT,
+                current_limited: 250,
+                voltage_limited: 250,
+                max_p: 13,
                 encoder_counts_per_rev: 4000,
                 sample_encoder_start: 0,
                 pending_positive_sample: None,
@@ -3110,6 +3147,9 @@ mod tests {
                 step_amplitude: 250,
                 final_status: CommissionStatus::Failed(CommissionError::CurrentValidationFailed),
                 pidout_limit: CURRENT_SAFE_PIDOUT_LIMIT,
+                current_limited: 250,
+                voltage_limited: 250,
+                max_p: 13,
                 encoder_counts_per_rev: 4000,
                 sample_encoder_start: 0,
                 pending_positive_sample: None,
@@ -3194,6 +3234,9 @@ mod tests {
                 step_amplitude: 250,
                 final_status: CommissionStatus::Accepted,
                 pidout_limit: CURRENT_SAFE_PIDOUT_LIMIT,
+                current_limited: 250,
+                voltage_limited: 250,
+                max_p: 13,
                 encoder_counts_per_rev: 4000,
                 sample_encoder_start: 0,
                 pending_positive_sample: None,

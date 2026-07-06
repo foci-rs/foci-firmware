@@ -617,6 +617,23 @@ pub struct CurrentValidationAxisReport {
     pub status_flags_or: u32,
 }
 
+/// Current-validation target envelope emitted once per commissioning run.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CurrentValidationEnvelopeReport {
+    /// Object id of the FOCI endpoint.
+    pub oid: u8,
+    /// Final validation target after all safety caps.
+    pub step_amplitude: u16,
+    /// PIDOUT limit active while collecting validation samples.
+    pub pidout_limit: u16,
+    /// Target cap derived from the configured current limit.
+    pub current_limited: u16,
+    /// Target cap derived from PIDOUT headroom and candidate P gain.
+    pub voltage_limited: u16,
+    /// Maximum candidate P gain used for voltage-limited target sizing.
+    pub max_p: u16,
+}
+
 /// Construct a zero-filled [`ResistanceRunReport`] carrying only the header
 /// status, used on entry-precheck rejection before any profile is read.
 pub fn empty_resistance_run_report(oid: u8, status: u8) -> ResistanceRunReport {
