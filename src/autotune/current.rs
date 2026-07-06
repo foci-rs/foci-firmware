@@ -118,6 +118,11 @@ const CURRENT_AXIS_NON_ACTIONABLE_STATUS_MASK: u32 = CURRENT_AXIS_POSITION_VELOC
     | CURRENT_AXIS_ENCODER_PRESENCE_STATUS_MASK
     | CURRENT_AXIS_RESERVED_STATUS_MASK;
 
+/// Status flags that fail current-loop validation and sustained-hold checks.
+pub const fn current_loop_actionable_status_mask() -> u32 {
+    !CURRENT_AXIS_NON_ACTIONABLE_STATUS_MASK
+}
+
 /// Retry action for one failed current-axis short-sample validation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub enum CurrentAxisRetryDecision {
@@ -180,7 +185,7 @@ impl CurrentAxisGate {
             max_cross_axis_permille: 150,
             max_voltage_output_permille: 900,
             max_encoder_delta_counts,
-            actionable_status_mask: !CURRENT_AXIS_NON_ACTIONABLE_STATUS_MASK,
+            actionable_status_mask: current_loop_actionable_status_mask(),
         }
     }
 }

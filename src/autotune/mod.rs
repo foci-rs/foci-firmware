@@ -13,6 +13,7 @@
 mod buffer;
 mod current;
 mod filters;
+mod hold;
 mod models;
 mod position;
 #[cfg(test)]
@@ -21,6 +22,7 @@ mod types;
 mod velocity;
 
 pub use buffer::{CaptureDirection, TRANSIENT_LEN, TransientBuffer, normalize_capture_sample};
+pub use current::current_loop_actionable_status_mask;
 pub use current::{
     CURRENT_AXIS_VALIDATION_CROSS_AXIS, CURRENT_AXIS_VALIDATION_HIGH_RESPONSE,
     CURRENT_AXIS_VALIDATION_LOW_RESPONSE, CURRENT_AXIS_VALIDATION_MOTION,
@@ -35,6 +37,16 @@ pub use current::{
     simc_current_gains_with_lambda_checked, synthesize_current_gains,
 };
 pub use filters::recommend_filters;
+pub use hold::{
+    HOLD_GATE_DWELL_US, HOLD_GATE_FINE_DWELL_US, HOLD_GATE_FINE_SAMPLE_PERIOD_US,
+    HOLD_GATE_MAX_SAMPLES, HOLD_GATE_POSITION_SPAN_LIMIT_COUNTS, HOLD_GATE_SAMPLE_PERIOD_US,
+    HOLD_GATE_STATUS_FAIL_POSITION_SPAN, HOLD_GATE_STATUS_FAIL_SAMPLE_ERROR,
+    HOLD_GATE_STATUS_FAIL_STATUS_FLAGS, HOLD_GATE_STATUS_NOT_RUN, HOLD_GATE_STATUS_PASS,
+    HOLD_GATE_WARNING_FLUX_CROSSINGS, HOLD_GATE_WARNING_FLUX_RMS, HOLD_GATE_WARNING_FLUX_SPAN,
+    HOLD_GATE_WARNING_NON_ACTIONABLE_STATUS, HOLD_GATE_WARNING_SAMPLE_OVERRUN,
+    HOLD_GATE_WARNING_TORQUE_CROSSINGS, HOLD_GATE_WARNING_TORQUE_RMS,
+    HOLD_GATE_WARNING_TORQUE_SPAN, HoldGateAccumulator, HoldGateMetrics, HoldGateSample,
+};
 pub(crate) use models::VELOCITY_SIMC_MAX_P_REG;
 pub use models::{
     AXIS_SPLIT_SOURCE_IMPEDANCE, AXIS_SPLIT_SOURCE_NONE, CURRENT_AXIS_FLUX, CURRENT_AXIS_TORQUE,
