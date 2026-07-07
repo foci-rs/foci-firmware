@@ -9,16 +9,16 @@
 //! current gains.
 
 use crate::autotune::{
-    CaptureDirection, ClosedLoopEntryState, CommissionError, CommissionProfile, CommissionStatus,
-    CurrentAxisGate, CurrentAxisGateResult, CurrentAxisRetryDecision, CurrentAxisSample,
-    CurrentGainSynthesisInput, CurrentGains, CurrentLoopEvidence, ElectricalModel, InnerSequence,
-    PhaseId, TransientBuffer, classify_current_axis_sample, current_axis_retry_decision,
-    retry_current_loop_gains,
+    CURRENT_AXIS_FLUX, CURRENT_AXIS_TORQUE, CaptureDirection, ClosedLoopEntryState,
+    CommissionError, CommissionProfile, CommissionStatus, CurrentAxisGate, CurrentAxisGateResult,
+    CurrentAxisRetryDecision, CurrentAxisSample, CurrentGainSynthesisInput, CurrentGains,
+    CurrentLoopEvidence, ElectricalModel, InnerSequence, PhaseId, TransientBuffer,
+    classify_current_axis_sample, current_axis_retry_decision, retry_current_loop_gains,
 };
 use crate::commissioning::inner::InnerPhase;
 use crate::commissioning::types::{
-    CommissionResult, CommissioningBackend, CurrentValidationAxisEvidence, InductanceEvidence,
-    InnerResult, StepResult,
+    CommissionResult, CommissioningBackend, CurrentValidationAxisEvidence,
+    CurrentValidationSettledSampleEvidence, InductanceEvidence, InnerResult, StepResult,
 };
 
 /// Current-loop validation sub-state machine (Phase 7).
@@ -98,6 +98,11 @@ pub(crate) struct CurrentValidateData {
     pub(crate) sample_encoder_start: u32,
     /// Positive half of the active positive/negative delay pair.
     pub(crate) pending_positive_sample: Option<AxisDirectionalEvidence>,
+    /// Number of populated settled-flux raw validation reads.
+    pub(crate) current_settled_validation_count: u8,
+    /// Raw settled-flux validation reads retained for offline analysis.
+    pub(crate) current_settled_validation: [CurrentValidationSettledSampleEvidence;
+        crate::autotune::CURRENT_VALIDATION_SETTLED_MAX_SAMPLES],
     /// Number of populated flux-axis validation evidence items.
     pub(crate) current_flux_validation_count: u8,
     /// Flux-axis validation evidence by sample delay.
@@ -141,6 +146,8 @@ pub(crate) struct AxisDirectionalEvidence {
     encoder_delta_counts: i32,
     cross_axis_peak_permille: u16,
     status_flags: u32,
+    settled_sample_count: u8,
+    settled_samples: [CurrentValidationSettledSampleEvidence; SETTLED_FLUX_AVERAGE_SAMPLES],
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -334,6 +341,41 @@ fn cross_axis_permille(sample: &CurrentAxisSample) -> u16 {
         as u16
 }
 
+fn current_validation_axis_code(axis: CurrentValidationAxis) -> u8 {
+    match axis {
+        CurrentValidationAxis::Flux => CURRENT_AXIS_FLUX,
+        CurrentValidationAxis::Torque => CURRENT_AXIS_TORQUE,
+    }
+}
+
+fn settled_sample_evidence_from_sample(
+    backend: &impl CommissioningBackend,
+    axis: CurrentValidationAxis,
+    sample_delay_ms: u16,
+    sample: &CurrentAxisSample,
+) -> CurrentValidationSettledSampleEvidence {
+    let gate = classify_current_axis_sample(
+        sample,
+        &validation_gate(backend.tmc_config(), axis, sample_delay_ms),
+    );
+
+    CurrentValidationSettledSampleEvidence {
+        axis: current_validation_axis_code(axis),
+        sample_index: 0,
+        direction: 0,
+        raw_index: 0,
+        attempt: 0,
+        target: sample.target,
+        sample_delay_ms,
+        same_axis_count: sample.same_axis_actual,
+        cross_axis_count: sample.cross_axis_actual,
+        cross_axis_permille: gate.cross_axis_permille,
+        voltage_output_permille: gate.voltage_output_permille,
+        encoder_delta_counts: sample.encoder_delta_counts,
+        status_flags: sample.status_flags,
+    }
+}
+
 fn max_abs_i16(current: i16, candidate: i16) -> i16 {
     if candidate.unsigned_abs() > current.unsigned_abs() {
         candidate
@@ -495,6 +537,9 @@ fn directional_evidence_from_sample<B: CommissioningBackend>(
         gate,
         encoder_delta_counts: sample.encoder_delta_counts,
         status_flags: sample.status_flags,
+        settled_sample_count: 0,
+        settled_samples: [CurrentValidationSettledSampleEvidence::EMPTY;
+            SETTLED_FLUX_AVERAGE_SAMPLES],
     }
 }
 
@@ -553,6 +598,8 @@ async fn read_axis_directional_evidence_for_gate<B: CommissioningBackend>(
     let mut encoder_delta_peak = 0i32;
     let mut status_flags_or = 0u32;
     let mut cross_axis_peak_permille = 0u16;
+    let mut settled_samples =
+        [CurrentValidationSettledSampleEvidence::EMPTY; SETTLED_FLUX_AVERAGE_SAMPLES];
 
     for index in 0..SETTLED_FLUX_AVERAGE_SAMPLES {
         let sample = read_axis_sample(
@@ -571,6 +618,9 @@ async fn read_axis_directional_evidence_for_gate<B: CommissioningBackend>(
         encoder_delta_peak = max_abs_i32(encoder_delta_peak, sample.encoder_delta_counts);
         status_flags_or |= sample.status_flags;
         cross_axis_peak_permille = cross_axis_peak_permille.max(cross_axis_permille(&sample));
+        settled_samples[index] =
+            settled_sample_evidence_from_sample(backend, axis, sample_delay_ms, &sample);
+        settled_samples[index].raw_index = index as u8;
 
         if index + 1 < SETTLED_FLUX_AVERAGE_SAMPLES {
             backend.delay_us(SETTLED_FLUX_AVERAGE_INTERVAL_US).await;
@@ -590,7 +640,45 @@ async fn read_axis_directional_evidence_for_gate<B: CommissioningBackend>(
     let mut evidence =
         directional_evidence_from_sample(backend, axis, sample_delay_ms, averaged_sample);
     evidence.cross_axis_peak_permille = cross_axis_peak_permille;
+    evidence.settled_sample_count = SETTLED_FLUX_AVERAGE_SAMPLES as u8;
+    evidence.settled_samples = settled_samples;
     Ok(evidence)
+}
+
+fn append_directional_settled_samples(
+    data: &mut CurrentValidateData,
+    axis: CurrentValidationAxis,
+    sample_index: u8,
+    direction: u8,
+    directional: &AxisDirectionalEvidence,
+) {
+    let count = directional.settled_sample_count as usize;
+    let attempt = axis_attempt(data, axis);
+    for (raw_index, raw) in directional.settled_samples.iter().take(count).enumerate() {
+        let slot_index = data.current_settled_validation_count as usize;
+        if let Some(slot) = data.current_settled_validation.get_mut(slot_index) {
+            let mut sample = *raw;
+            sample.axis = current_validation_axis_code(axis);
+            sample.sample_index = sample_index;
+            sample.direction = direction;
+            sample.raw_index = raw_index as u8;
+            sample.attempt = attempt;
+            *slot = sample;
+            data.current_settled_validation_count =
+                data.current_settled_validation_count.saturating_add(1);
+        }
+    }
+}
+
+fn append_settled_samples(
+    data: &mut CurrentValidateData,
+    axis: CurrentValidationAxis,
+    sample_index: u8,
+    positive: &AxisDirectionalEvidence,
+    negative: &AxisDirectionalEvidence,
+) {
+    append_directional_settled_samples(data, axis, sample_index, 0, positive);
+    append_directional_settled_samples(data, axis, sample_index, 1, negative);
 }
 
 fn advance_after_directional_sample(
@@ -617,6 +705,7 @@ fn advance_after_directional_sample(
                 .pending_positive_sample
                 .take()
                 .ok_or(CommissionError::CurrentValidationFailed)?;
+            append_settled_samples(data, axis, sample_index, &positive, &directional);
             let evidence = combine_axis_pair_evidence(
                 axis_attempt(data, axis),
                 data.step_amplitude as i16,
@@ -998,6 +1087,9 @@ pub(crate) async fn step_current_tune<B: CommissioningBackend>(
             encoder_counts_per_rev: 1,
             sample_encoder_start: 0,
             pending_positive_sample: None,
+            current_settled_validation_count: 0,
+            current_settled_validation: [CurrentValidationSettledSampleEvidence::EMPTY;
+                crate::autotune::CURRENT_VALIDATION_SETTLED_MAX_SAMPLES],
             current_flux_validation_count: 0,
             current_flux_validation: [CurrentValidationAxisEvidence::EMPTY;
                 crate::autotune::CURRENT_VALIDATION_MAX_SAMPLES_PER_AXIS],
@@ -1078,6 +1170,9 @@ pub(crate) async fn step_current_validate<B: CommissioningBackend>(
 
             // Clear any previous validation evidence for this attempt.
             data.pending_positive_sample = None;
+            data.current_settled_validation_count = 0;
+            data.current_settled_validation = [CurrentValidationSettledSampleEvidence::EMPTY;
+                crate::autotune::CURRENT_VALIDATION_SETTLED_MAX_SAMPLES];
             data.current_flux_validation_count = 0;
             data.current_flux_validation = [CurrentValidationAxisEvidence::EMPTY;
                 crate::autotune::CURRENT_VALIDATION_MAX_SAMPLES_PER_AXIS];
@@ -1536,6 +1631,8 @@ pub(crate) async fn step_current_validate<B: CommissioningBackend>(
                 current_validation_voltage_limited: data.voltage_limited.min(u16::MAX as u32)
                     as u16,
                 current_validation_max_p: data.max_p.min(u16::MAX as u32) as u16,
+                current_settled_validation_count: data.current_settled_validation_count,
+                current_settled_validation: data.current_settled_validation,
                 current_flux_validation_count: data.current_flux_validation_count,
                 current_flux_validation: data.current_flux_validation,
                 current_torque_validation_count: data.current_torque_validation_count,
@@ -2971,6 +3068,11 @@ mod tests {
                 evidence.gate.status,
                 crate::autotune::CURRENT_AXIS_VALIDATION_PASS
             );
+            assert_eq!(evidence.settled_sample_count, 4);
+            assert_eq!(evidence.settled_samples[0].cross_axis_count, 45);
+            assert_eq!(evidence.settled_samples[1].cross_axis_count, 5);
+            assert_eq!(evidence.settled_samples[0].cross_axis_permille, 180);
+            assert_eq!(evidence.settled_samples[1].cross_axis_permille, 20);
             assert_eq!(evidence.gate.response_permille, 1000);
             assert_eq!(evidence.gate.cross_axis_permille, 60);
             assert_eq!(evidence.cross_axis_peak_permille, 180);
@@ -3015,6 +3117,43 @@ mod tests {
         });
     }
 
+    #[test]
+    fn settled_flux_raw_samples_are_retained_across_polarities() {
+        let mut positive = axis_directional_evidence(crate::autotune::CURRENT_AXIS_VALIDATION_PASS);
+        positive.settled_sample_count = 2;
+        positive.settled_samples[0].target = 250;
+        positive.settled_samples[0].cross_axis_count = 45;
+        positive.settled_samples[1].target = 250;
+        positive.settled_samples[1].cross_axis_count = 5;
+        let mut negative = axis_directional_evidence(crate::autotune::CURRENT_AXIS_VALIDATION_PASS);
+        negative.settled_sample_count = 2;
+        negative.settled_samples[0].target = -250;
+        negative.settled_samples[0].cross_axis_count = -35;
+        negative.settled_samples[1].target = -250;
+        negative.settled_samples[1].cross_axis_count = -7;
+        let InnerPhase::CurrentValidate { mut data, .. } = current_validate_phase() else {
+            panic!("current validation fixture expected");
+        };
+
+        append_settled_samples(
+            &mut data,
+            CurrentValidationAxis::Flux,
+            3,
+            &positive,
+            &negative,
+        );
+
+        assert_eq!(data.current_settled_validation_count, 4);
+        assert_eq!(data.current_settled_validation[0].direction, 0);
+        assert_eq!(data.current_settled_validation[0].raw_index, 0);
+        assert_eq!(data.current_settled_validation[0].target, 250);
+        assert_eq!(data.current_settled_validation[0].cross_axis_count, 45);
+        assert_eq!(data.current_settled_validation[2].direction, 1);
+        assert_eq!(data.current_settled_validation[2].raw_index, 0);
+        assert_eq!(data.current_settled_validation[2].target, -250);
+        assert_eq!(data.current_settled_validation[2].cross_axis_count, -35);
+    }
+
     fn axis_directional_evidence(status: u8) -> AxisDirectionalEvidence {
         AxisDirectionalEvidence {
             gate: CurrentAxisGateResult {
@@ -3032,6 +3171,9 @@ mod tests {
             } else {
                 0
             },
+            settled_sample_count: 0,
+            settled_samples: [CurrentValidationSettledSampleEvidence::EMPTY;
+                SETTLED_FLUX_AVERAGE_SAMPLES],
         }
     }
 
@@ -3190,6 +3332,9 @@ mod tests {
                 encoder_counts_per_rev: 4000,
                 sample_encoder_start: 0,
                 pending_positive_sample: None,
+                current_settled_validation_count: 0,
+                current_settled_validation: [CurrentValidationSettledSampleEvidence::EMPTY;
+                    crate::autotune::CURRENT_VALIDATION_SETTLED_MAX_SAMPLES],
                 current_flux_validation_count: 0,
                 current_flux_validation: [CurrentValidationAxisEvidence::EMPTY;
                     crate::autotune::CURRENT_VALIDATION_MAX_SAMPLES_PER_AXIS],
@@ -3242,6 +3387,9 @@ mod tests {
                 encoder_counts_per_rev: 4000,
                 sample_encoder_start: 0,
                 pending_positive_sample: None,
+                current_settled_validation_count: 0,
+                current_settled_validation: [CurrentValidationSettledSampleEvidence::EMPTY;
+                    crate::autotune::CURRENT_VALIDATION_SETTLED_MAX_SAMPLES],
                 current_flux_validation_count: 1,
                 current_flux_validation: [CurrentValidationAxisEvidence {
                     status: crate::autotune::CURRENT_AXIS_VALIDATION_PASS,
@@ -3329,6 +3477,9 @@ mod tests {
                 encoder_counts_per_rev: 4000,
                 sample_encoder_start: 0,
                 pending_positive_sample: None,
+                current_settled_validation_count: 0,
+                current_settled_validation: [CurrentValidationSettledSampleEvidence::EMPTY;
+                    crate::autotune::CURRENT_VALIDATION_SETTLED_MAX_SAMPLES],
                 current_flux_validation_count: 1,
                 current_flux_validation: [CurrentValidationAxisEvidence {
                     status: crate::autotune::CURRENT_AXIS_VALIDATION_PASS,

@@ -931,6 +931,10 @@ mod tests {
             current_validation_current_limited: 422,
             current_validation_voltage_limited: 128,
             current_validation_max_p: 3474,
+            current_settled_validation_count: 0,
+            current_settled_validation:
+                [crate::commissioning::types::CurrentValidationSettledSampleEvidence::EMPTY;
+                    crate::autotune::CURRENT_VALIDATION_SETTLED_MAX_SAMPLES],
             current_flux_validation_count: 0,
             current_flux_validation:
                 [crate::commissioning::types::CurrentValidationAxisEvidence::EMPTY;

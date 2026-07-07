@@ -20,6 +20,9 @@ use super::{
     CURRENT_VALIDATION_MAX_SAMPLES_PER_AXIS,
 };
 
+/// Raw settled-flux current-validation reads retained for audit.
+pub const CURRENT_VALIDATION_SETTLED_MAX_SAMPLES: usize = 8;
+
 /// Advanced-PI current-loop I zero scale.
 ///
 /// With `CONFIG_ADVANCED_PI_REPRESENT=0`, current-loop I is Q8.8 and the

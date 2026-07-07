@@ -617,6 +617,39 @@ pub struct CurrentValidationAxisReport {
     pub status_flags_or: u32,
 }
 
+/// One raw read contributing to the settled-flux current-validation gate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CurrentValidationSettledSampleReport {
+    /// Object id of the FOCI endpoint.
+    pub oid: u8,
+    /// Stable `CURRENT_AXIS_*` axis identifier.
+    pub axis: u8,
+    /// Zero-based sample index for this axis.
+    pub sample_index: u8,
+    /// Direction index: 0 for positive pulse, 1 for negative pulse.
+    pub direction: u8,
+    /// Raw read index within the settled averaging window.
+    pub raw_index: u8,
+    /// Validation attempt that produced this raw read.
+    pub attempt: u8,
+    /// Signed current target used for this pulse.
+    pub target: i16,
+    /// Delay between target write and this settled gate, in milliseconds.
+    pub sample_delay_ms: u16,
+    /// Same-axis current count from `PID_TORQUE_FLUX_ACTUAL`.
+    pub same_axis_count: i16,
+    /// Cross-axis current count from `PID_TORQUE_FLUX_ACTUAL`.
+    pub cross_axis_count: i16,
+    /// Cross-axis response normalized to target, in permille.
+    pub cross_axis_permille: u16,
+    /// Voltage output normalized to the configured limit, in permille.
+    pub voltage_output_permille: u16,
+    /// Signed encoder movement observed at this raw read.
+    pub encoder_delta_counts: i32,
+    /// TMC4671 `STATUS_FLAGS` captured at this raw read.
+    pub status_flags: u32,
+}
+
 /// Current-validation target envelope emitted once per commissioning run.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CurrentValidationEnvelopeReport {

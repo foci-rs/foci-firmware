@@ -63,6 +63,56 @@ impl CurrentValidationAxisEvidence {
     };
 }
 
+/// One raw read contributing to the settled-flux current-validation gate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+pub struct CurrentValidationSettledSampleEvidence {
+    /// Stable `CURRENT_AXIS_*` axis identifier.
+    pub axis: u8,
+    /// Zero-based sample index for this axis.
+    pub sample_index: u8,
+    /// Direction index: 0 for positive pulse, 1 for negative pulse.
+    pub direction: u8,
+    /// Raw read index within the settled averaging window.
+    pub raw_index: u8,
+    /// Validation attempt that produced this raw read.
+    pub attempt: u8,
+    /// Signed current target used for this pulse.
+    pub target: i16,
+    /// Delay between target write and this settled gate, in milliseconds.
+    pub sample_delay_ms: u16,
+    /// Same-axis current count from `PID_TORQUE_FLUX_ACTUAL`.
+    pub same_axis_count: i16,
+    /// Cross-axis current count from `PID_TORQUE_FLUX_ACTUAL`.
+    pub cross_axis_count: i16,
+    /// Cross-axis response normalized to target, in permille.
+    pub cross_axis_permille: u16,
+    /// Voltage output normalized to the configured limit, in permille.
+    pub voltage_output_permille: u16,
+    /// Signed encoder movement observed at this raw read.
+    pub encoder_delta_counts: i32,
+    /// TMC4671 `STATUS_FLAGS` captured at this raw read.
+    pub status_flags: u32,
+}
+
+impl CurrentValidationSettledSampleEvidence {
+    /// Empty evidence slot used for fixed-capacity arrays.
+    pub const EMPTY: Self = Self {
+        axis: 0,
+        sample_index: 0,
+        direction: 0,
+        raw_index: 0,
+        attempt: 0,
+        target: 0,
+        sample_delay_ms: 0,
+        same_axis_count: 0,
+        cross_axis_count: 0,
+        cross_axis_permille: 0,
+        voltage_output_permille: 0,
+        encoder_delta_counts: 0,
+        status_flags: 0,
+    };
+}
+
 /// No accepted production inductance source.
 pub const INDUCTANCE_SOURCE_NONE: u8 = 0;
 /// Accepted production inductance source: rotating-field estimator.
@@ -482,6 +532,11 @@ pub struct InnerResult {
     pub current_validation_voltage_limited: u16,
     /// Maximum candidate P gain used for voltage-limited target sizing.
     pub current_validation_max_p: u16,
+    /// Number of populated settled-flux raw validation reads.
+    pub current_settled_validation_count: u8,
+    /// Raw settled-flux validation reads retained for offline analysis.
+    pub current_settled_validation: [CurrentValidationSettledSampleEvidence;
+        crate::autotune::CURRENT_VALIDATION_SETTLED_MAX_SAMPLES],
     /// Number of populated flux-axis validation evidence items.
     pub current_flux_validation_count: u8,
     /// Flux-axis validation evidence by sample delay.
