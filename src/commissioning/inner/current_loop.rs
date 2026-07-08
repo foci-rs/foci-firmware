@@ -17,7 +17,7 @@ use crate::autotune::{
 };
 use crate::commissioning::inner::InnerPhase;
 use crate::commissioning::types::{
-    CommissionResult, CommissioningBackend, CurrentValidationAxisEvidence,
+    AdcResidualEvidence, CommissionResult, CommissioningBackend, CurrentValidationAxisEvidence,
     CurrentValidationSettledSampleEvidence, InductanceEvidence, InnerResult, StepResult,
 };
 
@@ -1812,6 +1812,12 @@ pub(crate) async fn step_current_validate<B: CommissioningBackend>(
                 encoder_alignment_counts_per_electrical_rev: alignment.map_or(0, |result| {
                     result.encoder_alignment_counts_per_electrical_rev
                 }),
+                adc_residual_chop0: alignment.map_or(AdcResidualEvidence::EMPTY, |result| {
+                    result.adc_residual_chop0
+                }),
+                adc_residual_chop7: alignment.map_or(AdcResidualEvidence::EMPTY, |result| {
+                    result.adc_residual_chop7
+                }),
                 current_gains_source: data.current_loop_evidence.gains_source,
                 axis_split_source: data.current_loop_evidence.axis_split_source,
                 gains_tier: data.current_loop_evidence.gains_tier,
@@ -2636,6 +2642,8 @@ mod tests {
                 encoder_alignment_movement_counts: 37,
                 encoder_alignment_min_movement_counts: 2,
                 encoder_alignment_counts_per_electrical_rev: 80,
+                adc_residual_chop0: crate::commissioning::types::AdcResidualEvidence::EMPTY,
+                adc_residual_chop7: crate::commissioning::types::AdcResidualEvidence::EMPTY,
             });
 
             let result = step_current_validate(

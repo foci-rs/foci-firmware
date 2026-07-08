@@ -8,13 +8,13 @@
 use crate::autotune::{CURRENT_AXIS_FLUX, CURRENT_AXIS_TORQUE, PhaseId};
 use crate::commission_dispatch::ReplyPayload;
 use crate::commissioning::types::{
-    AdcCalResult, CommissionResult, CurrentValidationAxisEvidence,
+    AdcCalResult, AdcResidualEvidence, CommissionResult, CurrentValidationAxisEvidence,
     CurrentValidationSettledSampleEvidence, INDUCTANCE_SOURCE_NONE, InnerResult, OuterResult,
 };
 use crate::selftest::{CommissionDiagnostic, CommissionDiagnostics, SelftestStageValue};
 use crate::tmc_diagnostics::{
-    ClosedLoopEntryReport, CurrentLoopFiltersReport, CurrentLoopHoldReport, CurrentLoopRunReport,
-    CurrentValidationAxisReport, CurrentValidationEnvelopeReport,
+    AdcResidualReport, ClosedLoopEntryReport, CurrentLoopFiltersReport, CurrentLoopHoldReport,
+    CurrentLoopRunReport, CurrentValidationAxisReport, CurrentValidationEnvelopeReport,
     CurrentValidationSettledSampleReport, EncoderAlignmentReport, InductanceEstimateReport,
     InductanceFrameReport, InductanceRunReport, ResistanceAxisReport, ResistanceRunReport,
 };
@@ -55,6 +55,10 @@ pub trait CommissionReplySink {
     /// correlatable with the alignment residual without expanding the
     /// size-capped terminal commission result.
     fn foci_encoder_alignment(&mut self, report: EncoderAlignmentReport);
+
+    /// Emit post-ADC-calibration zero-current residual evidence captured
+    /// before the terminal commissioning result.
+    fn foci_adc_residual(&mut self, report: AdcResidualReport);
 
     /// Emit run-level production inductance evidence captured during Stage 1
     /// commissioning.
@@ -144,6 +148,7 @@ pub fn emit_terminal_reply<S: CommissionReplySink>(sink: &mut S, payload: ReplyP
             // Resistance axes stay before the resistance run, mirroring the
             // diagnostic path's axes-then-run ordering (`emit_diagnostic_report`).
             let inner = &result.inner;
+            emit_adc_residual_evidence(sink, oid, inner);
             sink.foci_resistance_axis(commission_resistance_axis_report(
                 oid,
                 0,
@@ -194,6 +199,27 @@ fn emit_commission_diagnostics<S: CommissionReplySink>(
 ) {
     for event in diagnostics.iter() {
         sink.foci_commission_detail(oid, event);
+    }
+}
+
+fn emit_adc_residual_evidence<S: CommissionReplySink>(sink: &mut S, oid: u8, inner: &InnerResult) {
+    sink.foci_adc_residual(adc_residual_report(oid, inner.adc_residual_chop0));
+    sink.foci_adc_residual(adc_residual_report(oid, inner.adc_residual_chop7));
+}
+
+fn adc_residual_report(oid: u8, evidence: AdcResidualEvidence) -> AdcResidualReport {
+    AdcResidualReport {
+        oid,
+        stage: evidence.stage,
+        sample_count: evidence.sample_count,
+        pwm_sv_chop: evidence.pwm_sv_chop,
+        pwm_bbm: evidence.pwm_bbm,
+        adc_i0_scale_offset: evidence.adc_i0_scale_offset,
+        adc_i1_scale_offset: evidence.adc_i1_scale_offset,
+        adc_iux_mean_count: evidence.adc_iux_mean_count,
+        adc_iwy_mean_count: evidence.adc_iwy_mean_count,
+        pid_flux_mean_count: evidence.pid_flux_mean_count,
+        pid_torque_mean_count: evidence.pid_torque_mean_count,
     }
 }
 
@@ -828,6 +854,8 @@ mod tests {
             });
         }
 
+        fn foci_adc_residual(&mut self, _report: crate::tmc_diagnostics::AdcResidualReport) {}
+
         fn foci_inductance_run(&mut self, report: crate::tmc_diagnostics::InductanceRunReport) {
             self.events.push(Event::InductanceRun {
                 oid: report.oid,
@@ -1167,6 +1195,8 @@ mod tests {
                 encoder_alignment_movement_counts: 37,
                 encoder_alignment_min_movement_counts: 2,
                 encoder_alignment_counts_per_electrical_rev: 80,
+                adc_residual_chop0: crate::commissioning::types::AdcResidualEvidence::EMPTY,
+                adc_residual_chop7: crate::commissioning::types::AdcResidualEvidence::EMPTY,
                 current_gains_source: CURRENT_GAINS_SOURCE_MEASURED,
                 axis_split_source: AXIS_SPLIT_SOURCE_NONE,
                 gains_tier: CURRENT_GAINS_TIER_MEASURED_SYMMETRIC,
@@ -1897,6 +1927,8 @@ mod tests {
                     encoder_alignment_movement_counts: 0,
                     encoder_alignment_min_movement_counts: 0,
                     encoder_alignment_counts_per_electrical_rev: 0,
+                    adc_residual_chop0: crate::commissioning::types::AdcResidualEvidence::EMPTY,
+                    adc_residual_chop7: crate::commissioning::types::AdcResidualEvidence::EMPTY,
                 },
             },
         );

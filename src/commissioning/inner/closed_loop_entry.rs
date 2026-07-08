@@ -16,7 +16,8 @@ use crate::autotune::{
     HoldGateSample, InnerSequence, hold_status_failure_reason,
 };
 use crate::commissioning::types::{
-    AdcCalResult, CommissionResult, CommissioningBackend, InnerResult, StepResult,
+    AdcCalResult, AdcResidualEvidence, CommissionResult, CommissioningBackend, InnerResult,
+    StepResult,
 };
 use crate::tmc::{decode_signed_lower_half, decode_signed_upper_half};
 
@@ -747,6 +748,8 @@ pub(crate) async fn step_closed_loop_entry<B: CommissioningBackend>(
                         encoder_alignment_movement_counts: 0,
                         encoder_alignment_min_movement_counts: 0,
                         encoder_alignment_counts_per_electrical_rev: 0,
+                        adc_residual_chop0: AdcResidualEvidence::EMPTY,
+                        adc_residual_chop7: AdcResidualEvidence::EMPTY,
                     });
                     StepResult::CalibrateDone(adc_result)
                 }
@@ -979,6 +982,8 @@ mod tests {
             encoder_alignment_movement_counts: 0,
             encoder_alignment_min_movement_counts: 0,
             encoder_alignment_counts_per_electrical_rev: 0,
+            adc_residual_chop0: AdcResidualEvidence::EMPTY,
+            adc_residual_chop7: AdcResidualEvidence::EMPTY,
             current_gains_source: crate::autotune::CURRENT_GAINS_SOURCE_MEASURED,
             axis_split_source: crate::autotune::AXIS_SPLIT_SOURCE_NONE,
             gains_tier: crate::autotune::CURRENT_GAINS_TIER_MEASURED_SYMMETRIC,

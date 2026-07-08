@@ -893,6 +893,8 @@ mod tests {
             encoder_alignment_movement_counts: 0,
             encoder_alignment_min_movement_counts: 0,
             encoder_alignment_counts_per_electrical_rev: 0,
+            adc_residual_chop0: crate::commissioning::types::AdcResidualEvidence::EMPTY,
+            adc_residual_chop7: crate::commissioning::types::AdcResidualEvidence::EMPTY,
             current_gains_source: crate::autotune::CURRENT_GAINS_SOURCE_MEASURED,
             axis_split_source: crate::autotune::AXIS_SPLIT_SOURCE_NONE,
             gains_tier: crate::autotune::CURRENT_GAINS_TIER_MEASURED_SYMMETRIC,
@@ -1002,6 +1004,8 @@ mod tests {
             encoder_alignment_movement_counts: 0,
             encoder_alignment_min_movement_counts: 0,
             encoder_alignment_counts_per_electrical_rev: 0,
+            adc_residual_chop0: crate::commissioning::types::AdcResidualEvidence::EMPTY,
+            adc_residual_chop7: crate::commissioning::types::AdcResidualEvidence::EMPTY,
         }
     }
 

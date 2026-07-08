@@ -93,6 +93,8 @@ impl CommissionReplySink for ReplyRecorder {
 
     fn foci_encoder_alignment(&mut self, _report: crate::tmc_diagnostics::EncoderAlignmentReport) {}
 
+    fn foci_adc_residual(&mut self, _report: crate::tmc_diagnostics::AdcResidualReport) {}
+
     fn foci_inductance_run(&mut self, _report: crate::tmc_diagnostics::InductanceRunReport) {}
 
     fn foci_inductance_frame(&mut self, _report: crate::tmc_diagnostics::InductanceFrameReport) {}
@@ -559,6 +561,8 @@ fn calibrate_done_preserves_step_epoch_after_gain_restore() {
             encoder_alignment_movement_counts: 0,
             encoder_alignment_min_movement_counts: 0,
             encoder_alignment_counts_per_electrical_rev: 0,
+            adc_residual_chop0: crate::commissioning::types::AdcResidualEvidence::EMPTY,
+            adc_residual_chop7: crate::commissioning::types::AdcResidualEvidence::EMPTY,
         };
         stepper_state().position.store(42, Ordering::Relaxed);
         tmc_state().motor_armed.store(true, Ordering::Relaxed);
@@ -842,6 +846,8 @@ fn sample_commission_result() -> crate::commissioning::types::CommissionResult {
             encoder_alignment_movement_counts: 0,
             encoder_alignment_min_movement_counts: 0,
             encoder_alignment_counts_per_electrical_rev: 0,
+            adc_residual_chop0: crate::commissioning::types::AdcResidualEvidence::EMPTY,
+            adc_residual_chop7: crate::commissioning::types::AdcResidualEvidence::EMPTY,
             current_gains_source: crate::autotune::CURRENT_GAINS_SOURCE_MEASURED,
             axis_split_source: crate::autotune::AXIS_SPLIT_SOURCE_NONE,
             gains_tier: crate::autotune::CURRENT_GAINS_TIER_MEASURED_SYMMETRIC,

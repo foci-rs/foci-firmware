@@ -45,6 +45,39 @@ pub(crate) enum AdcCalState {
     },
     /// Validate and program offsets.
     Finalize { sum_i0: i32, sum_i1: i32 },
+    /// Wait before sampling zero-current residuals after offset programming.
+    ResidualSettle {
+        stage: AdcResidualStage,
+        offset_i0: u16,
+        offset_i1: u16,
+        chop0: Option<crate::commissioning::types::AdcResidualEvidence>,
+        deadline_us: u64,
+    },
+    /// Collect zero-current residual samples after offset programming.
+    ResidualSample {
+        stage: AdcResidualStage,
+        offset_i0: u16,
+        offset_i1: u16,
+        adc_i0_scale_offset: u32,
+        adc_i1_scale_offset: u32,
+        pwm_sv_chop: u8,
+        pwm_bbm: u32,
+        adc_iux_sum: i32,
+        adc_iwy_sum: i32,
+        pid_flux_sum: i32,
+        pid_torque_sum: i32,
+        count: u16,
+        chop0: Option<crate::commissioning::types::AdcResidualEvidence>,
+    },
+}
+
+/// ADC zero-current residual sampling stage.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+pub(crate) enum AdcResidualStage {
+    /// PWM chopping disabled (`PWM_SV_CHOP=0`).
+    ChopOff,
+    /// PWM chopping restored (`PWM_SV_CHOP=7`).
+    ChopOn,
 }
 
 /// Coil test sub-state (used for both coil A and coil B).

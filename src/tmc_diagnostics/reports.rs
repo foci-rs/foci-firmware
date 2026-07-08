@@ -375,6 +375,33 @@ pub struct EncoderAlignmentReport {
     pub counts_per_electrical_rev: u16,
 }
 
+/// Post-ADC-calibration zero-current residual evidence.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AdcResidualReport {
+    /// Object id of the FOCI endpoint.
+    pub oid: u8,
+    /// `ADC_RESIDUAL_STAGE_*` discriminator.
+    pub stage: u8,
+    /// Number of samples folded into the means.
+    pub sample_count: u8,
+    /// `PWM_SV_CHOP` readback for this residual block.
+    pub pwm_sv_chop: u8,
+    /// `PWM_BBM_H_BBM_L` readback for this residual block.
+    pub pwm_bbm: u32,
+    /// `ADC_I0_SCALE_OFFSET` readback after programming.
+    pub adc_i0_scale_offset: u32,
+    /// `ADC_I1_SCALE_OFFSET` readback after programming.
+    pub adc_i1_scale_offset: u32,
+    /// Mean low-half raw phase-current monitor from `ADC_IWY_IUX`.
+    pub adc_iux_mean_count: i16,
+    /// Mean high-half raw phase-current monitor from `ADC_IWY_IUX`.
+    pub adc_iwy_mean_count: i16,
+    /// Mean low-half measured flux current from `PID_TORQUE_FLUX_ACTUAL`.
+    pub pid_flux_mean_count: i16,
+    /// Mean high-half measured torque current from `PID_TORQUE_FLUX_ACTUAL`.
+    pub pid_torque_mean_count: i16,
+}
+
 /// Run-level current-loop commissioning evidence emitted before the terminal
 /// `foci_commission_result` reply.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

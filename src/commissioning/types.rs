@@ -456,6 +456,10 @@ pub struct InnerResult {
     pub encoder_alignment_min_movement_counts: u16,
     /// Encoder counts per electrical revolution.
     pub encoder_alignment_counts_per_electrical_rev: u16,
+    /// Zero-current ADC residual with PWM chopping disabled.
+    pub adc_residual_chop0: AdcResidualEvidence,
+    /// Zero-current ADC residual with PWM chopping restored.
+    pub adc_residual_chop7: AdcResidualEvidence,
 
     // --- Current-loop synthesis evidence ---
     /// `CURRENT_GAINS_SOURCE_*`.
@@ -609,6 +613,52 @@ pub struct OuterResult {
     pub synth_position_i: u16,
 }
 
+/// ADC residual stage sampled with PWM chopping disabled after offset programming.
+pub const ADC_RESIDUAL_STAGE_CHOP_OFF: u8 = 0;
+/// ADC residual stage sampled with PWM chopping restored after offset programming.
+pub const ADC_RESIDUAL_STAGE_CHOP_ON: u8 = 1;
+
+/// Zero-current ADC residual evidence captured after programming ADC offsets.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+pub struct AdcResidualEvidence {
+    /// `ADC_RESIDUAL_STAGE_*` discriminator.
+    pub stage: u8,
+    /// Number of samples folded into the means.
+    pub sample_count: u8,
+    /// `PWM_SV_CHOP` readback for this residual block.
+    pub pwm_sv_chop: u8,
+    /// `PWM_BBM_H_BBM_L` readback for this residual block.
+    pub pwm_bbm: u32,
+    /// `ADC_I0_SCALE_OFFSET` readback after programming.
+    pub adc_i0_scale_offset: u32,
+    /// `ADC_I1_SCALE_OFFSET` readback after programming.
+    pub adc_i1_scale_offset: u32,
+    /// Mean low-half raw phase-current monitor from `ADC_IWY_IUX`.
+    pub adc_iux_mean_count: i16,
+    /// Mean high-half raw phase-current monitor from `ADC_IWY_IUX`.
+    pub adc_iwy_mean_count: i16,
+    /// Mean low-half measured flux current from `PID_TORQUE_FLUX_ACTUAL`.
+    pub pid_flux_mean_count: i16,
+    /// Mean high-half measured torque current from `PID_TORQUE_FLUX_ACTUAL`.
+    pub pid_torque_mean_count: i16,
+}
+
+impl AdcResidualEvidence {
+    /// Empty evidence used before ADC residual capture has run.
+    pub const EMPTY: Self = Self {
+        stage: ADC_RESIDUAL_STAGE_CHOP_OFF,
+        sample_count: 0,
+        pwm_sv_chop: 0,
+        pwm_bbm: 0,
+        adc_i0_scale_offset: 0,
+        adc_i1_scale_offset: 0,
+        adc_iux_mean_count: 0,
+        adc_iwy_mean_count: 0,
+        pid_flux_mean_count: 0,
+        pid_torque_mean_count: 0,
+    };
+}
+
 /// Result of the calibration subset requested by `new_calibrate`.
 #[derive(Debug, Clone, defmt::Format)]
 pub struct AdcCalResult {
@@ -628,6 +678,10 @@ pub struct AdcCalResult {
     pub encoder_alignment_min_movement_counts: u16,
     /// Encoder counts per electrical revolution.
     pub encoder_alignment_counts_per_electrical_rev: u16,
+    /// Zero-current residual with PWM chopping disabled after offset programming.
+    pub adc_residual_chop0: AdcResidualEvidence,
+    /// Zero-current residual with PWM chopping restored after offset programming.
+    pub adc_residual_chop7: AdcResidualEvidence,
 }
 
 /// Result of Stage 1 commissioning.
