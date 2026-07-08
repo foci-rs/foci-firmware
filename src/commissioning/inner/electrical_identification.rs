@@ -527,7 +527,8 @@ enum InductanceCaptureRejectReason {
     FirstHalfAccumulator = 5,
     SecondHalfAccumulator = 6,
     ElapsedInterpolation = 7,
-    SaliencyBracketInvariant = 8,
+    SaliencyAverageBelowBracket = 9,
+    SaliencyAverageAboveBracket = 10,
 }
 
 impl InductanceCaptureRejectReason {
@@ -573,6 +574,37 @@ fn push_inductance_capture_rejection(
         reason,
         sample_count,
         value2,
+    ));
+}
+
+fn push_inductance_saliency_bracket_rejection(
+    diagnostics: &mut crate::selftest::CommissionDiagnostics,
+    estimate: InductanceEstimateEvidence,
+) {
+    let low = estimate
+        .x_d_count_ratio_milli
+        .min(estimate.x_q_count_ratio_milli);
+    let high = estimate
+        .x_d_count_ratio_milli
+        .max(estimate.x_q_count_ratio_milli);
+    let (reason, bound) = if estimate.x_average_count_ratio_milli < low {
+        (
+            InductanceCaptureRejectReason::SaliencyAverageBelowBracket,
+            low,
+        )
+    } else {
+        (
+            InductanceCaptureRejectReason::SaliencyAverageAboveBracket,
+            high,
+        )
+    };
+    diagnostics.push(inductance_capture_rejection_diagnostic(
+        reason,
+        estimate.saliency_permille,
+        pack_u16_pair(
+            low_u16(estimate.x_average_count_ratio_milli),
+            low_u16(bound),
+        ),
     ));
 }
 
@@ -808,15 +840,7 @@ async fn capture_inductance_ac_window<B: CommissioningBackend>(
         if evidence.estimate.saliency_status == crate::electrical_capture::AC_SALIENCY_DETERMINABLE
             && !evidence.estimate.brackets_average()
         {
-            push_inductance_capture_rejection(
-                diagnostics,
-                InductanceCaptureRejectReason::SaliencyBracketInvariant,
-                capture.sample_count,
-                pack_u16_pair(
-                    low_u16(evidence.estimate.x_d_count_ratio_milli),
-                    low_u16(evidence.estimate.x_q_count_ratio_milli),
-                ),
-            );
+            push_inductance_saliency_bracket_rejection(diagnostics, evidence.estimate);
             return Err(CommissionError::InductanceCaptureRejected);
         }
         return Ok(evidence);
@@ -1736,6 +1760,55 @@ mod tests {
             .iter()
             .find(|event| event.phase == PhaseId::ElectricalId.to_u8() && event.code == 33)
             .expect("inductance capture rejection should retain branch detail")
+    }
+
+    #[test]
+    fn saliency_bracket_rejection_records_violated_bound() {
+        let mut diagnostics = crate::selftest::CommissionDiagnostics::default();
+
+        push_inductance_saliency_bracket_rejection(
+            &mut diagnostics,
+            InductanceEstimateEvidence {
+                x_average_count_ratio_milli: 8_500,
+                x_d_count_ratio_milli: 8_616,
+                x_q_count_ratio_milli: 8_552,
+                saliency_status: crate::electrical_capture::AC_SALIENCY_DETERMINABLE,
+                saliency_permille: 7,
+                x_mag_nominal_count_ratio_milli: 0,
+                x_mag_shift_minus_permille: 0,
+                x_mag_shift_plus_permille: 0,
+                x_mag_vs_quad_permille: 0,
+            },
+        );
+        push_inductance_saliency_bracket_rejection(
+            &mut diagnostics,
+            InductanceEstimateEvidence {
+                x_average_count_ratio_milli: 8_700,
+                x_d_count_ratio_milli: 8_616,
+                x_q_count_ratio_milli: 8_552,
+                saliency_status: crate::electrical_capture::AC_SALIENCY_DETERMINABLE,
+                saliency_permille: 7,
+                x_mag_nominal_count_ratio_milli: 0,
+                x_mag_shift_minus_permille: 0,
+                x_mag_shift_plus_permille: 0,
+                x_mag_vs_quad_permille: 0,
+            },
+        );
+
+        let mut details = diagnostics.iter();
+        let below = details
+            .next()
+            .expect("below-bound saliency diagnostic missing");
+        assert_eq!(below.value0, 9);
+        assert_eq!(below.value1, 7);
+        assert_eq!(below.value2, (8_500u32 << 16) | 8_552);
+
+        let above = details
+            .next()
+            .expect("above-bound saliency diagnostic missing");
+        assert_eq!(above.value0, 10);
+        assert_eq!(above.value1, 7);
+        assert_eq!(above.value2, (8_700u32 << 16) | 8_616);
     }
 
     #[test]
