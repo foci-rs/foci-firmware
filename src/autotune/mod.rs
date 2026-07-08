@@ -76,9 +76,9 @@ pub use position::{
 };
 pub use types::{
     CLOSED_LOOP_ENTRY_STATUS_FAIL_DRIFT, CLOSED_LOOP_ENTRY_STATUS_FAIL_RUNAWAY,
-    CLOSED_LOOP_ENTRY_STATUS_NOT_RUN, CLOSED_LOOP_ENTRY_STATUS_PASS, ClosedLoopEntryState,
-    CommissionError, CommissionProfile, CommissionStatus, InnerSequence, OperatingMode, PhaseId,
-    SavedGains, ValidationResult,
+    CLOSED_LOOP_ENTRY_STATUS_NOT_RUN, CLOSED_LOOP_ENTRY_STATUS_PASS,
+    CLOSED_LOOP_ENTRY_STATUS_WARN_DRIFT, ClosedLoopEntryState, CommissionError, CommissionProfile,
+    CommissionStatus, InnerSequence, OperatingMode, PhaseId, SavedGains, ValidationResult,
 };
 pub(crate) use velocity::simc_velocity_gains_with_lambda_multiplier;
 pub use velocity::{

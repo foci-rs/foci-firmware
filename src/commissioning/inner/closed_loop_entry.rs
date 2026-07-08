@@ -5,15 +5,15 @@
 //! voltage limit, locks `PHI_E_SELECTION` to the ABN encoder, zeros the
 //! position registers and PID integrators, programs `STEP_WIDTH` and
 //! biquad filters, enters position mode, and runs a 30 ms two-sample
-//! stability check that aborts on runaway or drift.
+//! stability check that aborts on runaway or large drift.
 
 use super::InnerPhase;
 use crate::autotune::{
     CLOSED_LOOP_ENTRY_STATUS_FAIL_DRIFT, CLOSED_LOOP_ENTRY_STATUS_FAIL_RUNAWAY,
-    CLOSED_LOOP_ENTRY_STATUS_PASS, ClosedLoopEntryState, CommissionError, CommissionStatus,
-    HOLD_GATE_DWELL_US, HOLD_GATE_MAX_SAMPLES, HOLD_GATE_SAMPLE_PERIOD_US, HOLD_GATE_STATUS_PASS,
-    HoldGateAccumulator, HoldGateMetrics, HoldGateSample, InnerSequence,
-    hold_status_failure_reason,
+    CLOSED_LOOP_ENTRY_STATUS_PASS, CLOSED_LOOP_ENTRY_STATUS_WARN_DRIFT, ClosedLoopEntryState,
+    CommissionError, CommissionStatus, HOLD_GATE_DWELL_US, HOLD_GATE_MAX_SAMPLES,
+    HOLD_GATE_SAMPLE_PERIOD_US, HOLD_GATE_STATUS_PASS, HoldGateAccumulator, HoldGateMetrics,
+    HoldGateSample, InnerSequence, hold_status_failure_reason,
 };
 use crate::commissioning::types::{
     AdcCalResult, CommissionResult, CommissioningBackend, InnerResult, StepResult,
@@ -27,6 +27,7 @@ const CLOSED_LOOP_MOTOR_TYPE_N_POLE_PAIRS: u32 = (2 << 16) | 50;
 const CLOSED_LOOP_PHI_E_SELECTION: u32 = 3;
 const CLOSED_LOOP_POSITION_MODE: u32 = 0x8000_0003;
 const CLOSED_LOOP_ENTRY_STABILITY_THRESHOLD: u32 = 2;
+const CLOSED_LOOP_ENTRY_BOUNDED_DRIFT_WARN_THRESHOLD: u32 = 64;
 const CLOSED_LOOP_ENTRY_RUNAWAY_THRESHOLD: u32 = 32760; // ~40 steps
 
 async fn verify_closed_loop_armed_state<B: CommissioningBackend>(
@@ -670,10 +671,35 @@ pub(crate) async fn step_closed_loop_entry<B: CommissioningBackend>(
                 return super::fail_inner(phase, CommissionError::ClosedLoopEntryUnstable);
             }
 
-            // Stability check: position must not be drifting.
-            // Threshold of 2 encoder counts between 10ms and 30ms
-            // readings indicates the motor is holding position.
+            // Stability check: a small two-sample drift can be a bounded
+            // hunt. In commissioning, keep it as evidence and let the
+            // sustained-hold sampler decide with a longer window; larger
+            // walk-off and all non-commissioning drift remain hard failures.
             let drift = (pos2.wrapping_sub(*position_1)).unsigned_abs();
+            if drift > CLOSED_LOOP_ENTRY_STABILITY_THRESHOLD
+                && matches!(sequence, InnerSequence::Commission)
+                && drift <= CLOSED_LOOP_ENTRY_BOUNDED_DRIFT_WARN_THRESHOLD
+            {
+                defmt::warn!(
+                    "closed-loop: bounded entry drift: pos1={}, pos2={}, drift={}",
+                    position_1,
+                    pos2,
+                    drift
+                );
+                if let Some(inner) = inner_result.as_mut() {
+                    copy_closed_loop_entry_metrics(
+                        inner,
+                        CLOSED_LOOP_ENTRY_STATUS_WARN_DRIFT,
+                        *position_1,
+                        pos2,
+                        drift,
+                        false,
+                    );
+                }
+                *cle_state = ClosedLoopEntryState::SustainedHoldStart;
+                return StepResult::Continue;
+            }
+
             if drift > CLOSED_LOOP_ENTRY_STABILITY_THRESHOLD {
                 defmt::error!(
                     "closed-loop: unstable: pos1={}, pos2={}, drift={}",
@@ -1295,6 +1321,60 @@ mod tests {
     }
 
     #[test]
+    fn commission_bounded_entry_drift_runs_sustained_hold_with_warning_evidence() {
+        pollster::block_on(async {
+            let mut phase = closed_loop_phase_at(ClosedLoopEntryState::StabilityCheck2 {
+                position_1: 0,
+                deadline_us: 0,
+            });
+            let mut adc_cal = None;
+            let mut backend = MockBackend::new();
+            backend
+                .registers
+                .insert(PID_POSITION_ACTUAL.addr(), 17)
+                .ok();
+
+            let result = step_closed_loop_entry(
+                &mut phase,
+                InnerSequence::Commission,
+                &mut adc_cal,
+                &mut backend,
+            )
+            .await;
+
+            assert!(matches!(result, StepResult::Continue));
+            let InnerPhase::ClosedLoopEntry {
+                state: ClosedLoopEntryState::SustainedHoldStart,
+                inner_result: Some(inner),
+                ..
+            } = phase
+            else {
+                panic!("expected bounded entry drift to continue into sustained hold");
+            };
+            assert_eq!(inner.status, CommissionStatus::Accepted);
+            assert_eq!(
+                inner.current_loop_failure_reason,
+                crate::autotune::CURRENT_LOOP_FAILURE_NONE
+            );
+            assert_eq!(
+                inner.closed_loop_entry_status,
+                CLOSED_LOOP_ENTRY_STATUS_WARN_DRIFT
+            );
+            assert_eq!(inner.closed_loop_entry_position_1, 0);
+            assert_eq!(inner.closed_loop_entry_position_2, 17);
+            assert_eq!(inner.closed_loop_entry_drift_count, 17);
+            assert_eq!(inner.closed_loop_entry_threshold_count, 2);
+            assert_eq!(inner.closed_loop_entry_runaway, 0);
+            assert!(
+                !write_log(&backend)
+                    .as_slice()
+                    .contains(&(MODE_RAMP_MODE_MOTION.addr(), 0)),
+                "bounded entry drift must leave position mode active for sustained hold"
+            );
+        });
+    }
+
+    #[test]
     fn calibrate_skips_sustained_hold_after_fast_stability_check() {
         pollster::block_on(async {
             let mut phase = closed_loop_phase_at(ClosedLoopEntryState::StabilityCheck2 {
@@ -1347,15 +1427,18 @@ mod tests {
     }
 
     #[test]
-    fn commission_stability_drift_returns_failed_result_with_entry_evidence() {
+    fn commission_large_entry_drift_returns_failed_result_with_entry_evidence() {
         pollster::block_on(async {
             let mut phase = closed_loop_phase_at(ClosedLoopEntryState::StabilityCheck2 {
-                position_1: -3,
+                position_1: 0,
                 deadline_us: 0,
             });
             let mut adc_cal = None;
             let mut backend = MockBackend::new();
-            backend.registers.insert(PID_POSITION_ACTUAL.addr(), 4).ok();
+            backend
+                .registers
+                .insert(PID_POSITION_ACTUAL.addr(), 65)
+                .ok();
 
             let result = step_closed_loop_entry(
                 &mut phase,
@@ -1373,10 +1456,13 @@ mod tests {
                 CommissionStatus::Failed(CommissionError::ClosedLoopEntryUnstable)
             );
             assert_eq!(result.inner.current_loop_failure_reason, 17);
-            assert_eq!(result.inner.closed_loop_entry_status, 3);
-            assert_eq!(result.inner.closed_loop_entry_position_1, -3);
-            assert_eq!(result.inner.closed_loop_entry_position_2, 4);
-            assert_eq!(result.inner.closed_loop_entry_drift_count, 7);
+            assert_eq!(
+                result.inner.closed_loop_entry_status,
+                CLOSED_LOOP_ENTRY_STATUS_FAIL_DRIFT
+            );
+            assert_eq!(result.inner.closed_loop_entry_position_1, 0);
+            assert_eq!(result.inner.closed_loop_entry_position_2, 65);
+            assert_eq!(result.inner.closed_loop_entry_drift_count, 65);
             assert_eq!(result.inner.closed_loop_entry_threshold_count, 2);
             assert_eq!(result.inner.closed_loop_entry_runaway, 0);
             assert!(

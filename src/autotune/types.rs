@@ -462,6 +462,8 @@ pub const CLOSED_LOOP_ENTRY_STATUS_PASS: u8 = 1;
 pub const CLOSED_LOOP_ENTRY_STATUS_FAIL_RUNAWAY: u8 = 2;
 /// Closed-loop entry detected bounded position drift above the threshold.
 pub const CLOSED_LOOP_ENTRY_STATUS_FAIL_DRIFT: u8 = 3;
+/// Closed-loop entry detected bounded drift accepted for downstream hold sampling.
+pub const CLOSED_LOOP_ENTRY_STATUS_WARN_DRIFT: u8 = 4;
 
 /// Controls which phases run and in what order for the inner engine.
 ///
