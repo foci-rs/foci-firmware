@@ -245,6 +245,9 @@ pub(crate) enum ElectricalIdState {
 /// next phase. The dispatcher `step_inner` selects the matching
 /// submodule's `step_*` function each tick; long-running register
 /// operations can be chunked across 1ms `step()` calls.
+// Commissioning is no-heap firmware, so large phase payloads stay inline rather
+// than using Box/alloc indirection.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, defmt::Format)]
 pub(crate) enum InnerPhase {
     /// Phase 1: ADC offset calibration.

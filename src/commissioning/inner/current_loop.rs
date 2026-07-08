@@ -80,8 +80,10 @@ pub(crate) struct CurrentValidateData {
     pub(crate) flux_attempt: u8,
     /// Torque-axis validation retry attempt index carried in evidence.
     pub(crate) torque_attempt: u8,
-    /// Current step amplitude (absolute torque/flux current target counts).
-    pub(crate) step_amplitude: u16,
+    /// Flux-axis step amplitude (absolute current target counts).
+    pub(crate) flux_step_amplitude: u16,
+    /// Torque-axis step amplitude (absolute current target counts).
+    pub(crate) torque_step_amplitude: u16,
     /// Final commissioning status to report.
     pub(crate) final_status: CommissionStatus,
     /// Configured PIDOUT voltage limit for saturation detection.
@@ -142,6 +144,10 @@ pub(crate) enum CurrentValidationAxis {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub(crate) struct AxisDirectionalEvidence {
+    same_axis_total: i32,
+    same_axis_sample_count: u8,
+    cross_axis_total: i32,
+    cross_axis_sample_count: u8,
     gate: CurrentAxisGateResult,
     encoder_delta_counts: i32,
     cross_axis_peak_permille: u16,
@@ -178,6 +184,13 @@ const TORQUE_VALIDATION_DELAYS_MS: [u16; crate::autotune::CURRENT_TORQUE_VALIDAT
 const SETTLED_FLUX_SAMPLE_DELAY_MS: u16 = 100;
 const SETTLED_FLUX_AVERAGE_SAMPLES: usize = 4;
 const SETTLED_FLUX_AVERAGE_INTERVAL_US: u32 = 250;
+const SETTLED_FLUX_MIN_RESPONSE_PERMILLE: u16 = 850;
+const SETTLED_FLUX_MAX_RESPONSE_PERMILLE: u16 = 1150;
+
+///
+/// The torque validation path stays at the lower signal-floor target to avoid
+/// adding torque exposure while testing the flux settled-gate SNR.
+const SETTLED_FLUX_VALIDATION_STEP_AMPLITUDE: u32 = 224;
 
 /// PID output voltage limit used during current-loop validation.
 ///
@@ -188,7 +201,7 @@ const SETTLED_FLUX_AVERAGE_INTERVAL_US: u32 = 250;
 const CURRENT_VALIDATE_PIDOUT_LIMIT: u32 = 2000;
 /// Highest validation PIDOUT limit the tune phase may request to keep the
 /// minimum current signal above the quantization floor at high physical P.
-const CURRENT_VALIDATE_PIDOUT_MAX_LIMIT: u32 = 2400;
+const CURRENT_VALIDATE_PIDOUT_MAX_LIMIT: u32 = 5000;
 const CURRENT_SAFE_PIDOUT_LIMIT: u32 = 1024;
 
 /// `MODE_RAMP_MODE_MOTION` value for advanced PI torque mode.
@@ -208,7 +221,8 @@ fn validation_target_register(axis: CurrentValidationAxis, target: i16) -> u32 {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct ValidationEnvelope {
-    step_amplitude: u16,
+    flux_step_amplitude: u16,
+    torque_step_amplitude: u16,
     pidout_limit: u32,
     current_limited: u32,
     voltage_limited: u32,
@@ -242,26 +256,27 @@ fn validation_envelope(current_limit: u32, gains: CurrentGains) -> Option<Valida
         return None;
     }
 
+    let flux_requested = current_limited.min(SETTLED_FLUX_VALIDATION_STEP_AMPLITUDE);
+    let torque_requested = current_limited.min(u32::from(VALIDATION_MIN_STEP_AMPLITUDE));
+    let required_target = flux_requested.max(torque_requested);
+
     let mut pidout_limit = CURRENT_VALIDATE_PIDOUT_LIMIT;
     let mut voltage_limited = voltage_limited_validation_target(pidout_limit, max_p);
-    if voltage_limited < u32::from(VALIDATION_MIN_STEP_AMPLITUDE) {
-        pidout_limit = required_pidout_limit_for_validation_target(
-            u32::from(VALIDATION_MIN_STEP_AMPLITUDE),
-            max_p,
-        )?
-        .max(CURRENT_VALIDATE_PIDOUT_LIMIT);
+    if voltage_limited < required_target {
+        pidout_limit = required_pidout_limit_for_validation_target(required_target, max_p)?
+            .max(CURRENT_VALIDATE_PIDOUT_LIMIT);
         if pidout_limit > CURRENT_VALIDATE_PIDOUT_MAX_LIMIT {
             return None;
         }
         voltage_limited = voltage_limited_validation_target(pidout_limit, max_p);
     }
-    let amplitude = current_limited.min(voltage_limited);
-    if amplitude < u32::from(VALIDATION_MIN_STEP_AMPLITUDE) {
+    if voltage_limited < required_target {
         return None;
     }
 
     Some(ValidationEnvelope {
-        step_amplitude: amplitude.min(u16::MAX as u32) as u16,
+        flux_step_amplitude: flux_requested.min(u16::MAX as u32) as u16,
+        torque_step_amplitude: torque_requested.min(u16::MAX as u32) as u16,
         pidout_limit,
         current_limited,
         voltage_limited,
@@ -270,11 +285,19 @@ fn validation_envelope(current_limit: u32, gains: CurrentGains) -> Option<Valida
 }
 
 fn apply_validation_envelope(data: &mut CurrentValidateData, validation: ValidationEnvelope) {
-    data.step_amplitude = validation.step_amplitude;
+    data.flux_step_amplitude = validation.flux_step_amplitude;
+    data.torque_step_amplitude = validation.torque_step_amplitude;
     data.pidout_limit = validation.pidout_limit;
     data.current_limited = validation.current_limited;
     data.voltage_limited = validation.voltage_limited;
     data.max_p = validation.max_p;
+}
+
+fn validation_step_amplitude(data: &CurrentValidateData, axis: CurrentValidationAxis) -> u16 {
+    match axis {
+        CurrentValidationAxis::Flux => data.flux_step_amplitude,
+        CurrentValidationAxis::Torque => data.torque_step_amplitude,
+    }
 }
 
 fn signed_lower_half(value: u32) -> i16 {
@@ -412,7 +435,10 @@ fn validation_gate(
         // is reported, but response-only misses do not block axis acceptance;
         // the 100 ms sample below is the steady-state closure gate.
         (CurrentValidationAxis::Flux, 5) => (850, 1150),
-        (CurrentValidationAxis::Flux, _) => (850, 1150),
+        (CurrentValidationAxis::Flux, _) => (
+            SETTLED_FLUX_MIN_RESPONSE_PERMILLE,
+            SETTLED_FLUX_MAX_RESPONSE_PERMILLE,
+        ),
         // Zero-delay torque is an earliest-possible geometry discriminator.
         // Keep safety/status/cross-axis gates active, but do not make an
         // intentionally pre-settle response magnitude block commissioning.
@@ -445,25 +471,55 @@ fn first_axis_step(axis: CurrentValidationAxis) -> CurrentValidateState {
 }
 
 fn combine_axis_pair_evidence(
+    axis: CurrentValidationAxis,
     attempt: u8,
     target: i16,
     sample_delay_ms: u16,
     positive: AxisDirectionalEvidence,
     negative: AxisDirectionalEvidence,
 ) -> CurrentValidationAxisEvidence {
-    let status = merge_axis_pair_status(positive.gate.status, negative.gate.status);
+    let mut positive_response = positive.gate.response_permille;
+    let mut negative_response = negative.gate.response_permille;
+    let mut cross_axis_permille = positive
+        .gate
+        .cross_axis_permille
+        .max(negative.gate.cross_axis_permille);
+    let status = if should_average_current_sample(axis, sample_delay_ms) {
+        let pair_response = bidirectional_pair_response_permille(target, &positive, &negative);
+        let pair_error_count =
+            bidirectional_pair_response_error_count(target, &positive, &negative);
+        let pair_cross_available =
+            bidirectional_pair_cross_axis_parts(&positive, &negative).is_some();
+        let pair_cross = bidirectional_pair_cross_axis_permille(target, &positive, &negative);
+        let pair_cross_count = bidirectional_pair_cross_axis_count(&positive, &negative);
+        positive_response = pair_response;
+        negative_response = pair_response;
+        cross_axis_permille = pair_cross;
+        let safety_status = merge_axis_pair_status(
+            pair_centered_free_axis_status(positive.gate.status, pair_cross_available),
+            pair_centered_free_axis_status(negative.gate.status, pair_cross_available),
+        );
+        if safety_status != crate::autotune::CURRENT_AXIS_VALIDATION_PASS {
+            safety_status
+        } else if pair_cross_axis_status(pair_cross, pair_cross_count)
+            != crate::autotune::CURRENT_AXIS_VALIDATION_PASS
+        {
+            crate::autotune::CURRENT_AXIS_VALIDATION_CROSS_AXIS
+        } else {
+            pair_response_status(pair_response, pair_error_count)
+        }
+    } else {
+        merge_axis_pair_status(positive.gate.status, negative.gate.status)
+    };
 
     CurrentValidationAxisEvidence {
         status,
         attempt,
         target,
         sample_delay_ms,
-        positive_response_permille: positive.gate.response_permille,
-        negative_response_permille: negative.gate.response_permille,
-        cross_axis_permille: positive
-            .gate
-            .cross_axis_permille
-            .max(negative.gate.cross_axis_permille),
+        positive_response_permille: positive_response,
+        negative_response_permille: negative_response,
+        cross_axis_permille,
         cross_axis_peak_permille: positive
             .cross_axis_peak_permille
             .max(negative.cross_axis_peak_permille),
@@ -478,6 +534,154 @@ fn combine_axis_pair_evidence(
         positive_encoder_delta_counts: positive.encoder_delta_counts,
         negative_encoder_delta_counts: negative.encoder_delta_counts,
         status_flags_or: positive.status_flags | negative.status_flags,
+    }
+}
+
+fn pair_centered_free_axis_status(status: u8, pair_cross_available: bool) -> u8 {
+    let status = response_free_axis_status(status);
+    if pair_cross_available && status == crate::autotune::CURRENT_AXIS_VALIDATION_CROSS_AXIS {
+        crate::autotune::CURRENT_AXIS_VALIDATION_PASS
+    } else {
+        status
+    }
+}
+
+fn response_free_axis_status(status: u8) -> u8 {
+    match status {
+        crate::autotune::CURRENT_AXIS_VALIDATION_LOW_RESPONSE
+        | crate::autotune::CURRENT_AXIS_VALIDATION_HIGH_RESPONSE => {
+            crate::autotune::CURRENT_AXIS_VALIDATION_PASS
+        }
+        other => other,
+    }
+}
+
+fn bidirectional_pair_response_parts(
+    positive: &AxisDirectionalEvidence,
+    negative: &AxisDirectionalEvidence,
+) -> Option<(u64, u64)> {
+    let positive_count = i64::from(positive.same_axis_sample_count);
+    let negative_count = i64::from(negative.same_axis_sample_count);
+    if positive_count <= 0 || negative_count <= 0 {
+        return None;
+    }
+    let numerator = (i64::from(positive.same_axis_total) * negative_count
+        - i64::from(negative.same_axis_total) * positive_count)
+        .unsigned_abs();
+    let denominator = (2 * positive_count * negative_count) as u64;
+    Some((numerator, denominator))
+}
+
+fn bidirectional_pair_response_permille(
+    target: i16,
+    positive: &AxisDirectionalEvidence,
+    negative: &AxisDirectionalEvidence,
+) -> u16 {
+    let target_abs = target.unsigned_abs().max(1) as u64;
+    let Some((numerator, denominator)) = bidirectional_pair_response_parts(positive, negative)
+    else {
+        return positive
+            .gate
+            .response_permille
+            .max(negative.gate.response_permille);
+    };
+    ((numerator * 1000) / (denominator * target_abs)).min(u64::from(u16::MAX)) as u16
+}
+
+fn bidirectional_pair_response_error_count(
+    target: i16,
+    positive: &AxisDirectionalEvidence,
+    negative: &AxisDirectionalEvidence,
+) -> u16 {
+    let target_abs = u32::from(target.unsigned_abs());
+    let Some((numerator, denominator)) = bidirectional_pair_response_parts(positive, negative)
+    else {
+        let response_count = positive
+            .gate
+            .response_permille
+            .max(negative.gate.response_permille) as u32
+            * target_abs
+            / 1000;
+        return response_count.abs_diff(target_abs).min(u32::from(u16::MAX)) as u16;
+    };
+    let response_count = ((numerator + denominator / 2) / denominator) as u32;
+    response_count.abs_diff(target_abs).min(u32::from(u16::MAX)) as u16
+}
+
+fn bidirectional_pair_cross_axis_parts(
+    positive: &AxisDirectionalEvidence,
+    negative: &AxisDirectionalEvidence,
+) -> Option<(u64, u64)> {
+    let positive_count = i64::from(positive.cross_axis_sample_count);
+    let negative_count = i64::from(negative.cross_axis_sample_count);
+    if positive_count <= 0 || negative_count <= 0 {
+        return None;
+    }
+    let numerator = (i64::from(positive.cross_axis_total) * negative_count
+        - i64::from(negative.cross_axis_total) * positive_count)
+        .unsigned_abs();
+    let denominator = (2 * positive_count * negative_count) as u64;
+    Some((numerator, denominator))
+}
+
+fn bidirectional_pair_cross_axis_permille(
+    target: i16,
+    positive: &AxisDirectionalEvidence,
+    negative: &AxisDirectionalEvidence,
+) -> u16 {
+    let target_abs = target.unsigned_abs().max(1) as u64;
+    let Some((numerator, denominator)) = bidirectional_pair_cross_axis_parts(positive, negative)
+    else {
+        return positive
+            .gate
+            .cross_axis_permille
+            .max(negative.gate.cross_axis_permille);
+    };
+    ((numerator * 1000) / (denominator * target_abs)).min(u64::from(u16::MAX)) as u16
+}
+
+fn bidirectional_pair_cross_axis_count(
+    positive: &AxisDirectionalEvidence,
+    negative: &AxisDirectionalEvidence,
+) -> u16 {
+    let Some((numerator, denominator)) = bidirectional_pair_cross_axis_parts(positive, negative)
+    else {
+        return u16::MAX;
+    };
+    ((numerator + denominator / 2) / denominator).min(u64::from(u16::MAX)) as u16
+}
+
+fn pair_cross_axis_status(cross_axis_permille: u16, cross_axis_count: u16) -> u8 {
+    let gate = CurrentAxisGate::commissioning_short_sample(
+        SETTLED_FLUX_MIN_RESPONSE_PERMILLE,
+        SETTLED_FLUX_MAX_RESPONSE_PERMILLE,
+        u16::MAX,
+    );
+    if cross_axis_count > gate.min_cross_axis_fault_count
+        && cross_axis_permille > gate.max_cross_axis_permille
+    {
+        crate::autotune::CURRENT_AXIS_VALIDATION_CROSS_AXIS
+    } else {
+        crate::autotune::CURRENT_AXIS_VALIDATION_PASS
+    }
+}
+
+fn pair_response_status(response_permille: u16, response_error_count: u16) -> u8 {
+    let gate = CurrentAxisGate::commissioning_short_sample(
+        SETTLED_FLUX_MIN_RESPONSE_PERMILLE,
+        SETTLED_FLUX_MAX_RESPONSE_PERMILLE,
+        u16::MAX,
+    );
+    if response_error_count > gate.min_response_fault_delta_count
+        && response_permille < gate.min_response_permille
+    {
+        crate::autotune::CURRENT_AXIS_VALIDATION_LOW_RESPONSE
+    } else if response_error_count > gate.min_response_fault_delta_count
+        && response_permille > gate.max_response_permille
+    {
+        crate::autotune::CURRENT_AXIS_VALIDATION_HIGH_RESPONSE
+    } else {
+        crate::autotune::CURRENT_AXIS_VALIDATION_PASS
     }
 }
 
@@ -533,6 +737,10 @@ fn directional_evidence_from_sample<B: CommissioningBackend>(
     );
 
     AxisDirectionalEvidence {
+        same_axis_total: i32::from(sample.same_axis_actual),
+        same_axis_sample_count: 1,
+        cross_axis_total: i32::from(sample.cross_axis_actual),
+        cross_axis_sample_count: 1,
         cross_axis_peak_permille: gate.cross_axis_permille,
         gate,
         encoder_delta_counts: sample.encoder_delta_counts,
@@ -594,6 +802,7 @@ async fn read_axis_directional_evidence_for_gate<B: CommissioningBackend>(
 
     let mut same_axis_total = 0i32;
     let mut cross_axis_total = 0i32;
+    let mut same_axis_sample_count = 0u8;
     let mut output_limited_peak = 0i16;
     let mut encoder_delta_peak = 0i32;
     let mut status_flags_or = 0u32;
@@ -601,7 +810,7 @@ async fn read_axis_directional_evidence_for_gate<B: CommissioningBackend>(
     let mut settled_samples =
         [CurrentValidationSettledSampleEvidence::EMPTY; SETTLED_FLUX_AVERAGE_SAMPLES];
 
-    for index in 0..SETTLED_FLUX_AVERAGE_SAMPLES {
+    for (index, settled_sample) in settled_samples.iter_mut().enumerate() {
         let sample = read_axis_sample(
             backend,
             axis,
@@ -613,14 +822,15 @@ async fn read_axis_directional_evidence_for_gate<B: CommissioningBackend>(
         .await?;
 
         same_axis_total += i32::from(sample.same_axis_actual);
+        same_axis_sample_count = same_axis_sample_count.saturating_add(1);
         cross_axis_total += i32::from(sample.cross_axis_actual);
         output_limited_peak = max_abs_i16(output_limited_peak, sample.output_limited);
         encoder_delta_peak = max_abs_i32(encoder_delta_peak, sample.encoder_delta_counts);
         status_flags_or |= sample.status_flags;
         cross_axis_peak_permille = cross_axis_peak_permille.max(cross_axis_permille(&sample));
-        settled_samples[index] =
+        *settled_sample =
             settled_sample_evidence_from_sample(backend, axis, sample_delay_ms, &sample);
-        settled_samples[index].raw_index = index as u8;
+        settled_sample.raw_index = index as u8;
 
         if index + 1 < SETTLED_FLUX_AVERAGE_SAMPLES {
             backend.delay_us(SETTLED_FLUX_AVERAGE_INTERVAL_US).await;
@@ -639,6 +849,10 @@ async fn read_axis_directional_evidence_for_gate<B: CommissioningBackend>(
     };
     let mut evidence =
         directional_evidence_from_sample(backend, axis, sample_delay_ms, averaged_sample);
+    evidence.same_axis_total = same_axis_total;
+    evidence.same_axis_sample_count = same_axis_sample_count;
+    evidence.cross_axis_total = cross_axis_total;
+    evidence.cross_axis_sample_count = same_axis_sample_count;
     evidence.cross_axis_peak_permille = cross_axis_peak_permille;
     evidence.settled_sample_count = SETTLED_FLUX_AVERAGE_SAMPLES as u8;
     evidence.settled_samples = settled_samples;
@@ -706,9 +920,11 @@ fn advance_after_directional_sample(
                 .take()
                 .ok_or(CommissionError::CurrentValidationFailed)?;
             append_settled_samples(data, axis, sample_index, &positive, &directional);
+            let step_amplitude = validation_step_amplitude(data, axis);
             let evidence = combine_axis_pair_evidence(
+                axis,
                 axis_attempt(data, axis),
-                data.step_amplitude as i16,
+                step_amplitude as i16,
                 sample_delay_ms,
                 positive,
                 directional,
@@ -1078,7 +1294,8 @@ pub(crate) async fn step_current_tune<B: CommissioningBackend>(
             candidate_attempt: 0,
             flux_attempt: 0,
             torque_attempt: 0,
-            step_amplitude: validation.step_amplitude,
+            flux_step_amplitude: validation.flux_step_amplitude,
+            torque_step_amplitude: validation.torque_step_amplitude,
             final_status: CommissionStatus::Accepted,
             pidout_limit: validation.pidout_limit,
             current_limited: validation.current_limited,
@@ -1143,6 +1360,10 @@ pub(crate) async fn step_current_validate<B: CommissioningBackend>(
                 .is_err()
                 || backend
                     .write_register(PID_TORQUE_P_TORQUE_I, torque_reg)
+                    .await
+                    .is_err()
+                || backend
+                    .write_register(PID_TORQUE_FLUX_LIMITS, backend.current_limit())
                     .await
                     .is_err()
                 || backend
@@ -1219,9 +1440,10 @@ pub(crate) async fn step_current_validate<B: CommissioningBackend>(
                 Err(_) => return super::fail_inner(phase, CommissionError::Spi),
             };
 
+            let step_amplitude = validation_step_amplitude(data, axis);
             let target = match dir {
-                CaptureDirection::Forward => data.step_amplitude as i16,
-                CaptureDirection::Reverse => -(data.step_amplitude as i16),
+                CaptureDirection::Forward => step_amplitude as i16,
+                CaptureDirection::Reverse => -(step_amplitude as i16),
             };
             if backend
                 .write_register(
@@ -1317,9 +1539,10 @@ pub(crate) async fn step_current_validate<B: CommissioningBackend>(
             let sample_delay_ms = *sample_delay_ms;
             let dir = *direction;
 
+            let step_amplitude = validation_step_amplitude(data, axis);
             let target = match dir {
-                CaptureDirection::Forward => data.step_amplitude as i16,
-                CaptureDirection::Reverse => -(data.step_amplitude as i16),
+                CaptureDirection::Forward => step_amplitude as i16,
+                CaptureDirection::Reverse => -(step_amplitude as i16),
             };
             let directional = match read_axis_directional_evidence_for_gate(
                 backend,
@@ -1624,7 +1847,9 @@ pub(crate) async fn step_current_validate<B: CommissioningBackend>(
                 current_hold_flux_crossing_count: 0,
                 current_hold_status_flags_or: 0,
                 current_hold_actionable_status_count: 0,
-                current_validation_step_amplitude: data.step_amplitude,
+                current_validation_step_amplitude: data.flux_step_amplitude,
+                current_validation_flux_step_amplitude: data.flux_step_amplitude,
+                current_validation_torque_step_amplitude: data.torque_step_amplitude,
                 current_validation_pidout_limit: data.pidout_limit.min(u16::MAX as u32) as u16,
                 current_validation_current_limited: data.current_limited.min(u16::MAX as u32)
                     as u16,
@@ -1718,8 +1943,8 @@ mod tests {
     use foci_tmc4671::registers::{
         ABN_DECODER_PPR, INTERIM_FOC_UQ_UD_LIMITED, MODE_RAMP_MODE_MOTION, PHI_E_SELECTION,
         PID_ERROR_PID_FLUX_ERROR_SUM, PID_ERROR_PID_TORQUE_ERROR_SUM, PID_FLUX_P_FLUX_I,
-        PID_TORQUE_FLUX_ACTUAL, PID_TORQUE_FLUX_TARGET, PID_TORQUE_P_TORQUE_I, PIDOUT_UQ_UD_LIMITS,
-        PWM_SV_CHOP, STATUS_FLAGS, UQ_UD_EXT,
+        PID_TORQUE_FLUX_ACTUAL, PID_TORQUE_FLUX_LIMITS, PID_TORQUE_FLUX_TARGET,
+        PID_TORQUE_P_TORQUE_I, PIDOUT_UQ_UD_LIMITS, PWM_SV_CHOP, STATUS_FLAGS, UQ_UD_EXT,
     };
 
     use super::*;
@@ -1831,13 +2056,14 @@ mod tests {
             match phase {
                 InnerPhase::CurrentValidate { data, .. } => {
                     assert_eq!(data.gains.flux_p, 1269);
-                    assert_eq!(data.step_amplitude, 322);
+                    assert_eq!(data.flux_step_amplitude, 224);
+                    assert_eq!(data.torque_step_amplitude, VALIDATION_MIN_STEP_AMPLITUDE);
                     assert_eq!(data.pidout_limit, CURRENT_VALIDATE_PIDOUT_LIMIT);
                     assert_eq!(data.current_limited, 422);
                     assert_eq!(data.voltage_limited, 322);
                     assert_eq!(data.max_p, 1269);
                     assert!(
-                        data.gains.flux_p as u32 * data.step_amplitude as u32
+                        data.gains.flux_p as u32 * data.flux_step_amplitude as u32
                             <= CURRENT_VALIDATE_PIDOUT_LIMIT * 256 * 8 / 10
                     );
                 }
@@ -1876,20 +2102,18 @@ mod tests {
             match phase {
                 InnerPhase::CurrentValidate { data, .. } => {
                     assert_eq!(data.gains.flux_p, 3474);
-                    assert_eq!(data.step_amplitude, VALIDATION_MIN_STEP_AMPLITUDE);
-                    assert_eq!(data.pidout_limit, 2172);
+                    assert_eq!(data.flux_step_amplitude, 224);
+                    assert_eq!(data.torque_step_amplitude, VALIDATION_MIN_STEP_AMPLITUDE);
+                    assert_eq!(data.pidout_limit, 3800);
                     assert_eq!(data.current_limited, 422);
-                    assert_eq!(
-                        data.voltage_limited,
-                        u32::from(VALIDATION_MIN_STEP_AMPLITUDE)
-                    );
+                    assert_eq!(data.voltage_limited, u32::from(data.flux_step_amplitude));
                     assert_eq!(data.max_p, 3474);
                     assert!(
-                        data.step_amplitude >= VALIDATION_MIN_STEP_AMPLITUDE,
-                        "1600 Hz validation target must stay above the signal floor"
+                        data.flux_step_amplitude > data.torque_step_amplitude,
+                        "flux settled gate should use the reviewed higher-SNR target"
                     );
                     assert!(
-                        data.gains.flux_p as u32 * data.step_amplitude as u32
+                        data.gains.flux_p as u32 * data.flux_step_amplitude as u32
                             <= data.pidout_limit * 256 * VALIDATION_PIDOUT_HEADROOM_PERMILLE / 1000
                     );
                 }
@@ -2516,6 +2740,7 @@ mod tests {
             }
             let mut buf = TransientBuffer::new();
             let mut backend = MockBackend::new();
+            backend.current_limit_value = 2816;
 
             let result = step_current_validate(
                 &mut phase,
@@ -2536,6 +2761,9 @@ mod tests {
             }));
             assert!(backend.spi_log.iter().any(|op| {
                 matches!(op, SpiOp::Write(addr, value) if *addr == PIDOUT_UQ_UD_LIMITS.addr() && *value == 2172)
+            }));
+            assert!(backend.spi_log.iter().any(|op| {
+                matches!(op, SpiOp::Write(addr, value) if *addr == PID_TORQUE_FLUX_LIMITS.addr() && *value == backend.current_limit_value)
             }));
             assert!(matches!(
                 phase,
@@ -2569,7 +2797,8 @@ mod tests {
                     lambda_us: 100,
                 };
                 data.candidate_gains = data.gains;
-                data.step_amplitude = VALIDATION_MIN_STEP_AMPLITUDE;
+                data.flux_step_amplitude = VALIDATION_MIN_STEP_AMPLITUDE;
+                data.torque_step_amplitude = VALIDATION_MIN_STEP_AMPLITUDE;
                 data.pidout_limit = 2190;
                 data.current_limited = 422;
                 data.voltage_limited = u32::from(VALIDATION_MIN_STEP_AMPLITUDE);
@@ -2614,7 +2843,8 @@ mod tests {
                     assert_eq!(data.max_p, 1752);
                     assert_eq!(data.pidout_limit, CURRENT_VALIDATE_PIDOUT_LIMIT);
                     assert_eq!(data.voltage_limited, 233);
-                    assert_eq!(data.step_amplitude, 233);
+                    assert_eq!(data.flux_step_amplitude, 224);
+                    assert_eq!(data.torque_step_amplitude, VALIDATION_MIN_STEP_AMPLITUDE);
                 }
                 other => panic!("expected CurrentValidate phase, got {other:?}"),
             }
@@ -2665,15 +2895,18 @@ mod tests {
                                 ..
                             },
                         data,
-                    } => Action::StepSetup {
-                        axis: *axis,
-                        direction: *direction,
-                        sample_delay_ms: *sample_delay_ms,
-                        step_amplitude: data.step_amplitude,
-                        flux_count: data.current_flux_validation_count,
-                        torque_count: data.current_torque_validation_count,
-                        validation_axes: data.current_loop_evidence.current_validation_axes,
-                    },
+                    } => {
+                        let axis = *axis;
+                        Action::StepSetup {
+                            axis,
+                            direction: *direction,
+                            sample_delay_ms: *sample_delay_ms,
+                            step_amplitude: validation_step_amplitude(data, axis),
+                            flux_count: data.current_flux_validation_count,
+                            torque_count: data.current_torque_validation_count,
+                            validation_axes: data.current_loop_evidence.current_validation_axes,
+                        }
+                    }
                     InnerPhase::CurrentValidate {
                         state: CurrentValidateState::AxisSampleDelay { deadline_us, .. },
                         ..
@@ -2899,7 +3132,8 @@ mod tests {
                     sample_delay_ms: 1,
                     direction: CaptureDirection::Forward,
                 };
-                data.step_amplitude = 250;
+                data.flux_step_amplitude = 250;
+                data.torque_step_amplitude = 250;
             }
             let mut buf = TransientBuffer::new();
             let mut backend = MockBackend::new();
@@ -3008,6 +3242,7 @@ mod tests {
     #[test]
     fn combine_axis_pair_evidence_preserves_actionable_negative_failure() {
         let evidence = combine_axis_pair_evidence(
+            CurrentValidationAxis::Flux,
             0,
             250,
             2,
@@ -3030,11 +3265,217 @@ mod tests {
         negative.encoder_delta_counts = -3;
         negative.gate.encoder_delta_counts = 3;
 
-        let evidence = combine_axis_pair_evidence(0, 250, 2, positive, negative);
+        let evidence =
+            combine_axis_pair_evidence(CurrentValidationAxis::Flux, 0, 250, 2, positive, negative);
 
         assert_eq!(evidence.encoder_delta_counts, 7);
         assert_eq!(evidence.positive_encoder_delta_counts, 7);
         assert_eq!(evidence.negative_encoder_delta_counts, -3);
+    }
+
+    #[test]
+    fn settled_flux_pair_response_cancels_dc_offset() {
+        pollster::block_on(async {
+            let mut backend = MockBackend::new();
+            let _ = backend
+                .registers
+                .insert(INTERIM_FOC_UQ_UD_LIMITED.data.addr(), pack_halves(0, 100));
+            let _ = backend.registers.insert(STATUS_FLAGS.addr(), 0);
+            backend.set_pid_torque_flux_actual_sequence(&[
+                pack_halves(-4, 178),
+                pack_halves(14, 178),
+                pack_halves(37, 172),
+                pack_halves(35, 184),
+            ]);
+
+            let positive = read_axis_directional_evidence_for_gate(
+                &mut backend,
+                CurrentValidationAxis::Flux,
+                224,
+                100,
+                0,
+                5000,
+                4000,
+            )
+            .await
+            .expect("positive settled flux evidence should read cleanly");
+
+            backend.set_pid_torque_flux_actual_sequence(&[
+                pack_halves(28, -217),
+                pack_halves(6, -242),
+                pack_halves(14, -230),
+                pack_halves(29, -234),
+            ]);
+
+            let negative = read_axis_directional_evidence_for_gate(
+                &mut backend,
+                CurrentValidationAxis::Flux,
+                -224,
+                100,
+                0,
+                5000,
+                4000,
+            )
+            .await
+            .expect("negative settled flux evidence should read cleanly");
+
+            assert_eq!(
+                positive.gate.status,
+                crate::autotune::CURRENT_AXIS_VALIDATION_LOW_RESPONSE,
+                "single-polarity response reproduces the hardware false positive"
+            );
+            assert_eq!(positive.gate.response_permille, 794);
+
+            let evidence = combine_axis_pair_evidence(
+                CurrentValidationAxis::Flux,
+                1,
+                224,
+                100,
+                positive,
+                negative,
+            );
+
+            assert_eq!(
+                evidence.status,
+                crate::autotune::CURRENT_AXIS_VALIDATION_PASS
+            );
+            assert_eq!(evidence.positive_response_permille, 912);
+            assert_eq!(evidence.negative_response_permille, 912);
+        });
+    }
+
+    #[test]
+    fn settled_flux_pair_cross_cancels_dc_offset() {
+        pollster::block_on(async {
+            let mut backend = MockBackend::new();
+            let _ = backend
+                .registers
+                .insert(INTERIM_FOC_UQ_UD_LIMITED.data.addr(), pack_halves(0, 100));
+            let _ = backend.registers.insert(STATUS_FLAGS.addr(), 0);
+            backend.set_pid_torque_flux_actual_sequence(&[
+                pack_halves(44, 185),
+                pack_halves(28, 184),
+                pack_halves(34, 207),
+                pack_halves(41, 211),
+            ]);
+
+            let positive = read_axis_directional_evidence_for_gate(
+                &mut backend,
+                CurrentValidationAxis::Flux,
+                224,
+                100,
+                0,
+                5000,
+                4000,
+            )
+            .await
+            .expect("positive settled flux evidence should read cleanly");
+
+            backend.set_pid_torque_flux_actual_sequence(&[
+                pack_halves(20, -245),
+                pack_halves(3, -225),
+                pack_halves(26, -244),
+                pack_halves(22, -236),
+            ]);
+
+            let negative = read_axis_directional_evidence_for_gate(
+                &mut backend,
+                CurrentValidationAxis::Flux,
+                -224,
+                100,
+                0,
+                5000,
+                4000,
+            )
+            .await
+            .expect("negative settled flux evidence should read cleanly");
+
+            assert_eq!(
+                positive.gate.status,
+                crate::autotune::CURRENT_AXIS_VALIDATION_CROSS_AXIS,
+                "single-polarity cross reproduces the hardware false positive"
+            );
+            assert_eq!(positive.gate.cross_axis_permille, 160);
+
+            let evidence = combine_axis_pair_evidence(
+                CurrentValidationAxis::Flux,
+                1,
+                224,
+                100,
+                positive,
+                negative,
+            );
+
+            assert_eq!(
+                evidence.status,
+                crate::autotune::CURRENT_AXIS_VALIDATION_PASS
+            );
+            assert_eq!(evidence.cross_axis_permille, 42);
+            assert_eq!(evidence.cross_axis_peak_permille, 196);
+        });
+    }
+
+    #[test]
+    fn settled_flux_pair_cross_rejects_sign_flipping_coupling() {
+        pollster::block_on(async {
+            let mut backend = MockBackend::new();
+            let _ = backend
+                .registers
+                .insert(INTERIM_FOC_UQ_UD_LIMITED.data.addr(), pack_halves(0, 100));
+            let _ = backend.registers.insert(STATUS_FLAGS.addr(), 0);
+            backend.set_pid_torque_flux_actual_sequence(&[
+                pack_halves(40, 224),
+                pack_halves(40, 224),
+                pack_halves(40, 224),
+                pack_halves(40, 224),
+            ]);
+
+            let positive = read_axis_directional_evidence_for_gate(
+                &mut backend,
+                CurrentValidationAxis::Flux,
+                224,
+                100,
+                0,
+                5000,
+                4000,
+            )
+            .await
+            .expect("positive settled flux evidence should read cleanly");
+
+            backend.set_pid_torque_flux_actual_sequence(&[
+                pack_halves(-40, -224),
+                pack_halves(-40, -224),
+                pack_halves(-40, -224),
+                pack_halves(-40, -224),
+            ]);
+
+            let negative = read_axis_directional_evidence_for_gate(
+                &mut backend,
+                CurrentValidationAxis::Flux,
+                -224,
+                100,
+                0,
+                5000,
+                4000,
+            )
+            .await
+            .expect("negative settled flux evidence should read cleanly");
+
+            let evidence = combine_axis_pair_evidence(
+                CurrentValidationAxis::Flux,
+                1,
+                224,
+                100,
+                positive,
+                negative,
+            );
+
+            assert_eq!(
+                evidence.status,
+                crate::autotune::CURRENT_AXIS_VALIDATION_CROSS_AXIS
+            );
+            assert_eq!(evidence.cross_axis_permille, 178);
+        });
     }
 
     #[test]
@@ -3156,6 +3597,10 @@ mod tests {
 
     fn axis_directional_evidence(status: u8) -> AxisDirectionalEvidence {
         AxisDirectionalEvidence {
+            same_axis_total: 0,
+            same_axis_sample_count: 1,
+            cross_axis_total: 0,
+            cross_axis_sample_count: 1,
             gate: CurrentAxisGateResult {
                 status,
                 response_permille: 0,
@@ -3323,7 +3768,8 @@ mod tests {
                 candidate_attempt: 0,
                 flux_attempt: 0,
                 torque_attempt: 0,
-                step_amplitude: 250,
+                flux_step_amplitude: 250,
+                torque_step_amplitude: 250,
                 final_status: CommissionStatus::Accepted,
                 pidout_limit: CURRENT_SAFE_PIDOUT_LIMIT,
                 current_limited: 250,
@@ -3378,7 +3824,8 @@ mod tests {
                 candidate_attempt: 1,
                 flux_attempt: 1,
                 torque_attempt: 1,
-                step_amplitude: 250,
+                flux_step_amplitude: 250,
+                torque_step_amplitude: 250,
                 final_status: CommissionStatus::Failed(CommissionError::CurrentValidationFailed),
                 pidout_limit: CURRENT_SAFE_PIDOUT_LIMIT,
                 current_limited: 250,
@@ -3468,7 +3915,8 @@ mod tests {
                 candidate_attempt: 1,
                 flux_attempt: 1,
                 torque_attempt: 1,
-                step_amplitude: 250,
+                flux_step_amplitude: 250,
+                torque_step_amplitude: 250,
                 final_status: CommissionStatus::Accepted,
                 pidout_limit: CURRENT_SAFE_PIDOUT_LIMIT,
                 current_limited: 250,

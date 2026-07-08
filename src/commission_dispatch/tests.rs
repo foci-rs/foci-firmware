@@ -876,6 +876,8 @@ fn sample_commission_result() -> crate::commissioning::types::CommissionResult {
             current_hold_status_flags_or: 0,
             current_hold_actionable_status_count: 0,
             current_validation_step_amplitude: 128,
+            current_validation_flux_step_amplitude: 128,
+            current_validation_torque_step_amplitude: 128,
             current_validation_pidout_limit: 2400,
             current_validation_current_limited: 422,
             current_validation_voltage_limited: 128,

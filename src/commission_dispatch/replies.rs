@@ -391,6 +391,8 @@ fn current_validation_envelope_report(
     CurrentValidationEnvelopeReport {
         oid,
         step_amplitude: inner.current_validation_step_amplitude,
+        flux_step_amplitude: inner.current_validation_flux_step_amplitude,
+        torque_step_amplitude: inner.current_validation_torque_step_amplitude,
         pidout_limit: inner.current_validation_pidout_limit,
         current_limited: inner.current_validation_current_limited,
         voltage_limited: inner.current_validation_voltage_limited,
@@ -679,6 +681,8 @@ mod tests {
         CurrentValidationEnvelope {
             oid: u8,
             step_amplitude: u16,
+            flux_step_amplitude: u16,
+            torque_step_amplitude: u16,
             pidout_limit: u16,
             current_limited: u16,
             voltage_limited: u16,
@@ -995,6 +999,8 @@ mod tests {
             self.events.push(Event::CurrentValidationEnvelope {
                 oid: report.oid,
                 step_amplitude: report.step_amplitude,
+                flux_step_amplitude: report.flux_step_amplitude,
+                torque_step_amplitude: report.torque_step_amplitude,
                 pidout_limit: report.pidout_limit,
                 current_limited: report.current_limited,
                 voltage_limited: report.voltage_limited,
@@ -1196,6 +1202,8 @@ mod tests {
                 current_hold_status_flags_or: 0,
                 current_hold_actionable_status_count: 0,
                 current_validation_step_amplitude: 128,
+                current_validation_flux_step_amplitude: 128,
+                current_validation_torque_step_amplitude: 128,
                 current_validation_pidout_limit: 2400,
                 current_validation_current_limited: 422,
                 current_validation_voltage_limited: 128,
@@ -1279,6 +1287,8 @@ mod tests {
         events.push(Event::CurrentValidationEnvelope {
             oid,
             step_amplitude: 128,
+            flux_step_amplitude: 128,
+            torque_step_amplitude: 128,
             pidout_limit: 2400,
             current_limited: 422,
             voltage_limited: 128,

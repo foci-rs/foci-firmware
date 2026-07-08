@@ -501,8 +501,14 @@ pub struct FociCurrentValidationSettledSample {
 pub struct FociCurrentValidationEnvelope {
     /// Object id of the FOCI endpoint.
     pub oid: u8,
-    /// Final validation target after all safety caps.
+    /// Primary validation target after all safety caps.
+    ///
+    /// Retained for compatibility and mirrors the flux-axis target.
     pub step_amplitude: u16,
+    /// Flux-axis validation target after all safety caps.
+    pub flux_step_amplitude: u16,
+    /// Torque-axis validation target after all safety caps.
+    pub torque_step_amplitude: u16,
     /// PIDOUT limit active while collecting validation samples.
     pub pidout_limit: u16,
     /// Target cap derived from the configured current limit.
@@ -1391,6 +1397,8 @@ mod resistance_reply_size_tests {
         let reply = super::FociCurrentValidationEnvelope {
             oid: u8::MAX,
             step_amplitude: u16::MAX,
+            flux_step_amplitude: u16::MAX,
+            torque_step_amplitude: u16::MAX,
             pidout_limit: u16::MAX,
             current_limited: u16::MAX,
             voltage_limited: u16::MAX,

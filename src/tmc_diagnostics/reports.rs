@@ -655,8 +655,14 @@ pub struct CurrentValidationSettledSampleReport {
 pub struct CurrentValidationEnvelopeReport {
     /// Object id of the FOCI endpoint.
     pub oid: u8,
-    /// Final validation target after all safety caps.
+    /// Primary validation target after all safety caps.
+    ///
+    /// Retained for compatibility and mirrors the flux-axis target.
     pub step_amplitude: u16,
+    /// Flux-axis validation target after all safety caps.
+    pub flux_step_amplitude: u16,
+    /// Torque-axis validation target after all safety caps.
+    pub torque_step_amplitude: u16,
     /// PIDOUT limit active while collecting validation samples.
     pub pidout_limit: u16,
     /// Target cap derived from the configured current limit.

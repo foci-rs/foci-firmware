@@ -522,8 +522,15 @@ pub struct InnerResult {
     pub current_hold_status_flags_or: u32,
     /// Count of samples with actionable status bits.
     pub current_hold_actionable_status_count: u8,
-    /// Final current-validation target after all safety caps.
+    /// Primary current-validation target after all safety caps.
+    ///
+    /// This is retained for compatibility and mirrors the flux-axis target,
+    /// because the settled flux gate is the production hard gate.
     pub current_validation_step_amplitude: u16,
+    /// Flux-axis current-validation target after all safety caps.
+    pub current_validation_flux_step_amplitude: u16,
+    /// Torque-axis current-validation target after all safety caps.
+    pub current_validation_torque_step_amplitude: u16,
     /// PIDOUT limit used while collecting current-validation samples.
     pub current_validation_pidout_limit: u16,
     /// Target cap derived from the configured current limit.
