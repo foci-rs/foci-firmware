@@ -42,6 +42,7 @@ const INDUCTANCE_MAX_ENCODER_DELTA_COUNTS: u32 = 8;
 const INDUCTANCE_MAX_DRIFT_WARN_PERMILLE: u16 = 70;
 const INDUCTANCE_MAX_IQ_RMS_WARN_PERMILLE: u16 = 250;
 const INDUCTANCE_MAX_MAG_CROSSCHECK_WARN_PERMILLE: u16 = 100;
+const INDUCTANCE_SALIENCY_BRACKET_TOLERANCE_COUNT_RATIO_MILLI: u32 = 256;
 const INDUCTANCE_REALIZED_FREQUENCY_TARGET_MILLIHZ: u32 = 1_000_000;
 const INDUCTANCE_REALIZED_FREQUENCY_TOLERANCE_MILLIHZ: u32 = 50_000;
 const INDUCTANCE_MIN_AC_SAMPLE_COUNT: u16 = 90;
@@ -823,7 +824,7 @@ async fn capture_inductance_ac_window<B: CommissioningBackend>(
             .read_register(ABN_DECODER_COUNT)
             .await
             .map_err(|_| CommissionError::Spi)?;
-        let evidence = finish_inductance_evidence(InductanceCaptureFinish {
+        let mut evidence = finish_inductance_evidence(InductanceCaptureFinish {
             data: capture.data,
             encoder_start: capture.encoder_start,
             encoder_after,
@@ -837,11 +838,25 @@ async fn capture_inductance_ac_window<B: CommissioningBackend>(
             saliency_accumulator: capture.saliency,
         })
         .map_err(InductanceReject::commission_error)?;
-        if evidence.estimate.saliency_status == crate::electrical_capture::AC_SALIENCY_DETERMINABLE
-            && !evidence.estimate.brackets_average()
-        {
-            push_inductance_saliency_bracket_rejection(diagnostics, evidence.estimate);
-            return Err(CommissionError::InductanceCaptureRejected);
+        let saliency = crate::electrical_capture::AcSaliencyEvidence {
+            status: evidence.estimate.saliency_status,
+            x_average_count_ratio_milli: evidence.estimate.x_average_count_ratio_milli,
+            x_d_count_ratio_milli: evidence.estimate.x_d_count_ratio_milli,
+            x_q_count_ratio_milli: evidence.estimate.x_q_count_ratio_milli,
+            saliency_permille: evidence.estimate.saliency_permille,
+        };
+        match saliency_for_frame_average(evidence.estimate.x_average_count_ratio_milli, saliency) {
+            Ok(saliency) => {
+                evidence.estimate.x_d_count_ratio_milli = saliency.x_d_count_ratio_milli;
+                evidence.estimate.x_q_count_ratio_milli = saliency.x_q_count_ratio_milli;
+                evidence.estimate.saliency_status = saliency.status;
+                evidence.estimate.saliency_permille = saliency.saliency_permille;
+            }
+            Err(InductanceReject::Saliency) => {
+                push_inductance_saliency_bracket_rejection(diagnostics, evidence.estimate);
+                return Err(CommissionError::InductanceCaptureRejected);
+            }
+            Err(rejection) => return Err(rejection.commission_error()),
         }
         return Ok(evidence);
     }
@@ -1034,6 +1049,43 @@ fn finish_inductance_evidence(
             x_mag_vs_quad_permille: reactance.x_mag_vs_quad_permille,
         },
     })
+}
+
+fn saliency_for_frame_average(
+    frame_average_count_ratio_milli: u32,
+    saliency: crate::electrical_capture::AcSaliencyEvidence,
+) -> Result<crate::electrical_capture::AcSaliencyEvidence, InductanceReject> {
+    if saliency.status != crate::electrical_capture::AC_SALIENCY_DETERMINABLE {
+        return Ok(saliency);
+    }
+
+    let low = saliency
+        .x_d_count_ratio_milli
+        .min(saliency.x_q_count_ratio_milli);
+    let high = saliency
+        .x_d_count_ratio_milli
+        .max(saliency.x_q_count_ratio_milli);
+    if low <= frame_average_count_ratio_milli && frame_average_count_ratio_milli <= high {
+        return Ok(saliency);
+    }
+
+    let miss = if frame_average_count_ratio_milli < low {
+        low - frame_average_count_ratio_milli
+    } else {
+        frame_average_count_ratio_milli - high
+    };
+    if miss > INDUCTANCE_SALIENCY_BRACKET_TOLERANCE_COUNT_RATIO_MILLI {
+        return Err(InductanceReject::Saliency);
+    }
+
+    // Low-saliency D/Q split evidence is below the measurement consistency
+    // floor. Keep the angle-averaged production L and decline to publish a
+    // physically weak split rather than hard-failing a valid capture.
+    Ok(
+        crate::electrical_capture::AcSaliencyEvidence::not_determinable(
+            frame_average_count_ratio_milli,
+        ),
+    )
 }
 
 /// Advance electrical identification sub-state.
@@ -1809,6 +1861,88 @@ mod tests {
         assert_eq!(above.value0, 10);
         assert_eq!(above.value1, 7);
         assert_eq!(above.value2, (8_700u32 << 16) | 8_616);
+    }
+
+    #[test]
+    fn saliency_bracket_small_miss_marks_split_not_determinable() {
+        let below = saliency_for_frame_average(
+            8_659,
+            crate::electrical_capture::AcSaliencyEvidence {
+                status: crate::electrical_capture::AC_SALIENCY_DETERMINABLE,
+                x_average_count_ratio_milli: 8_834,
+                x_d_count_ratio_milli: 8_936,
+                x_q_count_ratio_milli: 8_732,
+                saliency_permille: 23,
+            },
+        )
+        .expect("small below-bracket miss should keep average L");
+        let above = saliency_for_frame_average(
+            8_735,
+            crate::electrical_capture::AcSaliencyEvidence {
+                status: crate::electrical_capture::AC_SALIENCY_DETERMINABLE,
+                x_average_count_ratio_milli: 8_586,
+                x_d_count_ratio_milli: 8_629,
+                x_q_count_ratio_milli: 8_543,
+                saliency_permille: 10,
+            },
+        )
+        .expect("small above-bracket miss should keep average L");
+        let p95_tail = saliency_for_frame_average(
+            8_832,
+            crate::electrical_capture::AcSaliencyEvidence {
+                status: crate::electrical_capture::AC_SALIENCY_DETERMINABLE,
+                x_average_count_ratio_milli: 8_586,
+                x_d_count_ratio_milli: 8_629,
+                x_q_count_ratio_milli: 8_543,
+                saliency_permille: 10,
+            },
+        )
+        .expect("p95-scale benign mismatch should keep average L");
+
+        assert_eq!(
+            below,
+            crate::electrical_capture::AcSaliencyEvidence::not_determinable(8_659)
+        );
+        assert_eq!(
+            above,
+            crate::electrical_capture::AcSaliencyEvidence::not_determinable(8_735)
+        );
+        assert_eq!(
+            p95_tail,
+            crate::electrical_capture::AcSaliencyEvidence::not_determinable(8_832)
+        );
+    }
+
+    #[test]
+    fn saliency_bracket_large_miss_still_rejects() {
+        let result = saliency_for_frame_average(
+            9_200,
+            crate::electrical_capture::AcSaliencyEvidence {
+                status: crate::electrical_capture::AC_SALIENCY_DETERMINABLE,
+                x_average_count_ratio_milli: 8_586,
+                x_d_count_ratio_milli: 8_629,
+                x_q_count_ratio_milli: 8_543,
+                saliency_permille: 10,
+            },
+        );
+
+        assert_eq!(result, Err(InductanceReject::Saliency));
+    }
+
+    #[test]
+    fn saliency_bracketed_average_preserves_split_evidence() {
+        let saliency = crate::electrical_capture::AcSaliencyEvidence {
+            status: crate::electrical_capture::AC_SALIENCY_DETERMINABLE,
+            x_average_count_ratio_milli: 8_600,
+            x_d_count_ratio_milli: 8_900,
+            x_q_count_ratio_milli: 8_300,
+            saliency_permille: 70,
+        };
+
+        let result =
+            saliency_for_frame_average(8_620, saliency).expect("bracketed average should pass");
+
+        assert_eq!(result, saliency);
     }
 
     #[test]
