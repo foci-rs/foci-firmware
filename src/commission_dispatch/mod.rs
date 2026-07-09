@@ -240,6 +240,7 @@ pub enum ReplyPayload {
         oid: u8,
         status: u8,
         result: AdcCalResult,
+        diagnostics: crate::selftest::CommissionDiagnostics,
     },
     /// FociSelftestResult per stage + FociSelftestDone terminal.
     /// Board emits one Result message per populated stage, then Done.
@@ -381,6 +382,7 @@ pub async fn drive_commission_result<B: CommissioningBackend>(
                     oid,
                     status: calibration_status_from_commission_error(error),
                     result: zero_adc_cal_result(),
+                    diagnostics,
                 },
                 EngineKind::Selftest => ReplyPayload::Selftest {
                     oid,
@@ -424,6 +426,7 @@ pub async fn drive_commission_result<B: CommissioningBackend>(
                         oid,
                         status: crate::calibration::CalibrationError::SpiError.status_code(),
                         result: zero_adc_cal_result(),
+                        diagnostics: crate::selftest::CommissionDiagnostics::default(),
                     },
                     actions: PostActions {
                         stop_trace: false,
@@ -449,6 +452,7 @@ pub async fn drive_commission_result<B: CommissioningBackend>(
                         oid,
                         status: crate::calibration::CalibrationError::SpiError.status_code(),
                         result: zero_adc_cal_result(),
+                        diagnostics: crate::selftest::CommissionDiagnostics::default(),
                     },
                     actions: PostActions {
                         stop_trace: false,
@@ -478,6 +482,7 @@ pub async fn drive_commission_result<B: CommissioningBackend>(
                         oid,
                         status,
                         result: zero_adc_cal_result(),
+                        diagnostics: crate::selftest::CommissionDiagnostics::default(),
                     },
                     actions: PostActions {
                         stop_trace: false,
@@ -496,6 +501,7 @@ pub async fn drive_commission_result<B: CommissioningBackend>(
                     oid,
                     status: 0,
                     result: cal_result,
+                    diagnostics: crate::selftest::CommissionDiagnostics::default(),
                 },
                 actions: PostActions {
                     stop_trace: false,

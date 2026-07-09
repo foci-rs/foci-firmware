@@ -686,6 +686,7 @@ where
             adc_residual_chop0: crate::commissioning::types::AdcResidualEvidence::EMPTY,
             adc_residual_chop7: crate::commissioning::types::AdcResidualEvidence::EMPTY,
         },
+        diagnostics: CommissionDiagnostics::default(),
     });
 }
 
@@ -973,6 +974,7 @@ mod tests {
                         encoder_count,
                         ..
                     },
+                ..
             } => {
                 assert_eq!(*actual_oid, oid);
                 assert_eq!(*actual_status, status);

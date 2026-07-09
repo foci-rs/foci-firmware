@@ -445,6 +445,16 @@ fn inner_failed_calibrate_emits_calibrate_reply() {
         let (mut cal, mut en, mut gains) = fresh_state_locals();
         let mut state = dispatch_state(&mut cal, &mut en, &mut gains);
         let mut engine = Some(CommissioningEngine::new_calibrate(2));
+        engine.as_mut().expect("engine").diagnostics_mut().push(
+            crate::selftest::CommissionDiagnostic {
+                phase: crate::autotune::PhaseId::EncoderCheck.to_u8(),
+                code: 2,
+                status: 1,
+                value0: 123,
+                value1: 123,
+                value2: 0,
+            },
+        );
         let err = crate::autotune::CommissionError::Spi;
         let outcome = drive_commission_result(
             crate::commissioning::types::StepResult::InnerFailed(err),
@@ -456,7 +466,13 @@ fn inner_failed_calibrate_emits_calibrate_reply() {
         .await;
         match outcome {
             CommissionOutcome::Terminal {
-                reply: ReplyPayload::CalibrateResult { oid, status, .. },
+                reply:
+                    ReplyPayload::CalibrateResult {
+                        oid,
+                        status,
+                        diagnostics,
+                        ..
+                    },
                 ..
             } => {
                 assert_eq!(oid, 2);
@@ -464,6 +480,14 @@ fn inner_failed_calibrate_emits_calibrate_reply() {
                     status,
                     crate::calibration::CalibrationError::SpiError.status_code()
                 );
+                let items: heapless::Vec<_, 4> = diagnostics.iter().collect();
+                assert_eq!(items.len(), 1);
+                assert_eq!(
+                    items[0].phase,
+                    crate::autotune::PhaseId::EncoderCheck.to_u8()
+                );
+                assert_eq!(items[0].code, 2);
+                assert_eq!(items[0].value0, 123);
             }
             _ => panic!("expected CalibrateResult"),
         }
@@ -594,11 +618,13 @@ fn calibrate_done_preserves_step_epoch_after_gain_restore() {
                         oid,
                         status,
                         result,
+                        diagnostics,
                     } => {
                         assert_eq!(oid, 4);
                         assert_eq!(status, 0);
                         assert_eq!(result.adc_i0, cal_result.adc_i0);
                         assert_eq!(result.encoder_count, cal_result.encoder_count);
+                        assert_eq!(diagnostics.iter().count(), 0);
                     }
                     _ => panic!("expected CalibrateResult"),
                 }

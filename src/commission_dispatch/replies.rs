@@ -133,7 +133,11 @@ pub fn emit_terminal_reply<S: CommissionReplySink>(sink: &mut S, payload: ReplyP
             oid,
             status,
             result,
-        } => sink.foci_calibrate_result(oid, status, &result),
+            diagnostics,
+        } => {
+            emit_commission_diagnostics(sink, oid, diagnostics);
+            sink.foci_calibrate_result(oid, status, &result);
+        }
         ReplyPayload::CommissionResult {
             oid,
             status,
@@ -1892,6 +1896,60 @@ mod tests {
     }
 
     #[test]
+    fn calibrate_result_emits_diagnostics_before_terminal_reply() {
+        let mut sink = RecordingSink::default();
+        emit_terminal_reply(
+            &mut sink,
+            ReplyPayload::CalibrateResult {
+                oid: 1,
+                status: 8,
+                result: AdcCalResult {
+                    adc_i0: 0,
+                    adc_i1: 0,
+                    encoder_count: 0,
+                    encoder_alignment_electrical_residual_counts: 0,
+                    encoder_alignment_stability_counts: 0,
+                    encoder_alignment_movement_counts: 0,
+                    encoder_alignment_min_movement_counts: 0,
+                    encoder_alignment_counts_per_electrical_rev: 0,
+                    adc_residual_chop0: crate::commissioning::types::AdcResidualEvidence::EMPTY,
+                    adc_residual_chop7: crate::commissioning::types::AdcResidualEvidence::EMPTY,
+                },
+                diagnostics: diagnostics([CommissionDiagnostic {
+                    phase: PhaseId::EncoderCheck.to_u8(),
+                    code: 2,
+                    status: 1,
+                    value0: 12,
+                    value1: 12,
+                    value2: 0,
+                }]),
+            },
+        );
+
+        assert_eq!(
+            sink.events,
+            std::vec![
+                Event::Detail {
+                    oid: 1,
+                    phase: PhaseId::EncoderCheck.to_u8(),
+                    code: 2,
+                    status: 1,
+                    value0: 12,
+                    value1: 12,
+                    value2: 0,
+                },
+                Event::Calibrate {
+                    oid: 1,
+                    status: 8,
+                    adc_i0: 0,
+                    adc_i1: 0,
+                    encoder_count: 0,
+                },
+            ]
+        );
+    }
+
+    #[test]
     fn empty_diagnostics_still_emit_terminal_replies() {
         let mut sink = RecordingSink::default();
         emit_terminal_reply(
@@ -1930,6 +1988,7 @@ mod tests {
                     adc_residual_chop0: crate::commissioning::types::AdcResidualEvidence::EMPTY,
                     adc_residual_chop7: crate::commissioning::types::AdcResidualEvidence::EMPTY,
                 },
+                diagnostics: CommissionDiagnostics::default(),
             },
         );
         emit_terminal_reply(
