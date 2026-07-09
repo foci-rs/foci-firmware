@@ -463,7 +463,8 @@ async fn step_inner_dispatch<B: CommissioningBackend>(
             phase::step_phase_wiring(phase, sequence, selftest_results, a, b)
         }
         InnerPhase::EncoderCheck { .. } => {
-            encoder::step_encoder_check(phase, sequence, selftest_results, backend).await
+            encoder::step_encoder_check(phase, sequence, selftest_results, diagnostics, backend)
+                .await
         }
         InnerPhase::EncoderAlign { .. } => {
             encoder::step_encoder_align(
@@ -472,6 +473,7 @@ async fn step_inner_dispatch<B: CommissioningBackend>(
                 adc_cal,
                 calibrate_entry_gains,
                 selftest_results,
+                diagnostics,
                 backend,
             )
             .await
