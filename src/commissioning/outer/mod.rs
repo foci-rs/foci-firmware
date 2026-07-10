@@ -38,6 +38,7 @@ pub(crate) use safety::{
 pub(crate) use state::{
     MechanicalIdData, MechanicalIdState, OuterDiagnostics, OuterPhase, PositionTuneData,
     PositionTuneState, VELOCITY_SEARCH_STOP_CLEAN, VELOCITY_SEARCH_STOP_LOW_CONFIDENCE,
+    VELOCITY_SEARCH_STOP_UNDER_DRIVEN_BUDGET, VELOCITY_SEARCH_STOP_UNSAFE_BACKOFF,
     VelocityTuneStrategy, VelocityValidateData, VelocityValidateState,
 };
 pub(crate) use trace::{

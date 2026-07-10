@@ -210,6 +210,8 @@ pub(crate) enum VelocityTuneStrategy {
 }
 
 pub(crate) const VELOCITY_SEARCH_STOP_CLEAN: u8 = 1;
+pub(crate) const VELOCITY_SEARCH_STOP_UNDER_DRIVEN_BUDGET: u8 = 2;
+pub(crate) const VELOCITY_SEARCH_STOP_UNSAFE_BACKOFF: u8 = 3;
 pub(crate) const VELOCITY_SEARCH_STOP_LOW_CONFIDENCE: u8 = 4;
 
 /// Accumulated data for velocity-loop validation.

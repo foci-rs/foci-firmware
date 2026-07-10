@@ -3,9 +3,10 @@
 use super::super::{
     OUTER_MAX_VELOCITY_I, OUTER_MAX_VELOCITY_P, OUTER_WARNING_UNSAFE_SYNTH_GAINS, OuterPhase,
     POS_TUNE_INITIAL_P, PositionTuneData, PositionTuneState, TraceSummarySeqs,
-    VELOCITY_SEARCH_STOP_CLEAN, VELOCITY_SEARCH_STOP_LOW_CONFIDENCE, VelocityTuneStrategy,
-    VelocityValidateData, VelocityValidateState, trace_pack_i16_pair, trace_pack_u16_pair,
-    trace_summary_event,
+    VELOCITY_SEARCH_STOP_CLEAN, VELOCITY_SEARCH_STOP_LOW_CONFIDENCE,
+    VELOCITY_SEARCH_STOP_UNDER_DRIVEN_BUDGET, VELOCITY_SEARCH_STOP_UNSAFE_BACKOFF,
+    VelocityTuneStrategy, VelocityValidateData, VelocityValidateState, trace_pack_i16_pair,
+    trace_pack_u16_pair, trace_summary_event,
 };
 use super::response_ramp;
 use crate::autotune::{
@@ -574,6 +575,11 @@ pub(crate) async fn step_velocity_validate_with_trace<B: CommissioningBackend>(
                 validation_tau_ms,
                 total_samples,
             );
+            let stiffness = crate::autotune::classify_velocity_stiffness(
+                &merged,
+                result,
+                data.stiffness_timebase_ms,
+            );
 
             defmt::info!(
                 "vel classify: result={}, chatter={}, saturation={}, symmetry={}",
@@ -803,6 +809,38 @@ pub(crate) async fn step_velocity_validate_with_trace<B: CommissioningBackend>(
                 return StepResult::Continue;
             }
 
+            if data.strategy == VelocityTuneStrategy::Model
+                && result == ValidationResult::Pass
+                && stiffness == crate::autotune::VelocityStiffnessVerdict::UnderDriven
+            {
+                data.accepted_gains = data.gains;
+                data.has_accepted_gains = true;
+                if let Some(next_p) = response_ramp::response_next_velocity_p(data.gains.velocity_p)
+                {
+                    data.attempt = data.attempt.saturating_add(1);
+                    data.gains.velocity_p = next_p;
+                    data.gains.velocity_i = 0;
+                    defmt::info!(
+                        "vel validate: under-driven model response, trying P={}, I=0",
+                        data.gains.velocity_p
+                    );
+                    *state = VelocityValidateState::WriteGains;
+                    return StepResult::Continue;
+                }
+
+                data.velocity_search_stop_reason = VELOCITY_SEARCH_STOP_UNDER_DRIVEN_BUDGET;
+                if !stop_velocity_motion(backend).await {
+                    return fail_outer(phase, CommissionError::Spi);
+                }
+                let deadline = backend
+                    .elapsed_us()
+                    .wrapping_add(VELOCITY_VALIDATE_SETTLE_US);
+                *state = VelocityValidateState::SafeState {
+                    deadline_us: deadline,
+                };
+                return StepResult::Continue;
+            }
+
             match result {
                 ValidationResult::Pass => {
                     data.velocity_search_stop_reason = VELOCITY_SEARCH_STOP_CLEAN;
@@ -873,6 +911,29 @@ pub(crate) async fn step_velocity_validate_with_trace<B: CommissioningBackend>(
                             return fail_outer(phase, CommissionError::VelocityValidationFailed);
                         }
                     }
+                }
+                ValidationResult::Marginal | ValidationResult::Fail if data.has_accepted_gains => {
+                    let failed_p = data.gains.velocity_p;
+                    data.gains = data.accepted_gains;
+                    data.velocity_search_stop_reason = VELOCITY_SEARCH_STOP_UNSAFE_BACKOFF;
+                    defmt::warn!(
+                        "vel validate: {} at P={}, restoring passing P={}",
+                        match result {
+                            ValidationResult::Fail => "fail",
+                            _ => "marginal",
+                        },
+                        failed_p,
+                        data.accepted_gains.velocity_p
+                    );
+                    if !stop_velocity_motion(backend).await {
+                        return fail_outer(phase, CommissionError::Spi);
+                    }
+                    let deadline = backend
+                        .elapsed_us()
+                        .wrapping_add(VELOCITY_VALIDATE_SETTLE_US);
+                    *state = VelocityValidateState::SafeState {
+                        deadline_us: deadline,
+                    };
                 }
                 ValidationResult::Marginal | ValidationResult::Fail => {
                     defmt::warn!(
@@ -995,8 +1056,9 @@ mod tests {
     use crate::commission_dispatch::test_support::MockBackend;
     use crate::commissioning::outer::{
         OuterDiagnostics, OuterPhase, OuterSafetyLimits, TraceSummarySeqs,
-        VELOCITY_SEARCH_STOP_CLEAN, VelocityTuneStrategy, VelocityValidateData,
-        VelocityValidateState, response, trace_pack_i16_pair, trace_pack_u16_pair,
+        VELOCITY_SEARCH_STOP_CLEAN, VELOCITY_SEARCH_STOP_UNSAFE_BACKOFF, VelocityTuneStrategy,
+        VelocityValidateData, VelocityValidateState, response, trace_pack_i16_pair,
+        trace_pack_u16_pair,
     };
     use crate::commissioning::types::StepResult;
     use foci_tmc4671::registers::{PID_VELOCITY_LIMIT, PID_VELOCITY_TARGET};
@@ -1259,6 +1321,18 @@ mod tests {
         }
     }
 
+    fn under_driven_pass_metrics() -> VelocityValidation {
+        VelocityValidation {
+            rise_time_ms: 200,
+            overshoot_pct: 0,
+            peak_velocity: 20,
+            settling_time_ms: 120,
+            zero_speed_chatter: false,
+            saturation_samples: 0,
+            symmetry_pct: 0,
+        }
+    }
+
     fn model_failed_velocity_phase() -> OuterPhase {
         let gains = VelocityGains {
             velocity_p: 4608,
@@ -1305,6 +1379,166 @@ mod tests {
                 crate::commissioning::outer::OuterMotionBudget::firmware_caps(),
             ),
         }
+    }
+
+    #[test]
+    fn model_pass_under_driven_probes_higher_p() {
+        pollster::block_on(async {
+            let gains = VelocityGains {
+                velocity_p: 512,
+                velocity_i: 4,
+                velocity_limit: 40,
+                effective_bandwidth_hz: 10,
+                lambda_vel_ms: 50,
+            };
+            let mut phase = OuterPhase::VelocityValidate {
+                state: VelocityValidateState::Classify,
+                data: VelocityValidateData {
+                    gains,
+                    accepted_gains: gains,
+                    has_accepted_gains: false,
+                    response_lower_p: 0,
+                    response_upper_p: 0,
+                    model: MechanicalModel {
+                        j_eff: 1,
+                        b_eff: 1,
+                        tau_mech_ms: 50,
+                        theta_mech_us: 1,
+                        t_f: 0,
+                    },
+                    strategy: VelocityTuneStrategy::Model,
+                    stiffness_timebase_ms: 50,
+                    mech_tau_trusted: true,
+                    velocity_search_stop_reason: VELOCITY_SEARCH_STOP_CLEAN,
+                    attempt: 0,
+                    step_target: 4,
+                    forward_metrics: Some(under_driven_pass_metrics()),
+                    reverse_metrics: Some(under_driven_pass_metrics()),
+                    max_chatter: 0,
+                    peak_velocity: 20,
+                    prev_encoder_for_velocity: 0,
+                    saturation_count: 0,
+                    torque_limit: 2448,
+                    operational_velocity_limit: 500_000,
+                    diagnostics: zero_diagnostics(),
+                },
+                safety: OuterSafetyLimits::new(
+                    0,
+                    2448,
+                    crate::commissioning::outer::OuterMotionBudget::firmware_caps(),
+                ),
+            };
+            let mut buf = TransientBuffer::new();
+            let mut backend = MockBackend::new();
+
+            let result = step_velocity_validate(
+                &mut phase,
+                &mut buf,
+                CommissionProfile::Balanced,
+                OperatingMode::Nominal,
+                934,
+                160,
+                false,
+                0,
+                &mut backend,
+            )
+            .await;
+
+            assert!(matches!(result, StepResult::Continue));
+            match phase {
+                OuterPhase::VelocityValidate { state, data, .. } => {
+                    assert!(matches!(state, VelocityValidateState::WriteGains));
+                    assert!(data.has_accepted_gains);
+                    assert_eq!(data.accepted_gains.velocity_p, gains.velocity_p);
+                    assert!(data.gains.velocity_p > gains.velocity_p);
+                    assert_eq!(data.gains.velocity_i, 0);
+                }
+                other => panic!("expected higher-P model probe, got {:?}", other),
+            }
+        });
+    }
+
+    #[test]
+    fn model_probe_restores_last_clean_when_higher_p_fails() {
+        pollster::block_on(async {
+            let accepted_gains = VelocityGains {
+                velocity_p: 512,
+                velocity_i: 4,
+                velocity_limit: 40,
+                effective_bandwidth_hz: 10,
+                lambda_vel_ms: 50,
+            };
+            let failing_gains = VelocityGains {
+                velocity_p: 768,
+                velocity_i: 0,
+                ..accepted_gains
+            };
+            let mut phase = OuterPhase::VelocityValidate {
+                state: VelocityValidateState::Classify,
+                data: VelocityValidateData {
+                    gains: failing_gains,
+                    accepted_gains,
+                    has_accepted_gains: true,
+                    response_lower_p: 0,
+                    response_upper_p: 0,
+                    model: MechanicalModel {
+                        j_eff: 1,
+                        b_eff: 1,
+                        tau_mech_ms: 50,
+                        theta_mech_us: 1,
+                        t_f: 0,
+                    },
+                    strategy: VelocityTuneStrategy::Model,
+                    stiffness_timebase_ms: 50,
+                    mech_tau_trusted: true,
+                    velocity_search_stop_reason: VELOCITY_SEARCH_STOP_CLEAN,
+                    attempt: 1,
+                    step_target: 4,
+                    forward_metrics: Some(failing_velocity_metrics()),
+                    reverse_metrics: Some(failing_velocity_metrics()),
+                    max_chatter: 0,
+                    peak_velocity: 20,
+                    prev_encoder_for_velocity: 0,
+                    saturation_count: 0,
+                    torque_limit: 2448,
+                    operational_velocity_limit: 500_000,
+                    diagnostics: zero_diagnostics(),
+                },
+                safety: OuterSafetyLimits::new(
+                    0,
+                    2448,
+                    crate::commissioning::outer::OuterMotionBudget::firmware_caps(),
+                ),
+            };
+            let mut buf = TransientBuffer::new();
+            let mut backend = MockBackend::new();
+
+            let result = step_velocity_validate(
+                &mut phase,
+                &mut buf,
+                CommissionProfile::Balanced,
+                OperatingMode::Nominal,
+                934,
+                160,
+                false,
+                0,
+                &mut backend,
+            )
+            .await;
+
+            assert!(matches!(result, StepResult::Continue));
+            match phase {
+                OuterPhase::VelocityValidate { state, data, .. } => {
+                    assert!(matches!(state, VelocityValidateState::SafeState { .. }));
+                    assert_eq!(data.gains.velocity_p, accepted_gains.velocity_p);
+                    assert_eq!(
+                        data.velocity_search_stop_reason,
+                        VELOCITY_SEARCH_STOP_UNSAFE_BACKOFF
+                    );
+                }
+                other => panic!("expected accepted model gains restore, got {:?}", other),
+            }
+        });
     }
 
     #[test]
