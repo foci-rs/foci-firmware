@@ -82,7 +82,8 @@ pub use types::{
 };
 pub(crate) use velocity::simc_velocity_gains_with_lambda_multiplier;
 pub use velocity::{
-    VelocityValidation, classify_velocity_validation, extract_velocity_metrics, simc_velocity_gains,
+    VelocityStiffnessVerdict, VelocityValidation, classify_velocity_stiffness,
+    classify_velocity_validation, extract_velocity_metrics, simc_velocity_gains,
 };
 
 /// Compute symmetry metric from forward and reverse rise times.

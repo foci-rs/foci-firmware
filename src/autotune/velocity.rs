@@ -445,6 +445,29 @@ pub fn classify_velocity_validation(
     worst
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+pub enum VelocityStiffnessVerdict {
+    Clean,
+    UnderDriven,
+}
+
+pub fn classify_velocity_stiffness(
+    metrics: &VelocityValidation,
+    validation_result: ValidationResult,
+    stiffness_timebase_ms: u32,
+) -> VelocityStiffnessVerdict {
+    if validation_result != ValidationResult::Pass {
+        return VelocityStiffnessVerdict::Clean;
+    }
+
+    let limit = stiffness_timebase_ms.max(1).saturating_mul(3);
+    if metrics.rise_time_ms > limit || metrics.settling_time_ms > limit {
+        VelocityStiffnessVerdict::UnderDriven
+    } else {
+        VelocityStiffnessVerdict::Clean
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::super::test_support::{
@@ -558,6 +581,42 @@ mod tests {
         assert_eq!(gains.velocity_limit, 800, "80% of peak=1000");
         assert!(gains.effective_bandwidth_hz > 0);
         assert!(gains.lambda_vel_ms > 0);
+    }
+
+    #[test]
+    fn velocity_stiffness_marks_slow_pass_under_driven() {
+        let metrics = VelocityValidation {
+            rise_time_ms: 200,
+            overshoot_pct: 0,
+            peak_velocity: 20,
+            settling_time_ms: 120,
+            zero_speed_chatter: false,
+            saturation_samples: 0,
+            symmetry_pct: 0,
+        };
+
+        assert_eq!(
+            classify_velocity_stiffness(&metrics, ValidationResult::Pass, 50),
+            VelocityStiffnessVerdict::UnderDriven
+        );
+    }
+
+    #[test]
+    fn velocity_stiffness_does_not_override_unsafe_result() {
+        let metrics = VelocityValidation {
+            rise_time_ms: 200,
+            overshoot_pct: 500,
+            peak_velocity: 20,
+            settling_time_ms: 200,
+            zero_speed_chatter: false,
+            saturation_samples: 0,
+            symmetry_pct: 0,
+        };
+
+        assert_eq!(
+            classify_velocity_stiffness(&metrics, ValidationResult::Fail, 50),
+            VelocityStiffnessVerdict::Clean
+        );
     }
 
     #[test]

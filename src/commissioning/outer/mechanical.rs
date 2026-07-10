@@ -112,6 +112,14 @@ fn mechanical_retry_warning_code(data: &MechanicalIdData) -> u8 {
     }
 }
 
+fn derive_mechanical_tau_with_default_flag(j_eff: u32, b_eff_raw: u32) -> (u32, u32, bool) {
+    let tau_ratio = j_eff.checked_div(b_eff_raw);
+    let tau_defaulted = tau_ratio.is_none();
+    let b_eff = b_eff_raw.max(1);
+    let tau_mech_ms = tau_ratio.unwrap_or(1000);
+    (b_eff, tau_mech_ms, tau_defaulted)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -120,6 +128,21 @@ mod tests {
     use crate::commissioning::outer::{OuterSafetyLimits, step_outer};
     use crate::trace::events::EVENT_COMMISSION_DIAGNOSTIC_WARNING;
     use foci_tmc4671::registers::{ABN_DECODER_PPR, MODE_RAMP_MODE_MOTION, PID_TORQUE_FLUX_TARGET};
+
+    #[test]
+    fn mechanical_id_marks_tau_defaulted_when_raw_b_eff_zero() {
+        let (b_eff, tau_mech_ms, tau_defaulted) =
+            derive_mechanical_tau_with_default_flag(100_000, 0);
+
+        assert_eq!(b_eff, 1);
+        assert_eq!(tau_mech_ms, 1000);
+        assert!(tau_defaulted);
+    }
+
+    #[test]
+    fn mechanical_id_no_motion_sets_low_confidence_warning() {
+        assert!(response::mechanical_id_low_confidence(0, 0, 0, 0, 0, 0));
+    }
 
     #[test]
     fn mechanical_id_summary_packs_exact_fragments() {
@@ -1325,7 +1348,7 @@ pub(crate) async fn step_mechanical_id_with_trace<B: CommissioningBackend>(
             let fwd_peak = data.forward_peak_velocity.unsigned_abs();
             let rev_peak = data.reverse_peak_velocity as u32;
             let peak_avg = (fwd_peak + rev_peak) / 2;
-            let diagnostics = OuterDiagnostics::from_mechanical_id(data);
+            let mut diagnostics = OuterDiagnostics::from_mechanical_id(data);
 
             if data.fwd_response.is_high_confidence() && data.rev_response.is_high_confidence() {
                 let j_avg = (data.fwd_response.j_eff + data.rev_response.j_eff) / 2;
@@ -1526,11 +1549,9 @@ pub(crate) async fn step_mechanical_id_with_trace<B: CommissioningBackend>(
             // B_eff = torque / steady_state_velocity, scaled to match J_eff units.
             // No steady-state velocity reached -> pure inertial load; small minimum
             // (1) avoids division by zero in tau below.
-            let b_eff = (torque * 1000).checked_div(peak_avg).unwrap_or(1);
-
-            // tau_mech = J_eff / B_eff in milliseconds. Default to 1000 ms when
-            // b_eff is zero (matches the historical fall-back).
-            let tau_mech_ms = j_eff.checked_div(b_eff).unwrap_or(1000);
+            let b_eff_raw = (torque * 1000).checked_div(peak_avg).unwrap_or(1);
+            let (b_eff, tau_mech_ms, tau_defaulted) =
+                derive_mechanical_tau_with_default_flag(j_eff, b_eff_raw);
 
             // theta_mech from delay samples (time from torque step to
             // first measurable velocity change).
@@ -1543,6 +1564,7 @@ pub(crate) async fn step_mechanical_id_with_trace<B: CommissioningBackend>(
                 theta_mech_us,
                 t_f: 0, // Static friction not measured in this phase.
             };
+            diagnostics.mech_tau_defaulted = tau_defaulted;
 
             defmt::info!(
                 "mechanical-id: J={}, B={}, tau={}ms, theta={}us",

@@ -3,8 +3,9 @@
 use super::super::{
     OUTER_MAX_VELOCITY_I, OUTER_MAX_VELOCITY_P, OUTER_WARNING_UNSAFE_SYNTH_GAINS, OuterPhase,
     POS_TUNE_INITIAL_P, PositionTuneData, PositionTuneState, TraceSummarySeqs,
-    VelocityTuneStrategy, VelocityValidateData, VelocityValidateState, trace_pack_i16_pair,
-    trace_pack_u16_pair, trace_summary_event,
+    VELOCITY_SEARCH_STOP_CLEAN, VELOCITY_SEARCH_STOP_LOW_CONFIDENCE, VelocityTuneStrategy,
+    VelocityValidateData, VelocityValidateState, trace_pack_i16_pair, trace_pack_u16_pair,
+    trace_summary_event,
 };
 use super::response_ramp;
 use crate::autotune::{
@@ -804,6 +805,7 @@ pub(crate) async fn step_velocity_validate_with_trace<B: CommissioningBackend>(
 
             match result {
                 ValidationResult::Pass => {
+                    data.velocity_search_stop_reason = VELOCITY_SEARCH_STOP_CLEAN;
                     if !stop_velocity_motion(backend).await {
                         return fail_outer(phase, CommissionError::Spi);
                     }
@@ -915,6 +917,12 @@ pub(crate) async fn step_velocity_validate_with_trace<B: CommissioningBackend>(
                 return fail_outer(phase, CommissionError::Spi);
             }
 
+            if !data.mech_tau_trusted {
+                data.diagnostics.warning_code =
+                    response::OUTER_WARNING_LOW_CONFIDENCE_MECHANICAL_ID;
+                data.velocity_search_stop_reason = VELOCITY_SEARCH_STOP_LOW_CONFIDENCE;
+            }
+
             let carried_safety = *safety;
             let mut accepted_gains = data.gains;
             // Keep the bounded validation velocity limit in hardware for
@@ -986,9 +994,9 @@ mod tests {
     };
     use crate::commission_dispatch::test_support::MockBackend;
     use crate::commissioning::outer::{
-        OuterDiagnostics, OuterPhase, OuterSafetyLimits, TraceSummarySeqs, VelocityTuneStrategy,
-        VelocityValidateData, VelocityValidateState, response, trace_pack_i16_pair,
-        trace_pack_u16_pair,
+        OuterDiagnostics, OuterPhase, OuterSafetyLimits, TraceSummarySeqs,
+        VELOCITY_SEARCH_STOP_CLEAN, VelocityTuneStrategy, VelocityValidateData,
+        VelocityValidateState, response, trace_pack_i16_pair, trace_pack_u16_pair,
     };
     use crate::commissioning::types::StepResult;
     use foci_tmc4671::registers::{PID_VELOCITY_LIMIT, PID_VELOCITY_TARGET};
@@ -1003,6 +1011,7 @@ mod tests {
             mech_rev_peak_velocity: 0,
             mech_fwd_travel: 0,
             mech_rev_travel: 0,
+            mech_tau_defaulted: false,
             synth_velocity_p: 0,
             synth_velocity_i: 0,
             synth_position_p: 0,
@@ -1052,6 +1061,9 @@ mod tests {
                 t_f: 0,
             },
             strategy: VelocityTuneStrategy::Model,
+            stiffness_timebase_ms: 50,
+            mech_tau_trusted: true,
+            velocity_search_stop_reason: VELOCITY_SEARCH_STOP_CLEAN,
             attempt: 0,
             step_target: 100,
             forward_metrics: None,
@@ -1145,6 +1157,9 @@ mod tests {
                         t_f: 0,
                     },
                     strategy: VelocityTuneStrategy::ResponseRamp,
+                    stiffness_timebase_ms: 50,
+                    mech_tau_trusted: true,
+                    velocity_search_stop_reason: VELOCITY_SEARCH_STOP_CLEAN,
                     attempt: 0,
                     step_target: 4,
                     forward_metrics: Some(VelocityValidation {
@@ -1180,6 +1195,7 @@ mod tests {
                         mech_rev_peak_velocity: 18,
                         mech_fwd_travel: 3907,
                         mech_rev_travel: 3886,
+                        mech_tau_defaulted: false,
                         synth_velocity_p: 0,
                         synth_velocity_i: 0,
                         synth_position_p: 0,
@@ -1268,6 +1284,9 @@ mod tests {
                     t_f: 0,
                 },
                 strategy: VelocityTuneStrategy::Model,
+                stiffness_timebase_ms: 50,
+                mech_tau_trusted: true,
+                velocity_search_stop_reason: VELOCITY_SEARCH_STOP_CLEAN,
                 attempt: 0,
                 step_target: 2,
                 forward_metrics: Some(failing_velocity_metrics()),
@@ -1286,6 +1305,166 @@ mod tests {
                 crate::commissioning::outer::OuterMotionBudget::firmware_caps(),
             ),
         }
+    }
+
+    #[test]
+    fn low_confidence_tau_accepts_with_warning_not_production() {
+        pollster::block_on(async {
+            let gains = VelocityGains {
+                velocity_p: 512,
+                velocity_i: 4,
+                velocity_limit: 40,
+                effective_bandwidth_hz: 10,
+                lambda_vel_ms: 50,
+            };
+            let mut phase = OuterPhase::VelocityValidate {
+                state: VelocityValidateState::Finalize,
+                data: VelocityValidateData {
+                    gains,
+                    accepted_gains: gains,
+                    has_accepted_gains: false,
+                    response_lower_p: 0,
+                    response_upper_p: 0,
+                    model: MechanicalModel {
+                        j_eff: 1,
+                        b_eff: 1,
+                        tau_mech_ms: 50,
+                        theta_mech_us: 1,
+                        t_f: 0,
+                    },
+                    strategy: VelocityTuneStrategy::Model,
+                    stiffness_timebase_ms: response::VELOCITY_RESPONSE_VALIDATE_TAU_MS,
+                    mech_tau_trusted: false,
+                    velocity_search_stop_reason: VELOCITY_SEARCH_STOP_CLEAN,
+                    attempt: 0,
+                    step_target: 4,
+                    forward_metrics: None,
+                    reverse_metrics: None,
+                    max_chatter: 0,
+                    peak_velocity: 20,
+                    prev_encoder_for_velocity: 0,
+                    saturation_count: 0,
+                    torque_limit: 2448,
+                    operational_velocity_limit: 500_000,
+                    diagnostics: zero_diagnostics(),
+                },
+                safety: OuterSafetyLimits::new(
+                    0,
+                    2448,
+                    crate::commissioning::outer::OuterMotionBudget::firmware_caps(),
+                ),
+            };
+            let mut buf = TransientBuffer::new();
+            let mut backend = MockBackend::new();
+
+            let result = step_velocity_validate(
+                &mut phase,
+                &mut buf,
+                CommissionProfile::Balanced,
+                OperatingMode::Nominal,
+                934,
+                160,
+                false,
+                0,
+                &mut backend,
+            )
+            .await;
+
+            assert!(matches!(
+                result,
+                StepResult::PhaseChanged(crate::autotune::PhaseId::PositionTune)
+            ));
+            match phase {
+                OuterPhase::PositionTune { data, .. } => {
+                    assert_eq!(
+                        data.diagnostics.warning_code,
+                        response::OUTER_WARNING_LOW_CONFIDENCE_MECHANICAL_ID
+                    );
+                }
+                other => panic!("expected PositionTune with warning, got {:?}", other),
+            }
+        });
+    }
+
+    #[test]
+    fn defaulted_tau_accepts_with_warning_not_production() {
+        pollster::block_on(async {
+            let gains = VelocityGains {
+                velocity_p: 512,
+                velocity_i: 4,
+                velocity_limit: 40,
+                effective_bandwidth_hz: 10,
+                lambda_vel_ms: 50,
+            };
+            let mut diagnostics = zero_diagnostics();
+            diagnostics.mech_tau_defaulted = true;
+            let mut phase = OuterPhase::VelocityValidate {
+                state: VelocityValidateState::Finalize,
+                data: VelocityValidateData {
+                    gains,
+                    accepted_gains: gains,
+                    has_accepted_gains: false,
+                    response_lower_p: 0,
+                    response_upper_p: 0,
+                    model: MechanicalModel {
+                        j_eff: 1,
+                        b_eff: 1,
+                        tau_mech_ms: 1000,
+                        theta_mech_us: 1,
+                        t_f: 0,
+                    },
+                    strategy: VelocityTuneStrategy::Model,
+                    stiffness_timebase_ms: response::VELOCITY_RESPONSE_VALIDATE_TAU_MS,
+                    mech_tau_trusted: false,
+                    velocity_search_stop_reason: VELOCITY_SEARCH_STOP_CLEAN,
+                    attempt: 0,
+                    step_target: 4,
+                    forward_metrics: None,
+                    reverse_metrics: None,
+                    max_chatter: 0,
+                    peak_velocity: 20,
+                    prev_encoder_for_velocity: 0,
+                    saturation_count: 0,
+                    torque_limit: 2448,
+                    operational_velocity_limit: 500_000,
+                    diagnostics,
+                },
+                safety: OuterSafetyLimits::new(
+                    0,
+                    2448,
+                    crate::commissioning::outer::OuterMotionBudget::firmware_caps(),
+                ),
+            };
+            let mut buf = TransientBuffer::new();
+            let mut backend = MockBackend::new();
+
+            let result = step_velocity_validate(
+                &mut phase,
+                &mut buf,
+                CommissionProfile::Balanced,
+                OperatingMode::Nominal,
+                934,
+                160,
+                false,
+                0,
+                &mut backend,
+            )
+            .await;
+
+            assert!(matches!(
+                result,
+                StepResult::PhaseChanged(crate::autotune::PhaseId::PositionTune)
+            ));
+            match phase {
+                OuterPhase::PositionTune { data, .. } => {
+                    assert_eq!(
+                        data.diagnostics.warning_code,
+                        response::OUTER_WARNING_LOW_CONFIDENCE_MECHANICAL_ID
+                    );
+                }
+                other => panic!("expected PositionTune with warning, got {:?}", other),
+            }
+        });
     }
 
     #[test]
@@ -1331,6 +1510,9 @@ mod tests {
                         t_f: 0,
                     },
                     strategy: VelocityTuneStrategy::Model,
+                    stiffness_timebase_ms: 50,
+                    mech_tau_trusted: true,
+                    velocity_search_stop_reason: VELOCITY_SEARCH_STOP_CLEAN,
                     attempt: 0,
                     step_target: 4,
                     forward_metrics: None,
@@ -1420,6 +1602,9 @@ mod tests {
                         t_f: 0,
                     },
                     strategy: VelocityTuneStrategy::Model,
+                    stiffness_timebase_ms: 50,
+                    mech_tau_trusted: true,
+                    velocity_search_stop_reason: VELOCITY_SEARCH_STOP_CLEAN,
                     attempt: 0,
                     step_target: 4,
                     forward_metrics: None,
@@ -1500,6 +1685,9 @@ mod tests {
                         t_f: 0,
                     },
                     strategy: VelocityTuneStrategy::Model,
+                    stiffness_timebase_ms: 50,
+                    mech_tau_trusted: true,
+                    velocity_search_stop_reason: VELOCITY_SEARCH_STOP_CLEAN,
                     attempt: 0,
                     step_target: 4,
                     forward_metrics: None,
@@ -1570,6 +1758,9 @@ mod tests {
                         t_f: 0,
                     },
                     strategy: VelocityTuneStrategy::Model,
+                    stiffness_timebase_ms: 50,
+                    mech_tau_trusted: true,
+                    velocity_search_stop_reason: VELOCITY_SEARCH_STOP_CLEAN,
                     attempt: 0,
                     step_target: 4,
                     forward_metrics: None,
@@ -1749,6 +1940,9 @@ mod tests {
                         t_f: 0,
                     },
                     strategy: VelocityTuneStrategy::ResponseRamp,
+                    stiffness_timebase_ms: 50,
+                    mech_tau_trusted: true,
+                    velocity_search_stop_reason: VELOCITY_SEARCH_STOP_CLEAN,
                     attempt: 0,
                     step_target: response::VELOCITY_RESPONSE_STEP_TARGET,
                     forward_metrics: Some(low_energy_marginal_velocity_metrics()),
@@ -1821,6 +2015,9 @@ mod tests {
                         t_f: 0,
                     },
                     strategy: VelocityTuneStrategy::ResponseRamp,
+                    stiffness_timebase_ms: 50,
+                    mech_tau_trusted: true,
+                    velocity_search_stop_reason: VELOCITY_SEARCH_STOP_CLEAN,
                     attempt: 0,
                     step_target: response::VELOCITY_RESPONSE_STEP_TARGET,
                     forward_metrics: Some(stiction_breakaway_metrics(8, 250)),
@@ -1899,6 +2096,9 @@ mod tests {
                         t_f: 0,
                     },
                     strategy: VelocityTuneStrategy::ResponseRamp,
+                    stiffness_timebase_ms: 50,
+                    mech_tau_trusted: true,
+                    velocity_search_stop_reason: VELOCITY_SEARCH_STOP_CLEAN,
                     attempt: 0,
                     step_target: response::VELOCITY_RESPONSE_STEP_TARGET,
                     forward_metrics: Some(failing_velocity_metrics()),
@@ -1974,6 +2174,9 @@ mod tests {
                         t_f: 0,
                     },
                     strategy: VelocityTuneStrategy::ResponseRamp,
+                    stiffness_timebase_ms: 50,
+                    mech_tau_trusted: true,
+                    velocity_search_stop_reason: VELOCITY_SEARCH_STOP_CLEAN,
                     attempt: 0,
                     step_target: response::VELOCITY_RESPONSE_STEP_TARGET,
                     forward_metrics: Some(stiction_breakaway_metrics(2, 0)),
@@ -2056,6 +2259,9 @@ mod tests {
                         t_f: 0,
                     },
                     strategy: VelocityTuneStrategy::ResponseRamp,
+                    stiffness_timebase_ms: 50,
+                    mech_tau_trusted: true,
+                    velocity_search_stop_reason: VELOCITY_SEARCH_STOP_CLEAN,
                     attempt: 0,
                     step_target: response::VELOCITY_RESPONSE_STEP_TARGET * 2,
                     forward_metrics: Some(stiction_breakaway_metrics(13, 250)),
@@ -2131,6 +2337,9 @@ mod tests {
                         t_f: 0,
                     },
                     strategy: VelocityTuneStrategy::ResponseRamp,
+                    stiffness_timebase_ms: 50,
+                    mech_tau_trusted: true,
+                    velocity_search_stop_reason: VELOCITY_SEARCH_STOP_CLEAN,
                     attempt: 0,
                     step_target: response::VELOCITY_RESPONSE_STEP_TARGET,
                     forward_metrics: Some(stiction_breakaway_metrics(2, 0)),
@@ -2208,6 +2417,9 @@ mod tests {
                         t_f: 0,
                     },
                     strategy: VelocityTuneStrategy::ResponseRamp,
+                    stiffness_timebase_ms: 50,
+                    mech_tau_trusted: true,
+                    velocity_search_stop_reason: VELOCITY_SEARCH_STOP_CLEAN,
                     attempt: 12,
                     step_target: response::VELOCITY_RESPONSE_STEP_TARGET,
                     forward_metrics: Some(failing_velocity_metrics()),

@@ -456,6 +456,7 @@ mod tests {
             mech_rev_peak_velocity: 0,
             mech_fwd_travel: 0,
             mech_rev_travel: 0,
+            mech_tau_defaulted: false,
             synth_velocity_p: 0,
             synth_velocity_i: 0,
             synth_position_p: 0,

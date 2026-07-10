@@ -257,6 +257,7 @@ pub(crate) fn response_velocity_phase(
     safety: OuterSafetyLimits,
 ) -> OuterPhase {
     diagnostics.warning_code = OUTER_WARNING_LOW_CONFIDENCE_MECHANICAL_ID;
+    diagnostics.mech_tau_defaulted = true;
     OuterPhase::VelocityTune {
         model,
         peak_velocity,

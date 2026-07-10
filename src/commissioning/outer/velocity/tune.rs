@@ -2,7 +2,7 @@
 
 use super::super::{
     OUTER_MAX_VELOCITY_I, OUTER_MAX_VELOCITY_P, OUTER_WARNING_UNSAFE_SYNTH_GAINS, OuterPhase,
-    VelocityTuneStrategy, VelocityValidateData, VelocityValidateState,
+    VELOCITY_SEARCH_STOP_CLEAN, VelocityTuneStrategy, VelocityValidateData, VelocityValidateState,
 };
 use super::validate::VELOCITY_VALIDATE_STEP_PERCENT;
 use crate::autotune::{CommissionError, CommissionProfile, OperatingMode, PhaseId};
@@ -153,6 +153,15 @@ pub(crate) async fn step_velocity_tune<B: CommissioningBackend>(
         }
     );
 
+    let low_confidence_mech =
+        diagnostics.warning_code == response::OUTER_WARNING_LOW_CONFIDENCE_MECHANICAL_ID;
+    let mech_tau_trusted = !low_confidence_mech && !diagnostics.mech_tau_defaulted;
+    let stiffness_timebase_ms = if mech_tau_trusted {
+        model.tau_mech_ms.max(1)
+    } else {
+        response::VELOCITY_RESPONSE_VALIDATE_TAU_MS
+    };
+
     let data = VelocityValidateData {
         gains,
         accepted_gains: gains,
@@ -161,6 +170,9 @@ pub(crate) async fn step_velocity_tune<B: CommissioningBackend>(
         response_upper_p: 0,
         model,
         strategy,
+        stiffness_timebase_ms,
+        mech_tau_trusted,
+        velocity_search_stop_reason: VELOCITY_SEARCH_STOP_CLEAN,
         attempt: 0,
         step_target,
         forward_metrics: None,
@@ -201,6 +213,7 @@ mod tests {
             mech_rev_peak_velocity: 0,
             mech_fwd_travel: 0,
             mech_rev_travel: 0,
+            mech_tau_defaulted: false,
             synth_velocity_p: 0,
             synth_velocity_i: 0,
             synth_position_p: 0,
@@ -292,6 +305,62 @@ mod tests {
 
             assert_eq!(clean_lambda_ms, 60);
             assert_eq!(warned_lambda_ms, 90);
+        });
+    }
+
+    #[test]
+    fn velocity_tune_defaulted_tau_uses_conservative_timebase() {
+        pollster::block_on(async {
+            let model = MechanicalModel {
+                j_eff: 1_000_000,
+                b_eff: 1_000,
+                tau_mech_ms: 1000,
+                theta_mech_us: 20_000,
+                t_f: 0,
+            };
+            let mut diagnostics = zero_diagnostics();
+            diagnostics.mech_tau_defaulted = true;
+            let mut phase = OuterPhase::VelocityTune {
+                model,
+                peak_velocity: 1_000,
+                diagnostics,
+                safety: OuterSafetyLimits::new(
+                    0,
+                    2_448,
+                    crate::commissioning::outer::OuterMotionBudget::firmware_caps(),
+                ),
+            };
+            let mut backend = MockBackend::new();
+            backend.step_width_value = 819;
+            backend.current_limit_value = 2_448;
+
+            let result = step_velocity_tune(
+                &mut phase,
+                CommissionProfile::Balanced,
+                OperatingMode::Nominal,
+                1_000,
+                100,
+                0,
+                1_000,
+                &mut backend,
+            )
+            .await;
+
+            assert!(matches!(
+                result,
+                StepResult::PhaseChanged(crate::autotune::PhaseId::VelocityValidate)
+            ));
+            match phase {
+                OuterPhase::VelocityValidate { data, .. } => {
+                    assert_eq!(data.strategy, VelocityTuneStrategy::Model);
+                    assert!(!data.mech_tau_trusted);
+                    assert_eq!(
+                        data.stiffness_timebase_ms,
+                        response::VELOCITY_RESPONSE_VALIDATE_TAU_MS
+                    );
+                }
+                other => panic!("expected VelocityValidate, got {:?}", other),
+            }
         });
     }
 

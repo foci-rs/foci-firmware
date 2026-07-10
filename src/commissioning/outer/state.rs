@@ -136,6 +136,8 @@ pub(crate) struct OuterDiagnostics {
     pub(crate) mech_rev_peak_velocity: u32,
     pub(crate) mech_fwd_travel: u32,
     pub(crate) mech_rev_travel: u32,
+    /// True when mechanical-ID fell back instead of deriving tau from J/B.
+    pub(crate) mech_tau_defaulted: bool,
     pub(crate) synth_velocity_p: u16,
     pub(crate) synth_velocity_i: u16,
     pub(crate) synth_position_p: u16,
@@ -153,6 +155,7 @@ impl OuterDiagnostics {
             mech_rev_peak_velocity: data.reverse_peak_velocity.unsigned_abs(),
             mech_fwd_travel: data.forward_travel,
             mech_rev_travel: data.reverse_travel,
+            mech_tau_defaulted: false,
             synth_velocity_p: 0,
             synth_velocity_i: 0,
             synth_position_p: 0,
@@ -206,6 +209,9 @@ pub(crate) enum VelocityTuneStrategy {
     ResponseRamp,
 }
 
+pub(crate) const VELOCITY_SEARCH_STOP_CLEAN: u8 = 1;
+pub(crate) const VELOCITY_SEARCH_STOP_LOW_CONFIDENCE: u8 = 4;
+
 /// Accumulated data for velocity-loop validation.
 #[derive(Debug, defmt::Format)]
 pub(crate) struct VelocityValidateData {
@@ -223,6 +229,12 @@ pub(crate) struct VelocityValidateData {
     pub(crate) model: MechanicalModel,
     /// Velocity tuning strategy for this run.
     pub(crate) strategy: VelocityTuneStrategy,
+    /// Timebase used for production stiffness classification.
+    pub(crate) stiffness_timebase_ms: u32,
+    /// True when mechanical timing is trusted enough for production verdict.
+    pub(crate) mech_tau_trusted: bool,
+    /// Reason the velocity search stopped.
+    pub(crate) velocity_search_stop_reason: u8,
     /// Current attempt (0 = first, 1 = retry).
     pub(crate) attempt: u8,
     /// Velocity step amplitude (encoder counts/ms or velocity target units).
