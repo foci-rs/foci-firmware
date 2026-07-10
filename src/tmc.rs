@@ -858,8 +858,7 @@ pub fn compute_velocity_offset_scaled(
 
 /// Computes the exact planner-timing command-velocity reference.
 ///
-/// Exact half-unit ties round away from zero. A denominator multiplication
-/// overflow returns zero because the exact bounded ratio rounds to zero.
+/// Exact half-unit ties round away from zero.
 pub fn compute_planner_velocity_reference(
     scale: crate::motion_scale::PlannerVelocityScale,
     step_interval: u32,
@@ -880,15 +879,56 @@ pub fn compute_planner_velocity_offset_scaled(
     if step_interval == 0 || multiplier == 0 {
         return 0;
     }
-    let Some(denominator) = scale.denominator().checked_mul(u64::from(step_interval)) else {
-        return 0;
+    let mut numerator_factors = [scale.numerator(), u64::from(multiplier)];
+    let mut denominator_factors = [scale.denominator(), u64::from(step_interval)];
+    cross_reduce_factors(&mut numerator_factors, &mut denominator_factors);
+
+    let numerator = numerator_factors[0]
+        .checked_mul(numerator_factors[1])
+        .expect("validated planner velocity numerator fits u64");
+    let rounded = match denominator_factors[0].checked_mul(denominator_factors[1]) {
+        Some(denominator) => {
+            let quotient = numerator / denominator;
+            let remainder = numerator % denominator;
+            quotient + u64::from(remainder >= denominator / 2 + denominator % 2)
+        }
+        None => u64::from(ceil_half_product_leq(
+            denominator_factors[0],
+            denominator_factors[1],
+            numerator,
+        )),
     };
-    let numerator = scale.numerator() * u64::from(multiplier);
-    let quotient = numerator / denominator;
-    let remainder = numerator % denominator;
-    let rounded = quotient + u64::from(remainder >= denominator / 2 + denominator % 2);
     let magnitude = rounded.min(i32::MAX as u64) as i32;
     if dir_high { -magnitude } else { magnitude }
+}
+
+fn cross_reduce_factors(numerators: &mut [u64; 2], denominators: &mut [u64; 2]) {
+    for numerator in numerators {
+        for denominator in denominators.iter_mut() {
+            let divisor = crate::motion_scale::greatest_common_divisor(*numerator, *denominator);
+            *numerator /= divisor;
+            *denominator /= divisor;
+        }
+    }
+}
+
+fn ceil_half_product_leq(left: u64, right: u64, limit: u64) -> bool {
+    if left.is_multiple_of(2) {
+        return (left / 2)
+            .checked_mul(right)
+            .is_some_and(|half_product| half_product <= limit);
+    }
+    if right.is_multiple_of(2) {
+        return (right / 2)
+            .checked_mul(left)
+            .is_some_and(|half_product| half_product <= limit);
+    }
+
+    (left / 2)
+        .checked_mul(right)
+        .and_then(|half_product| half_product.checked_add(right / 2))
+        .and_then(|half_product| half_product.checked_add(1))
+        .is_some_and(|half_product| half_product <= limit)
 }
 
 /// Compute a bounded logical position-target lead from the command velocity.
@@ -1687,6 +1727,23 @@ mod tests {
         let scale = crate::motion_scale::PlannerVelocityScale::from_reduced(1, u64::MAX);
 
         assert_eq!(compute_planner_velocity_reference(scale, 2, false), 0);
+    }
+
+    #[test]
+    fn rational_planner_velocity_rounds_exact_ratio_when_denominator_product_overflows() {
+        let scale = crate::motion_scale::MotionScale::new(1, 3)
+            .unwrap()
+            .planner_velocity_scale(4_294_967_294, 4_294_967_295)
+            .unwrap();
+
+        assert_eq!(
+            compute_planner_velocity_offset_scaled(scale, 1_431_655_766, false, 65_535),
+            1
+        );
+        assert_eq!(
+            compute_planner_velocity_offset_scaled(scale, 1_431_655_766, true, 65_535),
+            -1
+        );
     }
 
     #[test]
