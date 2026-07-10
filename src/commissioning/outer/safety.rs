@@ -12,6 +12,7 @@ use super::{
 
 const FIRMWARE_MAX_TRAVEL_MREV: u32 = 2_000;
 const FIRMWARE_MAX_VELOCITY_MREV_S: u32 = 6_000;
+const MIN_USEFUL_DURATION_MS: u16 = 4;
 
 /// Host-provided motor-local motion budget for outer commissioning.
 #[derive(Debug, Clone, Copy, defmt::Format)]
@@ -90,6 +91,13 @@ impl OuterSafetyLimits {
         }
     }
 
+    pub(crate) fn budget_request_is_valid(&self) -> bool {
+        self.budget.max_travel_mrev > 0
+            && self.budget.max_velocity_mrev_s > 0
+            && self.budget.max_duration_ms > 0
+            && self.budget.direction_mask == 0x03
+    }
+
     pub(crate) fn configure_encoder_resolution(&mut self, counts_per_rev: i32) {
         let counts_per_rev = normalized_counts_per_rev(counts_per_rev);
         self.counts_per_rev = counts_per_rev;
@@ -100,10 +108,10 @@ impl OuterSafetyLimits {
     }
 
     pub(crate) fn budget_is_usable(&self) -> bool {
-        self.budget.max_travel_mrev > 0
-            && self.budget.max_velocity_mrev_s > 0
-            && self.budget.max_duration_ms > 0
-            && self.budget.direction_mask == 0x03
+        self.budget_request_is_valid()
+            && self.budget.max_duration_ms >= MIN_USEFUL_DURATION_MS
+            && self.position_window as u32 >= response::MECHANICAL_ID_MIN_TRAVEL_COUNTS
+            && self.velocity_cap as u32 >= response::MECHANICAL_ID_MIN_PEAK_VELOCITY_COUNTS_PER_MS
     }
 
     pub(crate) fn motion_budget_mrev(&self) -> u16 {

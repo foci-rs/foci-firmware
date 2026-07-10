@@ -75,6 +75,17 @@ pub(crate) async fn step_outer_with_trace<B: CommissioningBackend>(
     // `inner_warning_flags`.
     let _ = tau_e_us;
     if let Some(safety) = outer_safety_mut(phase) {
+        if !safety.budget_request_is_valid() {
+            defmt::warn!(
+                "outer safety: invalid motion budget travel={} velocity={} duration={} dir={}",
+                safety.budget.max_travel_mrev,
+                safety.budget.max_velocity_mrev_s,
+                safety.budget.max_duration_ms,
+                safety.budget.direction_mask,
+            );
+            let err = safety_error_for_phase(phase);
+            return fail_outer(phase, err);
+        }
         match check_outer_safety(safety, backend).await {
             Ok(true) => {
                 // Zero excitation immediately on any safety violation.

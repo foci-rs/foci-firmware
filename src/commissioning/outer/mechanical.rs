@@ -274,6 +274,120 @@ mod tests {
     }
 
     #[test]
+    fn mechanical_id_rejects_invalid_budget_before_actuation() {
+        pollster::block_on(async {
+            let mut phase = OuterPhase::MechanicalId {
+                state: MechanicalIdState::Setup,
+                data: MechanicalIdData::new(0, 0),
+                safety: OuterSafetyLimits::new(
+                    0,
+                    0,
+                    crate::commissioning::outer::OuterMotionBudget {
+                        max_travel_mrev: 500,
+                        max_velocity_mrev_s: 6_000,
+                        max_duration_ms: 3_000,
+                        direction_mask: 1,
+                    },
+                ),
+            };
+            let mut buf = TransientBuffer::new();
+            let mut backend = MockBackend::new();
+            backend.current_limit_value = 2448;
+            backend.encoder_count_value = 1234;
+            let _ = backend.registers.insert(ABN_DECODER_PPR.addr(), 4000);
+
+            let result = step_outer(
+                &mut phase,
+                &mut buf,
+                CommissionProfile::Balanced,
+                OperatingMode::Nominal,
+                0,
+                0,
+                false,
+                0,
+                0,
+                0,
+                &mut backend,
+            )
+            .await;
+
+            assert!(matches!(
+                result,
+                StepResult::OuterFailed(CommissionError::SafetyEnvelopeViolation)
+            ));
+            assert!(!backend.enable_pin);
+            assert!(
+                !backend
+                    .spi_log
+                    .iter()
+                    .any(|op| matches!(op, SpiOp::EnablePin(true)))
+            );
+            assert!(!backend.spi_log.iter().any(|op| matches!(
+                op,
+                SpiOp::Write(addr, val)
+                    if *addr == PID_TORQUE_FLUX_TARGET.addr() && (*val >> 16) != 0
+            )));
+        });
+    }
+
+    #[test]
+    fn mechanical_id_rejects_tiny_budget_before_actuation() {
+        pollster::block_on(async {
+            let mut phase = OuterPhase::MechanicalId {
+                state: MechanicalIdState::Setup,
+                data: MechanicalIdData::new(0, 0),
+                safety: OuterSafetyLimits::new(
+                    0,
+                    0,
+                    crate::commissioning::outer::OuterMotionBudget {
+                        max_travel_mrev: 1,
+                        max_velocity_mrev_s: 6_000,
+                        max_duration_ms: 3_000,
+                        direction_mask: 3,
+                    },
+                ),
+            };
+            let mut buf = TransientBuffer::new();
+            let mut backend = MockBackend::new();
+            backend.current_limit_value = 2448;
+            backend.encoder_count_value = 1234;
+            let _ = backend.registers.insert(ABN_DECODER_PPR.addr(), 4000);
+
+            let result = step_outer(
+                &mut phase,
+                &mut buf,
+                CommissionProfile::Balanced,
+                OperatingMode::Nominal,
+                0,
+                0,
+                false,
+                0,
+                0,
+                0,
+                &mut backend,
+            )
+            .await;
+
+            assert!(matches!(
+                result,
+                StepResult::OuterFailed(CommissionError::SafetyEnvelopeViolation)
+            ));
+            assert!(!backend.enable_pin);
+            assert!(
+                !backend
+                    .spi_log
+                    .iter()
+                    .any(|op| matches!(op, SpiOp::EnablePin(true)))
+            );
+            assert!(!backend.spi_log.iter().any(|op| matches!(
+                op,
+                SpiOp::Write(addr, val)
+                    if *addr == PID_TORQUE_FLUX_TARGET.addr() && (*val >> 16) != 0
+            )));
+        });
+    }
+
+    #[test]
     fn mechanical_id_ignores_immediate_post_switch_velocity_spike() {
         pollster::block_on(async {
             let mut phase = OuterPhase::MechanicalId {
@@ -972,6 +1086,27 @@ pub(crate) async fn step_mechanical_id_with_trace<B: CommissioningBackend>(
             data.start_position = start_position;
             data.torque_step = torque_step;
 
+            // Read encoder PPR and prove the host budget can produce useful
+            // mechanical-ID evidence before any torque/mode writes or enable.
+            let ppr_raw = match backend.read_register(ABN_DECODER_PPR).await {
+                Ok(value) => value,
+                Err(_) => return fail_outer(phase, CommissionError::Spi),
+            };
+            let counts_per_rev = (ppr_raw as i32).max(4);
+            safety.configure_encoder_resolution(counts_per_rev);
+            if !safety.budget_is_usable() {
+                defmt::warn!(
+                    "mechanical-id: unusable motion budget travel={} velocity={} duration={} dir={} window={} velocity_cap={}",
+                    safety.budget.max_travel_mrev,
+                    safety.budget.max_velocity_mrev_s,
+                    safety.budget.max_duration_ms,
+                    safety.budget.direction_mask,
+                    safety.position_window,
+                    safety.velocity_cap,
+                );
+                return fail_outer(phase, CommissionError::SafetyEnvelopeViolation);
+            }
+
             // Zero torque before the position->torque mode switch so any stale
             // target from the prior closed-loop hold cannot bleed into setup.
             if backend
@@ -1010,14 +1145,6 @@ pub(crate) async fn step_mechanical_id_with_trace<B: CommissioningBackend>(
 
             // Prepare transient buffer for forward capture.
             buf.reset(response::MECHANICAL_ID_SAMPLE_PERIOD_US as u16);
-
-            // Read encoder PPR for wrap-aware delta computation.
-            let ppr_raw = match backend.read_register(ABN_DECODER_PPR).await {
-                Ok(value) => value,
-                Err(_) => return fail_outer(phase, CommissionError::Spi),
-            };
-            let counts_per_rev = (ppr_raw as i32).max(4);
-            safety.configure_encoder_resolution(counts_per_rev);
 
             // Seed the safety baseline from the post-switch position, but keep
             // safety disarmed until a brief zero-torque settle completes.
