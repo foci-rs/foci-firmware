@@ -486,6 +486,10 @@ where
                     current_bandwidth_hz,
                     tau_e_us,
                     inner_warning_flags,
+                    max_travel_mrev,
+                    max_velocity_mrev_s,
+                    max_duration_ms,
+                    direction_mask,
                 },
             ..
         } => {
@@ -574,6 +578,10 @@ where
                 current_bandwidth_hz,
                 tau_e_us,
                 inner_warning_flags,
+                max_travel_mrev,
+                max_velocity_mrev_s,
+                max_duration_ms,
+                direction_mask,
             };
             runtime.set_commission_engine(CommissioningEngine::new_outer_for_tmc_with_trace_seq(
                 oid,
@@ -958,6 +966,10 @@ mod tests {
                 current_bandwidth_hz: 1_000,
                 tau_e_us: 10,
                 inner_warning_flags: 0,
+                max_travel_mrev: 1000,
+                max_velocity_mrev_s: 6000,
+                max_duration_ms: 3000,
+                direction_mask: 3,
             },
         )
     }

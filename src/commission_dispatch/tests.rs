@@ -1352,6 +1352,10 @@ fn sample_outer_params() -> crate::commissioning::OuterTuneParams {
         current_bandwidth_hz: 1000,
         tau_e_us: 730,
         inner_warning_flags: 0,
+        max_travel_mrev: 1000,
+        max_velocity_mrev_s: 6000,
+        max_duration_ms: 3000,
+        direction_mask: 3,
     }
 }
 

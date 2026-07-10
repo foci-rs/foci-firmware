@@ -65,6 +65,14 @@ pub struct OuterTuneParams {
     pub tau_e_us: u32,
     /// Inner-confidence warning bitfield carried from Stage 1.
     pub inner_warning_flags: u8,
+    /// Host-computed max local motor travel in milli-revolutions.
+    pub max_travel_mrev: u32,
+    /// Host-computed max local motor velocity in milli-revolutions/s.
+    pub max_velocity_mrev_s: u32,
+    /// Host-computed max primitive duration in milliseconds.
+    pub max_duration_ms: u16,
+    /// Reserved direction mask. Requires bidirectional value 0x03.
+    pub direction_mask: u8,
 }
 
 /// Snapshot of outer gains at Stage 2 entry, for soft-failure restoration.
@@ -464,6 +472,10 @@ impl CommissioningEngine {
             current_bandwidth_hz,
             tau_e_us,
             inner_warning_flags,
+            max_travel_mrev: _,
+            max_velocity_mrev_s: _,
+            max_duration_ms: _,
+            direction_mask: _,
         } = params;
         Self {
             oid,
@@ -822,6 +834,10 @@ mod tests {
             current_bandwidth_hz: 1000,
             tau_e_us: 730,
             inner_warning_flags: 0,
+            max_travel_mrev: 1000,
+            max_velocity_mrev_s: 6000,
+            max_duration_ms: 3000,
+            direction_mask: 3,
         }
     }
 

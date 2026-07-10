@@ -223,6 +223,14 @@ pub enum TmcRequestKind {
         tau_e_us: u32,
         /// Inner-confidence warning bitfield carried from Stage 1.
         inner_warning_flags: u8,
+        /// Host-computed max local motor travel in milli-revolutions.
+        max_travel_mrev: u32,
+        /// Host-computed max local motor velocity in milli-revolutions/s.
+        max_velocity_mrev_s: u32,
+        /// Host-computed max primitive duration in milliseconds.
+        max_duration_ms: u16,
+        /// Reserved direction mask. Requires bidirectional value 0x03.
+        direction_mask: u8,
     },
     /// Set velocity biquad low-pass filter cutoff frequency.
     /// 0 = disabled, 10..1000 Hz = enabled.
@@ -468,6 +476,10 @@ pub fn tmc_tune(
     current_bandwidth_hz: u32,
     tau_e_us: u32,
     inner_warning_flags: u8,
+    max_travel_mrev: u32,
+    max_velocity_mrev_s: u32,
+    max_duration_ms: u16,
+    direction_mask: u8,
 ) -> TmcRequest {
     TmcRequest::new(
         channel,
@@ -481,6 +493,10 @@ pub fn tmc_tune(
             current_bandwidth_hz,
             tau_e_us,
             inner_warning_flags,
+            max_travel_mrev,
+            max_velocity_mrev_s,
+            max_duration_ms,
+            direction_mask,
         },
     )
 }
@@ -1582,7 +1598,9 @@ mod tests {
     #[test]
     fn tmc_tune_builds_request() {
         assert_eq!(
-            tmc_tune(0, 7, 2, 1, 1400, 700, 3, 500, 730, 0x40),
+            tmc_tune(
+                0, 7, 2, 1, 1400, 700, 3, 500, 730, 0x40, 1000, 6000, 3000, 3
+            ),
             TmcRequest::new(
                 0,
                 TmcRequestKind::Tune {
@@ -1595,6 +1613,10 @@ mod tests {
                     current_bandwidth_hz: 500,
                     tau_e_us: 730,
                     inner_warning_flags: 0x40,
+                    max_travel_mrev: 1000,
+                    max_velocity_mrev_s: 6000,
+                    max_duration_ms: 3000,
+                    direction_mask: 3,
                 }
             )
         );
