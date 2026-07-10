@@ -856,6 +856,41 @@ pub fn compute_velocity_offset_scaled(
     if dir_high { -magnitude } else { magnitude }
 }
 
+/// Computes the exact planner-timing command-velocity reference.
+///
+/// Exact half-unit ties round away from zero. A denominator multiplication
+/// overflow returns zero because the exact bounded ratio rounds to zero.
+pub fn compute_planner_velocity_reference(
+    scale: crate::motion_scale::PlannerVelocityScale,
+    step_interval: u32,
+    dir_high: bool,
+) -> i32 {
+    compute_planner_velocity_offset_scaled(scale, step_interval, dir_high, 1)
+}
+
+/// Computes an exact planner-timing velocity offset with a runtime multiplier.
+///
+/// The result saturates symmetrically to `-i32::MAX..=i32::MAX`.
+pub fn compute_planner_velocity_offset_scaled(
+    scale: crate::motion_scale::PlannerVelocityScale,
+    step_interval: u32,
+    dir_high: bool,
+    multiplier: u16,
+) -> i32 {
+    if step_interval == 0 || multiplier == 0 {
+        return 0;
+    }
+    let Some(denominator) = scale.denominator().checked_mul(u64::from(step_interval)) else {
+        return 0;
+    };
+    let numerator = scale.numerator() * u64::from(multiplier);
+    let quotient = numerator / denominator;
+    let remainder = numerator % denominator;
+    let rounded = quotient + u64::from(remainder >= denominator / 2 + denominator % 2);
+    let magnitude = rounded.min(i32::MAX as u64) as i32;
+    if dir_high { -magnitude } else { magnitude }
+}
+
 /// Compute a bounded logical position-target lead from the command velocity.
 ///
 /// The returned value is in firmware logical step counts, not TMC4671
@@ -1626,6 +1661,46 @@ mod tests {
     fn velocity_scale_factor_typical() {
         let scale = compute_velocity_scale_factor(81, 84_000_000, 25_000);
         assert_eq!(scale, 272_160);
+    }
+
+    #[test]
+    fn rational_planner_velocity_helpers_round_and_apply_tmc_sign() {
+        let scale = crate::motion_scale::MotionScale::new(1_000, 3_200)
+            .unwrap()
+            .planner_velocity_scale(84_000_000, 25_000)
+            .unwrap();
+
+        assert_eq!(compute_planner_velocity_reference(scale, 2_800, false), 25);
+        assert_eq!(compute_planner_velocity_reference(scale, 2_800, true), -25);
+    }
+
+    #[test]
+    fn rational_planner_velocity_rounds_ties_away_from_zero() {
+        let scale = crate::motion_scale::PlannerVelocityScale::from_reduced(1, 2);
+
+        assert_eq!(compute_planner_velocity_reference(scale, 1, false), 1);
+        assert_eq!(compute_planner_velocity_reference(scale, 1, true), -1);
+    }
+
+    #[test]
+    fn rational_planner_velocity_overflow_is_mathematical_zero() {
+        let scale = crate::motion_scale::PlannerVelocityScale::from_reduced(1, u64::MAX);
+
+        assert_eq!(compute_planner_velocity_reference(scale, 2, false), 0);
+    }
+
+    #[test]
+    fn rational_planner_velocity_multiplier_saturates_symmetrically() {
+        let scale = crate::motion_scale::PlannerVelocityScale::from_reduced(i32::MAX as u64, 1);
+
+        assert_eq!(
+            compute_planner_velocity_offset_scaled(scale, 1, false, u16::MAX),
+            i32::MAX
+        );
+        assert_eq!(
+            compute_planner_velocity_offset_scaled(scale, 1, true, u16::MAX),
+            i32::MIN + 1
+        );
     }
 
     #[test]

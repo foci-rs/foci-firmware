@@ -24,6 +24,7 @@ pub mod diagnostic;
 pub mod dump;
 pub mod electrical_capture;
 pub mod helpers;
+pub mod motion_scale;
 pub mod pid;
 pub mod platform;
 pub mod resistance_identification;

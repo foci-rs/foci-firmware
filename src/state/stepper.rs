@@ -21,6 +21,7 @@ pub struct StepperChannelState {
     pub direction: AtomicBool,
     /// P1-readable mirror of board-local step timer activity.
     pub timer_active_mirror: AtomicBool,
+    planner_steps_per_rev: AtomicU32,
 }
 
 impl StepperChannelState {
@@ -33,6 +34,7 @@ impl StepperChannelState {
             interval_add: AtomicI32::new(0),
             direction: AtomicBool::new(true),
             timer_active_mirror: AtomicBool::new(false),
+            planner_steps_per_rev: AtomicU32::new(0),
         }
     }
 
@@ -46,6 +48,26 @@ impl StepperChannelState {
         self.interval_add.store(0, Relaxed);
         self.direction.store(true, Relaxed);
         self.timer_active_mirror.store(false, Relaxed);
+        self.planner_steps_per_rev.store(0, Relaxed);
+    }
+
+    pub(crate) fn store_planner_steps_per_rev(&self, value: u32) {
+        self.planner_steps_per_rev
+            .store(value, core::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Returns the configured logical planner steps per mechanical revolution.
+    ///
+    /// The complete scale's acquire publication gate is checked before reading
+    /// this cross-state planner mirror.
+    pub fn planner_steps_per_rev(
+        &self,
+        tmc_state: &crate::state::tmc::TmcChannelState,
+    ) -> Option<u32> {
+        tmc_state.motion_scale_configured().then(|| {
+            self.planner_steps_per_rev
+                .load(core::sync::atomic::Ordering::Relaxed)
+        })
     }
 }
 

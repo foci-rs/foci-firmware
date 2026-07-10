@@ -76,6 +76,10 @@ pub struct TmcChannelState {
     pub step_width_value: AtomicI32,
     /// Configured mechanical ABN encoder pulses per revolution.
     pub encoder_ppr: AtomicU32,
+    encoder_counts_per_rev: AtomicU32,
+    tmc_grid: AtomicU32,
+    step_width: AtomicU32,
+    motion_scale_configured: AtomicBool,
     /// Optional velocity biquad filter cutoff frequency in Hz.
     pub velocity_filter_hz: AtomicOptionalFilterHz,
     /// Optional torque biquad filter cutoff frequency in Hz.
@@ -169,6 +173,10 @@ impl TmcChannelState {
             motor_sentinel: AtomicU32::new(0),
             step_width_value: AtomicI32::new(0),
             encoder_ppr: AtomicU32::new(0),
+            encoder_counts_per_rev: AtomicU32::new(0),
+            tmc_grid: AtomicU32::new(0),
+            step_width: AtomicU32::new(0),
+            motion_scale_configured: AtomicBool::new(false),
             velocity_filter_hz: AtomicOptionalFilterHz::new(None),
             torque_filter_hz: AtomicOptionalFilterHz::new(None),
             position_filter_hz: AtomicOptionalFilterHz::new(None),
@@ -217,11 +225,15 @@ impl TmcChannelState {
     pub fn reset(&self) {
         use core::sync::atomic::Ordering::Relaxed;
 
+        self.motion_scale_configured.store(false, Ordering::Release);
         self.current_limit_reg.store(0, Relaxed);
         self.motor_armed.store(false, Relaxed);
         self.motor_sentinel.store(0, Relaxed);
         self.step_width_value.store(0, Relaxed);
         self.encoder_ppr.store(0, Relaxed);
+        self.encoder_counts_per_rev.store(0, Relaxed);
+        self.tmc_grid.store(0, Relaxed);
+        self.step_width.store(0, Relaxed);
         self.velocity_filter_hz.store(None, Relaxed);
         self.torque_filter_hz.store(None, Relaxed);
         self.position_filter_hz.store(None, Relaxed);
@@ -266,6 +278,63 @@ impl TmcChannelState {
         self.velocity_i_value.store(0, Relaxed);
     }
 
+    /// Validates and publishes a complete motion scale to its channel mirrors.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::motion_scale::MotionScaleError`] without changing any
+    /// mirror when either encoder or planner resolution is invalid.
+    pub fn configure_motion_scale(
+        &self,
+        stepper_state: &crate::state::stepper::StepperChannelState,
+        encoder_ppr: u32,
+        planner_steps_per_rev: u32,
+    ) -> Result<crate::motion_scale::MotionScale, crate::motion_scale::MotionScaleError> {
+        let scale = crate::motion_scale::MotionScale::new(encoder_ppr, planner_steps_per_rev)?;
+
+        self.motion_scale_configured.store(false, Ordering::Release);
+        self.encoder_ppr
+            .store(scale.encoder_ppr(), Ordering::Relaxed);
+        self.encoder_counts_per_rev
+            .store(scale.encoder_counts_per_rev(), Ordering::Relaxed);
+        stepper_state.store_planner_steps_per_rev(scale.planner_steps_per_rev());
+        self.tmc_grid.store(scale.tmc_grid(), Ordering::Relaxed);
+        self.step_width.store(scale.step_width(), Ordering::Relaxed);
+        self.step_width_value
+            .store(scale.step_width() as i32, Ordering::Relaxed);
+        self.motion_scale_configured.store(true, Ordering::Release);
+        Ok(scale)
+    }
+
+    /// Returns whether a complete motion scale has been published.
+    pub fn motion_scale_configured(&self) -> bool {
+        self.motion_scale_configured.load(Ordering::Acquire)
+    }
+
+    /// Returns configured encoder pulses per mechanical revolution.
+    pub fn encoder_ppr(&self) -> Option<u32> {
+        self.motion_scale_configured()
+            .then(|| self.encoder_ppr.load(Ordering::Relaxed))
+    }
+
+    /// Returns configured quadrature encoder counts per mechanical revolution.
+    pub fn encoder_counts_per_rev(&self) -> Option<u32> {
+        self.motion_scale_configured()
+            .then(|| self.encoder_counts_per_rev.load(Ordering::Relaxed))
+    }
+
+    /// Returns configured physical TMC pulses per mechanical revolution.
+    pub fn tmc_grid(&self) -> Option<u32> {
+        self.motion_scale_configured()
+            .then(|| self.tmc_grid.load(Ordering::Relaxed))
+    }
+
+    /// Returns configured TMC4671 position units per physical pulse.
+    pub fn physical_step_width(&self) -> Option<u32> {
+        self.motion_scale_configured()
+            .then(|| self.step_width.load(Ordering::Relaxed))
+    }
+
     /// Store the ADC_VM mode-5 startup offset captured for this channel.
     pub fn store_adc_vm_offset(&self, offset_raw: u16, sample_count: u8) {
         use core::sync::atomic::Ordering::Relaxed;
@@ -286,6 +355,61 @@ impl TmcChannelState {
             offset_raw: self.adc_vm_offset_raw.load(Relaxed),
             sample_count,
         })
+    }
+}
+
+#[cfg(test)]
+mod motion_scale_tests {
+    use super::*;
+    use crate::state::stepper::StepperChannelState;
+
+    #[test]
+    fn motion_scale_configuration_publishes_named_and_legacy_mirrors() {
+        let tmc = TmcChannelState::new();
+        let stepper = StepperChannelState::new();
+
+        let scale = tmc.configure_motion_scale(&stepper, 1_000, 3_200).unwrap();
+
+        assert!(tmc.motion_scale_configured());
+        assert_eq!(tmc.encoder_ppr(), Some(1_000));
+        assert_eq!(tmc.encoder_counts_per_rev(), Some(4_000));
+        assert_eq!(stepper.planner_steps_per_rev(&tmc), Some(3_200));
+        assert_eq!(tmc.tmc_grid(), Some(4_096));
+        assert_eq!(tmc.physical_step_width(), Some(16));
+        assert_eq!(tmc.step_width_value.load(Ordering::Relaxed), 16);
+        assert_eq!(scale.step_width(), 16);
+    }
+
+    #[test]
+    fn invalid_motion_scale_does_not_partially_update_mirrors() {
+        let tmc = TmcChannelState::new();
+        let stepper = StepperChannelState::new();
+        tmc.configure_motion_scale(&stepper, 1_000, 3_200).unwrap();
+
+        assert!(
+            tmc.configure_motion_scale(&stepper, u32::MAX, 4_000)
+                .is_err()
+        );
+
+        assert_eq!(tmc.encoder_ppr(), Some(1_000));
+        assert_eq!(tmc.encoder_counts_per_rev(), Some(4_000));
+        assert_eq!(stepper.planner_steps_per_rev(&tmc), Some(3_200));
+        assert_eq!(tmc.physical_step_width(), Some(16));
+    }
+
+    #[test]
+    fn reset_unpublishes_motion_scale_before_clearing_mirrors() {
+        let tmc = TmcChannelState::new();
+        let stepper = StepperChannelState::new();
+        tmc.configure_motion_scale(&stepper, 1_000, 3_200).unwrap();
+
+        tmc.reset();
+        stepper.reset();
+
+        assert!(!tmc.motion_scale_configured());
+        assert_eq!(tmc.encoder_counts_per_rev(), None);
+        assert_eq!(stepper.planner_steps_per_rev(&tmc), None);
+        assert_eq!(tmc.step_width_value.load(Ordering::Relaxed), 0);
     }
 }
 
