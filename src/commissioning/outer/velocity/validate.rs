@@ -1,12 +1,13 @@
 //! Phase 10 velocity-loop bidirectional step-response validation.
 
 use super::super::{
-    OUTER_MAX_VELOCITY_I, OUTER_MAX_VELOCITY_P, OUTER_WARNING_UNSAFE_SYNTH_GAINS, OuterPhase,
-    POS_TUNE_INITIAL_P, PositionTuneData, PositionTuneState, TraceSummarySeqs,
-    VELOCITY_SEARCH_STOP_CLEAN, VELOCITY_SEARCH_STOP_LOW_CONFIDENCE,
-    VELOCITY_SEARCH_STOP_UNDER_DRIVEN_BUDGET, VELOCITY_SEARCH_STOP_UNSAFE_BACKOFF,
-    VelocityTuneStrategy, VelocityValidateData, VelocityValidateState, trace_pack_i16_pair,
-    trace_pack_u16_pair, trace_summary_event,
+    OUTER_EVIDENCE_LOW_CONFIDENCE_MECH, OUTER_EVIDENCE_MOTION_BUDGET_CLAMPED,
+    OUTER_EVIDENCE_TAU_DEFAULTED, OUTER_EVIDENCE_UNDER_DRIVEN_PROBE, OUTER_MAX_VELOCITY_I,
+    OUTER_MAX_VELOCITY_P, OUTER_WARNING_UNSAFE_SYNTH_GAINS, OuterPhase, POS_TUNE_INITIAL_P,
+    PositionTuneData, PositionTuneState, TraceSummarySeqs, VELOCITY_SEARCH_STOP_CLEAN,
+    VELOCITY_SEARCH_STOP_LOW_CONFIDENCE, VELOCITY_SEARCH_STOP_UNDER_DRIVEN_BUDGET,
+    VELOCITY_SEARCH_STOP_UNSAFE_BACKOFF, VelocityTuneStrategy, VelocityValidateData,
+    VelocityValidateState, trace_pack_i16_pair, trace_pack_u16_pair, trace_summary_event,
 };
 use super::response_ramp;
 use crate::autotune::{
@@ -815,6 +816,7 @@ pub(crate) async fn step_velocity_validate_with_trace<B: CommissioningBackend>(
             {
                 data.accepted_gains = data.gains;
                 data.has_accepted_gains = true;
+                data.diagnostics.outer_evidence_flags |= OUTER_EVIDENCE_UNDER_DRIVEN_PROBE;
                 if let Some(next_p) = response_ramp::response_next_velocity_p(data.gains.velocity_p)
                 {
                     data.attempt = data.attempt.saturating_add(1);
@@ -985,6 +987,21 @@ pub(crate) async fn step_velocity_validate_with_trace<B: CommissioningBackend>(
             }
 
             let carried_safety = *safety;
+            data.diagnostics.stiffness_timebase_ms =
+                data.stiffness_timebase_ms.min(u16::MAX as u32) as u16;
+            data.diagnostics.velocity_search_stop_reason = data.velocity_search_stop_reason;
+            data.diagnostics.motion_budget_mrev = carried_safety.motion_budget_mrev();
+            if data.diagnostics.warning_code == response::OUTER_WARNING_LOW_CONFIDENCE_MECHANICAL_ID
+            {
+                data.diagnostics.outer_evidence_flags |= OUTER_EVIDENCE_LOW_CONFIDENCE_MECH;
+            }
+            if data.diagnostics.mech_tau_defaulted {
+                data.diagnostics.outer_evidence_flags |= OUTER_EVIDENCE_TAU_DEFAULTED;
+            }
+            if carried_safety.budget_clamped_firmware_caps() {
+                data.diagnostics.outer_evidence_flags |= OUTER_EVIDENCE_MOTION_BUDGET_CLAMPED;
+            }
+
             let mut accepted_gains = data.gains;
             // Keep the bounded validation velocity limit in hardware for
             // Phase 11. Position tuning intentionally uses small, local
@@ -1078,6 +1095,10 @@ mod tests {
             synth_velocity_i: 0,
             synth_position_p: 0,
             synth_position_i: 0,
+            outer_evidence_flags: 0,
+            stiffness_timebase_ms: 0,
+            velocity_search_stop_reason: 0,
+            motion_budget_mrev: 0,
         }
     }
 
@@ -1262,6 +1283,10 @@ mod tests {
                         synth_velocity_i: 0,
                         synth_position_p: 0,
                         synth_position_i: 0,
+                        outer_evidence_flags: 0,
+                        stiffness_timebase_ms: 0,
+                        velocity_search_stop_reason: 0,
+                        motion_budget_mrev: 0,
                     },
                 },
                 safety: OuterSafetyLimits::new(

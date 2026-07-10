@@ -611,6 +611,21 @@ pub struct OuterResult {
     pub synth_position_p: u16,
     /// Position I before safety fallback, if position tuning reached that far.
     pub synth_position_i: u16,
+    /// Compact outer evidence bitfield.
+    ///
+    /// bit0: velocity model candidate was under-driven and probed upward.
+    /// bit1: mechanical ID was low confidence.
+    /// bit2: mechanical tau was defaulted instead of derived from J/B.
+    /// bit3: host motion budget clamped a firmware hard cap.
+    ///
+    /// Remaining bits are reserved and must be zero.
+    pub outer_evidence_flags: u8,
+    /// Stiffness classification timebase in milliseconds.
+    pub stiffness_timebase_ms: u16,
+    /// Reason velocity search stopped.
+    pub velocity_search_stop_reason: u8,
+    /// Host-provided motion budget in milli-revolutions after clamping.
+    pub motion_budget_mrev: u16,
 }
 
 /// ADC residual stage sampled with PWM chopping disabled after offset programming.

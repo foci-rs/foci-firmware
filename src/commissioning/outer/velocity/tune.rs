@@ -218,6 +218,10 @@ mod tests {
             synth_velocity_i: 0,
             synth_position_p: 0,
             synth_position_i: 0,
+            outer_evidence_flags: 0,
+            stiffness_timebase_ms: 0,
+            velocity_search_stop_reason: 0,
+            motion_budget_mrev: 0,
         }
     }
 

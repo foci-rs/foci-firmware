@@ -9,6 +9,11 @@ use crate::commissioning::types::OuterResult;
 use super::OUTER_WARNING_NONE;
 use super::safety::OuterSafetyLimits;
 
+pub(crate) const OUTER_EVIDENCE_UNDER_DRIVEN_PROBE: u8 = 1 << 0;
+pub(crate) const OUTER_EVIDENCE_LOW_CONFIDENCE_MECH: u8 = 1 << 1;
+pub(crate) const OUTER_EVIDENCE_TAU_DEFAULTED: u8 = 1 << 2;
+pub(crate) const OUTER_EVIDENCE_MOTION_BUDGET_CLAMPED: u8 = 1 << 3;
+
 /// Mechanical identification sub-state machine (Phase 8).
 #[derive(Debug, defmt::Format)]
 pub(crate) enum MechanicalIdState {
@@ -142,6 +147,10 @@ pub(crate) struct OuterDiagnostics {
     pub(crate) synth_velocity_i: u16,
     pub(crate) synth_position_p: u16,
     pub(crate) synth_position_i: u16,
+    pub(crate) outer_evidence_flags: u8,
+    pub(crate) stiffness_timebase_ms: u16,
+    pub(crate) velocity_search_stop_reason: u8,
+    pub(crate) motion_budget_mrev: u16,
 }
 
 impl OuterDiagnostics {
@@ -160,6 +169,10 @@ impl OuterDiagnostics {
             synth_velocity_i: 0,
             synth_position_p: 0,
             synth_position_i: 0,
+            outer_evidence_flags: 0,
+            stiffness_timebase_ms: 0,
+            velocity_search_stop_reason: 0,
+            motion_budget_mrev: 0,
         }
     }
 }

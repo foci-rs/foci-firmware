@@ -1822,6 +1822,14 @@ pub struct FociTuneResult {
     pub synth_position_p: u16,
     /// Synthesized position I gain.
     pub synth_position_i: u16,
+    /// Compact outer evidence bitfield.
+    pub outer_evidence_flags: u8,
+    /// Stiffness classification timebase in milliseconds.
+    pub stiffness_timebase_ms: u16,
+    /// Reason velocity search stopped.
+    pub velocity_search_stop_reason: u8,
+    /// Host-provided motion budget in milli-revolutions after clamping.
+    pub motion_budget_mrev: u16,
 }
 
 /// `spi_transfer_response` reply — echo of a completed SPI transfer.

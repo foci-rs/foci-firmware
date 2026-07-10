@@ -92,6 +92,10 @@ pub(crate) fn step_commit(phase: &mut OuterPhase) -> StepResult {
         synth_velocity_i: diagnostics.synth_velocity_i,
         synth_position_p: diagnostics.synth_position_p,
         synth_position_i: diagnostics.synth_position_i,
+        outer_evidence_flags: diagnostics.outer_evidence_flags,
+        stiffness_timebase_ms: diagnostics.stiffness_timebase_ms,
+        velocity_search_stop_reason: diagnostics.velocity_search_stop_reason,
+        motion_budget_mrev: diagnostics.motion_budget_mrev,
     };
 
     defmt::info!(

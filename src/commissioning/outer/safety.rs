@@ -10,6 +10,9 @@ use super::{
     mechanical_id_velocity_cap_counts_per_ms, position_window_counts, response, state::OuterPhase,
 };
 
+const FIRMWARE_MAX_TRAVEL_MREV: u32 = 2_000;
+const FIRMWARE_MAX_VELOCITY_MREV_S: u32 = 6_000;
+
 /// Host-provided motor-local motion budget for outer commissioning.
 #[derive(Debug, Clone, Copy, defmt::Format)]
 pub(crate) struct OuterMotionBudget {
@@ -28,8 +31,8 @@ impl OuterMotionBudget {
     #[cfg(test)]
     pub(crate) const fn firmware_caps() -> Self {
         Self {
-            max_travel_mrev: 2_000,
-            max_velocity_mrev_s: 6_000,
+            max_travel_mrev: FIRMWARE_MAX_TRAVEL_MREV,
+            max_velocity_mrev_s: FIRMWARE_MAX_VELOCITY_MREV_S,
             max_duration_ms: 3_000,
             direction_mask: 0x03,
         }
@@ -101,6 +104,18 @@ impl OuterSafetyLimits {
             && self.budget.max_velocity_mrev_s > 0
             && self.budget.max_duration_ms > 0
             && self.budget.direction_mask == 0x03
+    }
+
+    pub(crate) fn motion_budget_mrev(&self) -> u16 {
+        self.budget
+            .max_travel_mrev
+            .min(FIRMWARE_MAX_TRAVEL_MREV)
+            .min(u16::MAX as u32) as u16
+    }
+
+    pub(crate) fn budget_clamped_firmware_caps(&self) -> bool {
+        self.budget.max_travel_mrev < FIRMWARE_MAX_TRAVEL_MREV
+            || self.budget.max_velocity_mrev_s < FIRMWARE_MAX_VELOCITY_MREV_S
     }
 }
 
