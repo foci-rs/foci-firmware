@@ -32,7 +32,9 @@ pub(crate) use limits::{
     position_tune_step_counts, position_window_counts,
     response_fallback_velocity_limit_counts_per_ms,
 };
-pub(crate) use safety::{OuterSafetyLimits, check_outer_safety, safety_error_for_phase};
+pub(crate) use safety::{
+    OuterMotionBudget, OuterSafetyLimits, check_outer_safety, safety_error_for_phase,
+};
 pub(crate) use state::{
     MechanicalIdData, MechanicalIdState, OuterDiagnostics, OuterPhase, PositionTuneData,
     PositionTuneState, VelocityTuneStrategy, VelocityValidateData, VelocityValidateState,

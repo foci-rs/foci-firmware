@@ -413,7 +413,11 @@ mod tests {
             OuterPhase::MechanicalId {
                 state: MechanicalIdState::Setup,
                 data: MechanicalIdData::new(0, 0),
-                safety: OuterSafetyLimits::new(0, 0),
+                safety: OuterSafetyLimits::new(
+                    0,
+                    0,
+                    crate::commissioning::outer::OuterMotionBudget::firmware_caps()
+                ),
             }
             .current_phase_id(),
             Some(PhaseId::MechanicalId)

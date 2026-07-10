@@ -190,7 +190,11 @@ mod tests {
             let mut phase = OuterPhase::MechanicalId {
                 state: MechanicalIdState::Setup,
                 data: MechanicalIdData::new(0, 0),
-                safety: OuterSafetyLimits::new(0, 0),
+                safety: OuterSafetyLimits::new(
+                    0,
+                    0,
+                    crate::commissioning::outer::OuterMotionBudget::firmware_caps(),
+                ),
             };
             let mut buf = TransientBuffer::new();
             let mut backend = MockBackend::new();
@@ -252,7 +256,11 @@ mod tests {
             let mut phase = OuterPhase::MechanicalId {
                 state: MechanicalIdState::Setup,
                 data: MechanicalIdData::new(0, 0),
-                safety: OuterSafetyLimits::new(0, 0),
+                safety: OuterSafetyLimits::new(
+                    0,
+                    0,
+                    crate::commissioning::outer::OuterMotionBudget::firmware_caps(),
+                ),
             };
             let mut buf = TransientBuffer::new();
             let mut backend = MockBackend::new();
@@ -321,7 +329,11 @@ mod tests {
             let mut phase = OuterPhase::MechanicalId {
                 state: MechanicalIdState::Setup,
                 data: MechanicalIdData::new(0, 0),
-                safety: OuterSafetyLimits::new(0, 0),
+                safety: OuterSafetyLimits::new(
+                    0,
+                    0,
+                    crate::commissioning::outer::OuterMotionBudget::firmware_caps(),
+                ),
             };
             let mut buf = TransientBuffer::new();
             let mut backend = MockBackend::new();
@@ -427,7 +439,11 @@ mod tests {
             let mut phase = OuterPhase::MechanicalId {
                 state: MechanicalIdState::Setup,
                 data: MechanicalIdData::new(0, 0),
-                safety: OuterSafetyLimits::new(0, 0),
+                safety: OuterSafetyLimits::new(
+                    0,
+                    0,
+                    crate::commissioning::outer::OuterMotionBudget::firmware_caps(),
+                ),
             };
             let mut buf = TransientBuffer::new();
             let mut backend = MockBackend::new();
@@ -532,7 +548,11 @@ mod tests {
                     sample_timestamps_us: [0; crate::autotune::TRANSIENT_LEN],
                     sample_timestamp_len: 0,
                 },
-                safety: OuterSafetyLimits::new(0, 2448),
+                safety: OuterSafetyLimits::new(
+                    0,
+                    2448,
+                    crate::commissioning::outer::OuterMotionBudget::firmware_caps(),
+                ),
             };
             let mut buf = TransientBuffer::new();
             let mut backend = MockBackend::new();
@@ -590,7 +610,11 @@ mod tests {
                     sample_timestamps_us: [0; crate::autotune::TRANSIENT_LEN],
                     sample_timestamp_len: 0,
                 },
-                safety: OuterSafetyLimits::new(0, 2448),
+                safety: OuterSafetyLimits::new(
+                    0,
+                    2448,
+                    crate::commissioning::outer::OuterMotionBudget::firmware_caps(),
+                ),
             };
             let mut buf = TransientBuffer::new();
             let mut backend = MockBackend::new();
@@ -654,7 +678,11 @@ mod tests {
                     sample_timestamps_us: [0; crate::autotune::TRANSIENT_LEN],
                     sample_timestamp_len: 0,
                 },
-                safety: OuterSafetyLimits::new(0, 2448),
+                safety: OuterSafetyLimits::new(
+                    0,
+                    2448,
+                    crate::commissioning::outer::OuterMotionBudget::firmware_caps(),
+                ),
             };
             let mut buf = TransientBuffer::new();
             let mut backend = MockBackend::new();
@@ -712,7 +740,11 @@ mod tests {
                     sample_timestamps_us: [0; crate::autotune::TRANSIENT_LEN],
                     sample_timestamp_len: 0,
                 },
-                safety: OuterSafetyLimits::new(0, 2448),
+                safety: OuterSafetyLimits::new(
+                    0,
+                    2448,
+                    crate::commissioning::outer::OuterMotionBudget::firmware_caps(),
+                ),
             };
             let mut buf = TransientBuffer::new();
             let mut backend = MockBackend::new();
@@ -771,7 +803,11 @@ mod tests {
                     sample_timestamps_us: [0; crate::autotune::TRANSIENT_LEN],
                     sample_timestamp_len: 0,
                 },
-                safety: OuterSafetyLimits::new(0, 2448),
+                safety: OuterSafetyLimits::new(
+                    0,
+                    2448,
+                    crate::commissioning::outer::OuterMotionBudget::firmware_caps(),
+                ),
             };
             let mut buf = TransientBuffer::new();
             let mut backend = MockBackend::new();
@@ -828,7 +864,11 @@ mod tests {
                     sample_timestamps_us: [0; crate::autotune::TRANSIENT_LEN],
                     sample_timestamp_len: 0,
                 },
-                safety: OuterSafetyLimits::new(0, 2448),
+                safety: OuterSafetyLimits::new(
+                    0,
+                    2448,
+                    crate::commissioning::outer::OuterMotionBudget::firmware_caps(),
+                ),
             };
             let mut buf = TransientBuffer::new();
             let mut backend = MockBackend::new();

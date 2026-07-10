@@ -1186,7 +1186,11 @@ mod tests {
                         synth_position_i: 0,
                     },
                 },
-                safety: OuterSafetyLimits::new(0, 2448),
+                safety: OuterSafetyLimits::new(
+                    0,
+                    2448,
+                    crate::commissioning::outer::OuterMotionBudget::firmware_caps(),
+                ),
             };
             let mut buf = TransientBuffer::new();
             let mut backend = MockBackend::new();
@@ -1276,7 +1280,11 @@ mod tests {
                 operational_velocity_limit: 500_000,
                 diagnostics: zero_diagnostics(),
             },
-            safety: OuterSafetyLimits::new(0, 2448),
+            safety: OuterSafetyLimits::new(
+                0,
+                2448,
+                crate::commissioning::outer::OuterMotionBudget::firmware_caps(),
+            ),
         }
     }
 
@@ -1335,7 +1343,11 @@ mod tests {
                     operational_velocity_limit: 500_000,
                     diagnostics: zero_diagnostics(),
                 },
-                safety: OuterSafetyLimits::new(0, 2448),
+                safety: OuterSafetyLimits::new(
+                    0,
+                    2448,
+                    crate::commissioning::outer::OuterMotionBudget::firmware_caps(),
+                ),
             };
             let mut buf = TransientBuffer::new();
             let mut backend = MockBackend::new();
@@ -1383,7 +1395,11 @@ mod tests {
                 effective_bandwidth_hz: 0,
                 lambda_vel_ms: 0,
             };
-            let mut safety = OuterSafetyLimits::new(0, 2448);
+            let mut safety = OuterSafetyLimits::new(
+                0,
+                2448,
+                crate::commissioning::outer::OuterMotionBudget::firmware_caps(),
+            );
             safety.configure_encoder_resolution(4_000);
             let mut phase = OuterPhase::VelocityValidate {
                 state: VelocityValidateState::ForwardCapture {
@@ -1459,7 +1475,11 @@ mod tests {
                 effective_bandwidth_hz: 0,
                 lambda_vel_ms: 0,
             };
-            let mut safety = OuterSafetyLimits::new(0, 2448);
+            let mut safety = OuterSafetyLimits::new(
+                0,
+                2448,
+                crate::commissioning::outer::OuterMotionBudget::firmware_caps(),
+            );
             safety.counts_per_rev = 4000;
             let mut phase = OuterPhase::VelocityValidate {
                 state: VelocityValidateState::ForwardCapture {
@@ -1562,7 +1582,11 @@ mod tests {
                     operational_velocity_limit: 500_000,
                     diagnostics: zero_diagnostics(),
                 },
-                safety: OuterSafetyLimits::new(0, 2448),
+                safety: OuterSafetyLimits::new(
+                    0,
+                    2448,
+                    crate::commissioning::outer::OuterMotionBudget::firmware_caps(),
+                ),
             };
             let mut buf = TransientBuffer::new();
             let mut backend = MockBackend::new();
@@ -1737,7 +1761,11 @@ mod tests {
                     operational_velocity_limit: 500_000,
                     diagnostics: zero_diagnostics(),
                 },
-                safety: OuterSafetyLimits::new(0, 2448),
+                safety: OuterSafetyLimits::new(
+                    0,
+                    2448,
+                    crate::commissioning::outer::OuterMotionBudget::firmware_caps(),
+                ),
             };
             let mut buf = TransientBuffer::new();
             let mut backend = MockBackend::new();
@@ -1805,7 +1833,11 @@ mod tests {
                     operational_velocity_limit: 500_000,
                     diagnostics: zero_diagnostics(),
                 },
-                safety: OuterSafetyLimits::new(0, 2448),
+                safety: OuterSafetyLimits::new(
+                    0,
+                    2448,
+                    crate::commissioning::outer::OuterMotionBudget::firmware_caps(),
+                ),
             };
             let mut buf = TransientBuffer::new();
             let mut backend = MockBackend::new();
@@ -1879,7 +1911,11 @@ mod tests {
                     operational_velocity_limit: 500_000,
                     diagnostics: zero_diagnostics(),
                 },
-                safety: OuterSafetyLimits::new(0, 2448),
+                safety: OuterSafetyLimits::new(
+                    0,
+                    2448,
+                    crate::commissioning::outer::OuterMotionBudget::firmware_caps(),
+                ),
             };
             let mut buf = TransientBuffer::new();
             let mut backend = MockBackend::new();
@@ -1950,7 +1986,11 @@ mod tests {
                     operational_velocity_limit: 500_000,
                     diagnostics: zero_diagnostics(),
                 },
-                safety: OuterSafetyLimits::new(0, 2448),
+                safety: OuterSafetyLimits::new(
+                    0,
+                    2448,
+                    crate::commissioning::outer::OuterMotionBudget::firmware_caps(),
+                ),
             };
             let mut buf = TransientBuffer::new();
             let mut backend = MockBackend::new();
@@ -2028,7 +2068,11 @@ mod tests {
                     operational_velocity_limit: 500_000,
                     diagnostics: zero_diagnostics(),
                 },
-                safety: OuterSafetyLimits::new(0, 2448),
+                safety: OuterSafetyLimits::new(
+                    0,
+                    2448,
+                    crate::commissioning::outer::OuterMotionBudget::firmware_caps(),
+                ),
             };
             let mut buf = TransientBuffer::new();
             let mut backend = MockBackend::new();
@@ -2099,7 +2143,11 @@ mod tests {
                     operational_velocity_limit: 500_000,
                     diagnostics: zero_diagnostics(),
                 },
-                safety: OuterSafetyLimits::new(0, 2448),
+                safety: OuterSafetyLimits::new(
+                    0,
+                    2448,
+                    crate::commissioning::outer::OuterMotionBudget::firmware_caps(),
+                ),
             };
             let mut buf = TransientBuffer::new();
             let mut backend = MockBackend::new();
@@ -2172,7 +2220,11 @@ mod tests {
                     operational_velocity_limit: 500_000,
                     diagnostics: zero_diagnostics(),
                 },
-                safety: OuterSafetyLimits::new(0, 2448),
+                safety: OuterSafetyLimits::new(
+                    0,
+                    2448,
+                    crate::commissioning::outer::OuterMotionBudget::firmware_caps(),
+                ),
             };
             let mut buf = TransientBuffer::new();
             let mut backend = MockBackend::new();

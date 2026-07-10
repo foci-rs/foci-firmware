@@ -213,7 +213,11 @@ mod tests {
                 j_eff: 1,
                 b_eff: 1,
                 diagnostics: zero_diagnostics(),
-                safety: OuterSafetyLimits::new(0, 2448),
+                safety: OuterSafetyLimits::new(
+                    0,
+                    2448,
+                    crate::commissioning::outer::OuterMotionBudget::firmware_caps(),
+                ),
             };
             let mut backend = MockBackend::new();
             backend.fail_on_write =

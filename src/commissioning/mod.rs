@@ -20,7 +20,8 @@ use crate::autotune::{
 };
 use crate::commissioning::inner::InnerPhase;
 use crate::commissioning::outer::{
-    MechanicalIdData, MechanicalIdState, OuterPhase, OuterSafetyLimits, TraceSummarySeqs,
+    MechanicalIdData, MechanicalIdState, OuterMotionBudget, OuterPhase, OuterSafetyLimits,
+    TraceSummarySeqs,
 };
 use crate::commissioning::types::{AdcCalResult, EngineKind, StepResult};
 use crate::pid::InnerLoopGains;
@@ -461,8 +462,6 @@ impl CommissioningEngine {
         // Safety limits and data are initialized with placeholder values.
         // The MechanicalIdState::Setup sub-state reads the actual encoder
         // position and current limit from the backend on the first step().
-        let safety = OuterSafetyLimits::new(0, 0);
-        let data = MechanicalIdData::new(0, 0);
         let OuterTuneParams {
             profile,
             mode,
@@ -472,11 +471,19 @@ impl CommissioningEngine {
             current_bandwidth_hz,
             tau_e_us,
             inner_warning_flags,
-            max_travel_mrev: _,
-            max_velocity_mrev_s: _,
-            max_duration_ms: _,
-            direction_mask: _,
+            max_travel_mrev,
+            max_velocity_mrev_s,
+            max_duration_ms,
+            direction_mask,
         } = params;
+        let budget = OuterMotionBudget {
+            max_travel_mrev,
+            max_velocity_mrev_s,
+            max_duration_ms,
+            direction_mask,
+        };
+        let safety = OuterSafetyLimits::new(0, 0, budget);
+        let data = MechanicalIdData::new(0, 0);
         Self {
             oid,
             tmc_state,
@@ -1141,6 +1148,31 @@ mod tests {
             CommissioningEngine::new_outer(0, params, snapshot).kind(),
             EngineKind::OuterTune,
         );
+    }
+
+    #[test]
+    fn new_outer_seeds_host_motion_budget() {
+        let params = OuterTuneParams {
+            max_travel_mrev: 750,
+            max_velocity_mrev_s: 4_500,
+            max_duration_ms: 2_500,
+            direction_mask: 0x03,
+            ..sample_outer_params()
+        };
+        let engine = CommissioningEngine::new_outer(0, params, sample_entry_snapshot());
+
+        let EngineMode::Outer {
+            phase: OuterPhase::MechanicalId { safety, .. },
+            ..
+        } = engine.engine_mode
+        else {
+            panic!("new_outer should create an outer engine");
+        };
+
+        assert_eq!(safety.budget.max_travel_mrev, 750);
+        assert_eq!(safety.budget.max_velocity_mrev_s, 4_500);
+        assert_eq!(safety.budget.max_duration_ms, 2_500);
+        assert_eq!(safety.budget.direction_mask, 0x03);
     }
 
     #[test]

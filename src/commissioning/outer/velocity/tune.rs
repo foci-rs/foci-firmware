@@ -222,13 +222,21 @@ mod tests {
                 model,
                 peak_velocity: 1_000,
                 diagnostics: zero_diagnostics(),
-                safety: OuterSafetyLimits::new(0, 2_448),
+                safety: OuterSafetyLimits::new(
+                    0,
+                    2_448,
+                    crate::commissioning::outer::OuterMotionBudget::firmware_caps(),
+                ),
             };
             let mut warned_phase = OuterPhase::VelocityTune {
                 model,
                 peak_velocity: 1_000,
                 diagnostics: zero_diagnostics(),
-                safety: OuterSafetyLimits::new(0, 2_448),
+                safety: OuterSafetyLimits::new(
+                    0,
+                    2_448,
+                    crate::commissioning::outer::OuterMotionBudget::firmware_caps(),
+                ),
             };
             let mut backend = MockBackend::new();
             backend.step_width_value = 819;
