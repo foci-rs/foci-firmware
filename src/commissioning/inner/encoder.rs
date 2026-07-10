@@ -141,7 +141,7 @@ fn push_encoder_align_result(
 /// Propagates `CommissionError::Spi` if the underlying register read fails.
 async fn read_encoder_count_stable<B: CommissioningBackend>(
     backend: &mut B,
-    mut diagnostics: Option<&mut CommissionDiagnostics>,
+    diagnostics: Option<&mut CommissionDiagnostics>,
     phase_id: PhaseId,
 ) -> Result<u32, CommissionError> {
     use foci_tmc4671::registers::ABN_DECODER_COUNT;
@@ -170,7 +170,7 @@ async fn read_encoder_count_stable<B: CommissioningBackend>(
             return Ok(samples[ENCODER_READ_SAMPLES - 1]);
         }
     }
-    if let Some(diagnostics) = diagnostics.as_deref_mut() {
+    if let Some(diagnostics) = diagnostics {
         push_encoder_read_unstable(diagnostics, phase_id, last_samples);
     }
     Err(CommissionError::EncoderFault)
