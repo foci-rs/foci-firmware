@@ -15,8 +15,11 @@ use super::{
     trace_summary_event,
 };
 use crate::autotune::{CommissionError, MechanicalModel, PhaseId, TransientBuffer};
-use crate::commissioning::outer::{fail_outer, response};
-use crate::commissioning::types::{CommissioningBackend, StepResult};
+use crate::commissioning::outer::{fail_outer, fail_outer_with_safety, response};
+use crate::commissioning::types::{
+    CommissioningBackend, OUTER_SAFETY_FAULT_POST_SWITCH_SETTLE,
+    OUTER_SAFETY_FAULT_UNUSABLE_BUDGET, StepResult,
+};
 use crate::trace::events::{
     EVENT_COMMISSION_MECHANICAL_ID_ATTEMPT, EVENT_COMMISSION_MECHANICAL_ID_CLASSIFICATION,
     EVENT_COMMISSION_MECHANICAL_ID_RESPONSE, EVENT_COMMISSION_MECHANICAL_ID_RESULT,
@@ -654,7 +657,10 @@ mod tests {
             ));
             assert!(matches!(
                 phase,
-                OuterPhase::Failed(CommissionError::SafetyEnvelopeViolation)
+                OuterPhase::FailedWithSafety {
+                    error: CommissionError::SafetyEnvelopeViolation,
+                    safety_fault
+                } if safety_fault.reason == OUTER_SAFETY_FAULT_POST_SWITCH_SETTLE
             ));
         });
     }
@@ -1104,7 +1110,12 @@ pub(crate) async fn step_mechanical_id_with_trace<B: CommissioningBackend>(
                     safety.position_window,
                     safety.velocity_cap,
                 );
-                return fail_outer(phase, CommissionError::SafetyEnvelopeViolation);
+                let fault = safety.fault(OUTER_SAFETY_FAULT_UNUSABLE_BUDGET, 0, 0, 0, 0);
+                return fail_outer_with_safety(
+                    phase,
+                    CommissionError::SafetyEnvelopeViolation,
+                    fault,
+                );
             }
 
             // Zero torque before the position->torque mode switch so any stale
@@ -1251,7 +1262,21 @@ pub(crate) async fn step_mechanical_id_with_trace<B: CommissioningBackend>(
                     delta_counts,
                     dt_us,
                 );
-                return fail_outer(phase, CommissionError::SafetyEnvelopeViolation);
+                let settle_start_us = timeout_deadline_us
+                    .wrapping_sub(MECHANICAL_ID_MODE_SWITCH_SETTLE_POLICY.timeout_us);
+                let elapsed_us = now.wrapping_sub(settle_start_us);
+                let fault = safety.fault(
+                    OUTER_SAFETY_FAULT_POST_SWITCH_SETTLE,
+                    delta_counts,
+                    dt_us,
+                    velocity_cpms,
+                    elapsed_us,
+                );
+                return fail_outer_with_safety(
+                    phase,
+                    CommissionError::SafetyEnvelopeViolation,
+                    fault,
+                );
             }
 
             StepResult::Continue

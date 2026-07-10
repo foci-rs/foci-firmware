@@ -2,6 +2,10 @@
 
 use crate::autotune::CommissionError;
 use crate::commissioning::backend::CommissioningBackend;
+use crate::commissioning::types::{
+    OUTER_SAFETY_FAULT_DURATION, OUTER_SAFETY_FAULT_INVALID_BUDGET, OUTER_SAFETY_FAULT_POSITION,
+    OUTER_SAFETY_FAULT_UNUSABLE_BUDGET, OUTER_SAFETY_FAULT_VELOCITY, OuterSafetyFault,
+};
 
 use super::limits::{
     MECHANICAL_ID_VELOCITY_CAP_COUNTS_PER_MS, POSITION_WINDOW_COUNTS, normalized_counts_per_rev,
@@ -125,6 +129,36 @@ impl OuterSafetyLimits {
         self.budget.max_travel_mrev < FIRMWARE_MAX_TRAVEL_MREV
             || self.budget.max_velocity_mrev_s < FIRMWARE_MAX_VELOCITY_MREV_S
     }
+
+    pub(crate) fn invalid_budget_fault(&self) -> OuterSafetyFault {
+        self.fault(OUTER_SAFETY_FAULT_INVALID_BUDGET, 0, 0, 0, 0)
+    }
+
+    pub(crate) fn fault(
+        &self,
+        reason: u8,
+        delta_counts: i32,
+        dt_us: u64,
+        velocity_counts_per_ms: i32,
+        elapsed_us: u64,
+    ) -> OuterSafetyFault {
+        let duration_cap_us = u64::from(self.budget.max_duration_ms) * 1_000;
+        OuterSafetyFault {
+            reason,
+            max_travel_mrev: clamp_u32_to_u16(self.budget.max_travel_mrev),
+            max_velocity_mrev_s: clamp_u32_to_u16(self.budget.max_velocity_mrev_s),
+            max_duration_ms: self.budget.max_duration_ms,
+            direction_mask: self.budget.direction_mask,
+            delta_counts,
+            dt_us: clamp_u64_to_u32(dt_us),
+            velocity_counts_per_ms,
+            velocity_cap_counts_per_ms: self.velocity_cap,
+            position_counts: self.unwrapped_position,
+            position_window_counts: self.position_window,
+            elapsed_us: clamp_u64_to_u32(elapsed_us),
+            duration_cap_us: clamp_u64_to_u32(duration_cap_us),
+        }
+    }
 }
 
 fn mrev_to_counts(mrev: u32, counts_per_rev: i32) -> i32 {
@@ -141,6 +175,14 @@ fn clamp_positive_i32(value: u64) -> i32 {
     } else {
         value as i32
     }
+}
+
+fn clamp_u32_to_u16(value: u32) -> u16 {
+    value.min(u16::MAX as u32) as u16
+}
+
+fn clamp_u64_to_u32(value: u64) -> u32 {
+    value.min(u32::MAX as u64) as u32
 }
 
 /// Map a safety-envelope violation to the dedicated error variant.
@@ -160,15 +202,15 @@ pub(crate) fn safety_error_for_phase(_phase: &OuterPhase) -> CommissionError {
 /// - Time-normalized velocity within cap.
 /// - Unwrapped position within window from start.
 ///
-/// Returns `true` if a safety limit is violated.
+/// Returns `Some(fault)` if a safety limit is violated.
 pub(crate) async fn check_outer_safety<B: CommissioningBackend>(
     safety: &mut OuterSafetyLimits,
     backend: &mut B,
-) -> Result<bool, B::Error> {
+) -> Result<Option<OuterSafetyFault>, B::Error> {
     // Safety limits are initialized by MechanicalId::Setup after it reads
     // the real encoder baseline. Skip the pre-setup placeholder values.
     if safety.torque_cap == 0 {
-        return Ok(false);
+        return Ok(None);
     }
 
     if !safety.budget_is_usable() {
@@ -179,7 +221,13 @@ pub(crate) async fn check_outer_safety<B: CommissioningBackend>(
             safety.budget.max_duration_ms,
             safety.budget.direction_mask,
         );
-        return Ok(true);
+        return Ok(Some(safety.fault(
+            OUTER_SAFETY_FAULT_UNUSABLE_BUDGET,
+            0,
+            0,
+            0,
+            0,
+        )));
     }
 
     let encoder_raw = backend.try_read_encoder_count().await?;
@@ -197,7 +245,13 @@ pub(crate) async fn check_outer_safety<B: CommissioningBackend>(
             elapsed_us,
             max_duration_us
         );
-        return Ok(true);
+        return Ok(Some(safety.fault(
+            OUTER_SAFETY_FAULT_DURATION,
+            0,
+            0,
+            0,
+            elapsed_us,
+        )));
     }
 
     // Wrap-aware delta in encoder counts since the last safety sample.
@@ -226,7 +280,13 @@ pub(crate) async fn check_outer_safety<B: CommissioningBackend>(
             delta_counts,
             dt_us,
         );
-        return Ok(true);
+        return Ok(Some(safety.fault(
+            OUTER_SAFETY_FAULT_VELOCITY,
+            delta_counts,
+            dt_us,
+            velocity_cpms,
+            elapsed_us,
+        )));
     }
 
     // Check position window against unwrapped accumulator.
@@ -237,10 +297,16 @@ pub(crate) async fn check_outer_safety<B: CommissioningBackend>(
             abs_position,
             safety.position_window
         );
-        return Ok(true);
+        return Ok(Some(safety.fault(
+            OUTER_SAFETY_FAULT_POSITION,
+            delta_counts,
+            dt_us,
+            velocity_cpms,
+            elapsed_us,
+        )));
     }
 
-    Ok(false)
+    Ok(None)
 }
 
 /// Get a mutable reference to the safety limits for the current phase.
@@ -254,7 +320,10 @@ pub(super) fn outer_safety_mut(phase: &mut OuterPhase) -> Option<&mut OuterSafet
         | OuterPhase::VelocityValidate { safety, .. }
         | OuterPhase::PositionTune { safety, .. }
         | OuterPhase::FilterTune { safety, .. } => Some(safety),
-        OuterPhase::Commit { .. } | OuterPhase::Done(_) | OuterPhase::Failed(_) => None,
+        OuterPhase::Commit { .. }
+        | OuterPhase::Done(_)
+        | OuterPhase::Failed(_)
+        | OuterPhase::FailedWithSafety { .. } => None,
     }
 }
 
@@ -267,7 +336,7 @@ mod tests {
         MECHANICAL_ID_VELOCITY_CAP_COUNTS_PER_MS, MechanicalIdData, MechanicalIdState, OuterPhase,
         step_outer,
     };
-    use crate::commissioning::types::StepResult;
+    use crate::commissioning::types::{OUTER_SAFETY_FAULT_VELOCITY, StepResult};
     use foci_tmc4671::registers::ABN_DECODER_COUNT;
 
     #[test]
@@ -356,11 +425,11 @@ mod tests {
             );
             let mut backend = MockBackend::new();
 
-            let violated = check_outer_safety(&mut safety, &mut backend)
+            let fault = check_outer_safety(&mut safety, &mut backend)
                 .await
                 .expect("encoder read should succeed");
 
-            assert!(violated);
+            assert!(fault.is_some());
         });
     }
 
@@ -382,11 +451,11 @@ mod tests {
             let mut backend = MockBackend::new();
             backend.elapsed_us_value = 2_001;
 
-            let violated = check_outer_safety(&mut safety, &mut backend)
+            let fault = check_outer_safety(&mut safety, &mut backend)
                 .await
                 .expect("encoder read should succeed");
 
-            assert!(violated);
+            assert!(fault.is_some());
         });
     }
 
@@ -401,17 +470,59 @@ mod tests {
             backend.elapsed_us_value = 124_909;
             backend.encoder_count_value = 2525; // delta=197 over 24.909ms => ~7 counts/ms
 
-            let violated = check_outer_safety(&mut safety, &mut backend)
+            let fault = check_outer_safety(&mut safety, &mut backend)
                 .await
                 .expect("encoder read should succeed");
 
             assert!(
-                !violated,
+                fault.is_none(),
                 "time-normalized velocity should stay below the cap"
             );
             assert_eq!(safety.prev_encoder_count, 2525);
             assert_eq!(safety.last_sample_us, 124_909);
             assert_eq!(safety.unwrapped_position, 197);
+        });
+    }
+
+    #[test]
+    fn outer_safety_reports_velocity_fault_details() {
+        pollster::block_on(async {
+            let mut safety = OuterSafetyLimits::new(
+                0,
+                100,
+                OuterMotionBudget {
+                    max_travel_mrev: 750,
+                    max_velocity_mrev_s: 6000,
+                    max_duration_ms: 3000,
+                    direction_mask: 3,
+                },
+            );
+            safety.configure_encoder_resolution(4_000);
+            safety.prev_encoder_count = 0;
+            safety.last_sample_us = 100_000;
+            safety.start_sample_us = 90_000;
+            let mut backend = MockBackend::new();
+            backend.elapsed_us_value = 104_000;
+            backend.encoder_count_value = 125;
+
+            let fault = check_outer_safety(&mut safety, &mut backend)
+                .await
+                .expect("encoder read should succeed")
+                .expect("velocity should violate the safety envelope");
+
+            assert_eq!(fault.reason, OUTER_SAFETY_FAULT_VELOCITY);
+            assert_eq!(fault.max_travel_mrev, 750);
+            assert_eq!(fault.max_velocity_mrev_s, 6000);
+            assert_eq!(fault.max_duration_ms, 3000);
+            assert_eq!(fault.direction_mask, 3);
+            assert_eq!(fault.delta_counts, 125);
+            assert_eq!(fault.dt_us, 4_000);
+            assert_eq!(fault.velocity_counts_per_ms, 31);
+            assert_eq!(fault.velocity_cap_counts_per_ms, 24);
+            assert_eq!(fault.position_counts, 125);
+            assert_eq!(fault.position_window_counts, 3000);
+            assert_eq!(fault.elapsed_us, 14_000);
+            assert_eq!(fault.duration_cap_us, 3_000_000);
         });
     }
 

@@ -21,7 +21,7 @@ pub mod velocity;
 
 #[allow(unused_imports)]
 pub(crate) use dispatch::step_outer;
-pub(crate) use dispatch::{fail_outer, step_outer_with_trace};
+pub(crate) use dispatch::{fail_outer, fail_outer_with_safety, step_outer_with_trace};
 #[allow(unused_imports)]
 pub(crate) use limits::MECHANICAL_ID_VELOCITY_CAP_COUNTS_PER_MS;
 pub(crate) use limits::{

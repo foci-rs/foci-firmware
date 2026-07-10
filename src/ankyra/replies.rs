@@ -1117,8 +1117,8 @@ mod tests {
 #[cfg(test)]
 mod resistance_reply_size_tests {
     use super::{
-        FociClosedLoopEntry, FociCurrentLoopFilters, FociCurrentLoopHold, FociResistanceAxis,
-        FociResistanceProfile, FociResistanceRun,
+        FociClosedLoopEntry, FociCurrentLoopFilters, FociCurrentLoopHold, FociOuterSafetyFault,
+        FociResistanceAxis, FociResistanceProfile, FociResistanceRun,
     };
     use ankyra::ScratchOutput;
     use ankyra::encoding::Writable;
@@ -1453,6 +1453,27 @@ mod resistance_reply_size_tests {
         };
         assert_fits_with_id(&reply, "foci_adc_residual");
     }
+
+    #[test]
+    fn outer_safety_fault_reply_fits_klipper_message_limit() {
+        let reply = FociOuterSafetyFault {
+            oid: u8::MAX,
+            reason: u8::MAX,
+            max_travel_mrev: u16::MAX,
+            max_velocity_mrev_s: u16::MAX,
+            max_duration_ms: u16::MAX,
+            direction_mask: u8::MAX,
+            delta_counts: i32::MIN,
+            dt_us: 0x7FFF_FFFF,
+            velocity_counts_per_ms: i32::MIN,
+            velocity_cap_counts_per_ms: i32::MAX,
+            position_counts: i32::MIN,
+            position_window_counts: i32::MAX,
+            elapsed_us: 0x7FFF_FFFF,
+            duration_cap_us: 0x7FFF_FFFF,
+        };
+        assert_fits_with_id(&reply, "foci_outer_safety_fault");
+    }
 }
 
 /// `foci_stepper_event` reply - bounded stepper runtime diagnostic.
@@ -1765,6 +1786,41 @@ pub struct FociSelftestResult {
     pub status: u8,
     /// Stage-specific measurement.
     pub value: u32,
+}
+
+/// `foci_outer_safety_fault` reply — Stage 2 safety-envelope evidence.
+///
+/// Wire name: `foci_outer_safety_fault`.
+#[klipper_reply]
+pub struct FociOuterSafetyFault {
+    /// Object id of the FOCI endpoint.
+    pub oid: u8,
+    /// `OUTER_SAFETY_FAULT_*` reason code.
+    pub reason: u8,
+    /// Host-provided travel budget in milli-revolutions.
+    pub max_travel_mrev: u16,
+    /// Host-provided velocity budget in milli-revolutions per second.
+    pub max_velocity_mrev_s: u16,
+    /// Host-provided primitive duration budget in milliseconds.
+    pub max_duration_ms: u16,
+    /// Reserved direction mask carried from the host request.
+    pub direction_mask: u8,
+    /// Signed encoder delta for the sample that tripped the gate.
+    pub delta_counts: i32,
+    /// Elapsed time for `delta_counts`, in microseconds.
+    pub dt_us: u32,
+    /// Signed sample velocity in encoder counts per millisecond.
+    pub velocity_counts_per_ms: i32,
+    /// Active velocity cap in encoder counts per millisecond.
+    pub velocity_cap_counts_per_ms: i32,
+    /// Signed accumulated position from the Stage 2 start, in encoder counts.
+    pub position_counts: i32,
+    /// Active signed-position window in encoder counts.
+    pub position_window_counts: i32,
+    /// Elapsed time from Stage 2 safety arming, in microseconds.
+    pub elapsed_us: u32,
+    /// Active primitive duration cap in microseconds.
+    pub duration_cap_us: u32,
 }
 
 /// `foci_tune_result` reply — final outer-loop tune output.

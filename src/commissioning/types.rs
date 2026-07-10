@@ -334,6 +334,52 @@ pub enum StepResult {
     CommissionDone(CommissionResult),
 }
 
+/// No Stage 2 safety-envelope fault was reported.
+pub const OUTER_SAFETY_FAULT_NONE: u8 = 0;
+/// Host budget was structurally invalid before Stage 2 actuation.
+pub const OUTER_SAFETY_FAULT_INVALID_BUDGET: u8 = 1;
+/// Host budget was too small to collect useful Stage 2 evidence.
+pub const OUTER_SAFETY_FAULT_UNUSABLE_BUDGET: u8 = 2;
+/// Stage 2 primitive exceeded its host-provided duration cap.
+pub const OUTER_SAFETY_FAULT_DURATION: u8 = 3;
+/// Stage 2 encoder velocity exceeded its active safety cap.
+pub const OUTER_SAFETY_FAULT_VELOCITY: u8 = 4;
+/// Stage 2 accumulated encoder position exceeded its active travel window.
+pub const OUTER_SAFETY_FAULT_POSITION: u8 = 5;
+/// Mechanical-ID position-to-torque handoff did not settle before timeout.
+pub const OUTER_SAFETY_FAULT_POST_SWITCH_SETTLE: u8 = 6;
+
+/// Host-visible Stage 2 safety-envelope fault evidence.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+pub struct OuterSafetyFault {
+    /// `OUTER_SAFETY_FAULT_*` reason code.
+    pub reason: u8,
+    /// Host-provided travel budget in milli-revolutions.
+    pub max_travel_mrev: u16,
+    /// Host-provided velocity budget in milli-revolutions per second.
+    pub max_velocity_mrev_s: u16,
+    /// Host-provided primitive duration budget in milliseconds.
+    pub max_duration_ms: u16,
+    /// Reserved direction mask carried from the host request.
+    pub direction_mask: u8,
+    /// Signed encoder delta for the sample that tripped the gate.
+    pub delta_counts: i32,
+    /// Elapsed time for `delta_counts`, in microseconds.
+    pub dt_us: u32,
+    /// Signed sample velocity in encoder counts per millisecond.
+    pub velocity_counts_per_ms: i32,
+    /// Active velocity cap in encoder counts per millisecond.
+    pub velocity_cap_counts_per_ms: i32,
+    /// Signed accumulated position from the Stage 2 start, in encoder counts.
+    pub position_counts: i32,
+    /// Active signed-position window in encoder counts.
+    pub position_window_counts: i32,
+    /// Elapsed time from Stage 2 safety arming, in microseconds.
+    pub elapsed_us: u32,
+    /// Active primitive duration cap in microseconds.
+    pub duration_cap_us: u32,
+}
+
 /// Result of inner (electrical) commissioning.
 #[derive(Debug, Clone, defmt::Format)]
 pub struct InnerResult {

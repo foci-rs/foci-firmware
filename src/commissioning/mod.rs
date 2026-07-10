@@ -560,6 +560,17 @@ impl CommissioningEngine {
         }
     }
 
+    /// Return retained Stage 2 safety-envelope evidence for a safety terminal state.
+    pub fn outer_safety_fault(&self) -> Option<crate::commissioning::types::OuterSafetyFault> {
+        match &self.engine_mode {
+            EngineMode::Outer {
+                phase: OuterPhase::FailedWithSafety { safety_fault, .. },
+                ..
+            } => Some(*safety_fault),
+            _ => None,
+        }
+    }
+
     /// Consume the engine's collected selftest results.
     ///
     /// Caller should only invoke this when the most recent `step()`

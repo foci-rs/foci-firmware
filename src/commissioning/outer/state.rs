@@ -4,7 +4,7 @@ use crate::autotune::{
     CommissionError, FilterConfig, MechanicalModel, PhaseId, PositionGains, TRANSIENT_LEN,
     VelocityGains, VelocityValidation,
 };
-use crate::commissioning::types::OuterResult;
+use crate::commissioning::types::{OuterResult, OuterSafetyFault};
 
 use super::OUTER_WARNING_NONE;
 use super::safety::OuterSafetyLimits;
@@ -398,6 +398,13 @@ pub(crate) enum OuterPhase {
     Done(OuterResult),
     /// A phase failed.
     Failed(CommissionError),
+    /// A phase failed because a Stage 2 safety envelope tripped.
+    FailedWithSafety {
+        /// Terminal Stage 2 status.
+        error: CommissionError,
+        /// Host-visible safety-envelope evidence.
+        safety_fault: OuterSafetyFault,
+    },
 }
 
 impl OuterPhase {
@@ -411,7 +418,7 @@ impl OuterPhase {
             Self::FilterTune { .. } => Some(PhaseId::FilterTune),
             Self::Commit { .. } => Some(PhaseId::Commit),
             Self::Done(_) => Some(PhaseId::OuterDone),
-            Self::Failed(_) => None,
+            Self::Failed(_) | Self::FailedWithSafety { .. } => None,
         }
     }
 }

@@ -10,6 +10,7 @@ use crate::commission_dispatch::ReplyPayload;
 use crate::commissioning::types::{
     AdcCalResult, AdcResidualEvidence, CommissionResult, CurrentValidationAxisEvidence,
     CurrentValidationSettledSampleEvidence, INDUCTANCE_SOURCE_NONE, InnerResult, OuterResult,
+    OuterSafetyFault,
 };
 use crate::selftest::{CommissionDiagnostic, CommissionDiagnostics, SelftestStageValue};
 use crate::tmc_diagnostics::{
@@ -107,6 +108,9 @@ pub trait CommissionReplySink {
     /// Emit the Stage 2 tune result.
     fn foci_tune_result(&mut self, oid: u8, status: u8, result: &OuterResult);
 
+    /// Emit Stage 2 safety-envelope evidence before the terminal tune result.
+    fn foci_outer_safety_fault(&mut self, oid: u8, fault: OuterSafetyFault);
+
     /// Emit the ADC calibration result.
     fn foci_calibrate_result(&mut self, oid: u8, status: u8, result: &AdcCalResult);
 
@@ -175,7 +179,13 @@ pub fn emit_terminal_reply<S: CommissionReplySink>(sink: &mut S, payload: ReplyP
             oid,
             status,
             result,
-        } => sink.foci_tune_result(oid, status, &result),
+            safety_fault,
+        } => {
+            if let Some(fault) = safety_fault {
+                sink.foci_outer_safety_fault(oid, fault);
+            }
+            sink.foci_tune_result(oid, status, &result);
+        }
         ReplyPayload::Selftest {
             oid,
             results,
@@ -778,6 +788,13 @@ mod tests {
             velocity_search_stop_reason: u8,
             motion_budget_mrev: u16,
         },
+        OuterSafetyFault {
+            oid: u8,
+            reason: u8,
+            delta_counts: i32,
+            velocity_counts_per_ms: i32,
+            velocity_cap_counts_per_ms: i32,
+        },
         SelftestResult {
             oid: u8,
             stage: u8,
@@ -1055,6 +1072,16 @@ mod tests {
                 stiffness_timebase_ms: result.stiffness_timebase_ms,
                 velocity_search_stop_reason: result.velocity_search_stop_reason,
                 motion_budget_mrev: result.motion_budget_mrev,
+            });
+        }
+
+        fn foci_outer_safety_fault(&mut self, oid: u8, fault: OuterSafetyFault) {
+            self.events.push(Event::OuterSafetyFault {
+                oid,
+                reason: fault.reason,
+                delta_counts: fault.delta_counts,
+                velocity_counts_per_ms: fault.velocity_counts_per_ms,
+                velocity_cap_counts_per_ms: fault.velocity_cap_counts_per_ms,
             });
         }
 
@@ -2017,6 +2044,7 @@ mod tests {
                 oid: 8,
                 status: 9,
                 result: outer_result(),
+                safety_fault: None,
             },
         );
 
@@ -2093,6 +2121,59 @@ mod tests {
         ]);
 
         assert_eq!(sink.events, expected);
+    }
+
+    #[test]
+    fn tune_result_emits_outer_safety_fault_before_terminal_result() {
+        let mut sink = RecordingSink::default();
+
+        emit_terminal_reply(
+            &mut sink,
+            ReplyPayload::TuneResult {
+                oid: 3,
+                status: CommissionError::SafetyEnvelopeViolation.status_code(),
+                result: outer_result(),
+                safety_fault: Some(OuterSafetyFault {
+                    reason: crate::commissioning::types::OUTER_SAFETY_FAULT_VELOCITY,
+                    max_travel_mrev: 750,
+                    max_velocity_mrev_s: 6000,
+                    max_duration_ms: 3000,
+                    direction_mask: 3,
+                    delta_counts: -125,
+                    dt_us: 4000,
+                    velocity_counts_per_ms: -31,
+                    velocity_cap_counts_per_ms: 24,
+                    position_counts: -373,
+                    position_window_counts: 3000,
+                    elapsed_us: 120_000,
+                    duration_cap_us: 3_000_000,
+                }),
+            },
+        );
+
+        assert_eq!(
+            &sink.events[..2],
+            &[
+                Event::OuterSafetyFault {
+                    oid: 3,
+                    reason: crate::commissioning::types::OUTER_SAFETY_FAULT_VELOCITY,
+                    delta_counts: -125,
+                    velocity_counts_per_ms: -31,
+                    velocity_cap_counts_per_ms: 24,
+                },
+                Event::Tune {
+                    oid: 3,
+                    status: CommissionError::SafetyEnvelopeViolation.status_code(),
+                    velocity_p: 41,
+                    position_p: 44,
+                    warning_code: 52,
+                    outer_evidence_flags: 0x0f,
+                    stiffness_timebase_ms: 64,
+                    velocity_search_stop_reason: 65,
+                    motion_budget_mrev: 66,
+                },
+            ]
+        );
     }
 
     #[test]

@@ -177,6 +177,13 @@ impl CommissionReplySink for ReplyRecorder {
     ) {
     }
 
+    fn foci_outer_safety_fault(
+        &mut self,
+        _oid: u8,
+        _fault: crate::commissioning::types::OuterSafetyFault,
+    ) {
+    }
+
     fn foci_calibrate_result(
         &mut self,
         _oid: u8,

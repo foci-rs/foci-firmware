@@ -26,7 +26,8 @@ use crate::autotune::PhaseId;
 use crate::commissioning::{
     CommissioningEngine,
     types::{
-        AdcCalResult, CommissionResult, CommissioningBackend, EngineKind, OuterResult, StepResult,
+        AdcCalResult, CommissionResult, CommissioningBackend, EngineKind, OuterResult,
+        OuterSafetyFault, StepResult,
     },
 };
 use crate::pid::InnerLoopGains;
@@ -234,6 +235,7 @@ pub enum ReplyPayload {
         oid: u8,
         status: u8,
         result: OuterResult,
+        safety_fault: Option<OuterSafetyFault>,
     },
     /// FociCalibrateResult: ADC calibration complete.
     CalibrateResult {
@@ -682,6 +684,7 @@ pub async fn drive_commission_result<B: CommissioningBackend>(
                         oid,
                         status: crate::autotune::CommissionError::Spi.status_code(),
                         result: zero_outer_result(),
+                        safety_fault: None,
                     },
                     actions: PostActions {
                         stop_trace: true,
@@ -704,6 +707,7 @@ pub async fn drive_commission_result<B: CommissioningBackend>(
                         oid,
                         status: crate::autotune::CommissionError::Spi.status_code(),
                         result: zero_outer_result(),
+                        safety_fault: None,
                     },
                     actions: PostActions {
                         stop_trace: true,
@@ -724,6 +728,7 @@ pub async fn drive_commission_result<B: CommissioningBackend>(
                         oid,
                         status: error.status_code(),
                         result: outer,
+                        safety_fault: None,
                     },
                     actions: PostActions {
                         stop_trace: true,
@@ -745,6 +750,7 @@ pub async fn drive_commission_result<B: CommissioningBackend>(
                     oid,
                     status,
                     result: outer,
+                    safety_fault: None,
                 },
                 actions: PostActions {
                     stop_trace: true,
@@ -758,6 +764,7 @@ pub async fn drive_commission_result<B: CommissioningBackend>(
             let mut consumed = engine.take().expect("engine slot None on OuterFailed");
             let oid = consumed.oid();
             let snapshot = consumed.entry_snapshot();
+            let safety_fault = consumed.outer_safety_fault();
 
             let is_safety_fault =
                 matches!(error, CE::Spi | CE::Shutdown | CE::SafetyEnvelopeViolation);
@@ -871,6 +878,7 @@ pub async fn drive_commission_result<B: CommissioningBackend>(
                     oid,
                     status: reply_status,
                     result: zero_outer_result(),
+                    safety_fault,
                 },
                 actions,
             }

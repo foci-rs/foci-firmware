@@ -2,7 +2,7 @@
 
 use crate::autotune::{CommissionError, CommissionProfile, OperatingMode, TransientBuffer};
 use crate::commissioning::backend::CommissioningBackend;
-use crate::commissioning::types::StepResult;
+use crate::commissioning::types::{OuterSafetyFault, StepResult};
 
 use super::safety::outer_safety_mut;
 use super::{
@@ -13,6 +13,19 @@ use super::{
 /// Transition the outer phase to `Failed` and emit an `OuterFailed` result.
 pub(crate) fn fail_outer(phase: &mut OuterPhase, err: CommissionError) -> StepResult {
     *phase = OuterPhase::Failed(err);
+    StepResult::OuterFailed(err)
+}
+
+/// Transition the outer phase to `FailedWithSafety` and emit an `OuterFailed` result.
+pub(crate) fn fail_outer_with_safety(
+    phase: &mut OuterPhase,
+    err: CommissionError,
+    safety_fault: OuterSafetyFault,
+) -> StepResult {
+    *phase = OuterPhase::FailedWithSafety {
+        error: err,
+        safety_fault,
+    };
     StepResult::OuterFailed(err)
 }
 
@@ -83,11 +96,12 @@ pub(crate) async fn step_outer_with_trace<B: CommissioningBackend>(
                 safety.budget.max_duration_ms,
                 safety.budget.direction_mask,
             );
+            let fault = safety.invalid_budget_fault();
             let err = safety_error_for_phase(phase);
-            return fail_outer(phase, err);
+            return fail_outer_with_safety(phase, err, fault);
         }
         match check_outer_safety(safety, backend).await {
-            Ok(true) => {
+            Ok(Some(fault)) => {
                 // Zero excitation immediately on any safety violation.
                 let _ = backend
                     .write_register(foci_tmc4671::registers::PID_TORQUE_FLUX_TARGET, 0)
@@ -96,9 +110,9 @@ pub(crate) async fn step_outer_with_trace<B: CommissioningBackend>(
                     .write_register(foci_tmc4671::registers::MODE_RAMP_MODE_MOTION, 0)
                     .await;
                 let err = safety_error_for_phase(phase);
-                return fail_outer(phase, err);
+                return fail_outer_with_safety(phase, err, fault);
             }
-            Ok(false) => {}
+            Ok(None) => {}
             Err(_) => {
                 defmt::warn!("outer safety: encoder read failed");
                 return fail_outer(phase, CommissionError::Spi);
@@ -146,5 +160,6 @@ pub(crate) async fn step_outer_with_trace<B: CommissioningBackend>(
         OuterPhase::Commit { .. } => commit::step_commit(phase),
         OuterPhase::Done(result) => StepResult::OuterDone(result.clone()),
         OuterPhase::Failed(err) => StepResult::OuterFailed(*err),
+        OuterPhase::FailedWithSafety { error, .. } => StepResult::OuterFailed(*error),
     }
 }
