@@ -1051,7 +1051,7 @@ mod tests {
             (PHI_E_SELECTION.addr(), 3),
             (POSITION_SELECTION.addr(), CLOSED_LOOP_POSITION_SELECTION),
             (VELOCITY_SELECTION.addr(), CLOSED_LOOP_VELOCITY_SELECTION),
-            (ABN_DECODER_PPR.addr(), backend.encoder_quadrature_ppr_value),
+            (ABN_DECODER_PPR.addr(), backend.encoder_counts_per_rev_value),
             (ADC_I_SELECT.addr(), backend.tmc_config.adc_i_select),
             (PID_TORQUE_FLUX_LIMITS.addr(), backend.current_limit_value),
             (

@@ -96,7 +96,7 @@ pub(crate) async fn step_velocity_tune<B: CommissioningBackend>(
             )
         } else {
             let config = backend.tmc_config();
-            let step_width = backend.step_width();
+            let encoder_counts_per_rev = backend.encoder_counts_per_rev();
             let gains = match crate::autotune::simc_velocity_gains_with_lambda_multiplier(
                 &model,
                 effective_profile,
@@ -104,7 +104,7 @@ pub(crate) async fn step_velocity_tune<B: CommissioningBackend>(
                 inner_lambda_us,
                 theta_e_us,
                 peak_velocity,
-                step_width,
+                encoder_counts_per_rev,
                 config,
                 widening,
             ) {
@@ -256,7 +256,7 @@ mod tests {
                 ),
             };
             let mut backend = MockBackend::new();
-            backend.step_width_value = 819;
+            backend.step_width_value = 16;
             backend.current_limit_value = 2_448;
 
             let clean_result = step_velocity_tune(
@@ -283,6 +283,8 @@ mod tests {
                 other => panic!("expected VelocityValidate, got {:?}", other),
             };
 
+            // Planner resolution must not change encoder-domain gain synthesis.
+            backend.step_width_value = 8;
             let warned_result = step_velocity_tune(
                 &mut warned_phase,
                 CommissionProfile::Balanced,
@@ -335,7 +337,6 @@ mod tests {
                 ),
             };
             let mut backend = MockBackend::new();
-            backend.step_width_value = 819;
             backend.current_limit_value = 2_448;
 
             let result = step_velocity_tune(

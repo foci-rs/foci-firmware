@@ -53,10 +53,10 @@ const DIAG_ENCODER_READ_UNSTABLE: u8 = 1;
 const DIAG_ENCODER_DIRECTION_RESULT: u8 = 2;
 const DIAG_ENCODER_ALIGN_RESULT: u8 = 1;
 
-fn encoder_alignment_min_movement(step_width: u32) -> u32 {
-    let electrical_step_width = step_width.saturating_mul(ENCODER_ALIGNMENT_POLE_PAIRS);
-    let denominator = 20u32.saturating_mul(electrical_step_width).max(1);
-    (65536u32 / denominator).max(2)
+fn encoder_alignment_min_movement(encoder_counts_per_rev: u32) -> u32 {
+    let denominator = 20_u64 * u64::from(ENCODER_ALIGNMENT_POLE_PAIRS);
+    let numerator = u64::from(encoder_counts_per_rev);
+    ((numerator + denominator / 2) / denominator).max(2) as u32
 }
 
 fn encoder_delta_abs(a: u32, b: u32, counts_per_rev: i32) -> u32 {
@@ -139,14 +139,14 @@ fn push_encoder_align_result(
 ///
 /// Returns `CommissionError::EncoderFault` when attempts are exhausted.
 /// Propagates `CommissionError::Spi` if the underlying register read fails.
-async fn read_encoder_count_stable<B: CommissioningBackend>(
+async fn read_encoder_position_counts_stable<B: CommissioningBackend>(
     backend: &mut B,
     diagnostics: Option<&mut CommissionDiagnostics>,
     phase_id: PhaseId,
 ) -> Result<u32, CommissionError> {
     use foci_tmc4671::registers::ABN_DECODER_COUNT;
 
-    let counts_per_rev = backend.encoder_quadrature_ppr() as i32;
+    let counts_per_rev = backend.encoder_counts_per_rev() as i32;
     let mut last_samples = [0u32; ENCODER_READ_SAMPLES];
     for _ in 0..ENCODER_READ_ATTEMPTS {
         let mut samples = [0u32; ENCODER_READ_SAMPLES];
@@ -296,13 +296,16 @@ pub(crate) async fn step_encoder_check<B: CommissioningBackend>(
 
     match state {
         EncoderCheckState::Setup => {
-            let count_start =
-                match read_encoder_count_stable(backend, Some(diagnostics), PhaseId::EncoderCheck)
-                    .await
-                {
-                    Ok(value) => value as i32,
-                    Err(error) => return super::fail_inner(phase, error),
-                };
+            let count_start = match read_encoder_position_counts_stable(
+                backend,
+                Some(diagnostics),
+                PhaseId::EncoderCheck,
+            )
+            .await
+            {
+                Ok(value) => value as i32,
+                Err(error) => return super::fail_inner(phase, error),
+            };
 
             if let Err(error) = start_encoder_current_drive(backend, 0).await {
                 return super::fail_inner(phase, error);
@@ -346,16 +349,19 @@ pub(crate) async fn step_encoder_check<B: CommissioningBackend>(
         }
 
         EncoderCheckState::Finalize { count_start } => {
-            let count_end =
-                match read_encoder_count_stable(backend, Some(diagnostics), PhaseId::EncoderCheck)
-                    .await
-                {
-                    Ok(value) => value as i32,
-                    Err(error) => {
-                        let _ = stop_encoder_current_drive(backend).await;
-                        return super::fail_inner(phase, error);
-                    }
-                };
+            let count_end = match read_encoder_position_counts_stable(
+                backend,
+                Some(diagnostics),
+                PhaseId::EncoderCheck,
+            )
+            .await
+            {
+                Ok(value) => value as i32,
+                Err(error) => {
+                    let _ = stop_encoder_current_drive(backend).await;
+                    return super::fail_inner(phase, error);
+                }
+            };
 
             // Stop and disable (always, regardless of result).
             let _ = stop_encoder_current_drive(backend).await;
@@ -449,7 +455,7 @@ pub(crate) async fn step_encoder_align<B: CommissioningBackend>(
 
     match state {
         EncoderAlignState::Setup { count_before } => {
-            if backend.current_limit() == 0 || backend.step_width() == 0 {
+            if backend.current_limit() == 0 || backend.encoder_counts_per_rev() == 0 {
                 return super::fail_inner(phase, CommissionError::NoCurrent);
             }
 
@@ -471,8 +477,7 @@ pub(crate) async fn step_encoder_align<B: CommissioningBackend>(
 
             backend.set_enable_pin(true);
 
-            let step_width = backend.step_width().max(1);
-            let min_movement = encoder_alignment_min_movement(step_width);
+            let min_movement = encoder_alignment_min_movement(backend.encoder_counts_per_rev());
             let deadline = backend
                 .elapsed_us()
                 .wrapping_add(ENCODER_ALIGNMENT_SETTLE_US);
@@ -502,13 +507,16 @@ pub(crate) async fn step_encoder_align<B: CommissioningBackend>(
             count_before,
             min_movement,
         } => {
-            let count1 =
-                match read_encoder_count_stable(backend, Some(diagnostics), PhaseId::EncoderAlign)
-                    .await
-                {
-                    Ok(value) => value,
-                    Err(error) => return super::fail_inner(phase, error),
-                };
+            let count1 = match read_encoder_position_counts_stable(
+                backend,
+                Some(diagnostics),
+                PhaseId::EncoderAlign,
+            )
+            .await
+            {
+                Ok(value) => value,
+                Err(error) => return super::fail_inner(phase, error),
+            };
             let deadline = backend
                 .elapsed_us()
                 .wrapping_add(ENCODER_ALIGNMENT_STABILITY_US);
@@ -531,15 +539,18 @@ pub(crate) async fn step_encoder_align<B: CommissioningBackend>(
                 return StepResult::Continue;
             }
 
-            let count2 =
-                match read_encoder_count_stable(backend, Some(diagnostics), PhaseId::EncoderAlign)
-                    .await
-                {
-                    Ok(value) => value,
-                    Err(error) => return super::fail_inner(phase, error),
-                };
+            let count2 = match read_encoder_position_counts_stable(
+                backend,
+                Some(diagnostics),
+                PhaseId::EncoderAlign,
+            )
+            .await
+            {
+                Ok(value) => value,
+                Err(error) => return super::fail_inner(phase, error),
+            };
 
-            let counts_per_rev = backend.encoder_quadrature_ppr() as i32;
+            let counts_per_rev = backend.encoder_counts_per_rev() as i32;
             let movement1 = encoder_delta_abs(*count1, *count_before, counts_per_rev);
             let movement2 = encoder_delta_abs(count2, *count_before, counts_per_rev);
             let movement = movement1.max(movement2);
@@ -561,7 +572,7 @@ pub(crate) async fn step_encoder_align<B: CommissioningBackend>(
                 return super::fail_inner(phase, CommissionError::EncoderFault);
             }
 
-            let counts_per_elec = counts_per_electrical_rev(backend.encoder_quadrature_ppr());
+            let counts_per_elec = counts_per_electrical_rev(backend.encoder_counts_per_rev());
             *state = EncoderAlignState::Commit {
                 old_count: *count1,
                 electrical_residual_counts: folded_electrical_residual_counts(
@@ -690,8 +701,8 @@ mod tests {
     use crate::commission_dispatch::test_support::{MockBackend, SHARED_STATE_MUTEX};
 
     #[test]
-    fn encoder_alignment_min_movement_uses_electrical_fraction() {
-        assert_eq!(encoder_alignment_min_movement(16), 4);
+    fn encoder_alignment_min_movement_uses_encoder_count_scale() {
+        assert_eq!(encoder_alignment_min_movement(4_000), 4);
     }
 
     #[test]
@@ -699,11 +710,13 @@ mod tests {
         pollster::block_on(async {
             let _guard = SHARED_STATE_MUTEX.lock().await;
             let mut backend = MockBackend::new();
-            backend.encoder_quadrature_ppr_value = 4000;
+            backend.encoder_counts_per_rev_value = 4000;
             let _ = backend
                 .write_register(foci_tmc4671::registers::ABN_DECODER_COUNT, 1234)
                 .await;
-            let result = read_encoder_count_stable(&mut backend, None, PhaseId::EncoderCheck).await;
+            let result =
+                read_encoder_position_counts_stable(&mut backend, None, PhaseId::EncoderCheck)
+                    .await;
             assert_eq!(result, Ok(1234));
         });
     }
@@ -713,9 +726,11 @@ mod tests {
         pollster::block_on(async {
             let _guard = SHARED_STATE_MUTEX.lock().await;
             let mut backend = MockBackend::new();
-            backend.encoder_quadrature_ppr_value = 4000;
+            backend.encoder_counts_per_rev_value = 4000;
             backend.set_abn_decoder_count_sequence(&[3999, 0, 1]);
-            let result = read_encoder_count_stable(&mut backend, None, PhaseId::EncoderCheck).await;
+            let result =
+                read_encoder_position_counts_stable(&mut backend, None, PhaseId::EncoderCheck)
+                    .await;
             assert!(
                 result.is_ok(),
                 "wrap-near samples should be accepted, got {:?}",
@@ -729,10 +744,10 @@ mod tests {
         pollster::block_on(async {
             let _guard = SHARED_STATE_MUTEX.lock().await;
             let mut backend = MockBackend::new();
-            backend.encoder_quadrature_ppr_value = 4000;
+            backend.encoder_counts_per_rev_value = 4000;
             backend.set_abn_decoder_count_sequence(&[500, 600, 500, 600, 500, 600, 500, 600, 500]);
             let mut diagnostics = crate::selftest::CommissionDiagnostics::default();
-            let result = read_encoder_count_stable(
+            let result = read_encoder_position_counts_stable(
                 &mut backend,
                 Some(&mut diagnostics),
                 PhaseId::EncoderCheck,
@@ -763,7 +778,7 @@ mod tests {
             let mut selftest_results = crate::selftest::SelftestResults::default();
             let mut diagnostics = crate::selftest::CommissionDiagnostics::default();
             let mut backend = MockBackend::new();
-            backend.encoder_quadrature_ppr_value = 4000;
+            backend.encoder_counts_per_rev_value = 4000;
             backend.set_abn_decoder_count_sequence(&[1234, 1234, 1234]);
 
             let result = step_encoder_check(
@@ -817,7 +832,7 @@ mod tests {
             let mut selftest_results = crate::selftest::SelftestResults::default();
             let mut diagnostics = crate::selftest::CommissionDiagnostics::default();
             let mut backend = MockBackend::new();
-            backend.encoder_quadrature_ppr_value = 4000;
+            backend.encoder_counts_per_rev_value = 4000;
             backend.set_abn_decoder_count_sequence(&[0, 0, 0]);
 
             let result = step_encoder_align(
@@ -875,7 +890,7 @@ mod tests {
             let mut selftest_results = crate::selftest::SelftestResults::default();
             let mut diagnostics = crate::selftest::CommissionDiagnostics::default();
             let mut backend = MockBackend::new();
-            backend.encoder_quadrature_ppr_value = 4000;
+            backend.encoder_counts_per_rev_value = 4000;
             backend.set_abn_decoder_count_sequence(&[1001, 1001, 1001]);
 
             let result = step_encoder_align(

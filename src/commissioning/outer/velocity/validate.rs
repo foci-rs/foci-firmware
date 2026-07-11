@@ -57,16 +57,43 @@ async fn stop_velocity_motion<B: CommissioningBackend>(backend: &mut B) -> bool 
     target_ok && mode_ok
 }
 
-fn counts_per_ms_to_tmc_velocity(counts_per_ms: u32, step_width: u32, f_pwm_hz: u32) -> u32 {
-    if counts_per_ms == 0 || step_width == 0 || f_pwm_hz == 0 {
+fn counts_per_ms_to_tmc_velocity(
+    encoder_counts_per_ms: i64,
+    encoder_counts_per_rev: u32,
+    f_pwm_hz: u32,
+) -> i32 {
+    if encoder_counts_per_ms == 0 || encoder_counts_per_rev == 0 || f_pwm_hz == 0 {
         return 0;
     }
 
     // TMC velocity registers use position-units per PWM period. Validation
-    // metrics use encoder counts/ms, and STEP_WIDTH is position-units/count.
-    let numerator = counts_per_ms as u64 * step_width as u64 * 1000;
-    let raw = numerator.div_ceil(f_pwm_hz as u64);
-    raw.min(u32::MAX as u64) as u32
+    // metrics use encoder counts/ms. Convert through the exact mechanical
+    // position scale, independent of the planner's physical STEP width.
+    let numerator = i128::from(encoder_counts_per_ms) * 65_536 * 1_000;
+    let denominator = i128::from(encoder_counts_per_rev) * i128::from(f_pwm_hz);
+    let rounding = denominator / 2;
+    let rounded = if numerator < 0 {
+        (numerator - rounding) / denominator
+    } else {
+        (numerator + rounding) / denominator
+    };
+    rounded.clamp(i128::from(i32::MIN), i128::from(i32::MAX)) as i32
+}
+
+fn encoder_counts_to_tmc_position_units(encoder_counts: i32, encoder_counts_per_rev: u32) -> i32 {
+    if encoder_counts_per_rev == 0 {
+        return 0;
+    }
+
+    let numerator = i128::from(encoder_counts) * 65_536;
+    let denominator = i128::from(encoder_counts_per_rev);
+    let rounding = denominator / 2;
+    let rounded = if numerator < 0 {
+        (numerator - rounding) / denominator
+    } else {
+        (numerator + rounding) / denominator
+    };
+    rounded.clamp(i128::from(i32::MIN), i128::from(i32::MAX)) as i32
 }
 
 fn encoder_delta_counts_per_ms(
@@ -188,13 +215,20 @@ pub(crate) async fn step_velocity_validate_with_trace<B: CommissioningBackend>(
 
     match state {
         VelocityValidateState::WriteGains => {
-            let step_width = backend.step_width();
+            let encoder_counts_per_rev = backend.encoder_counts_per_rev();
             let f_pwm_hz = backend.tmc_config().pwm_freq_hz();
-            let velocity_limit_reg =
-                counts_per_ms_to_tmc_velocity(data.gains.velocity_limit, step_width, f_pwm_hz)
-                    .max(1);
-            let step_target_reg =
-                counts_per_ms_to_tmc_velocity(data.step_target, step_width, f_pwm_hz).max(1);
+            let velocity_limit_reg = counts_per_ms_to_tmc_velocity(
+                i64::from(data.gains.velocity_limit),
+                encoder_counts_per_rev,
+                f_pwm_hz,
+            )
+            .max(1) as u32;
+            let step_target_reg = counts_per_ms_to_tmc_velocity(
+                i64::from(data.step_target),
+                encoder_counts_per_rev,
+                f_pwm_hz,
+            )
+            .max(1) as u32;
 
             let vel_reg = ((data.gains.velocity_p as u32) << 16) | (data.gains.velocity_i as u32);
             if backend
@@ -249,11 +283,11 @@ pub(crate) async fn step_velocity_validate_with_trace<B: CommissioningBackend>(
 
         VelocityValidateState::ForwardStep => {
             let target_reg = counts_per_ms_to_tmc_velocity(
-                data.step_target,
-                backend.step_width(),
+                i64::from(data.step_target),
+                backend.encoder_counts_per_rev(),
                 backend.tmc_config().pwm_freq_hz(),
             )
-            .max(1);
+            .max(1) as u32;
             if backend
                 .write_register(PID_VELOCITY_TARGET, target_reg)
                 .await
@@ -262,7 +296,8 @@ pub(crate) async fn step_velocity_validate_with_trace<B: CommissioningBackend>(
                 return fail_outer(phase, CommissionError::Spi);
             }
 
-            data.prev_encoder_for_velocity = match backend.try_read_encoder_count().await {
+            data.prev_encoder_for_velocity = match backend.try_read_encoder_position_counts().await
+            {
                 Ok(value) => value,
                 Err(_) => return fail_outer(phase, CommissionError::Spi),
             };
@@ -286,7 +321,7 @@ pub(crate) async fn step_velocity_validate_with_trace<B: CommissioningBackend>(
                 return StepResult::Continue;
             }
 
-            let encoder_raw = match backend.try_read_encoder_count().await {
+            let encoder_raw = match backend.try_read_encoder_position_counts().await {
                 Ok(value) => value,
                 Err(_) => return fail_outer(phase, CommissionError::Spi),
             };
@@ -367,22 +402,21 @@ pub(crate) async fn step_velocity_validate_with_trace<B: CommissioningBackend>(
 
         VelocityValidateState::ReverseStep => {
             let target_reg = counts_per_ms_to_tmc_velocity(
-                data.step_target,
-                backend.step_width(),
+                -i64::from(data.step_target),
+                backend.encoder_counts_per_rev(),
                 backend.tmc_config().pwm_freq_hz(),
             )
-            .max(1)
-            .min(i32::MAX as u32) as i32;
-            let neg_target = -target_reg;
+            .min(-1);
             if backend
-                .write_register(PID_VELOCITY_TARGET, neg_target as u32)
+                .write_register(PID_VELOCITY_TARGET, target_reg as u32)
                 .await
                 .is_err()
             {
                 return fail_outer(phase, CommissionError::Spi);
             }
 
-            data.prev_encoder_for_velocity = match backend.try_read_encoder_count().await {
+            data.prev_encoder_for_velocity = match backend.try_read_encoder_position_counts().await
+            {
                 Ok(value) => value,
                 Err(_) => return fail_outer(phase, CommissionError::Spi),
             };
@@ -406,7 +440,7 @@ pub(crate) async fn step_velocity_validate_with_trace<B: CommissioningBackend>(
                 return StepResult::Continue;
             }
 
-            let encoder_raw = match backend.try_read_encoder_count().await {
+            let encoder_raw = match backend.try_read_encoder_position_counts().await {
                 Ok(value) => value,
                 Err(_) => return fail_outer(phase, CommissionError::Spi),
             };
@@ -479,10 +513,11 @@ pub(crate) async fn step_velocity_validate_with_trace<B: CommissioningBackend>(
 
         VelocityValidateState::ReverseSettle { deadline_us } => {
             if backend.elapsed_us().wrapping_sub(*deadline_us) < 0x8000_0000 {
-                data.prev_encoder_for_velocity = match backend.try_read_encoder_count().await {
-                    Ok(value) => value,
-                    Err(_) => return fail_outer(phase, CommissionError::Spi),
-                };
+                data.prev_encoder_for_velocity =
+                    match backend.try_read_encoder_position_counts().await {
+                        Ok(value) => value,
+                        Err(_) => return fail_outer(phase, CommissionError::Spi),
+                    };
                 buf.reset(VELOCITY_VALIDATE_SAMPLE_PERIOD_US as u16);
                 let next_sample_us = backend
                     .elapsed_us()
@@ -506,7 +541,7 @@ pub(crate) async fn step_velocity_validate_with_trace<B: CommissioningBackend>(
                 return StepResult::Continue;
             }
 
-            let count = match backend.try_read_encoder_count().await {
+            let count = match backend.try_read_encoder_position_counts().await {
                 Ok(value) => value,
                 Err(_) => return fail_outer(phase, CommissionError::Spi),
             };
@@ -861,7 +896,7 @@ pub(crate) async fn step_velocity_validate_with_trace<B: CommissioningBackend>(
                     data.attempt = 1;
 
                     let config = backend.tmc_config();
-                    let step_width = backend.step_width();
+                    let encoder_counts_per_rev = backend.encoder_counts_per_rev();
                     let mut retry_model = data.model;
                     let new_theta = data.model.theta_mech_us * VELOCITY_RETRY_LAMBDA_MUL_NUM
                         / VELOCITY_RETRY_LAMBDA_MUL_DEN;
@@ -874,7 +909,7 @@ pub(crate) async fn step_velocity_validate_with_trace<B: CommissioningBackend>(
                         inner_lambda_us,
                         theta_e_us,
                         data.peak_velocity,
-                        step_width,
+                        encoder_counts_per_rev,
                         config,
                     ) {
                         Some(mut new_gains) => {
@@ -1020,13 +1055,14 @@ pub(crate) async fn step_velocity_validate_with_trace<B: CommissioningBackend>(
                 accepted_gains.velocity_limit
             );
 
-            // Position capture is measured in ABN counts, but
-            // PID_POSITION_TARGET is written in TMC electrical-position
-            // units. Convert the small motor-local test move through the
-            // configured STEP_WIDTH so the command and measurement agree.
-            let step_width = backend.step_width().max(1);
+            // Position capture is measured in ABN counts, while the TMC target
+            // uses 65536 mechanical position units per revolution.
             let step_target_counts = response::position_tune_step_counts(safety.counts_per_rev);
-            let step_target_tmc = step_width.saturating_mul(step_target_counts);
+            let step_target_tmc = encoder_counts_to_tmc_position_units(
+                step_target_counts.min(i32::MAX as u32) as i32,
+                backend.encoder_counts_per_rev(),
+            )
+            .max(1) as u32;
 
             let j_eff = data.model.j_eff;
             let b_eff = data.model.b_eff;
@@ -1063,8 +1099,8 @@ pub(crate) async fn step_velocity_validate_with_trace<B: CommissioningBackend>(
 #[cfg(test)]
 mod tests {
     use super::{
-        counts_per_ms_to_tmc_velocity, encoder_delta_counts_per_ms,
-        record_velocity_validate_summary, step_velocity_validate,
+        counts_per_ms_to_tmc_velocity, encoder_counts_to_tmc_position_units,
+        encoder_delta_counts_per_ms, record_velocity_validate_summary, step_velocity_validate,
     };
     use crate::autotune::{
         CommissionError, CommissionProfile, MechanicalModel, OperatingMode, TRANSIENT_LEN,
@@ -1727,9 +1763,16 @@ mod tests {
     }
 
     #[test]
-    fn velocity_validation_converts_counts_per_ms_to_tmc_velocity_units() {
-        assert_eq!(counts_per_ms_to_tmc_velocity(4, 819, 25_000), 132);
-        assert_eq!(counts_per_ms_to_tmc_velocity(16, 819, 25_000), 525);
+    fn velocity_validation_converts_encoder_rate_through_exact_scale() {
+        assert_eq!(counts_per_ms_to_tmc_velocity(4, 4_000, 25_000), 3);
+        assert_eq!(counts_per_ms_to_tmc_velocity(-4, 4_000, 25_000), -3);
+        assert_eq!(counts_per_ms_to_tmc_velocity(16, 4_000, 25_000), 10);
+    }
+
+    #[test]
+    fn position_target_converts_signed_encoder_counts_through_exact_scale() {
+        assert_eq!(encoder_counts_to_tmc_position_units(31, 4_000), 508);
+        assert_eq!(encoder_counts_to_tmc_position_units(-31, 4_000), -508);
     }
 
     #[test]
@@ -1793,7 +1836,7 @@ mod tests {
             let mut buf = TransientBuffer::new();
             let mut backend = MockBackend::new();
             backend.elapsed_us_value = 1_600;
-            backend.encoder_count_value = 1_024;
+            backend.encoder_position_counts_value = 1_024;
 
             let result = step_velocity_validate(
                 &mut phase,
@@ -1885,7 +1928,7 @@ mod tests {
             }
             let mut backend = MockBackend::new();
             backend.elapsed_us_value = 1_000;
-            backend.encoder_count_value = 1_004;
+            backend.encoder_position_counts_value = 1_004;
             backend.fail_on_write = Some(PID_VELOCITY_TARGET.addr());
 
             let result = step_velocity_validate(
@@ -1964,7 +2007,7 @@ mod tests {
             let mut buf = TransientBuffer::new();
             let mut backend = MockBackend::new();
             backend.elapsed_us_value = 1_000;
-            backend.encoder_count_value = 5;
+            backend.encoder_position_counts_value = 5;
 
             let result = step_velocity_validate(
                 &mut phase,
@@ -1986,13 +2029,13 @@ mod tests {
 
     #[test]
     fn velocity_validation_conversion_handles_zero_inputs() {
-        assert_eq!(counts_per_ms_to_tmc_velocity(0, 819, 25_000), 0);
+        assert_eq!(counts_per_ms_to_tmc_velocity(0, 4_000, 25_000), 0);
         assert_eq!(counts_per_ms_to_tmc_velocity(4, 0, 25_000), 0);
-        assert_eq!(counts_per_ms_to_tmc_velocity(4, 819, 0), 0);
+        assert_eq!(counts_per_ms_to_tmc_velocity(4, 4_000, 0), 0);
     }
 
     #[test]
-    fn velocity_validation_writes_converted_tmc_limit_and_target() {
+    fn velocity_validation_writes_encoder_scaled_rates_independent_of_step_width() {
         pollster::block_on(async {
             let gains = VelocityGains {
                 velocity_p: 1152,
@@ -2040,7 +2083,8 @@ mod tests {
             };
             let mut buf = TransientBuffer::new();
             let mut backend = MockBackend::new();
-            backend.step_width_value = 819;
+            backend.encoder_counts_per_rev_value = 4_000;
+            backend.step_width_value = 16;
 
             let _ = step_velocity_validate(
                 &mut phase,
@@ -2060,9 +2104,10 @@ mod tests {
                     .registers
                     .get(&PID_VELOCITY_LIMIT.addr())
                     .expect("velocity limit should be written"),
-                525
+                10
             );
 
+            backend.step_width_value = 8;
             let _ = step_velocity_validate(
                 &mut phase,
                 &mut buf,
@@ -2081,7 +2126,7 @@ mod tests {
                     .registers
                     .get(&PID_VELOCITY_TARGET.addr())
                     .expect("velocity target should be written"),
-                132
+                3
             );
         });
     }

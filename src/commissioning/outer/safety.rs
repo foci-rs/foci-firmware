@@ -468,7 +468,7 @@ mod tests {
             safety.last_sample_us = 100_000;
             let mut backend = MockBackend::new();
             backend.elapsed_us_value = 124_909;
-            backend.encoder_count_value = 2525; // delta=197 over 24.909ms => ~7 counts/ms
+            backend.encoder_position_counts_value = 2525; // delta=197 over 24.909ms => ~7 counts/ms
 
             let fault = check_outer_safety(&mut safety, &mut backend)
                 .await
@@ -503,7 +503,7 @@ mod tests {
             safety.start_sample_us = 90_000;
             let mut backend = MockBackend::new();
             backend.elapsed_us_value = 104_000;
-            backend.encoder_count_value = 125;
+            backend.encoder_position_counts_value = 125;
 
             let fault = check_outer_safety(&mut safety, &mut backend)
                 .await

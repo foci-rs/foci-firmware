@@ -700,7 +700,7 @@ async fn restored_position_target(
 
     let mut backend = MockBackend::new();
     backend.set_abn_decoder_count(encoder_count);
-    backend.encoder_quadrature_ppr_value = encoder_ppr * 4;
+    backend.encoder_counts_per_rev_value = encoder_ppr * 4;
     tmc_state()
         .configure_motion_scale(stepper_state(), encoder_ppr, planner_steps_per_rev)
         .expect("valid test motion scale");

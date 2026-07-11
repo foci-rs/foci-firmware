@@ -61,12 +61,22 @@ pub trait CommissionMotorControl {
 /// Encoder sampling capability used by inner and outer commissioning.
 #[allow(async_fn_in_trait)]
 pub trait CommissionEncoderRead: CommissionRegisterIo {
-    /// Read the current ABN encoder count.
-    async fn read_encoder_count(&mut self) -> u32;
+    /// Read the current ABN encoder position, in quadrature counts.
+    async fn read_encoder_position_counts(&mut self) -> u32;
 
-    /// Read the current ABN encoder count and preserve backend read failures.
+    /// Read the current ABN encoder position in counts and preserve read failures.
+    async fn try_read_encoder_position_counts(&mut self) -> Result<u32, Self::Error> {
+        Ok(self.read_encoder_position_counts().await)
+    }
+
+    /// Legacy alias for [`Self::read_encoder_position_counts`].
+    async fn read_encoder_count(&mut self) -> u32 {
+        self.read_encoder_position_counts().await
+    }
+
+    /// Legacy alias for [`Self::try_read_encoder_position_counts`].
     async fn try_read_encoder_count(&mut self) -> Result<u32, Self::Error> {
-        Ok(self.read_encoder_count().await)
+        self.try_read_encoder_position_counts().await
     }
 }
 
@@ -139,16 +149,15 @@ pub trait CommissionBoardConfig {
     /// TMC4671 STEP_WIDTH value.
     fn step_width(&self) -> u32;
 
-    /// Configured ABN decoder quadrature count per mechanical revolution.
-    fn encoder_quadrature_ppr(&self) -> u32;
-
     /// Encoder counts per mechanical revolution.
+    fn encoder_counts_per_rev(&self) -> u32;
+
+    /// Configured ABN decoder quadrature count per mechanical revolution.
     ///
-    /// Used by the shared resistance runner to wrap the per-window encoder-move
-    /// delta. Identical to [`Self::encoder_quadrature_ppr`]; provided under the
-    /// runner-facing name expected by the `ResistanceBackend` adapter.
-    fn encoder_counts_per_rev(&self) -> u32 {
-        self.encoder_quadrature_ppr()
+    /// Legacy alias retained until the commissioning accessor migration is
+    /// complete. New count and rate calculations use [`Self::encoder_counts_per_rev`].
+    fn encoder_quadrature_ppr(&self) -> u32 {
+        self.encoder_counts_per_rev()
     }
 
     /// Whether ADC current-offset calibration has been established.
@@ -386,14 +395,14 @@ impl<T> CommissionEncoderRead for T
 where
     T: CommissionTmcSpiAccess,
 {
-    async fn read_encoder_count(&mut self) -> u32 {
+    async fn read_encoder_position_counts(&mut self) -> u32 {
         self.tmc_spi()
             .read_register(ABN_DECODER_COUNT)
             .await
             .unwrap_or(0)
     }
 
-    async fn try_read_encoder_count(&mut self) -> Result<u32, Self::Error> {
+    async fn try_read_encoder_position_counts(&mut self) -> Result<u32, Self::Error> {
         self.tmc_spi().read_register(ABN_DECODER_COUNT).await
     }
 }
@@ -462,7 +471,7 @@ where
             .max(0) as u32
     }
 
-    fn encoder_quadrature_ppr(&self) -> u32 {
+    fn encoder_counts_per_rev(&self) -> u32 {
         self.tmc_state()
             .encoder_ppr
             .load(core::sync::atomic::Ordering::Relaxed)

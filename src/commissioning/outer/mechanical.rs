@@ -225,7 +225,7 @@ mod tests {
             let mut buf = TransientBuffer::new();
             let mut backend = MockBackend::new();
             backend.current_limit_value = 2448;
-            backend.encoder_count_value = 1234;
+            backend.encoder_position_counts_value = 1234;
             let _ = backend.registers.insert(ABN_DECODER_PPR.addr(), 4000);
 
             let result = step_outer(
@@ -296,7 +296,7 @@ mod tests {
             let mut buf = TransientBuffer::new();
             let mut backend = MockBackend::new();
             backend.current_limit_value = 2448;
-            backend.encoder_count_value = 1234;
+            backend.encoder_position_counts_value = 1234;
             let _ = backend.registers.insert(ABN_DECODER_PPR.addr(), 4000);
 
             let result = step_outer(
@@ -353,7 +353,7 @@ mod tests {
             let mut buf = TransientBuffer::new();
             let mut backend = MockBackend::new();
             backend.current_limit_value = 2448;
-            backend.encoder_count_value = 1234;
+            backend.encoder_position_counts_value = 1234;
             let _ = backend.registers.insert(ABN_DECODER_PPR.addr(), 4000);
 
             let result = step_outer(
@@ -405,7 +405,7 @@ mod tests {
             let mut buf = TransientBuffer::new();
             let mut backend = MockBackend::new();
             backend.current_limit_value = 2448;
-            backend.encoder_count_value = 1000;
+            backend.encoder_position_counts_value = 1000;
             let _ = backend.registers.insert(ABN_DECODER_PPR.addr(), 4000);
 
             let first = step_outer(
@@ -429,7 +429,7 @@ mod tests {
 
             // Reproduce the field failure: the first sample after the position->torque
             // mode switch jumps by 25 counts/ms before the intended torque step starts.
-            backend.encoder_count_value = 1025;
+            backend.encoder_position_counts_value = 1025;
 
             let second = step_outer(
                 &mut phase,
@@ -478,7 +478,7 @@ mod tests {
             let mut buf = TransientBuffer::new();
             let mut backend = MockBackend::new();
             backend.current_limit_value = 2448;
-            backend.encoder_count_value = 1000;
+            backend.encoder_position_counts_value = 1000;
             let _ = backend.registers.insert(ABN_DECODER_PPR.addr(), 4000);
 
             let first = step_outer(
@@ -501,7 +501,7 @@ mod tests {
             ));
 
             backend.elapsed_us_value = 10_000;
-            backend.encoder_count_value = 1025;
+            backend.encoder_position_counts_value = 1025;
             let second = step_outer(
                 &mut phase,
                 &mut buf,
@@ -530,7 +530,7 @@ mod tests {
 
             for (us, pos) in [(11_000, 1026), (12_000, 1027), (13_000, 1028)] {
                 backend.elapsed_us_value = us;
-                backend.encoder_count_value = pos;
+                backend.encoder_position_counts_value = pos;
                 let result = step_outer(
                     &mut phase,
                     &mut buf,
@@ -588,7 +588,7 @@ mod tests {
             let mut buf = TransientBuffer::new();
             let mut backend = MockBackend::new();
             backend.current_limit_value = 2448;
-            backend.encoder_count_value = 1000;
+            backend.encoder_position_counts_value = 1000;
             let _ = backend.registers.insert(ABN_DECODER_PPR.addr(), 4000);
 
             let first = step_outer(
@@ -617,7 +617,7 @@ mod tests {
                 (40_000, 1200),
             ] {
                 backend.elapsed_us_value = us;
-                backend.encoder_count_value = pos;
+                backend.encoder_position_counts_value = pos;
                 let _ = step_outer(
                     &mut phase,
                     &mut buf,
@@ -635,7 +635,7 @@ mod tests {
             }
 
             backend.elapsed_us_value = 150_000;
-            backend.encoder_count_value = 1250;
+            backend.encoder_position_counts_value = 1250;
             let result = step_outer(
                 &mut phase,
                 &mut buf,

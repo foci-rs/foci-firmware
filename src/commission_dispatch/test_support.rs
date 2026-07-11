@@ -72,8 +72,8 @@ pub struct MockBackend {
     pub excitation_voltage_value: u16,
     /// Value returned by `step_width()`.
     pub step_width_value: u32,
-    /// Expected ABN_DECODER_PPR quadrature count for readback tests.
-    pub encoder_quadrature_ppr_value: u32,
+    /// Encoder quadrature counts per mechanical revolution.
+    pub encoder_counts_per_rev_value: u32,
     /// Value returned by `adc_offsets_ready()`.
     pub adc_offsets_ready_value: bool,
     /// Value returned by `operational_velocity_limit()`.
@@ -86,8 +86,8 @@ pub struct MockBackend {
     pub configured_torque_filter_hz: Option<u16>,
     /// Optional flux-filter override returned by `configured_flux_filter_hz()`.
     pub configured_flux_filter_hz: Option<u16>,
-    /// Value returned by `read_encoder_count()`.
-    pub encoder_count_value: u32,
+    /// Encoder position returned by the sampled-count accessor.
+    pub encoder_position_counts_value: u32,
     /// Sequential values to return for consecutive `PID_POSITION_ACTUAL` reads.
     ///
     /// When non-empty, each `read_register(PID_POSITION_ACTUAL)` call pops and
@@ -145,7 +145,7 @@ impl MockBackend {
             dsadc_mdec_register_value: 0,
             excitation_voltage_value: 1024,
             step_width_value: 0,
-            encoder_quadrature_ppr_value: 4000,
+            encoder_counts_per_rev_value: 4000,
             adc_offsets_ready_value: true,
             operational_velocity_limit_value: 500_000,
             operational_voltage_limit_value:
@@ -153,7 +153,7 @@ impl MockBackend {
             tmc_config: TmcConfig::default_for_test(),
             configured_torque_filter_hz: None,
             configured_flux_filter_hz: None,
-            encoder_count_value: 0,
+            encoder_position_counts_value: 0,
             read_position_actual_sequence: Vec::new(),
             read_position_actual_pos: 0,
             abn_decoder_count_sequence: Vec::new(),
@@ -333,17 +333,17 @@ impl CommissionMotorControl for MockBackend {
 }
 
 impl CommissionEncoderRead for MockBackend {
-    async fn read_encoder_count(&mut self) -> u32 {
-        self.encoder_count_value
+    async fn read_encoder_position_counts(&mut self) -> u32 {
+        self.encoder_position_counts_value
     }
 
-    async fn try_read_encoder_count(&mut self) -> Result<u32, Self::Error> {
+    async fn try_read_encoder_position_counts(&mut self) -> Result<u32, Self::Error> {
         let addr = foci_tmc4671::registers::ABN_DECODER_COUNT.addr();
         self.spi_log.push(SpiOp::Read).ok();
         if self.fail_on_read == Some(addr) {
             return Err(MockSpiError);
         }
-        Ok(self.encoder_count_value)
+        Ok(self.encoder_position_counts_value)
     }
 }
 
@@ -398,8 +398,8 @@ impl CommissionBoardConfig for MockBackend {
         self.step_width_value
     }
 
-    fn encoder_quadrature_ppr(&self) -> u32 {
-        self.encoder_quadrature_ppr_value
+    fn encoder_counts_per_rev(&self) -> u32 {
+        self.encoder_counts_per_rev_value
     }
 
     fn adc_offsets_ready(&self) -> bool {
@@ -544,12 +544,12 @@ mod tests {
     }
 
     #[test]
-    fn mock_try_read_encoder_count_propagates_read_failure() {
+    fn mock_try_read_encoder_position_counts_propagates_read_failure() {
         pollster::block_on(async {
             let mut backend = MockBackend::new();
             backend.fail_on_read = Some(foci_tmc4671::registers::ABN_DECODER_COUNT.addr());
 
-            let result = backend.try_read_encoder_count().await;
+            let result = backend.try_read_encoder_position_counts().await;
 
             assert_eq!(result, Err(MockSpiError));
         });

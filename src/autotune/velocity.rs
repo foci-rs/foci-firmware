@@ -107,24 +107,26 @@ fn apply_velocity_gain_envelope(
     tau_us: u32,
     theta_us: u32,
     b_eff: u32,
-    step_width: u32,
+    encoder_counts_per_rev: u32,
     f_pwm_hz: u32,
 ) -> u32 {
-    if b_eff == 0 || step_width == 0 || f_pwm_hz == 0 {
+    if b_eff == 0 || encoder_counts_per_rev == 0 || f_pwm_hz == 0 {
         return lambda_us;
     }
 
     // b_eff is stored as torque * 1000 / encoder-counts/ms, while TMC4671
     // velocity error is measured in TMC velocity units:
     //
-    //   tmc_vel_per_cpms = step_width * 1000 / f_pwm_hz
+    //   tmc_vel_per_cpms = 65536 * 1000 / (encoder_counts_per_rev * f_pwm_hz)
     //   P_reg = tau_us * b_eff * 256 * f_pwm_hz
-    //           / (1_000_000 * step_width * (lambda_us + theta_us))
+    //           * encoder_counts_per_rev
+    //           / (1_000_000 * 65536 * (lambda_us + theta_us))
     //
     // Widen lambda when needed so the synthesized P lands inside the same
     // envelope enforced by Phase 10 and commit.
-    let numerator = tau_us as u128 * b_eff as u128 * 256 * f_pwm_hz as u128;
-    let denominator = 1_000_000_u128 * step_width as u128 * VELOCITY_SIMC_MAX_P_REG as u128;
+    let numerator =
+        tau_us as u128 * b_eff as u128 * 256 * f_pwm_hz as u128 * encoder_counts_per_rev as u128;
+    let denominator = 1_000_000_u128 * 65_536 * VELOCITY_SIMC_MAX_P_REG as u128;
     let required_sum = numerator.div_ceil(denominator).min(u32::MAX as u128) as u32;
     let lambda_floor = required_sum.saturating_sub(theta_us);
     lambda_us.max(lambda_floor)
@@ -140,7 +142,7 @@ fn apply_velocity_gain_envelope(
 /// - `inner_lambda_us`: inner-loop time scale from current-loop commissioning
 /// - `theta_e_us`: electrical transport delay from inner loop
 /// - `peak_velocity`: peak velocity observed during mechanical ID (for limit)
-/// - `step_width`: TMC position units per encoder count
+/// - `encoder_counts_per_rev`: quadrature encoder counts per mechanical revolution
 /// - `config`: TMC4671 board configuration (for PWM frequency)
 #[allow(clippy::too_many_arguments)]
 pub fn simc_velocity_gains(
@@ -150,7 +152,7 @@ pub fn simc_velocity_gains(
     inner_lambda_us: u32,
     theta_e_us: u32,
     peak_velocity: u32,
-    step_width: u32,
+    encoder_counts_per_rev: u32,
     config: &crate::config::TmcConfig,
 ) -> Option<VelocityGains> {
     simc_velocity_gains_with_lambda_multiplier(
@@ -160,7 +162,7 @@ pub fn simc_velocity_gains(
         inner_lambda_us,
         theta_e_us,
         peak_velocity,
-        step_width,
+        encoder_counts_per_rev,
         config,
         1.0,
     )
@@ -176,7 +178,7 @@ pub(crate) fn simc_velocity_gains_with_lambda_multiplier(
     inner_lambda_us: u32,
     theta_e_us: u32,
     peak_velocity: u32,
-    step_width: u32,
+    encoder_counts_per_rev: u32,
     config: &crate::config::TmcConfig,
     lambda_multiplier: f32,
 ) -> Option<VelocityGains> {
@@ -184,7 +186,7 @@ pub(crate) fn simc_velocity_gains_with_lambda_multiplier(
         return None;
     }
     let f_pwm_hz = config.pwm_freq_hz();
-    if step_width == 0 || f_pwm_hz == 0 {
+    if encoder_counts_per_rev == 0 || f_pwm_hz == 0 {
         return None;
     }
 
@@ -212,7 +214,7 @@ pub(crate) fn simc_velocity_gains_with_lambda_multiplier(
         tau_mech_us,
         model.theta_mech_us,
         model.b_eff,
-        step_width,
+        encoder_counts_per_rev,
         f_pwm_hz,
     );
 
@@ -229,7 +231,8 @@ pub(crate) fn simc_velocity_gains_with_lambda_multiplier(
     let lambda = lambda_us as f32;
     let b_eff = model.b_eff as f32;
     let k = if b_eff > 0.0 { 1000.0 / b_eff } else { 1.0 };
-    let tmc_velocity_units_per_cpms = step_width as f32 * 1000.0 / f_pwm_hz as f32;
+    let tmc_velocity_units_per_cpms =
+        65_536.0 * 1000.0 / (encoder_counts_per_rev as f32 * f_pwm_hz as f32);
 
     let kp_cpms = tau / (k * (lambda + theta));
     let kp = kp_cpms / tmc_velocity_units_per_cpms;
@@ -470,10 +473,10 @@ pub fn classify_velocity_stiffness(
 
 #[cfg(test)]
 mod tests {
-    use super::super::test_support::{
-        TEST_STEP_WIDTH, autotune_test_config, test_mechanical_model,
-    };
+    use super::super::test_support::{autotune_test_config, test_mechanical_model};
     use super::*;
+
+    const TEST_ENCODER_COUNTS_PER_REV: u32 = 80;
 
     // --- Velocity-loop SIMC synthesis ---
 
@@ -572,7 +575,7 @@ mod tests {
             700,  // inner lambda from current tune
             100,  // theta_e
             1000, // peak velocity
-            TEST_STEP_WIDTH,
+            TEST_ENCODER_COUNTS_PER_REV,
             &config,
         );
         let gains = gains.expect("gains should be Some for valid model");
@@ -581,6 +584,33 @@ mod tests {
         assert_eq!(gains.velocity_limit, 800, "80% of peak=1000");
         assert!(gains.effective_bandwidth_hz > 0);
         assert!(gains.lambda_vel_ms > 0);
+    }
+
+    #[test]
+    fn velocity_gains_use_exact_non_divisible_encoder_scale() {
+        let model = MechanicalModel {
+            j_eff: 1,
+            b_eff: 100,
+            tau_mech_ms: 100,
+            theta_mech_us: 1_000,
+            t_f: 0,
+        };
+        let config = autotune_test_config();
+
+        let gains = simc_velocity_gains(
+            &model,
+            CommissionProfile::Balanced,
+            OperatingMode::Nominal,
+            0,
+            0,
+            1_000,
+            4_000,
+            &config,
+        )
+        .expect("non-divisible encoder scale should synthesize gains");
+
+        assert_eq!(gains.velocity_p, 976);
+        assert_eq!(gains.velocity_i, 2);
     }
 
     #[test]
@@ -659,7 +689,7 @@ mod tests {
                 934,
                 160,
                 19,
-                TEST_STEP_WIDTH,
+                TEST_ENCODER_COUNTS_PER_REV,
                 &config,
             )
             .expect("field model should synthesize gains");
@@ -712,7 +742,7 @@ mod tests {
             934,
             160,
             18,
-            TEST_STEP_WIDTH,
+            TEST_ENCODER_COUNTS_PER_REV,
             &config,
         )
         .expect("field model should synthesize gains");
@@ -737,7 +767,7 @@ mod tests {
                 700,
                 100,
                 1000,
-                TEST_STEP_WIDTH,
+                TEST_ENCODER_COUNTS_PER_REV,
                 &config
             )
             .is_none()
@@ -757,7 +787,7 @@ mod tests {
                 700,
                 100,
                 1000,
-                TEST_STEP_WIDTH,
+                TEST_ENCODER_COUNTS_PER_REV,
                 &config
             )
             .is_none()
@@ -775,7 +805,7 @@ mod tests {
             700,
             100,
             1000,
-            TEST_STEP_WIDTH,
+            TEST_ENCODER_COUNTS_PER_REV,
             &config,
         )
         .unwrap();
@@ -786,7 +816,7 @@ mod tests {
             700,
             100,
             1000,
-            TEST_STEP_WIDTH,
+            TEST_ENCODER_COUNTS_PER_REV,
             &config,
         )
         .unwrap();
@@ -809,7 +839,7 @@ mod tests {
             700,
             100,
             1000,
-            TEST_STEP_WIDTH,
+            TEST_ENCODER_COUNTS_PER_REV,
             &config,
         )
         .unwrap();
@@ -820,7 +850,7 @@ mod tests {
             700,
             100,
             1000,
-            TEST_STEP_WIDTH,
+            TEST_ENCODER_COUNTS_PER_REV,
             &config,
         )
         .unwrap();
@@ -847,7 +877,7 @@ mod tests {
             inner_lambda_us,
             theta_e_us,
             1000,
-            TEST_STEP_WIDTH,
+            TEST_ENCODER_COUNTS_PER_REV,
             &config,
         )
         .unwrap();

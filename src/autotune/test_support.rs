@@ -19,8 +19,6 @@ pub(super) fn autotune_test_config() -> crate::config::TmcConfig {
     }
 }
 
-pub(super) const TEST_STEP_WIDTH: u32 = 819;
-
 pub(super) fn test_electrical_model() -> ElectricalModel {
     ElectricalModel {
         r_int: 1125,
