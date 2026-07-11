@@ -13,6 +13,7 @@ use crate::autotune::{
     TransientBuffer,
 };
 use crate::commissioning::EntrySnapshot;
+use crate::commissioning::encoder_domain::EncoderCount;
 use crate::commissioning::inner::current_loop::{CurrentValidateData, CurrentValidateState};
 use crate::commissioning::types::{
     AdcCalResult, CommissioningBackend, InductanceEvidence, InnerResult, StepResult,
@@ -120,10 +121,10 @@ pub(crate) enum EncoderCheckState {
     Sweep {
         step: u16,
         deadline_us: u64,
-        count_start: i32,
+        count_start: EncoderCount,
     },
     /// Read final count and determine direction.
-    Finalize { count_start: i32 },
+    Finalize { count_start: EncoderCount },
 }
 
 /// Encoder D-axis alignment sub-state.
@@ -132,29 +133,29 @@ pub(crate) enum EncoderAlignState {
     /// Configure external PHI_E=0 voltage drive.
     Setup {
         /// Encoder count captured before the direction sweep that ended at PHI_E=0.
-        count_before: u32,
+        count_before: EncoderCount,
     },
     /// Wait for rotor to settle at the nearest D-axis pole.
     Settle {
-        count_before: u32,
+        count_before: EncoderCount,
         deadline_us: u64,
         min_movement: u32,
     },
     /// First post-settle encoder read.
     StabilityCheck1 {
-        count_before: u32,
+        count_before: EncoderCount,
         min_movement: u32,
     },
     /// Second encoder read after a short delay for stability validation.
     StabilityCheck2 {
-        count_before: u32,
-        count1: u32,
+        count_before: EncoderCount,
+        count1: EncoderCount,
         deadline_us: u64,
         min_movement: u32,
     },
     /// Zero encoder count and offset while the rotor is still held.
     Commit {
-        old_count: u32,
+        old_count: EncoderCount,
         electrical_residual_counts: u16,
         stability_counts: u16,
         movement_counts: u16,
@@ -163,7 +164,7 @@ pub(crate) enum EncoderAlignState {
     },
     /// Stop open-loop drive after PHI_E has been locked to ABN.
     StopDrive {
-        old_count: u32,
+        old_count: EncoderCount,
         electrical_residual_counts: u16,
         stability_counts: u16,
         movement_counts: u16,
