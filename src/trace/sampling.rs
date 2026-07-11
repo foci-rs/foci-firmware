@@ -14,7 +14,7 @@ pub const COMMISSION_TRACE_SAMPLE_MIN_BUDGET_US: u64 = 250;
 /// samples by board-local trace integrations.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub struct TraceSampleInputs {
-    /// Last command velocity reference emitted to trace sampling.
+    /// Last command rate in TMC position counts per PWM cycle.
     pub command_velocity_reference: i32,
     /// Last velocity feedforward offset emitted to trace sampling.
     pub cached_velocity_offset: i32,

@@ -10,7 +10,6 @@ use foci_tmc4671::spi::Tmc4671Spi;
 
 use crate::pid::{InnerLoopGains, OuterLoopGains};
 use crate::state::tmc::TmcChannelState;
-use crate::tmc::compute_velocity_scale_factor;
 use crate::tmc_control::TmcControlRuntime;
 use crate::tmc_control::request_writes::write_motion_scale;
 
@@ -30,26 +29,22 @@ impl LiveGainWriteStatus {
     }
 }
 
-/// Recompute runtime velocity scale from the channel's STEP_WIDTH state.
+/// Recompute the exact runtime velocity scale from planner resolution.
 pub fn refresh_velocity_scale_from_state(
     runtime: &mut TmcControlRuntime,
     tmc_state: &TmcChannelState,
     clock_freq: u32,
     pwm_freq_hz: u32,
 ) {
-    runtime.set_velocity_scale(compute_velocity_scale_factor(
-        tmc_state.step_width_value.load(Relaxed).unsigned_abs(),
-        clock_freq,
-        pwm_freq_hz,
-    ));
     let rational_scale = crate::state::stepper::stepper_channel(runtime.channel())
         .and_then(|stepper| stepper.planner_steps_per_rev(tmc_state))
         .and_then(|planner_steps_per_rev| {
-            tmc_state.encoder_ppr().and_then(|encoder_ppr| {
-                crate::motion_scale::MotionScale::new(encoder_ppr, planner_steps_per_rev).ok()
-            })
-        })
-        .and_then(|scale| scale.planner_velocity_scale(clock_freq, pwm_freq_hz));
+            crate::motion_scale::PlannerVelocityScale::new(
+                planner_steps_per_rev,
+                clock_freq,
+                pwm_freq_hz,
+            )
+        });
     runtime.set_planner_velocity_scale(rational_scale);
 }
 

@@ -251,7 +251,7 @@ pub struct CriticalSample {
     pub tmc_position_actual: i32,
     /// Position error.
     pub position_error: i32,
-    /// Software command-velocity reference in TMC velocity-offset sign convention.
+    /// Software command rate in TMC position counts per PWM cycle.
     ///
     /// This is derived from Klipper STEP/DIR timing. It is not a TMC register read.
     pub target_velocity: i32,

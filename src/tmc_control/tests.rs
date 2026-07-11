@@ -295,7 +295,7 @@ fn request_outcome_constructors_encode_tail_shutdown_and_refresh() {
 }
 
 #[test]
-fn refresh_velocity_scale_caches_legacy_and_rational_scales() {
+fn refresh_velocity_scale_caches_exact_planner_scale() {
     let _guard = crate::commission_dispatch::test_support::SHARED_STATE_MUTEX.blocking_lock();
     let mut runtime = TmcControlRuntime::new_for_channel(0);
     let tmc_state = crate::state::tmc::tmc_channel0();
@@ -308,10 +308,6 @@ fn refresh_velocity_scale_caches_legacy_and_rational_scales() {
 
     refresh_velocity_scale_from_state(&mut runtime, tmc_state, 84_000_000, 25_000);
 
-    assert_eq!(
-        runtime.velocity_scale(),
-        crate::tmc::compute_velocity_scale_factor(16, 84_000_000, 25_000)
-    );
     assert_eq!(
         runtime.planner_velocity_scale(),
         scale.planner_velocity_scale(84_000_000, 25_000)
@@ -780,14 +776,14 @@ fn config_reset_runtime_state_clears_owned_flags_and_defaults() {
     let mut runtime = TmcControlRuntime::new_for_channel(0);
     runtime.set_calibrated_for_test(true);
     runtime.set_motor_enabled_for_test(true);
-    runtime.set_velocity_scale_for_test(1234);
+    runtime.set_planner_velocity_scale_for_test(1234);
     runtime.set_slow_control_accum_us_for_test(750);
 
     runtime.reset_runtime_state();
 
     assert!(!runtime.is_calibrated());
     assert!(!runtime.is_motor_enabled());
-    assert_eq!(runtime.velocity_scale_for_test(), 0);
+    assert_eq!(runtime.planner_velocity_scale(), None);
     assert_eq!(runtime.slow_control_accum_us_for_test(), 0);
 }
 
@@ -1257,7 +1253,7 @@ fn shutdown_quiesce_clears_safe_state_without_config_reset() {
     runtime.set_motor_enabled_for_test(true);
     runtime.set_commission_engine(crate::commissioning::CommissioningEngine::new_calibrate(0));
     runtime.set_stored_gains(gains);
-    runtime.set_velocity_scale(123_456);
+    runtime.set_planner_velocity_scale_for_test(123_456);
     runtime.set_feedforward_was_active(true);
     runtime.set_pid_error_clear_countdown_ms(9);
 
@@ -1270,7 +1266,12 @@ fn shutdown_quiesce_clears_safe_state_without_config_reset() {
     assert!(!runtime.feedforward_was_active());
     assert_eq!(runtime.pid_error_clear_countdown_ms(), 0);
     assert_eq!(runtime.stored_gains(), Some(gains));
-    assert_eq!(runtime.velocity_scale(), 123_456);
+    assert_eq!(
+        runtime.planner_velocity_scale(),
+        Some(crate::motion_scale::PlannerVelocityScale::from_reduced(
+            123_456, 1
+        ))
+    );
 }
 
 #[test]
@@ -1278,7 +1279,7 @@ fn shutdown_quiesce_clears_torque_flux_offset_activity() {
     pollster::block_on(async {
         let mut runtime = TmcControlRuntime::new_for_channel(0);
         runtime.set_motor_enabled_for_test(true);
-        runtime.set_velocity_scale_for_test(84_000_000);
+        runtime.set_planner_velocity_scale_for_test(84_000_000);
         let tmc_state = crate::state::tmc::TmcChannelState::new();
         let stepper_state = crate::state::stepper::StepperChannelState::new();
         let config = commissioning_runtime_config();
@@ -1644,9 +1645,9 @@ fn minimum_control_period_us_selects_fastest_runtime() {
     let stepper1 = crate::state::stepper::StepperChannelState::new();
 
     runtime0.set_motor_enabled_for_test(true);
-    runtime0.set_velocity_scale_for_test(84_000_000);
+    runtime0.set_planner_velocity_scale_for_test(84_000_000);
     runtime1.set_motor_enabled_for_test(true);
-    runtime1.set_velocity_scale_for_test(84_000_000);
+    runtime1.set_planner_velocity_scale_for_test(84_000_000);
     tmc0.velocity_transient_feedforward.store(true, Relaxed);
     tmc0.velocity_transient_rate_hz.store(10_000, Relaxed);
     tmc1.velocity_transient_feedforward.store(true, Relaxed);
@@ -1712,7 +1713,7 @@ fn feedforward_tick_writes_velocity_offset_and_marks_active() {
     pollster::block_on(async {
         let mut runtime = TmcControlRuntime::new_for_channel(0);
         runtime.set_motor_enabled_for_test(true);
-        runtime.set_velocity_scale_for_test(84_000_000);
+        runtime.set_planner_velocity_scale_for_test(84_000_000);
         let tmc_state = crate::state::tmc::TmcChannelState::new();
         let stepper_state = crate::state::stepper::StepperChannelState::new();
         let config = commissioning_runtime_config();
@@ -1720,8 +1721,12 @@ fn feedforward_tick_writes_velocity_offset_and_marks_active() {
         tmc_state.velocity_feedforward_multiplier.store(40, Relaxed);
         stepper_state.interval.store(2_800, Relaxed);
         stepper_state.direction.store(false, Relaxed);
-        let expected =
-            crate::tmc::compute_velocity_offset_scaled(84_000_000, 2_800, false, 40) as u32;
+        let expected = crate::tmc::compute_planner_velocity_offset_scaled(
+            crate::motion_scale::PlannerVelocityScale::from_reduced(84_000_000, 1),
+            2_800,
+            false,
+            40,
+        ) as u32;
         let mut tmc = Tmc4671Spi::new(RuntimeMockSpi::default());
 
         assert_eq!(
@@ -1751,7 +1756,7 @@ fn feedforward_tick_clears_velocity_offset_once_after_deactivation() {
     pollster::block_on(async {
         let mut runtime = TmcControlRuntime::new_for_channel(0);
         runtime.set_motor_enabled_for_test(true);
-        runtime.set_velocity_scale_for_test(84_000_000);
+        runtime.set_planner_velocity_scale_for_test(84_000_000);
         runtime.set_feedforward_was_active(true);
         let tmc_state = crate::state::tmc::TmcChannelState::new();
         let stepper_state = crate::state::stepper::StepperChannelState::new();
@@ -1801,7 +1806,7 @@ fn feedforward_fast_tick_skips_torque_flux_offset_slow_work() {
     pollster::block_on(async {
         let mut runtime = TmcControlRuntime::new_for_channel(0);
         runtime.set_motor_enabled_for_test(true);
-        runtime.set_velocity_scale_for_test(84_000_000);
+        runtime.set_planner_velocity_scale_for_test(84_000_000);
         let tmc_state = crate::state::tmc::TmcChannelState::new();
         let stepper_state = crate::state::stepper::StepperChannelState::new();
         let config = commissioning_runtime_config();
@@ -1841,7 +1846,7 @@ fn command_velocity_reference_zeroes_when_reset_is_requested() {
     let tmc = crate::state::tmc::TmcChannelState::new();
     let stepper = crate::state::stepper::StepperChannelState::new();
     runtime.set_motor_enabled_for_test(true);
-    runtime.set_velocity_scale_for_test(84_000_000);
+    runtime.set_planner_velocity_scale_for_test(84_000_000);
     stepper.interval.store(2_800, Relaxed);
     stepper.direction.store(false, Relaxed);
 
@@ -1857,7 +1862,7 @@ fn command_velocity_reference_can_use_single_consumed_reset_latch() {
     let tmc = crate::state::tmc::TmcChannelState::new();
     let stepper = crate::state::stepper::StepperChannelState::new();
     runtime.set_motor_enabled_for_test(true);
-    runtime.set_velocity_scale_for_test(84_000_000);
+    runtime.set_planner_velocity_scale_for_test(84_000_000);
     tmc.feedforward_reset.store(true, Relaxed);
     stepper.interval.store(2_800, Relaxed);
     stepper.direction.store(false, Relaxed);
@@ -1877,7 +1882,7 @@ fn command_velocity_reference_uses_motion_when_reset_false() {
     let tmc = crate::state::tmc::TmcChannelState::new();
     let stepper = crate::state::stepper::StepperChannelState::new();
     runtime.set_motor_enabled_for_test(true);
-    runtime.set_velocity_scale_for_test(84_000_000);
+    runtime.set_planner_velocity_scale_for_test(84_000_000);
     stepper.interval.store(2_800, Relaxed);
     stepper.direction.store(false, Relaxed);
 
@@ -1886,7 +1891,11 @@ fn command_velocity_reference_uses_motion_when_reset_false() {
 
     assert_eq!(
         reference,
-        crate::tmc::compute_command_velocity_reference(84_000_000, 2_800, false)
+        crate::tmc::compute_planner_command_velocity_reference(
+            crate::motion_scale::PlannerVelocityScale::from_reduced(84_000_000, 1),
+            2_800,
+            false,
+        )
     );
 }
 
@@ -1895,7 +1904,7 @@ fn command_velocity_reference_zeroes_when_runtime_inactive() {
     let mut runtime = TmcControlRuntime::new_for_channel(0);
     let tmc = crate::state::tmc::TmcChannelState::new();
     let stepper = crate::state::stepper::StepperChannelState::new();
-    runtime.set_velocity_scale_for_test(84_000_000);
+    runtime.set_planner_velocity_scale_for_test(84_000_000);
     stepper.interval.store(2_800, Relaxed);
     stepper.direction.store(false, Relaxed);
 
@@ -1906,11 +1915,16 @@ fn command_velocity_reference_zeroes_when_runtime_inactive() {
 }
 
 #[test]
-fn velocity_scale_accessors_round_trip() {
+fn planner_velocity_scale_accessors_round_trip() {
     let mut runtime = TmcControlRuntime::new_for_channel(0);
-    assert_eq!(runtime.velocity_scale(), 0);
-    runtime.set_velocity_scale(123_456);
-    assert_eq!(runtime.velocity_scale(), 123_456);
+    assert_eq!(runtime.planner_velocity_scale(), None);
+    runtime.set_planner_velocity_scale_for_test(123_456);
+    assert_eq!(
+        runtime.planner_velocity_scale(),
+        Some(crate::motion_scale::PlannerVelocityScale::from_reduced(
+            123_456, 1
+        ))
+    );
 }
 
 #[test]
@@ -2018,7 +2032,7 @@ fn phase_advance_tick_snapshots_base_and_writes_adjusted_offset() {
     pollster::block_on(async {
         let mut runtime = TmcControlRuntime::new_for_channel(0);
         runtime.set_motor_enabled_for_test(true);
-        runtime.set_velocity_scale_for_test(84_000_000);
+        runtime.set_planner_velocity_scale_for_test(84_000_000);
         let tmc_state = crate::state::tmc::TmcChannelState::new();
         let stepper_state = crate::state::stepper::StepperChannelState::new();
         tmc_state.phase_advance.store(true, Relaxed);
@@ -2068,7 +2082,7 @@ fn phase_advance_tick_reset_gate_skips_abn_snapshot_and_write() {
     pollster::block_on(async {
         let mut runtime = TmcControlRuntime::new_for_channel(0);
         runtime.set_motor_enabled_for_test(true);
-        runtime.set_velocity_scale_for_test(84_000_000);
+        runtime.set_planner_velocity_scale_for_test(84_000_000);
         let tmc_state = crate::state::tmc::TmcChannelState::new();
         let stepper_state = crate::state::stepper::StepperChannelState::new();
         tmc_state.phase_advance.store(true, Relaxed);
@@ -2098,7 +2112,7 @@ fn phase_advance_tick_reset_gate_skips_abn_snapshot_and_write() {
 fn phase_and_position_tick_disabled_runtime_writes_nothing() {
     pollster::block_on(async {
         let mut runtime = TmcControlRuntime::new_for_channel(0);
-        runtime.set_velocity_scale_for_test(84_000_000);
+        runtime.set_planner_velocity_scale_for_test(84_000_000);
         let tmc_state = crate::state::tmc::TmcChannelState::new();
         let stepper_state = crate::state::stepper::StepperChannelState::new();
         tmc_state.phase_advance.store(true, Relaxed);
@@ -2131,7 +2145,7 @@ fn position_lead_tick_writes_target_and_tracks_applied_scaled() {
     pollster::block_on(async {
         let mut runtime = TmcControlRuntime::new_for_channel(0);
         runtime.set_motor_enabled_for_test(true);
-        runtime.set_velocity_scale_for_test(84_000_000);
+        runtime.set_planner_velocity_scale_for_test(84_000_000);
         let tmc_state = crate::state::tmc::TmcChannelState::new();
         let stepper_state = crate::state::stepper::StepperChannelState::new();
         tmc_state.position_lead.store(true, Relaxed);
@@ -2141,7 +2155,7 @@ fn position_lead_tick_writes_target_and_tracks_applied_scaled() {
         stepper_state.interval.store(2_800, Relaxed);
         stepper_state.direction.store(false, Relaxed);
         let lead_counts =
-            crate::tmc::compute_position_lead_counts(84_000_000, 2_800, false, 1000, 20);
+            crate::tmc::compute_position_lead_counts_from_reference(30_000, false, 1000, 20);
         let (expected_target, expected_applied_scaled) =
             crate::tmc::compute_position_lead_target(1_000, 0, lead_counts, 16);
         let mut tmc = Tmc4671Spi::new(RuntimeMockSpi::default().with_read(1_000));
@@ -2150,7 +2164,7 @@ fn position_lead_tick_writes_target_and_tracks_applied_scaled() {
             .apply_phase_and_position_tick(
                 &mut tmc,
                 TmcControlStateRefs::new(&tmc_state, &stepper_state),
-                0,
+                30_000,
                 false,
                 false,
             )
