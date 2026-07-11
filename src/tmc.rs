@@ -49,21 +49,6 @@ pub struct PlannerVelocityTransientFeedforwardInput {
     pub dir_high: bool,
 }
 
-/// Legacy STEP_WIDTH-derived transient feedforward inputs.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
-pub struct VelocityTransientFeedforwardInput {
-    /// Precomputed velocity scale factor.
-    pub scale_factor: u32,
-    /// Step-timer clock frequency in Hz.
-    pub clock_freq: u32,
-    /// Current step interval in timer ticks.
-    pub step_interval: u32,
-    /// Klipper interval delta in timer ticks per step.
-    pub interval_add: i16,
-    /// True when the TMC4671 DIR input is high.
-    pub dir_high: bool,
-}
-
 /// Runtime configuration for velocity-surface transient feedforward.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub struct VelocityTransientFeedforwardConfig {
@@ -820,42 +805,6 @@ pub fn auto_calibrate_on_enable_allowed(channel: u8) -> bool {
 ///
 /// With a positive STEP_WIDTH, the TMC4671 STEP/DIR input reports a
 /// negative velocity for DIR high and a positive velocity for DIR low.
-pub fn compute_velocity_scale_factor(step_width: u32, clock_freq: u32, f_pwm: u32) -> u32 {
-    if step_width == 0 || f_pwm == 0 {
-        return 0;
-    }
-    ((u64::from(step_width) * u64::from(clock_freq)) / u64::from(f_pwm)) as u32
-}
-
-/// Compute a legacy STEP_WIDTH-derived velocity offset.
-pub fn compute_velocity_offset(scale_factor: u32, step_interval: u32, dir_high: bool) -> i32 {
-    compute_velocity_offset_scaled(scale_factor, step_interval, dir_high, 1)
-}
-
-/// Compute a legacy STEP_WIDTH-derived command velocity reference.
-pub fn compute_command_velocity_reference(
-    scale_factor: u32,
-    step_interval: u32,
-    dir_high: bool,
-) -> i32 {
-    compute_velocity_offset_scaled(scale_factor, step_interval, dir_high, 1)
-}
-
-/// Compute a legacy STEP_WIDTH-derived velocity offset with a multiplier.
-pub fn compute_velocity_offset_scaled(
-    scale_factor: u32,
-    step_interval: u32,
-    dir_high: bool,
-    multiplier: u16,
-) -> i32 {
-    if step_interval == 0 || scale_factor == 0 {
-        return 0;
-    }
-    let magnitude = (scale_factor / step_interval) as u64 * u64::from(multiplier);
-    let magnitude = magnitude.min(i32::MAX as u64) as i32;
-    if dir_high { -magnitude } else { magnitude }
-}
-
 /// Compute an exact planner velocity offset.
 pub fn compute_planner_velocity_offset(
     scale: crate::motion_scale::PlannerVelocityScale,
@@ -954,11 +903,7 @@ fn ceil_half_product_leq(left: u64, right: u64, limit: u64) -> bool {
         .is_some_and(|half_product| half_product <= limit)
 }
 
-fn round_ratio_to_cap(
-    numerators: &mut [u64],
-    denominators: &mut [u64],
-    cap: u64,
-) -> u64 {
+fn round_ratio_to_cap(numerators: &mut [u64], denominators: &mut [u64], cap: u64) -> u64 {
     for numerator in numerators.iter_mut() {
         for denominator in denominators.iter_mut() {
             let divisor = crate::motion_scale::greatest_common_divisor(*numerator, *denominator);
@@ -1015,8 +960,7 @@ pub fn compute_position_lead_counts_from_reference(
         return 0;
     }
 
-    let magnitude = (command_velocity_reference.unsigned_abs() as u64 * gain_permille as u64
-        / 1000)
+    let magnitude = (command_velocity_reference.unsigned_abs() as u64 * gain_permille as u64 / 1000)
         .min(max_counts as u64)
         .min(i16::MAX as u64) as i16;
     if magnitude == 0 {
@@ -1024,18 +968,6 @@ pub fn compute_position_lead_counts_from_reference(
     }
 
     if dir_high { magnitude } else { -magnitude }
-}
-
-/// Compute legacy position lead from a STEP_WIDTH-derived velocity scale.
-pub fn compute_position_lead_counts(
-    scale_factor: u32,
-    step_interval: u32,
-    dir_high: bool,
-    gain_permille: u16,
-    max_counts: u16,
-) -> i16 {
-    let velocity = compute_command_velocity_reference(scale_factor, step_interval, dir_high);
-    compute_position_lead_counts_from_reference(velocity, dir_high, gain_permille, max_counts)
 }
 
 /// Compute a relative `PID_POSITION_TARGET` with diagnostic lead applied.
@@ -1068,41 +1000,6 @@ pub fn compute_position_lead_target(
 /// same sign convention as `PID_VELOCITY_OFFSET`. It is intended to be added to
 /// the existing velocity feedforward offset and written as one combined
 /// register value.
-pub fn compute_velocity_transient_offset(
-    input: VelocityTransientFeedforwardInput,
-    config: VelocityTransientFeedforwardConfig,
-) -> i32 {
-    if input.scale_factor == 0
-        || input.clock_freq == 0
-        || input.step_interval == 0
-        || input.interval_add == 0
-        || config.lead_time_us == 0
-        || config.gain_permille == 0
-        || config.max_offset == 0
-    {
-        return 0;
-    }
-    let interval = u128::from(input.step_interval);
-    let denominator = interval
-        .saturating_mul(interval)
-        .saturating_mul(interval)
-        .saturating_mul(1_000_000)
-        .saturating_mul(1_000);
-    let numerator = u128::from(input.interval_add.unsigned_abs())
-        * u128::from(input.scale_factor)
-        * u128::from(input.clock_freq)
-        * u128::from(config.lead_time_us)
-        * u128::from(config.gain_permille);
-    let magnitude = (numerator / denominator).min(u128::from(config.max_offset)) as i32;
-    let accel_sign = if input.interval_add < 0 { 1 } else { -1 };
-    let direction_sign = if input.dir_high { -1 } else { 1 };
-    if accel_sign * direction_sign < 0 {
-        -magnitude
-    } else {
-        magnitude
-    }
-}
-
 /// Compute an exact planner-scale transient velocity offset.
 pub fn compute_planner_velocity_transient_offset(
     input: PlannerVelocityTransientFeedforwardInput,
@@ -1277,72 +1174,6 @@ pub fn compute_decoupling_current_offsets(
 /// acceleration estimate, `500` applies half, and `0` disables the offset.
 /// The result is clamped to `torque_limit` and is intended for the torque field
 /// of `PID_TORQUE_FLUX_OFFSET`.
-pub fn compute_accel_torque_offset(
-    scale_factor: u32,
-    clock_freq: u32,
-    step_interval: u32,
-    interval_add: i16,
-    dir_high: bool,
-    gain_permille: u16,
-    torque_limit: u32,
-) -> i16 {
-    if scale_factor == 0
-        || clock_freq == 0
-        || step_interval == 0
-        || interval_add == 0
-        || gain_permille == 0
-        || torque_limit == 0
-    {
-        return 0;
-    }
-    let interval = u128::from(step_interval);
-    let denominator = interval
-        .saturating_mul(interval)
-        .saturating_mul(interval)
-        .saturating_mul(1_000);
-    let numerator = u128::from(interval_add.unsigned_abs())
-        * u128::from(scale_factor)
-        * u128::from(clock_freq)
-        * u128::from(gain_permille);
-    let magnitude = (numerator / denominator)
-        .min(u128::from(torque_limit.min(i16::MAX as u32))) as i16;
-    let accel_sign = if interval_add < 0 { 1 } else { -1 };
-    let direction_sign = if dir_high { -1 } else { 1 };
-    if accel_sign * direction_sign < 0 {
-        -magnitude
-    } else {
-        magnitude
-    }
-}
-
-/// Compute legacy acceleration feedforward with split gains.
-pub fn compute_accel_torque_offset_split(
-    scale_factor: u32,
-    clock_freq: u32,
-    step_interval: u32,
-    interval_add: i16,
-    dir_high: bool,
-    gains: AccelFeedforwardGains,
-    torque_limit: u32,
-) -> i16 {
-    let gain = if interval_add < 0 {
-        gains.accel_permille
-    } else if interval_add > 0 {
-        gains.decel_permille
-    } else {
-        0
-    };
-    compute_accel_torque_offset(
-        scale_factor,
-        clock_freq,
-        step_interval,
-        interval_add,
-        dir_high,
-        gain,
-        torque_limit,
-    )
-}
-
 /// Compute exact planner-scale acceleration feedforward.
 pub fn compute_planner_accel_torque_offset(
     scale: crate::motion_scale::PlannerVelocityScale,
@@ -1369,13 +1200,7 @@ pub fn compute_planner_accel_torque_offset(
         u64::from(clock_freq),
         u64::from(gain_permille),
     ];
-    let mut denominators = [
-        scale.denominator(),
-        interval,
-        interval,
-        interval,
-        1_000,
-    ];
+    let mut denominators = [scale.denominator(), interval, interval, interval, 1_000];
     let current_limit = u64::from(torque_limit.min(i16::MAX as u32));
     let magnitude = round_ratio_to_cap(&mut numerators, &mut denominators, current_limit) as i16;
     if magnitude == 0 {
@@ -1852,35 +1677,44 @@ mod tests {
     }
 
     #[test]
-    fn velocity_scale_factor_typical() {
-        let scale = compute_velocity_scale_factor(81, 84_000_000, 25_000);
-        assert_eq!(scale, 272_160);
-    }
-
-    #[test]
     fn rational_planner_velocity_helpers_round_and_apply_tmc_sign() {
         let scale = crate::motion_scale::MotionScale::new(1_000, 3_200)
             .unwrap()
             .planner_velocity_scale(84_000_000, 25_000)
             .unwrap();
 
-        assert_eq!(compute_planner_velocity_reference(scale, 2_800, false), 25);
-        assert_eq!(compute_planner_velocity_reference(scale, 2_800, true), -25);
+        assert_eq!(
+            compute_planner_command_velocity_reference(scale, 2_800, false),
+            25
+        );
+        assert_eq!(
+            compute_planner_command_velocity_reference(scale, 2_800, true),
+            -25
+        );
     }
 
     #[test]
     fn rational_planner_velocity_rounds_ties_away_from_zero() {
         let scale = crate::motion_scale::PlannerVelocityScale::from_reduced(1, 2);
 
-        assert_eq!(compute_planner_velocity_reference(scale, 1, false), 1);
-        assert_eq!(compute_planner_velocity_reference(scale, 1, true), -1);
+        assert_eq!(
+            compute_planner_command_velocity_reference(scale, 1, false),
+            1
+        );
+        assert_eq!(
+            compute_planner_command_velocity_reference(scale, 1, true),
+            -1
+        );
     }
 
     #[test]
     fn rational_planner_velocity_overflow_is_mathematical_zero() {
         let scale = crate::motion_scale::PlannerVelocityScale::from_reduced(1, u64::MAX);
 
-        assert_eq!(compute_planner_velocity_reference(scale, 2, false), 0);
+        assert_eq!(
+            compute_planner_command_velocity_reference(scale, 2, false),
+            0
+        );
     }
 
     #[test]
@@ -1914,88 +1748,153 @@ mod tests {
         );
     }
 
-    #[test]
-    fn velocity_scale_factor_zero_step_width() {
-        let scale = compute_velocity_scale_factor(0, 84_000_000, 25_000);
-        assert_eq!(scale, 0);
+    fn planner_scale(encoder_ppr: u32) -> crate::motion_scale::PlannerVelocityScale {
+        crate::motion_scale::MotionScale::new(encoder_ppr, 32_768)
+            .unwrap()
+            .planner_velocity_scale(1, 1)
+            .unwrap()
     }
 
     #[test]
-    fn velocity_scale_factor_large_step_width() {
-        let scale = compute_velocity_scale_factor(4096, 84_000_000, 25_000);
-        assert_eq!(scale, 13_762_560);
+    fn command_velocity_uses_exact_planner_scale_independent_of_encoder_ppr() {
+        let low_ppr = compute_planner_command_velocity_reference(planner_scale(500), 3, false);
+        let high_ppr = compute_planner_command_velocity_reference(planner_scale(4_000), 3, false);
+
+        assert_eq!(low_ppr, 1);
+        assert_eq!(high_ppr, low_ppr);
+    }
+
+    #[test]
+    fn velocity_feedforward_uses_exact_planner_scale_independent_of_encoder_ppr() {
+        let low_ppr = compute_planner_velocity_offset_scaled(planner_scale(500), 3, true, 2);
+        let high_ppr = compute_planner_velocity_offset_scaled(planner_scale(4_000), 3, true, 2);
+
+        assert_eq!(low_ppr, -1);
+        assert_eq!(high_ppr, low_ppr);
+    }
+
+    #[test]
+    fn transient_feedforward_uses_exact_planner_scale_independent_of_encoder_ppr() {
+        let offset = |scale| {
+            compute_planner_velocity_transient_offset(
+                PlannerVelocityTransientFeedforwardInput {
+                    scale,
+                    clock_freq: 4,
+                    step_interval: 1,
+                    interval_add: -1,
+                    dir_high: false,
+                },
+                VelocityTransientFeedforwardConfig {
+                    lead_time_us: 62_500,
+                    gain_permille: 1_000,
+                    max_offset: 10,
+                },
+            )
+        };
+
+        assert_eq!(offset(planner_scale(500)), 1);
+        assert_eq!(offset(planner_scale(4_000)), 1);
+    }
+
+    #[test]
+    fn acceleration_feedforward_uses_exact_planner_scale_independent_of_encoder_ppr() {
+        let offset = |scale| compute_planner_accel_torque_offset(scale, 1, 1, -1, false, 250, 10);
+
+        assert_eq!(offset(planner_scale(500)), 1);
+        assert_eq!(offset(planner_scale(4_000)), 1);
+    }
+
+    #[test]
+    fn decoupling_uses_planner_command_rate_independent_of_encoder_ppr() {
+        let offsets = |scale| {
+            compute_decoupling_current_offsets(
+                decoupling_input(
+                    compute_planner_command_velocity_reference(scale, 1, false),
+                    400,
+                    800,
+                ),
+                decoupling_config(5_000),
+            )
+        };
+
+        assert_eq!(offsets(planner_scale(500)), (261, -130));
+        assert_eq!(offsets(planner_scale(4_000)), (261, -130));
+    }
+
+    #[test]
+    fn phase_advance_uses_planner_command_rate_independent_of_encoder_ppr() {
+        let counts = |scale| {
+            compute_phase_advance_counts(
+                compute_planner_command_velocity_reference(scale, 1, false),
+                PhaseAdvanceConfig {
+                    enable: true,
+                    gain_ppm: 500_000,
+                    max_counts: 10,
+                    deadband_velocity: 0,
+                },
+            )
+            .counts
+        };
+
+        assert_eq!(counts(planner_scale(500)), 1);
+        assert_eq!(counts(planner_scale(4_000)), 1);
     }
 
     #[test]
     fn velocity_offset_dir_high_matches_tmc_negative_velocity() {
-        let scale = compute_velocity_scale_factor(81, 84_000_000, 25_000);
-        let offset = compute_velocity_offset(scale, 420, true);
+        let scale = crate::motion_scale::PlannerVelocityScale::from_reduced(272_160, 1);
+        let offset = compute_planner_velocity_offset(scale, 420, true);
         assert_eq!(offset, -648);
     }
 
     #[test]
     fn velocity_offset_dir_low_matches_tmc_positive_velocity() {
-        let scale = compute_velocity_scale_factor(81, 84_000_000, 25_000);
-        let offset = compute_velocity_offset(scale, 420, false);
+        let scale = crate::motion_scale::PlannerVelocityScale::from_reduced(272_160, 1);
+        let offset = compute_planner_velocity_offset(scale, 420, false);
         assert_eq!(offset, 648);
     }
 
     #[test]
     fn velocity_offset_zero_interval() {
-        let scale = compute_velocity_scale_factor(81, 84_000_000, 25_000);
-        let offset = compute_velocity_offset(scale, 0, true);
-        assert_eq!(offset, 0);
-    }
-
-    #[test]
-    fn velocity_offset_zero_scale() {
-        let offset = compute_velocity_offset(0, 420, true);
+        let scale = crate::motion_scale::PlannerVelocityScale::from_reduced(272_160, 1);
+        let offset = compute_planner_velocity_offset(scale, 0, true);
         assert_eq!(offset, 0);
     }
 
     #[test]
     fn velocity_offset_high_speed() {
-        let scale = compute_velocity_scale_factor(81, 84_000_000, 25_000);
-        let offset = compute_velocity_offset(scale, 84, true);
+        let scale = crate::motion_scale::PlannerVelocityScale::from_reduced(272_160, 1);
+        let offset = compute_planner_velocity_offset(scale, 84, true);
         assert_eq!(offset, -3240);
     }
 
     #[test]
     fn velocity_offset_low_speed() {
-        let scale = compute_velocity_scale_factor(81, 84_000_000, 25_000);
-        let offset = compute_velocity_offset(scale, 84_000, true);
+        let scale = crate::motion_scale::PlannerVelocityScale::from_reduced(272_160, 1);
+        let offset = compute_planner_velocity_offset(scale, 84_000, true);
         assert_eq!(offset, -3);
     }
 
     #[test]
     fn velocity_offset_applies_multiplier() {
-        let scale = compute_velocity_scale_factor(81, 84_000_000, 25_000);
-        let offset = compute_velocity_offset_scaled(scale, 84_000, false, 8);
-        assert_eq!(offset, 24);
+        let scale = crate::motion_scale::PlannerVelocityScale::from_reduced(272_160, 1);
+        let offset = compute_planner_velocity_offset_scaled(scale, 84_000, false, 8);
+        assert_eq!(offset, 26);
     }
 
     #[test]
     fn velocity_offset_multiplier_zero_disables_offset() {
-        let scale = compute_velocity_scale_factor(81, 84_000_000, 25_000);
-        let offset = compute_velocity_offset_scaled(scale, 84_000, false, 0);
+        let scale = crate::motion_scale::PlannerVelocityScale::from_reduced(272_160, 1);
+        let offset = compute_planner_velocity_offset_scaled(scale, 84_000, false, 0);
         assert_eq!(offset, 0);
     }
 
     #[test]
-    fn velocity_offset_multiplier_saturates_to_i32_range() {
-        let offset = compute_velocity_offset_scaled(u32::MAX, 1, false, u16::MAX);
-        assert_eq!(offset, i32::MAX);
-
-        let offset = compute_velocity_offset_scaled(u32::MAX, 1, true, u16::MAX);
-        assert_eq!(offset, i32::MIN + 1);
-    }
-
-    #[test]
     fn command_velocity_reference_uses_step_direction_sign() {
-        let scale = compute_velocity_scale_factor(16, 84_000_000, 25_000);
+        let scale = crate::motion_scale::PlannerVelocityScale::from_reduced(53_760, 1);
 
-        let forward = compute_command_velocity_reference(scale, 2800, false);
-        let reversed = compute_command_velocity_reference(scale, 2800, true);
+        let forward = compute_planner_command_velocity_reference(scale, 2800, false);
+        let reversed = compute_planner_command_velocity_reference(scale, 2800, true);
 
         assert_eq!(forward, 19);
         assert_eq!(reversed, -19);
@@ -2003,35 +1902,43 @@ mod tests {
 
     #[test]
     fn command_velocity_reference_zero_cases_disable_reference() {
-        assert_eq!(compute_command_velocity_reference(0, 2800, false), 0);
-        assert_eq!(compute_command_velocity_reference(19, 0, false), 0);
+        let scale = crate::motion_scale::PlannerVelocityScale::from_reduced(19, 1);
+        assert_eq!(
+            compute_planner_command_velocity_reference(scale, 0, false),
+            0
+        );
     }
 
     #[test]
     fn command_velocity_reference_is_unmultiplied_velocity_offset() {
-        let scale = compute_velocity_scale_factor(16, 84_000_000, 25_000);
-        let reference = compute_command_velocity_reference(scale, 2800, false);
-        let offset = compute_velocity_offset_scaled(scale, 2800, false, 40);
+        let scale = crate::motion_scale::PlannerVelocityScale::from_reduced(53_760, 1);
+        let reference = compute_planner_command_velocity_reference(scale, 2800, false);
+        let offset = compute_planner_velocity_offset_scaled(scale, 2800, false, 40);
 
-        assert_eq!(offset, reference * 40);
+        assert_eq!(reference, 19);
+        assert_eq!(offset, 768);
     }
 
     #[test]
     fn position_lead_zero_cases_disable_lead() {
-        let scale = compute_velocity_scale_factor(16, 84_000_000, 25_000);
-
-        assert_eq!(compute_position_lead_counts(0, 2800, true, 10, 20), 0);
-        assert_eq!(compute_position_lead_counts(scale, 0, true, 10, 20), 0);
-        assert_eq!(compute_position_lead_counts(scale, 2800, true, 0, 20), 0);
-        assert_eq!(compute_position_lead_counts(scale, 2800, true, 10, 0), 0);
+        assert_eq!(
+            compute_position_lead_counts_from_reference(0, true, 10, 20),
+            0
+        );
+        assert_eq!(
+            compute_position_lead_counts_from_reference(19, true, 0, 20),
+            0
+        );
+        assert_eq!(
+            compute_position_lead_counts_from_reference(19, true, 10, 0),
+            0
+        );
     }
 
     #[test]
     fn position_lead_uses_logical_step_direction() {
-        let scale = compute_velocity_scale_factor(16, 84_000_000, 25_000);
-
-        let dir_high = compute_position_lead_counts(scale, 2800, true, 1000, 20);
-        let dir_low = compute_position_lead_counts(scale, 2800, false, 1000, 20);
+        let dir_high = compute_position_lead_counts_from_reference(-19, true, 1000, 20);
+        let dir_low = compute_position_lead_counts_from_reference(19, false, 1000, 20);
 
         assert_eq!(dir_high, 19);
         assert_eq!(dir_low, -19);
@@ -2039,14 +1946,12 @@ mod tests {
 
     #[test]
     fn position_lead_caps_magnitude() {
-        let scale = compute_velocity_scale_factor(16, 84_000_000, 25_000);
-
         assert_eq!(
-            compute_position_lead_counts(scale, 2800, true, 4000, 20),
+            compute_position_lead_counts_from_reference(-19, true, 4000, 20),
             20
         );
         assert_eq!(
-            compute_position_lead_counts(scale, 2800, false, 4000, 20),
+            compute_position_lead_counts_from_reference(19, false, 4000, 20),
             -20
         );
     }
@@ -2098,35 +2003,35 @@ mod tests {
             max_offset: 1_000,
         };
         assert_eq!(
-            compute_velocity_transient_offset(
+            compute_planner_velocity_transient_offset(
                 velocity_transient_input(0, 1_000, 1_000, -10, false),
                 config,
             ),
             0
         );
         assert_eq!(
-            compute_velocity_transient_offset(
+            compute_planner_velocity_transient_offset(
                 velocity_transient_input(1_000, 0, 1_000, -10, false),
                 config,
             ),
             0
         );
         assert_eq!(
-            compute_velocity_transient_offset(
+            compute_planner_velocity_transient_offset(
                 velocity_transient_input(1_000, 1_000, 0, -10, false),
                 config,
             ),
             0
         );
         assert_eq!(
-            compute_velocity_transient_offset(
+            compute_planner_velocity_transient_offset(
                 velocity_transient_input(1_000, 1_000, 1_000, 0, false),
                 config,
             ),
             0
         );
         assert_eq!(
-            compute_velocity_transient_offset(
+            compute_planner_velocity_transient_offset(
                 velocity_transient_input(1_000, 1_000, 1_000, -10, false),
                 VelocityTransientFeedforwardConfig {
                     lead_time_us: 0,
@@ -2137,7 +2042,7 @@ mod tests {
             0
         );
         assert_eq!(
-            compute_velocity_transient_offset(
+            compute_planner_velocity_transient_offset(
                 velocity_transient_input(1_000, 1_000, 1_000, -10, false),
                 VelocityTransientFeedforwardConfig {
                     lead_time_us: 1_000,
@@ -2148,7 +2053,7 @@ mod tests {
             0
         );
         assert_eq!(
-            compute_velocity_transient_offset(
+            compute_planner_velocity_transient_offset(
                 velocity_transient_input(1_000, 1_000, 1_000, -10, false),
                 VelocityTransientFeedforwardConfig {
                     lead_time_us: 1_000,
@@ -2168,28 +2073,28 @@ mod tests {
             max_offset: 10_000,
         };
         assert_eq!(
-            compute_velocity_transient_offset(
+            compute_planner_velocity_transient_offset(
                 velocity_transient_input(1_000_000, 1_000_000, 1_000, -1_000, false),
                 config,
             ),
             1_000
         );
         assert_eq!(
-            compute_velocity_transient_offset(
+            compute_planner_velocity_transient_offset(
                 velocity_transient_input(1_000_000, 1_000_000, 1_000, 1_000, false),
                 config,
             ),
             -1_000
         );
         assert_eq!(
-            compute_velocity_transient_offset(
+            compute_planner_velocity_transient_offset(
                 velocity_transient_input(1_000_000, 1_000_000, 1_000, -1_000, true),
                 config,
             ),
             -1_000
         );
         assert_eq!(
-            compute_velocity_transient_offset(
+            compute_planner_velocity_transient_offset(
                 velocity_transient_input(1_000_000, 1_000_000, 1_000, 1_000, true),
                 config,
             ),
@@ -2200,7 +2105,7 @@ mod tests {
     #[test]
     fn velocity_transient_applies_gain_and_clamp() {
         assert_eq!(
-            compute_velocity_transient_offset(
+            compute_planner_velocity_transient_offset(
                 velocity_transient_input(1_000_000, 1_000_000, 1_000, -1_000, false),
                 VelocityTransientFeedforwardConfig {
                     lead_time_us: 1_000,
@@ -2211,7 +2116,7 @@ mod tests {
             500
         );
         assert_eq!(
-            compute_velocity_transient_offset(
+            compute_planner_velocity_transient_offset(
                 velocity_transient_input(1_000_000, 1_000_000, 1_000, -1_000, false),
                 VelocityTransientFeedforwardConfig {
                     lead_time_us: 1_000,
@@ -2224,14 +2129,17 @@ mod tests {
     }
 
     fn velocity_transient_input(
-        scale_factor: u32,
+        scale_numerator: u32,
         clock_freq: u32,
         step_interval: u32,
         interval_add: i16,
         dir_high: bool,
-    ) -> VelocityTransientFeedforwardInput {
-        VelocityTransientFeedforwardInput {
-            scale_factor,
+    ) -> PlannerVelocityTransientFeedforwardInput {
+        PlannerVelocityTransientFeedforwardInput {
+            scale: crate::motion_scale::PlannerVelocityScale::from_reduced(
+                u64::from(scale_numerator),
+                1,
+            ),
             clock_freq,
             step_interval,
             interval_add,
@@ -2451,44 +2359,47 @@ mod tests {
 
     #[test]
     fn acceleration_feedforward_zero_cases_disable_offset() {
-        let scale = compute_velocity_scale_factor(16, 84_000_000, 25_000);
+        let scale = crate::motion_scale::PlannerVelocityScale::from_reduced(53_760, 1);
         assert_eq!(
-            compute_accel_torque_offset(scale, 84_000_000, 2800, 0, false, 1000, 2816),
+            compute_planner_accel_torque_offset(scale, 84_000_000, 2800, 0, false, 1000, 2816),
             0
         );
         assert_eq!(
-            compute_accel_torque_offset(scale, 84_000_000, 0, -9, false, 1000, 2816),
+            compute_planner_accel_torque_offset(scale, 84_000_000, 0, -9, false, 1000, 2816),
             0
         );
         assert_eq!(
-            compute_accel_torque_offset(scale, 84_000_000, 2800, -9, false, 0, 2816),
+            compute_planner_accel_torque_offset(scale, 84_000_000, 2800, -9, false, 0, 2816),
             0
         );
     }
 
     #[test]
     fn acceleration_feedforward_uses_add_direction_and_gain() {
-        let scale = compute_velocity_scale_factor(16, 84_000_000, 25_000);
+        let scale = crate::motion_scale::PlannerVelocityScale::from_reduced(53_760, 1);
 
-        let forward = compute_accel_torque_offset(scale, 84_000_000, 2800, -9, false, 1000, 2816);
+        let forward =
+            compute_planner_accel_torque_offset(scale, 84_000_000, 2800, -9, false, 1000, 2816);
         assert_eq!(forward, 1851);
 
-        let half = compute_accel_torque_offset(scale, 84_000_000, 2800, -9, false, 500, 2816);
-        assert_eq!(half, 925);
+        let half =
+            compute_planner_accel_torque_offset(scale, 84_000_000, 2800, -9, false, 500, 2816);
+        assert_eq!(half, 926);
 
         let reversed_dir =
-            compute_accel_torque_offset(scale, 84_000_000, 2800, -9, true, 1000, 2816);
+            compute_planner_accel_torque_offset(scale, 84_000_000, 2800, -9, true, 1000, 2816);
         assert_eq!(reversed_dir, -1851);
 
-        let decel = compute_accel_torque_offset(scale, 84_000_000, 2800, 9, false, 1000, 2816);
+        let decel =
+            compute_planner_accel_torque_offset(scale, 84_000_000, 2800, 9, false, 1000, 2816);
         assert_eq!(decel, -1851);
     }
 
     #[test]
     fn acceleration_feedforward_split_uses_accel_gain_for_shrinking_interval() {
-        let scale = compute_velocity_scale_factor(16, 84_000_000, 25_000);
+        let scale = crate::motion_scale::PlannerVelocityScale::from_reduced(53_760, 1);
         assert_eq!(
-            compute_accel_torque_offset_split(
+            compute_planner_accel_torque_offset_split(
                 scale,
                 84_000_000,
                 2800,
@@ -2500,10 +2411,10 @@ mod tests {
                 },
                 2816
             ),
-            compute_accel_torque_offset(scale, 84_000_000, 2800, -9, false, 1000, 2816)
+            compute_planner_accel_torque_offset(scale, 84_000_000, 2800, -9, false, 1000, 2816)
         );
         assert_eq!(
-            compute_accel_torque_offset_split(
+            compute_planner_accel_torque_offset_split(
                 scale,
                 84_000_000,
                 2800,
@@ -2521,9 +2432,9 @@ mod tests {
 
     #[test]
     fn acceleration_feedforward_split_uses_decel_gain_for_growing_interval() {
-        let scale = compute_velocity_scale_factor(16, 84_000_000, 25_000);
+        let scale = crate::motion_scale::PlannerVelocityScale::from_reduced(53_760, 1);
         assert_eq!(
-            compute_accel_torque_offset_split(
+            compute_planner_accel_torque_offset_split(
                 scale,
                 84_000_000,
                 2800,
@@ -2535,10 +2446,10 @@ mod tests {
                 },
                 2816
             ),
-            compute_accel_torque_offset(scale, 84_000_000, 2800, 9, false, 500, 2816)
+            compute_planner_accel_torque_offset(scale, 84_000_000, 2800, 9, false, 500, 2816)
         );
         assert_eq!(
-            compute_accel_torque_offset_split(
+            compute_planner_accel_torque_offset_split(
                 scale,
                 84_000_000,
                 2800,
@@ -2556,8 +2467,9 @@ mod tests {
 
     #[test]
     fn acceleration_feedforward_clamps_to_current_limit() {
-        let scale = compute_velocity_scale_factor(16, 84_000_000, 25_000);
-        let offset = compute_accel_torque_offset(scale, 84_000_000, 2800, -90, false, 1000, 1200);
+        let scale = crate::motion_scale::PlannerVelocityScale::from_reduced(53_760, 1);
+        let offset =
+            compute_planner_accel_torque_offset(scale, 84_000_000, 2800, -90, false, 1000, 1200);
         assert_eq!(offset, 1200);
     }
 }
