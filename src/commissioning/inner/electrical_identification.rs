@@ -1127,6 +1127,14 @@ pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
         // Resistance identification (shared multi-point runner)
         // ---------------------------------------------------------------
         ElectricalIdState::ResistanceIdentify => {
+            data.encoder_domain =
+                match EncoderDomain::new(backend.mechanical_encoder_quadrature_counts_per_rev()) {
+                    Ok(domain) => Some(domain),
+                    Err(EncoderMathError::InvalidCountsPerRev) => {
+                        return super::fail_inner(phase, CommissionError::EncoderFault);
+                    }
+                    Err(EncoderMathError::AmbiguousHalfTurn) => unreachable!(),
+                };
             // The shared runner owns the full count-space sweep and the
             // managed-enable exception (it asserts/clears the enable pin and
             // restores safe state on every exit path). On success, store the
@@ -1155,14 +1163,9 @@ pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
         // Inductance measurement (phi-locked rotating field)
         // ---------------------------------------------------------------
         ElectricalIdState::InductanceSetup => {
-            data.encoder_domain =
-                match EncoderDomain::new(backend.mechanical_encoder_quadrature_counts_per_rev()) {
-                    Ok(domain) => Some(domain),
-                    Err(EncoderMathError::InvalidCountsPerRev) => {
-                        return super::fail_inner(phase, CommissionError::EncoderFault);
-                    }
-                    Err(EncoderMathError::AmbiguousHalfTurn) => unreachable!(),
-                };
+            if data.encoder_domain.is_none() {
+                return super::fail_inner(phase, CommissionError::EncoderFault);
+            }
             let pidout_limit = data.voltage.min(INDUCTANCE_AC_UD_EXT as u32);
             if backend
                 .write_register(PIDOUT_UQ_UD_LIMITS, pidout_limit)
@@ -1970,9 +1973,11 @@ mod tests {
     #[test]
     fn inductance_setup_bounds_voltage_before_enable_and_starts_hardware_ramp() {
         pollster::block_on(async {
+            let mut data = ElectricalIdData::new(1024);
+            data.encoder_domain = Some(EncoderDomain::new(4000).unwrap());
             let mut phase = InnerPhase::ElectricalId {
                 state: ElectricalIdState::InductanceSetup,
-                data: ElectricalIdData::new(1024),
+                data,
             };
             let mut buf = TransientBuffer::new();
             let mut backend = MockBackend::new();
@@ -2576,7 +2581,7 @@ mod tests {
     }
 
     #[test]
-    fn inductance_setup_rejects_invalid_domain_before_excitation() {
+    fn inductance_setup_rejects_missing_validated_domain_before_excitation() {
         pollster::block_on(async {
             let mut phase = InnerPhase::ElectricalId {
                 state: ElectricalIdState::InductanceSetup,
@@ -2604,6 +2609,45 @@ mod tests {
             ));
             assert!(!backend.enable_pin);
             assert!(backend.spi_log.is_empty());
+        });
+    }
+
+    #[test]
+    fn electrical_id_rejects_invalid_domain_before_resistance_identification() {
+        pollster::block_on(async {
+            let mut phase = InnerPhase::ElectricalId {
+                state: ElectricalIdState::ResistanceIdentify,
+                data: ElectricalIdData::new(1024),
+            };
+            let mut buf = TransientBuffer::new();
+            let mut backend = MockBackend::new();
+            backend.mechanical_encoder_quadrature_counts_per_rev_value = 0;
+            let mut selftest_results = crate::selftest::SelftestResults::default();
+            let mut diagnostics = crate::selftest::CommissionDiagnostics::default();
+
+            let result = step_electrical_identification(
+                &mut phase,
+                &mut buf,
+                InnerSequence::Commission,
+                &mut selftest_results,
+                &mut diagnostics,
+                &mut backend,
+            )
+            .await;
+
+            assert!(matches!(
+                result,
+                StepResult::InnerFailed(CommissionError::EncoderFault)
+            ));
+            assert!(matches!(
+                phase,
+                InnerPhase::Failed(CommissionError::EncoderFault)
+            ));
+            assert!(!backend.enable_pin);
+            assert!(
+                backend.spi_log.is_empty(),
+                "invalid encoder configuration must not start resistance excitation"
+            );
         });
     }
 
