@@ -11,8 +11,8 @@ use super::super::{
 };
 use super::response_ramp;
 use crate::autotune::{
-    CommissionError, CommissionProfile, OperatingMode, PhaseId, TransientBuffer, ValidationResult,
-    VelocityValidation,
+    CommissionError, CommissionProfile, OperatingMode, Permille, PhaseId, TransientBuffer,
+    ValidationResult, VelocityValidation,
 };
 use crate::commissioning::outer::{fail_outer, response};
 use crate::commissioning::types::{CommissioningBackend, StepResult};
@@ -388,7 +388,7 @@ pub(crate) async fn step_velocity_validate_with_trace<B: CommissioningBackend>(
                     data.step_target,
                     peak,
                     metrics.rise_time_ms,
-                    metrics.overshoot_pct,
+                    metrics.overshoot_permille.raw(),
                     metrics.settling_time_ms,
                     data.saturation_count,
                     &samples_slice[..head_len],
@@ -507,7 +507,7 @@ pub(crate) async fn step_velocity_validate_with_trace<B: CommissioningBackend>(
                     data.step_target,
                     peak,
                     metrics.rise_time_ms,
-                    metrics.overshoot_pct,
+                    metrics.overshoot_permille.raw(),
                     metrics.settling_time_ms,
                     data.saturation_count,
                     &samples_slice[..head_len],
@@ -585,34 +585,34 @@ pub(crate) async fn step_velocity_validate_with_trace<B: CommissioningBackend>(
         VelocityValidateState::Classify => {
             let fwd = data.forward_metrics.unwrap_or(VelocityValidation {
                 rise_time_ms: 0,
-                overshoot_pct: 0,
+                overshoot_permille: Permille::ZERO,
                 peak_velocity: 0,
                 settling_time_ms: 0,
                 zero_speed_chatter: false,
                 saturation_samples: 0,
-                symmetry_pct: 0,
+                symmetry_permille: Permille::ZERO,
             });
             let rev = data.reverse_metrics.unwrap_or(VelocityValidation {
                 rise_time_ms: 0,
-                overshoot_pct: 0,
+                overshoot_permille: Permille::ZERO,
                 peak_velocity: 0,
                 settling_time_ms: 0,
                 zero_speed_chatter: false,
                 saturation_samples: 0,
-                symmetry_pct: 0,
+                symmetry_permille: Permille::ZERO,
             });
 
-            let symmetry =
-                crate::autotune::compute_symmetry_pct(fwd.rise_time_ms, rev.rise_time_ms);
+            let symmetry_permille =
+                crate::autotune::compute_symmetry_permille(fwd.rise_time_ms, rev.rise_time_ms);
 
             let merged = VelocityValidation {
                 rise_time_ms: fwd.rise_time_ms.max(rev.rise_time_ms),
-                overshoot_pct: fwd.overshoot_pct.max(rev.overshoot_pct),
+                overshoot_permille: fwd.overshoot_permille.max(rev.overshoot_permille),
                 peak_velocity: fwd.peak_velocity.max(rev.peak_velocity),
                 settling_time_ms: fwd.settling_time_ms.max(rev.settling_time_ms),
                 zero_speed_chatter: data.max_chatter > VELOCITY_VALIDATE_CHATTER_THRESHOLD,
                 saturation_samples: data.saturation_count,
-                symmetry_pct: symmetry,
+                symmetry_permille,
             };
 
             let validation_tau_ms = if data.strategy == VelocityTuneStrategy::ResponseRamp {
@@ -641,7 +641,7 @@ pub(crate) async fn step_velocity_validate_with_trace<B: CommissioningBackend>(
                 },
                 data.max_chatter,
                 data.saturation_count,
-                symmetry
+                symmetry_permille.raw()
             );
 
             let exhausted_response_budget = data.strategy == VelocityTuneStrategy::ResponseRamp
@@ -1121,8 +1121,8 @@ mod tests {
         step_velocity_validate,
     };
     use crate::autotune::{
-        CommissionError, CommissionProfile, MechanicalModel, OperatingMode, TRANSIENT_LEN,
-        TransientBuffer, VelocityGains, VelocityValidation,
+        CommissionError, CommissionProfile, MechanicalModel, OperatingMode, Permille,
+        TRANSIENT_LEN, TransientBuffer, VelocityGains, VelocityValidation,
     };
     use crate::commission_dispatch::test_support::MockBackend;
     use crate::commissioning::outer::{
@@ -1159,12 +1159,12 @@ mod tests {
     fn failing_velocity_metrics() -> VelocityValidation {
         VelocityValidation {
             rise_time_ms: 0,
-            overshoot_pct: 11_500,
+            overshoot_permille: Permille::new(11_500),
             peak_velocity: 25,
             settling_time_ms: 256,
             zero_speed_chatter: false,
             saturation_samples: 0,
-            symmetry_pct: 0,
+            symmetry_permille: Permille::ZERO,
         }
     }
 
@@ -1301,21 +1301,21 @@ mod tests {
                     step_target: 4,
                     forward_metrics: Some(VelocityValidation {
                         rise_time_ms: 20,
-                        overshoot_pct: 5250,
+                        overshoot_permille: Permille::new(5250),
                         peak_velocity: 25,
                         settling_time_ms: 256,
                         zero_speed_chatter: false,
                         saturation_samples: 0,
-                        symmetry_pct: 0,
+                        symmetry_permille: Permille::ZERO,
                     }),
                     reverse_metrics: Some(VelocityValidation {
                         rise_time_ms: 0,
-                        overshoot_pct: 5000,
+                        overshoot_permille: Permille::new(5000),
                         peak_velocity: 24,
                         settling_time_ms: 256,
                         zero_speed_chatter: false,
                         saturation_samples: 0,
-                        symmetry_pct: 0,
+                        symmetry_permille: Permille::ZERO,
                     }),
                     max_chatter: 24,
                     peak_velocity: 18,
@@ -1379,23 +1379,26 @@ mod tests {
     fn low_energy_marginal_velocity_metrics() -> VelocityValidation {
         VelocityValidation {
             rise_time_ms: 0,
-            overshoot_pct: 0,
+            overshoot_permille: Permille::ZERO,
             peak_velocity: 0,
             settling_time_ms: 256,
             zero_speed_chatter: false,
             saturation_samples: 0,
-            symmetry_pct: 0,
+            symmetry_permille: Permille::ZERO,
         }
     }
 
-    fn stiction_breakaway_metrics(peak_velocity: u32, overshoot_pct: u16) -> VelocityValidation {
+    fn stiction_breakaway_metrics(
+        peak_velocity: u32,
+        overshoot_permille: Permille,
+    ) -> VelocityValidation {
         VelocityValidation {
             rise_time_ms: 0,
-            overshoot_pct,
+            overshoot_permille,
             settling_time_ms: 256,
             zero_speed_chatter: false,
             saturation_samples: 0,
-            symmetry_pct: 0,
+            symmetry_permille: Permille::ZERO,
             peak_velocity,
         }
     }
@@ -1403,12 +1406,12 @@ mod tests {
     fn under_driven_pass_metrics() -> VelocityValidation {
         VelocityValidation {
             rise_time_ms: 200,
-            overshoot_pct: 0,
+            overshoot_permille: Permille::ZERO,
             peak_velocity: 20,
             settling_time_ms: 120,
             zero_speed_chatter: false,
             saturation_samples: 0,
-            symmetry_pct: 0,
+            symmetry_permille: Permille::ZERO,
         }
     }
 
@@ -2374,8 +2377,8 @@ mod tests {
                     velocity_search_stop_reason: VELOCITY_SEARCH_STOP_CLEAN,
                     attempt: 0,
                     step_target: response::VELOCITY_RESPONSE_STEP_TARGET,
-                    forward_metrics: Some(stiction_breakaway_metrics(8, 250)),
-                    reverse_metrics: Some(stiction_breakaway_metrics(1, 0)),
+                    forward_metrics: Some(stiction_breakaway_metrics(8, Permille::new(250))),
+                    reverse_metrics: Some(stiction_breakaway_metrics(1, Permille::ZERO)),
                     max_chatter: 0,
                     peak_velocity: 18,
                     prev_encoder_for_velocity: 0,
@@ -2533,8 +2536,8 @@ mod tests {
                     velocity_search_stop_reason: VELOCITY_SEARCH_STOP_CLEAN,
                     attempt: 0,
                     step_target: response::VELOCITY_RESPONSE_STEP_TARGET,
-                    forward_metrics: Some(stiction_breakaway_metrics(2, 0)),
-                    reverse_metrics: Some(stiction_breakaway_metrics(2, 0)),
+                    forward_metrics: Some(stiction_breakaway_metrics(2, Permille::ZERO)),
+                    reverse_metrics: Some(stiction_breakaway_metrics(2, Permille::ZERO)),
                     max_chatter: 1,
                     peak_velocity: 18,
                     prev_encoder_for_velocity: 0,
@@ -2618,8 +2621,8 @@ mod tests {
                     velocity_search_stop_reason: VELOCITY_SEARCH_STOP_CLEAN,
                     attempt: 0,
                     step_target: response::VELOCITY_RESPONSE_STEP_TARGET * 2,
-                    forward_metrics: Some(stiction_breakaway_metrics(13, 250)),
-                    reverse_metrics: Some(stiction_breakaway_metrics(2, 0)),
+                    forward_metrics: Some(stiction_breakaway_metrics(13, Permille::new(250))),
+                    reverse_metrics: Some(stiction_breakaway_metrics(2, Permille::ZERO)),
                     max_chatter: 0,
                     peak_velocity: 18,
                     prev_encoder_for_velocity: 0,
@@ -2696,8 +2699,8 @@ mod tests {
                     velocity_search_stop_reason: VELOCITY_SEARCH_STOP_CLEAN,
                     attempt: 0,
                     step_target: response::VELOCITY_RESPONSE_STEP_TARGET,
-                    forward_metrics: Some(stiction_breakaway_metrics(2, 0)),
-                    reverse_metrics: Some(stiction_breakaway_metrics(2, 0)),
+                    forward_metrics: Some(stiction_breakaway_metrics(2, Permille::ZERO)),
+                    reverse_metrics: Some(stiction_breakaway_metrics(2, Permille::ZERO)),
                     max_chatter: 1,
                     peak_velocity: 18,
                     prev_encoder_for_velocity: 0,

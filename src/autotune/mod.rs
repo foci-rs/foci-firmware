@@ -51,6 +51,7 @@ pub use hold::{
     HoldGateMetrics, HoldGateSample, hold_status_failure_reason,
 };
 pub use metrics::Permille;
+pub(crate) use metrics::saturation_permille;
 pub(crate) use models::VELOCITY_SIMC_MAX_P_REG;
 pub use models::{
     AXIS_SPLIT_SOURCE_IMPEDANCE, AXIS_SPLIT_SOURCE_NONE, CURRENT_AXIS_FLUX, CURRENT_AXIS_TORQUE,
@@ -92,13 +93,8 @@ pub use velocity::{
 ///
 /// Returns `|a - b| / avg(a, b)` in 0.1% units (200 = 20.0%).
 /// Returns 0 if both values are zero.
-pub fn compute_symmetry_pct(rise_fwd: u32, rise_rev: u32) -> u16 {
-    let avg = (rise_fwd as u64 + rise_rev as u64) / 2;
-    if avg == 0 {
-        return 0;
-    }
-    let diff = rise_fwd.abs_diff(rise_rev);
-    (diff as u64 * 1000 / avg) as u16
+pub fn compute_symmetry_permille(rise_fwd: u32, rise_rev: u32) -> Permille {
+    metrics::normalized_difference(rise_fwd, rise_rev)
 }
 
 #[cfg(test)]
@@ -109,21 +105,22 @@ mod tests {
 
     #[test]
     fn compute_symmetry_identical() {
-        assert_eq!(compute_symmetry_pct(500, 500), 0);
+        assert_eq!(compute_symmetry_permille(500, 500), Permille::ZERO);
     }
 
     #[test]
     fn compute_symmetry_20_percent() {
         // |600 - 500| / 550 ≈ 18.2% → 181 in 0.1% units
-        let result = compute_symmetry_pct(600, 500);
+        let result = compute_symmetry_permille(600, 500);
         assert!(
-            (170..=190).contains(&result),
-            "symmetry {result} expected ~181"
+            (170..=190).contains(&result.raw()),
+            "symmetry {} expected ~181",
+            result.raw()
         );
     }
 
     #[test]
     fn compute_symmetry_zero_avg() {
-        assert_eq!(compute_symmetry_pct(0, 0), 0);
+        assert_eq!(compute_symmetry_permille(0, 0), Permille::ZERO);
     }
 }

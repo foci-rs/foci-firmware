@@ -1,6 +1,6 @@
 use super::{
-    CommissionProfile, MechanicalModel, OperatingMode, TransientBuffer, VELOCITY_SIMC_MAX_P_REG,
-    ValidationResult, VelocityGains,
+    CommissionProfile, MechanicalModel, OperatingMode, Permille, TransientBuffer,
+    VELOCITY_SIMC_MAX_P_REG, ValidationResult, VelocityGains, metrics,
 };
 
 /// Metrics from a velocity-loop step-response validation test (Phase 10).
@@ -12,7 +12,7 @@ pub struct VelocityValidation {
     /// Time from 10% to 90% of target velocity, in milliseconds.
     pub rise_time_ms: u32,
     /// Peak overshoot above target velocity, in 0.1% units (200 = 20.0%).
-    pub overshoot_pct: u16,
+    pub overshoot_permille: Permille,
     /// Peak measured encoder velocity in counts/ms.
     pub peak_velocity: u32,
     /// Time to settle within +/-5% of target velocity, in milliseconds.
@@ -22,7 +22,7 @@ pub struct VelocityValidation {
     /// Samples where PID output hit saturation.
     pub saturation_samples: u16,
     /// |rise_fwd - rise_rev| / avg, in 0.1% units.
-    pub symmetry_pct: u16,
+    pub symmetry_permille: Permille,
 }
 
 // ---------------------------------------------------------------------------
@@ -289,15 +289,26 @@ pub fn extract_velocity_metrics(
     chatter_window: u16,
 ) -> VelocityValidation {
     let samples = buf.samples();
-    if samples.is_empty() || target == 0 {
+    if samples.is_empty() {
         return VelocityValidation {
             rise_time_ms: 0,
-            overshoot_pct: 0,
+            overshoot_permille: Permille::ZERO,
             peak_velocity: 0,
             settling_time_ms: 0,
             zero_speed_chatter: false,
             saturation_samples: 0,
-            symmetry_pct: 0,
+            symmetry_permille: Permille::ZERO,
+        };
+    }
+    if target == 0 {
+        return VelocityValidation {
+            rise_time_ms: 0,
+            overshoot_permille: Permille::MAX,
+            peak_velocity: 0,
+            settling_time_ms: 0,
+            zero_speed_chatter: false,
+            saturation_samples: 0,
+            symmetry_permille: Permille::ZERO,
         };
     }
 
@@ -344,10 +355,11 @@ pub fn extract_velocity_metrics(
     let overshoot_counts = peak
         .saturating_sub(target)
         .saturating_sub(VELOCITY_OVERSHOOT_DEADBAND_COUNTS);
-    let overshoot_pct = if overshoot_counts > 0 {
-        (overshoot_counts as u64 * 1000 / target as u64) as u16
+    let overshoot_permille = if overshoot_counts > 0 {
+        Permille::checked_ratio(u64::from(overshoot_counts), u64::from(target))
+            .unwrap_or(Permille::MAX)
     } else {
-        0
+        Permille::ZERO
     };
 
     // Settling: last sample where |actual - target| > 5% band.
@@ -380,12 +392,12 @@ pub fn extract_velocity_metrics(
 
     VelocityValidation {
         rise_time_ms,
-        overshoot_pct,
+        overshoot_permille,
         peak_velocity: peak,
         settling_time_ms,
         zero_speed_chatter,
         saturation_samples: saturation_count,
-        symmetry_pct: 0, // Caller computes from fwd+rev captures.
+        symmetry_permille: Permille::ZERO, // Caller computes from fwd+rev captures.
     }
 }
 
@@ -408,9 +420,9 @@ pub fn classify_velocity_validation(
     let mut worst = ValidationResult::Pass;
 
     // Overshoot (0.1% units: 200 = 20.0%, 400 = 40.0%).
-    if metrics.overshoot_pct > 400 {
+    if metrics.overshoot_permille > Permille::new(400) {
         return ValidationResult::Fail;
-    } else if metrics.overshoot_pct > 200 {
+    } else if metrics.overshoot_permille > Permille::new(200) {
         worst = ValidationResult::Marginal;
     }
 
@@ -429,19 +441,20 @@ pub fn classify_velocity_validation(
     }
 
     // Saturation (fraction of total samples).
-    if total_samples > 0 {
-        let sat_pct = (metrics.saturation_samples as u32 * 100) / total_samples as u32;
-        if sat_pct > 25 {
+    let saturation_permille =
+        metrics::saturation_permille(metrics.saturation_samples, total_samples);
+    if let Some(saturation_permille) = saturation_permille {
+        if saturation_permille > Permille::new(250) {
             return ValidationResult::Fail;
-        } else if sat_pct > 10 {
+        } else if saturation_permille > Permille::new(100) {
             worst = ValidationResult::Marginal;
         }
     }
 
     // Symmetry (0.1% units: 200 = 20.0%, 400 = 40.0%).
-    if metrics.symmetry_pct > 400 {
+    if metrics.symmetry_permille > Permille::new(400) {
         return ValidationResult::Fail;
-    } else if metrics.symmetry_pct > 200 {
+    } else if metrics.symmetry_permille > Permille::new(200) {
         worst = ValidationResult::Marginal;
     }
 
@@ -475,6 +488,62 @@ pub fn classify_velocity_stiffness(
 mod tests {
     use super::super::test_support::{autotune_test_config, test_mechanical_model};
     use super::*;
+
+    fn passing_velocity_metrics() -> VelocityValidation {
+        VelocityValidation {
+            rise_time_ms: 1,
+            overshoot_permille: Permille::ZERO,
+            peak_velocity: 10,
+            settling_time_ms: 1,
+            zero_speed_chatter: false,
+            saturation_samples: 0,
+            symmetry_permille: Permille::ZERO,
+        }
+    }
+
+    #[test]
+    fn velocity_overshoot_saturates_instead_of_wrapping_to_pass() {
+        let mut buf = TransientBuffer::new();
+        buf.reset(1000);
+        buf.push(65_540);
+        let metrics = extract_velocity_metrics(&buf, 1, 0, 3, 0);
+
+        assert_eq!(metrics.overshoot_permille, Permille::MAX);
+        assert_eq!(
+            classify_velocity_validation(&metrics, 1, 1),
+            ValidationResult::Fail,
+        );
+    }
+
+    #[test]
+    fn zero_velocity_target_fails_closed() {
+        let mut buf = TransientBuffer::new();
+        buf.reset(1000);
+        buf.push(1);
+        let metrics = extract_velocity_metrics(&buf, 0, 0, 3, 0);
+
+        assert_eq!(metrics.overshoot_permille, Permille::MAX);
+    }
+
+    #[test]
+    fn velocity_saturation_uses_permille_boundaries() {
+        let mut metrics = passing_velocity_metrics();
+        metrics.saturation_samples = 100;
+        assert_eq!(
+            classify_velocity_validation(&metrics, 100, 1000),
+            ValidationResult::Pass
+        );
+        metrics.saturation_samples = 101;
+        assert_eq!(
+            classify_velocity_validation(&metrics, 100, 1000),
+            ValidationResult::Marginal,
+        );
+        metrics.saturation_samples = 251;
+        assert_eq!(
+            classify_velocity_validation(&metrics, 100, 1000),
+            ValidationResult::Fail
+        );
+    }
 
     const TEST_ENCODER_COUNTS_PER_REV: u32 = 80;
 
@@ -617,12 +686,12 @@ mod tests {
     fn velocity_stiffness_marks_slow_pass_under_driven() {
         let metrics = VelocityValidation {
             rise_time_ms: 200,
-            overshoot_pct: 0,
+            overshoot_permille: Permille::ZERO,
             peak_velocity: 20,
             settling_time_ms: 120,
             zero_speed_chatter: false,
             saturation_samples: 0,
-            symmetry_pct: 0,
+            symmetry_permille: Permille::ZERO,
         };
 
         assert_eq!(
@@ -635,12 +704,12 @@ mod tests {
     fn velocity_stiffness_does_not_override_unsafe_result() {
         let metrics = VelocityValidation {
             rise_time_ms: 200,
-            overshoot_pct: 500,
+            overshoot_permille: Permille::new(500),
             peak_velocity: 20,
             settling_time_ms: 200,
             zero_speed_chatter: false,
             saturation_samples: 0,
-            symmetry_pct: 0,
+            symmetry_permille: Permille::ZERO,
         };
 
         assert_eq!(
@@ -896,12 +965,12 @@ mod tests {
     fn velocity_classify_pass() {
         let metrics = VelocityValidation {
             rise_time_ms: 5,
-            overshoot_pct: 100, // 10%
+            overshoot_permille: Permille::new(100), // 10%
             peak_velocity: 0,
             settling_time_ms: 30,
             zero_speed_chatter: false,
             saturation_samples: 5,
-            symmetry_pct: 100,
+            symmetry_permille: Permille::new(100),
         };
         assert_eq!(
             classify_velocity_validation(&metrics, 10, 256),
@@ -913,12 +982,12 @@ mod tests {
     fn velocity_classify_marginal_overshoot() {
         let metrics = VelocityValidation {
             rise_time_ms: 5,
-            overshoot_pct: 300, // 30%
+            overshoot_permille: Permille::new(300), // 30%
             peak_velocity: 0,
             settling_time_ms: 30,
             zero_speed_chatter: false,
             saturation_samples: 0,
-            symmetry_pct: 0,
+            symmetry_permille: Permille::ZERO,
         };
         assert_eq!(
             classify_velocity_validation(&metrics, 10, 256),
@@ -930,12 +999,12 @@ mod tests {
     fn velocity_classify_fail_overshoot() {
         let metrics = VelocityValidation {
             rise_time_ms: 5,
-            overshoot_pct: 500, // 50%
+            overshoot_permille: Permille::new(500), // 50%
             peak_velocity: 0,
             settling_time_ms: 30,
             zero_speed_chatter: false,
             saturation_samples: 0,
-            symmetry_pct: 0,
+            symmetry_permille: Permille::ZERO,
         };
         assert_eq!(
             classify_velocity_validation(&metrics, 10, 256),
@@ -947,12 +1016,12 @@ mod tests {
     fn velocity_classify_marginal_chatter() {
         let metrics = VelocityValidation {
             rise_time_ms: 5,
-            overshoot_pct: 50,
+            overshoot_permille: Permille::new(50),
             peak_velocity: 0,
             settling_time_ms: 30,
             zero_speed_chatter: true,
             saturation_samples: 0,
-            symmetry_pct: 0,
+            symmetry_permille: Permille::ZERO,
         };
         assert_eq!(
             classify_velocity_validation(&metrics, 10, 256),
@@ -964,12 +1033,12 @@ mod tests {
     fn velocity_classify_fail_settling() {
         let metrics = VelocityValidation {
             rise_time_ms: 5,
-            overshoot_pct: 50,
+            overshoot_permille: Permille::new(50),
             peak_velocity: 0,
             settling_time_ms: 150, // > 10 * tau_mech(10) = 100
             zero_speed_chatter: false,
             saturation_samples: 0,
-            symmetry_pct: 0,
+            symmetry_permille: Permille::ZERO,
         };
         assert_eq!(
             classify_velocity_validation(&metrics, 10, 256),
@@ -981,12 +1050,12 @@ mod tests {
     fn velocity_classify_fail_saturation() {
         let metrics = VelocityValidation {
             rise_time_ms: 5,
-            overshoot_pct: 50,
+            overshoot_permille: Permille::new(50),
             peak_velocity: 0,
             settling_time_ms: 30,
             zero_speed_chatter: false,
             saturation_samples: 70, // 70/256 = 27% > 25%
-            symmetry_pct: 0,
+            symmetry_permille: Permille::ZERO,
         };
         assert_eq!(
             classify_velocity_validation(&metrics, 10, 256),
@@ -998,12 +1067,12 @@ mod tests {
     fn velocity_classify_marginal_settling() {
         let metrics = VelocityValidation {
             rise_time_ms: 5,
-            overshoot_pct: 50,
+            overshoot_permille: Permille::new(50),
             peak_velocity: 0,
             settling_time_ms: 70, // 7*10 = 70, between 5*10=50 and 10*10=100
             zero_speed_chatter: false,
             saturation_samples: 0,
-            symmetry_pct: 0,
+            symmetry_permille: Permille::ZERO,
         };
         assert_eq!(
             classify_velocity_validation(&metrics, 10, 256),
@@ -1018,7 +1087,7 @@ mod tests {
         let buf = TransientBuffer::new();
         let metrics = extract_velocity_metrics(&buf, 1000, 0, 3, 50);
         assert_eq!(metrics.rise_time_ms, 0);
-        assert_eq!(metrics.overshoot_pct, 0);
+        assert_eq!(metrics.overshoot_permille, Permille::ZERO);
         assert!(!metrics.zero_speed_chatter);
     }
 
@@ -1066,7 +1135,7 @@ mod tests {
         }
 
         let metrics = extract_velocity_metrics(&buf, 4, 0, 3, 0);
-        assert_eq!(metrics.overshoot_pct, 0);
+        assert_eq!(metrics.overshoot_permille, Permille::ZERO);
     }
 
     #[test]

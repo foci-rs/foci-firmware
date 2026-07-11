@@ -67,11 +67,8 @@ pub(super) fn response_result_is_gain_limited(
     target: u32,
     total_samples: u16,
 ) -> bool {
-    let sat_pct = if total_samples > 0 {
-        (metrics.saturation_samples as u32 * 100) / total_samples as u32
-    } else {
-        0
-    };
+    let saturation_permille =
+        crate::autotune::saturation_permille(metrics.saturation_samples, total_samples);
 
     let min_peak = fwd.peak_velocity.min(rev.peak_velocity);
     let max_peak = fwd.peak_velocity.max(rev.peak_velocity);
@@ -83,7 +80,9 @@ pub(super) fn response_result_is_gain_limited(
     // capture looks under-driven. A one-sided breakaway hop is also
     // gain-limited: one direction moved a little, the other never overcame
     // stiction. Saturation/chatter still mean the gain is unsafe.
-    (metrics.overshoot_pct <= 200 || breakaway_stiction)
-        && sat_pct <= 10
+    (metrics.overshoot_permille <= crate::autotune::Permille::new(200) || breakaway_stiction)
+        && saturation_permille.is_none_or(|saturation_permille| {
+            saturation_permille <= crate::autotune::Permille::new(100)
+        })
         && !metrics.zero_speed_chatter
 }
