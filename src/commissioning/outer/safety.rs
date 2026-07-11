@@ -206,6 +206,15 @@ fn clamp_u64_to_u32(value: u64) -> u32 {
     value.min(u32::MAX as u64) as u32
 }
 
+fn velocity_counts_per_ms_for_fault(delta_counts: i32, magnitude: u64) -> i32 {
+    if delta_counts < 0 {
+        let magnitude = magnitude.min(i32::MAX as u64 + 1);
+        -(magnitude as i64) as i32
+    } else {
+        magnitude.min(i32::MAX as u64) as i32
+    }
+}
+
 /// Map a safety-envelope violation to the dedicated error variant.
 ///
 /// Always returns `SafetyEnvelopeViolation` so the OuterFailed handler
@@ -260,10 +269,12 @@ pub(crate) async fn check_outer_safety<B: CommissioningBackend>(
         .count(encoder_raw);
     let now_us = backend.elapsed_us();
 
-    if safety.start_sample_us == 0 {
-        safety.start_sample_us = now_us;
-    }
-    let elapsed_us = now_us.wrapping_sub(safety.start_sample_us);
+    let start_sample_us = if safety.start_sample_us == 0 {
+        now_us
+    } else {
+        safety.start_sample_us
+    };
+    let elapsed_us = now_us.wrapping_sub(start_sample_us);
     let max_duration_us = u64::from(safety.budget.max_duration_ms) * 1_000;
     if elapsed_us > max_duration_us {
         defmt::warn!(
@@ -280,35 +291,55 @@ pub(crate) async fn check_outer_safety<B: CommissioningBackend>(
         )));
     }
 
-    // Wrap-aware delta in encoder counts since the last safety sample.
-    let delta_counts = response::encoder_delta(
-        encoder_count.raw_counts(),
-        safety
-            .prev_encoder_count
-            .expect("outer encoder baseline configured before motion")
-            .raw_counts(),
-        safety.counts_per_rev(),
-    );
     let dt_us = if safety.last_sample_us == 0 {
         0
     } else {
         now_us.wrapping_sub(safety.last_sample_us)
     };
-    let velocity_cpms = response::counts_per_ms(delta_counts, dt_us);
+    let encoder_domain = safety
+        .encoder_domain
+        .expect("outer encoder domain configured before motion");
+    let previous_count = safety
+        .prev_encoder_count
+        .expect("outer encoder baseline configured before motion");
+    let delta = match encoder_domain.delta(previous_count, encoder_count) {
+        Ok(delta) => delta,
+        Err(EncoderMathError::AmbiguousHalfTurn) => {
+            return Ok(Some(safety.fault(
+                OUTER_SAFETY_FAULT_VELOCITY,
+                0,
+                dt_us,
+                0,
+                elapsed_us,
+            )));
+        }
+        Err(EncoderMathError::InvalidCountsPerRev) => {
+            unreachable!("validated encoder domain cannot become invalid")
+        }
+    };
+    let delta_counts = delta.signed_counts();
+    let velocity_magnitude_cpms = (u64::from(delta.absolute_counts()) * 1_000)
+        .checked_div(dt_us)
+        .unwrap_or(0);
+
+    // The accumulator intentionally preserves signed multi-revolution travel.
+    // Saturation keeps a corrupt or unexpectedly long sequence from wrapping
+    // back inside the allowed safety window.
+    safety.start_sample_us = start_sample_us;
     safety.prev_encoder_count = Some(encoder_count);
     safety.last_sample_us = now_us;
-    safety.unwrapped_position += delta_counts;
+    safety.unwrapped_position = safety.unwrapped_position.saturating_add(delta_counts);
 
-    // Check velocity cap (absolute value).
-    let abs_velocity = velocity_cpms.unsigned_abs();
-    if abs_velocity > safety.velocity_cap {
+    // Check velocity cap using the typed displacement magnitude.
+    if velocity_magnitude_cpms > u64::from(safety.velocity_cap) {
         defmt::warn!(
             "outer safety: velocity {} exceeds cap {} (delta={} dt_us={})",
-            abs_velocity,
+            velocity_magnitude_cpms,
             safety.velocity_cap,
             delta_counts,
             dt_us,
         );
+        let velocity_cpms = velocity_counts_per_ms_for_fault(delta_counts, velocity_magnitude_cpms);
         return Ok(Some(safety.fault(
             OUTER_SAFETY_FAULT_VELOCITY,
             delta_counts,
@@ -326,6 +357,7 @@ pub(crate) async fn check_outer_safety<B: CommissioningBackend>(
             abs_position,
             safety.position_window
         );
+        let velocity_cpms = velocity_counts_per_ms_for_fault(delta_counts, velocity_magnitude_cpms);
         return Ok(Some(safety.fault(
             OUTER_SAFETY_FAULT_POSITION,
             delta_counts,
@@ -360,13 +392,15 @@ pub(super) fn outer_safety_mut(phase: &mut OuterPhase) -> Option<&mut OuterSafet
 mod tests {
     use super::{OuterMotionBudget, OuterSafetyLimits, check_outer_safety};
     use crate::autotune::{CommissionError, CommissionProfile, OperatingMode, TransientBuffer};
-    use crate::commission_dispatch::test_support::MockBackend;
+    use crate::commission_dispatch::test_support::{MockBackend, SpiOp};
     use crate::commissioning::outer::{
         MECHANICAL_ID_VELOCITY_CAP_COUNTS_PER_MS, MechanicalIdData, MechanicalIdState, OuterPhase,
         step_outer,
     };
     use crate::commissioning::types::{OUTER_SAFETY_FAULT_VELOCITY, StepResult};
-    use foci_tmc4671::registers::ABN_DECODER_COUNT;
+    use foci_tmc4671::registers::{
+        ABN_DECODER_COUNT, MODE_RAMP_MODE_MOTION, PID_TORQUE_FLUX_TARGET,
+    };
 
     #[test]
     fn outer_safety_rejects_zero_encoder_resolution() {
@@ -535,6 +569,163 @@ mod tests {
     }
 
     #[test]
+    fn outer_safety_tracks_forward_origin_crossing() {
+        pollster::block_on(async {
+            let mut safety = OuterSafetyLimits::new(100, OuterMotionBudget::firmware_caps());
+            safety.configure_encoder_resolution(4_000).unwrap();
+            safety.set_encoder_baseline(3_998).unwrap();
+            safety.last_sample_us = 100_000;
+            safety.start_sample_us = 90_000;
+            let mut backend = MockBackend::new();
+            backend.elapsed_us_value = 101_000;
+            backend.mechanical_encoder_position_counts_value = 2;
+
+            let fault = check_outer_safety(&mut safety, &mut backend)
+                .await
+                .expect("encoder read should succeed");
+
+            assert!(fault.is_none());
+            assert_eq!(
+                safety.prev_encoder_count.map(|count| count.raw_counts()),
+                Some(2)
+            );
+            assert_eq!(safety.unwrapped_position, 4);
+        });
+    }
+
+    #[test]
+    fn outer_safety_tracks_reverse_origin_crossing() {
+        pollster::block_on(async {
+            let mut safety = OuterSafetyLimits::new(100, OuterMotionBudget::firmware_caps());
+            safety.configure_encoder_resolution(4_000).unwrap();
+            safety.set_encoder_baseline(2).unwrap();
+            safety.last_sample_us = 100_000;
+            safety.start_sample_us = 90_000;
+            let mut backend = MockBackend::new();
+            backend.elapsed_us_value = 101_000;
+            backend.mechanical_encoder_position_counts_value = 3_998;
+
+            let fault = check_outer_safety(&mut safety, &mut backend)
+                .await
+                .expect("encoder read should succeed");
+
+            assert!(fault.is_none());
+            assert_eq!(
+                safety.prev_encoder_count.map(|count| count.raw_counts()),
+                Some(3_998)
+            );
+            assert_eq!(safety.unwrapped_position, -4);
+        });
+    }
+
+    #[test]
+    fn outer_safety_half_turn_fault_preserves_accumulation_state() {
+        pollster::block_on(async {
+            let mut safety = OuterSafetyLimits::new(100, OuterMotionBudget::firmware_caps());
+            safety.configure_encoder_resolution(4_000).unwrap();
+            safety.set_encoder_baseline(1_000).unwrap();
+            safety.last_sample_us = 100_000;
+            safety.start_sample_us = 90_000;
+            safety.unwrapped_position = 17;
+            let before = safety;
+            let mut backend = MockBackend::new();
+            backend.elapsed_us_value = 101_000;
+            backend.mechanical_encoder_position_counts_value = 3_000;
+
+            let fault = check_outer_safety(&mut safety, &mut backend)
+                .await
+                .expect("encoder read should succeed")
+                .expect("ambiguous half-turn should violate safety");
+
+            assert_eq!(fault.reason, OUTER_SAFETY_FAULT_VELOCITY);
+            assert_eq!(safety.prev_encoder_count, before.prev_encoder_count);
+            assert_eq!(safety.last_sample_us, before.last_sample_us);
+            assert_eq!(safety.start_sample_us, before.start_sample_us);
+            assert_eq!(safety.unwrapped_position, before.unwrapped_position);
+        });
+    }
+
+    #[test]
+    fn outer_safety_half_turn_stops_dispatch_before_phase_motion() {
+        pollster::block_on(async {
+            let mut safety = OuterSafetyLimits::new(2448, OuterMotionBudget::firmware_caps());
+            safety.configure_encoder_resolution(4_000).unwrap();
+            safety.set_encoder_baseline(1_000).unwrap();
+            safety.last_sample_us = 100_000;
+            safety.start_sample_us = 90_000;
+            let mut phase = OuterPhase::MechanicalId {
+                state: MechanicalIdState::ForwardCapture {
+                    next_sample_us: 101_000,
+                    capture_start_us: 90_000,
+                },
+                data: MechanicalIdData::new(367),
+                safety,
+            };
+            let mut buf = TransientBuffer::new();
+            let mut backend = MockBackend::new();
+            backend.elapsed_us_value = 101_000;
+            backend.mechanical_encoder_position_counts_value = 3_000;
+
+            let result = step_outer(
+                &mut phase,
+                &mut buf,
+                CommissionProfile::Balanced,
+                OperatingMode::Nominal,
+                0,
+                0,
+                false,
+                0,
+                0,
+                0,
+                &mut backend,
+            )
+            .await;
+
+            assert!(matches!(
+                result,
+                StepResult::OuterFailed(CommissionError::SafetyEnvelopeViolation)
+            ));
+            assert!(matches!(
+                phase,
+                OuterPhase::FailedWithSafety {
+                    error: CommissionError::SafetyEnvelopeViolation,
+                    safety_fault
+                } if safety_fault.reason == OUTER_SAFETY_FAULT_VELOCITY
+            ));
+            assert!(backend.spi_log.iter().any(|op| matches!(
+                op,
+                SpiOp::Write(addr, 0) if *addr == PID_TORQUE_FLUX_TARGET.addr()
+            )));
+            assert!(backend.spi_log.iter().any(|op| matches!(
+                op,
+                SpiOp::Write(addr, 0) if *addr == MODE_RAMP_MODE_MOTION.addr()
+            )));
+            let writes_after_failure = backend.spi_log.len();
+
+            let terminal_result = step_outer(
+                &mut phase,
+                &mut buf,
+                CommissionProfile::Balanced,
+                OperatingMode::Nominal,
+                0,
+                0,
+                false,
+                0,
+                0,
+                0,
+                &mut backend,
+            )
+            .await;
+
+            assert!(matches!(
+                terminal_result,
+                StepResult::OuterFailed(CommissionError::SafetyEnvelopeViolation)
+            ));
+            assert_eq!(backend.spi_log.len(), writes_after_failure);
+        });
+    }
+
+    #[test]
     fn outer_safety_reports_velocity_fault_details() {
         pollster::block_on(async {
             let mut safety = OuterSafetyLimits::new(
@@ -572,6 +763,56 @@ mod tests {
             assert_eq!(fault.position_window_counts, 3000);
             assert_eq!(fault.elapsed_us, 14_000);
             assert_eq!(fault.duration_cap_us, 3_000_000);
+        });
+    }
+
+    #[test]
+    fn outer_safety_saturates_positive_velocity_fault_evidence() {
+        pollster::block_on(async {
+            let mut safety = OuterSafetyLimits::new(100, OuterMotionBudget::firmware_caps());
+            safety
+                .configure_encoder_resolution(i32::MAX as u32)
+                .unwrap();
+            safety.set_encoder_baseline(0).unwrap();
+            safety.last_sample_us = 100;
+            safety.start_sample_us = 90;
+            let mut backend = MockBackend::new();
+            backend.elapsed_us_value = 101;
+            backend.mechanical_encoder_position_counts_value = 1_073_741_823;
+
+            let fault = check_outer_safety(&mut safety, &mut backend)
+                .await
+                .expect("encoder read should succeed")
+                .expect("velocity should violate the safety envelope");
+
+            assert_eq!(fault.reason, OUTER_SAFETY_FAULT_VELOCITY);
+            assert_eq!(fault.delta_counts, 1_073_741_823);
+            assert_eq!(fault.velocity_counts_per_ms, i32::MAX);
+        });
+    }
+
+    #[test]
+    fn outer_safety_saturates_negative_velocity_fault_evidence() {
+        pollster::block_on(async {
+            let mut safety = OuterSafetyLimits::new(100, OuterMotionBudget::firmware_caps());
+            safety
+                .configure_encoder_resolution(i32::MAX as u32)
+                .unwrap();
+            safety.set_encoder_baseline(0).unwrap();
+            safety.last_sample_us = 100;
+            safety.start_sample_us = 90;
+            let mut backend = MockBackend::new();
+            backend.elapsed_us_value = 101;
+            backend.mechanical_encoder_position_counts_value = 1_073_741_824;
+
+            let fault = check_outer_safety(&mut safety, &mut backend)
+                .await
+                .expect("encoder read should succeed")
+                .expect("velocity should violate the safety envelope");
+
+            assert_eq!(fault.reason, OUTER_SAFETY_FAULT_VELOCITY);
+            assert_eq!(fault.delta_counts, -1_073_741_823);
+            assert_eq!(fault.velocity_counts_per_ms, i32::MIN);
         });
     }
 

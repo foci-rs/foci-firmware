@@ -1468,7 +1468,7 @@ fn sample_outer_params() -> crate::commissioning::OuterTuneParams {
 }
 
 #[test]
-fn outer_failed_safety_fault_full_disarm() {
+fn outer_failed_safety_envelope_violation_full_disarm() {
     pollster::block_on(async {
         use core::sync::atomic::Ordering;
         let _guard = test_support::SHARED_STATE_MUTEX.lock().await;
@@ -1483,7 +1483,7 @@ fn outer_failed_safety_fault_full_disarm() {
             sample_outer_params(),
             sample_entry_snapshot(),
         ));
-        let err = crate::autotune::CommissionError::Spi;
+        let err = crate::autotune::CommissionError::SafetyEnvelopeViolation;
 
         let outcome = drive_commission_result(
             StepResult::OuterFailed(err),
