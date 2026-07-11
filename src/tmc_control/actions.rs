@@ -16,6 +16,8 @@ pub enum ShutdownReason {
     InvalidTmcChannel,
     /// A core TMC request failed validation.
     RequestValidationFailed,
+    /// Applying a live inner- or outer-loop gain pair failed.
+    LiveGainApplyFailed,
     /// STATUS_FLAGS reported ADC current clipping.
     AdcCurrentClipped,
     /// STATUS_FLAGS reported a non-clipping TMC fault.

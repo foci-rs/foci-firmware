@@ -20,7 +20,7 @@ use crate::tmc_control::actions::{
     TmcControlRequestTail,
 };
 use crate::tmc_control::helpers::{
-    apply_live_inner_gains, apply_live_outer_gains, apply_motion_scale,
+    LiveGainWriteStatus, apply_live_inner_gains, apply_live_outer_gains, apply_motion_scale,
 };
 use crate::tmc_control::state::TmcControlRuntime;
 
@@ -296,8 +296,9 @@ where
                 torque_i,
             };
             let write_status = apply_live_inner_gains(runtime, tmc, gains).await;
-            if !write_status.all_ok() {
+            if let Some(outcome) = live_gain_failure_outcome(write_status) {
                 defmt::warn!("PID gains live write failed");
+                return outcome;
             }
             defmt::info!(
                 "PID gains received: flux P={} I={}, torque P={} I={}",
@@ -324,8 +325,9 @@ where
                 velocity_i,
             };
             let write_status = apply_live_outer_gains(board.tmc_state(), tmc, gains).await;
-            if !write_status.all_ok() {
+            if let Some(outcome) = live_gain_failure_outcome(write_status) {
                 defmt::warn!("Position gains live write failed");
+                return outcome;
             }
             defmt::info!(
                 "Position gains received: pos P={} I={}, vel P={} I={}",
@@ -738,6 +740,19 @@ where
     }
 
     normal_outcome(board.normal_tail())
+}
+
+pub(super) fn live_gain_failure_outcome(
+    status: LiveGainWriteStatus,
+) -> Option<TmcControlRequestOutcome> {
+    if status.all_ok() {
+        None
+    } else {
+        Some(TmcControlRequestOutcome::shutdown(
+            ShutdownReason::LiveGainApplyFailed,
+            TmcControlRequestTail::SkipTickTail,
+        ))
+    }
 }
 
 fn normal_outcome(tail: TmcControlRequestTail) -> TmcControlRequestOutcome {

@@ -6,9 +6,10 @@ use crate::pid::{InnerLoopGains, OuterLoopGains};
 use crate::tmc::{TmcRequest, TmcRequestKind};
 use crate::tmc_control::dispatch::{SharedTmcDispatch, apply_shared_tmc_request};
 use crate::tmc_control::helpers::{
-    apply_live_inner_gains, apply_live_outer_gains, apply_motion_scale,
+    LiveGainWriteStatus, apply_live_inner_gains, apply_live_outer_gains, apply_motion_scale,
     refresh_velocity_scale_from_state,
 };
+use crate::tmc_control::request::live_gain_failure_outcome;
 use core::sync::atomic::AtomicBool;
 use core::sync::atomic::Ordering::Relaxed;
 
@@ -457,6 +458,46 @@ fn apply_live_outer_gains_publishes_only_after_both_writes_succeed() {
             );
         }
     });
+}
+
+#[test]
+fn live_gain_failure_outcome_maps_incomplete_pairs_to_shutdown() {
+    let cases = [
+        (true, true, None),
+        (
+            false,
+            true,
+            Some(TmcControlRequestOutcome::shutdown(
+                ShutdownReason::LiveGainApplyFailed,
+                TmcControlRequestTail::SkipTickTail,
+            )),
+        ),
+        (
+            true,
+            false,
+            Some(TmcControlRequestOutcome::shutdown(
+                ShutdownReason::LiveGainApplyFailed,
+                TmcControlRequestTail::SkipTickTail,
+            )),
+        ),
+        (
+            false,
+            false,
+            Some(TmcControlRequestOutcome::shutdown(
+                ShutdownReason::LiveGainApplyFailed,
+                TmcControlRequestTail::SkipTickTail,
+            )),
+        ),
+    ];
+
+    for (first_write_ok, second_write_ok, expected) in cases {
+        let status = LiveGainWriteStatus {
+            first_write_ok,
+            second_write_ok,
+        };
+
+        assert_eq!(live_gain_failure_outcome(status), expected);
+    }
 }
 
 #[test]
