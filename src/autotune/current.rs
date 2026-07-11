@@ -241,15 +241,22 @@ pub fn classify_current_axis_sample(
     let target_abs = sample.target.unsigned_abs().max(1) as u32;
     let same_axis_count = sample.same_axis_actual.unsigned_abs();
     let response_permille =
-        ((same_axis_count as u32 * 1000) / target_abs).min(u16::MAX as u32) as u16;
+        Permille::checked_ratio(u64::from(same_axis_count), u64::from(target_abs))
+            .expect("nonzero current-axis target")
+            .raw();
     let response_error_count = same_axis_count.abs_diff(sample.target.unsigned_abs());
     let cross_axis_count = sample.cross_axis_actual.unsigned_abs();
-    let cross_axis_permille = ((sample.cross_axis_actual.unsigned_abs() as u32 * 1000) / target_abs)
-        .min(u16::MAX as u32) as u16;
+    let cross_axis_permille =
+        Permille::checked_ratio(u64::from(cross_axis_count), u64::from(target_abs))
+            .expect("nonzero current-axis target")
+            .raw();
     let output_limit = sample.output_limit.max(1) as u32;
-    let voltage_output_permille = ((sample.output_limited.unsigned_abs() as u32 * 1000)
-        / output_limit)
-        .min(u16::MAX as u32) as u16;
+    let voltage_output_permille = Permille::checked_ratio(
+        u64::from(sample.output_limited.unsigned_abs()),
+        u64::from(output_limit),
+    )
+    .expect("nonzero current-axis output limit")
+    .raw();
     let encoder_delta_counts = sample
         .encoder_delta_counts
         .unsigned_abs()
