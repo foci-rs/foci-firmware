@@ -635,22 +635,18 @@ impl TmcControlRuntime {
         homing_active: bool,
         reset: bool,
     ) -> i32 {
-        let reference = if !self.motor_enabled
-            || self.planner_velocity_scale.is_none()
-            || self.commission_engine.is_some()
-            || homing_active
-            || reset
-        {
-            0
-        } else {
-            let interval = refs.stepper.interval.load(Relaxed);
-            let forward = refs.stepper.direction.load(Relaxed);
-            crate::tmc::compute_planner_command_velocity_reference(
-                self.planner_velocity_scale
-                    .expect("configured planner velocity scale"),
-                interval,
-                forward,
-            )
+        let reference = match self.planner_velocity_scale {
+            Some(scale)
+                if self.motor_enabled
+                    && self.commission_engine.is_none()
+                    && !homing_active
+                    && !reset =>
+            {
+                let interval = refs.stepper.interval.load(Relaxed);
+                let forward = refs.stepper.direction.load(Relaxed);
+                crate::tmc::compute_planner_command_velocity_reference(scale, interval, forward)
+            }
+            Some(_) | None => 0,
         };
         #[cfg(feature = "trace")]
         {
