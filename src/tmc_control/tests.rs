@@ -498,12 +498,17 @@ fn apply_motion_scale_spi_failures_leave_scale_unconfigured() {
                 Tmc4671Spi::new(RuntimeMockSpi::default().fail_writes_to(failed_register));
             let scale = crate::motion_scale::MotionScale::new(1000, 3200).unwrap();
 
+            let expected = if failed_register == ABN_DECODER_PPR.addr() {
+                crate::motion_scale::MotionScaleRejection::EncoderRegisterWriteFailed
+            } else {
+                crate::motion_scale::MotionScaleRejection::StepWidthRegisterWriteFailed
+            };
             assert_eq!(
                 apply_motion_scale(&mut tmc, &tmc_state, &stepper_state, scale, |_| {
                     Ok::<(), core::convert::Infallible>(())
                 })
                 .await,
-                Err(())
+                Err(expected)
             );
             assert!(!tmc_state.motion_scale_configured());
             assert_eq!(tmc_state.physical_step_width(), None);

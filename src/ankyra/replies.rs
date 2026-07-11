@@ -45,6 +45,19 @@ pub struct Config {
     pub move_count: u16,
 }
 
+/// `foci_motion_scale_rejected` reply emitted immediately before shutdown.
+///
+/// Wire name: `foci_motion_scale_rejected`.
+#[klipper_reply]
+pub struct FociMotionScaleRejected {
+    /// Object id of the FOCI endpoint whose scale was rejected.
+    pub oid: u8,
+    /// Task stage that detected the rejection (`0` = P2, `1` = P1).
+    pub stage: u8,
+    /// Cause code from [`crate::motion_scale::MotionScaleRejection`].
+    pub reason: u8,
+}
+
 /// `endstop_state` reply — emitted by `endstop_home` / `endstop_query_state`.
 ///
 /// Wire name: `endstop_state`.

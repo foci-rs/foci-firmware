@@ -190,6 +190,8 @@ pub enum TmcRequestKind {
     SetCurrent { run_ma: u32 },
     /// Configure independent encoder-feedback and planner-motion scales.
     SetMotionScale {
+        /// Host object id used to correlate rejection diagnostics.
+        oid: u8,
         /// Encoder pulses per mechanical revolution before quadrature.
         encoder_ppr: u32,
         /// Logical planner steps per mechanical revolution.
@@ -411,6 +413,7 @@ pub fn tmc_set_current(channel: u8, run_ma: u32) -> TmcRequest {
 /// Returns [`crate::motion_scale::MotionScaleError`] when either resolution is invalid.
 pub fn tmc_set_encoder_hw(
     channel: u8,
+    oid: u8,
     encoder_ppr: u32,
     planner_steps_per_rev: u32,
 ) -> Result<TmcRequest, crate::motion_scale::MotionScaleError> {
@@ -418,6 +421,7 @@ pub fn tmc_set_encoder_hw(
     Ok(TmcRequest::new(
         channel,
         TmcRequestKind::SetMotionScale {
+            oid,
             encoder_ppr,
             planner_steps_per_rev,
         },
@@ -805,7 +809,6 @@ pub fn auto_calibrate_on_enable_allowed(channel: u8) -> bool {
 ///
 /// With a positive STEP_WIDTH, the TMC4671 STEP/DIR input reports a
 /// negative velocity for DIR high and a positive velocity for DIR low.
-/// Compute an exact planner velocity offset.
 pub fn compute_planner_velocity_offset(
     scale: crate::motion_scale::PlannerVelocityScale,
     step_interval: u32,
@@ -826,15 +829,6 @@ pub fn compute_planner_command_velocity_reference(
     dir_high: bool,
 ) -> i32 {
     compute_planner_velocity_offset_scaled(scale, step_interval, dir_high, 1)
-}
-
-/// Compute an exact planner-timing command velocity reference.
-pub fn compute_planner_velocity_reference(
-    scale: crate::motion_scale::PlannerVelocityScale,
-    step_interval: u32,
-    dir_high: bool,
-) -> i32 {
-    compute_planner_command_velocity_reference(scale, step_interval, dir_high)
 }
 
 /// Compute the velocity feedforward offset with a runtime multiplier.

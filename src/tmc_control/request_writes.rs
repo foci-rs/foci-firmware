@@ -104,11 +104,11 @@ where
 ///
 /// # Errors
 ///
-/// Returns `Err(())` on either SPI write failure.
+/// Returns a cause-specific rejection on either SPI write failure.
 pub async fn write_motion_scale<B>(
     tmc: &mut Tmc4671Spi<B>,
     scale: crate::motion_scale::MotionScale,
-) -> Result<(), ()>
+) -> Result<(), crate::motion_scale::MotionScaleRejection>
 where
     B: SpiDevice<u8>,
 {
@@ -120,7 +120,7 @@ where
         .is_err()
     {
         defmt::error!("TMC4671 SPI write failed: ABN_DECODER_PPR");
-        return Err(());
+        return Err(crate::motion_scale::MotionScaleRejection::EncoderRegisterWriteFailed);
     }
     // STEP_WIDTH consumes position units per emitted physical TMC pulse.
     if tmc
@@ -129,7 +129,7 @@ where
         .is_err()
     {
         defmt::error!("TMC4671 SPI write failed: STEP_WIDTH");
-        return Err(());
+        return Err(crate::motion_scale::MotionScaleRejection::StepWidthRegisterWriteFailed);
     }
     Ok(())
 }

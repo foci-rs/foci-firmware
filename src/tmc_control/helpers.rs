@@ -52,29 +52,28 @@ pub fn refresh_velocity_scale_from_state(
 ///
 /// # Errors
 ///
-/// Returns `Err(())` after clearing configured scale state when either SPI write or the
-/// board-owned mapper installation fails.
+/// Returns a cause-specific rejection after clearing configured scale state when either SPI
+/// write or the board-owned mapper installation fails.
 pub async fn apply_motion_scale<Spi, InstallMapper, InstallError>(
     tmc: &mut Tmc4671Spi<Spi>,
     tmc_state: &TmcChannelState,
     stepper_state: &crate::state::stepper::StepperChannelState,
     scale: crate::motion_scale::MotionScale,
     install_mapper: InstallMapper,
-) -> Result<(), ()>
+) -> Result<(), crate::motion_scale::MotionScaleRejection>
 where
     Spi: SpiDevice<u8>,
     InstallMapper:
         FnOnce(foci_klipper::pulse_mapper::PulseMapperConfig) -> Result<(), InstallError>,
 {
-    if write_motion_scale(tmc, scale).await.is_err() {
+    write_motion_scale(tmc, scale).await.inspect_err(|_| {
         tmc_state.clear_motion_scale(stepper_state);
-        return Err(());
-    }
+    })?;
     let mapper = foci_klipper::pulse_mapper::PulseMapperConfig::new(scale.planner_steps_per_rev())
         .expect("validated motion scale must contain a valid mapper");
     if install_mapper(mapper).is_err() {
         tmc_state.clear_motion_scale(stepper_state);
-        return Err(());
+        return Err(crate::motion_scale::MotionScaleRejection::MapperInstallFailed);
     }
     let configured = tmc_state.configure_motion_scale(
         stepper_state,

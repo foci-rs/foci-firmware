@@ -70,6 +70,13 @@ where
         mapper: foci_klipper::pulse_mapper::PulseMapperConfig,
     ) -> Result<(), MotionScaleMapperInstallError>;
 
+    /// Emit a host-visible reason before rejecting motion-scale configuration.
+    fn report_motion_scale_rejection(
+        &mut self,
+        oid: u8,
+        rejection: crate::motion_scale::MotionScaleRejection,
+    );
+
     /// Emit a host reply using board-local sender glue.
     fn emit_reply(&mut self, payload: ReplyPayload);
     /// Emit a board-local motor arm event, if supported.
@@ -661,41 +668,58 @@ where
         TmcRequest {
             kind:
                 TmcRequestKind::SetMotionScale {
+                    oid,
                     encoder_ppr,
                     planner_steps_per_rev,
                 },
             ..
         } => {
-            let Ok(scale) =
-                crate::motion_scale::MotionScale::new(encoder_ppr, planner_steps_per_rev)
-            else {
-                return TmcControlRequestOutcome::shutdown(
-                    ShutdownReason::RequestValidationFailed,
-                    board.normal_tail(),
-                );
+            let scale =
+                match crate::motion_scale::MotionScale::new(encoder_ppr, planner_steps_per_rev) {
+                    Ok(scale) => scale,
+                    Err(error) => {
+                        board.report_motion_scale_rejection(oid, error.into());
+                        return TmcControlRequestOutcome::shutdown(
+                            ShutdownReason::RequestValidationFailed,
+                            board.normal_tail(),
+                        );
+                    }
+                };
+            let rejection = if runtime.is_motor_enabled() {
+                Some(crate::motion_scale::MotionScaleRejection::RuntimeEnabled)
+            } else if board
+                .tmc_state()
+                .motor_armed
+                .load(core::sync::atomic::Ordering::Relaxed)
+            {
+                Some(crate::motion_scale::MotionScaleRejection::MotorArmed)
+            } else if !board.motion_scale_queue_empty() {
+                Some(crate::motion_scale::MotionScaleRejection::QueueNotEmpty)
+            } else if board
+                .stepper_state()
+                .timer_active_mirror
+                .load(core::sync::atomic::Ordering::Relaxed)
+            {
+                Some(crate::motion_scale::MotionScaleRejection::TimerActive)
+            } else {
+                None
             };
-            let tmc_state = board.tmc_state();
-            let stepper_state = board.stepper_state();
-            let idle = !runtime.is_motor_enabled()
-                && !tmc_state
-                    .motor_armed
-                    .load(core::sync::atomic::Ordering::Relaxed)
-                && board.motion_scale_queue_empty()
-                && !stepper_state
-                    .timer_active_mirror
-                    .load(core::sync::atomic::Ordering::Relaxed);
-            if !idle {
+            if let Some(rejection) = rejection {
+                board.report_motion_scale_rejection(oid, rejection);
                 return TmcControlRequestOutcome::shutdown(
                     ShutdownReason::RequestValidationFailed,
                     board.normal_tail(),
                 );
             }
-            if apply_motion_scale(tmc, tmc_state, stepper_state, scale, |mapper| {
-                board.install_motion_scale_mapper(mapper)
-            })
-            .await
-            .is_err()
+            let tmc_state = board.tmc_state();
+            let stepper_state = board.stepper_state();
+            if let Err(rejection) =
+                apply_motion_scale(tmc, tmc_state, stepper_state, scale, |mapper| {
+                    board.install_motion_scale_mapper(mapper)
+                })
+                .await
             {
+                board.report_motion_scale_rejection(oid, rejection);
                 return TmcControlRequestOutcome::shutdown_then_refresh_velocity_scale(
                     ShutdownReason::RequestValidationFailed,
                     board.normal_tail(),
@@ -854,6 +878,7 @@ mod tests {
         mapper_install_calls: u8,
         installed_mapper: Option<foci_klipper::pulse_mapper::PulseMapperConfig>,
         configured_during_mapper_install: bool,
+        motion_scale_rejections: std::vec::Vec<(u8, crate::motion_scale::MotionScaleRejection)>,
         next_trace_seq: u32,
         register_result: Result<(), ()>,
         arm_result: Result<(), CommissionError>,
@@ -879,6 +904,7 @@ mod tests {
                 mapper_install_calls: 0,
                 installed_mapper: None,
                 configured_during_mapper_install: false,
+                motion_scale_rejections: std::vec::Vec::new(),
                 next_trace_seq: 1,
                 register_result: Ok(()),
                 arm_result: Ok(()),
@@ -944,6 +970,14 @@ mod tests {
             self.installed_mapper = Some(mapper);
             self.configured_during_mapper_install = tmc_channel0().motion_scale_configured();
             self.mapper_install_result
+        }
+
+        fn report_motion_scale_rejection(
+            &mut self,
+            oid: u8,
+            rejection: crate::motion_scale::MotionScaleRejection,
+        ) {
+            self.motion_scale_rejections.push((oid, rejection));
         }
 
         fn emit_reply(&mut self, payload: ReplyPayload) {
@@ -1072,7 +1106,7 @@ mod tests {
 
     #[derive(Clone, Copy)]
     enum MotionScaleRevalidationRejection {
-        InvalidScale,
+        InvalidScale(crate::motion_scale::MotionScaleRejection),
         RuntimeEnabled,
         MotorArmedMirror,
         PhysicalQueueNonempty,
@@ -1090,27 +1124,35 @@ mod tests {
         let before = motion_scale_snapshot();
         let mut encoder_ppr = 2000;
 
-        match rejection {
-            MotionScaleRevalidationRejection::InvalidScale => encoder_ppr = 0,
+        let expected = match rejection {
+            MotionScaleRevalidationRejection::InvalidScale(expected) => {
+                encoder_ppr = 0;
+                expected
+            }
             MotionScaleRevalidationRejection::RuntimeEnabled => {
                 runtime.set_motor_enabled_for_test(true);
+                crate::motion_scale::MotionScaleRejection::RuntimeEnabled
             }
             MotionScaleRevalidationRejection::MotorArmedMirror => {
                 tmc_channel0().motor_armed.store(true, Relaxed);
+                crate::motion_scale::MotionScaleRejection::MotorArmed
             }
             MotionScaleRevalidationRejection::PhysicalQueueNonempty => {
                 board.motion_scale_queue_empty = false;
+                crate::motion_scale::MotionScaleRejection::QueueNotEmpty
             }
             MotionScaleRevalidationRejection::TimerActive => {
                 stepper_channel0().timer_active_mirror.store(true, Relaxed);
+                crate::motion_scale::MotionScaleRejection::TimerActive
             }
-        }
+        };
 
         let mut tmc = Tmc4671Spi::new(RuntimeMockSpi::default());
         let outcome = handle_tmc_control_request(
             TmcRequest::new(
                 0,
                 TmcRequestKind::SetMotionScale {
+                    oid: 7,
                     encoder_ppr,
                     planner_steps_per_rev: 6400,
                 },
@@ -1132,6 +1174,7 @@ mod tests {
         assert_eq!(outcome.tail, TmcControlRequestTail::FallThrough);
         assert!(!outcome.should_refresh_velocity_scale);
         assert_eq!(board.arm_calls, 0);
+        assert_eq!(board.motion_scale_rejections, std::vec![(7, expected)]);
     }
 
     async fn assert_motion_scale_spi_failure(
@@ -1148,6 +1191,7 @@ mod tests {
             TmcRequest::new(
                 0,
                 TmcRequestKind::SetMotionScale {
+                    oid: 7,
                     encoder_ppr: 4000,
                     planner_steps_per_rev: 3200,
                 },
@@ -1178,6 +1222,16 @@ mod tests {
         );
         assert_eq!(outcome.tail, TmcControlRequestTail::FallThrough);
         assert!(outcome.should_refresh_velocity_scale);
+        let expected_rejection =
+            if failed_register == foci_tmc4671::registers::ABN_DECODER_PPR.addr() {
+                crate::motion_scale::MotionScaleRejection::EncoderRegisterWriteFailed
+            } else {
+                crate::motion_scale::MotionScaleRejection::StepWidthRegisterWriteFailed
+            };
+        assert_eq!(
+            board.motion_scale_rejections,
+            std::vec![(7, expected_rejection)]
+        );
         assert_eq!(board.arm_calls, 0);
     }
 
@@ -1458,6 +1512,7 @@ mod tests {
                 TmcRequest::new(
                     0,
                     TmcRequestKind::SetMotionScale {
+                        oid: 7,
                         encoder_ppr: 4000,
                         planner_steps_per_rev: 3200,
                     },
@@ -1495,6 +1550,7 @@ mod tests {
                 TmcRequest::new(
                     0,
                     TmcRequestKind::SetMotionScale {
+                        oid: 7,
                         encoder_ppr: 4000,
                         planner_steps_per_rev: 3200,
                     },
@@ -1518,6 +1574,13 @@ mod tests {
             assert!(!board.configured_during_mapper_install);
             assert!(!tmc_channel0().motion_scale_configured());
             assert_eq!(
+                board.motion_scale_rejections,
+                std::vec![(
+                    7,
+                    crate::motion_scale::MotionScaleRejection::MapperInstallFailed,
+                )]
+            );
+            assert_eq!(
                 outcome.shutdown,
                 Some(ShutdownReason::RequestValidationFailed)
             );
@@ -1529,7 +1592,9 @@ mod tests {
     fn set_motion_scale_rejects_invalid_scale_before_spi_or_publication() {
         run_request_test(async {
             assert_motion_scale_revalidation_rejected(
-                MotionScaleRevalidationRejection::InvalidScale,
+                MotionScaleRevalidationRejection::InvalidScale(
+                    crate::motion_scale::MotionScaleRejection::EncoderPprZero,
+                ),
             )
             .await;
         });

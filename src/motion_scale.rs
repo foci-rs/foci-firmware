@@ -18,6 +18,61 @@ pub enum MotionScaleError {
     PlannerStepsPerRevTooLarge,
 }
 
+/// Bounded host-visible reasons for rejecting motion-scale configuration.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+#[repr(u8)]
+pub enum MotionScaleRejection {
+    /// Encoder pulses per revolution was zero.
+    EncoderPprZero = 1,
+    /// Encoder quadrature counts would overflow `u32`.
+    EncoderPprTooLarge = 2,
+    /// Planner steps per revolution was zero.
+    PlannerStepsPerRevZero = 3,
+    /// Planner steps per revolution exceeded the mapper bound.
+    PlannerStepsPerRevTooLarge = 4,
+    /// The P1 motor runtime still considered the motor enabled.
+    RuntimeEnabled = 5,
+    /// The shared armed-state mirror was set.
+    MotorArmed = 6,
+    /// The physical step queue was not empty.
+    QueueNotEmpty = 7,
+    /// The physical step timer was active.
+    TimerActive = 8,
+    /// The board could not install the validated mapper.
+    MapperInstallFailed = 9,
+    /// The encoder-count register write failed.
+    EncoderRegisterWriteFailed = 10,
+    /// The physical step-width register write failed.
+    StepWidthRegisterWriteFailed = 11,
+    /// The P2-to-P1 request queue was full.
+    RequestQueueFull = 12,
+    /// The board-local channel was unavailable.
+    InvalidChannel = 13,
+}
+
+impl From<MotionScaleError> for MotionScaleRejection {
+    fn from(error: MotionScaleError) -> Self {
+        match error {
+            MotionScaleError::ZeroEncoderPpr => Self::EncoderPprZero,
+            MotionScaleError::EncoderCountsPerRevOverflow => Self::EncoderPprTooLarge,
+            MotionScaleError::ZeroPlannerStepsPerRev => Self::PlannerStepsPerRevZero,
+            MotionScaleError::PlannerStepsPerRevTooLarge => Self::PlannerStepsPerRevTooLarge,
+        }
+    }
+}
+
+impl MotionScaleRejection {
+    /// Stable wire code used by `foci_motion_scale_rejected`.
+    pub const fn code(self) -> u8 {
+        self as u8
+    }
+}
+
+/// Rejection was detected by the high-priority protocol task.
+pub const MOTION_SCALE_REJECTION_STAGE_P2: u8 = 0;
+/// Rejection was detected by the slow-control transaction task.
+pub const MOTION_SCALE_REJECTION_STAGE_P1: u8 = 1;
+
 /// Complete validated feedback, planner, and physical-pulse scale for one motor.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub struct MotionScale {
@@ -201,6 +256,29 @@ mod tests {
             MotionScale::new(1_000, MAX_PLANNER_STEPS_PER_REV + 1),
             Err(MotionScaleError::PlannerStepsPerRevTooLarge)
         );
+    }
+
+    #[test]
+    fn rejection_wire_codes_are_stable_and_distinct() {
+        let reasons = [
+            MotionScaleRejection::EncoderPprZero,
+            MotionScaleRejection::EncoderPprTooLarge,
+            MotionScaleRejection::PlannerStepsPerRevZero,
+            MotionScaleRejection::PlannerStepsPerRevTooLarge,
+            MotionScaleRejection::RuntimeEnabled,
+            MotionScaleRejection::MotorArmed,
+            MotionScaleRejection::QueueNotEmpty,
+            MotionScaleRejection::TimerActive,
+            MotionScaleRejection::MapperInstallFailed,
+            MotionScaleRejection::EncoderRegisterWriteFailed,
+            MotionScaleRejection::StepWidthRegisterWriteFailed,
+            MotionScaleRejection::RequestQueueFull,
+            MotionScaleRejection::InvalidChannel,
+        ];
+
+        for (index, reason) in reasons.into_iter().enumerate() {
+            assert_eq!(reason.code(), index as u8 + 1);
+        }
     }
 
     #[test]

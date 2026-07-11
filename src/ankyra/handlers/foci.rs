@@ -304,8 +304,18 @@ mod tests {
             Ok(())
         }
 
-        fn motion_scale_idle(&self, _channel: u8) -> bool {
-            true
+        fn motion_scale_idle(
+            &self,
+            _channel: u8,
+        ) -> Result<(), crate::motion_scale::MotionScaleRejection> {
+            Ok(())
+        }
+
+        fn report_motion_scale_rejection(
+            &mut self,
+            _oid: u8,
+            _rejection: crate::motion_scale::MotionScaleRejection,
+        ) {
         }
     }
 

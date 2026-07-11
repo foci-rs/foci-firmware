@@ -9,7 +9,17 @@ pub trait TmcHost: StateAccess {
     fn enqueue_request(&self, req: crate::tmc::TmcRequest) -> Result<(), QueueFull>;
 
     /// Capture read-only idle admission for motion-scale configuration.
-    fn motion_scale_idle(&self, channel: u8) -> bool;
+    fn motion_scale_idle(
+        &self,
+        channel: u8,
+    ) -> Result<(), crate::motion_scale::MotionScaleRejection>;
+
+    /// Emit a host-visible reason before rejecting motion-scale configuration.
+    fn report_motion_scale_rejection(
+        &mut self,
+        oid: u8,
+        rejection: crate::motion_scale::MotionScaleRejection,
+    );
 }
 
 impl<T: ?Sized + TmcHost> TmcHost for &mut T {
@@ -17,8 +27,19 @@ impl<T: ?Sized + TmcHost> TmcHost for &mut T {
         (**self).enqueue_request(req)
     }
 
-    fn motion_scale_idle(&self, channel: u8) -> bool {
+    fn motion_scale_idle(
+        &self,
+        channel: u8,
+    ) -> Result<(), crate::motion_scale::MotionScaleRejection> {
         (**self).motion_scale_idle(channel)
+    }
+
+    fn report_motion_scale_rejection(
+        &mut self,
+        oid: u8,
+        rejection: crate::motion_scale::MotionScaleRejection,
+    ) {
+        (**self).report_motion_scale_rejection(oid, rejection);
     }
 }
 

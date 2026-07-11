@@ -113,22 +113,31 @@ pub fn tmc_set_motion_scale(
     let Some((channel, _state)) = foci_tmc_state_matching_or_shutdown(ctx, oid, channel) else {
         return;
     };
-    let req = match crate::tmc::tmc_set_encoder_hw(channel, encoder_ppr, planner_steps_per_rev) {
+    let req = match crate::tmc::tmc_set_encoder_hw(channel, oid, encoder_ppr, planner_steps_per_rev)
+    {
         Ok(req) => req,
         Err(error) => {
             defmt::error!("tmc_set_motion_scale rejected: {}", error);
+            ctx.report_motion_scale_rejection(oid, error.into());
             shutdown_request_validation(ctx);
             return;
         }
     };
-    if !ctx.motion_scale_idle(channel) {
+    if let Err(rejection) = ctx.motion_scale_idle(channel) {
         defmt::error!("tmc_set_motion_scale requires disarmed motor, empty queue, inactive timer");
+        ctx.report_motion_scale_rejection(oid, rejection);
         shutdown_request_validation(ctx);
         return;
     }
-    if ctx.enqueue_request(req).is_err() && ctx.enter_shutdown() {
-        let clock = ctx.now();
-        ctx.send_shutdown(ShutdownReason::TmcSetMotionScaleLostQueueFull, clock);
+    if ctx.enqueue_request(req).is_err() {
+        ctx.report_motion_scale_rejection(
+            oid,
+            crate::motion_scale::MotionScaleRejection::RequestQueueFull,
+        );
+        if ctx.enter_shutdown() {
+            let clock = ctx.now();
+            ctx.send_shutdown(ShutdownReason::TmcSetMotionScaleLostQueueFull, clock);
+        }
     }
 }
 
@@ -854,6 +863,7 @@ mod tests {
         queue_empty: bool,
         timer_inactive: bool,
         accept_request: bool,
+        motion_scale_rejections: std::vec::Vec<crate::motion_scale::MotionScaleRejection>,
     }
 
     impl MockCtx {
@@ -867,6 +877,7 @@ mod tests {
                 queue_empty: true,
                 timer_inactive: true,
                 accept_request: true,
+                motion_scale_rejections: std::vec::Vec::new(),
             }
         }
     }
@@ -924,8 +935,28 @@ mod tests {
             Ok(())
         }
 
-        fn motion_scale_idle(&self, _channel: u8) -> bool {
-            self.motor_disarmed && self.queue_empty && self.timer_inactive
+        fn motion_scale_idle(
+            &self,
+            _channel: u8,
+        ) -> Result<(), crate::motion_scale::MotionScaleRejection> {
+            if !self.motor_disarmed {
+                return Err(crate::motion_scale::MotionScaleRejection::MotorArmed);
+            }
+            if !self.queue_empty {
+                return Err(crate::motion_scale::MotionScaleRejection::QueueNotEmpty);
+            }
+            if !self.timer_inactive {
+                return Err(crate::motion_scale::MotionScaleRejection::TimerActive);
+            }
+            Ok(())
+        }
+
+        fn report_motion_scale_rejection(
+            &mut self,
+            _oid: u8,
+            rejection: crate::motion_scale::MotionScaleRejection,
+        ) {
+            self.motion_scale_rejections.push(rejection);
         }
     }
 
@@ -1249,6 +1280,7 @@ mod tests {
         assert!(matches!(
             req.kind,
             crate::tmc::TmcRequestKind::SetMotionScale {
+                oid: 10,
                 encoder_ppr: 1000,
                 planner_steps_per_rev: 3200,
             }
@@ -1266,11 +1298,27 @@ mod tests {
         let tmc_state = crate::state::tmc::tmc_channel(1).unwrap();
         let before_configured = tmc_state.motion_scale_configured();
 
-        for (encoder_ppr, planner_steps_per_rev) in [
-            (0, 3200),
-            (u32::MAX / 4 + 1, 3200),
-            (1000, 0),
-            (1000, MAX_PLANNER_STEPS_PER_REV + 1),
+        for (encoder_ppr, planner_steps_per_rev, expected) in [
+            (
+                0,
+                3200,
+                crate::motion_scale::MotionScaleRejection::EncoderPprZero,
+            ),
+            (
+                u32::MAX / 4 + 1,
+                3200,
+                crate::motion_scale::MotionScaleRejection::EncoderPprTooLarge,
+            ),
+            (
+                1000,
+                0,
+                crate::motion_scale::MotionScaleRejection::PlannerStepsPerRevZero,
+            ),
+            (
+                1000,
+                MAX_PLANNER_STEPS_PER_REV + 1,
+                crate::motion_scale::MotionScaleRejection::PlannerStepsPerRevTooLarge,
+            ),
         ] {
             tmc_set_motion_scale(
                 &mut ctx,
@@ -1282,18 +1330,35 @@ mod tests {
             );
             assert!(ctx.last_request.borrow().is_none());
             assert_eq!(tmc_state.motion_scale_configured(), before_configured);
+            assert_eq!(ctx.motion_scale_rejections.last(), Some(&expected));
         }
 
-        for (motor_disarmed, queue_empty, timer_inactive) in [
-            (false, true, true),
-            (true, false, true),
-            (true, true, false),
+        for (motor_disarmed, queue_empty, timer_inactive, expected) in [
+            (
+                false,
+                true,
+                true,
+                crate::motion_scale::MotionScaleRejection::MotorArmed,
+            ),
+            (
+                true,
+                false,
+                true,
+                crate::motion_scale::MotionScaleRejection::QueueNotEmpty,
+            ),
+            (
+                true,
+                true,
+                false,
+                crate::motion_scale::MotionScaleRejection::TimerActive,
+            ),
         ] {
             ctx.motor_disarmed = motor_disarmed;
             ctx.queue_empty = queue_empty;
             ctx.timer_inactive = timer_inactive;
             tmc_set_motion_scale(&mut ctx, &mut sender, 10, 1, 1000, 3200);
             assert!(ctx.last_request.borrow().is_none());
+            assert_eq!(ctx.motion_scale_rejections.last(), Some(&expected));
         }
 
         ctx.motor_disarmed = true;
@@ -1302,6 +1367,10 @@ mod tests {
         ctx.accept_request = false;
         tmc_set_motion_scale(&mut ctx, &mut sender, 10, 1, 1000, 3200);
         assert_eq!(tmc_state.motion_scale_configured(), before_configured);
+        assert_eq!(
+            ctx.motion_scale_rejections.last(),
+            Some(&crate::motion_scale::MotionScaleRejection::RequestQueueFull)
+        );
     }
 
     #[test]
