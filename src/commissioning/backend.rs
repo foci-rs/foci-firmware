@@ -139,6 +139,11 @@ pub trait CommissionBoardConfig {
     /// TMC4671 STEP_WIDTH value.
     fn step_width(&self) -> u32;
 
+    /// Published TMC4671 position units per physical emitted pulse.
+    ///
+    /// Returns `None` until the complete motion scale has been configured.
+    fn configured_physical_step_width(&self) -> Option<u32>;
+
     /// Encoder counts per mechanical revolution.
     fn mechanical_encoder_quadrature_counts_per_rev(&self) -> u32;
 
@@ -451,6 +456,10 @@ where
             .step_width_value
             .load(core::sync::atomic::Ordering::Relaxed)
             .max(0) as u32
+    }
+
+    fn configured_physical_step_width(&self) -> Option<u32> {
+        self.tmc_state().physical_step_width()
     }
 
     fn mechanical_encoder_quadrature_counts_per_rev(&self) -> u32 {

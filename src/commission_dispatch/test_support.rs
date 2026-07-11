@@ -72,6 +72,8 @@ pub struct MockBackend {
     pub excitation_voltage_value: u16,
     /// Value returned by `step_width()`.
     pub step_width_value: u32,
+    /// Value returned by `configured_physical_step_width()`.
+    pub configured_physical_step_width_value: Option<u32>,
     /// Encoder quadrature counts per mechanical revolution.
     pub mechanical_encoder_quadrature_counts_per_rev_value: u32,
     /// Value returned by `adc_offsets_ready()`.
@@ -145,6 +147,7 @@ impl MockBackend {
             dsadc_mdec_register_value: 0,
             excitation_voltage_value: 1024,
             step_width_value: 0,
+            configured_physical_step_width_value: None,
             mechanical_encoder_quadrature_counts_per_rev_value: 4000,
             adc_offsets_ready_value: true,
             operational_velocity_limit_value: 500_000,
@@ -396,6 +399,10 @@ impl CommissionBoardConfig for MockBackend {
 
     fn step_width(&self) -> u32 {
         self.step_width_value
+    }
+
+    fn configured_physical_step_width(&self) -> Option<u32> {
+        self.configured_physical_step_width_value
     }
 
     fn mechanical_encoder_quadrature_counts_per_rev(&self) -> u32 {

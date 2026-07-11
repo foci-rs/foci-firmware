@@ -37,6 +37,13 @@ async fn verify_closed_loop_armed_state<B: CommissioningBackend>(
 ) -> Result<(), ()> {
     use foci_tmc4671::registers::*;
 
+    let step_width = match backend.configured_physical_step_width() {
+        Some(value) if value != 0 => value,
+        _ => {
+            defmt::error!("closed-loop: configured physical STEP_WIDTH is missing or zero");
+            return Err(());
+        }
+    };
     let encoder_ppr = backend.mechanical_encoder_quadrature_counts_per_rev();
     if encoder_ppr == 0 {
         defmt::error!("closed-loop: ABN_DECODER_PPR expected value is zero");
@@ -54,7 +61,7 @@ async fn verify_closed_loop_armed_state<B: CommissioningBackend>(
         (ABN_DECODER_PPR, encoder_ppr),
         (ADC_I_SELECT, backend.tmc_config().adc_i_select),
         (PID_TORQUE_FLUX_LIMITS, backend.current_limit()),
-        (STEP_WIDTH, backend.step_width()),
+        (STEP_WIDTH, step_width),
     ];
 
     for (register, expected) in checks {
@@ -475,11 +482,13 @@ pub(crate) async fn step_closed_loop_entry<B: CommissioningBackend>(
             }
 
             // 8. Write STEP_WIDTH for hardware step/dir input.
-            let step_width = backend.step_width();
-            if step_width == 0 {
-                defmt::error!("STEP_WIDTH=0, aborting closed-loop entry");
-                return super::fail_inner(phase, CommissionError::Spi);
-            }
+            let step_width = match backend.configured_physical_step_width() {
+                Some(value) if value != 0 => value,
+                _ => {
+                    defmt::error!("closed-loop: configured physical STEP_WIDTH is missing or zero");
+                    return super::fail_inner(phase, CommissionError::Spi);
+                }
+            };
             if backend
                 .write_register(STEP_WIDTH, step_width)
                 .await
@@ -1054,6 +1063,7 @@ mod tests {
         backend.current_limit_value = 2816;
         backend.operational_voltage_limit_value = 29_000;
         backend.step_width_value = 16;
+        backend.configured_physical_step_width_value = Some(16);
 
         let registers = [
             (PWM_SV_CHOP.addr(), 7),
@@ -1111,6 +1121,7 @@ mod tests {
             let mut adc_cal = None;
             let mut backend = MockBackend::new();
             backend.step_width_value = 16;
+            backend.configured_physical_step_width_value = Some(16);
 
             let result = step_closed_loop_entry(
                 &mut phase,
@@ -1146,6 +1157,7 @@ mod tests {
             let mut adc_cal = None;
             let mut backend = MockBackend::new();
             backend.step_width_value = 16;
+            backend.configured_physical_step_width_value = Some(16);
             backend.read_override = Some((POSITION_SELECTION.addr(), 8));
 
             let result = step_closed_loop_entry(
@@ -1166,6 +1178,128 @@ mod tests {
                     .iter()
                     .any(|(addr, _)| *addr == STEP_WIDTH.addr()),
                 "STEP_WIDTH must not be armed before mechanical selection verifies"
+            );
+        });
+    }
+
+    #[test]
+    fn write_position_config_propagates_mechanical_selection_read_error() {
+        pollster::block_on(async {
+            let mut phase = closed_loop_phase_at(ClosedLoopEntryState::WritePositionConfig);
+            let mut adc_cal = None;
+            let mut backend = MockBackend::new();
+            backend.step_width_value = 16;
+            backend.configured_physical_step_width_value = Some(16);
+            backend.fail_on_read = Some(POSITION_SELECTION.addr());
+
+            let result = step_closed_loop_entry(
+                &mut phase,
+                InnerSequence::Calibrate,
+                &mut adc_cal,
+                &mut backend,
+            )
+            .await;
+
+            assert!(matches!(
+                result,
+                StepResult::InnerFailed(CommissionError::Spi)
+            ));
+            assert!(
+                !write_log(&backend)
+                    .as_slice()
+                    .iter()
+                    .any(|(addr, _)| *addr == STEP_WIDTH.addr()),
+                "POSITION_SELECTION read failure must block STEP_WIDTH"
+            );
+        });
+    }
+
+    #[test]
+    fn write_position_config_uses_published_physical_width_not_legacy_mirror() {
+        pollster::block_on(async {
+            let mut phase = closed_loop_phase_at(ClosedLoopEntryState::WritePositionConfig);
+            let mut adc_cal = None;
+            let mut backend = MockBackend::new();
+            backend.step_width_value = 16;
+            backend.configured_physical_step_width_value = Some(8);
+
+            let result = step_closed_loop_entry(
+                &mut phase,
+                InnerSequence::Calibrate,
+                &mut adc_cal,
+                &mut backend,
+            )
+            .await;
+
+            assert!(matches!(result, StepResult::Continue));
+            assert_eq!(
+                write_log(&backend).as_slice(),
+                &[
+                    (VELOCITY_SELECTION.addr(), CLOSED_LOOP_VELOCITY_SELECTION),
+                    (POSITION_SELECTION.addr(), CLOSED_LOOP_POSITION_SELECTION),
+                    (STEP_WIDTH.addr(), 8),
+                ]
+            );
+        });
+    }
+
+    #[test]
+    fn write_position_config_rejects_unpublished_legacy_width() {
+        pollster::block_on(async {
+            let mut phase = closed_loop_phase_at(ClosedLoopEntryState::WritePositionConfig);
+            let mut adc_cal = None;
+            let mut backend = MockBackend::new();
+            backend.step_width_value = 16;
+
+            let result = step_closed_loop_entry(
+                &mut phase,
+                InnerSequence::Calibrate,
+                &mut adc_cal,
+                &mut backend,
+            )
+            .await;
+
+            assert!(matches!(
+                result,
+                StepResult::InnerFailed(CommissionError::Spi)
+            ));
+            assert!(
+                !write_log(&backend)
+                    .as_slice()
+                    .iter()
+                    .any(|(addr, _)| *addr == STEP_WIDTH.addr()),
+                "an unpublished legacy width must not arm STEP_WIDTH"
+            );
+        });
+    }
+
+    #[test]
+    fn write_position_config_rejects_zero_published_physical_width() {
+        pollster::block_on(async {
+            let mut phase = closed_loop_phase_at(ClosedLoopEntryState::WritePositionConfig);
+            let mut adc_cal = None;
+            let mut backend = MockBackend::new();
+            backend.step_width_value = 16;
+            backend.configured_physical_step_width_value = Some(0);
+
+            let result = step_closed_loop_entry(
+                &mut phase,
+                InnerSequence::Calibrate,
+                &mut adc_cal,
+                &mut backend,
+            )
+            .await;
+
+            assert!(matches!(
+                result,
+                StepResult::InnerFailed(CommissionError::Spi)
+            ));
+            assert!(
+                !write_log(&backend)
+                    .as_slice()
+                    .iter()
+                    .any(|(addr, _)| *addr == STEP_WIDTH.addr()),
+                "zero physical width must not arm STEP_WIDTH"
             );
         });
     }
@@ -1299,6 +1433,84 @@ mod tests {
                 .expect("closed-loop entry should clear STATUS_FLAGS before enable");
             assert!(target_rewrite_index < enable_index);
             assert!(status_clear_index < enable_index);
+        });
+    }
+
+    #[test]
+    fn enter_position_mode_rejects_unpublished_legacy_width() {
+        pollster::block_on(async {
+            let mut phase = closed_loop_phase_at(ClosedLoopEntryState::EnterPositionMode);
+            let mut adc_cal = None;
+            let mut backend = MockBackend::new();
+            seed_armed_state_registers(&mut backend);
+            backend.configured_physical_step_width_value = None;
+
+            let result = step_closed_loop_entry(
+                &mut phase,
+                InnerSequence::Calibrate,
+                &mut adc_cal,
+                &mut backend,
+            )
+            .await;
+
+            assert!(matches!(
+                result,
+                StepResult::InnerFailed(CommissionError::Spi)
+            ));
+            assert!(!backend.enable_pin, "missing scale must fail closed");
+        });
+    }
+
+    #[test]
+    fn enter_position_mode_rejects_divergent_legacy_width_without_enable() {
+        pollster::block_on(async {
+            let mut phase = closed_loop_phase_at(ClosedLoopEntryState::EnterPositionMode);
+            let mut adc_cal = None;
+            let mut backend = MockBackend::new();
+            seed_armed_state_registers(&mut backend);
+            backend.configured_physical_step_width_value = Some(8);
+
+            let result = step_closed_loop_entry(
+                &mut phase,
+                InnerSequence::Calibrate,
+                &mut adc_cal,
+                &mut backend,
+            )
+            .await;
+
+            assert!(matches!(
+                result,
+                StepResult::InnerFailed(CommissionError::Spi)
+            ));
+            assert!(!backend.enable_pin, "divergent STEP_WIDTH must fail closed");
+        });
+    }
+
+    #[test]
+    fn enter_position_mode_propagates_armed_state_read_error_without_enable() {
+        pollster::block_on(async {
+            let mut phase = closed_loop_phase_at(ClosedLoopEntryState::EnterPositionMode);
+            let mut adc_cal = None;
+            let mut backend = MockBackend::new();
+            seed_armed_state_registers(&mut backend);
+            backend.fail_on_read = Some(STEP_WIDTH.addr());
+
+            let result = step_closed_loop_entry(
+                &mut phase,
+                InnerSequence::Calibrate,
+                &mut adc_cal,
+                &mut backend,
+            )
+            .await;
+
+            assert!(matches!(
+                result,
+                StepResult::InnerFailed(CommissionError::Spi)
+            ));
+            assert!(
+                !backend.enable_pin,
+                "armed-state read failure must fail closed"
+            );
         });
     }
 
