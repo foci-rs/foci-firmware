@@ -1869,6 +1869,132 @@ fn feedforward_tick_clears_velocity_offset_once_after_deactivation() {
 }
 
 #[test]
+fn feedforward_tick_retries_failed_velocity_offset_clear() {
+    pollster::block_on(async {
+        let mut runtime = TmcControlRuntime::new_for_channel(0);
+        runtime.set_motor_enabled_for_test(true);
+        runtime.set_planner_velocity_scale_for_test(84_000_000);
+        let tmc_state = crate::state::tmc::TmcChannelState::new();
+        let stepper_state = crate::state::stepper::StepperChannelState::new();
+        let config = commissioning_runtime_config();
+        tmc_state.velocity_feedforward.store(true, Relaxed);
+        tmc_state.velocity_feedforward_multiplier.store(40, Relaxed);
+        tmc_state
+            .velocity_transient_feedforward
+            .store(true, Relaxed);
+        tmc_state
+            .velocity_transient_lead_time_us
+            .store(1_000, Relaxed);
+        tmc_state
+            .velocity_transient_gain_permille
+            .store(1_000, Relaxed);
+        tmc_state
+            .velocity_transient_max_offset
+            .store(1_000, Relaxed);
+        stepper_state.interval.store(2_800, Relaxed);
+        stepper_state.interval_add.store(-10, Relaxed);
+        stepper_state.direction.store(false, Relaxed);
+        let mut active_tmc = Tmc4671Spi::new(RuntimeMockSpi::default());
+
+        assert_eq!(
+            runtime
+                .apply_feedforward_tick(
+                    &mut active_tmc,
+                    TmcControlStateRefs::new(&tmc_state, &stepper_state),
+                    &config,
+                    false,
+                    false,
+                    false,
+                )
+                .await,
+            Ok(())
+        );
+        let active_writes = active_tmc.into_inner().writes;
+        assert_eq!(active_writes.len(), 1);
+        let active_offset = active_writes[0].1 as i32;
+        assert_ne!(active_offset, 0);
+        assert!(runtime.feedforward_was_active());
+        #[cfg(feature = "trace")]
+        let active_transient_offset = runtime.trace_state().cached_velocity_transient_offset;
+        #[cfg(feature = "trace")]
+        {
+            assert_eq!(runtime.trace_state().cached_velocity_offset, active_offset);
+            assert_ne!(active_transient_offset, 0);
+        }
+
+        tmc_state.velocity_feedforward.store(false, Relaxed);
+        tmc_state
+            .velocity_transient_feedforward
+            .store(false, Relaxed);
+        let mut failed_tmc =
+            Tmc4671Spi::new(RuntimeMockSpi::default().fail_writes_to(PID_VELOCITY_OFFSET.addr()));
+
+        let failed_tick = runtime
+            .apply_feedforward_tick(
+                &mut failed_tmc,
+                TmcControlStateRefs::new(&tmc_state, &stepper_state),
+                &config,
+                false,
+                false,
+                false,
+            )
+            .await;
+
+        assert_eq!(failed_tick, Err(()));
+        assert!(runtime.feedforward_was_active());
+        #[cfg(feature = "trace")]
+        {
+            assert_eq!(runtime.trace_state().cached_velocity_offset, active_offset);
+            assert_eq!(
+                runtime.trace_state().cached_velocity_transient_offset,
+                active_transient_offset
+            );
+        }
+
+        let mut retry_tmc = Tmc4671Spi::new(RuntimeMockSpi::default());
+        assert_eq!(
+            runtime
+                .apply_feedforward_tick(
+                    &mut retry_tmc,
+                    TmcControlStateRefs::new(&tmc_state, &stepper_state),
+                    &config,
+                    false,
+                    false,
+                    false,
+                )
+                .await,
+            Ok(())
+        );
+        assert_eq!(
+            retry_tmc.into_inner().writes,
+            std::vec![(PID_VELOCITY_OFFSET.addr(), 0)]
+        );
+        assert!(!runtime.feedforward_was_active());
+        #[cfg(feature = "trace")]
+        {
+            assert_eq!(runtime.trace_state().cached_velocity_offset, 0);
+            assert_eq!(runtime.trace_state().cached_velocity_transient_offset, 0);
+        }
+
+        let mut inactive_tmc = Tmc4671Spi::new(RuntimeMockSpi::default());
+        assert_eq!(
+            runtime
+                .apply_feedforward_tick(
+                    &mut inactive_tmc,
+                    TmcControlStateRefs::new(&tmc_state, &stepper_state),
+                    &config,
+                    false,
+                    false,
+                    false,
+                )
+                .await,
+            Ok(())
+        );
+        assert!(inactive_tmc.into_inner().writes.is_empty());
+    });
+}
+
+#[test]
 fn feedforward_fast_tick_skips_torque_flux_offset_slow_work() {
     pollster::block_on(async {
         let mut runtime = TmcControlRuntime::new_for_channel(0);

@@ -661,8 +661,9 @@ impl TmcControlRuntime {
     /// and decoupling offsets run only when `slow_control_tick` is true, matching
     /// the board-local decimation used by the surrounding maintenance path.
     ///
-    /// Individual SPI operations are best-effort to preserve existing board
-    /// behavior; write/read failures do not abort later control work.
+    /// Active feedforward SPI operations are best-effort to preserve existing
+    /// board behavior. A failed inactive velocity-offset clear is propagated so
+    /// the runtime retains its active latch and retries the clear.
     pub async fn apply_feedforward_tick<B>(
         &mut self,
         tmc_spi: &mut foci_tmc4671::spi::Tmc4671Spi<B>,
@@ -745,9 +746,10 @@ impl TmcControlRuntime {
                 trace.cached_velocity_transient_offset = transient_offset;
             }
         } else if self.feedforward_was_active {
-            let _ = tmc_spi
+            tmc_spi
                 .write_register(foci_tmc4671::registers::PID_VELOCITY_OFFSET, 0)
-                .await;
+                .await
+                .map_err(|_| ())?;
             #[cfg(feature = "trace")]
             {
                 let trace = self.trace_state_mut();
