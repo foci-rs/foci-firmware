@@ -73,7 +73,7 @@ pub struct MockBackend {
     /// Value returned by `step_width()`.
     pub step_width_value: u32,
     /// Encoder quadrature counts per mechanical revolution.
-    pub encoder_counts_per_rev_value: u32,
+    pub mechanical_encoder_quadrature_counts_per_rev_value: u32,
     /// Value returned by `adc_offsets_ready()`.
     pub adc_offsets_ready_value: bool,
     /// Value returned by `operational_velocity_limit()`.
@@ -87,7 +87,7 @@ pub struct MockBackend {
     /// Optional flux-filter override returned by `configured_flux_filter_hz()`.
     pub configured_flux_filter_hz: Option<u16>,
     /// Encoder position returned by the sampled-count accessor.
-    pub encoder_position_counts_value: u32,
+    pub mechanical_encoder_position_counts_value: u32,
     /// Sequential values to return for consecutive `PID_POSITION_ACTUAL` reads.
     ///
     /// When non-empty, each `read_register(PID_POSITION_ACTUAL)` call pops and
@@ -145,7 +145,7 @@ impl MockBackend {
             dsadc_mdec_register_value: 0,
             excitation_voltage_value: 1024,
             step_width_value: 0,
-            encoder_counts_per_rev_value: 4000,
+            mechanical_encoder_quadrature_counts_per_rev_value: 4000,
             adc_offsets_ready_value: true,
             operational_velocity_limit_value: 500_000,
             operational_voltage_limit_value:
@@ -153,7 +153,7 @@ impl MockBackend {
             tmc_config: TmcConfig::default_for_test(),
             configured_torque_filter_hz: None,
             configured_flux_filter_hz: None,
-            encoder_position_counts_value: 0,
+            mechanical_encoder_position_counts_value: 0,
             read_position_actual_sequence: Vec::new(),
             read_position_actual_pos: 0,
             abn_decoder_count_sequence: Vec::new(),
@@ -333,17 +333,17 @@ impl CommissionMotorControl for MockBackend {
 }
 
 impl CommissionEncoderRead for MockBackend {
-    async fn read_encoder_position_counts(&mut self) -> u32 {
-        self.encoder_position_counts_value
+    async fn read_mechanical_encoder_position_counts(&mut self) -> u32 {
+        self.mechanical_encoder_position_counts_value
     }
 
-    async fn try_read_encoder_position_counts(&mut self) -> Result<u32, Self::Error> {
+    async fn try_read_mechanical_encoder_position_counts(&mut self) -> Result<u32, Self::Error> {
         let addr = foci_tmc4671::registers::ABN_DECODER_COUNT.addr();
         self.spi_log.push(SpiOp::Read).ok();
         if self.fail_on_read == Some(addr) {
             return Err(MockSpiError);
         }
-        Ok(self.encoder_position_counts_value)
+        Ok(self.mechanical_encoder_position_counts_value)
     }
 }
 
@@ -398,8 +398,8 @@ impl CommissionBoardConfig for MockBackend {
         self.step_width_value
     }
 
-    fn encoder_counts_per_rev(&self) -> u32 {
-        self.encoder_counts_per_rev_value
+    fn mechanical_encoder_quadrature_counts_per_rev(&self) -> u32 {
+        self.mechanical_encoder_quadrature_counts_per_rev_value
     }
 
     fn adc_offsets_ready(&self) -> bool {
@@ -544,14 +544,32 @@ mod tests {
     }
 
     #[test]
-    fn mock_try_read_encoder_position_counts_propagates_read_failure() {
+    fn mock_try_read_mechanical_encoder_position_counts_propagates_read_failure() {
         pollster::block_on(async {
             let mut backend = MockBackend::new();
             backend.fail_on_read = Some(foci_tmc4671::registers::ABN_DECODER_COUNT.addr());
 
-            let result = backend.try_read_encoder_position_counts().await;
+            let result = backend.try_read_mechanical_encoder_position_counts().await;
 
             assert_eq!(result, Err(MockSpiError));
+        });
+    }
+
+    #[test]
+    fn mock_mechanical_encoder_accessors_report_explicit_units() {
+        pollster::block_on(async {
+            let mut backend = MockBackend::new();
+            backend.mechanical_encoder_position_counts_value = 1_234;
+            backend.mechanical_encoder_quadrature_counts_per_rev_value = 8_000;
+
+            assert_eq!(
+                backend.read_mechanical_encoder_position_counts().await,
+                1_234
+            );
+            assert_eq!(
+                backend.mechanical_encoder_quadrature_counts_per_rev(),
+                8_000
+            );
         });
     }
 }

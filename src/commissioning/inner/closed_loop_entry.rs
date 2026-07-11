@@ -36,7 +36,7 @@ async fn verify_closed_loop_armed_state<B: CommissioningBackend>(
 ) -> Result<(), ()> {
     use foci_tmc4671::registers::*;
 
-    let encoder_ppr = backend.encoder_quadrature_ppr();
+    let encoder_ppr = backend.mechanical_encoder_quadrature_counts_per_rev();
     if encoder_ppr == 0 {
         defmt::error!("closed-loop: ABN_DECODER_PPR expected value is zero");
         return Err(());
@@ -1051,7 +1051,10 @@ mod tests {
             (PHI_E_SELECTION.addr(), 3),
             (POSITION_SELECTION.addr(), CLOSED_LOOP_POSITION_SELECTION),
             (VELOCITY_SELECTION.addr(), CLOSED_LOOP_VELOCITY_SELECTION),
-            (ABN_DECODER_PPR.addr(), backend.encoder_counts_per_rev_value),
+            (
+                ABN_DECODER_PPR.addr(),
+                backend.mechanical_encoder_quadrature_counts_per_rev_value,
+            ),
             (ADC_I_SELECT.addr(), backend.tmc_config.adc_i_select),
             (PID_TORQUE_FLUX_LIMITS.addr(), backend.current_limit_value),
             (

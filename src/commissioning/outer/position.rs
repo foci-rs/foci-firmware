@@ -136,7 +136,7 @@ pub(crate) async fn step_position_tune_with_trace<B: CommissioningBackend>(
             // Record both position domains. ABN counts are used for response
             // measurement; PID_POSITION_ACTUAL is the TMC target domain used
             // by PID_POSITION_TARGET.
-            let encoder_raw = match backend.try_read_encoder_count().await {
+            let encoder_raw = match backend.try_read_mechanical_encoder_position_counts().await {
                 Ok(value) => value,
                 Err(_) => return fail_outer(phase, CommissionError::Spi),
             };
@@ -186,7 +186,7 @@ pub(crate) async fn step_position_tune_with_trace<B: CommissioningBackend>(
                 return StepResult::Continue;
             }
 
-            let encoder_raw = match backend.try_read_encoder_count().await {
+            let encoder_raw = match backend.try_read_mechanical_encoder_position_counts().await {
                 Ok(value) => value,
                 Err(_) => return fail_outer(phase, CommissionError::Spi),
             };
@@ -325,10 +325,11 @@ pub(crate) async fn step_position_tune_with_trace<B: CommissioningBackend>(
                         return fail_outer(phase, CommissionError::Spi);
                     }
 
-                    let encoder_raw = match backend.try_read_encoder_count().await {
-                        Ok(value) => value,
-                        Err(_) => return fail_outer(phase, CommissionError::Spi),
-                    };
+                    let encoder_raw =
+                        match backend.try_read_mechanical_encoder_position_counts().await {
+                            Ok(value) => value,
+                            Err(_) => return fail_outer(phase, CommissionError::Spi),
+                        };
                     data.step_start_counts = encoder_raw as i32;
                     let position_raw = match backend.read_register(PID_POSITION_ACTUAL).await {
                         Ok(v) => v as i32,

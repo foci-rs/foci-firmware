@@ -215,7 +215,7 @@ pub(crate) async fn step_velocity_validate_with_trace<B: CommissioningBackend>(
 
     match state {
         VelocityValidateState::WriteGains => {
-            let encoder_counts_per_rev = backend.encoder_counts_per_rev();
+            let encoder_counts_per_rev = backend.mechanical_encoder_quadrature_counts_per_rev();
             let f_pwm_hz = backend.tmc_config().pwm_freq_hz();
             let velocity_limit_reg = counts_per_ms_to_tmc_velocity(
                 i64::from(data.gains.velocity_limit),
@@ -284,7 +284,7 @@ pub(crate) async fn step_velocity_validate_with_trace<B: CommissioningBackend>(
         VelocityValidateState::ForwardStep => {
             let target_reg = counts_per_ms_to_tmc_velocity(
                 i64::from(data.step_target),
-                backend.encoder_counts_per_rev(),
+                backend.mechanical_encoder_quadrature_counts_per_rev(),
                 backend.tmc_config().pwm_freq_hz(),
             )
             .max(1) as u32;
@@ -296,11 +296,11 @@ pub(crate) async fn step_velocity_validate_with_trace<B: CommissioningBackend>(
                 return fail_outer(phase, CommissionError::Spi);
             }
 
-            data.prev_encoder_for_velocity = match backend.try_read_encoder_position_counts().await
-            {
-                Ok(value) => value,
-                Err(_) => return fail_outer(phase, CommissionError::Spi),
-            };
+            data.prev_encoder_for_velocity =
+                match backend.try_read_mechanical_encoder_position_counts().await {
+                    Ok(value) => value,
+                    Err(_) => return fail_outer(phase, CommissionError::Spi),
+                };
 
             let next_sample_us = backend
                 .elapsed_us()
@@ -321,7 +321,7 @@ pub(crate) async fn step_velocity_validate_with_trace<B: CommissioningBackend>(
                 return StepResult::Continue;
             }
 
-            let encoder_raw = match backend.try_read_encoder_position_counts().await {
+            let encoder_raw = match backend.try_read_mechanical_encoder_position_counts().await {
                 Ok(value) => value,
                 Err(_) => return fail_outer(phase, CommissionError::Spi),
             };
@@ -403,7 +403,7 @@ pub(crate) async fn step_velocity_validate_with_trace<B: CommissioningBackend>(
         VelocityValidateState::ReverseStep => {
             let target_reg = counts_per_ms_to_tmc_velocity(
                 -i64::from(data.step_target),
-                backend.encoder_counts_per_rev(),
+                backend.mechanical_encoder_quadrature_counts_per_rev(),
                 backend.tmc_config().pwm_freq_hz(),
             )
             .min(-1);
@@ -415,11 +415,11 @@ pub(crate) async fn step_velocity_validate_with_trace<B: CommissioningBackend>(
                 return fail_outer(phase, CommissionError::Spi);
             }
 
-            data.prev_encoder_for_velocity = match backend.try_read_encoder_position_counts().await
-            {
-                Ok(value) => value,
-                Err(_) => return fail_outer(phase, CommissionError::Spi),
-            };
+            data.prev_encoder_for_velocity =
+                match backend.try_read_mechanical_encoder_position_counts().await {
+                    Ok(value) => value,
+                    Err(_) => return fail_outer(phase, CommissionError::Spi),
+                };
 
             let next_sample_us = backend
                 .elapsed_us()
@@ -440,7 +440,7 @@ pub(crate) async fn step_velocity_validate_with_trace<B: CommissioningBackend>(
                 return StepResult::Continue;
             }
 
-            let encoder_raw = match backend.try_read_encoder_position_counts().await {
+            let encoder_raw = match backend.try_read_mechanical_encoder_position_counts().await {
                 Ok(value) => value,
                 Err(_) => return fail_outer(phase, CommissionError::Spi),
             };
@@ -514,7 +514,7 @@ pub(crate) async fn step_velocity_validate_with_trace<B: CommissioningBackend>(
         VelocityValidateState::ReverseSettle { deadline_us } => {
             if backend.elapsed_us().wrapping_sub(*deadline_us) < 0x8000_0000 {
                 data.prev_encoder_for_velocity =
-                    match backend.try_read_encoder_position_counts().await {
+                    match backend.try_read_mechanical_encoder_position_counts().await {
                         Ok(value) => value,
                         Err(_) => return fail_outer(phase, CommissionError::Spi),
                     };
@@ -541,7 +541,7 @@ pub(crate) async fn step_velocity_validate_with_trace<B: CommissioningBackend>(
                 return StepResult::Continue;
             }
 
-            let count = match backend.try_read_encoder_position_counts().await {
+            let count = match backend.try_read_mechanical_encoder_position_counts().await {
                 Ok(value) => value,
                 Err(_) => return fail_outer(phase, CommissionError::Spi),
             };
@@ -896,7 +896,8 @@ pub(crate) async fn step_velocity_validate_with_trace<B: CommissioningBackend>(
                     data.attempt = 1;
 
                     let config = backend.tmc_config();
-                    let encoder_counts_per_rev = backend.encoder_counts_per_rev();
+                    let encoder_counts_per_rev =
+                        backend.mechanical_encoder_quadrature_counts_per_rev();
                     let mut retry_model = data.model;
                     let new_theta = data.model.theta_mech_us * VELOCITY_RETRY_LAMBDA_MUL_NUM
                         / VELOCITY_RETRY_LAMBDA_MUL_DEN;
@@ -1060,7 +1061,7 @@ pub(crate) async fn step_velocity_validate_with_trace<B: CommissioningBackend>(
             let step_target_counts = response::position_tune_step_counts(safety.counts_per_rev);
             let step_target_tmc = encoder_counts_to_tmc_position_units(
                 step_target_counts.min(i32::MAX as u32) as i32,
-                backend.encoder_counts_per_rev(),
+                backend.mechanical_encoder_quadrature_counts_per_rev(),
             )
             .max(1) as u32;
 
@@ -1836,7 +1837,7 @@ mod tests {
             let mut buf = TransientBuffer::new();
             let mut backend = MockBackend::new();
             backend.elapsed_us_value = 1_600;
-            backend.encoder_position_counts_value = 1_024;
+            backend.mechanical_encoder_position_counts_value = 1_024;
 
             let result = step_velocity_validate(
                 &mut phase,
@@ -1928,7 +1929,7 @@ mod tests {
             }
             let mut backend = MockBackend::new();
             backend.elapsed_us_value = 1_000;
-            backend.encoder_position_counts_value = 1_004;
+            backend.mechanical_encoder_position_counts_value = 1_004;
             backend.fail_on_write = Some(PID_VELOCITY_TARGET.addr());
 
             let result = step_velocity_validate(
@@ -2007,7 +2008,7 @@ mod tests {
             let mut buf = TransientBuffer::new();
             let mut backend = MockBackend::new();
             backend.elapsed_us_value = 1_000;
-            backend.encoder_position_counts_value = 5;
+            backend.mechanical_encoder_position_counts_value = 5;
 
             let result = step_velocity_validate(
                 &mut phase,
@@ -2083,7 +2084,7 @@ mod tests {
             };
             let mut buf = TransientBuffer::new();
             let mut backend = MockBackend::new();
-            backend.encoder_counts_per_rev_value = 4_000;
+            backend.mechanical_encoder_quadrature_counts_per_rev_value = 4_000;
             backend.step_width_value = 16;
 
             let _ = step_velocity_validate(

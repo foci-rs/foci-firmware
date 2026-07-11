@@ -96,7 +96,7 @@ pub(crate) async fn step_velocity_tune<B: CommissioningBackend>(
             )
         } else {
             let config = backend.tmc_config();
-            let encoder_counts_per_rev = backend.encoder_counts_per_rev();
+            let encoder_counts_per_rev = backend.mechanical_encoder_quadrature_counts_per_rev();
             let gains = match crate::autotune::simc_velocity_gains_with_lambda_multiplier(
                 &model,
                 effective_profile,

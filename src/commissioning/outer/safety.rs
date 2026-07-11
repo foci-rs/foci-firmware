@@ -230,7 +230,9 @@ pub(crate) async fn check_outer_safety<B: CommissioningBackend>(
         )));
     }
 
-    let encoder_raw = backend.try_read_encoder_count().await?;
+    let encoder_raw = backend
+        .try_read_mechanical_encoder_position_counts()
+        .await?;
     let encoder_count = encoder_raw as i32;
     let now_us = backend.elapsed_us();
 
@@ -468,7 +470,7 @@ mod tests {
             safety.last_sample_us = 100_000;
             let mut backend = MockBackend::new();
             backend.elapsed_us_value = 124_909;
-            backend.encoder_position_counts_value = 2525; // delta=197 over 24.909ms => ~7 counts/ms
+            backend.mechanical_encoder_position_counts_value = 2525; // delta=197 over 24.909ms => ~7 counts/ms
 
             let fault = check_outer_safety(&mut safety, &mut backend)
                 .await
@@ -503,7 +505,7 @@ mod tests {
             safety.start_sample_us = 90_000;
             let mut backend = MockBackend::new();
             backend.elapsed_us_value = 104_000;
-            backend.encoder_position_counts_value = 125;
+            backend.mechanical_encoder_position_counts_value = 125;
 
             let fault = check_outer_safety(&mut safety, &mut backend)
                 .await

@@ -399,7 +399,7 @@ pub(crate) async fn step_adc_calibrate<B: CommissioningBackend>(
                     StepResult::Continue
                 }
                 AdcResidualStage::ChopOn => {
-                    let encoder_count = backend.read_encoder_count().await;
+                    let encoder_count = backend.read_mechanical_encoder_position_counts().await;
                     let result = AdcCalResult {
                         adc_i0: *offset_i0,
                         adc_i1: *offset_i1,

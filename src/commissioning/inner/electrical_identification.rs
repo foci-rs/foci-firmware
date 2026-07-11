@@ -403,7 +403,7 @@ impl<B: CommissioningBackend> crate::resistance_identification::ResistanceBacken
     }
 
     fn encoder_counts_per_rev(&self) -> u32 {
-        self.backend.encoder_counts_per_rev()
+        self.backend.mechanical_encoder_quadrature_counts_per_rev()
     }
 
     fn adc_offsets_ready(&self) -> bool {

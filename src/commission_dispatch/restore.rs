@@ -63,8 +63,10 @@ pub async fn restore_position_mode_after_outer<B: CommissioningBackend>(
     backend.write_register(PID_POSITION_ACTUAL, 0).await?;
 
     let encoder_count = backend.read_register(ABN_DECODER_COUNT).await?;
-    let target_scaled =
-        encoder_count_to_position_target(encoder_count, backend.encoder_counts_per_rev());
+    let target_scaled = encoder_count_to_position_target(
+        encoder_count,
+        backend.mechanical_encoder_quadrature_counts_per_rev(),
+    );
     backend
         .write_register(PID_POSITION_TARGET, target_scaled)
         .await?;

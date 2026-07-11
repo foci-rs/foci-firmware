@@ -708,7 +708,10 @@ async fn read_axis_sample<B: CommissioningBackend>(
         .map_err(|_| ())?;
     let foc_limited = backend.read_register(sub.data).await.map_err(|_| ())?;
     let status_flags = backend.read_register(STATUS_FLAGS).await.map_err(|_| ())?;
-    let encoder_end = backend.try_read_encoder_count().await.map_err(|_| ())?;
+    let encoder_end = backend
+        .try_read_mechanical_encoder_position_counts()
+        .await
+        .map_err(|_| ())?;
 
     Ok(axis_sample_from_registers(
         axis,
@@ -1435,10 +1438,11 @@ pub(crate) async fn step_current_validate<B: CommissioningBackend>(
                 return super::fail_inner(phase, CommissionError::Spi);
             }
 
-            data.sample_encoder_start = match backend.try_read_encoder_count().await {
-                Ok(count) => count,
-                Err(_) => return super::fail_inner(phase, CommissionError::Spi),
-            };
+            data.sample_encoder_start =
+                match backend.try_read_mechanical_encoder_position_counts().await {
+                    Ok(count) => count,
+                    Err(_) => return super::fail_inner(phase, CommissionError::Spi),
+                };
 
             let step_amplitude = validation_step_amplitude(data, axis);
             let target = match dir {
