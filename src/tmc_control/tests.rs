@@ -6,7 +6,8 @@ use crate::pid::{InnerLoopGains, OuterLoopGains};
 use crate::tmc::{TmcRequest, TmcRequestKind};
 use crate::tmc_control::dispatch::{SharedTmcDispatch, apply_shared_tmc_request};
 use crate::tmc_control::helpers::{
-    apply_live_inner_gains, apply_live_outer_gains, refresh_velocity_scale_from_state,
+    apply_live_inner_gains, apply_live_outer_gains, apply_motion_scale,
+    refresh_velocity_scale_from_state,
 };
 use core::sync::atomic::AtomicBool;
 use core::sync::atomic::Ordering::Relaxed;
@@ -20,7 +21,7 @@ use foci_tmc4671::registers::{
     PID_ERROR_PID_VELOCITY_ERROR_SUM, PID_FLUX_P_FLUX_I, PID_POSITION_ACTUAL,
     PID_POSITION_P_POSITION_I, PID_POSITION_TARGET, PID_TORQUE_FLUX_LIMITS, PID_TORQUE_FLUX_OFFSET,
     PID_TORQUE_P_TORQUE_I, PID_VELOCITY_OFFSET, PID_VELOCITY_P_VELOCITY_I, PIDOUT_UQ_UD_LIMITS,
-    STATUS_FLAGS,
+    STATUS_FLAGS, STEP_WIDTH,
 };
 use foci_tmc4671::spi::Tmc4671Spi;
 
@@ -294,17 +295,29 @@ fn request_outcome_constructors_encode_tail_shutdown_and_refresh() {
 }
 
 #[test]
-fn refresh_velocity_scale_reads_step_width_from_state() {
+fn refresh_velocity_scale_caches_legacy_and_rational_scales() {
+    let _guard = crate::commission_dispatch::test_support::SHARED_STATE_MUTEX.blocking_lock();
     let mut runtime = TmcControlRuntime::new_for_channel(0);
-    let tmc_state = crate::state::tmc::TmcChannelState::new();
-    tmc_state.step_width_value.store(-3200, Relaxed);
+    let tmc_state = crate::state::tmc::tmc_channel0();
+    let stepper_state = crate::state::stepper::stepper_channel0();
+    tmc_state.reset();
+    stepper_state.reset();
+    let scale = tmc_state
+        .configure_motion_scale(stepper_state, 1000, 3200)
+        .unwrap();
 
-    refresh_velocity_scale_from_state(&mut runtime, &tmc_state, 84_000_000, 25_000);
+    refresh_velocity_scale_from_state(&mut runtime, tmc_state, 84_000_000, 25_000);
 
     assert_eq!(
         runtime.velocity_scale(),
-        crate::tmc::compute_velocity_scale_factor(3200, 84_000_000, 25_000)
+        crate::tmc::compute_velocity_scale_factor(16, 84_000_000, 25_000)
     );
+    assert_eq!(
+        runtime.planner_velocity_scale(),
+        scale.planner_velocity_scale(84_000_000, 25_000)
+    );
+    tmc_state.reset();
+    stepper_state.reset();
 }
 
 #[test]
@@ -455,47 +468,45 @@ fn shared_dispatch_set_current_writes_current_limit_and_updates_state() {
 }
 
 #[test]
-fn shared_dispatch_set_encoder_writes_quadrature_ppr() {
+fn apply_motion_scale_writes_encoder_then_physical_width_and_publishes_state() {
     pollster::block_on(async {
         let tmc_state = crate::state::tmc::TmcChannelState::new();
+        let stepper_state = crate::state::stepper::StepperChannelState::new();
         let mut tmc = Tmc4671Spi::new(RuntimeMockSpi::default());
+        let scale = crate::motion_scale::MotionScale::new(1000, 3200).unwrap();
 
-        let result = apply_shared_tmc_request(
-            &TmcRequestKind::SetEncoder { ppr: 1000 },
-            &mut tmc,
-            &tmc_state,
-            1.155,
-            3999,
-        )
-        .await;
+        let result = apply_motion_scale(&mut tmc, &tmc_state, &stepper_state, scale).await;
         let spi = tmc.into_inner();
 
-        assert_eq!(result, Ok(SharedTmcDispatch::Handled));
+        assert_eq!(result, Ok(()));
         assert_eq!(
             spi.write_attempts,
-            std::vec![(ABN_DECODER_PPR.addr(), 4000)]
+            std::vec![(ABN_DECODER_PPR.addr(), 4000), (STEP_WIDTH.addr(), 16)]
         );
+        assert_eq!(tmc_state.encoder_counts_per_rev(), Some(4000));
+        assert_eq!(stepper_state.planner_steps_per_rev(&tmc_state), Some(3200));
+        assert_eq!(tmc_state.physical_step_width(), Some(16));
+        assert_eq!(tmc_state.step_width_value.load(Relaxed), 16);
     });
 }
 
 #[test]
-fn shared_dispatch_set_encoder_rejects_zero_ppr() {
+fn apply_motion_scale_spi_failures_leave_scale_unconfigured() {
     pollster::block_on(async {
-        let tmc_state = crate::state::tmc::TmcChannelState::new();
-        let mut tmc = Tmc4671Spi::new(RuntimeMockSpi::default());
+        for failed_register in [ABN_DECODER_PPR.addr(), STEP_WIDTH.addr()] {
+            let tmc_state = crate::state::tmc::TmcChannelState::new();
+            let stepper_state = crate::state::stepper::StepperChannelState::new();
+            let mut tmc =
+                Tmc4671Spi::new(RuntimeMockSpi::default().fail_writes_to(failed_register));
+            let scale = crate::motion_scale::MotionScale::new(1000, 3200).unwrap();
 
-        let result = apply_shared_tmc_request(
-            &TmcRequestKind::SetEncoder { ppr: 0 },
-            &mut tmc,
-            &tmc_state,
-            1.155,
-            3999,
-        )
-        .await;
-        let spi = tmc.into_inner();
-
-        assert_eq!(result, Err(()));
-        assert!(spi.write_attempts.is_empty());
+            assert_eq!(
+                apply_motion_scale(&mut tmc, &tmc_state, &stepper_state, scale).await,
+                Err(())
+            );
+            assert!(!tmc_state.motion_scale_configured());
+            assert_eq!(tmc_state.step_width_value.load(Relaxed), 0);
+        }
     });
 }
 

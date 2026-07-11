@@ -62,7 +62,7 @@ pub enum ShutdownReason {
     TrsyncTriggerFailed,
     InvalidTmcChannel,
     TmcSetCurrentLostQueueFull,
-    TmcSetEncoderLostQueueFull,
+    TmcSetMotionScaleLostQueueFull,
     TmcSetEncoderDirLostQueueFull,
     TmcSetPidGainsLostQueueFull,
     TmcSetPositionGainsLostQueueFull,
@@ -108,7 +108,7 @@ impl ShutdownReason {
             Self::TrsyncTriggerFailed => "trsync_trigger failed",
             Self::InvalidTmcChannel => "Invalid TMC channel",
             Self::TmcSetCurrentLostQueueFull => "tmc_set_current lost (queue full)",
-            Self::TmcSetEncoderLostQueueFull => "tmc_set_encoder lost (queue full)",
+            Self::TmcSetMotionScaleLostQueueFull => "tmc_set_motion_scale lost (queue full)",
             Self::TmcSetEncoderDirLostQueueFull => "tmc_set_encoder_dir lost (queue full)",
             Self::TmcSetPidGainsLostQueueFull => "tmc_set_pid_gains lost (queue full)",
             Self::TmcSetPositionGainsLostQueueFull => "tmc_set_position_gains lost (queue full)",
@@ -240,10 +240,10 @@ macro_rules! dispatch_shutdown {
                     $clock
                 );
             }
-            $crate::shutdown::ShutdownReason::TmcSetEncoderLostQueueFull => {
+            $crate::shutdown::ShutdownReason::TmcSetMotionScaleLostQueueFull => {
                 ::ankyra::klipper_shutdown_from!(
                     $sender,
-                    "tmc_set_encoder lost (queue full)",
+                    "tmc_set_motion_scale lost (queue full)",
                     $clock
                 );
             }
@@ -382,7 +382,7 @@ macro_rules! foci_ankyra_config {
                 "trsync_trigger failed",
                 "Invalid TMC channel",
                 "tmc_set_current lost (queue full)",
-                "tmc_set_encoder lost (queue full)",
+                "tmc_set_motion_scale lost (queue full)",
                 "tmc_set_encoder_dir lost (queue full)",
                 "tmc_set_pid_gains lost (queue full)",
                 "tmc_set_position_gains lost (queue full)",

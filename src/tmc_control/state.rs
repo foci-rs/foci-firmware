@@ -103,6 +103,7 @@ pub struct TmcControlRuntime {
     commission_engine: Option<CommissioningEngine>,
     shutdown_handled: bool,
     velocity_scale: u32,
+    planner_velocity_scale: Option<crate::motion_scale::PlannerVelocityScale>,
     feedforward_was_active: bool,
     torque_flux_offset_was_active: bool,
     position_lead_applied_scaled: i32,
@@ -127,6 +128,7 @@ impl TmcControlRuntime {
             commission_engine: None,
             shutdown_handled: false,
             velocity_scale: 0,
+            planner_velocity_scale: None,
             feedforward_was_active: false,
             torque_flux_offset_was_active: false,
             position_lead_applied_scaled: 0,
@@ -215,6 +217,7 @@ impl TmcControlRuntime {
         self.commission_engine = None;
         self.shutdown_handled = false;
         self.velocity_scale = 0;
+        self.planner_velocity_scale = None;
         self.feedforward_was_active = false;
         self.torque_flux_offset_was_active = false;
         self.position_lead_applied_scaled = 0;
@@ -602,6 +605,21 @@ impl TmcControlRuntime {
     /// used by the velocity transient feedforward path.
     pub fn set_velocity_scale(&mut self, value: u32) {
         self.velocity_scale = value;
+    }
+
+    /// Return the exact planner-timing velocity ratio cached for later consumers.
+    pub const fn planner_velocity_scale(
+        &self,
+    ) -> Option<crate::motion_scale::PlannerVelocityScale> {
+        self.planner_velocity_scale
+    }
+
+    /// Cache the exact planner-timing velocity ratio without cutting over consumers.
+    pub fn set_planner_velocity_scale(
+        &mut self,
+        scale: Option<crate::motion_scale::PlannerVelocityScale>,
+    ) {
+        self.planner_velocity_scale = scale;
     }
 
     /// Return whether velocity feedforward was active on the previous control tick.

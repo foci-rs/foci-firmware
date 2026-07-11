@@ -72,7 +72,7 @@ pub struct TmcChannelState {
     /// inactive". Used by `arm_motor_electrical` to detect silent chip
     /// resets between commission and arm.
     pub motor_sentinel: AtomicU32,
-    /// STEP_WIDTH value computed by tmc_set_encoder_hw.
+    /// Legacy mirror of the configured physical STEP_WIDTH register value.
     pub step_width_value: AtomicI32,
     /// Configured mechanical ABN encoder pulses per revolution.
     pub encoder_ppr: AtomicU32,
@@ -304,6 +304,19 @@ impl TmcChannelState {
             .store(scale.step_width() as i32, Ordering::Relaxed);
         self.motion_scale_configured.store(true, Ordering::Release);
         Ok(scale)
+    }
+
+    pub(crate) fn clear_motion_scale(
+        &self,
+        stepper_state: &crate::state::stepper::StepperChannelState,
+    ) {
+        self.motion_scale_configured.store(false, Ordering::Release);
+        self.encoder_ppr.store(0, Ordering::Relaxed);
+        self.encoder_counts_per_rev.store(0, Ordering::Relaxed);
+        stepper_state.store_planner_steps_per_rev(0);
+        self.tmc_grid.store(0, Ordering::Relaxed);
+        self.step_width.store(0, Ordering::Relaxed);
+        self.step_width_value.store(0, Ordering::Relaxed);
     }
 
     /// Returns whether a complete motion scale has been published.

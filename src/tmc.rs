@@ -188,8 +188,13 @@ pub enum TmcRequestKind {
     Calibrate { oid: u8 },
     /// Set motor run current (milliamps to register counts).
     SetCurrent { run_ma: u32 },
-    /// Configure ABN encoder resolution.
-    SetEncoder { ppr: u32 },
+    /// Configure independent encoder-feedback and planner-motion scales.
+    SetMotionScale {
+        /// Encoder pulses per mechanical revolution before quadrature.
+        encoder_ppr: u32,
+        /// Logical planner steps per mechanical revolution.
+        planner_steps_per_rev: u32,
+    },
     /// Set encoder count direction.
     SetEncoderDir { invert: bool },
     /// Trigger TMC4671 self-test diagnostic.
@@ -399,24 +404,24 @@ pub fn tmc_set_current(channel: u8, run_ma: u32) -> TmcRequest {
     TmcRequest::new(channel, TmcRequestKind::SetCurrent { run_ma })
 }
 
-/// Compute step width from encoder PPR and pole pairs for hardware step/dir.
+/// Validate wire inputs and build a complete motion-scale request.
 ///
-/// Returns `(TmcRequest, step_width)` where `step_width` is the value to
-/// write to TMC4671 STEP_WIDTH register (0x78). The board crate writes
-/// the step width directly to the TMC4671 register.
+/// # Errors
 ///
-/// Step width formula: `65536 * pole_pairs / (ppr * 4)`
-pub fn tmc_set_encoder_hw(channel: u8, ppr: u32, pole_pairs: u32) -> (TmcRequest, i32) {
-    let step_width = if ppr > 0 {
-        let quad_ppr = (ppr as u64) * 4;
-        (65536u64 * pole_pairs as u64 / quad_ppr) as i32
-    } else {
-        0
-    };
-    (
-        TmcRequest::new(channel, TmcRequestKind::SetEncoder { ppr }),
-        step_width,
-    )
+/// Returns [`crate::motion_scale::MotionScaleError`] when either resolution is invalid.
+pub fn tmc_set_encoder_hw(
+    channel: u8,
+    encoder_ppr: u32,
+    planner_steps_per_rev: u32,
+) -> Result<TmcRequest, crate::motion_scale::MotionScaleError> {
+    crate::motion_scale::MotionScale::new(encoder_ppr, planner_steps_per_rev)?;
+    Ok(TmcRequest::new(
+        channel,
+        TmcRequestKind::SetMotionScale {
+            encoder_ppr,
+            planner_steps_per_rev,
+        },
+    ))
 }
 
 /// Build a `SetEncoderDir` request.
@@ -1295,36 +1300,6 @@ mod tests {
             tmc_set_current(0, 500),
             TmcRequest::new(0, TmcRequestKind::SetCurrent { run_ma: 500 })
         );
-    }
-
-    #[test]
-    fn tmc_set_encoder_hw_computes_step_width() {
-        let (req, step_width) = tmc_set_encoder_hw(0, 1000, 50);
-        assert_eq!(
-            req,
-            TmcRequest::new(0, TmcRequestKind::SetEncoder { ppr: 1000 })
-        );
-        assert_eq!(step_width, 819);
-    }
-
-    #[test]
-    fn tmc_set_encoder_hw_computes_mechanical_step_width() {
-        let (req, step_width) = tmc_set_encoder_hw(0, 1000, 1);
-        assert_eq!(
-            req,
-            TmcRequest::new(0, TmcRequestKind::SetEncoder { ppr: 1000 })
-        );
-        assert_eq!(step_width, 16);
-    }
-
-    #[test]
-    fn tmc_set_encoder_hw_zero_ppr() {
-        let (req, step_width) = tmc_set_encoder_hw(0, 0, 50);
-        assert_eq!(
-            req,
-            TmcRequest::new(0, TmcRequestKind::SetEncoder { ppr: 0 })
-        );
-        assert_eq!(step_width, 0);
     }
 
     #[test]

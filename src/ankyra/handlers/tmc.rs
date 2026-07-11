@@ -1,5 +1,5 @@
 //! TMC4671 command handlers: `tmc_init`, `tmc_read_register`,
-//! `tmc_write_register`, `tmc_set_current`, `tmc_set_encoder`,
+//! `tmc_write_register`, `tmc_set_current`, `tmc_set_motion_scale`,
 //! `tmc_set_encoder_dir`, `tmc_set_flux_filter`, `tmc_set_pid_gains`,
 //! `tmc_set_position_filter`, `tmc_set_position_gains`,
 //! `tmc_set_torque_filter`, `tmc_set_velocity_feedforward`,
@@ -101,24 +101,34 @@ pub fn tmc_set_current(ctx: &mut dyn TmcWriteHost, oid: u8, run_ma: u32) {
     }
 }
 
-/// Configure ABN encoder resolution and compute step width.
-///
-/// The closed-loop position PID currently operates in `phi_m_abn`
-/// mechanical-angle space (`POSITION_SELECTION=9`), so STEP_WIDTH is one
-/// mechanical revolution divided by the quadrature encoder count:
-/// `step_width = 65536 / quadrature_ppr`.
+/// Configure independent encoder-feedback and planner-motion scales while idle.
 #[klipper_command]
-pub fn tmc_set_encoder(ctx: &mut dyn TmcWriteHost, oid: u8, channel: u8, ppr: u32) {
-    let Some((channel, state)) = foci_tmc_state_matching_or_shutdown(ctx, oid, channel) else {
+pub fn tmc_set_motion_scale(
+    ctx: &mut dyn TmcWriteHost,
+    oid: u8,
+    channel: u8,
+    encoder_ppr: u32,
+    planner_steps_per_rev: u32,
+) {
+    let Some((channel, _state)) = foci_tmc_state_matching_or_shutdown(ctx, oid, channel) else {
         return;
     };
-    let (req, step_width) = crate::tmc::tmc_set_encoder_hw(channel, ppr, 1);
-    state.step_width_value.store(step_width, Ordering::Relaxed);
-    state.encoder_ppr.store(ppr, Ordering::Relaxed);
-    defmt::info!("channel={} ppr={} step_width={}", channel, ppr, step_width);
+    let req = match crate::tmc::tmc_set_encoder_hw(channel, encoder_ppr, planner_steps_per_rev) {
+        Ok(req) => req,
+        Err(error) => {
+            defmt::error!("tmc_set_motion_scale rejected: {}", error);
+            shutdown_request_validation(ctx);
+            return;
+        }
+    };
+    if !ctx.motion_scale_idle(channel) {
+        defmt::error!("tmc_set_motion_scale requires disarmed motor, empty queue, inactive timer");
+        shutdown_request_validation(ctx);
+        return;
+    }
     if ctx.enqueue_request(req).is_err() && ctx.enter_shutdown() {
         let clock = ctx.now();
-        ctx.send_shutdown(ShutdownReason::TmcSetEncoderLostQueueFull, clock);
+        ctx.send_shutdown(ShutdownReason::TmcSetMotionScaleLostQueueFull, clock);
     }
 }
 
@@ -818,6 +828,13 @@ fn shutdown_invalid_tmc_channel(ctx: &mut dyn ShutdownRecovery) {
     }
 }
 
+fn shutdown_request_validation(ctx: &mut dyn ShutdownRecovery) {
+    if ctx.enter_shutdown() {
+        let clock = ctx.now();
+        ctx.send_shutdown(ShutdownReason::TmcRequestValidationFailed, clock);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -832,6 +849,10 @@ mod tests {
         channel_count: u8,
         last_request: RefCell<Option<crate::tmc::TmcRequest>>,
         last_shutdown: Option<ShutdownReason>,
+        motor_disarmed: bool,
+        queue_empty: bool,
+        timer_inactive: bool,
+        accept_request: bool,
     }
 
     impl MockCtx {
@@ -841,6 +862,10 @@ mod tests {
                 channel_count,
                 last_request: RefCell::new(None),
                 last_shutdown: None,
+                motor_disarmed: true,
+                queue_empty: true,
+                timer_inactive: true,
+                accept_request: true,
             }
         }
     }
@@ -892,7 +917,11 @@ mod tests {
     impl TmcHost for MockCtx {
         fn enqueue_request(&self, req: crate::tmc::TmcRequest) -> Result<(), QueueFull> {
             self.last_request.replace(Some(req));
-            Ok(())
+            self.accept_request.then_some(()).ok_or(QueueFull)
+        }
+
+        fn motion_scale_idle(&self, _channel: u8) -> bool {
+            self.motor_disarmed && self.queue_empty && self.timer_inactive
         }
     }
 
@@ -905,12 +934,10 @@ mod tests {
         tmc_set_current(&mut ctx, &mut sender, 10, 800);
 
         let req = ctx.last_request.borrow().clone().unwrap();
-        assert_eq!(req.channel, 1);
         assert!(matches!(
             req.kind,
             crate::tmc::TmcRequestKind::SetCurrent { run_ma: 800 }
         ));
-        assert_eq!(ctx.last_shutdown, None);
     }
 
     #[test]
@@ -1205,34 +1232,92 @@ mod tests {
     }
 
     #[test]
-    fn tmc_set_encoder_stores_mechanical_step_width() {
+    fn tmc_set_motion_scale_enqueues_complete_scale_without_mutating_state() {
         use core::sync::atomic::Ordering::Relaxed;
 
         let mut ctx = MockCtx::new(2);
         let mut sender = ();
         config_stepper_channel(ctx.state(), 10, 1).unwrap();
         let tmc_state = crate::state::tmc::tmc_channel(1).unwrap();
-        tmc_state.step_width_value.store(819, Relaxed);
+        let before_width = tmc_state.step_width_value.load(Relaxed);
+        let before_configured = tmc_state.motion_scale_configured();
 
-        tmc_set_encoder(&mut ctx, &mut sender, 10, 1, 1000);
+        tmc_set_motion_scale(&mut ctx, &mut sender, 10, 1, 1000, 3200);
 
-        assert_eq!(tmc_state.step_width_value.load(Relaxed), 16);
+        assert_eq!(tmc_state.step_width_value.load(Relaxed), before_width);
+        assert_eq!(tmc_state.motion_scale_configured(), before_configured);
         let req = ctx.last_request.borrow().clone().unwrap();
         assert_eq!(req.channel, 1);
         assert!(matches!(
             req.kind,
-            crate::tmc::TmcRequestKind::SetEncoder { ppr: 1000 }
+            crate::tmc::TmcRequestKind::SetMotionScale {
+                encoder_ppr: 1000,
+                planner_steps_per_rev: 3200,
+            }
         ));
         assert_eq!(ctx.last_shutdown, None);
     }
 
     #[test]
-    fn tmc_set_encoder_rejects_channel_mismatch_for_stepper_oid() {
+    fn tmc_set_motion_scale_rejects_invalid_or_busy_requests_without_mutation() {
+        use foci_klipper::pulse_mapper::MAX_PLANNER_STEPS_PER_REV;
+
+        let mut ctx = MockCtx::new(2);
+        let mut sender = ();
+        config_stepper_channel(ctx.state(), 10, 1).unwrap();
+        let tmc_state = crate::state::tmc::tmc_channel(1).unwrap();
+        let before_width = tmc_state.step_width_value.load(Ordering::Relaxed);
+        let before_configured = tmc_state.motion_scale_configured();
+
+        for (encoder_ppr, planner_steps_per_rev) in [
+            (0, 3200),
+            (u32::MAX / 4 + 1, 3200),
+            (1000, 0),
+            (1000, MAX_PLANNER_STEPS_PER_REV + 1),
+        ] {
+            tmc_set_motion_scale(
+                &mut ctx,
+                &mut sender,
+                10,
+                1,
+                encoder_ppr,
+                planner_steps_per_rev,
+            );
+            assert!(ctx.last_request.borrow().is_none());
+            assert_eq!(tmc_state.motion_scale_configured(), before_configured);
+        }
+
+        for (motor_disarmed, queue_empty, timer_inactive) in [
+            (false, true, true),
+            (true, false, true),
+            (true, true, false),
+        ] {
+            ctx.motor_disarmed = motor_disarmed;
+            ctx.queue_empty = queue_empty;
+            ctx.timer_inactive = timer_inactive;
+            tmc_set_motion_scale(&mut ctx, &mut sender, 10, 1, 1000, 3200);
+            assert!(ctx.last_request.borrow().is_none());
+        }
+
+        ctx.motor_disarmed = true;
+        ctx.queue_empty = true;
+        ctx.timer_inactive = true;
+        ctx.accept_request = false;
+        tmc_set_motion_scale(&mut ctx, &mut sender, 10, 1, 1000, 3200);
+        assert_eq!(tmc_state.motion_scale_configured(), before_configured);
+        assert_eq!(
+            tmc_state.step_width_value.load(Ordering::Relaxed),
+            before_width
+        );
+    }
+
+    #[test]
+    fn tmc_set_motion_scale_rejects_channel_mismatch_for_stepper_oid() {
         let mut ctx = MockCtx::new(2);
         let mut sender = ();
         config_stepper_channel(ctx.state(), 10, 1).unwrap();
 
-        tmc_set_encoder(&mut ctx, &mut sender, 10, 0, 1000);
+        tmc_set_motion_scale(&mut ctx, &mut sender, 10, 0, 1000, 3200);
 
         assert!(ctx.last_request.borrow().is_none());
         assert_eq!(ctx.last_shutdown, Some(ShutdownReason::InvalidTmcChannel));

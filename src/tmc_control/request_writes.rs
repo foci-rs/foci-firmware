@@ -100,41 +100,36 @@ where
     Ok(())
 }
 
-/// Apply a new encoder pulses-per-revolution value to the TMC4671.
-///
-/// Validates that `ppr` is non-zero, multiplies by 4 to obtain the
-/// quadrature count (ABN encoders produce four edges per mechanical cycle),
-/// writes `ABN_DECODER_PPR`, and logs the mechanical-angle step width.
-///
-/// # Parameters
-///
-/// - `tmc` — mutable reference to the TMC4671 SPI driver.
-/// - `ppr` — encoder pulses per revolution (mechanical, pre-quadrature).
+/// Write the hardware registers for a validated motion scale.
 ///
 /// # Errors
 ///
-/// Returns `Err(())` if `ppr` is zero or if the SPI write fails.
-pub async fn apply_set_encoder<B>(tmc: &mut Tmc4671Spi<B>, ppr: u32) -> Result<(), ()>
+/// Returns `Err(())` on either SPI write failure.
+pub async fn write_motion_scale<B>(
+    tmc: &mut Tmc4671Spi<B>,
+    scale: crate::motion_scale::MotionScale,
+) -> Result<(), ()>
 where
     B: SpiDevice<u8>,
 {
     use foci_tmc4671::registers::*;
 
-    if ppr == 0 {
-        defmt::error!("Invalid encoder PPR: 0");
-        return Err(());
-    }
-    let quadrature_ppr = ppr.saturating_mul(4);
     if tmc
-        .write_register(ABN_DECODER_PPR, quadrature_ppr)
+        .write_register(ABN_DECODER_PPR, scale.encoder_counts_per_rev())
         .await
         .is_err()
     {
         defmt::error!("TMC4671 SPI write failed: ABN_DECODER_PPR");
         return Err(());
     }
-    let step_width = 65536u64 / quadrature_ppr as u64;
-    defmt::info!("TMC4671 encoder: {} PPR, step_width={}", ppr, step_width);
+    if tmc
+        .write_register(STEP_WIDTH, scale.step_width())
+        .await
+        .is_err()
+    {
+        defmt::error!("TMC4671 SPI write failed: STEP_WIDTH");
+        return Err(());
+    }
     Ok(())
 }
 

@@ -60,7 +60,7 @@ pub fn foci_selftest(ctx: &mut dyn FociRuntimeHost, oid: u8) {
 /// Calibrate the TMC4671: ADC offset calibration, encoder alignment,
 /// and closed-loop entry via the commissioning engine.
 ///
-/// Must be called after `tmc_set_encoder` populates the channel step width.
+/// Must be called after `tmc_set_motion_scale` populates the channel step width.
 /// Rejected if the step width is unset, or if another commissioning
 /// operation is already in flight.
 #[klipper_command]
@@ -69,13 +69,13 @@ pub fn foci_calibrate(ctx: &mut dyn FociRuntimeHost, oid: u8) {
         return;
     };
     // Pre-flight: channel step width must have been populated by a prior
-    // tmc_set_encoder command. If it hasn't, fail before touching hardware
+    // tmc_set_motion_scale command. If it hasn't, fail before touching hardware
     // — otherwise calibration would succeed but the motor would silently
     // refuse to respond to step pulses. The engine's ClosedLoopEntry
     // phase also checks this via backend.step_width().
     if state.step_width_value.load(Relaxed) <= 0 {
         defmt::error!(
-            "foci_calibrate rejected: STEP_WIDTH not configured (host must call tmc_set_encoder first)"
+            "foci_calibrate rejected: STEP_WIDTH not configured (call tmc_set_motion_scale first)"
         );
         ::ankyra::klipper_reply!(
             crate::ankyra::replies::FociCalibrateResult,

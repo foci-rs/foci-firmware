@@ -7,7 +7,7 @@ use crate::state::tmc::TmcChannelState;
 use crate::tmc::TmcRequestKind;
 use crate::tmc_control::filters::{BiquadFilterTarget, apply_live_filter};
 use crate::tmc_control::request_writes::{
-    apply_set_current, apply_set_encoder, apply_set_encoder_dir, apply_set_voltage_limit,
+    apply_set_current, apply_set_encoder_dir, apply_set_voltage_limit,
 };
 
 /// Result of attempting board-agnostic TMC request dispatch.
@@ -38,10 +38,6 @@ where
     match kind {
         TmcRequestKind::SetCurrent { run_ma } => {
             apply_set_current(tmc, tmc_state, *run_ma, current_scale_ma_per_lsb).await?;
-            Ok(SharedTmcDispatch::Handled)
-        }
-        TmcRequestKind::SetEncoder { ppr } => {
-            apply_set_encoder(tmc, *ppr).await?;
             Ok(SharedTmcDispatch::Handled)
         }
         TmcRequestKind::SetEncoderDir { invert } => {

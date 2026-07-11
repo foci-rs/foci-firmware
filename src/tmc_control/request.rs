@@ -19,7 +19,9 @@ use crate::tmc_control::actions::{
     BoardAction, BoardActions, ShutdownReason, StepperAction, TmcControlRequestOutcome,
     TmcControlRequestTail,
 };
-use crate::tmc_control::helpers::{apply_live_inner_gains, apply_live_outer_gains};
+use crate::tmc_control::helpers::{
+    apply_live_inner_gains, apply_live_outer_gains, apply_motion_scale,
+};
 use crate::tmc_control::state::TmcControlRuntime;
 
 /// Board-local disposition computed before shared request handling.
@@ -53,6 +55,10 @@ where
     fn normal_tail(&self) -> TmcControlRequestTail;
     /// Return the board default current-filter cutoff for omitted host config.
     fn default_current_filter_hz(&self) -> u16;
+    /// Return whether the selected channel's physical step queue is empty.
+    fn motion_scale_queue_empty(&self) -> bool {
+        false
+    }
 
     /// Emit a host reply using board-local sender glue.
     fn emit_reply(&mut self, payload: ReplyPayload);
@@ -642,11 +648,42 @@ where
                 .run_diagnostic_request(diagnostic_req, runtime, tmc)
                 .await;
         }
-        req @ TmcRequest {
-            kind: TmcRequestKind::SetEncoder { .. },
+        TmcRequest {
+            kind:
+                TmcRequestKind::SetMotionScale {
+                    encoder_ppr,
+                    planner_steps_per_rev,
+                },
             ..
         } => {
-            if board.dispatch_register_request(req, tmc).await.is_err() {
+            let Ok(scale) =
+                crate::motion_scale::MotionScale::new(encoder_ppr, planner_steps_per_rev)
+            else {
+                return TmcControlRequestOutcome::shutdown(
+                    ShutdownReason::RequestValidationFailed,
+                    board.normal_tail(),
+                );
+            };
+            let tmc_state = board.tmc_state();
+            let stepper_state = board.stepper_state();
+            let idle = !runtime.is_motor_enabled()
+                && !tmc_state
+                    .motor_armed
+                    .load(core::sync::atomic::Ordering::Relaxed)
+                && board.motion_scale_queue_empty()
+                && !stepper_state
+                    .timer_active_mirror
+                    .load(core::sync::atomic::Ordering::Relaxed);
+            if !idle {
+                return TmcControlRequestOutcome::shutdown(
+                    ShutdownReason::RequestValidationFailed,
+                    board.normal_tail(),
+                );
+            }
+            if apply_motion_scale(tmc, tmc_state, stepper_state, scale)
+                .await
+                .is_err()
+            {
                 return TmcControlRequestOutcome::shutdown_then_refresh_velocity_scale(
                     ShutdownReason::RequestValidationFailed,
                     board.normal_tail(),
@@ -800,6 +837,7 @@ mod tests {
         commissioning_blocked: bool,
         normal_tail: TmcControlRequestTail,
         default_current_filter_hz: u16,
+        motion_scale_queue_empty: bool,
         next_trace_seq: u32,
         register_result: Result<(), ()>,
         arm_result: Result<(), CommissionError>,
@@ -820,6 +858,7 @@ mod tests {
                 commissioning_blocked: false,
                 normal_tail,
                 default_current_filter_hz: 6000,
+                motion_scale_queue_empty: true,
                 next_trace_seq: 1,
                 register_result: Ok(()),
                 arm_result: Ok(()),
@@ -871,6 +910,10 @@ mod tests {
 
         fn default_current_filter_hz(&self) -> u16 {
             self.default_current_filter_hz
+        }
+
+        fn motion_scale_queue_empty(&self) -> bool {
+            self.motion_scale_queue_empty
         }
 
         fn emit_reply(&mut self, payload: ReplyPayload) {
@@ -1241,16 +1284,27 @@ mod tests {
     }
 
     #[test]
-    fn set_encoder_success_and_failure_use_board_tail() {
+    fn set_motion_scale_success_and_failure_use_board_tail() {
         run_request_test(async {
-            for register_result in [Ok(()), Err(())] {
+            for fail_step_width in [false, true] {
                 let mut runtime = TmcControlRuntime::new_for_channel(0);
                 let mut board = RecordingBoard::fall_through();
-                board.register_result = register_result;
-                let mut tmc = Tmc4671Spi::new(RuntimeMockSpi::default());
+                let spi = if fail_step_width {
+                    RuntimeMockSpi::default()
+                        .fail_writes_to(foci_tmc4671::registers::STEP_WIDTH.addr())
+                } else {
+                    RuntimeMockSpi::default()
+                };
+                let mut tmc = Tmc4671Spi::new(spi);
 
                 let outcome = handle_tmc_control_request(
-                    TmcRequest::new(0, TmcRequestKind::SetEncoder { ppr: 4000 }),
+                    TmcRequest::new(
+                        0,
+                        TmcRequestKind::SetMotionScale {
+                            encoder_ppr: 4000,
+                            planner_steps_per_rev: 3200,
+                        },
+                    ),
                     TmcPreRequestDisposition::ContinueRequest,
                     &mut runtime,
                     &mut tmc,
@@ -1262,10 +1316,10 @@ mod tests {
                 assert!(outcome.should_refresh_velocity_scale);
                 assert_eq!(
                     outcome.shutdown,
-                    register_result
-                        .err()
-                        .map(|()| ShutdownReason::RequestValidationFailed)
+                    fail_step_width.then_some(ShutdownReason::RequestValidationFailed)
                 );
+                assert_eq!(tmc_channel0().motion_scale_configured(), !fail_step_width);
+                assert_eq!(board.arm_calls, 0);
             }
         });
     }

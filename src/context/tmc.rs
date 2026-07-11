@@ -7,11 +7,20 @@ use super::{QueueFull, StateAccess};
 /// register writes.
 pub trait TmcHost: StateAccess {
     fn enqueue_request(&self, req: crate::tmc::TmcRequest) -> Result<(), QueueFull>;
+
+    /// Capture read-only idle admission for motion-scale configuration.
+    fn motion_scale_idle(&self, _channel: u8) -> bool {
+        false
+    }
 }
 
 impl<T: ?Sized + TmcHost> TmcHost for &mut T {
     fn enqueue_request(&self, req: crate::tmc::TmcRequest) -> Result<(), QueueFull> {
         (**self).enqueue_request(req)
+    }
+
+    fn motion_scale_idle(&self, channel: u8) -> bool {
+        (**self).motion_scale_idle(channel)
     }
 }
 

@@ -12,6 +12,7 @@ use crate::pid::{InnerLoopGains, OuterLoopGains};
 use crate::state::tmc::TmcChannelState;
 use crate::tmc::compute_velocity_scale_factor;
 use crate::tmc_control::TmcControlRuntime;
+use crate::tmc_control::request_writes::write_motion_scale;
 
 /// Result of applying two live gain writes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
@@ -41,6 +42,42 @@ pub fn refresh_velocity_scale_from_state(
         clock_freq,
         pwm_freq_hz,
     ));
+    let rational_scale = crate::state::stepper::stepper_channel(runtime.channel())
+        .and_then(|stepper| stepper.planner_steps_per_rev(tmc_state))
+        .and_then(|planner_steps_per_rev| {
+            tmc_state.encoder_ppr().and_then(|encoder_ppr| {
+                crate::motion_scale::MotionScale::new(encoder_ppr, planner_steps_per_rev).ok()
+            })
+        })
+        .and_then(|scale| scale.planner_velocity_scale(clock_freq, pwm_freq_hz));
+    runtime.set_planner_velocity_scale(rational_scale);
+}
+
+/// Write and publish one validated motion scale as an idle P1 transaction.
+///
+/// # Errors
+///
+/// Returns `Err(())` after clearing configured scale state when either SPI write fails.
+pub async fn apply_motion_scale<Spi>(
+    tmc: &mut Tmc4671Spi<Spi>,
+    tmc_state: &TmcChannelState,
+    stepper_state: &crate::state::stepper::StepperChannelState,
+    scale: crate::motion_scale::MotionScale,
+) -> Result<(), ()>
+where
+    Spi: SpiDevice<u8>,
+{
+    if write_motion_scale(tmc, scale).await.is_err() {
+        tmc_state.clear_motion_scale(stepper_state);
+        return Err(());
+    }
+    let configured = tmc_state.configure_motion_scale(
+        stepper_state,
+        scale.encoder_ppr(),
+        scale.planner_steps_per_rev(),
+    );
+    assert!(configured.is_ok(), "validated motion scale must publish");
+    Ok(())
 }
 
 /// Store inner-loop gains and apply the live flux/torque register writes.

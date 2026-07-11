@@ -14,7 +14,7 @@ pub enum CalibrationError {
     /// Internal firmware error (queue full, channel not initialized,
     /// etc.).
     InternalError,
-    /// Required configuration (e.g., `tmc_set_encoder`) has not been
+    /// Required configuration (e.g., `tmc_set_motion_scale`) has not been
     /// issued by the host before calibration. Most commonly this means
     /// STEP_WIDTH has not been computed, so the TMC4671 hardware step
     /// input would not advance the position target — the motor would
