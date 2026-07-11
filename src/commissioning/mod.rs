@@ -9,7 +9,6 @@
 //! [`backend`].
 
 pub mod backend;
-#[allow(dead_code)] // Introduced additively; migrations consume it incrementally.
 pub(crate) mod encoder_domain;
 pub mod helpers;
 pub mod inner;
