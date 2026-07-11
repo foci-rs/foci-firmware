@@ -195,18 +195,23 @@ pub(crate) async fn step_position_tune_with_trace<B: CommissioningBackend>(
                 Ok(value) => value,
                 Err(_) => return fail_outer(phase, CommissionError::Spi),
             };
-            // Wrap-aware displacement from step start, normalized to
-            // [-counts_per_rev/2, +counts_per_rev/2). Stored unsigned for
-            // comparison against the unsigned step target_abs in the
-            // oscillation detector.
-            let delta = crate::commissioning::outer::response::encoder_delta(
-                encoder_raw,
+            let encoder_domain = safety
+                .encoder_domain
+                .expect("outer encoder domain configured before position capture");
+            let encoder_count = encoder_domain.count(encoder_raw);
+            let delta = match encoder_domain.delta(
                 data.step_start_counts
-                    .expect("position step baseline configured")
-                    .raw_counts(),
-                safety.counts_per_rev(),
-            );
-            buf.push(delta.unsigned_abs());
+                    .expect("position step baseline configured"),
+                encoder_count,
+            ) {
+                Ok(delta) => delta,
+                Err(_) => {
+                    let _ = backend.write_register(PID_TORQUE_FLUX_TARGET, 0).await;
+                    let _ = backend.write_register(MODE_RAMP_MODE_MOTION, 0).await;
+                    return fail_outer(phase, CommissionError::EncoderFault);
+                }
+            };
+            buf.push(delta.absolute_counts());
 
             if data.torque_limit > 0 {
                 let sub = foci_tmc4671::registers::INTERIM_PIDOUT_TARGET_TORQUE;
@@ -479,6 +484,98 @@ mod tests {
             velocity_search_stop_reason: 0,
             motion_budget_mrev: 0,
         }
+    }
+
+    fn position_capture_phase(start_counts: u32) -> OuterPhase {
+        let mut safety = crate::commissioning::outer::OuterSafetyLimits::new(
+            0,
+            crate::commissioning::outer::OuterMotionBudget::firmware_caps(),
+        );
+        safety.configure_encoder_resolution(4_000).unwrap();
+        let domain = safety.encoder_domain.unwrap();
+        OuterPhase::PositionTune {
+            state: PositionTuneState::StepCapture {
+                next_sample_us: 1_000,
+            },
+            data: PositionTuneData {
+                current_p: 128,
+                stable_p: 0,
+                step_target_counts: 100,
+                step_target_tmc: 1_638,
+                step_start_counts: Some(domain.count(start_counts)),
+                step_start_tmc: 0,
+                oscillation_at_minimum: false,
+                velocity_gains: VelocityGains {
+                    velocity_p: 1,
+                    velocity_i: 0,
+                    velocity_limit: 1_000,
+                    effective_bandwidth_hz: 50,
+                    lambda_vel_ms: 20,
+                },
+                velocity_chatter: false,
+                current_ringing: false,
+                current_bandwidth_hz: 100,
+                j_eff: 1,
+                b_eff: 1,
+                torque_limit: 0,
+                saturation_count: 0,
+                diagnostics: zero_diagnostics(),
+            },
+            safety,
+        }
+    }
+
+    #[test]
+    fn position_step_capture_accepts_origin_crossing() {
+        pollster::block_on(async {
+            let mut phase = position_capture_phase(3_998);
+            let mut buf = TransientBuffer::new();
+            let mut backend = MockBackend::new();
+            backend.elapsed_us_value = 1_000;
+            backend.mechanical_encoder_position_counts_value = 2;
+
+            let result =
+                step_position_tune(&mut phase, &mut buf, OperatingMode::Nominal, &mut backend)
+                    .await;
+
+            assert!(matches!(result, StepResult::Continue));
+            assert_eq!(buf.samples(), &[4]);
+        });
+    }
+
+    #[test]
+    fn position_step_half_turn_stops_without_appending_or_accepting_state() {
+        pollster::block_on(async {
+            let mut phase = position_capture_phase(0);
+            let mut buf = TransientBuffer::new();
+            let mut backend = MockBackend::new();
+            backend.elapsed_us_value = 1_000;
+            backend.mechanical_encoder_position_counts_value = 2_000;
+
+            let result =
+                step_position_tune(&mut phase, &mut buf, OperatingMode::Nominal, &mut backend)
+                    .await;
+
+            assert!(matches!(
+                result,
+                StepResult::OuterFailed(CommissionError::EncoderFault)
+            ));
+            assert!(matches!(
+                phase,
+                OuterPhase::Failed(CommissionError::EncoderFault)
+            ));
+            assert_eq!(buf.len(), 0);
+            assert!(backend.spi_log.iter().any(|op| matches!(
+                op,
+                crate::commission_dispatch::test_support::SpiOp::Write(addr, 0)
+                    if *addr == foci_tmc4671::registers::PID_TORQUE_FLUX_TARGET.addr()
+            )));
+            assert!(backend.spi_log.iter().any(|op| matches!(
+                op,
+                crate::commission_dispatch::test_support::SpiOp::Write(addr, 0)
+                    if *addr == foci_tmc4671::registers::MODE_RAMP_MODE_MOTION.addr()
+            )));
+        });
     }
 
     #[test]

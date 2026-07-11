@@ -624,6 +624,256 @@ mod tests {
     }
 
     #[test]
+    fn mechanical_id_post_switch_settle_accepts_origin_crossing() {
+        pollster::block_on(async {
+            let mut safety = OuterSafetyLimits::new(
+                0,
+                crate::commissioning::outer::OuterMotionBudget::firmware_caps(),
+            );
+            safety.configure_encoder_resolution(4_000).unwrap();
+            safety.set_encoder_baseline(3_998).unwrap();
+            safety.last_sample_us = 10_000;
+            let mut data = MechanicalIdData::new(100);
+            data.start_position = safety.prev_encoder_count;
+            let mut phase = OuterPhase::MechanicalId {
+                state: MechanicalIdState::PostSwitchSettle {
+                    earliest_sample_us: 11_000,
+                    timeout_deadline_us: 100_000,
+                    stable_ticks: 0,
+                },
+                data,
+                safety,
+            };
+            let mut buf = TransientBuffer::new();
+            let mut backend = MockBackend::new();
+            backend.elapsed_us_value = 11_000;
+            backend.mechanical_encoder_position_counts_value = 2;
+
+            let result = step_mechanical_id(&mut phase, &mut buf, &mut backend).await;
+
+            assert!(matches!(result, StepResult::Continue));
+            match phase {
+                OuterPhase::MechanicalId { state, safety, .. } => {
+                    assert!(matches!(
+                        state,
+                        MechanicalIdState::PostSwitchSettle {
+                            stable_ticks: 0,
+                            ..
+                        }
+                    ));
+                    assert_eq!(
+                        safety.prev_encoder_count.map(|count| count.raw_counts()),
+                        Some(2)
+                    );
+                }
+                _ => panic!("expected MechanicalId phase"),
+            }
+        });
+    }
+
+    #[test]
+    fn mechanical_id_post_switch_half_turn_stops_without_advancing_baseline() {
+        pollster::block_on(async {
+            let mut safety = OuterSafetyLimits::new(
+                0,
+                crate::commissioning::outer::OuterMotionBudget::firmware_caps(),
+            );
+            safety.configure_encoder_resolution(4_000).unwrap();
+            safety.set_encoder_baseline(0).unwrap();
+            safety.last_sample_us = 10_000;
+            let mut data = MechanicalIdData::new(100);
+            data.start_position = safety.prev_encoder_count;
+            let mut phase = OuterPhase::MechanicalId {
+                state: MechanicalIdState::PostSwitchSettle {
+                    earliest_sample_us: 11_000,
+                    timeout_deadline_us: 100_000,
+                    stable_ticks: 0,
+                },
+                data,
+                safety,
+            };
+            let mut buf = TransientBuffer::new();
+            let mut backend = MockBackend::new();
+            backend.elapsed_us_value = 11_000;
+            backend.mechanical_encoder_position_counts_value = 2_000;
+
+            let result = step_mechanical_id(&mut phase, &mut buf, &mut backend).await;
+
+            assert!(matches!(
+                result,
+                StepResult::OuterFailed(CommissionError::EncoderFault)
+            ));
+            assert_eq!(buf.len(), 0);
+            assert!(backend.spi_log.iter().any(|op| matches!(
+                op,
+                SpiOp::Write(addr, 0) if *addr == PID_TORQUE_FLUX_TARGET.addr()
+            )));
+            assert!(backend.spi_log.iter().any(|op| matches!(
+                op,
+                SpiOp::Write(addr, 0) if *addr == MODE_RAMP_MODE_MOTION.addr()
+            )));
+        });
+    }
+
+    #[test]
+    fn mechanical_id_capture_accepts_origin_crossing() {
+        pollster::block_on(async {
+            let mut safety = OuterSafetyLimits::new(
+                0,
+                crate::commissioning::outer::OuterMotionBudget::firmware_caps(),
+            );
+            safety.configure_encoder_resolution(4_000).unwrap();
+            let domain = safety.encoder_domain.unwrap();
+            let mut data = MechanicalIdData::new(100);
+            data.start_position = Some(domain.count(3_998));
+            let mut phase = OuterPhase::MechanicalId {
+                state: MechanicalIdState::ForwardCapture {
+                    next_sample_us: 1_000,
+                    capture_start_us: 0,
+                },
+                data,
+                safety,
+            };
+            let mut buf = TransientBuffer::new();
+            let mut backend = MockBackend::new();
+            backend.elapsed_us_value = 1_000;
+            backend.mechanical_encoder_position_counts_value = 2;
+
+            let result = step_mechanical_id(&mut phase, &mut buf, &mut backend).await;
+
+            assert!(matches!(result, StepResult::Continue));
+            assert_eq!(buf.samples(), &[2]);
+        });
+    }
+
+    #[test]
+    fn mechanical_id_capture_half_turn_stops_without_appending_sample() {
+        pollster::block_on(async {
+            let mut safety = OuterSafetyLimits::new(
+                0,
+                crate::commissioning::outer::OuterMotionBudget::firmware_caps(),
+            );
+            safety.configure_encoder_resolution(4_000).unwrap();
+            let domain = safety.encoder_domain.unwrap();
+            let mut data = MechanicalIdData::new(100);
+            data.start_position = Some(domain.count(0));
+            let mut phase = OuterPhase::MechanicalId {
+                state: MechanicalIdState::ForwardCapture {
+                    next_sample_us: 1_000,
+                    capture_start_us: 0,
+                },
+                data,
+                safety,
+            };
+            let mut buf = TransientBuffer::new();
+            let mut backend = MockBackend::new();
+            backend.elapsed_us_value = 1_000;
+            backend.mechanical_encoder_position_counts_value = 2_000;
+
+            let result = step_mechanical_id(&mut phase, &mut buf, &mut backend).await;
+
+            assert!(matches!(
+                result,
+                StepResult::OuterFailed(CommissionError::EncoderFault)
+            ));
+            assert_eq!(buf.len(), 0);
+            assert!(backend.spi_log.iter().any(|op| matches!(
+                op,
+                SpiOp::Write(addr, 0) if *addr == PID_TORQUE_FLUX_TARGET.addr()
+            )));
+            assert!(backend.spi_log.iter().any(|op| matches!(
+                op,
+                SpiOp::Write(addr, 0) if *addr == MODE_RAMP_MODE_MOTION.addr()
+            )));
+        });
+    }
+
+    #[test]
+    fn mechanical_id_reverse_capture_accepts_origin_crossing_from_reverse_baseline() {
+        pollster::block_on(async {
+            let mut safety = OuterSafetyLimits::new(
+                0,
+                crate::commissioning::outer::OuterMotionBudget::firmware_caps(),
+            );
+            safety.configure_encoder_resolution(4_000).unwrap();
+            let domain = safety.encoder_domain.unwrap();
+            let mut data = MechanicalIdData::new(100);
+            data.start_position = Some(domain.count(1_000));
+            let mut phase = OuterPhase::MechanicalId {
+                state: MechanicalIdState::ReverseStart,
+                data,
+                safety,
+            };
+            let mut buf = TransientBuffer::new();
+            let mut backend = MockBackend::new();
+            backend.mechanical_encoder_position_counts_value = 3_998;
+
+            let start_result = step_mechanical_id(&mut phase, &mut buf, &mut backend).await;
+
+            assert!(matches!(start_result, StepResult::Continue));
+            match &phase {
+                OuterPhase::MechanicalId { data, .. } => assert_eq!(
+                    data.start_position.map(|count| count.raw_counts()),
+                    Some(3_998)
+                ),
+                _ => panic!("expected MechanicalId phase"),
+            }
+
+            backend.elapsed_us_value = response::MECHANICAL_ID_SAMPLE_PERIOD_US;
+            backend.mechanical_encoder_position_counts_value = 2;
+            let capture_result = step_mechanical_id(&mut phase, &mut buf, &mut backend).await;
+
+            assert!(matches!(capture_result, StepResult::Continue));
+            assert_eq!(buf.samples(), &[2]);
+        });
+    }
+
+    #[test]
+    fn mechanical_id_reverse_half_turn_stops_without_appending_sample() {
+        pollster::block_on(async {
+            let mut safety = OuterSafetyLimits::new(
+                0,
+                crate::commissioning::outer::OuterMotionBudget::firmware_caps(),
+            );
+            safety.configure_encoder_resolution(4_000).unwrap();
+            let domain = safety.encoder_domain.unwrap();
+            let mut data = MechanicalIdData::new(100);
+            data.start_position = Some(domain.count(1_000));
+            let mut phase = OuterPhase::MechanicalId {
+                state: MechanicalIdState::ReverseStart,
+                data,
+                safety,
+            };
+            let mut buf = TransientBuffer::new();
+            let mut backend = MockBackend::new();
+            backend.mechanical_encoder_position_counts_value = 0;
+            let _ = step_mechanical_id(&mut phase, &mut buf, &mut backend).await;
+
+            backend.elapsed_us_value = response::MECHANICAL_ID_SAMPLE_PERIOD_US;
+            backend.mechanical_encoder_position_counts_value = 2_000;
+            let result = step_mechanical_id(&mut phase, &mut buf, &mut backend).await;
+
+            assert!(matches!(
+                result,
+                StepResult::OuterFailed(CommissionError::EncoderFault)
+            ));
+            assert!(matches!(
+                phase,
+                OuterPhase::Failed(CommissionError::EncoderFault)
+            ));
+            assert_eq!(buf.len(), 0);
+            assert!(backend.spi_log.iter().any(|op| matches!(
+                op,
+                SpiOp::Write(addr, 0) if *addr == PID_TORQUE_FLUX_TARGET.addr()
+            )));
+            assert!(backend.spi_log.iter().any(|op| matches!(
+                op,
+                SpiOp::Write(addr, 0) if *addr == MODE_RAMP_MODE_MOTION.addr()
+            )));
+        });
+    }
+
+    #[test]
     fn mechanical_id_fails_if_post_switch_motion_never_settles() {
         pollster::block_on(async {
             let mut phase = OuterPhase::MechanicalId {
@@ -1240,14 +1490,23 @@ pub(crate) async fn step_mechanical_id_with_trace<B: CommissioningBackend>(
                 Ok(value) => value,
                 Err(_) => return fail_outer(phase, CommissionError::Spi),
             };
-            let delta_counts = response::encoder_delta(
-                settled_pos,
+            let encoder_domain = safety
+                .encoder_domain
+                .expect("outer encoder domain configured before settle");
+            let settled_count = encoder_domain.count(settled_pos);
+            let delta_counts = match encoder_domain.delta(
                 safety
                     .prev_encoder_count
-                    .expect("post-switch baseline configured")
-                    .raw_counts(),
-                safety.counts_per_rev(),
-            );
+                    .expect("post-switch baseline configured"),
+                settled_count,
+            ) {
+                Ok(delta) => delta.signed_counts(),
+                Err(_) => {
+                    let _ = backend.write_register(PID_TORQUE_FLUX_TARGET, 0).await;
+                    let _ = backend.write_register(MODE_RAMP_MODE_MOTION, 0).await;
+                    return fail_outer(phase, CommissionError::EncoderFault);
+                }
+            };
             let dt_us = if safety.last_sample_us == 0 {
                 0
             } else {
@@ -1353,7 +1612,22 @@ pub(crate) async fn step_mechanical_id_with_trace<B: CommissioningBackend>(
                 Ok(value) => value,
                 Err(_) => return fail_outer(phase, CommissionError::Spi),
             };
-            buf.push(encoder_raw);
+            let encoder_domain = safety
+                .encoder_domain
+                .expect("outer encoder domain configured before capture");
+            let encoder_count = encoder_domain.count(encoder_raw);
+            let previous_count = if let Some(previous_raw) = buf.samples().last() {
+                encoder_domain.count(*previous_raw)
+            } else {
+                data.start_position
+                    .expect("mechanical capture baseline configured")
+            };
+            if encoder_domain.delta(previous_count, encoder_count).is_err() {
+                let _ = backend.write_register(PID_TORQUE_FLUX_TARGET, 0).await;
+                let _ = backend.write_register(MODE_RAMP_MODE_MOTION, 0).await;
+                return fail_outer(phase, CommissionError::EncoderFault);
+            }
+            buf.push(encoder_count.raw_counts());
             data.push_sample_timestamp(now);
 
             if buf.is_full() {
@@ -1428,6 +1702,15 @@ pub(crate) async fn step_mechanical_id_with_trace<B: CommissioningBackend>(
         }
 
         MechanicalIdState::ReverseStart => {
+            let encoder_raw = match backend.try_read_mechanical_encoder_position_counts().await {
+                Ok(value) => value,
+                Err(_) => return fail_outer(phase, CommissionError::Spi),
+            };
+            let encoder_domain = safety
+                .encoder_domain
+                .expect("outer encoder domain configured before capture");
+            data.start_position = Some(encoder_domain.count(encoder_raw));
+
             // Apply negative torque step.
             // Torque is signed i16 in upper 16 bits.
             let neg_torque = (-(data.torque_step as i16)) as u16;
@@ -1464,7 +1747,22 @@ pub(crate) async fn step_mechanical_id_with_trace<B: CommissioningBackend>(
                 Ok(value) => value,
                 Err(_) => return fail_outer(phase, CommissionError::Spi),
             };
-            buf.push(encoder_raw);
+            let encoder_domain = safety
+                .encoder_domain
+                .expect("outer encoder domain configured before capture");
+            let encoder_count = encoder_domain.count(encoder_raw);
+            let previous_count = if let Some(previous_raw) = buf.samples().last() {
+                encoder_domain.count(*previous_raw)
+            } else {
+                data.start_position
+                    .expect("mechanical capture baseline configured")
+            };
+            if encoder_domain.delta(previous_count, encoder_count).is_err() {
+                let _ = backend.write_register(PID_TORQUE_FLUX_TARGET, 0).await;
+                let _ = backend.write_register(MODE_RAMP_MODE_MOTION, 0).await;
+                return fail_outer(phase, CommissionError::EncoderFault);
+            }
+            buf.push(encoder_count.raw_counts());
             data.push_sample_timestamp(now);
 
             if buf.is_full() {
