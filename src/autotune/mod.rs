@@ -14,6 +14,7 @@ mod buffer;
 mod current;
 mod filters;
 mod hold;
+mod metrics;
 mod models;
 mod position;
 #[cfg(test)]
@@ -49,6 +50,7 @@ pub use hold::{
     HOLD_GATE_WARNING_TORQUE_RMS, HOLD_GATE_WARNING_TORQUE_SPAN, HoldGateAccumulator,
     HoldGateMetrics, HoldGateSample, hold_status_failure_reason,
 };
+pub use metrics::Permille;
 pub(crate) use models::VELOCITY_SIMC_MAX_P_REG;
 pub use models::{
     AXIS_SPLIT_SOURCE_IMPEDANCE, AXIS_SPLIT_SOURCE_NONE, CURRENT_AXIS_FLUX, CURRENT_AXIS_TORQUE,
