@@ -334,6 +334,56 @@ mod tests {
     }
 
     #[test]
+    fn mechanical_id_rejects_invalid_encoder_domain_before_actuation() {
+        pollster::block_on(async {
+            let mut phase = OuterPhase::MechanicalId {
+                state: MechanicalIdState::Setup,
+                data: MechanicalIdData::new(0, 0),
+                safety: OuterSafetyLimits::new(
+                    0,
+                    0,
+                    crate::commissioning::outer::OuterMotionBudget::firmware_caps(),
+                ),
+            };
+            let mut buf = TransientBuffer::new();
+            let mut backend = MockBackend::new();
+            backend.current_limit_value = 2448;
+            backend.mechanical_encoder_position_counts_value = 1234;
+            let _ = backend.registers.insert(ABN_DECODER_PPR.addr(), 0);
+
+            let result = step_outer(
+                &mut phase,
+                &mut buf,
+                CommissionProfile::Balanced,
+                OperatingMode::Nominal,
+                0,
+                0,
+                false,
+                0,
+                0,
+                0,
+                &mut backend,
+            )
+            .await;
+
+            assert!(matches!(
+                result,
+                StepResult::OuterFailed(CommissionError::EncoderFault)
+            ));
+            assert!(!backend.enable_pin);
+            assert!(!backend.spi_log.iter().any(|op| matches!(
+                op,
+                SpiOp::Write(addr, _) if *addr == MODE_RAMP_MODE_MOTION.addr()
+            )));
+            assert!(!backend.spi_log.iter().any(|op| matches!(
+                op,
+                SpiOp::Write(addr, val)
+                    if *addr == PID_TORQUE_FLUX_TARGET.addr() && (*val >> 16) != 0
+            )));
+        });
+    }
+
+    #[test]
     fn mechanical_id_rejects_tiny_budget_before_actuation() {
         pollster::block_on(async {
             let mut phase = OuterPhase::MechanicalId {
@@ -1078,7 +1128,6 @@ pub(crate) async fn step_mechanical_id_with_trace<B: CommissioningBackend>(
                 Ok(value) => value,
                 Err(_) => return fail_outer(phase, CommissionError::Spi),
             };
-            let start_position = encoder_raw as i32;
 
             // Compute torque step from configured run_current.
             let current_limit = backend.current_limit() & 0xFFFF;
@@ -1089,7 +1138,6 @@ pub(crate) async fn step_mechanical_id_with_trace<B: CommissioningBackend>(
             };
 
             // Initialize data with real values.
-            data.start_position = start_position;
             data.torque_step = torque_step;
 
             // Read encoder PPR and prove the host budget can produce useful
@@ -1098,8 +1146,12 @@ pub(crate) async fn step_mechanical_id_with_trace<B: CommissioningBackend>(
                 Ok(value) => value,
                 Err(_) => return fail_outer(phase, CommissionError::Spi),
             };
-            let counts_per_rev = (ppr_raw as i32).max(4);
-            safety.configure_encoder_resolution(counts_per_rev);
+            if safety.configure_encoder_resolution(ppr_raw).is_err()
+                || safety.set_encoder_baseline(encoder_raw).is_err()
+            {
+                return fail_outer(phase, CommissionError::EncoderFault);
+            }
+            data.start_position = safety.prev_encoder_count;
             if !safety.budget_is_usable() {
                 defmt::warn!(
                     "mechanical-id: unusable motion budget travel={} velocity={} duration={} dir={} window={} velocity_cap={}",
@@ -1161,12 +1213,14 @@ pub(crate) async fn step_mechanical_id_with_trace<B: CommissioningBackend>(
             // safety disarmed until a brief zero-torque settle completes.
             let post_switch_pos = match backend.try_read_mechanical_encoder_position_counts().await
             {
-                Ok(value) => value as i32,
+                Ok(value) => value,
                 Err(_) => return fail_outer(phase, CommissionError::Spi),
             };
-            safety.prev_encoder_count = post_switch_pos;
+            safety
+                .set_encoder_baseline(post_switch_pos)
+                .expect("configured domain");
             safety.unwrapped_position = 0;
-            data.start_position = post_switch_pos;
+            data.start_position = safety.prev_encoder_count;
             safety.torque_cap = 0;
 
             let now = backend.elapsed_us();
@@ -1190,13 +1244,13 @@ pub(crate) async fn step_mechanical_id_with_trace<B: CommissioningBackend>(
             }
 
             let settled_pos = match backend.try_read_mechanical_encoder_position_counts().await {
-                Ok(value) => value as i32,
+                Ok(value) => value,
                 Err(_) => return fail_outer(phase, CommissionError::Spi),
             };
             let delta_counts = response::encoder_delta(
                 settled_pos,
                 safety.prev_encoder_count,
-                safety.counts_per_rev,
+                safety.counts_per_rev(),
             );
             let dt_us = if safety.last_sample_us == 0 {
                 0
@@ -1204,13 +1258,15 @@ pub(crate) async fn step_mechanical_id_with_trace<B: CommissioningBackend>(
                 now.wrapping_sub(safety.last_sample_us)
             };
             let velocity_cpms = response::counts_per_ms(delta_counts, dt_us);
-            safety.prev_encoder_count = settled_pos;
+            safety
+                .set_encoder_baseline(settled_pos)
+                .expect("configured domain");
             safety.last_sample_us = now;
 
             let settle_threshold = response::mechanical_id_settle_velocity_threshold_counts_per_ms(
-                safety.counts_per_rev,
+                safety.counts_per_rev(),
             );
-            if velocity_cpms.unsigned_abs() as i32 <= settle_threshold {
+            if velocity_cpms.unsigned_abs() <= settle_threshold {
                 *stable_ticks = stable_ticks.saturating_add(1);
             } else {
                 *stable_ticks = 0;
@@ -1218,11 +1274,13 @@ pub(crate) async fn step_mechanical_id_with_trace<B: CommissioningBackend>(
 
             if *stable_ticks >= MECHANICAL_ID_MODE_SWITCH_SETTLE_POLICY.stable_ticks {
                 let current_limit = backend.current_limit() & 0xFFFF;
-                safety.prev_encoder_count = settled_pos;
+                safety
+                    .set_encoder_baseline(settled_pos)
+                    .expect("configured domain");
                 safety.unwrapped_position = 0;
                 safety.torque_cap = current_limit as u16;
                 safety.last_sample_us = backend.elapsed_us();
-                data.start_position = settled_pos;
+                data.start_position = safety.prev_encoder_count;
 
                 // Apply the first positive torque step immediately so the next
                 // outer tick does not arm safety for an idle pre-excitation gap.
@@ -1318,7 +1376,7 @@ pub(crate) async fn step_mechanical_id_with_trace<B: CommissioningBackend>(
                     data.sample_timestamps(),
                     *capture_start_us,
                     data.start_position,
-                    safety.counts_per_rev,
+                    safety.counts_per_rev(),
                 );
                 data.fwd_slope = metrics.accel;
                 data.forward_peak_velocity = metrics.peak_velocity;
@@ -1329,7 +1387,7 @@ pub(crate) async fn step_mechanical_id_with_trace<B: CommissioningBackend>(
                     data.sample_timestamps(),
                     *capture_start_us,
                     data.start_position,
-                    safety.counts_per_rev,
+                    safety.counts_per_rev(),
                     data.torque_step as u32,
                 );
 
@@ -1420,7 +1478,7 @@ pub(crate) async fn step_mechanical_id_with_trace<B: CommissioningBackend>(
                 // For reverse capture, use the position at capture start
                 // (first sample) as the reference, not the original start.
                 let reverse_start = if !buf.is_empty() {
-                    buf.samples()[0] as i32
+                    buf.samples()[0]
                 } else {
                     data.start_position
                 };
@@ -1429,7 +1487,7 @@ pub(crate) async fn step_mechanical_id_with_trace<B: CommissioningBackend>(
                     data.sample_timestamps(),
                     *capture_start_us,
                     reverse_start,
-                    safety.counts_per_rev,
+                    safety.counts_per_rev(),
                 );
                 data.rev_slope = metrics.accel;
                 data.reverse_peak_velocity = metrics.peak_velocity.unsigned_abs() as i32;
@@ -1440,7 +1498,7 @@ pub(crate) async fn step_mechanical_id_with_trace<B: CommissioningBackend>(
                     data.sample_timestamps(),
                     *capture_start_us,
                     reverse_start,
-                    safety.counts_per_rev,
+                    safety.counts_per_rev(),
                     data.torque_step as u32,
                 );
 

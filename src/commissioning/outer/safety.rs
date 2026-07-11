@@ -2,14 +2,13 @@
 
 use crate::autotune::CommissionError;
 use crate::commissioning::backend::CommissioningBackend;
+use crate::commissioning::encoder_domain::{EncoderDomain, EncoderMathError};
 use crate::commissioning::types::{
     OUTER_SAFETY_FAULT_DURATION, OUTER_SAFETY_FAULT_INVALID_BUDGET, OUTER_SAFETY_FAULT_POSITION,
     OUTER_SAFETY_FAULT_UNUSABLE_BUDGET, OUTER_SAFETY_FAULT_VELOCITY, OuterSafetyFault,
 };
 
-use super::limits::{
-    MECHANICAL_ID_VELOCITY_CAP_COUNTS_PER_MS, POSITION_WINDOW_COUNTS, normalized_counts_per_rev,
-};
+use super::limits::{MECHANICAL_ID_VELOCITY_CAP_COUNTS_PER_MS, POSITION_WINDOW_COUNTS};
 use super::{
     mechanical_id_velocity_cap_counts_per_ms, position_window_counts, response, state::OuterPhase,
 };
@@ -43,15 +42,15 @@ impl OuterMotionBudget {
         }
     }
 
-    fn travel_counts(self, counts_per_rev: i32) -> i32 {
+    fn travel_counts(self, counts_per_rev: u32) -> u32 {
         mrev_to_counts(self.max_travel_mrev, counts_per_rev)
     }
 
-    fn velocity_counts_per_ms(self, counts_per_rev: i32) -> i32 {
-        let counts_per_rev = normalized_counts_per_rev(counts_per_rev) as u64;
+    fn velocity_counts_per_ms(self, counts_per_rev: u32) -> u32 {
+        let counts_per_rev = u64::from(counts_per_rev);
         let scaled = counts_per_rev.saturating_mul(self.max_velocity_mrev_s as u64);
         let rounded = (scaled + 500_000) / 1_000_000;
-        clamp_positive_i32(rounded)
+        clamp_positive_u32(rounded)
     }
 }
 
@@ -59,18 +58,17 @@ impl OuterMotionBudget {
 #[derive(Debug, Clone, Copy, defmt::Format)]
 pub(crate) struct OuterSafetyLimits {
     /// Maximum absolute velocity in encoder counts per millisecond.
-    pub(crate) velocity_cap: i32,
+    pub(crate) velocity_cap: u32,
     /// Maximum distance from start position in encoder counts.
-    pub(crate) position_window: i32,
+    pub(crate) position_window: u32,
     /// Unwrapped signed position accumulated from wrap-aware deltas.
     pub(crate) unwrapped_position: i32,
     /// Torque cap: the configured run_current limit.
     pub(crate) torque_cap: u16,
-    /// Previous raw encoder count for delta computation.
-    pub(crate) prev_encoder_count: i32,
-    /// Encoder counts per revolution (PPR * 4). Used to normalize
-    /// wrap-around deltas when the ABN decoder counter rolls over.
-    pub(crate) counts_per_rev: i32,
+    /// Previous normalized encoder count for delta computation.
+    pub(crate) prev_encoder_count: u32,
+    /// Validated encoder modulo domain.
+    pub(crate) encoder_domain: Option<EncoderDomain>,
     /// Timestamp (microseconds) of the previous safety sample.
     /// Zero means the next sample initializes the baseline.
     pub(crate) last_sample_us: u64,
@@ -81,14 +79,14 @@ pub(crate) struct OuterSafetyLimits {
 }
 
 impl OuterSafetyLimits {
-    pub(crate) fn new(start_position: i32, torque_cap: u16, budget: OuterMotionBudget) -> Self {
+    pub(crate) fn new(start_position: u32, torque_cap: u16, budget: OuterMotionBudget) -> Self {
         Self {
             velocity_cap: MECHANICAL_ID_VELOCITY_CAP_COUNTS_PER_MS,
             position_window: POSITION_WINDOW_COUNTS,
             unwrapped_position: 0,
             torque_cap,
             prev_encoder_count: start_position,
-            counts_per_rev: 0, // Set by MechanicalId::Setup after reading ABN_DECODER_PPR
+            encoder_domain: None,
             last_sample_us: 0,
             start_sample_us: 0,
             budget,
@@ -102,20 +100,39 @@ impl OuterSafetyLimits {
             && self.budget.direction_mask == 0x03
     }
 
-    pub(crate) fn configure_encoder_resolution(&mut self, counts_per_rev: i32) {
-        let counts_per_rev = normalized_counts_per_rev(counts_per_rev);
-        self.counts_per_rev = counts_per_rev;
+    pub(crate) fn configure_encoder_resolution(
+        &mut self,
+        counts_per_rev: u32,
+    ) -> Result<(), EncoderMathError> {
+        let encoder_domain = EncoderDomain::new(counts_per_rev)?;
+        self.encoder_domain = Some(encoder_domain);
+        self.prev_encoder_count = encoder_domain.count(self.prev_encoder_count).raw_counts();
         self.velocity_cap = mechanical_id_velocity_cap_counts_per_ms(counts_per_rev)
             .min(self.budget.velocity_counts_per_ms(counts_per_rev));
         self.position_window =
             position_window_counts(counts_per_rev).min(self.budget.travel_counts(counts_per_rev));
+        Ok(())
+    }
+
+    pub(crate) fn set_encoder_baseline(&mut self, raw_counts: u32) -> Result<(), EncoderMathError> {
+        let domain = self
+            .encoder_domain
+            .ok_or(EncoderMathError::InvalidCountsPerRev)?;
+        self.prev_encoder_count = domain.count(raw_counts).raw_counts();
+        Ok(())
+    }
+
+    pub(crate) fn counts_per_rev(&self) -> u32 {
+        self.encoder_domain
+            .expect("outer encoder domain configured before motion")
+            .counts_per_rev()
     }
 
     pub(crate) fn budget_is_usable(&self) -> bool {
         self.budget_request_is_valid()
             && self.budget.max_duration_ms >= MIN_USEFUL_DURATION_MS
-            && self.position_window as u32 >= response::MECHANICAL_ID_MIN_TRAVEL_COUNTS
-            && self.velocity_cap as u32 >= response::MECHANICAL_ID_MIN_PEAK_VELOCITY_COUNTS_PER_MS
+            && self.position_window >= response::MECHANICAL_ID_MIN_TRAVEL_COUNTS
+            && self.velocity_cap >= response::MECHANICAL_ID_MIN_PEAK_VELOCITY_COUNTS_PER_MS
     }
 
     pub(crate) fn motion_budget_mrev(&self) -> u16 {
@@ -152,29 +169,33 @@ impl OuterSafetyLimits {
             delta_counts,
             dt_us: clamp_u64_to_u32(dt_us),
             velocity_counts_per_ms,
-            velocity_cap_counts_per_ms: self.velocity_cap,
+            velocity_cap_counts_per_ms: clamp_u32_to_i32(self.velocity_cap),
             position_counts: self.unwrapped_position,
-            position_window_counts: self.position_window,
+            position_window_counts: clamp_u32_to_i32(self.position_window),
             elapsed_us: clamp_u64_to_u32(elapsed_us),
             duration_cap_us: clamp_u64_to_u32(duration_cap_us),
         }
     }
 }
 
-fn mrev_to_counts(mrev: u32, counts_per_rev: i32) -> i32 {
-    let counts_per_rev = normalized_counts_per_rev(counts_per_rev) as u64;
+fn mrev_to_counts(mrev: u32, counts_per_rev: u32) -> u32 {
+    let counts_per_rev = u64::from(counts_per_rev);
     let scaled = counts_per_rev.saturating_mul(mrev as u64);
-    clamp_positive_i32(scaled / 1_000)
+    clamp_positive_u32(scaled / 1_000)
 }
 
-fn clamp_positive_i32(value: u64) -> i32 {
+fn clamp_positive_u32(value: u64) -> u32 {
     if value == 0 {
         1
-    } else if value > i32::MAX as u64 {
-        i32::MAX
+    } else if value > u32::MAX as u64 {
+        u32::MAX
     } else {
-        value as i32
+        value as u32
     }
+}
+
+fn clamp_u32_to_i32(value: u32) -> i32 {
+    value.min(i32::MAX as u32) as i32
 }
 
 fn clamp_u32_to_u16(value: u32) -> u16 {
@@ -233,7 +254,10 @@ pub(crate) async fn check_outer_safety<B: CommissioningBackend>(
     let encoder_raw = backend
         .try_read_mechanical_encoder_position_counts()
         .await?;
-    let encoder_count = encoder_raw as i32;
+    let encoder_count = safety
+        .encoder_domain
+        .expect("outer encoder domain configured before motion")
+        .count(encoder_raw);
     let now_us = backend.elapsed_us();
 
     if safety.start_sample_us == 0 {
@@ -258,9 +282,9 @@ pub(crate) async fn check_outer_safety<B: CommissioningBackend>(
 
     // Wrap-aware delta in encoder counts since the last safety sample.
     let delta_counts = response::encoder_delta(
-        encoder_count,
+        encoder_count.raw_counts(),
         safety.prev_encoder_count,
-        safety.counts_per_rev,
+        safety.counts_per_rev(),
     );
     let dt_us = if safety.last_sample_us == 0 {
         0
@@ -268,12 +292,12 @@ pub(crate) async fn check_outer_safety<B: CommissioningBackend>(
         now_us.wrapping_sub(safety.last_sample_us)
     };
     let velocity_cpms = response::counts_per_ms(delta_counts, dt_us);
-    safety.prev_encoder_count = encoder_count;
+    safety.prev_encoder_count = encoder_count.raw_counts();
     safety.last_sample_us = now_us;
     safety.unwrapped_position += delta_counts;
 
     // Check velocity cap (absolute value).
-    let abs_velocity = velocity_cpms.unsigned_abs() as i32;
+    let abs_velocity = velocity_cpms.unsigned_abs();
     if abs_velocity > safety.velocity_cap {
         defmt::warn!(
             "outer safety: velocity {} exceeds cap {} (delta={} dt_us={})",
@@ -292,7 +316,7 @@ pub(crate) async fn check_outer_safety<B: CommissioningBackend>(
     }
 
     // Check position window against unwrapped accumulator.
-    let abs_position = safety.unwrapped_position.unsigned_abs() as i32;
+    let abs_position = safety.unwrapped_position.unsigned_abs();
     if abs_position > safety.position_window {
         defmt::warn!(
             "outer safety: position {} exceeds window {}",
@@ -342,6 +366,16 @@ mod tests {
     use foci_tmc4671::registers::ABN_DECODER_COUNT;
 
     #[test]
+    fn outer_safety_rejects_zero_encoder_resolution() {
+        let mut safety = OuterSafetyLimits::new(0, 100, OuterMotionBudget::firmware_caps());
+
+        let result = safety.configure_encoder_resolution(0);
+
+        assert!(result.is_err());
+        assert!(safety.encoder_domain.is_none());
+    }
+
+    #[test]
     fn outer_safety_uses_mechanical_id_velocity_cap() {
         let safety = OuterSafetyLimits::new(0, 100, OuterMotionBudget::firmware_caps());
         assert_eq!(
@@ -354,9 +388,9 @@ mod tests {
     fn outer_safety_limits_scale_with_encoder_resolution() {
         let mut safety = OuterSafetyLimits::new(0, 100, OuterMotionBudget::firmware_caps());
 
-        safety.configure_encoder_resolution(8_000);
+        safety.configure_encoder_resolution(8_000).unwrap();
 
-        assert_eq!(safety.counts_per_rev, 8_000);
+        assert_eq!(safety.counts_per_rev(), 8_000);
         assert_eq!(safety.velocity_cap, 48);
         assert_eq!(safety.position_window, 16_000);
     }
@@ -374,7 +408,7 @@ mod tests {
             },
         );
 
-        safety.configure_encoder_resolution(4_000);
+        safety.configure_encoder_resolution(4_000).unwrap();
 
         assert_eq!(safety.position_window, 2_000);
         assert_eq!(safety.velocity_cap, 24);
@@ -448,7 +482,7 @@ mod tests {
                     direction_mask: 3,
                 },
             );
-            safety.configure_encoder_resolution(4_000);
+            safety.configure_encoder_resolution(4_000).unwrap();
             safety.start_sample_us = 1_000;
             let mut backend = MockBackend::new();
             backend.elapsed_us_value = 2_001;
@@ -465,7 +499,7 @@ mod tests {
     fn outer_safety_normalizes_velocity_by_elapsed_time() {
         pollster::block_on(async {
             let mut safety = OuterSafetyLimits::new(0, 100, OuterMotionBudget::firmware_caps());
-            safety.counts_per_rev = 4000;
+            safety.configure_encoder_resolution(4_000).unwrap();
             safety.prev_encoder_count = 2328;
             safety.last_sample_us = 100_000;
             let mut backend = MockBackend::new();
@@ -499,7 +533,7 @@ mod tests {
                     direction_mask: 3,
                 },
             );
-            safety.configure_encoder_resolution(4_000);
+            safety.configure_encoder_resolution(4_000).unwrap();
             safety.prev_encoder_count = 0;
             safety.last_sample_us = 100_000;
             safety.start_sample_us = 90_000;
@@ -532,7 +566,7 @@ mod tests {
     fn outer_safety_read_error_fails_with_spi() {
         pollster::block_on(async {
             let mut safety = OuterSafetyLimits::new(0, 2448, OuterMotionBudget::firmware_caps());
-            safety.counts_per_rev = 4000;
+            safety.configure_encoder_resolution(4_000).unwrap();
             safety.last_sample_us = 1_000;
             let mut phase = OuterPhase::MechanicalId {
                 state: MechanicalIdState::ForwardCapture {

@@ -114,15 +114,14 @@ fn encoder_counts_to_tmc_position_units(encoder_counts: i32, encoder_counts_per_
 fn encoder_delta_counts_per_ms(
     current: u32,
     previous: u32,
-    counts_per_rev: i32,
+    counts_per_rev: u32,
     elapsed_us: u64,
 ) -> u32 {
     if elapsed_us == 0 {
         return 0;
     }
 
-    let delta_counts =
-        response::encoder_delta(current as i32, previous as i32, counts_per_rev).unsigned_abs();
+    let delta_counts = response::encoder_delta(current, previous, counts_per_rev).unsigned_abs();
     if delta_counts == 0 {
         return 0;
     }
@@ -313,7 +312,11 @@ pub(crate) async fn step_velocity_validate_with_trace<B: CommissioningBackend>(
 
             data.prev_encoder_for_velocity =
                 match backend.try_read_mechanical_encoder_position_counts().await {
-                    Ok(value) => value,
+                    Ok(value) => safety
+                        .encoder_domain
+                        .expect("outer encoder domain configured before velocity validation")
+                        .count(value)
+                        .raw_counts(),
                     Err(_) => return fail_outer(phase, CommissionError::Spi),
                 };
 
@@ -341,11 +344,15 @@ pub(crate) async fn step_velocity_validate_with_trace<B: CommissioningBackend>(
                 Err(_) => return fail_outer(phase, CommissionError::Spi),
             };
             let prev_encoder = data.prev_encoder_for_velocity;
-            data.prev_encoder_for_velocity = encoder_raw;
+            data.prev_encoder_for_velocity = safety
+                .encoder_domain
+                .expect("outer encoder domain configured before velocity validation")
+                .count(encoder_raw)
+                .raw_counts();
             let velocity = encoder_delta_counts_per_ms(
                 encoder_raw,
                 prev_encoder,
-                safety.counts_per_rev,
+                safety.counts_per_rev(),
                 now.wrapping_sub(*last_sample_us),
             );
             buf.push(velocity);
@@ -432,7 +439,11 @@ pub(crate) async fn step_velocity_validate_with_trace<B: CommissioningBackend>(
 
             data.prev_encoder_for_velocity =
                 match backend.try_read_mechanical_encoder_position_counts().await {
-                    Ok(value) => value,
+                    Ok(value) => safety
+                        .encoder_domain
+                        .expect("outer encoder domain configured before velocity validation")
+                        .count(value)
+                        .raw_counts(),
                     Err(_) => return fail_outer(phase, CommissionError::Spi),
                 };
 
@@ -460,11 +471,15 @@ pub(crate) async fn step_velocity_validate_with_trace<B: CommissioningBackend>(
                 Err(_) => return fail_outer(phase, CommissionError::Spi),
             };
             let prev_encoder = data.prev_encoder_for_velocity;
-            data.prev_encoder_for_velocity = encoder_raw;
+            data.prev_encoder_for_velocity = safety
+                .encoder_domain
+                .expect("outer encoder domain configured before velocity validation")
+                .count(encoder_raw)
+                .raw_counts();
             let velocity = encoder_delta_counts_per_ms(
                 encoder_raw,
                 prev_encoder,
-                safety.counts_per_rev,
+                safety.counts_per_rev(),
                 now.wrapping_sub(*last_sample_us),
             );
             buf.push(velocity);
@@ -530,7 +545,11 @@ pub(crate) async fn step_velocity_validate_with_trace<B: CommissioningBackend>(
             if backend.elapsed_us().wrapping_sub(*deadline_us) < 0x8000_0000 {
                 data.prev_encoder_for_velocity =
                     match backend.try_read_mechanical_encoder_position_counts().await {
-                        Ok(value) => value,
+                        Ok(value) => safety
+                            .encoder_domain
+                            .expect("outer encoder domain configured before velocity validation")
+                            .count(value)
+                            .raw_counts(),
                         Err(_) => return fail_outer(phase, CommissionError::Spi),
                     };
                 buf.reset(VELOCITY_VALIDATE_SAMPLE_PERIOD_US as u16);
@@ -561,11 +580,15 @@ pub(crate) async fn step_velocity_validate_with_trace<B: CommissioningBackend>(
                 Err(_) => return fail_outer(phase, CommissionError::Spi),
             };
             let prev_encoder = data.prev_encoder_for_velocity;
-            data.prev_encoder_for_velocity = count;
+            data.prev_encoder_for_velocity = safety
+                .encoder_domain
+                .expect("outer encoder domain configured before velocity validation")
+                .count(count)
+                .raw_counts();
             let velocity = encoder_delta_counts_per_ms(
                 count,
                 prev_encoder,
-                safety.counts_per_rev,
+                safety.counts_per_rev(),
                 now.wrapping_sub(*last_sample_us),
             );
             if velocity > data.max_chatter {
@@ -941,7 +964,7 @@ pub(crate) async fn step_velocity_validate_with_trace<B: CommissioningBackend>(
                                     new_gains.velocity_i
                                 );
                                 new_gains =
-                                    response::response_velocity_gains(safety.counts_per_rev);
+                                    response::response_velocity_gains(safety.counts_per_rev());
                                 data.strategy = VelocityTuneStrategy::ResponseRamp;
                                 data.step_target = response::VELOCITY_RESPONSE_STEP_TARGET;
                             }
@@ -998,7 +1021,7 @@ pub(crate) async fn step_velocity_validate_with_trace<B: CommissioningBackend>(
                         data.attempt
                     );
                     data.diagnostics.warning_code = OUTER_WARNING_UNSAFE_SYNTH_GAINS;
-                    data.gains = response::response_velocity_gains(safety.counts_per_rev);
+                    data.gains = response::response_velocity_gains(safety.counts_per_rev());
                     data.accepted_gains = data.gains;
                     data.has_accepted_gains = false;
                     data.response_lower_p = 0;
@@ -1073,7 +1096,7 @@ pub(crate) async fn step_velocity_validate_with_trace<B: CommissioningBackend>(
 
             // Position capture is measured in ABN counts, while the TMC target
             // uses 65536 mechanical position units per revolution.
-            let step_target_counts = response::position_tune_step_counts(safety.counts_per_rev);
+            let step_target_counts = response::position_tune_step_counts(safety.counts_per_rev());
             let step_target_tmc = encoder_counts_to_tmc_position_units(
                 step_target_counts.min(i32::MAX as u32) as i32,
                 backend.mechanical_encoder_quadrature_counts_per_rev(),
@@ -1930,7 +1953,7 @@ mod tests {
                 2448,
                 crate::commissioning::outer::OuterMotionBudget::firmware_caps(),
             );
-            safety.configure_encoder_resolution(4_000);
+            safety.configure_encoder_resolution(4_000).unwrap();
             let mut phase = OuterPhase::VelocityValidate {
                 state: VelocityValidateState::ForwardCapture {
                     next_sample_us: 1_000,
@@ -2013,7 +2036,7 @@ mod tests {
                 2448,
                 crate::commissioning::outer::OuterMotionBudget::firmware_caps(),
             );
-            safety.counts_per_rev = 4000;
+            safety.configure_encoder_resolution(4_000).unwrap();
             let mut phase = OuterPhase::VelocityValidate {
                 state: VelocityValidateState::ForwardCapture {
                     next_sample_us: 1_000,

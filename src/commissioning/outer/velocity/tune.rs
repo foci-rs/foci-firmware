@@ -88,7 +88,7 @@ pub(crate) async fn step_velocity_tune<B: CommissioningBackend>(
 
     let (gains, strategy, step_target) =
         if diagnostics.warning_code == response::OUTER_WARNING_LOW_CONFIDENCE_MECHANICAL_ID {
-            let gains = response::response_velocity_gains(safety.counts_per_rev);
+            let gains = response::response_velocity_gains(safety.counts_per_rev());
             (
                 gains,
                 VelocityTuneStrategy::ResponseRamp,
@@ -126,7 +126,7 @@ pub(crate) async fn step_velocity_tune<B: CommissioningBackend>(
                     gains.velocity_i
                 );
                 (
-                    response::response_velocity_gains(safety.counts_per_rev),
+                    response::response_velocity_gains(safety.counts_per_rev()),
                     VelocityTuneStrategy::ResponseRamp,
                     response::VELOCITY_RESPONSE_STEP_TARGET,
                 )

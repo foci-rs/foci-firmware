@@ -51,7 +51,7 @@ pub(crate) enum MechanicalIdState {
 #[derive(Debug, defmt::Format)]
 pub(crate) struct MechanicalIdData {
     /// Starting encoder position recorded at setup.
-    pub(crate) start_position: i32,
+    pub(crate) start_position: u32,
     /// Retry attempt index for adaptive torque steps.
     pub(crate) attempt: u8,
     /// Torque step amplitude (PIDOUT units).
@@ -75,7 +75,7 @@ pub(crate) struct MechanicalIdData {
 }
 
 impl MechanicalIdData {
-    pub(crate) fn new(start_position: i32, torque_step: u16) -> Self {
+    pub(crate) fn new(start_position: u32, torque_step: u16) -> Self {
         Self {
             start_position,
             attempt: 0,
@@ -302,7 +302,7 @@ pub(crate) struct PositionTuneData {
     /// Position step target in TMC electrical-position units.
     pub(crate) step_target_tmc: u32,
     /// Starting ABN encoder count for response measurement.
-    pub(crate) step_start_counts: i32,
+    pub(crate) step_start_counts: u32,
     /// Starting TMC position for target writes.
     pub(crate) step_start_tmc: i32,
     /// Whether oscillation was detected early (at the first P value).

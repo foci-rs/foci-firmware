@@ -92,8 +92,8 @@ pub(crate) fn estimate_early_slope(
     buf: &TransientBuffer,
     timestamps_us: &[u64],
     capture_start_us: u64,
-    reference_position: i32,
-    counts_per_rev: i32,
+    reference_position: u32,
+    counts_per_rev: u32,
 ) -> SlopeEstimate {
     let samples = buf.samples();
     debug_assert_eq!(timestamps_us.len(), samples.len());
@@ -108,7 +108,7 @@ pub(crate) fn estimate_early_slope(
 
     // Stage 1: onset detection — first sample with per-sample velocity
     // above the onset threshold (in milli-counts per millisecond).
-    let threshold_mcpms = mechanical_id_velocity_onset_threshold_mcpms(counts_per_rev) as i64;
+    let threshold_mcpms = i64::from(mechanical_id_velocity_onset_threshold_mcpms(counts_per_rev));
     let onset_idx = {
         let mut found: Option<usize> = None;
         for i in 0..samples.len() {
@@ -117,7 +117,7 @@ pub(crate) fn estimate_early_slope(
             } else {
                 (samples[i - 1] as i64, timestamps_us[i - 1])
             };
-            let delta = wrap_aware_delta(samples[i] as i64, prev_count, counts_per_rev as i64);
+            let delta = wrap_aware_delta(samples[i] as i64, prev_count, i64::from(counts_per_rev));
             let dt_us = timestamps_us[i].saturating_sub(prev_ts) as i64;
             if dt_us == 0 {
                 continue;
@@ -171,7 +171,7 @@ pub(crate) fn estimate_early_slope(
     let mut prev_count = reference_position as i64;
     let mut running: i128 = 0;
     for (i, &s) in samples.iter().enumerate() {
-        let d = wrap_aware_delta(s as i64, prev_count, counts_per_rev as i64);
+        let d = wrap_aware_delta(s as i64, prev_count, i64::from(counts_per_rev));
         running += d as i128;
         unwrapped[i] = running;
         prev_count = s as i64;
@@ -237,7 +237,7 @@ pub(crate) fn estimate_early_slope(
         } else {
             (samples[i - 1] as i64, timestamps_us[i - 1])
         };
-        let delta = wrap_aware_delta(samples[i] as i64, prev_count, counts_per_rev as i64);
+        let delta = wrap_aware_delta(samples[i] as i64, prev_count, i64::from(counts_per_rev));
         let dt_us = timestamps_us[i].saturating_sub(prev_ts) as i64;
         if dt_us == 0 {
             0

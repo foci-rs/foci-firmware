@@ -29,14 +29,9 @@ pub(crate) const MECHANICAL_ID_SAMPLE_PERIOD_US: u64 = 1000;
 /// The physical threshold is 0.5 rev/s, rounded up to whole counts/ms for
 /// the settle path's integer velocity samples.
 pub(crate) const fn mechanical_id_settle_velocity_threshold_counts_per_ms(
-    counts_per_rev: i32,
-) -> i32 {
-    let counts_per_rev = if counts_per_rev > 0 {
-        counts_per_rev
-    } else {
-        super::REFERENCE_ENCODER_COUNTS_PER_REV
-    };
-    let threshold = (counts_per_rev + 1999) / 2000;
+    counts_per_rev: u32,
+) -> u32 {
+    let threshold = counts_per_rev.div_ceil(2000);
     if threshold > 0 { threshold } else { 1 }
 }
 
@@ -44,13 +39,8 @@ pub(crate) const fn mechanical_id_settle_velocity_threshold_counts_per_ms(
 /// time-normalized velocity estimator used by MechanicalId metric extraction.
 ///
 /// The physical threshold is 0.5 rev/s.
-pub(crate) const fn mechanical_id_velocity_onset_threshold_mcpms(counts_per_rev: i32) -> i32 {
-    let counts_per_rev = if counts_per_rev > 0 {
-        counts_per_rev
-    } else {
-        super::REFERENCE_ENCODER_COUNTS_PER_REV
-    };
-    let threshold = (counts_per_rev + 1) / 2;
+pub(crate) const fn mechanical_id_velocity_onset_threshold_mcpms(counts_per_rev: u32) -> u32 {
+    let threshold = counts_per_rev.div_ceil(2);
     if threshold > 0 { threshold } else { 1 }
 }
 
@@ -92,16 +82,17 @@ pub(crate) const OUTER_WARNING_LOW_CONFIDENCE_MECHANICAL_ID: u8 = 1;
 /// subtraction across the wrap boundary produces a delta near
 /// `+/- counts_per_rev` instead of the true small motion. This normalizes
 /// the delta to `[-half, +half)`.
-pub(crate) fn encoder_delta(current: i32, previous: i32, counts_per_rev: i32) -> i32 {
+pub(crate) fn encoder_delta(current: u32, previous: u32, counts_per_rev: u32) -> i32 {
+    let counts_per_rev = i64::from(counts_per_rev);
     let half = counts_per_rev / 2;
-    let raw = current.wrapping_sub(previous);
-    if raw > half {
+    let raw = i64::from(current) - i64::from(previous);
+    (if raw > half {
         raw - counts_per_rev
     } else if raw < -half {
         raw + counts_per_rev
     } else {
         raw
-    }
+    }) as i32
 }
 
 /// Convert a wrap-aware encoder delta into counts per millisecond using the
@@ -177,7 +168,7 @@ pub(crate) fn retry_mechanical_id(
 }
 
 /// Default velocity gains used by the response-ramp fallback.
-pub(crate) fn response_velocity_gains(counts_per_rev: i32) -> VelocityGains {
+pub(crate) fn response_velocity_gains(counts_per_rev: u32) -> VelocityGains {
     VelocityGains {
         velocity_p: VELOCITY_RESPONSE_INITIAL_P,
         velocity_i: OUTER_FALLBACK_VELOCITY_I,
@@ -315,8 +306,8 @@ pub(crate) fn extract_mechanical_response_model(
     buf: &TransientBuffer,
     timestamps_us: &[u64],
     capture_start_us: u64,
-    reference_position: i32,
-    counts_per_rev: i32,
+    reference_position: u32,
+    counts_per_rev: u32,
     torque: u32,
 ) -> MechanicalResponseEstimate {
     let samples = buf.samples();
@@ -336,14 +327,14 @@ pub(crate) fn extract_mechanical_response_model(
         let previous_count = if i == 0 {
             reference_position
         } else {
-            samples[i - 1] as i32
+            samples[i - 1]
         };
         let previous_ts = if i == 0 {
             capture_start_us
         } else {
             timestamps_us[i - 1]
         };
-        let delta = encoder_delta(samples[i] as i32, previous_count, counts_per_rev);
+        let delta = encoder_delta(samples[i], previous_count, counts_per_rev);
         let dt_us = timestamps_us[i].saturating_sub(previous_ts);
         let v_mcpms = if dt_us == 0 {
             0
@@ -357,7 +348,7 @@ pub(crate) fn extract_mechanical_response_model(
         if v_mcpms.unsigned_abs() > peak_velocity_mcpms.unsigned_abs() {
             peak_velocity_mcpms = v_mcpms;
         }
-        if onset_idx.is_none() && v_mcpms.unsigned_abs() >= threshold_mcpms as u32 {
+        if onset_idx.is_none() && v_mcpms.unsigned_abs() >= threshold_mcpms {
             onset_idx = Some(i);
         }
     }
@@ -382,7 +373,7 @@ pub(crate) fn extract_mechanical_response_model(
         .sum();
     let steady_mcpms = round_div_signed_i128(tail_sum as i128, tail_len as i128) as i32;
     let steady_abs_mcpms = steady_mcpms.unsigned_abs();
-    if steady_abs_mcpms < threshold_mcpms as u32 {
+    if steady_abs_mcpms < threshold_mcpms {
         return MechanicalResponseEstimate::default();
     }
 
@@ -438,8 +429,8 @@ pub(crate) fn extract_mechanical_id_metrics(
     buf: &TransientBuffer,
     timestamps_us: &[u64],
     capture_start_us: u64,
-    reference_position: i32,
-    counts_per_rev: i32,
+    reference_position: u32,
+    counts_per_rev: u32,
 ) -> MechanicalIdMetrics {
     use crate::commissioning::outer::slope_estimator::{SlopeEstimate, estimate_early_slope};
 
@@ -476,11 +467,11 @@ pub(crate) fn extract_mechanical_id_metrics(
 
     for i in 0..samples.len() {
         let delta_counts = encoder_delta(
-            samples[i] as i32,
+            samples[i],
             if i == 0 {
                 reference_position
             } else {
-                samples[i - 1] as i32
+                samples[i - 1]
             },
             counts_per_rev,
         );
@@ -504,7 +495,7 @@ pub(crate) fn extract_mechanical_id_metrics(
         }
         if onset_idx.is_none()
             && v_mcpms.unsigned_abs()
-                >= mechanical_id_velocity_onset_threshold_mcpms(counts_per_rev) as u32
+                >= mechanical_id_velocity_onset_threshold_mcpms(counts_per_rev)
         {
             onset_idx = Some(i);
         }

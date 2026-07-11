@@ -140,7 +140,11 @@ pub(crate) async fn step_position_tune_with_trace<B: CommissioningBackend>(
                 Ok(value) => value,
                 Err(_) => return fail_outer(phase, CommissionError::Spi),
             };
-            data.step_start_counts = encoder_raw as i32;
+            data.step_start_counts = safety
+                .encoder_domain
+                .expect("outer encoder domain configured before position tuning")
+                .count(encoder_raw)
+                .raw_counts();
             let position_raw = match backend.read_register(PID_POSITION_ACTUAL).await {
                 Ok(v) => v as i32,
                 Err(_) => {
@@ -195,9 +199,9 @@ pub(crate) async fn step_position_tune_with_trace<B: CommissioningBackend>(
             // comparison against the unsigned step target_abs in the
             // oscillation detector.
             let delta = crate::commissioning::outer::response::encoder_delta(
-                encoder_raw as i32,
+                encoder_raw,
                 data.step_start_counts,
-                safety.counts_per_rev,
+                safety.counts_per_rev(),
             );
             buf.push(delta.unsigned_abs());
 
@@ -330,7 +334,11 @@ pub(crate) async fn step_position_tune_with_trace<B: CommissioningBackend>(
                             Ok(value) => value,
                             Err(_) => return fail_outer(phase, CommissionError::Spi),
                         };
-                    data.step_start_counts = encoder_raw as i32;
+                    data.step_start_counts = safety
+                        .encoder_domain
+                        .expect("outer encoder domain configured before position tuning")
+                        .count(encoder_raw)
+                        .raw_counts();
                     let position_raw = match backend.read_register(PID_POSITION_ACTUAL).await {
                         Ok(v) => v as i32,
                         Err(_) => {
