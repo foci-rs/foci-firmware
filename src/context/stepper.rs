@@ -346,7 +346,7 @@ mod tests {
                 motion_scale_error: None,
                 dir_changed: false,
                 direction_error: None,
-                pulse_timing: crate::step_pulse::StepPulseTiming::new(84_000_000, 0, 0).unwrap(),
+                pulse_timing: crate::step_pulse::StepPulseTiming::new(84_000_000, 24, 0).unwrap(),
                 timing_error: None,
                 enqueue_calls: 0,
                 queue_len: 1,

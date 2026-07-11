@@ -100,7 +100,7 @@ mod tests {
 
     #[test]
     fn admission_uses_the_segment_minimum_interval() {
-        let timing = crate::step_pulse::StepPulseTiming::new(84_000_000, 0, 0).unwrap();
+        let timing = crate::step_pulse::StepPulseTiming::new(84_000_000, 24, 0).unwrap();
         let move_ = foci_klipper::stepper::StepMove::new(20, 3, -3);
 
         assert_eq!(
