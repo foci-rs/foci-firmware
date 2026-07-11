@@ -362,8 +362,9 @@ macro_rules! foci_ankyra_config {
             providers = [ $($provider),* ],
             static_strings = [
                 $($board_lit,)*
-                // FOCI firmware-wide shutdown literals. Keep in sync with
-                // `ShutdownReason::message` and `dispatch_shutdown!` above.
+                // FOCI firmware-wide shutdown literals. Keep top-level reasons in sync with
+                // `ShutdownReason::message` and `dispatch_shutdown!`, and include literals
+                // emitted by shared-control board glue.
                 "Shutdown cleared when not shutdown",
                 "config_reset only available when shutdown",
                 "Command request",
@@ -398,6 +399,7 @@ macro_rules! foci_ankyra_config {
                 "TMC4671 chip ID mismatch",
                 "TMC4671 SPI failed at boot",
                 "TMC request validation failed",
+                "Live gain application failed",
                 "TMC4671: PLL not locked (clock lost)",
                 "TMC4671: ADC current clipped (overcurrent)",
                 "TMC4671 fault",
