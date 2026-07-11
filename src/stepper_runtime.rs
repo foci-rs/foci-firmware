@@ -21,6 +21,9 @@ pub enum StepDeadlineStatus {
 }
 
 /// Classify actual step deadline lateness using wrap-safe signed timer ordering.
+///
+/// `scheduled` and `now` are comparable only when separated by less than half the
+/// `u32` timer range; exactly half-range apart is ambiguous under signed-delta ordering.
 pub const fn classify_step_deadline(
     scheduled: u32,
     now: u32,
