@@ -405,10 +405,11 @@ pub fn extract_velocity_metrics(
 ///
 /// | Metric | Pass | Marginal | Fail |
 /// |--------|------|----------|------|
-/// | Overshoot | < 20% | 20-40% | > 40% |
-/// | Settling | < 5*tau_mech | 5-10*tau_mech | > 10*tau_mech |
+/// | Overshoot | <= 20% | > 20-40% | > 40% |
+/// | Settling | <= 5*tau_mech | > 5-10*tau_mech | > 10*tau_mech |
 /// | Zero chatter | none | detected | -- |
-/// | Saturation | < 10% | 10-25% | > 25% |
+/// | Saturation | <= 10% | > 10-25% | > 25% |
+/// | Symmetry | <= 20% | > 20-40% | > 40% |
 ///
 /// Chatter is marginal, not fail — the filter stage addresses it.
 /// Returns the worst classification across all metrics.

@@ -84,8 +84,10 @@ pub struct CurrentValidation {
     pub tail_level: u32,
     /// |tail_level - target| / target, in 0.1% units (permille).
     /// Measures whether the current loop actually reached the commanded
-    /// target. Set to 0 by extract_step_metrics; the caller computes it
-    /// from the combined (worst-case) tail_level and commanded target.
+    /// target. Extraction sets this to 0 for empty captures and nonzero
+    /// targets, or to 100% for a non-empty zero-target capture. The caller
+    /// computes it from the combined (worst-case) tail_level and commanded
+    /// target.
     pub target_error_permille: Permille,
 }
 
@@ -733,12 +735,12 @@ pub fn extract_step_metrics(
 ///
 /// | Metric | Pass | Marginal | Fail |
 /// |--------|------|----------|------|
-/// | Overshoot | < 15% | 15-30% | > 30% |
+/// | Overshoot | <= 15% | > 15-30% | > 30% |
 /// | Ringing | 0-1 | 2-3 | > 3 |
-/// | Settling | < 5*settle_ref | 5-10*settle_ref | > 10*settle_ref |
-/// | Symmetry | <= 10% | 10-25% | > 25% |
-/// | Saturation | < 10% | 10-25% | > 25% |
-/// | Target error | <= 10% | 10-50% | > 50% |
+/// | Settling | <= 5*settle_ref | > 5-10*settle_ref | > 10*settle_ref |
+/// | Symmetry | <= 10% | > 10-25% | > 25% |
+/// | Saturation | <= 10% | > 10-25% | > 25% |
+/// | Target error | <= 10% | > 10-50% | > 50% |
 ///
 /// `total_samples` is the total number of capture samples across both
 /// directions, used for computing the saturation percentage.
