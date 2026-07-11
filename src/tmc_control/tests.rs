@@ -893,7 +893,9 @@ fn pid_error_settle_tick_waits_for_inactive_timer_then_clears() {
         let tmc_state = crate::state::tmc::TmcChannelState::new();
         let stepper_state = crate::state::stepper::StepperChannelState::new();
         runtime.set_motor_enabled_for_test(true);
-        tmc_state.step_width_value.store(16, Relaxed);
+        tmc_state
+            .configure_motion_scale(&stepper_state, 1_000, 3_200)
+            .expect("motion scale should configure");
         tmc_state.pid_error_sums_clear.store(true, Relaxed);
         stepper_state.timer_active_mirror.store(true, Relaxed);
 

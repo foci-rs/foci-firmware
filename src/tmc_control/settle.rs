@@ -5,9 +5,9 @@ use foci_tmc4671::spi::Tmc4671Spi;
 
 use crate::state::tmc::TmcChannelState;
 
-/// Acceptable residual following error after a completed move, in ABN encoder
-/// counts. Within this window the controller is fighting encoder quantization
-/// and belt/motor compliance more than useful position error.
+/// Acceptable residual following error after a completed move, in physical
+/// emitted-pulse counts. Within this window the controller is fighting encoder
+/// quantization and belt/motor compliance more than useful position error.
 pub const HOLD_SETTLE_DEADBAND_COUNTS: u32 = 5;
 
 /// Clear TMC4671 PID error accumulators.
@@ -55,9 +55,9 @@ pub async fn settle_hold_and_clear_pid_errors<B>(
 where
     B: SpiDevice<u8>,
 {
-    use core::sync::atomic::Ordering::Relaxed;
     use foci_tmc4671::registers::*;
 
+    let step_width = tmc_state.physical_step_width().ok_or(())?;
     let target = tmc
         .read_register(PID_POSITION_TARGET)
         .await
@@ -66,11 +66,8 @@ where
         .read_register(PID_POSITION_ACTUAL)
         .await
         .map_err(|_| ())?;
-    let step_width = tmc_state
-        .step_width_value
-        .load(Relaxed)
-        .unsigned_abs()
-        .max(1);
+    // Units: position units per physical emitted pulse multiplied by physical
+    // emitted-pulse counts yields the position-unit settle deadband.
     let deadband = step_width.saturating_mul(HOLD_SETTLE_DEADBAND_COUNTS);
     let error = (actual as i32).wrapping_sub(target as i32);
     if error.unsigned_abs() <= deadband {
@@ -141,7 +138,7 @@ mod tests {
     }
 
     #[test]
-    fn settle_hold_snaps_observed_small_residual_to_actual() {
+    fn settle_hold_uses_configured_physical_step_width() {
         pollster::block_on(async {
             use core::sync::atomic::Ordering;
             use foci_tmc4671::registers::PID_POSITION_ACTUAL;
@@ -149,11 +146,16 @@ mod tests {
             let _guard = crate::commission_dispatch::test_support::SHARED_STATE_MUTEX
                 .lock()
                 .await;
+            tmc_state()
+                .configure_motion_scale(crate::state::stepper::stepper_channel0(), 1_000, 3_200)
+                .expect("motion scale should configure");
+            // Deliberately corrupt the legacy mirror: settle must consume the
+            // published physical width of 16 position units per emitted pulse.
             tmc_state().step_width_value.store(4, Ordering::Relaxed);
 
             let mut raw_spi = MockRawSpi::default();
-            raw_spi.reads.push_back(0x0000_bb95);
-            raw_spi.reads.push_back(0x0000_bba6);
+            raw_spi.reads.push_back(0x0000_bb80);
+            raw_spi.reads.push_back(0x0000_bbc0);
             let mut tmc = Tmc4671Spi::new(raw_spi);
 
             settle_hold_and_clear_pid_errors(&mut tmc, tmc_state())
@@ -163,12 +165,31 @@ mod tests {
             let raw_spi = tmc.into_inner();
             assert!(
                 raw_spi.writes.iter().any(|write| {
-                    write == &[PID_POSITION_ACTUAL.addr() | 0x80, 0x00, 0x00, 0xbb, 0xa6]
+                    write == &[PID_POSITION_ACTUAL.addr() | 0x80, 0x00, 0x00, 0xbb, 0xc0]
                 }),
                 "expected PID_POSITION_ACTUAL to be rewritten with the observed actual"
             );
 
-            tmc_state().step_width_value.store(0, Ordering::Relaxed);
+            tmc_state().clear_motion_scale(crate::state::stepper::stepper_channel0());
+        });
+    }
+
+    #[test]
+    fn settle_hold_rejects_missing_motion_scale() {
+        pollster::block_on(async {
+            let _guard = crate::commission_dispatch::test_support::SHARED_STATE_MUTEX
+                .lock()
+                .await;
+            tmc_state().clear_motion_scale(crate::state::stepper::stepper_channel0());
+            let mut tmc = Tmc4671Spi::new(MockRawSpi::default());
+
+            let result = settle_hold_and_clear_pid_errors(&mut tmc, tmc_state()).await;
+
+            assert_eq!(result, Err(()));
+            assert!(
+                tmc.into_inner().writes.is_empty(),
+                "missing scale must not substitute or mutate controller state"
+            );
         });
     }
 }

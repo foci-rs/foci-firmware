@@ -22,6 +22,7 @@ use crate::commissioning::types::{
 use crate::tmc::{decode_signed_lower_half, decode_signed_upper_half};
 
 const CLOSED_LOOP_VELOCITY_SELECTION: u32 = 0x0000_0109;
+// phi_m_abn selects the mechanical ABN angle directly; no pole-pair scaling applies.
 const CLOSED_LOOP_POSITION_SELECTION: u32 = 9;
 const CLOSED_LOOP_PWM_SV_CHOP: u32 = 7;
 const CLOSED_LOOP_MOTOR_TYPE_N_POLE_PAIRS: u32 = (2 << 16) | 50;
@@ -53,6 +54,7 @@ async fn verify_closed_loop_armed_state<B: CommissioningBackend>(
         (ABN_DECODER_PPR, encoder_ppr),
         (ADC_I_SELECT, backend.tmc_config().adc_i_select),
         (PID_TORQUE_FLUX_LIMITS, backend.current_limit()),
+        (STEP_WIDTH, backend.step_width()),
     ];
 
     for (register, expected) in checks {
@@ -463,6 +465,13 @@ pub(crate) async fn step_closed_loop_entry<B: CommissioningBackend>(
                     .is_err()
             {
                 return super::fail_inner(phase, CommissionError::Spi);
+            }
+            match backend.read_register(POSITION_SELECTION).await {
+                Ok(CLOSED_LOOP_POSITION_SELECTION) => {}
+                _ => {
+                    defmt::error!("closed-loop: POSITION_SELECTION readback mismatch");
+                    return super::fail_inner(phase, CommissionError::Spi);
+                }
             }
 
             // 8. Write STEP_WIDTH for hardware step/dir input.
@@ -1044,6 +1053,7 @@ mod tests {
     fn seed_armed_state_registers(backend: &mut MockBackend) {
         backend.current_limit_value = 2816;
         backend.operational_voltage_limit_value = 29_000;
+        backend.step_width_value = 16;
 
         let registers = [
             (PWM_SV_CHOP.addr(), 7),
@@ -1057,6 +1067,7 @@ mod tests {
             ),
             (ADC_I_SELECT.addr(), backend.tmc_config.adc_i_select),
             (PID_TORQUE_FLUX_LIMITS.addr(), backend.current_limit_value),
+            (STEP_WIDTH.addr(), backend.step_width_value),
             (
                 PIDOUT_UQ_UD_LIMITS.addr(),
                 backend.operational_voltage_limit_value,
@@ -1124,6 +1135,37 @@ mod tests {
                     (POSITION_SELECTION.addr(), 9),
                     (STEP_WIDTH.addr(), 16),
                 ]
+            );
+        });
+    }
+
+    #[test]
+    fn write_position_config_verifies_mechanical_selection_before_step_width() {
+        pollster::block_on(async {
+            let mut phase = closed_loop_phase_at(ClosedLoopEntryState::WritePositionConfig);
+            let mut adc_cal = None;
+            let mut backend = MockBackend::new();
+            backend.step_width_value = 16;
+            backend.read_override = Some((POSITION_SELECTION.addr(), 8));
+
+            let result = step_closed_loop_entry(
+                &mut phase,
+                InnerSequence::Calibrate,
+                &mut adc_cal,
+                &mut backend,
+            )
+            .await;
+
+            assert!(matches!(
+                result,
+                StepResult::InnerFailed(CommissionError::Spi)
+            ));
+            assert!(
+                !write_log(&backend)
+                    .as_slice()
+                    .iter()
+                    .any(|(addr, _)| *addr == STEP_WIDTH.addr()),
+                "STEP_WIDTH must not be armed before mechanical selection verifies"
             );
         });
     }
@@ -1273,6 +1315,7 @@ mod tests {
                 (ADC_I_SELECT.addr(), 0),
                 (PID_TORQUE_FLUX_LIMITS.addr(), 1024),
                 (PIDOUT_UQ_UD_LIMITS.addr(), 16_000),
+                (STEP_WIDTH.addr(), 8),
             ];
 
             for (addr, stale_value) in stale_registers {
