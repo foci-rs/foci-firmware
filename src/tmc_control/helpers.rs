@@ -84,7 +84,7 @@ where
     Ok(())
 }
 
-/// Store inner-loop gains and apply the live flux/torque register writes.
+/// Apply live flux/torque register writes and publish the gains after complete success.
 pub async fn apply_live_inner_gains<Spi>(
     runtime: &mut TmcControlRuntime,
     tmc: &mut Tmc4671Spi<Spi>,
@@ -93,7 +93,6 @@ pub async fn apply_live_inner_gains<Spi>(
 where
     Spi: SpiDevice<u8>,
 {
-    runtime.set_stored_gains(gains);
     let (flux_reg, torque_reg) = gains.to_registers();
     let first_write_ok = tmc
         .write_register(PID_FLUX_P_FLUX_I, flux_reg)
@@ -104,13 +103,17 @@ where
         .await
         .is_ok();
 
-    LiveGainWriteStatus {
+    let status = LiveGainWriteStatus {
         first_write_ok,
         second_write_ok,
+    };
+    if status.all_ok() {
+        runtime.set_stored_gains(gains);
     }
+    status
 }
 
-/// Store outer-loop gains and apply the live velocity/position register writes.
+/// Apply live velocity/position register writes and publish the gains after complete success.
 pub async fn apply_live_outer_gains<Spi>(
     tmc_state: &TmcChannelState,
     tmc: &mut Tmc4671Spi<Spi>,
@@ -119,11 +122,6 @@ pub async fn apply_live_outer_gains<Spi>(
 where
     Spi: SpiDevice<u8>,
 {
-    tmc_state.position_p_value.store(gains.position_p, Relaxed);
-    tmc_state.position_i_value.store(gains.position_i, Relaxed);
-    tmc_state.velocity_p_value.store(gains.velocity_p, Relaxed);
-    tmc_state.velocity_i_value.store(gains.velocity_i, Relaxed);
-
     let (velocity_reg, position_reg) = gains.to_registers();
     let first_write_ok = tmc
         .write_register(PID_VELOCITY_P_VELOCITY_I, velocity_reg)
@@ -134,8 +132,15 @@ where
         .await
         .is_ok();
 
-    LiveGainWriteStatus {
+    let status = LiveGainWriteStatus {
         first_write_ok,
         second_write_ok,
+    };
+    if status.all_ok() {
+        tmc_state.position_p_value.store(gains.position_p, Relaxed);
+        tmc_state.position_i_value.store(gains.position_i, Relaxed);
+        tmc_state.velocity_p_value.store(gains.velocity_p, Relaxed);
+        tmc_state.velocity_i_value.store(gains.velocity_i, Relaxed);
     }
+    status
 }

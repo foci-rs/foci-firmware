@@ -40,7 +40,7 @@ struct RuntimeMockSpi {
     write_attempts: std::vec::Vec<(u8, u32)>,
     read_requests: std::vec::Vec<u8>,
     reads: std::collections::VecDeque<u32>,
-    fail_writes_to: Option<u8>,
+    failed_write_addresses: std::vec::Vec<u8>,
 }
 
 impl RuntimeMockSpi {
@@ -50,7 +50,7 @@ impl RuntimeMockSpi {
     }
 
     fn fail_writes_to(mut self, addr: u8) -> Self {
-        self.fail_writes_to = Some(addr);
+        self.failed_write_addresses.push(addr);
         self
     }
 
@@ -82,7 +82,7 @@ impl SpiDevice<u8> for RuntimeMockSpi {
                     let addr = buf[0] & 0x7f;
                     let value = u32::from_be_bytes([buf[1], buf[2], buf[3], buf[4]]);
                     self.write_attempts.push((addr, value));
-                    if self.fail_writes_to == Some(addr) {
+                    if self.failed_write_addresses.contains(&addr) {
                         return Err(MockSpiError);
                     }
                     self.writes.push((addr, value));
@@ -317,123 +317,145 @@ fn refresh_velocity_scale_caches_exact_planner_scale() {
 }
 
 #[test]
-fn apply_live_inner_gains_stores_gains_and_writes_flux_then_torque() {
+fn apply_live_inner_gains_publishes_only_after_both_writes_succeed() {
     pollster::block_on(async {
-        let mut runtime = TmcControlRuntime::new_for_channel(0);
-        let mut tmc = Tmc4671Spi::new(RuntimeMockSpi::default());
-        let gains = InnerLoopGains {
+        let previous = InnerLoopGains {
+            flux_p: 1,
+            flux_i: 2,
+            torque_p: 3,
+            torque_i: 4,
+        };
+        let requested = InnerLoopGains {
             flux_p: 11,
             flux_i: 12,
             torque_p: 13,
             torque_i: 14,
         };
+        let cases = [
+            (false, false, true, true),
+            (true, false, false, true),
+            (false, true, true, false),
+            (true, true, false, false),
+        ];
 
-        let status = apply_live_inner_gains(&mut runtime, &mut tmc, gains).await;
-        let spi = tmc.into_inner();
+        for (fail_flux, fail_torque, expected_first_ok, expected_second_ok) in cases {
+            let mut runtime = TmcControlRuntime::new_for_channel(0);
+            runtime.set_stored_gains(previous);
+            let mut spi = RuntimeMockSpi::default();
+            if fail_flux {
+                spi = spi.fail_writes_to(PID_FLUX_P_FLUX_I.addr());
+            }
+            if fail_torque {
+                spi = spi.fail_writes_to(PID_TORQUE_P_TORQUE_I.addr());
+            }
+            let mut tmc = Tmc4671Spi::new(spi);
 
-        assert!(status.all_ok());
-        assert_eq!(runtime.stored_gains(), Some(gains));
-        assert_eq!(
-            spi.write_attempts,
-            std::vec![
-                (
-                    PID_FLUX_P_FLUX_I.addr(),
-                    crate::pid::pack_pid_register(11, 12)
-                ),
-                (
-                    PID_TORQUE_P_TORQUE_I.addr(),
-                    crate::pid::pack_pid_register(13, 14)
-                ),
-            ]
-        );
+            let status = apply_live_inner_gains(&mut runtime, &mut tmc, requested).await;
+            let spi = tmc.into_inner();
+
+            assert_eq!(status.first_write_ok, expected_first_ok);
+            assert_eq!(status.second_write_ok, expected_second_ok);
+            assert_eq!(spi.write_attempts.len(), 2);
+            assert_eq!(
+                spi.write_attempts,
+                std::vec![
+                    (
+                        PID_FLUX_P_FLUX_I.addr(),
+                        crate::pid::pack_pid_register(11, 12),
+                    ),
+                    (
+                        PID_TORQUE_P_TORQUE_I.addr(),
+                        crate::pid::pack_pid_register(13, 14),
+                    ),
+                ],
+            );
+            assert_eq!(
+                runtime.stored_gains(),
+                if status.all_ok() {
+                    Some(requested)
+                } else {
+                    Some(previous)
+                },
+            );
+        }
     });
 }
 
 #[test]
-fn apply_live_inner_gains_attempts_second_write_after_first_failure() {
+fn apply_live_outer_gains_publishes_only_after_both_writes_succeed() {
     pollster::block_on(async {
-        let mut runtime = TmcControlRuntime::new_for_channel(0);
-        let mut tmc =
-            Tmc4671Spi::new(RuntimeMockSpi::default().fail_writes_to(PID_FLUX_P_FLUX_I.addr()));
-        let gains = InnerLoopGains {
-            flux_p: 21,
-            flux_i: 22,
-            torque_p: 23,
-            torque_i: 24,
-        };
-
-        let status = apply_live_inner_gains(&mut runtime, &mut tmc, gains).await;
-        let spi = tmc.into_inner();
-
-        assert!(!status.all_ok());
-        assert!(!status.first_write_ok);
-        assert!(status.second_write_ok);
-        assert_eq!(runtime.stored_gains(), Some(gains));
-        assert!(spi.attempted_write_to(PID_FLUX_P_FLUX_I));
-        assert!(spi.attempted_write_to(PID_TORQUE_P_TORQUE_I));
-    });
-}
-
-#[test]
-fn apply_live_outer_gains_updates_state_and_writes_velocity_then_position() {
-    pollster::block_on(async {
-        let tmc_state = crate::state::tmc::TmcChannelState::new();
-        let mut tmc = Tmc4671Spi::new(RuntimeMockSpi::default());
-        let gains = OuterLoopGains {
+        let previous = OuterLoopGains {
             position_p: 101,
             position_i: 102,
             velocity_p: 103,
             velocity_i: 104,
         };
-
-        let status = apply_live_outer_gains(&tmc_state, &mut tmc, gains).await;
-        let spi = tmc.into_inner();
-
-        assert!(status.all_ok());
-        assert_eq!(tmc_state.position_p_value.load(Relaxed), 101);
-        assert_eq!(tmc_state.position_i_value.load(Relaxed), 102);
-        assert_eq!(tmc_state.velocity_p_value.load(Relaxed), 103);
-        assert_eq!(tmc_state.velocity_i_value.load(Relaxed), 104);
-        assert_eq!(
-            spi.write_attempts,
-            std::vec![
-                (
-                    PID_VELOCITY_P_VELOCITY_I.addr(),
-                    crate::pid::pack_pid_register(103, 104)
-                ),
-                (
-                    PID_POSITION_P_POSITION_I.addr(),
-                    crate::pid::pack_pid_register(101, 102)
-                ),
-            ]
-        );
-    });
-}
-
-#[test]
-fn apply_live_outer_gains_attempts_both_writes_on_partial_failure() {
-    pollster::block_on(async {
-        let tmc_state = crate::state::tmc::TmcChannelState::new();
-        let mut tmc = Tmc4671Spi::new(
-            RuntimeMockSpi::default().fail_writes_to(PID_POSITION_P_POSITION_I.addr()),
-        );
-        let gains = OuterLoopGains {
+        let requested = OuterLoopGains {
             position_p: 201,
             position_i: 202,
             velocity_p: 203,
             velocity_i: 204,
         };
+        let cases = [
+            (false, false, true, true),
+            (true, false, false, true),
+            (false, true, true, false),
+            (true, true, false, false),
+        ];
 
-        let status = apply_live_outer_gains(&tmc_state, &mut tmc, gains).await;
-        let spi = tmc.into_inner();
+        for (fail_velocity, fail_position, expected_first_ok, expected_second_ok) in cases {
+            let tmc_state = crate::state::tmc::TmcChannelState::new();
+            tmc_state
+                .position_p_value
+                .store(previous.position_p, Relaxed);
+            tmc_state
+                .position_i_value
+                .store(previous.position_i, Relaxed);
+            tmc_state
+                .velocity_p_value
+                .store(previous.velocity_p, Relaxed);
+            tmc_state
+                .velocity_i_value
+                .store(previous.velocity_i, Relaxed);
+            let mut spi = RuntimeMockSpi::default();
+            if fail_velocity {
+                spi = spi.fail_writes_to(PID_VELOCITY_P_VELOCITY_I.addr());
+            }
+            if fail_position {
+                spi = spi.fail_writes_to(PID_POSITION_P_POSITION_I.addr());
+            }
+            let mut tmc = Tmc4671Spi::new(spi);
 
-        assert!(!status.all_ok());
-        assert!(status.first_write_ok);
-        assert!(!status.second_write_ok);
-        assert!(spi.attempted_write_to(PID_VELOCITY_P_VELOCITY_I));
-        assert!(spi.attempted_write_to(PID_POSITION_P_POSITION_I));
-        assert_eq!(tmc_state.position_p_value.load(Relaxed), 201);
-        assert_eq!(tmc_state.velocity_p_value.load(Relaxed), 203);
+            let status = apply_live_outer_gains(&tmc_state, &mut tmc, requested).await;
+            let spi = tmc.into_inner();
+            let published = OuterLoopGains {
+                position_p: tmc_state.position_p_value.load(Relaxed),
+                position_i: tmc_state.position_i_value.load(Relaxed),
+                velocity_p: tmc_state.velocity_p_value.load(Relaxed),
+                velocity_i: tmc_state.velocity_i_value.load(Relaxed),
+            };
+
+            assert_eq!(status.first_write_ok, expected_first_ok);
+            assert_eq!(status.second_write_ok, expected_second_ok);
+            assert_eq!(spi.write_attempts.len(), 2);
+            assert_eq!(
+                spi.write_attempts,
+                std::vec![
+                    (
+                        PID_VELOCITY_P_VELOCITY_I.addr(),
+                        crate::pid::pack_pid_register(203, 204),
+                    ),
+                    (
+                        PID_POSITION_P_POSITION_I.addr(),
+                        crate::pid::pack_pid_register(201, 202),
+                    ),
+                ],
+            );
+            assert_eq!(
+                published,
+                if status.all_ok() { requested } else { previous },
+            );
+        }
     });
 }
 
