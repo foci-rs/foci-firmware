@@ -303,6 +303,10 @@ mod tests {
             self.last_request.replace(Some(req));
             Ok(())
         }
+
+        fn motion_scale_idle(&self, _channel: u8) -> bool {
+            true
+        }
     }
 
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]

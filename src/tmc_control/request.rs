@@ -35,6 +35,10 @@ pub enum TmcPreRequestDisposition {
     RunDiagnostic(TmcRequest),
 }
 
+/// A board could not install the validated mapper into its idle P3 scheduler.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+pub struct MotionScaleMapperInstallError;
+
 /// Board hooks required by the shared TMC request runner.
 #[allow(async_fn_in_trait)]
 pub trait TmcRequestBoard<Spi>
@@ -56,9 +60,15 @@ where
     /// Return the board default current-filter cutoff for omitted host config.
     fn default_current_filter_hz(&self) -> u16;
     /// Return whether the selected channel's physical step queue is empty.
-    fn motion_scale_queue_empty(&self) -> bool {
-        false
-    }
+    fn motion_scale_queue_empty(&self) -> bool;
+    /// Install a freshly centered pulse mapper into the idle board P3 scheduler.
+    ///
+    /// The shared runner calls this only while the motor is disarmed, the physical queue is
+    /// empty, and the timer is inactive. Failure must leave the scheduler unconfigured.
+    fn install_motion_scale_mapper(
+        &mut self,
+        mapper: foci_klipper::pulse_mapper::PulseMapperConfig,
+    ) -> Result<(), MotionScaleMapperInstallError>;
 
     /// Emit a host reply using board-local sender glue.
     fn emit_reply(&mut self, payload: ReplyPayload);
@@ -680,9 +690,11 @@ where
                     board.normal_tail(),
                 );
             }
-            if apply_motion_scale(tmc, tmc_state, stepper_state, scale)
-                .await
-                .is_err()
+            if apply_motion_scale(tmc, tmc_state, stepper_state, scale, |mapper| {
+                board.install_motion_scale_mapper(mapper)
+            })
+            .await
+            .is_err()
             {
                 return TmcControlRequestOutcome::shutdown_then_refresh_velocity_scale(
                     ShutdownReason::RequestValidationFailed,
@@ -838,6 +850,9 @@ mod tests {
         normal_tail: TmcControlRequestTail,
         default_current_filter_hz: u16,
         motion_scale_queue_empty: bool,
+        mapper_install_result: Result<(), MotionScaleMapperInstallError>,
+        mapper_install_calls: u8,
+        configured_during_mapper_install: bool,
         next_trace_seq: u32,
         register_result: Result<(), ()>,
         arm_result: Result<(), CommissionError>,
@@ -859,6 +874,9 @@ mod tests {
                 normal_tail,
                 default_current_filter_hz: 6000,
                 motion_scale_queue_empty: true,
+                mapper_install_result: Ok(()),
+                mapper_install_calls: 0,
+                configured_during_mapper_install: false,
                 next_trace_seq: 1,
                 register_result: Ok(()),
                 arm_result: Ok(()),
@@ -914,6 +932,15 @@ mod tests {
 
         fn motion_scale_queue_empty(&self) -> bool {
             self.motion_scale_queue_empty
+        }
+
+        fn install_motion_scale_mapper(
+            &mut self,
+            _mapper: foci_klipper::pulse_mapper::PulseMapperConfig,
+        ) -> Result<(), MotionScaleMapperInstallError> {
+            self.mapper_install_calls = self.mapper_install_calls.saturating_add(1);
+            self.configured_during_mapper_install = tmc_channel0().motion_scale_configured();
+            self.mapper_install_result
         }
 
         fn emit_reply(&mut self, payload: ReplyPayload) {
@@ -1446,7 +1473,51 @@ mod tests {
             assert!(outcome.should_refresh_velocity_scale);
             assert_eq!(outcome.shutdown, None);
             assert!(tmc_channel0().motion_scale_configured());
+            assert_eq!(board.mapper_install_calls, 1);
+            assert!(!board.configured_during_mapper_install);
             assert_eq!(board.arm_calls, 0);
+        });
+    }
+
+    #[test]
+    fn set_motion_scale_mapper_install_failure_shuts_down_before_publication() {
+        run_request_test(async {
+            let mut runtime = TmcControlRuntime::new_for_channel(0);
+            let mut board = RecordingBoard::fall_through();
+            board.mapper_install_result = Err(MotionScaleMapperInstallError);
+            let mut tmc = Tmc4671Spi::new(RuntimeMockSpi::default());
+
+            let outcome = handle_tmc_control_request(
+                TmcRequest::new(
+                    0,
+                    TmcRequestKind::SetMotionScale {
+                        encoder_ppr: 4000,
+                        planner_steps_per_rev: 3200,
+                    },
+                ),
+                TmcPreRequestDisposition::ContinueRequest,
+                &mut runtime,
+                &mut tmc,
+                &mut board,
+            )
+            .await;
+            let spi = tmc.into_inner();
+
+            assert_eq!(
+                spi.writes,
+                std::vec![
+                    (foci_tmc4671::registers::ABN_DECODER_PPR.addr(), 16000),
+                    (foci_tmc4671::registers::STEP_WIDTH.addr(), 16),
+                ]
+            );
+            assert_eq!(board.mapper_install_calls, 1);
+            assert!(!board.configured_during_mapper_install);
+            assert!(!tmc_channel0().motion_scale_configured());
+            assert_eq!(
+                outcome.shutdown,
+                Some(ShutdownReason::RequestValidationFailed)
+            );
+            assert!(outcome.should_refresh_velocity_scale);
         });
     }
 

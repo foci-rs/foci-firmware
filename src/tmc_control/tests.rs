@@ -475,7 +475,10 @@ fn apply_motion_scale_writes_encoder_then_physical_width_and_publishes_state() {
         let mut tmc = Tmc4671Spi::new(RuntimeMockSpi::default());
         let scale = crate::motion_scale::MotionScale::new(1000, 3200).unwrap();
 
-        let result = apply_motion_scale(&mut tmc, &tmc_state, &stepper_state, scale).await;
+        let result = apply_motion_scale(&mut tmc, &tmc_state, &stepper_state, scale, |_| {
+            Ok::<(), core::convert::Infallible>(())
+        })
+        .await;
         let spi = tmc.into_inner();
 
         assert_eq!(result, Ok(()));
@@ -501,7 +504,10 @@ fn apply_motion_scale_spi_failures_leave_scale_unconfigured() {
             let scale = crate::motion_scale::MotionScale::new(1000, 3200).unwrap();
 
             assert_eq!(
-                apply_motion_scale(&mut tmc, &tmc_state, &stepper_state, scale).await,
+                apply_motion_scale(&mut tmc, &tmc_state, &stepper_state, scale, |_| {
+                    Ok::<(), core::convert::Infallible>(())
+                })
+                .await,
                 Err(())
             );
             assert!(!tmc_state.motion_scale_configured());
