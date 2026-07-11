@@ -178,6 +178,14 @@ impl MockBackend {
         self.abn_decoder_count_pos = 0;
     }
 
+    /// Seed `ABN_DECODER_COUNT` with a signed encoder-count bit pattern.
+    pub fn set_abn_decoder_count(&mut self, count: i32) {
+        let _ = self.registers.insert(
+            foci_tmc4671::registers::ABN_DECODER_COUNT.addr(),
+            count as u32,
+        );
+    }
+
     /// Set sequential `PID_TORQUE_FLUX_ACTUAL` values for read-register tests.
     pub fn set_pid_torque_flux_actual_sequence(&mut self, values: &[u32]) {
         self.pid_torque_flux_actual_sequence.clear();

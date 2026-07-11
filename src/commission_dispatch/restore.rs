@@ -8,7 +8,7 @@ use crate::state::tmc::TmcChannelState;
 /// Writes tuned velocity and position gains, the operational velocity limit,
 /// current limit from channel state, the safety-net `PIDOUT_UQ_UD_LIMITS` cap
 /// (1024 counts), clears the position-actual integrator, snaps the position
-/// target to the current encoder count scaled by the channel step width, and
+/// target to the current encoder count scaled by the encoder resolution, and
 /// enters position mode via `MODE_RAMP_MODE_MOTION = 0x8000_0003`.
 ///
 /// The write order matches the OuterDone restore block in `main.rs` exactly.
@@ -62,8 +62,9 @@ pub async fn restore_position_mode_after_outer<B: CommissioningBackend>(
     // Clear PID error sums before mode switch.
     backend.write_register(PID_POSITION_ACTUAL, 0).await?;
 
-    let target = backend.read_register(ABN_DECODER_COUNT).await?;
-    let target_scaled = target.wrapping_mul(tmc_state.step_width_value.load(Relaxed) as u32);
+    let encoder_count = backend.read_register(ABN_DECODER_COUNT).await?;
+    let target_scaled =
+        encoder_count_to_position_target(encoder_count, backend.encoder_counts_per_rev());
     backend
         .write_register(PID_POSITION_TARGET, target_scaled)
         .await?;
@@ -74,6 +75,23 @@ pub async fn restore_position_mode_after_outer<B: CommissioningBackend>(
         .await?;
 
     Ok(())
+}
+
+fn encoder_count_to_position_target(encoder_count: u32, encoder_counts_per_rev: u32) -> u32 {
+    assert!(
+        encoder_counts_per_rev != 0,
+        "encoder scale must be configured"
+    );
+
+    let scaled = i64::from(encoder_count as i32) * 65_536;
+    let denominator = i64::from(encoder_counts_per_rev);
+    let rounding = denominator / 2;
+    let rounded = if scaled < 0 {
+        (scaled - rounding) / denominator
+    } else {
+        (scaled + rounding) / denominator
+    };
+    rounded as u32
 }
 
 /// SPI restore sequence for the CalibrateDone path.
@@ -221,7 +239,7 @@ mod tests {
                     (PID_TORQUE_FLUX_LIMITS.addr(), 0x0010_0010),
                     (PIDOUT_UQ_UD_LIMITS.addr(), 1024),
                     (PID_POSITION_ACTUAL.addr(), 0),
-                    (PID_POSITION_TARGET.addr(), 1234 * 50),
+                    (PID_POSITION_TARGET.addr(), 20_218),
                     (MODE_RAMP_MODE_MOTION.addr(), 0x8000_0003),
                 ]
             );

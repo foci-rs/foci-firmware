@@ -691,6 +691,93 @@ fn sample_outer_result_for_dispatch() -> OuterResult {
     }
 }
 
+async fn restored_position_target(
+    encoder_count: i32,
+    encoder_ppr: u32,
+    planner_steps_per_rev: u32,
+) -> u32 {
+    use foci_tmc4671::registers::PID_POSITION_TARGET;
+
+    let mut backend = MockBackend::new();
+    backend.set_abn_decoder_count(encoder_count);
+    backend.encoder_quadrature_ppr_value = encoder_ppr * 4;
+    tmc_state()
+        .configure_motion_scale(stepper_state(), encoder_ppr, planner_steps_per_rev)
+        .expect("valid test motion scale");
+
+    restore::restore_position_mode_after_outer(
+        &mut backend,
+        tmc_state(),
+        &sample_outer_result_for_dispatch(),
+    )
+    .await
+    .expect("restore succeeds");
+
+    backend
+        .spi_log
+        .iter()
+        .find_map(|op| match op {
+            SpiOp::Write(addr, value) if *addr == PID_POSITION_TARGET.addr() => Some(*value),
+            _ => None,
+        })
+        .expect("position target write")
+}
+
+#[test]
+fn outer_restore_converts_positive_and_negative_encoder_counts_symmetrically() {
+    pollster::block_on(async {
+        let _guard = test_support::SHARED_STATE_MUTEX.lock().await;
+
+        assert_eq!(restored_position_target(1_234, 1_000, 3_200).await, 20_218);
+        assert_eq!(
+            restored_position_target(-1_234, 1_000, 3_200).await,
+            (-20_218_i32) as u32
+        );
+    });
+}
+
+#[test]
+fn outer_restore_rounds_non_divisible_encoder_positions_to_nearest() {
+    pollster::block_on(async {
+        let _guard = test_support::SHARED_STATE_MUTEX.lock().await;
+
+        assert_eq!(restored_position_target(7, 1_000, 3_200).await, 115);
+        assert_eq!(
+            restored_position_target(-7, 1_000, 3_200).await,
+            (-115_i32) as u32
+        );
+    });
+}
+
+#[test]
+fn outer_restore_preserves_signed_behavior_adjacent_to_encoder_wrap() {
+    pollster::block_on(async {
+        let _guard = test_support::SHARED_STATE_MUTEX.lock().await;
+
+        assert_eq!(
+            restored_position_target(i32::MAX, 16_384, 3_200).await,
+            i32::MAX as u32
+        );
+        assert_eq!(
+            restored_position_target(i32::MIN, 16_384, 3_200).await,
+            i32::MIN as u32
+        );
+    });
+}
+
+#[test]
+fn outer_restore_is_independent_of_planner_microsteps() {
+    pollster::block_on(async {
+        let _guard = test_support::SHARED_STATE_MUTEX.lock().await;
+
+        let coarse = restored_position_target(1_234, 1_000, 3_200).await;
+        let fine = restored_position_target(1_234, 1_000, 51_200).await;
+
+        assert_eq!(coarse, 20_218);
+        assert_eq!(fine, coarse);
+    });
+}
+
 #[test]
 fn outer_done_success_arms_motor() {
     pollster::block_on(async {
