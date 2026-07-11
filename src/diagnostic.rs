@@ -107,10 +107,14 @@ pub struct StepperExecutionSnapshot {
     pub loaded_segments: u32,
     /// Motor steps loaded by the timer ISR since boot.
     pub loaded_steps: u32,
-    /// Executed positive-direction motor steps since boot.
+    /// Executed positive-direction logical motor steps since boot.
     pub executed_pos_steps: u32,
-    /// Executed negative-direction motor steps since boot.
+    /// Executed negative-direction logical motor steps since boot.
     pub executed_neg_steps: u32,
+    /// Positive-direction physical STEP pulses emitted since boot.
+    pub physical_pos_pulses: u32,
+    /// Negative-direction physical STEP pulses emitted since boot.
+    pub physical_neg_pulses: u32,
     /// Number of times the board armed the step timer.
     pub activation_count: u32,
     /// TIM5 clock when the step timer was most recently armed.
@@ -165,6 +169,65 @@ pub struct StepperExecutionSnapshot {
     pub queue_len: u16,
 }
 
+/// Live motion-scale and physical-pulse admission diagnostic values.
+///
+/// Scale values are zero when no complete scale is published. Like the
+/// execution snapshot, this is a best-effort cross-atomic view intended for
+/// host diagnostics rather than synchronization.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+pub struct MotionScaleDiagnosticSnapshot {
+    /// Configured logical planner steps per mechanical revolution.
+    pub planner_steps_per_rev: u32,
+    /// Configured encoder pulses per mechanical revolution.
+    pub encoder_ppr: u32,
+    /// Configured quadrature encoder counts per mechanical revolution.
+    pub encoder_counts_per_rev: u32,
+    /// Configured physical TMC STEP pulses per mechanical revolution.
+    pub tmc_grid: u32,
+    /// Configured TMC position units per physical STEP pulse.
+    pub physical_step_width: u32,
+    /// Whether a complete motion scale is currently configured.
+    pub configured: bool,
+    /// Timer ticks in one physical STEP high or low phase.
+    pub step_half_period_ticks: u32,
+    /// Timer ticks reserved between a DIR change and the first STEP edge.
+    pub dir_setup_ticks: u32,
+    /// Board ceiling for the direction-change plus two-pulse P3 handler.
+    pub handler_wcet_ticks: u32,
+    /// Whether the handler ceiling is provisional rather than measured.
+    pub timing_provisional: bool,
+    /// Explicit uncertainty margin added to the handler ceiling.
+    pub admission_margin_ticks: u32,
+    /// Required worst-case logical interval for a direction-changing event.
+    pub required_worst_case_interval_ticks: u32,
+}
+
+impl MotionScaleDiagnosticSnapshot {
+    /// Read current scale atomics and combine them with immutable board timing.
+    pub fn from_state(
+        tmc_state: &crate::state::tmc::TmcChannelState,
+        stepper_state: &crate::state::stepper::StepperChannelState,
+        timing: crate::step_pulse::StepPulseTiming,
+        timing_provisional: bool,
+    ) -> Self {
+        let configured = tmc_state.motion_scale_configured();
+        Self {
+            planner_steps_per_rev: stepper_state.planner_steps_per_rev(tmc_state).unwrap_or(0),
+            encoder_ppr: tmc_state.encoder_ppr().unwrap_or(0),
+            encoder_counts_per_rev: tmc_state.encoder_counts_per_rev().unwrap_or(0),
+            tmc_grid: tmc_state.tmc_grid().unwrap_or(0),
+            physical_step_width: tmc_state.physical_step_width().unwrap_or(0),
+            configured,
+            step_half_period_ticks: timing.half_period_ticks(),
+            dir_setup_ticks: timing.dir_setup_ticks(),
+            handler_wcet_ticks: timing.total_handler_wcet_ticks(),
+            timing_provisional,
+            admission_margin_ticks: timing.margin_ticks(),
+            required_worst_case_interval_ticks: timing.required_interval_ticks(true),
+        }
+    }
+}
+
 struct StepperExecutionCounters {
     queued_segments: AtomicU32,
     queued_steps: AtomicU32,
@@ -172,6 +235,8 @@ struct StepperExecutionCounters {
     loaded_steps: AtomicU32,
     executed_pos_steps: AtomicU32,
     executed_neg_steps: AtomicU32,
+    physical_pos_pulses: AtomicU32,
+    physical_neg_pulses: AtomicU32,
     activation_count: AtomicU32,
     last_activation_clock: AtomicU32,
     activation_loaded_segments: AtomicU32,
@@ -209,6 +274,8 @@ impl StepperExecutionCounters {
             loaded_steps: AtomicU32::new(0),
             executed_pos_steps: AtomicU32::new(0),
             executed_neg_steps: AtomicU32::new(0),
+            physical_pos_pulses: AtomicU32::new(0),
+            physical_neg_pulses: AtomicU32::new(0),
             activation_count: AtomicU32::new(0),
             last_activation_clock: AtomicU32::new(0),
             activation_loaded_segments: AtomicU32::new(0),
@@ -318,13 +385,30 @@ impl<const CHANNELS: usize> StepperExecutionStats<CHANNELS> {
         }
     }
 
-    /// Record one executed motor step and first-step timing for the activation.
-    pub fn record_executed_step(&self, channel: u8, forward: bool, clock: u32) {
+    /// Record one executed logical motor step, its physical pulses, and first-step timing.
+    ///
+    /// Logical-step and physical-pulse totals are since-boot diagnostics. They
+    /// use explicit wrapping `u32` addition, remain unchanged by timer
+    /// activation and `reset_step_clock`, and return to zero only when firmware
+    /// constructs fresh statistics after reset.
+    pub fn record_executed_step(
+        &self,
+        channel: u8,
+        forward: bool,
+        physical_pulses: u8,
+        clock: u32,
+    ) {
         if let Some(counters) = self.counters(channel) {
             if forward {
                 counters.executed_pos_steps.fetch_add(1, Relaxed);
+                counters
+                    .physical_pos_pulses
+                    .fetch_add(u32::from(physical_pulses), Relaxed);
             } else {
                 counters.executed_neg_steps.fetch_add(1, Relaxed);
+                counters
+                    .physical_neg_pulses
+                    .fetch_add(u32::from(physical_pulses), Relaxed);
             }
             if counters.activation_executed_steps.fetch_add(1, Relaxed) == 0 {
                 let activation_clock = counters.last_activation_clock.load(Relaxed);
@@ -423,6 +507,8 @@ impl<const CHANNELS: usize> StepperExecutionStats<CHANNELS> {
                 loaded_steps: counters.loaded_steps.load(Relaxed),
                 executed_pos_steps: counters.executed_pos_steps.load(Relaxed),
                 executed_neg_steps: counters.executed_neg_steps.load(Relaxed),
+                physical_pos_pulses: counters.physical_pos_pulses.load(Relaxed),
+                physical_neg_pulses: counters.physical_neg_pulses.load(Relaxed),
                 activation_count: counters.activation_count.load(Relaxed),
                 last_activation_clock: counters.last_activation_clock.load(Relaxed),
                 first_load_now: counters.first_load_now.load(Relaxed),
@@ -1137,6 +1223,8 @@ mod tests {
             loaded_steps: 14352,
             executed_pos_steps: 14352,
             executed_neg_steps: 0,
+            physical_pos_pulses: 18_370,
+            physical_neg_pulses: 0,
             activation_count: 2,
             last_activation_clock: 123_456,
             first_load_now: 123_584,
@@ -1169,6 +1257,7 @@ mod tests {
         assert_eq!(snapshot.queued_steps, 45150);
         assert_eq!(snapshot.loaded_steps, 14352);
         assert_eq!(snapshot.executed_pos_steps, 14352);
+        assert_eq!(snapshot.physical_pos_pulses, 18_370);
         assert_eq!(snapshot.activation_count, 2);
         assert_eq!(snapshot.first_load_lead_ticks, 416);
         assert_eq!(snapshot.first_step_delay_ticks, 546);
@@ -1192,8 +1281,9 @@ mod tests {
         stats.record_queued_segment(0, 8);
         stats.record_discarded_segment(1, 5);
         stats.record_loaded_segment(0, 7);
-        stats.record_executed_step(0, true, 1200);
-        stats.record_executed_step(0, false, 1250);
+        stats.record_executed_step(0, true, 0, 1200);
+        stats.record_executed_step(0, true, 1, 1225);
+        stats.record_executed_step(0, false, 2, 1250);
         stats.record_queue_empty(0);
         stats.record_missed_deadline(1);
         stats.record_reset(1, 2, 44);
@@ -1208,8 +1298,10 @@ mod tests {
         assert_eq!(channel0.queued_steps, 20);
         assert_eq!(channel0.loaded_segments, 1);
         assert_eq!(channel0.loaded_steps, 7);
-        assert_eq!(channel0.executed_pos_steps, 1);
+        assert_eq!(channel0.executed_pos_steps, 2);
         assert_eq!(channel0.executed_neg_steps, 1);
+        assert_eq!(channel0.physical_pos_pulses, 1);
+        assert_eq!(channel0.physical_neg_pulses, 2);
         assert_eq!(channel0.queue_empty_count, 1);
         assert!(channel0.timer_active);
         assert_eq!(channel0.queue_len, 4);
@@ -1220,6 +1312,8 @@ mod tests {
         assert_eq!(channel1.channel, 1);
         assert_eq!(channel1.position, 33);
         assert_eq!(channel1.queued_segments, 0);
+        assert_eq!(channel1.physical_pos_pulses, 0);
+        assert_eq!(channel1.physical_neg_pulses, 0);
         assert_eq!(channel1.discarded_segments, 1);
         assert_eq!(channel1.discarded_steps, 5);
         assert_eq!(channel1.missed_deadline_count, 1);
@@ -1252,8 +1346,8 @@ mod tests {
         stats.record_timer_activation(0, 1000);
         stats.record_loaded_segment_timing(0, 3, 1010, 1030, 1040);
         stats.record_loaded_segment_timing(0, 4, 1020, 1050, 1060);
-        stats.record_executed_step(0, true, 1070);
-        stats.record_executed_step(0, true, 1080);
+        stats.record_executed_step(0, true, 2, 1070);
+        stats.record_executed_step(0, true, 1, 1080);
 
         let first = stats
             .snapshot(0, 0, true, 0)
@@ -1263,6 +1357,7 @@ mod tests {
         assert_eq!(first.loaded_segments, 2);
         assert_eq!(first.loaded_steps, 7);
         assert_eq!(first.executed_pos_steps, 2);
+        assert_eq!(first.physical_pos_pulses, 3);
         assert_eq!(first.first_load_now, 1010);
         assert_eq!(first.first_load_scheduled, 1030);
         assert_eq!(first.first_load_compare, 1040);
@@ -1284,9 +1379,12 @@ mod tests {
         assert_eq!(reset.first_load_compare_delay_ticks, 0);
         assert_eq!(reset.first_step_clock, 0);
         assert_eq!(reset.first_step_delay_ticks, 0);
+        assert_eq!(reset.physical_pos_pulses, 3);
+        assert_eq!(reset.physical_neg_pulses, 0);
 
         stats.record_loaded_segment_timing(0, 5, 2010, 2060, 2075);
-        stats.record_executed_step(0, false, 2090);
+        stats.record_reset(0, 0, 0);
+        stats.record_executed_step(0, false, 2, 2090);
         let second = stats
             .snapshot(0, 0, true, 0)
             .expect("second activation snapshot exists");
@@ -1295,6 +1393,8 @@ mod tests {
         assert_eq!(second.loaded_steps, 12);
         assert_eq!(second.executed_pos_steps, 2);
         assert_eq!(second.executed_neg_steps, 1);
+        assert_eq!(second.physical_pos_pulses, 3);
+        assert_eq!(second.physical_neg_pulses, 2);
         assert_eq!(second.first_load_now, 2010);
         assert_eq!(second.first_load_scheduled, 2060);
         assert_eq!(second.first_load_compare, 2075);
@@ -1302,6 +1402,74 @@ mod tests {
         assert_eq!(second.first_load_compare_delay_ticks, 65);
         assert_eq!(second.first_step_clock, 2090);
         assert_eq!(second.first_step_delay_ticks, 90);
+    }
+
+    #[test]
+    fn physical_pulse_counters_wrap_u32_and_remain_directional() {
+        let stats = StepperExecutionStats::<1>::new();
+        stats.counters[0]
+            .physical_pos_pulses
+            .store(u32::MAX, Relaxed);
+        stats.counters[0]
+            .physical_neg_pulses
+            .store(u32::MAX - 1, Relaxed);
+
+        stats.record_executed_step(0, true, 1, 100);
+        stats.record_executed_step(0, false, 2, 200);
+
+        let snapshot = stats
+            .snapshot(0, 0, false, 0)
+            .expect("channel snapshot exists");
+        assert_eq!(snapshot.physical_pos_pulses, 0);
+        assert_eq!(snapshot.physical_neg_pulses, 0);
+        assert_eq!(snapshot.executed_pos_steps, 1);
+        assert_eq!(snapshot.executed_neg_steps, 1);
+    }
+
+    #[test]
+    fn motion_scale_diagnostic_snapshot_reports_unconfigured_state_and_timing() {
+        let tmc = crate::state::tmc::TmcChannelState::new();
+        let stepper = crate::state::stepper::StepperChannelState::new();
+        let timing = crate::step_pulse::StepPulseTiming::new(84_000_000, 30, 6).unwrap();
+
+        let snapshot = MotionScaleDiagnosticSnapshot::from_state(&tmc, &stepper, timing, true);
+
+        assert_eq!(snapshot.planner_steps_per_rev, 0);
+        assert_eq!(snapshot.encoder_ppr, 0);
+        assert_eq!(snapshot.encoder_counts_per_rev, 0);
+        assert_eq!(snapshot.tmc_grid, 0);
+        assert_eq!(snapshot.physical_step_width, 0);
+        assert!(!snapshot.configured);
+        assert_eq!(snapshot.step_half_period_ticks, 4);
+        assert_eq!(snapshot.dir_setup_ticks, 8);
+        assert_eq!(snapshot.handler_wcet_ticks, 30);
+        assert!(snapshot.timing_provisional);
+        assert_eq!(snapshot.admission_margin_ticks, 6);
+        assert_eq!(snapshot.required_worst_case_interval_ticks, 36);
+    }
+
+    #[test]
+    fn motion_scale_diagnostic_snapshot_reports_configured_scale() {
+        let tmc = crate::state::tmc::TmcChannelState::new();
+        let stepper = crate::state::stepper::StepperChannelState::new();
+        tmc.configure_motion_scale(&stepper, 1_000, 3_200)
+            .expect("valid motion scale");
+        let timing = crate::step_pulse::StepPulseTiming::new(260_000_000, 66, 8).unwrap();
+
+        let snapshot = MotionScaleDiagnosticSnapshot::from_state(&tmc, &stepper, timing, true);
+
+        assert_eq!(snapshot.planner_steps_per_rev, 3_200);
+        assert_eq!(snapshot.encoder_ppr, 1_000);
+        assert_eq!(snapshot.encoder_counts_per_rev, 4_000);
+        assert_eq!(snapshot.tmc_grid, 4_096);
+        assert_eq!(snapshot.physical_step_width, 16);
+        assert!(snapshot.configured);
+        assert_eq!(snapshot.step_half_period_ticks, 11);
+        assert_eq!(snapshot.dir_setup_ticks, 22);
+        assert_eq!(snapshot.handler_wcet_ticks, 66);
+        assert!(snapshot.timing_provisional);
+        assert_eq!(snapshot.admission_margin_ticks, 8);
+        assert_eq!(snapshot.required_worst_case_interval_ticks, 74);
     }
 
     #[test]

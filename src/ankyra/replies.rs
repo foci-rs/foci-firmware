@@ -1622,10 +1622,38 @@ pub struct FociStepperExecStatsResult {
     pub oid: u8,
     /// Board-local channel.
     pub channel: u8,
-    /// Executed positive-direction motor steps since boot.
+    /// Executed positive-direction logical motor steps since boot.
     pub executed_pos_steps: u32,
-    /// Executed negative-direction motor steps since boot.
+    /// Executed negative-direction logical motor steps since boot.
     pub executed_neg_steps: u32,
+    /// Positive-direction physical STEP pulses emitted since boot, wrapping at `u32::MAX`.
+    pub physical_pos_pulses: u32,
+    /// Negative-direction physical STEP pulses emitted since boot, wrapping at `u32::MAX`.
+    pub physical_neg_pulses: u32,
+    /// Configured logical planner steps per mechanical revolution, or zero when unconfigured.
+    pub planner_steps_per_rev: u32,
+    /// Configured encoder pulses per mechanical revolution, or zero when unconfigured.
+    pub encoder_ppr: u32,
+    /// Configured quadrature encoder counts per revolution, or zero when unconfigured.
+    pub encoder_counts_per_rev: u32,
+    /// Configured physical TMC STEP pulses per revolution, or zero when unconfigured.
+    pub tmc_grid: u32,
+    /// Configured TMC position units per physical STEP pulse, or zero when unconfigured.
+    pub physical_step_width: u32,
+    /// Non-zero when a complete motion scale is currently configured.
+    pub motion_scale_configured: u8,
+    /// Timer ticks in one physical STEP high or low phase.
+    pub step_half_period_ticks: u32,
+    /// Timer ticks reserved between a DIR change and the first STEP edge.
+    pub dir_setup_ticks: u32,
+    /// Board ceiling for the direction-change plus two-pulse P3 handler.
+    pub handler_wcet_ticks: u32,
+    /// Non-zero when `handler_wcet_ticks` is provisional rather than measured.
+    pub timing_provisional: u8,
+    /// Explicit uncertainty margin added to the handler ceiling.
+    pub admission_margin_ticks: u32,
+    /// Required worst-case logical interval for a direction-changing event.
+    pub required_worst_case_interval_ticks: u32,
     /// Times the step timer went idle because the queue was empty.
     pub queue_empty_count: u32,
     /// Combined missed-deadline count from segment-load and in-segment checks.
