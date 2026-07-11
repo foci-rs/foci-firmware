@@ -18,7 +18,7 @@ pub mod stepper;
 pub mod tmc;
 pub mod trsync;
 
-pub use stepper::StepperHost;
+pub use stepper::{StepperEnqueueError, StepperHost};
 pub use tmc::TmcHost;
 pub use trsync::TrsyncHost;
 

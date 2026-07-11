@@ -14,7 +14,9 @@
 
 use ankyra::prelude::klipper_command;
 
-use crate::context::{BoardChannels, ShutdownRecovery, StateAccess, StepperHost, TrsyncHost};
+use crate::context::{
+    BoardChannels, ShutdownRecovery, StateAccess, StepperEnqueueError, StepperHost, TrsyncHost,
+};
 use crate::shutdown::ShutdownReason;
 use crate::state::stepper::stepper_channel;
 use crate::state::trsync::HOMING_STATE;
@@ -105,11 +107,30 @@ pub fn queue_step(ctx: &mut dyn StepperQueue, oid: u8, interval: u32, count: u16
         return;
     };
     let move_ = foci_klipper::stepper::StepMove::new(interval, count, add);
-    if let Err(e) = ctx.queue_step_move(channel, move_) {
-        defmt::error!("queue_step: oid={} channel={} {}", oid, channel, e);
+    if let Err(error) = ctx.queue_step_move(channel, move_) {
+        defmt::error!("queue_step: oid={} channel={} {}", oid, channel, error);
+        let shutdown_reason = if let StepperEnqueueError::ExpandedPulseRate {
+            channel,
+            minimum_requested_interval,
+            required_interval,
+        } = error
+        {
+            ::ankyra::klipper_reply!(
+                crate::ankyra::replies::FociDiagnostic,
+                fault: u8 = crate::diagnostic::FaultClass::ExpandedPulseRate as u8,
+                operation: u8 = crate::diagnostic::operation::QUEUE_STEP,
+                oid: u8 = oid,
+                channel: u8 = channel,
+                data0: u32 = minimum_requested_interval,
+                data1: u32 = required_interval,
+            );
+            ShutdownReason::MotionScaleRateExceeded
+        } else {
+            ShutdownReason::QueueStepFailed
+        };
         if ctx.enter_shutdown() {
             let clock = ctx.now();
-            ctx.send_shutdown(ShutdownReason::QueueStepFailed, clock);
+            ctx.send_shutdown(shutdown_reason, clock);
         }
     }
 }
@@ -362,6 +383,7 @@ mod tests {
         state: State,
         last_shutdown: Option<ShutdownReason>,
         stepper_calls: std::cell::RefCell<std::vec::Vec<StepperCall>>,
+        queue_result: Result<(), crate::context::StepperEnqueueError>,
     }
 
     impl MockCtx {
@@ -370,6 +392,7 @@ mod tests {
                 state: State::new(),
                 last_shutdown: None,
                 stepper_calls: std::cell::RefCell::new(std::vec::Vec::new()),
+                queue_result: Ok(()),
             }
         }
     }
@@ -437,12 +460,12 @@ mod tests {
             &mut self,
             channel: u8,
             move_: foci_klipper::stepper::StepMove,
-        ) -> Result<(), foci_klipper::commands::CommandError> {
+        ) -> Result<(), crate::context::StepperEnqueueError> {
             self.stepper_calls.borrow_mut().push(StepperCall::Queue {
                 channel,
                 count: move_.count,
             });
-            Ok(())
+            self.queue_result.clone()
         }
 
         fn reset_step_clock(
@@ -497,6 +520,36 @@ mod tests {
         );
         assert_eq!(ctx.last_shutdown, None);
         assert_eq!(sender.diagnostics.as_slice(), &[]);
+    }
+
+    #[test]
+    fn queue_step_rate_failure_reports_channel_and_interval_budget() {
+        let mut ctx = MockCtx::new();
+        ctx.queue_result = Err(crate::context::StepperEnqueueError::ExpandedPulseRate {
+            channel: 1,
+            minimum_requested_interval: 63,
+            required_interval: 66,
+        });
+        let mut sender = MockSender::new();
+        foci_klipper::commands::stepper::config_stepper_channel(ctx.state(), 10, 1).unwrap();
+
+        queue_step(&mut ctx, &mut sender, 10, 100, 7, 0);
+
+        assert_eq!(
+            sender.diagnostics.as_slice(),
+            &[DiagnosticReply {
+                fault: crate::diagnostic::FaultClass::ExpandedPulseRate as u8,
+                operation: crate::diagnostic::operation::QUEUE_STEP,
+                oid: 10,
+                channel: 1,
+                data0: 63,
+                data1: 66,
+            }]
+        );
+        assert_eq!(
+            ctx.last_shutdown,
+            Some(ShutdownReason::MotionScaleRateExceeded)
+        );
     }
 
     #[test]

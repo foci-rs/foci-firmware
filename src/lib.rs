@@ -32,6 +32,7 @@ pub mod sample_timing;
 pub mod selftest;
 pub mod shutdown;
 pub mod state;
+pub mod step_pulse;
 pub mod stepper_runtime;
 pub mod tmc;
 pub mod tmc_control;

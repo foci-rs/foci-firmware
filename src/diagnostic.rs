@@ -14,6 +14,8 @@ pub enum FaultClass {
     ActiveReset = 3,
     /// A command referenced an invalid channel.
     InvalidChannel = 4,
+    /// A logical move cannot contain its expanded physical pulse train.
+    ExpandedPulseRate = 5,
 }
 
 /// Operation code carried by `foci_diagnostic`.

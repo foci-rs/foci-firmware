@@ -1,7 +1,20 @@
 //! Channel-indexed stepper runtime helpers for board timer dispatch.
 
+use foci_klipper::stepper::StepMove;
+
+use crate::step_pulse::{StepPulseAdmissionError, StepPulseTiming};
+
 /// Maximum step/unstep events a timer IRQ may process before yielding.
 pub const MAX_STEP_EVENTS_PER_IRQ: usize = 8;
+
+/// Admit a complete move segment before any queue insertion.
+pub fn admit_step_move(
+    timing: &StepPulseTiming,
+    move_: &StepMove,
+    dir_changed: bool,
+) -> Result<(), StepPulseAdmissionError> {
+    timing.admit(move_.minimum_interval(), dir_changed)
+}
 
 /// A selected step event deadline.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
@@ -84,6 +97,20 @@ impl Default for StepIrqBudget {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn admission_uses_the_segment_minimum_interval() {
+        let timing = crate::step_pulse::StepPulseTiming::new(84_000_000, 0, 0).unwrap();
+        let move_ = foci_klipper::stepper::StepMove::new(20, 3, -3);
+
+        assert_eq!(
+            admit_step_move(&timing, &move_, false),
+            Err(crate::step_pulse::StepPulseAdmissionError {
+                minimum_interval: 14,
+                required_interval: 16,
+            })
+        );
+    }
 
     #[test]
     fn earliest_due_returns_none_when_all_channels_idle() {
