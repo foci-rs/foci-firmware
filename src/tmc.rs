@@ -975,22 +975,33 @@ pub fn compute_position_lead_counts_from_reference(
 /// `current_target` is the live TMC4671 target register value. The function
 /// removes the previously applied diagnostic delta before applying the new
 /// lead, so repeated calls do not accumulate lead into the TMC's target frame.
-/// It returns the register value to write and the new applied delta in raw
-/// TMC4671 position counts.
+/// Logical lead counts are converted through the exact planner ratio of 65536
+/// TMC4671 position units per mechanical revolution. It returns the register
+/// value to write and the delta actually applied in TMC4671 position units.
 pub fn compute_position_lead_target(
     current_target: u32,
-    previous_lead_scaled: i32,
+    previous_lead_units: i32,
     lead_counts: i16,
-    step_width: u32,
+    planner_steps_per_rev: u32,
 ) -> (u32, i32) {
-    if step_width == 0 {
+    if planner_steps_per_rev == 0 {
         return (current_target, 0);
     }
 
-    let new_lead_scaled = i32::from(lead_counts).wrapping_mul(step_width as i32);
-    let base_target = (current_target as i32).wrapping_sub(previous_lead_scaled);
-    let target = base_target.wrapping_add(new_lead_scaled);
-    (target as u32, new_lead_scaled)
+    let magnitude_numerator = i64::from(lead_counts.unsigned_abs()) * 65_536;
+    let denominator = i64::from(planner_steps_per_rev);
+    let rounded_magnitude = (magnitude_numerator + denominator / 2) / denominator;
+    let requested_lead_units = if lead_counts < 0 {
+        -rounded_magnitude
+    } else {
+        rounded_magnitude
+    };
+    let base_target = (i64::from(current_target as i32) - i64::from(previous_lead_units))
+        .clamp(i64::from(i32::MIN), i64::from(i32::MAX));
+    let target =
+        (base_target + requested_lead_units).clamp(i64::from(i32::MIN), i64::from(i32::MAX));
+    let applied_units = (target - base_target) as i32;
+    (target as i32 as u32, applied_units)
 }
 
 /// Compute a bounded velocity-loop transient offset from command acceleration.
@@ -1965,34 +1976,55 @@ mod tests {
     }
 
     #[test]
-    fn position_lead_target_is_relative_to_current_tmc_target() {
-        let (target, applied) = compute_position_lead_target(1_000, 0, 2, 16);
+    fn position_lead_target_converts_forward_planner_steps_to_position_units() {
+        let (target, applied) = compute_position_lead_target(1_000, 0, 2, 3_200);
 
-        assert_eq!(target, 1_032);
-        assert_eq!(applied, 32);
+        assert_eq!(target, 1_041);
+        assert_eq!(applied, 41);
+    }
+
+    #[test]
+    fn position_lead_target_converts_reverse_fractional_planner_scale() {
+        let (target, applied) = compute_position_lead_target(1_000, 0, -3, 40_000);
+
+        assert_eq!(target, 995);
+        assert_eq!(applied, -5);
     }
 
     #[test]
     fn position_lead_target_does_not_accumulate_existing_lead() {
-        let previous_applied = 32;
+        let previous_applied = 41;
 
         let (unchanged, still_applied) =
-            compute_position_lead_target(1_192, previous_applied, 2, 16);
+            compute_position_lead_target(1_041, previous_applied, 2, 3_200);
         let (changed, changed_applied) =
-            compute_position_lead_target(1_192, previous_applied, 3, 16);
+            compute_position_lead_target(1_041, previous_applied, 3, 3_200);
 
-        assert_eq!(unchanged, 1_192);
-        assert_eq!(still_applied, 32);
-        assert_eq!(changed, 1_208);
-        assert_eq!(changed_applied, 48);
+        assert_eq!(unchanged, 1_041);
+        assert_eq!(still_applied, 41);
+        assert_eq!(changed, 1_061);
+        assert_eq!(changed_applied, 61);
     }
 
     #[test]
     fn position_lead_target_clears_previous_relative_lead() {
-        let (target, applied) = compute_position_lead_target(1_192, 32, 0, 16);
+        let (target, applied) = compute_position_lead_target(1_041, 41, 0, 3_200);
 
-        assert_eq!(target, 1_160);
+        assert_eq!(target, 1_000);
         assert_eq!(applied, 0);
+    }
+
+    #[test]
+    fn position_lead_target_saturates_and_tracks_applied_units() {
+        let (positive_target, positive_applied) =
+            compute_position_lead_target(i32::MAX as u32 - 10, 0, 2, 3_200);
+        let (negative_target, negative_applied) =
+            compute_position_lead_target((i32::MIN + 10) as u32, 0, -2, 3_200);
+
+        assert_eq!(positive_target, i32::MAX as u32);
+        assert_eq!(positive_applied, 10);
+        assert_eq!(negative_target, i32::MIN as u32);
+        assert_eq!(negative_applied, -10);
     }
 
     #[test]

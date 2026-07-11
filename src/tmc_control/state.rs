@@ -105,7 +105,7 @@ pub struct TmcControlRuntime {
     planner_velocity_scale: Option<crate::motion_scale::PlannerVelocityScale>,
     feedforward_was_active: bool,
     torque_flux_offset_was_active: bool,
-    position_lead_applied_scaled: i32,
+    position_lead_applied_units: i32,
     phase_advance_was_active: bool,
     phase_advance_base_register: u32,
     phase_advance_last_register: u32,
@@ -129,7 +129,7 @@ impl TmcControlRuntime {
             planner_velocity_scale: None,
             feedforward_was_active: false,
             torque_flux_offset_was_active: false,
-            position_lead_applied_scaled: 0,
+            position_lead_applied_units: 0,
             phase_advance_was_active: false,
             phase_advance_base_register: 0,
             phase_advance_last_register: 0,
@@ -217,7 +217,7 @@ impl TmcControlRuntime {
         self.planner_velocity_scale = None;
         self.feedforward_was_active = false;
         self.torque_flux_offset_was_active = false;
-        self.position_lead_applied_scaled = 0;
+        self.position_lead_applied_units = 0;
         self.phase_advance_was_active = false;
         self.phase_advance_base_register = 0;
         self.phase_advance_last_register = 0;
@@ -1135,7 +1135,7 @@ impl TmcControlRuntime {
             && refs.tmc.position_lead.load(Relaxed)
             && self.commission_engine.is_none()
             && !homing_active;
-        if position_lead_active || self.position_lead_applied_scaled != 0 {
+        if position_lead_active || self.position_lead_applied_units != 0 {
             let interval = refs.stepper.interval.load(Relaxed);
             let forward = refs.stepper.direction.load(Relaxed);
             let gain_permille = refs.tmc.position_lead_gain_permille.load(Relaxed);
@@ -1150,20 +1150,19 @@ impl TmcControlRuntime {
                     max_counts,
                 )
             };
-            let step_width = refs.tmc.step_width_value.load(Relaxed);
-            if step_width > 0 {
+            if let Some(planner_steps_per_rev) = refs.stepper.planner_steps_per_rev(refs.tmc) {
                 match tmc_spi
                     .read_register(foci_tmc4671::registers::PID_POSITION_TARGET)
                     .await
                 {
                     Ok(current_target) => {
-                        let (target, applied_scaled) = crate::tmc::compute_position_lead_target(
+                        let (target, applied_units) = crate::tmc::compute_position_lead_target(
                             current_target,
-                            self.position_lead_applied_scaled,
+                            self.position_lead_applied_units,
                             lead_counts,
-                            step_width as u32,
+                            planner_steps_per_rev,
                         );
-                        if applied_scaled != self.position_lead_applied_scaled
+                        if applied_units != self.position_lead_applied_units
                             && tmc_spi
                                 .write_register(
                                     foci_tmc4671::registers::PID_POSITION_TARGET,
@@ -1172,7 +1171,7 @@ impl TmcControlRuntime {
                                 .await
                                 .is_ok()
                         {
-                            self.position_lead_applied_scaled = applied_scaled;
+                            self.position_lead_applied_units = applied_units;
                         }
                     }
                     Err(_) => {
@@ -1528,8 +1527,8 @@ impl TmcControlRuntime {
     }
 
     #[cfg(test)]
-    pub(crate) fn position_lead_applied_scaled_for_test(&self) -> i32 {
-        self.position_lead_applied_scaled
+    pub(crate) fn position_lead_applied_units_for_test(&self) -> i32 {
+        self.position_lead_applied_units
     }
 
     #[cfg(all(test, feature = "trace"))]

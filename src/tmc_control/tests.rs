@@ -2087,7 +2087,9 @@ fn phase_advance_tick_reset_gate_skips_abn_snapshot_and_write() {
         let stepper_state = crate::state::stepper::StepperChannelState::new();
         tmc_state.phase_advance.store(true, Relaxed);
         tmc_state.position_lead.store(true, Relaxed);
-        tmc_state.step_width_value.store(16, Relaxed);
+        tmc_state
+            .configure_motion_scale(&stepper_state, 1_000, 3_200)
+            .unwrap();
         stepper_state.interval.store(2_800, Relaxed);
         let mut tmc = Tmc4671Spi::new(RuntimeMockSpi::default().with_read(1_000));
 
@@ -2119,7 +2121,9 @@ fn phase_and_position_tick_disabled_runtime_writes_nothing() {
         tmc_state.position_lead.store(true, Relaxed);
         tmc_state.position_lead_gain_permille.store(1000, Relaxed);
         tmc_state.position_lead_max_counts.store(20, Relaxed);
-        tmc_state.step_width_value.store(16, Relaxed);
+        tmc_state
+            .configure_motion_scale(&stepper_state, 1_000, 3_200)
+            .unwrap();
         stepper_state.interval.store(2_800, Relaxed);
         let mut tmc = Tmc4671Spi::new(RuntimeMockSpi::default().with_read(1_000));
 
@@ -2136,12 +2140,12 @@ fn phase_and_position_tick_disabled_runtime_writes_nothing() {
         let raw_spi = tmc.into_inner();
         assert!(raw_spi.read_requests.is_empty());
         assert!(raw_spi.write_attempts.is_empty());
-        assert_eq!(runtime.position_lead_applied_scaled_for_test(), 0);
+        assert_eq!(runtime.position_lead_applied_units_for_test(), 0);
     });
 }
 
 #[test]
-fn position_lead_tick_writes_target_and_tracks_applied_scaled() {
+fn position_lead_tick_uses_planner_position_units() {
     pollster::block_on(async {
         let mut runtime = TmcControlRuntime::new_for_channel(0);
         runtime.set_motor_enabled_for_test(true);
@@ -2151,13 +2155,15 @@ fn position_lead_tick_writes_target_and_tracks_applied_scaled() {
         tmc_state.position_lead.store(true, Relaxed);
         tmc_state.position_lead_gain_permille.store(1000, Relaxed);
         tmc_state.position_lead_max_counts.store(20, Relaxed);
-        tmc_state.step_width_value.store(16, Relaxed);
+        tmc_state
+            .configure_motion_scale(&stepper_state, 1_000, 3_200)
+            .unwrap();
         stepper_state.interval.store(2_800, Relaxed);
         stepper_state.direction.store(false, Relaxed);
         let lead_counts =
             crate::tmc::compute_position_lead_counts_from_reference(30_000, false, 1000, 20);
-        let (expected_target, expected_applied_scaled) =
-            crate::tmc::compute_position_lead_target(1_000, 0, lead_counts, 16);
+        let (expected_target, expected_applied_units) =
+            crate::tmc::compute_position_lead_target(1_000, 0, lead_counts, 3_200);
         let mut tmc = Tmc4671Spi::new(RuntimeMockSpi::default().with_read(1_000));
 
         runtime
@@ -2171,8 +2177,8 @@ fn position_lead_tick_writes_target_and_tracks_applied_scaled() {
             .await;
 
         assert_eq!(
-            runtime.position_lead_applied_scaled_for_test(),
-            expected_applied_scaled
+            runtime.position_lead_applied_units_for_test(),
+            expected_applied_units
         );
         assert_eq!(
             tmc.into_inner().writes,
