@@ -258,13 +258,9 @@ pub fn tmc_set_position_gains(
     velocity_p: u16,
     velocity_i: u16,
 ) {
-    let Some((channel, state)) = foci_tmc_state_or_shutdown(ctx, oid) else {
+    let Some((channel, _state)) = foci_tmc_state_or_shutdown(ctx, oid) else {
         return;
     };
-    state.position_p_value.store(position_p, Ordering::Relaxed);
-    state.position_i_value.store(position_i, Ordering::Relaxed);
-    state.velocity_p_value.store(velocity_p, Ordering::Relaxed);
-    state.velocity_i_value.store(velocity_i, Ordering::Relaxed);
     if ctx
         .enqueue_request(crate::tmc::tmc_set_position_gains(
             channel, position_p, position_i, velocity_p, velocity_i,
@@ -976,7 +972,8 @@ mod tests {
     }
 
     #[test]
-    fn tmc_set_position_gains_updates_saved_state_before_worker_runs() {
+    fn tmc_set_position_gains_enqueues_request_without_publishing_unapplied_gains() {
+        let _guard = crate::commission_dispatch::test_support::SHARED_STATE_MUTEX.blocking_lock();
         let mut ctx = MockCtx::new(2);
         let mut sender = ();
         config_stepper_channel(ctx.state(), 10, 1).unwrap();
@@ -988,10 +985,10 @@ mod tests {
 
         tmc_set_position_gains(&mut ctx, &mut sender, 10, 256, 3, 768, 4);
 
-        assert_eq!(tmc_state.position_p_value.load(Relaxed), 256);
-        assert_eq!(tmc_state.position_i_value.load(Relaxed), 3);
-        assert_eq!(tmc_state.velocity_p_value.load(Relaxed), 768);
-        assert_eq!(tmc_state.velocity_i_value.load(Relaxed), 4);
+        assert_eq!(tmc_state.position_p_value.load(Relaxed), 640);
+        assert_eq!(tmc_state.position_i_value.load(Relaxed), 0);
+        assert_eq!(tmc_state.velocity_p_value.load(Relaxed), 1152);
+        assert_eq!(tmc_state.velocity_i_value.load(Relaxed), 0);
         let req = ctx.last_request.borrow().clone().unwrap();
         assert_eq!(req.channel, 1);
         assert!(matches!(
@@ -1004,6 +1001,32 @@ mod tests {
             }
         ));
         assert_eq!(ctx.last_shutdown, None);
+    }
+
+    #[test]
+    fn tmc_set_position_gains_queue_full_preserves_confirmed_gains_and_shuts_down() {
+        let _guard = crate::commission_dispatch::test_support::SHARED_STATE_MUTEX.blocking_lock();
+        let mut ctx = MockCtx::new(2);
+        let mut sender = ();
+        config_stepper_channel(ctx.state(), 10, 1).unwrap();
+        let tmc_state = crate::state::tmc::tmc_channel(1).unwrap();
+        tmc_state.position_p_value.store(641, Relaxed);
+        tmc_state.position_i_value.store(1, Relaxed);
+        tmc_state.velocity_p_value.store(1153, Relaxed);
+        tmc_state.velocity_i_value.store(2, Relaxed);
+        ctx.accept_request = false;
+
+        tmc_set_position_gains(&mut ctx, &mut sender, 10, 256, 3, 768, 4);
+
+        assert_eq!(tmc_state.position_p_value.load(Relaxed), 641);
+        assert_eq!(tmc_state.position_i_value.load(Relaxed), 1);
+        assert_eq!(tmc_state.velocity_p_value.load(Relaxed), 1153);
+        assert_eq!(tmc_state.velocity_i_value.load(Relaxed), 2);
+        assert!(ctx.last_request.borrow().is_none());
+        assert_eq!(
+            ctx.last_shutdown,
+            Some(ShutdownReason::TmcSetPositionGainsLostQueueFull)
+        );
     }
 
     #[test]
