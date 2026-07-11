@@ -189,6 +189,8 @@ pub(crate) enum VelocityValidateState {
     ForwardCapture {
         next_sample_us: u64,
         last_sample_us: u64,
+        ambiguity_retried: bool,
+        saturation_start: u16,
     },
     /// Return to zero velocity and wait for settling.
     ForwardSettle { deadline_us: u64 },
@@ -198,6 +200,8 @@ pub(crate) enum VelocityValidateState {
     ReverseCapture {
         next_sample_us: u64,
         last_sample_us: u64,
+        ambiguity_retried: bool,
+        saturation_start: u16,
     },
     /// Return to zero velocity and wait for settling.
     ReverseSettle { deadline_us: u64 },
@@ -206,6 +210,7 @@ pub(crate) enum VelocityValidateState {
         next_sample_us: u64,
         last_sample_us: u64,
         remaining: u16,
+        ambiguity_retried: bool,
     },
     /// Extract metrics and classify response.
     Classify,

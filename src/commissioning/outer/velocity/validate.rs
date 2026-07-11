@@ -14,6 +14,7 @@ use crate::autotune::{
     CommissionError, CommissionProfile, OperatingMode, Permille, PhaseId, TransientBuffer,
     ValidationResult, VelocityValidation,
 };
+use crate::commissioning::encoder_domain::{EncoderDomain, EncoderMathError};
 use crate::commissioning::outer::{fail_outer, response};
 use crate::commissioning::types::{CommissioningBackend, StepResult};
 use crate::trace::events::{
@@ -55,6 +56,13 @@ async fn stop_velocity_motion<B: CommissioningBackend>(backend: &mut B) -> bool 
         .await
         .is_ok();
     target_ok && mode_ok
+}
+
+async fn command_velocity_target<B: CommissioningBackend>(backend: &mut B, target: u32) -> bool {
+    backend
+        .write_register(foci_tmc4671::registers::PID_VELOCITY_TARGET, target)
+        .await
+        .is_ok()
 }
 
 fn encoder_rate_counts_per_ms_to_tmc_velocity_signed(
@@ -116,18 +124,21 @@ fn encoder_delta_counts_per_ms(
     previous: u32,
     counts_per_rev: u32,
     elapsed_us: u64,
-) -> u32 {
+) -> Result<u32, EncoderMathError> {
+    let domain = EncoderDomain::new(counts_per_rev)?;
+    let delta_counts = domain
+        .delta(domain.count(previous), domain.count(current))?
+        .absolute_counts();
     if elapsed_us == 0 {
-        return 0;
+        return Ok(0);
     }
 
-    let delta_counts = response::encoder_delta(current, previous, counts_per_rev).unsigned_abs();
     if delta_counts == 0 {
-        return 0;
+        return Ok(0);
     }
 
     let numerator = delta_counts as u128 * 1000;
-    ((numerator + elapsed_us as u128 / 2) / elapsed_us as u128).min(u32::MAX as u128) as u32
+    Ok(((numerator + elapsed_us as u128 / 2) / elapsed_us as u128).min(u32::MAX as u128) as u32)
 }
 
 fn record_velocity_validate_summary<B: CommissioningBackend>(
@@ -327,6 +338,8 @@ pub(crate) async fn step_velocity_validate_with_trace<B: CommissioningBackend>(
             *state = VelocityValidateState::ForwardCapture {
                 next_sample_us,
                 last_sample_us: backend.elapsed_us(),
+                ambiguity_retried: false,
+                saturation_start: data.saturation_count,
             };
             StepResult::Continue
         }
@@ -334,6 +347,8 @@ pub(crate) async fn step_velocity_validate_with_trace<B: CommissioningBackend>(
         VelocityValidateState::ForwardCapture {
             next_sample_us,
             last_sample_us,
+            ambiguity_retried,
+            saturation_start,
         } => {
             let now = backend.elapsed_us();
             if now.wrapping_sub(*next_sample_us) >= 0x8000_0000 {
@@ -344,20 +359,65 @@ pub(crate) async fn step_velocity_validate_with_trace<B: CommissioningBackend>(
                 Ok(value) => value,
                 Err(_) => return fail_outer(phase, CommissionError::Spi),
             };
-            let prev_encoder = data.prev_encoder_for_velocity;
+            let prev_encoder = data
+                .prev_encoder_for_velocity
+                .expect("forward velocity baseline configured");
+            let counts_per_rev = safety
+                .encoder_domain
+                .map(EncoderDomain::counts_per_rev)
+                .unwrap_or(0);
+            let velocity = match encoder_delta_counts_per_ms(
+                encoder_raw,
+                prev_encoder.raw_counts(),
+                counts_per_rev,
+                now.wrapping_sub(*last_sample_us),
+            ) {
+                Ok(velocity) => velocity,
+                Err(EncoderMathError::InvalidCountsPerRev) => {
+                    if !command_velocity_target(backend, 0).await {
+                        return fail_outer(phase, CommissionError::Spi);
+                    }
+                    return fail_outer(phase, CommissionError::EncoderFault);
+                }
+                Err(EncoderMathError::AmbiguousHalfTurn) if !*ambiguity_retried => {
+                    if !command_velocity_target(backend, 0).await {
+                        return fail_outer(phase, CommissionError::Spi);
+                    }
+                    let target = encoder_rate_counts_per_ms_to_tmc_velocity_signed(
+                        i64::from(data.step_target),
+                        counts_per_rev,
+                        backend.tmc_config().pwm_freq_hz(),
+                    )
+                    .max(1) as u32;
+                    if !command_velocity_target(backend, target).await {
+                        return fail_outer(phase, CommissionError::Spi);
+                    }
+                    buf.reset(VELOCITY_VALIDATE_SAMPLE_PERIOD_US as u16);
+                    data.forward_metrics = None;
+                    data.saturation_count = *saturation_start;
+                    data.prev_encoder_for_velocity = Some(
+                        safety
+                            .encoder_domain
+                            .expect("validated domain")
+                            .count(encoder_raw),
+                    );
+                    *ambiguity_retried = true;
+                    *next_sample_us = now.wrapping_add(VELOCITY_VALIDATE_SAMPLE_PERIOD_US);
+                    *last_sample_us = now;
+                    return StepResult::Continue;
+                }
+                Err(EncoderMathError::AmbiguousHalfTurn) => {
+                    if !command_velocity_target(backend, 0).await {
+                        return fail_outer(phase, CommissionError::Spi);
+                    }
+                    return fail_outer(phase, CommissionError::VelocityValidationFailed);
+                }
+            };
             data.prev_encoder_for_velocity = Some(
                 safety
                     .encoder_domain
-                    .expect("outer encoder domain configured before velocity validation")
+                    .expect("validated domain")
                     .count(encoder_raw),
-            );
-            let velocity = encoder_delta_counts_per_ms(
-                encoder_raw,
-                prev_encoder
-                    .expect("forward velocity baseline configured")
-                    .raw_counts(),
-                safety.counts_per_rev(),
-                now.wrapping_sub(*last_sample_us),
             );
             buf.push(velocity);
 
@@ -458,6 +518,8 @@ pub(crate) async fn step_velocity_validate_with_trace<B: CommissioningBackend>(
             *state = VelocityValidateState::ReverseCapture {
                 next_sample_us,
                 last_sample_us: backend.elapsed_us(),
+                ambiguity_retried: false,
+                saturation_start: data.saturation_count,
             };
             StepResult::Continue
         }
@@ -465,6 +527,8 @@ pub(crate) async fn step_velocity_validate_with_trace<B: CommissioningBackend>(
         VelocityValidateState::ReverseCapture {
             next_sample_us,
             last_sample_us,
+            ambiguity_retried,
+            saturation_start,
         } => {
             let now = backend.elapsed_us();
             if now.wrapping_sub(*next_sample_us) >= 0x8000_0000 {
@@ -475,20 +539,65 @@ pub(crate) async fn step_velocity_validate_with_trace<B: CommissioningBackend>(
                 Ok(value) => value,
                 Err(_) => return fail_outer(phase, CommissionError::Spi),
             };
-            let prev_encoder = data.prev_encoder_for_velocity;
+            let prev_encoder = data
+                .prev_encoder_for_velocity
+                .expect("reverse velocity baseline configured");
+            let counts_per_rev = safety
+                .encoder_domain
+                .map(EncoderDomain::counts_per_rev)
+                .unwrap_or(0);
+            let velocity = match encoder_delta_counts_per_ms(
+                encoder_raw,
+                prev_encoder.raw_counts(),
+                counts_per_rev,
+                now.wrapping_sub(*last_sample_us),
+            ) {
+                Ok(velocity) => velocity,
+                Err(EncoderMathError::InvalidCountsPerRev) => {
+                    if !command_velocity_target(backend, 0).await {
+                        return fail_outer(phase, CommissionError::Spi);
+                    }
+                    return fail_outer(phase, CommissionError::EncoderFault);
+                }
+                Err(EncoderMathError::AmbiguousHalfTurn) if !*ambiguity_retried => {
+                    if !command_velocity_target(backend, 0).await {
+                        return fail_outer(phase, CommissionError::Spi);
+                    }
+                    let target = encoder_rate_counts_per_ms_to_tmc_velocity_signed(
+                        -i64::from(data.step_target),
+                        counts_per_rev,
+                        backend.tmc_config().pwm_freq_hz(),
+                    )
+                    .min(-1) as u32;
+                    if !command_velocity_target(backend, target).await {
+                        return fail_outer(phase, CommissionError::Spi);
+                    }
+                    buf.reset(VELOCITY_VALIDATE_SAMPLE_PERIOD_US as u16);
+                    data.reverse_metrics = None;
+                    data.saturation_count = *saturation_start;
+                    data.prev_encoder_for_velocity = Some(
+                        safety
+                            .encoder_domain
+                            .expect("validated domain")
+                            .count(encoder_raw),
+                    );
+                    *ambiguity_retried = true;
+                    *next_sample_us = now.wrapping_add(VELOCITY_VALIDATE_SAMPLE_PERIOD_US);
+                    *last_sample_us = now;
+                    return StepResult::Continue;
+                }
+                Err(EncoderMathError::AmbiguousHalfTurn) => {
+                    if !command_velocity_target(backend, 0).await {
+                        return fail_outer(phase, CommissionError::Spi);
+                    }
+                    return fail_outer(phase, CommissionError::VelocityValidationFailed);
+                }
+            };
             data.prev_encoder_for_velocity = Some(
                 safety
                     .encoder_domain
-                    .expect("outer encoder domain configured before velocity validation")
+                    .expect("validated domain")
                     .count(encoder_raw),
-            );
-            let velocity = encoder_delta_counts_per_ms(
-                encoder_raw,
-                prev_encoder
-                    .expect("reverse velocity baseline configured")
-                    .raw_counts(),
-                safety.counts_per_rev(),
-                now.wrapping_sub(*last_sample_us),
             );
             buf.push(velocity);
 
@@ -571,6 +680,7 @@ pub(crate) async fn step_velocity_validate_with_trace<B: CommissioningBackend>(
                     next_sample_us,
                     last_sample_us: backend.elapsed_us(),
                     remaining: VELOCITY_VALIDATE_CHATTER_WINDOW,
+                    ambiguity_retried: false,
                 };
             }
             StepResult::Continue
@@ -580,6 +690,7 @@ pub(crate) async fn step_velocity_validate_with_trace<B: CommissioningBackend>(
             next_sample_us,
             last_sample_us,
             remaining,
+            ambiguity_retried,
         } => {
             let now = backend.elapsed_us();
             if now.wrapping_sub(*next_sample_us) >= 0x8000_0000 {
@@ -590,20 +701,55 @@ pub(crate) async fn step_velocity_validate_with_trace<B: CommissioningBackend>(
                 Ok(value) => value,
                 Err(_) => return fail_outer(phase, CommissionError::Spi),
             };
-            let prev_encoder = data.prev_encoder_for_velocity;
+            let prev_encoder = data
+                .prev_encoder_for_velocity
+                .expect("chatter velocity baseline configured");
+            let counts_per_rev = safety
+                .encoder_domain
+                .map(EncoderDomain::counts_per_rev)
+                .unwrap_or(0);
+            let velocity = match encoder_delta_counts_per_ms(
+                count,
+                prev_encoder.raw_counts(),
+                counts_per_rev,
+                now.wrapping_sub(*last_sample_us),
+            ) {
+                Ok(velocity) => velocity,
+                Err(EncoderMathError::InvalidCountsPerRev) => {
+                    if !command_velocity_target(backend, 0).await {
+                        return fail_outer(phase, CommissionError::Spi);
+                    }
+                    return fail_outer(phase, CommissionError::EncoderFault);
+                }
+                Err(EncoderMathError::AmbiguousHalfTurn) if !*ambiguity_retried => {
+                    if !command_velocity_target(backend, 0).await {
+                        return fail_outer(phase, CommissionError::Spi);
+                    }
+                    data.max_chatter = 0;
+                    data.prev_encoder_for_velocity = Some(
+                        safety
+                            .encoder_domain
+                            .expect("validated domain")
+                            .count(count),
+                    );
+                    *ambiguity_retried = true;
+                    *remaining = VELOCITY_VALIDATE_CHATTER_WINDOW;
+                    *next_sample_us = now.wrapping_add(VELOCITY_VALIDATE_SAMPLE_PERIOD_US);
+                    *last_sample_us = now;
+                    return StepResult::Continue;
+                }
+                Err(EncoderMathError::AmbiguousHalfTurn) => {
+                    if !command_velocity_target(backend, 0).await {
+                        return fail_outer(phase, CommissionError::Spi);
+                    }
+                    return fail_outer(phase, CommissionError::VelocityValidationFailed);
+                }
+            };
             data.prev_encoder_for_velocity = Some(
                 safety
                     .encoder_domain
-                    .expect("outer encoder domain configured before velocity validation")
+                    .expect("validated domain")
                     .count(count),
-            );
-            let velocity = encoder_delta_counts_per_ms(
-                count,
-                prev_encoder
-                    .expect("chatter velocity baseline configured")
-                    .raw_counts(),
-                safety.counts_per_rev(),
-                now.wrapping_sub(*last_sample_us),
             );
             if velocity > data.max_chatter {
                 data.max_chatter = velocity;
@@ -1851,10 +1997,32 @@ mod tests {
 
     #[test]
     fn velocity_validation_normalizes_encoder_delta_by_elapsed_time() {
-        assert_eq!(encoder_delta_counts_per_ms(1_024, 1_000, 4_000, 1_600), 15);
-        assert_eq!(encoder_delta_counts_per_ms(1_024, 1_000, 4_000, 1_000), 24);
-        assert_eq!(encoder_delta_counts_per_ms(1_000, 1_000, 4_000, 1_600), 0);
-        assert_eq!(encoder_delta_counts_per_ms(1_024, 1_000, 4_000, 0), 0);
+        assert_eq!(
+            encoder_delta_counts_per_ms(1_024, 1_000, 4_000, 1_600),
+            Ok(15)
+        );
+        assert_eq!(
+            encoder_delta_counts_per_ms(1_024, 1_000, 4_000, 1_000),
+            Ok(24)
+        );
+        assert_eq!(
+            encoder_delta_counts_per_ms(1_000, 1_000, 4_000, 1_600),
+            Ok(0)
+        );
+        assert_eq!(encoder_delta_counts_per_ms(1_024, 1_000, 4_000, 0), Ok(0));
+    }
+
+    #[test]
+    fn velocity_sample_preserves_origin_crossing_and_rejects_invalid_evidence() {
+        assert_eq!(encoder_delta_counts_per_ms(5, 3_995, 4_000, 1_000), Ok(10));
+        assert_eq!(
+            encoder_delta_counts_per_ms(5, 3_995, 0, 1_000),
+            Err(crate::commissioning::encoder_domain::EncoderMathError::InvalidCountsPerRev)
+        );
+        assert_eq!(
+            encoder_delta_counts_per_ms(2_000, 0, 4_000, 1_000),
+            Err(crate::commissioning::encoder_domain::EncoderMathError::AmbiguousHalfTurn)
+        );
     }
 
     #[test]
@@ -1871,6 +2039,8 @@ mod tests {
                 state: VelocityValidateState::ForwardCapture {
                     next_sample_us: 1_000,
                     last_sample_us: 0,
+                    ambiguity_retried: false,
+                    saturation_start: 0,
                 },
                 data: VelocityValidateData {
                     gains,
@@ -1934,7 +2104,8 @@ mod tests {
                         state,
                         VelocityValidateState::ForwardCapture {
                             next_sample_us: 2_600,
-                            last_sample_us: 1_600
+                            last_sample_us: 1_600,
+                            ..
                         }
                     ));
                 }
@@ -1962,6 +2133,8 @@ mod tests {
                 state: VelocityValidateState::ForwardCapture {
                     next_sample_us: 1_000,
                     last_sample_us: 0,
+                    ambiguity_retried: false,
+                    saturation_start: 0,
                 },
                 data: VelocityValidateData {
                     gains,
@@ -2044,6 +2217,8 @@ mod tests {
                 state: VelocityValidateState::ForwardCapture {
                     next_sample_us: 1_000,
                     last_sample_us: 0,
+                    ambiguity_retried: false,
+                    saturation_start: 0,
                 },
                 data: VelocityValidateData {
                     gains,

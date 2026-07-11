@@ -77,25 +77,6 @@ pub(crate) use super::{OUTER_FALLBACK_VELOCITY_I, position_tune_step_counts};
 /// fallback was used.
 pub(crate) const OUTER_WARNING_LOW_CONFIDENCE_MECHANICAL_ID: u8 = 1;
 
-/// Wrap-aware encoder delta.
-///
-/// The ABN decoder counter wraps at `counts_per_rev` (PPR * 4). A raw
-/// subtraction across the wrap boundary produces a delta near
-/// `+/- counts_per_rev` instead of the true small motion. This normalizes
-/// the delta to `[-half, +half)`.
-pub(crate) fn encoder_delta(current: u32, previous: u32, counts_per_rev: u32) -> i32 {
-    let counts_per_rev = i64::from(counts_per_rev);
-    let half = counts_per_rev / 2;
-    let raw = i64::from(current) - i64::from(previous);
-    (if raw > half {
-        raw - counts_per_rev
-    } else if raw < -half {
-        raw + counts_per_rev
-    } else {
-        raw
-    }) as i32
-}
-
 /// Convert a wrap-aware encoder delta into counts per millisecond using the
 /// actual elapsed sample time.
 ///
