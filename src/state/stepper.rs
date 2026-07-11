@@ -2,10 +2,16 @@
 //! timer-active mirror, actual position. The heapless step-queue and
 //! HardwareStepper handles stay board-local.
 
-use core::sync::atomic::{AtomicBool, AtomicI32, AtomicU32};
+use core::sync::atomic::{AtomicBool, AtomicI32, AtomicU8, AtomicU32};
 
 /// Maximum number of board-local stepper channels supported by shared firmware.
 pub const MAX_STEPPER_CHANNELS: usize = 2;
+
+/// Sentinel indicating that no stepper channel owns a deadline-miss shutdown.
+pub const NO_STEPPER_CHANNEL: u8 = u8::MAX;
+
+/// Channel that first observed a fatal step deadline miss.
+pub static STEPPER_DEADLINE_MISS_CHANNEL: AtomicU8 = AtomicU8::new(NO_STEPPER_CHANNEL);
 
 /// Cross-priority runtime state for one board-local stepper channel.
 pub struct StepperChannelState {

@@ -14,8 +14,6 @@ pub enum FaultClass {
     ActiveReset = 3,
     /// A command referenced an invalid channel.
     InvalidChannel = 4,
-    /// A logical move cannot contain its expanded physical pulse train.
-    ExpandedPulseRate = 5,
 }
 
 /// Operation code carried by `foci_diagnostic`.
@@ -169,7 +167,7 @@ pub struct StepperExecutionSnapshot {
     pub queue_len: u16,
 }
 
-/// Live motion-scale and physical-pulse admission diagnostic values.
+/// Live motion-scale and physical-pulse timing diagnostic values.
 ///
 /// Scale values are zero when no complete scale is published. Like the
 /// execution snapshot, this is a best-effort cross-atomic view intended for
@@ -192,14 +190,10 @@ pub struct MotionScaleDiagnosticSnapshot {
     pub step_half_period_ticks: u32,
     /// Timer ticks reserved between a DIR change and the first STEP edge.
     pub dir_setup_ticks: u32,
-    /// Board ceiling for the direction-change plus two-pulse P3 handler.
-    pub handler_wcet_ticks: u32,
-    /// Whether the handler ceiling is provisional rather than measured.
-    pub timing_provisional: bool,
-    /// Explicit uncertainty margin added to the handler ceiling.
-    pub admission_margin_ticks: u32,
-    /// Required worst-case logical interval for a direction-changing event.
-    pub required_worst_case_interval_ticks: u32,
+    /// Waveform-only two-pulse cost including DIR setup.
+    pub waveform_worst_case_ticks: u32,
+    /// One millisecond of fatal scheduler lateness in timer ticks.
+    pub fatal_lateness_ticks: u32,
 }
 
 impl MotionScaleDiagnosticSnapshot {
@@ -208,7 +202,6 @@ impl MotionScaleDiagnosticSnapshot {
         tmc_state: &crate::state::tmc::TmcChannelState,
         stepper_state: &crate::state::stepper::StepperChannelState,
         timing: crate::step_pulse::StepPulseTiming,
-        timing_provisional: bool,
     ) -> Self {
         let configured = tmc_state.motion_scale_configured();
         Self {
@@ -220,10 +213,8 @@ impl MotionScaleDiagnosticSnapshot {
             configured,
             step_half_period_ticks: timing.half_period_ticks(),
             dir_setup_ticks: timing.dir_setup_ticks(),
-            handler_wcet_ticks: timing.total_handler_wcet_ticks(),
-            timing_provisional,
-            admission_margin_ticks: timing.margin_ticks(),
-            required_worst_case_interval_ticks: timing.required_interval_ticks(true),
+            waveform_worst_case_ticks: timing.waveform_worst_case_ticks(),
+            fatal_lateness_ticks: timing.fatal_lateness_ticks(),
         }
     }
 }
@@ -1430,9 +1421,9 @@ mod tests {
     fn motion_scale_diagnostic_snapshot_reports_unconfigured_state_and_timing() {
         let tmc = crate::state::tmc::TmcChannelState::new();
         let stepper = crate::state::stepper::StepperChannelState::new();
-        let timing = crate::step_pulse::StepPulseTiming::new(84_000_000, 30, 6).unwrap();
+        let timing = crate::step_pulse::StepPulseTiming::new(84_000_000).unwrap();
 
-        let snapshot = MotionScaleDiagnosticSnapshot::from_state(&tmc, &stepper, timing, true);
+        let snapshot = MotionScaleDiagnosticSnapshot::from_state(&tmc, &stepper, timing);
 
         assert_eq!(snapshot.planner_steps_per_rev, 0);
         assert_eq!(snapshot.encoder_ppr, 0);
@@ -1442,10 +1433,8 @@ mod tests {
         assert!(!snapshot.configured);
         assert_eq!(snapshot.step_half_period_ticks, 4);
         assert_eq!(snapshot.dir_setup_ticks, 8);
-        assert_eq!(snapshot.handler_wcet_ticks, 30);
-        assert!(snapshot.timing_provisional);
-        assert_eq!(snapshot.admission_margin_ticks, 6);
-        assert_eq!(snapshot.required_worst_case_interval_ticks, 36);
+        assert_eq!(snapshot.waveform_worst_case_ticks, 24);
+        assert_eq!(snapshot.fatal_lateness_ticks, 84_000);
     }
 
     #[test]
@@ -1454,9 +1443,9 @@ mod tests {
         let stepper = crate::state::stepper::StepperChannelState::new();
         tmc.configure_motion_scale(&stepper, 1_000, 3_200)
             .expect("valid motion scale");
-        let timing = crate::step_pulse::StepPulseTiming::new(260_000_000, 66, 8).unwrap();
+        let timing = crate::step_pulse::StepPulseTiming::new(260_000_000).unwrap();
 
-        let snapshot = MotionScaleDiagnosticSnapshot::from_state(&tmc, &stepper, timing, true);
+        let snapshot = MotionScaleDiagnosticSnapshot::from_state(&tmc, &stepper, timing);
 
         assert_eq!(snapshot.planner_steps_per_rev, 3_200);
         assert_eq!(snapshot.encoder_ppr, 1_000);
@@ -1466,10 +1455,8 @@ mod tests {
         assert!(snapshot.configured);
         assert_eq!(snapshot.step_half_period_ticks, 11);
         assert_eq!(snapshot.dir_setup_ticks, 22);
-        assert_eq!(snapshot.handler_wcet_ticks, 66);
-        assert!(snapshot.timing_provisional);
-        assert_eq!(snapshot.admission_margin_ticks, 8);
-        assert_eq!(snapshot.required_worst_case_interval_ticks, 74);
+        assert_eq!(snapshot.waveform_worst_case_ticks, 66);
+        assert_eq!(snapshot.fatal_lateness_ticks, 260_000);
     }
 
     #[test]

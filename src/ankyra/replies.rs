@@ -1659,14 +1659,10 @@ pub struct FociStepperExecStatsResult {
     pub step_half_period_ticks: u32,
     /// Timer ticks reserved between a DIR change and the first STEP edge.
     pub dir_setup_ticks: u32,
-    /// Board ceiling for the direction-change plus two-pulse P3 handler.
-    pub handler_wcet_ticks: u32,
-    /// Non-zero when `handler_wcet_ticks` is provisional rather than measured.
-    pub timing_provisional: u8,
-    /// Explicit uncertainty margin added to the handler ceiling.
-    pub admission_margin_ticks: u32,
-    /// Required worst-case logical interval for a direction-changing event.
-    pub required_worst_case_interval_ticks: u32,
+    /// Waveform-only two-pulse cost including DIR setup.
+    pub waveform_worst_case_ticks: u32,
+    /// One millisecond of fatal scheduler lateness in timer ticks.
+    pub fatal_lateness_ticks: u32,
     /// Times the step timer went idle because the queue was empty.
     pub queue_empty_count: u32,
     /// Combined missed-deadline count from segment-load and in-segment checks.

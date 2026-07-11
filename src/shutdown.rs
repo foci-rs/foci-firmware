@@ -50,7 +50,7 @@ pub enum ShutdownReason {
     UnknownStepperOid,
     InvalidStepperChannel,
     QueueStepFailed,
-    MotionScaleRateExceeded,
+    StepperTooFarInPast,
     CannotResetTimeWhenStepperActive,
     StepperStopOnTriggerUnknownStepper,
     StepperStopOnTriggerFailed,
@@ -97,7 +97,7 @@ impl ShutdownReason {
             Self::UnknownStepperOid => "Unknown stepper OID",
             Self::InvalidStepperChannel => "Invalid stepper channel",
             Self::QueueStepFailed => "queue_step failed",
-            Self::MotionScaleRateExceeded => "Expanded pulse rate exceeds channel timing budget",
+            Self::StepperTooFarInPast => "Stepper too far in past",
             Self::CannotResetTimeWhenStepperActive => "Can't reset time when stepper active",
             Self::StepperStopOnTriggerUnknownStepper => "stepper_stop_on_trigger: unknown stepper",
             Self::StepperStopOnTriggerFailed => "stepper_stop_on_trigger failed",
@@ -194,12 +194,8 @@ macro_rules! dispatch_shutdown {
             $crate::shutdown::ShutdownReason::QueueStepFailed => {
                 ::ankyra::klipper_shutdown_from!($sender, "queue_step failed", $clock);
             }
-            $crate::shutdown::ShutdownReason::MotionScaleRateExceeded => {
-                ::ankyra::klipper_shutdown_from!(
-                    $sender,
-                    "Expanded pulse rate exceeds channel timing budget",
-                    $clock
-                );
+            $crate::shutdown::ShutdownReason::StepperTooFarInPast => {
+                ::ankyra::klipper_shutdown_from!($sender, "Stepper too far in past", $clock);
             }
             $crate::shutdown::ShutdownReason::CannotResetTimeWhenStepperActive => {
                 ::ankyra::klipper_shutdown_from!(
@@ -379,7 +375,7 @@ macro_rules! foci_ankyra_config {
                 "Unknown stepper OID",
                 "Invalid stepper channel",
                 "queue_step failed",
-                "Expanded pulse rate exceeds channel timing budget",
+                "Stepper too far in past",
                 "Can't reset time when stepper active",
                 "stepper_stop_on_trigger: unknown stepper",
                 "stepper_stop_on_trigger failed",

@@ -1,19 +1,41 @@
 //! Channel-indexed stepper runtime helpers for board timer dispatch.
 
-use foci_klipper::stepper::StepMove;
-
-use crate::step_pulse::{StepPulseAdmissionError, StepPulseTiming};
-
 /// Maximum step/unstep events a timer IRQ may process before yielding.
 pub const MAX_STEP_EVENTS_PER_IRQ: usize = 8;
 
-/// Admit a complete move segment before any queue insertion.
-pub fn admit_step_move(
-    timing: &StepPulseTiming,
-    move_: &StepMove,
-    dir_changed: bool,
-) -> Result<(), StepPulseAdmissionError> {
-    timing.admit(move_.minimum_interval(), dir_changed)
+/// Classification of an observed step deadline against the fatal-lateness policy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+pub enum StepDeadlineStatus {
+    /// The deadline has not passed.
+    OnTimeOrEarly,
+    /// The deadline passed, but remains within the tolerated lateness window.
+    TolerablyLate {
+        /// Observed positive lateness in timer ticks.
+        ticks: u32,
+    },
+    /// The deadline passed by more than the tolerated lateness window.
+    Fatal {
+        /// Observed positive lateness in timer ticks.
+        ticks: u32,
+    },
+}
+
+/// Classify actual step deadline lateness using wrap-safe signed timer ordering.
+pub const fn classify_step_deadline(
+    scheduled: u32,
+    now: u32,
+    fatal_lateness_ticks: u32,
+) -> StepDeadlineStatus {
+    let signed_lateness = now.wrapping_sub(scheduled) as i32;
+    if signed_lateness <= 0 {
+        return StepDeadlineStatus::OnTimeOrEarly;
+    }
+    let ticks = signed_lateness as u32;
+    if ticks > fatal_lateness_ticks {
+        StepDeadlineStatus::Fatal { ticks }
+    } else {
+        StepDeadlineStatus::TolerablyLate { ticks }
+    }
 }
 
 /// A selected step event deadline.
@@ -99,16 +121,26 @@ mod tests {
     use super::*;
 
     #[test]
-    fn admission_uses_the_segment_minimum_interval() {
-        let timing = crate::step_pulse::StepPulseTiming::new(84_000_000, 24, 0).unwrap();
-        let move_ = foci_klipper::stepper::StepMove::new(20, 3, -3);
-
+    fn actual_lateness_is_fatal_only_above_one_millisecond() {
         assert_eq!(
-            admit_step_move(&timing, &move_, false),
-            Err(crate::step_pulse::StepPulseAdmissionError {
-                minimum_interval: 14,
-                required_interval: 16,
-            })
+            classify_step_deadline(1_000, 85_000, 84_000),
+            StepDeadlineStatus::TolerablyLate { ticks: 84_000 }
+        );
+        assert_eq!(
+            classify_step_deadline(1_000, 85_001, 84_000),
+            StepDeadlineStatus::Fatal { ticks: 84_001 }
+        );
+    }
+
+    #[test]
+    fn actual_lateness_classification_is_wrap_safe() {
+        assert_eq!(
+            classify_step_deadline(0xffff_fff0, 0x0000_0010, 84_000),
+            StepDeadlineStatus::TolerablyLate { ticks: 32 }
+        );
+        assert_eq!(
+            classify_step_deadline(0x0000_0010, 0xffff_fff0, 84_000),
+            StepDeadlineStatus::OnTimeOrEarly
         );
     }
 

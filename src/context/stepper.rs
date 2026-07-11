@@ -8,7 +8,6 @@ use foci_klipper::commands::stepper::{QueueStepResult, queue_step_hw, reset_step
 use foci_klipper::stepper::StepMove;
 
 use super::trsync::TriggerDomainState;
-use crate::step_pulse::StepPulseTiming;
 
 /// Stepper subsystem: direction/queue/clock operations exposed at the
 /// granularity the handler bodies actually need.
@@ -57,10 +56,10 @@ impl StepperDrainStats {
     };
 }
 
-/// Distinct command-path failures while admitting or enqueuing a move.
+/// Distinct command-path failures while validating or enqueuing a move.
 #[derive(Debug, Clone, PartialEq, Eq, defmt::Format)]
 pub enum StepperEnqueueError {
-    /// A prerequisite board lookup failed before admission.
+    /// A prerequisite board lookup failed before enqueue.
     Command(CommandError),
     /// The physical move queue could not accept the segment.
     QueueFull {
@@ -78,15 +77,6 @@ pub enum StepperEnqueueError {
     MissingMotionScale {
         /// Board-local channel that rejected the segment.
         channel: u8,
-    },
-    /// The segment is too fast for its expanded physical pulse train.
-    ExpandedPulseRate {
-        /// Board-local channel that rejected the segment.
-        channel: u8,
-        /// Smallest interval requested anywhere in the segment.
-        minimum_requested_interval: u32,
-        /// Board timing budget required by the segment.
-        required_interval: u32,
     },
 }
 
@@ -111,12 +101,6 @@ pub trait StepperQueueBoard: StepperTimerStateBoard {
 
     /// Return whether the channel's logical-to-physical mapper is installed.
     fn motion_scale_configured(&self, channel: u8) -> Result<bool, CommandError>;
-
-    /// Preview whether preparing this segment will change physical direction.
-    fn move_changes_direction(&self, channel: u8) -> Result<bool, CommandError>;
-
-    /// Return immutable board pulse timing used for command admission.
-    fn step_pulse_timing(&self, channel: u8) -> Result<StepPulseTiming, CommandError>;
 
     /// Prepare the move with board-local P2 stepper state and enqueue it.
     fn prepare_and_enqueue(&mut self, channel: u8, move_: StepMove) -> Result<usize, usize>;
@@ -221,21 +205,6 @@ pub fn queue_step_move<B: StepperQueueBoard + ?Sized>(
         }
         Err(err) => Err(StepperEnqueueError::Command(err)),
         Ok(QueueStepResult::Queued | QueueStepResult::QueuedFirstMove) => {
-            let dir_changed = board
-                .move_changes_direction(channel)
-                .map_err(StepperEnqueueError::Command)?;
-            let timing = board
-                .step_pulse_timing(channel)
-                .map_err(StepperEnqueueError::Command)?;
-            if let Err(error) =
-                crate::stepper_runtime::admit_step_move(&timing, &move_, dir_changed)
-            {
-                return Err(StepperEnqueueError::ExpandedPulseRate {
-                    channel,
-                    minimum_requested_interval: error.minimum_interval,
-                    required_interval: error.required_interval,
-                });
-            }
             let queue_len = board
                 .prepare_and_enqueue(channel, move_)
                 .map_err(|queue_len| {
@@ -322,10 +291,6 @@ mod tests {
         enqueue_full: bool,
         motion_scale_configured: bool,
         motion_scale_error: Option<CommandError>,
-        dir_changed: bool,
-        direction_error: Option<CommandError>,
-        pulse_timing: crate::step_pulse::StepPulseTiming,
-        timing_error: Option<CommandError>,
         enqueue_calls: u8,
         queue_len: usize,
         motor_armed: bool,
@@ -344,10 +309,6 @@ mod tests {
                 enqueue_full: false,
                 motion_scale_configured: true,
                 motion_scale_error: None,
-                dir_changed: false,
-                direction_error: None,
-                pulse_timing: crate::step_pulse::StepPulseTiming::new(84_000_000, 24, 0).unwrap(),
-                timing_error: None,
                 enqueue_calls: 0,
                 queue_len: 1,
                 motor_armed: false,
@@ -386,19 +347,6 @@ mod tests {
             self.motion_scale_error
                 .clone()
                 .map_or(Ok(self.motion_scale_configured), Err)
-        }
-
-        fn move_changes_direction(&self, _channel: u8) -> Result<bool, CommandError> {
-            self.direction_error
-                .clone()
-                .map_or(Ok(self.dir_changed), Err)
-        }
-
-        fn step_pulse_timing(
-            &self,
-            _channel: u8,
-        ) -> Result<crate::step_pulse::StepPulseTiming, CommandError> {
-            self.timing_error.clone().map_or(Ok(self.pulse_timing), Err)
         }
 
         fn prepare_and_enqueue(&mut self, _channel: u8, _move_: StepMove) -> Result<usize, usize> {
@@ -531,8 +479,6 @@ mod tests {
         let mut board = MockStepperBoard {
             queue_empty_error: Some(CommandError::QueueFull),
             motion_scale_error: Some(CommandError::MotionScaleUnconfigured),
-            direction_error: Some(CommandError::InvalidChannel(0)),
-            timing_error: Some(CommandError::InvalidChannel(0)),
             ..MockStepperBoard::default()
         };
 
@@ -566,8 +512,6 @@ mod tests {
         let mut board = MockStepperBoard {
             queue_empty_error: Some(CommandError::QueueFull),
             motion_scale_error: Some(CommandError::MotionScaleUnconfigured),
-            direction_error: Some(CommandError::InvalidChannel(0)),
-            timing_error: Some(CommandError::InvalidChannel(0)),
             ..MockStepperBoard::default()
         };
 
@@ -597,38 +541,15 @@ mod tests {
     }
 
     #[test]
-    fn queue_step_move_rejects_expanded_rate_without_enqueue() {
-        let mut state = TriggerDomainState::new();
-        let mut board = MockStepperBoard {
-            dir_changed: true,
-            ..MockStepperBoard::default()
-        };
-
-        assert_eq!(
-            queue_step_move(&mut state, &mut board, 0, StepMove::new(23, 1, 0)),
-            Err(StepperEnqueueError::ExpandedPulseRate {
-                channel: 0,
-                minimum_requested_interval: 23,
-                required_interval: 24,
-            })
-        );
-        assert!(board.events.is_empty());
-    }
-
-    #[test]
-    fn queue_step_move_uses_accelerated_minimum_interval_for_admission() {
+    fn queue_step_move_accepts_interval_shorter_than_waveform_cost() {
         let mut state = TriggerDomainState::new();
         let mut board = MockStepperBoard::default();
 
         assert_eq!(
-            queue_step_move(&mut state, &mut board, 0, StepMove::new(20, 3, -3)),
-            Err(StepperEnqueueError::ExpandedPulseRate {
-                channel: 0,
-                minimum_requested_interval: 14,
-                required_interval: 16,
-            })
+            queue_step_move(&mut state, &mut board, 0, StepMove::new(1, 3, 0)),
+            Ok(())
         );
-        assert!(board.events.is_empty());
+        assert_eq!(board.events.as_slice(), &[Event::Queued(0, 3, 1)]);
     }
 
     #[test]
