@@ -57,7 +57,7 @@ async fn stop_velocity_motion<B: CommissioningBackend>(backend: &mut B) -> bool 
     target_ok && mode_ok
 }
 
-fn counts_per_ms_to_tmc_velocity(
+fn encoder_rate_counts_per_ms_to_tmc_velocity_signed(
     encoder_counts_per_ms: i64,
     encoder_counts_per_rev: u32,
     f_pwm_hz: u32,
@@ -78,6 +78,21 @@ fn counts_per_ms_to_tmc_velocity(
         (numerator + rounding) / denominator
     };
     rounded.clamp(i128::from(i32::MIN), i128::from(i32::MAX)) as i32
+}
+
+fn encoder_rate_magnitude_counts_per_ms_to_tmc_velocity(
+    encoder_counts_per_ms: u64,
+    encoder_counts_per_rev: u32,
+    f_pwm_hz: u32,
+) -> u32 {
+    if encoder_counts_per_ms == 0 || encoder_counts_per_rev == 0 || f_pwm_hz == 0 {
+        return 0;
+    }
+
+    let numerator = u128::from(encoder_counts_per_ms) * 65_536 * 1_000;
+    let denominator = u128::from(encoder_counts_per_rev) * u128::from(f_pwm_hz);
+    let rounded = (numerator + denominator / 2) / denominator;
+    rounded.min(u128::from(u32::MAX)) as u32
 }
 
 fn encoder_counts_to_tmc_position_units(encoder_counts: i32, encoder_counts_per_rev: u32) -> i32 {
@@ -217,13 +232,13 @@ pub(crate) async fn step_velocity_validate_with_trace<B: CommissioningBackend>(
         VelocityValidateState::WriteGains => {
             let encoder_counts_per_rev = backend.mechanical_encoder_quadrature_counts_per_rev();
             let f_pwm_hz = backend.tmc_config().pwm_freq_hz();
-            let velocity_limit_reg = counts_per_ms_to_tmc_velocity(
-                i64::from(data.gains.velocity_limit),
+            let velocity_limit_reg = encoder_rate_magnitude_counts_per_ms_to_tmc_velocity(
+                u64::from(data.gains.velocity_limit),
                 encoder_counts_per_rev,
                 f_pwm_hz,
             )
-            .max(1) as u32;
-            let step_target_reg = counts_per_ms_to_tmc_velocity(
+            .max(1);
+            let step_target_reg = encoder_rate_counts_per_ms_to_tmc_velocity_signed(
                 i64::from(data.step_target),
                 encoder_counts_per_rev,
                 f_pwm_hz,
@@ -282,7 +297,7 @@ pub(crate) async fn step_velocity_validate_with_trace<B: CommissioningBackend>(
         }
 
         VelocityValidateState::ForwardStep => {
-            let target_reg = counts_per_ms_to_tmc_velocity(
+            let target_reg = encoder_rate_counts_per_ms_to_tmc_velocity_signed(
                 i64::from(data.step_target),
                 backend.mechanical_encoder_quadrature_counts_per_rev(),
                 backend.tmc_config().pwm_freq_hz(),
@@ -401,7 +416,7 @@ pub(crate) async fn step_velocity_validate_with_trace<B: CommissioningBackend>(
         }
 
         VelocityValidateState::ReverseStep => {
-            let target_reg = counts_per_ms_to_tmc_velocity(
+            let target_reg = encoder_rate_counts_per_ms_to_tmc_velocity_signed(
                 -i64::from(data.step_target),
                 backend.mechanical_encoder_quadrature_counts_per_rev(),
                 backend.tmc_config().pwm_freq_hz(),
@@ -1100,8 +1115,10 @@ pub(crate) async fn step_velocity_validate_with_trace<B: CommissioningBackend>(
 #[cfg(test)]
 mod tests {
     use super::{
-        counts_per_ms_to_tmc_velocity, encoder_counts_to_tmc_position_units,
-        encoder_delta_counts_per_ms, record_velocity_validate_summary, step_velocity_validate,
+        encoder_counts_to_tmc_position_units, encoder_delta_counts_per_ms,
+        encoder_rate_counts_per_ms_to_tmc_velocity_signed,
+        encoder_rate_magnitude_counts_per_ms_to_tmc_velocity, record_velocity_validate_summary,
+        step_velocity_validate,
     };
     use crate::autotune::{
         CommissionError, CommissionProfile, MechanicalModel, OperatingMode, TRANSIENT_LEN,
@@ -1765,9 +1782,34 @@ mod tests {
 
     #[test]
     fn velocity_validation_converts_encoder_rate_through_exact_scale() {
-        assert_eq!(counts_per_ms_to_tmc_velocity(4, 4_000, 25_000), 3);
-        assert_eq!(counts_per_ms_to_tmc_velocity(-4, 4_000, 25_000), -3);
-        assert_eq!(counts_per_ms_to_tmc_velocity(16, 4_000, 25_000), 10);
+        assert_eq!(
+            encoder_rate_counts_per_ms_to_tmc_velocity_signed(4, 4_000, 25_000),
+            3
+        );
+        assert_eq!(
+            encoder_rate_counts_per_ms_to_tmc_velocity_signed(-4, 4_000, 25_000),
+            -3
+        );
+        assert_eq!(
+            encoder_rate_magnitude_counts_per_ms_to_tmc_velocity(16, 4_000, 25_000),
+            10
+        );
+    }
+
+    #[test]
+    fn velocity_conversion_preserves_signed_and_unsigned_saturation_contracts() {
+        assert_eq!(
+            encoder_rate_counts_per_ms_to_tmc_velocity_signed(i64::MAX, 1, 1),
+            i32::MAX
+        );
+        assert_eq!(
+            encoder_rate_counts_per_ms_to_tmc_velocity_signed(i64::MIN, 1, 1),
+            i32::MIN
+        );
+        assert_eq!(
+            encoder_rate_magnitude_counts_per_ms_to_tmc_velocity(u64::MAX, 1, 1),
+            u32::MAX
+        );
     }
 
     #[test]
@@ -2030,9 +2072,18 @@ mod tests {
 
     #[test]
     fn velocity_validation_conversion_handles_zero_inputs() {
-        assert_eq!(counts_per_ms_to_tmc_velocity(0, 4_000, 25_000), 0);
-        assert_eq!(counts_per_ms_to_tmc_velocity(4, 0, 25_000), 0);
-        assert_eq!(counts_per_ms_to_tmc_velocity(4, 4_000, 0), 0);
+        assert_eq!(
+            encoder_rate_counts_per_ms_to_tmc_velocity_signed(0, 4_000, 25_000),
+            0
+        );
+        assert_eq!(
+            encoder_rate_magnitude_counts_per_ms_to_tmc_velocity(4, 0, 25_000),
+            0
+        );
+        assert_eq!(
+            encoder_rate_magnitude_counts_per_ms_to_tmc_velocity(4, 4_000, 0),
+            0
+        );
     }
 
     #[test]
