@@ -192,6 +192,21 @@ pub fn queue_step_move<B: StepperQueueBoard + ?Sized>(
         .queue_stepper_index(channel)
         .map_err(StepperEnqueueError::Command)?;
     let need_reset = state.stepper_stop[stepper_idx].need_reset;
+
+    // Resolve reset discard and zero count before consulting any fallible board
+    // state. The placeholder values admit every positive, non-reset move.
+    match queue_step_hw(need_reset, move_.count, false, true) {
+        Ok(QueueStepResult::Discarded) => {
+            board.record_discarded_segment(channel, u32::from(move_.count));
+            return Ok(());
+        }
+        Err(CommandError::ZeroCount) => {
+            return Err(StepperEnqueueError::ZeroCount { channel });
+        }
+        Err(err) => return Err(StepperEnqueueError::Command(err)),
+        Ok(QueueStepResult::Queued | QueueStepResult::QueuedFirstMove) => {}
+    }
+
     let queue_was_empty = board
         .queue_was_empty(channel)
         .map_err(StepperEnqueueError::Command)?;
@@ -199,17 +214,8 @@ pub fn queue_step_move<B: StepperQueueBoard + ?Sized>(
         .motion_scale_configured(channel)
         .map_err(StepperEnqueueError::Command)?;
 
-    match queue_step_hw(
-        need_reset,
-        move_.count,
-        queue_was_empty,
-        motion_scale_configured,
-    ) {
-        Ok(QueueStepResult::Discarded) => {
-            board.record_discarded_segment(channel, u32::from(move_.count));
-            Ok(())
-        }
-        Err(CommandError::ZeroCount) => Err(StepperEnqueueError::ZeroCount { channel }),
+    match queue_step_hw(false, move_.count, queue_was_empty, motion_scale_configured) {
+        Ok(QueueStepResult::Discarded) | Err(CommandError::ZeroCount) => unreachable!(),
         Err(CommandError::MotionScaleUnconfigured) => {
             Err(StepperEnqueueError::MissingMotionScale { channel })
         }
@@ -312,10 +318,15 @@ mod tests {
     struct MockStepperBoard {
         index: Option<usize>,
         queue_empty: bool,
+        queue_empty_error: Option<CommandError>,
         enqueue_full: bool,
         motion_scale_configured: bool,
+        motion_scale_error: Option<CommandError>,
         dir_changed: bool,
+        direction_error: Option<CommandError>,
         pulse_timing: crate::step_pulse::StepPulseTiming,
+        timing_error: Option<CommandError>,
+        enqueue_calls: u8,
         queue_len: usize,
         motor_armed: bool,
         queue_has_moves: bool,
@@ -329,10 +340,15 @@ mod tests {
             Self {
                 index: Some(0),
                 queue_empty: true,
+                queue_empty_error: None,
                 enqueue_full: false,
                 motion_scale_configured: true,
+                motion_scale_error: None,
                 dir_changed: false,
+                direction_error: None,
                 pulse_timing: crate::step_pulse::StepPulseTiming::new(84_000_000, 0, 0).unwrap(),
+                timing_error: None,
+                enqueue_calls: 0,
                 queue_len: 1,
                 motor_armed: false,
                 queue_has_moves: false,
@@ -361,25 +377,32 @@ mod tests {
         }
 
         fn queue_was_empty(&self, _channel: u8) -> Result<bool, CommandError> {
-            Ok(self.queue_empty)
+            self.queue_empty_error
+                .clone()
+                .map_or(Ok(self.queue_empty), Err)
         }
 
         fn motion_scale_configured(&self, _channel: u8) -> Result<bool, CommandError> {
-            Ok(self.motion_scale_configured)
+            self.motion_scale_error
+                .clone()
+                .map_or(Ok(self.motion_scale_configured), Err)
         }
 
         fn move_changes_direction(&self, _channel: u8) -> Result<bool, CommandError> {
-            Ok(self.dir_changed)
+            self.direction_error
+                .clone()
+                .map_or(Ok(self.dir_changed), Err)
         }
 
         fn step_pulse_timing(
             &self,
             _channel: u8,
         ) -> Result<crate::step_pulse::StepPulseTiming, CommandError> {
-            Ok(self.pulse_timing)
+            self.timing_error.clone().map_or(Ok(self.pulse_timing), Err)
         }
 
         fn prepare_and_enqueue(&mut self, _channel: u8, _move_: StepMove) -> Result<usize, usize> {
+            self.enqueue_calls = self.enqueue_calls.saturating_add(1);
             if self.enqueue_full {
                 Err(self.queue_len)
             } else {
@@ -496,6 +519,29 @@ mod tests {
         );
 
         assert_eq!(board.events.as_slice(), &[Event::Discarded(0, 12)]);
+        assert_eq!(board.enqueue_calls, 0);
+        assert!(!state.stepper_stop[0].timer_active);
+        assert!(!board.mirror[0]);
+    }
+
+    #[test]
+    fn queue_step_move_reset_discard_precedes_fallible_ancillary_hooks() {
+        let mut state = TriggerDomainState::new();
+        state.stepper_stop[0].need_reset = true;
+        let mut board = MockStepperBoard {
+            queue_empty_error: Some(CommandError::QueueFull),
+            motion_scale_error: Some(CommandError::MotionScaleUnconfigured),
+            direction_error: Some(CommandError::InvalidChannel(0)),
+            timing_error: Some(CommandError::InvalidChannel(0)),
+            ..MockStepperBoard::default()
+        };
+
+        assert_eq!(
+            queue_step_move(&mut state, &mut board, 0, StepMove::new(100, 12, 0)),
+            Ok(())
+        );
+        assert_eq!(board.events.as_slice(), &[Event::Discarded(0, 12)]);
+        assert_eq!(board.enqueue_calls, 0);
         assert!(!state.stepper_stop[0].timer_active);
         assert!(!board.mirror[0]);
     }
@@ -511,6 +557,28 @@ mod tests {
         );
 
         assert!(board.events.is_empty());
+        assert_eq!(board.enqueue_calls, 0);
+    }
+
+    #[test]
+    fn queue_step_move_zero_count_precedes_fallible_ancillary_hooks() {
+        let mut state = TriggerDomainState::new();
+        let mut board = MockStepperBoard {
+            queue_empty_error: Some(CommandError::QueueFull),
+            motion_scale_error: Some(CommandError::MotionScaleUnconfigured),
+            direction_error: Some(CommandError::InvalidChannel(0)),
+            timing_error: Some(CommandError::InvalidChannel(0)),
+            ..MockStepperBoard::default()
+        };
+
+        assert_eq!(
+            queue_step_move(&mut state, &mut board, 0, StepMove::new(100, 0, 0)),
+            Err(StepperEnqueueError::ZeroCount { channel: 0 })
+        );
+        assert!(board.events.is_empty());
+        assert_eq!(board.enqueue_calls, 0);
+        assert!(!state.stepper_stop[0].timer_active);
+        assert!(!board.mirror[0]);
     }
 
     #[test]

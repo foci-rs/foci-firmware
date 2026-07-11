@@ -35,6 +35,14 @@ pub struct StepPulseTiming {
 impl StepPulseTiming {
     /// Derive pulse spacing and the board's admission budget.
     ///
+    /// All inputs and derived durations use step-timer ticks. A nonzero
+    /// `measured_wcet_ticks` is the measured or provisional total worst-case
+    /// P3 handler duration for a direction change and two physical pulses. It
+    /// includes GPIO work, DIR setup, and every STEP high/low wait. Admission
+    /// therefore uses `max(waveform_worst_case, measured_wcet_ticks) + margin`;
+    /// adding the waveform to the measured total would count its waits twice.
+    /// Zero selects the waveform-only provisional bound.
+    ///
     /// # Errors
     ///
     /// Returns [`StepPulseTimingError::ZeroTimerFrequency`] for a zero timer
@@ -99,7 +107,7 @@ impl StepPulseTiming {
         self.dir_setup_ticks + self.half_period_ticks * 4
     }
 
-    /// Board-measured worst-case execution time, or `None` while provisional.
+    /// Total direction-change plus two-pulse handler WCET, or `None` while provisional.
     pub const fn measured_wcet_ticks(&self) -> Option<u32> {
         self.measured_wcet_ticks
     }
@@ -110,6 +118,10 @@ impl StepPulseTiming {
     }
 
     /// Required logical interval for a conservative two-pulse event.
+    ///
+    /// The measured total covers the direction-change path. When direction is
+    /// unchanged, only the known DIR setup wait is removed; GPIO, pulse waits,
+    /// and all other measured handler overhead remain conservatively budgeted.
     pub const fn required_interval_ticks(&self, dir_changed: bool) -> u32 {
         if dir_changed {
             self.worst_case_budget_ticks
@@ -170,10 +182,12 @@ mod tests {
     }
 
     #[test]
-    fn measured_wcet_and_margin_form_checked_admission_budget() {
+    fn total_direction_change_wcet_and_margin_form_checked_admission_budget() {
         let timing = StepPulseTiming::new(84_000_000, 30, 6).unwrap();
+        assert_eq!(timing.half_period_ticks(), 4);
         assert_eq!(timing.measured_wcet_ticks(), Some(30));
         assert_eq!(timing.margin_ticks(), 6);
+        // The total measured path already includes the 8-tick DIR setup wait.
         assert_eq!(timing.required_interval_ticks(false), 28);
         assert_eq!(timing.required_interval_ticks(true), 36);
         assert_eq!(

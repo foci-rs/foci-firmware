@@ -852,6 +852,7 @@ mod tests {
         motion_scale_queue_empty: bool,
         mapper_install_result: Result<(), MotionScaleMapperInstallError>,
         mapper_install_calls: u8,
+        installed_mapper: Option<foci_klipper::pulse_mapper::PulseMapperConfig>,
         configured_during_mapper_install: bool,
         next_trace_seq: u32,
         register_result: Result<(), ()>,
@@ -876,6 +877,7 @@ mod tests {
                 motion_scale_queue_empty: true,
                 mapper_install_result: Ok(()),
                 mapper_install_calls: 0,
+                installed_mapper: None,
                 configured_during_mapper_install: false,
                 next_trace_seq: 1,
                 register_result: Ok(()),
@@ -936,9 +938,10 @@ mod tests {
 
         fn install_motion_scale_mapper(
             &mut self,
-            _mapper: foci_klipper::pulse_mapper::PulseMapperConfig,
+            mapper: foci_klipper::pulse_mapper::PulseMapperConfig,
         ) -> Result<(), MotionScaleMapperInstallError> {
             self.mapper_install_calls = self.mapper_install_calls.saturating_add(1);
+            self.installed_mapper = Some(mapper);
             self.configured_during_mapper_install = tmc_channel0().motion_scale_configured();
             self.mapper_install_result
         }
@@ -1474,6 +1477,10 @@ mod tests {
             assert_eq!(outcome.shutdown, None);
             assert!(tmc_channel0().motion_scale_configured());
             assert_eq!(board.mapper_install_calls, 1);
+            let mapper = board.installed_mapper.unwrap();
+            assert_eq!(mapper.planner_steps_per_rev(), 3200);
+            assert_eq!(mapper.tmc_grid(), 4096);
+            assert_eq!(mapper.step_width(), 16);
             assert!(!board.configured_during_mapper_install);
             assert_eq!(board.arm_calls, 0);
         });
