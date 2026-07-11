@@ -662,8 +662,8 @@ impl TmcControlRuntime {
     /// the board-local decimation used by the surrounding maintenance path.
     ///
     /// Active feedforward SPI operations are best-effort to preserve existing
-    /// board behavior. A failed inactive velocity-offset clear is propagated so
-    /// the runtime retains its active latch and retries the clear.
+    /// board behavior. Failed inactive velocity- and torque-offset clears are
+    /// propagated so the runtime retains its active latch and retries the clear.
     pub async fn apply_feedforward_tick<B>(
         &mut self,
         tmc_spi: &mut foci_tmc4671::spi::Tmc4671Spi<B>,
@@ -898,9 +898,10 @@ impl TmcControlRuntime {
                 .write_register(foci_tmc4671::registers::PID_TORQUE_FLUX_OFFSET, offset_reg)
                 .await;
         } else if self.torque_flux_offset_was_active {
-            let _ = tmc_spi
+            tmc_spi
                 .write_register(foci_tmc4671::registers::PID_TORQUE_FLUX_OFFSET, 0)
-                .await;
+                .await
+                .map_err(|_| ())?;
             #[cfg(feature = "trace")]
             {
                 let trace = self.trace_state_mut();
@@ -1531,6 +1532,11 @@ impl TmcControlRuntime {
     #[cfg(test)]
     pub(crate) fn position_lead_applied_units_for_test(&self) -> i32 {
         self.position_lead_applied_units
+    }
+
+    #[cfg(test)]
+    pub(crate) fn torque_flux_offset_was_active_for_test(&self) -> bool {
+        self.torque_flux_offset_was_active
     }
 
     #[cfg(all(test, feature = "trace"))]
