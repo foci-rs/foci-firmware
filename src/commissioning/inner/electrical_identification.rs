@@ -10,6 +10,7 @@ use crate::autotune::{
     CommissionError, ELECTRICAL_MODEL_RESISTANCE_SCALE, ElectricalModel, InnerSequence, PhaseId,
     TransientBuffer,
 };
+use crate::commissioning::encoder_domain::{EncoderDomain, EncoderMathError};
 use crate::commissioning::types::{
     CommissioningBackend, INDUCTANCE_SOURCE_ROTATING_FIELD, INDUCTANCE_WARN_DRIFT,
     INDUCTANCE_WARN_HIGH_RMS, INDUCTANCE_WARN_MAG_CROSSCHECK, INDUCTANCE_WARN_STATUS_FLAGS,
@@ -473,8 +474,19 @@ fn decode_rotating_frame_current(actual: u32) -> (i16, i16) {
     (id_count, iq_count)
 }
 
-fn signed_encoder_delta(start: u32, end: u32) -> i32 {
-    end.wrapping_sub(start) as i32
+fn inductance_encoder_delta(
+    domain: EncoderDomain,
+    start: u32,
+    end: u32,
+) -> Result<i32, InductanceReject> {
+    domain
+        .delta(domain.count(start), domain.count(end))
+        .map(|delta| delta.signed_counts())
+        .map_err(|error| match error {
+            EncoderMathError::InvalidCountsPerRev | EncoderMathError::AmbiguousHalfTurn => {
+                InductanceReject::EncoderMotion
+            }
+        })
 }
 
 fn permille_delta(a: u32, b: u32) -> Option<u16> {
@@ -1010,7 +1022,9 @@ fn finish_inductance_evidence(
         warning_flags |= INDUCTANCE_WARN_STATUS_FLAGS;
     }
 
-    let encoder_delta_counts = signed_encoder_delta(encoder_start, encoder_after);
+    let encoder_domain = data.encoder_domain.ok_or(InductanceReject::EncoderMotion)?;
+    let encoder_delta_counts =
+        inductance_encoder_delta(encoder_domain, encoder_start, encoder_after)?;
     if encoder_delta_counts.unsigned_abs() > INDUCTANCE_MAX_ENCODER_DELTA_COUNTS {
         return Err(InductanceReject::EncoderMotion);
     }
@@ -1142,6 +1156,14 @@ pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
         // Inductance measurement (phi-locked rotating field)
         // ---------------------------------------------------------------
         ElectricalIdState::InductanceSetup => {
+            data.encoder_domain =
+                match EncoderDomain::new(backend.mechanical_encoder_quadrature_counts_per_rev()) {
+                    Ok(domain) => Some(domain),
+                    Err(EncoderMathError::InvalidCountsPerRev) => {
+                        return super::fail_inner(phase, CommissionError::EncoderFault);
+                    }
+                    Err(EncoderMathError::AmbiguousHalfTurn) => unreachable!(),
+                };
             let pidout_limit = data.voltage.min(INDUCTANCE_AC_UD_EXT as u32);
             if backend
                 .write_register(PIDOUT_UQ_UD_LIMITS, pidout_limit)
@@ -1604,6 +1626,7 @@ mod tests {
         let mut data = ElectricalIdData::new(512);
         data.resistance_result = Some(resistance_result(1706, 1706));
         data.inductance = Some(inductance_evidence_fixture(8_600, 1_000_000));
+        data.encoder_domain = Some(EncoderDomain::new(4000).unwrap());
         data
     }
 
@@ -2525,6 +2548,59 @@ mod tests {
         };
 
         assert_eq!(rejection, InductanceReject::EncoderMotion);
+    }
+
+    #[test]
+    fn inductance_encoder_delta_crosses_origin_forward() {
+        let domain = EncoderDomain::new(4000).unwrap();
+
+        assert_eq!(inductance_encoder_delta(domain, 3998, 2), Ok(4));
+    }
+
+    #[test]
+    fn inductance_encoder_delta_maps_half_turn_to_motion_rejection() {
+        let domain = EncoderDomain::new(4000).unwrap();
+
+        assert_eq!(
+            inductance_encoder_delta(domain, 0, 2000),
+            Err(InductanceReject::EncoderMotion)
+        );
+        assert_eq!(
+            InductanceReject::EncoderMotion.commission_error(),
+            CommissionError::InductanceEncoderMotion
+        );
+    }
+
+    #[test]
+    fn inductance_setup_rejects_invalid_domain_before_excitation() {
+        pollster::block_on(async {
+            let mut phase = InnerPhase::ElectricalId {
+                state: ElectricalIdState::InductanceSetup,
+                data: ElectricalIdData::new(1024),
+            };
+            let mut buf = TransientBuffer::new();
+            let mut backend = MockBackend::new();
+            backend.mechanical_encoder_quadrature_counts_per_rev_value = 0;
+            let mut selftest_results = crate::selftest::SelftestResults::default();
+            let mut diagnostics = crate::selftest::CommissionDiagnostics::default();
+
+            let result = step_electrical_identification(
+                &mut phase,
+                &mut buf,
+                InnerSequence::Commission,
+                &mut selftest_results,
+                &mut diagnostics,
+                &mut backend,
+            )
+            .await;
+
+            assert!(matches!(
+                result,
+                StepResult::InnerFailed(CommissionError::EncoderFault)
+            ));
+            assert!(!backend.enable_pin);
+            assert!(backend.spi_log.is_empty());
+        });
     }
 
     #[test]

@@ -15,6 +15,7 @@ use crate::autotune::{
     CurrentLoopEvidence, ElectricalModel, InnerSequence, PhaseId, TransientBuffer,
     classify_current_axis_sample, current_axis_retry_decision, retry_current_loop_gains,
 };
+use crate::commissioning::encoder_domain::{EncoderDelta, EncoderDomain, EncoderMathError};
 use crate::commissioning::inner::InnerPhase;
 use crate::commissioning::types::{
     AdcResidualEvidence, CommissionResult, CommissioningBackend, CurrentValidationAxisEvidence,
@@ -94,8 +95,8 @@ pub(crate) struct CurrentValidateData {
     pub(crate) voltage_limited: u32,
     /// Maximum candidate P gain used for voltage-limited target sizing.
     pub(crate) max_p: u32,
-    /// Encoder counts per mechanical revolution for wrap-aware motion checks.
-    pub(crate) encoder_counts_per_rev: u32,
+    /// Validated mechanical encoder domain for motion checks.
+    pub(crate) encoder_domain: Option<EncoderDomain>,
     /// Encoder count captured immediately before the active short sample target.
     pub(crate) sample_encoder_start: u32,
     /// Positive half of the active positive/negative delay pair.
@@ -163,7 +164,7 @@ struct AxisSampleRegisters {
     output_limit: u16,
     encoder_start: u32,
     encoder_end: u32,
-    encoder_counts_per_rev: u32,
+    encoder_domain: EncoderDomain,
     status_flags: u32,
 }
 
@@ -308,28 +309,31 @@ fn signed_upper_half(value: u32) -> i16 {
     crate::tmc::decode_signed_upper_half(value)
 }
 
-fn encoder_delta_counts(start: u32, end: u32, counts_per_rev: u32) -> i32 {
-    let counts_u32 = counts_per_rev.max(1);
-    let counts = i64::from(counts_u32);
-    let half = counts / 2;
-    let start = i64::from(start % counts_u32);
-    let end = i64::from(end % counts_u32);
-    let raw = end - start;
-    let delta = if raw > half {
-        raw - counts
-    } else if raw < -half {
-        raw + counts
-    } else {
-        raw
-    };
-    delta.clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CurrentSampleError {
+    Io,
+    InvalidDomain,
+    AmbiguousHalfTurn,
+}
+
+fn current_validation_encoder_delta(
+    domain: EncoderDomain,
+    start: u32,
+    end: u32,
+) -> Result<EncoderDelta, CurrentSampleError> {
+    domain
+        .delta(domain.count(start), domain.count(end))
+        .map_err(|error| match error {
+            EncoderMathError::InvalidCountsPerRev => CurrentSampleError::InvalidDomain,
+            EncoderMathError::AmbiguousHalfTurn => CurrentSampleError::AmbiguousHalfTurn,
+        })
 }
 
 fn axis_sample_from_registers(
     axis: CurrentValidationAxis,
     target: i16,
     registers: AxisSampleRegisters,
-) -> CurrentAxisSample {
+) -> Result<CurrentAxisSample, CurrentSampleError> {
     let (same_axis_actual, cross_axis_actual, output_limited) = match axis {
         CurrentValidationAxis::Flux => (
             signed_lower_half(registers.pid_torque_flux_actual),
@@ -343,19 +347,20 @@ fn axis_sample_from_registers(
         ),
     };
 
-    CurrentAxisSample {
+    Ok(CurrentAxisSample {
         target,
         same_axis_actual,
         cross_axis_actual,
         output_limited,
         output_limit: registers.output_limit,
-        encoder_delta_counts: encoder_delta_counts(
+        encoder_delta_counts: current_validation_encoder_delta(
+            registers.encoder_domain,
             registers.encoder_start,
             registers.encoder_end,
-            registers.encoder_counts_per_rev,
-        ),
+        )?
+        .signed_counts(),
         status_flags: registers.status_flags,
-    }
+    })
 }
 
 fn cross_axis_permille(sample: &CurrentAxisSample) -> u16 {
@@ -691,8 +696,8 @@ async fn read_axis_sample<B: CommissioningBackend>(
     target: i16,
     encoder_start: u32,
     output_limit: u32,
-    encoder_counts_per_rev: u32,
-) -> Result<CurrentAxisSample, ()> {
+    encoder_domain: EncoderDomain,
+) -> Result<CurrentAxisSample, CurrentSampleError> {
     use foci_tmc4671::registers::{
         INTERIM_FOC_UQ_UD_LIMITED, PID_TORQUE_FLUX_ACTUAL, STATUS_FLAGS,
     };
@@ -700,20 +705,26 @@ async fn read_axis_sample<B: CommissioningBackend>(
     let pid_actual = backend
         .read_register(PID_TORQUE_FLUX_ACTUAL)
         .await
-        .map_err(|_| ())?;
+        .map_err(|_| CurrentSampleError::Io)?;
     let sub = INTERIM_FOC_UQ_UD_LIMITED;
     backend
         .write_register(sub.addr, sub.sub_addr as u32)
         .await
-        .map_err(|_| ())?;
-    let foc_limited = backend.read_register(sub.data).await.map_err(|_| ())?;
-    let status_flags = backend.read_register(STATUS_FLAGS).await.map_err(|_| ())?;
+        .map_err(|_| CurrentSampleError::Io)?;
+    let foc_limited = backend
+        .read_register(sub.data)
+        .await
+        .map_err(|_| CurrentSampleError::Io)?;
+    let status_flags = backend
+        .read_register(STATUS_FLAGS)
+        .await
+        .map_err(|_| CurrentSampleError::Io)?;
     let encoder_end = backend
         .try_read_mechanical_encoder_position_counts()
         .await
-        .map_err(|_| ())?;
+        .map_err(|_| CurrentSampleError::Io)?;
 
-    Ok(axis_sample_from_registers(
+    axis_sample_from_registers(
         axis,
         target,
         AxisSampleRegisters {
@@ -722,10 +733,10 @@ async fn read_axis_sample<B: CommissioningBackend>(
             output_limit: output_limit.min(u16::MAX as u32) as u16,
             encoder_start,
             encoder_end,
-            encoder_counts_per_rev,
+            encoder_domain,
             status_flags,
         },
-    ))
+    )
 }
 
 fn directional_evidence_from_sample<B: CommissioningBackend>(
@@ -761,15 +772,15 @@ async fn read_axis_directional_evidence<B: CommissioningBackend>(
     sample_delay_ms: u16,
     encoder_start: u32,
     output_limit: u32,
-    encoder_counts_per_rev: u32,
-) -> Result<AxisDirectionalEvidence, ()> {
+    encoder_domain: EncoderDomain,
+) -> Result<AxisDirectionalEvidence, CurrentSampleError> {
     let sample = read_axis_sample(
         backend,
         axis,
         target,
         encoder_start,
         output_limit,
-        encoder_counts_per_rev,
+        encoder_domain,
     )
     .await?;
 
@@ -788,8 +799,8 @@ async fn read_axis_directional_evidence_for_gate<B: CommissioningBackend>(
     sample_delay_ms: u16,
     encoder_start: u32,
     output_limit: u32,
-    encoder_counts_per_rev: u32,
-) -> Result<AxisDirectionalEvidence, ()> {
+    encoder_domain: EncoderDomain,
+) -> Result<AxisDirectionalEvidence, CurrentSampleError> {
     if !should_average_current_sample(axis, sample_delay_ms) {
         return read_axis_directional_evidence(
             backend,
@@ -798,7 +809,7 @@ async fn read_axis_directional_evidence_for_gate<B: CommissioningBackend>(
             sample_delay_ms,
             encoder_start,
             output_limit,
-            encoder_counts_per_rev,
+            encoder_domain,
         )
         .await;
     }
@@ -820,7 +831,7 @@ async fn read_axis_directional_evidence_for_gate<B: CommissioningBackend>(
             target,
             encoder_start,
             output_limit,
-            encoder_counts_per_rev,
+            encoder_domain,
         )
         .await?;
 
@@ -1237,6 +1248,44 @@ async fn restore_current_validation_safe_state<B: CommissioningBackend>(
     if failed { Err(()) } else { Ok(()) }
 }
 
+async fn stop_after_current_sample_error<B: CommissioningBackend>(
+    backend: &mut B,
+    validate_state: &mut CurrentValidateState,
+    data: &mut CurrentValidateData,
+    error: CurrentSampleError,
+) -> Result<(), CommissionError> {
+    let terminal_error = match error {
+        CurrentSampleError::Io => Some(CommissionError::Spi),
+        CurrentSampleError::InvalidDomain => Some(CommissionError::EncoderFault),
+        CurrentSampleError::AmbiguousHalfTurn => {
+            data.final_status = CommissionStatus::Failed(CommissionError::CurrentValidationFailed);
+            data.current_loop_evidence = failed_axis_failure_evidence(
+                data.current_loop_evidence,
+                crate::autotune::CURRENT_LOOP_FAILURE_MOTION,
+                false,
+            );
+            data.gains = disabled_state_safe_current_gains();
+            None
+        }
+    };
+
+    if restore_current_validation_safe_state(backend, data.gains)
+        .await
+        .is_err()
+    {
+        return Err(CommissionError::Spi);
+    }
+
+    if let Some(error) = terminal_error {
+        return Err(error);
+    }
+
+    *validate_state = CurrentValidateState::SafeState {
+        deadline_us: backend.elapsed_us().wrapping_add(VALIDATION_SETTLE_US),
+    };
+    Ok(())
+}
+
 /// Thin phase: read the electrical model, compute physical current-loop gains,
 /// and transition immediately to validation.
 pub(crate) async fn step_current_tune<B: CommissioningBackend>(
@@ -1304,7 +1353,7 @@ pub(crate) async fn step_current_tune<B: CommissioningBackend>(
             current_limited: validation.current_limited,
             voltage_limited: validation.voltage_limited,
             max_p: validation.max_p,
-            encoder_counts_per_rev: 1,
+            encoder_domain: None,
             sample_encoder_start: 0,
             pending_positive_sample: None,
             current_settled_validation_count: 0,
@@ -1387,8 +1436,14 @@ pub(crate) async fn step_current_validate<B: CommissioningBackend>(
             {
                 return super::fail_inner(phase, CommissionError::Spi);
             }
-            data.encoder_counts_per_rev = match backend.read_register(ABN_DECODER_PPR).await {
-                Ok(counts) => counts.max(1),
+            data.encoder_domain = match backend.read_register(ABN_DECODER_PPR).await {
+                Ok(counts) => match EncoderDomain::new(counts) {
+                    Ok(domain) => Some(domain),
+                    Err(EncoderMathError::InvalidCountsPerRev) => {
+                        return super::fail_inner(phase, CommissionError::EncoderFault);
+                    }
+                    Err(EncoderMathError::AmbiguousHalfTurn) => unreachable!(),
+                },
                 Err(_) => return super::fail_inner(phase, CommissionError::Spi),
             };
 
@@ -1468,12 +1523,25 @@ pub(crate) async fn step_current_validate<B: CommissioningBackend>(
                     sample_delay_ms,
                     data.sample_encoder_start,
                     data.pidout_limit,
-                    data.encoder_counts_per_rev,
+                    data.encoder_domain
+                        .expect("encoder domain validated in setup"),
                 )
                 .await
                 {
                     Ok(sample) => sample,
-                    Err(()) => return super::fail_inner(phase, CommissionError::Spi),
+                    Err(error) => {
+                        return match stop_after_current_sample_error(
+                            backend,
+                            validate_state,
+                            data,
+                            error,
+                        )
+                        .await
+                        {
+                            Ok(()) => StepResult::Continue,
+                            Err(error) => super::fail_inner(phase, error),
+                        };
+                    }
                 };
 
                 if backend
@@ -1555,12 +1623,25 @@ pub(crate) async fn step_current_validate<B: CommissioningBackend>(
                 sample_delay_ms,
                 data.sample_encoder_start,
                 data.pidout_limit,
-                data.encoder_counts_per_rev,
+                data.encoder_domain
+                    .expect("encoder domain validated in setup"),
             )
             .await
             {
                 Ok(sample) => sample,
-                Err(()) => return super::fail_inner(phase, CommissionError::Spi),
+                Err(error) => {
+                    return match stop_after_current_sample_error(
+                        backend,
+                        validate_state,
+                        data,
+                        error,
+                    )
+                    .await
+                    {
+                        Ok(()) => StepResult::Continue,
+                        Err(error) => super::fail_inner(phase, error),
+                    };
+                }
             };
 
             // Return to zero target and clear accumulated current error so
@@ -1950,6 +2031,7 @@ mod tests {
         CURRENT_VALIDATION_AXIS_TORQUE,
     };
     use crate::commission_dispatch::test_support::{MockBackend, SpiOp};
+    use crate::commissioning::backend::CommissionMotorControl;
     use foci_tmc4671::registers::{
         ABN_DECODER_PPR, INTERIM_FOC_UQ_UD_LIMITED, MODE_RAMP_MODE_MOTION, PHI_E_SELECTION,
         PID_ERROR_PID_FLUX_ERROR_SUM, PID_ERROR_PID_TORQUE_ERROR_SUM, PID_FLUX_P_FLUX_I,
@@ -2753,6 +2835,7 @@ mod tests {
             let mut buf = TransientBuffer::new();
             let mut backend = MockBackend::new();
             backend.current_limit_value = 2816;
+            let _ = backend.registers.insert(ABN_DECODER_PPR.addr(), 4000);
 
             let result = step_current_validate(
                 &mut phase,
@@ -3209,10 +3292,11 @@ mod tests {
                 output_limit: 2000,
                 encoder_start: 1000,
                 encoder_end: 1002,
-                encoder_counts_per_rev: 4000,
+                encoder_domain: EncoderDomain::new(4000).unwrap(),
                 status_flags: 0x10,
             },
-        );
+        )
+        .unwrap();
 
         assert_eq!(sample.same_axis_actual, 240);
         assert_eq!(sample.cross_axis_actual, 25);
@@ -3232,10 +3316,11 @@ mod tests {
                 output_limit: 2000,
                 encoder_start: 1002,
                 encoder_end: 1000,
-                encoder_counts_per_rev: 4000,
+                encoder_domain: EncoderDomain::new(4000).unwrap(),
                 status_flags: 0,
             },
-        );
+        )
+        .unwrap();
 
         assert_eq!(sample.same_axis_actual, -240);
         assert_eq!(sample.cross_axis_actual, 25);
@@ -3245,10 +3330,113 @@ mod tests {
 
     #[test]
     fn current_validation_encoder_delta_uses_shortest_wrap_distance() {
-        assert_eq!(encoder_delta_counts(3998, 2, 4000), 4);
-        assert_eq!(encoder_delta_counts(2, 3998, 4000), -4);
-        assert_eq!(encoder_delta_counts(100, 108, 4000), 8);
-        assert_eq!(encoder_delta_counts(108, 100, 4000), -8);
+        let domain = EncoderDomain::new(4000).unwrap();
+
+        assert_eq!(
+            current_validation_encoder_delta(domain, 3998, 2)
+                .unwrap()
+                .signed_counts(),
+            4
+        );
+        assert_eq!(
+            current_validation_encoder_delta(domain, 2, 3998)
+                .unwrap()
+                .signed_counts(),
+            -4
+        );
+    }
+
+    #[test]
+    fn current_validation_rejects_half_turn_motion() {
+        let domain = EncoderDomain::new(4000).unwrap();
+
+        assert_eq!(
+            current_validation_encoder_delta(domain, 0, 2000),
+            Err(CurrentSampleError::AmbiguousHalfTurn)
+        );
+    }
+
+    #[test]
+    fn current_validation_half_turn_stops_drive_and_records_motion_failure() {
+        pollster::block_on(async {
+            let mut phase = current_validate_phase();
+            let InnerPhase::CurrentValidate { data, .. } = &mut phase else {
+                panic!("expected current validation phase");
+            };
+            let mut validate_state = CurrentValidateState::AxisSampleRead {
+                axis: CurrentValidationAxis::Flux,
+                sample_index: 0,
+                sample_delay_ms: 1,
+                direction: CaptureDirection::Forward,
+            };
+            let mut backend = MockBackend::new();
+            backend.set_enable_pin(true);
+
+            let result = stop_after_current_sample_error(
+                &mut backend,
+                &mut validate_state,
+                data,
+                CurrentSampleError::AmbiguousHalfTurn,
+            )
+            .await;
+
+            assert_eq!(result, Ok(()));
+            assert!(!backend.enable_pin);
+            assert!(matches!(
+                validate_state,
+                CurrentValidateState::SafeState { .. }
+            ));
+            assert_eq!(
+                data.final_status,
+                CommissionStatus::Failed(CommissionError::CurrentValidationFailed)
+            );
+            assert_eq!(
+                data.current_loop_evidence.failure_reason,
+                crate::autotune::CURRENT_LOOP_FAILURE_MOTION
+            );
+            assert!(backend.spi_log.iter().any(|op| matches!(
+                op,
+                SpiOp::Write(addr, 0) if *addr == PID_TORQUE_FLUX_TARGET.addr()
+            )));
+        });
+    }
+
+    #[test]
+    fn current_validation_rejects_invalid_domain_before_actuation() {
+        pollster::block_on(async {
+            let mut phase = current_validate_phase();
+            let mut buf = TransientBuffer::new();
+            let mut backend = MockBackend::new();
+            let _ = backend.registers.insert(ABN_DECODER_PPR.addr(), 0);
+
+            let result = step_current_validate(
+                &mut phase,
+                &mut buf,
+                CommissionProfile::Balanced,
+                InnerSequence::Commission,
+                &None,
+                &mut backend,
+            )
+            .await;
+
+            assert!(matches!(
+                result,
+                StepResult::InnerFailed(CommissionError::EncoderFault)
+            ));
+            assert!(!backend.enable_pin);
+            assert!(backend.spi_log.iter().all(|op| !matches!(
+                op,
+                SpiOp::Write(addr, value)
+                    if (*addr == MODE_RAMP_MODE_MOTION.addr()
+                        || (*addr == PID_TORQUE_FLUX_TARGET.addr() && *value != 0))
+            )));
+            assert!(
+                backend
+                    .spi_log
+                    .iter()
+                    .all(|op| !matches!(op, SpiOp::EnablePin(true)))
+            );
+        });
     }
 
     #[test]
@@ -3307,7 +3495,7 @@ mod tests {
                 100,
                 0,
                 5000,
-                4000,
+                EncoderDomain::new(4000).unwrap(),
             )
             .await
             .expect("positive settled flux evidence should read cleanly");
@@ -3326,7 +3514,7 @@ mod tests {
                 100,
                 0,
                 5000,
-                4000,
+                EncoderDomain::new(4000).unwrap(),
             )
             .await
             .expect("negative settled flux evidence should read cleanly");
@@ -3378,7 +3566,7 @@ mod tests {
                 100,
                 0,
                 5000,
-                4000,
+                EncoderDomain::new(4000).unwrap(),
             )
             .await
             .expect("positive settled flux evidence should read cleanly");
@@ -3397,7 +3585,7 @@ mod tests {
                 100,
                 0,
                 5000,
-                4000,
+                EncoderDomain::new(4000).unwrap(),
             )
             .await
             .expect("negative settled flux evidence should read cleanly");
@@ -3449,7 +3637,7 @@ mod tests {
                 100,
                 0,
                 5000,
-                4000,
+                EncoderDomain::new(4000).unwrap(),
             )
             .await
             .expect("positive settled flux evidence should read cleanly");
@@ -3468,7 +3656,7 @@ mod tests {
                 100,
                 0,
                 5000,
-                4000,
+                EncoderDomain::new(4000).unwrap(),
             )
             .await
             .expect("negative settled flux evidence should read cleanly");
@@ -3512,7 +3700,7 @@ mod tests {
                 100,
                 0,
                 1024,
-                4000,
+                EncoderDomain::new(4000).unwrap(),
             )
             .await
             .expect("settled flux averaging should read cleanly");
@@ -3556,7 +3744,7 @@ mod tests {
                 100,
                 0,
                 1024,
-                4000,
+                EncoderDomain::new(4000).unwrap(),
             )
             .await
             .expect("settled flux averaging should read cleanly");
@@ -3787,7 +3975,7 @@ mod tests {
                 current_limited: 250,
                 voltage_limited: 250,
                 max_p: 13,
-                encoder_counts_per_rev: 4000,
+                encoder_domain: Some(EncoderDomain::new(4000).unwrap()),
                 sample_encoder_start: 0,
                 pending_positive_sample: None,
                 current_settled_validation_count: 0,
@@ -3843,7 +4031,7 @@ mod tests {
                 current_limited: 250,
                 voltage_limited: 250,
                 max_p: 13,
-                encoder_counts_per_rev: 4000,
+                encoder_domain: Some(EncoderDomain::new(4000).unwrap()),
                 sample_encoder_start: 0,
                 pending_positive_sample: None,
                 current_settled_validation_count: 0,
@@ -3934,7 +4122,7 @@ mod tests {
                 current_limited: 250,
                 voltage_limited: 250,
                 max_p: 13,
-                encoder_counts_per_rev: 4000,
+                encoder_domain: Some(EncoderDomain::new(4000).unwrap()),
                 sample_encoder_start: 0,
                 pending_positive_sample: None,
                 current_settled_validation_count: 0,

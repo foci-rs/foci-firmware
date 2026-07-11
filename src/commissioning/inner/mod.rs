@@ -184,6 +184,8 @@ pub(crate) struct ElectricalIdData {
     pub(crate) resistance_result: Option<crate::resistance_identification::ResistanceRunResult>,
     /// Accepted production inductance evidence from the rotating-field estimator.
     pub(crate) inductance: Option<InductanceEvidence>,
+    /// Validated mechanical encoder domain used by inductance motion checks.
+    pub(crate) encoder_domain: Option<crate::commissioning::encoder_domain::EncoderDomain>,
 }
 
 impl ElectricalIdData {
@@ -192,6 +194,7 @@ impl ElectricalIdData {
             voltage,
             resistance_result: None,
             inductance: None,
+            encoder_domain: None,
         }
     }
 }
