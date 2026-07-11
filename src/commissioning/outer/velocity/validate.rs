@@ -1307,7 +1307,7 @@ mod tests {
         CommissionError, CommissionProfile, MechanicalModel, OperatingMode, Permille,
         TRANSIENT_LEN, TransientBuffer, VelocityGains, VelocityValidation,
     };
-    use crate::commission_dispatch::test_support::MockBackend;
+    use crate::commission_dispatch::test_support::{MockBackend, SpiOp};
     use crate::commissioning::encoder_domain::{EncoderCount, EncoderDomain};
     use crate::commissioning::outer::{
         OuterDiagnostics, OuterPhase, OuterSafetyLimits, TraceSummarySeqs,
@@ -1330,6 +1330,335 @@ mod tests {
         safety.configure_encoder_resolution(4_000).unwrap();
         safety.set_encoder_baseline(0).unwrap();
         safety
+    }
+
+    #[derive(Clone, Copy)]
+    enum AmbiguousCapturePoint {
+        Forward,
+        Reverse,
+        Chatter,
+    }
+
+    fn capture_phase(
+        strategy: VelocityTuneStrategy,
+        point: AmbiguousCapturePoint,
+        safety: OuterSafetyLimits,
+    ) -> OuterPhase {
+        let gains = VelocityGains {
+            velocity_p: 1_152,
+            velocity_i: 7,
+            velocity_limit: 16,
+            effective_bandwidth_hz: 10,
+            lambda_vel_ms: 50,
+        };
+        let accepted_gains = VelocityGains {
+            velocity_p: 768,
+            velocity_i: 3,
+            ..gains
+        };
+        let state = match point {
+            AmbiguousCapturePoint::Forward => VelocityValidateState::ForwardCapture {
+                next_sample_us: 1_000,
+                last_sample_us: 0,
+                ambiguity_retried: false,
+                saturation_start: 4,
+            },
+            AmbiguousCapturePoint::Reverse => VelocityValidateState::ReverseCapture {
+                next_sample_us: 1_000,
+                last_sample_us: 0,
+                ambiguity_retried: false,
+                saturation_start: 4,
+            },
+            AmbiguousCapturePoint::Chatter => VelocityValidateState::ChatterCheck {
+                next_sample_us: 1_000,
+                last_sample_us: 0,
+                remaining: 100,
+                ambiguity_retried: false,
+            },
+        };
+        let metrics = VelocityValidation {
+            rise_time_ms: 11,
+            overshoot_permille: Permille::new(125),
+            peak_velocity: 4,
+            settling_time_ms: 17,
+            zero_speed_chatter: false,
+            saturation_samples: 0,
+            symmetry_permille: Permille::new(900),
+        };
+
+        OuterPhase::VelocityValidate {
+            state,
+            data: VelocityValidateData {
+                gains,
+                accepted_gains,
+                has_accepted_gains: true,
+                response_lower_p: 512,
+                response_upper_p: 1_536,
+                model: MechanicalModel {
+                    j_eff: 1,
+                    b_eff: 1,
+                    tau_mech_ms: 50,
+                    theta_mech_us: 1,
+                    t_f: 0,
+                },
+                strategy,
+                stiffness_timebase_ms: 50,
+                mech_tau_trusted: true,
+                velocity_search_stop_reason: VELOCITY_SEARCH_STOP_CLEAN,
+                attempt: 3,
+                step_target: 4,
+                forward_metrics: Some(metrics),
+                reverse_metrics: Some(metrics),
+                max_chatter: 12,
+                peak_velocity: 20,
+                prev_encoder_for_velocity: Some(encoder_count(0)),
+                saturation_count: 9,
+                torque_limit: 0,
+                operational_velocity_limit: 500_000,
+                diagnostics: zero_diagnostics(),
+            },
+            safety,
+        }
+    }
+
+    async fn assert_ambiguous_capture_retries_without_gain_search_mutation(
+        strategy: VelocityTuneStrategy,
+        point: AmbiguousCapturePoint,
+    ) {
+        let mut phase = capture_phase(strategy, point, configured_safety());
+        let mut buf = TransientBuffer::new();
+        if !matches!(point, AmbiguousCapturePoint::Chatter) {
+            assert!(buf.push(99));
+        }
+        let mut backend = MockBackend::new();
+        backend.elapsed_us_value = 1_000;
+        backend.mechanical_encoder_position_counts_value = 2_000;
+
+        let result = step_velocity_validate(
+            &mut phase,
+            &mut buf,
+            CommissionProfile::Balanced,
+            OperatingMode::Nominal,
+            0,
+            0,
+            false,
+            0,
+            &mut backend,
+        )
+        .await;
+
+        assert!(matches!(result, StepResult::Continue));
+        assert!(buf.samples().is_empty());
+        assert!(backend.spi_log.iter().any(
+            |op| matches!(op, SpiOp::Write(address, 0) if *address == PID_VELOCITY_TARGET.addr())
+        ));
+        match phase {
+            OuterPhase::VelocityValidate { state, data, .. } => {
+                assert_eq!(data.strategy, strategy);
+                assert_eq!(data.attempt, 3);
+                assert_eq!(data.gains.velocity_p, 1_152);
+                assert_eq!(data.accepted_gains.velocity_p, 768);
+                assert!(data.has_accepted_gains);
+                assert_eq!(data.response_lower_p, 512);
+                assert_eq!(data.response_upper_p, 1_536);
+                match point {
+                    AmbiguousCapturePoint::Forward => {
+                        assert!(data.forward_metrics.is_none());
+                        assert!(data.reverse_metrics.is_some());
+                        assert_eq!(data.saturation_count, 4);
+                        assert!(matches!(
+                            state,
+                            VelocityValidateState::ForwardCapture {
+                                ambiguity_retried: true,
+                                next_sample_us: 2_000,
+                                last_sample_us: 1_000,
+                                ..
+                            }
+                        ));
+                    }
+                    AmbiguousCapturePoint::Reverse => {
+                        assert!(data.forward_metrics.is_some());
+                        assert!(data.reverse_metrics.is_none());
+                        assert_eq!(data.saturation_count, 4);
+                        assert!(matches!(
+                            state,
+                            VelocityValidateState::ReverseCapture {
+                                ambiguity_retried: true,
+                                next_sample_us: 2_000,
+                                last_sample_us: 1_000,
+                                ..
+                            }
+                        ));
+                    }
+                    AmbiguousCapturePoint::Chatter => {
+                        assert!(data.forward_metrics.is_some());
+                        assert!(data.reverse_metrics.is_some());
+                        assert_eq!(data.max_chatter, 0);
+                        assert!(matches!(
+                            state,
+                            VelocityValidateState::ChatterCheck {
+                                ambiguity_retried: true,
+                                remaining: 200,
+                                next_sample_us: 2_000,
+                                last_sample_us: 1_000,
+                            }
+                        ));
+                    }
+                }
+            }
+            other => panic!("expected velocity validation retry, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn ambiguous_forward_capture_retries_for_both_tuning_strategies() {
+        pollster::block_on(async {
+            for strategy in [
+                VelocityTuneStrategy::Model,
+                VelocityTuneStrategy::ResponseRamp,
+            ] {
+                assert_ambiguous_capture_retries_without_gain_search_mutation(
+                    strategy,
+                    AmbiguousCapturePoint::Forward,
+                )
+                .await;
+            }
+        });
+    }
+
+    #[test]
+    fn ambiguous_reverse_capture_retries_for_both_tuning_strategies() {
+        pollster::block_on(async {
+            for strategy in [
+                VelocityTuneStrategy::Model,
+                VelocityTuneStrategy::ResponseRamp,
+            ] {
+                assert_ambiguous_capture_retries_without_gain_search_mutation(
+                    strategy,
+                    AmbiguousCapturePoint::Reverse,
+                )
+                .await;
+            }
+        });
+    }
+
+    #[test]
+    fn ambiguous_chatter_capture_retries_for_both_tuning_strategies() {
+        pollster::block_on(async {
+            for strategy in [
+                VelocityTuneStrategy::Model,
+                VelocityTuneStrategy::ResponseRamp,
+            ] {
+                assert_ambiguous_capture_retries_without_gain_search_mutation(
+                    strategy,
+                    AmbiguousCapturePoint::Chatter,
+                )
+                .await;
+            }
+        });
+    }
+
+    #[test]
+    fn invalid_velocity_domain_commands_zero_and_fails_immediately() {
+        pollster::block_on(async {
+            for strategy in [
+                VelocityTuneStrategy::Model,
+                VelocityTuneStrategy::ResponseRamp,
+            ] {
+                let safety = OuterSafetyLimits::new(
+                    2_448,
+                    crate::commissioning::outer::OuterMotionBudget::firmware_caps(),
+                );
+                let mut phase = capture_phase(strategy, AmbiguousCapturePoint::Forward, safety);
+                let mut buf = TransientBuffer::new();
+                let mut backend = MockBackend::new();
+                backend.elapsed_us_value = 1_000;
+                backend.mechanical_encoder_position_counts_value = 1;
+
+                let result = step_velocity_validate(
+                    &mut phase,
+                    &mut buf,
+                    CommissionProfile::Balanced,
+                    OperatingMode::Nominal,
+                    0,
+                    0,
+                    false,
+                    0,
+                    &mut backend,
+                )
+                .await;
+
+                assert!(matches!(
+                    result,
+                    StepResult::OuterFailed(CommissionError::EncoderFault)
+                ));
+                assert!(buf.samples().is_empty());
+                assert!(backend.spi_log.iter().any(|op| {
+                    matches!(op, SpiOp::Write(address, 0) if *address == PID_VELOCITY_TARGET.addr())
+                }));
+            }
+        });
+    }
+
+    #[test]
+    fn repeated_velocity_ambiguity_commands_zero_and_exhausts_retry() {
+        pollster::block_on(async {
+            for strategy in [
+                VelocityTuneStrategy::Model,
+                VelocityTuneStrategy::ResponseRamp,
+            ] {
+                for point in [
+                    AmbiguousCapturePoint::Forward,
+                    AmbiguousCapturePoint::Reverse,
+                    AmbiguousCapturePoint::Chatter,
+                ] {
+                    let mut phase = capture_phase(strategy, point, configured_safety());
+                    if let OuterPhase::VelocityValidate { state, .. } = &mut phase {
+                        match state {
+                            VelocityValidateState::ForwardCapture {
+                                ambiguity_retried, ..
+                            }
+                            | VelocityValidateState::ReverseCapture {
+                                ambiguity_retried, ..
+                            }
+                            | VelocityValidateState::ChatterCheck {
+                                ambiguity_retried, ..
+                            } => *ambiguity_retried = true,
+                            _ => unreachable!("fixture always starts in a capture state"),
+                        }
+                    }
+                    let mut buf = TransientBuffer::new();
+                    let mut backend = MockBackend::new();
+                    backend.elapsed_us_value = 1_000;
+                    backend.mechanical_encoder_position_counts_value = 2_000;
+
+                    let result = step_velocity_validate(
+                        &mut phase,
+                        &mut buf,
+                        CommissionProfile::Balanced,
+                        OperatingMode::Nominal,
+                        0,
+                        0,
+                        false,
+                        0,
+                        &mut backend,
+                    )
+                    .await;
+
+                    assert!(matches!(
+                        result,
+                        StepResult::OuterFailed(CommissionError::VelocityValidationFailed)
+                    ));
+                    assert!(backend.spi_log.iter().any(|op| {
+                        matches!(
+                            op,
+                            SpiOp::Write(address, 0)
+                                if *address == PID_VELOCITY_TARGET.addr()
+                        )
+                    }));
+                }
+            }
+        });
     }
 
     fn zero_diagnostics() -> OuterDiagnostics {
