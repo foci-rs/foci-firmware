@@ -122,8 +122,9 @@ where
         defmt::error!("TMC4671 SPI write failed: ABN_DECODER_PPR");
         return Err(());
     }
+    // STEP_WIDTH consumes position units per emitted physical TMC pulse.
     if tmc
-        .write_register(STEP_WIDTH, scale.step_width())
+        .write_register(STEP_WIDTH, scale.physical_step_width())
         .await
         .is_err()
     {

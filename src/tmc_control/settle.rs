@@ -57,7 +57,7 @@ where
 {
     use foci_tmc4671::registers::*;
 
-    let step_width = tmc_state.physical_step_width().ok_or(())?;
+    let physical_step_width = tmc_state.physical_step_width().ok_or(())?;
     let target = tmc
         .read_register(PID_POSITION_TARGET)
         .await
@@ -68,7 +68,7 @@ where
         .map_err(|_| ())?;
     // Units: position units per physical emitted pulse multiplied by physical
     // emitted-pulse counts yields the position-unit settle deadband.
-    let deadband = step_width.saturating_mul(HOLD_SETTLE_DEADBAND_COUNTS);
+    let deadband = physical_step_width.saturating_mul(HOLD_SETTLE_DEADBAND_COUNTS);
     let error = (actual as i32).wrapping_sub(target as i32);
     if error.unsigned_abs() <= deadband {
         // Writing PID_POSITION_ACTUAL also writes PID_POSITION_TARGET per the
@@ -140,7 +140,6 @@ mod tests {
     #[test]
     fn settle_hold_uses_configured_physical_step_width() {
         pollster::block_on(async {
-            use core::sync::atomic::Ordering;
             use foci_tmc4671::registers::PID_POSITION_ACTUAL;
 
             let _guard = crate::commission_dispatch::test_support::SHARED_STATE_MUTEX
@@ -149,10 +148,6 @@ mod tests {
             tmc_state()
                 .configure_motion_scale(crate::state::stepper::stepper_channel0(), 1_000, 3_200)
                 .expect("motion scale should configure");
-            // Deliberately corrupt the legacy mirror: settle must consume the
-            // published physical width of 16 position units per emitted pulse.
-            tmc_state().step_width_value.store(4, Ordering::Relaxed);
-
             let mut raw_spi = MockRawSpi::default();
             raw_spi.reads.push_back(0x0000_bb80);
             raw_spi.reads.push_back(0x0000_bbc0);

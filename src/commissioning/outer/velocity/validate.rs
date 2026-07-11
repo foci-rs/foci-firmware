@@ -2136,7 +2136,6 @@ mod tests {
             let mut buf = TransientBuffer::new();
             let mut backend = MockBackend::new();
             backend.mechanical_encoder_quadrature_counts_per_rev_value = 4_000;
-            backend.step_width_value = 16;
 
             let _ = step_velocity_validate(
                 &mut phase,
@@ -2159,7 +2158,6 @@ mod tests {
                 10
             );
 
-            backend.step_width_value = 8;
             let _ = step_velocity_validate(
                 &mut phase,
                 &mut buf,

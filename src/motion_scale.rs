@@ -78,7 +78,7 @@ impl MotionScale {
     }
 
     /// Returns TMC4671 position units added by each physical pulse.
-    pub const fn step_width(&self) -> u32 {
+    pub const fn physical_step_width(&self) -> u32 {
         self.pulse_mapper.step_width()
     }
 
@@ -209,7 +209,10 @@ mod tests {
         let high_resolution = MotionScale::new(4_000, 3_200).unwrap();
 
         assert_eq!(low_resolution.tmc_grid(), high_resolution.tmc_grid());
-        assert_eq!(low_resolution.step_width(), high_resolution.step_width());
+        assert_eq!(
+            low_resolution.physical_step_width(),
+            high_resolution.physical_step_width()
+        );
     }
 
     #[test]
@@ -254,7 +257,7 @@ mod tests {
         assert_eq!(scale.encoder_counts_per_rev(), 4_000);
         assert_eq!(scale.planner_steps_per_rev(), 3_200);
         assert_eq!(scale.tmc_grid(), 4_096);
-        assert_eq!(scale.step_width(), 16);
+        assert_eq!(scale.physical_step_width(), 16);
         assert_eq!(scale.position_error_bound_half_units() / 2, 8);
     }
 }

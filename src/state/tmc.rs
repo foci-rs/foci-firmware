@@ -72,8 +72,6 @@ pub struct TmcChannelState {
     /// inactive". Used by `arm_motor_electrical` to detect silent chip
     /// resets between commission and arm.
     pub motor_sentinel: AtomicU32,
-    /// Legacy mirror of the configured physical STEP_WIDTH register value.
-    pub step_width_value: AtomicI32,
     /// Configured mechanical ABN encoder pulses per revolution.
     pub encoder_ppr: AtomicU32,
     encoder_counts_per_rev: AtomicU32,
@@ -171,7 +169,6 @@ impl TmcChannelState {
             current_limit_reg: AtomicU32::new(0),
             motor_armed: AtomicBool::new(false),
             motor_sentinel: AtomicU32::new(0),
-            step_width_value: AtomicI32::new(0),
             encoder_ppr: AtomicU32::new(0),
             encoder_counts_per_rev: AtomicU32::new(0),
             tmc_grid: AtomicU32::new(0),
@@ -229,7 +226,6 @@ impl TmcChannelState {
         self.current_limit_reg.store(0, Relaxed);
         self.motor_armed.store(false, Relaxed);
         self.motor_sentinel.store(0, Relaxed);
-        self.step_width_value.store(0, Relaxed);
         self.encoder_ppr.store(0, Relaxed);
         self.encoder_counts_per_rev.store(0, Relaxed);
         self.tmc_grid.store(0, Relaxed);
@@ -299,9 +295,8 @@ impl TmcChannelState {
             .store(scale.encoder_counts_per_rev(), Ordering::Relaxed);
         stepper_state.store_planner_steps_per_rev(scale.planner_steps_per_rev());
         self.tmc_grid.store(scale.tmc_grid(), Ordering::Relaxed);
-        self.step_width.store(scale.step_width(), Ordering::Relaxed);
-        self.step_width_value
-            .store(scale.step_width() as i32, Ordering::Relaxed);
+        self.step_width
+            .store(scale.physical_step_width(), Ordering::Relaxed);
         self.motion_scale_configured.store(true, Ordering::Release);
         Ok(scale)
     }
@@ -316,7 +311,6 @@ impl TmcChannelState {
         stepper_state.store_planner_steps_per_rev(0);
         self.tmc_grid.store(0, Ordering::Relaxed);
         self.step_width.store(0, Ordering::Relaxed);
-        self.step_width_value.store(0, Ordering::Relaxed);
     }
 
     /// Returns whether a complete motion scale has been published.
@@ -377,7 +371,7 @@ mod motion_scale_tests {
     use crate::state::stepper::StepperChannelState;
 
     #[test]
-    fn motion_scale_configuration_publishes_named_and_legacy_mirrors() {
+    fn motion_scale_configuration_publishes_named_mirrors() {
         let tmc = TmcChannelState::new();
         let stepper = StepperChannelState::new();
 
@@ -389,8 +383,7 @@ mod motion_scale_tests {
         assert_eq!(stepper.planner_steps_per_rev(&tmc), Some(3_200));
         assert_eq!(tmc.tmc_grid(), Some(4_096));
         assert_eq!(tmc.physical_step_width(), Some(16));
-        assert_eq!(tmc.step_width_value.load(Ordering::Relaxed), 16);
-        assert_eq!(scale.step_width(), 16);
+        assert_eq!(scale.physical_step_width(), 16);
     }
 
     #[test]
@@ -422,7 +415,7 @@ mod motion_scale_tests {
         assert!(!tmc.motion_scale_configured());
         assert_eq!(tmc.encoder_counts_per_rev(), None);
         assert_eq!(stepper.planner_steps_per_rev(&tmc), None);
-        assert_eq!(tmc.step_width_value.load(Ordering::Relaxed), 0);
+        assert_eq!(tmc.physical_step_width(), None);
     }
 }
 

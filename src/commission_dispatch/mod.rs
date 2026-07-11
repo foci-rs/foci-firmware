@@ -153,12 +153,17 @@ async fn outer_restore_position_stable<B: CommissioningBackend>(
     }
 
     let span = (max_delta as i64 - min_delta as i64).unsigned_abs();
-    let threshold = backend
-        .step_width()
+    let encoder_counts_per_rev = backend.mechanical_encoder_quadrature_counts_per_rev();
+    let threshold = if encoder_counts_per_rev == 0 {
+        1
+    } else {
+        ((u64::from(OUTER_RESTORE_STABILITY_ENCODER_COUNTS) * 65_536
+            + u64::from(encoder_counts_per_rev) / 2)
+            / u64::from(encoder_counts_per_rev))
         .max(1)
-        .saturating_mul(OUTER_RESTORE_STABILITY_ENCODER_COUNTS);
+    };
     let span_counts = span.min(u32::MAX as u64) as u32;
-    if span > threshold as u64 {
+    if span > threshold {
         defmt::error!(
             "OuterFailed restore: unstable span={} threshold={}",
             span,

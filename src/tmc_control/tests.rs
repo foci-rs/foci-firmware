@@ -485,7 +485,6 @@ fn apply_motion_scale_writes_encoder_then_physical_width_and_publishes_state() {
         assert_eq!(tmc_state.encoder_counts_per_rev(), Some(4000));
         assert_eq!(stepper_state.planner_steps_per_rev(&tmc_state), Some(3200));
         assert_eq!(tmc_state.physical_step_width(), Some(16));
-        assert_eq!(tmc_state.step_width_value.load(Relaxed), 16);
     });
 }
 
@@ -507,7 +506,7 @@ fn apply_motion_scale_spi_failures_leave_scale_unconfigured() {
                 Err(())
             );
             assert!(!tmc_state.motion_scale_configured());
-            assert_eq!(tmc_state.step_width_value.load(Relaxed), 0);
+            assert_eq!(tmc_state.physical_step_width(), None);
         }
     });
 }

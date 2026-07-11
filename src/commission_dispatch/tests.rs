@@ -1625,14 +1625,12 @@ fn outer_failed_unstable_drift_preserves_upstream_error() {
 }
 
 #[test]
-fn outer_failed_restore_rejects_aliased_position_oscillation() {
+fn outer_failed_restore_uses_encoder_scale_for_position_jitter() {
     pollster::block_on(async {
         let _guard = test_support::SHARED_STATE_MUTEX.lock().await;
         let mut backend = MockBackend::new();
-        backend.step_width_value = 10;
-        // First two samples match, so the old two-read check accepts this.
-        // The full window spans 31 TMC position units: more than two
-        // encoder counts at step_width=10.
+        // The full window spans 31 TMC position units, within two quadrature
+        // encoder counts at 4000 counts/revolution (33 rounded position units).
         backend.read_position_actual_sequence.push(1000).unwrap();
         backend.read_position_actual_sequence.push(1000).unwrap();
         backend.read_position_actual_sequence.push(1031).unwrap();
@@ -1649,6 +1647,7 @@ fn outer_failed_restore_rejects_aliased_position_oscillation() {
             sample_entry_snapshot(),
         ));
         let err = crate::autotune::CommissionError::VelocityValidationFailed;
+        seed_motor_sentinel(&mut backend).await;
 
         let outcome = drive_commission_result(
             StepResult::OuterFailed(err),
@@ -1659,9 +1658,9 @@ fn outer_failed_restore_rejects_aliased_position_oscillation() {
         )
         .await;
 
-        assert!(!*state.calibrated);
-        assert!(!*state.motor_enabled);
-        assert!(!backend.enable_pin);
+        assert!(*state.calibrated);
+        assert!(*state.motor_enabled);
+        assert!(backend.enable_pin);
 
         match outcome {
             CommissionOutcome::Terminal {
@@ -1669,10 +1668,15 @@ fn outer_failed_restore_rejects_aliased_position_oscillation() {
                 actions,
             } => {
                 assert_eq!(status, err.status_code());
-                assert_eq!(actions.stepper, StepperPostAction::Stop);
+                assert_eq!(actions.stepper, StepperPostAction::ArmPreservePosition);
             }
             _ => panic!("expected TuneResult"),
         }
+
+        tmc_state()
+            .motor_armed
+            .store(false, core::sync::atomic::Ordering::Relaxed);
+        clear_motor_sentinel();
     });
 }
 
@@ -1682,7 +1686,6 @@ fn outer_failed_restore_accepts_scaled_encoder_jitter() {
         use core::sync::atomic::Ordering;
         let _guard = test_support::SHARED_STATE_MUTEX.lock().await;
         let mut backend = MockBackend::new();
-        backend.step_width_value = 819;
         backend.read_position_actual_sequence.push(1000).unwrap();
         backend.read_position_actual_sequence.push(1001).unwrap();
         backend.read_position_actual_sequence.push(1000).unwrap();
@@ -1735,7 +1738,7 @@ fn outer_failed_restore_rejects_monotonic_creep() {
     pollster::block_on(async {
         let _guard = test_support::SHARED_STATE_MUTEX.lock().await;
         let mut backend = MockBackend::new();
-        backend.step_width_value = 10;
+        backend.mechanical_encoder_quadrature_counts_per_rev_value = 6_554;
         backend.read_position_actual_sequence.push(1000).unwrap();
         backend.read_position_actual_sequence.push(1006).unwrap();
         backend.read_position_actual_sequence.push(1012).unwrap();

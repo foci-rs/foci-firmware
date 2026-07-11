@@ -413,7 +413,6 @@ mod tests {
                 .lock()
                 .await;
             let mut backend = MockBackend::new();
-            backend.step_width_value = 4;
             tmc_state()
                 .motor_sentinel
                 .store(0x0002_0032, core::sync::atomic::Ordering::Relaxed);

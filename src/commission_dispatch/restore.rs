@@ -214,9 +214,6 @@ mod tests {
             tmc_state()
                 .current_limit_reg
                 .store(0x0010_0010, core::sync::atomic::Ordering::Relaxed);
-            tmc_state()
-                .step_width_value
-                .store(50, core::sync::atomic::Ordering::Relaxed);
             // Pre-seed ABN_DECODER_COUNT for the position-target compute.
             let _ = backend.write_register(ABN_DECODER_COUNT, 1234).await;
             backend.spi_log.clear();
@@ -249,9 +246,6 @@ mod tests {
             // Cleanup atomics.
             tmc_state()
                 .current_limit_reg
-                .store(0, core::sync::atomic::Ordering::Relaxed);
-            tmc_state()
-                .step_width_value
                 .store(0, core::sync::atomic::Ordering::Relaxed);
         });
     }

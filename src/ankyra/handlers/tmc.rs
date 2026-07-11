@@ -840,6 +840,7 @@ mod tests {
     use super::*;
     use crate::context::{BoardChannels, ClockSource, QueueFull, StateAccess, TmcHost};
     use crate::shutdown::ShutdownReason;
+    use core::sync::atomic::Ordering::Relaxed;
     use foci_klipper::commands::stepper::config_stepper_channel;
     use foci_klipper::state::State;
     use std::cell::RefCell;
@@ -945,8 +946,6 @@ mod tests {
 
     #[test]
     fn tmc_set_position_gains_updates_saved_state_before_worker_runs() {
-        use core::sync::atomic::Ordering::Relaxed;
-
         let mut ctx = MockCtx::new(2);
         let mut sender = ();
         config_stepper_channel(ctx.state(), 10, 1).unwrap();
@@ -1236,18 +1235,14 @@ mod tests {
 
     #[test]
     fn tmc_set_motion_scale_enqueues_complete_scale_without_mutating_state() {
-        use core::sync::atomic::Ordering::Relaxed;
-
         let mut ctx = MockCtx::new(2);
         let mut sender = ();
         config_stepper_channel(ctx.state(), 10, 1).unwrap();
         let tmc_state = crate::state::tmc::tmc_channel(1).unwrap();
-        let before_width = tmc_state.step_width_value.load(Relaxed);
         let before_configured = tmc_state.motion_scale_configured();
 
         tmc_set_motion_scale(&mut ctx, &mut sender, 10, 1, 1000, 3200);
 
-        assert_eq!(tmc_state.step_width_value.load(Relaxed), before_width);
         assert_eq!(tmc_state.motion_scale_configured(), before_configured);
         let req = ctx.last_request.borrow().clone().unwrap();
         assert_eq!(req.channel, 1);
@@ -1269,7 +1264,6 @@ mod tests {
         let mut sender = ();
         config_stepper_channel(ctx.state(), 10, 1).unwrap();
         let tmc_state = crate::state::tmc::tmc_channel(1).unwrap();
-        let before_width = tmc_state.step_width_value.load(Ordering::Relaxed);
         let before_configured = tmc_state.motion_scale_configured();
 
         for (encoder_ppr, planner_steps_per_rev) in [
@@ -1308,10 +1302,6 @@ mod tests {
         ctx.accept_request = false;
         tmc_set_motion_scale(&mut ctx, &mut sender, 10, 1, 1000, 3200);
         assert_eq!(tmc_state.motion_scale_configured(), before_configured);
-        assert_eq!(
-            tmc_state.step_width_value.load(Ordering::Relaxed),
-            before_width
-        );
     }
 
     #[test]
@@ -1327,7 +1317,6 @@ mod tests {
         let before_planner_steps_per_rev = stepper_state.planner_steps_per_rev(tmc_state);
         let before_tmc_grid = tmc_state.tmc_grid();
         let before_physical_step_width = tmc_state.physical_step_width();
-        let before_legacy_step_width = tmc_state.step_width_value.load(Ordering::Relaxed);
         ctx.accept_request = false;
 
         tmc_set_motion_scale(&mut ctx, &mut sender, 10, 1, 1000, 3200);
@@ -1349,10 +1338,6 @@ mod tests {
         );
         assert_eq!(tmc_state.tmc_grid(), before_tmc_grid);
         assert_eq!(tmc_state.physical_step_width(), before_physical_step_width);
-        assert_eq!(
-            tmc_state.step_width_value.load(Ordering::Relaxed),
-            before_legacy_step_width
-        );
     }
 
     #[test]

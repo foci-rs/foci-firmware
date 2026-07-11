@@ -256,7 +256,6 @@ mod tests {
                 ),
             };
             let mut backend = MockBackend::new();
-            backend.step_width_value = 16;
             backend.current_limit_value = 2_448;
 
             let clean_result = step_velocity_tune(
@@ -284,7 +283,6 @@ mod tests {
             };
 
             // Planner resolution must not change encoder-domain gain synthesis.
-            backend.step_width_value = 8;
             let warned_result = step_velocity_tune(
                 &mut warned_phase,
                 CommissionProfile::Balanced,

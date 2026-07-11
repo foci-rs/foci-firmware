@@ -1055,7 +1055,6 @@ mod tests {
         planner_steps_per_rev: Option<u32>,
         tmc_grid: Option<u32>,
         physical_step_width: Option<u32>,
-        legacy_step_width_value: i32,
     }
 
     fn motion_scale_snapshot() -> MotionScaleSnapshot {
@@ -1068,7 +1067,6 @@ mod tests {
             planner_steps_per_rev: stepper_state.planner_steps_per_rev(tmc_state),
             tmc_grid: tmc_state.tmc_grid(),
             physical_step_width: tmc_state.physical_step_width(),
-            legacy_step_width_value: tmc_state.step_width_value.load(Relaxed),
         }
     }
 
@@ -1174,7 +1172,6 @@ mod tests {
         );
         assert_eq!(tmc_channel0().tmc_grid(), None);
         assert_eq!(tmc_channel0().physical_step_width(), None);
-        assert_eq!(tmc_channel0().step_width_value.load(Relaxed), 0);
         assert_eq!(
             outcome.shutdown,
             Some(ShutdownReason::RequestValidationFailed)

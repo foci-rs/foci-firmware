@@ -37,7 +37,7 @@ async fn verify_closed_loop_armed_state<B: CommissioningBackend>(
 ) -> Result<(), ()> {
     use foci_tmc4671::registers::*;
 
-    let step_width = match backend.configured_physical_step_width() {
+    let physical_step_width = match backend.configured_physical_step_width() {
         Some(value) if value != 0 => value,
         _ => {
             defmt::error!("closed-loop: configured physical STEP_WIDTH is missing or zero");
@@ -61,7 +61,8 @@ async fn verify_closed_loop_armed_state<B: CommissioningBackend>(
         (ABN_DECODER_PPR, encoder_ppr),
         (ADC_I_SELECT, backend.tmc_config().adc_i_select),
         (PID_TORQUE_FLUX_LIMITS, backend.current_limit()),
-        (STEP_WIDTH, step_width),
+        // STEP_WIDTH consumes position units per emitted physical TMC pulse.
+        (STEP_WIDTH, physical_step_width),
     ];
 
     for (register, expected) in checks {
@@ -481,8 +482,8 @@ pub(crate) async fn step_closed_loop_entry<B: CommissioningBackend>(
                 }
             }
 
-            // 8. Write STEP_WIDTH for hardware step/dir input.
-            let step_width = match backend.configured_physical_step_width() {
+            // 8. STEP_WIDTH consumes position units per emitted physical TMC pulse.
+            let physical_step_width = match backend.configured_physical_step_width() {
                 Some(value) if value != 0 => value,
                 _ => {
                     defmt::error!("closed-loop: configured physical STEP_WIDTH is missing or zero");
@@ -490,7 +491,7 @@ pub(crate) async fn step_closed_loop_entry<B: CommissioningBackend>(
                 }
             };
             if backend
-                .write_register(STEP_WIDTH, step_width)
+                .write_register(STEP_WIDTH, physical_step_width)
                 .await
                 .is_err()
             {
@@ -498,13 +499,13 @@ pub(crate) async fn step_closed_loop_entry<B: CommissioningBackend>(
             }
             // Readback verification.
             match backend.read_register(STEP_WIDTH).await {
-                Ok(val) if val == step_width => {}
+                Ok(val) if val == physical_step_width => {}
                 _ => {
                     defmt::error!("closed-loop: STEP_WIDTH readback mismatch");
                     return super::fail_inner(phase, CommissionError::Spi);
                 }
             }
-            defmt::info!("STEP_WIDTH(0x78) = {} written", step_width);
+            defmt::info!("STEP_WIDTH(0x78) = {} written", physical_step_width);
 
             *cle_state = ClosedLoopEntryState::WriteFilters;
             StepResult::Continue
@@ -1062,8 +1063,7 @@ mod tests {
     fn seed_armed_state_registers(backend: &mut MockBackend) {
         backend.current_limit_value = 2816;
         backend.operational_voltage_limit_value = 29_000;
-        backend.step_width_value = 16;
-        backend.configured_physical_step_width_value = Some(16);
+        backend.configured_physical_width = Some(16);
 
         let registers = [
             (PWM_SV_CHOP.addr(), 7),
@@ -1077,7 +1077,10 @@ mod tests {
             ),
             (ADC_I_SELECT.addr(), backend.tmc_config.adc_i_select),
             (PID_TORQUE_FLUX_LIMITS.addr(), backend.current_limit_value),
-            (STEP_WIDTH.addr(), backend.step_width_value),
+            (
+                STEP_WIDTH.addr(),
+                backend.configured_physical_width.unwrap(),
+            ),
             (
                 PIDOUT_UQ_UD_LIMITS.addr(),
                 backend.operational_voltage_limit_value,
@@ -1120,8 +1123,7 @@ mod tests {
             let mut phase = closed_loop_phase_at(ClosedLoopEntryState::WritePositionConfig);
             let mut adc_cal = None;
             let mut backend = MockBackend::new();
-            backend.step_width_value = 16;
-            backend.configured_physical_step_width_value = Some(16);
+            backend.configured_physical_width = Some(16);
 
             let result = step_closed_loop_entry(
                 &mut phase,
@@ -1156,8 +1158,7 @@ mod tests {
             let mut phase = closed_loop_phase_at(ClosedLoopEntryState::WritePositionConfig);
             let mut adc_cal = None;
             let mut backend = MockBackend::new();
-            backend.step_width_value = 16;
-            backend.configured_physical_step_width_value = Some(16);
+            backend.configured_physical_width = Some(16);
             backend.read_override = Some((POSITION_SELECTION.addr(), 8));
 
             let result = step_closed_loop_entry(
@@ -1188,8 +1189,7 @@ mod tests {
             let mut phase = closed_loop_phase_at(ClosedLoopEntryState::WritePositionConfig);
             let mut adc_cal = None;
             let mut backend = MockBackend::new();
-            backend.step_width_value = 16;
-            backend.configured_physical_step_width_value = Some(16);
+            backend.configured_physical_width = Some(16);
             backend.fail_on_read = Some(POSITION_SELECTION.addr());
 
             let result = step_closed_loop_entry(
@@ -1220,8 +1220,7 @@ mod tests {
             let mut phase = closed_loop_phase_at(ClosedLoopEntryState::WritePositionConfig);
             let mut adc_cal = None;
             let mut backend = MockBackend::new();
-            backend.step_width_value = 16;
-            backend.configured_physical_step_width_value = Some(8);
+            backend.configured_physical_width = Some(8);
 
             let result = step_closed_loop_entry(
                 &mut phase,
@@ -1249,7 +1248,6 @@ mod tests {
             let mut phase = closed_loop_phase_at(ClosedLoopEntryState::WritePositionConfig);
             let mut adc_cal = None;
             let mut backend = MockBackend::new();
-            backend.step_width_value = 16;
 
             let result = step_closed_loop_entry(
                 &mut phase,
@@ -1279,8 +1277,7 @@ mod tests {
             let mut phase = closed_loop_phase_at(ClosedLoopEntryState::WritePositionConfig);
             let mut adc_cal = None;
             let mut backend = MockBackend::new();
-            backend.step_width_value = 16;
-            backend.configured_physical_step_width_value = Some(0);
+            backend.configured_physical_width = Some(0);
 
             let result = step_closed_loop_entry(
                 &mut phase,
@@ -1443,7 +1440,7 @@ mod tests {
             let mut adc_cal = None;
             let mut backend = MockBackend::new();
             seed_armed_state_registers(&mut backend);
-            backend.configured_physical_step_width_value = None;
+            backend.configured_physical_width = None;
 
             let result = step_closed_loop_entry(
                 &mut phase,
@@ -1468,7 +1465,7 @@ mod tests {
             let mut adc_cal = None;
             let mut backend = MockBackend::new();
             seed_armed_state_registers(&mut backend);
-            backend.configured_physical_step_width_value = Some(8);
+            backend.configured_physical_width = Some(8);
 
             let result = step_closed_loop_entry(
                 &mut phase,

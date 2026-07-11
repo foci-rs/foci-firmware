@@ -68,12 +68,12 @@ pub fn foci_calibrate(ctx: &mut dyn FociRuntimeHost, oid: u8) {
     let Some((channel, state)) = foci_tmc_state_or_shutdown(ctx, oid) else {
         return;
     };
-    // Pre-flight: channel step width must have been populated by a prior
+    // Pre-flight: the physical pulse width must have been populated by a prior
     // tmc_set_motion_scale command. If it hasn't, fail before touching hardware
     // — otherwise calibration would succeed but the motor would silently
     // refuse to respond to step pulses. The engine's ClosedLoopEntry
-    // phase also checks this via backend.step_width().
-    if state.step_width_value.load(Relaxed) <= 0 {
+    // phase also checks the named configured physical width.
+    if state.physical_step_width().is_none() {
         defmt::error!(
             "foci_calibrate rejected: STEP_WIDTH not configured (call tmc_set_motion_scale first)"
         );
