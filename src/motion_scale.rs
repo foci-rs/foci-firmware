@@ -121,7 +121,11 @@ pub struct PlannerVelocityScale {
 }
 
 impl PlannerVelocityScale {
-    fn new(planner_steps_per_rev: u32, step_timer_hz: u32, f_pwm_hz: u32) -> Option<Self> {
+    pub(crate) fn new(
+        planner_steps_per_rev: u32,
+        step_timer_hz: u32,
+        f_pwm_hz: u32,
+    ) -> Option<Self> {
         if step_timer_hz == 0 || f_pwm_hz == 0 {
             return None;
         }

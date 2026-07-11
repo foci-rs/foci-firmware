@@ -36,6 +36,21 @@ pub struct AccelFeedforwardGains {
 
 /// Command-acceleration inputs for velocity-surface transient feedforward.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+pub struct PlannerVelocityTransientFeedforwardInput {
+    /// Exact planner-timing velocity ratio.
+    pub scale: crate::motion_scale::PlannerVelocityScale,
+    /// Step-timer clock frequency in Hz.
+    pub clock_freq: u32,
+    /// Current step interval in timer ticks.
+    pub step_interval: u32,
+    /// Klipper interval delta in timer ticks per step.
+    pub interval_add: i16,
+    /// True when the TMC4671 DIR input is high.
+    pub dir_high: bool,
+}
+
+/// Legacy STEP_WIDTH-derived transient feedforward inputs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub struct VelocityTransientFeedforwardInput {
     /// Precomputed velocity scale factor.
     pub scale_factor: u32,
@@ -791,49 +806,33 @@ pub fn auto_calibrate_on_enable_allowed(channel: u8) -> bool {
         .unwrap_or(false)
 }
 
-/// Precompute the velocity feedforward scale factor.
-///
-/// The result encodes `step_width * clock_freq / f_pwm` so that the
-/// per-tick feedforward computation is a single division:
-/// `velocity_tmc = scale_factor / step_interval`.
-///
-/// Uses `u64` intermediate to avoid overflow on the multiplication
-/// (`step_width * clock_freq` can exceed `u32::MAX`).
-///
-/// Returns 0 if `step_width == 0` or `f_pwm == 0` (feedforward disabled).
-pub fn compute_velocity_scale_factor(step_width: u32, clock_freq: u32, f_pwm: u32) -> u32 {
-    if step_width == 0 || f_pwm == 0 {
-        return 0;
-    }
-    let numerator = step_width as u64 * clock_freq as u64;
-    (numerator / f_pwm as u64) as u32
-}
-
 /// Compute the velocity feedforward offset value for PID_VELOCITY_OFFSET.
 ///
 /// # Parameters
-/// - `scale_factor`: precomputed by [`compute_velocity_scale_factor`]
+/// - `scale`: exact planner-timing velocity ratio
 /// - `step_interval`: current step interval in TIM5 clock ticks (from atomic)
 /// - `dir_high`: true if the TMC4671 DIR input is high
 ///
-/// Returns 0 if `step_interval == 0` (motor idle) or `scale_factor == 0`
-/// (feedforward not configured).
+/// Returns 0 if `step_interval == 0` (motor idle).
 ///
 /// The result is in TMC4671 velocity units (position change per PWM period)
 /// and is written directly to PID_VELOCITY_OFFSET (0x67, s32).
 ///
 /// With a positive STEP_WIDTH, the TMC4671 STEP/DIR input reports a
 /// negative velocity for DIR high and a positive velocity for DIR low.
+pub fn compute_velocity_scale_factor(step_width: u32, clock_freq: u32, f_pwm: u32) -> u32 {
+    if step_width == 0 || f_pwm == 0 {
+        return 0;
+    }
+    ((u64::from(step_width) * u64::from(clock_freq)) / u64::from(f_pwm)) as u32
+}
+
+/// Compute a legacy STEP_WIDTH-derived velocity offset.
 pub fn compute_velocity_offset(scale_factor: u32, step_interval: u32, dir_high: bool) -> i32 {
     compute_velocity_offset_scaled(scale_factor, step_interval, dir_high, 1)
 }
 
-/// Compute the signed command-velocity reference used by trace diagnostics.
-///
-/// This uses the same TMC4671 sign convention as `PID_VELOCITY_OFFSET`, but it
-/// intentionally does not apply the runtime feedforward multiplier. The value
-/// is a software reference derived from Klipper STEP/DIR timing, not a TMC
-/// register read.
+/// Compute a legacy STEP_WIDTH-derived command velocity reference.
 pub fn compute_command_velocity_reference(
     scale_factor: u32,
     step_interval: u32,
@@ -842,11 +841,7 @@ pub fn compute_command_velocity_reference(
     compute_velocity_offset_scaled(scale_factor, step_interval, dir_high, 1)
 }
 
-/// Compute the velocity feedforward offset with a runtime multiplier.
-///
-/// `multiplier == 0` disables the offset. Positive products saturate to
-/// `i32::MAX`; negative products use the same magnitude limit so the value
-/// remains symmetric around zero.
+/// Compute a legacy STEP_WIDTH-derived velocity offset with a multiplier.
 pub fn compute_velocity_offset_scaled(
     scale_factor: u32,
     step_interval: u32,
@@ -856,15 +851,13 @@ pub fn compute_velocity_offset_scaled(
     if step_interval == 0 || scale_factor == 0 {
         return 0;
     }
-    let magnitude = (scale_factor / step_interval) as u64 * multiplier as u64;
+    let magnitude = (scale_factor / step_interval) as u64 * u64::from(multiplier);
     let magnitude = magnitude.min(i32::MAX as u64) as i32;
     if dir_high { -magnitude } else { magnitude }
 }
 
-/// Computes the exact planner-timing command-velocity reference.
-///
-/// Exact half-unit ties round away from zero.
-pub fn compute_planner_velocity_reference(
+/// Compute an exact planner velocity offset.
+pub fn compute_planner_velocity_offset(
     scale: crate::motion_scale::PlannerVelocityScale,
     step_interval: u32,
     dir_high: bool,
@@ -872,9 +865,34 @@ pub fn compute_planner_velocity_reference(
     compute_planner_velocity_offset_scaled(scale, step_interval, dir_high, 1)
 }
 
-/// Computes an exact planner-timing velocity offset with a runtime multiplier.
+/// Compute the signed command-velocity reference used by trace diagnostics.
 ///
-/// The result saturates symmetrically to `-i32::MAX..=i32::MAX`.
+/// This uses the same TMC4671 sign convention as `PID_VELOCITY_OFFSET`, but it
+/// intentionally does not apply the runtime feedforward multiplier. The value
+/// is a software reference derived from Klipper STEP/DIR timing, not a TMC
+/// register read.
+pub fn compute_planner_command_velocity_reference(
+    scale: crate::motion_scale::PlannerVelocityScale,
+    step_interval: u32,
+    dir_high: bool,
+) -> i32 {
+    compute_planner_velocity_offset_scaled(scale, step_interval, dir_high, 1)
+}
+
+/// Compute an exact planner-timing command velocity reference.
+pub fn compute_planner_velocity_reference(
+    scale: crate::motion_scale::PlannerVelocityScale,
+    step_interval: u32,
+    dir_high: bool,
+) -> i32 {
+    compute_planner_command_velocity_reference(scale, step_interval, dir_high)
+}
+
+/// Compute the velocity feedforward offset with a runtime multiplier.
+///
+/// `multiplier == 0` disables the offset. Positive products saturate to
+/// `i32::MAX`; negative products use the same magnitude limit so the value
+/// remains symmetric around zero.
 pub fn compute_planner_velocity_offset_scaled(
     scale: crate::motion_scale::PlannerVelocityScale,
     step_interval: u32,
@@ -936,25 +954,69 @@ fn ceil_half_product_leq(left: u64, right: u64, limit: u64) -> bool {
         .is_some_and(|half_product| half_product <= limit)
 }
 
+fn round_ratio_to_cap(
+    numerators: &mut [u64],
+    denominators: &mut [u64],
+    cap: u64,
+) -> u64 {
+    for numerator in numerators.iter_mut() {
+        for denominator in denominators.iter_mut() {
+            let divisor = crate::motion_scale::greatest_common_divisor(*numerator, *denominator);
+            *numerator /= divisor;
+            *denominator /= divisor;
+        }
+    }
+
+    let numerator = numerators.iter().fold(1u128, |product, factor| {
+        product
+            .checked_mul(u128::from(*factor))
+            .expect("planner feedforward numerator fits u128")
+    });
+    let denominator = denominators.iter().try_fold(1u128, |product, factor| {
+        product.checked_mul(u128::from(*factor))
+    });
+    let rounded = if let Some(denominator) = denominator {
+        let quotient = numerator / denominator;
+        let remainder = numerator % denominator;
+        quotient + u128::from(remainder >= denominator / 2 + denominator % 2)
+    } else {
+        let twice_numerator = numerator
+            .checked_mul(2)
+            .expect("planner feedforward numerator leaves one rounding bit");
+        u128::from(product_leq(denominators, twice_numerator))
+    };
+    rounded.min(u128::from(cap)) as u64
+}
+
+fn product_leq(factors: &[u64], limit: u128) -> bool {
+    factors
+        .iter()
+        .try_fold(1u128, |product, factor| {
+            product
+                .checked_mul(u128::from(*factor))
+                .filter(|product| *product <= limit)
+        })
+        .is_some()
+}
+
 /// Compute a bounded logical position-target lead from the command velocity.
 ///
 /// The returned value is in firmware logical step counts, not TMC4671
 /// electrical-position counts. With OpenFFBoard's current hardware STEP/DIR
 /// path, DIR high increments the firmware step counter even though the TMC
 /// velocity monitor reports a negative velocity for that same direction.
-pub fn compute_position_lead_counts(
-    scale_factor: u32,
-    step_interval: u32,
+pub fn compute_position_lead_counts_from_reference(
+    command_velocity_reference: i32,
     dir_high: bool,
     gain_permille: u16,
     max_counts: u16,
 ) -> i16 {
-    if scale_factor == 0 || step_interval == 0 || gain_permille == 0 || max_counts == 0 {
+    if command_velocity_reference == 0 || gain_permille == 0 || max_counts == 0 {
         return 0;
     }
 
-    let velocity = compute_command_velocity_reference(scale_factor, step_interval, dir_high);
-    let magnitude = (velocity.unsigned_abs() as u64 * gain_permille as u64 / 1000)
+    let magnitude = (command_velocity_reference.unsigned_abs() as u64 * gain_permille as u64
+        / 1000)
         .min(max_counts as u64)
         .min(i16::MAX as u64) as i16;
     if magnitude == 0 {
@@ -962,6 +1024,18 @@ pub fn compute_position_lead_counts(
     }
 
     if dir_high { magnitude } else { -magnitude }
+}
+
+/// Compute legacy position lead from a STEP_WIDTH-derived velocity scale.
+pub fn compute_position_lead_counts(
+    scale_factor: u32,
+    step_interval: u32,
+    dir_high: bool,
+    gain_permille: u16,
+    max_counts: u16,
+) -> i16 {
+    let velocity = compute_command_velocity_reference(scale_factor, step_interval, dir_high);
+    compute_position_lead_counts_from_reference(velocity, dir_high, gain_permille, max_counts)
 }
 
 /// Compute a relative `PID_POSITION_TARGET` with diagnostic lead applied.
@@ -1008,25 +1082,63 @@ pub fn compute_velocity_transient_offset(
     {
         return 0;
     }
-
-    let interval = input.step_interval as u128;
+    let interval = u128::from(input.step_interval);
     let denominator = interval
         .saturating_mul(interval)
         .saturating_mul(interval)
         .saturating_mul(1_000_000)
-        .saturating_mul(1000);
-    if denominator == 0 {
+        .saturating_mul(1_000);
+    let numerator = u128::from(input.interval_add.unsigned_abs())
+        * u128::from(input.scale_factor)
+        * u128::from(input.clock_freq)
+        * u128::from(config.lead_time_us)
+        * u128::from(config.gain_permille);
+    let magnitude = (numerator / denominator).min(u128::from(config.max_offset)) as i32;
+    let accel_sign = if input.interval_add < 0 { 1 } else { -1 };
+    let direction_sign = if input.dir_high { -1 } else { 1 };
+    if accel_sign * direction_sign < 0 {
+        -magnitude
+    } else {
+        magnitude
+    }
+}
+
+/// Compute an exact planner-scale transient velocity offset.
+pub fn compute_planner_velocity_transient_offset(
+    input: PlannerVelocityTransientFeedforwardInput,
+    config: VelocityTransientFeedforwardConfig,
+) -> i32 {
+    if input.clock_freq == 0
+        || input.step_interval == 0
+        || input.interval_add == 0
+        || config.lead_time_us == 0
+        || config.gain_permille == 0
+        || config.max_offset == 0
+    {
         return 0;
     }
 
-    let numerator = input.interval_add.unsigned_abs() as u128
-        * input.scale_factor as u128
-        * input.clock_freq as u128
-        * config.lead_time_us as u128
-        * config.gain_permille as u128;
-    let magnitude = (numerator / denominator)
-        .min(config.max_offset as u128)
-        .min(i32::MAX as u128) as i32;
+    let interval = u64::from(input.step_interval);
+    let mut numerators = [
+        u64::from(input.interval_add.unsigned_abs()),
+        input.scale.numerator(),
+        u64::from(input.clock_freq),
+        u64::from(config.lead_time_us),
+        u64::from(config.gain_permille),
+    ];
+    let mut denominators = [
+        input.scale.denominator(),
+        interval,
+        interval,
+        interval,
+        1_000_000,
+        1_000,
+    ];
+    let magnitude = round_ratio_to_cap(
+        &mut numerators,
+        &mut denominators,
+        u64::from(config.max_offset),
+    ) as i32;
     if magnitude == 0 {
         return 0;
     }
@@ -1183,22 +1295,89 @@ pub fn compute_accel_torque_offset(
     {
         return 0;
     }
-
-    let interval = step_interval as u128;
+    let interval = u128::from(step_interval);
     let denominator = interval
         .saturating_mul(interval)
         .saturating_mul(interval)
-        .saturating_mul(1000);
-    if denominator == 0 {
+        .saturating_mul(1_000);
+    let numerator = u128::from(interval_add.unsigned_abs())
+        * u128::from(scale_factor)
+        * u128::from(clock_freq)
+        * u128::from(gain_permille);
+    let magnitude = (numerator / denominator)
+        .min(u128::from(torque_limit.min(i16::MAX as u32))) as i16;
+    let accel_sign = if interval_add < 0 { 1 } else { -1 };
+    let direction_sign = if dir_high { -1 } else { 1 };
+    if accel_sign * direction_sign < 0 {
+        -magnitude
+    } else {
+        magnitude
+    }
+}
+
+/// Compute legacy acceleration feedforward with split gains.
+pub fn compute_accel_torque_offset_split(
+    scale_factor: u32,
+    clock_freq: u32,
+    step_interval: u32,
+    interval_add: i16,
+    dir_high: bool,
+    gains: AccelFeedforwardGains,
+    torque_limit: u32,
+) -> i16 {
+    let gain = if interval_add < 0 {
+        gains.accel_permille
+    } else if interval_add > 0 {
+        gains.decel_permille
+    } else {
+        0
+    };
+    compute_accel_torque_offset(
+        scale_factor,
+        clock_freq,
+        step_interval,
+        interval_add,
+        dir_high,
+        gain,
+        torque_limit,
+    )
+}
+
+/// Compute exact planner-scale acceleration feedforward.
+pub fn compute_planner_accel_torque_offset(
+    scale: crate::motion_scale::PlannerVelocityScale,
+    clock_freq: u32,
+    step_interval: u32,
+    interval_add: i16,
+    dir_high: bool,
+    gain_permille: u16,
+    torque_limit: u32,
+) -> i16 {
+    if clock_freq == 0
+        || step_interval == 0
+        || interval_add == 0
+        || gain_permille == 0
+        || torque_limit == 0
+    {
         return 0;
     }
 
-    let numerator = interval_add.unsigned_abs() as u128
-        * scale_factor as u128
-        * clock_freq as u128
-        * gain_permille as u128;
-    let current_limit = torque_limit.min(i16::MAX as u32) as u128;
-    let magnitude = (numerator / denominator).min(current_limit) as i16;
+    let interval = u64::from(step_interval);
+    let mut numerators = [
+        u64::from(interval_add.unsigned_abs()),
+        scale.numerator(),
+        u64::from(clock_freq),
+        u64::from(gain_permille),
+    ];
+    let mut denominators = [
+        scale.denominator(),
+        interval,
+        interval,
+        interval,
+        1_000,
+    ];
+    let current_limit = u64::from(torque_limit.min(i16::MAX as u32));
+    let magnitude = round_ratio_to_cap(&mut numerators, &mut denominators, current_limit) as i16;
     if magnitude == 0 {
         return 0;
     }
@@ -1213,8 +1392,8 @@ pub fn compute_accel_torque_offset(
 }
 
 /// Compute acceleration feedforward with independent accel/decel gains.
-pub fn compute_accel_torque_offset_split(
-    scale_factor: u32,
+pub fn compute_planner_accel_torque_offset_split(
+    scale: crate::motion_scale::PlannerVelocityScale,
     clock_freq: u32,
     step_interval: u32,
     interval_add: i16,
@@ -1229,8 +1408,8 @@ pub fn compute_accel_torque_offset_split(
     } else {
         0
     };
-    compute_accel_torque_offset(
-        scale_factor,
+    compute_planner_accel_torque_offset(
+        scale,
         clock_freq,
         step_interval,
         interval_add,
