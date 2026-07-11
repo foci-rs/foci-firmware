@@ -1017,6 +1017,143 @@ mod tests {
         )
     }
 
+    #[derive(Debug, PartialEq, Eq)]
+    struct MotionScaleSnapshot {
+        configured: bool,
+        encoder_ppr: Option<u32>,
+        encoder_counts_per_rev: Option<u32>,
+        planner_steps_per_rev: Option<u32>,
+        tmc_grid: Option<u32>,
+        physical_step_width: Option<u32>,
+        legacy_step_width_value: i32,
+    }
+
+    fn motion_scale_snapshot() -> MotionScaleSnapshot {
+        let tmc_state = tmc_channel0();
+        let stepper_state = stepper_channel0();
+        MotionScaleSnapshot {
+            configured: tmc_state.motion_scale_configured(),
+            encoder_ppr: tmc_state.encoder_ppr(),
+            encoder_counts_per_rev: tmc_state.encoder_counts_per_rev(),
+            planner_steps_per_rev: stepper_state.planner_steps_per_rev(tmc_state),
+            tmc_grid: tmc_state.tmc_grid(),
+            physical_step_width: tmc_state.physical_step_width(),
+            legacy_step_width_value: tmc_state.step_width_value.load(Relaxed),
+        }
+    }
+
+    #[derive(Clone, Copy)]
+    enum MotionScaleRevalidationRejection {
+        InvalidScale,
+        RuntimeEnabled,
+        MotorArmedMirror,
+        PhysicalQueueNonempty,
+        TimerActive,
+    }
+
+    async fn assert_motion_scale_revalidation_rejected(
+        rejection: MotionScaleRevalidationRejection,
+    ) {
+        let mut runtime = TmcControlRuntime::new_for_channel(0);
+        let mut board = RecordingBoard::fall_through();
+        tmc_channel0()
+            .configure_motion_scale(stepper_channel0(), 1000, 3200)
+            .unwrap();
+        let before = motion_scale_snapshot();
+        let mut encoder_ppr = 2000;
+
+        match rejection {
+            MotionScaleRevalidationRejection::InvalidScale => encoder_ppr = 0,
+            MotionScaleRevalidationRejection::RuntimeEnabled => {
+                runtime.set_motor_enabled_for_test(true);
+            }
+            MotionScaleRevalidationRejection::MotorArmedMirror => {
+                tmc_channel0().motor_armed.store(true, Relaxed);
+            }
+            MotionScaleRevalidationRejection::PhysicalQueueNonempty => {
+                board.motion_scale_queue_empty = false;
+            }
+            MotionScaleRevalidationRejection::TimerActive => {
+                stepper_channel0().timer_active_mirror.store(true, Relaxed);
+            }
+        }
+
+        let mut tmc = Tmc4671Spi::new(RuntimeMockSpi::default());
+        let outcome = handle_tmc_control_request(
+            TmcRequest::new(
+                0,
+                TmcRequestKind::SetMotionScale {
+                    encoder_ppr,
+                    planner_steps_per_rev: 6400,
+                },
+            ),
+            TmcPreRequestDisposition::ContinueRequest,
+            &mut runtime,
+            &mut tmc,
+            &mut board,
+        )
+        .await;
+        let spi = tmc.into_inner();
+
+        assert!(spi.write_attempts.is_empty());
+        assert_eq!(motion_scale_snapshot(), before);
+        assert_eq!(
+            outcome.shutdown,
+            Some(ShutdownReason::RequestValidationFailed)
+        );
+        assert_eq!(outcome.tail, TmcControlRequestTail::FallThrough);
+        assert!(!outcome.should_refresh_velocity_scale);
+        assert_eq!(board.arm_calls, 0);
+    }
+
+    async fn assert_motion_scale_spi_failure(
+        failed_register: u8,
+        expected_attempts: &[(u8, u32)],
+        expected_completed_writes: &[(u8, u32)],
+    ) {
+        let mut runtime = TmcControlRuntime::new_for_channel(0);
+        let mut board = RecordingBoard::fall_through();
+        let before = motion_scale_snapshot();
+        let mut tmc = Tmc4671Spi::new(RuntimeMockSpi::default().fail_writes_to(failed_register));
+
+        let outcome = handle_tmc_control_request(
+            TmcRequest::new(
+                0,
+                TmcRequestKind::SetMotionScale {
+                    encoder_ppr: 4000,
+                    planner_steps_per_rev: 3200,
+                },
+            ),
+            TmcPreRequestDisposition::ContinueRequest,
+            &mut runtime,
+            &mut tmc,
+            &mut board,
+        )
+        .await;
+        let spi = tmc.into_inner();
+
+        assert_eq!(spi.write_attempts, expected_attempts);
+        assert_eq!(spi.writes, expected_completed_writes);
+        assert_eq!(motion_scale_snapshot(), before);
+        assert!(!tmc_channel0().motion_scale_configured());
+        assert_eq!(tmc_channel0().encoder_ppr(), None);
+        assert_eq!(tmc_channel0().encoder_counts_per_rev(), None);
+        assert_eq!(
+            stepper_channel0().planner_steps_per_rev(tmc_channel0()),
+            None
+        );
+        assert_eq!(tmc_channel0().tmc_grid(), None);
+        assert_eq!(tmc_channel0().physical_step_width(), None);
+        assert_eq!(tmc_channel0().step_width_value.load(Relaxed), 0);
+        assert_eq!(
+            outcome.shutdown,
+            Some(ShutdownReason::RequestValidationFailed)
+        );
+        assert_eq!(outcome.tail, TmcControlRequestTail::FallThrough);
+        assert!(outcome.should_refresh_velocity_scale);
+        assert_eq!(board.arm_calls, 0);
+    }
+
     fn assert_calibrate_failure(reply: &ReplyPayload, oid: u8, status: u8) {
         match reply {
             ReplyPayload::CalibrateResult {
@@ -1284,43 +1421,109 @@ mod tests {
     }
 
     #[test]
-    fn set_motion_scale_success_and_failure_use_board_tail() {
+    fn set_motion_scale_success_uses_board_tail() {
         run_request_test(async {
-            for fail_step_width in [false, true] {
-                let mut runtime = TmcControlRuntime::new_for_channel(0);
-                let mut board = RecordingBoard::fall_through();
-                let spi = if fail_step_width {
-                    RuntimeMockSpi::default()
-                        .fail_writes_to(foci_tmc4671::registers::STEP_WIDTH.addr())
-                } else {
-                    RuntimeMockSpi::default()
-                };
-                let mut tmc = Tmc4671Spi::new(spi);
+            let mut runtime = TmcControlRuntime::new_for_channel(0);
+            let mut board = RecordingBoard::fall_through();
+            let mut tmc = Tmc4671Spi::new(RuntimeMockSpi::default());
 
-                let outcome = handle_tmc_control_request(
-                    TmcRequest::new(
-                        0,
-                        TmcRequestKind::SetMotionScale {
-                            encoder_ppr: 4000,
-                            planner_steps_per_rev: 3200,
-                        },
-                    ),
-                    TmcPreRequestDisposition::ContinueRequest,
-                    &mut runtime,
-                    &mut tmc,
-                    &mut board,
-                )
-                .await;
+            let outcome = handle_tmc_control_request(
+                TmcRequest::new(
+                    0,
+                    TmcRequestKind::SetMotionScale {
+                        encoder_ppr: 4000,
+                        planner_steps_per_rev: 3200,
+                    },
+                ),
+                TmcPreRequestDisposition::ContinueRequest,
+                &mut runtime,
+                &mut tmc,
+                &mut board,
+            )
+            .await;
 
-                assert_eq!(outcome.tail, TmcControlRequestTail::FallThrough);
-                assert!(outcome.should_refresh_velocity_scale);
-                assert_eq!(
-                    outcome.shutdown,
-                    fail_step_width.then_some(ShutdownReason::RequestValidationFailed)
-                );
-                assert_eq!(tmc_channel0().motion_scale_configured(), !fail_step_width);
-                assert_eq!(board.arm_calls, 0);
-            }
+            assert_eq!(outcome.tail, TmcControlRequestTail::FallThrough);
+            assert!(outcome.should_refresh_velocity_scale);
+            assert_eq!(outcome.shutdown, None);
+            assert!(tmc_channel0().motion_scale_configured());
+            assert_eq!(board.arm_calls, 0);
+        });
+    }
+
+    #[test]
+    fn set_motion_scale_rejects_invalid_scale_before_spi_or_publication() {
+        run_request_test(async {
+            assert_motion_scale_revalidation_rejected(
+                MotionScaleRevalidationRejection::InvalidScale,
+            )
+            .await;
+        });
+    }
+
+    #[test]
+    fn set_motion_scale_rejects_runtime_enabled_before_spi_or_publication() {
+        run_request_test(async {
+            assert_motion_scale_revalidation_rejected(
+                MotionScaleRevalidationRejection::RuntimeEnabled,
+            )
+            .await;
+        });
+    }
+
+    #[test]
+    fn set_motion_scale_rejects_motor_armed_mirror_before_spi_or_publication() {
+        run_request_test(async {
+            assert_motion_scale_revalidation_rejected(
+                MotionScaleRevalidationRejection::MotorArmedMirror,
+            )
+            .await;
+        });
+    }
+
+    #[test]
+    fn set_motion_scale_rejects_physical_queue_before_spi_or_publication() {
+        run_request_test(async {
+            assert_motion_scale_revalidation_rejected(
+                MotionScaleRevalidationRejection::PhysicalQueueNonempty,
+            )
+            .await;
+        });
+    }
+
+    #[test]
+    fn set_motion_scale_rejects_active_timer_before_spi_or_publication() {
+        run_request_test(async {
+            assert_motion_scale_revalidation_rejected(
+                MotionScaleRevalidationRejection::TimerActive,
+            )
+            .await;
+        });
+    }
+
+    #[test]
+    fn set_motion_scale_abn_decoder_ppr_failure_shuts_down_without_publication() {
+        run_request_test(async {
+            assert_motion_scale_spi_failure(
+                foci_tmc4671::registers::ABN_DECODER_PPR.addr(),
+                &[(foci_tmc4671::registers::ABN_DECODER_PPR.addr(), 16000)],
+                &[],
+            )
+            .await;
+        });
+    }
+
+    #[test]
+    fn set_motion_scale_step_width_failure_shuts_down_without_publication() {
+        run_request_test(async {
+            assert_motion_scale_spi_failure(
+                foci_tmc4671::registers::STEP_WIDTH.addr(),
+                &[
+                    (foci_tmc4671::registers::ABN_DECODER_PPR.addr(), 16000),
+                    (foci_tmc4671::registers::STEP_WIDTH.addr(), 16),
+                ],
+                &[(foci_tmc4671::registers::ABN_DECODER_PPR.addr(), 16000)],
+            )
+            .await;
         });
     }
 

@@ -916,8 +916,11 @@ mod tests {
 
     impl TmcHost for MockCtx {
         fn enqueue_request(&self, req: crate::tmc::TmcRequest) -> Result<(), QueueFull> {
+            if !self.accept_request {
+                return Err(QueueFull);
+            }
             self.last_request.replace(Some(req));
-            self.accept_request.then_some(()).ok_or(QueueFull)
+            Ok(())
         }
 
         fn motion_scale_idle(&self, _channel: u8) -> bool {
@@ -1308,6 +1311,47 @@ mod tests {
         assert_eq!(
             tmc_state.step_width_value.load(Ordering::Relaxed),
             before_width
+        );
+    }
+
+    #[test]
+    fn tmc_set_motion_scale_queue_full_reports_error_without_enqueue_or_mutation() {
+        let mut ctx = MockCtx::new(2);
+        let mut sender = ();
+        config_stepper_channel(ctx.state(), 10, 1).unwrap();
+        let tmc_state = crate::state::tmc::tmc_channel(1).unwrap();
+        let stepper_state = crate::state::stepper::stepper_channel(1).unwrap();
+        let before_configured = tmc_state.motion_scale_configured();
+        let before_encoder_ppr = tmc_state.encoder_ppr();
+        let before_encoder_counts_per_rev = tmc_state.encoder_counts_per_rev();
+        let before_planner_steps_per_rev = stepper_state.planner_steps_per_rev(tmc_state);
+        let before_tmc_grid = tmc_state.tmc_grid();
+        let before_physical_step_width = tmc_state.physical_step_width();
+        let before_legacy_step_width = tmc_state.step_width_value.load(Ordering::Relaxed);
+        ctx.accept_request = false;
+
+        tmc_set_motion_scale(&mut ctx, &mut sender, 10, 1, 1000, 3200);
+
+        assert!(ctx.last_request.borrow().is_none());
+        assert_eq!(
+            ctx.last_shutdown,
+            Some(ShutdownReason::TmcSetMotionScaleLostQueueFull)
+        );
+        assert_eq!(tmc_state.motion_scale_configured(), before_configured);
+        assert_eq!(tmc_state.encoder_ppr(), before_encoder_ppr);
+        assert_eq!(
+            tmc_state.encoder_counts_per_rev(),
+            before_encoder_counts_per_rev
+        );
+        assert_eq!(
+            stepper_state.planner_steps_per_rev(tmc_state),
+            before_planner_steps_per_rev
+        );
+        assert_eq!(tmc_state.tmc_grid(), before_tmc_grid);
+        assert_eq!(tmc_state.physical_step_width(), before_physical_step_width);
+        assert_eq!(
+            tmc_state.step_width_value.load(Ordering::Relaxed),
+            before_legacy_step_width
         );
     }
 
