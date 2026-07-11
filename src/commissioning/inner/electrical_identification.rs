@@ -10,7 +10,7 @@ use crate::autotune::{
     CommissionError, ELECTRICAL_MODEL_RESISTANCE_SCALE, ElectricalModel, InnerSequence, PhaseId,
     TransientBuffer,
 };
-use crate::commissioning::encoder_domain::{EncoderDomain, EncoderMathError};
+use crate::commissioning::encoder_domain::{EncoderDelta, EncoderDomain, EncoderMathError};
 use crate::commissioning::types::{
     CommissioningBackend, INDUCTANCE_SOURCE_ROTATING_FIELD, INDUCTANCE_WARN_DRIFT,
     INDUCTANCE_WARN_HIGH_RMS, INDUCTANCE_WARN_MAG_CROSSCHECK, INDUCTANCE_WARN_STATUS_FLAGS,
@@ -478,10 +478,9 @@ fn inductance_encoder_delta(
     domain: EncoderDomain,
     start: u32,
     end: u32,
-) -> Result<i32, InductanceReject> {
+) -> Result<EncoderDelta, InductanceReject> {
     domain
         .delta(domain.count(start), domain.count(end))
-        .map(|delta| delta.signed_counts())
         .map_err(|error| match error {
             EncoderMathError::InvalidCountsPerRev | EncoderMathError::AmbiguousHalfTurn => {
                 InductanceReject::EncoderMotion
@@ -1023,11 +1022,11 @@ fn finish_inductance_evidence(
     }
 
     let encoder_domain = data.encoder_domain.ok_or(InductanceReject::EncoderMotion)?;
-    let encoder_delta_counts =
-        inductance_encoder_delta(encoder_domain, encoder_start, encoder_after)?;
-    if encoder_delta_counts.unsigned_abs() > INDUCTANCE_MAX_ENCODER_DELTA_COUNTS {
+    let encoder_delta = inductance_encoder_delta(encoder_domain, encoder_start, encoder_after)?;
+    if encoder_delta.absolute_counts() > INDUCTANCE_MAX_ENCODER_DELTA_COUNTS {
         return Err(InductanceReject::EncoderMotion);
     }
+    let encoder_delta_counts = encoder_delta.signed_counts();
 
     Ok(InductanceEvidence {
         run: InductanceRunEvidence {
@@ -2554,7 +2553,12 @@ mod tests {
     fn inductance_encoder_delta_crosses_origin_forward() {
         let domain = EncoderDomain::new(4000).unwrap();
 
-        assert_eq!(inductance_encoder_delta(domain, 3998, 2), Ok(4));
+        assert_eq!(
+            inductance_encoder_delta(domain, 3998, 2)
+                .unwrap()
+                .signed_counts(),
+            4
+        );
     }
 
     #[test]
@@ -2600,6 +2604,70 @@ mod tests {
             ));
             assert!(!backend.enable_pin);
             assert!(backend.spi_log.is_empty());
+        });
+    }
+
+    #[test]
+    fn inductance_half_turn_path_tears_down_without_committing_evidence() {
+        pollster::block_on(async {
+            let mut data = ElectricalIdData::new(512);
+            data.resistance_result = Some(resistance_result_fixture());
+            data.encoder_domain = Some(EncoderDomain::new(4000).unwrap());
+            let mut phase = InnerPhase::ElectricalId {
+                state: ElectricalIdState::InductanceSample {
+                    encoder_start: 0,
+                    start_us: 0,
+                    previous_elapsed_us: 0,
+                    start_phi: 0,
+                    previous_phi: 0,
+                    accumulated_phi_delta_counts: 0,
+                    accumulator: crate::electrical_capture::AcFrameAccumulator::new(),
+                    first_half: crate::electrical_capture::AcFrameAccumulator::new(),
+                    second_half: crate::electrical_capture::AcFrameAccumulator::new(),
+                    saliency: crate::electrical_capture::AcSaliencyAccumulator::new(),
+                    sample_count: 0,
+                    status_flags_or: 0,
+                },
+                data,
+            };
+            let mut buf = TransientBuffer::new();
+            let mut backend = MockBackend::new();
+            backend.enable_pin = true;
+            let _ = backend.registers.insert(STATUS_FLAGS.addr(), 0);
+            let _ = backend
+                .registers
+                .insert(foci_tmc4671::registers::ABN_DECODER_COUNT.addr(), 2000);
+            let mut phi_samples = heapless::Vec::<u32, 128>::new();
+            let mut current_samples = heapless::Vec::<u32, 128>::new();
+            let actual = ((-84i16 as u16 as u32) << 16) | 20u32;
+            for index in 1..=100u32 {
+                phi_samples.push(index.wrapping_mul(5_243) & 0xffff).ok();
+                current_samples.push(actual).ok();
+            }
+            backend.set_openloop_phi_sequence(phi_samples.as_slice(), 80);
+            backend.set_pid_torque_flux_actual_sequence(current_samples.as_slice());
+            let mut selftest_results = crate::selftest::SelftestResults::default();
+            let mut diagnostics = crate::selftest::CommissionDiagnostics::default();
+
+            let result = step_electrical_identification(
+                &mut phase,
+                &mut buf,
+                InnerSequence::Commission,
+                &mut selftest_results,
+                &mut diagnostics,
+                &mut backend,
+            )
+            .await;
+
+            assert!(matches!(
+                result,
+                StepResult::InnerFailed(CommissionError::InductanceEncoderMotion)
+            ));
+            assert!(matches!(
+                phase,
+                InnerPhase::Failed(CommissionError::InductanceEncoderMotion)
+            ));
+            assert_ac_teardown_after_failure(&backend);
         });
     }
 

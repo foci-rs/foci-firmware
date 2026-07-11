@@ -1436,16 +1436,14 @@ pub(crate) async fn step_current_validate<B: CommissioningBackend>(
             {
                 return super::fail_inner(phase, CommissionError::Spi);
             }
-            data.encoder_domain = match backend.read_register(ABN_DECODER_PPR).await {
-                Ok(counts) => match EncoderDomain::new(counts) {
+            data.encoder_domain =
+                match EncoderDomain::new(backend.mechanical_encoder_quadrature_counts_per_rev()) {
                     Ok(domain) => Some(domain),
                     Err(EncoderMathError::InvalidCountsPerRev) => {
                         return super::fail_inner(phase, CommissionError::EncoderFault);
                     }
                     Err(EncoderMathError::AmbiguousHalfTurn) => unreachable!(),
-                },
-                Err(_) => return super::fail_inner(phase, CommissionError::Spi),
-            };
+                };
 
             // Clear any previous validation evidence for this attempt.
             data.pending_positive_sample = None;
@@ -3402,12 +3400,115 @@ mod tests {
     }
 
     #[test]
-    fn current_validation_rejects_invalid_domain_before_actuation() {
+    fn current_validation_half_turn_path_stops_without_committing_sample() {
+        pollster::block_on(async {
+            let mut phase = current_validate_phase();
+            let InnerPhase::CurrentValidate { state, data } = &mut phase else {
+                panic!("expected current validation phase");
+            };
+            *state = CurrentValidateState::AxisSampleRead {
+                axis: CurrentValidationAxis::Flux,
+                sample_index: 0,
+                sample_delay_ms: 1,
+                direction: CaptureDirection::Forward,
+            };
+            data.sample_encoder_start = 0;
+            let mut buf = TransientBuffer::new();
+            let mut backend = MockBackend::new();
+            backend.set_enable_pin(true);
+            backend.mechanical_encoder_position_counts_value = 2000;
+            let _ = backend
+                .registers
+                .insert(PID_TORQUE_FLUX_ACTUAL.addr(), pack_halves(0, 240));
+            let _ = backend
+                .registers
+                .insert(INTERIM_FOC_UQ_UD_LIMITED.data.addr(), pack_halves(0, 100));
+            let _ = backend.registers.insert(STATUS_FLAGS.addr(), 0);
+
+            let result = step_current_validate(
+                &mut phase,
+                &mut buf,
+                CommissionProfile::Balanced,
+                InnerSequence::Commission,
+                &None,
+                &mut backend,
+            )
+            .await;
+
+            assert!(matches!(result, StepResult::Continue));
+            assert!(!backend.enable_pin);
+            let InnerPhase::CurrentValidate { state, data } = &phase else {
+                panic!("ambiguity must retain current validation evidence");
+            };
+            assert!(matches!(state, CurrentValidateState::SafeState { .. }));
+            assert_eq!(data.current_flux_validation_count, 0);
+            assert_eq!(data.current_settled_validation_count, 0);
+            assert!(data.pending_positive_sample.is_none());
+            assert_eq!(
+                data.current_loop_evidence.failure_reason,
+                crate::autotune::CURRENT_LOOP_FAILURE_MOTION
+            );
+
+            backend.elapsed_us_value = VALIDATION_SETTLE_US;
+            assert!(matches!(
+                step_current_validate(
+                    &mut phase,
+                    &mut buf,
+                    CommissionProfile::Balanced,
+                    InnerSequence::Commission,
+                    &None,
+                    &mut backend,
+                )
+                .await,
+                StepResult::Continue
+            ));
+            let result = step_current_validate(
+                &mut phase,
+                &mut buf,
+                CommissionProfile::Balanced,
+                InnerSequence::Commission,
+                &None,
+                &mut backend,
+            )
+            .await;
+            let StepResult::CommissionDone(result) = result else {
+                panic!("ambiguity must finalize current validation failure");
+            };
+            assert_eq!(
+                result.inner.status,
+                CommissionStatus::Failed(CommissionError::CurrentValidationFailed)
+            );
+            assert_eq!(
+                result.inner.current_loop_failure_reason,
+                crate::autotune::CURRENT_LOOP_FAILURE_MOTION
+            );
+        });
+    }
+
+    fn assert_no_current_validation_actuation(backend: &MockBackend) {
+        assert!(!backend.enable_pin);
+        assert!(backend.spi_log.iter().all(|op| !matches!(
+            op,
+            SpiOp::Write(addr, value)
+                if (*addr == MODE_RAMP_MODE_MOTION.addr()
+                    || (*addr == PID_TORQUE_FLUX_TARGET.addr() && *value != 0))
+        )));
+        assert!(
+            backend
+                .spi_log
+                .iter()
+                .all(|op| !matches!(op, SpiOp::EnablePin(true)))
+        );
+    }
+
+    #[test]
+    fn current_validation_rejects_zero_configured_domain_before_actuation() {
         pollster::block_on(async {
             let mut phase = current_validate_phase();
             let mut buf = TransientBuffer::new();
             let mut backend = MockBackend::new();
-            let _ = backend.registers.insert(ABN_DECODER_PPR.addr(), 0);
+            backend.mechanical_encoder_quadrature_counts_per_rev_value = 0;
+            let _ = backend.registers.insert(ABN_DECODER_PPR.addr(), 4000);
 
             let result = step_current_validate(
                 &mut phase,
@@ -3423,19 +3524,34 @@ mod tests {
                 result,
                 StepResult::InnerFailed(CommissionError::EncoderFault)
             ));
-            assert!(!backend.enable_pin);
-            assert!(backend.spi_log.iter().all(|op| !matches!(
-                op,
-                SpiOp::Write(addr, value)
-                    if (*addr == MODE_RAMP_MODE_MOTION.addr()
-                        || (*addr == PID_TORQUE_FLUX_TARGET.addr() && *value != 0))
-            )));
-            assert!(
-                backend
-                    .spi_log
-                    .iter()
-                    .all(|op| !matches!(op, SpiOp::EnablePin(true)))
-            );
+            assert_no_current_validation_actuation(&backend);
+        });
+    }
+
+    #[test]
+    fn current_validation_rejects_unsupported_configured_domain_before_actuation() {
+        pollster::block_on(async {
+            let mut phase = current_validate_phase();
+            let mut buf = TransientBuffer::new();
+            let mut backend = MockBackend::new();
+            backend.mechanical_encoder_quadrature_counts_per_rev_value = i32::MAX as u32 + 1;
+            let _ = backend.registers.insert(ABN_DECODER_PPR.addr(), 4000);
+
+            let result = step_current_validate(
+                &mut phase,
+                &mut buf,
+                CommissionProfile::Balanced,
+                InnerSequence::Commission,
+                &None,
+                &mut backend,
+            )
+            .await;
+
+            assert!(matches!(
+                result,
+                StepResult::InnerFailed(CommissionError::EncoderFault)
+            ));
+            assert_no_current_validation_actuation(&backend);
         });
     }
 
