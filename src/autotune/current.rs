@@ -2,7 +2,8 @@ use super::{
     AXIS_SPLIT_SOURCE_IMPEDANCE, AXIS_SPLIT_SOURCE_NONE, CURRENT_AXIS_FLUX,
     CURRENT_GAINS_TIER_PHYSICAL_SYMMETRIC, CommissionProfile, CurrentGainSynthesis,
     CurrentGainSynthesisInput, CurrentGains, CurrentLoopEvidence,
-    ELECTRICAL_MODEL_RESISTANCE_SCALE, ElectricalModel, TransientBuffer, ValidationResult,
+    ELECTRICAL_MODEL_RESISTANCE_SCALE, ElectricalModel, Permille, TransientBuffer,
+    ValidationResult,
 };
 #[cfg(test)]
 use super::{
@@ -67,7 +68,7 @@ pub struct CurrentValidation {
     /// Time from 10% to 90% of target, in microseconds.
     pub rise_time_us: u32,
     /// Peak overshoot above target, in 0.1% units (150 = 15.0%).
-    pub overshoot_pct: u16,
+    pub overshoot_permille: Permille,
     /// Time to settle within +/-5% of target, in microseconds.
     pub settling_time_us: u32,
     /// Zero-crossings of (actual - target) after peak.
@@ -76,7 +77,7 @@ pub struct CurrentValidation {
     pub saturation_samples: u16,
     /// |fwd_tail - rev_tail| / avg, in 0.1% units (permille).
     /// Set to 0 by extract_step_metrics (requires two captures).
-    pub symmetry_pct: u16,
+    pub symmetry_permille: Permille,
     /// Robust tail level: median of last 32 samples (or fewer if buffer is
     /// shorter). Used to compute steady-state signed-current symmetry between
     /// forward and reverse captures.
@@ -85,7 +86,7 @@ pub struct CurrentValidation {
     /// Measures whether the current loop actually reached the commanded
     /// target. Set to 0 by extract_step_metrics; the caller computes it
     /// from the combined (worst-case) tail_level and commanded target.
-    pub target_error_pct: u16,
+    pub target_error_permille: Permille,
 }
 
 /// Axis sample passed validation.
@@ -582,8 +583,8 @@ fn trailing_average(samples: &[u32], idx: usize, window_len: usize) -> u32 {
 /// - `target`: the target value that was commanded (step amplitude)
 /// - `pidout_limit`: saturation threshold (0 to skip saturation check)
 ///
-/// Returns metrics with `symmetry_pct = 0`. Symmetry requires two captures
-/// (forward + reverse); the caller computes it via [`compute_tail_symmetry_pct`].
+/// Returns metrics with `symmetry_permille = 0`. Symmetry requires two captures
+/// (forward + reverse); the caller computes it via [`compute_tail_symmetry_permille`].
 /// Timing fields are durations within the capture, not absolute times since
 /// the command step. Callers that schedule the first sample after one sample
 /// period should keep that origin outside this buffer.
@@ -593,16 +594,28 @@ pub fn extract_step_metrics(
     pidout_limit: u32,
 ) -> CurrentValidation {
     let samples = buf.samples();
-    if samples.is_empty() || target == 0 {
+    if samples.is_empty() {
         return CurrentValidation {
             rise_time_us: 0,
-            overshoot_pct: 0,
+            overshoot_permille: Permille::ZERO,
             settling_time_us: 0,
             ringing_count: 0,
             saturation_samples: 0,
-            symmetry_pct: 0,
+            symmetry_permille: Permille::ZERO,
             tail_level: 0,
-            target_error_pct: 0,
+            target_error_permille: Permille::ZERO,
+        };
+    }
+    if target == 0 {
+        return CurrentValidation {
+            rise_time_us: 0,
+            overshoot_permille: Permille::MAX,
+            settling_time_us: 0,
+            ringing_count: 0,
+            saturation_samples: 0,
+            symmetry_permille: Permille::ZERO,
+            tail_level: 0,
+            target_error_permille: Permille::HUNDRED_PERCENT,
         };
     }
 
@@ -646,10 +659,11 @@ pub fn extract_step_metrics(
     };
 
     // Overshoot: (peak - target) / target in 0.1% units
-    let overshoot_pct = if peak > target {
-        ((peak - target) as u64 * 1000 / target as u64) as u16
+    let overshoot_permille = if peak > target {
+        Permille::checked_ratio(u64::from(peak - target), u64::from(target))
+            .unwrap_or(Permille::MAX)
     } else {
-        0
+        Permille::ZERO
     };
 
     // Settling: last smoothed sample where |actual - target| > 5% band.
@@ -703,13 +717,13 @@ pub fn extract_step_metrics(
 
     CurrentValidation {
         rise_time_us,
-        overshoot_pct,
+        overshoot_permille,
         settling_time_us,
         ringing_count,
         saturation_samples: saturation_count,
-        symmetry_pct: 0,
+        symmetry_permille: Permille::ZERO,
         tail_level,
-        target_error_pct: 0,
+        target_error_permille: Permille::ZERO,
     }
 }
 
@@ -737,9 +751,9 @@ pub fn classify_current_validation(
     let mut worst = ValidationResult::Pass;
 
     // Overshoot (0.1% units: 150 = 15.0%, 300 = 30.0%)
-    if metrics.overshoot_pct > 300 {
+    if metrics.overshoot_permille > Permille::new(300) {
         return ValidationResult::Fail;
-    } else if metrics.overshoot_pct > 150 {
+    } else if metrics.overshoot_permille > Permille::new(150) {
         worst = ValidationResult::Marginal;
     }
 
@@ -762,18 +776,19 @@ pub fn classify_current_validation(
     // Symmetry (0.1% units: 100 = 10.0%, 250 = 25.0%)
     // Tail-level symmetry is much less noisy than the old rise-time metric,
     // so tighter thresholds are appropriate.
-    if metrics.symmetry_pct > 250 {
+    if metrics.symmetry_permille > Permille::new(250) {
         return ValidationResult::Fail;
-    } else if metrics.symmetry_pct > 100 {
+    } else if metrics.symmetry_permille > Permille::new(100) {
         worst = ValidationResult::Marginal;
     }
 
     // Saturation (fraction of total samples): pass <10%, marginal 10-25%, fail >25%
-    if total_samples > 0 {
-        let sat_pct = (metrics.saturation_samples as u32 * 100) / total_samples as u32;
-        if sat_pct > 25 {
+    let saturation_permille =
+        super::metrics::saturation_permille(metrics.saturation_samples, total_samples);
+    if let Some(saturation_permille) = saturation_permille {
+        if saturation_permille > Permille::new(250) {
             return ValidationResult::Fail;
-        } else if sat_pct > 10 {
+        } else if saturation_permille > Permille::new(100) {
             worst = ValidationResult::Marginal;
         }
     }
@@ -782,9 +797,9 @@ pub fn classify_current_validation(
     // target? Catches zero-current, wrong-sign, and under-target responses
     // that would otherwise pass all other checks.
     // 0.1% units: 500 = 50.0%, 100 = 10.0%
-    if metrics.target_error_pct > 500 {
+    if metrics.target_error_permille > Permille::new(500) {
         return ValidationResult::Fail;
-    } else if metrics.target_error_pct > 100 {
+    } else if metrics.target_error_permille > Permille::new(100) {
         worst = ValidationResult::Marginal;
     }
 
@@ -842,20 +857,20 @@ pub fn should_accept_current_validation_without_retry(
     if previous != retry {
         return false;
     }
-    if metrics.overshoot_pct > 150 || metrics.ringing_count > 1 {
+    if metrics.overshoot_permille > Permille::new(150) || metrics.ringing_count > 1 {
         return false;
     }
     if metrics.settling_time_us > 5 * settle_reference_us {
         return false;
     }
-    if total_samples > 0 {
-        let sat_pct = (metrics.saturation_samples as u32 * 100) / total_samples as u32;
-        if sat_pct > 10 {
-            return false;
-        }
+    if super::metrics::saturation_permille(metrics.saturation_samples, total_samples)
+        .is_some_and(|saturation_permille| saturation_permille > Permille::new(100))
+    {
+        return false;
     }
 
-    metrics.symmetry_pct > 100 && metrics.symmetry_pct <= 250
+    metrics.symmetry_permille > Permille::new(100)
+        && metrics.symmetry_permille <= Permille::new(250)
 }
 
 fn retry_low_response_lambda_permille(_profile: CommissionProfile) -> u16 {
@@ -969,31 +984,94 @@ pub fn retry_current_loop_gains(
 /// This measures steady-state signed-current symmetry — whether both
 /// directions produce the same actual current magnitude. Returns 0 if
 /// both values are zero.
-pub fn compute_tail_symmetry_pct(fwd_tail: u32, rev_tail: u32) -> u16 {
-    let avg = (fwd_tail as u64 + rev_tail as u64) / 2;
-    if avg == 0 {
-        return 0;
-    }
-    let diff = fwd_tail.abs_diff(rev_tail);
-    (diff as u64 * 1000 / avg) as u16
+pub fn compute_tail_symmetry_permille(fwd_tail: u32, rev_tail: u32) -> Permille {
+    super::metrics::normalized_difference(fwd_tail, rev_tail)
 }
 
 /// Compute target-attainment error from a tail level and commanded target.
 ///
 /// Returns `|tail_level - target| / target` in 0.1% units (permille).
 /// Returns 1000 (100%) if `target` is zero to avoid division by zero.
-pub fn compute_target_error_pct(tail_level: u32, target: u32) -> u16 {
+pub fn compute_target_error_permille(tail_level: u32, target: u32) -> Permille {
     if target == 0 {
-        return 1000;
+        return Permille::HUNDRED_PERCENT;
     }
-    let diff = tail_level.abs_diff(target);
-    (diff as u64 * 1000 / target as u64) as u16
+    Permille::checked_ratio(u64::from(tail_level.abs_diff(target)), u64::from(target))
+        .expect("target checked nonzero")
 }
 
 #[cfg(test)]
 mod tests {
     use super::super::test_support::{autotune_test_config, test_electrical_model};
     use super::*;
+
+    fn passing_current_metrics() -> CurrentValidation {
+        CurrentValidation {
+            rise_time_us: 100,
+            overshoot_permille: Permille::ZERO,
+            settling_time_us: 100,
+            ringing_count: 0,
+            saturation_samples: 0,
+            symmetry_permille: Permille::ZERO,
+            tail_level: 1000,
+            target_error_permille: Permille::ZERO,
+        }
+    }
+
+    #[test]
+    fn current_overshoot_saturates_instead_of_wrapping_to_pass() {
+        let mut buf = TransientBuffer::new();
+        buf.reset(1000);
+        buf.push(65_537);
+        let metrics = extract_step_metrics(&buf, 1, 0);
+
+        assert_eq!(metrics.overshoot_permille, Permille::MAX);
+        assert_eq!(
+            classify_current_validation(&metrics, 1, 1),
+            ValidationResult::Fail,
+        );
+    }
+
+    #[test]
+    fn zero_current_target_fails_closed() {
+        let mut buf = TransientBuffer::new();
+        buf.reset(1000);
+        buf.push(1);
+        let metrics = extract_step_metrics(&buf, 0, 0);
+
+        assert_eq!(metrics.overshoot_permille, Permille::MAX);
+        assert_eq!(metrics.target_error_permille, Permille::HUNDRED_PERCENT);
+    }
+
+    #[test]
+    fn target_error_saturates_instead_of_wrapping() {
+        assert_eq!(compute_target_error_permille(u32::MAX, 1), Permille::MAX,);
+    }
+
+    #[test]
+    fn current_saturation_uses_permille_boundaries() {
+        let mut metrics = passing_current_metrics();
+        metrics.saturation_samples = 99;
+        assert_eq!(
+            classify_current_validation(&metrics, 100, 1000),
+            ValidationResult::Pass
+        );
+        metrics.saturation_samples = 100;
+        assert_eq!(
+            classify_current_validation(&metrics, 100, 1000),
+            ValidationResult::Pass
+        );
+        metrics.saturation_samples = 101;
+        assert_eq!(
+            classify_current_validation(&metrics, 100, 1000),
+            ValidationResult::Marginal,
+        );
+        metrics.saturation_samples = 251;
+        assert_eq!(
+            classify_current_validation(&metrics, 100, 1000),
+            ValidationResult::Fail
+        );
+    }
 
     #[test]
     fn current_loop_evidence_defaults_to_failed_none() {
@@ -1674,15 +1752,15 @@ mod tests {
 
     /// Build a synthetic first-order step response for testing.
     /// Fills 256 samples at 100us intervals.
-    fn synthetic_step_response(overshoot_pct: f32) -> TransientBuffer {
+    fn synthetic_step_response(overshoot_percent: f32) -> TransientBuffer {
         let mut buf = TransientBuffer::new();
         buf.reset(100);
         let target = 1000.0f32;
         for i in 0..256u32 {
             let t = i as f32;
             let base = target * (1.0 - (-t / 10.0).exp());
-            let overshoot_term = if overshoot_pct > 0.0 {
-                target * overshoot_pct / 100.0 * (-t / 20.0).exp() * (t / 5.0).sin()
+            let overshoot_term = if overshoot_percent > 0.0 {
+                target * overshoot_percent / 100.0 * (-t / 20.0).exp() * (t / 5.0).sin()
             } else {
                 0.0
             };
@@ -1696,9 +1774,9 @@ mod tests {
         let buf = synthetic_step_response(0.0);
         let metrics = extract_step_metrics(&buf, 1000, 0);
         assert!(
-            metrics.overshoot_pct < 20,
+            metrics.overshoot_permille < Permille::new(20),
             "overshoot {} should be <2%",
-            metrics.overshoot_pct
+            metrics.overshoot_permille.raw()
         );
         assert!(
             metrics.ringing_count <= 1,
@@ -1794,9 +1872,9 @@ mod tests {
         let buf = synthetic_step_response(100.0);
         let metrics = extract_step_metrics(&buf, 1000, 0);
         assert!(
-            metrics.overshoot_pct > 100,
+            metrics.overshoot_permille > Permille::new(100),
             "should detect significant overshoot: {}",
-            metrics.overshoot_pct
+            metrics.overshoot_permille.raw()
         );
     }
 
@@ -1846,7 +1924,7 @@ mod tests {
         let buf = TransientBuffer::new();
         let metrics = extract_step_metrics(&buf, 1000, 0);
         assert_eq!(metrics.rise_time_us, 0);
-        assert_eq!(metrics.overshoot_pct, 0);
+        assert_eq!(metrics.overshoot_permille, Permille::ZERO);
         assert_eq!(metrics.tail_level, 0);
     }
 
@@ -2265,13 +2343,13 @@ mod tests {
     fn classify_pass() {
         let metrics = CurrentValidation {
             rise_time_us: 500,
-            overshoot_pct: 100, // 10.0%
+            overshoot_permille: Permille::new(100), // 10.0%
             settling_time_us: 2000,
             ringing_count: 1,
             saturation_samples: 5,
-            symmetry_pct: 100, // 10.0%
+            symmetry_permille: Permille::new(100), // 10.0%
             tail_level: 0,
-            target_error_pct: 0,
+            target_error_permille: Permille::ZERO,
         };
         assert_eq!(
             classify_current_validation(&metrics, 1000, 512),
@@ -2283,13 +2361,13 @@ mod tests {
     fn classify_marginal_overshoot() {
         let metrics = CurrentValidation {
             rise_time_us: 500,
-            overshoot_pct: 200, // 20.0%
+            overshoot_permille: Permille::new(200), // 20.0%
             settling_time_us: 2000,
             ringing_count: 1,
             saturation_samples: 5,
-            symmetry_pct: 100,
+            symmetry_permille: Permille::new(100),
             tail_level: 0,
-            target_error_pct: 0,
+            target_error_permille: Permille::ZERO,
         };
         assert_eq!(
             classify_current_validation(&metrics, 1000, 512),
@@ -2301,13 +2379,13 @@ mod tests {
     fn classify_fail_overshoot() {
         let metrics = CurrentValidation {
             rise_time_us: 500,
-            overshoot_pct: 350, // 35.0%
+            overshoot_permille: Permille::new(350), // 35.0%
             settling_time_us: 2000,
             ringing_count: 1,
             saturation_samples: 5,
-            symmetry_pct: 100,
+            symmetry_permille: Permille::new(100),
             tail_level: 0,
-            target_error_pct: 0,
+            target_error_permille: Permille::ZERO,
         };
         assert_eq!(
             classify_current_validation(&metrics, 1000, 512),
@@ -2319,13 +2397,13 @@ mod tests {
     fn classify_fail_ringing() {
         let metrics = CurrentValidation {
             rise_time_us: 500,
-            overshoot_pct: 50,
+            overshoot_permille: Permille::new(50),
             settling_time_us: 2000,
             ringing_count: 4,
             saturation_samples: 0,
-            symmetry_pct: 0,
+            symmetry_permille: Permille::ZERO,
             tail_level: 0,
-            target_error_pct: 0,
+            target_error_permille: Permille::ZERO,
         };
         assert_eq!(
             classify_current_validation(&metrics, 1000, 512),
@@ -2337,13 +2415,13 @@ mod tests {
     fn classify_marginal_settling() {
         let metrics = CurrentValidation {
             rise_time_us: 500,
-            overshoot_pct: 50,
+            overshoot_permille: Permille::new(50),
             settling_time_us: 7000, // 7x tau=1000
             ringing_count: 0,
             saturation_samples: 0,
-            symmetry_pct: 0,
+            symmetry_permille: Permille::ZERO,
             tail_level: 0,
-            target_error_pct: 0,
+            target_error_permille: Permille::ZERO,
         };
         assert_eq!(
             classify_current_validation(&metrics, 1000, 512),
@@ -2355,13 +2433,13 @@ mod tests {
     fn classify_current_validation_settling_uses_controller_reference() {
         let metrics = CurrentValidation {
             rise_time_us: 500,
-            overshoot_pct: 141,
+            overshoot_permille: Permille::new(141),
             settling_time_us: 39360,
             ringing_count: 0,
             saturation_samples: 0,
-            symmetry_pct: 83,
+            symmetry_permille: Permille::new(83),
             tail_level: 0,
-            target_error_pct: 0,
+            target_error_permille: Permille::ZERO,
         };
 
         assert_eq!(
@@ -2376,13 +2454,13 @@ mod tests {
         // 150 permille should be Marginal (not Pass as with old 200 threshold).
         let metrics = CurrentValidation {
             rise_time_us: 500,
-            overshoot_pct: 50,
+            overshoot_permille: Permille::new(50),
             settling_time_us: 2000,
             ringing_count: 0,
             saturation_samples: 0,
-            symmetry_pct: 150,
+            symmetry_permille: Permille::new(150),
             tail_level: 0,
-            target_error_pct: 0,
+            target_error_permille: Permille::ZERO,
         };
         assert_eq!(
             classify_current_validation(&metrics, 1000, 512),
@@ -2396,13 +2474,13 @@ mod tests {
         // (not Marginal as with old 400 threshold).
         let metrics = CurrentValidation {
             rise_time_us: 500,
-            overshoot_pct: 50,
+            overshoot_permille: Permille::new(50),
             settling_time_us: 2000,
             ringing_count: 0,
             saturation_samples: 0,
-            symmetry_pct: 300,
+            symmetry_permille: Permille::new(300),
             tail_level: 0,
-            target_error_pct: 0,
+            target_error_permille: Permille::ZERO,
         };
         assert_eq!(
             classify_current_validation(&metrics, 1000, 512),
@@ -2415,13 +2493,13 @@ mod tests {
         // Exactly 100 permille should still pass.
         let metrics = CurrentValidation {
             rise_time_us: 500,
-            overshoot_pct: 50,
+            overshoot_permille: Permille::new(50),
             settling_time_us: 2000,
             ringing_count: 0,
             saturation_samples: 0,
-            symmetry_pct: 100,
+            symmetry_permille: Permille::new(100),
             tail_level: 0,
-            target_error_pct: 0,
+            target_error_permille: Permille::ZERO,
         };
         assert_eq!(
             classify_current_validation(&metrics, 1000, 512),
@@ -2436,13 +2514,13 @@ mod tests {
         // Zero current in both directions: target_error = 1000‰ (100% off).
         let metrics = CurrentValidation {
             rise_time_us: 0,
-            overshoot_pct: 0,
+            overshoot_permille: Permille::ZERO,
             settling_time_us: 0,
             ringing_count: 0,
             saturation_samples: 0,
-            symmetry_pct: 0,
+            symmetry_permille: Permille::ZERO,
             tail_level: 0,
-            target_error_pct: 1000, // 100% off target
+            target_error_permille: Permille::HUNDRED_PERCENT, // 100% off target
         };
         assert_eq!(
             classify_current_validation(&metrics, 12000, 512),
@@ -2456,13 +2534,13 @@ mod tests {
         // |200 - 367| / 367 * 1000 = 455
         let metrics = CurrentValidation {
             rise_time_us: 500,
-            overshoot_pct: 0,
+            overshoot_permille: Permille::ZERO,
             settling_time_us: 2000,
             ringing_count: 0,
             saturation_samples: 0,
-            symmetry_pct: 20,
+            symmetry_permille: Permille::new(20),
             tail_level: 200,
-            target_error_pct: 455,
+            target_error_permille: Permille::new(455),
         };
         assert_eq!(
             classify_current_validation(&metrics, 12000, 512),
@@ -2475,13 +2553,13 @@ mod tests {
         // tail_level=360 vs target=367 → error ≈ 19‰ (1.9% off).
         let metrics = CurrentValidation {
             rise_time_us: 500,
-            overshoot_pct: 50,
+            overshoot_permille: Permille::new(50),
             settling_time_us: 2000,
             ringing_count: 0,
             saturation_samples: 0,
-            symmetry_pct: 20,
+            symmetry_permille: Permille::new(20),
             tail_level: 360,
-            target_error_pct: 19,
+            target_error_permille: Permille::new(19),
         };
         assert_eq!(
             classify_current_validation(&metrics, 12000, 512),
@@ -2504,31 +2582,33 @@ mod tests {
 
     #[test]
     fn tail_symmetry_identical_is_zero() {
-        assert_eq!(compute_tail_symmetry_pct(367, 367), 0);
+        assert_eq!(compute_tail_symmetry_permille(367, 367), Permille::ZERO);
     }
 
     #[test]
     fn tail_symmetry_small_mismatch() {
         // |351 - 358| / avg(351, 358) = 7 / 354.5 ≈ 19.7‰ → 19 in permille
-        let result = compute_tail_symmetry_pct(351, 358);
+        let result = compute_tail_symmetry_permille(351, 358);
         assert!(
-            (15..=25).contains(&result),
-            "tail symmetry {result} expected ~20‰"
+            (15..=25).contains(&result.raw()),
+            "tail symmetry {} expected ~20‰",
+            result.raw()
         );
     }
 
     #[test]
     fn tail_symmetry_large_mismatch() {
         // |200 - 400| / avg(200, 400) = 200 / 300 ≈ 666.7‰
-        let result = compute_tail_symmetry_pct(200, 400);
+        let result = compute_tail_symmetry_permille(200, 400);
         assert!(
-            (660..=670).contains(&result),
-            "tail symmetry {result} expected ~667‰"
+            (660..=670).contains(&result.raw()),
+            "tail symmetry {} expected ~667‰",
+            result.raw()
         );
     }
 
     #[test]
     fn tail_symmetry_zero_avg() {
-        assert_eq!(compute_tail_symmetry_pct(0, 0), 0);
+        assert_eq!(compute_tail_symmetry_permille(0, 0), Permille::ZERO);
     }
 }

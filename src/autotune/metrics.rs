@@ -36,8 +36,6 @@ impl Permille {
     }
 }
 
-// Task 2 consumes this helper when acceptance metrics migrate to `Permille`.
-#[allow(dead_code)]
 pub(crate) fn normalized_difference(a: u32, b: u32) -> Permille {
     if a == 0 && b == 0 {
         return Permille::ZERO;
@@ -47,8 +45,6 @@ pub(crate) fn normalized_difference(a: u32, b: u32) -> Permille {
     Permille::checked_ratio(numerator, denominator).expect("nonzero normalized-difference sum")
 }
 
-// Task 2 consumes this helper when acceptance metrics migrate to `Permille`.
-#[allow(dead_code)]
 pub(crate) fn saturation_permille(saturated_samples: u16, total_samples: u16) -> Option<Permille> {
     Permille::checked_ratio(u64::from(saturated_samples), u64::from(total_samples))
 }
