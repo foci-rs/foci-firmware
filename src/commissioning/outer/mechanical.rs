@@ -1367,14 +1367,18 @@ pub(crate) async fn step_mechanical_id_with_trace<B: CommissioningBackend>(
                 }
 
                 // Extract forward metrics from buffer before reset.
+                let encoder_domain = safety
+                    .encoder_domain
+                    .expect("outer encoder domain configured before capture");
+                let reference_position = data
+                    .start_position
+                    .expect("mechanical capture baseline configured");
                 let metrics = response::extract_mechanical_id_metrics(
                     buf,
                     data.sample_timestamps(),
                     *capture_start_us,
-                    data.start_position
-                        .expect("mechanical capture baseline configured")
-                        .raw_counts(),
-                    safety.counts_per_rev(),
+                    reference_position,
+                    encoder_domain,
                 );
                 data.fwd_slope = metrics.accel;
                 data.forward_peak_velocity = metrics.peak_velocity;
@@ -1384,10 +1388,8 @@ pub(crate) async fn step_mechanical_id_with_trace<B: CommissioningBackend>(
                     buf,
                     data.sample_timestamps(),
                     *capture_start_us,
-                    data.start_position
-                        .expect("mechanical capture baseline configured")
-                        .raw_counts(),
-                    safety.counts_per_rev(),
+                    reference_position,
+                    encoder_domain,
                     data.torque_step as u32,
                 );
 
@@ -1477,19 +1479,21 @@ pub(crate) async fn step_mechanical_id_with_trace<B: CommissioningBackend>(
 
                 // For reverse capture, use the position at capture start
                 // (first sample) as the reference, not the original start.
+                let encoder_domain = safety
+                    .encoder_domain
+                    .expect("outer encoder domain configured before capture");
                 let reverse_start = if !buf.is_empty() {
-                    buf.samples()[0]
+                    encoder_domain.count(buf.samples()[0])
                 } else {
                     data.start_position
                         .expect("mechanical capture baseline configured")
-                        .raw_counts()
                 };
                 let metrics = response::extract_mechanical_id_metrics(
                     buf,
                     data.sample_timestamps(),
                     *capture_start_us,
                     reverse_start,
-                    safety.counts_per_rev(),
+                    encoder_domain,
                 );
                 data.rev_slope = metrics.accel;
                 data.reverse_peak_velocity = metrics.peak_velocity.unsigned_abs() as i32;
@@ -1500,7 +1504,7 @@ pub(crate) async fn step_mechanical_id_with_trace<B: CommissioningBackend>(
                     data.sample_timestamps(),
                     *capture_start_us,
                     reverse_start,
-                    safety.counts_per_rev(),
+                    encoder_domain,
                     data.torque_step as u32,
                 );
 

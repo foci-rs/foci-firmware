@@ -8,6 +8,7 @@
 
 use super::{MechanicalIdData, MechanicalIdState, OuterDiagnostics, OuterPhase, OuterSafetyLimits};
 use crate::autotune::{MechanicalModel, TransientBuffer, VelocityGains};
+use crate::commissioning::encoder_domain::{EncoderCount, EncoderDomain};
 
 /// Torque step attempts as fractions of run_current.
 ///
@@ -258,7 +259,7 @@ pub(crate) fn response_velocity_phase(
 }
 
 /// Time-aware metrics extracted from a MechanicalId transient capture.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub(crate) struct MechanicalIdMetrics {
     pub(crate) accel: crate::commissioning::outer::slope_estimator::SlopeEstimate,
     pub(crate) peak_velocity: i32,
@@ -306,8 +307,8 @@ pub(crate) fn extract_mechanical_response_model(
     buf: &TransientBuffer,
     timestamps_us: &[u64],
     capture_start_us: u64,
-    reference_position: u32,
-    counts_per_rev: u32,
+    reference_position: EncoderCount,
+    encoder_domain: EncoderDomain,
     torque: u32,
 ) -> MechanicalResponseEstimate {
     let samples = buf.samples();
@@ -319,22 +320,24 @@ pub(crate) fn extract_mechanical_response_model(
     let mut velocities_mcpms = [0_i32; crate::autotune::TRANSIENT_LEN];
     let mut peak_velocity_mcpms: i32 = 0;
     let mut onset_idx: Option<usize> = None;
-    let mut unwrapped_travel: i32 = 0;
+    let mut unwrapped_travel: i64 = 0;
     let mut max_travel: u32 = 0;
-    let threshold_mcpms = mechanical_id_velocity_onset_threshold_mcpms(counts_per_rev);
+    let threshold_mcpms =
+        mechanical_id_velocity_onset_threshold_mcpms(encoder_domain.counts_per_rev());
+    let mut previous_count = reference_position;
 
     for i in 0..samples.len() {
-        let previous_count = if i == 0 {
-            reference_position
-        } else {
-            samples[i - 1]
-        };
         let previous_ts = if i == 0 {
             capture_start_us
         } else {
             timestamps_us[i - 1]
         };
-        let delta = encoder_delta(samples[i], previous_count, counts_per_rev);
+        let current_count = encoder_domain.count(samples[i]);
+        let delta = match encoder_domain.delta(previous_count, current_count) {
+            Ok(delta) => delta.signed_counts(),
+            Err(_) => return MechanicalResponseEstimate::default(),
+        };
+        previous_count = current_count;
         let dt_us = timestamps_us[i].saturating_sub(previous_ts);
         let v_mcpms = if dt_us == 0 {
             0
@@ -343,8 +346,9 @@ pub(crate) fn extract_mechanical_response_model(
         };
         velocities_mcpms[i] = v_mcpms;
 
-        unwrapped_travel += delta;
-        max_travel = max_travel.max(unwrapped_travel.unsigned_abs());
+        unwrapped_travel += i64::from(delta);
+        let travel = unwrapped_travel.unsigned_abs().min(u64::from(u32::MAX)) as u32;
+        max_travel = max_travel.max(travel);
         if v_mcpms.unsigned_abs() > peak_velocity_mcpms.unsigned_abs() {
             peak_velocity_mcpms = v_mcpms;
         }
@@ -422,17 +426,17 @@ pub(crate) fn extract_mechanical_response_model(
 /// absolute travel from a mechanical-ID transient capture.
 ///
 /// Accel + confidence is delegated to `estimate_early_slope`; peak velocity,
-/// delay, and travel are computed inline. The caller supplies the reference
-/// encoder position and counts-per-revolution so all math is wrap-aware on
-/// the ABN decoder boundary.
+/// delay, and travel are computed inline. The caller supplies a normalized
+/// reference position and its validated domain so all displacement uses the
+/// shared shortest-path encoder arithmetic.
 pub(crate) fn extract_mechanical_id_metrics(
     buf: &TransientBuffer,
     timestamps_us: &[u64],
     capture_start_us: u64,
-    reference_position: u32,
-    counts_per_rev: u32,
+    reference_position: EncoderCount,
+    encoder_domain: EncoderDomain,
 ) -> MechanicalIdMetrics {
-    use crate::commissioning::outer::slope_estimator::{SlopeEstimate, estimate_early_slope};
+    use crate::commissioning::outer::slope_estimator::estimate_early_slope;
 
     let samples = buf.samples();
     debug_assert_eq!(timestamps_us.len(), samples.len());
@@ -442,12 +446,7 @@ pub(crate) fn extract_mechanical_id_metrics(
             timestamps_us.len(),
             samples.len()
         );
-        return MechanicalIdMetrics {
-            accel: SlopeEstimate::default(),
-            peak_velocity: 0,
-            delay_us: 0,
-            travel: 0,
-        };
+        return MechanicalIdMetrics::default();
     }
 
     // Accel + confidence is delegated.
@@ -456,25 +455,23 @@ pub(crate) fn extract_mechanical_id_metrics(
         timestamps_us,
         capture_start_us,
         reference_position,
-        counts_per_rev,
+        encoder_domain,
     );
 
     // Peak velocity, delay_us, and travel keep their existing extraction.
     let mut peak_velocity_mcpms: i32 = 0;
     let mut onset_idx: Option<usize> = None;
     let mut max_travel: u32 = 0;
-    let mut unwrapped_travel: i32 = 0;
+    let mut unwrapped_travel: i64 = 0;
+    let mut previous_count = reference_position;
 
     for i in 0..samples.len() {
-        let delta_counts = encoder_delta(
-            samples[i],
-            if i == 0 {
-                reference_position
-            } else {
-                samples[i - 1]
-            },
-            counts_per_rev,
-        );
+        let current_count = encoder_domain.count(samples[i]);
+        let delta_counts = match encoder_domain.delta(previous_count, current_count) {
+            Ok(delta) => delta.signed_counts(),
+            Err(_) => return MechanicalIdMetrics::default(),
+        };
+        previous_count = current_count;
         let dt_us = if i == 0 {
             timestamps_us[i].saturating_sub(capture_start_us)
         } else {
@@ -485,8 +482,8 @@ pub(crate) fn extract_mechanical_id_metrics(
         } else {
             ((delta_counts as i64) * 1_000_000 / dt_us as i64) as i32
         };
-        unwrapped_travel += delta_counts;
-        let travel = unwrapped_travel.unsigned_abs();
+        unwrapped_travel += i64::from(delta_counts);
+        let travel = unwrapped_travel.unsigned_abs().min(u64::from(u32::MAX)) as u32;
         if travel > max_travel {
             max_travel = travel;
         }
@@ -495,7 +492,7 @@ pub(crate) fn extract_mechanical_id_metrics(
         }
         if onset_idx.is_none()
             && v_mcpms.unsigned_abs()
-                >= mechanical_id_velocity_onset_threshold_mcpms(counts_per_rev)
+                >= mechanical_id_velocity_onset_threshold_mcpms(encoder_domain.counts_per_rev())
         {
             onset_idx = Some(i);
         }
@@ -536,12 +533,49 @@ fn round_div_signed_i128(numerator: i128, denominator: i128) -> i128 {
 #[cfg(test)]
 mod tests {
     use super::{
-        extract_mechanical_id_metrics, extract_mechanical_response_model,
-        mechanical_id_torque_percent, mechanical_id_velocity_onset_threshold_mcpms,
-        position_tune_step_counts, response_velocity_gains,
+        MechanicalIdMetrics, MechanicalResponseEstimate, mechanical_id_torque_percent,
+        mechanical_id_velocity_onset_threshold_mcpms, position_tune_step_counts,
+        response_velocity_gains,
     };
     use crate::autotune::TransientBuffer;
+    use crate::commissioning::encoder_domain::EncoderDomain;
     use crate::commissioning::outer::MECHANICAL_ID_VELOCITY_CAP_COUNTS_PER_MS;
+
+    fn extract_mechanical_id_metrics(
+        buf: &TransientBuffer,
+        timestamps_us: &[u64],
+        capture_start_us: u64,
+        reference_position: u32,
+        counts_per_rev: u32,
+    ) -> MechanicalIdMetrics {
+        let domain = EncoderDomain::new(counts_per_rev).unwrap();
+        super::extract_mechanical_id_metrics(
+            buf,
+            timestamps_us,
+            capture_start_us,
+            domain.count(reference_position),
+            domain,
+        )
+    }
+
+    fn extract_mechanical_response_model(
+        buf: &TransientBuffer,
+        timestamps_us: &[u64],
+        capture_start_us: u64,
+        reference_position: u32,
+        counts_per_rev: u32,
+        torque: u32,
+    ) -> MechanicalResponseEstimate {
+        let domain = EncoderDomain::new(counts_per_rev).unwrap();
+        super::extract_mechanical_response_model(
+            buf,
+            timestamps_us,
+            capture_start_us,
+            domain.count(reference_position),
+            domain,
+            torque,
+        )
+    }
 
     #[test]
     fn response_velocity_gains_keep_conservative_runtime_limit() {
@@ -652,5 +686,40 @@ mod tests {
         assert_eq!(estimate.b_eff, 20_000);
         assert!((2..=6).contains(&estimate.tau_mech_ms));
         assert_eq!(estimate.j_eff, estimate.b_eff * estimate.tau_mech_ms);
+    }
+
+    #[test]
+    fn response_metrics_preserve_forward_motion_across_encoder_origin() {
+        let mut buf = TransientBuffer::new();
+        buf.reset(1000);
+        for sample in [3_995_u32, 3_998, 3, 10, 19, 30, 43, 58] {
+            assert!(buf.push(sample));
+        }
+        let timestamps = [0_u64, 1_000, 2_000, 3_000, 4_000, 5_000, 6_000, 7_000];
+
+        let metrics = extract_mechanical_id_metrics(&buf, &timestamps, 0, 3_995, 4_000);
+
+        assert!(metrics.accel.accel > 0);
+        assert!(metrics.peak_velocity > 0);
+        assert_eq!(metrics.travel, 63);
+    }
+
+    #[test]
+    fn half_turn_discards_entire_response_before_later_samples() {
+        let mut buf = TransientBuffer::new();
+        buf.reset(1000);
+        for sample in [4_u32, 8, 2_008, 3_900, 3_800, 3_700, 3_600, 3_500] {
+            assert!(buf.push(sample));
+        }
+        let timestamps = [1_000_u64, 2_000, 3_000, 4_000, 5_000, 6_000, 7_000, 8_000];
+
+        let metrics = extract_mechanical_id_metrics(&buf, &timestamps, 0, 0, 4_000);
+        let estimate = extract_mechanical_response_model(&buf, &timestamps, 0, 0, 4_000, 360);
+
+        assert_eq!(metrics.accel, Default::default());
+        assert_eq!(metrics.peak_velocity, 0);
+        assert_eq!(metrics.delay_us, 0);
+        assert_eq!(metrics.travel, 0);
+        assert_eq!(estimate, Default::default());
     }
 }
