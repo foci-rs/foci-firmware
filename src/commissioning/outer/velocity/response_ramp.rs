@@ -86,3 +86,39 @@ pub(super) fn response_result_is_gain_limited(
         })
         && !metrics.zero_speed_chatter
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::autotune::Permille;
+
+    use super::*;
+
+    fn gain_limited_metrics() -> VelocityValidation {
+        VelocityValidation {
+            rise_time_ms: 1,
+            overshoot_permille: Permille::ZERO,
+            peak_velocity: 10,
+            settling_time_ms: 1,
+            zero_speed_chatter: false,
+            saturation_samples: 0,
+            symmetry_permille: Permille::ZERO,
+        }
+    }
+
+    #[test]
+    fn gain_limited_response_rejects_fractional_saturation_above_ten_percent() {
+        let mut metrics = gain_limited_metrics();
+        let fwd = gain_limited_metrics();
+        let rev = gain_limited_metrics();
+
+        metrics.saturation_samples = 100;
+        assert!(response_result_is_gain_limited(
+            &metrics, &fwd, &rev, 10, 1000,
+        ));
+
+        metrics.saturation_samples = 101;
+        assert!(!response_result_is_gain_limited(
+            &metrics, &fwd, &rev, 10, 1000,
+        ));
+    }
+}

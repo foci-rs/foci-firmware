@@ -529,12 +529,27 @@ mod tests {
     #[test]
     fn velocity_saturation_uses_permille_boundaries() {
         let mut metrics = passing_velocity_metrics();
+        metrics.saturation_samples = 99;
+        assert_eq!(
+            classify_velocity_validation(&metrics, 100, 1000),
+            ValidationResult::Pass
+        );
         metrics.saturation_samples = 100;
         assert_eq!(
             classify_velocity_validation(&metrics, 100, 1000),
             ValidationResult::Pass
         );
         metrics.saturation_samples = 101;
+        assert_eq!(
+            classify_velocity_validation(&metrics, 100, 1000),
+            ValidationResult::Marginal,
+        );
+        metrics.saturation_samples = 249;
+        assert_eq!(
+            classify_velocity_validation(&metrics, 100, 1000),
+            ValidationResult::Marginal,
+        );
+        metrics.saturation_samples = 250;
         assert_eq!(
             classify_velocity_validation(&metrics, 100, 1000),
             ValidationResult::Marginal,

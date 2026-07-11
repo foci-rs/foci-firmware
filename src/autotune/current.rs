@@ -791,7 +791,7 @@ pub fn classify_current_validation(
         worst = ValidationResult::Marginal;
     }
 
-    // Saturation (fraction of total samples): pass <10%, marginal 10-25%, fail >25%
+    // Saturation (fraction of total samples): pass <=10%, marginal >10-25%, fail >25%.
     let saturation_permille =
         super::metrics::saturation_permille(metrics.saturation_samples, total_samples);
     if let Some(saturation_permille) = saturation_permille {
@@ -1075,11 +1075,45 @@ mod tests {
             classify_current_validation(&metrics, 100, 1000),
             ValidationResult::Marginal,
         );
+        metrics.saturation_samples = 249;
+        assert_eq!(
+            classify_current_validation(&metrics, 100, 1000),
+            ValidationResult::Marginal,
+        );
+        metrics.saturation_samples = 250;
+        assert_eq!(
+            classify_current_validation(&metrics, 100, 1000),
+            ValidationResult::Marginal,
+        );
         metrics.saturation_samples = 251;
         assert_eq!(
             classify_current_validation(&metrics, 100, 1000),
             ValidationResult::Fail
         );
+    }
+
+    #[test]
+    fn accept_without_retry_rejects_fractional_saturation_above_ten_percent() {
+        let gains = CurrentGains {
+            flux_p: 1,
+            flux_i: 1,
+            torque_p: 1,
+            torque_i: 1,
+            effective_bandwidth_hz: 1,
+            lambda_us: 1,
+        };
+        let mut metrics = passing_current_metrics();
+        metrics.symmetry_permille = Permille::new(101);
+
+        metrics.saturation_samples = 100;
+        assert!(should_accept_current_validation_without_retry(
+            &metrics, 100, 1000, gains, gains,
+        ));
+
+        metrics.saturation_samples = 101;
+        assert!(!should_accept_current_validation_without_retry(
+            &metrics, 100, 1000, gains, gains,
+        ));
     }
 
     #[test]
