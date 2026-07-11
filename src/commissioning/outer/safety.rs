@@ -2,7 +2,7 @@
 
 use crate::autotune::CommissionError;
 use crate::commissioning::backend::CommissioningBackend;
-use crate::commissioning::encoder_domain::{EncoderDomain, EncoderMathError};
+use crate::commissioning::encoder_domain::{EncoderCount, EncoderDomain, EncoderMathError};
 use crate::commissioning::types::{
     OUTER_SAFETY_FAULT_DURATION, OUTER_SAFETY_FAULT_INVALID_BUDGET, OUTER_SAFETY_FAULT_POSITION,
     OUTER_SAFETY_FAULT_UNUSABLE_BUDGET, OUTER_SAFETY_FAULT_VELOCITY, OuterSafetyFault,
@@ -66,7 +66,7 @@ pub(crate) struct OuterSafetyLimits {
     /// Torque cap: the configured run_current limit.
     pub(crate) torque_cap: u16,
     /// Previous normalized encoder count for delta computation.
-    pub(crate) prev_encoder_count: u32,
+    pub(crate) prev_encoder_count: Option<EncoderCount>,
     /// Validated encoder modulo domain.
     pub(crate) encoder_domain: Option<EncoderDomain>,
     /// Timestamp (microseconds) of the previous safety sample.
@@ -79,13 +79,13 @@ pub(crate) struct OuterSafetyLimits {
 }
 
 impl OuterSafetyLimits {
-    pub(crate) fn new(start_position: u32, torque_cap: u16, budget: OuterMotionBudget) -> Self {
+    pub(crate) fn new(torque_cap: u16, budget: OuterMotionBudget) -> Self {
         Self {
             velocity_cap: MECHANICAL_ID_VELOCITY_CAP_COUNTS_PER_MS,
             position_window: POSITION_WINDOW_COUNTS,
             unwrapped_position: 0,
             torque_cap,
-            prev_encoder_count: start_position,
+            prev_encoder_count: None,
             encoder_domain: None,
             last_sample_us: 0,
             start_sample_us: 0,
@@ -106,7 +106,7 @@ impl OuterSafetyLimits {
     ) -> Result<(), EncoderMathError> {
         let encoder_domain = EncoderDomain::new(counts_per_rev)?;
         self.encoder_domain = Some(encoder_domain);
-        self.prev_encoder_count = encoder_domain.count(self.prev_encoder_count).raw_counts();
+        self.prev_encoder_count = None;
         self.velocity_cap = mechanical_id_velocity_cap_counts_per_ms(counts_per_rev)
             .min(self.budget.velocity_counts_per_ms(counts_per_rev));
         self.position_window =
@@ -118,7 +118,7 @@ impl OuterSafetyLimits {
         let domain = self
             .encoder_domain
             .ok_or(EncoderMathError::InvalidCountsPerRev)?;
-        self.prev_encoder_count = domain.count(raw_counts).raw_counts();
+        self.prev_encoder_count = Some(domain.count(raw_counts));
         Ok(())
     }
 
@@ -283,7 +283,10 @@ pub(crate) async fn check_outer_safety<B: CommissioningBackend>(
     // Wrap-aware delta in encoder counts since the last safety sample.
     let delta_counts = response::encoder_delta(
         encoder_count.raw_counts(),
-        safety.prev_encoder_count,
+        safety
+            .prev_encoder_count
+            .expect("outer encoder baseline configured before motion")
+            .raw_counts(),
         safety.counts_per_rev(),
     );
     let dt_us = if safety.last_sample_us == 0 {
@@ -292,7 +295,7 @@ pub(crate) async fn check_outer_safety<B: CommissioningBackend>(
         now_us.wrapping_sub(safety.last_sample_us)
     };
     let velocity_cpms = response::counts_per_ms(delta_counts, dt_us);
-    safety.prev_encoder_count = encoder_count.raw_counts();
+    safety.prev_encoder_count = Some(encoder_count);
     safety.last_sample_us = now_us;
     safety.unwrapped_position += delta_counts;
 
@@ -367,7 +370,7 @@ mod tests {
 
     #[test]
     fn outer_safety_rejects_zero_encoder_resolution() {
-        let mut safety = OuterSafetyLimits::new(0, 100, OuterMotionBudget::firmware_caps());
+        let mut safety = OuterSafetyLimits::new(100, OuterMotionBudget::firmware_caps());
 
         let result = safety.configure_encoder_resolution(0);
 
@@ -376,8 +379,21 @@ mod tests {
     }
 
     #[test]
+    fn outer_safety_retains_a_normalized_typed_baseline() {
+        let mut safety = OuterSafetyLimits::new(100, OuterMotionBudget::firmware_caps());
+
+        safety.configure_encoder_resolution(4_000).unwrap();
+        safety.set_encoder_baseline(8_003).unwrap();
+
+        assert_eq!(
+            safety.prev_encoder_count.map(|count| count.raw_counts()),
+            Some(3)
+        );
+    }
+
+    #[test]
     fn outer_safety_uses_mechanical_id_velocity_cap() {
-        let safety = OuterSafetyLimits::new(0, 100, OuterMotionBudget::firmware_caps());
+        let safety = OuterSafetyLimits::new(100, OuterMotionBudget::firmware_caps());
         assert_eq!(
             safety.velocity_cap,
             MECHANICAL_ID_VELOCITY_CAP_COUNTS_PER_MS
@@ -386,7 +402,7 @@ mod tests {
 
     #[test]
     fn outer_safety_limits_scale_with_encoder_resolution() {
-        let mut safety = OuterSafetyLimits::new(0, 100, OuterMotionBudget::firmware_caps());
+        let mut safety = OuterSafetyLimits::new(100, OuterMotionBudget::firmware_caps());
 
         safety.configure_encoder_resolution(8_000).unwrap();
 
@@ -398,7 +414,6 @@ mod tests {
     #[test]
     fn outer_safety_clamps_position_window_to_host_budget() {
         let mut safety = OuterSafetyLimits::new(
-            0,
             100,
             OuterMotionBudget {
                 max_travel_mrev: 500,
@@ -417,7 +432,6 @@ mod tests {
     #[test]
     fn outer_safety_refuses_zero_budget() {
         let safety = OuterSafetyLimits::new(
-            0,
             100,
             OuterMotionBudget {
                 max_travel_mrev: 0,
@@ -433,7 +447,6 @@ mod tests {
     #[test]
     fn outer_safety_refuses_non_bidirectional_direction_mask() {
         let safety = OuterSafetyLimits::new(
-            0,
             100,
             OuterMotionBudget {
                 max_travel_mrev: 500,
@@ -450,7 +463,6 @@ mod tests {
     fn outer_safety_violates_on_unusable_budget() {
         pollster::block_on(async {
             let mut safety = OuterSafetyLimits::new(
-                0,
                 100,
                 OuterMotionBudget {
                     max_travel_mrev: 0,
@@ -473,7 +485,6 @@ mod tests {
     fn outer_safety_violates_on_duration_budget() {
         pollster::block_on(async {
             let mut safety = OuterSafetyLimits::new(
-                0,
                 100,
                 OuterMotionBudget {
                     max_travel_mrev: 500,
@@ -498,9 +509,9 @@ mod tests {
     #[test]
     fn outer_safety_normalizes_velocity_by_elapsed_time() {
         pollster::block_on(async {
-            let mut safety = OuterSafetyLimits::new(0, 100, OuterMotionBudget::firmware_caps());
+            let mut safety = OuterSafetyLimits::new(100, OuterMotionBudget::firmware_caps());
             safety.configure_encoder_resolution(4_000).unwrap();
-            safety.prev_encoder_count = 2328;
+            safety.set_encoder_baseline(2328).unwrap();
             safety.last_sample_us = 100_000;
             let mut backend = MockBackend::new();
             backend.elapsed_us_value = 124_909;
@@ -514,7 +525,10 @@ mod tests {
                 fault.is_none(),
                 "time-normalized velocity should stay below the cap"
             );
-            assert_eq!(safety.prev_encoder_count, 2525);
+            assert_eq!(
+                safety.prev_encoder_count.map(|count| count.raw_counts()),
+                Some(2525)
+            );
             assert_eq!(safety.last_sample_us, 124_909);
             assert_eq!(safety.unwrapped_position, 197);
         });
@@ -524,7 +538,6 @@ mod tests {
     fn outer_safety_reports_velocity_fault_details() {
         pollster::block_on(async {
             let mut safety = OuterSafetyLimits::new(
-                0,
                 100,
                 OuterMotionBudget {
                     max_travel_mrev: 750,
@@ -534,7 +547,7 @@ mod tests {
                 },
             );
             safety.configure_encoder_resolution(4_000).unwrap();
-            safety.prev_encoder_count = 0;
+            safety.set_encoder_baseline(0).unwrap();
             safety.last_sample_us = 100_000;
             safety.start_sample_us = 90_000;
             let mut backend = MockBackend::new();
@@ -565,7 +578,7 @@ mod tests {
     #[test]
     fn outer_safety_read_error_fails_with_spi() {
         pollster::block_on(async {
-            let mut safety = OuterSafetyLimits::new(0, 2448, OuterMotionBudget::firmware_caps());
+            let mut safety = OuterSafetyLimits::new(2448, OuterMotionBudget::firmware_caps());
             safety.configure_encoder_resolution(4_000).unwrap();
             safety.last_sample_us = 1_000;
             let mut phase = OuterPhase::MechanicalId {
@@ -573,7 +586,7 @@ mod tests {
                     next_sample_us: 2_000,
                     capture_start_us: 1_000,
                 },
-                data: MechanicalIdData::new(0, 367),
+                data: MechanicalIdData::new(367),
                 safety,
             };
             let mut buf = TransientBuffer::new();

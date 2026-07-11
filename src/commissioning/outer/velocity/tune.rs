@@ -179,7 +179,7 @@ pub(crate) async fn step_velocity_tune<B: CommissioningBackend>(
         reverse_metrics: None,
         max_chatter: 0,
         peak_velocity,
-        prev_encoder_for_velocity: 0,
+        prev_encoder_for_velocity: None,
         saturation_count: 0,
         torque_limit: backend.current_limit() & 0xFFFF,
         operational_velocity_limit: backend.operational_velocity_limit(),
@@ -240,7 +240,6 @@ mod tests {
                 peak_velocity: 1_000,
                 diagnostics: zero_diagnostics(),
                 safety: OuterSafetyLimits::new(
-                    0,
                     2_448,
                     crate::commissioning::outer::OuterMotionBudget::firmware_caps(),
                 ),
@@ -250,7 +249,6 @@ mod tests {
                 peak_velocity: 1_000,
                 diagnostics: zero_diagnostics(),
                 safety: OuterSafetyLimits::new(
-                    0,
                     2_448,
                     crate::commissioning::outer::OuterMotionBudget::firmware_caps(),
                 ),
@@ -329,7 +327,6 @@ mod tests {
                 peak_velocity: 1_000,
                 diagnostics,
                 safety: OuterSafetyLimits::new(
-                    0,
                     2_448,
                     crate::commissioning::outer::OuterMotionBudget::firmware_caps(),
                 ),

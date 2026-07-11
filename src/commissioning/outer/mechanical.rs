@@ -151,7 +151,7 @@ mod tests {
     fn mechanical_id_summary_packs_exact_fragments() {
         let mut backend = MockBackend::new();
         let mut seqs = TraceSummarySeqs::new();
-        let mut data = MechanicalIdData::new(0, 300);
+        let mut data = MechanicalIdData::new(300);
         data.attempt = 2;
         data.forward_peak_velocity = 123;
         data.reverse_peak_velocity = -45;
@@ -215,9 +215,8 @@ mod tests {
         pollster::block_on(async {
             let mut phase = OuterPhase::MechanicalId {
                 state: MechanicalIdState::Setup,
-                data: MechanicalIdData::new(0, 0),
+                data: MechanicalIdData::new(0),
                 safety: OuterSafetyLimits::new(
-                    0,
                     0,
                     crate::commissioning::outer::OuterMotionBudget::firmware_caps(),
                 ),
@@ -281,9 +280,8 @@ mod tests {
         pollster::block_on(async {
             let mut phase = OuterPhase::MechanicalId {
                 state: MechanicalIdState::Setup,
-                data: MechanicalIdData::new(0, 0),
+                data: MechanicalIdData::new(0),
                 safety: OuterSafetyLimits::new(
-                    0,
                     0,
                     crate::commissioning::outer::OuterMotionBudget {
                         max_travel_mrev: 500,
@@ -338,9 +336,8 @@ mod tests {
         pollster::block_on(async {
             let mut phase = OuterPhase::MechanicalId {
                 state: MechanicalIdState::Setup,
-                data: MechanicalIdData::new(0, 0),
+                data: MechanicalIdData::new(0),
                 safety: OuterSafetyLimits::new(
-                    0,
                     0,
                     crate::commissioning::outer::OuterMotionBudget::firmware_caps(),
                 ),
@@ -388,9 +385,8 @@ mod tests {
         pollster::block_on(async {
             let mut phase = OuterPhase::MechanicalId {
                 state: MechanicalIdState::Setup,
-                data: MechanicalIdData::new(0, 0),
+                data: MechanicalIdData::new(0),
                 safety: OuterSafetyLimits::new(
-                    0,
                     0,
                     crate::commissioning::outer::OuterMotionBudget {
                         max_travel_mrev: 1,
@@ -445,9 +441,8 @@ mod tests {
         pollster::block_on(async {
             let mut phase = OuterPhase::MechanicalId {
                 state: MechanicalIdState::Setup,
-                data: MechanicalIdData::new(0, 0),
+                data: MechanicalIdData::new(0),
                 safety: OuterSafetyLimits::new(
-                    0,
                     0,
                     crate::commissioning::outer::OuterMotionBudget::firmware_caps(),
                 ),
@@ -518,9 +513,8 @@ mod tests {
         pollster::block_on(async {
             let mut phase = OuterPhase::MechanicalId {
                 state: MechanicalIdState::Setup,
-                data: MechanicalIdData::new(0, 0),
+                data: MechanicalIdData::new(0),
                 safety: OuterSafetyLimits::new(
-                    0,
                     0,
                     crate::commissioning::outer::OuterMotionBudget::firmware_caps(),
                 ),
@@ -606,8 +600,14 @@ mod tests {
                 } => {
                     assert!(matches!(state, MechanicalIdState::ForwardCapture { .. }));
                     assert_eq!(safety.torque_cap, 2448);
-                    assert_eq!(safety.prev_encoder_count, 1028);
-                    assert_eq!(data.start_position, 1027);
+                    assert_eq!(
+                        safety.prev_encoder_count.map(|count| count.raw_counts()),
+                        Some(1028)
+                    );
+                    assert_eq!(
+                        data.start_position.map(|count| count.raw_counts()),
+                        Some(1027)
+                    );
                 }
                 _ => panic!("expected MechanicalId phase"),
             }
@@ -628,9 +628,8 @@ mod tests {
         pollster::block_on(async {
             let mut phase = OuterPhase::MechanicalId {
                 state: MechanicalIdState::Setup,
-                data: MechanicalIdData::new(0, 0),
+                data: MechanicalIdData::new(0),
                 safety: OuterSafetyLimits::new(
-                    0,
                     0,
                     crate::commissioning::outer::OuterMotionBudget::firmware_caps(),
                 ),
@@ -725,7 +724,7 @@ mod tests {
             let mut phase = OuterPhase::MechanicalId {
                 state: MechanicalIdState::Finalize,
                 data: MechanicalIdData {
-                    start_position: 0,
+                    start_position: None,
                     attempt: 0,
                     torque_step: 367,
                     fwd_slope: low_conf,
@@ -742,7 +741,6 @@ mod tests {
                     sample_timestamp_len: 0,
                 },
                 safety: OuterSafetyLimits::new(
-                    0,
                     2448,
                     crate::commissioning::outer::OuterMotionBudget::firmware_caps(),
                 ),
@@ -787,7 +785,7 @@ mod tests {
             let mut phase = OuterPhase::MechanicalId {
                 state: MechanicalIdState::Finalize,
                 data: MechanicalIdData {
-                    start_position: 0,
+                    start_position: None,
                     attempt: 0,
                     torque_step: 122,
                     fwd_slope: low_conf,
@@ -804,7 +802,6 @@ mod tests {
                     sample_timestamp_len: 0,
                 },
                 safety: OuterSafetyLimits::new(
-                    0,
                     2448,
                     crate::commissioning::outer::OuterMotionBudget::firmware_caps(),
                 ),
@@ -855,7 +852,7 @@ mod tests {
             let mut phase = OuterPhase::MechanicalId {
                 state: MechanicalIdState::Finalize,
                 data: MechanicalIdData {
-                    start_position: 0,
+                    start_position: None,
                     attempt: 0,
                     torque_step: 367,
                     fwd_slope: Default::default(),
@@ -872,7 +869,6 @@ mod tests {
                     sample_timestamp_len: 0,
                 },
                 safety: OuterSafetyLimits::new(
-                    0,
                     2448,
                     crate::commissioning::outer::OuterMotionBudget::firmware_caps(),
                 ),
@@ -917,7 +913,7 @@ mod tests {
             let mut phase = OuterPhase::MechanicalId {
                 state: MechanicalIdState::Finalize,
                 data: MechanicalIdData {
-                    start_position: 0,
+                    start_position: None,
                     attempt: 0,
                     torque_step: 367,
                     fwd_slope: high_conf_fwd,
@@ -934,7 +930,6 @@ mod tests {
                     sample_timestamp_len: 0,
                 },
                 safety: OuterSafetyLimits::new(
-                    0,
                     2448,
                     crate::commissioning::outer::OuterMotionBudget::firmware_caps(),
                 ),
@@ -980,7 +975,7 @@ mod tests {
             let mut phase = OuterPhase::MechanicalId {
                 state: MechanicalIdState::Finalize,
                 data: MechanicalIdData {
-                    start_position: 0,
+                    start_position: None,
                     attempt: 0,
                     torque_step: 367,
                     fwd_slope: zero_accel,
@@ -997,7 +992,6 @@ mod tests {
                     sample_timestamp_len: 0,
                 },
                 safety: OuterSafetyLimits::new(
-                    0,
                     2448,
                     crate::commissioning::outer::OuterMotionBudget::firmware_caps(),
                 ),
@@ -1041,7 +1035,7 @@ mod tests {
             let mut phase = OuterPhase::MechanicalId {
                 state: MechanicalIdState::Finalize,
                 data: MechanicalIdData {
-                    start_position: 0,
+                    start_position: None,
                     attempt: 0,
                     torque_step: 367,
                     fwd_slope: high_conf_fwd,
@@ -1058,7 +1052,6 @@ mod tests {
                     sample_timestamp_len: 0,
                 },
                 safety: OuterSafetyLimits::new(
-                    0,
                     2448,
                     crate::commissioning::outer::OuterMotionBudget::firmware_caps(),
                 ),
@@ -1249,7 +1242,10 @@ pub(crate) async fn step_mechanical_id_with_trace<B: CommissioningBackend>(
             };
             let delta_counts = response::encoder_delta(
                 settled_pos,
-                safety.prev_encoder_count,
+                safety
+                    .prev_encoder_count
+                    .expect("post-switch baseline configured")
+                    .raw_counts(),
                 safety.counts_per_rev(),
             );
             let dt_us = if safety.last_sample_us == 0 {
@@ -1375,7 +1371,9 @@ pub(crate) async fn step_mechanical_id_with_trace<B: CommissioningBackend>(
                     buf,
                     data.sample_timestamps(),
                     *capture_start_us,
-                    data.start_position,
+                    data.start_position
+                        .expect("mechanical capture baseline configured")
+                        .raw_counts(),
                     safety.counts_per_rev(),
                 );
                 data.fwd_slope = metrics.accel;
@@ -1386,7 +1384,9 @@ pub(crate) async fn step_mechanical_id_with_trace<B: CommissioningBackend>(
                     buf,
                     data.sample_timestamps(),
                     *capture_start_us,
-                    data.start_position,
+                    data.start_position
+                        .expect("mechanical capture baseline configured")
+                        .raw_counts(),
                     safety.counts_per_rev(),
                     data.torque_step as u32,
                 );
@@ -1481,6 +1481,8 @@ pub(crate) async fn step_mechanical_id_with_trace<B: CommissioningBackend>(
                     buf.samples()[0]
                 } else {
                     data.start_position
+                        .expect("mechanical capture baseline configured")
+                        .raw_counts()
                 };
                 let metrics = response::extract_mechanical_id_metrics(
                     buf,

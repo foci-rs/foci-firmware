@@ -219,7 +219,6 @@ mod tests {
                 b_eff: 1,
                 diagnostics: zero_diagnostics(),
                 safety: OuterSafetyLimits::new(
-                    0,
                     2448,
                     crate::commissioning::outer::OuterMotionBudget::firmware_caps(),
                 ),

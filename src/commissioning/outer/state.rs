@@ -4,6 +4,7 @@ use crate::autotune::{
     CommissionError, FilterConfig, MechanicalModel, PhaseId, PositionGains, TRANSIENT_LEN,
     VelocityGains, VelocityValidation,
 };
+use crate::commissioning::encoder_domain::EncoderCount;
 use crate::commissioning::types::{OuterResult, OuterSafetyFault};
 
 use super::OUTER_WARNING_NONE;
@@ -51,7 +52,7 @@ pub(crate) enum MechanicalIdState {
 #[derive(Debug, defmt::Format)]
 pub(crate) struct MechanicalIdData {
     /// Starting encoder position recorded at setup.
-    pub(crate) start_position: u32,
+    pub(crate) start_position: Option<EncoderCount>,
     /// Retry attempt index for adaptive torque steps.
     pub(crate) attempt: u8,
     /// Torque step amplitude (PIDOUT units).
@@ -75,9 +76,9 @@ pub(crate) struct MechanicalIdData {
 }
 
 impl MechanicalIdData {
-    pub(crate) fn new(start_position: u32, torque_step: u16) -> Self {
+    pub(crate) fn new(torque_step: u16) -> Self {
         Self {
-            start_position,
+            start_position: None,
             attempt: 0,
             torque_step,
             fwd_slope: crate::commissioning::outer::slope_estimator::SlopeEstimate::default(),
@@ -263,7 +264,7 @@ pub(crate) struct VelocityValidateData {
     /// Peak velocity from mechanical ID (for velocity limit derivation).
     pub(crate) peak_velocity: u32,
     /// Previous encoder count for velocity derivation (position delta per tick).
-    pub(crate) prev_encoder_for_velocity: u32,
+    pub(crate) prev_encoder_for_velocity: Option<EncoderCount>,
     /// Saturation counter: samples where the velocity PID's torque output
     /// is near the current limit (indicating the controller is effort-limited).
     pub(crate) saturation_count: u16,
@@ -302,7 +303,7 @@ pub(crate) struct PositionTuneData {
     /// Position step target in TMC electrical-position units.
     pub(crate) step_target_tmc: u32,
     /// Starting ABN encoder count for response measurement.
-    pub(crate) step_start_counts: u32,
+    pub(crate) step_start_counts: Option<EncoderCount>,
     /// Starting TMC position for target writes.
     pub(crate) step_start_tmc: i32,
     /// Whether oscillation was detected early (at the first P value).
@@ -446,9 +447,8 @@ mod tests {
         assert_eq!(
             OuterPhase::MechanicalId {
                 state: MechanicalIdState::Setup,
-                data: MechanicalIdData::new(0, 0),
+                data: MechanicalIdData::new(0),
                 safety: OuterSafetyLimits::new(
-                    0,
                     0,
                     crate::commissioning::outer::OuterMotionBudget::firmware_caps()
                 ),

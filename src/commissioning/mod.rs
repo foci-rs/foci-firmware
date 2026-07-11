@@ -484,8 +484,8 @@ impl CommissioningEngine {
             max_duration_ms,
             direction_mask,
         };
-        let safety = OuterSafetyLimits::new(0, 0, budget);
-        let data = MechanicalIdData::new(0, 0);
+        let safety = OuterSafetyLimits::new(0, budget);
+        let data = MechanicalIdData::new(0);
         Self {
             oid,
             tmc_state,

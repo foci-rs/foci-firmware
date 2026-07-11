@@ -140,11 +140,12 @@ pub(crate) async fn step_position_tune_with_trace<B: CommissioningBackend>(
                 Ok(value) => value,
                 Err(_) => return fail_outer(phase, CommissionError::Spi),
             };
-            data.step_start_counts = safety
-                .encoder_domain
-                .expect("outer encoder domain configured before position tuning")
-                .count(encoder_raw)
-                .raw_counts();
+            data.step_start_counts = Some(
+                safety
+                    .encoder_domain
+                    .expect("outer encoder domain configured before position tuning")
+                    .count(encoder_raw),
+            );
             let position_raw = match backend.read_register(PID_POSITION_ACTUAL).await {
                 Ok(v) => v as i32,
                 Err(_) => {
@@ -200,7 +201,9 @@ pub(crate) async fn step_position_tune_with_trace<B: CommissioningBackend>(
             // oscillation detector.
             let delta = crate::commissioning::outer::response::encoder_delta(
                 encoder_raw,
-                data.step_start_counts,
+                data.step_start_counts
+                    .expect("position step baseline configured")
+                    .raw_counts(),
                 safety.counts_per_rev(),
             );
             buf.push(delta.unsigned_abs());
@@ -334,11 +337,12 @@ pub(crate) async fn step_position_tune_with_trace<B: CommissioningBackend>(
                             Ok(value) => value,
                             Err(_) => return fail_outer(phase, CommissionError::Spi),
                         };
-                    data.step_start_counts = safety
-                        .encoder_domain
-                        .expect("outer encoder domain configured before position tuning")
-                        .count(encoder_raw)
-                        .raw_counts();
+                    data.step_start_counts = Some(
+                        safety
+                            .encoder_domain
+                            .expect("outer encoder domain configured before position tuning")
+                            .count(encoder_raw),
+                    );
                     let position_raw = match backend.read_register(PID_POSITION_ACTUAL).await {
                         Ok(v) => v as i32,
                         Err(_) => {
@@ -486,7 +490,7 @@ mod tests {
             stable_p: 128,
             step_target_counts: 400,
             step_target_tmc: 800,
-            step_start_counts: 0,
+            step_start_counts: None,
             step_start_tmc: 0,
             oscillation_at_minimum: true,
             velocity_gains: VelocityGains {

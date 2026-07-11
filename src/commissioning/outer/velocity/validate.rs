@@ -312,11 +312,12 @@ pub(crate) async fn step_velocity_validate_with_trace<B: CommissioningBackend>(
 
             data.prev_encoder_for_velocity =
                 match backend.try_read_mechanical_encoder_position_counts().await {
-                    Ok(value) => safety
-                        .encoder_domain
-                        .expect("outer encoder domain configured before velocity validation")
-                        .count(value)
-                        .raw_counts(),
+                    Ok(value) => Some(
+                        safety
+                            .encoder_domain
+                            .expect("outer encoder domain configured before velocity validation")
+                            .count(value),
+                    ),
                     Err(_) => return fail_outer(phase, CommissionError::Spi),
                 };
 
@@ -344,14 +345,17 @@ pub(crate) async fn step_velocity_validate_with_trace<B: CommissioningBackend>(
                 Err(_) => return fail_outer(phase, CommissionError::Spi),
             };
             let prev_encoder = data.prev_encoder_for_velocity;
-            data.prev_encoder_for_velocity = safety
-                .encoder_domain
-                .expect("outer encoder domain configured before velocity validation")
-                .count(encoder_raw)
-                .raw_counts();
+            data.prev_encoder_for_velocity = Some(
+                safety
+                    .encoder_domain
+                    .expect("outer encoder domain configured before velocity validation")
+                    .count(encoder_raw),
+            );
             let velocity = encoder_delta_counts_per_ms(
                 encoder_raw,
-                prev_encoder,
+                prev_encoder
+                    .expect("forward velocity baseline configured")
+                    .raw_counts(),
                 safety.counts_per_rev(),
                 now.wrapping_sub(*last_sample_us),
             );
@@ -439,11 +443,12 @@ pub(crate) async fn step_velocity_validate_with_trace<B: CommissioningBackend>(
 
             data.prev_encoder_for_velocity =
                 match backend.try_read_mechanical_encoder_position_counts().await {
-                    Ok(value) => safety
-                        .encoder_domain
-                        .expect("outer encoder domain configured before velocity validation")
-                        .count(value)
-                        .raw_counts(),
+                    Ok(value) => Some(
+                        safety
+                            .encoder_domain
+                            .expect("outer encoder domain configured before velocity validation")
+                            .count(value),
+                    ),
                     Err(_) => return fail_outer(phase, CommissionError::Spi),
                 };
 
@@ -471,14 +476,17 @@ pub(crate) async fn step_velocity_validate_with_trace<B: CommissioningBackend>(
                 Err(_) => return fail_outer(phase, CommissionError::Spi),
             };
             let prev_encoder = data.prev_encoder_for_velocity;
-            data.prev_encoder_for_velocity = safety
-                .encoder_domain
-                .expect("outer encoder domain configured before velocity validation")
-                .count(encoder_raw)
-                .raw_counts();
+            data.prev_encoder_for_velocity = Some(
+                safety
+                    .encoder_domain
+                    .expect("outer encoder domain configured before velocity validation")
+                    .count(encoder_raw),
+            );
             let velocity = encoder_delta_counts_per_ms(
                 encoder_raw,
-                prev_encoder,
+                prev_encoder
+                    .expect("reverse velocity baseline configured")
+                    .raw_counts(),
                 safety.counts_per_rev(),
                 now.wrapping_sub(*last_sample_us),
             );
@@ -543,15 +551,18 @@ pub(crate) async fn step_velocity_validate_with_trace<B: CommissioningBackend>(
 
         VelocityValidateState::ReverseSettle { deadline_us } => {
             if backend.elapsed_us().wrapping_sub(*deadline_us) < 0x8000_0000 {
-                data.prev_encoder_for_velocity =
-                    match backend.try_read_mechanical_encoder_position_counts().await {
-                        Ok(value) => safety
+                data.prev_encoder_for_velocity = match backend
+                    .try_read_mechanical_encoder_position_counts()
+                    .await
+                {
+                    Ok(value) => Some(
+                        safety
                             .encoder_domain
                             .expect("outer encoder domain configured before velocity validation")
-                            .count(value)
-                            .raw_counts(),
-                        Err(_) => return fail_outer(phase, CommissionError::Spi),
-                    };
+                            .count(value),
+                    ),
+                    Err(_) => return fail_outer(phase, CommissionError::Spi),
+                };
                 buf.reset(VELOCITY_VALIDATE_SAMPLE_PERIOD_US as u16);
                 let next_sample_us = backend
                     .elapsed_us()
@@ -580,14 +591,17 @@ pub(crate) async fn step_velocity_validate_with_trace<B: CommissioningBackend>(
                 Err(_) => return fail_outer(phase, CommissionError::Spi),
             };
             let prev_encoder = data.prev_encoder_for_velocity;
-            data.prev_encoder_for_velocity = safety
-                .encoder_domain
-                .expect("outer encoder domain configured before velocity validation")
-                .count(count)
-                .raw_counts();
+            data.prev_encoder_for_velocity = Some(
+                safety
+                    .encoder_domain
+                    .expect("outer encoder domain configured before velocity validation")
+                    .count(count),
+            );
             let velocity = encoder_delta_counts_per_ms(
                 count,
-                prev_encoder,
+                prev_encoder
+                    .expect("chatter velocity baseline configured")
+                    .raw_counts(),
                 safety.counts_per_rev(),
                 now.wrapping_sub(*last_sample_us),
             );
@@ -1111,7 +1125,7 @@ pub(crate) async fn step_velocity_validate_with_trace<B: CommissioningBackend>(
                 stable_p: 0,
                 step_target_counts,
                 step_target_tmc,
-                step_start_counts: 0,
+                step_start_counts: None,
                 step_start_tmc: 0,
                 oscillation_at_minimum: false,
                 velocity_gains: accepted_gains,
@@ -1148,6 +1162,7 @@ mod tests {
         TRANSIENT_LEN, TransientBuffer, VelocityGains, VelocityValidation,
     };
     use crate::commission_dispatch::test_support::MockBackend;
+    use crate::commissioning::encoder_domain::{EncoderCount, EncoderDomain};
     use crate::commissioning::outer::{
         OuterDiagnostics, OuterPhase, OuterSafetyLimits, TraceSummarySeqs,
         VELOCITY_SEARCH_STOP_CLEAN, VELOCITY_SEARCH_STOP_UNSAFE_BACKOFF, VelocityTuneStrategy,
@@ -1156,6 +1171,20 @@ mod tests {
     };
     use crate::commissioning::types::StepResult;
     use foci_tmc4671::registers::{PID_VELOCITY_LIMIT, PID_VELOCITY_TARGET};
+
+    fn encoder_count(raw_counts: u32) -> EncoderCount {
+        EncoderDomain::new(4_000).unwrap().count(raw_counts)
+    }
+
+    fn configured_safety() -> OuterSafetyLimits {
+        let mut safety = OuterSafetyLimits::new(
+            2448,
+            crate::commissioning::outer::OuterMotionBudget::firmware_caps(),
+        );
+        safety.configure_encoder_resolution(4_000).unwrap();
+        safety.set_encoder_baseline(0).unwrap();
+        safety
+    }
 
     fn zero_diagnostics() -> OuterDiagnostics {
         OuterDiagnostics {
@@ -1230,7 +1259,7 @@ mod tests {
             reverse_metrics: None,
             max_chatter: 7,
             peak_velocity: 0,
-            prev_encoder_for_velocity: 0,
+            prev_encoder_for_velocity: None,
             saturation_count: 3,
             torque_limit: 1000,
             operational_velocity_limit: 20_000,
@@ -1342,7 +1371,7 @@ mod tests {
                     }),
                     max_chatter: 24,
                     peak_velocity: 18,
-                    prev_encoder_for_velocity: 0,
+                    prev_encoder_for_velocity: None,
                     saturation_count: 0,
                     torque_limit: 2448,
                     operational_velocity_limit: 500_000,
@@ -1366,11 +1395,7 @@ mod tests {
                         motion_budget_mrev: 0,
                     },
                 },
-                safety: OuterSafetyLimits::new(
-                    0,
-                    2448,
-                    crate::commissioning::outer::OuterMotionBudget::firmware_caps(),
-                ),
+                safety: configured_safety(),
             };
             let mut buf = TransientBuffer::new();
             let mut backend = MockBackend::new();
@@ -1472,17 +1497,13 @@ mod tests {
                 reverse_metrics: Some(failing_velocity_metrics()),
                 max_chatter: 24,
                 peak_velocity: 18,
-                prev_encoder_for_velocity: 0,
+                prev_encoder_for_velocity: None,
                 saturation_count: 484,
                 torque_limit: 2448,
                 operational_velocity_limit: 500_000,
                 diagnostics: zero_diagnostics(),
             },
-            safety: OuterSafetyLimits::new(
-                0,
-                2448,
-                crate::commissioning::outer::OuterMotionBudget::firmware_caps(),
-            ),
+            safety: configured_safety(),
         }
     }
 
@@ -1521,17 +1542,13 @@ mod tests {
                     reverse_metrics: Some(under_driven_pass_metrics()),
                     max_chatter: 0,
                     peak_velocity: 20,
-                    prev_encoder_for_velocity: 0,
+                    prev_encoder_for_velocity: None,
                     saturation_count: 0,
                     torque_limit: 2448,
                     operational_velocity_limit: 500_000,
                     diagnostics: zero_diagnostics(),
                 },
-                safety: OuterSafetyLimits::new(
-                    0,
-                    2448,
-                    crate::commissioning::outer::OuterMotionBudget::firmware_caps(),
-                ),
+                safety: configured_safety(),
             };
             let mut buf = TransientBuffer::new();
             let mut backend = MockBackend::new();
@@ -1603,17 +1620,13 @@ mod tests {
                     reverse_metrics: Some(failing_velocity_metrics()),
                     max_chatter: 0,
                     peak_velocity: 20,
-                    prev_encoder_for_velocity: 0,
+                    prev_encoder_for_velocity: None,
                     saturation_count: 0,
                     torque_limit: 2448,
                     operational_velocity_limit: 500_000,
                     diagnostics: zero_diagnostics(),
                 },
-                safety: OuterSafetyLimits::new(
-                    0,
-                    2448,
-                    crate::commissioning::outer::OuterMotionBudget::firmware_caps(),
-                ),
+                safety: configured_safety(),
             };
             let mut buf = TransientBuffer::new();
             let mut backend = MockBackend::new();
@@ -1681,17 +1694,13 @@ mod tests {
                     reverse_metrics: None,
                     max_chatter: 0,
                     peak_velocity: 20,
-                    prev_encoder_for_velocity: 0,
+                    prev_encoder_for_velocity: None,
                     saturation_count: 0,
                     torque_limit: 2448,
                     operational_velocity_limit: 500_000,
                     diagnostics: zero_diagnostics(),
                 },
-                safety: OuterSafetyLimits::new(
-                    0,
-                    2448,
-                    crate::commissioning::outer::OuterMotionBudget::firmware_caps(),
-                ),
+                safety: configured_safety(),
             };
             let mut buf = TransientBuffer::new();
             let mut backend = MockBackend::new();
@@ -1762,17 +1771,13 @@ mod tests {
                     reverse_metrics: None,
                     max_chatter: 0,
                     peak_velocity: 20,
-                    prev_encoder_for_velocity: 0,
+                    prev_encoder_for_velocity: None,
                     saturation_count: 0,
                     torque_limit: 2448,
                     operational_velocity_limit: 500_000,
                     diagnostics,
                 },
-                safety: OuterSafetyLimits::new(
-                    0,
-                    2448,
-                    crate::commissioning::outer::OuterMotionBudget::firmware_caps(),
-                ),
+                safety: configured_safety(),
             };
             let mut buf = TransientBuffer::new();
             let mut backend = MockBackend::new();
@@ -1890,17 +1895,13 @@ mod tests {
                     reverse_metrics: None,
                     max_chatter: 0,
                     peak_velocity: 20,
-                    prev_encoder_for_velocity: 1_000,
+                    prev_encoder_for_velocity: Some(encoder_count(1_000)),
                     saturation_count: 0,
                     torque_limit: 0,
                     operational_velocity_limit: 500_000,
                     diagnostics: zero_diagnostics(),
                 },
-                safety: OuterSafetyLimits::new(
-                    0,
-                    2448,
-                    crate::commissioning::outer::OuterMotionBudget::firmware_caps(),
-                ),
+                safety: configured_safety(),
             };
             let mut buf = TransientBuffer::new();
             let mut backend = MockBackend::new();
@@ -1924,7 +1925,11 @@ mod tests {
             assert_eq!(buf.samples(), &[15]);
             match phase {
                 OuterPhase::VelocityValidate { state, data, .. } => {
-                    assert_eq!(data.prev_encoder_for_velocity, 1_024);
+                    assert_eq!(
+                        data.prev_encoder_for_velocity
+                            .map(|count| count.raw_counts()),
+                        Some(1_024)
+                    );
                     assert!(matches!(
                         state,
                         VelocityValidateState::ForwardCapture {
@@ -1949,7 +1954,6 @@ mod tests {
                 lambda_vel_ms: 0,
             };
             let mut safety = OuterSafetyLimits::new(
-                0,
                 2448,
                 crate::commissioning::outer::OuterMotionBudget::firmware_caps(),
             );
@@ -1982,7 +1986,7 @@ mod tests {
                     reverse_metrics: None,
                     max_chatter: 0,
                     peak_velocity: 20,
-                    prev_encoder_for_velocity: 1_000,
+                    prev_encoder_for_velocity: Some(encoder_count(1_000)),
                     saturation_count: 0,
                     torque_limit: 0,
                     operational_velocity_limit: 500_000,
@@ -2032,7 +2036,6 @@ mod tests {
                 lambda_vel_ms: 0,
             };
             let mut safety = OuterSafetyLimits::new(
-                0,
                 2448,
                 crate::commissioning::outer::OuterMotionBudget::firmware_caps(),
             );
@@ -2065,7 +2068,7 @@ mod tests {
                     reverse_metrics: None,
                     max_chatter: 0,
                     peak_velocity: 20,
-                    prev_encoder_for_velocity: 3_995,
+                    prev_encoder_for_velocity: Some(encoder_count(3_995)),
                     saturation_count: 0,
                     torque_limit: 0,
                     operational_velocity_limit: 500_000,
@@ -2147,17 +2150,13 @@ mod tests {
                     reverse_metrics: None,
                     max_chatter: 0,
                     peak_velocity: 20,
-                    prev_encoder_for_velocity: 0,
+                    prev_encoder_for_velocity: None,
                     saturation_count: 0,
                     torque_limit: 0,
                     operational_velocity_limit: 500_000,
                     diagnostics: zero_diagnostics(),
                 },
-                safety: OuterSafetyLimits::new(
-                    0,
-                    2448,
-                    crate::commissioning::outer::OuterMotionBudget::firmware_caps(),
-                ),
+                safety: configured_safety(),
             };
             let mut buf = TransientBuffer::new();
             let mut backend = MockBackend::new();
@@ -2329,17 +2328,13 @@ mod tests {
                     reverse_metrics: Some(low_energy_marginal_velocity_metrics()),
                     max_chatter: 0,
                     peak_velocity: 18,
-                    prev_encoder_for_velocity: 0,
+                    prev_encoder_for_velocity: None,
                     saturation_count: 0,
                     torque_limit: 2448,
                     operational_velocity_limit: 500_000,
                     diagnostics: zero_diagnostics(),
                 },
-                safety: OuterSafetyLimits::new(
-                    0,
-                    2448,
-                    crate::commissioning::outer::OuterMotionBudget::firmware_caps(),
-                ),
+                safety: configured_safety(),
             };
             let mut buf = TransientBuffer::new();
             let mut backend = MockBackend::new();
@@ -2404,17 +2399,13 @@ mod tests {
                     reverse_metrics: Some(stiction_breakaway_metrics(1, Permille::ZERO)),
                     max_chatter: 0,
                     peak_velocity: 18,
-                    prev_encoder_for_velocity: 0,
+                    prev_encoder_for_velocity: None,
                     saturation_count: 0,
                     torque_limit: 2448,
                     operational_velocity_limit: 500_000,
                     diagnostics: zero_diagnostics(),
                 },
-                safety: OuterSafetyLimits::new(
-                    0,
-                    2448,
-                    crate::commissioning::outer::OuterMotionBudget::firmware_caps(),
-                ),
+                safety: configured_safety(),
             };
             let mut buf = TransientBuffer::new();
             let mut backend = MockBackend::new();
@@ -2485,17 +2476,13 @@ mod tests {
                     reverse_metrics: Some(failing_velocity_metrics()),
                     max_chatter: 23,
                     peak_velocity: 18,
-                    prev_encoder_for_velocity: 0,
+                    prev_encoder_for_velocity: None,
                     saturation_count: 283,
                     torque_limit: 2448,
                     operational_velocity_limit: 500_000,
                     diagnostics: zero_diagnostics(),
                 },
-                safety: OuterSafetyLimits::new(
-                    0,
-                    2448,
-                    crate::commissioning::outer::OuterMotionBudget::firmware_caps(),
-                ),
+                safety: configured_safety(),
             };
             let mut buf = TransientBuffer::new();
             let mut backend = MockBackend::new();
@@ -2563,17 +2550,13 @@ mod tests {
                     reverse_metrics: Some(stiction_breakaway_metrics(2, Permille::ZERO)),
                     max_chatter: 1,
                     peak_velocity: 18,
-                    prev_encoder_for_velocity: 0,
+                    prev_encoder_for_velocity: None,
                     saturation_count: 0,
                     torque_limit: 2448,
                     operational_velocity_limit: 500_000,
                     diagnostics: zero_diagnostics(),
                 },
-                safety: OuterSafetyLimits::new(
-                    0,
-                    2448,
-                    crate::commissioning::outer::OuterMotionBudget::firmware_caps(),
-                ),
+                safety: configured_safety(),
             };
             let mut buf = TransientBuffer::new();
             let mut backend = MockBackend::new();
@@ -2648,17 +2631,13 @@ mod tests {
                     reverse_metrics: Some(stiction_breakaway_metrics(2, Permille::ZERO)),
                     max_chatter: 0,
                     peak_velocity: 18,
-                    prev_encoder_for_velocity: 0,
+                    prev_encoder_for_velocity: None,
                     saturation_count: 1,
                     torque_limit: 2448,
                     operational_velocity_limit: 500_000,
                     diagnostics: zero_diagnostics(),
                 },
-                safety: OuterSafetyLimits::new(
-                    0,
-                    2448,
-                    crate::commissioning::outer::OuterMotionBudget::firmware_caps(),
-                ),
+                safety: configured_safety(),
             };
             let mut buf = TransientBuffer::new();
             let mut backend = MockBackend::new();
@@ -2726,17 +2705,13 @@ mod tests {
                     reverse_metrics: Some(stiction_breakaway_metrics(2, Permille::ZERO)),
                     max_chatter: 1,
                     peak_velocity: 18,
-                    prev_encoder_for_velocity: 0,
+                    prev_encoder_for_velocity: None,
                     saturation_count: 0,
                     torque_limit: 2448,
                     operational_velocity_limit: 500_000,
                     diagnostics: zero_diagnostics(),
                 },
-                safety: OuterSafetyLimits::new(
-                    0,
-                    2448,
-                    crate::commissioning::outer::OuterMotionBudget::firmware_caps(),
-                ),
+                safety: configured_safety(),
             };
             let mut buf = TransientBuffer::new();
             let mut backend = MockBackend::new();
@@ -2806,17 +2781,13 @@ mod tests {
                     reverse_metrics: Some(failing_velocity_metrics()),
                     max_chatter: 23,
                     peak_velocity: 18,
-                    prev_encoder_for_velocity: 0,
+                    prev_encoder_for_velocity: None,
                     saturation_count: 277,
                     torque_limit: 2448,
                     operational_velocity_limit: 500_000,
                     diagnostics: zero_diagnostics(),
                 },
-                safety: OuterSafetyLimits::new(
-                    0,
-                    2448,
-                    crate::commissioning::outer::OuterMotionBudget::firmware_caps(),
-                ),
+                safety: configured_safety(),
             };
             let mut buf = TransientBuffer::new();
             let mut backend = MockBackend::new();
