@@ -182,6 +182,9 @@ pub(crate) struct ElectricalIdData {
     /// runner-owned `ResistanceIdentify` sub-state completes; the
     /// inductance/delay/gain path reads its count-slope-milli values from here.
     pub(crate) resistance_result: Option<crate::resistance_identification::ResistanceRunResult>,
+    /// Accepted timing evidence across all resistance windows.
+    pub(crate) resistance_timing:
+        Option<crate::commissioning::capture_timing::CaptureTimingEvidence>,
     /// Accepted production inductance evidence from the rotating-field estimator.
     pub(crate) inductance: Option<InductanceEvidence>,
     /// Accepted timing evidence for the rotating-field capture.
@@ -191,6 +194,10 @@ pub(crate) struct ElectricalIdData {
     pub(crate) delay_estimate_us: Option<u32>,
     /// Accepted timing evidence for the electrical-delay capture.
     pub(crate) delay_timing: Option<crate::commissioning::capture_timing::CaptureTimingEvidence>,
+    /// Packed two-bit timing lifecycle state for resistance, inductance, and delay.
+    pub(crate) timing_states: u8,
+    /// Bit per method indicating saturated timing telemetry.
+    pub(crate) timing_overflow_mask: u8,
     /// Validated mechanical encoder domain used by inductance motion checks.
     pub(crate) encoder_domain: Option<crate::commissioning::encoder_domain::EncoderDomain>,
 }
@@ -200,10 +207,13 @@ impl ElectricalIdData {
         Self {
             voltage,
             resistance_result: None,
+            resistance_timing: None,
             inductance: None,
             inductance_timing: None,
             delay_estimate_us: None,
             delay_timing: None,
+            timing_states: 0,
+            timing_overflow_mask: 0,
             encoder_domain: None,
         }
     }
@@ -444,6 +454,8 @@ pub(crate) enum InnerPhase {
         resistance_result: crate::resistance_identification::ResistanceRunResult,
         /// Accepted production inductance evidence.
         inductance: InductanceEvidence,
+        /// Completed Phase 5 timing summaries in resistance, inductance, delay order.
+        timing: [crate::commissioning::types::CommissionTimingSummary; 3],
     },
     /// Phase 7: Current-loop step-response validation.
     CurrentValidate {

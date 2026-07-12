@@ -1210,6 +1210,8 @@ mod tests {
                 tau_e_us: 23,
                 inductance: InductanceEvidence::test_fixture(),
                 inner_warning_flags: 26,
+                timing: [crate::commissioning::types::CommissionTimingSummary::NOT_RUN; 3],
+                timing_summary: 0,
                 resistance_selected_count_slope_milli: 1050,
                 resistance_gain_path_count_slope_milli: 16,
                 resistance_axis0_count_slope_milli: 1040,

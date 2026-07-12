@@ -1215,6 +1215,61 @@ fn saliency_for_frame_average(
     )
 }
 
+fn electrical_timing_summaries(
+    data: &ElectricalIdData,
+) -> [crate::commissioning::types::CommissionTimingSummary; 3] {
+    use crate::commissioning::types::CommissionTimingSummary;
+
+    let evidence = [
+        data.resistance_timing,
+        data.inductance_timing,
+        data.delay_timing,
+    ];
+    core::array::from_fn(|method| CommissionTimingSummary {
+        status: (data.timing_states >> (method * 2)) & 0x03,
+        overflowed: data.timing_overflow_mask & (1 << method) != 0,
+        evidence: evidence[method]
+            .unwrap_or(crate::commissioning::capture_timing::CaptureTimingEvidence::EMPTY),
+    })
+}
+
+fn set_timing_state(data: &mut ElectricalIdData, method: usize, status: u8) {
+    let shift = method * 2;
+    data.timing_states = (data.timing_states & !(0x03 << shift)) | ((status & 0x03) << shift);
+}
+
+fn push_timing_diagnostics(
+    diagnostics: &mut crate::selftest::CommissionDiagnostics,
+    summaries: [crate::commissioning::types::CommissionTimingSummary; 3],
+) {
+    for (method, summary) in summaries.iter().copied().enumerate() {
+        let evidence = summary.evidence;
+        let code = 34 + (method as u8 * 2);
+        diagnostics.push(crate::selftest::CommissionDiagnostic {
+            phase: PhaseId::ElectricalId.to_u8(),
+            code,
+            status: u8::from(
+                summary.status == crate::commissioning::types::COMMISSION_TIMING_REJECTED,
+            ),
+            value0: u32::from(evidence.requested_period_us)
+                | (u32::from(evidence.valid_samples) << 16),
+            value1: u32::from(evidence.missed_samples)
+                | (u32::from(evidence.max_consecutive_misses) << 16)
+                | (u32::from(summary.status) << 24)
+                | (u32::from(summary.overflowed) << 31),
+            value2: evidence.max_lateness_us,
+        });
+        diagnostics.push(crate::selftest::CommissionDiagnostic {
+            phase: PhaseId::ElectricalId.to_u8(),
+            code: code + 1,
+            status: 0,
+            value0: evidence.max_interval_us,
+            value1: evidence.max_poll_wall_us,
+            value2: evidence.max_spi_wall_us,
+        });
+    }
+}
+
 /// Advance electrical identification sub-state.
 ///
 /// Runs shared multi-point resistance identification, then per-coil
@@ -1262,6 +1317,11 @@ pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
                     return super::fail_inner(phase, CommissionError::from(error));
                 }
             };
+            set_timing_state(
+                data,
+                0,
+                crate::commissioning::types::COMMISSION_TIMING_REJECTED,
+            );
             *electrical_id_state = ElectricalIdState::ResistanceIdentify { runner };
             StepResult::ReadyNow
         }
@@ -1271,6 +1331,8 @@ pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
             let poll = runner
                 .poll(&mut CommissionResistanceBackend { backend }, now_us)
                 .await;
+            let resistance_timing = runner.timing_evidence();
+            data.resistance_timing = Some(resistance_timing.capture_evidence());
 
             match poll {
                 crate::resistance_identification::ResistancePoll::ReadyNow => StepResult::ReadyNow,
@@ -1279,11 +1341,17 @@ pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
                 }
                 crate::resistance_identification::ResistancePoll::Complete(Ok(resistance)) => {
                     data.resistance_result = Some(resistance);
+                    set_timing_state(
+                        data,
+                        0,
+                        crate::commissioning::types::COMMISSION_TIMING_ACCEPTED,
+                    );
                     *electrical_id_state = ElectricalIdState::InductanceSetup;
                     StepResult::ReadyNow
                 }
                 crate::resistance_identification::ResistancePoll::Complete(Err(error)) => {
                     defmt::warn!("resistance id failed: {}", error);
+                    push_timing_diagnostics(diagnostics, electrical_timing_summaries(data));
                     super::fail_inner(phase, CommissionError::from(error))
                 }
             }
@@ -1528,6 +1596,11 @@ pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
                     None,
                 );
             };
+            set_timing_state(
+                data,
+                1,
+                crate::commissioning::types::COMMISSION_TIMING_REJECTED,
+            );
             *electrical_id_state = ElectricalIdState::InductanceSample {
                 capture: InductanceCaptureState {
                     encoder_domain: *encoder_domain,
@@ -1565,6 +1638,9 @@ pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
                     StepResult::ReadyNow
                 }
                 Err(error) => {
+                    let (evidence, overflowed) = capture.timing.snapshot();
+                    data.inductance_timing = Some(evidence);
+                    data.timing_overflow_mask |= u8::from(overflowed) << 1;
                     begin_inductance_restore(electrical_id_state, backend, Some(error), None, None)
                 }
             }
@@ -1748,19 +1824,30 @@ pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
                 .is_err()
             {
                 *primary_error = Some(CommissionError::Spi);
+                *timing = None;
             }
             if let Some(next) = next {
                 *operation = next;
                 return StepResult::ReadyNow;
             }
+            data.inductance_timing = *timing;
+            if timing.is_some() {
+                set_timing_state(
+                    data,
+                    1,
+                    crate::commissioning::types::COMMISSION_TIMING_ACCEPTED,
+                );
+            }
             if let Some(error) = *primary_error {
+                push_timing_diagnostics(diagnostics, electrical_timing_summaries(data));
                 return super::fail_inner(phase, error);
             }
             let Some(evidence) = *evidence else {
+                data.inductance_timing = *timing;
+                push_timing_diagnostics(diagnostics, electrical_timing_summaries(data));
                 return super::fail_inner(phase, CommissionError::InductanceCaptureRejected);
             };
             data.inductance = Some(evidence);
-            data.inductance_timing = *timing;
             let Some(deadline_us) = backend.elapsed_us().checked_add(ELECTRICAL_COOLDOWN_US) else {
                 return super::fail_inner(phase, CommissionError::InvalidSchedule);
             };
@@ -1896,6 +1983,11 @@ pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
                     None,
                 );
             };
+            set_timing_state(
+                data,
+                2,
+                crate::commissioning::types::COMMISSION_TIMING_REJECTED,
+            );
             *electrical_id_state = ElectricalIdState::DelaySample {
                 capture: DelayCaptureState {
                     baseline: *baseline,
@@ -1916,13 +2008,19 @@ pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
             match poll_delay_sample(backend, buf, capture, now_us).await {
                 Ok(DelaySamplePoll::At) => StepResult::At(capture.next_sample_us),
                 Ok(DelaySamplePoll::Complete(completed)) => {
+                    data.delay_timing = Some(completed.timing);
                     *electrical_id_state = ElectricalIdState::DelayStopMotion {
                         primary_error: None,
                         completed: Some(completed),
                     };
                     StepResult::ReadyNow
                 }
-                Err(error) => begin_delay_restore(electrical_id_state, backend, Some(error), None),
+                Err(error) => {
+                    let (evidence, overflowed) = capture.timing.snapshot();
+                    data.delay_timing = Some(evidence);
+                    data.timing_overflow_mask |= u8::from(overflowed) << 2;
+                    begin_delay_restore(electrical_id_state, backend, Some(error), None)
+                }
             }
         }
 
@@ -2003,6 +2101,7 @@ pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
         }
 
         ElectricalIdState::DelayEvaluate { completed } => {
+            data.delay_timing = Some(completed.timing);
             let estimate = crate::autotune::estimate_electrical_delay(
                 buf.samples(),
                 completed.offsets.offsets_us(),
@@ -2010,7 +2109,6 @@ pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
             let primary_error = match estimate {
                 Ok(delay_us) => {
                     data.delay_estimate_us = Some(delay_us);
-                    data.delay_timing = Some(completed.timing);
                     None
                 }
                 Err(error) => Some(error),
@@ -2029,8 +2127,14 @@ pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
                 return StepResult::At(*deadline_us);
             }
             if let Some(error) = *primary_error {
+                push_timing_diagnostics(diagnostics, electrical_timing_summaries(data));
                 return super::fail_inner(phase, error);
             }
+            set_timing_state(
+                data,
+                2,
+                crate::commissioning::types::COMMISSION_TIMING_ACCEPTED,
+            );
             *electrical_id_state = ElectricalIdState::Validate;
             StepResult::ReadyNow
         }
@@ -2051,6 +2155,8 @@ pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
                     return super::fail_inner(phase, CommissionError::from(err));
                 }
             };
+            let timing = electrical_timing_summaries(data);
+            push_timing_diagnostics(diagnostics, timing);
 
             match sequence {
                 InnerSequence::Selftest => {
@@ -2090,6 +2196,7 @@ pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
                         inductance: data
                             .inductance
                             .unwrap_or(crate::commissioning::types::InductanceEvidence::EMPTY),
+                        timing,
                     };
                     StepResult::PhaseChanged(PhaseId::CurrentTune)
                 }
@@ -2342,6 +2449,7 @@ mod tests {
                 inner_warning_flags,
                 resistance_result,
                 inductance: _,
+                timing,
             } = phase
             else {
                 panic!("expected CurrentTune, got {phase:?}");
@@ -2356,7 +2464,14 @@ mod tests {
                 model.tau_e_us
             );
             assert_eq!(inner_warning_flags & (1 << 2), 0);
-            assert_eq!(diagnostics.iter().count(), 0);
+            assert_eq!(timing.len(), 3);
+            assert_eq!(
+                diagnostics
+                    .iter()
+                    .map(|event| event.code)
+                    .collect::<std::vec::Vec<_>>(),
+                std::vec![34, 35, 36, 37, 38, 39],
+            );
         });
     }
 

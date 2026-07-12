@@ -32,12 +32,55 @@ pub enum ResistancePoll {
 pub struct ResistanceTimingEvidence {
     /// Windows whose timing envelopes completed successfully.
     pub completed_windows: u8,
+    /// Requested sample period shared by all windows.
+    pub requested_period_us: u16,
+    /// Total accepted logical samples.
+    pub valid_samples: u16,
     /// Total skipped sample slots.
     pub missed_samples: u16,
+    /// Largest consecutive skipped-slot count.
+    pub max_consecutive_misses: u8,
+    /// Largest observation lateness.
+    pub max_lateness_us: u32,
+    /// Largest accepted-observation interval.
+    pub max_interval_us: u32,
     /// Largest complete sample-poll wall time.
     pub max_poll_wall_us: u32,
     /// Largest summed SPI-await wall time in a sample poll.
     pub max_spi_wall_us: u32,
+}
+
+impl ResistanceTimingEvidence {
+    pub(crate) fn merge(
+        &mut self,
+        evidence: crate::commissioning::capture_timing::CaptureTimingEvidence,
+    ) {
+        self.requested_period_us = evidence.requested_period_us;
+        self.valid_samples = self.valid_samples.saturating_add(evidence.valid_samples);
+        self.missed_samples = self.missed_samples.saturating_add(evidence.missed_samples);
+        self.max_consecutive_misses = self
+            .max_consecutive_misses
+            .max(evidence.max_consecutive_misses);
+        self.max_lateness_us = self.max_lateness_us.max(evidence.max_lateness_us);
+        self.max_interval_us = self.max_interval_us.max(evidence.max_interval_us);
+        self.max_poll_wall_us = self.max_poll_wall_us.max(evidence.max_poll_wall_us);
+        self.max_spi_wall_us = self.max_spi_wall_us.max(evidence.max_spi_wall_us);
+    }
+
+    pub(crate) const fn capture_evidence(
+        self,
+    ) -> crate::commissioning::capture_timing::CaptureTimingEvidence {
+        crate::commissioning::capture_timing::CaptureTimingEvidence {
+            requested_period_us: self.requested_period_us,
+            valid_samples: self.valid_samples,
+            missed_samples: self.missed_samples,
+            max_consecutive_misses: self.max_consecutive_misses,
+            max_lateness_us: self.max_lateness_us,
+            max_interval_us: self.max_interval_us,
+            max_poll_wall_us: self.max_poll_wall_us,
+            max_spi_wall_us: self.max_spi_wall_us,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, defmt::Format)]

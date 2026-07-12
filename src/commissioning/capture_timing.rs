@@ -114,6 +114,20 @@ pub struct CaptureTimingEvidence {
     pub max_spi_wall_us: u32,
 }
 
+impl CaptureTimingEvidence {
+    /// Zero-filled evidence for a timing method that did not run.
+    pub const EMPTY: Self = Self {
+        requested_period_us: 0,
+        valid_samples: 0,
+        missed_samples: 0,
+        max_consecutive_misses: 0,
+        max_lateness_us: 0,
+        max_interval_us: 0,
+        max_poll_wall_us: 0,
+        max_spi_wall_us: 0,
+    };
+}
+
 /// Streaming timing-quality accumulator for one electrical capture.
 #[derive(Debug, Clone, Copy, defmt::Format)]
 pub struct CaptureTiming {
@@ -179,12 +193,18 @@ impl CaptureTiming {
         let lateness_us = observation_us
             .checked_sub(slot.sample_deadline_us)
             .ok_or(TimingReject::NonMonotonicTime)?;
+        update_max_u32(&mut self.max_lateness_us, lateness_us, &mut self.overflowed);
         if lateness_us > u64::from(self.requested_period_us) / 4 {
             return Err(TimingReject::ExcessiveLateness);
         }
         let poll_wall_us = poll_completion_us
             .checked_sub(poll_entry_us)
             .ok_or(TimingReject::NonMonotonicTime)?;
+        update_max_u32(
+            &mut self.max_poll_wall_us,
+            poll_wall_us,
+            &mut self.overflowed,
+        );
         if u64::from(spi_wall_us) > poll_wall_us {
             return Err(TimingReject::SpiWallExceedsPoll);
         }
@@ -205,12 +225,6 @@ impl CaptureTiming {
             self.max_consecutive_misses = self.max_consecutive_misses.max(self.consecutive_misses);
         }
 
-        update_max_u32(&mut self.max_lateness_us, lateness_us, &mut self.overflowed);
-        update_max_u32(
-            &mut self.max_poll_wall_us,
-            poll_wall_us,
-            &mut self.overflowed,
-        );
         self.max_spi_wall_us = self.max_spi_wall_us.max(spi_wall_us);
         if self.valid_samples > 1 {
             let interval_us = observation_us
@@ -239,16 +253,25 @@ impl CaptureTiming {
         if self.missed_samples > self.envelope.max_missed_samples {
             return Err(TimingReject::MissedSamples);
         }
-        Ok(CaptureTimingEvidence {
-            requested_period_us: self.requested_period_us,
-            valid_samples: self.valid_samples,
-            missed_samples: self.missed_samples,
-            max_consecutive_misses: self.max_consecutive_misses,
-            max_lateness_us: self.max_lateness_us,
-            max_interval_us: self.max_interval_us,
-            max_poll_wall_us: self.max_poll_wall_us,
-            max_spi_wall_us: self.max_spi_wall_us,
-        })
+        Ok(self.snapshot().0)
+    }
+
+    /// Return the latest saturating evidence and its overflow flag without applying gates.
+    #[must_use]
+    pub const fn snapshot(&self) -> (CaptureTimingEvidence, bool) {
+        (
+            CaptureTimingEvidence {
+                requested_period_us: self.requested_period_us,
+                valid_samples: self.valid_samples,
+                missed_samples: self.missed_samples,
+                max_consecutive_misses: self.max_consecutive_misses,
+                max_lateness_us: self.max_lateness_us,
+                max_interval_us: self.max_interval_us,
+                max_poll_wall_us: self.max_poll_wall_us,
+                max_spi_wall_us: self.max_spi_wall_us,
+            },
+            self.overflowed,
+        )
     }
 }
 
@@ -328,6 +351,22 @@ mod tests {
 
         let evidence = timing.finish().unwrap();
         assert_eq!(evidence.max_lateness_us, 25);
+    }
+
+    #[test]
+    fn rejected_sample_snapshot_retains_offending_lateness() {
+        let mut timing = CaptureTiming::new(100, TimingEnvelope::DELAY);
+
+        assert_eq!(
+            timing.record_sample(1_000, 1_000, 1_026, 1_030, 4),
+            Err(TimingReject::ExcessiveLateness),
+        );
+        let (evidence, overflowed) = timing.snapshot();
+
+        assert_eq!(evidence.valid_samples, 0);
+        assert_eq!(evidence.max_lateness_us, 26);
+        assert_eq!(evidence.max_poll_wall_us, 0);
+        assert!(!overflowed);
     }
 
     #[test]

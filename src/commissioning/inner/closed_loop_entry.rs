@@ -977,6 +977,8 @@ mod tests {
             tau_e_us: 730,
             inductance: InductanceEvidence::EMPTY,
             inner_warning_flags: 0,
+            timing: [crate::commissioning::types::CommissionTimingSummary::NOT_RUN; 3],
+            timing_summary: 0,
             resistance_selected_count_slope_milli: 1706,
             resistance_gain_path_count_slope_milli: 1706,
             resistance_axis0_count_slope_milli: 1700,

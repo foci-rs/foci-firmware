@@ -384,6 +384,93 @@ pub struct OuterSafetyFault {
     pub duration_cap_us: u32,
 }
 
+/// Timing capture did not run.
+pub const COMMISSION_TIMING_NOT_RUN: u8 = 0;
+/// Timing capture completed inside its method envelope.
+pub const COMMISSION_TIMING_ACCEPTED: u8 = 1;
+/// Timing capture was rejected by its method envelope.
+pub const COMMISSION_TIMING_REJECTED: u8 = 2;
+
+/// Electrical-identification timing method identifier for resistance.
+pub const COMMISSION_TIMING_METHOD_RESISTANCE: u8 = 0;
+/// Electrical-identification timing method identifier for inductance.
+pub const COMMISSION_TIMING_METHOD_INDUCTANCE: u8 = 1;
+/// Electrical-identification timing method identifier for delay.
+pub const COMMISSION_TIMING_METHOD_DELAY: u8 = 2;
+
+/// Compact retained timing result for one electrical-identification method.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+pub struct CommissionTimingSummary {
+    /// `COMMISSION_TIMING_*` state.
+    pub status: u8,
+    /// Whether timing telemetry saturated its retained integer representation.
+    pub overflowed: bool,
+    /// Saturating capture metrics. Zero-filled when the method did not run.
+    pub evidence: crate::commissioning::capture_timing::CaptureTimingEvidence,
+}
+
+impl CommissionTimingSummary {
+    /// Summary for a method that did not run.
+    pub const NOT_RUN: Self = Self {
+        status: COMMISSION_TIMING_NOT_RUN,
+        overflowed: false,
+        evidence: crate::commissioning::capture_timing::CaptureTimingEvidence::EMPTY,
+    };
+
+    /// Build an accepted summary.
+    #[must_use]
+    pub const fn accepted(
+        evidence: crate::commissioning::capture_timing::CaptureTimingEvidence,
+    ) -> Self {
+        Self {
+            status: COMMISSION_TIMING_ACCEPTED,
+            overflowed: false,
+            evidence,
+        }
+    }
+
+    /// Build a rejected summary from the last observable timing snapshot.
+    #[must_use]
+    pub const fn rejected(
+        evidence: crate::commissioning::capture_timing::CaptureTimingEvidence,
+        overflowed: bool,
+    ) -> Self {
+        Self {
+            status: COMMISSION_TIMING_REJECTED,
+            overflowed,
+            evidence,
+        }
+    }
+}
+
+/// Pack three R/L/delay timing summaries into the terminal wire bitfield.
+#[must_use]
+pub fn pack_commission_timing_summary(summaries: [CommissionTimingSummary; 3]) -> u32 {
+    let states = u32::from(summaries[0].status & 0x03)
+        | (u32::from(summaries[1].status & 0x03) << 2)
+        | (u32::from(summaries[2].status & 0x03) << 4);
+    let rejected = summaries
+        .iter()
+        .any(|summary| summary.status == COMMISSION_TIMING_REJECTED);
+    let missed_total = summaries.iter().fold(0_u32, |total, summary| {
+        total.saturating_add(u32::from(summary.evidence.missed_samples))
+    });
+    let max_lateness = summaries
+        .iter()
+        .map(|summary| summary.evidence.max_lateness_us)
+        .max()
+        .unwrap_or(0);
+    let overflowed = summaries.iter().any(|summary| summary.overflowed)
+        || missed_total > u32::from(u8::MAX)
+        || max_lateness > u32::from(u16::MAX);
+
+    states
+        | (u32::from(rejected) << 6)
+        | (u32::from(overflowed) << 7)
+        | (missed_total.min(u32::from(u8::MAX)) << 8)
+        | (max_lateness.min(u32::from(u16::MAX)) << 16)
+}
+
 /// Result of inner (electrical) commissioning.
 #[derive(Debug, Clone, defmt::Format)]
 pub struct InnerResult {
@@ -448,6 +535,10 @@ pub struct InnerResult {
     /// fallback gains, bit 6 reports host-default confidence, and bit 7 is
     /// reserved.
     pub inner_warning_flags: u8,
+    /// Per-method timing summaries in resistance, inductance, delay order.
+    pub timing: [CommissionTimingSummary; 3],
+    /// Packed terminal timing status derived from [`Self::timing`].
+    pub timing_summary: u32,
 
     // --- Shared multi-point resistance-identification evidence ---
     //
@@ -777,4 +868,61 @@ pub struct CommissionResult {
     pub position_filter_hz: u16,
     /// Applied flux-filter cutoff in Hz (0 = disabled).
     pub flux_filter_hz: u16,
+}
+
+#[cfg(test)]
+mod commission_timing_tests {
+    use super::{
+        COMMISSION_TIMING_ACCEPTED, COMMISSION_TIMING_NOT_RUN, COMMISSION_TIMING_REJECTED,
+        CommissionTimingSummary, pack_commission_timing_summary,
+    };
+    use crate::commissioning::capture_timing::CaptureTimingEvidence;
+
+    fn summary(status: u8, missed_samples: u16, max_lateness_us: u32) -> CommissionTimingSummary {
+        CommissionTimingSummary {
+            status,
+            overflowed: false,
+            evidence: CaptureTimingEvidence {
+                requested_period_us: 100,
+                valid_samples: 12,
+                missed_samples,
+                max_consecutive_misses: 1,
+                max_lateness_us,
+                max_interval_us: 125,
+                max_poll_wall_us: 20,
+                max_spi_wall_us: 8,
+            },
+        }
+    }
+
+    #[test]
+    fn commission_timing_packs_states_and_worst_case_metrics() {
+        let packed = pack_commission_timing_summary([
+            summary(COMMISSION_TIMING_ACCEPTED, 2, 15),
+            summary(COMMISSION_TIMING_REJECTED, 3, 40),
+            CommissionTimingSummary::NOT_RUN,
+        ]);
+
+        assert_eq!(packed & 0x03, u32::from(COMMISSION_TIMING_ACCEPTED));
+        assert_eq!((packed >> 2) & 0x03, u32::from(COMMISSION_TIMING_REJECTED));
+        assert_eq!((packed >> 4) & 0x03, u32::from(COMMISSION_TIMING_NOT_RUN));
+        assert_ne!(packed & (1 << 6), 0);
+        assert_eq!((packed >> 8) & 0xff, 5);
+        assert_eq!(packed >> 16, 40);
+    }
+
+    #[test]
+    fn commission_timing_marks_metric_saturation_as_overflow() {
+        let mut resistance = summary(COMMISSION_TIMING_ACCEPTED, 250, 70_000);
+        resistance.overflowed = true;
+        let packed = pack_commission_timing_summary([
+            resistance,
+            summary(COMMISSION_TIMING_ACCEPTED, 20, 1),
+            CommissionTimingSummary::NOT_RUN,
+        ]);
+
+        assert_ne!(packed & (1 << 7), 0);
+        assert_eq!((packed >> 8) & 0xff, 0xff);
+        assert_eq!(packed >> 16, 0xffff);
+    }
 }

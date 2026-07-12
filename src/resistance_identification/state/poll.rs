@@ -318,13 +318,7 @@ impl ResistanceRunner {
                 Err(_) => return self.fail(backend, ResistanceError::TimingRejected),
             };
             self.timing.completed_windows = self.timing.completed_windows.saturating_add(1);
-            self.timing.missed_samples = self
-                .timing
-                .missed_samples
-                .saturating_add(evidence.missed_samples);
-            self.timing.max_poll_wall_us =
-                self.timing.max_poll_wall_us.max(evidence.max_poll_wall_us);
-            self.timing.max_spi_wall_us = self.timing.max_spi_wall_us.max(evidence.max_spi_wall_us);
+            self.timing.merge(evidence);
             self.state = ResistanceState::ReadEncoderAfter(capture);
             ResistancePoll::ReadyNow
         } else {

@@ -125,6 +125,8 @@ pub(crate) struct CurrentValidateData {
     pub(crate) inductance: InductanceEvidence,
     /// Shared multi-point resistance-identification result from Phase 5.
     pub(crate) resistance_result: crate::resistance_identification::ResistanceRunResult,
+    /// Completed Phase 5 timing summaries in resistance, inductance, delay order.
+    pub(crate) timing: [crate::commissioning::types::CommissionTimingSummary; 3],
     /// Resistance count-slope (milli-units) consumed by the gain-formula path.
     /// Captured before any averaging so the final InnerResult can record the
     /// same-run 64x count-slope-milli audit counterpart against
@@ -1293,17 +1295,19 @@ pub(crate) async fn step_current_tune<B: CommissioningBackend>(
     profile: CommissionProfile,
     backend: &mut B,
 ) -> StepResult {
-    let (model, inner_warning_flags, resistance_result, inductance) = match phase {
+    let (model, inner_warning_flags, resistance_result, inductance, timing) = match phase {
         InnerPhase::CurrentTune {
             model,
             inner_warning_flags,
             resistance_result,
             inductance,
+            timing,
         } => (
             *model,
             *inner_warning_flags,
             *resistance_result,
             *inductance,
+            *timing,
         ),
         _ => return StepResult::Continue,
     };
@@ -1368,6 +1372,7 @@ pub(crate) async fn step_current_tune<B: CommissioningBackend>(
             inner_warning_flags,
             inductance,
             resistance_result,
+            timing,
             // The gain-formula path consumes `model.r_int`, already in the
             // `ELECTRICAL_MODEL_RESISTANCE_SCALE` (milli) count-slope unit
             // space — identical to `selected_r_count_slope_milli`, so the 64x
@@ -1852,6 +1857,10 @@ pub(crate) async fn step_current_validate<B: CommissioningBackend>(
                 tau_e_us: data.model.tau_e_us,
                 inductance: data.inductance,
                 inner_warning_flags: data.inner_warning_flags,
+                timing: data.timing,
+                timing_summary: crate::commissioning::types::pack_commission_timing_summary(
+                    data.timing,
+                ),
                 resistance_selected_count_slope_milli: resistance.selected_r_count_slope_milli,
                 resistance_gain_path_count_slope_milli: data.resistance_gain_path_count_slope_milli,
                 resistance_axis0_count_slope_milli: axis0.r_count_slope_milli,
@@ -2085,6 +2094,7 @@ mod tests {
                 inner_warning_flags: 0,
                 resistance_result: resistance_result(),
                 inductance: InductanceEvidence::test_fixture(),
+                timing: [crate::commissioning::types::CommissionTimingSummary::NOT_RUN; 3],
             };
             let mut backend = MockBackend::new();
             backend.current_limit_value = 4000;
@@ -2131,6 +2141,7 @@ mod tests {
                 inner_warning_flags: 0,
                 resistance_result: resistance_result(),
                 inductance: InductanceEvidence::test_fixture(),
+                timing: [crate::commissioning::types::CommissionTimingSummary::NOT_RUN; 3],
             };
             let mut backend = MockBackend::new();
             backend.current_limit_value = 2816;
@@ -2177,6 +2188,7 @@ mod tests {
                 inner_warning_flags: 0,
                 resistance_result: resistance_result(),
                 inductance: InductanceEvidence::test_fixture(),
+                timing: [crate::commissioning::types::CommissionTimingSummary::NOT_RUN; 3],
             };
             let mut backend = MockBackend::new();
             backend.current_limit_value = 2816;
@@ -2228,6 +2240,7 @@ mod tests {
                 inner_warning_flags: 0,
                 resistance_result: resistance_result(),
                 inductance: evidence,
+                timing: [crate::commissioning::types::CommissionTimingSummary::NOT_RUN; 3],
             };
             let mut backend = MockBackend::new();
             backend.current_limit_value = 4000;
@@ -2270,6 +2283,7 @@ mod tests {
                 inner_warning_flags: 0,
                 resistance_result: resistance_result(),
                 inductance: InductanceEvidence::test_fixture(),
+                timing: [crate::commissioning::types::CommissionTimingSummary::NOT_RUN; 3],
             };
             let mut backend = MockBackend::new();
             backend.current_limit_value = 4000;
@@ -4106,6 +4120,7 @@ mod tests {
                 inner_warning_flags: 0,
                 inductance: InductanceEvidence::test_fixture(),
                 resistance_result: resistance_result(),
+                timing: [crate::commissioning::types::CommissionTimingSummary::NOT_RUN; 3],
                 resistance_gain_path_count_slope_milli: 1000,
                 current_loop_evidence: CurrentLoopEvidence::measured_symmetric(),
             },
@@ -4190,6 +4205,7 @@ mod tests {
                 inner_warning_flags: 0,
                 inductance: InductanceEvidence::test_fixture(),
                 resistance_result: resistance_result(),
+                timing: [crate::commissioning::types::CommissionTimingSummary::NOT_RUN; 3],
                 resistance_gain_path_count_slope_milli: 1000,
                 current_loop_evidence: evidence,
             },
@@ -4281,6 +4297,7 @@ mod tests {
                 inner_warning_flags: 0,
                 inductance: InductanceEvidence::test_fixture(),
                 resistance_result: resistance_result(),
+                timing: [crate::commissioning::types::CommissionTimingSummary::NOT_RUN; 3],
                 resistance_gain_path_count_slope_milli: 1000,
                 current_loop_evidence: evidence,
             },

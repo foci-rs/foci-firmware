@@ -913,12 +913,12 @@ mod tests {
         assert!(size_of::<capture_timing::CaptureTimingEvidence>() <= 32);
         assert_eq!(size_of::<[u16; crate::autotune::TRANSIENT_LEN]>(), 512);
         assert_eq!(size_of::<crate::autotune::DelayTimestampOffsets>(), 514);
-        assert_eq!(engine_step, 3_952);
-        assert_eq!(step_inner, 3_904);
-        assert_eq!(electrical_id, 592);
+        assert_eq!(engine_step, 4_288);
+        assert_eq!(step_inner, 4_240);
+        assert_eq!(electrical_id, 608);
         assert!(electrical_id <= 608);
         assert!(electrical_id <= 960);
-        assert_eq!(runtime_tick, 22_304);
+        assert_eq!(runtime_tick, 22_576);
     }
 
     fn tmc_state() -> &'static crate::state::tmc::TmcChannelState {
@@ -986,6 +986,8 @@ mod tests {
             tau_e_us: 730,
             inductance: crate::commissioning::types::InductanceEvidence::EMPTY,
             inner_warning_flags: 0,
+            timing: [crate::commissioning::types::CommissionTimingSummary::NOT_RUN; 3],
+            timing_summary: 0,
             resistance_selected_count_slope_milli: 1706,
             resistance_gain_path_count_slope_milli: 1706,
             resistance_axis0_count_slope_milli: 1700,
