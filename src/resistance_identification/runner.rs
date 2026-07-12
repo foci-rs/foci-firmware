@@ -32,12 +32,8 @@
 //!   energizing register write, so a rejection there must not write the
 //!   restore sequence over an externally armed motor.
 
-use foci_tmc4671::registers::{
-    ABN_DECODER_COUNT, ADC_IWY_IUX, MODE_RAMP_MODE_MOTION, MotionMode, STATUS_FLAGS, UQ_UD_EXT,
-};
-
 use super::profile::ResistanceProfile;
-use super::types::{ElectricalAxis, ResistanceError, ResistanceRunResult, ResistanceWarningFlags};
+use super::types::{ResistanceError, ResistanceRunResult};
 
 pub use super::state::{ResistancePoll, ResistanceRunner, ResistanceTimingEvidence};
 
@@ -88,21 +84,6 @@ pub trait ResistanceBackend {
     fn adc_offsets_ready(&self) -> bool;
 }
 
-/// Number of samples averaged per window. Kept small and fixed; the windows
-/// settle for `settle_ms`/`zero_settle_ms` before sampling.
-const SAMPLES_PER_WINDOW: u8 = 8;
-
-/// Result of one sampled window.
-///
-/// Carries only the mean physical phase current; the window's `STATUS_FLAGS` and
-/// encoder motion are folded into the run-wide accumulator and the warning flags
-/// inside [`capture_window`], so they are not carried out here.
-#[allow(dead_code, reason = "removed with the remaining legacy sweep helpers")]
-struct WindowMean {
-    /// Mean physical phase-current count for the axis channel.
-    phase_current_count: i32,
-}
-
 /// Run the shared resistance-identification sweep.
 ///
 /// Sequences power-stage setup, a fixed two-axis voltage sweep with signed
@@ -127,8 +108,7 @@ struct WindowMean {
 /// - [`ResistanceError::PeakCurrentExceeded`] when an energized window's mean
 ///   current exceeds the profile peak.
 /// - [`ResistanceError::BackendIo`] when a backend register transaction fails.
-/// - Any fit/evaluation error from [`fit_resistance_axis`] or
-///   [`evaluate_resistance_result`].
+/// - Any fit/evaluation error produced by the resumable runner.
 ///
 /// All errors except the entry pre-checks and pre-energize validations
 /// ([`ResistanceError::NotAdcReady`], [`ResistanceError::NotArmed`],
@@ -152,132 +132,5 @@ pub async fn run_resistance_identification<B: ResistanceBackend>(
             }
             ResistancePoll::Complete(result) => return result,
         }
-    }
-}
-
-/// Capture one window: settle, sample `SAMPLES_PER_WINDOW` times, and return the
-/// mean physical phase current (selected per axis). Folds the sampled status
-/// flags into the run-wide accumulator and raises the `ENCODER_MOVED` and
-/// `STATUS_FLAGS` warning flags as appropriate.
-#[allow(dead_code, reason = "removed with the remaining legacy sweep helpers")]
-async fn capture_window<B: ResistanceBackend>(
-    backend: &mut B,
-    profile: &ResistanceProfile,
-    axis: ElectricalAxis,
-    ud: i16,
-    settle_ms: u16,
-    status_flags_or: &mut u32,
-    warning_flags: &mut ResistanceWarningFlags,
-) -> Result<WindowMean, ResistanceError> {
-    let energized = ud != 0;
-
-    if energized {
-        write(backend, UQ_UD_EXT.addr(), pack_ud(ud)).await?;
-        write(
-            backend,
-            MODE_RAMP_MODE_MOTION.addr(),
-            MotionMode::UqUdExt as u32,
-        )
-        .await?;
-    } else {
-        write(
-            backend,
-            MODE_RAMP_MODE_MOTION.addr(),
-            MotionMode::Stopped as u32,
-        )
-        .await?;
-        write(backend, UQ_UD_EXT.addr(), 0).await?;
-    }
-
-    // Capture the encoder before the dwell so the move detector spans the full
-    // energized settling and sampling interval.
-    let encoder_before = read(backend, ABN_DECODER_COUNT.addr()).await?;
-
-    backend.delay_ms(u64::from(settle_ms)).await;
-
-    let mut current_sum: i32 = 0;
-    let mut window_status_or: u32 = 0;
-    for _ in 0..SAMPLES_PER_WINDOW {
-        let packed = read(backend, ADC_IWY_IUX.addr()).await?;
-        current_sum += i32::from(phase_current_for_axis(axis, packed));
-        window_status_or |= read(backend, STATUS_FLAGS.addr()).await?;
-        backend
-            .delay_ms(u64::from(profile.sample_interval_ms))
-            .await;
-    }
-    let phase_current_count = current_sum / i32::from(SAMPLES_PER_WINDOW);
-
-    let encoder_after = read(backend, ABN_DECODER_COUNT.addr()).await?;
-    let encoder_delta_count = wrapped_encoder_delta(
-        encoder_before,
-        encoder_after,
-        backend.encoder_counts_per_rev(),
-    );
-
-    *status_flags_or |= window_status_or;
-    if window_status_or & profile.status_flags_warn_mask != 0 {
-        warning_flags.insert(ResistanceWarningFlags::STATUS_FLAGS);
-    }
-    if energized && encoder_delta_count.unsigned_abs() > u32::from(profile.encoder_move_warn_counts)
-    {
-        warning_flags.insert(ResistanceWarningFlags::ENCODER_MOVED);
-    }
-
-    Ok(WindowMean {
-        phase_current_count,
-    })
-}
-
-/// Read a register, mapping backend I/O failures to [`ResistanceError::BackendIo`].
-async fn read<B: ResistanceBackend>(backend: &mut B, addr: u8) -> Result<u32, ResistanceError> {
-    backend
-        .read_register(addr)
-        .await
-        .map_err(|_| ResistanceError::BackendIo)
-}
-
-/// Write a register, mapping backend I/O failures to [`ResistanceError::BackendIo`].
-async fn write<B: ResistanceBackend>(
-    backend: &mut B,
-    addr: u8,
-    value: u32,
-) -> Result<(), ResistanceError> {
-    backend
-        .write_register(addr, value)
-        .await
-        .map_err(|_| ResistanceError::BackendIo)
-}
-
-/// Pack a signed `UD_EXT` value with `UQ_EXT=0` into the `UQ_UD_EXT` word.
-fn pack_ud(ud: i16) -> u32 {
-    u32::from(ud as u16)
-}
-
-/// Select the physical phase-current channel for the electrical axis.
-///
-/// `ADC_IWY_IUX` packs IWY in the upper half and IUX in the lower half. Axis 0
-/// (PHI_E_EXT=0, coil A) uses IUX; axis 1 (PHI_E_EXT=16384, coil B) uses IWY.
-fn phase_current_for_axis(axis: ElectricalAxis, packed: u32) -> i16 {
-    if axis.index == 0 {
-        crate::tmc::decode_signed_lower_half(packed)
-    } else {
-        crate::tmc::decode_signed_upper_half(packed)
-    }
-}
-
-/// Wrap an encoder delta into `[-counts_per_rev/2, counts_per_rev/2]`.
-fn wrapped_encoder_delta(before: u32, after: u32, counts_per_rev: u32) -> i32 {
-    let raw = (after as i32).wrapping_sub(before as i32);
-    let counts_per_rev = counts_per_rev as i32;
-    if counts_per_rev <= 0 {
-        return raw;
-    }
-    let half = counts_per_rev / 2;
-    if raw > half {
-        raw - counts_per_rev
-    } else if raw < -half {
-        raw + counts_per_rev
-    } else {
-        raw
     }
 }

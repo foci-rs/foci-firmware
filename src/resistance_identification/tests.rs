@@ -1045,10 +1045,10 @@ fn warning_only_status_is_retained_without_terminating_sample() {
 }
 
 #[test]
-fn resumable_success_matches_legacy_result_and_remains_terminal() {
-    let mut legacy_backend = FakeResistanceBackend::standard();
+fn resumable_success_matches_compatibility_loop_and_remains_terminal() {
+    let mut compatibility_backend = FakeResistanceBackend::standard();
     let expected = block_on(run_resistance_identification(
-        &mut legacy_backend,
+        &mut compatibility_backend,
         ResistanceRunMode::CommissioningManagedEnable,
     ))
     .unwrap();
