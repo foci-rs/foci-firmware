@@ -16,7 +16,8 @@ use pollster::block_on;
 
 use super::profile::ResistanceProfile;
 use super::runner::{
-    ResistanceBackend, ResistanceBackendError, ResistanceRunMode, run_resistance_identification,
+    ResistanceBackend, ResistanceBackendError, ResistancePoll, ResistanceRunMode, ResistanceRunner,
+    run_resistance_identification,
 };
 use super::types::{ResistanceError, ResistanceWarningFlags};
 
@@ -97,6 +98,9 @@ struct FakeResistanceBackend {
     scripted_positive_anchor_current: Option<i32>,
     /// Scripted negative signed-anchor current (UD = -signed_anchor_ud).
     scripted_negative_anchor_current: Option<i32>,
+    operations: usize,
+    enable_transitions: heapless::Vec<bool, 8>,
+    io_elapsed_us: u64,
 }
 
 impl FakeResistanceBackend {
@@ -134,7 +138,18 @@ impl FakeResistanceBackend {
             zero_window_counted: false,
             scripted_positive_anchor_current: None,
             scripted_negative_anchor_current: None,
+            operations: 0,
+            enable_transitions: heapless::Vec::new(),
+            io_elapsed_us: 1,
         }
+    }
+
+    fn begin_poll(&mut self) {
+        self.operations = 0;
+    }
+
+    fn operations_since_poll(&self) -> usize {
+        self.operations
     }
 
     /// Returns true when the recorded writes end in the safe-state restore set.
@@ -227,6 +242,8 @@ impl FakeResistanceBackend {
 
 impl ResistanceBackend for FakeResistanceBackend {
     async fn read_register(&mut self, addr: u8) -> Result<u32, ResistanceBackendError> {
+        self.operations += 1;
+        self.elapsed_us += self.io_elapsed_us;
         if addr == foci_tmc4671::registers::MOTOR_TYPE_N_POLE_PAIRS.addr() {
             return Ok(MotorTypeNPolePairs::new()
                 .with_motor_type(self.motor_type)
@@ -267,6 +284,8 @@ impl ResistanceBackend for FakeResistanceBackend {
     }
 
     async fn write_register(&mut self, addr: u8, value: u32) -> Result<(), ResistanceBackendError> {
+        self.operations += 1;
+        self.elapsed_us += self.io_elapsed_us;
         self.write_count += 1;
         // Record every attempted write, including ones that fail, so that
         // safe-state restore is observable even after a backend error.
@@ -307,6 +326,9 @@ impl ResistanceBackend for FakeResistanceBackend {
 
     fn set_enable_pin(&mut self, enabled: bool) {
         self.enable_pin = enabled;
+        self.enable_transitions
+            .push(enabled)
+            .expect("enable transition log overflow");
     }
 
     fn is_armed_for_open_loop_voltage(&self) -> bool {
@@ -518,7 +540,11 @@ fn runner_sets_encoder_moved_warning_when_motion_exceeds_profile_threshold() {
 #[test]
 fn runner_sets_status_flags_warning_when_sampled_status_matches_mask() {
     let mut backend = FakeResistanceBackend::standard();
-    let expected_status_flags = backend.profile().status_flags_warn_mask;
+    let expected_status_flags = 1 << 28;
+    assert_ne!(
+        expected_status_flags & backend.profile().status_flags_warn_mask,
+        0
+    );
     backend.scripted_status_flags = expected_status_flags;
 
     let result = block_on(run_resistance_identification(
@@ -747,4 +773,254 @@ fn signed_anchor_positive_current_is_zero_subtracted_like_the_negative_anchor() 
     // Negative anchor: raw -960 minus zero 100 = -1060 (already zero-subtracted
     // before the fix; asserted here to pin the consistent treatment).
     assert_eq!(anchor.negative_current_count, -1060);
+}
+
+#[test]
+fn resumable_setup_performs_one_register_operation_per_poll() {
+    let mut backend = FakeResistanceBackend::standard();
+    let mut runner = ResistanceRunner::new(
+        ResistanceRunMode::CommissioningManagedEnable,
+        backend.profile(),
+        1_000,
+    )
+    .unwrap();
+
+    for _ in 0..24 {
+        backend.begin_poll();
+        let poll = block_on(runner.poll(&mut backend, 1_000));
+        assert_eq!(
+            backend.operations_since_poll(),
+            1,
+            "setup poll was not bounded"
+        );
+        if matches!(poll, ResistancePoll::At(_)) {
+            return;
+        }
+        assert_eq!(poll, ResistancePoll::ReadyNow);
+    }
+    panic!("runner did not reach the first settle");
+}
+
+#[test]
+fn resumable_sample_performs_exactly_current_and_status_reads() {
+    let mut backend = FakeResistanceBackend::standard();
+    let mut runner = ResistanceRunner::new(
+        ResistanceRunMode::CommissioningManagedEnable,
+        backend.profile(),
+        1_000,
+    )
+    .unwrap();
+    let mut now = 1_000;
+
+    loop {
+        backend.begin_poll();
+        match block_on(runner.poll(&mut backend, now)) {
+            ResistancePoll::ReadyNow => {}
+            ResistancePoll::At(deadline) => {
+                now = deadline;
+                backend.begin_poll();
+                let sample = block_on(runner.poll(&mut backend, now));
+                assert_eq!(backend.operations_since_poll(), 2);
+                assert!(matches!(
+                    sample,
+                    ResistancePoll::At(_) | ResistancePoll::ReadyNow
+                ));
+                break;
+            }
+            ResistancePoll::Complete(result) => panic!("unexpected completion: {result:?}"),
+        }
+    }
+}
+
+#[test]
+fn profile_that_cannot_fit_phase_deadline_rejects_before_enable() {
+    let backend = FakeResistanceBackend::standard();
+    let mut profile = backend.profile();
+    profile.settle_ms = u16::MAX;
+    profile.max_window_exposure = u64::MAX;
+    profile.max_total_exposure = u64::MAX;
+
+    assert!(matches!(
+        ResistanceRunner::new(
+            ResistanceRunMode::CommissioningManagedEnable,
+            profile,
+            1_000,
+        ),
+        Err(ResistanceError::PhaseDeadlineExceeded)
+    ));
+    assert!(backend.enable_transitions.is_empty());
+}
+
+fn drive_to_first_sample(
+    runner: &mut ResistanceRunner,
+    backend: &mut FakeResistanceBackend,
+    now: u64,
+) -> u64 {
+    for _ in 0..32 {
+        match block_on(runner.poll(backend, now)) {
+            ResistancePoll::ReadyNow => {}
+            ResistancePoll::At(deadline) => return deadline,
+            ResistancePoll::Complete(result) => panic!("unexpected completion: {result:?}"),
+        }
+    }
+    panic!("runner did not reach sample wait");
+}
+
+fn finish_restoration(
+    runner: &mut ResistanceRunner,
+    backend: &mut FakeResistanceBackend,
+    now: u64,
+) -> Result<super::types::ResistanceRunResult, ResistanceError> {
+    for _ in 0..8 {
+        backend.begin_poll();
+        let poll = block_on(runner.poll(backend, now));
+        assert_eq!(
+            backend.operations_since_poll(),
+            1,
+            "restore poll was not bounded"
+        );
+        if let ResistancePoll::Complete(result) = poll {
+            return result;
+        }
+    }
+    panic!("restoration did not complete");
+}
+
+#[test]
+fn one_missed_slot_uses_ninth_opportunity_without_catch_up() {
+    let mut backend = FakeResistanceBackend::standard();
+    let mut runner = ResistanceRunner::new(
+        ResistanceRunMode::CommissioningManagedEnable,
+        backend.profile(),
+        1_000,
+    )
+    .unwrap();
+    let due = drive_to_first_sample(&mut runner, &mut backend, 1_000);
+    let period = u64::from(backend.profile().sample_interval_ms) * 1_000;
+
+    backend.begin_poll();
+    let mut next = match block_on(runner.poll(&mut backend, due + period)) {
+        ResistancePoll::At(deadline) => deadline,
+        poll => panic!("unexpected delayed-sample result: {poll:?}"),
+    };
+    assert_eq!(backend.operations_since_poll(), 2, "no catch-up reads");
+    for _ in 1..SAMPLES_PER_WINDOW_FOR_TEST {
+        next = match block_on(runner.poll(&mut backend, next)) {
+            ResistancePoll::At(deadline) => deadline,
+            ResistancePoll::ReadyNow => break,
+            poll => panic!("unexpected sample result: {poll:?}"),
+        };
+    }
+    assert_eq!(runner.timing_evidence().completed_windows, 1);
+    assert_eq!(runner.timing_evidence().missed_samples, 1);
+}
+
+const SAMPLES_PER_WINDOW_FOR_TEST: u8 = 8;
+
+#[test]
+fn second_missed_slot_rejects_the_window() {
+    let mut backend = FakeResistanceBackend::standard();
+    let mut runner = ResistanceRunner::new(
+        ResistanceRunMode::CommissioningManagedEnable,
+        backend.profile(),
+        1_000,
+    )
+    .unwrap();
+    let due = drive_to_first_sample(&mut runner, &mut backend, 1_000);
+    let period = u64::from(backend.profile().sample_interval_ms) * 1_000;
+    let next = match block_on(runner.poll(&mut backend, due + period)) {
+        ResistancePoll::At(deadline) => deadline,
+        poll => panic!("unexpected first miss result: {poll:?}"),
+    };
+
+    assert_eq!(
+        block_on(runner.poll(&mut backend, next + period)),
+        ResistancePoll::ReadyNow
+    );
+    assert!(!backend.enable_pin, "timing rejection must lower GPIO");
+    assert_eq!(
+        finish_restoration(&mut runner, &mut backend, next + period),
+        Err(ResistanceError::TimingRejected)
+    );
+}
+
+#[test]
+fn absolute_phase_deadline_transitions_to_gpio_first_restore() {
+    let mut backend = FakeResistanceBackend::standard();
+    let mut runner = ResistanceRunner::new(
+        ResistanceRunMode::CommissioningManagedEnable,
+        backend.profile(),
+        1_000,
+    )
+    .unwrap();
+    let _ = drive_to_first_sample(&mut runner, &mut backend, 1_000);
+
+    assert_eq!(
+        block_on(runner.poll(&mut backend, 20_001_001)),
+        ResistancePoll::ReadyNow
+    );
+    assert!(!backend.enable_pin);
+    assert_eq!(
+        finish_restoration(&mut runner, &mut backend, 20_001_001),
+        Err(ResistanceError::PhaseDeadlineExceeded)
+    );
+}
+
+#[test]
+fn critical_status_stops_measurement_and_lowers_gpio_before_restore_io() {
+    let mut backend = FakeResistanceBackend::standard();
+    backend.scripted_status_flags = 1 << 26;
+    let mut runner = ResistanceRunner::new(
+        ResistanceRunMode::CommissioningManagedEnable,
+        backend.profile(),
+        1_000,
+    )
+    .unwrap();
+    let due = drive_to_first_sample(&mut runner, &mut backend, 1_000);
+    let writes_before = backend.writes.len();
+
+    assert_eq!(
+        block_on(runner.poll(&mut backend, due)),
+        ResistancePoll::ReadyNow
+    );
+    assert!(!backend.enable_pin);
+    assert_eq!(
+        backend.writes.len(),
+        writes_before,
+        "restore await ran too early"
+    );
+    assert_eq!(runner.status_flags_or(), 1 << 26);
+    assert_eq!(
+        runner.primary_error(),
+        Some(ResistanceError::CriticalStatus)
+    );
+    assert_eq!(
+        finish_restoration(&mut runner, &mut backend, due),
+        Err(ResistanceError::CriticalStatus)
+    );
+}
+
+#[test]
+fn warning_only_status_is_retained_without_terminating_sample() {
+    let mut backend = FakeResistanceBackend::standard();
+    backend.scripted_status_flags = 1 << 28;
+    let mut runner = ResistanceRunner::new(
+        ResistanceRunMode::CommissioningManagedEnable,
+        backend.profile(),
+        1_000,
+    )
+    .unwrap();
+    let due = drive_to_first_sample(&mut runner, &mut backend, 1_000);
+
+    assert!(matches!(
+        block_on(runner.poll(&mut backend, due)),
+        ResistancePoll::At(_)
+    ));
+    assert!(backend.enable_pin);
+    assert_eq!(runner.status_flags_or(), 1 << 28);
+    assert!(
+        runner
+            .warning_flags()
+            .contains(ResistanceWarningFlags::STATUS_FLAGS)
+    );
 }
