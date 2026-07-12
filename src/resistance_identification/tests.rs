@@ -7,6 +7,7 @@
 //! restores safe state, and the exposure-budget and peak-current gates reject
 //! before energizing.
 
+use core::cell::Cell;
 use foci_tmc4671::registers::{
     ABN_DECODER_COUNT, ADC_IWY_IUX, DSADC_MDEC_B_MDEC_A, MODE_RAMP_MODE_MOTION, MotorType,
     MotorTypeNPolePairs, PIDOUT_UQ_UD_LIMITS, PWM_BBM_H_BBM_L, PWM_MAXCNT, PWM_SV_CHOP,
@@ -101,6 +102,8 @@ struct FakeResistanceBackend {
     operations: usize,
     enable_transitions: heapless::Vec<bool, 8>,
     io_elapsed_us: u64,
+    scripted_elapsed_us: heapless::Vec<u64, 8>,
+    scripted_elapsed_index: Cell<usize>,
 }
 
 impl FakeResistanceBackend {
@@ -141,6 +144,8 @@ impl FakeResistanceBackend {
             operations: 0,
             enable_transitions: heapless::Vec::new(),
             io_elapsed_us: 1,
+            scripted_elapsed_us: heapless::Vec::new(),
+            scripted_elapsed_index: Cell::new(0),
         }
     }
 
@@ -150,6 +155,15 @@ impl FakeResistanceBackend {
 
     fn operations_since_poll(&self) -> usize {
         self.operations
+    }
+
+    fn script_elapsed(&mut self, timestamps: &[u64]) {
+        self.scripted_elapsed_us = heapless::Vec::from_slice(timestamps).unwrap();
+        self.scripted_elapsed_index.set(0);
+    }
+
+    fn fail_next_write(&mut self) {
+        self.fail_after_writes = Some(self.write_count);
     }
 
     /// Returns true when the recorded writes end in the safe-state restore set.
@@ -321,6 +335,11 @@ impl ResistanceBackend for FakeResistanceBackend {
     }
 
     fn elapsed_us(&self) -> u64 {
+        let index = self.scripted_elapsed_index.get();
+        if let Some(&timestamp) = self.scripted_elapsed_us.get(index) {
+            self.scripted_elapsed_index.set(index + 1);
+            return timestamp;
+        }
         self.elapsed_us
     }
 
@@ -969,7 +988,6 @@ fn absolute_phase_deadline_transitions_to_gpio_first_restore() {
 #[test]
 fn critical_status_stops_measurement_and_lowers_gpio_before_restore_io() {
     let mut backend = FakeResistanceBackend::standard();
-    backend.scripted_status_flags = 1 << 26;
     let mut runner = ResistanceRunner::new(
         ResistanceRunMode::CommissioningManagedEnable,
         backend.profile(),
@@ -977,6 +995,7 @@ fn critical_status_stops_measurement_and_lowers_gpio_before_restore_io() {
     )
     .unwrap();
     let due = drive_to_first_sample(&mut runner, &mut backend, 1_000);
+    backend.scripted_status_flags = 1 << 26;
     let writes_before = backend.writes.len();
 
     assert_eq!(
@@ -1054,5 +1073,174 @@ fn resumable_success_matches_legacy_result_and_remains_terminal() {
     assert_eq!(
         block_on(runner.poll(&mut backend, now)),
         ResistancePoll::Complete(Ok(expected))
+    );
+}
+
+#[test]
+fn backward_sample_timestamp_rejects_timing_and_lowers_gpio() {
+    let mut backend = FakeResistanceBackend::standard();
+    let mut runner = ResistanceRunner::new(
+        ResistanceRunMode::CommissioningManagedEnable,
+        backend.profile(),
+        1_000,
+    )
+    .unwrap();
+    let due = drive_to_first_sample(&mut runner, &mut backend, 1_000);
+    backend.script_elapsed(&[100, 90, 110]);
+
+    assert_eq!(
+        block_on(runner.poll(&mut backend, due)),
+        ResistancePoll::ReadyNow
+    );
+    assert!(!backend.enable_pin);
+    assert_eq!(
+        runner.primary_error(),
+        Some(ResistanceError::TimingRejected)
+    );
+}
+
+#[test]
+fn unrepresentable_sample_spi_sum_rejects_timing() {
+    let mut backend = FakeResistanceBackend::standard();
+    let mut runner = ResistanceRunner::new(
+        ResistanceRunMode::CommissioningManagedEnable,
+        backend.profile(),
+        1_000,
+    )
+    .unwrap();
+    let due = drive_to_first_sample(&mut runner, &mut backend, 1_000);
+    backend.script_elapsed(&[0, u64::from(u32::MAX), u64::from(u32::MAX) + 1]);
+
+    assert_eq!(
+        block_on(runner.poll(&mut backend, due)),
+        ResistancePoll::ReadyNow
+    );
+    assert_eq!(
+        runner.primary_error(),
+        Some(ResistanceError::TimingRejected)
+    );
+}
+
+#[test]
+fn critical_pre_enable_status_never_asserts_enable() {
+    let mut backend = FakeResistanceBackend::standard();
+    backend.scripted_status_flags = 1 << 26;
+    let mut runner = ResistanceRunner::new(
+        ResistanceRunMode::CommissioningManagedEnable,
+        backend.profile(),
+        1_000,
+    )
+    .unwrap();
+
+    for _ in 0..16 {
+        if runner.primary_error().is_some() {
+            break;
+        }
+        assert_eq!(
+            block_on(runner.poll(&mut backend, 1_000)),
+            ResistancePoll::ReadyNow
+        );
+    }
+
+    assert_eq!(runner.status_flags_or(), 1 << 26);
+    assert_eq!(
+        runner.primary_error(),
+        Some(ResistanceError::CriticalStatus)
+    );
+    assert!(!backend.enable_transitions.iter().any(|&enabled| enabled));
+}
+
+#[test]
+fn critical_sample_status_precedes_coincident_timing_rejection() {
+    let mut backend = FakeResistanceBackend::standard();
+    let mut runner = ResistanceRunner::new(
+        ResistanceRunMode::CommissioningManagedEnable,
+        backend.profile(),
+        1_000,
+    )
+    .unwrap();
+    let due = drive_to_first_sample(&mut runner, &mut backend, 1_000);
+    backend.scripted_status_flags = 1 << 26;
+    backend.script_elapsed(&[0, u64::from(u32::MAX), u64::from(u32::MAX) + 1]);
+
+    assert_eq!(
+        block_on(runner.poll(&mut backend, due)),
+        ResistancePoll::ReadyNow
+    );
+    assert_eq!(runner.status_flags_or(), 1 << 26);
+    assert_eq!(
+        runner.primary_error(),
+        Some(ResistanceError::CriticalStatus)
+    );
+    assert!(!backend.enable_pin);
+}
+
+#[test]
+fn restore_failure_replaces_success_and_remains_terminal() {
+    let mut backend = FakeResistanceBackend::standard();
+    let mut runner = ResistanceRunner::new(
+        ResistanceRunMode::CommissioningManagedEnable,
+        backend.profile(),
+        1_000,
+    )
+    .unwrap();
+    let mut now = 1_000;
+    let mut was_enabled = false;
+
+    for _ in 0..1_000 {
+        match block_on(runner.poll(&mut backend, now)) {
+            ResistancePoll::ReadyNow => {}
+            ResistancePoll::At(deadline) => now = deadline,
+            ResistancePoll::Complete(result) => panic!("unexpected completion: {result:?}"),
+        }
+        was_enabled |= backend.enable_pin;
+        if was_enabled && !backend.enable_pin && runner.primary_error().is_none() {
+            break;
+        }
+    }
+    assert!(
+        was_enabled && !backend.enable_pin,
+        "runner did not enter restore"
+    );
+    backend.fail_next_write();
+
+    assert_eq!(
+        finish_restoration(&mut runner, &mut backend, now),
+        Err(ResistanceError::BackendIo)
+    );
+    assert_eq!(
+        block_on(runner.poll(&mut backend, now)),
+        ResistancePoll::Complete(Err(ResistanceError::BackendIo))
+    );
+}
+
+#[test]
+fn restore_failure_replaces_existing_primary_error_and_remains_terminal() {
+    let mut backend = FakeResistanceBackend::standard();
+    let mut runner = ResistanceRunner::new(
+        ResistanceRunMode::CommissioningManagedEnable,
+        backend.profile(),
+        1_000,
+    )
+    .unwrap();
+    let due = drive_to_first_sample(&mut runner, &mut backend, 1_000);
+    backend.scripted_status_flags = 1 << 26;
+    assert_eq!(
+        block_on(runner.poll(&mut backend, due)),
+        ResistancePoll::ReadyNow
+    );
+    assert_eq!(
+        runner.primary_error(),
+        Some(ResistanceError::CriticalStatus)
+    );
+    backend.fail_next_write();
+
+    assert_eq!(
+        finish_restoration(&mut runner, &mut backend, due),
+        Err(ResistanceError::BackendIo)
+    );
+    assert_eq!(
+        block_on(runner.poll(&mut backend, due)),
+        ResistancePoll::Complete(Err(ResistanceError::BackendIo))
     );
 }

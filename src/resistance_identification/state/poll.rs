@@ -112,7 +112,9 @@ impl ResistanceRunner {
             }
             8 => match backend.read_register(STATUS_FLAGS.addr()).await {
                 Ok(flags) => {
-                    self.status_flags_or |= flags;
+                    if let Some(poll) = self.record_status(backend, flags) {
+                        return poll;
+                    }
                     Ok(())
                 }
                 Err(_) => Err(ResistanceError::BackendIo),
@@ -265,10 +267,19 @@ impl ResistanceRunner {
             Ok(value) => value,
             Err(_) => return self.fail(backend, ResistanceError::BackendIo),
         };
+        if let Some(poll) = self.record_status(backend, flags) {
+            return poll;
+        }
         let io_done = backend.elapsed_us();
-        let spi_wall = first_done
-            .saturating_sub(io_start)
-            .saturating_add(io_done.saturating_sub(first_done));
+        let Some(first_read_wall) = first_done.checked_sub(io_start) else {
+            return self.fail(backend, ResistanceError::TimingRejected);
+        };
+        let Some(second_read_wall) = io_done.checked_sub(first_done) else {
+            return self.fail(backend, ResistanceError::TimingRejected);
+        };
+        let Some(spi_wall) = first_read_wall.checked_add(second_read_wall) else {
+            return self.fail(backend, ResistanceError::TimingRejected);
+        };
         let Ok(spi_wall_u32) = u32::try_from(spi_wall) else {
             return self.fail(backend, ResistanceError::TimingRejected);
         };
@@ -301,14 +312,6 @@ impl ResistanceRunner {
         capture.status_or |= flags;
         capture.valid_samples += 1;
         capture.next_sample_us = slot.next_deadline_us;
-        self.status_flags_or |= flags;
-        if flags & current_loop_actionable_status_mask() != 0 {
-            return self.fail(backend, ResistanceError::CriticalStatus);
-        }
-        if flags & self.profile.status_flags_warn_mask != 0 {
-            self.warning_flags
-                .insert(ResistanceWarningFlags::STATUS_FLAGS);
-        }
         if capture.valid_samples == SAMPLES_PER_WINDOW {
             let evidence = match capture.timing.finish() {
                 Ok(evidence) => evidence,
@@ -327,6 +330,23 @@ impl ResistanceRunner {
         } else {
             self.state = ResistanceState::Window(capture);
             ResistancePoll::At(capture.next_sample_us)
+        }
+    }
+
+    fn record_status<B: ResistanceBackend>(
+        &mut self,
+        backend: &mut B,
+        flags: u32,
+    ) -> Option<ResistancePoll> {
+        self.status_flags_or |= flags;
+        if flags & self.profile.status_flags_warn_mask != 0 {
+            self.warning_flags
+                .insert(ResistanceWarningFlags::STATUS_FLAGS);
+        }
+        if flags & current_loop_actionable_status_mask() != 0 {
+            Some(self.fail(backend, ResistanceError::CriticalStatus))
+        } else {
+            None
         }
     }
 
