@@ -33,17 +33,11 @@
 //!   restore sequence over an externally armed motor.
 
 use foci_tmc4671::registers::{
-    ABN_DECODER_COUNT, ADC_IWY_IUX, DSADC_MDEC_B_MDEC_A, MODE_RAMP_MODE_MOTION, MotionMode,
-    PHI_E_EXT, PHI_E_SELECTION, PIDOUT_UQ_UD_LIMITS, PWM_BBM_H_BBM_L, PWM_MAXCNT, PWM_SV_CHOP,
-    STATUS_FLAGS, UQ_UD_EXT,
+    ABN_DECODER_COUNT, ADC_IWY_IUX, MODE_RAMP_MODE_MOTION, MotionMode, STATUS_FLAGS, UQ_UD_EXT,
 };
 
 use super::profile::ResistanceProfile;
-use super::types::{
-    ElectricalAxis, ResistanceError, ResistancePoint, ResistanceRunResult, ResistanceWarningFlags,
-    SignedAnchorEvidence,
-};
-use crate::resistance_identification::fit::{evaluate_resistance_result, fit_resistance_axis};
+use super::types::{ElectricalAxis, ResistanceError, ResistanceRunResult, ResistanceWarningFlags};
 
 pub use super::state::{ResistancePoll, ResistanceRunner, ResistanceTimingEvidence};
 
@@ -97,13 +91,13 @@ pub trait ResistanceBackend {
 /// Number of samples averaged per window. Kept small and fixed; the windows
 /// settle for `settle_ms`/`zero_settle_ms` before sampling.
 const SAMPLES_PER_WINDOW: u8 = 8;
-const PREDICTED_CURRENT_STOP_PERMILLE: u64 = 950;
 
 /// Result of one sampled window.
 ///
 /// Carries only the mean physical phase current; the window's `STATUS_FLAGS` and
 /// encoder motion are folded into the run-wide accumulator and the warning flags
 /// inside [`capture_window`], so they are not carried out here.
+#[allow(dead_code, reason = "removed with the remaining legacy sweep helpers")]
 struct WindowMean {
     /// Mean physical phase-current count for the axis channel.
     phase_current_count: i32,
@@ -161,329 +155,11 @@ pub async fn run_resistance_identification<B: ResistanceBackend>(
     }
 }
 
-/// Energizing body. Every entry to this function follows the pre-energize
-/// validations in [`run_resistance_identification`], so any early return here
-/// is correctly caught by that caller's unconditional restore: every exit path
-/// past this point is post-energize.
-#[allow(dead_code, reason = "removed with the remaining legacy sweep helpers")]
-async fn run_energized_body<B: ResistanceBackend>(
-    backend: &mut B,
-    mode: ResistanceRunMode,
-    profile: &ResistanceProfile,
-) -> Result<ResistanceRunResult, ResistanceError> {
-    // Power-stage setup. The sweep voltage limit is set to the profile's full
-    // sweep authority (not clamped against the saved baseline) before the
-    // chopper is enabled and before any open-loop voltage command, so no
-    // sweep point is silently clamped. `ExternallyArmed` mode's caller already
-    // rejected, as a pre-energize validation, when the saved operational
-    // limit could not cover this; `CommissioningManagedEnable` always uses the
-    // full authority because the saved value there is only a restore
-    // baseline, not an authority cap.
-    write(
-        backend,
-        MODE_RAMP_MODE_MOTION.addr(),
-        MotionMode::Stopped as u32,
-    )
-    .await?;
-    write(backend, UQ_UD_EXT.addr(), 0).await?;
-    write(
-        backend,
-        PIDOUT_UQ_UD_LIMITS.addr(),
-        u32::from(profile.max_abs_ud().unsigned_abs()),
-    )
-    .await?;
-    write(backend, PWM_SV_CHOP.addr(), profile.pwm_sv_chop).await?;
-
-    // Power-stage readback verification.
-    let pwm_sv_chop = read(backend, PWM_SV_CHOP.addr()).await?;
-    let pwm_maxcnt = read(backend, PWM_MAXCNT.addr()).await?;
-    let pwm_bbm = read(backend, PWM_BBM_H_BBM_L.addr()).await?;
-    let dsadc = read(backend, DSADC_MDEC_B_MDEC_A.addr()).await?;
-    if pwm_sv_chop != profile.pwm_sv_chop
-        || pwm_maxcnt != u32::from(profile.pwm_maxcnt)
-        || pwm_bbm != ((u32::from(profile.bbm_h) << 8) | u32::from(profile.bbm_l))
-        || dsadc != ((u32::from(profile.dsadc_mdec_b) << 16) | u32::from(profile.dsadc_mdec_a))
-    {
-        return Err(ResistanceError::WrongPowerStage);
-    }
-
-    // Initialize the status-flags accumulator from the pre-sweep snapshot.
-    let mut status_flags_or = read(backend, STATUS_FLAGS.addr()).await?;
-
-    // Only assert the enable pin under the commissioning managed-enable
-    // exception. ExternallyArmed relies on the already-enabled lifecycle path.
-    if mode == ResistanceRunMode::CommissioningManagedEnable {
-        backend.set_enable_pin(true);
-    }
-
-    let mut warning_flags = ResistanceWarningFlags::NONE;
-
-    let axis0 = measure_axis(
-        backend,
-        profile,
-        profile.axes[0],
-        &mut status_flags_or,
-        &mut warning_flags,
-    )
-    .await?;
-    let axis1 = measure_axis(
-        backend,
-        profile,
-        profile.axes[1],
-        &mut status_flags_or,
-        &mut warning_flags,
-    )
-    .await?;
-
-    let mut result = evaluate_resistance_result(profile, axis0, axis1, status_flags_or)?;
-    result.warning_flags.insert(warning_flags);
-    Ok(result)
-}
-
-/// Measured positive point that can be reused as the signed-anchor UD.
-#[derive(Debug, Clone, Copy)]
-struct SafeAnchorCandidate {
-    /// Positive UD count used for the measured point.
-    ud: i16,
-    /// Zero-subtracted current measured at `ud`.
-    positive_current_count: i32,
-    /// Distance from the profile's preferred signed anchor, used to choose the
-    /// closest measured safe point when the sweep has to stop early.
-    preferred_distance: u16,
-}
-
-/// Measure one electrical axis: zero/energized windows, signed anchors, and the
-/// fixed-point fit.
-async fn measure_axis<B: ResistanceBackend>(
-    backend: &mut B,
-    profile: &ResistanceProfile,
-    axis: ElectricalAxis,
-    status_flags_or: &mut u32,
-    warning_flags: &mut ResistanceWarningFlags,
-) -> Result<crate::resistance_identification::types::ResistanceAxisResult, ResistanceError> {
-    // Select the open-loop external electrical angle for this axis.
-    write(backend, PHI_E_SELECTION.addr(), 1).await?;
-    write(backend, PHI_E_EXT.addr(), u32::from(axis.phi_e_ext)).await?;
-
-    // Initial zero window for offset tracking.
-    let initial_zero = capture_window(
-        backend,
-        profile,
-        axis,
-        0,
-        profile.zero_settle_ms,
-        status_flags_or,
-        warning_flags,
-    )
-    .await?;
-
-    let mut points = [ResistancePoint {
-        requested_ud: 0,
-        voltage_delta_count: 0,
-        current_delta_count: 0,
-        selected: false,
-    }; 8];
-
-    let mut first_anchor_current: Option<i32> = None;
-    let mut safe_anchor: Option<SafeAnchorCandidate> = None;
-    let mut last_safe_point: Option<(u16, u32)> = None;
-
-    // Rolling leading zero, advanced to each point's trailing zero so every
-    // point is bracketed against its ADJACENT zero windows (prior trailing and
-    // own trailing). Bracketing against the global initial zero would bias late
-    // points against a stale start-of-sweep offset and defeat the per-point
-    // trailing zeros' drift compensation.
-    let mut leading_zero = initial_zero.phase_current_count;
-
-    for (index, &ud) in profile.ud_points.iter().enumerate() {
-        if next_point_predicted_unsafe(profile, last_safe_point, ud) {
-            if fit_resistance_axis(axis, profile, &points, None).is_ok() {
-                break;
-            }
-            return Err(ResistanceError::MeasurementEnvelopeUnsupported);
-        }
-
-        let energized = capture_window(
-            backend,
-            profile,
-            axis,
-            ud,
-            profile.settle_ms,
-            status_flags_or,
-            warning_flags,
-        )
-        .await?;
-
-        check_peak_current(profile, energized.phase_current_count)?;
-        last_safe_point = Some((
-            ud.unsigned_abs(),
-            energized.phase_current_count.unsigned_abs(),
-        ));
-
-        // Adjacent zero window after the energized point.
-        let trailing_zero = capture_window(
-            backend,
-            profile,
-            axis,
-            0,
-            profile.zero_settle_ms,
-            status_flags_or,
-            warning_flags,
-        )
-        .await?;
-
-        // Zero-subtract against the mean of the adjacent bracketing zero
-        // windows (prior trailing and own trailing).
-        let zero_current = (leading_zero + trailing_zero.phase_current_count) / 2;
-        let current_delta_count = energized.phase_current_count - zero_current;
-
-        // The first positive anchor must feed `build_signed_anchor` with the
-        // same zero-subtraction as every other point and the negative anchor,
-        // otherwise the signed slope, asymmetry, and drift mix raw and
-        // zero-subtracted currents.
-        if ud == profile.signed_anchor_ud {
-            first_anchor_current = Some(current_delta_count);
-        }
-        update_safe_anchor(profile, &mut safe_anchor, ud, current_delta_count);
-
-        points[index] = ResistancePoint {
-            requested_ud: ud,
-            voltage_delta_count: i32::from(ud),
-            current_delta_count,
-            selected: false,
-        };
-
-        // Advance the rolling bracket to this point's trailing zero.
-        leading_zero = trailing_zero.phase_current_count;
-    }
-
-    let anchor = safe_anchor.ok_or(ResistanceError::MeasurementEnvelopeUnsupported)?;
-    let anchor_ud = anchor.ud;
-
-    // Repeated positive anchor near the end of the axis for drift evidence.
-    let repeated_anchor = capture_window(
-        backend,
-        profile,
-        axis,
-        anchor_ud,
-        profile.settle_ms,
-        status_flags_or,
-        warning_flags,
-    )
-    .await?;
-    check_peak_current(profile, repeated_anchor.phase_current_count)?;
-
-    let repeated_zero = capture_window(
-        backend,
-        profile,
-        axis,
-        0,
-        profile.zero_settle_ms,
-        status_flags_or,
-        warning_flags,
-    )
-    .await?;
-
-    // Bracket the repeated anchor against its adjacent zeros (the last sweep
-    // point's trailing zero and the repeated anchor's own trailing zero), then
-    // advance the rolling bracket past it.
-    let repeated_zero_mean = (leading_zero + repeated_zero.phase_current_count) / 2;
-    let repeated_zero_subtracted = repeated_anchor.phase_current_count - repeated_zero_mean;
-    leading_zero = repeated_zero.phase_current_count;
-
-    // One negative signed anchor.
-    let negative_anchor = capture_window(
-        backend,
-        profile,
-        axis,
-        -anchor_ud,
-        profile.settle_ms,
-        status_flags_or,
-        warning_flags,
-    )
-    .await?;
-    check_peak_current(profile, negative_anchor.phase_current_count)?;
-
-    let negative_zero = capture_window(
-        backend,
-        profile,
-        axis,
-        0,
-        profile.zero_settle_ms,
-        status_flags_or,
-        warning_flags,
-    )
-    .await?;
-
-    // Bracket the negative anchor against its adjacent zeros (the repeated
-    // anchor's trailing zero and the negative anchor's own trailing zero).
-    let negative_zero_mean = (leading_zero + negative_zero.phase_current_count) / 2;
-    let negative_zero_subtracted = negative_anchor.phase_current_count - negative_zero_mean;
-
-    // The positive anchor is always the zero-subtracted value: either the first
-    // matching sweep point or, if none matched, the zero-subtracted repeated
-    // anchor. It must never be a raw energized current.
-    let positive_anchor_current = first_anchor_current.unwrap_or(anchor.positive_current_count);
-
-    let signed_anchor = build_signed_anchor(
-        positive_anchor_current,
-        negative_zero_subtracted,
-        repeated_zero_subtracted,
-        anchor_ud,
-    );
-
-    fit_resistance_axis(axis, profile, &points, Some(signed_anchor))
-}
-
-/// Return true when the next requested point is predicted too close to the hard
-/// current ceiling based on the last measured safe point.
-fn next_point_predicted_unsafe(
-    profile: &ResistanceProfile,
-    last_safe_point: Option<(u16, u32)>,
-    next_ud: i16,
-) -> bool {
-    let Some((last_ud, last_current)) = last_safe_point else {
-        return false;
-    };
-    if last_ud == 0 {
-        return false;
-    }
-    let predicted = u64::from(last_current).saturating_mul(u64::from(next_ud.unsigned_abs()))
-        / u64::from(last_ud);
-    let stop_threshold =
-        u64::from(profile.max_expected_current_count) * PREDICTED_CURRENT_STOP_PERMILLE / 1000;
-    predicted >= stop_threshold
-}
-
-/// Track the measured safe point closest to the preferred signed-anchor UD.
-fn update_safe_anchor(
-    profile: &ResistanceProfile,
-    candidate: &mut Option<SafeAnchorCandidate>,
-    ud: i16,
-    current_delta_count: i32,
-) {
-    if current_delta_count.unsigned_abs() < u32::from(profile.linear_current_threshold_count) {
-        return;
-    }
-    let distance = ud
-        .unsigned_abs()
-        .abs_diff(profile.signed_anchor_ud.unsigned_abs());
-    let should_replace = candidate
-        .map(|existing| distance < existing.preferred_distance)
-        .unwrap_or(true);
-    if should_replace {
-        *candidate = Some(SafeAnchorCandidate {
-            ud,
-            positive_current_count: current_delta_count,
-            preferred_distance: distance,
-        });
-    }
-}
-
 /// Capture one window: settle, sample `SAMPLES_PER_WINDOW` times, and return the
 /// mean physical phase current (selected per axis). Folds the sampled status
 /// flags into the run-wide accumulator and raises the `ENCODER_MOVED` and
 /// `STATUS_FLAGS` warning flags as appropriate.
+#[allow(dead_code, reason = "removed with the remaining legacy sweep helpers")]
 async fn capture_window<B: ResistanceBackend>(
     backend: &mut B,
     profile: &ResistanceProfile,
@@ -550,57 +226,6 @@ async fn capture_window<B: ResistanceBackend>(
     Ok(WindowMean {
         phase_current_count,
     })
-}
-
-/// Abort with [`ResistanceError::PeakCurrentExceeded`] when an energized
-/// window's mean physical current exceeds the profile peak.
-fn check_peak_current(
-    profile: &ResistanceProfile,
-    current_count: i32,
-) -> Result<(), ResistanceError> {
-    if current_count.unsigned_abs() > u32::from(profile.max_expected_current_count) {
-        Err(ResistanceError::PeakCurrentExceeded)
-    } else {
-        Ok(())
-    }
-}
-
-/// Build the signed-anchor evidence from the zero-subtracted anchor currents.
-fn build_signed_anchor(
-    positive_current_count: i32,
-    negative_current_count: i32,
-    repeated_positive_current_count: i32,
-    anchor_ud: i16,
-) -> SignedAnchorEvidence {
-    // Signed slope across the +/-UD anchor pair, scaled to milli-units.
-    let voltage_span = i64::from(anchor_ud) * 2;
-    let current_span = i64::from(positive_current_count) - i64::from(negative_current_count);
-    let signed_count_slope_milli = if current_span != 0 {
-        ((voltage_span * 1000) / current_span) as i32
-    } else {
-        0
-    };
-
-    // Asymmetry: |+I| vs |-I| relative to the larger magnitude.
-    let pos_abs = positive_current_count.unsigned_abs();
-    let neg_abs = negative_current_count.unsigned_abs();
-    let max_abs = pos_abs.max(neg_abs).max(1);
-    let asymmetry_permille =
-        ((u64::from(pos_abs.abs_diff(neg_abs)) * 1000) / u64::from(max_abs)).min(1000) as u16;
-
-    // Drift: repeated positive anchor vs first positive anchor.
-    let first_abs = positive_current_count.unsigned_abs().max(1);
-    let drift_abs = positive_current_count.abs_diff(repeated_positive_current_count);
-    let drift_permille = ((u64::from(drift_abs) * 1000) / u64::from(first_abs)).min(1000) as u16;
-
-    SignedAnchorEvidence {
-        positive_current_count,
-        negative_current_count,
-        signed_count_slope_milli,
-        asymmetry_permille,
-        repeated_positive_current_count,
-        drift_permille,
-    }
 }
 
 /// Read a register, mapping backend I/O failures to [`ResistanceError::BackendIo`].
