@@ -199,6 +199,10 @@ pub enum CommissionError {
     ElectricalThetaTooLarge,
     /// A commissioning state returned an invalid or unrepresentable deadline. Code 47.
     InvalidSchedule,
+    /// Resistance acquisition violated its timing envelope. Code 48.
+    ResistanceTimingRejected,
+    /// Resistance acquisition exceeded its phase-local deadline. Code 49.
+    ResistanceDeadlineExceeded,
 }
 
 impl CommissionError {
@@ -255,6 +259,8 @@ impl CommissionError {
             Self::ElectricalModelScaleZero => 45,
             Self::ElectricalThetaTooLarge => 46,
             Self::InvalidSchedule => 47,
+            Self::ResistanceTimingRejected => 48,
+            Self::ResistanceDeadlineExceeded => 49,
         }
     }
 }
@@ -586,6 +592,9 @@ mod tests {
             CommissionError::ElectricalModelNoSamples,
             CommissionError::ElectricalModelScaleZero,
             CommissionError::ElectricalThetaTooLarge,
+            CommissionError::InvalidSchedule,
+            CommissionError::ResistanceTimingRejected,
+            CommissionError::ResistanceDeadlineExceeded,
         ];
         let mut seen = [false; 256];
         for e in errors {
@@ -599,6 +608,12 @@ mod tests {
         assert_eq!(CommissionError::ElectricalModelNoSamples.status_code(), 44);
         assert_eq!(CommissionError::ElectricalModelScaleZero.status_code(), 45);
         assert_eq!(CommissionError::ElectricalThetaTooLarge.status_code(), 46);
+        assert_eq!(CommissionError::InvalidSchedule.status_code(), 47);
+        assert_eq!(CommissionError::ResistanceTimingRejected.status_code(), 48);
+        assert_eq!(
+            CommissionError::ResistanceDeadlineExceeded.status_code(),
+            49
+        );
     }
 
     #[test]

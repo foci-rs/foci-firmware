@@ -115,6 +115,12 @@ pub enum ResistanceError {
     UnsupportedProfile,
     OutOfBoundsParameter,
     MeasurementEnvelopeUnsupported,
+    /// Scheduled sampling violated the resistance timing envelope.
+    TimingRejected,
+    /// The resistance phase exceeded its absolute 20-second deadline.
+    PhaseDeadlineExceeded,
+    /// An actionable TMC4671 status bit was sampled while energized.
+    CriticalStatus,
 }
 
 impl ResistanceError {
@@ -147,6 +153,9 @@ impl From<ResistanceError> for crate::autotune::CommissionError {
             ResistanceError::MeasurementEnvelopeUnsupported => {
                 Self::ResistanceMeasurementEnvelopeUnsupported
             }
+            ResistanceError::TimingRejected => Self::ResistanceTimingRejected,
+            ResistanceError::PhaseDeadlineExceeded => Self::ResistanceDeadlineExceeded,
+            ResistanceError::CriticalStatus => Self::ResistanceIdFailed,
         }
     }
 }
@@ -178,6 +187,8 @@ mod tests {
             (ResistanceError::UnsupportedProfile, 29),
             (ResistanceError::OutOfBoundsParameter, 30),
             (ResistanceError::MeasurementEnvelopeUnsupported, 31),
+            (ResistanceError::TimingRejected, 48),
+            (ResistanceError::PhaseDeadlineExceeded, 49),
         ];
         let mut seen = [false; 256];
         for (error, code) in expected {
