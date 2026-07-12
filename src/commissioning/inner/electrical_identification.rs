@@ -444,51 +444,6 @@ fn inductance_status_is_critical(flags: u32) -> bool {
     flags & crate::autotune::current_loop_actionable_status_mask() != 0
 }
 
-async fn restore_inductance_ac_drive<B>(backend: &mut B) -> Result<(), CommissionError>
-where
-    B: CommissioningBackend,
-{
-    use foci_tmc4671::registers::{
-        MODE_RAMP_MODE_MOTION, OPENLOOP_VELOCITY_TARGET, PHI_E_SELECTION, UQ_UD_EXT,
-    };
-
-    let mut failed = false;
-    failed |= backend.write_register_verified(UQ_UD_EXT, 0).await.is_err();
-    failed |= backend
-        .write_register_verified(OPENLOOP_VELOCITY_TARGET, 0)
-        .await
-        .is_err();
-    failed |= backend
-        .write_register_verified(MODE_RAMP_MODE_MOTION, 0)
-        .await
-        .is_err();
-    failed |= backend
-        .write_register_verified(PHI_E_SELECTION, 0)
-        .await
-        .is_err();
-    backend.set_enable_pin(false);
-    crate::tmc_safe_state::restore_safe_state_via_backend(backend).await;
-    if failed {
-        Err(CommissionError::Spi)
-    } else {
-        Ok(())
-    }
-}
-
-async fn fail_inductance_ac_after_restore<B>(
-    phase: &mut InnerPhase,
-    backend: &mut B,
-    error: CommissionError,
-) -> StepResult
-where
-    B: CommissioningBackend,
-{
-    match restore_inductance_ac_drive(backend).await {
-        Ok(()) => super::fail_inner(phase, error),
-        Err(restore_error) => super::fail_inner(phase, restore_error),
-    }
-}
-
 fn wait_deadline_not_reached(now_us: u64, deadline_us: u64) -> bool {
     now_us.wrapping_sub(deadline_us) >= 0x8000_0000
 }
@@ -851,261 +806,9 @@ async fn poll_inductance_sample<B: CommissioningBackend>(
     Ok(InductanceSamplePoll::At)
 }
 
-struct InductanceCaptureRun<'a> {
-    data: &'a ElectricalIdData,
-    encoder_start: u32,
-    start_us: u64,
-    previous_elapsed_us: u32,
-    previous_phi: u16,
-    accumulated_phi_delta_counts: u32,
-    accumulator: crate::electrical_capture::AcFrameAccumulator,
-    first_half: crate::electrical_capture::AcFrameAccumulator,
-    second_half: crate::electrical_capture::AcFrameAccumulator,
-    saliency: crate::electrical_capture::AcSaliencyAccumulator,
-    sample_count: u16,
-    status_flags_or: u32,
-}
-
-async fn capture_inductance_ac_window<B: CommissioningBackend>(
-    backend: &mut B,
-    diagnostics: &mut crate::selftest::CommissionDiagnostics,
-    mut capture: InductanceCaptureRun<'_>,
-) -> Result<InductanceEvidence, CommissionError> {
-    use foci_tmc4671::registers::{ABN_DECODER_COUNT, OPENLOOP_PHI, PID_TORQUE_FLUX_ACTUAL};
-
-    if capture.sample_count == 0 && capture.accumulated_phi_delta_counts == 0 {
-        capture.previous_phi = backend
-            .read_register(OPENLOOP_PHI)
-            .await
-            .map_err(|_| CommissionError::Spi)? as u16;
-        capture.previous_elapsed_us = 0;
-        capture.start_us = backend.elapsed_us();
-    }
-
-    loop {
-        if backend.is_shutdown_requested() {
-            return Err(CommissionError::Shutdown);
-        }
-        if capture.sample_count >= INDUCTANCE_MAX_AC_SAMPLE_COUNT {
-            return Err(CommissionError::InductanceCaptureWindow);
-        }
-
-        let current_phi = backend
-            .read_register(OPENLOOP_PHI)
-            .await
-            .map_err(|_| CommissionError::Spi)? as u16;
-        let actual = backend
-            .read_register(PID_TORQUE_FLUX_ACTUAL)
-            .await
-            .map_err(|_| CommissionError::Spi)?;
-        let interval = crate::electrical_capture::phi_locked_ac_interval(
-            capture.accumulated_phi_delta_counts,
-            INDUCTANCE_AC_TARGET_PHI_DELTA_COUNTS,
-            capture.previous_phi,
-            current_phi,
-        )
-        .ok_or_else(|| {
-            push_inductance_capture_rejection(
-                diagnostics,
-                InductanceCaptureRejectReason::PhiInterval,
-                capture.sample_count,
-                pack_u16_pair(capture.previous_phi, current_phi),
-            );
-            CommissionError::InductanceCaptureRejected
-        })?;
-
-        if interval.sample_weight_counts == 0 {
-            push_inductance_capture_rejection(
-                diagnostics,
-                InductanceCaptureRejectReason::ZeroPhiDelta,
-                capture.sample_count,
-                pack_u16_pair(capture.previous_phi, current_phi),
-            );
-            return Err(CommissionError::InductanceCaptureRejected);
-        }
-
-        let (id_count, iq_count) = decode_rotating_frame_current(actual);
-        let current_sample = pack_i16_pair(id_count, iq_count);
-        if capture
-            .accumulator
-            .push_weighted(id_count, iq_count, interval.sample_weight_counts)
-            .is_none()
-        {
-            push_inductance_capture_rejection(
-                diagnostics,
-                InductanceCaptureRejectReason::FrameAccumulator,
-                capture.sample_count,
-                current_sample,
-            );
-            return Err(CommissionError::InductanceCaptureRejected);
-        }
-        if capture
-            .saliency
-            .push_weighted_sample(
-                current_phi,
-                interval.sample_weight_counts,
-                INDUCTANCE_AC_UD_EXT,
-                id_count,
-                iq_count,
-            )
-            .is_none()
-        {
-            push_inductance_capture_rejection(
-                diagnostics,
-                InductanceCaptureRejectReason::SaliencyAccumulator,
-                capture.sample_count,
-                current_sample,
-            );
-            return Err(CommissionError::InductanceCaptureRejected);
-        }
-
-        let half_target = INDUCTANCE_AC_TARGET_PHI_DELTA_COUNTS / 2;
-        let before = capture.accumulated_phi_delta_counts;
-        let after = interval.accumulated_phi_delta_counts;
-        if before < half_target {
-            let first_weight = interval.sample_weight_counts.min(half_target - before);
-            if capture
-                .first_half
-                .push_weighted(id_count, iq_count, first_weight)
-                .is_none()
-            {
-                push_inductance_capture_rejection(
-                    diagnostics,
-                    InductanceCaptureRejectReason::FirstHalfAccumulator,
-                    capture.sample_count,
-                    current_sample,
-                );
-                return Err(CommissionError::InductanceCaptureRejected);
-            }
-            let second_weight = interval.sample_weight_counts - first_weight;
-            if second_weight != 0
-                && capture
-                    .second_half
-                    .push_weighted(id_count, iq_count, second_weight)
-                    .is_none()
-            {
-                push_inductance_capture_rejection(
-                    diagnostics,
-                    InductanceCaptureRejectReason::SecondHalfAccumulator,
-                    capture.sample_count,
-                    current_sample,
-                );
-                return Err(CommissionError::InductanceCaptureRejected);
-            }
-        } else if capture
-            .second_half
-            .push_weighted(id_count, iq_count, interval.sample_weight_counts)
-            .is_none()
-        {
-            push_inductance_capture_rejection(
-                diagnostics,
-                InductanceCaptureRejectReason::SecondHalfAccumulator,
-                capture.sample_count,
-                current_sample,
-            );
-            return Err(CommissionError::InductanceCaptureRejected);
-        }
-
-        capture.sample_count = capture.sample_count.saturating_add(1);
-        let current_elapsed_us = backend.elapsed_us().wrapping_sub(capture.start_us) as u32;
-        let completed_elapsed_us = if interval.complete {
-            let Some(elapsed_us) = crate::electrical_capture::interpolate_phi_window_elapsed_us(
-                capture.previous_elapsed_us,
-                current_elapsed_us,
-                interval,
-            ) else {
-                push_inductance_capture_rejection(
-                    diagnostics,
-                    InductanceCaptureRejectReason::ElapsedInterpolation,
-                    capture.sample_count,
-                    pack_u16_pair(
-                        low_u16(capture.previous_elapsed_us),
-                        low_u16(current_elapsed_us),
-                    ),
-                );
-                return Err(CommissionError::InductanceCaptureRejected);
-            };
-            elapsed_us
-        } else {
-            capture.previous_phi = current_phi;
-            capture.previous_elapsed_us = current_elapsed_us;
-            capture.accumulated_phi_delta_counts = after;
-            continue;
-        };
-
-        capture.previous_phi = current_phi;
-        capture.previous_elapsed_us = current_elapsed_us;
-        capture.accumulated_phi_delta_counts = after;
-
-        let Some(realized_frequency) = crate::electrical_capture::realized_frequency_millihz(
-            capture.accumulated_phi_delta_counts,
-            completed_elapsed_us,
-        ) else {
-            diagnostics.push(inductance_frequency_rejection_diagnostic(
-                0,
-                completed_elapsed_us,
-                capture.sample_count,
-            ));
-            return Err(CommissionError::InductanceFrequencyOutOfRange);
-        };
-        if !realized_frequency_in_range(realized_frequency) {
-            diagnostics.push(inductance_frequency_rejection_diagnostic(
-                realized_frequency,
-                completed_elapsed_us,
-                capture.sample_count,
-            ));
-            return Err(CommissionError::InductanceFrequencyOutOfRange);
-        }
-
-        let post_status = backend
-            .read_register(foci_tmc4671::registers::STATUS_FLAGS)
-            .await
-            .map_err(|_| CommissionError::Spi)?;
-        capture.status_flags_or |= post_status;
-        let encoder_after = backend
-            .read_register(ABN_DECODER_COUNT)
-            .await
-            .map_err(|_| CommissionError::Spi)?;
-        let mut evidence = finish_inductance_evidence(InductanceCaptureFinish {
-            data: capture.data,
-            encoder_start: capture.encoder_start,
-            encoder_after,
-            elapsed_us: completed_elapsed_us,
-            phi_delta_counts: capture.accumulated_phi_delta_counts,
-            sample_count: capture.sample_count,
-            status_flags_or: capture.status_flags_or,
-            accumulator: capture.accumulator,
-            first_half: capture.first_half,
-            second_half: capture.second_half,
-            saliency_accumulator: capture.saliency,
-        })
-        .map_err(InductanceReject::commission_error)?;
-        let saliency = crate::electrical_capture::AcSaliencyEvidence {
-            status: evidence.estimate.saliency_status,
-            x_average_count_ratio_milli: evidence.estimate.x_average_count_ratio_milli,
-            x_d_count_ratio_milli: evidence.estimate.x_d_count_ratio_milli,
-            x_q_count_ratio_milli: evidence.estimate.x_q_count_ratio_milli,
-            saliency_permille: evidence.estimate.saliency_permille,
-        };
-        match saliency_for_frame_average(evidence.estimate.x_average_count_ratio_milli, saliency) {
-            Ok(saliency) => {
-                evidence.estimate.x_d_count_ratio_milli = saliency.x_d_count_ratio_milli;
-                evidence.estimate.x_q_count_ratio_milli = saliency.x_q_count_ratio_milli;
-                evidence.estimate.saliency_status = saliency.status;
-                evidence.estimate.saliency_permille = saliency.saliency_permille;
-            }
-            Err(InductanceReject::Saliency) => {
-                push_inductance_saliency_bracket_rejection(diagnostics, evidence.estimate);
-                return Err(CommissionError::InductanceCaptureRejected);
-            }
-            Err(rejection) => return Err(rejection.commission_error()),
-        }
-        return Ok(evidence);
-    }
-}
-
 struct InductanceCaptureFinish<'a> {
     data: &'a ElectricalIdData,
+    encoder_domain: EncoderDomain,
     encoder_start: u32,
     encoder_after: u32,
     elapsed_us: u32,
@@ -1150,6 +853,7 @@ fn finish_inductance_evidence(
 ) -> Result<InductanceEvidence, InductanceReject> {
     let InductanceCaptureFinish {
         data,
+        encoder_domain,
         encoder_start,
         encoder_after,
         elapsed_us,
@@ -1252,7 +956,6 @@ fn finish_inductance_evidence(
         warning_flags |= INDUCTANCE_WARN_STATUS_FLAGS;
     }
 
-    let encoder_domain = data.encoder_domain.ok_or(InductanceReject::EncoderMotion)?;
     let encoder_delta = inductance_encoder_delta(encoder_domain, encoder_start, encoder_after)?;
     if encoder_delta.absolute_counts() > INDUCTANCE_MAX_ENCODER_DELTA_COUNTS {
         return Err(InductanceReject::EncoderMotion);
@@ -2869,6 +2572,7 @@ mod tests {
 
         let evidence = finish_inductance_evidence(InductanceCaptureFinish {
             data: &representative_data(),
+            encoder_domain: EncoderDomain::new(4000).unwrap(),
             encoder_start: 10,
             encoder_after: 10,
             elapsed_us: 8_000,
@@ -2909,6 +2613,7 @@ mod tests {
 
         let rejection = match finish_inductance_evidence(InductanceCaptureFinish {
             data: &representative_data(),
+            encoder_domain: EncoderDomain::new(4000).unwrap(),
             encoder_start: 10,
             encoder_after: 10 + INDUCTANCE_MAX_ENCODER_DELTA_COUNTS + 1,
             elapsed_us: 8_000,
