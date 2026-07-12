@@ -1,5 +1,6 @@
 use super::*;
 use crate::commission_dispatch::test_support::MockBackend;
+use crate::commission_dispatch::{PostActions, ReplyPayload};
 use crate::commissioning::{CommissioningEngine, types::StepResult};
 use crate::config::TmcConfig;
 use crate::pid::{InnerLoopGains, OuterLoopGains};
@@ -748,6 +749,75 @@ fn scheduled_step_preserves_legacy_deadline_without_consuming_engine() {
                 event: None,
             }
         ));
+    });
+}
+
+#[test]
+fn scheduled_dispatch_preserves_wait_action() {
+    pollster::block_on(async {
+        let tmc = crate::state::tmc::tmc_channel0();
+        let stepper = crate::state::stepper::stepper_channel0();
+        let mut runtime = TmcControlRuntime::new_for_channel(0);
+        let mut backend = MockBackend::new();
+        let config = commissioning_runtime_config();
+        runtime.set_commission_engine(CommissioningEngine::new_selftest_for_tmc(7, tmc));
+
+        let action = runtime
+            .drive_commissioning_poll(
+                crate::commissioning::schedule::CommissionPoll::At {
+                    timestamp_us: 43_000,
+                    event: None,
+                },
+                &mut backend,
+                tmc,
+                stepper,
+                &config,
+            )
+            .await
+            .expect("engine should be active");
+
+        assert!(matches!(
+            action,
+            ScheduledCommissionTickAction::At {
+                timestamp_us: 43_000,
+                event: None,
+            }
+        ));
+        assert!(runtime.is_commission_active());
+    });
+}
+
+#[test]
+fn scheduled_dispatch_preserves_terminal_reply_and_actions() {
+    pollster::block_on(async {
+        let tmc = crate::state::tmc::tmc_channel0();
+        let stepper = crate::state::stepper::stepper_channel0();
+        let mut runtime = TmcControlRuntime::new_for_channel(0);
+        let mut backend = MockBackend::new();
+        let config = commissioning_runtime_config();
+        runtime.set_commission_engine(CommissioningEngine::new_selftest_for_tmc(7, tmc));
+
+        let action = runtime
+            .drive_commissioning_poll(
+                crate::commissioning::schedule::CommissionPoll::Terminal {
+                    result: crate::commissioning::schedule::CommissionTerminal::SelftestDone,
+                },
+                &mut backend,
+                tmc,
+                stepper,
+                &config,
+            )
+            .await
+            .expect("terminal dispatch should produce an action");
+
+        assert!(matches!(
+            action,
+            ScheduledCommissionTickAction::Terminal {
+                reply: ReplyPayload::Selftest { oid: 7, .. },
+                actions: PostActions { .. },
+            }
+        ));
+        assert!(!runtime.is_commission_active());
     });
 }
 

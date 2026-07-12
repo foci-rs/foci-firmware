@@ -13,7 +13,8 @@ use crate::state::stepper::StepperChannelState;
 use crate::state::tmc::TmcChannelState;
 use crate::tmc::{TmcRequest, TmcRequestKind};
 use crate::tmc_control::actions::{
-    BoardAction, BoardActions, DelegatedDiagnostic, ShutdownReason, StepperAction, push_action,
+    BoardAction, BoardActions, CommissionTickAction, DelegatedDiagnostic,
+    ScheduledCommissionTickAction, ShutdownReason, StepperAction, push_action,
 };
 use crate::tmc_control::config::{TmcControlConfig, TmcControlHomingRefs, TmcControlStateRefs};
 use crate::tmc_control::signals::TmcControlSignals;
@@ -490,6 +491,50 @@ impl TmcControlRuntime {
             },
             CommissionPoll::Terminal { result } => result.into_step_result(),
         })
+    }
+
+    /// Convert an explicit poll into the board-facing scheduled action.
+    pub async fn drive_commissioning_poll<B>(
+        &mut self,
+        poll: CommissionPoll,
+        backend: &mut B,
+        tmc: &'static TmcChannelState,
+        stepper: &'static StepperChannelState,
+        config: &TmcControlConfig,
+    ) -> Option<ScheduledCommissionTickAction>
+    where
+        B: CommissioningBackend,
+    {
+        self.commission_engine.as_ref()?;
+        match poll {
+            CommissionPoll::ReadyNow { event } => {
+                Some(ScheduledCommissionTickAction::ReadyNow { event })
+            }
+            CommissionPoll::At {
+                timestamp_us,
+                event,
+            } => Some(ScheduledCommissionTickAction::At {
+                timestamp_us,
+                event,
+            }),
+            CommissionPoll::Terminal { result } => match self
+                .drive_commissioning_result(
+                    result.into_step_result(),
+                    backend,
+                    tmc,
+                    stepper,
+                    config,
+                )
+                .await?
+            {
+                CommissionTickAction::Terminal { reply, actions } => {
+                    Some(ScheduledCommissionTickAction::Terminal { reply, actions })
+                }
+                CommissionTickAction::Continue | CommissionTickAction::PhaseChanged { .. } => {
+                    unreachable!("terminal poll produced a nonterminal dispatch action")
+                }
+            },
+        }
     }
 
     /// Dispatch one commissioning step result through shared post-processing.
