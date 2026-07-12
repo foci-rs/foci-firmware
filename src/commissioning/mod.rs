@@ -911,9 +911,9 @@ mod tests {
         assert!(size_of::<CommissioningEngine>() <= 6_144);
         assert!(size_of::<capture_timing::CaptureTiming>() <= 64);
         assert!(size_of::<capture_timing::CaptureTimingEvidence>() <= 32);
-        assert_eq!(engine_step, 3_952);
-        assert_eq!(step_inner, 3_904);
-        assert_eq!(electrical_id, 880);
+        assert_eq!(engine_step, 3_928);
+        assert_eq!(step_inner, 3_888);
+        assert_eq!(electrical_id, 608);
         assert!(electrical_id <= 960);
         assert_eq!(runtime_tick, 22_304);
     }

@@ -11,7 +11,7 @@ use crate::autotune::{
     TransientBuffer,
 };
 use crate::commissioning::backend::timed_read_register;
-use crate::commissioning::capture_timing::CaptureTimingEvidence;
+use crate::commissioning::capture_timing::{CaptureTiming, CaptureTimingEvidence, TimingEnvelope};
 use crate::commissioning::encoder_domain::{EncoderDelta, EncoderDomain, EncoderMathError};
 use crate::commissioning::types::{
     CommissioningBackend, INDUCTANCE_SOURCE_ROTATING_FIELD, INDUCTANCE_WARN_DRIFT,
@@ -1413,184 +1413,278 @@ pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
             if data.encoder_domain.is_none() {
                 return super::fail_inner(phase, CommissionError::EncoderFault);
             }
+            *electrical_id_state = ElectricalIdState::InductanceSetupOperation { operation: 0 };
+            StepResult::ReadyNow
+        }
+
+        ElectricalIdState::InductanceSetupOperation { operation } => {
             let pidout_limit = data.voltage.min(INDUCTANCE_AC_UD_EXT as u32);
-            if backend
-                .write_register(PIDOUT_UQ_UD_LIMITS, pidout_limit)
-                .await
-                .is_err()
-                || backend.write_register(UQ_UD_EXT, 0).await.is_err()
-            {
-                return super::fail_inner(phase, CommissionError::Spi);
-            }
-
-            if backend
-                .write_register(OPENLOOP_VELOCITY_TARGET, 0)
-                .await
-                .is_err()
-                || backend.write_register(OPENLOOP_MODE, 0).await.is_err()
-                || backend
-                    .write_register(OPENLOOP_ACCELERATION, INDUCTANCE_OPENLOOP_ACCELERATION)
+            let result = match *operation {
+                0 => {
+                    backend
+                        .write_register(PIDOUT_UQ_UD_LIMITS, pidout_limit)
+                        .await
+                }
+                1 => backend.write_register(UQ_UD_EXT, 0).await,
+                2 => backend.write_register(OPENLOOP_VELOCITY_TARGET, 0).await,
+                3 => backend.write_register(OPENLOOP_MODE, 0).await,
+                4 => {
+                    backend
+                        .write_register(OPENLOOP_ACCELERATION, INDUCTANCE_OPENLOOP_ACCELERATION)
+                        .await
+                }
+                5 => {
+                    backend
+                        .write_register(
+                            OPENLOOP_VELOCITY_TARGET,
+                            INDUCTANCE_OPENLOOP_VELOCITY_TARGET_RPM,
+                        )
+                        .await
+                }
+                6 => {
+                    backend
+                        .write_register(PHI_E_SELECTION, PHI_E_SELECTION_OPENLOOP)
+                        .await
+                }
+                7 => {
+                    backend
+                        .write_register(MODE_RAMP_MODE_MOTION, MotionMode::UqUdExt as u32)
+                        .await
+                }
+                8 => backend
+                    .write_register_verified(PWM_SV_CHOP, 7)
                     .await
-                    .is_err()
-                || backend
-                    .write_register(
-                        OPENLOOP_VELOCITY_TARGET,
-                        INDUCTANCE_OPENLOOP_VELOCITY_TARGET_RPM,
-                    )
-                    .await
-                    .is_err()
-                || backend
-                    .write_register(PHI_E_SELECTION, PHI_E_SELECTION_OPENLOOP)
-                    .await
-                    .is_err()
-                || backend
-                    .write_register(MODE_RAMP_MODE_MOTION, MotionMode::UqUdExt as u32)
-                    .await
-                    .is_err()
-            {
-                return fail_inductance_ac_after_restore(phase, backend, CommissionError::Spi)
-                    .await;
-            }
-
-            if backend
-                .write_register_verified(PWM_SV_CHOP, 7)
-                .await
-                .is_err()
-                || backend.write_register(STATUS_FLAGS, 0).await.is_err()
-            {
-                return fail_inductance_ac_after_restore(phase, backend, CommissionError::Spi)
-                    .await;
-            }
-            backend.set_enable_pin(true);
-
-            *electrical_id_state = ElectricalIdState::InductanceWaitVelocity {
-                deadline_us: backend
-                    .elapsed_us()
-                    .wrapping_add(INDUCTANCE_OPENLOOP_RAMP_TIMEOUT_US),
+                    .map(|_| ()),
+                _ => backend.write_register(STATUS_FLAGS, 0).await,
             };
-            StepResult::Continue
+            if result.is_err() {
+                return begin_inductance_restore(
+                    electrical_id_state,
+                    backend,
+                    Some(CommissionError::Spi),
+                    None,
+                    None,
+                );
+            }
+            if *operation < 9 {
+                *operation += 1;
+                return StepResult::ReadyNow;
+            }
+            let Some(deadline_us) = backend
+                .elapsed_us()
+                .checked_add(INDUCTANCE_OPENLOOP_RAMP_TIMEOUT_US)
+            else {
+                return begin_inductance_restore(
+                    electrical_id_state,
+                    backend,
+                    Some(CommissionError::InvalidSchedule),
+                    None,
+                    None,
+                );
+            };
+            backend.set_enable_pin(true);
+            *electrical_id_state = ElectricalIdState::InductanceWaitVelocity { deadline_us };
+            StepResult::ReadyNow
         }
 
         ElectricalIdState::InductanceWaitVelocity { deadline_us } => {
             let velocity = match backend.read_register(OPENLOOP_VELOCITY_ACTUAL).await {
                 Ok(velocity) => velocity,
                 Err(_) => {
-                    return fail_inductance_ac_after_restore(phase, backend, CommissionError::Spi)
-                        .await;
+                    return begin_inductance_restore(
+                        electrical_id_state,
+                        backend,
+                        Some(CommissionError::Spi),
+                        None,
+                        None,
+                    );
                 }
             };
             if velocity != INDUCTANCE_OPENLOOP_VELOCITY_TARGET_RPM {
-                if wait_deadline_not_reached(backend.elapsed_us(), *deadline_us) {
-                    return StepResult::Continue;
+                if backend.elapsed_us() < *deadline_us {
+                    return StepResult::At(*deadline_us);
                 }
-                return fail_inductance_ac_after_restore(
-                    phase,
+                return begin_inductance_restore(
+                    electrical_id_state,
                     backend,
-                    CommissionError::InductanceVelocityTimeout,
-                )
-                .await;
+                    Some(CommissionError::InductanceVelocityTimeout),
+                    None,
+                    None,
+                );
             }
+            *electrical_id_state = ElectricalIdState::InductanceReadEncoderStart;
+            StepResult::ReadyNow
+        }
 
+        ElectricalIdState::InductanceReadEncoderStart => {
             let encoder_start = match backend.read_register(ABN_DECODER_COUNT).await {
                 Ok(count) => count,
                 Err(_) => {
-                    return fail_inductance_ac_after_restore(phase, backend, CommissionError::Spi)
-                        .await;
+                    return begin_inductance_restore(
+                        electrical_id_state,
+                        backend,
+                        Some(CommissionError::Spi),
+                        None,
+                        None,
+                    );
                 }
             };
+            *electrical_id_state = ElectricalIdState::InductanceApplyDrive { encoder_start };
+            StepResult::ReadyNow
+        }
+
+        ElectricalIdState::InductanceApplyDrive { encoder_start } => {
             if backend
                 .write_register(UQ_UD_EXT, pack_ud_drive(INDUCTANCE_AC_UD_EXT))
                 .await
                 .is_err()
             {
-                return fail_inductance_ac_after_restore(phase, backend, CommissionError::Spi)
-                    .await;
+                return begin_inductance_restore(
+                    electrical_id_state,
+                    backend,
+                    Some(CommissionError::Spi),
+                    None,
+                    None,
+                );
             }
-            *electrical_id_state = ElectricalIdState::InductanceDriveSettleLegacy {
-                deadline_us: backend.elapsed_us().wrapping_add(INDUCTANCE_AC_SETTLE_US),
-                encoder_start,
+            let Some(deadline_us) = backend.elapsed_us().checked_add(INDUCTANCE_AC_SETTLE_US)
+            else {
+                return begin_inductance_restore(
+                    electrical_id_state,
+                    backend,
+                    Some(CommissionError::InvalidSchedule),
+                    None,
+                    None,
+                );
             };
-            StepResult::Continue
+            let encoder_domain = data
+                .encoder_domain
+                .expect("validated before inductance setup");
+            *electrical_id_state = ElectricalIdState::InductanceDriveSettle {
+                deadline_us,
+                encoder_start: *encoder_start,
+                encoder_domain,
+            };
+            StepResult::At(deadline_us)
         }
 
-        ElectricalIdState::InductanceDriveSettleLegacy {
+        ElectricalIdState::InductanceDriveSettle {
             deadline_us,
             encoder_start,
+            encoder_domain,
         } => {
-            if wait_deadline_not_reached(backend.elapsed_us(), *deadline_us) {
-                return StepResult::Continue;
+            if backend.elapsed_us() < *deadline_us {
+                return StepResult::At(*deadline_us);
             }
+            *electrical_id_state = ElectricalIdState::InductanceReadPreStatus {
+                encoder_start: *encoder_start,
+                encoder_domain: *encoder_domain,
+            };
+            StepResult::ReadyNow
+        }
+
+        ElectricalIdState::InductanceReadPreStatus {
+            encoder_start,
+            encoder_domain,
+        } => {
             let status_flags_or = match backend.read_register(STATUS_FLAGS).await {
                 Ok(status) => status,
                 Err(_) => {
-                    return fail_inductance_ac_after_restore(phase, backend, CommissionError::Spi)
-                        .await;
+                    return begin_inductance_restore(
+                        electrical_id_state,
+                        backend,
+                        Some(CommissionError::Spi),
+                        None,
+                        None,
+                    );
                 }
             };
-            *electrical_id_state = ElectricalIdState::InductanceSampleLegacy {
+            if inductance_status_is_critical(status_flags_or) {
+                return begin_inductance_restore(
+                    electrical_id_state,
+                    backend,
+                    Some(CommissionError::InductanceCaptureRejected),
+                    None,
+                    None,
+                );
+            }
+            *electrical_id_state = ElectricalIdState::InductanceReadStartPhi {
                 encoder_start: *encoder_start,
-                start_us: 0,
-                previous_elapsed_us: 0,
-                start_phi: 0,
-                previous_phi: 0,
-                accumulated_phi_delta_counts: 0,
-                accumulator: crate::electrical_capture::AcFrameAccumulator::new(),
-                first_half: crate::electrical_capture::AcFrameAccumulator::new(),
-                second_half: crate::electrical_capture::AcFrameAccumulator::new(),
-                saliency: crate::electrical_capture::AcSaliencyAccumulator::new(),
-                sample_count: 0,
+                encoder_domain: *encoder_domain,
                 status_flags_or,
             };
-            StepResult::Continue
+            StepResult::ReadyNow
         }
 
-        ElectricalIdState::InductanceSampleLegacy {
+        ElectricalIdState::InductanceReadStartPhi {
             encoder_start,
-            start_us,
-            previous_elapsed_us,
-            start_phi: _,
-            previous_phi,
-            accumulated_phi_delta_counts,
-            accumulator,
-            first_half,
-            second_half,
-            saliency,
-            sample_count,
+            encoder_domain,
             status_flags_or,
         } => {
-            let evidence = match capture_inductance_ac_window(
-                backend,
-                diagnostics,
-                InductanceCaptureRun {
-                    data,
-                    encoder_start: *encoder_start,
-                    start_us: *start_us,
-                    previous_elapsed_us: *previous_elapsed_us,
-                    previous_phi: *previous_phi,
-                    accumulated_phi_delta_counts: *accumulated_phi_delta_counts,
-                    accumulator: *accumulator,
-                    first_half: *first_half,
-                    second_half: *second_half,
-                    saliency: *saliency,
-                    sample_count: *sample_count,
-                    status_flags_or: *status_flags_or,
-                },
-            )
-            .await
-            {
-                Ok(evidence) => evidence,
-                Err(err) => return fail_inductance_ac_after_restore(phase, backend, err).await,
-            };
-            match restore_inductance_ac_drive(backend).await {
-                Ok(()) => {
-                    data.inductance = Some(evidence);
-                    *electrical_id_state = ElectricalIdState::InductanceDisable {
-                        deadline_us: backend.elapsed_us().wrapping_add(ELECTRICAL_COOLDOWN_US),
-                    };
+            let previous_phi = match backend.read_register(OPENLOOP_PHI).await {
+                Ok(phi) => phi as u16,
+                Err(_) => {
+                    return begin_inductance_restore(
+                        electrical_id_state,
+                        backend,
+                        Some(CommissionError::Spi),
+                        None,
+                        None,
+                    );
                 }
-                Err(err) => return super::fail_inner(phase, err),
+            };
+            let start_us = backend.elapsed_us();
+            let Some(next_sample_us) =
+                start_us.checked_add(u64::from(INDUCTANCE_AC_SAMPLE_PERIOD_US))
+            else {
+                return begin_inductance_restore(
+                    electrical_id_state,
+                    backend,
+                    Some(CommissionError::InvalidSchedule),
+                    None,
+                    None,
+                );
+            };
+            *electrical_id_state = ElectricalIdState::InductanceSample {
+                capture: InductanceCaptureState {
+                    encoder_domain: *encoder_domain,
+                    encoder_start: *encoder_start,
+                    start_us,
+                    previous_elapsed_us: 0,
+                    previous_phi,
+                    accumulated_phi_delta_counts: 0,
+                    accumulator: crate::electrical_capture::AcFrameAccumulator::new(),
+                    first_half: crate::electrical_capture::AcFrameAccumulator::new(),
+                    second_half: crate::electrical_capture::AcFrameAccumulator::new(),
+                    saliency: crate::electrical_capture::AcSaliencyAccumulator::new(),
+                    sample_count: 0,
+                    status_flags_or: *status_flags_or,
+                    next_sample_us,
+                    timing: CaptureTiming::new(
+                        INDUCTANCE_AC_SAMPLE_PERIOD_US,
+                        TimingEnvelope::INDUCTANCE,
+                    ),
+                },
+            };
+            StepResult::At(next_sample_us)
+        }
+
+        ElectricalIdState::InductanceSample { capture } => {
+            let now_us = backend.elapsed_us();
+            match poll_inductance_sample(backend, diagnostics, capture, now_us).await {
+                Ok(InductanceSamplePoll::At) => StepResult::At(capture.next_sample_us),
+                Ok(InductanceSamplePoll::Complete { elapsed_us, timing }) => {
+                    *electrical_id_state = ElectricalIdState::InductanceReadStatus {
+                        capture: *capture,
+                        completed_elapsed_us: elapsed_us,
+                        timing,
+                    };
+                    StepResult::ReadyNow
+                }
+                Err(error) => {
+                    begin_inductance_restore(electrical_id_state, backend, Some(error), None, None)
+                }
             }
-            StepResult::Continue
         }
 
         ElectricalIdState::InductanceSetupOperation { .. }
@@ -1612,6 +1706,9 @@ pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
             *electrical_id_state = ElectricalIdState::DelaySetup;
             StepResult::Continue
         }
+
+        ElectricalIdState::InductanceDriveSettleLegacy { .. }
+        | ElectricalIdState::InductanceSampleLegacy { .. } => StepResult::Continue,
 
         // ---------------------------------------------------------------
         // Delay identification (transient capture)
