@@ -97,20 +97,24 @@ impl embedded_hal_async::spi::SpiDevice<u8> for DiagnosticMockSpi {
 #[derive(Default)]
 struct MockDelay {
     delays_ms: std::vec::Vec<u64>,
-    now_us: u64,
+    now_us: core::cell::Cell<u64>,
     advance_on_delay: bool,
+    advance_on_now_us: u64,
 }
 
 impl DiagnosticDelay for MockDelay {
     async fn delay_ms(&mut self, ms: u64) {
         self.delays_ms.push(ms);
         if self.advance_on_delay {
-            self.now_us = self.now_us.wrapping_add(ms.saturating_mul(1_000));
+            self.now_us
+                .set(self.now_us.get().wrapping_add(ms.saturating_mul(1_000)));
         }
     }
 
     fn now_us(&self) -> u64 {
-        self.now_us
+        let now_us = self.now_us.get();
+        self.now_us.set(now_us.wrapping_add(self.advance_on_now_us));
+        now_us
     }
 }
 
@@ -824,6 +828,80 @@ fn resistance_test_not_armed_reports_no_axes() {
             crate::resistance_identification::ResistanceError::NotArmed.status_code()
         );
         assert!(axes.is_none());
+    });
+}
+
+#[test]
+fn resistance_test_uses_board_monotonic_for_sample_timing() {
+    pollster::block_on(async {
+        let _guard = crate::commission_dispatch::test_support::SHARED_STATE_MUTEX
+            .lock()
+            .await;
+        let channel_state = crate::state::tmc::tmc_channel(0).unwrap();
+        channel_state
+            .motor_sentinel
+            .store(0x0002_0032, core::sync::atomic::Ordering::Relaxed);
+        channel_state
+            .encoder_ppr
+            .store(1_000, core::sync::atomic::Ordering::Relaxed);
+
+        let mut runtime = ready_runtime();
+        let mut delay = MockDelay {
+            advance_on_delay: true,
+            advance_on_now_us: 1_000,
+            ..MockDelay::default()
+        };
+        let raw_spi = DiagnosticMockSpi::default()
+            .with_read(2_000)
+            .with_read(0x0002_0032)
+            .with_read(7)
+            .with_read(u32::from(TEST_TMC_CONFIG.pwm_maxcnt))
+            .with_read((u32::from(TEST_TMC_CONFIG.bbm_h) << 8) | u32::from(TEST_TMC_CONFIG.bbm_l))
+            .with_read(
+                (u32::from(TEST_TMC_CONFIG.dsadc_mdec_b) << 16)
+                    | u32::from(TEST_TMC_CONFIG.dsadc_mdec_a),
+            )
+            .with_read(0)
+            .with_read(0)
+            .with_read(0)
+            .with_read(0);
+        let mut tmc = Tmc4671Spi::new(raw_spi);
+        let req = crate::tmc::tmc_resistance_test(0, 10, 0);
+
+        let outcome = handle_diagnostic_request(
+            req,
+            DiagnosticContext {
+                tmc: &mut tmc,
+                runtime: &mut runtime,
+                delay: &mut delay,
+                tmc_config: &TEST_TMC_CONFIG,
+                readiness: DiagnosticReadiness {
+                    homing_active: false,
+                    stepper_active: false,
+                    saved_voltage_limit: 2_000,
+                },
+            },
+        )
+        .await;
+
+        channel_state
+            .motor_sentinel
+            .store(0, core::sync::atomic::Ordering::Relaxed);
+        channel_state
+            .encoder_ppr
+            .store(0, core::sync::atomic::Ordering::Relaxed);
+
+        let DiagnosticOutcome::Handled(DiagnosticReport::ResistanceTest { run, axes, .. }) =
+            outcome
+        else {
+            panic!("expected resistance test report");
+        };
+        assert_eq!(
+            run.status,
+            crate::resistance_identification::ResistanceError::TimingRejected.status_code()
+        );
+        assert!(axes.is_none());
+        assert!(delay.now_us.get() > 0);
     });
 }
 

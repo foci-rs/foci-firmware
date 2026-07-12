@@ -64,10 +64,7 @@ where
     }
 
     fn elapsed_us(&self) -> u64 {
-        // Unused by `run_resistance_identification`'s control flow today; the
-        // diagnostic context has no monotonic clock source wired through, so
-        // there is nothing meaningful to report.
-        0
+        self.ctx.delay.now_us()
     }
 
     fn set_enable_pin(&mut self, _enabled: bool) {
