@@ -14,10 +14,11 @@ use crate::commissioning::types::{
 };
 use crate::selftest::{CommissionDiagnostic, CommissionDiagnostics, SelftestStageValue};
 use crate::tmc_diagnostics::{
-    AdcResidualReport, ClosedLoopEntryReport, CurrentLoopFiltersReport, CurrentLoopHoldReport,
-    CurrentLoopRunReport, CurrentValidationAxisReport, CurrentValidationEnvelopeReport,
-    CurrentValidationSettledSampleReport, EncoderAlignmentReport, InductanceEstimateReport,
-    InductanceFrameReport, InductanceRunReport, ResistanceAxisReport, ResistanceRunReport,
+    AdcResidualReport, ClosedLoopEntryReport, CommissionTimingReport, CurrentLoopFiltersReport,
+    CurrentLoopHoldReport, CurrentLoopRunReport, CurrentValidationAxisReport,
+    CurrentValidationEnvelopeReport, CurrentValidationSettledSampleReport, EncoderAlignmentReport,
+    InductanceEstimateReport, InductanceFrameReport, InductanceRunReport, ResistanceAxisReport,
+    ResistanceRunReport,
 };
 
 /// TMC4671 external electrical angle for electrical axis 0 (PHASE0).
@@ -39,6 +40,12 @@ pub trait CommissionReplySink {
 
     /// Emit the Stage 1 commissioning result.
     fn foci_commission_result(&mut self, oid: u8, status: u8, result: &CommissionResult);
+
+    /// Emit timing-quality evidence for one commissioning electrical method.
+    ///
+    /// The default keeps the shared API additive until each board adopts the
+    /// coordinated data dictionary in its board-integration task.
+    fn foci_commission_timing(&mut self, _report: CommissionTimingReport) {}
 
     /// Emit the resistance-identification per-run evidence captured during
     /// Stage 1 commissioning. `FociCommissionResult` is size-capped, so this
@@ -173,6 +180,9 @@ pub fn emit_terminal_reply<S: CommissionReplySink>(sink: &mut S, payload: ReplyP
             sink.foci_encoder_alignment(commission_encoder_alignment_report(oid, inner));
             emit_inductance_evidence(sink, oid, inner);
             emit_current_loop_evidence(sink, oid, status, &result);
+            for (method, summary) in inner.timing.iter().copied().enumerate() {
+                sink.foci_commission_timing(commission_timing_report(oid, method as u8, summary));
+            }
             sink.foci_commission_result(oid, status, &result);
         }
         ReplyPayload::TuneResult {
@@ -198,6 +208,27 @@ pub fn emit_terminal_reply<S: CommissionReplySink>(sink: &mut S, payload: ReplyP
             }
             sink.foci_selftest_done(oid, done_status);
         }
+    }
+}
+
+fn commission_timing_report(
+    oid: u8,
+    method: u8,
+    summary: crate::commissioning::types::CommissionTimingSummary,
+) -> CommissionTimingReport {
+    let evidence = summary.evidence;
+    CommissionTimingReport {
+        oid,
+        method,
+        status: summary.status,
+        requested_period_us: evidence.requested_period_us,
+        valid_samples: evidence.valid_samples,
+        missed_samples: evidence.missed_samples,
+        max_consecutive_misses: evidence.max_consecutive_misses,
+        max_lateness_us: evidence.max_lateness_us,
+        max_interval_us: evidence.max_interval_us,
+        max_poll_wall_us: evidence.max_poll_wall_us,
+        max_spi_wall_us: evidence.max_spi_wall_us,
     }
 }
 
@@ -620,6 +651,11 @@ mod tests {
             r_int: u32,
             fallback_velocity_limit: u32,
         },
+        CommissionTiming {
+            oid: u8,
+            method: u8,
+            status: u8,
+        },
         ResistanceRun {
             oid: u8,
             status: u8,
@@ -835,6 +871,14 @@ mod tests {
                 status,
                 r_int: result.inner.r_int,
                 fallback_velocity_limit: result.fallback_velocity_limit,
+            });
+        }
+
+        fn foci_commission_timing(&mut self, report: CommissionTimingReport) {
+            self.events.push(Event::CommissionTiming {
+                oid: report.oid,
+                method: report.method,
+                status: report.status,
             });
         }
 
@@ -1575,6 +1619,23 @@ mod tests {
         ];
         expected.extend(inductance_events(6));
         expected.extend(current_loop_events(6, 7));
+        expected.extend([
+            Event::CommissionTiming {
+                oid: 6,
+                method: 0,
+                status: 0,
+            },
+            Event::CommissionTiming {
+                oid: 6,
+                method: 1,
+                status: 0,
+            },
+            Event::CommissionTiming {
+                oid: 6,
+                method: 2,
+                status: 0,
+            },
+        ]);
         expected.push(Event::Commission {
             oid: 6,
             status: 7,
@@ -2103,6 +2164,21 @@ mod tests {
         expected.extend(inductance_events(6));
         expected.extend(current_loop_events(6, 7));
         expected.extend([
+            Event::CommissionTiming {
+                oid: 6,
+                method: 0,
+                status: 0,
+            },
+            Event::CommissionTiming {
+                oid: 6,
+                method: 1,
+                status: 0,
+            },
+            Event::CommissionTiming {
+                oid: 6,
+                method: 2,
+                status: 0,
+            },
             Event::Commission {
                 oid: 6,
                 status: 7,

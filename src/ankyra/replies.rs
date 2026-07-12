@@ -169,6 +169,33 @@ pub struct FociCommissionDetail {
     pub value2: u32,
 }
 
+/// `foci_commission_timing` reply — timing quality for one electrical method.
+#[klipper_reply]
+pub struct FociCommissionTiming {
+    /// Object id of the FOCI endpoint.
+    pub oid: u8,
+    /// Electrical method: 0 resistance, 1 inductance, 2 delay.
+    pub method: u8,
+    /// Timing state: 0 not run, 1 accepted, 2 rejected.
+    pub status: u8,
+    /// Requested logical sample period in microseconds.
+    pub requested_period_us: u16,
+    /// Accepted logical samples.
+    pub valid_samples: u16,
+    /// Skipped logical sample slots.
+    pub missed_samples: u16,
+    /// Largest consecutive skipped-slot count.
+    pub max_consecutive_misses: u8,
+    /// Maximum observation lateness in microseconds.
+    pub max_lateness_us: u32,
+    /// Maximum accepted-observation interval in microseconds.
+    pub max_interval_us: u32,
+    /// Maximum complete poll wall time in microseconds.
+    pub max_poll_wall_us: u32,
+    /// Maximum SPI-await wall time in one poll in microseconds.
+    pub max_spi_wall_us: u32,
+}
+
 /// `foci_commission_result` reply — emitted at the end of inner
 /// commissioning with measured electrical and fallback gain values.
 ///
@@ -222,6 +249,8 @@ pub struct FociCommissionResult {
     /// fallback gains, bit 6 reports host-default confidence, and bit 7 is
     /// reserved.
     pub inner_warning_flags: u8,
+    /// Packed R/L/delay timing states and worst-case metrics.
+    pub timing_summary: u32,
 }
 
 /// `foci_encoder_alignment` reply - encoder D-axis alignment evidence emitted before the
@@ -1130,8 +1159,9 @@ mod tests {
 #[cfg(test)]
 mod resistance_reply_size_tests {
     use super::{
-        FociClosedLoopEntry, FociCurrentLoopFilters, FociCurrentLoopHold, FociOuterSafetyFault,
-        FociResistanceAxis, FociResistanceProfile, FociResistanceRun,
+        FociClosedLoopEntry, FociCommissionResult, FociCommissionTiming, FociCurrentLoopFilters,
+        FociCurrentLoopHold, FociOuterSafetyFault, FociResistanceAxis, FociResistanceProfile,
+        FociResistanceRun,
     };
     use ankyra::ScratchOutput;
     use ankyra::encoding::Writable;
@@ -1158,6 +1188,53 @@ mod resistance_reply_size_tests {
         let mut scratch = ScratchOutput::<64>::new();
         reply.write(&mut scratch);
         scratch.result().len()
+    }
+
+    #[test]
+    fn commission_timing_reply_fits_klipper_message_limit() {
+        let reply = FociCommissionTiming {
+            oid: u8::MAX,
+            method: u8::MAX,
+            status: u8::MAX,
+            requested_period_us: u16::MAX,
+            valid_samples: u16::MAX,
+            missed_samples: u16::MAX,
+            max_consecutive_misses: u8::MAX,
+            max_lateness_us: u32::MAX,
+            max_interval_us: u32::MAX,
+            max_poll_wall_us: u32::MAX,
+            max_spi_wall_us: u32::MAX,
+        };
+        assert_fits_with_id(&reply, "foci_commission_timing");
+    }
+
+    #[test]
+    fn commission_result_with_timing_summary_fits_klipper_message_limit() {
+        let reply = FociCommissionResult {
+            oid: u8::MAX,
+            status: u8::MAX,
+            r_int: u32::MAX,
+            l_int: u32::MAX,
+            r_mohm: u32::MAX,
+            l_uh: u32::MAX,
+            flux_p: u16::MAX,
+            flux_i: u16::MAX,
+            torque_p: u16::MAX,
+            torque_i: u16::MAX,
+            lambda_us: u32::MAX,
+            theta_e_us: u32::MAX,
+            ringing_count: u8::MAX,
+            bandwidth_hz: u32::MAX,
+            fallback_velocity_p: u16::MAX,
+            fallback_velocity_i: u16::MAX,
+            fallback_position_p: u16::MAX,
+            fallback_position_i: u16::MAX,
+            fallback_velocity_limit: u32::MAX,
+            tau_e_us: u32::MAX,
+            inner_warning_flags: u8::MAX,
+            timing_summary: u32::MAX,
+        };
+        assert_fits_with_id(&reply, "foci_commission_result");
     }
 
     /// Assert that `reply`'s encoded payload, plus a worst-case reply-id

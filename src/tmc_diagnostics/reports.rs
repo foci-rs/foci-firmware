@@ -716,3 +716,29 @@ pub fn empty_resistance_run_report(oid: u8, status: u8) -> ResistanceRunReport {
         pwm_sv_chop_readback: 0,
     }
 }
+/// Timing-quality evidence for one commissioning electrical capture.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CommissionTimingReport {
+    /// Object id of the FOCI endpoint.
+    pub oid: u8,
+    /// Electrical method: 0 resistance, 1 inductance, 2 delay.
+    pub method: u8,
+    /// Timing state: 0 not run, 1 accepted, 2 rejected.
+    pub status: u8,
+    /// Requested logical sample period in microseconds.
+    pub requested_period_us: u16,
+    /// Accepted logical samples.
+    pub valid_samples: u16,
+    /// Skipped logical sample slots.
+    pub missed_samples: u16,
+    /// Largest consecutive skipped-slot count.
+    pub max_consecutive_misses: u8,
+    /// Maximum observation lateness in microseconds.
+    pub max_lateness_us: u32,
+    /// Maximum accepted-observation interval in microseconds.
+    pub max_interval_us: u32,
+    /// Maximum complete poll wall time in microseconds.
+    pub max_poll_wall_us: u32,
+    /// Maximum SPI-await wall time in one poll in microseconds.
+    pub max_spi_wall_us: u32,
+}
