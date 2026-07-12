@@ -5,6 +5,7 @@
 //! spawning.
 
 pub mod actions;
+pub mod commission_poll;
 pub mod config;
 pub mod dispatch;
 pub mod filters;
@@ -20,8 +21,14 @@ pub mod state;
 mod tests;
 
 pub use actions::{
-    BoardAction, BoardActions, CommissionTickAction, DelegatedDiagnostic, ShutdownReason,
-    StepperAction, TmcControlRequestOutcome, TmcControlRequestTail, push_action,
+    BoardAction, BoardActions, CommissionTickAction, DelegatedDiagnostic,
+    ScheduledCommissionTickAction, ShutdownReason, StepperAction, TmcControlRequestOutcome,
+    TmcControlRequestTail, push_action,
+};
+pub use commission_poll::{
+    COMMISSION_WAIT_SLICE_US, CommissionPollDriver, CommissionWaitRequestDisposition,
+    FORCED_READY_YIELD_US, MAX_CONSECUTIVE_READY_POLLS, PollDriverAction, classify_wait_request,
+    next_wait_slice,
 };
 pub use config::{TmcControlConfig, TmcControlHomingRefs, TmcControlStateRefs};
 pub use request::{TmcPreRequestDisposition, TmcRequestBoard, handle_tmc_control_request};

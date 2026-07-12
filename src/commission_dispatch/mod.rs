@@ -346,7 +346,9 @@ pub async fn drive_commission_result<B: CommissioningBackend>(
 ) -> CommissionOutcome {
     let _ = pwm_maxcnt; // suppress unused warning until all arms land
     match result {
-        StepResult::Continue => CommissionOutcome::Continue,
+        StepResult::ReadyNow | StepResult::At(_) | StepResult::Continue => {
+            CommissionOutcome::Continue
+        }
         StepResult::PhaseChanged(phase_id) => {
             let engine_ref = engine
                 .as_ref()

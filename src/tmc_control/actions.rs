@@ -2,6 +2,7 @@
 
 use crate::autotune::PhaseId;
 use crate::commission_dispatch::{PostActions, ReplyPayload, StepperPostAction};
+use crate::commissioning::schedule::CommissionEvent;
 use crate::commissioning::types::EngineKind;
 use crate::tmc::TmcRequest;
 
@@ -168,6 +169,30 @@ pub enum CommissionTickAction {
         engine_kind: EngineKind,
     },
     /// Engine reached a terminal outcome.
+    Terminal {
+        /// Reply payload for the board to emit.
+        reply: ReplyPayload,
+        /// Post-actions the board must execute after emitting the reply.
+        actions: PostActions,
+    },
+}
+
+/// Runtime result from the explicit commissioning scheduler.
+#[allow(clippy::large_enum_variant)]
+pub enum ScheduledCommissionTickAction {
+    /// Poll again without adding an artificial delay.
+    ReadyNow {
+        /// Optional nonterminal event produced by this poll.
+        event: Option<CommissionEvent>,
+    },
+    /// Poll again at the absolute microsecond timestamp.
+    At {
+        /// Absolute timestamp in the commissioning timing domain.
+        timestamp_us: u64,
+        /// Optional nonterminal event produced by this poll.
+        event: Option<CommissionEvent>,
+    },
+    /// Engine reached a terminal result.
     Terminal {
         /// Reply payload for the board to emit.
         reply: ReplyPayload,

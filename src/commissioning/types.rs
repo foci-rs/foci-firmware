@@ -313,6 +313,10 @@ pub enum EngineKind {
 #[derive(Debug, defmt::Format)]
 #[allow(clippy::large_enum_variant)]
 pub enum StepResult {
+    /// Engine remains runnable without an artificial delay.
+    ReadyNow,
+    /// Engine remains runnable at the strictly future absolute timestamp.
+    At(u64),
     /// Engine is still working. Call `step()` again next tick.
     Continue,
     /// A phase transition occurred. Report to host.

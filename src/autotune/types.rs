@@ -197,6 +197,8 @@ pub enum CommissionError {
     ElectricalModelScaleZero,
     /// Electrical model assembly rejected theta as too large relative to tau. Code 46.
     ElectricalThetaTooLarge,
+    /// A commissioning state returned an invalid or unrepresentable deadline. Code 47.
+    InvalidSchedule,
 }
 
 impl CommissionError {
@@ -252,6 +254,7 @@ impl CommissionError {
             Self::ElectricalModelNoSamples => 44,
             Self::ElectricalModelScaleZero => 45,
             Self::ElectricalThetaTooLarge => 46,
+            Self::InvalidSchedule => 47,
         }
     }
 }

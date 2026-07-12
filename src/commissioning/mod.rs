@@ -13,6 +13,7 @@ pub(crate) mod encoder_domain;
 pub mod helpers;
 pub mod inner;
 pub mod outer;
+pub mod schedule;
 pub mod types;
 
 use crate::autotune::{
@@ -716,7 +717,7 @@ impl CommissioningEngine {
         result: &StepResult,
     ) {
         match result {
-            StepResult::Continue => {}
+            StepResult::ReadyNow | StepResult::At(_) | StepResult::Continue => {}
             StepResult::PhaseChanged(phase) => {
                 self.emit_trace_phase_end(backend, PHASE_END_OK, TraceEventLevel::Info);
                 self.trace_run.phase_seq = self.trace_run.phase_seq.wrapping_add(1);

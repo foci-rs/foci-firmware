@@ -4,6 +4,10 @@ use core::sync::atomic::Ordering::Relaxed;
 
 use crate::commission_dispatch::DispatchState;
 use crate::commissioning::CommissioningEngine;
+use crate::commissioning::schedule::{
+    CommissionEvent, CommissionPoll, CommissionTerminal, adapt_step_result,
+};
+use crate::commissioning::types::{CommissioningBackend, EngineKind, StepResult};
 use crate::pid::InnerLoopGains;
 use crate::state::stepper::StepperChannelState;
 use crate::state::tmc::TmcChannelState;
@@ -425,6 +429,40 @@ impl TmcControlRuntime {
         self.calibrated = false;
     }
 
+    /// Advance the engine through explicit scheduling, or `None` when idle.
+    /// Legacy results are adapted to absolute scheduling at this boundary.
+    pub async fn step_commissioning_scheduled<B>(
+        &mut self,
+        backend: &mut B,
+    ) -> Option<CommissionPoll>
+    where
+        B: CommissioningBackend,
+    {
+        let (oid, engine_kind) = self
+            .commission_engine
+            .as_ref()
+            .map(|engine| (engine.oid(), engine.kind()))?;
+        let result = self
+            .commission_engine
+            .as_mut()
+            .expect("commission engine disappeared during scheduled step")
+            .step(backend)
+            .await;
+        let now_us = crate::commissioning::CommissionTiming::elapsed_us(backend);
+
+        Some(
+            adapt_step_result(result, now_us, Some((oid, engine_kind))).unwrap_or_else(|error| {
+                CommissionPoll::Terminal {
+                    result: if matches!(engine_kind, EngineKind::OuterTune) {
+                        CommissionTerminal::OuterFailed(error)
+                    } else {
+                        CommissionTerminal::InnerFailed(error)
+                    },
+                }
+            }),
+        )
+    }
+
     /// Advance the active commissioning engine by one `step()` call.
     ///
     /// Returns `None` immediately when no engine is installed. This helper does
@@ -440,10 +478,18 @@ impl TmcControlRuntime {
         backend: &mut B,
     ) -> Option<crate::commissioning::types::StepResult>
     where
-        B: crate::commissioning::types::CommissioningBackend,
+        B: CommissioningBackend,
     {
-        let engine = self.commission_engine.as_mut()?;
-        Some(engine.step(backend).await)
+        let poll = self.step_commissioning_scheduled(backend).await?;
+        Some(match poll {
+            CommissionPoll::ReadyNow { event } | CommissionPoll::At { event, .. } => match event {
+                Some(CommissionEvent::PhaseChanged { phase_id, .. }) => {
+                    StepResult::PhaseChanged(phase_id)
+                }
+                None => StepResult::Continue,
+            },
+            CommissionPoll::Terminal { result } => result.into_step_result(),
+        })
     }
 
     /// Dispatch one commissioning step result through shared post-processing.

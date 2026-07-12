@@ -731,6 +731,27 @@ fn step_commissioning_returns_none_without_engine() {
 }
 
 #[test]
+fn scheduled_step_preserves_legacy_deadline_without_consuming_engine() {
+    pollster::block_on(async {
+        let tmc = crate::state::tmc::tmc_channel0();
+        let mut runtime = TmcControlRuntime::new_for_channel(0);
+        let mut backend = MockBackend::new();
+        backend.elapsed_us_value = 42_000;
+        runtime.set_commission_engine(CommissioningEngine::new_selftest_for_tmc(7, tmc));
+        assert!(matches!(
+            runtime
+                .step_commissioning_scheduled(&mut backend)
+                .await
+                .expect("engine should be active"),
+            crate::commissioning::schedule::CommissionPoll::At {
+                timestamp_us: 43_000,
+                event: None,
+            }
+        ));
+    });
+}
+
+#[test]
 fn drive_commissioning_result_returns_none_without_engine() {
     pollster::block_on(async {
         let mut runtime = TmcControlRuntime::new_for_channel(0);
