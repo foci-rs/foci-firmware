@@ -248,9 +248,7 @@ impl ResistanceRunner {
     #[must_use]
     pub fn timing_evidence_with_active(&self) -> ResistanceTimingEvidence {
         let mut timing = self.timing;
-        if let ResistanceState::Window(capture) | ResistanceState::ReadEncoderAfter(capture) =
-            self.state
-        {
+        if let ResistanceState::Window(capture) = self.state {
             let (evidence, overflowed) = capture.timing.snapshot();
             timing.merge(evidence, overflowed);
         }
