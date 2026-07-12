@@ -16,6 +16,8 @@ pub const FORCED_READY_YIELD_US: u64 = 1;
 pub enum PollDriverAction {
     /// Poll the engine again immediately.
     PollNow,
+    /// Perform one guaranteed scheduler yield before any further processing.
+    YieldNow,
     /// Wait until the absolute timestamp.
     WaitUntil(u64),
     /// Apply terminal dispatch and leave the polling loop.
@@ -75,7 +77,7 @@ impl CommissionPollDriver {
     /// Classify one immediate poll while enforcing the bounded ready chain.
     ///
     /// # Errors
-    /// Returns [`CommissionError::InvalidSchedule`] on timestamp overflow.
+    /// Reserved for consistency with complete-poll classification.
     pub fn classify_ready(&mut self, now_us: u64) -> Result<PollDriverAction, CommissionError> {
         if self.consecutive_ready < MAX_CONSECUTIVE_READY_POLLS {
             self.consecutive_ready += 1;
@@ -83,10 +85,8 @@ impl CommissionPollDriver {
         }
 
         self.consecutive_ready = 0;
-        let wake_us = now_us
-            .checked_add(FORCED_READY_YIELD_US)
-            .ok_or(CommissionError::InvalidSchedule)?;
-        Ok(PollDriverAction::WaitUntil(wake_us))
+        let _ = now_us;
+        Ok(PollDriverAction::YieldNow)
     }
 }
 
@@ -147,7 +147,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn ninth_ready_poll_forces_a_yield() {
+    fn ninth_ready_poll_forces_non_expiring_yield() {
         let mut driver = CommissionPollDriver::new();
         for _ in 0..8 {
             assert_eq!(
@@ -157,7 +157,15 @@ mod tests {
         }
         assert_eq!(
             driver.classify_ready(10_000).unwrap(),
-            PollDriverAction::WaitUntil(10_001)
+            PollDriverAction::YieldNow
+        );
+
+        let processing_finished_us = 20_000;
+        assert!(processing_finished_us > 10_001);
+        assert_eq!(
+            driver.classify_ready(processing_finished_us).unwrap(),
+            PollDriverAction::PollNow,
+            "processing time cannot consume the already-issued yield action"
         );
     }
 

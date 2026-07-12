@@ -93,7 +93,7 @@ where
     }
 }
 
-fn profile_report(oid: u8, profile: &ResistanceProfile) -> ResistanceProfileReport {
+pub(super) fn profile_report(oid: u8, profile: &ResistanceProfile) -> ResistanceProfileReport {
     ResistanceProfileReport {
         oid,
         pwm_maxcnt: profile.pwm_maxcnt,

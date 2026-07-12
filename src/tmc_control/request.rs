@@ -79,6 +79,8 @@ where
 
     /// Emit a host reply using board-local sender glue.
     fn emit_reply(&mut self, payload: ReplyPayload);
+    /// Emit the established not-ready reply for a busy active diagnostic.
+    fn emit_busy_diagnostic(&mut self, _request: TmcRequest) {}
     /// Emit a board-local motor arm event, if supported.
     fn emit_motor_arm_event(&mut self) {}
     /// Emit a board-local motor disarm event, if supported.
@@ -119,6 +121,68 @@ where
     /// Run dev-only open-loop test spin.
     #[cfg(feature = "dev")]
     async fn run_dev_test_spin(&mut self, tmc: &mut Tmc4671Spi<Spi>, revolutions: u8);
+}
+
+/// Reject a queued request while commissioning exclusively owns the motor.
+///
+/// This synchronous path intentionally receives no runtime, SPI, or GPIO
+/// capability, so it cannot disturb the active engine or its deadline.
+pub fn handle_commission_wait_reject<Spi, Board>(
+    req: TmcRequest,
+    board: &mut Board,
+) -> TmcControlRequestOutcome
+where
+    Spi: SpiDevice<u8>,
+    Board: TmcRequestBoard<Spi>,
+{
+    match req {
+        TmcRequest {
+            kind: TmcRequestKind::SetEnable(true) | TmcRequestKind::DumpRegisters { .. },
+            ..
+        } => {}
+        TmcRequest {
+            kind: TmcRequestKind::Calibrate { oid },
+            ..
+        } => emit_calibrate_failure::<Board, Spi>(
+            board,
+            oid,
+            CalibrationError::InternalError.status_code(),
+        ),
+        TmcRequest {
+            kind: TmcRequestKind::SelfTest { oid },
+            ..
+        } => emit_selftest_failure::<Board, Spi>(
+            board,
+            oid,
+            CommissionError::AlreadyRunning.status_code(),
+        ),
+        TmcRequest {
+            kind: TmcRequestKind::Commission { oid, .. } | TmcRequestKind::Tune { oid, .. },
+            ..
+        } => emit_commission_phase_failure::<Board, Spi>(
+            board,
+            oid,
+            CommissionError::AlreadyRunning.status_code(),
+        ),
+        diagnostic_req @ TmcRequest {
+            kind:
+                TmcRequestKind::CurrentStepTest { .. }
+                | TmcRequestKind::CurrentVectorStepTest { .. }
+                | TmcRequestKind::CurrentTorqueSampleTest { .. }
+                | TmcRequestKind::PositionTorqueOffsetSampleTest { .. }
+                | TmcRequestKind::VoltageStepTest { .. }
+                | TmcRequestKind::ResistanceTest { .. },
+            ..
+        } => board.emit_busy_diagnostic(diagnostic_req),
+        #[cfg(feature = "dev")]
+        TmcRequest {
+            kind:
+                TmcRequestKind::Read { .. } | TmcRequestKind::Init | TmcRequestKind::TestSpin { .. },
+            ..
+        } => {}
+        _ => defmt::warn!("non-reject request reached commission busy-only path"),
+    }
+    normal_outcome(board.normal_tail())
 }
 
 /// Handle one board-routed TMC control request.
@@ -898,6 +962,7 @@ mod tests {
         register_result: Result<(), ()>,
         arm_result: Result<(), CommissionError>,
         replies: std::vec::Vec<ReplyPayload>,
+        busy_diagnostic_requests: std::vec::Vec<TmcRequest>,
         diagnostic_calls: u8,
         arm_calls: u8,
         disarm_calls: u8,
@@ -924,6 +989,7 @@ mod tests {
                 register_result: Ok(()),
                 arm_result: Ok(()),
                 replies: std::vec::Vec::new(),
+                busy_diagnostic_requests: std::vec::Vec::new(),
                 diagnostic_calls: 0,
                 arm_calls: 0,
                 disarm_calls: 0,
@@ -997,6 +1063,10 @@ mod tests {
 
         fn emit_reply(&mut self, payload: ReplyPayload) {
             self.replies.push(payload);
+        }
+
+        fn emit_busy_diagnostic(&mut self, request: TmcRequest) {
+            self.busy_diagnostic_requests.push(request);
         }
 
         fn emit_motor_arm_event(&mut self) {
@@ -1094,6 +1164,112 @@ mod tests {
                 direction_mask: 3,
             },
         )
+    }
+
+    #[test]
+    fn commission_wait_reject_preserves_active_run_and_emits_busy_reply() {
+        run_request_test(async {
+            enum ExpectedReply {
+                None,
+                Calibrate(u8),
+                Selftest(u8),
+                Commission(u8),
+                Diagnostic,
+            }
+
+            let cases = [
+                (
+                    TmcRequest::new(0, TmcRequestKind::SetEnable(true)),
+                    ExpectedReply::None,
+                ),
+                (
+                    TmcRequest::new(0, TmcRequestKind::DumpRegisters { oid: 2 }),
+                    ExpectedReply::None,
+                ),
+                (
+                    TmcRequest::new(
+                        0,
+                        TmcRequestKind::CurrentStepTest {
+                            oid: 3,
+                            axis: crate::tmc::CurrentStepAxis::Torque,
+                            target: 64,
+                            duration_ms: 5,
+                            voltage_limit: 512,
+                        },
+                    ),
+                    ExpectedReply::Diagnostic,
+                ),
+                (
+                    TmcRequest::new(0, TmcRequestKind::Calibrate { oid: 4 }),
+                    ExpectedReply::Calibrate(4),
+                ),
+                (
+                    TmcRequest::new(0, TmcRequestKind::SelfTest { oid: 5 }),
+                    ExpectedReply::Selftest(5),
+                ),
+                (
+                    TmcRequest::new(0, TmcRequestKind::Commission { oid: 6, profile: 1 }),
+                    ExpectedReply::Commission(6),
+                ),
+                (tune_request(), ExpectedReply::Commission(4)),
+            ];
+
+            for (request, expected) in cases {
+                let mut runtime = TmcControlRuntime::new_for_channel(0);
+                runtime.set_commission_engine(CommissioningEngine::new_selftest_for_tmc(
+                    11,
+                    tmc_channel0(),
+                ));
+                let active_kind = runtime.pending_commission_kind();
+                let mut board = RecordingBoard::skip_tick_tail();
+                tmc_channel0().commission_in_flight.store(true, Relaxed);
+                let tmc = Tmc4671Spi::new(RuntimeMockSpi::default());
+
+                let outcome =
+                    handle_commission_wait_reject::<RuntimeMockSpi, _>(request.clone(), &mut board);
+
+                assert_eq!(runtime.pending_commission_kind(), active_kind);
+                assert!(tmc_channel0().commission_in_flight.load(Relaxed));
+                assert!(tmc.into_inner().write_attempts.is_empty());
+                assert_eq!(board.arm_calls, 0);
+                assert_eq!(board.disarm_calls, 0);
+                assert_eq!(board.diagnostic_calls, 0);
+                assert_eq!(board.disable_action_count, 0);
+                assert_eq!(outcome.tail, TmcControlRequestTail::SkipTickTail);
+
+                match expected {
+                    ExpectedReply::None => {
+                        assert!(board.replies.is_empty());
+                        assert!(board.busy_diagnostic_requests.is_empty());
+                    }
+                    ExpectedReply::Calibrate(oid) => {
+                        assert_calibrate_failure(
+                            board.replies.first().expect("calibrate busy reply"),
+                            oid,
+                            CalibrationError::InternalError.status_code(),
+                        );
+                    }
+                    ExpectedReply::Selftest(oid) => {
+                        assert_selftest_failure(
+                            board.replies.first().expect("selftest busy reply"),
+                            oid,
+                            CommissionError::AlreadyRunning.status_code(),
+                        );
+                    }
+                    ExpectedReply::Commission(oid) => {
+                        assert_commission_phase_failure(
+                            board.replies.first().expect("commission busy reply"),
+                            oid,
+                            CommissionError::AlreadyRunning.status_code(),
+                        );
+                    }
+                    ExpectedReply::Diagnostic => {
+                        assert!(board.replies.is_empty());
+                        assert_eq!(board.busy_diagnostic_requests, std::vec![request]);
+                    }
+                }
+            }
+        });
     }
 
     #[derive(Debug, PartialEq, Eq)]

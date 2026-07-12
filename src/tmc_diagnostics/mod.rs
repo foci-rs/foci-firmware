@@ -122,6 +122,114 @@ pub enum DiagnosticOutcome {
     NotDiagnostic(crate::tmc::TmcRequest),
 }
 
+/// Build the established not-ready reply for a diagnostic rejected by commissioning.
+pub fn busy_diagnostic_report(
+    req: crate::tmc::TmcRequest,
+    tmc_config: &crate::config::TmcConfig,
+) -> DiagnosticOutcome {
+    use crate::tmc::{CurrentStepAxis, TmcRequestKind};
+
+    let report = match req.kind {
+        TmcRequestKind::CurrentStepTest {
+            oid,
+            axis,
+            target,
+            duration_ms,
+            voltage_limit,
+        } => {
+            let flux_target = if matches!(axis, CurrentStepAxis::Flux) {
+                target
+            } else {
+                0
+            };
+            DiagnosticReport::CurrentStep {
+                vector_reply: false,
+                report: current_step::empty_current_step_report(
+                    oid,
+                    CURRENT_STEP_STATUS_NOT_READY,
+                    target,
+                    flux_target,
+                    duration_ms,
+                    voltage_limit,
+                ),
+            }
+        }
+        TmcRequestKind::CurrentVectorStepTest {
+            oid,
+            torque_target,
+            flux_target,
+            duration_ms,
+            voltage_limit,
+        } => DiagnosticReport::CurrentStep {
+            vector_reply: true,
+            report: current_step::empty_current_step_report(
+                oid,
+                CURRENT_STEP_STATUS_NOT_READY,
+                torque_target,
+                flux_target,
+                duration_ms,
+                voltage_limit,
+            ),
+        },
+        TmcRequestKind::CurrentTorqueSampleTest {
+            oid,
+            target,
+            flux_target,
+            sample_delay_ms,
+            voltage_limit,
+        } => DiagnosticReport::CurrentTorqueSample {
+            report: empty_current_torque_sample_report(
+                oid,
+                CURRENT_STEP_STATUS_NOT_READY,
+                target,
+                flux_target,
+                sample_delay_ms,
+                voltage_limit,
+            ),
+            emit_detail: false,
+        },
+        TmcRequestKind::PositionTorqueOffsetSampleTest {
+            oid,
+            target,
+            sample_delay_ms,
+            voltage_limit,
+        } => DiagnosticReport::CurrentTorqueSample {
+            report: empty_current_torque_sample_report(
+                oid,
+                CURRENT_STEP_STATUS_NOT_READY,
+                target,
+                0,
+                sample_delay_ms,
+                voltage_limit,
+            ),
+            emit_detail: false,
+        },
+        TmcRequestKind::VoltageStepTest {
+            oid,
+            uq_ext,
+            ud_ext,
+            sample_delay_ms,
+        } => DiagnosticReport::VoltageStep(empty_voltage_step_report(
+            oid,
+            CURRENT_STEP_STATUS_NOT_READY,
+            uq_ext,
+            ud_ext,
+            sample_delay_ms,
+        )),
+        TmcRequestKind::ResistanceTest { oid, .. } => {
+            let profile =
+                tmc_config.resistance_profile(tmc_config.resistance_scale_metadata_validated);
+            DiagnosticReport::ResistanceTest {
+                profile: resistance::profile_report(oid, &profile),
+                run: empty_resistance_run_report(oid, CURRENT_STEP_STATUS_NOT_READY),
+                axes: None,
+            }
+        }
+        _ => return DiagnosticOutcome::NotDiagnostic(req),
+    };
+    DiagnosticOutcome::Handled(report)
+}
+
 /// Dispatch one active diagnostic request through the shared runner set.
 pub async fn handle_diagnostic_request<B, D>(
     req: crate::tmc::TmcRequest,

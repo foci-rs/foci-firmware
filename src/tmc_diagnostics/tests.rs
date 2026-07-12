@@ -183,6 +183,34 @@ fn empty_reports_preserve_headers_and_zero_samples() {
 }
 
 #[test]
+fn commissioning_busy_diagnostic_returns_not_ready_without_hardware() {
+    let request = crate::tmc::TmcRequest::new(
+        0,
+        crate::tmc::TmcRequestKind::CurrentStepTest {
+            oid: 9,
+            axis: crate::tmc::CurrentStepAxis::Torque,
+            target: 64,
+            duration_ms: 5,
+            voltage_limit: 512,
+        },
+    );
+
+    let outcome =
+        super::busy_diagnostic_report(request, &crate::config::TmcConfig::default_for_test());
+
+    let super::DiagnosticOutcome::Handled(super::DiagnosticReport::CurrentStep {
+        vector_reply: false,
+        report,
+    }) = outcome
+    else {
+        panic!("expected scalar current-step busy report");
+    };
+    assert_eq!(report.oid, 9);
+    assert_eq!(report.status, super::CURRENT_STEP_STATUS_NOT_READY);
+    assert_eq!(report.torque_target, 64);
+}
+
+#[test]
 fn current_step_not_ready_returns_status_without_writes() {
     pollster::block_on(async {
         let mut runtime = TmcControlRuntime::new_for_channel(0);

@@ -12,7 +12,7 @@ const CURRENT_STEP_TORQUE_MODE: u32 = 0x8000_0001;
 const CURRENT_STEP_POSITION_MODE: u32 = 0x8000_0003;
 const CURRENT_STEP_SETTLE_MS: u64 = 20;
 
-fn empty_current_step_report(
+pub(super) fn empty_current_step_report(
     oid: u8,
     status: u8,
     torque_target: i16,
