@@ -40,7 +40,7 @@ pub struct ResistanceTimingEvidence {
     pub max_spi_wall_us: u32,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, defmt::Format)]
 enum WindowPurpose {
     InitialZero,
     PointEnergized(u8),
@@ -51,14 +51,14 @@ enum WindowPurpose {
     NegativeZero,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, defmt::Format)]
 struct WindowPlan {
     purpose: WindowPurpose,
     ud: i16,
     settle_ms: u16,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, defmt::Format)]
 struct WindowCapture {
     plan: WindowPlan,
     operation: u8,
@@ -71,14 +71,14 @@ struct WindowCapture {
     timing: CaptureTiming,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, defmt::Format)]
 struct SafeAnchor {
     ud: i16,
     positive_current_count: i32,
     preferred_distance: u16,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, defmt::Format)]
 struct AxisProgress {
     points: [ResistancePoint; 8],
     point_index: u8,
@@ -112,7 +112,7 @@ impl AxisProgress {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, defmt::Format)]
 enum ResistanceState {
     ReadSavedLimit,
     ReadMotorType,
@@ -127,6 +127,7 @@ enum ResistanceState {
 }
 
 /// Resumable shared resistance-identification runner.
+#[derive(Debug, defmt::Format)]
 pub struct ResistanceRunner {
     mode: ResistanceRunMode,
     profile: ResistanceProfile,

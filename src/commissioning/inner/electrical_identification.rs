@@ -1126,7 +1126,7 @@ pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
         // ---------------------------------------------------------------
         // Resistance identification (shared multi-point runner)
         // ---------------------------------------------------------------
-        ElectricalIdState::ResistanceIdentify => {
+        ElectricalIdState::ResistanceStart => {
             data.encoder_domain =
                 match EncoderDomain::new(backend.mechanical_encoder_quadrature_counts_per_rev()) {
                     Ok(domain) => Some(domain),
@@ -1135,26 +1135,42 @@ pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
                     }
                     Err(EncoderMathError::AmbiguousHalfTurn) => unreachable!(),
                 };
-            // The shared runner owns the full count-space sweep and the
-            // managed-enable exception (it asserts/clears the enable pin and
-            // restores safe state on every exit path). On success, store the
-            // result and hand off to the inductance path; on any
-            // quality-gate or backend failure, fail the inner phase.
-            let result = crate::resistance_identification::run_resistance_identification(
-                &mut CommissionResistanceBackend { backend },
+            let config = backend.tmc_config();
+            let profile = config.resistance_profile(config.resistance_scale_metadata_validated);
+            let runner = match crate::resistance_identification::ResistanceRunner::new(
                 crate::resistance_identification::ResistanceRunMode::CommissioningManagedEnable,
-            )
-            .await;
+                profile,
+                backend.elapsed_us(),
+            ) {
+                Ok(runner) => runner,
+                Err(error) => {
+                    defmt::warn!("resistance id failed: {}", error);
+                    return super::fail_inner(phase, CommissionError::from(error));
+                }
+            };
+            *electrical_id_state = ElectricalIdState::ResistanceIdentify { runner };
+            StepResult::ReadyNow
+        }
 
-            match result {
-                Ok(resistance) => {
+        ElectricalIdState::ResistanceIdentify { runner } => {
+            let now_us = backend.elapsed_us();
+            let poll = runner
+                .poll(&mut CommissionResistanceBackend { backend }, now_us)
+                .await;
+
+            match poll {
+                crate::resistance_identification::ResistancePoll::ReadyNow => StepResult::ReadyNow,
+                crate::resistance_identification::ResistancePoll::At(deadline_us) => {
+                    StepResult::At(deadline_us)
+                }
+                crate::resistance_identification::ResistancePoll::Complete(Ok(resistance)) => {
                     data.resistance_result = Some(resistance);
                     *electrical_id_state = ElectricalIdState::InductanceSetup;
-                    StepResult::Continue
+                    StepResult::ReadyNow
                 }
-                Err(err) => {
-                    defmt::warn!("resistance id failed: {}", err);
-                    super::fail_inner(phase, CommissionError::from(err))
+                crate::resistance_identification::ResistancePoll::Complete(Err(error)) => {
+                    defmt::warn!("resistance id failed: {}", error);
+                    super::fail_inner(phase, CommissionError::from(error))
                 }
             }
         }
@@ -1790,6 +1806,12 @@ mod tests {
                 (u32::from(config.dsadc_mdec_b) << 16) | u32::from(config.dsadc_mdec_a),
             )
             .ok();
+    }
+
+    fn register_operation_count(log: &[SpiOp]) -> usize {
+        log.iter()
+            .filter(|operation| matches!(operation, SpiOp::Read | SpiOp::Write(_, _)))
+            .count()
     }
 
     fn write_position(log: &[SpiOp], register: Register, value: u32) -> usize {
@@ -2613,10 +2635,10 @@ mod tests {
     }
 
     #[test]
-    fn electrical_id_rejects_invalid_domain_before_resistance_identification() {
+    fn resistance_rejects_invalid_domain_before_identification() {
         pollster::block_on(async {
             let mut phase = InnerPhase::ElectricalId {
-                state: ElectricalIdState::ResistanceIdentify,
+                state: ElectricalIdState::ResistanceStart,
                 data: ElectricalIdData::new(1024),
             };
             let mut buf = TransientBuffer::new();
@@ -2724,44 +2746,56 @@ mod tests {
     }
 
     #[test]
-    fn electrical_id_uses_resistance_runner_before_inductance() {
+    fn resistance_runner_is_polled_with_bounded_spi_work() {
         pollster::block_on(async {
             let mut backend = MockBackend::new();
             seed_resistance_power_stage_registers(&mut backend);
             backend.script_resistance_current_proportional_to_ud = true;
 
             let mut phase = InnerPhase::ElectricalId {
-                state: ElectricalIdState::ResistanceIdentify,
+                state: ElectricalIdState::ResistanceStart,
                 data: ElectricalIdData::new(u32::from(backend.tmc_config().excitation_voltage)),
             };
             let mut buf = TransientBuffer::default();
             let mut selftest_results = crate::selftest::SelftestResults::default();
             let mut diagnostics = crate::selftest::CommissionDiagnostics::default();
 
-            let step = step_electrical_identification(
-                &mut phase,
-                &mut buf,
-                InnerSequence::Commission,
-                &mut selftest_results,
-                &mut diagnostics,
-                &mut backend,
-            )
-            .await;
+            let mut reached_inductance = false;
+            for _ in 0..2_000 {
+                let before = register_operation_count(&backend.spi_log);
+                let step = step_electrical_identification(
+                    &mut phase,
+                    &mut buf,
+                    InnerSequence::Commission,
+                    &mut selftest_results,
+                    &mut diagnostics,
+                    &mut backend,
+                )
+                .await;
+                let operations = register_operation_count(&backend.spi_log) - before;
+                assert!(
+                    operations <= 2,
+                    "resistance poll performed {operations} SPI ops"
+                );
 
-            assert!(
-                matches!(step, StepResult::Continue),
-                "expected Continue, got {step:?}"
-            );
-            assert!(
-                matches!(
+                if matches!(
                     phase,
                     InnerPhase::ElectricalId {
                         state: ElectricalIdState::InductanceSetup,
                         ..
                     }
-                ),
-                "expected InductanceSetup after a successful resistance run, got {phase:?}"
-            );
+                ) {
+                    assert!(matches!(step, StepResult::ReadyNow));
+                    reached_inductance = true;
+                    break;
+                }
+                match step {
+                    StepResult::ReadyNow => {}
+                    StepResult::At(deadline_us) => backend.elapsed_us_value = deadline_us,
+                    other => panic!("unexpected resistance poll result: {other:?}"),
+                }
+            }
+            assert!(reached_inductance, "resistance runner did not complete");
             let InnerPhase::ElectricalId { data, .. } = &phase else {
                 panic!("expected ElectricalId, got {phase:?}");
             };
@@ -2773,7 +2807,146 @@ mod tests {
     }
 
     #[test]
-    fn electrical_id_reports_specific_resistance_quality_gate_failure() {
+    fn resistance_critical_status_restores_before_terminal_failure() {
+        pollster::block_on(async {
+            let mut backend = MockBackend::new();
+            seed_resistance_power_stage_registers(&mut backend);
+            backend.script_resistance_current_proportional_to_ud = true;
+
+            let mut phase = InnerPhase::ElectricalId {
+                state: ElectricalIdState::ResistanceStart,
+                data: ElectricalIdData::new(u32::from(backend.tmc_config().excitation_voltage)),
+            };
+            let mut buf = TransientBuffer::default();
+            let mut selftest_results = crate::selftest::SelftestResults::default();
+            let mut diagnostics = crate::selftest::CommissionDiagnostics::default();
+            let critical_status = 1 << 1;
+            let mut injected = false;
+            let mut containment_seen = false;
+            let mut restore_polls = 0;
+
+            for _ in 0..200 {
+                let before = register_operation_count(&backend.spi_log);
+                let step = step_electrical_identification(
+                    &mut phase,
+                    &mut buf,
+                    InnerSequence::Commission,
+                    &mut selftest_results,
+                    &mut diagnostics,
+                    &mut backend,
+                )
+                .await;
+                let operations = register_operation_count(&backend.spi_log) - before;
+                assert!(
+                    operations <= 2,
+                    "resistance poll performed {operations} SPI ops"
+                );
+
+                if injected && !backend.enable_pin && !containment_seen {
+                    assert!(matches!(step, StepResult::ReadyNow));
+                    let InnerPhase::ElectricalId {
+                        state: ElectricalIdState::ResistanceIdentify { runner },
+                        ..
+                    } = &phase
+                    else {
+                        panic!("critical status failed before runner restoration: {phase:?}");
+                    };
+                    assert_eq!(runner.status_flags_or() & critical_status, critical_status);
+                    assert_eq!(
+                        runner.primary_error(),
+                        Some(crate::resistance_identification::ResistanceError::CriticalStatus)
+                    );
+                    containment_seen = true;
+                    continue;
+                }
+
+                if containment_seen && matches!(step, StepResult::ReadyNow) {
+                    restore_polls += 1;
+                }
+                if let StepResult::InnerFailed(error) = step {
+                    assert_eq!(error, CommissionError::ResistanceIdFailed);
+                    assert!(containment_seen);
+                    assert!(restore_polls > 0, "failure bypassed resumable restoration");
+                    assert!(!backend.enable_pin);
+                    return;
+                }
+                if let StepResult::At(deadline_us) = step {
+                    backend.elapsed_us_value = deadline_us;
+                }
+                if backend.enable_pin && !injected {
+                    backend.read_override = Some((STATUS_FLAGS.addr(), critical_status));
+                    injected = true;
+                }
+            }
+            panic!("critical resistance status did not reach terminal failure");
+        });
+    }
+
+    #[test]
+    fn resistance_warning_status_is_retained_without_terminal_failure() {
+        pollster::block_on(async {
+            let mut backend = MockBackend::new();
+            seed_resistance_power_stage_registers(&mut backend);
+            backend.script_resistance_current_proportional_to_ud = true;
+
+            let mut phase = InnerPhase::ElectricalId {
+                state: ElectricalIdState::ResistanceStart,
+                data: ElectricalIdData::new(u32::from(backend.tmc_config().excitation_voltage)),
+            };
+            let mut buf = TransientBuffer::default();
+            let mut selftest_results = crate::selftest::SelftestResults::default();
+            let mut diagnostics = crate::selftest::CommissionDiagnostics::default();
+            let warning_status = 1 << 31;
+            let mut injected = false;
+
+            for _ in 0..2_000 {
+                let before = register_operation_count(&backend.spi_log);
+                let step = step_electrical_identification(
+                    &mut phase,
+                    &mut buf,
+                    InnerSequence::Commission,
+                    &mut selftest_results,
+                    &mut diagnostics,
+                    &mut backend,
+                )
+                .await;
+                let operations = register_operation_count(&backend.spi_log) - before;
+                assert!(
+                    operations <= 2,
+                    "resistance poll performed {operations} SPI ops"
+                );
+
+                if let InnerPhase::ElectricalId {
+                    state: ElectricalIdState::InductanceSetup,
+                    data,
+                } = &phase
+                {
+                    assert!(matches!(step, StepResult::ReadyNow));
+                    let result = data.resistance_result.expect("resistance result");
+                    assert_eq!(result.status_flags_or & warning_status, warning_status);
+                    assert!(
+                        result
+                            .warning_flags
+                            .contains(ResistanceWarningFlags::STATUS_FLAGS)
+                    );
+                    return;
+                }
+                match step {
+                    StepResult::ReadyNow => {}
+                    StepResult::At(deadline_us) => backend.elapsed_us_value = deadline_us,
+                    other => panic!("warning-only status became terminal: {other:?}"),
+                }
+                if backend.enable_pin && !injected {
+                    backend.read_override = Some((STATUS_FLAGS.addr(), warning_status));
+                    injected = true;
+                }
+            }
+            panic!("warning-only resistance run did not complete");
+        });
+    }
+
+    #[test]
+    fn resistance_reports_specific_quality_gate_failure_after_restoration() {
         pollster::block_on(async {
             let mut backend = MockBackend::new();
             seed_resistance_power_stage_registers(&mut backend);
@@ -2783,34 +2956,41 @@ mod tests {
             // envelope rather than applying unsafe higher excitation.
 
             let mut phase = InnerPhase::ElectricalId {
-                state: ElectricalIdState::ResistanceIdentify,
+                state: ElectricalIdState::ResistanceStart,
                 data: ElectricalIdData::new(u32::from(backend.tmc_config().excitation_voltage)),
             };
             let mut buf = TransientBuffer::default();
             let mut selftest_results = crate::selftest::SelftestResults::default();
             let mut diagnostics = crate::selftest::CommissionDiagnostics::default();
 
-            let step = step_electrical_identification(
-                &mut phase,
-                &mut buf,
-                InnerSequence::Commission,
-                &mut selftest_results,
-                &mut diagnostics,
-                &mut backend,
-            )
-            .await;
-
             let expected_status =
                 crate::resistance_identification::ResistanceError::MeasurementEnvelopeUnsupported
                     .status_code();
-            let StepResult::InnerFailed(error) = step else {
-                panic!("expected InnerFailed, got {step:?}");
-            };
-            assert_eq!(error.status_code(), expected_status);
-            assert_ne!(
-                error.status_code(),
-                CommissionError::ResistanceIdFailed.status_code()
-            );
+            for _ in 0..2_000 {
+                let step = step_electrical_identification(
+                    &mut phase,
+                    &mut buf,
+                    InnerSequence::Commission,
+                    &mut selftest_results,
+                    &mut diagnostics,
+                    &mut backend,
+                )
+                .await;
+                match step {
+                    StepResult::ReadyNow => {}
+                    StepResult::At(deadline_us) => backend.elapsed_us_value = deadline_us,
+                    StepResult::InnerFailed(error) => {
+                        assert_eq!(error.status_code(), expected_status);
+                        assert_ne!(
+                            error.status_code(),
+                            CommissionError::ResistanceIdFailed.status_code()
+                        );
+                        return;
+                    }
+                    other => panic!("unexpected resistance poll result: {other:?}"),
+                }
+            }
+            panic!("resistance quality gate did not fail");
         });
     }
 

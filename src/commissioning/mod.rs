@@ -875,7 +875,7 @@ mod tests {
         };
 
         let mut phase = inner::InnerPhase::ElectricalId {
-            state: inner::ElectricalIdState::ResistanceIdentify,
+            state: inner::ElectricalIdState::ResistanceStart,
             data: inner::ElectricalIdData::new(1024),
         };
         let mut buf = crate::autotune::TransientBuffer::new();
@@ -913,7 +913,8 @@ mod tests {
         assert!(size_of::<capture_timing::CaptureTimingEvidence>() <= 32);
         assert_eq!(engine_step, 3_952);
         assert_eq!(step_inner, 3_904);
-        assert_eq!(electrical_id, 960);
+        assert_eq!(electrical_id, 880);
+        assert!(electrical_id <= 960);
         assert_eq!(runtime_tick, 22_304);
     }
 

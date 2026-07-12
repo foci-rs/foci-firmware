@@ -179,7 +179,7 @@ pub(crate) struct ElectricalIdData {
     /// Excitation voltage used for all measurements (PIDOUT units).
     pub(crate) voltage: u32,
     /// Shared multi-point resistance-identification result. `Some` once the
-    /// `ResistanceIdentify` sub-state has run the shared runner; the
+    /// runner-owned `ResistanceIdentify` sub-state completes; the
     /// inductance/delay/gain path reads its count-slope-milli values from here.
     pub(crate) resistance_result: Option<crate::resistance_identification::ResistanceRunResult>,
     /// Accepted production inductance evidence from the rotating-field estimator.
@@ -207,8 +207,13 @@ impl ElectricalIdData {
 )]
 pub(crate) enum ElectricalIdState {
     // --- Resistance identification ---
-    /// Run shared multi-point resistance identification before the L work.
-    ResistanceIdentify,
+    /// Validate commissioning inputs and construct the shared runner.
+    ResistanceStart,
+    /// Poll shared multi-point resistance identification before the L work.
+    ResistanceIdentify {
+        /// Mutually exclusive resumable resistance state.
+        runner: crate::resistance_identification::ResistanceRunner,
+    },
 
     // --- Inductance measurement (phi-locked rotating field) ---
     /// Configure the open-loop rotating-field generator.

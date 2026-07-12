@@ -726,7 +726,7 @@ pub(crate) async fn step_encoder_align<B: CommissioningBackend>(
                 InnerSequence::Selftest | InnerSequence::Commission => {
                     let voltage = backend.excitation_voltage() as u32;
                     *phase = InnerPhase::ElectricalId {
-                        state: ElectricalIdState::ResistanceIdentify,
+                        state: ElectricalIdState::ResistanceStart,
                         data: ElectricalIdData::new(voltage),
                     };
                     StepResult::PhaseChanged(PhaseId::ElectricalId)
