@@ -187,6 +187,10 @@ pub(crate) struct ElectricalIdData {
     /// Accepted timing evidence for the rotating-field capture.
     pub(crate) inductance_timing:
         Option<crate::commissioning::capture_timing::CaptureTimingEvidence>,
+    /// Low-rate timestamp-aware electrical-delay onset evidence.
+    pub(crate) delay_estimate_us: Option<u32>,
+    /// Accepted timing evidence for the electrical-delay capture.
+    pub(crate) delay_timing: Option<crate::commissioning::capture_timing::CaptureTimingEvidence>,
     /// Validated mechanical encoder domain used by inductance motion checks.
     pub(crate) encoder_domain: Option<crate::commissioning::encoder_domain::EncoderDomain>,
 }
@@ -198,6 +202,8 @@ impl ElectricalIdData {
             resistance_result: None,
             inductance: None,
             inductance_timing: None,
+            delay_estimate_us: None,
+            delay_timing: None,
             encoder_domain: None,
         }
     }
@@ -220,6 +226,23 @@ pub(crate) struct InductanceCaptureState {
     pub(crate) status_flags_or: u32,
     pub(crate) next_sample_us: u64,
     pub(crate) timing: crate::commissioning::capture_timing::CaptureTiming,
+}
+
+/// Mutually exclusive state retained across electrical-delay sample polls.
+#[derive(Debug, Clone, defmt::Format)]
+pub(crate) struct DelayCaptureState {
+    pub(crate) baseline: i16,
+    pub(crate) origin_us: u64,
+    pub(crate) next_sample_us: u64,
+    pub(crate) offsets: crate::autotune::DelayTimestampOffsets,
+    pub(crate) timing: crate::commissioning::capture_timing::CaptureTiming,
+}
+
+/// Completed delay timestamps and timing evidence retained through restoration.
+#[derive(Debug, Clone, defmt::Format)]
+pub(crate) struct DelayCompletedCapture {
+    pub(crate) offsets: crate::autotune::DelayTimestampOffsets,
+    pub(crate) timing: crate::commissioning::capture_timing::CaptureTimingEvidence,
 }
 
 /// One verified register operation in the bounded inductance restore sequence.
@@ -249,9 +272,9 @@ pub(crate) enum InductanceRestoreOperation {
 
 /// Electrical identification sub-state machine (Phase 5).
 #[derive(Debug, defmt::Format)]
-#[expect(
+#[allow(
     clippy::large_enum_variant,
-    reason = "no heap; AC capture uses fixed-size accumulators in state"
+    reason = "no heap; capture state uses fixed-size accumulators and timestamp storage"
 )]
 pub(crate) enum ElectricalIdState {
     // --- Resistance identification ---
@@ -333,14 +356,39 @@ pub(crate) enum ElectricalIdState {
     // --- Delay identification ---
     /// Configure for delay step response capture.
     DelaySetup,
+    /// Apply one delay setup register operation.
+    DelaySetupOperation { operation: u8 },
     /// Brief settle at zero voltage before step.
-    DelaySettle { deadline_us: u64 },
-    /// Apply voltage step and start capturing.
-    DelayStep,
-    /// Capture 256 samples into TransientBuffer at 160us intervals.
-    DelaySample { baseline: i16, next_sample_us: u64 },
-    /// Disable and restore safe state.
-    DelayDisable { deadline_us: u64 },
+    DelayPreSettle { deadline_us: u64 },
+    /// Read the zero-voltage current baseline.
+    DelayReadBaseline,
+    /// Apply the voltage step; successful completion establishes timestamp zero.
+    DelayApplyStep { baseline: i16 },
+    /// Capture one timestamped current observation per poll.
+    DelaySample { capture: DelayCaptureState },
+    /// Stop motion with one verified operation after successful capture.
+    DelayStopMotion {
+        primary_error: Option<crate::autotune::CommissionError>,
+        completed: Option<DelayCompletedCapture>,
+    },
+    /// Clear external voltage before synchronously lowering the enable GPIO.
+    DelayStopVoltage {
+        primary_error: Option<crate::autotune::CommissionError>,
+        completed: Option<DelayCompletedCapture>,
+    },
+    /// Perform the complete canonical verified restore one operation per poll.
+    DelayRestore {
+        operation: InductanceRestoreOperation,
+        primary_error: Option<crate::autotune::CommissionError>,
+        completed: Option<DelayCompletedCapture>,
+    },
+    /// Estimate timestamped response onset after successful restoration.
+    DelayEvaluate { completed: DelayCompletedCapture },
+    /// Hold the power stage disabled for the required cooldown.
+    DelayCooldown {
+        deadline_us: u64,
+        primary_error: Option<crate::autotune::CommissionError>,
+    },
 
     // --- Final ---
     /// Assemble ElectricalModel and validate.

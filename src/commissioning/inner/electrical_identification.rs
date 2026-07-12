@@ -6,15 +6,17 @@
 //! `CurrentTune` (commission flow) or emitting `SelftestDone` (selftest).
 
 use super::{
-    ElectricalIdData, ElectricalIdState, InductanceCaptureState, InductanceRestoreOperation,
-    InnerPhase,
+    DelayCaptureState, DelayCompletedCapture, ElectricalIdData, ElectricalIdState,
+    InductanceCaptureState, InductanceRestoreOperation, InnerPhase,
 };
 use crate::autotune::{
     CommissionError, ELECTRICAL_MODEL_RESISTANCE_SCALE, ElectricalModel, InnerSequence, PhaseId,
     TransientBuffer,
 };
 use crate::commissioning::backend::timed_read_register;
-use crate::commissioning::capture_timing::{CaptureTiming, CaptureTimingEvidence, TimingEnvelope};
+use crate::commissioning::capture_timing::{
+    CaptureTiming, CaptureTimingEvidence, TimingEnvelope, sample_slot,
+};
 use crate::commissioning::encoder_domain::{EncoderDelta, EncoderDomain, EncoderMathError};
 use crate::commissioning::types::{
     CommissioningBackend, INDUCTANCE_SOURCE_ROTATING_FIELD, INDUCTANCE_WARN_DRIFT,
@@ -508,6 +510,118 @@ fn inductance_restore_write(
         ),
         PositionErrorClear => (PID_ERROR_PID_POSITION_ERROR_SUM.data, 0, None),
     }
+}
+
+fn begin_delay_restore<B: CommissioningBackend>(
+    state: &mut ElectricalIdState,
+    backend: &mut B,
+    primary_error: Option<CommissionError>,
+    completed: Option<DelayCompletedCapture>,
+) -> StepResult {
+    backend.set_enable_pin(false);
+    *state = ElectricalIdState::DelayRestore {
+        operation: InductanceRestoreOperation::CanonicalMotionStop,
+        primary_error,
+        completed,
+    };
+    StepResult::ReadyNow
+}
+
+fn begin_delay_cooldown<B: CommissioningBackend>(
+    state: &mut ElectricalIdState,
+    backend: &B,
+    primary_error: Option<CommissionError>,
+) -> Result<StepResult, CommissionError> {
+    let deadline_us = backend
+        .elapsed_us()
+        .checked_add(ELECTRICAL_COOLDOWN_US)
+        .ok_or(CommissionError::InvalidSchedule)?;
+    *state = ElectricalIdState::DelayCooldown {
+        deadline_us,
+        primary_error,
+    };
+    Ok(StepResult::At(deadline_us))
+}
+
+#[allow(
+    clippy::large_enum_variant,
+    reason = "no heap; completed fixed timestamp storage is consumed immediately"
+)]
+enum DelaySamplePoll {
+    At,
+    Complete(DelayCompletedCapture),
+}
+
+async fn poll_delay_sample<B: CommissioningBackend>(
+    backend: &mut B,
+    buf: &mut TransientBuffer,
+    capture: &mut DelayCaptureState,
+    now_us: u64,
+) -> Result<DelaySamplePoll, CommissionError> {
+    use foci_tmc4671::registers::PID_TORQUE_FLUX_ACTUAL;
+
+    if now_us < capture.next_sample_us {
+        return Ok(DelaySamplePoll::At);
+    }
+    if backend.is_shutdown_requested() {
+        return Err(CommissionError::Shutdown);
+    }
+    let slot = sample_slot(
+        capture.next_sample_us,
+        ELECTRICAL_SAMPLE_PERIOD_US as u16,
+        now_us,
+    )
+    .map_err(|_| CommissionError::DelayTimingRejected)?;
+    if slot.missed != 0 {
+        return Err(CommissionError::DelayTimingRejected);
+    }
+
+    let current_io = timed_read_register(backend, PID_TORQUE_FLUX_ACTUAL).await;
+    let actual = current_io.result.map_err(|_| CommissionError::Spi)?;
+    let observation_us = backend.elapsed_us();
+    if current_io.overflowed {
+        return Err(CommissionError::DelayTimingRejected);
+    }
+    let accepted_slot = capture
+        .timing
+        .record_sample(
+            capture.next_sample_us,
+            now_us,
+            observation_us,
+            observation_us,
+            current_io.wall_us,
+        )
+        .map_err(|_| CommissionError::DelayTimingRejected)?;
+    capture
+        .timing
+        .finish()
+        .map_err(|_| CommissionError::DelayTimingRejected)?;
+    let offset_us = observation_us
+        .checked_sub(capture.origin_us)
+        .and_then(|offset| u32::try_from(offset).ok())
+        .ok_or(CommissionError::DelayTimingRejected)?;
+    capture
+        .offsets
+        .push(offset_us)
+        .map_err(|_| CommissionError::DelayTimingRejected)?;
+    let current = (actual & 0xffff) as i16;
+    let relative = (i32::from(current) - i32::from(capture.baseline)).unsigned_abs();
+    if !buf.push(relative) || buf.len() != capture.offsets.len() {
+        return Err(CommissionError::DelayTimingRejected);
+    }
+    capture.next_sample_us = accepted_slot.next_deadline_us;
+
+    if buf.len() >= DELAY_SAMPLE_COUNT || buf.is_full() {
+        let timing = capture
+            .timing
+            .finish()
+            .map_err(|_| CommissionError::DelayTimingRejected)?;
+        return Ok(DelaySamplePoll::Complete(DelayCompletedCapture {
+            offsets: capture.offsets.clone(),
+            timing,
+        }));
+    }
+    Ok(DelaySamplePoll::At)
 }
 
 fn inductance_status_is_critical(flags: u32) -> bool {
@@ -1666,105 +1780,246 @@ pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
         // Delay identification (transient capture)
         // ---------------------------------------------------------------
         ElectricalIdState::DelaySetup => {
-            // Configure for step response on coil A (D-axis).
-            if backend.write_register(PHI_E_SELECTION, 1).await.is_err()
-                || backend.write_register(PHI_E_EXT, 0).await.is_err()
-                || backend.write_register(UQ_UD_EXT, 0).await.is_err()
-                || backend
-                    .write_register(MODE_RAMP_MODE_MOTION, 8)
-                    .await
-                    .is_err()
-            {
+            buf.reset(ELECTRICAL_SAMPLE_PERIOD_US as u16);
+            *electrical_id_state = ElectricalIdState::DelaySetupOperation { operation: 0 };
+            StepResult::ReadyNow
+        }
+
+        ElectricalIdState::DelaySetupOperation { operation } => {
+            let (register, value) = match *operation {
+                0 => (PHI_E_SELECTION, 1),
+                1 => (PHI_E_EXT, 0),
+                2 => (UQ_UD_EXT, 0),
+                _ => (MODE_RAMP_MODE_MOTION, MotionMode::UqUdExt as u32),
+            };
+            if backend.write_register(register, value).await.is_err() {
                 return super::fail_inner(phase, CommissionError::Spi);
             }
-            backend.set_enable_pin(true);
-
-            // Reset transient buffer for 160us sampling.
-            buf.reset(ELECTRICAL_SAMPLE_PERIOD_US as u16);
-
-            let deadline = backend.elapsed_us().wrapping_add(DELAY_PRE_SETTLE_US);
-            *electrical_id_state = ElectricalIdState::DelaySettle {
-                deadline_us: deadline,
-            };
-            StepResult::Continue
-        }
-
-        ElectricalIdState::DelaySettle { deadline_us } => {
-            if backend.elapsed_us().wrapping_sub(*deadline_us) >= 0x8000_0000 {
-                return StepResult::Continue; // Not yet.
+            if *operation < 3 {
+                *operation += 1;
+                return StepResult::ReadyNow;
             }
-            *electrical_id_state = ElectricalIdState::DelayStep;
-            StepResult::Continue
+
+            backend.set_enable_pin(true);
+            let Some(deadline_us) = backend.elapsed_us().checked_add(DELAY_PRE_SETTLE_US) else {
+                return begin_delay_restore(
+                    electrical_id_state,
+                    backend,
+                    Some(CommissionError::InvalidSchedule),
+                    None,
+                );
+            };
+            *electrical_id_state = ElectricalIdState::DelayPreSettle { deadline_us };
+            StepResult::At(deadline_us)
         }
 
-        ElectricalIdState::DelayStep => {
-            // Read baseline current (should be ~0 with UQ_UD_EXT=0).
-            let baseline = match backend.read_register(PID_TORQUE_FLUX_ACTUAL).await {
-                Ok(actual) => (actual & 0xFFFF) as i16,
-                Err(_) => return super::fail_inner(phase, CommissionError::Spi),
-            };
+        ElectricalIdState::DelayPreSettle { deadline_us } => {
+            if backend.is_shutdown_requested() {
+                return begin_delay_restore(
+                    electrical_id_state,
+                    backend,
+                    Some(CommissionError::Shutdown),
+                    None,
+                );
+            }
+            if backend.elapsed_us() < *deadline_us {
+                return StepResult::At(*deadline_us);
+            }
+            *electrical_id_state = ElectricalIdState::DelayReadBaseline;
+            StepResult::ReadyNow
+        }
 
-            // Apply voltage step.
+        ElectricalIdState::DelayReadBaseline => {
+            if backend.is_shutdown_requested() {
+                return begin_delay_restore(
+                    electrical_id_state,
+                    backend,
+                    Some(CommissionError::Shutdown),
+                    None,
+                );
+            }
+            let baseline = match backend.read_register(PID_TORQUE_FLUX_ACTUAL).await {
+                Ok(actual) => (actual & 0xffff) as i16,
+                Err(_) => {
+                    return begin_delay_restore(
+                        electrical_id_state,
+                        backend,
+                        Some(CommissionError::Spi),
+                        None,
+                    );
+                }
+            };
+            *electrical_id_state = ElectricalIdState::DelayApplyStep { baseline };
+            StepResult::ReadyNow
+        }
+
+        ElectricalIdState::DelayApplyStep { baseline } => {
+            if backend.is_shutdown_requested() {
+                return begin_delay_restore(
+                    electrical_id_state,
+                    backend,
+                    Some(CommissionError::Shutdown),
+                    None,
+                );
+            }
             if backend
-                .write_register(UQ_UD_EXT, data.voltage & 0xFFFF)
+                .write_register(UQ_UD_EXT, data.voltage & 0xffff)
                 .await
                 .is_err()
             {
-                return super::fail_inner(phase, CommissionError::Spi);
+                return begin_delay_restore(
+                    electrical_id_state,
+                    backend,
+                    Some(CommissionError::Spi),
+                    None,
+                );
             }
-
-            let next = backend
-                .elapsed_us()
-                .wrapping_add(ELECTRICAL_SAMPLE_PERIOD_US);
-            *electrical_id_state = ElectricalIdState::DelaySample {
-                baseline,
-                next_sample_us: next,
+            let origin_us = backend.elapsed_us();
+            let Some(next_sample_us) = origin_us.checked_add(ELECTRICAL_SAMPLE_PERIOD_US) else {
+                return begin_delay_restore(
+                    electrical_id_state,
+                    backend,
+                    Some(CommissionError::DelayTimingRejected),
+                    None,
+                );
             };
-            StepResult::Continue
+            *electrical_id_state = ElectricalIdState::DelaySample {
+                capture: DelayCaptureState {
+                    baseline: *baseline,
+                    origin_us,
+                    next_sample_us,
+                    offsets: crate::autotune::DelayTimestampOffsets::new(),
+                    timing: CaptureTiming::new(
+                        ELECTRICAL_SAMPLE_PERIOD_US as u16,
+                        TimingEnvelope::DELAY,
+                    ),
+                },
+            };
+            StepResult::At(next_sample_us)
         }
 
-        ElectricalIdState::DelaySample {
-            baseline,
-            next_sample_us,
-        } => {
-            // Capture samples into TransientBuffer at 160us intervals.
-            loop {
-                if buf.len() >= DELAY_SAMPLE_COUNT || buf.is_full() {
-                    // Capture complete. Disable motor.
-                    let _ = backend.write_register(MODE_RAMP_MODE_MOTION, 0).await;
-                    let _ = backend.write_register(UQ_UD_EXT, 0).await;
-                    backend.set_enable_pin(false);
-                    let deadline = backend.elapsed_us().wrapping_add(ELECTRICAL_COOLDOWN_US);
-                    *electrical_id_state = ElectricalIdState::DelayDisable {
-                        deadline_us: deadline,
+        ElectricalIdState::DelaySample { capture } => {
+            let now_us = backend.elapsed_us();
+            match poll_delay_sample(backend, buf, capture, now_us).await {
+                Ok(DelaySamplePoll::At) => StepResult::At(capture.next_sample_us),
+                Ok(DelaySamplePoll::Complete(completed)) => {
+                    *electrical_id_state = ElectricalIdState::DelayStopMotion {
+                        primary_error: None,
+                        completed: Some(completed),
                     };
-                    return StepResult::Continue;
+                    StepResult::ReadyNow
                 }
-                if backend.elapsed_us().wrapping_sub(*next_sample_us) >= 0x8000_0000 {
-                    break; // Not yet time, yield.
-                }
-                match backend.read_register(PID_TORQUE_FLUX_ACTUAL).await {
-                    Ok(actual) => {
-                        // Store absolute current relative to baseline.
-                        let current = (actual & 0xFFFF) as i16;
-                        let relative = (current as i32 - *baseline as i32).unsigned_abs();
-                        buf.push(relative);
-                    }
-                    Err(_) => {
-                        return super::fail_inner(phase, CommissionError::Spi);
-                    }
-                }
-                *next_sample_us = next_sample_us.wrapping_add(ELECTRICAL_SAMPLE_PERIOD_US);
+                Err(error) => begin_delay_restore(electrical_id_state, backend, Some(error), None),
             }
-            StepResult::Continue
         }
 
-        ElectricalIdState::DelayDisable { deadline_us } => {
-            if backend.elapsed_us().wrapping_sub(*deadline_us) >= 0x8000_0000 {
-                return StepResult::Continue; // Not yet.
+        ElectricalIdState::DelayStopMotion {
+            primary_error,
+            completed,
+        } => {
+            if backend
+                .write_register_verified(MODE_RAMP_MODE_MOTION, MotionMode::Stopped as u32)
+                .await
+                .is_err()
+            {
+                let completed = completed.take();
+                return begin_delay_restore(
+                    electrical_id_state,
+                    backend,
+                    Some(CommissionError::Spi),
+                    completed,
+                );
+            }
+            let error = *primary_error;
+            let completed = completed.take();
+            *electrical_id_state = ElectricalIdState::DelayStopVoltage {
+                primary_error: error,
+                completed,
+            };
+            StepResult::ReadyNow
+        }
+
+        ElectricalIdState::DelayStopVoltage {
+            primary_error,
+            completed,
+        } => {
+            if backend.write_register_verified(UQ_UD_EXT, 0).await.is_err() {
+                *primary_error = Some(CommissionError::Spi);
+            }
+            let error = *primary_error;
+            let completed = completed.take();
+            begin_delay_restore(electrical_id_state, backend, error, completed)
+        }
+
+        ElectricalIdState::DelayRestore {
+            operation,
+            primary_error,
+            completed,
+        } => {
+            let (register, value, next) = inductance_restore_write(*operation);
+            if backend
+                .write_register_verified(register, value)
+                .await
+                .is_err()
+            {
+                *primary_error = Some(CommissionError::Spi);
+            }
+            if let Some(next) = next {
+                *operation = next;
+                return StepResult::ReadyNow;
+            }
+
+            if let Some(error) = *primary_error {
+                return match begin_delay_cooldown(electrical_id_state, backend, Some(error)) {
+                    Ok(result) => result,
+                    Err(error) => super::fail_inner(phase, error),
+                };
+            }
+            let Some(completed) = completed.take() else {
+                return match begin_delay_cooldown(
+                    electrical_id_state,
+                    backend,
+                    Some(CommissionError::ElectricalIdFailed),
+                ) {
+                    Ok(result) => result,
+                    Err(error) => super::fail_inner(phase, error),
+                };
+            };
+            *electrical_id_state = ElectricalIdState::DelayEvaluate { completed };
+            StepResult::ReadyNow
+        }
+
+        ElectricalIdState::DelayEvaluate { completed } => {
+            let estimate = crate::autotune::estimate_electrical_delay(
+                buf.samples(),
+                completed.offsets.offsets_us(),
+            );
+            let primary_error = match estimate {
+                Ok(delay_us) => {
+                    data.delay_estimate_us = Some(delay_us);
+                    data.delay_timing = Some(completed.timing);
+                    None
+                }
+                Err(error) => Some(error),
+            };
+            match begin_delay_cooldown(electrical_id_state, backend, primary_error) {
+                Ok(result) => result,
+                Err(error) => super::fail_inner(phase, error),
+            }
+        }
+
+        ElectricalIdState::DelayCooldown {
+            deadline_us,
+            primary_error,
+        } => {
+            if backend.elapsed_us() < *deadline_us {
+                return StepResult::At(*deadline_us);
+            }
+            if let Some(error) = *primary_error {
+                return super::fail_inner(phase, error);
             }
             *electrical_id_state = ElectricalIdState::Validate;
-            StepResult::Continue
+            StepResult::ReadyNow
         }
 
         // ---------------------------------------------------------------
