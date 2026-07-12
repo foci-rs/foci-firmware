@@ -2399,6 +2399,40 @@ mod tests {
             .count()
     }
 
+    fn delay_capture_state(
+        baseline: i16,
+        origin_us: u64,
+        next_sample_us: u64,
+    ) -> DelayCaptureState {
+        DelayCaptureState {
+            baseline,
+            origin_us,
+            next_sample_us,
+            offsets: crate::autotune::DelayTimestampOffsets::new(),
+            timing: CaptureTiming::new(ELECTRICAL_SAMPLE_PERIOD_US as u16, TimingEnvelope::DELAY),
+        }
+    }
+
+    fn completed_delay_capture(offsets_us: &[u16]) -> DelayCompletedCapture {
+        let mut offsets = crate::autotune::DelayTimestampOffsets::new();
+        for &offset_us in offsets_us {
+            offsets.push(u32::from(offset_us)).unwrap();
+        }
+        DelayCompletedCapture {
+            offsets,
+            timing: CaptureTimingEvidence {
+                requested_period_us: ELECTRICAL_SAMPLE_PERIOD_US as u16,
+                valid_samples: offsets_us.len() as u16,
+                missed_samples: 0,
+                max_consecutive_misses: 0,
+                max_lateness_us: 0,
+                max_interval_us: ELECTRICAL_SAMPLE_PERIOD_US as u32,
+                max_poll_wall_us: 0,
+                max_spi_wall_us: 0,
+            },
+        }
+    }
+
     fn write_position(log: &[SpiOp], register: Register, value: u32) -> usize {
         log.iter()
             .position(|op| {
@@ -3934,6 +3968,289 @@ mod tests {
                 }
             }
             panic!("resistance quality gate did not fail");
+        });
+    }
+
+    #[test]
+    fn delay_voltage_step_completion_is_origin_and_sample_poll_reads_once() {
+        pollster::block_on(async {
+            let mut phase = InnerPhase::ElectricalId {
+                state: ElectricalIdState::DelayApplyStep { baseline: 0 },
+                data: ElectricalIdData::new(512),
+            };
+            let mut buf = TransientBuffer::new();
+            buf.reset(ELECTRICAL_SAMPLE_PERIOD_US as u16);
+            let mut backend = MockBackend::new();
+            backend.elapsed_us_value = 1_000;
+            backend.spi_elapsed_step_us = 7;
+            let _ = backend.registers.insert(PID_TORQUE_FLUX_ACTUAL.addr(), 250);
+            let mut selftest_results = crate::selftest::SelftestResults::default();
+            let mut diagnostics = crate::selftest::CommissionDiagnostics::default();
+
+            let apply = step_electrical_identification(
+                &mut phase,
+                &mut buf,
+                InnerSequence::Commission,
+                &mut selftest_results,
+                &mut diagnostics,
+                &mut backend,
+            )
+            .await;
+            assert!(matches!(apply, StepResult::At(1_167)));
+
+            backend.elapsed_us_value = 1_167;
+            let before = register_operation_count(&backend.spi_log);
+            let sample = step_electrical_identification(
+                &mut phase,
+                &mut buf,
+                InnerSequence::Commission,
+                &mut selftest_results,
+                &mut diagnostics,
+                &mut backend,
+            )
+            .await;
+
+            assert!(matches!(sample, StepResult::At(1_327)));
+            assert_eq!(register_operation_count(&backend.spi_log) - before, 1);
+            assert_eq!(buf.samples(), &[250]);
+            let InnerPhase::ElectricalId {
+                state: ElectricalIdState::DelaySample { capture },
+                ..
+            } = &phase
+            else {
+                panic!("expected delay sample state: {phase:?}");
+            };
+            assert_eq!(capture.origin_us, 1_007);
+            assert_eq!(capture.offsets.offsets_us(), &[167]);
+        });
+    }
+
+    #[test]
+    fn delay_missed_slot_rejects_without_catch_up_read() {
+        pollster::block_on(async {
+            let mut phase = InnerPhase::ElectricalId {
+                state: ElectricalIdState::DelaySample {
+                    capture: delay_capture_state(0, 1_000, 1_160),
+                },
+                data: ElectricalIdData::new(512),
+            };
+            let mut buf = TransientBuffer::new();
+            buf.reset(ELECTRICAL_SAMPLE_PERIOD_US as u16);
+            let mut backend = MockBackend::new();
+            backend.elapsed_us_value = 1_320;
+            backend.enable_pin = true;
+            let mut selftest_results = crate::selftest::SelftestResults::default();
+            let mut diagnostics = crate::selftest::CommissionDiagnostics::default();
+
+            let before = register_operation_count(&backend.spi_log);
+            let result = step_electrical_identification(
+                &mut phase,
+                &mut buf,
+                InnerSequence::Commission,
+                &mut selftest_results,
+                &mut diagnostics,
+                &mut backend,
+            )
+            .await;
+
+            assert!(matches!(result, StepResult::ReadyNow));
+            assert_eq!(register_operation_count(&backend.spi_log) - before, 0);
+            assert!(!backend.enable_pin);
+            assert!(matches!(
+                phase,
+                InnerPhase::ElectricalId {
+                    state: ElectricalIdState::DelayRestore {
+                        primary_error: Some(CommissionError::DelayTimingRejected),
+                        ..
+                    },
+                    ..
+                }
+            ));
+            assert!(buf.is_empty());
+        });
+    }
+
+    #[test]
+    fn delay_restore_completes_before_timestamp_estimate_is_committed() {
+        pollster::block_on(async {
+            let mut phase = InnerPhase::ElectricalId {
+                state: ElectricalIdState::DelayStopMotion {
+                    primary_error: None,
+                    completed: Some(completed_delay_capture(&[160, 350, 515])),
+                },
+                data: ElectricalIdData::new(512),
+            };
+            let mut buf = TransientBuffer::new();
+            buf.reset(ELECTRICAL_SAMPLE_PERIOD_US as u16);
+            for sample in [0, 100, 1_000] {
+                assert!(buf.push(sample));
+            }
+            let mut backend = MockBackend::new();
+            backend.enable_pin = true;
+            let mut selftest_results = crate::selftest::SelftestResults::default();
+            let mut diagnostics = crate::selftest::CommissionDiagnostics::default();
+
+            for _ in 0..24 {
+                let before = register_operation_count(&backend.spi_log);
+                let result = step_electrical_identification(
+                    &mut phase,
+                    &mut buf,
+                    InnerSequence::Commission,
+                    &mut selftest_results,
+                    &mut diagnostics,
+                    &mut backend,
+                )
+                .await;
+                assert!(register_operation_count(&backend.spi_log) - before <= 2);
+
+                if matches!(result, StepResult::At(_)) {
+                    let InnerPhase::ElectricalId { state, data } = &phase else {
+                        panic!("expected electrical ID: {phase:?}");
+                    };
+                    assert!(matches!(state, ElectricalIdState::DelayCooldown { .. }));
+                    assert_eq!(data.delay_estimate_us, Some(350));
+                    assert!(data.delay_timing.is_some());
+                    assert!(!backend.enable_pin);
+                    let writes = backend
+                        .spi_log
+                        .iter()
+                        .filter(|operation| matches!(operation, SpiOp::Write(_, _)))
+                        .count();
+                    assert_eq!(writes, 18);
+                    return;
+                }
+                assert!(matches!(result, StepResult::ReadyNow));
+                let InnerPhase::ElectricalId { data, .. } = &phase else {
+                    panic!("expected electrical ID: {phase:?}");
+                };
+                assert!(data.delay_estimate_us.is_none());
+                assert!(data.delay_timing.is_none());
+            }
+            panic!("delay restoration did not reach cooldown");
+        });
+    }
+
+    #[test]
+    fn delay_restore_failure_replaces_existing_timing_error() {
+        pollster::block_on(async {
+            let mut phase = InnerPhase::ElectricalId {
+                state: ElectricalIdState::DelayRestore {
+                    operation: InductanceRestoreOperation::CanonicalMotionStop,
+                    primary_error: Some(CommissionError::DelayTimingRejected),
+                    completed: None,
+                },
+                data: ElectricalIdData::new(512),
+            };
+            let mut buf = TransientBuffer::new();
+            let mut backend = MockBackend::new();
+            backend.read_override = Some((MODE_RAMP_MODE_MOTION.addr(), 999));
+            let mut selftest_results = crate::selftest::SelftestResults::default();
+            let mut diagnostics = crate::selftest::CommissionDiagnostics::default();
+
+            for _ in 0..20 {
+                let result = step_electrical_identification(
+                    &mut phase,
+                    &mut buf,
+                    InnerSequence::Commission,
+                    &mut selftest_results,
+                    &mut diagnostics,
+                    &mut backend,
+                )
+                .await;
+                match result {
+                    StepResult::ReadyNow => {}
+                    StepResult::At(deadline_us) => backend.elapsed_us_value = deadline_us,
+                    StepResult::InnerFailed(error) => {
+                        assert_eq!(error, CommissionError::Spi);
+                        return;
+                    }
+                    other => panic!("unexpected restore result: {other:?}"),
+                }
+            }
+            panic!("delay restore failure did not become terminal");
+        });
+    }
+
+    #[test]
+    fn delay_stop_failure_lowers_gpio_before_next_restore_operation() {
+        pollster::block_on(async {
+            let mut phase = InnerPhase::ElectricalId {
+                state: ElectricalIdState::DelayStopMotion {
+                    primary_error: None,
+                    completed: Some(completed_delay_capture(&[160, 320])),
+                },
+                data: ElectricalIdData::new(512),
+            };
+            let mut buf = TransientBuffer::new();
+            let mut backend = MockBackend::new();
+            backend.enable_pin = true;
+            backend.read_override = Some((MODE_RAMP_MODE_MOTION.addr(), 999));
+            let mut selftest_results = crate::selftest::SelftestResults::default();
+            let mut diagnostics = crate::selftest::CommissionDiagnostics::default();
+
+            let result = step_electrical_identification(
+                &mut phase,
+                &mut buf,
+                InnerSequence::Commission,
+                &mut selftest_results,
+                &mut diagnostics,
+                &mut backend,
+            )
+            .await;
+
+            assert!(matches!(result, StepResult::ReadyNow));
+            assert!(!backend.enable_pin);
+            assert!(matches!(
+                phase,
+                InnerPhase::ElectricalId {
+                    state: ElectricalIdState::DelayRestore {
+                        primary_error: Some(CommissionError::Spi),
+                        ..
+                    },
+                    ..
+                }
+            ));
+        });
+    }
+
+    #[test]
+    fn delay_presettle_shutdown_enters_gpio_first_restore() {
+        pollster::block_on(async {
+            let mut phase = InnerPhase::ElectricalId {
+                state: ElectricalIdState::DelayPreSettle { deadline_us: 2_000 },
+                data: ElectricalIdData::new(512),
+            };
+            let mut buf = TransientBuffer::new();
+            let mut backend = MockBackend::new();
+            backend.elapsed_us_value = 1_000;
+            backend.shutdown_requested = true;
+            backend.enable_pin = true;
+            let mut selftest_results = crate::selftest::SelftestResults::default();
+            let mut diagnostics = crate::selftest::CommissionDiagnostics::default();
+
+            let result = step_electrical_identification(
+                &mut phase,
+                &mut buf,
+                InnerSequence::Commission,
+                &mut selftest_results,
+                &mut diagnostics,
+                &mut backend,
+            )
+            .await;
+
+            assert!(matches!(result, StepResult::ReadyNow));
+            assert!(!backend.enable_pin);
+            assert!(matches!(
+                phase,
+                InnerPhase::ElectricalId {
+                    state: ElectricalIdState::DelayRestore {
+                        primary_error: Some(CommissionError::Shutdown),
+                        ..
+                    },
+                    ..
+                }
+            ));
+            assert_eq!(register_operation_count(&backend.spi_log), 0);
         });
     }
 
