@@ -37,7 +37,8 @@ const INDUCTANCE_OPENLOOP_VELOCITY_TARGET_RPM: u32 = 1_200;
 const INDUCTANCE_OPENLOOP_ACCELERATION: u32 = 0x000f_ffff;
 const INDUCTANCE_OPENLOOP_RAMP_TIMEOUT_US: u64 = 2_000;
 const INDUCTANCE_AC_SETTLE_US: u64 = 8_500;
-const INDUCTANCE_AC_TARGET_PHI_DELTA_COUNTS: u32 = 8 * 65_536;
+const INDUCTANCE_AC_SAMPLE_PERIOD_US: u16 = 100;
+const INDUCTANCE_AC_TARGET_PHI_DELTA_COUNTS: u32 = 10 * 65_536;
 const INDUCTANCE_MIN_ABS_IQ_MILLI_COUNT: i32 = 30_000;
 const INDUCTANCE_MAX_ENCODER_DELTA_COUNTS: u32 = 8;
 const INDUCTANCE_MAX_DRIFT_WARN_PERMILLE: u16 = 70;
@@ -50,6 +51,14 @@ const INDUCTANCE_MIN_AC_SAMPLE_COUNT: u16 = 90;
 const INDUCTANCE_MAX_AC_SAMPLE_COUNT: u16 = 256;
 const PHI_E_SELECTION_OPENLOOP: u32 = 2;
 const L_INT_OMEGA_SCALE_MILLI: u64 = 6_283;
+
+const fn scheduled_samples_for_fixed_window(frequency_millihz: u32) -> u32 {
+    if frequency_millihz == 0 {
+        return 0;
+    }
+    let window_us = 10_000_000_000u64 / frequency_millihz as u64;
+    (window_us / INDUCTANCE_AC_SAMPLE_PERIOD_US as u64) as u32
+}
 
 /// Number of transient samples for delay identification.
 /// Matches TransientBuffer capacity. Re-exported because the current-loop
@@ -1560,6 +1569,17 @@ mod tests {
     };
 
     const TEST_THETA_E_US: u32 = 160;
+
+    #[test]
+    fn inductance_fixed_window_keeps_minimum_samples_at_upper_frequency() {
+        assert_eq!(INDUCTANCE_AC_SAMPLE_PERIOD_US, 100);
+        assert_eq!(INDUCTANCE_AC_TARGET_PHI_DELTA_COUNTS, 10 * 65_536);
+        assert_eq!(scheduled_samples_for_fixed_window(1_050_000), 95);
+        assert!(
+            scheduled_samples_for_fixed_window(1_050_000)
+                >= u32::from(INDUCTANCE_MIN_AC_SAMPLE_COUNT)
+        );
+    }
 
     /// Build a synthetic per-axis fit at the given count-slope (milli-units).
     fn axis_result(axis: ElectricalAxis, slope_milli: i32) -> ResistanceAxisResult {

@@ -203,6 +203,8 @@ pub enum CommissionError {
     ResistanceTimingRejected,
     /// Resistance acquisition exceeded its phase-local deadline. Code 49.
     ResistanceDeadlineExceeded,
+    /// Inductance acquisition violated its timing envelope. Code 50.
+    InductanceTimingRejected,
 }
 
 impl CommissionError {
@@ -261,6 +263,7 @@ impl CommissionError {
             Self::InvalidSchedule => 47,
             Self::ResistanceTimingRejected => 48,
             Self::ResistanceDeadlineExceeded => 49,
+            Self::InductanceTimingRejected => 50,
         }
     }
 }
@@ -595,6 +598,7 @@ mod tests {
             CommissionError::InvalidSchedule,
             CommissionError::ResistanceTimingRejected,
             CommissionError::ResistanceDeadlineExceeded,
+            CommissionError::InductanceTimingRejected,
         ];
         let mut seen = [false; 256];
         for e in errors {
@@ -614,6 +618,7 @@ mod tests {
             CommissionError::ResistanceDeadlineExceeded.status_code(),
             49
         );
+        assert_eq!(CommissionError::InductanceTimingRejected.status_code(), 50);
     }
 
     #[test]
