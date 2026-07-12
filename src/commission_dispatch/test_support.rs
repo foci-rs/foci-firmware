@@ -506,6 +506,41 @@ mod tests {
     }
 
     #[test]
+    fn timed_register_helpers_preserve_backend_errors_without_retry() {
+        pollster::block_on(async {
+            use crate::commissioning::backend::{timed_read_register, timed_write_register};
+            use foci_tmc4671::registers::STATUS_FLAGS;
+
+            let mut read_backend = MockBackend::new();
+            read_backend.elapsed_us_value = 100;
+            read_backend.spi_elapsed_step_us = 7;
+            read_backend.fail_on_read = Some(STATUS_FLAGS.addr());
+
+            let read = timed_read_register(&mut read_backend, STATUS_FLAGS).await;
+            assert_eq!(read.result, Err(MockSpiError));
+            assert_eq!(read.wall_us, 7);
+            assert!(!read.overflowed);
+            assert_eq!(read_backend.spi_log.len(), 1);
+            assert!(matches!(read_backend.spi_log[0], SpiOp::Read));
+
+            let mut write_backend = MockBackend::new();
+            write_backend.elapsed_us_value = 200;
+            write_backend.spi_elapsed_step_us = 11;
+            write_backend.fail_on_write = Some(STATUS_FLAGS.addr());
+
+            let write = timed_write_register(&mut write_backend, STATUS_FLAGS, 0x1234_5678).await;
+            assert_eq!(write.result, Err(MockSpiError));
+            assert_eq!(write.wall_us, 11);
+            assert!(!write.overflowed);
+            assert_eq!(write_backend.spi_log.len(), 1);
+            assert!(matches!(
+                write_backend.spi_log[0],
+                SpiOp::Write(addr, 0x1234_5678) if addr == STATUS_FLAGS.addr()
+            ));
+        });
+    }
+
+    #[test]
     fn mock_store_motor_sentinel_writes_field() {
         let backend = MockBackend::new();
         backend.store_motor_sentinel(0x0002_0032);

@@ -11,7 +11,7 @@ pub enum TimingReject {
     ExcessiveLateness,
     /// The capture missed more sample slots than its method permits.
     MissedSamples,
-    /// The capture missed sample slots on consecutive polls.
+    /// One observation gap skipped more consecutive logical sample slots than permitted.
     ConsecutiveMisses,
     /// Time attributed to SPI exceeded the complete poll wall time.
     SpiWallExceedsPoll,
@@ -29,13 +29,15 @@ pub struct TimingEnvelope {
 }
 
 impl TimingEnvelope {
-    /// Resistance permits one missed slot and no consecutive missed polls.
+    /// Resistance permits one missed slot and at most one consecutive logical slot skipped
+    /// within any observation gap.
     pub const RESISTANCE: Self = Self {
         max_missed_samples: 1,
         allow_consecutive_misses: false,
     };
 
-    /// Inductance permits two missed slots and no consecutive missed polls.
+    /// Inductance permits two missed slots and at most one consecutive logical slot skipped
+    /// within any observation gap.
     pub const INDUCTANCE: Self = Self {
         max_missed_samples: 2,
         allow_consecutive_misses: false,
@@ -100,7 +102,7 @@ pub struct CaptureTimingEvidence {
     pub valid_samples: u16,
     /// Number of skipped sample slots.
     pub missed_samples: u16,
-    /// Largest run of consecutive polls that skipped at least one slot.
+    /// Largest number of consecutive logical sample slots skipped in one observation gap.
     pub max_consecutive_misses: u8,
     /// Maximum observation lateness in microseconds.
     pub max_lateness_us: u32,
@@ -293,6 +295,28 @@ mod tests {
             .unwrap();
 
         assert_eq!(timing.finish(), Err(TimingReject::MissedSamples));
+    }
+
+    #[test]
+    fn resistance_accepts_one_miss_but_rejects_a_second_separated_miss() {
+        let mut one_miss = CaptureTiming::new(100, TimingEnvelope::RESISTANCE);
+        one_miss
+            .record_sample(1_000, 1_100, 1_100, 1_110, 10)
+            .unwrap();
+
+        let evidence = one_miss.finish().unwrap();
+        assert_eq!(evidence.missed_samples, 1);
+        assert_eq!(evidence.max_consecutive_misses, 1);
+
+        let mut two_misses = CaptureTiming::new(100, TimingEnvelope::RESISTANCE);
+        two_misses
+            .record_sample(1_000, 1_100, 1_100, 1_110, 10)
+            .unwrap();
+        two_misses
+            .record_sample(1_200, 1_300, 1_300, 1_310, 10)
+            .unwrap();
+
+        assert_eq!(two_misses.finish(), Err(TimingReject::MissedSamples));
     }
 
     #[test]
