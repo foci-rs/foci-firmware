@@ -193,8 +193,13 @@ impl CaptureTiming {
         if slot.missed == 0 {
             self.consecutive_misses = 0;
         } else {
-            self.consecutive_misses =
-                saturating_add_u8(self.consecutive_misses, 1, &mut self.overflowed);
+            self.consecutive_misses = match u8::try_from(slot.missed) {
+                Ok(missed) => missed,
+                Err(_) => {
+                    self.overflowed = true;
+                    u8::MAX
+                }
+            };
             self.max_consecutive_misses = self.max_consecutive_misses.max(self.consecutive_misses);
         }
 
@@ -252,16 +257,6 @@ fn saturating_add_u16(value: u16, add: u32, overflowed: &mut bool) -> u16 {
         u16::MAX
     } else {
         sum as u16
-    }
-}
-
-fn saturating_add_u8(value: u8, add: u8, overflowed: &mut bool) -> u8 {
-    match value.checked_add(add) {
-        Some(sum) => sum,
-        None => {
-            *overflowed = true;
-            u8::MAX
-        }
     }
 }
 
@@ -343,13 +338,25 @@ mod tests {
     }
 
     #[test]
-    fn resistance_rejects_consecutive_missed_polls() {
-        let mut timing = CaptureTiming::new(100, TimingEnvelope::RESISTANCE);
+    fn misses_separated_by_accepted_samples_are_not_consecutive() {
+        let mut timing = CaptureTiming::new(100, TimingEnvelope::INDUCTANCE);
         timing
             .record_sample(1_000, 1_100, 1_100, 1_110, 10)
             .unwrap();
         timing
             .record_sample(1_200, 1_300, 1_300, 1_310, 10)
+            .unwrap();
+
+        let evidence = timing.finish().unwrap();
+        assert_eq!(evidence.missed_samples, 2);
+        assert_eq!(evidence.max_consecutive_misses, 1);
+    }
+
+    #[test]
+    fn multiple_slots_skipped_in_one_wakeup_are_consecutive() {
+        let mut timing = CaptureTiming::new(100, TimingEnvelope::INDUCTANCE);
+        timing
+            .record_sample(1_000, 1_200, 1_200, 1_210, 10)
             .unwrap();
 
         assert_eq!(timing.finish(), Err(TimingReject::ConsecutiveMisses));
