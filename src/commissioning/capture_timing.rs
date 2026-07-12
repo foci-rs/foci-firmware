@@ -237,6 +237,32 @@ impl CaptureTiming {
         Ok(slot)
     }
 
+    /// Retain a rejected scheduler slot without counting a valid observation.
+    pub(crate) fn record_rejected_slot(&mut self, slot: SampleSlot, observation_us: u64) {
+        self.missed_samples =
+            saturating_add_u16(self.missed_samples, slot.missed, &mut self.overflowed);
+        self.consecutive_misses = match u8::try_from(slot.missed) {
+            Ok(missed) => missed,
+            Err(_) => {
+                self.overflowed = true;
+                u8::MAX
+            }
+        };
+        self.max_consecutive_misses = self.max_consecutive_misses.max(self.consecutive_misses);
+        match observation_us.checked_sub(slot.sample_deadline_us) {
+            Some(lateness_us) => {
+                update_max_u32(&mut self.max_lateness_us, lateness_us, &mut self.overflowed)
+            }
+            None => self.overflowed = true,
+        }
+    }
+
+    /// Mark an external timing source overflow and retain its saturated SPI span.
+    pub(crate) fn mark_source_overflow(&mut self, max_spi_wall_us: u32) {
+        self.overflowed = true;
+        self.max_spi_wall_us = self.max_spi_wall_us.max(max_spi_wall_us);
+    }
+
     /// Apply the method envelope and return compact completed evidence.
     ///
     /// # Errors
@@ -367,6 +393,33 @@ mod tests {
         assert_eq!(evidence.max_lateness_us, 26);
         assert_eq!(evidence.max_poll_wall_us, 0);
         assert!(!overflowed);
+    }
+
+    #[test]
+    fn rejected_slot_retains_miss_without_counting_valid_sample() {
+        let mut timing = CaptureTiming::new(160, TimingEnvelope::DELAY);
+        let slot = sample_slot(1_000, 160, 1_200).unwrap();
+
+        timing.record_rejected_slot(slot, 1_210);
+        let (evidence, overflowed) = timing.snapshot();
+
+        assert_eq!(evidence.valid_samples, 0);
+        assert_eq!(evidence.missed_samples, 1);
+        assert_eq!(evidence.max_consecutive_misses, 1);
+        assert_eq!(evidence.max_lateness_us, 50);
+        assert!(!overflowed);
+    }
+
+    #[test]
+    fn source_overflow_sets_provenance_and_saturates_spi_span() {
+        let mut timing = CaptureTiming::new(160, TimingEnvelope::DELAY);
+
+        timing.mark_source_overflow(u32::MAX);
+        let (evidence, overflowed) = timing.snapshot();
+
+        assert!(overflowed);
+        assert_eq!(evidence.max_spi_wall_us, u32::MAX);
+        assert_eq!(timing.finish(), Err(TimingReject::TelemetryOverflow));
     }
 
     #[test]

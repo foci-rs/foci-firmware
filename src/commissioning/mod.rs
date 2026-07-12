@@ -756,6 +756,12 @@ impl CommissioningEngine {
     pub async fn step<B: CommissioningBackend>(&mut self, backend: &mut B) -> StepResult {
         // E-stop check at the top of every step.
         if backend.is_shutdown_requested() {
+            if let EngineMode::Inner { phase, .. } = &self.engine_mode {
+                inner::electrical_identification::push_active_timing_diagnostics(
+                    phase,
+                    &mut self.diagnostics,
+                );
+            }
             // Defense in depth: dispatch already restores safe state on
             // terminal failures, but the shutdown abort path bypasses
             // step_inner / step_outer entirely. Drive the canonical helper
@@ -913,12 +919,21 @@ mod tests {
         assert!(size_of::<capture_timing::CaptureTimingEvidence>() <= 32);
         assert_eq!(size_of::<[u16; crate::autotune::TRANSIENT_LEN]>(), 512);
         assert_eq!(size_of::<crate::autotune::DelayTimestampOffsets>(), 514);
+        // Historical pre-Task-7 baseline: 3,952 bytes. The explicit 336-byte
+        // increase is the reviewed cost of carrying three detailed timing
+        // summaries through the terminal result without indirection.
         assert_eq!(engine_step, 4_288);
+        assert!(engine_step <= 4_288);
         assert_eq!(step_inner, 4_240);
+        // Historical pre-Task-7 baseline: 3,904 bytes; same reviewed delta.
+        assert!(step_inner <= 4_240);
         assert_eq!(electrical_id, 608);
         assert!(electrical_id <= 608);
         assert!(electrical_id <= 960);
         assert_eq!(runtime_tick, 22_576);
+        // Historical pre-Task-7 baseline: 22,304 bytes. The containing future
+        // retains 272 additional bytes after compiler layout reuse.
+        assert!(runtime_tick <= 22_576);
     }
 
     fn tmc_state() -> &'static crate::state::tmc::TmcChannelState {
@@ -1528,6 +1543,25 @@ mod tests {
                 0,
                 crate::autotune::CommissionProfile::Balanced,
             );
+            if let EngineMode::Inner { phase, .. } = &mut engine.engine_mode {
+                let mut data = inner::ElectricalIdData::new(512);
+                data.timing_states = crate::commissioning::types::COMMISSION_TIMING_REJECTED << 4;
+                *phase = InnerPhase::ElectricalId {
+                    state: inner::ElectricalIdState::DelaySample {
+                        capture: inner::DelayCaptureState {
+                            baseline: 0,
+                            origin_us: 1_000,
+                            next_sample_us: 1_160,
+                            offsets: crate::autotune::DelayTimestampOffsets::new(),
+                            timing: capture_timing::CaptureTiming::new(
+                                160,
+                                capture_timing::TimingEnvelope::DELAY,
+                            ),
+                        },
+                    },
+                    data,
+                };
+            }
             let mut backend = crate::commission_dispatch::test_support::MockBackend::new();
             backend.shutdown_requested = true;
             backend.enable_pin = true;
@@ -1546,6 +1580,12 @@ mod tests {
                 !tmc_state().motor_armed.load(Ordering::Relaxed),
                 "shutdown abort must gate step processing before reporting failure"
             );
+            let diagnostics = engine.take_diagnostics();
+            let delay = diagnostics
+                .iter()
+                .find(|event| event.code == 38)
+                .expect("shutdown timing diagnostic");
+            assert_eq!((delay.value1 >> 24) & 0x03, 2);
         });
     }
 }

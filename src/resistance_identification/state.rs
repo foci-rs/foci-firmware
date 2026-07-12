@@ -48,16 +48,31 @@ pub struct ResistanceTimingEvidence {
     pub max_poll_wall_us: u32,
     /// Largest summed SPI-await wall time in a sample poll.
     pub max_spi_wall_us: u32,
+    /// Whether any retained source or aggregate counter saturated.
+    pub overflowed: bool,
 }
 
 impl ResistanceTimingEvidence {
     pub(crate) fn merge(
         &mut self,
         evidence: crate::commissioning::capture_timing::CaptureTimingEvidence,
+        overflowed: bool,
     ) {
         self.requested_period_us = evidence.requested_period_us;
-        self.valid_samples = self.valid_samples.saturating_add(evidence.valid_samples);
-        self.missed_samples = self.missed_samples.saturating_add(evidence.missed_samples);
+        self.valid_samples = match self.valid_samples.checked_add(evidence.valid_samples) {
+            Some(value) => value,
+            None => {
+                self.overflowed = true;
+                u16::MAX
+            }
+        };
+        self.missed_samples = match self.missed_samples.checked_add(evidence.missed_samples) {
+            Some(value) => value,
+            None => {
+                self.overflowed = true;
+                u16::MAX
+            }
+        };
         self.max_consecutive_misses = self
             .max_consecutive_misses
             .max(evidence.max_consecutive_misses);
@@ -65,6 +80,7 @@ impl ResistanceTimingEvidence {
         self.max_interval_us = self.max_interval_us.max(evidence.max_interval_us);
         self.max_poll_wall_us = self.max_poll_wall_us.max(evidence.max_poll_wall_us);
         self.max_spi_wall_us = self.max_spi_wall_us.max(evidence.max_spi_wall_us);
+        self.overflowed |= overflowed;
     }
 
     pub(crate) const fn capture_evidence(
@@ -226,6 +242,19 @@ impl ResistanceRunner {
     #[must_use]
     pub const fn timing_evidence(&self) -> ResistanceTimingEvidence {
         self.timing
+    }
+
+    /// Return retained evidence plus a non-mutating snapshot of an active window.
+    #[must_use]
+    pub fn timing_evidence_with_active(&self) -> ResistanceTimingEvidence {
+        let mut timing = self.timing;
+        if let ResistanceState::Window(capture) | ResistanceState::ReadEncoderAfter(capture) =
+            self.state
+        {
+            let (evidence, overflowed) = capture.timing.snapshot();
+            timing.merge(evidence, overflowed);
+        }
+        timing
     }
 
     /// Return the raw OR of all STATUS observations made so far.

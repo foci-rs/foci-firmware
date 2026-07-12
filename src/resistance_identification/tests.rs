@@ -937,6 +937,28 @@ fn one_missed_slot_uses_ninth_opportunity_without_catch_up() {
 const SAMPLES_PER_WINDOW_FOR_TEST: u8 = 8;
 
 #[test]
+fn active_window_snapshot_is_available_for_shutdown_diagnostics() {
+    let mut backend = FakeResistanceBackend::standard();
+    let mut runner = ResistanceRunner::new(
+        ResistanceRunMode::CommissioningManagedEnable,
+        backend.profile(),
+        1_000,
+    )
+    .unwrap();
+    let due = drive_to_first_sample(&mut runner, &mut backend, 1_000);
+
+    assert!(matches!(
+        block_on(runner.poll(&mut backend, due)),
+        ResistancePoll::At(_)
+    ));
+    let timing = runner.timing_evidence_with_active();
+
+    assert_eq!(timing.completed_windows, 0);
+    assert_eq!(timing.valid_samples, 1);
+    assert_ne!(timing.requested_period_us, 0);
+}
+
+#[test]
 fn second_missed_slot_rejects_the_window() {
     let mut backend = FakeResistanceBackend::standard();
     let mut runner = ResistanceRunner::new(
@@ -957,6 +979,12 @@ fn second_missed_slot_rejects_the_window() {
         ResistancePoll::ReadyNow
     );
     assert!(!backend.enable_pin, "timing rejection must lower GPIO");
+    let timing = runner.timing_evidence();
+    assert_eq!(timing.completed_windows, 0);
+    assert_eq!(timing.requested_period_us, period as u16);
+    assert_eq!(timing.valid_samples, 2);
+    assert_eq!(timing.missed_samples, 2);
+    assert_eq!(timing.max_consecutive_misses, 1);
     assert_eq!(
         finish_restoration(&mut runner, &mut backend, next + period),
         Err(ResistanceError::TimingRejected)
@@ -1097,6 +1125,10 @@ fn backward_sample_timestamp_rejects_timing_and_lowers_gpio() {
         runner.primary_error(),
         Some(ResistanceError::TimingRejected)
     );
+    let timing = runner.timing_evidence();
+    assert_eq!(timing.completed_windows, 0);
+    assert_ne!(timing.requested_period_us, 0);
+    assert!(timing.overflowed);
 }
 
 #[test]
@@ -1119,6 +1151,10 @@ fn unrepresentable_sample_spi_sum_rejects_timing() {
         runner.primary_error(),
         Some(ResistanceError::TimingRejected)
     );
+    let timing = runner.timing_evidence();
+    assert_eq!(timing.completed_windows, 0);
+    assert_ne!(timing.requested_period_us, 0);
+    assert!(timing.overflowed);
 }
 
 #[test]

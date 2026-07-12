@@ -356,6 +356,7 @@ pub(crate) enum ElectricalIdState {
         primary_error: Option<crate::autotune::CommissionError>,
         evidence: Option<InductanceEvidence>,
         timing: Option<crate::commissioning::capture_timing::CaptureTimingEvidence>,
+        timing_accepted: bool,
     },
     /// Disable AC drive and cool down before delay capture.
     InductanceDisable {

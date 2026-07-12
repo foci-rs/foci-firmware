@@ -260,34 +260,43 @@ impl ResistanceRunner {
         let io_start = backend.elapsed_us();
         let packed = match backend.read_register(ADC_IWY_IUX.addr()).await {
             Ok(value) => value,
-            Err(_) => return self.fail(backend, ResistanceError::BackendIo),
+            Err(_) => {
+                return self.fail_window(backend, &capture, ResistanceError::BackendIo, false);
+            }
         };
         let first_done = backend.elapsed_us();
         let flags = match backend.read_register(STATUS_FLAGS.addr()).await {
             Ok(value) => value,
-            Err(_) => return self.fail(backend, ResistanceError::BackendIo),
+            Err(_) => {
+                return self.fail_window(backend, &capture, ResistanceError::BackendIo, false);
+            }
         };
-        if let Some(poll) = self.record_status(backend, flags) {
-            return poll;
+        if self.record_status_flags(flags) {
+            return self.fail_window(backend, &capture, ResistanceError::CriticalStatus, false);
         }
         let io_done = backend.elapsed_us();
         let Some(first_read_wall) = first_done.checked_sub(io_start) else {
-            return self.fail(backend, ResistanceError::TimingRejected);
+            return self.fail_window(backend, &capture, ResistanceError::TimingRejected, true);
         };
         let Some(second_read_wall) = io_done.checked_sub(first_done) else {
-            return self.fail(backend, ResistanceError::TimingRejected);
+            return self.fail_window(backend, &capture, ResistanceError::TimingRejected, true);
         };
         let Some(spi_wall) = first_read_wall.checked_add(second_read_wall) else {
-            return self.fail(backend, ResistanceError::TimingRejected);
+            return self.fail_window(backend, &capture, ResistanceError::TimingRejected, true);
         };
         let Ok(spi_wall_u32) = u32::try_from(spi_wall) else {
-            return self.fail(backend, ResistanceError::TimingRejected);
+            return self.fail_window(backend, &capture, ResistanceError::TimingRejected, true);
         };
         let Some(completion_us) = now_us.checked_add(spi_wall) else {
-            return self.fail(backend, ResistanceError::TimingRejected);
+            return self.fail_window(backend, &capture, ResistanceError::TimingRejected, true);
         };
         if completion_us > self.deadline_us {
-            return self.fail(backend, ResistanceError::PhaseDeadlineExceeded);
+            return self.fail_window(
+                backend,
+                &capture,
+                ResistanceError::PhaseDeadlineExceeded,
+                false,
+            );
         }
         let slot = match capture.timing.record_sample(
             capture.next_sample_us,
@@ -297,7 +306,14 @@ impl ResistanceRunner {
             spi_wall_u32,
         ) {
             Ok(slot) => slot,
-            Err(_) => return self.fail(backend, ResistanceError::TimingRejected),
+            Err(_) => {
+                return self.fail_window(
+                    backend,
+                    &capture,
+                    ResistanceError::TimingRejected,
+                    capture.timing.snapshot().1,
+                );
+            }
         };
         capture.opportunities = capture
             .opportunities
@@ -305,7 +321,12 @@ impl ResistanceRunner {
             .saturating_add(1);
         if capture.opportunities > MAX_OPPORTUNITIES_PER_WINDOW || capture.timing.finish().is_err()
         {
-            return self.fail(backend, ResistanceError::TimingRejected);
+            return self.fail_window(
+                backend,
+                &capture,
+                ResistanceError::TimingRejected,
+                capture.timing.snapshot().1,
+            );
         }
         let axis = self.profile.axes[self.axis_index as usize];
         capture.current_sum += i32::from(phase_current_for_axis(axis, packed));
@@ -315,16 +336,50 @@ impl ResistanceRunner {
         if capture.valid_samples == SAMPLES_PER_WINDOW {
             let evidence = match capture.timing.finish() {
                 Ok(evidence) => evidence,
-                Err(_) => return self.fail(backend, ResistanceError::TimingRejected),
+                Err(_) => {
+                    return self.fail_window(
+                        backend,
+                        &capture,
+                        ResistanceError::TimingRejected,
+                        capture.timing.snapshot().1,
+                    );
+                }
             };
-            self.timing.completed_windows = self.timing.completed_windows.saturating_add(1);
-            self.timing.merge(evidence);
+            self.timing.completed_windows = match self.timing.completed_windows.checked_add(1) {
+                Some(value) => value,
+                None => {
+                    self.timing.overflowed = true;
+                    u8::MAX
+                }
+            };
+            self.timing.merge(evidence, false);
             self.state = ResistanceState::ReadEncoderAfter(capture);
             ResistancePoll::ReadyNow
         } else {
             self.state = ResistanceState::Window(capture);
             ResistancePoll::At(capture.next_sample_us)
         }
+    }
+
+    fn fail_window<B: ResistanceBackend>(
+        &mut self,
+        backend: &mut B,
+        capture: &WindowCapture,
+        error: ResistanceError,
+        source_overflow: bool,
+    ) -> ResistancePoll {
+        let (evidence, overflowed) = capture.timing.snapshot();
+        self.timing.merge(evidence, overflowed || source_overflow);
+        self.fail(backend, error)
+    }
+
+    fn record_status_flags(&mut self, flags: u32) -> bool {
+        self.status_flags_or |= flags;
+        if flags & self.profile.status_flags_warn_mask != 0 {
+            self.warning_flags
+                .insert(ResistanceWarningFlags::STATUS_FLAGS);
+        }
+        flags & current_loop_actionable_status_mask() != 0
     }
 
     fn record_status<B: ResistanceBackend>(

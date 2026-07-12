@@ -437,11 +437,14 @@ fn begin_inductance_restore<B: CommissioningBackend>(
     timing: Option<CaptureTimingEvidence>,
 ) -> StepResult {
     backend.set_enable_pin(false);
+    let timing_accepted =
+        timing.is_some() && !matches!(state, ElectricalIdState::InductanceSample { .. });
     *state = ElectricalIdState::InductanceRestore {
         operation: InductanceRestoreOperation::RetainedUqUdExt,
         primary_error,
         evidence,
         timing,
+        timing_accepted,
     };
     StepResult::ReadyNow
 }
@@ -571,8 +574,12 @@ async fn poll_delay_sample<B: CommissioningBackend>(
         ELECTRICAL_SAMPLE_PERIOD_US as u16,
         now_us,
     )
-    .map_err(|_| CommissionError::DelayTimingRejected)?;
+    .map_err(|_| {
+        capture.timing.mark_source_overflow(u32::MAX);
+        CommissionError::DelayTimingRejected
+    })?;
     if slot.missed != 0 {
+        capture.timing.record_rejected_slot(slot, now_us);
         return Err(CommissionError::DelayTimingRejected);
     }
 
@@ -580,6 +587,7 @@ async fn poll_delay_sample<B: CommissioningBackend>(
     let actual = current_io.result.map_err(|_| CommissionError::Spi)?;
     let observation_us = backend.elapsed_us();
     if current_io.overflowed {
+        capture.timing.mark_source_overflow(current_io.wall_us);
         return Err(CommissionError::DelayTimingRejected);
     }
     let accepted_slot = capture
@@ -819,12 +827,18 @@ async fn poll_inductance_sample<B: CommissioningBackend>(
     let actual = current_io.result.map_err(|_| CommissionError::Spi)?;
     let observation_us = backend.elapsed_us();
     if phi_io.overflowed || current_io.overflowed {
+        capture
+            .timing
+            .mark_source_overflow(phi_io.wall_us.max(current_io.wall_us));
         return Err(CommissionError::InductanceTimingRejected);
     }
-    let spi_wall_us = phi_io
-        .wall_us
-        .checked_add(current_io.wall_us)
-        .ok_or(CommissionError::InductanceTimingRejected)?;
+    let spi_wall_us = match phi_io.wall_us.checked_add(current_io.wall_us) {
+        Some(value) => value,
+        None => {
+            capture.timing.mark_source_overflow(u32::MAX);
+            return Err(CommissionError::InductanceTimingRejected);
+        }
+    };
     let slot = capture
         .timing
         .record_sample(
@@ -1270,6 +1284,40 @@ fn push_timing_diagnostics(
     }
 }
 
+/// Snapshot active Phase 5 timing without sampling, awaiting, or changing state.
+pub(crate) fn push_active_timing_diagnostics(
+    phase: &InnerPhase,
+    diagnostics: &mut crate::selftest::CommissionDiagnostics,
+) {
+    let InnerPhase::ElectricalId { state, data } = phase else {
+        return;
+    };
+    let mut summaries = electrical_timing_summaries(data);
+    match state {
+        ElectricalIdState::ResistanceIdentify { runner } => {
+            let timing = runner.timing_evidence_with_active();
+            summaries[0] = crate::commissioning::types::CommissionTimingSummary::rejected(
+                timing.capture_evidence(),
+                timing.overflowed,
+            );
+        }
+        ElectricalIdState::InductanceSample { capture } => {
+            let (evidence, overflowed) = capture.timing.snapshot();
+            summaries[1] = crate::commissioning::types::CommissionTimingSummary::rejected(
+                evidence, overflowed,
+            );
+        }
+        ElectricalIdState::DelaySample { capture } => {
+            let (evidence, overflowed) = capture.timing.snapshot();
+            summaries[2] = crate::commissioning::types::CommissionTimingSummary::rejected(
+                evidence, overflowed,
+            );
+        }
+        _ => {}
+    }
+    push_timing_diagnostics(diagnostics, summaries);
+}
+
 fn fail_electrical_id(
     phase: &mut InnerPhase,
     diagnostics: &mut crate::selftest::CommissionDiagnostics,
@@ -1348,6 +1396,8 @@ pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
                 .await;
             let resistance_timing = runner.timing_evidence();
             data.resistance_timing = Some(resistance_timing.capture_evidence());
+            data.timing_overflow_mask =
+                (data.timing_overflow_mask & !1) | u8::from(resistance_timing.overflowed);
 
             match poll {
                 crate::resistance_identification::ResistancePoll::ReadyNow => StepResult::ReadyNow,
@@ -1655,7 +1705,13 @@ pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
                     let (evidence, overflowed) = capture.timing.snapshot();
                     data.inductance_timing = Some(evidence);
                     data.timing_overflow_mask |= u8::from(overflowed) << 1;
-                    begin_inductance_restore(electrical_id_state, backend, Some(error), None, None)
+                    begin_inductance_restore(
+                        electrical_id_state,
+                        backend,
+                        Some(error),
+                        None,
+                        Some(evidence),
+                    )
                 }
             }
         }
@@ -1830,6 +1886,7 @@ pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
             primary_error,
             evidence,
             timing,
+            timing_accepted,
         } => {
             let (register, value, next) = inductance_restore_write(*operation);
             if backend
@@ -1838,14 +1895,14 @@ pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
                 .is_err()
             {
                 *primary_error = Some(CommissionError::Spi);
-                *timing = None;
+                *timing_accepted = false;
             }
             if let Some(next) = next {
                 *operation = next;
                 return StepResult::ReadyNow;
             }
             data.inductance_timing = *timing;
-            if timing.is_some() {
+            if *timing_accepted {
                 set_timing_state(
                     data,
                     1,
@@ -3092,11 +3149,16 @@ mod tests {
     #[test]
     fn inductance_sample_spi_failure_tears_down_openloop_drive() {
         pollster::block_on(async {
+            let mut capture = inductance_capture_state(0, 1_000, 0, 0);
+            capture
+                .timing
+                .record_sample(1_000, 1_000, 1_010, 1_020, 10)
+                .unwrap();
+            let mut data = representative_data();
+            data.timing_states = crate::commissioning::types::COMMISSION_TIMING_REJECTED << 2;
             let mut phase = InnerPhase::ElectricalId {
-                state: ElectricalIdState::InductanceSample {
-                    capture: inductance_capture_state(0, 1_000, 0, 0),
-                },
-                data: representative_data(),
+                state: ElectricalIdState::InductanceSample { capture },
+                data,
             };
             let mut buf = TransientBuffer::new();
             let mut backend = MockBackend::new();
@@ -3128,6 +3190,12 @@ mod tests {
                 result,
                 StepResult::InnerFailed(CommissionError::Spi)
             ));
+            let timing = diagnostics
+                .iter()
+                .find(|event| event.code == 36)
+                .expect("inductance timing header");
+            assert_eq!(timing.value0 >> 16, 1);
+            assert_eq!((timing.value1 >> 24) & 0x03, 2);
             assert_ac_teardown_after_failure(&backend);
         });
     }
@@ -4313,11 +4381,13 @@ mod tests {
     #[test]
     fn delay_missed_slot_rejects_without_catch_up_read() {
         pollster::block_on(async {
+            let mut data = ElectricalIdData::new(512);
+            data.timing_states = crate::commissioning::types::COMMISSION_TIMING_REJECTED << 4;
             let mut phase = InnerPhase::ElectricalId {
                 state: ElectricalIdState::DelaySample {
                     capture: delay_capture_state(0, 1_000, 1_160),
                 },
-                data: ElectricalIdData::new(512),
+                data,
             };
             let mut buf = TransientBuffer::new();
             buf.reset(ELECTRICAL_SAMPLE_PERIOD_US as u16);
@@ -4352,7 +4422,110 @@ mod tests {
                 }
             ));
             assert!(buf.is_empty());
+            let InnerPhase::ElectricalId { data, .. } = &phase else {
+                unreachable!();
+            };
+            let timing = data.delay_timing.expect("rejected delay timing snapshot");
+            assert_eq!(timing.requested_period_us, 160);
+            assert_eq!(timing.valid_samples, 0);
+            assert_eq!(timing.missed_samples, 1);
+            assert_eq!(timing.max_consecutive_misses, 1);
+            assert_eq!(timing.max_lateness_us, 0);
         });
+    }
+
+    #[test]
+    fn delay_source_overflow_is_retained_before_restore() {
+        pollster::block_on(async {
+            let mut data = ElectricalIdData::new(512);
+            data.timing_states = crate::commissioning::types::COMMISSION_TIMING_REJECTED << 4;
+            let mut phase = InnerPhase::ElectricalId {
+                state: ElectricalIdState::DelaySample {
+                    capture: delay_capture_state(0, 1_000, 1_160),
+                },
+                data,
+            };
+            let mut buf = TransientBuffer::new();
+            buf.reset(ELECTRICAL_SAMPLE_PERIOD_US as u16);
+            let mut backend = MockBackend::new();
+            backend.elapsed_us_value = 1_160;
+            backend.spi_elapsed_step_us = u64::from(u32::MAX) + 1;
+            backend.enable_pin = true;
+            let mut selftest_results = crate::selftest::SelftestResults::default();
+            let mut diagnostics = crate::selftest::CommissionDiagnostics::default();
+
+            let result = step_electrical_identification(
+                &mut phase,
+                &mut buf,
+                InnerSequence::Commission,
+                &mut selftest_results,
+                &mut diagnostics,
+                &mut backend,
+            )
+            .await;
+
+            assert!(matches!(result, StepResult::ReadyNow));
+            let InnerPhase::ElectricalId { data, .. } = &phase else {
+                unreachable!();
+            };
+            assert_ne!(data.timing_overflow_mask & (1 << 2), 0);
+            assert_eq!(
+                data.delay_timing
+                    .expect("delay overflow snapshot")
+                    .max_spi_wall_us,
+                u32::MAX,
+            );
+        });
+    }
+
+    #[test]
+    fn shutdown_snapshot_reports_active_inductance_and_delay_without_polling() {
+        let mut inductance_capture = inductance_capture_state(0, 1_000, 0, 0);
+        inductance_capture
+            .timing
+            .record_sample(1_000, 1_000, 1_010, 1_020, 10)
+            .unwrap();
+        let mut inductance_data = representative_data();
+        inductance_data.timing_states =
+            crate::commissioning::types::COMMISSION_TIMING_REJECTED << 2;
+        let inductance_phase = InnerPhase::ElectricalId {
+            state: ElectricalIdState::InductanceSample {
+                capture: inductance_capture,
+            },
+            data: inductance_data,
+        };
+        let mut diagnostics = crate::selftest::CommissionDiagnostics::default();
+
+        push_active_timing_diagnostics(&inductance_phase, &mut diagnostics);
+
+        let header = diagnostics
+            .iter()
+            .find(|event| event.code == 36)
+            .expect("active inductance header");
+        assert_eq!(header.value0 >> 16, 1);
+        assert_eq!((header.value1 >> 24) & 0x03, 2);
+
+        let mut delay_capture = delay_capture_state(0, 1_000, 1_160);
+        let slot = sample_slot(1_160, 160, 1_320).unwrap();
+        delay_capture.timing.record_rejected_slot(slot, 1_320);
+        let mut delay_data = ElectricalIdData::new(512);
+        delay_data.timing_states = crate::commissioning::types::COMMISSION_TIMING_REJECTED << 4;
+        let delay_phase = InnerPhase::ElectricalId {
+            state: ElectricalIdState::DelaySample {
+                capture: delay_capture,
+            },
+            data: delay_data,
+        };
+        let mut diagnostics = crate::selftest::CommissionDiagnostics::default();
+
+        push_active_timing_diagnostics(&delay_phase, &mut diagnostics);
+
+        let header = diagnostics
+            .iter()
+            .find(|event| event.code == 38)
+            .expect("active delay header");
+        assert_eq!(header.value1 & 0xffff, 1);
+        assert_eq!((header.value1 >> 24) & 0x03, 2);
     }
 
     #[test]
