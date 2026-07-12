@@ -1786,16 +1786,29 @@ pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
         }
 
         ElectricalIdState::DelaySetupOperation { operation } => {
-            let (register, value) = match *operation {
-                0 => (PHI_E_SELECTION, 1),
-                1 => (PHI_E_EXT, 0),
-                2 => (UQ_UD_EXT, 0),
-                _ => (MODE_RAMP_MODE_MOTION, MotionMode::UqUdExt as u32),
+            let result = match *operation {
+                0 => backend.write_register(PHI_E_SELECTION, 1).await,
+                1 => backend.write_register(PHI_E_EXT, 0).await,
+                2 => backend.write_register(UQ_UD_EXT, 0).await,
+                3 => {
+                    backend
+                        .write_register(MODE_RAMP_MODE_MOTION, MotionMode::UqUdExt as u32)
+                        .await
+                }
+                _ => backend
+                    .write_register_verified(PWM_SV_CHOP, 7)
+                    .await
+                    .map(|_| ()),
             };
-            if backend.write_register(register, value).await.is_err() {
-                return super::fail_inner(phase, CommissionError::Spi);
+            if result.is_err() {
+                return begin_delay_restore(
+                    electrical_id_state,
+                    backend,
+                    Some(CommissionError::Spi),
+                    None,
+                );
             }
-            if *operation < 3 {
+            if *operation < 4 {
                 *operation += 1;
                 return StepResult::ReadyNow;
             }
@@ -2102,8 +2115,8 @@ mod tests {
         SignedAnchorEvidence,
     };
     use foci_tmc4671::registers::{
-        MODE_RAMP_MODE_MOTION, OPENLOOP_PHI, OPENLOOP_VELOCITY_TARGET, PHI_E_SELECTION,
-        PID_ERROR_PID_FLUX_ERROR_SUM, PID_ERROR_PID_POSITION_ERROR_SUM,
+        MODE_RAMP_MODE_MOTION, MotionMode, OPENLOOP_PHI, OPENLOOP_VELOCITY_TARGET, PHI_E_EXT,
+        PHI_E_SELECTION, PID_ERROR_PID_FLUX_ERROR_SUM, PID_ERROR_PID_POSITION_ERROR_SUM,
         PID_ERROR_PID_TORQUE_ERROR_SUM, PID_ERROR_PID_VELOCITY_ERROR_SUM, PID_TORQUE_FLUX_ACTUAL,
         PID_TORQUE_FLUX_OFFSET, PID_TORQUE_FLUX_TARGET, PID_VELOCITY_OFFSET, PIDOUT_UQ_UD_LIMITS,
         PWM_SV_CHOP, STATUS_FLAGS, UQ_UD_EXT,
@@ -3968,6 +3981,148 @@ mod tests {
                 }
             }
             panic!("resistance quality gate did not fail");
+        });
+    }
+
+    #[test]
+    fn delay_setup_verifies_pwm_before_enable_and_voltage_step() {
+        pollster::block_on(async {
+            let mut phase = InnerPhase::ElectricalId {
+                state: ElectricalIdState::DelaySetup,
+                data: ElectricalIdData::new(512),
+            };
+            let mut buf = TransientBuffer::new();
+            let mut backend = MockBackend::new();
+            let _ = backend.registers.insert(PID_TORQUE_FLUX_ACTUAL.addr(), 0);
+            let mut selftest_results = crate::selftest::SelftestResults::default();
+            let mut diagnostics = crate::selftest::CommissionDiagnostics::default();
+
+            for _ in 0..16 {
+                let before = register_operation_count(&backend.spi_log);
+                let step = step_electrical_identification(
+                    &mut phase,
+                    &mut buf,
+                    InnerSequence::Commission,
+                    &mut selftest_results,
+                    &mut diagnostics,
+                    &mut backend,
+                )
+                .await;
+                assert!(
+                    register_operation_count(&backend.spi_log) - before <= 2,
+                    "one delay setup poll performed more than one verified operation"
+                );
+                if let StepResult::At(deadline_us) = step {
+                    backend.elapsed_us_value = deadline_us;
+                }
+                if matches!(
+                    phase,
+                    InnerPhase::ElectricalId {
+                        state: ElectricalIdState::DelaySample { .. },
+                        ..
+                    }
+                ) {
+                    break;
+                }
+            }
+
+            assert!(matches!(
+                phase,
+                InnerPhase::ElectricalId {
+                    state: ElectricalIdState::DelaySample { .. },
+                    ..
+                }
+            ));
+            let phi_selection = write_position(&backend.spi_log, PHI_E_SELECTION, 1);
+            let phi_ext = write_position(&backend.spi_log, PHI_E_EXT, 0);
+            let zero_voltage = write_position(&backend.spi_log, UQ_UD_EXT, 0);
+            let motion = write_position(
+                &backend.spi_log,
+                MODE_RAMP_MODE_MOTION,
+                MotionMode::UqUdExt as u32,
+            );
+            let pwm = write_position(&backend.spi_log, PWM_SV_CHOP, 7);
+            let enable_high = enable_position(&backend.spi_log, true);
+            let voltage_step = write_position(&backend.spi_log, UQ_UD_EXT, 512);
+
+            assert!(phi_selection < phi_ext);
+            assert!(phi_ext < zero_voltage);
+            assert!(zero_voltage < motion);
+            assert!(motion < pwm);
+            assert!(matches!(backend.spi_log.get(pwm + 1), Some(SpiOp::Read)));
+            assert!(pwm < enable_high);
+            assert!(enable_high < voltage_step);
+        });
+    }
+
+    #[test]
+    fn delay_setup_pwm_verification_failure_restores_without_enabling() {
+        pollster::block_on(async {
+            for transport_failure in [false, true] {
+                let mut phase = InnerPhase::ElectricalId {
+                    state: ElectricalIdState::DelaySetup,
+                    data: ElectricalIdData::new(512),
+                };
+                let mut buf = TransientBuffer::new();
+                let mut backend = MockBackend::new();
+                if transport_failure {
+                    backend.fail_on_read = Some(PWM_SV_CHOP.addr());
+                } else {
+                    backend.read_override = Some((PWM_SV_CHOP.addr(), 0));
+                }
+                let mut selftest_results = crate::selftest::SelftestResults::default();
+                let mut diagnostics = crate::selftest::CommissionDiagnostics::default();
+
+                for _ in 0..8 {
+                    let result = step_electrical_identification(
+                        &mut phase,
+                        &mut buf,
+                        InnerSequence::Commission,
+                        &mut selftest_results,
+                        &mut diagnostics,
+                        &mut backend,
+                    )
+                    .await;
+                    assert!(matches!(result, StepResult::ReadyNow));
+                    if matches!(
+                        phase,
+                        InnerPhase::ElectricalId {
+                            state: ElectricalIdState::DelayRestore { .. },
+                            ..
+                        }
+                    ) {
+                        break;
+                    }
+                }
+
+                assert!(!backend.enable_pin);
+                assert!(
+                    !backend
+                        .spi_log
+                        .iter()
+                        .any(|operation| matches!(operation, SpiOp::EnablePin(true)))
+                );
+                assert!(
+                    backend
+                        .spi_log
+                        .iter()
+                        .any(|operation| matches!(operation, SpiOp::EnablePin(false)))
+                );
+                assert!(matches!(
+                    phase,
+                    InnerPhase::ElectricalId {
+                        state: ElectricalIdState::DelayRestore {
+                            primary_error: Some(CommissionError::Spi),
+                            completed: None,
+                            ..
+                        },
+                        ..
+                    }
+                ));
+                assert!(!backend.spi_log.iter().any(|operation| {
+                    matches!(operation, SpiOp::Write(addr, 512) if *addr == UQ_UD_EXT.addr())
+                }));
+            }
         });
     }
 
