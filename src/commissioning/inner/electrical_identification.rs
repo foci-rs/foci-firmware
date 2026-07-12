@@ -1307,6 +1307,23 @@ pub(crate) fn push_active_timing_diagnostics(
                 evidence, overflowed,
             );
         }
+        ElectricalIdState::InductanceReadStatus { timing, .. }
+        | ElectricalIdState::InductanceReadEncoder { timing, .. }
+        | ElectricalIdState::InductanceEvaluate { timing, .. } => {
+            summaries[1] = crate::commissioning::types::CommissionTimingSummary::rejected(
+                *timing,
+                data.timing_overflow_mask & (1 << 1) != 0,
+            );
+        }
+        ElectricalIdState::InductanceRestore {
+            timing: Some(timing),
+            ..
+        } => {
+            summaries[1] = crate::commissioning::types::CommissionTimingSummary::rejected(
+                *timing,
+                data.timing_overflow_mask & (1 << 1) != 0,
+            );
+        }
         ElectricalIdState::DelaySample { capture } => {
             let (evidence, overflowed) = capture.timing.snapshot();
             summaries[2] = crate::commissioning::types::CommissionTimingSummary::rejected(
@@ -4526,6 +4543,65 @@ mod tests {
             .expect("active delay header");
         assert_eq!(header.value1 & 0xffff, 1);
         assert_eq!((header.value1 >> 24) & 0x03, 2);
+    }
+
+    #[test]
+    fn shutdown_snapshot_retains_completed_inductance_across_post_capture_states() {
+        let capture = inductance_capture_state(0, 1_000, 0, 0);
+        let timing = CaptureTimingEvidence {
+            requested_period_us: INDUCTANCE_AC_SAMPLE_PERIOD_US,
+            valid_samples: 7,
+            missed_samples: 1,
+            max_consecutive_misses: 1,
+            max_lateness_us: 20,
+            max_interval_us: 120,
+            max_poll_wall_us: 15,
+            max_spi_wall_us: 10,
+        };
+        let states = [
+            ElectricalIdState::InductanceReadStatus {
+                capture,
+                completed_elapsed_us: 700,
+                timing,
+            },
+            ElectricalIdState::InductanceReadEncoder {
+                capture,
+                completed_elapsed_us: 700,
+                timing,
+            },
+            ElectricalIdState::InductanceEvaluate {
+                capture,
+                encoder_after: 0,
+                completed_elapsed_us: 700,
+                timing,
+            },
+            ElectricalIdState::InductanceRestore {
+                operation: InductanceRestoreOperation::RetainedUqUdExt,
+                primary_error: Some(CommissionError::InductanceCaptureRejected),
+                evidence: None,
+                timing: Some(timing),
+                timing_accepted: false,
+            },
+        ];
+
+        for state in states {
+            let mut data = representative_data();
+            data.timing_states = crate::commissioning::types::COMMISSION_TIMING_REJECTED << 2;
+            data.timing_overflow_mask = 1 << 1;
+            let phase = InnerPhase::ElectricalId { state, data };
+            let mut diagnostics = crate::selftest::CommissionDiagnostics::default();
+
+            push_active_timing_diagnostics(&phase, &mut diagnostics);
+
+            let header = diagnostics
+                .iter()
+                .find(|event| event.code == 36)
+                .expect("completed inductance timing header");
+            assert_eq!(header.value0 >> 16, 7);
+            assert_eq!((header.value1 >> 24) & 0x03, 2);
+            assert_ne!(header.value1 & (1 << 31), 0);
+            assert_eq!(header.value2, 20);
+        }
     }
 
     #[test]

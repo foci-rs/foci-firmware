@@ -845,6 +845,7 @@ impl CommissioningEngine {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::commission_dispatch::test_support::SpiOp;
     use crate::commissioning::types::EngineKind;
 
     #[test]
@@ -1586,6 +1587,71 @@ mod tests {
                 .find(|event| event.code == 38)
                 .expect("shutdown timing diagnostic");
             assert_eq!((delay.value1 >> 24) & 0x03, 2);
+        });
+    }
+
+    #[test]
+    fn shutdown_during_inductance_restore_retains_completed_timing() {
+        pollster::block_on(async {
+            let _guard = crate::commission_dispatch::test_support::SHARED_STATE_MUTEX
+                .lock()
+                .await;
+            let mut engine = CommissioningEngine::new_commission(
+                0,
+                crate::autotune::CommissionProfile::Balanced,
+            );
+            let timing = capture_timing::CaptureTimingEvidence {
+                requested_period_us: 100,
+                valid_samples: 7,
+                missed_samples: 0,
+                max_consecutive_misses: 0,
+                max_lateness_us: 10,
+                max_interval_us: 110,
+                max_poll_wall_us: 15,
+                max_spi_wall_us: 8,
+            };
+            if let EngineMode::Inner { phase, .. } = &mut engine.engine_mode {
+                let mut data = inner::ElectricalIdData::new(512);
+                data.timing_states = crate::commissioning::types::COMMISSION_TIMING_REJECTED << 2;
+                *phase = InnerPhase::ElectricalId {
+                    state: inner::ElectricalIdState::InductanceRestore {
+                        operation: inner::InductanceRestoreOperation::RetainedUqUdExt,
+                        primary_error: None,
+                        evidence: Some(crate::commissioning::types::InductanceEvidence::EMPTY),
+                        timing: Some(timing),
+                        timing_accepted: true,
+                    },
+                    data,
+                };
+            }
+            let mut backend = crate::commission_dispatch::test_support::MockBackend::new();
+            backend.shutdown_requested = true;
+            backend.enable_pin = true;
+
+            let result = engine.step(&mut backend).await;
+
+            assert!(matches!(
+                result,
+                crate::commissioning::types::StepResult::InnerFailed(
+                    crate::autotune::CommissionError::Shutdown,
+                )
+            ));
+            assert!(!backend.enable_pin);
+            assert!(matches!(
+                backend.spi_log.first(),
+                Some(SpiOp::EnablePin(false))
+            ));
+            assert!(
+                backend.delay_us_log.is_empty(),
+                "shutdown snapshot must not delay before GPIO-first restore"
+            );
+            let diagnostics = engine.take_diagnostics();
+            let header = diagnostics
+                .iter()
+                .find(|event| event.code == 36)
+                .expect("inductance restore timing diagnostic");
+            assert_eq!(header.value0 >> 16, 7);
+            assert_eq!((header.value1 >> 24) & 0x03, 2);
         });
     }
 }
