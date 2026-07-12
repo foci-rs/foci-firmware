@@ -222,6 +222,31 @@ pub(crate) struct InductanceCaptureState {
     pub(crate) timing: crate::commissioning::capture_timing::CaptureTiming,
 }
 
+/// One verified register operation in the bounded inductance restore sequence.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+pub(crate) enum InductanceRestoreOperation {
+    RetainedUqUdExt,
+    RetainedOpenloopVelocity,
+    RetainedMotionStop,
+    RetainedPhiSelection,
+    CanonicalMotionStop,
+    CanonicalTorqueFluxTarget,
+    CanonicalTorqueFluxOffset,
+    CanonicalUqUdExt,
+    CanonicalPhiSelection,
+    CanonicalPwmChop,
+    CanonicalVelocityOffset,
+    CanonicalVoltageLimit,
+    TorqueErrorSelect,
+    TorqueErrorClear,
+    FluxErrorSelect,
+    FluxErrorClear,
+    VelocityErrorSelect,
+    VelocityErrorClear,
+    PositionErrorSelect,
+    PositionErrorClear,
+}
+
 /// Electrical identification sub-state machine (Phase 5).
 #[derive(Debug, defmt::Format)]
 #[expect(
@@ -294,7 +319,7 @@ pub(crate) enum ElectricalIdState {
     },
     /// Restore one register per poll after synchronous GPIO disable.
     InductanceRestore {
-        operation: u8,
+        operation: InductanceRestoreOperation,
         primary_error: Option<crate::autotune::CommissionError>,
         evidence: Option<InductanceEvidence>,
         timing: Option<crate::commissioning::capture_timing::CaptureTimingEvidence>,

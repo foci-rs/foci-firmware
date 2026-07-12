@@ -5,7 +5,10 @@
 //! Assembles an `ElectricalModel` and validates it before transitioning to
 //! `CurrentTune` (commission flow) or emitting `SelftestDone` (selftest).
 
-use super::{ElectricalIdData, ElectricalIdState, InductanceCaptureState, InnerPhase};
+use super::{
+    ElectricalIdData, ElectricalIdState, InductanceCaptureState, InductanceRestoreOperation,
+    InnerPhase,
+};
 use crate::autotune::{
     CommissionError, ELECTRICAL_MODEL_RESISTANCE_SCALE, ElectricalModel, InnerSequence, PhaseId,
     TransientBuffer,
@@ -433,12 +436,78 @@ fn begin_inductance_restore<B: CommissioningBackend>(
 ) -> StepResult {
     backend.set_enable_pin(false);
     *state = ElectricalIdState::InductanceRestore {
-        operation: 0,
+        operation: InductanceRestoreOperation::RetainedUqUdExt,
         primary_error,
         evidence,
         timing,
     };
     StepResult::ReadyNow
+}
+
+fn inductance_restore_write(
+    operation: InductanceRestoreOperation,
+) -> (Register, u32, Option<InductanceRestoreOperation>) {
+    use InductanceRestoreOperation::*;
+    use foci_tmc4671::registers::*;
+
+    match operation {
+        RetainedUqUdExt => (UQ_UD_EXT, 0, Some(RetainedOpenloopVelocity)),
+        RetainedOpenloopVelocity => (OPENLOOP_VELOCITY_TARGET, 0, Some(RetainedMotionStop)),
+        RetainedMotionStop => (
+            MODE_RAMP_MODE_MOTION,
+            MotionMode::Stopped as u32,
+            Some(RetainedPhiSelection),
+        ),
+        RetainedPhiSelection => (PHI_E_SELECTION, 0, Some(CanonicalMotionStop)),
+        CanonicalMotionStop => (
+            MODE_RAMP_MODE_MOTION,
+            MotionMode::Stopped as u32,
+            Some(CanonicalTorqueFluxTarget),
+        ),
+        CanonicalTorqueFluxTarget => (PID_TORQUE_FLUX_TARGET, 0, Some(CanonicalTorqueFluxOffset)),
+        CanonicalTorqueFluxOffset => (PID_TORQUE_FLUX_OFFSET, 0, Some(CanonicalUqUdExt)),
+        CanonicalUqUdExt => (UQ_UD_EXT, 0, Some(CanonicalPhiSelection)),
+        CanonicalPhiSelection => (PHI_E_SELECTION, 0, Some(CanonicalPwmChop)),
+        CanonicalPwmChop => (PWM_SV_CHOP, 0, Some(CanonicalVelocityOffset)),
+        CanonicalVelocityOffset => (PID_VELOCITY_OFFSET, 0, Some(CanonicalVoltageLimit)),
+        CanonicalVoltageLimit => (PIDOUT_UQ_UD_LIMITS, 1024, Some(TorqueErrorSelect)),
+        TorqueErrorSelect => (
+            PID_ERROR_PID_TORQUE_ERROR_SUM.addr,
+            PID_ERROR_PID_TORQUE_ERROR_SUM.sub_addr as u32,
+            Some(TorqueErrorClear),
+        ),
+        TorqueErrorClear => (
+            PID_ERROR_PID_TORQUE_ERROR_SUM.data,
+            0,
+            Some(FluxErrorSelect),
+        ),
+        FluxErrorSelect => (
+            PID_ERROR_PID_FLUX_ERROR_SUM.addr,
+            PID_ERROR_PID_FLUX_ERROR_SUM.sub_addr as u32,
+            Some(FluxErrorClear),
+        ),
+        FluxErrorClear => (
+            PID_ERROR_PID_FLUX_ERROR_SUM.data,
+            0,
+            Some(VelocityErrorSelect),
+        ),
+        VelocityErrorSelect => (
+            PID_ERROR_PID_VELOCITY_ERROR_SUM.addr,
+            PID_ERROR_PID_VELOCITY_ERROR_SUM.sub_addr as u32,
+            Some(VelocityErrorClear),
+        ),
+        VelocityErrorClear => (
+            PID_ERROR_PID_VELOCITY_ERROR_SUM.data,
+            0,
+            Some(PositionErrorSelect),
+        ),
+        PositionErrorSelect => (
+            PID_ERROR_PID_POSITION_ERROR_SUM.addr,
+            PID_ERROR_PID_POSITION_ERROR_SUM.sub_addr as u32,
+            Some(PositionErrorClear),
+        ),
+        PositionErrorClear => (PID_ERROR_PID_POSITION_ERROR_SUM.data, 0, None),
+    }
 }
 
 fn inductance_status_is_critical(flags: u32) -> bool {
@@ -1558,17 +1627,16 @@ pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
             evidence,
             timing,
         } => {
-            let (register, value) = match *operation {
-                0 => (UQ_UD_EXT, 0),
-                1 => (OPENLOOP_VELOCITY_TARGET, 0),
-                2 => (MODE_RAMP_MODE_MOTION, MotionMode::Stopped as u32),
-                _ => (PHI_E_SELECTION, 0),
-            };
-            if backend.write_register(register, value).await.is_err() {
+            let (register, value, next) = inductance_restore_write(*operation);
+            if backend
+                .write_register_verified(register, value)
+                .await
+                .is_err()
+            {
                 *primary_error = Some(CommissionError::Spi);
             }
-            if *operation < 3 {
-                *operation += 1;
+            if let Some(next) = next {
+                *operation = next;
                 return StepResult::ReadyNow;
             }
             if let Some(error) = *primary_error {
@@ -1780,7 +1848,10 @@ mod tests {
     };
     use foci_tmc4671::registers::{
         MODE_RAMP_MODE_MOTION, OPENLOOP_PHI, OPENLOOP_VELOCITY_TARGET, PHI_E_SELECTION,
-        PID_TORQUE_FLUX_ACTUAL, PIDOUT_UQ_UD_LIMITS, PWM_SV_CHOP, STATUS_FLAGS, UQ_UD_EXT,
+        PID_ERROR_PID_FLUX_ERROR_SUM, PID_ERROR_PID_POSITION_ERROR_SUM,
+        PID_ERROR_PID_TORQUE_ERROR_SUM, PID_ERROR_PID_VELOCITY_ERROR_SUM, PID_TORQUE_FLUX_ACTUAL,
+        PID_TORQUE_FLUX_OFFSET, PID_TORQUE_FLUX_TARGET, PID_VELOCITY_OFFSET, PIDOUT_UQ_UD_LIMITS,
+        PWM_SV_CHOP, STATUS_FLAGS, UQ_UD_EXT,
     };
 
     const TEST_THETA_E_US: u32 = 160;
@@ -2118,7 +2189,7 @@ mod tests {
         diagnostics: &mut crate::selftest::CommissionDiagnostics,
         backend: &mut MockBackend,
     ) -> StepResult {
-        for _ in 0..5 {
+        for _ in 0..21 {
             let result = step_electrical_identification(
                 phase,
                 buf,
@@ -2133,6 +2204,170 @@ mod tests {
             }
         }
         panic!("inductance restoration did not terminate");
+    }
+
+    fn expected_inductance_restore_writes() -> [(u8, u32); 20] {
+        [
+            (UQ_UD_EXT.addr(), 0),
+            (OPENLOOP_VELOCITY_TARGET.addr(), 0),
+            (MODE_RAMP_MODE_MOTION.addr(), 0),
+            (PHI_E_SELECTION.addr(), 0),
+            (MODE_RAMP_MODE_MOTION.addr(), 0),
+            (PID_TORQUE_FLUX_TARGET.addr(), 0),
+            (PID_TORQUE_FLUX_OFFSET.addr(), 0),
+            (UQ_UD_EXT.addr(), 0),
+            (PHI_E_SELECTION.addr(), 0),
+            (PWM_SV_CHOP.addr(), 0),
+            (PID_VELOCITY_OFFSET.addr(), 0),
+            (PIDOUT_UQ_UD_LIMITS.addr(), 1024),
+            (
+                PID_ERROR_PID_TORQUE_ERROR_SUM.addr.addr(),
+                PID_ERROR_PID_TORQUE_ERROR_SUM.sub_addr as u32,
+            ),
+            (PID_ERROR_PID_TORQUE_ERROR_SUM.data.addr(), 0),
+            (
+                PID_ERROR_PID_FLUX_ERROR_SUM.addr.addr(),
+                PID_ERROR_PID_FLUX_ERROR_SUM.sub_addr as u32,
+            ),
+            (PID_ERROR_PID_FLUX_ERROR_SUM.data.addr(), 0),
+            (
+                PID_ERROR_PID_VELOCITY_ERROR_SUM.addr.addr(),
+                PID_ERROR_PID_VELOCITY_ERROR_SUM.sub_addr as u32,
+            ),
+            (PID_ERROR_PID_VELOCITY_ERROR_SUM.data.addr(), 0),
+            (
+                PID_ERROR_PID_POSITION_ERROR_SUM.addr.addr(),
+                PID_ERROR_PID_POSITION_ERROR_SUM.sub_addr as u32,
+            ),
+            (PID_ERROR_PID_POSITION_ERROR_SUM.data.addr(), 0),
+        ]
+    }
+
+    async fn run_bounded_inductance_restore(
+        phase: &mut InnerPhase,
+        backend: &mut MockBackend,
+    ) -> StepResult {
+        let mut buf = TransientBuffer::new();
+        let mut selftest_results = crate::selftest::SelftestResults::default();
+        let mut diagnostics = crate::selftest::CommissionDiagnostics::default();
+        for operation in 0..20 {
+            let writes_before = backend
+                .spi_log
+                .iter()
+                .filter(|entry| matches!(entry, SpiOp::Write(_, _)))
+                .count();
+            let result = step_electrical_identification(
+                phase,
+                &mut buf,
+                InnerSequence::Commission,
+                &mut selftest_results,
+                &mut diagnostics,
+                backend,
+            )
+            .await;
+            let writes_after = backend
+                .spi_log
+                .iter()
+                .filter(|entry| matches!(entry, SpiOp::Write(_, _)))
+                .count();
+            assert_eq!(writes_after - writes_before, 1, "restore poll {operation}");
+            if operation < 19 {
+                assert!(matches!(result, StepResult::ReadyNow));
+            } else {
+                return result;
+            }
+        }
+        unreachable!()
+    }
+
+    fn begin_test_inductance_restore(
+        backend: &mut MockBackend,
+        primary_error: Option<CommissionError>,
+        evidence: Option<InductanceEvidence>,
+    ) -> InnerPhase {
+        let mut state = ElectricalIdState::InductanceSetup;
+        let result = begin_inductance_restore(&mut state, backend, primary_error, evidence, None);
+        assert!(matches!(result, StepResult::ReadyNow));
+        let mut data = representative_data();
+        data.inductance = None;
+        data.inductance_timing = None;
+        InnerPhase::ElectricalId { state, data }
+    }
+
+    #[test]
+    fn inductance_restore_runs_complete_verified_sequence_before_cooldown() {
+        pollster::block_on(async {
+            let mut backend = MockBackend::new();
+            backend.enable_pin = true;
+            let mut phase = begin_test_inductance_restore(
+                &mut backend,
+                None,
+                Some(inductance_evidence_fixture(8_600, 1_000_000)),
+            );
+
+            let result = run_bounded_inductance_restore(&mut phase, &mut backend).await;
+
+            assert!(matches!(result, StepResult::At(_)));
+            let InnerPhase::ElectricalId { state, data } = &phase else {
+                panic!("expected electrical-id cooldown, got {phase:?}");
+            };
+            assert!(matches!(state, ElectricalIdState::InductanceDisable { .. }));
+            assert!(data.inductance.is_some());
+            assert!(!backend.enable_pin);
+            let enable_low = enable_position(&backend.spi_log, false);
+            let writes: heapless::Vec<(u8, u32), 32> = backend
+                .spi_log
+                .iter()
+                .filter_map(|entry| match entry {
+                    SpiOp::Write(address, value) => Some((*address, *value)),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(writes.as_slice(), &expected_inductance_restore_writes());
+            assert!(enable_low < write_position(&backend.spi_log, UQ_UD_EXT, 0));
+        });
+    }
+
+    #[test]
+    fn inductance_restore_mismatch_replaces_success_with_spi_failure() {
+        pollster::block_on(async {
+            let mut backend = MockBackend::new();
+            backend.read_override = Some((UQ_UD_EXT.addr(), 1));
+            let mut phase = begin_test_inductance_restore(
+                &mut backend,
+                None,
+                Some(inductance_evidence_fixture(8_600, 1_000_000)),
+            );
+
+            let result = run_bounded_inductance_restore(&mut phase, &mut backend).await;
+
+            assert!(matches!(
+                result,
+                StepResult::InnerFailed(CommissionError::Spi)
+            ));
+            assert!(matches!(phase, InnerPhase::Failed(CommissionError::Spi)));
+        });
+    }
+
+    #[test]
+    fn inductance_restore_mismatch_replaces_primary_error_with_spi_failure() {
+        pollster::block_on(async {
+            let mut backend = MockBackend::new();
+            backend.read_override = Some((UQ_UD_EXT.addr(), 1));
+            let mut phase = begin_test_inductance_restore(
+                &mut backend,
+                Some(CommissionError::InductanceCaptureRejected),
+                None,
+            );
+
+            let result = run_bounded_inductance_restore(&mut phase, &mut backend).await;
+
+            assert!(matches!(
+                result,
+                StepResult::InnerFailed(CommissionError::Spi)
+            ));
+            assert!(matches!(phase, InnerPhase::Failed(CommissionError::Spi)));
+        });
     }
 
     async fn drive_inductance_schedule(
