@@ -54,6 +54,7 @@ const INDUCTANCE_MAX_AC_SAMPLE_COUNT: u16 = 256;
 const PHI_E_SELECTION_OPENLOOP: u32 = 2;
 const L_INT_OMEGA_SCALE_MILLI: u64 = 6_283;
 
+#[cfg(test)]
 const fn scheduled_samples_for_fixed_window(frequency_millihz: u32) -> u32 {
     if frequency_millihz == 0 {
         return 0;
@@ -442,10 +443,6 @@ fn begin_inductance_restore<B: CommissioningBackend>(
 
 fn inductance_status_is_critical(flags: u32) -> bool {
     flags & crate::autotune::current_loop_actionable_status_mask() != 0
-}
-
-fn wait_deadline_not_reached(now_us: u64, deadline_us: u64) -> bool {
-    now_us.wrapping_sub(deadline_us) >= 0x8000_0000
 }
 
 fn pack_ud_drive(ud_ext: i16) -> u32 {
@@ -1390,28 +1387,212 @@ pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
             }
         }
 
-        ElectricalIdState::InductanceSetupOperation { .. }
-        | ElectricalIdState::InductanceReadEncoderStart
-        | ElectricalIdState::InductanceApplyDrive { .. }
-        | ElectricalIdState::InductanceDriveSettle { .. }
-        | ElectricalIdState::InductanceReadPreStatus { .. }
-        | ElectricalIdState::InductanceReadStartPhi { .. }
-        | ElectricalIdState::InductanceSample { .. }
-        | ElectricalIdState::InductanceReadStatus { .. }
-        | ElectricalIdState::InductanceReadEncoder { .. }
-        | ElectricalIdState::InductanceEvaluate { .. }
-        | ElectricalIdState::InductanceRestore { .. } => StepResult::Continue,
-
-        ElectricalIdState::InductanceDisable { deadline_us } => {
-            if wait_deadline_not_reached(backend.elapsed_us(), *deadline_us) {
-                return StepResult::Continue;
+        ElectricalIdState::InductanceReadStatus {
+            capture,
+            completed_elapsed_us,
+            timing,
+        } => {
+            let mut next_capture = *capture;
+            let completed_elapsed_us = *completed_elapsed_us;
+            let timing = *timing;
+            let status = match backend.read_register(STATUS_FLAGS).await {
+                Ok(status) => status,
+                Err(_) => {
+                    return begin_inductance_restore(
+                        electrical_id_state,
+                        backend,
+                        Some(CommissionError::Spi),
+                        None,
+                        Some(timing),
+                    );
+                }
+            };
+            next_capture.status_flags_or |= status;
+            if inductance_status_is_critical(status) {
+                return begin_inductance_restore(
+                    electrical_id_state,
+                    backend,
+                    Some(CommissionError::InductanceCaptureRejected),
+                    None,
+                    Some(timing),
+                );
             }
-            *electrical_id_state = ElectricalIdState::DelaySetup;
-            StepResult::Continue
+            *electrical_id_state = ElectricalIdState::InductanceReadEncoder {
+                capture: next_capture,
+                completed_elapsed_us,
+                timing,
+            };
+            StepResult::ReadyNow
         }
 
-        ElectricalIdState::InductanceDriveSettleLegacy { .. }
-        | ElectricalIdState::InductanceSampleLegacy { .. } => StepResult::Continue,
+        ElectricalIdState::InductanceReadEncoder {
+            capture,
+            completed_elapsed_us,
+            timing,
+        } => {
+            let capture = *capture;
+            let completed_elapsed_us = *completed_elapsed_us;
+            let timing = *timing;
+            let encoder_after = match backend.read_register(ABN_DECODER_COUNT).await {
+                Ok(count) => count,
+                Err(_) => {
+                    return begin_inductance_restore(
+                        electrical_id_state,
+                        backend,
+                        Some(CommissionError::Spi),
+                        None,
+                        Some(timing),
+                    );
+                }
+            };
+            *electrical_id_state = ElectricalIdState::InductanceEvaluate {
+                capture,
+                encoder_after,
+                completed_elapsed_us,
+                timing,
+            };
+            StepResult::ReadyNow
+        }
+
+        ElectricalIdState::InductanceEvaluate {
+            capture,
+            encoder_after,
+            completed_elapsed_us,
+            timing,
+        } => {
+            let capture = *capture;
+            let encoder_after = *encoder_after;
+            let completed_elapsed_us = *completed_elapsed_us;
+            let timing = *timing;
+            let evidence = finish_inductance_evidence(InductanceCaptureFinish {
+                data,
+                encoder_domain: capture.encoder_domain,
+                encoder_start: capture.encoder_start,
+                encoder_after,
+                elapsed_us: completed_elapsed_us,
+                phi_delta_counts: capture.accumulated_phi_delta_counts,
+                sample_count: capture.sample_count,
+                status_flags_or: capture.status_flags_or,
+                accumulator: capture.accumulator,
+                first_half: capture.first_half,
+                second_half: capture.second_half,
+                saliency_accumulator: capture.saliency,
+            });
+            match evidence {
+                Ok(mut evidence) => {
+                    let saliency = crate::electrical_capture::AcSaliencyEvidence {
+                        status: evidence.estimate.saliency_status,
+                        x_average_count_ratio_milli: evidence.estimate.x_average_count_ratio_milli,
+                        x_d_count_ratio_milli: evidence.estimate.x_d_count_ratio_milli,
+                        x_q_count_ratio_milli: evidence.estimate.x_q_count_ratio_milli,
+                        saliency_permille: evidence.estimate.saliency_permille,
+                    };
+                    match saliency_for_frame_average(
+                        evidence.estimate.x_average_count_ratio_milli,
+                        saliency,
+                    ) {
+                        Ok(saliency) => {
+                            evidence.estimate.x_d_count_ratio_milli =
+                                saliency.x_d_count_ratio_milli;
+                            evidence.estimate.x_q_count_ratio_milli =
+                                saliency.x_q_count_ratio_milli;
+                            evidence.estimate.saliency_status = saliency.status;
+                            evidence.estimate.saliency_permille = saliency.saliency_permille;
+                            begin_inductance_restore(
+                                electrical_id_state,
+                                backend,
+                                None,
+                                Some(evidence),
+                                Some(timing),
+                            )
+                        }
+                        Err(InductanceReject::Saliency) => {
+                            push_inductance_saliency_bracket_rejection(
+                                diagnostics,
+                                evidence.estimate,
+                            );
+                            begin_inductance_restore(
+                                electrical_id_state,
+                                backend,
+                                Some(CommissionError::InductanceCaptureRejected),
+                                None,
+                                Some(timing),
+                            )
+                        }
+                        Err(error) => begin_inductance_restore(
+                            electrical_id_state,
+                            backend,
+                            Some(error.commission_error()),
+                            None,
+                            Some(timing),
+                        ),
+                    }
+                }
+                Err(error) => {
+                    if error == InductanceReject::Frequency {
+                        let frequency = crate::electrical_capture::realized_frequency_millihz(
+                            capture.accumulated_phi_delta_counts,
+                            completed_elapsed_us,
+                        )
+                        .unwrap_or(0);
+                        diagnostics.push(inductance_frequency_rejection_diagnostic(
+                            frequency,
+                            completed_elapsed_us,
+                            capture.sample_count,
+                        ));
+                    }
+                    begin_inductance_restore(
+                        electrical_id_state,
+                        backend,
+                        Some(error.commission_error()),
+                        None,
+                        Some(timing),
+                    )
+                }
+            }
+        }
+
+        ElectricalIdState::InductanceRestore {
+            operation,
+            primary_error,
+            evidence,
+            timing,
+        } => {
+            let (register, value) = match *operation {
+                0 => (UQ_UD_EXT, 0),
+                1 => (OPENLOOP_VELOCITY_TARGET, 0),
+                2 => (MODE_RAMP_MODE_MOTION, MotionMode::Stopped as u32),
+                _ => (PHI_E_SELECTION, 0),
+            };
+            if backend.write_register(register, value).await.is_err() {
+                *primary_error = Some(CommissionError::Spi);
+            }
+            if *operation < 3 {
+                *operation += 1;
+                return StepResult::ReadyNow;
+            }
+            if let Some(error) = *primary_error {
+                return super::fail_inner(phase, error);
+            }
+            let Some(evidence) = *evidence else {
+                return super::fail_inner(phase, CommissionError::InductanceCaptureRejected);
+            };
+            data.inductance = Some(evidence);
+            data.inductance_timing = *timing;
+            let Some(deadline_us) = backend.elapsed_us().checked_add(ELECTRICAL_COOLDOWN_US) else {
+                return super::fail_inner(phase, CommissionError::InvalidSchedule);
+            };
+            *electrical_id_state = ElectricalIdState::InductanceDisable { deadline_us };
+            StepResult::At(deadline_us)
+        }
+
+        ElectricalIdState::InductanceDisable { deadline_us } => {
+            if backend.elapsed_us() < *deadline_us {
+                return StepResult::At(*deadline_us);
+            }
+            *electrical_id_state = ElectricalIdState::DelaySetup;
+            StepResult::ReadyNow
+        }
 
         // ---------------------------------------------------------------
         // Delay identification (transient capture)
@@ -1706,6 +1887,30 @@ mod tests {
         resistance_result(1706, 1706)
     }
 
+    fn inductance_capture_state(
+        previous_elapsed_us: u32,
+        previous_phi: u16,
+        accumulated_phi_delta_counts: u32,
+        sample_count: u16,
+    ) -> InductanceCaptureState {
+        InductanceCaptureState {
+            encoder_domain: EncoderDomain::new(4000).unwrap(),
+            encoder_start: 0,
+            start_us: 0,
+            previous_elapsed_us,
+            previous_phi,
+            accumulated_phi_delta_counts,
+            accumulator: crate::electrical_capture::AcFrameAccumulator::new(),
+            first_half: crate::electrical_capture::AcFrameAccumulator::new(),
+            second_half: crate::electrical_capture::AcFrameAccumulator::new(),
+            saliency: crate::electrical_capture::AcSaliencyAccumulator::new(),
+            sample_count,
+            status_flags_or: 0,
+            next_sample_us: 0,
+            timing: CaptureTiming::new(INDUCTANCE_AC_SAMPLE_PERIOD_US, TimingEnvelope::INDUCTANCE),
+        }
+    }
+
     #[test]
     fn electrical_id_enters_rotating_inductance_after_resistance() {
         let mut data = ElectricalIdData::new(768);
@@ -1899,11 +2104,70 @@ mod tests {
         ] {
             let position = write_position(&backend.spi_log, register, value);
             assert!(
-                position < enable_low,
-                "register {:#x} teardown write must precede enable-low",
+                enable_low < position,
+                "enable-low must precede register {:#x} teardown write",
                 register.addr()
             );
         }
+    }
+
+    async fn finish_inductance_restore(
+        phase: &mut InnerPhase,
+        buf: &mut TransientBuffer,
+        selftest_results: &mut crate::selftest::SelftestResults,
+        diagnostics: &mut crate::selftest::CommissionDiagnostics,
+        backend: &mut MockBackend,
+    ) -> StepResult {
+        for _ in 0..5 {
+            let result = step_electrical_identification(
+                phase,
+                buf,
+                InnerSequence::Commission,
+                selftest_results,
+                diagnostics,
+                backend,
+            )
+            .await;
+            if !matches!(result, StepResult::ReadyNow) {
+                return result;
+            }
+        }
+        panic!("inductance restoration did not terminate");
+    }
+
+    async fn drive_inductance_schedule(
+        phase: &mut InnerPhase,
+        buf: &mut TransientBuffer,
+        selftest_results: &mut crate::selftest::SelftestResults,
+        diagnostics: &mut crate::selftest::CommissionDiagnostics,
+        backend: &mut MockBackend,
+    ) -> StepResult {
+        for _ in 0..512 {
+            let result = step_electrical_identification(
+                phase,
+                buf,
+                InnerSequence::Commission,
+                selftest_results,
+                diagnostics,
+                backend,
+            )
+            .await;
+            if matches!(
+                phase,
+                InnerPhase::ElectricalId {
+                    state: ElectricalIdState::InductanceDisable { .. },
+                    ..
+                }
+            ) {
+                return StepResult::Continue;
+            }
+            match result {
+                StepResult::ReadyNow => {}
+                StepResult::At(deadline_us) => backend.elapsed_us_value = deadline_us,
+                other => return other,
+            }
+        }
+        panic!("inductance schedule did not terminate");
     }
 
     fn find_inductance_capture_rejection(
@@ -2071,9 +2335,21 @@ mod tests {
             .await;
 
             assert!(
-                matches!(result, StepResult::Continue),
+                matches!(result, StepResult::ReadyNow),
                 "scheduler gap must not make the AC window fail: {result:?}"
             );
+            for _ in 0..10 {
+                let result = step_electrical_identification(
+                    &mut phase,
+                    &mut buf,
+                    InnerSequence::Commission,
+                    &mut selftest_results,
+                    &mut diagnostics,
+                    &mut backend,
+                )
+                .await;
+                assert!(matches!(result, StepResult::ReadyNow));
+            }
             assert!(backend.enable_pin);
             assert!(matches!(
                 phase,

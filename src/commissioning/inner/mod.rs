@@ -248,47 +248,15 @@ pub(crate) enum ElectricalIdState {
         /// Timeout for the velocity ramp.
         deadline_us: u64,
     },
-    /// Wait for electrical current to settle after voltage is applied.
-    InductanceDriveSettleLegacy {
-        /// Deadline when the electrical L/R settle period completes.
-        deadline_us: u64,
-        /// Encoder count captured before voltage was applied.
-        encoder_start: u32,
-    },
-    /// Capture one integer-electrical-turn rotating-frame current window.
-    InductanceSampleLegacy {
-        /// Encoder count captured before voltage was applied.
-        encoder_start: u32,
-        /// Monotonic timestamp at the first phi/current sample.
-        start_us: u64,
-        /// Previous sample elapsed time relative to `start_us`.
-        previous_elapsed_us: u32,
-        /// Open-loop phi at the start of the window.
-        start_phi: u16,
-        /// Previous sampled open-loop phi.
-        previous_phi: u16,
-        /// Accepted phi movement accumulated into the window.
-        accumulated_phi_delta_counts: u32,
-        /// Whole-window rotating-frame current accumulator.
-        accumulator: crate::electrical_capture::AcFrameAccumulator,
-        /// First-half rotating-frame current accumulator.
-        first_half: crate::electrical_capture::AcFrameAccumulator,
-        /// Second-half rotating-frame current accumulator.
-        second_half: crate::electrical_capture::AcFrameAccumulator,
-        /// Phi-domain 2theta saliency accumulator.
-        saliency: crate::electrical_capture::AcSaliencyAccumulator,
-        /// Number of accepted hot-loop samples.
-        sample_count: u16,
-        /// STATUS_FLAGS sampled before the window.
-        status_flags_or: u32,
-    },
     /// Read the encoder before applying the AC voltage.
     InductanceReadEncoderStart,
     /// Apply the AC voltage after recording the encoder start.
     InductanceApplyDrive { encoder_start: u32 },
-    /// Wait for current to settle after the scheduled AC drive is applied.
+    /// Wait for electrical current to settle after voltage is applied.
     InductanceDriveSettle {
+        /// Deadline when the electrical L/R settle period completes.
         deadline_us: u64,
+        /// Encoder count captured before voltage was applied.
         encoder_start: u32,
         encoder_domain: crate::commissioning::encoder_domain::EncoderDomain,
     },
@@ -303,7 +271,7 @@ pub(crate) enum ElectricalIdState {
         encoder_domain: crate::commissioning::encoder_domain::EncoderDomain,
         status_flags_or: u32,
     },
-    /// Capture one sample at each absolute scheduler deadline.
+    /// Capture one integer-electrical-turn rotating-frame current window.
     InductanceSample { capture: InductanceCaptureState },
     /// Read STATUS after the fixed phi window completes.
     InductanceReadStatus {
