@@ -1270,6 +1270,17 @@ fn push_timing_diagnostics(
     }
 }
 
+fn fail_electrical_id(
+    phase: &mut InnerPhase,
+    diagnostics: &mut crate::selftest::CommissionDiagnostics,
+    error: CommissionError,
+) -> StepResult {
+    if let InnerPhase::ElectricalId { data, .. } = &*phase {
+        push_timing_diagnostics(diagnostics, electrical_timing_summaries(data));
+    }
+    super::fail_inner(phase, error)
+}
+
 /// Advance electrical identification sub-state.
 ///
 /// Runs shared multi-point resistance identification, then per-coil
@@ -1300,7 +1311,11 @@ pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
                 match EncoderDomain::new(backend.mechanical_encoder_quadrature_counts_per_rev()) {
                     Ok(domain) => Some(domain),
                     Err(EncoderMathError::InvalidCountsPerRev) => {
-                        return super::fail_inner(phase, CommissionError::EncoderFault);
+                        return fail_electrical_id(
+                            phase,
+                            diagnostics,
+                            CommissionError::EncoderFault,
+                        );
                     }
                     Err(EncoderMathError::AmbiguousHalfTurn) => unreachable!(),
                 };
@@ -1314,7 +1329,7 @@ pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
                 Ok(runner) => runner,
                 Err(error) => {
                     defmt::warn!("resistance id failed: {}", error);
-                    return super::fail_inner(phase, CommissionError::from(error));
+                    return fail_electrical_id(phase, diagnostics, CommissionError::from(error));
                 }
             };
             set_timing_state(
@@ -1351,8 +1366,7 @@ pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
                 }
                 crate::resistance_identification::ResistancePoll::Complete(Err(error)) => {
                     defmt::warn!("resistance id failed: {}", error);
-                    push_timing_diagnostics(diagnostics, electrical_timing_summaries(data));
-                    super::fail_inner(phase, CommissionError::from(error))
+                    fail_electrical_id(phase, diagnostics, CommissionError::from(error))
                 }
             }
         }
@@ -1362,7 +1376,7 @@ pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
         // ---------------------------------------------------------------
         ElectricalIdState::InductanceSetup => {
             if data.encoder_domain.is_none() {
-                return super::fail_inner(phase, CommissionError::EncoderFault);
+                return fail_electrical_id(phase, diagnostics, CommissionError::EncoderFault);
             }
             *electrical_id_state = ElectricalIdState::InductanceSetupOperation { operation: 0 };
             StepResult::ReadyNow
@@ -1839,17 +1853,19 @@ pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
                 );
             }
             if let Some(error) = *primary_error {
-                push_timing_diagnostics(diagnostics, electrical_timing_summaries(data));
-                return super::fail_inner(phase, error);
+                return fail_electrical_id(phase, diagnostics, error);
             }
             let Some(evidence) = *evidence else {
                 data.inductance_timing = *timing;
-                push_timing_diagnostics(diagnostics, electrical_timing_summaries(data));
-                return super::fail_inner(phase, CommissionError::InductanceCaptureRejected);
+                return fail_electrical_id(
+                    phase,
+                    diagnostics,
+                    CommissionError::InductanceCaptureRejected,
+                );
             };
             data.inductance = Some(evidence);
             let Some(deadline_us) = backend.elapsed_us().checked_add(ELECTRICAL_COOLDOWN_US) else {
-                return super::fail_inner(phase, CommissionError::InvalidSchedule);
+                return fail_electrical_id(phase, diagnostics, CommissionError::InvalidSchedule);
             };
             *electrical_id_state = ElectricalIdState::InductanceDisable { deadline_us };
             StepResult::At(deadline_us)
@@ -2083,7 +2099,7 @@ pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
             if let Some(error) = *primary_error {
                 return match begin_delay_cooldown(electrical_id_state, backend, Some(error)) {
                     Ok(result) => result,
-                    Err(error) => super::fail_inner(phase, error),
+                    Err(error) => fail_electrical_id(phase, diagnostics, error),
                 };
             }
             let Some(completed) = completed.take() else {
@@ -2093,7 +2109,7 @@ pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
                     Some(CommissionError::ElectricalIdFailed),
                 ) {
                     Ok(result) => result,
-                    Err(error) => super::fail_inner(phase, error),
+                    Err(error) => fail_electrical_id(phase, diagnostics, error),
                 };
             };
             *electrical_id_state = ElectricalIdState::DelayEvaluate { completed };
@@ -2115,7 +2131,7 @@ pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
             };
             match begin_delay_cooldown(electrical_id_state, backend, primary_error) {
                 Ok(result) => result,
-                Err(error) => super::fail_inner(phase, error),
+                Err(error) => fail_electrical_id(phase, diagnostics, error),
             }
         }
 
@@ -2127,8 +2143,7 @@ pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
                 return StepResult::At(*deadline_us);
             }
             if let Some(error) = *primary_error {
-                push_timing_diagnostics(diagnostics, electrical_timing_summaries(data));
-                return super::fail_inner(phase, error);
+                return fail_electrical_id(phase, diagnostics, error);
             }
             set_timing_state(
                 data,
@@ -2152,7 +2167,7 @@ pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
                     log_model_assembly_failure(err);
                     record_electrical_id_measurement_diagnostics(data, diagnostics);
                     diagnostics.push(diagnostic_for_model_assembly_failure(err));
-                    return super::fail_inner(phase, CommissionError::from(err));
+                    return fail_electrical_id(phase, diagnostics, CommissionError::from(err));
                 }
             };
             let timing = electrical_timing_summaries(data);
