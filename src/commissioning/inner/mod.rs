@@ -241,13 +241,15 @@ pub(crate) enum ElectricalIdState {
     // --- Inductance measurement (phi-locked rotating field) ---
     /// Configure the open-loop rotating-field generator.
     InductanceSetup,
+    /// Apply one open-loop setup register operation.
+    InductanceSetupOperation { operation: u8 },
     /// Wait for the open-loop angle generator to reach target velocity.
     InductanceWaitVelocity {
         /// Timeout for the velocity ramp.
         deadline_us: u64,
     },
     /// Wait for electrical current to settle after voltage is applied.
-    InductanceDriveSettle {
+    InductanceDriveSettleLegacy {
         /// Deadline when the electrical L/R settle period completes.
         deadline_us: u64,
         /// Encoder count captured before voltage was applied.
@@ -279,6 +281,55 @@ pub(crate) enum ElectricalIdState {
         sample_count: u16,
         /// STATUS_FLAGS sampled before the window.
         status_flags_or: u32,
+    },
+    /// Read the encoder before applying the AC voltage.
+    InductanceReadEncoderStart,
+    /// Apply the AC voltage after recording the encoder start.
+    InductanceApplyDrive { encoder_start: u32 },
+    /// Wait for current to settle after the scheduled AC drive is applied.
+    InductanceDriveSettle {
+        deadline_us: u64,
+        encoder_start: u32,
+        encoder_domain: crate::commissioning::encoder_domain::EncoderDomain,
+    },
+    /// Read the pre-window STATUS snapshot after drive settle.
+    InductanceReadPreStatus {
+        encoder_start: u32,
+        encoder_domain: crate::commissioning::encoder_domain::EncoderDomain,
+    },
+    /// Read the initial open-loop phi used as the fixed-window origin.
+    InductanceReadStartPhi {
+        encoder_start: u32,
+        encoder_domain: crate::commissioning::encoder_domain::EncoderDomain,
+        status_flags_or: u32,
+    },
+    /// Capture one sample at each absolute scheduler deadline.
+    InductanceSample { capture: InductanceCaptureState },
+    /// Read STATUS after the fixed phi window completes.
+    InductanceReadStatus {
+        capture: InductanceCaptureState,
+        completed_elapsed_us: u32,
+        timing: crate::commissioning::capture_timing::CaptureTimingEvidence,
+    },
+    /// Read encoder position after post-window STATUS.
+    InductanceReadEncoder {
+        capture: InductanceCaptureState,
+        completed_elapsed_us: u32,
+        timing: crate::commissioning::capture_timing::CaptureTimingEvidence,
+    },
+    /// Evaluate the existing estimator gates without performing register IO.
+    InductanceEvaluate {
+        capture: InductanceCaptureState,
+        encoder_after: u32,
+        completed_elapsed_us: u32,
+        timing: crate::commissioning::capture_timing::CaptureTimingEvidence,
+    },
+    /// Restore one register per poll after synchronous GPIO disable.
+    InductanceRestore {
+        operation: u8,
+        primary_error: Option<crate::autotune::CommissionError>,
+        evidence: Option<InductanceEvidence>,
+        timing: Option<crate::commissioning::capture_timing::CaptureTimingEvidence>,
     },
     /// Disable AC drive and cool down before delay capture.
     InductanceDisable {

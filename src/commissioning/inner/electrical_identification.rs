@@ -1284,14 +1284,14 @@ pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
                 return fail_inductance_ac_after_restore(phase, backend, CommissionError::Spi)
                     .await;
             }
-            *electrical_id_state = ElectricalIdState::InductanceDriveSettle {
+            *electrical_id_state = ElectricalIdState::InductanceDriveSettleLegacy {
                 deadline_us: backend.elapsed_us().wrapping_add(INDUCTANCE_AC_SETTLE_US),
                 encoder_start,
             };
             StepResult::Continue
         }
 
-        ElectricalIdState::InductanceDriveSettle {
+        ElectricalIdState::InductanceDriveSettleLegacy {
             deadline_us,
             encoder_start,
         } => {
@@ -1370,6 +1370,18 @@ pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
             }
             StepResult::Continue
         }
+
+        ElectricalIdState::InductanceSetupOperation { .. }
+        | ElectricalIdState::InductanceReadEncoderStart
+        | ElectricalIdState::InductanceApplyDrive { .. }
+        | ElectricalIdState::InductanceDriveSettle { .. }
+        | ElectricalIdState::InductanceReadPreStatus { .. }
+        | ElectricalIdState::InductanceReadStartPhi { .. }
+        | ElectricalIdState::InductanceSample { .. }
+        | ElectricalIdState::InductanceReadStatus { .. }
+        | ElectricalIdState::InductanceReadEncoder { .. }
+        | ElectricalIdState::InductanceEvaluate { .. }
+        | ElectricalIdState::InductanceRestore { .. } => StepResult::Continue,
 
         ElectricalIdState::InductanceDisable { deadline_us } => {
             if wait_deadline_not_reached(backend.elapsed_us(), *deadline_us) {
