@@ -33,10 +33,9 @@
 //!   restore sequence over an externally armed motor.
 
 use foci_tmc4671::registers::{
-    ABN_DECODER_COUNT, ADC_IWY_IUX, DSADC_MDEC_B_MDEC_A, MODE_RAMP_MODE_MOTION,
-    MOTOR_TYPE_N_POLE_PAIRS, MotionMode, MotorType, MotorTypeNPolePairs, PHI_E_EXT,
-    PHI_E_SELECTION, PIDOUT_UQ_UD_LIMITS, PWM_BBM_H_BBM_L, PWM_MAXCNT, PWM_SV_CHOP, STATUS_FLAGS,
-    UQ_UD_EXT,
+    ABN_DECODER_COUNT, ADC_IWY_IUX, DSADC_MDEC_B_MDEC_A, MODE_RAMP_MODE_MOTION, MotionMode,
+    PHI_E_EXT, PHI_E_SELECTION, PIDOUT_UQ_UD_LIMITS, PWM_BBM_H_BBM_L, PWM_MAXCNT, PWM_SV_CHOP,
+    STATUS_FLAGS, UQ_UD_EXT,
 };
 
 use super::profile::ResistanceProfile;
@@ -146,78 +145,19 @@ pub async fn run_resistance_identification<B: ResistanceBackend>(
     backend: &mut B,
     mode: ResistanceRunMode,
 ) -> Result<ResistanceRunResult, ResistanceError> {
-    // Entry pre-checks. These run before any register is written, so a
-    // rejection here cannot leave the power stage in a disturbed state and
-    // must not write a safe-state restore over an externally armed motor.
-    if !backend.adc_offsets_ready() {
-        return Err(ResistanceError::NotAdcReady);
-    }
-    if mode == ResistanceRunMode::ExternallyArmed && !backend.is_armed_for_open_loop_voltage() {
-        return Err(ResistanceError::NotArmed);
-    }
-
-    // Save the pre-existing voltage limit so the restore can put it back. This
-    // read is a register read, not an energizing write, so it stays in the
-    // no-restore zone: a backend failure here returns `BackendIo` directly,
-    // matching the entry pre-checks above.
-    let saved_voltage_limit = match backend.read_register(PIDOUT_UQ_UD_LIMITS.addr()).await {
-        Ok(value) => value,
-        Err(_) => return Err(ResistanceError::BackendIo),
-    };
-
+    let mut logical_now_us = backend.elapsed_us();
     let profile = backend.profile();
-
-    // Pre-energize validations. Like the entry pre-checks above, these run
-    // before any energizing register write, so a rejection here must not
-    // write a safe-state restore over an externally armed motor: the runner
-    // has not touched the power stage yet, so there is nothing to restore,
-    // and writing the restore sequence anyway would de-energize a motor the
-    // runner never energized.
-    //
-    // In `ExternallyArmed` mode the saved limit is the motor's operational
-    // voltage authority, not a restore baseline (commissioning's ADC
-    // calibration intentionally leaves PIDOUT_UQ_UD_LIMITS=1024 as such a
-    // baseline; see `step_adc_calibrate`). The sweep must never exceed that
-    // authority for a diagnostic run over an externally armed motor, so
-    // reject here, before any energizing register write, rather than silently
-    // clamping sweep points below the requested UD.
-    if mode == ResistanceRunMode::ExternallyArmed
-        && saved_voltage_limit < u32::from(profile.max_abs_ud().unsigned_abs())
-    {
-        return Err(ResistanceError::OutOfBoundsParameter);
-    }
-
-    // Verify the typed/masked MOTOR_TYPE through the register wrapper. This is
-    // a register read, not an energizing write, so a backend failure here
-    // maps to `BackendIo` with no restore, like the voltage-limit read above.
-    let motor_type_raw = match backend.read_register(MOTOR_TYPE_N_POLE_PAIRS.addr()).await {
-        Ok(value) => value,
-        Err(_) => return Err(ResistanceError::BackendIo),
-    };
-    let motor_type = MotorTypeNPolePairs::from(motor_type_raw).motor_type();
-    if motor_type != MotorType::TwoPhase as u8 {
-        return Err(ResistanceError::InvalidMotorType);
-    }
-
-    // Static exposure-budget gate. Proves by construction that the fixed sweep
-    // stays within the thermal budget before any energizing.
-    let largest_window_exposure = (profile.max_abs_ud() as u64).pow(2) * profile.settle_ms as u64;
-    if profile.exposure_per_axis() > profile.max_total_exposure
-        || largest_window_exposure > profile.max_window_exposure
-    {
-        return Err(ResistanceError::UnsupportedProfile);
-    }
-
-    // Run the energizing body, then unconditionally restore safe state. The
-    // body's `Err` is preserved; a restore failure is reported only when the
-    // body itself succeeded.
-    let body_result = run_energized_body(backend, mode, &profile).await;
-    let restore_result = restore_safe_state(backend, mode, saved_voltage_limit).await;
-
-    match (body_result, restore_result) {
-        (Ok(result), Ok(())) => Ok(result),
-        (Ok(_), Err(())) => Err(ResistanceError::BackendIo),
-        (Err(error), _) => Err(error),
+    let mut runner = ResistanceRunner::new(mode, profile, logical_now_us)?;
+    loop {
+        match runner.poll(backend, logical_now_us).await {
+            ResistancePoll::ReadyNow => {}
+            ResistancePoll::At(deadline_us) => {
+                let delay_us = deadline_us.saturating_sub(logical_now_us);
+                backend.delay_ms(delay_us.div_ceil(1_000)).await;
+                logical_now_us = deadline_us;
+            }
+            ResistancePoll::Complete(result) => return result,
+        }
     }
 }
 
@@ -225,6 +165,7 @@ pub async fn run_resistance_identification<B: ResistanceBackend>(
 /// validations in [`run_resistance_identification`], so any early return here
 /// is correctly caught by that caller's unconditional restore: every exit path
 /// past this point is post-energize.
+#[allow(dead_code, reason = "removed with the remaining legacy sweep helpers")]
 async fn run_energized_body<B: ResistanceBackend>(
     backend: &mut B,
     mode: ResistanceRunMode,
@@ -660,35 +601,6 @@ fn build_signed_anchor(
         repeated_positive_current_count,
         drift_permille,
     }
-}
-
-/// Restore safe TMC4671 state. Always called before the runner returns past the
-/// entry pre-checks. Sets motion mode stopped, clears the external voltage,
-/// disables the chopper, restores the saved voltage limit, and drops the enable
-/// pin only under the commissioning managed-enable exception.
-async fn restore_safe_state<B: ResistanceBackend>(
-    backend: &mut B,
-    mode: ResistanceRunMode,
-    saved_voltage_limit: u32,
-) -> Result<(), ()> {
-    let mut failed = false;
-    let writes = [
-        (MODE_RAMP_MODE_MOTION.addr(), MotionMode::Stopped as u32),
-        (UQ_UD_EXT.addr(), 0),
-        (PWM_SV_CHOP.addr(), 0),
-        (PIDOUT_UQ_UD_LIMITS.addr(), saved_voltage_limit),
-    ];
-    for (addr, value) in writes {
-        if backend.write_register(addr, value).await.is_err() {
-            failed = true;
-        }
-    }
-
-    if mode == ResistanceRunMode::CommissioningManagedEnable {
-        backend.set_enable_pin(false);
-    }
-
-    if failed { Err(()) } else { Ok(()) }
 }
 
 /// Read a register, mapping backend I/O failures to [`ResistanceError::BackendIo`].
