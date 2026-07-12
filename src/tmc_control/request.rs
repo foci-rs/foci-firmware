@@ -39,6 +39,16 @@ pub enum TmcPreRequestDisposition {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub struct MotionScaleMapperInstallError;
 
+/// Reply-only capabilities for rejecting queued work during commissioning.
+pub trait CommissionBusyReplySink {
+    /// Return the board's normal request-tail policy.
+    fn normal_tail(&self) -> TmcControlRequestTail;
+    /// Emit one established commissioning-family busy response.
+    fn emit_reply(&mut self, payload: ReplyPayload);
+    /// Emit one established diagnostic not-ready response.
+    fn emit_busy_diagnostic(&mut self, request: TmcRequest);
+}
+
 /// Board hooks required by the shared TMC request runner.
 #[allow(async_fn_in_trait)]
 pub trait TmcRequestBoard<Spi>
@@ -79,8 +89,6 @@ where
 
     /// Emit a host reply using board-local sender glue.
     fn emit_reply(&mut self, payload: ReplyPayload);
-    /// Emit the established not-ready reply for a busy active diagnostic.
-    fn emit_busy_diagnostic(&mut self, _request: TmcRequest) {}
     /// Emit a board-local motor arm event, if supported.
     fn emit_motor_arm_event(&mut self) {}
     /// Emit a board-local motor disarm event, if supported.
@@ -127,13 +135,12 @@ where
 ///
 /// This synchronous path intentionally receives no runtime, SPI, or GPIO
 /// capability, so it cannot disturb the active engine or its deadline.
-pub fn handle_commission_wait_reject<Spi, Board>(
+pub fn handle_commission_wait_reject<Sink>(
     req: TmcRequest,
-    board: &mut Board,
+    sink: &mut Sink,
 ) -> TmcControlRequestOutcome
 where
-    Spi: SpiDevice<u8>,
-    Board: TmcRequestBoard<Spi>,
+    Sink: CommissionBusyReplySink,
 {
     match req {
         TmcRequest {
@@ -143,27 +150,24 @@ where
         TmcRequest {
             kind: TmcRequestKind::Calibrate { oid },
             ..
-        } => emit_calibrate_failure::<Board, Spi>(
-            board,
+        } => sink.emit_reply(calibrate_failure_payload(
             oid,
             CalibrationError::InternalError.status_code(),
-        ),
+        )),
         TmcRequest {
             kind: TmcRequestKind::SelfTest { oid },
             ..
-        } => emit_selftest_failure::<Board, Spi>(
-            board,
+        } => sink.emit_reply(selftest_failure_payload(
             oid,
             CommissionError::AlreadyRunning.status_code(),
-        ),
+        )),
         TmcRequest {
             kind: TmcRequestKind::Commission { oid, .. } | TmcRequestKind::Tune { oid, .. },
             ..
-        } => emit_commission_phase_failure::<Board, Spi>(
-            board,
+        } => sink.emit_reply(commission_phase_failure_payload(
             oid,
             CommissionError::AlreadyRunning.status_code(),
-        ),
+        )),
         diagnostic_req @ TmcRequest {
             kind:
                 TmcRequestKind::CurrentStepTest { .. }
@@ -173,7 +177,7 @@ where
                 | TmcRequestKind::VoltageStepTest { .. }
                 | TmcRequestKind::ResistanceTest { .. },
             ..
-        } => board.emit_busy_diagnostic(diagnostic_req),
+        } => sink.emit_busy_diagnostic(diagnostic_req),
         #[cfg(feature = "dev")]
         TmcRequest {
             kind:
@@ -182,7 +186,7 @@ where
         } => {}
         _ => defmt::warn!("non-reject request reached commission busy-only path"),
     }
-    normal_outcome(board.normal_tail())
+    normal_outcome(sink.normal_tail())
 }
 
 /// Handle one board-routed TMC control request.
@@ -831,7 +835,11 @@ where
     Spi: SpiDevice<u8>,
     Board: TmcRequestBoard<Spi>,
 {
-    board.emit_reply(ReplyPayload::CalibrateResult {
+    board.emit_reply(calibrate_failure_payload(oid, status));
+}
+
+fn calibrate_failure_payload(oid: u8, status: u8) -> ReplyPayload {
+    ReplyPayload::CalibrateResult {
         oid,
         status,
         result: crate::commissioning::types::AdcCalResult {
@@ -847,7 +855,7 @@ where
             adc_residual_chop7: crate::commissioning::types::AdcResidualEvidence::EMPTY,
         },
         diagnostics: CommissionDiagnostics::default(),
-    });
+    }
 }
 
 fn emit_commission_phase_failure<Board, Spi>(board: &mut Board, oid: u8, status: u8)
@@ -855,12 +863,16 @@ where
     Spi: SpiDevice<u8>,
     Board: TmcRequestBoard<Spi>,
 {
-    board.emit_reply(ReplyPayload::CommissionPhase {
+    board.emit_reply(commission_phase_failure_payload(oid, status));
+}
+
+fn commission_phase_failure_payload(oid: u8, status: u8) -> ReplyPayload {
+    ReplyPayload::CommissionPhase {
         oid,
         phase: 0,
         status,
         diagnostics: CommissionDiagnostics::default(),
-    });
+    }
 }
 
 fn emit_selftest_failure<Board, Spi>(board: &mut Board, oid: u8, status: u8)
@@ -868,12 +880,16 @@ where
     Spi: SpiDevice<u8>,
     Board: TmcRequestBoard<Spi>,
 {
-    board.emit_reply(ReplyPayload::Selftest {
+    board.emit_reply(selftest_failure_payload(oid, status));
+}
+
+fn selftest_failure_payload(oid: u8, status: u8) -> ReplyPayload {
+    ReplyPayload::Selftest {
         oid,
         results: SelftestResults::default(),
         diagnostics: CommissionDiagnostics::default(),
         done_status: status,
-    });
+    }
 }
 
 #[cfg(test)]
@@ -1065,10 +1081,6 @@ mod tests {
             self.replies.push(payload);
         }
 
-        fn emit_busy_diagnostic(&mut self, request: TmcRequest) {
-            self.busy_diagnostic_requests.push(request);
-        }
-
         fn emit_motor_arm_event(&mut self) {
             self.motor_arm_events = self.motor_arm_events.saturating_add(1);
         }
@@ -1118,6 +1130,20 @@ mod tests {
             _tmc: &mut Tmc4671Spi<RuntimeMockSpi>,
         ) {
             self.diagnostic_calls = self.diagnostic_calls.saturating_add(1);
+        }
+    }
+
+    impl CommissionBusyReplySink for RecordingBoard {
+        fn normal_tail(&self) -> TmcControlRequestTail {
+            self.normal_tail
+        }
+
+        fn emit_reply(&mut self, payload: ReplyPayload) {
+            self.replies.push(payload);
+        }
+
+        fn emit_busy_diagnostic(&mut self, request: TmcRequest) {
+            self.busy_diagnostic_requests.push(request);
         }
     }
 
@@ -1225,8 +1251,7 @@ mod tests {
                 tmc_channel0().commission_in_flight.store(true, Relaxed);
                 let tmc = Tmc4671Spi::new(RuntimeMockSpi::default());
 
-                let outcome =
-                    handle_commission_wait_reject::<RuntimeMockSpi, _>(request.clone(), &mut board);
+                let outcome = handle_commission_wait_reject(request.clone(), &mut board);
 
                 assert_eq!(runtime.pending_commission_kind(), active_kind);
                 assert!(tmc_channel0().commission_in_flight.load(Relaxed));
