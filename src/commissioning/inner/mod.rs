@@ -184,6 +184,9 @@ pub(crate) struct ElectricalIdData {
     pub(crate) resistance_result: Option<crate::resistance_identification::ResistanceRunResult>,
     /// Accepted production inductance evidence from the rotating-field estimator.
     pub(crate) inductance: Option<InductanceEvidence>,
+    /// Accepted timing evidence for the rotating-field capture.
+    pub(crate) inductance_timing:
+        Option<crate::commissioning::capture_timing::CaptureTimingEvidence>,
     /// Validated mechanical encoder domain used by inductance motion checks.
     pub(crate) encoder_domain: Option<crate::commissioning::encoder_domain::EncoderDomain>,
 }
@@ -194,9 +197,29 @@ impl ElectricalIdData {
             voltage,
             resistance_result: None,
             inductance: None,
+            inductance_timing: None,
             encoder_domain: None,
         }
     }
+}
+
+/// Mutually exclusive state retained across deadline-driven inductance samples.
+#[derive(Debug, Clone, Copy, defmt::Format)]
+pub(crate) struct InductanceCaptureState {
+    pub(crate) encoder_domain: crate::commissioning::encoder_domain::EncoderDomain,
+    pub(crate) encoder_start: u32,
+    pub(crate) start_us: u64,
+    pub(crate) previous_elapsed_us: u32,
+    pub(crate) previous_phi: u16,
+    pub(crate) accumulated_phi_delta_counts: u32,
+    pub(crate) accumulator: crate::electrical_capture::AcFrameAccumulator,
+    pub(crate) first_half: crate::electrical_capture::AcFrameAccumulator,
+    pub(crate) second_half: crate::electrical_capture::AcFrameAccumulator,
+    pub(crate) saliency: crate::electrical_capture::AcSaliencyAccumulator,
+    pub(crate) sample_count: u16,
+    pub(crate) status_flags_or: u32,
+    pub(crate) next_sample_us: u64,
+    pub(crate) timing: crate::commissioning::capture_timing::CaptureTiming,
 }
 
 /// Electrical identification sub-state machine (Phase 5).
