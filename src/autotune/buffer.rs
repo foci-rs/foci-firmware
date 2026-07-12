@@ -4,6 +4,79 @@
 /// Only one capture is active at a time; the buffer is reused across phases.
 pub const TRANSIENT_LEN: usize = 256;
 
+/// Actual observation offsets for one electrical-delay transient capture.
+///
+/// Offsets are measured in microseconds from the successful voltage-step
+/// write. The fixed array is parallel to [`TransientBuffer`] samples.
+#[derive(Debug, Clone, defmt::Format)]
+pub struct DelayTimestampOffsets {
+    offsets_us: [u16; TRANSIENT_LEN],
+    len: u16,
+}
+
+impl Default for DelayTimestampOffsets {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl DelayTimestampOffsets {
+    /// Create an empty offset container.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self {
+            offsets_us: [0; TRANSIENT_LEN],
+            len: 0,
+        }
+    }
+
+    /// Append one strictly increasing nonzero offset.
+    ///
+    /// # Errors
+    ///
+    /// Returns `TimestampRange` when `offset_us` cannot fit in `u16`,
+    /// `NonMonotonicTime` when it does not advance, or `TelemetryOverflow`
+    /// when the fixed container is full.
+    pub fn push(
+        &mut self,
+        offset_us: u32,
+    ) -> Result<(), crate::commissioning::capture_timing::TimingReject> {
+        use crate::commissioning::capture_timing::TimingReject;
+
+        let offset_us = u16::try_from(offset_us).map_err(|_| TimingReject::TimestampRange)?;
+        if offset_us == 0
+            || (self.len != 0 && offset_us <= self.offsets_us[usize::from(self.len - 1)])
+        {
+            return Err(TimingReject::NonMonotonicTime);
+        }
+        let index = usize::from(self.len);
+        if index >= TRANSIENT_LEN {
+            return Err(TimingReject::TelemetryOverflow);
+        }
+        self.offsets_us[index] = offset_us;
+        self.len += 1;
+        Ok(())
+    }
+
+    /// Number of stored offsets.
+    #[must_use]
+    pub const fn len(&self) -> u16 {
+        self.len
+    }
+
+    /// Whether no offsets have been stored.
+    #[must_use]
+    pub const fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
+    /// Stored offsets in capture order.
+    #[must_use]
+    pub fn offsets_us(&self) -> &[u16] {
+        &self.offsets_us[..usize::from(self.len)]
+    }
+}
+
 /// Fixed-size ring buffer for raw step-response capture.
 ///
 /// Statically allocated and reused across commissioning phases. After each
@@ -177,6 +250,34 @@ mod tests {
         assert_eq!(buf.len(), 0);
         assert_eq!(buf.sample_period_us(), 200);
         assert_eq!(buf.samples(), &[] as &[u32]);
+    }
+
+    #[test]
+    fn delay_timestamp_offsets_are_compact_and_range_checked() {
+        assert_eq!(core::mem::size_of::<DelayTimestampOffsets>(), 514);
+        let mut offsets = DelayTimestampOffsets::new();
+
+        assert_eq!(offsets.push(160), Ok(()));
+        assert_eq!(offsets.push(40_960), Ok(()));
+        assert_eq!(offsets.offsets_us(), &[160, 40_960]);
+        assert_eq!(
+            offsets.push(65_536),
+            Err(crate::commissioning::capture_timing::TimingReject::TimestampRange)
+        );
+    }
+
+    #[test]
+    fn delay_timestamp_offsets_reject_nonmonotonic_values() {
+        let mut offsets = DelayTimestampOffsets::new();
+        assert_eq!(offsets.push(160), Ok(()));
+        assert_eq!(
+            offsets.push(160),
+            Err(crate::commissioning::capture_timing::TimingReject::NonMonotonicTime)
+        );
+        assert_eq!(
+            offsets.push(159),
+            Err(crate::commissioning::capture_timing::TimingReject::NonMonotonicTime)
+        );
     }
 
     #[test]

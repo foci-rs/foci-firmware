@@ -581,6 +581,37 @@ fn trailing_average(samples: &[u32], idx: usize, window_len: usize) -> u32 {
     (sum / window.len() as u64) as u32
 }
 
+/// Estimate current-response onset from actual voltage-step-relative offsets.
+///
+/// This preserves the existing low-rate delay evidence only; it is not the
+/// high-rate transport-delay estimator tracked separately elsewhere.
+pub fn estimate_electrical_delay(
+    samples: &[u32],
+    offsets_us: &[u16],
+) -> Result<u32, crate::autotune::CommissionError> {
+    use crate::autotune::CommissionError;
+
+    if samples.is_empty()
+        || samples.len() != offsets_us.len()
+        || offsets_us[0] == 0
+        || offsets_us.windows(2).any(|pair| pair[0] >= pair[1])
+    {
+        return Err(CommissionError::DelayTimingRejected);
+    }
+    let peak = samples.iter().copied().max().unwrap_or(0);
+    if peak == 0 {
+        return Err(CommissionError::ElectricalModelNoSamples);
+    }
+    let onset_threshold = peak.div_ceil(10);
+    samples
+        .iter()
+        .zip(offsets_us)
+        .find_map(|(&sample, &offset_us)| {
+            (sample >= onset_threshold).then_some(u32::from(offset_us))
+        })
+        .ok_or(CommissionError::ElectricalModelNoSamples)
+}
+
 /// Extract step-response metrics from a transient buffer capture.
 ///
 /// Analyzes a captured step response to measure rise time, overshoot,
@@ -1844,6 +1875,32 @@ mod tests {
         let metrics = extract_step_metrics(&buf, 1000, 0);
         // rise_time = t90 - t10; nonzero rise_time implies t90 >= t10.
         assert!(metrics.rise_time_us > 0);
+    }
+
+    #[test]
+    fn delay_timestamp_estimator_uses_actual_jittered_offsets() {
+        let samples = [0, 20, 100, 900, 1_000];
+        let offsets_us = [160, 350, 515, 720, 900];
+
+        assert_eq!(estimate_electrical_delay(&samples, &offsets_us), Ok(515));
+    }
+
+    #[test]
+    fn delay_timestamp_estimator_rejects_invalid_offset_domains() {
+        use crate::autotune::CommissionError;
+
+        assert_eq!(
+            estimate_electrical_delay(&[], &[]),
+            Err(CommissionError::DelayTimingRejected)
+        );
+        assert_eq!(
+            estimate_electrical_delay(&[0, 100], &[160]),
+            Err(CommissionError::DelayTimingRejected)
+        );
+        assert_eq!(
+            estimate_electrical_delay(&[0, 100], &[160, 160]),
+            Err(CommissionError::DelayTimingRejected)
+        );
     }
 
     #[test]

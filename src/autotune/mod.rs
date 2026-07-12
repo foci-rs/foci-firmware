@@ -22,8 +22,12 @@ mod test_support;
 mod types;
 mod velocity;
 
-pub use buffer::{CaptureDirection, TRANSIENT_LEN, TransientBuffer, normalize_capture_sample};
+pub use buffer::{
+    CaptureDirection, DelayTimestampOffsets, TRANSIENT_LEN, TransientBuffer,
+    normalize_capture_sample,
+};
 pub use current::current_loop_actionable_status_mask;
+pub use current::estimate_electrical_delay;
 pub use current::{
     CURRENT_AXIS_VALIDATION_CROSS_AXIS, CURRENT_AXIS_VALIDATION_HIGH_RESPONSE,
     CURRENT_AXIS_VALIDATION_LOW_RESPONSE, CURRENT_AXIS_VALIDATION_MOTION,
