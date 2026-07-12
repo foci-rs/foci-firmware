@@ -1,6 +1,6 @@
 use super::*;
-use crate::commission_dispatch::test_support::MockBackend;
-use crate::commission_dispatch::{PostActions, ReplyPayload};
+use crate::commission_dispatch::test_support::{MockBackend, accepted_commission_result};
+use crate::commission_dispatch::{PostActions, ReplyPayload, StepperPostAction};
 use crate::commissioning::CommissioningEngine;
 use crate::config::TmcConfig;
 use crate::pid::{InnerLoopGains, OuterLoopGains};
@@ -775,6 +775,63 @@ fn scheduled_dispatch_preserves_wait_action() {
 }
 
 #[test]
+fn scheduled_dispatch_preserves_phase_event_context_and_deadline() {
+    pollster::block_on(async {
+        let tmc = crate::state::tmc::tmc_channel0();
+        let stepper = crate::state::stepper::stepper_channel0();
+        let mut runtime = TmcControlRuntime::new_for_channel(0);
+        let mut backend = MockBackend::new();
+        let config = commissioning_runtime_config();
+        runtime.set_commission_engine(CommissioningEngine::new_commission(
+            37,
+            crate::autotune::CommissionProfile::Balanced,
+        ));
+        let poll = crate::commissioning::schedule::adapt_step_result(
+            crate::commissioning::types::StepResult::PhaseChanged(
+                crate::autotune::PhaseId::ElectricalId,
+            ),
+            81_250,
+            Some((37, crate::commissioning::types::EngineKind::Commission)),
+        )
+        .expect("phase change should produce a scheduled poll");
+
+        assert!(matches!(
+            &poll,
+            crate::commissioning::schedule::CommissionPoll::At {
+                timestamp_us: 82_250,
+                event: Some(
+                    crate::commissioning::schedule::CommissionEvent::PhaseChanged {
+                        oid: 37,
+                        phase_id: crate::autotune::PhaseId::ElectricalId,
+                        engine_kind: crate::commissioning::types::EngineKind::Commission,
+                    }
+                ),
+            }
+        ));
+
+        let action = runtime
+            .drive_commissioning_poll(poll, &mut backend, tmc, stepper, &config)
+            .await
+            .expect("engine should be active");
+
+        assert!(matches!(
+            action,
+            ScheduledCommissionTickAction::At {
+                timestamp_us: 82_250,
+                event: Some(
+                    crate::commissioning::schedule::CommissionEvent::PhaseChanged {
+                        oid: 37,
+                        phase_id: crate::autotune::PhaseId::ElectricalId,
+                        engine_kind: crate::commissioning::types::EngineKind::Commission,
+                    }
+                ),
+            }
+        ));
+        assert!(runtime.is_commission_active());
+    });
+}
+
+#[test]
 fn scheduled_dispatch_preserves_terminal_reply_and_actions() {
     pollster::block_on(async {
         let tmc = crate::state::tmc::tmc_channel0();
@@ -797,14 +854,95 @@ fn scheduled_dispatch_preserves_terminal_reply_and_actions() {
             .await
             .expect("terminal dispatch should produce an action");
 
-        assert!(matches!(
-            action,
+        match action {
             ScheduledCommissionTickAction::Terminal {
                 reply: ReplyPayload::Selftest { oid: 7, .. },
-                actions: PostActions { .. },
+                actions,
+            } => {
+                assert_eq!(actions.stop_trace, PostActions::NONE.stop_trace);
+                assert_eq!(actions.stepper, PostActions::NONE.stepper);
             }
-        ));
+            _ => panic!("expected Selftest terminal action"),
+        }
         assert!(!runtime.is_commission_active());
+    });
+}
+
+#[test]
+fn scheduled_dispatch_preserves_accepted_commission_reply_and_actions() {
+    pollster::block_on(async {
+        use core::sync::atomic::Ordering;
+
+        const MOTOR_SENTINEL: u32 = 0x0002_0032;
+
+        let _guard = crate::commission_dispatch::test_support::SHARED_STATE_MUTEX
+            .lock()
+            .await;
+        let tmc = crate::state::tmc::tmc_channel0();
+        let stepper = crate::state::stepper::stepper_channel0();
+        tmc.reset();
+        stepper.reset();
+        tmc.current_limit_reg.store(0x0010_0010, Ordering::Relaxed);
+        tmc.motor_sentinel.store(MOTOR_SENTINEL, Ordering::Relaxed);
+        let mut runtime = TmcControlRuntime::new_for_channel(0);
+        let mut backend = MockBackend::new();
+        backend
+            .write_register(
+                foci_tmc4671::registers::MOTOR_TYPE_N_POLE_PAIRS,
+                MOTOR_SENTINEL,
+            )
+            .await
+            .expect("test motor sentinel write should succeed");
+        let config = commissioning_runtime_config();
+        runtime.set_commission_engine(CommissioningEngine::new_commission(
+            23,
+            crate::autotune::CommissionProfile::Balanced,
+        ));
+
+        let action = runtime
+            .drive_commissioning_poll(
+                crate::commissioning::schedule::CommissionPoll::Terminal {
+                    result: crate::commissioning::schedule::CommissionTerminal::CommissionDone(
+                        accepted_commission_result(),
+                    ),
+                },
+                &mut backend,
+                tmc,
+                stepper,
+                &config,
+            )
+            .await
+            .expect("terminal dispatch should produce an action");
+
+        match action {
+            ScheduledCommissionTickAction::Terminal {
+                reply:
+                    ReplyPayload::CommissionResult {
+                        oid,
+                        status,
+                        result,
+                    },
+                actions,
+            } => {
+                assert_eq!(oid, 23);
+                assert_eq!(status, 0);
+                assert_eq!(result.inner.r_int, 1706);
+                assert_eq!(result.inner.l_int, 1245);
+                assert!(actions.stop_trace);
+                assert_eq!(actions.stepper, StepperPostAction::ArmZeroPosition);
+            }
+            _ => panic!("expected accepted CommissionResult terminal action"),
+        }
+        assert!(!runtime.is_commission_active());
+        assert!(runtime.is_calibrated());
+        assert!(runtime.is_motor_enabled());
+        assert!(runtime.stored_gains().is_some());
+        assert!(backend.enable_pin);
+        assert!(!tmc.motor_armed.load(Ordering::Relaxed));
+        assert!(!tmc.commission_in_flight.load(Ordering::Relaxed));
+
+        tmc.reset();
+        stepper.reset();
     });
 }
 
