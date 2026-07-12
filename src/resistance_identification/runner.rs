@@ -46,6 +46,8 @@ use super::types::{
 };
 use crate::resistance_identification::fit::{evaluate_resistance_result, fit_resistance_axis};
 
+pub use super::state::{ResistancePoll, ResistanceRunner, ResistanceTimingEvidence};
+
 /// How the runner manages the TMC4671 enable pin during the sweep.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub enum ResistanceRunMode {
