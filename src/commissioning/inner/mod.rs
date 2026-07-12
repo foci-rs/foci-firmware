@@ -254,7 +254,7 @@ pub(crate) enum ElectricalIdState {
         encoder_start: u32,
     },
     /// Capture one integer-electrical-turn rotating-frame current window.
-    InductanceSample {
+    InductanceSampleLegacy {
         /// Encoder count captured before voltage was applied.
         encoder_start: u32,
         /// Monotonic timestamp at the first phi/current sample.

@@ -1305,7 +1305,7 @@ pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
                         .await;
                 }
             };
-            *electrical_id_state = ElectricalIdState::InductanceSample {
+            *electrical_id_state = ElectricalIdState::InductanceSampleLegacy {
                 encoder_start: *encoder_start,
                 start_us: 0,
                 previous_elapsed_us: 0,
@@ -1322,7 +1322,7 @@ pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
             StepResult::Continue
         }
 
-        ElectricalIdState::InductanceSample {
+        ElectricalIdState::InductanceSampleLegacy {
             encoder_start,
             start_us,
             previous_elapsed_us,
@@ -2108,7 +2108,7 @@ mod tests {
     fn inductance_sample_spi_failure_tears_down_openloop_drive() {
         pollster::block_on(async {
             let mut phase = InnerPhase::ElectricalId {
-                state: ElectricalIdState::InductanceSample {
+                state: ElectricalIdState::InductanceSampleLegacy {
                     encoder_start: 0,
                     start_us: 0,
                     previous_elapsed_us: 0,
@@ -2154,7 +2154,7 @@ mod tests {
     fn inductance_capture_rejection_records_zero_phi_delta_detail() {
         pollster::block_on(async {
             let mut phase = InnerPhase::ElectricalId {
-                state: ElectricalIdState::InductanceSample {
+                state: ElectricalIdState::InductanceSampleLegacy {
                     encoder_start: 0,
                     start_us: 0,
                     previous_elapsed_us: 0,
@@ -2205,7 +2205,7 @@ mod tests {
     fn inductance_capture_rejection_records_saliency_sample_detail() {
         pollster::block_on(async {
             let mut phase = InnerPhase::ElectricalId {
-                state: ElectricalIdState::InductanceSample {
+                state: ElectricalIdState::InductanceSampleLegacy {
                     encoder_start: 0,
                     start_us: 0,
                     previous_elapsed_us: 0,
@@ -2256,7 +2256,7 @@ mod tests {
     fn inductance_capture_rejection_records_elapsed_interpolation_detail() {
         pollster::block_on(async {
             let mut phase = InnerPhase::ElectricalId {
-                state: ElectricalIdState::InductanceSample {
+                state: ElectricalIdState::InductanceSampleLegacy {
                     encoder_start: 0,
                     start_us: 0,
                     previous_elapsed_us: 9_000,
@@ -2307,7 +2307,7 @@ mod tests {
     fn inductance_sample_completes_phi_window_in_one_bounded_step() {
         pollster::block_on(async {
             let mut phase = InnerPhase::ElectricalId {
-                state: ElectricalIdState::InductanceSample {
+                state: ElectricalIdState::InductanceSampleLegacy {
                     encoder_start: 0,
                     start_us: 0,
                     previous_elapsed_us: 0,
@@ -2377,7 +2377,7 @@ mod tests {
     fn inductance_sample_excludes_scheduler_gap_before_first_phi_sample() {
         pollster::block_on(async {
             let mut phase = InnerPhase::ElectricalId {
-                state: ElectricalIdState::InductanceSample {
+                state: ElectricalIdState::InductanceSampleLegacy {
                     encoder_start: 0,
                     start_us: 0,
                     previous_elapsed_us: 0,
@@ -2451,7 +2451,7 @@ mod tests {
     fn inductance_frequency_rejection_records_measured_window_detail() {
         pollster::block_on(async {
             let mut phase = InnerPhase::ElectricalId {
-                state: ElectricalIdState::InductanceSample {
+                state: ElectricalIdState::InductanceSampleLegacy {
                     encoder_start: 0,
                     start_us: 0,
                     previous_elapsed_us: 0,
@@ -2700,7 +2700,7 @@ mod tests {
             data.resistance_result = Some(resistance_result_fixture());
             data.encoder_domain = Some(EncoderDomain::new(4000).unwrap());
             let mut phase = InnerPhase::ElectricalId {
-                state: ElectricalIdState::InductanceSample {
+                state: ElectricalIdState::InductanceSampleLegacy {
                     encoder_start: 0,
                     start_us: 0,
                     previous_elapsed_us: 0,
