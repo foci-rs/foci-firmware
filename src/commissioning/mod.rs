@@ -9,6 +9,7 @@
 //! [`backend`].
 
 pub mod backend;
+pub mod capture_timing;
 pub(crate) mod encoder_domain;
 pub mod helpers;
 pub mod inner;
@@ -839,6 +840,82 @@ impl CommissioningEngine {
 mod tests {
     use super::*;
     use crate::commissioning::types::EngineKind;
+
+    #[test]
+    fn size_regression_gates() {
+        use core::mem::{size_of, size_of_val};
+
+        let mut backend = crate::commission_dispatch::test_support::MockBackend::new();
+
+        let mut engine =
+            CommissioningEngine::new_commission(0, crate::autotune::CommissionProfile::Balanced);
+        let engine_step = size_of_val(&engine.step(&mut backend));
+
+        let mut engine =
+            CommissioningEngine::new_commission(0, crate::autotune::CommissionProfile::Balanced);
+        let step_inner = match &mut engine.engine_mode {
+            EngineMode::Inner {
+                phase,
+                profile,
+                sequence,
+                adc_cal,
+                calibrate_entry_gains,
+            } => size_of_val(&inner::step_inner(
+                phase,
+                &mut engine.buf,
+                *profile,
+                *sequence,
+                adc_cal,
+                *calibrate_entry_gains,
+                &mut engine.selftest_results,
+                &mut engine.diagnostics,
+                &mut backend,
+            )),
+            EngineMode::Outer { .. } => unreachable!(),
+        };
+
+        let mut phase = inner::InnerPhase::ElectricalId {
+            state: inner::ElectricalIdState::ResistanceIdentify,
+            data: inner::ElectricalIdData::new(1024),
+        };
+        let mut buf = crate::autotune::TransientBuffer::new();
+        let mut selftest_results = crate::selftest::SelftestResults::default();
+        let mut diagnostics = crate::selftest::CommissionDiagnostics::default();
+        let electrical_id = size_of_val(
+            &inner::electrical_identification::step_electrical_identification(
+                &mut phase,
+                &mut buf,
+                crate::autotune::InnerSequence::Commission,
+                &mut selftest_results,
+                &mut diagnostics,
+                &mut backend,
+            ),
+        );
+
+        let mut runtime = crate::tmc_control::TmcControlRuntime::new_for_channel(0);
+        let config = crate::tmc_control::TmcControlConfig::new(
+            84_000_000,
+            crate::config::TmcConfig::default_for_test().pwm_freq_hz(),
+            0.03125,
+            crate::config::TmcConfig::default_for_test(),
+        );
+        let runtime_tick = size_of_val(&runtime.tick_commissioning(
+            &mut backend,
+            crate::state::tmc::tmc_channel0(),
+            crate::state::stepper::stepper_channel0(),
+            &config,
+        ));
+
+        assert_eq!(size_of::<CommissioningEngine>(), 3_760);
+        assert!(size_of::<CommissioningEngine>() <= 4_528);
+        assert!(size_of::<CommissioningEngine>() <= 6_144);
+        assert!(size_of::<capture_timing::CaptureTiming>() <= 64);
+        assert!(size_of::<capture_timing::CaptureTimingEvidence>() <= 32);
+        assert_eq!(engine_step, 3_952);
+        assert_eq!(step_inner, 3_904);
+        assert_eq!(electrical_id, 960);
+        assert_eq!(runtime_tick, 22_304);
+    }
 
     fn tmc_state() -> &'static crate::state::tmc::TmcChannelState {
         crate::state::tmc::tmc_channel0()
