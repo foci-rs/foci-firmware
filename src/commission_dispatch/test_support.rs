@@ -58,6 +58,8 @@ pub struct MockBackend {
     pub read_override: Option<(u8, u32)>,
     /// Value returned by `elapsed_us()`.
     pub elapsed_us_value: u64,
+    /// Elapsed-time increment applied by each mock register read or write.
+    pub spi_elapsed_step_us: u64,
     /// Value returned by `is_shutdown_requested()`.
     pub shutdown_requested: bool,
     /// Value returned by `current_limit()`.
@@ -138,6 +140,7 @@ impl MockBackend {
             last_motor_sentinel_stored: core::cell::Cell::new(None),
             read_override: None,
             elapsed_us_value: 0,
+            spi_elapsed_step_us: 0,
             shutdown_requested: false,
             current_limit_value: 0,
             pwm_maxcnt_value: 4095,
@@ -216,6 +219,9 @@ impl CommissionRegisterIo for MockBackend {
 
     async fn read_register(&mut self, reg: Register) -> Result<u32, Self::Error> {
         let addr = reg.addr();
+        self.elapsed_us_value = self
+            .elapsed_us_value
+            .saturating_add(self.spi_elapsed_step_us);
         self.spi_log.push(SpiOp::Read).ok();
         if self.fail_on_read == Some(addr) {
             return Err(MockSpiError);
@@ -272,6 +278,9 @@ impl CommissionRegisterIo for MockBackend {
 
     async fn write_register(&mut self, reg: Register, val: u32) -> Result<(), Self::Error> {
         let addr = reg.addr();
+        self.elapsed_us_value = self
+            .elapsed_us_value
+            .saturating_add(self.spi_elapsed_step_us);
         if self.assert_motor_armed_false_on_write {
             assert!(
                 !crate::state::tmc::tmc_channel0()
@@ -471,6 +480,29 @@ mod tests {
         assert_board_config::<MockBackend>();
         assert_trace::<MockBackend>();
         assert_backend::<MockBackend>();
+    }
+
+    #[test]
+    fn timed_register_helpers_measure_existing_awaits() {
+        pollster::block_on(async {
+            use crate::commissioning::backend::{timed_read_register, timed_write_register};
+            use foci_tmc4671::registers::STATUS_FLAGS;
+
+            let mut backend = MockBackend::new();
+            backend.elapsed_us_value = 100;
+            backend.spi_elapsed_step_us = 7;
+            let _ = backend.registers.insert(STATUS_FLAGS.addr(), 0x1234_5678);
+
+            let read = timed_read_register(&mut backend, STATUS_FLAGS).await;
+            assert_eq!(read.result, Ok(0x1234_5678));
+            assert_eq!(read.wall_us, 7);
+            assert!(!read.overflowed);
+
+            let write = timed_write_register(&mut backend, STATUS_FLAGS, 0).await;
+            assert_eq!(write.result, Ok(()));
+            assert_eq!(write.wall_us, 7);
+            assert!(!write.overflowed);
+        });
     }
 
     #[test]

@@ -44,6 +44,66 @@ pub trait CommissionRegisterIo {
     ) -> Result<u32, Self::Error>;
 }
 
+/// Result of one existing register await with measured monotonic wall time.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TimedRegisterIo<T> {
+    /// Unchanged result returned by the wrapped register operation.
+    pub result: T,
+    /// Time spent inside the register-operation await, in microseconds.
+    pub wall_us: u32,
+    /// Whether elapsed-time subtraction or narrowing could not be represented.
+    pub overflowed: bool,
+}
+
+/// Read a register and measure wall time around the existing backend await.
+pub async fn timed_read_register<B>(
+    backend: &mut B,
+    reg: Register,
+) -> TimedRegisterIo<Result<u32, B::Error>>
+where
+    B: CommissioningBackend,
+{
+    let start_us = backend.elapsed_us();
+    let result = backend.read_register(reg).await;
+    let end_us = backend.elapsed_us();
+    let (wall_us, overflowed) = measured_wall_us(start_us, end_us);
+    TimedRegisterIo {
+        result,
+        wall_us,
+        overflowed,
+    }
+}
+
+/// Write a register and measure wall time around the existing backend await.
+pub async fn timed_write_register<B>(
+    backend: &mut B,
+    reg: Register,
+    value: u32,
+) -> TimedRegisterIo<Result<(), B::Error>>
+where
+    B: CommissioningBackend,
+{
+    let start_us = backend.elapsed_us();
+    let result = backend.write_register(reg, value).await;
+    let end_us = backend.elapsed_us();
+    let (wall_us, overflowed) = measured_wall_us(start_us, end_us);
+    TimedRegisterIo {
+        result,
+        wall_us,
+        overflowed,
+    }
+}
+
+fn measured_wall_us(start_us: u64, end_us: u64) -> (u32, bool) {
+    let Some(wall_us) = end_us.checked_sub(start_us) else {
+        return (0, true);
+    };
+    match u32::try_from(wall_us) {
+        Ok(wall_us) => (wall_us, false),
+        Err(_) => (u32::MAX, true),
+    }
+}
+
 /// Explicit motor lifecycle side effects used by commissioning.
 pub trait CommissionMotorControl {
     /// Store the captured `MOTOR_TYPE_N_POLE_PAIRS` sentinel.
