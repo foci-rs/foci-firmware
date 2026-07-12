@@ -208,7 +208,7 @@ impl ResistanceRunner {
         backend: &mut B,
         now_us: u64,
     ) -> ResistancePoll {
-        if now_us > self.deadline_us
+        if now_us >= self.deadline_us
             && !matches!(
                 self.state,
                 ResistanceState::Restore(_) | ResistanceState::Complete
@@ -228,9 +228,12 @@ impl ResistanceRunner {
             ResistanceState::EvaluateAxis => self.evaluate_axis(backend),
             ResistanceState::EvaluateRun => self.evaluate_run(backend),
             ResistanceState::Restore(operation) => self.poll_restore(backend, operation).await,
-            ResistanceState::Complete => ResistancePoll::Complete(Err(self
-                .primary_error
-                .unwrap_or(ResistanceError::BackendIo))),
+            ResistanceState::Complete => match self.primary_error {
+                Some(error) => ResistancePoll::Complete(Err(error)),
+                None => {
+                    ResistancePoll::Complete(Ok(self.result.expect("successful evaluated result")))
+                }
+            },
         }
     }
 }

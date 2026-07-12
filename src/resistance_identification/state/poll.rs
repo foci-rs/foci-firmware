@@ -275,6 +275,9 @@ impl ResistanceRunner {
         let Some(completion_us) = now_us.checked_add(spi_wall) else {
             return self.fail(backend, ResistanceError::TimingRejected);
         };
+        if completion_us > self.deadline_us {
+            return self.fail(backend, ResistanceError::PhaseDeadlineExceeded);
+        }
         let slot = match capture.timing.record_sample(
             capture.next_sample_us,
             now_us,

@@ -956,12 +956,12 @@ fn absolute_phase_deadline_transitions_to_gpio_first_restore() {
     let _ = drive_to_first_sample(&mut runner, &mut backend, 1_000);
 
     assert_eq!(
-        block_on(runner.poll(&mut backend, 20_001_001)),
+        block_on(runner.poll(&mut backend, 20_001_000)),
         ResistancePoll::ReadyNow
     );
     assert!(!backend.enable_pin);
     assert_eq!(
-        finish_restoration(&mut runner, &mut backend, 20_001_001),
+        finish_restoration(&mut runner, &mut backend, 20_001_000),
         Err(ResistanceError::PhaseDeadlineExceeded)
     );
 }
@@ -1022,5 +1022,37 @@ fn warning_only_status_is_retained_without_terminating_sample() {
         runner
             .warning_flags()
             .contains(ResistanceWarningFlags::STATUS_FLAGS)
+    );
+}
+
+#[test]
+fn resumable_success_matches_legacy_result_and_remains_terminal() {
+    let mut legacy_backend = FakeResistanceBackend::standard();
+    let expected = block_on(run_resistance_identification(
+        &mut legacy_backend,
+        ResistanceRunMode::CommissioningManagedEnable,
+    ))
+    .unwrap();
+    let mut backend = FakeResistanceBackend::standard();
+    let mut runner = ResistanceRunner::new(
+        ResistanceRunMode::CommissioningManagedEnable,
+        backend.profile(),
+        1_000,
+    )
+    .unwrap();
+    let mut now = 1_000;
+
+    let terminal = loop {
+        match block_on(runner.poll(&mut backend, now)) {
+            ResistancePoll::ReadyNow => {}
+            ResistancePoll::At(deadline) => now = deadline,
+            ResistancePoll::Complete(result) => break result,
+        }
+    };
+
+    assert_eq!(terminal, Ok(expected));
+    assert_eq!(
+        block_on(runner.poll(&mut backend, now)),
+        ResistancePoll::Complete(Ok(expected))
     );
 }
