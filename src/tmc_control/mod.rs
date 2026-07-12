@@ -21,9 +21,8 @@ pub mod state;
 mod tests;
 
 pub use actions::{
-    BoardAction, BoardActions, CommissionTickAction, DelegatedDiagnostic,
-    ScheduledCommissionTickAction, ShutdownReason, StepperAction, TmcControlRequestOutcome,
-    TmcControlRequestTail, push_action,
+    BoardAction, BoardActions, DelegatedDiagnostic, ScheduledCommissionTickAction, ShutdownReason,
+    StepperAction, TmcControlRequestOutcome, TmcControlRequestTail, push_action,
 };
 pub use commission_poll::{
     COMMISSION_WAIT_SLICE_US, CommissionPollDriver, CommissionWaitRequestDisposition,

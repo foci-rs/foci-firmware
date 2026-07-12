@@ -4,17 +4,15 @@ use core::sync::atomic::Ordering::Relaxed;
 
 use crate::commission_dispatch::DispatchState;
 use crate::commissioning::CommissioningEngine;
-use crate::commissioning::schedule::{
-    CommissionEvent, CommissionPoll, CommissionTerminal, adapt_step_result,
-};
-use crate::commissioning::types::{CommissioningBackend, EngineKind, StepResult};
+use crate::commissioning::schedule::{CommissionPoll, CommissionTerminal, adapt_step_result};
+use crate::commissioning::types::{CommissioningBackend, EngineKind};
 use crate::pid::InnerLoopGains;
 use crate::state::stepper::StepperChannelState;
 use crate::state::tmc::TmcChannelState;
 use crate::tmc::{TmcRequest, TmcRequestKind};
 use crate::tmc_control::actions::{
-    BoardAction, BoardActions, CommissionTickAction, DelegatedDiagnostic,
-    ScheduledCommissionTickAction, ShutdownReason, StepperAction, push_action,
+    BoardAction, BoardActions, DelegatedDiagnostic, ScheduledCommissionTickAction, ShutdownReason,
+    StepperAction, push_action,
 };
 use crate::tmc_control::config::{TmcControlConfig, TmcControlHomingRefs, TmcControlStateRefs};
 use crate::tmc_control::signals::TmcControlSignals;
@@ -464,35 +462,6 @@ impl TmcControlRuntime {
         )
     }
 
-    /// Advance the active commissioning engine by one `step()` call.
-    ///
-    /// Returns `None` immediately when no engine is installed. This helper does
-    /// not dispatch the result, emit actions, restore hardware state, or clear
-    /// runtime flags; callers that need those side effects must pass the
-    /// returned [`crate::commissioning::types::StepResult`] into
-    /// [`Self::drive_commissioning_result`].
-    ///
-    /// # Parameters
-    /// - `backend`: SPI + GPIO backend for register access.
-    pub async fn step_commissioning<B>(
-        &mut self,
-        backend: &mut B,
-    ) -> Option<crate::commissioning::types::StepResult>
-    where
-        B: CommissioningBackend,
-    {
-        let poll = self.step_commissioning_scheduled(backend).await?;
-        Some(match poll {
-            CommissionPoll::ReadyNow { event } | CommissionPoll::At { event, .. } => match event {
-                Some(CommissionEvent::PhaseChanged { phase_id, .. }) => {
-                    StepResult::PhaseChanged(phase_id)
-                }
-                None => StepResult::Continue,
-            },
-            CommissionPoll::Terminal { result } => result.into_step_result(),
-        })
-    }
-
     /// Convert an explicit poll into the board-facing scheduled action.
     pub async fn drive_commissioning_poll<B>(
         &mut self,
@@ -517,117 +486,33 @@ impl TmcControlRuntime {
                 timestamp_us,
                 event,
             }),
-            CommissionPoll::Terminal { result } => match self
-                .drive_commissioning_result(
-                    result.into_step_result(),
-                    backend,
+            CommissionPoll::Terminal { result } => {
+                let mut dispatch = crate::commission_dispatch::DispatchState::new(
                     tmc,
                     stepper,
-                    config,
+                    &mut self.calibrated,
+                    &mut self.motor_enabled,
+                    &mut self.stored_gains,
+                );
+                let outcome = crate::commission_dispatch::drive_commission_result(
+                    result.into_step_result(),
+                    &mut self.commission_engine,
+                    backend,
+                    &mut dispatch,
+                    config.tmc.pwm_maxcnt,
                 )
-                .await?
-            {
-                CommissionTickAction::Terminal { reply, actions } => {
-                    Some(ScheduledCommissionTickAction::Terminal { reply, actions })
+                .await;
+                match outcome {
+                    crate::commission_dispatch::CommissionOutcome::Terminal { reply, actions } => {
+                        Some(ScheduledCommissionTickAction::Terminal { reply, actions })
+                    }
+                    crate::commission_dispatch::CommissionOutcome::Continue
+                    | crate::commission_dispatch::CommissionOutcome::PhaseChanged { .. } => {
+                        unreachable!("terminal poll produced a nonterminal dispatch action")
+                    }
                 }
-                CommissionTickAction::Continue | CommissionTickAction::PhaseChanged { .. } => {
-                    unreachable!("terminal poll produced a nonterminal dispatch action")
-                }
-            },
-        }
-    }
-
-    /// Dispatch one commissioning step result through shared post-processing.
-    ///
-    /// Returns `None` immediately when no engine is installed. Dispatch may
-    /// restore safe state, update runtime calibration/enabled flags, re-apply
-    /// filters, and return board-visible actions.
-    ///
-    /// # Parameters
-    /// - `result`: Result returned by [`Self::step_commissioning`].
-    /// - `backend`: SPI + GPIO backend for register access.
-    /// - `tmc`: Static reference to the TMC channel atomics for this motor.
-    /// - `stepper`: Static reference to the stepper channel atomics.
-    /// - `config`: Board-level TMC control configuration (provides `pwm_maxcnt`).
-    pub async fn drive_commissioning_result<B>(
-        &mut self,
-        result: crate::commissioning::types::StepResult,
-        backend: &mut B,
-        tmc: &'static crate::state::tmc::TmcChannelState,
-        stepper: &'static crate::state::stepper::StepperChannelState,
-        config: &crate::tmc_control::config::TmcControlConfig,
-    ) -> Option<crate::tmc_control::actions::CommissionTickAction>
-    where
-        B: crate::commissioning::types::CommissioningBackend,
-    {
-        self.commission_engine.as_ref()?;
-
-        // Construct DispatchState from direct field references so that Rust can
-        // see the field borrows as disjoint from &mut self.commission_engine.
-        // Calling self.dispatch_state would re-borrow all of &mut self and
-        // create a conflict with the engine slot below.
-        let mut dispatch = crate::commission_dispatch::DispatchState::new(
-            tmc,
-            stepper,
-            &mut self.calibrated,
-            &mut self.motor_enabled,
-            &mut self.stored_gains,
-        );
-        let outcome = crate::commission_dispatch::drive_commission_result(
-            result,
-            &mut self.commission_engine,
-            backend,
-            &mut dispatch,
-            config.tmc.pwm_maxcnt,
-        )
-        .await;
-
-        match outcome {
-            crate::commission_dispatch::CommissionOutcome::Continue => {
-                Some(crate::tmc_control::actions::CommissionTickAction::Continue)
-            }
-            crate::commission_dispatch::CommissionOutcome::PhaseChanged {
-                oid,
-                phase_id,
-                engine_kind,
-            } => Some(
-                crate::tmc_control::actions::CommissionTickAction::PhaseChanged {
-                    oid,
-                    phase_id,
-                    engine_kind,
-                },
-            ),
-            crate::commission_dispatch::CommissionOutcome::Terminal { reply, actions } => {
-                Some(crate::tmc_control::actions::CommissionTickAction::Terminal { reply, actions })
             }
         }
-    }
-
-    /// Tick the active commissioning engine once and return the outcome.
-    ///
-    /// Drives `engine.step(backend)` then feeds the result into
-    /// `drive_commission_result`, which performs any required SPI restore,
-    /// atomic stores, filter re-apply, and arm/disarm work. Returns `None`
-    /// immediately when no engine is installed.
-    ///
-    /// # Parameters
-    /// - `backend`: SPI + GPIO backend for register access.
-    /// - `tmc`: Static reference to the TMC channel atomics for this motor.
-    /// - `stepper`: Static reference to the stepper channel atomics.
-    /// - `config`: Board-level TMC control configuration (provides `pwm_maxcnt`).
-    pub async fn tick_commissioning<B>(
-        &mut self,
-        backend: &mut B,
-        tmc: &'static crate::state::tmc::TmcChannelState,
-        stepper: &'static crate::state::stepper::StepperChannelState,
-        config: &crate::tmc_control::config::TmcControlConfig,
-    ) -> Option<crate::tmc_control::actions::CommissionTickAction>
-    where
-        B: crate::commissioning::types::CommissioningBackend,
-    {
-        let result = self.step_commissioning(backend).await?;
-        self.drive_commissioning_result(result, backend, tmc, stepper, config)
-            .await
     }
 
     /// Prepare an enable request up to the point where SPI or backend work begins.

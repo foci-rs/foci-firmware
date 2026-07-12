@@ -906,12 +906,18 @@ mod tests {
             0.03125,
             crate::config::TmcConfig::default_for_test(),
         );
-        let runtime_tick = size_of_val(&runtime.tick_commissioning(
-            &mut backend,
-            crate::state::tmc::tmc_channel0(),
-            crate::state::stepper::stepper_channel0(),
-            &config,
-        ));
+        let runtime_tick = size_of_val(&async {
+            let poll = runtime.step_commissioning_scheduled(&mut backend).await?;
+            runtime
+                .drive_commissioning_poll(
+                    poll,
+                    &mut backend,
+                    crate::state::tmc::tmc_channel0(),
+                    crate::state::stepper::stepper_channel0(),
+                    &config,
+                )
+                .await
+        });
 
         assert_eq!(size_of::<CommissioningEngine>(), 3_760);
         assert!(size_of::<CommissioningEngine>() <= 4_528);
@@ -931,9 +937,9 @@ mod tests {
         assert_eq!(electrical_id, 608);
         assert!(electrical_id <= 608);
         assert!(electrical_id <= 960);
-        assert_eq!(runtime_tick, 22_576);
-        // Historical pre-Task-7 baseline: 22,304 bytes. The containing future
-        // retains 272 additional bytes after compiler layout reuse.
+        assert_eq!(runtime_tick, 22_512);
+        // Historical pre-Task-7 baseline: 22,304 bytes. The scheduled future
+        // retains 208 additional bytes after compiler layout reuse.
         assert!(runtime_tick <= 22_576);
     }
 
