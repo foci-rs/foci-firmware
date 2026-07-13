@@ -3426,6 +3426,46 @@ mod tests {
     }
 
     #[test]
+    fn scheduled_inductance_uses_observation_timestamp_for_estimator_elapsed_time() {
+        pollster::block_on(async {
+            let mut capture = inductance_capture_state(0, 0, 0, 0);
+            capture.start_us = 900;
+            capture.next_sample_us = 1_000;
+            let mut phase = InnerPhase::ElectricalId {
+                state: ElectricalIdState::InductanceSample { capture },
+                data: representative_data(),
+            };
+            let mut buf = TransientBuffer::new();
+            let mut backend = MockBackend::new();
+            backend.set_elapsed_us_sequence(&[1_000, 1_000, 1_040, 1_040, 1_080, 1_080, 1_090]);
+            backend.set_openloop_phi_sequence(&[1_000], 0);
+            backend.set_pid_torque_flux_actual_sequence(&[((-84i16 as u16 as u32) << 16) | 20]);
+            let mut selftest = crate::selftest::SelftestResults::default();
+            let mut diagnostics = crate::selftest::CommissionDiagnostics::default();
+
+            let result = step_electrical_identification(
+                &mut phase,
+                &mut buf,
+                InnerSequence::Commission,
+                &mut selftest,
+                &mut diagnostics,
+                &mut backend,
+            )
+            .await;
+
+            assert!(matches!(result, StepResult::At(1_100)));
+            let InnerPhase::ElectricalId {
+                state: ElectricalIdState::InductanceSample { capture },
+                ..
+            } = phase
+            else {
+                panic!("capture should remain active");
+            };
+            assert_eq!(capture.previous_elapsed_us, 180);
+        });
+    }
+
+    #[test]
     fn inductance_poll_wall_includes_work_after_observation() {
         pollster::block_on(async {
             let mut capture = inductance_capture_state(0, 0, 0, 0);
@@ -3439,7 +3479,7 @@ mod tests {
             let mut backend = MockBackend::new();
             backend.elapsed_us_value = 10_020;
             backend
-                .set_elapsed_us_sequence(&[10_000, 10_000, 10_010, 10_010, 10_020, 10_020, 10_101]);
+                .set_elapsed_us_sequence(&[10_000, 10_000, 10_010, 10_010, 10_020, 10_020, 10_100]);
             backend.set_openloop_phi_sequence(&[1_000], 0);
             backend.set_pid_torque_flux_actual_sequence(&[((-84i16 as u16 as u32) << 16) | 20]);
             let mut selftest = crate::selftest::SelftestResults::default();
@@ -3468,7 +3508,7 @@ mod tests {
             };
             let timing = capture.timing.finish().unwrap();
             assert_eq!(timing.max_spi_wall_us, 20);
-            assert_eq!(timing.max_poll_wall_us, 101);
+            assert_eq!(timing.max_poll_wall_us, 100);
         });
     }
 

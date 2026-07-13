@@ -876,7 +876,9 @@ fn resistance_test_uses_board_monotonic_for_sample_timing() {
         let mut runtime = ready_runtime();
         let mut delay = MockDelay {
             advance_on_delay: true,
-            advance_on_now_us: 1_000,
+            // Each logical sample observes two 3 ms register-operation spans,
+            // exceeding the 5 ms sample-start period's service deadline.
+            advance_on_now_us: 3_000,
             ..MockDelay::default()
         };
         let raw_spi = DiagnosticMockSpi::default()

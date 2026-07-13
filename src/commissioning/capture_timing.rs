@@ -7,8 +7,10 @@ pub enum TimingReject {
     ArithmeticOverflow,
     /// A timestamp moved backwards or violated poll ordering.
     NonMonotonicTime,
-    /// Observation lateness exceeded one quarter of the requested period.
+    /// Sample-start lateness exceeded one quarter of the requested period.
     ExcessiveLateness,
+    /// Complete sample service finished after the next sample-start deadline.
+    ServiceOverrun,
     /// The capture missed more sample slots than its method permits.
     MissedSamples,
     /// One observation gap skipped more consecutive logical sample slots than permitted.
@@ -104,7 +106,7 @@ pub struct CaptureTimingEvidence {
     pub missed_samples: u16,
     /// Largest number of consecutive logical sample slots skipped in one observation gap.
     pub max_consecutive_misses: u8,
-    /// Maximum observation lateness in microseconds.
+    /// Maximum sample-start lateness in microseconds.
     pub max_lateness_us: u32,
     /// Maximum interval between accepted observations in microseconds.
     pub max_interval_us: u32,
@@ -190,7 +192,7 @@ impl CaptureTiming {
             return Err(TimingReject::NonMonotonicTime);
         }
 
-        let lateness_us = observation_us
+        let lateness_us = poll_entry_us
             .checked_sub(slot.sample_deadline_us)
             .ok_or(TimingReject::NonMonotonicTime)?;
         update_max_u32(&mut self.max_lateness_us, lateness_us, &mut self.overflowed);
@@ -207,6 +209,10 @@ impl CaptureTiming {
         );
         if u64::from(spi_wall_us) > poll_wall_us {
             return Err(TimingReject::SpiWallExceedsPoll);
+        }
+        self.max_spi_wall_us = self.max_spi_wall_us.max(spi_wall_us);
+        if poll_completion_us > slot.next_deadline_us {
+            return Err(TimingReject::ServiceOverrun);
         }
 
         self.valid_samples = saturating_add_u16(self.valid_samples, 1, &mut self.overflowed);
@@ -225,7 +231,6 @@ impl CaptureTiming {
             self.max_consecutive_misses = self.max_consecutive_misses.max(self.consecutive_misses);
         }
 
-        self.max_spi_wall_us = self.max_spi_wall_us.max(spi_wall_us);
         if self.valid_samples > 1 {
             let interval_us = observation_us
                 .checked_sub(self.previous_observation_us)
@@ -369,22 +374,22 @@ mod tests {
     }
 
     #[test]
-    fn exact_quarter_period_lateness_is_accepted() {
+    fn observation_after_quarter_period_is_accepted_when_sample_start_is_on_time() {
         let mut timing = CaptureTiming::new(100, TimingEnvelope::DELAY);
         timing
-            .record_sample(1_000, 1_000, 1_025, 1_030, 20)
+            .record_sample(1_000, 1_000, 1_080, 1_090, 80)
             .unwrap();
 
         let evidence = timing.finish().unwrap();
-        assert_eq!(evidence.max_lateness_us, 25);
+        assert_eq!(evidence.max_lateness_us, 0);
     }
 
     #[test]
-    fn rejected_sample_snapshot_retains_offending_lateness() {
+    fn sample_start_lateness_above_quarter_period_is_rejected() {
         let mut timing = CaptureTiming::new(100, TimingEnvelope::DELAY);
 
         assert_eq!(
-            timing.record_sample(1_000, 1_000, 1_026, 1_030, 4),
+            timing.record_sample(1_000, 1_026, 1_080, 1_090, 54),
             Err(TimingReject::ExcessiveLateness),
         );
         let (evidence, overflowed) = timing.snapshot();
@@ -392,6 +397,37 @@ mod tests {
         assert_eq!(evidence.valid_samples, 0);
         assert_eq!(evidence.max_lateness_us, 26);
         assert_eq!(evidence.max_poll_wall_us, 0);
+        assert!(!overflowed);
+    }
+
+    #[test]
+    fn sample_completion_exactly_at_next_deadline_is_accepted() {
+        let mut timing = CaptureTiming::new(100, TimingEnvelope::INDUCTANCE);
+
+        timing
+            .record_sample(1_000, 1_000, 1_080, 1_100, 80)
+            .unwrap();
+
+        let evidence = timing.finish().unwrap();
+        assert_eq!(evidence.valid_samples, 1);
+        assert_eq!(evidence.max_poll_wall_us, 100);
+        assert_eq!(evidence.max_spi_wall_us, 80);
+    }
+
+    #[test]
+    fn sample_completion_after_next_deadline_rejects_with_service_evidence() {
+        let mut timing = CaptureTiming::new(100, TimingEnvelope::INDUCTANCE);
+
+        assert_eq!(
+            timing.record_sample(1_000, 1_000, 1_080, 1_101, 80),
+            Err(TimingReject::ServiceOverrun),
+        );
+        let (evidence, overflowed) = timing.snapshot();
+
+        assert_eq!(evidence.valid_samples, 0);
+        assert_eq!(evidence.max_lateness_us, 0);
+        assert_eq!(evidence.max_poll_wall_us, 101);
+        assert_eq!(evidence.max_spi_wall_us, 80);
         assert!(!overflowed);
     }
 
@@ -420,16 +456,6 @@ mod tests {
         assert!(overflowed);
         assert_eq!(evidence.max_spi_wall_us, u32::MAX);
         assert_eq!(timing.finish(), Err(TimingReject::TelemetryOverflow));
-    }
-
-    #[test]
-    fn lateness_above_quarter_period_is_rejected() {
-        let mut timing = CaptureTiming::new(100, TimingEnvelope::DELAY);
-
-        assert_eq!(
-            timing.record_sample(1_000, 1_000, 1_026, 1_030, 20),
-            Err(TimingReject::ExcessiveLateness),
-        );
     }
 
     #[test]
