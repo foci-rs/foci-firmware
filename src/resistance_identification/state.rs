@@ -40,7 +40,7 @@ pub struct ResistanceTimingEvidence {
     pub missed_samples: u16,
     /// Largest consecutive skipped-slot count.
     pub max_consecutive_misses: u8,
-    /// Largest observation lateness.
+    /// Largest sample-start lateness.
     pub max_lateness_us: u32,
     /// Largest accepted-observation interval.
     pub max_interval_us: u32,

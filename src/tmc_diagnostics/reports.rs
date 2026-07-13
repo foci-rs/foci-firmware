@@ -733,7 +733,7 @@ pub struct CommissionTimingReport {
     pub missed_samples: u16,
     /// Largest consecutive skipped-slot count.
     pub max_consecutive_misses: u8,
-    /// Maximum observation lateness in microseconds.
+    /// Maximum sample-start lateness in microseconds.
     pub max_lateness_us: u32,
     /// Maximum accepted-observation interval in microseconds.
     pub max_interval_us: u32,
