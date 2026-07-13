@@ -40,8 +40,8 @@ const INDUCTANCE_OPENLOOP_VELOCITY_TARGET_RPM: u32 = 1_200;
 const INDUCTANCE_OPENLOOP_ACCELERATION: u32 = 0x000f_ffff;
 const INDUCTANCE_OPENLOOP_RAMP_TIMEOUT_US: u64 = 2_000;
 const INDUCTANCE_AC_SETTLE_US: u64 = 8_500;
-const INDUCTANCE_AC_SAMPLE_PERIOD_US: u16 = 400;
-const INDUCTANCE_AC_TARGET_PHI_DELTA_COUNTS: u32 = 40 * 65_536;
+const INDUCTANCE_AC_SAMPLE_PERIOD_US: u16 = 200;
+const INDUCTANCE_AC_TARGET_PHI_DELTA_COUNTS: u32 = 20 * 65_536;
 const INDUCTANCE_MIN_ABS_IQ_MILLI_COUNT: i32 = 30_000;
 const INDUCTANCE_MAX_ENCODER_DELTA_COUNTS: u32 = 8;
 const INDUCTANCE_MAX_DRIFT_WARN_PERMILLE: u16 = 70;
@@ -2360,8 +2360,8 @@ mod tests {
     #[test]
     fn electrical_capture_periods_preserve_required_windows() {
         assert_eq!(ELECTRICAL_SAMPLE_PERIOD_US, 200);
-        assert_eq!(INDUCTANCE_AC_SAMPLE_PERIOD_US, 400);
-        assert_eq!(INDUCTANCE_AC_TARGET_PHI_DELTA_COUNTS, 40 * 65_536);
+        assert_eq!(INDUCTANCE_AC_SAMPLE_PERIOD_US, 200);
+        assert_eq!(INDUCTANCE_AC_TARGET_PHI_DELTA_COUNTS, 20 * 65_536);
         assert_eq!(scheduled_samples_for_fixed_window(1_050_000), 95);
         assert!(
             scheduled_samples_for_fixed_window(1_050_000)
@@ -3501,7 +3501,7 @@ mod tests {
             )
             .await;
 
-            assert!(matches!(result, StepResult::At(1_400)));
+            assert!(matches!(result, StepResult::At(1_200)));
             let InnerPhase::ElectricalId {
                 state: ElectricalIdState::InductanceSample { capture },
                 ..
@@ -3544,7 +3544,7 @@ mod tests {
             .await;
 
             assert!(
-                matches!(result, StepResult::At(10_400)),
+                matches!(result, StepResult::At(10_200)),
                 "expected next sample deadline, got {result:?} in {phase:?}"
             );
             let InnerPhase::ElectricalId {
@@ -3564,7 +3564,7 @@ mod tests {
     fn inductance_accepts_two_nonconsecutive_misses_without_catch_up() {
         pollster::block_on(async {
             let mut capture = inductance_capture_state(0, 0, 0, 0);
-            capture.next_sample_us = 400;
+            capture.next_sample_us = 200;
             let mut phase = InnerPhase::ElectricalId {
                 state: ElectricalIdState::InductanceSample { capture },
                 data: representative_data(),
@@ -3578,7 +3578,7 @@ mod tests {
             let mut selftest = crate::selftest::SelftestResults::default();
             let mut diagnostics = crate::selftest::CommissionDiagnostics::default();
 
-            for now in [800, 1_200, 2_000, 2_400] {
+            for now in [400, 600, 1_000, 1_200] {
                 backend.elapsed_us_value = now;
                 let before = register_operation_count(&backend.spi_log);
                 let result = step_electrical_identification(
@@ -3613,14 +3613,14 @@ mod tests {
     fn inductance_skips_excessively_late_slot_before_spi() {
         pollster::block_on(async {
             let mut capture = inductance_capture_state(0, 0, 0, 0);
-            capture.next_sample_us = 400;
+            capture.next_sample_us = 200;
             let mut phase = InnerPhase::ElectricalId {
                 state: ElectricalIdState::InductanceSample { capture },
                 data: representative_data(),
             };
             let mut backend = MockBackend::new();
             backend.enable_pin = true;
-            backend.elapsed_us_value = 584;
+            backend.elapsed_us_value = 292;
             let mut buf = TransientBuffer::new();
             let mut selftest = crate::selftest::SelftestResults::default();
             let mut diagnostics = crate::selftest::CommissionDiagnostics::default();
@@ -3636,7 +3636,7 @@ mod tests {
             )
             .await;
 
-            assert!(matches!(result, StepResult::At(800)));
+            assert!(matches!(result, StepResult::At(400)));
             assert_eq!(register_operation_count(&backend.spi_log) - before, 0);
             let InnerPhase::ElectricalId {
                 state: ElectricalIdState::InductanceSample { capture },
@@ -3649,7 +3649,7 @@ mod tests {
             assert_eq!(evidence.valid_samples, 0);
             assert_eq!(evidence.missed_samples, 1);
             assert_eq!(evidence.max_consecutive_misses, 1);
-            assert_eq!(evidence.max_lateness_us, 184);
+            assert_eq!(evidence.max_lateness_us, 92);
         });
     }
 
@@ -3657,14 +3657,14 @@ mod tests {
     fn inductance_retains_two_consecutive_late_slots_before_spi() {
         pollster::block_on(async {
             let mut capture = inductance_capture_state(0, 0, 0, 0);
-            capture.next_sample_us = 400;
+            capture.next_sample_us = 200;
             let mut phase = InnerPhase::ElectricalId {
                 state: ElectricalIdState::InductanceSample { capture },
                 data: representative_data(),
             };
             let mut backend = MockBackend::new();
             backend.enable_pin = true;
-            backend.elapsed_us_value = 936;
+            backend.elapsed_us_value = 468;
             let mut buf = TransientBuffer::new();
             let mut selftest = crate::selftest::SelftestResults::default();
             let mut diagnostics = crate::selftest::CommissionDiagnostics::default();
@@ -3680,7 +3680,7 @@ mod tests {
             )
             .await;
 
-            assert!(matches!(result, StepResult::At(1_200)));
+            assert!(matches!(result, StepResult::At(600)));
             assert_eq!(register_operation_count(&backend.spi_log) - before, 0);
             assert!(backend.enable_pin);
             let InnerPhase::ElectricalId {
@@ -3690,7 +3690,7 @@ mod tests {
             else {
                 panic!("capture should remain active");
             };
-            assert_eq!(capture.next_sample_us, 1_200);
+            assert_eq!(capture.next_sample_us, 600);
             let evidence = capture.timing.finish().unwrap();
             assert_eq!(evidence.missed_samples, 2);
             assert_eq!(evidence.max_consecutive_misses, 2);
@@ -3701,7 +3701,7 @@ mod tests {
     fn inductance_third_miss_rejects_without_catch_up() {
         pollster::block_on(async {
             let mut capture = inductance_capture_state(0, 0, 0, 0);
-            capture.next_sample_us = 400;
+            capture.next_sample_us = 200;
             let mut phase = InnerPhase::ElectricalId {
                 state: ElectricalIdState::InductanceSample { capture },
                 data: representative_data(),
@@ -3715,7 +3715,7 @@ mod tests {
             let mut selftest = crate::selftest::SelftestResults::default();
             let mut diagnostics = crate::selftest::CommissionDiagnostics::default();
 
-            for now in [800, 1_200, 2_000, 2_400] {
+            for now in [400, 600, 1_000, 1_200] {
                 backend.elapsed_us_value = now;
                 let _ = step_electrical_identification(
                     &mut phase,
@@ -3727,7 +3727,7 @@ mod tests {
                 )
                 .await;
             }
-            backend.elapsed_us_value = 3_200;
+            backend.elapsed_us_value = 1_600;
             let before = register_operation_count(&backend.spi_log);
             let result = step_electrical_identification(
                 &mut phase,
