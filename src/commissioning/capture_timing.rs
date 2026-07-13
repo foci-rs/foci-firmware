@@ -302,9 +302,16 @@ impl CaptureTiming {
 
     fn record_misses_before_accepted_sample(&mut self, missed: u32) {
         self.missed_samples = saturating_add_u16(self.missed_samples, missed, &mut self.overflowed);
-        let consecutive_misses = match u8::try_from(missed) {
+        let missed = match u8::try_from(missed) {
             Ok(missed) => missed,
             Err(_) => {
+                self.overflowed = true;
+                u8::MAX
+            }
+        };
+        let consecutive_misses = match self.consecutive_misses.checked_add(missed) {
+            Some(consecutive) => consecutive,
+            None => {
                 self.overflowed = true;
                 u8::MAX
             }
@@ -657,6 +664,26 @@ mod tests {
         assert_eq!(evidence.missed_samples, 2);
         assert_eq!(evidence.max_consecutive_misses, 2);
         assert!(!overflowed);
+    }
+
+    #[test]
+    fn elapsed_slot_before_next_sample_extends_preflight_miss_chain() {
+        let mut timing = CaptureTiming::new(100, TimingEnvelope::INDUCTANCE);
+        assert_eq!(
+            timing.classify_sample_start(1_000, 1_092).unwrap(),
+            SampleStart::Skip {
+                next_deadline_us: 1_100
+            }
+        );
+
+        timing.record_sample(1_100, 1_200, 1_205, 1_210, 5).unwrap();
+
+        let (evidence, overflowed) = timing.snapshot();
+        assert_eq!(evidence.valid_samples, 1);
+        assert_eq!(evidence.missed_samples, 2);
+        assert_eq!(evidence.max_consecutive_misses, 2);
+        assert!(!overflowed);
+        assert_eq!(timing.finish(), Err(TimingReject::ConsecutiveMisses));
     }
 
     #[test]
