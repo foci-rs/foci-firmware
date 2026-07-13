@@ -3622,7 +3622,7 @@ mod tests {
     }
 
     #[test]
-    fn inductance_rejects_two_consecutive_late_slots_before_spi() {
+    fn inductance_retains_two_consecutive_late_slots_before_spi() {
         pollster::block_on(async {
             let mut capture = inductance_capture_state(0, 0, 0, 0);
             capture.next_sample_us = 100;
@@ -3648,19 +3648,20 @@ mod tests {
             )
             .await;
 
-            assert!(matches!(result, StepResult::ReadyNow));
+            assert!(matches!(result, StepResult::At(300)));
             assert_eq!(register_operation_count(&backend.spi_log) - before, 0);
-            assert!(!backend.enable_pin);
-            assert!(matches!(
-                phase,
-                InnerPhase::ElectricalId {
-                    state: ElectricalIdState::InductanceRestore {
-                        primary_error: Some(CommissionError::InductanceTimingRejected),
-                        ..
-                    },
-                    ..
-                }
-            ));
+            assert!(backend.enable_pin);
+            let InnerPhase::ElectricalId {
+                state: ElectricalIdState::InductanceSample { capture },
+                ..
+            } = phase
+            else {
+                panic!("capture should remain active");
+            };
+            assert_eq!(capture.next_sample_us, 300);
+            let evidence = capture.timing.finish().unwrap();
+            assert_eq!(evidence.missed_samples, 2);
+            assert_eq!(evidence.max_consecutive_misses, 2);
         });
     }
 

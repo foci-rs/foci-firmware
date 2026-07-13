@@ -38,11 +38,11 @@ impl TimingEnvelope {
         allow_consecutive_misses: false,
     };
 
-    /// Inductance permits two missed slots and at most one consecutive logical slot skipped
-    /// within any observation gap.
+    /// Inductance permits two missed slots, including consecutive logical slots skipped
+    /// within one or more observation gaps.
     pub const INDUCTANCE: Self = Self {
         max_missed_samples: 2,
-        allow_consecutive_misses: false,
+        allow_consecutive_misses: true,
     };
 
     /// Electrical delay permits no missed slots.
@@ -588,13 +588,15 @@ mod tests {
     }
 
     #[test]
-    fn multiple_slots_skipped_in_one_wakeup_are_consecutive() {
+    fn inductance_accepts_two_slots_skipped_in_one_wakeup() {
         let mut timing = CaptureTiming::new(100, TimingEnvelope::INDUCTANCE);
         timing
             .record_sample(1_000, 1_200, 1_200, 1_210, 10)
             .unwrap();
 
-        assert_eq!(timing.finish(), Err(TimingReject::ConsecutiveMisses));
+        let evidence = timing.finish().unwrap();
+        assert_eq!(evidence.missed_samples, 2);
+        assert_eq!(evidence.max_consecutive_misses, 2);
     }
 
     #[test]
@@ -631,23 +633,24 @@ mod tests {
     }
 
     #[test]
-    fn elapsed_and_selected_slot_skips_reject_as_consecutive() {
+    fn elapsed_and_selected_slot_skips_retain_two_misses() {
         let mut timing = CaptureTiming::new(100, TimingEnvelope::INDUCTANCE);
 
         assert_eq!(
-            timing.classify_sample_start(1_000, 1_168),
-            Err(TimingReject::ConsecutiveMisses),
+            timing.classify_sample_start(1_000, 1_168).unwrap(),
+            SampleStart::Skip {
+                next_deadline_us: 1_200
+            },
         );
-        let (evidence, overflowed) = timing.snapshot();
+        let evidence = timing.finish().unwrap();
         assert_eq!(evidence.valid_samples, 0);
         assert_eq!(evidence.missed_samples, 2);
         assert_eq!(evidence.max_consecutive_misses, 2);
         assert_eq!(evidence.max_lateness_us, 68);
-        assert!(!overflowed);
     }
 
     #[test]
-    fn successive_selected_slot_skips_accumulate_as_consecutive() {
+    fn successive_selected_slot_skips_retain_two_misses() {
         let mut timing = CaptureTiming::new(100, TimingEnvelope::INDUCTANCE);
 
         assert_eq!(
@@ -657,17 +660,18 @@ mod tests {
             }
         );
         assert_eq!(
-            timing.classify_sample_start(1_100, 1_192),
-            Err(TimingReject::ConsecutiveMisses),
+            timing.classify_sample_start(1_100, 1_192).unwrap(),
+            SampleStart::Skip {
+                next_deadline_us: 1_200
+            },
         );
-        let (evidence, overflowed) = timing.snapshot();
+        let evidence = timing.finish().unwrap();
         assert_eq!(evidence.missed_samples, 2);
         assert_eq!(evidence.max_consecutive_misses, 2);
-        assert!(!overflowed);
     }
 
     #[test]
-    fn elapsed_slot_before_next_sample_extends_preflight_miss_chain() {
+    fn selected_skip_then_elapsed_slot_finishes_with_two_misses() {
         let mut timing = CaptureTiming::new(100, TimingEnvelope::INDUCTANCE);
         assert_eq!(
             timing.classify_sample_start(1_000, 1_092).unwrap(),
@@ -678,12 +682,10 @@ mod tests {
 
         timing.record_sample(1_100, 1_200, 1_205, 1_210, 5).unwrap();
 
-        let (evidence, overflowed) = timing.snapshot();
+        let evidence = timing.finish().unwrap();
         assert_eq!(evidence.valid_samples, 1);
         assert_eq!(evidence.missed_samples, 2);
         assert_eq!(evidence.max_consecutive_misses, 2);
-        assert!(!overflowed);
-        assert_eq!(timing.finish(), Err(TimingReject::ConsecutiveMisses));
     }
 
     #[test]
