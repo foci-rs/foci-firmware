@@ -6,10 +6,26 @@ use crate::tmc::TmcRequestKind;
 
 /// Maximum duration between request and cancellation checks while waiting.
 pub const COMMISSION_WAIT_SLICE_US: u64 = 1_000;
+/// Maximum terminal spin before an absolute commissioning deadline.
+///
+/// This bounds only the unpreempted spin tail. It does not bound total
+/// containment time, which also includes scheduler and dispatch latency.
+pub const COMMISSION_WAIT_GUARD_US: u64 = 32;
 /// Consecutive immediate polls allowed before forcing one scheduler yield.
 pub const MAX_CONSECUTIVE_READY_POLLS: u8 = 8;
 /// Duration of the forced scheduler yield after the immediate-poll limit.
 pub const FORCED_READY_YIELD_US: u64 = 1;
+
+/// Board action selected while waiting for an absolute commissioning deadline.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+pub enum AbsoluteWaitAction {
+    /// Poll the commissioning engine immediately.
+    PollNow,
+    /// Sleep until the absolute timestamp.
+    SleepUntil(u64),
+    /// Spin until the exact engine deadline.
+    SpinUntil(u64),
+}
 
 /// Board action selected by the shared commissioning poll driver.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
@@ -87,15 +103,34 @@ impl CommissionPollDriver {
     }
 }
 
-/// Return the next bounded wake, or `InvalidSchedule` on timestamp overflow.
-pub fn next_wait_slice(now_us: u64, deadline_us: u64) -> Result<u64, CommissionError> {
+/// Classify the next action for an absolute commissioning deadline.
+///
+/// The terminal spin is at most [`COMMISSION_WAIT_GUARD_US`]. This function
+/// does not bound total containment time, which also includes scheduler and
+/// dispatch latency.
+///
+/// # Errors
+/// Returns [`CommissionError::InvalidSchedule`] if the bounded sleep timestamp
+/// cannot be represented.
+pub fn classify_absolute_wait(
+    now_us: u64,
+    deadline_us: u64,
+) -> Result<AbsoluteWaitAction, CommissionError> {
     if now_us >= deadline_us {
-        return Ok(deadline_us);
+        return Ok(AbsoluteWaitAction::PollNow);
     }
-    let slice_end = now_us
+
+    let guarded_wake_us = deadline_us.saturating_sub(COMMISSION_WAIT_GUARD_US);
+    if now_us >= guarded_wake_us {
+        return Ok(AbsoluteWaitAction::SpinUntil(deadline_us));
+    }
+
+    let slice_end_us = now_us
         .checked_add(COMMISSION_WAIT_SLICE_US)
         .ok_or(CommissionError::InvalidSchedule)?;
-    Ok(slice_end.min(deadline_us))
+    Ok(AbsoluteWaitAction::SleepUntil(
+        slice_end_us.min(guarded_wake_us),
+    ))
 }
 
 /// Classify a queued request while commissioning owns the motor.
@@ -194,9 +229,47 @@ mod tests {
     }
 
     #[test]
-    fn long_wait_is_sliced() {
-        assert_eq!(next_wait_slice(5_000, 20_000).unwrap(), 6_000);
-        assert_eq!(next_wait_slice(19_500, 20_000).unwrap(), 20_000);
+    fn absolute_wait_slices_to_the_shared_guard_boundary() {
+        assert_eq!(
+            classify_absolute_wait(5_000, 20_000).unwrap(),
+            AbsoluteWaitAction::SleepUntil(6_000),
+        );
+        assert_eq!(
+            classify_absolute_wait(19_000, 20_000).unwrap(),
+            AbsoluteWaitAction::SleepUntil(19_968),
+        );
+    }
+
+    #[test]
+    fn absolute_wait_spins_only_inside_the_shared_guard() {
+        assert_eq!(
+            classify_absolute_wait(19_968, 20_000).unwrap(),
+            AbsoluteWaitAction::SpinUntil(20_000),
+        );
+        assert_eq!(
+            classify_absolute_wait(19_999, 20_000).unwrap(),
+            AbsoluteWaitAction::SpinUntil(20_000),
+        );
+    }
+
+    #[test]
+    fn elapsed_absolute_wait_repolls_without_spinning() {
+        assert_eq!(
+            classify_absolute_wait(20_000, 20_000).unwrap(),
+            AbsoluteWaitAction::PollNow,
+        );
+        assert_eq!(
+            classify_absolute_wait(20_017, 20_000).unwrap(),
+            AbsoluteWaitAction::PollNow,
+        );
+    }
+
+    #[test]
+    fn early_epoch_deadline_cannot_exceed_the_guard() {
+        assert_eq!(
+            classify_absolute_wait(0, 31).unwrap(),
+            AbsoluteWaitAction::SpinUntil(31),
+        );
     }
 
     #[test]
