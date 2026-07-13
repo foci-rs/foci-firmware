@@ -26,12 +26,8 @@ use crate::commissioning::types::{
 };
 use foci_tmc4671::registers::Register;
 
-/// Sampling interval for resistance and transient captures (microseconds).
-/// Matches PWM rate (~160us at 25 kHz) for Nyquist-rate current sampling.
-///
-/// Re-exported for the validation phase, which captures step responses at
-/// the same cadence.
-pub(crate) const ELECTRICAL_SAMPLE_PERIOD_US: u64 = 160;
+/// Validated delay-transient sampling interval in microseconds.
+pub(crate) const ELECTRICAL_SAMPLE_PERIOD_US: u64 = 200;
 
 /// Cooldown time after disabling a per-coil measurement (microseconds).
 const ELECTRICAL_COOLDOWN_US: u64 = 50_000;
@@ -44,8 +40,8 @@ const INDUCTANCE_OPENLOOP_VELOCITY_TARGET_RPM: u32 = 1_200;
 const INDUCTANCE_OPENLOOP_ACCELERATION: u32 = 0x000f_ffff;
 const INDUCTANCE_OPENLOOP_RAMP_TIMEOUT_US: u64 = 2_000;
 const INDUCTANCE_AC_SETTLE_US: u64 = 8_500;
-const INDUCTANCE_AC_SAMPLE_PERIOD_US: u16 = 100;
-const INDUCTANCE_AC_TARGET_PHI_DELTA_COUNTS: u32 = 10 * 65_536;
+const INDUCTANCE_AC_SAMPLE_PERIOD_US: u16 = 200;
+const INDUCTANCE_AC_TARGET_PHI_DELTA_COUNTS: u32 = 20 * 65_536;
 const INDUCTANCE_MIN_ABS_IQ_MILLI_COUNT: i32 = 30_000;
 const INDUCTANCE_MAX_ENCODER_DELTA_COUNTS: u32 = 8;
 const INDUCTANCE_MAX_DRIFT_WARN_PERMILLE: u16 = 70;
@@ -64,7 +60,8 @@ const fn scheduled_samples_for_fixed_window(frequency_millihz: u32) -> u32 {
     if frequency_millihz == 0 {
         return 0;
     }
-    let window_us = 10_000_000_000u64 / frequency_millihz as u64;
+    let window_us = INDUCTANCE_AC_TARGET_PHI_DELTA_COUNTS as u64 * 1_000_000_000
+        / (65_536 * frequency_millihz as u64);
     (window_us / INDUCTANCE_AC_SAMPLE_PERIOD_US as u64) as u32
 }
 
@@ -2343,9 +2340,10 @@ mod tests {
     const TEST_THETA_E_US: u32 = 160;
 
     #[test]
-    fn inductance_fixed_window_keeps_minimum_samples_at_upper_frequency() {
-        assert_eq!(INDUCTANCE_AC_SAMPLE_PERIOD_US, 100);
-        assert_eq!(INDUCTANCE_AC_TARGET_PHI_DELTA_COUNTS, 10 * 65_536);
+    fn electrical_capture_periods_preserve_required_windows() {
+        assert_eq!(ELECTRICAL_SAMPLE_PERIOD_US, 200);
+        assert_eq!(INDUCTANCE_AC_SAMPLE_PERIOD_US, 200);
+        assert_eq!(INDUCTANCE_AC_TARGET_PHI_DELTA_COUNTS, 20 * 65_536);
         assert_eq!(scheduled_samples_for_fixed_window(1_050_000), 95);
         assert!(
             scheduled_samples_for_fixed_window(1_050_000)
@@ -2466,6 +2464,16 @@ mod tests {
             next_sample_us: 0,
             timing: CaptureTiming::new(INDUCTANCE_AC_SAMPLE_PERIOD_US, TimingEnvelope::INDUCTANCE),
         }
+    }
+
+    fn fixed_window_phi(index: u32, sample_count: u32) -> u16 {
+        ((index * INDUCTANCE_AC_TARGET_PHI_DELTA_COUNTS / sample_count) & 0xffff) as u16
+    }
+
+    fn fixed_window_phi_weight(index: u32, sample_count: u32) -> u32 {
+        let start = index * INDUCTANCE_AC_TARGET_PHI_DELTA_COUNTS / sample_count;
+        let end = (index + 1) * INDUCTANCE_AC_TARGET_PHI_DELTA_COUNTS / sample_count;
+        end - start
     }
 
     #[test]
@@ -3352,7 +3360,7 @@ mod tests {
             let mut buf = TransientBuffer::new();
             let mut backend = MockBackend::new();
             backend.enable_pin = true;
-            backend.elapsed_us_value = 100;
+            backend.elapsed_us_value = u64::from(INDUCTANCE_AC_SAMPLE_PERIOD_US);
             backend.set_openloop_phi_sequence(&[1_000], 0);
             backend.set_pid_torque_flux_actual_sequence(&[((-84i16 as u16 as u32) << 16) | 20]);
             let mut selftest_results = crate::selftest::SelftestResults::default();
@@ -3384,7 +3392,7 @@ mod tests {
             assert_eq!(detail.status, 1);
             assert_eq!(detail.value0, 7);
             assert_eq!(detail.value1, u32::from(INDUCTANCE_MIN_AC_SAMPLE_COUNT + 1));
-            assert_eq!(detail.value2, (9_000u32 << 16) | 100u32);
+            assert_eq!(detail.value2, (9_000u32 << 16) | 200u32);
             assert_ac_teardown_after_failure(&backend);
         });
     }
@@ -3469,7 +3477,7 @@ mod tests {
             )
             .await;
 
-            assert!(matches!(result, StepResult::At(1_100)));
+            assert!(matches!(result, StepResult::At(1_200)));
             let InnerPhase::ElectricalId {
                 state: ElectricalIdState::InductanceSample { capture },
                 ..
@@ -3512,7 +3520,7 @@ mod tests {
             .await;
 
             assert!(
-                matches!(result, StepResult::At(10_100)),
+                matches!(result, StepResult::At(10_200)),
                 "expected next sample deadline, got {result:?} in {phase:?}"
             );
             let InnerPhase::ElectricalId {
@@ -3532,7 +3540,7 @@ mod tests {
     fn inductance_accepts_two_nonconsecutive_misses_without_catch_up() {
         pollster::block_on(async {
             let mut capture = inductance_capture_state(0, 0, 0, 0);
-            capture.next_sample_us = 100;
+            capture.next_sample_us = 200;
             let mut phase = InnerPhase::ElectricalId {
                 state: ElectricalIdState::InductanceSample { capture },
                 data: representative_data(),
@@ -3546,7 +3554,7 @@ mod tests {
             let mut selftest = crate::selftest::SelftestResults::default();
             let mut diagnostics = crate::selftest::CommissionDiagnostics::default();
 
-            for now in [200, 300, 500, 600] {
+            for now in [400, 600, 1_000, 1_200] {
                 backend.elapsed_us_value = now;
                 let before = register_operation_count(&backend.spi_log);
                 let result = step_electrical_identification(
@@ -3581,14 +3589,14 @@ mod tests {
     fn inductance_skips_excessively_late_slot_before_spi() {
         pollster::block_on(async {
             let mut capture = inductance_capture_state(0, 0, 0, 0);
-            capture.next_sample_us = 100;
+            capture.next_sample_us = 200;
             let mut phase = InnerPhase::ElectricalId {
                 state: ElectricalIdState::InductanceSample { capture },
                 data: representative_data(),
             };
             let mut backend = MockBackend::new();
             backend.enable_pin = true;
-            backend.elapsed_us_value = 192;
+            backend.elapsed_us_value = 292;
             let mut buf = TransientBuffer::new();
             let mut selftest = crate::selftest::SelftestResults::default();
             let mut diagnostics = crate::selftest::CommissionDiagnostics::default();
@@ -3604,7 +3612,7 @@ mod tests {
             )
             .await;
 
-            assert!(matches!(result, StepResult::At(200)));
+            assert!(matches!(result, StepResult::At(400)));
             assert_eq!(register_operation_count(&backend.spi_log) - before, 0);
             let InnerPhase::ElectricalId {
                 state: ElectricalIdState::InductanceSample { capture },
@@ -3625,14 +3633,14 @@ mod tests {
     fn inductance_retains_two_consecutive_late_slots_before_spi() {
         pollster::block_on(async {
             let mut capture = inductance_capture_state(0, 0, 0, 0);
-            capture.next_sample_us = 100;
+            capture.next_sample_us = 200;
             let mut phase = InnerPhase::ElectricalId {
                 state: ElectricalIdState::InductanceSample { capture },
                 data: representative_data(),
             };
             let mut backend = MockBackend::new();
             backend.enable_pin = true;
-            backend.elapsed_us_value = 268;
+            backend.elapsed_us_value = 468;
             let mut buf = TransientBuffer::new();
             let mut selftest = crate::selftest::SelftestResults::default();
             let mut diagnostics = crate::selftest::CommissionDiagnostics::default();
@@ -3648,7 +3656,7 @@ mod tests {
             )
             .await;
 
-            assert!(matches!(result, StepResult::At(300)));
+            assert!(matches!(result, StepResult::At(600)));
             assert_eq!(register_operation_count(&backend.spi_log) - before, 0);
             assert!(backend.enable_pin);
             let InnerPhase::ElectricalId {
@@ -3658,7 +3666,7 @@ mod tests {
             else {
                 panic!("capture should remain active");
             };
-            assert_eq!(capture.next_sample_us, 300);
+            assert_eq!(capture.next_sample_us, 600);
             let evidence = capture.timing.finish().unwrap();
             assert_eq!(evidence.missed_samples, 2);
             assert_eq!(evidence.max_consecutive_misses, 2);
@@ -3669,7 +3677,7 @@ mod tests {
     fn inductance_third_miss_rejects_without_catch_up() {
         pollster::block_on(async {
             let mut capture = inductance_capture_state(0, 0, 0, 0);
-            capture.next_sample_us = 100;
+            capture.next_sample_us = 200;
             let mut phase = InnerPhase::ElectricalId {
                 state: ElectricalIdState::InductanceSample { capture },
                 data: representative_data(),
@@ -3683,7 +3691,7 @@ mod tests {
             let mut selftest = crate::selftest::SelftestResults::default();
             let mut diagnostics = crate::selftest::CommissionDiagnostics::default();
 
-            for now in [200, 300, 500, 600] {
+            for now in [400, 600, 1_000, 1_200] {
                 backend.elapsed_us_value = now;
                 let _ = step_electrical_identification(
                     &mut phase,
@@ -3695,7 +3703,7 @@ mod tests {
                 )
                 .await;
             }
-            backend.elapsed_us_value = 800;
+            backend.elapsed_us_value = 1_600;
             let before = register_operation_count(&backend.spi_log);
             let result = step_electrical_identification(
                 &mut phase,
@@ -3811,7 +3819,9 @@ mod tests {
             let mut current_samples = heapless::Vec::<u32, 128>::new();
             let actual = ((-84i16 as u16 as u32) << 16) | 20u32;
             for index in 0..=100u32 {
-                phi_samples.push(index.wrapping_mul(6_554) & 0xffff).ok();
+                phi_samples
+                    .push(u32::from(fixed_window_phi(index, 100)))
+                    .ok();
                 current_samples.push(actual).ok();
             }
             backend.set_openloop_phi_sequence(phi_samples.as_slice(), 0);
@@ -3841,7 +3851,7 @@ mod tests {
                 .inductance
                 .expect("inductance evidence should be retained");
             assert!(
-                (9_900..=10_100).contains(&evidence.run.elapsed_us),
+                (19_900..=20_100).contains(&evidence.run.elapsed_us),
                 "scheduler gap must not be charged to AC elapsed_us: {}",
                 evidence.run.elapsed_us
             );
@@ -3872,7 +3882,9 @@ mod tests {
             let mut current_samples = heapless::Vec::<u32, 128>::new();
             let actual = ((-84i16 as u16 as u32) << 16) | 20u32;
             for index in 1..=100u32 {
-                phi_samples.push(index.wrapping_mul(7_000) & 0xffff).ok();
+                phi_samples
+                    .push(u32::from(fixed_window_phi(index, 90)))
+                    .ok();
                 current_samples.push(actual).ok();
             }
             backend.set_openloop_phi_sequence(phi_samples.as_slice(), 0);
@@ -3901,7 +3913,7 @@ mod tests {
             assert_eq!(detail.phase, PhaseId::ElectricalId.to_u8());
             assert_eq!(detail.status, 1);
             assert!(detail.value0 > INDUCTANCE_REALIZED_FREQUENCY_TARGET_MILLIHZ);
-            assert!(detail.value1 < 10_000);
+            assert!(detail.value1 < 20_000);
             assert!(detail.value2 >= u32::from(INDUCTANCE_MIN_AC_SAMPLE_COUNT));
             assert_ac_teardown_after_failure(&backend);
         });
@@ -3915,8 +3927,8 @@ mod tests {
         let mut saliency = crate::electrical_capture::AcSaliencyAccumulator::new();
 
         for index in 0..100u32 {
-            let weight = if index == 99 { 6_514 } else { 6_554 };
-            let phi = ((index * INDUCTANCE_AC_TARGET_PHI_DELTA_COUNTS / 100) & 0xffff) as u16;
+            let weight = fixed_window_phi_weight(index, 100);
+            let phi = fixed_window_phi(index, 100);
             accumulator.push_weighted(20, -84, weight).unwrap();
             saliency
                 .push_weighted_sample(phi, weight, INDUCTANCE_AC_UD_EXT, 20, -84)
@@ -3933,7 +3945,7 @@ mod tests {
             encoder_domain: EncoderDomain::new(4000).unwrap(),
             encoder_start: 10,
             encoder_after: 10,
-            elapsed_us: 10_000,
+            elapsed_us: 20_000,
             phi_delta_counts: INDUCTANCE_AC_TARGET_PHI_DELTA_COUNTS,
             sample_count: 100,
             status_flags_or: 0x7000_4400,
@@ -3956,8 +3968,8 @@ mod tests {
         let mut saliency = crate::electrical_capture::AcSaliencyAccumulator::new();
 
         for index in 0..100u32 {
-            let weight = if index == 99 { 6_514 } else { 6_554 };
-            let phi = ((index * INDUCTANCE_AC_TARGET_PHI_DELTA_COUNTS / 100) & 0xffff) as u16;
+            let weight = fixed_window_phi_weight(index, 100);
+            let phi = fixed_window_phi(index, 100);
             accumulator.push_weighted(20, -84, weight).unwrap();
             saliency
                 .push_weighted_sample(phi, weight, INDUCTANCE_AC_UD_EXT, 20, -84)
@@ -3974,7 +3986,7 @@ mod tests {
             encoder_domain: EncoderDomain::new(4000).unwrap(),
             encoder_start: 10,
             encoder_after: 10 + INDUCTANCE_MAX_ENCODER_DELTA_COUNTS + 1,
-            elapsed_us: 10_000,
+            elapsed_us: 20_000,
             phi_delta_counts: INDUCTANCE_AC_TARGET_PHI_DELTA_COUNTS,
             sample_count: 100,
             status_flags_or: 0,
@@ -4110,7 +4122,9 @@ mod tests {
             let mut current_samples = heapless::Vec::<u32, 128>::new();
             let actual = ((-84i16 as u16 as u32) << 16) | 20u32;
             for index in 1..=100u32 {
-                phi_samples.push(index.wrapping_mul(6_554) & 0xffff).ok();
+                phi_samples
+                    .push(u32::from(fixed_window_phi(index, 100)))
+                    .ok();
                 current_samples.push(actual).ok();
             }
             backend.set_openloop_phi_sequence(phi_samples.as_slice(), 0);
@@ -4563,9 +4577,9 @@ mod tests {
                 &mut backend,
             )
             .await;
-            assert!(matches!(apply, StepResult::At(1_167)));
+            assert!(matches!(apply, StepResult::At(1_207)));
 
-            backend.elapsed_us_value = 1_167;
+            backend.elapsed_us_value = 1_207;
             let before = register_operation_count(&backend.spi_log);
             let sample = step_electrical_identification(
                 &mut phase,
@@ -4577,7 +4591,7 @@ mod tests {
             )
             .await;
 
-            assert!(matches!(sample, StepResult::At(1_327)));
+            assert!(matches!(sample, StepResult::At(1_407)));
             assert_eq!(register_operation_count(&backend.spi_log) - before, 1);
             assert_eq!(buf.samples(), &[250]);
             let InnerPhase::ElectricalId {
@@ -4588,7 +4602,7 @@ mod tests {
                 panic!("expected delay sample state: {phase:?}");
             };
             assert_eq!(capture.origin_us, 1_007);
-            assert_eq!(capture.offsets.offsets_us(), &[167]);
+            assert_eq!(capture.offsets.offsets_us(), &[207]);
         });
     }
 
@@ -4599,14 +4613,14 @@ mod tests {
             data.timing_states = crate::commissioning::types::COMMISSION_TIMING_REJECTED << 4;
             let mut phase = InnerPhase::ElectricalId {
                 state: ElectricalIdState::DelaySample {
-                    capture: delay_capture_state(0, 1_000, 1_160),
+                    capture: delay_capture_state(0, 1_000, 1_200),
                 },
                 data,
             };
             let mut buf = TransientBuffer::new();
             buf.reset(ELECTRICAL_SAMPLE_PERIOD_US as u16);
             let mut backend = MockBackend::new();
-            backend.elapsed_us_value = 1_320;
+            backend.elapsed_us_value = 1_400;
             backend.enable_pin = true;
             let mut selftest_results = crate::selftest::SelftestResults::default();
             let mut diagnostics = crate::selftest::CommissionDiagnostics::default();
@@ -4640,7 +4654,7 @@ mod tests {
                 unreachable!();
             };
             let timing = data.delay_timing.expect("rejected delay timing snapshot");
-            assert_eq!(timing.requested_period_us, 160);
+            assert_eq!(timing.requested_period_us, 200);
             assert_eq!(timing.valid_samples, 0);
             assert_eq!(timing.missed_samples, 1);
             assert_eq!(timing.max_consecutive_misses, 1);
@@ -4653,14 +4667,14 @@ mod tests {
         pollster::block_on(async {
             let mut phase = InnerPhase::ElectricalId {
                 state: ElectricalIdState::DelaySample {
-                    capture: delay_capture_state(0, 1_000, 1_160),
+                    capture: delay_capture_state(0, 1_000, 1_200),
                 },
                 data: ElectricalIdData::new(512),
             };
             let mut buf = TransientBuffer::new();
             buf.reset(ELECTRICAL_SAMPLE_PERIOD_US as u16);
             let mut backend = MockBackend::new();
-            backend.set_elapsed_us_sequence(&[1_160, 1_160, 1_200, 1_200, 1_320]);
+            backend.set_elapsed_us_sequence(&[1_200, 1_200, 1_240, 1_240, 1_400]);
             let _ = backend.registers.insert(PID_TORQUE_FLUX_ACTUAL.addr(), 250);
             let mut selftest_results = crate::selftest::SelftestResults::default();
             let mut diagnostics = crate::selftest::CommissionDiagnostics::default();
@@ -4675,7 +4689,7 @@ mod tests {
             )
             .await;
 
-            assert!(matches!(result, StepResult::At(1_320)));
+            assert!(matches!(result, StepResult::At(1_400)));
             assert_eq!(buf.samples(), &[250]);
             let InnerPhase::ElectricalId {
                 state: ElectricalIdState::DelaySample { capture },
@@ -4686,7 +4700,7 @@ mod tests {
             };
             let timing = capture.timing.finish().unwrap();
             assert_eq!(timing.valid_samples, 1);
-            assert_eq!(timing.max_poll_wall_us, 160);
+            assert_eq!(timing.max_poll_wall_us, 200);
             assert_eq!(timing.max_spi_wall_us, 40);
         });
     }
@@ -4696,7 +4710,7 @@ mod tests {
         pollster::block_on(async {
             let mut phase = InnerPhase::ElectricalId {
                 state: ElectricalIdState::DelaySample {
-                    capture: delay_capture_state(0, 1_000, 1_160),
+                    capture: delay_capture_state(0, 1_000, 1_200),
                 },
                 data: ElectricalIdData::new(512),
             };
@@ -4704,7 +4718,7 @@ mod tests {
             buf.reset(ELECTRICAL_SAMPLE_PERIOD_US as u16);
             let mut backend = MockBackend::new();
             backend.enable_pin = true;
-            backend.set_elapsed_us_sequence(&[1_160, 1_160, 1_200, 1_200, 1_321]);
+            backend.set_elapsed_us_sequence(&[1_200, 1_200, 1_240, 1_240, 1_401]);
             let _ = backend.registers.insert(PID_TORQUE_FLUX_ACTUAL.addr(), 250);
             let mut selftest_results = crate::selftest::SelftestResults::default();
             let mut diagnostics = crate::selftest::CommissionDiagnostics::default();
@@ -4737,7 +4751,7 @@ mod tests {
             ));
             let timing = data.delay_timing.expect("rejected delay timing snapshot");
             assert_eq!(timing.valid_samples, 0);
-            assert_eq!(timing.max_poll_wall_us, 161);
+            assert_eq!(timing.max_poll_wall_us, 201);
             assert_eq!(timing.max_spi_wall_us, 40);
         });
     }
@@ -4749,14 +4763,14 @@ mod tests {
             data.timing_states = crate::commissioning::types::COMMISSION_TIMING_REJECTED << 4;
             let mut phase = InnerPhase::ElectricalId {
                 state: ElectricalIdState::DelaySample {
-                    capture: delay_capture_state(0, 1_000, 1_160),
+                    capture: delay_capture_state(0, 1_000, 1_200),
                 },
                 data,
             };
             let mut buf = TransientBuffer::new();
             buf.reset(ELECTRICAL_SAMPLE_PERIOD_US as u16);
             let mut backend = MockBackend::new();
-            backend.elapsed_us_value = 1_160;
+            backend.elapsed_us_value = 1_200;
             backend.spi_elapsed_step_us = u64::from(u32::MAX) + 1;
             backend.enable_pin = true;
             let mut selftest_results = crate::selftest::SelftestResults::default();
@@ -4813,9 +4827,9 @@ mod tests {
         assert_eq!(header.value0 >> 16, 1);
         assert_eq!((header.value1 >> 24) & 0x03, 2);
 
-        let mut delay_capture = delay_capture_state(0, 1_000, 1_160);
-        let slot = sample_slot(1_160, 160, 1_320).unwrap();
-        delay_capture.timing.record_rejected_slot(slot, 1_320);
+        let mut delay_capture = delay_capture_state(0, 1_000, 1_200);
+        let slot = sample_slot(1_200, 200, 1_400).unwrap();
+        delay_capture.timing.record_rejected_slot(slot, 1_400);
         let mut delay_data = ElectricalIdData::new(512);
         delay_data.timing_states = crate::commissioning::types::COMMISSION_TIMING_REJECTED << 4;
         let delay_phase = InnerPhase::ElectricalId {
