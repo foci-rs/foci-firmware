@@ -839,22 +839,6 @@ async fn poll_inductance_sample<B: CommissioningBackend>(
             return Err(CommissionError::InductanceTimingRejected);
         }
     };
-    let slot = capture
-        .timing
-        .record_sample(
-            capture.next_sample_us,
-            now_us,
-            observation_us,
-            observation_us,
-            spi_wall_us,
-        )
-        .map_err(|_| CommissionError::InductanceTimingRejected)?;
-    capture
-        .timing
-        .finish()
-        .map_err(|_| CommissionError::InductanceTimingRejected)?;
-    capture.next_sample_us = slot.next_deadline_us;
-
     let interval = crate::electrical_capture::phi_locked_ac_interval(
         capture.accumulated_phi_delta_counts,
         INDUCTANCE_AC_TARGET_PHI_DELTA_COUNTS,
@@ -966,24 +950,46 @@ async fn poll_inductance_sample<B: CommissioningBackend>(
         .checked_sub(capture.start_us)
         .and_then(|elapsed| u32::try_from(elapsed).ok())
         .ok_or(CommissionError::InductanceTimingRejected)?;
-    if interval.complete {
-        let completed_elapsed_us = crate::electrical_capture::interpolate_phi_window_elapsed_us(
-            capture.previous_elapsed_us,
-            current_elapsed_us,
-            interval,
+    let completed_elapsed_us = if interval.complete {
+        Some(
+            crate::electrical_capture::interpolate_phi_window_elapsed_us(
+                capture.previous_elapsed_us,
+                current_elapsed_us,
+                interval,
+            )
+            .ok_or_else(|| {
+                push_inductance_capture_rejection(
+                    diagnostics,
+                    InductanceCaptureRejectReason::ElapsedInterpolation,
+                    capture.sample_count,
+                    pack_u16_pair(
+                        low_u16(capture.previous_elapsed_us),
+                        low_u16(current_elapsed_us),
+                    ),
+                );
+                CommissionError::InductanceCaptureRejected
+            })?,
         )
-        .ok_or_else(|| {
-            push_inductance_capture_rejection(
-                diagnostics,
-                InductanceCaptureRejectReason::ElapsedInterpolation,
-                capture.sample_count,
-                pack_u16_pair(
-                    low_u16(capture.previous_elapsed_us),
-                    low_u16(current_elapsed_us),
-                ),
-            );
-            CommissionError::InductanceCaptureRejected
-        })?;
+    } else {
+        None
+    };
+    let poll_completion_us = backend.elapsed_us();
+    let slot = capture
+        .timing
+        .record_sample(
+            capture.next_sample_us,
+            now_us,
+            observation_us,
+            poll_completion_us,
+            spi_wall_us,
+        )
+        .map_err(|_| CommissionError::InductanceTimingRejected)?;
+    capture
+        .timing
+        .finish()
+        .map_err(|_| CommissionError::InductanceTimingRejected)?;
+    capture.next_sample_us = slot.next_deadline_us;
+    if let Some(completed_elapsed_us) = completed_elapsed_us {
         capture.accumulated_phi_delta_counts = interval.accumulated_phi_delta_counts;
         let timing = capture
             .timing
@@ -3416,6 +3422,53 @@ mod tests {
                     ..
                 }
             ));
+        });
+    }
+
+    #[test]
+    fn inductance_poll_wall_includes_work_after_observation() {
+        pollster::block_on(async {
+            let mut capture = inductance_capture_state(0, 0, 0, 0);
+            capture.start_us = 10_000;
+            capture.next_sample_us = 10_000;
+            let mut phase = InnerPhase::ElectricalId {
+                state: ElectricalIdState::InductanceSample { capture },
+                data: representative_data(),
+            };
+            let mut buf = TransientBuffer::new();
+            let mut backend = MockBackend::new();
+            backend.elapsed_us_value = 10_020;
+            backend
+                .set_elapsed_us_sequence(&[10_000, 10_000, 10_010, 10_010, 10_020, 10_020, 10_101]);
+            backend.set_openloop_phi_sequence(&[1_000], 0);
+            backend.set_pid_torque_flux_actual_sequence(&[((-84i16 as u16 as u32) << 16) | 20]);
+            let mut selftest = crate::selftest::SelftestResults::default();
+            let mut diagnostics = crate::selftest::CommissionDiagnostics::default();
+
+            let result = step_electrical_identification(
+                &mut phase,
+                &mut buf,
+                InnerSequence::Commission,
+                &mut selftest,
+                &mut diagnostics,
+                &mut backend,
+            )
+            .await;
+
+            assert!(
+                matches!(result, StepResult::At(10_100)),
+                "expected next sample deadline, got {result:?} in {phase:?}"
+            );
+            let InnerPhase::ElectricalId {
+                state: ElectricalIdState::InductanceSample { capture },
+                ..
+            } = phase
+            else {
+                panic!("capture should remain active");
+            };
+            let timing = capture.timing.finish().unwrap();
+            assert_eq!(timing.max_spi_wall_us, 20);
+            assert_eq!(timing.max_poll_wall_us, 101);
         });
     }
 

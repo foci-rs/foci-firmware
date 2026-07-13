@@ -76,7 +76,7 @@ pub enum CommissionPoll {
 /// Adapt a step result while retaining one-millisecond legacy pacing.
 ///
 /// # Errors
-/// Returns [`CommissionError::InvalidSchedule`] for an invalid deadline or
+/// Returns [`CommissionError::InvalidSchedule`] for legacy-wait overflow or
 /// missing phase-change context.
 pub fn adapt_step_result(
     result: StepResult,
@@ -85,13 +85,13 @@ pub fn adapt_step_result(
 ) -> Result<CommissionPoll, CommissionError> {
     match result {
         StepResult::ReadyNow => Ok(CommissionPoll::ReadyNow { event: None }),
-        StepResult::At(timestamp_us) => {
-            validate_future(timestamp_us, now_us)?;
-            Ok(CommissionPoll::At {
-                timestamp_us,
-                event: None,
-            })
+        StepResult::At(timestamp_us) if timestamp_us <= now_us => {
+            Ok(CommissionPoll::ReadyNow { event: None })
         }
+        StepResult::At(timestamp_us) => Ok(CommissionPoll::At {
+            timestamp_us,
+            event: None,
+        }),
         StepResult::Continue => legacy_wait(now_us, None),
         StepResult::PhaseChanged(phase_id) => {
             let (oid, engine_kind) = event_context.ok_or(CommissionError::InvalidSchedule)?;
@@ -138,13 +138,6 @@ fn legacy_wait(
     })
 }
 
-fn validate_future(timestamp_us: u64, now_us: u64) -> Result<(), CommissionError> {
-    if timestamp_us <= now_us {
-        return Err(CommissionError::InvalidSchedule);
-    }
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -173,11 +166,15 @@ mod tests {
     }
 
     #[test]
-    fn nonfuture_or_overflowed_schedule_is_rejected() {
+    fn elapsed_explicit_deadline_maps_to_ready_now() {
         assert!(matches!(
-            adapt_step_result(StepResult::At(42_000), 42_000, None),
-            Err(CommissionError::InvalidSchedule)
+            adapt_step_result(StepResult::At(42_000), 42_000, None).unwrap(),
+            CommissionPoll::ReadyNow { event: None }
         ));
+    }
+
+    #[test]
+    fn overflowed_legacy_schedule_is_rejected() {
         assert!(matches!(
             adapt_step_result(StepResult::Continue, u64::MAX, None),
             Err(CommissionError::InvalidSchedule)

@@ -63,7 +63,7 @@ impl CommissionPollDriver {
             CommissionPoll::At { timestamp_us, .. } => {
                 self.consecutive_ready = 0;
                 if *timestamp_us <= now_us {
-                    return Err(CommissionError::InvalidSchedule);
+                    return Ok(PollDriverAction::PollNow);
                 }
                 Ok(PollDriverAction::WaitUntil(*timestamp_us))
             }
@@ -166,6 +166,33 @@ mod tests {
             driver.classify_ready(processing_finished_us).unwrap(),
             PollDriverAction::PollNow,
             "processing time cannot consume the already-issued yield action"
+        );
+    }
+
+    #[test]
+    fn deadline_expiring_during_handoff_repolls_and_resets_ready_chain() {
+        let poll = crate::commissioning::schedule::adapt_step_result(
+            crate::commissioning::types::StepResult::At(10_100),
+            10_099,
+            None,
+        )
+        .unwrap();
+        let mut driver = CommissionPollDriver::new();
+        for _ in 0..MAX_CONSECUTIVE_READY_POLLS {
+            assert_eq!(
+                driver.classify_ready(10_099).unwrap(),
+                PollDriverAction::PollNow
+            );
+        }
+
+        assert_eq!(
+            driver.classify(&poll, 10_100).unwrap(),
+            PollDriverAction::PollNow
+        );
+        assert_eq!(
+            driver.classify_ready(10_100).unwrap(),
+            PollDriverAction::PollNow,
+            "an absolute deadline resets the bounded ready chain"
         );
     }
 

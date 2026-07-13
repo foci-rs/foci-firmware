@@ -58,6 +58,10 @@ pub struct MockBackend {
     pub read_override: Option<(u8, u32)>,
     /// Value returned by `elapsed_us()`.
     pub elapsed_us_value: u64,
+    /// Sequential values returned by `elapsed_us()` before the fallback value.
+    elapsed_us_sequence: Vec<u64, 16>,
+    /// Current index into `elapsed_us_sequence`.
+    elapsed_us_pos: core::cell::Cell<usize>,
     /// Elapsed-time increment applied by each mock register read or write.
     pub spi_elapsed_step_us: u64,
     /// Value returned by `is_shutdown_requested()`.
@@ -140,6 +144,8 @@ impl MockBackend {
             last_motor_sentinel_stored: core::cell::Cell::new(None),
             read_override: None,
             elapsed_us_value: 0,
+            elapsed_us_sequence: Vec::new(),
+            elapsed_us_pos: core::cell::Cell::new(0),
             spi_elapsed_step_us: 0,
             shutdown_requested: false,
             current_limit_value: 0,
@@ -187,6 +193,15 @@ impl MockBackend {
             foci_tmc4671::registers::ABN_DECODER_COUNT.addr(),
             count as u32,
         );
+    }
+
+    /// Set sequential timestamps for elapsed-time observations.
+    pub fn set_elapsed_us_sequence(&mut self, values: &[u64]) {
+        self.elapsed_us_sequence.clear();
+        for &value in values {
+            let _ = self.elapsed_us_sequence.push(value);
+        }
+        self.elapsed_us_pos.set(0);
     }
 
     /// Set sequential `PID_TORQUE_FLUX_ACTUAL` values for read-register tests.
@@ -358,6 +373,11 @@ impl CommissionEncoderRead for MockBackend {
 
 impl CommissionTiming for MockBackend {
     fn elapsed_us(&self) -> u64 {
+        let position = self.elapsed_us_pos.get();
+        if position < self.elapsed_us_sequence.len() {
+            self.elapsed_us_pos.set(position + 1);
+            return self.elapsed_us_sequence[position];
+        }
         self.elapsed_us_value
     }
 
