@@ -112,8 +112,17 @@ impl ResistanceRunner {
             }
             8 => match backend.read_register(STATUS_FLAGS.addr()).await {
                 Ok(flags) => {
-                    if let Some(poll) = self.record_status(backend, flags) {
-                        return poll;
+                    self.record_status_evidence(flags);
+                    Ok(())
+                }
+                Err(_) => Err(ResistanceError::BackendIo),
+            },
+            9 => write(backend, STATUS_FLAGS.addr(), 0).await,
+            10 => match backend.read_register(STATUS_FLAGS.addr()).await {
+                Ok(flags) => {
+                    self.record_status_evidence(flags);
+                    if flags & current_loop_actionable_status_mask() != 0 {
+                        return self.fail(backend, ResistanceError::CriticalStatus);
                     }
                     Ok(())
                 }
@@ -127,7 +136,7 @@ impl ResistanceRunner {
         if operation == 0 {
             self.energized = true;
         }
-        if operation < 8 {
+        if operation < 10 {
             self.state = ResistanceState::Setup(operation + 1);
         } else {
             if self.mode == ResistanceRunMode::CommissioningManagedEnable {
@@ -271,7 +280,8 @@ impl ResistanceRunner {
                 return self.fail_window(backend, &capture, ResistanceError::BackendIo, false);
             }
         };
-        if self.record_status_flags(flags) {
+        self.record_status_evidence(flags);
+        if flags & current_loop_actionable_status_mask() != 0 {
             return self.fail_window(backend, &capture, ResistanceError::CriticalStatus, false);
         }
         let io_done = backend.elapsed_us();
@@ -373,29 +383,11 @@ impl ResistanceRunner {
         self.fail(backend, error)
     }
 
-    fn record_status_flags(&mut self, flags: u32) -> bool {
+    fn record_status_evidence(&mut self, flags: u32) {
         self.status_flags_or |= flags;
         if flags & self.profile.status_flags_warn_mask != 0 {
             self.warning_flags
                 .insert(ResistanceWarningFlags::STATUS_FLAGS);
-        }
-        flags & current_loop_actionable_status_mask() != 0
-    }
-
-    fn record_status<B: ResistanceBackend>(
-        &mut self,
-        backend: &mut B,
-        flags: u32,
-    ) -> Option<ResistancePoll> {
-        self.status_flags_or |= flags;
-        if flags & self.profile.status_flags_warn_mask != 0 {
-            self.warning_flags
-                .insert(ResistanceWarningFlags::STATUS_FLAGS);
-        }
-        if flags & current_loop_actionable_status_mask() != 0 {
-            Some(self.fail(backend, ResistanceError::CriticalStatus))
-        } else {
-            None
         }
     }
 

@@ -53,8 +53,12 @@ struct FakeResistanceBackend {
     readback_pwm_sv_chop: u32,
     /// Encoder counts per revolution returned to the runner.
     encoder_counts_per_rev: u32,
-    /// STATUS_FLAGS sampled in every window.
+    /// Current resettable STATUS_FLAGS register contents.
     scripted_status_flags: u32,
+    /// Ordered STATUS_FLAGS observations that model hardware reassertion.
+    scripted_status_reads: heapless::Vec<u32, 8>,
+    /// Next ordered STATUS_FLAGS observation.
+    scripted_status_read_index: usize,
     /// Physical phase-current count sampled during energized windows.
     ///
     /// Built proportional to the active UD so the fit produces a clean line.
@@ -124,6 +128,8 @@ impl FakeResistanceBackend {
             readback_pwm_sv_chop: profile.pwm_sv_chop,
             encoder_counts_per_rev: 4000,
             scripted_status_flags: 0,
+            scripted_status_reads: heapless::Vec::new(),
+            scripted_status_read_index: 0,
             // Scale current ~= UD so the high-current points clear the linear
             // threshold and the fit stays well-conditioned.
             scripted_energized_current_count: 0,
@@ -160,6 +166,11 @@ impl FakeResistanceBackend {
     fn script_elapsed(&mut self, timestamps: &[u64]) {
         self.scripted_elapsed_us = heapless::Vec::from_slice(timestamps).unwrap();
         self.scripted_elapsed_index.set(0);
+    }
+
+    fn script_status_reads(&mut self, flags: &[u32]) {
+        self.scripted_status_reads = heapless::Vec::from_slice(flags).unwrap();
+        self.scripted_status_read_index = 0;
     }
 
     fn fail_next_write(&mut self) {
@@ -280,6 +291,13 @@ impl ResistanceBackend for FakeResistanceBackend {
             return Ok(self.readback_pwm_sv_chop);
         }
         if addr == STATUS_FLAGS.addr() {
+            if let Some(&flags) = self
+                .scripted_status_reads
+                .get(self.scripted_status_read_index)
+            {
+                self.scripted_status_read_index += 1;
+                self.scripted_status_flags = flags;
+            }
             return Ok(self.scripted_status_flags);
         }
         if addr == ADC_IWY_IUX.addr() {
@@ -314,6 +332,9 @@ impl ResistanceBackend for FakeResistanceBackend {
             // A new window begins; arm the zero cursor to advance on this
             // window's first ADC sample (if it is a Stopped window).
             self.zero_window_counted = false;
+        }
+        if addr == STATUS_FLAGS.addr() && value == 0 {
+            self.scripted_status_flags = 0;
         }
         if let Some(threshold) = self.fail_after_writes
             && self.write_count > threshold
@@ -1158,9 +1179,9 @@ fn unrepresentable_sample_spi_sum_rejects_timing() {
 }
 
 #[test]
-fn critical_pre_enable_status_never_asserts_enable() {
+fn inherited_status_is_retained_cleared_and_absent_from_first_sample() {
     let mut backend = FakeResistanceBackend::standard();
-    backend.scripted_status_flags = 1 << 26;
+    backend.scripted_status_flags = 0x7000_4480;
     let mut runner = ResistanceRunner::new(
         ResistanceRunMode::CommissioningManagedEnable,
         backend.profile(),
@@ -1168,27 +1189,76 @@ fn critical_pre_enable_status_never_asserts_enable() {
     )
     .unwrap();
 
-    for _ in 0..16 {
-        if runner.primary_error().is_some() {
-            break;
+    let first_settle_deadline = drive_to_first_sample(&mut runner, &mut backend, 1_000);
+
+    assert!(first_settle_deadline > 1_000);
+    assert!(
+        backend
+            .writes
+            .iter()
+            .any(|write| { write.addr == STATUS_FLAGS.addr() && write.value == 0 })
+    );
+    assert_eq!(runner.status_flags_or(), 0x7000_4480);
+    assert!(
+        runner
+            .warning_flags()
+            .contains(ResistanceWarningFlags::STATUS_FLAGS)
+    );
+    assert_eq!(runner.primary_error(), None);
+    assert!(backend.enable_pin);
+    assert!(matches!(
+        block_on(runner.poll(&mut backend, first_settle_deadline)),
+        ResistancePoll::At(_) | ResistancePoll::ReadyNow
+    ));
+    assert_eq!(runner.status_flags_or(), 0x7000_4480);
+    assert_eq!(runner.primary_error(), None);
+    assert!(backend.enable_pin);
+}
+
+#[test]
+fn fresh_critical_status_after_clear_refuses_enable_and_starts_restore() {
+    let mut backend = FakeResistanceBackend::standard();
+    backend.script_status_reads(&[0x7000_4480, 1 << 26]);
+    let mut runner = ResistanceRunner::new(
+        ResistanceRunMode::CommissioningManagedEnable,
+        backend.profile(),
+        1_000,
+    )
+    .unwrap();
+    let mut writes_before_fresh_read = None;
+
+    for _ in 0..24 {
+        if backend.scripted_status_read_index == 1 {
+            writes_before_fresh_read = Some(backend.writes.len());
         }
-        assert_eq!(
-            block_on(runner.poll(&mut backend, 1_000)),
-            ResistancePoll::ReadyNow
-        );
+        backend.begin_poll();
+        let poll = block_on(runner.poll(&mut backend, 1_000));
+        assert_eq!(backend.operations_since_poll(), 1);
+        match poll {
+            ResistancePoll::ReadyNow if runner.primary_error().is_none() => {}
+            ResistancePoll::ReadyNow => break,
+            poll => panic!("unexpected pre-enable poll: {poll:?}"),
+        }
     }
 
-    assert_eq!(runner.status_flags_or(), 1 << 26);
+    assert_eq!(runner.status_flags_or(), 0x7400_4480);
     assert_eq!(
         runner.primary_error(),
         Some(ResistanceError::CriticalStatus)
     );
     assert!(!backend.enable_transitions.iter().any(|&enabled| enabled));
+    assert!(!backend.enable_pin);
+    assert_eq!(
+        backend.writes.len(),
+        writes_before_fresh_read.expect("fresh status read was not reached"),
+        "restore I/O ran before the GPIO-first transition returned"
+    );
 }
 
 #[test]
 fn critical_sample_status_precedes_coincident_timing_rejection() {
     let mut backend = FakeResistanceBackend::standard();
+    backend.scripted_status_flags = 0x7000_4480;
     let mut runner = ResistanceRunner::new(
         ResistanceRunMode::CommissioningManagedEnable,
         backend.profile(),
@@ -1198,17 +1268,23 @@ fn critical_sample_status_precedes_coincident_timing_rejection() {
     let due = drive_to_first_sample(&mut runner, &mut backend, 1_000);
     backend.scripted_status_flags = 1 << 26;
     backend.script_elapsed(&[0, u64::from(u32::MAX), u64::from(u32::MAX) + 1]);
+    let writes_before = backend.writes.len();
 
     assert_eq!(
         block_on(runner.poll(&mut backend, due)),
         ResistancePoll::ReadyNow
     );
-    assert_eq!(runner.status_flags_or(), 1 << 26);
+    assert_eq!(runner.status_flags_or(), 0x7400_4480);
     assert_eq!(
         runner.primary_error(),
         Some(ResistanceError::CriticalStatus)
     );
     assert!(!backend.enable_pin);
+    assert_eq!(
+        backend.writes.len(),
+        writes_before,
+        "restore await ran before the GPIO-first transition returned"
+    );
 }
 
 #[test]
