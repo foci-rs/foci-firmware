@@ -50,9 +50,6 @@ impl CommissionPollDriver {
     }
 
     /// Classify one complete poll result.
-    ///
-    /// # Errors
-    /// Returns [`CommissionError::InvalidSchedule`] for an invalid deadline.
     pub fn classify(
         &mut self,
         poll: &CommissionPoll,
