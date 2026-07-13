@@ -9,7 +9,7 @@ pub enum TimingReject {
     NonMonotonicTime,
     /// Sample-start lateness exceeded one quarter of the requested period.
     ExcessiveLateness,
-    /// Complete sample service finished after the next sample-start deadline.
+    /// Complete sample service took longer than one requested period.
     ServiceOverrun,
     /// The capture missed more sample slots than its method permits.
     MissedSamples,
@@ -61,6 +61,15 @@ pub struct SampleSlot {
     pub sample_deadline_us: u64,
     /// Absolute deadline for the following logical sample.
     pub next_deadline_us: u64,
+}
+
+/// Pre-SPI disposition for one selected sample slot.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+pub(crate) enum SampleStart {
+    /// The selected slot is inside the start-lateness envelope.
+    Sample,
+    /// The selected slot was too late and the caller must wait for this deadline.
+    Skip { next_deadline_us: u64 },
 }
 
 /// Select one current sample slot without performing catch-up reads.
@@ -167,6 +176,36 @@ impl CaptureTiming {
         }
     }
 
+    /// Classify sample-start lateness before performing any sample I/O.
+    ///
+    /// An excessively late selected slot is recorded as one additional miss
+    /// beyond any fully elapsed slots. The caller advances to the returned
+    /// absolute deadline without taking a catch-up sample.
+    pub(crate) fn classify_sample_start(
+        &mut self,
+        due_us: u64,
+        poll_entry_us: u64,
+    ) -> Result<SampleStart, TimingReject> {
+        let slot = sample_slot(due_us, self.requested_period_us, poll_entry_us)?;
+        let lateness_us = poll_entry_us
+            .checked_sub(slot.sample_deadline_us)
+            .ok_or(TimingReject::NonMonotonicTime)?;
+        if lateness_us <= u64::from(self.requested_period_us) / 4 {
+            return Ok(SampleStart::Sample);
+        }
+
+        update_max_u32(&mut self.max_lateness_us, lateness_us, &mut self.overflowed);
+        let missed = slot
+            .missed
+            .checked_add(1)
+            .ok_or(TimingReject::TelemetryOverflow)?;
+        self.record_skipped_slots(missed);
+        self.check_miss_envelope()?;
+        Ok(SampleStart::Skip {
+            next_deadline_us: slot.next_deadline_us,
+        })
+    }
+
     /// Record one scheduled sample poll and its SPI contribution.
     ///
     /// `due_us` is the prior absolute deadline. `poll_entry_us`,
@@ -176,8 +215,8 @@ impl CaptureTiming {
     ///
     /// Returns a [`TimingReject`] for invalid chronology, excessive lateness,
     /// invalid slot arithmetic, or SPI time outside the poll wall interval.
-    /// [`TimingReject::ServiceOverrun`] reports complete service after the next
-    /// sample-start deadline.
+    /// [`TimingReject::ServiceOverrun`] reports complete service longer than
+    /// one requested period.
     pub fn record_sample(
         &mut self,
         due_us: u64,
@@ -186,21 +225,6 @@ impl CaptureTiming {
         poll_completion_us: u64,
         spi_wall_us: u32,
     ) -> Result<SampleSlot, TimingReject> {
-        let slot = sample_slot(due_us, self.requested_period_us, poll_entry_us)?;
-        if observation_us < poll_entry_us
-            || poll_completion_us < observation_us
-            || (self.valid_samples != 0 && observation_us <= self.previous_observation_us)
-        {
-            return Err(TimingReject::NonMonotonicTime);
-        }
-
-        let lateness_us = poll_entry_us
-            .checked_sub(slot.sample_deadline_us)
-            .ok_or(TimingReject::NonMonotonicTime)?;
-        update_max_u32(&mut self.max_lateness_us, lateness_us, &mut self.overflowed);
-        if lateness_us > u64::from(self.requested_period_us) / 4 {
-            return Err(TimingReject::ExcessiveLateness);
-        }
         let poll_wall_us = poll_completion_us
             .checked_sub(poll_entry_us)
             .ok_or(TimingReject::NonMonotonicTime)?;
@@ -209,29 +233,31 @@ impl CaptureTiming {
             poll_wall_us,
             &mut self.overflowed,
         );
+        self.max_spi_wall_us = self.max_spi_wall_us.max(spi_wall_us);
+        if observation_us < poll_entry_us
+            || poll_completion_us < observation_us
+            || (self.valid_samples != 0 && observation_us <= self.previous_observation_us)
+        {
+            return Err(TimingReject::NonMonotonicTime);
+        }
+
+        let slot = sample_slot(due_us, self.requested_period_us, poll_entry_us)?;
+        let lateness_us = poll_entry_us
+            .checked_sub(slot.sample_deadline_us)
+            .ok_or(TimingReject::NonMonotonicTime)?;
+        update_max_u32(&mut self.max_lateness_us, lateness_us, &mut self.overflowed);
         if u64::from(spi_wall_us) > poll_wall_us {
             return Err(TimingReject::SpiWallExceedsPoll);
         }
-        self.max_spi_wall_us = self.max_spi_wall_us.max(spi_wall_us);
-        if poll_completion_us > slot.next_deadline_us {
+        if lateness_us > u64::from(self.requested_period_us) / 4 {
+            return Err(TimingReject::ExcessiveLateness);
+        }
+        if poll_wall_us > u64::from(self.requested_period_us) {
             return Err(TimingReject::ServiceOverrun);
         }
 
         self.valid_samples = saturating_add_u16(self.valid_samples, 1, &mut self.overflowed);
-        self.missed_samples =
-            saturating_add_u16(self.missed_samples, slot.missed, &mut self.overflowed);
-        if slot.missed == 0 {
-            self.consecutive_misses = 0;
-        } else {
-            self.consecutive_misses = match u8::try_from(slot.missed) {
-                Ok(missed) => missed,
-                Err(_) => {
-                    self.overflowed = true;
-                    u8::MAX
-                }
-            };
-            self.max_consecutive_misses = self.max_consecutive_misses.max(self.consecutive_misses);
-        }
+        self.record_misses_before_accepted_sample(slot.missed);
 
         if self.valid_samples > 1 {
             let interval_us = observation_us
@@ -246,22 +272,45 @@ impl CaptureTiming {
 
     /// Retain a rejected scheduler slot without counting a valid observation.
     pub(crate) fn record_rejected_slot(&mut self, slot: SampleSlot, observation_us: u64) {
-        self.missed_samples =
-            saturating_add_u16(self.missed_samples, slot.missed, &mut self.overflowed);
-        self.consecutive_misses = match u8::try_from(slot.missed) {
-            Ok(missed) => missed,
-            Err(_) => {
-                self.overflowed = true;
-                u8::MAX
-            }
-        };
-        self.max_consecutive_misses = self.max_consecutive_misses.max(self.consecutive_misses);
+        self.record_skipped_slots(slot.missed);
         match observation_us.checked_sub(slot.sample_deadline_us) {
             Some(lateness_us) => {
                 update_max_u32(&mut self.max_lateness_us, lateness_us, &mut self.overflowed)
             }
             None => self.overflowed = true,
         }
+    }
+
+    fn record_skipped_slots(&mut self, missed: u32) {
+        self.missed_samples = saturating_add_u16(self.missed_samples, missed, &mut self.overflowed);
+        let missed = match u8::try_from(missed) {
+            Ok(missed) => missed,
+            Err(_) => {
+                self.overflowed = true;
+                u8::MAX
+            }
+        };
+        self.consecutive_misses = match self.consecutive_misses.checked_add(missed) {
+            Some(consecutive) => consecutive,
+            None => {
+                self.overflowed = true;
+                u8::MAX
+            }
+        };
+        self.max_consecutive_misses = self.max_consecutive_misses.max(self.consecutive_misses);
+    }
+
+    fn record_misses_before_accepted_sample(&mut self, missed: u32) {
+        self.missed_samples = saturating_add_u16(self.missed_samples, missed, &mut self.overflowed);
+        let consecutive_misses = match u8::try_from(missed) {
+            Ok(missed) => missed,
+            Err(_) => {
+                self.overflowed = true;
+                u8::MAX
+            }
+        };
+        self.max_consecutive_misses = self.max_consecutive_misses.max(consecutive_misses);
+        self.consecutive_misses = 0;
     }
 
     /// Mark an external timing source overflow and retain its saturated SPI span.
@@ -277,6 +326,11 @@ impl CaptureTiming {
     /// Returns the first applicable telemetry, missed-slot, or consecutive
     /// miss rejection.
     pub fn finish(self) -> Result<CaptureTimingEvidence, TimingReject> {
+        self.check_miss_envelope()?;
+        Ok(self.snapshot().0)
+    }
+
+    fn check_miss_envelope(&self) -> Result<(), TimingReject> {
         if self.overflowed {
             return Err(TimingReject::TelemetryOverflow);
         }
@@ -286,7 +340,7 @@ impl CaptureTiming {
         if self.missed_samples > self.envelope.max_missed_samples {
             return Err(TimingReject::MissedSamples);
         }
-        Ok(self.snapshot().0)
+        Ok(())
     }
 
     /// Return the latest saturating evidence and its overflow flag without applying gates.
@@ -398,7 +452,8 @@ mod tests {
 
         assert_eq!(evidence.valid_samples, 0);
         assert_eq!(evidence.max_lateness_us, 26);
-        assert_eq!(evidence.max_poll_wall_us, 0);
+        assert_eq!(evidence.max_poll_wall_us, 64);
+        assert_eq!(evidence.max_spi_wall_us, 54);
         assert!(!overflowed);
     }
 
@@ -417,7 +472,22 @@ mod tests {
     }
 
     #[test]
-    fn sample_completion_after_next_deadline_rejects_with_service_evidence() {
+    fn scheduler_lateness_does_not_consume_the_service_budget() {
+        let mut timing = CaptureTiming::new(100, TimingEnvelope::INDUCTANCE);
+
+        timing
+            .record_sample(1_000, 1_017, 1_090, 1_105, 73)
+            .unwrap();
+
+        let evidence = timing.finish().unwrap();
+        assert_eq!(evidence.valid_samples, 1);
+        assert_eq!(evidence.max_lateness_us, 17);
+        assert_eq!(evidence.max_poll_wall_us, 88);
+        assert_eq!(evidence.max_spi_wall_us, 73);
+    }
+
+    #[test]
+    fn sample_service_over_one_period_rejects_with_service_evidence() {
         let mut timing = CaptureTiming::new(100, TimingEnvelope::INDUCTANCE);
 
         assert_eq!(
@@ -482,6 +552,20 @@ mod tests {
     }
 
     #[test]
+    fn serviced_non_monotonic_sample_retains_poll_and_spi_evidence() {
+        let mut timing = CaptureTiming::new(100, TimingEnvelope::INDUCTANCE);
+
+        assert_eq!(
+            timing.record_sample(1_000, 1_000, 999, 1_010, 8),
+            Err(TimingReject::NonMonotonicTime),
+        );
+        let (evidence, overflowed) = timing.snapshot();
+        assert_eq!(evidence.max_poll_wall_us, 10);
+        assert_eq!(evidence.max_spi_wall_us, 8);
+        assert!(!overflowed);
+    }
+
+    #[test]
     fn misses_separated_by_accepted_samples_are_not_consecutive() {
         let mut timing = CaptureTiming::new(100, TimingEnvelope::INDUCTANCE);
         timing
@@ -514,6 +598,65 @@ mod tests {
             timing.record_sample(1_000, 1_000, 1_005, 1_010, 11),
             Err(TimingReject::SpiWallExceedsPoll),
         );
+        let (evidence, overflowed) = timing.snapshot();
+        assert_eq!(evidence.max_poll_wall_us, 10);
+        assert_eq!(evidence.max_spi_wall_us, 11);
+        assert!(!overflowed);
+    }
+
+    #[test]
+    fn excessive_selected_slot_lateness_skips_one_slot() {
+        let mut timing = CaptureTiming::new(100, TimingEnvelope::INDUCTANCE);
+
+        let decision = timing.classify_sample_start(1_000, 1_092).unwrap();
+
+        assert_eq!(
+            decision,
+            SampleStart::Skip {
+                next_deadline_us: 1_100
+            }
+        );
+        let evidence = timing.finish().unwrap();
+        assert_eq!(evidence.valid_samples, 0);
+        assert_eq!(evidence.missed_samples, 1);
+        assert_eq!(evidence.max_consecutive_misses, 1);
+        assert_eq!(evidence.max_lateness_us, 92);
+    }
+
+    #[test]
+    fn elapsed_and_selected_slot_skips_reject_as_consecutive() {
+        let mut timing = CaptureTiming::new(100, TimingEnvelope::INDUCTANCE);
+
+        assert_eq!(
+            timing.classify_sample_start(1_000, 1_168),
+            Err(TimingReject::ConsecutiveMisses),
+        );
+        let (evidence, overflowed) = timing.snapshot();
+        assert_eq!(evidence.valid_samples, 0);
+        assert_eq!(evidence.missed_samples, 2);
+        assert_eq!(evidence.max_consecutive_misses, 2);
+        assert_eq!(evidence.max_lateness_us, 68);
+        assert!(!overflowed);
+    }
+
+    #[test]
+    fn successive_selected_slot_skips_accumulate_as_consecutive() {
+        let mut timing = CaptureTiming::new(100, TimingEnvelope::INDUCTANCE);
+
+        assert_eq!(
+            timing.classify_sample_start(1_000, 1_092).unwrap(),
+            SampleStart::Skip {
+                next_deadline_us: 1_100
+            }
+        );
+        assert_eq!(
+            timing.classify_sample_start(1_100, 1_192),
+            Err(TimingReject::ConsecutiveMisses),
+        );
+        let (evidence, overflowed) = timing.snapshot();
+        assert_eq!(evidence.missed_samples, 2);
+        assert_eq!(evidence.max_consecutive_misses, 2);
+        assert!(!overflowed);
     }
 
     #[test]

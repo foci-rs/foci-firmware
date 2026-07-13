@@ -15,7 +15,7 @@ use crate::autotune::{
 };
 use crate::commissioning::backend::timed_read_register;
 use crate::commissioning::capture_timing::{
-    CaptureTiming, CaptureTimingEvidence, TimingEnvelope, sample_slot,
+    CaptureTiming, CaptureTimingEvidence, SampleStart, TimingEnvelope, sample_slot,
 };
 use crate::commissioning::encoder_domain::{EncoderDelta, EncoderDomain, EncoderMathError};
 use crate::commissioning::types::{
@@ -824,6 +824,17 @@ async fn poll_inductance_sample<B: CommissioningBackend>(
     }
     if capture.sample_count >= INDUCTANCE_MAX_AC_SAMPLE_COUNT {
         return Err(CommissionError::InductanceCaptureWindow);
+    }
+    match capture
+        .timing
+        .classify_sample_start(capture.next_sample_us, now_us)
+        .map_err(|_| CommissionError::InductanceTimingRejected)?
+    {
+        SampleStart::Sample => {}
+        SampleStart::Skip { next_deadline_us } => {
+            capture.next_sample_us = next_deadline_us;
+            return Ok(InductanceSamplePoll::At);
+        }
     }
 
     let phi_io = timed_read_register(backend, OPENLOOP_PHI).await;
@@ -3563,6 +3574,93 @@ mod tests {
             let timing = capture.timing.finish().unwrap();
             assert_eq!(timing.missed_samples, 2);
             assert_eq!(timing.max_consecutive_misses, 1);
+        });
+    }
+
+    #[test]
+    fn inductance_skips_excessively_late_slot_before_spi() {
+        pollster::block_on(async {
+            let mut capture = inductance_capture_state(0, 0, 0, 0);
+            capture.next_sample_us = 100;
+            let mut phase = InnerPhase::ElectricalId {
+                state: ElectricalIdState::InductanceSample { capture },
+                data: representative_data(),
+            };
+            let mut backend = MockBackend::new();
+            backend.enable_pin = true;
+            backend.elapsed_us_value = 192;
+            let mut buf = TransientBuffer::new();
+            let mut selftest = crate::selftest::SelftestResults::default();
+            let mut diagnostics = crate::selftest::CommissionDiagnostics::default();
+
+            let before = register_operation_count(&backend.spi_log);
+            let result = step_electrical_identification(
+                &mut phase,
+                &mut buf,
+                InnerSequence::Commission,
+                &mut selftest,
+                &mut diagnostics,
+                &mut backend,
+            )
+            .await;
+
+            assert!(matches!(result, StepResult::At(200)));
+            assert_eq!(register_operation_count(&backend.spi_log) - before, 0);
+            let InnerPhase::ElectricalId {
+                state: ElectricalIdState::InductanceSample { capture },
+                ..
+            } = phase
+            else {
+                panic!("capture should remain active");
+            };
+            let evidence = capture.timing.finish().unwrap();
+            assert_eq!(evidence.valid_samples, 0);
+            assert_eq!(evidence.missed_samples, 1);
+            assert_eq!(evidence.max_consecutive_misses, 1);
+            assert_eq!(evidence.max_lateness_us, 92);
+        });
+    }
+
+    #[test]
+    fn inductance_rejects_two_consecutive_late_slots_before_spi() {
+        pollster::block_on(async {
+            let mut capture = inductance_capture_state(0, 0, 0, 0);
+            capture.next_sample_us = 100;
+            let mut phase = InnerPhase::ElectricalId {
+                state: ElectricalIdState::InductanceSample { capture },
+                data: representative_data(),
+            };
+            let mut backend = MockBackend::new();
+            backend.enable_pin = true;
+            backend.elapsed_us_value = 268;
+            let mut buf = TransientBuffer::new();
+            let mut selftest = crate::selftest::SelftestResults::default();
+            let mut diagnostics = crate::selftest::CommissionDiagnostics::default();
+
+            let before = register_operation_count(&backend.spi_log);
+            let result = step_electrical_identification(
+                &mut phase,
+                &mut buf,
+                InnerSequence::Commission,
+                &mut selftest,
+                &mut diagnostics,
+                &mut backend,
+            )
+            .await;
+
+            assert!(matches!(result, StepResult::ReadyNow));
+            assert_eq!(register_operation_count(&backend.spi_log) - before, 0);
+            assert!(!backend.enable_pin);
+            assert!(matches!(
+                phase,
+                InnerPhase::ElectricalId {
+                    state: ElectricalIdState::InductanceRestore {
+                        primary_error: Some(CommissionError::InductanceTimingRejected),
+                        ..
+                    },
+                    ..
+                }
+            ));
         });
     }
 

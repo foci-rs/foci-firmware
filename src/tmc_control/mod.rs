@@ -25,7 +25,7 @@ pub use actions::{
     StepperAction, TmcControlRequestOutcome, TmcControlRequestTail, push_action,
 };
 pub use commission_poll::{
-    AbsoluteWaitAction, COMMISSION_WAIT_GUARD_US, COMMISSION_WAIT_SLICE_US, CommissionPollDriver,
+    AbsoluteWaitAction, COMMISSION_WAIT_SLICE_US, CommissionPollDriver,
     CommissionWaitRequestDisposition, FORCED_READY_YIELD_US, MAX_CONSECUTIVE_READY_POLLS,
     PollDriverAction, classify_absolute_wait, classify_wait_request,
 };
