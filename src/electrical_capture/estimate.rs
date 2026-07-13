@@ -686,18 +686,49 @@ pub fn phi_delta_counts_forward(previous: u16, current: u16) -> u32 {
     u32::from(current.wrapping_sub(previous))
 }
 
+fn phi_delta_counts_near_expected(
+    previous: u16,
+    current: u16,
+    expected_phi_delta_counts: u32,
+) -> Option<u32> {
+    const COUNTS_PER_REVOLUTION: u64 = u16::MAX as u64 + 1;
+
+    let wrapped = u64::from(phi_delta_counts_forward(previous, current));
+    let expected = u64::from(expected_phi_delta_counts);
+    let lower_revolutions = expected.saturating_sub(wrapped) / COUNTS_PER_REVOLUTION;
+    let lower = wrapped.checked_add(lower_revolutions.checked_mul(COUNTS_PER_REVOLUTION)?)?;
+    let upper = lower.checked_add(COUNTS_PER_REVOLUTION)?;
+    let unwrapped = if lower.abs_diff(expected) <= upper.abs_diff(expected) {
+        lower
+    } else {
+        upper
+    };
+    u32::try_from(unwrapped).ok()
+}
+
+/// Convert a frequency and elapsed interval to the nearest electrical-angle count delta.
+pub fn expected_phi_delta_counts(frequency_millihz: u32, elapsed_us: u32) -> Option<u32> {
+    let numerator = u128::from(frequency_millihz)
+        .checked_mul(u128::from(u16::MAX as u32 + 1))?
+        .checked_mul(u128::from(elapsed_us))?
+        .checked_add(500_000_000)?;
+    u32::try_from(numerator.checked_div(1_000_000_000)?).ok()
+}
+
 /// Compute one sample's contribution to a phi-locked AC averaging window.
 pub fn phi_locked_ac_interval(
     accumulated_phi_delta_counts: u32,
     target_phi_delta_counts: u32,
     previous_phi: u16,
     current_phi: u16,
+    expected_phi_delta_counts: u32,
 ) -> Option<PhiLockedAcInterval> {
     if accumulated_phi_delta_counts >= target_phi_delta_counts {
         return None;
     }
 
-    let observed_phi_delta_counts = phi_delta_counts_forward(previous_phi, current_phi);
+    let observed_phi_delta_counts =
+        phi_delta_counts_near_expected(previous_phi, current_phi, expected_phi_delta_counts)?;
     let remaining_phi_delta_counts =
         target_phi_delta_counts.checked_sub(accumulated_phi_delta_counts)?;
     let sample_weight_counts = observed_phi_delta_counts.min(remaining_phi_delta_counts);
@@ -1251,7 +1282,8 @@ mod tests {
 
     #[test]
     fn phi_locked_ac_interval_truncates_final_wrap_interval() {
-        let interval = phi_locked_ac_interval(400, 512, 0xFF00, 0x0100).expect("window interval");
+        let interval =
+            phi_locked_ac_interval(400, 512, 0xFF00, 0x0100, 512).expect("window interval");
 
         assert_eq!(interval.observed_phi_delta_counts, 512);
         assert_eq!(interval.sample_weight_counts, 112);
@@ -1264,8 +1296,21 @@ mod tests {
     }
 
     #[test]
+    fn phi_locked_ac_interval_restores_wrap_nearest_expected_advance() {
+        let expected = expected_phi_delta_counts(1_000_000, 1_300).expect("expected advance");
+        let interval =
+            phi_locked_ac_interval(0, 40 * 65_536, 0, 23_921, expected).expect("window interval");
+
+        assert_eq!(expected, 85_197);
+        assert_eq!(interval.observed_phi_delta_counts, 89_457);
+        assert_eq!(interval.sample_weight_counts, 89_457);
+        assert_eq!(interval.accumulated_phi_delta_counts, 89_457);
+        assert!(!interval.complete);
+    }
+
+    #[test]
     fn phi_locked_ac_interval_rejects_completed_window() {
-        assert_eq!(phi_locked_ac_interval(512, 512, 0, 1), None);
+        assert_eq!(phi_locked_ac_interval(512, 512, 0, 1, 1), None);
     }
 
     #[test]

@@ -839,6 +839,22 @@ async fn poll_inductance_sample<B: CommissioningBackend>(
     let current_io = timed_read_register(backend, PID_TORQUE_FLUX_ACTUAL).await;
     let actual = current_io.result.map_err(|_| CommissionError::Spi)?;
     let observation_us = backend.elapsed_us();
+    let current_elapsed_us = observation_us
+        .checked_sub(capture.start_us)
+        .and_then(|elapsed| u32::try_from(elapsed).ok())
+        .ok_or(CommissionError::InductanceTimingRejected)?;
+    let expected_phi_delta_counts = match current_elapsed_us
+        .checked_sub(capture.previous_elapsed_us)
+    {
+        Some(elapsed_since_previous_us) => crate::electrical_capture::expected_phi_delta_counts(
+            INDUCTANCE_REALIZED_FREQUENCY_TARGET_MILLIHZ,
+            elapsed_since_previous_us,
+        )
+        .ok_or(CommissionError::InductanceTimingRejected)?,
+        None => {
+            crate::electrical_capture::phi_delta_counts_forward(capture.previous_phi, current_phi)
+        }
+    };
     if phi_io.overflowed || current_io.overflowed {
         capture
             .timing
@@ -857,6 +873,7 @@ async fn poll_inductance_sample<B: CommissioningBackend>(
         INDUCTANCE_AC_TARGET_PHI_DELTA_COUNTS,
         capture.previous_phi,
         current_phi,
+        expected_phi_delta_counts,
     )
     .ok_or_else(|| {
         push_inductance_capture_rejection(
@@ -959,10 +976,6 @@ async fn poll_inductance_sample<B: CommissioningBackend>(
     }
 
     capture.sample_count = capture.sample_count.saturating_add(1);
-    let current_elapsed_us = observation_us
-        .checked_sub(capture.start_us)
-        .and_then(|elapsed| u32::try_from(elapsed).ok())
-        .ok_or(CommissionError::InductanceTimingRejected)?;
     let completed_elapsed_us = if interval.complete {
         Some(
             crate::electrical_capture::interpolate_phi_window_elapsed_us(
