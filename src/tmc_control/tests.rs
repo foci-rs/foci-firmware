@@ -776,6 +776,28 @@ fn scheduled_dispatch_preserves_wait_action() {
 }
 
 #[test]
+fn scheduled_classification_is_synchronous_for_at_action() {
+    let tmc = crate::state::tmc::tmc_channel0();
+    let mut runtime = TmcControlRuntime::new_for_channel(0);
+    runtime.set_commission_engine(CommissioningEngine::new_selftest_for_tmc(7, tmc));
+
+    let action = runtime
+        .classify_commission_poll(crate::commissioning::schedule::CommissionPoll::At {
+            timestamp_us: 43_000,
+            event: None,
+        })
+        .expect("engine should be active");
+
+    assert!(matches!(
+        action,
+        ScheduledCommissionTickAction::At {
+            timestamp_us: 43_000,
+            event: None,
+        }
+    ));
+}
+
+#[test]
 fn runtime_appends_board_diagnostic_to_active_commission() {
     let tmc = crate::state::tmc::tmc_channel0();
     let mut runtime = TmcControlRuntime::new_for_channel(0);

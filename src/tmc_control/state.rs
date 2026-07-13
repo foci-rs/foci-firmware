@@ -476,18 +476,12 @@ impl TmcControlRuntime {
         )
     }
 
-    /// Convert an explicit poll into the board-facing scheduled action.
-    pub async fn drive_commissioning_poll<B>(
-        &mut self,
+    /// Convert a nonterminal explicit poll into the board-facing action.
+    #[must_use]
+    pub fn classify_commission_poll(
+        &self,
         poll: CommissionPoll,
-        backend: &mut B,
-        tmc: &'static TmcChannelState,
-        stepper: &'static StepperChannelState,
-        config: &TmcControlConfig,
-    ) -> Option<ScheduledCommissionTickAction>
-    where
-        B: CommissioningBackend,
-    {
+    ) -> Option<ScheduledCommissionTickAction> {
         self.commission_engine.as_ref()?;
         match poll {
             CommissionPoll::ReadyNow { event } => {
@@ -500,31 +494,75 @@ impl TmcControlRuntime {
                 timestamp_us,
                 event,
             }),
+            CommissionPoll::Terminal { .. } => None,
+        }
+    }
+
+    /// Dispatch a terminal commissioning result into the board-facing action.
+    pub async fn drive_commissioning_terminal<B>(
+        &mut self,
+        result: CommissionTerminal,
+        backend: &mut B,
+        tmc: &'static TmcChannelState,
+        stepper: &'static StepperChannelState,
+        config: &TmcControlConfig,
+    ) -> Option<ScheduledCommissionTickAction>
+    where
+        B: CommissioningBackend,
+    {
+        self.commission_engine.as_ref()?;
+        let mut dispatch = crate::commission_dispatch::DispatchState::new(
+            tmc,
+            stepper,
+            &mut self.calibrated,
+            &mut self.motor_enabled,
+            &mut self.stored_gains,
+        );
+        let outcome = crate::commission_dispatch::drive_commission_result(
+            result.into_step_result(),
+            &mut self.commission_engine,
+            backend,
+            &mut dispatch,
+            config.tmc.pwm_maxcnt,
+        )
+        .await;
+        match outcome {
+            crate::commission_dispatch::CommissionOutcome::Terminal { reply, actions } => {
+                Some(ScheduledCommissionTickAction::Terminal { reply, actions })
+            }
+            crate::commission_dispatch::CommissionOutcome::Continue
+            | crate::commission_dispatch::CommissionOutcome::PhaseChanged { .. } => {
+                unreachable!("terminal poll produced a nonterminal dispatch action")
+            }
+        }
+    }
+
+    /// Convert an explicit poll into the board-facing scheduled action.
+    pub async fn drive_commissioning_poll<B>(
+        &mut self,
+        poll: CommissionPoll,
+        backend: &mut B,
+        tmc: &'static TmcChannelState,
+        stepper: &'static StepperChannelState,
+        config: &TmcControlConfig,
+    ) -> Option<ScheduledCommissionTickAction>
+    where
+        B: CommissioningBackend,
+    {
+        match poll {
+            CommissionPoll::ReadyNow { event } => {
+                self.classify_commission_poll(CommissionPoll::ReadyNow { event })
+            }
+            CommissionPoll::At {
+                timestamp_us,
+                event,
+            } => self.classify_commission_poll(CommissionPoll::At {
+                timestamp_us,
+                event,
+            }),
             CommissionPoll::Terminal { result } => {
-                let mut dispatch = crate::commission_dispatch::DispatchState::new(
-                    tmc,
-                    stepper,
-                    &mut self.calibrated,
-                    &mut self.motor_enabled,
-                    &mut self.stored_gains,
-                );
-                let outcome = crate::commission_dispatch::drive_commission_result(
-                    result.into_step_result(),
-                    &mut self.commission_engine,
-                    backend,
-                    &mut dispatch,
-                    config.tmc.pwm_maxcnt,
-                )
-                .await;
-                match outcome {
-                    crate::commission_dispatch::CommissionOutcome::Terminal { reply, actions } => {
-                        Some(ScheduledCommissionTickAction::Terminal { reply, actions })
-                    }
-                    crate::commission_dispatch::CommissionOutcome::Continue
-                    | crate::commission_dispatch::CommissionOutcome::PhaseChanged { .. } => {
-                        unreachable!("terminal poll produced a nonterminal dispatch action")
-                    }
-                }
+                self.drive_commissioning_terminal(result, backend, tmc, stepper, config)
+                    .await
             }
         }
     }
