@@ -131,6 +131,52 @@ pub struct RetainedDeadlineAttribution {
     pub deadline_expired_before_sleep: bool,
 }
 
+impl RetainedDeadlineAttribution {
+    /// Convert retained DWT durations to rounded-up microseconds.
+    ///
+    /// Returns `None` when `cycles_per_microsecond` is zero.
+    #[must_use]
+    pub fn to_microseconds(
+        self,
+        cycles_per_microsecond: u32,
+    ) -> Option<DeadlineAttributionEvidence> {
+        if cycles_per_microsecond == 0 {
+            return None;
+        }
+        Some(DeadlineAttributionEvidence {
+            requested_wait_us: self.requested_wait_us,
+            release_lateness_us: self
+                .release_lateness_cycles
+                .div_ceil(cycles_per_microsecond),
+            source_mask: self.source_mask,
+            accumulated_overlap_us: self
+                .accumulated_overlap_cycles
+                .div_ceil(cycles_per_microsecond),
+            max_source_overlap_us: self
+                .max_source_overlap_cycles
+                .div_ceil(cycles_per_microsecond),
+            deadline_expired_before_sleep: self.deadline_expired_before_sleep,
+        })
+    }
+}
+
+/// Host-facing microsecond evidence derived from one retained release.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct DeadlineAttributionEvidence {
+    /// Requested wait from board classification to the deadline.
+    pub requested_wait_us: u32,
+    /// Rounded-up board release lateness.
+    pub release_lateness_us: u32,
+    /// Bitwise union of attributed source classes.
+    pub source_mask: u32,
+    /// Rounded-up sum of post-deadline source overlaps.
+    pub accumulated_overlap_us: u32,
+    /// Rounded-up largest single-source overlap.
+    pub max_source_overlap_us: u32,
+    /// Whether board handoff reached the deadline before sleeping.
+    pub deadline_expired_before_sleep: bool,
+}
+
 /// Lock-free single-core probe for attributing one armed board deadline.
 ///
 /// A board arms the probe before yielding to an absolute wait. Higher-priority
@@ -305,7 +351,7 @@ fn cycle_at_or_after(cycle: u32, reference: u32) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{DeadlineAttribution, DeadlineAttributionProbe};
+    use super::{DeadlineAttribution, DeadlineAttributionProbe, RetainedDeadlineAttribution};
 
     const USB_TASK: u32 = 1 << 2;
 
@@ -426,5 +472,34 @@ mod tests {
 
         assert_eq!(probe.worst_snapshot().release_lateness_cycles, 0);
         assert_eq!(probe.worst_snapshot().source_mask, 0);
+    }
+
+    #[test]
+    fn retained_release_converts_cycles_to_rounded_up_microseconds() {
+        let retained = RetainedDeadlineAttribution {
+            requested_wait_us: 100,
+            release_lateness_cycles: 168 * 491,
+            source_mask: USB_TASK,
+            accumulated_overlap_cycles: 168 * 300 + 1,
+            max_source_overlap_cycles: 168 * 250,
+            deadline_expired_before_sleep: true,
+        };
+
+        let evidence = retained.to_microseconds(168).expect("nonzero clock scale");
+        assert_eq!(evidence.requested_wait_us, 100);
+        assert_eq!(evidence.release_lateness_us, 491);
+        assert_eq!(evidence.source_mask, USB_TASK);
+        assert_eq!(evidence.accumulated_overlap_us, 301);
+        assert_eq!(evidence.max_source_overlap_us, 250);
+        assert!(evidence.deadline_expired_before_sleep);
+    }
+
+    #[test]
+    fn retained_release_rejects_zero_cycles_per_microsecond() {
+        assert!(
+            RetainedDeadlineAttribution::default()
+                .to_microseconds(0)
+                .is_none()
+        );
     }
 }
