@@ -11,7 +11,7 @@ use super::{
     wrapped_encoder_delta, write,
 };
 use crate::autotune::current_loop_actionable_status_mask;
-use crate::commissioning::capture_timing::{CaptureTiming, TimingEnvelope};
+use crate::commissioning::capture_timing::{CaptureTiming, TimingEnvelope, sample_slot};
 use crate::resistance_identification::runner::{ResistanceBackend, ResistanceRunMode};
 use crate::resistance_identification::types::{ResistanceError, ResistanceWarningFlags};
 
@@ -297,9 +297,27 @@ impl ResistanceRunner {
         let Ok(spi_wall_u32) = u32::try_from(spi_wall) else {
             return self.fail_window(backend, &capture, ResistanceError::TimingRejected, true);
         };
-        let Some(completion_us) = now_us.checked_add(spi_wall) else {
-            return self.fail_window(backend, &capture, ResistanceError::TimingRejected, true);
+        let due_us = capture.next_sample_us;
+        let slot = match sample_slot(
+            due_us,
+            self.profile.sample_interval_ms.saturating_mul(1_000),
+            now_us,
+        ) {
+            Ok(slot) => slot,
+            Err(_) => {
+                return self.fail_window(backend, &capture, ResistanceError::TimingRejected, true);
+            }
         };
+        capture.opportunities = capture
+            .opportunities
+            .saturating_add(u8::try_from(slot.missed).unwrap_or(u8::MAX))
+            .saturating_add(1);
+        let axis = self.profile.axes[self.axis_index as usize];
+        capture.current_sum += i32::from(phase_current_for_axis(axis, packed));
+        capture.status_or |= flags;
+        capture.valid_samples += 1;
+        capture.next_sample_us = slot.next_deadline_us;
+        let completion_us = backend.elapsed_us();
         if completion_us > self.deadline_us {
             return self.fail_window(
                 backend,
@@ -308,27 +326,18 @@ impl ResistanceRunner {
                 false,
             );
         }
-        let slot = match capture.timing.record_sample(
-            capture.next_sample_us,
-            now_us,
-            completion_us,
-            completion_us,
-            spi_wall_u32,
-        ) {
-            Ok(slot) => slot,
-            Err(_) => {
-                return self.fail_window(
-                    backend,
-                    &capture,
-                    ResistanceError::TimingRejected,
-                    capture.timing.snapshot().1,
-                );
-            }
-        };
-        capture.opportunities = capture
-            .opportunities
-            .saturating_add(u8::try_from(slot.missed).unwrap_or(u8::MAX))
-            .saturating_add(1);
+        if capture
+            .timing
+            .record_sample(due_us, now_us, io_done, completion_us, spi_wall_u32)
+            .is_err()
+        {
+            return self.fail_window(
+                backend,
+                &capture,
+                ResistanceError::TimingRejected,
+                capture.timing.snapshot().1,
+            );
+        }
         if capture.opportunities > MAX_OPPORTUNITIES_PER_WINDOW || capture.timing.finish().is_err()
         {
             return self.fail_window(
@@ -338,11 +347,6 @@ impl ResistanceRunner {
                 capture.timing.snapshot().1,
             );
         }
-        let axis = self.profile.axes[self.axis_index as usize];
-        capture.current_sum += i32::from(phase_current_for_axis(axis, packed));
-        capture.status_or |= flags;
-        capture.valid_samples += 1;
-        capture.next_sample_us = slot.next_deadline_us;
         if capture.valid_samples == SAMPLES_PER_WINDOW {
             let evidence = match capture.timing.finish() {
                 Ok(evidence) => evidence,

@@ -590,13 +590,27 @@ async fn poll_delay_sample<B: CommissioningBackend>(
         capture.timing.mark_source_overflow(current_io.wall_us);
         return Err(CommissionError::DelayTimingRejected);
     }
+    if buf.len() != capture.offsets.len() || buf.is_full() {
+        return Err(CommissionError::DelayTimingRejected);
+    }
+    let offset_us = observation_us
+        .checked_sub(capture.origin_us)
+        .and_then(|offset| u32::try_from(offset).ok())
+        .ok_or(CommissionError::DelayTimingRejected)?;
+    let mut offsets = capture.offsets.clone();
+    offsets
+        .push(offset_us)
+        .map_err(|_| CommissionError::DelayTimingRejected)?;
+    let current = (actual & 0xffff) as i16;
+    let relative = (i32::from(current) - i32::from(capture.baseline)).unsigned_abs();
+    let poll_completion_us = backend.elapsed_us();
     let accepted_slot = capture
         .timing
         .record_sample(
             capture.next_sample_us,
             now_us,
             observation_us,
-            observation_us,
+            poll_completion_us,
             current_io.wall_us,
         )
         .map_err(|_| CommissionError::DelayTimingRejected)?;
@@ -604,19 +618,10 @@ async fn poll_delay_sample<B: CommissioningBackend>(
         .timing
         .finish()
         .map_err(|_| CommissionError::DelayTimingRejected)?;
-    let offset_us = observation_us
-        .checked_sub(capture.origin_us)
-        .and_then(|offset| u32::try_from(offset).ok())
-        .ok_or(CommissionError::DelayTimingRejected)?;
-    capture
-        .offsets
-        .push(offset_us)
-        .map_err(|_| CommissionError::DelayTimingRejected)?;
-    let current = (actual & 0xffff) as i16;
-    let relative = (i32::from(current) - i32::from(capture.baseline)).unsigned_abs();
-    if !buf.push(relative) || buf.len() != capture.offsets.len() {
+    if !buf.push(relative) {
         return Err(CommissionError::DelayTimingRejected);
     }
+    capture.offsets = offsets;
     capture.next_sample_us = accepted_slot.next_deadline_us;
 
     if buf.len() >= DELAY_SAMPLE_COUNT || buf.is_full() {
@@ -4541,6 +4546,100 @@ mod tests {
             assert_eq!(timing.missed_samples, 1);
             assert_eq!(timing.max_consecutive_misses, 1);
             assert_eq!(timing.max_lateness_us, 0);
+        });
+    }
+
+    #[test]
+    fn delay_sample_completion_at_next_deadline_is_accepted() {
+        pollster::block_on(async {
+            let mut phase = InnerPhase::ElectricalId {
+                state: ElectricalIdState::DelaySample {
+                    capture: delay_capture_state(0, 1_000, 1_160),
+                },
+                data: ElectricalIdData::new(512),
+            };
+            let mut buf = TransientBuffer::new();
+            buf.reset(ELECTRICAL_SAMPLE_PERIOD_US as u16);
+            let mut backend = MockBackend::new();
+            backend.set_elapsed_us_sequence(&[1_160, 1_160, 1_200, 1_200, 1_320]);
+            let _ = backend.registers.insert(PID_TORQUE_FLUX_ACTUAL.addr(), 250);
+            let mut selftest_results = crate::selftest::SelftestResults::default();
+            let mut diagnostics = crate::selftest::CommissionDiagnostics::default();
+
+            let result = step_electrical_identification(
+                &mut phase,
+                &mut buf,
+                InnerSequence::Commission,
+                &mut selftest_results,
+                &mut diagnostics,
+                &mut backend,
+            )
+            .await;
+
+            assert!(matches!(result, StepResult::At(1_320)));
+            assert_eq!(buf.samples(), &[250]);
+            let InnerPhase::ElectricalId {
+                state: ElectricalIdState::DelaySample { capture },
+                ..
+            } = phase
+            else {
+                panic!("expected accepted delay sample");
+            };
+            let timing = capture.timing.finish().unwrap();
+            assert_eq!(timing.valid_samples, 1);
+            assert_eq!(timing.max_poll_wall_us, 160);
+            assert_eq!(timing.max_spi_wall_us, 40);
+        });
+    }
+
+    #[test]
+    fn delay_bookkeeping_overrun_rejects_without_committing_sample() {
+        pollster::block_on(async {
+            let mut phase = InnerPhase::ElectricalId {
+                state: ElectricalIdState::DelaySample {
+                    capture: delay_capture_state(0, 1_000, 1_160),
+                },
+                data: ElectricalIdData::new(512),
+            };
+            let mut buf = TransientBuffer::new();
+            buf.reset(ELECTRICAL_SAMPLE_PERIOD_US as u16);
+            let mut backend = MockBackend::new();
+            backend.enable_pin = true;
+            backend.set_elapsed_us_sequence(&[1_160, 1_160, 1_200, 1_200, 1_321]);
+            let _ = backend.registers.insert(PID_TORQUE_FLUX_ACTUAL.addr(), 250);
+            let mut selftest_results = crate::selftest::SelftestResults::default();
+            let mut diagnostics = crate::selftest::CommissionDiagnostics::default();
+
+            let result = step_electrical_identification(
+                &mut phase,
+                &mut buf,
+                InnerSequence::Commission,
+                &mut selftest_results,
+                &mut diagnostics,
+                &mut backend,
+            )
+            .await;
+
+            assert!(matches!(result, StepResult::ReadyNow));
+            assert!(
+                buf.is_empty(),
+                "rejected current must not reach the estimator"
+            );
+            assert!(!backend.enable_pin);
+            let InnerPhase::ElectricalId { state, data } = phase else {
+                unreachable!();
+            };
+            assert!(matches!(
+                state,
+                ElectricalIdState::DelayRestore {
+                    primary_error: Some(CommissionError::DelayTimingRejected),
+                    ..
+                }
+            ));
+            let timing = data.delay_timing.expect("rejected delay timing snapshot");
+            assert_eq!(timing.valid_samples, 0);
+            assert_eq!(timing.max_poll_wall_us, 161);
+            assert_eq!(timing.max_spi_wall_us, 40);
         });
     }
 

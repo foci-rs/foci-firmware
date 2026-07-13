@@ -176,6 +176,8 @@ impl CaptureTiming {
     ///
     /// Returns a [`TimingReject`] for invalid chronology, excessive lateness,
     /// invalid slot arithmetic, or SPI time outside the poll wall interval.
+    /// [`TimingReject::ServiceOverrun`] reports complete service after the next
+    /// sample-start deadline.
     pub fn record_sample(
         &mut self,
         due_us: u64,

@@ -265,6 +265,15 @@ impl FakeResistanceBackend {
     }
 }
 
+fn poll_runner(
+    runner: &mut ResistanceRunner,
+    backend: &mut FakeResistanceBackend,
+    now_us: u64,
+) -> ResistancePoll {
+    backend.elapsed_us = backend.elapsed_us.max(now_us);
+    block_on(runner.poll(backend, now_us))
+}
+
 impl ResistanceBackend for FakeResistanceBackend {
     async fn read_register(&mut self, addr: u8) -> Result<u32, ResistanceBackendError> {
         self.operations += 1;
@@ -827,7 +836,7 @@ fn resumable_setup_performs_one_register_operation_per_poll() {
 
     for _ in 0..24 {
         backend.begin_poll();
-        let poll = block_on(runner.poll(&mut backend, 1_000));
+        let poll = poll_runner(&mut runner, &mut backend, 1_000);
         assert_eq!(
             backend.operations_since_poll(),
             1,
@@ -854,12 +863,12 @@ fn resumable_sample_performs_exactly_current_and_status_reads() {
 
     loop {
         backend.begin_poll();
-        match block_on(runner.poll(&mut backend, now)) {
+        match poll_runner(&mut runner, &mut backend, now) {
             ResistancePoll::ReadyNow => {}
             ResistancePoll::At(deadline) => {
                 now = deadline;
                 backend.begin_poll();
-                let sample = block_on(runner.poll(&mut backend, now));
+                let sample = poll_runner(&mut runner, &mut backend, now);
                 assert_eq!(backend.operations_since_poll(), 2);
                 assert!(matches!(
                     sample,
@@ -897,7 +906,7 @@ fn drive_to_first_sample(
     now: u64,
 ) -> u64 {
     for _ in 0..32 {
-        match block_on(runner.poll(backend, now)) {
+        match poll_runner(runner, backend, now) {
             ResistancePoll::ReadyNow => {}
             ResistancePoll::At(deadline) => return deadline,
             ResistancePoll::Complete(result) => panic!("unexpected completion: {result:?}"),
@@ -913,7 +922,7 @@ fn finish_restoration(
 ) -> Result<super::types::ResistanceRunResult, ResistanceError> {
     for _ in 0..8 {
         backend.begin_poll();
-        let poll = block_on(runner.poll(backend, now));
+        let poll = poll_runner(runner, backend, now);
         assert_eq!(
             backend.operations_since_poll(),
             1,
@@ -939,13 +948,13 @@ fn one_missed_slot_uses_ninth_opportunity_without_catch_up() {
     let period = u64::from(backend.profile().sample_interval_ms) * 1_000;
 
     backend.begin_poll();
-    let mut next = match block_on(runner.poll(&mut backend, due + period)) {
+    let mut next = match poll_runner(&mut runner, &mut backend, due + period) {
         ResistancePoll::At(deadline) => deadline,
         poll => panic!("unexpected delayed-sample result: {poll:?}"),
     };
     assert_eq!(backend.operations_since_poll(), 2, "no catch-up reads");
     for _ in 1..SAMPLES_PER_WINDOW_FOR_TEST {
-        next = match block_on(runner.poll(&mut backend, next)) {
+        next = match poll_runner(&mut runner, &mut backend, next) {
             ResistancePoll::At(deadline) => deadline,
             ResistancePoll::ReadyNow => break,
             poll => panic!("unexpected sample result: {poll:?}"),
@@ -969,7 +978,7 @@ fn active_window_snapshot_is_available_for_shutdown_diagnostics() {
     let due = drive_to_first_sample(&mut runner, &mut backend, 1_000);
 
     assert!(matches!(
-        block_on(runner.poll(&mut backend, due)),
+        poll_runner(&mut runner, &mut backend, due),
         ResistancePoll::At(_)
     ));
     let timing = runner.timing_evidence_with_active();
@@ -977,6 +986,57 @@ fn active_window_snapshot_is_available_for_shutdown_diagnostics() {
     assert_eq!(timing.completed_windows, 0);
     assert_eq!(timing.valid_samples, 1);
     assert_ne!(timing.requested_period_us, 0);
+}
+
+#[test]
+fn resistance_sample_completion_at_next_deadline_is_accepted() {
+    let mut backend = FakeResistanceBackend::standard();
+    let mut runner = ResistanceRunner::new(
+        ResistanceRunMode::CommissioningManagedEnable,
+        backend.profile(),
+        1_000,
+    )
+    .unwrap();
+    let due = drive_to_first_sample(&mut runner, &mut backend, 1_000);
+    let period = u64::from(backend.profile().sample_interval_ms) * 1_000;
+    backend.script_elapsed(&[due, due + 20, due + 40, due + period]);
+
+    assert_eq!(
+        poll_runner(&mut runner, &mut backend, due),
+        ResistancePoll::At(due + period)
+    );
+    let timing = runner.timing_evidence_with_active();
+    assert_eq!(timing.valid_samples, 1);
+    assert_eq!(timing.max_poll_wall_us, period as u32);
+    assert_eq!(timing.max_spi_wall_us, 40);
+}
+
+#[test]
+fn resistance_bookkeeping_overrun_rejects_without_committing_sample() {
+    let mut backend = FakeResistanceBackend::standard();
+    let mut runner = ResistanceRunner::new(
+        ResistanceRunMode::CommissioningManagedEnable,
+        backend.profile(),
+        1_000,
+    )
+    .unwrap();
+    let due = drive_to_first_sample(&mut runner, &mut backend, 1_000);
+    let period = u64::from(backend.profile().sample_interval_ms) * 1_000;
+    backend.script_elapsed(&[due, due + 20, due + 40, due + period + 1]);
+
+    assert_eq!(
+        poll_runner(&mut runner, &mut backend, due),
+        ResistancePoll::ReadyNow
+    );
+    assert!(!backend.enable_pin);
+    assert_eq!(
+        runner.primary_error(),
+        Some(ResistanceError::TimingRejected)
+    );
+    let timing = runner.timing_evidence();
+    assert_eq!(timing.valid_samples, 0);
+    assert_eq!(timing.max_poll_wall_us, period as u32 + 1);
+    assert_eq!(timing.max_spi_wall_us, 40);
 }
 
 #[test]
@@ -990,13 +1050,13 @@ fn second_missed_slot_rejects_the_window() {
     .unwrap();
     let due = drive_to_first_sample(&mut runner, &mut backend, 1_000);
     let period = u64::from(backend.profile().sample_interval_ms) * 1_000;
-    let next = match block_on(runner.poll(&mut backend, due + period)) {
+    let next = match poll_runner(&mut runner, &mut backend, due + period) {
         ResistancePoll::At(deadline) => deadline,
         poll => panic!("unexpected first miss result: {poll:?}"),
     };
 
     assert_eq!(
-        block_on(runner.poll(&mut backend, next + period)),
+        poll_runner(&mut runner, &mut backend, next + period),
         ResistancePoll::ReadyNow
     );
     assert!(!backend.enable_pin, "timing rejection must lower GPIO");
@@ -1024,7 +1084,7 @@ fn absolute_phase_deadline_transitions_to_gpio_first_restore() {
     let _ = drive_to_first_sample(&mut runner, &mut backend, 1_000);
 
     assert_eq!(
-        block_on(runner.poll(&mut backend, 20_001_000)),
+        poll_runner(&mut runner, &mut backend, 20_001_000),
         ResistancePoll::ReadyNow
     );
     assert!(!backend.enable_pin);
@@ -1048,7 +1108,7 @@ fn critical_status_stops_measurement_and_lowers_gpio_before_restore_io() {
     let writes_before = backend.writes.len();
 
     assert_eq!(
-        block_on(runner.poll(&mut backend, due)),
+        poll_runner(&mut runner, &mut backend, due),
         ResistancePoll::ReadyNow
     );
     assert!(!backend.enable_pin);
@@ -1081,7 +1141,7 @@ fn warning_only_status_is_retained_without_terminating_sample() {
     let due = drive_to_first_sample(&mut runner, &mut backend, 1_000);
 
     assert!(matches!(
-        block_on(runner.poll(&mut backend, due)),
+        poll_runner(&mut runner, &mut backend, due),
         ResistancePoll::At(_)
     ));
     assert!(backend.enable_pin);
@@ -1111,7 +1171,7 @@ fn resumable_success_matches_compatibility_loop_and_remains_terminal() {
     let mut now = 1_000;
 
     let terminal = loop {
-        match block_on(runner.poll(&mut backend, now)) {
+        match poll_runner(&mut runner, &mut backend, now) {
             ResistancePoll::ReadyNow => {}
             ResistancePoll::At(deadline) => now = deadline,
             ResistancePoll::Complete(result) => break result,
@@ -1120,7 +1180,7 @@ fn resumable_success_matches_compatibility_loop_and_remains_terminal() {
 
     assert_eq!(terminal, Ok(expected));
     assert_eq!(
-        block_on(runner.poll(&mut backend, now)),
+        poll_runner(&mut runner, &mut backend, now),
         ResistancePoll::Complete(Ok(expected))
     );
 }
@@ -1138,7 +1198,7 @@ fn backward_sample_timestamp_rejects_timing_and_lowers_gpio() {
     backend.script_elapsed(&[100, 90, 110]);
 
     assert_eq!(
-        block_on(runner.poll(&mut backend, due)),
+        poll_runner(&mut runner, &mut backend, due),
         ResistancePoll::ReadyNow
     );
     assert!(!backend.enable_pin);
@@ -1165,7 +1225,7 @@ fn unrepresentable_sample_spi_sum_rejects_timing() {
     backend.script_elapsed(&[0, u64::from(u32::MAX), u64::from(u32::MAX) + 1]);
 
     assert_eq!(
-        block_on(runner.poll(&mut backend, due)),
+        poll_runner(&mut runner, &mut backend, due),
         ResistancePoll::ReadyNow
     );
     assert_eq!(
@@ -1207,7 +1267,7 @@ fn inherited_status_is_retained_cleared_and_absent_from_first_sample() {
     assert_eq!(runner.primary_error(), None);
     assert!(backend.enable_pin);
     assert!(matches!(
-        block_on(runner.poll(&mut backend, first_settle_deadline)),
+        poll_runner(&mut runner, &mut backend, first_settle_deadline),
         ResistancePoll::At(_) | ResistancePoll::ReadyNow
     ));
     assert_eq!(runner.status_flags_or(), 0x7000_4480);
@@ -1232,7 +1292,7 @@ fn fresh_critical_status_after_clear_refuses_enable_and_starts_restore() {
             writes_before_fresh_read = Some(backend.writes.len());
         }
         backend.begin_poll();
-        let poll = block_on(runner.poll(&mut backend, 1_000));
+        let poll = poll_runner(&mut runner, &mut backend, 1_000);
         assert_eq!(backend.operations_since_poll(), 1);
         match poll {
             ResistancePoll::ReadyNow if runner.primary_error().is_none() => {}
@@ -1271,7 +1331,7 @@ fn critical_sample_status_precedes_coincident_timing_rejection() {
     let writes_before = backend.writes.len();
 
     assert_eq!(
-        block_on(runner.poll(&mut backend, due)),
+        poll_runner(&mut runner, &mut backend, due),
         ResistancePoll::ReadyNow
     );
     assert_eq!(runner.status_flags_or(), 0x7400_4480);
@@ -1300,7 +1360,7 @@ fn restore_failure_replaces_success_and_remains_terminal() {
     let mut was_enabled = false;
 
     for _ in 0..1_000 {
-        match block_on(runner.poll(&mut backend, now)) {
+        match poll_runner(&mut runner, &mut backend, now) {
             ResistancePoll::ReadyNow => {}
             ResistancePoll::At(deadline) => now = deadline,
             ResistancePoll::Complete(result) => panic!("unexpected completion: {result:?}"),
@@ -1321,7 +1381,7 @@ fn restore_failure_replaces_success_and_remains_terminal() {
         Err(ResistanceError::BackendIo)
     );
     assert_eq!(
-        block_on(runner.poll(&mut backend, now)),
+        poll_runner(&mut runner, &mut backend, now),
         ResistancePoll::Complete(Err(ResistanceError::BackendIo))
     );
 }
@@ -1338,7 +1398,7 @@ fn restore_failure_replaces_existing_primary_error_and_remains_terminal() {
     let due = drive_to_first_sample(&mut runner, &mut backend, 1_000);
     backend.scripted_status_flags = 1 << 26;
     assert_eq!(
-        block_on(runner.poll(&mut backend, due)),
+        poll_runner(&mut runner, &mut backend, due),
         ResistancePoll::ReadyNow
     );
     assert_eq!(
@@ -1352,7 +1412,7 @@ fn restore_failure_replaces_existing_primary_error_and_remains_terminal() {
         Err(ResistanceError::BackendIo)
     );
     assert_eq!(
-        block_on(runner.poll(&mut backend, due)),
+        poll_runner(&mut runner, &mut backend, due),
         ResistancePoll::Complete(Err(ResistanceError::BackendIo))
     );
 }
