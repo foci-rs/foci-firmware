@@ -249,6 +249,11 @@ impl DeadlineAttributionProbe {
         self.active.store(true, Ordering::Release);
     }
 
+    /// Cancel the active deadline without retaining a release.
+    pub fn cancel_active(&self) {
+        self.active.store(false, Ordering::Release);
+    }
+
     /// Record one source span when a deadline is active.
     pub fn record_source_span(&self, source_mask: u32, entry_cycle: u32, exit_cycle: u32) {
         if !self.active.load(Ordering::Acquire) {
@@ -466,6 +471,8 @@ mod tests {
     #[test]
     fn inactive_probe_ignores_source_work_and_resume() {
         let probe = DeadlineAttributionProbe::new();
+        probe.arm(100, 100);
+        probe.cancel_active();
 
         probe.record_source_span(USB_TASK, 100, 130);
         probe.resume(140);
