@@ -242,8 +242,14 @@ fn emit_commission_diagnostics<S: CommissionReplySink>(
     oid: u8,
     diagnostics: CommissionDiagnostics,
 ) {
-    for event in diagnostics.iter() {
-        sink.foci_commission_detail(oid, event);
+    for priority in [true, false] {
+        for event in diagnostics.iter() {
+            let is_electrical_timing =
+                event.phase == PhaseId::ElectricalId.to_u8() && matches!(event.code, 34..=41);
+            if is_electrical_timing == priority {
+                sink.foci_commission_detail(oid, event);
+            }
+        }
     }
 }
 
@@ -1905,6 +1911,48 @@ mod tests {
                     phase: 9,
                     status: 3,
                 },
+            ]
+        );
+    }
+
+    #[test]
+    fn commission_phase_prioritizes_electrical_timing_details() {
+        let electrical_id = PhaseId::ElectricalId.to_u8();
+        let mut sink = RecordingSink::default();
+        emit_terminal_reply(
+            &mut sink,
+            ReplyPayload::CommissionPhase {
+                oid: 7,
+                phase: electrical_id,
+                status: 3,
+                diagnostics: diagnostics([
+                    diagnostic(4, 41),
+                    diagnostic(electrical_id, 2),
+                    diagnostic(electrical_id, 34),
+                    diagnostic(electrical_id, 40),
+                    diagnostic(electrical_id, 35),
+                    diagnostic(electrical_id, 3),
+                ]),
+            },
+        );
+
+        let detail_keys: Vec<(u8, u8)> = sink
+            .events
+            .iter()
+            .filter_map(|event| match event {
+                Event::Detail { phase, code, .. } => Some((*phase, *code)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            detail_keys,
+            [
+                (electrical_id, 34),
+                (electrical_id, 40),
+                (electrical_id, 35),
+                (4, 41),
+                (electrical_id, 2),
+                (electrical_id, 3),
             ]
         );
     }
