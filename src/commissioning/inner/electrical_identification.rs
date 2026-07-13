@@ -1276,6 +1276,9 @@ fn push_timing_diagnostics(
     summaries: [crate::commissioning::types::CommissionTimingSummary; 3],
 ) {
     for (method, summary) in summaries.iter().copied().enumerate() {
+        if summary.status == crate::commissioning::types::COMMISSION_TIMING_NOT_RUN {
+            continue;
+        }
         let evidence = summary.evidence;
         let code = 34 + (method as u8 * 2);
         diagnostics.push(crate::selftest::CommissionDiagnostic {
@@ -2540,9 +2543,12 @@ mod tests {
     #[test]
     fn validate_transitions_to_current_tune_with_model() {
         pollster::block_on(async {
+            let mut data = representative_data();
+            data.timing_states = crate::commissioning::types::COMMISSION_TIMING_ACCEPTED
+                | (crate::commissioning::types::COMMISSION_TIMING_ACCEPTED << 2);
             let mut phase = InnerPhase::ElectricalId {
                 state: ElectricalIdState::Validate,
-                data: representative_data(),
+                data,
             };
             let mut buf = TransientBuffer::new();
             let mut backend = MockBackend::new();
@@ -2589,7 +2595,7 @@ mod tests {
                     .iter()
                     .map(|event| event.code)
                     .collect::<std::vec::Vec<_>>(),
-                std::vec![34, 35, 36, 37, 38, 39],
+                std::vec![34, 35, 36, 37],
             );
         });
     }
