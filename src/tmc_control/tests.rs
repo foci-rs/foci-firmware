@@ -26,6 +26,7 @@ use foci_tmc4671::registers::{
     STATUS_FLAGS, STEP_WIDTH,
 };
 use foci_tmc4671::spi::Tmc4671Spi;
+use std::vec::Vec;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct MockSpiError;
@@ -772,6 +773,38 @@ fn scheduled_dispatch_preserves_wait_action() {
         ));
         assert!(runtime.is_commission_active());
     });
+}
+
+#[test]
+fn runtime_appends_board_diagnostic_to_active_commission() {
+    let tmc = crate::state::tmc::tmc_channel0();
+    let mut runtime = TmcControlRuntime::new_for_channel(0);
+    runtime.set_commission_engine(CommissioningEngine::new_selftest_for_tmc(7, tmc));
+    let diagnostic = crate::selftest::CommissionDiagnostic {
+        phase: crate::autotune::PhaseId::ElectricalId.to_u8(),
+        code: 40,
+        status: 2,
+        value0: 100,
+        value1: 491,
+        value2: 1,
+    };
+
+    assert!(runtime.push_commission_diagnostic(diagnostic));
+
+    let mut engine = runtime
+        .take_commission_engine()
+        .expect("commission engine remains active");
+    assert_eq!(
+        engine.take_diagnostics().iter().collect::<Vec<_>>(),
+        [diagnostic]
+    );
+}
+
+#[test]
+fn runtime_rejects_board_diagnostic_without_active_commission() {
+    let mut runtime = TmcControlRuntime::new_for_channel(0);
+
+    assert!(!runtime.push_commission_diagnostic(crate::selftest::CommissionDiagnostic::default()));
 }
 
 #[test]
