@@ -1389,7 +1389,9 @@ mod tests {
         trace_pack_u16_pair,
     };
     use crate::commissioning::types::StepResult;
-    use foci_tmc4671::registers::{PID_VELOCITY_LIMIT, PID_VELOCITY_TARGET};
+    use foci_tmc4671::registers::{
+        PID_VELOCITY_LIMIT, PID_VELOCITY_P_VELOCITY_I, PID_VELOCITY_TARGET,
+    };
 
     fn encoder_count(raw_counts: u32) -> EncoderCount {
         EncoderDomain::new(4_000).unwrap().count(raw_counts)
@@ -3024,7 +3026,7 @@ mod tests {
         pollster::block_on(async {
             let gains = VelocityGains {
                 velocity_p: 1152,
-                velocity_i: 0,
+                velocity_i: 341,
                 velocity_limit: 16,
                 effective_bandwidth_hz: 0,
                 lambda_vel_ms: 0,
@@ -3079,6 +3081,13 @@ mod tests {
             )
             .await;
 
+            assert_eq!(
+                *backend
+                    .registers
+                    .get(&PID_VELOCITY_P_VELOCITY_I.addr())
+                    .expect("velocity gains should be written"),
+                (u32::from(gains.velocity_p) << 16) | u32::from(gains.velocity_i)
+            );
             assert_eq!(
                 *backend
                     .registers

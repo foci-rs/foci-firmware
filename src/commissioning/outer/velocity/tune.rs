@@ -226,6 +226,60 @@ mod tests {
     }
 
     #[test]
+    fn advanced_pi_i_above_envelope_uses_response_tuning() {
+        pollster::block_on(async {
+            let mut safety = OuterSafetyLimits::new(
+                2_448,
+                crate::commissioning::outer::OuterMotionBudget::firmware_caps(),
+            );
+            safety.configure_encoder_resolution(4_000).unwrap();
+            let mut phase = OuterPhase::VelocityTune {
+                model: MechanicalModel {
+                    j_eff: 400,
+                    b_eff: 100,
+                    tau_mech_ms: 4,
+                    theta_mech_us: 500,
+                    t_f: 0,
+                },
+                peak_velocity: 1_000,
+                diagnostics: zero_diagnostics(),
+                safety,
+            };
+            let mut backend = MockBackend::new();
+            backend.current_limit_value = 2_448;
+
+            let result = step_velocity_tune(
+                &mut phase,
+                CommissionProfile::Balanced,
+                OperatingMode::Nominal,
+                100,
+                20,
+                0,
+                1_000,
+                &mut backend,
+            )
+            .await;
+
+            assert!(matches!(
+                result,
+                StepResult::PhaseChanged(PhaseId::VelocityValidate)
+            ));
+            match phase {
+                OuterPhase::VelocityValidate { data, .. } => {
+                    assert_eq!(data.strategy, VelocityTuneStrategy::ResponseRamp);
+                    assert!(data.diagnostics.synth_velocity_i > OUTER_MAX_VELOCITY_I);
+                    assert_eq!(
+                        data.diagnostics.warning_code,
+                        OUTER_WARNING_UNSAFE_SYNTH_GAINS
+                    );
+                    assert_eq!(data.gains.velocity_i, 0);
+                }
+                other => panic!("expected VelocityValidate, got {other:?}"),
+            }
+        });
+    }
+
+    #[test]
     fn velocity_tune_model_warning_widens_final_lambda_when_mechanical_lambda_dominates() {
         pollster::block_on(async {
             let model = MechanicalModel {

@@ -3,6 +3,14 @@ use super::{
     VELOCITY_SIMC_MAX_P_REG, ValidationResult, VelocityGains, metrics,
 };
 
+const VELOCITY_ADVANCED_PI_I_ZERO_SCALE: f32 = 65_536.0;
+
+fn advanced_pi_velocity_i_raw(ti_us: f32, f_pwm_hz: u32) -> u16 {
+    let ti_s = ti_us * 1e-6;
+    (VELOCITY_ADVANCED_PI_I_ZERO_SCALE / (ti_s * f_pwm_hz as f32)).clamp(1.0, u16::MAX as f32)
+        as u16
+}
+
 /// Metrics from a velocity-loop step-response validation test (Phase 10).
 ///
 /// Extracted from the [`TransientBuffer`] after a velocity step.
@@ -221,7 +229,6 @@ pub(crate) fn simc_velocity_gains_with_lambda_multiplier(
     // SIMC PI tuning law for FOPDT plant G_mech(s) = K / (tau*s+1) * e^(-theta*s):
     //   Kp = tau / (K * (lambda + theta))
     //   Ti = min(tau, 4 * (lambda + theta))
-    //   Ki = Kp / Ti
     //
     // In encoder-counts/ms units: K = 1000/B_eff because B_eff is stored as
     // torque * 1000 / cpms. TMC4671 evaluates velocity error in TMC velocity
@@ -240,13 +247,10 @@ pub(crate) fn simc_velocity_gains_with_lambda_multiplier(
         let candidate = 4.0 * (lambda + theta);
         if tau < candidate { tau } else { candidate }
     };
-    let ti_s = ti * 1e-6; // Convert Ti from microseconds to seconds.
-    let ki = kp / ti_s;
 
-    // Convert to TMC4671 Q8.8 register format.
-    let f_pwm = f_pwm_hz as f32;
+    // In advanced-PI mode, the integral zero is I_raw / 65536 per PWM sample.
     let p_reg = (kp * 256.0).clamp(1.0, u16::MAX as f32) as u16;
-    let i_reg = (ki / f_pwm * 256.0).clamp(1.0, u16::MAX as f32) as u16;
+    let i_reg = advanced_pi_velocity_i_raw(ti, f_pwm_hz);
 
     // Effective bandwidth = 1 / (2*pi*(lambda+theta)) in Hz.
     let bw_hz = 1_000_000.0 / (2.0 * core::f32::consts::PI * (lambda + theta));
@@ -672,7 +676,80 @@ mod tests {
     }
 
     #[test]
-    fn velocity_gains_use_exact_non_divisible_encoder_scale() {
+    fn advanced_pi_velocity_i_matches_ti_pwm_matrix() {
+        let cases = [
+            (10_000.0, 25_000, 262),
+            (20_000.0, 25_000, 131),
+            (10_000.0, 50_000, 131),
+            (4_000.0, 100_000, 163),
+        ];
+
+        for (ti_us, f_pwm_hz, expected) in cases {
+            assert_eq!(
+                advanced_pi_velocity_i_raw(ti_us, f_pwm_hz),
+                expected,
+                "Ti={ti_us}us fPWM={f_pwm_hz}Hz"
+            );
+        }
+    }
+
+    #[test]
+    fn advanced_pi_velocity_i_reconstructs_requested_zero() {
+        for (ti_us, f_pwm_hz) in [(4_000.0, 25_000), (10_000.0, 25_000), (20_000.0, 50_000)] {
+            let i_raw = advanced_pi_velocity_i_raw(ti_us, f_pwm_hz);
+            let reconstructed_hz = i_raw as f32 * f_pwm_hz as f32 / 65_536.0;
+            let requested_hz = 1_000_000.0 / ti_us;
+            let one_count_hz = f_pwm_hz as f32 / 65_536.0;
+
+            assert!((requested_hz - reconstructed_hz).abs() <= one_count_hz);
+        }
+    }
+
+    #[test]
+    fn velocity_i_is_independent_of_velocity_p() {
+        let config = autotune_test_config();
+        let base = MechanicalModel {
+            j_eff: 500,
+            b_eff: 2_000,
+            tau_mech_ms: 10,
+            theta_mech_us: 2_000,
+            t_f: 0,
+        };
+        let higher_p = MechanicalModel {
+            b_eff: 4_000,
+            ..base
+        };
+
+        let low = simc_velocity_gains(
+            &base,
+            CommissionProfile::Balanced,
+            OperatingMode::Nominal,
+            700,
+            100,
+            1_000,
+            4_000,
+            &config,
+        )
+        .expect("base model should synthesize gains");
+        let high = simc_velocity_gains(
+            &higher_p,
+            CommissionProfile::Balanced,
+            OperatingMode::Nominal,
+            700,
+            100,
+            1_000,
+            4_000,
+            &config,
+        )
+        .expect("higher-P model should synthesize gains");
+
+        assert_ne!(low.velocity_p, high.velocity_p);
+        assert_eq!(low.velocity_i, high.velocity_i);
+        assert_eq!(high.velocity_i, 262);
+    }
+
+    #[test]
+    fn velocity_gains_use_advanced_pi_i_scale() {
         let model = MechanicalModel {
             j_eff: 1,
             b_eff: 100,
@@ -695,7 +772,7 @@ mod tests {
         .expect("non-divisible encoder scale should synthesize gains");
 
         assert_eq!(gains.velocity_p, 976);
-        assert_eq!(gains.velocity_i, 2);
+        assert_eq!(gains.velocity_i, 163);
     }
 
     #[test]
