@@ -29,6 +29,9 @@ use crate::trace::events::{
 /// Settling time after removing torque (microseconds).
 /// Allow the motor to decelerate and stop before reverse capture.
 const MECHANICAL_ID_SETTLE_US: u64 = 500_000;
+const MECHANICAL_ID_POST_SWITCH_SAMPLE_PERIOD_US: u64 = 1_000;
+#[allow(dead_code)]
+pub(super) const MECHANICAL_ID_MAX_REGISTER_OPS_PER_ARM: usize = 9;
 
 /// Phase-local settle tuning for the position->torque mode switch.
 ///
@@ -131,6 +134,14 @@ mod tests {
     use crate::commissioning::outer::{OuterSafetyLimits, step_outer};
     use crate::trace::events::EVENT_COMMISSION_DIAGNOSTIC_WARNING;
     use foci_tmc4671::registers::{ABN_DECODER_PPR, MODE_RAMP_MODE_MOTION, PID_TORQUE_FLUX_TARGET};
+
+    fn register_operation_count(backend: &MockBackend) -> usize {
+        backend
+            .spi_log
+            .iter()
+            .filter(|operation| !matches!(operation, SpiOp::EnablePin(_)))
+            .count()
+    }
 
     #[test]
     fn mechanical_id_marks_tau_defaulted_when_raw_b_eff_zero() {
@@ -246,6 +257,10 @@ mod tests {
                 result,
                 StepResult::PhaseChanged(PhaseId::MechanicalId)
             ));
+            assert_eq!(
+                register_operation_count(&backend),
+                MECHANICAL_ID_MAX_REGISTER_OPS_PER_ARM
+            );
 
             let zero_torque_idx = backend
                 .spi_log
@@ -560,7 +575,7 @@ mod tests {
                 &mut backend,
             )
             .await;
-            assert!(matches!(second, StepResult::Continue));
+            assert!(matches!(second, StepResult::At(11_000)));
             match &phase {
                 OuterPhase::MechanicalId { state, safety, .. } => {
                     assert!(matches!(state, MechanicalIdState::PostSwitchSettle { .. }));
@@ -589,7 +604,10 @@ mod tests {
                     &mut backend,
                 )
                 .await;
-                assert!(matches!(result, StepResult::Continue));
+                let expected_deadline = us + 1_000;
+                assert!(
+                    matches!(result, StepResult::At(deadline) if deadline == expected_deadline)
+                );
             }
 
             match &phase {
@@ -625,7 +643,7 @@ mod tests {
     }
 
     #[test]
-    fn mechanical_id_post_switch_settle_accepts_origin_crossing() {
+    fn mechanical_id_post_switch_late_wake_accepts_origin_crossing_and_preserves_grid() {
         pollster::block_on(async {
             let mut safety = OuterSafetyLimits::new(
                 0,
@@ -638,7 +656,7 @@ mod tests {
             data.start_position = safety.prev_encoder_count;
             let mut phase = OuterPhase::MechanicalId {
                 state: MechanicalIdState::PostSwitchSettle {
-                    earliest_sample_us: 11_000,
+                    next_sample_us: 11_000,
                     timeout_deadline_us: 100_000,
                     stable_ticks: 0,
                 },
@@ -647,18 +665,18 @@ mod tests {
             };
             let mut buf = TransientBuffer::new();
             let mut backend = MockBackend::new();
-            backend.elapsed_us_value = 11_000;
+            backend.elapsed_us_value = 13_500;
             backend.mechanical_encoder_position_counts_value = 2;
 
             let result = step_mechanical_id(&mut phase, &mut buf, &mut backend).await;
 
-            assert!(matches!(result, StepResult::Continue));
+            assert!(matches!(result, StepResult::At(14_000)));
             match phase {
                 OuterPhase::MechanicalId { state, safety, .. } => {
                     assert!(matches!(
                         state,
                         MechanicalIdState::PostSwitchSettle {
-                            stable_ticks: 0,
+                            stable_ticks: 1,
                             ..
                         }
                     ));
@@ -686,7 +704,7 @@ mod tests {
             data.start_position = safety.prev_encoder_count;
             let mut phase = OuterPhase::MechanicalId {
                 state: MechanicalIdState::PostSwitchSettle {
-                    earliest_sample_us: 11_000,
+                    next_sample_us: 11_000,
                     timeout_deadline_us: 100_000,
                     stable_ticks: 0,
                 },
@@ -742,8 +760,146 @@ mod tests {
 
             let result = step_mechanical_id(&mut phase, &mut buf, &mut backend).await;
 
-            assert!(matches!(result, StepResult::Continue));
+            assert!(matches!(result, StepResult::At(2_000)));
             assert_eq!(buf.samples(), &[2]);
+        });
+    }
+
+    #[test]
+    fn mechanical_id_late_capture_takes_one_sample_and_preserves_grid() {
+        pollster::block_on(async {
+            let mut safety = OuterSafetyLimits::new(
+                0,
+                crate::commissioning::outer::OuterMotionBudget::firmware_caps(),
+            );
+            safety.configure_encoder_resolution(4_000).unwrap();
+            let domain = safety.encoder_domain.unwrap();
+            let mut data = MechanicalIdData::new(100);
+            data.start_position = Some(domain.count(0));
+            let mut phase = OuterPhase::MechanicalId {
+                state: MechanicalIdState::ForwardCapture {
+                    next_sample_us: 1_000,
+                    capture_start_us: 0,
+                },
+                data,
+                safety,
+            };
+            let mut buf = TransientBuffer::new();
+            let mut backend = MockBackend::new();
+            backend.elapsed_us_value = 3_500;
+            backend.mechanical_encoder_position_counts_value = 3;
+
+            let result = step_mechanical_id(&mut phase, &mut buf, &mut backend).await;
+
+            assert!(matches!(result, StepResult::At(4_000)));
+            assert_eq!(buf.samples(), &[3]);
+            assert!(matches!(
+                phase,
+                OuterPhase::MechanicalId {
+                    state: MechanicalIdState::ForwardCapture {
+                        next_sample_us: 4_000,
+                        ..
+                    },
+                    ..
+                }
+            ));
+        });
+    }
+
+    #[test]
+    fn mechanical_id_settles_return_exact_deadlines() {
+        pollster::block_on(async {
+            let mut phase = OuterPhase::MechanicalId {
+                state: MechanicalIdState::ForwardSettle {
+                    deadline_us: 500_000,
+                },
+                data: MechanicalIdData::new(100),
+                safety: OuterSafetyLimits::new(
+                    0,
+                    crate::commissioning::outer::OuterMotionBudget::firmware_caps(),
+                ),
+            };
+            let mut buf = TransientBuffer::new();
+            let mut backend = MockBackend::new();
+            backend.elapsed_us_value = 499_999;
+
+            let forward_early = step_mechanical_id(&mut phase, &mut buf, &mut backend).await;
+            assert!(matches!(forward_early, StepResult::At(500_000)));
+
+            backend.elapsed_us_value = 500_000;
+            let forward_due = step_mechanical_id(&mut phase, &mut buf, &mut backend).await;
+            assert!(matches!(forward_due, StepResult::ReadyNow));
+            assert!(matches!(
+                phase,
+                OuterPhase::MechanicalId {
+                    state: MechanicalIdState::ReverseStart,
+                    ..
+                }
+            ));
+
+            let OuterPhase::MechanicalId { state, .. } = &mut phase else {
+                unreachable!();
+            };
+            *state = MechanicalIdState::ReverseSettle {
+                deadline_us: 600_000,
+            };
+            backend.elapsed_us_value = 599_999;
+            let reverse_early = step_mechanical_id(&mut phase, &mut buf, &mut backend).await;
+            assert!(matches!(reverse_early, StepResult::At(600_000)));
+
+            backend.elapsed_us_value = 600_000;
+            let reverse_due = step_mechanical_id(&mut phase, &mut buf, &mut backend).await;
+            assert!(matches!(reverse_due, StepResult::ReadyNow));
+            assert!(matches!(
+                phase,
+                OuterPhase::MechanicalId {
+                    state: MechanicalIdState::Estimate,
+                    ..
+                }
+            ));
+        });
+    }
+
+    #[test]
+    fn mechanical_settle_is_clamped_to_real_safety_deadline() {
+        pollster::block_on(async {
+            let mut safety = OuterSafetyLimits::new(
+                0,
+                crate::commissioning::outer::OuterMotionBudget::firmware_caps(),
+            );
+            safety.configure_encoder_resolution(4_000).unwrap();
+            safety.set_encoder_baseline(0).unwrap();
+            safety.arm_safety_observation(0).unwrap();
+            safety.torque_cap = 2_448;
+            let mut phase = OuterPhase::MechanicalId {
+                state: MechanicalIdState::ForwardSettle {
+                    deadline_us: 500_000,
+                },
+                data: MechanicalIdData::new(100),
+                safety,
+            };
+            let mut buf = TransientBuffer::new();
+            let mut backend = MockBackend::new();
+
+            let result = step_outer(
+                &mut phase,
+                &mut buf,
+                CommissionProfile::Balanced,
+                OperatingMode::Nominal,
+                0,
+                0,
+                false,
+                0,
+                0,
+                0,
+                &mut backend,
+            )
+            .await;
+
+            assert!(
+                matches!(result, StepResult::At(1_000)),
+                "unexpected clamped result: {result:?}"
+            );
         });
     }
 
@@ -811,7 +967,7 @@ mod tests {
 
             let start_result = step_mechanical_id(&mut phase, &mut buf, &mut backend).await;
 
-            assert!(matches!(start_result, StepResult::Continue));
+            assert!(matches!(start_result, StepResult::At(1_000)));
             match &phase {
                 OuterPhase::MechanicalId { data, .. } => assert_eq!(
                     data.start_position.map(|count| count.raw_counts()),
@@ -824,7 +980,7 @@ mod tests {
             backend.mechanical_encoder_position_counts_value = 2;
             let capture_result = step_mechanical_id(&mut phase, &mut buf, &mut backend).await;
 
-            assert!(matches!(capture_result, StepResult::Continue));
+            assert!(matches!(capture_result, StepResult::At(2_000)));
             assert_eq!(buf.samples(), &[2]);
         });
     }
@@ -1129,7 +1285,7 @@ mod tests {
 
             let result = step_mechanical_id(&mut phase, &mut buf, &mut backend).await;
 
-            assert!(matches!(result, StepResult::Continue));
+            assert!(matches!(result, StepResult::ReadyNow));
             match phase {
                 OuterPhase::MechanicalId { state, data, .. } => {
                     assert_eq!(data.attempt, 1);
@@ -1469,22 +1625,33 @@ pub(crate) async fn step_mechanical_id_with_trace<B: CommissioningBackend>(
 
             let now = backend.elapsed_us();
             safety.last_sample_us = Some(now);
+            let Some(next_sample_us) =
+                now.checked_add(MECHANICAL_ID_MODE_SWITCH_SETTLE_POLICY.grace_us)
+            else {
+                return fail_outer(phase, CommissionError::InvalidSchedule);
+            };
+            let Some(timeout_deadline_us) =
+                now.checked_add(MECHANICAL_ID_MODE_SWITCH_SETTLE_POLICY.timeout_us)
+            else {
+                return fail_outer(phase, CommissionError::InvalidSchedule);
+            };
             *state = MechanicalIdState::PostSwitchSettle {
-                earliest_sample_us: now + MECHANICAL_ID_MODE_SWITCH_SETTLE_POLICY.grace_us,
-                timeout_deadline_us: now + MECHANICAL_ID_MODE_SWITCH_SETTLE_POLICY.timeout_us,
+                next_sample_us,
+                timeout_deadline_us,
                 stable_ticks: 0,
             };
             StepResult::PhaseChanged(PhaseId::MechanicalId)
         }
 
         MechanicalIdState::PostSwitchSettle {
-            earliest_sample_us,
+            next_sample_us,
             timeout_deadline_us,
             stable_ticks,
         } => {
             let now = backend.elapsed_us();
-            if now < *earliest_sample_us {
-                return StepResult::Continue;
+            let wake_deadline_us = (*next_sample_us).min(*timeout_deadline_us);
+            if now < wake_deadline_us {
+                return StepResult::At(wake_deadline_us);
             }
 
             let settled_pos = match backend.try_read_mechanical_encoder_position_counts().await {
@@ -1560,8 +1727,11 @@ pub(crate) async fn step_mechanical_id_with_trace<B: CommissioningBackend>(
                     return fail_outer(phase, CommissionError::InvalidSchedule);
                 }
                 data.reset_sample_timestamps();
-                let next_sample_us =
-                    capture_start_us.wrapping_add(response::MECHANICAL_ID_SAMPLE_PERIOD_US);
+                let Some(capture_deadline_us) =
+                    capture_start_us.checked_add(response::MECHANICAL_ID_SAMPLE_PERIOD_US)
+                else {
+                    return fail_outer(phase, CommissionError::InvalidSchedule);
+                };
 
                 defmt::info!(
                     "mechanical-id: attempt={}, start pos={}, torque_step={}, current_limit={}",
@@ -1572,10 +1742,10 @@ pub(crate) async fn step_mechanical_id_with_trace<B: CommissioningBackend>(
                 );
 
                 *state = MechanicalIdState::ForwardCapture {
-                    next_sample_us,
+                    next_sample_us: capture_deadline_us,
                     capture_start_us,
                 };
-                return StepResult::Continue;
+                return StepResult::At(capture_deadline_us);
             }
 
             if now >= *timeout_deadline_us {
@@ -1585,9 +1755,14 @@ pub(crate) async fn step_mechanical_id_with_trace<B: CommissioningBackend>(
                     delta_counts,
                     dt_us,
                 );
-                let settle_start_us = timeout_deadline_us
-                    .wrapping_sub(MECHANICAL_ID_MODE_SWITCH_SETTLE_POLICY.timeout_us);
-                let elapsed_us = now.wrapping_sub(settle_start_us);
+                let Some(settle_start_us) = timeout_deadline_us
+                    .checked_sub(MECHANICAL_ID_MODE_SWITCH_SETTLE_POLICY.timeout_us)
+                else {
+                    return fail_outer(phase, CommissionError::InvalidSchedule);
+                };
+                let Some(elapsed_us) = now.checked_sub(settle_start_us) else {
+                    return fail_outer(phase, CommissionError::InvalidSchedule);
+                };
                 let fault = safety.fault(
                     OUTER_SAFETY_FAULT_POST_SWITCH_SETTLE,
                     delta_counts,
@@ -1602,7 +1777,16 @@ pub(crate) async fn step_mechanical_id_with_trace<B: CommissioningBackend>(
                 );
             }
 
-            StepResult::Continue
+            let next_deadline_us = match crate::commissioning::schedule::next_grid_deadline(
+                *next_sample_us,
+                MECHANICAL_ID_POST_SWITCH_SAMPLE_PERIOD_US,
+                now,
+            ) {
+                Ok(deadline_us) => deadline_us,
+                Err(error) => return fail_outer(phase, error),
+            };
+            *next_sample_us = next_deadline_us;
+            StepResult::At(next_deadline_us.min(*timeout_deadline_us))
         }
 
         MechanicalIdState::ForwardCapture {
@@ -1611,9 +1795,9 @@ pub(crate) async fn step_mechanical_id_with_trace<B: CommissioningBackend>(
         } => {
             // Check if it's time for the next sample.
             let now = backend.elapsed_us();
-            if now.wrapping_sub(*next_sample_us) >= 0x8000_0000 {
+            if now < *next_sample_us {
                 // Not yet time for next sample.
-                return StepResult::Continue;
+                return StepResult::At(*next_sample_us);
             }
 
             // Sample encoder position.
@@ -1692,23 +1876,36 @@ pub(crate) async fn step_mechanical_id_with_trace<B: CommissioningBackend>(
                     data.fwd_response.residual_mcpms,
                 );
 
-                let deadline = backend.elapsed_us().wrapping_add(MECHANICAL_ID_SETTLE_US);
+                let Some(deadline) = backend.elapsed_us().checked_add(MECHANICAL_ID_SETTLE_US)
+                else {
+                    return fail_outer(phase, CommissionError::InvalidSchedule);
+                };
                 *state = MechanicalIdState::ForwardSettle {
                     deadline_us: deadline,
                 };
+                StepResult::At(deadline)
             } else {
-                *next_sample_us = now.wrapping_add(response::MECHANICAL_ID_SAMPLE_PERIOD_US);
+                let next_deadline_us = match crate::commissioning::schedule::next_grid_deadline(
+                    *next_sample_us,
+                    response::MECHANICAL_ID_SAMPLE_PERIOD_US,
+                    now,
+                ) {
+                    Ok(deadline_us) => deadline_us,
+                    Err(error) => return fail_outer(phase, error),
+                };
+                *next_sample_us = next_deadline_us;
+                StepResult::At(next_deadline_us)
             }
-            StepResult::Continue
         }
 
         MechanicalIdState::ForwardSettle { deadline_us } => {
-            if backend.elapsed_us().wrapping_sub(*deadline_us) < 0x8000_0000 {
-                // Settled — prepare for reverse capture.
-                buf.reset(response::MECHANICAL_ID_SAMPLE_PERIOD_US as u16);
-                *state = MechanicalIdState::ReverseStart;
+            if backend.elapsed_us() < *deadline_us {
+                return StepResult::At(*deadline_us);
             }
-            StepResult::Continue
+            // Settled — prepare for reverse capture.
+            buf.reset(response::MECHANICAL_ID_SAMPLE_PERIOD_US as u16);
+            *state = MechanicalIdState::ReverseStart;
+            StepResult::ReadyNow
         }
 
         MechanicalIdState::ReverseStart => {
@@ -1741,13 +1938,16 @@ pub(crate) async fn step_mechanical_id_with_trace<B: CommissioningBackend>(
                 return fail_outer(phase, CommissionError::InvalidSchedule);
             }
             data.reset_sample_timestamps();
-            let next_sample_us =
-                capture_start_us.wrapping_add(response::MECHANICAL_ID_SAMPLE_PERIOD_US);
+            let Some(next_sample_us) =
+                capture_start_us.checked_add(response::MECHANICAL_ID_SAMPLE_PERIOD_US)
+            else {
+                return fail_outer(phase, CommissionError::InvalidSchedule);
+            };
             *state = MechanicalIdState::ReverseCapture {
                 next_sample_us,
                 capture_start_us,
             };
-            StepResult::Continue
+            StepResult::At(next_sample_us)
         }
 
         MechanicalIdState::ReverseCapture {
@@ -1755,8 +1955,8 @@ pub(crate) async fn step_mechanical_id_with_trace<B: CommissioningBackend>(
             capture_start_us,
         } => {
             let now = backend.elapsed_us();
-            if now.wrapping_sub(*next_sample_us) >= 0x8000_0000 {
-                return StepResult::Continue;
+            if now < *next_sample_us {
+                return StepResult::At(*next_sample_us);
             }
 
             let encoder_raw = match backend.try_read_mechanical_encoder_position_counts().await {
@@ -1838,21 +2038,34 @@ pub(crate) async fn step_mechanical_id_with_trace<B: CommissioningBackend>(
                     data.rev_response.residual_mcpms,
                 );
 
-                let deadline = backend.elapsed_us().wrapping_add(MECHANICAL_ID_SETTLE_US);
+                let Some(deadline) = backend.elapsed_us().checked_add(MECHANICAL_ID_SETTLE_US)
+                else {
+                    return fail_outer(phase, CommissionError::InvalidSchedule);
+                };
                 *state = MechanicalIdState::ReverseSettle {
                     deadline_us: deadline,
                 };
+                StepResult::At(deadline)
             } else {
-                *next_sample_us = now.wrapping_add(response::MECHANICAL_ID_SAMPLE_PERIOD_US);
+                let next_deadline_us = match crate::commissioning::schedule::next_grid_deadline(
+                    *next_sample_us,
+                    response::MECHANICAL_ID_SAMPLE_PERIOD_US,
+                    now,
+                ) {
+                    Ok(deadline_us) => deadline_us,
+                    Err(error) => return fail_outer(phase, error),
+                };
+                *next_sample_us = next_deadline_us;
+                StepResult::At(next_deadline_us)
             }
-            StepResult::Continue
         }
 
         MechanicalIdState::ReverseSettle { deadline_us } => {
-            if backend.elapsed_us().wrapping_sub(*deadline_us) < 0x8000_0000 {
-                *state = MechanicalIdState::Estimate;
+            if backend.elapsed_us() < *deadline_us {
+                return StepResult::At(*deadline_us);
             }
-            StepResult::Continue
+            *state = MechanicalIdState::Estimate;
+            StepResult::ReadyNow
         }
 
         MechanicalIdState::Estimate => {
@@ -1870,7 +2083,7 @@ pub(crate) async fn step_mechanical_id_with_trace<B: CommissioningBackend>(
             }
 
             *state = MechanicalIdState::Finalize;
-            StepResult::Continue
+            StepResult::ReadyNow
         }
 
         MechanicalIdState::Finalize => {
@@ -1896,7 +2109,7 @@ pub(crate) async fn step_mechanical_id_with_trace<B: CommissioningBackend>(
                         TraceEventLevel::Warn,
                     );
                     if response::retry_mechanical_id(state, data, "asymmetric full response") {
-                        return StepResult::Continue;
+                        return StepResult::ReadyNow;
                     }
                     defmt::warn!(
                         "mechanical-id: full-response asymmetry {}% exceeds {}%, using response fallback",
@@ -2008,7 +2221,7 @@ pub(crate) async fn step_mechanical_id_with_trace<B: CommissioningBackend>(
                     TraceEventLevel::Warn,
                 );
                 if response::retry_mechanical_id(state, data, "zero acceleration") {
-                    return StepResult::Continue;
+                    return StepResult::ReadyNow;
                 }
                 defmt::warn!(
                     "mechanical-id: zero acceleration after retries, using response velocity tuning"
@@ -2057,7 +2270,7 @@ pub(crate) async fn step_mechanical_id_with_trace<B: CommissioningBackend>(
                     TraceEventLevel::Warn,
                 );
                 if response::retry_mechanical_id(state, data, "asymmetric response") {
-                    return StepResult::Continue;
+                    return StepResult::ReadyNow;
                 }
                 defmt::warn!(
                     "mechanical-id: asymmetry {}% exceeds {}% after retries, using response velocity tuning",
@@ -2123,7 +2336,7 @@ pub(crate) async fn step_mechanical_id_with_trace<B: CommissioningBackend>(
                     TraceEventLevel::Warn,
                 );
                 if response::retry_mechanical_id(state, data, "low-confidence response") {
-                    return StepResult::Continue;
+                    return StepResult::ReadyNow;
                 }
 
                 defmt::warn!("mechanical-id: low-confidence data, using response velocity tuning");

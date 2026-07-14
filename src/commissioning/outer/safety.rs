@@ -600,7 +600,7 @@ mod tests {
             )
             .await;
 
-            assert!(matches!(result, StepResult::Continue));
+            assert!(matches!(result, StepResult::At(2_000)));
             assert!(matches!(
                 phase,
                 OuterPhase::MechanicalId { safety, .. }

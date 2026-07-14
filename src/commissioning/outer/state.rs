@@ -22,7 +22,7 @@ pub(crate) enum MechanicalIdState {
     Setup,
     /// Hold zero torque briefly after the mode switch, then arm safety.
     PostSwitchSettle {
-        earliest_sample_us: u64,
+        next_sample_us: u64,
         timeout_deadline_us: u64,
         stable_ticks: u8,
     },
