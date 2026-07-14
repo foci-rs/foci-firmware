@@ -29,6 +29,10 @@ use foci_tmc4671::registers::Register;
 /// Validated delay-transient sampling interval in microseconds.
 pub(crate) const ELECTRICAL_SAMPLE_PERIOD_US: u64 = 200;
 
+/// Maximum register operations issued by one non-capture electrical-ID arm.
+#[allow(dead_code)]
+pub(super) const ELECTRICAL_ID_MAX_REGISTER_OPS_PER_ARM: usize = 2;
+
 /// Cooldown time after disabling a per-coil measurement (microseconds).
 const ELECTRICAL_COOLDOWN_US: u64 = 50_000;
 
@@ -4320,7 +4324,7 @@ mod tests {
                 .await;
                 let operations = register_operation_count(&backend.spi_log) - before;
                 assert!(
-                    operations <= 2,
+                    operations <= ELECTRICAL_ID_MAX_REGISTER_OPS_PER_ARM,
                     "resistance poll performed {operations} SPI ops"
                 );
 
@@ -4384,7 +4388,7 @@ mod tests {
                 .await;
                 let operations = register_operation_count(&backend.spi_log) - before;
                 assert!(
-                    operations <= 2,
+                    operations <= ELECTRICAL_ID_MAX_REGISTER_OPS_PER_ARM,
                     "resistance poll performed {operations} SPI ops"
                 );
 
@@ -4458,7 +4462,7 @@ mod tests {
                 .await;
                 let operations = register_operation_count(&backend.spi_log) - before;
                 assert!(
-                    operations <= 2,
+                    operations <= ELECTRICAL_ID_MAX_REGISTER_OPS_PER_ARM,
                     "resistance poll performed {operations} SPI ops"
                 );
 
@@ -4565,7 +4569,8 @@ mod tests {
                 )
                 .await;
                 assert!(
-                    register_operation_count(&backend.spi_log) - before <= 2,
+                    register_operation_count(&backend.spi_log) - before
+                        <= ELECTRICAL_ID_MAX_REGISTER_OPS_PER_ARM,
                     "one delay setup poll performed more than one verified operation"
                 );
                 if let StepResult::At(deadline_us) = step {
@@ -5070,7 +5075,10 @@ mod tests {
                     &mut backend,
                 )
                 .await;
-                assert!(register_operation_count(&backend.spi_log) - before <= 2);
+                assert!(
+                    register_operation_count(&backend.spi_log) - before
+                        <= ELECTRICAL_ID_MAX_REGISTER_OPS_PER_ARM
+                );
 
                 if matches!(result, StepResult::At(_)) {
                     let InnerPhase::ElectricalId { state, data } = &phase else {

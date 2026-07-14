@@ -1167,6 +1167,82 @@ mod tests {
         }
     }
 
+    #[test]
+    fn stage1_terminal_path_uses_only_explicit_scheduling() {
+        pollster::block_on(async {
+            use foci_tmc4671::registers::{
+                ABN_DECODER_PPR, ADC_I_SELECT, MOTOR_TYPE_N_POLE_PAIRS, PID_TORQUE_FLUX_LIMITS,
+                PWM_SV_CHOP,
+            };
+
+            let mut engine = CommissioningEngine::new_commission(
+                0,
+                crate::autotune::CommissionProfile::Balanced,
+            );
+            // Focused phase tests cover the earlier Stage 1 schedules. Seed the
+            // final phase here to exercise engine dispatch through a successful
+            // terminal result without reproducing analog estimator fixtures.
+            let EngineMode::Inner { phase, .. } = &mut engine.engine_mode else {
+                unreachable!();
+            };
+            *phase = InnerPhase::ClosedLoopEntry {
+                state: crate::autotune::ClosedLoopEntryState::WriteGains,
+                flux_p: 100,
+                flux_i: 10,
+                torque_p: 200,
+                torque_i: 20,
+                velocity_p: 1_152,
+                velocity_i: 0,
+                position_p: 640,
+                position_i: 0,
+                velocity_limit: 500_000,
+                velocity_filter_hz: 0,
+                torque_filter_hz: 0,
+                position_filter_hz: 0,
+                flux_filter_hz: 0,
+                inner_result: Some(sample_inner_result(
+                    crate::autotune::CommissionStatus::Accepted,
+                )),
+            };
+
+            let mut backend = crate::commission_dispatch::test_support::MockBackend::new();
+            backend.current_limit_value = 2_816;
+            backend.configured_physical_width = Some(16);
+            let required_registers = [
+                (PWM_SV_CHOP.addr(), 7),
+                (MOTOR_TYPE_N_POLE_PAIRS.addr(), (2 << 16) | 50),
+                (
+                    ABN_DECODER_PPR.addr(),
+                    backend.mechanical_encoder_quadrature_counts_per_rev_value,
+                ),
+                (ADC_I_SELECT.addr(), backend.tmc_config.adc_i_select),
+                (PID_TORQUE_FLUX_LIMITS.addr(), backend.current_limit_value),
+            ];
+            for (address, value) in required_registers {
+                backend.registers.insert(address, value).ok();
+            }
+
+            for _ in 0..512 {
+                match engine.step_scheduled(&mut backend).await {
+                    StepResult::ReadyNow => {}
+                    StepResult::At(deadline_us) => backend.elapsed_us_value = deadline_us,
+                    StepResult::CommissionDone(result) => {
+                        assert_eq!(
+                            result.inner.status,
+                            crate::autotune::CommissionStatus::Accepted
+                        );
+                        return;
+                    }
+                    StepResult::Continue => {
+                        panic!("Stage 1 terminal path used the compatibility scheduler")
+                    }
+                    other => panic!("unexpected Stage 1 terminal result: {other:?}"),
+                }
+            }
+            panic!("Stage 1 terminal path exceeded its explicit schedule bound");
+        });
+    }
+
     fn sample_outer_result(status: crate::autotune::CommissionStatus) -> OuterResult {
         OuterResult {
             status,
