@@ -43,6 +43,8 @@ pub(crate) enum AdcCalState {
         sum_i0: i32,
         sum_i1: i32,
         count: u16,
+        /// Absolute deadline for the next offset sample.
+        next_sample_us: u64,
     },
     /// Validate and program offsets.
     Finalize { sum_i0: i32, sum_i1: i32 },
@@ -69,6 +71,8 @@ pub(crate) enum AdcCalState {
         pid_torque_sum: i32,
         count: u16,
         chop0: Option<crate::commissioning::types::AdcResidualEvidence>,
+        /// Absolute deadline for the next residual sample bundle.
+        next_sample_us: u64,
     },
 }
 

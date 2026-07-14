@@ -21,6 +21,10 @@ const COIL_SETTLE_US: u64 = 100_000;
 /// Settling time after disabling coil test (microseconds).
 const COIL_COOLDOWN_US: u64 = 50_000;
 
+/// Maximum backend register operations issued by one coil-check state arm.
+#[allow(dead_code)]
+pub(super) const COIL_CHECK_MAX_REGISTER_OPS_PER_ARM: usize = 4;
+
 /// Advance coil check sub-state.
 ///
 /// Tests coil A then coil B via `UQ_UD_EXT` (MODE=8). Validates
@@ -75,22 +79,26 @@ pub(crate) async fn step_coil_check<B: CommissioningBackend>(
                 }
                 backend.set_enable_pin(true);
 
-                let deadline = backend.elapsed_us().wrapping_add(COIL_SETTLE_US);
+                let deadline = match backend.elapsed_us().checked_add(COIL_SETTLE_US) {
+                    Some(deadline) => deadline,
+                    None => return super::fail_inner(phase, CommissionError::InvalidSchedule),
+                };
                 *coil_test = CoilTestState::Settle {
                     phase: p,
                     deadline_us: deadline,
                 };
-                StepResult::Continue
+                StepResult::At(deadline)
             }
 
             CoilTestState::Settle {
                 phase: coil_phase,
                 deadline_us,
             } => {
-                if backend.elapsed_us().wrapping_sub(*deadline_us) < 0x8000_0000 {
-                    *coil_test = CoilTestState::Read { phase: *coil_phase };
+                if backend.elapsed_us() < *deadline_us {
+                    return StepResult::At(*deadline_us);
                 }
-                StepResult::Continue
+                *coil_test = CoilTestState::Read { phase: *coil_phase };
+                StepResult::ReadyNow
             }
 
             CoilTestState::Read { phase: coil_phase } => {
@@ -145,7 +153,10 @@ pub(crate) async fn step_coil_check<B: CommissioningBackend>(
                     return super::fail_inner(phase, CommissionError::CoilFault);
                 }
 
-                let deadline = backend.elapsed_us().wrapping_add(COIL_COOLDOWN_US);
+                let deadline = match backend.elapsed_us().checked_add(COIL_COOLDOWN_US) {
+                    Some(deadline) => deadline,
+                    None => return super::fail_inner(phase, CommissionError::InvalidSchedule),
+                };
                 *coil_test = CoilTestState::Cooldown {
                     phase: p,
                     deadline_us: deadline,
@@ -178,18 +189,19 @@ pub(crate) async fn step_coil_check<B: CommissioningBackend>(
                     };
                     return StepResult::PhaseChanged(PhaseId::PhaseWiringCheck);
                 }
-                StepResult::Continue
+                StepResult::At(deadline)
             }
 
             CoilTestState::Cooldown {
                 phase: _coil_phase,
                 deadline_us,
             } => {
-                if backend.elapsed_us().wrapping_sub(*deadline_us) < 0x8000_0000 {
-                    // Coil A done, move to coil B.
-                    *state = CoilCheckState::CoilB(CoilTestState::Setup { phase: 1 });
+                if backend.elapsed_us() < *deadline_us {
+                    return StepResult::At(*deadline_us);
                 }
-                StepResult::Continue
+                // Coil A done, move to coil B.
+                *state = CoilCheckState::CoilB(CoilTestState::Setup { phase: 1 });
+                StepResult::ReadyNow
             }
         },
     }
@@ -199,10 +211,129 @@ pub(crate) async fn step_coil_check<B: CommissioningBackend>(
 mod tests {
     use super::*;
     use crate::autotune::{CommissionProfile, InnerSequence};
-    use crate::commission_dispatch::test_support::MockBackend;
+    use crate::commission_dispatch::test_support::{MockBackend, SpiOp};
     use crate::commissioning::types::StepResult;
     use crate::selftest::CommissionDiagnostics;
     use foci_tmc4671::registers::ADC_IWY_IUX;
+
+    fn register_op_count(backend: &MockBackend) -> usize {
+        backend
+            .spi_log
+            .iter()
+            .filter(|op| !matches!(op, SpiOp::EnablePin(_)))
+            .count()
+    }
+
+    #[test]
+    fn coil_setup_and_wait_states_report_exact_schedules() {
+        pollster::block_on(async {
+            let mut phase = InnerPhase::CoilCheck {
+                state: CoilCheckState::CoilA(CoilTestState::Setup { phase: 0 }),
+                coil_a: None,
+            };
+            let mut selftest_results = crate::selftest::SelftestResults::default();
+            let mut diagnostics = CommissionDiagnostics::default();
+            let mut backend = MockBackend::new();
+            backend.elapsed_us_value = 1_000;
+
+            let setup = step_coil_check(
+                &mut phase,
+                InnerSequence::Commission,
+                &mut selftest_results,
+                &mut diagnostics,
+                &mut backend,
+            )
+            .await;
+            assert!(matches!(setup, StepResult::At(101_000)));
+            assert!(register_op_count(&backend) <= COIL_CHECK_MAX_REGISTER_OPS_PER_ARM);
+
+            backend.elapsed_us_value = 100_000;
+            let early = step_coil_check(
+                &mut phase,
+                InnerSequence::Commission,
+                &mut selftest_results,
+                &mut diagnostics,
+                &mut backend,
+            )
+            .await;
+            assert!(matches!(early, StepResult::At(101_000)));
+
+            backend.elapsed_us_value = 101_000;
+            let due = step_coil_check(
+                &mut phase,
+                InnerSequence::Commission,
+                &mut selftest_results,
+                &mut diagnostics,
+                &mut backend,
+            )
+            .await;
+            assert!(matches!(due, StepResult::ReadyNow));
+            assert!(matches!(
+                phase,
+                InnerPhase::CoilCheck {
+                    state: CoilCheckState::CoilA(CoilTestState::Read { phase: 0 }),
+                    ..
+                }
+            ));
+        });
+    }
+
+    #[test]
+    fn coil_read_and_cooldown_bound_work_and_report_exact_schedules() {
+        pollster::block_on(async {
+            let mut phase = InnerPhase::CoilCheck {
+                state: CoilCheckState::CoilA(CoilTestState::Read { phase: 0 }),
+                coil_a: None,
+            };
+            let mut selftest_results = crate::selftest::SelftestResults::default();
+            let mut diagnostics = CommissionDiagnostics::default();
+            let mut backend = MockBackend::new();
+            backend.elapsed_us_value = 1_000;
+            backend.registers.insert(ADC_IWY_IUX.addr(), 300).unwrap();
+
+            let read = step_coil_check(
+                &mut phase,
+                InnerSequence::Commission,
+                &mut selftest_results,
+                &mut diagnostics,
+                &mut backend,
+            )
+            .await;
+            assert!(matches!(read, StepResult::At(51_000)));
+            assert!(register_op_count(&backend) <= COIL_CHECK_MAX_REGISTER_OPS_PER_ARM);
+
+            backend.spi_log.clear();
+            backend.elapsed_us_value = 50_000;
+            let early = step_coil_check(
+                &mut phase,
+                InnerSequence::Commission,
+                &mut selftest_results,
+                &mut diagnostics,
+                &mut backend,
+            )
+            .await;
+            assert!(matches!(early, StepResult::At(51_000)));
+            assert_eq!(register_op_count(&backend), 0);
+
+            backend.elapsed_us_value = 51_000;
+            let due = step_coil_check(
+                &mut phase,
+                InnerSequence::Commission,
+                &mut selftest_results,
+                &mut diagnostics,
+                &mut backend,
+            )
+            .await;
+            assert!(matches!(due, StepResult::ReadyNow));
+            assert!(matches!(
+                phase,
+                InnerPhase::CoilCheck {
+                    state: CoilCheckState::CoilB(CoilTestState::Setup { phase: 1 }),
+                    ..
+                }
+            ));
+        });
+    }
 
     #[test]
     fn coil_fault_records_raw_current_sample() {

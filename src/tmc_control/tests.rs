@@ -719,7 +719,7 @@ fn commissioning_runtime_config() -> TmcControlConfig {
 }
 
 #[test]
-fn scheduled_step_preserves_legacy_deadline_without_consuming_engine() {
+fn scheduled_step_preserves_explicit_engine_deadline_without_consuming_engine() {
     pollster::block_on(async {
         let tmc = crate::state::tmc::tmc_channel0();
         let mut runtime = TmcControlRuntime::new_for_channel(0);
@@ -732,7 +732,7 @@ fn scheduled_step_preserves_legacy_deadline_without_consuming_engine() {
                 .await
                 .expect("engine should be active"),
             crate::commissioning::schedule::CommissionPoll::At {
-                timestamp_us: 43_000,
+                timestamp_us: 292_000,
                 event: None,
             }
         ));

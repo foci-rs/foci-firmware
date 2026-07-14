@@ -19,6 +19,13 @@ const ADC_CALIBRATION_SAMPLES: u16 = 128;
 /// Settling time after enabling ADC outputs (microseconds).
 const ADC_CALIBRATION_SETTLE_US: u64 = 250_000;
 
+/// Fixed cadence for ADC offset and residual samples (microseconds).
+const ADC_CALIBRATION_SAMPLE_PERIOD_US: u64 = 1_000;
+
+/// Maximum backend register operations issued by one ADC state arm.
+#[allow(dead_code)]
+pub(super) const ADC_CALIBRATION_MAX_REGISTER_OPS_PER_ARM: usize = 17;
+
 /// Valid ADC offset range (centered around ~33000).
 const ADC_OFFSET_MIN: u16 = 30_000;
 const ADC_OFFSET_MAX: u16 = 36_000;
@@ -175,31 +182,44 @@ pub(crate) async fn step_adc_calibrate<B: CommissioningBackend>(
             let _ = backend.write_register(ADC_I1_SCALE_OFFSET, 256 << 16).await;
             backend.set_enable_pin(true);
 
-            let deadline = backend.elapsed_us().wrapping_add(ADC_CALIBRATION_SETTLE_US);
+            let deadline = match backend.elapsed_us().checked_add(ADC_CALIBRATION_SETTLE_US) {
+                Some(deadline) => deadline,
+                None => return super::fail_inner(phase, CommissionError::InvalidSchedule),
+            };
             *cal_state = AdcCalState::Settle {
                 deadline_us: deadline,
             };
-            StepResult::Continue
+            StepResult::At(deadline)
         }
 
         AdcCalState::Settle { deadline_us } => {
-            if backend.elapsed_us().wrapping_sub(*deadline_us) < 0x8000_0000 {
-                // Deadline passed (unsigned comparison).
-                *cal_state = AdcCalState::Sample {
-                    sum_i0: 0,
-                    sum_i1: 0,
-                    count: 0,
-                };
+            let now_us = backend.elapsed_us();
+            if now_us < *deadline_us {
+                return StepResult::At(*deadline_us);
             }
-            StepResult::Continue
+            let next_sample_us = match now_us.checked_add(ADC_CALIBRATION_SAMPLE_PERIOD_US) {
+                Some(deadline) => deadline,
+                None => return super::fail_inner(phase, CommissionError::InvalidSchedule),
+            };
+            *cal_state = AdcCalState::Sample {
+                sum_i0: 0,
+                sum_i1: 0,
+                count: 0,
+                next_sample_us,
+            };
+            StepResult::At(next_sample_us)
         }
 
         AdcCalState::Sample {
             sum_i0,
             sum_i1,
             count,
+            next_sample_us,
         } => {
-            // One sample per step() call (~1ms between samples).
+            let now_us = backend.elapsed_us();
+            if now_us < *next_sample_us {
+                return StepResult::At(*next_sample_us);
+            }
             match backend.read_register(ADC_IWY_IUX).await {
                 Ok(raw) => {
                     let i_ux = (raw & 0xFFFF) as i16 as i32;
@@ -217,8 +237,19 @@ pub(crate) async fn step_adc_calibrate<B: CommissioningBackend>(
                     sum_i0: *sum_i0,
                     sum_i1: *sum_i1,
                 };
+                StepResult::ReadyNow
+            } else {
+                let next_deadline = match crate::commissioning::schedule::next_grid_deadline(
+                    *next_sample_us,
+                    ADC_CALIBRATION_SAMPLE_PERIOD_US,
+                    now_us,
+                ) {
+                    Ok(deadline) => deadline,
+                    Err(error) => return super::fail_inner(phase, error),
+                };
+                *next_sample_us = next_deadline;
+                StepResult::At(next_deadline)
             }
-            StepResult::Continue
         }
 
         AdcCalState::Finalize { sum_i0, sum_i1 } => {
@@ -278,7 +309,10 @@ pub(crate) async fn step_adc_calibrate<B: CommissioningBackend>(
                 return super::fail_inner(phase, CommissionError::Spi);
             }
 
-            let deadline = backend.elapsed_us().wrapping_add(ADC_CALIBRATION_SETTLE_US);
+            let deadline = match backend.elapsed_us().checked_add(ADC_CALIBRATION_SETTLE_US) {
+                Some(deadline) => deadline,
+                None => return super::fail_inner(phase, CommissionError::InvalidSchedule),
+            };
             *cal_state = AdcCalState::ResidualSettle {
                 stage: AdcResidualStage::ChopOff,
                 offset_i0,
@@ -286,7 +320,7 @@ pub(crate) async fn step_adc_calibrate<B: CommissioningBackend>(
                 chop0: None,
                 deadline_us: deadline,
             };
-            StepResult::Continue
+            StepResult::At(deadline)
         }
 
         AdcCalState::ResidualSettle {
@@ -296,8 +330,9 @@ pub(crate) async fn step_adc_calibrate<B: CommissioningBackend>(
             chop0,
             deadline_us,
         } => {
-            if backend.elapsed_us().wrapping_sub(*deadline_us) >= 0x8000_0000 {
-                return StepResult::Continue;
+            let now_us = backend.elapsed_us();
+            if now_us < *deadline_us {
+                return StepResult::At(*deadline_us);
             }
             let pwm_sv_chop = match backend.read_register(PWM_SV_CHOP).await {
                 Ok(value) if value == residual_stage_chop_value(*stage) => value as u8,
@@ -315,6 +350,10 @@ pub(crate) async fn step_adc_calibrate<B: CommissioningBackend>(
                 Ok(value) => value,
                 Err(_) => return super::fail_inner(phase, CommissionError::Spi),
             };
+            let next_sample_us = match now_us.checked_add(ADC_CALIBRATION_SAMPLE_PERIOD_US) {
+                Some(deadline) => deadline,
+                None => return super::fail_inner(phase, CommissionError::InvalidSchedule),
+            };
             *cal_state = AdcCalState::ResidualSample {
                 stage: *stage,
                 offset_i0: *offset_i0,
@@ -329,8 +368,9 @@ pub(crate) async fn step_adc_calibrate<B: CommissioningBackend>(
                 pid_torque_sum: 0,
                 count: 0,
                 chop0: *chop0,
+                next_sample_us,
             };
-            StepResult::Continue
+            StepResult::At(next_sample_us)
         }
 
         AdcCalState::ResidualSample {
@@ -347,7 +387,12 @@ pub(crate) async fn step_adc_calibrate<B: CommissioningBackend>(
             pid_torque_sum,
             count,
             chop0,
+            next_sample_us,
         } => {
+            let now_us = backend.elapsed_us();
+            if now_us < *next_sample_us {
+                return StepResult::At(*next_sample_us);
+            }
             let adc_raw = match backend.read_register(ADC_IWY_IUX).await {
                 Ok(value) => value,
                 Err(_) => return super::fail_inner(phase, CommissionError::Spi),
@@ -363,7 +408,16 @@ pub(crate) async fn step_adc_calibrate<B: CommissioningBackend>(
             *count += 1;
 
             if *count < ADC_CALIBRATION_SAMPLES {
-                return StepResult::Continue;
+                let next_deadline = match crate::commissioning::schedule::next_grid_deadline(
+                    *next_sample_us,
+                    ADC_CALIBRATION_SAMPLE_PERIOD_US,
+                    now_us,
+                ) {
+                    Ok(deadline) => deadline,
+                    Err(error) => return super::fail_inner(phase, error),
+                };
+                *next_sample_us = next_deadline;
+                return StepResult::At(next_deadline);
             }
 
             let evidence = residual_evidence(
@@ -388,7 +442,13 @@ pub(crate) async fn step_adc_calibrate<B: CommissioningBackend>(
                     {
                         return super::fail_inner(phase, CommissionError::Spi);
                     }
-                    let deadline = backend.elapsed_us().wrapping_add(ADC_CALIBRATION_SETTLE_US);
+                    let deadline = match backend.elapsed_us().checked_add(ADC_CALIBRATION_SETTLE_US)
+                    {
+                        Some(deadline) => deadline,
+                        None => {
+                            return super::fail_inner(phase, CommissionError::InvalidSchedule);
+                        }
+                    };
                     *cal_state = AdcCalState::ResidualSettle {
                         stage: AdcResidualStage::ChopOn,
                         offset_i0: *offset_i0,
@@ -396,7 +456,7 @@ pub(crate) async fn step_adc_calibrate<B: CommissioningBackend>(
                         chop0: Some(evidence),
                         deadline_us: deadline,
                     };
-                    StepResult::Continue
+                    StepResult::At(deadline)
                 }
                 AdcResidualStage::ChopOn => {
                     let encoder_count = backend.read_mechanical_encoder_position_counts().await;
@@ -449,6 +509,14 @@ mod tests {
         ((high as u16 as u32) << 16) | low as u16 as u32
     }
 
+    fn register_op_count(backend: &MockBackend) -> usize {
+        backend
+            .spi_log
+            .iter()
+            .filter(|op| !matches!(op, SpiOp::EnablePin(_)))
+            .count()
+    }
+
     #[test]
     fn setup_writes_board_configured_adc_i_select() {
         pollster::block_on(async {
@@ -467,7 +535,8 @@ mod tests {
             )
             .await;
 
-            assert!(matches!(result, StepResult::Continue));
+            assert!(matches!(result, StepResult::At(ADC_CALIBRATION_SETTLE_US)));
+            assert!(register_op_count(&backend) <= ADC_CALIBRATION_MAX_REGISTER_OPS_PER_ARM);
             assert!(
                 backend.spi_log.iter().any(|op| matches!(
                     op,
@@ -476,6 +545,130 @@ mod tests {
                 )),
                 "ADC setup must use the board-provided ADC_I_SELECT value"
             );
+        });
+    }
+
+    #[test]
+    fn adc_settle_reports_its_deadline_and_arms_the_sample_grid_when_due() {
+        pollster::block_on(async {
+            let mut backend = MockBackend::new();
+            backend.elapsed_us_value = 100;
+            let mut phase = InnerPhase::AdcCalibrate(AdcCalState::Settle {
+                deadline_us: 250_000,
+            });
+            let mut adc_cal = None;
+            let mut selftest_results = crate::selftest::SelftestResults::default();
+
+            let early = step_adc_calibrate(
+                &mut phase,
+                InnerSequence::Calibrate,
+                &mut adc_cal,
+                &mut selftest_results,
+                &mut backend,
+            )
+            .await;
+            assert!(matches!(early, StepResult::At(250_000)));
+            assert_eq!(register_op_count(&backend), 0);
+
+            backend.elapsed_us_value = 250_000;
+            let due = step_adc_calibrate(
+                &mut phase,
+                InnerSequence::Calibrate,
+                &mut adc_cal,
+                &mut selftest_results,
+                &mut backend,
+            )
+            .await;
+            assert!(matches!(due, StepResult::At(251_000)));
+            assert!(matches!(
+                phase,
+                InnerPhase::AdcCalibrate(AdcCalState::Sample {
+                    next_sample_us: 251_000,
+                    ..
+                })
+            ));
+        });
+    }
+
+    #[test]
+    fn late_adc_offset_sample_reads_once_and_skips_to_the_future_grid() {
+        pollster::block_on(async {
+            let mut backend = MockBackend::new();
+            backend.elapsed_us_value = 3_500;
+            let mut phase = InnerPhase::AdcCalibrate(AdcCalState::Sample {
+                sum_i0: 0,
+                sum_i1: 0,
+                count: 0,
+                next_sample_us: 1_000,
+            });
+            let mut adc_cal = None;
+            let mut selftest_results = crate::selftest::SelftestResults::default();
+
+            let result = step_adc_calibrate(
+                &mut phase,
+                InnerSequence::Calibrate,
+                &mut adc_cal,
+                &mut selftest_results,
+                &mut backend,
+            )
+            .await;
+
+            assert!(matches!(result, StepResult::At(4_000)));
+            assert_eq!(register_op_count(&backend), 1);
+            assert!(matches!(
+                phase,
+                InnerPhase::AdcCalibrate(AdcCalState::Sample {
+                    count: 1,
+                    next_sample_us: 4_000,
+                    ..
+                })
+            ));
+        });
+    }
+
+    #[test]
+    fn late_adc_residual_sample_reads_one_bundle_and_skips_elapsed_slots() {
+        pollster::block_on(async {
+            let mut backend = MockBackend::new();
+            backend.elapsed_us_value = 3_500;
+            let mut phase = InnerPhase::AdcCalibrate(AdcCalState::ResidualSample {
+                stage: AdcResidualStage::ChopOff,
+                offset_i0: 33_000,
+                offset_i1: 33_100,
+                adc_i0_scale_offset: (256 << 16) | 33_000,
+                adc_i1_scale_offset: (256 << 16) | 33_100,
+                pwm_sv_chop: 0,
+                pwm_bbm: 0,
+                adc_iux_sum: 0,
+                adc_iwy_sum: 0,
+                pid_flux_sum: 0,
+                pid_torque_sum: 0,
+                count: 0,
+                chop0: None,
+                next_sample_us: 1_000,
+            });
+            let mut adc_cal = None;
+            let mut selftest_results = crate::selftest::SelftestResults::default();
+
+            let result = step_adc_calibrate(
+                &mut phase,
+                InnerSequence::Calibrate,
+                &mut adc_cal,
+                &mut selftest_results,
+                &mut backend,
+            )
+            .await;
+
+            assert!(matches!(result, StepResult::At(4_000)));
+            assert_eq!(register_op_count(&backend), 2);
+            assert!(matches!(
+                phase,
+                InnerPhase::AdcCalibrate(AdcCalState::ResidualSample {
+                    count: 1,
+                    next_sample_us: 4_000,
+                    ..
+                })
+            ));
         });
     }
 
@@ -496,7 +689,7 @@ mod tests {
             )
             .await;
 
-            assert!(matches!(result, StepResult::Continue));
+            assert!(matches!(result, StepResult::At(ADC_CALIBRATION_SETTLE_US)));
             assert_eq!(
                 backend.last_motor_sentinel_stored.get(),
                 Some((2 << 16) | 50),
@@ -565,7 +758,7 @@ mod tests {
             let mut adc_cal = None;
             let mut selftest_results = crate::selftest::SelftestResults::default();
 
-            let first = step_adc_calibrate(
+            let mut scheduled = step_adc_calibrate(
                 &mut phase,
                 InnerSequence::Calibrate,
                 &mut adc_cal,
@@ -573,11 +766,13 @@ mod tests {
                 &mut backend,
             )
             .await;
-            assert!(matches!(first, StepResult::Continue));
+            assert!(matches!(scheduled, StepResult::At(250_000)));
+            assert!(register_op_count(&backend) <= ADC_CALIBRATION_MAX_REGISTER_OPS_PER_ARM);
             assert!(adc_cal.is_none());
 
-            backend.elapsed_us_value = backend.elapsed_us_value.saturating_add(250_000);
-            let settled = step_adc_calibrate(
+            backend.elapsed_us_value = 250_000;
+            backend.spi_log.clear();
+            scheduled = step_adc_calibrate(
                 &mut phase,
                 InnerSequence::Calibrate,
                 &mut adc_cal,
@@ -585,10 +780,16 @@ mod tests {
                 &mut backend,
             )
             .await;
-            assert!(matches!(settled, StepResult::Continue));
+            assert!(matches!(scheduled, StepResult::At(251_000)));
+            assert!(register_op_count(&backend) <= ADC_CALIBRATION_MAX_REGISTER_OPS_PER_ARM);
 
             for _ in 0..ADC_CALIBRATION_SAMPLES {
-                let sample = step_adc_calibrate(
+                let StepResult::At(deadline_us) = scheduled else {
+                    panic!("residual sampling should retain an absolute schedule");
+                };
+                backend.elapsed_us_value = deadline_us;
+                backend.spi_log.clear();
+                scheduled = step_adc_calibrate(
                     &mut phase,
                     InnerSequence::Calibrate,
                     &mut adc_cal,
@@ -596,11 +797,15 @@ mod tests {
                     &mut backend,
                 )
                 .await;
-                assert!(matches!(sample, StepResult::Continue));
+                assert!(register_op_count(&backend) <= ADC_CALIBRATION_MAX_REGISTER_OPS_PER_ARM);
             }
 
-            backend.elapsed_us_value = backend.elapsed_us_value.saturating_add(250_000);
-            let settled = step_adc_calibrate(
+            let StepResult::At(deadline_us) = scheduled else {
+                panic!("chop restore should enter a scheduled settle");
+            };
+            backend.elapsed_us_value = deadline_us;
+            backend.spi_log.clear();
+            scheduled = step_adc_calibrate(
                 &mut phase,
                 InnerSequence::Calibrate,
                 &mut adc_cal,
@@ -608,11 +813,16 @@ mod tests {
                 &mut backend,
             )
             .await;
-            assert!(matches!(settled, StepResult::Continue));
+            assert!(matches!(scheduled, StepResult::At(_)));
+            assert!(register_op_count(&backend) <= ADC_CALIBRATION_MAX_REGISTER_OPS_PER_ARM);
 
-            let mut result = StepResult::Continue;
             for _ in 0..ADC_CALIBRATION_SAMPLES {
-                result = step_adc_calibrate(
+                let StepResult::At(deadline_us) = scheduled else {
+                    panic!("residual sampling should retain an absolute schedule");
+                };
+                backend.elapsed_us_value = deadline_us;
+                backend.spi_log.clear();
+                scheduled = step_adc_calibrate(
                     &mut phase,
                     InnerSequence::Calibrate,
                     &mut adc_cal,
@@ -620,10 +830,11 @@ mod tests {
                     &mut backend,
                 )
                 .await;
+                assert!(register_op_count(&backend) <= ADC_CALIBRATION_MAX_REGISTER_OPS_PER_ARM);
             }
 
             assert!(matches!(
-                result,
+                scheduled,
                 StepResult::PhaseChanged(PhaseId::EncoderCheck)
             ));
             let cal = adc_cal.expect("ADC calibration result should be recorded");
