@@ -50,6 +50,10 @@ const ENCODER_READ_SAMPLES: usize = 3;
 const ENCODER_READ_MAX_JITTER: u32 = 2;
 const ENCODER_READ_ATTEMPTS: usize = 3;
 
+/// Maximum backend register operations issued by one encoder state arm.
+#[allow(dead_code)]
+pub(super) const ENCODER_MAX_REGISTER_OPS_PER_ARM: usize = 14;
+
 const DIAG_ENCODER_READ_UNSTABLE: u8 = 1;
 const DIAG_ENCODER_DIRECTION_RESULT: u8 = 2;
 const DIAG_ENCODER_ALIGN_RESULT: u8 = 1;
@@ -308,13 +312,16 @@ pub(crate) async fn step_encoder_check<B: CommissioningBackend>(
                 return super::fail_inner(phase, error);
             }
 
-            let deadline = backend.elapsed_us().wrapping_add(ENCODER_DIRECTION_STEP_US);
+            let deadline = match backend.elapsed_us().checked_add(ENCODER_DIRECTION_STEP_US) {
+                Some(deadline) => deadline,
+                None => return super::fail_inner(phase, CommissionError::InvalidSchedule),
+            };
             *state = EncoderCheckState::Sweep {
                 step: 0,
                 deadline_us: deadline,
                 count_start,
             };
-            StepResult::Continue
+            StepResult::At(deadline)
         }
 
         EncoderCheckState::Sweep {
@@ -322,16 +329,16 @@ pub(crate) async fn step_encoder_check<B: CommissioningBackend>(
             deadline_us,
             count_start,
         } => {
-            if backend.elapsed_us().wrapping_sub(*deadline_us) >= 0x8000_0000 {
-                // Not yet time for next step.
-                return StepResult::Continue;
+            let now_us = backend.elapsed_us();
+            if now_us < *deadline_us {
+                return StepResult::At(*deadline_us);
             }
 
             *step += 1;
             if *step > ENCODER_DIRECTION_STEPS {
                 let cs = *count_start;
                 *state = EncoderCheckState::Finalize { count_start: cs };
-                return StepResult::Continue;
+                return StepResult::ReadyNow;
             }
 
             // Advance PHI_E_EXT toward a non-zero final angle. Ending
@@ -341,8 +348,16 @@ pub(crate) async fn step_encoder_check<B: CommissioningBackend>(
                 / ENCODER_DIRECTION_STEPS as u64) as u32;
             let _ = backend.write_register(PHI_E_EXT, phi).await;
 
-            *deadline_us = backend.elapsed_us().wrapping_add(ENCODER_DIRECTION_STEP_US);
-            StepResult::Continue
+            let next_deadline = match crate::commissioning::schedule::next_grid_deadline(
+                *deadline_us,
+                ENCODER_DIRECTION_STEP_US,
+                now_us,
+            ) {
+                Ok(deadline) => deadline,
+                Err(error) => return super::fail_inner(phase, error),
+            };
+            *deadline_us = next_deadline;
+            StepResult::At(next_deadline)
         }
 
         EncoderCheckState::Finalize { count_start } => {
@@ -492,15 +507,19 @@ pub(crate) async fn step_encoder_align<B: CommissioningBackend>(
             let min_movement = encoder_alignment_min_movement(
                 backend.mechanical_encoder_quadrature_counts_per_rev(),
             );
-            let deadline = backend
+            let deadline = match backend
                 .elapsed_us()
-                .wrapping_add(ENCODER_ALIGNMENT_SETTLE_US);
+                .checked_add(ENCODER_ALIGNMENT_SETTLE_US)
+            {
+                Some(deadline) => deadline,
+                None => return super::fail_inner(phase, CommissionError::InvalidSchedule),
+            };
             *state = EncoderAlignState::Settle {
                 count_before: *count_before,
                 deadline_us: deadline,
                 min_movement,
             };
-            StepResult::Continue
+            StepResult::At(deadline)
         }
 
         EncoderAlignState::Settle {
@@ -508,13 +527,14 @@ pub(crate) async fn step_encoder_align<B: CommissioningBackend>(
             deadline_us,
             min_movement,
         } => {
-            if backend.elapsed_us().wrapping_sub(*deadline_us) < 0x8000_0000 {
-                *state = EncoderAlignState::StabilityCheck1 {
-                    count_before: *count_before,
-                    min_movement: *min_movement,
-                };
+            if backend.elapsed_us() < *deadline_us {
+                return StepResult::At(*deadline_us);
             }
-            StepResult::Continue
+            *state = EncoderAlignState::StabilityCheck1 {
+                count_before: *count_before,
+                min_movement: *min_movement,
+            };
+            StepResult::ReadyNow
         }
 
         EncoderAlignState::StabilityCheck1 {
@@ -534,16 +554,20 @@ pub(crate) async fn step_encoder_align<B: CommissioningBackend>(
                     return super::fail_inner(phase, error);
                 }
             };
-            let deadline = backend
+            let deadline = match backend
                 .elapsed_us()
-                .wrapping_add(ENCODER_ALIGNMENT_STABILITY_US);
+                .checked_add(ENCODER_ALIGNMENT_STABILITY_US)
+            {
+                Some(deadline) => deadline,
+                None => return super::fail_inner(phase, CommissionError::InvalidSchedule),
+            };
             *state = EncoderAlignState::StabilityCheck2 {
                 count_before: *count_before,
                 count1,
                 deadline_us: deadline,
                 min_movement: *min_movement,
             };
-            StepResult::Continue
+            StepResult::At(deadline)
         }
 
         EncoderAlignState::StabilityCheck2 {
@@ -552,8 +576,8 @@ pub(crate) async fn step_encoder_align<B: CommissioningBackend>(
             deadline_us,
             min_movement,
         } => {
-            if backend.elapsed_us().wrapping_sub(*deadline_us) >= 0x8000_0000 {
-                return StepResult::Continue;
+            if backend.elapsed_us() < *deadline_us {
+                return StepResult::At(*deadline_us);
             }
 
             let count2 = match read_mechanical_encoder_position_counts_stable(
@@ -623,7 +647,7 @@ pub(crate) async fn step_encoder_align<B: CommissioningBackend>(
                 min_movement_counts: saturating_u16(*min_movement),
                 counts_per_electrical_rev: counts_per_elec,
             };
-            StepResult::Continue
+            StepResult::ReadyNow
         }
 
         EncoderAlignState::Commit {
@@ -662,7 +686,7 @@ pub(crate) async fn step_encoder_align<B: CommissioningBackend>(
                 min_movement_counts: *min_movement_counts,
                 counts_per_electrical_rev: *counts_per_electrical_rev,
             };
-            StepResult::Continue
+            StepResult::ReadyNow
         }
 
         EncoderAlignState::StopDrive {
@@ -739,8 +763,130 @@ pub(crate) async fn step_encoder_align<B: CommissioningBackend>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::commission_dispatch::test_support::{MockBackend, SHARED_STATE_MUTEX};
+    use crate::commission_dispatch::test_support::{MockBackend, SHARED_STATE_MUTEX, SpiOp};
 
+    fn register_op_count(backend: &MockBackend) -> usize {
+        backend
+            .spi_log
+            .iter()
+            .filter(|op| !matches!(op, SpiOp::EnablePin(_)))
+            .count()
+    }
+
+    #[test]
+    fn encoder_direction_setup_and_late_sweep_use_absolute_grid_schedules() {
+        pollster::block_on(async {
+            let mut phase = InnerPhase::EncoderCheck {
+                state: EncoderCheckState::Setup,
+            };
+            let mut selftest_results = crate::selftest::SelftestResults::default();
+            let mut diagnostics = CommissionDiagnostics::default();
+            let mut backend = MockBackend::new();
+            backend.current_limit_value = 2_448;
+
+            let setup = step_encoder_check(
+                &mut phase,
+                InnerSequence::Commission,
+                &mut selftest_results,
+                &mut diagnostics,
+                &mut backend,
+            )
+            .await;
+            assert!(matches!(setup, StepResult::At(ENCODER_DIRECTION_STEP_US)));
+            assert!(register_op_count(&backend) <= ENCODER_MAX_REGISTER_OPS_PER_ARM);
+
+            let InnerPhase::EncoderCheck {
+                state: EncoderCheckState::Sweep { deadline_us, .. },
+            } = &mut phase
+            else {
+                panic!("setup should enter direction sweep");
+            };
+            *deadline_us = 1_000;
+            backend.elapsed_us_value = 35_000;
+            backend.spi_log.clear();
+            let late = step_encoder_check(
+                &mut phase,
+                InnerSequence::Commission,
+                &mut selftest_results,
+                &mut diagnostics,
+                &mut backend,
+            )
+            .await;
+            assert!(
+                matches!(late, StepResult::At(41_000)),
+                "late sweep returned {late:?} in {phase:?}"
+            );
+            assert_eq!(register_op_count(&backend), 1);
+            assert!(matches!(
+                phase,
+                InnerPhase::EncoderCheck {
+                    state: EncoderCheckState::Sweep {
+                        step: 1,
+                        deadline_us: 41_000,
+                        ..
+                    }
+                }
+            ));
+        });
+    }
+
+    #[test]
+    fn encoder_alignment_waits_report_exact_deadlines_without_early_reads() {
+        pollster::block_on(async {
+            let mut phase = InnerPhase::EncoderAlign {
+                state: EncoderAlignState::Settle {
+                    count_before: encoder_count(100),
+                    deadline_us: 5_000,
+                    min_movement: 2,
+                },
+            };
+            let mut adc_cal = None;
+            let mut selftest_results = crate::selftest::SelftestResults::default();
+            let mut diagnostics = CommissionDiagnostics::default();
+            let mut backend = MockBackend::new();
+            backend.elapsed_us_value = 4_000;
+
+            let early = step_encoder_align(
+                &mut phase,
+                InnerSequence::Commission,
+                &mut adc_cal,
+                None,
+                &mut selftest_results,
+                &mut diagnostics,
+                &mut backend,
+            )
+            .await;
+            assert!(matches!(early, StepResult::At(5_000)));
+            assert_eq!(register_op_count(&backend), 0);
+
+            backend.elapsed_us_value = 5_000;
+            let due = step_encoder_align(
+                &mut phase,
+                InnerSequence::Commission,
+                &mut adc_cal,
+                None,
+                &mut selftest_results,
+                &mut diagnostics,
+                &mut backend,
+            )
+            .await;
+            assert!(matches!(due, StepResult::ReadyNow));
+
+            backend.spi_log.clear();
+            let first_read = step_encoder_align(
+                &mut phase,
+                InnerSequence::Commission,
+                &mut adc_cal,
+                None,
+                &mut selftest_results,
+                &mut diagnostics,
+                &mut backend,
+            )
+            .await;
+            assert!(matches!(first_read, StepResult::At(15_000)));
+            assert_eq!(register_op_count(&backend), ENCODER_READ_SAMPLES);
+        });
+    }
     fn encoder_count(raw_counts: u32) -> EncoderCount {
         EncoderDomain::new(4_000).unwrap().count(raw_counts)
     }
@@ -1033,7 +1179,7 @@ mod tests {
             )
             .await;
 
-            assert!(matches!(result, StepResult::Continue));
+            assert!(matches!(result, StepResult::ReadyNow));
             let InnerPhase::EncoderAlign {
                 state:
                     EncoderAlignState::Commit {
