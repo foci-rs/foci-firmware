@@ -1333,8 +1333,8 @@ pub(crate) async fn step_current_tune<B: CommissioningBackend>(
 
     defmt::info!(
         "physical-p: R={} L={} tau_e={}us theta_e={}us lambda={}us -> P={} I={} bw={}Hz",
-        model.r_int,
-        model.l_int,
+        model.r_count_milli,
+        model.l_count_micro,
         model.tau_e_us,
         model.theta_e_us,
         gains.lambda_us,
@@ -1383,11 +1383,11 @@ pub(crate) async fn step_current_tune<B: CommissioningBackend>(
             inductance,
             resistance_result,
             timing,
-            // The gain-formula path consumes `model.r_int`, already in the
+            // The gain-formula path consumes `model.r_count_milli`, already in the
             // `ELECTRICAL_MODEL_RESISTANCE_SCALE` (milli) count-slope unit
             // space — identical to `selected_r_count_slope_milli`, so the 64x
             // mismatch is directly readable from the persisted artifacts.
-            resistance_gain_path_count_slope_milli: model.r_int as i32,
+            resistance_gain_path_count_slope_milli: model.r_count_milli as i32,
             current_loop_evidence,
         },
     };
@@ -1848,10 +1848,8 @@ pub(crate) async fn step_current_validate<B: CommissioningBackend>(
             let alignment = adc_cal.as_ref();
             let result = InnerResult {
                 status: data.final_status,
-                r_int: data.model.r_int,
-                l_int: data.model.l_int,
-                r_mohm: data.model.r_mohm,
-                l_uh: data.model.l_uh,
+                r_count_milli: data.model.r_count_milli,
+                l_count_micro: data.model.l_count_micro,
                 flux_p: data.gains.flux_p,
                 flux_i: data.gains.flux_i,
                 torque_p: data.gains.torque_p,
@@ -2115,12 +2113,10 @@ mod tests {
         pollster::block_on(async {
             let mut phase = InnerPhase::CurrentTune {
                 model: ElectricalModel {
-                    r_int: 1000,
-                    l_int: 2000,
+                    r_count_milli: 1000,
+                    l_count_micro: 2000,
                     tau_e_us: 2000,
                     theta_e_us: 100,
-                    r_mohm: 1000,
-                    l_uh: 2000,
                 },
                 inner_warning_flags: 0,
                 resistance_result: resistance_result(),
@@ -2162,12 +2158,10 @@ mod tests {
         pollster::block_on(async {
             let mut phase = InnerPhase::CurrentTune {
                 model: ElectricalModel {
-                    r_int: 905,
-                    l_int: 1315,
+                    r_count_milli: 905,
+                    l_count_micro: 1315,
                     tau_e_us: 1453,
                     theta_e_us: 160,
-                    r_mohm: 905,
-                    l_uh: 1315,
                 },
                 inner_warning_flags: 0,
                 resistance_result: resistance_result(),
@@ -2209,12 +2203,10 @@ mod tests {
         pollster::block_on(async {
             let mut phase = InnerPhase::CurrentTune {
                 model: ElectricalModel {
-                    r_int: 1163,
-                    l_int: 1350,
+                    r_count_milli: 1163,
+                    l_count_micro: 1350,
                     tau_e_us: 1705,
                     theta_e_us: 160,
-                    r_mohm: 1163,
-                    l_uh: 1350,
                 },
                 inner_warning_flags: 0,
                 resistance_result: resistance_result(),
@@ -2261,12 +2253,10 @@ mod tests {
             let evidence = crate::commissioning::types::InductanceEvidence::test_fixture();
             let mut phase = InnerPhase::CurrentTune {
                 model: ElectricalModel {
-                    r_int: 1000,
-                    l_int: 2000,
+                    r_count_milli: 1000,
+                    l_count_micro: 2000,
                     tau_e_us: 2000,
                     theta_e_us: 100,
-                    r_mohm: 1000,
-                    l_uh: 2000,
                 },
                 inner_warning_flags: 0,
                 resistance_result: resistance_result(),
@@ -2304,12 +2294,10 @@ mod tests {
         pollster::block_on(async {
             let mut phase = InnerPhase::CurrentTune {
                 model: ElectricalModel {
-                    r_int: 1000,
-                    l_int: 2000,
+                    r_count_milli: 1000,
+                    l_count_micro: 2000,
                     tau_e_us: 2000,
                     theta_e_us: 100,
-                    r_mohm: 1000,
-                    l_uh: 2000,
                 },
                 inner_warning_flags: 0,
                 resistance_result: resistance_result(),
@@ -4209,12 +4197,10 @@ mod tests {
             state: CurrentValidateState::WriteGains,
             data: CurrentValidateData {
                 model: ElectricalModel {
-                    r_int: 1000,
-                    l_int: 2000,
+                    r_count_milli: 1000,
+                    l_count_micro: 2000,
                     tau_e_us: 2000,
                     theta_e_us: 100,
-                    r_mohm: 1000,
-                    l_uh: 2000,
                 },
                 gains: CurrentGains {
                     flux_p: 11,
@@ -4273,12 +4259,10 @@ mod tests {
             state: CurrentValidateState::Finalize,
             data: CurrentValidateData {
                 model: ElectricalModel {
-                    r_int: 1000,
-                    l_int: 2000,
+                    r_count_milli: 1000,
+                    l_count_micro: 2000,
                     tau_e_us: 2000,
                     theta_e_us: 100,
-                    r_mohm: 1000,
-                    l_uh: 2000,
                 },
                 gains: disabled_state_safe_current_gains(),
                 candidate_gains: CurrentGains {
@@ -4358,12 +4342,10 @@ mod tests {
             },
             data: CurrentValidateData {
                 model: ElectricalModel {
-                    r_int: 1000,
-                    l_int: 2000,
+                    r_count_milli: 1000,
+                    l_count_micro: 2000,
                     tau_e_us: 2000,
                     theta_e_us: 100,
-                    r_mohm: 1000,
-                    l_uh: 2000,
                 },
                 gains: CurrentGains {
                     flux_p: 11,

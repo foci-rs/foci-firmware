@@ -515,10 +515,8 @@ pub fn accepted_commission_result() -> crate::commissioning::types::CommissionRe
     CommissionResult {
         inner: InnerResult {
             status: CommissionStatus::Accepted,
-            r_int: 1706,
-            l_int: 1245,
-            r_mohm: 1700,
-            l_uh: 3100,
+            r_count_milli: 1706,
+            l_count_micro: 1245,
             flux_p: 100,
             flux_i: 10,
             torque_p: 200,

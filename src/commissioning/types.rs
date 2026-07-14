@@ -474,14 +474,10 @@ pub fn pack_commission_timing_summary(summaries: [CommissionTimingSummary; 3]) -
 pub struct InnerResult {
     /// Overall status.
     pub status: CommissionStatus,
-    /// Resistance in scaled internal ADC/DAC units.
-    pub r_int: u32,
-    /// Inductance in internal micro-units.
-    pub l_int: u32,
-    /// Resistance in milliohms (for host display/persistence).
-    pub r_mohm: u32,
-    /// Inductance in microhenries (for host display/persistence).
-    pub l_uh: u32,
+    /// Resistance count slope in milli count-ratio units.
+    pub r_count_milli: u32,
+    /// Count-space inductance proxy in micro-time units.
+    pub l_count_micro: u32,
     /// Computed flux P gain (Q8.8).
     pub flux_p: u16,
     /// Computed flux I gain (raw Q8.8; effective advanced-PI zero is I/65536).
@@ -543,7 +539,7 @@ pub struct InnerResult {
     // Persisted so the host can audit the count-space fit and the 64x
     // count-slope-milli mismatch directly from artifacts. All slope fields
     // are in the same count-slope-milli unit space (dV_count/dI_count * 1000)
-    // as the `r_int` resistance scale.
+    // as the `r_count_milli` resistance scale.
     /// Run-selected resistance count-slope in milli-units.
     pub resistance_selected_count_slope_milli: i32,
     /// Resistance count-slope (milli-units) actually consumed by the gain path.

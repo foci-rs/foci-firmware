@@ -387,10 +387,10 @@ fn physical_current_gains_checked(
     bandwidth_hz: f32,
     config: &crate::config::TmcConfig,
 ) -> Option<CurrentGains> {
-    if model.r_int == 0 || model.l_int == 0 || model.tau_e_us == 0 {
+    if model.r_count_milli == 0 || model.l_count_micro == 0 || model.tau_e_us == 0 {
         return None;
     }
-    let p_reg = physical_current_p_raw_from_l_count_micro(model.l_int, bandwidth_hz)?;
+    let p_reg = physical_current_p_raw_from_l_count_micro(model.l_count_micro, bandwidth_hz)?;
     let tau_s = model.tau_e_us as f32 * 1e-6;
     let f_pwm = config.pwm_freq_hz() as f32;
     let i_reg =
@@ -448,7 +448,11 @@ pub fn simc_current_gains_with_lambda_checked(
     lambda_us: u32,
     config: &crate::config::TmcConfig,
 ) -> Option<CurrentGains> {
-    if model.r_int == 0 || model.l_int == 0 || model.tau_e_us == 0 || model.theta_e_us == 0 {
+    if model.r_count_milli == 0
+        || model.l_count_micro == 0
+        || model.tau_e_us == 0
+        || model.theta_e_us == 0
+    {
         return None;
     }
 
@@ -457,14 +461,15 @@ pub fn simc_current_gains_with_lambda_checked(
     // SIMC PI tuning law for FOPDT plant G(s) = K / (tau*s+1) * e^(-theta*s):
     //   Kp = tau / (K * (lambda + theta))
     //
-    // For current loop: K = 1/R_int (DC gain: current per unit voltage).
+    // For current loop: K is the reciprocal count-space resistance slope.
     // All in internal units — no board-specific scaling needed.
 
     let tau = model.tau_e_us as f32;
     let theta = model.theta_e_us as f32;
     let lambda = lambda_us as f32;
-    let r_int = model.r_int as f32 / ELECTRICAL_MODEL_RESISTANCE_SCALE as f32;
-    let k = 1.0 / r_int; // Plant DC gain
+    let resistance_count_ratio =
+        model.r_count_milli as f32 / ELECTRICAL_MODEL_RESISTANCE_SCALE as f32;
+    let k = 1.0 / resistance_count_ratio; // Plant DC gain
 
     let kp = tau / (k * (lambda + theta));
 
@@ -493,7 +498,10 @@ pub fn synthesize_current_gains(
     input: &CurrentGainSynthesisInput,
     config: &crate::config::TmcConfig,
 ) -> Option<CurrentGainSynthesis> {
-    if input.model.r_int == 0 || input.model.l_int == 0 || input.model.theta_e_us == 0 {
+    if input.model.r_count_milli == 0
+        || input.model.l_count_micro == 0
+        || input.model.theta_e_us == 0
+    {
         return None;
     }
 
@@ -1444,12 +1452,10 @@ mod tests {
     #[test]
     fn physical_synthesis_uses_configured_bandwidth_for_symmetric_p() {
         let model = ElectricalModel {
-            r_int: 888,
-            l_int: 1_346,
+            r_count_milli: 888,
+            l_count_micro: 1_346,
             tau_e_us: 1_515,
             theta_e_us: 160,
-            r_mohm: 888,
-            l_uh: 1_346,
         };
         let mut config = autotune_test_config();
         config.bandwidth_hz = 600.0;
@@ -1475,12 +1481,10 @@ mod tests {
     #[test]
     fn physical_synthesis_keeps_i_on_detuned_tau_path() {
         let model = ElectricalModel {
-            r_int: ELECTRICAL_MODEL_RESISTANCE_SCALE,
-            l_int: 1_366,
+            r_count_milli: ELECTRICAL_MODEL_RESISTANCE_SCALE,
+            l_count_micro: 1_366,
             tau_e_us: 1_366,
             theta_e_us: 160,
-            r_mohm: 1000,
-            l_uh: 1_366,
         };
         let mut config = autotune_test_config();
         config.bandwidth_hz = 650.0;
@@ -1584,12 +1588,10 @@ mod tests {
         // Tau-dominated current plants still need tau-based lambda floors:
         // Conservative >= Balanced >= Stiff.
         let model = ElectricalModel {
-            r_int: 1125,
-            l_int: 2950,
+            r_count_milli: 1125,
+            l_count_micro: 2950,
             tau_e_us: 4000,
             theta_e_us: 100,
-            r_mohm: 1125,
-            l_uh: 450,
         };
         let config = autotune_test_config();
         let conservative = simc_current_gains(&model, CommissionProfile::Conservative, &config);
@@ -1688,7 +1690,7 @@ mod tests {
     #[test]
     fn simc_zero_r_returns_none() {
         let mut model = test_electrical_model();
-        model.r_int = 0;
+        model.r_count_milli = 0;
         let config = autotune_test_config();
         assert!(simc_current_gains_checked(&model, CommissionProfile::Balanced, &config).is_none());
     }
@@ -1730,12 +1732,10 @@ mod tests {
     #[test]
     fn simc_current_i_uses_tau_seconds_and_stability_detune() {
         let model = ElectricalModel {
-            r_int: ELECTRICAL_MODEL_RESISTANCE_SCALE,
-            l_int: 1900,
+            r_count_milli: ELECTRICAL_MODEL_RESISTANCE_SCALE,
+            l_count_micro: 1900,
             tau_e_us: 1900,
             theta_e_us: 160,
-            r_mohm: 1000,
-            l_uh: 1900,
         };
         let config = autotune_test_config();
         let gains = simc_current_gains_with_lambda(&model, 950, &config);
@@ -1754,12 +1754,10 @@ mod tests {
     #[test]
     fn simc_current_i_is_independent_of_lambda() {
         let model = ElectricalModel {
-            r_int: ELECTRICAL_MODEL_RESISTANCE_SCALE,
-            l_int: 1900,
+            r_count_milli: ELECTRICAL_MODEL_RESISTANCE_SCALE,
+            l_count_micro: 1900,
             tau_e_us: 1900,
             theta_e_us: 160,
-            r_mohm: 1000,
-            l_uh: 1900,
         };
         let config = autotune_test_config();
         let fast = simc_current_gains_with_lambda(&model, 950, &config);
@@ -1773,12 +1771,10 @@ mod tests {
     #[test]
     fn simc_current_i_uses_tau_seconds_not_advanced_pi_zero() {
         let model = ElectricalModel {
-            r_int: ELECTRICAL_MODEL_RESISTANCE_SCALE,
-            l_int: 1863,
+            r_count_milli: ELECTRICAL_MODEL_RESISTANCE_SCALE,
+            l_count_micro: 1863,
             tau_e_us: 1863,
             theta_e_us: 160,
-            r_mohm: 1000,
-            l_uh: 1863,
         };
         let config = autotune_test_config();
         let gains = simc_current_gains(&model, CommissionProfile::Balanced, &config);
@@ -1798,12 +1794,10 @@ mod tests {
     #[test]
     fn simc_retry_lambda_preserves_measured_theta() {
         let model = ElectricalModel {
-            r_int: ELECTRICAL_MODEL_RESISTANCE_SCALE,
-            l_int: 1917,
+            r_count_milli: ELECTRICAL_MODEL_RESISTANCE_SCALE,
+            l_count_micro: 1917,
             tau_e_us: 1917,
             theta_e_us: 160,
-            r_mohm: 1000,
-            l_uh: 1917,
         };
         let config = autotune_test_config();
         let gains = simc_current_gains_with_lambda(&model, 1436, &config);
@@ -2097,8 +2091,9 @@ mod tests {
         let tau_s = model.tau_e_us as f64 * 1e-6;
         let theta_s = model.theta_e_us as f64 * 1e-6;
         let lambda_s = ((2 * model.theta_e_us).max(model.tau_e_us / 2)) as f64 * 1e-6;
-        let r_int = model.r_int as f64 / ELECTRICAL_MODEL_RESISTANCE_SCALE as f64;
-        let k = 1.0 / r_int;
+        let resistance_count_ratio =
+            model.r_count_milli as f64 / ELECTRICAL_MODEL_RESISTANCE_SCALE as f64;
+        let k = 1.0 / resistance_count_ratio;
         let f_pwm = config.pwm_freq_hz() as f64;
 
         let kp_si = tau_s / (k * (lambda_s + theta_s));

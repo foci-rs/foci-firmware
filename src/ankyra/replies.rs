@@ -206,14 +206,10 @@ pub struct FociCommissionResult {
     pub oid: u8,
     /// Status code (0 = success, non-zero = error code).
     pub status: u8,
-    /// Resistance in scaled internal ADC/DAC units.
-    pub r_int: u32,
-    /// Inductance in internal micro-units.
-    pub l_int: u32,
-    /// Phase resistance in milliohms.
-    pub r_mohm: u32,
-    /// Phase inductance in microhenries.
-    pub l_uh: u32,
+    /// Resistance count slope in milli count-ratio units.
+    pub r_count_milli: u32,
+    /// Count-space inductance proxy in micro-time units.
+    pub l_count_micro: u32,
     /// Flux P gain.
     pub flux_p: u16,
     /// Flux I gain.
@@ -1213,10 +1209,8 @@ mod resistance_reply_size_tests {
         let reply = FociCommissionResult {
             oid: u8::MAX,
             status: u8::MAX,
-            r_int: u32::MAX,
-            l_int: u32::MAX,
-            r_mohm: u32::MAX,
-            l_uh: u32::MAX,
+            r_count_milli: u32::MAX,
+            l_count_micro: u32::MAX,
             flux_p: u16::MAX,
             flux_i: u16::MAX,
             torque_p: u16::MAX,

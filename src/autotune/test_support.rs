@@ -21,12 +21,10 @@ pub(super) fn autotune_test_config() -> crate::config::TmcConfig {
 
 pub(super) fn test_electrical_model() -> ElectricalModel {
     ElectricalModel {
-        r_int: 1125,
-        l_int: 2950,
+        r_count_milli: 1125,
+        l_count_micro: 2950,
         tau_e_us: 2622,
         theta_e_us: 700,
-        r_mohm: 1125,
-        l_uh: 450,
     }
 }
 

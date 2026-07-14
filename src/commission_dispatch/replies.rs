@@ -654,7 +654,8 @@ mod tests {
         Commission {
             oid: u8,
             status: u8,
-            r_int: u32,
+            r_count_milli: u32,
+            l_count_micro: u32,
             fallback_velocity_limit: u32,
         },
         CommissionTiming {
@@ -875,7 +876,8 @@ mod tests {
             self.events.push(Event::Commission {
                 oid,
                 status,
-                r_int: result.inner.r_int,
+                r_count_milli: result.inner.r_count_milli,
+                l_count_micro: result.inner.l_count_micro,
                 fallback_velocity_limit: result.fallback_velocity_limit,
             });
         }
@@ -1234,10 +1236,8 @@ mod tests {
         CommissionResult {
             inner: InnerResult {
                 status: CommissionStatus::Accepted,
-                r_int: 11,
-                l_int: 12,
-                r_mohm: 13,
-                l_uh: 14,
+                r_count_milli: 11,
+                l_count_micro: 12,
                 flux_p: 15,
                 flux_i: 16,
                 torque_p: 17,
@@ -1645,7 +1645,8 @@ mod tests {
         expected.push(Event::Commission {
             oid: 6,
             status: 7,
-            r_int: 11,
+            r_count_milli: 11,
+            l_count_micro: 12,
             fallback_velocity_limit: 35,
         });
 
@@ -2238,7 +2239,8 @@ mod tests {
             Event::Commission {
                 oid: 6,
                 status: 7,
-                r_int: 11,
+                r_count_milli: 11,
+                l_count_micro: 12,
                 fallback_velocity_limit: 35,
             },
             Event::Tune {

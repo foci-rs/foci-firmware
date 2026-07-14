@@ -1,32 +1,23 @@
 use super::types::CommissionProfile;
 
-/// First-order-plus-dead-time (FOPDT) current plant model.
+/// First-order-plus-dead-time current plant model in TMC count space.
 ///
-/// Estimated during electrical identification (Phase 5). Contains
-/// both internal-unit values (used for gain computation) and physical
-/// values (milliohms, microhenries — for host display and persistence).
-///
-/// Plant model: `G(s) = K / (tau_e * s + 1) * e^(-theta_e * s)`
-/// where `K = 1 / R_int` (DC gain in internal units).
+/// Plant model: `G(s) = K / (tau_e * s + 1) * e^(-theta_e * s)`, where the
+/// resistance and inductance values map voltage-output counts to current-ADC
+/// counts. They are not physical ohms or henries.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub struct ElectricalModel {
-    /// Winding resistance in scaled internal (ADC/DAC) units.
-    /// `R_int = V_excitation / I_steady_state * ELECTRICAL_MODEL_RESISTANCE_SCALE`.
-    pub r_int: u32,
-    /// Winding inductance in internal micro-units.
-    /// `L_int = r_int * tau_e_us / ELECTRICAL_MODEL_RESISTANCE_SCALE`.
-    pub l_int: u32,
+    /// Voltage-output/current-ADC count slope, scaled by 1000.
+    pub r_count_milli: u32,
+    /// Count-space inductance proxy in micro-time units.
+    pub l_count_micro: u32,
     /// Electrical time constant L/R in microseconds.
     pub tau_e_us: u32,
     /// Effective transport delay in microseconds (from transient onset).
     pub theta_e_us: u32,
-    /// Physical resistance in milliohms (for display/persistence).
-    pub r_mohm: u32,
-    /// Physical inductance in microhenries (for display/persistence).
-    pub l_uh: u32,
 }
 
-/// Fixed-point scale used for [`ElectricalModel::r_int`].
+/// Fixed-point scale used for [`ElectricalModel::r_count_milli`].
 pub const ELECTRICAL_MODEL_RESISTANCE_SCALE: u32 = 1000;
 
 /// Computed PI gains for the TMC4671 current (flux/torque) loops.
@@ -382,16 +373,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn electrical_model_tau_from_l_over_r() {
+    fn electrical_model_exposes_only_count_space_electrical_values() {
         let model = ElectricalModel {
-            r_int: 512,
-            l_int: 256,
+            r_count_milli: 512,
+            l_count_micro: 256,
             tau_e_us: 50,
             theta_e_us: 10,
-            r_mohm: 1125,
-            l_uh: 450,
         };
-        assert_eq!(model.r_int, 512);
+        assert_eq!(model.r_count_milli, 512);
+        assert_eq!(model.l_count_micro, 256);
         assert_eq!(model.tau_e_us, 50);
         assert_eq!(model.theta_e_us, 10);
     }

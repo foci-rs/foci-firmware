@@ -985,20 +985,16 @@ mod tests {
         assert!(size_of::<capture_timing::CaptureTimingEvidence>() <= 32);
         assert_eq!(size_of::<[u16; crate::autotune::TRANSIENT_LEN]>(), 512);
         assert_eq!(size_of::<crate::autotune::DelayTimestampOffsets>(), 514);
-        // Historical pre-Task-7 baseline: 3,952 bytes. The explicit 336-byte
-        // increase is the reviewed cost of carrying three detailed timing
-        // summaries through the terminal result without indirection.
-        assert_eq!(engine_step, 4_288);
-        assert!(engine_step <= 4_288);
-        assert_eq!(step_inner, 4_240);
-        // Historical pre-Task-7 baseline: 3,904 bytes; same reviewed delta.
-        assert!(step_inner <= 4_240);
+        assert_eq!(engine_step, 4_272);
+        assert!(engine_step <= 4_272);
+        assert_eq!(step_inner, 4_224);
+        assert!(step_inner <= 4_224);
         assert_eq!(electrical_id, 608);
         assert!(electrical_id <= 608);
         assert!(electrical_id <= 960);
         // The capture-owned deadline loop adds 48 bytes to the scheduled
         // future while removing per-sample reconstruction of that future.
-        assert_eq!(scheduled_step, 4_368);
+        assert_eq!(scheduled_step, 4_352);
         // The hot path keeps nonterminal classification outside the terminal
         // async dispatch future.
         assert!(scheduled_step <= 4_400);
@@ -1043,10 +1039,8 @@ mod tests {
     fn sample_inner_result(status: crate::autotune::CommissionStatus) -> InnerResult {
         InnerResult {
             status,
-            r_int: 1706,
-            l_int: 1245,
-            r_mohm: 1700,
-            l_uh: 3100,
+            r_count_milli: 1706,
+            l_count_micro: 1245,
             flux_p: 100,
             flux_i: 10,
             torque_p: 200,

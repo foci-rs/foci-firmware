@@ -114,10 +114,10 @@ pub(crate) struct ModelAssembly {
 pub(crate) enum ModelAssemblyError {
     /// At least one coil had zero samples or zero current.
     SampleCount,
-    /// L_int or L_uh evaluated to zero after AC reactance conversion.
+    /// The count-space inductance evaluated to zero after AC reactance conversion.
     /// Distinct from `SampleCount` so RTT diagnostics name the actual
     /// failure (likely a fixed-point scale or rounding edge case).
-    ModelScaleZero { l_int: u32, l_uh: u32 },
+    ModelScaleZero { l_count_micro: u32 },
     /// theta_e_us >= tau_e_us / 2.
     ThetaTooLarge { theta_us: u32, tau_us: u32 },
 }
@@ -127,11 +127,10 @@ fn log_model_assembly_failure(err: ModelAssemblyError) {
         ModelAssemblyError::SampleCount => {
             defmt::warn!("electrical id: no usable per-coil samples");
         }
-        ModelAssemblyError::ModelScaleZero { l_int, l_uh } => {
+        ModelAssemblyError::ModelScaleZero { l_count_micro } => {
             defmt::warn!(
-                "electrical id: model scale zero (l_int={}, l_uh={})",
-                l_int,
-                l_uh
+                "electrical id: model scale zero (l_count_micro={})",
+                l_count_micro
             );
         }
         ModelAssemblyError::ThetaTooLarge { theta_us, tau_us } => {
@@ -149,9 +148,12 @@ fn diagnostic_for_model_assembly_failure(
 ) -> crate::selftest::CommissionDiagnostic {
     let (code, value0, value1, value2) = match err {
         ModelAssemblyError::SampleCount => (DIAG_ELECTRICAL_ID_REJECT_NO_SAMPLES, 0, 0, 0),
-        ModelAssemblyError::ModelScaleZero { l_int, l_uh } => {
-            (DIAG_ELECTRICAL_ID_REJECT_MODEL_SCALE_ZERO, l_int, l_uh, 0)
-        }
+        ModelAssemblyError::ModelScaleZero { l_count_micro } => (
+            DIAG_ELECTRICAL_ID_REJECT_MODEL_SCALE_ZERO,
+            l_count_micro,
+            l_count_micro,
+            0,
+        ),
         ModelAssemblyError::ThetaTooLarge { theta_us, tau_us } => (
             DIAG_ELECTRICAL_ID_REJECT_THETA_TOO_LARGE,
             theta_us,
@@ -209,8 +211,8 @@ fn electrical_id_measurement_diagnostic(
 ///
 /// The count-slope is in `ELECTRICAL_MODEL_RESISTANCE_SCALE` (milli) units
 /// (`dV_count / dI_count * 1000`), so it feeds the per-coil tau and gain math
-/// directly without conversion. Returns `(count_slope, count_slope, samples)`;
-/// the slope is reused as the display `r_mohm`.
+/// directly without conversion. Returns `(count_slope, count_slope, samples)`
+/// because the diagnostic retains both established count-space evidence slots.
 fn per_coil_resistance_slope(data: &ElectricalIdData, coil_idx: usize) -> Option<(u32, u32, u32)> {
     let result = data.resistance_result?;
     let axis = if coil_idx == 0 {
@@ -218,16 +220,14 @@ fn per_coil_resistance_slope(data: &ElectricalIdData, coil_idx: usize) -> Option
     } else {
         result.axis1
     };
-    let r_int = axis.r_count_slope_milli.max(0) as u32;
-    if r_int == 0 {
+    let r_count_milli = axis.r_count_slope_milli.max(0) as u32;
+    if r_count_milli == 0 {
         return None;
     }
-    // `r_mohm` diagnostic value is the count-slope-milli reused as derived
-    // display evidence; the runner owns the physical-scale gating.
-    Some((r_int, r_int, u32::from(axis.selected_count)))
+    Some((r_count_milli, r_count_milli, u32::from(axis.selected_count)))
 }
 
-fn l_int_from_reactance(
+fn l_count_micro_from_reactance(
     x_average_count_ratio_milli: u32,
     realized_frequency_millihz: u32,
 ) -> Option<u32> {
@@ -251,7 +251,8 @@ fn record_electrical_id_measurement_diagnostics(
         INDUCTANCE_OPENLOOP_VELOCITY_TARGET_RPM,
     ));
     for coil_idx in 0..2 {
-        if let Some((avg_current, r_mohm, count)) = per_coil_resistance_slope(data, coil_idx) {
+        if let Some((avg_current, r_count_milli, count)) = per_coil_resistance_slope(data, coil_idx)
+        {
             diagnostics.push(electrical_id_measurement_diagnostic(
                 if coil_idx == 0 {
                     DIAG_ELECTRICAL_ID_RESISTANCE_A
@@ -259,7 +260,7 @@ fn record_electrical_id_measurement_diagnostics(
                     DIAG_ELECTRICAL_ID_RESISTANCE_B
                 },
                 avg_current,
-                r_mohm,
+                r_count_milli,
                 count,
             ));
         }
@@ -272,30 +273,27 @@ fn assemble_electrical_model(
 ) -> Result<ModelAssembly, ModelAssemblyError> {
     // --- Per-coil resistance (from the shared multi-point runner) ---
     //
-    // `r_int` and the per-coil entries come from the runner's count-space fit,
+    // `r_count_milli` and the per-coil entries come from the runner's count-space fit,
     // in `ELECTRICAL_MODEL_RESISTANCE_SCALE` (milli) units. The runner already
     // enforces the resistance quality gates (short/open/per-axis mismatch,
     // residual, drift); this path only translates its slopes into the model.
     let result = data
         .resistance_result
         .ok_or(ModelAssemblyError::SampleCount)?;
-    let mut r_int_per_coil = [0u32; 2];
+    let mut r_count_milli_per_coil = [0u32; 2];
     let axis_results = [result.axis0, result.axis1];
     for (coil_idx, axis) in axis_results.iter().enumerate() {
-        let r_int_coil = axis.r_count_slope_milli.max(0) as u32;
-        if r_int_coil == 0 {
+        let r_count_milli_coil = axis.r_count_slope_milli.max(0) as u32;
+        if r_count_milli_coil == 0 {
             return Err(ModelAssemblyError::SampleCount);
         }
-        r_int_per_coil[coil_idx] = r_int_coil;
+        r_count_milli_per_coil[coil_idx] = r_count_milli_coil;
     }
     // Averaged model resistance is the run-selected count-slope.
-    let r_int = result.selected_r_count_slope_milli.max(0) as u32;
-    if r_int == 0 {
+    let r_count_milli = result.selected_r_count_slope_milli.max(0) as u32;
+    if r_count_milli == 0 {
         return Err(ModelAssemblyError::SampleCount);
     }
-    // `r_mohm` is derived display evidence only: the count-slope-milli reused
-    // as a physical-display stand-in. The host applies real scale metadata.
-    let r_mohm = r_int;
 
     // --- Hard gates (in spec order) ---
     //
@@ -303,22 +301,18 @@ fn assemble_electrical_model(
     // runner's count-space quality gates. The per-coil resistance
     // disagreement is still surfaced as a confidence warning below, computed
     // from the runner's per-axis slopes.
-    let r_diff_permille = permille_diff(r_int_per_coil[0], r_int_per_coil[1]);
+    let r_diff_permille = permille_diff(r_count_milli_per_coil[0], r_count_milli_per_coil[1]);
     let inductance = data.inductance.ok_or(ModelAssemblyError::SampleCount)?;
-    let l_int = l_int_from_reactance(
+    let l_count_micro = l_count_micro_from_reactance(
         inductance.estimate.x_average_count_ratio_milli,
         inductance.run.realized_frequency_millihz,
     )
-    .ok_or(ModelAssemblyError::ModelScaleZero { l_int: 0, l_uh: 0 })?;
+    .ok_or(ModelAssemblyError::ModelScaleZero { l_count_micro: 0 })?;
 
-    let tau_e_us =
-        (u64::from(l_int) * u64::from(ELECTRICAL_MODEL_RESISTANCE_SCALE) / u64::from(r_int)) as u32;
-    let l_uh = u64::from(l_int);
-    if l_int == 0 || l_uh == 0 {
-        return Err(ModelAssemblyError::ModelScaleZero {
-            l_int,
-            l_uh: l_uh as u32,
-        });
+    let tau_e_us = (u64::from(l_count_micro) * u64::from(ELECTRICAL_MODEL_RESISTANCE_SCALE)
+        / u64::from(r_count_milli)) as u32;
+    if l_count_micro == 0 {
+        return Err(ModelAssemblyError::ModelScaleZero { l_count_micro });
     }
 
     // --- Configured transport-delay gate ---
@@ -341,12 +335,10 @@ fn assemble_electrical_model(
 
     Ok(ModelAssembly {
         model: ElectricalModel {
-            r_int,
-            l_int,
+            r_count_milli,
+            l_count_micro,
             tau_e_us,
             theta_e_us: configured_theta_e_us,
-            r_mohm,
-            l_uh: l_uh as u32,
         },
         warning_flags,
     })
@@ -2387,14 +2379,14 @@ pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
                         7,
                         crate::selftest::SelftestStageValue {
                             status: 0,
-                            value: assembly.model.r_mohm,
+                            value: assembly.model.r_count_milli,
                         },
                     );
                     selftest_results.set(
                         8,
                         crate::selftest::SelftestStageValue {
                             status: 0,
-                            value: assembly.model.l_uh,
+                            value: assembly.model.l_count_micro,
                         },
                     );
                     crate::tmc_safe_state::restore_safe_state_via_backend(backend).await;
@@ -2615,18 +2607,17 @@ mod tests {
 
         let assembly = assemble_electrical_model(&data, TEST_THETA_E_US).unwrap();
 
-        assert_eq!(assembly.model.r_int, 1706);
-        assert_eq!(assembly.model.r_mohm, 1706);
+        assert_eq!(assembly.model.r_count_milli, 1706);
         assert!(
             (795..=805).contains(&assembly.model.tau_e_us),
             "tau should use R=1.706, not truncated: {}",
             assembly.model.tau_e_us
         );
-        // l_int = X / omega = 8600e9 / (6283 * 1_000_000) ≈ 1368.
+        // l_count_micro = X / omega = 8600e9 / (6283 * 1_000_000) ≈ 1368.
         assert!(
-            (1360..=1375).contains(&assembly.model.l_int),
-            "l_int should preserve the internal L scale: {}",
-            assembly.model.l_int
+            (1360..=1375).contains(&assembly.model.l_count_micro),
+            "l_count_micro should preserve the count-space L scale: {}",
+            assembly.model.l_count_micro
         );
     }
 
@@ -2638,12 +2629,12 @@ mod tests {
         let assembly =
             assemble_electrical_model(&data, TEST_THETA_E_US).expect("model should assemble");
 
-        let expected_l_int = l_int_from_reactance(8_600, 900_000).unwrap();
-        assert_eq!(assembly.model.l_int, expected_l_int);
+        let expected_l_count_micro = l_count_micro_from_reactance(8_600, 900_000).unwrap();
+        assert_eq!(assembly.model.l_count_micro, expected_l_count_micro);
         assert_eq!(
             assembly.model.tau_e_us,
-            (u64::from(expected_l_int) * u64::from(ELECTRICAL_MODEL_RESISTANCE_SCALE) / 1706)
-                as u32
+            (u64::from(expected_l_count_micro) * u64::from(ELECTRICAL_MODEL_RESISTANCE_SCALE)
+                / 1706) as u32
         );
     }
 
@@ -5256,8 +5247,7 @@ mod tests {
 
         let scale_zero =
             diagnostic_for_model_assembly_failure(ModelAssemblyError::ModelScaleZero {
-                l_int: 0,
-                l_uh: 0,
+                l_count_micro: 0,
             });
         assert_eq!(scale_zero.code, 22);
 
@@ -5302,7 +5292,7 @@ mod tests {
             CommissionError::ElectricalModelNoSamples
         );
         assert_eq!(
-            CommissionError::from(ModelAssemblyError::ModelScaleZero { l_int: 0, l_uh: 0 }),
+            CommissionError::from(ModelAssemblyError::ModelScaleZero { l_count_micro: 0 }),
             CommissionError::ElectricalModelScaleZero
         );
         assert_eq!(
@@ -5315,14 +5305,14 @@ mod tests {
     }
 
     #[test]
-    fn assemble_rejects_zero_l_int_with_model_scale_zero() {
+    fn assemble_rejects_zero_l_count_micro_with_model_scale_zero() {
         let mut data = ElectricalIdData::new(512);
         data.resistance_result = Some(resistance_result(100, 100));
         data.inductance = Some(inductance_evidence_fixture(1, 1_000_000));
         let err = assemble_electrical_model(&data, TEST_THETA_E_US).unwrap_err();
         assert!(matches!(
             err,
-            ModelAssemblyError::ModelScaleZero { l_int: 0, l_uh: 0 }
+            ModelAssemblyError::ModelScaleZero { l_count_micro: 0 }
         ));
     }
 
