@@ -73,6 +73,40 @@ pub enum CommissionPoll {
     },
 }
 
+/// Advance a due periodic deadline to the first strictly future grid point.
+///
+/// Callers must establish `now_us >= previous_deadline_us` before invoking
+/// this helper. An early invocation is rejected.
+///
+/// # Errors
+///
+/// Returns [`CommissionError::InvalidSchedule`] for a zero period, an early
+/// invocation, or arithmetic overflow.
+#[allow(dead_code)]
+pub(crate) fn next_grid_deadline(
+    previous_deadline_us: u64,
+    period_us: u64,
+    now_us: u64,
+) -> Result<u64, CommissionError> {
+    if period_us == 0 {
+        return Err(CommissionError::InvalidSchedule);
+    }
+    let elapsed_us = now_us
+        .checked_sub(previous_deadline_us)
+        .ok_or(CommissionError::InvalidSchedule)?;
+    let slots = elapsed_us
+        .checked_div(period_us)
+        .and_then(|elapsed_slots| elapsed_slots.checked_add(1))
+        .ok_or(CommissionError::InvalidSchedule)?;
+    previous_deadline_us
+        .checked_add(
+            slots
+                .checked_mul(period_us)
+                .ok_or(CommissionError::InvalidSchedule)?,
+        )
+        .ok_or(CommissionError::InvalidSchedule)
+}
+
 /// Adapt a step result while retaining one-millisecond legacy pacing.
 ///
 /// # Errors
@@ -141,6 +175,49 @@ fn legacy_wait(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn exactly_due_grid_deadline_advances_one_period() {
+        assert_eq!(next_grid_deadline(1_000, 200, 1_000), Ok(1_200));
+    }
+
+    #[test]
+    fn late_grid_deadline_skips_to_first_future_slot() {
+        assert_eq!(next_grid_deadline(1_000, 200, 1_450), Ok(1_600));
+    }
+
+    #[test]
+    fn grid_deadline_rejects_early_invocation() {
+        assert!(matches!(
+            next_grid_deadline(1_000, 200, 999),
+            Err(CommissionError::InvalidSchedule)
+        ));
+    }
+
+    #[test]
+    fn grid_deadline_rejects_zero_period() {
+        assert!(matches!(
+            next_grid_deadline(1_000, 0, 1_000),
+            Err(CommissionError::InvalidSchedule)
+        ));
+    }
+
+    #[test]
+    fn grid_deadline_rejects_slot_multiplication_overflow() {
+        let period_us = u64::MAX / 2 + 1;
+        assert!(matches!(
+            next_grid_deadline(0, period_us, u64::MAX),
+            Err(CommissionError::InvalidSchedule)
+        ));
+    }
+
+    #[test]
+    fn grid_deadline_rejects_deadline_addition_overflow() {
+        assert!(matches!(
+            next_grid_deadline(u64::MAX - 5, 10, u64::MAX - 5),
+            Err(CommissionError::InvalidSchedule)
+        ));
+    }
 
     #[test]
     fn legacy_continue_maps_to_one_millisecond_deadline() {
