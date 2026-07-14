@@ -153,7 +153,6 @@ pub(crate) async fn step_outer_with_trace<B: CommissioningBackend>(
             velocity::step_velocity_validate_with_trace(
                 phase,
                 buf,
-                profile,
                 mode,
                 inner_lambda_us,
                 theta_e_us,

@@ -11,8 +11,8 @@ use super::super::{
 };
 use super::response_ramp;
 use crate::autotune::{
-    CommissionError, CommissionProfile, OperatingMode, Permille, PhaseId, TransientBuffer,
-    ValidationResult, VelocityValidation,
+    CommissionError, OperatingMode, Permille, PhaseId, TransientBuffer, ValidationResult,
+    VelocityValidation,
 };
 use crate::commissioning::encoder_domain::{EncoderDomain, EncoderMathError};
 use crate::commissioning::outer::{fail_outer, response};
@@ -216,7 +216,6 @@ fn record_velocity_validate_summary<B: CommissioningBackend>(
 pub(crate) async fn step_velocity_validate<B: CommissioningBackend>(
     phase: &mut OuterPhase,
     buf: &mut TransientBuffer,
-    profile: CommissionProfile,
     mode: OperatingMode,
     inner_lambda_us: u32,
     theta_e_us: u32,
@@ -228,7 +227,6 @@ pub(crate) async fn step_velocity_validate<B: CommissioningBackend>(
     step_velocity_validate_with_trace(
         phase,
         buf,
-        profile,
         mode,
         inner_lambda_us,
         theta_e_us,
@@ -244,7 +242,6 @@ pub(crate) async fn step_velocity_validate<B: CommissioningBackend>(
 pub(crate) async fn step_velocity_validate_with_trace<B: CommissioningBackend>(
     phase: &mut OuterPhase,
     buf: &mut TransientBuffer,
-    profile: CommissionProfile,
     mode: OperatingMode,
     inner_lambda_us: u32,
     theta_e_us: u32,
@@ -1171,15 +1168,16 @@ pub(crate) async fn step_velocity_validate_with_trace<B: CommissioningBackend>(
                         / VELOCITY_RETRY_LAMBDA_MUL_DEN;
                     retry_model.theta_mech_us = new_theta;
 
-                    match crate::autotune::simc_velocity_gains(
+                    match crate::autotune::simc_velocity_gains_with_lambda_multiplier(
                         &retry_model,
-                        profile,
+                        data.policy.effective_profile,
                         mode,
                         inner_lambda_us,
                         theta_e_us,
                         data.peak_velocity,
                         encoder_counts_per_rev,
                         config,
+                        data.policy.lambda_multiplier,
                     ) {
                         Some(mut new_gains) => {
                             data.diagnostics.synth_velocity_p = new_gains.velocity_p;
@@ -1370,6 +1368,7 @@ pub(crate) async fn step_velocity_validate_with_trace<B: CommissioningBackend>(
 #[cfg(test)]
 mod tests {
     use super::{
+        VELOCITY_RETRY_LAMBDA_MUL_DEN, VELOCITY_RETRY_LAMBDA_MUL_NUM,
         VELOCITY_VALIDATE_MAX_REGISTER_OPS_PER_ARM, command_velocity_target,
         encoder_counts_to_tmc_position_units, encoder_delta_counts_per_ms,
         encoder_rate_counts_per_ms_to_tmc_velocity_signed,
@@ -1479,7 +1478,6 @@ mod tests {
                 let result = step_velocity_validate(
                     &mut phase,
                     &mut buf,
-                    CommissionProfile::Balanced,
                     OperatingMode::Nominal,
                     0,
                     0,
@@ -1513,7 +1511,6 @@ mod tests {
             let waiting = step_velocity_validate(
                 &mut phase,
                 &mut buf,
-                CommissionProfile::Balanced,
                 OperatingMode::Nominal,
                 0,
                 0,
@@ -1528,7 +1525,6 @@ mod tests {
             let elapsed = step_velocity_validate(
                 &mut phase,
                 &mut buf,
-                CommissionProfile::Balanced,
                 OperatingMode::Nominal,
                 0,
                 0,
@@ -1553,7 +1549,6 @@ mod tests {
             let reverse_waiting = step_velocity_validate(
                 &mut phase,
                 &mut buf,
-                CommissionProfile::Balanced,
                 OperatingMode::Nominal,
                 0,
                 0,
@@ -1568,7 +1563,6 @@ mod tests {
             let reverse_elapsed = step_velocity_validate(
                 &mut phase,
                 &mut buf,
-                CommissionProfile::Balanced,
                 OperatingMode::Nominal,
                 0,
                 0,
@@ -1607,7 +1601,6 @@ mod tests {
             let waiting = step_velocity_validate(
                 &mut phase,
                 &mut buf,
-                CommissionProfile::Balanced,
                 OperatingMode::Nominal,
                 0,
                 0,
@@ -1623,7 +1616,6 @@ mod tests {
             let sampled = step_velocity_validate(
                 &mut phase,
                 &mut buf,
-                CommissionProfile::Balanced,
                 OperatingMode::Nominal,
                 0,
                 0,
@@ -1666,7 +1658,6 @@ mod tests {
             let waiting = step_velocity_validate(
                 &mut phase,
                 &mut buf,
-                CommissionProfile::Balanced,
                 OperatingMode::Nominal,
                 0,
                 0,
@@ -1681,7 +1672,6 @@ mod tests {
             let elapsed = step_velocity_validate(
                 &mut phase,
                 &mut buf,
-                CommissionProfile::Balanced,
                 OperatingMode::Nominal,
                 0,
                 0,
@@ -1718,7 +1708,6 @@ mod tests {
             let result = step_velocity_validate(
                 &mut phase,
                 &mut buf,
-                CommissionProfile::Balanced,
                 OperatingMode::Nominal,
                 0,
                 0,
@@ -1842,7 +1831,6 @@ mod tests {
         let result = step_velocity_validate(
             &mut phase,
             &mut buf,
-            CommissionProfile::Balanced,
             OperatingMode::Nominal,
             0,
             0,
@@ -1990,7 +1978,6 @@ mod tests {
                 let result = step_velocity_validate(
                     &mut phase,
                     &mut buf,
-                    CommissionProfile::Balanced,
                     OperatingMode::Nominal,
                     0,
                     0,
@@ -2047,7 +2034,6 @@ mod tests {
                     let result = step_velocity_validate(
                         &mut phase,
                         &mut buf,
-                        CommissionProfile::Balanced,
                         OperatingMode::Nominal,
                         0,
                         0,
@@ -2101,6 +2087,18 @@ mod tests {
             overshoot_permille: Permille::new(11_500),
             peak_velocity: 25,
             settling_time_ms: 256,
+            zero_speed_chatter: false,
+            saturation_samples: 0,
+            symmetry_permille: Permille::ZERO,
+        }
+    }
+
+    fn marginal_model_metrics() -> VelocityValidation {
+        VelocityValidation {
+            rise_time_ms: 10,
+            overshoot_permille: Permille::new(300),
+            peak_velocity: 20,
+            settling_time_ms: 100,
             zero_speed_chatter: false,
             saturation_samples: 0,
             symmetry_permille: Permille::ZERO,
@@ -2292,7 +2290,6 @@ mod tests {
             let result = step_velocity_validate(
                 &mut phase,
                 &mut buf,
-                CommissionProfile::Balanced,
                 OperatingMode::Nominal,
                 0,
                 0,
@@ -2398,6 +2395,102 @@ mod tests {
     }
 
     #[test]
+    fn marginal_retry_reuses_effective_policy() {
+        pollster::block_on(async {
+            let model = MechanicalModel {
+                j_eff: 1_000_000,
+                b_eff: 1_000,
+                tau_mech_ms: 100,
+                theta_mech_us: 20_000,
+                t_f: 0,
+            };
+            let policy = EffectiveVelocityPolicy {
+                effective_profile: CommissionProfile::Conservative,
+                lambda_multiplier: 1.8,
+                conservative_required: true,
+                lambda_widened: true,
+            };
+            let initial_gains = VelocityGains {
+                velocity_p: 1,
+                velocity_i: 1,
+                velocity_limit: 1_000,
+                effective_bandwidth_hz: 1,
+                lambda_vel_ms: 1,
+            };
+            let mut phase = OuterPhase::VelocityValidate {
+                state: VelocityValidateState::Classify,
+                data: VelocityValidateData {
+                    gains: initial_gains,
+                    accepted_gains: initial_gains,
+                    has_accepted_gains: false,
+                    response_lower_p: 0,
+                    response_upper_p: 0,
+                    model,
+                    policy,
+                    strategy: VelocityTuneStrategy::Model,
+                    stiffness_timebase_ms: 100,
+                    mech_tau_trusted: true,
+                    velocity_search_stop_reason: VELOCITY_SEARCH_STOP_CLEAN,
+                    attempt: 0,
+                    step_target: 100,
+                    forward_metrics: Some(marginal_model_metrics()),
+                    reverse_metrics: Some(marginal_model_metrics()),
+                    max_chatter: 0,
+                    peak_velocity: 1_000,
+                    prev_encoder_for_velocity: None,
+                    saturation_count: 0,
+                    torque_limit: 2_448,
+                    operational_velocity_limit: 500_000,
+                    diagnostics: zero_diagnostics(),
+                },
+                safety: configured_safety(),
+            };
+            let mut buf = TransientBuffer::new();
+            let mut backend = MockBackend::new();
+            backend.mechanical_encoder_quadrature_counts_per_rev_value = 4_000;
+            let retry_model = MechanicalModel {
+                theta_mech_us: model.theta_mech_us * VELOCITY_RETRY_LAMBDA_MUL_NUM
+                    / VELOCITY_RETRY_LAMBDA_MUL_DEN,
+                ..model
+            };
+            let expected = crate::autotune::simc_velocity_gains_with_lambda_multiplier(
+                &retry_model,
+                policy.effective_profile,
+                OperatingMode::Nominal,
+                1_000,
+                100,
+                1_000,
+                4_000,
+                &backend.tmc_config,
+                policy.lambda_multiplier,
+            )
+            .expect("retry model should synthesize");
+
+            let result = step_velocity_validate(
+                &mut phase,
+                &mut buf,
+                OperatingMode::Nominal,
+                1_000,
+                100,
+                false,
+                1_600,
+                &mut backend,
+            )
+            .await;
+
+            assert!(matches!(result, StepResult::ReadyNow));
+            match phase {
+                OuterPhase::VelocityValidate { state, data, .. } => {
+                    assert!(matches!(state, VelocityValidateState::WriteGains));
+                    assert_eq!(data.attempt, 1);
+                    assert_eq!(data.gains, expected);
+                }
+                other => panic!("expected velocity retry, got {:?}", other),
+            }
+        });
+    }
+
+    #[test]
     fn model_pass_under_driven_probes_higher_p() {
         pollster::block_on(async {
             let gains = VelocityGains {
@@ -2447,7 +2540,6 @@ mod tests {
             let result = step_velocity_validate(
                 &mut phase,
                 &mut buf,
-                CommissionProfile::Balanced,
                 OperatingMode::Nominal,
                 934,
                 160,
@@ -2526,7 +2618,6 @@ mod tests {
             let result = step_velocity_validate(
                 &mut phase,
                 &mut buf,
-                CommissionProfile::Balanced,
                 OperatingMode::Nominal,
                 934,
                 160,
@@ -2601,7 +2692,6 @@ mod tests {
             let result = step_velocity_validate(
                 &mut phase,
                 &mut buf,
-                CommissionProfile::Balanced,
                 OperatingMode::Nominal,
                 934,
                 160,
@@ -2679,7 +2769,6 @@ mod tests {
             let result = step_velocity_validate(
                 &mut phase,
                 &mut buf,
-                CommissionProfile::Balanced,
                 OperatingMode::Nominal,
                 934,
                 160,
@@ -2830,7 +2919,6 @@ mod tests {
             let result = step_velocity_validate(
                 &mut phase,
                 &mut buf,
-                CommissionProfile::Balanced,
                 OperatingMode::Nominal,
                 0,
                 0,
@@ -2930,7 +3018,6 @@ mod tests {
             let result = step_velocity_validate(
                 &mut phase,
                 &mut buf,
-                CommissionProfile::Balanced,
                 OperatingMode::Nominal,
                 0,
                 0,
@@ -3010,7 +3097,6 @@ mod tests {
             let result = step_velocity_validate(
                 &mut phase,
                 &mut buf,
-                CommissionProfile::Balanced,
                 OperatingMode::Nominal,
                 0,
                 0,
@@ -3092,7 +3178,6 @@ mod tests {
             let _ = step_velocity_validate(
                 &mut phase,
                 &mut buf,
-                CommissionProfile::Balanced,
                 OperatingMode::Nominal,
                 0,
                 0,
@@ -3120,7 +3205,6 @@ mod tests {
             let _ = step_velocity_validate(
                 &mut phase,
                 &mut buf,
-                CommissionProfile::Balanced,
                 OperatingMode::Nominal,
                 0,
                 0,
@@ -3150,7 +3234,6 @@ mod tests {
             let result = step_velocity_validate(
                 &mut phase,
                 &mut buf,
-                CommissionProfile::Balanced,
                 OperatingMode::Nominal,
                 934,
                 160,
@@ -3184,7 +3267,6 @@ mod tests {
             let result = step_velocity_validate(
                 &mut phase,
                 &mut buf,
-                CommissionProfile::Balanced,
                 OperatingMode::Nominal,
                 934,
                 160,
@@ -3212,7 +3294,6 @@ mod tests {
             let result = step_velocity_validate(
                 &mut phase,
                 &mut buf,
-                CommissionProfile::Balanced,
                 OperatingMode::Nominal,
                 934,
                 160,
@@ -3277,7 +3358,6 @@ mod tests {
             let result = step_velocity_validate(
                 &mut phase,
                 &mut buf,
-                CommissionProfile::Balanced,
                 OperatingMode::Nominal,
                 934,
                 160,
@@ -3349,7 +3429,6 @@ mod tests {
             let result = step_velocity_validate(
                 &mut phase,
                 &mut buf,
-                CommissionProfile::Balanced,
                 OperatingMode::Nominal,
                 934,
                 160,
@@ -3427,7 +3506,6 @@ mod tests {
             let result = step_velocity_validate(
                 &mut phase,
                 &mut buf,
-                CommissionProfile::Balanced,
                 OperatingMode::Nominal,
                 934,
                 160,
@@ -3502,7 +3580,6 @@ mod tests {
             let result = step_velocity_validate(
                 &mut phase,
                 &mut buf,
-                CommissionProfile::Balanced,
                 OperatingMode::Nominal,
                 934,
                 160,
@@ -3584,7 +3661,6 @@ mod tests {
             let result = step_velocity_validate(
                 &mut phase,
                 &mut buf,
-                CommissionProfile::Balanced,
                 OperatingMode::Nominal,
                 934,
                 160,
@@ -3659,7 +3735,6 @@ mod tests {
             let result = step_velocity_validate(
                 &mut phase,
                 &mut buf,
-                CommissionProfile::Balanced,
                 OperatingMode::Nominal,
                 934,
                 160,
@@ -3736,7 +3811,6 @@ mod tests {
             let result = step_velocity_validate(
                 &mut phase,
                 &mut buf,
-                CommissionProfile::Balanced,
                 OperatingMode::Nominal,
                 934,
                 160,
