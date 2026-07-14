@@ -23,6 +23,21 @@ pub trait CommissionRegisterIo {
     /// Read a TMC4671 register.
     async fn read_register(&mut self, reg: Register) -> Result<u32, Self::Error>;
 
+    /// Read two TMC4671 registers for one capture observation.
+    ///
+    /// The default preserves ordinary async behavior for test and alternate
+    /// backends. Production shared backends override this with two blocking,
+    /// separately CS-framed transactions to avoid DMA wakeup overhead.
+    async fn read_register_pair(
+        &mut self,
+        first: Register,
+        second: Register,
+    ) -> Result<(u32, u32), Self::Error> {
+        let first = self.read_register(first).await?;
+        let second = self.read_register(second).await?;
+        Ok((first, second))
+    }
+
     /// Write a TMC4671 register.
     async fn write_register(&mut self, reg: Register, val: u32) -> Result<(), Self::Error>;
 
@@ -65,6 +80,26 @@ where
 {
     let start_us = backend.elapsed_us();
     let result = backend.read_register(reg).await;
+    let end_us = backend.elapsed_us();
+    let (wall_us, overflowed) = measured_wall_us(start_us, end_us);
+    TimedRegisterIo {
+        result,
+        wall_us,
+        overflowed,
+    }
+}
+
+/// Read two registers as one backend operation and measure its wall time.
+pub async fn timed_read_register_pair<B>(
+    backend: &mut B,
+    first: Register,
+    second: Register,
+) -> TimedRegisterIo<Result<(u32, u32), B::Error>>
+where
+    B: CommissioningBackend,
+{
+    let start_us = backend.elapsed_us();
+    let result = backend.read_register_pair(first, second).await;
     let end_us = backend.elapsed_us();
     let (wall_us, overflowed) = measured_wall_us(start_us, end_us);
     TimedRegisterIo {
@@ -407,11 +442,20 @@ where
 impl<T> CommissionRegisterIo for T
 where
     T: CommissionTmcSpiAccess,
+    T::Spi: embedded_hal::spi::SpiDevice<u8>,
 {
     type Error = SpiError<<T::Spi as ErrorType>::Error>;
 
     async fn read_register(&mut self, reg: Register) -> Result<u32, Self::Error> {
         self.tmc_spi().read_register(reg).await
+    }
+
+    async fn read_register_pair(
+        &mut self,
+        first: Register,
+        second: Register,
+    ) -> Result<(u32, u32), Self::Error> {
+        self.tmc_spi().read_register_pair_blocking(first, second)
     }
 
     async fn write_register(&mut self, reg: Register, val: u32) -> Result<(), Self::Error> {
@@ -438,6 +482,7 @@ where
 impl<T> CommissionEncoderRead for T
 where
     T: CommissionTmcSpiAccess,
+    T::Spi: embedded_hal::spi::SpiDevice<u8>,
 {
     async fn read_mechanical_encoder_position_counts(&mut self) -> u32 {
         self.tmc_spi()
@@ -648,6 +693,25 @@ mod tests {
             &mut self,
             operations: &mut [Operation<'_, u8>],
         ) -> Result<(), Self::Error> {
+            for operation in operations {
+                match operation {
+                    Operation::Write(buf) if buf.len() == 5 && (buf[0] & 0x80) != 0 => {
+                        let addr = buf[0] & 0x7F;
+                        let value = u32::from_be_bytes([buf[1], buf[2], buf[3], buf[4]]);
+                        self.writes.push((addr, value));
+                    }
+                    Operation::Read(buf) => {
+                        buf.fill(0);
+                    }
+                    _ => {}
+                }
+            }
+            Ok(())
+        }
+    }
+
+    impl embedded_hal::spi::SpiDevice<u8> for RecordingSpi {
+        fn transaction(&mut self, operations: &mut [Operation<'_, u8>]) -> Result<(), Self::Error> {
             for operation in operations {
                 match operation {
                     Operation::Write(buf) if buf.len() == 5 && (buf[0] & 0x80) != 0 => {

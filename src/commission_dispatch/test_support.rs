@@ -40,6 +40,8 @@ pub struct MockBackend {
     pub registers: heapless::LinearMap<u8, u32, 64>,
     /// Ordered log of every SPI read/write issued during the test.
     pub spi_log: Vec<SpiOp, 384>,
+    /// Number of paired register-read operations issued during the test.
+    pub register_pair_reads: usize,
     /// Ordered trace events recorded by the commissioning engine.
     pub trace_events: Vec<crate::trace::events::CommissionTraceEvent, 64>,
     /// Current state of the TMC4671 enable pin.
@@ -136,6 +138,7 @@ impl MockBackend {
         Self {
             registers: heapless::LinearMap::new(),
             spi_log: Vec::new(),
+            register_pair_reads: 0,
             trace_events: Vec::new(),
             enable_pin: false,
             delay_us_log: Vec::new(),
@@ -289,6 +292,17 @@ impl CommissionRegisterIo for MockBackend {
             }
         }
         Ok(*self.registers.get(&addr).unwrap_or(&0))
+    }
+
+    async fn read_register_pair(
+        &mut self,
+        first: Register,
+        second: Register,
+    ) -> Result<(u32, u32), Self::Error> {
+        self.register_pair_reads += 1;
+        let first = self.read_register(first).await?;
+        let second = self.read_register(second).await?;
+        Ok((first, second))
     }
 
     async fn write_register(&mut self, reg: Register, val: u32) -> Result<(), Self::Error> {

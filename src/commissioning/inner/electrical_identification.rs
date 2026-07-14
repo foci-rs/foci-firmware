@@ -13,7 +13,7 @@ use crate::autotune::{
     CommissionError, ELECTRICAL_MODEL_RESISTANCE_SCALE, ElectricalModel, InnerSequence, PhaseId,
     TransientBuffer,
 };
-use crate::commissioning::backend::timed_read_register;
+use crate::commissioning::backend::{timed_read_register, timed_read_register_pair};
 use crate::commissioning::capture_timing::{
     CaptureTiming, CaptureTimingEvidence, SampleStart, TimingEnvelope, sample_slot,
 };
@@ -834,10 +834,9 @@ async fn poll_inductance_sample<B: CommissioningBackend>(
         }
     }
 
-    let phi_io = timed_read_register(backend, OPENLOOP_PHI).await;
-    let current_phi = phi_io.result.map_err(|_| CommissionError::Spi)? as u16;
-    let current_io = timed_read_register(backend, PID_TORQUE_FLUX_ACTUAL).await;
-    let actual = current_io.result.map_err(|_| CommissionError::Spi)?;
+    let sample_io = timed_read_register_pair(backend, OPENLOOP_PHI, PID_TORQUE_FLUX_ACTUAL).await;
+    let (current_phi, actual) = sample_io.result.map_err(|_| CommissionError::Spi)?;
+    let current_phi = current_phi as u16;
     let observation_us = backend.elapsed_us();
     let current_elapsed_us = observation_us
         .checked_sub(capture.start_us)
@@ -855,19 +854,11 @@ async fn poll_inductance_sample<B: CommissioningBackend>(
             crate::electrical_capture::phi_delta_counts_forward(capture.previous_phi, current_phi)
         }
     };
-    if phi_io.overflowed || current_io.overflowed {
-        capture
-            .timing
-            .mark_source_overflow(phi_io.wall_us.max(current_io.wall_us));
+    if sample_io.overflowed {
+        capture.timing.mark_source_overflow(sample_io.wall_us);
         return Err(CommissionError::InductanceTimingRejected);
     }
-    let spi_wall_us = match phi_io.wall_us.checked_add(current_io.wall_us) {
-        Some(value) => value,
-        None => {
-            capture.timing.mark_source_overflow(u32::MAX);
-            return Err(CommissionError::InductanceTimingRejected);
-        }
-    };
+    let spi_wall_us = sample_io.wall_us;
     let interval = crate::electrical_capture::phi_locked_ac_interval(
         capture.accumulated_phi_delta_counts,
         INDUCTANCE_AC_TARGET_PHI_DELTA_COUNTS,
@@ -3485,7 +3476,7 @@ mod tests {
             };
             let mut buf = TransientBuffer::new();
             let mut backend = MockBackend::new();
-            backend.set_elapsed_us_sequence(&[1_000, 1_000, 1_040, 1_040, 1_080, 1_080, 1_090]);
+            backend.set_elapsed_us_sequence(&[1_000, 1_000, 1_080, 1_080, 1_090]);
             backend.set_openloop_phi_sequence(&[1_000], 0);
             backend.set_pid_torque_flux_actual_sequence(&[((-84i16 as u16 as u32) << 16) | 20]);
             let mut selftest = crate::selftest::SelftestResults::default();
@@ -3510,6 +3501,7 @@ mod tests {
                 panic!("capture should remain active");
             };
             assert_eq!(capture.previous_elapsed_us, 180);
+            assert_eq!(backend.register_pair_reads, 1);
         });
     }
 
@@ -3526,8 +3518,7 @@ mod tests {
             let mut buf = TransientBuffer::new();
             let mut backend = MockBackend::new();
             backend.elapsed_us_value = 10_020;
-            backend
-                .set_elapsed_us_sequence(&[10_000, 10_000, 10_010, 10_010, 10_020, 10_020, 10_100]);
+            backend.set_elapsed_us_sequence(&[10_000, 10_000, 10_020, 10_020, 10_100]);
             backend.set_openloop_phi_sequence(&[1_000], 0);
             backend.set_pid_torque_flux_actual_sequence(&[((-84i16 as u16 as u32) << 16) | 20]);
             let mut selftest = crate::selftest::SelftestResults::default();
