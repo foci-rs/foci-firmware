@@ -895,7 +895,9 @@ impl CommissioningEngine {
                 }
                 let remaining_us = deadline_us - now_us;
                 let delay_us = u32::try_from(remaining_us).unwrap_or(u32::MAX);
+                backend.capture_wait_start(delay_us);
                 backend.delay_us(delay_us).await;
+                backend.capture_wait_end();
             }
         }
     }
