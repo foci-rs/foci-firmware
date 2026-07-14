@@ -277,108 +277,119 @@ pub async fn apply_stored_filters_via_backend<B: CommissioningBackend>(
     pwm_maxcnt: u16,
 ) -> Result<(), B::Error> {
     use core::sync::atomic::Ordering::Relaxed;
-    use foci_tmc4671::registers::{SubRegister, *};
 
-    /// The six SubRegister addresses that make up one biquad channel.
-    struct BiquadFilterSubRegs {
-        a_1: SubRegister,
-        a_2: SubRegister,
-        b_0: SubRegister,
-        b_1: SubRegister,
-        b_2: SubRegister,
-        enable: SubRegister,
+    apply_backend_filter_cutoffs(
+        backend,
+        BackendFilterCutoffs {
+            velocity_hz: tmc_state.velocity_filter_hz.load_or_zero(Relaxed),
+            torque_hz: tmc_state.torque_filter_hz.load_or_zero(Relaxed),
+            position_hz: tmc_state.position_filter_hz.load_or_zero(Relaxed),
+            flux_hz: tmc_state.flux_filter_hz.load_or_zero(Relaxed),
+        },
+        pwm_maxcnt,
+    )
+    .await
+}
+
+/// Apply Stage 2 filter cutoffs directly from an unpublished outer result.
+///
+/// This uses the same backend write path as [`apply_stored_filters_via_backend`]
+/// without reading or changing the published filter cache.
+///
+/// # Errors
+///
+/// Returns the first backend register-write error.
+pub async fn apply_outer_result_filters_via_backend<B: CommissioningBackend>(
+    backend: &mut B,
+    outer: &crate::commissioning::types::OuterResult,
+    pwm_maxcnt: u16,
+) -> Result<(), B::Error> {
+    apply_backend_filter_cutoffs(
+        backend,
+        BackendFilterCutoffs {
+            velocity_hz: outer.velocity_filter_hz,
+            torque_hz: outer.torque_filter_hz,
+            position_hz: outer.position_filter_hz,
+            flux_hz: outer.flux_filter_hz,
+        },
+        pwm_maxcnt,
+    )
+    .await
+}
+
+#[derive(Clone, Copy)]
+struct BackendFilterCutoffs {
+    velocity_hz: u16,
+    torque_hz: u16,
+    position_hz: u16,
+    flux_hz: u16,
+}
+
+async fn write_backend_sub_register<B: CommissioningBackend>(
+    backend: &mut B,
+    sub: SubRegister,
+    value: u32,
+) -> Result<(), B::Error> {
+    backend
+        .write_register(sub.addr, sub.sub_addr as u32)
+        .await?;
+    backend.write_register(sub.data, value).await
+}
+
+async fn apply_one_backend_filter<B: CommissioningBackend>(
+    backend: &mut B,
+    target: BiquadFilterTarget,
+    filter_hz: u16,
+    pwm_maxcnt: u16,
+) -> Result<(), B::Error> {
+    if filter_hz == 0 {
+        return Ok(());
     }
+    let Some(coeffs) = crate::biquad::butterworth_lowpass(filter_hz, pwm_maxcnt) else {
+        return Ok(());
+    };
+    let regs = biquad_filter_regs(target);
+    write_backend_sub_register(backend, regs.a_1, coeffs.a_1 as u32).await?;
+    write_backend_sub_register(backend, regs.a_2, coeffs.a_2 as u32).await?;
+    write_backend_sub_register(backend, regs.b_0, coeffs.b_0 as u32).await?;
+    write_backend_sub_register(backend, regs.b_1, coeffs.b_1 as u32).await?;
+    write_backend_sub_register(backend, regs.b_2, coeffs.b_2 as u32).await?;
+    write_backend_sub_register(backend, regs.enable, 1).await
+}
 
-    async fn write_sub<B: CommissioningBackend>(
-        backend: &mut B,
-        sub: SubRegister,
-        val: u32,
-    ) -> Result<(), B::Error> {
-        backend
-            .write_register(sub.addr, sub.sub_addr as u32)
-            .await?;
-        backend.write_register(sub.data, val).await?;
-        Ok(())
-    }
-
-    async fn apply_one<B: CommissioningBackend>(
-        backend: &mut B,
-        filter_hz: u16,
-        pwm_maxcnt: u16,
-        regs: BiquadFilterSubRegs,
-    ) -> Result<(), B::Error> {
-        if filter_hz == 0 {
-            return Ok(());
-        }
-        let Some(coeffs) = crate::biquad::butterworth_lowpass(filter_hz, pwm_maxcnt) else {
-            return Ok(());
-        };
-        write_sub(backend, regs.a_1, coeffs.a_1 as u32).await?;
-        write_sub(backend, regs.a_2, coeffs.a_2 as u32).await?;
-        write_sub(backend, regs.b_0, coeffs.b_0 as u32).await?;
-        write_sub(backend, regs.b_1, coeffs.b_1 as u32).await?;
-        write_sub(backend, regs.b_2, coeffs.b_2 as u32).await?;
-        write_sub(backend, regs.enable, 1).await?;
-        Ok(())
-    }
-
-    apply_one(
+async fn apply_backend_filter_cutoffs<B: CommissioningBackend>(
+    backend: &mut B,
+    cutoffs: BackendFilterCutoffs,
+    pwm_maxcnt: u16,
+) -> Result<(), B::Error> {
+    apply_one_backend_filter(
         backend,
-        tmc_state.velocity_filter_hz.load_or_zero(Relaxed),
+        BiquadFilterTarget::Velocity,
+        cutoffs.velocity_hz,
         pwm_maxcnt,
-        BiquadFilterSubRegs {
-            a_1: CONFIG_BIQUAD_V_A_1,
-            a_2: CONFIG_BIQUAD_V_A_2,
-            b_0: CONFIG_BIQUAD_V_B_0,
-            b_1: CONFIG_BIQUAD_V_B_1,
-            b_2: CONFIG_BIQUAD_V_B_2,
-            enable: CONFIG_BIQUAD_V_ENABLE,
-        },
     )
     .await?;
-    apply_one(
+    apply_one_backend_filter(
         backend,
-        tmc_state.torque_filter_hz.load_or_zero(Relaxed),
+        BiquadFilterTarget::Torque,
+        cutoffs.torque_hz,
         pwm_maxcnt,
-        BiquadFilterSubRegs {
-            a_1: CONFIG_BIQUAD_T_A_1,
-            a_2: CONFIG_BIQUAD_T_A_2,
-            b_0: CONFIG_BIQUAD_T_B_0,
-            b_1: CONFIG_BIQUAD_T_B_1,
-            b_2: CONFIG_BIQUAD_T_B_2,
-            enable: CONFIG_BIQUAD_T_ENABLE,
-        },
     )
     .await?;
-    apply_one(
+    apply_one_backend_filter(
         backend,
-        tmc_state.position_filter_hz.load_or_zero(Relaxed),
+        BiquadFilterTarget::Position,
+        cutoffs.position_hz,
         pwm_maxcnt,
-        BiquadFilterSubRegs {
-            a_1: CONFIG_BIQUAD_X_A_1,
-            a_2: CONFIG_BIQUAD_X_A_2,
-            b_0: CONFIG_BIQUAD_X_B_0,
-            b_1: CONFIG_BIQUAD_X_B_1,
-            b_2: CONFIG_BIQUAD_X_B_2,
-            enable: CONFIG_BIQUAD_X_ENABLE,
-        },
     )
     .await?;
-    apply_one(
+    apply_one_backend_filter(
         backend,
-        tmc_state.flux_filter_hz.load_or_zero(Relaxed),
+        BiquadFilterTarget::Flux,
+        cutoffs.flux_hz,
         pwm_maxcnt,
-        BiquadFilterSubRegs {
-            a_1: CONFIG_BIQUAD_F_A_1,
-            a_2: CONFIG_BIQUAD_F_A_2,
-            b_0: CONFIG_BIQUAD_F_B_0,
-            b_1: CONFIG_BIQUAD_F_B_1,
-            b_2: CONFIG_BIQUAD_F_B_2,
-            enable: CONFIG_BIQUAD_F_ENABLE,
-        },
     )
-    .await?;
-    Ok(())
+    .await
 }
 
 #[cfg(test)]
@@ -542,6 +553,77 @@ mod tests {
             tmc_state()
                 .velocity_filter_hz
                 .store(None, Ordering::Relaxed);
+        });
+    }
+
+    #[test]
+    fn backend_filter_cutoffs_apply_explicit_values() {
+        pollster::block_on(async {
+            use crate::commission_dispatch::test_support::{MockBackend, SpiOp};
+            use foci_tmc4671::registers::CONFIG_BIQUAD_V_ENABLE;
+
+            let mut backend = MockBackend::new();
+            apply_backend_filter_cutoffs(
+                &mut backend,
+                BackendFilterCutoffs {
+                    velocity_hz: 100,
+                    torque_hz: 0,
+                    position_hz: 0,
+                    flux_hz: 0,
+                },
+                4095,
+            )
+            .await
+            .expect("explicit cutoff apply should succeed");
+
+            let writes: std::vec::Vec<(u8, u32)> = backend
+                .spi_log
+                .iter()
+                .filter_map(|op| match op {
+                    SpiOp::Write(addr, value) => Some((*addr, *value)),
+                    SpiOp::Read | SpiOp::EnablePin(_) => None,
+                })
+                .collect();
+            let has_sub_write = |sub: foci_tmc4671::registers::SubRegister, value: u32| {
+                writes.windows(2).any(|pair| {
+                    pair[0] == (sub.addr.addr(), sub.sub_addr as u32)
+                        && pair[1] == (sub.data.addr(), value)
+                })
+            };
+            let coeffs = crate::biquad::butterworth_lowpass(100, 4095)
+                .expect("100 Hz is a valid test cutoff");
+            use foci_tmc4671::registers::{
+                CONFIG_BIQUAD_V_A_1, CONFIG_BIQUAD_V_A_2, CONFIG_BIQUAD_V_B_0, CONFIG_BIQUAD_V_B_1,
+                CONFIG_BIQUAD_V_B_2,
+            };
+            assert!(has_sub_write(CONFIG_BIQUAD_V_A_1, coeffs.a_1 as u32));
+            assert!(has_sub_write(CONFIG_BIQUAD_V_A_2, coeffs.a_2 as u32));
+            assert!(has_sub_write(CONFIG_BIQUAD_V_B_0, coeffs.b_0 as u32));
+            assert!(has_sub_write(CONFIG_BIQUAD_V_B_1, coeffs.b_1 as u32));
+            assert!(has_sub_write(CONFIG_BIQUAD_V_B_2, coeffs.b_2 as u32));
+            assert!(has_sub_write(CONFIG_BIQUAD_V_ENABLE, 1));
+        });
+    }
+
+    #[test]
+    fn backend_filter_cutoffs_propagate_write_failure() {
+        pollster::block_on(async {
+            let mut backend = crate::commission_dispatch::test_support::MockBackend::new();
+            backend.fail_on_write = Some(foci_tmc4671::registers::CONFIG_BIQUAD_V_A_1.data.addr());
+
+            let result = apply_backend_filter_cutoffs(
+                &mut backend,
+                BackendFilterCutoffs {
+                    velocity_hz: 100,
+                    torque_hz: 0,
+                    position_hz: 0,
+                    flux_hz: 0,
+                },
+                4095,
+            )
+            .await;
+
+            assert!(result.is_err());
         });
     }
 }
