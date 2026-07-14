@@ -1,8 +1,8 @@
 //! Outer commissioning phase state and phase-local data.
 
 use crate::autotune::{
-    CommissionError, FilterConfig, MechanicalModel, PhaseId, PositionGains, TRANSIENT_LEN,
-    VelocityGains, VelocityValidation,
+    CommissionError, CommissionProfile, FilterConfig, MechanicalModel, PhaseId, PositionGains,
+    TRANSIENT_LEN, VelocityGains, VelocityValidation,
 };
 use crate::commissioning::encoder_domain::EncoderCount;
 use crate::commissioning::types::{OuterResult, OuterSafetyFault};
@@ -233,6 +233,14 @@ pub(crate) const VELOCITY_SEARCH_STOP_UNDER_DRIVEN_BUDGET: u8 = 2;
 pub(crate) const VELOCITY_SEARCH_STOP_UNSAFE_BACKOFF: u8 = 3;
 pub(crate) const VELOCITY_SEARCH_STOP_LOW_CONFIDENCE: u8 = 4;
 
+#[derive(Debug, Clone, Copy, PartialEq, defmt::Format)]
+pub(crate) struct EffectiveVelocityPolicy {
+    pub(crate) effective_profile: CommissionProfile,
+    pub(crate) lambda_multiplier: f32,
+    pub(crate) conservative_required: bool,
+    pub(crate) lambda_widened: bool,
+}
+
 /// Accumulated data for velocity-loop validation.
 #[derive(Debug, defmt::Format)]
 pub(crate) struct VelocityValidateData {
@@ -248,6 +256,8 @@ pub(crate) struct VelocityValidateData {
     pub(crate) response_upper_p: u16,
     /// The mechanical model from Phase 8 (needed for retry re-synthesis).
     pub(crate) model: MechanicalModel,
+    /// Effective policy derived once from the requested profile and inner confidence.
+    pub(crate) policy: EffectiveVelocityPolicy,
     /// Velocity tuning strategy for this run.
     pub(crate) strategy: VelocityTuneStrategy,
     /// Timebase used for production stiffness classification.

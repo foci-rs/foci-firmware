@@ -1383,7 +1383,7 @@ mod tests {
     use crate::commission_dispatch::test_support::{MockBackend, SpiOp};
     use crate::commissioning::encoder_domain::{EncoderCount, EncoderDomain};
     use crate::commissioning::outer::{
-        OuterDiagnostics, OuterPhase, OuterSafetyLimits, TraceSummarySeqs,
+        EffectiveVelocityPolicy, OuterDiagnostics, OuterPhase, OuterSafetyLimits, TraceSummarySeqs,
         VELOCITY_SEARCH_STOP_CLEAN, VELOCITY_SEARCH_STOP_UNSAFE_BACKOFF, VelocityTuneStrategy,
         VelocityValidateData, VelocityValidateState, response, trace_pack_i16_pair,
         trace_pack_u16_pair,
@@ -1395,6 +1395,15 @@ mod tests {
 
     fn encoder_count(raw_counts: u32) -> EncoderCount {
         EncoderDomain::new(4_000).unwrap().count(raw_counts)
+    }
+
+    fn clean_effective_policy() -> EffectiveVelocityPolicy {
+        EffectiveVelocityPolicy {
+            effective_profile: CommissionProfile::Balanced,
+            lambda_multiplier: 1.0,
+            conservative_required: false,
+            lambda_widened: false,
+        }
     }
 
     fn configured_safety() -> OuterSafetyLimits {
@@ -1796,6 +1805,7 @@ mod tests {
                     theta_mech_us: 1,
                     t_f: 0,
                 },
+                policy: clean_effective_policy(),
                 strategy,
                 stiffness_timebase_ms: 50,
                 mech_tau_trusted: true,
@@ -2126,6 +2136,7 @@ mod tests {
                 theta_mech_us: 1,
                 t_f: 0,
             },
+            policy: clean_effective_policy(),
             strategy: VelocityTuneStrategy::Model,
             stiffness_timebase_ms: 50,
             mech_tau_trusted: true,
@@ -2222,6 +2233,7 @@ mod tests {
                         theta_mech_us: 0,
                         t_f: 0,
                     },
+                    policy: clean_effective_policy(),
                     strategy: VelocityTuneStrategy::ResponseRamp,
                     stiffness_timebase_ms: 50,
                     mech_tau_trusted: true,
@@ -2364,6 +2376,7 @@ mod tests {
                     theta_mech_us: 12_895,
                     t_f: 0,
                 },
+                policy: clean_effective_policy(),
                 strategy: VelocityTuneStrategy::Model,
                 stiffness_timebase_ms: 50,
                 mech_tau_trusted: true,
@@ -2409,6 +2422,7 @@ mod tests {
                         theta_mech_us: 1,
                         t_f: 0,
                     },
+                    policy: clean_effective_policy(),
                     strategy: VelocityTuneStrategy::Model,
                     stiffness_timebase_ms: 50,
                     mech_tau_trusted: true,
@@ -2487,6 +2501,7 @@ mod tests {
                         theta_mech_us: 1,
                         t_f: 0,
                     },
+                    policy: clean_effective_policy(),
                     strategy: VelocityTuneStrategy::Model,
                     stiffness_timebase_ms: 50,
                     mech_tau_trusted: true,
@@ -2561,6 +2576,7 @@ mod tests {
                         theta_mech_us: 1,
                         t_f: 0,
                     },
+                    policy: clean_effective_policy(),
                     strategy: VelocityTuneStrategy::Model,
                     stiffness_timebase_ms: response::VELOCITY_RESPONSE_VALIDATE_TAU_MS,
                     mech_tau_trusted: false,
@@ -2638,6 +2654,7 @@ mod tests {
                         theta_mech_us: 1,
                         t_f: 0,
                     },
+                    policy: clean_effective_policy(),
                     strategy: VelocityTuneStrategy::Model,
                     stiffness_timebase_ms: response::VELOCITY_RESPONSE_VALIDATE_TAU_MS,
                     mech_tau_trusted: false,
@@ -2786,6 +2803,7 @@ mod tests {
                         theta_mech_us: 1,
                         t_f: 0,
                     },
+                    policy: clean_effective_policy(),
                     strategy: VelocityTuneStrategy::Model,
                     stiffness_timebase_ms: 50,
                     mech_tau_trusted: true,
@@ -2880,6 +2898,7 @@ mod tests {
                         theta_mech_us: 1,
                         t_f: 0,
                     },
+                    policy: clean_effective_policy(),
                     strategy: VelocityTuneStrategy::Model,
                     stiffness_timebase_ms: 50,
                     mech_tau_trusted: true,
@@ -2964,6 +2983,7 @@ mod tests {
                         theta_mech_us: 1,
                         t_f: 0,
                     },
+                    policy: clean_effective_policy(),
                     strategy: VelocityTuneStrategy::Model,
                     stiffness_timebase_ms: 50,
                     mech_tau_trusted: true,
@@ -3046,6 +3066,7 @@ mod tests {
                         theta_mech_us: 1,
                         t_f: 0,
                     },
+                    policy: clean_effective_policy(),
                     strategy: VelocityTuneStrategy::Model,
                     stiffness_timebase_ms: 50,
                     mech_tau_trusted: true,
@@ -3231,6 +3252,7 @@ mod tests {
                         theta_mech_us: 1,
                         t_f: 0,
                     },
+                    policy: clean_effective_policy(),
                     strategy: VelocityTuneStrategy::ResponseRamp,
                     stiffness_timebase_ms: 50,
                     mech_tau_trusted: true,
@@ -3302,6 +3324,7 @@ mod tests {
                         theta_mech_us: 1,
                         t_f: 0,
                     },
+                    policy: clean_effective_policy(),
                     strategy: VelocityTuneStrategy::ResponseRamp,
                     stiffness_timebase_ms: 50,
                     mech_tau_trusted: true,
@@ -3379,6 +3402,7 @@ mod tests {
                         theta_mech_us: 1,
                         t_f: 0,
                     },
+                    policy: clean_effective_policy(),
                     strategy: VelocityTuneStrategy::ResponseRamp,
                     stiffness_timebase_ms: 50,
                     mech_tau_trusted: true,
@@ -3453,6 +3477,7 @@ mod tests {
                         theta_mech_us: 1,
                         t_f: 0,
                     },
+                    policy: clean_effective_policy(),
                     strategy: VelocityTuneStrategy::ResponseRamp,
                     stiffness_timebase_ms: 50,
                     mech_tau_trusted: true,
@@ -3534,6 +3559,7 @@ mod tests {
                         theta_mech_us: 1,
                         t_f: 0,
                     },
+                    policy: clean_effective_policy(),
                     strategy: VelocityTuneStrategy::ResponseRamp,
                     stiffness_timebase_ms: 50,
                     mech_tau_trusted: true,
@@ -3608,6 +3634,7 @@ mod tests {
                         theta_mech_us: 1,
                         t_f: 0,
                     },
+                    policy: clean_effective_policy(),
                     strategy: VelocityTuneStrategy::ResponseRamp,
                     stiffness_timebase_ms: 50,
                     mech_tau_trusted: true,
@@ -3684,6 +3711,7 @@ mod tests {
                         theta_mech_us: 1,
                         t_f: 0,
                     },
+                    policy: clean_effective_policy(),
                     strategy: VelocityTuneStrategy::ResponseRamp,
                     stiffness_timebase_ms: 50,
                     mech_tau_trusted: true,

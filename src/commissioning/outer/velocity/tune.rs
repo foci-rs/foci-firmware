@@ -1,8 +1,9 @@
 //! Phase 9 velocity-loop SIMC gain synthesis.
 
 use super::super::{
-    OUTER_MAX_VELOCITY_I, OUTER_MAX_VELOCITY_P, OUTER_WARNING_UNSAFE_SYNTH_GAINS, OuterPhase,
-    VELOCITY_SEARCH_STOP_CLEAN, VelocityTuneStrategy, VelocityValidateData, VelocityValidateState,
+    EffectiveVelocityPolicy, OUTER_MAX_VELOCITY_I, OUTER_MAX_VELOCITY_P,
+    OUTER_WARNING_UNSAFE_SYNTH_GAINS, OuterPhase, VELOCITY_SEARCH_STOP_CLEAN, VelocityTuneStrategy,
+    VelocityValidateData, VelocityValidateState,
 };
 use super::validate::VELOCITY_VALIDATE_STEP_PERCENT;
 use crate::autotune::{CommissionError, CommissionProfile, OperatingMode, PhaseId};
@@ -15,41 +16,36 @@ use crate::commissioning::types::{CommissioningBackend, StepResult};
 /// response-ramp path with conservative defaults. Otherwise run the
 /// SIMC synthesis; if it produces gains outside the safety envelope,
 /// fall back to response-ramp tuning.
-/// Compose per-bit lambda widening multipliers for the inner-confidence
-/// warning bitfield. Multipliers compose multiplicatively and clamp at 4.0x.
-///
-/// - bit 0 (per-coil R mismatch) → 1.2x
-/// - bit 1 (per-coil tau/L mismatch) → 1.5x
-/// - bit 3 (theta/tau ratio) → 1.5x
-pub(crate) fn outer_lambda_widening(inner_warning_flags: u8) -> f32 {
-    let mut multiplier: f32 = 1.0;
-    if inner_warning_flags & (1 << 0) != 0 {
-        multiplier *= 1.2;
-    }
-    if inner_warning_flags & (1 << 1) != 0 {
-        multiplier *= 1.5;
-    }
-    if inner_warning_flags & (1 << 3) != 0 {
-        multiplier *= 1.5;
-    }
-    multiplier.min(4.0)
-}
-
-/// Force the outer profile to Conservative when the inner contract reports
-/// fallback gains (bit 5), host-default confidence (bit 6), or zero
-/// current-loop bandwidth.
-pub(crate) fn force_conservative_profile(
-    profile: CommissionProfile,
+fn derive_effective_velocity_policy(
+    requested_profile: CommissionProfile,
     inner_warning_flags: u8,
     current_bandwidth_hz: u32,
-) -> CommissionProfile {
-    if inner_warning_flags & (1 << 5) != 0
-        || inner_warning_flags & (1 << 6) != 0
-        || current_bandwidth_hz == 0
-    {
+) -> EffectiveVelocityPolicy {
+    let conservative_required =
+        inner_warning_flags & ((1 << 5) | (1 << 6)) != 0 || current_bandwidth_hz == 0;
+    let effective_profile = if conservative_required {
         CommissionProfile::Conservative
     } else {
-        profile
+        requested_profile
+    };
+
+    let mut lambda_multiplier = 1.0_f32;
+    if inner_warning_flags & (1 << 0) != 0 {
+        lambda_multiplier *= 1.2;
+    }
+    if inner_warning_flags & (1 << 1) != 0 {
+        lambda_multiplier *= 1.5;
+    }
+    if inner_warning_flags & (1 << 3) != 0 {
+        lambda_multiplier *= 1.5;
+    }
+    lambda_multiplier = lambda_multiplier.min(4.0);
+
+    EffectiveVelocityPolicy {
+        effective_profile,
+        lambda_multiplier,
+        conservative_required,
+        lambda_widened: lambda_multiplier > 1.0 + f32::EPSILON,
     }
 }
 
@@ -74,11 +70,10 @@ pub(crate) async fn step_velocity_tune<B: CommissioningBackend>(
         _ => return StepResult::ReadyNow,
     };
 
-    let effective_profile =
-        force_conservative_profile(profile, inner_warning_flags, current_bandwidth_hz);
-    let widening = outer_lambda_widening(inner_warning_flags);
-    if widening > 1.0 + f32::EPSILON {
-        let widening_permille = (widening * 1000.0) as u32;
+    let policy =
+        derive_effective_velocity_policy(profile, inner_warning_flags, current_bandwidth_hz);
+    if policy.lambda_widened {
+        let widening_permille = (policy.lambda_multiplier * 1000.0) as u32;
         defmt::info!(
             "outer: widening velocity lambda by {} permille (flags=0x{:02x})",
             widening_permille,
@@ -99,14 +94,14 @@ pub(crate) async fn step_velocity_tune<B: CommissioningBackend>(
             let encoder_counts_per_rev = backend.mechanical_encoder_quadrature_counts_per_rev();
             let gains = match crate::autotune::simc_velocity_gains_with_lambda_multiplier(
                 &model,
-                effective_profile,
+                policy.effective_profile,
                 mode,
                 inner_lambda_us,
                 theta_e_us,
                 peak_velocity,
                 encoder_counts_per_rev,
                 config,
-                widening,
+                policy.lambda_multiplier,
             ) {
                 Some(gains) => gains,
                 None => {
@@ -169,6 +164,7 @@ pub(crate) async fn step_velocity_tune<B: CommissioningBackend>(
         response_lower_p: 0,
         response_upper_p: 0,
         model,
+        policy,
         strategy,
         stiffness_timebase_ms,
         mech_tau_trusted,
@@ -424,102 +420,57 @@ mod tests {
     // ---------------------------------------------------------------
 
     #[test]
-    fn outer_widening_zero_when_clean() {
-        let multiplier = outer_lambda_widening(0);
-        assert!((multiplier - 1.0).abs() < 1e-6);
+    fn clean_policy_preserves_every_requested_profile() {
+        for profile in [
+            CommissionProfile::Conservative,
+            CommissionProfile::Balanced,
+            CommissionProfile::Stiff,
+        ] {
+            let policy = derive_effective_velocity_policy(profile, 0, 1_000);
+            assert_eq!(policy.effective_profile, profile);
+            assert!(!policy.conservative_required);
+            assert!(!policy.lambda_widened);
+            assert!((policy.lambda_multiplier - 1.0).abs() < 1e-6);
+        }
     }
 
     #[test]
-    fn outer_widening_bit_0_uses_1_2x() {
-        let multiplier = outer_lambda_widening(1 << 0);
-        assert!((multiplier - 1.2).abs() < 1e-6);
+    fn degraded_confidence_requires_conservative_even_when_already_requested() {
+        for (profile, flags, bandwidth_hz) in [
+            (CommissionProfile::Stiff, 1 << 5, 1_000),
+            (CommissionProfile::Balanced, 1 << 6, 1_000),
+            (CommissionProfile::Stiff, 0, 0),
+            (CommissionProfile::Conservative, 1 << 5, 1_000),
+        ] {
+            let policy = derive_effective_velocity_policy(profile, flags, bandwidth_hz);
+            assert_eq!(policy.effective_profile, CommissionProfile::Conservative);
+            assert!(policy.conservative_required);
+        }
     }
 
     #[test]
-    fn outer_widening_bit_1_uses_1_5x() {
-        let multiplier = outer_lambda_widening(1 << 1);
-        assert!((multiplier - 1.5).abs() < 1e-6);
+    fn warning_bits_retain_existing_lambda_widening() {
+        for (flags, expected) in [
+            (1 << 0, 1.2),
+            (1 << 1, 1.5),
+            (1 << 3, 1.5),
+            ((1 << 0) | (1 << 1) | (1 << 3), 2.7),
+        ] {
+            let policy =
+                derive_effective_velocity_policy(CommissionProfile::Balanced, flags, 1_000);
+            assert!(policy.lambda_widened);
+            assert!((policy.lambda_multiplier - expected).abs() < 1e-6);
+        }
     }
 
     #[test]
-    fn outer_widening_bit_2_is_telemetry_only() {
-        let lo = outer_lambda_widening(1 << 2);
-        assert!((lo - 1.0).abs() < 1e-6);
-        let hi = outer_lambda_widening(1 << 2);
-        assert!((hi - 1.0).abs() < 1e-6);
-    }
-
-    #[test]
-    fn outer_widening_bit_3_uses_1_5x() {
-        let multiplier = outer_lambda_widening(1 << 3);
-        assert!((multiplier - 1.5).abs() < 1e-6);
-    }
-
-    #[test]
-    fn outer_widening_clamps_at_four() {
-        // Bits 0, 1, and 3 widen; bit 2 is unused.
-        let multiplier = outer_lambda_widening(0x0F);
-        assert!((multiplier - 2.7).abs() < 1e-6);
-    }
-
-    #[test]
-    fn outer_widening_ignores_bits_5_and_6() {
-        // Bits 5 (fallback gains) and 6 (host-default confidence) drive
-        // profile override, NOT lambda widening (spec §4).
-        let multiplier = outer_lambda_widening((1 << 5) | (1 << 6));
-        assert!((multiplier - 1.0).abs() < 1e-6);
-    }
-
-    #[test]
-    fn outer_widening_composes_two_bits_multiplicatively() {
-        // bit 0 (1.2x) + bit 3 (1.5x) = 1.8x.
-        let multiplier = outer_lambda_widening((1 << 0) | (1 << 3));
-        assert!((multiplier - 1.8).abs() < 1e-6);
-    }
-
-    #[test]
-    fn force_conservative_profile_clean_inputs_pass_through() {
-        assert_eq!(
-            force_conservative_profile(CommissionProfile::Stiff, 0, 1000),
-            CommissionProfile::Stiff
+    fn non_derating_warning_bits_do_not_widen_lambda() {
+        let policy = derive_effective_velocity_policy(
+            CommissionProfile::Balanced,
+            (1 << 2) | (1 << 5) | (1 << 6),
+            1_000,
         );
-        assert_eq!(
-            force_conservative_profile(CommissionProfile::Balanced, 0, 1000),
-            CommissionProfile::Balanced
-        );
-    }
-
-    #[test]
-    fn force_conservative_profile_when_fallback_bit_set() {
-        assert_eq!(
-            force_conservative_profile(CommissionProfile::Stiff, 1 << 5, 1000),
-            CommissionProfile::Conservative
-        );
-    }
-
-    #[test]
-    fn force_conservative_profile_when_host_default_bit_set() {
-        assert_eq!(
-            force_conservative_profile(CommissionProfile::Stiff, 1 << 6, 1000),
-            CommissionProfile::Conservative
-        );
-    }
-
-    #[test]
-    fn force_conservative_profile_when_bandwidth_zero() {
-        assert_eq!(
-            force_conservative_profile(CommissionProfile::Stiff, 0, 0),
-            CommissionProfile::Conservative
-        );
-    }
-
-    #[test]
-    fn force_conservative_profile_ignores_model_warning_bits() {
-        // Bits 0, 1, and 3 widen lambda but do not force conservative;
-        // bit 2 is unused.
-        assert_eq!(
-            force_conservative_profile(CommissionProfile::Balanced, 0x0F, 1000),
-            CommissionProfile::Balanced
-        );
+        assert!(!policy.lambda_widened);
+        assert!((policy.lambda_multiplier - 1.0).abs() < 1e-6);
     }
 }

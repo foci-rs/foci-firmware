@@ -35,12 +35,13 @@ pub(crate) use safety::{
     OuterMotionBudget, OuterSafetyLimits, check_outer_safety, safety_error_for_phase,
 };
 pub(crate) use state::{
-    MechanicalIdData, MechanicalIdState, OUTER_EVIDENCE_LOW_CONFIDENCE_MECH,
-    OUTER_EVIDENCE_MOTION_BUDGET_CLAMPED, OUTER_EVIDENCE_TAU_DEFAULTED,
-    OUTER_EVIDENCE_UNDER_DRIVEN_PROBE, OuterDiagnostics, OuterPhase, PositionTuneData,
-    PositionTuneState, VELOCITY_SEARCH_STOP_CLEAN, VELOCITY_SEARCH_STOP_LOW_CONFIDENCE,
-    VELOCITY_SEARCH_STOP_UNDER_DRIVEN_BUDGET, VELOCITY_SEARCH_STOP_UNSAFE_BACKOFF,
-    VelocityTuneStrategy, VelocityValidateData, VelocityValidateState,
+    EffectiveVelocityPolicy, MechanicalIdData, MechanicalIdState,
+    OUTER_EVIDENCE_LOW_CONFIDENCE_MECH, OUTER_EVIDENCE_MOTION_BUDGET_CLAMPED,
+    OUTER_EVIDENCE_TAU_DEFAULTED, OUTER_EVIDENCE_UNDER_DRIVEN_PROBE, OuterDiagnostics, OuterPhase,
+    PositionTuneData, PositionTuneState, VELOCITY_SEARCH_STOP_CLEAN,
+    VELOCITY_SEARCH_STOP_LOW_CONFIDENCE, VELOCITY_SEARCH_STOP_UNDER_DRIVEN_BUDGET,
+    VELOCITY_SEARCH_STOP_UNSAFE_BACKOFF, VelocityTuneStrategy, VelocityValidateData,
+    VelocityValidateState,
 };
 pub(crate) use trace::{
     TraceSummarySeqs, trace_diagnostic_warning, trace_pack_i16_pair, trace_pack_u16_pair,
