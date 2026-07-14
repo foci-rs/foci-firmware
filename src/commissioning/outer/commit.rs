@@ -32,7 +32,7 @@ pub(crate) fn step_commit(phase: &mut OuterPhase) -> StepResult {
                 *b_eff,
                 *diagnostics,
             ),
-            _ => return StepResult::Continue,
+            _ => return StepResult::ReadyNow,
         };
 
     if diagnostics.synth_velocity_p == 0 && diagnostics.synth_velocity_i == 0 {

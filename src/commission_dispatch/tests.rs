@@ -266,7 +266,7 @@ fn clear_motor_sentinel() {
 }
 
 #[test]
-fn continue_returns_minimal_outcome() {
+fn ready_now_returns_minimal_outcome() {
     pollster::block_on(async {
         let _guard = test_support::SHARED_STATE_MUTEX.lock().await;
         let mut backend = MockBackend::new();
@@ -274,7 +274,7 @@ fn continue_returns_minimal_outcome() {
         let mut state = dispatch_state(&mut cal, &mut en, &mut gains);
         let mut engine = Some(CommissioningEngine::new_calibrate(0));
         let outcome = drive_commission_result(
-            crate::commissioning::types::StepResult::Continue,
+            crate::commissioning::types::StepResult::ReadyNow,
             &mut engine,
             &mut backend,
             &mut state,
@@ -283,7 +283,7 @@ fn continue_returns_minimal_outcome() {
         .await;
         assert!(matches!(outcome, CommissionOutcome::Continue));
         assert!(backend.spi_log.is_empty());
-        assert!(engine.is_some()); // engine NOT consumed on Continue
+        assert!(engine.is_some()); // engine is not consumed on ReadyNow
     });
 }
 

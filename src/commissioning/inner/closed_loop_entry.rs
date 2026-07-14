@@ -306,7 +306,7 @@ pub(crate) async fn step_closed_loop_entry<B: CommissioningBackend>(
             *flux_filter_hz,
             inner_result,
         ),
-        _ => return StepResult::Continue,
+        _ => return StepResult::ReadyNow,
     };
 
     match cle_state {

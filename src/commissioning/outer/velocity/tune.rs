@@ -71,7 +71,7 @@ pub(crate) async fn step_velocity_tune<B: CommissioningBackend>(
             diagnostics,
             safety,
         } => (*model, *peak_velocity, *diagnostics, *safety),
-        _ => return StepResult::Continue,
+        _ => return StepResult::ReadyNow,
     };
 
     let effective_profile =

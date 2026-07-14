@@ -22,23 +22,23 @@ use crate::trace::events::{
 };
 
 /// Position-tune P-gain growth ratio between attempts.
-const POSITION_TUNE_P_MUL_NUM: u32 = 3;
-const POSITION_TUNE_P_MUL_DEN: u32 = 2;
+pub(crate) const POSITION_TUNE_P_MUL_NUM: u32 = 3;
+pub(crate) const POSITION_TUNE_P_MUL_DEN: u32 = 2;
 
 /// Final position I gain as a percentage of the accepted P (5%).
 const POSITION_TUNE_I_PERCENT: u32 = 5;
 
 /// Position-tune ramp cap when SIMC velocity gains were accepted.
-const POSITION_TUNE_MAX_P: u16 = OUTER_MAX_POSITION_P;
+pub(crate) const POSITION_TUNE_MAX_P: u16 = OUTER_MAX_POSITION_P;
 
 /// Position-tune ramp cap when the response-ramp velocity fallback was used.
 const POSITION_RESPONSE_TUNE_MAX_P: u16 = OUTER_FALLBACK_POSITION_P;
 
 /// Sample period for the position step response (microseconds).
-const POSITION_TUNE_SAMPLE_PERIOD_US: u64 = 1000;
+pub(crate) const POSITION_TUNE_SAMPLE_PERIOD_US: u64 = 1000;
 
 /// Settle period after returning to the starting position (microseconds).
-const POSITION_TUNE_SETTLE_US: u64 = 200_000;
+pub(crate) const POSITION_TUNE_SETTLE_US: u64 = 200_000;
 
 /// Maximum register operations performed by one armed position-tune poll.
 #[allow(dead_code)]
@@ -143,7 +143,7 @@ pub(crate) async fn step_position_tune_with_trace<B: CommissioningBackend>(
             data,
             safety,
         } => (state, data, safety),
-        _ => return StepResult::Continue,
+        _ => return StepResult::ReadyNow,
     };
 
     match state {

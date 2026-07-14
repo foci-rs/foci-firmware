@@ -1498,7 +1498,7 @@ pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
 
     let (electrical_id_state, data) = match phase {
         InnerPhase::ElectricalId { state, data } => (state, data),
-        _ => return StepResult::Continue,
+        _ => return StepResult::ReadyNow,
     };
 
     match electrical_id_state {
@@ -3055,7 +3055,7 @@ mod tests {
                     ..
                 }
             ) {
-                return StepResult::Continue;
+                return StepResult::ReadyNow;
             }
             match result {
                 StepResult::ReadyNow => {}
@@ -3972,7 +3972,7 @@ mod tests {
             )
             .await;
 
-            assert!(matches!(result, StepResult::Continue));
+            assert!(matches!(result, StepResult::ReadyNow));
             let InnerPhase::ElectricalId {
                 state: ElectricalIdState::InductanceDisable { .. },
                 data,

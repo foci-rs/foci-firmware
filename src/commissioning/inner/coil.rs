@@ -43,7 +43,7 @@ pub(crate) async fn step_coil_check<B: CommissioningBackend>(
     // Extract mutable fields from phase.
     let (state, coil_a_obs) = match phase {
         InnerPhase::CoilCheck { state, coil_a } => (state, coil_a),
-        _ => return StepResult::Continue,
+        _ => return StepResult::ReadyNow,
     };
 
     let is_coil_b = matches!(state, CoilCheckState::CoilB(_));

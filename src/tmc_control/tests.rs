@@ -944,7 +944,7 @@ fn scheduled_classification_is_synchronous_for_at_action() {
 }
 
 #[test]
-fn scheduled_dispatch_preserves_phase_event_context_and_deadline() {
+fn scheduled_dispatch_preserves_phase_event_context_without_delay() {
     pollster::block_on(async {
         let tmc = crate::state::tmc::tmc_channel0();
         let stepper = crate::state::stepper::stepper_channel0();
@@ -966,8 +966,7 @@ fn scheduled_dispatch_preserves_phase_event_context_and_deadline() {
 
         assert!(matches!(
             &poll,
-            crate::commissioning::schedule::CommissionPoll::At {
-                timestamp_us: 82_250,
+            crate::commissioning::schedule::CommissionPoll::ReadyNow {
                 event: Some(
                     crate::commissioning::schedule::CommissionEvent::PhaseChanged {
                         oid: 37,
@@ -985,8 +984,7 @@ fn scheduled_dispatch_preserves_phase_event_context_and_deadline() {
 
         assert!(matches!(
             action,
-            ScheduledCommissionTickAction::At {
-                timestamp_us: 82_250,
+            ScheduledCommissionTickAction::ReadyNow {
                 event: Some(
                     crate::commissioning::schedule::CommissionEvent::PhaseChanged {
                         oid: 37,

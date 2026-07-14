@@ -54,7 +54,7 @@ pub(crate) async fn step_filter_tune<B: CommissioningBackend>(
             *b_eff,
             *diagnostics,
         ),
-        _ => return StepResult::Continue,
+        _ => return StepResult::ReadyNow,
     };
 
     // Estimate position bandwidth as velocity_bw / 4.

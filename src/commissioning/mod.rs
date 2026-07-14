@@ -745,7 +745,7 @@ impl CommissioningEngine {
         result: &StepResult,
     ) {
         match result {
-            StepResult::ReadyNow | StepResult::At(_) | StepResult::Continue => {}
+            StepResult::ReadyNow | StepResult::At(_) => {}
             StepResult::PhaseChanged(phase) => {
                 self.emit_trace_phase_end(backend, PHASE_END_OK, TraceEventLevel::Info);
                 self.trace_run.phase_seq = self.trace_run.phase_seq.wrapping_add(1);
@@ -1232,9 +1232,6 @@ mod tests {
                             crate::autotune::CommissionStatus::Accepted
                         );
                         return;
-                    }
-                    StepResult::Continue => {
-                        panic!("Stage 1 terminal path used the compatibility scheduler")
                     }
                     other => panic!("unexpected Stage 1 terminal result: {other:?}"),
                 }

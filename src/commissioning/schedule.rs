@@ -106,11 +106,10 @@ pub(crate) fn next_grid_deadline(
         .ok_or(CommissionError::InvalidSchedule)
 }
 
-/// Adapt a step result while retaining one-millisecond legacy pacing.
+/// Adapt an engine step result to the explicit scheduling contract.
 ///
 /// # Errors
-/// Returns [`CommissionError::InvalidSchedule`] for legacy-wait overflow or
-/// missing phase-change context.
+/// Returns [`CommissionError::InvalidSchedule`] for missing phase-change context.
 pub fn adapt_step_result(
     result: StepResult,
     now_us: u64,
@@ -125,17 +124,15 @@ pub fn adapt_step_result(
             timestamp_us,
             event: None,
         }),
-        StepResult::Continue => legacy_wait(now_us, None),
         StepResult::PhaseChanged(phase_id) => {
             let (oid, engine_kind) = event_context.ok_or(CommissionError::InvalidSchedule)?;
-            legacy_wait(
-                now_us,
-                Some(CommissionEvent::PhaseChanged {
+            Ok(CommissionPoll::ReadyNow {
+                event: Some(CommissionEvent::PhaseChanged {
                     oid,
                     phase_id,
                     engine_kind,
                 }),
-            )
+            })
         }
         StepResult::InnerFailed(error) => Ok(CommissionPoll::Terminal {
             result: CommissionTerminal::InnerFailed(error),
@@ -156,19 +153,6 @@ pub fn adapt_step_result(
             result: CommissionTerminal::CommissionDone(result),
         }),
     }
-}
-
-fn legacy_wait(
-    now_us: u64,
-    event: Option<CommissionEvent>,
-) -> Result<CommissionPoll, CommissionError> {
-    let timestamp_us = now_us
-        .checked_add(crate::tmc_control::commission_poll::COMMISSION_WAIT_SLICE_US)
-        .ok_or(CommissionError::InvalidSchedule)?;
-    Ok(CommissionPoll::At {
-        timestamp_us,
-        event,
-    })
 }
 
 #[cfg(test)]
@@ -219,17 +203,6 @@ mod tests {
     }
 
     #[test]
-    fn legacy_continue_maps_to_one_millisecond_deadline() {
-        assert!(matches!(
-            adapt_step_result(StepResult::Continue, 42_000, None).unwrap(),
-            CommissionPoll::At {
-                timestamp_us: 43_000,
-                event: None,
-            }
-        ));
-    }
-
-    #[test]
     fn explicit_future_deadline_is_preserved() {
         let at = adapt_step_result(StepResult::At(42_160), 42_000, None).unwrap();
         assert!(matches!(
@@ -250,11 +223,130 @@ mod tests {
     }
 
     #[test]
-    fn overflowed_legacy_schedule_is_rejected() {
+    fn phase_change_maps_to_ready_now_with_its_event() {
+        let poll = adapt_step_result(
+            StepResult::PhaseChanged(PhaseId::ClosedLoopEntry),
+            42_000,
+            Some((7, EngineKind::Commission)),
+        )
+        .unwrap();
+
         assert!(matches!(
-            adapt_step_result(StepResult::Continue, u64::MAX, None),
-            Err(CommissionError::InvalidSchedule)
+            poll,
+            CommissionPoll::ReadyNow {
+                event: Some(CommissionEvent::PhaseChanged {
+                    oid: 7,
+                    phase_id: PhaseId::ClosedLoopEntry,
+                    engine_kind: EngineKind::Commission,
+                })
+            }
         ));
-        assert_eq!(CommissionError::InvalidSchedule.status_code(), 47);
+    }
+
+    fn maximum_position_rungs() -> u64 {
+        let mut rungs = 1_u64;
+        let mut position_p = u32::from(crate::commissioning::outer::POS_TUNE_INITIAL_P);
+        let maximum_p = u32::from(crate::commissioning::outer::position::POSITION_TUNE_MAX_P);
+        while position_p < maximum_p {
+            let next_p = (position_p
+                * crate::commissioning::outer::position::POSITION_TUNE_P_MUL_NUM
+                / crate::commissioning::outer::position::POSITION_TUNE_P_MUL_DEN)
+                .min(maximum_p);
+            if next_p <= position_p {
+                break;
+            }
+            position_p = next_p;
+            rungs += 1;
+        }
+        rungs
+    }
+
+    #[test]
+    fn outer_worst_path_clock_model_stays_inside_the_derived_bound() {
+        const DERIVED_SCHEDULED_SAMPLE_BOUND: u64 = 13_238;
+        const DERIVED_REQUESTED_WAIT_BOUND_US: u64 = 23_396_000;
+
+        #[derive(Default)]
+        struct StructuralClock {
+            now_us: u64,
+            scheduled_samples: u64,
+        }
+
+        impl StructuralClock {
+            fn wait(&mut self, duration_us: u64) {
+                self.now_us = self
+                    .now_us
+                    .checked_add(duration_us)
+                    .expect("the reviewed worst path fits in the commissioning clock");
+                self.scheduled_samples += 1;
+            }
+        }
+
+        let transient_samples = crate::autotune::TRANSIENT_LEN as u64;
+        let mechanical_attempts =
+            u64::from(crate::commissioning::outer::response::MECHANICAL_ID_MAX_ATTEMPTS);
+        let velocity_attempts =
+            u64::from(crate::commissioning::outer::velocity::VELOCITY_RESPONSE_MAX_RETRIES) + 1;
+        let position_rungs = maximum_position_rungs();
+
+        let mut clock = StructuralClock::default();
+        let post_switch_samples =
+            crate::commissioning::outer::mechanical::MECHANICAL_ID_POST_SWITCH_TIMEOUT_US
+                / crate::commissioning::outer::response::MECHANICAL_ID_SAMPLE_PERIOD_US;
+        for _ in 0..post_switch_samples {
+            clock.wait(crate::commissioning::outer::response::MECHANICAL_ID_SAMPLE_PERIOD_US);
+        }
+        for _ in 0..mechanical_attempts {
+            for _ in 0..2 {
+                for _ in 0..transient_samples {
+                    clock.wait(
+                        crate::commissioning::outer::response::MECHANICAL_ID_SAMPLE_PERIOD_US,
+                    );
+                }
+                clock.wait(crate::commissioning::outer::mechanical::MECHANICAL_ID_SETTLE_US);
+            }
+        }
+        for _ in 0..velocity_attempts {
+            for _ in 0..2 {
+                for _ in 0..transient_samples {
+                    clock.wait(
+                        crate::commissioning::outer::velocity::VELOCITY_VALIDATE_SAMPLE_PERIOD_US,
+                    );
+                }
+                clock.wait(crate::commissioning::outer::velocity::VELOCITY_VALIDATE_SETTLE_US);
+            }
+            for _ in 0..crate::commissioning::outer::velocity::VELOCITY_VALIDATE_CHATTER_WINDOW {
+                clock.wait(
+                    crate::commissioning::outer::velocity::VELOCITY_VALIDATE_SAMPLE_PERIOD_US,
+                );
+            }
+        }
+        clock.wait(crate::commissioning::outer::velocity::VELOCITY_VALIDATE_SETTLE_US);
+        for _ in 0..position_rungs {
+            for _ in 0..transient_samples {
+                clock.wait(crate::commissioning::outer::position::POSITION_TUNE_SAMPLE_PERIOD_US);
+            }
+            clock.wait(crate::commissioning::outer::position::POSITION_TUNE_SETTLE_US);
+        }
+
+        assert_eq!(position_rungs, 9);
+        assert_eq!(clock.scheduled_samples, DERIVED_SCHEDULED_SAMPLE_BOUND);
+        assert_eq!(clock.now_us, DERIVED_REQUESTED_WAIT_BOUND_US);
+        assert!(clock.now_us < 30_000_000);
+    }
+
+    #[test]
+    fn nominal_outer_primitives_fit_the_unchanged_duration_budget() {
+        let samples = crate::autotune::TRANSIENT_LEN as u64;
+        let primitive_durations_us = [
+            samples * crate::commissioning::outer::response::MECHANICAL_ID_SAMPLE_PERIOD_US,
+            samples * crate::commissioning::outer::velocity::VELOCITY_VALIDATE_SAMPLE_PERIOD_US,
+            samples * crate::commissioning::outer::position::POSITION_TUNE_SAMPLE_PERIOD_US,
+        ];
+        assert!(
+            primitive_durations_us
+                .iter()
+                .all(|duration_us| *duration_us < 3_000_000)
+        );
     }
 }

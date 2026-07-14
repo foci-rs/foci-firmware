@@ -1319,7 +1319,7 @@ pub(crate) async fn step_current_tune<B: CommissioningBackend>(
             *inductance,
             *timing,
         ),
-        _ => return StepResult::Continue,
+        _ => return StepResult::ReadyNow,
     };
 
     let synthesis_input = CurrentGainSynthesisInput::symmetric(model, profile);
@@ -1411,7 +1411,7 @@ pub(crate) async fn step_current_validate<B: CommissioningBackend>(
 
     let (validate_state, data) = match phase {
         InnerPhase::CurrentValidate { state, data } => (state, data),
-        _ => return StepResult::Continue,
+        _ => return StepResult::ReadyNow,
     };
 
     match validate_state {

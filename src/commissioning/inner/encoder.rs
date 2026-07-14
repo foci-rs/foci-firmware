@@ -292,7 +292,7 @@ pub(crate) async fn step_encoder_check<B: CommissioningBackend>(
 
     let state = match phase {
         InnerPhase::EncoderCheck { state } => state,
-        _ => return StepResult::Continue,
+        _ => return StepResult::ReadyNow,
     };
 
     match state {
@@ -473,7 +473,7 @@ pub(crate) async fn step_encoder_align<B: CommissioningBackend>(
 
     let state = match phase {
         InnerPhase::EncoderAlign { state } => state,
-        _ => return StepResult::Continue,
+        _ => return StepResult::ReadyNow,
     };
 
     match state {

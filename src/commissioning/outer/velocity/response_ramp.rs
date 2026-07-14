@@ -9,7 +9,7 @@ const VELOCITY_RESPONSE_P_MUL_DEN: u32 = 2;
 const VELOCITY_RESPONSE_BREAKAWAY_OVERSHOOT_COUNTS: u32 = 4;
 const VELOCITY_RESPONSE_MAX_STEP_PERCENT: u32 = 50;
 const VELOCITY_RESPONSE_MIN_BRACKET_P: u16 = 64;
-pub(super) const VELOCITY_RESPONSE_MAX_RETRIES: u8 = 12;
+pub(crate) const VELOCITY_RESPONSE_MAX_RETRIES: u8 = 12;
 
 pub(super) fn response_next_velocity_p(current_p: u16) -> Option<u16> {
     let next_p = current_p as u32 * VELOCITY_RESPONSE_P_MUL_NUM / VELOCITY_RESPONSE_P_MUL_DEN;

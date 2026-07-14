@@ -317,8 +317,6 @@ pub enum StepResult {
     ReadyNow,
     /// Engine remains runnable at the strictly future absolute timestamp.
     At(u64),
-    /// Engine is still working. Call `step()` again next tick.
-    Continue,
     /// A phase transition occurred. Report to host.
     PhaseChanged(PhaseId),
     /// Inner commissioning failed.

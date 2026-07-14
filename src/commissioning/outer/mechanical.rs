@@ -28,8 +28,9 @@ use crate::trace::events::{
 
 /// Settling time after removing torque (microseconds).
 /// Allow the motor to decelerate and stop before reverse capture.
-const MECHANICAL_ID_SETTLE_US: u64 = 500_000;
+pub(crate) const MECHANICAL_ID_SETTLE_US: u64 = 500_000;
 const MECHANICAL_ID_POST_SWITCH_SAMPLE_PERIOD_US: u64 = 1_000;
+pub(crate) const MECHANICAL_ID_POST_SWITCH_TIMEOUT_US: u64 = 100_000;
 #[allow(dead_code)]
 pub(super) const MECHANICAL_ID_MAX_REGISTER_OPS_PER_ARM: usize = 9;
 
@@ -49,7 +50,7 @@ const MECHANICAL_ID_MODE_SWITCH_SETTLE_POLICY: MechanicalIdModeSwitchSettlePolic
         // Ignore the immediate position->torque transient before sampling settle velocity.
         grace_us: 10_000,
         // Fail cleanly if the unloaded axis never comes to rest after the mode switch.
-        timeout_us: 100_000,
+        timeout_us: MECHANICAL_ID_POST_SWITCH_TIMEOUT_US,
         // Require a few consecutive quiet samples before arming MechanicalId safety.
         stable_ticks: 3,
     };
@@ -1518,7 +1519,7 @@ pub(crate) async fn step_mechanical_id_with_trace<B: CommissioningBackend>(
             data,
             safety,
         } => (state, data, safety),
-        _ => return StepResult::Continue,
+        _ => return StepResult::ReadyNow,
     };
 
     match state {

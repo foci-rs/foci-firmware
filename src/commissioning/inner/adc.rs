@@ -100,7 +100,7 @@ pub(crate) async fn step_adc_calibrate<B: CommissioningBackend>(
 
     let cal_state = match phase {
         InnerPhase::AdcCalibrate(cal_state) => cal_state,
-        _ => return StepResult::Continue,
+        _ => return StepResult::ReadyNow,
     };
 
     match cal_state {

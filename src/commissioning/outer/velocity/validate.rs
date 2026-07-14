@@ -29,13 +29,13 @@ pub(super) const VELOCITY_VALIDATE_STEP_PERCENT: u32 = 15;
 
 /// Sampling interval for velocity capture (microseconds).
 /// 1 kHz matches mechanical ID and the SIMC validation cadence.
-const VELOCITY_VALIDATE_SAMPLE_PERIOD_US: u64 = 1000;
+pub(crate) const VELOCITY_VALIDATE_SAMPLE_PERIOD_US: u64 = 1000;
 
 /// Settling time after a velocity step (microseconds).
-const VELOCITY_VALIDATE_SETTLE_US: u64 = 200_000;
+pub(crate) const VELOCITY_VALIDATE_SETTLE_US: u64 = 200_000;
 
 /// Number of zero-speed samples used to detect chatter.
-const VELOCITY_VALIDATE_CHATTER_WINDOW: u16 = 200;
+pub(crate) const VELOCITY_VALIDATE_CHATTER_WINDOW: u16 = 200;
 
 /// Encoder-counts/ms threshold above which a zero-speed sample counts as chatter.
 const VELOCITY_VALIDATE_CHATTER_THRESHOLD: u32 = 3;
@@ -261,7 +261,7 @@ pub(crate) async fn step_velocity_validate_with_trace<B: CommissioningBackend>(
             data,
             safety,
         } => (state, data, safety),
-        _ => return StepResult::Continue,
+        _ => return StepResult::ReadyNow,
     };
 
     match state {
