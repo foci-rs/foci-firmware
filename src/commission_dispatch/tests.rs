@@ -25,6 +25,88 @@ fn tmc_state() -> &'static crate::state::tmc::TmcChannelState {
     crate::state::tmc::tmc_channel0()
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct PublishedControllerCache {
+    stored_gains: Option<crate::pid::InnerLoopGains>,
+    position_p: u16,
+    position_i: u16,
+    velocity_p: u16,
+    velocity_i: u16,
+    velocity_limit: u32,
+    velocity_filter_hz: Option<u16>,
+    torque_filter_hz: Option<u16>,
+    position_filter_hz: Option<u16>,
+    flux_filter_hz: Option<u16>,
+}
+
+fn load_published_controller_cache(state: &DispatchState<'_>) -> PublishedControllerCache {
+    use core::sync::atomic::Ordering::Relaxed;
+
+    PublishedControllerCache {
+        stored_gains: *state.stored_gains,
+        position_p: state.tmc.position_p_value.load(Relaxed),
+        position_i: state.tmc.position_i_value.load(Relaxed),
+        velocity_p: state.tmc.velocity_p_value.load(Relaxed),
+        velocity_i: state.tmc.velocity_i_value.load(Relaxed),
+        velocity_limit: state.tmc.velocity_limit_cfg.load(Relaxed),
+        velocity_filter_hz: state.tmc.velocity_filter_hz.load(Relaxed),
+        torque_filter_hz: state.tmc.torque_filter_hz.load(Relaxed),
+        position_filter_hz: state.tmc.position_filter_hz.load(Relaxed),
+        flux_filter_hz: state.tmc.flux_filter_hz.load(Relaxed),
+    }
+}
+
+fn store_published_controller_cache(
+    state: &mut DispatchState<'_>,
+    cache: PublishedControllerCache,
+) {
+    use core::sync::atomic::Ordering::Relaxed;
+
+    *state.stored_gains = cache.stored_gains;
+    state.tmc.position_p_value.store(cache.position_p, Relaxed);
+    state.tmc.position_i_value.store(cache.position_i, Relaxed);
+    state.tmc.velocity_p_value.store(cache.velocity_p, Relaxed);
+    state.tmc.velocity_i_value.store(cache.velocity_i, Relaxed);
+    state
+        .tmc
+        .velocity_limit_cfg
+        .store(cache.velocity_limit, Relaxed);
+    state
+        .tmc
+        .velocity_filter_hz
+        .store(cache.velocity_filter_hz, Relaxed);
+    state
+        .tmc
+        .torque_filter_hz
+        .store(cache.torque_filter_hz, Relaxed);
+    state
+        .tmc
+        .position_filter_hz
+        .store(cache.position_filter_hz, Relaxed);
+    state
+        .tmc
+        .flux_filter_hz
+        .store(cache.flux_filter_hz, Relaxed);
+}
+
+const PREVIOUS_CONTROLLER_CACHE: PublishedControllerCache = PublishedControllerCache {
+    stored_gains: Some(crate::pid::InnerLoopGains {
+        flux_p: 11,
+        flux_i: 12,
+        torque_p: 13,
+        torque_i: 14,
+    }),
+    position_p: 21,
+    position_i: 22,
+    velocity_p: 23,
+    velocity_i: 24,
+    velocity_limit: 25_000,
+    velocity_filter_hz: Some(31),
+    torque_filter_hz: Some(32),
+    position_filter_hz: Some(33),
+    flux_filter_hz: Some(34),
+};
+
 fn stepper_state() -> &'static crate::state::stepper::StepperChannelState {
     crate::state::stepper::stepper_channel0()
 }
@@ -794,6 +876,7 @@ fn outer_done_success_arms_motor() {
             CommissionProfile::Balanced,
         ));
         let outer = sample_outer_result_for_dispatch();
+        let original = load_published_controller_cache(&state);
         tmc_state().motor_armed.store(false, Ordering::Relaxed);
         seed_motor_sentinel(&mut backend).await;
         tmc_state().motor_armed.store(true, Ordering::Relaxed);
@@ -816,6 +899,34 @@ fn outer_done_success_arms_motor() {
             tmc_state().velocity_limit_cfg.load(Ordering::Relaxed),
             outer.velocity_limit
         );
+        assert_eq!(
+            tmc_state().position_i_value.load(Ordering::Relaxed),
+            outer.position_i
+        );
+        assert_eq!(
+            tmc_state().velocity_p_value.load(Ordering::Relaxed),
+            outer.velocity_p
+        );
+        assert_eq!(
+            tmc_state().velocity_i_value.load(Ordering::Relaxed),
+            outer.velocity_i
+        );
+        assert_eq!(
+            tmc_state().velocity_filter_hz.load(Ordering::Relaxed),
+            Some(outer.velocity_filter_hz)
+        );
+        assert_eq!(
+            tmc_state().torque_filter_hz.load(Ordering::Relaxed),
+            Some(outer.torque_filter_hz)
+        );
+        assert_eq!(
+            tmc_state().position_filter_hz.load(Ordering::Relaxed),
+            Some(outer.position_filter_hz)
+        );
+        assert_eq!(
+            tmc_state().flux_filter_hz.load(Ordering::Relaxed),
+            Some(outer.flux_filter_hz)
+        );
 
         // Motor electrically enabled; board owns stepper arming.
         assert!(backend.enable_pin);
@@ -834,6 +945,7 @@ fn outer_done_success_arms_motor() {
         }
 
         tmc_state().motor_armed.store(false, Ordering::Relaxed);
+        store_published_controller_cache(&mut state, original);
         clear_motor_sentinel();
     });
 }
@@ -852,6 +964,8 @@ fn outer_done_spi_failure_disarms() {
             CommissionProfile::Balanced,
         ));
         let outer = sample_outer_result_for_dispatch();
+        let original = load_published_controller_cache(&state);
+        store_published_controller_cache(&mut state, PREVIOUS_CONTROLLER_CACHE);
 
         let outcome = drive_commission_result(
             StepResult::OuterDone(outer),
@@ -867,6 +981,10 @@ fn outer_done_spi_failure_disarms() {
         assert!(!*state.motor_enabled);
         assert!(!backend.enable_pin);
         assert!(!tmc_state().motor_armed.load(Ordering::Relaxed));
+        assert_eq!(
+            load_published_controller_cache(&state),
+            PREVIOUS_CONTROLLER_CACHE
+        );
 
         match outcome {
             CommissionOutcome::Terminal {
@@ -879,6 +997,8 @@ fn outer_done_spi_failure_disarms() {
             }
             _ => panic!("expected TuneResult error"),
         }
+
+        store_published_controller_cache(&mut state, original);
     });
 }
 
@@ -897,6 +1017,12 @@ fn outer_done_filter_apply_failure_disarms() {
         ));
         let mut outer = sample_outer_result_for_dispatch();
         outer.velocity_filter_hz = 100;
+        let original = load_published_controller_cache(&state);
+        let previous_cache = PublishedControllerCache {
+            velocity_filter_hz: Some(0),
+            ..PREVIOUS_CONTROLLER_CACHE
+        };
+        store_published_controller_cache(&mut state, previous_cache);
 
         let outcome = drive_commission_result(
             StepResult::OuterDone(outer),
@@ -911,6 +1037,7 @@ fn outer_done_filter_apply_failure_disarms() {
         assert!(!*state.motor_enabled);
         assert!(!backend.enable_pin);
         assert!(!tmc_state().motor_armed.load(Ordering::Relaxed));
+        assert_eq!(load_published_controller_cache(&state), previous_cache);
 
         match outcome {
             CommissionOutcome::Terminal {
@@ -923,6 +1050,66 @@ fn outer_done_filter_apply_failure_disarms() {
             }
             _ => panic!("expected TuneResult error"),
         }
+
+        store_published_controller_cache(&mut state, original);
+    });
+}
+
+#[test]
+fn outer_done_sentinel_failure_preserves_published_cache() {
+    pollster::block_on(async {
+        use core::sync::atomic::Ordering;
+
+        let _guard = test_support::SHARED_STATE_MUTEX.lock().await;
+        let mut backend = MockBackend::new();
+        let (mut cal, mut en, mut gains) = fresh_state_locals();
+        let mut state = dispatch_state(&mut cal, &mut en, &mut gains);
+        let mut engine = Some(CommissioningEngine::new_commission(
+            0,
+            CommissionProfile::Balanced,
+        ));
+        let original = load_published_controller_cache(&state);
+        store_published_controller_cache(&mut state, PREVIOUS_CONTROLLER_CACHE);
+        seed_motor_sentinel(&mut backend).await;
+        backend.read_override = Some((
+            foci_tmc4671::registers::MOTOR_TYPE_N_POLE_PAIRS.addr(),
+            TEST_MOTOR_SENTINEL ^ 1,
+        ));
+
+        let outcome = drive_commission_result(
+            StepResult::OuterDone(sample_outer_result_for_dispatch()),
+            &mut engine,
+            &mut backend,
+            &mut state,
+            4095,
+        )
+        .await;
+
+        assert_eq!(
+            load_published_controller_cache(&state),
+            PREVIOUS_CONTROLLER_CACHE
+        );
+        assert!(!*state.calibrated);
+        assert!(!*state.motor_enabled);
+        assert!(!backend.enable_pin);
+        assert!(!tmc_state().motor_armed.load(Ordering::Relaxed));
+        match outcome {
+            CommissionOutcome::Terminal {
+                reply: ReplyPayload::TuneResult { status, .. },
+                actions,
+            } => {
+                assert_eq!(
+                    status,
+                    crate::autotune::CommissionError::ChipResetDetected.status_code()
+                );
+                assert!(actions.stop_trace);
+                assert_eq!(actions.stepper, StepperPostAction::Stop);
+            }
+            _ => panic!("expected TuneResult sentinel error"),
+        }
+
+        store_published_controller_cache(&mut state, original);
+        clear_motor_sentinel();
     });
 }
 
@@ -1140,6 +1327,7 @@ fn commission_done_finalize_path() {
             CommissionProfile::Balanced,
         ));
         let commission_result = sample_commission_result();
+        let original = load_published_controller_cache(&state);
         seed_motor_sentinel(&mut backend).await;
 
         let outcome = drive_commission_result(
@@ -1151,7 +1339,35 @@ fn commission_done_finalize_path() {
         )
         .await;
 
-        assert!(state.stored_gains.is_some());
+        assert_eq!(
+            *state.stored_gains,
+            Some(crate::pid::InnerLoopGains {
+                flux_p: commission_result.inner.flux_p,
+                flux_i: commission_result.inner.flux_i,
+                torque_p: commission_result.inner.torque_p,
+                torque_i: commission_result.inner.torque_i,
+            })
+        );
+        assert_eq!(
+            state.tmc.position_p_value.load(Ordering::Relaxed),
+            commission_result.fallback_position_p
+        );
+        assert_eq!(
+            state.tmc.position_i_value.load(Ordering::Relaxed),
+            commission_result.fallback_position_i
+        );
+        assert_eq!(
+            state.tmc.velocity_p_value.load(Ordering::Relaxed),
+            commission_result.fallback_velocity_p
+        );
+        assert_eq!(
+            state.tmc.velocity_i_value.load(Ordering::Relaxed),
+            commission_result.fallback_velocity_i
+        );
+        assert_eq!(
+            state.tmc.velocity_limit_cfg.load(Ordering::Relaxed),
+            commission_result.fallback_velocity_limit
+        );
         assert!(*state.calibrated);
         assert!(backend.enable_pin);
         assert!(!tmc_state().motor_armed.load(Ordering::Relaxed));
@@ -1190,6 +1406,7 @@ fn commission_done_finalize_path() {
         }
         // Cleanup
         tmc_state().motor_armed.store(false, Ordering::Relaxed);
+        store_published_controller_cache(&mut state, original);
         stepper_state().position.store(0, Ordering::Relaxed);
         tmc_state().current_limit_reg.store(0, Ordering::Relaxed);
         clear_motor_sentinel();
@@ -1283,6 +1500,8 @@ fn commission_done_current_limit_restore_failure_disarms() {
             6,
             CommissionProfile::Balanced,
         ));
+        let original = load_published_controller_cache(&state);
+        store_published_controller_cache(&mut state, PREVIOUS_CONTROLLER_CACHE);
 
         let outcome = drive_commission_result(
             StepResult::CommissionDone(sample_commission_result()),
@@ -1297,6 +1516,10 @@ fn commission_done_current_limit_restore_failure_disarms() {
         assert!(!*state.motor_enabled);
         assert!(!backend.enable_pin);
         assert!(!tmc_state().motor_armed.load(Ordering::Relaxed));
+        assert_eq!(
+            load_published_controller_cache(&state),
+            PREVIOUS_CONTROLLER_CACHE
+        );
 
         match outcome {
             CommissionOutcome::Terminal {
@@ -1310,7 +1533,71 @@ fn commission_done_current_limit_restore_failure_disarms() {
             _ => panic!("expected CommissionResult error"),
         }
 
+        store_published_controller_cache(&mut state, original);
         tmc_state().current_limit_reg.store(0, Ordering::Relaxed);
+    });
+}
+
+#[test]
+fn commission_done_sentinel_failure_preserves_published_cache() {
+    pollster::block_on(async {
+        use core::sync::atomic::Ordering;
+
+        let _guard = test_support::SHARED_STATE_MUTEX.lock().await;
+        let mut backend = MockBackend::new();
+        let (mut cal, mut en, mut gains) = fresh_state_locals();
+        let mut state = dispatch_state(&mut cal, &mut en, &mut gains);
+        state
+            .tmc
+            .current_limit_reg
+            .store(0x0010_0010, Ordering::Relaxed);
+        let mut engine = Some(CommissioningEngine::new_commission(
+            6,
+            CommissionProfile::Balanced,
+        ));
+        let original = load_published_controller_cache(&state);
+        store_published_controller_cache(&mut state, PREVIOUS_CONTROLLER_CACHE);
+        seed_motor_sentinel(&mut backend).await;
+        backend.read_override = Some((
+            foci_tmc4671::registers::MOTOR_TYPE_N_POLE_PAIRS.addr(),
+            TEST_MOTOR_SENTINEL ^ 1,
+        ));
+
+        let outcome = drive_commission_result(
+            StepResult::CommissionDone(sample_commission_result()),
+            &mut engine,
+            &mut backend,
+            &mut state,
+            4095,
+        )
+        .await;
+
+        assert_eq!(
+            load_published_controller_cache(&state),
+            PREVIOUS_CONTROLLER_CACHE
+        );
+        assert!(!*state.calibrated);
+        assert!(!*state.motor_enabled);
+        assert!(!backend.enable_pin);
+        assert!(!tmc_state().motor_armed.load(Ordering::Relaxed));
+        match outcome {
+            CommissionOutcome::Terminal {
+                reply: ReplyPayload::CommissionResult { status, .. },
+                actions,
+            } => {
+                assert_eq!(
+                    status,
+                    crate::autotune::CommissionError::ChipResetDetected.status_code()
+                );
+                assert!(actions.stop_trace);
+                assert_eq!(actions.stepper, StepperPostAction::Stop);
+            }
+            _ => panic!("expected CommissionResult sentinel error"),
+        }
+
+        store_published_controller_cache(&mut state, original);
+        state.tmc.current_limit_reg.store(0, Ordering::Relaxed);
+        clear_motor_sentinel();
     });
 }
 

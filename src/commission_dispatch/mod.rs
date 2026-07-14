@@ -579,15 +579,34 @@ pub async fn drive_commission_result<B: CommissioningBackend>(
                 };
             }
 
-            // Persist inner gains so future calibrate uses them.
+            *state.calibrated = true;
+            if let Err(error) =
+                crate::tmc_control::lifecycle::arm_motor_electrical(backend, state).await
+            {
+                defmt::error!("CommissionDone: arm sentinel verify failed: {}", error);
+                crate::tmc_control::lifecycle::disarm_motor(backend, state).await;
+                state.tmc.commission_in_flight.store(false, Relaxed);
+                return CommissionOutcome::Terminal {
+                    reply: ReplyPayload::CommissionResult {
+                        oid,
+                        status: error.status_code(),
+                        result: commission_result,
+                    },
+                    actions: PostActions {
+                        stop_trace: true,
+                        stepper: StepperPostAction::Stop,
+                    },
+                };
+            }
+
+            // Publish the completed result only after terminal restore and
+            // sentinel verification have both succeeded.
             *state.stored_gains = Some(crate::pid::InnerLoopGains {
                 flux_p: inner.flux_p,
                 flux_i: inner.flux_i,
                 torque_p: inner.torque_p,
                 torque_i: inner.torque_i,
             });
-
-            // Sync outer-gain atomics to the fallback values the engine wrote.
             state
                 .tmc
                 .position_p_value
@@ -609,26 +628,6 @@ pub async fn drive_commission_result<B: CommissioningBackend>(
                 .velocity_limit_cfg
                 .store(commission_result.fallback_velocity_limit, Relaxed);
 
-            *state.calibrated = true;
-            if let Err(error) =
-                crate::tmc_control::lifecycle::arm_motor_electrical(backend, state).await
-            {
-                defmt::error!("CommissionDone: arm sentinel verify failed: {}", error);
-                crate::tmc_control::lifecycle::disarm_motor(backend, state).await;
-                state.tmc.commission_in_flight.store(false, Relaxed);
-                return CommissionOutcome::Terminal {
-                    reply: ReplyPayload::CommissionResult {
-                        oid,
-                        status: error.status_code(),
-                        result: commission_result,
-                    },
-                    actions: PostActions {
-                        stop_trace: true,
-                        stepper: StepperPostAction::Stop,
-                    },
-                };
-            }
-
             state.tmc.commission_in_flight.store(false, Relaxed);
 
             defmt::info!("foci_commission complete: oid={} status={}", oid, status);
@@ -649,32 +648,6 @@ pub async fn drive_commission_result<B: CommissioningBackend>(
             let consumed = engine.take().expect("engine slot None on OuterDone");
             let oid = consumed.oid();
             state.tmc.motor_armed.store(false, Relaxed);
-
-            // Persist outer gains to atomics for closed-loop entry.
-            state.tmc.position_p_value.store(outer.position_p, Relaxed);
-            state.tmc.position_i_value.store(outer.position_i, Relaxed);
-            state.tmc.velocity_p_value.store(outer.velocity_p, Relaxed);
-            state.tmc.velocity_i_value.store(outer.velocity_i, Relaxed);
-            state
-                .tmc
-                .velocity_limit_cfg
-                .store(outer.velocity_limit, Relaxed);
-            state
-                .tmc
-                .velocity_filter_hz
-                .store(Some(outer.velocity_filter_hz), Relaxed);
-            state
-                .tmc
-                .position_filter_hz
-                .store(Some(outer.position_filter_hz), Relaxed);
-            state
-                .tmc
-                .flux_filter_hz
-                .store(Some(outer.flux_filter_hz), Relaxed);
-            state
-                .tmc
-                .torque_filter_hz
-                .store(Some(outer.torque_filter_hz), Relaxed);
 
             // SPI restore — enter position mode with the tuned gains.
             if restore::restore_position_mode_after_outer(backend, state.tmc, &outer)
@@ -698,13 +671,13 @@ pub async fn drive_commission_result<B: CommissioningBackend>(
                 };
             }
 
-            if crate::tmc_control::filters::apply_stored_filters_via_backend(
-                backend, state.tmc, pwm_maxcnt,
+            if crate::tmc_control::filters::apply_outer_result_filters_via_backend(
+                backend, &outer, pwm_maxcnt,
             )
             .await
             .is_err()
             {
-                defmt::error!("OuterDone: stored filter apply SPI failed");
+                defmt::error!("OuterDone: candidate filter apply SPI failed");
                 crate::tmc_control::lifecycle::disarm_motor(backend, state).await;
                 state.tmc.commission_in_flight.store(false, Relaxed);
                 return CommissionOutcome::Terminal {
@@ -741,6 +714,33 @@ pub async fn drive_commission_result<B: CommissioningBackend>(
                     },
                 };
             }
+
+            // Publish the completed result only after terminal restore,
+            // candidate filter application, and sentinel verification succeed.
+            state.tmc.position_p_value.store(outer.position_p, Relaxed);
+            state.tmc.position_i_value.store(outer.position_i, Relaxed);
+            state.tmc.velocity_p_value.store(outer.velocity_p, Relaxed);
+            state.tmc.velocity_i_value.store(outer.velocity_i, Relaxed);
+            state
+                .tmc
+                .velocity_limit_cfg
+                .store(outer.velocity_limit, Relaxed);
+            state
+                .tmc
+                .velocity_filter_hz
+                .store(Some(outer.velocity_filter_hz), Relaxed);
+            state
+                .tmc
+                .torque_filter_hz
+                .store(Some(outer.torque_filter_hz), Relaxed);
+            state
+                .tmc
+                .position_filter_hz
+                .store(Some(outer.position_filter_hz), Relaxed);
+            state
+                .tmc
+                .flux_filter_hz
+                .store(Some(outer.flux_filter_hz), Relaxed);
 
             state.tmc.commission_in_flight.store(false, Relaxed);
 
