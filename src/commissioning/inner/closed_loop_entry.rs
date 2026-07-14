@@ -31,6 +31,8 @@ const CLOSED_LOOP_POSITION_MODE: u32 = 0x8000_0003;
 const CLOSED_LOOP_ENTRY_STABILITY_THRESHOLD: u32 = 2;
 const CLOSED_LOOP_ENTRY_BOUNDED_DRIFT_WARN_THRESHOLD: u32 = 64;
 const CLOSED_LOOP_ENTRY_RUNAWAY_THRESHOLD: u32 = 32760; // ~40 steps
+#[allow(dead_code)]
+pub(super) const CLOSED_LOOP_ENTRY_MAX_REGISTER_OPS_PER_ARM: usize = 48;
 
 async fn verify_closed_loop_armed_state<B: CommissioningBackend>(
     backend: &mut B,
@@ -345,7 +347,7 @@ pub(crate) async fn step_closed_loop_entry<B: CommissioningBackend>(
             }
 
             *cle_state = ClosedLoopEntryState::WriteLimits;
-            StepResult::Continue
+            StepResult::ReadyNow
         }
 
         ClosedLoopEntryState::WriteLimits => {
@@ -378,7 +380,7 @@ pub(crate) async fn step_closed_loop_entry<B: CommissioningBackend>(
             }
 
             *cle_state = ClosedLoopEntryState::VerifyPhiE;
-            StepResult::Continue
+            StepResult::ReadyNow
         }
 
         ClosedLoopEntryState::VerifyPhiE => {
@@ -405,7 +407,7 @@ pub(crate) async fn step_closed_loop_entry<B: CommissioningBackend>(
             }
 
             *cle_state = ClosedLoopEntryState::ZeroAndClear;
-            StepResult::Continue
+            StepResult::ReadyNow
         }
 
         ClosedLoopEntryState::ZeroAndClear => {
@@ -455,7 +457,7 @@ pub(crate) async fn step_closed_loop_entry<B: CommissioningBackend>(
             }
 
             *cle_state = ClosedLoopEntryState::WritePositionConfig;
-            StepResult::Continue
+            StepResult::ReadyNow
         }
 
         ClosedLoopEntryState::WritePositionConfig => {
@@ -508,7 +510,7 @@ pub(crate) async fn step_closed_loop_entry<B: CommissioningBackend>(
             defmt::info!("STEP_WIDTH(0x78) = {} written", physical_step_width);
 
             *cle_state = ClosedLoopEntryState::WriteFilters;
-            StepResult::Continue
+            StepResult::ReadyNow
         }
 
         ClosedLoopEntryState::WriteFilters => {
@@ -580,7 +582,7 @@ pub(crate) async fn step_closed_loop_entry<B: CommissioningBackend>(
             }
 
             *cle_state = ClosedLoopEntryState::EnterPositionMode;
-            StepResult::Continue
+            StepResult::ReadyNow
         }
 
         ClosedLoopEntryState::EnterPositionMode => {
@@ -605,11 +607,14 @@ pub(crate) async fn step_closed_loop_entry<B: CommissioningBackend>(
 
             // Schedule stability check after 10ms.
             let now = backend.elapsed_us();
+            let Some(deadline_us) = now.checked_add(10_000) else {
+                return super::fail_inner(phase, CommissionError::InvalidSchedule);
+            };
             *cle_state = ClosedLoopEntryState::StabilityCheck1 {
                 position_1: 0,
-                deadline_us: now + 10_000,
+                deadline_us,
             };
-            StepResult::Continue
+            StepResult::At(deadline_us)
         }
 
         ClosedLoopEntryState::StabilityCheck1 {
@@ -617,24 +622,23 @@ pub(crate) async fn step_closed_loop_entry<B: CommissioningBackend>(
             deadline_us,
         } => {
             if backend.elapsed_us() < *deadline_us {
-                return StepResult::Continue;
+                return StepResult::At(*deadline_us);
             }
 
             // Read first position sample.
-            match backend.read_register(PID_POSITION_ACTUAL).await {
-                Ok(val) => {
-                    let pos1 = val as i32;
-                    let now = backend.elapsed_us();
-                    *cle_state = ClosedLoopEntryState::StabilityCheck2 {
-                        position_1: pos1,
-                        deadline_us: now + 20_000,
-                    };
-                }
-                Err(_) => {
-                    return super::fail_inner(phase, CommissionError::Spi);
-                }
-            }
-            StepResult::Continue
+            let pos1 = match backend.read_register(PID_POSITION_ACTUAL).await {
+                Ok(val) => val as i32,
+                Err(_) => return super::fail_inner(phase, CommissionError::Spi),
+            };
+            let now = backend.elapsed_us();
+            let Some(next_deadline_us) = now.checked_add(20_000) else {
+                return super::fail_inner(phase, CommissionError::InvalidSchedule);
+            };
+            *cle_state = ClosedLoopEntryState::StabilityCheck2 {
+                position_1: pos1,
+                deadline_us: next_deadline_us,
+            };
+            StepResult::At(next_deadline_us)
         }
 
         ClosedLoopEntryState::StabilityCheck2 {
@@ -642,7 +646,7 @@ pub(crate) async fn step_closed_loop_entry<B: CommissioningBackend>(
             deadline_us,
         } => {
             if backend.elapsed_us() < *deadline_us {
-                return StepResult::Continue;
+                return StepResult::At(*deadline_us);
             }
 
             // Read second position sample and check for runaway.
@@ -717,7 +721,7 @@ pub(crate) async fn step_closed_loop_entry<B: CommissioningBackend>(
                     );
                 }
                 *cle_state = ClosedLoopEntryState::SustainedHoldStart;
-                return StepResult::Continue;
+                return StepResult::ReadyNow;
             }
 
             if drift > CLOSED_LOOP_ENTRY_STABILITY_THRESHOLD {
@@ -784,7 +788,7 @@ pub(crate) async fn step_closed_loop_entry<B: CommissioningBackend>(
                         );
                     }
                     *cle_state = ClosedLoopEntryState::SustainedHoldStart;
-                    StepResult::Continue
+                    StepResult::ReadyNow
                 }
                 InnerSequence::Selftest => {
                     // Selftest never reaches ClosedLoopEntry.
@@ -795,15 +799,18 @@ pub(crate) async fn step_closed_loop_entry<B: CommissioningBackend>(
 
         ClosedLoopEntryState::SustainedHoldStart => {
             let now = backend.elapsed_us();
+            let Some(deadline_us) = now.checked_add(HOLD_GATE_DWELL_US as u64) else {
+                return super::fail_inner(phase, CommissionError::InvalidSchedule);
+            };
             *cle_state = ClosedLoopEntryState::SustainedHoldSample {
                 accumulator: HoldGateAccumulator::commissioning(HOLD_GATE_SAMPLE_PERIOD_US as u16),
                 started_us: now,
                 next_sample_us: now,
-                deadline_us: now + HOLD_GATE_DWELL_US as u64,
+                deadline_us,
                 requested_sample_period_us: HOLD_GATE_SAMPLE_PERIOD_US as u16,
                 sample_overrun: false,
             };
-            StepResult::Continue
+            StepResult::ReadyNow
         }
 
         ClosedLoopEntryState::SustainedHoldSample {
@@ -816,7 +823,7 @@ pub(crate) async fn step_closed_loop_entry<B: CommissioningBackend>(
         } => {
             let now = backend.elapsed_us();
             if now < *next_sample_us {
-                return StepResult::Continue;
+                return StepResult::At(*next_sample_us);
             }
 
             let pid_torque_flux_actual = match backend.read_register(PID_TORQUE_FLUX_ACTUAL).await {
@@ -854,8 +861,16 @@ pub(crate) async fn step_closed_loop_entry<B: CommissioningBackend>(
             }
 
             if now < *deadline_us && accumulator.sample_count() < HOLD_GATE_MAX_SAMPLES {
-                *next_sample_us = now.saturating_add(u64::from(*requested_sample_period_us));
-                return StepResult::Continue;
+                let next_deadline = match crate::commissioning::schedule::next_grid_deadline(
+                    *next_sample_us,
+                    u64::from(*requested_sample_period_us),
+                    now,
+                ) {
+                    Ok(deadline) => deadline,
+                    Err(error) => return super::fail_inner(phase, error),
+                };
+                *next_sample_us = next_deadline;
+                return StepResult::At(next_deadline);
             }
 
             let elapsed_us = now.saturating_sub(*started_us).min(u64::from(u32::MAX)) as u32;
@@ -1119,6 +1134,14 @@ mod tests {
         writes
     }
 
+    fn register_op_count(backend: &MockBackend) -> usize {
+        backend
+            .spi_log
+            .iter()
+            .filter(|op| !matches!(op, SpiOp::EnablePin(_)))
+            .count()
+    }
+
     #[test]
     fn write_position_config_programs_selection_registers() {
         pollster::block_on(async {
@@ -1135,7 +1158,7 @@ mod tests {
             )
             .await;
 
-            assert!(matches!(result, StepResult::Continue));
+            assert!(matches!(result, StepResult::ReadyNow));
             assert!(matches!(
                 phase,
                 InnerPhase::ClosedLoopEntry {
@@ -1232,7 +1255,7 @@ mod tests {
             )
             .await;
 
-            assert!(matches!(result, StepResult::Continue));
+            assert!(matches!(result, StepResult::ReadyNow));
             assert_eq!(
                 write_log(&backend).as_slice(),
                 &[
@@ -1319,7 +1342,7 @@ mod tests {
             )
             .await;
 
-            assert!(matches!(result, StepResult::Continue));
+            assert!(matches!(result, StepResult::ReadyNow));
             assert_eq!(
                 write_log(&backend).as_slice(),
                 &[
@@ -1361,7 +1384,7 @@ mod tests {
             )
             .await;
 
-            assert!(matches!(result, StepResult::Continue));
+            assert!(matches!(result, StepResult::At(10_000)));
             assert!(matches!(
                 phase,
                 InnerPhase::ClosedLoopEntry {
@@ -1376,6 +1399,102 @@ mod tests {
             assert!(
                 matches!(backend.spi_log.last(), Some(SpiOp::EnablePin(true))),
                 "enable pin must be asserted after closed-loop register verification"
+            );
+        });
+    }
+
+    #[test]
+    fn stability_checks_return_exact_one_shot_deadlines() {
+        pollster::block_on(async {
+            let mut phase = closed_loop_phase_at(ClosedLoopEntryState::StabilityCheck1 {
+                position_1: 0,
+                deadline_us: 10_000,
+            });
+            let mut adc_cal = None;
+            let mut backend = MockBackend::new();
+            backend.elapsed_us_value = 9_999;
+
+            let early = step_closed_loop_entry(
+                &mut phase,
+                InnerSequence::Calibrate,
+                &mut adc_cal,
+                &mut backend,
+            )
+            .await;
+
+            assert!(matches!(early, StepResult::At(10_000)));
+            assert_eq!(register_op_count(&backend), 0);
+
+            backend.elapsed_us_value = 10_000;
+            backend.registers.insert(PID_POSITION_ACTUAL.addr(), 7).ok();
+            let due = step_closed_loop_entry(
+                &mut phase,
+                InnerSequence::Calibrate,
+                &mut adc_cal,
+                &mut backend,
+            )
+            .await;
+
+            assert!(matches!(due, StepResult::At(30_000)));
+            assert!(matches!(
+                phase,
+                InnerPhase::ClosedLoopEntry {
+                    state: ClosedLoopEntryState::StabilityCheck2 {
+                        position_1: 7,
+                        deadline_us: 30_000,
+                    },
+                    ..
+                }
+            ));
+
+            backend.spi_log.clear();
+            backend.elapsed_us_value = 29_999;
+            let second_early = step_closed_loop_entry(
+                &mut phase,
+                InnerSequence::Calibrate,
+                &mut adc_cal,
+                &mut backend,
+            )
+            .await;
+
+            assert!(matches!(second_early, StepResult::At(30_000)));
+            assert_eq!(register_op_count(&backend), 0);
+        });
+    }
+
+    #[test]
+    fn filter_writes_respect_entry_operation_bound() {
+        pollster::block_on(async {
+            let mut phase = closed_loop_phase_at(ClosedLoopEntryState::WriteFilters);
+            let InnerPhase::ClosedLoopEntry {
+                velocity_filter_hz,
+                torque_filter_hz,
+                position_filter_hz,
+                flux_filter_hz,
+                ..
+            } = &mut phase
+            else {
+                unreachable!();
+            };
+            *velocity_filter_hz = 100;
+            *torque_filter_hz = 100;
+            *position_filter_hz = 100;
+            *flux_filter_hz = 100;
+            let mut adc_cal = None;
+            let mut backend = MockBackend::new();
+
+            let result = step_closed_loop_entry(
+                &mut phase,
+                InnerSequence::Calibrate,
+                &mut adc_cal,
+                &mut backend,
+            )
+            .await;
+
+            assert!(matches!(result, StepResult::ReadyNow));
+            assert_eq!(
+                register_op_count(&backend),
+                CLOSED_LOOP_ENTRY_MAX_REGISTER_OPS_PER_ARM
             );
         });
     }
@@ -1404,7 +1523,7 @@ mod tests {
             )
             .await;
 
-            assert!(matches!(result, StepResult::Continue));
+            assert!(matches!(result, StepResult::At(10_000)));
             let enable_index = backend
                 .spi_log
                 .iter()
@@ -1578,7 +1697,7 @@ mod tests {
                     ..
                 }
             ));
-            assert!(matches!(result, StepResult::Continue));
+            assert!(matches!(result, StepResult::ReadyNow));
         });
     }
 
@@ -1604,7 +1723,7 @@ mod tests {
             )
             .await;
 
-            assert!(matches!(result, StepResult::Continue));
+            assert!(matches!(result, StepResult::ReadyNow));
             let InnerPhase::ClosedLoopEntry {
                 state: ClosedLoopEntryState::SustainedHoldStart,
                 inner_result: Some(inner),
@@ -2014,7 +2133,7 @@ mod tests {
     }
 
     #[test]
-    fn sustained_hold_late_sample_marks_overrun_and_reschedules_from_now() {
+    fn sustained_hold_late_sample_marks_overrun_and_preserves_grid() {
         pollster::block_on(async {
             let mut phase = closed_loop_phase_at(ClosedLoopEntryState::SustainedHoldSample {
                 accumulator: HoldGateAccumulator::new(
@@ -2045,7 +2164,10 @@ mod tests {
             )
             .await;
 
-            assert!(matches!(result, StepResult::Continue));
+            assert!(matches!(
+                result,
+                StepResult::At(next) if next == (HOLD_GATE_SAMPLE_PERIOD_US * 2) as u64
+            ));
             assert!(matches!(
                 phase,
                 InnerPhase::ClosedLoopEntry {
@@ -2055,9 +2177,7 @@ mod tests {
                         ..
                     },
                     ..
-                } if next_sample_us
-                    == (HOLD_GATE_SAMPLE_PERIOD_US as u64 + 1)
-                        + HOLD_GATE_SAMPLE_PERIOD_US as u64
+                } if next_sample_us == (HOLD_GATE_SAMPLE_PERIOD_US * 2) as u64
             ));
         });
     }
