@@ -180,6 +180,10 @@ const VALIDATION_MIN_STEP_AMPLITUDE: u16 = 128;
 /// Settling time after removing validation current targets (microseconds).
 const VALIDATION_SETTLE_US: u64 = 50_000;
 
+/// Maximum backend register operations issued by one current-validation arm.
+#[allow(dead_code)]
+pub(super) const CURRENT_VALIDATE_MAX_REGISTER_OPS_PER_ARM: usize = 37;
+
 const FLUX_VALIDATION_DELAYS_MS: [u16; crate::autotune::CURRENT_FLUX_VALIDATION_SAMPLE_COUNT] =
     [1, 2, 5, 100];
 const TORQUE_VALIDATION_DELAYS_MS: [u16; crate::autotune::CURRENT_TORQUE_VALIDATION_SAMPLE_COUNT] =
@@ -992,15 +996,19 @@ fn settle_after_directional_sample(
     sample_delay_ms: u16,
     direction: CaptureDirection,
     directional: AxisDirectionalEvidence,
-) {
+) -> Result<u64, CommissionError> {
+    let deadline_us = now_us
+        .checked_add(VALIDATION_SETTLE_US)
+        .ok_or(CommissionError::InvalidSchedule)?;
     *validate_state = CurrentValidateState::AxisSampleSettle {
         axis,
         sample_index,
         sample_delay_ms,
         direction,
         directional,
-        deadline_us: now_us.wrapping_add(VALIDATION_SETTLE_US),
+        deadline_us,
     };
+    Ok(deadline_us)
 }
 
 fn merge_axis_pair_status(positive_status: u8, negative_status: u8) -> u8 {
@@ -1255,7 +1263,7 @@ async fn stop_after_current_sample_error<B: CommissioningBackend>(
     validate_state: &mut CurrentValidateState,
     data: &mut CurrentValidateData,
     error: CurrentSampleError,
-) -> Result<(), CommissionError> {
+) -> Result<u64, CommissionError> {
     let terminal_error = match error {
         CurrentSampleError::Io => Some(CommissionError::Spi),
         CurrentSampleError::InvalidDomain => Some(CommissionError::EncoderFault),
@@ -1282,10 +1290,12 @@ async fn stop_after_current_sample_error<B: CommissioningBackend>(
         return Err(error);
     }
 
-    *validate_state = CurrentValidateState::SafeState {
-        deadline_us: backend.elapsed_us().wrapping_add(VALIDATION_SETTLE_US),
-    };
-    Ok(())
+    let deadline_us = backend
+        .elapsed_us()
+        .checked_add(VALIDATION_SETTLE_US)
+        .ok_or(CommissionError::InvalidSchedule)?;
+    *validate_state = CurrentValidateState::SafeState { deadline_us };
+    Ok(deadline_us)
 }
 
 /// Thin phase: read the electrical model, compute physical current-loop gains,
@@ -1464,7 +1474,7 @@ pub(crate) async fn step_current_validate<B: CommissioningBackend>(
             data.current_loop_evidence.current_validation_axes = 0;
 
             *validate_state = first_axis_step(CurrentValidationAxis::Flux);
-            StepResult::Continue
+            StepResult::ReadyNow
         }
 
         CurrentValidateState::AxisStepSetup {
@@ -1541,7 +1551,7 @@ pub(crate) async fn step_current_validate<B: CommissioningBackend>(
                         )
                         .await
                         {
-                            Ok(()) => StepResult::Continue,
+                            Ok(deadline_us) => StepResult::At(deadline_us),
                             Err(error) => super::fail_inner(phase, error),
                         };
                     }
@@ -1558,7 +1568,7 @@ pub(crate) async fn step_current_validate<B: CommissioningBackend>(
                     return super::fail_inner(phase, CommissionError::Spi);
                 }
 
-                settle_after_directional_sample(
+                let deadline_us = match settle_after_directional_sample(
                     validate_state,
                     backend.elapsed_us(),
                     axis,
@@ -1566,14 +1576,21 @@ pub(crate) async fn step_current_validate<B: CommissioningBackend>(
                     sample_delay_ms,
                     dir,
                     directional,
-                );
+                ) {
+                    Ok(deadline_us) => deadline_us,
+                    Err(error) => return super::fail_inner(phase, error),
+                };
 
-                return StepResult::Continue;
+                return StepResult::At(deadline_us);
             }
 
-            let deadline = backend
+            let deadline = match backend
                 .elapsed_us()
-                .wrapping_add(u64::from(sample_delay_ms) * 1000);
+                .checked_add(u64::from(sample_delay_ms) * 1000)
+            {
+                Some(deadline) => deadline,
+                None => return super::fail_inner(phase, CommissionError::InvalidSchedule),
+            };
             *validate_state = CurrentValidateState::AxisSampleDelay {
                 axis,
                 sample_index,
@@ -1581,7 +1598,7 @@ pub(crate) async fn step_current_validate<B: CommissioningBackend>(
                 direction: dir,
                 deadline_us: deadline,
             };
-            StepResult::Continue
+            StepResult::At(deadline)
         }
 
         CurrentValidateState::AxisSampleDelay {
@@ -1592,7 +1609,7 @@ pub(crate) async fn step_current_validate<B: CommissioningBackend>(
             deadline_us,
         } => {
             if backend.elapsed_us() < *deadline_us {
-                return StepResult::Continue;
+                return StepResult::At(*deadline_us);
             }
             *validate_state = CurrentValidateState::AxisSampleRead {
                 axis: *axis,
@@ -1600,7 +1617,7 @@ pub(crate) async fn step_current_validate<B: CommissioningBackend>(
                 sample_delay_ms: *sample_delay_ms,
                 direction: *direction,
             };
-            StepResult::Continue
+            StepResult::ReadyNow
         }
 
         CurrentValidateState::AxisSampleRead {
@@ -1641,7 +1658,7 @@ pub(crate) async fn step_current_validate<B: CommissioningBackend>(
                     )
                     .await
                     {
-                        Ok(()) => StepResult::Continue,
+                        Ok(deadline_us) => StepResult::At(deadline_us),
                         Err(error) => super::fail_inner(phase, error),
                     };
                 }
@@ -1660,7 +1677,7 @@ pub(crate) async fn step_current_validate<B: CommissioningBackend>(
                 return super::fail_inner(phase, CommissionError::Spi);
             }
 
-            settle_after_directional_sample(
+            let deadline_us = match settle_after_directional_sample(
                 validate_state,
                 backend.elapsed_us(),
                 axis,
@@ -1668,8 +1685,11 @@ pub(crate) async fn step_current_validate<B: CommissioningBackend>(
                 sample_delay_ms,
                 dir,
                 directional,
-            );
-            StepResult::Continue
+            ) {
+                Ok(deadline_us) => deadline_us,
+                Err(error) => return super::fail_inner(phase, error),
+            };
+            StepResult::At(deadline_us)
         }
 
         CurrentValidateState::AxisSampleSettle {
@@ -1685,8 +1705,8 @@ pub(crate) async fn step_current_validate<B: CommissioningBackend>(
             let sample_delay_ms = *sample_delay_ms;
             let direction = *direction;
             let directional = *directional;
-            if backend.elapsed_us().wrapping_sub(*deadline_us) >= 0x8000_0000 {
-                return StepResult::Continue;
+            if backend.elapsed_us() < *deadline_us {
+                return StepResult::At(*deadline_us);
             }
 
             if let Err(err) = advance_after_directional_sample(
@@ -1700,7 +1720,7 @@ pub(crate) async fn step_current_validate<B: CommissioningBackend>(
             ) {
                 return super::fail_inner(phase, err);
             }
-            StepResult::Continue
+            StepResult::ReadyNow
         }
 
         CurrentValidateState::AxisClassify { axis } => {
@@ -1724,7 +1744,7 @@ pub(crate) async fn step_current_validate<B: CommissioningBackend>(
                         data.current_loop_evidence.current_validation_axes |=
                             crate::autotune::CURRENT_VALIDATION_AXIS_FLUX;
                         *validate_state = first_axis_step(CurrentValidationAxis::Torque);
-                        return StepResult::Continue;
+                        return StepResult::ReadyNow;
                     }
                     CurrentValidationAxis::Torque => {
                         data.current_loop_evidence.current_validation_axes |=
@@ -1761,7 +1781,7 @@ pub(crate) async fn step_current_validate<B: CommissioningBackend>(
                             data.flux_attempt = data.flux_attempt.max(next_attempt);
                             data.torque_attempt = data.torque_attempt.max(next_attempt);
                             *validate_state = CurrentValidateState::WriteGains;
-                            return StepResult::Continue;
+                            return StepResult::ReadyNow;
                         }
                         data.final_status =
                             CommissionStatus::Failed(CommissionError::CurrentValidationFailed);
@@ -1803,19 +1823,22 @@ pub(crate) async fn step_current_validate<B: CommissioningBackend>(
                 return super::fail_inner(phase, CommissionError::Spi);
             }
 
-            let deadline = backend.elapsed_us().wrapping_add(VALIDATION_SETTLE_US);
+            let deadline = match backend.elapsed_us().checked_add(VALIDATION_SETTLE_US) {
+                Some(deadline) => deadline,
+                None => return super::fail_inner(phase, CommissionError::InvalidSchedule),
+            };
             *validate_state = CurrentValidateState::SafeState {
                 deadline_us: deadline,
             };
-            StepResult::Continue
+            StepResult::At(deadline)
         }
 
         CurrentValidateState::SafeState { deadline_us } => {
-            if backend.elapsed_us().wrapping_sub(*deadline_us) >= 0x8000_0000 {
-                return StepResult::Continue;
+            if backend.elapsed_us() < *deadline_us {
+                return StepResult::At(*deadline_us);
             }
             *validate_state = CurrentValidateState::Finalize;
-            StepResult::Continue
+            StepResult::ReadyNow
         }
 
         CurrentValidateState::Finalize => {
@@ -2047,6 +2070,14 @@ mod tests {
     };
 
     use super::*;
+
+    fn register_op_count(backend: &MockBackend) -> usize {
+        backend
+            .spi_log
+            .iter()
+            .filter(|op| !matches!(op, SpiOp::EnablePin(_)))
+            .count()
+    }
 
     #[test]
     fn failed_evidence_reports_failed_gains_and_validation_failure() {
@@ -2618,7 +2649,7 @@ mod tests {
             )
             .await;
 
-            assert!(matches!(result, StepResult::Continue));
+            assert!(matches!(result, StepResult::At(VALIDATION_SETTLE_US)));
             match phase {
                 InnerPhase::CurrentValidate { state, data } => {
                     assert!(matches!(state, CurrentValidateState::SafeState { .. }));
@@ -2859,7 +2890,7 @@ mod tests {
             )
             .await;
 
-            assert!(matches!(result, StepResult::Continue));
+            assert!(matches!(result, StepResult::ReadyNow));
             assert!(backend.spi_log.iter().any(|op| {
                 matches!(op, SpiOp::Write(addr, value) if *addr == PWM_SV_CHOP.addr() && *value == 7)
             }));
@@ -2941,7 +2972,7 @@ mod tests {
             )
             .await;
 
-            assert!(matches!(result, StepResult::Continue));
+            assert!(matches!(result, StepResult::ReadyNow));
             match phase {
                 InnerPhase::CurrentValidate { state, data } => {
                     assert!(matches!(state, CurrentValidateState::WriteGains));
@@ -3089,7 +3120,22 @@ mod tests {
                             &mut backend,
                         )
                         .await;
-                        assert!(matches!(result, StepResult::Continue));
+                        let expected_deadline = match &phase {
+                            InnerPhase::CurrentValidate {
+                                state:
+                                    CurrentValidateState::AxisSampleDelay { deadline_us, .. }
+                                    | CurrentValidateState::AxisSampleSettle { deadline_us, .. },
+                                ..
+                            } => *deadline_us,
+                            other => panic!("step setup did not enter a wait: {other:?}"),
+                        };
+                        assert!(
+                            matches!(result, StepResult::At(deadline) if deadline == expected_deadline)
+                        );
+                        assert!(
+                            register_op_count(&backend)
+                                <= CURRENT_VALIDATE_MAX_REGISTER_OPS_PER_ARM
+                        );
 
                         let signed_target = match direction {
                             CaptureDirection::Forward => step_amplitude as i16,
@@ -3117,7 +3163,11 @@ mod tests {
                             &mut backend,
                         )
                         .await;
-                        assert!(matches!(result, StepResult::Continue));
+                        assert!(matches!(result, StepResult::ReadyNow));
+                        assert!(
+                            register_op_count(&backend)
+                                <= CURRENT_VALIDATE_MAX_REGISTER_OPS_PER_ARM
+                        );
                     }
                     Action::SampleRead { axis, direction } => {
                         if axis == CurrentValidationAxis::Torque {
@@ -3134,7 +3184,20 @@ mod tests {
                             &mut backend,
                         )
                         .await;
-                        assert!(matches!(result, StepResult::Continue));
+                        let expected_deadline = match &phase {
+                            InnerPhase::CurrentValidate {
+                                state: CurrentValidateState::AxisSampleSettle { deadline_us, .. },
+                                ..
+                            } => *deadline_us,
+                            other => panic!("sample read did not enter settle: {other:?}"),
+                        };
+                        assert!(
+                            matches!(result, StepResult::At(deadline) if deadline == expected_deadline)
+                        );
+                        assert!(
+                            register_op_count(&backend)
+                                <= CURRENT_VALIDATE_MAX_REGISTER_OPS_PER_ARM
+                        );
                     }
                     Action::Other => {
                         backend.spi_log.clear();
@@ -3147,7 +3210,23 @@ mod tests {
                             &mut backend,
                         )
                         .await;
-                        assert!(matches!(result, StepResult::Continue));
+                        match result {
+                            StepResult::ReadyNow => {}
+                            StepResult::At(deadline_us) => assert!(matches!(
+                                &phase,
+                                InnerPhase::CurrentValidate {
+                                    state: CurrentValidateState::SafeState {
+                                        deadline_us: expected,
+                                    },
+                                    ..
+                                } if *expected == deadline_us
+                            )),
+                            other => panic!("immediate state returned {other:?}"),
+                        }
+                        assert!(
+                            register_op_count(&backend)
+                                <= CURRENT_VALIDATE_MAX_REGISTER_OPS_PER_ARM
+                        );
                     }
                     Action::SafeState => break,
                 }
@@ -3177,6 +3256,64 @@ mod tests {
                 }
                 other => panic!("expected validation SafeState, got {other:?}"),
             }
+        });
+    }
+
+    #[test]
+    fn current_validation_waits_return_exact_deadlines_without_register_io() {
+        pollster::block_on(async {
+            let mut phase = current_validate_phase();
+            let InnerPhase::CurrentValidate { state, .. } = &mut phase else {
+                panic!("expected current validation phase");
+            };
+            *state = CurrentValidateState::AxisSampleDelay {
+                axis: CurrentValidationAxis::Flux,
+                sample_index: 0,
+                sample_delay_ms: 1,
+                direction: CaptureDirection::Forward,
+                deadline_us: 1_000,
+            };
+            let mut buf = TransientBuffer::new();
+            let mut backend = MockBackend::new();
+            backend.elapsed_us_value = 500;
+
+            let sample_wait = step_current_validate(
+                &mut phase,
+                &mut buf,
+                CommissionProfile::Balanced,
+                InnerSequence::Commission,
+                &None,
+                &mut backend,
+            )
+            .await;
+            assert!(matches!(sample_wait, StepResult::At(1_000)));
+            assert_eq!(register_op_count(&backend), 0);
+
+            let InnerPhase::CurrentValidate { state, .. } = &mut phase else {
+                panic!("expected current validation phase");
+            };
+            *state = CurrentValidateState::AxisSampleSettle {
+                axis: CurrentValidationAxis::Flux,
+                sample_index: 0,
+                sample_delay_ms: 1,
+                direction: CaptureDirection::Forward,
+                directional: axis_directional_evidence(
+                    crate::autotune::CURRENT_AXIS_VALIDATION_PASS,
+                ),
+                deadline_us: 2_000,
+            };
+
+            let settle_wait = step_current_validate(
+                &mut phase,
+                &mut buf,
+                CommissionProfile::Balanced,
+                InnerSequence::Commission,
+                &None,
+                &mut backend,
+            )
+            .await;
+            assert!(matches!(settle_wait, StepResult::At(2_000)));
+            assert_eq!(register_op_count(&backend), 0);
         });
     }
 
@@ -3255,7 +3392,7 @@ mod tests {
             )
             .await;
 
-            assert!(matches!(result, StepResult::Continue));
+            assert!(matches!(result, StepResult::At(1_000)));
             let status_clear_index = backend
                 .spi_log
                 .iter()
@@ -3392,7 +3529,7 @@ mod tests {
             )
             .await;
 
-            assert_eq!(result, Ok(()));
+            assert_eq!(result, Ok(VALIDATION_SETTLE_US));
             assert!(!backend.enable_pin);
             assert!(matches!(
                 validate_state,
@@ -3449,7 +3586,7 @@ mod tests {
             )
             .await;
 
-            assert!(matches!(result, StepResult::Continue));
+            assert!(matches!(result, StepResult::At(VALIDATION_SETTLE_US)));
             assert!(!backend.enable_pin);
             let InnerPhase::CurrentValidate { state, data } = &phase else {
                 panic!("ambiguity must retain current validation evidence");
@@ -3474,7 +3611,7 @@ mod tests {
                     &mut backend,
                 )
                 .await,
-                StepResult::Continue
+                StepResult::ReadyNow
             ));
             let result = step_current_validate(
                 &mut phase,
