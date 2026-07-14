@@ -4,44 +4,30 @@ use super::FilterConfig;
 // Filter recommendation (Phase 12)
 // ---------------------------------------------------------------------------
 
-/// Recommend filter cutoff frequencies based on prior validation metrics.
+/// Recommend the Stage 2 filter configuration.
 ///
-/// Follows the spec policy:
-/// - Velocity chatter detected: enable velocity biquad, cutoff = velocity_bw * 2
-/// - Position ramp-up hit oscillation early: enable position filter, cutoff = position_bw * 3
-/// - Current ringing detected: enable flux/torque biquad, cutoff = current_bw * 2
+/// Velocity chatter and early position oscillation remain inputs so those observations are not
+/// discarded. Stage 2 does not currently select velocity or position filters.
 ///
-/// Policy ordering: prefer velocity filtering before position filtering.
-/// Leave flux/torque filters off unless current noise demands it.
+/// Current ringing retains the existing interim torque/flux policy: both target filters use twice
+/// the current-loop bandwidth through the shared legacy 10–1000 Hz clamp.
 ///
 /// # Parameters
-/// - `velocity_chatter`: true if velocity validation detected zero-speed chatter
-/// - `velocity_bandwidth_hz`: velocity-loop effective bandwidth
-/// - `position_oscillation_early`: true if position P ramp-up hit oscillation
-///   before reaching a useful gain value
-/// - `position_bandwidth_hz`: estimated position-loop bandwidth (from velocity BW / 4)
+/// - `_velocity_chatter`: retained velocity observation; not consumed by the interim policy
+/// - `_velocity_bandwidth_hz`: retained velocity bandwidth; not consumed by the interim policy
+/// - `_position_oscillation_early`: retained position observation; not consumed by the interim
+///   policy
+/// - `_position_bandwidth_hz`: retained position bandwidth; not consumed by the interim policy
 /// - `current_ringing`: true if current validation detected ringing (count > 1)
 /// - `current_bandwidth_hz`: current-loop effective bandwidth
 pub fn recommend_filters(
-    velocity_chatter: bool,
-    velocity_bandwidth_hz: u32,
-    position_oscillation_early: bool,
-    position_bandwidth_hz: u32,
+    _velocity_chatter: bool,
+    _velocity_bandwidth_hz: u32,
+    _position_oscillation_early: bool,
+    _position_bandwidth_hz: u32,
     current_ringing: bool,
     current_bandwidth_hz: u32,
 ) -> FilterConfig {
-    let velocity_filter_hz = if velocity_chatter {
-        clamp_filter_cutoff(velocity_bandwidth_hz * 2)
-    } else {
-        None
-    };
-
-    let position_filter_hz = if position_oscillation_early {
-        clamp_filter_cutoff(position_bandwidth_hz * 3)
-    } else {
-        None
-    };
-
     let (flux_filter_hz, torque_filter_hz) = if current_ringing {
         let cutoff = clamp_filter_cutoff(current_bandwidth_hz * 2);
         (cutoff, cutoff)
@@ -50,8 +36,8 @@ pub fn recommend_filters(
     };
 
     FilterConfig {
-        velocity_filter_hz,
-        position_filter_hz,
+        velocity_filter_hz: None,
+        position_filter_hz: None,
         flux_filter_hz,
         torque_filter_hz,
     }
@@ -89,19 +75,21 @@ mod tests {
     }
 
     #[test]
-    fn filter_velocity_chatter_enables_velocity_filter() {
+    fn filter_velocity_chatter_keeps_motion_filters_disabled() {
         let config = recommend_filters(true, 100, false, 25, false, 500);
-        assert_eq!(config.velocity_filter_hz, Some(200)); // 100 * 2
+        assert_eq!(config.velocity_filter_hz, None);
         assert_eq!(config.position_filter_hz, None);
         assert_eq!(config.flux_filter_hz, None);
+        assert_eq!(config.torque_filter_hz, None);
     }
 
     #[test]
-    fn filter_position_oscillation_enables_position_filter() {
+    fn filter_position_oscillation_keeps_motion_filters_disabled() {
         let config = recommend_filters(false, 100, true, 25, false, 500);
         assert_eq!(config.velocity_filter_hz, None);
-        assert_eq!(config.position_filter_hz, Some(75)); // 25 * 3
+        assert_eq!(config.position_filter_hz, None);
         assert_eq!(config.flux_filter_hz, None);
+        assert_eq!(config.torque_filter_hz, None);
     }
 
     #[test]
@@ -114,10 +102,10 @@ mod tests {
     }
 
     #[test]
-    fn filter_all_issues_all_filters() {
+    fn filter_all_issues_only_selects_current_filters() {
         let config = recommend_filters(true, 100, true, 25, true, 500);
-        assert_eq!(config.velocity_filter_hz, Some(200));
-        assert_eq!(config.position_filter_hz, Some(75));
+        assert_eq!(config.velocity_filter_hz, None);
+        assert_eq!(config.position_filter_hz, None);
         assert_eq!(config.flux_filter_hz, Some(1000));
         assert_eq!(config.torque_filter_hz, Some(1000));
     }

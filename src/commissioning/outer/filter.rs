@@ -14,7 +14,7 @@ use crate::commissioning::types::{CommissioningBackend, StepResult};
 
 /// Maximum register operations performed by filter selection.
 #[allow(dead_code)]
-pub(super) const FILTER_TUNE_MAX_REGISTER_OPS_PER_ARM: usize = 48;
+pub(super) const FILTER_TUNE_MAX_REGISTER_OPS_PER_ARM: usize = 28;
 
 /// Implement filter selection from prior validation metrics.
 pub(crate) async fn step_filter_tune<B: CommissioningBackend>(
@@ -174,9 +174,10 @@ pub(crate) async fn step_filter_tune<B: CommissioningBackend>(
 mod tests {
     use super::{FILTER_TUNE_MAX_REGISTER_OPS_PER_ARM, step_filter_tune};
     use crate::autotune::{CommissionError, PositionGains, VelocityGains};
-    use crate::commission_dispatch::test_support::MockBackend;
-    use crate::commissioning::outer::{OuterDiagnostics, OuterPhase, OuterSafetyLimits};
+    use crate::commission_dispatch::test_support::{MockBackend, SpiOp};
+    use crate::commissioning::outer::{OuterDiagnostics, OuterPhase, OuterSafetyLimits, commit};
     use crate::commissioning::types::StepResult;
+    use foci_tmc4671::registers::SubRegister;
 
     fn zero_diagnostics() -> OuterDiagnostics {
         OuterDiagnostics {
@@ -200,8 +201,21 @@ mod tests {
         }
     }
 
+    fn has_sub_write(backend: &MockBackend, sub: SubRegister, value: u32) -> bool {
+        backend.spi_log.windows(2).any(|pair| {
+            matches!(
+                pair,
+                [SpiOp::Write(selector_addr, selector_value), SpiOp::Write(data_addr, data_value)]
+                    if *selector_addr == sub.addr.addr()
+                        && *selector_value == sub.sub_addr as u32
+                        && *data_addr == sub.data.addr()
+                        && *data_value == value
+            )
+        })
+    }
+
     #[test]
-    fn selected_filter_write_failure_fails_outer_with_spi() {
+    fn motion_filter_disable_failure_fails_outer_with_spi() {
         pollster::block_on(async {
             let mut phase = OuterPhase::FilterTune {
                 velocity_gains: VelocityGains {
@@ -242,7 +256,7 @@ mod tests {
     }
 
     #[test]
-    fn enabled_filters_complete_immediately_within_the_register_bound() {
+    fn motion_filters_are_disabled_while_current_filters_reach_commit() {
         pollster::block_on(async {
             let mut phase = OuterPhase::FilterTune {
                 velocity_gains: VelocityGains {
@@ -276,8 +290,32 @@ mod tests {
                 result,
                 StepResult::PhaseChanged(crate::autotune::PhaseId::Commit)
             ));
+
+            use foci_tmc4671::registers::{
+                CONFIG_BIQUAD_F_ENABLE, CONFIG_BIQUAD_T_ENABLE, CONFIG_BIQUAD_V_ENABLE,
+                CONFIG_BIQUAD_X_ENABLE,
+            };
+            assert!(has_sub_write(&backend, CONFIG_BIQUAD_V_ENABLE, 0));
+            assert!(has_sub_write(&backend, CONFIG_BIQUAD_X_ENABLE, 0));
+            assert!(has_sub_write(&backend, CONFIG_BIQUAD_F_ENABLE, 1));
+            assert!(has_sub_write(&backend, CONFIG_BIQUAD_T_ENABLE, 1));
             assert_eq!(backend.spi_log.len(), FILTER_TUNE_MAX_REGISTER_OPS_PER_ARM);
-            assert!(matches!(phase, OuterPhase::Commit { .. }));
+
+            let OuterPhase::Commit { filter_config, .. } = &phase else {
+                panic!("expected commit");
+            };
+            assert_eq!(filter_config.velocity_filter_hz, None);
+            assert_eq!(filter_config.position_filter_hz, None);
+            assert_eq!(filter_config.flux_filter_hz, Some(1000));
+            assert_eq!(filter_config.torque_filter_hz, Some(1000));
+
+            let StepResult::OuterDone(result) = commit::step_commit(&mut phase) else {
+                panic!("expected accepted outer result");
+            };
+            assert_eq!(result.velocity_filter_hz, 0);
+            assert_eq!(result.position_filter_hz, 0);
+            assert_eq!(result.flux_filter_hz, 1000);
+            assert_eq!(result.torque_filter_hz, 1000);
         });
     }
 }
