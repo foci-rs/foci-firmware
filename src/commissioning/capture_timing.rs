@@ -27,28 +27,26 @@ pub enum TimingReject {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub struct TimingEnvelope {
     max_missed_samples: u16,
-    allow_consecutive_misses: bool,
+    max_consecutive_misses: u8,
 }
 
 impl TimingEnvelope {
-    /// Resistance permits one missed slot and at most one consecutive logical slot skipped
-    /// within any observation gap.
+    /// Resistance permits one total missed slot and a chain of at most one.
     pub const RESISTANCE: Self = Self {
         max_missed_samples: 1,
-        allow_consecutive_misses: false,
+        max_consecutive_misses: 1,
     };
 
-    /// Inductance permits two missed slots, including consecutive logical slots skipped
-    /// within one or more observation gaps.
+    /// Inductance permits the five-slot estimator coverage margin, with chains capped at two.
     pub const INDUCTANCE: Self = Self {
-        max_missed_samples: 2,
-        allow_consecutive_misses: true,
+        max_missed_samples: 5,
+        max_consecutive_misses: 2,
     };
 
     /// Electrical delay permits no missed slots.
     pub const DELAY: Self = Self {
         max_missed_samples: 0,
-        allow_consecutive_misses: false,
+        max_consecutive_misses: 0,
     };
 }
 
@@ -341,11 +339,11 @@ impl CaptureTiming {
         if self.overflowed {
             return Err(TimingReject::TelemetryOverflow);
         }
-        if !self.envelope.allow_consecutive_misses && self.max_consecutive_misses > 1 {
-            return Err(TimingReject::ConsecutiveMisses);
-        }
         if self.missed_samples > self.envelope.max_missed_samples {
             return Err(TimingReject::MissedSamples);
+        }
+        if self.max_consecutive_misses > self.envelope.max_consecutive_misses {
+            return Err(TimingReject::ConsecutiveMisses);
         }
         Ok(())
     }
@@ -597,6 +595,41 @@ mod tests {
         let evidence = timing.finish().unwrap();
         assert_eq!(evidence.missed_samples, 2);
         assert_eq!(evidence.max_consecutive_misses, 2);
+    }
+
+    #[test]
+    fn inductance_accepts_five_total_misses_but_rejects_a_sixth() {
+        let mut timing = CaptureTiming::new(100, TimingEnvelope::INDUCTANCE);
+        let two_slot_gap = sample_slot(1_000, 100, 1_200).unwrap();
+        timing.record_rejected_slot(two_slot_gap, 1_200);
+        timing
+            .record_sample(1_300, 1_300, 1_310, 1_320, 10)
+            .unwrap();
+        for (due_us, entry_us) in [(1_400, 1_500), (1_600, 1_700), (1_800, 1_900)] {
+            timing
+                .record_sample(due_us, entry_us, entry_us + 10, entry_us + 20, 10)
+                .unwrap();
+        }
+
+        let evidence = timing
+            .finish()
+            .expect("five misses preserve minimum coverage");
+        assert_eq!(evidence.missed_samples, 5);
+        assert_eq!(evidence.max_consecutive_misses, 2);
+
+        timing
+            .record_sample(2_000, 2_100, 2_110, 2_120, 10)
+            .unwrap();
+        assert_eq!(timing.finish(), Err(TimingReject::MissedSamples));
+    }
+
+    #[test]
+    fn inductance_rejects_three_consecutive_misses_within_total_budget() {
+        let mut timing = CaptureTiming::new(100, TimingEnvelope::INDUCTANCE);
+        let three_slot_gap = sample_slot(1_000, 100, 1_300).unwrap();
+        timing.record_rejected_slot(three_slot_gap, 1_300);
+
+        assert_eq!(timing.finish(), Err(TimingReject::ConsecutiveMisses));
     }
 
     #[test]

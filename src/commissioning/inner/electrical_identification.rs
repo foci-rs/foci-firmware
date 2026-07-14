@@ -2359,6 +2359,11 @@ mod tests {
         assert_eq!(INDUCTANCE_AC_SAMPLE_PERIOD_US, 200);
         assert_eq!(INDUCTANCE_AC_TARGET_PHI_DELTA_COUNTS, 20 * 65_536);
         assert_eq!(scheduled_samples_for_fixed_window(1_050_000), 95);
+        assert_eq!(
+            scheduled_samples_for_fixed_window(1_050_000)
+                - u32::from(INDUCTANCE_MIN_AC_SAMPLE_COUNT),
+            5
+        );
         assert!(
             scheduled_samples_for_fixed_window(1_050_000)
                 >= u32::from(INDUCTANCE_MIN_AC_SAMPLE_COUNT)
@@ -3694,7 +3699,7 @@ mod tests {
     }
 
     #[test]
-    fn inductance_third_miss_rejects_without_catch_up() {
+    fn inductance_sixth_total_miss_rejects_without_catch_up() {
         pollster::block_on(async {
             let mut capture = inductance_capture_state(0, 0, 0, 0);
             capture.next_sample_us = 200;
@@ -3704,14 +3709,15 @@ mod tests {
             };
             let mut backend = MockBackend::new();
             backend.enable_pin = true;
-            backend.set_openloop_phi_sequence(&[1_000, 2_000, 3_000, 4_000, 5_000], 0);
+            backend
+                .set_openloop_phi_sequence(&[26_214, 39_321, 13_107, 26_214, 0, 13_107, 39_321], 0);
             let actual = ((-84i16 as u16 as u32) << 16) | 20;
-            backend.set_pid_torque_flux_actual_sequence(&[actual; 5]);
+            backend.set_pid_torque_flux_actual_sequence(&[actual; 7]);
             let mut buf = TransientBuffer::new();
             let mut selftest = crate::selftest::SelftestResults::default();
             let mut diagnostics = crate::selftest::CommissionDiagnostics::default();
 
-            for now in [400, 600, 1_000, 1_200] {
+            for now in [400, 600, 1_200, 1_400, 2_000, 2_200] {
                 backend.elapsed_us_value = now;
                 let _ = step_electrical_identification(
                     &mut phase,
@@ -3723,7 +3729,7 @@ mod tests {
                 )
                 .await;
             }
-            backend.elapsed_us_value = 1_600;
+            backend.elapsed_us_value = 2_600;
             let before = register_operation_count(&backend.spi_log);
             let result = step_electrical_identification(
                 &mut phase,
@@ -3738,16 +3744,21 @@ mod tests {
             assert!(matches!(result, StepResult::ReadyNow));
             assert_eq!(register_operation_count(&backend.spi_log) - before, 2);
             assert!(!backend.enable_pin);
-            assert!(matches!(
-                phase,
+            match phase {
                 InnerPhase::ElectricalId {
-                    state: ElectricalIdState::InductanceRestore {
-                        primary_error: Some(CommissionError::InductanceTimingRejected),
-                        ..
-                    },
+                    state: ElectricalIdState::InductanceRestore { primary_error, .. },
                     ..
+                } => assert_eq!(
+                    primary_error,
+                    Some(CommissionError::InductanceTimingRejected),
+                    "diagnostics: {:?}",
+                    diagnostics
+                ),
+                InnerPhase::ElectricalId { state, .. } => {
+                    panic!("expected inductance restore, got {state:?}")
                 }
-            ));
+                _ => panic!("expected electrical identification phase"),
+            }
         });
     }
 
