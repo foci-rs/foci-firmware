@@ -68,8 +68,6 @@ pub struct MockBackend {
     elapsed_us_pos: core::cell::Cell<usize>,
     /// Whether cooperative test delays advance the mock monotonic.
     pub advance_elapsed_on_delay: bool,
-    /// Number of completed sample-start classification windows.
-    pub capture_classify_windows: core::cell::Cell<usize>,
     /// Elapsed-time increment applied by each mock register read or write.
     pub spi_elapsed_step_us: u64,
     /// Value returned by `is_shutdown_requested()`.
@@ -157,7 +155,6 @@ impl MockBackend {
             elapsed_us_sequence: Vec::new(),
             elapsed_us_pos: core::cell::Cell::new(0),
             advance_elapsed_on_delay: false,
-            capture_classify_windows: core::cell::Cell::new(0),
             spi_elapsed_step_us: 0,
             shutdown_requested: false,
             current_limit_value: 0,
@@ -411,11 +408,6 @@ impl CommissionTiming for MockBackend {
 
     fn is_shutdown_requested(&self) -> bool {
         self.shutdown_requested
-    }
-
-    fn capture_classify_end(&self) {
-        self.capture_classify_windows
-            .set(self.capture_classify_windows.get() + 1);
     }
 
     async fn delay_us(&mut self, us: u32) {

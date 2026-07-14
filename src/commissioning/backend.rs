@@ -207,18 +207,6 @@ pub trait CommissionTiming {
     /// Whether a shutdown has been requested.
     fn is_shutdown_requested(&self) -> bool;
 
-    /// Mark the DWT start of one pure sample-start classification window.
-    fn capture_classify_start(&self) {}
-
-    /// Mark the DWT end of one pure sample-start classification window.
-    fn capture_classify_end(&self) {}
-
-    /// Arm board diagnostics for one capture-owned wait.
-    fn capture_wait_start(&self, _requested_wait_us: u32) {}
-
-    /// Complete board diagnostics immediately after one capture-owned wait.
-    fn capture_wait_end(&self) {}
-
     /// Cooperative microsecond delay.
     ///
     /// Used by the OuterFailed stability check and any other firmware-side
@@ -339,18 +327,6 @@ pub trait CommissionTimingAccess {
     /// Whether a shutdown has been requested.
     fn commission_is_shutdown_requested(&self) -> bool;
 
-    /// Mark the start of one pure capture classification window.
-    fn commission_capture_classify_start(&self) {}
-
-    /// Mark the end of one pure capture classification window.
-    fn commission_capture_classify_end(&self) {}
-
-    /// Arm board diagnostics for one capture-owned wait.
-    fn commission_capture_wait_start(&self, _requested_wait_us: u32) {}
-
-    /// Complete board diagnostics immediately after one capture-owned wait.
-    fn commission_capture_wait_end(&self) {}
-
     /// Cooperative microsecond delay.
     async fn commission_delay_us(&mut self, us: u32);
 }
@@ -376,18 +352,6 @@ pub trait CommissionBackendHooks {
 
     /// Whether a shutdown has been requested.
     fn commission_is_shutdown_requested() -> bool;
-
-    /// Mark the start of one pure capture classification window.
-    fn commission_capture_classify_start() {}
-
-    /// Mark the end of one pure capture classification window.
-    fn commission_capture_classify_end() {}
-
-    /// Arm board diagnostics for one capture-owned wait.
-    fn commission_capture_wait_start(_requested_wait_us: u32) {}
-
-    /// Complete board diagnostics immediately after one capture-owned wait.
-    fn commission_capture_wait_end() {}
 
     /// Cooperative microsecond delay.
     async fn commission_delay_us(us: u32);
@@ -480,22 +444,6 @@ where
 
     fn commission_is_shutdown_requested(&self) -> bool {
         Hooks::commission_is_shutdown_requested()
-    }
-
-    fn commission_capture_classify_start(&self) {
-        Hooks::commission_capture_classify_start();
-    }
-
-    fn commission_capture_classify_end(&self) {
-        Hooks::commission_capture_classify_end();
-    }
-
-    fn commission_capture_wait_start(&self, requested_wait_us: u32) {
-        Hooks::commission_capture_wait_start(requested_wait_us);
-    }
-
-    fn commission_capture_wait_end(&self) {
-        Hooks::commission_capture_wait_end();
     }
 
     async fn commission_delay_us(&mut self, us: u32) {
@@ -678,22 +626,6 @@ where
 
     fn is_shutdown_requested(&self) -> bool {
         self.commission_is_shutdown_requested()
-    }
-
-    fn capture_classify_start(&self) {
-        self.commission_capture_classify_start();
-    }
-
-    fn capture_classify_end(&self) {
-        self.commission_capture_classify_end();
-    }
-
-    fn capture_wait_start(&self, requested_wait_us: u32) {
-        self.commission_capture_wait_start(requested_wait_us);
-    }
-
-    fn capture_wait_end(&self) {
-        self.commission_capture_wait_end();
     }
 
     async fn delay_us(&mut self, us: u32) {

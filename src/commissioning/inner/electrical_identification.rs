@@ -566,7 +566,6 @@ async fn poll_delay_sample<B: CommissioningBackend>(
     if backend.is_shutdown_requested() {
         return Err(CommissionError::Shutdown);
     }
-    backend.capture_classify_start();
     let slot = sample_slot(
         capture.next_sample_us,
         ELECTRICAL_SAMPLE_PERIOD_US as u16,
@@ -576,7 +575,6 @@ async fn poll_delay_sample<B: CommissioningBackend>(
         capture.timing.mark_source_overflow(u32::MAX);
         CommissionError::DelayTimingRejected
     });
-    backend.capture_classify_end();
     let slot = slot?;
     if slot.missed != 0 {
         capture.timing.record_rejected_slot(slot, now_us);
@@ -828,9 +826,7 @@ async fn wait_for_capture_deadline<B: CommissioningBackend>(
         }
         let remaining_us = deadline_us - now_us;
         let delay_us = u32::try_from(remaining_us).unwrap_or(u32::MAX);
-        backend.capture_wait_start(delay_us);
         backend.delay_us(delay_us).await;
-        backend.capture_wait_end();
     }
 }
 
@@ -851,12 +847,10 @@ async fn poll_inductance_sample<B: CommissioningBackend>(
     if capture.sample_count >= INDUCTANCE_MAX_AC_SAMPLE_COUNT {
         return Err(CommissionError::InductanceCaptureWindow);
     }
-    backend.capture_classify_start();
     let sample_start = capture
         .timing
         .classify_sample_start(capture.next_sample_us, now_us)
         .map_err(|_| CommissionError::InductanceTimingRejected);
-    backend.capture_classify_end();
     match sample_start? {
         SampleStart::Sample => {}
         SampleStart::Skip { next_deadline_us } => {

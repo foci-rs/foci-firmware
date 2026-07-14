@@ -7,7 +7,6 @@
 pub mod actions;
 pub mod commission_poll;
 pub mod config;
-pub mod deadline_attribution;
 pub mod dispatch;
 pub mod filters;
 pub mod helpers;

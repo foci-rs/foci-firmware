@@ -418,20 +418,6 @@ impl TmcControlRuntime {
         self.commission_engine = Some(engine);
     }
 
-    /// Append one board-originated diagnostic to the active commissioning run.
-    ///
-    /// Returns `false` when no commissioning engine is active.
-    pub fn push_commission_diagnostic(
-        &mut self,
-        diagnostic: crate::selftest::CommissionDiagnostic,
-    ) -> bool {
-        let Some(engine) = self.commission_engine.as_mut() else {
-            return false;
-        };
-        engine.diagnostics_mut().push(diagnostic);
-        true
-    }
-
     /// Remove and return the active commissioning engine, if any.
     pub fn take_commission_engine(&mut self) -> Option<CommissioningEngine> {
         self.commission_engine.take()
