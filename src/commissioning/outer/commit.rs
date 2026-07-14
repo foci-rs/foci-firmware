@@ -1,39 +1,37 @@
 //! Phase 13: Commit.
 //!
 //! Assemble the final outer commissioning result from the accepted
-//! gains, filter selection, and diagnostics. Reject gains that exceed
-//! the safety envelope by falling back to conservative runtime defaults
-//! and flagging the result with `OUTER_WARNING_UNSAFE_SYNTH_GAINS`.
+//! gains, filter selection, and diagnostics. Reject accepted gains that
+//! violate the phase envelopes instead of publishing a different controller.
 
 use super::{
-    OUTER_FALLBACK_POSITION_I, OUTER_FALLBACK_POSITION_P, OUTER_FALLBACK_VELOCITY_I,
-    OUTER_FALLBACK_VELOCITY_P, OUTER_MAX_POSITION_I, OUTER_MAX_POSITION_P, OUTER_MAX_VELOCITY_I,
-    OUTER_MAX_VELOCITY_P, OUTER_WARNING_NONE, OUTER_WARNING_UNSAFE_SYNTH_GAINS, OuterPhase,
+    OUTER_MAX_POSITION_I, OUTER_MAX_POSITION_P, OUTER_MAX_VELOCITY_I, OUTER_MAX_VELOCITY_P,
+    OUTER_WARNING_NONE, OuterPhase, fail_outer,
 };
-use crate::autotune::CommissionStatus;
+use crate::autotune::{CommissionError, CommissionStatus};
 use crate::commissioning::types::{OuterResult, StepResult};
 
 /// Assemble and emit the final outer commissioning result.
 pub(crate) fn step_commit(phase: &mut OuterPhase) -> StepResult {
-    let (mut velocity_gains, mut position_gains, filter_config, j_eff, b_eff, mut diagnostics) =
-        match phase {
-            OuterPhase::Commit {
-                velocity_gains,
-                position_gains,
-                filter_config,
-                j_eff,
-                b_eff,
-                diagnostics,
-            } => (
-                *velocity_gains,
-                *position_gains,
-                *filter_config,
-                *j_eff,
-                *b_eff,
-                *diagnostics,
-            ),
-            _ => return StepResult::ReadyNow,
-        };
+    let (velocity_gains, position_gains, filter_config, j_eff, b_eff, mut diagnostics) = match phase
+    {
+        OuterPhase::Commit {
+            velocity_gains,
+            position_gains,
+            filter_config,
+            j_eff,
+            b_eff,
+            diagnostics,
+        } => (
+            *velocity_gains,
+            *position_gains,
+            *filter_config,
+            *j_eff,
+            *b_eff,
+            *diagnostics,
+        ),
+        _ => return StepResult::ReadyNow,
+    };
 
     if diagnostics.synth_velocity_p == 0 && diagnostics.synth_velocity_i == 0 {
         diagnostics.synth_velocity_p = velocity_gains.velocity_p;
@@ -42,30 +40,33 @@ pub(crate) fn step_commit(phase: &mut OuterPhase) -> StepResult {
     diagnostics.synth_position_p = position_gains.position_p;
     diagnostics.synth_position_i = position_gains.position_i;
 
-    let mut status = if diagnostics.warning_code == OUTER_WARNING_NONE {
+    if velocity_gains.velocity_p > OUTER_MAX_VELOCITY_P
+        || velocity_gains.velocity_i > OUTER_MAX_VELOCITY_I
+    {
+        defmt::warn!(
+            "outer commit: invalid accepted velocity gains P={}, I={}",
+            velocity_gains.velocity_p,
+            velocity_gains.velocity_i
+        );
+        return fail_outer(phase, CommissionError::VelocityValidationFailed);
+    }
+
+    if position_gains.position_p > OUTER_MAX_POSITION_P
+        || position_gains.position_i > OUTER_MAX_POSITION_I
+    {
+        defmt::warn!(
+            "outer commit: invalid accepted position gains P={}, I={}",
+            position_gains.position_p,
+            position_gains.position_i
+        );
+        return fail_outer(phase, CommissionError::PositionTuneFailed);
+    }
+
+    let status = if diagnostics.warning_code == OUTER_WARNING_NONE {
         CommissionStatus::Accepted
     } else {
         CommissionStatus::AcceptedWithWarnings
     };
-    if velocity_gains.velocity_p > OUTER_MAX_VELOCITY_P
-        || velocity_gains.velocity_i > OUTER_MAX_VELOCITY_I
-        || position_gains.position_p > OUTER_MAX_POSITION_P
-        || position_gains.position_i > OUTER_MAX_POSITION_I
-    {
-        defmt::warn!(
-            "outer commit: rejecting unsafe gains vel_p={}, vel_i={}, pos_p={}, pos_i={}",
-            velocity_gains.velocity_p,
-            velocity_gains.velocity_i,
-            position_gains.position_p,
-            position_gains.position_i
-        );
-        velocity_gains.velocity_p = OUTER_FALLBACK_VELOCITY_P;
-        velocity_gains.velocity_i = OUTER_FALLBACK_VELOCITY_I;
-        position_gains.position_p = OUTER_FALLBACK_POSITION_P;
-        position_gains.position_i = OUTER_FALLBACK_POSITION_I;
-        diagnostics.warning_code = OUTER_WARNING_UNSAFE_SYNTH_GAINS;
-        status = CommissionStatus::AcceptedWithWarnings;
-    }
 
     let result = OuterResult {
         status,
@@ -112,57 +113,121 @@ pub(crate) fn step_commit(phase: &mut OuterPhase) -> StepResult {
 
 #[cfg(test)]
 mod tests {
-    use super::step_commit;
-    use crate::autotune::{FilterConfig, PositionGains, VelocityGains};
+    use super::*;
+    use crate::autotune::{CommissionError, FilterConfig, PositionGains, VelocityGains};
     use crate::commissioning::outer::{OuterDiagnostics, OuterPhase};
     use crate::commissioning::types::StepResult;
 
-    #[test]
-    fn commit_assembles_the_result_immediately() {
-        let mut phase = OuterPhase::Commit {
-            velocity_gains: VelocityGains {
-                velocity_p: 350,
-                velocity_i: 80,
-                velocity_limit: 1_000,
-                effective_bandwidth_hz: 100,
-                lambda_vel_ms: 10,
-            },
-            position_gains: PositionGains {
-                position_p: 100,
-                position_i: 0,
-            },
+    fn zero_diagnostics() -> OuterDiagnostics {
+        OuterDiagnostics {
+            warning_code: OUTER_WARNING_NONE,
+            mech_torque_step: 0,
+            mech_fwd_accel: 0,
+            mech_rev_accel: 0,
+            mech_fwd_peak_velocity: 0,
+            mech_rev_peak_velocity: 0,
+            mech_fwd_travel: 0,
+            mech_rev_travel: 0,
+            mech_tau_defaulted: false,
+            synth_velocity_p: 0,
+            synth_velocity_i: 0,
+            synth_position_p: 0,
+            synth_position_i: 0,
+            outer_evidence_flags: 0,
+            stiffness_timebase_ms: 0,
+            velocity_search_stop_reason: 0,
+            motion_budget_mrev: 0,
+        }
+    }
+
+    fn commit_phase(velocity_gains: VelocityGains, position_gains: PositionGains) -> OuterPhase {
+        OuterPhase::Commit {
+            velocity_gains,
+            position_gains,
             filter_config: FilterConfig {
                 velocity_filter_hz: None,
                 position_filter_hz: None,
                 flux_filter_hz: None,
                 torque_filter_hz: None,
             },
-            j_eff: 1,
-            b_eff: 2,
-            diagnostics: OuterDiagnostics {
-                warning_code: 0,
-                mech_torque_step: 0,
-                mech_fwd_accel: 0,
-                mech_rev_accel: 0,
-                mech_fwd_peak_velocity: 0,
-                mech_rev_peak_velocity: 0,
-                mech_fwd_travel: 0,
-                mech_rev_travel: 0,
-                mech_tau_defaulted: false,
-                synth_velocity_p: 0,
-                synth_velocity_i: 0,
-                synth_position_p: 0,
-                synth_position_i: 0,
-                outer_evidence_flags: 0,
-                stiffness_timebase_ms: 0,
-                velocity_search_stop_reason: 0,
-                motion_budget_mrev: 0,
-            },
-        };
+            j_eff: 11,
+            b_eff: 22,
+            diagnostics: zero_diagnostics(),
+        }
+    }
+
+    fn valid_velocity_gains() -> VelocityGains {
+        VelocityGains {
+            velocity_p: 1152,
+            velocity_i: 341,
+            velocity_limit: 16,
+            effective_bandwidth_hz: 50,
+            lambda_vel_ms: 20,
+        }
+    }
+
+    fn valid_position_gains() -> PositionGains {
+        PositionGains {
+            position_p: 640,
+            position_i: 0,
+        }
+    }
+
+    #[test]
+    fn commit_copies_validated_gains_bit_for_bit() {
+        let velocity = valid_velocity_gains();
+        let position = valid_position_gains();
+        let mut phase = commit_phase(velocity, position);
 
         let result = step_commit(&mut phase);
 
-        assert!(matches!(result, StepResult::OuterDone(_)));
-        assert!(matches!(phase, OuterPhase::Done(_)));
+        let StepResult::OuterDone(result) = result else {
+            panic!("expected OuterDone, got {result:?}");
+        };
+        assert_eq!(result.velocity_p, velocity.velocity_p);
+        assert_eq!(result.velocity_i, velocity.velocity_i);
+        assert_eq!(result.velocity_limit, velocity.velocity_limit);
+        assert_eq!(result.position_p, position.position_p);
+        assert_eq!(result.position_i, position.position_i);
+        assert_eq!(result.synth_velocity_p, velocity.velocity_p);
+        assert_eq!(result.synth_velocity_i, velocity.velocity_i);
+        assert_eq!(result.synth_position_p, position.position_p);
+        assert_eq!(result.synth_position_i, position.position_i);
+    }
+
+    #[test]
+    fn commit_rejects_out_of_envelope_velocity_gains() {
+        let mut velocity = valid_velocity_gains();
+        velocity.velocity_i = OUTER_MAX_VELOCITY_I + 1;
+        let mut phase = commit_phase(velocity, valid_position_gains());
+
+        let result = step_commit(&mut phase);
+
+        assert!(matches!(
+            result,
+            StepResult::OuterFailed(CommissionError::VelocityValidationFailed)
+        ));
+        assert!(matches!(
+            phase,
+            OuterPhase::Failed(CommissionError::VelocityValidationFailed)
+        ));
+    }
+
+    #[test]
+    fn commit_rejects_out_of_envelope_position_gains() {
+        let mut position = valid_position_gains();
+        position.position_p = OUTER_MAX_POSITION_P + 1;
+        let mut phase = commit_phase(valid_velocity_gains(), position);
+
+        let result = step_commit(&mut phase);
+
+        assert!(matches!(
+            result,
+            StepResult::OuterFailed(CommissionError::PositionTuneFailed)
+        ));
+        assert!(matches!(
+            phase,
+            OuterPhase::Failed(CommissionError::PositionTuneFailed)
+        ));
     }
 }

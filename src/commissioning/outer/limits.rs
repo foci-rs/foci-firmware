@@ -15,16 +15,11 @@ pub(crate) const MECHANICAL_ID_VELOCITY_CAP_COUNTS_PER_MS: u32 =
 pub(super) const POSITION_WINDOW_COUNTS: u32 =
     position_window_counts(REFERENCE_ENCODER_COUNTS_PER_REV);
 
-/// Conservative velocity-loop runtime fallback used when autotuned outer
-/// gains exceed the accepted safety envelope. These are the same defaults
-/// used by closed-loop entry when no outer gains are configured.
-pub(crate) const OUTER_FALLBACK_VELOCITY_P: u16 = 1152;
+/// Velocity integral used by response tuning when model gains are unavailable.
 pub(crate) const OUTER_FALLBACK_VELOCITY_I: u16 = 0;
 
-/// Conservative position-loop runtime fallback used with
-/// `OUTER_FALLBACK_VELOCITY_*`.
+/// Position P cap used when response-tuned velocity gains are selected.
 pub(crate) const OUTER_FALLBACK_POSITION_P: u16 = 640;
-pub(crate) const OUTER_FALLBACK_POSITION_I: u16 = 0;
 
 /// Maximum accepted autotuned velocity P gain.
 ///

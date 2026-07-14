@@ -25,10 +25,10 @@ pub(crate) use dispatch::{fail_outer, fail_outer_with_safety, step_outer_with_tr
 #[allow(unused_imports)]
 pub(crate) use limits::MECHANICAL_ID_VELOCITY_CAP_COUNTS_PER_MS;
 pub(crate) use limits::{
-    OUTER_FALLBACK_POSITION_I, OUTER_FALLBACK_POSITION_P, OUTER_FALLBACK_VELOCITY_I,
-    OUTER_FALLBACK_VELOCITY_P, OUTER_MAX_POSITION_I, OUTER_MAX_POSITION_P, OUTER_MAX_VELOCITY_I,
-    OUTER_MAX_VELOCITY_P, OUTER_WARNING_NONE, OUTER_WARNING_UNSAFE_SYNTH_GAINS, POS_TUNE_INITIAL_P,
-    mechanical_id_velocity_cap_counts_per_ms, position_tune_step_counts, position_window_counts,
+    OUTER_FALLBACK_POSITION_P, OUTER_FALLBACK_VELOCITY_I, OUTER_MAX_POSITION_I,
+    OUTER_MAX_POSITION_P, OUTER_MAX_VELOCITY_I, OUTER_MAX_VELOCITY_P, OUTER_WARNING_NONE,
+    OUTER_WARNING_UNSAFE_SYNTH_GAINS, POS_TUNE_INITIAL_P, mechanical_id_velocity_cap_counts_per_ms,
+    position_tune_step_counts, position_window_counts,
     response_fallback_velocity_limit_counts_per_ms,
 };
 pub(crate) use safety::{
