@@ -8,8 +8,8 @@
 //! integral.
 
 use super::{
-    OUTER_FALLBACK_POSITION_P, OUTER_MAX_POSITION_P, OuterPhase, POS_TUNE_INITIAL_P,
-    PositionTuneData, PositionTuneState, TraceSummarySeqs, trace_pack_u16_pair,
+    OUTER_FALLBACK_POSITION_P, OUTER_MAX_POSITION_P, OuterPhase, OuterSafetyLimits,
+    POS_TUNE_INITIAL_P, PositionTuneData, PositionTuneState, TraceSummarySeqs, trace_pack_u16_pair,
     trace_summary_event,
 };
 use crate::autotune::{CommissionError, OperatingMode, PhaseId, PositionGains, TransientBuffer};
@@ -42,6 +42,34 @@ const POSITION_TUNE_SETTLE_US: u64 = 200_000;
 
 /// Position mode with `MODE_PID_TYPE` set, matching production closed-loop entry.
 const OUTER_POSITION_MODE: u32 = 0x8000_0003;
+
+async fn command_position_step_target<B: CommissioningBackend>(
+    backend: &mut B,
+    safety: &mut OuterSafetyLimits,
+    target: u32,
+) -> Result<(), CommissionError> {
+    if safety.primitive_start_us.is_some() {
+        return Err(CommissionError::InvalidSchedule);
+    }
+    backend
+        .write_register(foci_tmc4671::registers::PID_POSITION_TARGET, target)
+        .await
+        .map_err(|_| CommissionError::Spi)?;
+    safety.begin_primitive(backend.elapsed_us())
+}
+
+async fn command_position_baseline_target<B: CommissioningBackend>(
+    backend: &mut B,
+    safety: &mut OuterSafetyLimits,
+    target: u32,
+) -> Result<(), CommissionError> {
+    backend
+        .write_register(foci_tmc4671::registers::PID_POSITION_TARGET, target)
+        .await
+        .map_err(|_| CommissionError::Spi)?;
+    safety.end_primitive();
+    Ok(())
+}
 
 fn record_position_tune_summary<B: CommissioningBackend>(
     backend: &mut B,
@@ -155,12 +183,8 @@ pub(crate) async fn step_position_tune_with_trace<B: CommissioningBackend>(
             data.step_start_tmc = position_raw;
 
             let target = position_raw.wrapping_add(data.step_target_tmc as i32);
-            if backend
-                .write_register(PID_POSITION_TARGET, target as u32)
-                .await
-                .is_err()
-            {
-                return fail_outer(phase, CommissionError::Spi);
+            if let Err(error) = command_position_step_target(backend, safety, target as u32).await {
+                return fail_outer(phase, error);
             }
 
             defmt::info!(
@@ -226,12 +250,11 @@ pub(crate) async fn step_position_tune_with_trace<B: CommissioningBackend>(
             }
 
             if buf.is_full() {
-                if backend
-                    .write_register(PID_POSITION_TARGET, data.step_start_tmc as u32)
-                    .await
-                    .is_err()
+                if let Err(error) =
+                    command_position_baseline_target(backend, safety, data.step_start_tmc as u32)
+                        .await
                 {
-                    return fail_outer(phase, CommissionError::Spi);
+                    return fail_outer(phase, error);
                 }
 
                 let deadline = backend.elapsed_us().wrapping_add(POSITION_TUNE_SETTLE_US);
@@ -356,12 +379,10 @@ pub(crate) async fn step_position_tune_with_trace<B: CommissioningBackend>(
                     };
                     data.step_start_tmc = position_raw;
                     let target = position_raw.wrapping_add(data.step_target_tmc as i32);
-                    if backend
-                        .write_register(PID_POSITION_TARGET, target as u32)
-                        .await
-                        .is_err()
+                    if let Err(error) =
+                        command_position_step_target(backend, safety, target as u32).await
                     {
-                        return fail_outer(phase, CommissionError::Spi);
+                        return fail_outer(phase, error);
                     }
 
                     buf.reset(POSITION_TUNE_SAMPLE_PERIOD_US as u16);
@@ -523,6 +544,41 @@ mod tests {
             },
             safety,
         }
+    }
+
+    #[test]
+    fn each_position_rung_uses_a_fresh_primitive_timer() {
+        pollster::block_on(async {
+            let mut safety = crate::commissioning::outer::OuterSafetyLimits::new(
+                100,
+                crate::commissioning::outer::OuterMotionBudget::firmware_caps(),
+            );
+            let mut backend = MockBackend::new();
+            backend.elapsed_us_value = 100;
+
+            assert!(
+                command_position_step_target(&mut backend, &mut safety, 1_000)
+                    .await
+                    .is_ok()
+            );
+            assert_eq!(safety.primitive_start_us, Some(100));
+
+            backend.elapsed_us_value = 200;
+            assert!(
+                command_position_baseline_target(&mut backend, &mut safety, 0)
+                    .await
+                    .is_ok()
+            );
+            assert_eq!(safety.primitive_start_us, None);
+
+            backend.elapsed_us_value = 300;
+            assert!(
+                command_position_step_target(&mut backend, &mut safety, 2_000)
+                    .await
+                    .is_ok()
+            );
+            assert_eq!(safety.primitive_start_us, Some(300));
+        });
     }
 
     #[test]

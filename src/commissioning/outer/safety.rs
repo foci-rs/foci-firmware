@@ -77,8 +77,8 @@ pub(crate) struct OuterSafetyLimits {
     pub(crate) encoder_domain: Option<EncoderDomain>,
     /// Timestamp (microseconds) of the previous safety sample.
     pub(crate) last_sample_us: Option<u64>,
-    /// Timestamp (microseconds) of the first armed safety sample.
-    pub(crate) start_sample_us: Option<u64>,
+    /// Timestamp (microseconds) when the active motion primitive began.
+    pub(crate) primitive_start_us: Option<u64>,
     /// Absolute deadline for the next independent safety observation.
     pub(crate) next_safety_sample_us: Option<u64>,
     /// Host-provided motion budget used to clamp firmware safety caps.
@@ -95,7 +95,7 @@ impl OuterSafetyLimits {
             prev_encoder_count: None,
             encoder_domain: None,
             last_sample_us: None,
-            start_sample_us: None,
+            primitive_start_us: None,
             next_safety_sample_us: None,
             budget,
         }
@@ -136,9 +136,22 @@ impl OuterSafetyLimits {
             .checked_add(OUTER_SAFETY_SAMPLE_PERIOD_US)
             .ok_or(CommissionError::InvalidSchedule)?;
         self.last_sample_us = Some(now_us);
-        self.start_sample_us = Some(now_us);
         self.next_safety_sample_us = Some(next_safety_sample_us);
         Ok(())
+    }
+
+    /// Begin a bounded motion primitive after its nonzero target is applied.
+    pub(crate) fn begin_primitive(&mut self, now_us: u64) -> Result<(), CommissionError> {
+        if self.primitive_start_us.is_some() {
+            return Err(CommissionError::InvalidSchedule);
+        }
+        self.primitive_start_us = Some(now_us);
+        Ok(())
+    }
+
+    /// End the active motion primitive after its safe target is applied.
+    pub(crate) fn end_primitive(&mut self) {
+        self.primitive_start_us = None;
     }
 
     /// Return the next observation deadline while the safety envelope is armed.
@@ -304,12 +317,17 @@ pub(crate) async fn check_outer_safety<B: CommissioningBackend>(
         .count(encoder_raw);
     let now_us = backend.elapsed_us();
 
-    let start_sample_us = safety.start_sample_us.unwrap_or(now_us);
-    let elapsed_us = now_us
-        .checked_sub(start_sample_us)
-        .ok_or(CommissionError::InvalidSchedule)?;
+    let elapsed_us = safety
+        .primitive_start_us
+        .map(|primitive_start_us| {
+            now_us
+                .checked_sub(primitive_start_us)
+                .ok_or(CommissionError::InvalidSchedule)
+        })
+        .transpose()?
+        .unwrap_or(0);
     let max_duration_us = u64::from(safety.budget.max_duration_ms) * 1_000;
-    if elapsed_us > max_duration_us {
+    if safety.primitive_start_us.is_some() && elapsed_us > max_duration_us {
         defmt::warn!(
             "outer safety: duration {}us exceeds cap {}us",
             elapsed_us,
@@ -362,7 +380,6 @@ pub(crate) async fn check_outer_safety<B: CommissioningBackend>(
     // The accumulator intentionally preserves signed multi-revolution travel.
     // Saturation keeps a corrupt or unexpectedly long sequence from wrapping
     // back inside the allowed safety window.
-    safety.start_sample_us = Some(start_sample_us);
     safety.prev_encoder_count = Some(encoder_count);
     safety.last_sample_us = Some(now_us);
     safety.next_safety_sample_us = Some(next_grid_deadline(
@@ -457,6 +474,47 @@ mod tests {
     }
 
     #[test]
+    fn primitive_timer_restarts_for_a_retry_after_the_previous_primitive_ends() {
+        let mut safety = OuterSafetyLimits::new(100, OuterMotionBudget::firmware_caps());
+
+        assert_eq!(safety.begin_primitive(0), Ok(()));
+        assert_eq!(safety.primitive_start_us, Some(0));
+        safety.end_primitive();
+        assert_eq!(safety.primitive_start_us, None);
+        assert_eq!(safety.begin_primitive(5_000), Ok(()));
+        assert_eq!(safety.primitive_start_us, Some(5_000));
+    }
+
+    #[test]
+    fn primitive_timer_rejects_an_overlapping_start() {
+        let mut safety = OuterSafetyLimits::new(100, OuterMotionBudget::firmware_caps());
+        safety.begin_primitive(1_000).unwrap();
+
+        assert!(matches!(
+            safety.begin_primitive(2_000),
+            Err(CommissionError::InvalidSchedule)
+        ));
+        assert_eq!(safety.primitive_start_us, Some(1_000));
+    }
+
+    #[test]
+    fn inactive_settle_does_not_consume_a_primitive_duration_budget() {
+        pollster::block_on(async {
+            let mut safety = armed_safety(Some(0), 3_000_001);
+            safety.primitive_start_us = None;
+            let mut backend = MockBackend::new();
+            backend.elapsed_us_value = 3_000_001;
+
+            let fault = check_outer_safety(&mut safety, &mut backend)
+                .await
+                .expect("inactive safety observation should succeed");
+
+            assert!(fault.is_none());
+            assert_eq!(safety.primitive_start_us, None);
+        });
+    }
+
+    #[test]
     fn outer_safety_does_not_read_encoder_before_deadline() {
         pollster::block_on(async {
             let mut safety = armed_safety(Some(1_000), 2_000);
@@ -506,7 +564,7 @@ mod tests {
 
             assert!(fault.is_none());
             assert_eq!(safety.last_sample_us, Some(0));
-            assert_eq!(safety.start_sample_us, Some(0));
+            assert_eq!(safety.primitive_start_us, None);
             assert_eq!(safety.next_safety_sample_us, Some(1_000));
         });
     }
@@ -678,7 +736,7 @@ mod tests {
                 },
             );
             safety.configure_encoder_resolution(4_000).unwrap();
-            safety.start_sample_us = Some(1_000);
+            safety.primitive_start_us = Some(1_000);
             let mut backend = MockBackend::new();
             backend.elapsed_us_value = 2_001;
 
@@ -725,7 +783,7 @@ mod tests {
             safety.configure_encoder_resolution(4_000).unwrap();
             safety.set_encoder_baseline(3_998).unwrap();
             safety.last_sample_us = Some(100_000);
-            safety.start_sample_us = Some(90_000);
+            safety.primitive_start_us = Some(90_000);
             let mut backend = MockBackend::new();
             backend.elapsed_us_value = 101_000;
             backend.mechanical_encoder_position_counts_value = 2;
@@ -750,7 +808,7 @@ mod tests {
             safety.configure_encoder_resolution(4_000).unwrap();
             safety.set_encoder_baseline(2).unwrap();
             safety.last_sample_us = Some(100_000);
-            safety.start_sample_us = Some(90_000);
+            safety.primitive_start_us = Some(90_000);
             let mut backend = MockBackend::new();
             backend.elapsed_us_value = 101_000;
             backend.mechanical_encoder_position_counts_value = 3_998;
@@ -775,7 +833,7 @@ mod tests {
             safety.configure_encoder_resolution(4_000).unwrap();
             safety.set_encoder_baseline(1_000).unwrap();
             safety.last_sample_us = Some(100_000);
-            safety.start_sample_us = Some(90_000);
+            safety.primitive_start_us = Some(90_000);
             safety.unwrapped_position = 17;
             let before = safety;
             let mut backend = MockBackend::new();
@@ -790,7 +848,7 @@ mod tests {
             assert_eq!(fault.reason, OUTER_SAFETY_FAULT_VELOCITY);
             assert_eq!(safety.prev_encoder_count, before.prev_encoder_count);
             assert_eq!(safety.last_sample_us, before.last_sample_us);
-            assert_eq!(safety.start_sample_us, before.start_sample_us);
+            assert_eq!(safety.primitive_start_us, before.primitive_start_us);
             assert_eq!(safety.unwrapped_position, before.unwrapped_position);
         });
     }
@@ -802,7 +860,7 @@ mod tests {
             safety.configure_encoder_resolution(4_000).unwrap();
             safety.set_encoder_baseline(1_000).unwrap();
             safety.last_sample_us = Some(100_000);
-            safety.start_sample_us = Some(90_000);
+            safety.primitive_start_us = Some(90_000);
             let mut phase = OuterPhase::MechanicalId {
                 state: MechanicalIdState::ForwardCapture {
                     next_sample_us: 101_000,
@@ -890,7 +948,7 @@ mod tests {
             safety.configure_encoder_resolution(4_000).unwrap();
             safety.set_encoder_baseline(0).unwrap();
             safety.last_sample_us = Some(100_000);
-            safety.start_sample_us = Some(90_000);
+            safety.primitive_start_us = Some(90_000);
             let mut backend = MockBackend::new();
             backend.elapsed_us_value = 104_000;
             backend.mechanical_encoder_position_counts_value = 125;
@@ -925,7 +983,7 @@ mod tests {
                 .unwrap();
             safety.set_encoder_baseline(0).unwrap();
             safety.last_sample_us = Some(100);
-            safety.start_sample_us = Some(90);
+            safety.primitive_start_us = Some(90);
             let mut backend = MockBackend::new();
             backend.elapsed_us_value = 101;
             backend.mechanical_encoder_position_counts_value = 1_073_741_823;
@@ -950,7 +1008,7 @@ mod tests {
                 .unwrap();
             safety.set_encoder_baseline(0).unwrap();
             safety.last_sample_us = Some(100);
-            safety.start_sample_us = Some(90);
+            safety.primitive_start_us = Some(90);
             let mut backend = MockBackend::new();
             backend.elapsed_us_value = 101;
             backend.mechanical_encoder_position_counts_value = 1_073_741_824;

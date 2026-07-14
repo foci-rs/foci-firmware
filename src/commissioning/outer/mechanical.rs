@@ -608,6 +608,7 @@ mod tests {
                         data.start_position.map(|count| count.raw_counts()),
                         Some(1027)
                     );
+                    assert_eq!(safety.primitive_start_us, Some(12_000));
                 }
                 _ => panic!("expected MechanicalId phase"),
             }
@@ -1527,6 +1528,9 @@ pub(crate) async fn step_mechanical_id_with_trace<B: CommissioningBackend>(
             }
 
             if *stable_ticks >= MECHANICAL_ID_MODE_SWITCH_SETTLE_POLICY.stable_ticks {
+                if safety.primitive_start_us.is_some() {
+                    return fail_outer(phase, CommissionError::InvalidSchedule);
+                }
                 let current_limit = backend.current_limit() & 0xFFFF;
                 safety
                     .set_encoder_baseline(settled_pos)
@@ -1552,6 +1556,9 @@ pub(crate) async fn step_mechanical_id_with_trace<B: CommissioningBackend>(
                 }
 
                 let capture_start_us = backend.elapsed_us();
+                if safety.begin_primitive(capture_start_us).is_err() {
+                    return fail_outer(phase, CommissionError::InvalidSchedule);
+                }
                 data.reset_sample_timestamps();
                 let next_sample_us =
                     capture_start_us.wrapping_add(response::MECHANICAL_ID_SAMPLE_PERIOD_US);
@@ -1641,6 +1648,7 @@ pub(crate) async fn step_mechanical_id_with_trace<B: CommissioningBackend>(
                 {
                     return fail_outer(phase, CommissionError::Spi);
                 }
+                safety.end_primitive();
 
                 // Extract forward metrics from buffer before reset.
                 let encoder_domain = safety
@@ -1704,6 +1712,9 @@ pub(crate) async fn step_mechanical_id_with_trace<B: CommissioningBackend>(
         }
 
         MechanicalIdState::ReverseStart => {
+            if safety.primitive_start_us.is_some() {
+                return fail_outer(phase, CommissionError::InvalidSchedule);
+            }
             let encoder_raw = match backend.try_read_mechanical_encoder_position_counts().await {
                 Ok(value) => value,
                 Err(_) => return fail_outer(phase, CommissionError::Spi),
@@ -1726,6 +1737,9 @@ pub(crate) async fn step_mechanical_id_with_trace<B: CommissioningBackend>(
             }
 
             let capture_start_us = backend.elapsed_us();
+            if safety.begin_primitive(capture_start_us).is_err() {
+                return fail_outer(phase, CommissionError::InvalidSchedule);
+            }
             data.reset_sample_timestamps();
             let next_sample_us =
                 capture_start_us.wrapping_add(response::MECHANICAL_ID_SAMPLE_PERIOD_US);
@@ -1776,6 +1790,7 @@ pub(crate) async fn step_mechanical_id_with_trace<B: CommissioningBackend>(
                 {
                     return fail_outer(phase, CommissionError::Spi);
                 }
+                safety.end_primitive();
 
                 // For reverse capture, use the position at capture start
                 // (first sample) as the reference, not the original start.

@@ -47,10 +47,13 @@ const VELOCITY_RETRY_LAMBDA_MUL_DEN: u32 = 2;
 /// Velocity mode with `MODE_PID_TYPE` set for the TMC4671 advanced PI structure.
 const OUTER_VELOCITY_MODE: u32 = 0x8000_0002;
 
-async fn stop_velocity_motion<B: CommissioningBackend>(backend: &mut B) -> bool {
-    use foci_tmc4671::registers::{MODE_RAMP_MODE_MOTION, PID_VELOCITY_TARGET};
+async fn stop_velocity_motion<B: CommissioningBackend>(
+    backend: &mut B,
+    safety: &mut super::super::OuterSafetyLimits,
+) -> bool {
+    use foci_tmc4671::registers::MODE_RAMP_MODE_MOTION;
 
-    let target_ok = backend.write_register(PID_VELOCITY_TARGET, 0).await.is_ok();
+    let target_ok = command_velocity_target(backend, safety, 0).await.is_ok();
     let mode_ok = backend
         .write_register(MODE_RAMP_MODE_MOTION, 0)
         .await
@@ -58,11 +61,24 @@ async fn stop_velocity_motion<B: CommissioningBackend>(backend: &mut B) -> bool 
     target_ok && mode_ok
 }
 
-async fn command_velocity_target<B: CommissioningBackend>(backend: &mut B, target: u32) -> bool {
+async fn command_velocity_target<B: CommissioningBackend>(
+    backend: &mut B,
+    safety: &mut super::super::OuterSafetyLimits,
+    target: u32,
+) -> Result<(), CommissionError> {
+    if target != 0 && safety.primitive_start_us.is_some() {
+        return Err(CommissionError::InvalidSchedule);
+    }
     backend
         .write_register(foci_tmc4671::registers::PID_VELOCITY_TARGET, target)
         .await
-        .is_ok()
+        .map_err(|_| CommissionError::Spi)?;
+    if target == 0 {
+        safety.end_primitive();
+        Ok(())
+    } else {
+        safety.begin_primitive(backend.elapsed_us())
+    }
 }
 
 fn encoder_rate_counts_per_ms_to_tmc_velocity_signed(
@@ -280,12 +296,8 @@ pub(crate) async fn step_velocity_validate_with_trace<B: CommissioningBackend>(
                 return fail_outer(phase, CommissionError::Spi);
             }
 
-            if backend
-                .write_register(PID_VELOCITY_TARGET, 0)
-                .await
-                .is_err()
-            {
-                return fail_outer(phase, CommissionError::Spi);
+            if let Err(error) = command_velocity_target(backend, safety, 0).await {
+                return fail_outer(phase, error);
             }
 
             defmt::info!(
@@ -313,12 +325,8 @@ pub(crate) async fn step_velocity_validate_with_trace<B: CommissioningBackend>(
                 backend.tmc_config().pwm_freq_hz(),
             )
             .max(1) as u32;
-            if backend
-                .write_register(PID_VELOCITY_TARGET, target_reg)
-                .await
-                .is_err()
-            {
-                return fail_outer(phase, CommissionError::Spi);
+            if let Err(error) = command_velocity_target(backend, safety, target_reg).await {
+                return fail_outer(phase, error);
             }
 
             data.prev_encoder_for_velocity =
@@ -374,14 +382,14 @@ pub(crate) async fn step_velocity_validate_with_trace<B: CommissioningBackend>(
             ) {
                 Ok(velocity) => velocity,
                 Err(EncoderMathError::InvalidCountsPerRev) => {
-                    if !command_velocity_target(backend, 0).await {
-                        return fail_outer(phase, CommissionError::Spi);
+                    if let Err(error) = command_velocity_target(backend, safety, 0).await {
+                        return fail_outer(phase, error);
                     }
                     return fail_outer(phase, CommissionError::EncoderFault);
                 }
                 Err(EncoderMathError::AmbiguousHalfTurn) if !*ambiguity_retried => {
-                    if !command_velocity_target(backend, 0).await {
-                        return fail_outer(phase, CommissionError::Spi);
+                    if let Err(error) = command_velocity_target(backend, safety, 0).await {
+                        return fail_outer(phase, error);
                     }
                     let target = encoder_rate_counts_per_ms_to_tmc_velocity_signed(
                         i64::from(data.step_target),
@@ -389,8 +397,8 @@ pub(crate) async fn step_velocity_validate_with_trace<B: CommissioningBackend>(
                         backend.tmc_config().pwm_freq_hz(),
                     )
                     .max(1) as u32;
-                    if !command_velocity_target(backend, target).await {
-                        return fail_outer(phase, CommissionError::Spi);
+                    if let Err(error) = command_velocity_target(backend, safety, target).await {
+                        return fail_outer(phase, error);
                     }
                     buf.reset(VELOCITY_VALIDATE_SAMPLE_PERIOD_US as u16);
                     data.forward_metrics = None;
@@ -407,8 +415,8 @@ pub(crate) async fn step_velocity_validate_with_trace<B: CommissioningBackend>(
                     return StepResult::Continue;
                 }
                 Err(EncoderMathError::AmbiguousHalfTurn) => {
-                    if !command_velocity_target(backend, 0).await {
-                        return fail_outer(phase, CommissionError::Spi);
+                    if let Err(error) = command_velocity_target(backend, safety, 0).await {
+                        return fail_outer(phase, error);
                     }
                     return fail_outer(phase, CommissionError::VelocityValidationFailed);
                 }
@@ -434,12 +442,8 @@ pub(crate) async fn step_velocity_validate_with_trace<B: CommissioningBackend>(
             }
 
             if buf.is_full() {
-                if backend
-                    .write_register(PID_VELOCITY_TARGET, 0)
-                    .await
-                    .is_err()
-                {
-                    return fail_outer(phase, CommissionError::Spi);
+                if let Err(error) = command_velocity_target(backend, safety, 0).await {
+                    return fail_outer(phase, error);
                 }
 
                 let samples_slice = buf.samples();
@@ -493,12 +497,8 @@ pub(crate) async fn step_velocity_validate_with_trace<B: CommissioningBackend>(
                 backend.tmc_config().pwm_freq_hz(),
             )
             .min(-1);
-            if backend
-                .write_register(PID_VELOCITY_TARGET, target_reg as u32)
-                .await
-                .is_err()
-            {
-                return fail_outer(phase, CommissionError::Spi);
+            if let Err(error) = command_velocity_target(backend, safety, target_reg as u32).await {
+                return fail_outer(phase, error);
             }
 
             data.prev_encoder_for_velocity =
@@ -554,14 +554,14 @@ pub(crate) async fn step_velocity_validate_with_trace<B: CommissioningBackend>(
             ) {
                 Ok(velocity) => velocity,
                 Err(EncoderMathError::InvalidCountsPerRev) => {
-                    if !command_velocity_target(backend, 0).await {
-                        return fail_outer(phase, CommissionError::Spi);
+                    if let Err(error) = command_velocity_target(backend, safety, 0).await {
+                        return fail_outer(phase, error);
                     }
                     return fail_outer(phase, CommissionError::EncoderFault);
                 }
                 Err(EncoderMathError::AmbiguousHalfTurn) if !*ambiguity_retried => {
-                    if !command_velocity_target(backend, 0).await {
-                        return fail_outer(phase, CommissionError::Spi);
+                    if let Err(error) = command_velocity_target(backend, safety, 0).await {
+                        return fail_outer(phase, error);
                     }
                     let target = encoder_rate_counts_per_ms_to_tmc_velocity_signed(
                         -i64::from(data.step_target),
@@ -569,8 +569,8 @@ pub(crate) async fn step_velocity_validate_with_trace<B: CommissioningBackend>(
                         backend.tmc_config().pwm_freq_hz(),
                     )
                     .min(-1) as u32;
-                    if !command_velocity_target(backend, target).await {
-                        return fail_outer(phase, CommissionError::Spi);
+                    if let Err(error) = command_velocity_target(backend, safety, target).await {
+                        return fail_outer(phase, error);
                     }
                     buf.reset(VELOCITY_VALIDATE_SAMPLE_PERIOD_US as u16);
                     data.reverse_metrics = None;
@@ -587,8 +587,8 @@ pub(crate) async fn step_velocity_validate_with_trace<B: CommissioningBackend>(
                     return StepResult::Continue;
                 }
                 Err(EncoderMathError::AmbiguousHalfTurn) => {
-                    if !command_velocity_target(backend, 0).await {
-                        return fail_outer(phase, CommissionError::Spi);
+                    if let Err(error) = command_velocity_target(backend, safety, 0).await {
+                        return fail_outer(phase, error);
                     }
                     return fail_outer(phase, CommissionError::VelocityValidationFailed);
                 }
@@ -614,12 +614,8 @@ pub(crate) async fn step_velocity_validate_with_trace<B: CommissioningBackend>(
             }
 
             if buf.is_full() {
-                if backend
-                    .write_register(PID_VELOCITY_TARGET, 0)
-                    .await
-                    .is_err()
-                {
-                    return fail_outer(phase, CommissionError::Spi);
+                if let Err(error) = command_velocity_target(backend, safety, 0).await {
+                    return fail_outer(phase, error);
                 }
 
                 let samples_slice = buf.samples();
@@ -716,14 +712,14 @@ pub(crate) async fn step_velocity_validate_with_trace<B: CommissioningBackend>(
             ) {
                 Ok(velocity) => velocity,
                 Err(EncoderMathError::InvalidCountsPerRev) => {
-                    if !command_velocity_target(backend, 0).await {
-                        return fail_outer(phase, CommissionError::Spi);
+                    if let Err(error) = command_velocity_target(backend, safety, 0).await {
+                        return fail_outer(phase, error);
                     }
                     return fail_outer(phase, CommissionError::EncoderFault);
                 }
                 Err(EncoderMathError::AmbiguousHalfTurn) if !*ambiguity_retried => {
-                    if !command_velocity_target(backend, 0).await {
-                        return fail_outer(phase, CommissionError::Spi);
+                    if let Err(error) = command_velocity_target(backend, safety, 0).await {
+                        return fail_outer(phase, error);
                     }
                     data.max_chatter = 0;
                     data.prev_encoder_for_velocity = Some(
@@ -739,8 +735,8 @@ pub(crate) async fn step_velocity_validate_with_trace<B: CommissioningBackend>(
                     return StepResult::Continue;
                 }
                 Err(EncoderMathError::AmbiguousHalfTurn) => {
-                    if !command_velocity_target(backend, 0).await {
-                        return fail_outer(phase, CommissionError::Spi);
+                    if let Err(error) = command_velocity_target(backend, safety, 0).await {
+                        return fail_outer(phase, error);
                     }
                     return fail_outer(phase, CommissionError::VelocityValidationFailed);
                 }
@@ -881,7 +877,7 @@ pub(crate) async fn step_velocity_validate_with_trace<B: CommissioningBackend>(
                                 data.accepted_gains.velocity_p,
                                 data.accepted_gains.velocity_i
                             );
-                            if !stop_velocity_motion(backend).await {
+                            if !stop_velocity_motion(backend, safety).await {
                                 return fail_outer(phase, CommissionError::Spi);
                             }
                             let deadline = backend
@@ -906,7 +902,7 @@ pub(crate) async fn step_velocity_validate_with_trace<B: CommissioningBackend>(
                                 failed_p,
                                 data.attempt
                             );
-                            if !stop_velocity_motion(backend).await {
+                            if !stop_velocity_motion(backend, safety).await {
                                 return fail_outer(phase, CommissionError::Spi);
                             }
                             return fail_outer(phase, CommissionError::VelocityValidationFailed);
@@ -1013,7 +1009,7 @@ pub(crate) async fn step_velocity_validate_with_trace<B: CommissioningBackend>(
                                 },
                                 failed_p
                             );
-                            if !stop_velocity_motion(backend).await {
+                            if !stop_velocity_motion(backend, safety).await {
                                 return fail_outer(phase, CommissionError::Spi);
                             }
                             return fail_outer(phase, CommissionError::VelocityValidationFailed);
@@ -1029,7 +1025,7 @@ pub(crate) async fn step_velocity_validate_with_trace<B: CommissioningBackend>(
                             failed_p,
                             data.accepted_gains.velocity_p
                         );
-                        if !stop_velocity_motion(backend).await {
+                        if !stop_velocity_motion(backend, safety).await {
                             return fail_outer(phase, CommissionError::Spi);
                         }
                         let deadline = backend
@@ -1064,7 +1060,7 @@ pub(crate) async fn step_velocity_validate_with_trace<B: CommissioningBackend>(
                 }
 
                 data.velocity_search_stop_reason = VELOCITY_SEARCH_STOP_UNDER_DRIVEN_BUDGET;
-                if !stop_velocity_motion(backend).await {
+                if !stop_velocity_motion(backend, safety).await {
                     return fail_outer(phase, CommissionError::Spi);
                 }
                 let deadline = backend
@@ -1079,7 +1075,7 @@ pub(crate) async fn step_velocity_validate_with_trace<B: CommissioningBackend>(
             match result {
                 ValidationResult::Pass => {
                     data.velocity_search_stop_reason = VELOCITY_SEARCH_STOP_CLEAN;
-                    if !stop_velocity_motion(backend).await {
+                    if !stop_velocity_motion(backend, safety).await {
                         return fail_outer(phase, CommissionError::Spi);
                     }
                     let deadline = backend
@@ -1161,7 +1157,7 @@ pub(crate) async fn step_velocity_validate_with_trace<B: CommissioningBackend>(
                         failed_p,
                         data.accepted_gains.velocity_p
                     );
-                    if !stop_velocity_motion(backend).await {
+                    if !stop_velocity_motion(backend, safety).await {
                         return fail_outer(phase, CommissionError::Spi);
                     }
                     let deadline = backend
@@ -1193,7 +1189,7 @@ pub(crate) async fn step_velocity_validate_with_trace<B: CommissioningBackend>(
                     data.reverse_metrics = None;
                     data.max_chatter = 0;
                     data.saturation_count = 0;
-                    if !stop_velocity_motion(backend).await {
+                    if !stop_velocity_motion(backend, safety).await {
                         return fail_outer(phase, CommissionError::Spi);
                     }
                     *state = VelocityValidateState::WriteGains;
@@ -1210,7 +1206,7 @@ pub(crate) async fn step_velocity_validate_with_trace<B: CommissioningBackend>(
         }
 
         VelocityValidateState::Finalize => {
-            if !stop_velocity_motion(backend).await {
+            if !stop_velocity_motion(backend, safety).await {
                 return fail_outer(phase, CommissionError::Spi);
             }
 
@@ -1298,7 +1294,7 @@ pub(crate) async fn step_velocity_validate_with_trace<B: CommissioningBackend>(
 #[cfg(test)]
 mod tests {
     use super::{
-        encoder_counts_to_tmc_position_units, encoder_delta_counts_per_ms,
+        command_velocity_target, encoder_counts_to_tmc_position_units, encoder_delta_counts_per_ms,
         encoder_rate_counts_per_ms_to_tmc_velocity_signed,
         encoder_rate_magnitude_counts_per_ms_to_tmc_velocity, record_velocity_validate_summary,
         step_velocity_validate,
@@ -1330,6 +1326,53 @@ mod tests {
         safety.configure_encoder_resolution(4_000).unwrap();
         safety.set_encoder_baseline(0).unwrap();
         safety
+    }
+
+    #[test]
+    fn forward_and_reverse_velocity_targets_use_separate_primitive_timers() {
+        pollster::block_on(async {
+            let mut safety = configured_safety();
+            let mut backend = MockBackend::new();
+            backend.elapsed_us_value = 100;
+
+            assert!(
+                command_velocity_target(&mut backend, &mut safety, 42)
+                    .await
+                    .is_ok()
+            );
+            assert_eq!(safety.primitive_start_us, Some(100));
+
+            backend.elapsed_us_value = 200;
+            assert!(
+                command_velocity_target(&mut backend, &mut safety, 0)
+                    .await
+                    .is_ok()
+            );
+            assert_eq!(safety.primitive_start_us, None);
+
+            backend.elapsed_us_value = 300;
+            assert!(
+                command_velocity_target(&mut backend, &mut safety, (-42_i32) as u32)
+                    .await
+                    .is_ok()
+            );
+            assert_eq!(safety.primitive_start_us, Some(300));
+        });
+    }
+
+    #[test]
+    fn failed_velocity_target_does_not_start_a_primitive_timer() {
+        pollster::block_on(async {
+            let mut safety = configured_safety();
+            let mut backend = MockBackend::new();
+            backend.fail_on_write = Some(PID_VELOCITY_TARGET.addr());
+
+            assert!(matches!(
+                command_velocity_target(&mut backend, &mut safety, 42).await,
+                Err(CommissionError::Spi)
+            ));
+            assert_eq!(safety.primitive_start_us, None);
+        });
     }
 
     #[derive(Clone, Copy)]
