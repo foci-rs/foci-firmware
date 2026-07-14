@@ -165,8 +165,7 @@ pub(crate) async fn step_outer_with_trace<B: CommissioningBackend>(
             .await
         }
         OuterPhase::PositionTune { .. } => {
-            position::step_position_tune_with_trace(phase, buf, mode, trace_summary_seqs, backend)
-                .await
+            position::step_position_tune_with_trace(phase, buf, trace_summary_seqs, backend).await
         }
         OuterPhase::FilterTune { .. } => filter::step_filter_tune(phase, backend).await,
         OuterPhase::Commit { .. } => commit::step_commit(phase),

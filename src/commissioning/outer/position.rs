@@ -12,7 +12,7 @@ use super::{
     POS_TUNE_INITIAL_P, PositionTuneData, PositionTuneState, TraceSummarySeqs, trace_pack_u16_pair,
     trace_summary_event,
 };
-use crate::autotune::{CommissionError, OperatingMode, PhaseId, PositionGains, TransientBuffer};
+use crate::autotune::{CommissionError, PhaseId, PositionGains, TransientBuffer};
 use crate::commissioning::outer::fail_outer;
 use crate::commissioning::types::{CommissioningBackend, StepResult};
 use crate::trace::events::{
@@ -24,9 +24,6 @@ use crate::trace::events::{
 /// Position-tune P-gain growth ratio between attempts.
 pub(crate) const POSITION_TUNE_P_MUL_NUM: u32 = 3;
 pub(crate) const POSITION_TUNE_P_MUL_DEN: u32 = 2;
-
-/// Final position I gain as a percentage of the accepted P (5%).
-const POSITION_TUNE_I_PERCENT: u32 = 5;
 
 /// Position-tune ramp cap when SIMC velocity gains were accepted.
 pub(crate) const POSITION_TUNE_MAX_P: u16 = OUTER_MAX_POSITION_P;
@@ -121,17 +118,15 @@ fn record_position_tune_summary<B: CommissioningBackend>(
 pub(crate) async fn step_position_tune<B: CommissioningBackend>(
     phase: &mut OuterPhase,
     buf: &mut TransientBuffer,
-    mode: OperatingMode,
     backend: &mut B,
 ) -> StepResult {
     let mut trace_summary_seqs = TraceSummarySeqs::new();
-    step_position_tune_with_trace(phase, buf, mode, &mut trace_summary_seqs, backend).await
+    step_position_tune_with_trace(phase, buf, &mut trace_summary_seqs, backend).await
 }
 
 pub(crate) async fn step_position_tune_with_trace<B: CommissioningBackend>(
     phase: &mut OuterPhase,
     buf: &mut TransientBuffer,
-    mode: OperatingMode,
     trace_summary_seqs: &mut TraceSummarySeqs,
     backend: &mut B,
 ) -> StepResult {
@@ -440,22 +435,7 @@ pub(crate) async fn step_position_tune_with_trace<B: CommissioningBackend>(
             }
 
             let final_p = data.stable_p;
-
-            // Response-tuned velocity gains are deliberately conservative:
-            // the tuner has not measured a steady-state position bias, so
-            // leave position integral disabled to avoid windup on installed
-            // mechanics.
-            let response_tuned = data.velocity_gains.effective_bandwidth_hz == 0;
-            let final_i = if response_tuned {
-                0
-            } else {
-                match mode {
-                    OperatingMode::Nominal | OperatingMode::HighInertia => {
-                        (final_p as u32 * POSITION_TUNE_I_PERCENT / 100).max(1) as u16
-                    }
-                    OperatingMode::Unloaded => 0,
-                }
-            };
+            let final_i = 0;
 
             defmt::info!("pos tune: final P={}, I={}", final_p, final_i);
 
@@ -570,6 +550,34 @@ mod tests {
     }
 
     #[test]
+    fn position_finalize_returns_validated_p_with_zero_i() {
+        pollster::block_on(async {
+            let mut phase = position_capture_phase(0);
+            if let OuterPhase::PositionTune { state, data, .. } = &mut phase {
+                *state = PositionTuneState::Finalize;
+                data.current_p = 640;
+                data.stable_p = 640;
+            }
+            let mut buf = TransientBuffer::new();
+            let mut backend = MockBackend::new();
+
+            let result = step_position_tune(&mut phase, &mut buf, &mut backend).await;
+
+            assert!(matches!(
+                result,
+                StepResult::PhaseChanged(PhaseId::FilterTune)
+            ));
+            match phase {
+                OuterPhase::FilterTune { position_gains, .. } => {
+                    assert_eq!(position_gains.position_p, 640);
+                    assert_eq!(position_gains.position_i, 0);
+                }
+                other => panic!("expected FilterTune, got {other:?}"),
+            }
+        });
+    }
+
+    #[test]
     fn each_position_rung_uses_a_fresh_primitive_timer() {
         pollster::block_on(async {
             let mut safety = crate::commissioning::outer::OuterSafetyLimits::new(
@@ -608,17 +616,23 @@ mod tests {
     fn position_setup_schedules_capture_within_the_register_bound() {
         pollster::block_on(async {
             let mut phase = position_capture_phase(0);
-            if let OuterPhase::PositionTune { state, .. } = &mut phase {
+            if let OuterPhase::PositionTune { state, data, .. } = &mut phase {
                 *state = PositionTuneState::Setup;
+                data.current_p = 640;
             }
             let mut buf = TransientBuffer::new();
             let mut backend = MockBackend::new();
 
-            let result =
-                step_position_tune(&mut phase, &mut buf, OperatingMode::Nominal, &mut backend)
-                    .await;
+            let result = step_position_tune(&mut phase, &mut buf, &mut backend).await;
 
             assert!(matches!(result, StepResult::At(1_000)));
+            assert_eq!(
+                *backend
+                    .registers
+                    .get(&foci_tmc4671::registers::PID_POSITION_P_POSITION_I.addr())
+                    .expect("position gains should be written"),
+                640_u32 << 16
+            );
             assert_eq!(
                 backend.spi_log.len(),
                 POSITION_TUNE_MAX_REGISTER_OPS_PER_ARM
@@ -647,17 +661,13 @@ mod tests {
             let mut backend = MockBackend::new();
             backend.elapsed_us_value = 999;
 
-            let waiting =
-                step_position_tune(&mut phase, &mut buf, OperatingMode::Nominal, &mut backend)
-                    .await;
+            let waiting = step_position_tune(&mut phase, &mut buf, &mut backend).await;
             assert!(matches!(waiting, StepResult::At(1_000)));
             assert!(backend.spi_log.is_empty());
 
             backend.elapsed_us_value = 1_600;
             backend.mechanical_encoder_position_counts_value = 4;
-            let sampled =
-                step_position_tune(&mut phase, &mut buf, OperatingMode::Nominal, &mut backend)
-                    .await;
+            let sampled = step_position_tune(&mut phase, &mut buf, &mut backend).await;
             assert!(matches!(sampled, StepResult::At(2_000)));
             assert!(matches!(
                 phase,
@@ -682,15 +692,11 @@ mod tests {
             let mut backend = MockBackend::new();
             backend.elapsed_us_value = 999;
 
-            let waiting =
-                step_position_tune(&mut phase, &mut buf, OperatingMode::Nominal, &mut backend)
-                    .await;
+            let waiting = step_position_tune(&mut phase, &mut buf, &mut backend).await;
             assert!(matches!(waiting, StepResult::At(1_000)));
 
             backend.elapsed_us_value = 1_000;
-            let elapsed =
-                step_position_tune(&mut phase, &mut buf, OperatingMode::Nominal, &mut backend)
-                    .await;
+            let elapsed = step_position_tune(&mut phase, &mut buf, &mut backend).await;
             assert!(matches!(elapsed, StepResult::ReadyNow));
             assert!(matches!(
                 phase,
@@ -715,9 +721,7 @@ mod tests {
             }
             let mut backend = MockBackend::new();
 
-            let result =
-                step_position_tune(&mut phase, &mut buf, OperatingMode::Nominal, &mut backend)
-                    .await;
+            let result = step_position_tune(&mut phase, &mut buf, &mut backend).await;
 
             assert!(matches!(result, StepResult::At(1_000)));
             assert!(matches!(
@@ -741,9 +745,7 @@ mod tests {
             backend.elapsed_us_value = 1_000;
             backend.mechanical_encoder_position_counts_value = 2;
 
-            let result =
-                step_position_tune(&mut phase, &mut buf, OperatingMode::Nominal, &mut backend)
-                    .await;
+            let result = step_position_tune(&mut phase, &mut buf, &mut backend).await;
 
             assert!(matches!(result, StepResult::At(2_000)));
             assert_eq!(buf.samples(), &[4]);
@@ -759,9 +761,7 @@ mod tests {
             backend.elapsed_us_value = 1_000;
             backend.mechanical_encoder_position_counts_value = 2_000;
 
-            let result =
-                step_position_tune(&mut phase, &mut buf, OperatingMode::Nominal, &mut backend)
-                    .await;
+            let result = step_position_tune(&mut phase, &mut buf, &mut backend).await;
 
             assert!(matches!(
                 result,
