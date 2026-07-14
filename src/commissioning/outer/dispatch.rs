@@ -29,6 +29,18 @@ pub(crate) fn fail_outer_with_safety(
     StepResult::OuterFailed(err)
 }
 
+fn clamp_outer_safety_deadline(
+    result: StepResult,
+    next_safety_sample_us: Option<u64>,
+) -> StepResult {
+    match (result, next_safety_sample_us) {
+        (StepResult::At(state_deadline_us), Some(safety_deadline_us)) => {
+            StepResult::At(state_deadline_us.min(safety_deadline_us))
+        }
+        (result, _) => result,
+    }
+}
+
 /// Step outer phase state machine by one cooperative tick.
 ///
 /// Dispatches to the per-phase handler in the matching submodule. Every
@@ -113,14 +125,14 @@ pub(crate) async fn step_outer_with_trace<B: CommissioningBackend>(
                 return fail_outer_with_safety(phase, err, fault);
             }
             Ok(None) => {}
-            Err(_) => {
-                defmt::warn!("outer safety: encoder read failed");
-                return fail_outer(phase, CommissionError::Spi);
+            Err(error) => {
+                defmt::warn!("outer safety check failed: {}", error);
+                return fail_outer(phase, error);
             }
         }
     }
 
-    match phase {
+    let result = match phase {
         OuterPhase::MechanicalId { .. } => {
             mechanical::step_mechanical_id_with_trace(phase, buf, trace_summary_seqs, backend).await
         }
@@ -161,5 +173,21 @@ pub(crate) async fn step_outer_with_trace<B: CommissioningBackend>(
         OuterPhase::Done(result) => StepResult::OuterDone(result.clone()),
         OuterPhase::Failed(err) => StepResult::OuterFailed(*err),
         OuterPhase::FailedWithSafety { error, .. } => StepResult::OuterFailed(*error),
+    };
+    let next_safety_sample_us =
+        outer_safety_mut(phase).and_then(|safety| safety.next_safety_deadline());
+    clamp_outer_safety_deadline(result, next_safety_sample_us)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::clamp_outer_safety_deadline;
+    use crate::commissioning::types::StepResult;
+
+    #[test]
+    fn long_state_deadline_is_clamped_to_earlier_safety_sample() {
+        let result = clamp_outer_safety_deadline(StepResult::At(300_000), Some(2_000));
+
+        assert!(matches!(result, StepResult::At(2_000)));
     }
 }

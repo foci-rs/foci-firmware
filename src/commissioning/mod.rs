@@ -976,7 +976,9 @@ mod tests {
         let mut runtime = crate::tmc_control::TmcControlRuntime::new_for_channel(0);
         let scheduled_step = size_of_val(&runtime.step_commissioning_scheduled(&mut backend));
 
-        assert_eq!(size_of::<CommissioningEngine>(), 3_760);
+        // Independent outer-safety scheduling adds explicit optional previous,
+        // start, and next timestamps to the largest engine variant.
+        assert_eq!(size_of::<CommissioningEngine>(), 3_792);
         assert!(size_of::<CommissioningEngine>() <= 4_528);
         assert!(size_of::<CommissioningEngine>() <= 6_144);
         assert!(size_of::<capture_timing::CaptureTiming>() <= 64);

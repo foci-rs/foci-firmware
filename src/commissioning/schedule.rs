@@ -82,7 +82,6 @@ pub enum CommissionPoll {
 ///
 /// Returns [`CommissionError::InvalidSchedule`] for a zero period, an early
 /// invocation, or arithmetic overflow.
-#[allow(dead_code)]
 pub(crate) fn next_grid_deadline(
     previous_deadline_us: u64,
     period_us: u64,

@@ -632,7 +632,7 @@ mod tests {
             );
             safety.configure_encoder_resolution(4_000).unwrap();
             safety.set_encoder_baseline(3_998).unwrap();
-            safety.last_sample_us = 10_000;
+            safety.last_sample_us = Some(10_000);
             let mut data = MechanicalIdData::new(100);
             data.start_position = safety.prev_encoder_count;
             let mut phase = OuterPhase::MechanicalId {
@@ -680,7 +680,7 @@ mod tests {
             );
             safety.configure_encoder_resolution(4_000).unwrap();
             safety.set_encoder_baseline(0).unwrap();
-            safety.last_sample_us = 10_000;
+            safety.last_sample_us = Some(10_000);
             let mut data = MechanicalIdData::new(100);
             data.start_position = safety.prev_encoder_count;
             let mut phase = OuterPhase::MechanicalId {
@@ -1467,7 +1467,7 @@ pub(crate) async fn step_mechanical_id_with_trace<B: CommissioningBackend>(
             safety.torque_cap = 0;
 
             let now = backend.elapsed_us();
-            safety.last_sample_us = now;
+            safety.last_sample_us = Some(now);
             *state = MechanicalIdState::PostSwitchSettle {
                 earliest_sample_us: now + MECHANICAL_ID_MODE_SWITCH_SETTLE_POLICY.grace_us,
                 timeout_deadline_us: now + MECHANICAL_ID_MODE_SWITCH_SETTLE_POLICY.timeout_us,
@@ -1507,16 +1507,15 @@ pub(crate) async fn step_mechanical_id_with_trace<B: CommissioningBackend>(
                     return fail_outer(phase, CommissionError::EncoderFault);
                 }
             };
-            let dt_us = if safety.last_sample_us == 0 {
-                0
-            } else {
-                now.wrapping_sub(safety.last_sample_us)
-            };
+            let dt_us = safety
+                .last_sample_us
+                .and_then(|last_sample_us| now.checked_sub(last_sample_us))
+                .unwrap_or(0);
             let velocity_cpms = response::counts_per_ms(delta_counts, dt_us);
             safety
                 .set_encoder_baseline(settled_pos)
                 .expect("configured domain");
-            safety.last_sample_us = now;
+            safety.last_sample_us = Some(now);
 
             let settle_threshold = response::mechanical_id_settle_velocity_threshold_counts_per_ms(
                 safety.counts_per_rev(),
@@ -1534,7 +1533,10 @@ pub(crate) async fn step_mechanical_id_with_trace<B: CommissioningBackend>(
                     .expect("configured domain");
                 safety.unwrapped_position = 0;
                 safety.torque_cap = current_limit as u16;
-                safety.last_sample_us = backend.elapsed_us();
+                let safety_arm_us = backend.elapsed_us();
+                if safety.arm_safety_observation(safety_arm_us).is_err() {
+                    return fail_outer(phase, CommissionError::InvalidSchedule);
+                }
                 data.start_position = safety.prev_encoder_count;
 
                 // Apply the first positive torque step immediately so the next
