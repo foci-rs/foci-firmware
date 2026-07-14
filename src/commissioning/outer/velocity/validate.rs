@@ -315,7 +315,7 @@ pub(crate) async fn step_velocity_validate_with_trace<B: CommissioningBackend>(
             data.saturation_count = 0;
 
             *state = VelocityValidateState::ForwardStep;
-            StepResult::Continue
+            StepResult::ReadyNow
         }
 
         VelocityValidateState::ForwardStep => {
@@ -340,16 +340,17 @@ pub(crate) async fn step_velocity_validate_with_trace<B: CommissioningBackend>(
                     Err(_) => return fail_outer(phase, CommissionError::Spi),
                 };
 
-            let next_sample_us = backend
-                .elapsed_us()
-                .wrapping_add(VELOCITY_VALIDATE_SAMPLE_PERIOD_US);
+            let now = backend.elapsed_us();
+            let Some(next_sample_us) = now.checked_add(VELOCITY_VALIDATE_SAMPLE_PERIOD_US) else {
+                return fail_outer(phase, CommissionError::InvalidSchedule);
+            };
             *state = VelocityValidateState::ForwardCapture {
                 next_sample_us,
-                last_sample_us: backend.elapsed_us(),
+                last_sample_us: now,
                 ambiguity_retried: false,
                 saturation_start: data.saturation_count,
             };
-            StepResult::Continue
+            StepResult::At(next_sample_us)
         }
 
         VelocityValidateState::ForwardCapture {
@@ -359,8 +360,8 @@ pub(crate) async fn step_velocity_validate_with_trace<B: CommissioningBackend>(
             saturation_start,
         } => {
             let now = backend.elapsed_us();
-            if now.wrapping_sub(*next_sample_us) >= 0x8000_0000 {
-                return StepResult::Continue;
+            if now < *next_sample_us {
+                return StepResult::At(*next_sample_us);
             }
 
             let encoder_raw = match backend.try_read_mechanical_encoder_position_counts().await {
@@ -374,11 +375,14 @@ pub(crate) async fn step_velocity_validate_with_trace<B: CommissioningBackend>(
                 .encoder_domain
                 .map(EncoderDomain::counts_per_rev)
                 .unwrap_or(0);
+            let Some(elapsed_us) = now.checked_sub(*last_sample_us) else {
+                return fail_outer(phase, CommissionError::InvalidSchedule);
+            };
             let velocity = match encoder_delta_counts_per_ms(
                 encoder_raw,
                 prev_encoder.raw_counts(),
                 counts_per_rev,
-                now.wrapping_sub(*last_sample_us),
+                elapsed_us,
             ) {
                 Ok(velocity) => velocity,
                 Err(EncoderMathError::InvalidCountsPerRev) => {
@@ -410,9 +414,13 @@ pub(crate) async fn step_velocity_validate_with_trace<B: CommissioningBackend>(
                             .count(encoder_raw),
                     );
                     *ambiguity_retried = true;
-                    *next_sample_us = now.wrapping_add(VELOCITY_VALIDATE_SAMPLE_PERIOD_US);
+                    let Some(deadline_us) = now.checked_add(VELOCITY_VALIDATE_SAMPLE_PERIOD_US)
+                    else {
+                        return fail_outer(phase, CommissionError::InvalidSchedule);
+                    };
+                    *next_sample_us = deadline_us;
                     *last_sample_us = now;
-                    return StepResult::Continue;
+                    return StepResult::At(deadline_us);
                 }
                 Err(EncoderMathError::AmbiguousHalfTurn) => {
                     if let Err(error) = command_velocity_target(backend, safety, 0).await {
@@ -469,25 +477,38 @@ pub(crate) async fn step_velocity_validate_with_trace<B: CommissioningBackend>(
                     &samples_slice[..head_len],
                 );
 
-                let deadline = backend
+                let Some(deadline) = backend
                     .elapsed_us()
-                    .wrapping_add(VELOCITY_VALIDATE_SETTLE_US);
+                    .checked_add(VELOCITY_VALIDATE_SETTLE_US)
+                else {
+                    return fail_outer(phase, CommissionError::InvalidSchedule);
+                };
                 *state = VelocityValidateState::ForwardSettle {
                     deadline_us: deadline,
                 };
+                StepResult::At(deadline)
             } else {
-                *next_sample_us = now.wrapping_add(VELOCITY_VALIDATE_SAMPLE_PERIOD_US);
+                let next_deadline_us = match crate::commissioning::schedule::next_grid_deadline(
+                    *next_sample_us,
+                    VELOCITY_VALIDATE_SAMPLE_PERIOD_US,
+                    now,
+                ) {
+                    Ok(deadline_us) => deadline_us,
+                    Err(error) => return fail_outer(phase, error),
+                };
+                *next_sample_us = next_deadline_us;
                 *last_sample_us = now;
+                StepResult::At(next_deadline_us)
             }
-            StepResult::Continue
         }
 
         VelocityValidateState::ForwardSettle { deadline_us } => {
-            if backend.elapsed_us().wrapping_sub(*deadline_us) < 0x8000_0000 {
-                buf.reset(VELOCITY_VALIDATE_SAMPLE_PERIOD_US as u16);
-                *state = VelocityValidateState::ReverseStep;
+            if backend.elapsed_us() < *deadline_us {
+                return StepResult::At(*deadline_us);
             }
-            StepResult::Continue
+            buf.reset(VELOCITY_VALIDATE_SAMPLE_PERIOD_US as u16);
+            *state = VelocityValidateState::ReverseStep;
+            StepResult::ReadyNow
         }
 
         VelocityValidateState::ReverseStep => {
@@ -512,16 +533,17 @@ pub(crate) async fn step_velocity_validate_with_trace<B: CommissioningBackend>(
                     Err(_) => return fail_outer(phase, CommissionError::Spi),
                 };
 
-            let next_sample_us = backend
-                .elapsed_us()
-                .wrapping_add(VELOCITY_VALIDATE_SAMPLE_PERIOD_US);
+            let now = backend.elapsed_us();
+            let Some(next_sample_us) = now.checked_add(VELOCITY_VALIDATE_SAMPLE_PERIOD_US) else {
+                return fail_outer(phase, CommissionError::InvalidSchedule);
+            };
             *state = VelocityValidateState::ReverseCapture {
                 next_sample_us,
-                last_sample_us: backend.elapsed_us(),
+                last_sample_us: now,
                 ambiguity_retried: false,
                 saturation_start: data.saturation_count,
             };
-            StepResult::Continue
+            StepResult::At(next_sample_us)
         }
 
         VelocityValidateState::ReverseCapture {
@@ -531,8 +553,8 @@ pub(crate) async fn step_velocity_validate_with_trace<B: CommissioningBackend>(
             saturation_start,
         } => {
             let now = backend.elapsed_us();
-            if now.wrapping_sub(*next_sample_us) >= 0x8000_0000 {
-                return StepResult::Continue;
+            if now < *next_sample_us {
+                return StepResult::At(*next_sample_us);
             }
 
             let encoder_raw = match backend.try_read_mechanical_encoder_position_counts().await {
@@ -546,11 +568,14 @@ pub(crate) async fn step_velocity_validate_with_trace<B: CommissioningBackend>(
                 .encoder_domain
                 .map(EncoderDomain::counts_per_rev)
                 .unwrap_or(0);
+            let Some(elapsed_us) = now.checked_sub(*last_sample_us) else {
+                return fail_outer(phase, CommissionError::InvalidSchedule);
+            };
             let velocity = match encoder_delta_counts_per_ms(
                 encoder_raw,
                 prev_encoder.raw_counts(),
                 counts_per_rev,
-                now.wrapping_sub(*last_sample_us),
+                elapsed_us,
             ) {
                 Ok(velocity) => velocity,
                 Err(EncoderMathError::InvalidCountsPerRev) => {
@@ -582,9 +607,13 @@ pub(crate) async fn step_velocity_validate_with_trace<B: CommissioningBackend>(
                             .count(encoder_raw),
                     );
                     *ambiguity_retried = true;
-                    *next_sample_us = now.wrapping_add(VELOCITY_VALIDATE_SAMPLE_PERIOD_US);
+                    let Some(deadline_us) = now.checked_add(VELOCITY_VALIDATE_SAMPLE_PERIOD_US)
+                    else {
+                        return fail_outer(phase, CommissionError::InvalidSchedule);
+                    };
+                    *next_sample_us = deadline_us;
                     *last_sample_us = now;
-                    return StepResult::Continue;
+                    return StepResult::At(deadline_us);
                 }
                 Err(EncoderMathError::AmbiguousHalfTurn) => {
                     if let Err(error) = command_velocity_target(backend, safety, 0).await {
@@ -641,17 +670,29 @@ pub(crate) async fn step_velocity_validate_with_trace<B: CommissioningBackend>(
                     &samples_slice[..head_len],
                 );
 
-                let deadline = backend
+                let Some(deadline) = backend
                     .elapsed_us()
-                    .wrapping_add(VELOCITY_VALIDATE_SETTLE_US);
+                    .checked_add(VELOCITY_VALIDATE_SETTLE_US)
+                else {
+                    return fail_outer(phase, CommissionError::InvalidSchedule);
+                };
                 *state = VelocityValidateState::ReverseSettle {
                     deadline_us: deadline,
                 };
+                StepResult::At(deadline)
             } else {
-                *next_sample_us = now.wrapping_add(VELOCITY_VALIDATE_SAMPLE_PERIOD_US);
+                let next_deadline_us = match crate::commissioning::schedule::next_grid_deadline(
+                    *next_sample_us,
+                    VELOCITY_VALIDATE_SAMPLE_PERIOD_US,
+                    now,
+                ) {
+                    Ok(deadline_us) => deadline_us,
+                    Err(error) => return fail_outer(phase, error),
+                };
+                *next_sample_us = next_deadline_us;
                 *last_sample_us = now;
+                StepResult::At(next_deadline_us)
             }
-            StepResult::Continue
         }
 
         VelocityValidateState::ReverseSettle { deadline_us } => {
@@ -1375,6 +1416,91 @@ mod tests {
         });
     }
 
+    #[test]
+    fn velocity_captures_wait_for_the_exact_sample_deadline() {
+        pollster::block_on(async {
+            for point in [
+                AmbiguousCapturePoint::Forward,
+                AmbiguousCapturePoint::Reverse,
+            ] {
+                let mut phase =
+                    capture_phase(VelocityTuneStrategy::Model, point, configured_safety());
+                let mut buf = TransientBuffer::new();
+                let mut backend = MockBackend::new();
+                backend.elapsed_us_value = 999;
+
+                let result = step_velocity_validate(
+                    &mut phase,
+                    &mut buf,
+                    CommissionProfile::Balanced,
+                    OperatingMode::Nominal,
+                    0,
+                    0,
+                    false,
+                    0,
+                    &mut backend,
+                )
+                .await;
+
+                assert!(matches!(result, StepResult::At(1_000)));
+                assert!(backend.spi_log.is_empty());
+            }
+        });
+    }
+
+    #[test]
+    fn velocity_settles_use_one_shot_deadlines() {
+        pollster::block_on(async {
+            let mut phase = capture_phase(
+                VelocityTuneStrategy::Model,
+                AmbiguousCapturePoint::Forward,
+                configured_safety(),
+            );
+            if let OuterPhase::VelocityValidate { state, .. } = &mut phase {
+                *state = VelocityValidateState::ForwardSettle { deadline_us: 1_000 };
+            }
+            let mut buf = TransientBuffer::new();
+            let mut backend = MockBackend::new();
+            backend.elapsed_us_value = 999;
+
+            let waiting = step_velocity_validate(
+                &mut phase,
+                &mut buf,
+                CommissionProfile::Balanced,
+                OperatingMode::Nominal,
+                0,
+                0,
+                false,
+                0,
+                &mut backend,
+            )
+            .await;
+            assert!(matches!(waiting, StepResult::At(1_000)));
+
+            backend.elapsed_us_value = 1_000;
+            let elapsed = step_velocity_validate(
+                &mut phase,
+                &mut buf,
+                CommissionProfile::Balanced,
+                OperatingMode::Nominal,
+                0,
+                0,
+                false,
+                0,
+                &mut backend,
+            )
+            .await;
+            assert!(matches!(elapsed, StepResult::ReadyNow));
+            assert!(matches!(
+                phase,
+                OuterPhase::VelocityValidate {
+                    state: VelocityValidateState::ReverseStep,
+                    ..
+                }
+            ));
+        });
+    }
+
     #[derive(Clone, Copy)]
     enum AmbiguousCapturePoint {
         Forward,
@@ -1490,7 +1616,14 @@ mod tests {
         )
         .await;
 
-        assert!(matches!(result, StepResult::Continue));
+        match point {
+            AmbiguousCapturePoint::Forward | AmbiguousCapturePoint::Reverse => {
+                assert!(matches!(result, StepResult::At(2_000)));
+            }
+            AmbiguousCapturePoint::Chatter => {
+                assert!(matches!(result, StepResult::Continue));
+            }
+        }
         assert!(buf.samples().is_empty());
         assert!(backend.spi_log.iter().any(
             |op| matches!(op, SpiOp::Write(address, 0) if *address == PID_VELOCITY_TARGET.addr())
@@ -2463,7 +2596,7 @@ mod tests {
             )
             .await;
 
-            assert!(matches!(result, StepResult::Continue));
+            assert!(matches!(result, StepResult::At(2_000)));
             assert_eq!(buf.samples(), &[15]);
             match phase {
                 OuterPhase::VelocityValidate { state, data, .. } => {
@@ -2475,7 +2608,7 @@ mod tests {
                     assert!(matches!(
                         state,
                         VelocityValidateState::ForwardCapture {
-                            next_sample_us: 2_600,
+                            next_sample_us: 2_000,
                             last_sample_us: 1_600,
                             ..
                         }
@@ -2641,7 +2774,7 @@ mod tests {
             )
             .await;
 
-            assert!(matches!(result, StepResult::Continue));
+            assert!(matches!(result, StepResult::At(2_000)));
             assert_eq!(buf.samples(), &[10]);
         });
     }
