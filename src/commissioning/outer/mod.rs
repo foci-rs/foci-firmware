@@ -11,6 +11,8 @@ mod dispatch;
 pub mod filter;
 mod limits;
 pub mod mechanical;
+#[cfg(test)]
+mod policy_tests;
 pub mod position;
 pub mod response;
 mod safety;
@@ -36,9 +38,10 @@ pub(crate) use safety::{
 };
 pub(crate) use state::{
     EffectiveVelocityPolicy, MechanicalIdData, MechanicalIdState,
+    OUTER_EVIDENCE_CONSERVATIVE_REQUIRED, OUTER_EVIDENCE_LAMBDA_WIDENED,
     OUTER_EVIDENCE_LOW_CONFIDENCE_MECH, OUTER_EVIDENCE_MOTION_BUDGET_CLAMPED,
-    OUTER_EVIDENCE_TAU_DEFAULTED, OUTER_EVIDENCE_UNDER_DRIVEN_PROBE, OuterDiagnostics, OuterPhase,
-    PositionTuneData, PositionTuneState, VELOCITY_SEARCH_STOP_CLEAN,
+    OUTER_EVIDENCE_TAU_DEFAULTED, OUTER_EVIDENCE_UNDER_DRIVEN_PROBE, OUTER_POLICY_WARNING_MASK,
+    OuterDiagnostics, OuterPhase, PositionTuneData, PositionTuneState, VELOCITY_SEARCH_STOP_CLEAN,
     VELOCITY_SEARCH_STOP_LOW_CONFIDENCE, VELOCITY_SEARCH_STOP_UNDER_DRIVEN_BUDGET,
     VELOCITY_SEARCH_STOP_UNSAFE_BACKOFF, VelocityTuneStrategy, VelocityValidateData,
     VelocityValidateState,

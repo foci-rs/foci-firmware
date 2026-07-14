@@ -6,7 +6,7 @@
 
 use super::{
     OUTER_MAX_POSITION_I, OUTER_MAX_POSITION_P, OUTER_MAX_VELOCITY_I, OUTER_MAX_VELOCITY_P,
-    OUTER_WARNING_NONE, OuterPhase, fail_outer,
+    OUTER_POLICY_WARNING_MASK, OUTER_WARNING_NONE, OuterPhase, fail_outer,
 };
 use crate::autotune::{CommissionError, CommissionStatus};
 use crate::commissioning::types::{OuterResult, StepResult};
@@ -62,7 +62,8 @@ pub(crate) fn step_commit(phase: &mut OuterPhase) -> StepResult {
         return fail_outer(phase, CommissionError::PositionTuneFailed);
     }
 
-    let status = if diagnostics.warning_code == OUTER_WARNING_NONE {
+    let has_policy_warning = diagnostics.outer_evidence_flags & OUTER_POLICY_WARNING_MASK != 0;
+    let status = if diagnostics.warning_code == OUTER_WARNING_NONE && !has_policy_warning {
         CommissionStatus::Accepted
     } else {
         CommissionStatus::AcceptedWithWarnings
@@ -115,7 +116,12 @@ pub(crate) fn step_commit(phase: &mut OuterPhase) -> StepResult {
 mod tests {
     use super::*;
     use crate::autotune::{CommissionError, FilterConfig, PositionGains, VelocityGains};
-    use crate::commissioning::outer::{OuterDiagnostics, OuterPhase};
+    use crate::commissioning::outer::{
+        OUTER_EVIDENCE_CONSERVATIVE_REQUIRED, OUTER_EVIDENCE_LAMBDA_WIDENED,
+        OUTER_EVIDENCE_LOW_CONFIDENCE_MECH, OUTER_EVIDENCE_MOTION_BUDGET_CLAMPED,
+        OUTER_EVIDENCE_TAU_DEFAULTED, OUTER_EVIDENCE_UNDER_DRIVEN_PROBE, OuterDiagnostics,
+        OuterPhase,
+    };
     use crate::commissioning::types::StepResult;
 
     fn zero_diagnostics() -> OuterDiagnostics {
@@ -171,6 +177,56 @@ mod tests {
             position_p: 640,
             position_i: 0,
         }
+    }
+
+    fn commit_with_evidence(outer_evidence_flags: u8) -> OuterResult {
+        let mut phase = commit_phase(valid_velocity_gains(), valid_position_gains());
+        let OuterPhase::Commit { diagnostics, .. } = &mut phase else {
+            unreachable!();
+        };
+        diagnostics.outer_evidence_flags = outer_evidence_flags;
+
+        let StepResult::OuterDone(result) = step_commit(&mut phase) else {
+            panic!("expected accepted outer result");
+        };
+        result
+    }
+
+    #[test]
+    fn conservative_required_policy_is_accepted_with_warnings() {
+        let result = commit_with_evidence(OUTER_EVIDENCE_CONSERVATIVE_REQUIRED);
+        assert_eq!(result.status, CommissionStatus::AcceptedWithWarnings);
+    }
+
+    #[test]
+    fn widened_lambda_policy_is_accepted_with_warnings() {
+        let result = commit_with_evidence(OUTER_EVIDENCE_LAMBDA_WIDENED);
+        assert_eq!(result.status, CommissionStatus::AcceptedWithWarnings);
+    }
+
+    #[test]
+    fn unrelated_outer_evidence_does_not_change_status() {
+        let result = commit_with_evidence(
+            OUTER_EVIDENCE_UNDER_DRIVEN_PROBE
+                | OUTER_EVIDENCE_LOW_CONFIDENCE_MECH
+                | OUTER_EVIDENCE_TAU_DEFAULTED
+                | OUTER_EVIDENCE_MOTION_BUDGET_CLAMPED,
+        );
+        assert_eq!(result.status, CommissionStatus::Accepted);
+    }
+
+    #[test]
+    fn warning_code_remains_accepted_with_warnings() {
+        let mut phase = commit_phase(valid_velocity_gains(), valid_position_gains());
+        let OuterPhase::Commit { diagnostics, .. } = &mut phase else {
+            unreachable!();
+        };
+        diagnostics.warning_code = 1;
+
+        let StepResult::OuterDone(result) = step_commit(&mut phase) else {
+            panic!("expected accepted outer result");
+        };
+        assert_eq!(result.status, CommissionStatus::AcceptedWithWarnings);
     }
 
     #[test]

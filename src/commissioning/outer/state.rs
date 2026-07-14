@@ -14,6 +14,10 @@ pub(crate) const OUTER_EVIDENCE_UNDER_DRIVEN_PROBE: u8 = 1 << 0;
 pub(crate) const OUTER_EVIDENCE_LOW_CONFIDENCE_MECH: u8 = 1 << 1;
 pub(crate) const OUTER_EVIDENCE_TAU_DEFAULTED: u8 = 1 << 2;
 pub(crate) const OUTER_EVIDENCE_MOTION_BUDGET_CLAMPED: u8 = 1 << 3;
+pub(crate) const OUTER_EVIDENCE_CONSERVATIVE_REQUIRED: u8 = 1 << 4;
+pub(crate) const OUTER_EVIDENCE_LAMBDA_WIDENED: u8 = 1 << 5;
+pub(crate) const OUTER_POLICY_WARNING_MASK: u8 =
+    OUTER_EVIDENCE_CONSERVATIVE_REQUIRED | OUTER_EVIDENCE_LAMBDA_WIDENED;
 
 /// Mechanical identification sub-state machine (Phase 8).
 #[derive(Debug, defmt::Format)]

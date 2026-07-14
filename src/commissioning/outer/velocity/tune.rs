@@ -1,9 +1,9 @@
 //! Phase 9 velocity-loop SIMC gain synthesis.
 
 use super::super::{
-    EffectiveVelocityPolicy, OUTER_MAX_VELOCITY_I, OUTER_MAX_VELOCITY_P,
-    OUTER_WARNING_UNSAFE_SYNTH_GAINS, OuterPhase, VELOCITY_SEARCH_STOP_CLEAN, VelocityTuneStrategy,
-    VelocityValidateData, VelocityValidateState,
+    EffectiveVelocityPolicy, OUTER_EVIDENCE_CONSERVATIVE_REQUIRED, OUTER_EVIDENCE_LAMBDA_WIDENED,
+    OUTER_MAX_VELOCITY_I, OUTER_MAX_VELOCITY_P, OUTER_WARNING_UNSAFE_SYNTH_GAINS, OuterPhase,
+    VELOCITY_SEARCH_STOP_CLEAN, VelocityTuneStrategy, VelocityValidateData, VelocityValidateState,
 };
 use super::validate::VELOCITY_VALIDATE_STEP_PERCENT;
 use crate::autotune::{CommissionError, CommissionProfile, OperatingMode, PhaseId};
@@ -72,6 +72,12 @@ pub(crate) async fn step_velocity_tune<B: CommissioningBackend>(
 
     let policy =
         derive_effective_velocity_policy(profile, inner_warning_flags, current_bandwidth_hz);
+    if policy.conservative_required {
+        diagnostics.outer_evidence_flags |= OUTER_EVIDENCE_CONSERVATIVE_REQUIRED;
+    }
+    if policy.lambda_widened {
+        diagnostics.outer_evidence_flags |= OUTER_EVIDENCE_LAMBDA_WIDENED;
+    }
     if policy.lambda_widened {
         let widening_permille = (policy.lambda_multiplier * 1000.0) as u32;
         defmt::info!(

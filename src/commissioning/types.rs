@@ -752,8 +752,10 @@ pub struct OuterResult {
     /// bit1: mechanical ID was low confidence.
     /// bit2: mechanical tau was defaulted instead of derived from J/B.
     /// bit3: host motion budget clamped a firmware hard cap.
+    /// bit4: Conservative velocity policy was required.
+    /// bit5: velocity lambda was widened from Stage 1 warning evidence.
     ///
-    /// Remaining bits are reserved and must be zero.
+    /// Bits 6-7 are reserved and must be zero.
     pub outer_evidence_flags: u8,
     /// Stiffness classification timebase in milliseconds.
     pub stiffness_timebase_ms: u16,
