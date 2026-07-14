@@ -40,6 +40,10 @@ const POSITION_TUNE_SAMPLE_PERIOD_US: u64 = 1000;
 /// Settle period after returning to the starting position (microseconds).
 const POSITION_TUNE_SETTLE_US: u64 = 200_000;
 
+/// Maximum register operations performed by one armed position-tune poll.
+#[allow(dead_code)]
+pub(super) const POSITION_TUNE_MAX_REGISTER_OPS_PER_ARM: usize = 5;
+
 /// Position mode with `MODE_PID_TYPE` set, matching production closed-loop entry.
 const OUTER_POSITION_MODE: u32 = 0x8000_0003;
 
@@ -202,17 +206,18 @@ pub(crate) async fn step_position_tune_with_trace<B: CommissioningBackend>(
             buf.reset(POSITION_TUNE_SAMPLE_PERIOD_US as u16);
             data.saturation_count = 0;
 
-            let next_sample_us = backend
-                .elapsed_us()
-                .wrapping_add(POSITION_TUNE_SAMPLE_PERIOD_US);
+            let now = backend.elapsed_us();
+            let Some(next_sample_us) = now.checked_add(POSITION_TUNE_SAMPLE_PERIOD_US) else {
+                return fail_outer(phase, CommissionError::InvalidSchedule);
+            };
             *state = PositionTuneState::StepCapture { next_sample_us };
-            StepResult::Continue
+            StepResult::At(next_sample_us)
         }
 
         PositionTuneState::StepCapture { next_sample_us } => {
             let now = backend.elapsed_us();
-            if now.wrapping_sub(*next_sample_us) >= 0x8000_0000 {
-                return StepResult::Continue;
+            if now < *next_sample_us {
+                return StepResult::At(*next_sample_us);
             }
 
             let encoder_raw = match backend.try_read_mechanical_encoder_position_counts().await {
@@ -257,21 +262,34 @@ pub(crate) async fn step_position_tune_with_trace<B: CommissioningBackend>(
                     return fail_outer(phase, error);
                 }
 
-                let deadline = backend.elapsed_us().wrapping_add(POSITION_TUNE_SETTLE_US);
+                let Some(deadline) = backend.elapsed_us().checked_add(POSITION_TUNE_SETTLE_US)
+                else {
+                    return fail_outer(phase, CommissionError::InvalidSchedule);
+                };
                 *state = PositionTuneState::Settle {
                     deadline_us: deadline,
                 };
+                StepResult::At(deadline)
             } else {
-                *next_sample_us = now.wrapping_add(POSITION_TUNE_SAMPLE_PERIOD_US);
+                let next_deadline_us = match crate::commissioning::schedule::next_grid_deadline(
+                    *next_sample_us,
+                    POSITION_TUNE_SAMPLE_PERIOD_US,
+                    now,
+                ) {
+                    Ok(deadline_us) => deadline_us,
+                    Err(error) => return fail_outer(phase, error),
+                };
+                *next_sample_us = next_deadline_us;
+                StepResult::At(next_deadline_us)
             }
-            StepResult::Continue
         }
 
         PositionTuneState::Settle { deadline_us } => {
-            if backend.elapsed_us().wrapping_sub(*deadline_us) < 0x8000_0000 {
-                *state = PositionTuneState::Analyze;
+            if backend.elapsed_us() < *deadline_us {
+                return StepResult::At(*deadline_us);
             }
-            StepResult::Continue
+            *state = PositionTuneState::Analyze;
+            StepResult::ReadyNow
         }
 
         PositionTuneState::Analyze => {
@@ -321,6 +339,7 @@ pub(crate) async fn step_position_tune_with_trace<B: CommissioningBackend>(
                     defmt::warn!("pos tune: minimum P={} oscillates", data.current_p);
                 }
                 *state = PositionTuneState::Finalize;
+                StepResult::ReadyNow
             } else {
                 data.stable_p = data.current_p;
 
@@ -333,6 +352,7 @@ pub(crate) async fn step_position_tune_with_trace<B: CommissioningBackend>(
                 if data.current_p >= max_p {
                     defmt::info!("pos tune: P cap reached at {}", data.stable_p);
                     *state = PositionTuneState::Finalize;
+                    StepResult::ReadyNow
                 } else {
                     record_position_tune_summary(
                         backend,
@@ -347,53 +367,56 @@ pub(crate) async fn step_position_tune_with_trace<B: CommissioningBackend>(
                     if new_p <= data.current_p {
                         defmt::info!("pos tune: P cap reached at {}", data.stable_p);
                         *state = PositionTuneState::Finalize;
-                        return StepResult::Continue;
-                    }
-                    data.current_p = new_p;
+                        StepResult::ReadyNow
+                    } else {
+                        data.current_p = new_p;
 
-                    let pos_reg = (data.current_p as u32) << 16;
-                    if backend
-                        .write_register(PID_POSITION_P_POSITION_I, pos_reg)
-                        .await
-                        .is_err()
-                    {
-                        return fail_outer(phase, CommissionError::Spi);
-                    }
-
-                    let encoder_raw =
-                        match backend.try_read_mechanical_encoder_position_counts().await {
-                            Ok(value) => value,
-                            Err(_) => return fail_outer(phase, CommissionError::Spi),
-                        };
-                    data.step_start_counts = Some(
-                        safety
-                            .encoder_domain
-                            .expect("outer encoder domain configured before position tuning")
-                            .count(encoder_raw),
-                    );
-                    let position_raw = match backend.read_register(PID_POSITION_ACTUAL).await {
-                        Ok(v) => v as i32,
-                        Err(_) => {
+                        let pos_reg = (data.current_p as u32) << 16;
+                        if backend
+                            .write_register(PID_POSITION_P_POSITION_I, pos_reg)
+                            .await
+                            .is_err()
+                        {
                             return fail_outer(phase, CommissionError::Spi);
                         }
-                    };
-                    data.step_start_tmc = position_raw;
-                    let target = position_raw.wrapping_add(data.step_target_tmc as i32);
-                    if let Err(error) =
-                        command_position_step_target(backend, safety, target as u32).await
-                    {
-                        return fail_outer(phase, error);
-                    }
 
-                    buf.reset(POSITION_TUNE_SAMPLE_PERIOD_US as u16);
-                    data.saturation_count = 0;
-                    let next_sample_us = backend
-                        .elapsed_us()
-                        .wrapping_add(POSITION_TUNE_SAMPLE_PERIOD_US);
-                    *state = PositionTuneState::StepCapture { next_sample_us };
+                        let encoder_raw =
+                            match backend.try_read_mechanical_encoder_position_counts().await {
+                                Ok(value) => value,
+                                Err(_) => return fail_outer(phase, CommissionError::Spi),
+                            };
+                        data.step_start_counts = Some(
+                            safety
+                                .encoder_domain
+                                .expect("outer encoder domain configured before position tuning")
+                                .count(encoder_raw),
+                        );
+                        let position_raw = match backend.read_register(PID_POSITION_ACTUAL).await {
+                            Ok(v) => v as i32,
+                            Err(_) => {
+                                return fail_outer(phase, CommissionError::Spi);
+                            }
+                        };
+                        data.step_start_tmc = position_raw;
+                        let target = position_raw.wrapping_add(data.step_target_tmc as i32);
+                        if let Err(error) =
+                            command_position_step_target(backend, safety, target as u32).await
+                        {
+                            return fail_outer(phase, error);
+                        }
+
+                        buf.reset(POSITION_TUNE_SAMPLE_PERIOD_US as u16);
+                        data.saturation_count = 0;
+                        let now = backend.elapsed_us();
+                        let Some(next_sample_us) = now.checked_add(POSITION_TUNE_SAMPLE_PERIOD_US)
+                        else {
+                            return fail_outer(phase, CommissionError::InvalidSchedule);
+                        };
+                        *state = PositionTuneState::StepCapture { next_sample_us };
+                        StepResult::At(next_sample_us)
+                    }
                 }
             }
-            StepResult::Continue
         }
 
         PositionTuneState::Finalize => {
@@ -582,6 +605,134 @@ mod tests {
     }
 
     #[test]
+    fn position_setup_schedules_capture_within_the_register_bound() {
+        pollster::block_on(async {
+            let mut phase = position_capture_phase(0);
+            if let OuterPhase::PositionTune { state, .. } = &mut phase {
+                *state = PositionTuneState::Setup;
+            }
+            let mut buf = TransientBuffer::new();
+            let mut backend = MockBackend::new();
+
+            let result =
+                step_position_tune(&mut phase, &mut buf, OperatingMode::Nominal, &mut backend)
+                    .await;
+
+            assert!(matches!(result, StepResult::At(1_000)));
+            assert_eq!(
+                backend.spi_log.len(),
+                POSITION_TUNE_MAX_REGISTER_OPS_PER_ARM
+            );
+            assert!(matches!(
+                phase,
+                OuterPhase::PositionTune {
+                    state: PositionTuneState::StepCapture {
+                        next_sample_us: 1_000
+                    },
+                    safety: OuterSafetyLimits {
+                        primitive_start_us: Some(0),
+                        ..
+                    },
+                    ..
+                }
+            ));
+        });
+    }
+
+    #[test]
+    fn position_capture_waits_and_preserves_the_sample_grid() {
+        pollster::block_on(async {
+            let mut phase = position_capture_phase(0);
+            let mut buf = TransientBuffer::new();
+            let mut backend = MockBackend::new();
+            backend.elapsed_us_value = 999;
+
+            let waiting =
+                step_position_tune(&mut phase, &mut buf, OperatingMode::Nominal, &mut backend)
+                    .await;
+            assert!(matches!(waiting, StepResult::At(1_000)));
+            assert!(backend.spi_log.is_empty());
+
+            backend.elapsed_us_value = 1_600;
+            backend.mechanical_encoder_position_counts_value = 4;
+            let sampled =
+                step_position_tune(&mut phase, &mut buf, OperatingMode::Nominal, &mut backend)
+                    .await;
+            assert!(matches!(sampled, StepResult::At(2_000)));
+            assert!(matches!(
+                phase,
+                OuterPhase::PositionTune {
+                    state: PositionTuneState::StepCapture {
+                        next_sample_us: 2_000
+                    },
+                    ..
+                }
+            ));
+        });
+    }
+
+    #[test]
+    fn position_settle_uses_a_one_shot_deadline() {
+        pollster::block_on(async {
+            let mut phase = position_capture_phase(0);
+            if let OuterPhase::PositionTune { state, .. } = &mut phase {
+                *state = PositionTuneState::Settle { deadline_us: 1_000 };
+            }
+            let mut buf = TransientBuffer::new();
+            let mut backend = MockBackend::new();
+            backend.elapsed_us_value = 999;
+
+            let waiting =
+                step_position_tune(&mut phase, &mut buf, OperatingMode::Nominal, &mut backend)
+                    .await;
+            assert!(matches!(waiting, StepResult::At(1_000)));
+
+            backend.elapsed_us_value = 1_000;
+            let elapsed =
+                step_position_tune(&mut phase, &mut buf, OperatingMode::Nominal, &mut backend)
+                    .await;
+            assert!(matches!(elapsed, StepResult::ReadyNow));
+            assert!(matches!(
+                phase,
+                OuterPhase::PositionTune {
+                    state: PositionTuneState::Analyze,
+                    ..
+                }
+            ));
+        });
+    }
+
+    #[test]
+    fn next_position_rung_arms_its_exact_capture_deadline() {
+        pollster::block_on(async {
+            let mut phase = position_capture_phase(0);
+            if let OuterPhase::PositionTune { state, .. } = &mut phase {
+                *state = PositionTuneState::Analyze;
+            }
+            let mut buf = TransientBuffer::new();
+            for _ in 0..crate::autotune::TRANSIENT_LEN {
+                assert!(buf.push(100));
+            }
+            let mut backend = MockBackend::new();
+
+            let result =
+                step_position_tune(&mut phase, &mut buf, OperatingMode::Nominal, &mut backend)
+                    .await;
+
+            assert!(matches!(result, StepResult::At(1_000)));
+            assert!(matches!(
+                phase,
+                OuterPhase::PositionTune {
+                    state: PositionTuneState::StepCapture {
+                        next_sample_us: 1_000
+                    },
+                    ..
+                }
+            ));
+        });
+    }
+
+    #[test]
     fn position_step_capture_accepts_origin_crossing() {
         pollster::block_on(async {
             let mut phase = position_capture_phase(3_998);
@@ -594,7 +745,7 @@ mod tests {
                 step_position_tune(&mut phase, &mut buf, OperatingMode::Nominal, &mut backend)
                     .await;
 
-            assert!(matches!(result, StepResult::Continue));
+            assert!(matches!(result, StepResult::At(2_000)));
             assert_eq!(buf.samples(), &[4]);
         });
     }

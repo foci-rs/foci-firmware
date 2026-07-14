@@ -109,3 +109,60 @@ pub(crate) fn step_commit(phase: &mut OuterPhase) -> StepResult {
     *phase = OuterPhase::Done(result.clone());
     StepResult::OuterDone(result)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::step_commit;
+    use crate::autotune::{FilterConfig, PositionGains, VelocityGains};
+    use crate::commissioning::outer::{OuterDiagnostics, OuterPhase};
+    use crate::commissioning::types::StepResult;
+
+    #[test]
+    fn commit_assembles_the_result_immediately() {
+        let mut phase = OuterPhase::Commit {
+            velocity_gains: VelocityGains {
+                velocity_p: 350,
+                velocity_i: 80,
+                velocity_limit: 1_000,
+                effective_bandwidth_hz: 100,
+                lambda_vel_ms: 10,
+            },
+            position_gains: PositionGains {
+                position_p: 100,
+                position_i: 0,
+            },
+            filter_config: FilterConfig {
+                velocity_filter_hz: None,
+                position_filter_hz: None,
+                flux_filter_hz: None,
+                torque_filter_hz: None,
+            },
+            j_eff: 1,
+            b_eff: 2,
+            diagnostics: OuterDiagnostics {
+                warning_code: 0,
+                mech_torque_step: 0,
+                mech_fwd_accel: 0,
+                mech_rev_accel: 0,
+                mech_fwd_peak_velocity: 0,
+                mech_rev_peak_velocity: 0,
+                mech_fwd_travel: 0,
+                mech_rev_travel: 0,
+                mech_tau_defaulted: false,
+                synth_velocity_p: 0,
+                synth_velocity_i: 0,
+                synth_position_p: 0,
+                synth_position_i: 0,
+                outer_evidence_flags: 0,
+                stiffness_timebase_ms: 0,
+                velocity_search_stop_reason: 0,
+                motion_budget_mrev: 0,
+            },
+        };
+
+        let result = step_commit(&mut phase);
+
+        assert!(matches!(result, StepResult::OuterDone(_)));
+        assert!(matches!(phase, OuterPhase::Done(_)));
+    }
+}

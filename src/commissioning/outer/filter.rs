@@ -12,6 +12,10 @@ use crate::commissioning::helpers;
 use crate::commissioning::outer::fail_outer;
 use crate::commissioning::types::{CommissioningBackend, StepResult};
 
+/// Maximum register operations performed by filter selection.
+#[allow(dead_code)]
+pub(super) const FILTER_TUNE_MAX_REGISTER_OPS_PER_ARM: usize = 48;
+
 /// Implement filter selection from prior validation metrics.
 pub(crate) async fn step_filter_tune<B: CommissioningBackend>(
     phase: &mut OuterPhase,
@@ -168,7 +172,7 @@ pub(crate) async fn step_filter_tune<B: CommissioningBackend>(
 
 #[cfg(test)]
 mod tests {
-    use super::step_filter_tune;
+    use super::{FILTER_TUNE_MAX_REGISTER_OPS_PER_ARM, step_filter_tune};
     use crate::autotune::{CommissionError, PositionGains, VelocityGains};
     use crate::commission_dispatch::test_support::MockBackend;
     use crate::commissioning::outer::{OuterDiagnostics, OuterPhase, OuterSafetyLimits};
@@ -234,6 +238,46 @@ mod tests {
                 StepResult::OuterFailed(CommissionError::Spi)
             ));
             assert!(matches!(phase, OuterPhase::Failed(CommissionError::Spi)));
+        });
+    }
+
+    #[test]
+    fn enabled_filters_complete_immediately_within_the_register_bound() {
+        pollster::block_on(async {
+            let mut phase = OuterPhase::FilterTune {
+                velocity_gains: VelocityGains {
+                    velocity_p: 1_152,
+                    velocity_i: 0,
+                    velocity_limit: 16,
+                    effective_bandwidth_hz: 100,
+                    lambda_vel_ms: 10,
+                },
+                position_gains: PositionGains {
+                    position_p: 640,
+                    position_i: 0,
+                },
+                position_oscillation_early: true,
+                velocity_chatter: true,
+                current_ringing: true,
+                current_bandwidth_hz: 1_600,
+                j_eff: 1,
+                b_eff: 1,
+                diagnostics: zero_diagnostics(),
+                safety: OuterSafetyLimits::new(
+                    2_448,
+                    crate::commissioning::outer::OuterMotionBudget::firmware_caps(),
+                ),
+            };
+            let mut backend = MockBackend::new();
+
+            let result = step_filter_tune(&mut phase, &mut backend).await;
+
+            assert!(matches!(
+                result,
+                StepResult::PhaseChanged(crate::autotune::PhaseId::Commit)
+            ));
+            assert_eq!(backend.spi_log.len(), FILTER_TUNE_MAX_REGISTER_OPS_PER_ARM);
+            assert!(matches!(phase, OuterPhase::Commit { .. }));
         });
     }
 }
