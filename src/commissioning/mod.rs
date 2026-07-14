@@ -880,24 +880,29 @@ impl CommissioningEngine {
         backend: &mut B,
     ) -> StepResult {
         loop {
+            let capture_result = match &mut self.engine_mode {
+                EngineMode::Inner { phase, .. } => {
+                    inner::electrical_identification::drive_deadline_capture(
+                        phase,
+                        &mut self.buf,
+                        &mut self.diagnostics,
+                        backend,
+                    )
+                    .await
+                }
+                EngineMode::Outer { .. } => None,
+            };
+            if let Some(result) = capture_result {
+                self.emit_trace_after_step(backend, &result);
+                return result;
+            }
+
             let result = self.step(backend).await;
-            let StepResult::At(deadline_us) = result else {
+            let StepResult::At(_) = result else {
                 return result;
             };
             if !self.deadline_capture_active() {
                 return result;
-            }
-
-            loop {
-                let now_us = backend.elapsed_us();
-                if now_us >= deadline_us || backend.is_shutdown_requested() {
-                    break;
-                }
-                let remaining_us = deadline_us - now_us;
-                let delay_us = u32::try_from(remaining_us).unwrap_or(u32::MAX);
-                backend.capture_wait_start(delay_us);
-                backend.delay_us(delay_us).await;
-                backend.capture_wait_end();
             }
         }
     }

@@ -808,6 +808,32 @@ enum InductanceSamplePoll {
     },
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CaptureWait {
+    DeadlineReached,
+    Shutdown,
+}
+
+async fn wait_for_capture_deadline<B: CommissioningBackend>(
+    backend: &mut B,
+    deadline_us: u64,
+) -> CaptureWait {
+    loop {
+        if backend.is_shutdown_requested() {
+            return CaptureWait::Shutdown;
+        }
+        let now_us = backend.elapsed_us();
+        if now_us >= deadline_us {
+            return CaptureWait::DeadlineReached;
+        }
+        let remaining_us = deadline_us - now_us;
+        let delay_us = u32::try_from(remaining_us).unwrap_or(u32::MAX);
+        backend.capture_wait_start(delay_us);
+        backend.delay_us(delay_us).await;
+        backend.capture_wait_end();
+    }
+}
+
 async fn poll_inductance_sample<B: CommissioningBackend>(
     backend: &mut B,
     diagnostics: &mut crate::selftest::CommissionDiagnostics,
@@ -1026,6 +1052,85 @@ async fn poll_inductance_sample<B: CommissioningBackend>(
     capture.previous_phi = current_phi;
     capture.accumulated_phi_delta_counts = interval.accumulated_phi_delta_counts;
     Ok(InductanceSamplePoll::At)
+}
+
+/// Drive an active electrical capture through all of its sample deadlines.
+///
+/// Returns `None` when the electrical-ID state is not a deadline capture or
+/// when shutdown must fall back to the engine's canonical safe-state path.
+pub(crate) async fn drive_deadline_capture<B: CommissioningBackend>(
+    phase: &mut InnerPhase,
+    buf: &mut TransientBuffer,
+    diagnostics: &mut crate::selftest::CommissionDiagnostics,
+    backend: &mut B,
+) -> Option<StepResult> {
+    let InnerPhase::ElectricalId { state, data } = phase else {
+        return None;
+    };
+
+    match state {
+        ElectricalIdState::InductanceSample { capture } => loop {
+            if matches!(
+                wait_for_capture_deadline(backend, capture.next_sample_us).await,
+                CaptureWait::Shutdown
+            ) {
+                return None;
+            }
+            let now_us = backend.elapsed_us();
+            match poll_inductance_sample(backend, diagnostics, capture, now_us).await {
+                Ok(InductanceSamplePoll::At) => {}
+                Ok(InductanceSamplePoll::Complete { elapsed_us, timing }) => {
+                    *state = ElectricalIdState::InductanceReadStatus {
+                        capture: *capture,
+                        completed_elapsed_us: elapsed_us,
+                        timing,
+                    };
+                    return Some(StepResult::ReadyNow);
+                }
+                Err(CommissionError::Shutdown) => return None,
+                Err(error) => {
+                    let (evidence, overflowed) = capture.timing.snapshot();
+                    data.inductance_timing = Some(evidence);
+                    data.timing_overflow_mask |= u8::from(overflowed) << 1;
+                    return Some(begin_inductance_restore(
+                        state,
+                        backend,
+                        Some(error),
+                        None,
+                        Some(evidence),
+                    ));
+                }
+            }
+        },
+        ElectricalIdState::DelaySample { capture } => loop {
+            if matches!(
+                wait_for_capture_deadline(backend, capture.next_sample_us).await,
+                CaptureWait::Shutdown
+            ) {
+                return None;
+            }
+            let now_us = backend.elapsed_us();
+            match poll_delay_sample(backend, buf, capture, now_us).await {
+                Ok(DelaySamplePoll::At) => {}
+                Ok(DelaySamplePoll::Complete(completed)) => {
+                    data.delay_timing = Some(completed.timing);
+                    *state = ElectricalIdState::DelayStopMotion {
+                        primary_error: None,
+                        completed: Some(completed),
+                    };
+                    return Some(StepResult::ReadyNow);
+                }
+                Err(CommissionError::Shutdown) => return None,
+                Err(error) => {
+                    let (evidence, overflowed) = capture.timing.snapshot();
+                    data.delay_timing = Some(evidence);
+                    data.timing_overflow_mask |= u8::from(overflowed) << 2;
+                    return Some(begin_delay_restore(state, backend, Some(error), None));
+                }
+            }
+        },
+        _ => None,
+    }
 }
 
 struct InductanceCaptureFinish<'a> {

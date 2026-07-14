@@ -798,6 +798,57 @@ fn scheduled_step_keeps_inductance_capture_inside_one_deadline_loop() {
 }
 
 #[test]
+fn scheduled_capture_shutdown_uses_canonical_engine_failure_path() {
+    pollster::block_on(async {
+        use crate::commissioning::capture_timing::{CaptureTiming, TimingEnvelope};
+        use crate::commissioning::encoder_domain::EncoderDomain;
+        use crate::commissioning::inner::InductanceCaptureState;
+
+        let mut runtime = TmcControlRuntime::new_for_channel(0);
+        let mut engine =
+            CommissioningEngine::new_commission(7, crate::autotune::CommissionProfile::Balanced);
+        engine.set_inductance_capture_for_test(InductanceCaptureState {
+            encoder_domain: EncoderDomain::new(4_000).unwrap(),
+            encoder_start: 0,
+            start_us: 900,
+            previous_elapsed_us: 0,
+            previous_phi: 0,
+            accumulated_phi_delta_counts: 0,
+            accumulator: crate::electrical_capture::AcFrameAccumulator::new(),
+            first_half: crate::electrical_capture::AcFrameAccumulator::new(),
+            second_half: crate::electrical_capture::AcFrameAccumulator::new(),
+            saliency: crate::electrical_capture::AcSaliencyAccumulator::new(),
+            sample_count: 0,
+            status_flags_or: 0,
+            next_sample_us: 1_000,
+            timing: CaptureTiming::new(200, TimingEnvelope::INDUCTANCE),
+        });
+        runtime.set_commission_engine(engine);
+
+        let mut backend = MockBackend::new();
+        backend.enable_pin = true;
+        backend.elapsed_us_value = 900;
+        backend.shutdown_requested = true;
+
+        let poll = runtime
+            .step_commissioning_scheduled(&mut backend)
+            .await
+            .expect("engine should be active");
+
+        assert!(matches!(
+            poll,
+            crate::commissioning::schedule::CommissionPoll::Terminal {
+                result: crate::commissioning::schedule::CommissionTerminal::InnerFailed(
+                    crate::autotune::CommissionError::Shutdown
+                )
+            }
+        ));
+        assert!(!backend.enable_pin);
+        assert_eq!(backend.register_pair_reads, 0);
+    });
+}
+
+#[test]
 fn scheduled_step_keeps_delay_capture_inside_one_deadline_loop() {
     pollster::block_on(async {
         use crate::autotune::DelayTimestampOffsets;
