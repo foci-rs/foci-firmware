@@ -40,6 +40,10 @@ const VELOCITY_VALIDATE_CHATTER_WINDOW: u16 = 200;
 /// Encoder-counts/ms threshold above which a zero-speed sample counts as chatter.
 const VELOCITY_VALIDATE_CHATTER_THRESHOLD: u32 = 3;
 
+/// Maximum register operations performed by one armed velocity-validation poll.
+#[allow(dead_code)]
+pub(super) const VELOCITY_VALIDATE_MAX_REGISTER_OPS_PER_ARM: usize = 4;
+
 /// Lambda multiplier (numerator/denominator) applied on a marginal retry.
 const VELOCITY_RETRY_LAMBDA_MUL_NUM: u32 = 3;
 const VELOCITY_RETRY_LAMBDA_MUL_DEN: u32 = 2;
@@ -117,6 +121,12 @@ fn encoder_rate_magnitude_counts_per_ms_to_tmc_velocity(
     let denominator = u128::from(encoder_counts_per_rev) * u128::from(f_pwm_hz);
     let rounded = (numerator + denominator / 2) / denominator;
     rounded.min(u128::from(u32::MAX)) as u32
+}
+
+fn velocity_settle_deadline(now_us: u64) -> Result<u64, CommissionError> {
+    now_us
+        .checked_add(VELOCITY_VALIDATE_SETTLE_US)
+        .ok_or(CommissionError::InvalidSchedule)
 }
 
 fn encoder_counts_to_tmc_position_units(encoder_counts: i32, encoder_counts_per_rev: u32) -> i32 {
@@ -696,11 +706,12 @@ pub(crate) async fn step_velocity_validate_with_trace<B: CommissioningBackend>(
         }
 
         VelocityValidateState::ReverseSettle { deadline_us } => {
-            if backend.elapsed_us().wrapping_sub(*deadline_us) < 0x8000_0000 {
-                data.prev_encoder_for_velocity = match backend
-                    .try_read_mechanical_encoder_position_counts()
-                    .await
-                {
+            let now = backend.elapsed_us();
+            if now < *deadline_us {
+                return StepResult::At(*deadline_us);
+            }
+            data.prev_encoder_for_velocity =
+                match backend.try_read_mechanical_encoder_position_counts().await {
                     Ok(value) => Some(
                         safety
                             .encoder_domain
@@ -709,18 +720,17 @@ pub(crate) async fn step_velocity_validate_with_trace<B: CommissioningBackend>(
                     ),
                     Err(_) => return fail_outer(phase, CommissionError::Spi),
                 };
-                buf.reset(VELOCITY_VALIDATE_SAMPLE_PERIOD_US as u16);
-                let next_sample_us = backend
-                    .elapsed_us()
-                    .wrapping_add(VELOCITY_VALIDATE_SAMPLE_PERIOD_US);
-                *state = VelocityValidateState::ChatterCheck {
-                    next_sample_us,
-                    last_sample_us: backend.elapsed_us(),
-                    remaining: VELOCITY_VALIDATE_CHATTER_WINDOW,
-                    ambiguity_retried: false,
-                };
-            }
-            StepResult::Continue
+            buf.reset(VELOCITY_VALIDATE_SAMPLE_PERIOD_US as u16);
+            let Some(next_sample_us) = now.checked_add(VELOCITY_VALIDATE_SAMPLE_PERIOD_US) else {
+                return fail_outer(phase, CommissionError::InvalidSchedule);
+            };
+            *state = VelocityValidateState::ChatterCheck {
+                next_sample_us,
+                last_sample_us: now,
+                remaining: VELOCITY_VALIDATE_CHATTER_WINDOW,
+                ambiguity_retried: false,
+            };
+            StepResult::At(next_sample_us)
         }
 
         VelocityValidateState::ChatterCheck {
@@ -730,8 +740,8 @@ pub(crate) async fn step_velocity_validate_with_trace<B: CommissioningBackend>(
             ambiguity_retried,
         } => {
             let now = backend.elapsed_us();
-            if now.wrapping_sub(*next_sample_us) >= 0x8000_0000 {
-                return StepResult::Continue;
+            if now < *next_sample_us {
+                return StepResult::At(*next_sample_us);
             }
 
             let count = match backend.try_read_mechanical_encoder_position_counts().await {
@@ -745,11 +755,14 @@ pub(crate) async fn step_velocity_validate_with_trace<B: CommissioningBackend>(
                 .encoder_domain
                 .map(EncoderDomain::counts_per_rev)
                 .unwrap_or(0);
+            let Some(elapsed_us) = now.checked_sub(*last_sample_us) else {
+                return fail_outer(phase, CommissionError::InvalidSchedule);
+            };
             let velocity = match encoder_delta_counts_per_ms(
                 count,
                 prev_encoder.raw_counts(),
                 counts_per_rev,
-                now.wrapping_sub(*last_sample_us),
+                elapsed_us,
             ) {
                 Ok(velocity) => velocity,
                 Err(EncoderMathError::InvalidCountsPerRev) => {
@@ -771,9 +784,13 @@ pub(crate) async fn step_velocity_validate_with_trace<B: CommissioningBackend>(
                     );
                     *ambiguity_retried = true;
                     *remaining = VELOCITY_VALIDATE_CHATTER_WINDOW;
-                    *next_sample_us = now.wrapping_add(VELOCITY_VALIDATE_SAMPLE_PERIOD_US);
+                    let Some(deadline_us) = now.checked_add(VELOCITY_VALIDATE_SAMPLE_PERIOD_US)
+                    else {
+                        return fail_outer(phase, CommissionError::InvalidSchedule);
+                    };
+                    *next_sample_us = deadline_us;
                     *last_sample_us = now;
-                    return StepResult::Continue;
+                    return StepResult::At(deadline_us);
                 }
                 Err(EncoderMathError::AmbiguousHalfTurn) => {
                     if let Err(error) = command_velocity_target(backend, safety, 0).await {
@@ -795,11 +812,20 @@ pub(crate) async fn step_velocity_validate_with_trace<B: CommissioningBackend>(
             *remaining -= 1;
             if *remaining == 0 {
                 *state = VelocityValidateState::Classify;
+                StepResult::ReadyNow
             } else {
-                *next_sample_us = now.wrapping_add(VELOCITY_VALIDATE_SAMPLE_PERIOD_US);
+                let next_deadline_us = match crate::commissioning::schedule::next_grid_deadline(
+                    *next_sample_us,
+                    VELOCITY_VALIDATE_SAMPLE_PERIOD_US,
+                    now,
+                ) {
+                    Ok(deadline_us) => deadline_us,
+                    Err(error) => return fail_outer(phase, error),
+                };
+                *next_sample_us = next_deadline_us;
                 *last_sample_us = now;
+                StepResult::At(next_deadline_us)
             }
-            StepResult::Continue
         }
 
         VelocityValidateState::Classify => {
@@ -912,6 +938,7 @@ pub(crate) async fn step_velocity_validate_with_trace<B: CommissioningBackend>(
                                 data.gains.velocity_p
                             );
                             *state = VelocityValidateState::WriteGains;
+                            return StepResult::ReadyNow;
                         } else {
                             defmt::info!(
                                 "vel response: cap reached, accepted P={}, I={}",
@@ -921,12 +948,14 @@ pub(crate) async fn step_velocity_validate_with_trace<B: CommissioningBackend>(
                             if !stop_velocity_motion(backend, safety).await {
                                 return fail_outer(phase, CommissionError::Spi);
                             }
-                            let deadline = backend
-                                .elapsed_us()
-                                .wrapping_add(VELOCITY_VALIDATE_SETTLE_US);
+                            let deadline = match velocity_settle_deadline(backend.elapsed_us()) {
+                                Ok(deadline_us) => deadline_us,
+                                Err(error) => return fail_outer(phase, error),
+                            };
                             *state = VelocityValidateState::SafeState {
                                 deadline_us: deadline,
                             };
+                            return StepResult::At(deadline);
                         }
                     }
                     ValidationResult::Marginal | ValidationResult::Fail => {
@@ -975,7 +1004,7 @@ pub(crate) async fn step_velocity_validate_with_trace<B: CommissioningBackend>(
                                 data.gains.velocity_p
                             );
                             *state = VelocityValidateState::WriteGains;
-                            return StepResult::Continue;
+                            return StepResult::ReadyNow;
                         }
                         if !data.has_accepted_gains {
                             let gain_limited = response_ramp::response_result_is_gain_limited(
@@ -1013,7 +1042,7 @@ pub(crate) async fn step_velocity_validate_with_trace<B: CommissioningBackend>(
                                     data.gains.velocity_p
                                 );
                                 *state = VelocityValidateState::WriteGains;
-                                return StepResult::Continue;
+                                return StepResult::ReadyNow;
                             }
                             if data.response_lower_p > 0
                                 && data.response_upper_p > data.response_lower_p
@@ -1040,7 +1069,7 @@ pub(crate) async fn step_velocity_validate_with_trace<B: CommissioningBackend>(
                                     data.gains.velocity_p
                                 );
                                 *state = VelocityValidateState::WriteGains;
-                                return StepResult::Continue;
+                                return StepResult::ReadyNow;
                             }
                             defmt::warn!(
                                 "vel response: {} at P={} with no passing response gain",
@@ -1069,15 +1098,16 @@ pub(crate) async fn step_velocity_validate_with_trace<B: CommissioningBackend>(
                         if !stop_velocity_motion(backend, safety).await {
                             return fail_outer(phase, CommissionError::Spi);
                         }
-                        let deadline = backend
-                            .elapsed_us()
-                            .wrapping_add(VELOCITY_VALIDATE_SETTLE_US);
+                        let deadline = match velocity_settle_deadline(backend.elapsed_us()) {
+                            Ok(deadline_us) => deadline_us,
+                            Err(error) => return fail_outer(phase, error),
+                        };
                         *state = VelocityValidateState::SafeState {
                             deadline_us: deadline,
                         };
+                        return StepResult::At(deadline);
                     }
                 }
-                return StepResult::Continue;
             }
 
             if data.strategy == VelocityTuneStrategy::Model
@@ -1097,20 +1127,21 @@ pub(crate) async fn step_velocity_validate_with_trace<B: CommissioningBackend>(
                         data.gains.velocity_p
                     );
                     *state = VelocityValidateState::WriteGains;
-                    return StepResult::Continue;
+                    return StepResult::ReadyNow;
                 }
 
                 data.velocity_search_stop_reason = VELOCITY_SEARCH_STOP_UNDER_DRIVEN_BUDGET;
                 if !stop_velocity_motion(backend, safety).await {
                     return fail_outer(phase, CommissionError::Spi);
                 }
-                let deadline = backend
-                    .elapsed_us()
-                    .wrapping_add(VELOCITY_VALIDATE_SETTLE_US);
+                let deadline = match velocity_settle_deadline(backend.elapsed_us()) {
+                    Ok(deadline_us) => deadline_us,
+                    Err(error) => return fail_outer(phase, error),
+                };
                 *state = VelocityValidateState::SafeState {
                     deadline_us: deadline,
                 };
-                return StepResult::Continue;
+                return StepResult::At(deadline);
             }
 
             match result {
@@ -1119,12 +1150,14 @@ pub(crate) async fn step_velocity_validate_with_trace<B: CommissioningBackend>(
                     if !stop_velocity_motion(backend, safety).await {
                         return fail_outer(phase, CommissionError::Spi);
                     }
-                    let deadline = backend
-                        .elapsed_us()
-                        .wrapping_add(VELOCITY_VALIDATE_SETTLE_US);
+                    let deadline = match velocity_settle_deadline(backend.elapsed_us()) {
+                        Ok(deadline_us) => deadline_us,
+                        Err(error) => return fail_outer(phase, error),
+                    };
                     *state = VelocityValidateState::SafeState {
                         deadline_us: deadline,
                     };
+                    StepResult::At(deadline)
                 }
                 ValidationResult::Marginal if data.attempt == 0 => {
                     defmt::info!("vel validate: marginal on attempt 0, retrying");
@@ -1179,10 +1212,9 @@ pub(crate) async fn step_velocity_validate_with_trace<B: CommissioningBackend>(
                                     .max(1);
                             }
                             *state = VelocityValidateState::WriteGains;
+                            StepResult::ReadyNow
                         }
-                        None => {
-                            return fail_outer(phase, CommissionError::VelocityValidationFailed);
-                        }
+                        None => fail_outer(phase, CommissionError::VelocityValidationFailed),
                     }
                 }
                 ValidationResult::Marginal | ValidationResult::Fail if data.has_accepted_gains => {
@@ -1201,12 +1233,14 @@ pub(crate) async fn step_velocity_validate_with_trace<B: CommissioningBackend>(
                     if !stop_velocity_motion(backend, safety).await {
                         return fail_outer(phase, CommissionError::Spi);
                     }
-                    let deadline = backend
-                        .elapsed_us()
-                        .wrapping_add(VELOCITY_VALIDATE_SETTLE_US);
+                    let deadline = match velocity_settle_deadline(backend.elapsed_us()) {
+                        Ok(deadline_us) => deadline_us,
+                        Err(error) => return fail_outer(phase, error),
+                    };
                     *state = VelocityValidateState::SafeState {
                         deadline_us: deadline,
                     };
+                    StepResult::At(deadline)
                 }
                 ValidationResult::Marginal | ValidationResult::Fail => {
                     defmt::warn!(
@@ -1234,16 +1268,17 @@ pub(crate) async fn step_velocity_validate_with_trace<B: CommissioningBackend>(
                         return fail_outer(phase, CommissionError::Spi);
                     }
                     *state = VelocityValidateState::WriteGains;
+                    StepResult::ReadyNow
                 }
             }
-            StepResult::Continue
         }
 
         VelocityValidateState::SafeState { deadline_us } => {
-            if backend.elapsed_us().wrapping_sub(*deadline_us) < 0x8000_0000 {
-                *state = VelocityValidateState::Finalize;
+            if backend.elapsed_us() < *deadline_us {
+                return StepResult::At(*deadline_us);
             }
-            StepResult::Continue
+            *state = VelocityValidateState::Finalize;
+            StepResult::ReadyNow
         }
 
         VelocityValidateState::Finalize => {
@@ -1335,7 +1370,8 @@ pub(crate) async fn step_velocity_validate_with_trace<B: CommissioningBackend>(
 #[cfg(test)]
 mod tests {
     use super::{
-        command_velocity_target, encoder_counts_to_tmc_position_units, encoder_delta_counts_per_ms,
+        VELOCITY_VALIDATE_MAX_REGISTER_OPS_PER_ARM, command_velocity_target,
+        encoder_counts_to_tmc_position_units, encoder_delta_counts_per_ms,
         encoder_rate_counts_per_ms_to_tmc_velocity_signed,
         encoder_rate_magnitude_counts_per_ms_to_tmc_velocity, record_velocity_validate_summary,
         step_velocity_validate,
@@ -1498,6 +1534,194 @@ mod tests {
                     ..
                 }
             ));
+
+            if let OuterPhase::VelocityValidate { state, .. } = &mut phase {
+                *state = VelocityValidateState::ReverseSettle { deadline_us: 2_000 };
+            }
+            backend.elapsed_us_value = 1_999;
+            let reverse_waiting = step_velocity_validate(
+                &mut phase,
+                &mut buf,
+                CommissionProfile::Balanced,
+                OperatingMode::Nominal,
+                0,
+                0,
+                false,
+                0,
+                &mut backend,
+            )
+            .await;
+            assert!(matches!(reverse_waiting, StepResult::At(2_000)));
+
+            backend.elapsed_us_value = 2_000;
+            let reverse_elapsed = step_velocity_validate(
+                &mut phase,
+                &mut buf,
+                CommissionProfile::Balanced,
+                OperatingMode::Nominal,
+                0,
+                0,
+                false,
+                0,
+                &mut backend,
+            )
+            .await;
+            assert!(matches!(reverse_elapsed, StepResult::At(3_000)));
+            assert!(matches!(
+                phase,
+                OuterPhase::VelocityValidate {
+                    state: VelocityValidateState::ChatterCheck {
+                        next_sample_us: 3_000,
+                        last_sample_us: 2_000,
+                        ..
+                    },
+                    ..
+                }
+            ));
+        });
+    }
+
+    #[test]
+    fn chatter_capture_waits_and_preserves_the_sample_grid() {
+        pollster::block_on(async {
+            let mut phase = capture_phase(
+                VelocityTuneStrategy::Model,
+                AmbiguousCapturePoint::Chatter,
+                configured_safety(),
+            );
+            let mut buf = TransientBuffer::new();
+            let mut backend = MockBackend::new();
+            backend.elapsed_us_value = 999;
+
+            let waiting = step_velocity_validate(
+                &mut phase,
+                &mut buf,
+                CommissionProfile::Balanced,
+                OperatingMode::Nominal,
+                0,
+                0,
+                false,
+                0,
+                &mut backend,
+            )
+            .await;
+            assert!(matches!(waiting, StepResult::At(1_000)));
+            assert!(backend.spi_log.is_empty());
+
+            backend.elapsed_us_value = 1_600;
+            let sampled = step_velocity_validate(
+                &mut phase,
+                &mut buf,
+                CommissionProfile::Balanced,
+                OperatingMode::Nominal,
+                0,
+                0,
+                false,
+                0,
+                &mut backend,
+            )
+            .await;
+            assert!(matches!(sampled, StepResult::At(2_000)));
+            assert!(matches!(
+                phase,
+                OuterPhase::VelocityValidate {
+                    state: VelocityValidateState::ChatterCheck {
+                        next_sample_us: 2_000,
+                        last_sample_us: 1_600,
+                        remaining: 99,
+                        ..
+                    },
+                    ..
+                }
+            ));
+        });
+    }
+
+    #[test]
+    fn velocity_safe_state_settle_uses_one_shot_deadline() {
+        pollster::block_on(async {
+            let mut phase = capture_phase(
+                VelocityTuneStrategy::Model,
+                AmbiguousCapturePoint::Forward,
+                configured_safety(),
+            );
+            if let OuterPhase::VelocityValidate { state, .. } = &mut phase {
+                *state = VelocityValidateState::SafeState { deadline_us: 1_000 };
+            }
+            let mut buf = TransientBuffer::new();
+            let mut backend = MockBackend::new();
+            backend.elapsed_us_value = 999;
+
+            let waiting = step_velocity_validate(
+                &mut phase,
+                &mut buf,
+                CommissionProfile::Balanced,
+                OperatingMode::Nominal,
+                0,
+                0,
+                false,
+                0,
+                &mut backend,
+            )
+            .await;
+            assert!(matches!(waiting, StepResult::At(1_000)));
+
+            backend.elapsed_us_value = 1_000;
+            let elapsed = step_velocity_validate(
+                &mut phase,
+                &mut buf,
+                CommissionProfile::Balanced,
+                OperatingMode::Nominal,
+                0,
+                0,
+                false,
+                0,
+                &mut backend,
+            )
+            .await;
+            assert!(matches!(elapsed, StepResult::ReadyNow));
+            assert!(matches!(
+                phase,
+                OuterPhase::VelocityValidate {
+                    state: VelocityValidateState::Finalize,
+                    ..
+                }
+            ));
+        });
+    }
+
+    #[test]
+    fn velocity_validation_respects_the_per_arm_register_bound() {
+        pollster::block_on(async {
+            let mut phase = capture_phase(
+                VelocityTuneStrategy::Model,
+                AmbiguousCapturePoint::Forward,
+                configured_safety(),
+            );
+            if let OuterPhase::VelocityValidate { state, .. } = &mut phase {
+                *state = VelocityValidateState::WriteGains;
+            }
+            let mut buf = TransientBuffer::new();
+            let mut backend = MockBackend::new();
+
+            let result = step_velocity_validate(
+                &mut phase,
+                &mut buf,
+                CommissionProfile::Balanced,
+                OperatingMode::Nominal,
+                0,
+                0,
+                false,
+                0,
+                &mut backend,
+            )
+            .await;
+
+            assert!(matches!(result, StepResult::ReadyNow));
+            assert_eq!(
+                backend.spi_log.len(),
+                VELOCITY_VALIDATE_MAX_REGISTER_OPS_PER_ARM
+            );
         });
     }
 
@@ -1621,7 +1845,7 @@ mod tests {
                 assert!(matches!(result, StepResult::At(2_000)));
             }
             AmbiguousCapturePoint::Chatter => {
-                assert!(matches!(result, StepResult::Continue));
+                assert!(matches!(result, StepResult::At(2_000)));
             }
         }
         assert!(buf.samples().is_empty());
@@ -2217,7 +2441,7 @@ mod tests {
             )
             .await;
 
-            assert!(matches!(result, StepResult::Continue));
+            assert!(matches!(result, StepResult::ReadyNow));
             match phase {
                 OuterPhase::VelocityValidate { state, data, .. } => {
                     assert!(matches!(state, VelocityValidateState::WriteGains));
@@ -2295,7 +2519,7 @@ mod tests {
             )
             .await;
 
-            assert!(matches!(result, StepResult::Continue));
+            assert!(matches!(result, StepResult::At(200_000)));
             match phase {
                 OuterPhase::VelocityValidate { state, data, .. } => {
                     assert!(matches!(state, VelocityValidateState::SafeState { .. }));
@@ -2906,7 +3130,7 @@ mod tests {
             )
             .await;
 
-            assert!(matches!(result, StepResult::Continue));
+            assert!(matches!(result, StepResult::ReadyNow));
             match phase {
                 OuterPhase::VelocityValidate { state, data, .. } => {
                     assert!(matches!(state, VelocityValidateState::WriteGains));
@@ -2940,7 +3164,7 @@ mod tests {
             )
             .await;
 
-            assert!(matches!(result, StepResult::Continue));
+            assert!(matches!(result, StepResult::ReadyNow));
             match &mut phase {
                 OuterPhase::VelocityValidate { state, data, .. } => {
                     assert!(matches!(state, VelocityValidateState::WriteGains));
@@ -3032,7 +3256,7 @@ mod tests {
             )
             .await;
 
-            assert!(matches!(result, StepResult::Continue));
+            assert!(matches!(result, StepResult::ReadyNow));
             match phase {
                 OuterPhase::VelocityValidate { state, data, .. } => {
                     assert!(matches!(state, VelocityValidateState::WriteGains));
@@ -3103,7 +3327,7 @@ mod tests {
             )
             .await;
 
-            assert!(matches!(result, StepResult::Continue));
+            assert!(matches!(result, StepResult::ReadyNow));
             match phase {
                 OuterPhase::VelocityValidate { state, data, .. } => {
                     assert!(matches!(state, VelocityValidateState::WriteGains));
@@ -3180,7 +3404,7 @@ mod tests {
             )
             .await;
 
-            assert!(matches!(result, StepResult::Continue));
+            assert!(matches!(result, StepResult::ReadyNow));
             match phase {
                 OuterPhase::VelocityValidate { state, data, .. } => {
                     assert!(matches!(state, VelocityValidateState::WriteGains));
@@ -3254,7 +3478,7 @@ mod tests {
             )
             .await;
 
-            assert!(matches!(result, StepResult::Continue));
+            assert!(matches!(result, StepResult::ReadyNow));
             match phase {
                 OuterPhase::VelocityValidate { state, data, .. } => {
                     assert!(matches!(state, VelocityValidateState::WriteGains));
@@ -3335,7 +3559,7 @@ mod tests {
             )
             .await;
 
-            assert!(matches!(result, StepResult::Continue));
+            assert!(matches!(result, StepResult::ReadyNow));
             match phase {
                 OuterPhase::VelocityValidate { state, data, .. } => {
                     assert!(matches!(state, VelocityValidateState::WriteGains));
@@ -3409,7 +3633,7 @@ mod tests {
             )
             .await;
 
-            assert!(matches!(result, StepResult::Continue));
+            assert!(matches!(result, StepResult::ReadyNow));
             match phase {
                 OuterPhase::VelocityValidate { state, data, .. } => {
                     assert!(matches!(state, VelocityValidateState::WriteGains));
