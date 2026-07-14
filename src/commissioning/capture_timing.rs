@@ -26,26 +26,26 @@ pub enum TimingReject {
 /// Method-specific missed-slot acceptance limits.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub struct TimingEnvelope {
-    max_missed_samples: u16,
+    max_missed_samples: Option<u16>,
     max_consecutive_misses: u8,
 }
 
 impl TimingEnvelope {
     /// Resistance permits one total missed slot and a chain of at most one.
     pub const RESISTANCE: Self = Self {
-        max_missed_samples: 1,
+        max_missed_samples: Some(1),
         max_consecutive_misses: 1,
     };
 
-    /// Inductance permits the five-slot estimator coverage margin, with chains capped at two.
+    /// Inductance defers total coverage to the estimator, with chains capped at two.
     pub const INDUCTANCE: Self = Self {
-        max_missed_samples: 5,
+        max_missed_samples: None,
         max_consecutive_misses: 2,
     };
 
     /// Electrical delay permits no missed slots.
     pub const DELAY: Self = Self {
-        max_missed_samples: 0,
+        max_missed_samples: Some(0),
         max_consecutive_misses: 0,
     };
 }
@@ -339,7 +339,9 @@ impl CaptureTiming {
         if self.overflowed {
             return Err(TimingReject::TelemetryOverflow);
         }
-        if self.missed_samples > self.envelope.max_missed_samples {
+        if let Some(max_missed_samples) = self.envelope.max_missed_samples
+            && self.missed_samples > max_missed_samples
+        {
             return Err(TimingReject::MissedSamples);
         }
         if self.max_consecutive_misses > self.envelope.max_consecutive_misses {
@@ -598,7 +600,7 @@ mod tests {
     }
 
     #[test]
-    fn inductance_accepts_five_total_misses_but_rejects_a_sixth() {
+    fn inductance_defers_total_miss_acceptance_to_the_coverage_gate() {
         let mut timing = CaptureTiming::new(100, TimingEnvelope::INDUCTANCE);
         let two_slot_gap = sample_slot(1_000, 100, 1_200).unwrap();
         timing.record_rejected_slot(two_slot_gap, 1_200);
@@ -611,20 +613,22 @@ mod tests {
                 .unwrap();
         }
 
-        let evidence = timing
-            .finish()
-            .expect("five misses preserve minimum coverage");
+        let evidence = timing.finish().expect("isolated misses remain admissible");
         assert_eq!(evidence.missed_samples, 5);
         assert_eq!(evidence.max_consecutive_misses, 2);
 
         timing
             .record_sample(2_000, 2_100, 2_110, 2_120, 10)
             .unwrap();
-        assert_eq!(timing.finish(), Err(TimingReject::MissedSamples));
+        let evidence = timing
+            .finish()
+            .expect("final estimator coverage decides total misses");
+        assert_eq!(evidence.missed_samples, 6);
+        assert_eq!(evidence.max_consecutive_misses, 2);
     }
 
     #[test]
-    fn inductance_rejects_three_consecutive_misses_within_total_budget() {
+    fn inductance_rejects_three_consecutive_misses() {
         let mut timing = CaptureTiming::new(100, TimingEnvelope::INDUCTANCE);
         let three_slot_gap = sample_slot(1_000, 100, 1_300).unwrap();
         timing.record_rejected_slot(three_slot_gap, 1_300);
