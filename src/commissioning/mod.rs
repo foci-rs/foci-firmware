@@ -555,6 +555,33 @@ impl CommissioningEngine {
         }
     }
 
+    #[cfg(test)]
+    pub(crate) fn set_inductance_capture_for_test(
+        &mut self,
+        capture: inner::InductanceCaptureState,
+    ) {
+        let EngineMode::Inner { phase, .. } = &mut self.engine_mode else {
+            panic!("inductance capture fixture requires an inner engine");
+        };
+        *phase = InnerPhase::ElectricalId {
+            state: inner::ElectricalIdState::InductanceSample { capture },
+            data: inner::ElectricalIdData::new(1_024),
+        };
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_delay_capture_for_test(&mut self, capture: inner::DelayCaptureState) {
+        let EngineMode::Inner { phase, .. } = &mut self.engine_mode else {
+            panic!("delay capture fixture requires an inner engine");
+        };
+        self.buf
+            .reset(inner::electrical_identification::ELECTRICAL_SAMPLE_PERIOD_US as u16);
+        *phase = InnerPhase::ElectricalId {
+            state: inner::ElectricalIdState::DelaySample { capture },
+            data: inner::ElectricalIdData::new(1_024),
+        };
+    }
+
     /// Return the entry snapshot for the outer engine, if active.
     pub fn entry_snapshot(&self) -> Option<EntrySnapshot> {
         match &self.engine_mode {
@@ -833,6 +860,46 @@ impl CommissioningEngine {
         result
     }
 
+    fn deadline_capture_active(&self) -> bool {
+        matches!(
+            &self.engine_mode,
+            EngineMode::Inner {
+                phase: InnerPhase::ElectricalId {
+                    state: inner::ElectricalIdState::InductanceSample { .. }
+                        | inner::ElectricalIdState::DelaySample { .. },
+                    ..
+                },
+                ..
+            }
+        )
+    }
+
+    /// Drive one deadline capture without unwinding between sample slots.
+    pub(crate) async fn step_scheduled<B: CommissioningBackend>(
+        &mut self,
+        backend: &mut B,
+    ) -> StepResult {
+        loop {
+            let result = self.step(backend).await;
+            let StepResult::At(deadline_us) = result else {
+                return result;
+            };
+            if !self.deadline_capture_active() {
+                return result;
+            }
+
+            loop {
+                let now_us = backend.elapsed_us();
+                if now_us >= deadline_us || backend.is_shutdown_requested() {
+                    break;
+                }
+                let remaining_us = deadline_us - now_us;
+                let delay_us = u32::try_from(remaining_us).unwrap_or(u32::MAX);
+                backend.delay_us(delay_us).await;
+            }
+        }
+    }
+
     /// Abort commissioning, restoring safe state.
     fn abort(&mut self, error: CommissionError) -> StepResult {
         match &self.engine_mode {
@@ -920,7 +987,9 @@ mod tests {
         assert_eq!(electrical_id, 608);
         assert!(electrical_id <= 608);
         assert!(electrical_id <= 960);
-        assert_eq!(scheduled_step, 4_320);
+        // The capture-owned deadline loop adds 48 bytes to the scheduled
+        // future while removing per-sample reconstruction of that future.
+        assert_eq!(scheduled_step, 4_368);
         // The hot path keeps nonterminal classification outside the terminal
         // async dispatch future.
         assert!(scheduled_step <= 4_400);

@@ -42,6 +42,8 @@ pub struct MockBackend {
     pub spi_log: Vec<SpiOp, 384>,
     /// Number of paired register-read operations issued during the test.
     pub register_pair_reads: usize,
+    /// Number of single-register capture reads issued during the test.
+    pub capture_register_reads: usize,
     /// Ordered trace events recorded by the commissioning engine.
     pub trace_events: Vec<crate::trace::events::CommissionTraceEvent, 64>,
     /// Current state of the TMC4671 enable pin.
@@ -64,6 +66,10 @@ pub struct MockBackend {
     elapsed_us_sequence: Vec<u64, 16>,
     /// Current index into `elapsed_us_sequence`.
     elapsed_us_pos: core::cell::Cell<usize>,
+    /// Whether cooperative test delays advance the mock monotonic.
+    pub advance_elapsed_on_delay: bool,
+    /// Number of completed sample-start classification windows.
+    pub capture_classify_windows: core::cell::Cell<usize>,
     /// Elapsed-time increment applied by each mock register read or write.
     pub spi_elapsed_step_us: u64,
     /// Value returned by `is_shutdown_requested()`.
@@ -139,6 +145,7 @@ impl MockBackend {
             registers: heapless::LinearMap::new(),
             spi_log: Vec::new(),
             register_pair_reads: 0,
+            capture_register_reads: 0,
             trace_events: Vec::new(),
             enable_pin: false,
             delay_us_log: Vec::new(),
@@ -149,6 +156,8 @@ impl MockBackend {
             elapsed_us_value: 0,
             elapsed_us_sequence: Vec::new(),
             elapsed_us_pos: core::cell::Cell::new(0),
+            advance_elapsed_on_delay: false,
+            capture_classify_windows: core::cell::Cell::new(0),
             spi_elapsed_step_us: 0,
             shutdown_requested: false,
             current_limit_value: 0,
@@ -305,6 +314,11 @@ impl CommissionRegisterIo for MockBackend {
         Ok((first, second))
     }
 
+    async fn read_capture_register(&mut self, reg: Register) -> Result<u32, Self::Error> {
+        self.capture_register_reads += 1;
+        self.read_register(reg).await
+    }
+
     async fn write_register(&mut self, reg: Register, val: u32) -> Result<(), Self::Error> {
         let addr = reg.addr();
         self.elapsed_us_value = self
@@ -399,8 +413,16 @@ impl CommissionTiming for MockBackend {
         self.shutdown_requested
     }
 
+    fn capture_classify_end(&self) {
+        self.capture_classify_windows
+            .set(self.capture_classify_windows.get() + 1);
+    }
+
     async fn delay_us(&mut self, us: u32) {
         self.delay_us_log.push(us).ok();
+        if self.advance_elapsed_on_delay {
+            self.elapsed_us_value = self.elapsed_us_value.saturating_add(u64::from(us));
+        }
     }
 }
 

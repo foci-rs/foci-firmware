@@ -741,6 +741,104 @@ fn scheduled_step_preserves_legacy_deadline_without_consuming_engine() {
 }
 
 #[test]
+fn scheduled_step_keeps_inductance_capture_inside_one_deadline_loop() {
+    pollster::block_on(async {
+        use crate::commissioning::capture_timing::{CaptureTiming, TimingEnvelope};
+        use crate::commissioning::encoder_domain::EncoderDomain;
+        use crate::commissioning::inner::InductanceCaptureState;
+
+        let mut runtime = TmcControlRuntime::new_for_channel(0);
+        let mut engine =
+            CommissioningEngine::new_commission(7, crate::autotune::CommissionProfile::Balanced);
+        engine.set_inductance_capture_for_test(InductanceCaptureState {
+            encoder_domain: EncoderDomain::new(4_000).unwrap(),
+            encoder_start: 0,
+            start_us: 900,
+            previous_elapsed_us: 0,
+            previous_phi: 0,
+            accumulated_phi_delta_counts: 0,
+            accumulator: crate::electrical_capture::AcFrameAccumulator::new(),
+            first_half: crate::electrical_capture::AcFrameAccumulator::new(),
+            second_half: crate::electrical_capture::AcFrameAccumulator::new(),
+            saliency: crate::electrical_capture::AcSaliencyAccumulator::new(),
+            sample_count: 0,
+            status_flags_or: 0,
+            next_sample_us: 1_000,
+            timing: CaptureTiming::new(200, TimingEnvelope::INDUCTANCE),
+        });
+        runtime.set_commission_engine(engine);
+
+        let mut backend = MockBackend::new();
+        backend.elapsed_us_value = 1_138;
+        backend.advance_elapsed_on_delay = true;
+        let mut phi_samples = heapless::Vec::<u32, 128>::new();
+        let mut current_samples = heapless::Vec::<u32, 128>::new();
+        let actual = ((-84i16 as u16 as u32) << 16) | 20;
+        for index in 1..=100u32 {
+            phi_samples
+                .push(index.wrapping_mul(20 * 65_536) / 100 & 0xffff)
+                .unwrap();
+            current_samples.push(actual).unwrap();
+        }
+        backend.set_openloop_phi_sequence(phi_samples.as_slice(), 0);
+        backend.set_pid_torque_flux_actual_sequence(current_samples.as_slice());
+
+        let poll = runtime
+            .step_commissioning_scheduled(&mut backend)
+            .await
+            .expect("engine should be active");
+
+        assert!(matches!(
+            poll,
+            crate::commissioning::schedule::CommissionPoll::ReadyNow { event: None }
+        ));
+        assert_eq!(backend.register_pair_reads, 100);
+        assert_eq!(backend.capture_classify_windows.get(), 101);
+    });
+}
+
+#[test]
+fn scheduled_step_keeps_delay_capture_inside_one_deadline_loop() {
+    pollster::block_on(async {
+        use crate::autotune::DelayTimestampOffsets;
+        use crate::commissioning::capture_timing::{CaptureTiming, TimingEnvelope};
+        use crate::commissioning::inner::DelayCaptureState;
+
+        let mut runtime = TmcControlRuntime::new_for_channel(0);
+        let mut engine =
+            CommissioningEngine::new_commission(7, crate::autotune::CommissionProfile::Balanced);
+        engine.set_delay_capture_for_test(DelayCaptureState {
+            baseline: 0,
+            origin_us: 1_000,
+            next_sample_us: 1_200,
+            offsets: DelayTimestampOffsets::new(),
+            timing: CaptureTiming::new(200, TimingEnvelope::DELAY),
+        });
+        runtime.set_commission_engine(engine);
+
+        let mut backend = MockBackend::new();
+        backend.elapsed_us_value = 1_200;
+        backend.advance_elapsed_on_delay = true;
+        backend
+            .registers
+            .insert(foci_tmc4671::registers::PID_TORQUE_FLUX_ACTUAL.addr(), 100)
+            .unwrap();
+
+        let poll = runtime
+            .step_commissioning_scheduled(&mut backend)
+            .await
+            .expect("engine should be active");
+
+        assert!(matches!(
+            poll,
+            crate::commissioning::schedule::CommissionPoll::ReadyNow { event: None }
+        ));
+        assert_eq!(backend.capture_register_reads, 256);
+        assert_eq!(backend.capture_classify_windows.get(), 256);
+    });
+}
+
+#[test]
 fn scheduled_dispatch_preserves_wait_action() {
     pollster::block_on(async {
         let tmc = crate::state::tmc::tmc_channel0();

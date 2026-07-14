@@ -459,7 +459,7 @@ impl TmcControlRuntime {
             .commission_engine
             .as_mut()
             .expect("commission engine disappeared during scheduled step")
-            .step(backend)
+            .step_scheduled(backend)
             .await;
         let now_us = crate::commissioning::CommissionTiming::elapsed_us(backend);
 

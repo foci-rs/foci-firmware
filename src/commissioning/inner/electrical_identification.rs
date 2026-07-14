@@ -13,7 +13,7 @@ use crate::autotune::{
     CommissionError, ELECTRICAL_MODEL_RESISTANCE_SCALE, ElectricalModel, InnerSequence, PhaseId,
     TransientBuffer,
 };
-use crate::commissioning::backend::{timed_read_register, timed_read_register_pair};
+use crate::commissioning::backend::{timed_read_capture_register, timed_read_register_pair};
 use crate::commissioning::capture_timing::{
     CaptureTiming, CaptureTimingEvidence, SampleStart, TimingEnvelope, sample_slot,
 };
@@ -566,6 +566,7 @@ async fn poll_delay_sample<B: CommissioningBackend>(
     if backend.is_shutdown_requested() {
         return Err(CommissionError::Shutdown);
     }
+    backend.capture_classify_start();
     let slot = sample_slot(
         capture.next_sample_us,
         ELECTRICAL_SAMPLE_PERIOD_US as u16,
@@ -574,13 +575,15 @@ async fn poll_delay_sample<B: CommissioningBackend>(
     .map_err(|_| {
         capture.timing.mark_source_overflow(u32::MAX);
         CommissionError::DelayTimingRejected
-    })?;
+    });
+    backend.capture_classify_end();
+    let slot = slot?;
     if slot.missed != 0 {
         capture.timing.record_rejected_slot(slot, now_us);
         return Err(CommissionError::DelayTimingRejected);
     }
 
-    let current_io = timed_read_register(backend, PID_TORQUE_FLUX_ACTUAL).await;
+    let current_io = timed_read_capture_register(backend, PID_TORQUE_FLUX_ACTUAL).await;
     let actual = current_io.result.map_err(|_| CommissionError::Spi)?;
     let observation_us = backend.elapsed_us();
     if current_io.overflowed {
@@ -822,11 +825,13 @@ async fn poll_inductance_sample<B: CommissioningBackend>(
     if capture.sample_count >= INDUCTANCE_MAX_AC_SAMPLE_COUNT {
         return Err(CommissionError::InductanceCaptureWindow);
     }
-    match capture
+    backend.capture_classify_start();
+    let sample_start = capture
         .timing
         .classify_sample_start(capture.next_sample_us, now_us)
-        .map_err(|_| CommissionError::InductanceTimingRejected)?
-    {
+        .map_err(|_| CommissionError::InductanceTimingRejected);
+    backend.capture_classify_end();
+    match sample_start? {
         SampleStart::Sample => {}
         SampleStart::Skip { next_deadline_us } => {
             capture.next_sample_us = next_deadline_us;

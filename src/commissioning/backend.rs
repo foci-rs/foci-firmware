@@ -23,6 +23,11 @@ pub trait CommissionRegisterIo {
     /// Read a TMC4671 register.
     async fn read_register(&mut self, reg: Register) -> Result<u32, Self::Error>;
 
+    /// Read one register for a fixed-rate capture observation.
+    async fn read_capture_register(&mut self, reg: Register) -> Result<u32, Self::Error> {
+        self.read_register(reg).await
+    }
+
     /// Read two TMC4671 registers for one capture observation.
     ///
     /// The default preserves ordinary async behavior for test and alternate
@@ -109,6 +114,25 @@ where
     }
 }
 
+/// Read one capture register and measure its wall time.
+pub async fn timed_read_capture_register<B>(
+    backend: &mut B,
+    reg: Register,
+) -> TimedRegisterIo<Result<u32, B::Error>>
+where
+    B: CommissioningBackend,
+{
+    let start_us = backend.elapsed_us();
+    let result = backend.read_capture_register(reg).await;
+    let end_us = backend.elapsed_us();
+    let (wall_us, overflowed) = measured_wall_us(start_us, end_us);
+    TimedRegisterIo {
+        result,
+        wall_us,
+        overflowed,
+    }
+}
+
 /// Write a register and measure wall time around the existing backend await.
 pub async fn timed_write_register<B>(
     backend: &mut B,
@@ -182,6 +206,12 @@ pub trait CommissionTiming {
 
     /// Whether a shutdown has been requested.
     fn is_shutdown_requested(&self) -> bool;
+
+    /// Mark the DWT start of one pure sample-start classification window.
+    fn capture_classify_start(&self) {}
+
+    /// Mark the DWT end of one pure sample-start classification window.
+    fn capture_classify_end(&self) {}
 
     /// Cooperative microsecond delay.
     ///
@@ -303,6 +333,12 @@ pub trait CommissionTimingAccess {
     /// Whether a shutdown has been requested.
     fn commission_is_shutdown_requested(&self) -> bool;
 
+    /// Mark the start of one pure capture classification window.
+    fn commission_capture_classify_start(&self) {}
+
+    /// Mark the end of one pure capture classification window.
+    fn commission_capture_classify_end(&self) {}
+
     /// Cooperative microsecond delay.
     async fn commission_delay_us(&mut self, us: u32);
 }
@@ -328,6 +364,12 @@ pub trait CommissionBackendHooks {
 
     /// Whether a shutdown has been requested.
     fn commission_is_shutdown_requested() -> bool;
+
+    /// Mark the start of one pure capture classification window.
+    fn commission_capture_classify_start() {}
+
+    /// Mark the end of one pure capture classification window.
+    fn commission_capture_classify_end() {}
 
     /// Cooperative microsecond delay.
     async fn commission_delay_us(us: u32);
@@ -422,6 +464,14 @@ where
         Hooks::commission_is_shutdown_requested()
     }
 
+    fn commission_capture_classify_start(&self) {
+        Hooks::commission_capture_classify_start();
+    }
+
+    fn commission_capture_classify_end(&self) {
+        Hooks::commission_capture_classify_end();
+    }
+
     async fn commission_delay_us(&mut self, us: u32) {
         Hooks::commission_delay_us(us).await;
     }
@@ -448,6 +498,10 @@ where
 
     async fn read_register(&mut self, reg: Register) -> Result<u32, Self::Error> {
         self.tmc_spi().read_register(reg).await
+    }
+
+    async fn read_capture_register(&mut self, reg: Register) -> Result<u32, Self::Error> {
+        self.tmc_spi().read_register_blocking(reg)
     }
 
     async fn read_register_pair(
@@ -598,6 +652,14 @@ where
 
     fn is_shutdown_requested(&self) -> bool {
         self.commission_is_shutdown_requested()
+    }
+
+    fn capture_classify_start(&self) {
+        self.commission_capture_classify_start();
+    }
+
+    fn capture_classify_end(&self) {
+        self.commission_capture_classify_end();
     }
 
     async fn delay_us(&mut self, us: u32) {
