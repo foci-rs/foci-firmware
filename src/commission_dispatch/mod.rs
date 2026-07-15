@@ -595,7 +595,7 @@ pub async fn drive_commission_result<B: CommissioningBackend>(
             // The engine's ClosedLoopEntry phase already set PID gains, limits,
             // filters, and entered position mode. Re-apply current limit because
             // the mode change resets PID_TORQUE_FLUX_LIMITS.
-            let current_limit = state.tmc.current_limit_reg.load(Relaxed);
+            let current_limit = state.tmc.load_current_limit(Relaxed).register_value();
             if backend
                 .write_register(
                     foci_tmc4671::registers::PID_TORQUE_FLUX_LIMITS,

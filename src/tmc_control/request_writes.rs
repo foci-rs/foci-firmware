@@ -61,9 +61,7 @@ where
         defmt::error!("TMC4671 SPI write failed: PID_TORQUE_FLUX_LIMITS");
         return Err(SetCurrentError::Spi);
     }
-    tmc_state
-        .current_limit_reg
-        .store(register_value, core::sync::atomic::Ordering::Relaxed);
+    tmc_state.store_current_limit(limit, core::sync::atomic::Ordering::Relaxed);
     defmt::info!(
         "TMC4671 current: {}mA RMS -> {} counts (peak)",
         run_ma,
@@ -253,7 +251,10 @@ mod tests {
             let _guard = crate::commission_dispatch::test_support::SHARED_STATE_MUTEX
                 .lock()
                 .await;
-            tmc_state().current_limit_reg.store(0, Ordering::Relaxed);
+            tmc_state().store_current_limit(
+                foci_tmc4671::current_limit::PidTorqueFluxLimit::ZERO,
+                Ordering::Relaxed,
+            );
 
             let raw_spi = MockRawSpi::default();
             let mut tmc = Tmc4671Spi::new(raw_spi);
@@ -262,8 +263,8 @@ mod tests {
                 .expect("current write should succeed");
 
             assert_eq!(
-                tmc_state().current_limit_reg.load(Ordering::Relaxed),
-                0x0000_072c
+                tmc_state().load_current_limit(Ordering::Relaxed).raw(),
+                0x072c
             );
             let raw_spi = tmc.into_inner();
             assert_eq!(raw_spi.writes.len(), 1);
@@ -272,7 +273,10 @@ mod tests {
                 [PID_TORQUE_FLUX_LIMITS.addr() | 0x80, 0x00, 0x00, 0x07, 0x2c]
             );
 
-            tmc_state().current_limit_reg.store(0, Ordering::Relaxed);
+            tmc_state().store_current_limit(
+                foci_tmc4671::current_limit::PidTorqueFluxLimit::ZERO,
+                Ordering::Relaxed,
+            );
         });
     }
 
@@ -282,7 +286,10 @@ mod tests {
             let _guard = crate::commission_dispatch::test_support::SHARED_STATE_MUTEX
                 .lock()
                 .await;
-            tmc_state().current_limit_reg.store(123, Ordering::Relaxed);
+            tmc_state().store_current_limit(
+                crate::commission_dispatch::test_support::current_limit(123),
+                Ordering::Relaxed,
+            );
 
             let raw_spi = MockRawSpi::default();
             let mut tmc = Tmc4671Spi::new(raw_spi);
@@ -294,10 +301,13 @@ mod tests {
                     crate::tmc_control::current_limit::CurrentLimitConversionError::OutOfRange,
                 )),
             );
-            assert_eq!(tmc_state().current_limit_reg.load(Ordering::Relaxed), 123);
+            assert_eq!(tmc_state().load_current_limit(Ordering::Relaxed).raw(), 123);
             assert!(tmc.into_inner().writes.is_empty());
 
-            tmc_state().current_limit_reg.store(0, Ordering::Relaxed);
+            tmc_state().store_current_limit(
+                foci_tmc4671::current_limit::PidTorqueFluxLimit::ZERO,
+                Ordering::Relaxed,
+            );
         });
     }
 

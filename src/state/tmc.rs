@@ -6,6 +6,7 @@ use core::sync::atomic::{AtomicBool, AtomicI32, AtomicU8, AtomicU16, AtomicU32, 
 
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::signal::Signal;
+use foci_tmc4671::current_limit::PidTorqueFluxLimit;
 use foci_tmc4671::pid::{PidGain, PidGainOutOfRange};
 
 use crate::pid::OuterLoopGains;
@@ -66,8 +67,8 @@ impl AtomicOptionalFilterHz {
 
 /// Runtime state for one board-local TMC4671 channel.
 pub struct TmcChannelState {
-    /// Current limit for PID_TORQUE_FLUX_LIMITS (0x5E).
-    pub current_limit_reg: AtomicU32,
+    /// Validated current limit for PID_TORQUE_FLUX_LIMITS (0x5E).
+    current_limit_value: AtomicU16,
     /// Set by P1 after calibration, cleared on disable/fault.
     pub motor_armed: AtomicBool,
     /// Captured at commission time from the actual `MOTOR_TYPE_N_POLE_PAIRS`
@@ -169,7 +170,7 @@ impl TmcChannelState {
     /// Create a channel state with firmware defaults.
     pub const fn new() -> Self {
         Self {
-            current_limit_reg: AtomicU32::new(0),
+            current_limit_value: AtomicU16::new(PidTorqueFluxLimit::ZERO.raw()),
             motor_armed: AtomicBool::new(false),
             motor_sentinel: AtomicU32::new(0),
             encoder_ppr: AtomicU32::new(0),
@@ -226,7 +227,7 @@ impl TmcChannelState {
         use core::sync::atomic::Ordering::Relaxed;
 
         self.motion_scale_configured.store(false, Ordering::Release);
-        self.current_limit_reg.store(0, Relaxed);
+        self.store_current_limit(PidTorqueFluxLimit::ZERO, Relaxed);
         self.motor_armed.store(false, Relaxed);
         self.motor_sentinel.store(0, Relaxed);
         self.encoder_ppr.store(0, Relaxed);
@@ -272,6 +273,18 @@ impl TmcChannelState {
         self.commission_in_flight.store(false, Relaxed);
         self.auto_calibrate_on_enable_allowed.store(false, Relaxed);
         self.store_outer_gains(crate::pid::DEFAULT_OUTER_GAINS, Relaxed);
+    }
+
+    /// Load the validated torque/flux current limit.
+    pub fn load_current_limit(&self, ordering: Ordering) -> PidTorqueFluxLimit {
+        let raw = u32::from(self.current_limit_value.load(ordering));
+        PidTorqueFluxLimit::new(raw)
+            .expect("private current-limit storage accepts only validated values")
+    }
+
+    /// Publish a validated torque/flux current limit.
+    pub fn store_current_limit(&self, limit: PidTorqueFluxLimit, ordering: Ordering) {
+        self.current_limit_value.store(limit.raw(), ordering);
     }
 
     /// Load and validate the retained outer-loop gains.
@@ -498,6 +511,7 @@ pub static TMC_QUEUE_FLUSH: AtomicBool = AtomicBool::new(false);
 mod tests {
     use super::*;
     use core::sync::atomic::Ordering::Relaxed;
+    use foci_tmc4671::current_limit::PidTorqueFluxLimit;
 
     #[test]
     fn optional_filter_hz_distinguishes_unset_disable_and_cutoff() {
@@ -547,15 +561,17 @@ mod tests {
     fn tmc_channels_have_independent_current_limits() {
         let channel0 = tmc_channel(0).unwrap();
         let channel1 = tmc_channel(1).unwrap();
+        let limit0 = PidTorqueFluxLimit::new(0x1111).unwrap();
+        let limit1 = PidTorqueFluxLimit::new(0x2222).unwrap();
 
-        channel0.current_limit_reg.store(0x1111, Relaxed);
-        channel1.current_limit_reg.store(0x2222, Relaxed);
+        channel0.store_current_limit(limit0, Relaxed);
+        channel1.store_current_limit(limit1, Relaxed);
 
-        assert_eq!(channel0.current_limit_reg.load(Relaxed), 0x1111);
-        assert_eq!(channel1.current_limit_reg.load(Relaxed), 0x2222);
+        assert_eq!(channel0.load_current_limit(Relaxed), limit0);
+        assert_eq!(channel1.load_current_limit(Relaxed), limit1);
 
-        channel0.current_limit_reg.store(0, Relaxed);
-        channel1.current_limit_reg.store(0, Relaxed);
+        channel0.store_current_limit(PidTorqueFluxLimit::ZERO, Relaxed);
+        channel1.store_current_limit(PidTorqueFluxLimit::ZERO, Relaxed);
     }
 
     #[test]

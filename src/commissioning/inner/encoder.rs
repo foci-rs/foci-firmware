@@ -190,7 +190,7 @@ pub(crate) async fn start_encoder_current_drive<B: CommissioningBackend>(
 ) -> Result<(), CommissionError> {
     use foci_tmc4671::registers::*;
 
-    let current_limit = backend.current_limit() & 0xFFFF;
+    let current_limit = u32::from(backend.current_limit());
     if current_limit == 0 {
         return Err(CommissionError::NoCurrent);
     }
@@ -227,7 +227,10 @@ pub(crate) async fn start_encoder_current_drive<B: CommissioningBackend>(
         .await
         .map_err(|_| CommissionError::Spi)?;
     backend
-        .write_register(PID_TORQUE_FLUX_LIMITS, backend.current_limit())
+        .write_register(
+            PID_TORQUE_FLUX_LIMITS,
+            backend.current_limit().register_value(),
+        )
         .await
         .map_err(|_| CommissionError::Spi)?;
     backend
@@ -480,7 +483,7 @@ pub(crate) async fn step_encoder_align<B: CommissioningBackend>(
             if EncoderDomain::new(backend.mechanical_encoder_quadrature_counts_per_rev()).is_err() {
                 return super::fail_inner(phase, CommissionError::EncoderFault);
             }
-            if backend.current_limit() == 0 {
+            if backend.current_limit().raw() == 0 {
                 return super::fail_inner(phase, CommissionError::NoCurrent);
             }
 
@@ -762,7 +765,9 @@ pub(crate) async fn step_encoder_align<B: CommissioningBackend>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::commission_dispatch::test_support::{MockBackend, SHARED_STATE_MUTEX, SpiOp};
+    use crate::commission_dispatch::test_support::{
+        MockBackend, SHARED_STATE_MUTEX, SpiOp, current_limit,
+    };
 
     fn register_op_count(backend: &MockBackend) -> usize {
         backend
@@ -781,7 +786,7 @@ mod tests {
             let mut selftest_results = crate::selftest::SelftestResults::default();
             let mut diagnostics = CommissionDiagnostics::default();
             let mut backend = MockBackend::new();
-            backend.current_limit_value = 2_448;
+            backend.current_limit_value = current_limit(2_448);
 
             let setup = step_encoder_check(
                 &mut phase,
@@ -1112,7 +1117,7 @@ mod tests {
             let mut selftest_results = crate::selftest::SelftestResults::default();
             let mut diagnostics = crate::selftest::CommissionDiagnostics::default();
             let mut backend = MockBackend::new();
-            backend.current_limit_value = 1000;
+            backend.current_limit_value = current_limit(1000);
             backend.mechanical_encoder_quadrature_counts_per_rev_value = 0;
 
             let result = step_encoder_check(
@@ -1258,7 +1263,7 @@ mod tests {
                     }
                 };
                 let mut backend = MockBackend::new();
-                backend.current_limit_value = 1000;
+                backend.current_limit_value = current_limit(1000);
                 backend.enable_pin = case != 0;
                 if case == 1 {
                     backend.fail_on_write = Some(ABN_DECODER_COUNT.addr());

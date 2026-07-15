@@ -868,7 +868,7 @@ impl TmcControlRuntime {
         } else if accel_ff_active {
             let accel_gain_permille = refs.tmc.accel_feedforward_accel_gain_permille.load(Relaxed);
             let decel_gain_permille = refs.tmc.accel_feedforward_decel_gain_permille.load(Relaxed);
-            let torque_limit = refs.tmc.current_limit_reg.load(Relaxed);
+            let torque_limit = refs.tmc.load_current_limit(Relaxed).register_value();
             let interval = refs.stepper.interval.load(Relaxed);
             let interval_add = refs
                 .stepper

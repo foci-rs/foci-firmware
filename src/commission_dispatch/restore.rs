@@ -61,9 +61,9 @@ pub async fn restore_position_mode_after_outer<B: CommissioningBackend>(
         .await
         .map_err(RestoreError::Spi)?;
 
-    let current_limit = tmc_state.current_limit_reg.load(Relaxed);
+    let current_limit = tmc_state.load_current_limit(Relaxed);
     backend
-        .write_register(PID_TORQUE_FLUX_LIMITS, current_limit)
+        .write_register(PID_TORQUE_FLUX_LIMITS, current_limit.register_value())
         .await
         .map_err(RestoreError::Spi)?;
 
@@ -183,9 +183,9 @@ pub async fn restore_calibrate_gains<B: CommissioningBackend>(
         .map_err(RestoreError::Spi)?;
 
     // Current limit (TMC4671 resets on mode change).
-    let current_limit = tmc_state.current_limit_reg.load(Relaxed);
+    let current_limit = tmc_state.load_current_limit(Relaxed);
     backend
-        .write_register(PID_TORQUE_FLUX_LIMITS, current_limit)
+        .write_register(PID_TORQUE_FLUX_LIMITS, current_limit.register_value())
         .await
         .map_err(RestoreError::Spi)?;
 
@@ -234,9 +234,10 @@ mod tests {
                 .lock()
                 .await;
             let mut backend = MockBackend::new();
-            tmc_state()
-                .current_limit_reg
-                .store(0x0010_0010, core::sync::atomic::Ordering::Relaxed);
+            tmc_state().store_current_limit(
+                crate::commission_dispatch::test_support::current_limit(0x10),
+                core::sync::atomic::Ordering::Relaxed,
+            );
             // Pre-seed ABN_DECODER_COUNT for the position-target compute.
             let _ = backend.write_register(ABN_DECODER_COUNT, 1234).await;
             backend.spi_log.clear();
@@ -253,7 +254,7 @@ mod tests {
                     (PID_VELOCITY_P_VELOCITY_I.addr(), velocity_reg),
                     (PID_POSITION_P_POSITION_I.addr(), position_reg),
                     (PID_VELOCITY_LIMIT.addr(), outer.velocity_limit),
-                    (PID_TORQUE_FLUX_LIMITS.addr(), 0x0010_0010),
+                    (PID_TORQUE_FLUX_LIMITS.addr(), 0x10),
                     (PIDOUT_UQ_UD_LIMITS.addr(), 1024),
                     (PID_POSITION_ACTUAL.addr(), 0),
                     (PID_POSITION_TARGET.addr(), 20_218),
@@ -262,9 +263,10 @@ mod tests {
             );
 
             // Cleanup atomics.
-            tmc_state()
-                .current_limit_reg
-                .store(0, core::sync::atomic::Ordering::Relaxed);
+            tmc_state().store_current_limit(
+                foci_tmc4671::current_limit::PidTorqueFluxLimit::ZERO,
+                core::sync::atomic::Ordering::Relaxed,
+            );
         });
     }
 
@@ -328,7 +330,10 @@ mod tests {
             let outer_gains = crate::pid::test_outer_gains(333, 44, 111, 22);
             tmc_state().store_outer_gains(outer_gains, Relaxed);
             tmc_state().velocity_limit_cfg.store(555_000, Relaxed);
-            tmc_state().current_limit_reg.store(0x0020_0030, Relaxed);
+            tmc_state().store_current_limit(
+                crate::commission_dispatch::test_support::current_limit(0x30),
+                Relaxed,
+            );
             let stored_gains = crate::pid::InnerLoopGains {
                 flux_p: crate::pid::test_gain(100),
                 flux_i: crate::pid::test_gain(10),
@@ -348,12 +353,15 @@ mod tests {
                     (PID_VELOCITY_P_VELOCITY_I.addr(), velocity_reg),
                     (PID_POSITION_P_POSITION_I.addr(), position_reg),
                     (PID_VELOCITY_LIMIT.addr(), 555_000),
-                    (PID_TORQUE_FLUX_LIMITS.addr(), 0x0020_0030),
+                    (PID_TORQUE_FLUX_LIMITS.addr(), 0x30),
                 ]
             );
             tmc_state().store_outer_gains(crate::pid::DEFAULT_OUTER_GAINS, Relaxed);
             tmc_state().velocity_limit_cfg.store(0, Relaxed);
-            tmc_state().current_limit_reg.store(0, Relaxed);
+            tmc_state().store_current_limit(
+                foci_tmc4671::current_limit::PidTorqueFluxLimit::ZERO,
+                Relaxed,
+            );
         });
     }
 
@@ -369,7 +377,10 @@ mod tests {
             let outer_gains = crate::pid::test_outer_gains(377, 55, 211, 33);
             tmc_state().store_outer_gains(outer_gains, Relaxed);
             tmc_state().velocity_limit_cfg.store(666_000, Relaxed);
-            tmc_state().current_limit_reg.store(0x0040_0050, Relaxed);
+            tmc_state().store_current_limit(
+                crate::commission_dispatch::test_support::current_limit(0x50),
+                Relaxed,
+            );
             let result = restore_calibrate_gains(&mut backend, tmc_state(), None).await;
             assert!(result.is_ok());
             let (velocity_reg, position_reg) = outer_gains.to_registers();
@@ -379,12 +390,15 @@ mod tests {
                     (PID_VELOCITY_P_VELOCITY_I.addr(), velocity_reg),
                     (PID_POSITION_P_POSITION_I.addr(), position_reg),
                     (PID_VELOCITY_LIMIT.addr(), 666_000),
-                    (PID_TORQUE_FLUX_LIMITS.addr(), 0x0040_0050),
+                    (PID_TORQUE_FLUX_LIMITS.addr(), 0x50),
                 ]
             );
             tmc_state().store_outer_gains(crate::pid::DEFAULT_OUTER_GAINS, Relaxed);
             tmc_state().velocity_limit_cfg.store(0, Relaxed);
-            tmc_state().current_limit_reg.store(0, Relaxed);
+            tmc_state().store_current_limit(
+                foci_tmc4671::current_limit::PidTorqueFluxLimit::ZERO,
+                Relaxed,
+            );
         });
     }
 

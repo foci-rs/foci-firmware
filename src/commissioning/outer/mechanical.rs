@@ -131,7 +131,7 @@ fn derive_mechanical_tau_with_default_flag(j_eff: u32, b_eff_raw: u32) -> (u32, 
 mod tests {
     use super::*;
     use crate::autotune::{CommissionProfile, OperatingMode};
-    use crate::commission_dispatch::test_support::{MockBackend, SpiOp};
+    use crate::commission_dispatch::test_support::{MockBackend, SpiOp, current_limit};
     use crate::commissioning::outer::{OuterSafetyLimits, step_outer};
     use crate::trace::events::EVENT_COMMISSION_DIAGNOSTIC_WARNING;
     use foci_tmc4671::registers::{ABN_DECODER_PPR, MODE_RAMP_MODE_MOTION, PID_TORQUE_FLUX_TARGET};
@@ -235,7 +235,7 @@ mod tests {
             };
             let mut buf = TransientBuffer::new();
             let mut backend = MockBackend::new();
-            backend.current_limit_value = 2448;
+            backend.current_limit_value = current_limit(2448);
             backend.mechanical_encoder_position_counts_value = 1234;
             let _ = backend.registers.insert(ABN_DECODER_PPR.addr(), 4000);
 
@@ -308,7 +308,7 @@ mod tests {
             };
             let mut buf = TransientBuffer::new();
             let mut backend = MockBackend::new();
-            backend.current_limit_value = 2448;
+            backend.current_limit_value = current_limit(2448);
             backend.mechanical_encoder_position_counts_value = 1234;
             let _ = backend.registers.insert(ABN_DECODER_PPR.addr(), 4000);
 
@@ -358,7 +358,7 @@ mod tests {
             };
             let mut buf = TransientBuffer::new();
             let mut backend = MockBackend::new();
-            backend.current_limit_value = 2448;
+            backend.current_limit_value = current_limit(2448);
             backend.mechanical_encoder_position_counts_value = 1234;
             let _ = backend.registers.insert(ABN_DECODER_PPR.addr(), 0);
 
@@ -411,7 +411,7 @@ mod tests {
             };
             let mut buf = TransientBuffer::new();
             let mut backend = MockBackend::new();
-            backend.current_limit_value = 2448;
+            backend.current_limit_value = current_limit(2448);
             backend.mechanical_encoder_position_counts_value = 1234;
             let _ = backend.registers.insert(ABN_DECODER_PPR.addr(), 4000);
 
@@ -461,7 +461,7 @@ mod tests {
             };
             let mut buf = TransientBuffer::new();
             let mut backend = MockBackend::new();
-            backend.current_limit_value = 2448;
+            backend.current_limit_value = current_limit(2448);
             backend.mechanical_encoder_position_counts_value = 1000;
             let _ = backend.registers.insert(ABN_DECODER_PPR.addr(), 4000);
 
@@ -531,7 +531,7 @@ mod tests {
             };
             let mut buf = TransientBuffer::new();
             let mut backend = MockBackend::new();
-            backend.current_limit_value = 2448;
+            backend.current_limit_value = current_limit(2448);
             backend.mechanical_encoder_position_counts_value = 1000;
             let _ = backend.registers.insert(ABN_DECODER_PPR.addr(), 4000);
 
@@ -1034,7 +1034,7 @@ mod tests {
             };
             let mut buf = TransientBuffer::new();
             let mut backend = MockBackend::new();
-            backend.current_limit_value = 2448;
+            backend.current_limit_value = current_limit(2448);
             backend.mechanical_encoder_position_counts_value = 1000;
             let _ = backend.registers.insert(ABN_DECODER_PPR.addr(), 4000);
 
@@ -1518,7 +1518,7 @@ pub(crate) async fn step_mechanical_id_with_trace<B: CommissioningBackend>(
             };
 
             // Compute torque step from configured run_current.
-            let current_limit = backend.current_limit() & 0xFFFF;
+            let current_limit = u32::from(backend.current_limit());
             let torque_step = if current_limit > 0 {
                 response::mechanical_id_torque_step(current_limit, data.attempt)
             } else {
@@ -1686,7 +1686,7 @@ pub(crate) async fn step_mechanical_id_with_trace<B: CommissioningBackend>(
                 if safety.primitive_start_us.is_some() {
                     return fail_outer(phase, CommissionError::InvalidSchedule);
                 }
-                let current_limit = backend.current_limit() & 0xFFFF;
+                let current_limit = u32::from(backend.current_limit());
                 safety
                     .set_encoder_baseline(settled_pos)
                     .expect("configured domain");

@@ -84,7 +84,10 @@ async fn verify_closed_loop_armed_state<B: CommissioningBackend>(
         (VELOCITY_SELECTION, CLOSED_LOOP_VELOCITY_SELECTION),
         (ABN_DECODER_PPR, encoder_ppr),
         (ADC_I_SELECT, backend.tmc_config().adc_i_select),
-        (PID_TORQUE_FLUX_LIMITS, backend.current_limit()),
+        (
+            PID_TORQUE_FLUX_LIMITS,
+            backend.current_limit().register_value(),
+        ),
         // STEP_WIDTH consumes position units per emitted physical TMC pulse.
         (STEP_WIDTH, physical_step_width),
     ];
@@ -952,7 +955,7 @@ mod tests {
         HOLD_GATE_WARNING_SAMPLE_OVERRUN, HoldGateAccumulator, HoldGateSample,
         current_loop_actionable_status_mask,
     };
-    use crate::commission_dispatch::test_support::{MockBackend, SpiOp};
+    use crate::commission_dispatch::test_support::{MockBackend, SpiOp, current_limit};
     use crate::commissioning::types::{CurrentValidationAxisEvidence, InductanceEvidence};
     use foci_tmc4671::registers::{
         ABN_DECODER_PPR, ADC_I_SELECT, MODE_RAMP_MODE_MOTION, MOTOR_TYPE_N_POLE_PAIRS,
@@ -1107,7 +1110,7 @@ mod tests {
     }
 
     fn seed_armed_state_registers(backend: &mut MockBackend) {
-        backend.current_limit_value = 2816;
+        backend.current_limit_value = current_limit(2816);
         backend.operational_voltage_limit_value = 29_000;
         backend.configured_physical_width = Some(16);
 
@@ -1122,7 +1125,10 @@ mod tests {
                 backend.mechanical_encoder_quadrature_counts_per_rev_value,
             ),
             (ADC_I_SELECT.addr(), backend.tmc_config.adc_i_select),
-            (PID_TORQUE_FLUX_LIMITS.addr(), backend.current_limit_value),
+            (
+                PID_TORQUE_FLUX_LIMITS.addr(),
+                backend.current_limit_value.register_value(),
+            ),
             (
                 STEP_WIDTH.addr(),
                 backend.configured_physical_width.unwrap(),

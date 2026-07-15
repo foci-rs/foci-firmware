@@ -1,5 +1,7 @@
 use super::*;
-use crate::commission_dispatch::test_support::{MockBackend, accepted_commission_result};
+use crate::commission_dispatch::test_support::{
+    MockBackend, accepted_commission_result, current_limit,
+};
 use crate::commission_dispatch::{PostActions, ReplyPayload, StepperPostAction};
 use crate::commissioning::CommissioningEngine;
 use crate::config::TmcConfig;
@@ -485,7 +487,10 @@ fn shared_dispatch_set_current_writes_current_limit_and_updates_state() {
             spi.write_attempts,
             std::vec![(PID_TORQUE_FLUX_LIMITS.addr(), expected_limit)]
         );
-        assert_eq!(tmc_state.current_limit_reg.load(Relaxed), expected_limit);
+        assert_eq!(
+            u32::from(tmc_state.load_current_limit(Relaxed).raw()),
+            expected_limit
+        );
     });
 }
 
@@ -1011,7 +1016,7 @@ fn scheduled_dispatch_preserves_accepted_commission_reply_and_actions() {
         let stepper = crate::state::stepper::stepper_channel0();
         tmc.reset();
         stepper.reset();
-        tmc.current_limit_reg.store(0x0010_0010, Ordering::Relaxed);
+        tmc.store_current_limit(current_limit(0x10), Ordering::Relaxed);
         tmc.motor_sentinel.store(MOTOR_SENTINEL, Ordering::Relaxed);
         let mut runtime = TmcControlRuntime::new_for_channel(0);
         let mut backend = MockBackend::new();
@@ -1129,13 +1134,13 @@ fn config_reset_channel_state_restores_known_defaults() {
     let tmc = crate::state::tmc::TmcChannelState::new();
     let stepper = crate::state::stepper::StepperChannelState::new();
 
-    tmc.current_limit_reg.store(99, Relaxed);
+    tmc.store_current_limit(current_limit(99), Relaxed);
     tmc.velocity_limit_cfg.store(123, Relaxed);
     stepper.position.store(44, Relaxed);
 
     TmcControlRuntime::reset_channel_state(&tmc, &stepper);
 
-    assert_eq!(tmc.current_limit_reg.load(Relaxed), 0);
+    assert_eq!(tmc.load_current_limit(Relaxed).raw(), 0);
     assert_eq!(tmc.velocity_limit_cfg.load(Relaxed), 500_000);
     assert_eq!(stepper.position.load(Relaxed), 0);
 }
@@ -1158,7 +1163,7 @@ fn queue_flush_without_signal_does_not_mutate_state() {
 
     runtime.set_calibrated_for_test(true);
     runtime.set_motor_enabled_for_test(true);
-    tmc.current_limit_reg.store(88, Relaxed);
+    tmc.store_current_limit(current_limit(88), Relaxed);
     stepper.position.store(55, Relaxed);
 
     let actions = runtime.poll_queue_flush(&signals, &tmc, &stepper);
@@ -1167,7 +1172,7 @@ fn queue_flush_without_signal_does_not_mutate_state() {
     assert!(!queue_flush.load(Relaxed));
     assert!(runtime.is_calibrated());
     assert!(runtime.is_motor_enabled());
-    assert_eq!(tmc.current_limit_reg.load(Relaxed), 88);
+    assert_eq!(tmc.load_current_limit(Relaxed).raw(), 88);
     assert_eq!(stepper.position.load(Relaxed), 55);
     assert!(fault_active.load(Relaxed));
 }
@@ -1190,7 +1195,7 @@ fn queue_flush_signal_resets_runtime_and_channel_state() {
 
     runtime.set_calibrated_for_test(true);
     runtime.set_motor_enabled_for_test(true);
-    tmc.current_limit_reg.store(88, Relaxed);
+    tmc.store_current_limit(current_limit(88), Relaxed);
     stepper.position.store(55, Relaxed);
     queue_flush.store(true, Relaxed);
 
@@ -1199,7 +1204,7 @@ fn queue_flush_signal_resets_runtime_and_channel_state() {
     assert!(!queue_flush.load(Relaxed));
     assert!(!runtime.is_calibrated());
     assert!(!runtime.is_motor_enabled());
-    assert_eq!(tmc.current_limit_reg.load(Relaxed), 0);
+    assert_eq!(tmc.load_current_limit(Relaxed).raw(), 0);
     assert_eq!(stepper.position.load(Relaxed), 0);
     assert!(!fault_active.load(Relaxed));
     assert_single_stop_now(&actions);
@@ -1626,7 +1631,7 @@ fn shutdown_quiesce_clears_torque_flux_offset_activity() {
         tmc_state
             .accel_feedforward_decel_gain_permille
             .store(1_000, Relaxed);
-        tmc_state.current_limit_reg.store(10_000, Relaxed);
+        tmc_state.store_current_limit(current_limit(10_000), Relaxed);
         stepper_state.interval.store(2_800, Relaxed);
         stepper_state.interval_add.store(-10, Relaxed);
         let mut active_tmc = Tmc4671Spi::new(RuntimeMockSpi::default());
@@ -2301,7 +2306,7 @@ fn feedforward_tick_retries_failed_torque_flux_offset_clear() {
         tmc_state
             .accel_feedforward_decel_gain_permille
             .store(1_000, Relaxed);
-        tmc_state.current_limit_reg.store(10_000, Relaxed);
+        tmc_state.store_current_limit(current_limit(10_000), Relaxed);
         stepper_state.interval.store(2_800, Relaxed);
         stepper_state.interval_add.store(-10, Relaxed);
         let mut active_tmc = Tmc4671Spi::new(RuntimeMockSpi::default());
@@ -2429,7 +2434,7 @@ fn feedforward_fast_tick_skips_torque_flux_offset_slow_work() {
         tmc_state
             .accel_feedforward_decel_gain_permille
             .store(1_000, Relaxed);
-        tmc_state.current_limit_reg.store(10_000, Relaxed);
+        tmc_state.store_current_limit(current_limit(10_000), Relaxed);
         stepper_state.interval.store(2_800, Relaxed);
         stepper_state.interval_add.store(-10, Relaxed);
         let mut tmc = Tmc4671Spi::new(RuntimeMockSpi::default());

@@ -11,6 +11,7 @@ use core::marker::PhantomData;
 use crate::config::TmcConfig;
 use embedded_hal::digital::OutputPin;
 use embedded_hal_async::spi::{ErrorType, SpiDevice};
+use foci_tmc4671::current_limit::PidTorqueFluxLimit;
 use foci_tmc4671::registers::{ABN_DECODER_COUNT, Register};
 use foci_tmc4671::spi::{SpiError, Tmc4671Spi};
 
@@ -227,8 +228,8 @@ pub trait CommissionTiming {
 
 /// Board and channel configuration values consumed by commissioning.
 pub trait CommissionBoardConfig {
-    /// Read the configured current limit register value.
-    fn current_limit(&self) -> u32;
+    /// Read the configured torque/flux current limit.
+    fn current_limit(&self) -> PidTorqueFluxLimit;
 
     /// PWM_MAXCNT register value for the board.
     fn pwm_maxcnt(&self) -> u16;
@@ -543,10 +544,9 @@ impl<T> CommissionBoardConfig for T
 where
     T: CommissionTmcStateAccess + CommissionConfigAccess,
 {
-    fn current_limit(&self) -> u32 {
+    fn current_limit(&self) -> PidTorqueFluxLimit {
         self.tmc_state()
-            .current_limit_reg
-            .load(core::sync::atomic::Ordering::Relaxed)
+            .load_current_limit(core::sync::atomic::Ordering::Relaxed)
     }
 
     fn pwm_maxcnt(&self) -> u16 {

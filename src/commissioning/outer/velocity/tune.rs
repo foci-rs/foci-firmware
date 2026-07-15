@@ -185,7 +185,7 @@ pub(crate) async fn step_velocity_tune<B: CommissioningBackend>(
         peak_velocity,
         prev_encoder_for_velocity: None,
         saturation_count: 0,
-        torque_limit: backend.current_limit() & 0xFFFF,
+        torque_limit: u32::from(backend.current_limit()),
         operational_velocity_limit: backend.operational_velocity_limit(),
         diagnostics,
     };
@@ -202,7 +202,7 @@ pub(crate) async fn step_velocity_tune<B: CommissioningBackend>(
 mod tests {
     use super::*;
     use crate::autotune::MechanicalModel;
-    use crate::commission_dispatch::test_support::MockBackend;
+    use crate::commission_dispatch::test_support::{MockBackend, current_limit};
     use crate::commissioning::outer::{
         OuterDiagnostics, OuterPhase, OuterSafetyLimits, VelocityTuneStrategy,
     };
@@ -250,7 +250,7 @@ mod tests {
                 safety,
             };
             let mut backend = MockBackend::new();
-            backend.current_limit_value = 2_448;
+            backend.current_limit_value = current_limit(2_448);
 
             let result = step_velocity_tune(
                 &mut phase,
@@ -312,7 +312,7 @@ mod tests {
                 ),
             };
             let mut backend = MockBackend::new();
-            backend.current_limit_value = 2_448;
+            backend.current_limit_value = current_limit(2_448);
 
             let clean_result = step_velocity_tune(
                 &mut clean_phase,
@@ -390,7 +390,7 @@ mod tests {
                 ),
             };
             let mut backend = MockBackend::new();
-            backend.current_limit_value = 2_448;
+            backend.current_limit_value = current_limit(2_448);
 
             let result = step_velocity_tune(
                 &mut phase,

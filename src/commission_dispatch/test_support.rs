@@ -7,12 +7,18 @@ use crate::commissioning::backend::{
     CommissionTiming, CommissionTrace,
 };
 use crate::config::TmcConfig;
+use foci_tmc4671::current_limit::PidTorqueFluxLimit;
 use foci_tmc4671::registers::Register;
 use heapless::Vec;
 
 /// Synthetic SPI error for test injection.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub struct MockSpiError;
+
+/// Construct a validated current limit for test fixtures.
+pub fn current_limit(raw: u32) -> PidTorqueFluxLimit {
+    PidTorqueFluxLimit::new(raw).expect("test current limit must be valid")
+}
 
 /// A single SPI operation recorded by `MockBackend`.
 #[derive(Debug, Clone, Copy)]
@@ -79,7 +85,7 @@ pub struct MockBackend {
     /// Value returned by `is_shutdown_requested()`.
     pub shutdown_requested: bool,
     /// Value returned by `current_limit()`.
-    pub current_limit_value: u32,
+    pub current_limit_value: PidTorqueFluxLimit,
     /// Value returned by `pwm_maxcnt()`.
     pub pwm_maxcnt_value: u16,
     /// Value returned by `bbm_register()`.
@@ -166,7 +172,7 @@ impl MockBackend {
             advance_elapsed_on_delay: false,
             spi_elapsed_step_us: 0,
             shutdown_requested: false,
-            current_limit_value: 0,
+            current_limit_value: PidTorqueFluxLimit::ZERO,
             pwm_maxcnt_value: 4095,
             bbm_register_value: 0,
             dsadc_mdec_register_value: 0,
@@ -465,7 +471,7 @@ impl CommissionTiming for MockBackend {
 }
 
 impl CommissionBoardConfig for MockBackend {
-    fn current_limit(&self) -> u32 {
+    fn current_limit(&self) -> PidTorqueFluxLimit {
         self.current_limit_value
     }
 

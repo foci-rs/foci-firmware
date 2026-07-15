@@ -543,9 +543,8 @@ where
             }
             let current_limit = board
                 .tmc_state()
-                .current_limit_reg
-                .load(core::sync::atomic::Ordering::Relaxed);
-            if current_limit == 0 {
+                .load_current_limit(core::sync::atomic::Ordering::Relaxed);
+            if current_limit.raw() == 0 {
                 board
                     .tmc_state()
                     .commission_in_flight
@@ -611,9 +610,8 @@ where
             }
             let current_limit = board
                 .tmc_state()
-                .current_limit_reg
-                .load(core::sync::atomic::Ordering::Relaxed);
-            if current_limit == 0 {
+                .load_current_limit(core::sync::atomic::Ordering::Relaxed);
+            if current_limit.raw() == 0 {
                 board
                     .tmc_state()
                     .commission_in_flight
@@ -912,6 +910,7 @@ mod tests {
 
     use crate::autotune::CommissionProfile;
     use crate::calibration::CalibrationError;
+    use crate::commission_dispatch::test_support::current_limit;
     use crate::commissioning::types::{AdcCalResult, EngineKind};
     use crate::state::stepper::{reset_all_stepper_channels, stepper_channel0};
     use crate::state::tmc::{reset_all_tmc_channels, tmc_channel0};
@@ -1701,7 +1700,7 @@ mod tests {
             runtime.set_calibrated_for_test(true);
             runtime.set_phase_advance_for_test(true, 0x1111_2222, 0x3333_4444);
             let mut board = RecordingBoard::skip_tick_tail();
-            tmc_channel0().current_limit_reg.store(1, Relaxed);
+            tmc_channel0().store_current_limit(current_limit(1), Relaxed);
             let mut tmc = Tmc4671Spi::new(
                 RuntimeMockSpi::default().fail_writes_to(ABN_DECODER_PHI_E_PHI_M_OFFSET.addr()),
             );
@@ -2003,7 +2002,7 @@ mod tests {
             runtime.set_motor_enabled_for_test(true);
             runtime.set_calibrated_for_test(true);
             let mut board = RecordingBoard::skip_tick_tail();
-            tmc_channel0().current_limit_reg.store(1, Relaxed);
+            tmc_channel0().store_current_limit(current_limit(1), Relaxed);
             let mut tmc = Tmc4671Spi::new(RuntimeMockSpi::default());
 
             let outcome = handle_tmc_control_request(

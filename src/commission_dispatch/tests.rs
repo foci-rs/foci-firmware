@@ -1313,9 +1313,7 @@ fn commission_done_finalize_path() {
         let mut backend = MockBackend::new();
         let (mut cal, mut en, mut gains) = fresh_state_locals();
         let mut state = dispatch_state(&mut cal, &mut en, &mut gains);
-        tmc_state()
-            .current_limit_reg
-            .store(0x0010_0010, Ordering::Relaxed);
+        tmc_state().store_current_limit(test_support::current_limit(0x10), Ordering::Relaxed);
         stepper_state().position.store(99, Ordering::Relaxed);
         let mut engine = Some(CommissioningEngine::new_commission(
             6,
@@ -1404,7 +1402,10 @@ fn commission_done_finalize_path() {
         tmc_state().motor_armed.store(false, Ordering::Relaxed);
         store_published_controller_cache(&mut state, original);
         stepper_state().position.store(0, Ordering::Relaxed);
-        tmc_state().current_limit_reg.store(0, Ordering::Relaxed);
+        tmc_state().store_current_limit(
+            foci_tmc4671::current_limit::PidTorqueFluxLimit::ZERO,
+            Ordering::Relaxed,
+        );
         clear_motor_sentinel();
     });
 }
@@ -1417,9 +1418,7 @@ fn commission_done_failed_inner_status_skips_persist_and_arm() {
         let mut backend = MockBackend::new();
         let (mut cal, mut en, mut gains) = fresh_state_locals();
         let mut state = dispatch_state(&mut cal, &mut en, &mut gains);
-        tmc_state()
-            .current_limit_reg
-            .store(0x0010_0010, Ordering::Relaxed);
+        tmc_state().store_current_limit(test_support::current_limit(0x10), Ordering::Relaxed);
         let mut engine = Some(CommissioningEngine::new_commission(
             6,
             CommissionProfile::Balanced,
@@ -1475,7 +1474,10 @@ fn commission_done_failed_inner_status_skips_persist_and_arm() {
             _ => panic!("expected failed CommissionResult"),
         }
 
-        tmc_state().current_limit_reg.store(0, Ordering::Relaxed);
+        tmc_state().store_current_limit(
+            foci_tmc4671::current_limit::PidTorqueFluxLimit::ZERO,
+            Ordering::Relaxed,
+        );
     });
 }
 
@@ -1488,9 +1490,7 @@ fn commission_done_current_limit_restore_failure_disarms() {
         backend.fail_on_write = Some(foci_tmc4671::registers::PID_TORQUE_FLUX_LIMITS.addr());
         let (mut cal, mut en, mut gains) = fresh_state_locals();
         let mut state = dispatch_state(&mut cal, &mut en, &mut gains);
-        tmc_state()
-            .current_limit_reg
-            .store(0x0010_0010, Ordering::Relaxed);
+        tmc_state().store_current_limit(test_support::current_limit(0x10), Ordering::Relaxed);
         tmc_state().motor_armed.store(true, Ordering::Relaxed);
         let mut engine = Some(CommissioningEngine::new_commission(
             6,
@@ -1530,7 +1530,10 @@ fn commission_done_current_limit_restore_failure_disarms() {
         }
 
         store_published_controller_cache(&mut state, original);
-        tmc_state().current_limit_reg.store(0, Ordering::Relaxed);
+        tmc_state().store_current_limit(
+            foci_tmc4671::current_limit::PidTorqueFluxLimit::ZERO,
+            Ordering::Relaxed,
+        );
     });
 }
 
@@ -1545,8 +1548,7 @@ fn commission_done_sentinel_failure_preserves_published_cache() {
         let mut state = dispatch_state(&mut cal, &mut en, &mut gains);
         state
             .tmc
-            .current_limit_reg
-            .store(0x0010_0010, Ordering::Relaxed);
+            .store_current_limit(test_support::current_limit(0x10), Ordering::Relaxed);
         let mut engine = Some(CommissioningEngine::new_commission(
             6,
             CommissionProfile::Balanced,
@@ -1592,7 +1594,10 @@ fn commission_done_sentinel_failure_preserves_published_cache() {
         }
 
         store_published_controller_cache(&mut state, original);
-        state.tmc.current_limit_reg.store(0, Ordering::Relaxed);
+        state.tmc.store_current_limit(
+            foci_tmc4671::current_limit::PidTorqueFluxLimit::ZERO,
+            Ordering::Relaxed,
+        );
         clear_motor_sentinel();
     });
 }

@@ -1351,7 +1351,7 @@ pub(crate) async fn step_current_tune<B: CommissioningBackend>(
 
     // Compute step amplitude: 15% of run_current, capped so validation does
     // not saturate PIDOUT before the current-loop response can be measured.
-    let current_limit = backend.current_limit() & 0xFFFF;
+    let current_limit = u32::from(backend.current_limit());
     let validation = match validation_envelope(current_limit, gains) {
         Some(validation) => validation,
         None => return super::fail_inner(phase, CommissionError::CurrentValidationFailed),
@@ -1437,7 +1437,10 @@ pub(crate) async fn step_current_validate<B: CommissioningBackend>(
                     .await
                     .is_err()
                 || backend
-                    .write_register(PID_TORQUE_FLUX_LIMITS, backend.current_limit())
+                    .write_register(
+                        PID_TORQUE_FLUX_LIMITS,
+                        backend.current_limit().register_value(),
+                    )
                     .await
                     .is_err()
                 || backend
@@ -1783,7 +1786,7 @@ pub(crate) async fn step_current_validate<B: CommissioningBackend>(
                         match retry_gains {
                             Ok(gains) => {
                                 data.gains = gains;
-                                let current_limit = backend.current_limit() & 0xFFFF;
+                                let current_limit = u32::from(backend.current_limit());
                                 if let Some(validation) =
                                     validation_envelope(current_limit, data.gains)
                                 {
@@ -2092,7 +2095,7 @@ mod tests {
         CURRENT_LOOP_FAILURE_TORQUE_VALIDATION, CURRENT_VALIDATION_AXIS_FLUX,
         CURRENT_VALIDATION_AXIS_TORQUE,
     };
-    use crate::commission_dispatch::test_support::{MockBackend, SpiOp};
+    use crate::commission_dispatch::test_support::{MockBackend, SpiOp, current_limit};
     use crate::commissioning::backend::CommissionMotorControl;
     use foci_tmc4671::registers::{
         ABN_DECODER_PPR, INTERIM_FOC_UQ_UD_LIMITED, MODE_RAMP_MODE_MOTION, PHI_E_SELECTION,
@@ -2162,7 +2165,7 @@ mod tests {
                 timing: [crate::commissioning::types::CommissionTimingSummary::NOT_RUN; 3],
             };
             let mut backend = MockBackend::new();
-            backend.current_limit_value = 4000;
+            backend.current_limit_value = current_limit(4000);
 
             let result =
                 step_current_tune(&mut phase, CommissionProfile::Balanced, &mut backend).await;
@@ -2207,7 +2210,7 @@ mod tests {
                 timing: [crate::commissioning::types::CommissionTimingSummary::NOT_RUN; 3],
             };
             let mut backend = MockBackend::new();
-            backend.current_limit_value = 2816;
+            backend.current_limit_value = current_limit(2816);
             backend.tmc_config.bandwidth_hz = 600.0;
 
             let result =
@@ -2252,7 +2255,7 @@ mod tests {
                 timing: [crate::commissioning::types::CommissionTimingSummary::NOT_RUN; 3],
             };
             let mut backend = MockBackend::new();
-            backend.current_limit_value = 2816;
+            backend.current_limit_value = current_limit(2816);
             backend.tmc_config.bandwidth_hz = 1600.0;
 
             let result =
@@ -2302,7 +2305,7 @@ mod tests {
                 timing: [crate::commissioning::types::CommissionTimingSummary::NOT_RUN; 3],
             };
             let mut backend = MockBackend::new();
-            backend.current_limit_value = 4000;
+            backend.current_limit_value = current_limit(4000);
 
             let result =
                 step_current_tune(&mut phase, CommissionProfile::Balanced, &mut backend).await;
@@ -2343,7 +2346,7 @@ mod tests {
                 timing: [crate::commissioning::types::CommissionTimingSummary::NOT_RUN; 3],
             };
             let mut backend = MockBackend::new();
-            backend.current_limit_value = 4000;
+            backend.current_limit_value = current_limit(4000);
             backend.tmc_config.bandwidth_hz = 12_000.0;
 
             let result =
@@ -2380,7 +2383,7 @@ mod tests {
                 timing: [crate::commissioning::types::CommissionTimingSummary::NOT_RUN; 3],
             };
             let mut backend = MockBackend::new();
-            backend.current_limit_value = 4000;
+            backend.current_limit_value = current_limit(4000);
             backend.tmc_config.bandwidth_hz = 2_000.0;
 
             let result =
@@ -2947,7 +2950,7 @@ mod tests {
             }
             let mut buf = TransientBuffer::new();
             let mut backend = MockBackend::new();
-            backend.current_limit_value = 2816;
+            backend.current_limit_value = current_limit(2816);
             let _ = backend.registers.insert(ABN_DECODER_PPR.addr(), 4000);
 
             let result = step_current_validate(
@@ -2971,7 +2974,7 @@ mod tests {
                 matches!(op, SpiOp::Write(addr, value) if *addr == PIDOUT_UQ_UD_LIMITS.addr() && *value == 2172)
             }));
             assert!(backend.spi_log.iter().any(|op| {
-                matches!(op, SpiOp::Write(addr, value) if *addr == PID_TORQUE_FLUX_LIMITS.addr() && *value == backend.current_limit_value)
+                matches!(op, SpiOp::Write(addr, value) if *addr == PID_TORQUE_FLUX_LIMITS.addr() && *value == backend.current_limit_value.register_value())
             }));
             assert!(matches!(
                 phase,
@@ -3030,7 +3033,7 @@ mod tests {
             }
             let mut buf = TransientBuffer::new();
             let mut backend = MockBackend::new();
-            backend.current_limit_value = 2816;
+            backend.current_limit_value = current_limit(2816);
 
             let result = step_current_validate(
                 &mut phase,

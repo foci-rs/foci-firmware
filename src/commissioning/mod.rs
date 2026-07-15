@@ -902,7 +902,7 @@ impl CommissioningEngine {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::commission_dispatch::test_support::SpiOp;
+    use crate::commission_dispatch::test_support::{SpiOp, current_limit};
     use crate::commissioning::types::EngineKind;
 
     #[test]
@@ -1192,7 +1192,7 @@ mod tests {
             };
 
             let mut backend = crate::commission_dispatch::test_support::MockBackend::new();
-            backend.current_limit_value = 2_816;
+            backend.current_limit_value = current_limit(2_816);
             backend.configured_physical_width = Some(16);
             let required_registers = [
                 (PWM_SV_CHOP.addr(), 7),
@@ -1202,7 +1202,10 @@ mod tests {
                     backend.mechanical_encoder_quadrature_counts_per_rev_value,
                 ),
                 (ADC_I_SELECT.addr(), backend.tmc_config.adc_i_select),
-                (PID_TORQUE_FLUX_LIMITS.addr(), backend.current_limit_value),
+                (
+                    PID_TORQUE_FLUX_LIMITS.addr(),
+                    backend.current_limit_value.register_value(),
+                ),
             ];
             for (address, value) in required_registers {
                 backend.registers.insert(address, value).ok();
