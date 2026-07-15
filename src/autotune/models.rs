@@ -363,9 +363,9 @@ pub(crate) const VELOCITY_SIMC_MAX_P_REG: u16 = 1152 * 4;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub struct PositionGains {
     /// Position P gain — TMC4671 Q8.8 register value.
-    pub position_p: u16,
+    pub position_p: PidGain,
     /// Position I gain — TMC4671 Q8.8 register value (usually 0).
-    pub position_i: u16,
+    pub position_i: PidGain,
 }
 
 /// Filter cutoff recommendations from Phase 12.

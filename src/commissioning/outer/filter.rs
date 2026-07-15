@@ -231,8 +231,8 @@ mod tests {
                     lambda_vel_ms: 10,
                 },
                 position_gains: PositionGains {
-                    position_p: 640,
-                    position_i: 0,
+                    position_p: gain(640),
+                    position_i: PidGain::ZERO,
                 },
                 position_oscillation_early: false,
                 velocity_chatter: true,
@@ -272,8 +272,8 @@ mod tests {
                     lambda_vel_ms: 10,
                 },
                 position_gains: PositionGains {
-                    position_p: 640,
-                    position_i: 0,
+                    position_p: gain(640),
+                    position_i: PidGain::ZERO,
                 },
                 position_oscillation_early: true,
                 velocity_chatter: true,

@@ -20,6 +20,7 @@ use crate::trace::events::{
     EVENT_COMMISSION_POSITION_TUNE_RESULT, EVENT_COMMISSION_POSITION_TUNE_TARGET, TraceEventLevel,
     u32_arg,
 };
+use foci_tmc4671::pid::PidGain;
 
 /// Position-tune P-gain growth ratio between attempts.
 pub(crate) const POSITION_TUNE_P_MUL_NUM: u32 = 3;
@@ -435,14 +436,17 @@ pub(crate) async fn step_position_tune_with_trace<B: CommissioningBackend>(
             }
 
             let final_p = data.stable_p;
-            let final_i = 0;
+            let position_p = match PidGain::new(final_p) {
+                Ok(gain) => gain,
+                Err(_) => return fail_outer(phase, CommissionError::PositionTuneFailed),
+            };
 
-            defmt::info!("pos tune: final P={}, I={}", final_p, final_i);
+            defmt::info!("pos tune: final P={}, I=0", final_p);
 
             let carried_safety = *safety;
             let position_gains = PositionGains {
-                position_p: final_p,
-                position_i: final_i,
+                position_p,
+                position_i: PidGain::ZERO,
             };
             let velocity_gains = data.velocity_gains;
             let velocity_chatter = data.velocity_chatter;
@@ -574,8 +578,8 @@ mod tests {
             ));
             match phase {
                 OuterPhase::FilterTune { position_gains, .. } => {
-                    assert_eq!(position_gains.position_p, 640);
-                    assert_eq!(position_gains.position_i, 0);
+                    assert_eq!(position_gains.position_p.raw(), 640);
+                    assert_eq!(position_gains.position_i, PidGain::ZERO);
                 }
                 other => panic!("expected FilterTune, got {other:?}"),
             }

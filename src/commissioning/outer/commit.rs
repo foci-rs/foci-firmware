@@ -37,8 +37,8 @@ pub(crate) fn step_commit(phase: &mut OuterPhase) -> StepResult {
         diagnostics.synth_velocity_p = velocity_gains.velocity_p.raw();
         diagnostics.synth_velocity_i = velocity_gains.velocity_i.raw();
     }
-    diagnostics.synth_position_p = position_gains.position_p;
-    diagnostics.synth_position_i = position_gains.position_i;
+    diagnostics.synth_position_p = position_gains.position_p.raw();
+    diagnostics.synth_position_i = position_gains.position_i.raw();
 
     if velocity_gains.velocity_p.raw() > OUTER_MAX_VELOCITY_P
         || velocity_gains.velocity_i.raw() > OUTER_MAX_VELOCITY_I
@@ -51,8 +51,8 @@ pub(crate) fn step_commit(phase: &mut OuterPhase) -> StepResult {
         return fail_outer(phase, CommissionError::VelocityValidationFailed);
     }
 
-    if position_gains.position_p > OUTER_MAX_POSITION_P
-        || position_gains.position_i > OUTER_MAX_POSITION_I
+    if position_gains.position_p.raw() > OUTER_MAX_POSITION_P
+        || position_gains.position_i.raw() > OUTER_MAX_POSITION_I
     {
         defmt::warn!(
             "outer commit: invalid accepted position gains P={}, I={}",
@@ -74,8 +74,8 @@ pub(crate) fn step_commit(phase: &mut OuterPhase) -> StepResult {
         velocity_p: velocity_gains.velocity_p.raw(),
         velocity_i: velocity_gains.velocity_i.raw(),
         velocity_limit: velocity_gains.velocity_limit,
-        position_p: position_gains.position_p,
-        position_i: position_gains.position_i,
+        position_p: position_gains.position_p.raw(),
+        position_i: position_gains.position_i.raw(),
         velocity_filter_hz: filter_config.velocity_filter_hz.unwrap_or(0) as u16,
         position_filter_hz: filter_config.position_filter_hz.unwrap_or(0) as u16,
         flux_filter_hz: filter_config.flux_filter_hz.unwrap_or(0) as u16,
@@ -179,8 +179,8 @@ mod tests {
 
     fn valid_position_gains() -> PositionGains {
         PositionGains {
-            position_p: 640,
-            position_i: 0,
+            position_p: gain(640),
+            position_i: PidGain::ZERO,
         }
     }
 
@@ -248,12 +248,12 @@ mod tests {
         assert_eq!(result.velocity_p, velocity.velocity_p.raw());
         assert_eq!(result.velocity_i, velocity.velocity_i.raw());
         assert_eq!(result.velocity_limit, velocity.velocity_limit);
-        assert_eq!(result.position_p, position.position_p);
-        assert_eq!(result.position_i, position.position_i);
+        assert_eq!(result.position_p, position.position_p.raw());
+        assert_eq!(result.position_i, position.position_i.raw());
         assert_eq!(result.synth_velocity_p, velocity.velocity_p.raw());
         assert_eq!(result.synth_velocity_i, velocity.velocity_i.raw());
-        assert_eq!(result.synth_position_p, position.position_p);
-        assert_eq!(result.synth_position_i, position.position_i);
+        assert_eq!(result.synth_position_p, position.position_p.raw());
+        assert_eq!(result.synth_position_i, position.position_i.raw());
     }
 
     #[test]
@@ -277,7 +277,7 @@ mod tests {
     #[test]
     fn commit_rejects_out_of_envelope_position_gains() {
         let mut position = valid_position_gains();
-        position.position_p = OUTER_MAX_POSITION_P + 1;
+        position.position_p = gain(OUTER_MAX_POSITION_P + 1);
         let mut phase = commit_phase(valid_velocity_gains(), position);
 
         let result = step_commit(&mut phase);
