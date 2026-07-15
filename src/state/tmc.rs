@@ -156,13 +156,13 @@ pub struct TmcChannelState {
     /// Host-controlled gate for raw-enable auto-calibration.
     pub auto_calibrate_on_enable_allowed: AtomicBool,
     /// Position P gain for cross-priority access (Q8.8).
-    pub position_p_value: AtomicU16,
+    position_p_value: AtomicU16,
     /// Position I gain for cross-priority access (Q8.8).
-    pub position_i_value: AtomicU16,
+    position_i_value: AtomicU16,
     /// Velocity P gain for cross-priority access (Q8.8).
-    pub velocity_p_value: AtomicU16,
+    velocity_p_value: AtomicU16,
     /// Velocity I gain for cross-priority access (Q8.8).
-    pub velocity_i_value: AtomicU16,
+    velocity_i_value: AtomicU16,
 }
 
 impl TmcChannelState {
@@ -297,6 +297,11 @@ impl TmcChannelState {
             .store(gains.velocity_p.raw(), ordering);
         self.velocity_i_value
             .store(gains.velocity_i.raw(), ordering);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn corrupt_outer_gain_for_test(&self, raw: u16) {
+        self.position_p_value.store(raw, Ordering::Relaxed);
     }
 
     /// Validates and publishes a complete motion scale to its channel mirrors.
@@ -508,6 +513,34 @@ mod tests {
 
         filter.store(None, Relaxed);
         assert_eq!(filter.load(Relaxed), None);
+    }
+
+    #[test]
+    fn outer_gain_defaults_load_through_typed_boundary() {
+        let state = TmcChannelState::new();
+
+        assert_eq!(
+            state.load_outer_gains(Relaxed),
+            Ok(crate::pid::DEFAULT_OUTER_GAINS)
+        );
+    }
+
+    #[test]
+    fn outer_gain_store_round_trips_as_one_aggregate() {
+        let state = TmcChannelState::new();
+        let gains = crate::pid::test_outer_gains(0x7fff, 1, 2, 0x7fff);
+
+        state.store_outer_gains(gains, Relaxed);
+
+        assert_eq!(state.load_outer_gains(Relaxed), Ok(gains));
+    }
+
+    #[test]
+    fn outer_gain_load_rejects_corrupt_raw_storage() {
+        let state = TmcChannelState::new();
+        state.corrupt_outer_gain_for_test(0x8000);
+
+        assert!(state.load_outer_gains(Relaxed).is_err());
     }
 
     #[test]

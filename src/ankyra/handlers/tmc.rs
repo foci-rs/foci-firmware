@@ -1048,17 +1048,12 @@ mod tests {
         let mut sender = ();
         config_stepper_channel(ctx.state(), 10, 1).unwrap();
         let tmc_state = crate::state::tmc::tmc_channel(1).unwrap();
-        tmc_state.position_p_value.store(640, Relaxed);
-        tmc_state.position_i_value.store(0, Relaxed);
-        tmc_state.velocity_p_value.store(1152, Relaxed);
-        tmc_state.velocity_i_value.store(0, Relaxed);
+        let confirmed = crate::pid::DEFAULT_OUTER_GAINS;
+        tmc_state.store_outer_gains(confirmed, Relaxed);
 
         tmc_set_position_gains(&mut ctx, &mut sender, 10, 256, 3, 768, 4);
 
-        assert_eq!(tmc_state.position_p_value.load(Relaxed), 640);
-        assert_eq!(tmc_state.position_i_value.load(Relaxed), 0);
-        assert_eq!(tmc_state.velocity_p_value.load(Relaxed), 1152);
-        assert_eq!(tmc_state.velocity_i_value.load(Relaxed), 0);
+        assert_eq!(tmc_state.load_outer_gains(Relaxed), Ok(confirmed));
         let req = ctx.last_request.borrow().clone().unwrap();
         assert_eq!(req.channel, 1);
         let crate::tmc::TmcRequestKind::SetPositionGains {
@@ -1084,18 +1079,13 @@ mod tests {
         let mut sender = ();
         config_stepper_channel(ctx.state(), 10, 1).unwrap();
         let tmc_state = crate::state::tmc::tmc_channel(1).unwrap();
-        tmc_state.position_p_value.store(641, Relaxed);
-        tmc_state.position_i_value.store(1, Relaxed);
-        tmc_state.velocity_p_value.store(1153, Relaxed);
-        tmc_state.velocity_i_value.store(2, Relaxed);
+        let confirmed = crate::pid::test_outer_gains(641, 1, 1153, 2);
+        tmc_state.store_outer_gains(confirmed, Relaxed);
         ctx.accept_request = false;
 
         tmc_set_position_gains(&mut ctx, &mut sender, 10, 256, 3, 768, 4);
 
-        assert_eq!(tmc_state.position_p_value.load(Relaxed), 641);
-        assert_eq!(tmc_state.position_i_value.load(Relaxed), 1);
-        assert_eq!(tmc_state.velocity_p_value.load(Relaxed), 1153);
-        assert_eq!(tmc_state.velocity_i_value.load(Relaxed), 2);
+        assert_eq!(tmc_state.load_outer_gains(Relaxed), Ok(confirmed));
         assert!(ctx.last_request.borrow().is_none());
         assert_eq!(
             ctx.last_shutdown,
@@ -1107,10 +1097,8 @@ mod tests {
     fn tmc_set_position_gains_accepts_maximum_and_rejects_negative_encoding() {
         let _guard = crate::commission_dispatch::test_support::SHARED_STATE_MUTEX.blocking_lock();
         let tmc_state = crate::state::tmc::tmc_channel(1).unwrap();
-        tmc_state.position_p_value.store(640, Relaxed);
-        tmc_state.position_i_value.store(0, Relaxed);
-        tmc_state.velocity_p_value.store(1152, Relaxed);
-        tmc_state.velocity_i_value.store(0, Relaxed);
+        let confirmed = crate::pid::DEFAULT_OUTER_GAINS;
+        tmc_state.store_outer_gains(confirmed, Relaxed);
 
         let mut accepted = MockCtx::new(2);
         let mut sender = ();
@@ -1156,10 +1144,7 @@ mod tests {
             rejected.last_shutdown,
             Some(ShutdownReason::TmcRequestValidationFailed)
         );
-        assert_eq!(tmc_state.position_p_value.load(Relaxed), 640);
-        assert_eq!(tmc_state.position_i_value.load(Relaxed), 0);
-        assert_eq!(tmc_state.velocity_p_value.load(Relaxed), 1152);
-        assert_eq!(tmc_state.velocity_i_value.load(Relaxed), 0);
+        assert_eq!(tmc_state.load_outer_gains(Relaxed), Ok(confirmed));
     }
 
     #[test]

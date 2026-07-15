@@ -41,13 +41,14 @@ struct PublishedControllerCache {
 
 fn load_published_controller_cache(state: &DispatchState<'_>) -> PublishedControllerCache {
     use core::sync::atomic::Ordering::Relaxed;
+    let outer = state.tmc.load_outer_gains(Relaxed).unwrap();
 
     PublishedControllerCache {
         stored_gains: *state.stored_gains,
-        position_p: state.tmc.position_p_value.load(Relaxed),
-        position_i: state.tmc.position_i_value.load(Relaxed),
-        velocity_p: state.tmc.velocity_p_value.load(Relaxed),
-        velocity_i: state.tmc.velocity_i_value.load(Relaxed),
+        position_p: outer.position_p.raw(),
+        position_i: outer.position_i.raw(),
+        velocity_p: outer.velocity_p.raw(),
+        velocity_i: outer.velocity_i.raw(),
         velocity_limit: state.tmc.velocity_limit_cfg.load(Relaxed),
         velocity_filter_hz: state.tmc.velocity_filter_hz.load(Relaxed),
         torque_filter_hz: state.tmc.torque_filter_hz.load(Relaxed),
@@ -63,10 +64,15 @@ fn store_published_controller_cache(
     use core::sync::atomic::Ordering::Relaxed;
 
     *state.stored_gains = cache.stored_gains;
-    state.tmc.position_p_value.store(cache.position_p, Relaxed);
-    state.tmc.position_i_value.store(cache.position_i, Relaxed);
-    state.tmc.velocity_p_value.store(cache.velocity_p, Relaxed);
-    state.tmc.velocity_i_value.store(cache.velocity_i, Relaxed);
+    state.tmc.store_outer_gains(
+        crate::pid::test_outer_gains(
+            cache.position_p,
+            cache.position_i,
+            cache.velocity_p,
+            cache.velocity_i,
+        ),
+        Relaxed,
+    );
     state
         .tmc
         .velocity_limit_cfg
@@ -891,26 +897,15 @@ fn outer_done_success_arms_motor() {
         .await;
 
         // Atomics persisted
-        assert_eq!(
-            tmc_state().position_p_value.load(Ordering::Relaxed),
-            outer.position_p
-        );
+        let published = tmc_state().load_outer_gains(Ordering::Relaxed).unwrap();
+        assert_eq!(published.position_p.raw(), outer.position_p);
         assert_eq!(
             tmc_state().velocity_limit_cfg.load(Ordering::Relaxed),
             outer.velocity_limit
         );
-        assert_eq!(
-            tmc_state().position_i_value.load(Ordering::Relaxed),
-            outer.position_i
-        );
-        assert_eq!(
-            tmc_state().velocity_p_value.load(Ordering::Relaxed),
-            outer.velocity_p
-        );
-        assert_eq!(
-            tmc_state().velocity_i_value.load(Ordering::Relaxed),
-            outer.velocity_i
-        );
+        assert_eq!(published.position_i.raw(), outer.position_i);
+        assert_eq!(published.velocity_p.raw(), outer.velocity_p);
+        assert_eq!(published.velocity_i.raw(), outer.velocity_i);
         assert_eq!(
             tmc_state().velocity_filter_hz.load(Ordering::Relaxed),
             Some(outer.velocity_filter_hz)
@@ -1348,20 +1343,21 @@ fn commission_done_finalize_path() {
                 torque_i: crate::pid::test_gain(commission_result.inner.torque_i),
             })
         );
+        let published = state.tmc.load_outer_gains(Ordering::Relaxed).unwrap();
         assert_eq!(
-            state.tmc.position_p_value.load(Ordering::Relaxed),
+            published.position_p.raw(),
             commission_result.fallback_position_p
         );
         assert_eq!(
-            state.tmc.position_i_value.load(Ordering::Relaxed),
+            published.position_i.raw(),
             commission_result.fallback_position_i
         );
         assert_eq!(
-            state.tmc.velocity_p_value.load(Ordering::Relaxed),
+            published.velocity_p.raw(),
             commission_result.fallback_velocity_p
         );
         assert_eq!(
-            state.tmc.velocity_i_value.load(Ordering::Relaxed),
+            published.velocity_i.raw(),
             commission_result.fallback_velocity_i
         );
         assert_eq!(

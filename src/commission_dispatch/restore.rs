@@ -387,4 +387,24 @@ mod tests {
             tmc_state().current_limit_reg.store(0, Relaxed);
         });
     }
+
+    #[test]
+    fn restore_calibrate_gains_rejects_corrupt_outer_storage_before_pid_write() {
+        pollster::block_on(async {
+            let _guard = crate::commission_dispatch::test_support::SHARED_STATE_MUTEX
+                .lock()
+                .await;
+            let mut backend = MockBackend::new();
+            tmc_state().corrupt_outer_gain_for_test(0x8000);
+
+            let result = restore_calibrate_gains(&mut backend, tmc_state(), None).await;
+
+            assert_eq!(result, Err(RestoreError::InvalidGains));
+            assert!(backend.spi_log.is_empty());
+            tmc_state().store_outer_gains(
+                crate::pid::DEFAULT_OUTER_GAINS,
+                core::sync::atomic::Ordering::Relaxed,
+            );
+        });
+    }
 }
