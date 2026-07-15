@@ -4,6 +4,16 @@ use embedded_hal_async::spi::SpiDevice;
 use foci_tmc4671::spi::Tmc4671Spi;
 
 use crate::state::tmc::TmcChannelState;
+use crate::tmc_control::current_limit::{CurrentLimitConversionError, current_limit_from_run_ma};
+
+/// Failure while applying a validated RMS current request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+pub enum SetCurrentError {
+    /// The RMS current or board scale cannot form a valid chip limit.
+    InvalidLimit(CurrentLimitConversionError),
+    /// The validated register write failed.
+    Spi,
+}
 
 /// Apply a new RMS current limit to the TMC4671.
 ///
@@ -21,40 +31,43 @@ use crate::state::tmc::TmcChannelState;
 ///
 /// # Errors
 ///
-/// Returns `Err(())` if the SPI write fails.
+/// Returns a cause-specific error if conversion or the SPI write fails.
 pub async fn apply_set_current<B>(
     tmc: &mut Tmc4671Spi<B>,
     tmc_state: &TmcChannelState,
     run_ma: u32,
     current_scale_ma_per_lsb: f32,
-) -> Result<(), ()>
+) -> Result<(), SetCurrentError>
 where
     B: SpiDevice<u8>,
 {
     use foci_tmc4671::registers::*;
 
-    // User configures RMS current (Klipper convention). The TMC4671
-    // PID limits operate on peak amplitude in the d-q frame
-    // (datasheet eq. 19/21: I_phase = I_D * sin(phi_e)).
-    // Convert: peak = RMS * sqrt(2).
-    let peak_ma = run_ma as f32 * core::f32::consts::SQRT_2;
-    let counts = (peak_ma / current_scale_ma_per_lsb) as u32;
-    let limit = counts;
+    let limit = current_limit_from_run_ma(run_ma, current_scale_ma_per_lsb).map_err(|error| {
+        defmt::error!(
+            "Invalid TMC4671 current limit: run_ma={} scale={} cause={}",
+            run_ma,
+            current_scale_ma_per_lsb,
+            error,
+        );
+        SetCurrentError::InvalidLimit(error)
+    })?;
+    let register_value = limit.register_value();
     if tmc
-        .write_register(PID_TORQUE_FLUX_LIMITS, limit)
+        .write_register(PID_TORQUE_FLUX_LIMITS, register_value)
         .await
         .is_err()
     {
         defmt::error!("TMC4671 SPI write failed: PID_TORQUE_FLUX_LIMITS");
-        return Err(());
+        return Err(SetCurrentError::Spi);
     }
     tmc_state
         .current_limit_reg
-        .store(limit, core::sync::atomic::Ordering::Relaxed);
+        .store(register_value, core::sync::atomic::Ordering::Relaxed);
     defmt::info!(
         "TMC4671 current: {}mA RMS -> {} counts (peak)",
         run_ma,
-        counts
+        register_value
     );
     Ok(())
 }
@@ -258,6 +271,31 @@ mod tests {
                 raw_spi.writes[0],
                 [PID_TORQUE_FLUX_LIMITS.addr() | 0x80, 0x00, 0x00, 0x07, 0x2c]
             );
+
+            tmc_state().current_limit_reg.store(0, Ordering::Relaxed);
+        });
+    }
+
+    #[test]
+    fn apply_set_current_rejects_before_write_or_publication() {
+        pollster::block_on(async {
+            let _guard = crate::commission_dispatch::test_support::SHARED_STATE_MUTEX
+                .lock()
+                .await;
+            tmc_state().current_limit_reg.store(123, Ordering::Relaxed);
+
+            let raw_spi = MockRawSpi::default();
+            let mut tmc = Tmc4671Spi::new(raw_spi);
+            let result = apply_set_current(&mut tmc, tmc_state(), u32::MAX, 1.155).await;
+
+            assert_eq!(
+                result,
+                Err(SetCurrentError::InvalidLimit(
+                    crate::tmc_control::current_limit::CurrentLimitConversionError::OutOfRange,
+                )),
+            );
+            assert_eq!(tmc_state().current_limit_reg.load(Ordering::Relaxed), 123);
+            assert!(tmc.into_inner().writes.is_empty());
 
             tmc_state().current_limit_reg.store(0, Ordering::Relaxed);
         });

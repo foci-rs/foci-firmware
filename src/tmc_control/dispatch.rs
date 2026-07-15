@@ -37,7 +37,9 @@ where
 {
     match kind {
         TmcRequestKind::SetCurrent { run_ma } => {
-            apply_set_current(tmc, tmc_state, *run_ma, current_scale_ma_per_lsb).await?;
+            apply_set_current(tmc, tmc_state, *run_ma, current_scale_ma_per_lsb)
+                .await
+                .map_err(|_| ())?;
             Ok(SharedTmcDispatch::Handled)
         }
         TmcRequestKind::SetEncoderDir { invert } => {
