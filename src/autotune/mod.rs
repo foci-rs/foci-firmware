@@ -38,8 +38,7 @@ pub use current::{
     classify_current_axis_sample, classify_current_validation, compute_tail_symmetry_permille,
     compute_target_error_permille, current_axis_retry_decision, extract_step_metrics,
     retry_current_loop_gains, should_accept_current_validation_without_retry,
-    should_retry_current_validation, simc_current_gains_checked,
-    simc_current_gains_with_lambda_checked, synthesize_current_gains,
+    should_retry_current_validation, synthesize_current_gains,
 };
 pub use filters::recommend_filters;
 pub use hold::{
