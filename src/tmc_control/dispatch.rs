@@ -7,8 +7,17 @@ use crate::state::tmc::TmcChannelState;
 use crate::tmc::TmcRequestKind;
 use crate::tmc_control::filters::{BiquadFilterTarget, apply_live_filter};
 use crate::tmc_control::request_writes::{
-    apply_set_current, apply_set_encoder_dir, apply_set_voltage_limit,
+    SetCurrentError, apply_set_current, apply_set_encoder_dir, apply_set_voltage_limit,
 };
+
+/// Failure while applying a plain register/configuration request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+pub enum RegisterRequestError {
+    /// The requested current cannot be represented by the TMC4671 limit field.
+    CurrentLimitInvalid,
+    /// SPI or another register-request operation failed.
+    Other,
+}
 
 /// Result of attempting board-agnostic TMC request dispatch.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
@@ -31,7 +40,7 @@ pub async fn apply_shared_tmc_request<Spi>(
     tmc_state: &TmcChannelState,
     current_scale_ma_per_lsb: f32,
     pwm_maxcnt: u16,
-) -> Result<SharedTmcDispatch, ()>
+) -> Result<SharedTmcDispatch, RegisterRequestError>
 where
     Spi: SpiDevice<u8>,
 {
@@ -39,15 +48,22 @@ where
         TmcRequestKind::SetCurrent { run_ma } => {
             apply_set_current(tmc, tmc_state, *run_ma, current_scale_ma_per_lsb)
                 .await
-                .map_err(|_| ())?;
+                .map_err(|error| match error {
+                    SetCurrentError::InvalidLimit(_) => RegisterRequestError::CurrentLimitInvalid,
+                    SetCurrentError::Spi => RegisterRequestError::Other,
+                })?;
             Ok(SharedTmcDispatch::Handled)
         }
         TmcRequestKind::SetEncoderDir { invert } => {
-            apply_set_encoder_dir(tmc, tmc_state, *invert).await?;
+            apply_set_encoder_dir(tmc, tmc_state, *invert)
+                .await
+                .map_err(|_| RegisterRequestError::Other)?;
             Ok(SharedTmcDispatch::Handled)
         }
         TmcRequestKind::SetVoltageLimit { voltage_limit } => {
-            apply_set_voltage_limit(tmc, tmc_state, *voltage_limit).await?;
+            apply_set_voltage_limit(tmc, tmc_state, *voltage_limit)
+                .await
+                .map_err(|_| RegisterRequestError::Other)?;
             Ok(SharedTmcDispatch::Handled)
         }
         TmcRequestKind::SetVelocityFilter { filter_hz } => {
@@ -58,7 +74,8 @@ where
                 *filter_hz,
                 pwm_maxcnt,
             )
-            .await?;
+            .await
+            .map_err(|_| RegisterRequestError::Other)?;
             Ok(SharedTmcDispatch::Handled)
         }
         TmcRequestKind::SetTorqueFilter { filter_hz } => {
@@ -69,7 +86,8 @@ where
                 *filter_hz,
                 pwm_maxcnt,
             )
-            .await?;
+            .await
+            .map_err(|_| RegisterRequestError::Other)?;
             Ok(SharedTmcDispatch::Handled)
         }
         TmcRequestKind::SetPositionFilter { filter_hz } => {
@@ -80,7 +98,8 @@ where
                 *filter_hz,
                 pwm_maxcnt,
             )
-            .await?;
+            .await
+            .map_err(|_| RegisterRequestError::Other)?;
             Ok(SharedTmcDispatch::Handled)
         }
         TmcRequestKind::SetFluxFilter { filter_hz } => {
@@ -91,7 +110,8 @@ where
                 *filter_hz,
                 pwm_maxcnt,
             )
-            .await?;
+            .await
+            .map_err(|_| RegisterRequestError::Other)?;
             Ok(SharedTmcDispatch::Handled)
         }
         TmcRequestKind::SetVelocityFeedforward { .. }

@@ -495,6 +495,7 @@ macro_rules! foci_ankyra_config {
                 "TMC4671 ch1 bootstrap: STATUS_FLAGS read failed",
                 "TMC4671 ch1 bootstrap: STATUS_FLAGS clear failed",
                 "TMC request validation failed",
+                "TMC current limit invalid",
                 "Live gain application failed",
                 "TMC4671: PLL not locked (clock lost)",
                 "TMC4671: ADC current clipped (overcurrent)",

@@ -19,6 +19,7 @@ use crate::tmc_control::actions::{
     BoardAction, BoardActions, ShutdownReason, StepperAction, TmcControlRequestOutcome,
     TmcControlRequestTail,
 };
+use crate::tmc_control::dispatch::RegisterRequestError;
 use crate::tmc_control::helpers::{
     LiveGainWriteStatus, apply_live_inner_gains, apply_live_outer_gains, apply_motion_scale,
 };
@@ -112,7 +113,7 @@ where
         &mut self,
         req: TmcRequest,
         tmc: &mut Tmc4671Spi<Spi>,
-    ) -> Result<(), ()>;
+    ) -> Result<(), RegisterRequestError>;
 
     /// Run an active diagnostic request in board context.
     async fn run_diagnostic_request(
@@ -806,11 +807,14 @@ where
             return TmcControlRequestOutcome::refresh_velocity_scale(board.normal_tail());
         }
         other => {
-            if board.dispatch_register_request(other, tmc).await.is_err() {
-                return TmcControlRequestOutcome::shutdown(
-                    ShutdownReason::RequestValidationFailed,
-                    board.normal_tail(),
-                );
+            if let Err(error) = board.dispatch_register_request(other, tmc).await {
+                let reason = match error {
+                    RegisterRequestError::CurrentLimitInvalid => {
+                        ShutdownReason::CurrentLimitInvalid
+                    }
+                    RegisterRequestError::Other => ShutdownReason::RequestValidationFailed,
+                };
+                return TmcControlRequestOutcome::shutdown(reason, board.normal_tail());
             }
         }
     }
@@ -984,7 +988,7 @@ mod tests {
         configured_during_mapper_install: bool,
         motion_scale_rejections: std::vec::Vec<(u8, crate::motion_scale::MotionScaleRejection)>,
         next_trace_seq: u32,
-        register_result: Result<(), ()>,
+        register_result: Result<(), crate::tmc_control::dispatch::RegisterRequestError>,
         arm_result: Result<(), CommissionError>,
         replies: std::vec::Vec<ReplyPayload>,
         busy_diagnostic_requests: std::vec::Vec<TmcRequest>,
@@ -1128,7 +1132,7 @@ mod tests {
             &mut self,
             _req: TmcRequest,
             _tmc: &mut Tmc4671Spi<RuntimeMockSpi>,
-        ) -> Result<(), ()> {
+        ) -> Result<(), crate::tmc_control::dispatch::RegisterRequestError> {
             self.register_result
         }
 
@@ -1896,7 +1900,7 @@ mod tests {
         run_request_test(async {
             let mut runtime = TmcControlRuntime::new_for_channel(0);
             let mut board = RecordingBoard::fall_through();
-            board.register_result = Err(());
+            board.register_result = Err(crate::tmc_control::dispatch::RegisterRequestError::Other);
             let mut tmc = Tmc4671Spi::new(RuntimeMockSpi::default());
 
             let outcome = handle_tmc_control_request(
@@ -1913,6 +1917,30 @@ mod tests {
                 outcome.shutdown,
                 Some(ShutdownReason::RequestValidationFailed)
             );
+            assert!(!outcome.should_refresh_velocity_scale);
+        });
+    }
+
+    #[test]
+    fn current_limit_invalid_uses_dedicated_shutdown() {
+        run_request_test(async {
+            let mut runtime = TmcControlRuntime::new_for_channel(0);
+            let mut board = RecordingBoard::fall_through();
+            board.register_result =
+                Err(crate::tmc_control::dispatch::RegisterRequestError::CurrentLimitInvalid);
+            let mut tmc = Tmc4671Spi::new(RuntimeMockSpi::default());
+
+            let outcome = handle_tmc_control_request(
+                TmcRequest::new(0, TmcRequestKind::SetCurrent { run_ma: u32::MAX }),
+                TmcPreRequestDisposition::ContinueRequest,
+                &mut runtime,
+                &mut tmc,
+                &mut board,
+            )
+            .await;
+
+            assert_eq!(outcome.tail, TmcControlRequestTail::FallThrough);
+            assert_eq!(outcome.shutdown, Some(ShutdownReason::CurrentLimitInvalid));
             assert!(!outcome.should_refresh_velocity_scale);
         });
     }

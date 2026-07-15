@@ -7,7 +7,9 @@ use crate::commissioning::CommissioningEngine;
 use crate::config::TmcConfig;
 use crate::pid::InnerLoopGains;
 use crate::tmc::{TmcRequest, TmcRequestKind};
-use crate::tmc_control::dispatch::{SharedTmcDispatch, apply_shared_tmc_request};
+use crate::tmc_control::dispatch::{
+    RegisterRequestError, SharedTmcDispatch, apply_shared_tmc_request,
+};
 use crate::tmc_control::helpers::{
     LiveGainWriteStatus, apply_live_inner_gains, apply_live_outer_gains, apply_motion_scale,
     refresh_velocity_scale_from_state,
@@ -495,6 +497,25 @@ fn shared_dispatch_set_current_writes_current_limit_and_updates_state() {
 }
 
 #[test]
+fn shared_dispatch_set_current_rejects_invalid_limit_distinctly() {
+    pollster::block_on(async {
+        let tmc_state = crate::state::tmc::TmcChannelState::new();
+        let mut tmc = Tmc4671Spi::new(RuntimeMockSpi::default());
+
+        let result = apply_shared_tmc_request(
+            &TmcRequestKind::SetCurrent { run_ma: u32::MAX },
+            &mut tmc,
+            &tmc_state,
+            1.155,
+            3999,
+        )
+        .await;
+
+        assert_eq!(result, Err(RegisterRequestError::CurrentLimitInvalid));
+    });
+}
+
+#[test]
 fn apply_motion_scale_writes_encoder_then_physical_width_and_publishes_state() {
     pollster::block_on(async {
         let tmc_state = crate::state::tmc::TmcChannelState::new();
@@ -592,7 +613,7 @@ fn shared_dispatch_set_voltage_limit_propagates_write_failure() {
         .await;
         let spi = tmc.into_inner();
 
-        assert_eq!(result, Err(()));
+        assert_eq!(result, Err(RegisterRequestError::Other));
         assert!(spi.attempted_write_to(PIDOUT_UQ_UD_LIMITS));
     });
 }

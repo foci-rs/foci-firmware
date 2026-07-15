@@ -15,6 +15,8 @@ pub enum ShutdownReason {
     InvalidTmcChannel,
     /// A core TMC request failed validation.
     RequestValidationFailed,
+    /// The requested current exceeds the TMC4671 torque/flux limit field.
+    CurrentLimitInvalid,
     /// Applying a live inner- or outer-loop gain pair failed.
     LiveGainApplyFailed,
     /// STATUS_FLAGS reported ADC current clipping.
