@@ -314,10 +314,10 @@ mod tests {
             tmc_state().velocity_limit_cfg.store(555_000, Relaxed);
             tmc_state().current_limit_reg.store(0x0020_0030, Relaxed);
             let stored_gains = crate::pid::InnerLoopGains {
-                flux_p: 100,
-                flux_i: 10,
-                torque_p: 200,
-                torque_i: 20,
+                flux_p: crate::pid::test_gain(100),
+                flux_i: crate::pid::test_gain(10),
+                torque_p: crate::pid::test_gain(200),
+                torque_i: crate::pid::test_gain(20),
             };
             let (flux_reg, torque_reg) = stored_gains.to_registers();
             let result =

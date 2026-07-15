@@ -358,10 +358,10 @@ where
             ..
         } => {
             let gains = InnerLoopGains {
-                flux_p: flux_p.raw(),
-                flux_i: flux_i.raw(),
-                torque_p: torque_p.raw(),
-                torque_i: torque_i.raw(),
+                flux_p,
+                flux_i,
+                torque_p,
+                torque_i,
             };
             let write_status = apply_live_inner_gains(runtime, tmc, gains).await;
             if let Some(outcome) = live_gain_failure_outcome(write_status) {
@@ -1164,10 +1164,10 @@ mod tests {
 
     fn stored_gains() -> crate::pid::InnerLoopGains {
         crate::pid::InnerLoopGains {
-            flux_p: 11,
-            flux_i: 12,
-            torque_p: 13,
-            torque_i: 14,
+            flux_p: crate::pid::test_gain(11),
+            flux_i: crate::pid::test_gain(12),
+            torque_p: crate::pid::test_gain(13),
+            torque_i: crate::pid::test_gain(14),
         }
     }
 

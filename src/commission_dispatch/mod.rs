@@ -602,10 +602,14 @@ pub async fn drive_commission_result<B: CommissioningBackend>(
             // Publish the completed result only after terminal restore and
             // sentinel verification have both succeeded.
             *state.stored_gains = Some(crate::pid::InnerLoopGains {
-                flux_p: inner.flux_p,
-                flux_i: inner.flux_i,
-                torque_p: inner.torque_p,
-                torque_i: inner.torque_i,
+                flux_p: foci_tmc4671::pid::PidGain::new(inner.flux_p)
+                    .expect("commissioned flux P must be valid"),
+                flux_i: foci_tmc4671::pid::PidGain::new(inner.flux_i)
+                    .expect("commissioned flux I must be valid"),
+                torque_p: foci_tmc4671::pid::PidGain::new(inner.torque_p)
+                    .expect("commissioned torque P must be valid"),
+                torque_i: foci_tmc4671::pid::PidGain::new(inner.torque_i)
+                    .expect("commissioned torque I must be valid"),
             });
             state
                 .tmc

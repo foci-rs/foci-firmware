@@ -224,10 +224,10 @@ fn runtime_starts_disarmed_and_uncalibrated() {
 fn runtime_stores_inner_gains_without_spi_side_effects() {
     let mut runtime = TmcControlRuntime::new_for_channel(0);
     let gains = InnerLoopGains {
-        flux_p: 11,
-        flux_i: 12,
-        torque_p: 13,
-        torque_i: 14,
+        flux_p: crate::pid::test_gain(11),
+        flux_i: crate::pid::test_gain(12),
+        torque_p: crate::pid::test_gain(13),
+        torque_i: crate::pid::test_gain(14),
     };
 
     runtime.set_stored_gains(gains);
@@ -322,16 +322,16 @@ fn refresh_velocity_scale_caches_exact_planner_scale() {
 fn apply_live_inner_gains_publishes_only_after_both_writes_succeed() {
     pollster::block_on(async {
         let previous = InnerLoopGains {
-            flux_p: 1,
-            flux_i: 2,
-            torque_p: 3,
-            torque_i: 4,
+            flux_p: crate::pid::test_gain(1),
+            flux_i: crate::pid::test_gain(2),
+            torque_p: crate::pid::test_gain(3),
+            torque_i: crate::pid::test_gain(4),
         };
         let requested = InnerLoopGains {
-            flux_p: 11,
-            flux_i: 12,
-            torque_p: 13,
-            torque_i: 14,
+            flux_p: crate::pid::test_gain(11),
+            flux_i: crate::pid::test_gain(12),
+            torque_p: crate::pid::test_gain(13),
+            torque_i: crate::pid::test_gain(14),
         };
         let cases = [
             (false, false, true, true),
@@ -1618,10 +1618,10 @@ fn advance_homing_state_after_channels_waits_for_all_channels() {
 fn shutdown_quiesce_clears_safe_state_without_config_reset() {
     let mut runtime = TmcControlRuntime::new_for_channel(0);
     let gains = InnerLoopGains {
-        flux_p: 11,
-        flux_i: 12,
-        torque_p: 13,
-        torque_i: 14,
+        flux_p: crate::pid::test_gain(11),
+        flux_i: crate::pid::test_gain(12),
+        torque_p: crate::pid::test_gain(13),
+        torque_i: crate::pid::test_gain(14),
     };
 
     runtime.set_calibrated_for_test(true);

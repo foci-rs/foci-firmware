@@ -21,7 +21,9 @@ use crate::commissioning::types::{
     AdcResidualEvidence, CommissionResult, CommissioningBackend, CurrentValidationAxisEvidence,
     CurrentValidationSettledSampleEvidence, InductanceEvidence, InnerResult, StepResult,
 };
-use foci_tmc4671::pid::{PidGain, PidGainPair};
+#[cfg(test)]
+use foci_tmc4671::pid::PidGain;
+use foci_tmc4671::pid::PidGainPair;
 
 /// Current-loop validation sub-state machine (Phase 7).
 #[derive(Debug, defmt::Format)]
@@ -1157,14 +1159,10 @@ fn failed_current_loop_evidence(failure_reason: u8, retry_exhausted: bool) -> Cu
 
 fn disabled_state_safe_current_gains() -> CurrentGains {
     CurrentGains {
-        flux_p: PidGain::new(crate::pid::DEFAULT_INNER_GAINS.flux_p)
-            .expect("default flux P gain must be valid"),
-        flux_i: PidGain::new(crate::pid::DEFAULT_INNER_GAINS.flux_i)
-            .expect("default flux I gain must be valid"),
-        torque_p: PidGain::new(crate::pid::DEFAULT_INNER_GAINS.torque_p)
-            .expect("default torque P gain must be valid"),
-        torque_i: PidGain::new(crate::pid::DEFAULT_INNER_GAINS.torque_i)
-            .expect("default torque I gain must be valid"),
+        flux_p: crate::pid::DEFAULT_INNER_GAINS.flux_p,
+        flux_i: crate::pid::DEFAULT_INNER_GAINS.flux_i,
+        torque_p: crate::pid::DEFAULT_INNER_GAINS.torque_p,
+        torque_i: crate::pid::DEFAULT_INNER_GAINS.torque_i,
         effective_bandwidth_hz: 0,
         lambda_us: 0,
     }

@@ -1347,10 +1347,10 @@ mod tests {
             tmc_state.flux_filter_hz.store(Some(19), Relaxed);
 
             let inner = crate::pid::InnerLoopGains {
-                flux_p: 711,
-                flux_i: 159,
-                torque_p: 711,
-                torque_i: 159,
+                flux_p: crate::pid::test_gain(711),
+                flux_i: crate::pid::test_gain(159),
+                torque_p: crate::pid::test_gain(711),
+                torque_i: crate::pid::test_gain(159),
             };
 
             let engine =

@@ -199,8 +199,7 @@ pub(crate) async fn start_encoder_current_drive<B: CommissioningBackend>(
         .clamp(ENCODER_MOVEMENT_CURRENT_MIN, ENCODER_MOVEMENT_CURRENT_MAX)
         .min(current_limit) as i16;
     let defaults = crate::pid::DEFAULT_INNER_GAINS;
-    let flux_reg = (defaults.flux_p as u32) << 16 | defaults.flux_i as u32;
-    let torque_reg = (defaults.torque_p as u32) << 16 | defaults.torque_i as u32;
+    let (flux_reg, torque_reg) = defaults.to_registers();
     let target_reg: u32 = PidTorqueFluxTarget::new()
         .with_pid_flux_target(target)
         .with_pid_torque_target(0)
@@ -730,10 +729,10 @@ pub(crate) async fn step_encoder_align<B: CommissioningBackend>(
                     });
                     *phase = InnerPhase::ClosedLoopEntry {
                         state: ClosedLoopEntryState::WriteGains,
-                        flux_p: gains.inner.flux_p,
-                        flux_i: gains.inner.flux_i,
-                        torque_p: gains.inner.torque_p,
-                        torque_i: gains.inner.torque_i,
+                        flux_p: gains.inner.flux_p.raw(),
+                        flux_i: gains.inner.flux_i.raw(),
+                        torque_p: gains.inner.torque_p.raw(),
+                        torque_i: gains.inner.torque_i.raw(),
                         velocity_p: gains.velocity_p,
                         velocity_i: gains.velocity_i,
                         position_p: gains.position_p,
@@ -1432,10 +1431,10 @@ mod tests {
             let mut backend = MockBackend::new();
             let gains = CalibrateEntryGains {
                 inner: crate::pid::InnerLoopGains {
-                    flux_p: 711,
-                    flux_i: 159,
-                    torque_p: 712,
-                    torque_i: 160,
+                    flux_p: crate::pid::test_gain(711),
+                    flux_i: crate::pid::test_gain(159),
+                    torque_p: crate::pid::test_gain(712),
+                    torque_i: crate::pid::test_gain(160),
                 },
                 velocity_p: 1434,
                 velocity_i: 2,
@@ -1484,10 +1483,10 @@ mod tests {
                 panic!("calibrate StopDrive should enter ClosedLoopEntry");
             };
 
-            assert_eq!(flux_p, gains.inner.flux_p);
-            assert_eq!(flux_i, gains.inner.flux_i);
-            assert_eq!(torque_p, gains.inner.torque_p);
-            assert_eq!(torque_i, gains.inner.torque_i);
+            assert_eq!(flux_p, gains.inner.flux_p.raw());
+            assert_eq!(flux_i, gains.inner.flux_i.raw());
+            assert_eq!(torque_p, gains.inner.torque_p.raw());
+            assert_eq!(torque_i, gains.inner.torque_i.raw());
             assert_eq!(velocity_p, gains.velocity_p);
             assert_eq!(velocity_i, gains.velocity_i);
             assert_eq!(position_p, gains.position_p);
