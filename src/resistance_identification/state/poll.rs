@@ -313,7 +313,11 @@ impl ResistanceRunner {
             .saturating_add(u8::try_from(slot.missed).unwrap_or(u8::MAX))
             .saturating_add(1);
         let axis = self.profile.axes[self.axis_index as usize];
-        capture.current_sum += i32::from(phase_current_for_axis(axis, packed));
+        let current = phase_current_for_axis(axis, packed);
+        if capture.plan.ud != 0 {
+            self.current.observe_energized_sample(current);
+        }
+        capture.current_sum += i32::from(current);
         capture.status_or |= flags;
         capture.valid_samples += 1;
         capture.next_sample_us = slot.next_deadline_us;

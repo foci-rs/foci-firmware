@@ -16,6 +16,6 @@ pub use runner::{
     ResistanceTimingEvidence, run_resistance_identification,
 };
 pub use types::{
-    ElectricalAxis, ResistanceAxisResult, ResistanceError, ResistancePoint, ResistanceRunResult,
-    ResistanceWarningFlags, SignedAnchorEvidence,
+    ElectricalAxis, ResistanceAxisResult, ResistanceCurrentEvidence, ResistanceError,
+    ResistancePoint, ResistanceRunResult, ResistanceWarningFlags, SignedAnchorEvidence,
 };

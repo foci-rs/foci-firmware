@@ -23,6 +23,7 @@ impl ResistanceRunner {
                 self.begin_next_point(backend)
             }
             WindowPurpose::PointEnergized(index) => {
+                self.current.record_completed_energized_mean(mean);
                 if let Err(error) = check_peak_current(&self.profile, mean) {
                     return self.fail(backend, error);
                 }
@@ -54,6 +55,7 @@ impl ResistanceRunner {
                 self.begin_next_point(backend)
             }
             WindowPurpose::RepeatedAnchor => {
+                self.current.record_completed_energized_mean(mean);
                 if let Err(error) = check_peak_current(&self.profile, mean) {
                     return self.fail(backend, error);
                 }
@@ -77,6 +79,7 @@ impl ResistanceRunner {
                 ResistancePoll::ReadyNow
             }
             WindowPurpose::NegativeAnchor => {
+                self.current.record_completed_energized_mean(mean);
                 if let Err(error) = check_peak_current(&self.profile, mean) {
                     return self.fail(backend, error);
                 }
@@ -166,6 +169,7 @@ impl ResistanceRunner {
         match result {
             Ok(mut result) => {
                 result.warning_flags.insert(self.warning_flags);
+                result.current = self.current;
                 self.primary_error = None;
                 self.result = Some(result);
                 self.start_restore(backend);

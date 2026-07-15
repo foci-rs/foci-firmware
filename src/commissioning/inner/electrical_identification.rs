@@ -2499,6 +2499,7 @@ mod tests {
             axis0: axis_result(ElectricalAxis::PHASE0, slope0_milli),
             axis1: axis_result(ElectricalAxis::PHASE90, slope1_milli),
             warning_flags: ResistanceWarningFlags::NONE,
+            current: crate::resistance_identification::ResistanceCurrentEvidence::new(1_600),
         }
     }
 

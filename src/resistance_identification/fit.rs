@@ -2,8 +2,8 @@
 
 use super::profile::ResistanceProfile;
 use super::types::{
-    ElectricalAxis, ResistanceAxisResult, ResistanceError, ResistancePoint, ResistanceRunResult,
-    ResistanceWarningFlags, SignedAnchorEvidence,
+    ElectricalAxis, ResistanceAxisResult, ResistanceCurrentEvidence, ResistanceError,
+    ResistancePoint, ResistanceRunResult, ResistanceWarningFlags, SignedAnchorEvidence,
 };
 
 /// Fits a single electrical axis to a count-space line using ordinary least
@@ -154,6 +154,7 @@ pub fn evaluate_resistance_result(
         axis0,
         axis1,
         warning_flags,
+        current: ResistanceCurrentEvidence::new(profile.max_expected_current_count),
     })
 }
 

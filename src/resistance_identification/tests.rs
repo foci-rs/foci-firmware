@@ -20,7 +20,7 @@ use super::runner::{
     ResistanceBackend, ResistanceBackendError, ResistancePoll, ResistanceRunMode, ResistanceRunner,
     run_resistance_identification,
 };
-use super::types::{ResistanceError, ResistanceWarningFlags};
+use super::types::{ResistanceCurrentEvidence, ResistanceError, ResistanceWarningFlags};
 
 /// One register write recorded by the fake backend, in issue order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -428,6 +428,78 @@ fn runner_writes_voltage_limit_before_chopper() {
         PIDOUT_UQ_UD_LIMITS.addr(),
         PWM_SV_CHOP.addr(),
     );
+}
+
+#[test]
+fn current_evidence_separates_individual_peak_from_completed_mean() {
+    let mut evidence = ResistanceCurrentEvidence::new(1_600);
+
+    evidence.observe_energized_sample(200);
+    evidence.observe_energized_sample(-320);
+
+    assert_eq!(evidence.peak_abs_current_count(), 320);
+    assert_eq!(evidence.max_abs_steady_mean_current_count(), 0);
+    assert_eq!(evidence.current_ceiling_count(), 1_600);
+    assert!(!evidence.power_stage_tripped());
+
+    evidence.record_completed_energized_mean(-250);
+
+    assert_eq!(evidence.peak_abs_current_count(), 320);
+    assert_eq!(evidence.max_abs_steady_mean_current_count(), 250);
+}
+
+#[test]
+fn current_evidence_represents_i16_min_without_narrowing() {
+    let mut evidence = ResistanceCurrentEvidence::new(u16::MAX);
+
+    evidence.observe_energized_sample(i16::MIN);
+
+    assert_eq!(evidence.peak_abs_current_count(), 32_768);
+}
+
+#[test]
+fn zero_window_samples_do_not_update_current_evidence() {
+    let mut backend = FakeResistanceBackend::standard();
+    backend.scripted_zero_currents = heapless::Vec::from_slice(&[1_500]).unwrap();
+    let mut runner = ResistanceRunner::new(
+        ResistanceRunMode::CommissioningManagedEnable,
+        backend.profile(),
+        1_000,
+    )
+    .unwrap();
+    let mut now = drive_to_first_sample(&mut runner, &mut backend, 1_000);
+
+    for _ in 0..SAMPLES_PER_WINDOW_FOR_TEST {
+        match poll_runner(&mut runner, &mut backend, now) {
+            ResistancePoll::At(deadline) => now = deadline,
+            ResistancePoll::ReadyNow => break,
+            ResistancePoll::Complete(result) => panic!("unexpected completion: {result:?}"),
+        }
+    }
+
+    assert_eq!(runner.current_evidence().peak_abs_current_count(), 0);
+    assert_eq!(
+        runner
+            .current_evidence()
+            .max_abs_steady_mean_current_count(),
+        0
+    );
+}
+
+#[test]
+fn successful_run_carries_observed_current_evidence() {
+    let mut backend = FakeResistanceBackend::standard();
+
+    let result = block_on(run_resistance_identification(
+        &mut backend,
+        ResistanceRunMode::CommissioningManagedEnable,
+    ))
+    .expect("standard resistance run should succeed");
+
+    assert_eq!(result.current.peak_abs_current_count(), 1_440);
+    assert_eq!(result.current.max_abs_steady_mean_current_count(), 1_440);
+    assert_eq!(result.current.current_ceiling_count(), 1_600);
+    assert!(!result.current.power_stage_tripped());
 }
 
 #[test]

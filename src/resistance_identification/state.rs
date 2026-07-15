@@ -6,8 +6,8 @@ mod poll;
 use super::profile::ResistanceProfile;
 use super::runner::{ResistanceBackend, ResistanceRunMode};
 use super::types::{
-    ElectricalAxis, ResistanceAxisResult, ResistanceError, ResistancePoint, ResistanceRunResult,
-    ResistanceWarningFlags, SignedAnchorEvidence,
+    ElectricalAxis, ResistanceAxisResult, ResistanceCurrentEvidence, ResistanceError,
+    ResistancePoint, ResistanceRunResult, ResistanceWarningFlags, SignedAnchorEvidence,
 };
 use crate::commissioning::capture_timing::CaptureTiming;
 
@@ -202,6 +202,7 @@ pub struct ResistanceRunner {
     axis_results: [Option<ResistanceAxisResult>; 2],
     result: Option<ResistanceRunResult>,
     timing: ResistanceTimingEvidence,
+    current: ResistanceCurrentEvidence,
 }
 
 impl ResistanceRunner {
@@ -235,6 +236,7 @@ impl ResistanceRunner {
             axis_results: [None, None],
             result: None,
             timing: ResistanceTimingEvidence::default(),
+            current: ResistanceCurrentEvidence::new(profile.max_expected_current_count),
         })
     }
 
@@ -271,6 +273,12 @@ impl ResistanceRunner {
     #[must_use]
     pub const fn warning_flags(&self) -> ResistanceWarningFlags {
         self.warning_flags
+    }
+
+    /// Return current evidence accumulated so far.
+    #[must_use]
+    pub const fn current_evidence(&self) -> ResistanceCurrentEvidence {
+        self.current
     }
 
     /// Advance by at most one register operation or one two-read logical sample.

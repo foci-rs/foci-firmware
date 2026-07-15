@@ -89,6 +89,68 @@ pub struct ResistanceAxisResult {
     pub warning_flags: ResistanceWarningFlags,
 }
 
+/// Run-level current evidence retained independently from resistance fitting.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+pub struct ResistanceCurrentEvidence {
+    peak_abs_current_count: u16,
+    max_abs_steady_mean_current_count: u16,
+    current_ceiling_count: u16,
+    power_stage_tripped: bool,
+}
+
+impl ResistanceCurrentEvidence {
+    /// Create empty evidence for one run and retain its configured ceiling.
+    #[must_use]
+    pub const fn new(current_ceiling_count: u16) -> Self {
+        Self {
+            peak_abs_current_count: 0,
+            max_abs_steady_mean_current_count: 0,
+            current_ceiling_count,
+            power_stage_tripped: false,
+        }
+    }
+
+    /// Retain one energized current sample in the unsigned absolute domain.
+    pub fn observe_energized_sample(&mut self, current: i16) {
+        self.peak_abs_current_count = self.peak_abs_current_count.max(current.unsigned_abs());
+    }
+
+    /// Retain the absolute mean of one completed energized acquisition window.
+    pub fn record_completed_energized_mean(&mut self, mean: i32) {
+        let count = u16::try_from(mean.unsigned_abs()).unwrap_or(u16::MAX);
+        self.max_abs_steady_mean_current_count = self.max_abs_steady_mean_current_count.max(count);
+    }
+
+    /// Record that sample-level containment lowered the power stage.
+    pub fn mark_power_stage_tripped(&mut self) {
+        self.power_stage_tripped = true;
+    }
+
+    /// Largest absolute individual energized sample observed so far.
+    #[must_use]
+    pub const fn peak_abs_current_count(self) -> u16 {
+        self.peak_abs_current_count
+    }
+
+    /// Largest absolute completed energized-window mean observed so far.
+    #[must_use]
+    pub const fn max_abs_steady_mean_current_count(self) -> u16 {
+        self.max_abs_steady_mean_current_count
+    }
+
+    /// Configured current ceiling used for this run.
+    #[must_use]
+    pub const fn current_ceiling_count(self) -> u16 {
+        self.current_ceiling_count
+    }
+
+    /// Whether sample-level containment lowered the power stage.
+    #[must_use]
+    pub const fn power_stage_tripped(self) -> bool {
+        self.power_stage_tripped
+    }
+}
+
 /// Complete two-axis resistance run result.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub struct ResistanceRunResult {
@@ -97,6 +159,8 @@ pub struct ResistanceRunResult {
     pub axis0: ResistanceAxisResult,
     pub axis1: ResistanceAxisResult,
     pub warning_flags: ResistanceWarningFlags,
+    /// Current evidence retained across both electrical axes.
+    pub current: ResistanceCurrentEvidence,
 }
 
 /// Hard-failure reason for resistance identification.
