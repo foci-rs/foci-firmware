@@ -769,7 +769,7 @@ impl CommissioningEngine {
         // E-stop check at the top of every step.
         if backend.is_shutdown_requested() {
             if let EngineMode::Inner { phase, .. } = &self.engine_mode {
-                inner::electrical_identification::push_active_timing_diagnostics(
+                inner::electrical_identification::push_active_electrical_diagnostics(
                     phase,
                     &mut self.diagnostics,
                 );
@@ -970,10 +970,12 @@ mod tests {
         assert_eq!(size_of::<crate::autotune::DelayTimestampOffsets>(), 514);
         // Production-semantic verified retries add loop state to the mock
         // backend future used by this host-side size gate.
-        assert_eq!(engine_step, 4_304);
-        assert!(engine_step <= 4_304);
-        assert_eq!(step_inner, 4_256);
-        assert!(step_inner <= 4_256);
+        // Resistance current evidence adds 16 bytes to the terminal result
+        // carried by the engine-step future.
+        assert_eq!(engine_step, 4_320);
+        assert!(engine_step <= 4_320);
+        assert_eq!(step_inner, 4_272);
+        assert!(step_inner <= 4_272);
         // Run-owned current evidence adds 32 bytes to electrical ID state.
         assert_eq!(electrical_id, 640);
         assert!(electrical_id <= 640);
@@ -981,7 +983,7 @@ mod tests {
         // The capture-owned deadline loop adds 48 bytes to the scheduled
         // future while removing per-sample reconstruction of that future.
         // Production-semantic mock retries add another 32 bytes in tests.
-        assert_eq!(scheduled_step, 4_384);
+        assert_eq!(scheduled_step, 4_400);
         // The hot path keeps nonterminal classification outside the terminal
         // async dispatch future.
         assert!(scheduled_step <= 4_400);
@@ -1069,6 +1071,10 @@ mod tests {
             resistance_axis1_drift_permille: 0,
             resistance_status_flags_or: 0,
             resistance_warning_flags: 0,
+            resistance_peak_abs_current_count: 1_440,
+            resistance_max_abs_steady_mean_current_count: 1_280,
+            resistance_current_ceiling_count: 1_600,
+            resistance_power_stage_tripped: false,
             encoder_alignment_count: 0,
             encoder_alignment_electrical_residual_counts: 0,
             encoder_alignment_stability_counts: 0,
@@ -1702,6 +1708,57 @@ mod tests {
                 .find(|event| event.code == 38)
                 .expect("shutdown timing diagnostic");
             assert_eq!((delay.value1 >> 24) & 0x03, 2);
+        });
+    }
+
+    #[test]
+    fn shutdown_during_resistance_emits_current_evidence() {
+        pollster::block_on(async {
+            let _guard = crate::commission_dispatch::test_support::SHARED_STATE_MUTEX
+                .lock()
+                .await;
+            let mut engine = CommissioningEngine::new_commission(
+                0,
+                crate::autotune::CommissionProfile::Balanced,
+            );
+            let mut backend = crate::commission_dispatch::test_support::MockBackend::new();
+            backend.tmc_config.resistance_max_expected_current_count = 321;
+            let profile = backend
+                .tmc_config
+                .resistance_profile(backend.tmc_config.resistance_scale_metadata_validated);
+            if let EngineMode::Inner { phase, .. } = &mut engine.engine_mode {
+                *phase = InnerPhase::ElectricalId {
+                    state: inner::ElectricalIdState::ResistanceIdentify {
+                        runner: crate::resistance_identification::ResistanceRunner::new(
+                            crate::resistance_identification::ResistanceRunMode::CommissioningManagedEnable,
+                            profile,
+                            0,
+                        )
+                        .unwrap(),
+                    },
+                    data: inner::ElectricalIdData::new(512),
+                };
+            }
+            backend.shutdown_requested = true;
+            backend.enable_pin = true;
+
+            let result = engine.step(&mut backend).await;
+
+            assert!(matches!(
+                result,
+                crate::commissioning::types::StepResult::InnerFailed(
+                    crate::autotune::CommissionError::Shutdown,
+                )
+            ));
+            let diagnostics = engine.take_diagnostics();
+            let current = diagnostics
+                .iter()
+                .find(|event| event.code == 40)
+                .expect("shutdown resistance current diagnostic");
+            assert_eq!(current.value0, 0);
+            assert_eq!(current.value1, 0);
+            assert_eq!(current.value2, 321);
+            assert_eq!(current.status, 0);
         });
     }
 

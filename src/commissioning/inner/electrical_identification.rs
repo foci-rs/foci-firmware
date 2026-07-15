@@ -1414,8 +1414,22 @@ fn push_timing_diagnostics(
     }
 }
 
-/// Snapshot active Phase 5 timing without sampling, awaiting, or changing state.
-pub(crate) fn push_active_timing_diagnostics(
+fn push_resistance_current_diagnostic(
+    diagnostics: &mut crate::selftest::CommissionDiagnostics,
+    current: crate::resistance_identification::ResistanceCurrentEvidence,
+) {
+    diagnostics.push(crate::selftest::CommissionDiagnostic {
+        phase: PhaseId::ElectricalId.to_u8(),
+        code: 40,
+        status: u8::from(current.power_stage_tripped()),
+        value0: u32::from(current.peak_abs_current_count()),
+        value1: u32::from(current.max_abs_steady_mean_current_count()),
+        value2: u32::from(current.current_ceiling_count()),
+    });
+}
+
+/// Snapshot active Phase 5 evidence without sampling, awaiting, or changing state.
+pub(crate) fn push_active_electrical_diagnostics(
     phase: &InnerPhase,
     diagnostics: &mut crate::selftest::CommissionDiagnostics,
 ) {
@@ -1423,6 +1437,7 @@ pub(crate) fn push_active_timing_diagnostics(
         return;
     };
     let mut summaries = electrical_timing_summaries(data);
+    let mut active_resistance_current = None;
     match state {
         ElectricalIdState::ResistanceIdentify { runner } => {
             let timing = runner.timing_evidence_with_active();
@@ -1430,6 +1445,7 @@ pub(crate) fn push_active_timing_diagnostics(
                 timing.capture_evidence(),
                 timing.overflowed,
             );
+            active_resistance_current = Some(runner.current_evidence());
         }
         ElectricalIdState::InductanceSample { capture } => {
             let (evidence, overflowed) = capture.timing.snapshot();
@@ -1463,6 +1479,9 @@ pub(crate) fn push_active_timing_diagnostics(
         _ => {}
     }
     push_timing_diagnostics(diagnostics, summaries);
+    if let Some(current) = active_resistance_current {
+        push_resistance_current_diagnostic(diagnostics, current);
+    }
 }
 
 fn fail_electrical_id(
@@ -1563,6 +1582,7 @@ pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
                 }
                 crate::resistance_identification::ResistancePoll::Complete(Err(error)) => {
                     defmt::warn!("resistance id failed: {}", error);
+                    push_resistance_current_diagnostic(diagnostics, runner.current_evidence());
                     fail_electrical_id(phase, diagnostics, CommissionError::from(error))
                 }
             }
@@ -4442,6 +4462,61 @@ mod tests {
     }
 
     #[test]
+    fn resistance_cleanup_failure_retains_trip_diagnostic() {
+        pollster::block_on(async {
+            let mut backend = MockBackend::new();
+            seed_resistance_power_stage_registers(&mut backend);
+            backend.script_resistance_current_proportional_to_ud = true;
+            backend.tmc_config.resistance_max_expected_current_count = 100;
+
+            let mut phase = InnerPhase::ElectricalId {
+                state: ElectricalIdState::ResistanceStart,
+                data: ElectricalIdData::new(u32::from(backend.tmc_config().excitation_voltage)),
+            };
+            let mut buf = TransientBuffer::default();
+            let mut selftest_results = crate::selftest::SelftestResults::default();
+            let mut diagnostics = crate::selftest::CommissionDiagnostics::default();
+            let mut saw_enabled = false;
+            let mut injected_cleanup_failure = false;
+
+            for _ in 0..200 {
+                let step = step_electrical_identification(
+                    &mut phase,
+                    &mut buf,
+                    InnerSequence::Commission,
+                    &mut selftest_results,
+                    &mut diagnostics,
+                    &mut backend,
+                )
+                .await;
+
+                saw_enabled |= backend.enable_pin;
+                if saw_enabled && !backend.enable_pin && !injected_cleanup_failure {
+                    backend.fail_on_write = Some(UQ_UD_EXT.addr());
+                    injected_cleanup_failure = true;
+                }
+
+                if let StepResult::InnerFailed(error) = step {
+                    assert_eq!(error, CommissionError::Spi);
+                    let current = diagnostics
+                        .iter()
+                        .find(|event| event.code == 40)
+                        .expect("resistance current diagnostic");
+                    assert_eq!(current.value0, 512);
+                    assert_eq!(current.value1, 0);
+                    assert_eq!(current.value2, 100);
+                    assert_eq!(current.status, 1);
+                    return;
+                }
+                if let StepResult::At(deadline_us) = step {
+                    backend.elapsed_us_value = deadline_us;
+                }
+            }
+            panic!("resistance cleanup failure did not terminate");
+        });
+    }
+
+    #[test]
     fn resistance_warning_status_is_retained_without_terminal_failure() {
         pollster::block_on(async {
             let mut backend = MockBackend::new();
@@ -4964,7 +5039,7 @@ mod tests {
         };
         let mut diagnostics = crate::selftest::CommissionDiagnostics::default();
 
-        push_active_timing_diagnostics(&inductance_phase, &mut diagnostics);
+        push_active_electrical_diagnostics(&inductance_phase, &mut diagnostics);
 
         let header = diagnostics
             .iter()
@@ -4986,7 +5061,7 @@ mod tests {
         };
         let mut diagnostics = crate::selftest::CommissionDiagnostics::default();
 
-        push_active_timing_diagnostics(&delay_phase, &mut diagnostics);
+        push_active_electrical_diagnostics(&delay_phase, &mut diagnostics);
 
         let header = diagnostics
             .iter()
@@ -5042,7 +5117,7 @@ mod tests {
             let phase = InnerPhase::ElectricalId { state, data };
             let mut diagnostics = crate::selftest::CommissionDiagnostics::default();
 
-            push_active_timing_diagnostics(&phase, &mut diagnostics);
+            push_active_electrical_diagnostics(&phase, &mut diagnostics);
 
             let header = diagnostics
                 .iter()

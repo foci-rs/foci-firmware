@@ -577,6 +577,14 @@ pub struct InnerResult {
     pub resistance_status_flags_or: u32,
     /// Resistance run warning bitfield (`ResistanceWarningFlags`).
     pub resistance_warning_flags: u32,
+    /// Largest absolute individual current sample observed while energized.
+    pub resistance_peak_abs_current_count: u16,
+    /// Largest absolute mean from a completed energized acquisition window.
+    pub resistance_max_abs_steady_mean_current_count: u16,
+    /// Current ceiling applied to individual energized samples.
+    pub resistance_current_ceiling_count: u16,
+    /// Whether sample-level containment synchronously tripped the power stage.
+    pub resistance_power_stage_tripped: bool,
 
     // --- Encoder alignment evidence ---
     /// Encoder count captured immediately before alignment zeroed the ABN count.

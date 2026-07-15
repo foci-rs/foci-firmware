@@ -1940,6 +1940,12 @@ pub(crate) async fn step_current_validate<B: CommissioningBackend>(
                     .map_or(0, |anchor| anchor.drift_permille),
                 resistance_status_flags_or: resistance.status_flags_or,
                 resistance_warning_flags: resistance.warning_flags.0,
+                resistance_peak_abs_current_count: resistance.current.peak_abs_current_count(),
+                resistance_max_abs_steady_mean_current_count: resistance
+                    .current
+                    .max_abs_steady_mean_current_count(),
+                resistance_current_ceiling_count: resistance.current.current_ceiling_count(),
+                resistance_power_stage_tripped: resistance.current.power_stage_tripped(),
                 encoder_alignment_count: alignment.map_or(0, |result| result.encoder_count),
                 encoder_alignment_electrical_residual_counts: alignment.map_or(0, |result| {
                     result.encoder_alignment_electrical_residual_counts
@@ -2864,6 +2870,13 @@ mod tests {
                     assert_eq!(result.inner.encoder_alignment_electrical_residual_counts, 3);
                     assert_eq!(result.inner.encoder_alignment_stability_counts, 1);
                     assert_eq!(result.inner.encoder_alignment_counts_per_electrical_rev, 80);
+                    assert_eq!(result.inner.resistance_peak_abs_current_count, 1_440);
+                    assert_eq!(
+                        result.inner.resistance_max_abs_steady_mean_current_count,
+                        1_280
+                    );
+                    assert_eq!(result.inner.resistance_current_ceiling_count, 1_600);
+                    assert!(!result.inner.resistance_power_stage_tripped);
                 }
                 other => panic!("expected failed CommissionDone, got {other:?}"),
             }
@@ -4513,13 +4526,17 @@ mod tests {
             }
         }
 
+        let mut current = crate::resistance_identification::ResistanceCurrentEvidence::new(1_600);
+        current.observe_energized_sample(1_440);
+        current.record_completed_energized_mean(1_280);
+
         ResistanceRunResult {
             selected_r_count_slope_milli: 1000,
             status_flags_or: 0,
             axis0: axis_result(ElectricalAxis::PHASE0),
             axis1: axis_result(ElectricalAxis::PHASE90),
             warning_flags: ResistanceWarningFlags::NONE,
-            current: crate::resistance_identification::ResistanceCurrentEvidence::new(1_600),
+            current,
         }
     }
 
