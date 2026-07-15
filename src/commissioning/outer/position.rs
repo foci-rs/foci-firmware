@@ -487,6 +487,11 @@ mod tests {
     use crate::autotune::VelocityGains;
     use crate::commission_dispatch::test_support::MockBackend;
     use crate::commissioning::outer::OuterDiagnostics;
+    use foci_tmc4671::pid::PidGain;
+
+    fn gain(raw: u16) -> PidGain {
+        PidGain::new(raw).expect("test gain must be in range")
+    }
 
     fn zero_diagnostics() -> OuterDiagnostics {
         OuterDiagnostics {
@@ -530,8 +535,8 @@ mod tests {
                 step_start_tmc: 0,
                 oscillation_at_minimum: false,
                 velocity_gains: VelocityGains {
-                    velocity_p: 1,
-                    velocity_i: 0,
+                    velocity_p: gain(1),
+                    velocity_i: PidGain::ZERO,
                     velocity_limit: 1_000,
                     effective_bandwidth_hz: 50,
                     lambda_vel_ms: 20,
@@ -798,8 +803,8 @@ mod tests {
             step_start_tmc: 0,
             oscillation_at_minimum: true,
             velocity_gains: VelocityGains {
-                velocity_p: 512,
-                velocity_i: 0,
+                velocity_p: gain(512),
+                velocity_i: PidGain::ZERO,
                 velocity_limit: 10_000,
                 effective_bandwidth_hz: 50,
                 lambda_vel_ms: 20,

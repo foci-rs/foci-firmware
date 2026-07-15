@@ -342,9 +342,9 @@ pub struct MechanicalModel {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub struct VelocityGains {
     /// Velocity P gain — TMC4671 Q8.8 register value.
-    pub velocity_p: u16,
+    pub velocity_p: PidGain,
     /// Velocity I gain — TMC4671 Q8.8 register value.
-    pub velocity_i: u16,
+    pub velocity_i: PidGain,
     /// Commissioning velocity limit in encoder counts/ms.
     pub velocity_limit: u32,
     /// Effective closed-loop velocity bandwidth in Hz.

@@ -2,6 +2,7 @@ use super::{
     CommissionProfile, MechanicalModel, OperatingMode, Permille, TransientBuffer,
     VELOCITY_SIMC_MAX_P_REG, ValidationResult, VelocityGains, metrics,
 };
+use foci_tmc4671::pid::PidGain;
 
 const VELOCITY_ADVANCED_PI_I_ZERO_SCALE: f32 = 65_536.0;
 
@@ -249,8 +250,8 @@ pub(crate) fn simc_velocity_gains_with_lambda_multiplier(
     };
 
     // In advanced-PI mode, the integral zero is I_raw / 65536 per PWM sample.
-    let p_reg = (kp * 256.0).clamp(1.0, u16::MAX as f32) as u16;
-    let i_reg = advanced_pi_velocity_i_raw(ti, f_pwm_hz);
+    let p_reg = PidGain::new((kp * 256.0).clamp(1.0, u16::MAX as f32) as u16).ok()?;
+    let i_reg = PidGain::new(advanced_pi_velocity_i_raw(ti, f_pwm_hz)).ok()?;
 
     // Effective bandwidth = 1 / (2*pi*(lambda+theta)) in Hz.
     let bw_hz = 1_000_000.0 / (2.0 * core::f32::consts::PI * (lambda + theta));
@@ -668,8 +669,11 @@ mod tests {
             &config,
         );
         let gains = gains.expect("gains should be Some for valid model");
-        assert!(gains.velocity_p > 0, "velocity_p must be nonzero");
-        assert!(gains.velocity_i > 0, "velocity_i must be nonzero");
+        let _: PidGain = gains.velocity_p;
+        assert!(gains.velocity_p.raw() > 0, "velocity_p must be nonzero");
+        assert!(gains.velocity_i.raw() > 0, "velocity_i must be nonzero");
+        assert!(gains.velocity_p.raw() <= PidGain::MAX.raw());
+        assert!(gains.velocity_i.raw() <= PidGain::MAX.raw());
         assert_eq!(gains.velocity_limit, 800, "80% of peak=1000");
         assert!(gains.effective_bandwidth_hz > 0);
         assert!(gains.lambda_vel_ms > 0);
@@ -745,7 +749,7 @@ mod tests {
 
         assert_ne!(low.velocity_p, high.velocity_p);
         assert_eq!(low.velocity_i, high.velocity_i);
-        assert_eq!(high.velocity_i, 262);
+        assert_eq!(high.velocity_i.raw(), 262);
     }
 
     #[test]
@@ -771,8 +775,8 @@ mod tests {
         )
         .expect("non-divisible encoder scale should synthesize gains");
 
-        assert_eq!(gains.velocity_p, 976);
-        assert_eq!(gains.velocity_i, 163);
+        assert_eq!(gains.velocity_p.raw(), 976);
+        assert_eq!(gains.velocity_i.raw(), 163);
     }
 
     #[test]
@@ -857,23 +861,23 @@ mod tests {
             .expect("field model should synthesize gains");
 
             assert!(
-                gains.velocity_p <= VELOCITY_SIMC_MAX_P_REG,
+                gains.velocity_p.raw() <= VELOCITY_SIMC_MAX_P_REG,
                 "velocity P {} should fit envelope {} for {:?}",
-                gains.velocity_p,
+                gains.velocity_p.raw(),
                 VELOCITY_SIMC_MAX_P_REG,
                 model
             );
             assert!(
-                gains.velocity_i <= crate::commissioning::outer::OUTER_MAX_VELOCITY_I,
+                gains.velocity_i.raw() <= crate::commissioning::outer::OUTER_MAX_VELOCITY_I,
                 "velocity I {} should fit envelope {} for {:?}",
-                gains.velocity_i,
+                gains.velocity_i.raw(),
                 crate::commissioning::outer::OUTER_MAX_VELOCITY_I,
                 model
             );
             assert!(
-                gains.velocity_p < 1024,
+                gains.velocity_p.raw() < 1024,
                 "velocity P {} should be scaled to TMC velocity-error units for {:?}",
-                gains.velocity_p,
+                gains.velocity_p.raw(),
                 model
             );
             assert!(
@@ -910,9 +914,9 @@ mod tests {
         .expect("field model should synthesize gains");
 
         assert!(
-            gains.velocity_p < 1024,
+            gains.velocity_p.raw() < 1024,
             "P={} is still in cpms-domain units; expected TMC velocity-error scaling",
-            gains.velocity_p
+            gains.velocity_p.raw()
         );
     }
 

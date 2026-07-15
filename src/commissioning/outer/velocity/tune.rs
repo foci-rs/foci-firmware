@@ -116,15 +116,17 @@ pub(crate) async fn step_velocity_tune<B: CommissioningBackend>(
                 }
             };
 
-            diagnostics.synth_velocity_p = gains.velocity_p;
-            diagnostics.synth_velocity_i = gains.velocity_i;
+            diagnostics.synth_velocity_p = gains.velocity_p.raw();
+            diagnostics.synth_velocity_i = gains.velocity_i.raw();
 
-            if gains.velocity_p > OUTER_MAX_VELOCITY_P || gains.velocity_i > OUTER_MAX_VELOCITY_I {
+            if gains.velocity_p.raw() > OUTER_MAX_VELOCITY_P
+                || gains.velocity_i.raw() > OUTER_MAX_VELOCITY_I
+            {
                 diagnostics.warning_code = OUTER_WARNING_UNSAFE_SYNTH_GAINS;
                 defmt::warn!(
                     "velocity tune: synthesized P={}, I={} outside envelope, using response tuning",
-                    gains.velocity_p,
-                    gains.velocity_i
+                    gains.velocity_p.raw(),
+                    gains.velocity_i.raw()
                 );
                 (
                     response::response_velocity_gains(safety.counts_per_rev()),
@@ -143,8 +145,8 @@ pub(crate) async fn step_velocity_tune<B: CommissioningBackend>(
 
     defmt::info!(
         "velocity tune: P={}, I={}, limit={}, bw={}Hz, lambda={}ms, strategy={}",
-        gains.velocity_p,
-        gains.velocity_i,
+        gains.velocity_p.raw(),
+        gains.velocity_i.raw(),
         gains.velocity_limit,
         gains.effective_bandwidth_hz,
         gains.lambda_vel_ms,
@@ -274,7 +276,7 @@ mod tests {
                         data.diagnostics.warning_code,
                         OUTER_WARNING_UNSAFE_SYNTH_GAINS
                     );
-                    assert_eq!(data.gains.velocity_i, 0);
+                    assert_eq!(data.gains.velocity_i.raw(), 0);
                 }
                 other => panic!("expected VelocityValidate, got {other:?}"),
             }

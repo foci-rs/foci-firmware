@@ -177,7 +177,12 @@ mod tests {
     use crate::commission_dispatch::test_support::{MockBackend, SpiOp};
     use crate::commissioning::outer::{OuterDiagnostics, OuterPhase, OuterSafetyLimits, commit};
     use crate::commissioning::types::StepResult;
+    use foci_tmc4671::pid::PidGain;
     use foci_tmc4671::registers::SubRegister;
+
+    fn gain(raw: u16) -> PidGain {
+        PidGain::new(raw).expect("test gain must be in range")
+    }
 
     fn zero_diagnostics() -> OuterDiagnostics {
         OuterDiagnostics {
@@ -219,8 +224,8 @@ mod tests {
         pollster::block_on(async {
             let mut phase = OuterPhase::FilterTune {
                 velocity_gains: VelocityGains {
-                    velocity_p: 1152,
-                    velocity_i: 0,
+                    velocity_p: gain(1152),
+                    velocity_i: PidGain::ZERO,
                     velocity_limit: 16,
                     effective_bandwidth_hz: 100,
                     lambda_vel_ms: 10,
@@ -260,8 +265,8 @@ mod tests {
         pollster::block_on(async {
             let mut phase = OuterPhase::FilterTune {
                 velocity_gains: VelocityGains {
-                    velocity_p: 1_152,
-                    velocity_i: 0,
+                    velocity_p: gain(1_152),
+                    velocity_i: PidGain::ZERO,
                     velocity_limit: 16,
                     effective_bandwidth_hz: 100,
                     lambda_vel_ms: 10,

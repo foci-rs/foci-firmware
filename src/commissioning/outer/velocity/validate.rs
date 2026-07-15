@@ -22,6 +22,7 @@ use crate::trace::events::{
     EVENT_COMMISSION_VELOCITY_VALIDATE_METRICS, EVENT_COMMISSION_VELOCITY_VALIDATE_RESULT,
     TraceEventLevel,
 };
+use foci_tmc4671::pid::{PidGain, PidGainPair};
 
 /// Velocity step as a fraction of velocity_limit (15% = 15/100).
 /// Spec says 10-20%.
@@ -278,7 +279,8 @@ pub(crate) async fn step_velocity_validate_with_trace<B: CommissioningBackend>(
             )
             .max(1) as u32;
 
-            let vel_reg = ((data.gains.velocity_p as u32) << 16) | (data.gains.velocity_i as u32);
+            let vel_reg =
+                PidGainPair::new(data.gains.velocity_p, data.gains.velocity_i).register_value();
             if backend
                 .write_register(PID_VELOCITY_P_VELOCITY_I, vel_reg)
                 .await
@@ -929,7 +931,7 @@ pub(crate) async fn step_velocity_validate_with_trace<B: CommissioningBackend>(
                         {
                             data.attempt = data.attempt.saturating_add(1);
                             data.gains.velocity_p = next_p;
-                            data.gains.velocity_i = 0;
+                            data.gains.velocity_i = PidGain::ZERO;
                             defmt::info!(
                                 "vel response: clean response, trying P={}, I=0",
                                 data.gains.velocity_p
@@ -956,7 +958,7 @@ pub(crate) async fn step_velocity_validate_with_trace<B: CommissioningBackend>(
                         }
                     }
                     ValidationResult::Marginal | ValidationResult::Fail => {
-                        let failed_p = data.gains.velocity_p;
+                        let failed_p = data.gains.velocity_p.raw();
                         if !data.has_accepted_gains
                             && data.attempt >= response_ramp::VELOCITY_RESPONSE_MAX_RETRIES
                         {
@@ -966,7 +968,7 @@ pub(crate) async fn step_velocity_validate_with_trace<B: CommissioningBackend>(
                                     ValidationResult::Fail => "fail",
                                     _ => "marginal",
                                 },
-                                failed_p,
+                                data.gains.velocity_p,
                                 data.attempt
                             );
                             if !stop_velocity_motion(backend, safety).await {
@@ -983,21 +985,21 @@ pub(crate) async fn step_velocity_validate_with_trace<B: CommissioningBackend>(
                                 total_samples,
                             )
                             && let Some(next_p) = response_ramp::response_next_gain_limited_p(
-                                failed_p,
+                                data.gains.velocity_p,
                                 data.response_upper_p,
                             )
                         {
                             data.response_lower_p = failed_p;
                             data.attempt = data.attempt.saturating_add(1);
                             data.gains.velocity_p = next_p;
-                            data.gains.velocity_i = 0;
+                            data.gains.velocity_i = PidGain::ZERO;
                             defmt::info!(
                                 "vel response: {} at P={} without passing gain, trying P={}",
                                 match result {
                                     ValidationResult::Fail => "fail",
                                     _ => "marginal",
                                 },
-                                failed_p,
+                                data.gains.velocity_p,
                                 data.gains.velocity_p
                             );
                             *state = VelocityValidateState::WriteGains;
@@ -1026,7 +1028,7 @@ pub(crate) async fn step_velocity_validate_with_trace<B: CommissioningBackend>(
                             ) {
                                 data.attempt = data.attempt.saturating_add(1);
                                 data.gains.velocity_p = next_p;
-                                data.gains.velocity_i = 0;
+                                data.gains.velocity_i = PidGain::ZERO;
                                 defmt::info!(
                                     "vel response: {} at P={} bracketed by P={}..{}, trying P={}",
                                     match result {
@@ -1049,12 +1051,18 @@ pub(crate) async fn step_velocity_validate_with_trace<B: CommissioningBackend>(
                                 )
                             {
                                 let old_target = data.step_target;
-                                data.gains.velocity_p = response_ramp::response_scaled_p_for_target(
+                                let Some(next_p) = response_ramp::response_scaled_p_for_target(
                                     data.response_lower_p,
                                     old_target,
                                     next_target,
-                                );
-                                data.gains.velocity_i = 0;
+                                ) else {
+                                    return fail_outer(
+                                        phase,
+                                        CommissionError::VelocityValidationFailed,
+                                    );
+                                };
+                                data.gains.velocity_p = next_p;
+                                data.gains.velocity_i = PidGain::ZERO;
                                 data.step_target = next_target;
                                 data.response_lower_p = 0;
                                 data.response_upper_p = 0;
@@ -1118,7 +1126,7 @@ pub(crate) async fn step_velocity_validate_with_trace<B: CommissioningBackend>(
                 {
                     data.attempt = data.attempt.saturating_add(1);
                     data.gains.velocity_p = next_p;
-                    data.gains.velocity_i = 0;
+                    data.gains.velocity_i = PidGain::ZERO;
                     defmt::info!(
                         "vel validate: under-driven model response, trying P={}, I=0",
                         data.gains.velocity_p
@@ -1180,10 +1188,10 @@ pub(crate) async fn step_velocity_validate_with_trace<B: CommissioningBackend>(
                         data.policy.lambda_multiplier,
                     ) {
                         Some(mut new_gains) => {
-                            data.diagnostics.synth_velocity_p = new_gains.velocity_p;
-                            data.diagnostics.synth_velocity_i = new_gains.velocity_i;
-                            if new_gains.velocity_p > OUTER_MAX_VELOCITY_P
-                                || new_gains.velocity_i > OUTER_MAX_VELOCITY_I
+                            data.diagnostics.synth_velocity_p = new_gains.velocity_p.raw();
+                            data.diagnostics.synth_velocity_i = new_gains.velocity_i.raw();
+                            if new_gains.velocity_p.raw() > OUTER_MAX_VELOCITY_P
+                                || new_gains.velocity_i.raw() > OUTER_MAX_VELOCITY_I
                             {
                                 data.diagnostics.warning_code = OUTER_WARNING_UNSAFE_SYNTH_GAINS;
                                 defmt::warn!(
@@ -1388,9 +1396,14 @@ mod tests {
         trace_pack_u16_pair,
     };
     use crate::commissioning::types::StepResult;
+    use foci_tmc4671::pid::PidGain;
     use foci_tmc4671::registers::{
         PID_VELOCITY_LIMIT, PID_VELOCITY_P_VELOCITY_I, PID_VELOCITY_TARGET,
     };
+
+    fn gain(raw: u16) -> PidGain {
+        PidGain::new(raw).expect("test gain must be in range")
+    }
 
     fn encoder_count(raw_counts: u32) -> EncoderCount {
         EncoderDomain::new(4_000).unwrap().count(raw_counts)
@@ -1738,15 +1751,15 @@ mod tests {
         safety: OuterSafetyLimits,
     ) -> OuterPhase {
         let gains = VelocityGains {
-            velocity_p: 1_152,
-            velocity_i: 7,
+            velocity_p: gain(1_152),
+            velocity_i: gain(7),
             velocity_limit: 16,
             effective_bandwidth_hz: 10,
             lambda_vel_ms: 50,
         };
         let accepted_gains = VelocityGains {
-            velocity_p: 768,
-            velocity_i: 3,
+            velocity_p: gain(768),
+            velocity_i: gain(3),
             ..gains
         };
         let state = match point {
@@ -1856,8 +1869,8 @@ mod tests {
             OuterPhase::VelocityValidate { state, data, .. } => {
                 assert_eq!(data.strategy, strategy);
                 assert_eq!(data.attempt, 3);
-                assert_eq!(data.gains.velocity_p, 1_152);
-                assert_eq!(data.accepted_gains.velocity_p, 768);
+                assert_eq!(data.gains.velocity_p.raw(), 1_152);
+                assert_eq!(data.accepted_gains.velocity_p.raw(), 768);
                 assert!(data.has_accepted_gains);
                 assert_eq!(data.response_lower_p, 512);
                 assert_eq!(data.response_upper_p, 1_536);
@@ -2111,15 +2124,15 @@ mod tests {
         let mut seqs = TraceSummarySeqs::new();
         let data = VelocityValidateData {
             gains: VelocityGains {
-                velocity_p: 512,
-                velocity_i: 32,
+                velocity_p: gain(512),
+                velocity_i: gain(32),
                 velocity_limit: 10_000,
                 effective_bandwidth_hz: 50,
                 lambda_vel_ms: 20,
             },
             accepted_gains: VelocityGains {
-                velocity_p: 0,
-                velocity_i: 0,
+                velocity_p: PidGain::ZERO,
+                velocity_i: PidGain::ZERO,
                 velocity_limit: 0,
                 effective_bandwidth_hz: 0,
                 lambda_vel_ms: 0,
@@ -2208,15 +2221,15 @@ mod tests {
                 state: VelocityValidateState::Classify,
                 data: VelocityValidateData {
                     gains: VelocityGains {
-                        velocity_p: 1152,
-                        velocity_i: 0,
+                        velocity_p: gain(1152),
+                        velocity_i: PidGain::ZERO,
                         velocity_limit: 16,
                         effective_bandwidth_hz: 0,
                         lambda_vel_ms: 0,
                     },
                     accepted_gains: VelocityGains {
-                        velocity_p: 1152,
-                        velocity_i: 0,
+                        velocity_p: gain(1152),
+                        velocity_i: PidGain::ZERO,
                         velocity_limit: 16,
                         effective_bandwidth_hz: 0,
                         lambda_vel_ms: 0,
@@ -2351,8 +2364,8 @@ mod tests {
 
     fn model_failed_velocity_phase() -> OuterPhase {
         let gains = VelocityGains {
-            velocity_p: 4608,
-            velocity_i: 1,
+            velocity_p: gain(4608),
+            velocity_i: gain(1),
             velocity_limit: 14,
             effective_bandwidth_hz: 1,
             lambda_vel_ms: 137,
@@ -2411,8 +2424,8 @@ mod tests {
                 lambda_widened: true,
             };
             let initial_gains = VelocityGains {
-                velocity_p: 1,
-                velocity_i: 1,
+                velocity_p: gain(1),
+                velocity_i: gain(1),
                 velocity_limit: 1_000,
                 effective_bandwidth_hz: 1,
                 lambda_vel_ms: 1,
@@ -2494,8 +2507,8 @@ mod tests {
     fn model_pass_under_driven_probes_higher_p() {
         pollster::block_on(async {
             let gains = VelocityGains {
-                velocity_p: 512,
-                velocity_i: 4,
+                velocity_p: gain(512),
+                velocity_i: gain(4),
                 velocity_limit: 40,
                 effective_bandwidth_hz: 10,
                 lambda_vel_ms: 50,
@@ -2555,8 +2568,8 @@ mod tests {
                     assert!(matches!(state, VelocityValidateState::WriteGains));
                     assert!(data.has_accepted_gains);
                     assert_eq!(data.accepted_gains.velocity_p, gains.velocity_p);
-                    assert!(data.gains.velocity_p > gains.velocity_p);
-                    assert_eq!(data.gains.velocity_i, 0);
+                    assert!(data.gains.velocity_p.raw() > gains.velocity_p.raw());
+                    assert_eq!(data.gains.velocity_i, PidGain::ZERO);
                 }
                 other => panic!("expected higher-P model probe, got {:?}", other),
             }
@@ -2567,15 +2580,15 @@ mod tests {
     fn model_probe_restores_last_clean_when_higher_p_fails() {
         pollster::block_on(async {
             let accepted_gains = VelocityGains {
-                velocity_p: 512,
-                velocity_i: 4,
+                velocity_p: gain(512),
+                velocity_i: gain(4),
                 velocity_limit: 40,
                 effective_bandwidth_hz: 10,
                 lambda_vel_ms: 50,
             };
             let failing_gains = VelocityGains {
-                velocity_p: 768,
-                velocity_i: 0,
+                velocity_p: gain(768),
+                velocity_i: PidGain::ZERO,
                 ..accepted_gains
             };
             let mut phase = OuterPhase::VelocityValidate {
@@ -2646,8 +2659,8 @@ mod tests {
     fn low_confidence_tau_accepts_with_warning_not_production() {
         pollster::block_on(async {
             let gains = VelocityGains {
-                velocity_p: 512,
-                velocity_i: 4,
+                velocity_p: gain(512),
+                velocity_i: gain(4),
                 velocity_limit: 40,
                 effective_bandwidth_hz: 10,
                 lambda_vel_ms: 50,
@@ -2721,8 +2734,8 @@ mod tests {
     fn defaulted_tau_accepts_with_warning_not_production() {
         pollster::block_on(async {
             let gains = VelocityGains {
-                velocity_p: 512,
-                velocity_i: 4,
+                velocity_p: gain(512),
+                velocity_i: gain(4),
                 velocity_limit: 40,
                 effective_bandwidth_hz: 10,
                 lambda_vel_ms: 50,
@@ -2866,8 +2879,8 @@ mod tests {
     fn velocity_validation_capture_uses_elapsed_time_for_sample_velocity() {
         pollster::block_on(async {
             let gains = VelocityGains {
-                velocity_p: 1152,
-                velocity_i: 0,
+                velocity_p: gain(1152),
+                velocity_i: PidGain::ZERO,
                 velocity_limit: 16,
                 effective_bandwidth_hz: 0,
                 lambda_vel_ms: 0,
@@ -2955,8 +2968,8 @@ mod tests {
     fn velocity_forward_capture_cleanup_write_failure_fails_spi() {
         pollster::block_on(async {
             let gains = VelocityGains {
-                velocity_p: 1152,
-                velocity_i: 0,
+                velocity_p: gain(1152),
+                velocity_i: PidGain::ZERO,
                 velocity_limit: 16,
                 effective_bandwidth_hz: 0,
                 lambda_vel_ms: 0,
@@ -3039,8 +3052,8 @@ mod tests {
     fn velocity_validation_capture_uses_wrap_aware_encoder_delta() {
         pollster::block_on(async {
             let gains = VelocityGains {
-                velocity_p: 1152,
-                velocity_i: 0,
+                velocity_p: gain(1152),
+                velocity_i: PidGain::ZERO,
                 velocity_limit: 16,
                 effective_bandwidth_hz: 0,
                 lambda_vel_ms: 0,
@@ -3131,8 +3144,8 @@ mod tests {
     fn velocity_validation_writes_encoder_scaled_rates_independent_of_step_width() {
         pollster::block_on(async {
             let gains = VelocityGains {
-                velocity_p: 1152,
-                velocity_i: 341,
+                velocity_p: gain(1152),
+                velocity_i: gain(341),
                 velocity_limit: 16,
                 effective_bandwidth_hz: 0,
                 lambda_vel_ms: 0,
@@ -3248,8 +3261,11 @@ mod tests {
                 OuterPhase::VelocityValidate { state, data, .. } => {
                     assert!(matches!(state, VelocityValidateState::WriteGains));
                     assert_eq!(data.strategy, VelocityTuneStrategy::ResponseRamp);
-                    assert_eq!(data.gains.velocity_p, response::VELOCITY_RESPONSE_INITIAL_P);
-                    assert_eq!(data.gains.velocity_i, 0);
+                    assert_eq!(
+                        data.gains.velocity_p.raw(),
+                        response::VELOCITY_RESPONSE_INITIAL_P
+                    );
+                    assert_eq!(data.gains.velocity_i, PidGain::ZERO);
                     assert_eq!(data.step_target, response::VELOCITY_RESPONSE_STEP_TARGET);
                 }
                 other => panic!("expected response-ramp retry, got {:?}", other),
@@ -3374,10 +3390,10 @@ mod tests {
                     assert_eq!(data.strategy, VelocityTuneStrategy::ResponseRamp);
                     assert!(!data.has_accepted_gains);
                     assert!(
-                        data.gains.velocity_p > gains.velocity_p,
+                        data.gains.velocity_p.raw() > gains.velocity_p.raw(),
                         "low-energy response should advance P, got {} from {}",
-                        data.gains.velocity_p,
-                        gains.velocity_p
+                        data.gains.velocity_p.raw(),
+                        gains.velocity_p.raw()
                     );
                 }
                 other => panic!("expected response-ramp search to continue, got {:?}", other),
@@ -3445,10 +3461,10 @@ mod tests {
                     assert_eq!(data.strategy, VelocityTuneStrategy::ResponseRamp);
                     assert!(!data.has_accepted_gains);
                     assert!(
-                        data.gains.velocity_p > gains.velocity_p,
+                        data.gains.velocity_p.raw() > gains.velocity_p.raw(),
                         "stiction breakaway should advance P, got {} from {}",
-                        data.gains.velocity_p,
-                        gains.velocity_p
+                        data.gains.velocity_p.raw(),
+                        gains.velocity_p.raw()
                     );
                 }
                 other => panic!("expected response-ramp search to continue, got {:?}", other),
@@ -3460,8 +3476,8 @@ mod tests {
     fn response_ramp_brackets_between_underdriven_and_unsafe_without_accepted_gain() {
         pollster::block_on(async {
             let gains = VelocityGains {
-                velocity_p: 648,
-                velocity_i: 0,
+                velocity_p: gain(648),
+                velocity_i: PidGain::ZERO,
                 velocity_limit: 16,
                 effective_bandwidth_hz: 0,
                 lambda_vel_ms: 0,
@@ -3523,7 +3539,7 @@ mod tests {
                     assert!(!data.has_accepted_gains);
                     assert_eq!(data.response_lower_p, 432);
                     assert_eq!(data.response_upper_p, 648);
-                    assert_eq!(data.gains.velocity_p, 540);
+                    assert_eq!(data.gains.velocity_p.raw(), 540);
                 }
                 other => panic!("expected bracketed response-ramp search, got {:?}", other),
             }
@@ -3534,8 +3550,8 @@ mod tests {
     fn response_ramp_raises_step_target_when_p_bracket_collapses_under_stiction() {
         pollster::block_on(async {
             let gains = VelocityGains {
-                velocity_p: 485,
-                velocity_i: 0,
+                velocity_p: gain(485),
+                velocity_i: PidGain::ZERO,
                 velocity_limit: 16,
                 effective_bandwidth_hz: 0,
                 lambda_vel_ms: 0,
@@ -3601,7 +3617,7 @@ mod tests {
                     );
                     assert_eq!(data.response_lower_p, 0);
                     assert_eq!(data.response_upper_p, 0);
-                    assert_eq!(data.gains.velocity_p, 243);
+                    assert_eq!(data.gains.velocity_p.raw(), 243);
                 }
                 other => panic!(
                     "expected raised-target response-ramp search, got {:?}",
@@ -3615,8 +3631,8 @@ mod tests {
     fn response_ramp_treats_one_sided_overshoot_as_stiction_at_higher_target() {
         pollster::block_on(async {
             let gains = VelocityGains {
-                velocity_p: 645,
-                velocity_i: 0,
+                velocity_p: gain(645),
+                velocity_i: PidGain::ZERO,
                 velocity_limit: 16,
                 effective_bandwidth_hz: 0,
                 lambda_vel_ms: 0,
@@ -3678,7 +3694,7 @@ mod tests {
                     assert!(!data.has_accepted_gains);
                     assert_eq!(data.response_lower_p, 645);
                     assert_eq!(data.response_upper_p, 774);
-                    assert_eq!(data.gains.velocity_p, 709);
+                    assert_eq!(data.gains.velocity_p.raw(), 709);
                 }
                 other => panic!("expected one-sided stiction search, got {:?}", other),
             }
@@ -3689,8 +3705,8 @@ mod tests {
     fn response_ramp_raises_step_target_when_p_bracket_is_too_narrow_to_search() {
         pollster::block_on(async {
             let gains = VelocityGains {
-                velocity_p: 668,
-                velocity_i: 0,
+                velocity_p: gain(668),
+                velocity_i: PidGain::ZERO,
                 velocity_limit: 16,
                 effective_bandwidth_hz: 0,
                 lambda_vel_ms: 0,
@@ -3754,7 +3770,7 @@ mod tests {
                     );
                     assert_eq!(data.response_lower_p, 0);
                     assert_eq!(data.response_upper_p, 0);
-                    assert_eq!(data.gains.velocity_p, 334);
+                    assert_eq!(data.gains.velocity_p.raw(), 334);
                 }
                 other => panic!("expected raised-target retry, got {:?}", other),
             }
@@ -3765,8 +3781,8 @@ mod tests {
     fn response_ramp_stops_when_retry_budget_is_exhausted() {
         pollster::block_on(async {
             let gains = VelocityGains {
-                velocity_p: 688,
-                velocity_i: 0,
+                velocity_p: gain(688),
+                velocity_i: PidGain::ZERO,
                 velocity_limit: 16,
                 effective_bandwidth_hz: 0,
                 lambda_vel_ms: 0,

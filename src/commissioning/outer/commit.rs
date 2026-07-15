@@ -34,14 +34,14 @@ pub(crate) fn step_commit(phase: &mut OuterPhase) -> StepResult {
     };
 
     if diagnostics.synth_velocity_p == 0 && diagnostics.synth_velocity_i == 0 {
-        diagnostics.synth_velocity_p = velocity_gains.velocity_p;
-        diagnostics.synth_velocity_i = velocity_gains.velocity_i;
+        diagnostics.synth_velocity_p = velocity_gains.velocity_p.raw();
+        diagnostics.synth_velocity_i = velocity_gains.velocity_i.raw();
     }
     diagnostics.synth_position_p = position_gains.position_p;
     diagnostics.synth_position_i = position_gains.position_i;
 
-    if velocity_gains.velocity_p > OUTER_MAX_VELOCITY_P
-        || velocity_gains.velocity_i > OUTER_MAX_VELOCITY_I
+    if velocity_gains.velocity_p.raw() > OUTER_MAX_VELOCITY_P
+        || velocity_gains.velocity_i.raw() > OUTER_MAX_VELOCITY_I
     {
         defmt::warn!(
             "outer commit: invalid accepted velocity gains P={}, I={}",
@@ -71,8 +71,8 @@ pub(crate) fn step_commit(phase: &mut OuterPhase) -> StepResult {
 
     let result = OuterResult {
         status,
-        velocity_p: velocity_gains.velocity_p,
-        velocity_i: velocity_gains.velocity_i,
+        velocity_p: velocity_gains.velocity_p.raw(),
+        velocity_i: velocity_gains.velocity_i.raw(),
         velocity_limit: velocity_gains.velocity_limit,
         position_p: position_gains.position_p,
         position_i: position_gains.position_i,
@@ -123,6 +123,11 @@ mod tests {
         OuterPhase,
     };
     use crate::commissioning::types::StepResult;
+    use foci_tmc4671::pid::PidGain;
+
+    fn gain(raw: u16) -> PidGain {
+        PidGain::new(raw).expect("test gain must be in range")
+    }
 
     fn zero_diagnostics() -> OuterDiagnostics {
         OuterDiagnostics {
@@ -164,8 +169,8 @@ mod tests {
 
     fn valid_velocity_gains() -> VelocityGains {
         VelocityGains {
-            velocity_p: 1152,
-            velocity_i: 341,
+            velocity_p: gain(1152),
+            velocity_i: gain(341),
             velocity_limit: 16,
             effective_bandwidth_hz: 50,
             lambda_vel_ms: 20,
@@ -240,13 +245,13 @@ mod tests {
         let StepResult::OuterDone(result) = result else {
             panic!("expected OuterDone, got {result:?}");
         };
-        assert_eq!(result.velocity_p, velocity.velocity_p);
-        assert_eq!(result.velocity_i, velocity.velocity_i);
+        assert_eq!(result.velocity_p, velocity.velocity_p.raw());
+        assert_eq!(result.velocity_i, velocity.velocity_i.raw());
         assert_eq!(result.velocity_limit, velocity.velocity_limit);
         assert_eq!(result.position_p, position.position_p);
         assert_eq!(result.position_i, position.position_i);
-        assert_eq!(result.synth_velocity_p, velocity.velocity_p);
-        assert_eq!(result.synth_velocity_i, velocity.velocity_i);
+        assert_eq!(result.synth_velocity_p, velocity.velocity_p.raw());
+        assert_eq!(result.synth_velocity_i, velocity.velocity_i.raw());
         assert_eq!(result.synth_position_p, position.position_p);
         assert_eq!(result.synth_position_i, position.position_i);
     }
@@ -254,7 +259,7 @@ mod tests {
     #[test]
     fn commit_rejects_out_of_envelope_velocity_gains() {
         let mut velocity = valid_velocity_gains();
-        velocity.velocity_i = OUTER_MAX_VELOCITY_I + 1;
+        velocity.velocity_i = gain(OUTER_MAX_VELOCITY_I + 1);
         let mut phase = commit_phase(velocity, valid_position_gains());
 
         let result = step_commit(&mut phase);
