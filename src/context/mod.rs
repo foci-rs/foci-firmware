@@ -15,6 +15,7 @@
 //! removed.
 
 pub mod stepper;
+pub mod stepper_reconcile;
 pub mod tmc;
 pub mod trsync;
 
