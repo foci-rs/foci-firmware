@@ -2,7 +2,7 @@ use super::{
     AXIS_SPLIT_SOURCE_NONE, CURRENT_AXIS_FLUX, CURRENT_GAINS_TIER_PHYSICAL_SYMMETRIC,
     CommissionProfile, CurrentGainSynthesis, CurrentGainSynthesisError, CurrentGainSynthesisInput,
     CurrentGains, CurrentLoopEvidence, ELECTRICAL_MODEL_RESISTANCE_SCALE, ElectricalModel,
-    Permille, TransientBuffer, ValidationResult,
+    Permille, TransientBuffer,
 };
 #[cfg(test)]
 use super::{
@@ -62,7 +62,6 @@ const CURRENT_METRIC_SMOOTHING_SAMPLES: usize = 8;
 /// Metrics from a current-loop step-response validation test.
 ///
 /// Extracted from the [`TransientBuffer`] after a torque step.
-/// Used by [`classify_current_validation`] to determine pass/marginal/fail.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub struct CurrentValidation {
     /// Time from 10% to 90% of target, in microseconds.
@@ -492,19 +491,18 @@ pub fn estimate_electrical_delay(
 /// Extract step-response metrics from a transient buffer capture.
 ///
 /// Analyzes a captured step response to measure rise time, overshoot,
-/// settling time, ringing, and saturation. These metrics are then
-/// classified by [`classify_current_validation`].
+/// settling time, ringing, and saturation.
 ///
 /// # Parameters
 /// - `buf`: captured step response samples (raw ADC or encoder values)
 /// - `target`: the target value that was commanded (step amplitude)
 /// - `pidout_limit`: saturation threshold (0 to skip saturation check)
 ///
-/// Returns metrics with `symmetry_permille = 0`. Symmetry requires two captures
-/// (forward + reverse); the caller computes it via [`compute_tail_symmetry_permille`].
-/// Timing fields are durations within the capture, not absolute times since
-/// the command step. Callers that schedule the first sample after one sample
-/// period should keep that origin outside this buffer.
+/// Returns metrics with `symmetry_permille = 0`; symmetry requires paired
+/// forward and reverse captures. Timing fields are durations within the
+/// capture, not absolute times since the command step. Callers that schedule
+/// the first sample after one sample period should keep that origin outside
+/// this buffer.
 pub fn extract_step_metrics(
     buf: &TransientBuffer,
     target: u32,
@@ -644,90 +642,6 @@ pub fn extract_step_metrics(
     }
 }
 
-/// Classify current-loop validation metrics against thresholds.
-///
-/// Thresholds (starting points, subject to hardware validation):
-///
-/// | Metric | Pass | Marginal | Fail |
-/// |--------|------|----------|------|
-/// | Overshoot | <= 15% | > 15-30% | > 30% |
-/// | Ringing | 0-1 | 2-3 | > 3 |
-/// | Settling | <= 5*settle_ref | > 5-10*settle_ref | > 10*settle_ref |
-/// | Symmetry | <= 10% | > 10-25% | > 25% |
-/// | Saturation | <= 10% | > 10-25% | > 25% |
-/// | Target error | <= 10% | > 10-50% | > 50% |
-///
-/// `total_samples` is the total number of capture samples across both
-/// directions, used for computing the saturation percentage.
-/// Returns the worst classification across all metrics.
-pub fn classify_current_validation(
-    metrics: &CurrentValidation,
-    settle_reference_us: u32,
-    total_samples: u16,
-) -> ValidationResult {
-    let mut worst = ValidationResult::Pass;
-
-    // Overshoot (0.1% units: 150 = 15.0%, 300 = 30.0%)
-    if metrics.overshoot_permille > Permille::new(300) {
-        return ValidationResult::Fail;
-    } else if metrics.overshoot_permille > Permille::new(150) {
-        worst = ValidationResult::Marginal;
-    }
-
-    // Ringing
-    if metrics.ringing_count > 3 {
-        return ValidationResult::Fail;
-    } else if metrics.ringing_count > 1 {
-        worst = ValidationResult::Marginal;
-    }
-
-    // Settling (relative to the dominant current-loop reference).
-    let settle_5x = 5 * settle_reference_us;
-    let settle_10x = 10 * settle_reference_us;
-    if metrics.settling_time_us > settle_10x {
-        return ValidationResult::Fail;
-    } else if metrics.settling_time_us > settle_5x {
-        worst = ValidationResult::Marginal;
-    }
-
-    // Symmetry (0.1% units: 100 = 10.0%, 250 = 25.0%)
-    // Tail-level symmetry is much less noisy than the old rise-time metric,
-    // so tighter thresholds are appropriate.
-    if metrics.symmetry_permille > Permille::new(250) {
-        return ValidationResult::Fail;
-    } else if metrics.symmetry_permille > Permille::new(100) {
-        worst = ValidationResult::Marginal;
-    }
-
-    // Saturation (fraction of total samples): pass <=10%, marginal >10-25%, fail >25%.
-    let saturation_permille =
-        super::metrics::saturation_permille(metrics.saturation_samples, total_samples);
-    if let Some(saturation_permille) = saturation_permille {
-        if saturation_permille > Permille::new(250) {
-            return ValidationResult::Fail;
-        } else if saturation_permille > Permille::new(100) {
-            worst = ValidationResult::Marginal;
-        }
-    }
-
-    // Target attainment: did the current loop actually reach the commanded
-    // target? Catches zero-current, wrong-sign, and under-target responses
-    // that would otherwise pass all other checks.
-    // 0.1% units: 500 = 50.0%, 100 = 10.0%
-    if metrics.target_error_permille > Permille::new(500) {
-        return ValidationResult::Fail;
-    } else if metrics.target_error_permille > Permille::new(100) {
-        worst = ValidationResult::Marginal;
-    }
-
-    worst
-}
-
-/// Return whether current validation should retry with adjusted gains.
-pub fn should_retry_current_validation(result: ValidationResult, attempt: u8) -> bool {
-    attempt == 0 && result != ValidationResult::Pass
-}
-
 /// Return the retry policy decision for one current-axis validation failure.
 pub fn current_axis_retry_decision(
     axis_status: u8,
@@ -755,39 +669,6 @@ pub fn current_axis_retry_decision(
     } else {
         CurrentAxisRetryDecision::RetryLowerBandwidth
     }
-}
-
-/// Return whether a marginal current validation can be accepted without retry.
-///
-/// This is intentionally narrow: it only accepts the case where all metrics
-/// except bidirectional rise-time symmetry are already in the pass range, and
-/// the computed retry would not change the gains. That covers measurement
-/// variability in the symmetry metric without hiding overshoot, ringing,
-/// settling, or saturation issues.
-pub fn should_accept_current_validation_without_retry(
-    metrics: &CurrentValidation,
-    settle_reference_us: u32,
-    total_samples: u16,
-    previous: CurrentGains,
-    retry: CurrentGains,
-) -> bool {
-    if previous != retry {
-        return false;
-    }
-    if metrics.overshoot_permille > Permille::new(150) || metrics.ringing_count > 1 {
-        return false;
-    }
-    if metrics.settling_time_us > 5 * settle_reference_us {
-        return false;
-    }
-    if super::metrics::saturation_permille(metrics.saturation_samples, total_samples)
-        .is_some_and(|saturation_permille| saturation_permille > Permille::new(100))
-    {
-        return false;
-    }
-
-    metrics.symmetry_permille > Permille::new(100)
-        && metrics.symmetry_permille <= Permille::new(250)
 }
 
 fn retry_low_response_lambda_permille(_profile: CommissionProfile) -> u16 {
@@ -904,28 +785,6 @@ pub fn retry_current_loop_gains(
     next.torque_p = torque_p;
 
     Ok(next)
-}
-
-/// Compute symmetry metric from forward and reverse tail levels.
-///
-/// Returns `|fwd - rev| / avg(fwd, rev)` in 0.1% units (permille).
-/// This measures steady-state signed-current symmetry — whether both
-/// directions produce the same actual current magnitude. Returns 0 if
-/// both values are zero.
-pub fn compute_tail_symmetry_permille(fwd_tail: u32, rev_tail: u32) -> Permille {
-    super::metrics::normalized_difference(fwd_tail, rev_tail)
-}
-
-/// Compute target-attainment error from a tail level and commanded target.
-///
-/// Returns `|tail_level - target| / target` in 0.1% units (permille).
-/// Returns 1000 (100%) if `target` is zero to avoid division by zero.
-pub fn compute_target_error_permille(tail_level: u32, target: u32) -> Permille {
-    if target == 0 {
-        return Permille::HUNDRED_PERCENT;
-    }
-    Permille::checked_ratio(u64::from(tail_level.abs_diff(target)), u64::from(target))
-        .expect("target checked nonzero")
 }
 
 #[cfg(test)]
@@ -1527,31 +1386,6 @@ mod tests {
 
         let metrics = extract_step_metrics(&buf, 1000, 0);
         assert_eq!(metrics.ringing_count, 0);
-    }
-
-    #[test]
-    fn current_metrics_ignore_tail_ripple_after_settling() {
-        let mut buf = TransientBuffer::new();
-        buf.reset(160);
-        for &sample in &[53, 98, 180, 260, 330, 390, 416, 370] {
-            buf.push(sample);
-        }
-        for i in 0..248 {
-            let sample = if i % 2 == 0 { 345 } else { 416 };
-            buf.push(sample);
-        }
-
-        let metrics = extract_step_metrics(&buf, 367, 0);
-
-        assert!(
-            metrics.settling_time_us < 10 * 1868,
-            "tail ripple around target should not force full-window settling"
-        );
-        assert_eq!(metrics.ringing_count, 0);
-        assert_eq!(
-            classify_current_validation(&metrics, 1868, 512),
-            ValidationResult::Pass
-        );
     }
 
     #[test]
