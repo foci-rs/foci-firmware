@@ -974,8 +974,9 @@ mod tests {
         assert!(engine_step <= 4_304);
         assert_eq!(step_inner, 4_256);
         assert!(step_inner <= 4_256);
-        assert_eq!(electrical_id, 608);
-        assert!(electrical_id <= 608);
+        // Run-owned current evidence adds 32 bytes to electrical ID state.
+        assert_eq!(electrical_id, 640);
+        assert!(electrical_id <= 640);
         assert!(electrical_id <= 960);
         // The capture-owned deadline loop adds 48 bytes to the scheduled
         // future while removing per-sample reconstruction of that future.

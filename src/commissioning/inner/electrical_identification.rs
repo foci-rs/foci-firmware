@@ -4318,7 +4318,9 @@ mod tests {
             let mut diagnostics = crate::selftest::CommissionDiagnostics::default();
 
             let mut reached_inductance = false;
-            for _ in 0..2_000 {
+            // A 20 s resistance run can schedule up to 4,000 observations at
+            // the 5 ms sample period, plus bounded state transitions.
+            for _ in 0..5_000 {
                 let before = register_operation_count(&backend.spi_log);
                 let step = step_electrical_identification(
                     &mut phase,
@@ -4456,7 +4458,9 @@ mod tests {
             let warning_status = 1 << 31;
             let mut injected = false;
 
-            for _ in 0..2_000 {
+            // A 20 s resistance run can schedule up to 4,000 observations at
+            // the 5 ms sample period, plus bounded state transitions.
+            for _ in 0..5_000 {
                 let before = register_operation_count(&backend.spi_log);
                 let step = step_electrical_identification(
                     &mut phase,
