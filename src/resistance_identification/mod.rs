@@ -12,8 +12,9 @@ mod tests;
 pub use fit::{evaluate_resistance_result, fit_resistance_axis};
 pub use profile::{ResistanceProfile, STANDARD_UD_POINTS};
 pub use runner::{
-    ResistanceBackend, ResistanceBackendError, ResistancePoll, ResistanceRunMode, ResistanceRunner,
-    ResistanceTimingEvidence, run_resistance_identification,
+    ResistanceBackend, ResistanceBackendError, ResistancePoll, ResistanceRunMode,
+    ResistanceRunTerminal, ResistanceRunner, ResistanceTimingEvidence,
+    run_resistance_identification,
 };
 pub use types::{
     ElectricalAxis, ResistanceAxisResult, ResistanceCurrentEvidence, ResistanceError,

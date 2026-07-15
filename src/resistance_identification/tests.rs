@@ -73,7 +73,7 @@ struct FakeResistanceBackend {
     /// Built proportional to the active UD so the fit produces a clean line.
     scripted_energized_current_count: i32,
     /// Ordered energized samples used before the fixed/proportional script.
-    scripted_energized_samples: heapless::Vec<i16, 8>,
+    scripted_energized_samples: heapless::Vec<i16, 128>,
     /// Next ordered energized sample.
     scripted_energized_sample_index: usize,
     /// Current gain used by the default UD-proportional script, in milli-counts per UD count.
@@ -96,6 +96,10 @@ struct FakeResistanceBackend {
     elapsed_us: u64,
     /// When `Some(n)`, the nth write (1-based) and beyond fail with Spi.
     fail_after_writes: Option<usize>,
+    /// Whether cleanup writes after containment fail.
+    fail_writes_after_trip: bool,
+    /// Whether the containment hook has run.
+    power_stage_tripped: bool,
     /// Count of writes issued so far, for `fail_after_writes`.
     write_count: usize,
     /// Scripted zero-window currents, consumed in capture order per axis.
@@ -164,6 +168,8 @@ impl FakeResistanceBackend {
             enable_pin: false,
             elapsed_us: 0,
             fail_after_writes: None,
+            fail_writes_after_trip: false,
+            power_stage_tripped: false,
             write_count: 0,
             scripted_zero_currents: heapless::Vec::new(),
             zero_windows_sampled: 0,
@@ -402,6 +408,9 @@ impl ResistanceBackend for FakeResistanceBackend {
         {
             return Err(ResistanceBackendError::Spi);
         }
+        if self.fail_writes_after_trip && self.power_stage_tripped {
+            return Err(ResistanceBackendError::Spi);
+        }
         Ok(())
     }
 
@@ -436,6 +445,7 @@ impl ResistanceBackend for FakeResistanceBackend {
     fn trip_power_stage(&mut self) {
         self.record_event(BackendEvent::TripPowerStage);
         self.enable_pin = false;
+        self.power_stage_tripped = true;
     }
 
     fn is_armed_for_open_loop_voltage(&self) -> bool {
@@ -480,7 +490,7 @@ fn runner_writes_voltage_limit_before_chopper() {
         ResistanceRunMode::CommissioningManagedEnable,
     ));
 
-    assert!(result.is_ok(), "expected ok, got {result:?}");
+    assert!(result.result().is_ok(), "expected ok, got {result:?}");
     assert_write_order(
         &backend.writes,
         PIDOUT_UQ_UD_LIMITS.addr(),
@@ -552,6 +562,7 @@ fn successful_run_carries_observed_current_evidence() {
         &mut backend,
         ResistanceRunMode::CommissioningManagedEnable,
     ))
+    .result()
     .expect("standard resistance run should succeed");
 
     assert_eq!(result.current.peak_abs_current_count(), 1_440);
@@ -732,6 +743,7 @@ fn runner_rejects_wrong_power_stage() {
         &mut backend,
         ResistanceRunMode::CommissioningManagedEnable,
     ))
+    .result()
     .unwrap_err();
 
     assert_eq!(err, ResistanceError::WrongPowerStage);
@@ -747,6 +759,7 @@ fn runner_restores_safe_state_on_backend_error() {
         &mut backend,
         ResistanceRunMode::ExternallyArmed,
     ))
+    .result()
     .unwrap_err();
 
     assert_eq!(err, ResistanceError::BackendIo);
@@ -762,6 +775,7 @@ fn externally_armed_mode_rejects_when_motor_is_not_armed() {
         &mut backend,
         ResistanceRunMode::ExternallyArmed,
     ))
+    .result()
     .unwrap_err();
 
     assert_eq!(err, ResistanceError::NotArmed);
@@ -776,10 +790,52 @@ fn runner_aborts_when_profile_peak_current_is_exceeded() {
         &mut backend,
         ResistanceRunMode::CommissioningManagedEnable,
     ))
+    .result()
     .unwrap_err();
 
     assert_eq!(err, ResistanceError::PeakCurrentExceeded);
     assert!(backend.wrote_safe_state());
+}
+
+#[test]
+fn failed_terminal_retains_triggering_current_evidence() {
+    let mut backend = FakeResistanceBackend::standard();
+    backend.scripted_energized_current_count = 1_800;
+
+    let terminal = block_on(run_resistance_identification(
+        &mut backend,
+        ResistanceRunMode::CommissioningManagedEnable,
+    ));
+
+    assert_eq!(terminal.result(), Err(ResistanceError::PeakCurrentExceeded));
+    assert_eq!(terminal.current().peak_abs_current_count(), 1_800);
+    assert_eq!(terminal.current().max_abs_steady_mean_current_count(), 0);
+    assert_eq!(terminal.current().current_ceiling_count(), 1_600);
+    assert!(terminal.current().power_stage_tripped());
+}
+
+#[test]
+fn cleanup_error_terminal_preserves_prior_trip_evidence() {
+    let mut backend = FakeResistanceBackend::standard();
+    for _ in 0..107 {
+        backend.scripted_energized_samples.push(1_000).unwrap();
+    }
+    backend.scripted_energized_samples.push(1_800).unwrap();
+    backend.fail_writes_after_trip = true;
+
+    let terminal = block_on(run_resistance_identification(
+        &mut backend,
+        ResistanceRunMode::CommissioningManagedEnable,
+    ));
+
+    assert_eq!(terminal.result(), Err(ResistanceError::BackendIo));
+    assert_eq!(terminal.current().peak_abs_current_count(), 1_800);
+    assert_eq!(
+        terminal.current().max_abs_steady_mean_current_count(),
+        1_000
+    );
+    assert_eq!(terminal.current().current_ceiling_count(), 1_600);
+    assert!(terminal.current().power_stage_tripped());
 }
 
 #[test]
@@ -932,10 +988,10 @@ fn runner_stops_after_good_fit_before_unsafe_high_points() {
     ));
 
     assert!(
-        result.is_ok(),
+        result.result().is_ok(),
         "expected adaptive sweep to fit, got {result:?}"
     );
-    assert!(!result.unwrap().current.power_stage_tripped());
+    assert!(!result.result().unwrap().current.power_stage_tripped());
     assert!(
         !backend
             .writes
@@ -963,7 +1019,7 @@ fn runner_stops_after_good_fit_before_near_limit_high_point() {
     ));
 
     assert!(
-        result.is_ok(),
+        result.result().is_ok(),
         "expected adaptive sweep to fit with near-limit headroom, got {result:?}"
     );
     assert!(
@@ -985,6 +1041,7 @@ fn runner_skips_predicted_unsafe_point_when_fit_is_not_yet_supported() {
         &mut backend,
         ResistanceRunMode::CommissioningManagedEnable,
     ))
+    .result()
     .unwrap_err();
 
     assert_eq!(
@@ -1010,6 +1067,7 @@ fn runner_sets_encoder_moved_warning_when_motion_exceeds_profile_threshold() {
         &mut backend,
         ResistanceRunMode::CommissioningManagedEnable,
     ))
+    .result()
     .unwrap();
 
     assert!(
@@ -1033,6 +1091,7 @@ fn runner_sets_status_flags_warning_when_sampled_status_matches_mask() {
         &mut backend,
         ResistanceRunMode::CommissioningManagedEnable,
     ))
+    .result()
     .unwrap();
 
     assert!(
@@ -1076,7 +1135,7 @@ fn commissioning_mode_uses_full_sweep_authority_despite_low_saved_baseline() {
         ResistanceRunMode::CommissioningManagedEnable,
     ));
 
-    assert!(result.is_ok(), "expected ok, got {result:?}");
+    assert!(result.result().is_ok(), "expected ok, got {result:?}");
     assert_written_before_restore(&backend.writes, PIDOUT_UQ_UD_LIMITS.addr(), max_abs_ud);
     assert!(backend.wrote_safe_state());
 }
@@ -1099,6 +1158,7 @@ fn externally_armed_mode_rejects_when_saved_limit_is_below_sweep_authority() {
         &mut backend,
         ResistanceRunMode::ExternallyArmed,
     ))
+    .result()
     .unwrap_err();
 
     assert_eq!(err, ResistanceError::OutOfBoundsParameter);
@@ -1122,6 +1182,7 @@ fn externally_armed_mode_rejects_wrong_motor_type_without_restore() {
         &mut backend,
         ResistanceRunMode::ExternallyArmed,
     ))
+    .result()
     .unwrap_err();
 
     assert_eq!(err, ResistanceError::InvalidMotorType);
@@ -1143,7 +1204,7 @@ fn externally_armed_mode_proceeds_when_saved_limit_meets_sweep_authority() {
         ResistanceRunMode::ExternallyArmed,
     ));
 
-    assert!(result.is_ok(), "expected ok, got {result:?}");
+    assert!(result.result().is_ok(), "expected ok, got {result:?}");
     assert_written_before_restore(&backend.writes, PIDOUT_UQ_UD_LIMITS.addr(), max_abs_ud);
 }
 
@@ -1165,6 +1226,7 @@ fn runner_rejects_profile_exceeding_exposure_budget() {
         &mut backend,
         ResistanceRunMode::ExternallyArmed,
     ))
+    .result()
     .unwrap_err();
 
     assert_eq!(err, ResistanceError::UnsupportedProfile);
@@ -1204,6 +1266,7 @@ fn sweep_point_is_bracketed_against_adjacent_zero_windows_not_initial_zero() {
         &mut backend,
         ResistanceRunMode::CommissioningManagedEnable,
     ))
+    .result()
     .expect("adjacent-bracket sweep should fit");
 
     // ud=800 is sweep index 2. Adjacent bracket excludes it (delta 740 < 750).
@@ -1238,6 +1301,7 @@ fn signed_anchor_positive_current_is_zero_subtracted_like_the_negative_anchor() 
         &mut backend,
         ResistanceRunMode::CommissioningManagedEnable,
     ))
+    .result()
     .expect("nonzero-offset sweep should fit");
 
     let anchor = result
@@ -1593,6 +1657,7 @@ fn resumable_success_matches_compatibility_loop_and_remains_terminal() {
         &mut compatibility_backend,
         ResistanceRunMode::CommissioningManagedEnable,
     ))
+    .result()
     .unwrap();
     let mut backend = FakeResistanceBackend::standard();
     let mut runner = ResistanceRunner::new(

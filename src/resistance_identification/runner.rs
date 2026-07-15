@@ -33,7 +33,7 @@
 //!   restore sequence over an externally armed motor.
 
 use super::profile::ResistanceProfile;
-use super::types::{ResistanceError, ResistanceRunResult};
+use super::types::{ResistanceCurrentEvidence, ResistanceError, ResistanceRunResult};
 
 pub use super::state::{ResistancePoll, ResistanceRunner, ResistanceTimingEvidence};
 
@@ -45,6 +45,26 @@ pub enum ResistanceRunMode {
     /// The motor is already armed and enabled by the normal lifecycle path;
     /// the runner must not touch the enable pin.
     ExternallyArmed,
+}
+
+/// Terminal resistance-run outcome with current evidence retained on failure.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+pub struct ResistanceRunTerminal {
+    result: Result<ResistanceRunResult, ResistanceError>,
+    current: ResistanceCurrentEvidence,
+}
+
+impl ResistanceRunTerminal {
+    /// Return the measurement result or terminal error.
+    pub const fn result(self) -> Result<ResistanceRunResult, ResistanceError> {
+        self.result
+    }
+
+    /// Return current evidence retained through restoration.
+    #[must_use]
+    pub const fn current(self) -> ResistanceCurrentEvidence {
+        self.current
+    }
 }
 
 /// Error returned by backend register I/O during resistance identification.
@@ -93,7 +113,11 @@ pub trait ResistanceBackend {
 /// restore. The motor is energized only between the bounded-limit/chopper setup
 /// and the restore.
 ///
-/// # Errors
+/// # Terminal failures
+///
+/// Failures are returned through [`ResistanceRunTerminal::result`], while
+/// [`ResistanceRunTerminal::current`] retains current evidence collected before
+/// or during restoration.
 ///
 /// - [`ResistanceError::NotAdcReady`] when ADC offsets are not ready.
 /// - [`ResistanceError::NotArmed`] in [`ResistanceRunMode::ExternallyArmed`]
@@ -107,8 +131,8 @@ pub trait ResistanceBackend {
 ///   the per-window or total energized-exposure budget.
 /// - [`ResistanceError::WrongPowerStage`] when the power-stage readback does not
 ///   match the profile.
-/// - [`ResistanceError::PeakCurrentExceeded`] when an energized window's mean
-///   current exceeds the profile peak.
+/// - [`ResistanceError::PeakCurrentExceeded`] when an individual energized
+///   current sample exceeds the profile ceiling.
 /// - [`ResistanceError::BackendIo`] when a backend register transaction fails.
 /// - Any fit/evaluation error produced by the resumable runner.
 ///
@@ -120,10 +144,18 @@ pub trait ResistanceBackend {
 pub async fn run_resistance_identification<B: ResistanceBackend>(
     backend: &mut B,
     mode: ResistanceRunMode,
-) -> Result<ResistanceRunResult, ResistanceError> {
+) -> ResistanceRunTerminal {
     let mut logical_now_us = backend.elapsed_us();
     let profile = backend.profile();
-    let mut runner = ResistanceRunner::new(mode, profile, logical_now_us)?;
+    let mut runner = match ResistanceRunner::new(mode, profile, logical_now_us) {
+        Ok(runner) => runner,
+        Err(error) => {
+            return ResistanceRunTerminal {
+                result: Err(error),
+                current: ResistanceCurrentEvidence::new(profile.max_expected_current_count),
+            };
+        }
+    };
     loop {
         match runner.poll(backend, logical_now_us).await {
             ResistancePoll::ReadyNow => {}
@@ -132,7 +164,12 @@ pub async fn run_resistance_identification<B: ResistanceBackend>(
                 backend.delay_ms(delay_us.div_ceil(1_000)).await;
                 logical_now_us = backend.elapsed_us().max(deadline_us);
             }
-            ResistancePoll::Complete(result) => return result,
+            ResistancePoll::Complete(result) => {
+                return ResistanceRunTerminal {
+                    result,
+                    current: runner.current_evidence(),
+                };
+            }
         }
     }
 }

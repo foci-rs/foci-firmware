@@ -314,6 +314,14 @@ pub struct ResistanceRunReport {
     pub warning_flags: u32,
     /// STATUS_FLAGS accumulated (OR) across the run.
     pub status_flags_or: u32,
+    /// Largest absolute individual current sample observed while energized.
+    pub peak_abs_current_count: u16,
+    /// Largest absolute mean from a completed energized acquisition window.
+    pub max_abs_steady_mean_current_count: u16,
+    /// Current ceiling applied to individual energized samples.
+    pub current_ceiling_count: u16,
+    /// Whether sample-level containment synchronously tripped the power stage.
+    pub power_stage_tripped: bool,
     /// PWM_MAXCNT readback captured during the run.
     pub pwm_maxcnt_readback: u16,
     /// Packed PWM_BBM_H_BBM_L readback captured during the run.
@@ -710,6 +718,10 @@ pub fn empty_resistance_run_report(oid: u8, status: u8) -> ResistanceRunReport {
         gain_path_count_slope_milli: 0,
         warning_flags: 0,
         status_flags_or: 0,
+        peak_abs_current_count: 0,
+        max_abs_steady_mean_current_count: 0,
+        current_ceiling_count: 0,
+        power_stage_tripped: false,
         pwm_maxcnt_readback: 0,
         bbm_readback: 0,
         dsadc_mdec_readback: 0,

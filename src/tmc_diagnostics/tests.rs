@@ -180,6 +180,38 @@ fn empty_reports_preserve_headers_and_zero_samples() {
     assert_eq!(voltage.ud_ext, 44);
     assert_eq!(voltage.sample_delay_ms, 5);
     assert_eq!(voltage.encoder_delta_after, 0);
+
+    let resistance = empty_resistance_run_report(9, CURRENT_STEP_STATUS_SPI);
+    assert_eq!(resistance.oid, 9);
+    assert_eq!(resistance.status, CURRENT_STEP_STATUS_SPI);
+    assert_eq!(resistance.peak_abs_current_count, 0);
+    assert_eq!(resistance.max_abs_steady_mean_current_count, 0);
+    assert_eq!(resistance.current_ceiling_count, 0);
+    assert!(!resistance.power_stage_tripped);
+}
+
+#[test]
+fn failed_resistance_report_retains_current_evidence() {
+    let mut current = crate::resistance_identification::ResistanceCurrentEvidence::new(1_600);
+    current.observe_energized_sample(-1_800);
+    current.record_completed_energized_mean(-900);
+    current.mark_power_stage_tripped();
+
+    let report = super::resistance::failed_run_report(
+        7,
+        crate::resistance_identification::ResistanceError::BackendIo.status_code(),
+        current,
+    );
+
+    assert_eq!(report.oid, 7);
+    assert_eq!(
+        report.status,
+        crate::resistance_identification::ResistanceError::BackendIo.status_code()
+    );
+    assert_eq!(report.peak_abs_current_count, 1_800);
+    assert_eq!(report.max_abs_steady_mean_current_count, 900);
+    assert_eq!(report.current_ceiling_count, 1_600);
+    assert!(report.power_stage_tripped);
 }
 
 #[test]

@@ -6,8 +6,8 @@ use core::sync::atomic::Ordering::Relaxed;
 use foci_tmc4671::registers::Register;
 
 use crate::resistance_identification::{
-    ResistanceAxisResult, ResistanceBackend, ResistanceBackendError, ResistanceProfile,
-    ResistanceRunMode, ResistanceRunResult, run_resistance_identification,
+    ResistanceAxisResult, ResistanceBackend, ResistanceBackendError, ResistanceCurrentEvidence,
+    ResistanceProfile, ResistanceRunMode, ResistanceRunResult, run_resistance_identification,
 };
 use crate::tmc::{TmcRequest, TmcRequestKind};
 
@@ -161,10 +161,28 @@ fn success_run_report(
         gain_path_count_slope_milli: 0,
         warning_flags: result.warning_flags.0,
         status_flags_or: result.status_flags_or,
+        peak_abs_current_count: result.current.peak_abs_current_count(),
+        max_abs_steady_mean_current_count: result.current.max_abs_steady_mean_current_count(),
+        current_ceiling_count: result.current.current_ceiling_count(),
+        power_stage_tripped: result.current.power_stage_tripped(),
         pwm_maxcnt_readback,
         bbm_readback,
         dsadc_mdec_readback,
         pwm_sv_chop_readback: profile.pwm_sv_chop,
+    }
+}
+
+pub(super) fn failed_run_report(
+    oid: u8,
+    status: u8,
+    current: ResistanceCurrentEvidence,
+) -> ResistanceRunReport {
+    ResistanceRunReport {
+        peak_abs_current_count: current.peak_abs_current_count(),
+        max_abs_steady_mean_current_count: current.max_abs_steady_mean_current_count(),
+        current_ceiling_count: current.current_ceiling_count(),
+        power_stage_tripped: current.power_stage_tripped(),
+        ..empty_resistance_run_report(oid, status)
     }
 }
 
@@ -221,10 +239,11 @@ where
     }
 
     let mut backend = DiagnosticResistanceBackend { ctx: &mut ctx };
-    let result =
+    let terminal =
         run_resistance_identification(&mut backend, ResistanceRunMode::ExternallyArmed).await;
+    let current = terminal.current();
 
-    match result {
+    match terminal.result() {
         Ok(result) => {
             let run_report = success_run_report(oid, &profile, &result);
             let axes = [
@@ -235,7 +254,7 @@ where
         }
         Err(error) => handled(
             profile_report,
-            empty_resistance_run_report(oid, error.status_code()),
+            failed_run_report(oid, error.status_code(), current),
             None,
         ),
     }
