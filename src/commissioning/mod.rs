@@ -65,8 +65,6 @@ pub struct OuterTuneParams {
     pub current_ringing: bool,
     /// Current-loop bandwidth from Stage 1 (Hz).
     pub current_bandwidth_hz: u32,
-    /// Phase 5 tau_e_us measurement (or host-defaulted).
-    pub tau_e_us: u32,
     /// Inner-confidence warning bitfield carried from Stage 1.
     pub inner_warning_flags: u8,
     /// Host-computed max local motor travel in milli-revolutions.
@@ -179,8 +177,6 @@ pub(crate) enum EngineMode {
         current_ringing: bool,
         /// Current-loop effective bandwidth Hz from inner commissioning.
         current_bandwidth_hz: u32,
-        /// Phase 5 tau_e_us (or persisted/host default).
-        tau_e_us: u32,
         /// Inner-confidence warning bitfield carried from Stage 1.
         inner_warning_flags: u8,
         /// Gains snapshot at entry for soft-failure restoration.
@@ -463,7 +459,6 @@ impl CommissioningEngine {
             theta_e_us,
             current_ringing,
             current_bandwidth_hz,
-            tau_e_us,
             inner_warning_flags,
             max_travel_mrev,
             max_velocity_mrev_s,
@@ -493,7 +488,6 @@ impl CommissioningEngine {
                 theta_e_us,
                 current_ringing,
                 current_bandwidth_hz,
-                tau_e_us,
                 inner_warning_flags,
                 entry_snapshot,
             },
@@ -826,7 +820,6 @@ impl CommissioningEngine {
                 theta_e_us,
                 current_ringing,
                 current_bandwidth_hz,
-                tau_e_us,
                 inner_warning_flags,
                 ..
             } => {
@@ -839,7 +832,6 @@ impl CommissioningEngine {
                     *theta_e_us,
                     *current_ringing,
                     *current_bandwidth_hz,
-                    *tau_e_us,
                     *inner_warning_flags,
                     trace_summary_seqs,
                     backend,
@@ -1003,7 +995,6 @@ mod tests {
             theta_e_us: 50,
             current_ringing: false,
             current_bandwidth_hz: 1000,
-            tau_e_us: 730,
             inner_warning_flags: 0,
             max_travel_mrev: 1000,
             max_velocity_mrev_s: 6000,

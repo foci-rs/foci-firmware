@@ -1620,7 +1620,6 @@ fn sample_outer_params() -> crate::commissioning::OuterTuneParams {
         theta_e_us: 50,
         current_ringing: false,
         current_bandwidth_hz: 1000,
-        tau_e_us: 730,
         inner_warning_flags: 0,
         max_travel_mrev: 1000,
         max_velocity_mrev_s: 6000,

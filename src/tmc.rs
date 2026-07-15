@@ -226,8 +226,6 @@ pub enum TmcRequestKind {
         current_ringing_count: u8,
         /// Current-loop effective bandwidth Hz from inner commissioning.
         current_bandwidth_hz: u32,
-        /// Phase 5 tau_e_us measurement (or persisted default).
-        tau_e_us: u32,
         /// Inner-confidence warning bitfield carried from Stage 1.
         inner_warning_flags: u8,
         /// Host-computed max local motor travel in milli-revolutions.
@@ -483,7 +481,6 @@ pub fn tmc_tune(
     theta_e_us: u32,
     current_ringing_count: u8,
     current_bandwidth_hz: u32,
-    tau_e_us: u32,
     inner_warning_flags: u8,
     max_travel_mrev: u32,
     max_velocity_mrev_s: u32,
@@ -500,7 +497,6 @@ pub fn tmc_tune(
             theta_e_us,
             current_ringing_count,
             current_bandwidth_hz,
-            tau_e_us,
             inner_warning_flags,
             max_travel_mrev,
             max_velocity_mrev_s,
@@ -1661,9 +1657,7 @@ mod tests {
     #[test]
     fn tmc_tune_builds_request() {
         assert_eq!(
-            tmc_tune(
-                0, 7, 2, 1, 1400, 700, 3, 500, 730, 0x40, 1000, 6000, 3000, 3
-            ),
+            tmc_tune(0, 7, 2, 1, 1400, 700, 3, 500, 0x40, 1000, 6000, 3000, 3),
             TmcRequest::new(
                 0,
                 TmcRequestKind::Tune {
@@ -1674,7 +1668,6 @@ mod tests {
                     theta_e_us: 700,
                     current_ringing_count: 3,
                     current_bandwidth_hz: 500,
-                    tau_e_us: 730,
                     inner_warning_flags: 0x40,
                     max_travel_mrev: 1000,
                     max_velocity_mrev_s: 6000,

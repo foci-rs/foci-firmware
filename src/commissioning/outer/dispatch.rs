@@ -58,7 +58,6 @@ pub(crate) async fn step_outer<B: CommissioningBackend>(
     theta_e_us: u32,
     current_ringing: bool,
     current_bandwidth_hz: u32,
-    tau_e_us: u32,
     inner_warning_flags: u8,
     backend: &mut B,
 ) -> StepResult {
@@ -72,7 +71,6 @@ pub(crate) async fn step_outer<B: CommissioningBackend>(
         theta_e_us,
         current_ringing,
         current_bandwidth_hz,
-        tau_e_us,
         inner_warning_flags,
         &mut trace_summary_seqs,
         backend,
@@ -90,15 +88,10 @@ pub(crate) async fn step_outer_with_trace<B: CommissioningBackend>(
     theta_e_us: u32,
     current_ringing: bool,
     current_bandwidth_hz: u32,
-    tau_e_us: u32,
     inner_warning_flags: u8,
     trace_summary_seqs: &mut TraceSummarySeqs,
     backend: &mut B,
 ) -> StepResult {
-    // `tau_e_us` is persisted in the outer engine for a future Phase 2
-    // adaptive-measurement path; Phase 1 outer logic uses only
-    // `inner_warning_flags`.
-    let _ = tau_e_us;
     if let Some(safety) = outer_safety_mut(phase) {
         if !safety.budget_request_is_valid() {
             defmt::warn!(
