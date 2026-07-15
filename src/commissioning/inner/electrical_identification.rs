@@ -2922,7 +2922,18 @@ mod tests {
                 .iter()
                 .filter(|entry| matches!(entry, SpiOp::Write(_, _)))
                 .count();
-            assert_eq!(writes_after - writes_before, 1, "restore poll {operation}");
+            let expected_writes = if backend.read_override.is_some_and(|(address, _)| {
+                address == expected_inductance_restore_writes()[operation].0
+            }) {
+                3
+            } else {
+                1
+            };
+            assert_eq!(
+                writes_after - writes_before,
+                expected_writes,
+                "restore poll {operation}"
+            );
             if operation < 19 {
                 assert!(matches!(result, StepResult::ReadyNow));
             } else {

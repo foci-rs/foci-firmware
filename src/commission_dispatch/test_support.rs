@@ -54,12 +54,18 @@ pub struct MockBackend {
     pub fail_on_write: Option<u8>,
     /// If `Some(addr)`, `read_register` returns `Err(MockSpiError)` for that address.
     pub fail_on_read: Option<u8>,
+    /// Transient write failures as `(address, remaining failures)`.
+    pub fail_writes_remaining: Option<(u8, u8)>,
+    /// Transient read failures as `(address, remaining failures)`.
+    pub fail_reads_remaining: Option<(u8, u8)>,
     /// Last value passed to `store_motor_sentinel`. None until first call.
     pub last_motor_sentinel_stored: core::cell::Cell<Option<u32>>,
     /// When Some((addr, value)), `read_register(reg)` for that addr returns
     /// `value` instead of consulting `registers`. Used by verify tests to
     /// inject a mismatch.
     pub read_override: Option<(u8, u32)>,
+    /// Transient read mismatches as `(address, value, remaining reads)`.
+    pub read_override_remaining: Option<(u8, u32, u8)>,
     /// Value returned by `elapsed_us()`.
     pub elapsed_us_value: u64,
     /// Sequential values returned by `elapsed_us()` before the fallback value.
@@ -149,8 +155,11 @@ impl MockBackend {
             delay_us_log: Vec::new(),
             fail_on_write: None,
             fail_on_read: None,
+            fail_writes_remaining: None,
+            fail_reads_remaining: None,
             last_motor_sentinel_stored: core::cell::Cell::new(None),
             read_override: None,
+            read_override_remaining: None,
             elapsed_us_value: 0,
             elapsed_us_sequence: Vec::new(),
             elapsed_us_pos: core::cell::Cell::new(0),
@@ -247,8 +256,22 @@ impl CommissionRegisterIo for MockBackend {
             .elapsed_us_value
             .saturating_add(self.spi_elapsed_step_us);
         self.spi_log.push(SpiOp::Read).ok();
+        if let Some((failure_addr, remaining)) = self.fail_reads_remaining.as_mut()
+            && *failure_addr == addr
+            && *remaining > 0
+        {
+            *remaining -= 1;
+            return Err(MockSpiError);
+        }
         if self.fail_on_read == Some(addr) {
             return Err(MockSpiError);
+        }
+        if let Some((override_addr, val, remaining)) = self.read_override_remaining.as_mut()
+            && *override_addr == addr
+            && *remaining > 0
+        {
+            *remaining -= 1;
+            return Ok(*val);
         }
         if let Some((addr_override, val)) = self.read_override
             && addr_override == addr
@@ -335,6 +358,13 @@ impl CommissionRegisterIo for MockBackend {
             self.last_uq_ud_ext_write = val;
         }
         self.spi_log.push(SpiOp::Write(addr, val)).ok();
+        if let Some((failure_addr, remaining)) = self.fail_writes_remaining.as_mut()
+            && *failure_addr == addr
+            && *remaining > 0
+        {
+            *remaining -= 1;
+            return Err(MockSpiError);
+        }
         if self.fail_on_write == Some(addr) {
             return Err(MockSpiError);
         }
@@ -347,13 +377,23 @@ impl CommissionRegisterIo for MockBackend {
         reg: Register,
         val: u32,
     ) -> Result<(), Self::Error> {
-        self.write_register(reg, val).await?;
-        let actual = self.read_register(reg).await?;
-        if actual == val {
-            Ok(())
-        } else {
-            Err(MockSpiError)
+        let max_attempts = foci_tmc4671::spi::RetryPolicy::production()
+            .max_attempts
+            .max(1);
+        for attempt in 0..max_attempts {
+            let result = async {
+                self.write_register(reg, val).await?;
+                self.read_register(reg).await
+            }
+            .await;
+            match result {
+                Ok(actual) if actual == val => return Ok(()),
+                Ok(_) => {}
+                Err(error) if attempt + 1 == max_attempts => return Err(error),
+                Err(_) => continue,
+            }
         }
+        Err(MockSpiError)
     }
 
     async fn read_register_verified(
@@ -361,12 +401,18 @@ impl CommissionRegisterIo for MockBackend {
         reg: Register,
         expected: u32,
     ) -> Result<u32, Self::Error> {
-        let actual = self.read_register(reg).await?;
-        if actual == expected {
-            Ok(actual)
-        } else {
-            Err(MockSpiError)
+        let max_attempts = foci_tmc4671::spi::RetryPolicy::production()
+            .max_attempts
+            .max(1);
+        for attempt in 0..max_attempts {
+            match self.read_register(reg).await {
+                Ok(actual) if actual == expected => return Ok(actual),
+                Ok(_) => {}
+                Err(error) if attempt + 1 == max_attempts => return Err(error),
+                Err(_) => continue,
+            }
         }
+        Err(MockSpiError)
     }
 }
 
@@ -748,6 +794,39 @@ mod tests {
                 .write_register_verified(foci_tmc4671::registers::PID_POSITION_TARGET, 42)
                 .await;
             assert!(result.is_err(), "expected verify mismatch");
+            assert_eq!(backend.spi_log.len(), 6);
+        });
+    }
+
+    #[test]
+    fn mock_write_register_verified_recovers_from_transient_write_failure() {
+        pollster::block_on(async {
+            let mut backend = MockBackend::new();
+            backend.fail_writes_remaining =
+                Some((foci_tmc4671::registers::PID_POSITION_TARGET.addr(), 1));
+
+            let result = backend
+                .write_register_verified(foci_tmc4671::registers::PID_POSITION_TARGET, 42)
+                .await;
+
+            assert_eq!(result, Ok(()));
+            assert_eq!(backend.spi_log.len(), 3);
+        });
+    }
+
+    #[test]
+    fn mock_write_register_verified_recovers_from_transient_mismatch() {
+        pollster::block_on(async {
+            let mut backend = MockBackend::new();
+            backend.read_override_remaining =
+                Some((foci_tmc4671::registers::PID_POSITION_TARGET.addr(), 999, 1));
+
+            let result = backend
+                .write_register_verified(foci_tmc4671::registers::PID_POSITION_TARGET, 42)
+                .await;
+
+            assert_eq!(result, Ok(()));
+            assert_eq!(backend.spi_log.len(), 4);
         });
     }
 
@@ -780,6 +859,24 @@ mod tests {
                 .await;
 
             assert!(result.is_err(), "expected verify mismatch");
+            assert_eq!(backend.spi_log.len(), 3);
+        });
+    }
+
+    #[test]
+    fn mock_read_register_verified_recovers_from_transient_failure() {
+        pollster::block_on(async {
+            let mut backend = MockBackend::new();
+            let addr = foci_tmc4671::registers::PID_POSITION_TARGET.addr();
+            let _ = backend.registers.insert(addr, 42);
+            backend.fail_reads_remaining = Some((addr, 1));
+
+            let result = backend
+                .read_register_verified(foci_tmc4671::registers::PID_POSITION_TARGET, 42)
+                .await;
+
+            assert_eq!(result, Ok(42));
+            assert_eq!(backend.spi_log.len(), 2);
         });
     }
 

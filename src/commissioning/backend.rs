@@ -48,15 +48,15 @@ pub trait CommissionRegisterIo {
 
     /// Write a register, read it back, and compare against `val`.
     ///
-    /// Production board implementations must preserve the `Tmc4671Spi`
-    /// retry policy. Test backends may implement single-attempt behavior.
+    /// Production board implementations and production-semantic test backends
+    /// must preserve the `Tmc4671Spi` retry policy.
     async fn write_register_verified(&mut self, reg: Register, val: u32)
     -> Result<(), Self::Error>;
 
     /// Read a register and compare against `expected`.
     ///
-    /// Production board implementations must preserve the `Tmc4671Spi`
-    /// retry policy. Test backends may implement single-attempt behavior.
+    /// Production board implementations and production-semantic test backends
+    /// must preserve the `Tmc4671Spi` retry policy.
     async fn read_register_verified(
         &mut self,
         reg: Register,

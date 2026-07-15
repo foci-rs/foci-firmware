@@ -968,16 +968,19 @@ mod tests {
         assert!(size_of::<capture_timing::CaptureTimingEvidence>() <= 32);
         assert_eq!(size_of::<[u16; crate::autotune::TRANSIENT_LEN]>(), 512);
         assert_eq!(size_of::<crate::autotune::DelayTimestampOffsets>(), 514);
-        assert_eq!(engine_step, 4_272);
-        assert!(engine_step <= 4_272);
-        assert_eq!(step_inner, 4_224);
-        assert!(step_inner <= 4_224);
+        // Production-semantic verified retries add loop state to the mock
+        // backend future used by this host-side size gate.
+        assert_eq!(engine_step, 4_304);
+        assert!(engine_step <= 4_304);
+        assert_eq!(step_inner, 4_256);
+        assert!(step_inner <= 4_256);
         assert_eq!(electrical_id, 608);
         assert!(electrical_id <= 608);
         assert!(electrical_id <= 960);
         // The capture-owned deadline loop adds 48 bytes to the scheduled
         // future while removing per-sample reconstruction of that future.
-        assert_eq!(scheduled_step, 4_352);
+        // Production-semantic mock retries add another 32 bytes in tests.
+        assert_eq!(scheduled_step, 4_384);
         // The hot path keeps nonterminal classification outside the terminal
         // async dispatch future.
         assert!(scheduled_step <= 4_400);
