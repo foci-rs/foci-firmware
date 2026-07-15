@@ -72,6 +72,14 @@ pub enum ShutdownReason {
     TmcDiagnosticLostQueueFull,
     Tmc4671ChipIdMismatch,
     Tmc4671SpiFailedAtBoot,
+    TmcBootstrapCh0AdcVmLimitsWriteFailed,
+    TmcBootstrapCh0StatusMaskWriteFailed,
+    TmcBootstrapCh0StatusFlagsReadFailed,
+    TmcBootstrapCh0StatusFlagsClearFailed,
+    TmcBootstrapCh1AdcVmLimitsWriteFailed,
+    TmcBootstrapCh1StatusMaskWriteFailed,
+    TmcBootstrapCh1StatusFlagsReadFailed,
+    TmcBootstrapCh1StatusFlagsClearFailed,
     TmcRequestValidationFailed,
     Tmc4671PllNotLocked,
     Tmc4671AdcCurrentClipped,
@@ -119,6 +127,30 @@ impl ShutdownReason {
             Self::TmcDiagnosticLostQueueFull => "TMC diagnostic lost (queue full)",
             Self::Tmc4671ChipIdMismatch => "TMC4671 chip ID mismatch",
             Self::Tmc4671SpiFailedAtBoot => "TMC4671 SPI failed at boot",
+            Self::TmcBootstrapCh0AdcVmLimitsWriteFailed => {
+                "TMC4671 ch0 bootstrap: ADC_VM_LIMITS write failed"
+            }
+            Self::TmcBootstrapCh0StatusMaskWriteFailed => {
+                "TMC4671 ch0 bootstrap: STATUS_MASK write failed"
+            }
+            Self::TmcBootstrapCh0StatusFlagsReadFailed => {
+                "TMC4671 ch0 bootstrap: STATUS_FLAGS read failed"
+            }
+            Self::TmcBootstrapCh0StatusFlagsClearFailed => {
+                "TMC4671 ch0 bootstrap: STATUS_FLAGS clear failed"
+            }
+            Self::TmcBootstrapCh1AdcVmLimitsWriteFailed => {
+                "TMC4671 ch1 bootstrap: ADC_VM_LIMITS write failed"
+            }
+            Self::TmcBootstrapCh1StatusMaskWriteFailed => {
+                "TMC4671 ch1 bootstrap: STATUS_MASK write failed"
+            }
+            Self::TmcBootstrapCh1StatusFlagsReadFailed => {
+                "TMC4671 ch1 bootstrap: STATUS_FLAGS read failed"
+            }
+            Self::TmcBootstrapCh1StatusFlagsClearFailed => {
+                "TMC4671 ch1 bootstrap: STATUS_FLAGS clear failed"
+            }
             Self::TmcRequestValidationFailed => "TMC request validation failed",
             Self::Tmc4671PllNotLocked => "TMC4671: PLL not locked (clock lost)",
             Self::Tmc4671AdcCurrentClipped => "TMC4671: ADC current clipped (overcurrent)",
@@ -300,6 +332,62 @@ macro_rules! dispatch_shutdown {
             $crate::shutdown::ShutdownReason::Tmc4671SpiFailedAtBoot => {
                 ::ankyra::klipper_shutdown_from!($sender, "TMC4671 SPI failed at boot", $clock);
             }
+            $crate::shutdown::ShutdownReason::TmcBootstrapCh0AdcVmLimitsWriteFailed => {
+                ::ankyra::klipper_shutdown_from!(
+                    $sender,
+                    "TMC4671 ch0 bootstrap: ADC_VM_LIMITS write failed",
+                    $clock
+                );
+            }
+            $crate::shutdown::ShutdownReason::TmcBootstrapCh0StatusMaskWriteFailed => {
+                ::ankyra::klipper_shutdown_from!(
+                    $sender,
+                    "TMC4671 ch0 bootstrap: STATUS_MASK write failed",
+                    $clock
+                );
+            }
+            $crate::shutdown::ShutdownReason::TmcBootstrapCh0StatusFlagsReadFailed => {
+                ::ankyra::klipper_shutdown_from!(
+                    $sender,
+                    "TMC4671 ch0 bootstrap: STATUS_FLAGS read failed",
+                    $clock
+                );
+            }
+            $crate::shutdown::ShutdownReason::TmcBootstrapCh0StatusFlagsClearFailed => {
+                ::ankyra::klipper_shutdown_from!(
+                    $sender,
+                    "TMC4671 ch0 bootstrap: STATUS_FLAGS clear failed",
+                    $clock
+                );
+            }
+            $crate::shutdown::ShutdownReason::TmcBootstrapCh1AdcVmLimitsWriteFailed => {
+                ::ankyra::klipper_shutdown_from!(
+                    $sender,
+                    "TMC4671 ch1 bootstrap: ADC_VM_LIMITS write failed",
+                    $clock
+                );
+            }
+            $crate::shutdown::ShutdownReason::TmcBootstrapCh1StatusMaskWriteFailed => {
+                ::ankyra::klipper_shutdown_from!(
+                    $sender,
+                    "TMC4671 ch1 bootstrap: STATUS_MASK write failed",
+                    $clock
+                );
+            }
+            $crate::shutdown::ShutdownReason::TmcBootstrapCh1StatusFlagsReadFailed => {
+                ::ankyra::klipper_shutdown_from!(
+                    $sender,
+                    "TMC4671 ch1 bootstrap: STATUS_FLAGS read failed",
+                    $clock
+                );
+            }
+            $crate::shutdown::ShutdownReason::TmcBootstrapCh1StatusFlagsClearFailed => {
+                ::ankyra::klipper_shutdown_from!(
+                    $sender,
+                    "TMC4671 ch1 bootstrap: STATUS_FLAGS clear failed",
+                    $clock
+                );
+            }
             $crate::shutdown::ShutdownReason::TmcRequestValidationFailed => {
                 ::ankyra::klipper_shutdown_from!($sender, "TMC request validation failed", $clock);
             }
@@ -398,6 +486,14 @@ macro_rules! foci_ankyra_config {
                 "TMC diagnostic lost (queue full)",
                 "TMC4671 chip ID mismatch",
                 "TMC4671 SPI failed at boot",
+                "TMC4671 ch0 bootstrap: ADC_VM_LIMITS write failed",
+                "TMC4671 ch0 bootstrap: STATUS_MASK write failed",
+                "TMC4671 ch0 bootstrap: STATUS_FLAGS read failed",
+                "TMC4671 ch0 bootstrap: STATUS_FLAGS clear failed",
+                "TMC4671 ch1 bootstrap: ADC_VM_LIMITS write failed",
+                "TMC4671 ch1 bootstrap: STATUS_MASK write failed",
+                "TMC4671 ch1 bootstrap: STATUS_FLAGS read failed",
+                "TMC4671 ch1 bootstrap: STATUS_FLAGS clear failed",
                 "TMC request validation failed",
                 "Live gain application failed",
                 "TMC4671: PLL not locked (clock lost)",

@@ -5,6 +5,7 @@
 //! spawning.
 
 pub mod actions;
+pub mod bootstrap;
 pub mod commission_poll;
 pub mod config;
 pub mod dispatch;
@@ -23,6 +24,10 @@ mod tests;
 pub use actions::{
     BoardAction, BoardActions, DelegatedDiagnostic, ScheduledCommissionTickAction, ShutdownReason,
     StepperAction, TmcControlRequestOutcome, TmcControlRequestTail, push_action,
+};
+pub use bootstrap::{
+    TmcSafetyBootstrapFailure, TmcSafetyBootstrapStage, bootstrap_tmc_safety,
+    first_tmc_safety_bootstrap_failure,
 };
 pub use commission_poll::{
     AbsoluteWaitAction, COMMISSION_WAIT_SLICE_US, CommissionPollDriver,
