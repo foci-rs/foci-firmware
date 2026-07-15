@@ -2215,7 +2215,7 @@ mod tests {
             ));
             match phase {
                 InnerPhase::CurrentValidate { data, .. } => {
-                    assert_eq!(data.gains.flux_p, 1269);
+                    assert_eq!(data.gains.flux_p.raw(), 1269);
                     assert_eq!(data.flux_step_amplitude, 224);
                     assert_eq!(data.torque_step_amplitude, VALIDATION_MIN_STEP_AMPLITUDE);
                     assert_eq!(data.pidout_limit, CURRENT_VALIDATE_PIDOUT_LIMIT);
@@ -2223,7 +2223,7 @@ mod tests {
                     assert_eq!(data.voltage_limited, 322);
                     assert_eq!(data.max_p, 1269);
                     assert!(
-                        data.gains.flux_p as u32 * data.flux_step_amplitude as u32
+                        u32::from(data.gains.flux_p) * data.flux_step_amplitude as u32
                             <= CURRENT_VALIDATE_PIDOUT_LIMIT * 256 * 8 / 10
                     );
                 }
@@ -2260,7 +2260,7 @@ mod tests {
             ));
             match phase {
                 InnerPhase::CurrentValidate { data, .. } => {
-                    assert_eq!(data.gains.flux_p, 3474);
+                    assert_eq!(data.gains.flux_p.raw(), 3474);
                     assert_eq!(data.flux_step_amplitude, 224);
                     assert_eq!(data.torque_step_amplitude, VALIDATION_MIN_STEP_AMPLITUDE);
                     assert_eq!(data.pidout_limit, 3800);
@@ -2272,7 +2272,7 @@ mod tests {
                         "flux settled gate should use the reviewed higher-SNR target"
                     );
                     assert!(
-                        data.gains.flux_p as u32 * data.flux_step_amplitude as u32
+                        u32::from(data.gains.flux_p) * data.flux_step_amplitude as u32
                             <= data.pidout_limit * 256 * VALIDATION_PIDOUT_HEADROOM_PERMILLE / 1000
                     );
                 }
@@ -2356,6 +2356,43 @@ mod tests {
             assert!(
                 backend.spi_log.iter().all(|op| matches!(op, SpiOp::Read)),
                 "invalid physical bandwidth must fail before writing default gains"
+            );
+        });
+    }
+
+    #[test]
+    fn current_tune_rejects_out_of_range_gain_before_register_write() {
+        pollster::block_on(async {
+            let mut phase = InnerPhase::CurrentTune {
+                model: ElectricalModel {
+                    r_count_milli: 1000,
+                    l_count_micro: 20_000,
+                    tau_e_us: 20_000,
+                    theta_e_us: 100,
+                },
+                inner_warning_flags: 0,
+                resistance_result: resistance_result(),
+                inductance: InductanceEvidence::test_fixture(),
+                timing: [crate::commissioning::types::CommissionTimingSummary::NOT_RUN; 3],
+            };
+            let mut backend = MockBackend::new();
+            backend.current_limit_value = 4000;
+            backend.tmc_config.bandwidth_hz = 2_000.0;
+
+            let result =
+                step_current_tune(&mut phase, CommissionProfile::Balanced, &mut backend).await;
+
+            assert!(matches!(
+                result,
+                StepResult::InnerFailed(CommissionError::CurrentValidationFailed)
+            ));
+            assert!(matches!(
+                phase,
+                InnerPhase::Failed(CommissionError::CurrentValidationFailed)
+            ));
+            assert!(
+                backend.spi_log.iter().all(|op| matches!(op, SpiOp::Read)),
+                "unrepresentable gains must fail before any PID write"
             );
         });
     }
@@ -2841,10 +2878,10 @@ mod tests {
             let mut backend = MockBackend::new();
             backend.enable_pin = true;
             let gains = CurrentGains {
-                flux_p: 11,
-                flux_i: 12,
-                torque_p: 13,
-                torque_i: 14,
+                flux_p: gain(11),
+                flux_i: gain(12),
+                torque_p: gain(13),
+                torque_i: gain(14),
                 effective_bandwidth_hz: 0,
                 lambda_us: 0,
             };
@@ -2888,10 +2925,10 @@ mod tests {
             if let InnerPhase::CurrentValidate { state, data } = &mut phase {
                 *state = CurrentValidateState::WriteGains;
                 data.gains = CurrentGains {
-                    flux_p: 11,
-                    flux_i: 12,
-                    torque_p: 13,
-                    torque_i: 14,
+                    flux_p: gain(11),
+                    flux_i: gain(12),
+                    torque_p: gain(13),
+                    torque_i: gain(14),
                     effective_bandwidth_hz: 0,
                     lambda_us: 0,
                 };
@@ -2949,10 +2986,10 @@ mod tests {
                     axis: CurrentValidationAxis::Flux,
                 };
                 data.gains = CurrentGains {
-                    flux_p: 3504,
-                    flux_i: 220,
-                    torque_p: 3504,
-                    torque_i: 220,
+                    flux_p: gain(3504),
+                    flux_i: gain(220),
+                    torque_p: gain(3504),
+                    torque_i: gain(220),
                     effective_bandwidth_hz: 1600,
                     lambda_us: 100,
                 };
@@ -2999,7 +3036,7 @@ mod tests {
                 InnerPhase::CurrentValidate { state, data } => {
                     assert!(matches!(state, CurrentValidateState::WriteGains));
                     assert_eq!(data.candidate_attempt, 1);
-                    assert_eq!(data.gains.flux_p, 1752);
+                    assert_eq!(data.gains.flux_p.raw(), 1752);
                     assert_eq!(data.max_p, 1752);
                     assert_eq!(data.pidout_limit, CURRENT_VALIDATE_PIDOUT_LIMIT);
                     assert_eq!(data.voltage_limited, 233);
@@ -3346,10 +3383,10 @@ mod tests {
             backend.enable_pin = true;
             backend.fail_on_write = Some(PID_TORQUE_FLUX_TARGET.addr());
             let gains = CurrentGains {
-                flux_p: 11,
-                flux_i: 12,
-                torque_p: 13,
-                torque_i: 14,
+                flux_p: gain(11),
+                flux_i: gain(12),
+                torque_p: gain(13),
+                torque_i: gain(14),
                 effective_bandwidth_hz: 0,
                 lambda_us: 0,
             };
@@ -4237,18 +4274,18 @@ mod tests {
                     theta_e_us: 100,
                 },
                 gains: CurrentGains {
-                    flux_p: 11,
-                    flux_i: 12,
-                    torque_p: 13,
-                    torque_i: 14,
+                    flux_p: gain(11),
+                    flux_i: gain(12),
+                    torque_p: gain(13),
+                    torque_i: gain(14),
                     effective_bandwidth_hz: 0,
                     lambda_us: 0,
                 },
                 candidate_gains: CurrentGains {
-                    flux_p: 11,
-                    flux_i: 12,
-                    torque_p: 13,
-                    torque_i: 14,
+                    flux_p: gain(11),
+                    flux_i: gain(12),
+                    torque_p: gain(13),
+                    torque_i: gain(14),
                     effective_bandwidth_hz: 0,
                     lambda_us: 0,
                 },
@@ -4300,10 +4337,10 @@ mod tests {
                 },
                 gains: disabled_state_safe_current_gains(),
                 candidate_gains: CurrentGains {
-                    flux_p: 11,
-                    flux_i: 12,
-                    torque_p: 13,
-                    torque_i: 14,
+                    flux_p: gain(11),
+                    flux_i: gain(12),
+                    torque_p: gain(13),
+                    torque_i: gain(14),
                     effective_bandwidth_hz: 0,
                     lambda_us: 0,
                 },
@@ -4382,18 +4419,18 @@ mod tests {
                     theta_e_us: 100,
                 },
                 gains: CurrentGains {
-                    flux_p: 11,
-                    flux_i: 12,
-                    torque_p: 13,
-                    torque_i: 14,
+                    flux_p: gain(11),
+                    flux_i: gain(12),
+                    torque_p: gain(13),
+                    torque_i: gain(14),
                     effective_bandwidth_hz: 0,
                     lambda_us: 0,
                 },
                 candidate_gains: CurrentGains {
-                    flux_p: 11,
-                    flux_i: 12,
-                    torque_p: 13,
-                    torque_i: 14,
+                    flux_p: gain(11),
+                    flux_i: gain(12),
+                    torque_p: gain(13),
+                    torque_i: gain(14),
                     effective_bandwidth_hz: 0,
                     lambda_us: 0,
                 },

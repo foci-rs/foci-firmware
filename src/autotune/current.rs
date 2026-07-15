@@ -1039,6 +1039,10 @@ mod tests {
     use super::super::test_support::{autotune_test_config, test_electrical_model};
     use super::*;
 
+    fn gain(raw: u16) -> PidGain {
+        PidGain::new(raw).expect("test PID gain must be valid")
+    }
+
     fn passing_current_metrics() -> CurrentValidation {
         CurrentValidation {
             rise_time_us: 100,
@@ -1120,10 +1124,10 @@ mod tests {
     #[test]
     fn accept_without_retry_rejects_fractional_saturation_above_ten_percent() {
         let gains = CurrentGains {
-            flux_p: 1,
-            flux_i: 1,
-            torque_p: 1,
-            torque_i: 1,
+            flux_p: gain(1),
+            flux_i: gain(1),
+            torque_p: gain(1),
+            torque_i: gain(1),
             effective_bandwidth_hz: 1,
             lambda_us: 1,
         };
@@ -1268,16 +1272,22 @@ mod tests {
     #[test]
     fn physical_current_p_uses_count_space_l_and_bandwidth() {
         assert_eq!(
-            physical_current_p_raw_from_l_count_micro(1_346, 600.0),
-            Some(1_299)
+            physical_current_p_raw_from_l_count_micro(1_346, 600.0)
+                .expect("valid physical gain")
+                .raw(),
+            1_299
         );
         assert_eq!(
-            physical_current_p_raw_from_l_count_micro(1_346, 800.0),
-            Some(1_732)
+            physical_current_p_raw_from_l_count_micro(1_346, 800.0)
+                .expect("valid physical gain")
+                .raw(),
+            1_732
         );
         assert_eq!(
-            physical_current_p_raw_from_l_count_micro(1_366, 650.0),
-            Some(1_428)
+            physical_current_p_raw_from_l_count_micro(1_366, 650.0)
+                .expect("valid physical gain")
+                .raw(),
+            1_428
         );
     }
 
@@ -1300,21 +1310,12 @@ mod tests {
 
     #[test]
     fn physical_current_p_rejects_invalid_inputs() {
-        assert_eq!(physical_current_p_raw_from_l_count_micro(0, 600.0), None);
-        assert_eq!(physical_current_p_raw_from_l_count_micro(1_346, 0.0), None);
-        assert_eq!(
-            physical_current_p_raw_from_l_count_micro(1_346, f32::NAN),
-            None
-        );
-        assert!(physical_current_p_raw_from_l_count_micro(1_346, 2_000.0).is_some());
-        assert_eq!(
-            physical_current_p_raw_from_l_count_micro(1_346, 2_001.0),
-            None
-        );
-        assert_eq!(
-            physical_current_p_raw_from_l_count_micro(1_346, 12_000.0),
-            None
-        );
+        assert!(physical_current_p_raw_from_l_count_micro(0, 600.0).is_err());
+        assert!(physical_current_p_raw_from_l_count_micro(1_346, 0.0).is_err());
+        assert!(physical_current_p_raw_from_l_count_micro(1_346, f32::NAN).is_err());
+        assert!(physical_current_p_raw_from_l_count_micro(1_346, 2_000.0).is_ok());
+        assert!(physical_current_p_raw_from_l_count_micro(1_346, 2_001.0).is_err());
+        assert!(physical_current_p_raw_from_l_count_micro(1_346, 12_000.0).is_err());
     }
 
     #[test]
@@ -1352,12 +1353,47 @@ mod tests {
     }
 
     #[test]
+    fn gain_conversion_accepts_maximum_and_rejects_first_negative_encoding() {
+        assert_eq!(
+            pid_gain_from_float(32_767.0).unwrap(),
+            foci_tmc4671::pid::PidGain::MAX
+        );
+        assert!(matches!(
+            pid_gain_from_float(32_768.0),
+            Err(CurrentGainSynthesisError::GainOutOfRange {
+                attempted_raw: 32_768,
+            })
+        ));
+    }
+
+    #[test]
+    fn higher_bandwidth_retry_reports_gain_overflow_without_saturation() {
+        let previous = CurrentGains {
+            flux_p: foci_tmc4671::pid::PidGain::MAX,
+            flux_i: foci_tmc4671::pid::PidGain::new(10).unwrap(),
+            torque_p: foci_tmc4671::pid::PidGain::MAX,
+            torque_i: foci_tmc4671::pid::PidGain::new(10).unwrap(),
+            effective_bandwidth_hz: 100,
+            lambda_us: 1_000,
+        };
+
+        assert!(matches!(
+            retry_current_loop_gains(
+                previous,
+                CurrentAxisRetryDecision::RetryHigherBandwidth,
+                CommissionProfile::Balanced,
+            ),
+            Err(CurrentGainSynthesisError::GainOutOfRange { .. })
+        ));
+    }
+
+    #[test]
     fn retry_policy_scales_bandwidth_and_p_but_keeps_i() {
         let previous = CurrentGains {
-            flux_p: 120,
-            flux_i: 23,
-            torque_p: 220,
-            torque_i: 19,
+            flux_p: gain(120),
+            flux_i: gain(23),
+            torque_p: gain(220),
+            torque_i: gain(19),
             effective_bandwidth_hz: 145,
             lambda_us: 934,
         };
@@ -1366,10 +1402,11 @@ mod tests {
             previous,
             CurrentAxisRetryDecision::RetryHigherBandwidth,
             CommissionProfile::Balanced,
-        );
+        )
+        .expect("retry gains must remain valid");
 
-        assert!(retry.flux_p > previous.flux_p);
-        assert!(retry.torque_p > previous.torque_p);
+        assert!(retry.flux_p.raw() > previous.flux_p.raw());
+        assert!(retry.torque_p.raw() > previous.torque_p.raw());
         assert_eq!(retry.flux_i, previous.flux_i);
         assert_eq!(retry.torque_i, previous.torque_i);
         // These metadata expectations track the retry constants. If hardware
@@ -1383,10 +1420,10 @@ mod tests {
         let physical_limit_lambda =
             bandwidth_period_us(MAX_PHYSICAL_CURRENT_BANDWIDTH_HZ).expect("valid limit");
         let previous = CurrentGains {
-            flux_p: 1500,
-            flux_i: 23,
-            torque_p: 1600,
-            torque_i: 19,
+            flux_p: gain(1500),
+            flux_i: gain(23),
+            torque_p: gain(1600),
+            torque_i: gain(19),
             effective_bandwidth_hz: MAX_PHYSICAL_CURRENT_BANDWIDTH_HZ as u32,
             lambda_us: physical_limit_lambda,
         };
@@ -1395,7 +1432,8 @@ mod tests {
             previous,
             CurrentAxisRetryDecision::RetryHigherBandwidth,
             CommissionProfile::Balanced,
-        );
+        )
+        .expect("capped retry gains must remain valid");
 
         assert_eq!(
             retry.effective_bandwidth_hz,
@@ -1411,10 +1449,10 @@ mod tests {
     #[test]
     fn retry_policy_lower_bandwidth_keeps_i() {
         let previous = CurrentGains {
-            flux_p: 120,
-            flux_i: 23,
-            torque_p: 220,
-            torque_i: 19,
+            flux_p: gain(120),
+            flux_i: gain(23),
+            torque_p: gain(220),
+            torque_i: gain(19),
             effective_bandwidth_hz: 145,
             lambda_us: 934,
         };
@@ -1423,10 +1461,11 @@ mod tests {
             previous,
             CurrentAxisRetryDecision::RetryLowerBandwidth,
             CommissionProfile::Balanced,
-        );
+        )
+        .expect("retry gains must remain valid");
 
-        assert!(retry.flux_p < previous.flux_p);
-        assert!(retry.torque_p < previous.torque_p);
+        assert!(retry.flux_p.raw() < previous.flux_p.raw());
+        assert!(retry.torque_p.raw() < previous.torque_p.raw());
         assert_eq!(retry.flux_i, previous.flux_i);
         assert_eq!(retry.torque_i, previous.torque_i);
         // These metadata expectations track the retry constants. If hardware
@@ -1449,8 +1488,8 @@ mod tests {
 
         let output = synthesize_current_gains(&input, &config).expect("physical gains");
 
-        assert_eq!(output.gains.flux_p, 1_299);
-        assert_eq!(output.gains.torque_p, 1_299);
+        assert_eq!(output.gains.flux_p.raw(), 1_299);
+        assert_eq!(output.gains.torque_p.raw(), 1_299);
         assert_eq!(output.gains.effective_bandwidth_hz, 600);
         assert_eq!(
             output.evidence.gains_tier,
@@ -1479,12 +1518,13 @@ mod tests {
         let output = synthesize_current_gains(&input, &config).expect("physical gains");
 
         let tau_s = model.tau_e_us as f32 * 1e-6;
-        let expected_i = (CURRENT_I_DETUNED_ZERO_FACTOR / (tau_s * config.pwm_freq_hz() as f32))
-            .clamp(1.0, u16::MAX as f32) as u16;
+        let expected_i = (CURRENT_I_DETUNED_ZERO_FACTOR / (tau_s * config.pwm_freq_hz() as f32)
+            + 0.5)
+            .clamp(1.0, PidGain::MAX.raw() as f32) as u16;
 
-        assert_eq!(output.gains.flux_i, expected_i);
-        assert_eq!(output.gains.torque_i, expected_i);
-        assert_eq!(output.gains.flux_p, 1_428);
+        assert_eq!(output.gains.flux_i.raw(), expected_i);
+        assert_eq!(output.gains.torque_i.raw(), expected_i);
+        assert_eq!(output.gains.flux_p.raw(), 1_428);
     }
 
     #[test]
@@ -1520,7 +1560,10 @@ mod tests {
             CURRENT_AXIS_FLUX,
         );
 
-        assert!(synthesize_current_gains(&input, &config).is_none());
+        assert!(matches!(
+            synthesize_current_gains(&input, &config),
+            Err(CurrentGainSynthesisError::UnsupportedSynthesisPolicy { .. })
+        ));
     }
 
     #[test]
@@ -1530,7 +1573,10 @@ mod tests {
         let mut input = CurrentGainSynthesisInput::symmetric(model, CommissionProfile::Balanced);
         input.axis_split_source = 0xff;
 
-        assert!(synthesize_current_gains(&input, &config).is_none());
+        assert!(matches!(
+            synthesize_current_gains(&input, &config),
+            Err(CurrentGainSynthesisError::UnsupportedSynthesisPolicy { .. })
+        ));
     }
 
     // --- SIMC current gains ---
@@ -1539,9 +1585,10 @@ mod tests {
     fn simc_balanced_gains_nonzero() {
         let model = test_electrical_model();
         let config = autotune_test_config();
-        let gains = simc_current_gains(&model, CommissionProfile::Balanced, &config);
-        assert!(gains.flux_p > 0, "flux_p must be nonzero");
-        assert!(gains.flux_i > 0, "flux_i must be nonzero");
+        let gains = simc_current_gains_checked(&model, CommissionProfile::Balanced, &config)
+            .expect("valid SIMC gains");
+        assert!(gains.flux_p.raw() > 0, "flux_p must be nonzero");
+        assert!(gains.flux_i.raw() > 0, "flux_i must be nonzero");
         assert_eq!(gains.flux_p, gains.torque_p, "flux/torque P must match");
         assert_eq!(gains.flux_i, gains.torque_i, "flux/torque I must match");
         assert!(gains.lambda_us > 0, "lambda must be nonzero");
@@ -1559,8 +1606,10 @@ mod tests {
         // So stiff < balanced here.
         let model = test_electrical_model(); // theta=700, tau=2622
         let config = autotune_test_config();
-        let balanced = simc_current_gains(&model, CommissionProfile::Balanced, &config);
-        let stiff = simc_current_gains(&model, CommissionProfile::Stiff, &config);
+        let balanced = simc_current_gains_checked(&model, CommissionProfile::Balanced, &config)
+            .expect("valid balanced gains");
+        let stiff = simc_current_gains_checked(&model, CommissionProfile::Stiff, &config)
+            .expect("valid stiff gains");
         assert!(
             stiff.lambda_us < balanced.lambda_us,
             "delay-dominated: stiff lambda {} should be < balanced {}",
@@ -1580,9 +1629,13 @@ mod tests {
             theta_e_us: 100,
         };
         let config = autotune_test_config();
-        let conservative = simc_current_gains(&model, CommissionProfile::Conservative, &config);
-        let balanced = simc_current_gains(&model, CommissionProfile::Balanced, &config);
-        let stiff = simc_current_gains(&model, CommissionProfile::Stiff, &config);
+        let conservative =
+            simc_current_gains_checked(&model, CommissionProfile::Conservative, &config)
+                .expect("valid conservative gains");
+        let balanced = simc_current_gains_checked(&model, CommissionProfile::Balanced, &config)
+            .expect("valid balanced gains");
+        let stiff = simc_current_gains_checked(&model, CommissionProfile::Stiff, &config)
+            .expect("valid stiff gains");
         assert_eq!(conservative.lambda_us, 4000);
         assert_eq!(balanced.lambda_us, 2000);
         assert_eq!(stiff.lambda_us, 1000);
@@ -1608,9 +1661,12 @@ mod tests {
             },
         ] {
             let config = autotune_test_config();
-            let con = simc_current_gains(&model, CommissionProfile::Conservative, &config);
-            let bal = simc_current_gains(&model, CommissionProfile::Balanced, &config);
-            let stf = simc_current_gains(&model, CommissionProfile::Stiff, &config);
+            let con = simc_current_gains_checked(&model, CommissionProfile::Conservative, &config)
+                .expect("valid conservative gains");
+            let bal = simc_current_gains_checked(&model, CommissionProfile::Balanced, &config)
+                .expect("valid balanced gains");
+            let stf = simc_current_gains_checked(&model, CommissionProfile::Stiff, &config)
+                .expect("valid stiff gains");
 
             assert!(
                 con.lambda_us >= bal.lambda_us,
@@ -1678,27 +1734,16 @@ mod tests {
         let mut model = test_electrical_model();
         model.r_count_milli = 0;
         let config = autotune_test_config();
-        assert!(simc_current_gains_checked(&model, CommissionProfile::Balanced, &config).is_none());
+        assert!(simc_current_gains_checked(&model, CommissionProfile::Balanced, &config).is_err());
     }
 
     #[test]
-    fn simc_zero_tau_returns_none_and_default_fallback() {
+    fn simc_zero_tau_is_rejected_without_default_fallback() {
         let mut model = test_electrical_model();
         model.tau_e_us = 0;
         let config = autotune_test_config();
 
-        assert!(simc_current_gains_with_lambda_checked(&model, 950, &config).is_none());
-        assert_eq!(
-            simc_current_gains_with_lambda(&model, 950, &config),
-            CurrentGains {
-                flux_p: crate::pid::DEFAULT_INNER_GAINS.flux_p,
-                flux_i: crate::pid::DEFAULT_INNER_GAINS.flux_i,
-                torque_p: crate::pid::DEFAULT_INNER_GAINS.torque_p,
-                torque_i: crate::pid::DEFAULT_INNER_GAINS.torque_i,
-                effective_bandwidth_hz: 0,
-                lambda_us: 0,
-            }
-        );
+        assert!(simc_current_gains_with_lambda_checked(&model, 950, &config).is_err());
     }
 
     #[test]
@@ -1707,11 +1752,12 @@ mod tests {
         // above the minimum clamp of 1. A value of 1 indicates a units bug.
         let model = test_electrical_model();
         let config = autotune_test_config();
-        let gains = simc_current_gains(&model, CommissionProfile::Balanced, &config);
+        let gains = simc_current_gains_checked(&model, CommissionProfile::Balanced, &config)
+            .expect("valid SIMC gains");
         assert!(
-            gains.flux_i > 10,
+            gains.flux_i.raw() > 10,
             "flux_i={} is suspiciously low (units bug?)",
-            gains.flux_i
+            gains.flux_i.raw()
         );
     }
 
@@ -1724,16 +1770,17 @@ mod tests {
             theta_e_us: 160,
         };
         let config = autotune_test_config();
-        let gains = simc_current_gains_with_lambda(&model, 950, &config);
+        let gains =
+            simc_current_gains_with_lambda_checked(&model, 950, &config).expect("valid SIMC gains");
 
         let tau_s = model.tau_e_us as f32 * 1e-6;
         let f_pwm = config.pwm_freq_hz() as f32;
         let expected_i =
             (CURRENT_I_DETUNED_ZERO_FACTOR / (tau_s * f_pwm)).clamp(1.0, u16::MAX as f32) as u16;
 
-        assert_eq!(gains.flux_i, expected_i);
-        assert_eq!(gains.torque_i, expected_i);
-        let detune = ADVANCED_PI_I_ZERO_SCALE / (gains.flux_i as f32 * tau_s * f_pwm);
+        assert_eq!(gains.flux_i.raw(), expected_i);
+        assert_eq!(gains.torque_i.raw(), expected_i);
+        let detune = ADVANCED_PI_I_ZERO_SCALE / (gains.flux_i.raw() as f32 * tau_s * f_pwm);
         assert!((7.5..=8.5).contains(&detune), "detune={detune} expected ~8");
     }
 
@@ -1746,10 +1793,12 @@ mod tests {
             theta_e_us: 160,
         };
         let config = autotune_test_config();
-        let fast = simc_current_gains_with_lambda(&model, 950, &config);
-        let slow = simc_current_gains_with_lambda(&model, 1900, &config);
+        let fast =
+            simc_current_gains_with_lambda_checked(&model, 950, &config).expect("valid fast gains");
+        let slow = simc_current_gains_with_lambda_checked(&model, 1900, &config)
+            .expect("valid slow gains");
 
-        assert!(fast.flux_p > slow.flux_p);
+        assert!(fast.flux_p.raw() > slow.flux_p.raw());
         assert_eq!(fast.flux_i, slow.flux_i);
         assert_eq!(fast.torque_i, slow.torque_i);
     }
@@ -1763,18 +1812,20 @@ mod tests {
             theta_e_us: 160,
         };
         let config = autotune_test_config();
-        let gains = simc_current_gains(&model, CommissionProfile::Balanced, &config);
+        let gains = simc_current_gains_checked(&model, CommissionProfile::Balanced, &config)
+            .expect("valid SIMC gains");
 
         // Balanced current-loop lambda is still floored at tau/2 for P:
         // max(2*theta=320us, tau/2=931us). Current-I uses electrical tau
         // directly, independent of lambda.
         assert_eq!(gains.lambda_us, model.tau_e_us / 2);
         let tau_s = model.tau_e_us as f32 * 1e-6;
-        let expected_i = (CURRENT_I_DETUNED_ZERO_FACTOR / (tau_s * config.pwm_freq_hz() as f32))
-            .clamp(1.0, u16::MAX as f32) as u16;
+        let expected_i = (CURRENT_I_DETUNED_ZERO_FACTOR / (tau_s * config.pwm_freq_hz() as f32)
+            + 0.5)
+            .clamp(1.0, PidGain::MAX.raw() as f32) as u16;
 
-        assert_eq!(gains.flux_i, expected_i);
-        assert_eq!(gains.torque_i, expected_i);
+        assert_eq!(gains.flux_i.raw(), expected_i);
+        assert_eq!(gains.torque_i.raw(), expected_i);
     }
 
     #[test]
@@ -1786,20 +1837,24 @@ mod tests {
             theta_e_us: 160,
         };
         let config = autotune_test_config();
-        let gains = simc_current_gains_with_lambda(&model, 1436, &config);
+        let gains = simc_current_gains_with_lambda_checked(&model, 1436, &config)
+            .expect("valid retry gains");
 
-        let p_expected =
-            (1917.0_f64 / (1436.0_f64 + 160.0_f64) * 256.0_f64).clamp(1.0, u16::MAX as f64) as u16;
+        let p_expected = (1917.0_f64 / (1436.0_f64 + 160.0_f64) * 256.0_f64 + 0.5)
+            .clamp(1.0, PidGain::MAX.raw() as f64) as u16;
         let tau_s = model.tau_e_us as f64 * 1e-6;
-        let i_expected = (CURRENT_I_DETUNED_ZERO_FACTOR as f64
-            / (tau_s * config.pwm_freq_hz() as f64))
-            .clamp(1.0, u16::MAX as f64) as u16;
+        let i_expected =
+            (CURRENT_I_DETUNED_ZERO_FACTOR as f64 / (tau_s * config.pwm_freq_hz() as f64) + 0.5)
+                .clamp(1.0, PidGain::MAX.raw() as f64) as u16;
 
         assert_eq!(gains.lambda_us, 1436);
-        assert_eq!(gains.flux_p, p_expected);
-        assert_eq!(gains.flux_i, i_expected);
-        assert!(gains.flux_p > 227, "retry P should not use inflated theta");
-        assert_eq!(gains.torque_i, i_expected);
+        assert_eq!(gains.flux_p.raw(), p_expected);
+        assert_eq!(gains.flux_i.raw(), i_expected);
+        assert!(
+            gains.flux_p.raw() > 227,
+            "retry P should not use inflated theta"
+        );
+        assert_eq!(gains.torque_i.raw(), i_expected);
     }
 
     // --- Step metrics extraction ---
@@ -2071,7 +2126,8 @@ mod tests {
         // Q8.8 register values must match, proving no units conversion error.
         let model = test_electrical_model();
         let config = autotune_test_config();
-        let gains = simc_current_gains(&model, CommissionProfile::Balanced, &config);
+        let gains = simc_current_gains_checked(&model, CommissionProfile::Balanced, &config)
+            .expect("valid SIMC gains");
 
         // Manual calculation in SI (seconds):
         let tau_s = model.tau_e_us as f64 * 1e-6;
@@ -2083,21 +2139,23 @@ mod tests {
         let f_pwm = config.pwm_freq_hz() as f64;
 
         let kp_si = tau_s / (k * (lambda_s + theta_s));
-        let p_reg_expected = (kp_si * 256.0).clamp(1.0, u16::MAX as f64) as u16;
-        let i_reg_expected = (CURRENT_I_DETUNED_ZERO_FACTOR as f64 / (tau_s * f_pwm))
-            .clamp(1.0, u16::MAX as f64) as u16;
+        let p_reg_expected = (kp_si * 256.0 + 0.5).clamp(1.0, PidGain::MAX.raw() as f64) as u16;
+        let i_reg_expected = (CURRENT_I_DETUNED_ZERO_FACTOR as f64 / (tau_s * f_pwm) + 0.5)
+            .clamp(1.0, PidGain::MAX.raw() as f64) as u16;
 
         assert_eq!(
-            gains.flux_p, p_reg_expected,
+            gains.flux_p.raw(),
+            p_reg_expected,
             "P gain mismatch: got {} expected {}",
-            gains.flux_p, p_reg_expected
+            gains.flux_p.raw(),
+            p_reg_expected
         );
         // Allow +/- 1 for f32 vs f64 rounding
-        let i_diff = (gains.flux_i as i32 - i_reg_expected as i32).unsigned_abs();
+        let i_diff = (i32::from(gains.flux_i.raw()) - i32::from(i_reg_expected)).unsigned_abs();
         assert!(
             i_diff <= 1,
             "I gain mismatch: got {} expected {} (diff {})",
-            gains.flux_i,
+            gains.flux_i.raw(),
             i_reg_expected,
             i_diff
         );
