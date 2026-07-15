@@ -21,6 +21,7 @@ use crate::commissioning::types::{
     AdcResidualEvidence, CommissionResult, CommissioningBackend, CurrentValidationAxisEvidence,
     CurrentValidationSettledSampleEvidence, InductanceEvidence, InnerResult, StepResult,
 };
+use foci_tmc4671::pid::{PidGain, PidGainPair};
 
 /// Current-loop validation sub-state machine (Phase 7).
 #[derive(Debug, defmt::Format)]
@@ -255,7 +256,7 @@ fn required_pidout_limit_for_validation_target(target: u32, max_p: u32) -> Optio
 
 fn validation_envelope(current_limit: u32, gains: CurrentGains) -> Option<ValidationEnvelope> {
     let current_limited = (current_limit * VALIDATION_STEP_PERCENT / 100).max(1);
-    let max_p = u32::from(gains.flux_p.max(gains.torque_p));
+    let max_p = u32::from(gains.flux_p.raw().max(gains.torque_p.raw()));
     if current_limit == 0 || max_p == 0 {
         return None;
     }
@@ -1156,10 +1157,14 @@ fn failed_current_loop_evidence(failure_reason: u8, retry_exhausted: bool) -> Cu
 
 fn disabled_state_safe_current_gains() -> CurrentGains {
     CurrentGains {
-        flux_p: crate::pid::DEFAULT_INNER_GAINS.flux_p,
-        flux_i: crate::pid::DEFAULT_INNER_GAINS.flux_i,
-        torque_p: crate::pid::DEFAULT_INNER_GAINS.torque_p,
-        torque_i: crate::pid::DEFAULT_INNER_GAINS.torque_i,
+        flux_p: PidGain::new(crate::pid::DEFAULT_INNER_GAINS.flux_p)
+            .expect("default flux P gain must be valid"),
+        flux_i: PidGain::new(crate::pid::DEFAULT_INNER_GAINS.flux_i)
+            .expect("default flux I gain must be valid"),
+        torque_p: PidGain::new(crate::pid::DEFAULT_INNER_GAINS.torque_p)
+            .expect("default torque P gain must be valid"),
+        torque_i: PidGain::new(crate::pid::DEFAULT_INNER_GAINS.torque_i)
+            .expect("default torque I gain must be valid"),
         effective_bandwidth_hz: 0,
         lambda_us: 0,
     }
@@ -1220,8 +1225,8 @@ async fn restore_current_validation_safe_state<B: CommissioningBackend>(
         failed = true;
     }
 
-    let flux_reg = ((gains.flux_p as u32) << 16) | gains.flux_i as u32;
-    let torque_reg = ((gains.torque_p as u32) << 16) | gains.torque_i as u32;
+    let flux_reg = PidGainPair::new(gains.flux_p, gains.flux_i).register_value();
+    let torque_reg = PidGainPair::new(gains.torque_p, gains.torque_i).register_value();
     if backend
         .write_register(PID_FLUX_P_FLUX_I, flux_reg)
         .await
@@ -1326,8 +1331,11 @@ pub(crate) async fn step_current_tune<B: CommissioningBackend>(
     let config = backend.tmc_config();
     let synthesis = crate::autotune::synthesize_current_gains(&synthesis_input, config);
     let (gains, mut current_loop_evidence) = match synthesis {
-        Some(synthesis) => (synthesis.gains, synthesis.evidence),
-        None => return super::fail_inner(phase, CommissionError::CurrentValidationFailed),
+        Ok(synthesis) => (synthesis.gains, synthesis.evidence),
+        Err(error) => {
+            defmt::error!("current gain synthesis rejected: {}", error);
+            return super::fail_inner(phase, CommissionError::CurrentValidationFailed);
+        }
     };
     current_loop_evidence.current_validation_axes = 0;
 
@@ -1418,8 +1426,9 @@ pub(crate) async fn step_current_validate<B: CommissioningBackend>(
         CurrentValidateState::WriteGains => {
             // Write gains to TMC4671 PI registers.
             // PID_FLUX_P_FLUX_I: P in [31:16], I in [15:0]
-            let flux_reg = ((data.gains.flux_p as u32) << 16) | data.gains.flux_i as u32;
-            let torque_reg = ((data.gains.torque_p as u32) << 16) | data.gains.torque_i as u32;
+            let flux_reg = PidGainPair::new(data.gains.flux_p, data.gains.flux_i).register_value();
+            let torque_reg =
+                PidGainPair::new(data.gains.torque_p, data.gains.torque_i).register_value();
 
             if backend
                 .write_register(PID_FLUX_P_FLUX_I, flux_reg)
@@ -1771,26 +1780,47 @@ pub(crate) async fn step_current_validate<B: CommissioningBackend>(
                 match retry_decision {
                     CurrentAxisRetryDecision::RetryHigherBandwidth
                     | CurrentAxisRetryDecision::RetryLowerBandwidth => {
-                        data.gains = retry_current_loop_gains(data.gains, retry_decision, _profile);
-                        let current_limit = backend.current_limit() & 0xFFFF;
-                        if let Some(validation) = validation_envelope(current_limit, data.gains) {
-                            apply_validation_envelope(data, validation);
-                            let next_attempt = axis_attempt(data, axis).saturating_add(1);
-                            data.candidate_gains = data.gains;
-                            data.candidate_attempt = next_attempt;
-                            data.flux_attempt = data.flux_attempt.max(next_attempt);
-                            data.torque_attempt = data.torque_attempt.max(next_attempt);
-                            *validate_state = CurrentValidateState::WriteGains;
-                            return StepResult::ReadyNow;
+                        let retry_gains =
+                            retry_current_loop_gains(data.gains, retry_decision, _profile);
+                        match retry_gains {
+                            Ok(gains) => {
+                                data.gains = gains;
+                                let current_limit = backend.current_limit() & 0xFFFF;
+                                if let Some(validation) =
+                                    validation_envelope(current_limit, data.gains)
+                                {
+                                    apply_validation_envelope(data, validation);
+                                    let next_attempt = axis_attempt(data, axis).saturating_add(1);
+                                    data.candidate_gains = data.gains;
+                                    data.candidate_attempt = next_attempt;
+                                    data.flux_attempt = data.flux_attempt.max(next_attempt);
+                                    data.torque_attempt = data.torque_attempt.max(next_attempt);
+                                    *validate_state = CurrentValidateState::WriteGains;
+                                    return StepResult::ReadyNow;
+                                }
+                                data.final_status = CommissionStatus::Failed(
+                                    CommissionError::CurrentValidationFailed,
+                                );
+                                data.current_loop_evidence = failed_axis_failure_evidence(
+                                    data.current_loop_evidence,
+                                    failure_reason,
+                                    false,
+                                );
+                                data.gains = disabled_state_safe_current_gains();
+                            }
+                            Err(error) => {
+                                defmt::error!("current gain retry rejected: {}", error);
+                                data.final_status = CommissionStatus::Failed(
+                                    CommissionError::CurrentValidationFailed,
+                                );
+                                data.current_loop_evidence = failed_axis_failure_evidence(
+                                    data.current_loop_evidence,
+                                    failure_reason,
+                                    false,
+                                );
+                                data.gains = disabled_state_safe_current_gains();
+                            }
                         }
-                        data.final_status =
-                            CommissionStatus::Failed(CommissionError::CurrentValidationFailed);
-                        data.current_loop_evidence = failed_axis_failure_evidence(
-                            data.current_loop_evidence,
-                            failure_reason,
-                            false,
-                        );
-                        data.gains = disabled_state_safe_current_gains();
                     }
                     CurrentAxisRetryDecision::RetryBudgetExhausted
                     | CurrentAxisRetryDecision::Fail => {
@@ -1850,10 +1880,10 @@ pub(crate) async fn step_current_validate<B: CommissioningBackend>(
                 status: data.final_status,
                 r_count_milli: data.model.r_count_milli,
                 l_count_micro: data.model.l_count_micro,
-                flux_p: data.gains.flux_p,
-                flux_i: data.gains.flux_i,
-                torque_p: data.gains.torque_p,
-                torque_i: data.gains.torque_i,
+                flux_p: data.gains.flux_p.raw(),
+                flux_i: data.gains.flux_i.raw(),
+                torque_p: data.gains.torque_p.raw(),
+                torque_i: data.gains.torque_i.raw(),
                 candidate_gains_source: data.current_loop_evidence.candidate_gains_source,
                 candidate_axis_split_source: data.current_loop_evidence.candidate_axis_split_source,
                 candidate_gains_tier: data.current_loop_evidence.candidate_gains_tier,
@@ -1866,10 +1896,10 @@ pub(crate) async fn step_current_validate<B: CommissioningBackend>(
                 candidate_axis_split_clamped: data
                     .current_loop_evidence
                     .candidate_axis_split_clamped,
-                candidate_flux_p: data.candidate_gains.flux_p,
-                candidate_flux_i: data.candidate_gains.flux_i,
-                candidate_torque_p: data.candidate_gains.torque_p,
-                candidate_torque_i: data.candidate_gains.torque_i,
+                candidate_flux_p: data.candidate_gains.flux_p.raw(),
+                candidate_flux_i: data.candidate_gains.flux_i.raw(),
+                candidate_torque_p: data.candidate_gains.torque_p.raw(),
+                candidate_torque_i: data.candidate_gains.torque_i.raw(),
                 candidate_attempt: data.candidate_attempt,
                 lambda_us: data.gains.lambda_us,
                 theta_e_us: data.model.theta_e_us,
@@ -2068,6 +2098,10 @@ mod tests {
     };
 
     use super::*;
+
+    fn gain(raw: u16) -> PidGain {
+        PidGain::new(raw).expect("test PID gain must be valid")
+    }
 
     fn register_op_count(backend: &MockBackend) -> usize {
         backend

@@ -1,7 +1,7 @@
 use super::{
     AXIS_SPLIT_SOURCE_IMPEDANCE, AXIS_SPLIT_SOURCE_NONE, CURRENT_AXIS_FLUX,
     CURRENT_GAINS_TIER_PHYSICAL_SYMMETRIC, CommissionProfile, CurrentGainSynthesis,
-    CurrentGainSynthesisInput, CurrentGains, CurrentLoopEvidence,
+    CurrentGainSynthesisError, CurrentGainSynthesisInput, CurrentGains, CurrentLoopEvidence,
     ELECTRICAL_MODEL_RESISTANCE_SCALE, ElectricalModel, Permille, TransientBuffer,
     ValidationResult,
 };
@@ -20,6 +20,7 @@ use super::{
     CURRENT_VALIDATION_AXIS_FLUX, CURRENT_VALIDATION_AXIS_TORQUE,
     CURRENT_VALIDATION_MAX_SAMPLES_PER_AXIS,
 };
+use foci_tmc4671::pid::PidGain;
 
 /// Raw settled-flux current-validation reads retained for audit.
 pub const CURRENT_VALIDATION_SETTLED_MAX_SAMPLES: usize = 8;
@@ -341,25 +342,32 @@ fn valid_physical_current_bandwidth_hz(value: f32) -> bool {
     finite_positive(value) && value <= MAX_PHYSICAL_CURRENT_BANDWIDTH_HZ
 }
 
-fn round_positive_to_u16(value: f32) -> Option<u16> {
+fn pid_gain_from_float(value: f32) -> Result<PidGain, CurrentGainSynthesisError> {
     if !finite_positive(value) {
-        return None;
+        return Err(CurrentGainSynthesisError::InvalidElectricalModel);
     }
-    let rounded = value + 0.5;
-    if rounded >= u16::MAX as f32 + 1.0 {
-        return None;
+    let rounded = (value + 0.5).max(1.0) as u64;
+    if rounded > u64::from(PidGain::MAX.raw()) {
+        return Err(CurrentGainSynthesisError::GainOutOfRange {
+            attempted_raw: rounded,
+        });
     }
-    Some(rounded.max(1.0) as u16)
+    PidGain::new(rounded as u16).map_err(|error| CurrentGainSynthesisError::GainOutOfRange {
+        attempted_raw: u64::from(error.raw()),
+    })
 }
 
-fn physical_current_p_raw_from_l_count_micro(l_count_micro: u32, bandwidth_hz: f32) -> Option<u16> {
+fn physical_current_p_raw_from_l_count_micro(
+    l_count_micro: u32,
+    bandwidth_hz: f32,
+) -> Result<PidGain, CurrentGainSynthesisError> {
     if l_count_micro == 0 || !valid_physical_current_bandwidth_hz(bandwidth_hz) {
-        return None;
+        return Err(CurrentGainSynthesisError::InvalidElectricalModel);
     }
     let l_count_seconds = l_count_micro as f32 * 1e-6;
     let p_float =
         2.0 * core::f32::consts::PI * bandwidth_hz * l_count_seconds * CURRENT_P_Q8_8_SCALE;
-    round_positive_to_u16(p_float)
+    pid_gain_from_float(p_float)
 }
 
 #[cfg(test)]
@@ -386,23 +394,23 @@ fn physical_current_gains_checked(
     model: &ElectricalModel,
     bandwidth_hz: f32,
     config: &crate::config::TmcConfig,
-) -> Option<CurrentGains> {
+) -> Result<CurrentGains, CurrentGainSynthesisError> {
     if model.r_count_milli == 0 || model.l_count_micro == 0 || model.tau_e_us == 0 {
-        return None;
+        return Err(CurrentGainSynthesisError::InvalidElectricalModel);
     }
     let p_reg = physical_current_p_raw_from_l_count_micro(model.l_count_micro, bandwidth_hz)?;
     let tau_s = model.tau_e_us as f32 * 1e-6;
     let f_pwm = config.pwm_freq_hz() as f32;
-    let i_reg =
-        (CURRENT_I_DETUNED_ZERO_FACTOR / (tau_s * f_pwm)).clamp(1.0, u16::MAX as f32) as u16;
+    let i_reg = pid_gain_from_float(CURRENT_I_DETUNED_ZERO_FACTOR / (tau_s * f_pwm))?;
 
-    Some(CurrentGains {
+    Ok(CurrentGains {
         flux_p: p_reg,
         flux_i: i_reg,
         torque_p: p_reg,
         torque_i: i_reg,
         effective_bandwidth_hz: (bandwidth_hz + 0.5).max(1.0) as u32,
-        lambda_us: bandwidth_period_us(bandwidth_hz)?,
+        lambda_us: bandwidth_period_us(bandwidth_hz)
+            .ok_or(CurrentGainSynthesisError::InvalidElectricalModel)?,
     })
 }
 
@@ -431,13 +439,14 @@ fn simc_lambda_us(profile: CommissionProfile, tau_e_us: u32, theta_e_us: u32) ->
     }
 }
 
-/// Compute SIMC PI gains for the current loop, returning `None` if the
-/// electrical model is invalid (zero R, zero L, zero tau, or zero theta).
+/// Compute SIMC PI gains for the current loop.
+///
+/// Returns a cause-specific error when the model or synthesized gain is invalid.
 pub fn simc_current_gains_checked(
     model: &ElectricalModel,
     profile: CommissionProfile,
     config: &crate::config::TmcConfig,
-) -> Option<CurrentGains> {
+) -> Result<CurrentGains, CurrentGainSynthesisError> {
     let lambda_us = simc_lambda_us(profile, model.tau_e_us, model.theta_e_us);
     simc_current_gains_with_lambda_checked(model, lambda_us, config)
 }
@@ -447,13 +456,13 @@ pub fn simc_current_gains_with_lambda_checked(
     model: &ElectricalModel,
     lambda_us: u32,
     config: &crate::config::TmcConfig,
-) -> Option<CurrentGains> {
+) -> Result<CurrentGains, CurrentGainSynthesisError> {
     if model.r_count_milli == 0
         || model.l_count_micro == 0
         || model.tau_e_us == 0
         || model.theta_e_us == 0
     {
-        return None;
+        return Err(CurrentGainSynthesisError::InvalidElectricalModel);
     }
 
     let lambda_us = lambda_us.max(model.theta_e_us);
@@ -476,14 +485,13 @@ pub fn simc_current_gains_with_lambda_checked(
     // Convert to the TMC4671 current-loop register format.
     let tau_s = tau * 1e-6;
     let f_pwm = config.pwm_freq_hz() as f32;
-    let p_reg = (kp * 256.0).clamp(1.0, u16::MAX as f32) as u16;
-    let i_reg =
-        (CURRENT_I_DETUNED_ZERO_FACTOR / (tau_s * f_pwm)).clamp(1.0, u16::MAX as f32) as u16;
+    let p_reg = pid_gain_from_float(kp * 256.0)?;
+    let i_reg = pid_gain_from_float(CURRENT_I_DETUNED_ZERO_FACTOR / (tau_s * f_pwm))?;
 
     // Effective bandwidth = 1 / (2*pi*(lambda+theta)) in Hz
     let bw_hz = 1_000_000.0 / (2.0 * core::f32::consts::PI * (lambda + theta));
 
-    Some(CurrentGains {
+    Ok(CurrentGains {
         flux_p: p_reg,
         flux_i: i_reg,
         torque_p: p_reg,
@@ -497,18 +505,18 @@ pub fn simc_current_gains_with_lambda_checked(
 pub fn synthesize_current_gains(
     input: &CurrentGainSynthesisInput,
     config: &crate::config::TmcConfig,
-) -> Option<CurrentGainSynthesis> {
+) -> Result<CurrentGainSynthesis, CurrentGainSynthesisError> {
     if input.model.r_count_milli == 0
         || input.model.l_count_micro == 0
         || input.model.theta_e_us == 0
     {
-        return None;
+        return Err(CurrentGainSynthesisError::InvalidElectricalModel);
     }
 
     match input.axis_split_source {
         AXIS_SPLIT_SOURCE_NONE => {
             let gains = physical_current_gains_checked(&input.model, config.bandwidth_hz, config)?;
-            Some(CurrentGainSynthesis {
+            Ok(CurrentGainSynthesis {
                 gains,
                 evidence: CurrentLoopEvidence {
                     gains_tier: CURRENT_GAINS_TIER_PHYSICAL_SYMMETRIC,
@@ -519,43 +527,10 @@ pub fn synthesize_current_gains(
                 torque_tau_us: input.model.tau_e_us,
             })
         }
-        AXIS_SPLIT_SOURCE_IMPEDANCE => None,
-        _ => None,
+        axis_split_source => {
+            Err(CurrentGainSynthesisError::UnsupportedSynthesisPolicy { axis_split_source })
+        }
     }
-}
-
-/// Compute SIMC PI gains for the current loop.
-///
-/// Returns default conservative gains if the electrical model is invalid.
-pub fn simc_current_gains(
-    model: &ElectricalModel,
-    profile: CommissionProfile,
-    config: &crate::config::TmcConfig,
-) -> CurrentGains {
-    simc_current_gains_checked(model, profile, config).unwrap_or(CurrentGains {
-        flux_p: crate::pid::DEFAULT_INNER_GAINS.flux_p,
-        flux_i: crate::pid::DEFAULT_INNER_GAINS.flux_i,
-        torque_p: crate::pid::DEFAULT_INNER_GAINS.torque_p,
-        torque_i: crate::pid::DEFAULT_INNER_GAINS.torque_i,
-        effective_bandwidth_hz: 0,
-        lambda_us: 0,
-    })
-}
-
-/// Compute SIMC current-loop gains with an explicit lambda, falling back to defaults.
-pub fn simc_current_gains_with_lambda(
-    model: &ElectricalModel,
-    lambda_us: u32,
-    config: &crate::config::TmcConfig,
-) -> CurrentGains {
-    simc_current_gains_with_lambda_checked(model, lambda_us, config).unwrap_or(CurrentGains {
-        flux_p: crate::pid::DEFAULT_INNER_GAINS.flux_p,
-        flux_i: crate::pid::DEFAULT_INNER_GAINS.flux_i,
-        torque_p: crate::pid::DEFAULT_INNER_GAINS.torque_p,
-        torque_i: crate::pid::DEFAULT_INNER_GAINS.torque_i,
-        effective_bandwidth_hz: 0,
-        lambda_us: 0,
-    })
 }
 
 /// Number of tail samples used for the robust tail-level statistic.
@@ -943,13 +918,22 @@ fn scale_lambda_permille(lambda_us: u32, permille: u16) -> u32 {
     ((lambda_us.max(1) as u64 * permille.max(1) as u64) / 1000).min(u32::MAX as u64) as u32
 }
 
-fn scale_gain_for_lambda(gain: u16, previous_lambda_us: u32, next_lambda_us: u32) -> u16 {
+fn scale_gain_for_lambda(
+    gain: PidGain,
+    previous_lambda_us: u32,
+    next_lambda_us: u32,
+) -> Result<PidGain, CurrentGainSynthesisError> {
     if previous_lambda_us == 0 || next_lambda_us == 0 {
-        return gain;
+        return Ok(gain);
     }
 
-    ((gain as u64 * previous_lambda_us as u64) / next_lambda_us as u64).clamp(1, u16::MAX as u64)
-        as u16
+    let raw = (u64::from(gain.raw()) * u64::from(previous_lambda_us)) / u64::from(next_lambda_us);
+    if raw > u64::from(PidGain::MAX.raw()) {
+        return Err(CurrentGainSynthesisError::GainOutOfRange { attempted_raw: raw });
+    }
+    PidGain::new(raw.max(1) as u16).map_err(|error| CurrentGainSynthesisError::GainOutOfRange {
+        attempted_raw: u64::from(error.raw()),
+    })
 }
 
 fn scale_bandwidth_for_lambda(
@@ -993,7 +977,7 @@ pub fn retry_current_loop_gains(
     previous: CurrentGains,
     decision: CurrentAxisRetryDecision,
     profile: CommissionProfile,
-) -> CurrentGains {
+) -> Result<CurrentGains, CurrentGainSynthesisError> {
     let lambda_permille = match decision {
         CurrentAxisRetryDecision::RetryHigherBandwidth => {
             retry_low_response_lambda_permille(profile)
@@ -1002,7 +986,7 @@ pub fn retry_current_loop_gains(
             retry_high_response_lambda_permille(profile)
         }
         CurrentAxisRetryDecision::RetryBudgetExhausted | CurrentAxisRetryDecision::Fail => {
-            return previous;
+            return Ok(previous);
         }
     };
     let min_lambda = scale_lambda_permille(previous.lambda_us, retry_min_lambda_permille(profile));
@@ -1016,14 +1000,16 @@ pub fn retry_current_loop_gains(
     );
     let (next_bandwidth, next_lambda) =
         cap_higher_retry_at_physical_limit(decision, next_bandwidth, next_lambda);
+    let flux_p = scale_gain_for_lambda(previous.flux_p, previous.lambda_us, next_lambda)?;
+    let torque_p = scale_gain_for_lambda(previous.torque_p, previous.lambda_us, next_lambda)?;
     let mut next = previous;
 
     next.lambda_us = next_lambda;
     next.effective_bandwidth_hz = next_bandwidth;
-    next.flux_p = scale_gain_for_lambda(previous.flux_p, previous.lambda_us, next_lambda);
-    next.torque_p = scale_gain_for_lambda(previous.torque_p, previous.lambda_us, next_lambda);
+    next.flux_p = flux_p;
+    next.torque_p = torque_p;
 
-    next
+    Ok(next)
 }
 
 /// Compute symmetry metric from forward and reverse tail levels.

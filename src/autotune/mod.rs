@@ -38,9 +38,8 @@ pub use current::{
     classify_current_axis_sample, classify_current_validation, compute_tail_symmetry_permille,
     compute_target_error_permille, current_axis_retry_decision, extract_step_metrics,
     retry_current_loop_gains, should_accept_current_validation_without_retry,
-    should_retry_current_validation, simc_current_gains, simc_current_gains_checked,
-    simc_current_gains_with_lambda, simc_current_gains_with_lambda_checked,
-    synthesize_current_gains,
+    should_retry_current_validation, simc_current_gains_checked,
+    simc_current_gains_with_lambda_checked, synthesize_current_gains,
 };
 pub use filters::recommend_filters;
 pub use hold::{
@@ -74,7 +73,7 @@ pub use models::{
     CURRENT_LOOP_FAILURE_TORQUE_VALIDATION, CURRENT_LOOP_FAILURE_WRONG_SIGN,
     CURRENT_TORQUE_VALIDATION_SAMPLE_COUNT, CURRENT_VALIDATION_AXIS_FLUX,
     CURRENT_VALIDATION_AXIS_TORQUE, CURRENT_VALIDATION_MAX_SAMPLES_PER_AXIS, CurrentGainSynthesis,
-    CurrentGainSynthesisInput, CurrentGains, CurrentLoopEvidence,
+    CurrentGainSynthesisError, CurrentGainSynthesisInput, CurrentGains, CurrentLoopEvidence,
     ELECTRICAL_MODEL_RESISTANCE_SCALE, ElectricalModel, FilterConfig, MechanicalModel,
     PositionGains, VelocityGains,
 };

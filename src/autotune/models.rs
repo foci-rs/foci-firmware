@@ -1,4 +1,5 @@
 use super::types::CommissionProfile;
+use foci_tmc4671::pid::PidGain;
 
 /// First-order-plus-dead-time current plant model in TMC count space.
 ///
@@ -28,13 +29,13 @@ pub const ELECTRICAL_MODEL_RESISTANCE_SCALE: u32 = 1000;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub struct CurrentGains {
     /// Flux P gain — TMC4671 Q8.8 register value.
-    pub flux_p: u16,
+    pub flux_p: PidGain,
     /// Flux I gain — raw Q8.8; effective advanced-PI zero is I/65536.
-    pub flux_i: u16,
+    pub flux_i: PidGain,
     /// Torque P gain — TMC4671 Q8.8 register value.
-    pub torque_p: u16,
+    pub torque_p: PidGain,
     /// Torque I gain — raw Q8.8; effective advanced-PI zero is I/65536.
-    pub torque_i: u16,
+    pub torque_i: PidGain,
     /// Effective closed-loop bandwidth in Hz.
     pub effective_bandwidth_hz: u32,
     /// Inner-loop time scale in microseconds.
@@ -42,6 +43,23 @@ pub struct CurrentGains {
     /// Physical-P synthesis reports `1 / (2*pi*bandwidth)`. The retained SIMC
     /// helper functions report their SIMC lambda in the same field.
     pub lambda_us: u32,
+}
+
+/// Cause-specific failure from current-loop gain synthesis or retry scaling.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+pub enum CurrentGainSynthesisError {
+    /// The electrical model or requested bandwidth cannot describe a controller.
+    InvalidElectricalModel,
+    /// The requested axis-split policy has no implemented synthesis path.
+    UnsupportedSynthesisPolicy {
+        /// Rejected `AXIS_SPLIT_SOURCE_*` value.
+        axis_split_source: u8,
+    },
+    /// A computed raw gain would exceed the non-negative signed register range.
+    GainOutOfRange {
+        /// Rounded raw gain that could not be represented.
+        attempted_raw: u64,
+    },
 }
 
 /// Input to production current-loop gain synthesis.
