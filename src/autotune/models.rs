@@ -107,15 +107,11 @@ pub const CURRENT_GAINS_SOURCE_DEFAULT: u8 = 2;
 
 /// No independent axis split source was used.
 pub const AXIS_SPLIT_SOURCE_NONE: u8 = 0;
-/// Axis split came from measured impedance asymmetry.
-pub const AXIS_SPLIT_SOURCE_IMPEDANCE: u8 = 1;
 
 /// No current-loop gain tier was produced.
 pub const CURRENT_GAINS_TIER_NONE: u8 = 0;
 /// Measured symmetric current-loop gains were produced.
 pub const CURRENT_GAINS_TIER_MEASURED_SYMMETRIC: u8 = 1;
-/// Measured split current-loop gains were produced.
-pub const CURRENT_GAINS_TIER_MEASURED_SPLIT: u8 = 2;
 /// Default conservative current-loop gains were applied.
 pub const CURRENT_GAINS_TIER_DEFAULT: u8 = 3;
 /// Physical-bandwidth symmetric current-loop gains were produced.
@@ -249,31 +245,6 @@ impl CurrentLoopEvidence {
             candidate_applied_axis_split_permille: 1000,
             axis_split_clamped: 0,
             candidate_axis_split_clamped: 0,
-            current_validation_axes: 0,
-            retry_budget_exhausted: 0,
-            failure_reason: CURRENT_LOOP_FAILURE_NONE,
-        }
-    }
-
-    /// Build a measured split evidence record.
-    pub const fn measured_split(
-        measured_axis_split_permille: u16,
-        applied_axis_split_permille: u16,
-        clamped: bool,
-    ) -> Self {
-        Self {
-            gains_source: CURRENT_GAINS_SOURCE_MEASURED,
-            candidate_gains_source: CURRENT_GAINS_SOURCE_MEASURED,
-            axis_split_source: AXIS_SPLIT_SOURCE_IMPEDANCE,
-            candidate_axis_split_source: AXIS_SPLIT_SOURCE_IMPEDANCE,
-            gains_tier: CURRENT_GAINS_TIER_MEASURED_SPLIT,
-            candidate_gains_tier: CURRENT_GAINS_TIER_MEASURED_SPLIT,
-            measured_axis_split_permille,
-            candidate_measured_axis_split_permille: measured_axis_split_permille,
-            applied_axis_split_permille,
-            candidate_applied_axis_split_permille: applied_axis_split_permille,
-            axis_split_clamped: clamped as u8,
-            candidate_axis_split_clamped: clamped as u8,
             current_validation_axes: 0,
             retry_budget_exhausted: 0,
             failure_reason: CURRENT_LOOP_FAILURE_NONE,

@@ -1110,7 +1110,7 @@ fn outer_done_sentinel_failure_preserves_published_cache() {
 
 #[test]
 fn commission_result_maps_current_loop_evidence() {
-    let evidence = crate::autotune::CurrentLoopEvidence::measured_split(1840, 1500, true);
+    let evidence = crate::autotune::CurrentLoopEvidence::measured_symmetric();
     let flux_validation = [
         crate::commissioning::types::CurrentValidationAxisEvidence {
             status: crate::autotune::CURRENT_AXIS_VALIDATION_PASS,
@@ -1296,9 +1296,9 @@ fn commission_result_maps_current_loop_evidence() {
                 drift_count: 0,
             },
             ReplyEvent::CurrentLoopRun {
-                measured_axis_split_permille: 1840,
-                applied_axis_split_permille: 1500,
-                axis_split_clamped: 1,
+                measured_axis_split_permille: 1000,
+                applied_axis_split_permille: 1000,
+                axis_split_clamped: 0,
             },
             ReplyEvent::Commission { oid: 6, status: 0 },
         ]

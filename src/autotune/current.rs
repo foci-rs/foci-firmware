@@ -1,19 +1,18 @@
 use super::{
-    AXIS_SPLIT_SOURCE_IMPEDANCE, AXIS_SPLIT_SOURCE_NONE, CURRENT_AXIS_FLUX,
-    CURRENT_GAINS_TIER_PHYSICAL_SYMMETRIC, CommissionProfile, CurrentGainSynthesis,
-    CurrentGainSynthesisError, CurrentGainSynthesisInput, CurrentGains, CurrentLoopEvidence,
-    ELECTRICAL_MODEL_RESISTANCE_SCALE, ElectricalModel, Permille, TransientBuffer,
-    ValidationResult,
+    AXIS_SPLIT_SOURCE_NONE, CURRENT_AXIS_FLUX, CURRENT_GAINS_TIER_PHYSICAL_SYMMETRIC,
+    CommissionProfile, CurrentGainSynthesis, CurrentGainSynthesisError, CurrentGainSynthesisInput,
+    CurrentGains, CurrentLoopEvidence, ELECTRICAL_MODEL_RESISTANCE_SCALE, ElectricalModel,
+    Permille, TransientBuffer, ValidationResult,
 };
 #[cfg(test)]
 use super::{
     CURRENT_AXIS_TORQUE, CURRENT_FLUX_VALIDATION_SAMPLE_COUNT, CURRENT_GAINS_SOURCE_DEFAULT,
     CURRENT_GAINS_SOURCE_FAILED, CURRENT_GAINS_SOURCE_MEASURED, CURRENT_GAINS_TIER_DEFAULT,
-    CURRENT_GAINS_TIER_MEASURED_SPLIT, CURRENT_GAINS_TIER_MEASURED_SYMMETRIC,
-    CURRENT_GAINS_TIER_NONE, CURRENT_LOOP_FAILURE_FLUX_VALIDATION,
-    CURRENT_LOOP_FAILURE_GAIN_SYNTHESIS, CURRENT_LOOP_FAILURE_HOLD_POSITION_SPAN,
-    CURRENT_LOOP_FAILURE_HOLD_SAMPLE, CURRENT_LOOP_FAILURE_HOLD_STATUS_FLAGS,
-    CURRENT_LOOP_FAILURE_IMPEDANCE_INVALID, CURRENT_LOOP_FAILURE_MOTION, CURRENT_LOOP_FAILURE_NONE,
+    CURRENT_GAINS_TIER_MEASURED_SYMMETRIC, CURRENT_GAINS_TIER_NONE,
+    CURRENT_LOOP_FAILURE_FLUX_VALIDATION, CURRENT_LOOP_FAILURE_GAIN_SYNTHESIS,
+    CURRENT_LOOP_FAILURE_HOLD_POSITION_SPAN, CURRENT_LOOP_FAILURE_HOLD_SAMPLE,
+    CURRENT_LOOP_FAILURE_HOLD_STATUS_FLAGS, CURRENT_LOOP_FAILURE_IMPEDANCE_INVALID,
+    CURRENT_LOOP_FAILURE_MOTION, CURRENT_LOOP_FAILURE_NONE,
     CURRENT_LOOP_FAILURE_RESISTANCE_INVALID, CURRENT_LOOP_FAILURE_RETRY_EXHAUSTED,
     CURRENT_LOOP_FAILURE_SATURATION, CURRENT_LOOP_FAILURE_SPI, CURRENT_LOOP_FAILURE_STATUS_FLAGS,
     CURRENT_LOOP_FAILURE_TORQUE_VALIDATION, CURRENT_TORQUE_VALIDATION_SAMPLE_COUNT,
@@ -309,24 +308,6 @@ impl CurrentGainSynthesisInput {
             applied_axis_split_permille: 1000,
             axis_split_source: AXIS_SPLIT_SOURCE_NONE,
             high_inductance_axis: CURRENT_AXIS_FLUX,
-        }
-    }
-
-    /// Build impedance-split current-loop synthesis input from measured axis asymmetry.
-    pub const fn with_impedance_split(
-        model: ElectricalModel,
-        profile: CommissionProfile,
-        measured_axis_split_permille: u16,
-        applied_axis_split_permille: u16,
-        high_inductance_axis: u8,
-    ) -> Self {
-        Self {
-            model,
-            profile,
-            measured_axis_split_permille,
-            applied_axis_split_permille,
-            axis_split_source: AXIS_SPLIT_SOURCE_IMPEDANCE,
-            high_inductance_axis,
         }
     }
 }
@@ -1176,21 +1157,6 @@ mod tests {
     }
 
     #[test]
-    fn current_loop_evidence_records_measured_split() {
-        let evidence = CurrentLoopEvidence::measured_split(1850, 1500, true);
-
-        assert_eq!(evidence.gains_source, CURRENT_GAINS_SOURCE_MEASURED);
-        assert_eq!(evidence.axis_split_source, AXIS_SPLIT_SOURCE_IMPEDANCE);
-        assert_eq!(evidence.gains_tier, CURRENT_GAINS_TIER_MEASURED_SPLIT);
-        assert_eq!(evidence.failure_reason, CURRENT_LOOP_FAILURE_NONE);
-        assert_eq!(evidence.measured_axis_split_permille, 1850);
-        assert_eq!(evidence.applied_axis_split_permille, 1500);
-        assert_eq!(evidence.axis_split_clamped, 1);
-        assert_eq!(evidence.current_validation_axes, 0);
-        assert_eq!(evidence.retry_budget_exhausted, 0);
-    }
-
-    #[test]
     fn current_loop_evidence_records_default_fallback() {
         let evidence = CurrentLoopEvidence::default_gains(
             CURRENT_LOOP_FAILURE_TORQUE_VALIDATION,
@@ -1222,11 +1188,9 @@ mod tests {
         assert_eq!(CURRENT_GAINS_SOURCE_DEFAULT, 2);
 
         assert_eq!(AXIS_SPLIT_SOURCE_NONE, 0);
-        assert_eq!(AXIS_SPLIT_SOURCE_IMPEDANCE, 1);
 
         assert_eq!(CURRENT_GAINS_TIER_NONE, 0);
         assert_eq!(CURRENT_GAINS_TIER_MEASURED_SYMMETRIC, 1);
-        assert_eq!(CURRENT_GAINS_TIER_MEASURED_SPLIT, 2);
         assert_eq!(CURRENT_GAINS_TIER_DEFAULT, 3);
         assert_eq!(CURRENT_GAINS_TIER_PHYSICAL_SYMMETRIC, 4);
     }
@@ -1552,17 +1516,20 @@ mod tests {
     fn physical_synthesis_rejects_unvalidated_axis_split() {
         let model = test_electrical_model();
         let config = autotune_test_config();
-        let input = CurrentGainSynthesisInput::with_impedance_split(
+        let input = CurrentGainSynthesisInput {
             model,
-            CommissionProfile::Balanced,
-            1500,
-            1500,
-            CURRENT_AXIS_FLUX,
-        );
+            profile: CommissionProfile::Balanced,
+            measured_axis_split_permille: 1_200,
+            applied_axis_split_permille: 1_100,
+            axis_split_source: 1,
+            high_inductance_axis: CURRENT_AXIS_FLUX,
+        };
 
         assert!(matches!(
             synthesize_current_gains(&input, &config),
-            Err(CurrentGainSynthesisError::UnsupportedSynthesisPolicy { .. })
+            Err(CurrentGainSynthesisError::UnsupportedSynthesisPolicy {
+                axis_split_source: 1
+            })
         ));
     }
 
