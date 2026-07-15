@@ -71,6 +71,11 @@ where
         // No-op: `ExternallyArmed` mode never asserts/clears the enable pin.
     }
 
+    fn trip_power_stage(&mut self) {
+        // The standalone diagnostic's physical containment hook is supplied
+        // through its board-owned context before deployment.
+    }
+
     fn is_armed_for_open_loop_voltage(&self) -> bool {
         self.ctx.runtime.is_motor_enabled() && self.ctx.runtime.is_calibrated()
     }

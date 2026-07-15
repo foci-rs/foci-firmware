@@ -295,6 +295,21 @@ impl ResistanceRunner {
                 return self.fail_window(backend, &capture, ResistanceError::BackendIo, false);
             }
         };
+        let axis = self.profile.axes[self.axis_index as usize];
+        let current = phase_current_for_axis(axis, packed);
+        if capture.plan.ud != 0 {
+            self.current.observe_energized_sample(current);
+            if current.unsigned_abs() > self.current.current_ceiling_count() {
+                self.current.mark_power_stage_tripped();
+                backend.trip_power_stage();
+                return self.fail_window(
+                    backend,
+                    &capture,
+                    ResistanceError::PeakCurrentExceeded,
+                    false,
+                );
+            }
+        }
         let first_done = backend.elapsed_us();
         let flags = match backend.read_register(STATUS_FLAGS.addr()).await {
             Ok(value) => value,
@@ -330,11 +345,6 @@ impl ResistanceRunner {
                 return self.fail_window(backend, &capture, ResistanceError::TimingRejected, true);
             }
         };
-        let axis = self.profile.axes[self.axis_index as usize];
-        let current = phase_current_for_axis(axis, packed);
-        if capture.plan.ud != 0 {
-            self.current.observe_energized_sample(current);
-        }
         capture.status_or |= flags;
         let acquisition_opportunities = match acquisition_opportunities_through(
             due_us,

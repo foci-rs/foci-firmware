@@ -30,6 +30,14 @@ struct RecordedWrite {
     value: u32,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BackendEvent {
+    Read(u8),
+    Write(u8, u32),
+    Enable(bool),
+    TripPowerStage,
+}
+
 /// Fake backend that records writes and returns scripted window samples.
 struct FakeResistanceBackend {
     /// Ordered log of every register write.
@@ -64,6 +72,10 @@ struct FakeResistanceBackend {
     ///
     /// Built proportional to the active UD so the fit produces a clean line.
     scripted_energized_current_count: i32,
+    /// Ordered energized samples used before the fixed/proportional script.
+    scripted_energized_samples: heapless::Vec<i16, 8>,
+    /// Next ordered energized sample.
+    scripted_energized_sample_index: usize,
     /// Current gain used by the default UD-proportional script, in milli-counts per UD count.
     scripted_current_per_ud_milli: i32,
     /// Encoder delta applied across each energized window.
@@ -113,6 +125,8 @@ struct FakeResistanceBackend {
     io_elapsed_us: u64,
     scripted_elapsed_us: heapless::Vec<u64, 8>,
     scripted_elapsed_index: Cell<usize>,
+    record_events: bool,
+    events: heapless::Vec<BackendEvent, 64>,
 }
 
 impl FakeResistanceBackend {
@@ -138,6 +152,8 @@ impl FakeResistanceBackend {
             // Scale current ~= UD so the high-current points clear the linear
             // threshold and the fit stays well-conditioned.
             scripted_energized_current_count: 0,
+            scripted_energized_samples: heapless::Vec::new(),
+            scripted_energized_sample_index: 0,
             scripted_current_per_ud_milli: 1000,
             scripted_encoder_delta_count: 0,
             last_ud: 0,
@@ -159,6 +175,8 @@ impl FakeResistanceBackend {
             io_elapsed_us: 1,
             scripted_elapsed_us: heapless::Vec::new(),
             scripted_elapsed_index: Cell::new(0),
+            record_events: false,
+            events: heapless::Vec::new(),
         }
     }
 
@@ -182,6 +200,17 @@ impl FakeResistanceBackend {
 
     fn fail_next_write(&mut self) {
         self.fail_after_writes = Some(self.write_count);
+    }
+
+    fn start_event_recording(&mut self) {
+        self.events.clear();
+        self.record_events = true;
+    }
+
+    fn record_event(&mut self, event: BackendEvent) {
+        if self.record_events {
+            self.events.push(event).expect("backend event log overflow");
+        }
     }
 
     /// Returns true when the recorded writes end in the safe-state restore set.
@@ -260,9 +289,16 @@ impl FakeResistanceBackend {
     ///
     /// Both halves carry the same scripted current so either axis channel reads
     /// the intended value.
-    fn packed_phase_current(&self) -> u32 {
+    fn packed_phase_current(&mut self) -> u32 {
         let energized = self.last_motion_mode == 8;
-        let value = if energized {
+        let value = if energized
+            && let Some(&current) = self
+                .scripted_energized_samples
+                .get(self.scripted_energized_sample_index)
+        {
+            self.scripted_energized_sample_index += 1;
+            i32::from(current)
+        } else if energized {
             self.energized_current_for_ud()
         } else {
             self.zero_current_for_window()
@@ -283,6 +319,7 @@ fn poll_runner(
 
 impl ResistanceBackend for FakeResistanceBackend {
     async fn read_register(&mut self, addr: u8) -> Result<u32, ResistanceBackendError> {
+        self.record_event(BackendEvent::Read(addr));
         self.operations += 1;
         self.elapsed_us += self.io_elapsed_us;
         if addr == foci_tmc4671::registers::MOTOR_TYPE_N_POLE_PAIRS.addr() {
@@ -335,6 +372,7 @@ impl ResistanceBackend for FakeResistanceBackend {
     }
 
     async fn write_register(&mut self, addr: u8, value: u32) -> Result<(), ResistanceBackendError> {
+        self.record_event(BackendEvent::Write(addr, value));
         self.operations += 1;
         self.elapsed_us += self.io_elapsed_us;
         self.write_count += 1;
@@ -388,10 +426,16 @@ impl ResistanceBackend for FakeResistanceBackend {
     }
 
     fn set_enable_pin(&mut self, enabled: bool) {
+        self.record_event(BackendEvent::Enable(enabled));
         self.enable_pin = enabled;
         self.enable_transitions
             .push(enabled)
             .expect("enable transition log overflow");
+    }
+
+    fn trip_power_stage(&mut self) {
+        self.record_event(BackendEvent::TripPowerStage);
+        self.enable_pin = false;
     }
 
     fn is_armed_for_open_loop_voltage(&self) -> bool {
@@ -739,6 +783,145 @@ fn runner_aborts_when_profile_peak_current_is_exceeded() {
 }
 
 #[test]
+fn first_over_limit_settle_sample_trips_before_status_or_restore_io() {
+    let mut backend = FakeResistanceBackend::standard();
+    backend.profile.settle_ms = 10;
+    backend.scripted_energized_current_count = 1_800;
+    let mut runner = ResistanceRunner::new(
+        ResistanceRunMode::CommissioningManagedEnable,
+        backend.profile(),
+        1_000,
+    )
+    .unwrap();
+    let mut now = 1_000;
+
+    loop {
+        match poll_runner(&mut runner, &mut backend, now) {
+            ResistancePoll::ReadyNow => {}
+            ResistancePoll::At(deadline)
+                if backend.last_motion_mode == MotionMode::UqUdExt as u32 =>
+            {
+                now = deadline;
+                break;
+            }
+            ResistancePoll::At(deadline) => now = deadline,
+            ResistancePoll::Complete(result) => panic!("unexpected completion: {result:?}"),
+        }
+    }
+    backend.start_event_recording();
+
+    assert_eq!(
+        poll_runner(&mut runner, &mut backend, now),
+        ResistancePoll::ReadyNow
+    );
+    assert_eq!(
+        backend.events.as_slice(),
+        &[
+            BackendEvent::Read(ADC_IWY_IUX.addr()),
+            BackendEvent::TripPowerStage,
+            BackendEvent::Enable(false),
+        ]
+    );
+    assert!(!backend.enable_pin);
+    assert_eq!(
+        runner.primary_error(),
+        Some(ResistanceError::PeakCurrentExceeded)
+    );
+    assert_eq!(runner.current_evidence().peak_abs_current_count(), 1_800);
+    assert!(runner.current_evidence().power_stage_tripped());
+}
+
+#[test]
+fn early_spike_terminates_before_later_normal_samples() {
+    let mut backend = FakeResistanceBackend::standard();
+    backend.profile.settle_ms = 10;
+    backend.scripted_energized_samples = heapless::Vec::from_slice(&[1_800, 100, 100]).unwrap();
+    let mut runner = ResistanceRunner::new(
+        ResistanceRunMode::CommissioningManagedEnable,
+        backend.profile(),
+        1_000,
+    )
+    .unwrap();
+    let mut now = 1_000;
+
+    loop {
+        match poll_runner(&mut runner, &mut backend, now) {
+            ResistancePoll::ReadyNow => {}
+            ResistancePoll::At(deadline)
+                if backend.last_motion_mode == MotionMode::UqUdExt as u32 =>
+            {
+                now = deadline;
+                break;
+            }
+            ResistancePoll::At(deadline) => now = deadline,
+            ResistancePoll::Complete(result) => panic!("unexpected completion: {result:?}"),
+        }
+    }
+
+    assert_eq!(
+        poll_runner(&mut runner, &mut backend, now),
+        ResistancePoll::ReadyNow
+    );
+    assert_eq!(backend.scripted_energized_sample_index, 1);
+    assert_eq!(backend.energized_window_current_reads, 1);
+    assert_eq!(
+        runner.primary_error(),
+        Some(ResistanceError::PeakCurrentExceeded)
+    );
+}
+
+#[test]
+fn sample_ceiling_uses_strict_unsigned_absolute_comparison() {
+    for (current, trips) in [
+        (1_600, false),
+        (1_601, true),
+        (-1_601, true),
+        (i16::MIN, true),
+    ] {
+        let mut backend = FakeResistanceBackend::standard();
+        backend.profile.settle_ms = 10;
+        backend.scripted_energized_samples = heapless::Vec::from_slice(&[current]).unwrap();
+        let mut runner = ResistanceRunner::new(
+            ResistanceRunMode::CommissioningManagedEnable,
+            backend.profile(),
+            1_000,
+        )
+        .unwrap();
+        let mut now = 1_000;
+
+        loop {
+            match poll_runner(&mut runner, &mut backend, now) {
+                ResistancePoll::ReadyNow => {}
+                ResistancePoll::At(deadline)
+                    if backend.last_motion_mode == MotionMode::UqUdExt as u32 =>
+                {
+                    now = deadline;
+                    break;
+                }
+                ResistancePoll::At(deadline) => now = deadline,
+                ResistancePoll::Complete(result) => panic!("unexpected completion: {result:?}"),
+            }
+        }
+
+        let poll = poll_runner(&mut runner, &mut backend, now);
+        assert_eq!(
+            matches!(poll, ResistancePoll::ReadyNow),
+            trips,
+            "current={current} poll={poll:?}"
+        );
+        assert_eq!(runner.current_evidence().power_stage_tripped(), trips);
+        assert_eq!(
+            runner.current_evidence().peak_abs_current_count(),
+            current.unsigned_abs()
+        );
+        assert_eq!(
+            runner.primary_error(),
+            trips.then_some(ResistanceError::PeakCurrentExceeded)
+        );
+    }
+}
+
+#[test]
 fn runner_stops_after_good_fit_before_unsafe_high_points() {
     let mut backend = FakeResistanceBackend::standard();
     backend.scripted_current_per_ud_milli = 1200;
@@ -752,6 +935,7 @@ fn runner_stops_after_good_fit_before_unsafe_high_points() {
         result.is_ok(),
         "expected adaptive sweep to fit, got {result:?}"
     );
+    assert!(!result.unwrap().current.power_stage_tripped());
     assert!(
         !backend
             .writes

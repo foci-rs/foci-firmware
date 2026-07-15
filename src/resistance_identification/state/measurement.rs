@@ -4,7 +4,7 @@ use foci_tmc4671::registers::{
 
 use super::{
     AxisProgress, ResistancePoll, ResistanceRunner, ResistanceState, WindowPlan, WindowPurpose,
-    build_signed_anchor, check_peak_current, next_point_predicted_unsafe, update_safe_anchor,
+    build_signed_anchor, next_point_predicted_unsafe, update_safe_anchor,
 };
 use crate::resistance_identification::fit::{evaluate_resistance_result, fit_resistance_axis};
 use crate::resistance_identification::runner::{ResistanceBackend, ResistanceRunMode};
@@ -24,9 +24,6 @@ impl ResistanceRunner {
             }
             WindowPurpose::PointEnergized(index) => {
                 self.current.record_completed_energized_mean(mean);
-                if let Err(error) = check_peak_current(&self.profile, mean) {
-                    return self.fail(backend, error);
-                }
                 self.axis.energized_current = mean;
                 self.axis.last_safe_point = Some((plan.ud.unsigned_abs(), mean.unsigned_abs()));
                 self.begin_window(
@@ -56,9 +53,6 @@ impl ResistanceRunner {
             }
             WindowPurpose::RepeatedAnchor => {
                 self.current.record_completed_energized_mean(mean);
-                if let Err(error) = check_peak_current(&self.profile, mean) {
-                    return self.fail(backend, error);
-                }
                 self.axis.energized_current = mean;
                 self.begin_window(WindowPurpose::RepeatedZero, 0, self.profile.zero_settle_ms);
                 ResistancePoll::ReadyNow
@@ -80,9 +74,6 @@ impl ResistanceRunner {
             }
             WindowPurpose::NegativeAnchor => {
                 self.current.record_completed_energized_mean(mean);
-                if let Err(error) = check_peak_current(&self.profile, mean) {
-                    return self.fail(backend, error);
-                }
                 self.axis.energized_current = mean;
                 self.begin_window(WindowPurpose::NegativeZero, 0, self.profile.zero_settle_ms);
                 ResistancePoll::ReadyNow

@@ -74,6 +74,8 @@ pub trait ResistanceBackend {
     fn elapsed_us(&self) -> u64;
     /// Set the TMC4671 enable pin. No-op in [`ResistanceRunMode::ExternallyArmed`].
     fn set_enable_pin(&mut self, enabled: bool);
+    /// Synchronously lower the physical power stage before any cleanup I/O.
+    fn trip_power_stage(&mut self);
     /// Whether the motor is already armed and enabled for open-loop voltage.
     fn is_armed_for_open_loop_voltage(&self) -> bool;
     /// The board's resistance-identification profile.

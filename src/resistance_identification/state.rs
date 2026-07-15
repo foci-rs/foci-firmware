@@ -407,14 +407,6 @@ fn wrapped_encoder_delta(before: u32, after: u32, counts_per_rev: u32) -> i32 {
     }
 }
 
-fn check_peak_current(profile: &ResistanceProfile, current: i32) -> Result<(), ResistanceError> {
-    if current.unsigned_abs() > u32::from(profile.max_expected_current_count) {
-        Err(ResistanceError::PeakCurrentExceeded)
-    } else {
-        Ok(())
-    }
-}
-
 fn next_point_predicted_unsafe(
     profile: &ResistanceProfile,
     last: Option<(u16, u32)>,

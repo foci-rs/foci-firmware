@@ -401,6 +401,10 @@ impl<B: CommissioningBackend> crate::resistance_identification::ResistanceBacken
         self.backend.set_enable_pin(enabled);
     }
 
+    fn trip_power_stage(&mut self) {
+        self.backend.set_enable_pin(false);
+    }
+
     fn is_armed_for_open_loop_voltage(&self) -> bool {
         true
     }
