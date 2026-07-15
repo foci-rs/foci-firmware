@@ -205,10 +205,10 @@ pub enum TmcRequestKind {
     DumpRegisters { oid: u8 },
     /// Host sends pre-computed PI gains for flux/torque controllers.
     SetPidGains {
-        flux_p: u16,
-        flux_i: u16,
-        torque_p: u16,
-        torque_i: u16,
+        flux_p: foci_tmc4671::pid::PidGain,
+        flux_i: foci_tmc4671::pid::PidGain,
+        torque_p: foci_tmc4671::pid::PidGain,
+        torque_i: foci_tmc4671::pid::PidGain,
     },
     /// Start Stage 1 commissioning (diagnostics + current tune + closed-loop entry).
     /// Profile: 0=Conservative, 1=Balanced, 2=Stiff.
@@ -254,10 +254,10 @@ pub enum TmcRequestKind {
     /// Host sends pre-computed PI gains for position/velocity controllers.
     /// Range: 0..32767 (Q8.8 format, max 0x7FFF per datasheet page 120).
     SetPositionGains {
-        position_p: u16,
-        position_i: u16,
-        velocity_p: u16,
-        velocity_i: u16,
+        position_p: foci_tmc4671::pid::PidGain,
+        position_i: foci_tmc4671::pid::PidGain,
+        velocity_p: foci_tmc4671::pid::PidGain,
+        velocity_i: foci_tmc4671::pid::PidGain,
     },
     /// Enable or disable velocity feedforward in the 1ms tick loop.
     SetVelocityFeedforward { enable: bool, multiplier: u16 },
@@ -451,10 +451,10 @@ pub fn tmc_dump_registers(channel: u8, oid: u8) -> TmcRequest {
 /// Build a `SetPidGains` request.
 pub fn tmc_set_pid_gains(
     channel: u8,
-    flux_p: u16,
-    flux_i: u16,
-    torque_p: u16,
-    torque_i: u16,
+    flux_p: foci_tmc4671::pid::PidGain,
+    flux_i: foci_tmc4671::pid::PidGain,
+    torque_p: foci_tmc4671::pid::PidGain,
+    torque_i: foci_tmc4671::pid::PidGain,
 ) -> TmcRequest {
     TmcRequest::new(
         channel,
@@ -533,10 +533,10 @@ pub fn tmc_set_flux_filter(channel: u8, filter_hz: u16) -> TmcRequest {
 /// Build a `SetPositionGains` request.
 pub fn tmc_set_position_gains(
     channel: u8,
-    position_p: u16,
-    position_i: u16,
-    velocity_p: u16,
-    velocity_i: u16,
+    position_p: foci_tmc4671::pid::PidGain,
+    position_i: foci_tmc4671::pid::PidGain,
+    velocity_p: foci_tmc4671::pid::PidGain,
+    velocity_i: foci_tmc4671::pid::PidGain,
 ) -> TmcRequest {
     TmcRequest::new(
         channel,
@@ -1292,6 +1292,10 @@ pub fn tmc_test_spin(channel: u8, revolutions: u8) -> TmcRequest {
 mod tests {
     use super::*;
 
+    fn gain(raw: u16) -> foci_tmc4671::pid::PidGain {
+        foci_tmc4671::pid::PidGain::new(raw).expect("test gain must be in range")
+    }
+
     #[test]
     fn tmc_set_current_includes_channel() {
         let req = tmc_set_current(1, 800);
@@ -1346,14 +1350,14 @@ mod tests {
     #[test]
     fn tmc_set_pid_gains_builds_request() {
         assert_eq!(
-            tmc_set_pid_gains(0, 100, 200, 300, 400),
+            tmc_set_pid_gains(0, gain(100), gain(200), gain(300), gain(400)),
             TmcRequest::new(
                 0,
                 TmcRequestKind::SetPidGains {
-                    flux_p: 100,
-                    flux_i: 200,
-                    torque_p: 300,
-                    torque_i: 400,
+                    flux_p: gain(100),
+                    flux_i: gain(200),
+                    torque_p: gain(300),
+                    torque_i: gain(400),
                 }
             )
         );
@@ -1500,14 +1504,14 @@ mod tests {
     #[test]
     fn tmc_set_position_gains_builds_request() {
         assert_eq!(
-            tmc_set_position_gains(0, 640, 5, 1152, 0),
+            tmc_set_position_gains(0, gain(640), gain(5), gain(1152), gain(0)),
             TmcRequest::new(
                 0,
                 TmcRequestKind::SetPositionGains {
-                    position_p: 640,
-                    position_i: 5,
-                    velocity_p: 1152,
-                    velocity_i: 0,
+                    position_p: gain(640),
+                    position_i: gain(5),
+                    velocity_p: gain(1152),
+                    velocity_i: gain(0),
                 }
             )
         );

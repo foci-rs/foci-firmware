@@ -358,10 +358,10 @@ where
             ..
         } => {
             let gains = InnerLoopGains {
-                flux_p,
-                flux_i,
-                torque_p,
-                torque_i,
+                flux_p: flux_p.raw(),
+                flux_i: flux_i.raw(),
+                torque_p: torque_p.raw(),
+                torque_i: torque_i.raw(),
             };
             let write_status = apply_live_inner_gains(runtime, tmc, gains).await;
             if let Some(outcome) = live_gain_failure_outcome(write_status) {
@@ -387,10 +387,10 @@ where
             ..
         } => {
             let gains = OuterLoopGains {
-                position_p,
-                position_i,
-                velocity_p,
-                velocity_i,
+                position_p: position_p.raw(),
+                position_i: position_i.raw(),
+                velocity_p: velocity_p.raw(),
+                velocity_i: velocity_i.raw(),
             };
             let write_status = apply_live_outer_gains(board.tmc_state(), tmc, gains).await;
             if let Some(outcome) = live_gain_failure_outcome(write_status) {

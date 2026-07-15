@@ -19,6 +19,7 @@
 
 use ankyra::prelude::klipper_command;
 use core::sync::atomic::Ordering;
+use foci_tmc4671::pid::PidGain;
 
 use crate::context::{ShutdownRecovery, TmcHost};
 use crate::shutdown::ShutdownReason;
@@ -172,6 +173,15 @@ pub fn tmc_set_pid_gains(
     let Some((channel, _state)) = foci_tmc_state_or_shutdown(ctx, oid) else {
         return;
     };
+    let (Ok(flux_p), Ok(flux_i), Ok(torque_p), Ok(torque_i)) = (
+        PidGain::new(flux_p),
+        PidGain::new(flux_i),
+        PidGain::new(torque_p),
+        PidGain::new(torque_i),
+    ) else {
+        shutdown_request_validation(ctx);
+        return;
+    };
     if ctx
         .enqueue_request(crate::tmc::tmc_set_pid_gains(
             channel, flux_p, flux_i, torque_p, torque_i,
@@ -259,6 +269,15 @@ pub fn tmc_set_position_gains(
     velocity_i: u16,
 ) {
     let Some((channel, _state)) = foci_tmc_state_or_shutdown(ctx, oid) else {
+        return;
+    };
+    let (Ok(position_p), Ok(position_i), Ok(velocity_p), Ok(velocity_i)) = (
+        PidGain::new(position_p),
+        PidGain::new(position_i),
+        PidGain::new(velocity_p),
+        PidGain::new(velocity_i),
+    ) else {
+        shutdown_request_validation(ctx);
         return;
     };
     if ctx
@@ -972,6 +991,57 @@ mod tests {
     }
 
     #[test]
+    fn tmc_set_pid_gains_accepts_maximum_and_rejects_negative_encoding() {
+        let mut accepted = MockCtx::new(2);
+        let mut sender = ();
+        config_stepper_channel(accepted.state(), 10, 1).unwrap();
+
+        tmc_set_pid_gains(
+            &mut accepted,
+            &mut sender,
+            10,
+            0x7fff,
+            0x7fff,
+            0x7fff,
+            0x7fff,
+        );
+
+        let request = accepted.last_request.borrow().clone().unwrap();
+        let crate::tmc::TmcRequestKind::SetPidGains {
+            flux_p,
+            flux_i,
+            torque_p,
+            torque_i,
+        } = request.kind
+        else {
+            panic!("expected PID gain request");
+        };
+        assert_eq!(flux_p.raw(), 0x7fff);
+        assert_eq!(flux_i.raw(), 0x7fff);
+        assert_eq!(torque_p.raw(), 0x7fff);
+        assert_eq!(torque_i.raw(), 0x7fff);
+
+        let mut rejected = MockCtx::new(2);
+        config_stepper_channel(rejected.state(), 10, 1).unwrap();
+
+        tmc_set_pid_gains(
+            &mut rejected,
+            &mut sender,
+            10,
+            0x8000,
+            0x7fff,
+            0x7fff,
+            0x7fff,
+        );
+
+        assert!(rejected.last_request.borrow().is_none());
+        assert_eq!(
+            rejected.last_shutdown,
+            Some(ShutdownReason::TmcRequestValidationFailed)
+        );
+    }
+
+    #[test]
     fn tmc_set_position_gains_enqueues_request_without_publishing_unapplied_gains() {
         let _guard = crate::commission_dispatch::test_support::SHARED_STATE_MUTEX.blocking_lock();
         let mut ctx = MockCtx::new(2);
@@ -991,15 +1061,19 @@ mod tests {
         assert_eq!(tmc_state.velocity_i_value.load(Relaxed), 0);
         let req = ctx.last_request.borrow().clone().unwrap();
         assert_eq!(req.channel, 1);
-        assert!(matches!(
-            req.kind,
-            crate::tmc::TmcRequestKind::SetPositionGains {
-                position_p: 256,
-                position_i: 3,
-                velocity_p: 768,
-                velocity_i: 4,
-            }
-        ));
+        let crate::tmc::TmcRequestKind::SetPositionGains {
+            position_p,
+            position_i,
+            velocity_p,
+            velocity_i,
+        } = req.kind
+        else {
+            panic!("expected position gain request");
+        };
+        assert_eq!(position_p.raw(), 256);
+        assert_eq!(position_i.raw(), 3);
+        assert_eq!(velocity_p.raw(), 768);
+        assert_eq!(velocity_i.raw(), 4);
         assert_eq!(ctx.last_shutdown, None);
     }
 
@@ -1027,6 +1101,65 @@ mod tests {
             ctx.last_shutdown,
             Some(ShutdownReason::TmcSetPositionGainsLostQueueFull)
         );
+    }
+
+    #[test]
+    fn tmc_set_position_gains_accepts_maximum_and_rejects_negative_encoding() {
+        let _guard = crate::commission_dispatch::test_support::SHARED_STATE_MUTEX.blocking_lock();
+        let tmc_state = crate::state::tmc::tmc_channel(1).unwrap();
+        tmc_state.position_p_value.store(640, Relaxed);
+        tmc_state.position_i_value.store(0, Relaxed);
+        tmc_state.velocity_p_value.store(1152, Relaxed);
+        tmc_state.velocity_i_value.store(0, Relaxed);
+
+        let mut accepted = MockCtx::new(2);
+        let mut sender = ();
+        config_stepper_channel(accepted.state(), 10, 1).unwrap();
+        tmc_set_position_gains(
+            &mut accepted,
+            &mut sender,
+            10,
+            0x7fff,
+            0x7fff,
+            0x7fff,
+            0x7fff,
+        );
+        let request = accepted.last_request.borrow().clone().unwrap();
+        let crate::tmc::TmcRequestKind::SetPositionGains {
+            position_p,
+            position_i,
+            velocity_p,
+            velocity_i,
+        } = request.kind
+        else {
+            panic!("expected position gain request");
+        };
+        assert_eq!(position_p.raw(), 0x7fff);
+        assert_eq!(position_i.raw(), 0x7fff);
+        assert_eq!(velocity_p.raw(), 0x7fff);
+        assert_eq!(velocity_i.raw(), 0x7fff);
+
+        let mut rejected = MockCtx::new(2);
+        config_stepper_channel(rejected.state(), 10, 1).unwrap();
+        tmc_set_position_gains(
+            &mut rejected,
+            &mut sender,
+            10,
+            0x7fff,
+            0x7fff,
+            0x8000,
+            0x7fff,
+        );
+
+        assert!(rejected.last_request.borrow().is_none());
+        assert_eq!(
+            rejected.last_shutdown,
+            Some(ShutdownReason::TmcRequestValidationFailed)
+        );
+        assert_eq!(tmc_state.position_p_value.load(Relaxed), 640);
+        assert_eq!(tmc_state.position_i_value.load(Relaxed), 0);
+        assert_eq!(tmc_state.velocity_p_value.load(Relaxed), 1152);
+        assert_eq!(tmc_state.velocity_i_value.load(Relaxed), 0);
     }
 
     #[test]
