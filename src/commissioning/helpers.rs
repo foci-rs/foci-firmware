@@ -11,7 +11,7 @@ use foci_tmc4671::registers::SubRegister;
 
 /// Write a sub-register via the backend's regular register writes.
 ///
-/// TMC4671 sub-registers use address register 0x4D and data register 0x4E.
+/// TMC4671 sub-registers use selector/address register 0x4E and data register 0x4D.
 pub(crate) async fn write_sub_register<B: CommissioningBackend>(
     backend: &mut B,
     sub: SubRegister,
