@@ -387,10 +387,10 @@ where
             ..
         } => {
             let gains = OuterLoopGains {
-                position_p: position_p.raw(),
-                position_i: position_i.raw(),
-                velocity_p: velocity_p.raw(),
-                velocity_i: velocity_i.raw(),
+                position_p,
+                position_i,
+                velocity_p,
+                velocity_i,
             };
             let write_status = apply_live_outer_gains(board.tmc_state(), tmc, gains).await;
             if let Some(outcome) = live_gain_failure_outcome(write_status) {
@@ -643,11 +643,23 @@ where
             let entry_snapshot = {
                 use core::sync::atomic::Ordering::Relaxed;
                 let default_current_filter_hz = board.default_current_filter_hz();
+                let outer_gains = match tmc_state.load_outer_gains(Relaxed) {
+                    Ok(gains) => gains,
+                    Err(_) => {
+                        tmc_state.commission_in_flight.store(false, Relaxed);
+                        emit_commission_phase_failure::<Board, Spi>(
+                            board,
+                            oid,
+                            CommissionError::VelocityValidationFailed.status_code(),
+                        );
+                        return TmcControlRequestOutcome::skip_tick_tail();
+                    }
+                };
                 EntrySnapshot {
-                    velocity_p: tmc_state.velocity_p_value.load(Relaxed),
-                    velocity_i: tmc_state.velocity_i_value.load(Relaxed),
-                    position_p: tmc_state.position_p_value.load(Relaxed),
-                    position_i: tmc_state.position_i_value.load(Relaxed),
+                    velocity_p: outer_gains.velocity_p.raw(),
+                    velocity_i: outer_gains.velocity_i.raw(),
+                    position_p: outer_gains.position_p.raw(),
+                    position_i: outer_gains.position_i.raw(),
                     velocity_limit: tmc_state.velocity_limit_cfg.load(Relaxed),
                     voltage_limit: tmc_state.voltage_limit_cfg.load(Relaxed),
                     velocity_filter_hz: tmc_state.velocity_filter_hz.load_or_zero(Relaxed),

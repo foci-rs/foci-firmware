@@ -137,10 +137,7 @@ where
         second_write_ok,
     };
     if status.all_ok() {
-        tmc_state.position_p_value.store(gains.position_p, Relaxed);
-        tmc_state.position_i_value.store(gains.position_i, Relaxed);
-        tmc_state.velocity_p_value.store(gains.velocity_p, Relaxed);
-        tmc_state.velocity_i_value.store(gains.velocity_i, Relaxed);
+        tmc_state.store_outer_gains(gains, Relaxed);
     }
     status
 }

@@ -30,7 +30,7 @@ use crate::commissioning::{
         OuterSafetyFault, StepResult,
     },
 };
-use crate::pid::InnerLoopGains;
+use crate::pid::{InnerLoopGains, OuterLoopGains};
 use crate::selftest::SelftestResults;
 use crate::state::stepper::StepperChannelState;
 use crate::state::tmc::TmcChannelState;
@@ -293,6 +293,22 @@ fn zero_outer_result() -> OuterResult {
     }
 }
 
+fn validate_outer_gains(
+    position_p: u16,
+    position_i: u16,
+    velocity_p: u16,
+    velocity_i: u16,
+) -> Result<OuterLoopGains, foci_tmc4671::pid::PidGainOutOfRange> {
+    use foci_tmc4671::pid::PidGain;
+
+    Ok(OuterLoopGains {
+        position_p: PidGain::new(position_p)?,
+        position_i: PidGain::new(position_i)?,
+        velocity_p: PidGain::new(velocity_p)?,
+        velocity_i: PidGain::new(velocity_i)?,
+    })
+}
+
 /// Helper: zero-filled AdcCalResult for failure-path CalibrateResult emission.
 fn zero_adc_cal_result() -> AdcCalResult {
     AdcCalResult {
@@ -551,6 +567,31 @@ pub async fn drive_commission_result<B: CommissioningBackend>(
                 };
             }
 
+            let fallback_outer_gains = match validate_outer_gains(
+                commission_result.fallback_position_p,
+                commission_result.fallback_position_i,
+                commission_result.fallback_velocity_p,
+                commission_result.fallback_velocity_i,
+            ) {
+                Ok(gains) => gains,
+                Err(_) => {
+                    crate::tmc_control::lifecycle::disarm_motor(backend, state).await;
+                    state.tmc.commission_in_flight.store(false, Relaxed);
+                    return CommissionOutcome::Terminal {
+                        reply: ReplyPayload::CommissionResult {
+                            oid,
+                            status: crate::autotune::CommissionError::CurrentValidationFailed
+                                .status_code(),
+                            result: commission_result,
+                        },
+                        actions: PostActions {
+                            stop_trace: true,
+                            stepper: StepperPostAction::Stop,
+                        },
+                    };
+                }
+            };
+
             // The engine's ClosedLoopEntry phase already set PID gains, limits,
             // filters, and entered position mode. Re-apply current limit because
             // the mode change resets PID_TORQUE_FLUX_LIMITS.
@@ -611,22 +652,7 @@ pub async fn drive_commission_result<B: CommissioningBackend>(
                 torque_i: foci_tmc4671::pid::PidGain::new(inner.torque_i)
                     .expect("commissioned torque I must be valid"),
             });
-            state
-                .tmc
-                .position_p_value
-                .store(commission_result.fallback_position_p, Relaxed);
-            state
-                .tmc
-                .position_i_value
-                .store(commission_result.fallback_position_i, Relaxed);
-            state
-                .tmc
-                .velocity_p_value
-                .store(commission_result.fallback_velocity_p, Relaxed);
-            state
-                .tmc
-                .velocity_i_value
-                .store(commission_result.fallback_velocity_i, Relaxed);
+            state.tmc.store_outer_gains(fallback_outer_gains, Relaxed);
             state
                 .tmc
                 .velocity_limit_cfg
@@ -654,26 +680,36 @@ pub async fn drive_commission_result<B: CommissioningBackend>(
             state.tmc.motor_armed.store(false, Relaxed);
 
             // SPI restore — enter position mode with the tuned gains.
-            if restore::restore_position_mode_after_outer(backend, state.tmc, &outer)
-                .await
-                .is_err()
+            let restored_gains = match restore::restore_position_mode_after_outer(
+                backend, state.tmc, &outer,
+            )
+            .await
             {
-                defmt::error!("OuterDone: position-mode restore SPI failed");
-                crate::tmc_control::lifecycle::disarm_motor(backend, state).await;
-                state.tmc.commission_in_flight.store(false, Relaxed);
-                return CommissionOutcome::Terminal {
-                    reply: ReplyPayload::TuneResult {
-                        oid,
-                        status: crate::autotune::CommissionError::Spi.status_code(),
-                        result: zero_outer_result(),
-                        safety_fault: None,
-                    },
-                    actions: PostActions {
-                        stop_trace: true,
-                        stepper: StepperPostAction::Stop,
-                    },
-                };
-            }
+                Ok(gains) => gains,
+                Err(error) => {
+                    let status = match error {
+                        restore::RestoreError::Spi(_) => crate::autotune::CommissionError::Spi,
+                        restore::RestoreError::InvalidGains => {
+                            crate::autotune::CommissionError::VelocityValidationFailed
+                        }
+                    };
+                    defmt::error!("OuterDone: position-mode restore failed");
+                    crate::tmc_control::lifecycle::disarm_motor(backend, state).await;
+                    state.tmc.commission_in_flight.store(false, Relaxed);
+                    return CommissionOutcome::Terminal {
+                        reply: ReplyPayload::TuneResult {
+                            oid,
+                            status: status.status_code(),
+                            result: zero_outer_result(),
+                            safety_fault: None,
+                        },
+                        actions: PostActions {
+                            stop_trace: true,
+                            stepper: StepperPostAction::Stop,
+                        },
+                    };
+                }
+            };
 
             if crate::tmc_control::filters::apply_outer_result_filters_via_backend(
                 backend, &outer, pwm_maxcnt,
@@ -721,10 +757,7 @@ pub async fn drive_commission_result<B: CommissioningBackend>(
 
             // Publish the completed result only after terminal restore,
             // candidate filter application, and sentinel verification succeed.
-            state.tmc.position_p_value.store(outer.position_p, Relaxed);
-            state.tmc.position_i_value.store(outer.position_i, Relaxed);
-            state.tmc.velocity_p_value.store(outer.velocity_p, Relaxed);
-            state.tmc.velocity_i_value.store(outer.velocity_i, Relaxed);
+            state.tmc.store_outer_gains(restored_gains, Relaxed);
             state
                 .tmc
                 .velocity_limit_cfg

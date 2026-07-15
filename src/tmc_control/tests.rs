@@ -3,7 +3,7 @@ use crate::commission_dispatch::test_support::{MockBackend, accepted_commission_
 use crate::commission_dispatch::{PostActions, ReplyPayload, StepperPostAction};
 use crate::commissioning::CommissioningEngine;
 use crate::config::TmcConfig;
-use crate::pid::{InnerLoopGains, OuterLoopGains};
+use crate::pid::InnerLoopGains;
 use crate::tmc::{TmcRequest, TmcRequestKind};
 use crate::tmc_control::dispatch::{SharedTmcDispatch, apply_shared_tmc_request};
 use crate::tmc_control::helpers::{
@@ -386,18 +386,8 @@ fn apply_live_inner_gains_publishes_only_after_both_writes_succeed() {
 #[test]
 fn apply_live_outer_gains_publishes_only_after_both_writes_succeed() {
     pollster::block_on(async {
-        let previous = OuterLoopGains {
-            position_p: 101,
-            position_i: 102,
-            velocity_p: 103,
-            velocity_i: 104,
-        };
-        let requested = OuterLoopGains {
-            position_p: 201,
-            position_i: 202,
-            velocity_p: 203,
-            velocity_i: 204,
-        };
+        let previous = crate::pid::test_outer_gains(101, 102, 103, 104);
+        let requested = crate::pid::test_outer_gains(201, 202, 203, 204);
         let cases = [
             (false, false, true, true),
             (true, false, false, true),
@@ -407,18 +397,7 @@ fn apply_live_outer_gains_publishes_only_after_both_writes_succeed() {
 
         for (fail_velocity, fail_position, expected_first_ok, expected_second_ok) in cases {
             let tmc_state = crate::state::tmc::TmcChannelState::new();
-            tmc_state
-                .position_p_value
-                .store(previous.position_p, Relaxed);
-            tmc_state
-                .position_i_value
-                .store(previous.position_i, Relaxed);
-            tmc_state
-                .velocity_p_value
-                .store(previous.velocity_p, Relaxed);
-            tmc_state
-                .velocity_i_value
-                .store(previous.velocity_i, Relaxed);
+            tmc_state.store_outer_gains(previous, Relaxed);
             let mut spi = RuntimeMockSpi::default();
             if fail_velocity {
                 spi = spi.fail_writes_to(PID_VELOCITY_P_VELOCITY_I.addr());
@@ -430,12 +409,7 @@ fn apply_live_outer_gains_publishes_only_after_both_writes_succeed() {
 
             let status = apply_live_outer_gains(&tmc_state, &mut tmc, requested).await;
             let spi = tmc.into_inner();
-            let published = OuterLoopGains {
-                position_p: tmc_state.position_p_value.load(Relaxed),
-                position_i: tmc_state.position_i_value.load(Relaxed),
-                velocity_p: tmc_state.velocity_p_value.load(Relaxed),
-                velocity_i: tmc_state.velocity_i_value.load(Relaxed),
-            };
+            let published = tmc_state.load_outer_gains(Relaxed).unwrap();
 
             assert_eq!(status.first_write_ok, expected_first_ok);
             assert_eq!(status.second_write_ok, expected_second_ok);
@@ -1449,7 +1423,7 @@ fn homing_channel_tick_suppresses_position_i_without_global_advance() {
         let mut runtime = TmcControlRuntime::new_for_channel(0);
         let tmc_state = crate::state::tmc::TmcChannelState::new();
         let stepper_state = crate::state::stepper::StepperChannelState::new();
-        tmc_state.position_p_value.store(123, Relaxed);
+        tmc_state.store_outer_gains(crate::pid::test_outer_gains(123, 0, 1152, 0), Relaxed);
         let mut tmc = Tmc4671Spi::new(RuntimeMockSpi::default());
 
         let result = runtime
@@ -1474,7 +1448,7 @@ fn homing_channel_tick_preserves_openffboard_ungated_suppression() {
         let mut runtime = TmcControlRuntime::new_for_channel(0);
         let tmc_state = crate::state::tmc::TmcChannelState::new();
         let stepper_state = crate::state::stepper::StepperChannelState::new();
-        tmc_state.position_p_value.store(77, Relaxed);
+        tmc_state.store_outer_gains(crate::pid::test_outer_gains(77, 0, 1152, 0), Relaxed);
         let mut tmc = Tmc4671Spi::new(RuntimeMockSpi::default());
 
         let result = runtime
@@ -1499,8 +1473,7 @@ fn homing_channel_tick_restores_position_i_and_clears_integrator() {
         let mut runtime = TmcControlRuntime::new_for_channel(0);
         let tmc_state = crate::state::tmc::TmcChannelState::new();
         let stepper_state = crate::state::stepper::StepperChannelState::new();
-        tmc_state.position_p_value.store(12, Relaxed);
-        tmc_state.position_i_value.store(34, Relaxed);
+        tmc_state.store_outer_gains(crate::pid::test_outer_gains(12, 34, 1152, 0), Relaxed);
         let mut tmc = Tmc4671Spi::new(RuntimeMockSpi::default());
 
         let result = runtime
@@ -1532,8 +1505,7 @@ fn homing_channel_tick_preserves_openffboard_ungated_restore() {
         let mut runtime = TmcControlRuntime::new_for_channel(0);
         let tmc_state = crate::state::tmc::TmcChannelState::new();
         let stepper_state = crate::state::stepper::StepperChannelState::new();
-        tmc_state.position_p_value.store(7, Relaxed);
-        tmc_state.position_i_value.store(9, Relaxed);
+        tmc_state.store_outer_gains(crate::pid::test_outer_gains(7, 9, 1152, 0), Relaxed);
         let mut tmc = Tmc4671Spi::new(RuntimeMockSpi::default());
 
         let result = runtime

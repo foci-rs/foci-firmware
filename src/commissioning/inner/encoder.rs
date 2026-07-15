@@ -717,26 +717,26 @@ pub(crate) async fn step_encoder_align<B: CommissioningBackend>(
                     // paths should provide the host-stored tuned values.
                     let gains = calibrate_entry_gains.unwrap_or(CalibrateEntryGains {
                         inner: crate::pid::DEFAULT_INNER_GAINS,
-                        velocity_p: 1152,
-                        velocity_i: 0,
-                        position_p: 640,
-                        position_i: 0,
+                        outer: Some(crate::pid::DEFAULT_OUTER_GAINS),
                         velocity_limit: backend.operational_velocity_limit(),
                         velocity_filter_hz: 0,
                         torque_filter_hz: 0,
                         position_filter_hz: 0,
                         flux_filter_hz: 0,
                     });
+                    let Some(outer) = gains.outer else {
+                        return super::fail_inner(phase, CommissionError::CurrentValidationFailed);
+                    };
                     *phase = InnerPhase::ClosedLoopEntry {
                         state: ClosedLoopEntryState::WriteGains,
                         flux_p: gains.inner.flux_p.raw(),
                         flux_i: gains.inner.flux_i.raw(),
                         torque_p: gains.inner.torque_p.raw(),
                         torque_i: gains.inner.torque_i.raw(),
-                        velocity_p: gains.velocity_p,
-                        velocity_i: gains.velocity_i,
-                        position_p: gains.position_p,
-                        position_i: gains.position_i,
+                        velocity_p: outer.velocity_p.raw(),
+                        velocity_i: outer.velocity_i.raw(),
+                        position_p: outer.position_p.raw(),
+                        position_i: outer.position_i.raw(),
                         velocity_limit: gains.velocity_limit,
                         velocity_filter_hz: gains.velocity_filter_hz,
                         torque_filter_hz: gains.torque_filter_hz,
@@ -1436,10 +1436,7 @@ mod tests {
                     torque_p: crate::pid::test_gain(712),
                     torque_i: crate::pid::test_gain(160),
                 },
-                velocity_p: 1434,
-                velocity_i: 2,
-                position_p: 627,
-                position_i: 1,
+                outer: Some(crate::pid::test_outer_gains(627, 1, 1434, 2)),
                 velocity_limit: 500_000,
                 velocity_filter_hz: 11,
                 torque_filter_hz: 13,
@@ -1487,10 +1484,11 @@ mod tests {
             assert_eq!(flux_i, gains.inner.flux_i.raw());
             assert_eq!(torque_p, gains.inner.torque_p.raw());
             assert_eq!(torque_i, gains.inner.torque_i.raw());
-            assert_eq!(velocity_p, gains.velocity_p);
-            assert_eq!(velocity_i, gains.velocity_i);
-            assert_eq!(position_p, gains.position_p);
-            assert_eq!(position_i, gains.position_i);
+            let outer = gains.outer.unwrap();
+            assert_eq!(velocity_p, outer.velocity_p.raw());
+            assert_eq!(velocity_i, outer.velocity_i.raw());
+            assert_eq!(position_p, outer.position_p.raw());
+            assert_eq!(position_i, outer.position_i.raw());
             assert_eq!(velocity_limit, gains.velocity_limit);
             assert_eq!(velocity_filter_hz, gains.velocity_filter_hz);
             assert_eq!(torque_filter_hz, gains.torque_filter_hz);

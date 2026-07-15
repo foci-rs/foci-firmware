@@ -2,6 +2,13 @@
 
 use crate::commissioning::types::CommissioningBackend;
 use crate::state::tmc::TmcChannelState;
+use foci_tmc4671::pid::PidGain;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RestoreError<E> {
+    Spi(E),
+    InvalidGains,
+}
 
 /// SPI restore sequence for the OuterDone success path.
 ///
@@ -27,56 +34,71 @@ pub async fn restore_position_mode_after_outer<B: CommissioningBackend>(
     backend: &mut B,
     tmc_state: &TmcChannelState,
     outer: &crate::commissioning::types::OuterResult,
-) -> Result<(), B::Error> {
+) -> Result<crate::pid::OuterLoopGains, RestoreError<B::Error>> {
     use core::sync::atomic::Ordering::Relaxed;
     use foci_tmc4671::registers::*;
 
     // Tuned velocity + position gains.
     let gains = crate::pid::OuterLoopGains {
-        position_p: outer.position_p,
-        position_i: outer.position_i,
-        velocity_p: outer.velocity_p,
-        velocity_i: outer.velocity_i,
+        position_p: PidGain::new(outer.position_p).map_err(|_| RestoreError::InvalidGains)?,
+        position_i: PidGain::new(outer.position_i).map_err(|_| RestoreError::InvalidGains)?,
+        velocity_p: PidGain::new(outer.velocity_p).map_err(|_| RestoreError::InvalidGains)?,
+        velocity_i: PidGain::new(outer.velocity_i).map_err(|_| RestoreError::InvalidGains)?,
     };
     let (velocity_reg, position_reg) = gains.to_registers();
     backend
         .write_register(PID_VELOCITY_P_VELOCITY_I, velocity_reg)
-        .await?;
+        .await
+        .map_err(RestoreError::Spi)?;
     backend
         .write_register(PID_POSITION_P_POSITION_I, position_reg)
-        .await?;
+        .await
+        .map_err(RestoreError::Spi)?;
 
     // Operational limits (not safety caps).
     backend
         .write_register(PID_VELOCITY_LIMIT, outer.velocity_limit)
-        .await?;
+        .await
+        .map_err(RestoreError::Spi)?;
 
     let current_limit = tmc_state.current_limit_reg.load(Relaxed);
     backend
         .write_register(PID_TORQUE_FLUX_LIMITS, current_limit)
-        .await?;
+        .await
+        .map_err(RestoreError::Spi)?;
 
     // Safety-net voltage cap - must be written before entering motion mode.
-    backend.write_register(PIDOUT_UQ_UD_LIMITS, 1024).await?;
+    backend
+        .write_register(PIDOUT_UQ_UD_LIMITS, 1024)
+        .await
+        .map_err(RestoreError::Spi)?;
 
     // Clear PID error sums before mode switch.
-    backend.write_register(PID_POSITION_ACTUAL, 0).await?;
+    backend
+        .write_register(PID_POSITION_ACTUAL, 0)
+        .await
+        .map_err(RestoreError::Spi)?;
 
-    let encoder_count = backend.read_register(ABN_DECODER_COUNT).await?;
+    let encoder_count = backend
+        .read_register(ABN_DECODER_COUNT)
+        .await
+        .map_err(RestoreError::Spi)?;
     let target_scaled = encoder_count_to_position_target(
         encoder_count,
         backend.mechanical_encoder_quadrature_counts_per_rev(),
     );
     backend
         .write_register(PID_POSITION_TARGET, target_scaled)
-        .await?;
+        .await
+        .map_err(RestoreError::Spi)?;
 
     // Enter position mode (advanced PID cascade).
     backend
         .write_register(MODE_RAMP_MODE_MOTION, 0x8000_0003)
-        .await?;
+        .await
+        .map_err(RestoreError::Spi)?;
 
-    Ok(())
+    Ok(gains)
 }
 
 fn encoder_count_to_position_target(encoder_count: u32, encoder_counts_per_rev: u32) -> u32 {
@@ -119,52 +141,53 @@ pub async fn restore_calibrate_gains<B: CommissioningBackend>(
     backend: &mut B,
     tmc_state: &TmcChannelState,
     stored: Option<crate::pid::InnerLoopGains>,
-) -> Result<(), B::Error> {
+) -> Result<(), RestoreError<B::Error>> {
     use core::sync::atomic::Ordering::Relaxed;
     use foci_tmc4671::registers::*;
 
     // Current-loop gains from prior commissioning.
     if let Some(gains) = stored {
         let (flux_reg, torque_reg) = gains.to_registers();
-        backend.write_register(PID_FLUX_P_FLUX_I, flux_reg).await?;
+        backend
+            .write_register(PID_FLUX_P_FLUX_I, flux_reg)
+            .await
+            .map_err(RestoreError::Spi)?;
         backend
             .write_register(PID_TORQUE_P_TORQUE_I, torque_reg)
-            .await?;
+            .await
+            .map_err(RestoreError::Spi)?;
     }
 
-    let velocity_p = tmc_state.velocity_p_value.load(Relaxed);
-    let velocity_i = tmc_state.velocity_i_value.load(Relaxed);
-    let position_p = tmc_state.position_p_value.load(Relaxed);
-    let position_i = tmc_state.position_i_value.load(Relaxed);
-    let gains = crate::pid::OuterLoopGains {
-        position_p,
-        position_i,
-        velocity_p,
-        velocity_i,
-    };
+    let gains = tmc_state
+        .load_outer_gains(Relaxed)
+        .map_err(|_| RestoreError::InvalidGains)?;
     let (velocity_reg, position_reg) = gains.to_registers();
 
     // Velocity gains.
     backend
         .write_register(PID_VELOCITY_P_VELOCITY_I, velocity_reg)
-        .await?;
+        .await
+        .map_err(RestoreError::Spi)?;
 
     // Position gains.
     backend
         .write_register(PID_POSITION_P_POSITION_I, position_reg)
-        .await?;
+        .await
+        .map_err(RestoreError::Spi)?;
 
     // Velocity limit.
     let velocity_limit = tmc_state.velocity_limit_cfg.load(Relaxed);
     backend
         .write_register(PID_VELOCITY_LIMIT, velocity_limit)
-        .await?;
+        .await
+        .map_err(RestoreError::Spi)?;
 
     // Current limit (TMC4671 resets on mode change).
     let current_limit = tmc_state.current_limit_reg.load(Relaxed);
     backend
         .write_register(PID_TORQUE_FLUX_LIMITS, current_limit)
-        .await?;
+        .await
+        .map_err(RestoreError::Spi)?;
 
     Ok(())
 }
@@ -219,16 +242,11 @@ mod tests {
             backend.spi_log.clear();
 
             let outer = sample_outer_result();
-            let result = restore_position_mode_after_outer(&mut backend, tmc_state(), &outer).await;
-            assert!(result.is_ok());
+            let restored = restore_position_mode_after_outer(&mut backend, tmc_state(), &outer)
+                .await
+                .unwrap();
 
-            let (velocity_reg, position_reg) = crate::pid::OuterLoopGains {
-                position_p: outer.position_p,
-                position_i: outer.position_i,
-                velocity_p: outer.velocity_p,
-                velocity_i: outer.velocity_i,
-            }
-            .to_registers();
+            let (velocity_reg, position_reg) = restored.to_registers();
             assert_eq!(
                 write_log(&backend).as_slice(),
                 &[
@@ -307,10 +325,8 @@ mod tests {
                 .lock()
                 .await;
             let mut backend = MockBackend::new();
-            tmc_state().velocity_p_value.store(111, Relaxed);
-            tmc_state().velocity_i_value.store(22, Relaxed);
-            tmc_state().position_p_value.store(333, Relaxed);
-            tmc_state().position_i_value.store(44, Relaxed);
+            let outer_gains = crate::pid::test_outer_gains(333, 44, 111, 22);
+            tmc_state().store_outer_gains(outer_gains, Relaxed);
             tmc_state().velocity_limit_cfg.store(555_000, Relaxed);
             tmc_state().current_limit_reg.store(0x0020_0030, Relaxed);
             let stored_gains = crate::pid::InnerLoopGains {
@@ -323,13 +339,7 @@ mod tests {
             let result =
                 restore_calibrate_gains(&mut backend, tmc_state(), Some(stored_gains)).await;
             assert!(result.is_ok());
-            let (velocity_reg, position_reg) = crate::pid::OuterLoopGains {
-                position_p: 333,
-                position_i: 44,
-                velocity_p: 111,
-                velocity_i: 22,
-            }
-            .to_registers();
+            let (velocity_reg, position_reg) = outer_gains.to_registers();
             assert_eq!(
                 write_log(&backend).as_slice(),
                 &[
@@ -341,10 +351,7 @@ mod tests {
                     (PID_TORQUE_FLUX_LIMITS.addr(), 0x0020_0030),
                 ]
             );
-            tmc_state().velocity_p_value.store(0, Relaxed);
-            tmc_state().velocity_i_value.store(0, Relaxed);
-            tmc_state().position_p_value.store(0, Relaxed);
-            tmc_state().position_i_value.store(0, Relaxed);
+            tmc_state().store_outer_gains(crate::pid::DEFAULT_OUTER_GAINS, Relaxed);
             tmc_state().velocity_limit_cfg.store(0, Relaxed);
             tmc_state().current_limit_reg.store(0, Relaxed);
         });
@@ -359,21 +366,13 @@ mod tests {
                 .lock()
                 .await;
             let mut backend = MockBackend::new();
-            tmc_state().velocity_p_value.store(211, Relaxed);
-            tmc_state().velocity_i_value.store(33, Relaxed);
-            tmc_state().position_p_value.store(377, Relaxed);
-            tmc_state().position_i_value.store(55, Relaxed);
+            let outer_gains = crate::pid::test_outer_gains(377, 55, 211, 33);
+            tmc_state().store_outer_gains(outer_gains, Relaxed);
             tmc_state().velocity_limit_cfg.store(666_000, Relaxed);
             tmc_state().current_limit_reg.store(0x0040_0050, Relaxed);
             let result = restore_calibrate_gains(&mut backend, tmc_state(), None).await;
             assert!(result.is_ok());
-            let (velocity_reg, position_reg) = crate::pid::OuterLoopGains {
-                position_p: 377,
-                position_i: 55,
-                velocity_p: 211,
-                velocity_i: 33,
-            }
-            .to_registers();
+            let (velocity_reg, position_reg) = outer_gains.to_registers();
             assert_eq!(
                 write_log(&backend).as_slice(),
                 &[
@@ -383,10 +382,7 @@ mod tests {
                     (PID_TORQUE_FLUX_LIMITS.addr(), 0x0040_0050),
                 ]
             );
-            tmc_state().velocity_p_value.store(0, Relaxed);
-            tmc_state().velocity_i_value.store(0, Relaxed);
-            tmc_state().position_p_value.store(0, Relaxed);
-            tmc_state().position_i_value.store(0, Relaxed);
+            tmc_state().store_outer_gains(crate::pid::DEFAULT_OUTER_GAINS, Relaxed);
             tmc_state().velocity_limit_cfg.store(0, Relaxed);
             tmc_state().current_limit_reg.store(0, Relaxed);
         });

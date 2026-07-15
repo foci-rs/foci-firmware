@@ -113,14 +113,8 @@ pub struct EntrySnapshot {
 pub(crate) struct CalibrateEntryGains {
     /// Inner current-loop gains to use during closed-loop entry.
     pub inner: InnerLoopGains,
-    /// Velocity P gain (Q8.8).
-    pub velocity_p: u16,
-    /// Velocity I gain (Q8.8).
-    pub velocity_i: u16,
-    /// Position P gain (Q8.8).
-    pub position_p: u16,
-    /// Position I gain (Q8.8).
-    pub position_i: u16,
+    /// Validated outer-loop gains, or `None` when retained storage was corrupt.
+    pub outer: Option<crate::pid::OuterLoopGains>,
     /// PID velocity limit register value.
     pub velocity_limit: u32,
     /// Velocity biquad filter cutoff (Hz), 0 = disabled.
@@ -143,10 +137,7 @@ impl CalibrateEntryGains {
 
         Self {
             inner: inner.unwrap_or(crate::pid::DEFAULT_INNER_GAINS),
-            velocity_p: tmc_state.velocity_p_value.load(Relaxed),
-            velocity_i: tmc_state.velocity_i_value.load(Relaxed),
-            position_p: tmc_state.position_p_value.load(Relaxed),
-            position_i: tmc_state.position_i_value.load(Relaxed),
+            outer: tmc_state.load_outer_gains(Relaxed).ok(),
             velocity_limit: tmc_state.velocity_limit_cfg.load(Relaxed),
             velocity_filter_hz: tmc_state.velocity_filter_hz.load_or_zero(Relaxed),
             torque_filter_hz: tmc_state
@@ -1336,10 +1327,8 @@ mod tests {
                 .lock()
                 .await;
             let tmc_state = tmc_state();
-            tmc_state.velocity_p_value.store(1434, Relaxed);
-            tmc_state.velocity_i_value.store(2, Relaxed);
-            tmc_state.position_p_value.store(627, Relaxed);
-            tmc_state.position_i_value.store(1, Relaxed);
+            let outer = crate::pid::test_outer_gains(627, 1, 1434, 2);
+            tmc_state.store_outer_gains(outer, Relaxed);
             tmc_state.velocity_limit_cfg.store(500_000, Relaxed);
             tmc_state.velocity_filter_hz.store(Some(11), Relaxed);
             tmc_state.torque_filter_hz.store(Some(13), Relaxed);
@@ -1365,10 +1354,7 @@ mod tests {
             };
 
             assert_eq!(gains.inner, inner);
-            assert_eq!(gains.velocity_p, 1434);
-            assert_eq!(gains.velocity_i, 2);
-            assert_eq!(gains.position_p, 627);
-            assert_eq!(gains.position_i, 1);
+            assert_eq!(gains.outer, Some(outer));
             assert_eq!(gains.velocity_limit, 500_000);
             assert_eq!(gains.velocity_filter_hz, 11);
             assert_eq!(gains.torque_filter_hz, 13);

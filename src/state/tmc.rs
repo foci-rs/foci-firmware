@@ -6,6 +6,9 @@ use core::sync::atomic::{AtomicBool, AtomicI32, AtomicU8, AtomicU16, AtomicU32, 
 
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::signal::Signal;
+use foci_tmc4671::pid::{PidGain, PidGainOutOfRange};
+
+use crate::pid::OuterLoopGains;
 
 /// Maximum number of board-local TMC4671 channels supported by shared firmware.
 pub const MAX_TMC_CHANNELS: usize = 2;
@@ -211,10 +214,10 @@ impl TmcChannelState {
             encoder_reversed: AtomicBool::new(false),
             commission_in_flight: AtomicBool::new(false),
             auto_calibrate_on_enable_allowed: AtomicBool::new(false),
-            position_p_value: AtomicU16::new(640),
-            position_i_value: AtomicU16::new(0),
-            velocity_p_value: AtomicU16::new(1152),
-            velocity_i_value: AtomicU16::new(0),
+            position_p_value: AtomicU16::new(crate::pid::DEFAULT_OUTER_GAINS.position_p.raw()),
+            position_i_value: AtomicU16::new(crate::pid::DEFAULT_OUTER_GAINS.position_i.raw()),
+            velocity_p_value: AtomicU16::new(crate::pid::DEFAULT_OUTER_GAINS.velocity_p.raw()),
+            velocity_i_value: AtomicU16::new(crate::pid::DEFAULT_OUTER_GAINS.velocity_i.raw()),
         }
     }
 
@@ -268,10 +271,32 @@ impl TmcChannelState {
         self.encoder_reversed.store(false, Relaxed);
         self.commission_in_flight.store(false, Relaxed);
         self.auto_calibrate_on_enable_allowed.store(false, Relaxed);
-        self.position_p_value.store(640, Relaxed);
-        self.position_i_value.store(0, Relaxed);
-        self.velocity_p_value.store(1152, Relaxed);
-        self.velocity_i_value.store(0, Relaxed);
+        self.store_outer_gains(crate::pid::DEFAULT_OUTER_GAINS, Relaxed);
+    }
+
+    /// Load and validate the retained outer-loop gains.
+    pub fn load_outer_gains(
+        &self,
+        ordering: Ordering,
+    ) -> Result<OuterLoopGains, PidGainOutOfRange> {
+        Ok(OuterLoopGains {
+            position_p: PidGain::new(self.position_p_value.load(ordering))?,
+            position_i: PidGain::new(self.position_i_value.load(ordering))?,
+            velocity_p: PidGain::new(self.velocity_p_value.load(ordering))?,
+            velocity_i: PidGain::new(self.velocity_i_value.load(ordering))?,
+        })
+    }
+
+    /// Publish one complete validated outer-loop gain set.
+    pub fn store_outer_gains(&self, gains: OuterLoopGains, ordering: Ordering) {
+        self.position_p_value
+            .store(gains.position_p.raw(), ordering);
+        self.position_i_value
+            .store(gains.position_i.raw(), ordering);
+        self.velocity_p_value
+            .store(gains.velocity_p.raw(), ordering);
+        self.velocity_i_value
+            .store(gains.velocity_i.raw(), ordering);
     }
 
     /// Validates and publishes a complete motion scale to its channel mirrors.

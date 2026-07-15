@@ -19,13 +19,13 @@ pub struct InnerLoopGains {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub struct OuterLoopGains {
     /// Position P gain — raw TMC4671 register value (Q8.8 format).
-    pub position_p: u16,
+    pub position_p: PidGain,
     /// Position I gain — raw TMC4671 register value (Q8.8 format).
-    pub position_i: u16,
+    pub position_i: PidGain,
     /// Velocity P gain — raw TMC4671 register value (Q8.8 format).
-    pub velocity_p: u16,
+    pub velocity_p: PidGain,
     /// Velocity I gain — raw TMC4671 register value (Q8.8 format).
-    pub velocity_i: u16,
+    pub velocity_i: PidGain,
 }
 
 /// Conservative default gains for when no R/L data is available.
@@ -49,11 +49,40 @@ pub const DEFAULT_INNER_GAINS: InnerLoopGains = InnerLoopGains {
     },
 };
 
+/// Conservative default gains for the position and velocity loops.
+pub const DEFAULT_OUTER_GAINS: OuterLoopGains = OuterLoopGains {
+    position_p: match PidGain::new(640) {
+        Ok(gain) => gain,
+        Err(_) => panic!("valid default"),
+    },
+    position_i: PidGain::ZERO,
+    velocity_p: match PidGain::new(1152) {
+        Ok(gain) => gain,
+        Err(_) => panic!("valid default"),
+    },
+    velocity_i: PidGain::ZERO,
+};
+
 #[cfg(test)]
 pub(crate) const fn test_gain(raw: u16) -> PidGain {
     match PidGain::new(raw) {
         Ok(gain) => gain,
         Err(_) => panic!("test gain must be in range"),
+    }
+}
+
+#[cfg(test)]
+pub(crate) const fn test_outer_gains(
+    position_p: u16,
+    position_i: u16,
+    velocity_p: u16,
+    velocity_i: u16,
+) -> OuterLoopGains {
+    OuterLoopGains {
+        position_p: test_gain(position_p),
+        position_i: test_gain(position_i),
+        velocity_p: test_gain(velocity_p),
+        velocity_i: test_gain(velocity_i),
     }
 }
 
@@ -108,8 +137,8 @@ impl OuterLoopGains {
     /// Returns `(velocity_register, position_register)` ready for
     /// `PID_VELOCITY_P_VELOCITY_I` and `PID_POSITION_P_POSITION_I`.
     pub fn to_registers(self) -> (u32, u32) {
-        let velocity = pack_pid_register(self.velocity_p, self.velocity_i);
-        let position = pack_pid_register(self.position_p, self.position_i);
+        let velocity = PidGainPair::new(self.velocity_p, self.velocity_i).register_value();
+        let position = PidGainPair::new(self.position_p, self.position_i).register_value();
         (velocity, position)
     }
 }
@@ -125,6 +154,8 @@ mod tests {
             assert!(DEFAULT_INNER_GAINS.flux_i.raw() > 0);
             assert!(DEFAULT_INNER_GAINS.torque_p.raw() > 0);
             assert!(DEFAULT_INNER_GAINS.torque_i.raw() > 0);
+            assert!(DEFAULT_OUTER_GAINS.position_p.raw() > 0);
+            assert!(DEFAULT_OUTER_GAINS.velocity_p.raw() > 0);
         }
     }
 
@@ -165,10 +196,10 @@ mod tests {
     #[test]
     fn outer_loop_gains_to_registers_places_p_in_upper_half() {
         let gains = OuterLoopGains {
-            position_p: 256,
-            position_i: 3,
-            velocity_p: 6656,
-            velocity_i: 4,
+            position_p: test_gain(256),
+            position_i: test_gain(3),
+            velocity_p: test_gain(6656),
+            velocity_i: test_gain(4),
         };
 
         let (velocity_reg, position_reg) = gains.to_registers();
