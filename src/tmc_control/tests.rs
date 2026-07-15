@@ -361,14 +361,8 @@ fn apply_live_inner_gains_publishes_only_after_both_writes_succeed() {
             assert_eq!(
                 spi.write_attempts,
                 std::vec![
-                    (
-                        PID_FLUX_P_FLUX_I.addr(),
-                        crate::pid::pack_pid_register(11, 12),
-                    ),
-                    (
-                        PID_TORQUE_P_TORQUE_I.addr(),
-                        crate::pid::pack_pid_register(13, 14),
-                    ),
+                    (PID_FLUX_P_FLUX_I.addr(), (11u32 << 16) | 12,),
+                    (PID_TORQUE_P_TORQUE_I.addr(), (13u32 << 16) | 14,),
                 ],
             );
             assert_eq!(
@@ -417,14 +411,8 @@ fn apply_live_outer_gains_publishes_only_after_both_writes_succeed() {
             assert_eq!(
                 spi.write_attempts,
                 std::vec![
-                    (
-                        PID_VELOCITY_P_VELOCITY_I.addr(),
-                        crate::pid::pack_pid_register(203, 204),
-                    ),
-                    (
-                        PID_POSITION_P_POSITION_I.addr(),
-                        crate::pid::pack_pid_register(201, 202),
-                    ),
+                    (PID_VELOCITY_P_VELOCITY_I.addr(), (203u32 << 16) | 204,),
+                    (PID_POSITION_P_POSITION_I.addr(), (201u32 << 16) | 202,),
                 ],
             );
             assert_eq!(

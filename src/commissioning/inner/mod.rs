@@ -18,6 +18,7 @@ use crate::commissioning::inner::current_loop::{CurrentValidateData, CurrentVali
 use crate::commissioning::types::{
     AdcCalResult, CommissioningBackend, InductanceEvidence, InnerResult, StepResult,
 };
+use foci_tmc4671::pid::{PidGain, PidGainPair};
 
 pub mod adc;
 pub mod closed_loop_entry;
@@ -714,12 +715,20 @@ pub async fn restore_entry_gains<B: CommissioningBackend>(
         .map_err(|_| CommissionError::Spi)?;
 
     // 5. Reload outer gains from snapshot.
-    let velocity_reg = (snapshot.velocity_p as u32) << 16 | snapshot.velocity_i as u32;
+    let velocity_p =
+        PidGain::new(snapshot.velocity_p).map_err(|_| CommissionError::VelocityValidationFailed)?;
+    let velocity_i =
+        PidGain::new(snapshot.velocity_i).map_err(|_| CommissionError::VelocityValidationFailed)?;
+    let position_p =
+        PidGain::new(snapshot.position_p).map_err(|_| CommissionError::PositionTuneFailed)?;
+    let position_i =
+        PidGain::new(snapshot.position_i).map_err(|_| CommissionError::PositionTuneFailed)?;
+    let velocity_reg = PidGainPair::new(velocity_p, velocity_i).register_value();
     backend
         .write_register(PID_VELOCITY_P_VELOCITY_I, velocity_reg)
         .await
         .map_err(|_| CommissionError::Spi)?;
-    let position_reg = (snapshot.position_p as u32) << 16 | snapshot.position_i as u32;
+    let position_reg = PidGainPair::new(position_p, position_i).register_value();
     backend
         .write_register(PID_POSITION_P_POSITION_I, position_reg)
         .await

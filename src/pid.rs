@@ -86,27 +86,6 @@ pub(crate) const fn test_outer_gains(
     }
 }
 
-/// Pack P and I gains into a TMC4671 PID register value.
-///
-/// Register layout (datasheet section 7.2, page 96):
-///   bits `[15:0]` = I gain
-///   bits `[31:16]` = P gain
-///
-/// Note: the datasheet types these fields as s16, but PI gains are
-/// always non-negative. This function treats them as u16.
-pub fn pack_pid_register(p: u16, i: u16) -> u32 {
-    ((p as u32) << 16) | (i as u32)
-}
-
-/// Unpack P and I gains from a TMC4671 PID register value.
-///
-/// Returns (p_gain, i_gain).
-pub fn unpack_pid_register(reg: u32) -> (u16, u16) {
-    let p = (reg >> 16) as u16;
-    let i = (reg & 0xFFFF) as u16;
-    (p, i)
-}
-
 impl InnerLoopGains {
     /// Pack gains into TMC4671 register values.
     ///
@@ -206,19 +185,5 @@ mod tests {
 
         assert_eq!(velocity_reg, 0x1a00_0004);
         assert_eq!(position_reg, 0x0100_0003);
-    }
-
-    #[test]
-    fn pack_register_layout() {
-        // P=0x1234 in bits[31:16], I=0x5678 in bits[15:0]
-        let reg = pack_pid_register(0x1234, 0x5678);
-        assert_eq!(reg, 0x12345678);
-    }
-
-    #[test]
-    fn unpack_register_layout() {
-        let (p, i) = unpack_pid_register(0x12345678);
-        assert_eq!(p, 0x1234);
-        assert_eq!(i, 0x5678);
     }
 }

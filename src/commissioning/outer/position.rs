@@ -20,7 +20,7 @@ use crate::trace::events::{
     EVENT_COMMISSION_POSITION_TUNE_RESULT, EVENT_COMMISSION_POSITION_TUNE_TARGET, TraceEventLevel,
     u32_arg,
 };
-use foci_tmc4671::pid::PidGain;
+use foci_tmc4671::pid::{PidGain, PidGainPair};
 
 /// Position-tune P-gain growth ratio between attempts.
 pub(crate) const POSITION_TUNE_P_MUL_NUM: u32 = 3;
@@ -152,7 +152,11 @@ pub(crate) async fn step_position_tune_with_trace<B: CommissioningBackend>(
                 return fail_outer(phase, CommissionError::Spi);
             }
 
-            let pos_reg = (data.current_p as u32) << 16;
+            let position_p = match PidGain::new(data.current_p) {
+                Ok(gain) => gain,
+                Err(_) => return fail_outer(phase, CommissionError::PositionTuneFailed),
+            };
+            let pos_reg = PidGainPair::new(position_p, PidGain::ZERO).register_value();
             if backend
                 .write_register(PID_POSITION_P_POSITION_I, pos_reg)
                 .await
@@ -367,7 +371,13 @@ pub(crate) async fn step_position_tune_with_trace<B: CommissioningBackend>(
                     } else {
                         data.current_p = new_p;
 
-                        let pos_reg = (data.current_p as u32) << 16;
+                        let position_p = match PidGain::new(data.current_p) {
+                            Ok(gain) => gain,
+                            Err(_) => {
+                                return fail_outer(phase, CommissionError::PositionTuneFailed);
+                            }
+                        };
+                        let pos_reg = PidGainPair::new(position_p, PidGain::ZERO).register_value();
                         if backend
                             .write_register(PID_POSITION_P_POSITION_I, pos_reg)
                             .await
