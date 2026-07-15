@@ -9,8 +9,8 @@
 
 use core::cell::Cell;
 use foci_tmc4671::registers::{
-    ABN_DECODER_COUNT, ADC_IWY_IUX, DSADC_MDEC_B_MDEC_A, MODE_RAMP_MODE_MOTION, MotorType,
-    MotorTypeNPolePairs, PIDOUT_UQ_UD_LIMITS, PWM_BBM_H_BBM_L, PWM_MAXCNT, PWM_SV_CHOP,
+    ABN_DECODER_COUNT, ADC_IWY_IUX, DSADC_MDEC_B_MDEC_A, MODE_RAMP_MODE_MOTION, MotionMode,
+    MotorType, MotorTypeNPolePairs, PIDOUT_UQ_UD_LIMITS, PWM_BBM_H_BBM_L, PWM_MAXCNT, PWM_SV_CHOP,
     STATUS_FLAGS, UQ_UD_EXT,
 };
 use pollster::block_on;
@@ -20,6 +20,7 @@ use super::runner::{
     ResistanceBackend, ResistanceBackendError, ResistancePoll, ResistanceRunMode, ResistanceRunner,
     run_resistance_identification,
 };
+use super::state::acquisition_opportunities_through;
 use super::types::{ResistanceCurrentEvidence, ResistanceError, ResistanceWarningFlags};
 
 /// One register write recorded by the fake backend, in issue order.
@@ -71,6 +72,10 @@ struct FakeResistanceBackend {
     last_ud: i16,
     /// Last motion mode written via MODE_RAMP_MODE_MOTION.
     last_motion_mode: u32,
+    /// Completion timestamp of the latest UqUdExt mode write.
+    energized_mode_write_us: Option<u64>,
+    /// Current-register reads in the active energized window.
+    energized_window_current_reads: u16,
     /// Monotonic encoder count returned by ABN_DECODER_COUNT.
     encoder_count: u32,
     /// Whether the enable pin is asserted.
@@ -137,6 +142,8 @@ impl FakeResistanceBackend {
             scripted_encoder_delta_count: 0,
             last_ud: 0,
             last_motion_mode: 0,
+            energized_mode_write_us: None,
+            energized_window_current_reads: 0,
             encoder_count: 0,
             enable_pin: false,
             elapsed_us: 0,
@@ -310,6 +317,9 @@ impl ResistanceBackend for FakeResistanceBackend {
             return Ok(self.scripted_status_flags);
         }
         if addr == ADC_IWY_IUX.addr() {
+            if self.last_motion_mode == MotionMode::UqUdExt as u32 {
+                self.energized_window_current_reads += 1;
+            }
             // The first ADC read of a Stopped window advances the drift-script
             // cursor, so only sampled zero windows consume a script entry.
             if self.last_motion_mode == 0 && !self.zero_window_counted {
@@ -338,6 +348,10 @@ impl ResistanceBackend for FakeResistanceBackend {
         }
         if addr == MODE_RAMP_MODE_MOTION.addr() {
             self.last_motion_mode = value;
+            if value == MotionMode::UqUdExt as u32 {
+                self.energized_mode_write_us = Some(self.elapsed_us);
+                self.energized_window_current_reads = 0;
+            }
             // A new window begins; arm the zero cursor to advance on this
             // window's first ADC sample (if it is a Stopped window).
             self.zero_window_counted = false;
@@ -500,6 +514,169 @@ fn successful_run_carries_observed_current_evidence() {
     assert_eq!(result.current.max_abs_steady_mean_current_count(), 1_440);
     assert_eq!(result.current.current_ceiling_count(), 1_600);
     assert!(!result.current.power_stage_tripped());
+}
+
+#[test]
+fn energized_monitoring_starts_one_period_after_excitation_entry() {
+    let mut backend = FakeResistanceBackend::standard();
+    backend.profile.settle_ms = 10;
+    let mut runner = ResistanceRunner::new(
+        ResistanceRunMode::CommissioningManagedEnable,
+        backend.profile(),
+        1_000,
+    )
+    .unwrap();
+    let mut now = 1_000;
+
+    let first_monitoring_deadline = loop {
+        match poll_runner(&mut runner, &mut backend, now) {
+            ResistancePoll::ReadyNow => {}
+            ResistancePoll::At(deadline)
+                if backend.last_motion_mode == MotionMode::UqUdExt as u32 =>
+            {
+                break deadline;
+            }
+            ResistancePoll::At(deadline) => now = deadline,
+            ResistancePoll::Complete(result) => panic!("unexpected completion: {result:?}"),
+        }
+    };
+    let excitation_start = backend
+        .energized_mode_write_us
+        .expect("energized mode write must anchor the schedule");
+    let period_us = u64::from(backend.profile.sample_interval_ms) * 1_000;
+
+    assert_eq!(first_monitoring_deadline, excitation_start + period_us);
+}
+
+#[test]
+fn exact_settle_boundary_begins_eight_sample_acquisition() {
+    let mut backend = FakeResistanceBackend::standard();
+    backend.profile.settle_ms = 10;
+    let mut runner = ResistanceRunner::new(
+        ResistanceRunMode::CommissioningManagedEnable,
+        backend.profile(),
+        1_000,
+    )
+    .unwrap();
+    let mut now = 1_000;
+
+    loop {
+        match poll_runner(&mut runner, &mut backend, now) {
+            ResistancePoll::ReadyNow => {}
+            ResistancePoll::At(deadline)
+                if backend.last_motion_mode == MotionMode::UqUdExt as u32 =>
+            {
+                now = deadline;
+                break;
+            }
+            ResistancePoll::At(deadline) => now = deadline,
+            ResistancePoll::Complete(result) => panic!("unexpected completion: {result:?}"),
+        }
+    }
+
+    let first_sample = poll_runner(&mut runner, &mut backend, now);
+    assert!(matches!(first_sample, ResistancePoll::At(_)));
+    assert_eq!(
+        runner.current_evidence().peak_abs_current_count(),
+        backend.last_ud.unsigned_abs()
+    );
+    assert_eq!(
+        runner
+            .current_evidence()
+            .max_abs_steady_mean_current_count(),
+        0
+    );
+    now = match first_sample {
+        ResistancePoll::At(deadline) => deadline,
+        _ => unreachable!(),
+    };
+
+    loop {
+        match poll_runner(&mut runner, &mut backend, now) {
+            ResistancePoll::At(deadline) => now = deadline,
+            ResistancePoll::ReadyNow => break,
+            ResistancePoll::Complete(result) => panic!("unexpected completion: {result:?}"),
+        }
+    }
+
+    assert_eq!(backend.energized_window_current_reads, 9);
+}
+
+#[test]
+fn wake_crossing_settle_counts_only_acquisition_deadlines() {
+    assert_eq!(
+        acquisition_opportunities_through(5_000, 10_000, 10_000, 5_000),
+        Ok(1)
+    );
+}
+
+#[test]
+fn delayed_wake_crossing_settle_takes_one_acquisition_sample_without_catch_up() {
+    let mut backend = FakeResistanceBackend::standard();
+    backend.profile.settle_ms = 10;
+    let period_us = u64::from(backend.profile.sample_interval_ms) * 1_000;
+    let mut runner = ResistanceRunner::new(
+        ResistanceRunMode::CommissioningManagedEnable,
+        backend.profile(),
+        1_000,
+    )
+    .unwrap();
+    let mut now = 1_000;
+
+    loop {
+        match poll_runner(&mut runner, &mut backend, now) {
+            ResistancePoll::ReadyNow => {}
+            ResistancePoll::At(deadline)
+                if backend.last_motion_mode == MotionMode::UqUdExt as u32 =>
+            {
+                now = deadline + period_us;
+                break;
+            }
+            ResistancePoll::At(deadline) => now = deadline,
+            ResistancePoll::Complete(result) => panic!("unexpected completion: {result:?}"),
+        }
+    }
+    let completed_before = runner.timing_evidence().completed_windows;
+
+    loop {
+        match poll_runner(&mut runner, &mut backend, now) {
+            ResistancePoll::At(deadline) => now = deadline,
+            ResistancePoll::ReadyNow => break,
+            ResistancePoll::Complete(result) => panic!("unexpected completion: {result:?}"),
+        }
+    }
+
+    assert_eq!(backend.energized_window_current_reads, 8);
+    let timing = runner.timing_evidence();
+    assert_eq!(timing.completed_windows, completed_before + 1);
+    assert_eq!(timing.missed_samples, 1);
+    assert_eq!(timing.max_consecutive_misses, 1);
+}
+
+#[test]
+fn zero_window_still_waits_for_settle_before_sampling() {
+    let mut backend = FakeResistanceBackend::standard();
+    backend.profile.zero_settle_ms = 10;
+    let mut runner = ResistanceRunner::new(
+        ResistanceRunMode::CommissioningManagedEnable,
+        backend.profile(),
+        1_000,
+    )
+    .unwrap();
+    let due = drive_to_first_sample(&mut runner, &mut backend, 1_000);
+
+    assert_eq!(backend.zero_windows_sampled, 0);
+    assert_eq!(
+        poll_runner(&mut runner, &mut backend, due - 1),
+        ResistancePoll::At(due)
+    );
+    assert_eq!(backend.zero_windows_sampled, 0);
+
+    assert!(matches!(
+        poll_runner(&mut runner, &mut backend, due),
+        ResistancePoll::At(_)
+    ));
+    assert_eq!(backend.zero_windows_sampled, 1);
 }
 
 #[test]
@@ -1431,7 +1608,7 @@ fn restore_failure_replaces_success_and_remains_terminal() {
     let mut now = 1_000;
     let mut was_enabled = false;
 
-    for _ in 0..1_000 {
+    for _ in 0..5_000 {
         match poll_runner(&mut runner, &mut backend, now) {
             ResistancePoll::ReadyNow => {}
             ResistancePoll::At(deadline) => now = deadline,

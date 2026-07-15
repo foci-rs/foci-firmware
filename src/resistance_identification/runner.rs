@@ -128,7 +128,7 @@ pub async fn run_resistance_identification<B: ResistanceBackend>(
             ResistancePoll::At(deadline_us) => {
                 let delay_us = deadline_us.saturating_sub(logical_now_us);
                 backend.delay_ms(delay_us.div_ceil(1_000)).await;
-                logical_now_us = deadline_us;
+                logical_now_us = backend.elapsed_us().max(deadline_us);
             }
             ResistancePoll::Complete(result) => return result,
         }

@@ -7,8 +7,9 @@ use foci_tmc4671::registers::{
 
 use super::{
     MAX_OPPORTUNITIES_PER_WINDOW, ResistancePoll, ResistanceRunner, ResistanceState,
-    SAMPLES_PER_WINDOW, WindowCapture, WindowPlan, WindowPurpose, pack_ud, phase_current_for_axis,
-    wrapped_encoder_delta, write,
+    SAMPLES_PER_WINDOW, WindowCapture, WindowPlan, WindowPurpose,
+    acquisition_opportunities_through, pack_ud, phase_current_for_axis, wrapped_encoder_delta,
+    write,
 };
 use crate::autotune::current_loop_actionable_status_mask;
 use crate::commissioning::capture_timing::{CaptureTiming, TimingEnvelope, sample_slot};
@@ -194,8 +195,9 @@ impl ResistanceRunner {
             encoder_before: 0,
             current_sum: 0,
             status_or: 0,
-            valid_samples: 0,
-            opportunities: 0,
+            acquisition_samples: 0,
+            acquisition_opportunities: 0,
+            settle_deadline_us: 0,
             next_sample_us: 0,
             timing: CaptureTiming::new(
                 self.profile.sample_interval_ms.saturating_mul(1_000),
@@ -232,6 +234,23 @@ impl ResistanceRunner {
                 {
                     return self.fail(backend, error);
                 }
+                if capture.plan.ud != 0 {
+                    let excitation_start_us = backend.elapsed_us();
+                    let settle_us = u64::from(capture.plan.settle_ms) * 1_000;
+                    let period_us = u64::from(self.profile.sample_interval_ms) * 1_000;
+                    let Some(settle_deadline_us) = excitation_start_us.checked_add(settle_us)
+                    else {
+                        return self.fail(backend, ResistanceError::PhaseDeadlineExceeded);
+                    };
+                    let Some(next_sample_us) = excitation_start_us.checked_add(period_us) else {
+                        return self.fail(backend, ResistanceError::PhaseDeadlineExceeded);
+                    };
+                    if settle_deadline_us > self.deadline_us || next_sample_us > self.deadline_us {
+                        return self.fail(backend, ResistanceError::PhaseDeadlineExceeded);
+                    }
+                    capture.settle_deadline_us = settle_deadline_us;
+                    capture.next_sample_us = next_sample_us;
+                }
                 capture.operation = 2;
             }
             2 => match backend.read_register(ABN_DECODER_COUNT.addr()).await {
@@ -244,10 +263,13 @@ impl ResistanceRunner {
                     if deadline > self.deadline_us {
                         return self.fail(backend, ResistanceError::PhaseDeadlineExceeded);
                     }
-                    capture.next_sample_us = deadline;
+                    if capture.plan.ud == 0 {
+                        capture.settle_deadline_us = deadline;
+                        capture.next_sample_us = deadline;
+                    }
                     capture.operation = 3;
                     self.state = ResistanceState::Window(capture);
-                    return ResistancePoll::At(deadline);
+                    return ResistancePoll::At(capture.next_sample_us);
                 }
                 Err(_) => return self.fail(backend, ResistanceError::BackendIo),
             },
@@ -308,18 +330,28 @@ impl ResistanceRunner {
                 return self.fail_window(backend, &capture, ResistanceError::TimingRejected, true);
             }
         };
-        capture.opportunities = capture
-            .opportunities
-            .saturating_add(u8::try_from(slot.missed).unwrap_or(u8::MAX))
-            .saturating_add(1);
         let axis = self.profile.axes[self.axis_index as usize];
         let current = phase_current_for_axis(axis, packed);
         if capture.plan.ud != 0 {
             self.current.observe_energized_sample(current);
         }
-        capture.current_sum += i32::from(current);
         capture.status_or |= flags;
-        capture.valid_samples += 1;
+        let acquisition_opportunities = match acquisition_opportunities_through(
+            due_us,
+            slot.sample_deadline_us,
+            capture.settle_deadline_us,
+            self.profile.sample_interval_ms.saturating_mul(1_000),
+        ) {
+            Ok(value) => value,
+            Err(error) => return self.fail_window(backend, &capture, error, true),
+        };
+        capture.acquisition_opportunities = capture
+            .acquisition_opportunities
+            .saturating_add(u8::try_from(acquisition_opportunities).unwrap_or(u8::MAX));
+        if slot.sample_deadline_us >= capture.settle_deadline_us {
+            capture.current_sum += i32::from(current);
+            capture.acquisition_samples += 1;
+        }
         capture.next_sample_us = slot.next_deadline_us;
         let completion_us = backend.elapsed_us();
         if completion_us > self.deadline_us {
@@ -342,7 +374,8 @@ impl ResistanceRunner {
                 capture.timing.snapshot().1,
             );
         }
-        if capture.opportunities > MAX_OPPORTUNITIES_PER_WINDOW || capture.timing.finish().is_err()
+        if capture.acquisition_opportunities > MAX_OPPORTUNITIES_PER_WINDOW
+            || capture.timing.finish().is_err()
         {
             return self.fail_window(
                 backend,
@@ -351,7 +384,7 @@ impl ResistanceRunner {
                 capture.timing.snapshot().1,
             );
         }
-        if capture.valid_samples == SAMPLES_PER_WINDOW {
+        if capture.acquisition_samples == SAMPLES_PER_WINDOW {
             let evidence = match capture.timing.finish() {
                 Ok(evidence) => evidence,
                 Err(_) => {

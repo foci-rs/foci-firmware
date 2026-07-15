@@ -124,8 +124,9 @@ struct WindowCapture {
     encoder_before: u32,
     current_sum: i32,
     status_or: u32,
-    valid_samples: u8,
-    opportunities: u8,
+    acquisition_samples: u8,
+    acquisition_opportunities: u8,
+    settle_deadline_us: u64,
     next_sample_us: u64,
     timing: CaptureTiming,
 }
@@ -362,6 +363,32 @@ fn phase_current_for_axis(axis: ElectricalAxis, packed: u32) -> i16 {
     } else {
         crate::tmc::decode_signed_upper_half(packed)
     }
+}
+
+pub(super) fn acquisition_opportunities_through(
+    due_us: u64,
+    sample_deadline_us: u64,
+    settle_deadline_us: u64,
+    period_us: u16,
+) -> Result<u32, ResistanceError> {
+    if sample_deadline_us < settle_deadline_us {
+        return Ok(0);
+    }
+    let period_us = u64::from(period_us);
+    if period_us == 0 || sample_deadline_us < due_us {
+        return Err(ResistanceError::TimingRejected);
+    }
+    let selected_index = (sample_deadline_us - due_us) / period_us;
+    let first_acquisition_index = if settle_deadline_us <= due_us {
+        0
+    } else {
+        (settle_deadline_us - due_us).div_ceil(period_us)
+    };
+    if first_acquisition_index > selected_index {
+        return Ok(0);
+    }
+    u32::try_from(selected_index - first_acquisition_index + 1)
+        .map_err(|_| ResistanceError::TimingRejected)
 }
 
 fn wrapped_encoder_delta(before: u32, after: u32, counts_per_rev: u32) -> i32 {
