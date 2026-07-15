@@ -914,6 +914,14 @@ pub struct FociResistanceRun {
     pub warning_flags: u32,
     /// STATUS_FLAGS accumulated (OR) across the run.
     pub status_flags_or: u32,
+    /// Largest absolute individual current sample observed while energized.
+    pub peak_abs_current_count: u16,
+    /// Largest absolute mean from a completed energized acquisition window.
+    pub max_abs_steady_mean_current_count: u16,
+    /// Current ceiling applied to individual energized samples.
+    pub current_ceiling_count: u16,
+    /// Non-zero when sample-level containment synchronously tripped the power stage.
+    pub power_stage_tripped: u8,
     /// PWM_MAXCNT readback captured during the run.
     pub pwm_maxcnt_readback: u16,
     /// Packed PWM_BBM_H_BBM_L readback captured during the run.
@@ -1283,6 +1291,10 @@ mod resistance_reply_size_tests {
             gain_path_count_slope_milli: i32::MIN,
             warning_flags: 0x7FFF_FFFF,
             status_flags_or: 0x7FFF_FFFF,
+            peak_abs_current_count: u16::MAX,
+            max_abs_steady_mean_current_count: u16::MAX,
+            current_ceiling_count: u16::MAX,
+            power_stage_tripped: u8::MAX,
             pwm_maxcnt_readback: u16::MAX,
             bbm_readback: u16::MAX,
             dsadc_mdec_readback: 0x7FFF_FFFF,
@@ -1290,6 +1302,34 @@ mod resistance_reply_size_tests {
         };
 
         assert_fits_with_id(&reply, "foci_resistance_run");
+    }
+
+    #[test]
+    fn resistance_run_current_evidence_has_stable_wire_order() {
+        let reply = FociResistanceRun {
+            oid: 1,
+            status: 2,
+            selected_r_count_slope_milli: 3,
+            gain_path_count_slope_milli: 4,
+            warning_flags: 5,
+            status_flags_or: 6,
+            peak_abs_current_count: 7,
+            max_abs_steady_mean_current_count: 8,
+            current_ceiling_count: 9,
+            power_stage_tripped: 10,
+            pwm_maxcnt_readback: 11,
+            bbm_readback: 12,
+            dsadc_mdec_readback: 13,
+            pwm_sv_chop_readback: 14,
+        };
+        let mut scratch = ScratchOutput::<64>::new();
+
+        reply.write(&mut scratch);
+
+        assert_eq!(
+            scratch.result(),
+            &[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]
+        );
     }
 
     #[test]

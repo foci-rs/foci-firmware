@@ -114,6 +114,10 @@ mod tests {
         ResistanceDone {
             oid: u8,
             status: u8,
+            peak_abs_current_count: u16,
+            max_abs_steady_mean_current_count: u16,
+            current_ceiling_count: u16,
+            power_stage_tripped: bool,
         },
     }
 
@@ -183,6 +187,10 @@ mod tests {
             self.events.push(Event::ResistanceDone {
                 oid: report.oid,
                 status: report.status,
+                peak_abs_current_count: report.peak_abs_current_count,
+                max_abs_steady_mean_current_count: report.max_abs_steady_mean_current_count,
+                current_ceiling_count: report.current_ceiling_count,
+                power_stage_tripped: report.power_stage_tripped,
             });
         }
     }
@@ -440,10 +448,10 @@ mod tests {
             gain_path_count_slope_milli: 0,
             warning_flags: 0,
             status_flags_or: 0,
-            peak_abs_current_count: 0,
-            max_abs_steady_mean_current_count: 0,
-            current_ceiling_count: 0,
-            power_stage_tripped: false,
+            peak_abs_current_count: 1200,
+            max_abs_steady_mean_current_count: 900,
+            current_ceiling_count: 1600,
+            power_stage_tripped: status != 0,
             pwm_maxcnt_readback: 3999,
             bbm_readback: 0x0909,
             dsadc_mdec_readback: 0x014B_014B,
@@ -476,7 +484,14 @@ mod tests {
                     oid: 7,
                     electrical_axis: 1,
                 },
-                Event::ResistanceDone { oid: 7, status: 0 },
+                Event::ResistanceDone {
+                    oid: 7,
+                    status: 0,
+                    peak_abs_current_count: 1200,
+                    max_abs_steady_mean_current_count: 900,
+                    current_ceiling_count: 1600,
+                    power_stage_tripped: false,
+                },
             ]
         );
     }
@@ -498,7 +513,14 @@ mod tests {
             sink.events,
             std::vec![
                 Event::ResistanceProfile { oid: 7 },
-                Event::ResistanceDone { oid: 7, status: 19 },
+                Event::ResistanceDone {
+                    oid: 7,
+                    status: 19,
+                    peak_abs_current_count: 1200,
+                    max_abs_steady_mean_current_count: 900,
+                    current_ceiling_count: 1600,
+                    power_stage_tripped: true,
+                },
             ]
         );
     }
