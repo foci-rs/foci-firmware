@@ -102,6 +102,21 @@ struct MockDelay {
     advance_on_now_us: u64,
 }
 
+#[derive(Default)]
+struct MockDiagnosticPowerStage {
+    trip_calls: u8,
+    motor_armed_at_trip: bool,
+}
+
+impl DiagnosticPowerStage for MockDiagnosticPowerStage {
+    fn trip_power_stage(&mut self) {
+        self.trip_calls = self.trip_calls.saturating_add(1);
+        self.motor_armed_at_trip = crate::state::tmc::tmc_channel0()
+            .motor_armed
+            .load(core::sync::atomic::Ordering::Relaxed);
+    }
+}
+
 impl DiagnosticDelay for MockDelay {
     async fn delay_ms(&mut self, ms: u64) {
         self.delays_ms.push(ms);
@@ -256,6 +271,7 @@ fn current_step_not_ready_returns_status_without_writes() {
                 tmc: &mut tmc,
                 runtime: &mut runtime,
                 delay: &mut delay,
+                power_stage: &mut MockDiagnosticPowerStage::default(),
                 tmc_config: &TEST_TMC_CONFIG,
                 readiness: DiagnosticReadiness {
                     homing_active: false,
@@ -296,6 +312,7 @@ fn current_vector_uses_vector_report_flag() {
                 tmc: &mut tmc,
                 runtime: &mut runtime,
                 delay: &mut delay,
+                power_stage: &mut MockDiagnosticPowerStage::default(),
                 tmc_config: &TEST_TMC_CONFIG,
                 readiness: DiagnosticReadiness {
                     homing_active: true,
@@ -345,6 +362,7 @@ fn current_step_success_records_settle_delays_and_restores_limit() {
                 tmc: &mut tmc,
                 runtime: &mut runtime,
                 delay: &mut delay,
+                power_stage: &mut MockDiagnosticPowerStage::default(),
                 tmc_config: &TEST_TMC_CONFIG,
                 readiness: DiagnosticReadiness {
                     homing_active: false,
@@ -449,6 +467,7 @@ fn flux_current_step_drives_and_reports_flux_axis() {
                 tmc: &mut tmc,
                 runtime: &mut runtime,
                 delay: &mut delay,
+                power_stage: &mut MockDiagnosticPowerStage::default(),
                 tmc_config: &TEST_TMC_CONFIG,
                 readiness: DiagnosticReadiness {
                     homing_active: false,
@@ -492,6 +511,7 @@ fn torque_sample_not_ready_does_not_emit_detail() {
                 tmc: &mut tmc,
                 runtime: &mut runtime,
                 delay: &mut delay,
+                power_stage: &mut MockDiagnosticPowerStage::default(),
                 tmc_config: &TEST_TMC_CONFIG,
                 readiness: DiagnosticReadiness {
                     homing_active: false,
@@ -528,6 +548,7 @@ fn position_offset_rejects_non_position_mode() {
                 tmc: &mut tmc,
                 runtime: &mut runtime,
                 delay: &mut delay,
+                power_stage: &mut MockDiagnosticPowerStage::default(),
                 tmc_config: &TEST_TMC_CONFIG,
                 readiness: DiagnosticReadiness {
                     homing_active: false,
@@ -572,6 +593,7 @@ fn position_offset_spi_failure_attempts_offset_restore() {
                 tmc: &mut tmc,
                 runtime: &mut runtime,
                 delay: &mut delay,
+                power_stage: &mut MockDiagnosticPowerStage::default(),
                 tmc_config: &TEST_TMC_CONFIG,
                 readiness: DiagnosticReadiness {
                     homing_active: false,
@@ -626,6 +648,7 @@ fn voltage_step_rejects_non_position_mode() {
                 tmc: &mut tmc,
                 runtime: &mut runtime,
                 delay: &mut delay,
+                power_stage: &mut MockDiagnosticPowerStage::default(),
                 tmc_config: &TEST_TMC_CONFIG,
                 readiness: DiagnosticReadiness {
                     homing_active: false,
@@ -664,6 +687,7 @@ fn voltage_step_failure_clears_external_voltage_and_restores_mode() {
                 tmc: &mut tmc,
                 runtime: &mut runtime,
                 delay: &mut delay,
+                power_stage: &mut MockDiagnosticPowerStage::default(),
                 tmc_config: &TEST_TMC_CONFIG,
                 readiness: DiagnosticReadiness {
                     homing_active: false,
@@ -723,6 +747,7 @@ fn dispatcher_returns_not_diagnostic_for_normal_request() {
                 tmc: &mut tmc,
                 runtime: &mut runtime,
                 delay: &mut delay,
+                power_stage: &mut MockDiagnosticPowerStage::default(),
                 tmc_config: &TEST_TMC_CONFIG,
                 readiness: DiagnosticReadiness {
                     homing_active: false,
@@ -812,6 +837,7 @@ fn resistance_test_request_dispatches_to_shared_runner() {
                 tmc: &mut tmc,
                 runtime: &mut runtime,
                 delay: &mut delay,
+                power_stage: &mut MockDiagnosticPowerStage::default(),
                 tmc_config: &TEST_TMC_CONFIG,
                 readiness: DiagnosticReadiness {
                     homing_active: false,
@@ -842,6 +868,82 @@ fn resistance_test_request_dispatches_to_shared_runner() {
 }
 
 #[test]
+fn resistance_trip_lowers_board_stage_before_clearing_shared_state() {
+    let _guard = crate::commission_dispatch::test_support::SHARED_STATE_MUTEX.blocking_lock();
+    let channel_state = crate::state::tmc::tmc_channel0();
+    let stepper_state = crate::state::stepper::stepper_channel0();
+    channel_state.reset();
+    stepper_state.reset();
+    channel_state
+        .motor_armed
+        .store(true, core::sync::atomic::Ordering::Relaxed);
+    stepper_state
+        .timer_active_mirror
+        .store(true, core::sync::atomic::Ordering::Relaxed);
+
+    let mut runtime = ready_runtime();
+    let mut delay = MockDelay::default();
+    let mut tmc = Tmc4671Spi::new(DiagnosticMockSpi::default());
+    let mut power_stage = MockDiagnosticPowerStage::default();
+    let mut ctx = DiagnosticContext {
+        tmc: &mut tmc,
+        runtime: &mut runtime,
+        delay: &mut delay,
+        power_stage: &mut power_stage,
+        tmc_config: &TEST_TMC_CONFIG,
+        readiness: DiagnosticReadiness {
+            homing_active: false,
+            stepper_active: false,
+            saved_voltage_limit: 777,
+        },
+    };
+
+    {
+        let mut backend = super::resistance::DiagnosticResistanceBackend::new(&mut ctx);
+        crate::resistance_identification::ResistanceBackend::set_enable_pin(&mut backend, true);
+        crate::resistance_identification::ResistanceBackend::set_enable_pin(&mut backend, false);
+    }
+    drop(ctx);
+    assert_eq!(power_stage.trip_calls, 0);
+    assert!(runtime.is_motor_enabled());
+    assert!(runtime.is_calibrated());
+
+    let mut ctx = DiagnosticContext {
+        tmc: &mut tmc,
+        runtime: &mut runtime,
+        delay: &mut delay,
+        power_stage: &mut power_stage,
+        tmc_config: &TEST_TMC_CONFIG,
+        readiness: DiagnosticReadiness {
+            homing_active: false,
+            stepper_active: false,
+            saved_voltage_limit: 777,
+        },
+    };
+    {
+        let mut backend = super::resistance::DiagnosticResistanceBackend::new(&mut ctx);
+        crate::resistance_identification::ResistanceBackend::trip_power_stage(&mut backend);
+    }
+
+    assert_eq!(power_stage.trip_calls, 1);
+    assert!(power_stage.motor_armed_at_trip);
+    assert!(!runtime.is_motor_enabled());
+    assert!(!runtime.is_calibrated());
+    assert!(
+        !channel_state
+            .motor_armed
+            .load(core::sync::atomic::Ordering::Relaxed)
+    );
+    assert!(
+        !stepper_state
+            .timer_active_mirror
+            .load(core::sync::atomic::Ordering::Relaxed)
+    );
+    channel_state.reset();
+    stepper_state.reset();
+}
+
+#[test]
 fn resistance_test_not_armed_reports_no_axes() {
     pollster::block_on(async {
         let _guard = crate::commission_dispatch::test_support::SHARED_STATE_MUTEX
@@ -863,6 +965,7 @@ fn resistance_test_not_armed_reports_no_axes() {
                 tmc: &mut tmc,
                 runtime: &mut runtime,
                 delay: &mut delay,
+                power_stage: &mut MockDiagnosticPowerStage::default(),
                 tmc_config: &TEST_TMC_CONFIG,
                 readiness: DiagnosticReadiness {
                     homing_active: false,
@@ -936,6 +1039,7 @@ fn resistance_test_uses_board_monotonic_for_sample_timing() {
                 tmc: &mut tmc,
                 runtime: &mut runtime,
                 delay: &mut delay,
+                power_stage: &mut MockDiagnosticPowerStage::default(),
                 tmc_config: &TEST_TMC_CONFIG,
                 readiness: DiagnosticReadiness {
                     homing_active: false,
@@ -998,6 +1102,7 @@ fn resistance_test_rejects_during_homing_without_invoking_runner() {
                 tmc: &mut tmc,
                 runtime: &mut runtime,
                 delay: &mut delay,
+                power_stage: &mut MockDiagnosticPowerStage::default(),
                 tmc_config: &TEST_TMC_CONFIG,
                 readiness: DiagnosticReadiness {
                     homing_active: true,

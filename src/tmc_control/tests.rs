@@ -1952,6 +1952,29 @@ fn disable_request_stops_and_clears_runtime_flags() {
 }
 
 #[test]
+fn diagnostic_trip_clears_runtime_and_step_acceptance_state() {
+    let _guard = crate::commission_dispatch::test_support::SHARED_STATE_MUTEX.blocking_lock();
+    let mut runtime = TmcControlRuntime::new_for_channel(0);
+    let tmc = crate::state::tmc::tmc_channel0();
+    let stepper = crate::state::stepper::stepper_channel0();
+    tmc.reset();
+    stepper.reset();
+    runtime.set_calibrated_for_test(true);
+    runtime.set_motor_enabled_for_test(true);
+    tmc.motor_armed.store(true, Relaxed);
+    stepper.timer_active_mirror.store(true, Relaxed);
+
+    runtime.contain_diagnostic_trip();
+
+    assert!(!runtime.is_motor_enabled());
+    assert!(!runtime.is_calibrated());
+    assert!(!tmc.motor_armed.load(Relaxed));
+    assert!(!stepper.timer_active_mirror.load(Relaxed));
+    tmc.reset();
+    stepper.reset();
+}
+
+#[test]
 fn slow_control_tick_fires_every_millisecond_under_fast_period() {
     let mut runtime = TmcControlRuntime::new_for_channel(0);
 

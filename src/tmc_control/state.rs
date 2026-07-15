@@ -604,6 +604,22 @@ impl TmcControlRuntime {
         actions
     }
 
+    /// Clear runtime and shared step-acceptance state after a diagnostic trip.
+    ///
+    /// The board must lower the physical enable GPIO and stop its step timer
+    /// before calling this synchronous bookkeeping method. It performs no SPI,
+    /// delay, allocation, or asynchronous work.
+    pub fn contain_diagnostic_trip(&mut self) {
+        self.motor_enabled = false;
+        self.calibrated = false;
+        if let Some(tmc) = crate::state::tmc::tmc_channel(self.channel) {
+            tmc.motor_armed.store(false, Relaxed);
+        }
+        if let Some(stepper) = crate::state::stepper::stepper_channel(self.channel) {
+            stepper.timer_active_mirror.store(false, Relaxed);
+        }
+    }
+
     /// Return the exact planner-timing velocity ratio cached for later consumers.
     pub const fn planner_velocity_scale(
         &self,

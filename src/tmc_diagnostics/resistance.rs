@@ -34,8 +34,14 @@ use super::{
 /// commissioning phase energizes, so a non-zero sentinel proves ADC offsets
 /// were established at some commission/arm cycle, independent of whether full
 /// commissioning ever ran afterward.
-struct DiagnosticResistanceBackend<'ctx, 'a, B, D> {
+pub(super) struct DiagnosticResistanceBackend<'ctx, 'a, B, D> {
     ctx: &'ctx mut DiagnosticContext<'a, B, D>,
+}
+
+impl<'ctx, 'a, B, D> DiagnosticResistanceBackend<'ctx, 'a, B, D> {
+    pub(super) fn new(ctx: &'ctx mut DiagnosticContext<'a, B, D>) -> Self {
+        Self { ctx }
+    }
 }
 
 impl<B, D> ResistanceBackend for DiagnosticResistanceBackend<'_, '_, B, D>
@@ -72,8 +78,8 @@ where
     }
 
     fn trip_power_stage(&mut self) {
-        // The standalone diagnostic's physical containment hook is supplied
-        // through its board-owned context before deployment.
+        self.ctx.power_stage.trip_power_stage();
+        self.ctx.runtime.contain_diagnostic_trip();
     }
 
     fn is_armed_for_open_loop_voltage(&self) -> bool {
@@ -238,7 +244,7 @@ where
         );
     }
 
-    let mut backend = DiagnosticResistanceBackend { ctx: &mut ctx };
+    let mut backend = DiagnosticResistanceBackend::new(&mut ctx);
     let terminal =
         run_resistance_identification(&mut backend, ResistanceRunMode::ExternallyArmed).await;
     let current = terminal.current();

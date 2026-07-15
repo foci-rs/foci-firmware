@@ -66,6 +66,16 @@ pub trait DiagnosticDelay {
     fn now_us(&self) -> u64;
 }
 
+/// Synchronous board-owned containment hook for active diagnostics.
+///
+/// Implementations must lower the selected channel's physical enable GPIO and
+/// stop its hardware step timer. They must not perform SPI, delay, allocation,
+/// or asynchronous work.
+pub trait DiagnosticPowerStage {
+    /// Immediately make the selected channel's power stage physically inert.
+    fn trip_power_stage(&mut self);
+}
+
 /// Mutable resources borrowed by one active diagnostic request.
 pub struct DiagnosticContext<'a, B, D> {
     /// TMC4671 SPI transport for the selected request channel.
@@ -74,6 +84,8 @@ pub struct DiagnosticContext<'a, B, D> {
     pub runtime: &'a mut crate::tmc_control::TmcControlRuntime,
     /// Board delay provider.
     pub delay: &'a mut D,
+    /// Board-owned synchronous physical containment hook.
+    pub power_stage: &'a mut dyn DiagnosticPowerStage,
     /// Board readiness snapshot for the selected request channel.
     pub readiness: DiagnosticReadiness,
     /// Board-specific TMC4671 hardware configuration, used by the
