@@ -1775,8 +1775,8 @@ mod tests {
 
         let tau_s = model.tau_e_us as f32 * 1e-6;
         let f_pwm = config.pwm_freq_hz() as f32;
-        let expected_i =
-            (CURRENT_I_DETUNED_ZERO_FACTOR / (tau_s * f_pwm)).clamp(1.0, u16::MAX as f32) as u16;
+        let expected_i = (CURRENT_I_DETUNED_ZERO_FACTOR / (tau_s * f_pwm))
+            .clamp(1.0, PidGain::MAX.raw() as f32) as u16;
 
         assert_eq!(gains.flux_i.raw(), expected_i);
         assert_eq!(gains.torque_i.raw(), expected_i);

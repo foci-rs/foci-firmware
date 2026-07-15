@@ -6,10 +6,16 @@ use foci_tmc4671::pid::PidGain;
 
 const VELOCITY_ADVANCED_PI_I_ZERO_SCALE: f32 = 65_536.0;
 
-fn advanced_pi_velocity_i_raw(ti_us: f32, f_pwm_hz: u32) -> u16 {
+fn pid_gain_from_float(value: f32) -> Option<PidGain> {
+    if !value.is_finite() || value > PidGain::MAX.raw() as f32 {
+        return None;
+    }
+    PidGain::new(value.max(1.0) as u16).ok()
+}
+
+fn advanced_pi_velocity_i_gain(ti_us: f32, f_pwm_hz: u32) -> Option<PidGain> {
     let ti_s = ti_us * 1e-6;
-    (VELOCITY_ADVANCED_PI_I_ZERO_SCALE / (ti_s * f_pwm_hz as f32)).clamp(1.0, u16::MAX as f32)
-        as u16
+    pid_gain_from_float(VELOCITY_ADVANCED_PI_I_ZERO_SCALE / (ti_s * f_pwm_hz as f32))
 }
 
 /// Metrics from a velocity-loop step-response validation test (Phase 10).
@@ -250,8 +256,8 @@ pub(crate) fn simc_velocity_gains_with_lambda_multiplier(
     };
 
     // In advanced-PI mode, the integral zero is I_raw / 65536 per PWM sample.
-    let p_reg = PidGain::new((kp * 256.0).clamp(1.0, u16::MAX as f32) as u16).ok()?;
-    let i_reg = PidGain::new(advanced_pi_velocity_i_raw(ti, f_pwm_hz)).ok()?;
+    let p_reg = pid_gain_from_float(kp * 256.0)?;
+    let i_reg = advanced_pi_velocity_i_gain(ti, f_pwm_hz)?;
 
     // Effective bandwidth = 1 / (2*pi*(lambda+theta)) in Hz.
     let bw_hz = 1_000_000.0 / (2.0 * core::f32::consts::PI * (lambda + theta));
@@ -495,6 +501,12 @@ mod tests {
     use super::super::test_support::{autotune_test_config, test_mechanical_model};
     use super::*;
 
+    #[test]
+    fn gain_conversion_accepts_maximum_and_rejects_first_negative_encoding() {
+        assert_eq!(pid_gain_from_float(32_767.0), Some(PidGain::MAX));
+        assert_eq!(pid_gain_from_float(32_768.0), None);
+    }
+
     fn passing_velocity_metrics() -> VelocityValidation {
         VelocityValidation {
             rise_time_ms: 1,
@@ -690,8 +702,8 @@ mod tests {
 
         for (ti_us, f_pwm_hz, expected) in cases {
             assert_eq!(
-                advanced_pi_velocity_i_raw(ti_us, f_pwm_hz),
-                expected,
+                advanced_pi_velocity_i_gain(ti_us, f_pwm_hz),
+                Some(crate::pid::test_gain(expected)),
                 "Ti={ti_us}us fPWM={f_pwm_hz}Hz"
             );
         }
@@ -700,8 +712,8 @@ mod tests {
     #[test]
     fn advanced_pi_velocity_i_reconstructs_requested_zero() {
         for (ti_us, f_pwm_hz) in [(4_000.0, 25_000), (10_000.0, 25_000), (20_000.0, 50_000)] {
-            let i_raw = advanced_pi_velocity_i_raw(ti_us, f_pwm_hz);
-            let reconstructed_hz = i_raw as f32 * f_pwm_hz as f32 / 65_536.0;
+            let i_raw = advanced_pi_velocity_i_gain(ti_us, f_pwm_hz).unwrap();
+            let reconstructed_hz = i_raw.raw() as f32 * f_pwm_hz as f32 / 65_536.0;
             let requested_hz = 1_000_000.0 / ti_us;
             let one_count_hz = f_pwm_hz as f32 / 65_536.0;
 
