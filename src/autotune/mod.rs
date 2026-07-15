@@ -34,9 +34,9 @@ pub use current::{
     CURRENT_AXIS_VALIDATION_PASS, CURRENT_AXIS_VALIDATION_SATURATION,
     CURRENT_AXIS_VALIDATION_STATUS_FLAGS, CURRENT_AXIS_VALIDATION_WRONG_SIGN,
     CURRENT_AXIS_VALIDATION_ZERO_TARGET, CURRENT_VALIDATION_SETTLED_MAX_SAMPLES, CurrentAxisGate,
-    CurrentAxisGateResult, CurrentAxisRetryDecision, CurrentAxisSample, CurrentValidation,
-    classify_current_axis_sample, current_axis_retry_decision, extract_step_metrics,
-    retry_current_loop_gains, synthesize_current_gains,
+    CurrentAxisGateResult, CurrentAxisRetryDecision, CurrentAxisSample,
+    classify_current_axis_sample, current_axis_retry_decision, retry_current_loop_gains,
+    synthesize_current_gains,
 };
 pub use filters::recommend_filters;
 pub use hold::{

@@ -2,7 +2,7 @@ use super::{
     AXIS_SPLIT_SOURCE_NONE, CURRENT_AXIS_FLUX, CURRENT_GAINS_TIER_PHYSICAL_SYMMETRIC,
     CommissionProfile, CurrentGainSynthesis, CurrentGainSynthesisError, CurrentGainSynthesisInput,
     CurrentGains, CurrentLoopEvidence, ELECTRICAL_MODEL_RESISTANCE_SCALE, ElectricalModel,
-    Permille, TransientBuffer,
+    Permille,
 };
 #[cfg(test)]
 use super::{
@@ -51,44 +51,6 @@ pub const CURRENT_I_STABILITY_DETUNE: f32 = 8.0;
 /// is the advanced-PI zero scale divided by the fixed stability detune.
 pub const CURRENT_I_DETUNED_ZERO_FACTOR: f32 =
     ADVANCED_PI_I_ZERO_SCALE / CURRENT_I_STABILITY_DETUNE;
-
-/// Samples used to smooth current validation settling/ringing checks.
-///
-/// Current captures include PWM/ADC ripple around the regulated value. A short
-/// trailing average keeps the validation focused on the controller envelope
-/// while preserving raw samples for rise time and overshoot.
-const CURRENT_METRIC_SMOOTHING_SAMPLES: usize = 8;
-
-/// Metrics from a current-loop step-response validation test.
-///
-/// Extracted from the [`TransientBuffer`] after a torque step.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
-pub struct CurrentValidation {
-    /// Time from 10% to 90% of target, in microseconds.
-    pub rise_time_us: u32,
-    /// Peak overshoot above target, in 0.1% units (150 = 15.0%).
-    pub overshoot_permille: Permille,
-    /// Time to settle within +/-5% of target, in microseconds.
-    pub settling_time_us: u32,
-    /// Zero-crossings of (actual - target) after peak.
-    pub ringing_count: u8,
-    /// Samples where value hit the saturation limit.
-    pub saturation_samples: u16,
-    /// |fwd_tail - rev_tail| / avg, in 0.1% units (permille).
-    /// Set to 0 by extract_step_metrics (requires two captures).
-    pub symmetry_permille: Permille,
-    /// Robust tail level: median of last 32 samples (or fewer if buffer is
-    /// shorter). Used to compute steady-state signed-current symmetry between
-    /// forward and reverse captures.
-    pub tail_level: u32,
-    /// |tail_level - target| / target, in 0.1% units (permille).
-    /// Measures whether the current loop actually reached the commanded
-    /// target. Extraction sets this to 0 for empty captures and nonzero
-    /// targets, or to 100% for a non-empty zero-target capture. The caller
-    /// computes it from the combined (worst-case) tail_level and commanded
-    /// target.
-    pub target_error_permille: Permille,
-}
 
 /// Axis sample passed validation.
 pub const CURRENT_AXIS_VALIDATION_PASS: u8 = 0;
@@ -426,37 +388,6 @@ pub fn synthesize_current_gains(
     }
 }
 
-/// Number of tail samples used for the robust tail-level statistic.
-const TAIL_LEVEL_WINDOW: usize = 32;
-
-/// Compute the median of a slice of u32 values.
-///
-/// Uses a stack-allocated scratch buffer (max 32 elements). Returns 0 for
-/// empty slices. For even-length slices, returns the mean of the two middle
-/// values.
-fn median_u32(values: &[u32]) -> u32 {
-    let len = values.len();
-    if len == 0 {
-        return 0;
-    }
-    let mut scratch = [0u32; TAIL_LEVEL_WINDOW];
-    let n = len.min(TAIL_LEVEL_WINDOW);
-    scratch[..n].copy_from_slice(&values[..n]);
-    scratch[..n].sort_unstable();
-    if n % 2 == 1 {
-        scratch[n / 2]
-    } else {
-        (scratch[n / 2 - 1] + scratch[n / 2]) / 2
-    }
-}
-
-fn trailing_average(samples: &[u32], idx: usize, window_len: usize) -> u32 {
-    let start = idx.saturating_add(1).saturating_sub(window_len);
-    let window = &samples[start..=idx];
-    let sum: u64 = window.iter().map(|&sample| sample as u64).sum();
-    (sum / window.len() as u64) as u32
-}
-
 /// Estimate current-response onset from actual voltage-step-relative offsets.
 ///
 /// This preserves the existing low-rate delay evidence only; it is not the
@@ -486,160 +417,6 @@ pub fn estimate_electrical_delay(
             (sample >= onset_threshold).then_some(u32::from(offset_us))
         })
         .ok_or(CommissionError::ElectricalModelNoSamples)
-}
-
-/// Extract step-response metrics from a transient buffer capture.
-///
-/// Analyzes a captured step response to measure rise time, overshoot,
-/// settling time, ringing, and saturation.
-///
-/// # Parameters
-/// - `buf`: captured step response samples (raw ADC or encoder values)
-/// - `target`: the target value that was commanded (step amplitude)
-/// - `pidout_limit`: saturation threshold (0 to skip saturation check)
-///
-/// Returns metrics with `symmetry_permille = 0`; symmetry requires paired
-/// forward and reverse captures. Timing fields are durations within the
-/// capture, not absolute times since the command step. Callers that schedule
-/// the first sample after one sample period should keep that origin outside
-/// this buffer.
-pub fn extract_step_metrics(
-    buf: &TransientBuffer,
-    target: u32,
-    pidout_limit: u32,
-) -> CurrentValidation {
-    let samples = buf.samples();
-    if samples.is_empty() {
-        return CurrentValidation {
-            rise_time_us: 0,
-            overshoot_permille: Permille::ZERO,
-            settling_time_us: 0,
-            ringing_count: 0,
-            saturation_samples: 0,
-            symmetry_permille: Permille::ZERO,
-            tail_level: 0,
-            target_error_permille: Permille::ZERO,
-        };
-    }
-    if target == 0 {
-        return CurrentValidation {
-            rise_time_us: 0,
-            overshoot_permille: Permille::MAX,
-            settling_time_us: 0,
-            ringing_count: 0,
-            saturation_samples: 0,
-            symmetry_permille: Permille::ZERO,
-            tail_level: 0,
-            target_error_permille: Permille::HUNDRED_PERCENT,
-        };
-    }
-
-    let period = buf.sample_period_us() as u32;
-    let target_f = target as f32;
-    let threshold_10 = (target_f * 0.10) as u32;
-    let threshold_90 = (target_f * 0.90) as u32;
-    // Current validation samples quantized ADC values. At low targets, a
-    // strict 5% band can truncate to zero counts, which would require every
-    // sample to equal the target exactly. Allow at least one count so a small,
-    // otherwise stable response can settle.
-    let settle_band = ((target_f * 0.05) as u32).max(1);
-
-    // These are relative crossing offsets; rise_time subtracts them, so the
-    // absolute capture origin does not affect the result.
-    let mut t_10: Option<u32> = None;
-    let mut t_90: Option<u32> = None;
-    let mut peak: u32 = 0;
-    let mut peak_idx: usize = 0;
-    let mut saturation_count: u16 = 0;
-
-    for (i, &s) in samples.iter().enumerate() {
-        if t_10.is_none() && s >= threshold_10 {
-            t_10 = Some(crate::sample_timing::sample_offset_us(i, period));
-        }
-        if t_90.is_none() && s >= threshold_90 {
-            t_90 = Some(crate::sample_timing::sample_offset_us(i, period));
-        }
-        if s > peak {
-            peak = s;
-            peak_idx = i;
-        }
-        if pidout_limit > 0 && s >= pidout_limit {
-            saturation_count += 1;
-        }
-    }
-
-    let rise_time_us = match (t_10, t_90) {
-        (Some(a), Some(b)) => b.saturating_sub(a),
-        _ => 0,
-    };
-
-    // Overshoot: (peak - target) / target in 0.1% units
-    let overshoot_permille = if peak > target {
-        Permille::checked_ratio(u64::from(peak - target), u64::from(target))
-            .unwrap_or(Permille::MAX)
-    } else {
-        Permille::ZERO
-    };
-
-    // Settling: last smoothed sample where |actual - target| > 5% band.
-    // Use (index + 1) * period because settling time is the duration through
-    // the period containing the last out-of-band sample, not its offset
-    // from the capture origin.
-    let mut last_outside: Option<usize> = None;
-    for (i, _) in samples.iter().enumerate() {
-        let smoothed = trailing_average(samples, i, CURRENT_METRIC_SMOOTHING_SAMPLES);
-        let diff = smoothed.abs_diff(target);
-        if diff > settle_band {
-            last_outside = Some(i);
-        }
-    }
-    let settling_time_us = match last_outside {
-        Some(idx) => crate::sample_timing::sample_elapsed_us(idx, period),
-        None => 0,
-    };
-
-    // Ringing: crossings between smoothed excursions outside the settle band.
-    // Samples inside the accepted band are ignored so ADC noise around the
-    // target does not look like sustained oscillation.
-    let mut ringing_count: u8 = 0;
-    if peak_idx + 1 < samples.len() {
-        let upper = target.saturating_add(settle_band);
-        let lower = target.saturating_sub(settle_band);
-        let mut above: Option<bool> = None;
-        for i in peak_idx + 1..samples.len() {
-            let smoothed = trailing_average(samples, i, CURRENT_METRIC_SMOOTHING_SAMPLES);
-            let now_above = if smoothed > upper {
-                Some(true)
-            } else if smoothed < lower {
-                Some(false)
-            } else {
-                None
-            };
-            if let Some(now) = now_above {
-                if let Some(prev) = above
-                    && now != prev
-                {
-                    ringing_count = ringing_count.saturating_add(1);
-                }
-                above = Some(now);
-            }
-        }
-    }
-
-    // Tail level: median of last TAIL_LEVEL_WINDOW samples.
-    let tail_start = samples.len().saturating_sub(TAIL_LEVEL_WINDOW);
-    let tail_level = median_u32(&samples[tail_start..]);
-
-    CurrentValidation {
-        rise_time_us,
-        overshoot_permille,
-        settling_time_us,
-        ringing_count,
-        saturation_samples: saturation_count,
-        symmetry_permille: Permille::ZERO,
-        tail_level,
-        target_error_permille: Permille::ZERO,
-    }
 }
 
 /// Return the retry policy decision for one current-axis validation failure.
