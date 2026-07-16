@@ -21,6 +21,7 @@ mod position;
 mod test_support;
 mod types;
 mod velocity;
+pub mod velocity_measurement;
 
 pub use buffer::{
     CaptureDirection, DelayTimestampOffsets, TRANSIENT_LEN, TransientBuffer,
