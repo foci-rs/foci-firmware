@@ -960,8 +960,9 @@ mod tests {
         let scheduled_step = size_of_val(&runtime.step_commissioning_scheduled(&mut backend));
 
         // Independent outer-safety scheduling adds explicit optional previous,
-        // start, and next timestamps to the largest engine variant.
-        assert_eq!(size_of::<CommissioningEngine>(), 3_792);
+        // start, and next timestamps to the largest engine variant. The sliding
+        // safety-velocity gate retains one additional displacement/time pair.
+        assert_eq!(size_of::<CommissioningEngine>(), 3_808);
         assert!(size_of::<CommissioningEngine>() <= 4_528);
         assert!(size_of::<CommissioningEngine>() <= 6_144);
         assert!(size_of::<capture_timing::CaptureTiming>() <= 64);
