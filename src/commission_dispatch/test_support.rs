@@ -52,6 +52,9 @@ pub struct MockBackend {
     pub capture_register_reads: usize,
     /// Ordered trace events recorded by the commissioning engine.
     pub trace_events: Vec<crate::trace::events::CommissionTraceEvent, 64>,
+    /// Characterization-only raw velocity observations.
+    #[cfg(feature = "trace")]
+    pub velocity_trace_observations: Vec<crate::trace::stream::VelocityTraceObservation, 64>,
     /// Current state of the TMC4671 enable pin.
     pub enable_pin: bool,
     /// Log of every `delay_us` call, in order.
@@ -157,6 +160,8 @@ impl MockBackend {
             register_pair_reads: 0,
             capture_register_reads: 0,
             trace_events: Vec::new(),
+            #[cfg(feature = "trace")]
+            velocity_trace_observations: Vec::new(),
             enable_pin: false,
             delay_us_log: Vec::new(),
             fail_on_write: None,
@@ -527,6 +532,14 @@ impl CommissionBoardConfig for MockBackend {
 impl CommissionTrace for MockBackend {
     fn record_commission_trace_event(&mut self, event: crate::trace::events::CommissionTraceEvent) {
         self.trace_events.push(event).ok();
+    }
+
+    #[cfg(feature = "trace")]
+    fn record_velocity_trace_observation(
+        &mut self,
+        observation: crate::trace::stream::VelocityTraceObservation,
+    ) {
+        self.velocity_trace_observations.push(observation).ok();
     }
 }
 

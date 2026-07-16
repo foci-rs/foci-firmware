@@ -30,6 +30,8 @@ pub const FRAME_TYPE_METADATA: u8 = 5;
 pub const FRAME_TYPE_CURRENT_PATH: u8 = 6;
 /// Runtime phase-advance diagnostic frame type.
 pub const FRAME_TYPE_PHASE_ADVANCE: u8 = 7;
+/// Characterization-only raw velocity observation frame type.
+pub const FRAME_TYPE_VELOCITY_OBSERVATION: u8 = 8;
 
 /// Board-level source kind.
 pub const SOURCE_KIND_BOARD: u8 = 0;
@@ -79,6 +81,10 @@ pub const CONTROL_DETAIL_PAYLOAD_LEN: usize = 28;
 pub const STATUS_PAYLOAD_LEN: usize = 40;
 /// Version-1 event payload length.
 pub const EVENT_PAYLOAD_LEN: usize = 24;
+/// Characterization velocity-observation payload length.
+pub const VELOCITY_OBSERVATION_PAYLOAD_LEN: usize = 16;
+/// Velocity observation met the existing torque-saturation threshold.
+pub const VELOCITY_OBSERVATION_FLAG_SATURATED: u8 = 1 << 0;
 /// Maximum metadata string bytes in firmware frames.
 pub const METADATA_STRING_MAX: usize = 31;
 /// Maximum source labels in a metadata frame.
@@ -386,6 +392,23 @@ pub struct EventSample {
     pub args: [i32; 4],
 }
 
+/// Raw signed velocity observation emitted only by characterization firmware.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct VelocityTraceObservation {
+    /// Signed commanded encoder rate in counts per millisecond.
+    pub target_counts_per_ms: i32,
+    /// Wrap-aware signed encoder displacement.
+    pub delta_counts: i32,
+    /// Actual interval between encoder observations.
+    pub elapsed_us: u32,
+    /// Signed-stroke identity within the velocity-validation run.
+    pub stroke_index: u16,
+    /// Commanded direction, encoded as `1` or `-1`.
+    pub direction: i8,
+    /// Observation evidence flags.
+    pub flags: u8,
+}
+
 fn put_i32(out: &mut [u8], offset: usize, value: i32) {
     out[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
 }
@@ -502,6 +525,20 @@ pub fn encode_event_payload(sample: &EventSample, out: &mut [u8; EVENT_PAYLOAD_L
     put_i32(out, 12, sample.args[1]);
     put_i32(out, 16, sample.args[2]);
     put_i32(out, 20, sample.args[3]);
+}
+
+/// Encode a characterization velocity observation into its exact wire payload.
+pub fn encode_velocity_observation_payload(
+    sample: &VelocityTraceObservation,
+    out: &mut [u8; VELOCITY_OBSERVATION_PAYLOAD_LEN],
+) {
+    *out = [0; VELOCITY_OBSERVATION_PAYLOAD_LEN];
+    put_i32(out, 0, sample.target_counts_per_ms);
+    put_i32(out, 4, sample.delta_counts);
+    put_u32(out, 8, sample.elapsed_us);
+    put_u16(out, 12, sample.stroke_index);
+    out[14] = sample.direction as u8;
+    out[15] = sample.flags;
 }
 
 #[cfg(test)]
@@ -621,6 +658,30 @@ mod tests {
         assert_eq!(&payload[4..8], &20u32.to_le_bytes());
         assert_eq!(&payload[8..12], &21u32.to_le_bytes());
         assert_eq!(&payload[12..16], &22u32.to_le_bytes());
+    }
+
+    #[test]
+    fn velocity_observation_payload_has_exact_signed_layout() {
+        let sample = VelocityTraceObservation {
+            target_counts_per_ms: -4,
+            delta_counts: -7,
+            elapsed_us: 1_037,
+            stroke_index: 513,
+            direction: -1,
+            flags: VELOCITY_OBSERVATION_FLAG_SATURATED,
+        };
+        let mut payload = [0xAA; VELOCITY_OBSERVATION_PAYLOAD_LEN];
+
+        encode_velocity_observation_payload(&sample, &mut payload);
+
+        assert_eq!(FRAME_TYPE_VELOCITY_OBSERVATION, 8);
+        assert_eq!(VELOCITY_OBSERVATION_PAYLOAD_LEN, 16);
+        assert_eq!(&payload[0..4], &(-4i32).to_le_bytes());
+        assert_eq!(&payload[4..8], &(-7i32).to_le_bytes());
+        assert_eq!(&payload[8..12], &1_037u32.to_le_bytes());
+        assert_eq!(&payload[12..14], &513u16.to_le_bytes());
+        assert_eq!(payload[14], 0xFF);
+        assert_eq!(payload[15], VELOCITY_OBSERVATION_FLAG_SATURATED);
     }
 
     #[test]

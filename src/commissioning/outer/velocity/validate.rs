@@ -152,20 +152,63 @@ fn encoder_delta_counts_per_ms(
     counts_per_rev: u32,
     elapsed_us: u64,
 ) -> Result<u32, EncoderMathError> {
+    encoder_delta_and_rate_counts_per_ms(current, previous, counts_per_rev, elapsed_us)
+        .map(|(_, rate)| rate)
+}
+
+fn encoder_delta_and_rate_counts_per_ms(
+    current: u32,
+    previous: u32,
+    counts_per_rev: u32,
+    elapsed_us: u64,
+) -> Result<(i32, u32), EncoderMathError> {
     let domain = EncoderDomain::new(counts_per_rev)?;
-    let delta_counts = domain
-        .delta(domain.count(previous), domain.count(current))?
-        .absolute_counts();
+    let delta = domain.delta(domain.count(previous), domain.count(current))?;
+    let delta_counts = delta.absolute_counts();
     if elapsed_us == 0 {
-        return Ok(0);
+        return Ok((delta.signed_counts(), 0));
     }
 
     if delta_counts == 0 {
-        return Ok(0);
+        return Ok((delta.signed_counts(), 0));
     }
 
     let numerator = delta_counts as u128 * 1000;
-    Ok(((numerator + elapsed_us as u128 / 2) / elapsed_us as u128).min(u32::MAX as u128) as u32)
+    let rate =
+        ((numerator + elapsed_us as u128 / 2) / elapsed_us as u128).min(u32::MAX as u128) as u32;
+    Ok((delta.signed_counts(), rate))
+}
+
+#[cfg(feature = "trace")]
+fn record_velocity_trace_observation<B: CommissioningBackend>(
+    backend: &mut B,
+    data: &VelocityValidateData,
+    delta_counts: i32,
+    elapsed_us: u64,
+    reverse: bool,
+    saturated: bool,
+) {
+    let Ok(elapsed_us) = u32::try_from(elapsed_us) else {
+        return;
+    };
+    let target_magnitude = i32::try_from(data.step_target).unwrap_or(i32::MAX);
+    let stroke_base = u16::from(data.attempt).saturating_mul(2);
+    backend.record_velocity_trace_observation(crate::trace::stream::VelocityTraceObservation {
+        target_counts_per_ms: if reverse {
+            -target_magnitude
+        } else {
+            target_magnitude
+        },
+        delta_counts,
+        elapsed_us,
+        stroke_index: stroke_base + u16::from(reverse),
+        direction: if reverse { -1 } else { 1 },
+        flags: if saturated {
+            crate::trace::stream::VELOCITY_OBSERVATION_FLAG_SATURATED
+        } else {
+            0
+        },
+    });
 }
 
 fn record_velocity_validate_summary<B: CommissioningBackend>(
@@ -387,7 +430,7 @@ pub(crate) async fn step_velocity_validate_with_trace<B: CommissioningBackend>(
             let Some(elapsed_us) = now.checked_sub(*last_sample_us) else {
                 return fail_outer(phase, CommissionError::InvalidSchedule);
             };
-            let velocity = match encoder_delta_counts_per_ms(
+            let (_delta_counts, velocity) = match encoder_delta_and_rate_counts_per_ms(
                 encoder_raw,
                 prev_encoder.raw_counts(),
                 counts_per_rev,
@@ -446,6 +489,7 @@ pub(crate) async fn step_velocity_validate_with_trace<B: CommissioningBackend>(
             );
             buf.push(velocity);
 
+            let mut _saturated = false;
             if data.torque_limit > 0 {
                 let sub = foci_tmc4671::registers::INTERIM_PIDOUT_TARGET_TORQUE;
                 let _ = backend.write_register(sub.addr, sub.sub_addr as u32).await;
@@ -454,9 +498,20 @@ pub(crate) async fn step_velocity_validate_with_trace<B: CommissioningBackend>(
                     let abs_commanded = commanded_torque.unsigned_abs() as u32;
                     if abs_commanded >= data.torque_limit * 9 / 10 {
                         data.saturation_count += 1;
+                        _saturated = true;
                     }
                 }
             }
+
+            #[cfg(feature = "trace")]
+            record_velocity_trace_observation(
+                backend,
+                data,
+                _delta_counts,
+                elapsed_us,
+                false,
+                _saturated,
+            );
 
             if buf.is_full() {
                 if let Err(error) = command_velocity_target(backend, safety, 0).await {
@@ -580,7 +635,7 @@ pub(crate) async fn step_velocity_validate_with_trace<B: CommissioningBackend>(
             let Some(elapsed_us) = now.checked_sub(*last_sample_us) else {
                 return fail_outer(phase, CommissionError::InvalidSchedule);
             };
-            let velocity = match encoder_delta_counts_per_ms(
+            let (_delta_counts, velocity) = match encoder_delta_and_rate_counts_per_ms(
                 encoder_raw,
                 prev_encoder.raw_counts(),
                 counts_per_rev,
@@ -639,6 +694,7 @@ pub(crate) async fn step_velocity_validate_with_trace<B: CommissioningBackend>(
             );
             buf.push(velocity);
 
+            let mut _saturated = false;
             if data.torque_limit > 0 {
                 let sub = foci_tmc4671::registers::INTERIM_PIDOUT_TARGET_TORQUE;
                 let _ = backend.write_register(sub.addr, sub.sub_addr as u32).await;
@@ -647,9 +703,20 @@ pub(crate) async fn step_velocity_validate_with_trace<B: CommissioningBackend>(
                     let abs_commanded = commanded_torque.unsigned_abs() as u32;
                     if abs_commanded >= data.torque_limit * 9 / 10 {
                         data.saturation_count += 1;
+                        _saturated = true;
                     }
                 }
             }
+
+            #[cfg(feature = "trace")]
+            record_velocity_trace_observation(
+                backend,
+                data,
+                _delta_counts,
+                elapsed_us,
+                true,
+                _saturated,
+            );
 
             if buf.is_full() {
                 if let Err(error) = command_velocity_target(backend, safety, 0).await {
@@ -2918,7 +2985,7 @@ mod tests {
                     peak_velocity: 20,
                     prev_encoder_for_velocity: Some(encoder_count(1_000)),
                     saturation_count: 0,
-                    torque_limit: 0,
+                    torque_limit: 1_000,
                     operational_velocity_limit: 500_000,
                     diagnostics: zero_diagnostics(),
                 },
@@ -2928,6 +2995,11 @@ mod tests {
             let mut backend = MockBackend::new();
             backend.elapsed_us_value = 1_600;
             backend.mechanical_encoder_position_counts_value = 1_024;
+            let torque_output = foci_tmc4671::registers::INTERIM_PIDOUT_TARGET_TORQUE;
+            backend
+                .registers
+                .insert(torque_output.data.addr(), 900)
+                .unwrap();
 
             let result = step_velocity_validate(
                 &mut phase,
@@ -2943,8 +3015,21 @@ mod tests {
 
             assert!(matches!(result, StepResult::At(2_000)));
             assert_eq!(buf.samples(), &[15]);
-            match phase {
+            #[cfg(feature = "trace")]
+            assert_eq!(
+                backend.velocity_trace_observations.as_slice(),
+                &[crate::trace::stream::VelocityTraceObservation {
+                    target_counts_per_ms: 4,
+                    delta_counts: 24,
+                    elapsed_us: 1_600,
+                    stroke_index: 0,
+                    direction: 1,
+                    flags: crate::trace::stream::VELOCITY_OBSERVATION_FLAG_SATURATED,
+                }]
+            );
+            match &phase {
                 OuterPhase::VelocityValidate { state, data, .. } => {
+                    assert_eq!(data.saturation_count, 1);
                     assert_eq!(
                         data.prev_encoder_for_velocity
                             .map(|count| count.raw_counts()),
@@ -2960,6 +3045,52 @@ mod tests {
                     ));
                 }
                 other => panic!("expected velocity validate phase, got {:?}", other),
+            }
+
+            #[cfg(feature = "trace")]
+            {
+                let OuterPhase::VelocityValidate { state, data, .. } = &mut phase else {
+                    unreachable!("velocity phase checked above");
+                };
+                *state = VelocityValidateState::ReverseCapture {
+                    next_sample_us: 2_600,
+                    last_sample_us: 1_600,
+                    ambiguity_retried: false,
+                    saturation_start: data.saturation_count,
+                };
+                data.prev_encoder_for_velocity = Some(encoder_count(1_024));
+                backend.elapsed_us_value = 2_600;
+                backend.mechanical_encoder_position_counts_value = 1_000;
+                backend
+                    .registers
+                    .insert(torque_output.data.addr(), 0)
+                    .unwrap();
+
+                let reverse_result = step_velocity_validate(
+                    &mut phase,
+                    &mut buf,
+                    OperatingMode::Nominal,
+                    0,
+                    0,
+                    false,
+                    0,
+                    &mut backend,
+                )
+                .await;
+
+                assert!(matches!(reverse_result, StepResult::At(3_600)));
+                assert_eq!(buf.samples(), &[15, 24]);
+                assert_eq!(
+                    backend.velocity_trace_observations[1],
+                    crate::trace::stream::VelocityTraceObservation {
+                        target_counts_per_ms: -4,
+                        delta_counts: -24,
+                        elapsed_us: 1_000,
+                        stroke_index: 1,
+                        direction: -1,
+                        flags: 0,
+                    }
+                );
             }
         });
     }

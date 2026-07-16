@@ -287,6 +287,14 @@ pub trait CommissionTrace {
         _event: crate::trace::events::CommissionTraceEvent,
     ) {
     }
+
+    /// Record one characterization-only raw velocity observation.
+    #[cfg(feature = "trace")]
+    fn record_velocity_trace_observation(
+        &mut self,
+        _observation: crate::trace::stream::VelocityTraceObservation,
+    ) {
+    }
 }
 
 /// Opt-in access to a production TMC4671 SPI driver for shared backend impls.
@@ -340,6 +348,14 @@ pub trait CommissionTraceAccess {
         _event: crate::trace::events::CommissionTraceEvent,
     ) {
     }
+
+    /// Record one characterization-only raw velocity observation.
+    #[cfg(feature = "trace")]
+    fn record_velocity_trace_observation_impl(
+        &mut self,
+        _observation: crate::trace::stream::VelocityTraceObservation,
+    ) {
+    }
 }
 
 /// Board-specific hooks used by [`SharedCommissioningBackend`].
@@ -361,6 +377,14 @@ pub trait CommissionBackendHooks {
     fn record_commission_trace_event(
         _channel: u8,
         _event: crate::trace::events::CommissionTraceEvent,
+    ) {
+    }
+
+    /// Record one characterization-only raw velocity observation.
+    #[cfg(feature = "trace")]
+    fn record_velocity_trace_observation(
+        _channel: u8,
+        _observation: crate::trace::stream::VelocityTraceObservation,
     ) {
     }
 }
@@ -461,6 +485,14 @@ where
         event: crate::trace::events::CommissionTraceEvent,
     ) {
         Hooks::record_commission_trace_event(self.channel, event);
+    }
+
+    #[cfg(feature = "trace")]
+    fn record_velocity_trace_observation_impl(
+        &mut self,
+        observation: crate::trace::stream::VelocityTraceObservation,
+    ) {
+        Hooks::record_velocity_trace_observation(self.channel, observation);
     }
 }
 
@@ -640,6 +672,14 @@ where
     fn record_commission_trace_event(&mut self, event: crate::trace::events::CommissionTraceEvent) {
         self.record_commission_trace_event_impl(event);
     }
+
+    #[cfg(feature = "trace")]
+    fn record_velocity_trace_observation(
+        &mut self,
+        observation: crate::trace::stream::VelocityTraceObservation,
+    ) {
+        self.record_velocity_trace_observation_impl(observation);
+    }
 }
 
 /// Complete commissioning backend capability bundle.
@@ -668,6 +708,8 @@ mod tests {
     use super::*;
 
     use core::convert::Infallible;
+    #[cfg(feature = "trace")]
+    use core::sync::atomic::AtomicI32;
     use core::sync::atomic::{
         AtomicBool, AtomicU8, AtomicU16, AtomicU32, AtomicU64, Ordering::Relaxed,
     };
@@ -706,6 +748,8 @@ mod tests {
     static LAST_DELAY_US: AtomicU32 = AtomicU32::new(0);
     static LAST_TRACE_CHANNEL: AtomicU8 = AtomicU8::new(u8::MAX);
     static LAST_TRACE_EVENT_ID: AtomicU16 = AtomicU16::new(0);
+    #[cfg(feature = "trace")]
+    static LAST_VELOCITY_DELTA: AtomicI32 = AtomicI32::new(0);
 
     #[derive(Default)]
     struct RecordingSpi {
@@ -801,6 +845,15 @@ mod tests {
             LAST_TRACE_CHANNEL.store(channel, Relaxed);
             LAST_TRACE_EVENT_ID.store(event.event_id, Relaxed);
         }
+
+        #[cfg(feature = "trace")]
+        fn record_velocity_trace_observation(
+            channel: u8,
+            observation: crate::trace::stream::VelocityTraceObservation,
+        ) {
+            LAST_TRACE_CHANNEL.store(channel, Relaxed);
+            LAST_VELOCITY_DELTA.store(observation.delta_counts, Relaxed);
+        }
     }
 
     fn reset_hooks() {
@@ -809,6 +862,8 @@ mod tests {
         LAST_DELAY_US.store(0, Relaxed);
         LAST_TRACE_CHANNEL.store(u8::MAX, Relaxed);
         LAST_TRACE_EVENT_ID.store(0, Relaxed);
+        #[cfg(feature = "trace")]
+        LAST_VELOCITY_DELTA.store(0, Relaxed);
     }
 
     #[test]
@@ -883,5 +938,33 @@ mod tests {
                 std::vec![(PID_POSITION_TARGET.addr(), 0x0102_0304)]
             );
         });
+    }
+
+    #[cfg(feature = "trace")]
+    #[test]
+    fn shared_backend_forwards_velocity_trace_observations() {
+        let _guard = TEST_LOCK
+            .lock()
+            .expect("commissioning backend test lock is available");
+        reset_hooks();
+        let mut tmc = Tmc4671Spi::new(RecordingSpi::default());
+        let mut enable_pin = RecordingPin::default();
+        let mut backend =
+            SharedCommissioningBackend::<RecordingSpi, RecordingPin, RecordingHooks>::new(
+                3,
+                &mut tmc,
+                &mut enable_pin,
+                &TEST_TMC_STATE,
+            );
+
+        backend.record_velocity_trace_observation_impl(
+            crate::trace::stream::VelocityTraceObservation {
+                delta_counts: -7,
+                ..Default::default()
+            },
+        );
+
+        assert_eq!(LAST_TRACE_CHANNEL.load(Relaxed), 3);
+        assert_eq!(LAST_VELOCITY_DELTA.load(Relaxed), -7);
     }
 }

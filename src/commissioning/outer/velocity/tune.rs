@@ -10,6 +10,9 @@ use crate::autotune::{CommissionError, CommissionProfile, OperatingMode, PhaseId
 use crate::commissioning::outer::{fail_outer, response};
 use crate::commissioning::types::{CommissioningBackend, StepResult};
 
+/// Temporary fixed velocity target used only by the characterization branch.
+pub(crate) const VELOCITY_CHARACTERIZATION_STEP_TARGET_CPMS: u32 = 4;
+
 /// Phase 9: synthesize velocity gains and transition to validation.
 ///
 /// If the mechanical-ID warning indicates low confidence, take the
@@ -87,7 +90,7 @@ pub(crate) async fn step_velocity_tune<B: CommissioningBackend>(
         );
     }
 
-    let (gains, strategy, step_target) =
+    let (gains, strategy, _selected_step_target) =
         if diagnostics.warning_code == response::OUTER_WARNING_LOW_CONFIDENCE_MECHANICAL_ID {
             let gains = response::response_velocity_gains(safety.counts_per_rev());
             (
@@ -142,6 +145,7 @@ pub(crate) async fn step_velocity_tune<B: CommissioningBackend>(
                 (gains, VelocityTuneStrategy::Model, step_target)
             }
         };
+    let step_target = VELOCITY_CHARACTERIZATION_STEP_TARGET_CPMS;
 
     defmt::info!(
         "velocity tune: P={}, I={}, limit={}, bw={}Hz, lambda={}ms, strategy={}",
@@ -271,6 +275,7 @@ mod tests {
             match phase {
                 OuterPhase::VelocityValidate { data, .. } => {
                     assert_eq!(data.strategy, VelocityTuneStrategy::ResponseRamp);
+                    assert_eq!(data.step_target, VELOCITY_CHARACTERIZATION_STEP_TARGET_CPMS);
                     assert!(data.diagnostics.synth_velocity_i > OUTER_MAX_VELOCITY_I);
                     assert_eq!(
                         data.diagnostics.warning_code,
@@ -333,6 +338,7 @@ mod tests {
             let clean_lambda_ms = match clean_phase {
                 OuterPhase::VelocityValidate { data, .. } => {
                     assert_eq!(data.strategy, VelocityTuneStrategy::Model);
+                    assert_eq!(data.step_target, VELOCITY_CHARACTERIZATION_STEP_TARGET_CPMS);
                     data.gains.lambda_vel_ms
                 }
                 other => panic!("expected VelocityValidate, got {:?}", other),
