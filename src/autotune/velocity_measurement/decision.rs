@@ -19,6 +19,17 @@ pub enum AccuracyDecision {
     CollectMore,
 }
 
+/// Foundation-level velocity measurement outcome before terminal-status mapping.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+pub enum VelocityMeasurementOutcome {
+    /// The complete confidence interval is inside the physical error limit.
+    Pass,
+    /// The complete confidence interval is outside the physical error limit.
+    ConfidentFail,
+    /// Available evidence cannot yet support either conclusion.
+    Inconclusive,
+}
+
 /// Confidence interval derived from one selected dyadic blocking level.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub struct ConfidenceEstimate {
@@ -149,12 +160,40 @@ pub fn classify_absolute_rate(
     }
 }
 
+/// Classify one selected plateau, preserving missing or straddling evidence as inconclusive.
+pub fn classify_plateau(
+    selection: Option<PlateauSelection>,
+    target_counts_per_ms: i32,
+    counts_per_rev: u32,
+    limit_mrev_per_s: u32,
+) -> Result<VelocityMeasurementOutcome, VelocityMeasurementError> {
+    let Some(selection) = selection else {
+        return Ok(VelocityMeasurementOutcome::Inconclusive);
+    };
+    let confidence = estimate_confidence(selection)?;
+    let accuracy = classify_absolute_rate(
+        selection.exact_totals.delta_counts,
+        selection.exact_totals.elapsed_us,
+        target_counts_per_ms,
+        confidence.half_width_rate_q,
+        counts_per_rev,
+        limit_mrev_per_s,
+    )?;
+    Ok(match accuracy {
+        AccuracyDecision::Pass => VelocityMeasurementOutcome::Pass,
+        AccuracyDecision::ConfidentFail => VelocityMeasurementOutcome::ConfidentFail,
+        AccuracyDecision::CollectMore => VelocityMeasurementOutcome::Inconclusive,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
         AccuracyDecision, PlateauSelection, RawVelocityObservation, TwoIntervalRateWindow,
-        VelocityMeasurementError, classify_absolute_rate, estimate_confidence,
+        VelocityMeasurementError, VelocityMeasurementOutcome, classify_absolute_rate,
+        classify_plateau, estimate_confidence,
     };
+    use crate::autotune::velocity_measurement::RateBlock;
 
     #[test]
     fn confidence_half_width_rounds_outward() {
@@ -162,6 +201,11 @@ mod tests {
             level: 3,
             block_count: 16,
             variance_of_mean_q2: 1,
+            exact_totals: RateBlock {
+                delta_counts: 16,
+                elapsed_us: 16_000,
+                observation_count: 16,
+            },
         })
         .unwrap();
 
@@ -169,6 +213,37 @@ mod tests {
         assert_eq!(estimate.selected_blocks, 16);
         assert_eq!(estimate.variance_of_mean_q2, 1);
         assert_eq!(estimate.half_width_rate_q, 3);
+    }
+
+    #[test]
+    fn missing_plateau_is_a_first_class_inconclusive_outcome() {
+        assert_eq!(
+            classify_plateau(None, 0, 1_000, 1_000),
+            Ok(VelocityMeasurementOutcome::Inconclusive)
+        );
+    }
+
+    #[test]
+    fn plateau_classification_uses_exact_time_weighted_totals() {
+        let selection = PlateauSelection {
+            level: 2,
+            block_count: 16,
+            variance_of_mean_q2: 0,
+            exact_totals: RateBlock {
+                delta_counts: 2,
+                elapsed_us: 3_000,
+                observation_count: 16,
+            },
+        };
+
+        assert_eq!(
+            classify_plateau(Some(selection), 0, 1_000, 667),
+            Ok(VelocityMeasurementOutcome::Pass)
+        );
+        assert_eq!(
+            classify_plateau(Some(selection), 0, 1_000, 666),
+            Ok(VelocityMeasurementOutcome::ConfidentFail)
+        );
     }
 
     #[test]

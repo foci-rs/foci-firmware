@@ -10,6 +10,8 @@ pub enum VelocityMeasurementError {
     ZeroElapsed,
     /// A checked integer operation exceeded its representation.
     ArithmeticOverflow,
+    /// Evidence from opposite signed directions was combined.
+    DirectionMismatch,
 }
 
 /// One signed encoder displacement observed over an actual elapsed interval.

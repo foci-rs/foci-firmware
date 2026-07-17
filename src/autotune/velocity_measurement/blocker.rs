@@ -10,6 +10,8 @@ pub struct BlockLevel {
     pub pending_child: Option<RateBlock>,
     /// Moments over every completed block rate observed at this level.
     pub completed: BlockMoments,
+    /// Exact displacement/time totals over the completed blocks at this level.
+    pub completed_totals: Option<RateBlock>,
 }
 
 impl BlockLevel {
@@ -17,8 +19,44 @@ impl BlockLevel {
         Self {
             pending_child: None,
             completed: BlockMoments::new(),
+            completed_totals: None,
         }
     }
+
+    fn record_completed(&mut self, block: RateBlock) -> Result<(), VelocityMeasurementError> {
+        let mut completed = self.completed;
+        completed.observe_rate_q(block.rate_q()?)?;
+        let completed_totals = self
+            .completed_totals
+            .map_or(Ok(block), |totals| totals.checked_merge(block))?;
+
+        self.completed = completed;
+        self.completed_totals = Some(completed_totals);
+        Ok(())
+    }
+
+    fn merge_completed(&mut self, other: &Self) -> Result<(), VelocityMeasurementError> {
+        let mut completed = self.completed;
+        completed.merge(other.completed)?;
+        let completed_totals = match (self.completed_totals, other.completed_totals) {
+            (Some(left), Some(right)) => Some(left.checked_merge(right)?),
+            (Some(totals), None) | (None, Some(totals)) => Some(totals),
+            (None, None) => None,
+        };
+
+        self.completed = completed;
+        self.completed_totals = completed_totals;
+        Ok(())
+    }
+}
+
+/// Signed mechanical direction owning one independent velocity evidence stream.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+pub enum VelocityDirection {
+    /// Positive mechanical direction.
+    Forward,
+    /// Negative mechanical direction.
+    Reverse,
 }
 
 /// Bounded online blocker that forms successively doubled observation blocks.
@@ -36,6 +74,8 @@ pub struct PlateauSelection {
     pub block_count: u32,
     /// Estimated variance of the overall mean in squared fixed-point rate units.
     pub variance_of_mean_q2: u128,
+    /// Exact displacement/time totals over the selected completed blocks.
+    pub exact_totals: RateBlock,
 }
 
 impl<const LEVELS: usize> DyadicBlocker<LEVELS> {
@@ -59,9 +99,7 @@ impl<const LEVELS: usize> DyadicBlocker<LEVELS> {
                 break;
             }
 
-            self.levels[level_index]
-                .completed
-                .observe_rate_q(current.rate_q()?)?;
+            self.levels[level_index].record_completed(current)?;
             if let Some(pending) = self.levels[level_index].pending_child.take() {
                 block = Some(pending.checked_merge(current)?);
                 level_index += 1;
@@ -84,9 +122,16 @@ impl<const LEVELS: usize> DyadicBlocker<LEVELS> {
     /// Merge completed block populations without joining partial blocks across strokes.
     pub fn merge_completed(&mut self, other: &Self) -> Result<(), VelocityMeasurementError> {
         for (target, source) in self.levels.iter_mut().zip(other.levels.iter()) {
-            target.completed.merge(source.completed)?;
+            target.merge_completed(source)?;
         }
         Ok(())
+    }
+
+    /// Return exact completed-block totals for one blocking level.
+    pub fn level_totals(&self, level: usize) -> Option<RateBlock> {
+        self.levels
+            .get(level)
+            .and_then(|item| item.completed_totals)
     }
 
     /// Select the coarsest supported level in a two-doubling plateau run.
@@ -116,6 +161,7 @@ impl<const LEVELS: usize> DyadicBlocker<LEVELS> {
                             level: u8::try_from(candidate_index).ok()?,
                             block_count: candidate.count,
                             variance_of_mean_q2,
+                            exact_totals: self.levels[candidate_index].completed_totals?,
                         });
                         break;
                     }
@@ -126,6 +172,100 @@ impl<const LEVELS: usize> DyadicBlocker<LEVELS> {
         }
 
         selected
+    }
+}
+
+/// Bounded same-direction evidence accumulated across signed strokes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VelocityDirectionEvidence<const LEVELS: usize> {
+    direction: VelocityDirection,
+    blocker: DyadicBlocker<LEVELS>,
+    observation_count: u32,
+    current_stroke_observations: u32,
+    stroke_count: u16,
+}
+
+impl<const LEVELS: usize> VelocityDirectionEvidence<LEVELS> {
+    /// Construct empty evidence for one signed mechanical direction.
+    pub const fn new(direction: VelocityDirection) -> Self {
+        Self {
+            direction,
+            blocker: DyadicBlocker::new(),
+            observation_count: 0,
+            current_stroke_observations: 0,
+            stroke_count: 0,
+        }
+    }
+
+    /// Add one eligible raw observation to the current signed stroke.
+    pub fn observe(
+        &mut self,
+        observation: RawVelocityObservation,
+    ) -> Result<(), VelocityMeasurementError> {
+        let observation_count = self
+            .observation_count
+            .checked_add(1)
+            .ok_or(VelocityMeasurementError::ArithmeticOverflow)?;
+        let current_stroke_observations = self
+            .current_stroke_observations
+            .checked_add(1)
+            .ok_or(VelocityMeasurementError::ArithmeticOverflow)?;
+        self.blocker.observe(observation)?;
+        self.observation_count = observation_count;
+        self.current_stroke_observations = current_stroke_observations;
+        Ok(())
+    }
+
+    /// Finish the current stroke without carrying partial blocks across its boundary.
+    pub fn finish_stroke(&mut self) -> Result<(), VelocityMeasurementError> {
+        self.blocker.discard_partial_blocks();
+        if self.current_stroke_observations > 0 {
+            self.stroke_count = self
+                .stroke_count
+                .checked_add(1)
+                .ok_or(VelocityMeasurementError::ArithmeticOverflow)?;
+            self.current_stroke_observations = 0;
+        }
+        Ok(())
+    }
+
+    /// Merge completed same-direction evidence without joining partial blocks.
+    pub fn merge_completed(&mut self, other: &Self) -> Result<(), VelocityMeasurementError> {
+        if self.direction != other.direction {
+            return Err(VelocityMeasurementError::DirectionMismatch);
+        }
+        let observation_count = self
+            .observation_count
+            .checked_add(other.observation_count)
+            .ok_or(VelocityMeasurementError::ArithmeticOverflow)?;
+        let stroke_count = self
+            .stroke_count
+            .checked_add(other.stroke_count)
+            .ok_or(VelocityMeasurementError::ArithmeticOverflow)?;
+        self.blocker.merge_completed(&other.blocker)?;
+        self.observation_count = observation_count;
+        self.stroke_count = stroke_count;
+        Ok(())
+    }
+
+    /// Return the number of eligible raw observations seen in this direction.
+    pub const fn observation_count(&self) -> u32 {
+        self.observation_count
+    }
+
+    /// Return the number of completed nonempty strokes in this direction.
+    pub const fn stroke_count(&self) -> u16 {
+        self.stroke_count
+    }
+
+    /// Return exact completed-block totals for one blocking level.
+    pub fn level_totals(&self, level: usize) -> Option<RateBlock> {
+        self.blocker.level_totals(level)
+    }
+
+    /// Select the coarsest supported confidence plateau for this direction.
+    pub fn select_plateau(&self) -> Option<PlateauSelection> {
+        self.blocker.select_plateau()
     }
 }
 
@@ -162,8 +302,9 @@ mod tests {
     use core::mem::size_of;
 
     use super::{
-        BlockMoments, DyadicBlocker, PlateauSelection, RawVelocityObservation,
-        VELOCITY_MIN_SELECTED_BLOCKS, plateau_like,
+        BlockMoments, DyadicBlocker, PlateauSelection, RateBlock, RawVelocityObservation,
+        VELOCITY_MIN_SELECTED_BLOCKS, VelocityDirection, VelocityDirectionEvidence,
+        VelocityMeasurementError, plateau_like,
     };
 
     const TEST_LEVELS: usize = 8;
@@ -191,6 +332,11 @@ mod tests {
         variance_of_mean_q2: u128,
     ) {
         blocker.levels[level].completed = moments_with_q(block_count, variance_of_mean_q2);
+        blocker.levels[level].completed_totals = Some(RateBlock {
+            delta_counts: i64::from(block_count),
+            elapsed_us: u64::from(block_count) * 1_000,
+            observation_count: block_count,
+        });
     }
 
     #[test]
@@ -208,6 +354,27 @@ mod tests {
         assert!(blocker.levels[0].pending_child.is_none());
         assert!(blocker.levels[1].pending_child.is_none());
         assert!(blocker.levels[2].pending_child.is_some());
+    }
+
+    #[test]
+    fn completed_levels_retain_exact_time_weighted_totals() {
+        let mut blocker = DyadicBlocker::<TEST_LEVELS>::new();
+        for (delta_counts, elapsed_us) in [(1, 1_000), (1, 2_000), (2, 1_000), (0, 1_000)] {
+            blocker
+                .observe(RawVelocityObservation::new(delta_counts, elapsed_us).unwrap())
+                .unwrap();
+        }
+
+        for level in 0..=2 {
+            assert_eq!(
+                blocker.levels[level].completed_totals,
+                Some(RateBlock {
+                    delta_counts: 4,
+                    elapsed_us: 5_000,
+                    observation_count: 4,
+                })
+            );
+        }
     }
 
     #[test]
@@ -245,6 +412,58 @@ mod tests {
         assert_eq!(first.levels[1].completed.count, 2);
         assert!(first.levels[2].completed.count == 0);
         assert!(first.levels[0].pending_child.is_some());
+        assert_eq!(
+            first.levels[0].completed_totals,
+            Some(RateBlock {
+                delta_counts: 3,
+                elapsed_us: 6_000,
+                observation_count: 6,
+            })
+        );
+        assert_eq!(
+            first.levels[1].completed_totals,
+            Some(RateBlock {
+                delta_counts: 2,
+                elapsed_us: 4_000,
+                observation_count: 4,
+            })
+        );
+    }
+
+    #[test]
+    fn direction_evidence_discards_partial_blocks_between_strokes() {
+        let mut evidence =
+            VelocityDirectionEvidence::<TEST_LEVELS>::new(VelocityDirection::Forward);
+        for delta_counts in [1, 1, 1] {
+            evidence.observe(observation(delta_counts)).unwrap();
+        }
+        evidence.finish_stroke().unwrap();
+        for delta_counts in [1, 1, 1] {
+            evidence.observe(observation(delta_counts)).unwrap();
+        }
+        evidence.finish_stroke().unwrap();
+
+        assert_eq!(evidence.observation_count(), 6);
+        assert_eq!(evidence.stroke_count(), 2);
+        assert_eq!(
+            evidence.level_totals(1),
+            Some(RateBlock {
+                delta_counts: 4,
+                elapsed_us: 4_000,
+                observation_count: 4,
+            })
+        );
+    }
+
+    #[test]
+    fn direction_evidence_refuses_opposite_direction_merge() {
+        let mut forward = VelocityDirectionEvidence::<TEST_LEVELS>::new(VelocityDirection::Forward);
+        let reverse = VelocityDirectionEvidence::<TEST_LEVELS>::new(VelocityDirection::Reverse);
+
+        assert_eq!(
+            forward.merge_completed(&reverse),
+            Err(VelocityMeasurementError::DirectionMismatch)
+        );
     }
 
     #[test]
@@ -293,6 +512,11 @@ mod tests {
                 level: 3,
                 block_count: 16,
                 variance_of_mean_q2: 101,
+                exact_totals: RateBlock {
+                    delta_counts: 16,
+                    elapsed_us: 16_000,
+                    observation_count: 16,
+                },
             })
         );
     }
