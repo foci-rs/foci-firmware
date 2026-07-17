@@ -265,12 +265,16 @@ fn encode_rung(report: VelocitySweepRungReport) -> VelocitySweepCanonicalRecord 
 /// Encode the detailed terminal in a trace-only canonical record.
 pub(crate) fn encode_velocity_sweep_terminal(
     report: VelocitySweepTerminal,
+    encoder_counts_per_rev: u32,
+    f_pwm_hz: u32,
 ) -> VelocitySweepCanonicalRecord {
     use crate::commissioning::types::VelocitySweepOutcome;
 
     let mut record = VelocitySweepCanonicalRecord::new();
     record.push_u8(4);
     record.push_u32(report.run_sequence);
+    record.push_u32(encoder_counts_per_rev);
+    record.push_u32(f_pwm_hz);
     for band in [report.forward, report.reverse] {
         let direction = super::sweep_evidence::direction_report_code(band.direction);
         let closure = band_closure_report_code(band.closure);

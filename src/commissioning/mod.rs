@@ -800,6 +800,8 @@ impl CommissioningEngine {
                 backend.record_velocity_sweep_trace_record(
                     crate::commissioning::outer::velocity::sweep_reporting::encode_velocity_sweep_terminal(
                         *terminal,
+                        backend.mechanical_encoder_quadrature_counts_per_rev(),
+                        backend.tmc_config().pwm_freq_hz(),
                     ),
                 );
                 let level = match terminal.outcome {

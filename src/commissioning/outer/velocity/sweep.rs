@@ -349,6 +349,7 @@ pub(crate) async fn step_velocity_sweep_with_trace<B: CommissioningBackend>(
                     stroke_index: u16::from(data.rung_index) * 4 + u16::from(data.slot),
                     direction: slot_direction(data.slot) as i8,
                     flags: u8::from(data.peak_torque_target >= plan_usable_limit(data)),
+                    peak_torque_target_abs: data.peak_torque_target,
                 },
             );
             data.previous_encoder_raw = encoder_raw;
