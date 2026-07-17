@@ -325,3 +325,7 @@ fn ceiled_u32(value: f32) -> Result<u32, StationarityExclusion> {
     }
     Ok(libm::ceilf(value) as u32)
 }
+
+#[cfg(test)]
+#[path = "stationarity_tests.rs"]
+mod tests;
