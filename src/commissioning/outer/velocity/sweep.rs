@@ -375,7 +375,6 @@ pub(crate) async fn step_velocity_sweep_with_trace<B: CommissioningBackend>(
             {
                 return fail_sweep(phase, backend, CommissionError::Spi).await;
             }
-            safety.end_primitive();
             *state = VelocitySweepState::ClearSettleIntegrator {
                 settle_started_us: backend.elapsed_us(),
             };
@@ -519,6 +518,7 @@ pub(crate) async fn step_velocity_sweep_with_trace<B: CommissioningBackend>(
                 }
                 Err(error) => return fail_sweep(phase, backend, error).await,
             }
+            safety.end_primitive();
             *state = VelocitySweepState::Advance;
             StepResult::ReadyNow
         }
@@ -914,8 +914,19 @@ mod tests {
                     ..
                 }
             ));
+            let OuterPhase::VelocitySweep { safety, .. } = &phase else {
+                panic!("velocity sweep should remain active");
+            };
+            assert!(safety.primitive_start_us.is_some());
 
             pollster::block_on(step_velocity_sweep_with_trace(&mut phase, &mut backend));
+            let OuterPhase::VelocitySweep { safety, .. } = &phase else {
+                panic!("velocity sweep should remain active");
+            };
+            assert!(
+                safety.primitive_start_us.is_some(),
+                "the local travel window must cover zero-target settle"
+            );
             pollster::block_on(step_velocity_sweep_with_trace(&mut phase, &mut backend));
             let result =
                 pollster::block_on(step_velocity_sweep_with_trace(&mut phase, &mut backend));
@@ -934,6 +945,13 @@ mod tests {
                 pollster::block_on(step_velocity_sweep_with_trace(&mut phase, &mut backend));
             }
             pollster::block_on(step_velocity_sweep_with_trace(&mut phase, &mut backend));
+            let OuterPhase::VelocitySweep { safety, .. } = &phase else {
+                panic!("velocity sweep should remain active");
+            };
+            assert!(
+                safety.primitive_start_us.is_none(),
+                "confirmed rest ends the moving-plus-settle primitive"
+            );
             let advance =
                 pollster::block_on(step_velocity_sweep_with_trace(&mut phase, &mut backend));
             if slot == 3 {
