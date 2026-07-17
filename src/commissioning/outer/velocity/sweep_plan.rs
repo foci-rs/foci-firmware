@@ -11,6 +11,8 @@ pub const ENVELOPE_ABSOLUTE_MARGIN_MREV_S: u32 = 2_000;
 pub const MOVING_STROKE_US: u32 = 256_000;
 /// Fixed duration of one zero-target settle.
 pub const ZERO_SETTLE_US: u32 = 200_000;
+/// Maximum cooperative analysis dwell after the fixed settle window.
+pub const SETTLE_ANALYSIS_BUDGET_US: u32 = 20_000;
 /// Minimum number of distinct gains that can support the required evidence geometry.
 pub const MIN_STRUCTURAL_RUNGS: usize = 5;
 /// Maximum audited gain count in one deterministic sweep.
@@ -224,6 +226,7 @@ pub fn plan_velocity_sweep(
     }
     let primitive_us = MOVING_STROKE_US
         .checked_add(ZERO_SETTLE_US)
+        .and_then(|value| value.checked_add(SETTLE_ANALYSIS_BUDGET_US))
         .ok_or(VelocityPlanError::Arithmetic)?;
     if primitive_us.div_ceil(1_000) > u32::from(request.max_duration_ms) {
         return Err(VelocityPlanError::InvalidRequest);

@@ -3,8 +3,9 @@ use super::{
     EFFECTIVE_CEILING_ENCODER, EFFECTIVE_CEILING_MACHINE, ENVELOPE_ABSOLUTE_MARGIN_MREV_S,
     ENVELOPE_PROPORTIONAL_DEN, ENVELOPE_PROPORTIONAL_NUM, MAX_SWEEP_RUNGS, MIN_STRUCTURAL_RUNGS,
     MOVING_STROKE_US, OBSERVATIONS_PER_DIRECTION_PER_RUNG, RequestedVelocitySource,
-    VelocityPlanError, VelocitySweepRequest, ZERO_SETTLE_US, build_gain_ladder, current_gain_span,
-    envelope_cap, plan_velocity_sweep, representability_ceilings, travel_cap,
+    SETTLE_ANALYSIS_BUDGET_US, VelocityPlanError, VelocitySweepRequest, ZERO_SETTLE_US,
+    build_gain_ladder, current_gain_span, envelope_cap, plan_velocity_sweep,
+    representability_ceilings, travel_cap,
 };
 
 fn request() -> VelocitySweepRequest {
@@ -142,7 +143,10 @@ fn maximum_domain_stays_inside_the_audited_two_k_family() {
 #[test]
 fn plan_freezes_exact_ladder_and_workflow_duration() {
     let plan = plan_velocity_sweep(request(), 4_000, 25_000, 1_000).unwrap();
-    let expected_ms = u32::from(plan.rung_count) * 4 * (MOVING_STROKE_US + ZERO_SETTLE_US) / 1_000;
+    let expected_ms = u32::from(plan.rung_count)
+        * 4
+        * (MOVING_STROKE_US + ZERO_SETTLE_US + SETTLE_ANALYSIS_BUDGET_US)
+        / 1_000;
     assert_eq!(plan.gains[0], plan.p_start);
     assert_eq!(plan.gains[usize::from(plan.rung_count) - 1], plan.p_top);
     assert_eq!(plan.observations_per_direction, 2);

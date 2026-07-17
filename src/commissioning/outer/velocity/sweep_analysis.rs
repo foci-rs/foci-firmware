@@ -1,8 +1,7 @@
 //! Bounded post-capture analysis for the velocity sweep.
 
 use crate::autotune::velocity_measurement::{
-    StationarityResult, VelocityDirection, estimate_confidence,
-    select_stationary_suffix_from_source,
+    StationarityResult, StationarityWorkPoll, VelocityDirection, estimate_confidence,
 };
 use crate::autotune::{
     CommissionError, equivalent_disturbance_from_rate, equivalent_disturbance_variance_from_rate,
@@ -37,18 +36,33 @@ fn slot_velocity_direction(slot: u8) -> VelocityDirection {
     }
 }
 
-pub(super) fn analyze_moving_observation(
+pub(super) fn poll_moving_observation_analysis(
     data: &mut VelocitySweepData,
     counts_per_rev: u32,
     f_pwm_hz: u32,
+) -> Result<Option<MovingObservationAnalysis>, CommissionError> {
+    let stationarity = match data
+        .analysis
+        .poll(&data.observations, &mut data.blocker)
+        .map_err(|_| CommissionError::VelocityValidationFailed)?
+    {
+        StationarityWorkPoll::Pending => return Ok(None),
+        StationarityWorkPoll::Complete(stationarity) => stationarity,
+    };
+    finish_moving_observation_analysis(data, counts_per_rev, f_pwm_hz, stationarity).map(Some)
+}
+
+fn finish_moving_observation_analysis(
+    data: &mut VelocitySweepData,
+    counts_per_rev: u32,
+    f_pwm_hz: u32,
+    stationarity: StationarityResult,
 ) -> Result<MovingObservationAnalysis, CommissionError> {
     let plan = data.plan.ok_or(CommissionError::InvalidSchedule)?;
     let p = *plan
         .gains
         .get(usize::from(data.rung_index))
         .ok_or(CommissionError::InvalidSchedule)?;
-    let stationarity = select_stationary_suffix_from_source(&data.observations, &mut data.blocker)
-        .map_err(|_| CommissionError::VelocityValidationFailed)?;
     let direction = slot_velocity_direction(data.slot);
     let predicted = u32::from(p.raw())
         .checked_mul(plan.target_velocity_register.unsigned_abs())
@@ -183,11 +197,19 @@ pub(super) fn retain_observation(
     Ok(())
 }
 
-pub(super) fn settle_is_confirmed(data: &mut VelocitySweepData) -> Result<bool, CommissionError> {
-    let stationarity = select_stationary_suffix_from_source(&data.observations, &mut data.blocker)
-        .map_err(|_| CommissionError::VelocityValidationFailed)?;
+pub(super) fn poll_settle_confirmation(
+    data: &mut VelocitySweepData,
+) -> Result<Option<bool>, CommissionError> {
+    let stationarity = match data
+        .analysis
+        .poll(&data.observations, &mut data.blocker)
+        .map_err(|_| CommissionError::VelocityValidationFailed)?
+    {
+        StationarityWorkPoll::Pending => return Ok(None),
+        StationarityWorkPoll::Complete(stationarity) => stationarity,
+    };
     let StationarityResult::Usable(suffix) = stationarity else {
-        return Ok(false);
+        return Ok(Some(false));
     };
     let confidence = estimate_confidence(suffix.selection, 3)
         .map_err(|_| CommissionError::VelocityValidationFailed)?;
@@ -198,5 +220,7 @@ pub(super) fn settle_is_confirmed(data: &mut VelocitySweepData) -> Result<bool, 
         .map_err(|_| CommissionError::VelocityValidationFailed)?;
     let half_width = i64::try_from(confidence.half_width_rate_q)
         .map_err(|_| CommissionError::VelocityValidationFailed)?;
-    Ok(mean.saturating_sub(half_width) <= 0 && mean.saturating_add(half_width) >= 0)
+    Ok(Some(
+        mean.saturating_sub(half_width) <= 0 && mean.saturating_add(half_width) >= 0,
+    ))
 }

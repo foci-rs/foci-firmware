@@ -1,6 +1,7 @@
 //! Trace-gated disturbance-identification velocity sweep.
 
 use crate::autotune::CommissionError;
+use crate::autotune::velocity_measurement::VELOCITY_SUFFIX_LENGTHS;
 use crate::commissioning::backend::CommissioningBackend;
 use crate::commissioning::encoder_domain::EncoderDomain;
 use crate::commissioning::outer::state::VelocitySweepEvidenceState;
@@ -18,13 +19,17 @@ use foci_tmc4671::registers::{
     PID_TORQUE_FLUX_TARGET, PID_VELOCITY_P_VELOCITY_I, PID_VELOCITY_TARGET,
 };
 
-use super::sweep_analysis::{analyze_moving_observation, retain_observation, settle_is_confirmed};
+use super::sweep_analysis::{
+    poll_moving_observation_analysis, poll_settle_confirmation, retain_observation,
+};
 use super::sweep_evidence::VelocityObservationClass;
 use super::sweep_plan::{
-    MAX_SAFETY_OBSERVATION_GAP_US, MOVING_STROKE_US, RequestedVelocitySource, ZERO_SETTLE_US,
+    MAX_SAFETY_OBSERVATION_GAP_US, MOVING_STROKE_US, RequestedVelocitySource,
+    SETTLE_ANALYSIS_BUDGET_US, ZERO_SETTLE_US,
 };
 
 const SAMPLE_PERIOD_US: u64 = 1_000;
+const MIN_SETTLE_CAPTURE_US: u64 = VELOCITY_SUFFIX_LENGTHS[0] as u64 * SAMPLE_PERIOD_US;
 const OUTER_VELOCITY_MODE: u32 = 0x8000_0002;
 const SWEEP_SLOT_COUNT: u8 = 4;
 const SWEEP_CAUSE_NONE: u8 = 0;
@@ -463,35 +468,42 @@ pub(crate) async fn step_velocity_sweep_with_trace<B: CommissioningBackend>(
             if clear_velocity_integrator(backend).await.is_err() {
                 return fail_sweep(phase, backend, CommissionError::Spi).await;
             }
-            let encoder_raw = match backend.read_capture_register(ABN_DECODER_COUNT).await {
-                Ok(value) => value,
-                Err(_) => return fail_sweep(phase, backend, CommissionError::Spi).await,
-            };
-            let baseline_us = backend.elapsed_us();
-            let Some(next_sample_us) = baseline_us.checked_add(SAMPLE_PERIOD_US) else {
+            let now_us = backend.elapsed_us();
+            let Some(settle_deadline_us) = settle_started_us.checked_add(u64::from(ZERO_SETTLE_US))
+            else {
                 return fail_sweep(phase, backend, CommissionError::InvalidSchedule).await;
             };
-            let Some(deadline_us) = settle_started_us.checked_add(u64::from(ZERO_SETTLE_US)) else {
+            let Some(analysis_deadline_us) =
+                now_us.checked_add(u64::from(SETTLE_ANALYSIS_BUDGET_US))
+            else {
                 return fail_sweep(phase, backend, CommissionError::InvalidSchedule).await;
             };
-            data.previous_encoder_raw = encoder_raw;
-            data.previous_read_us = baseline_us;
+            data.analysis.reset();
             *state = VelocitySweepState::AnalyzeMoving {
-                next_sample_us,
-                deadline_us,
+                settle_deadline_us,
+                analysis_deadline_us,
             };
             StepResult::ReadyNow
         }
         VelocitySweepState::AnalyzeMoving {
-            next_sample_us,
-            deadline_us,
+            settle_deadline_us,
+            analysis_deadline_us,
         } => {
-            let analysis = match analyze_moving_observation(
+            let now_us = backend.elapsed_us();
+            if now_us >= *analysis_deadline_us
+                || now_us
+                    .checked_add(MIN_SETTLE_CAPTURE_US)
+                    .is_none_or(|minimum_end_us| minimum_end_us > *settle_deadline_us)
+            {
+                return fail_sweep(phase, backend, CommissionError::InvalidSchedule).await;
+            }
+            let analysis = match poll_moving_observation_analysis(
                 data,
                 safety.counts_per_rev(),
                 backend.tmc_config().pwm_freq_hz(),
             ) {
-                Ok(analysis) => analysis,
+                Ok(Some(analysis)) => analysis,
+                Ok(None) => return StepResult::ReadyNow,
                 Err(error) => return fail_sweep(phase, backend, error).await,
             };
             let report = VelocitySweepObservation {
@@ -527,18 +539,14 @@ pub(crate) async fn step_velocity_sweep_with_trace<B: CommissioningBackend>(
             if retain_observation(data, analysis.summary).is_err() {
                 return fail_sweep(phase, backend, CommissionError::InvalidSchedule).await;
             }
-            if backend.elapsed_us() >= *next_sample_us {
-                return fail_sweep(phase, backend, CommissionError::InvalidSchedule).await;
-            }
-            let next_sample = *next_sample_us;
-            let deadline = *deadline_us;
+            let settle_deadline = *settle_deadline_us;
+            data.analysis.reset();
             data.observations.clear();
             *state = if let Some(error) = terminal_error {
                 VelocitySweepState::FaultTerminal { error }
             } else {
-                VelocitySweepState::SettleCapture {
-                    next_sample_us: next_sample,
-                    deadline_us: deadline,
+                VelocitySweepState::BeginSettleCapture {
+                    settle_deadline_us: settle_deadline,
                     current_headroom,
                 }
             };
@@ -546,6 +554,33 @@ pub(crate) async fn step_velocity_sweep_with_trace<B: CommissioningBackend>(
                 .integrity
                 .record(VelocitySweepEvent::Observation(report));
             StepResult::VelocitySweepEvent(event)
+        }
+        VelocitySweepState::BeginSettleCapture {
+            settle_deadline_us,
+            current_headroom,
+        } => {
+            let encoder_raw = match backend.read_capture_register(ABN_DECODER_COUNT).await {
+                Ok(value) => value,
+                Err(_) => return fail_sweep(phase, backend, CommissionError::Spi).await,
+            };
+            let baseline_us = backend.elapsed_us();
+            if baseline_us
+                .checked_add(MIN_SETTLE_CAPTURE_US)
+                .is_none_or(|minimum_end_us| minimum_end_us > *settle_deadline_us)
+            {
+                return fail_sweep(phase, backend, CommissionError::InvalidSchedule).await;
+            }
+            let Some(next_sample_us) = baseline_us.checked_add(SAMPLE_PERIOD_US) else {
+                return fail_sweep(phase, backend, CommissionError::InvalidSchedule).await;
+            };
+            data.previous_encoder_raw = encoder_raw;
+            data.previous_read_us = baseline_us;
+            *state = VelocitySweepState::SettleCapture {
+                next_sample_us,
+                deadline_us: *settle_deadline_us,
+                current_headroom: *current_headroom,
+            };
+            StepResult::At(next_sample_us)
         }
         VelocitySweepState::SettleCapture {
             next_sample_us,
@@ -596,8 +631,15 @@ pub(crate) async fn step_velocity_sweep_with_trace<B: CommissioningBackend>(
             data.previous_encoder_raw = encoder_raw;
             data.previous_read_us = read_us;
             if read_us >= *deadline_us {
+                let Some(analysis_deadline_us) =
+                    read_us.checked_add(u64::from(SETTLE_ANALYSIS_BUDGET_US))
+                else {
+                    return fail_sweep(phase, backend, CommissionError::InvalidSchedule).await;
+                };
+                data.analysis.reset();
                 *state = VelocitySweepState::AnalyzeSettle {
                     current_headroom: *current_headroom,
+                    analysis_deadline_us,
                 };
                 StepResult::ReadyNow
             } else {
@@ -610,15 +652,24 @@ pub(crate) async fn step_velocity_sweep_with_trace<B: CommissioningBackend>(
                 }
             }
         }
-        VelocitySweepState::AnalyzeSettle { current_headroom } => {
-            match settle_is_confirmed(data) {
-                Ok(true) => {}
-                Ok(false) => {
+        VelocitySweepState::AnalyzeSettle {
+            current_headroom,
+            analysis_deadline_us,
+        } => {
+            if backend.elapsed_us() >= *analysis_deadline_us {
+                return fail_sweep(phase, backend, CommissionError::InvalidSchedule).await;
+            }
+            match poll_settle_confirmation(data) {
+                Ok(Some(true)) => {}
+                Ok(Some(false)) => {
                     return fail_sweep(phase, backend, CommissionError::VelocityValidationFailed)
                         .await;
                 }
+                Ok(None) => return StepResult::ReadyNow,
                 Err(error) => return fail_sweep(phase, backend, error).await,
             }
+            data.analysis.reset();
+            data.observations.clear();
             safety.end_primitive();
             *state = if *current_headroom {
                 VelocitySweepState::CurrentHeadroomTerminal
@@ -902,7 +953,48 @@ mod tests {
         }
         pollster::block_on(step_velocity_sweep_with_trace(phase, backend));
         pollster::block_on(step_velocity_sweep_with_trace(phase, backend));
-        pollster::block_on(step_velocity_sweep_with_trace(phase, backend))
+        poll_until_observation(phase, backend).0
+    }
+
+    fn poll_until_observation(
+        phase: &mut OuterPhase,
+        backend: &mut MockBackend,
+    ) -> (StepResult, usize) {
+        for poll_count in 1..=128 {
+            let result = pollster::block_on(step_velocity_sweep_with_trace(phase, backend));
+            if matches!(
+                result,
+                StepResult::VelocitySweepEvent(VelocitySweepEvent::Observation(_))
+            ) {
+                assert!(
+                    poll_count > 1,
+                    "moving analysis must yield before emitting its observation"
+                );
+                return (result, poll_count);
+            }
+            assert!(matches!(result, StepResult::ReadyNow));
+        }
+        panic!("moving analysis did not finish within its bounded work count");
+    }
+
+    fn poll_until_settle_analysis_completes(
+        phase: &mut OuterPhase,
+        backend: &mut MockBackend,
+    ) -> StepResult {
+        for _ in 0..128 {
+            let result = pollster::block_on(step_velocity_sweep_with_trace(phase, backend));
+            let still_analyzing = matches!(
+                phase,
+                OuterPhase::VelocitySweep {
+                    state: VelocitySweepState::AnalyzeSettle { .. },
+                    ..
+                }
+            );
+            if !still_analyzing || !matches!(result, StepResult::ReadyNow) {
+                return result;
+            }
+        }
+        panic!("settle analysis did not finish within its bounded work count");
     }
 
     #[test]
@@ -951,7 +1043,10 @@ mod tests {
             backend.set_abn_decoder_count(encoder_count);
             pollster::block_on(step_velocity_sweep_with_trace(&mut phase, &mut backend));
         }
-        pollster::block_on(step_velocity_sweep_with_trace(&mut phase, &mut backend));
+        assert!(matches!(
+            poll_until_settle_analysis_completes(&mut phase, &mut backend),
+            StepResult::ReadyNow
+        ));
 
         let StepResult::VelocitySweepTerminal(terminal) =
             pollster::block_on(step_velocity_sweep_with_trace(&mut phase, &mut backend))
@@ -987,8 +1082,8 @@ mod tests {
             data.observations.push(1, 1_000).unwrap();
         }
         *state = VelocitySweepState::AnalyzeMoving {
-            next_sample_us: 1_000,
-            deadline_us: 200_000,
+            settle_deadline_us: 200_000,
+            analysis_deadline_us: 1_000,
         };
         backend.elapsed_us_value = 1_000;
 
@@ -1013,6 +1108,7 @@ mod tests {
         }
         pollster::block_on(step_velocity_sweep_with_trace(&mut phase, &mut backend));
         pollster::block_on(step_velocity_sweep_with_trace(&mut phase, &mut backend));
+        poll_until_observation(&mut phase, &mut backend);
         pollster::block_on(step_velocity_sweep_with_trace(&mut phase, &mut backend));
         for sample in 257..=456u64 {
             encoder_count += 1;
@@ -1022,7 +1118,7 @@ mod tests {
         }
 
         assert_sweep_fault(
-            pollster::block_on(step_velocity_sweep_with_trace(&mut phase, &mut backend)),
+            poll_until_settle_analysis_completes(&mut phase, &mut backend),
             CommissionError::VelocityValidationFailed,
         );
         assert_fail_closed_tail(&backend);
@@ -1084,8 +1180,7 @@ mod tests {
                 "the local travel window must cover zero-target settle"
             );
             pollster::block_on(step_velocity_sweep_with_trace(&mut phase, &mut backend));
-            let result =
-                pollster::block_on(step_velocity_sweep_with_trace(&mut phase, &mut backend));
+            let (result, _) = poll_until_observation(&mut phase, &mut backend);
             let StepResult::VelocitySweepEvent(VelocitySweepEvent::Observation(report)) = result
             else {
                 panic!("moving analysis must stream one observation");
@@ -1100,7 +1195,10 @@ mod tests {
                 backend.set_abn_decoder_count(encoder_count);
                 pollster::block_on(step_velocity_sweep_with_trace(&mut phase, &mut backend));
             }
-            pollster::block_on(step_velocity_sweep_with_trace(&mut phase, &mut backend));
+            assert!(matches!(
+                poll_until_settle_analysis_completes(&mut phase, &mut backend),
+                StepResult::ReadyNow
+            ));
             let OuterPhase::VelocitySweep { safety, .. } = &phase else {
                 panic!("velocity sweep should remain active");
             };

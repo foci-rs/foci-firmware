@@ -9,7 +9,7 @@ use crate::commissioning::types::{OuterResult, OuterSafetyFault};
 
 #[cfg(feature = "trace-velocity-sweep")]
 use crate::autotune::velocity_measurement::{
-    DyadicBlocker, RawVelocityObservation, VelocityMeasurementError,
+    DyadicBlocker, RawVelocityObservation, StationarityWork, VelocityMeasurementError,
 };
 #[cfg(feature = "trace-velocity-sweep")]
 use crate::commissioning::outer::velocity::sweep_evidence::{
@@ -191,8 +191,13 @@ pub(crate) enum VelocitySweepState {
     ClearSettleIntegrator { settle_started_us: u64 },
     /// Analyze the completed moving window during the fixed settle.
     AnalyzeMoving {
-        next_sample_us: u64,
-        deadline_us: u64,
+        settle_deadline_us: u64,
+        analysis_deadline_us: u64,
+    },
+    /// Refresh the scored-rest baseline after cooperative moving analysis.
+    BeginSettleCapture {
+        settle_deadline_us: u64,
+        current_headroom: bool,
     },
     /// Observe the fixed zero-target settle on an absolute 1 kHz grid.
     SettleCapture {
@@ -201,7 +206,10 @@ pub(crate) enum VelocitySweepState {
         current_headroom: bool,
     },
     /// Confirm terminal rest without extending the settle deadline.
-    AnalyzeSettle { current_headroom: bool },
+    AnalyzeSettle {
+        current_headroom: bool,
+        analysis_deadline_us: u64,
+    },
     /// Emit a structural-fault terminal after its observation evidence.
     FaultTerminal { error: CommissionError },
     /// Emit a current-headroom terminal after confirmed rest.
@@ -252,6 +260,8 @@ pub(crate) struct VelocitySweepData {
     pub(crate) observations: VelocityObservationRing,
     #[defmt(Debug2Format)]
     pub(crate) blocker: DyadicBlocker<VELOCITY_SWEEP_BLOCK_LEVELS>,
+    #[defmt(Debug2Format)]
+    pub(crate) analysis: StationarityWork,
     pub(crate) evidence: VelocitySweepEvidenceState,
     pub(crate) forward_band: DirectionalBandAccumulator,
     pub(crate) reverse_band: DirectionalBandAccumulator,
@@ -272,6 +282,7 @@ impl VelocitySweepData {
             peak_torque_target: 0,
             observations: VelocityObservationRing::new(),
             blocker: DyadicBlocker::new(),
+            analysis: StationarityWork::new(),
             evidence: VelocitySweepEvidenceState::Empty,
             forward_band: DirectionalBandAccumulator::new(VelocityDirection::Forward),
             reverse_band: DirectionalBandAccumulator::new(VelocityDirection::Reverse),
@@ -784,7 +795,7 @@ mod tests {
         assert_eq!(size_of::<[i32; 256]>(), 1_024);
         assert_eq!(size_of::<[u16; 256]>(), 512);
         assert_eq!(size_of::<super::VelocityObservationRing>(), 1_540);
-        assert_eq!(size_of::<super::VelocitySweepData>(), 2_608);
+        assert_eq!(size_of::<super::VelocitySweepData>(), 2_832);
         assert_eq!(size_of::<super::MechanicalIdData>(), 2_184);
     }
 
