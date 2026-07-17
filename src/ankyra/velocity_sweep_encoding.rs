@@ -14,6 +14,7 @@ pub struct VelocitySweepCanonicalRecord {
 }
 
 impl VelocitySweepCanonicalRecord {
+    #[cfg(feature = "trace-velocity-sweep")]
     pub(crate) const fn new() -> Self {
         Self {
             bytes: [0; VELOCITY_SWEEP_CANONICAL_RECORD_MAX],
@@ -26,22 +27,27 @@ impl VelocitySweepCanonicalRecord {
         &self.bytes[..usize::from(self.len)]
     }
 
+    #[cfg(feature = "trace-velocity-sweep")]
     pub(crate) fn push_u8(&mut self, value: u8) {
         self.push_bytes(&value.to_le_bytes());
     }
 
+    #[cfg(feature = "trace-velocity-sweep")]
     pub(crate) fn push_u16(&mut self, value: u16) {
         self.push_bytes(&value.to_le_bytes());
     }
 
+    #[cfg(feature = "trace-velocity-sweep")]
     pub(crate) fn push_u32(&mut self, value: u32) {
         self.push_bytes(&value.to_le_bytes());
     }
 
+    #[cfg(feature = "trace-velocity-sweep")]
     pub(crate) fn push_i32(&mut self, value: i32) {
         self.push_bytes(&value.to_le_bytes());
     }
 
+    #[cfg(feature = "trace-velocity-sweep")]
     fn push_bytes(&mut self, value: &[u8]) {
         let start = usize::from(self.len);
         let end = start
