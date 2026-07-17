@@ -207,6 +207,8 @@ pub enum CommissionError {
     InductanceTimingRejected,
     /// Electrical-delay acquisition violated its timing envelope. Code 51.
     DelayTimingRejected,
+    /// Velocity-sweep analysis exceeded its declared cooperative budget. Code 52.
+    AnalysisOverrun,
 }
 
 impl CommissionError {
@@ -267,6 +269,7 @@ impl CommissionError {
             Self::ResistanceDeadlineExceeded => 49,
             Self::InductanceTimingRejected => 50,
             Self::DelayTimingRejected => 51,
+            Self::AnalysisOverrun => 52,
         }
     }
 }
@@ -603,6 +606,7 @@ mod tests {
             CommissionError::ResistanceDeadlineExceeded,
             CommissionError::InductanceTimingRejected,
             CommissionError::DelayTimingRejected,
+            CommissionError::AnalysisOverrun,
         ];
         let mut seen = [false; 256];
         for e in errors {
@@ -624,6 +628,7 @@ mod tests {
         );
         assert_eq!(CommissionError::InductanceTimingRejected.status_code(), 50);
         assert_eq!(CommissionError::DelayTimingRejected.status_code(), 51);
+        assert_eq!(CommissionError::AnalysisOverrun.status_code(), 52);
     }
 
     #[test]

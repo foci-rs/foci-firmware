@@ -495,7 +495,7 @@ pub(crate) async fn step_velocity_sweep_with_trace<B: CommissioningBackend>(
                     .checked_add(MIN_SETTLE_CAPTURE_US)
                     .is_none_or(|minimum_end_us| minimum_end_us > *settle_deadline_us)
             {
-                return fail_sweep(phase, backend, CommissionError::InvalidSchedule).await;
+                return fail_sweep(phase, backend, CommissionError::AnalysisOverrun).await;
             }
             let analysis = match poll_moving_observation_analysis(
                 data,
@@ -568,7 +568,7 @@ pub(crate) async fn step_velocity_sweep_with_trace<B: CommissioningBackend>(
                 .checked_add(MIN_SETTLE_CAPTURE_US)
                 .is_none_or(|minimum_end_us| minimum_end_us > *settle_deadline_us)
             {
-                return fail_sweep(phase, backend, CommissionError::InvalidSchedule).await;
+                return fail_sweep(phase, backend, CommissionError::AnalysisOverrun).await;
             }
             let Some(next_sample_us) = baseline_us.checked_add(SAMPLE_PERIOD_US) else {
                 return fail_sweep(phase, backend, CommissionError::InvalidSchedule).await;
@@ -657,7 +657,7 @@ pub(crate) async fn step_velocity_sweep_with_trace<B: CommissioningBackend>(
             analysis_deadline_us,
         } => {
             if backend.elapsed_us() >= *analysis_deadline_us {
-                return fail_sweep(phase, backend, CommissionError::InvalidSchedule).await;
+                return fail_sweep(phase, backend, CommissionError::AnalysisOverrun).await;
             }
             match poll_settle_confirmation(data) {
                 Ok(Some(true)) => {}
@@ -1089,7 +1089,7 @@ mod tests {
 
         assert_sweep_fault(
             pollster::block_on(step_velocity_sweep_with_trace(&mut phase, &mut backend)),
-            CommissionError::InvalidSchedule,
+            CommissionError::AnalysisOverrun,
         );
         assert_fail_closed_tail(&backend);
     }
