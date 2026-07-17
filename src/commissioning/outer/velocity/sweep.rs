@@ -1,7 +1,6 @@
 //! Trace-gated disturbance-identification velocity sweep.
 
 use crate::autotune::CommissionError;
-use crate::autotune::velocity_measurement::VELOCITY_SUFFIX_LENGTHS;
 use crate::commissioning::backend::CommissioningBackend;
 use crate::commissioning::encoder_domain::EncoderDomain;
 use crate::commissioning::outer::state::VelocitySweepEvidenceState;
@@ -24,12 +23,11 @@ use super::sweep_analysis::{
 };
 use super::sweep_evidence::VelocityObservationClass;
 use super::sweep_plan::{
-    MAX_SAFETY_OBSERVATION_GAP_US, MOVING_STROKE_US, RequestedVelocitySource,
-    SETTLE_ANALYSIS_BUDGET_US, ZERO_SETTLE_US,
+    MAX_SAFETY_OBSERVATION_GAP_US, MIN_SETTLE_CAPTURE_US, MOVING_STROKE_US,
+    RequestedVelocitySource, SETTLE_ANALYSIS_BUDGET_US, VELOCITY_SWEEP_SAMPLE_PERIOD_US,
+    ZERO_SETTLE_US,
 };
 
-const SAMPLE_PERIOD_US: u64 = 1_000;
-const MIN_SETTLE_CAPTURE_US: u64 = VELOCITY_SUFFIX_LENGTHS[0] as u64 * SAMPLE_PERIOD_US;
 const OUTER_VELOCITY_MODE: u32 = 0x8000_0002;
 const SWEEP_SLOT_COUNT: u8 = 4;
 const SWEEP_CAUSE_NONE: u8 = 0;
@@ -348,7 +346,9 @@ pub(crate) async fn step_velocity_sweep_with_trace<B: CommissioningBackend>(
                 return fail_sweep(phase, backend, CommissionError::Spi).await;
             }
             let started_us = backend.elapsed_us();
-            let Some(next_sample_us) = started_us.checked_add(SAMPLE_PERIOD_US) else {
+            let Some(next_sample_us) =
+                started_us.checked_add(u64::from(VELOCITY_SWEEP_SAMPLE_PERIOD_US))
+            else {
                 return fail_sweep(phase, backend, CommissionError::InvalidSchedule).await;
             };
             let Some(deadline_us) = started_us.checked_add(u64::from(MOVING_STROKE_US)) else {
@@ -442,7 +442,11 @@ pub(crate) async fn step_velocity_sweep_with_trace<B: CommissioningBackend>(
                 *state = VelocitySweepState::CommandZero;
                 StepResult::ReadyNow
             } else {
-                match next_grid_deadline(*next_sample_us, SAMPLE_PERIOD_US, read_us) {
+                match next_grid_deadline(
+                    *next_sample_us,
+                    u64::from(VELOCITY_SWEEP_SAMPLE_PERIOD_US),
+                    read_us,
+                ) {
                     Ok(next) => {
                         *next_sample_us = next.min(*deadline_us);
                         StepResult::At(*next_sample_us)
@@ -492,7 +496,7 @@ pub(crate) async fn step_velocity_sweep_with_trace<B: CommissioningBackend>(
             let now_us = backend.elapsed_us();
             if now_us >= *analysis_deadline_us
                 || now_us
-                    .checked_add(MIN_SETTLE_CAPTURE_US)
+                    .checked_add(u64::from(MIN_SETTLE_CAPTURE_US))
                     .is_none_or(|minimum_end_us| minimum_end_us > *settle_deadline_us)
             {
                 return fail_sweep(phase, backend, CommissionError::AnalysisOverrun).await;
@@ -565,12 +569,14 @@ pub(crate) async fn step_velocity_sweep_with_trace<B: CommissioningBackend>(
             };
             let baseline_us = backend.elapsed_us();
             if baseline_us
-                .checked_add(MIN_SETTLE_CAPTURE_US)
+                .checked_add(u64::from(MIN_SETTLE_CAPTURE_US))
                 .is_none_or(|minimum_end_us| minimum_end_us > *settle_deadline_us)
             {
                 return fail_sweep(phase, backend, CommissionError::AnalysisOverrun).await;
             }
-            let Some(next_sample_us) = baseline_us.checked_add(SAMPLE_PERIOD_US) else {
+            let Some(next_sample_us) =
+                baseline_us.checked_add(u64::from(VELOCITY_SWEEP_SAMPLE_PERIOD_US))
+            else {
                 return fail_sweep(phase, backend, CommissionError::InvalidSchedule).await;
             };
             data.previous_encoder_raw = encoder_raw;
@@ -643,7 +649,11 @@ pub(crate) async fn step_velocity_sweep_with_trace<B: CommissioningBackend>(
                 };
                 StepResult::ReadyNow
             } else {
-                match next_grid_deadline(*next_sample_us, SAMPLE_PERIOD_US, read_us) {
+                match next_grid_deadline(
+                    *next_sample_us,
+                    u64::from(VELOCITY_SWEEP_SAMPLE_PERIOD_US),
+                    read_us,
+                ) {
                     Ok(next) => {
                         *next_sample_us = next.min(*deadline_us);
                         StepResult::At(*next_sample_us)

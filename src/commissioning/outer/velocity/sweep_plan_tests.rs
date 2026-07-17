@@ -1,10 +1,10 @@
 use super::{
     CLAMP_ENVELOPE, CLAMP_TRAVEL, CURRENT_HEADROOM_DEN, CURRENT_HEADROOM_NUM,
     EFFECTIVE_CEILING_ENCODER, EFFECTIVE_CEILING_MACHINE, ENVELOPE_ABSOLUTE_MARGIN_MREV_S,
-    ENVELOPE_PROPORTIONAL_DEN, ENVELOPE_PROPORTIONAL_NUM, MAX_SWEEP_RUNGS, MIN_STRUCTURAL_RUNGS,
-    MOVING_STROKE_US, OBSERVATIONS_PER_DIRECTION_PER_RUNG, RequestedVelocitySource,
-    SETTLE_ANALYSIS_BUDGET_US, VelocityPlanError, VelocitySweepRequest, ZERO_SETTLE_US,
-    build_gain_ladder, current_gain_span, envelope_cap, plan_velocity_sweep,
+    ENVELOPE_PROPORTIONAL_DEN, ENVELOPE_PROPORTIONAL_NUM, MAX_SWEEP_RUNGS, MIN_SETTLE_CAPTURE_US,
+    MIN_STRUCTURAL_RUNGS, MOVING_STROKE_US, OBSERVATIONS_PER_DIRECTION_PER_RUNG,
+    RequestedVelocitySource, SETTLE_ANALYSIS_BUDGET_US, VelocityPlanError, VelocitySweepRequest,
+    ZERO_SETTLE_US, build_gain_ladder, current_gain_span, envelope_cap, plan_velocity_sweep,
     representability_ceilings, travel_cap,
 };
 
@@ -152,6 +152,16 @@ fn plan_freezes_exact_ladder_and_workflow_duration() {
     assert_eq!(plan.observations_per_direction, 2);
     assert_eq!(plan.nominal_workflow_ms, expected_ms);
     assert_eq!(plan.maximum_workflow_ms, expected_ms);
+}
+
+#[test]
+fn analysis_budget_preserves_the_shortest_scored_rest_suffix() {
+    assert_eq!(MIN_SETTLE_CAPTURE_US, 64_000);
+    assert_eq!(SETTLE_ANALYSIS_BUDGET_US, 136_000);
+    assert_eq!(
+        SETTLE_ANALYSIS_BUDGET_US + MIN_SETTLE_CAPTURE_US,
+        ZERO_SETTLE_US
+    );
 }
 
 #[test]

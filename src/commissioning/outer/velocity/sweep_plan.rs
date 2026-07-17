@@ -11,8 +11,14 @@ pub const ENVELOPE_ABSOLUTE_MARGIN_MREV_S: u32 = 2_000;
 pub const MOVING_STROKE_US: u32 = 256_000;
 /// Fixed duration of one zero-target settle.
 pub const ZERO_SETTLE_US: u32 = 200_000;
-/// Maximum cooperative analysis dwell after the fixed settle window.
-pub const SETTLE_ANALYSIS_BUDGET_US: u32 = 20_000;
+/// Sampling period used by moving and zero-target velocity observations.
+pub const VELOCITY_SWEEP_SAMPLE_PERIOD_US: u32 = 1_000;
+/// Minimum zero-target capture retained for the shortest stationarity suffix.
+pub const MIN_SETTLE_CAPTURE_US: u32 =
+    crate::autotune::velocity_measurement::VELOCITY_SUFFIX_LENGTHS[0] as u32
+        * VELOCITY_SWEEP_SAMPLE_PERIOD_US;
+/// Maximum cooperative analysis budget that preserves the minimum rest suffix.
+pub const SETTLE_ANALYSIS_BUDGET_US: u32 = ZERO_SETTLE_US - MIN_SETTLE_CAPTURE_US;
 /// Minimum number of distinct gains that can support the required evidence geometry.
 pub const MIN_STRUCTURAL_RUNGS: usize = 5;
 /// Maximum audited gain count in one deterministic sweep.
