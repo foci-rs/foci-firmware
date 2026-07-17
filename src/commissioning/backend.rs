@@ -295,6 +295,14 @@ pub trait CommissionTrace {
         _observation: crate::trace::stream::VelocityTraceObservation,
     ) {
     }
+
+    /// Record one canonical velocity-sweep evidence record for offline audit.
+    #[cfg(feature = "trace")]
+    fn record_velocity_sweep_trace_record(
+        &mut self,
+        _record: crate::ankyra::velocity_sweep_encoding::VelocitySweepCanonicalRecord,
+    ) {
+    }
 }
 
 /// Opt-in access to a production TMC4671 SPI driver for shared backend impls.
@@ -356,6 +364,14 @@ pub trait CommissionTraceAccess {
         _observation: crate::trace::stream::VelocityTraceObservation,
     ) {
     }
+
+    /// Record one canonical velocity-sweep evidence record for offline audit.
+    #[cfg(feature = "trace")]
+    fn record_velocity_sweep_trace_record_impl(
+        &mut self,
+        _record: crate::ankyra::velocity_sweep_encoding::VelocitySweepCanonicalRecord,
+    ) {
+    }
 }
 
 /// Board-specific hooks used by [`SharedCommissioningBackend`].
@@ -385,6 +401,14 @@ pub trait CommissionBackendHooks {
     fn record_velocity_trace_observation(
         _channel: u8,
         _observation: crate::trace::stream::VelocityTraceObservation,
+    ) {
+    }
+
+    /// Record one canonical velocity-sweep evidence record for offline audit.
+    #[cfg(feature = "trace")]
+    fn record_velocity_sweep_trace_record(
+        _channel: u8,
+        _record: crate::ankyra::velocity_sweep_encoding::VelocitySweepCanonicalRecord,
     ) {
     }
 }
@@ -493,6 +517,14 @@ where
         observation: crate::trace::stream::VelocityTraceObservation,
     ) {
         Hooks::record_velocity_trace_observation(self.channel, observation);
+    }
+
+    #[cfg(feature = "trace")]
+    fn record_velocity_sweep_trace_record_impl(
+        &mut self,
+        record: crate::ankyra::velocity_sweep_encoding::VelocitySweepCanonicalRecord,
+    ) {
+        Hooks::record_velocity_sweep_trace_record(self.channel, record);
     }
 }
 
@@ -679,6 +711,14 @@ where
         observation: crate::trace::stream::VelocityTraceObservation,
     ) {
         self.record_velocity_trace_observation_impl(observation);
+    }
+
+    #[cfg(feature = "trace")]
+    fn record_velocity_sweep_trace_record(
+        &mut self,
+        record: crate::ankyra::velocity_sweep_encoding::VelocitySweepCanonicalRecord,
+    ) {
+        self.record_velocity_sweep_trace_record_impl(record);
     }
 }
 

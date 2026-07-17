@@ -767,6 +767,12 @@ impl CommissioningEngine {
                 self.emit_trace_phase_start(backend, *phase);
             }
             StepResult::VelocitySweepEvent(event) => {
+                #[cfg(all(feature = "trace", feature = "trace-velocity-sweep"))]
+                backend.record_velocity_sweep_trace_record(
+                    crate::commissioning::outer::velocity::sweep_reporting::encode_velocity_sweep_event(
+                        *event,
+                    ),
+                );
                 let (event_id, sequence) = match event {
                     crate::commissioning::types::VelocitySweepEvent::Planned(report) => (
                         EVENT_COMMISSION_VELOCITY_SWEEP_PLAN,
@@ -790,6 +796,12 @@ impl CommissioningEngine {
                 });
             }
             StepResult::VelocitySweepTerminal(terminal) => {
+                #[cfg(all(feature = "trace", feature = "trace-velocity-sweep"))]
+                backend.record_velocity_sweep_trace_record(
+                    crate::commissioning::outer::velocity::sweep_reporting::encode_velocity_sweep_terminal(
+                        *terminal,
+                    ),
+                );
                 let level = match terminal.outcome {
                     crate::commissioning::types::VelocitySweepOutcome::Complete => {
                         TraceEventLevel::Info

@@ -32,6 +32,8 @@ pub const FRAME_TYPE_CURRENT_PATH: u8 = 6;
 pub const FRAME_TYPE_PHASE_ADVANCE: u8 = 7;
 /// Characterization-only raw velocity observation frame type.
 pub const FRAME_TYPE_VELOCITY_OBSERVATION: u8 = 8;
+/// Canonical velocity-sweep logical evidence frame type.
+pub const FRAME_TYPE_VELOCITY_SWEEP_EVIDENCE: u8 = 9;
 
 /// Board-level source kind.
 pub const SOURCE_KIND_BOARD: u8 = 0;

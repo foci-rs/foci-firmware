@@ -1,5 +1,61 @@
 //! Canonical bounded encodings shared by velocity-sweep replies and integrity.
 
+/// Maximum bytes in one canonical velocity-sweep evidence record.
+pub const VELOCITY_SWEEP_CANONICAL_RECORD_MAX: usize = 128;
+
+/// One fixed-width canonical velocity-sweep evidence record.
+///
+/// The same bytes feed the firmware integrity digest and the trace-only offline
+/// audit stream, preventing those two representations from drifting apart.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct VelocitySweepCanonicalRecord {
+    bytes: [u8; VELOCITY_SWEEP_CANONICAL_RECORD_MAX],
+    len: u8,
+}
+
+impl VelocitySweepCanonicalRecord {
+    pub(crate) const fn new() -> Self {
+        Self {
+            bytes: [0; VELOCITY_SWEEP_CANONICAL_RECORD_MAX],
+            len: 0,
+        }
+    }
+
+    /// Return the exact canonical bytes represented by this record.
+    pub fn as_bytes(&self) -> &[u8] {
+        &self.bytes[..usize::from(self.len)]
+    }
+
+    pub(crate) fn push_u8(&mut self, value: u8) {
+        self.push_bytes(&value.to_le_bytes());
+    }
+
+    pub(crate) fn push_u16(&mut self, value: u16) {
+        self.push_bytes(&value.to_le_bytes());
+    }
+
+    pub(crate) fn push_u32(&mut self, value: u32) {
+        self.push_bytes(&value.to_le_bytes());
+    }
+
+    pub(crate) fn push_i32(&mut self, value: i32) {
+        self.push_bytes(&value.to_le_bytes());
+    }
+
+    fn push_bytes(&mut self, value: &[u8]) {
+        let start = usize::from(self.len);
+        let end = start
+            .checked_add(value.len())
+            .expect("canonical velocity-sweep record length fits usize");
+        assert!(
+            end <= self.bytes.len(),
+            "canonical velocity-sweep record exceeds audited capacity"
+        );
+        self.bytes[start..end].copy_from_slice(value);
+        self.len = u8::try_from(end).expect("canonical velocity-sweep record length fits u8");
+    }
+}
+
 /// Encode an unsigned value as an outward-rounded mantissa and right shift.
 pub(crate) fn upper_bound_u128(value: u128) -> (u32, u8) {
     for shift in 0..=127u8 {

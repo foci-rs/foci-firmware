@@ -13,4 +13,4 @@ pub mod constants;
 pub mod handlers;
 pub mod provider;
 pub mod replies;
-pub(crate) mod velocity_sweep_encoding;
+pub mod velocity_sweep_encoding;
