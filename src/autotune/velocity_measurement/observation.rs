@@ -8,6 +8,8 @@ const MICROS_PER_SECOND: i128 = 1_000_000;
 pub enum VelocityMeasurementError {
     /// An observation or block has no elapsed time.
     ZeroElapsed,
+    /// A confidence family is empty or exceeds the audited table.
+    InvalidConfidenceFamilySize,
     /// A checked integer operation exceeded its representation.
     ArithmeticOverflow,
     /// Evidence from opposite signed directions was combined.

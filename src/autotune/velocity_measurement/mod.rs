@@ -9,8 +9,9 @@ pub use blocker::{
     VelocityDirectionEvidence,
 };
 pub use decision::{
-    AccuracyDecision, ConfidenceEstimate, TwoIntervalRateWindow, VelocityMeasurementOutcome,
-    classify_absolute_rate, classify_plateau, estimate_confidence,
+    AccuracyDecision, ConfidenceEstimate, MAX_CONFIDENCE_FAMILY_SIZE, TwoIntervalRateWindow,
+    VelocityMeasurementOutcome, classify_absolute_rate, classify_plateau,
+    confidence_multiplier_95_df15, estimate_confidence,
 };
 pub use observation::{
     BlockMoments, RateBlock, RawVelocityObservation, VELOCITY_RATE_Q_SCALE,

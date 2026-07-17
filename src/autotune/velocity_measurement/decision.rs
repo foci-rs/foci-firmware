@@ -3,7 +3,22 @@ use super::observation::{
     RateBlock, RawVelocityObservation, VELOCITY_RATE_Q_SCALE, VelocityMeasurementError,
 };
 
-const CONFIDENCE_MULTIPLIER_95: f32 = 2.131;
+/// Largest Bonferroni confidence family covered by the audited lookup table.
+pub const MAX_CONFIDENCE_FAMILY_SIZE: u16 = 64;
+
+// Two-sided 95% family-wise Bonferroni Student-t critical values at df=15.
+// Entry k-1 is t(1 - 0.05 / (2*k), 15), rounded to six decimal places.
+// Entry zero preserves the established 2.131 single-interval behavior.
+const CONFIDENCE_MULTIPLIERS_95_DF15: [f32; MAX_CONFIDENCE_FAMILY_SIZE as usize] = [
+    2.131, 2.489_88, 2.693739, 2.836627, 2.946713, 3.036283, 3.111806, 3.177104, 3.234628,
+    3.286039, 3.332518, 3.374933, 3.413943, 3.450056, 3.483677, 3.515129, 3.544677, 3.572_54,
+    3.598902, 3.623918, 3.647719, 3.670419, 3.692116, 3.712896, 3.732834, 3.751997, 3.770443,
+    3.788224, 3.805387, 3.821973, 3.838022, 3.853567, 3.868639, 3.883266, 3.897474, 3.911287,
+    3.924726, 3.937811, 3.950561, 3.962993, 3.975122, 3.986963, 3.998529, 4.009833, 4.020887,
+    4.031702, 4.042288, 4.052655, 4.062811, 4.072765, 4.082526, 4.092_1, 4.101495, 4.110717,
+    4.119773, 4.128668, 4.137409, 4.146001, 4.154448, 4.162756, 4.170929, 4.178972, 4.186888,
+    4.194683,
+];
 const MICROS_PER_SECOND: i128 = 1_000_000;
 const MILLISECONDS_PER_SECOND: i128 = 1_000;
 const MILLIREVOLUTIONS_PER_REVOLUTION: i128 = 1_000;
@@ -79,15 +94,25 @@ impl Default for TwoIntervalRateWindow {
     }
 }
 
-/// Convert a selected variance-of-the-mean plateau into a 95% confidence interval.
+/// Return the two-sided 95% family-wise multiplier for a predeclared family.
+pub fn confidence_multiplier_95_df15(family_size: u16) -> Result<f32, VelocityMeasurementError> {
+    if family_size == 0 || family_size > MAX_CONFIDENCE_FAMILY_SIZE {
+        return Err(VelocityMeasurementError::InvalidConfidenceFamilySize);
+    }
+    Ok(CONFIDENCE_MULTIPLIERS_95_DF15[usize::from(family_size - 1)])
+}
+
+/// Convert a selected variance plateau into a family-wise 95% confidence interval.
 pub fn estimate_confidence(
     selection: PlateauSelection,
+    family_size: u16,
 ) -> Result<ConfidenceEstimate, VelocityMeasurementError> {
     let variance = selection.variance_of_mean_q2 as f32;
     if !variance.is_finite() {
         return Err(VelocityMeasurementError::ArithmeticOverflow);
     }
-    let half_width = CONFIDENCE_MULTIPLIER_95 * libm::sqrtf(variance);
+    let multiplier = confidence_multiplier_95_df15(family_size)?;
+    let half_width = multiplier * libm::sqrtf(variance);
     if !half_width.is_finite() || half_width >= u64::MAX as f32 {
         return Err(VelocityMeasurementError::ArithmeticOverflow);
     }
@@ -170,7 +195,7 @@ pub fn classify_plateau(
     let Some(selection) = selection else {
         return Ok(VelocityMeasurementOutcome::Inconclusive);
     };
-    let confidence = estimate_confidence(selection)?;
+    let confidence = estimate_confidence(selection, 1)?;
     let accuracy = classify_absolute_rate(
         selection.exact_totals.delta_counts,
         selection.exact_totals.elapsed_us,
@@ -191,28 +216,71 @@ mod tests {
     use super::{
         AccuracyDecision, PlateauSelection, RawVelocityObservation, TwoIntervalRateWindow,
         VelocityMeasurementError, VelocityMeasurementOutcome, classify_absolute_rate,
-        classify_plateau, estimate_confidence,
+        classify_plateau, confidence_multiplier_95_df15, estimate_confidence,
     };
     use crate::autotune::velocity_measurement::RateBlock;
 
     #[test]
     fn confidence_half_width_rounds_outward() {
-        let estimate = estimate_confidence(PlateauSelection {
-            level: 3,
-            block_count: 16,
-            variance_of_mean_q2: 1,
-            exact_totals: RateBlock {
-                delta_counts: 16,
-                elapsed_us: 16_000,
-                observation_count: 16,
+        let estimate = estimate_confidence(
+            PlateauSelection {
+                level: 3,
+                block_count: 16,
+                variance_of_mean_q2: 1,
+                exact_totals: RateBlock {
+                    delta_counts: 16,
+                    elapsed_us: 16_000,
+                    observation_count: 16,
+                },
             },
-        })
+            1,
+        )
         .unwrap();
 
         assert_eq!(estimate.selected_level, 3);
         assert_eq!(estimate.selected_blocks, 16);
         assert_eq!(estimate.variance_of_mean_q2, 1);
         assert_eq!(estimate.half_width_rate_q, 3);
+    }
+
+    #[test]
+    fn family_one_preserves_existing_confidence_multiplier() {
+        assert_eq!(confidence_multiplier_95_df15(1), Ok(2.131));
+    }
+
+    #[test]
+    fn audited_confidence_multipliers_widen_monotonically() {
+        let mut previous = confidence_multiplier_95_df15(1).unwrap();
+        for family_size in 2..=64 {
+            let current = confidence_multiplier_95_df15(family_size).unwrap();
+            assert!(
+                current > previous,
+                "family size {family_size} did not widen"
+            );
+            previous = current;
+        }
+    }
+
+    #[test]
+    fn forty_observation_family_uses_audited_multiplier() {
+        assert_eq!(confidence_multiplier_95_df15(40), Ok(3.962_993));
+    }
+
+    #[test]
+    fn maximum_confidence_family_is_supported() {
+        assert_eq!(confidence_multiplier_95_df15(64), Ok(4.194_683));
+    }
+
+    #[test]
+    fn confidence_family_outside_audited_range_is_rejected() {
+        assert_eq!(
+            confidence_multiplier_95_df15(0),
+            Err(VelocityMeasurementError::InvalidConfidenceFamilySize)
+        );
+        assert_eq!(
+            confidence_multiplier_95_df15(65),
+            Err(VelocityMeasurementError::InvalidConfidenceFamilySize)
+        );
     }
 
     #[test]
