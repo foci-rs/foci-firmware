@@ -19,6 +19,7 @@ pub use observation::{
     VelocityMeasurementError,
 };
 pub use stationarity::{
-    StationarityExclusion, StationarityResult, StationarySuffix, VELOCITY_SUFFIX_LENGTHS,
-    VelocityObservationSource, select_stationary_suffix, select_stationary_suffix_from_source,
+    StationarityExclusion, StationarityResult, StationarityWork, StationarityWorkPoll,
+    StationarySuffix, VELOCITY_SUFFIX_LENGTHS, VelocityObservationSource, select_stationary_suffix,
+    select_stationary_suffix_from_source,
 };

@@ -1,6 +1,6 @@
 use super::{
-    StationarityExclusion, StationarityResult, VELOCITY_SUFFIX_LENGTHS,
-    analyze_stationarity_with_blocking_variance, select_stationary_suffix,
+    StationarityExclusion, StationarityResult, StationarityWork, StationarityWorkPoll,
+    VELOCITY_SUFFIX_LENGTHS, analyze_stationarity_with_blocking_variance, select_stationary_suffix,
 };
 use crate::autotune::velocity_measurement::{DyadicBlocker, RawVelocityObservation};
 
@@ -37,6 +37,53 @@ fn flat_tail_selects_the_longest_supported_suffix() {
     assert_eq!(suffix.tested_suffixes, 3);
     assert_eq!(suffix.slope_q, 0);
     assert!(suffix.selection.block_count >= 16);
+}
+
+#[test]
+fn cooperative_work_matches_synchronous_selection_across_multiple_polls() {
+    let samples = observations::<256>(|index| [1, 0, 1, 1, 0][index % 5]);
+    let mut synchronous_blocker = DyadicBlocker::<LEVELS>::new();
+    let expected = select_stationary_suffix(&samples, &mut synchronous_blocker).unwrap();
+    let mut cooperative_blocker = DyadicBlocker::<LEVELS>::new();
+    let mut work = StationarityWork::new();
+    let mut polls = 0;
+
+    let actual = loop {
+        polls += 1;
+        match work.poll(&samples[..], &mut cooperative_blocker).unwrap() {
+            StationarityWorkPoll::Pending => {}
+            StationarityWorkPoll::Complete(result) => break result,
+        }
+    };
+
+    assert_eq!(actual, expected);
+    assert!(polls > 1, "a full capture must not be analyzed in one poll");
+}
+
+#[test]
+fn cooperative_work_preserves_first_nonstationary_extension_rule() {
+    let samples = observations::<256>(|index| {
+        if index >= 192 {
+            1
+        } else if index >= 128 {
+            -100
+        } else {
+            1
+        }
+    });
+    let mut synchronous_blocker = DyadicBlocker::<LEVELS>::new();
+    let expected = select_stationary_suffix(&samples, &mut synchronous_blocker).unwrap();
+    let mut cooperative_blocker = DyadicBlocker::<LEVELS>::new();
+    let mut work = StationarityWork::new();
+
+    let actual = loop {
+        match work.poll(&samples[..], &mut cooperative_blocker).unwrap() {
+            StationarityWorkPoll::Pending => {}
+            StationarityWorkPoll::Complete(result) => break result,
+        }
+    };
+
+    assert_eq!(actual, expected);
 }
 
 #[test]

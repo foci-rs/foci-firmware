@@ -63,6 +63,482 @@ struct StationarityMetrics {
     residual_magnitude_q2: u128,
 }
 
+/// Maximum raw observations consumed by one cooperative stationarity step.
+pub const STATIONARITY_WORK_OBSERVATIONS_PER_STEP: usize = 32;
+
+/// Result of one bounded cooperative stationarity-analysis step.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StationarityWorkPoll {
+    /// More bounded work remains.
+    Pending,
+    /// The declared suffix family has been classified.
+    Complete(StationarityResult),
+}
+
+#[derive(Debug, Clone, Copy)]
+enum StationarityWorkStage {
+    Idle,
+    Blocking {
+        suffix_index: u8,
+        suffix_start: u16,
+        suffix_len: u16,
+        next_index: u16,
+    },
+    Regression {
+        suffix_index: u8,
+        suffix_start: u16,
+        suffix_len: u16,
+        block_observations: u16,
+        block_count: u16,
+        next_block: u16,
+        cumulative_elapsed_us: u64,
+        sum_x: i128,
+        sum_y: i128,
+        sum_x2: i128,
+        sum_xy: i128,
+    },
+    Residual {
+        suffix_index: u8,
+        suffix_start: u16,
+        suffix_len: u16,
+        block_observations: u16,
+        block_count: u16,
+        next_block: u16,
+        cumulative_elapsed_us: u64,
+        slope_per_us: f32,
+        intercept: f32,
+        denominator: i128,
+        residual_sum_q2: f32,
+        lag_product_sum_q2: f32,
+        previous_residual: Option<f32>,
+    },
+    Done,
+}
+
+/// Resumable nested-suffix stationarity analysis for a fixed capture.
+#[derive(Debug, Clone, Copy)]
+pub struct StationarityWork {
+    stage: StationarityWorkStage,
+    selected: Option<StationarySuffix>,
+    tested_suffixes: u8,
+}
+
+impl StationarityWork {
+    /// Construct an idle work item.
+    pub const fn new() -> Self {
+        Self {
+            stage: StationarityWorkStage::Idle,
+            selected: None,
+            tested_suffixes: 0,
+        }
+    }
+
+    /// Reset all progress before analyzing another fixed capture.
+    pub fn reset(&mut self) {
+        *self = Self::new();
+    }
+
+    /// Advance analysis by at most [`STATIONARITY_WORK_OBSERVATIONS_PER_STEP`]
+    /// raw-observation visits.
+    pub fn poll<const LEVELS: usize, S>(
+        &mut self,
+        observations: &S,
+        blocker: &mut DyadicBlocker<LEVELS>,
+    ) -> Result<StationarityWorkPoll, VelocityMeasurementError>
+    where
+        S: VelocityObservationSource + ?Sized,
+    {
+        if matches!(self.stage, StationarityWorkStage::Idle) {
+            let Some((suffix_index, suffix_len)) = first_available_suffix(observations) else {
+                self.stage = StationarityWorkStage::Done;
+                return Ok(StationarityWorkPoll::Complete(
+                    StationarityResult::Excluded(StationarityExclusion::TooFewDecorrelatedBlocks),
+                ));
+            };
+            self.start_suffix(observations, blocker, suffix_index, suffix_len)?;
+        }
+
+        match self.stage {
+            StationarityWorkStage::Blocking { .. } => self.poll_blocking(observations, blocker),
+            StationarityWorkStage::Regression { .. } => self.poll_regression(observations),
+            StationarityWorkStage::Residual { .. } => self.poll_residual(observations, blocker),
+            StationarityWorkStage::Done => Err(VelocityMeasurementError::ArithmeticOverflow),
+            StationarityWorkStage::Idle => unreachable!("idle work starts before dispatch"),
+        }
+    }
+
+    fn start_suffix<const LEVELS: usize, S>(
+        &mut self,
+        observations: &S,
+        blocker: &mut DyadicBlocker<LEVELS>,
+        suffix_index: u8,
+        suffix_len: u16,
+    ) -> Result<(), VelocityMeasurementError>
+    where
+        S: VelocityObservationSource + ?Sized,
+    {
+        self.tested_suffixes = self
+            .tested_suffixes
+            .checked_add(1)
+            .ok_or(VelocityMeasurementError::ArithmeticOverflow)?;
+        *blocker = DyadicBlocker::new();
+        let suffix_start = observations
+            .observation_len()
+            .checked_sub(usize::from(suffix_len))
+            .and_then(|value| u16::try_from(value).ok())
+            .ok_or(VelocityMeasurementError::ArithmeticOverflow)?;
+        self.stage = StationarityWorkStage::Blocking {
+            suffix_index,
+            suffix_start,
+            suffix_len,
+            next_index: suffix_start,
+        };
+        Ok(())
+    }
+
+    fn poll_blocking<const LEVELS: usize, S>(
+        &mut self,
+        observations: &S,
+        blocker: &mut DyadicBlocker<LEVELS>,
+    ) -> Result<StationarityWorkPoll, VelocityMeasurementError>
+    where
+        S: VelocityObservationSource + ?Sized,
+    {
+        let StationarityWorkStage::Blocking {
+            suffix_index,
+            suffix_start,
+            suffix_len,
+            mut next_index,
+        } = self.stage
+        else {
+            return Err(VelocityMeasurementError::ArithmeticOverflow);
+        };
+        let end = suffix_start
+            .checked_add(suffix_len)
+            .ok_or(VelocityMeasurementError::ArithmeticOverflow)?;
+        let step_end = end.min(
+            next_index
+                .checked_add(STATIONARITY_WORK_OBSERVATIONS_PER_STEP as u16)
+                .ok_or(VelocityMeasurementError::ArithmeticOverflow)?,
+        );
+        while next_index < step_end {
+            blocker.observe(
+                observations
+                    .observation(usize::from(next_index))
+                    .ok_or(VelocityMeasurementError::ArithmeticOverflow)?,
+            )?;
+            next_index += 1;
+        }
+        if next_index < end {
+            self.stage = StationarityWorkStage::Blocking {
+                suffix_index,
+                suffix_start,
+                suffix_len,
+                next_index,
+            };
+            return Ok(StationarityWorkPoll::Pending);
+        }
+
+        let Some(selection) = blocker.select_plateau() else {
+            let exclusion = if blocker.has_two_doubling_plateau() {
+                StationarityExclusion::TooFewDecorrelatedBlocks
+            } else {
+                StationarityExclusion::NoBlockingPlateau
+            };
+            return Ok(self.finish_on_exclusion(exclusion));
+        };
+        let block_observations = 1u16
+            .checked_shl(u32::from(selection.level))
+            .ok_or(VelocityMeasurementError::ArithmeticOverflow)?;
+        let block_count = suffix_len / block_observations;
+        if usize::from(block_count) < VELOCITY_MIN_SELECTED_BLOCKS as usize {
+            return Ok(self.finish_on_exclusion(StationarityExclusion::TooFewDecorrelatedBlocks));
+        }
+        self.stage = StationarityWorkStage::Regression {
+            suffix_index,
+            suffix_start,
+            suffix_len,
+            block_observations,
+            block_count,
+            next_block: 0,
+            cumulative_elapsed_us: 0,
+            sum_x: 0,
+            sum_y: 0,
+            sum_x2: 0,
+            sum_xy: 0,
+        };
+        Ok(StationarityWorkPoll::Pending)
+    }
+
+    fn poll_regression<S>(
+        &mut self,
+        observations: &S,
+    ) -> Result<StationarityWorkPoll, VelocityMeasurementError>
+    where
+        S: VelocityObservationSource + ?Sized,
+    {
+        let StationarityWorkStage::Regression {
+            suffix_index,
+            suffix_start,
+            suffix_len,
+            block_observations,
+            block_count,
+            mut next_block,
+            mut cumulative_elapsed_us,
+            mut sum_x,
+            mut sum_y,
+            mut sum_x2,
+            mut sum_xy,
+        } = self.stage
+        else {
+            return Err(VelocityMeasurementError::ArithmeticOverflow);
+        };
+        let blocks_per_step = (STATIONARITY_WORK_OBSERVATIONS_PER_STEP
+            / usize::from(block_observations))
+        .max(1) as u16;
+        let step_end = block_count.min(next_block.saturating_add(blocks_per_step));
+        while next_block < step_end {
+            let block = rate_block_at(
+                observations,
+                usize::from(suffix_start),
+                usize::from(next_block),
+                usize::from(block_observations),
+            )
+            .map_err(|_| VelocityMeasurementError::ArithmeticOverflow)?;
+            let midpoint_us = cumulative_elapsed_us
+                .checked_add(block.elapsed_us / 2)
+                .ok_or(VelocityMeasurementError::ArithmeticOverflow)?;
+            cumulative_elapsed_us = cumulative_elapsed_us
+                .checked_add(block.elapsed_us)
+                .ok_or(VelocityMeasurementError::ArithmeticOverflow)?;
+            let x = i128::from(midpoint_us);
+            let y = i128::from(block.rate_q()?);
+            sum_x = sum_x
+                .checked_add(x)
+                .ok_or(VelocityMeasurementError::ArithmeticOverflow)?;
+            sum_y = sum_y
+                .checked_add(y)
+                .ok_or(VelocityMeasurementError::ArithmeticOverflow)?;
+            sum_x2 = sum_x2
+                .checked_add(
+                    x.checked_mul(x)
+                        .ok_or(VelocityMeasurementError::ArithmeticOverflow)?,
+                )
+                .ok_or(VelocityMeasurementError::ArithmeticOverflow)?;
+            sum_xy = sum_xy
+                .checked_add(
+                    x.checked_mul(y)
+                        .ok_or(VelocityMeasurementError::ArithmeticOverflow)?,
+                )
+                .ok_or(VelocityMeasurementError::ArithmeticOverflow)?;
+            next_block += 1;
+        }
+        if next_block < block_count {
+            self.stage = StationarityWorkStage::Regression {
+                suffix_index,
+                suffix_start,
+                suffix_len,
+                block_observations,
+                block_count,
+                next_block,
+                cumulative_elapsed_us,
+                sum_x,
+                sum_y,
+                sum_x2,
+                sum_xy,
+            };
+            return Ok(StationarityWorkPoll::Pending);
+        }
+
+        let n = i128::from(block_count);
+        let denominator = n
+            .checked_mul(sum_x2)
+            .and_then(|value| value.checked_sub(sum_x.checked_mul(sum_x)?))
+            .ok_or(VelocityMeasurementError::ArithmeticOverflow)?;
+        if denominator <= 0 {
+            return Err(VelocityMeasurementError::ArithmeticOverflow);
+        }
+        let numerator = n
+            .checked_mul(sum_xy)
+            .and_then(|value| value.checked_sub(sum_x.checked_mul(sum_y)?))
+            .ok_or(VelocityMeasurementError::ArithmeticOverflow)?;
+        let slope_per_us = numerator as f32 / denominator as f32;
+        let intercept = (sum_y as f32 - slope_per_us * sum_x as f32) / block_count as f32;
+        if !slope_per_us.is_finite() || !intercept.is_finite() {
+            return Err(VelocityMeasurementError::ArithmeticOverflow);
+        }
+        self.stage = StationarityWorkStage::Residual {
+            suffix_index,
+            suffix_start,
+            suffix_len,
+            block_observations,
+            block_count,
+            next_block: 0,
+            cumulative_elapsed_us: 0,
+            slope_per_us,
+            intercept,
+            denominator,
+            residual_sum_q2: 0.0,
+            lag_product_sum_q2: 0.0,
+            previous_residual: None,
+        };
+        Ok(StationarityWorkPoll::Pending)
+    }
+
+    fn poll_residual<const LEVELS: usize, S>(
+        &mut self,
+        observations: &S,
+        blocker: &mut DyadicBlocker<LEVELS>,
+    ) -> Result<StationarityWorkPoll, VelocityMeasurementError>
+    where
+        S: VelocityObservationSource + ?Sized,
+    {
+        let StationarityWorkStage::Residual {
+            suffix_index,
+            suffix_start,
+            suffix_len,
+            block_observations,
+            block_count,
+            mut next_block,
+            mut cumulative_elapsed_us,
+            slope_per_us,
+            intercept,
+            denominator,
+            mut residual_sum_q2,
+            mut lag_product_sum_q2,
+            mut previous_residual,
+        } = self.stage
+        else {
+            return Err(VelocityMeasurementError::ArithmeticOverflow);
+        };
+        let blocks_per_step = (STATIONARITY_WORK_OBSERVATIONS_PER_STEP
+            / usize::from(block_observations))
+        .max(1) as u16;
+        let step_end = block_count.min(next_block.saturating_add(blocks_per_step));
+        while next_block < step_end {
+            let block = rate_block_at(
+                observations,
+                usize::from(suffix_start),
+                usize::from(next_block),
+                usize::from(block_observations),
+            )
+            .map_err(|_| VelocityMeasurementError::ArithmeticOverflow)?;
+            let midpoint_us = cumulative_elapsed_us
+                .checked_add(block.elapsed_us / 2)
+                .ok_or(VelocityMeasurementError::ArithmeticOverflow)?;
+            cumulative_elapsed_us = cumulative_elapsed_us
+                .checked_add(block.elapsed_us)
+                .ok_or(VelocityMeasurementError::ArithmeticOverflow)?;
+            let residual = block.rate_q()? as f32 - (intercept + slope_per_us * midpoint_us as f32);
+            residual_sum_q2 += residual * residual;
+            if let Some(previous) = previous_residual {
+                lag_product_sum_q2 += residual * previous;
+            }
+            previous_residual = Some(residual);
+            next_block += 1;
+        }
+        if next_block < block_count {
+            self.stage = StationarityWorkStage::Residual {
+                suffix_index,
+                suffix_start,
+                suffix_len,
+                block_observations,
+                block_count,
+                next_block,
+                cumulative_elapsed_us,
+                slope_per_us,
+                intercept,
+                denominator,
+                residual_sum_q2,
+                lag_product_sum_q2,
+                previous_residual,
+            };
+            return Ok(StationarityWorkPoll::Pending);
+        }
+        let selection = blocker
+            .select_plateau()
+            .ok_or(VelocityMeasurementError::ArithmeticOverflow)?;
+        let metrics = finish_stationarity_metrics(
+            block_count as usize,
+            denominator,
+            slope_per_us,
+            residual_sum_q2,
+            lag_product_sum_q2,
+            3,
+            selection.variance_of_mean_q2,
+        );
+        match metrics {
+            Ok(metrics) => {
+                self.selected = Some(StationarySuffix {
+                    selection,
+                    suffix_len,
+                    slope_q: metrics.slope_q,
+                    slope_half_width_q: metrics.slope_half_width_q,
+                    lag_one_q: metrics.lag_one_q,
+                    lag_one_half_width_q: metrics.lag_one_half_width_q,
+                    residual_magnitude_q2: metrics.residual_magnitude_q2,
+                    tested_suffixes: self.tested_suffixes,
+                });
+                self.advance_or_complete(observations, blocker, suffix_index)
+            }
+            Err(exclusion) => Ok(self.finish_on_exclusion(exclusion)),
+        }
+    }
+
+    fn finish_on_exclusion(&mut self, exclusion: StationarityExclusion) -> StationarityWorkPoll {
+        if let Some(mut usable) = self.selected {
+            usable.tested_suffixes = self.tested_suffixes;
+            self.stage = StationarityWorkStage::Done;
+            return StationarityWorkPoll::Complete(StationarityResult::Usable(usable));
+        }
+        self.stage = StationarityWorkStage::Done;
+        StationarityWorkPoll::Complete(StationarityResult::Excluded(exclusion))
+    }
+
+    fn advance_or_complete<const LEVELS: usize, S>(
+        &mut self,
+        observations: &S,
+        blocker: &mut DyadicBlocker<LEVELS>,
+        suffix_index: u8,
+    ) -> Result<StationarityWorkPoll, VelocityMeasurementError>
+    where
+        S: VelocityObservationSource + ?Sized,
+    {
+        let next_index = suffix_index.saturating_add(1);
+        if let Some(&suffix_len) = VELOCITY_SUFFIX_LENGTHS.get(usize::from(next_index))
+            && usize::from(suffix_len) <= observations.observation_len()
+        {
+            self.start_suffix(observations, blocker, next_index, suffix_len)?;
+            return Ok(StationarityWorkPoll::Pending);
+        }
+        let mut result = self
+            .selected
+            .ok_or(VelocityMeasurementError::ArithmeticOverflow)?;
+        result.tested_suffixes = self.tested_suffixes;
+        self.stage = StationarityWorkStage::Done;
+        Ok(StationarityWorkPoll::Complete(StationarityResult::Usable(
+            result,
+        )))
+    }
+}
+
+impl Default for StationarityWork {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+fn first_available_suffix(
+    observations: &(impl VelocityObservationSource + ?Sized),
+) -> Option<(u8, u16)> {
+    VELOCITY_SUFFIX_LENGTHS
+        .iter()
+        .copied()
+        .enumerate()
+        .find(|(_, suffix_len)| usize::from(*suffix_len) <= observations.observation_len())
+        .and_then(|(index, suffix_len)| u8::try_from(index).ok().map(|index| (index, suffix_len)))
+}
+
 /// Random-access source for a fixed chronological velocity capture.
 pub trait VelocityObservationSource {
     /// Number of chronological observations available.
@@ -261,10 +737,30 @@ fn analyze_stationarity_from_source(
         }
         previous_residual = Some(residual);
     }
-    if !residual_sum_q2.is_finite() || !lag_product_sum_q2.is_finite() {
+    finish_stationarity_metrics(
+        block_count,
+        denominator,
+        slope_per_us,
+        residual_sum_q2,
+        lag_product_sum_q2,
+        family_size,
+        blocking_variance_of_mean_q2,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn finish_stationarity_metrics(
+    block_count: usize,
+    denominator: i128,
+    slope_per_us: f32,
+    residual_sum_q2: f32,
+    lag_product_sum_q2: f32,
+    family_size: u16,
+    blocking_variance_of_mean_q2: u128,
+) -> Result<StationarityMetrics, StationarityExclusion> {
+    if block_count < 3 || !residual_sum_q2.is_finite() || !lag_product_sum_q2.is_finite() {
         return Err(StationarityExclusion::Arithmetic);
     }
-
     let multiplier = confidence_multiplier_95_df15(family_size)
         .map_err(|_| StationarityExclusion::Arithmetic)?;
     let degrees_of_freedom = (block_count - 2) as f32;
