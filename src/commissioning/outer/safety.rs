@@ -5,12 +5,17 @@ use crate::commissioning::backend::CommissioningBackend;
 use crate::commissioning::encoder_domain::{EncoderCount, EncoderDomain, EncoderMathError};
 use crate::commissioning::schedule::next_grid_deadline;
 use crate::commissioning::types::{
-    OUTER_SAFETY_FAULT_DURATION, OUTER_SAFETY_FAULT_INVALID_BUDGET, OUTER_SAFETY_FAULT_POSITION,
-    OUTER_SAFETY_FAULT_UNUSABLE_BUDGET, OUTER_SAFETY_FAULT_VELOCITY, OuterSafetyFault,
+    OUTER_SAFETY_FAULT_DURATION, OUTER_SAFETY_FAULT_INVALID_BUDGET,
+    OUTER_SAFETY_FAULT_OBSERVATION_GAP, OUTER_SAFETY_FAULT_POSITION,
+    OUTER_SAFETY_FAULT_QUARTER_TURN, OUTER_SAFETY_FAULT_UNUSABLE_BUDGET,
+    OUTER_SAFETY_FAULT_VELOCITY, OuterSafetyFault,
 };
 
 use super::limits::{MECHANICAL_ID_VELOCITY_CAP_COUNTS_PER_MS, POSITION_WINDOW_COUNTS};
-use super::velocity::sweep_plan::RequestedVelocitySource;
+use super::velocity::sweep_plan::{
+    ENVELOPE_ABSOLUTE_MARGIN_MREV_S, ENVELOPE_PROPORTIONAL_DEN, ENVELOPE_PROPORTIONAL_NUM,
+    MAX_SAFETY_OBSERVATION_GAP_US, RequestedVelocitySource,
+};
 use super::{
     mechanical_id_velocity_cap_counts_per_ms, position_window_counts, response, state::OuterPhase,
 };
@@ -104,6 +109,12 @@ pub(crate) struct OuterSafetyLimits {
     pub(crate) velocity_cap: u32,
     /// Maximum distance from start position in encoder counts.
     pub(crate) position_window: u32,
+    /// Maximum negative displacement from the Stage-2 entry position.
+    pub(crate) negative_position_window: u32,
+    /// Maximum positive displacement from the Stage-2 entry position.
+    pub(crate) positive_position_window: u32,
+    /// Inclusive single-observation quarter-turn fault threshold.
+    pub(crate) quarter_turn_fault_counts: u32,
     /// Unwrapped signed position accumulated from wrap-aware deltas.
     pub(crate) unwrapped_position: i32,
     /// Torque cap: the configured run_current limit.
@@ -116,10 +127,14 @@ pub(crate) struct OuterSafetyLimits {
     pub(crate) last_sample_us: Option<u64>,
     /// Timestamp (microseconds) when the active motion primitive began.
     pub(crate) primitive_start_us: Option<u64>,
+    /// Unwrapped position when the active motion primitive began.
+    pub(crate) primitive_start_position: Option<i32>,
     /// Absolute deadline for the next independent safety observation.
     pub(crate) next_safety_sample_us: Option<u64>,
     /// Previous ordinary velocity observation for the sliding two-interval gate.
     previous_velocity_observation: Option<OuterVelocityObservation>,
+    /// Whether the latest accepted observation met the scoring cadence.
+    last_observation_scoring_eligible: bool,
     /// Host-provided motion budget used to clamp firmware safety caps.
     pub(crate) budget: OuterMotionBudget,
 }
@@ -129,14 +144,19 @@ impl OuterSafetyLimits {
         Self {
             velocity_cap: MECHANICAL_ID_VELOCITY_CAP_COUNTS_PER_MS,
             position_window: POSITION_WINDOW_COUNTS,
+            negative_position_window: POSITION_WINDOW_COUNTS,
+            positive_position_window: POSITION_WINDOW_COUNTS,
+            quarter_turn_fault_counts: 0,
             unwrapped_position: 0,
             torque_cap,
             prev_encoder_count: None,
             encoder_domain: None,
             last_sample_us: None,
             primitive_start_us: None,
+            primitive_start_position: None,
             next_safety_sample_us: None,
             previous_velocity_observation: None,
+            last_observation_scoring_eligible: false,
             budget,
         }
     }
@@ -159,10 +179,42 @@ impl OuterSafetyLimits {
         self.encoder_domain = Some(encoder_domain);
         self.prev_encoder_count = None;
         self.previous_velocity_observation = None;
+        self.quarter_turn_fault_counts = counts_per_rev.div_ceil(4);
         self.velocity_cap = mechanical_id_velocity_cap_counts_per_ms(counts_per_rev)
             .min(self.budget.velocity_counts_per_ms(counts_per_rev));
         self.position_window =
             position_window_counts(counts_per_rev).min(self.budget.travel_counts(counts_per_rev));
+        self.negative_position_window = position_window_counts(counts_per_rev).min(mrev_to_counts(
+            self.budget.negative_position_headroom_mrev,
+            counts_per_rev,
+        ));
+        self.positive_position_window = position_window_counts(counts_per_rev).min(mrev_to_counts(
+            self.budget.positive_position_headroom_mrev,
+            counts_per_rev,
+        ));
+        Ok(())
+    }
+
+    /// Configure the runtime envelope around the frozen sweep amplitude.
+    #[allow(dead_code)]
+    pub(crate) fn configure_velocity_envelope(
+        &mut self,
+        used_velocity_mrev_s: u32,
+    ) -> Result<(), CommissionError> {
+        if used_velocity_mrev_s == 0 {
+            return Err(CommissionError::InvalidSchedule);
+        }
+        let proportional = used_velocity_mrev_s
+            .checked_mul(ENVELOPE_PROPORTIONAL_NUM)
+            .and_then(|value| value.checked_add(ENVELOPE_PROPORTIONAL_DEN - 1))
+            .map(|value| value / ENVELOPE_PROPORTIONAL_DEN)
+            .ok_or(CommissionError::InvalidSchedule)?;
+        let absolute = used_velocity_mrev_s
+            .checked_add(ENVELOPE_ABSOLUTE_MARGIN_MREV_S)
+            .ok_or(CommissionError::InvalidSchedule)?;
+        let envelope_mrev_s = proportional.max(absolute);
+        self.velocity_cap =
+            velocity_mrev_s_to_counts_per_ms(envelope_mrev_s, self.counts_per_rev());
         Ok(())
     }
 
@@ -183,6 +235,7 @@ impl OuterSafetyLimits {
         self.last_sample_us = Some(now_us);
         self.next_safety_sample_us = Some(next_safety_sample_us);
         self.previous_velocity_observation = None;
+        self.last_observation_scoring_eligible = false;
         Ok(())
     }
 
@@ -192,6 +245,7 @@ impl OuterSafetyLimits {
             return Err(CommissionError::InvalidSchedule);
         }
         self.primitive_start_us = Some(now_us);
+        self.primitive_start_position = Some(self.unwrapped_position);
         self.previous_velocity_observation = None;
         Ok(())
     }
@@ -199,7 +253,14 @@ impl OuterSafetyLimits {
     /// End the active motion primitive after its safe target is applied.
     pub(crate) fn end_primitive(&mut self) {
         self.primitive_start_us = None;
+        self.primitive_start_position = None;
         self.previous_velocity_observation = None;
+    }
+
+    /// Whether the latest accepted observation met the 1 kHz scoring cadence.
+    #[allow(dead_code)]
+    pub(crate) fn last_observation_scoring_eligible(&self) -> bool {
+        self.last_observation_scoring_eligible
     }
 
     /// Return the next observation deadline while the safety envelope is armed.
@@ -271,6 +332,12 @@ fn mrev_to_counts(mrev: u32, counts_per_rev: u32) -> u32 {
     let counts_per_rev = u64::from(counts_per_rev);
     let scaled = counts_per_rev.saturating_mul(mrev as u64);
     clamp_positive_u32(scaled / 1_000)
+}
+
+#[allow(dead_code)]
+fn velocity_mrev_s_to_counts_per_ms(velocity_mrev_s: u32, counts_per_rev: u32) -> u32 {
+    let scaled = u64::from(velocity_mrev_s).saturating_mul(u64::from(counts_per_rev));
+    clamp_positive_u32(scaled / 1_000_000)
 }
 
 fn clamp_positive_u32(value: u64) -> u32 {
@@ -399,6 +466,20 @@ pub(crate) async fn check_outer_safety<B: CommissioningBackend>(
         })
         .transpose()?
         .unwrap_or(0);
+    if safety.last_sample_us.is_some() && (dt_us == 0 || dt_us > MAX_SAFETY_OBSERVATION_GAP_US) {
+        defmt::warn!(
+            "outer safety: observation gap {}us exceeds wrap-safe cap {}us",
+            dt_us,
+            MAX_SAFETY_OBSERVATION_GAP_US
+        );
+        return Ok(Some(safety.fault(
+            OUTER_SAFETY_FAULT_OBSERVATION_GAP,
+            0,
+            dt_us,
+            0,
+            elapsed_us,
+        )));
+    }
     let encoder_domain = safety
         .encoder_domain
         .expect("outer encoder domain configured before motion");
@@ -409,7 +490,7 @@ pub(crate) async fn check_outer_safety<B: CommissioningBackend>(
         Ok(delta) => delta,
         Err(EncoderMathError::AmbiguousHalfTurn) => {
             return Ok(Some(safety.fault(
-                OUTER_SAFETY_FAULT_VELOCITY,
+                OUTER_SAFETY_FAULT_QUARTER_TURN,
                 0,
                 dt_us,
                 0,
@@ -421,6 +502,20 @@ pub(crate) async fn check_outer_safety<B: CommissioningBackend>(
         }
     };
     let delta_counts = delta.signed_counts();
+    if delta.absolute_counts() >= safety.quarter_turn_fault_counts {
+        defmt::warn!(
+            "outer safety: delta {} reaches quarter-turn guard {}",
+            delta.absolute_counts(),
+            safety.quarter_turn_fault_counts
+        );
+        return Ok(Some(safety.fault(
+            OUTER_SAFETY_FAULT_QUARTER_TURN,
+            delta_counts,
+            dt_us,
+            0,
+            elapsed_us,
+        )));
+    }
     let velocity_magnitude_cpms = (u64::from(delta.absolute_counts()) * 1_000)
         .checked_div(dt_us)
         .unwrap_or(0);
@@ -436,6 +531,7 @@ pub(crate) async fn check_outer_safety<B: CommissioningBackend>(
         now_us,
     )?);
     safety.unwrapped_position = safety.unwrapped_position.saturating_add(delta_counts);
+    safety.last_observation_scoring_eligible = dt_us <= OUTER_SAFETY_SAMPLE_PERIOD_US;
 
     let velocity_observation = OuterVelocityObservation {
         absolute_delta_counts: delta.absolute_counts(),
@@ -472,13 +568,23 @@ pub(crate) async fn check_outer_safety<B: CommissioningBackend>(
         )));
     }
 
-    // Check position window against unwrapped accumulator.
-    let abs_position = safety.unwrapped_position.unsigned_abs();
-    if abs_position > safety.position_window {
+    // The primitive-local window begins at the moving target and remains active
+    // through the zero-target settle so braking can consume the declared reserve.
+    let local_position = safety
+        .primitive_start_position
+        .map(|start| safety.unwrapped_position.saturating_sub(start));
+    let local_position_exceeds_window =
+        local_position.is_some_and(|position| position.unsigned_abs() > safety.position_window);
+    let absolute_position_exceeds_window = safety.unwrapped_position
+        < -(clamp_u32_to_i32(safety.negative_position_window))
+        || safety.unwrapped_position > clamp_u32_to_i32(safety.positive_position_window);
+    if local_position_exceeds_window || absolute_position_exceeds_window {
         defmt::warn!(
-            "outer safety: position {} exceeds window {}",
-            abs_position,
-            safety.position_window
+            "outer safety: position {} exceeds local {} or absolute -{}/+{}",
+            safety.unwrapped_position,
+            safety.position_window,
+            safety.negative_position_window,
+            safety.positive_position_window,
         );
         let velocity_cpms = velocity_counts_per_ms_for_fault(delta_counts, velocity_magnitude_cpms);
         return Ok(Some(safety.fault(
@@ -523,7 +629,10 @@ mod tests {
         MECHANICAL_ID_VELOCITY_CAP_COUNTS_PER_MS, MechanicalIdData, MechanicalIdState, OuterPhase,
         step_outer,
     };
-    use crate::commissioning::types::{OUTER_SAFETY_FAULT_VELOCITY, StepResult};
+    use crate::commissioning::types::{
+        OUTER_SAFETY_FAULT_OBSERVATION_GAP, OUTER_SAFETY_FAULT_POSITION,
+        OUTER_SAFETY_FAULT_QUARTER_TURN, OUTER_SAFETY_FAULT_VELOCITY, StepResult,
+    };
     use foci_tmc4671::registers::{
         ABN_DECODER_COUNT, MODE_RAMP_MODE_MOTION, PID_TORQUE_FLUX_TARGET,
     };
@@ -540,13 +649,17 @@ mod tests {
     #[test]
     fn primitive_timer_restarts_for_a_retry_after_the_previous_primitive_ends() {
         let mut safety = OuterSafetyLimits::new(100, OuterMotionBudget::firmware_caps());
+        safety.unwrapped_position = 37;
 
         assert_eq!(safety.begin_primitive(0), Ok(()));
         assert_eq!(safety.primitive_start_us, Some(0));
+        assert_eq!(safety.primitive_start_position, Some(37));
         safety.end_primitive();
         assert_eq!(safety.primitive_start_us, None);
+        assert_eq!(safety.primitive_start_position, None);
         assert_eq!(safety.begin_primitive(5_000), Ok(()));
         assert_eq!(safety.primitive_start_us, Some(5_000));
+        assert_eq!(safety.primitive_start_position, Some(37));
     }
 
     #[test]
@@ -564,7 +677,7 @@ mod tests {
     #[test]
     fn inactive_settle_does_not_consume_a_primitive_duration_budget() {
         pollster::block_on(async {
-            let mut safety = armed_safety(Some(0), 3_000_001);
+            let mut safety = armed_safety(Some(3_000_000), 3_000_001);
             safety.primitive_start_us = None;
             let mut backend = MockBackend::new();
             backend.elapsed_us_value = 3_000_001;
@@ -601,7 +714,7 @@ mod tests {
         pollster::block_on(async {
             let mut safety = armed_safety(Some(1_000), 2_000);
             let mut backend = MockBackend::new();
-            backend.elapsed_us_value = 4_500;
+            backend.elapsed_us_value = 2_500;
             backend.mechanical_encoder_position_counts_value = 4;
 
             let fault = check_outer_safety(&mut safety, &mut backend)
@@ -609,8 +722,8 @@ mod tests {
                 .expect("a due encoder read should succeed");
 
             assert!(fault.is_none());
-            assert_eq!(safety.last_sample_us, Some(4_500));
-            assert_eq!(safety.next_safety_sample_us, Some(5_000));
+            assert_eq!(safety.last_sample_us, Some(2_500));
+            assert_eq!(safety.next_safety_sample_us, Some(3_000));
             assert_eq!(backend.spi_log.len(), OUTER_SAFETY_SAMPLE_MAX_REGISTER_OPS);
         });
     }
@@ -724,7 +837,172 @@ mod tests {
         safety.configure_encoder_resolution(4_000).unwrap();
 
         assert_eq!(safety.position_window, 2_000);
+        assert_eq!(safety.negative_position_window, 8_000);
+        assert_eq!(safety.positive_position_window, 8_000);
         assert_eq!(safety.velocity_cap, 24);
+    }
+
+    #[test]
+    fn outer_safety_uses_the_frozen_amplitude_runtime_envelope() {
+        let mut safety = OuterSafetyLimits::new(100, OuterMotionBudget::firmware_caps());
+        safety.configure_encoder_resolution(4_000).unwrap();
+
+        safety.configure_velocity_envelope(1_000).unwrap();
+
+        assert_eq!(safety.velocity_cap, 12);
+    }
+
+    #[test]
+    fn outer_safety_marks_soft_lateness_unscored_without_faulting() {
+        pollster::block_on(async {
+            let mut safety = armed_safety(Some(0), 1_000);
+            let mut backend = MockBackend::new();
+            backend.elapsed_us_value = 1_500;
+            backend.mechanical_encoder_position_counts_value = 1;
+
+            let fault = check_outer_safety(&mut safety, &mut backend)
+                .await
+                .expect("a soft-late observation should remain safe");
+
+            assert!(fault.is_none());
+            assert!(!safety.last_observation_scoring_eligible());
+        });
+    }
+
+    #[test]
+    fn outer_safety_marks_on_time_observations_scoring_eligible() {
+        pollster::block_on(async {
+            let mut safety = armed_safety(Some(0), 1_000);
+            let mut backend = MockBackend::new();
+            backend.elapsed_us_value = 1_000;
+            backend.mechanical_encoder_position_counts_value = 1;
+
+            let fault = check_outer_safety(&mut safety, &mut backend)
+                .await
+                .expect("an on-time observation should remain safe");
+
+            assert!(fault.is_none());
+            assert!(safety.last_observation_scoring_eligible());
+        });
+    }
+
+    #[test]
+    fn outer_safety_faults_on_large_gap_before_interpreting_delta() {
+        pollster::block_on(async {
+            let mut safety = armed_safety(Some(0), 1_000);
+            safety.unwrapped_position = 17;
+            let before = safety;
+            let mut backend = MockBackend::new();
+            backend.elapsed_us_value = 2_001;
+            backend.mechanical_encoder_position_counts_value = 1_999;
+
+            let fault = check_outer_safety(&mut safety, &mut backend)
+                .await
+                .expect("the observation should produce a safety fault")
+                .expect("a read-to-read gap over 2 ms must fault");
+
+            assert_eq!(fault.reason, OUTER_SAFETY_FAULT_OBSERVATION_GAP);
+            assert_eq!(safety.prev_encoder_count, before.prev_encoder_count);
+            assert_eq!(safety.last_sample_us, before.last_sample_us);
+            assert_eq!(safety.unwrapped_position, before.unwrapped_position);
+        });
+    }
+
+    #[test]
+    fn outer_safety_faults_inclusively_at_one_quarter_turn() {
+        pollster::block_on(async {
+            let mut safety = armed_safety(Some(0), 1_000);
+            safety.unwrapped_position = 17;
+            let before = safety;
+            let mut backend = MockBackend::new();
+            backend.elapsed_us_value = 1_000;
+            backend.mechanical_encoder_position_counts_value = 1_000;
+
+            let fault = check_outer_safety(&mut safety, &mut backend)
+                .await
+                .expect("the observation should produce a safety fault")
+                .expect("an exact quarter-turn delta must fault");
+
+            assert_eq!(fault.reason, OUTER_SAFETY_FAULT_QUARTER_TURN);
+            assert_eq!(safety.prev_encoder_count, before.prev_encoder_count);
+            assert_eq!(safety.last_sample_us, before.last_sample_us);
+            assert_eq!(safety.unwrapped_position, before.unwrapped_position);
+        });
+    }
+
+    #[test]
+    fn outer_safety_local_window_spans_motion_and_zero_settle() {
+        pollster::block_on(async {
+            let mut safety =
+                OuterSafetyLimits::new(100, OuterMotionBudget::test_budget(500, 6_000, 3_000));
+            safety.configure_encoder_resolution(4_000).unwrap();
+            safety.set_encoder_baseline(0).unwrap();
+            safety.last_sample_us = Some(0);
+            safety.next_safety_sample_us = Some(1_000);
+            safety.begin_primitive(0).unwrap();
+            safety.unwrapped_position = 1_999;
+            let mut backend = MockBackend::new();
+            backend.elapsed_us_value = 1_000;
+            backend.mechanical_encoder_position_counts_value = 2;
+
+            let fault = check_outer_safety(&mut safety, &mut backend)
+                .await
+                .expect("the settle observation should succeed")
+                .expect("settle drift beyond the full primitive window must fault");
+
+            assert_eq!(fault.reason, OUTER_SAFETY_FAULT_POSITION);
+            assert_eq!(fault.position_counts, 2_001);
+        });
+    }
+
+    #[test]
+    fn outer_safety_allows_healthy_deceleration_to_use_settle_reserve() {
+        pollster::block_on(async {
+            let mut safety =
+                OuterSafetyLimits::new(100, OuterMotionBudget::test_budget(500, 6_000, 3_000));
+            safety.configure_encoder_resolution(4_000).unwrap();
+            safety.set_encoder_baseline(0).unwrap();
+            safety.last_sample_us = Some(0);
+            safety.next_safety_sample_us = Some(1_000);
+            safety.begin_primitive(0).unwrap();
+            safety.unwrapped_position = 1_600;
+            let mut backend = MockBackend::new();
+            backend.elapsed_us_value = 1_000;
+            backend.mechanical_encoder_position_counts_value = 200;
+
+            let fault = check_outer_safety(&mut safety, &mut backend)
+                .await
+                .expect("the settle observation should succeed");
+
+            assert!(fault.is_none());
+            assert_eq!(safety.unwrapped_position, 1_800);
+        });
+    }
+
+    #[test]
+    fn outer_safety_asymmetric_window_catches_cumulative_drift() {
+        pollster::block_on(async {
+            let mut budget = OuterMotionBudget::test_budget(500, 6_000, 3_000);
+            budget.negative_position_headroom_mrev = 100;
+            budget.positive_position_headroom_mrev = 200;
+            let mut safety = OuterSafetyLimits::new(100, budget);
+            safety.configure_encoder_resolution(4_000).unwrap();
+            safety.set_encoder_baseline(0).unwrap();
+            safety.last_sample_us = Some(0);
+            safety.next_safety_sample_us = Some(1_000);
+            safety.unwrapped_position = 799;
+            let mut backend = MockBackend::new();
+            backend.elapsed_us_value = 1_000;
+            backend.mechanical_encoder_position_counts_value = 2;
+
+            let fault = check_outer_safety(&mut safety, &mut backend)
+                .await
+                .expect("the observation should succeed")
+                .expect("positive cumulative drift beyond headroom must fault");
+
+            assert_eq!(fault.reason, OUTER_SAFETY_FAULT_POSITION);
+            assert_eq!(fault.position_counts, 801);
+        });
     }
 
     #[test]
@@ -784,8 +1062,8 @@ mod tests {
             safety.set_encoder_baseline(2328).unwrap();
             safety.last_sample_us = Some(100_000);
             let mut backend = MockBackend::new();
-            backend.elapsed_us_value = 124_909;
-            backend.mechanical_encoder_position_counts_value = 2525; // delta=197 over 24.909ms => ~7 counts/ms
+            backend.elapsed_us_value = 101_500;
+            backend.mechanical_encoder_position_counts_value = 2339;
 
             let fault = check_outer_safety(&mut safety, &mut backend)
                 .await
@@ -797,10 +1075,10 @@ mod tests {
             );
             assert_eq!(
                 safety.prev_encoder_count.map(|count| count.raw_counts()),
-                Some(2525)
+                Some(2339)
             );
-            assert_eq!(safety.last_sample_us, Some(124_909));
-            assert_eq!(safety.unwrapped_position, 197);
+            assert_eq!(safety.last_sample_us, Some(101_500));
+            assert_eq!(safety.unwrapped_position, 11);
         });
     }
 
@@ -991,7 +1269,7 @@ mod tests {
                 .expect("encoder read should succeed")
                 .expect("ambiguous half-turn should violate safety");
 
-            assert_eq!(fault.reason, OUTER_SAFETY_FAULT_VELOCITY);
+            assert_eq!(fault.reason, OUTER_SAFETY_FAULT_QUARTER_TURN);
             assert_eq!(safety.prev_encoder_count, before.prev_encoder_count);
             assert_eq!(safety.last_sample_us, before.last_sample_us);
             assert_eq!(safety.primitive_start_us, before.primitive_start_us);
@@ -1043,7 +1321,7 @@ mod tests {
                 OuterPhase::FailedWithSafety {
                     error: CommissionError::SafetyEnvelopeViolation,
                     safety_fault
-                } if safety_fault.reason == OUTER_SAFETY_FAULT_VELOCITY
+                } if safety_fault.reason == OUTER_SAFETY_FAULT_QUARTER_TURN
             ));
             assert!(backend.spi_log.iter().any(|op| matches!(
                 op,
@@ -1087,16 +1365,16 @@ mod tests {
             safety.last_sample_us = Some(100_000);
             safety.primitive_start_us = Some(90_000);
             let mut backend = MockBackend::new();
-            backend.elapsed_us_value = 104_000;
-            backend.mechanical_encoder_position_counts_value = 125;
+            backend.elapsed_us_value = 101_000;
+            backend.mechanical_encoder_position_counts_value = 25;
 
             let first_fault = check_outer_safety(&mut safety, &mut backend)
                 .await
                 .expect("first velocity observation should succeed");
             assert!(first_fault.is_none());
 
-            backend.elapsed_us_value = 108_000;
-            backend.mechanical_encoder_position_counts_value = 250;
+            backend.elapsed_us_value = 102_000;
+            backend.mechanical_encoder_position_counts_value = 50;
             let fault = check_outer_safety(&mut safety, &mut backend)
                 .await
                 .expect("encoder read should succeed")
@@ -1107,13 +1385,13 @@ mod tests {
             assert_eq!(fault.max_velocity_mrev_s, 6000);
             assert_eq!(fault.max_duration_ms, 3000);
             assert_eq!(fault.direction_mask, 3);
-            assert_eq!(fault.delta_counts, 125);
-            assert_eq!(fault.dt_us, 4_000);
-            assert_eq!(fault.velocity_counts_per_ms, 31);
+            assert_eq!(fault.delta_counts, 25);
+            assert_eq!(fault.dt_us, 1_000);
+            assert_eq!(fault.velocity_counts_per_ms, 25);
             assert_eq!(fault.velocity_cap_counts_per_ms, 24);
-            assert_eq!(fault.position_counts, 250);
+            assert_eq!(fault.position_counts, 50);
             assert_eq!(fault.position_window_counts, 3000);
-            assert_eq!(fault.elapsed_us, 18_000);
+            assert_eq!(fault.elapsed_us, 12_000);
             assert_eq!(fault.duration_cap_us, 3_000_000);
         });
     }
@@ -1121,6 +1399,7 @@ mod tests {
     #[test]
     fn outer_safety_reports_large_positive_velocity_fault_evidence() {
         pollster::block_on(async {
+            const LARGE_DELTA: u32 = 536_870_910;
             let mut safety = OuterSafetyLimits::new(100, OuterMotionBudget::firmware_caps());
             safety
                 .configure_encoder_resolution(i32::MAX as u32)
@@ -1130,7 +1409,7 @@ mod tests {
             safety.primitive_start_us = Some(90);
             let mut backend = MockBackend::new();
             backend.elapsed_us_value = 101;
-            backend.mechanical_encoder_position_counts_value = 1_073_741_823;
+            backend.mechanical_encoder_position_counts_value = LARGE_DELTA;
 
             let first_fault = check_outer_safety(&mut safety, &mut backend)
                 .await
@@ -1138,21 +1417,23 @@ mod tests {
             assert!(first_fault.is_none());
 
             backend.elapsed_us_value = 1_101;
-            backend.mechanical_encoder_position_counts_value = 2_147_483_646;
+            backend.mechanical_encoder_position_counts_value = LARGE_DELTA * 2;
             let fault = check_outer_safety(&mut safety, &mut backend)
                 .await
                 .expect("encoder read should succeed")
                 .expect("velocity should violate the safety envelope");
 
             assert_eq!(fault.reason, OUTER_SAFETY_FAULT_VELOCITY);
-            assert_eq!(fault.delta_counts, 1_073_741_823);
-            assert_eq!(fault.velocity_counts_per_ms, 1_073_741_823);
+            assert_eq!(fault.delta_counts, LARGE_DELTA as i32);
+            assert_eq!(fault.velocity_counts_per_ms, LARGE_DELTA as i32);
         });
     }
 
     #[test]
     fn outer_safety_reports_large_negative_velocity_fault_evidence() {
         pollster::block_on(async {
+            const LARGE_DELTA: u32 = 536_870_910;
+            const ENCODER_DOMAIN: u32 = i32::MAX as u32;
             let mut safety = OuterSafetyLimits::new(100, OuterMotionBudget::firmware_caps());
             safety
                 .configure_encoder_resolution(i32::MAX as u32)
@@ -1162,7 +1443,7 @@ mod tests {
             safety.primitive_start_us = Some(90);
             let mut backend = MockBackend::new();
             backend.elapsed_us_value = 101;
-            backend.mechanical_encoder_position_counts_value = 1_073_741_824;
+            backend.mechanical_encoder_position_counts_value = ENCODER_DOMAIN - LARGE_DELTA;
 
             let first_fault = check_outer_safety(&mut safety, &mut backend)
                 .await
@@ -1170,15 +1451,15 @@ mod tests {
             assert!(first_fault.is_none());
 
             backend.elapsed_us_value = 1_101;
-            backend.mechanical_encoder_position_counts_value = 1;
+            backend.mechanical_encoder_position_counts_value = ENCODER_DOMAIN - LARGE_DELTA * 2;
             let fault = check_outer_safety(&mut safety, &mut backend)
                 .await
                 .expect("encoder read should succeed")
                 .expect("velocity should violate the safety envelope");
 
             assert_eq!(fault.reason, OUTER_SAFETY_FAULT_VELOCITY);
-            assert_eq!(fault.delta_counts, -1_073_741_823);
-            assert_eq!(fault.velocity_counts_per_ms, -1_073_741_823);
+            assert_eq!(fault.delta_counts, -(LARGE_DELTA as i32));
+            assert_eq!(fault.velocity_counts_per_ms, -(LARGE_DELTA as i32));
         });
     }
 

@@ -350,6 +350,10 @@ pub const OUTER_SAFETY_FAULT_VELOCITY: u8 = 4;
 pub const OUTER_SAFETY_FAULT_POSITION: u8 = 5;
 /// Mechanical-ID position-to-torque handoff did not settle before timeout.
 pub const OUTER_SAFETY_FAULT_POST_SWITCH_SETTLE: u8 = 6;
+/// Encoder observations were separated by too much time for wrap-safe interpretation.
+pub const OUTER_SAFETY_FAULT_OBSERVATION_GAP: u8 = 7;
+/// A single encoder delta reached the inclusive quarter-turn observability guard.
+pub const OUTER_SAFETY_FAULT_QUARTER_TURN: u8 = 8;
 
 /// Host-visible Stage 2 safety-envelope fault evidence.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
