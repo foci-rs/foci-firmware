@@ -819,3 +819,7 @@ mod tests {
         assert!(summary.initial_lead_in);
     }
 }
+
+#[cfg(test)]
+#[path = "sweep_band_tests.rs"]
+mod band_tests;
