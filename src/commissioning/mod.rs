@@ -1062,10 +1062,11 @@ mod tests {
         #[cfg(not(feature = "trace-velocity-sweep"))]
         assert_eq!(size_of::<CommissioningEngine>(), 3_840);
         // The feature-on immutable plan and engine-owned cooperative analysis
-        // state make VelocitySweep the largest outer payload while remaining
-        // below the audited F407 ceiling.
+        // state make VelocitySweep the largest outer payload. Resumable
+        // partial-block analysis reaches, but does not raise, the audited F407
+        // ceiling.
         #[cfg(feature = "trace-velocity-sweep")]
-        assert_eq!(size_of::<CommissioningEngine>(), 4_496);
+        assert_eq!(size_of::<CommissioningEngine>(), 4_528);
         assert!(size_of::<CommissioningEngine>() <= 4_528);
         assert!(size_of::<CommissioningEngine>() <= 6_144);
         assert!(size_of::<capture_timing::CaptureTiming>() <= 64);

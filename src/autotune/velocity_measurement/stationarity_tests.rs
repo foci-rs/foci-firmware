@@ -1,6 +1,9 @@
+use core::cell::Cell;
+
 use super::{
     StationarityExclusion, StationarityResult, StationarityWork, StationarityWorkPoll,
-    VELOCITY_SUFFIX_LENGTHS, analyze_stationarity_with_blocking_variance, select_stationary_suffix,
+    VELOCITY_SUFFIX_LENGTHS, VelocityObservationSource,
+    analyze_stationarity_with_blocking_variance, select_stationary_suffix,
 };
 use crate::autotune::velocity_measurement::{DyadicBlocker, RawVelocityObservation};
 
@@ -58,6 +61,46 @@ fn cooperative_work_matches_synchronous_selection_across_multiple_polls() {
 
     assert_eq!(actual, expected);
     assert!(polls > 1, "a full capture must not be analyzed in one poll");
+}
+
+#[test]
+fn cooperative_poll_limits_raw_visits_for_two_ms_safety_cadence() {
+    struct CountingSource<'a> {
+        samples: &'a [RawVelocityObservation],
+        visits: Cell<usize>,
+    }
+
+    impl VelocityObservationSource for CountingSource<'_> {
+        fn observation_len(&self) -> usize {
+            self.samples.len()
+        }
+
+        fn observation(&self, index: usize) -> Option<RawVelocityObservation> {
+            self.visits.set(self.visits.get() + 1);
+            self.samples.get(index).copied()
+        }
+    }
+
+    let samples = observations::<256>(|index| [1, 0, 1, 1, 0][index % 5]);
+    let source = CountingSource {
+        samples: &samples,
+        visits: Cell::new(0),
+    };
+    let mut blocker = DyadicBlocker::<LEVELS>::new();
+    let mut work = StationarityWork::new();
+
+    loop {
+        source.visits.set(0);
+        let poll = work.poll(&source, &mut blocker).unwrap();
+        assert!(
+            source.visits.get() <= 8,
+            "one cooperative poll visited {} raw observations",
+            source.visits.get()
+        );
+        if matches!(poll, StationarityWorkPoll::Complete(_)) {
+            break;
+        }
+    }
 }
 
 #[test]

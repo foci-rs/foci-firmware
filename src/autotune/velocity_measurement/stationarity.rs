@@ -64,7 +64,11 @@ struct StationarityMetrics {
 }
 
 /// Maximum raw observations consumed by one cooperative stationarity step.
-pub const STATIONARITY_WORK_OBSERVATIONS_PER_STEP: usize = 32;
+///
+/// Eight keeps one F407 work quantum below the two-millisecond outer-safety
+/// observation-gap guard while leaving the complete analysis inside its
+/// separately enforced twenty-millisecond budget.
+pub const STATIONARITY_WORK_OBSERVATIONS_PER_STEP: usize = 8;
 
 /// Result of one bounded cooperative stationarity-analysis step.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -91,6 +95,8 @@ enum StationarityWorkStage {
         block_observations: u16,
         block_count: u16,
         next_block: u16,
+        next_observation: u16,
+        partial_block: Option<RateBlock>,
         cumulative_elapsed_us: u64,
         sum_x: i128,
         sum_y: i128,
@@ -104,6 +110,8 @@ enum StationarityWorkStage {
         block_observations: u16,
         block_count: u16,
         next_block: u16,
+        next_observation: u16,
+        partial_block: Option<RateBlock>,
         cumulative_elapsed_us: u64,
         slope_per_us: f32,
         intercept: f32,
@@ -261,6 +269,8 @@ impl StationarityWork {
             block_observations,
             block_count,
             next_block: 0,
+            next_observation: 0,
+            partial_block: None,
             cumulative_elapsed_us: 0,
             sum_x: 0,
             sum_y: 0,
@@ -284,6 +294,8 @@ impl StationarityWork {
             block_observations,
             block_count,
             mut next_block,
+            mut next_observation,
+            mut partial_block,
             mut cumulative_elapsed_us,
             mut sum_x,
             mut sum_y,
@@ -293,18 +305,34 @@ impl StationarityWork {
         else {
             return Err(VelocityMeasurementError::ArithmeticOverflow);
         };
-        let blocks_per_step = (STATIONARITY_WORK_OBSERVATIONS_PER_STEP
-            / usize::from(block_observations))
-        .max(1) as u16;
-        let step_end = block_count.min(next_block.saturating_add(blocks_per_step));
-        while next_block < step_end {
-            let block = rate_block_at(
-                observations,
-                usize::from(suffix_start),
-                usize::from(next_block),
-                usize::from(block_observations),
-            )
-            .map_err(|_| VelocityMeasurementError::ArithmeticOverflow)?;
+        let mut remaining_visits = STATIONARITY_WORK_OBSERVATIONS_PER_STEP;
+        while next_block < block_count && remaining_visits > 0 {
+            let index = usize::from(suffix_start)
+                .checked_add(
+                    usize::from(next_block)
+                        .checked_mul(usize::from(block_observations))
+                        .ok_or(VelocityMeasurementError::ArithmeticOverflow)?,
+                )
+                .and_then(|value| value.checked_add(usize::from(next_observation)))
+                .ok_or(VelocityMeasurementError::ArithmeticOverflow)?;
+            let observation = observations
+                .observation(index)
+                .ok_or(VelocityMeasurementError::ArithmeticOverflow)?;
+            let next = RateBlock::from_observation(observation)?;
+            partial_block = Some(match partial_block {
+                Some(current) => current.checked_merge(next)?,
+                None => next,
+            });
+            next_observation = next_observation
+                .checked_add(1)
+                .ok_or(VelocityMeasurementError::ArithmeticOverflow)?;
+            remaining_visits -= 1;
+            if next_observation < block_observations {
+                continue;
+            }
+            let block = partial_block
+                .take()
+                .ok_or(VelocityMeasurementError::ArithmeticOverflow)?;
             let midpoint_us = cumulative_elapsed_us
                 .checked_add(block.elapsed_us / 2)
                 .ok_or(VelocityMeasurementError::ArithmeticOverflow)?;
@@ -332,6 +360,7 @@ impl StationarityWork {
                 )
                 .ok_or(VelocityMeasurementError::ArithmeticOverflow)?;
             next_block += 1;
+            next_observation = 0;
         }
         if next_block < block_count {
             self.stage = StationarityWorkStage::Regression {
@@ -341,6 +370,8 @@ impl StationarityWork {
                 block_observations,
                 block_count,
                 next_block,
+                next_observation,
+                partial_block,
                 cumulative_elapsed_us,
                 sum_x,
                 sum_y,
@@ -374,6 +405,8 @@ impl StationarityWork {
             block_observations,
             block_count,
             next_block: 0,
+            next_observation: 0,
+            partial_block: None,
             cumulative_elapsed_us: 0,
             slope_per_us,
             intercept,
@@ -400,6 +433,8 @@ impl StationarityWork {
             block_observations,
             block_count,
             mut next_block,
+            mut next_observation,
+            mut partial_block,
             mut cumulative_elapsed_us,
             slope_per_us,
             intercept,
@@ -411,18 +446,34 @@ impl StationarityWork {
         else {
             return Err(VelocityMeasurementError::ArithmeticOverflow);
         };
-        let blocks_per_step = (STATIONARITY_WORK_OBSERVATIONS_PER_STEP
-            / usize::from(block_observations))
-        .max(1) as u16;
-        let step_end = block_count.min(next_block.saturating_add(blocks_per_step));
-        while next_block < step_end {
-            let block = rate_block_at(
-                observations,
-                usize::from(suffix_start),
-                usize::from(next_block),
-                usize::from(block_observations),
-            )
-            .map_err(|_| VelocityMeasurementError::ArithmeticOverflow)?;
+        let mut remaining_visits = STATIONARITY_WORK_OBSERVATIONS_PER_STEP;
+        while next_block < block_count && remaining_visits > 0 {
+            let index = usize::from(suffix_start)
+                .checked_add(
+                    usize::from(next_block)
+                        .checked_mul(usize::from(block_observations))
+                        .ok_or(VelocityMeasurementError::ArithmeticOverflow)?,
+                )
+                .and_then(|value| value.checked_add(usize::from(next_observation)))
+                .ok_or(VelocityMeasurementError::ArithmeticOverflow)?;
+            let observation = observations
+                .observation(index)
+                .ok_or(VelocityMeasurementError::ArithmeticOverflow)?;
+            let next = RateBlock::from_observation(observation)?;
+            partial_block = Some(match partial_block {
+                Some(current) => current.checked_merge(next)?,
+                None => next,
+            });
+            next_observation = next_observation
+                .checked_add(1)
+                .ok_or(VelocityMeasurementError::ArithmeticOverflow)?;
+            remaining_visits -= 1;
+            if next_observation < block_observations {
+                continue;
+            }
+            let block = partial_block
+                .take()
+                .ok_or(VelocityMeasurementError::ArithmeticOverflow)?;
             let midpoint_us = cumulative_elapsed_us
                 .checked_add(block.elapsed_us / 2)
                 .ok_or(VelocityMeasurementError::ArithmeticOverflow)?;
@@ -436,6 +487,7 @@ impl StationarityWork {
             }
             previous_residual = Some(residual);
             next_block += 1;
+            next_observation = 0;
         }
         if next_block < block_count {
             self.stage = StationarityWorkStage::Residual {
@@ -445,6 +497,8 @@ impl StationarityWork {
                 block_observations,
                 block_count,
                 next_block,
+                next_observation,
+                partial_block,
                 cumulative_elapsed_us,
                 slope_per_us,
                 intercept,

@@ -960,7 +960,7 @@ mod tests {
         phase: &mut OuterPhase,
         backend: &mut MockBackend,
     ) -> (StepResult, usize) {
-        for poll_count in 1..=128 {
+        for poll_count in 1..=256 {
             let result = pollster::block_on(step_velocity_sweep_with_trace(phase, backend));
             if matches!(
                 result,
@@ -981,7 +981,7 @@ mod tests {
         phase: &mut OuterPhase,
         backend: &mut MockBackend,
     ) -> StepResult {
-        for _ in 0..128 {
+        for _ in 0..256 {
             let result = pollster::block_on(step_velocity_sweep_with_trace(phase, backend));
             let still_analyzing = matches!(
                 phase,

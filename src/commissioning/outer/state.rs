@@ -795,7 +795,7 @@ mod tests {
         assert_eq!(size_of::<[i32; 256]>(), 1_024);
         assert_eq!(size_of::<[u16; 256]>(), 512);
         assert_eq!(size_of::<super::VelocityObservationRing>(), 1_540);
-        assert_eq!(size_of::<super::VelocitySweepData>(), 2_832);
+        assert_eq!(size_of::<super::VelocitySweepData>(), 2_864);
         assert_eq!(size_of::<super::MechanicalIdData>(), 2_184);
     }
 
