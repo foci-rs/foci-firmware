@@ -3,6 +3,7 @@
 mod blocker;
 mod decision;
 mod observation;
+mod stationarity;
 
 pub use blocker::{
     BlockLevel, DyadicBlocker, PlateauSelection, VELOCITY_MIN_SELECTED_BLOCKS, VelocityDirection,
@@ -16,4 +17,8 @@ pub use decision::{
 pub use observation::{
     BlockMoments, RateBlock, RawVelocityObservation, VELOCITY_RATE_Q_SCALE,
     VelocityMeasurementError,
+};
+pub use stationarity::{
+    StationarityExclusion, StationarityResult, StationarySuffix, VELOCITY_SUFFIX_LENGTHS,
+    select_stationary_suffix,
 };

@@ -173,6 +173,28 @@ impl<const LEVELS: usize> DyadicBlocker<LEVELS> {
 
         selected
     }
+
+    /// Return whether any two consecutive plateau-like doublings exist.
+    pub(crate) fn has_two_doubling_plateau(&self) -> bool {
+        if LEVELS < 3 {
+            return false;
+        }
+        let mut consecutive_pairs = 0usize;
+        for lower_index in 0..LEVELS - 1 {
+            if plateau_like(
+                &self.levels[lower_index].completed,
+                &self.levels[lower_index + 1].completed,
+            ) {
+                consecutive_pairs += 1;
+                if consecutive_pairs >= 2 {
+                    return true;
+                }
+            } else {
+                consecutive_pairs = 0;
+            }
+        }
+        false
+    }
 }
 
 /// Bounded same-direction evidence accumulated across signed strokes.
@@ -541,6 +563,17 @@ mod tests {
         set_level_q(&mut blocker, 1, 16, 100);
 
         assert_eq!(blocker.select_plateau(), None);
+    }
+
+    #[test]
+    fn two_doubling_plateau_below_population_floor_is_visible() {
+        let mut blocker = DyadicBlocker::<3>::new();
+        set_level_q(&mut blocker, 0, 15, 100);
+        set_level_q(&mut blocker, 1, 7, 100);
+        set_level_q(&mut blocker, 2, 3, 100);
+
+        assert_eq!(blocker.select_plateau(), None);
+        assert!(blocker.has_two_doubling_plateau());
     }
 
     #[test]
