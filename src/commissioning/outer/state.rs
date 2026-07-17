@@ -7,6 +7,15 @@ use crate::autotune::{
 use crate::commissioning::encoder_domain::EncoderCount;
 use crate::commissioning::types::{OuterResult, OuterSafetyFault};
 
+#[cfg(feature = "trace-velocity-sweep")]
+use crate::autotune::velocity_measurement::{
+    DyadicBlocker, RawVelocityObservation, VelocityMeasurementError,
+};
+#[cfg(feature = "trace-velocity-sweep")]
+use crate::commissioning::outer::velocity::sweep_evidence::{
+    VelocityObservationSummary, VelocityRungVerdict,
+};
+
 use super::OUTER_WARNING_NONE;
 use super::safety::OuterSafetyLimits;
 
@@ -18,6 +27,168 @@ pub(crate) const OUTER_EVIDENCE_CONSERVATIVE_REQUIRED: u8 = 1 << 4;
 pub(crate) const OUTER_EVIDENCE_LAMBDA_WIDENED: u8 = 1 << 5;
 pub(crate) const OUTER_POLICY_WARNING_MASK: u8 =
     OUTER_EVIDENCE_CONSERVATIVE_REQUIRED | OUTER_EVIDENCE_LAMBDA_WIDENED;
+
+/// Number of validated observations retained from the end of one moving stroke.
+#[cfg(feature = "trace-velocity-sweep")]
+pub(crate) const VELOCITY_OBSERVATION_CAPACITY: usize = 256;
+/// Dyadic levels required to analyze every retained suffix through 256 samples.
+#[cfg(feature = "trace-velocity-sweep")]
+pub(crate) const VELOCITY_SWEEP_BLOCK_LEVELS: usize = 5;
+
+/// Fixed-memory tail ring with split arrays to avoid tuple padding.
+#[cfg(feature = "trace-velocity-sweep")]
+#[derive(Debug)]
+#[allow(dead_code)]
+pub(crate) struct VelocityObservationRing {
+    delta_counts: [i32; VELOCITY_OBSERVATION_CAPACITY],
+    elapsed_us: [u16; VELOCITY_OBSERVATION_CAPACITY],
+    next: u16,
+    len: u16,
+}
+
+#[cfg(feature = "trace-velocity-sweep")]
+#[allow(dead_code)]
+impl VelocityObservationRing {
+    pub(crate) const fn new() -> Self {
+        Self {
+            delta_counts: [0; VELOCITY_OBSERVATION_CAPACITY],
+            elapsed_us: [0; VELOCITY_OBSERVATION_CAPACITY],
+            next: 0,
+            len: 0,
+        }
+    }
+
+    pub(crate) fn push(
+        &mut self,
+        delta_counts: i32,
+        elapsed_us: u16,
+    ) -> Result<(), VelocityMeasurementError> {
+        if elapsed_us == 0 {
+            return Err(VelocityMeasurementError::ZeroElapsed);
+        }
+        let index = usize::from(self.next);
+        self.delta_counts[index] = delta_counts;
+        self.elapsed_us[index] = elapsed_us;
+        self.next = if index + 1 == VELOCITY_OBSERVATION_CAPACITY {
+            0
+        } else {
+            self.next + 1
+        };
+        self.len = self
+            .len
+            .saturating_add(1)
+            .min(VELOCITY_OBSERVATION_CAPACITY as u16);
+        Ok(())
+    }
+
+    pub(crate) const fn len(&self) -> usize {
+        self.len as usize
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn clear(&mut self) {
+        self.next = 0;
+        self.len = 0;
+    }
+
+    pub(crate) fn iter(&self) -> VelocityObservationIter<'_> {
+        let start = if self.len() == VELOCITY_OBSERVATION_CAPACITY {
+            usize::from(self.next)
+        } else {
+            0
+        };
+        VelocityObservationIter {
+            ring: self,
+            start,
+            offset: 0,
+        }
+    }
+}
+
+/// Chronological iterator over the retained tail, including after wraparound.
+#[cfg(feature = "trace-velocity-sweep")]
+#[allow(dead_code)]
+pub(crate) struct VelocityObservationIter<'a> {
+    ring: &'a VelocityObservationRing,
+    start: usize,
+    offset: usize,
+}
+
+#[cfg(feature = "trace-velocity-sweep")]
+impl Iterator for VelocityObservationIter<'_> {
+    type Item = RawVelocityObservation;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.offset == self.ring.len() {
+            return None;
+        }
+        let index = (self.start + self.offset) % VELOCITY_OBSERVATION_CAPACITY;
+        self.offset += 1;
+        Some(RawVelocityObservation {
+            delta_counts: self.ring.delta_counts[index],
+            elapsed_us: u32::from(self.ring.elapsed_us[index]),
+        })
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let remaining = self.ring.len() - self.offset;
+        (remaining, Some(remaining))
+    }
+}
+
+#[cfg(feature = "trace-velocity-sweep")]
+impl ExactSizeIterator for VelocityObservationIter<'_> {}
+
+/// Phase-local state for the trace-gated velocity sweep.
+#[cfg(feature = "trace-velocity-sweep")]
+#[derive(Debug, defmt::Format)]
+pub(crate) enum VelocitySweepState {
+    /// Validate hardware inputs and construct the immutable plan.
+    Setup,
+}
+
+/// Engine-owned measurement and current-rung evidence state.
+#[cfg(feature = "trace-velocity-sweep")]
+#[derive(Debug, defmt::Format)]
+#[allow(dead_code)]
+pub(crate) enum VelocitySweepEvidenceState {
+    /// No observation from the current rung is pending reproduction.
+    Empty,
+    /// The first forward observation is retained until its paired repeat.
+    ForwardFirst(VelocityObservationSummary),
+    /// First observations from both signed directions are retained.
+    FirstPair {
+        forward: VelocityObservationSummary,
+        reverse: VelocityObservationSummary,
+    },
+    /// Forward reproduction is complete while reverse awaits its repeat.
+    ForwardComplete {
+        forward: VelocityRungVerdict,
+        reverse_first: VelocityObservationSummary,
+    },
+}
+
+/// Engine-owned measurement and current-rung evidence state.
+#[cfg(feature = "trace-velocity-sweep")]
+#[derive(Debug, defmt::Format)]
+pub(crate) struct VelocitySweepData {
+    #[defmt(Debug2Format)]
+    pub(crate) observations: VelocityObservationRing,
+    #[defmt(Debug2Format)]
+    pub(crate) blocker: DyadicBlocker<VELOCITY_SWEEP_BLOCK_LEVELS>,
+    pub(crate) evidence: VelocitySweepEvidenceState,
+}
+
+#[cfg(feature = "trace-velocity-sweep")]
+impl VelocitySweepData {
+    pub(crate) const fn new() -> Self {
+        Self {
+            observations: VelocityObservationRing::new(),
+            blocker: DyadicBlocker::new(),
+            evidence: VelocitySweepEvidenceState::Empty,
+        }
+    }
+}
 
 /// Mechanical identification sub-state machine (Phase 8).
 #[derive(Debug, defmt::Format)]
@@ -79,6 +250,7 @@ pub(crate) struct MechanicalIdData {
     pub(crate) sample_timestamp_len: u16,
 }
 
+#[cfg_attr(feature = "trace-velocity-sweep", allow(dead_code))]
 impl MechanicalIdData {
     pub(crate) fn new(torque_step: u16) -> Self {
         Self {
@@ -370,6 +542,13 @@ pub(crate) enum OuterPhase {
         data: MechanicalIdData,
         safety: OuterSafetyLimits,
     },
+    /// Trace-gated replacement velocity identification phase (wire phase 10).
+    #[cfg(feature = "trace-velocity-sweep")]
+    VelocitySweep {
+        state: VelocitySweepState,
+        data: VelocitySweepData,
+        safety: OuterSafetyLimits,
+    },
     /// Phase 9: Velocity-loop SIMC gain synthesis.
     VelocityTune {
         model: MechanicalModel,
@@ -440,6 +619,8 @@ impl OuterPhase {
     pub(crate) fn current_phase_id(&self) -> Option<PhaseId> {
         match self {
             Self::MechanicalId { .. } => Some(PhaseId::MechanicalId),
+            #[cfg(feature = "trace-velocity-sweep")]
+            Self::VelocitySweep { .. } => Some(PhaseId::VelocityTune),
             Self::VelocityTune { .. } => Some(PhaseId::VelocityTune),
             Self::VelocityValidate { .. } => Some(PhaseId::VelocityValidate),
             Self::PositionTune { .. } => Some(PhaseId::PositionTune),
@@ -487,5 +668,52 @@ mod tests {
             OuterPhase::Failed(CommissionError::Spi).current_phase_id(),
             None
         );
+    }
+
+    #[cfg(feature = "trace-velocity-sweep")]
+    #[test]
+    fn velocity_observation_ring_overwrites_oldest_and_iterates_chronologically() {
+        let mut ring = super::VelocityObservationRing::new();
+        for sample in 0..=super::VELOCITY_OBSERVATION_CAPACITY as i32 {
+            ring.push(sample, 1_000).unwrap();
+        }
+
+        let observations: heapless::Vec<_, { super::VELOCITY_OBSERVATION_CAPACITY }> =
+            ring.iter().collect();
+
+        assert_eq!(ring.len(), super::VELOCITY_OBSERVATION_CAPACITY);
+        assert_eq!(observations.len(), super::VELOCITY_OBSERVATION_CAPACITY);
+        assert_eq!(observations.first().unwrap().delta_counts, 1);
+        assert_eq!(observations.last().unwrap().delta_counts, 256);
+        assert!(observations.iter().all(|item| item.elapsed_us == 1_000));
+    }
+
+    #[cfg(feature = "trace-velocity-sweep")]
+    #[test]
+    fn velocity_observation_ring_has_the_audited_split_array_layout() {
+        assert_eq!(size_of::<[i32; 256]>(), 1_024);
+        assert_eq!(size_of::<[u16; 256]>(), 512);
+        assert_eq!(size_of::<super::VelocityObservationRing>(), 1_540);
+        assert!(
+            size_of::<super::VelocitySweepData>() <= size_of::<super::MechanicalIdData>(),
+            "VelocitySweepData {} exceeds MechanicalIdData {}",
+            size_of::<super::VelocitySweepData>(),
+            size_of::<super::MechanicalIdData>(),
+        );
+    }
+
+    #[cfg(feature = "trace-velocity-sweep")]
+    #[test]
+    fn velocity_sweep_phase_reports_velocity_tune_wire_id() {
+        let phase = OuterPhase::VelocitySweep {
+            state: super::VelocitySweepState::Setup,
+            data: super::VelocitySweepData::new(),
+            safety: OuterSafetyLimits::new(
+                0,
+                crate::commissioning::outer::OuterMotionBudget::firmware_caps(),
+            ),
+        };
+
+        assert_eq!(phase.current_phase_id(), Some(PhaseId::VelocityTune));
     }
 }

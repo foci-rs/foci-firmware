@@ -46,6 +46,8 @@ pub(crate) use state::{
     VELOCITY_SEARCH_STOP_UNSAFE_BACKOFF, VelocityTuneStrategy, VelocityValidateData,
     VelocityValidateState,
 };
+#[cfg(feature = "trace-velocity-sweep")]
+pub(crate) use state::{VelocitySweepData, VelocitySweepState};
 pub(crate) use trace::{
     TraceSummarySeqs, trace_diagnostic_warning, trace_pack_i16_pair, trace_pack_u16_pair,
     trace_summary_event,

@@ -610,6 +610,8 @@ pub(super) fn outer_safety_mut(phase: &mut OuterPhase) -> Option<&mut OuterSafet
         | OuterPhase::VelocityValidate { safety, .. }
         | OuterPhase::PositionTune { safety, .. }
         | OuterPhase::FilterTune { safety, .. } => Some(safety),
+        #[cfg(feature = "trace-velocity-sweep")]
+        OuterPhase::VelocitySweep { safety, .. } => Some(safety),
         OuterPhase::Commit { .. }
         | OuterPhase::Done(_)
         | OuterPhase::Failed(_)

@@ -129,6 +129,8 @@ pub(crate) async fn step_outer_with_trace<B: CommissioningBackend>(
         OuterPhase::MechanicalId { .. } => {
             mechanical::step_mechanical_id_with_trace(phase, buf, trace_summary_seqs, backend).await
         }
+        #[cfg(feature = "trace-velocity-sweep")]
+        OuterPhase::VelocitySweep { .. } => fail_outer(phase, CommissionError::InvalidSchedule),
         OuterPhase::VelocityTune { .. } => {
             velocity::step_velocity_tune(
                 phase,

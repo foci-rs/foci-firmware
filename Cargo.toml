@@ -9,6 +9,7 @@ repository = "https://github.com/foci-rs/foci-firmware"
 [features]
 dev = []
 trace = []
+trace-velocity-sweep = ["trace"]
 
 [dependencies]
 ankyra = { git = "https://github.com/foci-rs/ankyra" }
