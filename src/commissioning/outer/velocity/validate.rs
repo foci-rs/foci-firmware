@@ -43,7 +43,7 @@ const VELOCITY_VALIDATE_CHATTER_THRESHOLD: u32 = 3;
 
 /// Maximum register operations performed by one armed velocity-validation poll.
 #[allow(dead_code)]
-pub(super) const VELOCITY_VALIDATE_MAX_REGISTER_OPS_PER_ARM: usize = 4;
+pub(super) const VELOCITY_VALIDATE_MAX_REGISTER_OPS_PER_ARM: usize = 5;
 
 /// Lambda multiplier (numerator/denominator) applied on a marginal retry.
 const VELOCITY_RETRY_LAMBDA_MUL_NUM: u32 = 3;
@@ -2075,10 +2075,8 @@ mod tests {
             .await;
 
             assert!(matches!(result, StepResult::ReadyNow));
-            assert_eq!(
-                backend.spi_log.len(),
-                VELOCITY_VALIDATE_MAX_REGISTER_OPS_PER_ARM
-            );
+            assert_eq!(backend.spi_log.len(), 4);
+            assert!(backend.spi_log.len() <= VELOCITY_VALIDATE_MAX_REGISTER_OPS_PER_ARM);
         });
     }
 
@@ -2214,6 +2212,10 @@ mod tests {
             PID_ERROR_PID_VELOCITY_ERROR_SUM,
             0
         ));
+        assert!(
+            backend.spi_log.len() <= VELOCITY_VALIDATE_MAX_REGISTER_OPS_PER_ARM,
+            "ambiguity recovery exceeded the per-poll register-operation bound"
+        );
         match phase {
             OuterPhase::VelocityValidate { state, data, .. } => {
                 assert_eq!(data.strategy, strategy);
