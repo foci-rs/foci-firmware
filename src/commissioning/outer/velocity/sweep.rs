@@ -19,6 +19,7 @@ use foci_tmc4671::registers::{
 };
 
 use super::sweep_analysis::{analyze_moving_observation, retain_observation, settle_is_confirmed};
+use super::sweep_evidence::VelocityObservationClass;
 use super::sweep_plan::{
     MAX_SAFETY_OBSERVATION_GAP_US, MOVING_STROKE_US, RequestedVelocitySource, ZERO_SETTLE_US,
 };
@@ -30,6 +31,7 @@ const SWEEP_CAUSE_NONE: u8 = 0;
 const SWEEP_CAUSE_PARTIAL_DIRECTION: u8 = 1;
 const SWEEP_CAUSE_TOTAL_INCONCLUSIVE: u8 = 2;
 const SWEEP_CAUSE_INTEGRITY: u8 = 3;
+const SWEEP_CAUSE_CURRENT_HEADROOM: u8 = 4;
 
 fn slot_direction(slot: u8) -> i32 {
     if slot.is_multiple_of(2) { 1 } else { -1 }
@@ -62,11 +64,19 @@ pub(crate) fn sweep_fault_terminal(
     error: CommissionError,
     safety_fault: Option<OuterSafetyFault>,
 ) -> StepResult {
-    use super::sweep_evidence::assess_sweep_sufficiency;
-
     let OuterPhase::VelocitySweep { data, .. } = phase else {
         return StepResult::OuterFailed(error);
     };
+    sweep_fault_terminal_from_data(data, error, safety_fault)
+}
+
+fn sweep_fault_terminal_from_data(
+    data: &super::super::VelocitySweepData,
+    error: CommissionError,
+    safety_fault: Option<OuterSafetyFault>,
+) -> StepResult {
+    use super::sweep_evidence::assess_sweep_sufficiency;
+
     let forward = data.forward_band.snapshot();
     let reverse = data.reverse_band.snapshot();
     let sufficiency = assess_sweep_sufficiency(&forward, &reverse);
@@ -95,6 +105,75 @@ pub(crate) fn sweep_fault_terminal(
         digest: data.integrity.digest(),
         safety_fault,
     })
+}
+
+fn sweep_evidence_terminal(
+    data: &super::super::VelocitySweepData,
+    current_headroom: bool,
+) -> VelocitySweepTerminal {
+    use super::sweep_evidence::{
+        VelocityInconclusiveKind, VelocitySweepSufficiency, assess_sweep_sufficiency,
+    };
+
+    let plan = data
+        .plan
+        .expect("velocity sweep terminal requires an immutable plan");
+    let forward = data.forward_band.snapshot();
+    let reverse = data.reverse_band.snapshot();
+    let sufficiency = assess_sweep_sufficiency(&forward, &reverse);
+    let (mut outcome, mut cause, sufficient_direction_mask) = match sufficiency {
+        VelocitySweepSufficiency::Complete { .. } => (
+            VelocitySweepOutcome::Complete,
+            if current_headroom {
+                SWEEP_CAUSE_CURRENT_HEADROOM
+            } else {
+                SWEEP_CAUSE_NONE
+            },
+            3,
+        ),
+        VelocitySweepSufficiency::Inconclusive {
+            sufficient_direction_mask,
+            kind,
+            ..
+        } => (
+            VelocitySweepOutcome::Inconclusive,
+            if current_headroom {
+                SWEEP_CAUSE_CURRENT_HEADROOM
+            } else {
+                match kind {
+                    VelocityInconclusiveKind::PartialDirection => SWEEP_CAUSE_PARTIAL_DIRECTION,
+                    VelocityInconclusiveKind::Total => SWEEP_CAUSE_TOTAL_INCONCLUSIVE,
+                }
+            },
+            sufficient_direction_mask,
+        ),
+    };
+    let expected_observations = u16::from(plan.rung_count)
+        .saturating_mul(plan.observations_per_direction)
+        .saturating_mul(2);
+    let expected_rungs = u16::from(plan.rung_count);
+    if !current_headroom
+        && (data.integrity.emitted_observations() != expected_observations
+            || data.integrity.emitted_rungs() != expected_rungs)
+    {
+        outcome = VelocitySweepOutcome::Fault;
+        cause = SWEEP_CAUSE_INTEGRITY;
+    }
+    VelocitySweepTerminal {
+        run_sequence: data.integrity.run_sequence(),
+        forward,
+        reverse,
+        sufficiency,
+        outcome,
+        cause,
+        sufficient_direction_mask,
+        expected_observations,
+        emitted_observations: data.integrity.emitted_observations(),
+        expected_rungs,
+        emitted_rungs: data.integrity.emitted_rungs(),
+        digest: data.integrity.digest(),
+        safety_fault: None,
+    }
 }
 
 async fn clear_velocity_integrator<B: CommissioningBackend>(
@@ -431,6 +510,20 @@ pub(crate) async fn step_velocity_sweep_with_trace<B: CommissioningBackend>(
                 variance_of_mean_q2: analysis.variance_of_mean_q2,
                 settled_rate_mean_q: analysis.settled_rate_mean_q,
             };
+            let terminal_error = match analysis.summary.classification {
+                VelocityObservationClass::WrongDirectionFault => {
+                    Some(CommissionError::VelocityValidationFailed)
+                }
+                VelocityObservationClass::HardClipFault => {
+                    Some(CommissionError::SafetyEnvelopeViolation)
+                }
+                VelocityObservationClass::InvalidEvidenceFault => {
+                    Some(CommissionError::InvalidSchedule)
+                }
+                _ => None,
+            };
+            let current_headroom =
+                analysis.summary.classification == VelocityObservationClass::CurrentHeadroom;
             if retain_observation(data, analysis.summary).is_err() {
                 return fail_sweep(phase, backend, CommissionError::InvalidSchedule).await;
             }
@@ -440,9 +533,14 @@ pub(crate) async fn step_velocity_sweep_with_trace<B: CommissioningBackend>(
             let next_sample = *next_sample_us;
             let deadline = *deadline_us;
             data.observations.clear();
-            *state = VelocitySweepState::SettleCapture {
-                next_sample_us: next_sample,
-                deadline_us: deadline,
+            *state = if let Some(error) = terminal_error {
+                VelocitySweepState::FaultTerminal { error }
+            } else {
+                VelocitySweepState::SettleCapture {
+                    next_sample_us: next_sample,
+                    deadline_us: deadline,
+                    current_headroom,
+                }
             };
             let event = data
                 .integrity
@@ -452,6 +550,7 @@ pub(crate) async fn step_velocity_sweep_with_trace<B: CommissioningBackend>(
         VelocitySweepState::SettleCapture {
             next_sample_us,
             deadline_us,
+            current_headroom,
         } => {
             let entry_us = backend.elapsed_us();
             if entry_us < *next_sample_us {
@@ -497,7 +596,9 @@ pub(crate) async fn step_velocity_sweep_with_trace<B: CommissioningBackend>(
             data.previous_encoder_raw = encoder_raw;
             data.previous_read_us = read_us;
             if read_us >= *deadline_us {
-                *state = VelocitySweepState::AnalyzeSettle;
+                *state = VelocitySweepState::AnalyzeSettle {
+                    current_headroom: *current_headroom,
+                };
                 StepResult::ReadyNow
             } else {
                 match next_grid_deadline(*next_sample_us, SAMPLE_PERIOD_US, read_us) {
@@ -509,7 +610,7 @@ pub(crate) async fn step_velocity_sweep_with_trace<B: CommissioningBackend>(
                 }
             }
         }
-        VelocitySweepState::AnalyzeSettle => {
+        VelocitySweepState::AnalyzeSettle { current_headroom } => {
             match settle_is_confirmed(data) {
                 Ok(true) => {}
                 Ok(false) => {
@@ -519,8 +620,19 @@ pub(crate) async fn step_velocity_sweep_with_trace<B: CommissioningBackend>(
                 Err(error) => return fail_sweep(phase, backend, error).await,
             }
             safety.end_primitive();
-            *state = VelocitySweepState::Advance;
+            *state = if *current_headroom {
+                VelocitySweepState::CurrentHeadroomTerminal
+            } else {
+                VelocitySweepState::Advance
+            };
             StepResult::ReadyNow
+        }
+        VelocitySweepState::FaultTerminal { error } => {
+            let error = *error;
+            fail_sweep(phase, backend, error).await
+        }
+        VelocitySweepState::CurrentHeadroomTerminal => {
+            StepResult::VelocitySweepTerminal(sweep_evidence_terminal(data, true))
         }
         VelocitySweepState::Advance => {
             let Some(plan) = data.plan else {
@@ -560,58 +672,10 @@ pub(crate) async fn step_velocity_sweep_with_trace<B: CommissioningBackend>(
             StepResult::ReadyNow
         }
         VelocitySweepState::Terminal => {
-            use super::sweep_evidence::{
-                VelocityInconclusiveKind, VelocitySweepSufficiency, assess_sweep_sufficiency,
-            };
-
-            let Some(plan) = data.plan else {
+            if data.plan.is_none() {
                 return fail_sweep(phase, backend, CommissionError::InvalidSchedule).await;
-            };
-            let forward = data.forward_band.snapshot();
-            let reverse = data.reverse_band.snapshot();
-            let sufficiency = assess_sweep_sufficiency(&forward, &reverse);
-            let (mut outcome, mut cause, sufficient_direction_mask) = match sufficiency {
-                VelocitySweepSufficiency::Complete { .. } => {
-                    (VelocitySweepOutcome::Complete, SWEEP_CAUSE_NONE, 3)
-                }
-                VelocitySweepSufficiency::Inconclusive {
-                    sufficient_direction_mask,
-                    kind,
-                    ..
-                } => (
-                    VelocitySweepOutcome::Inconclusive,
-                    match kind {
-                        VelocityInconclusiveKind::PartialDirection => SWEEP_CAUSE_PARTIAL_DIRECTION,
-                        VelocityInconclusiveKind::Total => SWEEP_CAUSE_TOTAL_INCONCLUSIVE,
-                    },
-                    sufficient_direction_mask,
-                ),
-            };
-            let expected_observations = u16::from(plan.rung_count)
-                .saturating_mul(plan.observations_per_direction)
-                .saturating_mul(2);
-            let expected_rungs = u16::from(plan.rung_count);
-            if data.integrity.emitted_observations() != expected_observations
-                || data.integrity.emitted_rungs() != expected_rungs
-            {
-                outcome = VelocitySweepOutcome::Fault;
-                cause = SWEEP_CAUSE_INTEGRITY;
             }
-            StepResult::VelocitySweepTerminal(VelocitySweepTerminal {
-                run_sequence: data.integrity.run_sequence(),
-                forward,
-                reverse,
-                sufficiency,
-                outcome,
-                cause,
-                sufficient_direction_mask,
-                expected_observations,
-                emitted_observations: data.integrity.emitted_observations(),
-                expected_rungs,
-                emitted_rungs: data.integrity.emitted_rungs(),
-                digest: data.integrity.digest(),
-                safety_fault: None,
-            })
+            StepResult::VelocitySweepTerminal(sweep_evidence_terminal(data, false))
         }
     }
 }
@@ -815,6 +879,98 @@ mod tests {
             );
             assert_fail_closed_tail(&backend);
         }
+    }
+
+    fn finish_first_moving_capture(
+        phase: &mut OuterPhase,
+        backend: &mut MockBackend,
+        delta_per_sample: i32,
+        torque_target_abs: u16,
+    ) -> StepResult {
+        let mut encoder_count = if delta_per_sample < 0 { 2_000 } else { 0 };
+        backend.set_abn_decoder_count(encoder_count);
+        enter_first_capture(phase, backend);
+        let _ = backend.registers.insert(
+            PID_TORQUE_FLUX_TARGET.addr(),
+            u32::from(torque_target_abs) << 16,
+        );
+        for sample in 1..=256u64 {
+            encoder_count += delta_per_sample;
+            backend.elapsed_us_value = sample * 1_000;
+            backend.set_abn_decoder_count(encoder_count);
+            pollster::block_on(step_velocity_sweep_with_trace(phase, backend));
+        }
+        pollster::block_on(step_velocity_sweep_with_trace(phase, backend));
+        pollster::block_on(step_velocity_sweep_with_trace(phase, backend));
+        pollster::block_on(step_velocity_sweep_with_trace(phase, backend))
+    }
+
+    #[test]
+    fn wrong_direction_observation_faults_before_another_stroke() {
+        let mut phase = phase();
+        let mut backend = MockBackend::new();
+
+        let result = finish_first_moving_capture(&mut phase, &mut backend, -1, 1);
+        let StepResult::VelocitySweepEvent(VelocitySweepEvent::Observation(report)) = result else {
+            panic!("moving analysis must emit the faulting observation first");
+        };
+        assert_eq!(
+            report.summary.classification,
+            super::super::sweep_evidence::VelocityObservationClass::WrongDirectionFault
+        );
+
+        let terminal = assert_sweep_fault(
+            pollster::block_on(step_velocity_sweep_with_trace(&mut phase, &mut backend)),
+            CommissionError::VelocityValidationFailed,
+        );
+        assert_eq!(terminal.emitted_observations, 1);
+        assert_eq!(terminal.emitted_rungs, 0);
+        assert_fail_closed_tail(&backend);
+    }
+
+    #[test]
+    fn current_headroom_terminates_after_confirmed_zero_settle() {
+        let mut phase = phase();
+        let mut backend = MockBackend::new();
+        let usable_limit = current_limit(2_448).raw() * 9 / 10;
+
+        let result = finish_first_moving_capture(&mut phase, &mut backend, 1, usable_limit);
+        let StepResult::VelocitySweepEvent(VelocitySweepEvent::Observation(report)) = result else {
+            panic!("moving analysis must emit the headroom observation first");
+        };
+        assert_eq!(
+            report.summary.classification,
+            super::super::sweep_evidence::VelocityObservationClass::CurrentHeadroom
+        );
+
+        let encoder_count = 256i32;
+        let result = pollster::block_on(step_velocity_sweep_with_trace(&mut phase, &mut backend));
+        assert!(matches!(result, StepResult::At(257_000)));
+        for sample in 257..=456u64 {
+            backend.elapsed_us_value = sample * 1_000;
+            backend.set_abn_decoder_count(encoder_count);
+            pollster::block_on(step_velocity_sweep_with_trace(&mut phase, &mut backend));
+        }
+        pollster::block_on(step_velocity_sweep_with_trace(&mut phase, &mut backend));
+
+        let StepResult::VelocitySweepTerminal(terminal) =
+            pollster::block_on(step_velocity_sweep_with_trace(&mut phase, &mut backend))
+        else {
+            panic!("current headroom must terminate without another signed stroke");
+        };
+        assert_eq!(terminal.outcome, VelocitySweepOutcome::Inconclusive);
+        assert_eq!(terminal.cause, SWEEP_CAUSE_CURRENT_HEADROOM);
+        assert_eq!(terminal.emitted_observations, 1);
+        assert_eq!(terminal.emitted_rungs, 0);
+        assert_eq!(
+            backend
+                .spi_log
+                .iter()
+                .filter(|op| matches!(op, SpiOp::Write(address, value)
+                    if *address == PID_VELOCITY_TARGET.addr() && *value != 0))
+                .count(),
+            1
+        );
     }
 
     #[test]

@@ -198,9 +198,14 @@ pub(crate) enum VelocitySweepState {
     SettleCapture {
         next_sample_us: u64,
         deadline_us: u64,
+        current_headroom: bool,
     },
     /// Confirm terminal rest without extending the settle deadline.
-    AnalyzeSettle,
+    AnalyzeSettle { current_headroom: bool },
+    /// Emit a structural-fault terminal after its observation evidence.
+    FaultTerminal { error: CommissionError },
+    /// Emit a current-headroom terminal after confirmed rest.
+    CurrentHeadroomTerminal,
     /// Advance to the next predeclared slot or gain rung.
     Advance,
     /// The fixed sweep schedule has executed every planned rung.
