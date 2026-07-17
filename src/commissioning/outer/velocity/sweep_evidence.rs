@@ -56,6 +56,28 @@ pub enum VelocityObservationClass {
     InvalidEvidenceFault,
 }
 
+/// Stable report code for one signed mechanical direction.
+pub const fn direction_report_code(direction: VelocityDirection) -> u8 {
+    match direction {
+        VelocityDirection::Forward => 0,
+        VelocityDirection::Reverse => 1,
+    }
+}
+
+/// Stable report code for one observation classification.
+pub const fn observation_class_report_code(class: VelocityObservationClass) -> u8 {
+    match class {
+        VelocityObservationClass::Eligible => 0,
+        VelocityObservationClass::Inert => 1,
+        VelocityObservationClass::DeficitUnresolved => 2,
+        VelocityObservationClass::CurrentHeadroom => 3,
+        VelocityObservationClass::StationarityExcluded(reason) => 4 + reason as u8,
+        VelocityObservationClass::WrongDirectionFault => 9,
+        VelocityObservationClass::HardClipFault => 10,
+        VelocityObservationClass::InvalidEvidenceFault => 11,
+    }
+}
+
 /// Auditable result for one completed observation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub struct VelocityObservationSummary {
@@ -100,6 +122,20 @@ pub enum VelocityRungClass {
     Excluded,
     /// At least one observation produced a structural fault.
     Fault,
+}
+
+/// Stable report code for one reproduced-rung classification.
+pub const fn rung_class_report_code(class: VelocityRungClass) -> u8 {
+    match class {
+        VelocityRungClass::Eligible => 0,
+        VelocityRungClass::Inert => 1,
+        VelocityRungClass::DeficitUnresolved => 2,
+        VelocityRungClass::CurrentHeadroom => 3,
+        VelocityRungClass::DisjointPair => 4,
+        VelocityRungClass::Ambiguous => 5,
+        VelocityRungClass::Excluded => 6,
+        VelocityRungClass::Fault => 7,
+    }
 }
 
 /// Reproduced evidence retained for one direction at one gain rung.
@@ -299,6 +335,19 @@ pub enum BandClosure {
     Fault,
 }
 
+/// Stable report code for one directional-band closure.
+pub const fn band_closure_report_code(closure: BandClosure) -> u8 {
+    match closure {
+        BandClosure::EndOfLadder => 0,
+        BandClosure::NoMovingEdge => 1,
+        BandClosure::DeficitResolution => 2,
+        BandClosure::ReproductionGap => 3,
+        BandClosure::Invariance => 4,
+        BandClosure::CurrentHeadroom => 5,
+        BandClosure::Fault => 6,
+    }
+}
+
 /// Fixed-effect pooled disturbance estimate kept separate from invariance evidence.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub struct PooledDisturbance {
@@ -436,7 +485,7 @@ pub fn assemble_directional_band(
     direction: VelocityDirection,
     rungs: &[VelocityRungVerdict],
 ) -> DirectionalDisturbanceBand {
-    let mut band = BandAccumulator::new(direction);
+    let mut band = DirectionalBandAccumulator::new(direction);
     for (index, rung) in rungs.iter().enumerate() {
         band.observe(index, *rung);
     }
@@ -465,7 +514,9 @@ pub fn assess_sweep_sufficiency(
     }
 }
 
-struct BandAccumulator {
+/// Fixed-memory streaming accumulator for one directional disturbance band.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+pub struct DirectionalBandAccumulator {
     band: DirectionalDisturbanceBand,
     closed: bool,
     weighted_point: i128,
@@ -475,8 +526,9 @@ struct BandAccumulator {
     variance_floor_observations: u8,
 }
 
-impl BandAccumulator {
-    fn new(direction: VelocityDirection) -> Self {
+impl DirectionalBandAccumulator {
+    /// Construct an empty directional band accumulator.
+    pub const fn new(direction: VelocityDirection) -> Self {
         Self {
             band: DirectionalDisturbanceBand {
                 direction,
@@ -502,7 +554,8 @@ impl BandAccumulator {
         }
     }
 
-    fn observe(&mut self, index: usize, rung: VelocityRungVerdict) {
+    /// Fold one already-executed rung into the maximal contiguous band.
+    pub fn observe(&mut self, index: usize, rung: VelocityRungVerdict) {
         if self.closed {
             return;
         }
@@ -580,6 +633,11 @@ impl BandAccumulator {
         self.weighted_high += i128::from(interval.high().raw()) * weight;
         self.weight_sum += weight;
         self.band.eligible_observations = self.band.eligible_observations.saturating_add(1);
+    }
+
+    /// Return the current reportable band without consuming the accumulator.
+    pub fn snapshot(self) -> DirectionalDisturbanceBand {
+        self.finish()
     }
 
     fn finish(mut self) -> DirectionalDisturbanceBand {
