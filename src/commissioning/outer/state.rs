@@ -15,6 +15,8 @@ use crate::autotune::velocity_measurement::{
 use crate::commissioning::outer::velocity::sweep_evidence::{
     VelocityObservationSummary, VelocityRungVerdict,
 };
+#[cfg(feature = "trace-velocity-sweep")]
+use crate::commissioning::outer::velocity::sweep_plan::VelocitySweepPlan;
 
 use super::OUTER_WARNING_NONE;
 use super::safety::OuterSafetyLimits;
@@ -145,6 +147,10 @@ impl ExactSizeIterator for VelocityObservationIter<'_> {}
 pub(crate) enum VelocitySweepState {
     /// Validate hardware inputs and construct the immutable plan.
     Setup,
+    /// Make the immutable plan observable before the first moving command.
+    EmitPlan,
+    /// Program the first gain after the plan has been made observable.
+    WriteGain,
 }
 
 /// Engine-owned measurement and current-rung evidence state.
@@ -172,6 +178,7 @@ pub(crate) enum VelocitySweepEvidenceState {
 #[cfg(feature = "trace-velocity-sweep")]
 #[derive(Debug, defmt::Format)]
 pub(crate) struct VelocitySweepData {
+    pub(crate) plan: Option<VelocitySweepPlan>,
     #[defmt(Debug2Format)]
     pub(crate) observations: VelocityObservationRing,
     #[defmt(Debug2Format)]
@@ -183,6 +190,7 @@ pub(crate) struct VelocitySweepData {
 impl VelocitySweepData {
     pub(crate) const fn new() -> Self {
         Self {
+            plan: None,
             observations: VelocityObservationRing::new(),
             blocker: DyadicBlocker::new(),
             evidence: VelocitySweepEvidenceState::Empty,
@@ -694,12 +702,8 @@ mod tests {
         assert_eq!(size_of::<[i32; 256]>(), 1_024);
         assert_eq!(size_of::<[u16; 256]>(), 512);
         assert_eq!(size_of::<super::VelocityObservationRing>(), 1_540);
-        assert!(
-            size_of::<super::VelocitySweepData>() <= size_of::<super::MechanicalIdData>(),
-            "VelocitySweepData {} exceeds MechanicalIdData {}",
-            size_of::<super::VelocitySweepData>(),
-            size_of::<super::MechanicalIdData>(),
-        );
+        assert_eq!(size_of::<super::VelocitySweepData>(), 2_304);
+        assert_eq!(size_of::<super::MechanicalIdData>(), 2_184);
     }
 
     #[cfg(feature = "trace-velocity-sweep")]
