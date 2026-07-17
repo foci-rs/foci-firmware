@@ -15,7 +15,7 @@ mod validate;
 #[allow(unused_imports)]
 pub(crate) use response_ramp::VELOCITY_RESPONSE_MAX_RETRIES;
 #[cfg(feature = "trace-velocity-sweep")]
-pub(crate) use sweep::step_velocity_sweep_with_trace;
+pub(crate) use sweep::{step_velocity_sweep_with_trace, sweep_fault_terminal};
 #[allow(unused_imports)]
 pub(crate) use tune::step_velocity_tune;
 #[allow(unused_imports)]

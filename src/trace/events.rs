@@ -54,6 +54,17 @@ pub const EVENT_COMMISSION_VELOCITY_VALIDATE_GAIN: u16 = 121;
 pub const EVENT_COMMISSION_VELOCITY_VALIDATE_METRICS: u16 = 122;
 /// Velocity-validation summary limits fragment.
 pub const EVENT_COMMISSION_VELOCITY_VALIDATE_LIMITS: u16 = 123;
+/// Disturbance-based velocity-sweep immutable plan.
+pub const EVENT_COMMISSION_VELOCITY_SWEEP_PLAN: u16 = 124;
+/// Disturbance-based velocity-sweep observation summary.
+pub const EVENT_COMMISSION_VELOCITY_SWEEP_OBSERVATION: u16 = 125;
+/// Disturbance-based velocity-sweep rung verdict.
+pub const EVENT_COMMISSION_VELOCITY_SWEEP_RUNG: u16 = 126;
+// Event 127 is intentionally unassigned; running band state rides in rung events.
+/// Disturbance-based velocity-sweep detailed terminal.
+pub const EVENT_COMMISSION_VELOCITY_SWEEP_TERMINAL: u16 = 128;
+/// Disturbance-based velocity-sweep complete marker.
+pub const EVENT_COMMISSION_VELOCITY_SWEEP_COMPLETE: u16 = 129;
 
 /// Position-tune summary result fragment.
 pub const EVENT_COMMISSION_POSITION_TUNE_RESULT: u16 = 130;
@@ -175,6 +186,11 @@ mod tests {
         assert_eq!(EVENT_COMMISSION_ENGINE_TERMINAL, 103);
         assert_eq!(EVENT_COMMISSION_MECHANICAL_ID_RESULT, 110);
         assert_eq!(EVENT_COMMISSION_VELOCITY_VALIDATE_RESULT, 120);
+        assert_eq!(EVENT_COMMISSION_VELOCITY_SWEEP_PLAN, 124);
+        assert_eq!(EVENT_COMMISSION_VELOCITY_SWEEP_OBSERVATION, 125);
+        assert_eq!(EVENT_COMMISSION_VELOCITY_SWEEP_RUNG, 126);
+        assert_eq!(EVENT_COMMISSION_VELOCITY_SWEEP_TERMINAL, 128);
+        assert_eq!(EVENT_COMMISSION_VELOCITY_SWEEP_COMPLETE, 129);
         assert_eq!(EVENT_COMMISSION_POSITION_TUNE_RESULT, 130);
         assert_eq!(EVENT_COMMISSION_RESTORE_RESULT, 140);
         assert_eq!(EVENT_COMMISSION_DIAGNOSTIC_WARNING, 200);

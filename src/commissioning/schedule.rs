@@ -2,10 +2,13 @@
 
 use crate::autotune::{CommissionError, PhaseId};
 use crate::commissioning::types::{
-    AdcCalResult, CommissionResult, EngineKind, OuterResult, StepResult,
+    AdcCalResult, CommissionResult, EngineKind, OuterResult, StepResult, VelocitySweepEvent,
+    VelocitySweepTerminal,
 };
 
 /// Nonterminal commissioning evidence emitted independently of scheduling.
+// The bounded velocity report remains inline so scheduling stays heap-free and `Copy`.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub enum CommissionEvent {
     /// The engine entered a new commissioning phase.
@@ -17,6 +20,8 @@ pub enum CommissionEvent {
         /// Engine kind used to route the progress reply.
         engine_kind: EngineKind,
     },
+    /// Streamed report-only velocity-sweep evidence.
+    VelocitySweep(VelocitySweepEvent),
 }
 
 /// Terminal result from one commissioning engine run.
@@ -35,6 +40,8 @@ pub enum CommissionTerminal {
     SelftestDone,
     /// Stage 1 commissioning completed.
     CommissionDone(CommissionResult),
+    /// Report-only velocity sweep completed, remained inconclusive, or faulted.
+    VelocitySweep(VelocitySweepTerminal),
 }
 
 impl CommissionTerminal {
@@ -46,6 +53,7 @@ impl CommissionTerminal {
             Self::CalibrateDone(result) => StepResult::CalibrateDone(result),
             Self::SelftestDone => StepResult::SelftestDone,
             Self::CommissionDone(result) => StepResult::CommissionDone(result),
+            Self::VelocitySweep(result) => StepResult::VelocitySweepTerminal(result),
         }
     }
 }
@@ -134,6 +142,12 @@ pub fn adapt_step_result(
                 }),
             })
         }
+        StepResult::VelocitySweepEvent(event) => Ok(CommissionPoll::ReadyNow {
+            event: Some(CommissionEvent::VelocitySweep(event)),
+        }),
+        StepResult::VelocitySweepTerminal(result) => Ok(CommissionPoll::Terminal {
+            result: CommissionTerminal::VelocitySweep(result),
+        }),
         StepResult::InnerFailed(error) => Ok(CommissionPoll::Terminal {
             result: CommissionTerminal::InnerFailed(error),
         }),
@@ -158,6 +172,57 @@ pub fn adapt_step_result(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn sample_sweep_terminal() -> VelocitySweepTerminal {
+        use crate::autotune::velocity_measurement::VelocityDirection;
+        use crate::commissioning::outer::velocity::sweep_evidence::{
+            BandClosure, DirectionalDisturbanceBand, JointIdentifiableGeometry,
+            VelocitySweepSufficiency,
+        };
+        use crate::commissioning::types::VelocitySweepOutcome;
+
+        let band = |direction| DirectionalDisturbanceBand {
+            direction,
+            last_inert: None,
+            first_moving: None,
+            ambiguous_edge: None,
+            left_censored: false,
+            p_low: None,
+            p_high: None,
+            closure: BandClosure::NoMovingEdge,
+            common_intersection: None,
+            pooled: None,
+            eligible_rungs: 0,
+            eligible_observations: 0,
+            sufficient: false,
+        };
+        let joint = JointIdentifiableGeometry {
+            low: None,
+            high: None,
+            gap_low: None,
+            gap_high: None,
+            has_joint_band: false,
+        };
+        VelocitySweepTerminal {
+            run_sequence: 9,
+            forward: band(VelocityDirection::Forward),
+            reverse: band(VelocityDirection::Reverse),
+            sufficiency: VelocitySweepSufficiency::Inconclusive {
+                sufficient_direction_mask: 0,
+                kind: crate::commissioning::outer::velocity::sweep_evidence::VelocityInconclusiveKind::Total,
+                joint,
+            },
+            outcome: VelocitySweepOutcome::Inconclusive,
+            cause: 4,
+            sufficient_direction_mask: 0,
+            expected_observations: 20,
+            emitted_observations: 20,
+            expected_rungs: 5,
+            emitted_rungs: 5,
+            digest: 0x0123_4567_89ab_cdef,
+            safety_fault: None,
+        }
+    }
 
     #[test]
     fn exactly_due_grid_deadline_advances_one_period() {
@@ -238,6 +303,60 @@ mod tests {
                     oid: 7,
                     phase_id: PhaseId::ClosedLoopEntry,
                     engine_kind: EngineKind::Commission,
+                })
+            }
+        ));
+    }
+
+    #[test]
+    fn velocity_sweep_event_maps_to_ready_now_without_phase_context() {
+        let event =
+            VelocitySweepEvent::Planned(crate::commissioning::types::VelocitySweepPlanned {
+                run_sequence: 1,
+                evidence_sequence: 0,
+                requested_velocity_mrev_s: 2,
+                requested_velocity_source: 1,
+                used_velocity_mrev_s: 3,
+                effective_ceiling_mrev_s: 4,
+                clamp_flags: 5,
+                effective_ceiling_source: 6,
+                target_velocity_register: 7,
+                p_start: 8,
+                p_top: 9,
+                rung_count: 10,
+                observations_per_direction: 2,
+                moving_stroke_us: 256_000,
+                zero_settle_us: 200_000,
+                nominal_workflow_ms: 11,
+                maximum_workflow_ms: 12,
+                max_stroke_travel_mrev: 13,
+                settle_travel_reserve_mrev: 14,
+                negative_position_headroom_mrev: 15,
+                positive_position_headroom_mrev: 16,
+                hard_torque_limit: 17,
+                usable_torque_limit: 18,
+            });
+
+        assert!(matches!(
+            adapt_step_result(StepResult::VelocitySweepEvent(event), 42_000, None).unwrap(),
+            CommissionPoll::ReadyNow {
+                event: Some(CommissionEvent::VelocitySweep(VelocitySweepEvent::Planned(
+                    _
+                )))
+            }
+        ));
+    }
+
+    #[test]
+    fn velocity_sweep_terminal_maps_without_legacy_outer_result() {
+        let terminal = sample_sweep_terminal();
+
+        assert!(matches!(
+            adapt_step_result(StepResult::VelocitySweepTerminal(terminal), 42_000, None).unwrap(),
+            CommissionPoll::Terminal {
+                result: CommissionTerminal::VelocitySweep(VelocitySweepTerminal {
+                    digest: 0x0123_4567_89ab_cdef,
+                    ..
                 })
             }
         ));

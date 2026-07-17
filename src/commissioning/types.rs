@@ -491,6 +491,10 @@ pub enum StepResult {
     At(u64),
     /// A phase transition occurred. Report to host.
     PhaseChanged(PhaseId),
+    /// Streamed velocity-sweep evidence became available.
+    VelocitySweepEvent(VelocitySweepEvent),
+    /// The report-only velocity sweep reached a terminal result.
+    VelocitySweepTerminal(VelocitySweepTerminal),
     /// Inner commissioning failed.
     InnerFailed(CommissionError),
     /// Outer commissioning completed successfully.
@@ -526,6 +530,8 @@ pub const OUTER_SAFETY_FAULT_POST_SWITCH_SETTLE: u8 = 6;
 pub const OUTER_SAFETY_FAULT_OBSERVATION_GAP: u8 = 7;
 /// A single encoder delta reached the inclusive quarter-turn observability guard.
 pub const OUTER_SAFETY_FAULT_QUARTER_TURN: u8 = 8;
+/// Velocity sweep reached the configured hard torque-target clip.
+pub const OUTER_SAFETY_FAULT_CURRENT: u8 = 9;
 
 /// Host-visible Stage 2 safety-envelope fault evidence.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]

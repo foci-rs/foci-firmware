@@ -1,7 +1,5 @@
 //! Bounded post-capture analysis for the velocity sweep.
 
-#![allow(dead_code)] // Activated by the execution-state commit that follows.
-
 use crate::autotune::velocity_measurement::{
     StationarityResult, VelocityDirection, estimate_confidence,
     select_stationary_suffix_from_source,

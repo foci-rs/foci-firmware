@@ -176,6 +176,35 @@ pub(crate) enum VelocitySweepState {
     EmitPlan,
     /// Program the first gain after the plan has been made observable.
     WriteGain,
+    /// Clear the velocity integrator before a signed command.
+    ClearSignedIntegrator,
+    /// Apply the next fixed F1/R1/F2/R2 target.
+    CommandTarget,
+    /// Capture the fixed moving window on an absolute 1 kHz grid.
+    Capture {
+        next_sample_us: u64,
+        deadline_us: u64,
+    },
+    /// Return the velocity target to zero.
+    CommandZero,
+    /// Clear the velocity integrator at the signed-step boundary.
+    ClearSettleIntegrator { settle_started_us: u64 },
+    /// Analyze the completed moving window during the fixed settle.
+    AnalyzeMoving {
+        next_sample_us: u64,
+        deadline_us: u64,
+    },
+    /// Observe the fixed zero-target settle on an absolute 1 kHz grid.
+    SettleCapture {
+        next_sample_us: u64,
+        deadline_us: u64,
+    },
+    /// Confirm terminal rest without extending the settle deadline.
+    AnalyzeSettle,
+    /// Advance to the next predeclared slot or gain rung.
+    Advance,
+    /// The fixed sweep schedule has executed every planned rung.
+    Terminal,
 }
 
 /// Engine-owned measurement and current-rung evidence state.

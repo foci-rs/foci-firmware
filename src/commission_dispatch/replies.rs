@@ -470,7 +470,6 @@ fn emit_velocity_sweep_rung<S: CommissionReplySink>(
     });
 }
 
-#[allow(dead_code)] // Activated by the terminal-ordering commit that follows.
 fn emit_velocity_sweep_terminal_fragments<S: CommissionReplySink>(
     sink: &mut S,
     oid: u8,
@@ -686,6 +685,36 @@ pub fn emit_terminal_reply<S: CommissionReplySink>(sink: &mut S, payload: ReplyP
                 sink.foci_selftest_result(oid, stage, value);
             }
             sink.foci_selftest_done(oid, done_status);
+        }
+        ReplyPayload::VelocitySweepEvent { oid, event } => {
+            emit_velocity_sweep_event(sink, oid, event);
+        }
+        ReplyPayload::VelocitySweepTerminal {
+            oid,
+            terminal,
+            inconclusive,
+        } => {
+            if let Some(fault) = terminal.safety_fault {
+                sink.foci_outer_safety_fault(oid, fault);
+            }
+            emit_velocity_sweep_terminal_fragments(sink, oid, terminal);
+            if let Some(report) = inconclusive {
+                let evidence_sequence = terminal
+                    .emitted_observations
+                    .saturating_add(terminal.emitted_rungs)
+                    .saturating_add(1);
+                sink.foci_outer_inconclusive(crate::ankyra::replies::FociOuterInconclusive {
+                    oid,
+                    run_sequence: terminal.run_sequence,
+                    evidence_sequence,
+                    fragment: 3,
+                    phase: report.phase.to_u8(),
+                    sufficient_direction_mask: report.sufficient_direction_mask,
+                    cause: report.cause,
+                    digest_low: report.digest_low,
+                    digest_high: report.digest_high,
+                });
+            }
         }
     }
 }
@@ -1348,6 +1377,11 @@ mod tests {
             velocity_counts_per_ms: i32,
             velocity_cap_counts_per_ms: i32,
         },
+        SweepPlan(u8),
+        SweepObservation(u8),
+        SweepRung(u8),
+        SweepTerminal(u8),
+        OuterInconclusive,
         SelftestResult {
             oid: u8,
             stage: u8,
@@ -1649,6 +1683,90 @@ mod tests {
                 velocity_counts_per_ms: fault.velocity_counts_per_ms,
                 velocity_cap_counts_per_ms: fault.velocity_cap_counts_per_ms,
             });
+        }
+
+        fn foci_velocity_sweep_plan_limits(
+            &mut self,
+            report: crate::ankyra::replies::FociVelocitySweepPlanLimits,
+        ) {
+            self.events.push(Event::SweepPlan(report.fragment));
+        }
+
+        fn foci_velocity_sweep_plan_geometry(
+            &mut self,
+            report: crate::ankyra::replies::FociVelocitySweepPlanGeometry,
+        ) {
+            self.events.push(Event::SweepPlan(report.fragment));
+        }
+
+        fn foci_velocity_sweep_plan_timing(
+            &mut self,
+            report: crate::ankyra::replies::FociVelocitySweepPlanTiming,
+        ) {
+            self.events.push(Event::SweepPlan(report.fragment));
+        }
+
+        fn foci_velocity_observation_core(
+            &mut self,
+            report: crate::ankyra::replies::FociVelocityObservationCore,
+        ) {
+            self.events.push(Event::SweepObservation(report.fragment));
+        }
+
+        fn foci_velocity_observation_rate(
+            &mut self,
+            report: crate::ankyra::replies::FociVelocityObservationRate,
+        ) {
+            self.events.push(Event::SweepObservation(report.fragment));
+        }
+
+        fn foci_velocity_observation_stationarity(
+            &mut self,
+            report: crate::ankyra::replies::FociVelocityObservationStationarity,
+        ) {
+            self.events.push(Event::SweepObservation(report.fragment));
+        }
+
+        fn foci_velocity_observation_disturbance(
+            &mut self,
+            report: crate::ankyra::replies::FociVelocityObservationDisturbance,
+        ) {
+            self.events.push(Event::SweepObservation(report.fragment));
+        }
+
+        fn foci_velocity_rung_verdict_band(
+            &mut self,
+            report: crate::ankyra::replies::FociVelocityRungVerdictBand,
+        ) {
+            self.events.push(Event::SweepRung(report.fragment));
+        }
+
+        fn foci_velocity_rung_verdict_quality(
+            &mut self,
+            report: crate::ankyra::replies::FociVelocityRungVerdictQuality,
+        ) {
+            self.events.push(Event::SweepRung(report.fragment));
+        }
+
+        fn foci_velocity_sweep_terminal_direction(
+            &mut self,
+            report: crate::ankyra::replies::FociVelocitySweepTerminalDirection,
+        ) {
+            self.events.push(Event::SweepTerminal(report.fragment));
+        }
+
+        fn foci_velocity_sweep_terminal_integrity(
+            &mut self,
+            report: crate::ankyra::replies::FociVelocitySweepTerminalIntegrity,
+        ) {
+            self.events.push(Event::SweepTerminal(report.fragment));
+        }
+
+        fn foci_outer_inconclusive(
+            &mut self,
+            _report: crate::ankyra::replies::FociOuterInconclusive,
+        ) {
+            self.events.push(Event::OuterInconclusive);
         }
 
         fn foci_calibrate_result(&mut self, oid: u8, status: u8, result: &AdcCalResult) {
@@ -2834,6 +2952,126 @@ mod tests {
                     velocity_search_stop_reason: 65,
                     motion_budget_mrev: 66,
                 },
+            ]
+        );
+    }
+
+    #[test]
+    fn sweep_terminal_order_separates_fault_and_inconclusive_paths() {
+        use crate::autotune::velocity_measurement::VelocityDirection;
+        use crate::commissioning::outer::velocity::sweep_evidence::{
+            BandClosure, DirectionalDisturbanceBand, JointIdentifiableGeometry,
+            VelocityInconclusiveKind, VelocitySweepSufficiency,
+        };
+        use crate::commissioning::types::{OuterInconclusive, VelocitySweepOutcome};
+
+        let band = |direction| DirectionalDisturbanceBand {
+            direction,
+            last_inert: None,
+            first_moving: None,
+            ambiguous_edge: None,
+            left_censored: false,
+            p_low: None,
+            p_high: None,
+            closure: BandClosure::Fault,
+            common_intersection: None,
+            pooled: None,
+            eligible_rungs: 0,
+            eligible_observations: 0,
+            sufficient: false,
+        };
+        let safety_fault = OuterSafetyFault {
+            reason: crate::commissioning::types::OUTER_SAFETY_FAULT_VELOCITY,
+            max_travel_mrev: 750,
+            max_velocity_mrev_s: 6_000,
+            max_duration_ms: 3_000,
+            direction_mask: 3,
+            delta_counts: -125,
+            dt_us: 4_000,
+            velocity_counts_per_ms: -31,
+            velocity_cap_counts_per_ms: 24,
+            position_counts: -373,
+            position_window_counts: 3_000,
+            elapsed_us: 120_000,
+            duration_cap_us: 3_000_000,
+        };
+        let digest = 0x0123_4567_89ab_cdef;
+        let mut terminal = VelocitySweepTerminal {
+            run_sequence: 7,
+            forward: band(VelocityDirection::Forward),
+            reverse: band(VelocityDirection::Reverse),
+            sufficiency: VelocitySweepSufficiency::Inconclusive {
+                sufficient_direction_mask: 0,
+                kind: VelocityInconclusiveKind::Total,
+                joint: JointIdentifiableGeometry {
+                    low: None,
+                    high: None,
+                    gap_low: None,
+                    gap_high: None,
+                    has_joint_band: false,
+                },
+            },
+            outcome: VelocitySweepOutcome::Fault,
+            cause: CommissionError::SafetyEnvelopeViolation.status_code(),
+            sufficient_direction_mask: 0,
+            expected_observations: 20,
+            emitted_observations: 4,
+            expected_rungs: 5,
+            emitted_rungs: 1,
+            digest,
+            safety_fault: Some(safety_fault),
+        };
+        let mut sink = RecordingSink::default();
+
+        emit_terminal_reply(
+            &mut sink,
+            ReplyPayload::VelocitySweepTerminal {
+                oid: 3,
+                terminal,
+                inconclusive: None,
+            },
+        );
+
+        assert!(matches!(sink.events[0], Event::OuterSafetyFault { .. }));
+        assert_eq!(
+            &sink.events[1..],
+            &[
+                Event::SweepTerminal(0),
+                Event::SweepTerminal(1),
+                Event::SweepTerminal(2),
+            ]
+        );
+        assert!(
+            !sink
+                .events
+                .iter()
+                .any(|event| matches!(event, Event::Tune { .. }))
+        );
+
+        terminal.outcome = VelocitySweepOutcome::Inconclusive;
+        terminal.safety_fault = None;
+        let mut sink = RecordingSink::default();
+        emit_terminal_reply(
+            &mut sink,
+            ReplyPayload::VelocitySweepTerminal {
+                oid: 3,
+                terminal,
+                inconclusive: Some(OuterInconclusive {
+                    phase: PhaseId::VelocityTune,
+                    sufficient_direction_mask: 0,
+                    cause: terminal.cause,
+                    digest_low: digest as u32,
+                    digest_high: (digest >> 32) as u32,
+                }),
+            },
+        );
+        assert_eq!(
+            sink.events,
+            [
+                Event::SweepTerminal(0),
+                Event::SweepTerminal(1),
+                Event::SweepTerminal(2),
+                Event::OuterInconclusive,
             ]
         );
     }

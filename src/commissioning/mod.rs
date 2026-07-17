@@ -34,7 +34,10 @@ use crate::pid::InnerLoopGains;
 use crate::state::tmc::TmcChannelState;
 use crate::trace::events::{
     CommissionTraceEvent, EVENT_COMMISSION_ENGINE_START, EVENT_COMMISSION_ENGINE_TERMINAL,
-    EVENT_COMMISSION_PHASE_END, EVENT_COMMISSION_PHASE_START, TraceEventLevel, u32_arg,
+    EVENT_COMMISSION_PHASE_END, EVENT_COMMISSION_PHASE_START,
+    EVENT_COMMISSION_VELOCITY_SWEEP_COMPLETE, EVENT_COMMISSION_VELOCITY_SWEEP_OBSERVATION,
+    EVENT_COMMISSION_VELOCITY_SWEEP_PLAN, EVENT_COMMISSION_VELOCITY_SWEEP_RUNG,
+    EVENT_COMMISSION_VELOCITY_SWEEP_TERMINAL, TraceEventLevel, u32_arg,
 };
 
 // Re-export public API surface for downstream consumers.
@@ -763,6 +766,60 @@ impl CommissioningEngine {
                 self.trace_run.phase_seq = self.trace_run.phase_seq.wrapping_add(1);
                 self.emit_trace_phase_start(backend, *phase);
             }
+            StepResult::VelocitySweepEvent(event) => {
+                let (event_id, sequence) = match event {
+                    crate::commissioning::types::VelocitySweepEvent::Planned(report) => (
+                        EVENT_COMMISSION_VELOCITY_SWEEP_PLAN,
+                        report.evidence_sequence,
+                    ),
+                    crate::commissioning::types::VelocitySweepEvent::Observation(report) => (
+                        EVENT_COMMISSION_VELOCITY_SWEEP_OBSERVATION,
+                        report.evidence_sequence,
+                    ),
+                    crate::commissioning::types::VelocitySweepEvent::Rung(report) => (
+                        EVENT_COMMISSION_VELOCITY_SWEEP_RUNG,
+                        report.evidence_sequence,
+                    ),
+                };
+                backend.record_commission_trace_event(CommissionTraceEvent {
+                    level: TraceEventLevel::Info,
+                    event_id,
+                    engine_kind: EngineKind::OuterTune,
+                    payload: [i32::from(sequence), 0],
+                    payload_count: 1,
+                });
+            }
+            StepResult::VelocitySweepTerminal(terminal) => {
+                let level = match terminal.outcome {
+                    crate::commissioning::types::VelocitySweepOutcome::Complete => {
+                        TraceEventLevel::Info
+                    }
+                    crate::commissioning::types::VelocitySweepOutcome::Inconclusive => {
+                        TraceEventLevel::Warn
+                    }
+                    crate::commissioning::types::VelocitySweepOutcome::Fault => {
+                        TraceEventLevel::Error
+                    }
+                };
+                backend.record_commission_trace_event(CommissionTraceEvent {
+                    level,
+                    event_id: EVENT_COMMISSION_VELOCITY_SWEEP_TERMINAL,
+                    engine_kind: EngineKind::OuterTune,
+                    payload: [terminal.cause.into(), terminal.digest as i32],
+                    payload_count: 2,
+                });
+                if terminal.outcome == crate::commissioning::types::VelocitySweepOutcome::Complete {
+                    backend.record_commission_trace_event(CommissionTraceEvent {
+                        level: TraceEventLevel::Info,
+                        event_id: EVENT_COMMISSION_VELOCITY_SWEEP_COMPLETE,
+                        engine_kind: EngineKind::OuterTune,
+                        payload: [terminal.digest as i32, (terminal.digest >> 32) as i32],
+                        payload_count: 2,
+                    });
+                }
+                self.emit_trace_phase_end(backend, terminal.cause, level);
+                self.emit_trace_terminal(backend, terminal.cause, level);
+            }
             StepResult::CommissionDone(result) => {
                 self.emit_trace_phase_end(backend, PHASE_END_OK, TraceEventLevel::Info);
                 let level = Self::status_level(result.inner.status);
@@ -993,7 +1050,7 @@ mod tests {
         // The feature-on immutable plan makes VelocitySweep the largest outer
         // payload while remaining below the audited F407 ceiling.
         #[cfg(feature = "trace-velocity-sweep")]
-        assert_eq!(size_of::<CommissioningEngine>(), 3_952);
+        assert_eq!(size_of::<CommissioningEngine>(), 4_272);
         assert!(size_of::<CommissioningEngine>() <= 4_528);
         assert!(size_of::<CommissioningEngine>() <= 6_144);
         assert!(size_of::<capture_timing::CaptureTiming>() <= 64);

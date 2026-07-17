@@ -1,7 +1,5 @@
 //! Streamed velocity-sweep evidence sequencing and integrity.
 
-#![allow(dead_code)] // Activated by the execution-state commit that follows.
-
 use crate::autotune::velocity_measurement::StationarityResult;
 use crate::commissioning::types::{
     VelocitySweepEvent, VelocitySweepObservation, VelocitySweepPlanned, VelocitySweepRungReport,

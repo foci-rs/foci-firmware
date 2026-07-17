@@ -18,7 +18,9 @@ pub(crate) mod test_support;
 mod tests;
 
 pub use post_actions::{StepperTaskDirective, apply_stepper_post_action_state};
-pub use replies::{CommissionReplySink, emit_phase_reply, emit_terminal_reply};
+pub use replies::{
+    CommissionReplySink, emit_phase_reply, emit_terminal_reply, emit_velocity_sweep_event,
+};
 
 use crate::autotune::PhaseId;
 // CommissioningEngine lives in commissioning/mod.rs (the engine impl); the
@@ -26,8 +28,9 @@ use crate::autotune::PhaseId;
 use crate::commissioning::{
     CommissioningEngine,
     types::{
-        AdcCalResult, CommissionResult, CommissioningBackend, EngineKind, OuterResult,
-        OuterSafetyFault, StepResult,
+        AdcCalResult, CommissionResult, CommissioningBackend, EngineKind, OuterInconclusive,
+        OuterResult, OuterSafetyFault, StepResult, VelocitySweepEvent, VelocitySweepOutcome,
+        VelocitySweepTerminal,
     },
 };
 use crate::pid::{InnerLoopGains, OuterLoopGains};
@@ -80,6 +83,11 @@ pub enum CommissionOutcome {
         oid: u8,
         phase_id: PhaseId,
         engine_kind: EngineKind,
+    },
+    /// Nonterminal report-only evidence is ready for immediate emission.
+    Evidence {
+        /// Shared reply payload; boards provide only transport forwarding.
+        reply: ReplyPayload,
     },
     /// Engine reached a terminal state. Firmware has already executed all
     /// SPI restore, atomic stores, filter re-apply, and arm/disarm motor.
@@ -257,6 +265,14 @@ pub enum ReplyPayload {
         diagnostics: crate::selftest::CommissionDiagnostics,
         done_status: u8,
     },
+    /// One streamed velocity-sweep plan, observation, or rung report.
+    VelocitySweepEvent { oid: u8, event: VelocitySweepEvent },
+    /// Detailed report-only terminal, optionally followed by a generic inconclusive terminal.
+    VelocitySweepTerminal {
+        oid: u8,
+        terminal: VelocitySweepTerminal,
+        inconclusive: Option<OuterInconclusive>,
+    },
 }
 
 /// Helper: zero-filled OuterResult for failure-path TuneResult emission.
@@ -371,6 +387,77 @@ pub async fn drive_commission_result<B: CommissioningBackend>(
                 oid: engine_ref.oid(),
                 phase_id,
                 engine_kind: engine_ref.kind(),
+            }
+        }
+        StepResult::VelocitySweepEvent(event) => {
+            let engine_ref = engine
+                .as_ref()
+                .expect("engine slot is None on VelocitySweepEvent");
+            CommissionOutcome::Evidence {
+                reply: ReplyPayload::VelocitySweepEvent {
+                    oid: engine_ref.oid(),
+                    event,
+                },
+            }
+        }
+        StepResult::VelocitySweepTerminal(mut terminal) => {
+            use core::sync::atomic::Ordering::Relaxed;
+
+            let consumed = engine
+                .take()
+                .expect("engine slot is None on VelocitySweepTerminal");
+            let oid = consumed.oid();
+            let snapshot = consumed.entry_snapshot();
+            let mut stepper = StepperPostAction::Stop;
+            if terminal.safety_fault.is_some() {
+                crate::tmc_control::lifecycle::disarm_motor(backend, state).await;
+            } else if let Some(snapshot) = snapshot {
+                if crate::commissioning::inner::restore_entry_gains(&snapshot, backend)
+                    .await
+                    .is_ok()
+                {
+                    *state.calibrated = true;
+                    if crate::tmc_control::lifecycle::arm_motor_electrical(backend, state)
+                        .await
+                        .is_ok()
+                    {
+                        stepper = StepperPostAction::ArmPreservePosition;
+                    } else {
+                        terminal.outcome = VelocitySweepOutcome::Fault;
+                        terminal.cause =
+                            crate::autotune::CommissionError::ChipResetDetected.status_code();
+                        crate::tmc_control::lifecycle::disarm_motor(backend, state).await;
+                    }
+                } else {
+                    terminal.outcome = VelocitySweepOutcome::Fault;
+                    terminal.cause = crate::autotune::CommissionError::Spi.status_code();
+                    crate::tmc_control::lifecycle::disarm_motor(backend, state).await;
+                }
+            } else {
+                terminal.outcome = VelocitySweepOutcome::Fault;
+                terminal.cause = crate::autotune::CommissionError::Spi.status_code();
+                crate::tmc_control::lifecycle::disarm_motor(backend, state).await;
+            }
+            state.tmc.commission_in_flight.store(false, Relaxed);
+            let inconclusive = (terminal.outcome == VelocitySweepOutcome::Inconclusive).then_some(
+                OuterInconclusive {
+                    phase: PhaseId::VelocityTune,
+                    sufficient_direction_mask: terminal.sufficient_direction_mask,
+                    cause: terminal.cause,
+                    digest_low: terminal.digest as u32,
+                    digest_high: (terminal.digest >> 32) as u32,
+                },
+            );
+            CommissionOutcome::Terminal {
+                reply: ReplyPayload::VelocitySweepTerminal {
+                    oid,
+                    terminal,
+                    inconclusive,
+                },
+                actions: PostActions {
+                    stop_trace: true,
+                    stepper,
+                },
             }
         }
         StepResult::SelftestDone => {

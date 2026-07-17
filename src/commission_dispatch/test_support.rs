@@ -45,16 +45,18 @@ pub struct MockBackend {
     /// Current register values, keyed by TMC4671 address byte.
     pub registers: heapless::LinearMap<u8, u32, 64>,
     /// Ordered log of every SPI read/write issued during the test.
-    pub spi_log: Vec<SpiOp, 384>,
+    pub spi_log: Vec<SpiOp, 4_096>,
     /// Number of paired register-read operations issued during the test.
     pub register_pair_reads: usize,
     /// Number of single-register capture reads issued during the test.
     pub capture_register_reads: usize,
+    /// Number of velocity-sweep controller-output reads issued during the test.
+    pub pid_torque_flux_target_reads: usize,
     /// Ordered trace events recorded by the commissioning engine.
     pub trace_events: Vec<crate::trace::events::CommissionTraceEvent, 64>,
     /// Characterization-only raw velocity observations.
     #[cfg(feature = "trace")]
-    pub velocity_trace_observations: Vec<crate::trace::stream::VelocityTraceObservation, 64>,
+    pub velocity_trace_observations: Vec<crate::trace::stream::VelocityTraceObservation, 2_048>,
     /// Current state of the TMC4671 enable pin.
     pub enable_pin: bool,
     /// Log of every `delay_us` call, in order.
@@ -159,6 +161,7 @@ impl MockBackend {
             spi_log: Vec::new(),
             register_pair_reads: 0,
             capture_register_reads: 0,
+            pid_torque_flux_target_reads: 0,
             trace_events: Vec::new(),
             #[cfg(feature = "trace")]
             velocity_trace_observations: Vec::new(),
@@ -295,6 +298,9 @@ impl CommissionRegisterIo for MockBackend {
             let val = self.read_position_actual_sequence[self.read_position_actual_pos];
             self.read_position_actual_pos += 1;
             return Ok(val);
+        }
+        if addr == foci_tmc4671::registers::PID_TORQUE_FLUX_TARGET.addr() {
+            self.pid_torque_flux_target_reads += 1;
         }
         if addr == foci_tmc4671::registers::ABN_DECODER_COUNT.addr()
             && self.abn_decoder_count_pos < self.abn_decoder_count_sequence.len()

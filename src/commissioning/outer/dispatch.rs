@@ -103,6 +103,10 @@ pub(crate) async fn step_outer_with_trace<B: CommissioningBackend>(
             );
             let fault = safety.invalid_budget_fault();
             let err = safety_error_for_phase(phase);
+            #[cfg(feature = "trace-velocity-sweep")]
+            if matches!(phase, OuterPhase::VelocitySweep { .. }) {
+                return velocity::sweep_fault_terminal(phase, err, Some(fault));
+            }
             return fail_outer_with_safety(phase, err, fault);
         }
         match check_outer_safety(safety, backend).await {
@@ -111,15 +115,27 @@ pub(crate) async fn step_outer_with_trace<B: CommissioningBackend>(
                 let _ = backend
                     .write_register(foci_tmc4671::registers::PID_TORQUE_FLUX_TARGET, 0)
                     .await;
+                #[cfg(feature = "trace-velocity-sweep")]
+                let _ = backend
+                    .write_register(foci_tmc4671::registers::PID_VELOCITY_TARGET, 0)
+                    .await;
                 let _ = backend
                     .write_register(foci_tmc4671::registers::MODE_RAMP_MODE_MOTION, 0)
                     .await;
                 let err = safety_error_for_phase(phase);
+                #[cfg(feature = "trace-velocity-sweep")]
+                if matches!(phase, OuterPhase::VelocitySweep { .. }) {
+                    return velocity::sweep_fault_terminal(phase, err, Some(fault));
+                }
                 return fail_outer_with_safety(phase, err, fault);
             }
             Ok(None) => {}
             Err(error) => {
                 defmt::warn!("outer safety check failed: {}", error);
+                #[cfg(feature = "trace-velocity-sweep")]
+                if matches!(phase, OuterPhase::VelocitySweep { .. }) {
+                    return velocity::sweep_fault_terminal(phase, error, None);
+                }
                 return fail_outer(phase, error);
             }
         }
