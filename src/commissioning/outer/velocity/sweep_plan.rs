@@ -431,3 +431,7 @@ fn build_gain_ladder(
     }
     Ok(gains)
 }
+
+#[cfg(test)]
+#[path = "sweep_plan_tests.rs"]
+mod tests;
