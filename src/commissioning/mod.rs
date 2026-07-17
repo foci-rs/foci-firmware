@@ -501,7 +501,7 @@ impl CommissioningEngine {
         #[cfg(feature = "trace-velocity-sweep")]
         let phase = OuterPhase::VelocitySweep {
             state: VelocitySweepState::Setup,
-            data: VelocitySweepData::new(),
+            data: VelocitySweepData::new(trace_engine_seq),
             safety,
         };
         Self {

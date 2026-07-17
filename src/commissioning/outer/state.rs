@@ -13,10 +13,12 @@ use crate::autotune::velocity_measurement::{
 };
 #[cfg(feature = "trace-velocity-sweep")]
 use crate::commissioning::outer::velocity::sweep_evidence::{
-    VelocityObservationSummary, VelocityRungVerdict,
+    DirectionalBandAccumulator, VelocityObservationSummary, VelocityRungVerdict,
 };
 #[cfg(feature = "trace-velocity-sweep")]
 use crate::commissioning::outer::velocity::sweep_plan::VelocitySweepPlan;
+#[cfg(feature = "trace-velocity-sweep")]
+use crate::commissioning::outer::velocity::sweep_reporting::VelocitySweepIntegrity;
 
 use super::OUTER_WARNING_NONE;
 use super::safety::OuterSafetyLimits;
@@ -141,6 +143,29 @@ impl Iterator for VelocityObservationIter<'_> {
 #[cfg(feature = "trace-velocity-sweep")]
 impl ExactSizeIterator for VelocityObservationIter<'_> {}
 
+#[cfg(feature = "trace-velocity-sweep")]
+impl crate::autotune::velocity_measurement::VelocityObservationSource for VelocityObservationRing {
+    fn observation_len(&self) -> usize {
+        self.len()
+    }
+
+    fn observation(&self, index: usize) -> Option<RawVelocityObservation> {
+        if index >= self.len() {
+            return None;
+        }
+        let start = if self.len() == VELOCITY_OBSERVATION_CAPACITY {
+            usize::from(self.next)
+        } else {
+            0
+        };
+        let source_index = (start + index) % VELOCITY_OBSERVATION_CAPACITY;
+        Some(RawVelocityObservation {
+            delta_counts: self.delta_counts[source_index],
+            elapsed_us: u32::from(self.elapsed_us[source_index]),
+        })
+    }
+}
+
 /// Phase-local state for the trace-gated velocity sweep.
 #[cfg(feature = "trace-velocity-sweep")]
 #[derive(Debug, defmt::Format)]
@@ -172,6 +197,11 @@ pub(crate) enum VelocitySweepEvidenceState {
         forward: VelocityRungVerdict,
         reverse_first: VelocityObservationSummary,
     },
+    /// Both directional reproduction verdicts are ready for streaming.
+    CompletePair {
+        forward: VelocityRungVerdict,
+        reverse: VelocityRungVerdict,
+    },
 }
 
 /// Engine-owned measurement and current-rung evidence state.
@@ -179,21 +209,39 @@ pub(crate) enum VelocitySweepEvidenceState {
 #[derive(Debug, defmt::Format)]
 pub(crate) struct VelocitySweepData {
     pub(crate) plan: Option<VelocitySweepPlan>,
+    pub(crate) rung_index: u8,
+    pub(crate) slot: u8,
+    pub(crate) previous_encoder_raw: u32,
+    pub(crate) previous_read_us: u64,
+    pub(crate) peak_torque_target: u16,
     #[defmt(Debug2Format)]
     pub(crate) observations: VelocityObservationRing,
     #[defmt(Debug2Format)]
     pub(crate) blocker: DyadicBlocker<VELOCITY_SWEEP_BLOCK_LEVELS>,
     pub(crate) evidence: VelocitySweepEvidenceState,
+    pub(crate) forward_band: DirectionalBandAccumulator,
+    pub(crate) reverse_band: DirectionalBandAccumulator,
+    pub(crate) integrity: VelocitySweepIntegrity,
 }
 
 #[cfg(feature = "trace-velocity-sweep")]
 impl VelocitySweepData {
-    pub(crate) const fn new() -> Self {
+    pub(crate) const fn new(run_sequence: u32) -> Self {
+        use crate::autotune::velocity_measurement::VelocityDirection;
+
         Self {
             plan: None,
+            rung_index: 0,
+            slot: 0,
+            previous_encoder_raw: 0,
+            previous_read_us: 0,
+            peak_torque_target: 0,
             observations: VelocityObservationRing::new(),
             blocker: DyadicBlocker::new(),
             evidence: VelocitySweepEvidenceState::Empty,
+            forward_band: DirectionalBandAccumulator::new(VelocityDirection::Forward),
+            reverse_band: DirectionalBandAccumulator::new(VelocityDirection::Reverse),
+            integrity: VelocitySweepIntegrity::new(run_sequence),
         }
     }
 }
@@ -702,7 +750,7 @@ mod tests {
         assert_eq!(size_of::<[i32; 256]>(), 1_024);
         assert_eq!(size_of::<[u16; 256]>(), 512);
         assert_eq!(size_of::<super::VelocityObservationRing>(), 1_540);
-        assert_eq!(size_of::<super::VelocitySweepData>(), 2_304);
+        assert_eq!(size_of::<super::VelocitySweepData>(), 2_608);
         assert_eq!(size_of::<super::MechanicalIdData>(), 2_184);
     }
 
@@ -711,7 +759,7 @@ mod tests {
     fn velocity_sweep_phase_reports_velocity_tune_wire_id() {
         let phase = OuterPhase::VelocitySweep {
             state: super::VelocitySweepState::Setup,
-            data: super::VelocitySweepData::new(),
+            data: super::VelocitySweepData::new(0),
             safety: OuterSafetyLimits::new(
                 0,
                 crate::commissioning::outer::OuterMotionBudget::firmware_caps(),

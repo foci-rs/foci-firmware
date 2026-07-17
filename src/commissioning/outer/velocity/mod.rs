@@ -3,8 +3,12 @@
 mod response_ramp;
 #[cfg(feature = "trace-velocity-sweep")]
 mod sweep;
+#[cfg(feature = "trace-velocity-sweep")]
+mod sweep_analysis;
 pub mod sweep_evidence;
 pub mod sweep_plan;
+#[cfg(feature = "trace-velocity-sweep")]
+pub(crate) mod sweep_reporting;
 mod tune;
 mod validate;
 
