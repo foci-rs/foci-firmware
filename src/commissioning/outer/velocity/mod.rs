@@ -1,6 +1,7 @@
 //! Velocity-loop commissioning phases.
 
 mod response_ramp;
+pub mod sweep_plan;
 mod tune;
 mod validate;
 
