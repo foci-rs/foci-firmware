@@ -113,6 +113,8 @@ pub struct VelocityRungVerdict {
     pub classification: VelocityRungClass,
     /// Intersection of corrected observation intervals when reproduced.
     pub disturbance_interval: Option<EquivalentTorqueTargetInterval>,
+    /// Individual corrected intervals retained for auditable pooling.
+    pub disturbance_intervals: [Option<EquivalentTorqueTargetInterval>; 2],
     /// Individual points retained for later fixed-effect pooling.
     pub disturbance_points: [Option<EquivalentTorqueTargetQ16>; 2],
     /// Individual variances retained for later fixed-effect pooling.
@@ -234,6 +236,7 @@ pub fn reproduce_velocity_rung(
         p: first.p,
         classification,
         disturbance_interval: interval,
+        disturbance_intervals: [first.disturbance_interval, second.disturbance_interval],
         disturbance_points: [first.disturbance, second.disturbance],
         disturbance_variances_q2: [
             first.disturbance_variance_q2,
@@ -275,6 +278,370 @@ fn intersect_intervals(
         EquivalentTorqueTargetQ16::from_raw(high),
     )
     .ok()
+}
+
+/// Reason the maximal contiguous directional band stopped growing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+pub enum BandClosure {
+    /// Every executed rung remained in the contiguous band.
+    EndOfLadder,
+    /// No same-direction pair confirmed motion.
+    NoMovingEdge,
+    /// The corrected deficit ceased to exclude zero.
+    DeficitResolution,
+    /// Observation reproduction or stationarity left a quality gap.
+    ReproductionGap,
+    /// Adding the next rung emptied the common D_eq intersection.
+    Invariance,
+    /// The inclusive usable-current boundary ended the evidence span.
+    CurrentHeadroom,
+    /// Structural evidence was invalid or unsafe.
+    Fault,
+}
+
+/// Fixed-effect pooled disturbance estimate kept separate from invariance evidence.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+pub struct PooledDisturbance {
+    /// Inverse-variance weighted controller-domain point.
+    pub estimate: EquivalentTorqueTargetQ16,
+    /// Outward-rounded weighted interval.
+    pub interval: EquivalentTorqueTargetInterval,
+    /// Number of observations whose zero variance used the one-unit floor.
+    pub variance_floor_observations: u8,
+}
+
+/// Maximal contiguous D_eq-identifiable band for one signed direction.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+pub struct DirectionalDisturbanceBand {
+    /// Signed direction represented by this band.
+    pub direction: VelocityDirection,
+    /// Last confirmed inert gain below the moving edge.
+    pub last_inert: Option<PidGain>,
+    /// First gain with reproduced commanded-side motion.
+    pub first_moving: Option<PidGain>,
+    /// Ambiguous gain observed around the lower edge.
+    pub ambiguous_edge: Option<PidGain>,
+    /// Whether the first structural gain already moved.
+    pub left_censored: bool,
+    /// First D_eq-eligible gain.
+    pub p_low: Option<PidGain>,
+    /// Last contiguous D_eq-eligible gain.
+    pub p_high: Option<PidGain>,
+    /// Condition that closed the band.
+    pub closure: BandClosure,
+    /// Common interval compatible with every included rung.
+    pub common_intersection: Option<EquivalentTorqueTargetInterval>,
+    /// Fixed-effect pooled estimate over included observations.
+    pub pooled: Option<PooledDisturbance>,
+    /// Number of contiguous eligible rungs.
+    pub eligible_rungs: u8,
+    /// Number of independently corrected observations pooled.
+    pub eligible_observations: u16,
+    /// Handoff sufficiency, not gain acceptance.
+    pub sufficient: bool,
+}
+
+/// Cross-direction P-band geometry without merging signed disturbance values.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+pub struct JointIdentifiableGeometry {
+    /// Lower jointly-identifiable gain when bands overlap.
+    pub low: Option<PidGain>,
+    /// Upper jointly-identifiable gain when bands overlap.
+    pub high: Option<PidGain>,
+    /// Lower edge of the gap when bands do not overlap.
+    pub gap_low: Option<PidGain>,
+    /// Upper edge of the gap when bands do not overlap.
+    pub gap_high: Option<PidGain>,
+    /// Whether a shared identifiable P exists.
+    pub has_joint_band: bool,
+}
+
+impl JointIdentifiableGeometry {
+    /// Derive shared P geometry while retaining the two directional bands.
+    pub fn from_bands(
+        forward: &DirectionalDisturbanceBand,
+        reverse: &DirectionalDisturbanceBand,
+    ) -> Self {
+        let (Some(forward_low), Some(forward_high), Some(reverse_low), Some(reverse_high)) =
+            (forward.p_low, forward.p_high, reverse.p_low, reverse.p_high)
+        else {
+            return Self {
+                low: None,
+                high: None,
+                gap_low: None,
+                gap_high: None,
+                has_joint_band: false,
+            };
+        };
+        let low = if forward_low.raw() >= reverse_low.raw() {
+            forward_low
+        } else {
+            reverse_low
+        };
+        let high = if forward_high.raw() <= reverse_high.raw() {
+            forward_high
+        } else {
+            reverse_high
+        };
+        if low.raw() <= high.raw() {
+            Self {
+                low: Some(low),
+                high: Some(high),
+                gap_low: None,
+                gap_high: None,
+                has_joint_band: true,
+            }
+        } else {
+            Self {
+                low: None,
+                high: None,
+                gap_low: Some(high),
+                gap_high: Some(low),
+                has_joint_band: false,
+            }
+        }
+    }
+}
+
+/// Why otherwise-safe evidence could not advance to the next stage.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+pub enum VelocityInconclusiveKind {
+    /// Exactly one direction met the handoff threshold.
+    PartialDirection,
+    /// Neither direction met the handoff threshold.
+    Total,
+}
+
+/// Bidirectional evidence-sufficiency result; this is not gain acceptance.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+pub enum VelocitySweepSufficiency {
+    /// Both directions contain enough evidence to hand off.
+    Complete {
+        /// Shared P geometry, which may be empty without blocking handoff.
+        joint: JointIdentifiableGeometry,
+    },
+    /// Measurement stayed safe but one or both directions lack evidence.
+    Inconclusive {
+        /// Bit zero is forward and bit one is reverse.
+        sufficient_direction_mask: u8,
+        /// Partial-versus-total diagnostic.
+        kind: VelocityInconclusiveKind,
+        /// Shared geometry retained for the detailed report.
+        joint: JointIdentifiableGeometry,
+    },
+}
+
+/// Assemble the maximal contiguous band from already-executed rung verdicts.
+pub fn assemble_directional_band(
+    direction: VelocityDirection,
+    rungs: &[VelocityRungVerdict],
+) -> DirectionalDisturbanceBand {
+    let mut band = BandAccumulator::new(direction);
+    for (index, rung) in rungs.iter().enumerate() {
+        band.observe(index, *rung);
+    }
+    band.finish()
+}
+
+/// Classify bidirectional handoff sufficiency without applying an acceptance threshold.
+pub fn assess_sweep_sufficiency(
+    forward: &DirectionalDisturbanceBand,
+    reverse: &DirectionalDisturbanceBand,
+) -> VelocitySweepSufficiency {
+    let joint = JointIdentifiableGeometry::from_bands(forward, reverse);
+    let mask = u8::from(forward.sufficient) | (u8::from(reverse.sufficient) << 1);
+    if mask == 3 {
+        VelocitySweepSufficiency::Complete { joint }
+    } else {
+        VelocitySweepSufficiency::Inconclusive {
+            sufficient_direction_mask: mask,
+            kind: if mask == 0 {
+                VelocityInconclusiveKind::Total
+            } else {
+                VelocityInconclusiveKind::PartialDirection
+            },
+            joint,
+        }
+    }
+}
+
+struct BandAccumulator {
+    band: DirectionalDisturbanceBand,
+    closed: bool,
+    weighted_point: i128,
+    weighted_low: i128,
+    weighted_high: i128,
+    weight_sum: i128,
+    variance_floor_observations: u8,
+}
+
+impl BandAccumulator {
+    fn new(direction: VelocityDirection) -> Self {
+        Self {
+            band: DirectionalDisturbanceBand {
+                direction,
+                last_inert: None,
+                first_moving: None,
+                ambiguous_edge: None,
+                left_censored: false,
+                p_low: None,
+                p_high: None,
+                closure: BandClosure::NoMovingEdge,
+                common_intersection: None,
+                pooled: None,
+                eligible_rungs: 0,
+                eligible_observations: 0,
+                sufficient: false,
+            },
+            closed: false,
+            weighted_point: 0,
+            weighted_low: 0,
+            weighted_high: 0,
+            weight_sum: 0,
+            variance_floor_observations: 0,
+        }
+    }
+
+    fn observe(&mut self, index: usize, rung: VelocityRungVerdict) {
+        if self.closed {
+            return;
+        }
+        if rung.direction != self.band.direction || rung.classification == VelocityRungClass::Fault
+        {
+            self.band.closure = BandClosure::Fault;
+            self.closed = true;
+            return;
+        }
+        if self.band.first_moving.is_none() {
+            if rung.classification == VelocityRungClass::Inert {
+                self.band.last_inert = Some(rung.p);
+                return;
+            }
+            if !rung.reproduced_moving {
+                self.band.ambiguous_edge = Some(rung.p);
+                return;
+            }
+            self.band.first_moving = Some(rung.p);
+            self.band.left_censored = index == 0;
+        }
+        if rung.classification != VelocityRungClass::Eligible {
+            self.band.closure = closure_for(rung.classification);
+            self.closed = true;
+            return;
+        }
+        let Some(rung_interval) = rung.disturbance_interval else {
+            self.band.closure = BandClosure::Fault;
+            self.closed = true;
+            return;
+        };
+        let next_common = self
+            .band
+            .common_intersection
+            .map_or(Some(rung_interval), |current| {
+                intersect_intervals(Some(current), Some(rung_interval))
+            });
+        let Some(common) = next_common else {
+            self.band.closure = BandClosure::Invariance;
+            self.closed = true;
+            return;
+        };
+        self.band.common_intersection = Some(common);
+        self.band.p_low.get_or_insert(rung.p);
+        self.band.p_high = Some(rung.p);
+        self.band.eligible_rungs = self.band.eligible_rungs.saturating_add(1);
+        for observation in 0..2 {
+            self.add_observation(
+                rung.disturbance_points[observation],
+                rung.disturbance_intervals[observation],
+                rung.disturbance_variances_q2[observation],
+            );
+        }
+    }
+
+    fn add_observation(
+        &mut self,
+        point: Option<EquivalentTorqueTargetQ16>,
+        interval: Option<EquivalentTorqueTargetInterval>,
+        variance_q2: u64,
+    ) {
+        let (Some(point), Some(interval)) = (point, interval) else {
+            self.band.closure = BandClosure::Fault;
+            self.closed = true;
+            return;
+        };
+        let variance = variance_q2.max(1);
+        self.variance_floor_observations = self
+            .variance_floor_observations
+            .saturating_add(u8::from(variance_q2 == 0));
+        let weight = ((1_u64 << 32) / variance).max(1);
+        let weight = i128::from(weight);
+        self.weighted_point += i128::from(point.raw()) * weight;
+        self.weighted_low += i128::from(interval.low().raw()) * weight;
+        self.weighted_high += i128::from(interval.high().raw()) * weight;
+        self.weight_sum += weight;
+        self.band.eligible_observations = self.band.eligible_observations.saturating_add(1);
+    }
+
+    fn finish(mut self) -> DirectionalDisturbanceBand {
+        if !self.closed && self.band.first_moving.is_some() {
+            self.band.closure = BandClosure::EndOfLadder;
+        }
+        if self.weight_sum > 0 {
+            let estimate = i32::try_from(self.weighted_point / self.weight_sum).ok();
+            let low =
+                floor_ratio(self.weighted_low, self.weight_sum).and_then(|v| i32::try_from(v).ok());
+            let high =
+                ceil_ratio(self.weighted_high, self.weight_sum).and_then(|v| i32::try_from(v).ok());
+            if let (Some(estimate), Some(low), Some(high)) = (estimate, low, high) {
+                let estimate = EquivalentTorqueTargetQ16::from_raw(estimate);
+                if let Ok(interval) = EquivalentTorqueTargetInterval::new(
+                    EquivalentTorqueTargetQ16::from_raw(low),
+                    EquivalentTorqueTargetQ16::from_raw(high),
+                ) {
+                    self.band.pooled = Some(PooledDisturbance {
+                        estimate,
+                        interval,
+                        variance_floor_observations: self.variance_floor_observations,
+                    });
+                }
+            }
+        }
+        self.band.sufficient = self.band.first_moving.is_some()
+            && self.band.eligible_rungs >= 3
+            && self.band.pooled.is_some();
+        self.band
+    }
+}
+
+fn closure_for(classification: VelocityRungClass) -> BandClosure {
+    match classification {
+        VelocityRungClass::DeficitUnresolved => BandClosure::DeficitResolution,
+        VelocityRungClass::CurrentHeadroom => BandClosure::CurrentHeadroom,
+        VelocityRungClass::Fault => BandClosure::Fault,
+        VelocityRungClass::Eligible => BandClosure::EndOfLadder,
+        VelocityRungClass::Inert
+        | VelocityRungClass::DisjointPair
+        | VelocityRungClass::Ambiguous
+        | VelocityRungClass::Excluded => BandClosure::ReproductionGap,
+    }
+}
+
+fn floor_ratio(numerator: i128, denominator: i128) -> Option<i128> {
+    let quotient = numerator.checked_div(denominator)?;
+    let remainder = numerator.checked_rem(denominator)?;
+    (remainder != 0 && numerator < 0)
+        .then(|| quotient.checked_sub(1))
+        .flatten()
+        .or(Some(quotient))
+}
+
+fn ceil_ratio(numerator: i128, denominator: i128) -> Option<i128> {
+    let quotient = numerator.checked_div(denominator)?;
+    let remainder = numerator.checked_rem(denominator)?;
+    (remainder != 0 && numerator > 0)
+        .then(|| quotient.checked_add(1))
+        .flatten()
+        .or(Some(quotient))
 }
 
 #[cfg(test)]
