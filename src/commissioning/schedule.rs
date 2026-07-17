@@ -21,7 +21,12 @@ pub enum CommissionEvent {
         engine_kind: EngineKind,
     },
     /// Streamed report-only velocity-sweep evidence.
-    VelocitySweep(VelocitySweepEvent),
+    VelocitySweep {
+        /// Object id of the commissioning channel.
+        oid: u8,
+        /// Transport-neutral evidence group.
+        event: VelocitySweepEvent,
+    },
 }
 
 /// Terminal result from one commissioning engine run.
@@ -142,9 +147,12 @@ pub fn adapt_step_result(
                 }),
             })
         }
-        StepResult::VelocitySweepEvent(event) => Ok(CommissionPoll::ReadyNow {
-            event: Some(CommissionEvent::VelocitySweep(event)),
-        }),
+        StepResult::VelocitySweepEvent(event) => {
+            let (oid, _) = event_context.ok_or(CommissionError::InvalidSchedule)?;
+            Ok(CommissionPoll::ReadyNow {
+                event: Some(CommissionEvent::VelocitySweep { oid, event }),
+            })
+        }
         StepResult::VelocitySweepTerminal(result) => Ok(CommissionPoll::Terminal {
             result: CommissionTerminal::VelocitySweep(result),
         }),
@@ -338,12 +346,53 @@ mod tests {
             });
 
         assert!(matches!(
-            adapt_step_result(StepResult::VelocitySweepEvent(event), 42_000, None).unwrap(),
+            adapt_step_result(
+                StepResult::VelocitySweepEvent(event),
+                42_000,
+                Some((7, EngineKind::OuterTune)),
+            )
+            .unwrap(),
             CommissionPoll::ReadyNow {
-                event: Some(CommissionEvent::VelocitySweep(VelocitySweepEvent::Planned(
-                    _
-                )))
+                event: Some(CommissionEvent::VelocitySweep {
+                    oid: 7,
+                    event: VelocitySweepEvent::Planned(_),
+                })
             }
+        ));
+    }
+
+    #[test]
+    fn velocity_sweep_event_rejects_missing_endpoint_context() {
+        let event =
+            VelocitySweepEvent::Planned(crate::commissioning::types::VelocitySweepPlanned {
+                run_sequence: 1,
+                evidence_sequence: 0,
+                requested_velocity_mrev_s: 2,
+                requested_velocity_source: 1,
+                used_velocity_mrev_s: 3,
+                effective_ceiling_mrev_s: 4,
+                clamp_flags: 5,
+                effective_ceiling_source: 6,
+                target_velocity_register: 7,
+                p_start: 8,
+                p_top: 9,
+                rung_count: 10,
+                observations_per_direction: 2,
+                moving_stroke_us: 256_000,
+                zero_settle_us: 200_000,
+                nominal_workflow_ms: 11,
+                maximum_workflow_ms: 12,
+                max_stroke_travel_mrev: 13,
+                settle_travel_reserve_mrev: 14,
+                negative_position_headroom_mrev: 15,
+                positive_position_headroom_mrev: 16,
+                hard_torque_limit: 17,
+                usable_torque_limit: 18,
+            });
+
+        assert!(matches!(
+            adapt_step_result(StepResult::VelocitySweepEvent(event), 42_000, None),
+            Err(CommissionError::InvalidSchedule)
         ));
     }
 
