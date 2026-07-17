@@ -42,6 +42,7 @@ pub use current::{
 };
 pub use equivalent_disturbance::{
     EquivalentTorqueTargetInterval, EquivalentTorqueTargetQ16, equivalent_disturbance_from_rate,
+    equivalent_disturbance_variance_from_rate,
 };
 pub use filters::recommend_filters;
 pub use hold::{

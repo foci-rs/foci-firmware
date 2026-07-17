@@ -20,5 +20,5 @@ pub use observation::{
 };
 pub use stationarity::{
     StationarityExclusion, StationarityResult, StationarySuffix, VELOCITY_SUFFIX_LENGTHS,
-    select_stationary_suffix,
+    VelocityObservationSource, select_stationary_suffix, select_stationary_suffix_from_source,
 };

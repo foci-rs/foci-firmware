@@ -145,6 +145,39 @@ pub fn equivalent_disturbance_from_rate(
     Ok((estimate, interval))
 }
 
+/// Transform encoder-rate variance into controller-domain Q16.16 variance.
+pub fn equivalent_disturbance_variance_from_rate(
+    p_raw: u16,
+    variance_of_mean_rate_q2: u128,
+    encoder_counts_per_rev: u32,
+    f_pwm_hz: u32,
+) -> Result<u64, VelocityMeasurementError> {
+    if encoder_counts_per_rev == 0 || f_pwm_hz == 0 {
+        return Err(VelocityMeasurementError::ArithmeticOverflow);
+    }
+    let scale_numerator = i128::from(p_raw)
+        .checked_mul(TMC_VELOCITY_SCALE)
+        .ok_or(VelocityMeasurementError::ArithmeticOverflow)?;
+    let scale_denominator = VELOCITY_P_DIVISOR
+        .checked_mul(i128::from(encoder_counts_per_rev))
+        .and_then(|value| value.checked_mul(i128::from(f_pwm_hz)))
+        .and_then(|value| value.checked_mul(i128::from(VELOCITY_RATE_Q_SCALE)))
+        .ok_or(VelocityMeasurementError::ArithmeticOverflow)?;
+    let numerator = variance_of_mean_rate_q2
+        .checked_mul(scale_numerator.unsigned_abs())
+        .and_then(|value| value.checked_mul(scale_numerator.unsigned_abs()))
+        .ok_or(VelocityMeasurementError::ArithmeticOverflow)?;
+    let denominator = scale_denominator
+        .unsigned_abs()
+        .checked_mul(scale_denominator.unsigned_abs())
+        .ok_or(VelocityMeasurementError::ArithmeticOverflow)?;
+    let rounded_up = numerator
+        .checked_add(denominator - 1)
+        .ok_or(VelocityMeasurementError::ArithmeticOverflow)?
+        / denominator;
+    u64::try_from(rounded_up).map_err(|_| VelocityMeasurementError::ArithmeticOverflow)
+}
+
 fn floor_div(numerator: i128, denominator: i128) -> Result<i128, VelocityMeasurementError> {
     if denominator <= 0 {
         return Err(VelocityMeasurementError::ArithmeticOverflow);
@@ -178,7 +211,8 @@ fn ceil_div(numerator: i128, denominator: i128) -> Result<i128, VelocityMeasurem
 #[cfg(test)]
 mod tests {
     use super::{
-        EquivalentTorqueTargetInterval, EquivalentTorqueTargetQ16, equivalent_disturbance_from_rate,
+        EquivalentTorqueTargetInterval, EquivalentTorqueTargetQ16,
+        equivalent_disturbance_from_rate, equivalent_disturbance_variance_from_rate,
     };
     use crate::autotune::velocity_measurement::{
         RateBlock, VELOCITY_RATE_Q_SCALE, VelocityMeasurementError,
@@ -241,6 +275,22 @@ mod tests {
         assert_eq!(estimate.raw(), 0);
         assert_eq!(interval.low().raw(), -66);
         assert_eq!(interval.high().raw(), 66);
+    }
+
+    #[test]
+    fn variance_conversion_preserves_scale_and_rounds_nonzero_outward() {
+        assert_eq!(
+            equivalent_disturbance_variance_from_rate(256, 1_000_000, 1, 65_536).unwrap(),
+            1
+        );
+        assert_eq!(
+            equivalent_disturbance_variance_from_rate(256, 1, 1, 65_536).unwrap(),
+            1
+        );
+        assert_eq!(
+            equivalent_disturbance_variance_from_rate(0, 1_000_000, 1, 65_536).unwrap(),
+            0
+        );
     }
 
     #[test]

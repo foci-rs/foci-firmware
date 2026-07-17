@@ -63,26 +63,60 @@ struct StationarityMetrics {
     residual_magnitude_q2: u128,
 }
 
+/// Random-access source for a fixed chronological velocity capture.
+pub trait VelocityObservationSource {
+    /// Number of chronological observations available.
+    fn observation_len(&self) -> usize;
+
+    /// Return one chronological observation.
+    fn observation(&self, index: usize) -> Option<RawVelocityObservation>;
+}
+
+impl VelocityObservationSource for [RawVelocityObservation] {
+    fn observation_len(&self) -> usize {
+        self.len()
+    }
+
+    fn observation(&self, index: usize) -> Option<RawVelocityObservation> {
+        self.get(index).copied()
+    }
+}
+
 /// Select the longest contiguous stationary suffix using one reusable blocker.
 pub fn select_stationary_suffix<const LEVELS: usize>(
     observations: &[RawVelocityObservation],
     blocker: &mut DyadicBlocker<LEVELS>,
 ) -> Result<StationarityResult, VelocityMeasurementError> {
+    select_stationary_suffix_from_source(observations, blocker)
+}
+
+/// Select the longest stationary suffix from a fixed random-access source.
+pub fn select_stationary_suffix_from_source<const LEVELS: usize, S>(
+    observations: &S,
+    blocker: &mut DyadicBlocker<LEVELS>,
+) -> Result<StationarityResult, VelocityMeasurementError>
+where
+    S: VelocityObservationSource + ?Sized,
+{
     let mut selected: Option<StationarySuffix> = None;
     let mut tested_suffixes = 0u8;
 
     for suffix_len in VELOCITY_SUFFIX_LENGTHS {
         let suffix_len = usize::from(suffix_len);
-        if suffix_len > observations.len() {
+        if suffix_len > observations.observation_len() {
             continue;
         }
         tested_suffixes = tested_suffixes
             .checked_add(1)
             .ok_or(VelocityMeasurementError::ArithmeticOverflow)?;
         *blocker = DyadicBlocker::new();
-        let suffix = &observations[observations.len() - suffix_len..];
-        for observation in suffix {
-            blocker.observe(*observation)?;
+        let suffix_start = observations.observation_len() - suffix_len;
+        for index in suffix_start..observations.observation_len() {
+            blocker.observe(
+                observations
+                    .observation(index)
+                    .ok_or(VelocityMeasurementError::ArithmeticOverflow)?,
+            )?;
         }
 
         let Some(selection) = blocker.select_plateau() else {
@@ -102,8 +136,10 @@ pub fn select_stationary_suffix<const LEVELS: usize>(
                 StationarityExclusion::Arithmetic,
             ));
         };
-        let metrics = match analyze_stationarity_with_blocking_variance(
-            suffix,
+        let metrics = match analyze_stationarity_from_source(
+            observations,
+            suffix_start,
+            suffix_len,
             block_observations,
             3,
             selection.variance_of_mean_q2,
@@ -136,8 +172,10 @@ pub fn select_stationary_suffix<const LEVELS: usize>(
     ))
 }
 
-fn analyze_stationarity_with_blocking_variance(
-    observations: &[RawVelocityObservation],
+fn analyze_stationarity_from_source(
+    observations: &(impl VelocityObservationSource + ?Sized),
+    suffix_start: usize,
+    suffix_len: usize,
     block_observations: usize,
     family_size: u16,
     blocking_variance_of_mean_q2: u128,
@@ -145,7 +183,7 @@ fn analyze_stationarity_with_blocking_variance(
     if block_observations == 0 {
         return Err(StationarityExclusion::Arithmetic);
     }
-    let block_count = observations.len() / block_observations;
+    let block_count = suffix_len / block_observations;
     if block_count < VELOCITY_MIN_SELECTED_BLOCKS as usize {
         return Err(StationarityExclusion::TooFewDecorrelatedBlocks);
     }
@@ -156,7 +194,7 @@ fn analyze_stationarity_with_blocking_variance(
     let mut sum_x2 = 0i128;
     let mut sum_xy = 0i128;
     for block_index in 0..block_count {
-        let block = rate_block_at(observations, block_index, block_observations)?;
+        let block = rate_block_at(observations, suffix_start, block_index, block_observations)?;
         let midpoint_us = cumulative_elapsed_us
             .checked_add(block.elapsed_us / 2)
             .ok_or(StationarityExclusion::Arithmetic)?;
@@ -206,7 +244,7 @@ fn analyze_stationarity_with_blocking_variance(
     let mut previous_residual = None;
     cumulative_elapsed_us = 0;
     for block_index in 0..block_count {
-        let block = rate_block_at(observations, block_index, block_observations)?;
+        let block = rate_block_at(observations, suffix_start, block_index, block_observations)?;
         let midpoint_us = cumulative_elapsed_us
             .checked_add(block.elapsed_us / 2)
             .ok_or(StationarityExclusion::Arithmetic)?;
@@ -270,23 +308,45 @@ fn analyze_stationarity_with_blocking_variance(
     })
 }
 
-fn rate_block_at(
+#[cfg(test)]
+fn analyze_stationarity_with_blocking_variance(
     observations: &[RawVelocityObservation],
+    block_observations: usize,
+    family_size: u16,
+    blocking_variance_of_mean_q2: u128,
+) -> Result<StationarityMetrics, StationarityExclusion> {
+    analyze_stationarity_from_source(
+        observations,
+        0,
+        observations.len(),
+        block_observations,
+        family_size,
+        blocking_variance_of_mean_q2,
+    )
+}
+
+fn rate_block_at(
+    observations: &(impl VelocityObservationSource + ?Sized),
+    suffix_start: usize,
     block_index: usize,
     block_observations: usize,
 ) -> Result<RateBlock, StationarityExclusion> {
-    let start = block_index
-        .checked_mul(block_observations)
+    let start = suffix_start
+        .checked_add(
+            block_index
+                .checked_mul(block_observations)
+                .ok_or(StationarityExclusion::Arithmetic)?,
+        )
         .ok_or(StationarityExclusion::Arithmetic)?;
     let end = start
         .checked_add(block_observations)
         .ok_or(StationarityExclusion::Arithmetic)?;
     let mut block: Option<RateBlock> = None;
-    for observation in observations
-        .get(start..end)
-        .ok_or(StationarityExclusion::Arithmetic)?
-    {
-        let next = RateBlock::from_observation(*observation)
+    for index in start..end {
+        let observation = observations
+            .observation(index)
+            .ok_or(StationarityExclusion::Arithmetic)?;
+        let next = RateBlock::from_observation(observation)
             .map_err(|_| StationarityExclusion::Arithmetic)?;
         block = Some(match block {
             Some(current) => current
