@@ -1638,6 +1638,123 @@ fn sample_outer_params() -> crate::commissioning::OuterTuneParams {
     }
 }
 
+fn sample_velocity_sweep_terminal(
+    outcome: crate::commissioning::types::VelocitySweepOutcome,
+) -> crate::commissioning::types::VelocitySweepTerminal {
+    use crate::autotune::velocity_measurement::VelocityDirection;
+    use crate::commissioning::outer::velocity::sweep_evidence::{
+        BandClosure, DirectionalDisturbanceBand, JointIdentifiableGeometry,
+        VelocityInconclusiveKind, VelocitySweepSufficiency,
+    };
+
+    let band = |direction| DirectionalDisturbanceBand {
+        direction,
+        last_inert: None,
+        first_moving: None,
+        ambiguous_edge: None,
+        left_censored: false,
+        p_low: None,
+        p_high: None,
+        closure: BandClosure::NoMovingEdge,
+        common_intersection: None,
+        pooled: None,
+        eligible_rungs: 0,
+        eligible_observations: 0,
+        sufficient: false,
+    };
+    let joint = JointIdentifiableGeometry {
+        low: None,
+        high: None,
+        gap_low: None,
+        gap_high: None,
+        has_joint_band: false,
+    };
+    let sufficiency = match outcome {
+        crate::commissioning::types::VelocitySweepOutcome::Complete => {
+            VelocitySweepSufficiency::Complete { joint }
+        }
+        crate::commissioning::types::VelocitySweepOutcome::Inconclusive
+        | crate::commissioning::types::VelocitySweepOutcome::Fault => {
+            VelocitySweepSufficiency::Inconclusive {
+                sufficient_direction_mask: 0,
+                kind: VelocityInconclusiveKind::Total,
+                joint,
+            }
+        }
+    };
+    crate::commissioning::types::VelocitySweepTerminal {
+        run_sequence: 9,
+        forward: band(VelocityDirection::Forward),
+        reverse: band(VelocityDirection::Reverse),
+        sufficiency,
+        outcome,
+        cause: 4,
+        sufficient_direction_mask: 0,
+        expected_observations: 20,
+        emitted_observations: 4,
+        expected_rungs: 5,
+        emitted_rungs: 1,
+        digest: 0x0123_4567_89ab_cdef,
+        safety_fault: None,
+    }
+}
+
+#[test]
+fn every_velocity_sweep_terminal_disarms_without_rearming() {
+    pollster::block_on(async {
+        use crate::commissioning::types::VelocitySweepOutcome;
+        use core::sync::atomic::Ordering;
+
+        let _guard = test_support::SHARED_STATE_MUTEX.lock().await;
+        for expected in [
+            VelocitySweepOutcome::Complete,
+            VelocitySweepOutcome::Inconclusive,
+            VelocitySweepOutcome::Fault,
+        ] {
+            let mut backend = MockBackend::new();
+            backend.enable_pin = true;
+            let (_, _, mut gains) = fresh_state_locals();
+            let mut calibrated = true;
+            let mut motor_enabled = true;
+            tmc_state().motor_armed.store(true, Ordering::Relaxed);
+            let mut state = dispatch_state(&mut calibrated, &mut motor_enabled, &mut gains);
+            let mut engine = Some(CommissioningEngine::new_outer(
+                0,
+                sample_outer_params(),
+                sample_entry_snapshot(),
+            ));
+            seed_motor_sentinel(&mut backend).await;
+
+            let outcome = drive_commission_result(
+                StepResult::VelocitySweepTerminal(sample_velocity_sweep_terminal(expected)),
+                &mut engine,
+                &mut backend,
+                &mut state,
+                4095,
+            )
+            .await;
+
+            assert!(engine.is_none());
+            assert!(!*state.calibrated);
+            assert!(!*state.motor_enabled);
+            assert!(!backend.enable_pin);
+            assert!(!tmc_state().motor_armed.load(Ordering::Relaxed));
+            match outcome {
+                CommissionOutcome::Terminal {
+                    reply: ReplyPayload::VelocitySweepTerminal { terminal, .. },
+                    actions,
+                } => {
+                    assert_eq!(terminal.outcome, expected);
+                    assert_eq!(actions.stepper, StepperPostAction::Stop);
+                    assert!(actions.stop_trace);
+                }
+                _ => panic!("expected velocity-sweep terminal"),
+            }
+            clear_motor_sentinel();
+        }
+    });
+}
+
 #[test]
 fn outer_failed_safety_envelope_violation_full_disarm() {
     pollster::block_on(async {

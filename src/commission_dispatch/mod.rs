@@ -400,44 +400,14 @@ pub async fn drive_commission_result<B: CommissioningBackend>(
                 },
             }
         }
-        StepResult::VelocitySweepTerminal(mut terminal) => {
+        StepResult::VelocitySweepTerminal(terminal) => {
             use core::sync::atomic::Ordering::Relaxed;
 
             let consumed = engine
                 .take()
                 .expect("engine slot is None on VelocitySweepTerminal");
             let oid = consumed.oid();
-            let snapshot = consumed.entry_snapshot();
-            let mut stepper = StepperPostAction::Stop;
-            if terminal.safety_fault.is_some() {
-                crate::tmc_control::lifecycle::disarm_motor(backend, state).await;
-            } else if let Some(snapshot) = snapshot {
-                if crate::commissioning::inner::restore_entry_gains(&snapshot, backend)
-                    .await
-                    .is_ok()
-                {
-                    *state.calibrated = true;
-                    if crate::tmc_control::lifecycle::arm_motor_electrical(backend, state)
-                        .await
-                        .is_ok()
-                    {
-                        stepper = StepperPostAction::ArmPreservePosition;
-                    } else {
-                        terminal.outcome = VelocitySweepOutcome::Fault;
-                        terminal.cause =
-                            crate::autotune::CommissionError::ChipResetDetected.status_code();
-                        crate::tmc_control::lifecycle::disarm_motor(backend, state).await;
-                    }
-                } else {
-                    terminal.outcome = VelocitySweepOutcome::Fault;
-                    terminal.cause = crate::autotune::CommissionError::Spi.status_code();
-                    crate::tmc_control::lifecycle::disarm_motor(backend, state).await;
-                }
-            } else {
-                terminal.outcome = VelocitySweepOutcome::Fault;
-                terminal.cause = crate::autotune::CommissionError::Spi.status_code();
-                crate::tmc_control::lifecycle::disarm_motor(backend, state).await;
-            }
+            crate::tmc_control::lifecycle::disarm_motor(backend, state).await;
             state.tmc.commission_in_flight.store(false, Relaxed);
             let inconclusive = (terminal.outcome == VelocitySweepOutcome::Inconclusive).then_some(
                 OuterInconclusive {
@@ -456,7 +426,7 @@ pub async fn drive_commission_result<B: CommissioningBackend>(
                 },
                 actions: PostActions {
                     stop_trace: true,
-                    stepper,
+                    stepper: StepperPostAction::Stop,
                 },
             }
         }
