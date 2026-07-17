@@ -12,6 +12,7 @@
 
 mod buffer;
 mod current;
+mod equivalent_disturbance;
 mod filters;
 mod hold;
 mod metrics;
@@ -38,6 +39,9 @@ pub use current::{
     CurrentAxisGateResult, CurrentAxisRetryDecision, CurrentAxisSample,
     classify_current_axis_sample, current_axis_retry_decision, retry_current_loop_gains,
     synthesize_current_gains,
+};
+pub use equivalent_disturbance::{
+    EquivalentTorqueTargetInterval, EquivalentTorqueTargetQ16, equivalent_disturbance_from_rate,
 };
 pub use filters::recommend_filters;
 pub use hold::{
