@@ -86,6 +86,18 @@ async fn command_velocity_target<B: CommissioningBackend>(
     }
 }
 
+async fn clear_velocity_integrator<B: CommissioningBackend>(
+    backend: &mut B,
+) -> Result<(), CommissionError> {
+    crate::commissioning::helpers::write_sub_register_checked(
+        backend,
+        foci_tmc4671::registers::PID_ERROR_PID_VELOCITY_ERROR_SUM,
+        0,
+    )
+    .await
+    .map_err(|_| CommissionError::Spi)
+}
+
 fn encoder_rate_counts_per_ms_to_tmc_velocity_signed(
     encoder_counts_per_ms: i64,
     encoder_counts_per_rev: u32,
@@ -366,6 +378,14 @@ pub(crate) async fn step_velocity_validate_with_trace<B: CommissioningBackend>(
             data.max_chatter = 0;
             data.saturation_count = 0;
 
+            *state = VelocityValidateState::ForwardClearIntegrator;
+            StepResult::ReadyNow
+        }
+
+        VelocityValidateState::ForwardClearIntegrator => {
+            if let Err(error) = clear_velocity_integrator(backend).await {
+                return fail_outer(phase, error);
+            }
             *state = VelocityValidateState::ForwardStep;
             StepResult::ReadyNow
         }
@@ -445,6 +465,9 @@ pub(crate) async fn step_velocity_validate_with_trace<B: CommissioningBackend>(
                 }
                 Err(EncoderMathError::AmbiguousHalfTurn) if !*ambiguity_retried => {
                     if let Err(error) = command_velocity_target(backend, safety, 0).await {
+                        return fail_outer(phase, error);
+                    }
+                    if let Err(error) = clear_velocity_integrator(backend).await {
                         return fail_outer(phase, error);
                     }
                     let target = encoder_rate_counts_per_ms_to_tmc_velocity_signed(
@@ -547,10 +570,10 @@ pub(crate) async fn step_velocity_validate_with_trace<B: CommissioningBackend>(
                 else {
                     return fail_outer(phase, CommissionError::InvalidSchedule);
                 };
-                *state = VelocityValidateState::ForwardSettle {
+                *state = VelocityValidateState::ForwardZeroClearIntegrator {
                     deadline_us: deadline,
                 };
-                StepResult::At(deadline)
+                StepResult::ReadyNow
             } else {
                 let next_deadline_us = match crate::commissioning::schedule::next_grid_deadline(
                     *next_sample_us,
@@ -566,11 +589,28 @@ pub(crate) async fn step_velocity_validate_with_trace<B: CommissioningBackend>(
             }
         }
 
+        VelocityValidateState::ForwardZeroClearIntegrator { deadline_us } => {
+            let deadline_us = *deadline_us;
+            if let Err(error) = clear_velocity_integrator(backend).await {
+                return fail_outer(phase, error);
+            }
+            *state = VelocityValidateState::ForwardSettle { deadline_us };
+            StepResult::At(deadline_us)
+        }
+
         VelocityValidateState::ForwardSettle { deadline_us } => {
             if backend.elapsed_us() < *deadline_us {
                 return StepResult::At(*deadline_us);
             }
             buf.reset(VELOCITY_VALIDATE_SAMPLE_PERIOD_US as u16);
+            *state = VelocityValidateState::ReverseClearIntegrator;
+            StepResult::ReadyNow
+        }
+
+        VelocityValidateState::ReverseClearIntegrator => {
+            if let Err(error) = clear_velocity_integrator(backend).await {
+                return fail_outer(phase, error);
+            }
             *state = VelocityValidateState::ReverseStep;
             StepResult::ReadyNow
         }
@@ -650,6 +690,9 @@ pub(crate) async fn step_velocity_validate_with_trace<B: CommissioningBackend>(
                 }
                 Err(EncoderMathError::AmbiguousHalfTurn) if !*ambiguity_retried => {
                     if let Err(error) = command_velocity_target(backend, safety, 0).await {
+                        return fail_outer(phase, error);
+                    }
+                    if let Err(error) = clear_velocity_integrator(backend).await {
                         return fail_outer(phase, error);
                     }
                     let target = encoder_rate_counts_per_ms_to_tmc_velocity_signed(
@@ -752,10 +795,10 @@ pub(crate) async fn step_velocity_validate_with_trace<B: CommissioningBackend>(
                 else {
                     return fail_outer(phase, CommissionError::InvalidSchedule);
                 };
-                *state = VelocityValidateState::ReverseSettle {
+                *state = VelocityValidateState::ReverseZeroClearIntegrator {
                     deadline_us: deadline,
                 };
-                StepResult::At(deadline)
+                StepResult::ReadyNow
             } else {
                 let next_deadline_us = match crate::commissioning::schedule::next_grid_deadline(
                     *next_sample_us,
@@ -769,6 +812,15 @@ pub(crate) async fn step_velocity_validate_with_trace<B: CommissioningBackend>(
                 *last_sample_us = now;
                 StepResult::At(next_deadline_us)
             }
+        }
+
+        VelocityValidateState::ReverseZeroClearIntegrator { deadline_us } => {
+            let deadline_us = *deadline_us;
+            if let Err(error) = clear_velocity_integrator(backend).await {
+                return fail_outer(phase, error);
+            }
+            *state = VelocityValidateState::ReverseSettle { deadline_us };
+            StepResult::At(deadline_us)
         }
 
         VelocityValidateState::ReverseSettle { deadline_us } => {
@@ -839,6 +891,9 @@ pub(crate) async fn step_velocity_validate_with_trace<B: CommissioningBackend>(
                 }
                 Err(EncoderMathError::AmbiguousHalfTurn) if !*ambiguity_retried => {
                     if let Err(error) = command_velocity_target(backend, safety, 0).await {
+                        return fail_outer(phase, error);
+                    }
+                    if let Err(error) = clear_velocity_integrator(backend).await {
                         return fail_outer(phase, error);
                     }
                     data.max_chatter = 0;
@@ -1444,8 +1499,8 @@ pub(crate) async fn step_velocity_validate_with_trace<B: CommissioningBackend>(
 mod tests {
     use super::{
         VELOCITY_RETRY_LAMBDA_MUL_DEN, VELOCITY_RETRY_LAMBDA_MUL_NUM,
-        VELOCITY_VALIDATE_MAX_REGISTER_OPS_PER_ARM, command_velocity_target,
-        encoder_counts_to_tmc_position_units, encoder_delta_counts_per_ms,
+        VELOCITY_VALIDATE_MAX_REGISTER_OPS_PER_ARM, VELOCITY_VALIDATE_SAMPLE_PERIOD_US,
+        command_velocity_target, encoder_counts_to_tmc_position_units, encoder_delta_counts_per_ms,
         encoder_rate_counts_per_ms_to_tmc_velocity_signed,
         encoder_rate_magnitude_counts_per_ms_to_tmc_velocity, record_velocity_validate_summary,
         step_velocity_validate,
@@ -1465,8 +1520,18 @@ mod tests {
     use crate::commissioning::types::StepResult;
     use foci_tmc4671::pid::PidGain;
     use foci_tmc4671::registers::{
-        PID_VELOCITY_LIMIT, PID_VELOCITY_P_VELOCITY_I, PID_VELOCITY_TARGET,
+        PID_ERROR_PID_VELOCITY_ERROR_SUM, PID_VELOCITY_LIMIT, PID_VELOCITY_P_VELOCITY_I,
+        PID_VELOCITY_TARGET, SubRegister,
     };
+
+    fn has_sub_register_write(ops: &[SpiOp], sub: SubRegister, value: u32) -> bool {
+        ops.windows(2).any(|pair| {
+            matches!(pair[0], SpiOp::Write(address, selector)
+                if address == sub.addr.addr() && selector == u32::from(sub.sub_addr))
+                && matches!(pair[1], SpiOp::Write(address, data)
+                    if address == sub.data.addr() && data == value)
+        })
+    }
 
     fn gain(raw: u16) -> PidGain {
         PidGain::new(raw).expect("test gain must be in range")
@@ -1617,7 +1682,7 @@ mod tests {
             assert!(matches!(
                 phase,
                 OuterPhase::VelocityValidate {
-                    state: VelocityValidateState::ReverseStep,
+                    state: VelocityValidateState::ReverseClearIntegrator,
                     ..
                 }
             ));
@@ -1663,6 +1728,218 @@ mod tests {
                     ..
                 }
             ));
+        });
+    }
+
+    #[test]
+    fn velocity_integrator_is_cleared_before_the_first_forward_step() {
+        pollster::block_on(async {
+            let mut phase = capture_phase(
+                VelocityTuneStrategy::Model,
+                AmbiguousCapturePoint::Forward,
+                configured_safety(),
+            );
+            if let OuterPhase::VelocityValidate { state, .. } = &mut phase {
+                *state = VelocityValidateState::WriteGains;
+            }
+            let mut buf = TransientBuffer::new();
+            let mut backend = MockBackend::new();
+
+            let setup = step_velocity_validate(
+                &mut phase,
+                &mut buf,
+                OperatingMode::Nominal,
+                0,
+                0,
+                false,
+                0,
+                &mut backend,
+            )
+            .await;
+            assert!(matches!(setup, StepResult::ReadyNow));
+            assert!(matches!(
+                phase,
+                OuterPhase::VelocityValidate {
+                    state: VelocityValidateState::ForwardClearIntegrator,
+                    ..
+                }
+            ));
+
+            backend.spi_log.clear();
+            let clear = step_velocity_validate(
+                &mut phase,
+                &mut buf,
+                OperatingMode::Nominal,
+                0,
+                0,
+                false,
+                0,
+                &mut backend,
+            )
+            .await;
+            assert!(matches!(clear, StepResult::ReadyNow));
+            assert!(has_sub_register_write(
+                &backend.spi_log,
+                PID_ERROR_PID_VELOCITY_ERROR_SUM,
+                0
+            ));
+            assert!(matches!(
+                phase,
+                OuterPhase::VelocityValidate {
+                    state: VelocityValidateState::ForwardStep,
+                    ..
+                }
+            ));
+        });
+    }
+
+    #[test]
+    fn velocity_integrator_clear_failure_fails_closed() {
+        pollster::block_on(async {
+            let mut phase = capture_phase(
+                VelocityTuneStrategy::Model,
+                AmbiguousCapturePoint::Forward,
+                configured_safety(),
+            );
+            if let OuterPhase::VelocityValidate { state, .. } = &mut phase {
+                *state = VelocityValidateState::ForwardClearIntegrator;
+            }
+            let mut buf = TransientBuffer::new();
+            let mut backend = MockBackend::new();
+            backend.fail_on_write = Some(PID_ERROR_PID_VELOCITY_ERROR_SUM.data.addr());
+
+            let result = step_velocity_validate(
+                &mut phase,
+                &mut buf,
+                OperatingMode::Nominal,
+                0,
+                0,
+                false,
+                0,
+                &mut backend,
+            )
+            .await;
+
+            assert!(matches!(
+                result,
+                StepResult::OuterFailed(CommissionError::Spi)
+            ));
+            assert!(matches!(phase, OuterPhase::Failed(CommissionError::Spi)));
+        });
+    }
+
+    #[test]
+    fn completed_signed_steps_clear_the_integrator_before_settling() {
+        pollster::block_on(async {
+            for point in [
+                AmbiguousCapturePoint::Forward,
+                AmbiguousCapturePoint::Reverse,
+            ] {
+                let mut phase =
+                    capture_phase(VelocityTuneStrategy::Model, point, configured_safety());
+                let mut buf = TransientBuffer::new();
+                buf.reset(VELOCITY_VALIDATE_SAMPLE_PERIOD_US as u16);
+                for _ in 0..(TRANSIENT_LEN - 1) {
+                    assert!(buf.push(0));
+                }
+                let mut backend = MockBackend::new();
+                backend.elapsed_us_value = 1_000;
+                backend.mechanical_encoder_position_counts_value = match point {
+                    AmbiguousCapturePoint::Forward => 4,
+                    AmbiguousCapturePoint::Reverse => 3_996,
+                    AmbiguousCapturePoint::Chatter => unreachable!(),
+                };
+
+                let completed = step_velocity_validate(
+                    &mut phase,
+                    &mut buf,
+                    OperatingMode::Nominal,
+                    0,
+                    0,
+                    false,
+                    0,
+                    &mut backend,
+                )
+                .await;
+                assert!(matches!(completed, StepResult::ReadyNow));
+                assert!(
+                    backend
+                        .spi_log
+                        .iter()
+                        .any(|op| matches!(op, SpiOp::Write(address, 0)
+                        if *address == PID_VELOCITY_TARGET.addr()))
+                );
+                assert!(!has_sub_register_write(
+                    &backend.spi_log,
+                    PID_ERROR_PID_VELOCITY_ERROR_SUM,
+                    0
+                ));
+                match (&point, &phase) {
+                    (
+                        AmbiguousCapturePoint::Forward,
+                        OuterPhase::VelocityValidate {
+                            state:
+                                VelocityValidateState::ForwardZeroClearIntegrator {
+                                    deadline_us: 201_000,
+                                },
+                            ..
+                        },
+                    )
+                    | (
+                        AmbiguousCapturePoint::Reverse,
+                        OuterPhase::VelocityValidate {
+                            state:
+                                VelocityValidateState::ReverseZeroClearIntegrator {
+                                    deadline_us: 201_000,
+                                },
+                            ..
+                        },
+                    ) => {}
+                    other => panic!("unexpected post-capture state: {other:?}"),
+                }
+
+                backend.spi_log.clear();
+                let cleared = step_velocity_validate(
+                    &mut phase,
+                    &mut buf,
+                    OperatingMode::Nominal,
+                    0,
+                    0,
+                    false,
+                    0,
+                    &mut backend,
+                )
+                .await;
+                assert!(matches!(cleared, StepResult::At(201_000)));
+                assert!(has_sub_register_write(
+                    &backend.spi_log,
+                    PID_ERROR_PID_VELOCITY_ERROR_SUM,
+                    0
+                ));
+                match (&point, &phase) {
+                    (
+                        AmbiguousCapturePoint::Forward,
+                        OuterPhase::VelocityValidate {
+                            state:
+                                VelocityValidateState::ForwardSettle {
+                                    deadline_us: 201_000,
+                                },
+                            ..
+                        },
+                    )
+                    | (
+                        AmbiguousCapturePoint::Reverse,
+                        OuterPhase::VelocityValidate {
+                            state:
+                                VelocityValidateState::ReverseSettle {
+                                    deadline_us: 201_000,
+                                },
+                            ..
+                        },
+                    ) => {}
+                    other => panic!("unexpected cleared state: {other:?}"),
+                }
+            }
         });
     }
 
@@ -1805,7 +2082,7 @@ mod tests {
         });
     }
 
-    #[derive(Clone, Copy)]
+    #[derive(Debug, Clone, Copy)]
     enum AmbiguousCapturePoint {
         Forward,
         Reverse,
@@ -1931,6 +2208,11 @@ mod tests {
         assert!(buf.samples().is_empty());
         assert!(backend.spi_log.iter().any(
             |op| matches!(op, SpiOp::Write(address, 0) if *address == PID_VELOCITY_TARGET.addr())
+        ));
+        assert!(has_sub_register_write(
+            &backend.spi_log,
+            PID_ERROR_PID_VELOCITY_ERROR_SUM,
+            0
         ));
         match phase {
             OuterPhase::VelocityValidate { state, data, .. } => {
@@ -3330,6 +3612,24 @@ mod tests {
                 &mut backend,
             )
             .await;
+
+            let _ = step_velocity_validate(
+                &mut phase,
+                &mut buf,
+                OperatingMode::Nominal,
+                0,
+                0,
+                false,
+                0,
+                &mut backend,
+            )
+            .await;
+
+            assert!(has_sub_register_write(
+                &backend.spi_log,
+                PID_ERROR_PID_VELOCITY_ERROR_SUM,
+                0
+            ));
 
             assert_eq!(
                 *backend

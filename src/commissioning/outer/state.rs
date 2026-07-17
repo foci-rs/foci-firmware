@@ -187,7 +187,9 @@ impl OuterDiagnostics {
 pub(crate) enum VelocityValidateState {
     /// Write velocity gains to TMC4671 registers.
     WriteGains,
-    /// Switch to velocity mode and apply forward velocity step.
+    /// Clear velocity integral state before the forward step.
+    ForwardClearIntegrator,
+    /// Apply the forward velocity step after integrator isolation.
     ForwardStep,
     /// Capture forward step response at 1 kHz.
     ForwardCapture {
@@ -196,9 +198,13 @@ pub(crate) enum VelocityValidateState {
         ambiguity_retried: bool,
         saturation_start: u16,
     },
+    /// Clear integral state after commanding the forward step to zero.
+    ForwardZeroClearIntegrator { deadline_us: u64 },
     /// Return to zero velocity and wait for settling.
     ForwardSettle { deadline_us: u64 },
-    /// Apply reverse velocity step.
+    /// Clear velocity integral state before the reverse step.
+    ReverseClearIntegrator,
+    /// Apply the reverse velocity step after integrator isolation.
     ReverseStep,
     /// Capture reverse step response.
     ReverseCapture {
@@ -207,6 +213,8 @@ pub(crate) enum VelocityValidateState {
         ambiguity_retried: bool,
         saturation_start: u16,
     },
+    /// Clear integral state after commanding the reverse step to zero.
+    ReverseZeroClearIntegrator { deadline_us: u64 },
     /// Return to zero velocity and wait for settling.
     ReverseSettle { deadline_us: u64 },
     /// Monitor zero-speed chatter for 200ms.
