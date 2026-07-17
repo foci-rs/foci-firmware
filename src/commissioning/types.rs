@@ -309,6 +309,178 @@ pub enum EngineKind {
     OuterTune,
 }
 
+/// Immutable velocity-sweep plan evidence emitted before the first moving stroke.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+pub struct VelocitySweepPlanned {
+    /// Caller-assigned run sequence.
+    pub run_sequence: u32,
+    /// Monotonic evidence sequence within the run.
+    pub evidence_sequence: u16,
+    /// Host-requested mechanical velocity amplitude.
+    pub requested_velocity_mrev_s: u32,
+    /// Origin of the host-requested amplitude.
+    pub requested_velocity_source: u8,
+    /// Frozen mechanical velocity amplitude.
+    pub used_velocity_mrev_s: u32,
+    /// Firmware-owned effective velocity ceiling.
+    pub effective_ceiling_mrev_s: u32,
+    /// Bitset describing every amplitude reduction.
+    pub clamp_flags: u16,
+    /// Source of the binding effective ceiling.
+    pub effective_ceiling_source: u8,
+    /// Frozen positive TMC velocity-target register magnitude.
+    pub target_velocity_register: i32,
+    /// First structural velocity-P gain.
+    pub p_start: u16,
+    /// Last structural velocity-P gain.
+    pub p_top: u16,
+    /// Number of post-dedupe rungs.
+    pub rung_count: u8,
+    /// Independent observations per direction and rung.
+    pub observations_per_direction: u16,
+    /// Fixed moving-stroke duration.
+    pub moving_stroke_us: u32,
+    /// Fixed zero-target settle duration.
+    pub zero_settle_us: u32,
+    /// Nominal workflow duration.
+    pub nominal_workflow_ms: u32,
+    /// Maximum declared workflow duration.
+    pub maximum_workflow_ms: u32,
+    /// Complete per-primitive displacement window.
+    pub max_stroke_travel_mrev: u32,
+    /// Reserved braking and settle displacement.
+    pub settle_travel_reserve_mrev: u32,
+    /// Negative absolute-position headroom.
+    pub negative_position_headroom_mrev: u32,
+    /// Positive absolute-position headroom.
+    pub positive_position_headroom_mrev: u32,
+    /// Configured hard torque-target limit.
+    pub hard_torque_limit: u16,
+    /// Inclusive usable torque-target limit.
+    pub usable_torque_limit: u16,
+}
+
+/// One analyzed moving observation emitted before the following signed stroke.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+pub struct VelocitySweepObservation {
+    /// Caller-assigned run sequence.
+    pub run_sequence: u32,
+    /// Monotonic evidence sequence within the run.
+    pub evidence_sequence: u16,
+    /// Zero-based gain-rung index.
+    pub rung_index: u8,
+    /// Observation slot (`F1`, `R1`, `F2`, `R2`).
+    pub slot: u8,
+    /// Signed TMC velocity-target register used for this observation.
+    pub target_velocity_register: i32,
+    /// Auditable observation classification and controller-domain evidence.
+    pub summary: crate::commissioning::outer::velocity::sweep_evidence::VelocityObservationSummary,
+    /// Stationary-suffix analysis result used to construct `summary`.
+    pub stationarity: crate::autotune::velocity_measurement::StationarityResult,
+    /// Exact displacement represented by the selected suffix.
+    pub selected_delta_counts: i64,
+    /// Exact elapsed time represented by the selected suffix.
+    pub selected_elapsed_us: u64,
+    /// Selected blocking level, or zero when no suffix was usable.
+    pub selected_level: u8,
+    /// Selected completed-block population, or zero when unusable.
+    pub selected_blocks: u32,
+    /// Settled-rate variance of the mean, or zero when unusable.
+    pub variance_of_mean_q2: u128,
+    /// Time-weighted settled-rate mean, or zero when unusable.
+    pub settled_rate_mean_q: i64,
+}
+
+/// Completed four-observation rung with the firmware's derived verdicts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+pub struct VelocitySweepRungReport {
+    /// Caller-assigned run sequence.
+    pub run_sequence: u32,
+    /// Monotonic evidence sequence within the run.
+    pub evidence_sequence: u16,
+    /// Zero-based gain-rung index.
+    pub rung_index: u8,
+    /// Forward reproduced verdict.
+    pub forward: crate::commissioning::outer::velocity::sweep_evidence::VelocityRungVerdict,
+    /// Reverse reproduced verdict.
+    pub reverse: crate::commissioning::outer::velocity::sweep_evidence::VelocityRungVerdict,
+    /// Running forward directional band after this rung.
+    pub forward_band:
+        crate::commissioning::outer::velocity::sweep_evidence::DirectionalDisturbanceBand,
+    /// Running reverse directional band after this rung.
+    pub reverse_band:
+        crate::commissioning::outer::velocity::sweep_evidence::DirectionalDisturbanceBand,
+}
+
+/// Nonterminal evidence produced by one velocity-sweep engine poll.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+pub enum VelocitySweepEvent {
+    /// Immutable plan emitted before motion.
+    Planned(VelocitySweepPlanned),
+    /// One analyzed moving observation.
+    Observation(VelocitySweepObservation),
+    /// One completed four-observation rung.
+    Rung(VelocitySweepRungReport),
+}
+
+/// Measurement-stage terminal class; this is not a gain-acceptance verdict.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+pub enum VelocitySweepOutcome {
+    /// Both directions contain enough evidence for the next stage.
+    Complete,
+    /// Motion was safe but evidence was insufficient.
+    Inconclusive,
+    /// Safety or structural integrity failed.
+    Fault,
+}
+
+/// Detailed terminal evidence for one velocity sweep.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+pub struct VelocitySweepTerminal {
+    /// Caller-assigned run sequence.
+    pub run_sequence: u32,
+    /// Final forward band.
+    pub forward: crate::commissioning::outer::velocity::sweep_evidence::DirectionalDisturbanceBand,
+    /// Final reverse band.
+    pub reverse: crate::commissioning::outer::velocity::sweep_evidence::DirectionalDisturbanceBand,
+    /// Cross-direction handoff sufficiency.
+    pub sufficiency:
+        crate::commissioning::outer::velocity::sweep_evidence::VelocitySweepSufficiency,
+    /// Terminal measurement-stage class.
+    pub outcome: VelocitySweepOutcome,
+    /// Phase-local terminal cause.
+    pub cause: u8,
+    /// Bit zero is forward sufficiency and bit one is reverse sufficiency.
+    pub sufficient_direction_mask: u8,
+    /// Number of observation reports expected from the plan.
+    pub expected_observations: u16,
+    /// Number of observation reports emitted.
+    pub emitted_observations: u16,
+    /// Number of rung reports expected from the plan.
+    pub expected_rungs: u16,
+    /// Number of rung reports emitted.
+    pub emitted_rungs: u16,
+    /// Rolling FNV-1a digest over all nonterminal evidence.
+    pub digest: u64,
+    /// Safety evidence retained for ordered fault emission.
+    pub safety_fault: Option<OuterSafetyFault>,
+}
+
+/// Generic terminal tying an inconclusive outer phase to its detailed report.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+pub struct OuterInconclusive {
+    /// Phase that could not produce sufficient evidence.
+    pub phase: PhaseId,
+    /// Bit zero is forward sufficiency and bit one is reverse sufficiency.
+    pub sufficient_direction_mask: u8,
+    /// Phase-local inconclusive cause.
+    pub cause: u8,
+    /// Low 32 bits of the exact report digest.
+    pub digest_low: u32,
+    /// High 32 bits of the exact report digest.
+    pub digest_high: u32,
+}
+
 /// Result of a `step()` call.
 #[derive(Debug, defmt::Format)]
 #[allow(clippy::large_enum_variant)]
