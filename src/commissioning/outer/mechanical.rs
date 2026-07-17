@@ -298,12 +298,7 @@ mod tests {
                 data: MechanicalIdData::new(0),
                 safety: OuterSafetyLimits::new(
                     0,
-                    crate::commissioning::outer::OuterMotionBudget {
-                        max_travel_mrev: 500,
-                        max_velocity_mrev_s: 6_000,
-                        max_duration_ms: 3_000,
-                        direction_mask: 1,
-                    },
+                    crate::commissioning::outer::OuterMotionBudget::test_budget(0, 6_000, 3_000),
                 ),
             };
             let mut buf = TransientBuffer::new();
@@ -401,12 +396,7 @@ mod tests {
                 data: MechanicalIdData::new(0),
                 safety: OuterSafetyLimits::new(
                     0,
-                    crate::commissioning::outer::OuterMotionBudget {
-                        max_travel_mrev: 1,
-                        max_velocity_mrev_s: 6_000,
-                        max_duration_ms: 3_000,
-                        direction_mask: 3,
-                    },
+                    crate::commissioning::outer::OuterMotionBudget::test_budget(1, 6_000, 3_000),
                 ),
             };
             let mut buf = TransientBuffer::new();
@@ -1543,10 +1533,10 @@ pub(crate) async fn step_mechanical_id_with_trace<B: CommissioningBackend>(
             if !safety.budget_is_usable() {
                 defmt::warn!(
                     "mechanical-id: unusable motion budget travel={} velocity={} duration={} dir={} window={} velocity_cap={}",
-                    safety.budget.max_travel_mrev,
-                    safety.budget.max_velocity_mrev_s,
+                    safety.budget.max_stroke_travel_mrev,
+                    safety.budget.requested_velocity_mrev_s,
                     safety.budget.max_duration_ms,
-                    safety.budget.direction_mask,
+                    0x03_u8,
                     safety.position_window,
                     safety.velocity_cap,
                 );

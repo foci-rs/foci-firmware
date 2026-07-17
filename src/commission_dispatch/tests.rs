@@ -1626,10 +1626,15 @@ fn sample_outer_params() -> crate::commissioning::OuterTuneParams {
         current_ringing: false,
         current_bandwidth_hz: 1000,
         inner_warning_flags: 0,
-        max_travel_mrev: 1000,
-        max_velocity_mrev_s: 6000,
+        requested_velocity_mrev_s: 6000,
+        machine_velocity_ceiling_mrev_s: 10_000,
+        requested_velocity_source:
+            crate::commissioning::outer::velocity::sweep_plan::RequestedVelocitySource::Defaulted,
+        max_stroke_travel_mrev: 1000,
+        settle_travel_reserve_mrev: 100,
+        negative_position_headroom_mrev: 2000,
+        positive_position_headroom_mrev: 2000,
         max_duration_ms: 3000,
-        direction_mask: 3,
     }
 }
 

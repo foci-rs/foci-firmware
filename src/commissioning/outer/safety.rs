@@ -10,6 +10,7 @@ use crate::commissioning::types::{
 };
 
 use super::limits::{MECHANICAL_ID_VELOCITY_CAP_COUNTS_PER_MS, POSITION_WINDOW_COUNTS};
+use super::velocity::sweep_plan::RequestedVelocitySource;
 use super::{
     mechanical_id_velocity_cap_counts_per_ms, position_window_counts, response, state::OuterPhase,
 };
@@ -26,14 +27,22 @@ pub(super) const OUTER_SAFETY_SAMPLE_MAX_REGISTER_OPS: usize = 1;
 /// Host-provided motor-local motion budget for outer commissioning.
 #[derive(Debug, Clone, Copy, defmt::Format)]
 pub(crate) struct OuterMotionBudget {
-    /// Maximum local motor travel in milli-revolutions.
-    pub(crate) max_travel_mrev: u32,
-    /// Maximum local motor velocity in milli-revolutions per second.
-    pub(crate) max_velocity_mrev_s: u32,
+    /// Requested mechanical velocity amplitude.
+    pub(crate) requested_velocity_mrev_s: u32,
+    /// Kinematics-derived absolute machine ceiling.
+    pub(crate) machine_velocity_ceiling_mrev_s: u32,
+    /// Explicit-versus-defaulted request provenance.
+    pub(crate) requested_velocity_source: RequestedVelocitySource,
+    /// Full local displacement window spanning moving and settle.
+    pub(crate) max_stroke_travel_mrev: u32,
+    /// Host planning reserve inside the full displacement window.
+    pub(crate) settle_travel_reserve_mrev: u32,
+    /// Negative absolute-position headroom from Stage-2 entry.
+    pub(crate) negative_position_headroom_mrev: u32,
+    /// Positive absolute-position headroom from Stage-2 entry.
+    pub(crate) positive_position_headroom_mrev: u32,
     /// Maximum primitive duration in milliseconds.
     pub(crate) max_duration_ms: u16,
-    /// Reserved direction mask. Supports bidirectional value 0x03.
-    pub(crate) direction_mask: u8,
 }
 
 impl OuterMotionBudget {
@@ -41,20 +50,42 @@ impl OuterMotionBudget {
     #[cfg(test)]
     pub(crate) const fn firmware_caps() -> Self {
         Self {
-            max_travel_mrev: FIRMWARE_MAX_TRAVEL_MREV,
-            max_velocity_mrev_s: FIRMWARE_MAX_VELOCITY_MREV_S,
+            requested_velocity_mrev_s: FIRMWARE_MAX_VELOCITY_MREV_S,
+            machine_velocity_ceiling_mrev_s: 10_000,
+            requested_velocity_source: RequestedVelocitySource::Defaulted,
+            max_stroke_travel_mrev: FIRMWARE_MAX_TRAVEL_MREV,
+            settle_travel_reserve_mrev: 100,
+            negative_position_headroom_mrev: FIRMWARE_MAX_TRAVEL_MREV,
+            positive_position_headroom_mrev: FIRMWARE_MAX_TRAVEL_MREV,
             max_duration_ms: 3_000,
-            direction_mask: 0x03,
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) const fn test_budget(
+        max_stroke_travel_mrev: u32,
+        requested_velocity_mrev_s: u32,
+        max_duration_ms: u16,
+    ) -> Self {
+        Self {
+            requested_velocity_mrev_s,
+            machine_velocity_ceiling_mrev_s: 10_000,
+            requested_velocity_source: RequestedVelocitySource::Defaulted,
+            max_stroke_travel_mrev,
+            settle_travel_reserve_mrev: if max_stroke_travel_mrev > 100 { 100 } else { 0 },
+            negative_position_headroom_mrev: 2_000,
+            positive_position_headroom_mrev: 2_000,
+            max_duration_ms,
         }
     }
 
     fn travel_counts(self, counts_per_rev: u32) -> u32 {
-        mrev_to_counts(self.max_travel_mrev, counts_per_rev)
+        mrev_to_counts(self.max_stroke_travel_mrev, counts_per_rev)
     }
 
     fn velocity_counts_per_ms(self, counts_per_rev: u32) -> u32 {
         let counts_per_rev = u64::from(counts_per_rev);
-        let scaled = counts_per_rev.saturating_mul(self.max_velocity_mrev_s as u64);
+        let scaled = counts_per_rev.saturating_mul(self.requested_velocity_mrev_s as u64);
         let rounded = (scaled + 500_000) / 1_000_000;
         clamp_positive_u32(rounded)
     }
@@ -111,10 +142,13 @@ impl OuterSafetyLimits {
     }
 
     pub(crate) fn budget_request_is_valid(&self) -> bool {
-        self.budget.max_travel_mrev > 0
-            && self.budget.max_velocity_mrev_s > 0
+        self.budget.max_stroke_travel_mrev > 0
+            && self.budget.requested_velocity_mrev_s > 0
+            && self.budget.machine_velocity_ceiling_mrev_s > 0
+            && self.budget.settle_travel_reserve_mrev < self.budget.max_stroke_travel_mrev
+            && self.budget.negative_position_headroom_mrev > 0
+            && self.budget.positive_position_headroom_mrev > 0
             && self.budget.max_duration_ms > 0
-            && self.budget.direction_mask == 0x03
     }
 
     pub(crate) fn configure_encoder_resolution(
@@ -192,14 +226,14 @@ impl OuterSafetyLimits {
 
     pub(crate) fn motion_budget_mrev(&self) -> u16 {
         self.budget
-            .max_travel_mrev
+            .max_stroke_travel_mrev
             .min(FIRMWARE_MAX_TRAVEL_MREV)
             .min(u16::MAX as u32) as u16
     }
 
     pub(crate) fn budget_clamped_firmware_caps(&self) -> bool {
-        self.budget.max_travel_mrev < FIRMWARE_MAX_TRAVEL_MREV
-            || self.budget.max_velocity_mrev_s < FIRMWARE_MAX_VELOCITY_MREV_S
+        self.budget.max_stroke_travel_mrev < FIRMWARE_MAX_TRAVEL_MREV
+            || self.budget.requested_velocity_mrev_s < FIRMWARE_MAX_VELOCITY_MREV_S
     }
 
     pub(crate) fn invalid_budget_fault(&self) -> OuterSafetyFault {
@@ -217,10 +251,10 @@ impl OuterSafetyLimits {
         let duration_cap_us = u64::from(self.budget.max_duration_ms) * 1_000;
         OuterSafetyFault {
             reason,
-            max_travel_mrev: clamp_u32_to_u16(self.budget.max_travel_mrev),
-            max_velocity_mrev_s: clamp_u32_to_u16(self.budget.max_velocity_mrev_s),
+            max_travel_mrev: clamp_u32_to_u16(self.budget.max_stroke_travel_mrev),
+            max_velocity_mrev_s: clamp_u32_to_u16(self.budget.requested_velocity_mrev_s),
             max_duration_ms: self.budget.max_duration_ms,
-            direction_mask: self.budget.direction_mask,
+            direction_mask: 0x03,
             delta_counts,
             dt_us: clamp_u64_to_u32(dt_us),
             velocity_counts_per_ms,
@@ -307,10 +341,10 @@ pub(crate) async fn check_outer_safety<B: CommissioningBackend>(
     if !safety.budget_is_usable() {
         defmt::warn!(
             "outer safety: unusable motion budget travel={} velocity={} duration={} dir={}",
-            safety.budget.max_travel_mrev,
-            safety.budget.max_velocity_mrev_s,
+            safety.budget.max_stroke_travel_mrev,
+            safety.budget.requested_velocity_mrev_s,
             safety.budget.max_duration_ms,
-            safety.budget.direction_mask,
+            0x03_u8,
         );
         return Ok(Some(safety.fault(
             OUTER_SAFETY_FAULT_UNUSABLE_BUDGET,
@@ -684,15 +718,8 @@ mod tests {
 
     #[test]
     fn outer_safety_clamps_position_window_to_host_budget() {
-        let mut safety = OuterSafetyLimits::new(
-            100,
-            OuterMotionBudget {
-                max_travel_mrev: 500,
-                max_velocity_mrev_s: 6000,
-                max_duration_ms: 3000,
-                direction_mask: 3,
-            },
-        );
+        let mut safety =
+            OuterSafetyLimits::new(100, OuterMotionBudget::test_budget(500, 6_000, 3_000));
 
         safety.configure_encoder_resolution(4_000).unwrap();
 
@@ -702,30 +729,16 @@ mod tests {
 
     #[test]
     fn outer_safety_refuses_zero_budget() {
-        let safety = OuterSafetyLimits::new(
-            100,
-            OuterMotionBudget {
-                max_travel_mrev: 0,
-                max_velocity_mrev_s: 6000,
-                max_duration_ms: 3000,
-                direction_mask: 3,
-            },
-        );
+        let safety = OuterSafetyLimits::new(100, OuterMotionBudget::test_budget(0, 6_000, 3_000));
 
         assert!(!safety.budget_is_usable());
     }
 
     #[test]
-    fn outer_safety_refuses_non_bidirectional_direction_mask() {
-        let safety = OuterSafetyLimits::new(
-            100,
-            OuterMotionBudget {
-                max_travel_mrev: 500,
-                max_velocity_mrev_s: 6000,
-                max_duration_ms: 3000,
-                direction_mask: 1,
-            },
-        );
+    fn outer_safety_refuses_reserve_that_consumes_the_window() {
+        let mut budget = OuterMotionBudget::test_budget(500, 6_000, 3_000);
+        budget.settle_travel_reserve_mrev = 500;
+        let safety = OuterSafetyLimits::new(100, budget);
 
         assert!(!safety.budget_is_usable());
     }
@@ -733,15 +746,8 @@ mod tests {
     #[test]
     fn outer_safety_violates_on_unusable_budget() {
         pollster::block_on(async {
-            let mut safety = OuterSafetyLimits::new(
-                100,
-                OuterMotionBudget {
-                    max_travel_mrev: 0,
-                    max_velocity_mrev_s: 6000,
-                    max_duration_ms: 3000,
-                    direction_mask: 3,
-                },
-            );
+            let mut safety =
+                OuterSafetyLimits::new(100, OuterMotionBudget::test_budget(0, 6_000, 3_000));
             let mut backend = MockBackend::new();
 
             let fault = check_outer_safety(&mut safety, &mut backend)
@@ -755,15 +761,8 @@ mod tests {
     #[test]
     fn outer_safety_violates_on_duration_budget() {
         pollster::block_on(async {
-            let mut safety = OuterSafetyLimits::new(
-                100,
-                OuterMotionBudget {
-                    max_travel_mrev: 500,
-                    max_velocity_mrev_s: 6000,
-                    max_duration_ms: 1,
-                    direction_mask: 3,
-                },
-            );
+            let mut safety =
+                OuterSafetyLimits::new(100, OuterMotionBudget::test_budget(500, 6_000, 1));
             safety.configure_encoder_resolution(4_000).unwrap();
             safety.primitive_start_us = Some(1_000);
             let mut backend = MockBackend::new();
@@ -1081,15 +1080,8 @@ mod tests {
     #[test]
     fn outer_safety_reports_velocity_fault_details() {
         pollster::block_on(async {
-            let mut safety = OuterSafetyLimits::new(
-                100,
-                OuterMotionBudget {
-                    max_travel_mrev: 750,
-                    max_velocity_mrev_s: 6000,
-                    max_duration_ms: 3000,
-                    direction_mask: 3,
-                },
-            );
+            let mut safety =
+                OuterSafetyLimits::new(100, OuterMotionBudget::test_budget(750, 6_000, 3_000));
             safety.configure_encoder_resolution(4_000).unwrap();
             safety.set_encoder_baseline(0).unwrap();
             safety.last_sample_us = Some(100_000);

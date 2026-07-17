@@ -67,14 +67,23 @@ pub struct OuterTuneParams {
     pub current_bandwidth_hz: u32,
     /// Inner-confidence warning bitfield carried from Stage 1.
     pub inner_warning_flags: u8,
-    /// Host-computed max local motor travel in milli-revolutions.
-    pub max_travel_mrev: u32,
-    /// Host-computed max local motor velocity in milli-revolutions/s.
-    pub max_velocity_mrev_s: u32,
+    /// Host-requested mechanical velocity amplitude in milli-revolutions/s.
+    pub requested_velocity_mrev_s: u32,
+    /// Kinematics-derived absolute machine velocity ceiling.
+    pub machine_velocity_ceiling_mrev_s: u32,
+    /// Whether the requested amplitude was explicit or host-defaulted.
+    pub requested_velocity_source:
+        crate::commissioning::outer::velocity::sweep_plan::RequestedVelocitySource,
+    /// Full displacement window spanning a moving stroke and its settle.
+    pub max_stroke_travel_mrev: u32,
+    /// Host planning reserve for braking and settle drift.
+    pub settle_travel_reserve_mrev: u32,
+    /// Negative absolute-position headroom from the Stage-2 entry anchor.
+    pub negative_position_headroom_mrev: u32,
+    /// Positive absolute-position headroom from the Stage-2 entry anchor.
+    pub positive_position_headroom_mrev: u32,
     /// Host-computed max primitive duration in milliseconds.
     pub max_duration_ms: u16,
-    /// Reserved direction mask. Requires bidirectional value 0x03.
-    pub direction_mask: u8,
 }
 
 /// Snapshot of outer gains at Stage 2 entry, for soft-failure restoration.
@@ -460,16 +469,24 @@ impl CommissioningEngine {
             current_ringing,
             current_bandwidth_hz,
             inner_warning_flags,
-            max_travel_mrev,
-            max_velocity_mrev_s,
+            requested_velocity_mrev_s,
+            machine_velocity_ceiling_mrev_s,
+            requested_velocity_source,
+            max_stroke_travel_mrev,
+            settle_travel_reserve_mrev,
+            negative_position_headroom_mrev,
+            positive_position_headroom_mrev,
             max_duration_ms,
-            direction_mask,
         } = params;
         let budget = OuterMotionBudget {
-            max_travel_mrev,
-            max_velocity_mrev_s,
+            requested_velocity_mrev_s,
+            machine_velocity_ceiling_mrev_s,
+            requested_velocity_source,
+            max_stroke_travel_mrev,
+            settle_travel_reserve_mrev,
+            negative_position_headroom_mrev,
+            positive_position_headroom_mrev,
             max_duration_ms,
-            direction_mask,
         };
         let safety = OuterSafetyLimits::new(0, budget);
         let data = MechanicalIdData::new(0);
@@ -1003,10 +1020,15 @@ mod tests {
             current_ringing: false,
             current_bandwidth_hz: 1000,
             inner_warning_flags: 0,
-            max_travel_mrev: 1000,
-            max_velocity_mrev_s: 6000,
+            requested_velocity_mrev_s: 6000,
+            machine_velocity_ceiling_mrev_s: 10_000,
+            requested_velocity_source:
+                crate::commissioning::outer::velocity::sweep_plan::RequestedVelocitySource::Defaulted,
+            max_stroke_travel_mrev: 1000,
+            settle_travel_reserve_mrev: 100,
+            negative_position_headroom_mrev: 2000,
+            positive_position_headroom_mrev: 2000,
             max_duration_ms: 3000,
-            direction_mask: 3,
         }
     }
 
@@ -1394,10 +1416,12 @@ mod tests {
     #[test]
     fn new_outer_seeds_host_motion_budget() {
         let params = OuterTuneParams {
-            max_travel_mrev: 750,
-            max_velocity_mrev_s: 4_500,
+            requested_velocity_mrev_s: 4_500,
+            max_stroke_travel_mrev: 750,
+            settle_travel_reserve_mrev: 75,
+            negative_position_headroom_mrev: 900,
+            positive_position_headroom_mrev: 1_100,
             max_duration_ms: 2_500,
-            direction_mask: 0x03,
             ..sample_outer_params()
         };
         let engine = CommissioningEngine::new_outer(0, params, sample_entry_snapshot());
@@ -1410,10 +1434,12 @@ mod tests {
             panic!("new_outer should create an outer engine");
         };
 
-        assert_eq!(safety.budget.max_travel_mrev, 750);
-        assert_eq!(safety.budget.max_velocity_mrev_s, 4_500);
+        assert_eq!(safety.budget.max_stroke_travel_mrev, 750);
+        assert_eq!(safety.budget.requested_velocity_mrev_s, 4_500);
+        assert_eq!(safety.budget.settle_travel_reserve_mrev, 75);
+        assert_eq!(safety.budget.negative_position_headroom_mrev, 900);
+        assert_eq!(safety.budget.positive_position_headroom_mrev, 1_100);
         assert_eq!(safety.budget.max_duration_ms, 2_500);
-        assert_eq!(safety.budget.direction_mask, 0x03);
     }
 
     #[test]

@@ -96,10 +96,10 @@ pub(crate) async fn step_outer_with_trace<B: CommissioningBackend>(
         if !safety.budget_request_is_valid() {
             defmt::warn!(
                 "outer safety: invalid motion budget travel={} velocity={} duration={} dir={}",
-                safety.budget.max_travel_mrev,
-                safety.budget.max_velocity_mrev_s,
+                safety.budget.max_stroke_travel_mrev,
+                safety.budget.requested_velocity_mrev_s,
                 safety.budget.max_duration_ms,
-                safety.budget.direction_mask,
+                0x03_u8,
             );
             let fault = safety.invalid_budget_fault();
             let err = safety_error_for_phase(phase);

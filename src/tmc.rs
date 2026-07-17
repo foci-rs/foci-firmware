@@ -228,14 +228,23 @@ pub enum TmcRequestKind {
         current_bandwidth_hz: u32,
         /// Inner-confidence warning bitfield carried from Stage 1.
         inner_warning_flags: u8,
-        /// Host-computed max local motor travel in milli-revolutions.
-        max_travel_mrev: u32,
-        /// Host-computed max local motor velocity in milli-revolutions/s.
-        max_velocity_mrev_s: u32,
+        /// Requested mechanical velocity amplitude in milli-revolutions/s.
+        requested_velocity_mrev_s: u32,
+        /// Kinematics-derived absolute machine velocity ceiling.
+        machine_velocity_ceiling_mrev_s: u32,
+        /// Explicit-versus-defaulted request provenance.
+        requested_velocity_source:
+            crate::commissioning::outer::velocity::sweep_plan::RequestedVelocitySource,
+        /// Full local displacement window spanning moving and settle.
+        max_stroke_travel_mrev: u32,
+        /// Host planning reserve for braking and settle drift.
+        settle_travel_reserve_mrev: u32,
+        /// Negative absolute-position headroom from Stage-2 entry.
+        negative_position_headroom_mrev: u32,
+        /// Positive absolute-position headroom from Stage-2 entry.
+        positive_position_headroom_mrev: u32,
         /// Host-computed max primitive duration in milliseconds.
         max_duration_ms: u16,
-        /// Reserved direction mask. Requires bidirectional value 0x03.
-        direction_mask: u8,
     },
     /// Set velocity biquad low-pass filter cutoff frequency.
     /// 0 = disabled, 10..1000 Hz = enabled.
@@ -482,10 +491,15 @@ pub fn tmc_tune(
     current_ringing_count: u8,
     current_bandwidth_hz: u32,
     inner_warning_flags: u8,
-    max_travel_mrev: u32,
-    max_velocity_mrev_s: u32,
+    requested_velocity_mrev_s: u32,
+    machine_velocity_ceiling_mrev_s: u32,
+    requested_velocity_source:
+        crate::commissioning::outer::velocity::sweep_plan::RequestedVelocitySource,
+    max_stroke_travel_mrev: u32,
+    settle_travel_reserve_mrev: u32,
+    negative_position_headroom_mrev: u32,
+    positive_position_headroom_mrev: u32,
     max_duration_ms: u16,
-    direction_mask: u8,
 ) -> TmcRequest {
     TmcRequest::new(
         channel,
@@ -498,10 +512,14 @@ pub fn tmc_tune(
             current_ringing_count,
             current_bandwidth_hz,
             inner_warning_flags,
-            max_travel_mrev,
-            max_velocity_mrev_s,
+            requested_velocity_mrev_s,
+            machine_velocity_ceiling_mrev_s,
+            requested_velocity_source,
+            max_stroke_travel_mrev,
+            settle_travel_reserve_mrev,
+            negative_position_headroom_mrev,
+            positive_position_headroom_mrev,
             max_duration_ms,
-            direction_mask,
         },
     )
 }
@@ -1657,7 +1675,25 @@ mod tests {
     #[test]
     fn tmc_tune_builds_request() {
         assert_eq!(
-            tmc_tune(0, 7, 2, 1, 1400, 700, 3, 500, 0x40, 1000, 6000, 3000, 3),
+            tmc_tune(
+                0,
+                7,
+                2,
+                1,
+                1400,
+                700,
+                3,
+                500,
+                0x40,
+                6000,
+                10_000,
+                crate::commissioning::outer::velocity::sweep_plan::RequestedVelocitySource::Defaulted,
+                1000,
+                100,
+                2000,
+                2000,
+                3000,
+            ),
             TmcRequest::new(
                 0,
                 TmcRequestKind::Tune {
@@ -1669,10 +1705,14 @@ mod tests {
                     current_ringing_count: 3,
                     current_bandwidth_hz: 500,
                     inner_warning_flags: 0x40,
-                    max_travel_mrev: 1000,
-                    max_velocity_mrev_s: 6000,
+                    requested_velocity_mrev_s: 6000,
+                    machine_velocity_ceiling_mrev_s: 10_000,
+                    requested_velocity_source: crate::commissioning::outer::velocity::sweep_plan::RequestedVelocitySource::Defaulted,
+                    max_stroke_travel_mrev: 1000,
+                    settle_travel_reserve_mrev: 100,
+                    negative_position_headroom_mrev: 2000,
+                    positive_position_headroom_mrev: 2000,
                     max_duration_ms: 3000,
-                    direction_mask: 3,
                 }
             )
         );
