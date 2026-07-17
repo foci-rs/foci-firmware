@@ -225,14 +225,14 @@ pub fn plan_velocity_sweep(
     let primitive_us = MOVING_STROKE_US
         .checked_add(ZERO_SETTLE_US)
         .ok_or(VelocityPlanError::Arithmetic)?;
+    if primitive_us.div_ceil(1_000) > u32::from(request.max_duration_ms) {
+        return Err(VelocityPlanError::InvalidRequest);
+    }
     let workflow_us = u32::from(rung_count)
         .checked_mul(4)
         .and_then(|value| value.checked_mul(primitive_us))
         .ok_or(VelocityPlanError::Arithmetic)?;
     let workflow_ms = workflow_us / 1_000;
-    if workflow_ms > u32::from(request.max_duration_ms) {
-        return Err(VelocityPlanError::InvalidRequest);
-    }
     let mut gains = [PidGain::ZERO; MAX_SWEEP_RUNGS];
     gains[..ladder.len()].copy_from_slice(ladder.as_slice());
 

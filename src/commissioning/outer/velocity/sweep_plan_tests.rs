@@ -149,3 +149,24 @@ fn plan_freezes_exact_ladder_and_workflow_duration() {
     assert_eq!(plan.nominal_workflow_ms, expected_ms);
     assert_eq!(plan.maximum_workflow_ms, expected_ms);
 }
+
+#[test]
+fn host_default_primitive_budget_does_not_cap_total_workflow() {
+    let mut host_request = request();
+    host_request.max_duration_ms = 3_000;
+
+    let plan = plan_velocity_sweep(host_request, 4_000, 25_000, 1_000).unwrap();
+
+    assert!(plan.maximum_workflow_ms > u32::from(host_request.max_duration_ms));
+}
+
+#[test]
+fn primitive_budget_must_cover_one_moving_and_settle_window() {
+    let mut too_short = request();
+    too_short.max_duration_ms = 455;
+
+    assert_eq!(
+        plan_velocity_sweep(too_short, 4_000, 25_000, 1_000),
+        Err(VelocityPlanError::InvalidRequest)
+    );
+}
