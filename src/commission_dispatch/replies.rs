@@ -10,7 +10,8 @@ use crate::commission_dispatch::ReplyPayload;
 use crate::commissioning::types::{
     AdcCalResult, AdcResidualEvidence, CommissionResult, CurrentValidationAxisEvidence,
     CurrentValidationSettledSampleEvidence, INDUCTANCE_SOURCE_NONE, InnerResult, OuterResult,
-    OuterSafetyFault,
+    OuterSafetyFault, VelocitySweepEvent, VelocitySweepObservation, VelocitySweepPlanned,
+    VelocitySweepRungReport, VelocitySweepTerminal,
 };
 use crate::selftest::{CommissionDiagnostic, CommissionDiagnostics, SelftestStageValue};
 use crate::tmc_diagnostics::{
@@ -118,6 +119,86 @@ pub trait CommissionReplySink {
     /// Emit Stage 2 safety-envelope evidence before the terminal tune result.
     fn foci_outer_safety_fault(&mut self, oid: u8, fault: OuterSafetyFault);
 
+    /// Emit one velocity-sweep plan-limits fragment.
+    fn foci_velocity_sweep_plan_limits(
+        &mut self,
+        _report: crate::ankyra::replies::FociVelocitySweepPlanLimits,
+    ) {
+    }
+
+    /// Emit one velocity-sweep plan-geometry fragment.
+    fn foci_velocity_sweep_plan_geometry(
+        &mut self,
+        _report: crate::ankyra::replies::FociVelocitySweepPlanGeometry,
+    ) {
+    }
+
+    /// Emit one velocity-sweep plan-timing fragment.
+    fn foci_velocity_sweep_plan_timing(
+        &mut self,
+        _report: crate::ankyra::replies::FociVelocitySweepPlanTiming,
+    ) {
+    }
+
+    /// Emit one velocity-observation core fragment.
+    fn foci_velocity_observation_core(
+        &mut self,
+        _report: crate::ankyra::replies::FociVelocityObservationCore,
+    ) {
+    }
+
+    /// Emit one velocity-observation rate fragment.
+    fn foci_velocity_observation_rate(
+        &mut self,
+        _report: crate::ankyra::replies::FociVelocityObservationRate,
+    ) {
+    }
+
+    /// Emit one velocity-observation stationarity fragment.
+    fn foci_velocity_observation_stationarity(
+        &mut self,
+        _report: crate::ankyra::replies::FociVelocityObservationStationarity,
+    ) {
+    }
+
+    /// Emit one velocity-observation disturbance fragment.
+    fn foci_velocity_observation_disturbance(
+        &mut self,
+        _report: crate::ankyra::replies::FociVelocityObservationDisturbance,
+    ) {
+    }
+
+    /// Emit one velocity-rung band fragment.
+    fn foci_velocity_rung_verdict_band(
+        &mut self,
+        _report: crate::ankyra::replies::FociVelocityRungVerdictBand,
+    ) {
+    }
+
+    /// Emit one velocity-rung quality fragment.
+    fn foci_velocity_rung_verdict_quality(
+        &mut self,
+        _report: crate::ankyra::replies::FociVelocityRungVerdictQuality,
+    ) {
+    }
+
+    /// Emit one directional velocity-sweep terminal fragment.
+    fn foci_velocity_sweep_terminal_direction(
+        &mut self,
+        _report: crate::ankyra::replies::FociVelocitySweepTerminalDirection,
+    ) {
+    }
+
+    /// Emit one velocity-sweep terminal-integrity fragment.
+    fn foci_velocity_sweep_terminal_integrity(
+        &mut self,
+        _report: crate::ankyra::replies::FociVelocitySweepTerminalIntegrity,
+    ) {
+    }
+
+    /// Emit the generic outer inconclusive terminal.
+    fn foci_outer_inconclusive(&mut self, _report: crate::ankyra::replies::FociOuterInconclusive) {}
+
     /// Emit the ADC calibration result.
     fn foci_calibrate_result(&mut self, oid: u8, status: u8, result: &AdcCalResult);
 
@@ -126,6 +207,404 @@ pub trait CommissionReplySink {
 
     /// Emit the terminal self-test completion reply.
     fn foci_selftest_done(&mut self, oid: u8, status: u8);
+}
+
+/// Emit one streamed velocity-sweep event as bounded wire fragments.
+pub fn emit_velocity_sweep_event<S: CommissionReplySink>(
+    sink: &mut S,
+    oid: u8,
+    event: VelocitySweepEvent,
+) {
+    match event {
+        VelocitySweepEvent::Planned(report) => emit_velocity_sweep_plan(sink, oid, report),
+        VelocitySweepEvent::Observation(report) => {
+            emit_velocity_sweep_observation(sink, oid, report);
+        }
+        VelocitySweepEvent::Rung(report) => emit_velocity_sweep_rung(sink, oid, report),
+    }
+}
+
+fn emit_velocity_sweep_plan<S: CommissionReplySink>(
+    sink: &mut S,
+    oid: u8,
+    report: VelocitySweepPlanned,
+) {
+    use crate::ankyra::replies::{
+        FociVelocitySweepPlanGeometry, FociVelocitySweepPlanLimits, FociVelocitySweepPlanTiming,
+    };
+
+    sink.foci_velocity_sweep_plan_limits(FociVelocitySweepPlanLimits {
+        oid,
+        run_sequence: report.run_sequence,
+        evidence_sequence: report.evidence_sequence,
+        fragment: 0,
+        requested_velocity_mrev_s: report.requested_velocity_mrev_s,
+        requested_velocity_source: report.requested_velocity_source,
+        used_velocity_mrev_s: report.used_velocity_mrev_s,
+        effective_ceiling_mrev_s: report.effective_ceiling_mrev_s,
+        clamp_flags: report.clamp_flags,
+        binding_source: report.effective_ceiling_source,
+    });
+    sink.foci_velocity_sweep_plan_geometry(FociVelocitySweepPlanGeometry {
+        oid,
+        run_sequence: report.run_sequence,
+        evidence_sequence: report.evidence_sequence,
+        fragment: 1,
+        target_velocity_register: report.target_velocity_register,
+        p_start: report.p_start,
+        p_top: report.p_top,
+        rung_count: report.rung_count,
+        observations_per_direction: report.observations_per_direction,
+        max_stroke_travel_mrev: report.max_stroke_travel_mrev,
+        settle_travel_reserve_mrev: report.settle_travel_reserve_mrev,
+        negative_position_headroom_mrev: report.negative_position_headroom_mrev,
+        positive_position_headroom_mrev: report.positive_position_headroom_mrev,
+        hard_torque_limit: report.hard_torque_limit,
+        usable_torque_limit: report.usable_torque_limit,
+    });
+    sink.foci_velocity_sweep_plan_timing(FociVelocitySweepPlanTiming {
+        oid,
+        run_sequence: report.run_sequence,
+        evidence_sequence: report.evidence_sequence,
+        fragment: 2,
+        moving_stroke_us: report.moving_stroke_us,
+        zero_settle_us: report.zero_settle_us,
+        nominal_workflow_ms: report.nominal_workflow_ms,
+        maximum_workflow_ms: report.maximum_workflow_ms,
+    });
+}
+
+fn emit_velocity_sweep_observation<S: CommissionReplySink>(
+    sink: &mut S,
+    oid: u8,
+    report: VelocitySweepObservation,
+) {
+    use crate::ankyra::replies::{
+        FociVelocityObservationCore, FociVelocityObservationDisturbance,
+        FociVelocityObservationRate, FociVelocityObservationStationarity,
+    };
+    use crate::autotune::velocity_measurement::StationarityResult;
+
+    let (delta_mantissa, delta_shift) =
+        upper_bound_u128(report.selected_delta_counts.unsigned_abs() as u128);
+    let (elapsed_mantissa, elapsed_shift) =
+        upper_bound_u128(u128::from(report.selected_elapsed_us));
+    let rate_values = [
+        report.summary.settled_rate_interval_q[0],
+        report.settled_rate_mean_q,
+        report.summary.settled_rate_interval_q[1],
+        report.summary.deficit_interval_q[0],
+        report.summary.deficit_interval_q[1],
+    ];
+    let (rate_values, rate_shift) = encode_rate_values(rate_values);
+    let (variance_mantissa, variance_shift) = upper_bound_u128(report.variance_of_mean_q2);
+    let initial_flag = u8::from(report.summary.initial_lead_in);
+    sink.foci_velocity_observation_core(FociVelocityObservationCore {
+        oid,
+        run_sequence: report.run_sequence,
+        evidence_sequence: report.evidence_sequence,
+        fragment: 0,
+        rung_index: report.rung_index,
+        slot: report.slot,
+        classification:
+            crate::commissioning::outer::velocity::sweep_evidence::observation_class_report_code(
+                report.summary.classification,
+            ),
+        flags: initial_flag,
+        delta_sign: u8::from(report.selected_delta_counts < 0),
+        delta_mantissa,
+        delta_shift,
+        elapsed_mantissa,
+        elapsed_shift,
+    });
+    let suffix_len = match report.stationarity {
+        StationarityResult::Usable(suffix) => suffix.suffix_len,
+        StationarityResult::Excluded(_) => 0,
+    };
+    sink.foci_velocity_observation_rate(FociVelocityObservationRate {
+        oid,
+        run_sequence: report.run_sequence,
+        evidence_sequence: report.evidence_sequence,
+        fragment: 1,
+        rate_low: rate_values[0],
+        rate_mean: rate_values[1],
+        rate_high: rate_values[2],
+        deficit_low: rate_values[3],
+        deficit_high: rate_values[4],
+        rate_shift,
+        suffix_len,
+        selected_level: report.selected_level,
+        selected_blocks: report.selected_blocks,
+        variance_mantissa,
+        variance_shift,
+    });
+    let (
+        slope_mantissa,
+        slope_shift,
+        slope_half_width_mantissa,
+        slope_half_width_shift,
+        lag_one_q,
+        lag_one_half_width_q,
+        residual_mantissa,
+        residual_shift,
+        tested_suffixes,
+    ) = match report.stationarity {
+        StationarityResult::Usable(suffix) => {
+            let (slope_mantissa, slope_shift) = upper_bound_i64(suffix.slope_q);
+            let (slope_half_width_mantissa, slope_half_width_shift) =
+                upper_bound_u128(u128::from(suffix.slope_half_width_q));
+            let (residual_mantissa, residual_shift) =
+                upper_bound_u128(suffix.residual_magnitude_q2);
+            (
+                slope_mantissa,
+                slope_shift,
+                slope_half_width_mantissa,
+                slope_half_width_shift,
+                suffix.lag_one_q,
+                suffix.lag_one_half_width_q,
+                residual_mantissa,
+                residual_shift,
+                suffix.tested_suffixes,
+            )
+        }
+        StationarityResult::Excluded(_) => (0, 0, 0, 0, 0, 0, 0, 0, 0),
+    };
+    sink.foci_velocity_observation_stationarity(FociVelocityObservationStationarity {
+        oid,
+        run_sequence: report.run_sequence,
+        evidence_sequence: report.evidence_sequence,
+        fragment: 2,
+        slope_mantissa,
+        slope_shift,
+        slope_half_width_mantissa,
+        slope_half_width_shift,
+        lag_one_q,
+        lag_one_half_width_q,
+        residual_mantissa,
+        residual_shift,
+        tested_suffixes,
+    });
+    let disturbance = report.summary.disturbance.map_or(0, |value| value.raw());
+    let (disturbance_low_q16, disturbance_high_q16) = report
+        .summary
+        .disturbance_interval
+        .map_or((0, 0), |interval| {
+            (interval.low().raw(), interval.high().raw())
+        });
+    let (disturbance_variance_mantissa, disturbance_variance_shift) =
+        upper_bound_u128(u128::from(report.summary.disturbance_variance_q2));
+    sink.foci_velocity_observation_disturbance(FociVelocityObservationDisturbance {
+        oid,
+        run_sequence: report.run_sequence,
+        evidence_sequence: report.evidence_sequence,
+        fragment: 3,
+        velocity_p: report.summary.p.raw(),
+        target_velocity_register: report.target_velocity_register,
+        disturbance_q16: disturbance,
+        disturbance_low_q16,
+        disturbance_high_q16,
+        variance_mantissa: disturbance_variance_mantissa,
+        variance_shift: disturbance_variance_shift,
+        predicted_torque_target_abs: report.summary.predicted_torque_target_abs,
+    });
+}
+
+fn emit_velocity_sweep_rung<S: CommissionReplySink>(
+    sink: &mut S,
+    oid: u8,
+    report: VelocitySweepRungReport,
+) {
+    use crate::ankyra::replies::{FociVelocityRungVerdictBand, FociVelocityRungVerdictQuality};
+    let interval = |value: Option<crate::autotune::EquivalentTorqueTargetInterval>| {
+        value.map_or((0, 0), |item| (item.low().raw(), item.high().raw()))
+    };
+    let (forward_low_q16, forward_high_q16) = interval(report.forward.disturbance_interval);
+    let (reverse_low_q16, reverse_high_q16) = interval(report.reverse.disturbance_interval);
+    sink.foci_velocity_rung_verdict_band(FociVelocityRungVerdictBand {
+        oid,
+        run_sequence: report.run_sequence,
+        evidence_sequence: report.evidence_sequence,
+        fragment: 0,
+        rung_index: report.rung_index,
+        velocity_p: report.forward.p.raw(),
+        forward_low_q16,
+        forward_high_q16,
+        reverse_low_q16,
+        reverse_high_q16,
+        forward_p_low: report.forward_band.p_low.map_or(0, |value| value.raw()),
+        forward_p_high: report.forward_band.p_high.map_or(0, |value| value.raw()),
+        reverse_p_low: report.reverse_band.p_low.map_or(0, |value| value.raw()),
+        reverse_p_high: report.reverse_band.p_high.map_or(0, |value| value.raw()),
+    });
+    let flags = u8::from(report.forward.reproduced_moving)
+        | (u8::from(report.reverse.reproduced_moving) << 1)
+        | (u8::from(report.forward.initial_lead_in) << 2)
+        | (u8::from(report.reverse.initial_lead_in) << 3);
+    sink.foci_velocity_rung_verdict_quality(FociVelocityRungVerdictQuality {
+        oid,
+        run_sequence: report.run_sequence,
+        evidence_sequence: report.evidence_sequence,
+        fragment: 1,
+        rung_index: report.rung_index,
+        forward_class:
+            crate::commissioning::outer::velocity::sweep_evidence::rung_class_report_code(
+                report.forward.classification,
+            ),
+        reverse_class:
+            crate::commissioning::outer::velocity::sweep_evidence::rung_class_report_code(
+                report.reverse.classification,
+            ),
+        forward_closure:
+            crate::commissioning::outer::velocity::sweep_evidence::band_closure_report_code(
+                report.forward_band.closure,
+            ),
+        reverse_closure:
+            crate::commissioning::outer::velocity::sweep_evidence::band_closure_report_code(
+                report.reverse_band.closure,
+            ),
+        flags,
+        forward_eligible_rungs: report.forward_band.eligible_rungs,
+        reverse_eligible_rungs: report.reverse_band.eligible_rungs,
+        forward_eligible_observations: report.forward_band.eligible_observations,
+        reverse_eligible_observations: report.reverse_band.eligible_observations,
+    });
+}
+
+#[allow(dead_code)] // Activated by the terminal-ordering commit that follows.
+fn emit_velocity_sweep_terminal_fragments<S: CommissionReplySink>(
+    sink: &mut S,
+    oid: u8,
+    report: VelocitySweepTerminal,
+) {
+    use crate::ankyra::replies::{
+        FociVelocitySweepTerminalDirection, FociVelocitySweepTerminalIntegrity,
+    };
+    use crate::commissioning::types::VelocitySweepOutcome;
+
+    let evidence_sequence = report
+        .emitted_observations
+        .saturating_add(report.emitted_rungs)
+        .saturating_add(1);
+    for (fragment, band) in [(0, report.forward), (1, report.reverse)] {
+        let direction =
+            crate::commissioning::outer::velocity::sweep_evidence::direction_report_code(
+                band.direction,
+            );
+        let closure =
+            crate::commissioning::outer::velocity::sweep_evidence::band_closure_report_code(
+                band.closure,
+            );
+        let (common_low_q16, common_high_q16) =
+            band.common_intersection.map_or((0, 0), |interval| {
+                (interval.low().raw(), interval.high().raw())
+            });
+        let (pooled_q16, pooled_low_q16, pooled_high_q16) =
+            band.pooled.map_or((0, 0, 0), |pooled| {
+                (
+                    pooled.estimate.raw(),
+                    pooled.interval.low().raw(),
+                    pooled.interval.high().raw(),
+                )
+            });
+        let flags = u8::from(band.sufficient)
+            | (u8::from(band.left_censored) << 1)
+            | (u8::from(band.common_intersection.is_some()) << 2)
+            | (u8::from(band.pooled.is_some()) << 3);
+        sink.foci_velocity_sweep_terminal_direction(FociVelocitySweepTerminalDirection {
+            oid,
+            run_sequence: report.run_sequence,
+            evidence_sequence,
+            fragment,
+            direction_closure: direction | (closure << 1),
+            first_moving: band.first_moving.map_or(0, |value| value.raw()),
+            p_low: band.p_low.map_or(0, |value| value.raw()),
+            p_high: band.p_high.map_or(0, |value| value.raw()),
+            common_low_q16,
+            common_high_q16,
+            pooled_q16,
+            pooled_low_q16,
+            pooled_high_q16,
+            eligible_rungs: band.eligible_rungs,
+            eligible_observations: band.eligible_observations,
+            flags,
+        });
+    }
+    let outcome = match report.outcome {
+        VelocitySweepOutcome::Complete => 0,
+        VelocitySweepOutcome::Inconclusive => 1,
+        VelocitySweepOutcome::Fault => 2,
+    };
+    sink.foci_velocity_sweep_terminal_integrity(FociVelocitySweepTerminalIntegrity {
+        oid,
+        run_sequence: report.run_sequence,
+        evidence_sequence,
+        fragment: 2,
+        expected_observations: report.expected_observations,
+        emitted_observations: report.emitted_observations,
+        expected_rungs: report.expected_rungs,
+        emitted_rungs: report.emitted_rungs,
+        digest_low: report.digest as u32,
+        digest_high: (report.digest >> 32) as u32,
+        outcome,
+        cause: report.cause,
+        sufficient_direction_mask: report.sufficient_direction_mask,
+    });
+}
+
+fn upper_bound_u128(value: u128) -> (u32, u8) {
+    for shift in 0..=127u8 {
+        let divisor = 1u128 << shift;
+        let rounded = value.div_ceil(divisor);
+        if let Ok(mantissa) = u32::try_from(rounded) {
+            return (mantissa, shift);
+        }
+    }
+    (u32::MAX, 127)
+}
+
+fn upper_bound_i64(value: i64) -> (i32, u8) {
+    let magnitude = i128::from(value).unsigned_abs();
+    for shift in 0..=63u8 {
+        let rounded = magnitude.div_ceil(1u128 << shift);
+        if rounded <= i32::MAX as u128 {
+            let mantissa = rounded as i32;
+            return (if value < 0 { -mantissa } else { mantissa }, shift);
+        }
+    }
+    (if value < 0 { -i32::MAX } else { i32::MAX }, 63)
+}
+
+fn encode_rate_values(values: [i64; 5]) -> ([i32; 5], u8) {
+    for shift in 0..=63u8 {
+        let divisor = 1i128 << shift;
+        let mut encoded = [0i32; 5];
+        let mut fits = true;
+        for (index, value) in values.into_iter().enumerate() {
+            let value = i128::from(value);
+            let quotient = value / divisor;
+            let remainder = value % divisor;
+            let is_lower_edge = matches!(index, 0 | 3);
+            let is_upper_edge = matches!(index, 2 | 4);
+            let outward = if is_lower_edge && remainder != 0 && value < 0 {
+                quotient - 1
+            } else if is_upper_edge && remainder != 0 && value > 0 {
+                quotient + 1
+            } else if index == 1 && remainder != 0 {
+                quotient + value.signum()
+            } else {
+                quotient
+            };
+            let Ok(narrow) = i32::try_from(outward) else {
+                fits = false;
+                break;
+            };
+            encoded[index] = narrow;
+        }
+        if fits {
+            return (encoded, shift);
+        }
+    }
+    ([i32::MIN, 0, i32::MAX, i32::MIN, i32::MAX], 63)
 }
 
 /// Emit all Klipper replies represented by one terminal commissioning payload.
@@ -631,6 +1110,29 @@ mod tests {
         COMMISSION_DIAGNOSTIC_CAPACITY, CommissionDiagnostic, CommissionDiagnostics,
         SelftestResults, SelftestStageValue,
     };
+
+    #[test]
+    fn wide_magnitude_encoding_rounds_outward_without_saturation() {
+        for value in [0, u64::MAX as u128, u128::MAX] {
+            let (mantissa, shift) = upper_bound_u128(value);
+            let required_mantissa = value.div_ceil(1u128 << shift);
+            assert!(u128::from(mantissa) >= required_mantissa);
+        }
+
+        let values = [i64::MIN, -3, -1, 1, i64::MAX];
+        let (encoded, shift) = encode_rate_values(values);
+        let decoded = encoded.map(|value| i128::from(value) << shift);
+        assert!(decoded[0] <= i128::from(values[0]));
+        assert!(decoded[1].unsigned_abs() >= i128::from(values[1]).unsigned_abs());
+        assert!(decoded[2] >= i128::from(values[2]));
+        assert!(decoded[3] <= i128::from(values[3]));
+        assert!(decoded[4] >= i128::from(values[4]));
+
+        for value in [i64::MIN, i64::MAX] {
+            let (mantissa, shift) = upper_bound_i64(value);
+            assert!((i128::from(mantissa) << shift).unsigned_abs() >= value.unsigned_abs() as u128);
+        }
+    }
 
     #[derive(Debug, Clone, PartialEq, Eq)]
     enum Event {
