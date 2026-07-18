@@ -99,6 +99,7 @@ pub fn equivalent_disturbance_from_rate(
         .ok_or(VelocityMeasurementError::ArithmeticOverflow)?;
     let encoder_numerator = i128::from(totals.delta_counts)
         .checked_mul(TMC_VELOCITY_SCALE)
+        .and_then(|value| value.checked_mul(TMC_VELOCITY_SCALE))
         .and_then(|value| value.checked_mul(MICROS_PER_SECOND))
         .ok_or(VelocityMeasurementError::ArithmeticOverflow)?;
     let error_numerator = target_numerator
@@ -123,6 +124,7 @@ pub fn equivalent_disturbance_from_rate(
         .ok_or(VelocityMeasurementError::ArithmeticOverflow)?;
     let common_half_width_numerator = i128::from(p_raw)
         .checked_mul(i128::from(half_width_rate_q))
+        .and_then(|value| value.checked_mul(TMC_VELOCITY_SCALE))
         .and_then(|value| value.checked_mul(TMC_VELOCITY_SCALE))
         .and_then(|value| value.checked_mul(elapsed_us))
         .ok_or(VelocityMeasurementError::ArithmeticOverflow)?;
@@ -157,6 +159,7 @@ pub fn equivalent_disturbance_variance_from_rate(
     }
     let scale_numerator = i128::from(p_raw)
         .checked_mul(TMC_VELOCITY_SCALE)
+        .and_then(|value| value.checked_mul(TMC_VELOCITY_SCALE))
         .ok_or(VelocityMeasurementError::ArithmeticOverflow)?;
     let scale_denominator = VELOCITY_P_DIVISOR
         .checked_mul(i128::from(encoder_counts_per_rev))
@@ -247,11 +250,20 @@ mod tests {
     }
 
     #[test]
+    fn encoder_rate_equal_to_target_produces_zero_disturbance() {
+        let (estimate, interval) =
+            equivalent_disturbance_from_rate(256, 8, block(800, 65_536), 0, 4_000, 25_000).unwrap();
+
+        assert_eq!(estimate.raw(), 0);
+        assert_eq!(interval, EquivalentTorqueTargetInterval::point(estimate));
+    }
+
+    #[test]
     fn exact_totals_bypass_the_rounded_counts_per_ms_helper() {
         let (estimate, _) =
-            equivalent_disturbance_from_rate(256, 0, block(1, 1_500), 0, 1, 1).unwrap();
+            equivalent_disturbance_from_rate(256, 0, block(1, 1_500), 0, 4_000, 25_000).unwrap();
 
-        assert_eq!(estimate.raw(), -43_690_666);
+        assert_eq!(estimate.raw(), -28_633);
         assert_ne!(estimate.raw(), 0);
     }
 
@@ -261,9 +273,10 @@ mod tests {
         let second = block(2, 2_000);
         let totals = first.checked_merge(second).unwrap();
 
-        let (estimate, _) = equivalent_disturbance_from_rate(128, 0, totals, 0, 1, 1).unwrap();
+        let (estimate, _) =
+            equivalent_disturbance_from_rate(128, 0, totals, 0, 4_000, 25_000).unwrap();
 
-        assert_eq!(estimate.raw(), -32_768_000);
+        assert_eq!(estimate.raw(), -21_474);
     }
 
     #[test]
@@ -273,19 +286,19 @@ mod tests {
 
         assert_eq!(VELOCITY_RATE_Q_SCALE, 1_000);
         assert_eq!(estimate.raw(), 0);
-        assert_eq!(interval.low().raw(), -66);
-        assert_eq!(interval.high().raw(), 66);
+        assert_eq!(interval.low().raw(), -4_294_968);
+        assert_eq!(interval.high().raw(), 4_294_968);
     }
 
     #[test]
     fn variance_conversion_preserves_scale_and_rounds_nonzero_outward() {
         assert_eq!(
             equivalent_disturbance_variance_from_rate(256, 1_000_000, 1, 65_536).unwrap(),
-            1
+            4_294_967_296
         );
         assert_eq!(
             equivalent_disturbance_variance_from_rate(256, 1, 1, 65_536).unwrap(),
-            1
+            4_295
         );
         assert_eq!(
             equivalent_disturbance_variance_from_rate(0, 1_000_000, 1, 65_536).unwrap(),
