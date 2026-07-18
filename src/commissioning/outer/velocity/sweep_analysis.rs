@@ -232,3 +232,29 @@ pub(super) fn poll_settle_confirmation(
 fn bounded_rest_displacement(data: &VelocitySweepData) -> bool {
     data.settle_max_displacement_counts - data.settle_min_displacement_counts <= 1
 }
+
+#[cfg(test)]
+mod tests {
+    use super::bounded_rest_displacement;
+    use crate::commissioning::outer::VelocitySweepData;
+
+    #[test]
+    fn bounded_boundary_dither_is_accepted() {
+        let mut data = VelocitySweepData::new(0);
+        data.settle_min_displacement_counts = 0;
+        data.settle_max_displacement_counts = 1;
+        data.settle_displacement_counts = -1;
+
+        assert!(bounded_rest_displacement(&data));
+    }
+
+    #[test]
+    fn multi_count_creep_is_not_accepted_as_bounded_rest() {
+        let mut data = VelocitySweepData::new(0);
+        data.settle_min_displacement_counts = -1;
+        data.settle_max_displacement_counts = 2;
+        data.settle_displacement_counts = 2;
+
+        assert!(!bounded_rest_displacement(&data));
+    }
+}
