@@ -256,6 +256,12 @@ pub(crate) struct VelocitySweepData {
     pub(crate) previous_encoder_raw: u32,
     pub(crate) previous_read_us: u64,
     pub(crate) peak_torque_target: u16,
+    /// Cumulative zero-target displacement from the settle origin.
+    pub(crate) settle_displacement_counts: i32,
+    /// Lowest cumulative displacement observed during the settle.
+    pub(crate) settle_min_displacement_counts: i32,
+    /// Highest cumulative displacement observed during the settle.
+    pub(crate) settle_max_displacement_counts: i32,
     #[defmt(Debug2Format)]
     pub(crate) observations: VelocityObservationRing,
     #[defmt(Debug2Format)]
@@ -280,6 +286,9 @@ impl VelocitySweepData {
             previous_encoder_raw: 0,
             previous_read_us: 0,
             peak_torque_target: 0,
+            settle_displacement_counts: 0,
+            settle_min_displacement_counts: 0,
+            settle_max_displacement_counts: 0,
             observations: VelocityObservationRing::new(),
             blocker: DyadicBlocker::new(),
             analysis: StationarityWork::new(),

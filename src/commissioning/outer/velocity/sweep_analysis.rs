@@ -209,7 +209,7 @@ pub(super) fn poll_settle_confirmation(
         StationarityWorkPoll::Complete(stationarity) => stationarity,
     };
     let StationarityResult::Usable(suffix) = stationarity else {
-        return Ok(Some(false));
+        return Ok(Some(bounded_rest_displacement(data)));
     };
     let confidence = estimate_confidence(suffix.selection, 3)
         .map_err(|_| CommissionError::VelocityValidationFailed)?;
@@ -220,7 +220,15 @@ pub(super) fn poll_settle_confirmation(
         .map_err(|_| CommissionError::VelocityValidationFailed)?;
     let half_width = i64::try_from(confidence.half_width_rate_q)
         .map_err(|_| CommissionError::VelocityValidationFailed)?;
-    Ok(Some(
-        mean.saturating_sub(half_width) <= 0 && mean.saturating_add(half_width) >= 0,
-    ))
+    let stationary = mean.saturating_sub(half_width) <= 0 && mean.saturating_add(half_width) >= 0;
+    Ok(Some(stationary || bounded_rest_displacement(data)))
+}
+
+/// Accept a zero-target settle that never leaves one encoder-count band.
+///
+/// This covers the observed boundary-toggle dither while rejecting the
+/// multi-count rebound that the statistical stationarity gate is intended to
+/// catch. The bounds include the settle origin at zero.
+fn bounded_rest_displacement(data: &VelocitySweepData) -> bool {
+    data.settle_max_displacement_counts - data.settle_min_displacement_counts <= 1
 }

@@ -358,6 +358,9 @@ pub(crate) async fn step_velocity_sweep_with_trace<B: CommissioningBackend>(
             data.observations.clear();
             data.previous_encoder_raw = encoder_raw;
             data.previous_read_us = baseline_us;
+            data.settle_displacement_counts = 0;
+            data.settle_min_displacement_counts = 0;
+            data.settle_max_displacement_counts = 0;
             data.peak_torque_target = 0;
             *state = VelocitySweepState::Capture {
                 next_sample_us,
@@ -419,6 +422,15 @@ pub(crate) async fn step_velocity_sweep_with_trace<B: CommissioningBackend>(
             {
                 return fail_sweep(phase, backend, CommissionError::InvalidSchedule).await;
             }
+            data.settle_displacement_counts = data
+                .settle_displacement_counts
+                .saturating_add(delta.signed_counts());
+            data.settle_min_displacement_counts = data
+                .settle_min_displacement_counts
+                .min(data.settle_displacement_counts);
+            data.settle_max_displacement_counts = data
+                .settle_max_displacement_counts
+                .max(data.settle_displacement_counts);
             backend.record_velocity_trace_observation(
                 crate::trace::stream::VelocityTraceObservation {
                     target_counts_per_ms: slot_direction(data.slot).saturating_mul(
