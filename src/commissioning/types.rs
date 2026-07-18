@@ -320,16 +320,16 @@ pub struct VelocitySweepPlanned {
     pub requested_velocity_mrev_s: u32,
     /// Origin of the host-requested amplitude.
     pub requested_velocity_source: u8,
-    /// Frozen mechanical velocity amplitude.
-    pub used_velocity_mrev_s: u32,
+    /// Planned encoder-domain mechanical velocity amplitude.
+    pub planned_velocity_mrev_s: u32,
     /// Firmware-owned effective velocity ceiling.
     pub effective_ceiling_mrev_s: u32,
     /// Bitset describing every amplitude reduction.
     pub clamp_flags: u16,
     /// Source of the binding effective ceiling.
     pub effective_ceiling_source: u8,
-    /// Frozen positive TMC velocity-target register magnitude.
-    pub target_velocity_register: i32,
+    /// Frozen positive TMC mechanical-RPM target.
+    pub target_velocity_rpm: i32,
     /// First structural velocity-P gain.
     pub p_start: u16,
     /// Last structural velocity-P gain.
@@ -371,8 +371,8 @@ pub struct VelocitySweepObservation {
     pub rung_index: u8,
     /// Observation slot (`F1`, `R1`, `F2`, `R2`).
     pub slot: u8,
-    /// Signed TMC velocity-target register used for this observation.
-    pub target_velocity_register: i32,
+    /// Signed TMC mechanical-RPM target used for this observation.
+    pub target_velocity_rpm: i32,
     /// Auditable observation classification and controller-domain evidence.
     pub summary: crate::commissioning::outer::velocity::sweep_evidence::VelocityObservationSummary,
     /// Stationary-suffix analysis result used to construct `summary`.

@@ -1951,8 +1951,8 @@ pub struct FociVelocitySweepPlanLimits {
     pub requested_velocity_mrev_s: u32,
     /// Request source (`0` explicit, `1` defaulted).
     pub requested_velocity_source: u8,
-    /// Frozen amplitude used by firmware.
-    pub used_velocity_mrev_s: u32,
+    /// Planned encoder-domain amplitude used by firmware.
+    pub planned_velocity_mrev_s: u32,
     /// Effective machine/measurement ceiling.
     pub effective_ceiling_mrev_s: u32,
     /// Amplitude-clamp bitset.
@@ -1972,8 +1972,8 @@ pub struct FociVelocitySweepPlanGeometry {
     pub evidence_sequence: u16,
     /// Fragment discriminator.
     pub fragment: u8,
-    /// Frozen positive velocity-target register.
-    pub target_velocity_register: i32,
+    /// Frozen positive mechanical-RPM target.
+    pub target_velocity_rpm: i32,
     /// First structural P gain.
     pub p_start: u16,
     /// Last structural P gain.
@@ -2127,8 +2127,8 @@ pub struct FociVelocityObservationDisturbance {
     pub fragment: u8,
     /// Velocity P gain.
     pub velocity_p: u16,
-    /// Signed target register.
-    pub target_velocity_register: i32,
+    /// Signed mechanical-RPM target.
+    pub target_velocity_rpm: i32,
     /// Equivalent disturbance point in Q16.16 torque-target counts.
     pub disturbance_q16: i32,
     /// Inclusive disturbance lower edge.
@@ -2337,7 +2337,7 @@ mod velocity_sweep_reply_tests {
                 fragment: u8::MAX,
                 requested_velocity_mrev_s: WIDE_U32,
                 requested_velocity_source: u8::MAX,
-                used_velocity_mrev_s: WIDE_U32,
+                planned_velocity_mrev_s: WIDE_U32,
                 effective_ceiling_mrev_s: WIDE_U32,
                 clamp_flags: u16::MAX,
                 binding_source: u8::MAX,
@@ -2350,7 +2350,7 @@ mod velocity_sweep_reply_tests {
                 run_sequence: WIDE_U32,
                 evidence_sequence: u16::MAX,
                 fragment: u8::MAX,
-                target_velocity_register: i32::MIN,
+                target_velocity_rpm: i32::MIN,
                 p_start: u16::MAX,
                 p_top: u16::MAX,
                 rung_count: u8::MAX,
@@ -2440,7 +2440,7 @@ mod velocity_sweep_reply_tests {
                 evidence_sequence: u16::MAX,
                 fragment: u8::MAX,
                 velocity_p: u16::MAX,
-                target_velocity_register: i32::MIN,
+                target_velocity_rpm: i32::MIN,
                 disturbance_q16: i32::MIN,
                 disturbance_low_q16: i32::MIN,
                 disturbance_high_q16: i32::MAX,

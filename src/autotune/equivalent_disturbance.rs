@@ -1,7 +1,11 @@
-use super::velocity_measurement::{RateBlock, VELOCITY_RATE_Q_SCALE, VelocityMeasurementError};
+use super::{
+    TmcMechanicalRpm,
+    velocity_measurement::{RateBlock, VELOCITY_RATE_Q_SCALE, VelocityMeasurementError},
+};
 
-const TMC_VELOCITY_SCALE: i128 = 65_536;
-const MICROS_PER_SECOND: i128 = 1_000_000;
+const Q16_SCALE: i128 = 65_536;
+const MICROS_PER_MINUTE: i128 = 60_000_000;
+const SECONDS_PER_MINUTE: i128 = 60;
 const VELOCITY_P_DIVISOR: i128 = 256;
 
 /// Signed Q16.16 equivalent TMC torque-target counts.
@@ -73,34 +77,30 @@ impl EquivalentTorqueTargetInterval {
 /// checked `i128` rational. Each returned Q16.16 value is narrowed exactly once.
 pub fn equivalent_disturbance_from_rate(
     p_raw: u16,
-    target_velocity_register: i32,
+    target_velocity_rpm: TmcMechanicalRpm,
     totals: RateBlock,
     half_width_rate_q: u64,
     encoder_counts_per_rev: u32,
-    f_pwm_hz: u32,
 ) -> Result<(EquivalentTorqueTargetQ16, EquivalentTorqueTargetInterval), VelocityMeasurementError> {
     if totals.elapsed_us == 0 {
         return Err(VelocityMeasurementError::ZeroElapsed);
     }
-    if encoder_counts_per_rev == 0 || f_pwm_hz == 0 {
+    if encoder_counts_per_rev == 0 {
         return Err(VelocityMeasurementError::ArithmeticOverflow);
     }
 
-    let scale_denominator = i128::from(encoder_counts_per_rev)
-        .checked_mul(i128::from(f_pwm_hz))
-        .ok_or(VelocityMeasurementError::ArithmeticOverflow)?;
+    let encoder_counts_per_rev = i128::from(encoder_counts_per_rev);
     let elapsed_us = i128::from(totals.elapsed_us);
-    let target_q16 = i128::from(target_velocity_register)
-        .checked_mul(TMC_VELOCITY_SCALE)
+    let target_q16 = i128::from(target_velocity_rpm.raw())
+        .checked_mul(Q16_SCALE)
         .ok_or(VelocityMeasurementError::ArithmeticOverflow)?;
     let target_numerator = target_q16
-        .checked_mul(scale_denominator)
+        .checked_mul(encoder_counts_per_rev)
         .and_then(|value| value.checked_mul(elapsed_us))
         .ok_or(VelocityMeasurementError::ArithmeticOverflow)?;
     let encoder_numerator = i128::from(totals.delta_counts)
-        .checked_mul(TMC_VELOCITY_SCALE)
-        .and_then(|value| value.checked_mul(TMC_VELOCITY_SCALE))
-        .and_then(|value| value.checked_mul(MICROS_PER_SECOND))
+        .checked_mul(MICROS_PER_MINUTE)
+        .and_then(|value| value.checked_mul(Q16_SCALE))
         .ok_or(VelocityMeasurementError::ArithmeticOverflow)?;
     let error_numerator = target_numerator
         .checked_sub(encoder_numerator)
@@ -109,7 +109,7 @@ pub fn equivalent_disturbance_from_rate(
         .checked_mul(error_numerator)
         .ok_or(VelocityMeasurementError::ArithmeticOverflow)?;
     let disturbance_denominator = VELOCITY_P_DIVISOR
-        .checked_mul(scale_denominator)
+        .checked_mul(encoder_counts_per_rev)
         .and_then(|value| value.checked_mul(elapsed_us))
         .ok_or(VelocityMeasurementError::ArithmeticOverflow)?;
     let estimate = EquivalentTorqueTargetQ16::checked_from_i128(
@@ -124,8 +124,8 @@ pub fn equivalent_disturbance_from_rate(
         .ok_or(VelocityMeasurementError::ArithmeticOverflow)?;
     let common_half_width_numerator = i128::from(p_raw)
         .checked_mul(i128::from(half_width_rate_q))
-        .and_then(|value| value.checked_mul(TMC_VELOCITY_SCALE))
-        .and_then(|value| value.checked_mul(TMC_VELOCITY_SCALE))
+        .and_then(|value| value.checked_mul(SECONDS_PER_MINUTE))
+        .and_then(|value| value.checked_mul(Q16_SCALE))
         .and_then(|value| value.checked_mul(elapsed_us))
         .ok_or(VelocityMeasurementError::ArithmeticOverflow)?;
     let low_numerator = common_mean_numerator
@@ -152,18 +152,16 @@ pub fn equivalent_disturbance_variance_from_rate(
     p_raw: u16,
     variance_of_mean_rate_q2: u128,
     encoder_counts_per_rev: u32,
-    f_pwm_hz: u32,
 ) -> Result<u64, VelocityMeasurementError> {
-    if encoder_counts_per_rev == 0 || f_pwm_hz == 0 {
+    if encoder_counts_per_rev == 0 {
         return Err(VelocityMeasurementError::ArithmeticOverflow);
     }
     let scale_numerator = i128::from(p_raw)
-        .checked_mul(TMC_VELOCITY_SCALE)
-        .and_then(|value| value.checked_mul(TMC_VELOCITY_SCALE))
+        .checked_mul(SECONDS_PER_MINUTE)
+        .and_then(|value| value.checked_mul(Q16_SCALE))
         .ok_or(VelocityMeasurementError::ArithmeticOverflow)?;
     let scale_denominator = VELOCITY_P_DIVISOR
         .checked_mul(i128::from(encoder_counts_per_rev))
-        .and_then(|value| value.checked_mul(i128::from(f_pwm_hz)))
         .and_then(|value| value.checked_mul(i128::from(VELOCITY_RATE_Q_SCALE)))
         .ok_or(VelocityMeasurementError::ArithmeticOverflow)?;
     let numerator = variance_of_mean_rate_q2
@@ -217,6 +215,7 @@ mod tests {
         EquivalentTorqueTargetInterval, EquivalentTorqueTargetQ16,
         equivalent_disturbance_from_rate, equivalent_disturbance_variance_from_rate,
     };
+    use crate::autotune::TmcMechanicalRpm;
     use crate::autotune::velocity_measurement::{
         RateBlock, VELOCITY_RATE_Q_SCALE, VelocityMeasurementError,
     };
@@ -230,9 +229,55 @@ mod tests {
     }
 
     #[test]
+    fn exact_encoder_rpm_equal_to_target_produces_zero_disturbance() {
+        let exact = RateBlock {
+            delta_counts: 44,
+            elapsed_us: 3_750,
+            observation_count: 1,
+        };
+        let (estimate, interval) = equivalent_disturbance_from_rate(
+            256,
+            TmcMechanicalRpm::from_register(176),
+            exact,
+            0,
+            4_000,
+        )
+        .unwrap();
+
+        assert_eq!(estimate.raw(), 0);
+        assert_eq!(interval.low().raw(), 0);
+        assert_eq!(interval.high().raw(), 0);
+    }
+
+    #[test]
+    fn retired_position_per_pwm_target_does_not_match_encoder_rpm() {
+        let exact = RateBlock {
+            delta_counts: 44,
+            elapsed_us: 3_750,
+            observation_count: 1,
+        };
+        let (estimate, _) = equivalent_disturbance_from_rate(
+            256,
+            TmcMechanicalRpm::from_register(8),
+            exact,
+            0,
+            4_000,
+        )
+        .unwrap();
+
+        assert_ne!(estimate.raw(), 0);
+    }
+
+    #[test]
     fn zero_rate_proves_explicit_target_q16_promotion() {
-        let (estimate, interval) =
-            equivalent_disturbance_from_rate(256, 1, block(0, 2_000), 0, 4_000, 25_000).unwrap();
+        let (estimate, interval) = equivalent_disturbance_from_rate(
+            256,
+            TmcMechanicalRpm::from_register(1),
+            block(0, 2_000),
+            0,
+            4_000,
+        )
+        .unwrap();
 
         assert_eq!(estimate.raw(), 1 << 16);
         assert_eq!(interval.low().raw(), 1 << 16);
@@ -242,28 +287,30 @@ mod tests {
     #[test]
     fn forward_and_reverse_results_preserve_sign() {
         for (target, expected) in [(2, 131_072), (-2, -131_072)] {
-            let (estimate, _) =
-                equivalent_disturbance_from_rate(256, target, block(0, 1_000), 0, 4_000, 25_000)
-                    .unwrap();
+            let (estimate, _) = equivalent_disturbance_from_rate(
+                256,
+                TmcMechanicalRpm::from_register(target),
+                block(0, 1_000),
+                0,
+                4_000,
+            )
+            .unwrap();
             assert_eq!(estimate.raw(), expected);
         }
     }
 
     #[test]
-    fn encoder_rate_equal_to_target_produces_zero_disturbance() {
-        let (estimate, interval) =
-            equivalent_disturbance_from_rate(256, 8, block(800, 65_536), 0, 4_000, 25_000).unwrap();
-
-        assert_eq!(estimate.raw(), 0);
-        assert_eq!(interval, EquivalentTorqueTargetInterval::point(estimate));
-    }
-
-    #[test]
     fn exact_totals_bypass_the_rounded_counts_per_ms_helper() {
-        let (estimate, _) =
-            equivalent_disturbance_from_rate(256, 0, block(1, 1_500), 0, 4_000, 25_000).unwrap();
+        let (estimate, _) = equivalent_disturbance_from_rate(
+            256,
+            TmcMechanicalRpm::from_register(0),
+            block(1, 1_500),
+            0,
+            4_000,
+        )
+        .unwrap();
 
-        assert_eq!(estimate.raw(), -28_633);
+        assert_eq!(estimate.raw(), -655_360);
         assert_ne!(estimate.raw(), 0);
     }
 
@@ -273,44 +320,61 @@ mod tests {
         let second = block(2, 2_000);
         let totals = first.checked_merge(second).unwrap();
 
-        let (estimate, _) =
-            equivalent_disturbance_from_rate(128, 0, totals, 0, 4_000, 25_000).unwrap();
+        let (estimate, _) = equivalent_disturbance_from_rate(
+            128,
+            TmcMechanicalRpm::from_register(0),
+            totals,
+            0,
+            4_000,
+        )
+        .unwrap();
 
-        assert_eq!(estimate.raw(), -21_474);
+        assert_eq!(estimate.raw(), -491_520);
     }
 
     #[test]
     fn confidence_conversion_rounds_both_interval_edges_outward() {
-        let (estimate, interval) =
-            equivalent_disturbance_from_rate(256, 0, block(0, 1_000), 1, 1, 1).unwrap();
+        let (estimate, interval) = equivalent_disturbance_from_rate(
+            256,
+            TmcMechanicalRpm::from_register(0),
+            block(0, 1_000),
+            1,
+            1,
+        )
+        .unwrap();
 
         assert_eq!(VELOCITY_RATE_Q_SCALE, 1_000);
         assert_eq!(estimate.raw(), 0);
-        assert_eq!(interval.low().raw(), -4_294_968);
-        assert_eq!(interval.high().raw(), 4_294_968);
+        assert_eq!(interval.low().raw(), -3_933);
+        assert_eq!(interval.high().raw(), 3_933);
     }
 
     #[test]
     fn variance_conversion_preserves_scale_and_rounds_nonzero_outward() {
         assert_eq!(
-            equivalent_disturbance_variance_from_rate(256, 1_000_000, 1, 65_536).unwrap(),
-            4_294_967_296
+            equivalent_disturbance_variance_from_rate(256, 1_000_000, 1).unwrap(),
+            15_461_882_265_600
         );
         assert_eq!(
-            equivalent_disturbance_variance_from_rate(256, 1, 1, 65_536).unwrap(),
-            4_295
+            equivalent_disturbance_variance_from_rate(256, 1, 1).unwrap(),
+            15_461_883
         );
         assert_eq!(
-            equivalent_disturbance_variance_from_rate(0, 1_000_000, 1, 65_536).unwrap(),
+            equivalent_disturbance_variance_from_rate(0, 1_000_000, 1).unwrap(),
             0
         );
     }
 
     #[test]
     fn maximum_positive_controller_target_fits_q16() {
-        let (estimate, interval) =
-            equivalent_disturbance_from_rate(256, 32_767, block(0, 1_000), 0, 4_000, 25_000)
-                .unwrap();
+        let (estimate, interval) = equivalent_disturbance_from_rate(
+            256,
+            TmcMechanicalRpm::from_register(32_767),
+            block(0, 1_000),
+            0,
+            4_000,
+        )
+        .unwrap();
 
         assert_eq!(estimate.raw(), 2_147_418_112);
         assert_eq!(interval, EquivalentTorqueTargetInterval::point(estimate));
@@ -319,7 +383,13 @@ mod tests {
     #[test]
     fn checked_final_narrow_rejects_out_of_domain_result() {
         assert_eq!(
-            equivalent_disturbance_from_rate(32_767, 32_767, block(0, 1_000), 0, 4_000, 25_000,),
+            equivalent_disturbance_from_rate(
+                32_767,
+                TmcMechanicalRpm::from_register(32_767),
+                block(0, 1_000),
+                0,
+                4_000,
+            ),
             Err(VelocityMeasurementError::ArithmeticOverflow)
         );
     }
@@ -327,16 +397,21 @@ mod tests {
     #[test]
     fn zero_elapsed_and_wide_intermediate_overflow_fail_closed() {
         assert_eq!(
-            equivalent_disturbance_from_rate(1, 1, block(0, 0), 0, 4_000, 25_000,),
+            equivalent_disturbance_from_rate(
+                1,
+                TmcMechanicalRpm::from_register(1),
+                block(0, 0),
+                0,
+                4_000,
+            ),
             Err(VelocityMeasurementError::ZeroElapsed)
         );
         assert_eq!(
             equivalent_disturbance_from_rate(
                 u16::MAX,
-                i32::MAX,
+                TmcMechanicalRpm::from_register(i32::MAX),
                 block(i64::MAX, u64::MAX),
                 u64::MAX,
-                u32::MAX,
                 u32::MAX,
             ),
             Err(VelocityMeasurementError::ArithmeticOverflow)

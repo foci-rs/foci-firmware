@@ -7,6 +7,7 @@ use super::{
     VelocityPlanError, VelocitySweepRequest, ZERO_SETTLE_US, build_gain_ladder, current_gain_span,
     envelope_cap, plan_velocity_sweep, representability_ceilings, travel_cap,
 };
+use crate::autotune::TmcMechanicalRpm;
 
 fn request() -> VelocitySweepRequest {
     VelocitySweepRequest {
@@ -22,6 +23,37 @@ fn request() -> VelocitySweepRequest {
 }
 
 #[test]
+fn live_geometry_uses_mechanical_rpm_and_the_corrected_ladder() {
+    let mut live = request();
+    live.requested_velocity_mrev_s = 2_929;
+    live.max_stroke_travel_mrev = 1_000;
+    live.settle_travel_reserve_mrev = 250;
+
+    let plan = plan_velocity_sweep(live, 4_000, 2_816).unwrap();
+    let gains: heapless::Vec<u16, MAX_SWEEP_RUNGS> = plan
+        .gains
+        .iter()
+        .take(usize::from(plan.rung_count))
+        .map(|gain| gain.raw())
+        .collect();
+
+    assert_eq!(plan.planned_velocity_mrev_s, 2_929);
+    assert_eq!(plan.target_velocity_rpm.raw(), 176);
+    assert_eq!(plan.p_start.raw(), 2);
+    assert_eq!(plan.p_top.raw(), 3_685);
+    assert_eq!(plan.rung_count, 23);
+    assert_eq!(
+        gains.as_slice(),
+        &[
+            2, 3, 4, 6, 8, 12, 16, 24, 32, 48, 64, 96, 128, 192, 256, 384, 512, 768, 1_024, 1_536,
+            2_048, 3_072, 3_685,
+        ]
+    );
+    assert_eq!(usize::from(plan.rung_count) * 2, 46);
+    assert!(gains.contains(&384));
+}
+
+#[test]
 fn inverse_envelope_uses_both_named_margins() {
     assert_eq!(ENVELOPE_PROPORTIONAL_NUM, 3);
     assert_eq!(ENVELOPE_PROPORTIONAL_DEN, 2);
@@ -33,7 +65,7 @@ fn inverse_envelope_uses_both_named_margins() {
 
 #[test]
 fn plan_reports_machine_and_encoder_ceiling_provenance() {
-    let machine_plan = plan_velocity_sweep(request(), 4_000, 25_000, 1_000).unwrap();
+    let machine_plan = plan_velocity_sweep(request(), 4_000, 1_000).unwrap();
     assert_eq!(machine_plan.effective_ceiling_mrev_s, 10_000);
     assert_eq!(
         machine_plan.effective_ceiling_source,
@@ -44,7 +76,7 @@ fn plan_reports_machine_and_encoder_ceiling_provenance() {
     let mut encoder_limited = request();
     encoder_limited.machine_velocity_ceiling_mrev_s = 200_000;
     encoder_limited.requested_velocity_mrev_s = 200_000;
-    let encoder_plan = plan_velocity_sweep(encoder_limited, 4_000, 25_000, 1_000).unwrap();
+    let encoder_plan = plan_velocity_sweep(encoder_limited, 4_000, 1_000).unwrap();
     assert_eq!(
         encoder_plan.effective_ceiling_source,
         EFFECTIVE_CEILING_ENCODER
@@ -54,17 +86,15 @@ fn plan_reports_machine_and_encoder_ceiling_provenance() {
 
 #[test]
 fn every_firmware_representability_term_is_enumerated() {
-    let limits = representability_ceilings(4_000, 25_000).unwrap();
+    let limits = representability_ceilings(4_000).unwrap();
     assert!(limits.encoder_observable_mrev_s > 80_000);
-    assert!(limits.tmc_target_mrev_s > limits.encoder_observable_mrev_s);
-    assert_eq!(limits.tmc_target_mrev_s, limits.tmc_feedback_mrev_s);
-    assert!(limits.fixed_point_mrev_s >= limits.tmc_target_mrev_s);
+    assert!(TmcMechanicalRpm::from_mrev_s_nearest(u32::MAX).is_ok());
 }
 
 #[test]
 fn encoder_observability_tracks_the_measured_three_ms_gap_bound() {
     assert_eq!(MAX_SAFETY_OBSERVATION_GAP_US, 3_000);
-    let limits = representability_ceilings(4_000, 25_000).unwrap();
+    let limits = representability_ceilings(4_000).unwrap();
     assert!((83_000..84_000).contains(&limits.encoder_observable_mrev_s));
 }
 
@@ -87,14 +117,15 @@ fn travel_binding_has_a_named_clamp_cause() {
     let mut limited = request();
     limited.max_stroke_travel_mrev = 300;
     limited.settle_travel_reserve_mrev = 100;
-    let plan = plan_velocity_sweep(limited, 4_000, 25_000, 1_000).unwrap();
+    let plan = plan_velocity_sweep(limited, 4_000, 1_000).unwrap();
     assert_ne!(plan.clamp_flags & CLAMP_TRAVEL, 0);
-    assert_eq!(plan.used_velocity_mrev_s, 781);
+    assert_eq!(plan.planned_velocity_mrev_s, 781);
 }
 
 #[test]
 fn current_span_uses_quantum_start_and_inclusive_nine_tenths_top() {
-    let (p_start, p_top, usable) = current_gain_span(100, 1_000).unwrap();
+    let (p_start, p_top, usable) =
+        current_gain_span(TmcMechanicalRpm::from_register(100), 1_000).unwrap();
     assert_eq!(CURRENT_HEADROOM_NUM, 9);
     assert_eq!(CURRENT_HEADROOM_DEN, 10);
     assert_eq!(usable, 900);
@@ -149,7 +180,7 @@ fn maximum_domain_stays_inside_the_audited_two_k_family() {
 
 #[test]
 fn plan_freezes_exact_ladder_and_workflow_duration() {
-    let plan = plan_velocity_sweep(request(), 4_000, 25_000, 1_000).unwrap();
+    let plan = plan_velocity_sweep(request(), 4_000, 1_000).unwrap();
     let expected_ms = u32::from(plan.rung_count)
         * 4
         * (MOVING_STROKE_US + ZERO_SETTLE_US + SETTLE_ANALYSIS_BUDGET_US)
@@ -174,7 +205,7 @@ fn host_default_primitive_budget_does_not_cap_total_workflow() {
     let mut host_request = request();
     host_request.max_duration_ms = 3_000;
 
-    let plan = plan_velocity_sweep(host_request, 4_000, 25_000, 1_000).unwrap();
+    let plan = plan_velocity_sweep(host_request, 4_000, 1_000).unwrap();
 
     assert!(plan.maximum_workflow_ms > u32::from(host_request.max_duration_ms));
 }
@@ -185,7 +216,7 @@ fn primitive_budget_must_cover_one_moving_and_settle_window() {
     too_short.max_duration_ms = 455;
 
     assert_eq!(
-        plan_velocity_sweep(too_short, 4_000, 25_000, 1_000),
+        plan_velocity_sweep(too_short, 4_000, 1_000),
         Err(VelocityPlanError::InvalidRequest)
     );
 }

@@ -233,7 +233,6 @@ pub(crate) async fn step_velocity_sweep_with_trace<B: CommissioningBackend>(
             let plan = match super::sweep_plan::plan_velocity_sweep(
                 request,
                 encoder_counts_per_rev,
-                backend.tmc_config().pwm_freq_hz(),
                 torque_limit,
             ) {
                 Ok(plan) => plan,
@@ -250,7 +249,7 @@ pub(crate) async fn step_velocity_sweep_with_trace<B: CommissioningBackend>(
                 .and_then(|_| safety.set_encoder_baseline(encoder_raw))
                 .is_err()
                 || safety
-                    .configure_velocity_envelope(plan.used_velocity_mrev_s)
+                    .configure_velocity_envelope(plan.planned_velocity_mrev_s)
                     .is_err()
             {
                 return sweep_fault_terminal(phase, CommissionError::EncoderFault, None);
@@ -275,11 +274,11 @@ pub(crate) async fn step_velocity_sweep_with_trace<B: CommissioningBackend>(
                     RequestedVelocitySource::Explicit => 0,
                     RequestedVelocitySource::Defaulted => 1,
                 },
-                used_velocity_mrev_s: plan.used_velocity_mrev_s,
+                planned_velocity_mrev_s: plan.planned_velocity_mrev_s,
                 effective_ceiling_mrev_s: plan.effective_ceiling_mrev_s,
                 clamp_flags: plan.clamp_flags,
                 effective_ceiling_source: plan.effective_ceiling_source,
-                target_velocity_register: plan.target_velocity_register,
+                target_velocity_rpm: plan.target_velocity_rpm.raw(),
                 p_start: plan.p_start.raw(),
                 p_top: plan.p_top.raw(),
                 rung_count: plan.rung_count,
@@ -342,9 +341,15 @@ pub(crate) async fn step_velocity_sweep_with_trace<B: CommissioningBackend>(
                 Err(_) => return fail_sweep(phase, backend, CommissionError::Spi).await,
             };
             let baseline_us = backend.elapsed_us();
-            let target = plan
-                .target_velocity_register
-                .saturating_mul(slot_direction(data.slot));
+            let target = match plan
+                .target_velocity_rpm
+                .with_direction(slot_direction(data.slot))
+            {
+                Ok(target) => target.raw(),
+                Err(_) => {
+                    return fail_sweep(phase, backend, CommissionError::InvalidSchedule).await;
+                }
+            };
             if backend
                 .write_register(PID_VELOCITY_TARGET, target as u32)
                 .await
@@ -528,11 +533,7 @@ pub(crate) async fn step_velocity_sweep_with_trace<B: CommissioningBackend>(
             {
                 return fail_sweep(phase, backend, CommissionError::AnalysisOverrun).await;
             }
-            let analysis = match poll_moving_observation_analysis(
-                data,
-                safety.counts_per_rev(),
-                backend.tmc_config().pwm_freq_hz(),
-            ) {
+            let analysis = match poll_moving_observation_analysis(data, safety.counts_per_rev()) {
                 Ok(Some(analysis)) => analysis,
                 Ok(None) => return StepResult::ReadyNow,
                 Err(error) => return fail_sweep(phase, backend, error).await,
@@ -542,7 +543,7 @@ pub(crate) async fn step_velocity_sweep_with_trace<B: CommissioningBackend>(
                 evidence_sequence: data.integrity.next_evidence_sequence(),
                 rung_index: data.rung_index,
                 slot: data.slot,
-                target_velocity_register: plan_target_velocity(data)
+                target_velocity_rpm: plan_target_velocity(data)
                     .saturating_mul(slot_direction(data.slot)),
                 summary: analysis.summary,
                 stationarity: analysis.stationarity,
@@ -808,11 +809,11 @@ pub(crate) async fn step_velocity_sweep_with_trace<B: CommissioningBackend>(
 }
 
 fn plan_used_velocity(data: &super::super::VelocitySweepData) -> u32 {
-    data.plan.map_or(0, |plan| plan.used_velocity_mrev_s)
+    data.plan.map_or(0, |plan| plan.planned_velocity_mrev_s)
 }
 
 fn plan_target_velocity(data: &super::super::VelocitySweepData) -> i32 {
-    data.plan.map_or(0, |plan| plan.target_velocity_register)
+    data.plan.map_or(0, |plan| plan.target_velocity_rpm.raw())
 }
 
 fn plan_usable_limit(data: &super::super::VelocitySweepData) -> u16 {

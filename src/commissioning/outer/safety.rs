@@ -199,17 +199,17 @@ impl OuterSafetyLimits {
     #[allow(dead_code)]
     pub(crate) fn configure_velocity_envelope(
         &mut self,
-        used_velocity_mrev_s: u32,
+        planned_velocity_mrev_s: u32,
     ) -> Result<(), CommissionError> {
-        if used_velocity_mrev_s == 0 {
+        if planned_velocity_mrev_s == 0 {
             return Err(CommissionError::InvalidSchedule);
         }
-        let proportional = used_velocity_mrev_s
+        let proportional = planned_velocity_mrev_s
             .checked_mul(ENVELOPE_PROPORTIONAL_NUM)
             .and_then(|value| value.checked_add(ENVELOPE_PROPORTIONAL_DEN - 1))
             .map(|value| value / ENVELOPE_PROPORTIONAL_DEN)
             .ok_or(CommissionError::InvalidSchedule)?;
-        let absolute = used_velocity_mrev_s
+        let absolute = planned_velocity_mrev_s
             .checked_add(ENVELOPE_ABSOLUTE_MARGIN_MREV_S)
             .ok_or(CommissionError::InvalidSchedule)?;
         let envelope_mrev_s = proportional.max(absolute);

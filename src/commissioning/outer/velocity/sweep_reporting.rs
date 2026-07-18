@@ -105,11 +105,11 @@ fn encode_plan(report: VelocitySweepPlanned) -> VelocitySweepCanonicalRecord {
     record.push_u16(report.evidence_sequence);
     record.push_u32(report.requested_velocity_mrev_s);
     record.push_u8(report.requested_velocity_source);
-    record.push_u32(report.used_velocity_mrev_s);
+    record.push_u32(report.planned_velocity_mrev_s);
     record.push_u32(report.effective_ceiling_mrev_s);
     record.push_u16(report.clamp_flags);
     record.push_u8(report.effective_ceiling_source);
-    record.push_i32(report.target_velocity_register);
+    record.push_i32(report.target_velocity_rpm);
     record.push_u16(report.p_start);
     record.push_u16(report.p_top);
     record.push_u8(report.rung_count);
@@ -134,7 +134,7 @@ fn encode_observation(report: VelocitySweepObservation) -> VelocitySweepCanonica
     record.push_u16(report.evidence_sequence);
     record.push_u8(report.rung_index);
     record.push_u8(report.slot);
-    record.push_i32(report.target_velocity_register);
+    record.push_i32(report.target_velocity_rpm);
     record.push_u8(observation_class_report_code(report.summary.classification));
     record.push_u8(u8::from(report.summary.initial_lead_in));
     record.push_u8(u8::from(report.selected_delta_counts < 0));
@@ -339,11 +339,11 @@ mod tests {
             evidence_sequence: 0,
             requested_velocity_mrev_s: 5_000,
             requested_velocity_source: 1,
-            used_velocity_mrev_s: 4_800,
+            planned_velocity_mrev_s: 4_800,
             effective_ceiling_mrev_s: 7_500,
             clamp_flags: 1,
             effective_ceiling_source: 0,
-            target_velocity_register: 3_200,
+            target_velocity_rpm: 3_200,
             p_start: 8,
             p_top: 128,
             rung_count: 5,
@@ -384,7 +384,7 @@ mod tests {
             evidence_sequence: 1,
             rung_index: 0,
             slot: 0,
-            target_velocity_register: 3_200,
+            target_velocity_rpm: 3_200,
             summary: VelocityObservationSummary {
                 direction: VelocityDirection::Forward,
                 p: PidGain::new(350).unwrap(),

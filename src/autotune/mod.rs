@@ -23,6 +23,7 @@ mod test_support;
 mod types;
 mod velocity;
 pub mod velocity_measurement;
+mod velocity_units;
 
 pub use buffer::{
     CaptureDirection, DelayTimestampOffsets, TRANSIENT_LEN, TransientBuffer,
@@ -93,6 +94,7 @@ pub use velocity::{
     VelocityStiffnessVerdict, VelocityValidation, classify_velocity_stiffness,
     classify_velocity_validation, extract_velocity_metrics, simc_velocity_gains,
 };
+pub use velocity_units::{TmcMechanicalRpm, VelocityUnitError};
 
 /// Compute symmetry metric from forward and reverse rise times.
 ///

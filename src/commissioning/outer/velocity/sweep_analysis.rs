@@ -1,7 +1,8 @@
 //! Bounded post-capture analysis for the velocity sweep.
 
 use crate::autotune::velocity_measurement::{
-    StationarityResult, StationarityWorkPoll, VelocityDirection, estimate_confidence,
+    StationarityResult, StationarityWorkPoll, VELOCITY_RATE_Q_SCALE, VelocityDirection,
+    estimate_confidence,
 };
 use crate::autotune::{
     CommissionError, equivalent_disturbance_from_rate, equivalent_disturbance_variance_from_rate,
@@ -39,7 +40,6 @@ fn slot_velocity_direction(slot: u8) -> VelocityDirection {
 pub(super) fn poll_moving_observation_analysis(
     data: &mut VelocitySweepData,
     counts_per_rev: u32,
-    f_pwm_hz: u32,
 ) -> Result<Option<MovingObservationAnalysis>, CommissionError> {
     let stationarity = match data
         .analysis
@@ -49,13 +49,12 @@ pub(super) fn poll_moving_observation_analysis(
         StationarityWorkPoll::Pending => return Ok(None),
         StationarityWorkPoll::Complete(stationarity) => stationarity,
     };
-    finish_moving_observation_analysis(data, counts_per_rev, f_pwm_hz, stationarity).map(Some)
+    finish_moving_observation_analysis(data, counts_per_rev, stationarity).map(Some)
 }
 
 fn finish_moving_observation_analysis(
     data: &mut VelocitySweepData,
     counts_per_rev: u32,
-    f_pwm_hz: u32,
     stationarity: StationarityResult,
 ) -> Result<MovingObservationAnalysis, CommissionError> {
     let plan = data.plan.ok_or(CommissionError::InvalidSchedule)?;
@@ -65,7 +64,7 @@ fn finish_moving_observation_analysis(
         .ok_or(CommissionError::InvalidSchedule)?;
     let direction = slot_velocity_direction(data.slot);
     let predicted = u32::from(p.raw())
-        .checked_mul(plan.target_velocity_register.unsigned_abs())
+        .checked_mul(plan.target_velocity_rpm.raw().unsigned_abs())
         .and_then(|value| value.checked_add(255))
         .map(|value| value / 256)
         .ok_or(CommissionError::InvalidSchedule)?
@@ -104,15 +103,16 @@ fn finish_moving_observation_analysis(
             .map_err(|_| CommissionError::VelocityValidationFailed)?;
         input.settled_rate_low_q = mean_rate_q.saturating_sub(half_width);
         input.settled_rate_high_q = mean_rate_q.saturating_add(half_width);
-        let target_rate_q = i64::from(slot_direction(data.slot))
-            .checked_mul(i64::from(plan.used_velocity_mrev_s))
-            .and_then(|value| value.checked_mul(i64::from(counts_per_rev)))
-            .ok_or(CommissionError::InvalidSchedule)?;
-        input.deficit_low_q = target_rate_q.saturating_sub(input.settled_rate_high_q);
-        input.deficit_high_q = target_rate_q.saturating_sub(input.settled_rate_low_q);
         let signed_target = plan
-            .target_velocity_register
-            .saturating_mul(slot_direction(data.slot));
+            .target_velocity_rpm
+            .with_direction(slot_direction(data.slot))
+            .map_err(|_| CommissionError::InvalidSchedule)?;
+        (input.deficit_low_q, input.deficit_high_q) = deficit_interval_q(
+            signed_target.raw(),
+            counts_per_rev,
+            input.settled_rate_low_q,
+            input.settled_rate_high_q,
+        )?;
         input.disturbance = Some(
             equivalent_disturbance_from_rate(
                 p.raw(),
@@ -120,7 +120,6 @@ fn finish_moving_observation_analysis(
                 suffix.selection.exact_totals,
                 confidence.half_width_rate_q,
                 counts_per_rev,
-                f_pwm_hz,
             )
             .map_err(|_| CommissionError::VelocityValidationFailed)?,
         );
@@ -128,7 +127,6 @@ fn finish_moving_observation_analysis(
             p.raw(),
             confidence.variance_of_mean_q2,
             counts_per_rev,
-            f_pwm_hz,
         )
         .map_err(|_| CommissionError::VelocityValidationFailed)?;
     }
@@ -159,6 +157,55 @@ fn finish_moving_observation_analysis(
         variance_of_mean_q2,
         settled_rate_mean_q,
     })
+}
+
+fn deficit_interval_q(
+    target_velocity_rpm: i32,
+    counts_per_rev: u32,
+    settled_rate_low_q: i64,
+    settled_rate_high_q: i64,
+) -> Result<(i64, i64), CommissionError> {
+    if counts_per_rev == 0 {
+        return Err(CommissionError::InvalidSchedule);
+    }
+    let target_numerator = i128::from(target_velocity_rpm)
+        .checked_mul(i128::from(counts_per_rev))
+        .and_then(|value| value.checked_mul(i128::from(VELOCITY_RATE_Q_SCALE)))
+        .ok_or(CommissionError::InvalidSchedule)?;
+    let low_numerator = target_numerator
+        .checked_sub(i128::from(settled_rate_high_q) * 60)
+        .ok_or(CommissionError::InvalidSchedule)?;
+    let high_numerator = target_numerator
+        .checked_sub(i128::from(settled_rate_low_q) * 60)
+        .ok_or(CommissionError::InvalidSchedule)?;
+    let low = floor_div_60(low_numerator)?;
+    let high = ceil_div_60(high_numerator)?;
+    Ok((
+        i64::try_from(low).map_err(|_| CommissionError::InvalidSchedule)?,
+        i64::try_from(high).map_err(|_| CommissionError::InvalidSchedule)?,
+    ))
+}
+
+fn floor_div_60(numerator: i128) -> Result<i128, CommissionError> {
+    let quotient = numerator / 60;
+    if numerator < 0 && numerator % 60 != 0 {
+        quotient
+            .checked_sub(1)
+            .ok_or(CommissionError::InvalidSchedule)
+    } else {
+        Ok(quotient)
+    }
+}
+
+fn ceil_div_60(numerator: i128) -> Result<i128, CommissionError> {
+    let quotient = numerator / 60;
+    if numerator > 0 && numerator % 60 != 0 {
+        quotient
+            .checked_add(1)
+            .ok_or(CommissionError::InvalidSchedule)
+    } else {
+        Ok(quotient)
+    }
 }
 
 pub(super) fn retain_observation(
@@ -235,7 +282,7 @@ fn bounded_rest_displacement(data: &VelocitySweepData) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::bounded_rest_displacement;
+    use super::{bounded_rest_displacement, deficit_interval_q};
     use crate::commissioning::outer::VelocitySweepData;
 
     #[test]
@@ -256,5 +303,17 @@ mod tests {
         data.settle_displacement_counts = 2;
 
         assert!(!bounded_rest_displacement(&data));
+    }
+
+    #[test]
+    fn deficit_interval_uses_exact_mechanical_rpm_target() {
+        assert_eq!(
+            deficit_interval_q(176, 4_000, 11_733_333, 11_733_334),
+            Ok((-1, 1))
+        );
+        assert_ne!(
+            deficit_interval_q(8, 4_000, 11_733_333, 11_733_334),
+            Ok((-1, 1))
+        );
     }
 }

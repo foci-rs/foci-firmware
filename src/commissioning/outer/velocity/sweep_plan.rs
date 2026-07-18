@@ -1,3 +1,4 @@
+use crate::autotune::TmcMechanicalRpm;
 use foci_tmc4671::pid::PidGain;
 use heapless::Vec;
 
@@ -30,8 +31,6 @@ pub const CURRENT_HEADROOM_NUM: u32 = 9;
 /// Denominator of the usable current-headroom boundary.
 pub const CURRENT_HEADROOM_DEN: u32 = 10;
 
-const TMC_VELOCITY_SCALE: u64 = 65_536;
-const MREV_PER_REV: u64 = 1_000;
 const MICROS_PER_SECOND: u64 = 1_000_000;
 /// Maximum actual time between encoder reads before wrap-safe interpretation is refused.
 pub const MAX_SAFETY_OBSERVATION_GAP_US: u64 = 3_000;
@@ -43,13 +42,6 @@ const HALF_OCTAVE_DEN_SHIFT: u32 = 7;
 pub const EFFECTIVE_CEILING_MACHINE: u8 = 0;
 /// The effective ceiling is limited by wrap-safe encoder observability.
 pub const EFFECTIVE_CEILING_ENCODER: u8 = 1;
-/// The effective ceiling is limited by the TMC target register.
-pub const EFFECTIVE_CEILING_TMC_TARGET: u8 = 2;
-/// The effective ceiling is limited by the TMC feedback register.
-pub const EFFECTIVE_CEILING_TMC_FEEDBACK: u8 = 3;
-/// The effective ceiling is limited by fixed-point intermediates.
-pub const EFFECTIVE_CEILING_FIXED_POINT: u8 = 4;
-
 /// The requested amplitude exceeded the normal envelope-compatible amplitude.
 pub const CLAMP_ENVELOPE: u16 = 1 << 0;
 /// The requested amplitude exceeded the declared moving-travel budget.
@@ -93,7 +85,7 @@ pub struct VelocitySweepPlan {
     /// Host-requested velocity amplitude.
     pub requested_velocity_mrev_s: u32,
     /// Frozen velocity amplitude used for every rung.
-    pub used_velocity_mrev_s: u32,
+    pub planned_velocity_mrev_s: u32,
     /// Origin of the requested amplitude.
     pub requested_velocity_source: RequestedVelocitySource,
     /// Bitset describing every amplitude reduction.
@@ -103,7 +95,7 @@ pub struct VelocitySweepPlan {
     /// Source code for the binding effective ceiling.
     pub effective_ceiling_source: u8,
     /// Frozen positive TMC velocity-target register magnitude.
-    pub target_velocity_register: i32,
+    pub target_velocity_rpm: TmcMechanicalRpm,
     /// Smallest gain producing one nonzero controller-output quantum.
     pub p_start: PidGain,
     /// Largest gain at the inclusive usable-current boundary.
@@ -154,16 +146,12 @@ pub enum VelocityPlanError {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct RepresentabilityCeilings {
     encoder_observable_mrev_s: u32,
-    tmc_target_mrev_s: u32,
-    tmc_feedback_mrev_s: u32,
-    fixed_point_mrev_s: u32,
 }
 
 /// Construct one immutable velocity sweep from host geometry and firmware limits.
 pub fn plan_velocity_sweep(
     request: VelocitySweepRequest,
     encoder_counts_per_rev: u32,
-    f_pwm_hz: u32,
     torque_flux_limit: u16,
 ) -> Result<VelocitySweepPlan, VelocityPlanError> {
     if request.requested_velocity_mrev_s == 0
@@ -176,7 +164,7 @@ pub fn plan_velocity_sweep(
         return Err(VelocityPlanError::InvalidRequest);
     }
 
-    let ceilings = representability_ceilings(encoder_counts_per_rev, f_pwm_hz)?;
+    let ceilings = representability_ceilings(encoder_counts_per_rev)?;
     let candidates = [
         (
             request.machine_velocity_ceiling_mrev_s,
@@ -186,9 +174,6 @@ pub fn plan_velocity_sweep(
             ceilings.encoder_observable_mrev_s,
             EFFECTIVE_CEILING_ENCODER,
         ),
-        (ceilings.tmc_target_mrev_s, EFFECTIVE_CEILING_TMC_TARGET),
-        (ceilings.tmc_feedback_mrev_s, EFFECTIVE_CEILING_TMC_FEEDBACK),
-        (ceilings.fixed_point_mrev_s, EFFECTIVE_CEILING_FIXED_POINT),
     ];
     let (effective_ceiling_mrev_s, effective_ceiling_source) = candidates
         .into_iter()
@@ -200,11 +185,11 @@ pub fn plan_velocity_sweep(
         request.settle_travel_reserve_mrev,
         MOVING_STROKE_US,
     )?;
-    let used_velocity_mrev_s = request
+    let planned_velocity_mrev_s = request
         .requested_velocity_mrev_s
         .min(envelope_velocity_cap)
         .min(travel_velocity_cap);
-    if used_velocity_mrev_s == 0 {
+    if planned_velocity_mrev_s == 0 {
         return Err(VelocityPlanError::ZeroMovingTravelAmplitude);
     }
 
@@ -219,9 +204,10 @@ pub fn plan_velocity_sweep(
         clamp_flags |= CLAMP_EFFECTIVE_CEILING;
     }
 
-    let target_velocity_register = velocity_target_register(used_velocity_mrev_s, f_pwm_hz)?;
+    let target_velocity_rpm = TmcMechanicalRpm::from_mrev_s_nearest(planned_velocity_mrev_s)
+        .map_err(|_| VelocityPlanError::ZeroMovingTravelAmplitude)?;
     let (p_start, p_top, usable_torque_limit) =
-        current_gain_span(target_velocity_register, torque_flux_limit)?;
+        current_gain_span(target_velocity_rpm, torque_flux_limit)?;
     let ladder = build_gain_ladder(p_start.raw(), p_top.raw())?;
     let rung_count = u8::try_from(ladder.len()).map_err(|_| VelocityPlanError::Arithmetic)?;
     let family_size = usize::from(rung_count)
@@ -247,12 +233,12 @@ pub fn plan_velocity_sweep(
 
     Ok(VelocitySweepPlan {
         requested_velocity_mrev_s: request.requested_velocity_mrev_s,
-        used_velocity_mrev_s,
+        planned_velocity_mrev_s,
         requested_velocity_source: request.requested_velocity_source,
         clamp_flags,
         effective_ceiling_mrev_s,
         effective_ceiling_source,
-        target_velocity_register,
+        target_velocity_rpm,
         p_start,
         p_top,
         gains,
@@ -306,9 +292,8 @@ fn travel_cap(
 
 fn representability_ceilings(
     encoder_counts_per_rev: u32,
-    f_pwm_hz: u32,
 ) -> Result<RepresentabilityCeilings, VelocityPlanError> {
-    if encoder_counts_per_rev == 0 || f_pwm_hz == 0 {
+    if encoder_counts_per_rev == 0 {
         return Err(VelocityPlanError::InvalidRequest);
     }
     let quarter_turn_fault_counts = u64::from(encoder_counts_per_rev).div_ceil(4);
@@ -322,51 +307,17 @@ fn representability_ceilings(
         .checked_mul(1_000_000_000)
         .ok_or(VelocityPlanError::Arithmetic)?
         / encoder_denominator;
-    let register_mrev_s = |register_limit: u64| -> Result<u32, VelocityPlanError> {
-        let value = u128::from(register_limit)
-            .checked_mul(u128::from(f_pwm_hz))
-            .and_then(|product| product.checked_mul(u128::from(MREV_PER_REV)))
-            .ok_or(VelocityPlanError::Arithmetic)?
-            / u128::from(TMC_VELOCITY_SCALE);
-        Ok(value.min(u128::from(u32::MAX)) as u32)
-    };
-    let signed_register_limit = i32::MAX as u64;
-    let fixed_point_register_limit = (i64::MAX as u64) / TMC_VELOCITY_SCALE;
-
     Ok(RepresentabilityCeilings {
         encoder_observable_mrev_s: u32::try_from(encoder_observable_mrev_s)
             .map_err(|_| VelocityPlanError::Arithmetic)?,
-        tmc_target_mrev_s: register_mrev_s(signed_register_limit)?,
-        tmc_feedback_mrev_s: register_mrev_s(signed_register_limit)?,
-        fixed_point_mrev_s: register_mrev_s(fixed_point_register_limit)?,
     })
 }
 
-fn velocity_target_register(velocity_mrev_s: u32, f_pwm_hz: u32) -> Result<i32, VelocityPlanError> {
-    if velocity_mrev_s == 0 || f_pwm_hz == 0 {
-        return Err(VelocityPlanError::InvalidRequest);
-    }
-    let numerator = u64::from(velocity_mrev_s)
-        .checked_mul(TMC_VELOCITY_SCALE)
-        .ok_or(VelocityPlanError::Arithmetic)?;
-    let denominator = u64::from(f_pwm_hz)
-        .checked_mul(MREV_PER_REV)
-        .ok_or(VelocityPlanError::Arithmetic)?;
-    let rounded = numerator
-        .checked_add(denominator / 2)
-        .ok_or(VelocityPlanError::Arithmetic)?
-        / denominator;
-    if rounded == 0 {
-        return Err(VelocityPlanError::ZeroMovingTravelAmplitude);
-    }
-    i32::try_from(rounded).map_err(|_| VelocityPlanError::Arithmetic)
-}
-
 fn current_gain_span(
-    target_velocity_register: i32,
+    target_velocity_rpm: TmcMechanicalRpm,
     hard_torque_limit: u16,
 ) -> Result<(PidGain, PidGain, u16), VelocityPlanError> {
-    let target = target_velocity_register.unsigned_abs();
+    let target = target_velocity_rpm.raw().unsigned_abs();
     if target == 0 || hard_torque_limit == 0 {
         return Err(VelocityPlanError::InvalidRequest);
     }
