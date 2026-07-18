@@ -1065,7 +1065,7 @@ mod tests {
         let encoder_count = 256i32;
         let result = pollster::block_on(step_velocity_sweep_with_trace(&mut phase, &mut backend));
         assert!(matches!(result, StepResult::At(257_000)));
-        for sample in 257..=456u64 {
+        for sample in 257..=256 + u64::from(ZERO_SETTLE_US / 1_000) {
             backend.elapsed_us_value = sample * 1_000;
             backend.set_abn_decoder_count(encoder_count);
             pollster::block_on(step_velocity_sweep_with_trace(&mut phase, &mut backend));
@@ -1137,7 +1137,7 @@ mod tests {
         pollster::block_on(step_velocity_sweep_with_trace(&mut phase, &mut backend));
         poll_until_observation(&mut phase, &mut backend);
         pollster::block_on(step_velocity_sweep_with_trace(&mut phase, &mut backend));
-        for sample in 257..=456u64 {
+        for sample in 257..=256 + u64::from(ZERO_SETTLE_US / 1_000) {
             encoder_count += 1;
             backend.elapsed_us_value = sample * 1_000;
             backend.set_abn_decoder_count(encoder_count);
@@ -1216,7 +1216,7 @@ mod tests {
             let result =
                 pollster::block_on(step_velocity_sweep_with_trace(&mut phase, &mut backend));
             assert!(matches!(result, StepResult::At(deadline) if deadline == now_us + 1_000));
-            for _ in 0..200 {
+            for _ in 0..ZERO_SETTLE_US / 1_000 {
                 now_us += 1_000;
                 backend.elapsed_us_value = now_us;
                 backend.set_abn_decoder_count(encoder_count);
@@ -1272,7 +1272,10 @@ mod tests {
             .collect();
         assert_eq!(targets.len(), 4);
         assert!(targets[0] > 0 && targets[1] < 0 && targets[2] > 0 && targets[3] < 0);
-        assert_eq!(backend.capture_register_reads, 4 * (1 + 256 + 1 + 200));
+        assert_eq!(
+            backend.capture_register_reads,
+            4 * (1 + 256 + 1 + usize::try_from(ZERO_SETTLE_US / 1_000).unwrap())
+        );
         assert_eq!(backend.pid_torque_flux_target_reads, 4 * 256);
         assert_eq!(
             backend

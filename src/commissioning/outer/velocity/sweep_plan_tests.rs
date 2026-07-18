@@ -163,8 +163,9 @@ fn plan_freezes_exact_ladder_and_workflow_duration() {
 
 #[test]
 fn analysis_budget_preserves_the_shortest_scored_rest_suffix() {
+    assert_eq!(ZERO_SETTLE_US, 300_000);
     assert_eq!(MIN_SETTLE_CAPTURE_US, 64_000);
-    assert_eq!(SETTLE_ANALYSIS_BUDGET_US, 136_000);
+    assert_eq!(SETTLE_ANALYSIS_BUDGET_US, 236_000);
     assert_eq!(
         SETTLE_ANALYSIS_BUDGET_US + MIN_SETTLE_CAPTURE_US,
         ZERO_SETTLE_US

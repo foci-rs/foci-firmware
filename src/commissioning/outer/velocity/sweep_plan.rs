@@ -10,7 +10,7 @@ pub const ENVELOPE_ABSOLUTE_MARGIN_MREV_S: u32 = 2_000;
 /// Fixed duration of one moving observation.
 pub const MOVING_STROKE_US: u32 = 256_000;
 /// Fixed duration of one zero-target settle.
-pub const ZERO_SETTLE_US: u32 = 200_000;
+pub const ZERO_SETTLE_US: u32 = 300_000;
 /// Sampling period used by moving and zero-target velocity observations.
 pub const VELOCITY_SWEEP_SAMPLE_PERIOD_US: u32 = 1_000;
 /// Minimum zero-target capture retained for the shortest stationarity suffix.
