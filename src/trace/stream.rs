@@ -7,8 +7,8 @@
 
 /// FTRC little-endian magic.
 pub const FRAME_MAGIC: u32 = 0x4352_5446;
-/// Version-7 firmware trace protocol.
-pub const PROTOCOL_VERSION: u8 = 7;
+/// Version-8 firmware trace protocol.
+pub const PROTOCOL_VERSION: u8 = 8;
 /// Fixed envelope length in bytes.
 pub const HEADER_LEN: usize = 32;
 /// Maximum critical frame transport budget in bytes.
@@ -84,9 +84,11 @@ pub const STATUS_PAYLOAD_LEN: usize = 40;
 /// Version-1 event payload length.
 pub const EVENT_PAYLOAD_LEN: usize = 24;
 /// Characterization velocity-observation payload length.
-pub const VELOCITY_OBSERVATION_PAYLOAD_LEN: usize = 18;
+pub const VELOCITY_OBSERVATION_PAYLOAD_LEN: usize = 22;
 /// Velocity observation met the existing torque-saturation threshold.
 pub const VELOCITY_OBSERVATION_FLAG_SATURATED: u8 = 1 << 0;
+/// Velocity observation includes a sampled `PID_VELOCITY_ACTUAL` value.
+pub const VELOCITY_OBSERVATION_FLAG_PID_VELOCITY_ACTUAL_VALID: u8 = 1 << 1;
 /// Maximum metadata string bytes in firmware frames.
 pub const METADATA_STRING_MAX: usize = 31;
 /// Maximum source labels in a metadata frame.
@@ -411,6 +413,8 @@ pub struct VelocityTraceObservation {
     pub flags: u8,
     /// Peak absolute velocity-controller torque target during this stroke.
     pub peak_torque_target_abs: u16,
+    /// Decimated signed `PID_VELOCITY_ACTUAL` sample when the validity flag is set.
+    pub pid_velocity_actual: i32,
 }
 
 fn put_i32(out: &mut [u8], offset: usize, value: i32) {
@@ -544,6 +548,7 @@ pub fn encode_velocity_observation_payload(
     out[14] = sample.direction as u8;
     out[15] = sample.flags;
     put_u16(out, 16, sample.peak_torque_target_abs);
+    put_i32(out, 18, sample.pid_velocity_actual);
 }
 
 #[cfg(test)]
@@ -631,7 +636,7 @@ mod tests {
 
     #[test]
     fn fixed_payload_lengths_match_spec() {
-        assert_eq!(PROTOCOL_VERSION, 7);
+        assert_eq!(PROTOCOL_VERSION, 8);
         assert_eq!(CRITICAL_PAYLOAD_LEN, 88);
         assert_eq!(CURRENT_PATH_PAYLOAD_LEN, 16);
         assert_eq!(PHASE_ADVANCE_PAYLOAD_LEN, 12);
@@ -642,6 +647,7 @@ mod tests {
             assert!(HEADER_LEN + CRITICAL_PAYLOAD_LEN <= CRITICAL_FRAME_BUDGET);
             assert!(HEADER_LEN + CURRENT_PATH_PAYLOAD_LEN <= CONTROL_DETAIL_FRAME_BUDGET);
             assert!(HEADER_LEN + PHASE_ADVANCE_PAYLOAD_LEN <= 64);
+            assert!(HEADER_LEN + VELOCITY_OBSERVATION_PAYLOAD_LEN <= 64);
             assert!(HEADER_LEN + METADATA_PAYLOAD_MAX <= FRAME_BUF_CAPACITY);
         }
     }
@@ -673,22 +679,29 @@ mod tests {
             elapsed_us: 1_037,
             stroke_index: 513,
             direction: -1,
-            flags: VELOCITY_OBSERVATION_FLAG_SATURATED,
+            flags: VELOCITY_OBSERVATION_FLAG_SATURATED
+                | VELOCITY_OBSERVATION_FLAG_PID_VELOCITY_ACTUAL_VALID,
             peak_torque_target_abs: 900,
+            pid_velocity_actual: -8,
         };
         let mut payload = [0xAA; VELOCITY_OBSERVATION_PAYLOAD_LEN];
 
         encode_velocity_observation_payload(&sample, &mut payload);
 
         assert_eq!(FRAME_TYPE_VELOCITY_OBSERVATION, 8);
-        assert_eq!(VELOCITY_OBSERVATION_PAYLOAD_LEN, 18);
+        assert_eq!(VELOCITY_OBSERVATION_PAYLOAD_LEN, 22);
         assert_eq!(&payload[0..4], &(-4i32).to_le_bytes());
         assert_eq!(&payload[4..8], &(-7i32).to_le_bytes());
         assert_eq!(&payload[8..12], &1_037u32.to_le_bytes());
         assert_eq!(&payload[12..14], &513u16.to_le_bytes());
         assert_eq!(payload[14], 0xFF);
-        assert_eq!(payload[15], VELOCITY_OBSERVATION_FLAG_SATURATED);
+        assert_eq!(
+            payload[15],
+            VELOCITY_OBSERVATION_FLAG_SATURATED
+                | VELOCITY_OBSERVATION_FLAG_PID_VELOCITY_ACTUAL_VALID
+        );
         assert_eq!(&payload[16..18], &900u16.to_le_bytes());
+        assert_eq!(&payload[18..22], &(-8i32).to_le_bytes());
     }
 
     #[test]

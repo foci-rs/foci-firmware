@@ -15,7 +15,7 @@ use crate::commissioning::types::{
 use foci_tmc4671::pid::PidGainPair;
 use foci_tmc4671::registers::{
     ABN_DECODER_COUNT, MODE_RAMP_MODE_MOTION, PID_ERROR_PID_VELOCITY_ERROR_SUM,
-    PID_TORQUE_FLUX_TARGET, PID_VELOCITY_P_VELOCITY_I, PID_VELOCITY_TARGET,
+    PID_TORQUE_FLUX_TARGET, PID_VELOCITY_ACTUAL, PID_VELOCITY_P_VELOCITY_I, PID_VELOCITY_TARGET,
 };
 
 use super::sweep_analysis::{
@@ -36,9 +36,16 @@ const SWEEP_CAUSE_PARTIAL_DIRECTION: u8 = 1;
 const SWEEP_CAUSE_TOTAL_INCONCLUSIVE: u8 = 2;
 const SWEEP_CAUSE_INTEGRITY: u8 = 3;
 const SWEEP_CAUSE_CURRENT_HEADROOM: u8 = 4;
+const PID_VELOCITY_ACTUAL_TRACE_DECIMATION: u16 = 16;
 
 fn slot_direction(slot: u8) -> i32 {
     if slot.is_multiple_of(2) { 1 } else { -1 }
+}
+
+fn pid_velocity_actual_trace_sample_due(next_sample_us: u64, deadline_us: u64) -> bool {
+    let remaining_sample_slots =
+        deadline_us.saturating_sub(next_sample_us) / u64::from(VELOCITY_SWEEP_SAMPLE_PERIOD_US);
+    remaining_sample_slots.is_multiple_of(u64::from(PID_VELOCITY_ACTUAL_TRACE_DECIMATION))
 }
 
 async fn fail_sweep<B: CommissioningBackend>(
@@ -422,15 +429,16 @@ pub(crate) async fn step_velocity_sweep_with_trace<B: CommissioningBackend>(
             {
                 return fail_sweep(phase, backend, CommissionError::InvalidSchedule).await;
             }
-            data.settle_displacement_counts = data
-                .settle_displacement_counts
-                .saturating_add(delta.signed_counts());
-            data.settle_min_displacement_counts = data
-                .settle_min_displacement_counts
-                .min(data.settle_displacement_counts);
-            data.settle_max_displacement_counts = data
-                .settle_max_displacement_counts
-                .max(data.settle_displacement_counts);
+            let pid_velocity_actual_valid =
+                pid_velocity_actual_trace_sample_due(*next_sample_us, *deadline_us);
+            let pid_velocity_actual = if pid_velocity_actual_valid {
+                match backend.read_register(PID_VELOCITY_ACTUAL).await {
+                    Ok(value) => value as i32,
+                    Err(_) => return fail_sweep(phase, backend, CommissionError::Spi).await,
+                }
+            } else {
+                0
+            };
             backend.record_velocity_trace_observation(
                 crate::trace::stream::VelocityTraceObservation {
                     target_counts_per_ms: slot_direction(data.slot).saturating_mul(
@@ -445,8 +453,14 @@ pub(crate) async fn step_velocity_sweep_with_trace<B: CommissioningBackend>(
                     elapsed_us: elapsed_us as u32,
                     stroke_index: u16::from(data.rung_index) * 4 + u16::from(data.slot),
                     direction: slot_direction(data.slot) as i8,
-                    flags: u8::from(data.peak_torque_target >= plan_usable_limit(data)),
+                    flags: u8::from(data.peak_torque_target >= plan_usable_limit(data))
+                        | if pid_velocity_actual_valid {
+                            crate::trace::stream::VELOCITY_OBSERVATION_FLAG_PID_VELOCITY_ACTUAL_VALID
+                        } else {
+                            0
+                        },
                     peak_torque_target_abs: data.peak_torque_target,
+                    pid_velocity_actual,
                 },
             );
             data.previous_encoder_raw = encoder_raw;
@@ -594,6 +608,9 @@ pub(crate) async fn step_velocity_sweep_with_trace<B: CommissioningBackend>(
             };
             data.previous_encoder_raw = encoder_raw;
             data.previous_read_us = baseline_us;
+            data.settle_displacement_counts = 0;
+            data.settle_min_displacement_counts = 0;
+            data.settle_max_displacement_counts = 0;
             *state = VelocitySweepState::SettleCapture {
                 next_sample_us,
                 deadline_us: *settle_deadline_us,
@@ -640,6 +657,15 @@ pub(crate) async fn step_velocity_sweep_with_trace<B: CommissioningBackend>(
                     return fail_sweep_with_safety(phase, backend, fault).await;
                 }
             };
+            data.settle_displacement_counts = i32::from(data.settle_displacement_counts)
+                .saturating_add(delta.signed_counts())
+                .clamp(-2, 2) as i8;
+            data.settle_min_displacement_counts = data
+                .settle_min_displacement_counts
+                .min(data.settle_displacement_counts);
+            data.settle_max_displacement_counts = data
+                .settle_max_displacement_counts
+                .max(data.settle_displacement_counts);
             if data
                 .observations
                 .push(delta.signed_counts(), elapsed_us as u16)
@@ -647,6 +673,16 @@ pub(crate) async fn step_velocity_sweep_with_trace<B: CommissioningBackend>(
             {
                 return fail_sweep(phase, backend, CommissionError::InvalidSchedule).await;
             }
+            let pid_velocity_actual_valid =
+                pid_velocity_actual_trace_sample_due(*next_sample_us, *deadline_us);
+            let pid_velocity_actual = if pid_velocity_actual_valid {
+                match backend.read_register(PID_VELOCITY_ACTUAL).await {
+                    Ok(value) => value as i32,
+                    Err(_) => return fail_sweep(phase, backend, CommissionError::Spi).await,
+                }
+            } else {
+                0
+            };
             backend.record_velocity_trace_observation(
                 crate::trace::stream::VelocityTraceObservation {
                     target_counts_per_ms: 0,
@@ -655,8 +691,13 @@ pub(crate) async fn step_velocity_sweep_with_trace<B: CommissioningBackend>(
                     stroke_index: SETTLE_TRACE_STROKE_MARKER
                         | (u16::from(data.rung_index) * 4 + u16::from(data.slot)),
                     direction: 0,
-                    flags: 0,
+                    flags: if pid_velocity_actual_valid {
+                        crate::trace::stream::VELOCITY_OBSERVATION_FLAG_PID_VELOCITY_ACTUAL_VALID
+                    } else {
+                        0
+                    },
                     peak_torque_target_abs: 0,
+                    pid_velocity_actual,
                 },
             );
             data.previous_encoder_raw = encoder_raw;
@@ -971,6 +1012,49 @@ mod tests {
         }
     }
 
+    #[test]
+    fn moving_capture_decimates_pid_velocity_actual_into_trace_only() {
+        let mut phase = phase();
+        let mut backend = MockBackend::new();
+        let _ = backend.registers.insert(
+            foci_tmc4671::registers::PID_VELOCITY_ACTUAL.addr(),
+            (-7i32) as u32,
+        );
+
+        let _ = finish_first_moving_capture(&mut phase, &mut backend, 1, 1);
+
+        let OuterPhase::VelocitySweep { data, .. } = &phase else {
+            panic!("velocity sweep should remain active");
+        };
+        assert_eq!(data.settle_displacement_counts, 0);
+        assert_eq!(data.settle_min_displacement_counts, 0);
+        assert_eq!(data.settle_max_displacement_counts, 0);
+
+        let sampled: std::vec::Vec<_> = backend
+            .velocity_trace_observations
+            .iter()
+            .enumerate()
+            .filter(|(_, observation)| {
+                observation.flags
+                    & crate::trace::stream::VELOCITY_OBSERVATION_FLAG_PID_VELOCITY_ACTUAL_VALID
+                    != 0
+            })
+            .collect();
+        assert_eq!(sampled.len(), 16);
+        assert_eq!(
+            sampled
+                .iter()
+                .map(|(index, _)| *index)
+                .collect::<std::vec::Vec<_>>(),
+            (15..256).step_by(16).collect::<std::vec::Vec<_>>()
+        );
+        assert!(
+            sampled
+                .iter()
+                .all(|(_, observation)| observation.pid_velocity_actual == -7)
+        );
+    }
+
     fn finish_first_moving_capture(
         phase: &mut OuterPhase,
         backend: &mut MockBackend,
@@ -1082,6 +1166,33 @@ mod tests {
             backend.set_abn_decoder_count(encoder_count);
             pollster::block_on(step_velocity_sweep_with_trace(&mut phase, &mut backend));
         }
+        let sampled_rest: std::vec::Vec<_> = backend
+            .velocity_trace_observations
+            .iter()
+            .filter(|observation| {
+                observation.stroke_index & SETTLE_TRACE_STROKE_MARKER != 0
+                    && observation.flags
+                        & crate::trace::stream::VELOCITY_OBSERVATION_FLAG_PID_VELOCITY_ACTUAL_VALID
+                        != 0
+            })
+            .collect();
+        assert_eq!(sampled_rest.len(), 32);
+        assert!(
+            sampled_rest
+                .iter()
+                .all(|observation| observation.pid_velocity_actual == 0)
+        );
+        let final_rest = backend
+            .velocity_trace_observations
+            .iter()
+            .rev()
+            .find(|observation| observation.stroke_index & SETTLE_TRACE_STROKE_MARKER != 0)
+            .expect("settle capture must emit raw observations");
+        assert_ne!(
+            final_rest.flags
+                & crate::trace::stream::VELOCITY_OBSERVATION_FLAG_PID_VELOCITY_ACTUAL_VALID,
+            0
+        );
         assert!(matches!(
             poll_until_settle_analysis_completes(&mut phase, &mut backend),
             StepResult::ReadyNow
