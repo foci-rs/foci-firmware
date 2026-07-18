@@ -30,6 +30,7 @@ use super::sweep_plan::{
 
 const OUTER_VELOCITY_MODE: u32 = 0x8000_0002;
 const SWEEP_SLOT_COUNT: u8 = 4;
+const SETTLE_TRACE_STROKE_MARKER: u16 = 1 << 15;
 const SWEEP_CAUSE_NONE: u8 = 0;
 const SWEEP_CAUSE_PARTIAL_DIRECTION: u8 = 1;
 const SWEEP_CAUSE_TOTAL_INCONCLUSIVE: u8 = 2;
@@ -634,6 +635,18 @@ pub(crate) async fn step_velocity_sweep_with_trace<B: CommissioningBackend>(
             {
                 return fail_sweep(phase, backend, CommissionError::InvalidSchedule).await;
             }
+            backend.record_velocity_trace_observation(
+                crate::trace::stream::VelocityTraceObservation {
+                    target_counts_per_ms: 0,
+                    delta_counts: delta.signed_counts(),
+                    elapsed_us: elapsed_us as u32,
+                    stroke_index: SETTLE_TRACE_STROKE_MARKER
+                        | (u16::from(data.rung_index) * 4 + u16::from(data.slot)),
+                    direction: 0,
+                    flags: 0,
+                    peak_torque_target_abs: 0,
+                },
+            );
             data.previous_encoder_raw = encoder_raw;
             data.previous_read_us = read_us;
             if read_us >= *deadline_us {
