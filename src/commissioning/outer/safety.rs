@@ -622,8 +622,8 @@ pub(super) fn outer_safety_mut(phase: &mut OuterPhase) -> Option<&mut OuterSafet
 #[cfg(test)]
 mod tests {
     use super::{
-        OUTER_SAFETY_SAMPLE_MAX_REGISTER_OPS, OuterMotionBudget, OuterSafetyLimits,
-        check_outer_safety,
+        MAX_SAFETY_OBSERVATION_GAP_US, OUTER_SAFETY_SAMPLE_MAX_REGISTER_OPS, OuterMotionBudget,
+        OuterSafetyLimits, check_outer_safety,
     };
     use crate::autotune::{CommissionError, CommissionProfile, OperatingMode, TransientBuffer};
     use crate::commission_dispatch::test_support::{MockBackend, SpiOp};
@@ -895,13 +895,13 @@ mod tests {
             safety.unwrapped_position = 17;
             let before = safety;
             let mut backend = MockBackend::new();
-            backend.elapsed_us_value = 2_001;
+            backend.elapsed_us_value = MAX_SAFETY_OBSERVATION_GAP_US + 1;
             backend.mechanical_encoder_position_counts_value = 1_999;
 
             let fault = check_outer_safety(&mut safety, &mut backend)
                 .await
                 .expect("the observation should produce a safety fault")
-                .expect("a read-to-read gap over 2 ms must fault");
+                .expect("a read-to-read gap over the configured maximum must fault");
 
             assert_eq!(fault.reason, OUTER_SAFETY_FAULT_OBSERVATION_GAP);
             assert_eq!(safety.prev_encoder_count, before.prev_encoder_count);

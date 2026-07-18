@@ -1,11 +1,11 @@
 use super::{
     CLAMP_ENVELOPE, CLAMP_TRAVEL, CURRENT_HEADROOM_DEN, CURRENT_HEADROOM_NUM,
     EFFECTIVE_CEILING_ENCODER, EFFECTIVE_CEILING_MACHINE, ENVELOPE_ABSOLUTE_MARGIN_MREV_S,
-    ENVELOPE_PROPORTIONAL_DEN, ENVELOPE_PROPORTIONAL_NUM, MAX_SWEEP_RUNGS, MIN_SETTLE_CAPTURE_US,
-    MIN_STRUCTURAL_RUNGS, MOVING_STROKE_US, OBSERVATIONS_PER_DIRECTION_PER_RUNG,
-    RequestedVelocitySource, SETTLE_ANALYSIS_BUDGET_US, VelocityPlanError, VelocitySweepRequest,
-    ZERO_SETTLE_US, build_gain_ladder, current_gain_span, envelope_cap, plan_velocity_sweep,
-    representability_ceilings, travel_cap,
+    ENVELOPE_PROPORTIONAL_DEN, ENVELOPE_PROPORTIONAL_NUM, MAX_SAFETY_OBSERVATION_GAP_US,
+    MAX_SWEEP_RUNGS, MIN_SETTLE_CAPTURE_US, MIN_STRUCTURAL_RUNGS, MOVING_STROKE_US,
+    OBSERVATIONS_PER_DIRECTION_PER_RUNG, RequestedVelocitySource, SETTLE_ANALYSIS_BUDGET_US,
+    VelocityPlanError, VelocitySweepRequest, ZERO_SETTLE_US, build_gain_ladder, current_gain_span,
+    envelope_cap, plan_velocity_sweep, representability_ceilings, travel_cap,
 };
 
 fn request() -> VelocitySweepRequest {
@@ -55,10 +55,17 @@ fn plan_reports_machine_and_encoder_ceiling_provenance() {
 #[test]
 fn every_firmware_representability_term_is_enumerated() {
     let limits = representability_ceilings(4_000, 25_000).unwrap();
-    assert!(limits.encoder_observable_mrev_s > 120_000);
+    assert!(limits.encoder_observable_mrev_s > 80_000);
     assert!(limits.tmc_target_mrev_s > limits.encoder_observable_mrev_s);
     assert_eq!(limits.tmc_target_mrev_s, limits.tmc_feedback_mrev_s);
     assert!(limits.fixed_point_mrev_s >= limits.tmc_target_mrev_s);
+}
+
+#[test]
+fn encoder_observability_tracks_the_measured_three_ms_gap_bound() {
+    assert_eq!(MAX_SAFETY_OBSERVATION_GAP_US, 3_000);
+    let limits = representability_ceilings(4_000, 25_000).unwrap();
+    assert!((83_000..84_000).contains(&limits.encoder_observable_mrev_s));
 }
 
 #[test]

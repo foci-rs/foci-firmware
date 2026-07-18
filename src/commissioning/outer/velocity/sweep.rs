@@ -914,7 +914,11 @@ mod tests {
             let mut phase = phase();
             let mut backend = MockBackend::new();
             enter_first_capture(&mut phase, &mut backend);
-            backend.elapsed_us_value = if cause == 0 { 2_001 } else { 1_000 };
+            backend.elapsed_us_value = if cause == 0 {
+                MAX_SAFETY_OBSERVATION_GAP_US + 1
+            } else {
+                1_000
+            };
             backend.set_abn_decoder_count(if cause == 1 { 1_000 } else { 1 });
             if cause == 2 {
                 let hard_limit = current_limit(2_448).raw();

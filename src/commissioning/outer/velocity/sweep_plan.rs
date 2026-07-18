@@ -34,7 +34,7 @@ const TMC_VELOCITY_SCALE: u64 = 65_536;
 const MREV_PER_REV: u64 = 1_000;
 const MICROS_PER_SECOND: u64 = 1_000_000;
 /// Maximum actual time between encoder reads before wrap-safe interpretation is refused.
-pub const MAX_SAFETY_OBSERVATION_GAP_US: u64 = 2_000;
+pub const MAX_SAFETY_OBSERVATION_GAP_US: u64 = 3_000;
 const VELOCITY_P_DIVISOR: u32 = 256;
 const HALF_OCTAVE_NUM: u32 = 181;
 const HALF_OCTAVE_DEN_SHIFT: u32 = 7;
