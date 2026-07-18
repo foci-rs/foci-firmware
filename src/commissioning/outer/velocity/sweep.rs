@@ -14,8 +14,9 @@ use crate::commissioning::types::{
 };
 use foci_tmc4671::pid::PidGainPair;
 use foci_tmc4671::registers::{
-    ABN_DECODER_COUNT, MODE_RAMP_MODE_MOTION, PID_ERROR_PID_VELOCITY_ERROR_SUM,
-    PID_TORQUE_FLUX_TARGET, PID_VELOCITY_ACTUAL, PID_VELOCITY_P_VELOCITY_I, PID_VELOCITY_TARGET,
+    ABN_DECODER_COUNT, CONFIG_VELOCITY_METER_PPTM_MIN_POS_DEV, INTERIM_ACTUAL_VELOCITY_PPTM,
+    MODE_RAMP_MODE_MOTION, PID_ERROR_PID_VELOCITY_ERROR_SUM, PID_TORQUE_FLUX_TARGET,
+    PID_VELOCITY_ACTUAL, PID_VELOCITY_P_VELOCITY_I, PID_VELOCITY_TARGET,
 };
 
 use super::sweep_analysis::{
@@ -38,14 +39,31 @@ const SWEEP_CAUSE_INTEGRITY: u8 = 3;
 const SWEEP_CAUSE_CURRENT_HEADROOM: u8 = 4;
 const PID_VELOCITY_ACTUAL_TRACE_DECIMATION: u16 = 16;
 
+#[derive(Clone, Copy)]
+enum VelocityDiagnosticKind {
+    PidVelocityActual,
+    PptmActual,
+}
+
 fn slot_direction(slot: u8) -> i32 {
     if slot.is_multiple_of(2) { 1 } else { -1 }
 }
 
-fn pid_velocity_actual_trace_sample_due(next_sample_us: u64, deadline_us: u64) -> bool {
+fn velocity_diagnostic_kind(
+    next_sample_us: u64,
+    deadline_us: u64,
+) -> Option<VelocityDiagnosticKind> {
     let remaining_sample_slots =
         deadline_us.saturating_sub(next_sample_us) / u64::from(VELOCITY_SWEEP_SAMPLE_PERIOD_US);
-    remaining_sample_slots.is_multiple_of(u64::from(PID_VELOCITY_ACTUAL_TRACE_DECIMATION))
+    if !remaining_sample_slots.is_multiple_of(u64::from(PID_VELOCITY_ACTUAL_TRACE_DECIMATION)) {
+        return None;
+    }
+    let diagnostic_slot = remaining_sample_slots / u64::from(PID_VELOCITY_ACTUAL_TRACE_DECIMATION);
+    if diagnostic_slot.is_multiple_of(2) {
+        Some(VelocityDiagnosticKind::PidVelocityActual)
+    } else {
+        Some(VelocityDiagnosticKind::PptmActual)
+    }
 }
 
 async fn fail_sweep<B: CommissioningBackend>(
@@ -240,6 +258,37 @@ pub(crate) async fn step_velocity_sweep_with_trace<B: CommissioningBackend>(
                     return sweep_fault_terminal(phase, CommissionError::InvalidSchedule, None);
                 }
             };
+            if backend
+                .write_register(
+                    CONFIG_VELOCITY_METER_PPTM_MIN_POS_DEV.addr,
+                    u32::from(CONFIG_VELOCITY_METER_PPTM_MIN_POS_DEV.sub_addr),
+                )
+                .await
+                .is_err()
+            {
+                return fail_sweep(phase, backend, CommissionError::Spi).await;
+            }
+            let pptm_min_pos_dev = match backend
+                .read_register(CONFIG_VELOCITY_METER_PPTM_MIN_POS_DEV.data)
+                .await
+            {
+                Ok(value) => value,
+                Err(_) => return fail_sweep(phase, backend, CommissionError::Spi).await,
+            };
+            if backend
+                .write_register(
+                    INTERIM_ACTUAL_VELOCITY_PPTM.addr,
+                    u32::from(INTERIM_ACTUAL_VELOCITY_PPTM.sub_addr),
+                )
+                .await
+                .is_err()
+            {
+                return fail_sweep(phase, backend, CommissionError::Spi).await;
+            }
+            defmt::info!(
+                "Velocity sweep read-only PPTM_MIN_POS_DEV={}",
+                pptm_min_pos_dev
+            );
             let encoder_raw = match backend.try_read_mechanical_encoder_position_counts().await {
                 Ok(value) => value,
                 Err(_) => return sweep_fault_terminal(phase, CommissionError::Spi, None),
@@ -434,15 +483,30 @@ pub(crate) async fn step_velocity_sweep_with_trace<B: CommissioningBackend>(
             {
                 return fail_sweep(phase, backend, CommissionError::InvalidSchedule).await;
             }
-            let pid_velocity_actual_valid =
-                pid_velocity_actual_trace_sample_due(*next_sample_us, *deadline_us);
-            let pid_velocity_actual = if pid_velocity_actual_valid {
-                match backend.read_register(PID_VELOCITY_ACTUAL).await {
-                    Ok(value) => value as i32,
-                    Err(_) => return fail_sweep(phase, backend, CommissionError::Spi).await,
+            let diagnostic_kind = velocity_diagnostic_kind(*next_sample_us, *deadline_us);
+            let (diagnostic_flag, velocity_diagnostic_value) = match diagnostic_kind {
+                Some(VelocityDiagnosticKind::PidVelocityActual) => {
+                    match backend.read_register(PID_VELOCITY_ACTUAL).await {
+                        Ok(value) => (
+                            crate::trace::stream::VELOCITY_OBSERVATION_FLAG_PID_VELOCITY_ACTUAL_VALID,
+                            value as i32,
+                        ),
+                        Err(_) => return fail_sweep(phase, backend, CommissionError::Spi).await,
+                    }
                 }
-            } else {
-                0
+                Some(VelocityDiagnosticKind::PptmActual) => {
+                    match backend
+                        .read_register(INTERIM_ACTUAL_VELOCITY_PPTM.data)
+                        .await
+                    {
+                        Ok(value) => (
+                            crate::trace::stream::VELOCITY_OBSERVATION_FLAG_PPTM_ACTUAL_VALID,
+                            value as i32,
+                        ),
+                        Err(_) => return fail_sweep(phase, backend, CommissionError::Spi).await,
+                    }
+                }
+                None => (0, 0),
             };
             backend.record_velocity_trace_observation(
                 crate::trace::stream::VelocityTraceObservation {
@@ -459,13 +523,9 @@ pub(crate) async fn step_velocity_sweep_with_trace<B: CommissioningBackend>(
                     stroke_index: u16::from(data.rung_index) * 4 + u16::from(data.slot),
                     direction: slot_direction(data.slot) as i8,
                     flags: u8::from(data.peak_torque_target >= plan_usable_limit(data))
-                        | if pid_velocity_actual_valid {
-                            crate::trace::stream::VELOCITY_OBSERVATION_FLAG_PID_VELOCITY_ACTUAL_VALID
-                        } else {
-                            0
-                        },
+                        | diagnostic_flag,
                     peak_torque_target_abs: data.peak_torque_target,
-                    pid_velocity_actual,
+                    velocity_diagnostic_value,
                 },
             );
             data.previous_encoder_raw = encoder_raw;
@@ -674,16 +734,6 @@ pub(crate) async fn step_velocity_sweep_with_trace<B: CommissioningBackend>(
             {
                 return fail_sweep(phase, backend, CommissionError::InvalidSchedule).await;
             }
-            let pid_velocity_actual_valid =
-                pid_velocity_actual_trace_sample_due(*next_sample_us, *deadline_us);
-            let pid_velocity_actual = if pid_velocity_actual_valid {
-                match backend.read_register(PID_VELOCITY_ACTUAL).await {
-                    Ok(value) => value as i32,
-                    Err(_) => return fail_sweep(phase, backend, CommissionError::Spi).await,
-                }
-            } else {
-                0
-            };
             backend.record_velocity_trace_observation(
                 crate::trace::stream::VelocityTraceObservation {
                     target_counts_per_ms: 0,
@@ -692,13 +742,9 @@ pub(crate) async fn step_velocity_sweep_with_trace<B: CommissioningBackend>(
                     stroke_index: SETTLE_TRACE_STROKE_MARKER
                         | (u16::from(data.rung_index) * 4 + u16::from(data.slot)),
                     direction: 0,
-                    flags: if pid_velocity_actual_valid {
-                        crate::trace::stream::VELOCITY_OBSERVATION_FLAG_PID_VELOCITY_ACTUAL_VALID
-                    } else {
-                        0
-                    },
+                    flags: 0,
                     peak_torque_target_abs: 0,
-                    pid_velocity_actual,
+                    velocity_diagnostic_value: 0,
                 },
             );
             data.previous_encoder_raw = encoder_raw;
@@ -904,6 +950,36 @@ mod tests {
         };
         assert!(matches!(state, VelocitySweepState::EmitPlan));
         assert!(data.plan.is_some());
+        let selector_writes: std::vec::Vec<_> = backend
+            .spi_log
+            .iter()
+            .filter_map(|operation| match operation {
+                SpiOp::Write(address, value) => Some((*address, *value)),
+                SpiOp::Read | SpiOp::EnablePin(_) => None,
+            })
+            .collect();
+        assert!(
+            selector_writes.contains(&(
+                foci_tmc4671::registers::CONFIG_VELOCITY_METER_PPTM_MIN_POS_DEV
+                    .addr
+                    .addr(),
+                50,
+            ))
+        );
+        assert!(
+            selector_writes.contains(&(
+                foci_tmc4671::registers::INTERIM_ACTUAL_VELOCITY_PPTM
+                    .addr
+                    .addr(),
+                29,
+            ))
+        );
+        assert!(!selector_writes.iter().any(|(address, _)| {
+            *address
+                == foci_tmc4671::registers::CONFIG_VELOCITY_METER_PPTM_MIN_POS_DEV
+                    .data
+                    .addr()
+        }));
         assert!(!backend.spi_log.iter().any(|op| {
             matches!(op, SpiOp::Write(address, value)
                 if *address == foci_tmc4671::registers::PID_VELOCITY_TARGET.addr()
@@ -1014,12 +1090,18 @@ mod tests {
     }
 
     #[test]
-    fn moving_capture_decimates_pid_velocity_actual_into_trace_only() {
+    fn moving_capture_alternates_diagnostics_without_raising_slot_cadence() {
         let mut phase = phase();
         let mut backend = MockBackend::new();
         let _ = backend.registers.insert(
             foci_tmc4671::registers::PID_VELOCITY_ACTUAL.addr(),
             (-7i32) as u32,
+        );
+        let _ = backend.registers.insert(
+            foci_tmc4671::registers::INTERIM_ACTUAL_VELOCITY_PPTM
+                .data
+                .addr(),
+            (-11i32) as u32,
         );
 
         let _ = finish_first_moving_capture(&mut phase, &mut backend, 1, 1);
@@ -1039,6 +1121,9 @@ mod tests {
                 observation.flags
                     & crate::trace::stream::VELOCITY_OBSERVATION_FLAG_PID_VELOCITY_ACTUAL_VALID
                     != 0
+                    || observation.flags
+                        & crate::trace::stream::VELOCITY_OBSERVATION_FLAG_PPTM_ACTUAL_VALID
+                        != 0
             })
             .collect();
         assert_eq!(sampled.len(), 16);
@@ -1049,11 +1134,36 @@ mod tests {
                 .collect::<std::vec::Vec<_>>(),
             (15..256).step_by(16).collect::<std::vec::Vec<_>>()
         );
-        assert!(
-            sampled
-                .iter()
-                .all(|(_, observation)| observation.pid_velocity_actual == -7)
-        );
+        let pid_samples: std::vec::Vec<_> = sampled
+            .iter()
+            .filter(|(_, observation)| {
+                observation.flags
+                    & crate::trace::stream::VELOCITY_OBSERVATION_FLAG_PID_VELOCITY_ACTUAL_VALID
+                    != 0
+            })
+            .collect();
+        let pptm_samples: std::vec::Vec<_> = sampled
+            .iter()
+            .filter(|(_, observation)| {
+                observation.flags
+                    & crate::trace::stream::VELOCITY_OBSERVATION_FLAG_PPTM_ACTUAL_VALID
+                    != 0
+            })
+            .collect();
+        assert_eq!(pid_samples.len(), 8);
+        assert_eq!(pptm_samples.len(), 8);
+        assert!(pid_samples.iter().all(|(_, observation)| {
+            observation.velocity_diagnostic_value == -7
+                && observation.flags
+                    & crate::trace::stream::VELOCITY_OBSERVATION_FLAG_PPTM_ACTUAL_VALID
+                    == 0
+        }));
+        assert!(pptm_samples.iter().all(|(_, observation)| {
+            observation.velocity_diagnostic_value == -11
+                && observation.flags
+                    & crate::trace::stream::VELOCITY_OBSERVATION_FLAG_PID_VELOCITY_ACTUAL_VALID
+                    == 0
+        }));
     }
 
     fn finish_first_moving_capture(
@@ -1173,25 +1283,22 @@ mod tests {
             .filter(|observation| {
                 observation.stroke_index & SETTLE_TRACE_STROKE_MARKER != 0
                     && observation.flags
-                        & crate::trace::stream::VELOCITY_OBSERVATION_FLAG_PID_VELOCITY_ACTUAL_VALID
+                        & (crate::trace::stream::VELOCITY_OBSERVATION_FLAG_PID_VELOCITY_ACTUAL_VALID
+                            | crate::trace::stream::VELOCITY_OBSERVATION_FLAG_PPTM_ACTUAL_VALID)
                         != 0
             })
             .collect();
-        assert_eq!(sampled_rest.len(), 32);
-        assert!(
-            sampled_rest
-                .iter()
-                .all(|observation| observation.pid_velocity_actual == 0)
-        );
+        assert!(sampled_rest.is_empty());
         let final_rest = backend
             .velocity_trace_observations
             .iter()
             .rev()
             .find(|observation| observation.stroke_index & SETTLE_TRACE_STROKE_MARKER != 0)
             .expect("settle capture must emit raw observations");
-        assert_ne!(
+        assert_eq!(
             final_rest.flags
-                & crate::trace::stream::VELOCITY_OBSERVATION_FLAG_PID_VELOCITY_ACTUAL_VALID,
+                & (crate::trace::stream::VELOCITY_OBSERVATION_FLAG_PID_VELOCITY_ACTUAL_VALID
+                    | crate::trace::stream::VELOCITY_OBSERVATION_FLAG_PPTM_ACTUAL_VALID),
             0
         );
         assert!(matches!(

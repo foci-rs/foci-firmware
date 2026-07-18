@@ -221,7 +221,7 @@ fn record_velocity_trace_observation<B: CommissioningBackend>(
             0
         },
         peak_torque_target_abs: 0,
-        pid_velocity_actual: 0,
+        velocity_diagnostic_value: 0,
     });
 }
 
@@ -3312,7 +3312,7 @@ mod tests {
                     direction: 1,
                     flags: crate::trace::stream::VELOCITY_OBSERVATION_FLAG_SATURATED,
                     peak_torque_target_abs: 0,
-                    pid_velocity_actual: 0,
+                    velocity_diagnostic_value: 0,
                 }]
             );
             match &phase {
@@ -3378,7 +3378,7 @@ mod tests {
                         direction: -1,
                         flags: 0,
                         peak_torque_target_abs: 0,
-                        pid_velocity_actual: 0,
+                        velocity_diagnostic_value: 0,
                     }
                 );
             }
