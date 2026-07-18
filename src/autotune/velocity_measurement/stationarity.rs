@@ -65,9 +65,8 @@ struct StationarityMetrics {
 
 /// Maximum raw observations consumed by one cooperative stationarity step.
 ///
-/// Eight keeps one F407 work quantum below the two-millisecond outer-safety
-/// observation-gap guard while leaving the complete analysis inside its
-/// separately enforced twenty-millisecond budget.
+/// Eight keeps one F407 work quantum below the outer-safety observation-gap
+/// guard while leaving complete analysis inside the settle-derived budget.
 pub const STATIONARITY_WORK_OBSERVATIONS_PER_STEP: usize = 8;
 
 /// Result of one bounded cooperative stationarity-analysis step.
