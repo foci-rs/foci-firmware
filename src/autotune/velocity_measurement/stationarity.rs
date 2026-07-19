@@ -1,6 +1,7 @@
 use super::{
     DyadicBlocker, PlateauSelection, RateBlock, RawVelocityObservation,
     VELOCITY_MIN_SELECTED_BLOCKS, VelocityMeasurementError, confidence_multiplier_95_df15,
+    estimate_confidence,
 };
 
 /// Nested stationary-tail candidates, anchored at the end of a capture.
@@ -54,6 +55,34 @@ pub struct StationarySuffix {
     pub tested_suffixes: u8,
 }
 
+/// Non-binding evidence for one declared suffix length.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+pub struct SuffixDiagnostic {
+    /// Number of raw observations in this suffix.
+    pub suffix_len: u16,
+    /// Whether the blocker found a usable two-doubling plateau.
+    pub usable_plateau: bool,
+    /// Whether the fitted slope confidence interval contains zero.
+    pub slope_passed: bool,
+    /// Whether the lag-one residual confidence interval contains its null.
+    pub lag_one_passed: bool,
+    /// Outward-rounded settled-rate confidence interval.
+    pub settled_rate_interval_q: [i64; 2],
+    /// Positive clearance or negative rejection beyond the slope interval.
+    pub slope_rejection_margin_q: i64,
+    /// Positive clearance or negative rejection beyond the lag-one interval.
+    pub lag_one_rejection_margin_q: i32,
+}
+
+/// Binding stationarity result plus all declared suffix diagnostics.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+pub struct StationarityDiagnostics {
+    /// Unchanged shortest-first, no-stitch stationarity decision.
+    pub binding: StationarityResult,
+    /// Available suffix diagnostics in [`VELOCITY_SUFFIX_LENGTHS`] order.
+    pub suffixes: [Option<SuffixDiagnostic>; 3],
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct StationarityMetrics {
     slope_q: i64,
@@ -61,6 +90,10 @@ struct StationarityMetrics {
     lag_one_q: i32,
     lag_one_half_width_q: u32,
     residual_magnitude_q2: u128,
+    slope_passed: bool,
+    lag_one_passed: bool,
+    slope_rejection_margin_q: i64,
+    lag_one_rejection_margin_q: i32,
 }
 
 /// Maximum raw observations consumed by one cooperative stationarity step.
@@ -619,6 +652,93 @@ pub fn select_stationary_suffix<const LEVELS: usize>(
     select_stationary_suffix_from_source(observations, blocker)
 }
 
+/// Analyze every available declared suffix without changing the binding verdict.
+pub fn analyze_stationarity_diagnostics<const LEVELS: usize, S>(
+    observations: &S,
+    blocker: &mut DyadicBlocker<LEVELS>,
+) -> Result<StationarityDiagnostics, VelocityMeasurementError>
+where
+    S: VelocityObservationSource + ?Sized,
+{
+    let binding = select_stationary_suffix_from_source(observations, blocker)?;
+    let mut suffixes = [None; VELOCITY_SUFFIX_LENGTHS.len()];
+    for (suffix_index, suffix_len) in VELOCITY_SUFFIX_LENGTHS.iter().copied().enumerate() {
+        if usize::from(suffix_len) > observations.observation_len() {
+            continue;
+        }
+        suffixes[suffix_index] = Some(analyze_suffix_diagnostic(
+            observations,
+            blocker,
+            suffix_len,
+        )?);
+    }
+    Ok(StationarityDiagnostics { binding, suffixes })
+}
+
+fn analyze_suffix_diagnostic<const LEVELS: usize, S>(
+    observations: &S,
+    blocker: &mut DyadicBlocker<LEVELS>,
+    suffix_len: u16,
+) -> Result<SuffixDiagnostic, VelocityMeasurementError>
+where
+    S: VelocityObservationSource + ?Sized,
+{
+    *blocker = DyadicBlocker::new();
+    let suffix_start = observations
+        .observation_len()
+        .checked_sub(usize::from(suffix_len))
+        .ok_or(VelocityMeasurementError::ArithmeticOverflow)?;
+    for index in suffix_start..observations.observation_len() {
+        blocker.observe(
+            observations
+                .observation(index)
+                .ok_or(VelocityMeasurementError::ArithmeticOverflow)?,
+        )?;
+    }
+    let Some(selection) = blocker.select_plateau() else {
+        return Ok(SuffixDiagnostic {
+            suffix_len,
+            usable_plateau: false,
+            slope_passed: false,
+            lag_one_passed: false,
+            settled_rate_interval_q: [0, 0],
+            slope_rejection_margin_q: 0,
+            lag_one_rejection_margin_q: 0,
+        });
+    };
+    let block_observations = 1usize
+        .checked_shl(u32::from(selection.level))
+        .ok_or(VelocityMeasurementError::ArithmeticOverflow)?;
+    let metrics = calculate_stationarity_metrics_from_source(
+        observations,
+        suffix_start,
+        usize::from(suffix_len),
+        block_observations,
+        3,
+        selection.variance_of_mean_q2,
+    )
+    .map_err(|_| VelocityMeasurementError::ArithmeticOverflow)?;
+    let confidence = estimate_confidence(selection, 3)?;
+    let mean_rate_q = selection.exact_totals.rate_q()?;
+    let half_width = i64::try_from(confidence.half_width_rate_q)
+        .map_err(|_| VelocityMeasurementError::ArithmeticOverflow)?;
+    let low = mean_rate_q
+        .checked_sub(half_width)
+        .ok_or(VelocityMeasurementError::ArithmeticOverflow)?;
+    let high = mean_rate_q
+        .checked_add(half_width)
+        .ok_or(VelocityMeasurementError::ArithmeticOverflow)?;
+    Ok(SuffixDiagnostic {
+        suffix_len,
+        usable_plateau: true,
+        slope_passed: metrics.slope_passed,
+        lag_one_passed: metrics.lag_one_passed,
+        settled_rate_interval_q: [low, high],
+        slope_rejection_margin_q: metrics.slope_rejection_margin_q,
+        lag_one_rejection_margin_q: metrics.lag_one_rejection_margin_q,
+    })
+}
+
 /// Select the longest stationary suffix from a fixed random-access source.
 pub fn select_stationary_suffix_from_source<const LEVELS: usize, S>(
     observations: &S,
@@ -709,6 +829,25 @@ fn analyze_stationarity_from_source(
     family_size: u16,
     blocking_variance_of_mean_q2: u128,
 ) -> Result<StationarityMetrics, StationarityExclusion> {
+    let metrics = calculate_stationarity_metrics_from_source(
+        observations,
+        suffix_start,
+        suffix_len,
+        block_observations,
+        family_size,
+        blocking_variance_of_mean_q2,
+    )?;
+    classify_stationarity_metrics(metrics)
+}
+
+fn calculate_stationarity_metrics_from_source(
+    observations: &(impl VelocityObservationSource + ?Sized),
+    suffix_start: usize,
+    suffix_len: usize,
+    block_observations: usize,
+    family_size: u16,
+    blocking_variance_of_mean_q2: u128,
+) -> Result<StationarityMetrics, StationarityExclusion> {
     if block_observations == 0 {
         return Err(StationarityExclusion::Arithmetic);
     }
@@ -790,7 +929,7 @@ fn analyze_stationarity_from_source(
         }
         previous_residual = Some(residual);
     }
-    finish_stationarity_metrics(
+    calculate_stationarity_metrics(
         block_count,
         denominator,
         slope_per_us,
@@ -803,6 +942,28 @@ fn analyze_stationarity_from_source(
 
 #[allow(clippy::too_many_arguments)]
 fn finish_stationarity_metrics(
+    block_count: usize,
+    denominator: i128,
+    slope_per_us: f32,
+    residual_sum_q2: f32,
+    lag_product_sum_q2: f32,
+    family_size: u16,
+    blocking_variance_of_mean_q2: u128,
+) -> Result<StationarityMetrics, StationarityExclusion> {
+    let metrics = calculate_stationarity_metrics(
+        block_count,
+        denominator,
+        slope_per_us,
+        residual_sum_q2,
+        lag_product_sum_q2,
+        family_size,
+        blocking_variance_of_mean_q2,
+    )?;
+    classify_stationarity_metrics(metrics)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn calculate_stationarity_metrics(
     block_count: usize,
     denominator: i128,
     slope_per_us: f32,
@@ -830,9 +991,7 @@ fn finish_stationarity_metrics(
     if !slope_per_second.is_finite() || !slope_half_width.is_finite() {
         return Err(StationarityExclusion::Arithmetic);
     }
-    if libm::fabsf(slope_per_second) > slope_half_width {
-        return Err(StationarityExclusion::ResolvedSlope);
-    }
+    let slope_rejection_margin = slope_half_width - libm::fabsf(slope_per_second);
 
     let lag_one = if residual_sum_q2 == 0.0 {
         0.0
@@ -844,9 +1003,7 @@ fn finish_stationarity_metrics(
     if !lag_one.is_finite() || !lag_half_width.is_finite() {
         return Err(StationarityExclusion::Arithmetic);
     }
-    if libm::fabsf(lag_one - lag_null) > lag_half_width {
-        return Err(StationarityExclusion::StructuredResidual);
-    }
+    let lag_rejection_margin = lag_half_width - libm::fabsf(lag_one - lag_null);
 
     Ok(StationarityMetrics {
         slope_q: rounded_i64(slope_per_second)?,
@@ -854,7 +1011,23 @@ fn finish_stationarity_metrics(
         lag_one_q: rounded_i32(lag_one * LAG_ONE_Q_SCALE)?,
         lag_one_half_width_q: ceiled_u32(lag_half_width * LAG_ONE_Q_SCALE)?,
         residual_magnitude_q2: libm::ceilf(residual_sum_q2 / block_count as f32) as u128,
+        slope_passed: slope_rejection_margin >= 0.0,
+        lag_one_passed: lag_rejection_margin >= 0.0,
+        slope_rejection_margin_q: rounded_i64(slope_rejection_margin)?,
+        lag_one_rejection_margin_q: rounded_i32(lag_rejection_margin * LAG_ONE_Q_SCALE)?,
     })
+}
+
+fn classify_stationarity_metrics(
+    metrics: StationarityMetrics,
+) -> Result<StationarityMetrics, StationarityExclusion> {
+    if !metrics.slope_passed {
+        return Err(StationarityExclusion::ResolvedSlope);
+    }
+    if !metrics.lag_one_passed {
+        return Err(StationarityExclusion::StructuredResidual);
+    }
+    Ok(metrics)
 }
 
 #[cfg(test)]

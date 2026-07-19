@@ -2,7 +2,7 @@ use core::cell::Cell;
 
 use super::{
     StationarityExclusion, StationarityResult, StationarityWork, StationarityWorkPoll,
-    VELOCITY_SUFFIX_LENGTHS, VelocityObservationSource,
+    VELOCITY_SUFFIX_LENGTHS, VelocityObservationSource, analyze_stationarity_diagnostics,
     analyze_stationarity_with_blocking_variance, select_stationary_suffix,
 };
 use crate::autotune::velocity_measurement::{DyadicBlocker, RawVelocityObservation};
@@ -24,6 +24,66 @@ fn analyze_stationarity(
 #[test]
 fn suffix_family_is_fixed_and_dyadic() {
     assert_eq!(VELOCITY_SUFFIX_LENGTHS, [64, 128, 256]);
+}
+
+#[test]
+fn stationarity_diagnostics_preserve_the_binding_verdict() {
+    let samples = observations::<256>(|index| [1, 0, 1, 1, 0][index % 5]);
+    let mut binding_blocker = DyadicBlocker::<LEVELS>::new();
+    let binding = select_stationary_suffix(&samples, &mut binding_blocker).unwrap();
+    let mut diagnostic_blocker = DyadicBlocker::<LEVELS>::new();
+
+    let diagnostics =
+        analyze_stationarity_diagnostics(&samples[..], &mut diagnostic_blocker).unwrap();
+
+    assert_eq!(diagnostics.binding, binding);
+    assert_eq!(
+        diagnostics.suffixes.map(|item| item.unwrap().suffix_len),
+        [64, 128, 256]
+    );
+    assert!(diagnostics.suffixes.iter().all(|item| {
+        let diagnostic = item.unwrap();
+        diagnostic.usable_plateau && diagnostic.slope_passed && diagnostic.lag_one_passed
+    }));
+}
+
+#[test]
+fn stationarity_diagnostics_report_longer_suffix_after_binding_lag_rejection() {
+    let samples = observations::<256>(|index| {
+        if index >= 192 {
+            if (index / 4) % 2 == 0 { 10 } else { -10 }
+        } else {
+            [1, -1, 0, -1, 1][index % 5]
+        }
+    });
+    let mut blocker = DyadicBlocker::<LEVELS>::new();
+
+    let diagnostics = analyze_stationarity_diagnostics(&samples[..], &mut blocker).unwrap();
+
+    let short = diagnostics.suffixes[0].unwrap();
+    let medium = diagnostics.suffixes[1].unwrap();
+    assert!(!short.lag_one_passed);
+    assert!(short.lag_one_rejection_margin_q < 0);
+    assert!(medium.slope_passed);
+    assert!(medium.lag_one_passed);
+    assert_eq!(
+        diagnostics.binding,
+        StationarityResult::Excluded(StationarityExclusion::StructuredResidual)
+    );
+}
+
+#[test]
+fn stationarity_diagnostics_report_missing_plateaus_without_fabricating_intervals() {
+    let samples = observations::<64>(|_| 1);
+    let mut blocker = DyadicBlocker::<2>::new();
+
+    let diagnostics = analyze_stationarity_diagnostics(&samples[..], &mut blocker).unwrap();
+
+    let short = diagnostics.suffixes[0].unwrap();
+    assert!(!short.usable_plateau);
+    assert_eq!(short.settled_rate_interval_q, [0, 0]);
+    assert!(diagnostics.suffixes[1].is_none());
+    assert!(diagnostics.suffixes[2].is_none());
 }
 
 #[test]
