@@ -294,7 +294,7 @@ pub(crate) async fn step_velocity_sweep_with_trace<B: CommissioningBackend>(
                 Err(_) => return sweep_fault_terminal(phase, CommissionError::Spi, None),
             };
             if safety
-                .configure_encoder_resolution(encoder_counts_per_rev)
+                .configure_velocity_sweep_encoder_resolution(encoder_counts_per_rev)
                 .and_then(|_| safety.set_encoder_baseline(encoder_raw))
                 .is_err()
                 || safety
@@ -1026,6 +1026,31 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn setup_enforces_the_full_declared_sweep_position_windows() {
+        let mut phase = phase();
+        let OuterPhase::VelocitySweep { safety, .. } = &mut phase else {
+            panic!("velocity sweep should be active");
+        };
+        safety.budget.max_stroke_travel_mrev = 2_500;
+        safety.budget.negative_position_headroom_mrev = 3_000;
+        safety.budget.positive_position_headroom_mrev = 4_000;
+        let mut backend = MockBackend::new();
+        backend.current_limit_value = current_limit(2_448);
+
+        assert!(matches!(
+            pollster::block_on(step_velocity_sweep_with_trace(&mut phase, &mut backend)),
+            StepResult::ReadyNow
+        ));
+
+        let OuterPhase::VelocitySweep { safety, .. } = phase else {
+            panic!("velocity sweep should remain active");
+        };
+        assert_eq!(safety.position_window, 10_000);
+        assert_eq!(safety.negative_position_window, 12_000);
+        assert_eq!(safety.positive_position_window, 16_000);
     }
 
     #[test]

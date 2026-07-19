@@ -195,6 +195,25 @@ impl OuterSafetyLimits {
         Ok(())
     }
 
+    /// Configure encoder-domain safety using the complete host-declared sweep windows.
+    ///
+    /// Mechanical identification retains its legacy two-revolution backstop until the
+    /// cutover. The trace-gated velocity sweep instead plans motion from the richer
+    /// request contract, so its runtime enforcement must use those same declared windows.
+    #[cfg(feature = "trace-velocity-sweep")]
+    pub(crate) fn configure_velocity_sweep_encoder_resolution(
+        &mut self,
+        counts_per_rev: u32,
+    ) -> Result<(), EncoderMathError> {
+        self.configure_encoder_resolution(counts_per_rev)?;
+        self.position_window = self.budget.travel_counts(counts_per_rev);
+        self.negative_position_window =
+            mrev_to_counts(self.budget.negative_position_headroom_mrev, counts_per_rev);
+        self.positive_position_window =
+            mrev_to_counts(self.budget.positive_position_headroom_mrev, counts_per_rev);
+        Ok(())
+    }
+
     /// Configure the runtime envelope around the frozen sweep amplitude.
     #[allow(dead_code)]
     pub(crate) fn configure_velocity_envelope(
@@ -842,6 +861,20 @@ mod tests {
         assert_eq!(safety.negative_position_window, 8_000);
         assert_eq!(safety.positive_position_window, 8_000);
         assert_eq!(safety.velocity_cap, 24);
+    }
+
+    #[test]
+    fn outer_safety_legacy_setup_retains_the_two_revolution_backstop() {
+        let mut budget = OuterMotionBudget::test_budget(2_500, 6_000, 3_000);
+        budget.negative_position_headroom_mrev = 3_000;
+        budget.positive_position_headroom_mrev = 4_000;
+        let mut safety = OuterSafetyLimits::new(100, budget);
+
+        safety.configure_encoder_resolution(4_000).unwrap();
+
+        assert_eq!(safety.position_window, 8_000);
+        assert_eq!(safety.negative_position_window, 8_000);
+        assert_eq!(safety.positive_position_window, 8_000);
     }
 
     #[test]
