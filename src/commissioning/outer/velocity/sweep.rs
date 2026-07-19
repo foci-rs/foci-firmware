@@ -1158,13 +1158,16 @@ mod tests {
                         != 0
             })
             .collect();
-        assert_eq!(sampled.len(), 16);
+        let moving_samples = usize::try_from(MOVING_STROKE_US / 1_000).unwrap();
+        assert_eq!(sampled.len(), moving_samples / 16);
         assert_eq!(
             sampled
                 .iter()
                 .map(|(index, _)| *index)
                 .collect::<std::vec::Vec<_>>(),
-            (15..256).step_by(16).collect::<std::vec::Vec<_>>()
+            (15..moving_samples)
+                .step_by(16)
+                .collect::<std::vec::Vec<_>>()
         );
         let pid_samples: std::vec::Vec<_> = sampled
             .iter()
@@ -1182,8 +1185,8 @@ mod tests {
                     != 0
             })
             .collect();
-        assert_eq!(pid_samples.len(), 8);
-        assert_eq!(pptm_samples.len(), 8);
+        assert_eq!(pid_samples.len(), moving_samples / 32);
+        assert_eq!(pptm_samples.len(), moving_samples / 32);
         assert!(pid_samples.iter().all(|(_, observation)| {
             observation.velocity_diagnostic_value == -7
                 && observation.flags
@@ -1244,7 +1247,7 @@ mod tests {
             INTERIM_PIDOUT_TARGET_TORQUE.data.addr(),
             u32::from(torque_target_abs),
         );
-        for sample in 1..=256u64 {
+        for sample in 1..=u64::from(MOVING_STROKE_US / 1_000) {
             encoder_count += delta_per_sample;
             backend.elapsed_us_value = sample * 1_000;
             backend.set_abn_decoder_count(encoder_count);
@@ -1334,10 +1337,13 @@ mod tests {
             super::super::sweep_evidence::VelocityObservationClass::CurrentHeadroom
         );
 
-        let encoder_count = 256i32;
+        let moving_samples = u64::from(MOVING_STROKE_US / 1_000);
+        let encoder_count = moving_samples as i32;
         let result = pollster::block_on(step_velocity_sweep_with_trace(&mut phase, &mut backend));
-        assert!(matches!(result, StepResult::At(257_000)));
-        for sample in 257..=256 + u64::from(ZERO_SETTLE_US / 1_000) {
+        assert!(
+            matches!(result, StepResult::At(deadline) if deadline == (moving_samples + 1) * 1_000)
+        );
+        for sample in moving_samples + 1..=moving_samples + u64::from(ZERO_SETTLE_US / 1_000) {
             backend.elapsed_us_value = sample * 1_000;
             backend.set_abn_decoder_count(encoder_count);
             pollster::block_on(step_velocity_sweep_with_trace(&mut phase, &mut backend));
@@ -1423,7 +1429,8 @@ mod tests {
         let mut backend = MockBackend::new();
         enter_first_capture(&mut phase, &mut backend);
         let mut encoder_count = 0i32;
-        for sample in 1..=256u64 {
+        let moving_samples = u64::from(MOVING_STROKE_US / 1_000);
+        for sample in 1..=moving_samples {
             encoder_count += 1;
             backend.elapsed_us_value = sample * 1_000;
             backend.set_abn_decoder_count(encoder_count);
@@ -1433,7 +1440,7 @@ mod tests {
         pollster::block_on(step_velocity_sweep_with_trace(&mut phase, &mut backend));
         poll_until_observation(&mut phase, &mut backend);
         pollster::block_on(step_velocity_sweep_with_trace(&mut phase, &mut backend));
-        for sample in 257..=256 + u64::from(ZERO_SETTLE_US / 1_000) {
+        for sample in moving_samples + 1..=moving_samples + u64::from(ZERO_SETTLE_US / 1_000) {
             encoder_count += 1;
             backend.elapsed_us_value = sample * 1_000;
             backend.set_abn_decoder_count(encoder_count);
@@ -1475,7 +1482,7 @@ mod tests {
             assert!(matches!(result, StepResult::At(deadline) if deadline == now_us + 1_000));
 
             let direction = slot_direction(slot);
-            for _ in 0..256 {
+            for _ in 0..MOVING_STROKE_US / 1_000 {
                 now_us += 1_000;
                 encoder_count += direction;
                 backend.elapsed_us_value = now_us;
@@ -1568,11 +1575,15 @@ mod tests {
             .collect();
         assert_eq!(targets.len(), 4);
         assert!(targets[0] > 0 && targets[1] < 0 && targets[2] > 0 && targets[3] < 0);
+        let moving_samples = usize::try_from(MOVING_STROKE_US / 1_000).unwrap();
         assert_eq!(
             backend.capture_register_reads,
-            4 * (1 + 256 + 1 + usize::try_from(ZERO_SETTLE_US / 1_000).unwrap())
+            4 * (1 + moving_samples + 1 + usize::try_from(ZERO_SETTLE_US / 1_000).unwrap())
         );
-        assert_eq!(backend.velocity_controller_output_selects, 4 * 256);
+        assert_eq!(
+            backend.velocity_controller_output_selects,
+            4 * moving_samples
+        );
         assert_eq!(
             backend
                 .spi_log

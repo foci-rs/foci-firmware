@@ -26,7 +26,7 @@ fn request() -> VelocitySweepRequest {
 fn live_geometry_uses_mechanical_rpm_and_the_corrected_ladder() {
     let mut live = request();
     live.requested_velocity_mrev_s = 2_929;
-    live.max_stroke_travel_mrev = 1_000;
+    live.max_stroke_travel_mrev = 2_000;
     live.settle_travel_reserve_mrev = 250;
 
     let plan = plan_velocity_sweep(live, 4_000, 2_816).unwrap();
@@ -119,7 +119,7 @@ fn travel_binding_has_a_named_clamp_cause() {
     limited.settle_travel_reserve_mrev = 100;
     let plan = plan_velocity_sweep(limited, 4_000, 1_000).unwrap();
     assert_ne!(plan.clamp_flags & CLAMP_TRAVEL, 0);
-    assert_eq!(plan.planned_velocity_mrev_s, 781);
+    assert_eq!(plan.planned_velocity_mrev_s, 390);
 }
 
 #[test]
@@ -194,6 +194,7 @@ fn plan_freezes_exact_ladder_and_workflow_duration() {
 
 #[test]
 fn analysis_budget_preserves_the_shortest_scored_rest_suffix() {
+    assert_eq!(MOVING_STROKE_US, 512_000);
     assert_eq!(ZERO_SETTLE_US, 500_000);
     assert_eq!(MIN_SETTLE_CAPTURE_US, 64_000);
     assert_eq!(SETTLE_ANALYSIS_BUDGET_US, 236_000);

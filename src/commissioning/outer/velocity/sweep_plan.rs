@@ -9,7 +9,7 @@ pub const ENVELOPE_PROPORTIONAL_DEN: u32 = 2;
 /// Absolute runtime velocity-envelope margin in mechanical millirevolutions per second.
 pub const ENVELOPE_ABSOLUTE_MARGIN_MREV_S: u32 = 2_000;
 /// Fixed duration of one moving observation.
-pub const MOVING_STROKE_US: u32 = 256_000;
+pub const MOVING_STROKE_US: u32 = 512_000;
 /// Fixed duration of one zero-target settle.
 pub const ZERO_SETTLE_US: u32 = 500_000;
 /// Sampling period used by moving and zero-target velocity observations.
