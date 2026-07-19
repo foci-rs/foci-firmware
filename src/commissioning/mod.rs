@@ -815,21 +815,7 @@ impl CommissioningEngine {
                         TraceEventLevel::Error
                     }
                 };
-                let phase_status = match terminal.outcome {
-                    crate::commissioning::types::VelocitySweepOutcome::Complete
-                    | crate::commissioning::types::VelocitySweepOutcome::Inconclusive => {
-                        PHASE_END_OK
-                    }
-                    crate::commissioning::types::VelocitySweepOutcome::Fault => terminal.cause,
-                };
-                let phase_level = match terminal.outcome {
-                    crate::commissioning::types::VelocitySweepOutcome::Fault => level,
-                    crate::commissioning::types::VelocitySweepOutcome::Complete
-                    | crate::commissioning::types::VelocitySweepOutcome::Inconclusive => {
-                        TraceEventLevel::Info
-                    }
-                };
-                self.emit_trace_phase_end(backend, phase_status, phase_level);
+                self.emit_trace_phase_end(backend, PHASE_END_OK, TraceEventLevel::Info);
                 backend.record_commission_trace_event(CommissionTraceEvent {
                     level,
                     event_id: EVENT_COMMISSION_VELOCITY_SWEEP_TERMINAL,
@@ -846,19 +832,10 @@ impl CommissioningEngine {
                         payload_count: 2,
                     });
                 }
-                match terminal.outcome {
-                    crate::commissioning::types::VelocitySweepOutcome::Complete => {
-                        self.emit_trace_terminal(backend, PHASE_END_OK, level);
-                    }
-                    crate::commissioning::types::VelocitySweepOutcome::Inconclusive => {
-                        // OuterInconclusive deliberately has no CommissionStatus code. The
-                        // dedicated velocity-sweep terminal event owns this trace lifecycle.
-                        self.trace_run.terminal = true;
-                    }
-                    crate::commissioning::types::VelocitySweepOutcome::Fault => {
-                        self.emit_trace_terminal(backend, terminal.cause, level);
-                    }
-                }
+                // VelocitySweepOutcome and its phase-local cause deliberately do not share the
+                // CommissionStatus/CommissionError namespace. The dedicated sweep event owns
+                // this trace lifecycle for complete, inconclusive, and fault outcomes alike.
+                self.trace_run.terminal = true;
             }
             StepResult::CommissionDone(result) => {
                 self.emit_trace_phase_end(backend, PHASE_END_OK, TraceEventLevel::Info);
@@ -1794,6 +1771,41 @@ mod tests {
             EngineKind::OuterTune,
             TraceEventLevel::Warn,
             [4, 0x89ab_cdef_u32 as i32],
+        );
+        assert!(engine.trace_run.terminal);
+    }
+
+    #[test]
+    fn sweep_integrity_fault_does_not_reuse_cause_as_generic_status() {
+        let mut engine = CommissioningEngine::new_outer_with_trace_seq(
+            0,
+            sample_outer_params(),
+            sample_entry_snapshot(),
+            9,
+        );
+        let mut backend = crate::commission_dispatch::test_support::MockBackend::new();
+        let mut terminal = sample_inconclusive_sweep_terminal();
+        terminal.outcome = crate::commissioning::types::VelocitySweepOutcome::Fault;
+        terminal.cause = 3;
+
+        engine.emit_trace_start(&mut backend);
+        engine.emit_trace_after_step(&mut backend, &StepResult::VelocitySweepTerminal(terminal));
+
+        let events = &backend.trace_events;
+        assert_eq!(events.len(), 4);
+        assert_trace_event(
+            &events[2],
+            crate::trace::events::EVENT_COMMISSION_PHASE_END,
+            EngineKind::OuterTune,
+            TraceEventLevel::Info,
+            [initial_outer_phase_id().to_u8() as i32, PHASE_END_OK.into()],
+        );
+        assert_trace_event(
+            &events[3],
+            crate::trace::events::EVENT_COMMISSION_VELOCITY_SWEEP_TERMINAL,
+            EngineKind::OuterTune,
+            TraceEventLevel::Error,
+            [3, 0x89ab_cdef_u32 as i32],
         );
         assert!(engine.trace_run.terminal);
     }
