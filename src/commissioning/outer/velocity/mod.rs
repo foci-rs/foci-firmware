@@ -3,6 +3,7 @@
 pub mod operating_region;
 #[cfg(test)]
 mod operating_region_tests;
+pub mod reproduction;
 mod response_ramp;
 #[cfg(feature = "trace-velocity-sweep")]
 mod sweep;
