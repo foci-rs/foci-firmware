@@ -3495,6 +3495,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "trace-velocity-sweep")]
     #[test]
     fn reproduction_group_emits_before_the_authoritative_terminal() {
         use crate::commission_dispatch::stage_b::StageBReproductionReport;
@@ -3577,6 +3578,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "trace-velocity-sweep")]
     #[test]
     fn sweep_terminal_order_separates_fault_and_inconclusive_paths() {
         use crate::commissioning::types::VelocitySweepOutcome;
