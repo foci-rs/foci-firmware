@@ -1,6 +1,8 @@
 use super::operating_region::{
-    BoundRounding, CompactSignedRate, DirectionalRegionClosure, DirectionalRegionFold,
-    DirectionalRegionKind, MIN_DIRECTIONAL_REGION_RUNGS, observe_directional_rung,
+    BoundRounding, CompactSignedRate, CoverageKind, DirectionalRegionClosure,
+    DirectionalRegionFold, DirectionalRegionKind, DirectionalRegionRef, HandoffTrackers,
+    JointOperableClosure, JointOperableFold, MIN_DIRECTIONAL_REGION_RUNGS, choose_joint_nomination,
+    observe_directional_rung, observe_joint_rung, select_directional_region,
 };
 use super::sweep_evidence::{VelocityRungClass, VelocityRungVerdict};
 use crate::autotune::velocity_measurement::VelocityDirection;
@@ -176,4 +178,201 @@ fn first_fit_counterexample_remains_two_fragments() {
             .iter()
             .all(|region| region.kind == DirectionalRegionKind::Fragment)
     );
+}
+
+fn gains() -> [PidGain; 7] {
+    [256, 362, 512, 724, 1024, 1448, 2048].map(|raw| PidGain::new(raw).unwrap())
+}
+
+#[test]
+fn joint_operability_ignores_deficit_resolution_but_rejects_limits_and_faults() {
+    let mut fold = JointOperableFold::new();
+    let mut forward = ineligible(256, VelocityRungClass::DeficitUnresolved);
+    let mut reverse = forward;
+    reverse.direction = VelocityDirection::Reverse;
+    forward.operable = true;
+    reverse.operable = true;
+    assert!(observe_joint_rung(&mut fold, 0, forward, reverse).is_none());
+
+    let mut current = forward;
+    current.classification = VelocityRungClass::CurrentHeadroom;
+    current.operable = false;
+    let closed = observe_joint_rung(&mut fold, 1, current, reverse).unwrap();
+    assert_eq!(closed.member_mask, 0b1);
+    assert_eq!(closed.closure, JointOperableClosure::CurrentHeadroom);
+
+    let mut fault_fold = JointOperableFold::new();
+    assert!(observe_joint_rung(&mut fault_fold, 0, forward, reverse).is_none());
+    let mut fault = reverse;
+    fault.classification = VelocityRungClass::Fault;
+    fault.operable = false;
+    let closed = observe_joint_rung(&mut fault_fold, 1, forward, fault).unwrap();
+    assert_eq!(closed.closure, JointOperableClosure::SafetyTerminus);
+}
+
+#[test]
+fn joint_fold_reports_maximal_contiguous_regions_and_single_rung_margin() {
+    let mut fold = JointOperableFold::new();
+    let mut forward = verdict(256, 0, 10, 1);
+    let mut reverse = forward;
+    reverse.direction = VelocityDirection::Reverse;
+    for index in 0..3 {
+        forward.p = gains()[index];
+        reverse.p = gains()[index];
+        assert!(observe_joint_rung(&mut fold, index as u8, forward, reverse).is_none());
+    }
+    let closed = fold.finish(JointOperableClosure::EndOfLadder).unwrap();
+    assert_eq!(closed.member_mask, 0b111);
+    assert_eq!(
+        (closed.first_rung, closed.last_rung, closed.member_count),
+        (0, 2, 3)
+    );
+
+    let nomination = choose_joint_nomination(None, closed, &gains(), gains()[0], gains()[6]);
+    assert_eq!(nomination.rung_index, 1);
+    assert_eq!(nomination.p.raw(), 362);
+    assert!(!nomination.reduced_margin);
+
+    let single = super::operating_region::JointOperableRegion {
+        member_mask: 1 << 4,
+        first_rung: 4,
+        last_rung: 4,
+        member_count: 1,
+        closure: JointOperableClosure::EndOfLadder,
+    };
+    assert!(choose_joint_nomination(None, single, &gains(), gains()[0], gains()[6]).reduced_margin);
+}
+
+#[test]
+fn joint_nomination_uses_count_ratio_distance_and_lower_p_ties() {
+    let candidates = [
+        super::operating_region::JointOperableRegion {
+            member_mask: 0b000_0111,
+            first_rung: 0,
+            last_rung: 2,
+            member_count: 3,
+            closure: JointOperableClosure::IneligibleGap,
+        },
+        super::operating_region::JointOperableRegion {
+            member_mask: 0b111_0000,
+            first_rung: 4,
+            last_rung: 6,
+            member_count: 3,
+            closure: JointOperableClosure::EndOfLadder,
+        },
+        super::operating_region::JointOperableRegion {
+            member_mask: 0b001_1110,
+            first_rung: 1,
+            last_rung: 4,
+            member_count: 4,
+            closure: JointOperableClosure::IneligibleGap,
+        },
+    ];
+    let mut selected = None;
+    for candidate in candidates {
+        selected = Some(choose_joint_nomination(
+            selected,
+            candidate,
+            &gains(),
+            gains()[0],
+            gains()[6],
+        ));
+    }
+    let selected = selected.unwrap();
+    assert_eq!(selected.joint.member_count, 4);
+    assert_eq!(selected.rung_index, 2);
+
+    let lower = super::operating_region::JointOperableRegion {
+        member_mask: 0b000_1100,
+        first_rung: 2,
+        last_rung: 3,
+        member_count: 2,
+        closure: JointOperableClosure::IneligibleGap,
+    };
+    let upper = super::operating_region::JointOperableRegion {
+        member_mask: 0b011_0000,
+        first_rung: 4,
+        last_rung: 5,
+        member_count: 2,
+        closure: JointOperableClosure::EndOfLadder,
+    };
+    let lower_nomination = choose_joint_nomination(None, lower, &gains(), gains()[0], gains()[6]);
+    let tied = choose_joint_nomination(
+        Some(lower_nomination),
+        upper,
+        &gains(),
+        gains()[0],
+        gains()[6],
+    );
+    assert_eq!(tied.joint.member_mask, lower.member_mask);
+}
+
+fn reference(mask: u32, low: i32, high: i32) -> DirectionalRegionRef {
+    DirectionalRegionRef {
+        member_mask: mask,
+        pooled_interval: [low, high],
+        selected_edge_rate: CompactSignedRate::encode(10, BoundRounding::TowardPositiveInfinity),
+    }
+}
+
+#[test]
+fn handoff_selection_prefers_containment_then_nearest_then_lower_region() {
+    let lower = reference(0b000_0110, 1, 2);
+    let containing = reference(0b001_1100, 3, 4);
+    let upper = reference(0b110_0000, 5, 6);
+
+    let selected = select_directional_region(None, lower, 3, &gains(), 0).unwrap();
+    assert_eq!(selected.coverage, CoverageKind::TransferredCoverage);
+    assert_eq!(
+        (selected.gain_ratio_num, selected.gain_ratio_den),
+        (724, 512)
+    );
+    assert_eq!(selected.settled_rate_difference_q, 10);
+    let selected = select_directional_region(Some(selected), upper, 3, &gains(), 0).unwrap();
+    assert_eq!(selected.region.member_mask, lower.member_mask);
+    let selected = select_directional_region(Some(selected), containing, 3, &gains(), 0).unwrap();
+    assert_eq!(selected.coverage, CoverageKind::FullCoverage);
+    assert_eq!(selected.region.member_mask, containing.member_mask);
+}
+
+#[test]
+fn handoff_trackers_promote_later_joint_candidate_without_full_regions() {
+    let mut trackers = HandoffTrackers::new();
+    let first = reference(0b000_0111, 1, 2);
+    let later = reference(0b111_0000, 3, 4);
+    trackers.observe_directional(VelocityDirection::Forward, first, 1, 1);
+    trackers.observe_directional(VelocityDirection::Reverse, first, 1, 1);
+    trackers.promote_active();
+    trackers.begin_active_nomination(5);
+    trackers.observe_directional(VelocityDirection::Forward, later, 5, 1);
+    trackers.observe_directional(VelocityDirection::Reverse, later, 5, 1);
+    trackers.promote_active();
+
+    assert_eq!(
+        trackers
+            .best(VelocityDirection::Forward, 5, &gains(), 0)
+            .unwrap()
+            .region
+            .member_mask,
+        later.member_mask
+    );
+    assert_eq!(
+        trackers
+            .best(VelocityDirection::Reverse, 5, &gains(), 0)
+            .unwrap()
+            .region
+            .member_mask,
+        later.member_mask
+    );
+
+    let joint = super::operating_region::JointOperableRegion {
+        member_mask: 0b111_0000,
+        first_rung: 4,
+        last_rung: 6,
+        member_count: 3,
+        closure: JointOperableClosure::EndOfLadder,
+    };
+    let nomination = choose_joint_nomination(None, joint, &gains(), gains()[0], gains()[6]);
+    let handoff = trackers.handoff(nomination, &gains(), [0, 0]).unwrap();
+    assert_eq!(handoff.coverage_mask, 3);
 }

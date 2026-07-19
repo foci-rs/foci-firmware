@@ -387,6 +387,493 @@ impl DirectionalRegionFold {
 
 const _: () = assert!(core::mem::size_of::<DirectionalRegionFold>() <= 96);
 
+/// Why one maximal contiguous jointly operable region closed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+pub enum JointOperableClosure {
+    /// One direction ceased to satisfy the unchanged operating predicates.
+    IneligibleGap,
+    /// The usable-current boundary ended the shared region.
+    CurrentHeadroom,
+    /// A fault or safety terminus ended the shared region.
+    SafetyTerminus,
+    /// The predeclared ladder ended normally.
+    EndOfLadder,
+}
+
+/// One maximal contiguous region where a shared P is operable in both directions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+pub struct JointOperableRegion {
+    /// Exact contiguous rung-membership bitmap.
+    pub member_mask: u32,
+    /// First member rung index.
+    pub first_rung: u8,
+    /// Last member rung index.
+    pub last_rung: u8,
+    /// Exact member population.
+    pub member_count: u8,
+    /// Why the region closed.
+    pub closure: JointOperableClosure,
+}
+
+/// Fixed-memory fold for jointly operable rungs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+pub struct JointOperableFold {
+    member_mask: u32,
+    first_rung: u8,
+    member_count: u8,
+    active: bool,
+}
+
+impl JointOperableFold {
+    /// Construct an empty joint-operability fold.
+    pub const fn new() -> Self {
+        Self {
+            member_mask: 0,
+            first_rung: 0,
+            member_count: 0,
+            active: false,
+        }
+    }
+
+    /// Close the active region at a declared terminus.
+    pub fn finish(&mut self, closure: JointOperableClosure) -> Option<JointOperableRegion> {
+        self.close(closure)
+    }
+
+    fn seed(&mut self, rung_index: u8) {
+        self.member_mask = 1_u32 << rung_index;
+        self.first_rung = rung_index;
+        self.member_count = 1;
+        self.active = true;
+    }
+
+    fn append(&mut self, rung_index: u8) {
+        self.member_mask |= 1_u32 << rung_index;
+        self.member_count = self.member_count.saturating_add(1);
+    }
+
+    fn close(&mut self, closure: JointOperableClosure) -> Option<JointOperableRegion> {
+        if !self.active {
+            return None;
+        }
+        let region = JointOperableRegion {
+            member_mask: self.member_mask,
+            first_rung: self.first_rung,
+            last_rung: self.first_rung + self.member_count - 1,
+            member_count: self.member_count,
+            closure,
+        };
+        *self = Self::new();
+        Some(region)
+    }
+}
+
+impl Default for JointOperableFold {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+const _: () = assert!(core::mem::size_of::<JointOperableFold>() <= 16);
+
+/// Fold one forward/reverse rung pair without consulting D_eq eligibility.
+pub fn observe_joint_rung(
+    fold: &mut JointOperableFold,
+    rung_index: u8,
+    forward: VelocityRungVerdict,
+    reverse: VelocityRungVerdict,
+) -> Option<JointOperableRegion> {
+    let direction_matches = forward.direction == VelocityDirection::Forward
+        && reverse.direction == VelocityDirection::Reverse
+        && forward.p == reverse.p;
+    if direction_matches && forward.operable && reverse.operable {
+        if !fold.active {
+            fold.seed(rung_index);
+            return None;
+        }
+        if rung_index == fold.first_rung.saturating_add(fold.member_count) {
+            fold.append(rung_index);
+            return None;
+        }
+        let closed = fold.close(JointOperableClosure::IneligibleGap);
+        fold.seed(rung_index);
+        return closed;
+    }
+    let closure = if matches!(
+        (forward.classification, reverse.classification),
+        (VelocityRungClass::Fault, _) | (_, VelocityRungClass::Fault)
+    ) || !direction_matches
+    {
+        JointOperableClosure::SafetyTerminus
+    } else if matches!(
+        (forward.classification, reverse.classification),
+        (VelocityRungClass::CurrentHeadroom, _) | (_, VelocityRungClass::CurrentHeadroom)
+    ) {
+        JointOperableClosure::CurrentHeadroom
+    } else {
+        JointOperableClosure::IneligibleGap
+    };
+    fold.close(closure)
+}
+
+/// Deterministic provisional operating point selected from one joint region.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+pub struct ProvisionalPNomination {
+    /// Selected joint-operability evidence.
+    pub joint: JointOperableRegion,
+    /// Lower-middle rung index.
+    pub rung_index: u8,
+    /// Gain at the selected rung.
+    pub p: PidGain,
+    /// Q16 ratio distance from structural P_start.
+    pub distance_to_start_num: u32,
+    /// Q16 ratio distance from structural P_top.
+    pub distance_to_top_num: u32,
+    /// Single-rung regions carry reduced I-ladder margin.
+    pub reduced_margin: bool,
+}
+
+/// Compare one closed joint region with the current deterministic nomination.
+pub fn choose_joint_nomination(
+    current: Option<ProvisionalPNomination>,
+    candidate: JointOperableRegion,
+    gains: &[PidGain],
+    p_start: PidGain,
+    p_top: PidGain,
+) -> ProvisionalPNomination {
+    let rung_index = candidate.first_rung + (candidate.member_count - 1) / 2;
+    let p = gains[usize::from(rung_index)];
+    let proposed = ProvisionalPNomination {
+        joint: candidate,
+        rung_index,
+        p,
+        distance_to_start_num: ratio_q16(p.raw(), p_start.raw()),
+        distance_to_top_num: ratio_q16(p_top.raw(), p.raw()),
+        reduced_margin: candidate.member_count == 1,
+    };
+    let Some(current) = current else {
+        return proposed;
+    };
+    if candidate.member_count != current.joint.member_count {
+        return if candidate.member_count > current.joint.member_count {
+            proposed
+        } else {
+            current
+        };
+    }
+    match compare_margin(p, current.p, p_start, p_top) {
+        core::cmp::Ordering::Greater => proposed,
+        core::cmp::Ordering::Less => current,
+        core::cmp::Ordering::Equal if p.raw() < current.p.raw() => proposed,
+        core::cmp::Ordering::Equal => current,
+    }
+}
+
+/// Compact region identity retained by bounded handoff selection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+pub struct DirectionalRegionRef {
+    /// Exact membership joining this reference to its causal region record.
+    pub member_mask: u32,
+    /// Exact pooled Q16.16 disturbance interval.
+    pub pooled_interval: [i32; 2],
+    /// Conservative source-edge settled rate for transfer reporting.
+    pub selected_edge_rate: CompactSignedRate,
+}
+
+impl DirectionalRegionRef {
+    const EMPTY: Self = Self {
+        member_mask: 0,
+        pooled_interval: [0, 0],
+        selected_edge_rate: CompactSignedRate {
+            mantissa: 0,
+            shift: 0,
+            rounding: BoundRounding::TowardNegativeInfinity,
+        },
+    };
+
+    /// Compact one valid causal region for bounded handoff selection.
+    pub fn from_summary(summary: DirectionalRegionSummary, nominated_rung: u8) -> Option<Self> {
+        if summary.kind != DirectionalRegionKind::Valid {
+            return None;
+        }
+        let (edge_rate, rounding) = if nominated_rung > summary.last_rung {
+            (
+                summary.settled_rate_mean_max_q,
+                BoundRounding::TowardPositiveInfinity,
+            )
+        } else {
+            (
+                summary.settled_rate_mean_min_q,
+                BoundRounding::TowardNegativeInfinity,
+            )
+        };
+        Some(Self {
+            member_mask: summary.member_mask,
+            pooled_interval: [
+                summary.pooled.interval.low().raw(),
+                summary.pooled.interval.high().raw(),
+            ],
+            selected_edge_rate: CompactSignedRate::encode(edge_rate, rounding),
+        })
+    }
+}
+
+const _: () = assert!(core::mem::size_of::<DirectionalRegionRef>() <= 16);
+
+/// Relationship between a selected directional model and the nominated P.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+pub enum CoverageKind {
+    /// The directional model region contains the nominated rung.
+    FullCoverage,
+    /// The nearest directional model region transfers across a declared gap.
+    TransferredCoverage,
+}
+
+/// Compact directional selection and transfer context.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+pub struct SelectedDirectionalRegion {
+    /// Selected compact source-region reference.
+    pub region: DirectionalRegionRef,
+    /// Direct or transferred coverage.
+    pub coverage: CoverageKind,
+    /// Signed source-edge distance from the nominated rung.
+    pub signed_rung_distance: i8,
+    /// Larger gain in the source/target ratio.
+    pub gain_ratio_num: u16,
+    /// Smaller gain in the source/target ratio.
+    pub gain_ratio_den: u16,
+    /// Source-edge minus nominated settled rate.
+    pub settled_rate_difference_q: i64,
+}
+
+/// Complete Stage B evidence handoff without applying a gain-acceptance policy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+pub struct StageBHandoff {
+    /// Firmware-owned provisional P nomination.
+    pub nomination: ProvisionalPNomination,
+    /// Forward then reverse selected directional model evidence.
+    pub directional: [SelectedDirectionalRegion; 2],
+    /// Bit set for each direction with full nominated-P coverage.
+    pub coverage_mask: u8,
+}
+
+/// Compare one directional region with the current nearest selection.
+pub fn select_directional_region(
+    current: Option<SelectedDirectionalRegion>,
+    candidate: DirectionalRegionRef,
+    nominated_rung: u8,
+    gains: &[PidGain],
+    nominated_rate_q: i64,
+) -> Option<SelectedDirectionalRegion> {
+    if candidate.member_mask == 0 {
+        return current;
+    }
+    let proposed = selected_directional(candidate, nominated_rung, gains, nominated_rate_q);
+    let Some(current) = current else {
+        return Some(proposed);
+    };
+    let proposed_distance = proposed.signed_rung_distance.unsigned_abs();
+    let current_distance = current.signed_rung_distance.unsigned_abs();
+    if proposed.coverage == CoverageKind::FullCoverage
+        && current.coverage != CoverageKind::FullCoverage
+        || proposed_distance < current_distance
+        || (proposed_distance == current_distance
+            && first_member(candidate.member_mask) < first_member(current.region.member_mask))
+    {
+        Some(proposed)
+    } else {
+        Some(current)
+    }
+}
+
+fn selected_directional(
+    region: DirectionalRegionRef,
+    nominated_rung: u8,
+    gains: &[PidGain],
+    nominated_rate_q: i64,
+) -> SelectedDirectionalRegion {
+    let first = first_member(region.member_mask);
+    let last = last_member(region.member_mask);
+    let (coverage, distance, edge) = if nominated_rung < first {
+        (
+            CoverageKind::TransferredCoverage,
+            i16::from(first) - i16::from(nominated_rung),
+            first,
+        )
+    } else if nominated_rung > last {
+        (
+            CoverageKind::TransferredCoverage,
+            i16::from(last) - i16::from(nominated_rung),
+            last,
+        )
+    } else {
+        (CoverageKind::FullCoverage, 0, nominated_rung)
+    };
+    let source_p = gains
+        .get(usize::from(edge))
+        .copied()
+        .unwrap_or(PidGain::ZERO)
+        .raw();
+    let target_p = gains
+        .get(usize::from(nominated_rung))
+        .copied()
+        .unwrap_or(PidGain::ZERO)
+        .raw();
+    let (gain_ratio_num, gain_ratio_den) = if coverage == CoverageKind::FullCoverage {
+        (1, 1)
+    } else {
+        (source_p.max(target_p), source_p.min(target_p).max(1))
+    };
+    SelectedDirectionalRegion {
+        region,
+        coverage,
+        signed_rung_distance: distance as i8,
+        gain_ratio_num,
+        gain_ratio_den,
+        settled_rate_difference_q: if coverage == CoverageKind::FullCoverage {
+            0
+        } else {
+            region.selected_edge_rate.decode() - nominated_rate_q
+        },
+    }
+}
+
+/// Six compact references supporting active and selected joint nominations.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+pub struct HandoffTrackers {
+    best: [DirectionalRegionRef; 2],
+    active: [DirectionalRegionRef; 2],
+    latest_closed: [DirectionalRegionRef; 2],
+}
+
+impl HandoffTrackers {
+    /// Construct empty bounded handoff trackers.
+    pub const fn new() -> Self {
+        Self {
+            best: [DirectionalRegionRef::EMPTY; 2],
+            active: [DirectionalRegionRef::EMPTY; 2],
+            latest_closed: [DirectionalRegionRef::EMPTY; 2],
+        }
+    }
+
+    /// Observe one closed valid directional region against both live nominations.
+    pub fn observe_directional(
+        &mut self,
+        direction: VelocityDirection,
+        region: DirectionalRegionRef,
+        active_rung: u8,
+        best_rung: u8,
+    ) {
+        let index = direction_index(direction);
+        self.latest_closed[index] = region;
+        self.active[index] = choose_ref(self.active[index], region, active_rung);
+        self.best[index] = choose_ref(self.best[index], region, best_rung);
+    }
+
+    /// Re-evaluate active selections when the active lower-middle rung advances.
+    pub fn move_active_nomination(&mut self, rung_index: u8) {
+        for index in 0..2 {
+            self.active[index] =
+                choose_ref(self.active[index], self.latest_closed[index], rung_index);
+        }
+    }
+
+    /// Start tracking a later joint candidate without retaining its predecessors.
+    pub fn begin_active_nomination(&mut self, rung_index: u8) {
+        for index in 0..2 {
+            self.active[index] =
+                choose_ref(self.best[index], self.latest_closed[index], rung_index);
+        }
+    }
+
+    /// Promote the active candidate's selections when it becomes the best joint region.
+    pub fn promote_active(&mut self) {
+        self.best = self.active;
+    }
+
+    /// Return the selected compact reference for one direction.
+    pub fn best(
+        &self,
+        direction: VelocityDirection,
+        nominated_rung: u8,
+        gains: &[PidGain],
+        nominated_rate_q: i64,
+    ) -> Option<SelectedDirectionalRegion> {
+        let selected = self.best[direction_index(direction)];
+        (selected.member_mask != 0)
+            .then(|| selected_directional(selected, nominated_rung, gains, nominated_rate_q))
+    }
+
+    /// Build the complete bidirectional handoff for the selected nomination.
+    pub fn handoff(
+        &self,
+        nomination: ProvisionalPNomination,
+        gains: &[PidGain],
+        nominated_rates_q: [i64; 2],
+    ) -> Option<StageBHandoff> {
+        let forward = self.best(
+            VelocityDirection::Forward,
+            nomination.rung_index,
+            gains,
+            nominated_rates_q[0],
+        )?;
+        let reverse = self.best(
+            VelocityDirection::Reverse,
+            nomination.rung_index,
+            gains,
+            nominated_rates_q[1],
+        )?;
+        let coverage_mask = u8::from(forward.coverage == CoverageKind::FullCoverage)
+            | (u8::from(reverse.coverage == CoverageKind::FullCoverage) << 1);
+        Some(StageBHandoff {
+            nomination,
+            directional: [forward, reverse],
+            coverage_mask,
+        })
+    }
+}
+
+impl Default for HandoffTrackers {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+const _: () = assert!(core::mem::size_of::<HandoffTrackers>() <= 96);
+
+/// Bounded runtime state replacing the two legacy global-band accumulators.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+pub struct OperatingRegionRuntime {
+    /// Independent forward and reverse model-region folds.
+    pub directional: [DirectionalRegionFold; 2],
+    /// Joint operability fold independent of model validity.
+    pub joint: JointOperableFold,
+    /// Bounded handoff selections.
+    pub handoff: HandoffTrackers,
+}
+
+impl OperatingRegionRuntime {
+    /// Construct empty Stage B operating-region state.
+    pub const fn new() -> Self {
+        Self {
+            directional: [
+                DirectionalRegionFold::new(VelocityDirection::Forward),
+                DirectionalRegionFold::new(VelocityDirection::Reverse),
+            ],
+            joint: JointOperableFold::new(),
+            handoff: HandoffTrackers::new(),
+        }
+    }
+}
+
+impl Default for OperatingRegionRuntime {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+const _: () = assert!(core::mem::size_of::<OperatingRegionRuntime>() <= 304);
+
 /// Fold one executed rung, returning a candidate closed by this observation.
 pub fn observe_directional_rung(
     fold: &mut DirectionalRegionFold,
@@ -446,6 +933,77 @@ fn contiguous_mask(first: u8, count: u8) -> u32 {
     } else {
         ((1_u32 << count) - 1) << first
     }
+}
+
+fn ratio_q16(numerator: u16, denominator: u16) -> u32 {
+    (u32::from(numerator) << 16) / u32::from(denominator.max(1))
+}
+
+fn compare_margin(
+    left: PidGain,
+    right: PidGain,
+    p_start: PidGain,
+    p_top: PidGain,
+) -> core::cmp::Ordering {
+    let left_margin = margin_fraction(left, p_start, p_top);
+    let right_margin = margin_fraction(right, p_start, p_top);
+    (u64::from(left_margin.0) * u64::from(right_margin.1))
+        .cmp(&(u64::from(right_margin.0) * u64::from(left_margin.1)))
+}
+
+fn margin_fraction(p: PidGain, p_start: PidGain, p_top: PidGain) -> (u16, u16) {
+    if u32::from(p.raw()) * u32::from(p.raw()) <= u32::from(p_start.raw()) * u32::from(p_top.raw())
+    {
+        (p.raw(), p_start.raw())
+    } else {
+        (p_top.raw(), p.raw())
+    }
+}
+
+fn direction_index(direction: VelocityDirection) -> usize {
+    match direction {
+        VelocityDirection::Forward => 0,
+        VelocityDirection::Reverse => 1,
+    }
+}
+
+fn choose_ref(
+    current: DirectionalRegionRef,
+    candidate: DirectionalRegionRef,
+    nominated_rung: u8,
+) -> DirectionalRegionRef {
+    let current_distance = ref_distance(current, nominated_rung);
+    let candidate_distance = ref_distance(candidate, nominated_rung);
+    if current.member_mask == 0
+        || candidate_distance < current_distance
+        || (candidate_distance == current_distance
+            && first_member(candidate.member_mask) < first_member(current.member_mask))
+    {
+        candidate
+    } else {
+        current
+    }
+}
+
+fn ref_distance(region: DirectionalRegionRef, nominated_rung: u8) -> u8 {
+    if region.member_mask == 0 {
+        return u8::MAX;
+    }
+    let first = first_member(region.member_mask);
+    let last = last_member(region.member_mask);
+    if nominated_rung < first {
+        first - nominated_rung
+    } else {
+        nominated_rung.saturating_sub(last)
+    }
+}
+
+fn first_member(mask: u32) -> u8 {
+    mask.trailing_zeros() as u8
+}
+
+fn last_member(mask: u32) -> u8 {
+    (u32::BITS - 1 - mask.leading_zeros()) as u8
 }
 
 fn floor_ratio(numerator: i128, denominator: i128) -> Option<i128> {
