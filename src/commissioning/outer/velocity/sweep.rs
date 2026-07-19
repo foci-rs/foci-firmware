@@ -467,6 +467,18 @@ pub(crate) async fn step_velocity_sweep_with_trace<B: CommissioningBackend>(
                     return fail_sweep_with_safety(phase, backend, fault).await;
                 }
             };
+            let diagnostic_kind = velocity_diagnostic_kind(*next_sample_us, *deadline_us);
+            let pid_velocity_actual = if matches!(
+                diagnostic_kind,
+                Some(VelocityDiagnosticKind::PidVelocityActual)
+            ) {
+                match backend.read_register(PID_VELOCITY_ACTUAL).await {
+                    Ok(value) => Some(value as i32),
+                    Err(_) => return fail_sweep(phase, backend, CommissionError::Spi).await,
+                }
+            } else {
+                None
+            };
             if backend
                 .write_register(
                     INTERIM_PIDOUT_TARGET_TORQUE.addr,
@@ -496,17 +508,11 @@ pub(crate) async fn step_velocity_sweep_with_trace<B: CommissioningBackend>(
             {
                 return fail_sweep(phase, backend, CommissionError::InvalidSchedule).await;
             }
-            let diagnostic_kind = velocity_diagnostic_kind(*next_sample_us, *deadline_us);
             let (diagnostic_flag, velocity_diagnostic_value) = match diagnostic_kind {
-                Some(VelocityDiagnosticKind::PidVelocityActual) => {
-                    match backend.read_register(PID_VELOCITY_ACTUAL).await {
-                        Ok(value) => (
-                            crate::trace::stream::VELOCITY_OBSERVATION_FLAG_PID_VELOCITY_ACTUAL_VALID,
-                            value as i32,
-                        ),
-                        Err(_) => return fail_sweep(phase, backend, CommissionError::Spi).await,
-                    }
-                }
+                Some(VelocityDiagnosticKind::PidVelocityActual) => (
+                    crate::trace::stream::VELOCITY_OBSERVATION_FLAG_PID_VELOCITY_ACTUAL_VALID,
+                    pid_velocity_actual.expect("PID diagnostic was read before torque output"),
+                ),
                 Some(VelocityDiagnosticKind::PptmActual) => {
                     if backend
                         .write_register(
@@ -1197,6 +1203,32 @@ mod tests {
                 .filter(|observation| observation.stroke_index & SETTLE_TRACE_STROKE_MARKER == 0)
                 .all(|observation| observation.peak_torque_target_abs == 11)
         );
+    }
+
+    #[test]
+    fn diagnostic_feedback_is_paired_with_the_following_torque_output() {
+        let mut phase = phase();
+        let mut backend = MockBackend::new();
+        let _ = backend
+            .registers
+            .insert(foci_tmc4671::registers::PID_VELOCITY_ACTUAL.addr(), 389);
+        backend.pid_velocity_actual_update_interim_on_read = Some((8, 320));
+
+        let _ = finish_first_moving_capture(&mut phase, &mut backend, 1, 285);
+
+        let last_pid_sample = backend
+            .velocity_trace_observations
+            .iter()
+            .filter(|observation| {
+                observation.stroke_index & SETTLE_TRACE_STROKE_MARKER == 0
+                    && observation.flags
+                        & crate::trace::stream::VELOCITY_OBSERVATION_FLAG_PID_VELOCITY_ACTUAL_VALID
+                        != 0
+            })
+            .next_back()
+            .expect("moving stroke must retain the final PID diagnostic");
+        assert_eq!(last_pid_sample.velocity_diagnostic_value, 389);
+        assert_eq!(last_pid_sample.peak_torque_target_abs, 320);
     }
 
     fn finish_first_moving_capture(

@@ -52,6 +52,10 @@ pub struct MockBackend {
     pub capture_register_reads: usize,
     /// Number of velocity-controller torque-output selector writes.
     pub velocity_controller_output_selects: usize,
+    /// Number of direct velocity-feedback reads.
+    pub pid_velocity_actual_reads: usize,
+    /// Update the interim torque output on a selected velocity-feedback read.
+    pub pid_velocity_actual_update_interim_on_read: Option<(usize, u32)>,
     /// Ordered trace events recorded by the commissioning engine.
     pub trace_events: Vec<crate::trace::events::CommissionTraceEvent, 64>,
     /// Characterization-only raw velocity observations.
@@ -162,6 +166,8 @@ impl MockBackend {
             register_pair_reads: 0,
             capture_register_reads: 0,
             velocity_controller_output_selects: 0,
+            pid_velocity_actual_reads: 0,
+            pid_velocity_actual_update_interim_on_read: None,
             trace_events: Vec::new(),
             #[cfg(feature = "trace")]
             velocity_trace_observations: Vec::new(),
@@ -298,6 +304,20 @@ impl CommissionRegisterIo for MockBackend {
             let val = self.read_position_actual_sequence[self.read_position_actual_pos];
             self.read_position_actual_pos += 1;
             return Ok(val);
+        }
+        if addr == foci_tmc4671::registers::PID_VELOCITY_ACTUAL.addr() {
+            self.pid_velocity_actual_reads += 1;
+            if let Some((selected_read, interim_value)) =
+                self.pid_velocity_actual_update_interim_on_read
+                && self.pid_velocity_actual_reads == selected_read
+            {
+                let _ = self.registers.insert(
+                    foci_tmc4671::registers::INTERIM_PIDOUT_TARGET_TORQUE
+                        .data
+                        .addr(),
+                    interim_value,
+                );
+            }
         }
         if addr == foci_tmc4671::registers::ABN_DECODER_COUNT.addr()
             && self.abn_decoder_count_pos < self.abn_decoder_count_sequence.len()
