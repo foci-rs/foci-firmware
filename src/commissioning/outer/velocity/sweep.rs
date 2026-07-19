@@ -15,8 +15,8 @@ use crate::commissioning::types::{
 use foci_tmc4671::pid::PidGainPair;
 use foci_tmc4671::registers::{
     ABN_DECODER_COUNT, CONFIG_VELOCITY_METER_PPTM_MIN_POS_DEV, INTERIM_ACTUAL_VELOCITY_PPTM,
-    MODE_RAMP_MODE_MOTION, PID_ERROR_PID_VELOCITY_ERROR_SUM, PID_TORQUE_FLUX_TARGET,
-    PID_VELOCITY_ACTUAL, PID_VELOCITY_P_VELOCITY_I, PID_VELOCITY_TARGET,
+    INTERIM_PIDOUT_TARGET_TORQUE, MODE_RAMP_MODE_MOTION, PID_ERROR_PID_VELOCITY_ERROR_SUM,
+    PID_TORQUE_FLUX_TARGET, PID_VELOCITY_ACTUAL, PID_VELOCITY_P_VELOCITY_I, PID_VELOCITY_TARGET,
 };
 
 use super::sweep_analysis::{
@@ -467,8 +467,21 @@ pub(crate) async fn step_velocity_sweep_with_trace<B: CommissioningBackend>(
                     return fail_sweep_with_safety(phase, backend, fault).await;
                 }
             };
-            let torque_target = match backend.read_register(PID_TORQUE_FLUX_TARGET).await {
-                Ok(value) => ((value >> 16) as u16 as i16).unsigned_abs(),
+            if backend
+                .write_register(
+                    INTERIM_PIDOUT_TARGET_TORQUE.addr,
+                    u32::from(INTERIM_PIDOUT_TARGET_TORQUE.sub_addr),
+                )
+                .await
+                .is_err()
+            {
+                return fail_sweep(phase, backend, CommissionError::Spi).await;
+            }
+            let torque_target = match backend
+                .read_register(INTERIM_PIDOUT_TARGET_TORQUE.data)
+                .await
+            {
+                Ok(value) => (value as u16 as i16).unsigned_abs(),
                 Err(_) => return fail_sweep(phase, backend, CommissionError::Spi).await,
             };
             data.peak_torque_target = data.peak_torque_target.max(torque_target);
@@ -495,6 +508,16 @@ pub(crate) async fn step_velocity_sweep_with_trace<B: CommissioningBackend>(
                     }
                 }
                 Some(VelocityDiagnosticKind::PptmActual) => {
+                    if backend
+                        .write_register(
+                            INTERIM_ACTUAL_VELOCITY_PPTM.addr,
+                            u32::from(INTERIM_ACTUAL_VELOCITY_PPTM.sub_addr),
+                        )
+                        .await
+                        .is_err()
+                    {
+                        return fail_sweep(phase, backend, CommissionError::Spi).await;
+                    }
                     match backend
                         .read_register(INTERIM_ACTUAL_VELOCITY_PPTM.data)
                         .await
@@ -1065,9 +1088,12 @@ mod tests {
             backend.set_abn_decoder_count(if cause == 1 { 1_000 } else { 1 });
             if cause == 2 {
                 let hard_limit = current_limit(2_448).raw();
-                let _ = backend
-                    .registers
-                    .insert(PID_TORQUE_FLUX_TARGET.addr(), u32::from(hard_limit) << 16);
+                let _ = backend.registers.insert(
+                    foci_tmc4671::registers::INTERIM_PIDOUT_TARGET_TORQUE
+                        .data
+                        .addr(),
+                    u32::from(hard_limit),
+                );
             }
 
             let terminal = assert_sweep_fault(
@@ -1104,7 +1130,7 @@ mod tests {
             (-11i32) as u32,
         );
 
-        let _ = finish_first_moving_capture(&mut phase, &mut backend, 1, 1);
+        let _ = finish_first_moving_capture(&mut phase, &mut backend, 1, 11);
 
         let OuterPhase::VelocitySweep { data, .. } = &phase else {
             panic!("velocity sweep should remain active");
@@ -1159,11 +1185,18 @@ mod tests {
                     == 0
         }));
         assert!(pptm_samples.iter().all(|(_, observation)| {
-            observation.velocity_diagnostic_value == -11
+            observation.velocity_diagnostic_value == 11
                 && observation.flags
                     & crate::trace::stream::VELOCITY_OBSERVATION_FLAG_PID_VELOCITY_ACTUAL_VALID
                     == 0
         }));
+        assert!(
+            backend
+                .velocity_trace_observations
+                .iter()
+                .filter(|observation| observation.stroke_index & SETTLE_TRACE_STROKE_MARKER == 0)
+                .all(|observation| observation.peak_torque_target_abs == 11)
+        );
     }
 
     fn finish_first_moving_capture(
@@ -1176,8 +1209,8 @@ mod tests {
         backend.set_abn_decoder_count(encoder_count);
         enter_first_capture(phase, backend);
         let _ = backend.registers.insert(
-            PID_TORQUE_FLUX_TARGET.addr(),
-            u32::from(torque_target_abs) << 16,
+            INTERIM_PIDOUT_TARGET_TORQUE.data.addr(),
+            u32::from(torque_target_abs),
         );
         for sample in 1..=256u64 {
             encoder_count += delta_per_sample;
@@ -1507,7 +1540,7 @@ mod tests {
             backend.capture_register_reads,
             4 * (1 + 256 + 1 + usize::try_from(ZERO_SETTLE_US / 1_000).unwrap())
         );
-        assert_eq!(backend.pid_torque_flux_target_reads, 4 * 256);
+        assert_eq!(backend.velocity_controller_output_selects, 4 * 256);
         assert_eq!(
             backend
                 .spi_log

@@ -45,13 +45,13 @@ pub struct MockBackend {
     /// Current register values, keyed by TMC4671 address byte.
     pub registers: heapless::LinearMap<u8, u32, 64>,
     /// Ordered log of every SPI read/write issued during the test.
-    pub spi_log: Vec<SpiOp, 4_096>,
+    pub spi_log: Vec<SpiOp, 8_192>,
     /// Number of paired register-read operations issued during the test.
     pub register_pair_reads: usize,
     /// Number of single-register capture reads issued during the test.
     pub capture_register_reads: usize,
-    /// Number of velocity-sweep controller-output reads issued during the test.
-    pub pid_torque_flux_target_reads: usize,
+    /// Number of velocity-controller torque-output selector writes.
+    pub velocity_controller_output_selects: usize,
     /// Ordered trace events recorded by the commissioning engine.
     pub trace_events: Vec<crate::trace::events::CommissionTraceEvent, 64>,
     /// Characterization-only raw velocity observations.
@@ -161,7 +161,7 @@ impl MockBackend {
             spi_log: Vec::new(),
             register_pair_reads: 0,
             capture_register_reads: 0,
-            pid_torque_flux_target_reads: 0,
+            velocity_controller_output_selects: 0,
             trace_events: Vec::new(),
             #[cfg(feature = "trace")]
             velocity_trace_observations: Vec::new(),
@@ -299,9 +299,6 @@ impl CommissionRegisterIo for MockBackend {
             self.read_position_actual_pos += 1;
             return Ok(val);
         }
-        if addr == foci_tmc4671::registers::PID_TORQUE_FLUX_TARGET.addr() {
-            self.pid_torque_flux_target_reads += 1;
-        }
         if addr == foci_tmc4671::registers::ABN_DECODER_COUNT.addr()
             && self.abn_decoder_count_pos < self.abn_decoder_count_sequence.len()
         {
@@ -358,6 +355,14 @@ impl CommissionRegisterIo for MockBackend {
 
     async fn write_register(&mut self, reg: Register, val: u32) -> Result<(), Self::Error> {
         let addr = reg.addr();
+        if addr
+            == foci_tmc4671::registers::INTERIM_PIDOUT_TARGET_TORQUE
+                .addr
+                .addr()
+            && val == u32::from(foci_tmc4671::registers::INTERIM_PIDOUT_TARGET_TORQUE.sub_addr)
+        {
+            self.velocity_controller_output_selects += 1;
+        }
         self.elapsed_us_value = self
             .elapsed_us_value
             .saturating_add(self.spi_elapsed_step_us);
