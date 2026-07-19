@@ -212,17 +212,24 @@ fn structured_boundary_evidence(
 ) -> Option<StructuredBoundaryEvidence> {
     let diagnostics =
         analyze_stationarity_diagnostics(&data.observations, &mut data.blocker).ok()?;
-    let binding = diagnostics.suffixes[0]?;
+    structured_boundary_from_suffixes(&diagnostics.suffixes)
+}
+
+fn structured_boundary_from_suffixes(
+    suffixes: &[Option<crate::autotune::velocity_measurement::SuffixDiagnostic>; 3],
+) -> Option<StructuredBoundaryEvidence> {
+    let binding = suffixes[0]?;
     if !binding.usable_plateau || binding.slope_passed && binding.lag_one_passed {
         return None;
     }
     let mut passing_suffix_mask = 0_u8;
     let mut common = None::<[i64; 2]>;
-    for (index, diagnostic) in diagnostics.suffixes.iter().enumerate() {
+    for (index, diagnostic) in suffixes.iter().enumerate() {
         let Some(diagnostic) = diagnostic else {
             continue;
         };
-        if diagnostic.usable_plateau {
+        let passed = diagnostic.slope_passed && diagnostic.lag_one_passed;
+        if diagnostic.usable_plateau && (index == 0 || passed) {
             common = match common {
                 None => Some(diagnostic.settled_rate_interval_q),
                 Some(interval) => {
@@ -232,7 +239,7 @@ fn structured_boundary_evidence(
                 }
             };
         }
-        if diagnostic.slope_passed && diagnostic.lag_one_passed {
+        if passed {
             passing_suffix_mask |= 1 << index;
         }
     }
@@ -1335,6 +1342,52 @@ mod tests {
         assert_eq!(terminal.outcome, VelocitySweepOutcome::Fault);
         assert_eq!(terminal.cause, error.status_code());
         terminal
+    }
+
+    #[test]
+    fn structured_boundary_intersects_only_binding_and_passing_suffixes() {
+        let mut data = VelocitySweepData::new(1);
+        for index in 0..256 {
+            let delta = if index >= 192 {
+                if (index / 4) % 2 == 0 { 10 } else { -10 }
+            } else {
+                [1, -1, 0, -1, 1][index % 5]
+            };
+            data.observations.push(delta, 1_000).unwrap();
+        }
+
+        let boundary = structured_boundary_evidence(&mut data)
+            .expect("a passing medium suffix must annotate the binding rejection");
+
+        assert_eq!(boundary.passing_suffix_mask & 0b010, 0b010);
+        assert!(boundary.binding_lag_one_margin_q < 0);
+        assert!(boundary.common_rate_interval_q[0] <= boundary.common_rate_interval_q[1]);
+    }
+
+    #[test]
+    fn failed_longer_suffix_cannot_empty_structured_boundary_intersection() {
+        use crate::autotune::velocity_measurement::SuffixDiagnostic;
+
+        let diagnostic = |interval, slope_passed, lag_one_passed| SuffixDiagnostic {
+            suffix_len: 64,
+            usable_plateau: true,
+            slope_passed,
+            lag_one_passed,
+            settled_rate_interval_q: interval,
+            slope_rejection_margin_q: if slope_passed { 1 } else { -1 },
+            lag_one_rejection_margin_q: if lag_one_passed { 1 } else { -1 },
+        };
+        let suffixes = [
+            Some(diagnostic([0, 10], true, false)),
+            Some(diagnostic([5, 8], true, true)),
+            Some(diagnostic([20, 30], false, false)),
+        ];
+
+        let boundary = structured_boundary_from_suffixes(&suffixes)
+            .expect("a failed longer suffix must not erase passing evidence");
+
+        assert_eq!(boundary.passing_suffix_mask, 0b010);
+        assert_eq!(boundary.common_rate_interval_q, [5, 8]);
     }
 
     #[test]
