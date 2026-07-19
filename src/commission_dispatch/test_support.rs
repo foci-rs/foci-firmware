@@ -61,6 +61,10 @@ pub struct MockBackend {
     /// Characterization-only raw velocity observations.
     #[cfg(feature = "trace")]
     pub velocity_trace_observations: Vec<crate::trace::stream::VelocityTraceObservation, 2_048>,
+    /// Canonical Stage B records emitted into the trace stream.
+    #[cfg(feature = "trace-velocity-sweep")]
+    pub velocity_sweep_trace_records:
+        Vec<crate::ankyra::velocity_sweep_encoding::VelocitySweepCanonicalRecord, 128>,
     /// Current state of the TMC4671 enable pin.
     pub enable_pin: bool,
     /// Log of every `delay_us` call, in order.
@@ -171,6 +175,8 @@ impl MockBackend {
             trace_events: Vec::new(),
             #[cfg(feature = "trace")]
             velocity_trace_observations: Vec::new(),
+            #[cfg(feature = "trace-velocity-sweep")]
+            velocity_sweep_trace_records: Vec::new(),
             enable_pin: false,
             delay_us_log: Vec::new(),
             fail_on_write: None,
@@ -571,6 +577,14 @@ impl CommissionTrace for MockBackend {
         observation: crate::trace::stream::VelocityTraceObservation,
     ) {
         self.velocity_trace_observations.push(observation).ok();
+    }
+
+    #[cfg(feature = "trace-velocity-sweep")]
+    fn record_velocity_sweep_trace_record(
+        &mut self,
+        record: crate::ankyra::velocity_sweep_encoding::VelocitySweepCanonicalRecord,
+    ) {
+        self.velocity_sweep_trace_records.push(record).ok();
     }
 }
 

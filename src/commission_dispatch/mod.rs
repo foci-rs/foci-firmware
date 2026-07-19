@@ -997,6 +997,10 @@ pub async fn drive_commission_result_with_stage_b<B: CommissioningBackend>(
         other => return drive_commission_result(other, engine, backend, state, pwm_maxcnt).await,
     };
     let dispatch = stage_b::apply_stage_b_terminal(terminal, channel, stage_b_candidate);
+    engine
+        .as_mut()
+        .expect("engine slot is None on VelocitySweepTerminal")
+        .emit_stage_b_terminal_trace(backend, dispatch.terminal, dispatch.reproduction);
     match drive_commission_result(
         StepResult::VelocitySweepTerminal(dispatch.terminal),
         engine,

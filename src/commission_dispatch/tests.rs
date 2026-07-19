@@ -1786,6 +1786,92 @@ fn stage_b_terminal_promotes_only_a_matching_second_run() {
 
 #[cfg(feature = "trace-velocity-sweep")]
 #[test]
+fn stage_b_dispatch_traces_reproduction_before_one_authoritative_terminal() {
+    pollster::block_on(async {
+        use crate::commissioning::outer::velocity::reproduction::{
+            StageBCandidateSlot, StageBCandidateSummary, StageBPlanIdentity,
+        };
+        use crate::commissioning::types::VelocitySweepOutcome;
+
+        let _guard = test_support::SHARED_STATE_MUTEX.lock().await;
+        let mut terminal = sample_velocity_sweep_terminal(VelocitySweepOutcome::CompleteCandidate);
+        terminal.selected_memberships = [0b11100, 0b11100, 0b11100];
+        terminal.nominated_p = 724;
+        terminal.selected_intervals = [[10, 20], [-20, -10]];
+        let mut slot = StageBCandidateSlot::new();
+        slot.observe_sufficient(StageBCandidateSummary {
+            identity: StageBPlanIdentity {
+                channel: 0,
+                build_revision:
+                    crate::commissioning::outer::velocity::reproduction::STAGE_B_BUILD_REVISION,
+                schema_revision: crate::commissioning::outer::velocity::reproduction::STAGE_B_EVIDENCE_SCHEMA_REVISION,
+                plan_digest: terminal.plan_digest,
+            },
+            forward_membership: terminal.selected_memberships[0],
+            reverse_membership: terminal.selected_memberships[1],
+            joint_membership: terminal.selected_memberships[2],
+            nominated_p: terminal.nominated_p,
+            forward_interval: terminal.selected_intervals[0],
+            reverse_interval: terminal.selected_intervals[1],
+            run_started_us: terminal.run_started_us.saturating_sub(100),
+            run_completed_us: terminal.run_completed_us.saturating_sub(100),
+            run_digest: terminal.digest ^ 0x55aa,
+        });
+
+        let mut backend = MockBackend::new();
+        let (_, _, mut gains) = fresh_state_locals();
+        let mut calibrated = true;
+        let mut motor_enabled = true;
+        let mut state = dispatch_state(&mut calibrated, &mut motor_enabled, &mut gains);
+        let mut engine = Some(CommissioningEngine::new_outer(
+            0,
+            sample_outer_params(),
+            sample_entry_snapshot(),
+        ));
+        seed_motor_sentinel(&mut backend).await;
+
+        let outcome = drive_commission_result_with_stage_b(
+            StepResult::VelocitySweepTerminal(terminal),
+            &mut engine,
+            &mut backend,
+            &mut state,
+            4095,
+            0,
+            &mut slot,
+        )
+        .await;
+
+        let CommissionOutcome::Terminal {
+            reply: ReplyPayload::VelocitySweepTerminal { terminal, .. },
+            ..
+        } = outcome
+        else {
+            panic!("matching second run must terminate")
+        };
+        assert_eq!(terminal.outcome, VelocitySweepOutcome::Complete);
+        let kinds: std::vec::Vec<u8> = backend
+            .velocity_sweep_trace_records
+            .iter()
+            .map(|record| record.as_bytes()[0])
+            .collect();
+        assert_eq!(kinds, [9, 8]);
+        let traced_terminal = backend
+            .velocity_sweep_trace_records
+            .last()
+            .expect("authoritative terminal trace");
+        assert_eq!(
+            *traced_terminal,
+            crate::commissioning::outer::velocity::sweep_reporting::encode_velocity_sweep_terminal(
+                terminal,
+                backend.mechanical_encoder_quadrature_counts_per_rev_value,
+                backend.tmc_config.pwm_freq_hz(),
+            )
+        );
+    });
+}
+
+#[cfg(feature = "trace-velocity-sweep")]
+#[test]
 fn stage_b_terminal_mismatch_replaces_candidate_and_insufficient_clears_it() {
     use crate::commission_dispatch::stage_b::{
         STAGE_B_CAUSE_REPRODUCTION_MISMATCH, apply_stage_b_terminal,

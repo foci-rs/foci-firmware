@@ -781,6 +781,66 @@ impl CommissioningEngine {
         }
     }
 
+    fn emit_velocity_sweep_terminal_lifecycle<B: CommissioningBackend>(
+        &mut self,
+        backend: &mut B,
+        terminal: crate::commissioning::types::VelocitySweepTerminal,
+    ) {
+        let level = match terminal.outcome {
+            crate::commissioning::types::VelocitySweepOutcome::CompleteCandidate
+            | crate::commissioning::types::VelocitySweepOutcome::Complete => TraceEventLevel::Info,
+            crate::commissioning::types::VelocitySweepOutcome::Inconclusive
+            | crate::commissioning::types::VelocitySweepOutcome::RejectedPlanMismatch => {
+                TraceEventLevel::Warn
+            }
+            crate::commissioning::types::VelocitySweepOutcome::Fault => TraceEventLevel::Error,
+        };
+        self.emit_trace_phase_end(backend, PHASE_END_OK, TraceEventLevel::Info);
+        backend.record_commission_trace_event(CommissionTraceEvent {
+            level,
+            event_id: EVENT_COMMISSION_VELOCITY_SWEEP_TERMINAL,
+            engine_kind: EngineKind::OuterTune,
+            payload: [terminal.cause.into(), terminal.digest as i32],
+            payload_count: 2,
+        });
+        if terminal.outcome == crate::commissioning::types::VelocitySweepOutcome::Complete {
+            backend.record_commission_trace_event(CommissionTraceEvent {
+                level: TraceEventLevel::Info,
+                event_id: EVENT_COMMISSION_VELOCITY_SWEEP_COMPLETE,
+                engine_kind: EngineKind::OuterTune,
+                payload: [terminal.digest as i32, (terminal.digest >> 32) as i32],
+                payload_count: 2,
+            });
+        }
+        // VelocitySweepOutcome and its phase-local cause deliberately do not share the
+        // CommissionStatus/CommissionError namespace. The dedicated sweep event owns
+        // this trace lifecycle for complete, inconclusive, and fault outcomes alike.
+        self.trace_run.terminal = true;
+    }
+
+    /// Emit the board-authoritative Stage B comparison and terminal after candidate policy.
+    #[cfg(feature = "trace-velocity-sweep")]
+    pub(crate) fn emit_stage_b_terminal_trace<B: CommissioningBackend>(
+        &mut self,
+        backend: &mut B,
+        terminal: crate::commissioning::types::VelocitySweepTerminal,
+        reproduction: Option<crate::commission_dispatch::stage_b::StageBReproductionReport>,
+    ) {
+        if let Some(report) = reproduction {
+            backend.record_velocity_sweep_trace_record(
+                crate::commission_dispatch::stage_b::encode_stage_b_reproduction(report),
+            );
+        }
+        backend.record_velocity_sweep_trace_record(
+            crate::commissioning::outer::velocity::sweep_reporting::encode_velocity_sweep_terminal(
+                terminal,
+                backend.mechanical_encoder_quadrature_counts_per_rev(),
+                backend.tmc_config().pwm_freq_hz(),
+            ),
+        );
+        self.emit_velocity_sweep_terminal_lifecycle(backend, terminal);
+    }
+
     fn emit_trace_after_step<B: CommissioningBackend>(
         &mut self,
         backend: &mut B,
@@ -854,48 +914,10 @@ impl CommissioningEngine {
                 }
             }
             StepResult::VelocitySweepTerminal(terminal) => {
-                #[cfg(all(feature = "trace", feature = "trace-velocity-sweep"))]
-                backend.record_velocity_sweep_trace_record(
-                    crate::commissioning::outer::velocity::sweep_reporting::encode_velocity_sweep_terminal(
-                        *terminal,
-                        backend.mechanical_encoder_quadrature_counts_per_rev(),
-                        backend.tmc_config().pwm_freq_hz(),
-                    ),
-                );
-                let level = match terminal.outcome {
-                    crate::commissioning::types::VelocitySweepOutcome::CompleteCandidate
-                    | crate::commissioning::types::VelocitySweepOutcome::Complete => {
-                        TraceEventLevel::Info
-                    }
-                    crate::commissioning::types::VelocitySweepOutcome::Inconclusive
-                    | crate::commissioning::types::VelocitySweepOutcome::RejectedPlanMismatch => {
-                        TraceEventLevel::Warn
-                    }
-                    crate::commissioning::types::VelocitySweepOutcome::Fault => {
-                        TraceEventLevel::Error
-                    }
-                };
-                self.emit_trace_phase_end(backend, PHASE_END_OK, TraceEventLevel::Info);
-                backend.record_commission_trace_event(CommissionTraceEvent {
-                    level,
-                    event_id: EVENT_COMMISSION_VELOCITY_SWEEP_TERMINAL,
-                    engine_kind: EngineKind::OuterTune,
-                    payload: [terminal.cause.into(), terminal.digest as i32],
-                    payload_count: 2,
-                });
-                if terminal.outcome == crate::commissioning::types::VelocitySweepOutcome::Complete {
-                    backend.record_commission_trace_event(CommissionTraceEvent {
-                        level: TraceEventLevel::Info,
-                        event_id: EVENT_COMMISSION_VELOCITY_SWEEP_COMPLETE,
-                        engine_kind: EngineKind::OuterTune,
-                        payload: [terminal.digest as i32, (terminal.digest >> 32) as i32],
-                        payload_count: 2,
-                    });
-                }
-                // VelocitySweepOutcome and its phase-local cause deliberately do not share the
-                // CommissionStatus/CommissionError namespace. The dedicated sweep event owns
-                // this trace lifecycle for complete, inconclusive, and fault outcomes alike.
-                self.trace_run.terminal = true;
+                #[cfg(feature = "trace-velocity-sweep")]
+                let _ = terminal;
+                #[cfg(not(feature = "trace-velocity-sweep"))]
+                self.emit_velocity_sweep_terminal_lifecycle(backend, *terminal);
             }
             StepResult::CommissionDone(result) => {
                 self.emit_trace_phase_end(backend, PHASE_END_OK, TraceEventLevel::Info);
@@ -1840,10 +1862,12 @@ mod tests {
         let mut backend = crate::commission_dispatch::test_support::MockBackend::new();
 
         engine.emit_trace_start(&mut backend);
-        engine.emit_trace_after_step(
-            &mut backend,
-            &StepResult::VelocitySweepTerminal(sample_inconclusive_sweep_terminal()),
-        );
+        let terminal = sample_inconclusive_sweep_terminal();
+        engine.emit_trace_after_step(&mut backend, &StepResult::VelocitySweepTerminal(terminal));
+        #[cfg(feature = "trace-velocity-sweep")]
+        assert!(backend.velocity_sweep_trace_records.is_empty());
+        #[cfg(feature = "trace-velocity-sweep")]
+        engine.emit_stage_b_terminal_trace(&mut backend, terminal, None);
 
         let events = &backend.trace_events;
         assert_eq!(events.len(), 4);
@@ -1879,6 +1903,8 @@ mod tests {
 
         engine.emit_trace_start(&mut backend);
         engine.emit_trace_after_step(&mut backend, &StepResult::VelocitySweepTerminal(terminal));
+        #[cfg(feature = "trace-velocity-sweep")]
+        engine.emit_stage_b_terminal_trace(&mut backend, terminal, None);
 
         let events = &backend.trace_events;
         assert_eq!(events.len(), 4);

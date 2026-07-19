@@ -185,7 +185,7 @@ pub fn apply_stage_b_terminal(
     }
 }
 
-fn encode_stage_b_reproduction(
+pub(crate) fn encode_stage_b_reproduction(
     report: StageBReproductionReport,
 ) -> crate::ankyra::velocity_sweep_encoding::VelocitySweepCanonicalRecord {
     let mut record = crate::ankyra::velocity_sweep_encoding::VelocitySweepCanonicalRecord::new();

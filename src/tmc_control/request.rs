@@ -90,6 +90,12 @@ where
 
     /// Emit a host reply using board-local sender glue.
     fn emit_reply(&mut self, payload: ReplyPayload);
+    /// Record one canonical Stage B record in the trace stream.
+    #[cfg(feature = "trace-velocity-sweep")]
+    fn record_velocity_sweep_trace_record(
+        &mut self,
+        record: crate::ankyra::velocity_sweep_encoding::VelocitySweepCanonicalRecord,
+    );
     /// Emit a board-local motor arm event, if supported.
     fn emit_motor_arm_event(&mut self) {}
     /// Emit a board-local motor disarm event, if supported.
@@ -750,9 +756,15 @@ where
             };
             #[cfg(feature = "trace-velocity-sweep")]
             {
+                let planned_event = stage_b_preflight.planned_event();
+                board.record_velocity_sweep_trace_record(
+                    crate::commissioning::outer::velocity::sweep_reporting::encode_velocity_sweep_event(
+                        planned_event,
+                    ),
+                );
                 board.emit_reply(ReplyPayload::VelocitySweepEvent {
                     oid,
-                    event: stage_b_preflight.planned_event(),
+                    event: planned_event,
                 });
                 runtime.set_commission_engine(
                     CommissioningEngine::new_outer_for_tmc_with_stage_b_preflight(
@@ -1151,6 +1163,9 @@ mod tests {
         register_result: Result<(), crate::tmc_control::dispatch::RegisterRequestError>,
         arm_result: Result<(), CommissionError>,
         replies: std::vec::Vec<ReplyPayload>,
+        #[cfg(feature = "trace-velocity-sweep")]
+        velocity_sweep_records:
+            std::vec::Vec<crate::ankyra::velocity_sweep_encoding::VelocitySweepCanonicalRecord>,
         busy_diagnostic_requests: std::vec::Vec<TmcRequest>,
         diagnostic_calls: u8,
         arm_calls: u8,
@@ -1178,6 +1193,8 @@ mod tests {
                 register_result: Ok(()),
                 arm_result: Ok(()),
                 replies: std::vec::Vec::new(),
+                #[cfg(feature = "trace-velocity-sweep")]
+                velocity_sweep_records: std::vec::Vec::new(),
                 busy_diagnostic_requests: std::vec::Vec::new(),
                 diagnostic_calls: 0,
                 arm_calls: 0,
@@ -1252,6 +1269,14 @@ mod tests {
 
         fn emit_reply(&mut self, payload: ReplyPayload) {
             self.replies.push(payload);
+        }
+
+        #[cfg(feature = "trace-velocity-sweep")]
+        fn record_velocity_sweep_trace_record(
+            &mut self,
+            record: crate::ankyra::velocity_sweep_encoding::VelocitySweepCanonicalRecord,
+        ) {
+            self.velocity_sweep_records.push(record);
         }
 
         fn emit_motor_arm_event(&mut self) {
@@ -1893,6 +1918,46 @@ mod tests {
             );
             assert_eq!(outcome.tail, TmcControlRequestTail::SkipTickTail);
             assert!(runtime.phase_advance_active_for_test());
+        });
+    }
+
+    #[cfg(feature = "trace-velocity-sweep")]
+    #[test]
+    fn admitted_stage_b_plan_is_recorded_before_engine_execution() {
+        run_request_test(async {
+            use crate::commissioning::outer::velocity::reproduction::StageBCandidateSlot;
+            use crate::commissioning::outer::velocity::sweep_reporting::encode_velocity_sweep_event;
+
+            let mut board = RecordingBoard::skip_tick_tail();
+            let tmc_state = tmc_channel0();
+            tmc_state
+                .configure_motion_scale(stepper_channel0(), 1_000, 3_200)
+                .expect("valid motion scale");
+            tmc_state.store_current_limit(current_limit(2_816), Relaxed);
+            let mut runtime = TmcControlRuntime::new_for_channel(0);
+            runtime.set_motor_enabled_for_test(true);
+            runtime.set_calibrated_for_test(true);
+            let mut slot = StageBCandidateSlot::new();
+            let mut tmc = Tmc4671Spi::new(RuntimeMockSpi::default());
+
+            handle_tmc_control_request_with_stage_b(
+                tune_request(),
+                TmcPreRequestDisposition::ContinueRequest,
+                &mut runtime,
+                &mut slot,
+                &mut tmc,
+                &mut board,
+            )
+            .await;
+
+            let ReplyPayload::VelocitySweepEvent { event, .. } = board.replies[0] else {
+                panic!("accepted Stage B request must publish its plan")
+            };
+            assert_eq!(
+                board.velocity_sweep_records,
+                [encode_velocity_sweep_event(event)]
+            );
+            assert!(runtime.is_commission_active());
         });
     }
 
