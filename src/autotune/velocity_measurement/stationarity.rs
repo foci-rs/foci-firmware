@@ -83,6 +83,19 @@ pub struct StationarityDiagnostics {
     pub suffixes: [Option<SuffixDiagnostic>; 3],
 }
 
+/// Compact non-binding evidence that longer suffixes bound short-scale structure.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+pub struct StructuredStationarityEvidence {
+    /// Bit set for each declared suffix that passes every stationarity gate.
+    pub passing_suffix_mask: u8,
+    /// Common settled-rate interval shared by the binding and passing suffixes.
+    pub common_rate_interval_q: [i64; 2],
+    /// Signed slope rejection margin from the binding 64-sample suffix.
+    pub binding_slope_margin_q: i64,
+    /// Signed lag-one rejection margin from the binding 64-sample suffix.
+    pub binding_lag_one_margin_q: i32,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct StationarityMetrics {
     slope_q: i64,
@@ -113,14 +126,18 @@ pub enum StationarityWorkPoll {
 
 #[derive(Debug, Clone, Copy)]
 enum StationarityWorkStage {
-    Idle,
+    Idle {
+        collect_structured: bool,
+    },
     Blocking {
+        collect_structured: bool,
         suffix_index: u8,
         suffix_start: u16,
         suffix_len: u16,
         next_index: u16,
     },
     Regression {
+        collect_structured: bool,
         suffix_index: u8,
         suffix_start: u16,
         suffix_len: u16,
@@ -136,6 +153,7 @@ enum StationarityWorkStage {
         sum_xy: i128,
     },
     Residual {
+        collect_structured: bool,
         suffix_index: u8,
         suffix_start: u16,
         suffix_len: u16,
@@ -155,25 +173,101 @@ enum StationarityWorkStage {
     Done,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct StructuredStationarityAccumulator {
+    binding_exclusion: StationarityExclusion,
+    passing_suffix_mask: u8,
+    common_interval_valid: bool,
+    common_rate_interval_q: [i64; 2],
+    binding_slope_margin_q: i64,
+    binding_lag_one_margin_q: i32,
+}
+
+impl StructuredStationarityAccumulator {
+    fn new(binding_exclusion: StationarityExclusion, binding: SuffixDiagnostic) -> Self {
+        Self {
+            binding_exclusion,
+            passing_suffix_mask: 0,
+            common_interval_valid: binding.usable_plateau,
+            common_rate_interval_q: binding.settled_rate_interval_q,
+            binding_slope_margin_q: binding.slope_rejection_margin_q,
+            binding_lag_one_margin_q: binding.lag_one_rejection_margin_q,
+        }
+    }
+
+    fn observe(&mut self, suffix_index: u8, diagnostic: SuffixDiagnostic) {
+        if !(diagnostic.usable_plateau && diagnostic.slope_passed && diagnostic.lag_one_passed) {
+            return;
+        }
+        self.passing_suffix_mask |= 1 << suffix_index;
+        if !self.common_interval_valid {
+            return;
+        }
+        let low = self.common_rate_interval_q[0].max(diagnostic.settled_rate_interval_q[0]);
+        let high = self.common_rate_interval_q[1].min(diagnostic.settled_rate_interval_q[1]);
+        self.common_interval_valid = low <= high;
+        self.common_rate_interval_q = [low, high];
+    }
+
+    fn evidence(self) -> Option<StructuredStationarityEvidence> {
+        if !self.common_interval_valid || self.passing_suffix_mask & !1 == 0 {
+            return None;
+        }
+        Some(StructuredStationarityEvidence {
+            passing_suffix_mask: self.passing_suffix_mask,
+            common_rate_interval_q: self.common_rate_interval_q,
+            binding_slope_margin_q: self.binding_slope_margin_q,
+            binding_lag_one_margin_q: self.binding_lag_one_margin_q,
+        })
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+enum StationarityWorkOutput {
+    Empty,
+    Selected(StationarySuffix),
+    Structured(StructuredStationarityAccumulator),
+}
+
 /// Resumable nested-suffix stationarity analysis for a fixed capture.
 #[derive(Debug, Clone, Copy)]
 pub struct StationarityWork {
     stage: StationarityWorkStage,
-    selected: Option<StationarySuffix>,
+    output: StationarityWorkOutput,
 }
 
 impl StationarityWork {
     /// Construct an idle work item.
     pub const fn new() -> Self {
         Self {
-            stage: StationarityWorkStage::Idle,
-            selected: None,
+            stage: StationarityWorkStage::Idle {
+                collect_structured: false,
+            },
+            output: StationarityWorkOutput::Empty,
         }
     }
 
     /// Reset all progress before analyzing another fixed capture.
     pub fn reset(&mut self) {
         *self = Self::new();
+    }
+
+    /// Reset progress and retain compact structured-boundary diagnostics.
+    pub fn reset_with_structured_diagnostics(&mut self) {
+        *self = Self {
+            stage: StationarityWorkStage::Idle {
+                collect_structured: true,
+            },
+            output: StationarityWorkOutput::Empty,
+        };
+    }
+
+    /// Return compact structured-boundary evidence after completed work.
+    pub fn structured_evidence(&self) -> Option<StructuredStationarityEvidence> {
+        match self.output {
+            StationarityWorkOutput::Structured(accumulator) => accumulator.evidence(),
+            StationarityWorkOutput::Empty | StationarityWorkOutput::Selected(_) => None,
+        }
     }
 
     /// Advance analysis by at most [`STATIONARITY_WORK_OBSERVATIONS_PER_STEP`]
@@ -186,14 +280,20 @@ impl StationarityWork {
     where
         S: VelocityObservationSource + ?Sized,
     {
-        if matches!(self.stage, StationarityWorkStage::Idle) {
+        if let StationarityWorkStage::Idle { collect_structured } = self.stage {
             let Some((suffix_index, suffix_len)) = first_available_suffix(observations) else {
                 self.stage = StationarityWorkStage::Done;
                 return Ok(StationarityWorkPoll::Complete(
                     StationarityResult::Excluded(StationarityExclusion::TooFewDecorrelatedBlocks),
                 ));
             };
-            self.start_suffix(observations, blocker, suffix_index, suffix_len)?;
+            self.start_suffix(
+                observations,
+                blocker,
+                suffix_index,
+                suffix_len,
+                collect_structured,
+            )?;
         }
 
         match self.stage {
@@ -201,7 +301,9 @@ impl StationarityWork {
             StationarityWorkStage::Regression { .. } => self.poll_regression(observations),
             StationarityWorkStage::Residual { .. } => self.poll_residual(observations, blocker),
             StationarityWorkStage::Done => Err(VelocityMeasurementError::ArithmeticOverflow),
-            StationarityWorkStage::Idle => unreachable!("idle work starts before dispatch"),
+            StationarityWorkStage::Idle { .. } => {
+                unreachable!("idle work starts before dispatch")
+            }
         }
     }
 
@@ -211,6 +313,7 @@ impl StationarityWork {
         blocker: &mut DyadicBlocker<LEVELS>,
         suffix_index: u8,
         suffix_len: u16,
+        collect_structured: bool,
     ) -> Result<(), VelocityMeasurementError>
     where
         S: VelocityObservationSource + ?Sized,
@@ -222,6 +325,7 @@ impl StationarityWork {
             .and_then(|value| u16::try_from(value).ok())
             .ok_or(VelocityMeasurementError::ArithmeticOverflow)?;
         self.stage = StationarityWorkStage::Blocking {
+            collect_structured,
             suffix_index,
             suffix_start,
             suffix_len,
@@ -239,6 +343,7 @@ impl StationarityWork {
         S: VelocityObservationSource + ?Sized,
     {
         let StationarityWorkStage::Blocking {
+            collect_structured,
             suffix_index,
             suffix_start,
             suffix_len,
@@ -265,6 +370,7 @@ impl StationarityWork {
         }
         if next_index < end {
             self.stage = StationarityWorkStage::Blocking {
+                collect_structured,
                 suffix_index,
                 suffix_start,
                 suffix_len,
@@ -279,6 +385,9 @@ impl StationarityWork {
             } else {
                 StationarityExclusion::NoBlockingPlateau
             };
+            if matches!(self.output, StationarityWorkOutput::Structured(_)) {
+                return self.advance_structured(observations, blocker, suffix_index, None);
+            }
             return Ok(self.finish_on_exclusion(exclusion, suffix_index));
         };
         let block_observations = 1u16
@@ -286,12 +395,16 @@ impl StationarityWork {
             .ok_or(VelocityMeasurementError::ArithmeticOverflow)?;
         let block_count = suffix_len / block_observations;
         if usize::from(block_count) < VELOCITY_MIN_SELECTED_BLOCKS as usize {
+            if matches!(self.output, StationarityWorkOutput::Structured(_)) {
+                return self.advance_structured(observations, blocker, suffix_index, None);
+            }
             return Ok(self.finish_on_exclusion(
                 StationarityExclusion::TooFewDecorrelatedBlocks,
                 suffix_index,
             ));
         }
         self.stage = StationarityWorkStage::Regression {
+            collect_structured,
             suffix_index,
             suffix_start,
             suffix_len,
@@ -317,6 +430,7 @@ impl StationarityWork {
         S: VelocityObservationSource + ?Sized,
     {
         let StationarityWorkStage::Regression {
+            collect_structured,
             suffix_index,
             suffix_start,
             suffix_len,
@@ -393,6 +507,7 @@ impl StationarityWork {
         }
         if next_block < block_count {
             self.stage = StationarityWorkStage::Regression {
+                collect_structured,
                 suffix_index,
                 suffix_start,
                 suffix_len,
@@ -428,6 +543,7 @@ impl StationarityWork {
             return Err(VelocityMeasurementError::ArithmeticOverflow);
         }
         self.stage = StationarityWorkStage::Residual {
+            collect_structured,
             suffix_index,
             suffix_start,
             suffix_len,
@@ -456,6 +572,7 @@ impl StationarityWork {
         S: VelocityObservationSource + ?Sized,
     {
         let StationarityWorkStage::Residual {
+            collect_structured,
             suffix_index,
             suffix_start,
             suffix_len,
@@ -520,6 +637,7 @@ impl StationarityWork {
         }
         if next_block < block_count {
             self.stage = StationarityWorkStage::Residual {
+                collect_structured,
                 suffix_index,
                 suffix_start,
                 suffix_len,
@@ -541,7 +659,7 @@ impl StationarityWork {
         let selection = blocker
             .select_plateau()
             .ok_or(VelocityMeasurementError::ArithmeticOverflow)?;
-        let metrics = finish_stationarity_metrics(
+        let metrics = calculate_stationarity_metrics(
             block_count as usize,
             denominator,
             slope_per_us,
@@ -552,17 +670,48 @@ impl StationarityWork {
         );
         match metrics {
             Ok(metrics) => {
-                self.selected = Some(StationarySuffix {
-                    selection,
-                    suffix_len,
-                    slope_q: metrics.slope_q,
-                    slope_half_width_q: metrics.slope_half_width_q,
-                    lag_one_q: metrics.lag_one_q,
-                    lag_one_half_width_q: metrics.lag_one_half_width_q,
-                    residual_magnitude_q2: metrics.residual_magnitude_q2,
-                    tested_suffixes: suffix_index.saturating_add(1),
-                });
-                self.advance_or_complete(observations, blocker, suffix_index)
+                let diagnostic = suffix_diagnostic_from_metrics(selection, suffix_len, metrics)?;
+                match classify_stationarity_metrics(metrics) {
+                    Ok(metrics) => {
+                        if let StationarityWorkOutput::Structured(_) = self.output {
+                            return self.advance_structured(
+                                observations,
+                                blocker,
+                                suffix_index,
+                                Some(diagnostic),
+                            );
+                        }
+                        self.output = StationarityWorkOutput::Selected(StationarySuffix {
+                            selection,
+                            suffix_len,
+                            slope_q: metrics.slope_q,
+                            slope_half_width_q: metrics.slope_half_width_q,
+                            lag_one_q: metrics.lag_one_q,
+                            lag_one_half_width_q: metrics.lag_one_half_width_q,
+                            residual_magnitude_q2: metrics.residual_magnitude_q2,
+                            tested_suffixes: suffix_index.saturating_add(1),
+                        });
+                        self.advance_or_complete(
+                            observations,
+                            blocker,
+                            suffix_index,
+                            collect_structured,
+                        )
+                    }
+                    Err(exclusion) if collect_structured && suffix_index == 0 => {
+                        self.output = StationarityWorkOutput::Structured(
+                            StructuredStationarityAccumulator::new(exclusion, diagnostic),
+                        );
+                        self.advance_structured(observations, blocker, suffix_index, None)
+                    }
+                    Err(_) if matches!(self.output, StationarityWorkOutput::Structured(_)) => {
+                        self.advance_structured(observations, blocker, suffix_index, None)
+                    }
+                    Err(exclusion) => Ok(self.finish_on_exclusion(exclusion, suffix_index)),
+                }
+            }
+            Err(_) if matches!(self.output, StationarityWorkOutput::Structured(_)) => {
+                self.advance_structured(observations, blocker, suffix_index, None)
             }
             Err(exclusion) => Ok(self.finish_on_exclusion(exclusion, suffix_index)),
         }
@@ -573,8 +722,9 @@ impl StationarityWork {
         exclusion: StationarityExclusion,
         suffix_index: u8,
     ) -> StationarityWorkPoll {
-        if let Some(mut usable) = self.selected {
+        if let StationarityWorkOutput::Selected(mut usable) = self.output {
             usable.tested_suffixes = suffix_index.saturating_add(1);
+            self.output = StationarityWorkOutput::Selected(usable);
             self.stage = StationarityWorkStage::Done;
             return StationarityWorkPoll::Complete(StationarityResult::Usable(usable));
         }
@@ -587,6 +737,7 @@ impl StationarityWork {
         observations: &S,
         blocker: &mut DyadicBlocker<LEVELS>,
         suffix_index: u8,
+        collect_structured: bool,
     ) -> Result<StationarityWorkPoll, VelocityMeasurementError>
     where
         S: VelocityObservationSource + ?Sized,
@@ -595,17 +746,54 @@ impl StationarityWork {
         if let Some(&suffix_len) = VELOCITY_SUFFIX_LENGTHS.get(usize::from(next_index))
             && usize::from(suffix_len) <= observations.observation_len()
         {
-            self.start_suffix(observations, blocker, next_index, suffix_len)?;
+            self.start_suffix(
+                observations,
+                blocker,
+                next_index,
+                suffix_len,
+                collect_structured,
+            )?;
             return Ok(StationarityWorkPoll::Pending);
         }
-        let mut result = self
-            .selected
-            .ok_or(VelocityMeasurementError::ArithmeticOverflow)?;
+        let StationarityWorkOutput::Selected(mut result) = self.output else {
+            return Err(VelocityMeasurementError::ArithmeticOverflow);
+        };
         result.tested_suffixes = next_index;
+        self.output = StationarityWorkOutput::Selected(result);
         self.stage = StationarityWorkStage::Done;
         Ok(StationarityWorkPoll::Complete(StationarityResult::Usable(
             result,
         )))
+    }
+
+    fn advance_structured<const LEVELS: usize, S>(
+        &mut self,
+        observations: &S,
+        blocker: &mut DyadicBlocker<LEVELS>,
+        suffix_index: u8,
+        diagnostic: Option<SuffixDiagnostic>,
+    ) -> Result<StationarityWorkPoll, VelocityMeasurementError>
+    where
+        S: VelocityObservationSource + ?Sized,
+    {
+        let StationarityWorkOutput::Structured(mut accumulator) = self.output else {
+            return Err(VelocityMeasurementError::ArithmeticOverflow);
+        };
+        if let Some(diagnostic) = diagnostic {
+            accumulator.observe(suffix_index, diagnostic);
+        }
+        self.output = StationarityWorkOutput::Structured(accumulator);
+        let next_index = suffix_index.saturating_add(1);
+        if let Some(&suffix_len) = VELOCITY_SUFFIX_LENGTHS.get(usize::from(next_index))
+            && usize::from(suffix_len) <= observations.observation_len()
+        {
+            self.start_suffix(observations, blocker, next_index, suffix_len, true)?;
+            return Ok(StationarityWorkPoll::Pending);
+        }
+        self.stage = StationarityWorkStage::Done;
+        Ok(StationarityWorkPoll::Complete(
+            StationarityResult::Excluded(accumulator.binding_exclusion),
+        ))
     }
 }
 
@@ -719,6 +907,14 @@ where
         selection.variance_of_mean_q2,
     )
     .map_err(|_| VelocityMeasurementError::ArithmeticOverflow)?;
+    suffix_diagnostic_from_metrics(selection, suffix_len, metrics)
+}
+
+fn suffix_diagnostic_from_metrics(
+    selection: PlateauSelection,
+    suffix_len: u16,
+    metrics: StationarityMetrics,
+) -> Result<SuffixDiagnostic, VelocityMeasurementError> {
     let confidence = estimate_confidence(selection, 3)?;
     let mean_rate_q = selection.exact_totals.rate_q()?;
     let half_width = i64::try_from(confidence.half_width_rate_q)
@@ -939,28 +1135,6 @@ fn calculate_stationarity_metrics_from_source(
         family_size,
         blocking_variance_of_mean_q2,
     )
-}
-
-#[allow(clippy::too_many_arguments)]
-fn finish_stationarity_metrics(
-    block_count: usize,
-    denominator: i128,
-    slope_per_us: f32,
-    residual_sum_q2: f32,
-    lag_product_sum_q2: f32,
-    family_size: u16,
-    blocking_variance_of_mean_q2: u128,
-) -> Result<StationarityMetrics, StationarityExclusion> {
-    let metrics = calculate_stationarity_metrics(
-        block_count,
-        denominator,
-        slope_per_us,
-        residual_sum_q2,
-        lag_product_sum_q2,
-        family_size,
-        blocking_variance_of_mean_q2,
-    )?;
-    classify_stationarity_metrics(metrics)
 }
 
 #[allow(clippy::too_many_arguments)]

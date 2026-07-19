@@ -20,7 +20,7 @@ pub use observation::{
 };
 pub use stationarity::{
     StationarityDiagnostics, StationarityExclusion, StationarityResult, StationarityWork,
-    StationarityWorkPoll, StationarySuffix, SuffixDiagnostic, VELOCITY_SUFFIX_LENGTHS,
-    VelocityObservationSource, analyze_stationarity_diagnostics, select_stationary_suffix,
-    select_stationary_suffix_from_source,
+    StationarityWorkPoll, StationarySuffix, StructuredStationarityEvidence, SuffixDiagnostic,
+    VELOCITY_SUFFIX_LENGTHS, VelocityObservationSource, analyze_stationarity_diagnostics,
+    select_stationary_suffix, select_stationary_suffix_from_source,
 };

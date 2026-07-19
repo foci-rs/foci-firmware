@@ -1,8 +1,8 @@
 //! Bounded post-capture analysis for the velocity sweep.
 
 use crate::autotune::velocity_measurement::{
-    StationarityResult, StationarityWorkPoll, VELOCITY_RATE_Q_SCALE, VelocityDirection,
-    estimate_confidence,
+    StationarityResult, StationarityWorkPoll, StructuredStationarityEvidence,
+    VELOCITY_RATE_Q_SCALE, VelocityDirection, estimate_confidence,
 };
 use crate::autotune::{
     CommissionError, equivalent_disturbance_from_rate, equivalent_disturbance_variance_from_rate,
@@ -23,6 +23,7 @@ pub(super) struct MovingObservationAnalysis {
     pub(super) selected_blocks: u32,
     pub(super) variance_of_mean_q2: u128,
     pub(super) settled_rate_mean_q: i64,
+    pub(super) structured_boundary: Option<StructuredStationarityEvidence>,
 }
 
 fn slot_direction(slot: u8) -> i32 {
@@ -49,13 +50,16 @@ pub(super) fn poll_moving_observation_analysis(
         StationarityWorkPoll::Pending => return Ok(None),
         StationarityWorkPoll::Complete(stationarity) => stationarity,
     };
-    finish_moving_observation_analysis(data, counts_per_rev, stationarity).map(Some)
+    let structured_boundary = data.analysis.structured_evidence();
+    finish_moving_observation_analysis(data, counts_per_rev, stationarity, structured_boundary)
+        .map(Some)
 }
 
 fn finish_moving_observation_analysis(
     data: &mut VelocitySweepData,
     counts_per_rev: u32,
     stationarity: StationarityResult,
+    structured_boundary: Option<StructuredStationarityEvidence>,
 ) -> Result<MovingObservationAnalysis, CommissionError> {
     let plan = data.plan;
     if !plan.is_present() {
@@ -160,6 +164,7 @@ fn finish_moving_observation_analysis(
         selected_blocks,
         variance_of_mean_q2,
         settled_rate_mean_q,
+        structured_boundary,
     })
 }
 

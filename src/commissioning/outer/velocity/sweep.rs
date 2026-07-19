@@ -1,7 +1,7 @@
 //! Trace-gated disturbance-identification velocity sweep.
 
 use crate::autotune::CommissionError;
-use crate::autotune::velocity_measurement::analyze_stationarity_diagnostics;
+use crate::autotune::velocity_measurement::StructuredStationarityEvidence;
 use crate::commissioning::backend::CommissioningBackend;
 use crate::commissioning::encoder_domain::EncoderDomain;
 use crate::commissioning::outer::state::VelocitySweepEvidenceState;
@@ -208,50 +208,14 @@ fn representative_rung_rates(
 }
 
 fn structured_boundary_evidence(
-    data: &mut super::super::VelocitySweepData,
-) -> Option<StructuredBoundaryEvidence> {
-    let diagnostics =
-        analyze_stationarity_diagnostics(&data.observations, &mut data.blocker).ok()?;
-    structured_boundary_from_suffixes(&diagnostics.suffixes)
-}
-
-fn structured_boundary_from_suffixes(
-    suffixes: &[Option<crate::autotune::velocity_measurement::SuffixDiagnostic>; 3],
-) -> Option<StructuredBoundaryEvidence> {
-    let binding = suffixes[0]?;
-    if !binding.usable_plateau || binding.slope_passed && binding.lag_one_passed {
-        return None;
+    evidence: StructuredStationarityEvidence,
+) -> StructuredBoundaryEvidence {
+    StructuredBoundaryEvidence {
+        passing_suffix_mask: evidence.passing_suffix_mask,
+        common_rate_interval_q: evidence.common_rate_interval_q,
+        binding_slope_margin_q: evidence.binding_slope_margin_q,
+        binding_lag_one_margin_q: evidence.binding_lag_one_margin_q,
     }
-    let mut passing_suffix_mask = 0_u8;
-    let mut common = None::<[i64; 2]>;
-    for (index, diagnostic) in suffixes.iter().enumerate() {
-        let Some(diagnostic) = diagnostic else {
-            continue;
-        };
-        let passed = diagnostic.slope_passed && diagnostic.lag_one_passed;
-        if diagnostic.usable_plateau && (index == 0 || passed) {
-            common = match common {
-                None => Some(diagnostic.settled_rate_interval_q),
-                Some(interval) => {
-                    let low = interval[0].max(diagnostic.settled_rate_interval_q[0]);
-                    let high = interval[1].min(diagnostic.settled_rate_interval_q[1]);
-                    (low <= high).then_some([low, high])
-                }
-            };
-        }
-        if passed {
-            passing_suffix_mask |= 1 << index;
-        }
-    }
-    if passing_suffix_mask & !1 == 0 {
-        return None;
-    }
-    Some(StructuredBoundaryEvidence {
-        passing_suffix_mask,
-        common_rate_interval_q: common?,
-        binding_slope_margin_q: binding.slope_rejection_margin_q,
-        binding_lag_one_margin_q: binding.lag_one_rejection_margin_q,
-    })
 }
 
 async fn fail_sweep<B: CommissioningBackend>(
@@ -795,7 +759,7 @@ pub(crate) async fn step_velocity_sweep_with_trace<B: CommissioningBackend>(
             else {
                 return fail_sweep(phase, backend, CommissionError::InvalidSchedule).await;
             };
-            data.analysis.reset();
+            data.analysis.reset_with_structured_diagnostics();
             *state = VelocitySweepState::AnalyzeMoving {
                 settle_deadline_us,
                 analysis_deadline_us,
@@ -819,7 +783,9 @@ pub(crate) async fn step_velocity_sweep_with_trace<B: CommissioningBackend>(
                 Ok(None) => return StepResult::ReadyNow,
                 Err(error) => return fail_sweep(phase, backend, error).await,
             };
-            let structured_boundary = structured_boundary_evidence(data);
+            let structured_boundary = analysis
+                .structured_boundary
+                .map(structured_boundary_evidence);
             let report = VelocitySweepObservation {
                 run_sequence: data.integrity.run_sequence(),
                 evidence_sequence: data.integrity.next_evidence_sequence(),
@@ -1345,49 +1311,18 @@ mod tests {
     }
 
     #[test]
-    fn structured_boundary_intersects_only_binding_and_passing_suffixes() {
-        let mut data = VelocitySweepData::new(1);
-        for index in 0..256 {
-            let delta = if index >= 192 {
-                if (index / 4) % 2 == 0 { 10 } else { -10 }
-            } else {
-                [1, -1, 0, -1, 1][index % 5]
-            };
-            data.observations.push(delta, 1_000).unwrap();
-        }
-
-        let boundary = structured_boundary_evidence(&mut data)
-            .expect("a passing medium suffix must annotate the binding rejection");
-
-        assert_eq!(boundary.passing_suffix_mask & 0b010, 0b010);
-        assert!(boundary.binding_lag_one_margin_q < 0);
-        assert!(boundary.common_rate_interval_q[0] <= boundary.common_rate_interval_q[1]);
-    }
-
-    #[test]
-    fn failed_longer_suffix_cannot_empty_structured_boundary_intersection() {
-        use crate::autotune::velocity_measurement::SuffixDiagnostic;
-
-        let diagnostic = |interval, slope_passed, lag_one_passed| SuffixDiagnostic {
-            suffix_len: 64,
-            usable_plateau: true,
-            slope_passed,
-            lag_one_passed,
-            settled_rate_interval_q: interval,
-            slope_rejection_margin_q: if slope_passed { 1 } else { -1 },
-            lag_one_rejection_margin_q: if lag_one_passed { 1 } else { -1 },
-        };
-        let suffixes = [
-            Some(diagnostic([0, 10], true, false)),
-            Some(diagnostic([5, 8], true, true)),
-            Some(diagnostic([20, 30], false, false)),
-        ];
-
-        let boundary = structured_boundary_from_suffixes(&suffixes)
-            .expect("a failed longer suffix must not erase passing evidence");
+    fn cooperative_structured_evidence_maps_without_reanalysis() {
+        let boundary = structured_boundary_evidence(StructuredStationarityEvidence {
+            passing_suffix_mask: 0b010,
+            common_rate_interval_q: [5, 8],
+            binding_slope_margin_q: 2,
+            binding_lag_one_margin_q: -3,
+        });
 
         assert_eq!(boundary.passing_suffix_mask, 0b010);
         assert_eq!(boundary.common_rate_interval_q, [5, 8]);
+        assert_eq!(boundary.binding_slope_margin_q, 2);
+        assert_eq!(boundary.binding_lag_one_margin_q, -3);
     }
 
     #[test]

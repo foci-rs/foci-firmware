@@ -164,6 +164,88 @@ fn cooperative_poll_limits_raw_visits_for_two_ms_safety_cadence() {
 }
 
 #[test]
+fn cooperative_structured_diagnostics_match_synchronous_evidence_with_bounded_visits() {
+    struct CountingSource<'a> {
+        samples: &'a [RawVelocityObservation],
+        visits: Cell<usize>,
+    }
+
+    impl VelocityObservationSource for CountingSource<'_> {
+        fn observation_len(&self) -> usize {
+            self.samples.len()
+        }
+
+        fn observation(&self, index: usize) -> Option<RawVelocityObservation> {
+            self.visits.set(self.visits.get() + 1);
+            self.samples.get(index).copied()
+        }
+    }
+
+    let samples = observations::<256>(|index| {
+        if index >= 192 {
+            if (index / 4) % 2 == 0 { 10 } else { -10 }
+        } else {
+            [1, -1, 0, -1, 1][index % 5]
+        }
+    });
+    let mut synchronous_blocker = DyadicBlocker::<LEVELS>::new();
+    let expected =
+        analyze_stationarity_diagnostics(&samples[..], &mut synchronous_blocker).unwrap();
+    let source = CountingSource {
+        samples: &samples,
+        visits: Cell::new(0),
+    };
+    let mut cooperative_blocker = DyadicBlocker::<LEVELS>::new();
+    let mut work = StationarityWork::new();
+    work.reset_with_structured_diagnostics();
+
+    let actual = loop {
+        source.visits.set(0);
+        let poll = work.poll(&source, &mut cooperative_blocker).unwrap();
+        assert!(
+            source.visits.get() <= 8,
+            "one cooperative diagnostic poll visited {} raw observations",
+            source.visits.get()
+        );
+        match poll {
+            StationarityWorkPoll::Pending => {}
+            StationarityWorkPoll::Complete(result) => break result,
+        }
+    };
+
+    let short = expected.suffixes[0].unwrap();
+    let mut expected_common = short.settled_rate_interval_q;
+    let mut expected_mask = 0_u8;
+    for (index, diagnostic) in expected.suffixes.iter().enumerate() {
+        let Some(diagnostic) = diagnostic else {
+            continue;
+        };
+        if diagnostic.slope_passed && diagnostic.lag_one_passed {
+            expected_mask |= 1 << index;
+            if index != 0 {
+                expected_common[0] = expected_common[0].max(diagnostic.settled_rate_interval_q[0]);
+                expected_common[1] = expected_common[1].min(diagnostic.settled_rate_interval_q[1]);
+            }
+        }
+    }
+    let structured = work
+        .structured_evidence()
+        .expect("the longer passing suffix must remain observable");
+
+    assert_eq!(actual, expected.binding);
+    assert_eq!(structured.passing_suffix_mask, expected_mask);
+    assert_eq!(structured.common_rate_interval_q, expected_common);
+    assert_eq!(
+        structured.binding_slope_margin_q,
+        short.slope_rejection_margin_q
+    );
+    assert_eq!(
+        structured.binding_lag_one_margin_q,
+        short.lag_one_rejection_margin_q
+    );
+}
+
+#[test]
 fn cooperative_work_preserves_first_nonstationary_extension_rule() {
     let samples = observations::<256>(|index| {
         if index >= 192 {
