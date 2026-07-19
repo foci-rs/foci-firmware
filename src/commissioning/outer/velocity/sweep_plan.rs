@@ -351,21 +351,27 @@ fn build_gain_ladder(
     if p_start_raw == 0 || p_start_raw > p_top_raw || p_top_raw > PidGain::MAX.raw() {
         return Err(VelocityPlanError::InsufficientStructuralSpan);
     }
-    let start = u32::from(p_start_raw);
-    let top = u32::from(p_top_raw);
-    let odd_anchor = start
-        .checked_mul(HALF_OCTAVE_NUM)
-        .and_then(|value| value.checked_add((1 << HALF_OCTAVE_DEN_SHIFT) - 1))
-        .ok_or(VelocityPlanError::Arithmetic)?
-        >> HALF_OCTAVE_DEN_SHIFT;
+    let start = u64::from(p_start_raw);
+    let top = u64::from(p_top_raw);
+    let odd_numerator = start
+        .checked_mul(u64::from(HALF_OCTAVE_NUM))
+        .ok_or(VelocityPlanError::Arithmetic)?;
+    let odd_rounding = (1_u64 << HALF_OCTAVE_DEN_SHIFT) - 1;
     let mut gains = Vec::new();
-    let mut previous = 0_u32;
+    let mut previous = 0_u64;
 
     for octave in 0..16 {
-        for anchor in [start, odd_anchor] {
-            let Some(candidate) = anchor.checked_shl(octave) else {
-                continue;
-            };
+        let Some(even_candidate) = start.checked_shl(octave) else {
+            continue;
+        };
+        let Some(odd_candidate) = odd_numerator
+            .checked_shl(octave)
+            .and_then(|value| value.checked_add(odd_rounding))
+            .map(|value| value >> HALF_OCTAVE_DEN_SHIFT)
+        else {
+            continue;
+        };
+        for candidate in [even_candidate, odd_candidate] {
             if candidate > top || candidate <= previous {
                 continue;
             }

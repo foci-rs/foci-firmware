@@ -45,12 +45,12 @@ fn live_geometry_uses_mechanical_rpm_and_the_corrected_ladder() {
     assert_eq!(
         gains.as_slice(),
         &[
-            2, 3, 4, 6, 8, 12, 16, 24, 32, 48, 64, 96, 128, 192, 256, 384, 512, 768, 1_024, 1_536,
-            2_048, 3_072, 3_685,
+            2, 3, 4, 6, 8, 12, 16, 23, 32, 46, 64, 91, 128, 181, 256, 362, 512, 724, 1_024, 1_448,
+            2_048, 2_896, 3_685,
         ]
     );
     assert_eq!(usize::from(plan.rung_count) * 2, 46);
-    assert!(gains.contains(&384));
+    assert!(gains.contains(&362));
 }
 
 #[test]
@@ -152,7 +152,7 @@ fn low_gain_collisions_are_deduplicated_and_top_is_explicit() {
             .map(|gain| gain.raw())
             .collect::<heapless::Vec<_, 32>>()
             .as_slice(),
-        &[1, 2, 4, 8, 16]
+        &[1, 2, 3, 4, 6, 8, 12, 16]
     );
     assert_eq!(
         bounded
@@ -160,15 +160,15 @@ fn low_gain_collisions_are_deduplicated_and_top_is_explicit() {
             .map(|gain| gain.raw())
             .collect::<heapless::Vec<_, 32>>()
             .as_slice(),
-        &[10, 15, 20, 30, 40, 60, 80, 90]
+        &[10, 15, 20, 29, 40, 57, 80, 90]
     );
 }
 
 #[test]
 fn structural_floor_counts_distinct_post_dedupe_gains() {
     assert_eq!(MIN_STRUCTURAL_RUNGS, 5);
-    assert!(build_gain_ladder(1, 8).is_err());
-    assert_eq!(build_gain_ladder(1, 16).unwrap().len(), 5);
+    assert!(build_gain_ladder(1, 4).is_err());
+    assert_eq!(build_gain_ladder(1, 8).unwrap().len(), 6);
 }
 
 #[test]
