@@ -6,9 +6,7 @@ use crate::commissioning::types::{
     VelocitySweepTerminal,
 };
 
-use super::sweep_evidence::{
-    band_closure_report_code, observation_class_report_code, rung_class_report_code,
-};
+use super::sweep_evidence::{observation_class_report_code, rung_class_report_code};
 use crate::ankyra::velocity_sweep_encoding::{
     VelocitySweepCanonicalRecord, encode_rate_values, upper_bound_i64, upper_bound_u128,
 };
@@ -58,6 +56,9 @@ impl VelocitySweepIntegrity {
             VelocitySweepEvent::Rung(_) => {
                 self.emitted_rungs = self.emitted_rungs.saturating_add(1);
             }
+            VelocitySweepEvent::DirectionalRegion(_)
+            | VelocitySweepEvent::JointRegion(_)
+            | VelocitySweepEvent::Handoff(_) => {}
         }
         self.hash_bytes(encode_velocity_sweep_event(event).as_bytes());
         self.next_evidence_sequence = self.next_evidence_sequence.saturating_add(1);
@@ -95,6 +96,31 @@ pub(crate) fn encode_velocity_sweep_event(
         VelocitySweepEvent::Planned(report) => encode_plan(report),
         VelocitySweepEvent::Observation(report) => encode_observation(report),
         VelocitySweepEvent::Rung(report) => encode_rung(report),
+        VelocitySweepEvent::DirectionalRegion(report) => {
+            let mut record = VelocitySweepCanonicalRecord::new();
+            record.push_u8(4);
+            record.push_u32(report.run_sequence);
+            record.push_u16(report.evidence_sequence);
+            record.push_u32(report.region.member_mask);
+            record
+        }
+        VelocitySweepEvent::JointRegion(report) => {
+            let mut record = VelocitySweepCanonicalRecord::new();
+            record.push_u8(5);
+            record.push_u32(report.run_sequence);
+            record.push_u16(report.evidence_sequence);
+            record.push_u32(report.region.member_mask);
+            record
+        }
+        VelocitySweepEvent::Handoff(report) => {
+            let mut record = VelocitySweepCanonicalRecord::new();
+            record.push_u8(6);
+            record.push_u32(report.run_sequence);
+            record.push_u16(report.evidence_sequence);
+            record.push_u16(report.handoff.nomination.p.raw());
+            record.push_u8(report.handoff.coverage_mask);
+            record
+        }
     }
 }
 
@@ -244,23 +270,15 @@ fn encode_rung(report: VelocitySweepRungReport) -> VelocitySweepCanonicalRecord 
         record.push_i32(low);
         record.push_i32(high);
     }
-    for band in [report.forward_band, report.reverse_band] {
-        record.push_u16(band.p_low.map_or(0, |value| value.raw()));
-        record.push_u16(band.p_high.map_or(0, |value| value.raw()));
-    }
     record.push_u8(rung_class_report_code(report.forward.classification));
     record.push_u8(rung_class_report_code(report.reverse.classification));
-    record.push_u8(band_closure_report_code(report.forward_band.closure));
-    record.push_u8(band_closure_report_code(report.reverse_band.closure));
     let flags = u8::from(report.forward.reproduced_moving)
         | (u8::from(report.reverse.reproduced_moving) << 1)
         | (u8::from(report.forward.initial_lead_in) << 2)
         | (u8::from(report.reverse.initial_lead_in) << 3);
     record.push_u8(flags);
-    record.push_u8(report.forward_band.eligible_rungs);
-    record.push_u8(report.reverse_band.eligible_rungs);
-    record.push_u16(report.forward_band.eligible_observations);
-    record.push_u16(report.reverse_band.eligible_observations);
+    record.push_u16(2 * u16::from(report.forward.disturbance_interval.is_some()));
+    record.push_u16(2 * u16::from(report.reverse.disturbance_interval.is_some()));
     record
 }
 
@@ -277,36 +295,16 @@ pub(crate) fn encode_velocity_sweep_terminal(
     record.push_u32(report.run_sequence);
     record.push_u32(encoder_counts_per_rev);
     record.push_u32(f_pwm_hz);
-    for band in [report.forward, report.reverse] {
-        let direction = super::sweep_evidence::direction_report_code(band.direction);
-        let closure = band_closure_report_code(band.closure);
-        record.push_u8(direction | (closure << 1));
-        record.push_u16(band.first_moving.map_or(0, |value| value.raw()));
-        record.push_u16(band.p_low.map_or(0, |value| value.raw()));
-        record.push_u16(band.p_high.map_or(0, |value| value.raw()));
-        let (common_low, common_high) = band
-            .common_intersection
-            .map_or((0, 0), |value| (value.low().raw(), value.high().raw()));
-        record.push_i32(common_low);
-        record.push_i32(common_high);
-        let (pooled, pooled_low, pooled_high) = band.pooled.map_or((0, 0, 0), |value| {
-            (
-                value.estimate.raw(),
-                value.interval.low().raw(),
-                value.interval.high().raw(),
-            )
-        });
-        record.push_i32(pooled);
-        record.push_i32(pooled_low);
-        record.push_i32(pooled_high);
-        record.push_u8(band.eligible_rungs);
-        record.push_u16(band.eligible_observations);
-        let flags = u8::from(band.sufficient)
-            | (u8::from(band.left_censored) << 1)
-            | (u8::from(band.common_intersection.is_some()) << 2)
-            | (u8::from(band.pooled.is_some()) << 3);
-        record.push_u8(flags);
+    record.push_u8(report.model_direction_mask);
+    for membership in report.selected_memberships {
+        record.push_u32(membership);
     }
+    record.push_u16(report.nominated_p);
+    for interval in report.selected_intervals {
+        record.push_i32(interval[0]);
+        record.push_i32(interval[1]);
+    }
+    record.push_u8(report.coverage_mask);
     record.push_u16(report.expected_observations);
     record.push_u16(report.emitted_observations);
     record.push_u16(report.expected_rungs);
@@ -314,12 +312,16 @@ pub(crate) fn encode_velocity_sweep_terminal(
     record.push_u32(report.digest as u32);
     record.push_u32((report.digest >> 32) as u32);
     record.push_u8(match report.outcome {
-        VelocitySweepOutcome::Complete => 0,
-        VelocitySweepOutcome::Inconclusive => 1,
-        VelocitySweepOutcome::Fault => 2,
+        VelocitySweepOutcome::CompleteCandidate => 0,
+        VelocitySweepOutcome::Complete => 1,
+        VelocitySweepOutcome::Inconclusive => 2,
+        VelocitySweepOutcome::Fault => 3,
     });
     record.push_u8(report.cause);
-    record.push_u8(report.sufficient_direction_mask);
+    record.push_u32(report.run_started_us as u32);
+    record.push_u32((report.run_started_us >> 32) as u32);
+    record.push_u32(report.run_completed_us as u32);
+    record.push_u32((report.run_completed_us >> 32) as u32);
     record
 }
 
@@ -408,8 +410,9 @@ mod tests {
             selected_blocks: 16,
             variance_of_mean_q2: 1 << 80,
             settled_rate_mean_q: 1,
+            structured_boundary: None,
         }));
 
-        assert_eq!(integrity.digest(), 0xa4d1_29e7_0765_6385);
+        assert_eq!(integrity.digest(), 0xd72d_ddd2_227b_c925);
     }
 }

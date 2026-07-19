@@ -391,6 +391,21 @@ pub struct VelocitySweepObservation {
     pub variance_of_mean_q2: u128,
     /// Time-weighted settled-rate mean, or zero when unusable.
     pub settled_rate_mean_q: i64,
+    /// Non-binding evidence that short-scale structure remains bounded at longer scales.
+    pub structured_boundary: Option<StructuredBoundaryEvidence>,
+}
+
+/// Diagnostic evidence for a structured but bounded moving tail.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+pub struct StructuredBoundaryEvidence {
+    /// Bit set for each declared suffix that passes every stationarity gate.
+    pub passing_suffix_mask: u8,
+    /// Common settled-rate interval shared by every usable suffix.
+    pub common_rate_interval_q: [i64; 2],
+    /// Signed slope rejection margin from the binding 64-sample suffix.
+    pub binding_slope_margin_q: i64,
+    /// Signed lag-one rejection margin from the binding 64-sample suffix.
+    pub binding_lag_one_margin_q: i32,
 }
 
 /// Completed four-observation rung with the firmware's derived verdicts.
@@ -406,12 +421,39 @@ pub struct VelocitySweepRungReport {
     pub forward: crate::commissioning::outer::velocity::sweep_evidence::VelocityRungVerdict,
     /// Reverse reproduced verdict.
     pub reverse: crate::commissioning::outer::velocity::sweep_evidence::VelocityRungVerdict,
-    /// Running forward directional band after this rung.
-    pub forward_band:
-        crate::commissioning::outer::velocity::sweep_evidence::DirectionalDisturbanceBand,
-    /// Running reverse directional band after this rung.
-    pub reverse_band:
-        crate::commissioning::outer::velocity::sweep_evidence::DirectionalDisturbanceBand,
+}
+
+/// One causally closed directional model region or fragment.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+pub struct VelocityDirectionalRegionReport {
+    /// Caller-assigned run sequence.
+    pub run_sequence: u32,
+    /// Monotonic evidence sequence within the run.
+    pub evidence_sequence: u16,
+    /// Closed directional evidence.
+    pub region: crate::commissioning::outer::velocity::operating_region::DirectionalRegionSummary,
+}
+
+/// One causally closed jointly operable region.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+pub struct VelocityJointRegionReport {
+    /// Caller-assigned run sequence.
+    pub run_sequence: u32,
+    /// Monotonic evidence sequence within the run.
+    pub evidence_sequence: u16,
+    /// Closed joint-operability evidence.
+    pub region: crate::commissioning::outer::velocity::operating_region::JointOperableRegion,
+}
+
+/// Per-run Stage B handoff emitted after every region record.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+pub struct VelocityStageBHandoffReport {
+    /// Caller-assigned run sequence.
+    pub run_sequence: u32,
+    /// Monotonic evidence sequence within the run.
+    pub evidence_sequence: u16,
+    /// Sufficient report-only Stage B handoff.
+    pub handoff: crate::commissioning::outer::velocity::operating_region::StageBHandoff,
 }
 
 /// Nonterminal evidence produced by one velocity-sweep engine poll.
@@ -423,12 +465,20 @@ pub enum VelocitySweepEvent {
     Observation(VelocitySweepObservation),
     /// One completed four-observation rung.
     Rung(VelocitySweepRungReport),
+    /// One directional region or fragment closed by the fold.
+    DirectionalRegion(VelocityDirectionalRegionReport),
+    /// One jointly operable region closed by the fold.
+    JointRegion(VelocityJointRegionReport),
+    /// Sufficient single-run Stage B handoff.
+    Handoff(VelocityStageBHandoffReport),
 }
 
 /// Measurement-stage terminal class; this is not a gain-acceptance verdict.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub enum VelocitySweepOutcome {
-    /// Both directions contain enough evidence for the next stage.
+    /// One sufficient run awaits a separately commanded reproduction run.
+    CompleteCandidate,
+    /// A second identical-plan run reproduced the Stage B handoff.
     Complete,
     /// Motion was safe but evidence was insufficient.
     Inconclusive,
@@ -441,19 +491,20 @@ pub enum VelocitySweepOutcome {
 pub struct VelocitySweepTerminal {
     /// Caller-assigned run sequence.
     pub run_sequence: u32,
-    /// Final forward band.
-    pub forward: crate::commissioning::outer::velocity::sweep_evidence::DirectionalDisturbanceBand,
-    /// Final reverse band.
-    pub reverse: crate::commissioning::outer::velocity::sweep_evidence::DirectionalDisturbanceBand,
-    /// Cross-direction handoff sufficiency.
-    pub sufficiency:
-        crate::commissioning::outer::velocity::sweep_evidence::VelocitySweepSufficiency,
     /// Terminal measurement-stage class.
     pub outcome: VelocitySweepOutcome,
     /// Phase-local terminal cause.
     pub cause: u8,
-    /// Bit zero is forward sufficiency and bit one is reverse sufficiency.
-    pub sufficient_direction_mask: u8,
+    /// Bit zero is forward model sufficiency and bit one is reverse sufficiency.
+    pub model_direction_mask: u8,
+    /// Exact selected forward, reverse, and joint memberships.
+    pub selected_memberships: [u32; 3],
+    /// Firmware-nominated proportional gain, or zero when unavailable.
+    pub nominated_p: u16,
+    /// Selected forward and reverse pooled disturbance intervals.
+    pub selected_intervals: [[i32; 2]; 2],
+    /// Bit set for every direction directly covered at the nominated P.
+    pub coverage_mask: u8,
     /// Number of observation reports expected from the plan.
     pub expected_observations: u16,
     /// Number of observation reports emitted.
@@ -464,6 +515,10 @@ pub struct VelocitySweepTerminal {
     pub emitted_rungs: u16,
     /// Rolling FNV-1a digest over all nonterminal evidence.
     pub digest: u64,
+    /// Monotonic timestamp captured before the pre-motion plan event.
+    pub run_started_us: u64,
+    /// Monotonic timestamp captured at terminal construction.
+    pub run_completed_us: u64,
     /// Safety evidence retained for ordered fault emission.
     pub safety_fault: Option<OuterSafetyFault>,
 }

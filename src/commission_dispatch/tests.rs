@@ -1641,60 +1641,22 @@ fn sample_outer_params() -> crate::commissioning::OuterTuneParams {
 fn sample_velocity_sweep_terminal(
     outcome: crate::commissioning::types::VelocitySweepOutcome,
 ) -> crate::commissioning::types::VelocitySweepTerminal {
-    use crate::autotune::velocity_measurement::VelocityDirection;
-    use crate::commissioning::outer::velocity::sweep_evidence::{
-        BandClosure, DirectionalDisturbanceBand, JointIdentifiableGeometry,
-        VelocityInconclusiveKind, VelocitySweepSufficiency,
-    };
-
-    let band = |direction| DirectionalDisturbanceBand {
-        direction,
-        last_inert: None,
-        first_moving: None,
-        ambiguous_edge: None,
-        left_censored: false,
-        p_low: None,
-        p_high: None,
-        closure: BandClosure::NoMovingEdge,
-        common_intersection: None,
-        pooled: None,
-        eligible_rungs: 0,
-        eligible_observations: 0,
-        sufficient: false,
-    };
-    let joint = JointIdentifiableGeometry {
-        low: None,
-        high: None,
-        gap_low: None,
-        gap_high: None,
-        has_joint_band: false,
-    };
-    let sufficiency = match outcome {
-        crate::commissioning::types::VelocitySweepOutcome::Complete => {
-            VelocitySweepSufficiency::Complete { joint }
-        }
-        crate::commissioning::types::VelocitySweepOutcome::Inconclusive
-        | crate::commissioning::types::VelocitySweepOutcome::Fault => {
-            VelocitySweepSufficiency::Inconclusive {
-                sufficient_direction_mask: 0,
-                kind: VelocityInconclusiveKind::Total,
-                joint,
-            }
-        }
-    };
     crate::commissioning::types::VelocitySweepTerminal {
         run_sequence: 9,
-        forward: band(VelocityDirection::Forward),
-        reverse: band(VelocityDirection::Reverse),
-        sufficiency,
         outcome,
         cause: 4,
-        sufficient_direction_mask: 0,
+        model_direction_mask: 0,
+        selected_memberships: [0; 3],
+        nominated_p: 0,
+        selected_intervals: [[0; 2]; 2],
+        coverage_mask: 0,
         expected_observations: 20,
         emitted_observations: 4,
         expected_rungs: 5,
         emitted_rungs: 1,
         digest: 0x0123_4567_89ab_cdef,
+        run_started_us: 1_000,
+        run_completed_us: 2_000,
         safety_fault: None,
     }
 }
@@ -1707,6 +1669,7 @@ fn every_velocity_sweep_terminal_disarms_without_rearming() {
 
         let _guard = test_support::SHARED_STATE_MUTEX.lock().await;
         for expected in [
+            VelocitySweepOutcome::CompleteCandidate,
             VelocitySweepOutcome::Complete,
             VelocitySweepOutcome::Inconclusive,
             VelocitySweepOutcome::Fault,

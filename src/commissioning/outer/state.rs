@@ -12,11 +12,13 @@ use crate::autotune::velocity_measurement::{
     DyadicBlocker, RawVelocityObservation, StationarityWork, VelocityMeasurementError,
 };
 #[cfg(feature = "trace-velocity-sweep")]
+use crate::commissioning::outer::velocity::operating_region::OperatingRegionRuntime;
+#[cfg(feature = "trace-velocity-sweep")]
 use crate::commissioning::outer::velocity::sweep_evidence::{
-    DirectionalBandAccumulator, VelocityObservationSummary, VelocityRungVerdict,
+    VelocityObservationSummary, VelocityRungVerdict,
 };
 #[cfg(feature = "trace-velocity-sweep")]
-use crate::commissioning::outer::velocity::sweep_plan::VelocitySweepPlan;
+use crate::commissioning::outer::velocity::sweep_plan::VelocitySweepExecutionPlan;
 #[cfg(feature = "trace-velocity-sweep")]
 use crate::commissioning::outer::velocity::sweep_reporting::VelocitySweepIntegrity;
 
@@ -172,8 +174,6 @@ impl crate::autotune::velocity_measurement::VelocityObservationSource for Veloci
 pub(crate) enum VelocitySweepState {
     /// Validate hardware inputs and construct the immutable plan.
     Setup,
-    /// Make the immutable plan observable before the first moving command.
-    EmitPlan,
     /// Program the first gain after the plan has been made observable.
     WriteGain,
     /// Clear the velocity integrator before a signed command.
@@ -212,12 +212,26 @@ pub(crate) enum VelocitySweepState {
     },
     /// Emit a structural-fault terminal after its observation evidence.
     FaultTerminal { error: CommissionError },
-    /// Emit a current-headroom terminal after confirmed rest.
-    CurrentHeadroomTerminal,
     /// Advance to the next predeclared slot or gain rung.
     Advance,
-    /// The fixed sweep schedule has executed every planned rung.
-    Terminal,
+    /// Fold the completed forward rung and emit any closure.
+    FoldForward,
+    /// Fold the completed reverse rung and emit any closure.
+    FoldReverse,
+    /// Fold joint operability and emit any closure.
+    FoldJoint,
+    /// Emit the unchanged per-rung observation verdicts.
+    EmitRung,
+    /// Close and emit the active forward directional candidate.
+    FinishForward { current_headroom: bool },
+    /// Close and emit the active reverse directional candidate.
+    FinishReverse { current_headroom: bool },
+    /// Close and emit the active joint-operability candidate.
+    FinishJoint { current_headroom: bool },
+    /// Emit the selected sufficient Stage B handoff, when available.
+    EmitHandoff { current_headroom: bool },
+    /// The fixed sweep schedule reached a normal or current-bound terminus.
+    Terminal { current_headroom: bool },
 }
 
 /// Engine-owned measurement and current-rung evidence state.
@@ -250,11 +264,12 @@ pub(crate) enum VelocitySweepEvidenceState {
 #[cfg(feature = "trace-velocity-sweep")]
 #[derive(Debug, defmt::Format)]
 pub(crate) struct VelocitySweepData {
-    pub(crate) plan: Option<VelocitySweepPlan>,
+    pub(crate) plan: Option<VelocitySweepExecutionPlan>,
     pub(crate) rung_index: u8,
     pub(crate) slot: u8,
     pub(crate) previous_encoder_raw: u32,
     pub(crate) previous_read_us: u64,
+    pub(crate) run_started_us: u64,
     pub(crate) peak_torque_target: u16,
     /// Cumulative zero-target displacement, saturated outside the accepted band.
     pub(crate) settle_displacement_counts: i8,
@@ -269,22 +284,20 @@ pub(crate) struct VelocitySweepData {
     #[defmt(Debug2Format)]
     pub(crate) analysis: StationarityWork,
     pub(crate) evidence: VelocitySweepEvidenceState,
-    pub(crate) forward_band: DirectionalBandAccumulator,
-    pub(crate) reverse_band: DirectionalBandAccumulator,
+    pub(crate) operating_regions: OperatingRegionRuntime,
     pub(crate) integrity: VelocitySweepIntegrity,
 }
 
 #[cfg(feature = "trace-velocity-sweep")]
 impl VelocitySweepData {
     pub(crate) const fn new(run_sequence: u32) -> Self {
-        use crate::autotune::velocity_measurement::VelocityDirection;
-
         Self {
             plan: None,
             rung_index: 0,
             slot: 0,
             previous_encoder_raw: 0,
             previous_read_us: 0,
+            run_started_us: 0,
             peak_torque_target: 0,
             settle_displacement_counts: 0,
             settle_min_displacement_counts: 0,
@@ -293,8 +306,7 @@ impl VelocitySweepData {
             blocker: DyadicBlocker::new(),
             analysis: StationarityWork::new(),
             evidence: VelocitySweepEvidenceState::Empty,
-            forward_band: DirectionalBandAccumulator::new(VelocityDirection::Forward),
-            reverse_band: DirectionalBandAccumulator::new(VelocityDirection::Reverse),
+            operating_regions: OperatingRegionRuntime::new(),
             integrity: VelocitySweepIntegrity::new(run_sequence),
         }
     }

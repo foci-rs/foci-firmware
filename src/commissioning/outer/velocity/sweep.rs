@@ -1,6 +1,7 @@
 //! Trace-gated disturbance-identification velocity sweep.
 
 use crate::autotune::CommissionError;
+use crate::autotune::velocity_measurement::analyze_stationarity_diagnostics;
 use crate::commissioning::backend::CommissioningBackend;
 use crate::commissioning::encoder_domain::EncoderDomain;
 use crate::commissioning::outer::state::VelocitySweepEvidenceState;
@@ -8,7 +9,8 @@ use crate::commissioning::outer::{OuterPhase, VelocitySweepState};
 use crate::commissioning::schedule::next_grid_deadline;
 use crate::commissioning::types::{
     OUTER_SAFETY_FAULT_CURRENT, OUTER_SAFETY_FAULT_OBSERVATION_GAP,
-    OUTER_SAFETY_FAULT_QUARTER_TURN, OuterSafetyFault, StepResult, VelocitySweepEvent,
+    OUTER_SAFETY_FAULT_QUARTER_TURN, OuterSafetyFault, StepResult, StructuredBoundaryEvidence,
+    VelocityDirectionalRegionReport, VelocityJointRegionReport, VelocitySweepEvent,
     VelocitySweepObservation, VelocitySweepOutcome, VelocitySweepPlanned, VelocitySweepRungReport,
     VelocitySweepTerminal,
 };
@@ -19,25 +21,43 @@ use foci_tmc4671::registers::{
     PID_TORQUE_FLUX_TARGET, PID_VELOCITY_ACTUAL, PID_VELOCITY_P_VELOCITY_I, PID_VELOCITY_TARGET,
 };
 
+use super::operating_region::{
+    DirectionalRegionClosure, DirectionalRegionRef, DirectionalRegionSummary, JointOperableClosure,
+    JointOperableRegion,
+};
 use super::sweep_analysis::{
     poll_moving_observation_analysis, poll_settle_confirmation, retain_observation,
 };
 use super::sweep_evidence::VelocityObservationClass;
 use super::sweep_plan::{
-    MAX_SAFETY_OBSERVATION_GAP_US, MIN_SETTLE_CAPTURE_US, MOVING_STROKE_US,
+    MAX_SAFETY_OBSERVATION_GAP_US, MAX_SWEEP_RUNGS, MIN_SETTLE_CAPTURE_US, MOVING_STROKE_US,
     RequestedVelocitySource, SETTLE_ANALYSIS_BUDGET_US, VELOCITY_SWEEP_SAMPLE_PERIOD_US,
-    ZERO_SETTLE_US,
+    VelocitySweepExecutionPlan, ZERO_SETTLE_US,
 };
 
 const OUTER_VELOCITY_MODE: u32 = 0x8000_0002;
 const SWEEP_SLOT_COUNT: u8 = 4;
 const SETTLE_TRACE_STROKE_MARKER: u16 = 1 << 15;
 const SWEEP_CAUSE_NONE: u8 = 0;
-const SWEEP_CAUSE_PARTIAL_DIRECTION: u8 = 1;
-const SWEEP_CAUSE_TOTAL_INCONCLUSIVE: u8 = 2;
+const SWEEP_CAUSE_NO_DIRECTIONAL_MODEL: u8 = 1;
+const SWEEP_CAUSE_NO_JOINT_OPERABLE_REGION: u8 = 2;
 const SWEEP_CAUSE_INTEGRITY: u8 = 3;
 const SWEEP_CAUSE_CURRENT_HEADROOM: u8 = 4;
 const PID_VELOCITY_ACTUAL_TRACE_DECIMATION: u16 = 16;
+
+fn execution_gains(
+    plan: VelocitySweepExecutionPlan,
+) -> [foci_tmc4671::pid::PidGain; MAX_SWEEP_RUNGS] {
+    let mut gains = [foci_tmc4671::pid::PidGain::ZERO; MAX_SWEEP_RUNGS];
+    let mut index = 0;
+    while index < plan.rung_count {
+        if let Some(gain) = plan.gain_at(index) {
+            gains[usize::from(index)] = gain;
+        }
+        index += 1;
+    }
+    gains
+}
 
 #[derive(Clone, Copy)]
 enum VelocityDiagnosticKind {
@@ -64,6 +84,121 @@ fn velocity_diagnostic_kind(
     } else {
         Some(VelocityDiagnosticKind::PptmActual)
     }
+}
+
+fn track_closed_directional_region(
+    data: &mut super::super::VelocitySweepData,
+    region: DirectionalRegionSummary,
+) {
+    let Some(plan) = data.plan else {
+        return;
+    };
+    let gains = execution_gains(plan);
+    let active_rung = data
+        .operating_regions
+        .joint
+        .active_nomination(
+            &gains[..usize::from(plan.rung_count)],
+            plan.p_start,
+            plan.p_top,
+        )
+        .map_or(data.rung_index, |nomination| nomination.rung_index);
+    let best_rung = data
+        .operating_regions
+        .joint
+        .best_nomination(
+            &gains[..usize::from(plan.rung_count)],
+            plan.p_start,
+            plan.p_top,
+        )
+        .map_or(active_rung, |nomination| nomination.rung_index);
+    if let Some(reference) = DirectionalRegionRef::from_summary(region, active_rung) {
+        data.operating_regions.handoff.observe_directional(
+            region.direction,
+            reference,
+            active_rung,
+            best_rung,
+        );
+    }
+}
+
+fn retain_joint_candidate(data: &mut super::super::VelocitySweepData, region: JointOperableRegion) {
+    let Some(plan) = data.plan else {
+        return;
+    };
+    let gains = execution_gains(plan);
+    let gains = &gains[..usize::from(plan.rung_count)];
+    let previous = data
+        .operating_regions
+        .joint
+        .best_nomination(gains, plan.p_start, plan.p_top)
+        .map(|nomination| nomination.joint.member_mask);
+    data.operating_regions
+        .joint
+        .consider_best(region, gains, plan.p_start, plan.p_top);
+    let current = data
+        .operating_regions
+        .joint
+        .best_nomination(gains, plan.p_start, plan.p_top)
+        .map(|nomination| nomination.joint.member_mask);
+    if current != previous && current == Some(region.member_mask) {
+        data.operating_regions.handoff.promote_active();
+    }
+}
+
+fn selected_handoff(
+    data: &super::super::VelocitySweepData,
+) -> Option<super::operating_region::StageBHandoff> {
+    let plan = data.plan?;
+    let gains = execution_gains(plan);
+    let gains = &gains[..usize::from(plan.rung_count)];
+    let nomination =
+        data.operating_regions
+            .joint
+            .best_nomination(gains, plan.p_start, plan.p_top)?;
+    data.operating_regions
+        .handoff
+        .handoff(nomination, gains, [0, 0])
+}
+
+fn structured_boundary_evidence(
+    data: &mut super::super::VelocitySweepData,
+) -> Option<StructuredBoundaryEvidence> {
+    let diagnostics =
+        analyze_stationarity_diagnostics(&data.observations, &mut data.blocker).ok()?;
+    let binding = diagnostics.suffixes[0]?;
+    if !binding.usable_plateau || binding.slope_passed && binding.lag_one_passed {
+        return None;
+    }
+    let mut passing_suffix_mask = 0_u8;
+    let mut common = None::<[i64; 2]>;
+    for (index, diagnostic) in diagnostics.suffixes.iter().enumerate() {
+        let Some(diagnostic) = diagnostic else {
+            continue;
+        };
+        if diagnostic.usable_plateau {
+            common = match common {
+                None => Some(diagnostic.settled_rate_interval_q),
+                Some(interval) => {
+                    let low = interval[0].max(diagnostic.settled_rate_interval_q[0]);
+                    let high = interval[1].min(diagnostic.settled_rate_interval_q[1]);
+                    (low <= high).then_some([low, high])
+                }
+            };
+        }
+        if diagnostic.slope_passed && diagnostic.lag_one_passed {
+            passing_suffix_mask |= 1 << index;
+        }
+    }
+    if passing_suffix_mask & !1 == 0 {
+        return None;
+    }
+    Some(StructuredBoundaryEvidence {
+        passing_suffix_mask,
+        common_rate_interval_q: common?,
+        binding_slope_margin_q: binding.slope_rejection_margin_q,
+        binding_lag_one_margin_q: binding.lag_one_rejection_margin_q,
+    })
 }
 
 async fn fail_sweep<B: CommissioningBackend>(
@@ -104,13 +239,7 @@ fn sweep_fault_terminal_from_data(
     error: CommissionError,
     safety_fault: Option<OuterSafetyFault>,
 ) -> StepResult {
-    use super::sweep_evidence::assess_sweep_sufficiency;
-
-    let forward = data.forward_band.snapshot();
-    let reverse = data.reverse_band.snapshot();
-    let sufficiency = assess_sweep_sufficiency(&forward, &reverse);
-    let sufficient_direction_mask =
-        u8::from(forward.sufficient) | (u8::from(reverse.sufficient) << 1);
+    let model_direction_mask = data.operating_regions.handoff.model_direction_mask();
     let (expected_observations, expected_rungs) = data.plan.map_or((0, 0), |plan| {
         (
             u16::from(plan.rung_count)
@@ -121,17 +250,20 @@ fn sweep_fault_terminal_from_data(
     });
     StepResult::VelocitySweepTerminal(VelocitySweepTerminal {
         run_sequence: data.integrity.run_sequence(),
-        forward,
-        reverse,
-        sufficiency,
         outcome: VelocitySweepOutcome::Fault,
         cause: error.status_code(),
-        sufficient_direction_mask,
+        model_direction_mask,
+        selected_memberships: [0; 3],
+        nominated_p: 0,
+        selected_intervals: [[0; 2]; 2],
+        coverage_mask: 0,
         expected_observations,
         emitted_observations: data.integrity.emitted_observations(),
         expected_rungs,
         emitted_rungs: data.integrity.emitted_rungs(),
         digest: data.integrity.digest(),
+        run_started_us: data.run_started_us,
+        run_completed_us: data.previous_read_us,
         safety_fault,
     })
 }
@@ -140,42 +272,30 @@ fn sweep_evidence_terminal(
     data: &super::super::VelocitySweepData,
     current_headroom: bool,
 ) -> VelocitySweepTerminal {
-    use super::sweep_evidence::{
-        VelocityInconclusiveKind, VelocitySweepSufficiency, assess_sweep_sufficiency,
-    };
-
     let plan = data
         .plan
         .expect("velocity sweep terminal requires an immutable plan");
-    let forward = data.forward_band.snapshot();
-    let reverse = data.reverse_band.snapshot();
-    let sufficiency = assess_sweep_sufficiency(&forward, &reverse);
-    let (mut outcome, mut cause, sufficient_direction_mask) = match sufficiency {
-        VelocitySweepSufficiency::Complete { .. } => (
-            VelocitySweepOutcome::Complete,
+    let model_direction_mask = data.operating_regions.handoff.model_direction_mask();
+    let handoff = selected_handoff(data);
+    let (mut outcome, mut cause) = if handoff.is_some() {
+        (
+            VelocitySweepOutcome::CompleteCandidate,
             if current_headroom {
                 SWEEP_CAUSE_CURRENT_HEADROOM
             } else {
                 SWEEP_CAUSE_NONE
             },
-            3,
-        ),
-        VelocitySweepSufficiency::Inconclusive {
-            sufficient_direction_mask,
-            kind,
-            ..
-        } => (
+        )
+    } else if model_direction_mask != 3 {
+        (
             VelocitySweepOutcome::Inconclusive,
-            if current_headroom {
-                SWEEP_CAUSE_CURRENT_HEADROOM
-            } else {
-                match kind {
-                    VelocityInconclusiveKind::PartialDirection => SWEEP_CAUSE_PARTIAL_DIRECTION,
-                    VelocityInconclusiveKind::Total => SWEEP_CAUSE_TOTAL_INCONCLUSIVE,
-                }
-            },
-            sufficient_direction_mask,
-        ),
+            SWEEP_CAUSE_NO_DIRECTIONAL_MODEL,
+        )
+    } else {
+        (
+            VelocitySweepOutcome::Inconclusive,
+            SWEEP_CAUSE_NO_JOINT_OPERABLE_REGION,
+        )
     };
     let expected_observations = u16::from(plan.rung_count)
         .saturating_mul(plan.observations_per_direction)
@@ -190,17 +310,31 @@ fn sweep_evidence_terminal(
     }
     VelocitySweepTerminal {
         run_sequence: data.integrity.run_sequence(),
-        forward,
-        reverse,
-        sufficiency,
         outcome,
         cause,
-        sufficient_direction_mask,
+        model_direction_mask,
+        selected_memberships: handoff.map_or([0; 3], |handoff| {
+            [
+                handoff.directional[0].region.member_mask,
+                handoff.directional[1].region.member_mask,
+                handoff.nomination.joint.member_mask,
+            ]
+        }),
+        nominated_p: handoff.map_or(0, |handoff| handoff.nomination.p.raw()),
+        selected_intervals: handoff.map_or([[0; 2]; 2], |handoff| {
+            [
+                handoff.directional[0].region.pooled_interval,
+                handoff.directional[1].region.pooled_interval,
+            ]
+        }),
+        coverage_mask: handoff.map_or(0, |handoff| handoff.coverage_mask),
         expected_observations,
         emitted_observations: data.integrity.emitted_observations(),
         expected_rungs,
         emitted_rungs: data.integrity.emitted_rungs(),
         digest: data.integrity.digest(),
+        run_started_us: data.run_started_us,
+        run_completed_us: data.previous_read_us,
         safety_fault: None,
     }
 }
@@ -304,21 +438,16 @@ pub(crate) async fn step_velocity_sweep_with_trace<B: CommissioningBackend>(
                 return sweep_fault_terminal(phase, CommissionError::EncoderFault, None);
             }
             safety.torque_cap = torque_limit;
-            if safety.arm_safety_observation(backend.elapsed_us()).is_err() {
+            let run_started_us = backend.elapsed_us();
+            if safety.arm_safety_observation(run_started_us).is_err() {
                 return sweep_fault_terminal(phase, CommissionError::InvalidSchedule, None);
             }
-            data.plan = Some(plan);
-            *state = VelocitySweepState::EmitPlan;
-            StepResult::ReadyNow
-        }
-        VelocitySweepState::EmitPlan => {
-            let Some(plan) = data.plan else {
-                return fail_sweep(phase, backend, CommissionError::InvalidSchedule).await;
-            };
+            data.run_started_us = run_started_us;
+            let plan_digest = plan.digest();
             let report = VelocitySweepPlanned {
                 run_sequence: data.integrity.run_sequence(),
                 evidence_sequence: data.integrity.next_evidence_sequence(),
-                plan_digest: plan.digest(),
+                plan_digest,
                 requested_velocity_mrev_s: plan.requested_velocity_mrev_s,
                 requested_velocity_source: match plan.requested_velocity_source {
                     RequestedVelocitySource::Explicit => 0,
@@ -344,6 +473,7 @@ pub(crate) async fn step_velocity_sweep_with_trace<B: CommissioningBackend>(
                 hard_torque_limit: plan.hard_torque_limit,
                 usable_torque_limit: plan.usable_torque_limit,
             };
+            data.plan = Some(plan.execution_plan(plan_digest));
             let event = data.integrity.record(VelocitySweepEvent::Planned(report));
             *state = VelocitySweepState::WriteGain;
             StepResult::VelocitySweepEvent(event)
@@ -352,7 +482,7 @@ pub(crate) async fn step_velocity_sweep_with_trace<B: CommissioningBackend>(
             let Some(plan) = data.plan else {
                 return fail_sweep(phase, backend, CommissionError::InvalidSchedule).await;
             };
-            let Some(p) = plan.gains.get(usize::from(data.rung_index)).copied() else {
+            let Some(p) = plan.gain_at(data.rung_index) else {
                 return fail_sweep(phase, backend, CommissionError::InvalidSchedule).await;
             };
             if data.rung_index >= plan.rung_count
@@ -628,6 +758,7 @@ pub(crate) async fn step_velocity_sweep_with_trace<B: CommissioningBackend>(
                 Ok(None) => return StepResult::ReadyNow,
                 Err(error) => return fail_sweep(phase, backend, error).await,
             };
+            let structured_boundary = structured_boundary_evidence(data);
             let report = VelocitySweepObservation {
                 run_sequence: data.integrity.run_sequence(),
                 evidence_sequence: data.integrity.next_evidence_sequence(),
@@ -643,6 +774,7 @@ pub(crate) async fn step_velocity_sweep_with_trace<B: CommissioningBackend>(
                 selected_blocks: analysis.selected_blocks,
                 variance_of_mean_q2: analysis.variance_of_mean_q2,
                 settled_rate_mean_q: analysis.settled_rate_mean_q,
+                structured_boundary,
             };
             let terminal_error = match analysis.summary.classification {
                 VelocityObservationClass::WrongDirectionFault => {
@@ -825,7 +957,9 @@ pub(crate) async fn step_velocity_sweep_with_trace<B: CommissioningBackend>(
             data.observations.clear();
             safety.end_primitive();
             *state = if *current_headroom {
-                VelocitySweepState::CurrentHeadroomTerminal
+                VelocitySweepState::FinishForward {
+                    current_headroom: true,
+                }
             } else {
                 VelocitySweepState::Advance
             };
@@ -835,51 +969,230 @@ pub(crate) async fn step_velocity_sweep_with_trace<B: CommissioningBackend>(
             let error = *error;
             fail_sweep(phase, backend, error).await
         }
-        VelocitySweepState::CurrentHeadroomTerminal => {
-            StepResult::VelocitySweepTerminal(sweep_evidence_terminal(data, true))
-        }
         VelocitySweepState::Advance => {
-            let Some(plan) = data.plan else {
+            if data.plan.is_none() {
                 return fail_sweep(phase, backend, CommissionError::InvalidSchedule).await;
-            };
+            }
             if data.slot + 1 < SWEEP_SLOT_COUNT {
                 data.slot += 1;
                 *state = VelocitySweepState::ClearSignedIntegrator;
             } else {
-                let VelocitySweepEvidenceState::CompletePair { forward, reverse } = data.evidence
-                else {
-                    return fail_sweep(phase, backend, CommissionError::InvalidSchedule).await;
-                };
-                data.forward_band
-                    .observe(usize::from(data.rung_index), forward);
-                data.reverse_band
-                    .observe(usize::from(data.rung_index), reverse);
-                let report = VelocitySweepRungReport {
-                    run_sequence: data.integrity.run_sequence(),
-                    evidence_sequence: data.integrity.next_evidence_sequence(),
-                    rung_index: data.rung_index,
-                    forward,
-                    reverse,
-                    forward_band: data.forward_band.snapshot(),
-                    reverse_band: data.reverse_band.snapshot(),
-                };
-                let event = data.integrity.record(VelocitySweepEvent::Rung(report));
-                if data.rung_index + 1 < plan.rung_count {
-                    data.rung_index += 1;
-                    data.slot = 0;
-                    *state = VelocitySweepState::WriteGain;
-                } else {
-                    *state = VelocitySweepState::Terminal;
-                }
+                *state = VelocitySweepState::FoldForward;
+            }
+            StepResult::ReadyNow
+        }
+        VelocitySweepState::FoldForward => {
+            let VelocitySweepEvidenceState::CompletePair { forward, .. } = data.evidence else {
+                return fail_sweep(phase, backend, CommissionError::InvalidSchedule).await;
+            };
+            *state = VelocitySweepState::FoldReverse;
+            if let Some(region) = super::operating_region::observe_directional_rung(
+                &mut data.operating_regions.directional[0],
+                data.rung_index,
+                forward,
+            ) {
+                track_closed_directional_region(data, region);
+                let event = data.integrity.record(VelocitySweepEvent::DirectionalRegion(
+                    VelocityDirectionalRegionReport {
+                        run_sequence: data.integrity.run_sequence(),
+                        evidence_sequence: data.integrity.next_evidence_sequence(),
+                        region,
+                    },
+                ));
                 return StepResult::VelocitySweepEvent(event);
             }
             StepResult::ReadyNow
         }
-        VelocitySweepState::Terminal => {
+        VelocitySweepState::FoldReverse => {
+            let VelocitySweepEvidenceState::CompletePair { reverse, .. } = data.evidence else {
+                return fail_sweep(phase, backend, CommissionError::InvalidSchedule).await;
+            };
+            *state = VelocitySweepState::FoldJoint;
+            if let Some(region) = super::operating_region::observe_directional_rung(
+                &mut data.operating_regions.directional[1],
+                data.rung_index,
+                reverse,
+            ) {
+                track_closed_directional_region(data, region);
+                let event = data.integrity.record(VelocitySweepEvent::DirectionalRegion(
+                    VelocityDirectionalRegionReport {
+                        run_sequence: data.integrity.run_sequence(),
+                        evidence_sequence: data.integrity.next_evidence_sequence(),
+                        region,
+                    },
+                ));
+                return StepResult::VelocitySweepEvent(event);
+            }
+            StepResult::ReadyNow
+        }
+        VelocitySweepState::FoldJoint => {
+            let Some(plan) = data.plan else {
+                return fail_sweep(phase, backend, CommissionError::InvalidSchedule).await;
+            };
+            let VelocitySweepEvidenceState::CompletePair { forward, reverse } = data.evidence
+            else {
+                return fail_sweep(phase, backend, CommissionError::InvalidSchedule).await;
+            };
+            *state = VelocitySweepState::EmitRung;
+            let gains = execution_gains(plan);
+            let gains = &gains[..usize::from(plan.rung_count)];
+            let previous_active =
+                data.operating_regions
+                    .joint
+                    .active_nomination(gains, plan.p_start, plan.p_top);
+            let closed = super::operating_region::observe_joint_rung(
+                &mut data.operating_regions.joint,
+                data.rung_index,
+                forward,
+                reverse,
+            );
+            let active =
+                data.operating_regions
+                    .joint
+                    .active_nomination(gains, plan.p_start, plan.p_top);
+            if let Some(region) = closed {
+                retain_joint_candidate(data, region);
+            }
+            match (previous_active, active) {
+                (None, Some(active)) => data
+                    .operating_regions
+                    .handoff
+                    .begin_active_nomination(active.rung_index),
+                (Some(previous), Some(active)) if previous.rung_index != active.rung_index => data
+                    .operating_regions
+                    .handoff
+                    .move_active_nomination(active.rung_index),
+                _ => {}
+            }
+            if let Some(region) = closed {
+                let event = data.integrity.record(VelocitySweepEvent::JointRegion(
+                    VelocityJointRegionReport {
+                        run_sequence: data.integrity.run_sequence(),
+                        evidence_sequence: data.integrity.next_evidence_sequence(),
+                        region,
+                    },
+                ));
+                return StepResult::VelocitySweepEvent(event);
+            }
+            StepResult::ReadyNow
+        }
+        VelocitySweepState::EmitRung => {
+            let Some(plan) = data.plan else {
+                return fail_sweep(phase, backend, CommissionError::InvalidSchedule).await;
+            };
+            let VelocitySweepEvidenceState::CompletePair { forward, reverse } = data.evidence
+            else {
+                return fail_sweep(phase, backend, CommissionError::InvalidSchedule).await;
+            };
+            let report = VelocitySweepRungReport {
+                run_sequence: data.integrity.run_sequence(),
+                evidence_sequence: data.integrity.next_evidence_sequence(),
+                rung_index: data.rung_index,
+                forward,
+                reverse,
+            };
+            let event = data.integrity.record(VelocitySweepEvent::Rung(report));
+            if data.rung_index + 1 < plan.rung_count {
+                data.rung_index += 1;
+                data.slot = 0;
+                *state = VelocitySweepState::WriteGain;
+            } else {
+                *state = VelocitySweepState::FinishForward {
+                    current_headroom: false,
+                };
+            }
+            StepResult::VelocitySweepEvent(event)
+        }
+        VelocitySweepState::FinishForward { current_headroom } => {
+            let closure = if *current_headroom {
+                DirectionalRegionClosure::CurrentHeadroom
+            } else {
+                DirectionalRegionClosure::EndOfLadder
+            };
+            let closed = data.operating_regions.directional[0].finish(closure);
+            let current_headroom = *current_headroom;
+            *state = VelocitySweepState::FinishReverse { current_headroom };
+            if let Some(region) = closed {
+                track_closed_directional_region(data, region);
+                let event = data.integrity.record(VelocitySweepEvent::DirectionalRegion(
+                    VelocityDirectionalRegionReport {
+                        run_sequence: data.integrity.run_sequence(),
+                        evidence_sequence: data.integrity.next_evidence_sequence(),
+                        region,
+                    },
+                ));
+                return StepResult::VelocitySweepEvent(event);
+            }
+            StepResult::ReadyNow
+        }
+        VelocitySweepState::FinishReverse { current_headroom } => {
+            let closure = if *current_headroom {
+                DirectionalRegionClosure::CurrentHeadroom
+            } else {
+                DirectionalRegionClosure::EndOfLadder
+            };
+            let closed = data.operating_regions.directional[1].finish(closure);
+            let current_headroom = *current_headroom;
+            *state = VelocitySweepState::FinishJoint { current_headroom };
+            if let Some(region) = closed {
+                track_closed_directional_region(data, region);
+                let event = data.integrity.record(VelocitySweepEvent::DirectionalRegion(
+                    VelocityDirectionalRegionReport {
+                        run_sequence: data.integrity.run_sequence(),
+                        evidence_sequence: data.integrity.next_evidence_sequence(),
+                        region,
+                    },
+                ));
+                return StepResult::VelocitySweepEvent(event);
+            }
+            StepResult::ReadyNow
+        }
+        VelocitySweepState::FinishJoint { current_headroom } => {
+            let closure = if *current_headroom {
+                JointOperableClosure::CurrentHeadroom
+            } else {
+                JointOperableClosure::EndOfLadder
+            };
+            let closed = data.operating_regions.joint.finish(closure);
+            let current_headroom = *current_headroom;
+            *state = VelocitySweepState::EmitHandoff { current_headroom };
+            if let Some(region) = closed {
+                retain_joint_candidate(data, region);
+                let event = data.integrity.record(VelocitySweepEvent::JointRegion(
+                    VelocityJointRegionReport {
+                        run_sequence: data.integrity.run_sequence(),
+                        evidence_sequence: data.integrity.next_evidence_sequence(),
+                        region,
+                    },
+                ));
+                return StepResult::VelocitySweepEvent(event);
+            }
+            StepResult::ReadyNow
+        }
+        VelocitySweepState::EmitHandoff { current_headroom } => {
             if data.plan.is_none() {
                 return fail_sweep(phase, backend, CommissionError::InvalidSchedule).await;
             }
-            StepResult::VelocitySweepTerminal(sweep_evidence_terminal(data, false))
+            let handoff = selected_handoff(data);
+            let current_headroom = *current_headroom;
+            *state = VelocitySweepState::Terminal { current_headroom };
+            if let Some(handoff) = handoff {
+                let event = data.integrity.record(VelocitySweepEvent::Handoff(
+                    crate::commissioning::types::VelocityStageBHandoffReport {
+                        run_sequence: data.integrity.run_sequence(),
+                        evidence_sequence: data.integrity.next_evidence_sequence(),
+                        handoff,
+                    },
+                ));
+                return StepResult::VelocitySweepEvent(event);
+            }
+            StepResult::ReadyNow
+        }
+        VelocitySweepState::Terminal { current_headroom } => {
+            if data.plan.is_none() {
+                return fail_sweep(phase, backend, CommissionError::InvalidSchedule).await;
+            }
+            StepResult::VelocitySweepTerminal(sweep_evidence_terminal(data, *current_headroom))
         }
     }
 }
@@ -937,7 +1250,6 @@ mod tests {
         pollster::block_on(step_velocity_sweep_with_trace(phase, backend));
         pollster::block_on(step_velocity_sweep_with_trace(phase, backend));
         pollster::block_on(step_velocity_sweep_with_trace(phase, backend));
-        pollster::block_on(step_velocity_sweep_with_trace(phase, backend));
     }
 
     fn assert_fail_closed_tail(backend: &MockBackend) {
@@ -973,12 +1285,12 @@ mod tests {
 
         assert!(matches!(
             pollster::block_on(step_velocity_sweep_with_trace(&mut phase, &mut backend)),
-            StepResult::ReadyNow
+            StepResult::VelocitySweepEvent(VelocitySweepEvent::Planned(_))
         ));
         let OuterPhase::VelocitySweep { state, data, .. } = &phase else {
             panic!("velocity sweep should remain active");
         };
-        assert!(matches!(state, VelocitySweepState::EmitPlan));
+        assert!(matches!(state, VelocitySweepState::WriteGain));
         assert!(data.plan.is_some());
         let selector_writes: std::vec::Vec<_> = backend
             .spi_log
@@ -1017,10 +1329,6 @@ mod tests {
         }));
 
         assert!(matches!(
-            pollster::block_on(step_velocity_sweep_with_trace(&mut phase, &mut backend)),
-            StepResult::VelocitySweepEvent(VelocitySweepEvent::Planned(_))
-        ));
-        assert!(matches!(
             phase,
             OuterPhase::VelocitySweep {
                 state: VelocitySweepState::WriteGain,
@@ -1043,7 +1351,7 @@ mod tests {
 
         assert!(matches!(
             pollster::block_on(step_velocity_sweep_with_trace(&mut phase, &mut backend)),
-            StepResult::ReadyNow
+            StepResult::VelocitySweepEvent(VelocitySweepEvent::Planned(_))
         ));
 
         let OuterPhase::VelocitySweep { safety, .. } = phase else {
@@ -1087,10 +1395,6 @@ mod tests {
         let mut spi_phase = phase();
         let mut spi_backend = MockBackend::new();
         spi_backend.current_limit_value = current_limit(2_448);
-        pollster::block_on(step_velocity_sweep_with_trace(
-            &mut spi_phase,
-            &mut spi_backend,
-        ));
         pollster::block_on(step_velocity_sweep_with_trace(
             &mut spi_phase,
             &mut spi_backend,
@@ -1403,13 +1707,15 @@ mod tests {
             StepResult::ReadyNow
         ));
 
-        let StepResult::VelocitySweepTerminal(terminal) =
-            pollster::block_on(step_velocity_sweep_with_trace(&mut phase, &mut backend))
-        else {
-            panic!("current headroom must terminate without another signed stroke");
+        let terminal = loop {
+            match pollster::block_on(step_velocity_sweep_with_trace(&mut phase, &mut backend)) {
+                StepResult::VelocitySweepTerminal(terminal) => break terminal,
+                StepResult::VelocitySweepEvent(_) | StepResult::ReadyNow => {}
+                other => panic!("unexpected current-headroom finalization result: {other:?}"),
+            }
         };
         assert_eq!(terminal.outcome, VelocitySweepOutcome::Inconclusive);
-        assert_eq!(terminal.cause, SWEEP_CAUSE_CURRENT_HEADROOM);
+        assert_eq!(terminal.cause, SWEEP_CAUSE_NO_DIRECTIONAL_MODEL);
         assert_eq!(terminal.emitted_observations, 1);
         assert_eq!(terminal.emitted_rungs, 0);
         assert_eq!(
@@ -1485,14 +1791,13 @@ mod tests {
         let mut phase = phase();
         let mut backend = MockBackend::new();
         backend.current_limit_value = current_limit(2_448);
-        pollster::block_on(step_velocity_sweep_with_trace(&mut phase, &mut backend));
+        let plan_event =
+            pollster::block_on(step_velocity_sweep_with_trace(&mut phase, &mut backend));
         let OuterPhase::VelocitySweep { data, .. } = &mut phase else {
             panic!("velocity sweep should remain active");
         };
         data.plan.as_mut().unwrap().rung_count = 1;
 
-        let plan_event =
-            pollster::block_on(step_velocity_sweep_with_trace(&mut phase, &mut backend));
         let StepResult::VelocitySweepEvent(VelocitySweepEvent::Planned(plan_report)) = plan_event
         else {
             panic!("plan must be the first streamed event");
@@ -1562,15 +1867,33 @@ mod tests {
                 safety.primitive_start_us.is_none(),
                 "confirmed rest ends the moving-plus-settle primitive"
             );
-            let advance =
-                pollster::block_on(step_velocity_sweep_with_trace(&mut phase, &mut backend));
             if slot == 3 {
-                let StepResult::VelocitySweepEvent(VelocitySweepEvent::Rung(report)) = advance
-                else {
-                    panic!("four observations must end with one rung verdict");
-                };
-                evidence_sequences.push(report.evidence_sequence);
+                loop {
+                    match pollster::block_on(step_velocity_sweep_with_trace(
+                        &mut phase,
+                        &mut backend,
+                    )) {
+                        StepResult::VelocitySweepEvent(VelocitySweepEvent::Rung(report)) => {
+                            evidence_sequences.push(report.evidence_sequence);
+                            break;
+                        }
+                        StepResult::VelocitySweepEvent(event) => {
+                            let sequence = match event {
+                                VelocitySweepEvent::DirectionalRegion(report) => {
+                                    report.evidence_sequence
+                                }
+                                VelocitySweepEvent::JointRegion(report) => report.evidence_sequence,
+                                _ => panic!("unexpected pre-rung event"),
+                            };
+                            evidence_sequences.push(sequence);
+                        }
+                        StepResult::ReadyNow => {}
+                        other => panic!("unexpected pre-rung result: {other:?}"),
+                    }
+                }
             } else {
+                let advance =
+                    pollster::block_on(step_velocity_sweep_with_trace(&mut phase, &mut backend));
                 assert!(matches!(advance, StepResult::ReadyNow));
             }
         }
@@ -1578,7 +1901,14 @@ mod tests {
         let OuterPhase::VelocitySweep { state, data, .. } = &phase else {
             panic!("velocity sweep should remain active");
         };
-        assert!(matches!(state, VelocitySweepState::Terminal));
+        assert!(matches!(
+            state,
+            VelocitySweepState::FinishForward { .. }
+                | VelocitySweepState::FinishReverse { .. }
+                | VelocitySweepState::FinishJoint { .. }
+                | VelocitySweepState::EmitHandoff { .. }
+                | VelocitySweepState::Terminal { .. }
+        ));
         let VelocitySweepEvidenceState::CompletePair { forward, reverse } = &data.evidence else {
             panic!("terminal rung should retain both directional verdicts");
         };
@@ -1586,7 +1916,7 @@ mod tests {
         assert!(forward.initial_lead_in);
         assert_eq!(reverse.direction, VelocityDirection::Reverse);
         assert!(!reverse.initial_lead_in);
-        assert_eq!(evidence_sequences, [0, 1, 2, 3, 4, 5]);
+        assert_eq!(&evidence_sequences[..6], [0, 1, 2, 3, 4, 5]);
         let targets: std::vec::Vec<i32> = backend
             .spi_log
             .iter()
@@ -1620,10 +1950,23 @@ mod tests {
             8
         );
 
-        let StepResult::VelocitySweepTerminal(terminal) =
-            pollster::block_on(step_velocity_sweep_with_trace(&mut phase, &mut backend))
-        else {
-            panic!("fixed ladder must end with the detailed sweep terminal");
+        let terminal = loop {
+            match pollster::block_on(step_velocity_sweep_with_trace(&mut phase, &mut backend)) {
+                StepResult::VelocitySweepEvent(event) => {
+                    let sequence = match event {
+                        VelocitySweepEvent::Planned(report) => report.evidence_sequence,
+                        VelocitySweepEvent::Observation(report) => report.evidence_sequence,
+                        VelocitySweepEvent::Rung(report) => report.evidence_sequence,
+                        VelocitySweepEvent::DirectionalRegion(report) => report.evidence_sequence,
+                        VelocitySweepEvent::JointRegion(report) => report.evidence_sequence,
+                        VelocitySweepEvent::Handoff(report) => report.evidence_sequence,
+                    };
+                    evidence_sequences.push(sequence);
+                }
+                StepResult::VelocitySweepTerminal(terminal) => break terminal,
+                StepResult::ReadyNow => {}
+                other => panic!("unexpected finalization result: {other:?}"),
+            }
         };
         assert_eq!(terminal.expected_observations, 4);
         assert_eq!(terminal.emitted_observations, 4);

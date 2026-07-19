@@ -224,6 +224,9 @@ pub fn emit_velocity_sweep_event<S: CommissionReplySink>(
             emit_velocity_sweep_observation(sink, oid, report);
         }
         VelocitySweepEvent::Rung(report) => emit_velocity_sweep_rung(sink, oid, report),
+        VelocitySweepEvent::DirectionalRegion(_)
+        | VelocitySweepEvent::JointRegion(_)
+        | VelocitySweepEvent::Handoff(_) => {}
     }
 }
 
@@ -434,10 +437,10 @@ fn emit_velocity_sweep_rung<S: CommissionReplySink>(
         forward_high_q16,
         reverse_low_q16,
         reverse_high_q16,
-        forward_p_low: report.forward_band.p_low.map_or(0, |value| value.raw()),
-        forward_p_high: report.forward_band.p_high.map_or(0, |value| value.raw()),
-        reverse_p_low: report.reverse_band.p_low.map_or(0, |value| value.raw()),
-        reverse_p_high: report.reverse_band.p_high.map_or(0, |value| value.raw()),
+        forward_p_low: 0,
+        forward_p_high: 0,
+        reverse_p_low: 0,
+        reverse_p_high: 0,
     });
     let flags = u8::from(report.forward.reproduced_moving)
         | (u8::from(report.reverse.reproduced_moving) << 1)
@@ -457,19 +460,13 @@ fn emit_velocity_sweep_rung<S: CommissionReplySink>(
             crate::commissioning::outer::velocity::sweep_evidence::rung_class_report_code(
                 report.reverse.classification,
             ),
-        forward_closure:
-            crate::commissioning::outer::velocity::sweep_evidence::band_closure_report_code(
-                report.forward_band.closure,
-            ),
-        reverse_closure:
-            crate::commissioning::outer::velocity::sweep_evidence::band_closure_report_code(
-                report.reverse_band.closure,
-            ),
+        forward_closure: 0,
+        reverse_closure: 0,
         flags,
-        forward_eligible_rungs: report.forward_band.eligible_rungs,
-        reverse_eligible_rungs: report.reverse_band.eligible_rungs,
-        forward_eligible_observations: report.forward_band.eligible_observations,
-        reverse_eligible_observations: report.reverse_band.eligible_observations,
+        forward_eligible_rungs: u8::from(report.forward.disturbance_interval.is_some()),
+        reverse_eligible_rungs: u8::from(report.reverse.disturbance_interval.is_some()),
+        forward_eligible_observations: 2 * u16::from(report.forward.disturbance_interval.is_some()),
+        reverse_eligible_observations: 2 * u16::from(report.reverse.disturbance_interval.is_some()),
     });
 }
 
@@ -487,54 +484,33 @@ fn emit_velocity_sweep_terminal_fragments<S: CommissionReplySink>(
         .emitted_observations
         .saturating_add(report.emitted_rungs)
         .saturating_add(1);
-    for (fragment, band) in [(0, report.forward), (1, report.reverse)] {
-        let direction =
-            crate::commissioning::outer::velocity::sweep_evidence::direction_report_code(
-                band.direction,
-            );
-        let closure =
-            crate::commissioning::outer::velocity::sweep_evidence::band_closure_report_code(
-                band.closure,
-            );
-        let (common_low_q16, common_high_q16) =
-            band.common_intersection.map_or((0, 0), |interval| {
-                (interval.low().raw(), interval.high().raw())
-            });
-        let (pooled_q16, pooled_low_q16, pooled_high_q16) =
-            band.pooled.map_or((0, 0, 0), |pooled| {
-                (
-                    pooled.estimate.raw(),
-                    pooled.interval.low().raw(),
-                    pooled.interval.high().raw(),
-                )
-            });
-        let flags = u8::from(band.sufficient)
-            | (u8::from(band.left_censored) << 1)
-            | (u8::from(band.common_intersection.is_some()) << 2)
-            | (u8::from(band.pooled.is_some()) << 3);
+    for fragment in 0..2 {
+        let interval = report.selected_intervals[usize::from(fragment)];
+        let sufficient = report.model_direction_mask & (1 << fragment) != 0;
         sink.foci_velocity_sweep_terminal_direction(FociVelocitySweepTerminalDirection {
             oid,
             run_sequence: report.run_sequence,
             evidence_sequence,
             fragment,
-            direction_closure: direction | (closure << 1),
-            first_moving: band.first_moving.map_or(0, |value| value.raw()),
-            p_low: band.p_low.map_or(0, |value| value.raw()),
-            p_high: band.p_high.map_or(0, |value| value.raw()),
-            common_low_q16,
-            common_high_q16,
-            pooled_q16,
-            pooled_low_q16,
-            pooled_high_q16,
-            eligible_rungs: band.eligible_rungs,
-            eligible_observations: band.eligible_observations,
-            flags,
+            direction_closure: fragment,
+            first_moving: 0,
+            p_low: report.nominated_p,
+            p_high: report.nominated_p,
+            common_low_q16: interval[0],
+            common_high_q16: interval[1],
+            pooled_q16: interval[0].saturating_add(interval[1]) / 2,
+            pooled_low_q16: interval[0],
+            pooled_high_q16: interval[1],
+            eligible_rungs: u8::from(sufficient) * 3,
+            eligible_observations: u16::from(sufficient) * 6,
+            flags: u8::from(sufficient),
         });
     }
     let outcome = match report.outcome {
-        VelocitySweepOutcome::Complete => 0,
-        VelocitySweepOutcome::Inconclusive => 1,
-        VelocitySweepOutcome::Fault => 2,
+        VelocitySweepOutcome::CompleteCandidate => 0,
+        VelocitySweepOutcome::Complete => 1,
+        VelocitySweepOutcome::Inconclusive => 2,
+        VelocitySweepOutcome::Fault => 3,
     };
     sink.foci_velocity_sweep_terminal_integrity(FociVelocitySweepTerminalIntegrity {
         oid,
@@ -549,7 +525,7 @@ fn emit_velocity_sweep_terminal_fragments<S: CommissionReplySink>(
         digest_high: (report.digest >> 32) as u32,
         outcome,
         cause: report.cause,
-        sufficient_direction_mask: report.sufficient_direction_mask,
+        sufficient_direction_mask: report.model_direction_mask,
     });
 }
 
@@ -2905,28 +2881,7 @@ mod tests {
 
     #[test]
     fn sweep_terminal_order_separates_fault_and_inconclusive_paths() {
-        use crate::autotune::velocity_measurement::VelocityDirection;
-        use crate::commissioning::outer::velocity::sweep_evidence::{
-            BandClosure, DirectionalDisturbanceBand, JointIdentifiableGeometry,
-            VelocityInconclusiveKind, VelocitySweepSufficiency,
-        };
         use crate::commissioning::types::{OuterInconclusive, VelocitySweepOutcome};
-
-        let band = |direction| DirectionalDisturbanceBand {
-            direction,
-            last_inert: None,
-            first_moving: None,
-            ambiguous_edge: None,
-            left_censored: false,
-            p_low: None,
-            p_high: None,
-            closure: BandClosure::Fault,
-            common_intersection: None,
-            pooled: None,
-            eligible_rungs: 0,
-            eligible_observations: 0,
-            sufficient: false,
-        };
         let safety_fault = OuterSafetyFault {
             reason: crate::commissioning::types::OUTER_SAFETY_FAULT_VELOCITY,
             max_travel_mrev: 750,
@@ -2945,27 +2900,20 @@ mod tests {
         let digest = 0x0123_4567_89ab_cdef;
         let mut terminal = VelocitySweepTerminal {
             run_sequence: 7,
-            forward: band(VelocityDirection::Forward),
-            reverse: band(VelocityDirection::Reverse),
-            sufficiency: VelocitySweepSufficiency::Inconclusive {
-                sufficient_direction_mask: 0,
-                kind: VelocityInconclusiveKind::Total,
-                joint: JointIdentifiableGeometry {
-                    low: None,
-                    high: None,
-                    gap_low: None,
-                    gap_high: None,
-                    has_joint_band: false,
-                },
-            },
             outcome: VelocitySweepOutcome::Fault,
             cause: CommissionError::SafetyEnvelopeViolation.status_code(),
-            sufficient_direction_mask: 0,
+            model_direction_mask: 0,
+            selected_memberships: [0; 3],
+            nominated_p: 0,
+            selected_intervals: [[0; 2]; 2],
+            coverage_mask: 0,
             expected_observations: 20,
             emitted_observations: 4,
             expected_rungs: 5,
             emitted_rungs: 1,
             digest,
+            run_started_us: 1_000,
+            run_completed_us: 2_000,
             safety_fault: Some(safety_fault),
         };
         let mut sink = RecordingSink::default();

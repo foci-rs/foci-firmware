@@ -58,9 +58,8 @@ fn finish_moving_observation_analysis(
     stationarity: StationarityResult,
 ) -> Result<MovingObservationAnalysis, CommissionError> {
     let plan = data.plan.ok_or(CommissionError::InvalidSchedule)?;
-    let p = *plan
-        .gains
-        .get(usize::from(data.rung_index))
+    let p = plan
+        .gain_at(data.rung_index)
         .ok_or(CommissionError::InvalidSchedule)?;
     let direction = slot_velocity_direction(data.slot);
     let predicted = u32::from(p.raw())

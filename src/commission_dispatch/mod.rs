@@ -412,7 +412,7 @@ pub async fn drive_commission_result<B: CommissioningBackend>(
             let inconclusive = (terminal.outcome == VelocitySweepOutcome::Inconclusive).then_some(
                 OuterInconclusive {
                     phase: PhaseId::VelocityTune,
-                    sufficient_direction_mask: terminal.sufficient_direction_mask,
+                    sufficient_direction_mask: terminal.model_direction_mask,
                     cause: terminal.cause,
                     digest_low: terminal.digest as u32,
                     digest_high: (terminal.digest >> 32) as u32,

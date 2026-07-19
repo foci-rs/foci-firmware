@@ -786,6 +786,15 @@ impl CommissioningEngine {
                         EVENT_COMMISSION_VELOCITY_SWEEP_RUNG,
                         report.evidence_sequence,
                     ),
+                    crate::commissioning::types::VelocitySweepEvent::DirectionalRegion(report) => {
+                        (127, report.evidence_sequence)
+                    }
+                    crate::commissioning::types::VelocitySweepEvent::JointRegion(report) => {
+                        (127, report.evidence_sequence)
+                    }
+                    crate::commissioning::types::VelocitySweepEvent::Handoff(report) => {
+                        (127, report.evidence_sequence)
+                    }
                 };
                 backend.record_commission_trace_event(CommissionTraceEvent {
                     level: TraceEventLevel::Info,
@@ -805,7 +814,8 @@ impl CommissioningEngine {
                     ),
                 );
                 let level = match terminal.outcome {
-                    crate::commissioning::types::VelocitySweepOutcome::Complete => {
+                    crate::commissioning::types::VelocitySweepOutcome::CompleteCandidate
+                    | crate::commissioning::types::VelocitySweepOutcome::Complete => {
                         TraceEventLevel::Info
                     }
                     crate::commissioning::types::VelocitySweepOutcome::Inconclusive => {
@@ -1069,7 +1079,20 @@ mod tests {
         // partial-block analysis reaches, but does not raise, the audited F407
         // ceiling.
         #[cfg(feature = "trace-velocity-sweep")]
-        assert_eq!(size_of::<CommissioningEngine>(), 4_528);
+        {
+            assert!(
+                size_of::<
+                    crate::commissioning::outer::velocity::sweep_plan::VelocitySweepExecutionPlan,
+                >() <= 80
+            );
+            assert!(
+                size_of::<
+                    crate::commissioning::outer::velocity::operating_region::OperatingRegionRuntime,
+                >() <= 304
+            );
+            assert!(size_of::<crate::commissioning::outer::VelocitySweepData>() <= 2_864);
+            assert_eq!(size_of::<CommissioningEngine>(), 4_528);
+        }
         assert!(size_of::<CommissioningEngine>() <= 4_528);
         assert!(size_of::<CommissioningEngine>() <= 6_144);
         assert!(size_of::<capture_timing::CaptureTiming>() <= 64);
@@ -1391,52 +1414,23 @@ mod tests {
     }
 
     fn sample_inconclusive_sweep_terminal() -> crate::commissioning::types::VelocitySweepTerminal {
-        use crate::autotune::velocity_measurement::VelocityDirection;
-        use crate::commissioning::outer::velocity::sweep_evidence::{
-            BandClosure, DirectionalDisturbanceBand, JointIdentifiableGeometry,
-            VelocityInconclusiveKind, VelocitySweepSufficiency,
-        };
         use crate::commissioning::types::{VelocitySweepOutcome, VelocitySweepTerminal};
-
-        let band = |direction| DirectionalDisturbanceBand {
-            direction,
-            last_inert: None,
-            first_moving: None,
-            ambiguous_edge: None,
-            left_censored: false,
-            p_low: None,
-            p_high: None,
-            closure: BandClosure::NoMovingEdge,
-            common_intersection: None,
-            pooled: None,
-            eligible_rungs: 0,
-            eligible_observations: 0,
-            sufficient: false,
-        };
-        let joint = JointIdentifiableGeometry {
-            low: None,
-            high: None,
-            gap_low: None,
-            gap_high: None,
-            has_joint_band: false,
-        };
         VelocitySweepTerminal {
             run_sequence: 9,
-            forward: band(VelocityDirection::Forward),
-            reverse: band(VelocityDirection::Reverse),
-            sufficiency: VelocitySweepSufficiency::Inconclusive {
-                sufficient_direction_mask: 0,
-                kind: VelocityInconclusiveKind::Total,
-                joint,
-            },
             outcome: VelocitySweepOutcome::Inconclusive,
             cause: 4,
-            sufficient_direction_mask: 0,
+            model_direction_mask: 0,
+            selected_memberships: [0; 3],
+            nominated_p: 0,
+            selected_intervals: [[0; 2]; 2],
+            coverage_mask: 0,
             expected_observations: 20,
             emitted_observations: 20,
             expected_rungs: 5,
             emitted_rungs: 5,
             digest: 0x0123_4567_89ab_cdef,
+            run_started_us: 1_000,
+            run_completed_us: 2_000,
             safety_fault: None,
         }
     }
