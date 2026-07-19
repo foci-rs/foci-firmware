@@ -4,7 +4,7 @@ use super::operating_region::{
     JointOperableClosure, JointOperableFold, MIN_DIRECTIONAL_REGION_RUNGS, choose_joint_nomination,
     observe_directional_rung, observe_joint_rung, select_directional_region,
 };
-use super::sweep_evidence::{VelocityRungClass, VelocityRungVerdict};
+use super::sweep_evidence::{CompactVariance, VelocityRungClass, VelocityRungVerdict};
 use crate::autotune::velocity_measurement::VelocityDirection;
 use crate::autotune::{EquivalentTorqueTargetInterval, EquivalentTorqueTargetQ16};
 use foci_tmc4671::pid::PidGain;
@@ -25,9 +25,13 @@ fn verdict(p: u16, low: i32, high: i32, mean: i64) -> VelocityRungVerdict {
         disturbance_interval: Some(interval(low, high)),
         disturbance_intervals: [Some(interval(low, high)); 2],
         disturbance_points: [Some(EquivalentTorqueTargetQ16::from_raw((low + high) / 2)); 2],
-        disturbance_variances_q2: [4, 4],
-        settled_rate_means_q: [mean - 1, mean + 1],
-        settled_rate_intervals_q: [[mean - 3, mean + 2], [mean - 2, mean + 3]],
+        disturbance_variances_q2: [CompactVariance::encode(4); 2],
+        settled_rate_bounds_q: [
+            CompactSignedRate::encode(mean - 1, BoundRounding::TowardNegativeInfinity),
+            CompactSignedRate::encode(mean + 1, BoundRounding::TowardPositiveInfinity),
+            CompactSignedRate::encode(mean - 3, BoundRounding::TowardNegativeInfinity),
+            CompactSignedRate::encode(mean + 3, BoundRounding::TowardPositiveInfinity),
+        ],
         reproduced_moving: true,
         operable: true,
         initial_lead_in: false,

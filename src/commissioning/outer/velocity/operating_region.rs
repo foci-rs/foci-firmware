@@ -290,7 +290,7 @@ impl DirectionalRegionFold {
             ) else {
                 return false;
             };
-            let variance = rung.disturbance_variances_q2[observation];
+            let variance = rung.disturbance_variances_q2[observation].decode();
             self.variance_floor_observations = self
                 .variance_floor_observations
                 .saturating_add(u8::from(variance == 0));
@@ -300,35 +300,11 @@ impl DirectionalRegionFold {
     }
 
     fn set_rate_bounds(&mut self, rung: VelocityRungVerdict) {
-        let means = rung.settled_rate_means_q;
-        let intervals = rung.settled_rate_intervals_q;
-        self.rate_bounds = [
-            CompactSignedRate::encode(
-                means[0].min(means[1]),
-                BoundRounding::TowardNegativeInfinity,
-            ),
-            CompactSignedRate::encode(
-                means[0].max(means[1]),
-                BoundRounding::TowardPositiveInfinity,
-            ),
-            CompactSignedRate::encode(
-                intervals[0][0].min(intervals[1][0]),
-                BoundRounding::TowardNegativeInfinity,
-            ),
-            CompactSignedRate::encode(
-                intervals[0][1].max(intervals[1][1]),
-                BoundRounding::TowardPositiveInfinity,
-            ),
-        ];
+        self.rate_bounds = rung.settled_rate_bounds_q;
     }
 
     fn extend_rate_bounds(&mut self, rung: VelocityRungVerdict) {
-        let values = [
-            rung.settled_rate_means_q[0].min(rung.settled_rate_means_q[1]),
-            rung.settled_rate_means_q[0].max(rung.settled_rate_means_q[1]),
-            rung.settled_rate_intervals_q[0][0].min(rung.settled_rate_intervals_q[1][0]),
-            rung.settled_rate_intervals_q[0][1].max(rung.settled_rate_intervals_q[1][1]),
-        ];
+        let values = rung.settled_rate_bounds_q.map(CompactSignedRate::decode);
         if values[0] < self.rate_bounds[0].decode() {
             self.rate_bounds[0] =
                 CompactSignedRate::encode(values[0], BoundRounding::TowardNegativeInfinity);
@@ -419,9 +395,11 @@ pub struct JointOperableRegion {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub struct JointOperableFold {
     member_mask: u32,
+    best_member_mask: u32,
     first_rung: u8,
     member_count: u8,
     active: bool,
+    best_closure: JointOperableClosure,
 }
 
 impl JointOperableFold {
@@ -429,15 +407,65 @@ impl JointOperableFold {
     pub const fn new() -> Self {
         Self {
             member_mask: 0,
+            best_member_mask: 0,
             first_rung: 0,
             member_count: 0,
             active: false,
+            best_closure: JointOperableClosure::EndOfLadder,
         }
     }
 
     /// Close the active region at a declared terminus.
     pub fn finish(&mut self, closure: JointOperableClosure) -> Option<JointOperableRegion> {
         self.close(closure)
+    }
+
+    /// Retain only the deterministically preferred closed joint membership.
+    pub fn consider_best(
+        &mut self,
+        candidate: JointOperableRegion,
+        gains: &[PidGain],
+        p_start: PidGain,
+        p_top: PidGain,
+    ) {
+        let current = self
+            .best_region()
+            .map(|region| choose_joint_nomination(None, region, gains, p_start, p_top));
+        let selected = choose_joint_nomination(current, candidate, gains, p_start, p_top);
+        self.best_member_mask = selected.joint.member_mask;
+        self.best_closure = selected.joint.closure;
+    }
+
+    /// Return the retained best joint nomination.
+    pub fn best_nomination(
+        &self,
+        gains: &[PidGain],
+        p_start: PidGain,
+        p_top: PidGain,
+    ) -> Option<ProvisionalPNomination> {
+        self.best_region()
+            .map(|region| choose_joint_nomination(None, region, gains, p_start, p_top))
+    }
+
+    /// Return the current active lower-middle nomination.
+    pub fn active_nomination(
+        &self,
+        gains: &[PidGain],
+        p_start: PidGain,
+        p_top: PidGain,
+    ) -> Option<ProvisionalPNomination> {
+        self.active_region()
+            .map(|region| choose_joint_nomination(None, region, gains, p_start, p_top))
+    }
+
+    fn best_region(&self) -> Option<JointOperableRegion> {
+        (self.best_member_mask != 0)
+            .then(|| region_from_mask(self.best_member_mask, self.best_closure))
+    }
+
+    fn active_region(&self) -> Option<JointOperableRegion> {
+        self.active
+            .then(|| region_from_mask(self.member_mask, JointOperableClosure::EndOfLadder))
     }
 
     fn seed(&mut self, rung_index: u8) {
@@ -463,7 +491,10 @@ impl JointOperableFold {
             member_count: self.member_count,
             closure,
         };
-        *self = Self::new();
+        self.member_mask = 0;
+        self.first_rung = 0;
+        self.member_count = 0;
+        self.active = false;
         Some(region)
     }
 }
@@ -804,6 +835,11 @@ impl HandoffTrackers {
             .then(|| selected_directional(selected, nominated_rung, gains, nominated_rate_q))
     }
 
+    /// Bit set for each direction with at least one retained valid model region.
+    pub fn model_direction_mask(&self) -> u8 {
+        u8::from(self.best[0].member_mask != 0) | (u8::from(self.best[1].member_mask != 0) << 1)
+    }
+
     /// Build the complete bidirectional handoff for the selected nomination.
     pub fn handoff(
         &self,
@@ -1004,6 +1040,18 @@ fn first_member(mask: u32) -> u8 {
 
 fn last_member(mask: u32) -> u8 {
     (u32::BITS - 1 - mask.leading_zeros()) as u8
+}
+
+fn region_from_mask(mask: u32, closure: JointOperableClosure) -> JointOperableRegion {
+    let first_rung = first_member(mask);
+    let last_rung = last_member(mask);
+    JointOperableRegion {
+        member_mask: mask,
+        first_rung,
+        last_rung,
+        member_count: mask.count_ones() as u8,
+        closure,
+    }
 }
 
 fn floor_ratio(numerator: i128, denominator: i128) -> Option<i128> {

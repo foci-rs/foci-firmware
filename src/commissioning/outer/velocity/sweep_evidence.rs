@@ -4,7 +4,35 @@ use crate::autotune::velocity_measurement::{
 use crate::autotune::{EquivalentTorqueTargetInterval, EquivalentTorqueTargetQ16};
 use foci_tmc4671::pid::PidGain;
 
-use super::operating_region::PooledDisturbanceAccumulator;
+use super::operating_region::{BoundRounding, CompactSignedRate, PooledDisturbanceAccumulator};
+
+/// Conservatively upper-rounded variance retained only until its rung is folded.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+pub struct CompactVariance {
+    mantissa: u16,
+    shift: u8,
+}
+
+impl CompactVariance {
+    /// Encode an unsigned variance without ever understating it.
+    pub fn encode(value: u64) -> Self {
+        for shift in 0..=48 {
+            let denominator = 1_u64 << shift;
+            let rounded = value.div_ceil(denominator);
+            if let Ok(mantissa) = u16::try_from(rounded) {
+                return Self { mantissa, shift };
+            }
+        }
+        unreachable!("a u64 always fits a u16 mantissa with a binary shift")
+    }
+
+    /// Decode the conservative variance upper bound.
+    pub const fn decode(self) -> u64 {
+        (self.mantissa as u64) << self.shift
+    }
+}
+
+const _: () = assert!(core::mem::size_of::<CompactVariance>() <= 4);
 
 /// Inputs already collected for one fixed-direction velocity observation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
@@ -160,11 +188,9 @@ pub struct VelocityRungVerdict {
     /// Individual points retained for later fixed-effect pooling.
     pub disturbance_points: [Option<EquivalentTorqueTargetQ16>; 2],
     /// Individual variances retained for later fixed-effect pooling.
-    pub disturbance_variances_q2: [u64; 2],
-    /// Individual exact time-weighted settled-rate means.
-    pub settled_rate_means_q: [i64; 2],
-    /// Individual settled-rate confidence intervals.
-    pub settled_rate_intervals_q: [[i64; 2]; 2],
+    pub disturbance_variances_q2: [CompactVariance; 2],
+    /// Conservative mean-min, mean-max, interval-low, and interval-high rate bounds.
+    pub settled_rate_bounds_q: [CompactSignedRate; 4],
     /// Whether both observations resolved commanded-side motion.
     pub reproduced_moving: bool,
     /// Whether all four unchanged operating-point predicates passed.
@@ -290,13 +316,26 @@ pub fn reproduce_velocity_rung(
         disturbance_intervals: [first.disturbance_interval, second.disturbance_interval],
         disturbance_points: [first.disturbance, second.disturbance],
         disturbance_variances_q2: [
-            first.disturbance_variance_q2,
-            second.disturbance_variance_q2,
+            CompactVariance::encode(first.disturbance_variance_q2),
+            CompactVariance::encode(second.disturbance_variance_q2),
         ],
-        settled_rate_means_q: [first.settled_rate_mean_q, second.settled_rate_mean_q],
-        settled_rate_intervals_q: [
-            first.settled_rate_interval_q,
-            second.settled_rate_interval_q,
+        settled_rate_bounds_q: [
+            CompactSignedRate::encode(
+                first.settled_rate_mean_q.min(second.settled_rate_mean_q),
+                BoundRounding::TowardNegativeInfinity,
+            ),
+            CompactSignedRate::encode(
+                first.settled_rate_mean_q.max(second.settled_rate_mean_q),
+                BoundRounding::TowardPositiveInfinity,
+            ),
+            CompactSignedRate::encode(
+                first.settled_rate_interval_q[0].min(second.settled_rate_interval_q[0]),
+                BoundRounding::TowardNegativeInfinity,
+            ),
+            CompactSignedRate::encode(
+                first.settled_rate_interval_q[1].max(second.settled_rate_interval_q[1]),
+                BoundRounding::TowardPositiveInfinity,
+            ),
         ],
         reproduced_moving,
         operable,
@@ -628,7 +667,7 @@ impl DirectionalBandAccumulator {
             self.add_observation(
                 rung.disturbance_points[observation],
                 rung.disturbance_intervals[observation],
-                rung.disturbance_variances_q2[observation],
+                rung.disturbance_variances_q2[observation].decode(),
             );
         }
     }

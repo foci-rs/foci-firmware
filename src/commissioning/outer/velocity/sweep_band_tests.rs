@@ -5,6 +5,8 @@ use super::{
 };
 use crate::autotune::velocity_measurement::VelocityDirection;
 use crate::autotune::{EquivalentTorqueTargetInterval, EquivalentTorqueTargetQ16};
+use crate::commissioning::outer::velocity::operating_region::{BoundRounding, CompactSignedRate};
+use crate::commissioning::outer::velocity::sweep_evidence::CompactVariance;
 use foci_tmc4671::pid::PidGain;
 
 fn interval(low: i32, high: i32) -> EquivalentTorqueTargetInterval {
@@ -31,9 +33,13 @@ fn verdict(p: u16, class: VelocityRungClass, low: i32, high: i32) -> VelocityRun
                 [Some(EquivalentTorqueTargetQ16::from_raw(middle)); 2]
             })
             .unwrap_or([None; 2]),
-        disturbance_variances_q2: [4, 4],
-        settled_rate_means_q: [1_000, 1_001],
-        settled_rate_intervals_q: [[990, 1_010], [991, 1_011]],
+        disturbance_variances_q2: [CompactVariance::encode(4); 2],
+        settled_rate_bounds_q: [
+            CompactSignedRate::encode(1_000, BoundRounding::TowardNegativeInfinity),
+            CompactSignedRate::encode(1_001, BoundRounding::TowardPositiveInfinity),
+            CompactSignedRate::encode(990, BoundRounding::TowardNegativeInfinity),
+            CompactSignedRate::encode(1_011, BoundRounding::TowardPositiveInfinity),
+        ],
         reproduced_moving: matches!(
             class,
             VelocityRungClass::Eligible
@@ -113,10 +119,10 @@ fn empty_common_intersection_closes_without_stitching() {
 fn pooling_uses_one_unit_variance_floor_and_keeps_intersection_separate() {
     let mut precise = verdict(100, VelocityRungClass::Eligible, 80, 120);
     precise.disturbance_points = [Some(EquivalentTorqueTargetQ16::from_raw(100)); 2];
-    precise.disturbance_variances_q2 = [0, 0];
+    precise.disturbance_variances_q2 = [CompactVariance::encode(0); 2];
     let mut noisy = verdict(150, VelocityRungClass::Eligible, 90, 210);
     noisy.disturbance_points = [Some(EquivalentTorqueTargetQ16::from_raw(200)); 2];
-    noisy.disturbance_variances_q2 = [100, 100];
+    noisy.disturbance_variances_q2 = [CompactVariance::encode(100); 2];
     let third = verdict(225, VelocityRungClass::Eligible, 95, 115);
     let band = assemble_directional_band(VelocityDirection::Forward, &[precise, noisy, third]);
     let pooled = band.pooled.unwrap();
