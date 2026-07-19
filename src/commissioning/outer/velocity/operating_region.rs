@@ -29,6 +29,13 @@ pub struct CompactSignedRate {
 }
 
 impl CompactSignedRate {
+    /// Exact zero used before a rung supplies a representative rate.
+    pub const ZERO: Self = Self {
+        mantissa: 0,
+        shift: 0,
+        rounding: BoundRounding::TowardNegativeInfinity,
+    };
+
     /// Encode one signed value while preserving the requested conservative bound.
     pub fn encode(value: i64, rounding: BoundRounding) -> Self {
         for shift in 0..=48 {
@@ -615,11 +622,7 @@ impl DirectionalRegionRef {
     const EMPTY: Self = Self {
         member_mask: 0,
         pooled_interval: [0, 0],
-        selected_edge_rate: CompactSignedRate {
-            mantissa: 0,
-            shift: 0,
-            rounding: BoundRounding::TowardNegativeInfinity,
-        },
+        selected_edge_rate: CompactSignedRate::ZERO,
     };
 
     /// Compact one valid causal region for bounded handoff selection.

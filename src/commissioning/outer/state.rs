@@ -12,7 +12,9 @@ use crate::autotune::velocity_measurement::{
     DyadicBlocker, RawVelocityObservation, StationarityWork, VelocityMeasurementError,
 };
 #[cfg(feature = "trace-velocity-sweep")]
-use crate::commissioning::outer::velocity::operating_region::OperatingRegionRuntime;
+use crate::commissioning::outer::velocity::operating_region::{
+    CompactSignedRate, OperatingRegionRuntime,
+};
 #[cfg(feature = "trace-velocity-sweep")]
 use crate::commissioning::outer::velocity::sweep_evidence::{
     VelocityObservationSummary, VelocityRungVerdict,
@@ -264,7 +266,7 @@ pub(crate) enum VelocitySweepEvidenceState {
 #[cfg(feature = "trace-velocity-sweep")]
 #[derive(Debug, defmt::Format)]
 pub(crate) struct VelocitySweepData {
-    pub(crate) plan: Option<VelocitySweepExecutionPlan>,
+    pub(crate) plan: VelocitySweepExecutionPlan,
     pub(crate) rung_index: u8,
     pub(crate) slot: u8,
     pub(crate) previous_encoder_raw: u32,
@@ -285,6 +287,12 @@ pub(crate) struct VelocitySweepData {
     pub(crate) analysis: StationarityWork,
     pub(crate) evidence: VelocitySweepEvidenceState,
     pub(crate) operating_regions: OperatingRegionRuntime,
+    /// Representative rates at the active joint nomination.
+    pub(crate) active_nomination_rates: [CompactSignedRate; 2],
+    /// Representative rates retained with the selected joint nomination.
+    pub(crate) best_nomination_rates: [CompactSignedRate; 2],
+    /// Representative rates from the immediately preceding rung.
+    pub(crate) previous_rung_rates: [CompactSignedRate; 2],
     pub(crate) integrity: VelocitySweepIntegrity,
 }
 
@@ -292,7 +300,7 @@ pub(crate) struct VelocitySweepData {
 impl VelocitySweepData {
     pub(crate) const fn new(run_sequence: u32) -> Self {
         Self {
-            plan: None,
+            plan: VelocitySweepExecutionPlan::EMPTY,
             rung_index: 0,
             slot: 0,
             previous_encoder_raw: 0,
@@ -307,8 +315,27 @@ impl VelocitySweepData {
             analysis: StationarityWork::new(),
             evidence: VelocitySweepEvidenceState::Empty,
             operating_regions: OperatingRegionRuntime::new(),
+            active_nomination_rates: [CompactSignedRate::ZERO; 2],
+            best_nomination_rates: [CompactSignedRate::ZERO; 2],
+            previous_rung_rates: [CompactSignedRate::ZERO; 2],
             integrity: VelocitySweepIntegrity::new(run_sequence),
         }
+    }
+
+    /// Construct sweep state from the single plan accepted at command admission.
+    pub(crate) fn new_with_plan(
+        run_sequence: u32,
+        plan: crate::commissioning::outer::velocity::sweep_plan::VelocitySweepPlan,
+    ) -> Self {
+        let mut data = Self::new(run_sequence);
+        let plan_digest = plan.digest();
+        let report = plan.report(run_sequence, data.integrity.next_evidence_sequence());
+        data.integrity
+            .record(crate::commissioning::types::VelocitySweepEvent::Planned(
+                report,
+            ));
+        data.plan = plan.execution_plan(plan_digest);
+        data
     }
 }
 

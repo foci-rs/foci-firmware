@@ -6,6 +6,49 @@ use foci_tmc4671::pid::PidGain;
 
 use super::operating_region::{BoundRounding, CompactSignedRate, PooledDisturbanceAccumulator};
 
+/// Stable report code for one directional-region kind.
+pub const fn directional_region_kind_code(
+    kind: super::operating_region::DirectionalRegionKind,
+) -> u8 {
+    match kind {
+        super::operating_region::DirectionalRegionKind::Valid => 0,
+        super::operating_region::DirectionalRegionKind::Fragment => 1,
+    }
+}
+
+/// Stable report code for one directional-region closure.
+pub const fn directional_region_closure_code(
+    closure: super::operating_region::DirectionalRegionClosure,
+) -> u8 {
+    match closure {
+        super::operating_region::DirectionalRegionClosure::DisjointInterval => 0,
+        super::operating_region::DirectionalRegionClosure::IneligibleGap => 1,
+        super::operating_region::DirectionalRegionClosure::CurrentHeadroom => 2,
+        super::operating_region::DirectionalRegionClosure::SafetyTerminus => 3,
+        super::operating_region::DirectionalRegionClosure::EndOfLadder => 4,
+    }
+}
+
+/// Stable report code for one joint-operable-region closure.
+pub const fn joint_operable_closure_code(
+    closure: super::operating_region::JointOperableClosure,
+) -> u8 {
+    match closure {
+        super::operating_region::JointOperableClosure::IneligibleGap => 0,
+        super::operating_region::JointOperableClosure::CurrentHeadroom => 1,
+        super::operating_region::JointOperableClosure::SafetyTerminus => 2,
+        super::operating_region::JointOperableClosure::EndOfLadder => 3,
+    }
+}
+
+/// Stable report code for one directional handoff coverage kind.
+pub const fn coverage_kind_code(kind: super::operating_region::CoverageKind) -> u8 {
+    match kind {
+        super::operating_region::CoverageKind::FullCoverage => 0,
+        super::operating_region::CoverageKind::TransferredCoverage => 1,
+    }
+}
+
 /// Conservatively upper-rounded variance retained only until its rung is folded.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub struct CompactVariance {

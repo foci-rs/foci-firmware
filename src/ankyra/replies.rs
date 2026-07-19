@@ -2556,6 +2556,10 @@ pub struct FociVelocityStageBTerminalIdentity {
     pub joint_member_mask: u32,
     /// Firmware-nominated proportional gain.
     pub nominated_p: u16,
+    /// Exact low immutable-plan digest word.
+    pub plan_digest_low: u32,
+    /// Exact high immutable-plan digest word.
+    pub plan_digest_high: u32,
     /// Exact low digest word.
     pub digest_low: u32,
     /// Exact high digest word.
@@ -3077,6 +3081,8 @@ mod velocity_sweep_reply_tests {
                 reverse_member_mask: 0x8000_0001,
                 joint_member_mask: 0x8000_0001,
                 nominated_p: u16::MAX,
+                plan_digest_low: 0x0123_4567,
+                plan_digest_high: 0x89ab_cdef,
                 digest_low: 0x7654_3210,
                 digest_high: 0xfedc_ba98,
             },
@@ -3206,6 +3212,8 @@ mod velocity_sweep_reply_tests {
             reverse_member_mask: 0x7fff_fffe,
             joint_member_mask: 0xa5a5_5a5a,
             nominated_p: 1_448,
+            plan_digest_low: 0x0123_4567,
+            plan_digest_high: 0x89ab_cdef,
             digest_low: 0x7654_3210,
             digest_high: 0xfedc_ba98,
         };
@@ -3213,6 +3221,10 @@ mod velocity_sweep_reply_tests {
         assert_eq!(identity.forward_member_mask, 0x8000_0001);
         assert_eq!(identity.reverse_member_mask, 0x7fff_fffe);
         assert_eq!(identity.joint_member_mask, 0xa5a5_5a5a);
+        assert_eq!(
+            (identity.plan_digest_high, identity.plan_digest_low),
+            (0x89ab_cdef, 0x0123_4567)
+        );
         assert_eq!(
             (identity.digest_high, identity.digest_low),
             (0xfedc_ba98, 0x7654_3210)

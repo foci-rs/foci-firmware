@@ -186,6 +186,7 @@ mod tests {
         VelocitySweepTerminal {
             run_sequence: 9,
             evidence_sequence: 0,
+            plan_digest: 0x1234,
             outcome: VelocitySweepOutcome::Inconclusive,
             cause: 4,
             model_direction_mask: 0,

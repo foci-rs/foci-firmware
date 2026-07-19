@@ -115,45 +115,6 @@ impl VelocitySweepIntegrity {
     }
 }
 
-pub(crate) const fn directional_region_kind_code(
-    kind: super::operating_region::DirectionalRegionKind,
-) -> u8 {
-    match kind {
-        super::operating_region::DirectionalRegionKind::Valid => 0,
-        super::operating_region::DirectionalRegionKind::Fragment => 1,
-    }
-}
-
-pub(crate) const fn directional_region_closure_code(
-    closure: super::operating_region::DirectionalRegionClosure,
-) -> u8 {
-    match closure {
-        super::operating_region::DirectionalRegionClosure::DisjointInterval => 0,
-        super::operating_region::DirectionalRegionClosure::IneligibleGap => 1,
-        super::operating_region::DirectionalRegionClosure::CurrentHeadroom => 2,
-        super::operating_region::DirectionalRegionClosure::SafetyTerminus => 3,
-        super::operating_region::DirectionalRegionClosure::EndOfLadder => 4,
-    }
-}
-
-pub(crate) const fn joint_operable_closure_code(
-    closure: super::operating_region::JointOperableClosure,
-) -> u8 {
-    match closure {
-        super::operating_region::JointOperableClosure::IneligibleGap => 0,
-        super::operating_region::JointOperableClosure::CurrentHeadroom => 1,
-        super::operating_region::JointOperableClosure::SafetyTerminus => 2,
-        super::operating_region::JointOperableClosure::EndOfLadder => 3,
-    }
-}
-
-pub(crate) const fn coverage_kind_code(kind: super::operating_region::CoverageKind) -> u8 {
-    match kind {
-        super::operating_region::CoverageKind::FullCoverage => 0,
-        super::operating_region::CoverageKind::TransferredCoverage => 1,
-    }
-}
-
 /// Encode one nonterminal sweep event in the exact canonical digest representation.
 pub(crate) fn encode_velocity_sweep_event(
     event: VelocitySweepEvent,
@@ -171,8 +132,12 @@ pub(crate) fn encode_velocity_sweep_event(
             record.push_u8(super::sweep_evidence::direction_report_code(
                 report.region.direction,
             ));
-            record.push_u8(directional_region_kind_code(report.region.kind));
-            record.push_u8(directional_region_closure_code(report.region.closure));
+            record.push_u8(super::sweep_evidence::directional_region_kind_code(
+                report.region.kind,
+            ));
+            record.push_u8(super::sweep_evidence::directional_region_closure_code(
+                report.region.closure,
+            ));
             record.push_u8(report.region.first_rung);
             record.push_u8(report.region.last_rung);
             record.push_u16(report.region.p_low.raw());
@@ -210,7 +175,9 @@ pub(crate) fn encode_velocity_sweep_event(
             record.push_u8(report.region.member_count);
             record.push_u16(report.p_low);
             record.push_u16(report.p_high);
-            record.push_u8(joint_operable_closure_code(report.region.closure));
+            record.push_u8(super::sweep_evidence::joint_operable_closure_code(
+                report.region.closure,
+            ));
             record
         }
         VelocitySweepEvent::Handoff(report) => {
@@ -229,7 +196,7 @@ pub(crate) fn encode_velocity_sweep_event(
                 record.push_u32(selected.region.member_mask);
                 record.push_i32(selected.region.pooled_interval[0]);
                 record.push_i32(selected.region.pooled_interval[1]);
-                record.push_u8(coverage_kind_code(selected.coverage));
+                record.push_u8(super::sweep_evidence::coverage_kind_code(selected.coverage));
                 record.push_u8(selected.signed_rung_distance as u8);
                 record.push_u16(selected.gain_ratio_num);
                 record.push_u16(selected.gain_ratio_den);
@@ -465,6 +432,7 @@ pub(crate) fn encode_velocity_sweep_terminal(
         VelocitySweepOutcome::Complete => 1,
         VelocitySweepOutcome::Inconclusive => 2,
         VelocitySweepOutcome::Fault => 3,
+        VelocitySweepOutcome::RejectedPlanMismatch => 4,
     });
     record.push_u8(report.cause);
     record.push_u32(report.run_started_us as u32);

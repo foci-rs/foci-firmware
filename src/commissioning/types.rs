@@ -488,6 +488,8 @@ pub enum VelocitySweepOutcome {
     Inconclusive,
     /// Safety or structural integrity failed.
     Fault,
+    /// A changed frozen plan was rejected before any actuation.
+    RejectedPlanMismatch,
 }
 
 /// Detailed terminal evidence for one velocity sweep.
@@ -497,6 +499,8 @@ pub struct VelocitySweepTerminal {
     pub run_sequence: u32,
     /// Evidence sequence shared by every terminal fragment.
     pub evidence_sequence: u16,
+    /// Exact digest of the immutable pre-motion plan.
+    pub plan_digest: u64,
     /// Terminal measurement-stage class.
     pub outcome: VelocitySweepOutcome,
     /// Phase-local terminal cause.

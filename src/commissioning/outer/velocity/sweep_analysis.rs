@@ -57,7 +57,10 @@ fn finish_moving_observation_analysis(
     counts_per_rev: u32,
     stationarity: StationarityResult,
 ) -> Result<MovingObservationAnalysis, CommissionError> {
-    let plan = data.plan.ok_or(CommissionError::InvalidSchedule)?;
+    let plan = data.plan;
+    if !plan.is_present() {
+        return Err(CommissionError::InvalidSchedule);
+    }
     let p = plan
         .gain_at(data.rung_index)
         .ok_or(CommissionError::InvalidSchedule)?;

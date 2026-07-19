@@ -11,8 +11,7 @@ use crate::commissioning::types::{
     OUTER_SAFETY_FAULT_CURRENT, OUTER_SAFETY_FAULT_OBSERVATION_GAP,
     OUTER_SAFETY_FAULT_QUARTER_TURN, OuterSafetyFault, StepResult, StructuredBoundaryEvidence,
     VelocityDirectionalRegionReport, VelocityJointRegionReport, VelocitySweepEvent,
-    VelocitySweepObservation, VelocitySweepOutcome, VelocitySweepPlanned, VelocitySweepRungReport,
-    VelocitySweepTerminal,
+    VelocitySweepObservation, VelocitySweepOutcome, VelocitySweepRungReport, VelocitySweepTerminal,
 };
 use foci_tmc4671::pid::PidGainPair;
 use foci_tmc4671::registers::{
@@ -22,8 +21,8 @@ use foci_tmc4671::registers::{
 };
 
 use super::operating_region::{
-    DirectionalRegionClosure, DirectionalRegionRef, DirectionalRegionSummary, JointOperableClosure,
-    JointOperableRegion,
+    BoundRounding, CompactSignedRate, DirectionalRegionClosure, DirectionalRegionRef,
+    DirectionalRegionSummary, JointOperableClosure, JointOperableRegion,
 };
 use super::sweep_analysis::{
     poll_moving_observation_analysis, poll_settle_confirmation, retain_observation,
@@ -31,8 +30,8 @@ use super::sweep_analysis::{
 use super::sweep_evidence::VelocityObservationClass;
 use super::sweep_plan::{
     MAX_SAFETY_OBSERVATION_GAP_US, MAX_SWEEP_RUNGS, MIN_SETTLE_CAPTURE_US, MOVING_STROKE_US,
-    RequestedVelocitySource, SETTLE_ANALYSIS_BUDGET_US, VELOCITY_SWEEP_SAMPLE_PERIOD_US,
-    VelocitySweepExecutionPlan, ZERO_SETTLE_US,
+    SETTLE_ANALYSIS_BUDGET_US, VELOCITY_SWEEP_SAMPLE_PERIOD_US, VelocitySweepExecutionPlan,
+    ZERO_SETTLE_US,
 };
 
 const OUTER_VELOCITY_MODE: u32 = 0x8000_0002;
@@ -90,9 +89,10 @@ fn track_closed_directional_region(
     data: &mut super::super::VelocitySweepData,
     region: DirectionalRegionSummary,
 ) {
-    let Some(plan) = data.plan else {
+    let plan = data.plan;
+    if !plan.is_present() {
         return;
-    };
+    }
     let gains = execution_gains(plan);
     let active_rung = data
         .operating_regions
@@ -123,9 +123,10 @@ fn track_closed_directional_region(
 }
 
 fn retain_joint_candidate(data: &mut super::super::VelocitySweepData, region: JointOperableRegion) {
-    let Some(plan) = data.plan else {
+    let plan = data.plan;
+    if !plan.is_present() {
         return;
-    };
+    }
     let gains = execution_gains(plan);
     let gains = &gains[..usize::from(plan.rung_count)];
     let previous = data
@@ -143,6 +144,7 @@ fn retain_joint_candidate(data: &mut super::super::VelocitySweepData, region: Jo
         .map(|nomination| nomination.joint.member_mask);
     if current != previous && current == Some(region.member_mask) {
         data.operating_regions.handoff.promote_active();
+        data.best_nomination_rates = data.active_nomination_rates;
     }
 }
 
@@ -150,9 +152,11 @@ fn joint_region_report(
     data: &super::super::VelocitySweepData,
     region: JointOperableRegion,
 ) -> VelocityJointRegionReport {
-    let plan = data
-        .plan
-        .expect("joint-region reporting requires an immutable plan");
+    let plan = data.plan;
+    assert!(
+        plan.is_present(),
+        "joint-region reporting requires an immutable plan"
+    );
     let p_low = plan
         .gain_at(region.first_rung)
         .expect("joint-region first rung belongs to the immutable ladder")
@@ -173,16 +177,34 @@ fn joint_region_report(
 fn selected_handoff(
     data: &super::super::VelocitySweepData,
 ) -> Option<super::operating_region::StageBHandoff> {
-    let plan = data.plan?;
+    let plan = data.plan;
+    if !plan.is_present() {
+        return None;
+    }
     let gains = execution_gains(plan);
     let gains = &gains[..usize::from(plan.rung_count)];
     let nomination =
         data.operating_regions
             .joint
             .best_nomination(gains, plan.p_start, plan.p_top)?;
-    data.operating_regions
-        .handoff
-        .handoff(nomination, gains, [0, 0])
+    data.operating_regions.handoff.handoff(
+        nomination,
+        gains,
+        data.best_nomination_rates.map(CompactSignedRate::decode),
+    )
+}
+
+fn representative_rung_rates(
+    forward: super::sweep_evidence::VelocityRungVerdict,
+    reverse: super::sweep_evidence::VelocityRungVerdict,
+) -> [CompactSignedRate; 2] {
+    [forward, reverse].map(|rung| {
+        let low = rung.settled_rate_bounds_q[0].decode();
+        let high = rung.settled_rate_bounds_q[1].decode();
+        let midpoint = (i128::from(low) + i128::from(high)) / 2;
+        let midpoint = i64::try_from(midpoint).expect("the midpoint of two i64 rates fits i64");
+        CompactSignedRate::encode(midpoint, BoundRounding::TowardNegativeInfinity)
+    })
 }
 
 fn structured_boundary_evidence(
@@ -264,17 +286,21 @@ fn sweep_fault_terminal_from_data(
     safety_fault: Option<OuterSafetyFault>,
 ) -> StepResult {
     let model_direction_mask = data.operating_regions.handoff.model_direction_mask();
-    let (expected_observations, expected_rungs) = data.plan.map_or((0, 0), |plan| {
+    let (expected_observations, expected_rungs) = if data.plan.is_present() {
+        let plan = data.plan;
         (
             u16::from(plan.rung_count)
                 .saturating_mul(plan.observations_per_direction)
                 .saturating_mul(2),
             u16::from(plan.rung_count),
         )
-    });
+    } else {
+        (0, 0)
+    };
     StepResult::VelocitySweepTerminal(VelocitySweepTerminal {
         run_sequence: data.integrity.run_sequence(),
         evidence_sequence: data.integrity.next_evidence_sequence(),
+        plan_digest: data.plan.plan_digest,
         outcome: VelocitySweepOutcome::Fault,
         cause: error.status_code(),
         model_direction_mask,
@@ -299,9 +325,11 @@ fn sweep_evidence_terminal(
     data: &super::super::VelocitySweepData,
     current_headroom: bool,
 ) -> VelocitySweepTerminal {
-    let plan = data
-        .plan
-        .expect("velocity sweep terminal requires an immutable plan");
+    let plan = data.plan;
+    assert!(
+        plan.is_present(),
+        "velocity sweep terminal requires an immutable plan"
+    );
     let model_direction_mask = data.operating_regions.handoff.model_direction_mask();
     let handoff = selected_handoff(data);
     let (mut outcome, mut cause) = if handoff.is_some() {
@@ -338,6 +366,7 @@ fn sweep_evidence_terminal(
     VelocitySweepTerminal {
         run_sequence: data.integrity.run_sequence(),
         evidence_sequence: data.integrity.next_evidence_sequence(),
+        plan_digest: plan.plan_digest,
         outcome,
         cause,
         model_direction_mask,
@@ -402,26 +431,42 @@ pub(crate) async fn step_velocity_sweep_with_trace<B: CommissioningBackend>(
             }
             let encoder_counts_per_rev = backend.mechanical_encoder_quadrature_counts_per_rev();
             let torque_limit = u16::from(backend.current_limit());
-            let request = super::sweep_plan::VelocitySweepRequest {
-                requested_velocity_mrev_s: safety.budget.requested_velocity_mrev_s,
-                machine_velocity_ceiling_mrev_s: safety.budget.machine_velocity_ceiling_mrev_s,
-                requested_velocity_source: safety.budget.requested_velocity_source,
-                max_stroke_travel_mrev: safety.budget.max_stroke_travel_mrev,
-                settle_travel_reserve_mrev: safety.budget.settle_travel_reserve_mrev,
-                negative_position_headroom_mrev: safety.budget.negative_position_headroom_mrev,
-                positive_position_headroom_mrev: safety.budget.positive_position_headroom_mrev,
-                max_duration_ms: safety.budget.max_duration_ms,
-            };
-            let plan = match super::sweep_plan::plan_velocity_sweep(
-                request,
-                encoder_counts_per_rev,
-                torque_limit,
-            ) {
-                Ok(plan) => plan,
-                Err(_) => {
-                    return sweep_fault_terminal(phase, CommissionError::InvalidSchedule, None);
+            let generated_plan = if !data.plan.is_present() {
+                let request = super::sweep_plan::VelocitySweepRequest {
+                    requested_velocity_mrev_s: safety.budget.requested_velocity_mrev_s,
+                    machine_velocity_ceiling_mrev_s: safety.budget.machine_velocity_ceiling_mrev_s,
+                    requested_velocity_source: safety.budget.requested_velocity_source,
+                    max_stroke_travel_mrev: safety.budget.max_stroke_travel_mrev,
+                    settle_travel_reserve_mrev: safety.budget.settle_travel_reserve_mrev,
+                    negative_position_headroom_mrev: safety.budget.negative_position_headroom_mrev,
+                    positive_position_headroom_mrev: safety.budget.positive_position_headroom_mrev,
+                    max_duration_ms: safety.budget.max_duration_ms,
+                };
+                match super::sweep_plan::plan_velocity_sweep(
+                    request,
+                    encoder_counts_per_rev,
+                    torque_limit,
+                ) {
+                    Ok(plan) => {
+                        let plan_digest = plan.digest();
+                        data.plan = plan.execution_plan(plan_digest);
+                        Some(plan)
+                    }
+                    Err(_) => {
+                        return sweep_fault_terminal(phase, CommissionError::InvalidSchedule, None);
+                    }
                 }
+            } else {
+                None
             };
+            let plan = data.plan;
+            assert!(
+                plan.is_present(),
+                "velocity sweep setup requires an admitted plan"
+            );
+            if plan.hard_torque_limit != torque_limit {
+                return sweep_fault_terminal(phase, CommissionError::InvalidSchedule, None);
+            }
             if backend
                 .write_register(
                     CONFIG_VELOCITY_METER_PPTM_MIN_POS_DEV.addr,
@@ -473,45 +518,23 @@ pub(crate) async fn step_velocity_sweep_with_trace<B: CommissioningBackend>(
                 return sweep_fault_terminal(phase, CommissionError::InvalidSchedule, None);
             }
             data.run_started_us = run_started_us;
-            let plan_digest = plan.digest();
-            let report = VelocitySweepPlanned {
-                run_sequence: data.integrity.run_sequence(),
-                evidence_sequence: data.integrity.next_evidence_sequence(),
-                plan_digest,
-                requested_velocity_mrev_s: plan.requested_velocity_mrev_s,
-                requested_velocity_source: match plan.requested_velocity_source {
-                    RequestedVelocitySource::Explicit => 0,
-                    RequestedVelocitySource::Defaulted => 1,
-                },
-                planned_velocity_mrev_s: plan.planned_velocity_mrev_s,
-                effective_ceiling_mrev_s: plan.effective_ceiling_mrev_s,
-                clamp_flags: plan.clamp_flags,
-                effective_ceiling_source: plan.effective_ceiling_source,
-                target_velocity_rpm: plan.target_velocity_rpm.raw(),
-                p_start: plan.p_start.raw(),
-                p_top: plan.p_top.raw(),
-                rung_count: plan.rung_count,
-                observations_per_direction: plan.observations_per_direction,
-                moving_stroke_us: plan.moving_stroke_us,
-                zero_settle_us: plan.zero_settle_us,
-                nominal_workflow_ms: plan.nominal_workflow_ms,
-                maximum_workflow_ms: plan.maximum_workflow_ms,
-                max_stroke_travel_mrev: plan.max_stroke_travel_mrev,
-                settle_travel_reserve_mrev: plan.settle_travel_reserve_mrev,
-                negative_position_headroom_mrev: plan.negative_position_headroom_mrev,
-                positive_position_headroom_mrev: plan.positive_position_headroom_mrev,
-                hard_torque_limit: plan.hard_torque_limit,
-                usable_torque_limit: plan.usable_torque_limit,
-            };
-            data.plan = Some(plan.execution_plan(plan_digest));
-            let event = data.integrity.record(VelocitySweepEvent::Planned(report));
             *state = VelocitySweepState::WriteGain;
-            StepResult::VelocitySweepEvent(event)
+            if let Some(plan) = generated_plan {
+                let report = plan.report(
+                    data.integrity.run_sequence(),
+                    data.integrity.next_evidence_sequence(),
+                );
+                let event = data.integrity.record(VelocitySweepEvent::Planned(report));
+                StepResult::VelocitySweepEvent(event)
+            } else {
+                StepResult::ReadyNow
+            }
         }
         VelocitySweepState::WriteGain => {
-            let Some(plan) = data.plan else {
+            let plan = data.plan;
+            if !plan.is_present() {
                 return fail_sweep(phase, backend, CommissionError::InvalidSchedule).await;
-            };
+            }
             let Some(p) = plan.gain_at(data.rung_index) else {
                 return fail_sweep(phase, backend, CommissionError::InvalidSchedule).await;
             };
@@ -543,9 +566,10 @@ pub(crate) async fn step_velocity_sweep_with_trace<B: CommissioningBackend>(
             StepResult::ReadyNow
         }
         VelocitySweepState::CommandTarget => {
-            let Some(plan) = data.plan else {
+            let plan = data.plan;
+            if !plan.is_present() {
                 return fail_sweep(phase, backend, CommissionError::InvalidSchedule).await;
-            };
+            }
             let encoder_raw = match backend.read_capture_register(ABN_DECODER_COUNT).await {
                 Ok(value) => value,
                 Err(_) => return fail_sweep(phase, backend, CommissionError::Spi).await,
@@ -1000,7 +1024,7 @@ pub(crate) async fn step_velocity_sweep_with_trace<B: CommissioningBackend>(
             fail_sweep(phase, backend, error).await
         }
         VelocitySweepState::Advance => {
-            if data.plan.is_none() {
+            if !data.plan.is_present() {
                 return fail_sweep(phase, backend, CommissionError::InvalidSchedule).await;
             }
             if data.slot + 1 < SWEEP_SLOT_COUNT {
@@ -1056,13 +1080,15 @@ pub(crate) async fn step_velocity_sweep_with_trace<B: CommissioningBackend>(
             StepResult::ReadyNow
         }
         VelocitySweepState::FoldJoint => {
-            let Some(plan) = data.plan else {
+            let plan = data.plan;
+            if !plan.is_present() {
                 return fail_sweep(phase, backend, CommissionError::InvalidSchedule).await;
-            };
+            }
             let VelocitySweepEvidenceState::CompletePair { forward, reverse } = data.evidence
             else {
                 return fail_sweep(phase, backend, CommissionError::InvalidSchedule).await;
             };
+            let current_rates = representative_rung_rates(forward, reverse);
             *state = VelocitySweepState::EmitRung;
             let gains = execution_gains(plan);
             let gains = &gains[..usize::from(plan.rung_count)];
@@ -1084,16 +1110,25 @@ pub(crate) async fn step_velocity_sweep_with_trace<B: CommissioningBackend>(
                 retain_joint_candidate(data, region);
             }
             match (previous_active, active) {
-                (None, Some(active)) => data
-                    .operating_regions
-                    .handoff
-                    .begin_active_nomination(active.rung_index),
-                (Some(previous), Some(active)) if previous.rung_index != active.rung_index => data
-                    .operating_regions
-                    .handoff
-                    .move_active_nomination(active.rung_index),
+                (None, Some(active)) => {
+                    data.active_nomination_rates = current_rates;
+                    data.operating_regions
+                        .handoff
+                        .begin_active_nomination(active.rung_index);
+                }
+                (Some(previous), Some(active)) if previous.rung_index != active.rung_index => {
+                    data.active_nomination_rates = if active.rung_index == data.rung_index {
+                        current_rates
+                    } else {
+                        data.previous_rung_rates
+                    };
+                    data.operating_regions
+                        .handoff
+                        .move_active_nomination(active.rung_index);
+                }
                 _ => {}
             }
+            data.previous_rung_rates = current_rates;
             if let Some(region) = closed {
                 let report = joint_region_report(data, region);
                 let event = data
@@ -1104,9 +1139,10 @@ pub(crate) async fn step_velocity_sweep_with_trace<B: CommissioningBackend>(
             StepResult::ReadyNow
         }
         VelocitySweepState::EmitRung => {
-            let Some(plan) = data.plan else {
+            let plan = data.plan;
+            if !plan.is_present() {
                 return fail_sweep(phase, backend, CommissionError::InvalidSchedule).await;
-            };
+            }
             let VelocitySweepEvidenceState::CompletePair { forward, reverse } = data.evidence
             else {
                 return fail_sweep(phase, backend, CommissionError::InvalidSchedule).await;
@@ -1194,7 +1230,7 @@ pub(crate) async fn step_velocity_sweep_with_trace<B: CommissioningBackend>(
             StepResult::ReadyNow
         }
         VelocitySweepState::EmitHandoff { current_headroom } => {
-            if data.plan.is_none() {
+            if !data.plan.is_present() {
                 return fail_sweep(phase, backend, CommissionError::InvalidSchedule).await;
             }
             let handoff = selected_handoff(data);
@@ -1213,7 +1249,7 @@ pub(crate) async fn step_velocity_sweep_with_trace<B: CommissioningBackend>(
             StepResult::ReadyNow
         }
         VelocitySweepState::Terminal { current_headroom } => {
-            if data.plan.is_none() {
+            if !data.plan.is_present() {
                 return fail_sweep(phase, backend, CommissionError::InvalidSchedule).await;
             }
             StepResult::VelocitySweepTerminal(sweep_evidence_terminal(data, *current_headroom))
@@ -1222,19 +1258,19 @@ pub(crate) async fn step_velocity_sweep_with_trace<B: CommissioningBackend>(
 }
 
 fn plan_used_velocity(data: &super::super::VelocitySweepData) -> u32 {
-    data.plan.map_or(0, |plan| plan.planned_velocity_mrev_s)
+    data.plan.planned_velocity_mrev_s
 }
 
 fn plan_target_velocity(data: &super::super::VelocitySweepData) -> i32 {
-    data.plan.map_or(0, |plan| plan.target_velocity_rpm.raw())
+    data.plan.target_velocity_rpm.raw()
 }
 
 fn plan_usable_limit(data: &super::super::VelocitySweepData) -> u16 {
-    data.plan.map_or(0, |plan| plan.usable_torque_limit)
+    data.plan.usable_torque_limit
 }
 
 fn plan_hard_limit(data: &super::super::VelocitySweepData) -> u16 {
-    data.plan.map_or(0, |plan| plan.hard_torque_limit)
+    data.plan.hard_torque_limit
 }
 
 #[cfg(test)]
@@ -1270,7 +1306,7 @@ mod tests {
         let OuterPhase::VelocitySweep { data, .. } = phase else {
             panic!("velocity sweep should remain active");
         };
-        data.plan.as_mut().unwrap().rung_count = 1;
+        data.plan.rung_count = 1;
         pollster::block_on(step_velocity_sweep_with_trace(phase, backend));
         pollster::block_on(step_velocity_sweep_with_trace(phase, backend));
         pollster::block_on(step_velocity_sweep_with_trace(phase, backend));
@@ -1315,7 +1351,7 @@ mod tests {
             panic!("velocity sweep should remain active");
         };
         assert!(matches!(state, VelocitySweepState::WriteGain));
-        assert!(data.plan.is_some());
+        assert!(data.plan.is_present());
         let selector_writes: std::vec::Vec<_> = backend
             .spi_log
             .iter()
@@ -1762,7 +1798,7 @@ mod tests {
         let OuterPhase::VelocitySweep { state, data, .. } = &mut phase else {
             panic!("velocity sweep should remain active");
         };
-        data.plan.as_mut().unwrap().rung_count = 1;
+        data.plan.rung_count = 1;
         for _ in 0..256 {
             data.observations.push(1, 1_000).unwrap();
         }
@@ -1820,7 +1856,7 @@ mod tests {
         let OuterPhase::VelocitySweep { data, .. } = &mut phase else {
             panic!("velocity sweep should remain active");
         };
-        data.plan.as_mut().unwrap().rung_count = 1;
+        data.plan.rung_count = 1;
 
         let StepResult::VelocitySweepEvent(VelocitySweepEvent::Planned(plan_report)) = plan_event
         else {

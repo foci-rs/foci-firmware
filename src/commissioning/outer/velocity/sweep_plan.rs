@@ -160,6 +160,28 @@ pub struct VelocitySweepExecutionPlan {
 }
 
 impl VelocitySweepExecutionPlan {
+    /// Sentinel used before a trace-gated sweep has an admitted immutable plan.
+    pub const EMPTY: Self = Self {
+        plan_digest: 0,
+        planned_velocity_mrev_s: 0,
+        target_velocity_rpm: TmcMechanicalRpm::from_register(0),
+        p_start: PidGain::ZERO,
+        p_top: PidGain::ZERO,
+        rung_count: 0,
+        observations_per_direction: 0,
+        max_stroke_travel_mrev: 0,
+        settle_travel_reserve_mrev: 0,
+        negative_position_headroom_mrev: 0,
+        positive_position_headroom_mrev: 0,
+        hard_torque_limit: 0,
+        usable_torque_limit: 0,
+    };
+
+    /// Whether command admission has installed a usable plan.
+    pub const fn is_present(self) -> bool {
+        self.rung_count != 0
+    }
+
     /// Regenerate one exact post-dedupe gain without retaining the ladder array.
     pub fn gain_at(self, rung_index: u8) -> Option<PidGain> {
         gain_at(
@@ -221,6 +243,43 @@ impl VelocitySweepPlan {
             p_top: self.p_top,
             rung_count: self.rung_count,
             observations_per_direction: self.observations_per_direction,
+            max_stroke_travel_mrev: self.max_stroke_travel_mrev,
+            settle_travel_reserve_mrev: self.settle_travel_reserve_mrev,
+            negative_position_headroom_mrev: self.negative_position_headroom_mrev,
+            positive_position_headroom_mrev: self.positive_position_headroom_mrev,
+            hard_torque_limit: self.hard_torque_limit,
+            usable_torque_limit: self.usable_torque_limit,
+        }
+    }
+
+    /// Build the exact pre-motion evidence record for this immutable plan.
+    pub fn report(
+        self,
+        run_sequence: u32,
+        evidence_sequence: u16,
+    ) -> crate::commissioning::types::VelocitySweepPlanned {
+        crate::commissioning::types::VelocitySweepPlanned {
+            run_sequence,
+            evidence_sequence,
+            plan_digest: self.digest(),
+            requested_velocity_mrev_s: self.requested_velocity_mrev_s,
+            requested_velocity_source: match self.requested_velocity_source {
+                RequestedVelocitySource::Explicit => 0,
+                RequestedVelocitySource::Defaulted => 1,
+            },
+            planned_velocity_mrev_s: self.planned_velocity_mrev_s,
+            effective_ceiling_mrev_s: self.effective_ceiling_mrev_s,
+            clamp_flags: self.clamp_flags,
+            effective_ceiling_source: self.effective_ceiling_source,
+            target_velocity_rpm: self.target_velocity_rpm.raw(),
+            p_start: self.p_start.raw(),
+            p_top: self.p_top.raw(),
+            rung_count: self.rung_count,
+            observations_per_direction: self.observations_per_direction,
+            moving_stroke_us: self.moving_stroke_us,
+            zero_settle_us: self.zero_settle_us,
+            nominal_workflow_ms: self.nominal_workflow_ms,
+            maximum_workflow_ms: self.maximum_workflow_ms,
             max_stroke_travel_mrev: self.max_stroke_travel_mrev,
             settle_travel_reserve_mrev: self.settle_travel_reserve_mrev,
             negative_position_headroom_mrev: self.negative_position_headroom_mrev,

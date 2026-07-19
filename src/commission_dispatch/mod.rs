@@ -12,6 +12,8 @@
 pub mod post_actions;
 pub mod replies;
 mod restore;
+#[cfg(feature = "trace-velocity-sweep")]
+pub mod stage_b;
 #[cfg(test)]
 pub(crate) mod test_support;
 #[cfg(test)]
@@ -21,6 +23,8 @@ pub use post_actions::{StepperTaskDirective, apply_stepper_post_action_state};
 pub use replies::{
     CommissionReplySink, emit_phase_reply, emit_terminal_reply, emit_velocity_sweep_event,
 };
+#[cfg(feature = "trace-velocity-sweep")]
+pub use stage_b::{StageBPreflight, StageBPreflightRejection, preflight_stage_b_request};
 
 use crate::autotune::PhaseId;
 // CommissioningEngine lives in commissioning/mod.rs (the engine impl); the
@@ -28,9 +32,8 @@ use crate::autotune::PhaseId;
 use crate::commissioning::{
     CommissioningEngine,
     types::{
-        AdcCalResult, CommissionResult, CommissioningBackend, EngineKind, OuterInconclusive,
-        OuterResult, OuterSafetyFault, StepResult, VelocitySweepEvent, VelocitySweepOutcome,
-        VelocitySweepTerminal,
+        AdcCalResult, CommissionResult, CommissioningBackend, EngineKind, OuterResult,
+        OuterSafetyFault, StepResult, VelocitySweepEvent, VelocitySweepTerminal,
     },
 };
 use crate::pid::{InnerLoopGains, OuterLoopGains};
@@ -267,11 +270,12 @@ pub enum ReplyPayload {
     },
     /// One streamed velocity-sweep plan, observation, or rung report.
     VelocitySweepEvent { oid: u8, event: VelocitySweepEvent },
-    /// Detailed report-only terminal, optionally followed by a generic inconclusive terminal.
+    /// Dedicated detailed report-only Stage B terminal.
     VelocitySweepTerminal {
         oid: u8,
         terminal: VelocitySweepTerminal,
-        inconclusive: Option<OuterInconclusive>,
+        #[cfg(feature = "trace-velocity-sweep")]
+        reproduction: Option<stage_b::StageBReproductionReport>,
     },
 }
 
@@ -409,20 +413,12 @@ pub async fn drive_commission_result<B: CommissioningBackend>(
             let oid = consumed.oid();
             crate::tmc_control::lifecycle::disarm_motor(backend, state).await;
             state.tmc.commission_in_flight.store(false, Relaxed);
-            let inconclusive = (terminal.outcome == VelocitySweepOutcome::Inconclusive).then_some(
-                OuterInconclusive {
-                    phase: PhaseId::VelocityTune,
-                    sufficient_direction_mask: terminal.model_direction_mask,
-                    cause: terminal.cause,
-                    digest_low: terminal.digest as u32,
-                    digest_high: (terminal.digest >> 32) as u32,
-                },
-            );
             CommissionOutcome::Terminal {
                 reply: ReplyPayload::VelocitySweepTerminal {
                     oid,
                     terminal,
-                    inconclusive,
+                    #[cfg(feature = "trace-velocity-sweep")]
+                    reproduction: None,
                 },
                 actions: PostActions {
                     stop_trace: true,
@@ -982,5 +978,45 @@ pub async fn drive_commission_result<B: CommissioningBackend>(
                 actions,
             }
         }
+    }
+}
+
+/// Dispatch one result while applying the board-owned Stage B candidate lifecycle.
+#[cfg(feature = "trace-velocity-sweep")]
+pub async fn drive_commission_result_with_stage_b<B: CommissioningBackend>(
+    result: StepResult,
+    engine: &mut Option<CommissioningEngine>,
+    backend: &mut B,
+    state: &mut DispatchState<'_>,
+    pwm_maxcnt: u16,
+    channel: u8,
+    stage_b_candidate: &mut crate::commissioning::outer::velocity::reproduction::StageBCandidateSlot,
+) -> CommissionOutcome {
+    let terminal = match result {
+        StepResult::VelocitySweepTerminal(terminal) => terminal,
+        other => return drive_commission_result(other, engine, backend, state, pwm_maxcnt).await,
+    };
+    let dispatch = stage_b::apply_stage_b_terminal(terminal, channel, stage_b_candidate);
+    match drive_commission_result(
+        StepResult::VelocitySweepTerminal(dispatch.terminal),
+        engine,
+        backend,
+        state,
+        pwm_maxcnt,
+    )
+    .await
+    {
+        CommissionOutcome::Terminal {
+            reply: ReplyPayload::VelocitySweepTerminal { oid, terminal, .. },
+            actions,
+        } => CommissionOutcome::Terminal {
+            reply: ReplyPayload::VelocitySweepTerminal {
+                oid,
+                terminal,
+                reproduction: dispatch.reproduction,
+            },
+            actions,
+        },
+        _ => unreachable!("velocity-sweep terminal produced a nonterminal outcome"),
     }
 }

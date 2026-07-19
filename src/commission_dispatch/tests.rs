@@ -7,6 +7,86 @@ use super::test_support::{
 use super::*;
 use crate::autotune::CommissionProfile;
 
+#[cfg(feature = "trace-velocity-sweep")]
+fn stage_b_request() -> crate::commissioning::outer::velocity::sweep_plan::VelocitySweepRequest {
+    use crate::commissioning::outer::velocity::sweep_plan::RequestedVelocitySource;
+
+    crate::commissioning::outer::velocity::sweep_plan::VelocitySweepRequest {
+        requested_velocity_mrev_s: 2_929,
+        machine_velocity_ceiling_mrev_s: 10_000,
+        requested_velocity_source: RequestedVelocitySource::Defaulted,
+        max_stroke_travel_mrev: 500,
+        settle_travel_reserve_mrev: 100,
+        negative_position_headroom_mrev: 2_000,
+        positive_position_headroom_mrev: 2_000,
+        max_duration_ms: 2_000,
+    }
+}
+
+#[cfg(feature = "trace-velocity-sweep")]
+#[test]
+fn stage_b_preflight_freezes_one_plan_and_rejects_mismatch_without_mutation() {
+    use crate::commission_dispatch::stage_b::{
+        StageBPreflightRejection, preflight_stage_b_request,
+    };
+    use crate::commissioning::outer::velocity::reproduction::{
+        StageBCandidateSlot, StageBCandidateSummary,
+    };
+
+    let mut slot = StageBCandidateSlot::new();
+    let first = preflight_stage_b_request(stage_b_request(), 4_000, 2_816, 0, 7, &mut slot)
+        .expect("valid preflight");
+    assert_eq!(first.plan.digest(), first.identity.plan_digest);
+    assert_eq!(first.identity.channel, 0);
+    assert_eq!(first.run_sequence, 7);
+
+    let retained = StageBCandidateSummary {
+        identity: first.identity,
+        forward_membership: 0b0001_1100,
+        reverse_membership: 0b0001_1100,
+        joint_membership: 0b0001_1100,
+        nominated_p: 724,
+        forward_interval: [10, 20],
+        reverse_interval: [-20, -10],
+        run_started_us: 1,
+        run_completed_us: 2,
+        run_digest: 3,
+    };
+    assert!(matches!(
+        slot.observe_sufficient(retained),
+        crate::commissioning::outer::velocity::reproduction::StageBReproductionDecision::CompleteCandidate(_)
+    ));
+
+    let mut changed = stage_b_request();
+    changed.requested_velocity_mrev_s += 1;
+    let rejection = preflight_stage_b_request(changed, 4_000, 2_816, 0, 8, &mut slot)
+        .expect_err("changed frozen plan must be rejected");
+    assert!(matches!(
+        rejection,
+        StageBPreflightRejection::RejectedPlanMismatch { retained: old, requested }
+            if old == first.identity && requested != first.identity
+    ));
+    assert_eq!(slot.candidate(), Some(retained));
+}
+
+#[cfg(feature = "trace-velocity-sweep")]
+#[test]
+fn stage_b_preflight_maps_invalid_plans_without_touching_retention() {
+    use crate::commission_dispatch::stage_b::{
+        StageBPreflightRejection, preflight_stage_b_request,
+    };
+    use crate::commissioning::outer::velocity::reproduction::StageBCandidateSlot;
+
+    let mut slot = StageBCandidateSlot::new();
+    let mut invalid = stage_b_request();
+    invalid.requested_velocity_mrev_s = 0;
+    assert_eq!(
+        preflight_stage_b_request(invalid, 4_000, 2_816, 0, 7, &mut slot),
+        Err(StageBPreflightRejection::InvalidPlan)
+    );
+    assert_eq!(slot.candidate(), None);
+}
+
 fn dispatch_state<'a>(
     calibrated: &'a mut bool,
     motor_enabled: &'a mut bool,
@@ -1644,6 +1724,7 @@ fn sample_velocity_sweep_terminal(
     crate::commissioning::types::VelocitySweepTerminal {
         run_sequence: 9,
         evidence_sequence: 0,
+        plan_digest: 0x1234,
         outcome,
         cause: 4,
         model_direction_mask: 0,
@@ -1662,6 +1743,91 @@ fn sample_velocity_sweep_terminal(
         run_completed_us: 2_000,
         safety_fault: None,
     }
+}
+
+#[cfg(feature = "trace-velocity-sweep")]
+#[test]
+fn stage_b_terminal_promotes_only_a_matching_second_run() {
+    use crate::commission_dispatch::stage_b::apply_stage_b_terminal;
+    use crate::commissioning::outer::velocity::reproduction::StageBCandidateSlot;
+    use crate::commissioning::types::VelocitySweepOutcome;
+
+    let mut slot = StageBCandidateSlot::new();
+    let mut first = sample_velocity_sweep_terminal(VelocitySweepOutcome::CompleteCandidate);
+    first.selected_memberships = [0b11100, 0b11100, 0b11100];
+    first.nominated_p = 724;
+    first.selected_intervals = [[10, 20], [-20, -10]];
+    let first_dispatch = apply_stage_b_terminal(first, 0, &mut slot);
+    assert_eq!(
+        first_dispatch.terminal.outcome,
+        VelocitySweepOutcome::CompleteCandidate
+    );
+    assert_eq!(first_dispatch.reproduction, None);
+    assert!(slot.candidate().is_some());
+
+    let mut second = first;
+    second.run_sequence += 1;
+    second.run_started_us += 10_000;
+    second.run_completed_us += 10_000;
+    second.digest ^= 0x55aa;
+    let second_dispatch = apply_stage_b_terminal(second, 0, &mut slot);
+    assert_eq!(
+        second_dispatch.terminal.outcome,
+        VelocitySweepOutcome::Complete
+    );
+    assert!(second_dispatch.reproduction.is_some());
+    assert_eq!(
+        second_dispatch.terminal.evidence_sequence,
+        second.evidence_sequence + 1
+    );
+    assert_ne!(second_dispatch.terminal.digest, second.digest);
+    assert_eq!(slot.candidate(), None);
+}
+
+#[cfg(feature = "trace-velocity-sweep")]
+#[test]
+fn stage_b_terminal_mismatch_replaces_candidate_and_insufficient_clears_it() {
+    use crate::commission_dispatch::stage_b::{
+        STAGE_B_CAUSE_REPRODUCTION_MISMATCH, apply_stage_b_terminal,
+    };
+    use crate::commissioning::outer::velocity::reproduction::StageBCandidateSlot;
+    use crate::commissioning::types::VelocitySweepOutcome;
+
+    let mut slot = StageBCandidateSlot::new();
+    let mut first = sample_velocity_sweep_terminal(VelocitySweepOutcome::CompleteCandidate);
+    first.selected_memberships = [0b11100, 0b11100, 0b11100];
+    first.nominated_p = 724;
+    first.selected_intervals = [[10, 20], [-20, -10]];
+    apply_stage_b_terminal(first, 0, &mut slot);
+
+    let mut mismatch = first;
+    mismatch.run_sequence += 1;
+    mismatch.selected_memberships[0] = 0b111000;
+    mismatch.digest ^= 0xaa55;
+    let mismatch_dispatch = apply_stage_b_terminal(mismatch, 0, &mut slot);
+    assert_eq!(
+        mismatch_dispatch.terminal.outcome,
+        VelocitySweepOutcome::Inconclusive
+    );
+    assert_eq!(
+        mismatch_dispatch.terminal.cause,
+        STAGE_B_CAUSE_REPRODUCTION_MISMATCH
+    );
+    assert_eq!(
+        slot.candidate()
+            .expect("replacement candidate")
+            .forward_membership,
+        mismatch.selected_memberships[0]
+    );
+    assert_eq!(
+        slot.candidate().expect("replacement candidate").run_digest,
+        mismatch_dispatch.terminal.digest
+    );
+
+    let insufficient = sample_velocity_sweep_terminal(VelocitySweepOutcome::Inconclusive);
+    let cleared = apply_stage_b_terminal(insufficient, 0, &mut slot);
+    assert_eq!(cleared.reproduction, None);
+    assert_eq!(slot.candidate(), None);
 }
 
 #[test]

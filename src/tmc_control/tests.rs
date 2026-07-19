@@ -225,6 +225,11 @@ fn runtime_starts_disarmed_and_uncalibrated() {
 }
 
 #[test]
+fn stage_b_candidate_retention_does_not_grow_channel_runtime() {
+    assert_eq!(core::mem::size_of::<TmcControlRuntime>(), 4_624);
+}
+
+#[test]
 fn runtime_stores_inner_gains_without_spi_side_effects() {
     let mut runtime = TmcControlRuntime::new_for_channel(0);
     let gains = InnerLoopGains {
@@ -882,6 +887,8 @@ fn scheduled_dispatch_preserves_wait_action() {
         let mut runtime = TmcControlRuntime::new_for_channel(0);
         let mut backend = MockBackend::new();
         let config = commissioning_runtime_config();
+        let mut stage_b_candidate =
+            crate::commissioning::outer::velocity::reproduction::StageBCandidateSlot::new();
         runtime.set_commission_engine(CommissioningEngine::new_selftest_for_tmc(7, tmc));
 
         let action = runtime
@@ -891,6 +898,7 @@ fn scheduled_dispatch_preserves_wait_action() {
                     event: None,
                 },
                 &mut backend,
+                &mut stage_b_candidate,
                 tmc,
                 stepper,
                 &config,
@@ -939,6 +947,8 @@ fn scheduled_dispatch_preserves_phase_event_context_without_delay() {
         let mut runtime = TmcControlRuntime::new_for_channel(0);
         let mut backend = MockBackend::new();
         let config = commissioning_runtime_config();
+        let mut stage_b_candidate =
+            crate::commissioning::outer::velocity::reproduction::StageBCandidateSlot::new();
         runtime.set_commission_engine(CommissioningEngine::new_commission(
             37,
             crate::autotune::CommissionProfile::Balanced,
@@ -966,7 +976,14 @@ fn scheduled_dispatch_preserves_phase_event_context_without_delay() {
         ));
 
         let action = runtime
-            .drive_commissioning_poll(poll, &mut backend, tmc, stepper, &config)
+            .drive_commissioning_poll(
+                poll,
+                &mut backend,
+                &mut stage_b_candidate,
+                tmc,
+                stepper,
+                &config,
+            )
             .await
             .expect("engine should be active");
 
@@ -994,6 +1011,8 @@ fn scheduled_dispatch_preserves_terminal_reply_and_actions() {
         let mut runtime = TmcControlRuntime::new_for_channel(0);
         let mut backend = MockBackend::new();
         let config = commissioning_runtime_config();
+        let mut stage_b_candidate =
+            crate::commissioning::outer::velocity::reproduction::StageBCandidateSlot::new();
         runtime.set_commission_engine(CommissioningEngine::new_selftest_for_tmc(7, tmc));
 
         let action = runtime
@@ -1002,6 +1021,7 @@ fn scheduled_dispatch_preserves_terminal_reply_and_actions() {
                     result: crate::commissioning::schedule::CommissionTerminal::SelftestDone,
                 },
                 &mut backend,
+                &mut stage_b_candidate,
                 tmc,
                 stepper,
                 &config,
@@ -1049,6 +1069,8 @@ fn scheduled_dispatch_preserves_accepted_commission_reply_and_actions() {
             .await
             .expect("test motor sentinel write should succeed");
         let config = commissioning_runtime_config();
+        let mut stage_b_candidate =
+            crate::commissioning::outer::velocity::reproduction::StageBCandidateSlot::new();
         runtime.set_commission_engine(CommissioningEngine::new_commission(
             23,
             crate::autotune::CommissionProfile::Balanced,
@@ -1062,6 +1084,7 @@ fn scheduled_dispatch_preserves_accepted_commission_reply_and_actions() {
                     ),
                 },
                 &mut backend,
+                &mut stage_b_candidate,
                 tmc,
                 stepper,
                 &config,

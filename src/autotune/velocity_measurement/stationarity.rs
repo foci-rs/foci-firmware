@@ -160,7 +160,6 @@ enum StationarityWorkStage {
 pub struct StationarityWork {
     stage: StationarityWorkStage,
     selected: Option<StationarySuffix>,
-    tested_suffixes: u8,
 }
 
 impl StationarityWork {
@@ -169,7 +168,6 @@ impl StationarityWork {
         Self {
             stage: StationarityWorkStage::Idle,
             selected: None,
-            tested_suffixes: 0,
         }
     }
 
@@ -217,10 +215,6 @@ impl StationarityWork {
     where
         S: VelocityObservationSource + ?Sized,
     {
-        self.tested_suffixes = self
-            .tested_suffixes
-            .checked_add(1)
-            .ok_or(VelocityMeasurementError::ArithmeticOverflow)?;
         *blocker = DyadicBlocker::new();
         let suffix_start = observations
             .observation_len()
@@ -285,14 +279,17 @@ impl StationarityWork {
             } else {
                 StationarityExclusion::NoBlockingPlateau
             };
-            return Ok(self.finish_on_exclusion(exclusion));
+            return Ok(self.finish_on_exclusion(exclusion, suffix_index));
         };
         let block_observations = 1u16
             .checked_shl(u32::from(selection.level))
             .ok_or(VelocityMeasurementError::ArithmeticOverflow)?;
         let block_count = suffix_len / block_observations;
         if usize::from(block_count) < VELOCITY_MIN_SELECTED_BLOCKS as usize {
-            return Ok(self.finish_on_exclusion(StationarityExclusion::TooFewDecorrelatedBlocks));
+            return Ok(self.finish_on_exclusion(
+                StationarityExclusion::TooFewDecorrelatedBlocks,
+                suffix_index,
+            ));
         }
         self.stage = StationarityWorkStage::Regression {
             suffix_index,
@@ -563,17 +560,21 @@ impl StationarityWork {
                     lag_one_q: metrics.lag_one_q,
                     lag_one_half_width_q: metrics.lag_one_half_width_q,
                     residual_magnitude_q2: metrics.residual_magnitude_q2,
-                    tested_suffixes: self.tested_suffixes,
+                    tested_suffixes: suffix_index.saturating_add(1),
                 });
                 self.advance_or_complete(observations, blocker, suffix_index)
             }
-            Err(exclusion) => Ok(self.finish_on_exclusion(exclusion)),
+            Err(exclusion) => Ok(self.finish_on_exclusion(exclusion, suffix_index)),
         }
     }
 
-    fn finish_on_exclusion(&mut self, exclusion: StationarityExclusion) -> StationarityWorkPoll {
+    fn finish_on_exclusion(
+        &mut self,
+        exclusion: StationarityExclusion,
+        suffix_index: u8,
+    ) -> StationarityWorkPoll {
         if let Some(mut usable) = self.selected {
-            usable.tested_suffixes = self.tested_suffixes;
+            usable.tested_suffixes = suffix_index.saturating_add(1);
             self.stage = StationarityWorkStage::Done;
             return StationarityWorkPoll::Complete(StationarityResult::Usable(usable));
         }
@@ -600,7 +601,7 @@ impl StationarityWork {
         let mut result = self
             .selected
             .ok_or(VelocityMeasurementError::ArithmeticOverflow)?;
-        result.tested_suffixes = self.tested_suffixes;
+        result.tested_suffixes = next_index;
         self.stage = StationarityWorkStage::Done;
         Ok(StationarityWorkPoll::Complete(StationarityResult::Usable(
             result,

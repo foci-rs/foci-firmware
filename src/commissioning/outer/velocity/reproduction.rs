@@ -150,6 +150,13 @@ impl StageBCandidateSlot {
         self.candidate = None;
     }
 
+    /// Replace the retained run digest after post-engine reproduction evidence is hashed.
+    pub fn replace_retained_digest(&mut self, digest: u64) {
+        if let Some(candidate) = &mut self.candidate {
+            candidate.run_digest = digest;
+        }
+    }
+
     /// Invalidate when commissioning starts on another channel.
     pub fn invalidate_for_channel(&mut self, channel: u8) -> StageBReproductionDecision {
         if self

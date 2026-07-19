@@ -490,6 +490,7 @@ impl TmcControlRuntime {
         &mut self,
         result: CommissionTerminal,
         backend: &mut B,
+        stage_b_candidate: &mut crate::commissioning::outer::velocity::reproduction::StageBCandidateSlot,
         tmc: &'static TmcChannelState,
         stepper: &'static StepperChannelState,
         config: &TmcControlConfig,
@@ -505,14 +506,31 @@ impl TmcControlRuntime {
             &mut self.motor_enabled,
             &mut self.stored_gains,
         );
-        let outcome = crate::commission_dispatch::drive_commission_result(
+        #[cfg(feature = "trace-velocity-sweep")]
+        let channel = self.channel;
+        #[cfg(feature = "trace-velocity-sweep")]
+        let outcome = crate::commission_dispatch::drive_commission_result_with_stage_b(
             result.into_step_result(),
             &mut self.commission_engine,
             backend,
             &mut dispatch,
             config.tmc.pwm_maxcnt,
+            channel,
+            stage_b_candidate,
         )
         .await;
+        #[cfg(not(feature = "trace-velocity-sweep"))]
+        let outcome = {
+            let _ = stage_b_candidate;
+            crate::commission_dispatch::drive_commission_result(
+                result.into_step_result(),
+                &mut self.commission_engine,
+                backend,
+                &mut dispatch,
+                config.tmc.pwm_maxcnt,
+            )
+            .await
+        };
         match outcome {
             crate::commission_dispatch::CommissionOutcome::Terminal { reply, actions } => {
                 Some(ScheduledCommissionTickAction::Terminal { reply, actions })
@@ -530,6 +548,7 @@ impl TmcControlRuntime {
         &mut self,
         poll: CommissionPoll,
         backend: &mut B,
+        stage_b_candidate: &mut crate::commissioning::outer::velocity::reproduction::StageBCandidateSlot,
         tmc: &'static TmcChannelState,
         stepper: &'static StepperChannelState,
         config: &TmcControlConfig,
@@ -549,8 +568,15 @@ impl TmcControlRuntime {
                 event,
             }),
             CommissionPoll::Terminal { result } => {
-                self.drive_commissioning_terminal(result, backend, tmc, stepper, config)
-                    .await
+                self.drive_commissioning_terminal(
+                    result,
+                    backend,
+                    stage_b_candidate,
+                    tmc,
+                    stepper,
+                    config,
+                )
+                .await
             }
         }
     }
