@@ -2209,6 +2209,386 @@ pub struct FociVelocityRungVerdictQuality {
     pub reverse_eligible_observations: u16,
 }
 
+/// Non-binding structured-boundary diagnostic for one moving observation.
+#[klipper_reply]
+pub struct FociVelocityStructuredBoundary {
+    /// Endpoint object id.
+    pub oid: u8,
+    /// Caller-assigned run sequence.
+    pub run_sequence: u32,
+    /// Monotonic evidence sequence.
+    pub evidence_sequence: u16,
+    /// Gain-rung index.
+    pub rung_index: u8,
+    /// Observation slot (`F1`, `R1`, `F2`, `R2`).
+    pub slot: u8,
+    /// Bit set for each longer suffix that passed every stationarity gate.
+    pub passing_suffix_mask: u8,
+    /// Outward-rounded common-rate lower mantissa.
+    pub rate_low_mantissa: i32,
+    /// Outward-rounded common-rate upper mantissa.
+    pub rate_high_mantissa: i32,
+    /// Shared binary right shift for the rate interval.
+    pub rate_shift: u8,
+    /// Outward-rounded binding slope rejection margin.
+    pub slope_margin_mantissa: i32,
+    /// Binary right shift for the slope margin.
+    pub slope_margin_shift: u8,
+    /// Binding lag-one rejection margin.
+    pub lag_one_margin_q: i32,
+}
+
+/// Causal directional operating-region identity and closure.
+#[klipper_reply]
+pub struct FociVelocityDirectionalRegionCore {
+    /// Endpoint object id.
+    pub oid: u8,
+    /// Caller-assigned run sequence.
+    pub run_sequence: u32,
+    /// Monotonic evidence sequence.
+    pub evidence_sequence: u16,
+    /// Direction, valid/fragment kind, and closure code.
+    pub direction_kind_closure: u8,
+    /// Exact rung-membership mask.
+    pub member_mask: u32,
+    /// First and last member indices packed low/high.
+    pub rung_bounds: u16,
+    /// First member gain.
+    pub p_low: u16,
+    /// Last member gain.
+    pub p_high: u16,
+    /// Exact member population.
+    pub member_count: u8,
+    /// Boundary rung plus one, or zero when absent.
+    pub boundary_rung_plus_one: u8,
+}
+
+/// Exact controller-domain evidence for one directional region.
+#[klipper_reply]
+pub struct FociVelocityDirectionalRegionModel {
+    /// Endpoint object id.
+    pub oid: u8,
+    /// Caller-assigned run sequence.
+    pub run_sequence: u32,
+    /// Monotonic evidence sequence.
+    pub evidence_sequence: u16,
+    /// Exact rung-membership mask joining the causal core record.
+    pub member_mask: u32,
+    /// Final common-intersection lower edge.
+    pub common_low_q16: i32,
+    /// Final common-intersection upper edge.
+    pub common_high_q16: i32,
+    /// Fixed-effect pooled estimate.
+    pub pooled_q16: i32,
+    /// Pooled lower confidence edge.
+    pub pooled_low_q16: i32,
+    /// Pooled upper confidence edge.
+    pub pooled_high_q16: i32,
+    /// Number of observations that used the numerical variance floor.
+    pub variance_floor_observations: u8,
+}
+
+/// Encoder-domain settled-rate spread for one directional region.
+#[klipper_reply]
+pub struct FociVelocityDirectionalRegionRates {
+    /// Endpoint object id.
+    pub oid: u8,
+    /// Caller-assigned run sequence.
+    pub run_sequence: u32,
+    /// Monotonic evidence sequence.
+    pub evidence_sequence: u16,
+    /// Exact membership joining the causal region record.
+    pub member_mask: u32,
+    /// Minimum member settled-rate mean mantissa.
+    pub mean_min_mantissa: i32,
+    /// Maximum member settled-rate mean mantissa.
+    pub mean_max_mantissa: i32,
+    /// Minimum member confidence-envelope mantissa.
+    pub envelope_low_mantissa: i32,
+    /// Maximum member confidence-envelope mantissa.
+    pub envelope_high_mantissa: i32,
+    /// Shared binary right shift for every rate magnitude.
+    pub rate_shift: u8,
+}
+
+/// Final tested intersection for one directional-region closure.
+#[klipper_reply]
+pub struct FociVelocityDirectionalRegionBoundary {
+    /// Endpoint object id.
+    pub oid: u8,
+    /// Caller-assigned run sequence.
+    pub run_sequence: u32,
+    /// Monotonic evidence sequence.
+    pub evidence_sequence: u16,
+    /// Exact membership joining the causal region record.
+    pub member_mask: u32,
+    /// Final tested-intersection lower edge.
+    pub tested_low_q16: i32,
+    /// Final tested-intersection upper edge.
+    pub tested_high_q16: i32,
+}
+
+/// One causally closed jointly operable region.
+#[klipper_reply]
+pub struct FociVelocityJointRegion {
+    /// Endpoint object id.
+    pub oid: u8,
+    /// Caller-assigned run sequence.
+    pub run_sequence: u32,
+    /// Monotonic evidence sequence.
+    pub evidence_sequence: u16,
+    /// Exact rung-membership mask.
+    pub member_mask: u32,
+    /// First and last member indices packed low/high.
+    pub rung_bounds: u16,
+    /// Member population.
+    pub member_count: u8,
+    /// First member gain.
+    pub p_low: u16,
+    /// Last member gain.
+    pub p_high: u16,
+    /// Closure code.
+    pub closure: u8,
+}
+
+/// Selected Stage B nomination and directional-region memberships.
+#[klipper_reply]
+pub struct FociVelocityStageBHandoffCore {
+    /// Endpoint object id.
+    pub oid: u8,
+    /// Caller-assigned run sequence.
+    pub run_sequence: u32,
+    /// Monotonic evidence sequence.
+    pub evidence_sequence: u16,
+    /// Firmware-nominated proportional gain.
+    pub nominated_p: u16,
+    /// Selected joint-operability membership.
+    pub joint_member_mask: u32,
+    /// Selected forward model membership.
+    pub forward_member_mask: u32,
+    /// Selected reverse model membership.
+    pub reverse_member_mask: u32,
+    /// Direct-coverage and reduced-margin flags.
+    pub flags: u8,
+}
+
+/// Firmware-owned provisional P nomination context.
+#[klipper_reply]
+pub struct FociVelocityStageBNomination {
+    /// Endpoint object id.
+    pub oid: u8,
+    /// Caller-assigned run sequence.
+    pub run_sequence: u32,
+    /// Monotonic evidence sequence.
+    pub evidence_sequence: u16,
+    /// Nominated ladder index.
+    pub nominated_rung: u8,
+    /// Firmware-nominated proportional gain.
+    pub nominated_p: u16,
+    /// Q16 ratio distance from structural P_start.
+    pub distance_to_start_q16: u32,
+    /// Q16 ratio distance from structural P_top.
+    pub distance_to_top_q16: u32,
+    /// Reduced-margin flags.
+    pub flags: u8,
+}
+
+/// One selected directional model and transfer context.
+#[klipper_reply]
+pub struct FociVelocityStageBDirectionalHandoff {
+    /// Endpoint object id.
+    pub oid: u8,
+    /// Caller-assigned run sequence.
+    pub run_sequence: u32,
+    /// Monotonic evidence sequence.
+    pub evidence_sequence: u16,
+    /// Direction code.
+    pub direction: u8,
+    /// Exact source-region membership.
+    pub member_mask: u32,
+    /// Direct or transferred coverage code.
+    pub coverage: u8,
+    /// Signed half-octave rung distance from the nomination.
+    pub signed_rung_distance: i32,
+    /// Larger gain in the source/target ratio.
+    pub gain_ratio_num: u16,
+    /// Smaller gain in the source/target ratio.
+    pub gain_ratio_den: u16,
+    /// Outward-rounded settled-rate difference mantissa.
+    pub settled_rate_difference_mantissa: i32,
+    /// Binary right shift for the settled-rate difference.
+    pub settled_rate_difference_shift: u8,
+}
+
+/// Stage B cross-run reproduction class and nominated gains.
+#[klipper_reply]
+pub struct FociVelocityStageBReproductionCore {
+    /// Endpoint object id.
+    pub oid: u8,
+    /// Current caller-assigned run sequence.
+    pub run_sequence: u32,
+    /// Monotonic evidence sequence.
+    pub evidence_sequence: u16,
+    /// Reproduced or mismatched outcome code.
+    pub outcome: u8,
+    /// Retained-run nominated proportional gain.
+    pub previous_nominated_p: u16,
+    /// Current-run nominated proportional gain.
+    pub current_nominated_p: u16,
+}
+
+/// Exact previous and current selected memberships for reproduction.
+#[klipper_reply]
+pub struct FociVelocityStageBReproductionMembership {
+    /// Endpoint object id.
+    pub oid: u8,
+    /// Current caller-assigned run sequence.
+    pub run_sequence: u32,
+    /// Monotonic evidence sequence.
+    pub evidence_sequence: u16,
+    /// Retained forward model membership.
+    pub previous_forward_mask: u32,
+    /// Retained reverse model membership.
+    pub previous_reverse_mask: u32,
+    /// Retained joint-operability membership.
+    pub previous_joint_mask: u32,
+    /// Current forward model membership.
+    pub current_forward_mask: u32,
+    /// Current reverse model membership.
+    pub current_reverse_mask: u32,
+    /// Current joint-operability membership.
+    pub current_joint_mask: u32,
+}
+
+/// One direction's previous and current pooled intervals.
+#[klipper_reply]
+pub struct FociVelocityStageBReproductionInterval {
+    /// Endpoint object id.
+    pub oid: u8,
+    /// Current caller-assigned run sequence.
+    pub run_sequence: u32,
+    /// Monotonic evidence sequence.
+    pub evidence_sequence: u16,
+    /// Direction code.
+    pub direction: u8,
+    /// Retained pooled lower edge.
+    pub previous_low_q16: i32,
+    /// Retained pooled upper edge.
+    pub previous_high_q16: i32,
+    /// Current pooled lower edge.
+    pub current_low_q16: i32,
+    /// Current pooled upper edge.
+    pub current_high_q16: i32,
+}
+
+/// Exact previous and current evidence digests for reproduction.
+#[klipper_reply]
+pub struct FociVelocityStageBReproductionDigest {
+    /// Endpoint object id.
+    pub oid: u8,
+    /// Current caller-assigned run sequence.
+    pub run_sequence: u32,
+    /// Monotonic evidence sequence.
+    pub evidence_sequence: u16,
+    /// Retained digest low word.
+    pub previous_digest_low: u32,
+    /// Retained digest high word.
+    pub previous_digest_high: u32,
+    /// Current pre-reproduction digest low word.
+    pub current_digest_low: u32,
+    /// Current pre-reproduction digest high word.
+    pub current_digest_high: u32,
+}
+
+/// Stage B terminal class and report completeness.
+#[klipper_reply]
+pub struct FociVelocityStageBTerminalCore {
+    /// Endpoint object id.
+    pub oid: u8,
+    /// Caller-assigned run sequence.
+    pub run_sequence: u32,
+    /// Terminal evidence sequence.
+    pub evidence_sequence: u16,
+    /// Terminal fragment discriminator.
+    pub fragment: u8,
+    /// Stage B terminal outcome.
+    pub outcome: u8,
+    /// Dedicated Stage B terminal cause.
+    pub cause: u8,
+    /// Directional-model sufficiency mask.
+    pub model_direction_mask: u8,
+    /// Direct nominated-P coverage mask.
+    pub coverage_mask: u8,
+    /// Forward valid-region count.
+    pub forward_region_count: u8,
+    /// Reverse valid-region count.
+    pub reverse_region_count: u8,
+    /// Forward fragment count.
+    pub forward_fragment_count: u8,
+    /// Reverse fragment count.
+    pub reverse_fragment_count: u8,
+    /// Planned observation-report count.
+    pub expected_observations: u16,
+    /// Emitted observation-report count.
+    pub emitted_observations: u16,
+    /// Planned rung-report count.
+    pub expected_rungs: u16,
+    /// Emitted rung-report count.
+    pub emitted_rungs: u16,
+}
+
+/// Exact selected memberships, nomination, and terminal digest.
+#[klipper_reply]
+pub struct FociVelocityStageBTerminalIdentity {
+    /// Endpoint object id.
+    pub oid: u8,
+    /// Caller-assigned run sequence.
+    pub run_sequence: u32,
+    /// Terminal evidence sequence.
+    pub evidence_sequence: u16,
+    /// Terminal fragment discriminator.
+    pub fragment: u8,
+    /// Selected forward model membership.
+    pub forward_member_mask: u32,
+    /// Selected reverse model membership.
+    pub reverse_member_mask: u32,
+    /// Selected joint-operability membership.
+    pub joint_member_mask: u32,
+    /// Firmware-nominated proportional gain.
+    pub nominated_p: u16,
+    /// Exact low digest word.
+    pub digest_low: u32,
+    /// Exact high digest word.
+    pub digest_high: u32,
+}
+
+/// One selected directional interval from the Stage B terminal.
+#[klipper_reply]
+pub struct FociVelocityStageBTerminalInterval {
+    /// Endpoint object id.
+    pub oid: u8,
+    /// Caller-assigned run sequence.
+    pub run_sequence: u32,
+    /// Terminal evidence sequence.
+    pub evidence_sequence: u16,
+    /// Terminal fragment discriminator.
+    pub fragment: u8,
+    /// Direction code.
+    pub direction: u8,
+    /// Exact pooled lower confidence edge.
+    pub pooled_low_q16: i32,
+    /// Exact pooled upper confidence edge.
+    pub pooled_high_q16: i32,
+    /// Low monotonic start timestamp word.
+    pub started_low: u32,
+    /// High monotonic start timestamp word.
+    pub started_high: u32,
+    /// Low monotonic completion timestamp word.
+    pub completed_low: u32,
+    /// High monotonic completion timestamp word.
+    pub completed_high: u32,
+}
+
 /// One directional terminal band and pooled estimate.
 #[klipper_reply]
 pub struct FociVelocitySweepTerminalDirection {
@@ -2489,6 +2869,236 @@ mod velocity_sweep_reply_tests {
             "rung_quality",
         );
         assert_fits(
+            &FociVelocityStructuredBoundary {
+                oid: u8::MAX,
+                run_sequence: WIDE_U32,
+                evidence_sequence: u16::MAX,
+                rung_index: u8::MAX,
+                slot: u8::MAX,
+                passing_suffix_mask: u8::MAX,
+                rate_low_mantissa: i32::MIN,
+                rate_high_mantissa: i32::MAX,
+                rate_shift: u8::MAX,
+                slope_margin_mantissa: i32::MIN,
+                slope_margin_shift: u8::MAX,
+                lag_one_margin_q: i32::MIN,
+            },
+            "structured_boundary",
+        );
+        assert_fits(
+            &FociVelocityDirectionalRegionCore {
+                oid: u8::MAX,
+                run_sequence: WIDE_U32,
+                evidence_sequence: u16::MAX,
+                direction_kind_closure: u8::MAX,
+                member_mask: 0x8000_0001,
+                rung_bounds: u16::MAX,
+                p_low: u16::MAX,
+                p_high: u16::MAX,
+                member_count: u8::MAX,
+                boundary_rung_plus_one: u8::MAX,
+            },
+            "directional_region_core",
+        );
+        assert_fits(
+            &FociVelocityDirectionalRegionModel {
+                oid: u8::MAX,
+                run_sequence: WIDE_U32,
+                evidence_sequence: u16::MAX,
+                member_mask: 0x8000_0001,
+                common_low_q16: i32::MIN,
+                common_high_q16: i32::MAX,
+                pooled_q16: i32::MIN,
+                pooled_low_q16: i32::MIN,
+                pooled_high_q16: i32::MAX,
+                variance_floor_observations: u8::MAX,
+            },
+            "directional_region_model",
+        );
+        assert_fits(
+            &FociVelocityDirectionalRegionRates {
+                oid: u8::MAX,
+                run_sequence: WIDE_U32,
+                evidence_sequence: u16::MAX,
+                member_mask: 0x8000_0001,
+                mean_min_mantissa: i32::MIN,
+                mean_max_mantissa: i32::MAX,
+                envelope_low_mantissa: i32::MIN,
+                envelope_high_mantissa: i32::MAX,
+                rate_shift: u8::MAX,
+            },
+            "directional_region_rates",
+        );
+        assert_fits(
+            &FociVelocityDirectionalRegionBoundary {
+                oid: u8::MAX,
+                run_sequence: WIDE_U32,
+                evidence_sequence: u16::MAX,
+                member_mask: 0x8000_0001,
+                tested_low_q16: i32::MIN,
+                tested_high_q16: i32::MAX,
+            },
+            "directional_region_boundary",
+        );
+        assert_fits(
+            &FociVelocityJointRegion {
+                oid: u8::MAX,
+                run_sequence: WIDE_U32,
+                evidence_sequence: u16::MAX,
+                member_mask: 0x8000_0001,
+                rung_bounds: u16::MAX,
+                member_count: u8::MAX,
+                p_low: u16::MAX,
+                p_high: u16::MAX,
+                closure: u8::MAX,
+            },
+            "joint_region",
+        );
+        assert_fits(
+            &FociVelocityStageBHandoffCore {
+                oid: u8::MAX,
+                run_sequence: WIDE_U32,
+                evidence_sequence: u16::MAX,
+                nominated_p: u16::MAX,
+                joint_member_mask: 0x8000_0001,
+                forward_member_mask: 0x8000_0001,
+                reverse_member_mask: 0x8000_0001,
+                flags: u8::MAX,
+            },
+            "stage_b_handoff_core",
+        );
+        assert_fits(
+            &FociVelocityStageBNomination {
+                oid: u8::MAX,
+                run_sequence: WIDE_U32,
+                evidence_sequence: u16::MAX,
+                nominated_rung: u8::MAX,
+                nominated_p: u16::MAX,
+                distance_to_start_q16: WIDE_U32,
+                distance_to_top_q16: WIDE_U32,
+                flags: u8::MAX,
+            },
+            "stage_b_nomination",
+        );
+        assert_fits(
+            &FociVelocityStageBDirectionalHandoff {
+                oid: u8::MAX,
+                run_sequence: WIDE_U32,
+                evidence_sequence: u16::MAX,
+                direction: u8::MAX,
+                member_mask: 0x8000_0001,
+                coverage: u8::MAX,
+                signed_rung_distance: i32::MIN,
+                gain_ratio_num: u16::MAX,
+                gain_ratio_den: u16::MAX,
+                settled_rate_difference_mantissa: i32::MIN,
+                settled_rate_difference_shift: u8::MAX,
+            },
+            "stage_b_directional_handoff",
+        );
+        assert_fits(
+            &FociVelocityStageBReproductionCore {
+                oid: u8::MAX,
+                run_sequence: WIDE_U32,
+                evidence_sequence: u16::MAX,
+                outcome: u8::MAX,
+                previous_nominated_p: u16::MAX,
+                current_nominated_p: u16::MAX,
+            },
+            "stage_b_reproduction_core",
+        );
+        assert_fits(
+            &FociVelocityStageBReproductionMembership {
+                oid: u8::MAX,
+                run_sequence: WIDE_U32,
+                evidence_sequence: u16::MAX,
+                previous_forward_mask: 0x8000_0001,
+                previous_reverse_mask: 0x8000_0001,
+                previous_joint_mask: 0x8000_0001,
+                current_forward_mask: 0x8000_0001,
+                current_reverse_mask: 0x8000_0001,
+                current_joint_mask: 0x8000_0001,
+            },
+            "stage_b_reproduction_membership",
+        );
+        assert_fits(
+            &FociVelocityStageBReproductionInterval {
+                oid: u8::MAX,
+                run_sequence: WIDE_U32,
+                evidence_sequence: u16::MAX,
+                direction: u8::MAX,
+                previous_low_q16: i32::MIN,
+                previous_high_q16: i32::MAX,
+                current_low_q16: i32::MIN,
+                current_high_q16: i32::MAX,
+            },
+            "stage_b_reproduction_interval",
+        );
+        assert_fits(
+            &FociVelocityStageBReproductionDigest {
+                oid: u8::MAX,
+                run_sequence: WIDE_U32,
+                evidence_sequence: u16::MAX,
+                previous_digest_low: 0x7654_3210,
+                previous_digest_high: 0xfedc_ba98,
+                current_digest_low: 0x89ab_cdef,
+                current_digest_high: 0x0123_4567,
+            },
+            "stage_b_reproduction_digest",
+        );
+        assert_fits(
+            &FociVelocityStageBTerminalCore {
+                oid: u8::MAX,
+                run_sequence: WIDE_U32,
+                evidence_sequence: u16::MAX,
+                fragment: u8::MAX,
+                outcome: u8::MAX,
+                cause: u8::MAX,
+                model_direction_mask: u8::MAX,
+                coverage_mask: u8::MAX,
+                forward_region_count: u8::MAX,
+                reverse_region_count: u8::MAX,
+                forward_fragment_count: u8::MAX,
+                reverse_fragment_count: u8::MAX,
+                expected_observations: u16::MAX,
+                emitted_observations: u16::MAX,
+                expected_rungs: u16::MAX,
+                emitted_rungs: u16::MAX,
+            },
+            "stage_b_terminal_core",
+        );
+        assert_fits(
+            &FociVelocityStageBTerminalIdentity {
+                oid: u8::MAX,
+                run_sequence: WIDE_U32,
+                evidence_sequence: u16::MAX,
+                fragment: u8::MAX,
+                forward_member_mask: 0x8000_0001,
+                reverse_member_mask: 0x8000_0001,
+                joint_member_mask: 0x8000_0001,
+                nominated_p: u16::MAX,
+                digest_low: 0x7654_3210,
+                digest_high: 0xfedc_ba98,
+            },
+            "stage_b_terminal_identity",
+        );
+        assert_fits(
+            &FociVelocityStageBTerminalInterval {
+                oid: u8::MAX,
+                run_sequence: WIDE_U32,
+                evidence_sequence: u16::MAX,
+                fragment: u8::MAX,
+                direction: u8::MAX,
+                pooled_low_q16: i32::MIN,
+                pooled_high_q16: i32::MAX,
+                started_low: WIDE_U32,
+                started_high: WIDE_U32,
+                completed_low: WIDE_U32,
+                completed_high: WIDE_U32,
+            },
+            "stage_b_terminal_interval",
+        );
+        assert_fits(
             &FociVelocitySweepTerminalDirection {
                 oid: u8::MAX,
                 run_sequence: WIDE_U32,
@@ -2583,6 +3193,30 @@ mod velocity_sweep_reply_tests {
                 digest
             );
         }
+    }
+
+    #[test]
+    fn stage_b_exact_identity_fields_round_trip_without_compaction() {
+        let identity = FociVelocityStageBTerminalIdentity {
+            oid: 1,
+            run_sequence: 2,
+            evidence_sequence: 3,
+            fragment: 1,
+            forward_member_mask: 0x8000_0001,
+            reverse_member_mask: 0x7fff_fffe,
+            joint_member_mask: 0xa5a5_5a5a,
+            nominated_p: 1_448,
+            digest_low: 0x7654_3210,
+            digest_high: 0xfedc_ba98,
+        };
+
+        assert_eq!(identity.forward_member_mask, 0x8000_0001);
+        assert_eq!(identity.reverse_member_mask, 0x7fff_fffe);
+        assert_eq!(identity.joint_member_mask, 0xa5a5_5a5a);
+        assert_eq!(
+            (identity.digest_high, identity.digest_low),
+            (0xfedc_ba98, 0x7654_3210)
+        );
     }
 }
 

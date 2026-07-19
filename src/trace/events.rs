@@ -60,7 +60,8 @@ pub const EVENT_COMMISSION_VELOCITY_SWEEP_PLAN: u16 = 124;
 pub const EVENT_COMMISSION_VELOCITY_SWEEP_OBSERVATION: u16 = 125;
 /// Disturbance-based velocity-sweep rung verdict.
 pub const EVENT_COMMISSION_VELOCITY_SWEEP_RUNG: u16 = 126;
-// Event 127 is intentionally unassigned; running band state rides in rung events.
+/// Derived Stage B structured-boundary, region, and handoff evidence.
+pub const EVENT_COMMISSION_VELOCITY_SWEEP_DERIVED: u16 = 127;
 /// Disturbance-based velocity-sweep detailed terminal.
 pub const EVENT_COMMISSION_VELOCITY_SWEEP_TERMINAL: u16 = 128;
 /// Disturbance-based velocity-sweep complete marker.

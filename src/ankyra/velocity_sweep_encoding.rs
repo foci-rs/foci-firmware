@@ -3,6 +3,8 @@
 /// Maximum bytes in one canonical velocity-sweep evidence record.
 pub const VELOCITY_SWEEP_CANONICAL_RECORD_MAX: usize = 128;
 
+const FNV1A64_PRIME: u64 = 0x0000_0100_0000_01b3;
+
 /// One fixed-width canonical velocity-sweep evidence record.
 ///
 /// The same bytes feed the firmware integrity digest and the trace-only offline
@@ -60,6 +62,15 @@ impl VelocitySweepCanonicalRecord {
         self.bytes[start..end].copy_from_slice(value);
         self.len = u8::try_from(end).expect("canonical velocity-sweep record length fits u8");
     }
+}
+
+/// Extend an existing FNV-1a sweep digest with one exact canonical record.
+pub fn extend_velocity_sweep_digest(mut digest: u64, record: &VelocitySweepCanonicalRecord) -> u64 {
+    for byte in record.as_bytes() {
+        digest ^= u64::from(*byte);
+        digest = digest.wrapping_mul(FNV1A64_PRIME);
+    }
+    digest
 }
 
 /// Encode an unsigned value as an outward-rounded mantissa and right shift.
