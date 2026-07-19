@@ -1,5 +1,8 @@
 //! Velocity-loop commissioning phases.
 
+pub mod operating_region;
+#[cfg(test)]
+mod operating_region_tests;
 mod response_ramp;
 #[cfg(feature = "trace-velocity-sweep")]
 mod sweep;

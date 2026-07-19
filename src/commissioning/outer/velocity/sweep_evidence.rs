@@ -4,6 +4,8 @@ use crate::autotune::velocity_measurement::{
 use crate::autotune::{EquivalentTorqueTargetInterval, EquivalentTorqueTargetQ16};
 use foci_tmc4671::pid::PidGain;
 
+use super::operating_region::PooledDisturbanceAccumulator;
+
 /// Inputs already collected for one fixed-direction velocity observation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub struct VelocityObservationInput {
@@ -17,6 +19,8 @@ pub struct VelocityObservationInput {
     pub settled_rate_low_q: i64,
     /// Inclusive upper settled-rate confidence edge.
     pub settled_rate_high_q: i64,
+    /// Exact time-weighted settled-rate mean.
+    pub settled_rate_mean_q: i64,
     /// Inclusive lower signed-deficit confidence edge.
     pub deficit_low_q: i64,
     /// Inclusive upper signed-deficit confidence edge.
@@ -89,6 +93,8 @@ pub struct VelocityObservationSummary {
     pub classification: VelocityObservationClass,
     /// Settled-rate confidence interval.
     pub settled_rate_interval_q: [i64; 2],
+    /// Exact time-weighted settled-rate mean.
+    pub settled_rate_mean_q: i64,
     /// Signed-deficit confidence interval.
     pub deficit_interval_q: [i64; 2],
     /// Controller-domain disturbance point.
@@ -155,8 +161,14 @@ pub struct VelocityRungVerdict {
     pub disturbance_points: [Option<EquivalentTorqueTargetQ16>; 2],
     /// Individual variances retained for later fixed-effect pooling.
     pub disturbance_variances_q2: [u64; 2],
+    /// Individual exact time-weighted settled-rate means.
+    pub settled_rate_means_q: [i64; 2],
+    /// Individual settled-rate confidence intervals.
+    pub settled_rate_intervals_q: [[i64; 2]; 2],
     /// Whether both observations resolved commanded-side motion.
     pub reproduced_moving: bool,
+    /// Whether all four unchanged operating-point predicates passed.
+    pub operable: bool,
     /// Whether either observation carried the rung-zero lead-in marker.
     pub initial_lead_in: bool,
 }
@@ -217,6 +229,7 @@ pub fn classify_velocity_observation(
         p: input.p,
         classification,
         settled_rate_interval_q: [input.settled_rate_low_q, input.settled_rate_high_q],
+        settled_rate_mean_q: input.settled_rate_mean_q,
         deficit_interval_q: [input.deficit_low_q, input.deficit_high_q],
         disturbance,
         disturbance_interval,
@@ -237,6 +250,8 @@ pub fn reproduce_velocity_rung(
     let first_moving = observation_resolves_motion(first.classification);
     let second_moving = observation_resolves_motion(second.classification);
     let reproduced_moving = first_moving && second_moving;
+    let operable = observation_is_operable(first.classification)
+        && observation_is_operable(second.classification);
     let mut interval = None;
     let classification = match (first.classification, second.classification) {
         (VelocityObservationClass::Eligible, VelocityObservationClass::Eligible) => {
@@ -278,9 +293,22 @@ pub fn reproduce_velocity_rung(
             first.disturbance_variance_q2,
             second.disturbance_variance_q2,
         ],
+        settled_rate_means_q: [first.settled_rate_mean_q, second.settled_rate_mean_q],
+        settled_rate_intervals_q: [
+            first.settled_rate_interval_q,
+            second.settled_rate_interval_q,
+        ],
         reproduced_moving,
+        operable,
         initial_lead_in: first.initial_lead_in || second.initial_lead_in,
     })
+}
+
+fn observation_is_operable(classification: VelocityObservationClass) -> bool {
+    matches!(
+        classification,
+        VelocityObservationClass::Eligible | VelocityObservationClass::DeficitUnresolved
+    )
 }
 
 fn observation_resolves_motion(classification: VelocityObservationClass) -> bool {
@@ -519,10 +547,7 @@ pub fn assess_sweep_sufficiency(
 pub struct DirectionalBandAccumulator {
     band: DirectionalDisturbanceBand,
     closed: bool,
-    weighted_point: i128,
-    weighted_low: i128,
-    weighted_high: i128,
-    weight_sum: i128,
+    pooled: PooledDisturbanceAccumulator,
     variance_floor_observations: u8,
 }
 
@@ -546,10 +571,7 @@ impl DirectionalBandAccumulator {
                 sufficient: false,
             },
             closed: false,
-            weighted_point: 0,
-            weighted_low: 0,
-            weighted_high: 0,
-            weight_sum: 0,
+            pooled: PooledDisturbanceAccumulator::new(),
             variance_floor_observations: 0,
         }
     }
@@ -622,16 +644,10 @@ impl DirectionalBandAccumulator {
             self.closed = true;
             return;
         };
-        let variance = variance_q2.max(1);
         self.variance_floor_observations = self
             .variance_floor_observations
             .saturating_add(u8::from(variance_q2 == 0));
-        let weight = ((1_u64 << 32) / variance).max(1);
-        let weight = i128::from(weight);
-        self.weighted_point += i128::from(point.raw()) * weight;
-        self.weighted_low += i128::from(interval.low().raw()) * weight;
-        self.weighted_high += i128::from(interval.high().raw()) * weight;
-        self.weight_sum += weight;
+        self.pooled.add(point, interval, variance_q2);
         self.band.eligible_observations = self.band.eligible_observations.saturating_add(1);
     }
 
@@ -644,26 +660,7 @@ impl DirectionalBandAccumulator {
         if !self.closed && self.band.first_moving.is_some() {
             self.band.closure = BandClosure::EndOfLadder;
         }
-        if self.weight_sum > 0 {
-            let estimate = i32::try_from(self.weighted_point / self.weight_sum).ok();
-            let low =
-                floor_ratio(self.weighted_low, self.weight_sum).and_then(|v| i32::try_from(v).ok());
-            let high =
-                ceil_ratio(self.weighted_high, self.weight_sum).and_then(|v| i32::try_from(v).ok());
-            if let (Some(estimate), Some(low), Some(high)) = (estimate, low, high) {
-                let estimate = EquivalentTorqueTargetQ16::from_raw(estimate);
-                if let Ok(interval) = EquivalentTorqueTargetInterval::new(
-                    EquivalentTorqueTargetQ16::from_raw(low),
-                    EquivalentTorqueTargetQ16::from_raw(high),
-                ) {
-                    self.band.pooled = Some(PooledDisturbance {
-                        estimate,
-                        interval,
-                        variance_floor_observations: self.variance_floor_observations,
-                    });
-                }
-            }
-        }
+        self.band.pooled = self.pooled.finish(self.variance_floor_observations);
         self.band.sufficient = self.band.first_moving.is_some()
             && self.band.eligible_rungs >= 3
             && self.band.pooled.is_some();
@@ -682,24 +679,6 @@ fn closure_for(classification: VelocityRungClass) -> BandClosure {
         | VelocityRungClass::Ambiguous
         | VelocityRungClass::Excluded => BandClosure::ReproductionGap,
     }
-}
-
-fn floor_ratio(numerator: i128, denominator: i128) -> Option<i128> {
-    let quotient = numerator.checked_div(denominator)?;
-    let remainder = numerator.checked_rem(denominator)?;
-    (remainder != 0 && numerator < 0)
-        .then(|| quotient.checked_sub(1))
-        .flatten()
-        .or(Some(quotient))
-}
-
-fn ceil_ratio(numerator: i128, denominator: i128) -> Option<i128> {
-    let quotient = numerator.checked_div(denominator)?;
-    let remainder = numerator.checked_rem(denominator)?;
-    (remainder != 0 && numerator > 0)
-        .then(|| quotient.checked_add(1))
-        .flatten()
-        .or(Some(quotient))
 }
 
 #[cfg(test)]
@@ -757,6 +736,7 @@ mod tests {
             stationarity: stationary(),
             settled_rate_low_q,
             settled_rate_high_q,
+            settled_rate_mean_q: (settled_rate_low_q + settled_rate_high_q) / 2,
             deficit_low_q,
             deficit_high_q,
             disturbance: Some((EquivalentTorqueTargetQ16::from_raw(point), ci)),
@@ -853,6 +833,7 @@ mod tests {
         let reproduced = reproduce_velocity_rung(first, second).unwrap();
         assert_eq!(reproduced.classification, VelocityRungClass::Eligible);
         assert_eq!(reproduced.disturbance_interval, Some(interval(100, 110)));
+        assert!(reproduced.operable);
 
         let mut disjoint_input = input(VelocityDirection::Forward);
         disjoint_input.disturbance =
@@ -860,12 +841,14 @@ mod tests {
         let disjoint =
             reproduce_velocity_rung(first, classify_velocity_observation(disjoint_input)).unwrap();
         assert_eq!(disjoint.classification, VelocityRungClass::DisjointPair);
+        assert!(disjoint.operable);
 
         let mut inert_input = input(VelocityDirection::Forward);
         inert_input.settled_rate_low_q = -1;
         let one_pass =
             reproduce_velocity_rung(first, classify_velocity_observation(inert_input)).unwrap();
         assert_eq!(one_pass.classification, VelocityRungClass::Ambiguous);
+        assert!(!one_pass.operable);
     }
 
     #[test]

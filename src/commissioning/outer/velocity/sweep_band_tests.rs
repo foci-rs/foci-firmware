@@ -32,11 +32,17 @@ fn verdict(p: u16, class: VelocityRungClass, low: i32, high: i32) -> VelocityRun
             })
             .unwrap_or([None; 2]),
         disturbance_variances_q2: [4, 4],
+        settled_rate_means_q: [1_000, 1_001],
+        settled_rate_intervals_q: [[990, 1_010], [991, 1_011]],
         reproduced_moving: matches!(
             class,
             VelocityRungClass::Eligible
                 | VelocityRungClass::DeficitUnresolved
                 | VelocityRungClass::CurrentHeadroom
+        ),
+        operable: matches!(
+            class,
+            VelocityRungClass::Eligible | VelocityRungClass::DeficitUnresolved
         ),
         initial_lead_in: false,
     }

@@ -390,6 +390,7 @@ mod tests {
                 p: PidGain::new(350).unwrap(),
                 classification: VelocityObservationClass::Eligible,
                 settled_rate_interval_q: [-5_000_000_001, 5_000_000_001],
+                settled_rate_mean_q: 1,
                 deficit_interval_q: [-6_000_000_001, 6_000_000_001],
                 disturbance: Some(disturbance),
                 disturbance_interval: Some(disturbance_interval),

@@ -77,6 +77,7 @@ fn finish_moving_observation_analysis(
         stationarity,
         settled_rate_low_q: 0,
         settled_rate_high_q: 0,
+        settled_rate_mean_q: 0,
         deficit_low_q: 0,
         deficit_high_q: 0,
         disturbance: None,
@@ -99,6 +100,7 @@ fn finish_moving_observation_analysis(
             .rate_q()
             .map_err(|_| CommissionError::VelocityValidationFailed)?;
         settled_rate_mean_q = mean_rate_q;
+        input.settled_rate_mean_q = mean_rate_q;
         let half_width = i64::try_from(confidence.half_width_rate_q)
             .map_err(|_| CommissionError::VelocityValidationFailed)?;
         input.settled_rate_low_q = mean_rate_q.saturating_sub(half_width);
