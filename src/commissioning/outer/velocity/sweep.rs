@@ -146,6 +146,30 @@ fn retain_joint_candidate(data: &mut super::super::VelocitySweepData, region: Jo
     }
 }
 
+fn joint_region_report(
+    data: &super::super::VelocitySweepData,
+    region: JointOperableRegion,
+) -> VelocityJointRegionReport {
+    let plan = data
+        .plan
+        .expect("joint-region reporting requires an immutable plan");
+    let p_low = plan
+        .gain_at(region.first_rung)
+        .expect("joint-region first rung belongs to the immutable ladder")
+        .raw();
+    let p_high = plan
+        .gain_at(region.last_rung)
+        .expect("joint-region last rung belongs to the immutable ladder")
+        .raw();
+    VelocityJointRegionReport {
+        run_sequence: data.integrity.run_sequence(),
+        evidence_sequence: data.integrity.next_evidence_sequence(),
+        region,
+        p_low,
+        p_high,
+    }
+}
+
 fn selected_handoff(
     data: &super::super::VelocitySweepData,
 ) -> Option<super::operating_region::StageBHandoff> {
@@ -250,6 +274,7 @@ fn sweep_fault_terminal_from_data(
     });
     StepResult::VelocitySweepTerminal(VelocitySweepTerminal {
         run_sequence: data.integrity.run_sequence(),
+        evidence_sequence: data.integrity.next_evidence_sequence(),
         outcome: VelocitySweepOutcome::Fault,
         cause: error.status_code(),
         model_direction_mask,
@@ -257,6 +282,8 @@ fn sweep_fault_terminal_from_data(
         nominated_p: 0,
         selected_intervals: [[0; 2]; 2],
         coverage_mask: 0,
+        directional_region_counts: data.integrity.directional_region_counts(),
+        directional_fragment_counts: data.integrity.directional_fragment_counts(),
         expected_observations,
         emitted_observations: data.integrity.emitted_observations(),
         expected_rungs,
@@ -310,6 +337,7 @@ fn sweep_evidence_terminal(
     }
     VelocitySweepTerminal {
         run_sequence: data.integrity.run_sequence(),
+        evidence_sequence: data.integrity.next_evidence_sequence(),
         outcome,
         cause,
         model_direction_mask,
@@ -328,6 +356,8 @@ fn sweep_evidence_terminal(
             ]
         }),
         coverage_mask: handoff.map_or(0, |handoff| handoff.coverage_mask),
+        directional_region_counts: data.integrity.directional_region_counts(),
+        directional_fragment_counts: data.integrity.directional_fragment_counts(),
         expected_observations,
         emitted_observations: data.integrity.emitted_observations(),
         expected_rungs,
@@ -1065,13 +1095,10 @@ pub(crate) async fn step_velocity_sweep_with_trace<B: CommissioningBackend>(
                 _ => {}
             }
             if let Some(region) = closed {
-                let event = data.integrity.record(VelocitySweepEvent::JointRegion(
-                    VelocityJointRegionReport {
-                        run_sequence: data.integrity.run_sequence(),
-                        evidence_sequence: data.integrity.next_evidence_sequence(),
-                        region,
-                    },
-                ));
+                let report = joint_region_report(data, region);
+                let event = data
+                    .integrity
+                    .record(VelocitySweepEvent::JointRegion(report));
                 return StepResult::VelocitySweepEvent(event);
             }
             StepResult::ReadyNow
@@ -1158,13 +1185,10 @@ pub(crate) async fn step_velocity_sweep_with_trace<B: CommissioningBackend>(
             *state = VelocitySweepState::EmitHandoff { current_headroom };
             if let Some(region) = closed {
                 retain_joint_candidate(data, region);
-                let event = data.integrity.record(VelocitySweepEvent::JointRegion(
-                    VelocityJointRegionReport {
-                        run_sequence: data.integrity.run_sequence(),
-                        evidence_sequence: data.integrity.next_evidence_sequence(),
-                        region,
-                    },
-                ));
+                let report = joint_region_report(data, region);
+                let event = data
+                    .integrity
+                    .record(VelocitySweepEvent::JointRegion(report));
                 return StepResult::VelocitySweepEvent(event);
             }
             StepResult::ReadyNow

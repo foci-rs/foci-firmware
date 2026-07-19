@@ -1643,6 +1643,7 @@ fn sample_velocity_sweep_terminal(
 ) -> crate::commissioning::types::VelocitySweepTerminal {
     crate::commissioning::types::VelocitySweepTerminal {
         run_sequence: 9,
+        evidence_sequence: 0,
         outcome,
         cause: 4,
         model_direction_mask: 0,
@@ -1650,6 +1651,8 @@ fn sample_velocity_sweep_terminal(
         nominated_p: 0,
         selected_intervals: [[0; 2]; 2],
         coverage_mask: 0,
+        directional_region_counts: [0; 2],
+        directional_fragment_counts: [0; 2],
         expected_observations: 20,
         emitted_observations: 4,
         expected_rungs: 5,

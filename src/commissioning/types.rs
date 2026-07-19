@@ -443,6 +443,10 @@ pub struct VelocityJointRegionReport {
     pub evidence_sequence: u16,
     /// Closed joint-operability evidence.
     pub region: crate::commissioning::outer::velocity::operating_region::JointOperableRegion,
+    /// First member gain.
+    pub p_low: u16,
+    /// Last member gain.
+    pub p_high: u16,
 }
 
 /// Per-run Stage B handoff emitted after every region record.
@@ -491,6 +495,8 @@ pub enum VelocitySweepOutcome {
 pub struct VelocitySweepTerminal {
     /// Caller-assigned run sequence.
     pub run_sequence: u32,
+    /// Evidence sequence shared by every terminal fragment.
+    pub evidence_sequence: u16,
     /// Terminal measurement-stage class.
     pub outcome: VelocitySweepOutcome,
     /// Phase-local terminal cause.
@@ -505,6 +511,10 @@ pub struct VelocitySweepTerminal {
     pub selected_intervals: [[i32; 2]; 2],
     /// Bit set for every direction directly covered at the nominated P.
     pub coverage_mask: u8,
+    /// Valid directional-region counts for forward and reverse.
+    pub directional_region_counts: [u8; 2],
+    /// Directional-fragment counts for forward and reverse.
+    pub directional_fragment_counts: [u8; 2],
     /// Number of observation reports expected from the plan.
     pub expected_observations: u16,
     /// Number of observation reports emitted.

@@ -185,6 +185,7 @@ mod tests {
         use crate::commissioning::types::VelocitySweepOutcome;
         VelocitySweepTerminal {
             run_sequence: 9,
+            evidence_sequence: 0,
             outcome: VelocitySweepOutcome::Inconclusive,
             cause: 4,
             model_direction_mask: 0,
@@ -192,6 +193,8 @@ mod tests {
             nominated_p: 0,
             selected_intervals: [[0; 2]; 2],
             coverage_mask: 0,
+            directional_region_counts: [0; 2],
+            directional_fragment_counts: [0; 2],
             expected_observations: 20,
             emitted_observations: 20,
             expected_rungs: 5,

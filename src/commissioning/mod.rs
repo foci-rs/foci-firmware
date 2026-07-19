@@ -35,9 +35,10 @@ use crate::state::tmc::TmcChannelState;
 use crate::trace::events::{
     CommissionTraceEvent, EVENT_COMMISSION_ENGINE_START, EVENT_COMMISSION_ENGINE_TERMINAL,
     EVENT_COMMISSION_PHASE_END, EVENT_COMMISSION_PHASE_START,
-    EVENT_COMMISSION_VELOCITY_SWEEP_COMPLETE, EVENT_COMMISSION_VELOCITY_SWEEP_OBSERVATION,
-    EVENT_COMMISSION_VELOCITY_SWEEP_PLAN, EVENT_COMMISSION_VELOCITY_SWEEP_RUNG,
-    EVENT_COMMISSION_VELOCITY_SWEEP_TERMINAL, TraceEventLevel, u32_arg,
+    EVENT_COMMISSION_VELOCITY_SWEEP_COMPLETE, EVENT_COMMISSION_VELOCITY_SWEEP_DERIVED,
+    EVENT_COMMISSION_VELOCITY_SWEEP_OBSERVATION, EVENT_COMMISSION_VELOCITY_SWEEP_PLAN,
+    EVENT_COMMISSION_VELOCITY_SWEEP_RUNG, EVENT_COMMISSION_VELOCITY_SWEEP_TERMINAL,
+    TraceEventLevel, u32_arg,
 };
 
 // Re-export public API surface for downstream consumers.
@@ -773,6 +774,12 @@ impl CommissioningEngine {
                         *event,
                     ),
                 );
+                #[cfg(all(feature = "trace", feature = "trace-velocity-sweep"))]
+                if let crate::commissioning::types::VelocitySweepEvent::Observation(report) = event
+                    && let Some(record) = crate::commissioning::outer::velocity::sweep_reporting::encode_velocity_sweep_structured_boundary(*report)
+                {
+                    backend.record_velocity_sweep_trace_record(record);
+                }
                 let (event_id, sequence) = match event {
                     crate::commissioning::types::VelocitySweepEvent::Planned(report) => (
                         EVENT_COMMISSION_VELOCITY_SWEEP_PLAN,
@@ -786,15 +793,18 @@ impl CommissioningEngine {
                         EVENT_COMMISSION_VELOCITY_SWEEP_RUNG,
                         report.evidence_sequence,
                     ),
-                    crate::commissioning::types::VelocitySweepEvent::DirectionalRegion(report) => {
-                        (127, report.evidence_sequence)
-                    }
-                    crate::commissioning::types::VelocitySweepEvent::JointRegion(report) => {
-                        (127, report.evidence_sequence)
-                    }
-                    crate::commissioning::types::VelocitySweepEvent::Handoff(report) => {
-                        (127, report.evidence_sequence)
-                    }
+                    crate::commissioning::types::VelocitySweepEvent::DirectionalRegion(report) => (
+                        EVENT_COMMISSION_VELOCITY_SWEEP_DERIVED,
+                        report.evidence_sequence,
+                    ),
+                    crate::commissioning::types::VelocitySweepEvent::JointRegion(report) => (
+                        EVENT_COMMISSION_VELOCITY_SWEEP_DERIVED,
+                        report.evidence_sequence,
+                    ),
+                    crate::commissioning::types::VelocitySweepEvent::Handoff(report) => (
+                        EVENT_COMMISSION_VELOCITY_SWEEP_DERIVED,
+                        report.evidence_sequence,
+                    ),
                 };
                 backend.record_commission_trace_event(CommissionTraceEvent {
                     level: TraceEventLevel::Info,
@@ -803,6 +813,19 @@ impl CommissioningEngine {
                     payload: [i32::from(sequence), 0],
                     payload_count: 1,
                 });
+                if matches!(
+                    event,
+                    crate::commissioning::types::VelocitySweepEvent::Observation(report)
+                        if report.structured_boundary.is_some()
+                ) {
+                    backend.record_commission_trace_event(CommissionTraceEvent {
+                        level: TraceEventLevel::Info,
+                        event_id: EVENT_COMMISSION_VELOCITY_SWEEP_DERIVED,
+                        engine_kind: EngineKind::OuterTune,
+                        payload: [i32::from(sequence), 0],
+                        payload_count: 1,
+                    });
+                }
             }
             StepResult::VelocitySweepTerminal(terminal) => {
                 #[cfg(all(feature = "trace", feature = "trace-velocity-sweep"))]
@@ -1417,6 +1440,7 @@ mod tests {
         use crate::commissioning::types::{VelocitySweepOutcome, VelocitySweepTerminal};
         VelocitySweepTerminal {
             run_sequence: 9,
+            evidence_sequence: 0,
             outcome: VelocitySweepOutcome::Inconclusive,
             cause: 4,
             model_direction_mask: 0,
@@ -1424,6 +1448,8 @@ mod tests {
             nominated_p: 0,
             selected_intervals: [[0; 2]; 2],
             coverage_mask: 0,
+            directional_region_counts: [0; 2],
+            directional_fragment_counts: [0; 2],
             expected_observations: 20,
             emitted_observations: 20,
             expected_rungs: 5,

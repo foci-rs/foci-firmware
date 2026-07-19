@@ -8,11 +8,11 @@ use crate::commissioning::types::{
 
 use super::sweep_evidence::{observation_class_report_code, rung_class_report_code};
 use crate::ankyra::velocity_sweep_encoding::{
-    VelocitySweepCanonicalRecord, encode_rate_values, upper_bound_i64, upper_bound_u128,
+    VelocitySweepCanonicalRecord, encode_rate_values, extend_velocity_sweep_digest,
+    upper_bound_i64, upper_bound_u128,
 };
 
 const FNV1A64_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
-const FNV1A64_PRIME: u64 = 0x0000_0100_0000_01b3;
 
 /// Fixed-memory sequencing and digest state for one report-only sweep.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
@@ -21,6 +21,8 @@ pub(crate) struct VelocitySweepIntegrity {
     next_evidence_sequence: u16,
     emitted_observations: u16,
     emitted_rungs: u16,
+    directional_region_counts: [u8; 2],
+    directional_fragment_counts: [u8; 2],
     digest: u64,
 }
 
@@ -32,6 +34,8 @@ impl VelocitySweepIntegrity {
             next_evidence_sequence: 0,
             emitted_observations: 0,
             emitted_rungs: 0,
+            directional_region_counts: [0; 2],
+            directional_fragment_counts: [0; 2],
             digest: FNV1A64_OFFSET,
         }
     }
@@ -56,11 +60,31 @@ impl VelocitySweepIntegrity {
             VelocitySweepEvent::Rung(_) => {
                 self.emitted_rungs = self.emitted_rungs.saturating_add(1);
             }
-            VelocitySweepEvent::DirectionalRegion(_)
-            | VelocitySweepEvent::JointRegion(_)
-            | VelocitySweepEvent::Handoff(_) => {}
+            VelocitySweepEvent::DirectionalRegion(report) => {
+                let direction = match report.region.direction {
+                    crate::autotune::velocity_measurement::VelocityDirection::Forward => 0,
+                    crate::autotune::velocity_measurement::VelocityDirection::Reverse => 1,
+                };
+                match report.region.kind {
+                    super::operating_region::DirectionalRegionKind::Valid => {
+                        self.directional_region_counts[direction] =
+                            self.directional_region_counts[direction].saturating_add(1);
+                    }
+                    super::operating_region::DirectionalRegionKind::Fragment => {
+                        self.directional_fragment_counts[direction] =
+                            self.directional_fragment_counts[direction].saturating_add(1);
+                    }
+                }
+            }
+            VelocitySweepEvent::JointRegion(_) | VelocitySweepEvent::Handoff(_) => {}
         }
-        self.hash_bytes(encode_velocity_sweep_event(event).as_bytes());
+        self.digest =
+            extend_velocity_sweep_digest(self.digest, &encode_velocity_sweep_event(event));
+        if let VelocitySweepEvent::Observation(report) = event
+            && let Some(record) = encode_velocity_sweep_structured_boundary(report)
+        {
+            self.digest = extend_velocity_sweep_digest(self.digest, &record);
+        }
         self.next_evidence_sequence = self.next_evidence_sequence.saturating_add(1);
         event
     }
@@ -75,16 +99,58 @@ impl VelocitySweepIntegrity {
         self.emitted_rungs
     }
 
+    /// Number of valid directional regions emitted for forward and reverse.
+    pub(crate) const fn directional_region_counts(self) -> [u8; 2] {
+        self.directional_region_counts
+    }
+
+    /// Number of directional fragments emitted for forward and reverse.
+    pub(crate) const fn directional_fragment_counts(self) -> [u8; 2] {
+        self.directional_fragment_counts
+    }
+
     /// Current exact FNV-1a digest.
     pub(crate) const fn digest(self) -> u64 {
         self.digest
     }
+}
 
-    fn hash_bytes(&mut self, bytes: &[u8]) {
-        for byte in bytes {
-            self.digest ^= u64::from(*byte);
-            self.digest = self.digest.wrapping_mul(FNV1A64_PRIME);
-        }
+pub(crate) const fn directional_region_kind_code(
+    kind: super::operating_region::DirectionalRegionKind,
+) -> u8 {
+    match kind {
+        super::operating_region::DirectionalRegionKind::Valid => 0,
+        super::operating_region::DirectionalRegionKind::Fragment => 1,
+    }
+}
+
+pub(crate) const fn directional_region_closure_code(
+    closure: super::operating_region::DirectionalRegionClosure,
+) -> u8 {
+    match closure {
+        super::operating_region::DirectionalRegionClosure::DisjointInterval => 0,
+        super::operating_region::DirectionalRegionClosure::IneligibleGap => 1,
+        super::operating_region::DirectionalRegionClosure::CurrentHeadroom => 2,
+        super::operating_region::DirectionalRegionClosure::SafetyTerminus => 3,
+        super::operating_region::DirectionalRegionClosure::EndOfLadder => 4,
+    }
+}
+
+pub(crate) const fn joint_operable_closure_code(
+    closure: super::operating_region::JointOperableClosure,
+) -> u8 {
+    match closure {
+        super::operating_region::JointOperableClosure::IneligibleGap => 0,
+        super::operating_region::JointOperableClosure::CurrentHeadroom => 1,
+        super::operating_region::JointOperableClosure::SafetyTerminus => 2,
+        super::operating_region::JointOperableClosure::EndOfLadder => 3,
+    }
+}
+
+pub(crate) const fn coverage_kind_code(kind: super::operating_region::CoverageKind) -> u8 {
+    match kind {
+        super::operating_region::CoverageKind::FullCoverage => 0,
+        super::operating_region::CoverageKind::TransferredCoverage => 1,
     }
 }
 
@@ -102,6 +168,35 @@ pub(crate) fn encode_velocity_sweep_event(
             record.push_u32(report.run_sequence);
             record.push_u16(report.evidence_sequence);
             record.push_u32(report.region.member_mask);
+            record.push_u8(super::sweep_evidence::direction_report_code(
+                report.region.direction,
+            ));
+            record.push_u8(directional_region_kind_code(report.region.kind));
+            record.push_u8(directional_region_closure_code(report.region.closure));
+            record.push_u8(report.region.first_rung);
+            record.push_u8(report.region.last_rung);
+            record.push_u16(report.region.p_low.raw());
+            record.push_u16(report.region.p_high.raw());
+            record.push_u8(report.region.member_count);
+            record.push_i32(report.region.common_intersection.low().raw());
+            record.push_i32(report.region.common_intersection.high().raw());
+            record.push_i32(report.region.pooled.estimate.raw());
+            record.push_i32(report.region.pooled.interval.low().raw());
+            record.push_i32(report.region.pooled.interval.high().raw());
+            record.push_u8(report.region.pooled.variance_floor_observations);
+            for value in [
+                report.region.settled_rate_mean_min_q,
+                report.region.settled_rate_mean_max_q,
+                report.region.settled_rate_envelope_low_q,
+                report.region.settled_rate_envelope_high_q,
+            ] {
+                let (mantissa, shift) = upper_bound_i64(value);
+                record.push_i32(mantissa);
+                record.push_u8(shift);
+            }
+            record.push_u8(report.region.boundary_rung.map_or(0, |rung| rung + 1));
+            record.push_i32(report.region.tested_intersection.low().raw());
+            record.push_i32(report.region.tested_intersection.high().raw());
             record
         }
         VelocitySweepEvent::JointRegion(report) => {
@@ -110,6 +205,12 @@ pub(crate) fn encode_velocity_sweep_event(
             record.push_u32(report.run_sequence);
             record.push_u16(report.evidence_sequence);
             record.push_u32(report.region.member_mask);
+            record.push_u8(report.region.first_rung);
+            record.push_u8(report.region.last_rung);
+            record.push_u8(report.region.member_count);
+            record.push_u16(report.p_low);
+            record.push_u16(report.p_high);
+            record.push_u8(joint_operable_closure_code(report.region.closure));
             record
         }
         VelocitySweepEvent::Handoff(report) => {
@@ -119,9 +220,50 @@ pub(crate) fn encode_velocity_sweep_event(
             record.push_u16(report.evidence_sequence);
             record.push_u16(report.handoff.nomination.p.raw());
             record.push_u8(report.handoff.coverage_mask);
+            record.push_u32(report.handoff.nomination.joint.member_mask);
+            record.push_u8(report.handoff.nomination.rung_index);
+            record.push_u32(report.handoff.nomination.distance_to_start_num);
+            record.push_u32(report.handoff.nomination.distance_to_top_num);
+            record.push_u8(u8::from(report.handoff.nomination.reduced_margin));
+            for selected in report.handoff.directional {
+                record.push_u32(selected.region.member_mask);
+                record.push_i32(selected.region.pooled_interval[0]);
+                record.push_i32(selected.region.pooled_interval[1]);
+                record.push_u8(coverage_kind_code(selected.coverage));
+                record.push_u8(selected.signed_rung_distance as u8);
+                record.push_u16(selected.gain_ratio_num);
+                record.push_u16(selected.gain_ratio_den);
+                let (mantissa, shift) = upper_bound_i64(selected.settled_rate_difference_q);
+                record.push_i32(mantissa);
+                record.push_u8(shift);
+            }
             record
         }
     }
+}
+
+/// Encode an observation's optional structured-boundary evidence.
+pub(crate) fn encode_velocity_sweep_structured_boundary(
+    report: VelocitySweepObservation,
+) -> Option<VelocitySweepCanonicalRecord> {
+    let boundary = report.structured_boundary?;
+    let mut record = VelocitySweepCanonicalRecord::new();
+    record.push_u8(7);
+    record.push_u32(report.run_sequence);
+    record.push_u16(report.evidence_sequence);
+    record.push_u8(report.rung_index);
+    record.push_u8(report.slot);
+    record.push_u8(boundary.passing_suffix_mask);
+    for value in boundary.common_rate_interval_q {
+        let (mantissa, shift) = upper_bound_i64(value);
+        record.push_i32(mantissa);
+        record.push_u8(shift);
+    }
+    let (mantissa, shift) = upper_bound_i64(boundary.binding_slope_margin_q);
+    record.push_i32(mantissa);
+    record.push_u8(shift);
+    record.push_i32(boundary.binding_lag_one_margin_q);
+    Some(record)
 }
 
 fn encode_plan(report: VelocitySweepPlanned) -> VelocitySweepCanonicalRecord {
@@ -291,8 +433,9 @@ pub(crate) fn encode_velocity_sweep_terminal(
     use crate::commissioning::types::VelocitySweepOutcome;
 
     let mut record = VelocitySweepCanonicalRecord::new();
-    record.push_u8(4);
+    record.push_u8(8);
     record.push_u32(report.run_sequence);
+    record.push_u16(report.evidence_sequence);
     record.push_u32(encoder_counts_per_rev);
     record.push_u32(f_pwm_hz);
     record.push_u8(report.model_direction_mask);
@@ -305,6 +448,12 @@ pub(crate) fn encode_velocity_sweep_terminal(
         record.push_i32(interval[1]);
     }
     record.push_u8(report.coverage_mask);
+    for count in report.directional_region_counts {
+        record.push_u8(count);
+    }
+    for count in report.directional_fragment_counts {
+        record.push_u8(count);
+    }
     record.push_u16(report.expected_observations);
     record.push_u16(report.emitted_observations);
     record.push_u16(report.expected_rungs);
@@ -333,7 +482,7 @@ mod tests {
     };
     use crate::autotune::{EquivalentTorqueTargetInterval, EquivalentTorqueTargetQ16};
     use crate::commissioning::outer::velocity::sweep_evidence::{
-        VelocityObservationClass, VelocityObservationSummary,
+        PooledDisturbance, VelocityObservationClass, VelocityObservationSummary,
     };
     use foci_tmc4671::pid::PidGain;
 
@@ -366,8 +515,45 @@ mod tests {
         }
     }
 
+    fn fixture_region(
+        direction: VelocityDirection,
+        kind: super::super::operating_region::DirectionalRegionKind,
+    ) -> crate::commissioning::outer::velocity::operating_region::DirectionalRegionSummary {
+        use crate::commissioning::outer::velocity::operating_region::{
+            DirectionalRegionClosure, DirectionalRegionSummary,
+        };
+        let interval = EquivalentTorqueTargetInterval::new(
+            EquivalentTorqueTargetQ16::from_raw(100),
+            EquivalentTorqueTargetQ16::from_raw(110),
+        )
+        .unwrap();
+        DirectionalRegionSummary {
+            direction,
+            member_mask: 0b111,
+            first_rung: 0,
+            last_rung: 2,
+            p_low: PidGain::new(256).unwrap(),
+            p_high: PidGain::new(512).unwrap(),
+            member_count: 3,
+            kind,
+            common_intersection: interval,
+            pooled: PooledDisturbance {
+                estimate: EquivalentTorqueTargetQ16::from_raw(105),
+                interval,
+                variance_floor_observations: 0,
+            },
+            settled_rate_mean_min_q: 1_000,
+            settled_rate_mean_max_q: 1_100,
+            settled_rate_envelope_low_q: 900,
+            settled_rate_envelope_high_q: 1_200,
+            closure: DirectionalRegionClosure::EndOfLadder,
+            boundary_rung: None,
+            tested_intersection: interval,
+        }
+    }
+
     #[test]
-    fn plan_digest_matches_host_wire_fixture() {
+    fn velocity_sweep_reporting_plan_digest_matches_host_wire_fixture() {
         let mut integrity = VelocitySweepIntegrity::new(7);
         integrity.record(VelocitySweepEvent::Planned(fixture_plan()));
 
@@ -375,7 +561,7 @@ mod tests {
     }
 
     #[test]
-    fn compressed_observation_digest_matches_host_wire_fixture() {
+    fn velocity_sweep_reporting_compressed_observation_digest_matches_host_wire_fixture() {
         let mut integrity = VelocitySweepIntegrity::new(7);
         integrity.record(VelocitySweepEvent::Planned(fixture_plan()));
         let disturbance = EquivalentTorqueTargetQ16::from_raw(123_456);
@@ -414,5 +600,41 @@ mod tests {
         }));
 
         assert_eq!(integrity.digest(), 0xd72d_ddd2_227b_c925);
+    }
+
+    #[test]
+    fn velocity_sweep_reporting_digest_extension_matches_integrity() {
+        let plan = fixture_plan();
+        let record = encode_velocity_sweep_event(VelocitySweepEvent::Planned(plan));
+        let extended = extend_velocity_sweep_digest(FNV1A64_OFFSET, &record);
+        let mut integrity = VelocitySweepIntegrity::new(plan.run_sequence);
+
+        integrity.record(VelocitySweepEvent::Planned(plan));
+
+        assert_eq!(extended, integrity.digest());
+    }
+
+    #[test]
+    fn velocity_sweep_reporting_counts_directional_regions_and_fragments() {
+        use crate::commissioning::outer::velocity::operating_region::DirectionalRegionKind;
+        use crate::commissioning::types::VelocityDirectionalRegionReport;
+        let mut integrity = VelocitySweepIntegrity::new(7);
+        integrity.record(VelocitySweepEvent::DirectionalRegion(
+            VelocityDirectionalRegionReport {
+                run_sequence: 7,
+                evidence_sequence: 0,
+                region: fixture_region(VelocityDirection::Forward, DirectionalRegionKind::Valid),
+            },
+        ));
+        integrity.record(VelocitySweepEvent::DirectionalRegion(
+            VelocityDirectionalRegionReport {
+                run_sequence: 7,
+                evidence_sequence: 1,
+                region: fixture_region(VelocityDirection::Reverse, DirectionalRegionKind::Fragment),
+            },
+        ));
+
+        assert_eq!(integrity.directional_region_counts(), [1, 0]);
+        assert_eq!(integrity.directional_fragment_counts(), [0, 1]);
     }
 }
