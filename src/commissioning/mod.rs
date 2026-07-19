@@ -815,6 +815,21 @@ impl CommissioningEngine {
                         TraceEventLevel::Error
                     }
                 };
+                let phase_status = match terminal.outcome {
+                    crate::commissioning::types::VelocitySweepOutcome::Complete
+                    | crate::commissioning::types::VelocitySweepOutcome::Inconclusive => {
+                        PHASE_END_OK
+                    }
+                    crate::commissioning::types::VelocitySweepOutcome::Fault => terminal.cause,
+                };
+                let phase_level = match terminal.outcome {
+                    crate::commissioning::types::VelocitySweepOutcome::Fault => level,
+                    crate::commissioning::types::VelocitySweepOutcome::Complete
+                    | crate::commissioning::types::VelocitySweepOutcome::Inconclusive => {
+                        TraceEventLevel::Info
+                    }
+                };
+                self.emit_trace_phase_end(backend, phase_status, phase_level);
                 backend.record_commission_trace_event(CommissionTraceEvent {
                     level,
                     event_id: EVENT_COMMISSION_VELOCITY_SWEEP_TERMINAL,
@@ -831,8 +846,19 @@ impl CommissioningEngine {
                         payload_count: 2,
                     });
                 }
-                self.emit_trace_phase_end(backend, terminal.cause, level);
-                self.emit_trace_terminal(backend, terminal.cause, level);
+                match terminal.outcome {
+                    crate::commissioning::types::VelocitySweepOutcome::Complete => {
+                        self.emit_trace_terminal(backend, PHASE_END_OK, level);
+                    }
+                    crate::commissioning::types::VelocitySweepOutcome::Inconclusive => {
+                        // OuterInconclusive deliberately has no CommissionStatus code. The
+                        // dedicated velocity-sweep terminal event owns this trace lifecycle.
+                        self.trace_run.terminal = true;
+                    }
+                    crate::commissioning::types::VelocitySweepOutcome::Fault => {
+                        self.emit_trace_terminal(backend, terminal.cause, level);
+                    }
+                }
             }
             StepResult::CommissionDone(result) => {
                 self.emit_trace_phase_end(backend, PHASE_END_OK, TraceEventLevel::Info);
@@ -1387,6 +1413,57 @@ mod tests {
         }
     }
 
+    fn sample_inconclusive_sweep_terminal() -> crate::commissioning::types::VelocitySweepTerminal {
+        use crate::autotune::velocity_measurement::VelocityDirection;
+        use crate::commissioning::outer::velocity::sweep_evidence::{
+            BandClosure, DirectionalDisturbanceBand, JointIdentifiableGeometry,
+            VelocityInconclusiveKind, VelocitySweepSufficiency,
+        };
+        use crate::commissioning::types::{VelocitySweepOutcome, VelocitySweepTerminal};
+
+        let band = |direction| DirectionalDisturbanceBand {
+            direction,
+            last_inert: None,
+            first_moving: None,
+            ambiguous_edge: None,
+            left_censored: false,
+            p_low: None,
+            p_high: None,
+            closure: BandClosure::NoMovingEdge,
+            common_intersection: None,
+            pooled: None,
+            eligible_rungs: 0,
+            eligible_observations: 0,
+            sufficient: false,
+        };
+        let joint = JointIdentifiableGeometry {
+            low: None,
+            high: None,
+            gap_low: None,
+            gap_high: None,
+            has_joint_band: false,
+        };
+        VelocitySweepTerminal {
+            run_sequence: 9,
+            forward: band(VelocityDirection::Forward),
+            reverse: band(VelocityDirection::Reverse),
+            sufficiency: VelocitySweepSufficiency::Inconclusive {
+                sufficient_direction_mask: 0,
+                kind: VelocityInconclusiveKind::Total,
+                joint,
+            },
+            outcome: VelocitySweepOutcome::Inconclusive,
+            cause: 4,
+            sufficient_direction_mask: 0,
+            expected_observations: 20,
+            emitted_observations: 20,
+            expected_rungs: 5,
+            emitted_rungs: 5,
+            digest: 0x0123_4567_89ab_cdef,
+            safety_fault: None,
+        }
+    }
+
     fn initial_outer_phase_id() -> PhaseId {
         #[cfg(not(feature = "trace-velocity-sweep"))]
         {
@@ -1684,6 +1761,41 @@ mod tests {
             TraceEventLevel::Info,
             TraceEventLevel::Info,
         );
+    }
+
+    #[test]
+    fn inconclusive_sweep_does_not_reuse_cause_as_generic_status() {
+        let mut engine = CommissioningEngine::new_outer_with_trace_seq(
+            0,
+            sample_outer_params(),
+            sample_entry_snapshot(),
+            9,
+        );
+        let mut backend = crate::commission_dispatch::test_support::MockBackend::new();
+
+        engine.emit_trace_start(&mut backend);
+        engine.emit_trace_after_step(
+            &mut backend,
+            &StepResult::VelocitySweepTerminal(sample_inconclusive_sweep_terminal()),
+        );
+
+        let events = &backend.trace_events;
+        assert_eq!(events.len(), 4);
+        assert_trace_event(
+            &events[2],
+            crate::trace::events::EVENT_COMMISSION_PHASE_END,
+            EngineKind::OuterTune,
+            TraceEventLevel::Info,
+            [initial_outer_phase_id().to_u8() as i32, PHASE_END_OK.into()],
+        );
+        assert_trace_event(
+            &events[3],
+            crate::trace::events::EVENT_COMMISSION_VELOCITY_SWEEP_TERMINAL,
+            EngineKind::OuterTune,
+            TraceEventLevel::Warn,
+            [4, 0x89ab_cdef_u32 as i32],
+        );
+        assert!(engine.trace_run.terminal);
     }
 
     #[test]
