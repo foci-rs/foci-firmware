@@ -128,6 +128,109 @@ pub struct VelocitySweepPlan {
     pub usable_torque_limit: u16,
 }
 
+/// Compact immutable plan retained after the complete pre-motion report is emitted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+pub struct VelocitySweepExecutionPlan {
+    /// Digest of every frozen request, bound, gain, duration, and geometry field.
+    pub plan_digest: u64,
+    /// Frozen encoder-domain velocity amplitude.
+    pub planned_velocity_mrev_s: u32,
+    /// Frozen positive TMC mechanical-RPM target.
+    pub target_velocity_rpm: TmcMechanicalRpm,
+    /// Structural ladder anchor.
+    pub p_start: PidGain,
+    /// Explicit structural ladder top.
+    pub p_top: PidGain,
+    /// Number of post-dedupe rungs.
+    pub rung_count: u8,
+    /// Independent observations per direction and rung.
+    pub observations_per_direction: u16,
+    /// Complete per-primitive displacement window.
+    pub max_stroke_travel_mrev: u32,
+    /// Reserved braking and settle displacement.
+    pub settle_travel_reserve_mrev: u32,
+    /// Negative absolute-position headroom.
+    pub negative_position_headroom_mrev: u32,
+    /// Positive absolute-position headroom.
+    pub positive_position_headroom_mrev: u32,
+    /// Configured hard torque-target limit.
+    pub hard_torque_limit: u16,
+    /// Inclusive usable torque-target boundary.
+    pub usable_torque_limit: u16,
+}
+
+impl VelocitySweepExecutionPlan {
+    /// Regenerate one exact post-dedupe gain without retaining the ladder array.
+    pub fn gain_at(self, rung_index: u8) -> Option<PidGain> {
+        gain_at(
+            self.p_start.raw(),
+            self.p_top.raw(),
+            self.rung_count,
+            rung_index,
+        )
+    }
+}
+
+const _: () = assert!(core::mem::size_of::<VelocitySweepExecutionPlan>() <= 80);
+
+impl VelocitySweepPlan {
+    /// Hash every frozen plan field and emitted post-dedupe gain exactly once.
+    pub fn digest(self) -> u64 {
+        let mut hash = 0xcbf2_9ce4_8422_2325_u64;
+        macro_rules! hash_value {
+            ($value:expr) => {
+                for byte in $value.to_le_bytes() {
+                    hash = (hash ^ u64::from(byte)).wrapping_mul(0x0000_0100_0000_01b3);
+                }
+            };
+        }
+        hash_value!(self.requested_velocity_mrev_s);
+        hash_value!(self.planned_velocity_mrev_s);
+        hash_value!(self.requested_velocity_source as u8);
+        hash_value!(self.clamp_flags);
+        hash_value!(self.effective_ceiling_mrev_s);
+        hash_value!(self.effective_ceiling_source);
+        hash_value!(self.target_velocity_rpm.raw());
+        hash_value!(self.p_start.raw());
+        hash_value!(self.p_top.raw());
+        hash_value!(self.rung_count);
+        for gain in self.gains.iter().take(usize::from(self.rung_count)) {
+            hash_value!(gain.raw());
+        }
+        hash_value!(self.observations_per_direction);
+        hash_value!(self.moving_stroke_us);
+        hash_value!(self.zero_settle_us);
+        hash_value!(self.nominal_workflow_ms);
+        hash_value!(self.maximum_workflow_ms);
+        hash_value!(self.max_stroke_travel_mrev);
+        hash_value!(self.settle_travel_reserve_mrev);
+        hash_value!(self.negative_position_headroom_mrev);
+        hash_value!(self.positive_position_headroom_mrev);
+        hash_value!(self.hard_torque_limit);
+        hash_value!(self.usable_torque_limit);
+        hash
+    }
+
+    /// Compact this complete report plan into the state needed after emission.
+    pub const fn execution_plan(self, plan_digest: u64) -> VelocitySweepExecutionPlan {
+        VelocitySweepExecutionPlan {
+            plan_digest,
+            planned_velocity_mrev_s: self.planned_velocity_mrev_s,
+            target_velocity_rpm: self.target_velocity_rpm,
+            p_start: self.p_start,
+            p_top: self.p_top,
+            rung_count: self.rung_count,
+            observations_per_direction: self.observations_per_direction,
+            max_stroke_travel_mrev: self.max_stroke_travel_mrev,
+            settle_travel_reserve_mrev: self.settle_travel_reserve_mrev,
+            negative_position_headroom_mrev: self.negative_position_headroom_mrev,
+            positive_position_headroom_mrev: self.positive_position_headroom_mrev,
+            hard_torque_limit: self.hard_torque_limit,
+            usable_torque_limit: self.usable_torque_limit,
+        }
+    }
+}
+
 /// Failure to construct a safe deterministic sweep before motion.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub enum VelocityPlanError {
@@ -397,6 +500,55 @@ fn build_gain_ladder(
         return Err(VelocityPlanError::ConfidenceFamilyTooLarge);
     }
     Ok(gains)
+}
+
+/// Regenerate one anchored post-dedupe ladder gain by index.
+pub fn gain_at(
+    p_start_raw: u16,
+    p_top_raw: u16,
+    rung_count: u8,
+    rung_index: u8,
+) -> Option<PidGain> {
+    if rung_index >= rung_count
+        || p_start_raw == 0
+        || p_start_raw > p_top_raw
+        || p_top_raw > PidGain::MAX.raw()
+    {
+        return None;
+    }
+    let start = u64::from(p_start_raw);
+    let top = u64::from(p_top_raw);
+    let odd_numerator = start.checked_mul(u64::from(HALF_OCTAVE_NUM))?;
+    let odd_rounding = (1_u64 << HALF_OCTAVE_DEN_SHIFT) - 1;
+    let mut previous = 0_u64;
+    let mut emitted = 0_u8;
+    for octave in 0..16 {
+        let Some(even_candidate) = start.checked_shl(octave) else {
+            continue;
+        };
+        let Some(odd_candidate) = odd_numerator
+            .checked_shl(octave)
+            .and_then(|value| value.checked_add(odd_rounding))
+            .map(|value| value >> HALF_OCTAVE_DEN_SHIFT)
+        else {
+            continue;
+        };
+        for candidate in [even_candidate, odd_candidate] {
+            if candidate > top || candidate <= previous {
+                continue;
+            }
+            if emitted == rung_index {
+                return PidGain::new(candidate as u16).ok();
+            }
+            previous = candidate;
+            emitted = emitted.checked_add(1)?;
+        }
+    }
+    if previous != top && emitted == rung_index {
+        PidGain::new(p_top_raw).ok()
+    } else {
+        None
+    }
 }
 
 #[cfg(test)]

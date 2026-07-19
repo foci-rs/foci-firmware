@@ -5,9 +5,10 @@ use super::{
     MAX_SWEEP_RUNGS, MIN_SETTLE_CAPTURE_US, MIN_STRUCTURAL_RUNGS, MOVING_STROKE_US,
     OBSERVATIONS_PER_DIRECTION_PER_RUNG, RequestedVelocitySource, SETTLE_ANALYSIS_BUDGET_US,
     VelocityPlanError, VelocitySweepRequest, ZERO_SETTLE_US, build_gain_ladder, current_gain_span,
-    envelope_cap, plan_velocity_sweep, representability_ceilings, travel_cap,
+    envelope_cap, gain_at, plan_velocity_sweep, representability_ceilings, travel_cap,
 };
 use crate::autotune::TmcMechanicalRpm;
+use foci_tmc4671::pid::PidGain;
 
 fn request() -> VelocitySweepRequest {
     VelocitySweepRequest {
@@ -190,6 +191,44 @@ fn plan_freezes_exact_ladder_and_workflow_duration() {
     assert_eq!(plan.observations_per_direction, 2);
     assert_eq!(plan.nominal_workflow_ms, expected_ms);
     assert_eq!(plan.maximum_workflow_ms, expected_ms);
+}
+
+#[test]
+fn compact_execution_plan_regenerates_every_emitted_gain() {
+    for p_start in 1_u16..=64 {
+        for p_top in p_start..=p_start.saturating_mul(32).min(PidGain::MAX.raw()) {
+            let Ok(ladder) = build_gain_ladder(p_start, p_top) else {
+                continue;
+            };
+            for (index, expected) in ladder.iter().copied().enumerate() {
+                assert_eq!(
+                    gain_at(p_start, p_top, ladder.len() as u8, index as u8),
+                    Some(expected)
+                );
+            }
+            assert_eq!(
+                gain_at(p_start, p_top, ladder.len() as u8, ladder.len() as u8),
+                None
+            );
+        }
+    }
+}
+
+#[test]
+fn execution_plan_retains_only_post_emission_runtime_fields() {
+    let plan = plan_velocity_sweep(request(), 4_000, 1_000).unwrap();
+    let execution = plan.execution_plan(0x1234_5678_9abc_def0);
+
+    assert!(core::mem::size_of_val(&execution) <= 80);
+    assert_eq!(execution.plan_digest, 0x1234_5678_9abc_def0);
+    assert_eq!(execution.gain_at(0), Some(plan.p_start));
+    assert_eq!(execution.gain_at(plan.rung_count - 1), Some(plan.p_top));
+    assert_eq!(execution.gain_at(plan.rung_count), None);
+    assert_eq!(execution.target_velocity_rpm, plan.target_velocity_rpm);
+    assert_eq!(
+        execution.max_stroke_travel_mrev,
+        plan.max_stroke_travel_mrev
+    );
 }
 
 #[test]

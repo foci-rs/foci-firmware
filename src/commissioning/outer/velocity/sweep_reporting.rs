@@ -103,6 +103,8 @@ fn encode_plan(report: VelocitySweepPlanned) -> VelocitySweepCanonicalRecord {
     record.push_u8(1);
     record.push_u32(report.run_sequence);
     record.push_u16(report.evidence_sequence);
+    record.push_u32(report.plan_digest as u32);
+    record.push_u32((report.plan_digest >> 32) as u32);
     record.push_u32(report.requested_velocity_mrev_s);
     record.push_u8(report.requested_velocity_source);
     record.push_u32(report.planned_velocity_mrev_s);
@@ -335,6 +337,7 @@ mod tests {
 
     fn fixture_plan() -> VelocitySweepPlanned {
         VelocitySweepPlanned {
+            plan_digest: 0,
             run_sequence: 7,
             evidence_sequence: 0,
             requested_velocity_mrev_s: 5_000,
@@ -366,7 +369,7 @@ mod tests {
         let mut integrity = VelocitySweepIntegrity::new(7);
         integrity.record(VelocitySweepEvent::Planned(fixture_plan()));
 
-        assert_eq!(integrity.digest(), 0x53e2_5af6_0105_c518);
+        assert_eq!(integrity.digest(), 0x0ca9_8fe8_60fb_0af8);
     }
 
     #[test]

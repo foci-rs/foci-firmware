@@ -318,6 +318,7 @@ pub(crate) async fn step_velocity_sweep_with_trace<B: CommissioningBackend>(
             let report = VelocitySweepPlanned {
                 run_sequence: data.integrity.run_sequence(),
                 evidence_sequence: data.integrity.next_evidence_sequence(),
+                plan_digest: plan.digest(),
                 requested_velocity_mrev_s: plan.requested_velocity_mrev_s,
                 requested_velocity_source: match plan.requested_velocity_source {
                     RequestedVelocitySource::Explicit => 0,

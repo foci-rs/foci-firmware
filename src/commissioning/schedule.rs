@@ -320,6 +320,7 @@ mod tests {
     fn velocity_sweep_event_maps_to_ready_now_without_phase_context() {
         let event =
             VelocitySweepEvent::Planned(crate::commissioning::types::VelocitySweepPlanned {
+                plan_digest: 0,
                 run_sequence: 1,
                 evidence_sequence: 0,
                 requested_velocity_mrev_s: 2,
@@ -365,6 +366,7 @@ mod tests {
     fn velocity_sweep_event_rejects_missing_endpoint_context() {
         let event =
             VelocitySweepEvent::Planned(crate::commissioning::types::VelocitySweepPlanned {
+                plan_digest: 0,
                 run_sequence: 1,
                 evidence_sequence: 0,
                 requested_velocity_mrev_s: 2,

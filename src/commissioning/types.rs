@@ -316,6 +316,8 @@ pub struct VelocitySweepPlanned {
     pub run_sequence: u32,
     /// Monotonic evidence sequence within the run.
     pub evidence_sequence: u16,
+    /// Exact digest of every frozen plan field and generated gain.
+    pub plan_digest: u64,
     /// Host-requested mechanical velocity amplitude.
     pub requested_velocity_mrev_s: u32,
     /// Origin of the host-requested amplitude.
