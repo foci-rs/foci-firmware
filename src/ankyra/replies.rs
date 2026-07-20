@@ -2535,6 +2535,150 @@ pub struct FociVelocityStageBReproductionDigest {
     pub current_digest_high: u32,
 }
 
+/// Schema-3 Stage B reproduction outcome and core-derived nomination.
+#[klipper_reply]
+pub struct FociVelocityStageBReproductionV3Core {
+    /// Endpoint object id.
+    pub oid: u8,
+    /// Current caller-assigned run sequence.
+    pub run_sequence: u32,
+    /// Shared reproduction-group evidence sequence.
+    pub evidence_sequence: u16,
+    /// Reproduced or mismatched outcome code.
+    pub outcome: u8,
+    /// Independent reproduction mismatch reasons.
+    pub reason_mask: u8,
+    /// Retained-run provisional proportional gain.
+    pub previous_provisional_p: u16,
+    /// Current-run provisional proportional gain.
+    pub current_provisional_p: u16,
+    /// Final proportional gain derived from the joint core.
+    pub final_p: u16,
+    /// Whether the joint core provides reduced I-ladder margin.
+    pub reduced_margin: u8,
+    /// Evidence schema revision.
+    pub schema_revision: u16,
+}
+
+/// Schema-3 membership intersection and exact boundary movement.
+#[klipper_reply]
+pub struct FociVelocityStageBReproductionV3Membership {
+    /// Endpoint object id.
+    pub oid: u8,
+    /// Current caller-assigned run sequence.
+    pub run_sequence: u32,
+    /// Shared reproduction-group evidence sequence.
+    pub evidence_sequence: u16,
+    /// Object code: forward, reverse, or joint.
+    pub object: u8,
+    /// Retained-run membership.
+    pub previous_mask: u32,
+    /// Current-run membership.
+    pub current_mask: u32,
+    /// Exact cross-run membership intersection.
+    pub core_mask: u32,
+    /// Rungs present only in the retained run.
+    pub previous_only_mask: u32,
+    /// Rungs present only in the current run.
+    pub current_only_mask: u32,
+    /// Current low edge minus retained low edge.
+    pub low_delta: i32,
+    /// Current high edge minus retained high edge.
+    pub high_delta: i32,
+}
+
+/// Schema-3 pooled-interval evidence for one direction.
+#[klipper_reply]
+pub struct FociVelocityStageBReproductionV3Pooled {
+    /// Endpoint object id.
+    pub oid: u8,
+    /// Current caller-assigned run sequence.
+    pub run_sequence: u32,
+    /// Shared reproduction-group evidence sequence.
+    pub evidence_sequence: u16,
+    /// Direction code.
+    pub direction: u8,
+    /// Retained pooled lower edge.
+    pub previous_low_q16: i32,
+    /// Retained pooled upper edge.
+    pub previous_high_q16: i32,
+    /// Current pooled lower edge.
+    pub current_low_q16: i32,
+    /// Current pooled upper edge.
+    pub current_high_q16: i32,
+    /// Cross-run pooled-overlap lower edge.
+    pub overlap_low_q16: i32,
+    /// Cross-run pooled-overlap upper edge.
+    pub overlap_high_q16: i32,
+}
+
+/// Schema-3 full-region common-interval evidence for one direction.
+#[klipper_reply]
+pub struct FociVelocityStageBReproductionV3Common {
+    /// Endpoint object id.
+    pub oid: u8,
+    /// Current caller-assigned run sequence.
+    pub run_sequence: u32,
+    /// Shared reproduction-group evidence sequence.
+    pub evidence_sequence: u16,
+    /// Direction code.
+    pub direction: u8,
+    /// Retained full-region common lower edge.
+    pub previous_low_q16: i32,
+    /// Retained full-region common upper edge.
+    pub previous_high_q16: i32,
+    /// Current full-region common lower edge.
+    pub current_low_q16: i32,
+    /// Current full-region common upper edge.
+    pub current_high_q16: i32,
+    /// Conservative cross-run common lower edge.
+    pub conservative_low_q16: i32,
+    /// Conservative cross-run common upper edge.
+    pub conservative_high_q16: i32,
+    /// Whether the conservative interval is nonempty.
+    pub nonempty: u8,
+}
+
+/// Schema-3 core-relative model coverage for one direction.
+#[klipper_reply]
+pub struct FociVelocityStageBReproductionV3Coverage {
+    /// Endpoint object id.
+    pub oid: u8,
+    /// Current caller-assigned run sequence.
+    pub run_sequence: u32,
+    /// Shared reproduction-group evidence sequence.
+    pub evidence_sequence: u16,
+    /// Direction code.
+    pub direction: u8,
+    /// Direct or transferred coverage code.
+    pub coverage: u8,
+    /// Signed nearest-core-edge distance from the final rung.
+    pub signed_rung_distance: i32,
+    /// Larger gain in the source/final ratio.
+    pub gain_ratio_num: u16,
+    /// Smaller gain in the source/final ratio.
+    pub gain_ratio_den: u16,
+}
+
+/// Schema-3 exact previous and current run digests.
+#[klipper_reply]
+pub struct FociVelocityStageBReproductionV3Digest {
+    /// Endpoint object id.
+    pub oid: u8,
+    /// Current caller-assigned run sequence.
+    pub run_sequence: u32,
+    /// Shared reproduction-group evidence sequence.
+    pub evidence_sequence: u16,
+    /// Retained digest low word.
+    pub previous_digest_low: u32,
+    /// Retained digest high word.
+    pub previous_digest_high: u32,
+    /// Current pre-reproduction digest low word.
+    pub current_digest_low: u32,
+    /// Current pre-reproduction digest high word.
+    pub current_digest_high: u32,
+}
+
 /// Stage B terminal class and report completeness.
 #[klipper_reply]
 pub struct FociVelocityStageBTerminalCore {
@@ -3106,6 +3250,93 @@ mod velocity_sweep_reply_tests {
             "stage_b_reproduction_digest",
         );
         assert_fits(
+            &FociVelocityStageBReproductionV3Core {
+                oid: u8::MAX,
+                run_sequence: WIDE_U32,
+                evidence_sequence: u16::MAX,
+                outcome: u8::MAX,
+                reason_mask: u8::MAX,
+                previous_provisional_p: u16::MAX,
+                current_provisional_p: u16::MAX,
+                final_p: u16::MAX,
+                reduced_margin: u8::MAX,
+                schema_revision: u16::MAX,
+            },
+            "stage_b_reproduction_v3_core",
+        );
+        assert_fits(
+            &FociVelocityStageBReproductionV3Membership {
+                oid: u8::MAX,
+                run_sequence: WIDE_U32,
+                evidence_sequence: u16::MAX,
+                object: u8::MAX,
+                previous_mask: 0x8000_0001,
+                current_mask: 0x8000_0001,
+                core_mask: 0x8000_0001,
+                previous_only_mask: 0x8000_0001,
+                current_only_mask: 0x8000_0001,
+                low_delta: i32::MIN,
+                high_delta: i32::MAX,
+            },
+            "stage_b_reproduction_v3_membership",
+        );
+        assert_fits(
+            &FociVelocityStageBReproductionV3Pooled {
+                oid: u8::MAX,
+                run_sequence: WIDE_U32,
+                evidence_sequence: u16::MAX,
+                direction: u8::MAX,
+                previous_low_q16: i32::MIN,
+                previous_high_q16: i32::MAX,
+                current_low_q16: i32::MIN,
+                current_high_q16: i32::MAX,
+                overlap_low_q16: i32::MIN,
+                overlap_high_q16: i32::MAX,
+            },
+            "stage_b_reproduction_v3_pooled",
+        );
+        assert_fits(
+            &FociVelocityStageBReproductionV3Common {
+                oid: u8::MAX,
+                run_sequence: WIDE_U32,
+                evidence_sequence: u16::MAX,
+                direction: u8::MAX,
+                previous_low_q16: i32::MIN,
+                previous_high_q16: i32::MAX,
+                current_low_q16: i32::MIN,
+                current_high_q16: i32::MAX,
+                conservative_low_q16: i32::MIN,
+                conservative_high_q16: i32::MAX,
+                nonempty: u8::MAX,
+            },
+            "stage_b_reproduction_v3_common",
+        );
+        assert_fits(
+            &FociVelocityStageBReproductionV3Coverage {
+                oid: u8::MAX,
+                run_sequence: WIDE_U32,
+                evidence_sequence: u16::MAX,
+                direction: u8::MAX,
+                coverage: u8::MAX,
+                signed_rung_distance: i32::MIN,
+                gain_ratio_num: u16::MAX,
+                gain_ratio_den: u16::MAX,
+            },
+            "stage_b_reproduction_v3_coverage",
+        );
+        assert_fits(
+            &FociVelocityStageBReproductionV3Digest {
+                oid: u8::MAX,
+                run_sequence: WIDE_U32,
+                evidence_sequence: u16::MAX,
+                previous_digest_low: 0x89ab_cdef,
+                previous_digest_high: 0x0123_4567,
+                current_digest_low: 0x7654_3210,
+                current_digest_high: 0xfedc_ba98,
+            },
+            "stage_b_reproduction_v3_digest",
+        );
+        assert_fits(
             &FociVelocityStageBTerminalCore {
                 oid: u8::MAX,
                 run_sequence: WIDE_U32,
@@ -3245,6 +3476,15 @@ mod velocity_sweep_reply_tests {
                 digest_low: low,
                 digest_high: high,
             };
+            let reproduction = FociVelocityStageBReproductionV3Digest {
+                oid: 1,
+                run_sequence: 2,
+                evidence_sequence: 3,
+                previous_digest_low: low,
+                previous_digest_high: high,
+                current_digest_low: !low,
+                current_digest_high: !high,
+            };
             assert_eq!(
                 (u64::from(terminal.digest_high) << 32) | u64::from(terminal.digest_low),
                 digest
@@ -3252,6 +3492,16 @@ mod velocity_sweep_reply_tests {
             assert_eq!(
                 (u64::from(inconclusive.digest_high) << 32) | u64::from(inconclusive.digest_low),
                 digest
+            );
+            assert_eq!(
+                (u64::from(reproduction.previous_digest_high) << 32)
+                    | u64::from(reproduction.previous_digest_low),
+                digest
+            );
+            assert_eq!(
+                (u64::from(reproduction.current_digest_high) << 32)
+                    | u64::from(reproduction.current_digest_low),
+                !digest
             );
         }
     }
