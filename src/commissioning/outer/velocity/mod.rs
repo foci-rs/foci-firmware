@@ -1,5 +1,7 @@
 //! Velocity-loop commissioning phases.
 
+#[cfg(feature = "trace-velocity-sweep")]
+pub mod integral_plan;
 pub mod operating_region;
 #[cfg(test)]
 mod operating_region_tests;
