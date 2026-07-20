@@ -1945,6 +1945,7 @@ mod tests {
         pollster::block_on(step_velocity_sweep_with_trace(&mut phase, &mut backend));
         let mut encoder_count = 0i32;
         let mut now_us = 0u64;
+        let mut maximum_analysis_polls = 0usize;
         for slot in 0..SWEEP_SLOT_COUNT {
             pollster::block_on(step_velocity_sweep_with_trace(&mut phase, &mut backend));
             let result =
@@ -1980,7 +1981,8 @@ mod tests {
                 "the local travel window must cover zero-target settle"
             );
             pollster::block_on(step_velocity_sweep_with_trace(&mut phase, &mut backend));
-            let (result, _) = poll_until_observation(&mut phase, &mut backend);
+            let (result, analysis_polls) = poll_until_observation(&mut phase, &mut backend);
+            maximum_analysis_polls = maximum_analysis_polls.max(analysis_polls);
             let StepResult::VelocitySweepEvent(VelocitySweepEvent::Observation(report)) = result
             else {
                 panic!("moving analysis must stream one observation");
@@ -2082,6 +2084,12 @@ mod tests {
         assert_eq!(
             backend.pid_velocity_error_sum_clears,
             2 * usize::from(SWEEP_SLOT_COUNT)
+        );
+        assert_eq!(maximum_analysis_polls, 168);
+        assert!(
+            maximum_analysis_polls
+                <= usize::try_from(SETTLE_ANALYSIS_BUDGET_US / VELOCITY_SWEEP_SAMPLE_PERIOD_US)
+                    .unwrap()
         );
 
         let terminal = loop {
