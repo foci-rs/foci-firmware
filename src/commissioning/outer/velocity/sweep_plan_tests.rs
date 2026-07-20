@@ -88,15 +88,15 @@ fn plan_reports_machine_and_encoder_ceiling_provenance() {
 #[test]
 fn every_firmware_representability_term_is_enumerated() {
     let limits = representability_ceilings(4_000).unwrap();
-    assert!(limits.encoder_observable_mrev_s > 80_000);
+    assert_eq!(limits.encoder_observable_mrev_s, 49_950);
     assert!(TmcMechanicalRpm::from_mrev_s_nearest(u32::MAX).is_ok());
 }
 
 #[test]
-fn encoder_observability_tracks_the_measured_three_ms_gap_bound() {
-    assert_eq!(MAX_SAFETY_OBSERVATION_GAP_US, 3_000);
+fn encoder_observability_tracks_the_measured_five_ms_gap_bound() {
+    assert_eq!(MAX_SAFETY_OBSERVATION_GAP_US, 5_000);
     let limits = representability_ceilings(4_000).unwrap();
-    assert!((83_000..84_000).contains(&limits.encoder_observable_mrev_s));
+    assert_eq!(limits.encoder_observable_mrev_s, 49_950);
 }
 
 #[test]
