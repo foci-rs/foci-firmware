@@ -9,6 +9,8 @@ use crate::commissioning::outer::velocity::sweep_plan::{
 };
 use crate::commissioning::types::{VelocitySweepOutcome, VelocitySweepTerminal};
 
+/// Dedicated terminal cause for structurally invalid retained evidence.
+pub const STAGE_B_CAUSE_EVIDENCE_INTEGRITY: u8 = 3;
 /// Dedicated terminal cause for a sufficient run that did not reproduce.
 pub const STAGE_B_CAUSE_REPRODUCTION_MISMATCH: u8 = 5;
 /// Dedicated terminal cause for a frozen-plan identity mismatch.
@@ -133,9 +135,13 @@ pub fn apply_stage_b_terminal(
         reverse_membership: terminal.selected_memberships[1],
         joint_membership: terminal.selected_memberships[2],
         nominated_p: terminal.nominated_p,
+        p_start: terminal.p_start,
+        p_top: terminal.p_top,
+        rung_count: terminal.rung_count,
         forward_interval: terminal.selected_intervals[0],
         reverse_interval: terminal.selected_intervals[1],
-        run_started_us: terminal.run_started_us,
+        forward_common_interval: terminal.selected_common_intervals[0],
+        reverse_common_interval: terminal.selected_common_intervals[1],
         run_completed_us: terminal.run_completed_us,
         run_digest: terminal.digest,
     };
@@ -143,6 +149,12 @@ pub fn apply_stage_b_terminal(
     let reproduction = match stage_b_candidate.observe_sufficient(current) {
         StageBReproductionDecision::CompleteCandidate(_) => None,
         StageBReproductionDecision::Complete(delta) => {
+            terminal.selected_memberships = delta.memberships.map(|item| item.core);
+            terminal.nominated_p = delta.final_p;
+            terminal.selected_intervals = delta.intervals.map(|item| item.pooled_overlap);
+            terminal.selected_common_intervals =
+                delta.intervals.map(|item| item.conservative_common);
+            terminal.coverage_mask = delta.coverage_mask();
             terminal.outcome = VelocitySweepOutcome::Complete;
             terminal.cause = 0;
             Some(StageBReproductionReport {
@@ -165,6 +177,11 @@ pub fn apply_stage_b_terminal(
         StageBReproductionDecision::RejectedPlanMismatch { .. } => {
             terminal.outcome = VelocitySweepOutcome::Inconclusive;
             terminal.cause = STAGE_B_CAUSE_PLAN_MISMATCH;
+            None
+        }
+        StageBReproductionDecision::EvidenceIntegrityFault => {
+            terminal.outcome = VelocitySweepOutcome::Fault;
+            terminal.cause = STAGE_B_CAUSE_EVIDENCE_INTEGRITY;
             None
         }
         StageBReproductionDecision::Cleared => None,
@@ -193,21 +210,21 @@ pub(crate) fn encode_stage_b_reproduction(
     record.push_u32(report.run_sequence);
     record.push_u16(report.evidence_sequence);
     record.push_u8(report.outcome);
-    record.push_u16(report.delta.previous_nominated_p);
-    record.push_u16(report.delta.current_nominated_p);
-    for membership in report.delta.previous_memberships {
-        record.push_u32(membership);
+    record.push_u16(report.delta.previous_provisional_p);
+    record.push_u16(report.delta.current_provisional_p);
+    for membership in report.delta.memberships {
+        record.push_u32(membership.previous);
     }
-    for membership in report.delta.current_memberships {
-        record.push_u32(membership);
+    for membership in report.delta.memberships {
+        record.push_u32(membership.current);
     }
-    for interval in report.delta.previous_intervals {
-        record.push_i32(interval[0]);
-        record.push_i32(interval[1]);
+    for interval in report.delta.intervals {
+        record.push_i32(interval.previous_pooled[0]);
+        record.push_i32(interval.previous_pooled[1]);
     }
-    for interval in report.delta.current_intervals {
-        record.push_i32(interval[0]);
-        record.push_i32(interval[1]);
+    for interval in report.delta.intervals {
+        record.push_i32(interval.current_pooled[0]);
+        record.push_i32(interval.current_pooled[1]);
     }
     record.push_u32(report.delta.previous_run_digest as u32);
     record.push_u32((report.delta.previous_run_digest >> 32) as u32);

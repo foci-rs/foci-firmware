@@ -876,8 +876,8 @@ fn emit_velocity_stage_b_reproduction<S: CommissionReplySink>(
             run_sequence: report.run_sequence,
             evidence_sequence: report.evidence_sequence,
             outcome: report.outcome,
-            previous_nominated_p: delta.previous_nominated_p,
-            current_nominated_p: delta.current_nominated_p,
+            previous_nominated_p: delta.previous_provisional_p,
+            current_nominated_p: delta.current_provisional_p,
         },
     );
     sink.foci_velocity_stage_b_reproduction_membership(
@@ -885,17 +885,18 @@ fn emit_velocity_stage_b_reproduction<S: CommissionReplySink>(
             oid,
             run_sequence: report.run_sequence,
             evidence_sequence: report.evidence_sequence,
-            previous_forward_mask: delta.previous_memberships[0],
-            previous_reverse_mask: delta.previous_memberships[1],
-            previous_joint_mask: delta.previous_memberships[2],
-            current_forward_mask: delta.current_memberships[0],
-            current_reverse_mask: delta.current_memberships[1],
-            current_joint_mask: delta.current_memberships[2],
+            previous_forward_mask: delta.memberships[0].previous,
+            previous_reverse_mask: delta.memberships[1].previous,
+            previous_joint_mask: delta.memberships[2].previous,
+            current_forward_mask: delta.memberships[0].current,
+            current_reverse_mask: delta.memberships[1].current,
+            current_joint_mask: delta.memberships[2].current,
         },
     );
     for direction in 0..2 {
-        let previous = delta.previous_intervals[usize::from(direction)];
-        let current = delta.current_intervals[usize::from(direction)];
+        let comparison = delta.intervals[usize::from(direction)];
+        let previous = comparison.previous_pooled;
+        let current = comparison.current_pooled;
         sink.foci_velocity_stage_b_reproduction_interval(
             crate::ankyra::replies::FociVelocityStageBReproductionInterval {
                 oid,
@@ -3755,7 +3756,11 @@ mod tests {
     #[test]
     fn reproduction_group_emits_before_the_authoritative_terminal() {
         use crate::commission_dispatch::stage_b::StageBReproductionReport;
-        use crate::commissioning::outer::velocity::reproduction::StageBReproductionDelta;
+        use crate::commissioning::outer::velocity::operating_region::CoverageKind;
+        use crate::commissioning::outer::velocity::reproduction::{
+            StageBCoreCoverage, StageBIntervalComparison, StageBMembershipComparison,
+            StageBReproductionDelta,
+        };
         use crate::commissioning::types::VelocitySweepOutcome;
 
         let terminal = VelocitySweepTerminal {
@@ -3789,12 +3794,46 @@ mod tests {
             evidence_sequence: 12,
             outcome: 1,
             delta: StageBReproductionDelta {
-                previous_memberships: [0b11100; 3],
-                current_memberships: [0b11100; 3],
-                previous_nominated_p: 724,
-                current_nominated_p: 724,
-                previous_intervals: [[9, 19], [-21, -11]],
-                current_intervals: terminal.selected_intervals,
+                memberships: [StageBMembershipComparison {
+                    previous: 0b11100,
+                    current: 0b11100,
+                    core: 0b11100,
+                    previous_only: 0,
+                    current_only: 0,
+                    low_delta: 0,
+                    high_delta: 0,
+                }; 3],
+                intervals: [
+                    StageBIntervalComparison {
+                        previous_pooled: [9, 19],
+                        current_pooled: [10, 20],
+                        pooled_overlap: [10, 19],
+                        previous_common: [11, 18],
+                        current_common: [12, 18],
+                        conservative_common: [12, 18],
+                        conservative_common_nonempty: true,
+                    },
+                    StageBIntervalComparison {
+                        previous_pooled: [-21, -11],
+                        current_pooled: [-20, -10],
+                        pooled_overlap: [-20, -11],
+                        previous_common: [-19, -12],
+                        current_common: [-18, -12],
+                        conservative_common: [-18, -12],
+                        conservative_common_nonempty: true,
+                    },
+                ],
+                previous_provisional_p: 724,
+                current_provisional_p: 724,
+                final_p: 724,
+                coverage: [StageBCoreCoverage {
+                    kind: CoverageKind::FullCoverage,
+                    signed_rung_distance: 0,
+                    gain_ratio_num: 1,
+                    gain_ratio_den: 1,
+                }; 2],
+                reduced_margin: false,
+                reason_mask: 0,
                 previous_run_digest: 1,
                 current_run_digest: 2,
             },

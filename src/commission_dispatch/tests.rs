@@ -46,9 +46,13 @@ fn stage_b_preflight_freezes_one_plan_and_rejects_mismatch_without_mutation() {
         reverse_membership: 0b0001_1100,
         joint_membership: 0b0001_1100,
         nominated_p: 724,
+        p_start: first.plan.p_start.raw(),
+        p_top: first.plan.p_top.raw(),
+        rung_count: first.plan.rung_count,
         forward_interval: [10, 20],
         reverse_interval: [-20, -10],
-        run_started_us: 1,
+        forward_common_interval: [12, 18],
+        reverse_common_interval: [-18, -12],
         run_completed_us: 2,
         run_digest: 3,
     };
@@ -1732,9 +1736,9 @@ fn sample_velocity_sweep_terminal(
         nominated_p: 0,
         selected_intervals: [[0; 2]; 2],
         selected_common_intervals: [[0; 2]; 2],
-        p_start: 0,
-        p_top: 0,
-        rung_count: 0,
+        p_start: 256,
+        p_top: 1_024,
+        rung_count: 5,
         coverage_mask: 0,
         directional_region_counts: [0; 2],
         directional_fragment_counts: [0; 2],
@@ -1751,7 +1755,7 @@ fn sample_velocity_sweep_terminal(
 
 #[cfg(feature = "trace-velocity-sweep")]
 #[test]
-fn stage_b_terminal_promotes_only_a_matching_second_run() {
+fn stage_b_dispatch_rewrites_complete_from_the_reproduced_core() {
     use crate::commission_dispatch::stage_b::apply_stage_b_terminal;
     use crate::commissioning::outer::velocity::reproduction::StageBCandidateSlot;
     use crate::commissioning::types::VelocitySweepOutcome;
@@ -1761,6 +1765,7 @@ fn stage_b_terminal_promotes_only_a_matching_second_run() {
     first.selected_memberships = [0b11100, 0b11100, 0b11100];
     first.nominated_p = 724;
     first.selected_intervals = [[10, 20], [-20, -10]];
+    first.selected_common_intervals = [[12, 18], [-18, -12]];
     let first_dispatch = apply_stage_b_terminal(first, 0, &mut slot);
     assert_eq!(
         first_dispatch.terminal.outcome,
@@ -1774,17 +1779,61 @@ fn stage_b_terminal_promotes_only_a_matching_second_run() {
     second.run_started_us += 10_000;
     second.run_completed_us += 10_000;
     second.digest ^= 0x55aa;
+    second.selected_memberships = [0b11110, 0b11100, 0b11110];
+    second.nominated_p = 512;
+    second.selected_intervals = [[11, 21], [-19, -9]];
+    second.selected_common_intervals = [[13, 19], [-17, -11]];
     let second_dispatch = apply_stage_b_terminal(second, 0, &mut slot);
     assert_eq!(
         second_dispatch.terminal.outcome,
         VelocitySweepOutcome::Complete
     );
     assert!(second_dispatch.reproduction.is_some());
+    assert_eq!(second_dispatch.terminal.selected_memberships, [0b11100; 3]);
+    assert_eq!(second_dispatch.terminal.nominated_p, 724);
+    assert_eq!(
+        second_dispatch.terminal.selected_intervals,
+        [[11, 20], [-19, -10]]
+    );
+    assert_eq!(
+        second_dispatch.terminal.selected_common_intervals,
+        [[13, 18], [-17, -12]]
+    );
+    assert_eq!(second_dispatch.terminal.coverage_mask, 3);
     assert_eq!(
         second_dispatch.terminal.evidence_sequence,
         second.evidence_sequence + 1
     );
     assert_ne!(second_dispatch.terminal.digest, second.digest);
+    assert_eq!(slot.candidate(), None);
+}
+
+#[cfg(feature = "trace-velocity-sweep")]
+#[test]
+fn stage_b_dispatch_faults_and_clears_noncontiguous_evidence() {
+    use crate::commission_dispatch::stage_b::{
+        STAGE_B_CAUSE_EVIDENCE_INTEGRITY, apply_stage_b_terminal,
+    };
+    use crate::commissioning::outer::velocity::reproduction::StageBCandidateSlot;
+    use crate::commissioning::types::VelocitySweepOutcome;
+
+    let mut slot = StageBCandidateSlot::new();
+    let mut first = sample_velocity_sweep_terminal(VelocitySweepOutcome::CompleteCandidate);
+    first.selected_memberships = [0b11100; 3];
+    first.nominated_p = 724;
+    first.selected_intervals = [[10, 20], [-20, -10]];
+    first.selected_common_intervals = [[12, 18], [-18, -12]];
+    apply_stage_b_terminal(first, 0, &mut slot);
+
+    let mut invalid = first;
+    invalid.selected_memberships[0] = 0b10100;
+    invalid.run_sequence += 1;
+    invalid.digest ^= 1;
+    let dispatch = apply_stage_b_terminal(invalid, 0, &mut slot);
+
+    assert_eq!(dispatch.terminal.outcome, VelocitySweepOutcome::Fault);
+    assert_eq!(dispatch.terminal.cause, STAGE_B_CAUSE_EVIDENCE_INTEGRITY);
+    assert_eq!(dispatch.reproduction, None);
     assert_eq!(slot.candidate(), None);
 }
 
@@ -1815,9 +1864,13 @@ fn stage_b_dispatch_traces_reproduction_before_one_authoritative_terminal() {
             reverse_membership: terminal.selected_memberships[1],
             joint_membership: terminal.selected_memberships[2],
             nominated_p: terminal.nominated_p,
+            p_start: terminal.p_start,
+            p_top: terminal.p_top,
+            rung_count: terminal.rung_count,
             forward_interval: terminal.selected_intervals[0],
             reverse_interval: terminal.selected_intervals[1],
-            run_started_us: terminal.run_started_us.saturating_sub(100),
+            forward_common_interval: terminal.selected_common_intervals[0],
+            reverse_common_interval: terminal.selected_common_intervals[1],
             run_completed_us: terminal.run_completed_us.saturating_sub(100),
             run_digest: terminal.digest ^ 0x55aa,
         });
