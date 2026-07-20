@@ -827,8 +827,9 @@ impl CommissioningEngine {
         reproduction: Option<crate::commission_dispatch::stage_b::StageBReproductionReport>,
     ) {
         if let Some(report) = reproduction {
-            backend.record_velocity_sweep_trace_record(
-                crate::commission_dispatch::stage_b::encode_stage_b_reproduction(report),
+            crate::commission_dispatch::stage_b::for_each_stage_b_reproduction_record(
+                report,
+                |record| backend.record_velocity_sweep_trace_record(record),
             );
         }
         backend.record_velocity_sweep_trace_record(

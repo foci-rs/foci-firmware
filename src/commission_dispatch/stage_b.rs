@@ -188,11 +188,13 @@ pub fn apply_stage_b_terminal(
     };
 
     if let Some(report) = reproduction {
-        let record = encode_stage_b_reproduction(report);
-        terminal.digest = crate::ankyra::velocity_sweep_encoding::extend_velocity_sweep_digest(
-            terminal.digest,
-            &record,
-        );
+        let mut digest = terminal.digest;
+        for_each_stage_b_reproduction_record(report, |record| {
+            digest = crate::ankyra::velocity_sweep_encoding::extend_velocity_sweep_digest(
+                digest, &record,
+            );
+        });
+        terminal.digest = digest;
         terminal.evidence_sequence = terminal.evidence_sequence.saturating_add(1);
         stage_b_candidate.replace_retained_digest(terminal.digest);
     }
@@ -202,33 +204,93 @@ pub fn apply_stage_b_terminal(
     }
 }
 
-pub(crate) fn encode_stage_b_reproduction(
+/// Construct each schema-3 canonical reproduction record in emission order.
+pub(crate) fn for_each_stage_b_reproduction_record(
     report: StageBReproductionReport,
-) -> crate::ankyra::velocity_sweep_encoding::VelocitySweepCanonicalRecord {
-    let mut record = crate::ankyra::velocity_sweep_encoding::VelocitySweepCanonicalRecord::new();
-    record.push_u8(9);
-    record.push_u32(report.run_sequence);
-    record.push_u16(report.evidence_sequence);
+    mut consume: impl FnMut(crate::ankyra::velocity_sweep_encoding::VelocitySweepCanonicalRecord),
+) {
+    let mut record = reproduction_record_header(10, report);
     record.push_u8(report.outcome);
+    record.push_u8(report.delta.reason_mask);
     record.push_u16(report.delta.previous_provisional_p);
     record.push_u16(report.delta.current_provisional_p);
-    for membership in report.delta.memberships {
+    record.push_u16(report.delta.final_p);
+    record.push_u8(u8::from(report.delta.reduced_margin));
+    record.push_u16(STAGE_B_EVIDENCE_SCHEMA_REVISION);
+    consume(record);
+
+    for (index, membership) in report.delta.memberships.into_iter().enumerate() {
+        let mut record = reproduction_record_header(11 + index as u8, report);
+        record.push_u8(index as u8);
         record.push_u32(membership.previous);
-    }
-    for membership in report.delta.memberships {
         record.push_u32(membership.current);
+        record.push_u32(membership.core);
+        record.push_u32(membership.previous_only);
+        record.push_u32(membership.current_only);
+        record.push_i32(i32::from(membership.low_delta));
+        record.push_i32(i32::from(membership.high_delta));
+        consume(record);
     }
-    for interval in report.delta.intervals {
-        record.push_i32(interval.previous_pooled[0]);
-        record.push_i32(interval.previous_pooled[1]);
+
+    for (index, interval) in report.delta.intervals.into_iter().enumerate() {
+        let mut record = reproduction_record_header(14 + index as u8, report);
+        record.push_u8(index as u8);
+        for bound in interval.previous_pooled {
+            record.push_i32(bound);
+        }
+        for bound in interval.current_pooled {
+            record.push_i32(bound);
+        }
+        for bound in interval.pooled_overlap {
+            record.push_i32(bound);
+        }
+        consume(record);
     }
-    for interval in report.delta.intervals {
-        record.push_i32(interval.current_pooled[0]);
-        record.push_i32(interval.current_pooled[1]);
+
+    for (index, interval) in report.delta.intervals.into_iter().enumerate() {
+        let mut record = reproduction_record_header(16 + index as u8, report);
+        record.push_u8(index as u8);
+        for bound in interval.previous_common {
+            record.push_i32(bound);
+        }
+        for bound in interval.current_common {
+            record.push_i32(bound);
+        }
+        for bound in interval.conservative_common {
+            record.push_i32(bound);
+        }
+        record.push_u8(u8::from(interval.conservative_common_nonempty));
+        consume(record);
     }
+
+    for (index, coverage) in report.delta.coverage.into_iter().enumerate() {
+        let mut record = reproduction_record_header(18 + index as u8, report);
+        record.push_u8(index as u8);
+        record.push_u8(match coverage.kind {
+            crate::commissioning::outer::velocity::operating_region::CoverageKind::FullCoverage => 0,
+            crate::commissioning::outer::velocity::operating_region::CoverageKind::TransferredCoverage => 1,
+        });
+        record.push_i32(i32::from(coverage.signed_rung_distance));
+        record.push_u16(coverage.gain_ratio_num);
+        record.push_u16(coverage.gain_ratio_den);
+        consume(record);
+    }
+
+    let mut record = reproduction_record_header(20, report);
     record.push_u32(report.delta.previous_run_digest as u32);
     record.push_u32((report.delta.previous_run_digest >> 32) as u32);
     record.push_u32(report.delta.current_run_digest as u32);
     record.push_u32((report.delta.current_run_digest >> 32) as u32);
+    consume(record);
+}
+
+fn reproduction_record_header(
+    kind: u8,
+    report: StageBReproductionReport,
+) -> crate::ankyra::velocity_sweep_encoding::VelocitySweepCanonicalRecord {
+    let mut record = crate::ankyra::velocity_sweep_encoding::VelocitySweepCanonicalRecord::new();
+    record.push_u8(kind);
+    record.push_u32(report.run_sequence);
+    record.push_u16(report.evidence_sequence);
     record
 }

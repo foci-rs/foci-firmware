@@ -283,6 +283,48 @@ pub trait CommissionReplySink {
     ) {
     }
 
+    /// Emit the schema-3 Stage B reproduction outcome and final nomination.
+    fn foci_velocity_stage_b_reproduction_v3_core(
+        &mut self,
+        _report: crate::ankyra::replies::FociVelocityStageBReproductionV3Core,
+    ) {
+    }
+
+    /// Emit one schema-3 membership/core comparison.
+    fn foci_velocity_stage_b_reproduction_v3_membership(
+        &mut self,
+        _report: crate::ankyra::replies::FociVelocityStageBReproductionV3Membership,
+    ) {
+    }
+
+    /// Emit one schema-3 pooled-interval comparison.
+    fn foci_velocity_stage_b_reproduction_v3_pooled(
+        &mut self,
+        _report: crate::ankyra::replies::FociVelocityStageBReproductionV3Pooled,
+    ) {
+    }
+
+    /// Emit one schema-3 common-interval comparison.
+    fn foci_velocity_stage_b_reproduction_v3_common(
+        &mut self,
+        _report: crate::ankyra::replies::FociVelocityStageBReproductionV3Common,
+    ) {
+    }
+
+    /// Emit one schema-3 core-relative coverage result.
+    fn foci_velocity_stage_b_reproduction_v3_coverage(
+        &mut self,
+        _report: crate::ankyra::replies::FociVelocityStageBReproductionV3Coverage,
+    ) {
+    }
+
+    /// Emit exact schema-3 Stage B reproduction digest inputs.
+    fn foci_velocity_stage_b_reproduction_v3_digest(
+        &mut self,
+        _report: crate::ankyra::replies::FociVelocityStageBReproductionV3Digest,
+    ) {
+    }
+
     /// Emit the Stage B terminal class and completeness fragment.
     fn foci_velocity_stage_b_terminal_core(
         &mut self,
@@ -870,48 +912,89 @@ fn emit_velocity_stage_b_reproduction<S: CommissionReplySink>(
     report: crate::commission_dispatch::stage_b::StageBReproductionReport,
 ) {
     let delta = report.delta;
-    sink.foci_velocity_stage_b_reproduction_core(
-        crate::ankyra::replies::FociVelocityStageBReproductionCore {
+    sink.foci_velocity_stage_b_reproduction_v3_core(
+        crate::ankyra::replies::FociVelocityStageBReproductionV3Core {
             oid,
             run_sequence: report.run_sequence,
             evidence_sequence: report.evidence_sequence,
             outcome: report.outcome,
-            previous_nominated_p: delta.previous_provisional_p,
-            current_nominated_p: delta.current_provisional_p,
+            reason_mask: delta.reason_mask,
+            previous_provisional_p: delta.previous_provisional_p,
+            current_provisional_p: delta.current_provisional_p,
+            final_p: delta.final_p,
+            reduced_margin: u8::from(delta.reduced_margin),
+            schema_revision:
+                crate::commissioning::outer::velocity::reproduction::STAGE_B_EVIDENCE_SCHEMA_REVISION,
         },
     );
-    sink.foci_velocity_stage_b_reproduction_membership(
-        crate::ankyra::replies::FociVelocityStageBReproductionMembership {
-            oid,
-            run_sequence: report.run_sequence,
-            evidence_sequence: report.evidence_sequence,
-            previous_forward_mask: delta.memberships[0].previous,
-            previous_reverse_mask: delta.memberships[1].previous,
-            previous_joint_mask: delta.memberships[2].previous,
-            current_forward_mask: delta.memberships[0].current,
-            current_reverse_mask: delta.memberships[1].current,
-            current_joint_mask: delta.memberships[2].current,
-        },
-    );
-    for direction in 0..2 {
-        let comparison = delta.intervals[usize::from(direction)];
-        let previous = comparison.previous_pooled;
-        let current = comparison.current_pooled;
-        sink.foci_velocity_stage_b_reproduction_interval(
-            crate::ankyra::replies::FociVelocityStageBReproductionInterval {
+    for (object, membership) in delta.memberships.into_iter().enumerate() {
+        sink.foci_velocity_stage_b_reproduction_v3_membership(
+            crate::ankyra::replies::FociVelocityStageBReproductionV3Membership {
                 oid,
                 run_sequence: report.run_sequence,
                 evidence_sequence: report.evidence_sequence,
-                direction,
-                previous_low_q16: previous[0],
-                previous_high_q16: previous[1],
-                current_low_q16: current[0],
-                current_high_q16: current[1],
+                object: object as u8,
+                previous_mask: membership.previous,
+                current_mask: membership.current,
+                core_mask: membership.core,
+                previous_only_mask: membership.previous_only,
+                current_only_mask: membership.current_only,
+                low_delta: i32::from(membership.low_delta),
+                high_delta: i32::from(membership.high_delta),
             },
         );
     }
-    sink.foci_velocity_stage_b_reproduction_digest(
-        crate::ankyra::replies::FociVelocityStageBReproductionDigest {
+    for (direction, interval) in delta.intervals.into_iter().enumerate() {
+        sink.foci_velocity_stage_b_reproduction_v3_pooled(
+            crate::ankyra::replies::FociVelocityStageBReproductionV3Pooled {
+                oid,
+                run_sequence: report.run_sequence,
+                evidence_sequence: report.evidence_sequence,
+                direction: direction as u8,
+                previous_low_q16: interval.previous_pooled[0],
+                previous_high_q16: interval.previous_pooled[1],
+                current_low_q16: interval.current_pooled[0],
+                current_high_q16: interval.current_pooled[1],
+                overlap_low_q16: interval.pooled_overlap[0],
+                overlap_high_q16: interval.pooled_overlap[1],
+            },
+        );
+    }
+    for (direction, interval) in delta.intervals.into_iter().enumerate() {
+        sink.foci_velocity_stage_b_reproduction_v3_common(
+            crate::ankyra::replies::FociVelocityStageBReproductionV3Common {
+                oid,
+                run_sequence: report.run_sequence,
+                evidence_sequence: report.evidence_sequence,
+                direction: direction as u8,
+                previous_low_q16: interval.previous_common[0],
+                previous_high_q16: interval.previous_common[1],
+                current_low_q16: interval.current_common[0],
+                current_high_q16: interval.current_common[1],
+                conservative_low_q16: interval.conservative_common[0],
+                conservative_high_q16: interval.conservative_common[1],
+                nonempty: u8::from(interval.conservative_common_nonempty),
+            },
+        );
+    }
+    for (direction, coverage) in delta.coverage.into_iter().enumerate() {
+        sink.foci_velocity_stage_b_reproduction_v3_coverage(
+            crate::ankyra::replies::FociVelocityStageBReproductionV3Coverage {
+                oid,
+                run_sequence: report.run_sequence,
+                evidence_sequence: report.evidence_sequence,
+                direction: direction as u8,
+                coverage: crate::commissioning::outer::velocity::sweep_evidence::coverage_kind_code(
+                    coverage.kind,
+                ),
+                signed_rung_distance: i32::from(coverage.signed_rung_distance),
+                gain_ratio_num: coverage.gain_ratio_num,
+                gain_ratio_den: coverage.gain_ratio_den,
+            },
+        );
+    }
+    sink.foci_velocity_stage_b_reproduction_v3_digest(
+        crate::ankyra::replies::FociVelocityStageBReproductionV3Digest {
             oid,
             run_sequence: report.run_sequence,
             evidence_sequence: report.evidence_sequence,
@@ -2234,6 +2317,52 @@ mod tests {
             _report: crate::ankyra::replies::FociVelocityStageBReproductionDigest,
         ) {
             self.events.push(Event::StageBReproduction(4));
+        }
+
+        fn foci_velocity_stage_b_reproduction_v3_core(
+            &mut self,
+            _report: crate::ankyra::replies::FociVelocityStageBReproductionV3Core,
+        ) {
+            self.events.push(Event::StageBReproduction(10));
+        }
+
+        fn foci_velocity_stage_b_reproduction_v3_membership(
+            &mut self,
+            report: crate::ankyra::replies::FociVelocityStageBReproductionV3Membership,
+        ) {
+            self.events
+                .push(Event::StageBReproduction(11 + report.object));
+        }
+
+        fn foci_velocity_stage_b_reproduction_v3_pooled(
+            &mut self,
+            report: crate::ankyra::replies::FociVelocityStageBReproductionV3Pooled,
+        ) {
+            self.events
+                .push(Event::StageBReproduction(14 + report.direction));
+        }
+
+        fn foci_velocity_stage_b_reproduction_v3_common(
+            &mut self,
+            report: crate::ankyra::replies::FociVelocityStageBReproductionV3Common,
+        ) {
+            self.events
+                .push(Event::StageBReproduction(16 + report.direction));
+        }
+
+        fn foci_velocity_stage_b_reproduction_v3_coverage(
+            &mut self,
+            report: crate::ankyra::replies::FociVelocityStageBReproductionV3Coverage,
+        ) {
+            self.events
+                .push(Event::StageBReproduction(18 + report.direction));
+        }
+
+        fn foci_velocity_stage_b_reproduction_v3_digest(
+            &mut self,
+            _report: crate::ankyra::replies::FociVelocityStageBReproductionV3Digest,
+        ) {
+            self.events.push(Event::StageBReproduction(20));
         }
 
         fn foci_velocity_stage_b_terminal_core(
@@ -3852,11 +3981,17 @@ mod tests {
         assert_eq!(
             sink.events,
             [
-                Event::StageBReproduction(0),
-                Event::StageBReproduction(1),
-                Event::StageBReproduction(2),
-                Event::StageBReproduction(3),
-                Event::StageBReproduction(4),
+                Event::StageBReproduction(10),
+                Event::StageBReproduction(11),
+                Event::StageBReproduction(12),
+                Event::StageBReproduction(13),
+                Event::StageBReproduction(14),
+                Event::StageBReproduction(15),
+                Event::StageBReproduction(16),
+                Event::StageBReproduction(17),
+                Event::StageBReproduction(18),
+                Event::StageBReproduction(19),
+                Event::StageBReproduction(20),
                 Event::StageBTerminal {
                     fragment: 0,
                     evidence_sequence: 13,

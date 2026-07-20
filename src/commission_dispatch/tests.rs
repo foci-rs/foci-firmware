@@ -1788,7 +1788,9 @@ fn stage_b_dispatch_rewrites_complete_from_the_reproduced_core() {
         second_dispatch.terminal.outcome,
         VelocitySweepOutcome::Complete
     );
-    assert!(second_dispatch.reproduction.is_some());
+    let reproduction = second_dispatch
+        .reproduction
+        .expect("a retained sufficient run emits reproduction evidence");
     assert_eq!(second_dispatch.terminal.selected_memberships, [0b11100; 3]);
     assert_eq!(second_dispatch.terminal.nominated_p, 724);
     assert_eq!(
@@ -1804,7 +1806,17 @@ fn stage_b_dispatch_rewrites_complete_from_the_reproduced_core() {
         second_dispatch.terminal.evidence_sequence,
         second.evidence_sequence + 1
     );
-    assert_ne!(second_dispatch.terminal.digest, second.digest);
+    let mut expected_digest = second.digest;
+    crate::commission_dispatch::stage_b::for_each_stage_b_reproduction_record(
+        reproduction,
+        |record| {
+            expected_digest = crate::ankyra::velocity_sweep_encoding::extend_velocity_sweep_digest(
+                expected_digest,
+                &record,
+            );
+        },
+    );
+    assert_eq!(second_dispatch.terminal.digest, expected_digest);
     assert_eq!(slot.candidate(), None);
 }
 
@@ -1835,6 +1847,133 @@ fn stage_b_dispatch_faults_and_clears_noncontiguous_evidence() {
     assert_eq!(dispatch.terminal.cause, STAGE_B_CAUSE_EVIDENCE_INTEGRITY);
     assert_eq!(dispatch.reproduction, None);
     assert_eq!(slot.candidate(), None);
+}
+
+#[cfg(feature = "trace-velocity-sweep")]
+#[test]
+fn stage_b_schema3_reproduction_records_are_canonical_and_ordered() {
+    use crate::commission_dispatch::stage_b::{
+        StageBReproductionReport, for_each_stage_b_reproduction_record,
+    };
+    use crate::commissioning::outer::velocity::operating_region::CoverageKind;
+    use crate::commissioning::outer::velocity::reproduction::{
+        STAGE_B_EVIDENCE_SCHEMA_REVISION, StageBCoreCoverage, StageBIntervalComparison,
+        StageBMembershipComparison, StageBReproductionDelta,
+    };
+
+    let report = StageBReproductionReport {
+        run_sequence: 0x1122_3344,
+        evidence_sequence: 0x5566,
+        outcome: 1,
+        delta: StageBReproductionDelta {
+            memberships: [
+                StageBMembershipComparison {
+                    previous: 0x0038_0000,
+                    current: 0x003c_0000,
+                    core: 0x0038_0000,
+                    previous_only: 0,
+                    current_only: 0x0004_0000,
+                    low_delta: -1,
+                    high_delta: 0,
+                },
+                StageBMembershipComparison {
+                    previous: 0x003c_0000,
+                    current: 0x0038_0000,
+                    core: 0x0038_0000,
+                    previous_only: 0x0004_0000,
+                    current_only: 0,
+                    low_delta: 1,
+                    high_delta: 0,
+                },
+                StageBMembershipComparison {
+                    previous: 0x0038_0000,
+                    current: 0x003c_0000,
+                    core: 0x0038_0000,
+                    previous_only: 0,
+                    current_only: 0x0004_0000,
+                    low_delta: -1,
+                    high_delta: 0,
+                },
+            ],
+            intervals: [
+                StageBIntervalComparison {
+                    previous_pooled: [100, 120],
+                    current_pooled: [110, 130],
+                    pooled_overlap: [110, 120],
+                    previous_common: [104, 116],
+                    current_common: [108, 118],
+                    conservative_common: [108, 116],
+                    conservative_common_nonempty: true,
+                },
+                StageBIntervalComparison {
+                    previous_pooled: [-130, -100],
+                    current_pooled: [-120, -90],
+                    pooled_overlap: [-120, -100],
+                    previous_common: [-125, -115],
+                    current_common: [-110, -100],
+                    conservative_common: [-110, -115],
+                    conservative_common_nonempty: false,
+                },
+            ],
+            previous_provisional_p: 1_448,
+            current_provisional_p: 1_024,
+            final_p: 1_448,
+            coverage: [
+                StageBCoreCoverage {
+                    kind: CoverageKind::FullCoverage,
+                    signed_rung_distance: 0,
+                    gain_ratio_num: 1,
+                    gain_ratio_den: 1,
+                },
+                StageBCoreCoverage {
+                    kind: CoverageKind::TransferredCoverage,
+                    signed_rung_distance: 1,
+                    gain_ratio_num: 1_448,
+                    gain_ratio_den: 1_024,
+                },
+            ],
+            reduced_margin: false,
+            reason_mask: 0,
+            previous_run_digest: 0x0123_4567_89ab_cdef,
+            current_run_digest: 0xfedc_ba98_7654_3210,
+        },
+    };
+    let mut records = std::vec::Vec::new();
+    for_each_stage_b_reproduction_record(report, |record| records.push(record));
+
+    assert_eq!(
+        records
+            .iter()
+            .map(|record| record.as_bytes()[0])
+            .collect::<std::vec::Vec<_>>(),
+        (10_u8..=20).collect::<std::vec::Vec<_>>()
+    );
+    assert_eq!(
+        &records[1].as_bytes()[16..20],
+        &0x0038_0000_u32.to_le_bytes()
+    );
+    assert_eq!(
+        &records[1].as_bytes()[24..28],
+        &0x0004_0000_u32.to_le_bytes()
+    );
+    assert_eq!(&records[1].as_bytes()[28..32], &(-1_i32).to_le_bytes());
+    assert_eq!(records[7].as_bytes()[32], 0);
+    assert_eq!(
+        &records[10].as_bytes()[7..11],
+        &0x89ab_cdef_u32.to_le_bytes()
+    );
+    assert_eq!(
+        &records[10].as_bytes()[11..15],
+        &0x0123_4567_u32.to_le_bytes()
+    );
+    assert_eq!(STAGE_B_EVIDENCE_SCHEMA_REVISION, 3);
+
+    let digest = records
+        .iter()
+        .fold(report.delta.current_run_digest, |digest, record| {
+            crate::ankyra::velocity_sweep_encoding::extend_velocity_sweep_digest(digest, record)
+        });
+    assert_ne!(digest, report.delta.current_run_digest);
 }
 
 #[cfg(feature = "trace-velocity-sweep")]
@@ -1911,7 +2050,7 @@ fn stage_b_dispatch_traces_reproduction_before_one_authoritative_terminal() {
             .iter()
             .map(|record| record.as_bytes()[0])
             .collect();
-        assert_eq!(kinds, [9, 8]);
+        assert_eq!(kinds, [10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 8]);
         let traced_terminal = backend
             .velocity_sweep_trace_records
             .last()
