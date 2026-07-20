@@ -1,8 +1,9 @@
 //! Bounded post-capture analysis for the velocity sweep.
 
 use crate::autotune::velocity_measurement::{
-    StationarityResult, StationarityWorkPoll, StructuredStationarityEvidence,
-    VELOCITY_RATE_Q_SCALE, VelocityDirection, estimate_confidence,
+    DyadicBlocker, StationarityResult, StationarityWork, StationarityWorkPoll,
+    StructuredStationarityEvidence, VELOCITY_RATE_Q_SCALE, VelocityDirection,
+    VelocityObservationSource, estimate_confidence,
 };
 use crate::autotune::{
     CommissionError, equivalent_disturbance_from_rate, equivalent_disturbance_variance_from_rate,
@@ -42,13 +43,10 @@ pub(super) fn poll_moving_observation_analysis(
     data: &mut VelocitySweepData,
     counts_per_rev: u32,
 ) -> Result<Option<MovingObservationAnalysis>, CommissionError> {
-    let stationarity = match data
-        .analysis
-        .poll(&data.observations, &mut data.blocker)
-        .map_err(|_| CommissionError::VelocityValidationFailed)?
-    {
-        StationarityWorkPoll::Pending => return Ok(None),
-        StationarityWorkPoll::Complete(stationarity) => stationarity,
+    let Some(stationarity) =
+        poll_stationarity(&mut data.analysis, &data.observations, &mut data.blocker)?
+    else {
+        return Ok(None);
     };
     let structured_boundary = data.analysis.structured_evidence();
     finish_moving_observation_analysis(data, counts_per_rev, stationarity, structured_boundary)
@@ -168,7 +166,7 @@ fn finish_moving_observation_analysis(
     })
 }
 
-fn deficit_interval_q(
+pub(super) fn deficit_interval_q(
     target_velocity_rpm: i32,
     counts_per_rev: u32,
     settled_rate_low_q: i64,
@@ -230,16 +228,44 @@ pub(super) fn retain_observation(
 pub(super) fn poll_settle_confirmation(
     data: &mut VelocitySweepData,
 ) -> Result<Option<bool>, CommissionError> {
-    let stationarity = match data
-        .analysis
-        .poll(&data.observations, &mut data.blocker)
+    poll_settle_confirmation_parts(
+        &mut data.analysis,
+        &data.observations,
+        &mut data.blocker,
+        data.settle_min_displacement_counts,
+        data.settle_max_displacement_counts,
+    )
+}
+
+pub(super) fn poll_stationarity<const LEVELS: usize>(
+    analysis: &mut StationarityWork,
+    observations: &impl VelocityObservationSource,
+    blocker: &mut DyadicBlocker<LEVELS>,
+) -> Result<Option<StationarityResult>, CommissionError> {
+    match analysis
+        .poll(observations, blocker)
         .map_err(|_| CommissionError::VelocityValidationFailed)?
     {
-        StationarityWorkPoll::Pending => return Ok(None),
-        StationarityWorkPoll::Complete(stationarity) => stationarity,
+        StationarityWorkPoll::Pending => Ok(None),
+        StationarityWorkPoll::Complete(stationarity) => Ok(Some(stationarity)),
+    }
+}
+
+pub(super) fn poll_settle_confirmation_parts<const LEVELS: usize>(
+    analysis: &mut StationarityWork,
+    observations: &impl VelocityObservationSource,
+    blocker: &mut DyadicBlocker<LEVELS>,
+    settle_min_displacement_counts: i8,
+    settle_max_displacement_counts: i8,
+) -> Result<Option<bool>, CommissionError> {
+    let Some(stationarity) = poll_stationarity(analysis, observations, blocker)? else {
+        return Ok(None);
     };
     let StationarityResult::Usable(suffix) = stationarity else {
-        return Ok(Some(bounded_rest_displacement(data)));
+        return Ok(Some(bounded_rest_displacement(
+            settle_min_displacement_counts,
+            settle_max_displacement_counts,
+        )));
     };
     let confidence = estimate_confidence(suffix.selection, 3)
         .map_err(|_| CommissionError::VelocityValidationFailed)?;
@@ -251,7 +277,13 @@ pub(super) fn poll_settle_confirmation(
     let half_width = i64::try_from(confidence.half_width_rate_q)
         .map_err(|_| CommissionError::VelocityValidationFailed)?;
     let stationary = mean.saturating_sub(half_width) <= 0 && mean.saturating_add(half_width) >= 0;
-    Ok(Some(stationary || bounded_rest_displacement(data)))
+    Ok(Some(
+        stationary
+            || bounded_rest_displacement(
+                settle_min_displacement_counts,
+                settle_max_displacement_counts,
+            ),
+    ))
 }
 
 /// Accept a zero-target settle that never leaves one encoder-count band.
@@ -259,33 +291,22 @@ pub(super) fn poll_settle_confirmation(
 /// This covers the observed boundary-toggle dither while rejecting the
 /// multi-count rebound that the statistical stationarity gate is intended to
 /// catch. The bounds include the settle origin at zero.
-fn bounded_rest_displacement(data: &VelocitySweepData) -> bool {
-    data.settle_max_displacement_counts - data.settle_min_displacement_counts <= 1
+fn bounded_rest_displacement(minimum: i8, maximum: i8) -> bool {
+    maximum - minimum <= 1
 }
 
 #[cfg(test)]
 mod tests {
     use super::{bounded_rest_displacement, deficit_interval_q};
-    use crate::commissioning::outer::VelocitySweepData;
 
     #[test]
     fn bounded_boundary_dither_is_accepted() {
-        let mut data = VelocitySweepData::new(0);
-        data.settle_min_displacement_counts = 0;
-        data.settle_max_displacement_counts = 1;
-        data.settle_displacement_counts = -1;
-
-        assert!(bounded_rest_displacement(&data));
+        assert!(bounded_rest_displacement(0, 1));
     }
 
     #[test]
     fn multi_count_creep_is_not_accepted_as_bounded_rest() {
-        let mut data = VelocitySweepData::new(0);
-        data.settle_min_displacement_counts = -1;
-        data.settle_max_displacement_counts = 2;
-        data.settle_displacement_counts = 2;
-
-        assert!(!bounded_rest_displacement(&data));
+        assert!(!bounded_rest_displacement(-1, 2));
     }
 
     #[test]
