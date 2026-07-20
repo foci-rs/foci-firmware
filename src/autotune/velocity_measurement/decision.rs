@@ -4,7 +4,7 @@ use super::observation::{
 };
 
 /// Largest Bonferroni confidence family covered by the audited lookup table.
-pub const MAX_CONFIDENCE_FAMILY_SIZE: u16 = 64;
+pub const MAX_CONFIDENCE_FAMILY_SIZE: u16 = 128;
 
 // Two-sided 95% family-wise Bonferroni Student-t critical values at df=15.
 // Entry k-1 is t(1 - 0.05 / (2*k), 15), rounded to six decimal places.
@@ -17,7 +17,14 @@ const CONFIDENCE_MULTIPLIERS_95_DF15: [f32; MAX_CONFIDENCE_FAMILY_SIZE as usize]
     3.924726, 3.937811, 3.950561, 3.962993, 3.975122, 3.986963, 3.998529, 4.009833, 4.020887,
     4.031702, 4.042288, 4.052655, 4.062811, 4.072765, 4.082526, 4.092_1, 4.101495, 4.110717,
     4.119773, 4.128668, 4.137409, 4.146001, 4.154448, 4.162756, 4.170929, 4.178972, 4.186888,
-    4.194683,
+    4.194683, 4.202358, 4.209919, 4.217368, 4.224709, 4.231945, 4.239079, 4.246114, 4.253052,
+    4.259896, 4.266_65, 4.273314, 4.279892, 4.286386, 4.292798, 4.299129, 4.305383, 4.311561,
+    4.317665, 4.323696, 4.329656, 4.335548, 4.341372, 4.347_13, 4.352824, 4.358455, 4.364025,
+    4.369534, 4.374985, 4.380377, 4.385714, 4.390995, 4.396222, 4.401397, 4.406519, 4.411591,
+    4.416613, 4.421586, 4.426511, 4.431389, 4.436222, 4.441009, 4.445752, 4.450451, 4.455108,
+    4.459722, 4.464296, 4.468829, 4.473323, 4.477778, 4.482194, 4.486573, 4.490914, 4.495_22,
+    4.499489, 4.503724, 4.507924, 4.512_09, 4.516222, 4.520322, 4.524389, 4.528424, 4.532429,
+    4.536402, 4.540345,
 ];
 const MICROS_PER_SECOND: i128 = 1_000_000;
 const MILLISECONDS_PER_SECOND: i128 = 1_000;
@@ -251,7 +258,7 @@ mod tests {
     #[test]
     fn audited_confidence_multipliers_widen_monotonically() {
         let mut previous = confidence_multiplier_95_df15(1).unwrap();
-        for family_size in 2..=64 {
+        for family_size in 2..=128 {
             let current = confidence_multiplier_95_df15(family_size).unwrap();
             assert!(
                 current > previous,
@@ -267,8 +274,10 @@ mod tests {
     }
 
     #[test]
-    fn maximum_confidence_family_is_supported() {
+    fn audited_four_observation_families_are_supported() {
         assert_eq!(confidence_multiplier_95_df15(64), Ok(4.194_683));
+        assert_eq!(confidence_multiplier_95_df15(92), Ok(4.374_985));
+        assert_eq!(confidence_multiplier_95_df15(128), Ok(4.540_345));
     }
 
     #[test]
@@ -278,7 +287,7 @@ mod tests {
             Err(VelocityMeasurementError::InvalidConfidenceFamilySize)
         );
         assert_eq!(
-            confidence_multiplier_95_df15(65),
+            confidence_multiplier_95_df15(129),
             Err(VelocityMeasurementError::InvalidConfidenceFamilySize)
         );
     }
