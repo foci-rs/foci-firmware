@@ -8,6 +8,8 @@ mod integral_evidence_tests;
 pub mod integral_plan;
 #[cfg(test)]
 mod integral_plan_tests;
+#[cfg(feature = "trace-velocity-sweep")]
+pub mod integral_reproduction;
 pub mod operating_region;
 #[cfg(test)]
 mod operating_region_tests;
