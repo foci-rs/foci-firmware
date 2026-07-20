@@ -41,6 +41,23 @@ fn clamp_outer_safety_deadline(
     }
 }
 
+#[cfg(feature = "trace-velocity-sweep")]
+fn velocity_fault_terminal(
+    phase: &OuterPhase,
+    error: CommissionError,
+    safety_fault: Option<OuterSafetyFault>,
+) -> StepResult {
+    match phase {
+        OuterPhase::VelocitySweep { .. } => {
+            velocity::sweep_fault_terminal(phase, error, safety_fault)
+        }
+        OuterPhase::VelocityIntegral { .. } => {
+            velocity::integral_fault_terminal(phase, error, safety_fault)
+        }
+        _ => StepResult::OuterFailed(error),
+    }
+}
+
 /// Step outer phase state machine by one cooperative tick.
 ///
 /// Dispatches to the per-phase handler in the matching submodule. Every
@@ -104,8 +121,11 @@ pub(crate) async fn step_outer_with_trace<B: CommissioningBackend>(
             let fault = safety.invalid_budget_fault();
             let err = safety_error_for_phase(phase);
             #[cfg(feature = "trace-velocity-sweep")]
-            if matches!(phase, OuterPhase::VelocitySweep { .. }) {
-                return velocity::sweep_fault_terminal(phase, err, Some(fault));
+            if matches!(
+                phase,
+                OuterPhase::VelocitySweep { .. } | OuterPhase::VelocityIntegral { .. }
+            ) {
+                return velocity_fault_terminal(phase, err, Some(fault));
             }
             return fail_outer_with_safety(phase, err, fault);
         }
@@ -124,8 +144,11 @@ pub(crate) async fn step_outer_with_trace<B: CommissioningBackend>(
                     .await;
                 let err = safety_error_for_phase(phase);
                 #[cfg(feature = "trace-velocity-sweep")]
-                if matches!(phase, OuterPhase::VelocitySweep { .. }) {
-                    return velocity::sweep_fault_terminal(phase, err, Some(fault));
+                if matches!(
+                    phase,
+                    OuterPhase::VelocitySweep { .. } | OuterPhase::VelocityIntegral { .. }
+                ) {
+                    return velocity_fault_terminal(phase, err, Some(fault));
                 }
                 return fail_outer_with_safety(phase, err, fault);
             }
@@ -133,8 +156,11 @@ pub(crate) async fn step_outer_with_trace<B: CommissioningBackend>(
             Err(error) => {
                 defmt::warn!("outer safety check failed: {}", error);
                 #[cfg(feature = "trace-velocity-sweep")]
-                if matches!(phase, OuterPhase::VelocitySweep { .. }) {
-                    return velocity::sweep_fault_terminal(phase, error, None);
+                if matches!(
+                    phase,
+                    OuterPhase::VelocitySweep { .. } | OuterPhase::VelocityIntegral { .. }
+                ) {
+                    return velocity_fault_terminal(phase, error, None);
                 }
                 return fail_outer(phase, error);
             }
@@ -148,6 +174,10 @@ pub(crate) async fn step_outer_with_trace<B: CommissioningBackend>(
         #[cfg(feature = "trace-velocity-sweep")]
         OuterPhase::VelocitySweep { .. } => {
             velocity::step_velocity_sweep_with_trace(phase, backend).await
+        }
+        #[cfg(feature = "trace-velocity-sweep")]
+        OuterPhase::VelocityIntegral { .. } => {
+            velocity::step_velocity_integral_with_trace(phase, buf, backend).await
         }
         OuterPhase::VelocityTune { .. } => {
             velocity::step_velocity_tune(

@@ -2,8 +2,8 @@
 
 use crate::autotune::{CommissionError, PhaseId};
 use crate::commissioning::types::{
-    AdcCalResult, CommissionResult, EngineKind, OuterResult, StepResult, VelocitySweepEvent,
-    VelocitySweepTerminal,
+    AdcCalResult, CommissionResult, EngineKind, OuterResult, StepResult, VelocityIntegralEvent,
+    VelocityIntegralTerminal, VelocitySweepEvent, VelocitySweepTerminal,
 };
 
 /// Nonterminal commissioning evidence emitted independently of scheduling.
@@ -27,6 +27,13 @@ pub enum CommissionEvent {
         /// Transport-neutral evidence group.
         event: VelocitySweepEvent,
     },
+    /// Streamed report-only Stage-C velocity-integral evidence.
+    VelocityIntegral {
+        /// Object id of the commissioning channel.
+        oid: u8,
+        /// Transport-neutral evidence group.
+        event: VelocityIntegralEvent,
+    },
 }
 
 /// Terminal result from one commissioning engine run.
@@ -47,6 +54,8 @@ pub enum CommissionTerminal {
     CommissionDone(CommissionResult),
     /// Report-only velocity sweep completed, remained inconclusive, or faulted.
     VelocitySweep(VelocitySweepTerminal),
+    /// Report-only Stage-C response sweep completed, remained inconclusive, or faulted.
+    VelocityIntegral(VelocityIntegralTerminal),
 }
 
 impl CommissionTerminal {
@@ -59,6 +68,7 @@ impl CommissionTerminal {
             Self::SelftestDone => StepResult::SelftestDone,
             Self::CommissionDone(result) => StepResult::CommissionDone(result),
             Self::VelocitySweep(result) => StepResult::VelocitySweepTerminal(result),
+            Self::VelocityIntegral(result) => StepResult::VelocityIntegralTerminal(result),
         }
     }
 }
@@ -155,6 +165,15 @@ pub fn adapt_step_result(
         }
         StepResult::VelocitySweepTerminal(result) => Ok(CommissionPoll::Terminal {
             result: CommissionTerminal::VelocitySweep(result),
+        }),
+        StepResult::VelocityIntegralEvent(event) => {
+            let (oid, _) = event_context.ok_or(CommissionError::InvalidSchedule)?;
+            Ok(CommissionPoll::ReadyNow {
+                event: Some(CommissionEvent::VelocityIntegral { oid, event }),
+            })
+        }
+        StepResult::VelocityIntegralTerminal(result) => Ok(CommissionPoll::Terminal {
+            result: CommissionTerminal::VelocityIntegral(result),
         }),
         StepResult::InnerFailed(error) => Ok(CommissionPoll::Terminal {
             result: CommissionTerminal::InnerFailed(error),

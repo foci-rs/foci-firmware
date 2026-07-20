@@ -391,7 +391,7 @@ fn sweep_evidence_terminal(
     }
 }
 
-async fn clear_velocity_integrator<B: CommissioningBackend>(
+pub(super) async fn clear_velocity_integrator<B: CommissioningBackend>(
     backend: &mut B,
 ) -> Result<(), CommissionError> {
     crate::commissioning::helpers::write_sub_register_checked(

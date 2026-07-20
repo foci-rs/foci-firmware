@@ -28,7 +28,9 @@ use crate::commissioning::outer::{
     OuterMotionBudget, OuterPhase, OuterSafetyLimits, TraceSummarySeqs,
 };
 #[cfg(feature = "trace-velocity-sweep")]
-use crate::commissioning::outer::{VelocitySweepData, VelocitySweepState};
+use crate::commissioning::outer::{
+    VelocityIntegralData, VelocityIntegralState, VelocitySweepData, VelocitySweepState,
+};
 use crate::commissioning::types::{AdcCalResult, EngineKind, StepResult};
 use crate::pid::InnerLoopGains;
 use crate::state::tmc::TmcChannelState;
@@ -556,6 +558,51 @@ impl CommissioningEngine {
         engine
     }
 
+    /// Continue a live reproduced Stage-B engine into the exact Stage-C plan.
+    #[cfg(feature = "trace-velocity-sweep")]
+    #[allow(dead_code)] // Routed by the Stage-C lifecycle task immediately after this seam.
+    pub(crate) fn begin_stage_c_continuation(
+        &mut self,
+        authority: crate::commissioning::outer::velocity::integral_plan::StageCAuthority,
+        pwm_hz: u32,
+    ) -> Result<
+        crate::commissioning::types::VelocityIntegralEvent,
+        crate::commissioning::outer::velocity::integral_plan::VelocityIntegralPlanError,
+    > {
+        use crate::commissioning::outer::velocity::integral_plan::{
+            VelocityIntegralPlanError, plan_velocity_integral_response,
+        };
+
+        let EngineMode::Outer { phase, .. } = &mut self.engine_mode else {
+            return Err(VelocityIntegralPlanError::MissingStageBPlan);
+        };
+        let (stage_b_plan, budget) = match phase {
+            OuterPhase::VelocitySweep { data, safety, .. } => (data.plan, safety.budget),
+            _ => return Err(VelocityIntegralPlanError::MissingStageBPlan),
+        };
+        let plan = plan_velocity_integral_response(authority, stage_b_plan, budget, pwm_hz)?;
+        let maximum_workflow_ms = plan.maximum_workflow_ms;
+        let execution_plan = plan.execution_plan();
+        let old_phase =
+            core::mem::replace(phase, OuterPhase::Failed(CommissionError::InvalidSchedule));
+        let OuterPhase::VelocitySweep { safety, .. } = old_phase else {
+            unreachable!("Stage-C continuation validated a Stage-B phase")
+        };
+        *phase = OuterPhase::VelocityIntegral {
+            state: VelocityIntegralState::Setup,
+            data: VelocityIntegralData::new(execution_plan),
+            safety,
+        };
+        Ok(crate::commissioning::types::VelocityIntegralEvent::Planned(
+            crate::commissioning::types::VelocityIntegralPlanned {
+                plan_digest: execution_plan.plan_digest,
+                final_p: execution_plan.final_p,
+                positive_rung_count: execution_plan.positive_rung_count,
+                maximum_workflow_ms,
+            },
+        ))
+    }
+
     /// The OID this engine was started for.
     pub fn oid(&self) -> u8 {
         self.oid
@@ -920,6 +967,10 @@ impl CommissioningEngine {
                 #[cfg(not(feature = "trace-velocity-sweep"))]
                 self.emit_velocity_sweep_terminal_lifecycle(backend, *terminal);
             }
+            // Stage-C canonical trace records are added with their dedicated
+            // event IDs. Until then the phase is not reachable from command
+            // admission, and its transport-neutral evidence stays internal.
+            StepResult::VelocityIntegralEvent(_) | StepResult::VelocityIntegralTerminal(_) => {}
             StepResult::CommissionDone(result) => {
                 self.emit_trace_phase_end(backend, PHASE_END_OK, TraceEventLevel::Info);
                 let level = Self::status_level(result.inner.status);
@@ -1153,6 +1204,10 @@ mod tests {
         // ceiling.
         #[cfg(feature = "trace-velocity-sweep")]
         {
+            assert_eq!(
+                size_of::<crate::commissioning::outer::VelocityIntegralData>(),
+                2_432
+            );
             assert!(
                 size_of::<
                     crate::commissioning::outer::velocity::sweep_plan::VelocitySweepExecutionPlan,

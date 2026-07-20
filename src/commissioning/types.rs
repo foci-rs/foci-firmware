@@ -547,6 +547,101 @@ pub struct VelocitySweepTerminal {
     pub safety_fault: Option<OuterSafetyFault>,
 }
 
+/// Exact Stage-C plan identity disclosed before the first integral stroke.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+pub struct VelocityIntegralPlanned {
+    /// Exact Stage-C stage-plan digest.
+    pub plan_digest: u64,
+    /// Firmware-authoritative fixed proportional gain.
+    pub final_p: u16,
+    /// Number of positive-I rungs between the two I=0 anchors.
+    pub positive_rung_count: u8,
+    /// Conservative complete Stage-C duration.
+    pub maximum_workflow_ms: u32,
+}
+
+/// One analyzed Stage-C moving observation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+pub struct VelocityIntegralObservation {
+    /// Exact Stage-C plan digest.
+    pub plan_digest: u64,
+    /// Zero-based rung index including both anchors.
+    pub rung_index: u8,
+    /// Fixed F/R observation slot.
+    pub slot: u8,
+    /// Integral gain programmed for this rung.
+    pub i_raw: u16,
+    /// Direct encoder-rate-domain observation summary.
+    pub summary: crate::commissioning::outer::velocity::sweep_evidence::VelocityObservationSummary,
+}
+
+/// One completed Stage-C rung after both directional consensus folds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+pub struct VelocityIntegralRungReport {
+    /// Exact Stage-C plan digest.
+    pub plan_digest: u64,
+    /// Zero-based rung index including both anchors.
+    pub rung_index: u8,
+    /// Integral gain programmed for this rung.
+    pub i_raw: u16,
+    /// Forward and reverse exact consensus evidence.
+    pub directions:
+        [crate::commissioning::outer::velocity::integral_evidence::IntegralRungEvidence; 2],
+}
+
+/// Nonterminal Stage-C evidence produced by one cooperative poll.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+pub enum VelocityIntegralEvent {
+    /// Exact Stage-C plan became authoritative before motion.
+    Planned(VelocityIntegralPlanned),
+    /// One moving observation was analyzed.
+    Observation(VelocityIntegralObservation),
+    /// One complete anchor, positive, or bookend rung was folded.
+    Rung(VelocityIntegralRungReport),
+}
+
+/// Report-only Stage-C terminal class.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+pub enum VelocityIntegralOutcome {
+    /// One sufficient run awaits a separately commanded repeat.
+    CompleteCandidate,
+    /// A second run reproduced at least three response points per direction.
+    Complete,
+    /// Measurement was safe but evidence was insufficient.
+    Inconclusive,
+    /// Safety or evidence integrity failed.
+    Fault,
+    /// A changed exact plan was rejected before motion.
+    RejectedPlanMismatch,
+}
+
+/// Detailed Stage-C terminal retained for lifecycle and canonical reporting.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+pub struct VelocityIntegralTerminal {
+    /// Exact Stage-C plan digest.
+    pub plan_digest: u64,
+    /// Terminal measurement-stage class.
+    pub outcome: VelocityIntegralOutcome,
+    /// Dedicated Stage-C phase-local cause.
+    pub cause: u8,
+    /// Exact raw anchor and positive-rung evidence.
+    pub evidence: crate::commissioning::outer::velocity::integral_evidence::IntegralRunEvidence,
+    /// Number of observations required by the immutable plan.
+    pub expected_observations: u16,
+    /// Number of observation records emitted.
+    pub emitted_observations: u16,
+    /// Number of anchor/positive/bookend rungs required by the plan.
+    pub expected_rungs: u16,
+    /// Number of rung records emitted.
+    pub emitted_rungs: u16,
+    /// Monotonic timestamp captured before Stage-C motion.
+    pub run_started_us: u64,
+    /// Monotonic timestamp captured at terminal construction.
+    pub run_completed_us: u64,
+    /// Safety evidence retained for ordered fault emission.
+    pub safety_fault: Option<OuterSafetyFault>,
+}
+
 /// Generic terminal tying an inconclusive outer phase to its detailed report.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub struct OuterInconclusive {
@@ -576,6 +671,10 @@ pub enum StepResult {
     VelocitySweepEvent(VelocitySweepEvent),
     /// The report-only velocity sweep reached a terminal result.
     VelocitySweepTerminal(VelocitySweepTerminal),
+    /// Streamed Stage-C velocity-integral evidence became available.
+    VelocityIntegralEvent(VelocityIntegralEvent),
+    /// The report-only Stage-C response sweep reached a terminal result.
+    VelocityIntegralTerminal(VelocityIntegralTerminal),
     /// Inner commissioning failed.
     InnerFailed(CommissionError),
     /// Outer commissioning completed successfully.

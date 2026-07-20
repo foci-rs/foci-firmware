@@ -426,6 +426,33 @@ pub async fn drive_commission_result<B: CommissioningBackend>(
                 },
             }
         }
+        // Stage C has no command-admission route until the dedicated lifecycle
+        // and wire tasks land. Keep internal evidence nonterminal, and make an
+        // accidentally reached terminal fail closed rather than leave torque
+        // armed or emit a partial Stage-C record.
+        StepResult::VelocityIntegralEvent(_) => CommissionOutcome::Continue,
+        StepResult::VelocityIntegralTerminal(terminal) => {
+            use core::sync::atomic::Ordering::Relaxed;
+
+            let consumed = engine
+                .take()
+                .expect("engine slot is None on VelocityIntegralTerminal");
+            let oid = consumed.oid();
+            crate::tmc_control::lifecycle::disarm_motor(backend, state).await;
+            state.tmc.commission_in_flight.store(false, Relaxed);
+            CommissionOutcome::Terminal {
+                reply: ReplyPayload::TuneResult {
+                    oid,
+                    status: terminal.cause,
+                    result: zero_outer_result(),
+                    safety_fault: terminal.safety_fault,
+                },
+                actions: PostActions {
+                    stop_trace: true,
+                    stepper: StepperPostAction::Stop,
+                },
+            }
+        }
         StepResult::SelftestDone => {
             let mut consumed = engine.take().expect("engine slot None on SelftestDone");
             let oid = consumed.oid();

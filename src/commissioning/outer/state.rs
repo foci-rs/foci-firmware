@@ -23,6 +23,11 @@ use crate::commissioning::outer::velocity::sweep_evidence::{
 use crate::commissioning::outer::velocity::sweep_plan::VelocitySweepExecutionPlan;
 #[cfg(feature = "trace-velocity-sweep")]
 use crate::commissioning::outer::velocity::sweep_reporting::VelocitySweepIntegrity;
+#[cfg(feature = "trace-velocity-sweep")]
+use crate::commissioning::outer::velocity::{
+    integral_evidence::ExactRateInterval, integral_plan::VelocityIntegralExecutionPlan,
+    sweep_evidence::VelocityObservationClass,
+};
 
 use super::OUTER_WARNING_NONE;
 use super::safety::OuterSafetyLimits;
@@ -167,6 +172,112 @@ impl crate::autotune::velocity_measurement::VelocityObservationSource for Veloci
             delta_counts: self.delta_counts[source_index],
             elapsed_us: u32::from(self.elapsed_us[source_index]),
         })
+    }
+}
+
+/// Phase-local state for the trace-gated velocity-integral response sweep.
+#[cfg(feature = "trace-velocity-sweep")]
+#[derive(Debug, defmt::Format)]
+pub(crate) enum VelocityIntegralState {
+    /// Validate the already-emitted immutable plan and arm measurement safety.
+    Setup,
+    /// Program fixed P and the current rung's I value.
+    WriteGains,
+    /// Clear the integrator before a signed command.
+    ClearSignedIntegrator,
+    /// Apply the next F/R target in the fixed eight-slot schedule.
+    CommandTarget,
+    /// Capture one fixed moving window.
+    Capture {
+        next_sample_us: u64,
+        deadline_us: u64,
+    },
+    /// Return the target to zero before any analysis or settle work.
+    CommandZero,
+    /// Clear the integrator at the signed-step boundary.
+    ClearSettleIntegrator { settle_started_us: u64 },
+    /// Analyze the moving tail within the fixed settle budget.
+    AnalyzeMoving {
+        settle_deadline_us: u64,
+        analysis_deadline_us: u64,
+    },
+    /// Refresh the encoder baseline for the terminal rest capture.
+    BeginSettleCapture { settle_deadline_us: u64 },
+    /// Capture the terminal zero-target rest window.
+    SettleCapture {
+        next_sample_us: u64,
+        deadline_us: u64,
+    },
+    /// Confirm rest without extending the declared schedule.
+    AnalyzeSettle { analysis_deadline_us: u64 },
+    /// Advance the fixed slot/rung cursor after confirmed rest.
+    Advance,
+    /// Fold the completed rung into anchor, curve, or bookend evidence.
+    AnalyzeRung,
+    /// Emit a structural-fault terminal after its observation evidence.
+    FaultTerminal { error: CommissionError },
+    /// Emit the report-only Stage-C terminal.
+    Terminal,
+}
+
+/// Engine-owned Stage-C acquisition and exact raw-curve state.
+#[cfg(feature = "trace-velocity-sweep")]
+#[derive(Debug, defmt::Format)]
+pub(crate) struct VelocityIntegralData {
+    pub(crate) plan: VelocityIntegralExecutionPlan,
+    pub(crate) rung_index: u8,
+    pub(crate) slot: u8,
+    pub(crate) previous_encoder_raw: u32,
+    pub(crate) previous_read_us: u64,
+    pub(crate) run_started_us: u64,
+    pub(crate) peak_torque_target: u16,
+    pub(crate) observation_current_headroom: bool,
+    pub(crate) settle_displacement_counts: i8,
+    pub(crate) settle_min_displacement_counts: i8,
+    pub(crate) settle_max_displacement_counts: i8,
+    #[defmt(Debug2Format)]
+    pub(crate) observations: VelocityObservationRing,
+    #[defmt(Debug2Format)]
+    pub(crate) blocker: DyadicBlocker<VELOCITY_SWEEP_BLOCK_LEVELS>,
+    #[defmt(Debug2Format)]
+    pub(crate) analysis: StationarityWork,
+    pub(crate) rung_classes: [VelocityObservationClass; 8],
+    pub(crate) rung_intervals: [ExactRateInterval; 8],
+    pub(crate) eligible_masks: [u32; 2],
+    pub(crate) bookend_available_mask: u8,
+    pub(crate) current_terminus: Option<u8>,
+    pub(crate) opening_direction_mask: u8,
+    pub(crate) emitted_observations: u16,
+    pub(crate) emitted_rungs: u16,
+}
+
+#[cfg(feature = "trace-velocity-sweep")]
+impl VelocityIntegralData {
+    pub(crate) const fn new(plan: VelocityIntegralExecutionPlan) -> Self {
+        Self {
+            plan,
+            rung_index: 0,
+            slot: 0,
+            previous_encoder_raw: 0,
+            previous_read_us: 0,
+            run_started_us: 0,
+            peak_torque_target: 0,
+            observation_current_headroom: false,
+            settle_displacement_counts: 0,
+            settle_min_displacement_counts: 0,
+            settle_max_displacement_counts: 0,
+            observations: VelocityObservationRing::new(),
+            blocker: DyadicBlocker::new(),
+            analysis: StationarityWork::new(),
+            rung_classes: [VelocityObservationClass::InvalidEvidenceFault; 8],
+            rung_intervals: [ExactRateInterval::EMPTY; 8],
+            eligible_masks: [0; 2],
+            bookend_available_mask: 0,
+            current_terminus: None,
+            opening_direction_mask: 0,
+            emitted_observations: 0,
+            emitted_rungs: 0,
+        }
     }
 }
 
@@ -697,6 +808,13 @@ pub(crate) enum OuterPhase {
         data: VelocitySweepData,
         safety: OuterSafetyLimits,
     },
+    /// Trace-gated Stage-C fixed-P velocity-integral response phase.
+    #[cfg(feature = "trace-velocity-sweep")]
+    VelocityIntegral {
+        state: VelocityIntegralState,
+        data: VelocityIntegralData,
+        safety: OuterSafetyLimits,
+    },
     /// Phase 9: Velocity-loop SIMC gain synthesis.
     VelocityTune {
         model: MechanicalModel,
@@ -769,6 +887,8 @@ impl OuterPhase {
             Self::MechanicalId { .. } => Some(PhaseId::MechanicalId),
             #[cfg(feature = "trace-velocity-sweep")]
             Self::VelocitySweep { .. } => Some(PhaseId::VelocityTune),
+            #[cfg(feature = "trace-velocity-sweep")]
+            Self::VelocityIntegral { .. } => Some(PhaseId::VelocityTune),
             Self::VelocityTune { .. } => Some(PhaseId::VelocityTune),
             Self::VelocityValidate { .. } => Some(PhaseId::VelocityValidate),
             Self::PositionTune { .. } => Some(PhaseId::PositionTune),
