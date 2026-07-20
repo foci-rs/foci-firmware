@@ -1104,6 +1104,15 @@ pub fn emit_terminal_reply<S: CommissionReplySink>(sink: &mut S, payload: ReplyP
             }
             emit_velocity_sweep_terminal_fragments(sink, oid, terminal);
         }
+        // Task 6 installs the canonical Stage-C record families before board
+        // admission is wired. Keeping these semantic payloads explicit here
+        // lets Task 5 prove lifecycle ordering without inventing wire fields.
+        #[cfg(feature = "trace-velocity-sweep")]
+        ReplyPayload::CommissioningWorkflowPlan { .. }
+        | ReplyPayload::VelocityIntegralContinuation { .. }
+        | ReplyPayload::VelocityIntegralPlan { .. }
+        | ReplyPayload::VelocityIntegralEvent { .. }
+        | ReplyPayload::VelocityIntegralTerminal { .. } => {}
     }
 }
 

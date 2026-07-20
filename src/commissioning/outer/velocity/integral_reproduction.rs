@@ -27,6 +27,12 @@ pub struct StageCAuthoritySummary {
     pub stage_b_plan_digest: u64,
     /// Firmware-authoritative fixed proportional gain.
     pub final_p: u16,
+    /// Reproduced forward and reverse Stage-B model memberships.
+    pub directional_memberships: [u32; DIRECTION_COUNT],
+    /// Reproduced Stage-B joint-operability membership.
+    pub joint_membership: u32,
+    /// Reproduced forward and reverse pooled disturbance intervals.
+    pub directional_pooled_intervals: [[i32; 2]; DIRECTION_COUNT],
     /// Frozen encoder-domain amplitude.
     pub planned_velocity_mrev_s: u32,
     /// Frozen signed-target magnitude.
@@ -49,6 +55,7 @@ impl StageCAuthoritySummary {
         schema_revision: u16,
         stage_b_plan_digest: u64,
         plan: VelocityIntegralExecutionPlan,
+        authority: super::integral_plan::StageCAuthority,
     ) -> Self {
         Self {
             identity: StageCPlanIdentity {
@@ -59,12 +66,27 @@ impl StageCAuthoritySummary {
             },
             stage_b_plan_digest,
             final_p: plan.final_p,
+            directional_memberships: authority.directional_memberships,
+            joint_membership: authority.joint_membership,
+            directional_pooled_intervals: authority.directional_pooled_intervals,
             planned_velocity_mrev_s: plan.planned_velocity_mrev_s,
             target_velocity_rpm: plan.target_velocity_rpm,
             pwm_hz: plan.pwm_hz,
             positive_rung_count: plan.positive_rung_count,
             family_size: plan.family_size,
             maximum_workflow_ms: plan.maximum_workflow_ms,
+        }
+    }
+
+    /// Rebuild the exact Stage-B handoff used by Stage-C planning.
+    pub const fn stage_c_authority(self) -> super::integral_plan::StageCAuthority {
+        super::integral_plan::StageCAuthority {
+            channel: self.identity.channel,
+            stage_b_plan_digest: self.stage_b_plan_digest,
+            final_p: self.final_p,
+            directional_memberships: self.directional_memberships,
+            joint_membership: self.joint_membership,
+            directional_pooled_intervals: self.directional_pooled_intervals,
         }
     }
 }
@@ -94,8 +116,8 @@ pub enum StageCSlotState {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
-// Fixed inline storage is required: firmware has no heap, and the measured
-// 600-byte slot remains below its explicit 640-byte ceiling.
+// Fixed inline storage is required because firmware has no heap. The exact
+// slot remains below its explicit 640-byte ceiling.
 #[allow(clippy::large_enum_variant)]
 enum RetainedStageC {
     Empty,

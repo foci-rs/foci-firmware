@@ -14,6 +14,10 @@ pub mod replies;
 mod restore;
 #[cfg(feature = "trace-velocity-sweep")]
 pub mod stage_b;
+#[cfg(feature = "trace-velocity-sweep")]
+pub mod stage_c;
+#[cfg(all(test, feature = "trace-velocity-sweep"))]
+mod stage_c_tests;
 #[cfg(test)]
 pub(crate) mod test_support;
 #[cfg(test)]
@@ -54,6 +58,25 @@ pub struct DispatchState<'a> {
     pub calibrated: &'a mut bool,
     pub motor_enabled: &'a mut bool,
     pub stored_gains: &'a mut Option<InnerLoopGains>,
+}
+
+/// Mutable board-wide evidence retention passed through one dispatch call.
+#[cfg(feature = "trace-velocity-sweep")]
+pub struct CommissionRetention<'a> {
+    pub stage_b: &'a mut crate::commissioning::outer::velocity::reproduction::StageBCandidateSlot,
+    pub stage_c:
+        &'a mut crate::commissioning::outer::velocity::integral_reproduction::StageCCandidateSlot,
+}
+
+#[cfg(feature = "trace-velocity-sweep")]
+impl<'a> CommissionRetention<'a> {
+    /// Borrow both stage-local RAM slots as one lifecycle context.
+    pub fn new(
+        stage_b: &'a mut crate::commissioning::outer::velocity::reproduction::StageBCandidateSlot,
+        stage_c: &'a mut crate::commissioning::outer::velocity::integral_reproduction::StageCCandidateSlot,
+    ) -> Self {
+        Self { stage_b, stage_c }
+    }
 }
 
 impl<'a> DispatchState<'a> {
@@ -231,6 +254,12 @@ fn record_restore_summary<B: CommissioningBackend>(
 /// Wire-reply payload for the board to emit via `klipper_reply_from!`.
 #[allow(clippy::large_enum_variant)]
 pub enum ReplyPayload {
+    /// Command-level motion shape and conservative host-timeout authority.
+    #[cfg(feature = "trace-velocity-sweep")]
+    CommissioningWorkflowPlan {
+        oid: u8,
+        plan: crate::commissioning::outer::velocity::integral_plan::CommissioningWorkflowPlan,
+    },
     /// FociCommissionPhase: phase change reply (foci_commission failures
     /// during inner phases).
     CommissionPhase {
@@ -276,6 +305,33 @@ pub enum ReplyPayload {
         terminal: VelocitySweepTerminal,
         #[cfg(feature = "trace-velocity-sweep")]
         reproduction: Option<stage_b::StageBReproductionReport>,
+    },
+    /// Causal Stage-B Complete followed by the exact Stage-C continuation plan.
+    #[cfg(feature = "trace-velocity-sweep")]
+    VelocityIntegralContinuation {
+        oid: u8,
+        stage_b_terminal: VelocitySweepTerminal,
+        stage_b_reproduction: Option<stage_b::StageBReproductionReport>,
+        stage_c_plan: crate::commissioning::outer::velocity::integral_plan::VelocityIntegralPlan,
+    },
+    /// Complete exact Stage-C plan emitted before direct-resume motion.
+    #[cfg(feature = "trace-velocity-sweep")]
+    VelocityIntegralPlan {
+        oid: u8,
+        plan: crate::commissioning::outer::velocity::integral_plan::VelocityIntegralPlan,
+    },
+    /// One streamed Stage-C observation or rung event.
+    #[cfg(feature = "trace-velocity-sweep")]
+    VelocityIntegralEvent {
+        oid: u8,
+        event: crate::commissioning::types::VelocityIntegralEvent,
+    },
+    /// Dedicated detailed Stage-C terminal and optional comparison.
+    #[cfg(feature = "trace-velocity-sweep")]
+    VelocityIntegralTerminal {
+        oid: u8,
+        terminal: crate::commissioning::types::VelocityIntegralTerminal,
+        reproduction: Option<stage_c::StageCReproductionReport>,
     },
 }
 
@@ -426,11 +482,43 @@ pub async fn drive_commission_result<B: CommissioningBackend>(
                 },
             }
         }
-        // Stage C has no command-admission route until the dedicated lifecycle
-        // and wire tasks land. Keep internal evidence nonterminal, and make an
-        // accidentally reached terminal fail closed rather than leave torque
-        // armed or emit a partial Stage-C record.
+        #[cfg(feature = "trace-velocity-sweep")]
+        StepResult::VelocityIntegralEvent(event) => {
+            let engine_ref = engine
+                .as_ref()
+                .expect("engine slot is None on VelocityIntegralEvent");
+            CommissionOutcome::Evidence {
+                reply: ReplyPayload::VelocityIntegralEvent {
+                    oid: engine_ref.oid(),
+                    event,
+                },
+            }
+        }
+        #[cfg(feature = "trace-velocity-sweep")]
+        StepResult::VelocityIntegralTerminal(terminal) => {
+            use core::sync::atomic::Ordering::Relaxed;
+
+            let consumed = engine
+                .take()
+                .expect("engine slot is None on VelocityIntegralTerminal");
+            let oid = consumed.oid();
+            crate::tmc_control::lifecycle::disarm_motor(backend, state).await;
+            state.tmc.commission_in_flight.store(false, Relaxed);
+            CommissionOutcome::Terminal {
+                reply: ReplyPayload::VelocityIntegralTerminal {
+                    oid,
+                    terminal,
+                    reproduction: None,
+                },
+                actions: PostActions {
+                    stop_trace: true,
+                    stepper: StepperPostAction::Stop,
+                },
+            }
+        }
+        #[cfg(not(feature = "trace-velocity-sweep"))]
         StepResult::VelocityIntegralEvent(_) => CommissionOutcome::Continue,
+        #[cfg(not(feature = "trace-velocity-sweep"))]
         StepResult::VelocityIntegralTerminal(terminal) => {
             use core::sync::atomic::Ordering::Relaxed;
 
@@ -1049,5 +1137,134 @@ pub async fn drive_commission_result_with_stage_b<B: CommissioningBackend>(
             actions,
         },
         _ => unreachable!("velocity-sweep terminal produced a nonterminal outcome"),
+    }
+}
+
+/// Dispatch one result while applying both Stage-B and Stage-C retained lifecycles.
+#[cfg(feature = "trace-velocity-sweep")]
+pub async fn drive_commission_result_with_stages<B: CommissioningBackend>(
+    result: StepResult,
+    engine: &mut Option<CommissioningEngine>,
+    backend: &mut B,
+    state: &mut DispatchState<'_>,
+    pwm_maxcnt: u16,
+    channel: u8,
+    retention: CommissionRetention<'_>,
+) -> CommissionOutcome {
+    match result {
+        StepResult::VelocitySweepTerminal(terminal) => {
+            let dispatch = stage_b::apply_stage_b_terminal(terminal, channel, retention.stage_b);
+            if dispatch.terminal.outcome
+                != crate::commissioning::types::VelocitySweepOutcome::Complete
+            {
+                engine
+                    .as_mut()
+                    .expect("engine slot is None on VelocitySweepTerminal")
+                    .emit_stage_b_terminal_trace(backend, dispatch.terminal, dispatch.reproduction);
+                return match drive_commission_result(
+                    StepResult::VelocitySweepTerminal(dispatch.terminal),
+                    engine,
+                    backend,
+                    state,
+                    pwm_maxcnt,
+                )
+                .await
+                {
+                    CommissionOutcome::Terminal {
+                        reply: ReplyPayload::VelocitySweepTerminal { oid, terminal, .. },
+                        actions,
+                    } => CommissionOutcome::Terminal {
+                        reply: ReplyPayload::VelocitySweepTerminal {
+                            oid,
+                            terminal,
+                            reproduction: dispatch.reproduction,
+                        },
+                        actions,
+                    },
+                    _ => unreachable!("velocity-sweep terminal produced a nonterminal outcome"),
+                };
+            }
+
+            let authority = crate::commissioning::outer::velocity::integral_plan::StageCAuthority {
+                channel,
+                stage_b_plan_digest: dispatch.terminal.plan_digest,
+                final_p: dispatch.terminal.nominated_p,
+                directional_memberships: [
+                    dispatch.terminal.selected_memberships[0],
+                    dispatch.terminal.selected_memberships[1],
+                ],
+                joint_membership: dispatch.terminal.selected_memberships[2],
+                directional_pooled_intervals: dispatch.terminal.selected_intervals,
+            };
+            let engine_ref = engine
+                .as_mut()
+                .expect("engine slot is None on VelocitySweepTerminal");
+            engine_ref.emit_stage_b_terminal_evidence(
+                backend,
+                dispatch.terminal,
+                dispatch.reproduction,
+            );
+            let oid = engine_ref.oid();
+            let stage_c_plan = match engine_ref
+                .begin_stage_c_continuation(authority, backend.tmc_config().pwm_freq_hz())
+            {
+                Ok(plan) => plan,
+                Err(_) => {
+                    retention.stage_c.observe_fault();
+                    return drive_commission_result(
+                        StepResult::OuterFailed(crate::autotune::CommissionError::InvalidSchedule),
+                        engine,
+                        backend,
+                        state,
+                        pwm_maxcnt,
+                    )
+                    .await;
+                }
+            };
+            retention.stage_c.install_authority(
+                crate::commissioning::outer::velocity::integral_reproduction::StageCAuthoritySummary::from_plan(
+                    channel,
+                    crate::commissioning::outer::velocity::reproduction::STAGE_B_BUILD_REVISION,
+                    crate::commissioning::outer::velocity::integral_plan::STAGE_C_EVIDENCE_SCHEMA_REVISION,
+                    dispatch.terminal.plan_digest,
+                    stage_c_plan.execution_plan(),
+                    authority,
+                ),
+            );
+            CommissionOutcome::Evidence {
+                reply: ReplyPayload::VelocityIntegralContinuation {
+                    oid,
+                    stage_b_terminal: dispatch.terminal,
+                    stage_b_reproduction: dispatch.reproduction,
+                    stage_c_plan,
+                },
+            }
+        }
+        StepResult::VelocityIntegralTerminal(terminal) => {
+            let dispatch = stage_c::apply_stage_c_terminal(terminal, retention.stage_c);
+            match drive_commission_result(
+                StepResult::VelocityIntegralTerminal(dispatch.terminal),
+                engine,
+                backend,
+                state,
+                pwm_maxcnt,
+            )
+            .await
+            {
+                CommissionOutcome::Terminal {
+                    reply: ReplyPayload::VelocityIntegralTerminal { oid, terminal, .. },
+                    actions,
+                } => CommissionOutcome::Terminal {
+                    reply: ReplyPayload::VelocityIntegralTerminal {
+                        oid,
+                        terminal,
+                        reproduction: dispatch.reproduction,
+                    },
+                    actions,
+                },
+                _ => unreachable!("velocity-integral terminal produced a nonterminal outcome"),
+            }
+        }
+        other => drive_commission_result(other, engine, backend, state, pwm_maxcnt).await,
     }
 }

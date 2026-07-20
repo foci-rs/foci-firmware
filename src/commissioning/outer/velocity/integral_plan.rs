@@ -361,6 +361,33 @@ pub fn confidence_family_size(positive_rungs: usize) -> Result<u16, VelocityInte
     u16::try_from(family).map_err(|_| VelocityIntegralPlanError::Arithmetic)
 }
 
+/// Derive the conservative fixed Stage-C duration for one frozen PWM rate.
+pub fn integral_workflow_maximum_ms(pwm_hz: u32) -> Result<u32, VelocityIntegralPlanError> {
+    let ladder = build_integral_ladder(
+        pwm_hz,
+        MOVING_STROKE_US,
+        MIN_SETTLE_CAPTURE_US,
+        OUTER_MAX_VELOCITY_I,
+    )?;
+    let total_rungs = ladder
+        .rungs
+        .len()
+        .checked_add(2)
+        .ok_or(VelocityIntegralPlanError::Arithmetic)?;
+    let observations = total_rungs
+        .checked_mul(STAGE_C_OBSERVATIONS_PER_RUNG as usize)
+        .ok_or(VelocityIntegralPlanError::Arithmetic)?;
+    let primitive_us = MOVING_STROKE_US
+        .checked_add(ZERO_SETTLE_US)
+        .and_then(|value| value.checked_add(SETTLE_ANALYSIS_BUDGET_US))
+        .ok_or(VelocityIntegralPlanError::Arithmetic)?;
+    let workflow_us = u32::try_from(observations)
+        .map_err(|_| VelocityIntegralPlanError::Arithmetic)?
+        .checked_mul(primitive_us)
+        .ok_or(VelocityIntegralPlanError::Arithmetic)?;
+    Ok(workflow_us / 1_000)
+}
+
 /// Construct one exact Stage-C stage plan from reproduced Stage-B authority.
 #[allow(dead_code)]
 pub(crate) fn plan_velocity_integral_response(

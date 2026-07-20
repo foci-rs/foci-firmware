@@ -1,20 +1,18 @@
 //! Velocity-loop commissioning phases.
 
-#[cfg(feature = "trace-velocity-sweep")]
 pub mod integral_evidence;
 #[cfg(test)]
 mod integral_evidence_tests;
-#[cfg(feature = "trace-velocity-sweep")]
 pub mod integral_plan;
 #[cfg(test)]
 mod integral_plan_tests;
 #[cfg(feature = "trace-velocity-sweep")]
 pub mod integral_reproduction;
-#[cfg(test)]
+#[cfg(all(test, feature = "trace-velocity-sweep"))]
 mod integral_reproduction_tests;
 #[cfg(feature = "trace-velocity-sweep")]
 mod integral_sweep;
-#[cfg(test)]
+#[cfg(all(test, feature = "trace-velocity-sweep"))]
 mod integral_sweep_tests;
 pub mod operating_region;
 #[cfg(test)]

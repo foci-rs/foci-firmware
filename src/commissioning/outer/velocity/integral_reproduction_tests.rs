@@ -23,6 +23,9 @@ fn authority(channel: u8, digest: u64) -> StageCAuthoritySummary {
         identity: identity(channel, digest),
         stage_b_plan_digest: 0x0123_4567_89ab_cdef,
         final_p: 1_448,
+        directional_memberships: [0x0038_0000; 2],
+        joint_membership: 0x0038_0000,
+        directional_pooled_intervals: [[10, 20], [-20, -10]],
         planned_velocity_mrev_s: 2_929,
         target_velocity_rpm: 176,
         pwm_hz: 25_000,
@@ -250,5 +253,5 @@ fn plan_mismatch_and_invalidation_follow_the_authority_lifecycle() {
 #[test]
 fn candidate_slot_size_is_measured_without_padding() {
     assert!(core::mem::size_of::<StageCCandidateSlot>() <= 640);
-    assert_eq!(core::mem::size_of::<StageCCandidateSlot>(), 600);
+    assert_eq!(core::mem::size_of::<StageCCandidateSlot>(), 632);
 }

@@ -486,11 +486,12 @@ impl TmcControlRuntime {
     }
 
     /// Dispatch a terminal commissioning result into the board-facing action.
-    pub async fn drive_commissioning_terminal<B>(
+    #[cfg(feature = "trace-velocity-sweep")]
+    pub async fn drive_commissioning_terminal_with_stages<B>(
         &mut self,
         result: CommissionTerminal,
         backend: &mut B,
-        stage_b_candidate: &mut crate::commissioning::outer::velocity::reproduction::StageBCandidateSlot,
+        retention: crate::commission_dispatch::CommissionRetention<'_>,
         tmc: &'static TmcChannelState,
         stepper: &'static StepperChannelState,
         config: &TmcControlConfig,
@@ -509,19 +510,19 @@ impl TmcControlRuntime {
         #[cfg(feature = "trace-velocity-sweep")]
         let channel = self.channel;
         #[cfg(feature = "trace-velocity-sweep")]
-        let outcome = crate::commission_dispatch::drive_commission_result_with_stage_b(
+        let outcome = crate::commission_dispatch::drive_commission_result_with_stages(
             result.into_step_result(),
             &mut self.commission_engine,
             backend,
             &mut dispatch,
             config.tmc.pwm_maxcnt,
             channel,
-            stage_b_candidate,
+            retention,
         )
         .await;
         #[cfg(not(feature = "trace-velocity-sweep"))]
         let outcome = {
-            let _ = stage_b_candidate;
+            let _ = retention;
             crate::commission_dispatch::drive_commission_result(
                 result.into_step_result(),
                 &mut self.commission_engine,
@@ -544,6 +545,110 @@ impl TmcControlRuntime {
     }
 
     /// Convert an explicit poll into the board-facing scheduled action.
+    #[cfg(feature = "trace-velocity-sweep")]
+    pub async fn drive_commissioning_poll_with_stages<B>(
+        &mut self,
+        poll: CommissionPoll,
+        backend: &mut B,
+        retention: crate::commission_dispatch::CommissionRetention<'_>,
+        tmc: &'static TmcChannelState,
+        stepper: &'static StepperChannelState,
+        config: &TmcControlConfig,
+    ) -> Option<ScheduledCommissionTickAction>
+    where
+        B: CommissioningBackend,
+    {
+        match poll {
+            CommissionPoll::ReadyNow { event } => {
+                self.classify_commission_poll(CommissionPoll::ReadyNow { event })
+            }
+            CommissionPoll::At {
+                timestamp_us,
+                event,
+            } => self.classify_commission_poll(CommissionPoll::At {
+                timestamp_us,
+                event,
+            }),
+            CommissionPoll::Terminal { result } => {
+                self.drive_commissioning_terminal_with_stages(
+                    result, backend, retention, tmc, stepper, config,
+                )
+                .await
+            }
+        }
+    }
+
+    /// Dispatch a terminal with temporary empty Stage-C retention.
+    ///
+    /// Board integration switches to [`Self::drive_commissioning_terminal_with_stages`]
+    /// when its persistent Stage-C task-local is added.
+    pub async fn drive_commissioning_terminal<B>(
+        &mut self,
+        result: CommissionTerminal,
+        backend: &mut B,
+        stage_b_candidate: &mut crate::commissioning::outer::velocity::reproduction::StageBCandidateSlot,
+        tmc: &'static TmcChannelState,
+        stepper: &'static StepperChannelState,
+        config: &TmcControlConfig,
+    ) -> Option<ScheduledCommissionTickAction>
+    where
+        B: CommissioningBackend,
+    {
+        #[cfg(feature = "trace-velocity-sweep")]
+        {
+            let mut stage_c_candidate =
+            crate::commissioning::outer::velocity::integral_reproduction::StageCCandidateSlot::new(
+            );
+            return self
+                .drive_commissioning_terminal_with_stages(
+                    result,
+                    backend,
+                    crate::commission_dispatch::CommissionRetention::new(
+                        stage_b_candidate,
+                        &mut stage_c_candidate,
+                    ),
+                    tmc,
+                    stepper,
+                    config,
+                )
+                .await;
+        }
+        #[cfg(not(feature = "trace-velocity-sweep"))]
+        {
+            self.commission_engine.as_ref()?;
+            let mut dispatch = crate::commission_dispatch::DispatchState::new(
+                tmc,
+                stepper,
+                &mut self.calibrated,
+                &mut self.motor_enabled,
+                &mut self.stored_gains,
+            );
+            let _ = stage_b_candidate;
+            let outcome = crate::commission_dispatch::drive_commission_result(
+                result.into_step_result(),
+                &mut self.commission_engine,
+                backend,
+                &mut dispatch,
+                config.tmc.pwm_maxcnt,
+            )
+            .await;
+            match outcome {
+                crate::commission_dispatch::CommissionOutcome::Terminal { reply, actions } => {
+                    Some(ScheduledCommissionTickAction::Terminal { reply, actions })
+                }
+                crate::commission_dispatch::CommissionOutcome::Continue
+                | crate::commission_dispatch::CommissionOutcome::PhaseChanged { .. }
+                | crate::commission_dispatch::CommissionOutcome::Evidence { .. } => {
+                    unreachable!("terminal poll produced a nonterminal dispatch action")
+                }
+            }
+        }
+    }
+
+    /// Dispatch one poll with temporary empty Stage-C retention.
+    ///
+    /// Board integration switches to [`Self::drive_commissioning_poll_with_stages`]
+    /// when its persistent Stage-C task-local is added.
     pub async fn drive_commissioning_poll<B>(
         &mut self,
         poll: CommissionPoll,
@@ -556,6 +661,26 @@ impl TmcControlRuntime {
     where
         B: CommissioningBackend,
     {
+        #[cfg(feature = "trace-velocity-sweep")]
+        {
+            let mut stage_c_candidate =
+            crate::commissioning::outer::velocity::integral_reproduction::StageCCandidateSlot::new(
+            );
+            return self
+                .drive_commissioning_poll_with_stages(
+                    poll,
+                    backend,
+                    crate::commission_dispatch::CommissionRetention::new(
+                        stage_b_candidate,
+                        &mut stage_c_candidate,
+                    ),
+                    tmc,
+                    stepper,
+                    config,
+                )
+                .await;
+        }
+        #[cfg(not(feature = "trace-velocity-sweep"))]
         match poll {
             CommissionPoll::ReadyNow { event } => {
                 self.classify_commission_poll(CommissionPoll::ReadyNow { event })

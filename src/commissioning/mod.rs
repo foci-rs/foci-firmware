@@ -560,13 +560,12 @@ impl CommissioningEngine {
 
     /// Continue a live reproduced Stage-B engine into the exact Stage-C plan.
     #[cfg(feature = "trace-velocity-sweep")]
-    #[allow(dead_code)] // Routed by the Stage-C lifecycle task immediately after this seam.
     pub(crate) fn begin_stage_c_continuation(
         &mut self,
         authority: crate::commissioning::outer::velocity::integral_plan::StageCAuthority,
         pwm_hz: u32,
     ) -> Result<
-        crate::commissioning::types::VelocityIntegralEvent,
+        crate::commissioning::outer::velocity::integral_plan::VelocityIntegralPlan,
         crate::commissioning::outer::velocity::integral_plan::VelocityIntegralPlanError,
     > {
         use crate::commissioning::outer::velocity::integral_plan::{
@@ -593,14 +592,40 @@ impl CommissioningEngine {
             data: VelocityIntegralData::new(execution_plan),
             safety,
         };
-        Ok(crate::commissioning::types::VelocityIntegralEvent::Planned(
-            crate::commissioning::types::VelocityIntegralPlanned {
-                plan_digest: execution_plan.plan_digest,
-                final_p: execution_plan.final_p,
-                positive_rung_count: execution_plan.positive_rung_count,
-                maximum_workflow_ms,
-            },
-        ))
+        let _ = maximum_workflow_ms;
+        Ok(plan)
+    }
+
+    /// Create a direct Stage-C resume engine from a preflighted exact plan.
+    #[cfg(feature = "trace-velocity-sweep")]
+    pub fn new_outer_for_tmc_with_stage_c_preflight(
+        oid: u8,
+        tmc_state: &'static TmcChannelState,
+        params: OuterTuneParams,
+        entry_snapshot: EntrySnapshot,
+        preflight: crate::commission_dispatch::stage_c::StageCPreflight,
+    ) -> Self {
+        let mut engine = Self::new_outer_for_tmc_with_trace_seq(
+            oid,
+            tmc_state,
+            params,
+            entry_snapshot,
+            preflight.run_sequence,
+        );
+        let EngineMode::Outer { phase, .. } = &mut engine.engine_mode else {
+            unreachable!("outer constructor must produce an outer engine")
+        };
+        let old_phase =
+            core::mem::replace(phase, OuterPhase::Failed(CommissionError::InvalidSchedule));
+        let OuterPhase::VelocitySweep { safety, .. } = old_phase else {
+            unreachable!("trace outer constructor must enter Stage B")
+        };
+        *phase = OuterPhase::VelocityIntegral {
+            state: VelocityIntegralState::Setup,
+            data: VelocityIntegralData::new(preflight.plan.execution_plan()),
+            safety,
+        };
+        engine
     }
 
     /// The OID this engine was started for.
@@ -873,6 +898,18 @@ impl CommissioningEngine {
         terminal: crate::commissioning::types::VelocitySweepTerminal,
         reproduction: Option<crate::commission_dispatch::stage_b::StageBReproductionReport>,
     ) {
+        self.emit_stage_b_terminal_evidence(backend, terminal, reproduction);
+        self.emit_velocity_sweep_terminal_lifecycle(backend, terminal);
+    }
+
+    /// Emit Stage-B terminal evidence without closing a live Stage-C continuation.
+    #[cfg(feature = "trace-velocity-sweep")]
+    pub(crate) fn emit_stage_b_terminal_evidence<B: CommissioningBackend>(
+        &mut self,
+        backend: &mut B,
+        terminal: crate::commissioning::types::VelocitySweepTerminal,
+        reproduction: Option<crate::commission_dispatch::stage_b::StageBReproductionReport>,
+    ) {
         if let Some(report) = reproduction {
             crate::commission_dispatch::stage_b::for_each_stage_b_reproduction_record(
                 report,
@@ -886,7 +923,6 @@ impl CommissioningEngine {
                 backend.tmc_config().pwm_freq_hz(),
             ),
         );
-        self.emit_velocity_sweep_terminal_lifecycle(backend, terminal);
     }
 
     fn emit_trace_after_step<B: CommissioningBackend>(
