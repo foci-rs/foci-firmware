@@ -515,6 +515,14 @@ pub struct VelocitySweepTerminal {
     pub nominated_p: u16,
     /// Selected forward and reverse pooled disturbance intervals.
     pub selected_intervals: [[i32; 2]; 2],
+    /// Selected forward and reverse full-region common disturbance intervals.
+    pub selected_common_intervals: [[i32; 2]; 2],
+    /// Structural ladder anchor retained for cross-run nomination.
+    pub p_start: u16,
+    /// Inclusive structural ladder top retained for cross-run nomination.
+    pub p_top: u16,
+    /// Number of post-dedupe ladder rungs.
+    pub rung_count: u8,
     /// Bit set for every direction directly covered at the nominated P.
     pub coverage_mask: u8,
     /// Valid directional-region counts for forward and reverse.

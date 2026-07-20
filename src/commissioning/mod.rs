@@ -1155,18 +1155,19 @@ mod tests {
             assert!(
                 size_of::<
                     crate::commissioning::outer::velocity::sweep_plan::VelocitySweepExecutionPlan,
-                >() <= 80
+                >() == 32
             );
-            assert!(
+            assert_eq!(
                 size_of::<
                     crate::commissioning::outer::velocity::operating_region::OperatingRegionRuntime,
-                >() <= 304
+                >(),
+                352
             );
             assert_eq!(
                 size_of::<crate::commissioning::outer::VelocitySweepData>(),
-                2_832
+                2_864
             );
-            assert_eq!(size_of::<CommissioningEngine>(), 4_496);
+            assert_eq!(size_of::<CommissioningEngine>(), 4_528);
         }
         assert!(size_of::<CommissioningEngine>() <= 4_528);
         assert!(size_of::<CommissioningEngine>() <= 6_144);
@@ -1500,6 +1501,10 @@ mod tests {
             selected_memberships: [0; 3],
             nominated_p: 0,
             selected_intervals: [[0; 2]; 2],
+            selected_common_intervals: [[0; 2]; 2],
+            p_start: 0,
+            p_top: 0,
+            rung_count: 0,
             coverage_mask: 0,
             directional_region_counts: [0; 2],
             directional_fragment_counts: [0; 2],

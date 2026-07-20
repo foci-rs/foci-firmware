@@ -623,6 +623,8 @@ pub struct DirectionalRegionRef {
     pub member_mask: u32,
     /// Exact pooled Q16.16 disturbance interval.
     pub pooled_interval: [i32; 2],
+    /// Exact full-region common Q16.16 disturbance interval.
+    pub common_intersection: [i32; 2],
     /// Conservative source-edge settled rate for transfer reporting.
     pub selected_edge_rate: CompactSignedRate,
 }
@@ -631,6 +633,7 @@ impl DirectionalRegionRef {
     const EMPTY: Self = Self {
         member_mask: 0,
         pooled_interval: [0, 0],
+        common_intersection: [0, 0],
         selected_edge_rate: CompactSignedRate::ZERO,
     };
 
@@ -656,12 +659,16 @@ impl DirectionalRegionRef {
                 summary.pooled.interval.low().raw(),
                 summary.pooled.interval.high().raw(),
             ],
+            common_intersection: [
+                summary.common_intersection.low().raw(),
+                summary.common_intersection.high().raw(),
+            ],
             selected_edge_rate: CompactSignedRate::encode(edge_rate, rounding),
         })
     }
 }
 
-const _: () = assert!(core::mem::size_of::<DirectionalRegionRef>() <= 16);
+const _: () = assert!(core::mem::size_of::<DirectionalRegionRef>() == 24);
 
 /// Relationship between a selected directional model and the nominated P.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
@@ -887,7 +894,7 @@ impl Default for HandoffTrackers {
     }
 }
 
-const _: () = assert!(core::mem::size_of::<HandoffTrackers>() <= 96);
+const _: () = assert!(core::mem::size_of::<HandoffTrackers>() == 144);
 
 /// Bounded runtime state replacing the two legacy global-band accumulators.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
@@ -920,7 +927,7 @@ impl Default for OperatingRegionRuntime {
     }
 }
 
-const _: () = assert!(core::mem::size_of::<OperatingRegionRuntime>() <= 304);
+const _: () = assert!(core::mem::size_of::<OperatingRegionRuntime>() == 352);
 
 /// Fold one executed rung, returning a candidate closed by this observation.
 pub fn observe_directional_rung(

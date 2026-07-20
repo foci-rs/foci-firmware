@@ -152,14 +152,6 @@ pub struct VelocitySweepExecutionPlan {
     pub rung_count: u8,
     /// Independent observations per direction and rung.
     pub observations_per_direction: u16,
-    /// Complete per-primitive displacement window.
-    pub max_stroke_travel_mrev: u32,
-    /// Reserved braking and settle displacement.
-    pub settle_travel_reserve_mrev: u32,
-    /// Negative absolute-position headroom.
-    pub negative_position_headroom_mrev: u32,
-    /// Positive absolute-position headroom.
-    pub positive_position_headroom_mrev: u32,
     /// Configured hard torque-target limit.
     pub hard_torque_limit: u16,
     /// Inclusive usable torque-target boundary.
@@ -176,10 +168,6 @@ impl VelocitySweepExecutionPlan {
         p_top: PidGain::ZERO,
         rung_count: 0,
         observations_per_direction: 0,
-        max_stroke_travel_mrev: 0,
-        settle_travel_reserve_mrev: 0,
-        negative_position_headroom_mrev: 0,
-        positive_position_headroom_mrev: 0,
         hard_torque_limit: 0,
         usable_torque_limit: 0,
     };
@@ -200,7 +188,7 @@ impl VelocitySweepExecutionPlan {
     }
 }
 
-const _: () = assert!(core::mem::size_of::<VelocitySweepExecutionPlan>() <= 80);
+const _: () = assert!(core::mem::size_of::<VelocitySweepExecutionPlan>() == 32);
 
 impl VelocitySweepPlan {
     /// Hash every frozen plan field and emitted post-dedupe gain exactly once.
@@ -250,10 +238,6 @@ impl VelocitySweepPlan {
             p_top: self.p_top,
             rung_count: self.rung_count,
             observations_per_direction: self.observations_per_direction,
-            max_stroke_travel_mrev: self.max_stroke_travel_mrev,
-            settle_travel_reserve_mrev: self.settle_travel_reserve_mrev,
-            negative_position_headroom_mrev: self.negative_position_headroom_mrev,
-            positive_position_headroom_mrev: self.positive_position_headroom_mrev,
             hard_torque_limit: self.hard_torque_limit,
             usable_torque_limit: self.usable_torque_limit,
         }

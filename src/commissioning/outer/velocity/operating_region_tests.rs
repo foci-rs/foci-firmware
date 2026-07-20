@@ -439,6 +439,7 @@ fn reference(mask: u32, low: i32, high: i32) -> DirectionalRegionRef {
     DirectionalRegionRef {
         member_mask: mask,
         pooled_interval: [low, high],
+        common_intersection: [low, high],
         selected_edge_rate: CompactSignedRate::encode(10, BoundRounding::TowardPositiveInfinity),
     }
 }

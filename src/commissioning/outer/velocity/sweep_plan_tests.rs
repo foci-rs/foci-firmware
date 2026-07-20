@@ -239,19 +239,29 @@ fn compact_execution_plan_regenerates_every_emitted_gain() {
 }
 
 #[test]
-fn execution_plan_retains_only_post_emission_runtime_fields() {
+fn execution_plan_drops_report_only_geometry() {
     let plan = plan_velocity_sweep(request(), 4_000, 1_000).unwrap();
     let execution = plan.execution_plan(0x1234_5678_9abc_def0);
+    let report = plan.report(7, 0);
 
-    assert!(core::mem::size_of_val(&execution) <= 80);
+    assert!(core::mem::size_of_val(&execution) <= 32);
     assert_eq!(execution.plan_digest, 0x1234_5678_9abc_def0);
     assert_eq!(execution.gain_at(0), Some(plan.p_start));
     assert_eq!(execution.gain_at(plan.rung_count - 1), Some(plan.p_top));
     assert_eq!(execution.gain_at(plan.rung_count), None);
     assert_eq!(execution.target_velocity_rpm, plan.target_velocity_rpm);
+    assert_eq!(report.max_stroke_travel_mrev, plan.max_stroke_travel_mrev);
     assert_eq!(
-        execution.max_stroke_travel_mrev,
-        plan.max_stroke_travel_mrev
+        report.settle_travel_reserve_mrev,
+        plan.settle_travel_reserve_mrev
+    );
+    assert_eq!(
+        report.negative_position_headroom_mrev,
+        plan.negative_position_headroom_mrev
+    );
+    assert_eq!(
+        report.positive_position_headroom_mrev,
+        plan.positive_position_headroom_mrev
     );
 }
 

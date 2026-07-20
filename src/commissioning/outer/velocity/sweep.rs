@@ -287,6 +287,10 @@ fn sweep_fault_terminal_from_data(
         selected_memberships: [0; 3],
         nominated_p: 0,
         selected_intervals: [[0; 2]; 2],
+        selected_common_intervals: [[0; 2]; 2],
+        p_start: data.plan.p_start.raw(),
+        p_top: data.plan.p_top.raw(),
+        rung_count: data.plan.rung_count,
         coverage_mask: 0,
         directional_region_counts: data.integrity.directional_region_counts(),
         directional_fragment_counts: data.integrity.directional_fragment_counts(),
@@ -364,6 +368,15 @@ fn sweep_evidence_terminal(
                 handoff.directional[1].region.pooled_interval,
             ]
         }),
+        selected_common_intervals: handoff.map_or([[0; 2]; 2], |handoff| {
+            [
+                handoff.directional[0].region.common_intersection,
+                handoff.directional[1].region.common_intersection,
+            ]
+        }),
+        p_start: plan.p_start.raw(),
+        p_top: plan.p_top.raw(),
+        rung_count: plan.rung_count,
         coverage_mask: handoff.map_or(0, |handoff| handoff.coverage_mask),
         directional_region_counts: data.integrity.directional_region_counts(),
         directional_fragment_counts: data.integrity.directional_fragment_counts(),
@@ -1361,11 +1374,13 @@ mod tests {
     use crate::commission_dispatch::test_support::{MockBackend, SpiOp, current_limit};
     use crate::commissioning::outer::velocity::operating_region::{
         BoundRounding, CompactSignedRate, DirectionalRegionClosure, DirectionalRegionFold,
+        DirectionalRegionKind, DirectionalRegionSummary, JointOperableClosure, JointOperableRegion,
         PooledDisturbanceAccumulator,
     };
     use crate::commissioning::outer::velocity::sweep_consensus::DirectionalConsensusClass;
     use crate::commissioning::outer::velocity::sweep_evidence::{
         CompactDirectionalRungReport, DIRECTIONAL_RUNG_FLAG_OPERABLE, DirectionalRungAnalysis,
+        PooledDisturbance,
     };
     use crate::commissioning::outer::velocity::sweep_plan::RequestedVelocitySource;
     use crate::commissioning::outer::{OuterMotionBudget, OuterSafetyLimits, VelocitySweepData};
@@ -1458,6 +1473,87 @@ mod tests {
             },
             pooled_accumulator: accumulator,
         }
+    }
+
+    fn selected_region(
+        direction: VelocityDirection,
+        pooled: [i32; 2],
+        common: [i32; 2],
+    ) -> DirectionalRegionSummary {
+        let pooled_interval = EquivalentTorqueTargetInterval::new(
+            EquivalentTorqueTargetQ16::from_raw(pooled[0]),
+            EquivalentTorqueTargetQ16::from_raw(pooled[1]),
+        )
+        .unwrap();
+        let common_intersection = EquivalentTorqueTargetInterval::new(
+            EquivalentTorqueTargetQ16::from_raw(common[0]),
+            EquivalentTorqueTargetQ16::from_raw(common[1]),
+        )
+        .unwrap();
+        DirectionalRegionSummary {
+            direction,
+            member_mask: 0b111,
+            first_rung: 0,
+            last_rung: 2,
+            p_low: PidGain::new(2).unwrap(),
+            p_high: PidGain::new(4).unwrap(),
+            member_count: 3,
+            kind: DirectionalRegionKind::Valid,
+            common_intersection,
+            pooled: PooledDisturbance {
+                estimate: EquivalentTorqueTargetQ16::from_raw((pooled[0] + pooled[1]) / 2),
+                interval: pooled_interval,
+                variance_floor_observations: 0,
+            },
+            settled_rate_mean_min_q: 990,
+            settled_rate_mean_max_q: 1_020,
+            settled_rate_envelope_low_q: 980,
+            settled_rate_envelope_high_q: 1_030,
+            closure: DirectionalRegionClosure::EndOfLadder,
+            boundary_rung: None,
+            tested_intersection: common_intersection,
+        }
+    }
+
+    #[test]
+    fn selected_region_common_intersection_reaches_terminal() {
+        let mut phase = phase();
+        let mut backend = MockBackend::new();
+        backend.current_limit_value = current_limit(2_448);
+        pollster::block_on(step_velocity_sweep_with_trace(&mut phase, &mut backend));
+        let OuterPhase::VelocitySweep { data, .. } = &mut phase else {
+            panic!("velocity sweep should remain active");
+        };
+        track_closed_directional_region(
+            data,
+            selected_region(VelocityDirection::Forward, [100, 140], [112, 126]),
+        );
+        track_closed_directional_region(
+            data,
+            selected_region(VelocityDirection::Reverse, [-140, -100], [-129, -115]),
+        );
+        retain_joint_candidate(
+            data,
+            JointOperableRegion {
+                member_mask: 0b111,
+                first_rung: 0,
+                last_rung: 2,
+                member_count: 3,
+                closure: JointOperableClosure::EndOfLadder,
+            },
+        );
+        let expected_ladder = [data.plan.p_start.raw(), data.plan.p_top.raw()];
+        let expected_rung_count = data.plan.rung_count;
+
+        let terminal = sweep_evidence_terminal(data, true);
+
+        assert_eq!(terminal.selected_intervals, [[100, 140], [-140, -100]]);
+        assert_eq!(
+            terminal.selected_common_intervals,
+            [[112, 126], [-129, -115]]
+        );
+        assert_eq!([terminal.p_start, terminal.p_top], expected_ladder);
+        assert_eq!(terminal.rung_count, expected_rung_count);
     }
 
     #[test]
