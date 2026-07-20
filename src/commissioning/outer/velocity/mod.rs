@@ -10,6 +10,8 @@ pub mod integral_plan;
 mod integral_plan_tests;
 #[cfg(feature = "trace-velocity-sweep")]
 pub mod integral_reproduction;
+#[cfg(test)]
+mod integral_reproduction_tests;
 pub mod operating_region;
 #[cfg(test)]
 mod operating_region_tests;
