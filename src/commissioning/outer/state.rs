@@ -849,6 +849,12 @@ mod tests {
 
     #[cfg(feature = "trace-velocity-sweep")]
     #[test]
+    fn delivered_velocity_sweep_evidence_state_is_176_bytes() {
+        assert_eq!(size_of::<super::VelocitySweepEvidenceState>(), 176);
+    }
+
+    #[cfg(feature = "trace-velocity-sweep")]
+    #[test]
     fn velocity_sweep_phase_reports_velocity_tune_wire_id() {
         let phase = OuterPhase::VelocitySweep {
             state: super::VelocitySweepState::Setup,
