@@ -28,8 +28,9 @@ use super::sweep_analysis::{
     poll_moving_observation_analysis, poll_settle_confirmation, retain_observation,
 };
 use super::sweep_evidence::{
-    CollectedRungEvidence, CompactDirectionalRungReport, VelocityObservationClass,
-    analyze_directional_rung, analyze_directional_set,
+    CollectedRungEvidence, CompactDirectionalRungReport, DirectionalRungAnalysis,
+    VelocityEvidenceError, VelocityObservationClass, analyze_directional_rung,
+    analyze_directional_set,
 };
 use super::sweep_plan::{
     MAX_SAFETY_OBSERVATION_GAP_US, MAX_SWEEP_RUNGS, MIN_SETTLE_CAPTURE_US, MOVING_STROKE_US,
@@ -1053,10 +1054,11 @@ pub(crate) async fn step_velocity_sweep_with_trace<B: CommissioningBackend>(
                 }
             };
             let forward = analysis.report;
-            let closed = match super::operating_region::observe_directional_rung(
+            let closed = match observe_directional_rung_for_sweep(
                 &mut data.operating_regions.directional[0],
                 data.rung_index,
                 analysis,
+                *current_headroom,
             ) {
                 Ok(closed) => closed,
                 Err(_) => {
@@ -1110,10 +1112,11 @@ pub(crate) async fn step_velocity_sweep_with_trace<B: CommissioningBackend>(
                 }
             };
             let reverse = analysis.report;
-            let closed = match super::operating_region::observe_directional_rung(
+            let closed = match observe_directional_rung_for_sweep(
                 &mut data.operating_regions.directional[1],
                 data.rung_index,
                 analysis,
+                *current_headroom,
             ) {
                 Ok(closed) => closed,
                 Err(_) => {
@@ -1147,9 +1150,12 @@ pub(crate) async fn step_velocity_sweep_with_trace<B: CommissioningBackend>(
                 return fail_sweep(phase, backend, CommissionError::InvalidSchedule).await;
             };
             let current_rates = representative_rung_rates(forward, reverse);
-            *state = VelocitySweepState::EmitRung {
-                current_headroom: *current_headroom,
-            };
+            let current_headroom = *current_headroom;
+            *state = VelocitySweepState::EmitRung { current_headroom };
+            if current_headroom {
+                data.previous_rung_rates = current_rates;
+                return StepResult::ReadyNow;
+            }
             let gains = execution_gains(plan);
             let gains = &gains[..usize::from(plan.rung_count)];
             let previous_active =
@@ -1336,11 +1342,34 @@ fn plan_hard_limit(data: &super::super::VelocitySweepData) -> u16 {
     data.plan.hard_torque_limit
 }
 
+fn observe_directional_rung_for_sweep(
+    fold: &mut super::operating_region::DirectionalRegionFold,
+    rung_index: u8,
+    analysis: DirectionalRungAnalysis,
+    current_headroom: bool,
+) -> Result<Option<DirectionalRegionSummary>, VelocityEvidenceError> {
+    if current_headroom {
+        return Ok(None);
+    }
+    super::operating_region::observe_directional_rung(fold, rung_index, analysis)
+}
+
 #[cfg(test)]
 mod tests {
+    use crate::autotune::velocity_measurement::VelocityDirection;
+    use crate::autotune::{EquivalentTorqueTargetInterval, EquivalentTorqueTargetQ16};
     use crate::commission_dispatch::test_support::{MockBackend, SpiOp, current_limit};
+    use crate::commissioning::outer::velocity::operating_region::{
+        BoundRounding, CompactSignedRate, DirectionalRegionClosure, DirectionalRegionFold,
+        PooledDisturbanceAccumulator,
+    };
+    use crate::commissioning::outer::velocity::sweep_consensus::DirectionalConsensusClass;
+    use crate::commissioning::outer::velocity::sweep_evidence::{
+        CompactDirectionalRungReport, DIRECTIONAL_RUNG_FLAG_OPERABLE, DirectionalRungAnalysis,
+    };
     use crate::commissioning::outer::velocity::sweep_plan::RequestedVelocitySource;
     use crate::commissioning::outer::{OuterMotionBudget, OuterSafetyLimits, VelocitySweepData};
+    use foci_tmc4671::pid::PidGain;
 
     use super::*;
 
@@ -1397,6 +1426,80 @@ mod tests {
         assert_eq!(terminal.outcome, VelocitySweepOutcome::Fault);
         assert_eq!(terminal.cause, error.status_code());
         terminal
+    }
+
+    fn eligible_directional_analysis(p: u16) -> DirectionalRungAnalysis {
+        let interval = EquivalentTorqueTargetInterval::new(
+            EquivalentTorqueTargetQ16::from_raw(100),
+            EquivalentTorqueTargetQ16::from_raw(120),
+        )
+        .unwrap();
+        let mut accumulator = PooledDisturbanceAccumulator::new();
+        for point in [100, 110, 120] {
+            accumulator.add(EquivalentTorqueTargetQ16::from_raw(point), interval, 4);
+        }
+        DirectionalRungAnalysis {
+            report: CompactDirectionalRungReport {
+                p: PidGain::new(p).unwrap(),
+                classification: DirectionalConsensusClass::EligibleConsensus,
+                components: [[100, 120], [0, 0]],
+                pooled: accumulator.finish(0),
+                settled_rate_bounds_q: [
+                    CompactSignedRate::encode(1_000, BoundRounding::TowardNegativeInfinity),
+                    CompactSignedRate::encode(1_010, BoundRounding::TowardPositiveInfinity),
+                    CompactSignedRate::encode(990, BoundRounding::TowardNegativeInfinity),
+                    CompactSignedRate::encode(1_020, BoundRounding::TowardPositiveInfinity),
+                ],
+                collected_mask: 0b1111,
+                eligible_mask: 0b1111,
+                included_mask: 0b1111,
+                operable_count: 4,
+                flags: DIRECTIONAL_RUNG_FLAG_OPERABLE,
+            },
+            pooled_accumulator: accumulator,
+        }
+    }
+
+    #[test]
+    fn current_headroom_incomplete_rung_closes_active_region_as_terminus() {
+        let mut fold = DirectionalRegionFold::new(VelocityDirection::Forward);
+        assert!(
+            observe_directional_rung_for_sweep(
+                &mut fold,
+                0,
+                eligible_directional_analysis(256),
+                false,
+            )
+            .unwrap()
+            .is_none()
+        );
+
+        let incomplete = DirectionalRungAnalysis {
+            report: CompactDirectionalRungReport {
+                p: PidGain::new(362).unwrap(),
+                classification: DirectionalConsensusClass::IncompleteRung,
+                components: [[0, 0]; 2],
+                pooled: None,
+                settled_rate_bounds_q: [CompactSignedRate::ZERO; 4],
+                collected_mask: 0b0001,
+                eligible_mask: 0,
+                included_mask: 0,
+                operable_count: 0,
+                flags: 0,
+            },
+            pooled_accumulator: PooledDisturbanceAccumulator::new(),
+        };
+        assert!(
+            observe_directional_rung_for_sweep(&mut fold, 1, incomplete, true)
+                .unwrap()
+                .is_none()
+        );
+        let closed = fold
+            .finish(DirectionalRegionClosure::CurrentHeadroom)
+            .unwrap();
+        assert_eq!(closed.member_mask, 0b0001);
+        assert_eq!(closed.boundary_rung, None);
+        assert_eq!(closed.closure, DirectionalRegionClosure::CurrentHeadroom);
     }
 
     #[test]
