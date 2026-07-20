@@ -9,6 +9,9 @@ mod response_ramp;
 mod sweep;
 #[cfg(feature = "trace-velocity-sweep")]
 mod sweep_analysis;
+pub mod sweep_consensus;
+#[cfg(test)]
+mod sweep_consensus_tests;
 pub mod sweep_evidence;
 pub mod sweep_plan;
 #[cfg(feature = "trace-velocity-sweep")]
