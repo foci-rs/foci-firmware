@@ -2,6 +2,8 @@
 
 #[cfg(feature = "trace-velocity-sweep")]
 pub mod integral_plan;
+#[cfg(test)]
+mod integral_plan_tests;
 pub mod operating_region;
 #[cfg(test)]
 mod operating_region_tests;
