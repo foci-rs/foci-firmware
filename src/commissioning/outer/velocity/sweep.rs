@@ -27,15 +27,17 @@ use super::operating_region::{
 use super::sweep_analysis::{
     poll_moving_observation_analysis, poll_settle_confirmation, retain_observation,
 };
-use super::sweep_evidence::VelocityObservationClass;
+use super::sweep_evidence::{
+    CollectedRungEvidence, CompactDirectionalRungReport, VelocityObservationClass,
+    analyze_directional_rung, analyze_directional_set,
+};
 use super::sweep_plan::{
     MAX_SAFETY_OBSERVATION_GAP_US, MAX_SWEEP_RUNGS, MIN_SETTLE_CAPTURE_US, MOVING_STROKE_US,
-    SETTLE_ANALYSIS_BUDGET_US, VELOCITY_SWEEP_SAMPLE_PERIOD_US, VelocitySweepExecutionPlan,
-    ZERO_SETTLE_US,
+    SETTLE_ANALYSIS_BUDGET_US, SWEEP_SLOT_COUNT, VELOCITY_SWEEP_SAMPLE_PERIOD_US,
+    VelocitySweepExecutionPlan, ZERO_SETTLE_US,
 };
 
 const OUTER_VELOCITY_MODE: u32 = 0x8000_0002;
-const SWEEP_SLOT_COUNT: u8 = 4;
 const SETTLE_TRACE_STROKE_MARKER: u16 = 1 << 15;
 const SWEEP_CAUSE_NONE: u8 = 0;
 const SWEEP_CAUSE_NO_DIRECTIONAL_MODEL: u8 = 1;
@@ -66,6 +68,12 @@ enum VelocityDiagnosticKind {
 
 fn slot_direction(slot: u8) -> i32 {
     if slot.is_multiple_of(2) { 1 } else { -1 }
+}
+
+fn sweep_stroke_index(rung_index: u8, slot: u8) -> Option<u16> {
+    u16::from(rung_index)
+        .checked_mul(u16::from(SWEEP_SLOT_COUNT))
+        .and_then(|base| base.checked_add(u16::from(slot)))
 }
 
 fn velocity_diagnostic_kind(
@@ -195,8 +203,8 @@ fn selected_handoff(
 }
 
 fn representative_rung_rates(
-    forward: super::sweep_evidence::VelocityRungVerdict,
-    reverse: super::sweep_evidence::VelocityRungVerdict,
+    forward: CompactDirectionalRungReport,
+    reverse: CompactDirectionalRungReport,
 ) -> [CompactSignedRate; 2] {
     [forward, reverse].map(|rung| {
         let low = rung.settled_rate_bounds_q[0].decode();
@@ -524,7 +532,7 @@ pub(crate) async fn step_velocity_sweep_with_trace<B: CommissioningBackend>(
             {
                 return fail_sweep(phase, backend, CommissionError::Spi).await;
             }
-            data.evidence = VelocitySweepEvidenceState::Empty;
+            data.evidence = VelocitySweepEvidenceState::Collecting(CollectedRungEvidence::new());
             data.slot = 0;
             *state = VelocitySweepState::ClearSignedIntegrator;
             StepResult::ReadyNow
@@ -693,6 +701,9 @@ pub(crate) async fn step_velocity_sweep_with_trace<B: CommissioningBackend>(
                 }
                 None => (0, 0),
             };
+            let Some(stroke_index) = sweep_stroke_index(data.rung_index, data.slot) else {
+                return fail_sweep(phase, backend, CommissionError::InvalidSchedule).await;
+            };
             backend.record_velocity_trace_observation(
                 crate::trace::stream::VelocityTraceObservation {
                     target_counts_per_ms: slot_direction(data.slot).saturating_mul(
@@ -705,7 +716,7 @@ pub(crate) async fn step_velocity_sweep_with_trace<B: CommissioningBackend>(
                     ),
                     delta_counts: delta.signed_counts(),
                     elapsed_us: elapsed_us as u32,
-                    stroke_index: u16::from(data.rung_index) * 4 + u16::from(data.slot),
+                    stroke_index,
                     direction: slot_direction(data.slot) as i8,
                     flags: u8::from(data.peak_torque_target >= plan_usable_limit(data))
                         | diagnostic_flag,
@@ -923,13 +934,15 @@ pub(crate) async fn step_velocity_sweep_with_trace<B: CommissioningBackend>(
             {
                 return fail_sweep(phase, backend, CommissionError::InvalidSchedule).await;
             }
+            let Some(stroke_index) = sweep_stroke_index(data.rung_index, data.slot) else {
+                return fail_sweep(phase, backend, CommissionError::InvalidSchedule).await;
+            };
             backend.record_velocity_trace_observation(
                 crate::trace::stream::VelocityTraceObservation {
                     target_counts_per_ms: 0,
                     delta_counts: delta.signed_counts(),
                     elapsed_us: elapsed_us as u32,
-                    stroke_index: SETTLE_TRACE_STROKE_MARKER
-                        | (u16::from(data.rung_index) * 4 + u16::from(data.slot)),
+                    stroke_index: SETTLE_TRACE_STROKE_MARKER | stroke_index,
                     direction: 0,
                     flags: 0,
                     peak_torque_target_abs: 0,
@@ -983,9 +996,9 @@ pub(crate) async fn step_velocity_sweep_with_trace<B: CommissioningBackend>(
             data.analysis.reset();
             data.observations.clear();
             safety.end_primitive();
-            *state = if *current_headroom {
-                VelocitySweepState::FinishForward {
-                    current_headroom: true,
+            *state = if *current_headroom || data.slot + 1 >= SWEEP_SLOT_COUNT {
+                VelocitySweepState::AnalyzeForwardRung {
+                    current_headroom: *current_headroom,
                 }
             } else {
                 VelocitySweepState::Advance
@@ -1004,20 +1017,58 @@ pub(crate) async fn step_velocity_sweep_with_trace<B: CommissioningBackend>(
                 data.slot += 1;
                 *state = VelocitySweepState::ClearSignedIntegrator;
             } else {
-                *state = VelocitySweepState::FoldForward;
+                *state = VelocitySweepState::AnalyzeForwardRung {
+                    current_headroom: false,
+                };
             }
             StepResult::ReadyNow
         }
-        VelocitySweepState::FoldForward => {
-            let VelocitySweepEvidenceState::CompletePair { forward, .. } = data.evidence else {
+        VelocitySweepState::AnalyzeForwardRung { current_headroom } => {
+            *state = VelocitySweepState::FoldForwardRung {
+                current_headroom: *current_headroom,
+            };
+            StepResult::ReadyNow
+        }
+        VelocitySweepState::FoldForwardRung { current_headroom } => {
+            let VelocitySweepEvidenceState::Collecting(collected) = data.evidence else {
                 return fail_sweep(phase, backend, CommissionError::InvalidSchedule).await;
             };
-            *state = VelocitySweepState::FoldReverse;
-            if let Some(region) = super::operating_region::observe_directional_rung(
+            let plan = data.plan;
+            let Some(p) = plan.gain_at(data.rung_index) else {
+                return fail_sweep(phase, backend, CommissionError::InvalidSchedule).await;
+            };
+            let reverse = collected
+                .directional_set(crate::autotune::velocity_measurement::VelocityDirection::Reverse);
+            let analysis = match analyze_directional_rung(
+                &collected,
+                crate::autotune::velocity_measurement::VelocityDirection::Forward,
+                p,
+                plan.target_velocity_rpm.raw(),
+                safety.counts_per_rev(),
+            ) {
+                Ok(analysis) => analysis,
+                Err(_) => {
+                    return fail_sweep(phase, backend, CommissionError::VelocityValidationFailed)
+                        .await;
+                }
+            };
+            let forward = analysis.report;
+            let closed = match super::operating_region::observe_directional_rung(
                 &mut data.operating_regions.directional[0],
                 data.rung_index,
-                forward,
+                analysis,
             ) {
+                Ok(closed) => closed,
+                Err(_) => {
+                    return fail_sweep(phase, backend, CommissionError::VelocityValidationFailed)
+                        .await;
+                }
+            };
+            data.evidence = VelocitySweepEvidenceState::ForwardFolded { forward, reverse };
+            *state = VelocitySweepState::AnalyzeReverseRung {
+                current_headroom: *current_headroom,
+            };
+            if let Some(region) = closed {
                 track_closed_directional_region(data, region);
                 let event = data.integrity.record(VelocitySweepEvent::DirectionalRegion(
                     VelocityDirectionalRegionReport {
@@ -1030,16 +1081,51 @@ pub(crate) async fn step_velocity_sweep_with_trace<B: CommissioningBackend>(
             }
             StepResult::ReadyNow
         }
-        VelocitySweepState::FoldReverse => {
-            let VelocitySweepEvidenceState::CompletePair { reverse, .. } = data.evidence else {
+        VelocitySweepState::AnalyzeReverseRung { current_headroom } => {
+            *state = VelocitySweepState::FoldReverseRung {
+                current_headroom: *current_headroom,
+            };
+            StepResult::ReadyNow
+        }
+        VelocitySweepState::FoldReverseRung { current_headroom } => {
+            let VelocitySweepEvidenceState::ForwardFolded { forward, reverse } = data.evidence
+            else {
                 return fail_sweep(phase, backend, CommissionError::InvalidSchedule).await;
             };
-            *state = VelocitySweepState::FoldJoint;
-            if let Some(region) = super::operating_region::observe_directional_rung(
+            let plan = data.plan;
+            let Some(p) = plan.gain_at(data.rung_index) else {
+                return fail_sweep(phase, backend, CommissionError::InvalidSchedule).await;
+            };
+            let analysis = match analyze_directional_set(
+                reverse,
+                crate::autotune::velocity_measurement::VelocityDirection::Reverse,
+                p,
+                plan.target_velocity_rpm.raw(),
+                safety.counts_per_rev(),
+            ) {
+                Ok(analysis) => analysis,
+                Err(_) => {
+                    return fail_sweep(phase, backend, CommissionError::VelocityValidationFailed)
+                        .await;
+                }
+            };
+            let reverse = analysis.report;
+            let closed = match super::operating_region::observe_directional_rung(
                 &mut data.operating_regions.directional[1],
                 data.rung_index,
-                reverse,
+                analysis,
             ) {
+                Ok(closed) => closed,
+                Err(_) => {
+                    return fail_sweep(phase, backend, CommissionError::VelocityValidationFailed)
+                        .await;
+                }
+            };
+            data.evidence = VelocitySweepEvidenceState::Complete { forward, reverse };
+            *state = VelocitySweepState::FoldJointRung {
+                current_headroom: *current_headroom,
+            };
+            if let Some(region) = closed {
                 track_closed_directional_region(data, region);
                 let event = data.integrity.record(VelocitySweepEvent::DirectionalRegion(
                     VelocityDirectionalRegionReport {
@@ -1052,17 +1138,18 @@ pub(crate) async fn step_velocity_sweep_with_trace<B: CommissioningBackend>(
             }
             StepResult::ReadyNow
         }
-        VelocitySweepState::FoldJoint => {
+        VelocitySweepState::FoldJointRung { current_headroom } => {
             let plan = data.plan;
             if !plan.is_present() {
                 return fail_sweep(phase, backend, CommissionError::InvalidSchedule).await;
             }
-            let VelocitySweepEvidenceState::CompletePair { forward, reverse } = data.evidence
-            else {
+            let VelocitySweepEvidenceState::Complete { forward, reverse } = data.evidence else {
                 return fail_sweep(phase, backend, CommissionError::InvalidSchedule).await;
             };
             let current_rates = representative_rung_rates(forward, reverse);
-            *state = VelocitySweepState::EmitRung;
+            *state = VelocitySweepState::EmitRung {
+                current_headroom: *current_headroom,
+            };
             let gains = execution_gains(plan);
             let gains = &gains[..usize::from(plan.rung_count)];
             let previous_active =
@@ -1111,13 +1198,12 @@ pub(crate) async fn step_velocity_sweep_with_trace<B: CommissioningBackend>(
             }
             StepResult::ReadyNow
         }
-        VelocitySweepState::EmitRung => {
+        VelocitySweepState::EmitRung { current_headroom } => {
             let plan = data.plan;
             if !plan.is_present() {
                 return fail_sweep(phase, backend, CommissionError::InvalidSchedule).await;
             }
-            let VelocitySweepEvidenceState::CompletePair { forward, reverse } = data.evidence
-            else {
+            let VelocitySweepEvidenceState::Complete { forward, reverse } = data.evidence else {
                 return fail_sweep(phase, backend, CommissionError::InvalidSchedule).await;
             };
             let report = VelocitySweepRungReport {
@@ -1128,7 +1214,11 @@ pub(crate) async fn step_velocity_sweep_with_trace<B: CommissioningBackend>(
                 reverse,
             };
             let event = data.integrity.record(VelocitySweepEvent::Rung(report));
-            if data.rung_index + 1 < plan.rung_count {
+            if *current_headroom {
+                *state = VelocitySweepState::FinishForward {
+                    current_headroom: true,
+                };
+            } else if data.rung_index + 1 < plan.rung_count {
                 data.rung_index += 1;
                 data.slot = 0;
                 *state = VelocitySweepState::WriteGain;
@@ -1248,7 +1338,6 @@ fn plan_hard_limit(data: &super::super::VelocitySweepData) -> u16 {
 
 #[cfg(test)]
 mod tests {
-    use crate::autotune::velocity_measurement::VelocityDirection;
     use crate::commission_dispatch::test_support::{MockBackend, SpiOp, current_limit};
     use crate::commissioning::outer::velocity::sweep_plan::RequestedVelocitySource;
     use crate::commissioning::outer::{OuterMotionBudget, OuterSafetyLimits, VelocitySweepData};
@@ -1765,7 +1854,7 @@ mod tests {
         assert_eq!(terminal.outcome, VelocitySweepOutcome::Inconclusive);
         assert_eq!(terminal.cause, SWEEP_CAUSE_NO_DIRECTIONAL_MODEL);
         assert_eq!(terminal.emitted_observations, 1);
-        assert_eq!(terminal.emitted_rungs, 0);
+        assert_eq!(terminal.emitted_rungs, 1);
         assert_eq!(
             backend
                 .spi_log
@@ -1835,7 +1924,7 @@ mod tests {
     }
 
     #[test]
-    fn one_rung_executes_fixed_f_r_f_r_strokes_without_early_stop() {
+    fn one_rung_executes_fixed_eight_slot_schedule_without_early_stop() {
         let mut phase = phase();
         let mut backend = MockBackend::new();
         backend.current_limit_value = current_limit(2_448);
@@ -1851,10 +1940,12 @@ mod tests {
             panic!("plan must be the first streamed event");
         };
         let mut evidence_sequences = std::vec![plan_report.evidence_sequence];
+        let mut observation_slots = std::vec::Vec::new();
+        let mut observation_targets = std::vec::Vec::new();
         pollster::block_on(step_velocity_sweep_with_trace(&mut phase, &mut backend));
         let mut encoder_count = 0i32;
         let mut now_us = 0u64;
-        for slot in 0..4u8 {
+        for slot in 0..SWEEP_SLOT_COUNT {
             pollster::block_on(step_velocity_sweep_with_trace(&mut phase, &mut backend));
             let result =
                 pollster::block_on(step_velocity_sweep_with_trace(&mut phase, &mut backend));
@@ -1895,6 +1986,8 @@ mod tests {
                 panic!("moving analysis must stream one observation");
             };
             evidence_sequences.push(report.evidence_sequence);
+            observation_slots.push(report.slot);
+            observation_targets.push(report.target_velocity_rpm);
             let result =
                 pollster::block_on(step_velocity_sweep_with_trace(&mut phase, &mut backend));
             assert!(matches!(result, StepResult::At(deadline) if deadline == now_us + 1_000));
@@ -1915,7 +2008,7 @@ mod tests {
                 safety.primitive_start_us.is_none(),
                 "confirmed rest ends the moving-plus-settle primitive"
             );
-            if slot == 3 {
+            if slot + 1 == SWEEP_SLOT_COUNT {
                 loop {
                     match pollster::block_on(step_velocity_sweep_with_trace(
                         &mut phase,
@@ -1957,45 +2050,38 @@ mod tests {
                 | VelocitySweepState::EmitHandoff { .. }
                 | VelocitySweepState::Terminal { .. }
         ));
-        let VelocitySweepEvidenceState::CompletePair { forward, reverse } = &data.evidence else {
-            panic!("terminal rung should retain both directional verdicts");
+        let VelocitySweepEvidenceState::Complete { forward, reverse } = &data.evidence else {
+            panic!("terminal rung should retain both directional consensus reports");
         };
-        assert_eq!(forward.direction, VelocityDirection::Forward);
-        assert!(forward.initial_lead_in);
-        assert_eq!(reverse.direction, VelocityDirection::Reverse);
-        assert!(!reverse.initial_lead_in);
-        assert_eq!(&evidence_sequences[..6], [0, 1, 2, 3, 4, 5]);
-        let targets: std::vec::Vec<i32> = backend
-            .spi_log
-            .iter()
-            .filter_map(|op| match op {
-                SpiOp::Write(address, value)
-                    if *address == PID_VELOCITY_TARGET.addr() && *value != 0 =>
-                {
-                    Some(*value as i32)
-                }
-                _ => None,
-            })
-            .collect();
-        assert_eq!(targets.len(), 4);
-        assert!(targets[0] > 0 && targets[1] < 0 && targets[2] > 0 && targets[3] < 0);
+        assert!(forward.initial_lead_in());
+        assert!(!reverse.initial_lead_in());
+        assert_eq!(&evidence_sequences[..10], [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
+        assert_eq!(observation_slots, [0, 1, 2, 3, 4, 5, 6, 7]);
+        assert!(
+            observation_targets
+                .iter()
+                .enumerate()
+                .all(|(index, target)| {
+                    if index % 2 == 0 {
+                        *target > 0
+                    } else {
+                        *target < 0
+                    }
+                })
+        );
         let moving_samples = usize::try_from(MOVING_STROKE_US / 1_000).unwrap();
         assert_eq!(
             backend.capture_register_reads,
-            4 * (1 + moving_samples + 1 + usize::try_from(ZERO_SETTLE_US / 1_000).unwrap())
+            usize::from(SWEEP_SLOT_COUNT)
+                * (1 + moving_samples + 1 + usize::try_from(ZERO_SETTLE_US / 1_000).unwrap())
         );
         assert_eq!(
             backend.velocity_controller_output_selects,
-            4 * moving_samples
+            usize::from(SWEEP_SLOT_COUNT) * moving_samples
         );
         assert_eq!(
-            backend
-                .spi_log
-                .iter()
-                .filter(|op| matches!(op, SpiOp::Write(address, 0)
-                    if *address == PID_ERROR_PID_VELOCITY_ERROR_SUM.data.addr()))
-                .count(),
-            8
+            backend.pid_velocity_error_sum_clears,
+            2 * usize::from(SWEEP_SLOT_COUNT)
         );
 
         let terminal = loop {
@@ -2016,8 +2102,8 @@ mod tests {
                 other => panic!("unexpected finalization result: {other:?}"),
             }
         };
-        assert_eq!(terminal.expected_observations, 4);
-        assert_eq!(terminal.emitted_observations, 4);
+        assert_eq!(terminal.expected_observations, u16::from(SWEEP_SLOT_COUNT));
+        assert_eq!(terminal.emitted_observations, u16::from(SWEEP_SLOT_COUNT));
         assert_eq!(terminal.expected_rungs, 1);
         assert_eq!(terminal.emitted_rungs, 1);
         assert_eq!(terminal.outcome, VelocitySweepOutcome::Inconclusive);

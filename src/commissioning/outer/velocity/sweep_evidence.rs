@@ -5,6 +5,23 @@ use crate::autotune::{EquivalentTorqueTargetInterval, EquivalentTorqueTargetQ16}
 use foci_tmc4671::pid::PidGain;
 
 use super::operating_region::{BoundRounding, CompactSignedRate, PooledDisturbanceAccumulator};
+use super::sweep_consensus::{
+    CONSENSUS_OBSERVATIONS_PER_DIRECTION, DirectionalConsensusClass, depth_three_consensus,
+};
+
+const CONSENSUS_DIRECTION_COUNT: usize = 2;
+const CONSENSUS_SLOT_COUNT: usize =
+    CONSENSUS_OBSERVATIONS_PER_DIRECTION * CONSENSUS_DIRECTION_COUNT;
+const STATUS_CLASS_BITS: u32 = 4;
+const STATUS_CLASS_MASK: u32 = 0x0f;
+const STATUS_COLLECTED_SHIFT: u32 = 16;
+const STATUS_COLLECTED_MASK: u32 = 0x0f << STATUS_COLLECTED_SHIFT;
+const STATUS_INITIAL_LEAD_IN: u32 = 1 << 20;
+
+/// Directional report flag indicating three independently operable observations.
+pub const DIRECTIONAL_RUNG_FLAG_OPERABLE: u8 = 1 << 0;
+/// Directional report flag indicating the exceptional initial lead-in observation.
+pub const DIRECTIONAL_RUNG_FLAG_INITIAL_LEAD_IN: u8 = 1 << 1;
 
 /// Stable report code for one directional-region kind.
 pub const fn directional_region_kind_code(
@@ -180,6 +197,254 @@ pub struct VelocityObservationSummary {
     pub initial_lead_in: bool,
 }
 
+/// Fixed-size controller-domain evidence retained for one observation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+#[repr(C)]
+pub struct CompactConsensusObservation {
+    /// Inclusive disturbance lower edge in signed Q16.16 counts.
+    pub disturbance_low_q16: i32,
+    /// Inclusive disturbance upper edge in signed Q16.16 counts.
+    pub disturbance_high_q16: i32,
+    /// Truncated disturbance point in signed Q16.16 counts.
+    pub disturbance_point_q16: i32,
+    /// Conservative compact controller-domain variance.
+    pub variance: CompactVariance,
+}
+
+impl CompactConsensusObservation {
+    const EMPTY: Self = Self {
+        disturbance_low_q16: 0,
+        disturbance_high_q16: 0,
+        disturbance_point_q16: 0,
+        variance: CompactVariance {
+            mantissa: 0,
+            shift: 0,
+        },
+    };
+
+    fn from_summary(summary: VelocityObservationSummary) -> Result<Self, VelocityEvidenceError> {
+        if summary.classification != VelocityObservationClass::Eligible {
+            return Ok(Self::EMPTY);
+        }
+        let point = summary
+            .disturbance
+            .ok_or(VelocityEvidenceError::InvalidConsensus)?;
+        let interval = summary
+            .disturbance_interval
+            .ok_or(VelocityEvidenceError::InvalidConsensus)?;
+        Ok(Self {
+            disturbance_low_q16: interval.low().raw(),
+            disturbance_high_q16: interval.high().raw(),
+            disturbance_point_q16: point.raw(),
+            variance: CompactVariance::encode(summary.disturbance_variance_q2),
+        })
+    }
+
+    fn interval(self) -> Option<EquivalentTorqueTargetInterval> {
+        EquivalentTorqueTargetInterval::new(
+            EquivalentTorqueTargetQ16::from_raw(self.disturbance_low_q16),
+            EquivalentTorqueTargetQ16::from_raw(self.disturbance_high_q16),
+        )
+        .ok()
+    }
+}
+
+const _: () = assert!(core::mem::size_of::<CompactConsensusObservation>() <= 16);
+
+/// Complete compact evidence for all eight observations at one gain rung.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+#[repr(C)]
+pub struct CollectedRungEvidence {
+    observations: [CompactConsensusObservation; CONSENSUS_SLOT_COUNT],
+    direction_status: [u32; CONSENSUS_DIRECTION_COUNT],
+}
+
+impl CollectedRungEvidence {
+    /// Construct an empty fixed-rung collector.
+    pub const fn new() -> Self {
+        Self {
+            observations: [CompactConsensusObservation::EMPTY; CONSENSUS_SLOT_COUNT],
+            direction_status: [0; CONSENSUS_DIRECTION_COUNT],
+        }
+    }
+
+    /// Retain one intrinsic observation at its declared global slot.
+    pub fn retain(
+        &mut self,
+        slot: u8,
+        summary: VelocityObservationSummary,
+    ) -> Result<(), VelocityEvidenceError> {
+        let slot = usize::from(slot);
+        if slot >= CONSENSUS_SLOT_COUNT {
+            return Err(VelocityEvidenceError::MismatchedObservation);
+        }
+        let direction = slot % CONSENSUS_DIRECTION_COUNT;
+        let observation = slot / CONSENSUS_DIRECTION_COUNT;
+        let expected_direction = if direction == 0 {
+            VelocityDirection::Forward
+        } else {
+            VelocityDirection::Reverse
+        };
+        if summary.direction != expected_direction || self.is_collected(direction, observation) {
+            return Err(VelocityEvidenceError::MismatchedObservation);
+        }
+
+        self.observations[slot] = CompactConsensusObservation::from_summary(summary)?;
+        let class_shift = u32::try_from(observation).unwrap() * STATUS_CLASS_BITS;
+        self.direction_status[direction] |=
+            u32::from(observation_class_report_code(summary.classification)) << class_shift;
+        self.direction_status[direction] |= 1 << (STATUS_COLLECTED_SHIFT + class_shift / 4);
+        if summary.initial_lead_in {
+            self.direction_status[direction] |= STATUS_INITIAL_LEAD_IN;
+        }
+        Ok(())
+    }
+
+    /// Return the four-bit collected mask for one signed direction.
+    pub const fn collected_mask(&self, direction: VelocityDirection) -> u8 {
+        ((self.direction_status[direction_index(direction)] & STATUS_COLLECTED_MASK)
+            >> STATUS_COLLECTED_SHIFT) as u8
+    }
+
+    /// Return one retained intrinsic class, or `None` when the slot was not collected.
+    pub fn classification(
+        &self,
+        direction: VelocityDirection,
+        observation: usize,
+    ) -> Option<VelocityObservationClass> {
+        self.directional_set(direction).classification(observation)
+    }
+
+    /// Return one retained eligible disturbance interval.
+    pub fn disturbance_interval(
+        &self,
+        direction: VelocityDirection,
+        observation: usize,
+    ) -> Option<EquivalentTorqueTargetInterval> {
+        self.directional_set(direction)
+            .disturbance_interval(observation)
+    }
+
+    /// Extract the fixed four-observation set for one direction.
+    pub fn directional_set(&self, direction: VelocityDirection) -> DirectionalObservationSet {
+        let direction_index = direction_index(direction);
+        let mut observations =
+            [CompactConsensusObservation::EMPTY; CONSENSUS_OBSERVATIONS_PER_DIRECTION];
+        for (observation, destination) in observations.iter_mut().enumerate() {
+            *destination = self.observations[observation * 2 + direction_index];
+        }
+        DirectionalObservationSet {
+            observations,
+            status: self.direction_status[direction_index],
+        }
+    }
+
+    const fn is_collected(&self, direction: usize, observation: usize) -> bool {
+        self.direction_status[direction] & (1 << (STATUS_COLLECTED_SHIFT + observation as u32)) != 0
+    }
+}
+
+impl Default for CollectedRungEvidence {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+const _: () = assert!(core::mem::size_of::<CollectedRungEvidence>() <= 136);
+
+/// Compact four-observation evidence retained for one direction.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+#[repr(C)]
+pub struct DirectionalObservationSet {
+    observations: [CompactConsensusObservation; CONSENSUS_OBSERVATIONS_PER_DIRECTION],
+    status: u32,
+}
+
+impl DirectionalObservationSet {
+    fn collected_mask(self) -> u8 {
+        ((self.status & STATUS_COLLECTED_MASK) >> STATUS_COLLECTED_SHIFT) as u8
+    }
+
+    fn classification(self, observation: usize) -> Option<VelocityObservationClass> {
+        if observation >= CONSENSUS_OBSERVATIONS_PER_DIRECTION
+            || self.status & (1 << (STATUS_COLLECTED_SHIFT + observation as u32)) == 0
+        {
+            return None;
+        }
+        let shift = observation as u32 * STATUS_CLASS_BITS;
+        observation_class_from_report_code(((self.status >> shift) & STATUS_CLASS_MASK) as u8)
+    }
+
+    fn disturbance_interval(self, observation: usize) -> Option<EquivalentTorqueTargetInterval> {
+        if self.classification(observation)? != VelocityObservationClass::Eligible {
+            return None;
+        }
+        self.observations.get(observation)?.interval()
+    }
+
+    fn initial_lead_in(self) -> bool {
+        self.status & STATUS_INITIAL_LEAD_IN != 0
+    }
+}
+
+const _: () = assert!(core::mem::size_of::<DirectionalObservationSet>() <= 68);
+
+/// Compact directional result consumed by region folds and wire reporting.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+pub struct CompactDirectionalRungReport {
+    /// Gain shared by the four observations.
+    pub p: PidGain,
+    /// Depth-three consensus classification.
+    pub classification: DirectionalConsensusClass,
+    /// Zero, one, or two exact consensus components.
+    pub components: [[i32; 2]; 2],
+    /// Fixed-effect pool when a unique component exists.
+    pub pooled: Option<PooledDisturbance>,
+    /// Conservative included-only mean and confidence rate bounds.
+    pub settled_rate_bounds_q: [CompactSignedRate; 4],
+    /// Four-bit collected mask.
+    pub collected_mask: u8,
+    /// Four-bit intrinsically eligible mask.
+    pub eligible_mask: u8,
+    /// Four-bit unique-component inclusion mask.
+    pub included_mask: u8,
+    /// Number of independently operable observations.
+    pub operable_count: u8,
+    /// Directional operability and initial-lead-in flags.
+    pub flags: u8,
+}
+
+impl CompactDirectionalRungReport {
+    /// Whether at least three observations independently support operation.
+    pub const fn operable(self) -> bool {
+        self.flags & DIRECTIONAL_RUNG_FLAG_OPERABLE != 0
+    }
+
+    /// Whether this direction contains the campaign's exceptional first observation.
+    pub const fn initial_lead_in(self) -> bool {
+        self.flags & DIRECTIONAL_RUNG_FLAG_INITIAL_LEAD_IN != 0
+    }
+
+    /// Number of reported exact consensus components.
+    pub const fn component_count(self) -> u8 {
+        match self.classification {
+            DirectionalConsensusClass::EligibleConsensus => 1,
+            DirectionalConsensusClass::AmbiguousConsensus => 2,
+            DirectionalConsensusClass::InsufficientConsensus
+            | DirectionalConsensusClass::IncompleteRung => 0,
+        }
+    }
+}
+
+/// Directional report plus mergeable exact pool state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+pub struct DirectionalRungAnalysis {
+    /// Compact report retained after folding.
+    pub report: CompactDirectionalRungReport,
+    /// Exact fixed-effect accumulator merged into a directional region.
+    pub pooled_accumulator: PooledDisturbanceAccumulator,
+}
+
 /// Analysis-only classification for one same-direction observation pair.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub enum VelocityRungClass {
@@ -245,8 +510,12 @@ pub struct VelocityRungVerdict {
 /// Failure to combine two summaries that do not describe one rung.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub enum VelocityEvidenceError {
-    /// Direction or gain differed between the two observations.
-    MismatchedPair,
+    /// A slot, direction, or gain did not match the declared rung.
+    MismatchedObservation,
+    /// Intrinsic eligible evidence lacked a required controller-domain value.
+    InvalidConsensus,
+    /// Checked reconstruction or pooling arithmetic failed.
+    Arithmetic,
 }
 
 /// Classify one already-executed observation without returning a motion directive.
@@ -314,7 +583,7 @@ pub fn reproduce_velocity_rung(
     second: VelocityObservationSummary,
 ) -> Result<VelocityRungVerdict, VelocityEvidenceError> {
     if first.direction != second.direction || first.p != second.p {
-        return Err(VelocityEvidenceError::MismatchedPair);
+        return Err(VelocityEvidenceError::MismatchedObservation);
     }
     let first_moving = observation_resolves_motion(first.classification);
     let second_moving = observation_resolves_motion(second.classification);
@@ -383,6 +652,252 @@ pub fn reproduce_velocity_rung(
         reproduced_moving,
         operable,
         initial_lead_in: first.initial_lead_in || second.initial_lead_in,
+    })
+}
+
+/// Derive one direction's consensus, pool, operability, and rate bounds.
+pub fn analyze_directional_rung(
+    collected: &CollectedRungEvidence,
+    direction: VelocityDirection,
+    p: PidGain,
+    target_rpm: i32,
+    counts_per_rev: u32,
+) -> Result<DirectionalRungAnalysis, VelocityEvidenceError> {
+    analyze_directional_set(
+        collected.directional_set(direction),
+        direction,
+        p,
+        target_rpm,
+        counts_per_rev,
+    )
+}
+
+/// Derive one direction after the opposite direction has already been folded.
+pub fn analyze_directional_set(
+    set: DirectionalObservationSet,
+    direction: VelocityDirection,
+    p: PidGain,
+    target_rpm: i32,
+    counts_per_rev: u32,
+) -> Result<DirectionalRungAnalysis, VelocityEvidenceError> {
+    if p == PidGain::ZERO || counts_per_rev == 0 || target_rpm == 0 {
+        return Err(VelocityEvidenceError::Arithmetic);
+    }
+    let classes = core::array::from_fn(|index| {
+        set.classification(index)
+            .unwrap_or(VelocityObservationClass::InvalidEvidenceFault)
+    });
+    let intervals = core::array::from_fn(|index| set.disturbance_interval(index));
+    let consensus = depth_three_consensus(set.collected_mask(), classes, intervals);
+    let operable_count = classes
+        .iter()
+        .enumerate()
+        .filter(|(index, class)| {
+            set.collected_mask() & (1 << index) != 0 && observation_is_operable(**class)
+        })
+        .count() as u8;
+    let mut flags = u8::from(operable_count >= 3) * DIRECTIONAL_RUNG_FLAG_OPERABLE;
+    if set.initial_lead_in() {
+        flags |= DIRECTIONAL_RUNG_FLAG_INITIAL_LEAD_IN;
+    }
+
+    let mut pooled_accumulator = PooledDisturbanceAccumulator::new();
+    let mut variance_floor_observations = 0u8;
+    let mut rate_bounds = [0i64; 4];
+    let mut have_rate_bounds = false;
+    if consensus.classification == DirectionalConsensusClass::EligibleConsensus {
+        let target_magnitude = i32::try_from(target_rpm.unsigned_abs())
+            .map_err(|_| VelocityEvidenceError::Arithmetic)?;
+        let signed_target_rpm = match direction {
+            VelocityDirection::Forward => target_magnitude,
+            VelocityDirection::Reverse => -target_magnitude,
+        };
+        for index in 0..CONSENSUS_OBSERVATIONS_PER_DIRECTION {
+            if consensus.included_mask & (1 << index) == 0 {
+                continue;
+            }
+            let observation = set.observations[index];
+            let interval = observation
+                .interval()
+                .ok_or(VelocityEvidenceError::InvalidConsensus)?;
+            let point = EquivalentTorqueTargetQ16::from_raw(observation.disturbance_point_q16);
+            let variance = observation.variance.decode();
+            variance_floor_observations = variance_floor_observations
+                .checked_add(u8::from(variance == 0))
+                .ok_or(VelocityEvidenceError::Arithmetic)?;
+            pooled_accumulator.add(point, interval, variance);
+
+            let point_cell = disturbance_point_cell(observation.disturbance_point_q16)?;
+            let mean_bounds = rate_bounds_from_disturbance_cell(
+                signed_target_rpm,
+                counts_per_rev,
+                p.raw(),
+                point_cell,
+            )?;
+            let confidence_bounds = rate_bounds_from_disturbance_cell(
+                signed_target_rpm,
+                counts_per_rev,
+                p.raw(),
+                [
+                    observation.disturbance_low_q16,
+                    observation.disturbance_high_q16,
+                ],
+            )?;
+            if have_rate_bounds {
+                rate_bounds[0] = rate_bounds[0].min(mean_bounds[0]);
+                rate_bounds[1] = rate_bounds[1].max(mean_bounds[1]);
+                rate_bounds[2] = rate_bounds[2].min(confidence_bounds[0]);
+                rate_bounds[3] = rate_bounds[3].max(confidence_bounds[1]);
+            } else {
+                rate_bounds = [
+                    mean_bounds[0],
+                    mean_bounds[1],
+                    confidence_bounds[0],
+                    confidence_bounds[1],
+                ];
+                have_rate_bounds = true;
+            }
+        }
+        if !have_rate_bounds {
+            return Err(VelocityEvidenceError::InvalidConsensus);
+        }
+    }
+
+    let pooled = if consensus.classification == DirectionalConsensusClass::EligibleConsensus {
+        pooled_accumulator
+            .finish(variance_floor_observations)
+            .ok_or(VelocityEvidenceError::Arithmetic)
+            .map(Some)?
+    } else {
+        None
+    };
+    let compact_rate_bounds = if have_rate_bounds {
+        [
+            CompactSignedRate::encode(rate_bounds[0], BoundRounding::TowardNegativeInfinity),
+            CompactSignedRate::encode(rate_bounds[1], BoundRounding::TowardPositiveInfinity),
+            CompactSignedRate::encode(rate_bounds[2], BoundRounding::TowardNegativeInfinity),
+            CompactSignedRate::encode(rate_bounds[3], BoundRounding::TowardPositiveInfinity),
+        ]
+    } else {
+        [CompactSignedRate::ZERO; 4]
+    };
+
+    Ok(DirectionalRungAnalysis {
+        report: CompactDirectionalRungReport {
+            p,
+            classification: consensus.classification,
+            components: consensus.components,
+            pooled,
+            settled_rate_bounds_q: compact_rate_bounds,
+            collected_mask: consensus.collected_mask,
+            eligible_mask: consensus.eligible_mask,
+            included_mask: consensus.included_mask,
+            operable_count,
+            flags,
+        },
+        pooled_accumulator,
+    })
+}
+
+fn rate_bounds_from_disturbance_cell(
+    target_rpm: i32,
+    counts_per_rev: u32,
+    p_raw: u16,
+    disturbance_cell_q16: [i32; 2],
+) -> Result<[i64; 2], VelocityEvidenceError> {
+    if counts_per_rev == 0 || p_raw == 0 || disturbance_cell_q16[0] > disturbance_cell_q16[1] {
+        return Err(VelocityEvidenceError::Arithmetic);
+    }
+    let target_term = i128::from(target_rpm)
+        .checked_mul(i128::from(counts_per_rev))
+        .and_then(|value| value.checked_mul(1_000))
+        .and_then(|value| value.checked_mul(i128::from(p_raw)))
+        .and_then(|value| value.checked_mul(65_536))
+        .ok_or(VelocityEvidenceError::Arithmetic)?;
+    let denominator = i128::from(p_raw)
+        .checked_mul(65_536)
+        .and_then(|value| value.checked_mul(60))
+        .ok_or(VelocityEvidenceError::Arithmetic)?;
+    let numerator = |disturbance: i32| {
+        i128::from(disturbance)
+            .checked_mul(256)
+            .and_then(|value| value.checked_mul(i128::from(counts_per_rev)))
+            .and_then(|value| value.checked_mul(1_000))
+            .and_then(|value| target_term.checked_sub(value))
+            .ok_or(VelocityEvidenceError::Arithmetic)
+    };
+    let low = floor_ratio(numerator(disturbance_cell_q16[1])?, denominator)
+        .ok_or(VelocityEvidenceError::Arithmetic)?;
+    let high = ceil_ratio(numerator(disturbance_cell_q16[0])?, denominator)
+        .ok_or(VelocityEvidenceError::Arithmetic)?;
+    Ok([
+        i64::try_from(low).map_err(|_| VelocityEvidenceError::Arithmetic)?,
+        i64::try_from(high).map_err(|_| VelocityEvidenceError::Arithmetic)?,
+    ])
+}
+
+fn disturbance_point_cell(point: i32) -> Result<[i32; 2], VelocityEvidenceError> {
+    match point.cmp(&0) {
+        core::cmp::Ordering::Greater => point
+            .checked_add(1)
+            .map(|high| [point, high])
+            .ok_or(VelocityEvidenceError::Arithmetic),
+        core::cmp::Ordering::Less => point
+            .checked_sub(1)
+            .map(|low| [low, point])
+            .ok_or(VelocityEvidenceError::Arithmetic),
+        core::cmp::Ordering::Equal => Ok([-1, 1]),
+    }
+}
+
+fn floor_ratio(numerator: i128, denominator: i128) -> Option<i128> {
+    let quotient = numerator.checked_div(denominator)?;
+    let remainder = numerator.checked_rem(denominator)?;
+    if remainder != 0 && numerator < 0 {
+        quotient.checked_sub(1)
+    } else {
+        Some(quotient)
+    }
+}
+
+fn ceil_ratio(numerator: i128, denominator: i128) -> Option<i128> {
+    let quotient = numerator.checked_div(denominator)?;
+    let remainder = numerator.checked_rem(denominator)?;
+    if remainder != 0 && numerator > 0 {
+        quotient.checked_add(1)
+    } else {
+        Some(quotient)
+    }
+}
+
+const fn direction_index(direction: VelocityDirection) -> usize {
+    match direction {
+        VelocityDirection::Forward => 0,
+        VelocityDirection::Reverse => 1,
+    }
+}
+
+fn observation_class_from_report_code(code: u8) -> Option<VelocityObservationClass> {
+    Some(match code {
+        0 => VelocityObservationClass::Eligible,
+        1 => VelocityObservationClass::Inert,
+        2 => VelocityObservationClass::DeficitUnresolved,
+        3 => VelocityObservationClass::CurrentHeadroom,
+        4 => {
+            VelocityObservationClass::StationarityExcluded(StationarityExclusion::NoBlockingPlateau)
+        }
+        5 => VelocityObservationClass::StationarityExcluded(
+            StationarityExclusion::TooFewDecorrelatedBlocks,
+        ),
+        6 => VelocityObservationClass::StationarityExcluded(StationarityExclusion::ResolvedSlope),
+        7 => VelocityObservationClass::StationarityExcluded(
+            StationarityExclusion::StructuredResidual,
+        ),
+        8 => VelocityObservationClass::StationarityExcluded(StationarityExclusion::Arithmetic),
+        9 => VelocityObservationClass::WrongDirectionFault,
+        10 => VelocityObservationClass::HardClipFault,
+        11 => VelocityObservationClass::InvalidEvidenceFault,
+        _ => return None,
     })
 }
 
@@ -766,8 +1281,9 @@ fn closure_for(classification: VelocityRungClass) -> BandClosure {
 #[cfg(test)]
 mod tests {
     use super::{
-        VelocityObservationClass, VelocityObservationInput, VelocityRungClass,
-        classify_velocity_observation, reproduce_velocity_rung,
+        VelocityEvidenceError, VelocityObservationClass, VelocityObservationInput,
+        VelocityRungClass, classify_velocity_observation, disturbance_point_cell,
+        rate_bounds_from_disturbance_cell, reproduce_velocity_rung,
     };
     use crate::autotune::velocity_measurement::{
         PlateauSelection, RateBlock, StationarityExclusion, StationarityResult, StationarySuffix,
@@ -804,6 +1320,37 @@ mod tests {
             EquivalentTorqueTargetQ16::from_raw(high),
         )
         .unwrap()
+    }
+
+    #[test]
+    fn compact_consensus_rate_inversion_is_outward_and_sign_correct() {
+        assert_eq!(
+            rate_bounds_from_disturbance_cell(176, 4_000, 256, [0, 0]),
+            Ok([11_733_333, 11_733_334])
+        );
+        assert_eq!(
+            rate_bounds_from_disturbance_cell(176, 4_000, 256, [65_536, 65_536]),
+            Ok([11_666_666, 11_666_667])
+        );
+        assert_eq!(
+            rate_bounds_from_disturbance_cell(176, 4_000, 256, [-65_536, -65_536]),
+            Ok([11_800_000, 11_800_000])
+        );
+    }
+
+    #[test]
+    fn compact_consensus_point_cells_cover_positive_negative_and_zero_truncation() {
+        assert_eq!(disturbance_point_cell(8), Ok([8, 9]));
+        assert_eq!(disturbance_point_cell(-8), Ok([-9, -8]));
+        assert_eq!(disturbance_point_cell(0), Ok([-1, 1]));
+        assert_eq!(
+            disturbance_point_cell(i32::MAX),
+            Err(VelocityEvidenceError::Arithmetic)
+        );
+        assert_eq!(
+            disturbance_point_cell(i32::MIN),
+            Err(VelocityEvidenceError::Arithmetic)
+        );
     }
 
     fn input(direction: VelocityDirection) -> VelocityObservationInput {

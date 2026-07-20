@@ -1,10 +1,15 @@
 use super::operating_region::{
     BoundRounding, CompactSignedRate, CoverageKind, DirectionalRegionClosure,
     DirectionalRegionFold, DirectionalRegionKind, DirectionalRegionRef, HandoffTrackers,
-    JointOperableClosure, JointOperableFold, MIN_DIRECTIONAL_REGION_RUNGS, choose_joint_nomination,
-    observe_directional_rung, observe_joint_rung, select_directional_region,
+    JointOperableClosure, JointOperableFold, MIN_DIRECTIONAL_REGION_RUNGS,
+    PooledDisturbanceAccumulator, choose_joint_nomination,
+    observe_directional_rung as observe_directional_result,
+    observe_joint_rung as observe_joint_result, select_directional_region,
 };
-use super::sweep_evidence::{CompactVariance, VelocityRungClass, VelocityRungVerdict};
+use super::sweep_consensus::DirectionalConsensusClass;
+use super::sweep_evidence::{
+    CompactDirectionalRungReport, DIRECTIONAL_RUNG_FLAG_OPERABLE, DirectionalRungAnalysis,
+};
 use crate::autotune::velocity_measurement::VelocityDirection;
 use crate::autotune::{EquivalentTorqueTargetInterval, EquivalentTorqueTargetQ16};
 use foci_tmc4671::pid::PidGain;
@@ -17,34 +22,167 @@ fn interval(low: i32, high: i32) -> EquivalentTorqueTargetInterval {
     .unwrap()
 }
 
-fn verdict(p: u16, low: i32, high: i32, mean: i64) -> VelocityRungVerdict {
-    VelocityRungVerdict {
-        direction: VelocityDirection::Forward,
-        p: PidGain::new(p).unwrap(),
-        classification: VelocityRungClass::Eligible,
-        disturbance_interval: Some(interval(low, high)),
-        disturbance_intervals: [Some(interval(low, high)); 2],
-        disturbance_points: [Some(EquivalentTorqueTargetQ16::from_raw((low + high) / 2)); 2],
-        disturbance_variances_q2: [CompactVariance::encode(4); 2],
-        settled_rate_bounds_q: [
-            CompactSignedRate::encode(mean - 1, BoundRounding::TowardNegativeInfinity),
-            CompactSignedRate::encode(mean + 1, BoundRounding::TowardPositiveInfinity),
-            CompactSignedRate::encode(mean - 3, BoundRounding::TowardNegativeInfinity),
-            CompactSignedRate::encode(mean + 3, BoundRounding::TowardPositiveInfinity),
-        ],
-        reproduced_moving: true,
-        operable: true,
-        initial_lead_in: false,
+fn verdict(p: u16, low: i32, high: i32, mean: i64) -> DirectionalRungAnalysis {
+    let mut analysis =
+        consensus_analysis(p, DirectionalConsensusClass::EligibleConsensus, low, high);
+    analysis.report.settled_rate_bounds_q = [
+        CompactSignedRate::encode(mean - 1, BoundRounding::TowardNegativeInfinity),
+        CompactSignedRate::encode(mean + 1, BoundRounding::TowardPositiveInfinity),
+        CompactSignedRate::encode(mean - 3, BoundRounding::TowardNegativeInfinity),
+        CompactSignedRate::encode(mean + 3, BoundRounding::TowardPositiveInfinity),
+    ];
+    analysis
+}
+
+fn ineligible(p: u16) -> DirectionalRungAnalysis {
+    let mut analysis =
+        consensus_analysis(p, DirectionalConsensusClass::InsufficientConsensus, 0, 0);
+    analysis.report.operable_count = 0;
+    analysis.report.flags = 0;
+    analysis
+}
+
+fn operable_without_model(p: u16) -> DirectionalRungAnalysis {
+    let mut analysis = ineligible(p);
+    analysis.report.operable_count = 3;
+    analysis.report.flags = DIRECTIONAL_RUNG_FLAG_OPERABLE;
+    analysis
+}
+
+fn observe_directional_rung(
+    fold: &mut DirectionalRegionFold,
+    rung_index: u8,
+    analysis: DirectionalRungAnalysis,
+) -> Option<super::operating_region::DirectionalRegionSummary> {
+    observe_directional_result(fold, rung_index, analysis).unwrap()
+}
+
+fn observe_joint_rung(
+    fold: &mut JointOperableFold,
+    rung_index: u8,
+    forward: DirectionalRungAnalysis,
+    reverse: DirectionalRungAnalysis,
+) -> Option<super::operating_region::JointOperableRegion> {
+    observe_joint_result(fold, rung_index, forward.report, reverse.report)
+}
+
+fn consensus_analysis(
+    p: u16,
+    class: DirectionalConsensusClass,
+    low: i32,
+    high: i32,
+) -> DirectionalRungAnalysis {
+    let mut accumulator = PooledDisturbanceAccumulator::new();
+    for point in [low, (low + high) / 2, high] {
+        accumulator.add(
+            EquivalentTorqueTargetQ16::from_raw(point),
+            interval(low, high),
+            4,
+        );
+    }
+    let pooled = (class == DirectionalConsensusClass::EligibleConsensus)
+        .then(|| accumulator.finish(0).unwrap());
+    DirectionalRungAnalysis {
+        report: CompactDirectionalRungReport {
+            p: PidGain::new(p).unwrap(),
+            classification: class,
+            components: if pooled.is_some() {
+                [[low, high], [0, 0]]
+            } else {
+                [[0, 0]; 2]
+            },
+            pooled,
+            settled_rate_bounds_q: [
+                CompactSignedRate::encode(1_000, BoundRounding::TowardNegativeInfinity),
+                CompactSignedRate::encode(1_010, BoundRounding::TowardPositiveInfinity),
+                CompactSignedRate::encode(990, BoundRounding::TowardNegativeInfinity),
+                CompactSignedRate::encode(1_020, BoundRounding::TowardPositiveInfinity),
+            ],
+            collected_mask: 0b1111,
+            eligible_mask: 0b1111,
+            included_mask: if pooled.is_some() { 0b0111 } else { 0 },
+            operable_count: 3,
+            flags: DIRECTIONAL_RUNG_FLAG_OPERABLE,
+        },
+        pooled_accumulator: accumulator,
     }
 }
 
-fn ineligible(p: u16, class: VelocityRungClass) -> VelocityRungVerdict {
-    let mut rung = verdict(p, 0, 1, 0);
-    rung.classification = class;
-    rung.disturbance_interval = None;
-    rung.disturbance_intervals = [None; 2];
-    rung.disturbance_points = [None; 2];
-    rung
+#[test]
+fn pooled_accumulator_merge_preserves_exact_weighted_state() {
+    let mut first = PooledDisturbanceAccumulator::new();
+    first.add(
+        EquivalentTorqueTargetQ16::from_raw(100),
+        interval(90, 110),
+        4,
+    );
+    let mut second = PooledDisturbanceAccumulator::new();
+    second.add(
+        EquivalentTorqueTargetQ16::from_raw(200),
+        interval(190, 210),
+        4,
+    );
+
+    first.merge(second).unwrap();
+    let pooled = first.finish(0).unwrap();
+    assert_eq!(pooled.estimate.raw(), 150);
+    assert_eq!(pooled.interval, interval(140, 160));
+}
+
+#[test]
+fn directional_fold_consumes_three_of_four_consensus_analysis() {
+    let mut fold = DirectionalRegionFold::new(VelocityDirection::Forward);
+    assert!(
+        observe_directional_rung(
+            &mut fold,
+            2,
+            consensus_analysis(256, DirectionalConsensusClass::EligibleConsensus, 100, 120,)
+        )
+        .is_none()
+    );
+    assert!(
+        observe_directional_rung(
+            &mut fold,
+            3,
+            consensus_analysis(362, DirectionalConsensusClass::EligibleConsensus, 105, 115,)
+        )
+        .is_none()
+    );
+    assert!(
+        observe_directional_rung(
+            &mut fold,
+            4,
+            consensus_analysis(512, DirectionalConsensusClass::EligibleConsensus, 108, 112,)
+        )
+        .is_none()
+    );
+
+    let region = fold.finish(DirectionalRegionClosure::EndOfLadder).unwrap();
+    assert_eq!(region.common_intersection, interval(108, 112));
+    assert_eq!(region.member_count, 3);
+    assert_eq!(region.pooled.estimate.raw(), 110);
+}
+
+#[test]
+fn ambiguous_and_incomplete_consensus_close_without_reseeding() {
+    for class in [
+        DirectionalConsensusClass::AmbiguousConsensus,
+        DirectionalConsensusClass::IncompleteRung,
+    ] {
+        let mut fold = DirectionalRegionFold::new(VelocityDirection::Forward);
+        assert!(
+            observe_directional_rung(
+                &mut fold,
+                0,
+                consensus_analysis(256, DirectionalConsensusClass::EligibleConsensus, 100, 120,),
+            )
+            .is_none()
+        );
+        let closed =
+            observe_directional_rung(&mut fold, 1, consensus_analysis(362, class, 0, 0)).unwrap();
+        assert_eq!(closed.closure, DirectionalRegionClosure::IneligibleGap);
+        assert!(fold.finish(DirectionalRegionClosure::EndOfLadder).is_none());
+    }
 }
 
 #[test]
@@ -123,12 +261,7 @@ fn narrowed_intersection_closes_and_disjoint_rung_reseeds_immediately() {
 fn ineligible_rung_separates_candidates_and_preserves_fragments() {
     let mut fold = DirectionalRegionFold::new(VelocityDirection::Forward);
     assert!(observe_directional_rung(&mut fold, 0, verdict(100, 0, 10, 1)).is_none());
-    let first = observe_directional_rung(
-        &mut fold,
-        1,
-        ineligible(150, VelocityRungClass::DeficitUnresolved),
-    )
-    .unwrap();
+    let first = observe_directional_rung(&mut fold, 1, ineligible(150)).unwrap();
     assert_eq!(first.member_mask, 0b0001);
     assert_eq!(first.closure, DirectionalRegionClosure::IneligibleGap);
     assert_eq!(first.boundary_rung, Some(1));
@@ -140,21 +273,19 @@ fn ineligible_rung_separates_candidates_and_preserves_fragments() {
 }
 
 #[test]
-fn current_and_fault_termini_are_distinct_closures() {
+fn current_and_fault_termini_are_distinct_finish_closures() {
     let mut current = DirectionalRegionFold::new(VelocityDirection::Forward);
     assert!(observe_directional_rung(&mut current, 0, verdict(100, 0, 10, 1)).is_none());
-    let closed = observe_directional_rung(
-        &mut current,
-        1,
-        ineligible(150, VelocityRungClass::CurrentHeadroom),
-    )
-    .unwrap();
+    let closed = current
+        .finish(DirectionalRegionClosure::CurrentHeadroom)
+        .unwrap();
     assert_eq!(closed.closure, DirectionalRegionClosure::CurrentHeadroom);
 
     let mut fault = DirectionalRegionFold::new(VelocityDirection::Forward);
     assert!(observe_directional_rung(&mut fault, 0, verdict(100, 0, 10, 1)).is_none());
-    let closed =
-        observe_directional_rung(&mut fault, 1, ineligible(150, VelocityRungClass::Fault)).unwrap();
+    let closed = fault
+        .finish(DirectionalRegionClosure::SafetyTerminus)
+        .unwrap();
     assert_eq!(closed.closure, DirectionalRegionClosure::SafetyTerminus);
 }
 
@@ -191,27 +322,21 @@ fn gains() -> [PidGain; 7] {
 #[test]
 fn joint_operability_ignores_deficit_resolution_but_rejects_limits_and_faults() {
     let mut fold = JointOperableFold::new();
-    let mut forward = ineligible(256, VelocityRungClass::DeficitUnresolved);
-    let mut reverse = forward;
-    reverse.direction = VelocityDirection::Reverse;
-    forward.operable = true;
-    reverse.operable = true;
+    let forward = operable_without_model(256);
+    let reverse = forward;
     assert!(observe_joint_rung(&mut fold, 0, forward, reverse).is_none());
 
-    let mut current = forward;
-    current.classification = VelocityRungClass::CurrentHeadroom;
-    current.operable = false;
-    let closed = observe_joint_rung(&mut fold, 1, current, reverse).unwrap();
+    let current = ineligible(362);
+    let closed = observe_joint_rung(&mut fold, 1, current, operable_without_model(362)).unwrap();
     assert_eq!(closed.member_mask, 0b1);
-    assert_eq!(closed.closure, JointOperableClosure::CurrentHeadroom);
+    assert_eq!(closed.closure, JointOperableClosure::IneligibleGap);
 
     let mut fault_fold = JointOperableFold::new();
     assert!(observe_joint_rung(&mut fault_fold, 0, forward, reverse).is_none());
-    let mut fault = reverse;
-    fault.classification = VelocityRungClass::Fault;
-    fault.operable = false;
-    let closed = observe_joint_rung(&mut fault_fold, 1, forward, fault).unwrap();
-    assert_eq!(closed.closure, JointOperableClosure::SafetyTerminus);
+    let fault = ineligible(362);
+    let closed =
+        observe_joint_rung(&mut fault_fold, 1, operable_without_model(362), fault).unwrap();
+    assert_eq!(closed.closure, JointOperableClosure::IneligibleGap);
 }
 
 #[test]
@@ -219,10 +344,9 @@ fn joint_fold_reports_maximal_contiguous_regions_and_single_rung_margin() {
     let mut fold = JointOperableFold::new();
     let mut forward = verdict(256, 0, 10, 1);
     let mut reverse = forward;
-    reverse.direction = VelocityDirection::Reverse;
     for index in 0..3 {
-        forward.p = gains()[index];
-        reverse.p = gains()[index];
+        forward.report.p = gains()[index];
+        reverse.report.p = gains()[index];
         assert!(observe_joint_rung(&mut fold, index as u8, forward, reverse).is_none());
     }
     let closed = fold.finish(JointOperableClosure::EndOfLadder).unwrap();

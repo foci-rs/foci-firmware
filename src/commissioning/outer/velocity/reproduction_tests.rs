@@ -119,6 +119,26 @@ fn reproduction_plan_mismatch_is_pre_motion_and_preserves_candidate() {
 }
 
 #[test]
+fn reproduction_rejects_retained_pair_schema_before_n4_motion() {
+    let mut slot = StageBCandidateSlot::new();
+    let mut retained = summary(0, 1);
+    retained.identity.schema_revision = 1;
+    slot.observe_sufficient(retained);
+
+    let requested = identity(0, retained.identity.plan_digest);
+    let Some(StageBReproductionDecision::RejectedPlanMismatch {
+        retained: retained_identity,
+        requested: requested_identity,
+    }) = slot.preflight(requested)
+    else {
+        panic!("the n=2 evidence schema must not compare with an n=4 plan")
+    };
+    assert_eq!(retained_identity.schema_revision, 1);
+    assert_eq!(requested_identity.schema_revision, 2);
+    assert_eq!(slot.candidate(), Some(retained));
+}
+
+#[test]
 fn reproduction_channel_and_commissioning_invalidation_clear_ram_state() {
     let mut slot = StageBCandidateSlot::new();
     slot.observe_sufficient(summary(0, 1));

@@ -1162,8 +1162,11 @@ mod tests {
                     crate::commissioning::outer::velocity::operating_region::OperatingRegionRuntime,
                 >() <= 304
             );
-            assert!(size_of::<crate::commissioning::outer::VelocitySweepData>() <= 2_864);
-            assert_eq!(size_of::<CommissioningEngine>(), 4_528);
+            assert_eq!(
+                size_of::<crate::commissioning::outer::VelocitySweepData>(),
+                2_832
+            );
+            assert_eq!(size_of::<CommissioningEngine>(), 4_496);
         }
         assert!(size_of::<CommissioningEngine>() <= 4_528);
         assert!(size_of::<CommissioningEngine>() <= 6_144);

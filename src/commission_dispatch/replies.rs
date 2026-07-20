@@ -171,17 +171,24 @@ pub trait CommissionReplySink {
     ) {
     }
 
-    /// Emit one velocity-rung band fragment.
-    fn foci_velocity_rung_verdict_band(
+    /// Emit one velocity-rung consensus core fragment.
+    fn foci_velocity_rung_consensus_core(
         &mut self,
-        _report: crate::ankyra::replies::FociVelocityRungVerdictBand,
+        _report: crate::ankyra::replies::FociVelocityRungConsensusCore,
     ) {
     }
 
-    /// Emit one velocity-rung quality fragment.
-    fn foci_velocity_rung_verdict_quality(
+    /// Emit one exact velocity-rung consensus component.
+    fn foci_velocity_rung_consensus_component(
         &mut self,
-        _report: crate::ankyra::replies::FociVelocityRungVerdictQuality,
+        _report: crate::ankyra::replies::FociVelocityRungConsensusComponent,
+    ) {
+    }
+
+    /// Emit one eligible direction's velocity-rung pool.
+    fn foci_velocity_rung_consensus_pool(
+        &mut self,
+        _report: crate::ankyra::replies::FociVelocityRungConsensusPool,
     ) {
     }
 
@@ -712,54 +719,95 @@ fn emit_velocity_sweep_rung<S: CommissionReplySink>(
     oid: u8,
     report: VelocitySweepRungReport,
 ) {
-    use crate::ankyra::replies::{FociVelocityRungVerdictBand, FociVelocityRungVerdictQuality};
-    let interval = |value: Option<crate::autotune::EquivalentTorqueTargetInterval>| {
-        value.map_or((0, 0), |item| (item.low().raw(), item.high().raw()))
+    use crate::ankyra::replies::{
+        FociVelocityRungConsensusComponent, FociVelocityRungConsensusCore,
+        FociVelocityRungConsensusPool,
     };
-    let (forward_low_q16, forward_high_q16) = interval(report.forward.disturbance_interval);
-    let (reverse_low_q16, reverse_high_q16) = interval(report.reverse.disturbance_interval);
-    sink.foci_velocity_rung_verdict_band(FociVelocityRungVerdictBand {
+    use crate::commissioning::outer::velocity::sweep_consensus::consensus_class_report_code;
+
+    let directions = [report.forward, report.reverse];
+    let flags = u8::from(report.forward.operable())
+        | (u8::from(report.reverse.operable()) << 1)
+        | (u8::from(report.forward.initial_lead_in()) << 2)
+        | (u8::from(report.reverse.initial_lead_in()) << 3);
+    sink.foci_velocity_rung_consensus_core(FociVelocityRungConsensusCore {
         oid,
         run_sequence: report.run_sequence,
         evidence_sequence: report.evidence_sequence,
         fragment: 0,
         rung_index: report.rung_index,
         velocity_p: report.forward.p.raw(),
-        forward_low_q16,
-        forward_high_q16,
-        reverse_low_q16,
-        reverse_high_q16,
-        forward_p_low: 0,
-        forward_p_high: 0,
-        reverse_p_low: 0,
-        reverse_p_high: 0,
-    });
-    let flags = u8::from(report.forward.reproduced_moving)
-        | (u8::from(report.reverse.reproduced_moving) << 1)
-        | (u8::from(report.forward.initial_lead_in) << 2)
-        | (u8::from(report.reverse.initial_lead_in) << 3);
-    sink.foci_velocity_rung_verdict_quality(FociVelocityRungVerdictQuality {
-        oid,
-        run_sequence: report.run_sequence,
-        evidence_sequence: report.evidence_sequence,
-        fragment: 1,
-        rung_index: report.rung_index,
-        forward_class:
-            crate::commissioning::outer::velocity::sweep_evidence::rung_class_report_code(
-                report.forward.classification,
-            ),
-        reverse_class:
-            crate::commissioning::outer::velocity::sweep_evidence::rung_class_report_code(
-                report.reverse.classification,
-            ),
-        forward_closure: 0,
-        reverse_closure: 0,
+        forward_class: consensus_class_report_code(report.forward.classification),
+        reverse_class: consensus_class_report_code(report.reverse.classification),
+        forward_collected_mask: report.forward.collected_mask,
+        reverse_collected_mask: report.reverse.collected_mask,
+        forward_eligible_mask: report.forward.eligible_mask,
+        reverse_eligible_mask: report.reverse.eligible_mask,
+        forward_included_mask: report.forward.included_mask,
+        reverse_included_mask: report.reverse.included_mask,
+        forward_component_count: report.forward.component_count(),
+        reverse_component_count: report.reverse.component_count(),
+        forward_operable_count: report.forward.operable_count,
+        reverse_operable_count: report.reverse.operable_count,
         flags,
-        forward_eligible_rungs: u8::from(report.forward.disturbance_interval.is_some()),
-        reverse_eligible_rungs: u8::from(report.reverse.disturbance_interval.is_some()),
-        forward_eligible_observations: 2 * u16::from(report.forward.disturbance_interval.is_some()),
-        reverse_eligible_observations: 2 * u16::from(report.reverse.disturbance_interval.is_some()),
     });
+
+    for (direction, directional) in directions.into_iter().enumerate() {
+        for component_index in 0..usize::from(directional.component_count()) {
+            let component = directional.components[component_index];
+            sink.foci_velocity_rung_consensus_component(FociVelocityRungConsensusComponent {
+                oid,
+                run_sequence: report.run_sequence,
+                evidence_sequence: report.evidence_sequence,
+                fragment: 1 + direction as u8 * 2 + component_index as u8,
+                rung_index: report.rung_index,
+                direction: direction as u8,
+                component_index: component_index as u8,
+                low_q16: component[0],
+                high_q16: component[1],
+            });
+        }
+        let Some(pooled) = directional.pooled else {
+            continue;
+        };
+        let (rate_mantissas, rate_shift) = common_rate_mantissas(directional.settled_rate_bounds_q);
+        sink.foci_velocity_rung_consensus_pool(FociVelocityRungConsensusPool {
+            oid,
+            run_sequence: report.run_sequence,
+            evidence_sequence: report.evidence_sequence,
+            fragment: 5 + direction as u8,
+            rung_index: report.rung_index,
+            direction: direction as u8,
+            pooled_q16: pooled.estimate.raw(),
+            pooled_low_q16: pooled.interval.low().raw(),
+            pooled_high_q16: pooled.interval.high().raw(),
+            variance_floor_observations: pooled.variance_floor_observations,
+            mean_min_mantissa: rate_mantissas[0],
+            mean_max_mantissa: rate_mantissas[1],
+            envelope_low_mantissa: rate_mantissas[2],
+            envelope_high_mantissa: rate_mantissas[3],
+            rate_shift,
+        });
+    }
+}
+
+fn common_rate_mantissas(
+    rates: [crate::commissioning::outer::velocity::operating_region::CompactSignedRate; 4],
+) -> ([i32; 4], u8) {
+    let shift = rates.iter().map(|rate| rate.shift).max().unwrap_or(0);
+    let divisor = 1_i64 << shift;
+    let mantissas = core::array::from_fn(|index| {
+        let value = rates[index].decode();
+        let quotient = value / divisor;
+        let remainder = value % divisor;
+        let outward = match index {
+            0 | 2 if value < 0 && remainder != 0 => quotient - 1,
+            1 | 3 if value > 0 && remainder != 0 => quotient + 1,
+            _ => quotient,
+        };
+        i32::try_from(outward).expect("compact rate fits common wire mantissa")
+    });
+    (mantissas, shift)
 }
 
 fn emit_velocity_sweep_terminal_fragments<S: CommissionReplySink>(
@@ -1435,6 +1483,35 @@ mod tests {
         }
     }
 
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum ConsensusEvent {
+        Core {
+            fragment: u8,
+            classes: [u8; 2],
+            collected: [u8; 2],
+            eligible: [u8; 2],
+            included: [u8; 2],
+            components: [u8; 2],
+            operable: [u8; 2],
+            flags: u8,
+        },
+        Component {
+            fragment: u8,
+            direction: u8,
+            index: u8,
+            bounds: [i32; 2],
+        },
+        Pool {
+            fragment: u8,
+            direction: u8,
+            point: i32,
+            interval: [i32; 2],
+            variance_floor: u8,
+            rates: [i32; 4],
+            rate_shift: u8,
+        },
+    }
+
     #[derive(Debug, Clone, PartialEq, Eq)]
     enum Event {
         Detail {
@@ -1651,7 +1728,7 @@ mod tests {
         },
         SweepPlan(u8),
         SweepObservation(u8),
-        SweepRung(u8),
+        SweepRung(ConsensusEvent),
         SweepStructuredBoundary,
         SweepDirectionalRegionCore(u32),
         SweepDirectionalRegionModel(u32),
@@ -2022,18 +2099,56 @@ mod tests {
             self.events.push(Event::SweepObservation(report.fragment));
         }
 
-        fn foci_velocity_rung_verdict_band(
+        fn foci_velocity_rung_consensus_core(
             &mut self,
-            report: crate::ankyra::replies::FociVelocityRungVerdictBand,
+            report: crate::ankyra::replies::FociVelocityRungConsensusCore,
         ) {
-            self.events.push(Event::SweepRung(report.fragment));
+            self.events.push(Event::SweepRung(ConsensusEvent::Core {
+                fragment: report.fragment,
+                classes: [report.forward_class, report.reverse_class],
+                collected: [report.forward_collected_mask, report.reverse_collected_mask],
+                eligible: [report.forward_eligible_mask, report.reverse_eligible_mask],
+                included: [report.forward_included_mask, report.reverse_included_mask],
+                components: [
+                    report.forward_component_count,
+                    report.reverse_component_count,
+                ],
+                operable: [report.forward_operable_count, report.reverse_operable_count],
+                flags: report.flags,
+            }));
         }
 
-        fn foci_velocity_rung_verdict_quality(
+        fn foci_velocity_rung_consensus_component(
             &mut self,
-            report: crate::ankyra::replies::FociVelocityRungVerdictQuality,
+            report: crate::ankyra::replies::FociVelocityRungConsensusComponent,
         ) {
-            self.events.push(Event::SweepRung(report.fragment));
+            self.events
+                .push(Event::SweepRung(ConsensusEvent::Component {
+                    fragment: report.fragment,
+                    direction: report.direction,
+                    index: report.component_index,
+                    bounds: [report.low_q16, report.high_q16],
+                }));
+        }
+
+        fn foci_velocity_rung_consensus_pool(
+            &mut self,
+            report: crate::ankyra::replies::FociVelocityRungConsensusPool,
+        ) {
+            self.events.push(Event::SweepRung(ConsensusEvent::Pool {
+                fragment: report.fragment,
+                direction: report.direction,
+                point: report.pooled_q16,
+                interval: [report.pooled_low_q16, report.pooled_high_q16],
+                variance_floor: report.variance_floor_observations,
+                rates: [
+                    report.mean_min_mantissa,
+                    report.mean_max_mantissa,
+                    report.envelope_low_mantissa,
+                    report.envelope_high_mantissa,
+                ],
+                rate_shift: report.rate_shift,
+            }));
         }
 
         fn foci_velocity_structured_boundary(
@@ -3493,6 +3608,162 @@ mod tests {
                 },
             ]
         );
+    }
+
+    fn consensus_report(
+        class: crate::commissioning::outer::velocity::sweep_consensus::DirectionalConsensusClass,
+        components: [[i32; 2]; 2],
+        masks: [u8; 3],
+        operable_count: u8,
+        flags: u8,
+    ) -> crate::commissioning::outer::velocity::sweep_evidence::CompactDirectionalRungReport {
+        use crate::autotune::{EquivalentTorqueTargetInterval, EquivalentTorqueTargetQ16};
+        use crate::commissioning::outer::velocity::operating_region::{
+            BoundRounding, CompactSignedRate,
+        };
+        use crate::commissioning::outer::velocity::sweep_consensus::DirectionalConsensusClass;
+        use crate::commissioning::outer::velocity::sweep_evidence::PooledDisturbance;
+
+        let pooled = (class == DirectionalConsensusClass::EligibleConsensus).then(|| {
+            let interval = EquivalentTorqueTargetInterval::new(
+                EquivalentTorqueTargetQ16::from_raw(components[0][0]),
+                EquivalentTorqueTargetQ16::from_raw(components[0][1]),
+            )
+            .unwrap();
+            PooledDisturbance {
+                estimate: EquivalentTorqueTargetQ16::from_raw(
+                    (components[0][0] + components[0][1]) / 2,
+                ),
+                interval,
+                variance_floor_observations: 1,
+            }
+        });
+        crate::commissioning::outer::velocity::sweep_evidence::CompactDirectionalRungReport {
+            p: foci_tmc4671::pid::PidGain::new(724).unwrap(),
+            classification: class,
+            components,
+            pooled,
+            settled_rate_bounds_q: [
+                CompactSignedRate::encode(100, BoundRounding::TowardNegativeInfinity),
+                CompactSignedRate::encode(110, BoundRounding::TowardPositiveInfinity),
+                CompactSignedRate::encode(90, BoundRounding::TowardNegativeInfinity),
+                CompactSignedRate::encode(120, BoundRounding::TowardPositiveInfinity),
+            ],
+            collected_mask: masks[0],
+            eligible_mask: masks[1],
+            included_mask: masks[2],
+            operable_count,
+            flags,
+        }
+    }
+
+    #[test]
+    fn velocity_sweep_reply_tests_preserve_consensus_groups_exactly() {
+        use crate::commissioning::outer::velocity::sweep_consensus::DirectionalConsensusClass;
+        use crate::commissioning::outer::velocity::sweep_evidence::{
+            DIRECTIONAL_RUNG_FLAG_INITIAL_LEAD_IN, DIRECTIONAL_RUNG_FLAG_OPERABLE,
+        };
+
+        let eligible = consensus_report(
+            DirectionalConsensusClass::EligibleConsensus,
+            [[100, 120], [0, 0]],
+            [0b1111, 0b1111, 0b0111],
+            4,
+            DIRECTIONAL_RUNG_FLAG_OPERABLE | DIRECTIONAL_RUNG_FLAG_INITIAL_LEAD_IN,
+        );
+        let ambiguous = consensus_report(
+            DirectionalConsensusClass::AmbiguousConsensus,
+            [[-140, -130], [-110, -100]],
+            [0b1111, 0b1111, 0],
+            3,
+            DIRECTIONAL_RUNG_FLAG_OPERABLE,
+        );
+        let report = VelocitySweepRungReport {
+            run_sequence: 7,
+            evidence_sequence: 9,
+            rung_index: 4,
+            forward: eligible,
+            reverse: ambiguous,
+        };
+        let mut sink = RecordingSink::default();
+
+        emit_velocity_sweep_rung(&mut sink, 3, report);
+
+        assert_eq!(sink.events.len(), 5);
+        assert_eq!(
+            sink.events[0],
+            Event::SweepRung(ConsensusEvent::Core {
+                fragment: 0,
+                classes: [0, 1],
+                collected: [0b1111, 0b1111],
+                eligible: [0b1111, 0b1111],
+                included: [0b0111, 0],
+                components: [1, 2],
+                operable: [4, 3],
+                flags: 0b0111,
+            })
+        );
+        assert_eq!(
+            &sink.events[1..],
+            &[
+                Event::SweepRung(ConsensusEvent::Component {
+                    fragment: 1,
+                    direction: 0,
+                    index: 0,
+                    bounds: [100, 120],
+                }),
+                Event::SweepRung(ConsensusEvent::Pool {
+                    fragment: 5,
+                    direction: 0,
+                    point: 110,
+                    interval: [100, 120],
+                    variance_floor: 1,
+                    rates: [100, 110, 90, 120],
+                    rate_shift: 0,
+                }),
+                Event::SweepRung(ConsensusEvent::Component {
+                    fragment: 3,
+                    direction: 1,
+                    index: 0,
+                    bounds: [-140, -130],
+                }),
+                Event::SweepRung(ConsensusEvent::Component {
+                    fragment: 4,
+                    direction: 1,
+                    index: 1,
+                    bounds: [-110, -100],
+                }),
+            ]
+        );
+
+        sink.events.clear();
+        let incomplete = consensus_report(
+            DirectionalConsensusClass::IncompleteRung,
+            [[0; 2]; 2],
+            [0b0111, 0b0111, 0],
+            2,
+            0,
+        );
+        emit_velocity_sweep_rung(
+            &mut sink,
+            3,
+            VelocitySweepRungReport {
+                run_sequence: 7,
+                evidence_sequence: 10,
+                rung_index: 5,
+                forward: incomplete,
+                reverse: incomplete,
+            },
+        );
+        assert_eq!(sink.events.len(), 1);
+        assert!(matches!(
+            sink.events[0],
+            Event::SweepRung(ConsensusEvent::Core {
+                classes: [3, 3],
+                components: [0, 0],
+                ..
+            })
+        ));
     }
 
     #[cfg(feature = "trace-velocity-sweep")]

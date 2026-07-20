@@ -7,6 +7,10 @@ use crate::autotune::velocity_measurement::VelocityDirection;
 use crate::autotune::{EquivalentTorqueTargetInterval, EquivalentTorqueTargetQ16};
 use crate::commissioning::outer::velocity::operating_region::{BoundRounding, CompactSignedRate};
 use crate::commissioning::outer::velocity::sweep_evidence::CompactVariance;
+use crate::commissioning::outer::velocity::sweep_evidence::{
+    CollectedRungEvidence, CompactConsensusObservation, VelocityObservationClass,
+    VelocityObservationSummary, analyze_directional_rung,
+};
 use foci_tmc4671::pid::PidGain;
 
 fn interval(low: i32, high: i32) -> EquivalentTorqueTargetInterval {
@@ -57,6 +61,126 @@ fn verdict(p: u16, class: VelocityRungClass, low: i32, high: i32) -> VelocityRun
 fn reverse(mut rung: VelocityRungVerdict) -> VelocityRungVerdict {
     rung.direction = VelocityDirection::Reverse;
     rung
+}
+
+fn summary(slot: u8, class: VelocityObservationClass) -> VelocityObservationSummary {
+    let eligible = class == VelocityObservationClass::Eligible;
+    let direction = if slot.is_multiple_of(2) {
+        VelocityDirection::Forward
+    } else {
+        VelocityDirection::Reverse
+    };
+    let low = 100 + i32::from(slot);
+    let high = 120 + i32::from(slot);
+    VelocityObservationSummary {
+        direction,
+        p: PidGain::new(512).unwrap(),
+        classification: class,
+        settled_rate_interval_q: [1_000 + i64::from(slot), 1_010 + i64::from(slot)],
+        settled_rate_mean_q: 1_005 + i64::from(slot),
+        deficit_interval_q: [100, 200],
+        disturbance: eligible.then(|| EquivalentTorqueTargetQ16::from_raw((low + high) / 2)),
+        disturbance_interval: eligible.then(|| interval(low, high)),
+        disturbance_variance_q2: 4,
+        predicted_torque_target_abs: 100,
+        initial_lead_in: slot == 0,
+    }
+}
+
+#[test]
+fn compact_consensus_collects_eight_slots_without_aliasing() {
+    assert!(core::mem::size_of::<CompactConsensusObservation>() <= 16);
+    assert_eq!(core::mem::size_of::<CollectedRungEvidence>(), 136);
+
+    let mut collected = CollectedRungEvidence::new();
+    for slot in 0u8..8 {
+        collected
+            .retain(slot, summary(slot, VelocityObservationClass::Eligible))
+            .unwrap();
+    }
+
+    assert_eq!(collected.collected_mask(VelocityDirection::Forward), 0b1111);
+    assert_eq!(collected.collected_mask(VelocityDirection::Reverse), 0b1111);
+    for slot in 0u8..8 {
+        let direction = if slot.is_multiple_of(2) {
+            VelocityDirection::Forward
+        } else {
+            VelocityDirection::Reverse
+        };
+        let index = usize::from(slot / 2);
+        assert_eq!(
+            collected.classification(direction, index),
+            Some(VelocityObservationClass::Eligible)
+        );
+        assert_eq!(
+            collected
+                .disturbance_interval(direction, index)
+                .unwrap()
+                .low()
+                .raw(),
+            100 + i32::from(slot)
+        );
+    }
+}
+
+#[test]
+fn compact_consensus_preserves_ineligible_class_without_an_interval() {
+    let mut collected = CollectedRungEvidence::new();
+    collected
+        .retain(0, summary(0, VelocityObservationClass::Inert))
+        .unwrap();
+
+    assert_eq!(
+        collected.classification(VelocityDirection::Forward, 0),
+        Some(VelocityObservationClass::Inert)
+    );
+    assert_eq!(
+        collected.disturbance_interval(VelocityDirection::Forward, 0),
+        None
+    );
+}
+
+#[test]
+fn compact_consensus_rate_bounds_ignore_excluded_minimum_and_maximum() {
+    fn collected_with_outlier(point: i32) -> CollectedRungEvidence {
+        let mut collected = CollectedRungEvidence::new();
+        for (observation, slot) in [0u8, 2, 4, 6].into_iter().enumerate() {
+            let mut item = summary(slot, VelocityObservationClass::Eligible);
+            let (low, high, disturbance) = if observation == 3 {
+                (point, point, point)
+            } else {
+                (0, 10, 5)
+            };
+            item.disturbance = Some(EquivalentTorqueTargetQ16::from_raw(disturbance));
+            item.disturbance_interval = Some(interval(low, high));
+            collected.retain(slot, item).unwrap();
+        }
+        collected
+    }
+
+    let low_outlier = analyze_directional_rung(
+        &collected_with_outlier(1_000_000),
+        VelocityDirection::Forward,
+        PidGain::new(512).unwrap(),
+        176,
+        4_000,
+    )
+    .unwrap();
+    let high_outlier = analyze_directional_rung(
+        &collected_with_outlier(-1_000_000),
+        VelocityDirection::Forward,
+        PidGain::new(512).unwrap(),
+        176,
+        4_000,
+    )
+    .unwrap();
+
+    assert_eq!(low_outlier.report.included_mask, 0b0111);
+    assert_eq!(high_outlier.report.included_mask, 0b0111);
+    assert_eq!(
+        low_outlier.report.settled_rate_bounds_q,
+        high_outlier.report.settled_rate_bounds_q
+    );
 }
 
 #[test]

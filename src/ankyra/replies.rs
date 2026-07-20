@@ -2143,9 +2143,9 @@ pub struct FociVelocityObservationDisturbance {
     pub predicted_torque_target_abs: u16,
 }
 
-/// Directional pair intersections and running band edges for one rung.
+/// Identity, classes, masks, and completeness for one consensus rung.
 #[klipper_reply]
-pub struct FociVelocityRungVerdictBand {
+pub struct FociVelocityRungConsensusCore {
     /// Endpoint object id.
     pub oid: u8,
     /// Caller-assigned run sequence.
@@ -2158,27 +2158,37 @@ pub struct FociVelocityRungVerdictBand {
     pub rung_index: u8,
     /// Velocity P gain.
     pub velocity_p: u16,
-    /// Forward pair-intersection lower edge.
-    pub forward_low_q16: i32,
-    /// Forward pair-intersection upper edge.
-    pub forward_high_q16: i32,
-    /// Reverse pair-intersection lower edge.
-    pub reverse_low_q16: i32,
-    /// Reverse pair-intersection upper edge.
-    pub reverse_high_q16: i32,
-    /// Running forward lower P edge.
-    pub forward_p_low: u16,
-    /// Running forward upper P edge.
-    pub forward_p_high: u16,
-    /// Running reverse lower P edge.
-    pub reverse_p_low: u16,
-    /// Running reverse upper P edge.
-    pub reverse_p_high: u16,
+    /// Forward consensus classification.
+    pub forward_class: u8,
+    /// Reverse consensus classification.
+    pub reverse_class: u8,
+    /// Forward collected-observation mask.
+    pub forward_collected_mask: u8,
+    /// Reverse collected-observation mask.
+    pub reverse_collected_mask: u8,
+    /// Forward intrinsically eligible-observation mask.
+    pub forward_eligible_mask: u8,
+    /// Reverse intrinsically eligible-observation mask.
+    pub reverse_eligible_mask: u8,
+    /// Forward unique-component inclusion mask.
+    pub forward_included_mask: u8,
+    /// Reverse unique-component inclusion mask.
+    pub reverse_included_mask: u8,
+    /// Number of exact forward consensus components.
+    pub forward_component_count: u8,
+    /// Number of exact reverse consensus components.
+    pub reverse_component_count: u8,
+    /// Number of independently operable forward observations.
+    pub forward_operable_count: u8,
+    /// Number of independently operable reverse observations.
+    pub reverse_operable_count: u8,
+    /// Directional operability and initial-lead-in flags.
+    pub flags: u8,
 }
 
-/// Reproduction, closure, and pooling quality for one completed rung.
+/// One exact connected component from a directional rung consensus.
 #[klipper_reply]
-pub struct FociVelocityRungVerdictQuality {
+pub struct FociVelocityRungConsensusComponent {
     /// Endpoint object id.
     pub oid: u8,
     /// Caller-assigned run sequence.
@@ -2189,24 +2199,49 @@ pub struct FociVelocityRungVerdictQuality {
     pub fragment: u8,
     /// Gain-rung index.
     pub rung_index: u8,
-    /// Forward pair classification.
-    pub forward_class: u8,
-    /// Reverse pair classification.
-    pub reverse_class: u8,
-    /// Forward band closure.
-    pub forward_closure: u8,
-    /// Reverse band closure.
-    pub reverse_closure: u8,
-    /// Reproduction and lead-in flags.
-    pub flags: u8,
-    /// Forward contiguous eligible-rung count.
-    pub forward_eligible_rungs: u8,
-    /// Reverse contiguous eligible-rung count.
-    pub reverse_eligible_rungs: u8,
-    /// Forward pooled-observation count.
-    pub forward_eligible_observations: u16,
-    /// Reverse pooled-observation count.
-    pub reverse_eligible_observations: u16,
+    /// Signed direction, zero for forward and one for reverse.
+    pub direction: u8,
+    /// Zero-based component index within the direction.
+    pub component_index: u8,
+    /// Inclusive component lower edge in Q16.16 torque-target counts.
+    pub low_q16: i32,
+    /// Inclusive component upper edge in Q16.16 torque-target counts.
+    pub high_q16: i32,
+}
+
+/// Fixed-effect pool and compact settled-rate bounds for one eligible direction.
+#[klipper_reply]
+pub struct FociVelocityRungConsensusPool {
+    /// Endpoint object id.
+    pub oid: u8,
+    /// Caller-assigned run sequence.
+    pub run_sequence: u32,
+    /// Monotonic evidence sequence.
+    pub evidence_sequence: u16,
+    /// Fragment discriminator.
+    pub fragment: u8,
+    /// Gain-rung index.
+    pub rung_index: u8,
+    /// Signed direction, zero for forward and one for reverse.
+    pub direction: u8,
+    /// Fixed-effect pooled point in Q16.16 torque-target counts.
+    pub pooled_q16: i32,
+    /// Inclusive pooled lower edge.
+    pub pooled_low_q16: i32,
+    /// Inclusive pooled upper edge.
+    pub pooled_high_q16: i32,
+    /// Number of included observations whose variance used the numerical floor.
+    pub variance_floor_observations: u8,
+    /// Lowest included settled-rate mean mantissa.
+    pub mean_min_mantissa: i32,
+    /// Highest included settled-rate mean mantissa.
+    pub mean_max_mantissa: i32,
+    /// Lowest included settled-rate confidence-bound mantissa.
+    pub envelope_low_mantissa: i32,
+    /// Highest included settled-rate confidence-bound mantissa.
+    pub envelope_high_mantissa: i32,
+    /// Common binary left shift for all four settled-rate mantissas.
+    pub rate_shift: u8,
 }
 
 /// Non-binding structured-boundary diagnostic for one moving observation.
@@ -2835,42 +2870,62 @@ mod velocity_sweep_reply_tests {
             "observation_disturbance",
         );
         assert_fits(
-            &FociVelocityRungVerdictBand {
+            &FociVelocityRungConsensusCore {
                 oid: u8::MAX,
                 run_sequence: WIDE_U32,
                 evidence_sequence: u16::MAX,
                 fragment: u8::MAX,
                 rung_index: u8::MAX,
                 velocity_p: u16::MAX,
-                forward_low_q16: i32::MIN,
-                forward_high_q16: i32::MAX,
-                reverse_low_q16: i32::MIN,
-                reverse_high_q16: i32::MAX,
-                forward_p_low: u16::MAX,
-                forward_p_high: u16::MAX,
-                reverse_p_low: u16::MAX,
-                reverse_p_high: u16::MAX,
+                forward_class: u8::MAX,
+                reverse_class: u8::MAX,
+                forward_collected_mask: u8::MAX,
+                reverse_collected_mask: u8::MAX,
+                forward_eligible_mask: u8::MAX,
+                reverse_eligible_mask: u8::MAX,
+                forward_included_mask: u8::MAX,
+                reverse_included_mask: u8::MAX,
+                forward_component_count: u8::MAX,
+                reverse_component_count: u8::MAX,
+                forward_operable_count: u8::MAX,
+                reverse_operable_count: u8::MAX,
+                flags: u8::MAX,
             },
-            "rung_band",
+            "rung_consensus_core",
         );
         assert_fits(
-            &FociVelocityRungVerdictQuality {
+            &FociVelocityRungConsensusComponent {
                 oid: u8::MAX,
                 run_sequence: WIDE_U32,
                 evidence_sequence: u16::MAX,
                 fragment: u8::MAX,
                 rung_index: u8::MAX,
-                forward_class: u8::MAX,
-                reverse_class: u8::MAX,
-                forward_closure: u8::MAX,
-                reverse_closure: u8::MAX,
-                flags: u8::MAX,
-                forward_eligible_rungs: u8::MAX,
-                reverse_eligible_rungs: u8::MAX,
-                forward_eligible_observations: u16::MAX,
-                reverse_eligible_observations: u16::MAX,
+                direction: u8::MAX,
+                component_index: u8::MAX,
+                low_q16: i32::MIN,
+                high_q16: i32::MAX,
             },
-            "rung_quality",
+            "rung_consensus_component",
+        );
+        assert_fits(
+            &FociVelocityRungConsensusPool {
+                oid: u8::MAX,
+                run_sequence: WIDE_U32,
+                evidence_sequence: u16::MAX,
+                fragment: u8::MAX,
+                rung_index: u8::MAX,
+                direction: u8::MAX,
+                pooled_q16: i32::MIN,
+                pooled_low_q16: i32::MIN,
+                pooled_high_q16: i32::MAX,
+                variance_floor_observations: u8::MAX,
+                mean_min_mantissa: i32::MIN,
+                mean_max_mantissa: i32::MAX,
+                envelope_low_mantissa: i32::MIN,
+                envelope_high_mantissa: i32::MAX,
+                rate_shift: u8::MAX,
+            },
+            "rung_consensus_pool",
         );
         assert_fits(
             &FociVelocityStructuredBoundary {

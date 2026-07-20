@@ -52,6 +52,8 @@ pub struct MockBackend {
     pub capture_register_reads: usize,
     /// Number of velocity-controller torque-output selector writes.
     pub velocity_controller_output_selects: usize,
+    /// Number of writes clearing the velocity-integrator error sum.
+    pub pid_velocity_error_sum_clears: usize,
     /// Number of direct velocity-feedback reads.
     pub pid_velocity_actual_reads: usize,
     /// Update the interim torque output on a selected velocity-feedback read.
@@ -170,6 +172,7 @@ impl MockBackend {
             register_pair_reads: 0,
             capture_register_reads: 0,
             velocity_controller_output_selects: 0,
+            pid_velocity_error_sum_clears: 0,
             pid_velocity_actual_reads: 0,
             pid_velocity_actual_update_interim_on_read: None,
             trace_events: Vec::new(),
@@ -388,6 +391,14 @@ impl CommissionRegisterIo for MockBackend {
             && val == u32::from(foci_tmc4671::registers::INTERIM_PIDOUT_TARGET_TORQUE.sub_addr)
         {
             self.velocity_controller_output_selects += 1;
+        }
+        if addr
+            == foci_tmc4671::registers::PID_ERROR_PID_VELOCITY_ERROR_SUM
+                .data
+                .addr()
+            && val == 0
+        {
+            self.pid_velocity_error_sum_clears += 1;
         }
         self.elapsed_us_value = self
             .elapsed_us_value

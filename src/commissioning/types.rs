@@ -408,7 +408,7 @@ pub struct StructuredBoundaryEvidence {
     pub binding_lag_one_margin_q: i32,
 }
 
-/// Completed four-observation rung with the firmware's derived verdicts.
+/// Completed eight-observation rung with firmware-owned directional consensus.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub struct VelocitySweepRungReport {
     /// Caller-assigned run sequence.
@@ -417,10 +417,12 @@ pub struct VelocitySweepRungReport {
     pub evidence_sequence: u16,
     /// Zero-based gain-rung index.
     pub rung_index: u8,
-    /// Forward reproduced verdict.
-    pub forward: crate::commissioning::outer::velocity::sweep_evidence::VelocityRungVerdict,
-    /// Reverse reproduced verdict.
-    pub reverse: crate::commissioning::outer::velocity::sweep_evidence::VelocityRungVerdict,
+    /// Forward compact consensus report.
+    pub forward:
+        crate::commissioning::outer::velocity::sweep_evidence::CompactDirectionalRungReport,
+    /// Reverse compact consensus report.
+    pub reverse:
+        crate::commissioning::outer::velocity::sweep_evidence::CompactDirectionalRungReport,
 }
 
 /// One causally closed directional model region or fragment.

@@ -6,7 +6,8 @@ use crate::commissioning::types::{
     VelocitySweepTerminal,
 };
 
-use super::sweep_evidence::{observation_class_report_code, rung_class_report_code};
+use super::sweep_consensus::consensus_class_report_code;
+use super::sweep_evidence::observation_class_report_code;
 use crate::ankyra::velocity_sweep_encoding::{
     VelocitySweepCanonicalRecord, encode_rate_values, extend_velocity_sweep_digest,
     upper_bound_i64, upper_bound_u128,
@@ -371,23 +372,37 @@ fn encode_rung(report: VelocitySweepRungReport) -> VelocitySweepCanonicalRecord 
     record.push_u16(report.evidence_sequence);
     record.push_u8(report.rung_index);
     record.push_u16(report.forward.p.raw());
-    let interval = |value: Option<crate::autotune::EquivalentTorqueTargetInterval>| {
-        value.map_or((0, 0), |item| (item.low().raw(), item.high().raw()))
-    };
-    for verdict in [report.forward, report.reverse] {
-        let (low, high) = interval(verdict.disturbance_interval);
+    for directional in [report.forward, report.reverse] {
+        record.push_u8(consensus_class_report_code(directional.classification));
+        record.push_u8(directional.component_count());
+        record.push_u8(directional.collected_mask);
+        record.push_u8(directional.eligible_mask);
+        record.push_u8(directional.included_mask);
+        record.push_u8(directional.operable_count);
+        record.push_u8(directional.flags);
+        for component in directional.components {
+            record.push_i32(component[0]);
+            record.push_i32(component[1]);
+        }
+        let (point, low, high, variance_floor) =
+            directional.pooled.map_or((0, 0, 0, 0), |pooled| {
+                (
+                    pooled.estimate.raw(),
+                    pooled.interval.low().raw(),
+                    pooled.interval.high().raw(),
+                    pooled.variance_floor_observations,
+                )
+            });
+        record.push_i32(point);
         record.push_i32(low);
         record.push_i32(high);
+        record.push_u8(variance_floor);
+        for rate in directional.settled_rate_bounds_q {
+            record.push_i32(i32::from(rate.mantissa));
+            record.push_u8(rate.shift);
+        }
     }
-    record.push_u8(rung_class_report_code(report.forward.classification));
-    record.push_u8(rung_class_report_code(report.reverse.classification));
-    let flags = u8::from(report.forward.reproduced_moving)
-        | (u8::from(report.reverse.reproduced_moving) << 1)
-        | (u8::from(report.forward.initial_lead_in) << 2)
-        | (u8::from(report.reverse.initial_lead_in) << 3);
-    record.push_u8(flags);
-    record.push_u16(2 * u16::from(report.forward.disturbance_interval.is_some()));
-    record.push_u16(2 * u16::from(report.reverse.disturbance_interval.is_some()));
+    assert!(record.as_bytes().len() <= 128);
     record
 }
 
@@ -449,8 +464,14 @@ mod tests {
         StationarityExclusion, StationarityResult, VelocityDirection,
     };
     use crate::autotune::{EquivalentTorqueTargetInterval, EquivalentTorqueTargetQ16};
+    use crate::commissioning::outer::velocity::operating_region::{
+        BoundRounding, CompactSignedRate,
+    };
+    use crate::commissioning::outer::velocity::sweep_consensus::DirectionalConsensusClass;
     use crate::commissioning::outer::velocity::sweep_evidence::{
-        PooledDisturbance, VelocityObservationClass, VelocityObservationSummary,
+        CompactDirectionalRungReport, DIRECTIONAL_RUNG_FLAG_INITIAL_LEAD_IN,
+        DIRECTIONAL_RUNG_FLAG_OPERABLE, PooledDisturbance, VelocityObservationClass,
+        VelocityObservationSummary,
     };
     use foci_tmc4671::pid::PidGain;
 
@@ -518,6 +539,51 @@ mod tests {
             boundary_rung: None,
             tested_intersection: interval,
         }
+    }
+
+    fn maximal_directional_rung(p: PidGain) -> CompactDirectionalRungReport {
+        let pooled_interval = EquivalentTorqueTargetInterval::new(
+            EquivalentTorqueTargetQ16::from_raw(i32::MIN + 1),
+            EquivalentTorqueTargetQ16::from_raw(i32::MAX),
+        )
+        .unwrap();
+        CompactDirectionalRungReport {
+            p,
+            classification: DirectionalConsensusClass::EligibleConsensus,
+            components: [[i32::MIN + 1, i32::MAX], [0, 0]],
+            pooled: Some(PooledDisturbance {
+                estimate: EquivalentTorqueTargetQ16::from_raw(0),
+                interval: pooled_interval,
+                variance_floor_observations: 4,
+            }),
+            settled_rate_bounds_q: [
+                CompactSignedRate::encode(i64::MIN / 2, BoundRounding::TowardNegativeInfinity),
+                CompactSignedRate::encode(i64::MAX / 2, BoundRounding::TowardPositiveInfinity),
+                CompactSignedRate::encode(i64::MIN / 3, BoundRounding::TowardNegativeInfinity),
+                CompactSignedRate::encode(i64::MAX / 3, BoundRounding::TowardPositiveInfinity),
+            ],
+            collected_mask: 0b1111,
+            eligible_mask: 0b1111,
+            included_mask: 0b1111,
+            operable_count: 4,
+            flags: DIRECTIONAL_RUNG_FLAG_OPERABLE | DIRECTIONAL_RUNG_FLAG_INITIAL_LEAD_IN,
+        }
+    }
+
+    #[test]
+    fn velocity_sweep_reporting_maximal_consensus_rung_fits_audited_capacity() {
+        let p = PidGain::new(PidGain::MAX.raw()).unwrap();
+        let directional = maximal_directional_rung(p);
+        let record = encode_rung(VelocitySweepRungReport {
+            run_sequence: u32::MAX,
+            evidence_sequence: u16::MAX,
+            rung_index: u8::MAX,
+            forward: directional,
+            reverse: directional,
+        });
+
+        assert!(record.as_bytes().len() <= 128);
+        assert_eq!(record.as_bytes().len(), 122);
     }
 
     #[test]

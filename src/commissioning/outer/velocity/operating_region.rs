@@ -2,7 +2,10 @@ use crate::autotune::velocity_measurement::VelocityDirection;
 use crate::autotune::{EquivalentTorqueTargetInterval, EquivalentTorqueTargetQ16};
 use foci_tmc4671::pid::PidGain;
 
-use super::sweep_evidence::{PooledDisturbance, VelocityRungClass, VelocityRungVerdict};
+use super::sweep_consensus::DirectionalConsensusClass;
+use super::sweep_evidence::{
+    CompactDirectionalRungReport, DirectionalRungAnalysis, PooledDisturbance, VelocityEvidenceError,
+};
 
 /// Minimum contiguous rung population supporting a directional constant model.
 pub const MIN_DIRECTIONAL_REGION_RUNGS: u8 = 3;
@@ -128,6 +131,15 @@ impl PooledDisturbanceAccumulator {
         self.weighted_low += i128::from(interval.low().raw()) * weight;
         self.weighted_high += i128::from(interval.high().raw()) * weight;
         self.weight_sum += weight;
+    }
+
+    /// Merge another exact fixed-effect accumulator with checked arithmetic.
+    pub fn merge(&mut self, other: Self) -> Option<()> {
+        self.weighted_point = self.weighted_point.checked_add(other.weighted_point)?;
+        self.weighted_low = self.weighted_low.checked_add(other.weighted_low)?;
+        self.weighted_high = self.weighted_high.checked_add(other.weighted_high)?;
+        self.weight_sum = self.weight_sum.checked_add(other.weight_sum)?;
+        Some(())
     }
 
     /// Finish the fixed-effect estimate with outward-rounded interval edges.
@@ -267,51 +279,59 @@ impl DirectionalRegionFold {
         *self = Self::new(direction);
     }
 
-    fn seed(&mut self, rung_index: u8, rung: VelocityRungVerdict) -> bool {
-        let Some(interval) = rung.disturbance_interval else {
-            return false;
-        };
+    fn seed(
+        &mut self,
+        rung_index: u8,
+        analysis: DirectionalRungAnalysis,
+    ) -> Result<(), VelocityEvidenceError> {
+        let interval = report_interval(analysis.report)?;
         self.common_intersection = interval;
-        self.p_low = rung.p;
-        self.p_high = rung.p;
+        self.p_low = analysis.report.p;
+        self.p_high = analysis.report.p;
         self.first_rung = rung_index;
         self.member_count = 1;
         self.flags |= Self::ACTIVE;
-        self.set_rate_bounds(rung);
-        self.add_rung_to_pool(rung)
+        self.set_rate_bounds(analysis.report);
+        self.variance_floor_observations = analysis
+            .report
+            .pooled
+            .ok_or(VelocityEvidenceError::InvalidConsensus)?
+            .variance_floor_observations;
+        self.pooled
+            .merge(analysis.pooled_accumulator)
+            .ok_or(VelocityEvidenceError::Arithmetic)
     }
 
-    fn append(&mut self, rung: VelocityRungVerdict, intersection: EquivalentTorqueTargetInterval) {
+    fn append(
+        &mut self,
+        analysis: DirectionalRungAnalysis,
+        intersection: EquivalentTorqueTargetInterval,
+    ) -> Result<(), VelocityEvidenceError> {
         self.common_intersection = intersection;
-        self.p_high = rung.p;
+        self.p_high = analysis.report.p;
         self.member_count = self.member_count.saturating_add(1);
-        self.extend_rate_bounds(rung);
-        let _ = self.add_rung_to_pool(rung);
+        self.extend_rate_bounds(analysis.report);
+        self.variance_floor_observations = self
+            .variance_floor_observations
+            .checked_add(
+                analysis
+                    .report
+                    .pooled
+                    .ok_or(VelocityEvidenceError::InvalidConsensus)?
+                    .variance_floor_observations,
+            )
+            .ok_or(VelocityEvidenceError::Arithmetic)?;
+        self.pooled
+            .merge(analysis.pooled_accumulator)
+            .ok_or(VelocityEvidenceError::Arithmetic)
     }
 
-    fn add_rung_to_pool(&mut self, rung: VelocityRungVerdict) -> bool {
-        for observation in 0..2 {
-            let (Some(point), Some(interval)) = (
-                rung.disturbance_points[observation],
-                rung.disturbance_intervals[observation],
-            ) else {
-                return false;
-            };
-            let variance = rung.disturbance_variances_q2[observation].decode();
-            self.variance_floor_observations = self
-                .variance_floor_observations
-                .saturating_add(u8::from(variance == 0));
-            self.pooled.add(point, interval, variance);
-        }
-        true
+    fn set_rate_bounds(&mut self, report: CompactDirectionalRungReport) {
+        self.rate_bounds = report.settled_rate_bounds_q;
     }
 
-    fn set_rate_bounds(&mut self, rung: VelocityRungVerdict) {
-        self.rate_bounds = rung.settled_rate_bounds_q;
-    }
-
-    fn extend_rate_bounds(&mut self, rung: VelocityRungVerdict) {
-        let values = rung.settled_rate_bounds_q.map(CompactSignedRate::decode);
+    fn extend_rate_bounds(&mut self, report: CompactDirectionalRungReport) {
+        let values = report.settled_rate_bounds_q.map(CompactSignedRate::decode);
         if values[0] < self.rate_bounds[0].decode() {
             self.rate_bounds[0] =
                 CompactSignedRate::encode(values[0], BoundRounding::TowardNegativeInfinity);
@@ -518,13 +538,11 @@ const _: () = assert!(core::mem::size_of::<JointOperableFold>() <= 16);
 pub fn observe_joint_rung(
     fold: &mut JointOperableFold,
     rung_index: u8,
-    forward: VelocityRungVerdict,
-    reverse: VelocityRungVerdict,
+    forward: CompactDirectionalRungReport,
+    reverse: CompactDirectionalRungReport,
 ) -> Option<JointOperableRegion> {
-    let direction_matches = forward.direction == VelocityDirection::Forward
-        && reverse.direction == VelocityDirection::Reverse
-        && forward.p == reverse.p;
-    if direction_matches && forward.operable && reverse.operable {
+    let matching_gain = forward.p == reverse.p;
+    if matching_gain && forward.operable() && reverse.operable() {
         if !fold.active {
             fold.seed(rung_index);
             return None;
@@ -537,17 +555,8 @@ pub fn observe_joint_rung(
         fold.seed(rung_index);
         return closed;
     }
-    let closure = if matches!(
-        (forward.classification, reverse.classification),
-        (VelocityRungClass::Fault, _) | (_, VelocityRungClass::Fault)
-    ) || !direction_matches
-    {
+    let closure = if !matching_gain {
         JointOperableClosure::SafetyTerminus
-    } else if matches!(
-        (forward.classification, reverse.classification),
-        (VelocityRungClass::CurrentHeadroom, _) | (_, VelocityRungClass::CurrentHeadroom)
-    ) {
-        JointOperableClosure::CurrentHeadroom
     } else {
         JointOperableClosure::IneligibleGap
     };
@@ -917,33 +926,23 @@ const _: () = assert!(core::mem::size_of::<OperatingRegionRuntime>() <= 304);
 pub fn observe_directional_rung(
     fold: &mut DirectionalRegionFold,
     rung_index: u8,
-    rung: VelocityRungVerdict,
-) -> Option<DirectionalRegionSummary> {
-    if rung.direction != fold.direction() {
-        return fold.close(DirectionalRegionClosure::SafetyTerminus, Some(rung_index));
+    analysis: DirectionalRungAnalysis,
+) -> Result<Option<DirectionalRegionSummary>, VelocityEvidenceError> {
+    if analysis.report.classification != DirectionalConsensusClass::EligibleConsensus {
+        return Ok(fold.close(DirectionalRegionClosure::IneligibleGap, Some(rung_index)));
     }
-    if rung.classification != VelocityRungClass::Eligible {
-        let closure = match rung.classification {
-            VelocityRungClass::CurrentHeadroom => DirectionalRegionClosure::CurrentHeadroom,
-            VelocityRungClass::Fault => DirectionalRegionClosure::SafetyTerminus,
-            _ => DirectionalRegionClosure::IneligibleGap,
-        };
-        return fold.close(closure, Some(rung_index));
-    }
-    let Some(rung_interval) = rung.disturbance_interval else {
-        return fold.close(DirectionalRegionClosure::SafetyTerminus, Some(rung_index));
-    };
+    let rung_interval = report_interval(analysis.report)?;
     if !fold.is_active() {
-        let _ = fold.seed(rung_index, rung);
-        return None;
+        fold.seed(rung_index, analysis)?;
+        return Ok(None);
     }
     let contiguous = rung_index == fold.first_rung.saturating_add(fold.member_count);
     let intersection = contiguous
         .then(|| intersect(fold.common_intersection, rung_interval))
         .flatten();
     if let Some(intersection) = intersection {
-        fold.append(rung, intersection);
-        return None;
+        fold.append(analysis, intersection)?;
+        return Ok(None);
     }
     let closure = if contiguous {
         DirectionalRegionClosure::DisjointInterval
@@ -951,8 +950,23 @@ pub fn observe_directional_rung(
         DirectionalRegionClosure::IneligibleGap
     };
     let closed = fold.close(closure, Some(rung_index));
-    let _ = fold.seed(rung_index, rung);
-    closed
+    fold.seed(rung_index, analysis)?;
+    Ok(closed)
+}
+
+fn report_interval(
+    report: CompactDirectionalRungReport,
+) -> Result<EquivalentTorqueTargetInterval, VelocityEvidenceError> {
+    if report.classification != DirectionalConsensusClass::EligibleConsensus
+        || report.pooled.is_none()
+    {
+        return Err(VelocityEvidenceError::InvalidConsensus);
+    }
+    EquivalentTorqueTargetInterval::new(
+        EquivalentTorqueTargetQ16::from_raw(report.components[0][0]),
+        EquivalentTorqueTargetQ16::from_raw(report.components[0][1]),
+    )
+    .map_err(|_| VelocityEvidenceError::InvalidConsensus)
 }
 
 fn intersect(

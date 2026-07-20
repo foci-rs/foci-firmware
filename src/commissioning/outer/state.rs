@@ -17,7 +17,7 @@ use crate::commissioning::outer::velocity::operating_region::{
 };
 #[cfg(feature = "trace-velocity-sweep")]
 use crate::commissioning::outer::velocity::sweep_evidence::{
-    VelocityObservationSummary, VelocityRungVerdict,
+    CollectedRungEvidence, CompactDirectionalRungReport, DirectionalObservationSet,
 };
 #[cfg(feature = "trace-velocity-sweep")]
 use crate::commissioning::outer::velocity::sweep_plan::VelocitySweepExecutionPlan;
@@ -214,16 +214,20 @@ pub(crate) enum VelocitySweepState {
     },
     /// Emit a structural-fault terminal after its observation evidence.
     FaultTerminal { error: CommissionError },
-    /// Advance to the next predeclared slot or gain rung.
+    /// Advance to the next predeclared observation slot.
     Advance,
-    /// Fold the completed forward rung and emit any closure.
-    FoldForward,
-    /// Fold the completed reverse rung and emit any closure.
-    FoldReverse,
+    /// Begin serial forward derivation after the rung stops collecting.
+    AnalyzeForwardRung { current_headroom: bool },
+    /// Derive and fold the forward directional report.
+    FoldForwardRung { current_headroom: bool },
+    /// Begin serial reverse derivation after forward storage is released.
+    AnalyzeReverseRung { current_headroom: bool },
+    /// Derive and fold the reverse directional report.
+    FoldReverseRung { current_headroom: bool },
     /// Fold joint operability and emit any closure.
-    FoldJoint,
-    /// Emit the unchanged per-rung observation verdicts.
-    EmitRung,
+    FoldJointRung { current_headroom: bool },
+    /// Emit the complete compact per-rung consensus report.
+    EmitRung { current_headroom: bool },
     /// Close and emit the active forward directional candidate.
     FinishForward { current_headroom: bool },
     /// Close and emit the active reverse directional candidate.
@@ -241,24 +245,19 @@ pub(crate) enum VelocitySweepState {
 #[derive(Debug, defmt::Format)]
 #[allow(dead_code)]
 pub(crate) enum VelocitySweepEvidenceState {
-    /// No observation from the current rung is pending reproduction.
+    /// No current-rung evidence has been admitted.
     Empty,
-    /// The first forward observation is retained until its paired repeat.
-    ForwardFirst(VelocityObservationSummary),
-    /// First observations from both signed directions are retained.
-    FirstPair {
-        forward: VelocityObservationSummary,
-        reverse: VelocityObservationSummary,
+    /// Up to eight compact observations are being collected.
+    Collecting(CollectedRungEvidence),
+    /// Forward has been folded while reverse compact evidence remains.
+    ForwardFolded {
+        forward: CompactDirectionalRungReport,
+        reverse: DirectionalObservationSet,
     },
-    /// Forward reproduction is complete while reverse awaits its repeat.
-    ForwardComplete {
-        forward: VelocityRungVerdict,
-        reverse_first: VelocityObservationSummary,
-    },
-    /// Both directional reproduction verdicts are ready for streaming.
-    CompletePair {
-        forward: VelocityRungVerdict,
-        reverse: VelocityRungVerdict,
+    /// Both compact directional reports are ready for joint folding and emission.
+    Complete {
+        forward: CompactDirectionalRungReport,
+        reverse: CompactDirectionalRungReport,
     },
 }
 
@@ -843,14 +842,16 @@ mod tests {
         assert_eq!(size_of::<[i32; 256]>(), 1_024);
         assert_eq!(size_of::<[u16; 256]>(), 512);
         assert_eq!(size_of::<super::VelocityObservationRing>(), 1_540);
-        assert_eq!(size_of::<super::VelocitySweepData>(), 2_864);
+        assert_eq!(size_of::<super::VelocitySweepData>(), 2_832);
         assert_eq!(size_of::<super::MechanicalIdData>(), 2_184);
     }
 
     #[cfg(feature = "trace-velocity-sweep")]
     #[test]
-    fn delivered_velocity_sweep_evidence_state_is_176_bytes() {
-        assert_eq!(size_of::<super::VelocitySweepEvidenceState>(), 176);
+    fn velocity_sweep_evidence_state_pins_replacement_size_below_delivered_size() {
+        // The delivered prior pair state was exactly 176 bytes.
+        assert_eq!(size_of::<super::VelocitySweepEvidenceState>(), 140);
+        assert!(size_of::<super::VelocitySweepEvidenceState>() <= 176);
     }
 
     #[cfg(feature = "trace-velocity-sweep")]

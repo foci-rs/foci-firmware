@@ -4,8 +4,9 @@ use super::{
     ENVELOPE_PROPORTIONAL_DEN, ENVELOPE_PROPORTIONAL_NUM, MAX_SAFETY_OBSERVATION_GAP_US,
     MAX_SWEEP_RUNGS, MIN_SETTLE_CAPTURE_US, MIN_STRUCTURAL_RUNGS, MOVING_STROKE_US,
     OBSERVATIONS_PER_DIRECTION_PER_RUNG, RequestedVelocitySource, SETTLE_ANALYSIS_BUDGET_US,
-    VelocityPlanError, VelocitySweepRequest, ZERO_SETTLE_US, build_gain_ladder, current_gain_span,
-    envelope_cap, gain_at, plan_velocity_sweep, representability_ceilings, travel_cap,
+    SWEEP_SLOT_COUNT, VelocityPlanError, VelocitySweepRequest, ZERO_SETTLE_US, build_gain_ladder,
+    current_gain_span, envelope_cap, gain_at, plan_velocity_sweep, representability_ceilings,
+    travel_cap,
 };
 use crate::autotune::TmcMechanicalRpm;
 use foci_tmc4671::pid::PidGain;
@@ -43,6 +44,13 @@ fn live_geometry_uses_mechanical_rpm_and_the_corrected_ladder() {
     assert_eq!(plan.p_start.raw(), 2);
     assert_eq!(plan.p_top.raw(), 3_685);
     assert_eq!(plan.rung_count, 23);
+    assert_eq!(plan.observations_per_direction, 4);
+    assert_eq!(plan.nominal_workflow_ms, 229_632);
+    assert_eq!(plan.maximum_workflow_ms, 229_632);
+    assert_eq!(
+        u16::from(plan.rung_count) * plan.observations_per_direction,
+        92
+    );
     assert_eq!(
         gains.as_slice(),
         &[
@@ -173,24 +181,40 @@ fn structural_floor_counts_distinct_post_dedupe_gains() {
 }
 
 #[test]
-fn maximum_domain_stays_inside_the_audited_two_k_family() {
+fn maximum_domain_stays_inside_the_audited_four_k_family() {
     let ladder = build_gain_ladder(2, 32_767).unwrap();
     assert!(ladder.len() <= MAX_SWEEP_RUNGS);
-    assert!(ladder.len() * usize::from(OBSERVATIONS_PER_DIRECTION_PER_RUNG) <= 64);
+    assert!(ladder.len() * usize::from(OBSERVATIONS_PER_DIRECTION_PER_RUNG) <= 128);
+
+    let synthetic_rung_count = MAX_SWEEP_RUNGS as u16;
+    assert_eq!(
+        synthetic_rung_count * OBSERVATIONS_PER_DIRECTION_PER_RUNG,
+        128
+    );
 }
 
 #[test]
 fn plan_freezes_exact_ladder_and_workflow_duration() {
     let plan = plan_velocity_sweep(request(), 4_000, 1_000).unwrap();
     let expected_ms = u32::from(plan.rung_count)
-        * 4
+        * u32::from(SWEEP_SLOT_COUNT)
         * (MOVING_STROKE_US + ZERO_SETTLE_US + SETTLE_ANALYSIS_BUDGET_US)
         / 1_000;
     assert_eq!(plan.gains[0], plan.p_start);
     assert_eq!(plan.gains[usize::from(plan.rung_count) - 1], plan.p_top);
-    assert_eq!(plan.observations_per_direction, 2);
+    assert_eq!(plan.observations_per_direction, 4);
     assert_eq!(plan.nominal_workflow_ms, expected_ms);
     assert_eq!(plan.maximum_workflow_ms, expected_ms);
+}
+
+#[test]
+fn observation_count_changes_the_plan_digest() {
+    let mut n2 = plan_velocity_sweep(request(), 4_000, 1_000).unwrap();
+    n2.observations_per_direction = 2;
+    let mut n4 = n2;
+    n4.observations_per_direction = 4;
+
+    assert_ne!(n2.digest(), n4.digest());
 }
 
 #[test]

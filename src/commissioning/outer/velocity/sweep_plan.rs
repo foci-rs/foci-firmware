@@ -25,7 +25,12 @@ pub const MIN_STRUCTURAL_RUNGS: usize = 5;
 /// Maximum audited gain count in one deterministic sweep.
 pub const MAX_SWEEP_RUNGS: usize = 32;
 /// Independent observations collected in each direction at every rung.
-pub const OBSERVATIONS_PER_DIRECTION_PER_RUNG: u16 = 2;
+pub const OBSERVATIONS_PER_DIRECTION_PER_RUNG: u16 = 4;
+/// Signed directions collected at every gain rung.
+pub const SWEEP_DIRECTION_COUNT: u16 = 2;
+/// Total moving observations collected at every gain rung.
+pub const SWEEP_SLOT_COUNT: u8 =
+    (OBSERVATIONS_PER_DIRECTION_PER_RUNG * SWEEP_DIRECTION_COUNT) as u8;
 /// Numerator of the usable current-headroom boundary.
 pub const CURRENT_HEADROOM_NUM: u32 = 9;
 /// Denominator of the usable current-headroom boundary.
@@ -377,7 +382,8 @@ pub fn plan_velocity_sweep(
     let family_size = usize::from(rung_count)
         .checked_mul(usize::from(OBSERVATIONS_PER_DIRECTION_PER_RUNG))
         .ok_or(VelocityPlanError::Arithmetic)?;
-    if family_size > 64 {
+    if family_size > usize::from(crate::autotune::velocity_measurement::MAX_CONFIDENCE_FAMILY_SIZE)
+    {
         return Err(VelocityPlanError::ConfidenceFamilyTooLarge);
     }
     let primitive_us = MOVING_STROKE_US
@@ -388,7 +394,7 @@ pub fn plan_velocity_sweep(
         return Err(VelocityPlanError::InvalidRequest);
     }
     let workflow_us = u32::from(rung_count)
-        .checked_mul(4)
+        .checked_mul(u32::from(SWEEP_SLOT_COUNT))
         .and_then(|value| value.checked_mul(primitive_us))
         .ok_or(VelocityPlanError::Arithmetic)?;
     let workflow_ms = workflow_us / 1_000;
@@ -557,7 +563,9 @@ fn build_gain_ladder(
     if gains.len() < MIN_STRUCTURAL_RUNGS {
         return Err(VelocityPlanError::InsufficientStructuralSpan);
     }
-    if gains.len() * usize::from(OBSERVATIONS_PER_DIRECTION_PER_RUNG) > 64 {
+    if gains.len() * usize::from(OBSERVATIONS_PER_DIRECTION_PER_RUNG)
+        > usize::from(crate::autotune::velocity_measurement::MAX_CONFIDENCE_FAMILY_SIZE)
+    {
         return Err(VelocityPlanError::ConfidenceFamilyTooLarge);
     }
     Ok(gains)

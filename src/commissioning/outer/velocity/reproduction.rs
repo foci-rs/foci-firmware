@@ -1,5 +1,5 @@
 /// Evidence schema stored in the RAM-only Stage B reproduction slot.
-pub const STAGE_B_EVIDENCE_SCHEMA_REVISION: u16 = 1;
+pub const STAGE_B_EVIDENCE_SCHEMA_REVISION: u16 = 2;
 
 /// Shared-firmware package revision stored in the RAM-only Stage B slot.
 pub const STAGE_B_BUILD_REVISION: u32 = const_fnv1a32(env!("CARGO_PKG_VERSION").as_bytes());

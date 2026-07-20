@@ -11,7 +11,7 @@ use crate::commissioning::outer::state::{VelocitySweepData, VelocitySweepEvidenc
 
 use super::sweep_evidence::{
     VelocityEvidenceError, VelocityObservationInput, VelocityObservationSummary,
-    classify_velocity_observation, reproduce_velocity_rung,
+    classify_velocity_observation,
 };
 
 pub(super) struct MovingObservationAnalysis {
@@ -221,36 +221,10 @@ pub(super) fn retain_observation(
     data: &mut VelocitySweepData,
     summary: VelocityObservationSummary,
 ) -> Result<(), VelocityEvidenceError> {
-    data.evidence = match (
-        data.slot,
-        core::mem::replace(&mut data.evidence, VelocitySweepEvidenceState::Empty),
-    ) {
-        (0, VelocitySweepEvidenceState::Empty) => VelocitySweepEvidenceState::ForwardFirst(summary),
-        (1, VelocitySweepEvidenceState::ForwardFirst(forward)) => {
-            VelocitySweepEvidenceState::FirstPair {
-                forward,
-                reverse: summary,
-            }
-        }
-        (2, VelocitySweepEvidenceState::FirstPair { forward, reverse }) => {
-            VelocitySweepEvidenceState::ForwardComplete {
-                forward: reproduce_velocity_rung(forward, summary)?,
-                reverse_first: reverse,
-            }
-        }
-        (
-            3,
-            VelocitySweepEvidenceState::ForwardComplete {
-                forward,
-                reverse_first,
-            },
-        ) => VelocitySweepEvidenceState::CompletePair {
-            forward,
-            reverse: reproduce_velocity_rung(reverse_first, summary)?,
-        },
-        _ => return Err(VelocityEvidenceError::MismatchedPair),
+    let VelocitySweepEvidenceState::Collecting(collected) = &mut data.evidence else {
+        return Err(VelocityEvidenceError::MismatchedObservation);
     };
-    Ok(())
+    collected.retain(data.slot, summary)
 }
 
 pub(super) fn poll_settle_confirmation(
