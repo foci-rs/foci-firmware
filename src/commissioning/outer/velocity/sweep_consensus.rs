@@ -10,6 +10,24 @@ const FULL_OBSERVATION_MASK: u8 = 0b1111;
 const MAX_CONSENSUS_COMPONENTS: usize = 2;
 const TRIPLES: [u8; 4] = [0b0111, 0b1011, 0b1101, 0b1110];
 
+/// Exact closed interval accepted by the domain-neutral consensus primitive.
+pub trait ConsensusInterval: Copy {
+    /// Return inclusive signed integer bounds in the caller's declared domain.
+    fn inclusive_bounds(self) -> [i32; 2];
+}
+
+impl ConsensusInterval for EquivalentTorqueTargetInterval {
+    fn inclusive_bounds(self) -> [i32; 2] {
+        [self.low().raw(), self.high().raw()]
+    }
+}
+
+impl ConsensusInterval for [i32; 2] {
+    fn inclusive_bounds(self) -> [i32; 2] {
+        self
+    }
+}
+
 /// Directional consensus outcome for one complete gain rung.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub enum DirectionalConsensusClass {
@@ -45,10 +63,10 @@ pub struct DirectionalConsensus {
 /// The four corrected observation intervals are the only statistical atoms.
 /// This function performs exact deterministic set arithmetic and never changes
 /// an observation's intrinsic classification.
-pub fn depth_three_consensus(
+pub fn depth_three_consensus<I: ConsensusInterval>(
     collected_mask: u8,
     classes: [VelocityObservationClass; CONSENSUS_OBSERVATIONS_PER_DIRECTION],
-    intervals: [Option<EquivalentTorqueTargetInterval>; CONSENSUS_OBSERVATIONS_PER_DIRECTION],
+    intervals: [Option<I>; CONSENSUS_OBSERVATIONS_PER_DIRECTION],
 ) -> DirectionalConsensus {
     let collected_mask = collected_mask & FULL_OBSERVATION_MASK;
     let eligible_mask = classes
@@ -131,10 +149,10 @@ fn empty_consensus(
     }
 }
 
-fn intersect_triple(
+fn intersect_triple<I: ConsensusInterval>(
     mask: u8,
     eligible_mask: u8,
-    intervals: [Option<EquivalentTorqueTargetInterval>; CONSENSUS_OBSERVATIONS_PER_DIRECTION],
+    intervals: [Option<I>; CONSENSUS_OBSERVATIONS_PER_DIRECTION],
 ) -> Option<[i32; 2]> {
     if mask & eligible_mask != mask {
         return None;
@@ -145,9 +163,9 @@ fn intersect_triple(
         if mask & (1u8 << index) == 0 {
             continue;
         }
-        let interval = interval.as_ref()?;
-        low = low.max(interval.low().raw());
-        high = high.min(interval.high().raw());
+        let interval = (*interval)?.inclusive_bounds();
+        low = low.max(interval[0]);
+        high = high.min(interval[1]);
     }
     (low <= high).then_some([low, high])
 }
@@ -195,9 +213,9 @@ fn merge_intersections(
     (components, component_count)
 }
 
-fn included_observations(
+fn included_observations<I: ConsensusInterval>(
     eligible_mask: u8,
-    intervals: [Option<EquivalentTorqueTargetInterval>; CONSENSUS_OBSERVATIONS_PER_DIRECTION],
+    intervals: [Option<I>; CONSENSUS_OBSERVATIONS_PER_DIRECTION],
     component: [i32; 2],
 ) -> u8 {
     intervals
@@ -208,7 +226,8 @@ fn included_observations(
                 return false;
             }
             interval.is_some_and(|interval| {
-                interval.low().raw() <= component[1] && component[0] <= interval.high().raw()
+                let bounds = interval.inclusive_bounds();
+                bounds[0] <= component[1] && component[0] <= bounds[1]
             })
         })
         .fold(0u8, |mask, (index, _)| mask | (1u8 << index))

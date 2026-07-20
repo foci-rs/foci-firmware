@@ -817,7 +817,7 @@ pub fn analyze_directional_set(
     })
 }
 
-fn rate_bounds_from_disturbance_cell(
+pub(crate) fn rate_bounds_from_disturbance_cell(
     target_rpm: i32,
     counts_per_rev: u32,
     p_raw: u16,
