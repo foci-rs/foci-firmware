@@ -2086,7 +2086,7 @@ fn stage_b_terminal_mismatch_replaces_candidate_and_insufficient_clears_it() {
 
     let mut mismatch = first;
     mismatch.run_sequence += 1;
-    mismatch.selected_memberships[0] = 0b111000;
+    mismatch.selected_memberships[0] = 0b01110;
     mismatch.digest ^= 0xaa55;
     let mismatch_dispatch = apply_stage_b_terminal(mismatch, 0, &mut slot);
     assert_eq!(
