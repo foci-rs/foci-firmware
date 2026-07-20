@@ -246,7 +246,11 @@ where
                         return TmcControlRequestOutcome::skip_tick_tail();
                     }
                     defmt::info!("Auto-calibrating on enable");
-                    stage_b_candidate.invalidate_for_unrelated_commissioning();
+                    // A routine same-channel re-enable may auto-calibrate after the
+                    // required disarm/cooling interval between Stage B runs. Preserve
+                    // that channel's candidate so the separately commanded repeat can
+                    // reproduce it; another channel still invalidates the single slot.
+                    stage_b_candidate.invalidate_for_channel(board.channel());
                     runtime.set_commission_engine(
                         CommissioningEngine::new_calibrate_for_tmc_with_gains_and_trace_seq(
                             0,
@@ -1735,6 +1739,56 @@ mod tests {
                 runtime.pending_calibrate_inner_gains_for_test(),
                 Some(stored_gains())
             );
+        });
+    }
+
+    #[test]
+    fn same_channel_auto_calibrate_preserves_stage_b_candidate() {
+        run_request_test(async {
+            use crate::commissioning::outer::velocity::reproduction::{
+                STAGE_B_BUILD_REVISION, STAGE_B_EVIDENCE_SCHEMA_REVISION, StageBCandidateSlot,
+                StageBCandidateSummary, StageBPlanIdentity,
+            };
+
+            let retained = StageBCandidateSummary {
+                identity: StageBPlanIdentity {
+                    channel: 0,
+                    build_revision: STAGE_B_BUILD_REVISION,
+                    schema_revision: STAGE_B_EVIDENCE_SCHEMA_REVISION,
+                    plan_digest: 0x1234,
+                },
+                forward_membership: 0b0001_1100,
+                reverse_membership: 0b0011_1000,
+                joint_membership: 0b0111_0000,
+                nominated_p: 1_448,
+                forward_interval: [100, 120],
+                reverse_interval: [-130, -100],
+                run_started_us: 1_000,
+                run_completed_us: 2_000,
+                run_digest: 3,
+            };
+            let mut slot = StageBCandidateSlot::new();
+            slot.observe_sufficient(retained);
+            let mut runtime = TmcControlRuntime::new_for_channel(0);
+            let mut board = RecordingBoard::skip_tick_tail();
+            set_auto_calibrate_on_enable_allowed(0, true);
+            let mut tmc = Tmc4671Spi::new(RuntimeMockSpi::default());
+
+            handle_tmc_control_request_with_stage_b(
+                TmcRequest::new(0, TmcRequestKind::SetEnable(true)),
+                TmcPreRequestDisposition::ContinueRequest,
+                &mut runtime,
+                &mut slot,
+                &mut tmc,
+                &mut board,
+            )
+            .await;
+
+            assert_eq!(
+                runtime.pending_commission_kind(),
+                Some(EngineKind::Calibrate)
+            );
+            assert_eq!(slot.candidate(), Some(retained));
         });
     }
 
