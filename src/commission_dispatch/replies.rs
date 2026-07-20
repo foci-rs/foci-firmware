@@ -770,7 +770,10 @@ fn emit_velocity_sweep_rung<S: CommissionReplySink>(
         let Some(pooled) = directional.pooled else {
             continue;
         };
-        let (rate_mantissas, rate_shift) = common_rate_mantissas(directional.settled_rate_bounds_q);
+        let (rate_mantissas, rate_shift) =
+            crate::commissioning::outer::velocity::sweep_reporting::common_rate_mantissas(
+                directional.settled_rate_bounds_q,
+            );
         sink.foci_velocity_rung_consensus_pool(FociVelocityRungConsensusPool {
             oid,
             run_sequence: report.run_sequence,
@@ -789,25 +792,6 @@ fn emit_velocity_sweep_rung<S: CommissionReplySink>(
             rate_shift,
         });
     }
-}
-
-fn common_rate_mantissas(
-    rates: [crate::commissioning::outer::velocity::operating_region::CompactSignedRate; 4],
-) -> ([i32; 4], u8) {
-    let shift = rates.iter().map(|rate| rate.shift).max().unwrap_or(0);
-    let divisor = 1_i64 << shift;
-    let mantissas = core::array::from_fn(|index| {
-        let value = rates[index].decode();
-        let quotient = value / divisor;
-        let remainder = value % divisor;
-        let outward = match index {
-            0 | 2 if value < 0 && remainder != 0 => quotient - 1,
-            1 | 3 if value > 0 && remainder != 0 => quotient + 1,
-            _ => quotient,
-        };
-        i32::try_from(outward).expect("compact rate fits common wire mantissa")
-    });
-    (mantissas, shift)
 }
 
 fn emit_velocity_sweep_terminal_fragments<S: CommissionReplySink>(

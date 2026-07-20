@@ -6,6 +6,7 @@ use crate::commissioning::types::{
     VelocitySweepTerminal,
 };
 
+use super::operating_region::CompactSignedRate;
 use super::sweep_consensus::consensus_class_report_code;
 use super::sweep_evidence::observation_class_report_code;
 use crate::ankyra::velocity_sweep_encoding::{
@@ -397,13 +398,32 @@ fn encode_rung(report: VelocitySweepRungReport) -> VelocitySweepCanonicalRecord 
         record.push_i32(low);
         record.push_i32(high);
         record.push_u8(variance_floor);
-        for rate in directional.settled_rate_bounds_q {
-            record.push_i32(i32::from(rate.mantissa));
-            record.push_u8(rate.shift);
+        let (rate_mantissas, rate_shift) = common_rate_mantissas(directional.settled_rate_bounds_q);
+        for mantissa in rate_mantissas {
+            record.push_i32(mantissa);
+            record.push_u8(rate_shift);
         }
     }
     assert!(record.as_bytes().len() <= 128);
     record
+}
+
+/// Normalize four directional rate bounds to the exact shared wire scale.
+pub(crate) fn common_rate_mantissas(rates: [CompactSignedRate; 4]) -> ([i32; 4], u8) {
+    let shift = rates.iter().map(|rate| rate.shift).max().unwrap_or(0);
+    let divisor = 1_i64 << shift;
+    let mantissas = core::array::from_fn(|index| {
+        let value = rates[index].decode();
+        let quotient = value / divisor;
+        let remainder = value % divisor;
+        let outward = match index {
+            0 | 2 if value < 0 && remainder != 0 => quotient - 1,
+            1 | 3 if value > 0 && remainder != 0 => quotient + 1,
+            _ => quotient,
+        };
+        i32::try_from(outward).expect("compact rate fits common wire mantissa")
+    });
+    (mantissas, shift)
 }
 
 /// Encode the detailed terminal in a trace-only canonical record.
@@ -584,6 +604,38 @@ mod tests {
 
         assert!(record.as_bytes().len() <= 128);
         assert_eq!(record.as_bytes().len(), 122);
+    }
+
+    #[test]
+    fn velocity_sweep_reporting_uses_the_wire_common_rate_shift() {
+        let p = PidGain::new(256).unwrap();
+        let mut directional = maximal_directional_rung(p);
+        directional.settled_rate_bounds_q = [
+            CompactSignedRate::encode(-10, BoundRounding::TowardNegativeInfinity),
+            CompactSignedRate::encode(40_000, BoundRounding::TowardPositiveInfinity),
+            CompactSignedRate::encode(-90_000, BoundRounding::TowardNegativeInfinity),
+            CompactSignedRate::encode(120, BoundRounding::TowardPositiveInfinity),
+        ];
+        let expected_shift = directional
+            .settled_rate_bounds_q
+            .iter()
+            .map(|rate| rate.shift)
+            .max()
+            .unwrap();
+
+        let record = encode_rung(VelocitySweepRungReport {
+            run_sequence: 7,
+            evidence_sequence: 9,
+            rung_index: 0,
+            forward: directional,
+            reverse: directional,
+        });
+        let bytes = record.as_bytes();
+
+        assert_eq!(
+            [bytes[50], bytes[55], bytes[60], bytes[65]],
+            [expected_shift; 4]
+        );
     }
 
     #[test]
