@@ -2,6 +2,8 @@
 
 #[cfg(feature = "trace-velocity-sweep")]
 pub mod integral_evidence;
+#[cfg(test)]
+mod integral_evidence_tests;
 #[cfg(feature = "trace-velocity-sweep")]
 pub mod integral_plan;
 #[cfg(test)]
