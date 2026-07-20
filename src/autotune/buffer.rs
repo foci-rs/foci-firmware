@@ -163,6 +163,24 @@ impl TransientBuffer {
     pub fn samples(&self) -> &[u32] {
         &self.samples[..self.len as usize]
     }
+
+    /// Write one engine-owned workspace word outside a transient capture.
+    ///
+    /// Commissioning phases that do not use the transient samples may reuse
+    /// this fixed allocation instead of growing the engine's largest enum
+    /// variant. The logical capture length is intentionally unchanged.
+    pub(crate) fn write_workspace_word(&mut self, index: usize, value: u32) -> bool {
+        let Some(destination) = self.samples.get_mut(index) else {
+            return false;
+        };
+        *destination = value;
+        true
+    }
+
+    /// Read one engine-owned workspace word outside a transient capture.
+    pub(crate) fn workspace_word(&self, index: usize) -> Option<u32> {
+        self.samples.get(index).copied()
+    }
 }
 
 impl core::fmt::Debug for TransientBuffer {
@@ -250,6 +268,18 @@ mod tests {
         assert_eq!(buf.len(), 0);
         assert_eq!(buf.sample_period_us(), 200);
         assert_eq!(buf.samples(), &[] as &[u32]);
+    }
+
+    #[test]
+    fn workspace_words_reuse_storage_without_forging_capture_samples() {
+        let mut buf = TransientBuffer::new();
+
+        assert!(buf.write_workspace_word(127, 0x89ab_cdef));
+        assert_eq!(buf.workspace_word(127), Some(0x89ab_cdef));
+        assert!(buf.is_empty());
+        assert_eq!(buf.samples(), &[] as &[u32]);
+        assert!(!buf.write_workspace_word(TRANSIENT_LEN, 1));
+        assert_eq!(buf.workspace_word(TRANSIENT_LEN), None);
     }
 
     #[test]

@@ -229,7 +229,7 @@ impl VelocityIntegralPlan {
             planned_velocity_mrev_s: self.planned_velocity_mrev_s,
             target_velocity_rpm: self.target_velocity_rpm,
             pwm_hz: self.pwm_hz,
-            positive_i: self.positive_i,
+            i_start: self.positive_i[0],
             positive_rung_count: self.positive_rung_count,
             family_size: self.family_size,
             moving_stroke_us: self.moving_stroke_us,
@@ -238,7 +238,6 @@ impl VelocityIntegralPlan {
             maximum_workflow_ms: self.maximum_workflow_ms,
             hard_torque_limit: self.hard_torque_limit,
             usable_torque_limit: self.usable_torque_limit,
-            motion_request: self.motion_request,
         }
     }
 }
@@ -254,10 +253,10 @@ pub struct VelocityIntegralExecutionPlan {
     pub planned_velocity_mrev_s: u32,
     /// Frozen signed-target magnitude.
     pub target_velocity_rpm: i32,
-    /// Frozen PWM frequency.
+    /// Frozen PWM frequency retained in candidate identity.
     pub pwm_hz: u32,
-    /// Exact whole-octave positive-I rungs.
-    pub positive_i: [u16; STAGE_C_MAX_POSITIVE_RUNGS],
+    /// First positive-I rung; later rungs are exact left shifts.
+    pub i_start: u16,
     /// Number of valid positive-I entries.
     pub positive_rung_count: u8,
     /// Family-wise observation count per direction.
@@ -268,14 +267,12 @@ pub struct VelocityIntegralExecutionPlan {
     pub zero_settle_us: u32,
     /// Cooperative analysis allowance per observation.
     pub analysis_budget_us: u32,
-    /// Conservative complete Stage-C duration.
+    /// Conservative complete Stage-C duration retained in candidate identity.
     pub maximum_workflow_ms: u32,
     /// Hard torque-target limit.
     pub hard_torque_limit: u16,
     /// Inclusive usable torque-target boundary.
     pub usable_torque_limit: u16,
-    /// Complete motion/travel identity.
-    pub motion_request: VelocitySweepRequest,
 }
 
 /// Failure to construct a deterministic Stage-C plan before motion.
