@@ -771,7 +771,7 @@ fn emit_velocity_sweep_rung<S: CommissionReplySink>(
             continue;
         };
         let (rate_mantissas, rate_shift) =
-            crate::commissioning::outer::velocity::sweep_reporting::common_rate_mantissas(
+            crate::commissioning::outer::velocity::sweep_evidence::common_rate_mantissas(
                 directional.settled_rate_bounds_q,
             );
         sink.foci_velocity_rung_consensus_pool(FociVelocityRungConsensusPool {

@@ -6,9 +6,8 @@ use crate::commissioning::types::{
     VelocitySweepTerminal,
 };
 
-use super::operating_region::CompactSignedRate;
 use super::sweep_consensus::consensus_class_report_code;
-use super::sweep_evidence::observation_class_report_code;
+use super::sweep_evidence::{common_rate_mantissas, observation_class_report_code};
 use crate::ankyra::velocity_sweep_encoding::{
     VelocitySweepCanonicalRecord, encode_rate_values, extend_velocity_sweep_digest,
     upper_bound_i64, upper_bound_u128,
@@ -406,24 +405,6 @@ fn encode_rung(report: VelocitySweepRungReport) -> VelocitySweepCanonicalRecord 
     }
     assert!(record.as_bytes().len() <= 128);
     record
-}
-
-/// Normalize four directional rate bounds to the exact shared wire scale.
-pub(crate) fn common_rate_mantissas(rates: [CompactSignedRate; 4]) -> ([i32; 4], u8) {
-    let shift = rates.iter().map(|rate| rate.shift).max().unwrap_or(0);
-    let divisor = 1_i64 << shift;
-    let mantissas = core::array::from_fn(|index| {
-        let value = rates[index].decode();
-        let quotient = value / divisor;
-        let remainder = value % divisor;
-        let outward = match index {
-            0 | 2 if value < 0 && remainder != 0 => quotient - 1,
-            1 | 3 if value > 0 && remainder != 0 => quotient + 1,
-            _ => quotient,
-        };
-        i32::try_from(outward).expect("compact rate fits common wire mantissa")
-    });
-    (mantissas, shift)
 }
 
 /// Encode the detailed terminal in a trace-only canonical record.
