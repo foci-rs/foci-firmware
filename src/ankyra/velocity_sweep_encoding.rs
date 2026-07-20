@@ -35,6 +35,11 @@ impl VelocitySweepCanonicalRecord {
     }
 
     #[cfg(feature = "trace-velocity-sweep")]
+    pub(crate) fn push_i8(&mut self, value: i8) {
+        self.push_bytes(&value.to_le_bytes());
+    }
+
+    #[cfg(feature = "trace-velocity-sweep")]
     pub(crate) fn push_u16(&mut self, value: u16) {
         self.push_bytes(&value.to_le_bytes());
     }

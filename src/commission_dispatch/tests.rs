@@ -1956,7 +1956,9 @@ fn stage_b_schema3_reproduction_records_are_canonical_and_ordered() {
         &records[1].as_bytes()[24..28],
         &0x0004_0000_u32.to_le_bytes()
     );
-    assert_eq!(&records[1].as_bytes()[28..32], &(-1_i32).to_le_bytes());
+    assert_eq!(records[1].as_bytes()[28] as i8, -1);
+    assert_eq!(records[1].as_bytes()[29] as i8, 0);
+    assert_eq!(records[1].as_bytes().len(), 30);
     assert_eq!(records[7].as_bytes()[32], 0);
     assert_eq!(
         &records[10].as_bytes()[7..11],

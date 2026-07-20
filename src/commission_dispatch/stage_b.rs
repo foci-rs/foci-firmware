@@ -227,8 +227,8 @@ pub(crate) fn for_each_stage_b_reproduction_record(
         record.push_u32(membership.core);
         record.push_u32(membership.previous_only);
         record.push_u32(membership.current_only);
-        record.push_i32(i32::from(membership.low_delta));
-        record.push_i32(i32::from(membership.high_delta));
+        record.push_i8(membership.low_delta);
+        record.push_i8(membership.high_delta);
         consume(record);
     }
 
