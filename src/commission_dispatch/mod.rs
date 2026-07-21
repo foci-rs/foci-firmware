@@ -1227,19 +1227,10 @@ pub async fn drive_commission_result_with_stages<B: CommissioningBackend>(
                     .await;
                 }
             };
-            let planned_event = crate::commissioning::types::VelocityIntegralEvent::Planned(
-                crate::commissioning::types::VelocityIntegralPlanned {
-                    run_sequence: dispatch.terminal.run_sequence,
-                    evidence_sequence: 0,
-                    plan_digest: stage_c_plan.digest(),
-                    final_p: stage_c_plan.final_p,
-                    positive_rung_count: stage_c_plan.positive_rung_count,
-                    maximum_workflow_ms: stage_c_plan.maximum_workflow_ms,
-                },
-            );
             backend.record_velocity_sweep_trace_record(
-                crate::commissioning::outer::velocity::integral_reporting::encode_velocity_integral_event(
-                    planned_event,
+                crate::commissioning::outer::velocity::integral_reporting::encode_velocity_integral_plan_trace(
+                    dispatch.terminal.run_sequence,
+                    stage_c_plan,
                 ),
             );
             retention.stage_c.install_authority(

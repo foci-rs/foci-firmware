@@ -11,7 +11,7 @@ use crate::commissioning::types::{
 };
 
 use super::integral_evidence::{IntegralObservationClass, IntegralRungClass, IntegralRungKind};
-use super::integral_plan::VelocityIntegralExecutionPlan;
+use super::integral_plan::{VelocityIntegralExecutionPlan, VelocityIntegralPlan};
 
 const FNV1A64_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
 
@@ -103,6 +103,62 @@ pub(crate) fn encode_velocity_integral_event(
         VelocityIntegralEvent::Observation(report) => encode_observation(report),
         VelocityIntegralEvent::Rung(report) => encode_rung(report),
     }
+}
+
+/// Encode the complete immutable Stage-C plan for trace-only reconstruction.
+///
+/// This record is emitted before motion and preserves every input to
+/// [`VelocityIntegralPlan::digest`]. It is intentionally distinct from the
+/// compact plan marker hashed into the evidence digest.
+pub(crate) fn encode_velocity_integral_plan_trace(
+    run_sequence: u32,
+    plan: VelocityIntegralPlan,
+) -> VelocitySweepCanonicalRecord {
+    let mut record = VelocitySweepCanonicalRecord::new();
+    record.push_u8(0);
+    record.push_u32(run_sequence);
+    record.push_u16(0);
+    push_u64(&mut record, plan.digest());
+    record.push_u32(plan.build_revision);
+    record.push_u16(plan.schema_revision);
+    record.push_u8(plan.authority.channel);
+    push_u64(&mut record, plan.authority.stage_b_plan_digest);
+    record.push_u16(plan.final_p);
+    for membership in plan.authority.directional_memberships {
+        record.push_u32(membership);
+    }
+    record.push_u32(plan.authority.joint_membership);
+    for interval in plan.authority.directional_pooled_intervals {
+        record.push_i32(interval[0]);
+        record.push_i32(interval[1]);
+    }
+    record.push_u32(plan.planned_velocity_mrev_s);
+    record.push_i32(plan.target_velocity_rpm);
+    record.push_u32(plan.pwm_hz);
+    record.push_u32(plan.encoder_counts_per_rev);
+    record.push_u8(plan.positive_rung_count);
+    for gain in plan.positive_rungs() {
+        record.push_u16(*gain);
+    }
+    record.push_u16(plan.family_size);
+    record.push_u8(plan.total_rung_count);
+    record.push_u16(plan.expected_observations);
+    record.push_u32(plan.moving_stroke_us);
+    record.push_u32(plan.zero_settle_us);
+    record.push_u32(plan.analysis_budget_us);
+    record.push_u32(plan.nominal_workflow_ms);
+    record.push_u32(plan.maximum_workflow_ms);
+    record.push_u16(plan.hard_torque_limit);
+    record.push_u16(plan.usable_torque_limit);
+    record.push_u32(plan.motion_request.requested_velocity_mrev_s);
+    record.push_u32(plan.motion_request.machine_velocity_ceiling_mrev_s);
+    record.push_u8(plan.motion_request.requested_velocity_source as u8);
+    record.push_u32(plan.motion_request.max_stroke_travel_mrev);
+    record.push_u32(plan.motion_request.settle_travel_reserve_mrev);
+    record.push_u32(plan.motion_request.negative_position_headroom_mrev);
+    record.push_u32(plan.motion_request.positive_position_headroom_mrev);
+    record.push_u16(plan.motion_request.max_duration_ms);
+    record
 }
 
 /// Encode the detailed Stage-C terminal for trace-only parity.
@@ -373,6 +429,64 @@ fn push_u64(record: &mut VelocitySweepCanonicalRecord, value: u64) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ankyra::velocity_sweep_encoding::VELOCITY_SWEEP_CANONICAL_RECORD_MAX;
+
+    #[test]
+    fn full_plan_trace_record_preserves_offline_reconstruction_inputs() {
+        let mut positive_i = [0; super::super::integral_plan::STAGE_C_MAX_POSITIVE_RUNGS];
+        positive_i[..5].copy_from_slice(&[5, 10, 20, 40, 80]);
+        let plan = super::super::integral_plan::VelocityIntegralPlan {
+            build_revision: 3,
+            schema_revision: 1,
+            authority: super::super::integral_plan::StageCAuthority {
+                channel: 0,
+                stage_b_plan_digest: 0xfedc_ba98_7654_3210,
+                final_p: 1_448,
+                directional_memberships: [0x0038_0000, 0x0038_0000],
+                joint_membership: 0x0038_0000,
+                directional_pooled_intervals: [
+                    [17_000_000, 18_000_000],
+                    [-19_000_000, -18_000_000],
+                ],
+            },
+            final_p: 1_448,
+            planned_velocity_mrev_s: 4_394,
+            target_velocity_rpm: 264,
+            pwm_hz: 25_000,
+            encoder_counts_per_rev: 4_000,
+            positive_i,
+            positive_rung_count: 5,
+            family_size: 28,
+            total_rung_count: 7,
+            expected_observations: 56,
+            moving_stroke_us: 512_000,
+            zero_settle_us: 500_000,
+            analysis_budget_us: 236_000,
+            nominal_workflow_ms: 69_888,
+            maximum_workflow_ms: 69_888,
+            hard_torque_limit: 2_816,
+            usable_torque_limit: 2_534,
+            motion_request: super::super::sweep_plan::VelocitySweepRequest {
+                requested_velocity_mrev_s: 4_394,
+                machine_velocity_ceiling_mrev_s: 10_000,
+                requested_velocity_source:
+                    super::super::sweep_plan::RequestedVelocitySource::Explicit,
+                max_stroke_travel_mrev: 10_000,
+                settle_travel_reserve_mrev: 100,
+                negative_position_headroom_mrev: 20_000,
+                positive_position_headroom_mrev: 20_000,
+                max_duration_ms: 60_000,
+            },
+        };
+
+        let record = encode_velocity_integral_plan_trace(7, plan);
+
+        assert_eq!(record.as_bytes()[0], 0);
+        assert_eq!(&record.as_bytes()[1..5], &7_u32.to_le_bytes());
+        assert_eq!(&record.as_bytes()[7..15], &plan.digest().to_le_bytes());
+        assert!(record.as_bytes().len() > 128);
+        assert!(record.as_bytes().len() <= VELOCITY_SWEEP_CANONICAL_RECORD_MAX);
+    }
 
     fn plan() -> VelocityIntegralExecutionPlan {
         VelocityIntegralExecutionPlan {

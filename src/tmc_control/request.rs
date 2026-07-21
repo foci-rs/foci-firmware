@@ -869,10 +869,10 @@ where
                         );
                     }
                     TunePreflight::StageC(stage_c_preflight) => {
-                        let planned_event = stage_c_preflight.planned_event();
                         board.record_velocity_sweep_trace_record(
-                            crate::commissioning::outer::velocity::integral_reporting::encode_velocity_integral_event(
-                                planned_event,
+                            crate::commissioning::outer::velocity::integral_reporting::encode_velocity_integral_plan_trace(
+                                stage_c_preflight.run_sequence,
+                                stage_c_preflight.plan,
                             ),
                         );
                         board.emit_reply(ReplyPayload::VelocityIntegralPlan {
@@ -2416,20 +2416,11 @@ mod tests {
                 panic!("exact Stage-C plan must precede motion")
             };
             assert_eq!(emitted, plan);
-            let planned_event = crate::commissioning::types::VelocityIntegralEvent::Planned(
-                crate::commissioning::types::VelocityIntegralPlanned {
-                    run_sequence: workflow.run_sequence,
-                    evidence_sequence: 0,
-                    plan_digest: plan.digest(),
-                    final_p: plan.final_p,
-                    positive_rung_count: plan.positive_rung_count,
-                    maximum_workflow_ms: plan.maximum_workflow_ms,
-                },
-            );
             assert_eq!(
                 board.velocity_sweep_records,
-                [crate::commissioning::outer::velocity::integral_reporting::encode_velocity_integral_event(
-                    planned_event,
+                [crate::commissioning::outer::velocity::integral_reporting::encode_velocity_integral_plan_trace(
+                    workflow.run_sequence,
+                    plan,
                 )]
             );
             assert_eq!(stage_c.state(), StageCSlotState::AuthorityOnly);

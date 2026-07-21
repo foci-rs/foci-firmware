@@ -428,21 +428,12 @@ fn stage_b_complete_installs_authority_and_continues_without_disarm() {
         else {
             unreachable!()
         };
-        let planned = crate::commissioning::types::VelocityIntegralEvent::Planned(
-            crate::commissioning::types::VelocityIntegralPlanned {
-                run_sequence,
-                evidence_sequence: 0,
-                plan_digest: stage_c_plan.digest(),
-                final_p: stage_c_plan.final_p,
-                positive_rung_count: stage_c_plan.positive_rung_count,
-                maximum_workflow_ms: stage_c_plan.maximum_workflow_ms,
-            },
-        );
         assert_eq!(
             backend.velocity_sweep_trace_records.last(),
             Some(
-                &crate::commissioning::outer::velocity::integral_reporting::encode_velocity_integral_event(
-                    planned,
+                &crate::commissioning::outer::velocity::integral_reporting::encode_velocity_integral_plan_trace(
+                    run_sequence,
+                    stage_c_plan,
                 ),
             )
         );
