@@ -37,9 +37,9 @@ pub enum TmcPreRequestDisposition {
 }
 
 #[cfg(feature = "trace-velocity-sweep")]
-enum TunePreflight {
+enum TuneRoute {
     StageB(crate::commission_dispatch::stage_b::StageBPreflight),
-    StageC(crate::commission_dispatch::stage_c::StageCPreflight),
+    StageC,
 }
 
 /// A board could not install the validated mapper into its idle P3 scheduler.
@@ -664,33 +664,33 @@ where
             }
             let run_sequence = board.next_commission_trace_seq();
             #[cfg(feature = "trace-velocity-sweep")]
-            let (tune_preflight, workflow_plan) = {
+            let Some(encoder_counts_per_rev) = board.tmc_state().encoder_counts_per_rev() else {
+                board
+                    .tmc_state()
+                    .commission_in_flight
+                    .store(false, core::sync::atomic::Ordering::Relaxed);
+                board.emit_reply(stage_b_preflight_failure_payload(
+                    oid,
+                    run_sequence,
+                    crate::commission_dispatch::stage_b::StageBPreflightRejection::InvalidPlan,
+                ));
+                return TmcControlRequestOutcome::skip_tick_tail();
+            };
+            #[cfg(feature = "trace-velocity-sweep")]
+            let request = crate::commissioning::outer::velocity::sweep_plan::VelocitySweepRequest {
+                requested_velocity_mrev_s,
+                machine_velocity_ceiling_mrev_s,
+                requested_velocity_source,
+                max_stroke_travel_mrev,
+                settle_travel_reserve_mrev,
+                negative_position_headroom_mrev,
+                positive_position_headroom_mrev,
+                max_duration_ms,
+            };
+            #[cfg(feature = "trace-velocity-sweep")]
+            let tune_route = {
                 stage_b_candidate.invalidate_for_channel(board.channel());
                 stage_c_candidate.invalidate_for_channel(board.channel());
-                let Some(encoder_counts_per_rev) = board.tmc_state().encoder_counts_per_rev()
-                else {
-                    board
-                        .tmc_state()
-                        .commission_in_flight
-                        .store(false, core::sync::atomic::Ordering::Relaxed);
-                    board.emit_reply(stage_b_preflight_failure_payload(
-                        oid,
-                        run_sequence,
-                        crate::commission_dispatch::stage_b::StageBPreflightRejection::InvalidPlan,
-                    ));
-                    return TmcControlRequestOutcome::skip_tick_tail();
-                };
-                let request =
-                    crate::commissioning::outer::velocity::sweep_plan::VelocitySweepRequest {
-                        requested_velocity_mrev_s,
-                        machine_velocity_ceiling_mrev_s,
-                        requested_velocity_source,
-                        max_stroke_travel_mrev,
-                        settle_travel_reserve_mrev,
-                        negative_position_headroom_mrev,
-                        positive_position_headroom_mrev,
-                        max_duration_ms,
-                    };
                 let stage_c = match crate::commission_dispatch::stage_c::preflight_stage_c_request(
                     request,
                     encoder_counts_per_rev,
@@ -723,7 +723,11 @@ where
                         preflight.plan.maximum_workflow_ms,
                     )
                     .expect("a valid Stage-C plan has a valid workflow envelope");
-                    (TunePreflight::StageC(preflight), workflow)
+                    board.emit_reply(ReplyPayload::CommissioningWorkflowPlan {
+                        oid,
+                        plan: workflow,
+                    });
+                    TuneRoute::StageC
                 } else {
                     stage_c_candidate.invalidate_for_unrelated_commissioning();
                     let stage_b_repeat = stage_b_candidate.candidate().is_some();
@@ -771,14 +775,13 @@ where
                         stage_c_ms,
                     )
                     .expect("valid stage plans have a valid workflow envelope");
-                    (TunePreflight::StageB(stage_b), workflow)
+                    board.emit_reply(ReplyPayload::CommissioningWorkflowPlan {
+                        oid,
+                        plan: workflow,
+                    });
+                    TuneRoute::StageB(stage_b)
                 }
             };
-            #[cfg(feature = "trace-velocity-sweep")]
-            board.emit_reply(ReplyPayload::CommissioningWorkflowPlan {
-                oid,
-                plan: workflow_plan,
-            });
             if !runtime.restore_phase_advance_now(tmc).await {
                 defmt::warn!("phase advance: failed to restore ABN offset before tune");
                 board
@@ -846,8 +849,8 @@ where
             };
             #[cfg(feature = "trace-velocity-sweep")]
             {
-                match tune_preflight {
-                    TunePreflight::StageB(stage_b_preflight) => {
+                match tune_route {
+                    TuneRoute::StageB(stage_b_preflight) => {
                         let planned_event = stage_b_preflight.planned_event();
                         board.record_velocity_sweep_trace_record(
                             crate::commissioning::outer::velocity::sweep_reporting::encode_velocity_sweep_event(
@@ -868,13 +871,38 @@ where
                             ),
                         );
                     }
-                    TunePreflight::StageC(stage_c_preflight) => {
-                        board.record_velocity_sweep_trace_record(
+                    TuneRoute::StageC => {
+                        let stage_c_preflight =
+                            match crate::commission_dispatch::stage_c::preflight_stage_c_request(
+                                request,
+                                encoder_counts_per_rev,
+                                current_limit.raw(),
+                                board.channel(),
+                                board.pwm_freq_hz(),
+                                run_sequence,
+                                stage_c_candidate,
+                            ) {
+                                Ok(Some(preflight)) => preflight,
+                                Ok(None) | Err(_) => {
+                                    tmc_state
+                                        .commission_in_flight
+                                        .store(false, core::sync::atomic::Ordering::Relaxed);
+                                    emit_commission_phase_failure::<Board, Spi>(
+                                        board,
+                                        oid,
+                                        CommissionError::VelocityValidationFailed.status_code(),
+                                    );
+                                    return TmcControlRequestOutcome::skip_tick_tail();
+                                }
+                            };
+                        for record in
                             crate::commissioning::outer::velocity::integral_reporting::encode_velocity_integral_plan_trace(
                                 stage_c_preflight.run_sequence,
                                 stage_c_preflight.plan,
-                            ),
-                        );
+                            )
+                        {
+                            board.record_velocity_sweep_trace_record(record);
+                        }
                         board.emit_reply(ReplyPayload::VelocityIntegralPlan {
                             oid,
                             run_sequence: stage_c_preflight.run_sequence,
@@ -2418,10 +2446,10 @@ mod tests {
             assert_eq!(emitted, plan);
             assert_eq!(
                 board.velocity_sweep_records,
-                [crate::commissioning::outer::velocity::integral_reporting::encode_velocity_integral_plan_trace(
+                crate::commissioning::outer::velocity::integral_reporting::encode_velocity_integral_plan_trace(
                     workflow.run_sequence,
                     plan,
-                )]
+                )
             );
             assert_eq!(stage_c.state(), StageCSlotState::AuthorityOnly);
             assert!(stage_b.candidate().is_none());

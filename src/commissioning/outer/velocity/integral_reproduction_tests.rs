@@ -118,8 +118,20 @@ fn sparse_directional_cores_reproduce_without_cross_direction_gates() {
     assert_eq!(delta.reproduced_masks, [0b10_1011, 0b11_1000]);
     assert_eq!(delta.divergent_masks, [0, 0]);
     assert!(delta.reproduces());
-    assert_eq!(delta.overlaps[0][0], interval(10, 24));
-    assert_eq!(delta.overlaps[1][3], interval(-20, -6));
+    assert_eq!(
+        closed_intersection(
+            delta_e(previous.positive[0][0], previous.opening[0]).unwrap(),
+            delta_e(current.positive[0][0], current.opening[0]).unwrap(),
+        ),
+        Some(interval(10, 24))
+    );
+    assert_eq!(
+        closed_intersection(
+            delta_e(previous.positive[1][3], previous.opening[1]).unwrap(),
+            delta_e(current.positive[1][3], current.opening[1]).unwrap(),
+        ),
+        Some(interval(-20, -6))
+    );
 }
 
 #[test]
@@ -140,7 +152,13 @@ fn eligibility_movement_and_response_divergence_are_separate() {
     assert_eq!(delta.previous_only_masks, [0b000001, 0]);
     assert_eq!(delta.current_only_masks, [0b010000, 0]);
     assert_eq!(delta.divergent_masks, [0, 0b010000]);
-    assert_eq!(delta.signed_gaps[1][4], 196);
+    assert_eq!(
+        signed_divergence_gap(
+            delta_e(previous.positive[1][4], previous.opening[1]).unwrap(),
+            delta_e(current.positive[1][4], current.opening[1]).unwrap(),
+        ),
+        Ok(196)
+    );
     assert!(delta.reproduces());
 }
 

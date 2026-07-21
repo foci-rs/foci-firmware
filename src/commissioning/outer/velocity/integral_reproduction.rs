@@ -131,6 +131,8 @@ enum RetainedStageC {
 /// Exact per-direction masks and interval comparisons for one run pair.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub struct StageCReproductionDelta {
+    /// Exact retained-run curve used to derive every comparison interval.
+    pub previous_evidence: IntegralRunEvidence,
     /// Retained-run positive-I membership.
     pub previous_masks: [u32; DIRECTION_COUNT],
     /// Current-run positive-I membership.
@@ -145,14 +147,6 @@ pub struct StageCReproductionDelta {
     pub previous_only_masks: [u32; DIRECTION_COUNT],
     /// Rungs present only in the current run.
     pub current_only_masks: [u32; DIRECTION_COUNT],
-    /// Exact overlap for every reproduced rung; masks carry presence.
-    pub overlaps: [[ExactRateInterval; STAGE_C_MAX_POSITIVE_RUNGS]; DIRECTION_COUNT],
-    /// Retained anchor-relative intervals for every shared rung.
-    pub previous_delta_e: [[ExactRateInterval; STAGE_C_MAX_POSITIVE_RUNGS]; DIRECTION_COUNT],
-    /// Current anchor-relative intervals for every shared rung.
-    pub current_delta_e: [[ExactRateInterval; STAGE_C_MAX_POSITIVE_RUNGS]; DIRECTION_COUNT],
-    /// Signed current-versus-retained gap for divergent rungs.
-    pub signed_gaps: [[i32; STAGE_C_MAX_POSITIVE_RUNGS]; DIRECTION_COUNT],
 }
 
 impl StageCReproductionDelta {
@@ -163,6 +157,11 @@ impl StageCReproductionDelta {
             .all(|mask| mask.count_ones() >= 3)
     }
 }
+
+// Keep comparison evidence compact: this value is carried through board-facing
+// commissioning outcomes, so storing derived per-rung arrays here can exhaust
+// the F407 RTIC task stack before any motion begins.
+const _: () = assert!(core::mem::size_of::<StageCReproductionDelta>() <= 600);
 
 /// Firmware-owned outcome of one Stage-C retained-state transition.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
@@ -390,6 +389,7 @@ pub fn compare_integral_runs(
     }
 
     let mut result = StageCReproductionDelta {
+        previous_evidence: previous,
         previous_masks: previous.eligible_masks,
         current_masks: current.eligible_masks,
         shared_masks: [0; DIRECTION_COUNT],
@@ -397,10 +397,6 @@ pub fn compare_integral_runs(
         divergent_masks: [0; DIRECTION_COUNT],
         previous_only_masks: [0; DIRECTION_COUNT],
         current_only_masks: [0; DIRECTION_COUNT],
-        overlaps: [[ExactRateInterval::EMPTY; STAGE_C_MAX_POSITIVE_RUNGS]; DIRECTION_COUNT],
-        previous_delta_e: [[ExactRateInterval::EMPTY; STAGE_C_MAX_POSITIVE_RUNGS]; DIRECTION_COUNT],
-        current_delta_e: [[ExactRateInterval::EMPTY; STAGE_C_MAX_POSITIVE_RUNGS]; DIRECTION_COUNT],
-        signed_gaps: [[0; STAGE_C_MAX_POSITIVE_RUNGS]; DIRECTION_COUNT],
     };
     for direction in 0..DIRECTION_COUNT {
         result.shared_masks[direction] =
@@ -422,15 +418,11 @@ pub fn compare_integral_runs(
                 current.positive[direction][rung],
                 current.opening[direction],
             )?;
-            result.previous_delta_e[direction][rung] = previous_delta;
-            result.current_delta_e[direction][rung] = current_delta;
-            if let Some(overlap) = closed_intersection(previous_delta, current_delta) {
+            if closed_intersection(previous_delta, current_delta).is_some() {
                 result.reproduced_masks[direction] |= bit;
-                result.overlaps[direction][rung] = overlap;
             } else {
                 result.divergent_masks[direction] |= bit;
-                result.signed_gaps[direction][rung] =
-                    signed_divergence_gap(previous_delta, current_delta)?;
+                signed_divergence_gap(previous_delta, current_delta)?;
             }
         }
     }

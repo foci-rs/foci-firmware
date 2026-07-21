@@ -113,52 +113,61 @@ pub(crate) fn encode_velocity_integral_event(
 pub(crate) fn encode_velocity_integral_plan_trace(
     run_sequence: u32,
     plan: VelocityIntegralPlan,
-) -> VelocitySweepCanonicalRecord {
-    let mut record = VelocitySweepCanonicalRecord::new();
-    record.push_u8(0);
-    record.push_u32(run_sequence);
-    record.push_u16(0);
-    push_u64(&mut record, plan.digest());
-    record.push_u32(plan.build_revision);
-    record.push_u16(plan.schema_revision);
-    record.push_u8(plan.authority.channel);
-    push_u64(&mut record, plan.authority.stage_b_plan_digest);
-    record.push_u16(plan.final_p);
+) -> [VelocitySweepCanonicalRecord; 2] {
+    let mut core = VelocitySweepCanonicalRecord::new();
+    core.push_u8(0);
+    core.push_u32(run_sequence);
+    core.push_u16(0);
+    push_u64(&mut core, plan.digest());
+    core.push_u8(0);
+    core.push_u32(plan.build_revision);
+    core.push_u16(plan.schema_revision);
+    core.push_u8(plan.authority.channel);
+    push_u64(&mut core, plan.authority.stage_b_plan_digest);
+    core.push_u16(plan.final_p);
     for membership in plan.authority.directional_memberships {
-        record.push_u32(membership);
+        core.push_u32(membership);
     }
-    record.push_u32(plan.authority.joint_membership);
+    core.push_u32(plan.authority.joint_membership);
     for interval in plan.authority.directional_pooled_intervals {
-        record.push_i32(interval[0]);
-        record.push_i32(interval[1]);
+        core.push_i32(interval[0]);
+        core.push_i32(interval[1]);
     }
-    record.push_u32(plan.planned_velocity_mrev_s);
-    record.push_i32(plan.target_velocity_rpm);
-    record.push_u32(plan.pwm_hz);
-    record.push_u32(plan.encoder_counts_per_rev);
-    record.push_u8(plan.positive_rung_count);
+    core.push_u32(plan.planned_velocity_mrev_s);
+    core.push_i32(plan.target_velocity_rpm);
+    core.push_u32(plan.pwm_hz);
+    core.push_u32(plan.encoder_counts_per_rev);
+    core.push_u8(plan.positive_rung_count);
+    core.push_u16(plan.family_size);
+    core.push_u8(plan.total_rung_count);
+    core.push_u16(plan.expected_observations);
+    core.push_u16(plan.hard_torque_limit);
+    core.push_u16(plan.usable_torque_limit);
+
+    let mut schedule = VelocitySweepCanonicalRecord::new();
+    schedule.push_u8(0);
+    schedule.push_u32(run_sequence);
+    schedule.push_u16(0);
+    push_u64(&mut schedule, plan.digest());
+    schedule.push_u8(1);
+    schedule.push_u8(plan.positive_rung_count);
     for gain in plan.positive_rungs() {
-        record.push_u16(*gain);
+        schedule.push_u16(*gain);
     }
-    record.push_u16(plan.family_size);
-    record.push_u8(plan.total_rung_count);
-    record.push_u16(plan.expected_observations);
-    record.push_u32(plan.moving_stroke_us);
-    record.push_u32(plan.zero_settle_us);
-    record.push_u32(plan.analysis_budget_us);
-    record.push_u32(plan.nominal_workflow_ms);
-    record.push_u32(plan.maximum_workflow_ms);
-    record.push_u16(plan.hard_torque_limit);
-    record.push_u16(plan.usable_torque_limit);
-    record.push_u32(plan.motion_request.requested_velocity_mrev_s);
-    record.push_u32(plan.motion_request.machine_velocity_ceiling_mrev_s);
-    record.push_u8(plan.motion_request.requested_velocity_source as u8);
-    record.push_u32(plan.motion_request.max_stroke_travel_mrev);
-    record.push_u32(plan.motion_request.settle_travel_reserve_mrev);
-    record.push_u32(plan.motion_request.negative_position_headroom_mrev);
-    record.push_u32(plan.motion_request.positive_position_headroom_mrev);
-    record.push_u16(plan.motion_request.max_duration_ms);
-    record
+    schedule.push_u32(plan.moving_stroke_us);
+    schedule.push_u32(plan.zero_settle_us);
+    schedule.push_u32(plan.analysis_budget_us);
+    schedule.push_u32(plan.nominal_workflow_ms);
+    schedule.push_u32(plan.maximum_workflow_ms);
+    schedule.push_u32(plan.motion_request.requested_velocity_mrev_s);
+    schedule.push_u32(plan.motion_request.machine_velocity_ceiling_mrev_s);
+    schedule.push_u8(plan.motion_request.requested_velocity_source as u8);
+    schedule.push_u32(plan.motion_request.max_stroke_travel_mrev);
+    schedule.push_u32(plan.motion_request.settle_travel_reserve_mrev);
+    schedule.push_u32(plan.motion_request.negative_position_headroom_mrev);
+    schedule.push_u32(plan.motion_request.positive_position_headroom_mrev);
+    schedule.push_u16(plan.motion_request.max_duration_ms);
+    [core, schedule]
 }
 
 /// Encode the detailed Stage-C terminal for trace-only parity.
@@ -434,7 +443,9 @@ mod tests {
     #[test]
     fn full_plan_trace_record_preserves_offline_reconstruction_inputs() {
         let mut positive_i = [0; super::super::integral_plan::STAGE_C_MAX_POSITIVE_RUNGS];
-        positive_i[..5].copy_from_slice(&[5, 10, 20, 40, 80]);
+        for (index, gain) in positive_i.iter_mut().enumerate() {
+            *gain = u16::try_from(index + 1).unwrap();
+        }
         let plan = super::super::integral_plan::VelocityIntegralPlan {
             build_revision: 3,
             schema_revision: 1,
@@ -455,10 +466,10 @@ mod tests {
             pwm_hz: 25_000,
             encoder_counts_per_rev: 4_000,
             positive_i,
-            positive_rung_count: 5,
-            family_size: 28,
-            total_rung_count: 7,
-            expected_observations: 56,
+            positive_rung_count: 30,
+            family_size: 128,
+            total_rung_count: 32,
+            expected_observations: 256,
             moving_stroke_us: 512_000,
             zero_settle_us: 500_000,
             analysis_budget_us: 236_000,
@@ -479,13 +490,20 @@ mod tests {
             },
         };
 
-        let record = encode_velocity_integral_plan_trace(7, plan);
+        let records = encode_velocity_integral_plan_trace(7, plan);
 
-        assert_eq!(record.as_bytes()[0], 0);
-        assert_eq!(&record.as_bytes()[1..5], &7_u32.to_le_bytes());
-        assert_eq!(&record.as_bytes()[7..15], &plan.digest().to_le_bytes());
-        assert!(record.as_bytes().len() > 128);
-        assert!(record.as_bytes().len() <= VELOCITY_SWEEP_CANONICAL_RECORD_MAX);
+        assert_eq!(records[0].as_bytes()[0], 0);
+        assert_eq!(records[1].as_bytes()[0], 0);
+        assert_eq!(&records[0].as_bytes()[1..5], &7_u32.to_le_bytes());
+        assert_eq!(&records[0].as_bytes()[7..15], &plan.digest().to_le_bytes());
+        assert_eq!(records[0].as_bytes()[15], 0);
+        assert_eq!(records[1].as_bytes()[15], 1);
+        assert!(
+            records
+                .iter()
+                .all(|record| record.as_bytes().len() <= VELOCITY_SWEEP_CANONICAL_RECORD_MAX)
+        );
+        assert_eq!(records[1].as_bytes().len(), 124);
     }
 
     fn plan() -> VelocityIntegralExecutionPlan {

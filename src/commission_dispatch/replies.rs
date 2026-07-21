@@ -844,6 +844,9 @@ pub fn emit_velocity_integral_terminal<S: CommissionReplySink>(
     use crate::commissioning::outer::velocity::integral_reporting::{
         outcome_code, stage_b_deficit_bounds_q,
     };
+    use crate::commissioning::outer::velocity::integral_reproduction::{
+        closed_intersection, delta_e, signed_divergence_gap,
+    };
 
     let sequence = terminal.evidence_sequence;
     let sufficient_direction_mask = terminal
@@ -987,9 +990,19 @@ pub fn emit_velocity_integral_terminal<S: CommissionReplySink>(
                 } else {
                     continue;
                 };
-                let previous = reproduction.delta.previous_delta_e[direction][rung];
-                let current = reproduction.delta.current_delta_e[direction][rung];
-                let overlap = reproduction.delta.overlaps[direction][rung];
+                let previous = delta_e(
+                    reproduction.delta.previous_evidence.positive[direction][rung],
+                    reproduction.delta.previous_evidence.opening[direction],
+                )
+                .expect("retained reproduction interval was validated before reporting");
+                let current = delta_e(
+                    terminal.evidence.positive[direction][rung],
+                    terminal.evidence.opening[direction],
+                )
+                .expect("current reproduction interval was validated before reporting");
+                let overlap = closed_intersection(previous, current);
+                let signed_gap = signed_divergence_gap(previous, current)
+                    .expect("reproduction gap was validated before reporting");
                 sink.foci_velocity_integral_reproduction_interval(
                     FociVelocityIntegralReproductionInterval {
                         oid,
@@ -1003,11 +1016,13 @@ pub fn emit_velocity_integral_terminal<S: CommissionReplySink>(
                         current_low_q: current.low_q,
                         current_high_q: current.high_q,
                         result_low_or_gap_q: if kind == 1 {
-                            overlap.low_q
+                            overlap
+                                .expect("reproduced mask requires a closed overlap")
+                                .low_q
                         } else {
-                            reproduction.delta.signed_gaps[direction][rung]
+                            signed_gap
                         },
-                        result_high_q: if kind == 1 { overlap.high_q } else { 0 },
+                        result_high_q: overlap.map_or(0, |interval| interval.high_q),
                     },
                 );
             }

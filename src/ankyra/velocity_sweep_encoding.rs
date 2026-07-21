@@ -1,11 +1,7 @@
 //! Canonical bounded encodings shared by velocity-sweep replies and integrity.
 
 /// Maximum bytes in one canonical velocity-sweep evidence record.
-///
-/// The trace-only velocity-integral plan is the largest record at 193 bytes
-/// for the maximum 30-rung ladder. The 224-byte ceiling leaves the complete
-/// record inside the trace transport's existing 256-byte frame buffer.
-pub const VELOCITY_SWEEP_CANONICAL_RECORD_MAX: usize = 224;
+pub const VELOCITY_SWEEP_CANONICAL_RECORD_MAX: usize = 128;
 
 const FNV1A64_PRIME: u64 = 0x0000_0100_0000_01b3;
 

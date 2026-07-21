@@ -340,6 +340,11 @@ pub enum ReplyPayload {
     },
 }
 
+#[cfg(feature = "trace-velocity-sweep")]
+// Reply values cross nested async commissioning dispatch. Bound their inline
+// size so a future evidence field cannot recreate the F407 startup reset.
+const _: () = assert!(core::mem::size_of::<ReplyPayload>() <= 1_400);
+
 /// Helper: zero-filled OuterResult for failure-path TuneResult emission.
 fn zero_outer_result() -> OuterResult {
     OuterResult {
@@ -1227,12 +1232,14 @@ pub async fn drive_commission_result_with_stages<B: CommissioningBackend>(
                     .await;
                 }
             };
-            backend.record_velocity_sweep_trace_record(
+            for record in
                 crate::commissioning::outer::velocity::integral_reporting::encode_velocity_integral_plan_trace(
                     dispatch.terminal.run_sequence,
                     stage_c_plan,
-                ),
-            );
+                )
+            {
+                backend.record_velocity_sweep_trace_record(record);
+            }
             retention.stage_c.install_authority(
                 crate::commissioning::outer::velocity::integral_reproduction::StageCAuthoritySummary::from_plan(
                     channel,

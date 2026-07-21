@@ -428,14 +428,15 @@ fn stage_b_complete_installs_authority_and_continues_without_disarm() {
         else {
             unreachable!()
         };
+        let expected =
+            crate::commissioning::outer::velocity::integral_reporting::encode_velocity_integral_plan_trace(
+                run_sequence,
+                stage_c_plan,
+            );
+        let trace_records = backend.velocity_sweep_trace_records.as_slice();
         assert_eq!(
-            backend.velocity_sweep_trace_records.last(),
-            Some(
-                &crate::commissioning::outer::velocity::integral_reporting::encode_velocity_integral_plan_trace(
-                    run_sequence,
-                    stage_c_plan,
-                ),
-            )
+            &trace_records[trace_records.len() - expected.len()..],
+            expected.as_slice()
         );
     });
 }
