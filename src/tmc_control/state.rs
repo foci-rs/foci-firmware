@@ -536,9 +536,11 @@ impl TmcControlRuntime {
             crate::commission_dispatch::CommissionOutcome::Terminal { reply, actions } => {
                 Some(ScheduledCommissionTickAction::Terminal { reply, actions })
             }
+            crate::commission_dispatch::CommissionOutcome::Evidence { reply } => {
+                Some(ScheduledCommissionTickAction::WorkflowContinuation { reply })
+            }
             crate::commission_dispatch::CommissionOutcome::Continue
-            | crate::commission_dispatch::CommissionOutcome::PhaseChanged { .. }
-            | crate::commission_dispatch::CommissionOutcome::Evidence { .. } => {
+            | crate::commission_dispatch::CommissionOutcome::PhaseChanged { .. } => {
                 unreachable!("terminal poll produced a nonterminal dispatch action")
             }
         }

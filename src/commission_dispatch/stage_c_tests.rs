@@ -357,9 +357,11 @@ fn stage_b_complete_installs_authority_and_continues_without_disarm() {
         use crate::commission_dispatch::stage_b::{
             apply_stage_b_terminal, preflight_stage_b_request,
         };
-        use crate::commission_dispatch::test_support::{MockBackend, fresh_state_locals};
+        use crate::commission_dispatch::test_support::MockBackend;
         use crate::commissioning::CommissioningEngine;
         use crate::commissioning::outer::velocity::reproduction::StageBCandidateSlot;
+        use crate::config::TmcConfig;
+        use crate::tmc_control::{ScheduledCommissionTickAction, TmcControlConfig};
 
         let mut stage_b_slot = StageBCandidateSlot::new();
         apply_stage_b_terminal(stage_b_terminal(), CHANNEL, &mut stage_b_slot);
@@ -375,7 +377,9 @@ fn stage_b_complete_installs_authority_and_continues_without_disarm() {
         crate::state::tmc::tmc_channel0()
             .configure_motion_scale(crate::state::stepper::stepper_channel0(), 1_000, 3_200)
             .expect("valid Stage-C test motion scale");
-        let mut engine = Some(
+        let mut runtime = crate::tmc_control::TmcControlRuntime::new_for_channel(CHANNEL);
+        runtime.set_motor_enabled_for_test(true);
+        runtime.set_commission_engine(
             CommissioningEngine::new_outer_for_tmc_with_stage_b_preflight(
                 1,
                 crate::state::tmc::tmc_channel0(),
@@ -386,52 +390,43 @@ fn stage_b_complete_installs_authority_and_continues_without_disarm() {
         );
         let mut stage_c_slot = StageCCandidateSlot::new();
         let mut backend = MockBackend::new();
-        let (_, _, mut gains) = fresh_state_locals();
-        let mut calibrated = true;
-        let mut enabled = true;
-        let mut state = super::DispatchState::new(
-            crate::state::tmc::tmc_channel0(),
-            crate::state::stepper::stepper_channel0(),
-            &mut calibrated,
-            &mut enabled,
-            &mut gains,
-        );
+        backend.enable_pin = true;
+        let tmc = TmcConfig::default_for_test();
+        let config = TmcControlConfig::new(84_000_000, PWM_HZ, 0.03125, tmc);
 
-        let outcome = drive_commission_result_with_stages(
-            crate::commissioning::types::StepResult::VelocitySweepTerminal(stage_b_terminal()),
-            &mut engine,
-            &mut backend,
-            &mut state,
-            4_095,
-            CHANNEL,
-            super::CommissionRetention::new(&mut stage_b_slot, &mut stage_c_slot),
-        )
-        .await;
+        let action = runtime
+            .drive_commissioning_terminal_with_stages(
+                crate::commissioning::schedule::CommissionTerminal::VelocitySweep(
+                    stage_b_terminal(),
+                ),
+                &mut backend,
+                super::CommissionRetention::new(&mut stage_b_slot, &mut stage_c_slot),
+                crate::state::tmc::tmc_channel0(),
+                crate::state::stepper::stepper_channel0(),
+                &config,
+            )
+            .await
+            .expect("live Stage-C continuation must produce a scheduler action");
 
-        assert!(engine.is_some());
-        assert!(enabled);
+        assert!(runtime.is_commission_active());
+        assert!(runtime.is_motor_enabled());
+        assert!(backend.enable_pin);
         assert_eq!(stage_c_slot.state(), StageCSlotState::AuthorityOnly);
-        assert!(matches!(
-            outcome,
-            CommissionOutcome::Evidence {
-                reply: ReplyPayload::VelocityIntegralContinuation { .. }
-            }
-        ));
-        let ReplyPayload::VelocityIntegralContinuation {
-            run_sequence,
-            stage_c_plan,
-            ..
-        } = (match outcome {
-            CommissionOutcome::Evidence { reply } => reply,
-            _ => unreachable!(),
-        })
-        else {
-            unreachable!()
+        let (run_sequence, continued_plan) = match &action {
+            ScheduledCommissionTickAction::WorkflowContinuation {
+                reply:
+                    ReplyPayload::VelocityIntegralContinuation {
+                        run_sequence,
+                        stage_c_plan,
+                        ..
+                    },
+            } => (*run_sequence, *stage_c_plan),
+            _ => panic!("expected velocity-integral workflow continuation"),
         };
         let expected =
             crate::commissioning::outer::velocity::integral_reporting::encode_velocity_integral_plan_trace(
                 run_sequence,
-                stage_c_plan,
+                continued_plan,
             );
         let trace_records = backend.velocity_sweep_trace_records.as_slice();
         assert_eq!(

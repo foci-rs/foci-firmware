@@ -166,6 +166,11 @@ pub enum ScheduledCommissionTickAction {
         /// Optional nonterminal event produced by this poll.
         event: Option<CommissionEvent>,
     },
+    /// Emit a causal workflow handoff reply and keep polling the live engine.
+    WorkflowContinuation {
+        /// Exact handoff evidence and next-stage plan disclosed before more motion.
+        reply: ReplyPayload,
+    },
     /// Engine reached a terminal result.
     Terminal {
         /// Reply payload for the board to emit.
