@@ -401,11 +401,14 @@ fn stage_b_complete_installs_authority_and_continues_without_disarm() {
                     stage_b_terminal(),
                 ),
                 &mut backend,
-                super::CommissionRetention::new(&mut stage_b_slot, &mut stage_c_slot),
+                super::CommissionTerminalContext::new(
+                    &mut stage_b_slot,
+                    &mut stage_c_slot,
+                    |reply| emitted_reply = Some(reply),
+                ),
                 crate::state::tmc::tmc_channel0(),
                 crate::state::stepper::stepper_channel0(),
                 &config,
-                |reply| emitted_reply = Some(reply),
             )
             .await
             .expect("live Stage-C continuation must produce a scheduler action");

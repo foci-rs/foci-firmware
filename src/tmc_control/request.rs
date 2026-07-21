@@ -16,8 +16,7 @@ use crate::state::stepper::StepperChannelState;
 use crate::state::tmc::TmcChannelState;
 use crate::tmc::{TmcRequest, TmcRequestKind};
 use crate::tmc_control::actions::{
-    BoardAction, BoardActions, ShutdownReason, StepperAction, TmcControlRequestOutcome,
-    TmcControlRequestTail,
+    BoardActions, ShutdownReason, TmcControlRequestOutcome, TmcControlRequestTail,
 };
 use crate::tmc_control::dispatch::RegisterRequestError;
 use crate::tmc_control::helpers::{
@@ -280,22 +279,19 @@ where
                     return TmcControlRequestOutcome::skip_tick_tail();
                 }
 
-                let actions = runtime.prepare_enable_request(board.tmc_state());
-                for action in actions {
-                    if let BoardAction::Stepper(StepperAction::ArmCheck { post_action }) = action {
-                        if !runtime.restore_phase_advance_now(tmc).await {
-                            defmt::warn!("phase advance: failed to restore ABN offset before arm");
-                            return TmcControlRequestOutcome::skip_tick_tail();
-                        }
-                        if let Err(error) = board.arm_motor(runtime, tmc, post_action).await {
-                            defmt::error!("Motor enable rejected by sentinel verify: {}", error);
-                            board.disarm_motor(runtime, tmc).await;
-                            return TmcControlRequestOutcome::skip_tick_tail();
-                        }
-
-                        defmt::info!("Motor enabled (calibrated, step/dir armed)");
-                        board.emit_motor_arm_event();
+                if let Some(post_action) = runtime.prepare_enable_request(board.tmc_state()) {
+                    if !runtime.restore_phase_advance_now(tmc).await {
+                        defmt::warn!("phase advance: failed to restore ABN offset before arm");
+                        return TmcControlRequestOutcome::skip_tick_tail();
                     }
+                    if let Err(error) = board.arm_motor(runtime, tmc, post_action).await {
+                        defmt::error!("Motor enable rejected by sentinel verify: {}", error);
+                        board.disarm_motor(runtime, tmc).await;
+                        return TmcControlRequestOutcome::skip_tick_tail();
+                    }
+
+                    defmt::info!("Motor enabled (calibrated, step/dir armed)");
+                    board.emit_motor_arm_event();
                 }
             } else {
                 let actions = runtime.prepare_disable_request();
@@ -1396,8 +1392,7 @@ mod tests {
             &mut board,
         );
 
-        assert_eq!(core::mem::size_of_val(&future), 13_888);
-        assert!(core::mem::size_of_val(&future) <= 13_888);
+        assert!(core::mem::size_of_val(&future) <= 3_232);
     }
 
     struct RecordingBoard {

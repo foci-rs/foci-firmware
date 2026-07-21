@@ -491,17 +491,20 @@ impl TmcControlRuntime {
         &mut self,
         result: CommissionTerminal,
         backend: &mut B,
-        retention: crate::commission_dispatch::CommissionRetention<'_>,
+        context: crate::commission_dispatch::CommissionTerminalContext<'_, E>,
         tmc: &'static TmcChannelState,
         stepper: &'static StepperChannelState,
         config: &TmcControlConfig,
-        emit_evidence: E,
     ) -> Option<ScheduledCommissionTickAction>
     where
         B: CommissioningBackend,
         E: FnOnce(crate::commission_dispatch::ReplyPayload),
     {
         self.commission_engine.as_ref()?;
+        let crate::commission_dispatch::CommissionTerminalContext {
+            retention,
+            emit_evidence,
+        } = context;
         let mut dispatch = crate::commission_dispatch::DispatchState::new(
             tmc,
             stepper,
@@ -555,11 +558,10 @@ impl TmcControlRuntime {
         &mut self,
         poll: CommissionPoll,
         backend: &mut B,
-        retention: crate::commission_dispatch::CommissionRetention<'_>,
+        context: crate::commission_dispatch::CommissionTerminalContext<'_, E>,
         tmc: &'static TmcChannelState,
         stepper: &'static StepperChannelState,
         config: &TmcControlConfig,
-        emit_evidence: E,
     ) -> Option<ScheduledCommissionTickAction>
     where
         B: CommissioningBackend,
@@ -578,13 +580,7 @@ impl TmcControlRuntime {
             }),
             CommissionPoll::Terminal { result } => {
                 self.drive_commissioning_terminal_with_stages(
-                    result,
-                    backend,
-                    retention,
-                    tmc,
-                    stepper,
-                    config,
-                    emit_evidence,
+                    result, backend, context, tmc, stepper, config,
                 )
                 .await
             }
@@ -616,14 +612,14 @@ impl TmcControlRuntime {
                 .drive_commissioning_terminal_with_stages(
                     result,
                     backend,
-                    crate::commission_dispatch::CommissionRetention::new(
+                    crate::commission_dispatch::CommissionTerminalContext::new(
                         stage_b_candidate,
                         &mut stage_c_candidate,
+                        |_| unreachable!("temporary Stage-C retention cannot continue a workflow"),
                     ),
                     tmc,
                     stepper,
                     config,
-                    |_| unreachable!("temporary Stage-C retention cannot continue a workflow"),
                 )
                 .await;
         }
@@ -684,14 +680,14 @@ impl TmcControlRuntime {
                 .drive_commissioning_poll_with_stages(
                     poll,
                     backend,
-                    crate::commission_dispatch::CommissionRetention::new(
+                    crate::commission_dispatch::CommissionTerminalContext::new(
                         stage_b_candidate,
                         &mut stage_c_candidate,
+                        |_| unreachable!("temporary Stage-C retention cannot continue a workflow"),
                     ),
                     tmc,
                     stepper,
                     config,
-                    |_| unreachable!("temporary Stage-C retention cannot continue a workflow"),
                 )
                 .await;
         }
@@ -723,38 +719,34 @@ impl TmcControlRuntime {
 
     /// Prepare an enable request up to the point where SPI or backend work begins.
     ///
-    /// Returns an empty action list when the motor is already enabled, or when
+    /// Returns no action when the motor is already enabled, or when
     /// the motor is uncalibrated and `auto_calibrate_on_enable_allowed` is not
-    /// set. Returns an [`StepperAction::ArmCheck`] action when the motor is
-    /// calibrated, so the board shell can drive the electrical arm verification
-    /// and step/dir arming.
+    /// set. Returns the required stepper post-action when the motor is calibrated,
+    /// so the board shell can drive the electrical arm verification and step/dir
+    /// arming without carrying the general reply-capable action buffer.
     ///
     /// This helper intentionally does not energize the motor; the caller's SPI
     /// path and the auto-calibrate commissioning construction remain in the
     /// request handler.
-    pub fn prepare_enable_request(&mut self, tmc: &TmcChannelState) -> BoardActions {
-        let mut actions = BoardActions::new();
+    pub fn prepare_enable_request(
+        &mut self,
+        tmc: &TmcChannelState,
+    ) -> Option<crate::commission_dispatch::StepperPostAction> {
         if self.motor_enabled {
-            return actions;
+            return None;
         }
         if !self.calibrated {
             if !tmc
                 .auto_calibrate_on_enable_allowed
                 .load(core::sync::atomic::Ordering::Relaxed)
             {
-                return actions;
+                return None;
             }
             // Auto-calibrate construction stays in the request handler.
             // This preflight helper must not energize the motor.
-            return actions;
+            return None;
         }
-        push_action(
-            &mut actions,
-            BoardAction::Stepper(StepperAction::ArmCheck {
-                post_action: crate::commission_dispatch::StepperPostAction::ArmPreservePosition,
-            }),
-        );
-        actions
+        Some(crate::commission_dispatch::StepperPostAction::ArmPreservePosition)
     }
 
     /// Prepare a disable request, emitting an immediate board stop action.

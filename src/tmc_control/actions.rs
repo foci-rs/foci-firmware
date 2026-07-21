@@ -120,9 +120,6 @@ pub struct DelegatedDiagnostic {
 
 /// One immediate effect for the board shell to apply.
 ///
-/// The large reply variants are intentionally stored inline. This crate is
-/// `no_std`/no-heap, so boxing would violate the firmware memory model.
-#[allow(clippy::large_enum_variant)]
 pub enum BoardAction {
     /// Enter Klipper shutdown with the provided reason.
     Shutdown(ShutdownReason),
@@ -130,8 +127,6 @@ pub enum BoardAction {
     SignalEmergencyDisable,
     /// Perform board-local stepper work.
     Stepper(StepperAction),
-    /// Emit a commissioning/self-test/calibration reply.
-    Reply(ReplyPayload),
     /// Run a board-local active diagnostic flow.
     DelegatedDiagnostic(DelegatedDiagnostic),
 }
@@ -139,9 +134,11 @@ pub enum BoardAction {
 /// Fixed-capacity list of board actions emitted by one runtime call.
 ///
 /// Capacity proof for this plan: current paths emit at most three actions
-/// (stop, shutdown/reply, and one arm/diagnostic action). Keep capacity at 8
-/// so a future path can add replies without silently dropping safety actions.
+/// (stop, shutdown, and one arm/diagnostic action). Keep capacity at 8 so a
+/// future path can add compact routing actions without silently dropping safety work.
 pub type BoardActions = heapless::Vec<BoardAction, 8>;
+
+const _: () = assert!(core::mem::size_of::<BoardActions>() <= 400);
 
 /// Push an action and assert the fixed action buffer is large enough.
 pub fn push_action(actions: &mut BoardActions, action: BoardAction) {

@@ -128,7 +128,6 @@ fn assert_stop_now_at(actions: &BoardActions, index: usize) {
         BoardAction::SignalEmergencyDisable => {
             panic!("expected StopNow, got SignalEmergencyDisable at index {index}")
         }
-        BoardAction::Reply(_) => panic!("expected StopNow, got Reply at index {index}"),
         BoardAction::DelegatedDiagnostic(_) => {
             panic!("expected StopNow, got DelegatedDiagnostic at index {index}")
         }
@@ -142,7 +141,6 @@ fn assert_shutdown_at(actions: &BoardActions, index: usize, reason: ShutdownReas
         BoardAction::SignalEmergencyDisable => {
             panic!("expected Shutdown at index {index}, got SignalEmergencyDisable")
         }
-        BoardAction::Reply(_) => panic!("expected Shutdown at index {index}, got Reply"),
         BoardAction::DelegatedDiagnostic(_) => {
             panic!("expected Shutdown at index {index}, got DelegatedDiagnostic")
         }
@@ -170,30 +168,8 @@ fn assert_single_signal_emergency_disable(actions: &BoardActions) {
         BoardAction::SignalEmergencyDisable => {}
         BoardAction::Stepper(_) => panic!("expected SignalEmergencyDisable, got Stepper"),
         BoardAction::Shutdown(_) => panic!("expected SignalEmergencyDisable, got Shutdown"),
-        BoardAction::Reply(_) => panic!("expected SignalEmergencyDisable, got Reply"),
         BoardAction::DelegatedDiagnostic(_) => {
             panic!("expected SignalEmergencyDisable, got DelegatedDiagnostic")
-        }
-    }
-}
-
-fn assert_single_arm_preserve_position(actions: &BoardActions) {
-    assert_eq!(actions.len(), 1, "expected one ArmCheck action");
-    match &actions[0] {
-        BoardAction::Stepper(StepperAction::ArmCheck { post_action }) => {
-            assert_eq!(
-                *post_action,
-                crate::commission_dispatch::StepperPostAction::ArmPreservePosition
-            );
-        }
-        BoardAction::Stepper(_) => panic!("expected ArmCheck action"),
-        BoardAction::Shutdown(_) => panic!("expected ArmCheck, got Shutdown"),
-        BoardAction::SignalEmergencyDisable => {
-            panic!("expected ArmCheck, got SignalEmergencyDisable")
-        }
-        BoardAction::Reply(_) => panic!("expected ArmCheck, got Reply"),
-        BoardAction::DelegatedDiagnostic(_) => {
-            panic!("expected ArmCheck, got DelegatedDiagnostic")
         }
     }
 }
@@ -209,7 +185,6 @@ fn assert_single_delegated_request(actions: &BoardActions, expected: &TmcRequest
         BoardAction::SignalEmergencyDisable => {
             panic!("expected DelegatedDiagnostic, got SignalEmergencyDisable")
         }
-        BoardAction::Reply(_) => panic!("expected DelegatedDiagnostic, got Reply"),
     }
 }
 
@@ -1943,9 +1918,9 @@ fn enable_before_calibration_without_gate_is_noop() {
     let tmc = crate::state::tmc::TmcChannelState::new();
     tmc.auto_calibrate_on_enable_allowed.store(false, Relaxed);
 
-    let actions = runtime.prepare_enable_request(&tmc);
+    let action = runtime.prepare_enable_request(&tmc);
 
-    assert_no_actions(&actions);
+    assert_eq!(action, None);
     assert!(!runtime.is_motor_enabled());
     assert!(!runtime.is_calibrated());
 }
@@ -1956,9 +1931,9 @@ fn enable_before_calibration_with_auto_calibrate_gate_still_does_not_energize() 
     let tmc = crate::state::tmc::TmcChannelState::new();
     tmc.auto_calibrate_on_enable_allowed.store(true, Relaxed);
 
-    let actions = runtime.prepare_enable_request(&tmc);
+    let action = runtime.prepare_enable_request(&tmc);
 
-    assert_no_actions(&actions);
+    assert_eq!(action, None);
     assert!(!runtime.is_motor_enabled());
     assert!(!runtime.is_calibrated());
 }
@@ -1969,9 +1944,9 @@ fn enable_after_calibration_emits_only_arm_preserve_position_check() {
     let tmc = crate::state::tmc::TmcChannelState::new();
     runtime.set_calibrated_for_test(true);
 
-    let actions = runtime.prepare_enable_request(&tmc);
+    let action = runtime.prepare_enable_request(&tmc);
 
-    assert_single_arm_preserve_position(&actions);
+    assert_eq!(action, Some(StepperPostAction::ArmPreservePosition));
     assert!(!runtime.is_motor_enabled());
     assert!(runtime.is_calibrated());
 }
@@ -1983,9 +1958,9 @@ fn enable_when_already_enabled_is_noop() {
     runtime.set_calibrated_for_test(true);
     runtime.set_motor_enabled_for_test(true);
 
-    let actions = runtime.prepare_enable_request(&tmc);
+    let action = runtime.prepare_enable_request(&tmc);
 
-    assert_no_actions(&actions);
+    assert_eq!(action, None);
     assert!(runtime.is_motor_enabled());
     assert!(runtime.is_calibrated());
 }

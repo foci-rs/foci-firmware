@@ -79,6 +79,30 @@ impl<'a> CommissionRetention<'a> {
     }
 }
 
+/// Stage-retention and immediate evidence emission for one terminal dispatch.
+#[cfg(feature = "trace-velocity-sweep")]
+pub struct CommissionTerminalContext<'a, E> {
+    /// Mutable Stage-B and Stage-C retained evidence for this dispatch.
+    pub retention: CommissionRetention<'a>,
+    /// Board-owned emitter used before returning the compact scheduler action.
+    pub emit_evidence: E,
+}
+
+#[cfg(feature = "trace-velocity-sweep")]
+impl<'a, E> CommissionTerminalContext<'a, E> {
+    /// Borrow both retained slots and bind the board's reply emitter.
+    pub fn new(
+        stage_b: &'a mut crate::commissioning::outer::velocity::reproduction::StageBCandidateSlot,
+        stage_c: &'a mut crate::commissioning::outer::velocity::integral_reproduction::StageCCandidateSlot,
+        emit_evidence: E,
+    ) -> Self {
+        Self {
+            retention: CommissionRetention::new(stage_b, stage_c),
+            emit_evidence,
+        }
+    }
+}
+
 impl<'a> DispatchState<'a> {
     /// Build a dispatch-state view for one board-local motor channel.
     pub fn new(
