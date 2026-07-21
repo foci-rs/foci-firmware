@@ -394,6 +394,7 @@ fn stage_b_complete_installs_authority_and_continues_without_disarm() {
         let tmc = TmcConfig::default_for_test();
         let config = TmcControlConfig::new(84_000_000, PWM_HZ, 0.03125, tmc);
 
+        let mut emitted_reply = None;
         let action = runtime
             .drive_commissioning_terminal_with_stages(
                 crate::commissioning::schedule::CommissionTerminal::VelocitySweep(
@@ -404,6 +405,7 @@ fn stage_b_complete_installs_authority_and_continues_without_disarm() {
                 crate::state::tmc::tmc_channel0(),
                 crate::state::stepper::stepper_channel0(),
                 &config,
+                |reply| emitted_reply = Some(reply),
             )
             .await
             .expect("live Stage-C continuation must produce a scheduler action");
@@ -412,15 +414,16 @@ fn stage_b_complete_installs_authority_and_continues_without_disarm() {
         assert!(runtime.is_motor_enabled());
         assert!(backend.enable_pin);
         assert_eq!(stage_c_slot.state(), StageCSlotState::AuthorityOnly);
-        let (run_sequence, continued_plan) = match &action {
-            ScheduledCommissionTickAction::WorkflowContinuation {
-                reply:
-                    ReplyPayload::VelocityIntegralContinuation {
-                        run_sequence,
-                        stage_c_plan,
-                        ..
-                    },
-            } => (*run_sequence, *stage_c_plan),
+        assert!(matches!(
+            action,
+            ScheduledCommissionTickAction::WorkflowContinuation
+        ));
+        let (run_sequence, continued_plan) = match emitted_reply {
+            Some(ReplyPayload::VelocityIntegralContinuation {
+                run_sequence,
+                stage_c_plan,
+                ..
+            }) => (run_sequence, stage_c_plan),
             _ => panic!("expected velocity-integral workflow continuation"),
         };
         let expected =

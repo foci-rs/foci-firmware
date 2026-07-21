@@ -166,11 +166,8 @@ pub enum ScheduledCommissionTickAction {
         /// Optional nonterminal event produced by this poll.
         event: Option<CommissionEvent>,
     },
-    /// Emit a causal workflow handoff reply and keep polling the live engine.
-    WorkflowContinuation {
-        /// Exact handoff evidence and next-stage plan disclosed before more motion.
-        reply: ReplyPayload,
-    },
+    /// A causal workflow handoff was emitted; keep polling the live engine.
+    WorkflowContinuation,
     /// Engine reached a terminal result.
     Terminal {
         /// Reply payload for the board to emit.
@@ -179,3 +176,10 @@ pub enum ScheduledCommissionTickAction {
         actions: PostActions,
     },
 }
+
+#[cfg(feature = "trace-velocity-sweep")]
+// This routing enum still carries the pre-existing terminal reply so the board
+// can preserve stop-trace -> stepper action -> reply ordering. Keep it at the
+// compact size; continuation evidence must never add a second
+// inline reply carrier.
+const _: () = assert!(core::mem::size_of::<ScheduledCommissionTickAction>() <= 1_400);

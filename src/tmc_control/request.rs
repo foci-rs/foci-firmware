@@ -1373,6 +1373,33 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "trace-velocity-sweep")]
+    #[test]
+    fn trace_request_future_size_stays_bounded() {
+        use crate::commissioning::outer::velocity::integral_reproduction::StageCCandidateSlot;
+        use crate::commissioning::outer::velocity::reproduction::StageBCandidateSlot;
+
+        let mut runtime = TmcControlRuntime::new_for_channel(0);
+        let mut stage_b = StageBCandidateSlot::new();
+        let mut stage_c = StageCCandidateSlot::new();
+        let mut tmc = Tmc4671Spi::new(RuntimeMockSpi::default());
+        let mut board = RecordingBoard::skip_tick_tail();
+        let request = TmcRequest::new(0, TmcRequestKind::SetEnable(false));
+
+        let future = handle_tmc_control_request_with_stages(
+            request,
+            TmcPreRequestDisposition::ContinueRequest,
+            &mut runtime,
+            &mut stage_b,
+            &mut stage_c,
+            &mut tmc,
+            &mut board,
+        );
+
+        assert_eq!(core::mem::size_of_val(&future), 13_888);
+        assert!(core::mem::size_of_val(&future) <= 13_888);
+    }
+
     struct RecordingBoard {
         channel: u8,
         commissioning_blocked: bool,

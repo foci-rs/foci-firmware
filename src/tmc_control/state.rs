@@ -487,7 +487,7 @@ impl TmcControlRuntime {
 
     /// Dispatch a terminal commissioning result into the board-facing action.
     #[cfg(feature = "trace-velocity-sweep")]
-    pub async fn drive_commissioning_terminal_with_stages<B>(
+    pub async fn drive_commissioning_terminal_with_stages<B, E>(
         &mut self,
         result: CommissionTerminal,
         backend: &mut B,
@@ -495,9 +495,11 @@ impl TmcControlRuntime {
         tmc: &'static TmcChannelState,
         stepper: &'static StepperChannelState,
         config: &TmcControlConfig,
+        emit_evidence: E,
     ) -> Option<ScheduledCommissionTickAction>
     where
         B: CommissioningBackend,
+        E: FnOnce(crate::commission_dispatch::ReplyPayload),
     {
         self.commission_engine.as_ref()?;
         let mut dispatch = crate::commission_dispatch::DispatchState::new(
@@ -537,7 +539,8 @@ impl TmcControlRuntime {
                 Some(ScheduledCommissionTickAction::Terminal { reply, actions })
             }
             crate::commission_dispatch::CommissionOutcome::Evidence { reply } => {
-                Some(ScheduledCommissionTickAction::WorkflowContinuation { reply })
+                emit_evidence(reply);
+                Some(ScheduledCommissionTickAction::WorkflowContinuation)
             }
             crate::commission_dispatch::CommissionOutcome::Continue
             | crate::commission_dispatch::CommissionOutcome::PhaseChanged { .. } => {
@@ -548,7 +551,7 @@ impl TmcControlRuntime {
 
     /// Convert an explicit poll into the board-facing scheduled action.
     #[cfg(feature = "trace-velocity-sweep")]
-    pub async fn drive_commissioning_poll_with_stages<B>(
+    pub async fn drive_commissioning_poll_with_stages<B, E>(
         &mut self,
         poll: CommissionPoll,
         backend: &mut B,
@@ -556,9 +559,11 @@ impl TmcControlRuntime {
         tmc: &'static TmcChannelState,
         stepper: &'static StepperChannelState,
         config: &TmcControlConfig,
+        emit_evidence: E,
     ) -> Option<ScheduledCommissionTickAction>
     where
         B: CommissioningBackend,
+        E: FnOnce(crate::commission_dispatch::ReplyPayload),
     {
         match poll {
             CommissionPoll::ReadyNow { event } => {
@@ -573,7 +578,13 @@ impl TmcControlRuntime {
             }),
             CommissionPoll::Terminal { result } => {
                 self.drive_commissioning_terminal_with_stages(
-                    result, backend, retention, tmc, stepper, config,
+                    result,
+                    backend,
+                    retention,
+                    tmc,
+                    stepper,
+                    config,
+                    emit_evidence,
                 )
                 .await
             }
@@ -612,6 +623,7 @@ impl TmcControlRuntime {
                     tmc,
                     stepper,
                     config,
+                    |_| unreachable!("temporary Stage-C retention cannot continue a workflow"),
                 )
                 .await;
         }
@@ -679,6 +691,7 @@ impl TmcControlRuntime {
                     tmc,
                     stepper,
                     config,
+                    |_| unreachable!("temporary Stage-C retention cannot continue a workflow"),
                 )
                 .await;
         }
