@@ -90,6 +90,7 @@ fn stage_c_plan_freezes_geometry_and_conservative_duration() {
         stage_b.execution_plan(stage_b.digest()),
         motion_budget(),
         25_000,
+        4_000,
     )
     .unwrap();
 
@@ -124,6 +125,7 @@ fn workflow_shape_does_not_change_either_stage_identity() {
         stage_b.execution_plan(stage_b_digest),
         motion_budget(),
         25_000,
+        4_000,
     )
     .unwrap();
     let stage_c_digest = stage_c.digest();
@@ -180,6 +182,7 @@ fn invalid_geometry_and_missing_authority_reject_before_motion() {
             stage_b.execution_plan(digest),
             motion_budget(),
             25_000,
+            4_000,
         ),
         Err(VelocityIntegralPlanError::MissingAuthority)
     );
@@ -189,6 +192,7 @@ fn invalid_geometry_and_missing_authority_reject_before_motion() {
             super::sweep_plan::VelocitySweepExecutionPlan::EMPTY,
             motion_budget(),
             25_000,
+            4_000,
         ),
         Err(VelocityIntegralPlanError::MissingStageBPlan)
     );
@@ -200,6 +204,7 @@ fn invalid_geometry_and_missing_authority_reject_before_motion() {
             stage_b.execution_plan(digest),
             motion_budget(),
             25_000,
+            4_000,
         ),
         Err(VelocityIntegralPlanError::MismatchedAuthority)
     );

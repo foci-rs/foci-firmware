@@ -360,6 +360,167 @@ pub trait CommissionReplySink {
     ) {
     }
 
+    /// Emit the command-level workflow envelope.
+    fn foci_commissioning_workflow_plan(
+        &mut self,
+        _report: crate::ankyra::replies::FociCommissioningWorkflowPlan,
+    ) {
+    }
+
+    /// Emit the Stage-C plan identity.
+    fn foci_velocity_integral_plan_core(
+        &mut self,
+        _report: crate::ankyra::replies::FociVelocityIntegralPlanCore,
+    ) {
+    }
+
+    /// Emit the Stage-C plan geometry.
+    fn foci_velocity_integral_plan_geometry(
+        &mut self,
+        _report: crate::ankyra::replies::FociVelocityIntegralPlanGeometry,
+    ) {
+    }
+
+    /// Emit one direction of Stage-C authority.
+    fn foci_velocity_integral_plan_authority(
+        &mut self,
+        _report: crate::ankyra::replies::FociVelocityIntegralPlanAuthority,
+    ) {
+    }
+
+    /// Emit Stage-C schedule timing.
+    fn foci_velocity_integral_plan_timing(
+        &mut self,
+        _report: crate::ankyra::replies::FociVelocityIntegralPlanTiming,
+    ) {
+    }
+
+    /// Emit Stage-C travel identity.
+    fn foci_velocity_integral_plan_travel(
+        &mut self,
+        _report: crate::ankyra::replies::FociVelocityIntegralPlanTravel,
+    ) {
+    }
+
+    /// Emit one exact positive-I plan rung.
+    fn foci_velocity_integral_plan_rung(
+        &mut self,
+        _report: crate::ankyra::replies::FociVelocityIntegralPlanRung,
+    ) {
+    }
+
+    /// Emit Stage-C observation identity.
+    fn foci_velocity_integral_observation_core(
+        &mut self,
+        _report: crate::ankyra::replies::FociVelocityIntegralObservationCore,
+    ) {
+    }
+
+    /// Emit Stage-C observation rate evidence.
+    fn foci_velocity_integral_observation_rate(
+        &mut self,
+        _report: crate::ankyra::replies::FociVelocityIntegralObservationRate,
+    ) {
+    }
+
+    /// Emit Stage-C observation stationarity quality.
+    fn foci_velocity_integral_observation_quality(
+        &mut self,
+        _report: crate::ankyra::replies::FociVelocityIntegralObservationQuality,
+    ) {
+    }
+
+    /// Emit one Stage-C directional rung verdict.
+    fn foci_velocity_integral_rung_core(
+        &mut self,
+        _report: crate::ankyra::replies::FociVelocityIntegralRungCore,
+    ) {
+    }
+
+    /// Emit one exact Stage-C consensus component.
+    fn foci_velocity_integral_rung_component(
+        &mut self,
+        _report: crate::ankyra::replies::FociVelocityIntegralRungComponent,
+    ) {
+    }
+
+    /// Emit Stage-C run sufficiency and membership.
+    fn foci_velocity_integral_run_summary(
+        &mut self,
+        _report: crate::ankyra::replies::FociVelocityIntegralRunSummary,
+    ) {
+    }
+
+    /// Emit one exact Stage-C curve interval.
+    fn foci_velocity_integral_curve_interval(
+        &mut self,
+        _report: crate::ankyra::replies::FociVelocityIntegralCurveInterval,
+    ) {
+    }
+
+    /// Emit one direction's opening-to-bookend drift.
+    fn foci_velocity_integral_drift(
+        &mut self,
+        _report: crate::ankyra::replies::FociVelocityIntegralDrift,
+    ) {
+    }
+
+    /// Emit fresh-anchor comparison with retained Stage-B disturbance.
+    fn foci_velocity_integral_stage_b_comparison(
+        &mut self,
+        _report: crate::ankyra::replies::FociVelocityIntegralStageBComparison,
+    ) {
+    }
+
+    /// Emit the Stage-C reproduction class.
+    fn foci_velocity_integral_reproduction_core(
+        &mut self,
+        _report: crate::ankyra::replies::FociVelocityIntegralReproductionCore,
+    ) {
+    }
+
+    /// Emit one direction's Stage-C reproduction masks.
+    fn foci_velocity_integral_reproduction_mask(
+        &mut self,
+        _report: crate::ankyra::replies::FociVelocityIntegralReproductionMask,
+    ) {
+    }
+
+    /// Emit one reproduced or divergent Stage-C interval comparison.
+    fn foci_velocity_integral_reproduction_interval(
+        &mut self,
+        _report: crate::ankyra::replies::FociVelocityIntegralReproductionInterval,
+    ) {
+    }
+
+    /// Emit exact Stage-C reproduction run digests.
+    fn foci_velocity_integral_reproduction_digest(
+        &mut self,
+        _report: crate::ankyra::replies::FociVelocityIntegralReproductionDigest,
+    ) {
+    }
+
+    /// Emit the Stage-C terminal class and completeness.
+    fn foci_velocity_integral_terminal_core(
+        &mut self,
+        _report: crate::ankyra::replies::FociVelocityIntegralTerminalCore,
+    ) {
+    }
+
+    /// Emit exact Stage-C terminal identity.
+    fn foci_velocity_integral_terminal_identity(
+        &mut self,
+        _report: crate::ankyra::replies::FociVelocityIntegralTerminalIdentity,
+    ) {
+    }
+
+    /// Emit Stage-C terminal timing.
+    fn foci_velocity_integral_terminal_timing(
+        &mut self,
+        _report: crate::ankyra::replies::FociVelocityIntegralTerminalTiming,
+    ) {
+    }
+
     /// Emit the generic outer inconclusive terminal.
     fn foci_outer_inconclusive(&mut self, _report: crate::ankyra::replies::FociOuterInconclusive) {}
 
@@ -371,6 +532,531 @@ pub trait CommissionReplySink {
 
     /// Emit the terminal self-test completion reply.
     fn foci_selftest_done(&mut self, oid: u8, status: u8);
+}
+
+/// Emit the command-level workflow envelope that precedes any Stage-B/C motion.
+#[cfg(feature = "trace-velocity-sweep")]
+pub fn emit_commissioning_workflow_plan<S: CommissionReplySink>(
+    sink: &mut S,
+    oid: u8,
+    plan: crate::commissioning::outer::velocity::integral_plan::CommissioningWorkflowPlan,
+) {
+    let digest = plan.digest();
+    sink.foci_commissioning_workflow_plan(crate::ankyra::replies::FociCommissioningWorkflowPlan {
+        oid,
+        run_sequence: plan.run_sequence,
+        shape: plan.shape as u8,
+        digest_low: digest as u32,
+        digest_high: (digest >> 32) as u32,
+        nominal_workflow_ms: plan.nominal_workflow_ms,
+        maximum_workflow_ms: plan.maximum_workflow_ms,
+    });
+}
+
+/// Emit the complete exact Stage-C plan as bounded causal fragments.
+#[cfg(feature = "trace-velocity-sweep")]
+pub fn emit_velocity_integral_plan<S: CommissionReplySink>(
+    sink: &mut S,
+    oid: u8,
+    run_sequence: u32,
+    plan: crate::commissioning::outer::velocity::integral_plan::VelocityIntegralPlan,
+) {
+    use crate::ankyra::replies::{
+        FociVelocityIntegralPlanAuthority, FociVelocityIntegralPlanCore,
+        FociVelocityIntegralPlanGeometry, FociVelocityIntegralPlanRung,
+        FociVelocityIntegralPlanTiming, FociVelocityIntegralPlanTravel,
+    };
+
+    let digest = plan.digest();
+    let sequence = 0;
+    sink.foci_velocity_integral_plan_core(FociVelocityIntegralPlanCore {
+        oid,
+        run_sequence,
+        evidence_sequence: sequence,
+        fragment: 0,
+        plan_digest_low: digest as u32,
+        plan_digest_high: (digest >> 32) as u32,
+        stage_b_digest_low: plan.authority.stage_b_plan_digest as u32,
+        stage_b_digest_high: (plan.authority.stage_b_plan_digest >> 32) as u32,
+        build_revision: plan.build_revision,
+        schema_revision: plan.schema_revision,
+        channel: plan.authority.channel,
+        final_p: plan.final_p,
+    });
+    sink.foci_velocity_integral_plan_geometry(FociVelocityIntegralPlanGeometry {
+        oid,
+        run_sequence,
+        evidence_sequence: sequence,
+        fragment: 1,
+        planned_velocity_mrev_s: plan.planned_velocity_mrev_s,
+        target_velocity_rpm: plan.target_velocity_rpm,
+        pwm_hz: plan.pwm_hz,
+        encoder_counts_per_rev: plan.encoder_counts_per_rev,
+        i_start: plan.positive_i[0],
+        positive_rung_count: plan.positive_rung_count,
+        family_size: plan.family_size,
+        total_rung_count: plan.total_rung_count,
+        expected_observations: plan.expected_observations,
+        hard_torque_limit: plan.hard_torque_limit,
+        usable_torque_limit: plan.usable_torque_limit,
+    });
+    for direction in 0..2 {
+        sink.foci_velocity_integral_plan_authority(FociVelocityIntegralPlanAuthority {
+            oid,
+            run_sequence,
+            evidence_sequence: sequence,
+            direction: direction as u8,
+            directional_membership: plan.authority.directional_memberships[direction],
+            joint_membership: plan.authority.joint_membership,
+            pooled_low_q16: plan.authority.directional_pooled_intervals[direction][0],
+            pooled_high_q16: plan.authority.directional_pooled_intervals[direction][1],
+        });
+    }
+    sink.foci_velocity_integral_plan_timing(FociVelocityIntegralPlanTiming {
+        oid,
+        run_sequence,
+        evidence_sequence: sequence,
+        fragment: 2,
+        moving_stroke_us: plan.moving_stroke_us,
+        zero_settle_us: plan.zero_settle_us,
+        analysis_budget_us: plan.analysis_budget_us,
+        nominal_workflow_ms: plan.nominal_workflow_ms,
+        maximum_workflow_ms: plan.maximum_workflow_ms,
+    });
+    sink.foci_velocity_integral_plan_travel(FociVelocityIntegralPlanTravel {
+        oid,
+        run_sequence,
+        evidence_sequence: sequence,
+        fragment: 3,
+        max_stroke_travel_mrev: plan.motion_request.max_stroke_travel_mrev,
+        settle_travel_reserve_mrev: plan.motion_request.settle_travel_reserve_mrev,
+        negative_position_headroom_mrev: plan.motion_request.negative_position_headroom_mrev,
+        positive_position_headroom_mrev: plan.motion_request.positive_position_headroom_mrev,
+    });
+    for (rung_index, i_raw) in plan.positive_rungs().iter().copied().enumerate() {
+        let tau_us = crate::commissioning::outer::velocity::integral_plan::velocity_i_tau_us(
+            i_raw,
+            plan.pwm_hz,
+        )
+        .and_then(|value| u32::try_from(value).ok())
+        .unwrap_or(u32::MAX);
+        sink.foci_velocity_integral_plan_rung(FociVelocityIntegralPlanRung {
+            oid,
+            run_sequence,
+            evidence_sequence: sequence,
+            rung_index: rung_index as u8,
+            i_raw,
+            tau_us,
+        });
+    }
+}
+
+/// Emit one Stage-C observation or rung group.
+#[cfg(feature = "trace-velocity-sweep")]
+pub fn emit_velocity_integral_event<S: CommissionReplySink>(
+    sink: &mut S,
+    oid: u8,
+    event: crate::commissioning::types::VelocityIntegralEvent,
+) {
+    match event {
+        crate::commissioning::types::VelocityIntegralEvent::Planned(_) => {}
+        crate::commissioning::types::VelocityIntegralEvent::Observation(report) => {
+            emit_velocity_integral_observation(sink, oid, report);
+        }
+        crate::commissioning::types::VelocityIntegralEvent::Rung(report) => {
+            emit_velocity_integral_rung(sink, oid, report);
+        }
+    }
+}
+
+#[cfg(feature = "trace-velocity-sweep")]
+fn emit_velocity_integral_observation<S: CommissionReplySink>(
+    sink: &mut S,
+    oid: u8,
+    report: crate::commissioning::types::VelocityIntegralObservation,
+) {
+    use crate::ankyra::replies::{
+        FociVelocityIntegralObservationCore, FociVelocityIntegralObservationQuality,
+        FociVelocityIntegralObservationRate,
+    };
+    use crate::autotune::velocity_measurement::StationarityResult;
+    use crate::commissioning::outer::velocity::integral_reporting::{
+        direction_code, integral_observation_class, observation_class_code,
+        stationarity_exclusion_code,
+    };
+
+    sink.foci_velocity_integral_observation_core(FociVelocityIntegralObservationCore {
+        oid,
+        run_sequence: report.run_sequence,
+        evidence_sequence: report.evidence_sequence,
+        fragment: 0,
+        plan_digest_low: report.plan_digest as u32,
+        plan_digest_high: (report.plan_digest >> 32) as u32,
+        rung_index: report.rung_index,
+        slot: report.slot,
+        i_raw: report.i_raw,
+        direction: direction_code(report.summary.direction),
+        classification: observation_class_code(integral_observation_class(report)),
+        initial_lead_in: u8::from(report.summary.initial_lead_in),
+        peak_torque_target_abs: report.summary.predicted_torque_target_abs,
+    });
+    let (rates, shift) = encode_rate_values([
+        report.summary.settled_rate_interval_q[0],
+        report.summary.settled_rate_mean_q,
+        report.summary.settled_rate_interval_q[1],
+        0,
+        0,
+    ]);
+    sink.foci_velocity_integral_observation_rate(FociVelocityIntegralObservationRate {
+        oid,
+        run_sequence: report.run_sequence,
+        evidence_sequence: report.evidence_sequence,
+        fragment: 1,
+        settled_low: rates[0],
+        settled_mean: rates[1],
+        settled_high: rates[2],
+        settled_shift: shift,
+        deficit_low_q: i32::try_from(report.summary.deficit_interval_q[0])
+            .expect("Stage-C evidence gate narrows deficit bounds before reporting"),
+        deficit_high_q: i32::try_from(report.summary.deficit_interval_q[1])
+            .expect("Stage-C evidence gate narrows deficit bounds before reporting"),
+    });
+    let quality = match report.stationarity {
+        StationarityResult::Usable(suffix) => {
+            let (slope_mantissa, slope_shift) = upper_bound_i64(suffix.slope_q);
+            let (slope_half_width_mantissa, slope_half_width_shift) =
+                upper_bound_u128(u128::from(suffix.slope_half_width_q));
+            let (residual_mantissa, residual_shift) =
+                upper_bound_u128(suffix.residual_magnitude_q2);
+            FociVelocityIntegralObservationQuality {
+                oid,
+                run_sequence: report.run_sequence,
+                evidence_sequence: report.evidence_sequence,
+                fragment: 2,
+                suffix_len: suffix.suffix_len,
+                level_or_exclusion: suffix.selection.level,
+                selected_blocks: suffix.selection.block_count,
+                slope_mantissa,
+                slope_shift,
+                slope_half_width_mantissa,
+                slope_half_width_shift,
+                lag_one_q: suffix.lag_one_q,
+                lag_one_half_width_q: suffix.lag_one_half_width_q,
+                residual_mantissa,
+                residual_shift,
+                tested_suffixes: suffix.tested_suffixes,
+            }
+        }
+        StationarityResult::Excluded(exclusion) => FociVelocityIntegralObservationQuality {
+            oid,
+            run_sequence: report.run_sequence,
+            evidence_sequence: report.evidence_sequence,
+            fragment: 2,
+            suffix_len: 0,
+            level_or_exclusion: 0x80 | stationarity_exclusion_code(exclusion),
+            selected_blocks: 0,
+            slope_mantissa: 0,
+            slope_shift: 0,
+            slope_half_width_mantissa: 0,
+            slope_half_width_shift: 0,
+            lag_one_q: 0,
+            lag_one_half_width_q: 0,
+            residual_mantissa: 0,
+            residual_shift: 0,
+            tested_suffixes: 0,
+        },
+    };
+    sink.foci_velocity_integral_observation_quality(quality);
+}
+
+#[cfg(feature = "trace-velocity-sweep")]
+fn emit_velocity_integral_rung<S: CommissionReplySink>(
+    sink: &mut S,
+    oid: u8,
+    report: crate::commissioning::types::VelocityIntegralRungReport,
+) {
+    use crate::commissioning::outer::velocity::integral_reporting::{
+        direction_code, observation_class_code, rung_class_code, rung_kind_code,
+    };
+
+    for direction in report.directions {
+        let packed_classes = direction.observation_classes.iter().enumerate().fold(
+            0_u16,
+            |packed, (index, class)| {
+                packed | (u16::from(observation_class_code(*class)) << (index * 3))
+            },
+        );
+        sink.foci_velocity_integral_rung_core(
+            crate::ankyra::replies::FociVelocityIntegralRungCore {
+                oid,
+                run_sequence: report.run_sequence,
+                evidence_sequence: report.evidence_sequence,
+                fragment: direction_code(direction.direction),
+                rung_index: report.rung_index,
+                i_raw: report.i_raw,
+                direction: direction_code(direction.direction),
+                kind: rung_kind_code(direction.kind),
+                classification: rung_class_code(direction.classification),
+                component_count: direction.component_count,
+                usable_mask: direction.usable_mask,
+                included_mask: direction.included_mask,
+                observation_classes: packed_classes,
+            },
+        );
+        for component in 0..usize::from(direction.component_count) {
+            let interval = direction.components[component];
+            sink.foci_velocity_integral_rung_component(
+                crate::ankyra::replies::FociVelocityIntegralRungComponent {
+                    oid,
+                    run_sequence: report.run_sequence,
+                    evidence_sequence: report.evidence_sequence,
+                    rung_index: report.rung_index,
+                    direction: direction_code(direction.direction),
+                    component: component as u8,
+                    low_q: interval.low_q,
+                    high_q: interval.high_q,
+                },
+            );
+        }
+    }
+}
+
+/// Emit Stage-C derived evidence, optional reproduction, and terminal fragments.
+#[cfg(feature = "trace-velocity-sweep")]
+pub fn emit_velocity_integral_terminal<S: CommissionReplySink>(
+    sink: &mut S,
+    oid: u8,
+    terminal: crate::commissioning::types::VelocityIntegralTerminal,
+    reproduction: Option<crate::commission_dispatch::stage_c::StageCReproductionReport>,
+    authority: Option<
+        crate::commissioning::outer::velocity::integral_reproduction::StageCAuthoritySummary,
+    >,
+) {
+    use crate::ankyra::replies::{
+        FociVelocityIntegralCurveInterval, FociVelocityIntegralDrift,
+        FociVelocityIntegralReproductionCore, FociVelocityIntegralReproductionDigest,
+        FociVelocityIntegralReproductionInterval, FociVelocityIntegralReproductionMask,
+        FociVelocityIntegralRunSummary, FociVelocityIntegralStageBComparison,
+        FociVelocityIntegralTerminalCore, FociVelocityIntegralTerminalIdentity,
+        FociVelocityIntegralTerminalTiming,
+    };
+    use crate::commissioning::outer::velocity::integral_plan::STAGE_C_MAX_POSITIVE_RUNGS;
+    use crate::commissioning::outer::velocity::integral_reporting::{
+        outcome_code, stage_b_deficit_bounds_q,
+    };
+
+    let sequence = terminal.evidence_sequence;
+    let sufficient_direction_mask = terminal
+        .evidence
+        .eligible_masks
+        .iter()
+        .enumerate()
+        .fold(0_u8, |mask, (direction, members)| {
+            mask | (u8::from(members.count_ones() >= 3) << direction)
+        });
+    let bookend_available_mask = terminal
+        .evidence
+        .bookend
+        .iter()
+        .enumerate()
+        .fold(0_u8, |mask, (direction, interval)| {
+            mask | (u8::from(interval.is_some()) << direction)
+        });
+    sink.foci_velocity_integral_run_summary(FociVelocityIntegralRunSummary {
+        oid,
+        run_sequence: terminal.run_sequence,
+        evidence_sequence: sequence,
+        fragment: 0,
+        forward_eligible_mask: terminal.evidence.eligible_masks[0],
+        reverse_eligible_mask: terminal.evidence.eligible_masks[1],
+        bookend_available_mask,
+        current_terminus_plus_one: terminal
+            .evidence
+            .current_terminus
+            .map_or(0, |rung| rung + 1),
+        sufficient_direction_mask,
+    });
+    for direction in 0..2 {
+        let opening = terminal.evidence.opening[direction];
+        sink.foci_velocity_integral_curve_interval(FociVelocityIntegralCurveInterval {
+            oid,
+            run_sequence: terminal.run_sequence,
+            evidence_sequence: sequence,
+            kind: 0,
+            direction: direction as u8,
+            rung_index: 0,
+            low_q: opening.low_q,
+            high_q: opening.high_q,
+        });
+        for rung in 0..STAGE_C_MAX_POSITIVE_RUNGS {
+            if terminal.evidence.eligible_masks[direction] & (1_u32 << rung) == 0 {
+                continue;
+            }
+            let interval = terminal.evidence.positive[direction][rung];
+            sink.foci_velocity_integral_curve_interval(FociVelocityIntegralCurveInterval {
+                oid,
+                run_sequence: terminal.run_sequence,
+                evidence_sequence: sequence,
+                kind: 1,
+                direction: direction as u8,
+                rung_index: rung as u8,
+                low_q: interval.low_q,
+                high_q: interval.high_q,
+            });
+        }
+        let bookend = terminal.evidence.bookend[direction];
+        if let Some(interval) = bookend {
+            sink.foci_velocity_integral_curve_interval(FociVelocityIntegralCurveInterval {
+                oid,
+                run_sequence: terminal.run_sequence,
+                evidence_sequence: sequence,
+                kind: 2,
+                direction: direction as u8,
+                rung_index: 0,
+                low_q: interval.low_q,
+                high_q: interval.high_q,
+            });
+        }
+        sink.foci_velocity_integral_drift(FociVelocityIntegralDrift {
+            oid,
+            run_sequence: terminal.run_sequence,
+            evidence_sequence: sequence,
+            direction: direction as u8,
+            available: u8::from(bookend.is_some()),
+            opening_low_q: opening.low_q,
+            opening_high_q: opening.high_q,
+            closing_low_q: bookend.map_or(0, |interval| interval.low_q),
+            closing_high_q: bookend.map_or(0, |interval| interval.high_q),
+        });
+        if let Some(authority) = authority
+            && let Some(expected) = stage_b_deficit_bounds_q(
+                authority.directional_pooled_intervals[direction],
+                authority.final_p,
+                authority.encoder_counts_per_rev,
+            )
+        {
+            sink.foci_velocity_integral_stage_b_comparison(FociVelocityIntegralStageBComparison {
+                oid,
+                run_sequence: terminal.run_sequence,
+                evidence_sequence: sequence,
+                direction: direction as u8,
+                stage_b_low_q16: authority.directional_pooled_intervals[direction][0],
+                stage_b_high_q16: authority.directional_pooled_intervals[direction][1],
+                expected_low_q: expected[0],
+                expected_high_q: expected[1],
+                opening_low_q: opening.low_q,
+                opening_high_q: opening.high_q,
+            });
+        }
+    }
+    if let Some(reproduction) = reproduction {
+        let direction_mask =
+            reproduction.delta.reproduced_masks.iter().enumerate().fold(
+                0_u8,
+                |mask, (direction, members)| {
+                    mask | (u8::from(members.count_ones() >= 3) << direction)
+                },
+            );
+        sink.foci_velocity_integral_reproduction_core(FociVelocityIntegralReproductionCore {
+            oid,
+            run_sequence: terminal.run_sequence,
+            evidence_sequence: sequence,
+            outcome: reproduction.outcome,
+            direction_mask,
+        });
+        for direction in 0..2 {
+            sink.foci_velocity_integral_reproduction_mask(FociVelocityIntegralReproductionMask {
+                oid,
+                run_sequence: terminal.run_sequence,
+                evidence_sequence: sequence,
+                direction: direction as u8,
+                previous_mask: reproduction.delta.previous_masks[direction],
+                current_mask: reproduction.delta.current_masks[direction],
+                shared_mask: reproduction.delta.shared_masks[direction],
+                reproduced_mask: reproduction.delta.reproduced_masks[direction],
+                divergent_mask: reproduction.delta.divergent_masks[direction],
+                previous_only_mask: reproduction.delta.previous_only_masks[direction],
+                current_only_mask: reproduction.delta.current_only_masks[direction],
+            });
+            for rung in 0..STAGE_C_MAX_POSITIVE_RUNGS {
+                let bit = 1_u32 << rung;
+                let kind = if reproduction.delta.reproduced_masks[direction] & bit != 0 {
+                    1
+                } else if reproduction.delta.divergent_masks[direction] & bit != 0 {
+                    2
+                } else {
+                    continue;
+                };
+                let previous = reproduction.delta.previous_delta_e[direction][rung];
+                let current = reproduction.delta.current_delta_e[direction][rung];
+                let overlap = reproduction.delta.overlaps[direction][rung];
+                sink.foci_velocity_integral_reproduction_interval(
+                    FociVelocityIntegralReproductionInterval {
+                        oid,
+                        run_sequence: terminal.run_sequence,
+                        evidence_sequence: sequence,
+                        direction: direction as u8,
+                        rung_index: rung as u8,
+                        kind,
+                        previous_low_q: previous.low_q,
+                        previous_high_q: previous.high_q,
+                        current_low_q: current.low_q,
+                        current_high_q: current.high_q,
+                        result_low_or_gap_q: if kind == 1 {
+                            overlap.low_q
+                        } else {
+                            reproduction.delta.signed_gaps[direction][rung]
+                        },
+                        result_high_q: if kind == 1 { overlap.high_q } else { 0 },
+                    },
+                );
+            }
+        }
+        sink.foci_velocity_integral_reproduction_digest(FociVelocityIntegralReproductionDigest {
+            oid,
+            run_sequence: terminal.run_sequence,
+            evidence_sequence: sequence,
+            previous_digest_low: reproduction.previous_run_digest as u32,
+            previous_digest_high: (reproduction.previous_run_digest >> 32) as u32,
+            current_digest_low: reproduction.current_run_digest as u32,
+            current_digest_high: (reproduction.current_run_digest >> 32) as u32,
+        });
+    }
+    if let Some(fault) = terminal.safety_fault {
+        sink.foci_outer_safety_fault(oid, fault);
+    }
+    sink.foci_velocity_integral_terminal_core(FociVelocityIntegralTerminalCore {
+        oid,
+        run_sequence: terminal.run_sequence,
+        evidence_sequence: sequence,
+        fragment: 0,
+        outcome: outcome_code(terminal.outcome),
+        cause: terminal.cause,
+        expected_observations: terminal.expected_observations,
+        emitted_observations: terminal.emitted_observations,
+        expected_rungs: terminal.expected_rungs,
+        emitted_rungs: terminal.emitted_rungs,
+    });
+    sink.foci_velocity_integral_terminal_identity(FociVelocityIntegralTerminalIdentity {
+        oid,
+        run_sequence: terminal.run_sequence,
+        evidence_sequence: sequence,
+        fragment: 1,
+        plan_digest_low: terminal.plan_digest as u32,
+        plan_digest_high: (terminal.plan_digest >> 32) as u32,
+        digest_low: terminal.digest as u32,
+        digest_high: (terminal.digest >> 32) as u32,
+    });
+    sink.foci_velocity_integral_terminal_timing(FociVelocityIntegralTerminalTiming {
+        oid,
+        run_sequence: terminal.run_sequence,
+        evidence_sequence: sequence,
+        fragment: 2,
+        started_low: terminal.run_started_us as u32,
+        started_high: (terminal.run_started_us >> 32) as u32,
+        completed_low: terminal.run_completed_us as u32,
+        completed_high: (terminal.run_completed_us >> 32) as u32,
+    });
 }
 
 /// Emit one streamed velocity-sweep event as bounded wire fragments.
@@ -1104,15 +1790,41 @@ pub fn emit_terminal_reply<S: CommissionReplySink>(sink: &mut S, payload: ReplyP
             }
             emit_velocity_sweep_terminal_fragments(sink, oid, terminal);
         }
-        // Task 6 installs the canonical Stage-C record families before board
-        // admission is wired. Keeping these semantic payloads explicit here
-        // lets Task 5 prove lifecycle ordering without inventing wire fields.
         #[cfg(feature = "trace-velocity-sweep")]
-        ReplyPayload::CommissioningWorkflowPlan { .. }
-        | ReplyPayload::VelocityIntegralContinuation { .. }
-        | ReplyPayload::VelocityIntegralPlan { .. }
-        | ReplyPayload::VelocityIntegralEvent { .. }
-        | ReplyPayload::VelocityIntegralTerminal { .. } => {}
+        ReplyPayload::CommissioningWorkflowPlan { oid, plan } => {
+            emit_commissioning_workflow_plan(sink, oid, plan);
+        }
+        #[cfg(feature = "trace-velocity-sweep")]
+        ReplyPayload::VelocityIntegralContinuation {
+            oid,
+            run_sequence,
+            stage_b_terminal,
+            stage_b_reproduction,
+            stage_c_plan,
+        } => {
+            if let Some(report) = stage_b_reproduction {
+                emit_velocity_stage_b_reproduction(sink, oid, report);
+            }
+            emit_velocity_sweep_terminal_fragments(sink, oid, stage_b_terminal);
+            emit_velocity_integral_plan(sink, oid, run_sequence, stage_c_plan);
+        }
+        #[cfg(feature = "trace-velocity-sweep")]
+        ReplyPayload::VelocityIntegralPlan {
+            oid,
+            run_sequence,
+            plan,
+        } => emit_velocity_integral_plan(sink, oid, run_sequence, plan),
+        #[cfg(feature = "trace-velocity-sweep")]
+        ReplyPayload::VelocityIntegralEvent { oid, event } => {
+            emit_velocity_integral_event(sink, oid, event);
+        }
+        #[cfg(feature = "trace-velocity-sweep")]
+        ReplyPayload::VelocityIntegralTerminal {
+            oid,
+            terminal,
+            reproduction,
+            authority,
+        } => emit_velocity_integral_terminal(sink, oid, terminal, reproduction, authority),
     }
 }
 
@@ -1823,6 +2535,12 @@ mod tests {
             fragment: u8,
             evidence_sequence: u16,
         },
+        WorkflowPlan,
+        IntegralPlan(u8),
+        IntegralObservation(u8),
+        IntegralRung(u8),
+        IntegralDerived(u8),
+        IntegralTerminal(u8),
         OuterInconclusive,
         SelftestResult {
             oid: u8,
@@ -2402,6 +3120,170 @@ mod tests {
                 fragment: report.fragment,
                 evidence_sequence: report.evidence_sequence,
             });
+        }
+
+        fn foci_commissioning_workflow_plan(
+            &mut self,
+            _report: crate::ankyra::replies::FociCommissioningWorkflowPlan,
+        ) {
+            self.events.push(Event::WorkflowPlan);
+        }
+
+        fn foci_velocity_integral_plan_core(
+            &mut self,
+            report: crate::ankyra::replies::FociVelocityIntegralPlanCore,
+        ) {
+            self.events.push(Event::IntegralPlan(report.fragment));
+        }
+
+        fn foci_velocity_integral_plan_geometry(
+            &mut self,
+            report: crate::ankyra::replies::FociVelocityIntegralPlanGeometry,
+        ) {
+            self.events.push(Event::IntegralPlan(report.fragment));
+        }
+
+        fn foci_velocity_integral_plan_authority(
+            &mut self,
+            report: crate::ankyra::replies::FociVelocityIntegralPlanAuthority,
+        ) {
+            self.events.push(Event::IntegralPlan(4 + report.direction));
+        }
+
+        fn foci_velocity_integral_plan_timing(
+            &mut self,
+            report: crate::ankyra::replies::FociVelocityIntegralPlanTiming,
+        ) {
+            self.events.push(Event::IntegralPlan(report.fragment));
+        }
+
+        fn foci_velocity_integral_plan_travel(
+            &mut self,
+            report: crate::ankyra::replies::FociVelocityIntegralPlanTravel,
+        ) {
+            self.events.push(Event::IntegralPlan(report.fragment));
+        }
+
+        fn foci_velocity_integral_plan_rung(
+            &mut self,
+            report: crate::ankyra::replies::FociVelocityIntegralPlanRung,
+        ) {
+            self.events.push(Event::IntegralPlan(6 + report.rung_index));
+        }
+
+        fn foci_velocity_integral_observation_core(
+            &mut self,
+            report: crate::ankyra::replies::FociVelocityIntegralObservationCore,
+        ) {
+            self.events
+                .push(Event::IntegralObservation(report.fragment));
+        }
+
+        fn foci_velocity_integral_observation_rate(
+            &mut self,
+            report: crate::ankyra::replies::FociVelocityIntegralObservationRate,
+        ) {
+            self.events
+                .push(Event::IntegralObservation(report.fragment));
+        }
+
+        fn foci_velocity_integral_observation_quality(
+            &mut self,
+            report: crate::ankyra::replies::FociVelocityIntegralObservationQuality,
+        ) {
+            self.events
+                .push(Event::IntegralObservation(report.fragment));
+        }
+
+        fn foci_velocity_integral_rung_core(
+            &mut self,
+            report: crate::ankyra::replies::FociVelocityIntegralRungCore,
+        ) {
+            self.events.push(Event::IntegralRung(report.fragment));
+        }
+
+        fn foci_velocity_integral_rung_component(
+            &mut self,
+            report: crate::ankyra::replies::FociVelocityIntegralRungComponent,
+        ) {
+            self.events.push(Event::IntegralRung(2 + report.direction));
+        }
+
+        fn foci_velocity_integral_run_summary(
+            &mut self,
+            _report: crate::ankyra::replies::FociVelocityIntegralRunSummary,
+        ) {
+            self.events.push(Event::IntegralDerived(0));
+        }
+
+        fn foci_velocity_integral_curve_interval(
+            &mut self,
+            _report: crate::ankyra::replies::FociVelocityIntegralCurveInterval,
+        ) {
+            self.events.push(Event::IntegralDerived(1));
+        }
+
+        fn foci_velocity_integral_drift(
+            &mut self,
+            _report: crate::ankyra::replies::FociVelocityIntegralDrift,
+        ) {
+            self.events.push(Event::IntegralDerived(2));
+        }
+
+        fn foci_velocity_integral_stage_b_comparison(
+            &mut self,
+            _report: crate::ankyra::replies::FociVelocityIntegralStageBComparison,
+        ) {
+            self.events.push(Event::IntegralDerived(3));
+        }
+
+        fn foci_velocity_integral_reproduction_core(
+            &mut self,
+            _report: crate::ankyra::replies::FociVelocityIntegralReproductionCore,
+        ) {
+            self.events.push(Event::IntegralDerived(4));
+        }
+
+        fn foci_velocity_integral_reproduction_mask(
+            &mut self,
+            _report: crate::ankyra::replies::FociVelocityIntegralReproductionMask,
+        ) {
+            self.events.push(Event::IntegralDerived(5));
+        }
+
+        fn foci_velocity_integral_reproduction_interval(
+            &mut self,
+            _report: crate::ankyra::replies::FociVelocityIntegralReproductionInterval,
+        ) {
+            self.events.push(Event::IntegralDerived(6));
+        }
+
+        fn foci_velocity_integral_reproduction_digest(
+            &mut self,
+            _report: crate::ankyra::replies::FociVelocityIntegralReproductionDigest,
+        ) {
+            self.events.push(Event::IntegralDerived(7));
+        }
+
+        fn foci_velocity_integral_terminal_core(
+            &mut self,
+            report: crate::ankyra::replies::FociVelocityIntegralTerminalCore,
+        ) {
+            self.events.push(Event::IntegralTerminal(report.fragment));
+        }
+
+        fn foci_velocity_integral_terminal_identity(
+            &mut self,
+            report: crate::ankyra::replies::FociVelocityIntegralTerminalIdentity,
+        ) {
+            self.events.push(Event::IntegralTerminal(report.fragment));
+        }
+
+        fn foci_velocity_integral_terminal_timing(
+            &mut self,
+            report: crate::ankyra::replies::FociVelocityIntegralTerminalTiming,
+        ) {
+            self.events.push(Event::IntegralTerminal(report.fragment));
         }
 
         fn foci_outer_inconclusive(
@@ -4138,6 +5020,196 @@ mod tests {
                     evidence_sequence: 11,
                 },
             ]
+        );
+    }
+
+    #[cfg(feature = "trace-velocity-sweep")]
+    fn velocity_integral_plan_fixture()
+    -> crate::commissioning::outer::velocity::integral_plan::VelocityIntegralPlan {
+        use crate::commissioning::outer::OuterMotionBudget;
+        use crate::commissioning::outer::velocity::integral_plan::{
+            StageCAuthority, plan_velocity_integral_response,
+        };
+        use crate::commissioning::outer::velocity::sweep_plan::{
+            RequestedVelocitySource, VelocitySweepRequest, plan_velocity_sweep,
+        };
+
+        let request = VelocitySweepRequest {
+            requested_velocity_mrev_s: 2_929,
+            machine_velocity_ceiling_mrev_s: 10_000,
+            requested_velocity_source: RequestedVelocitySource::Defaulted,
+            max_stroke_travel_mrev: 2_000,
+            settle_travel_reserve_mrev: 250,
+            negative_position_headroom_mrev: 50_000,
+            positive_position_headroom_mrev: 50_000,
+            max_duration_ms: 60_000,
+        };
+        let stage_b = plan_velocity_sweep(request, 4_000, 2_816).unwrap();
+        let digest = stage_b.digest();
+        plan_velocity_integral_response(
+            StageCAuthority {
+                channel: 0,
+                stage_b_plan_digest: digest,
+                final_p: 1_448,
+                directional_memberships: [0x0038_0000; 2],
+                joint_membership: 0x0038_0000,
+                directional_pooled_intervals: [
+                    [17_000_000, 18_000_000],
+                    [-19_000_000, -18_000_000],
+                ],
+            },
+            stage_b.execution_plan(digest),
+            OuterMotionBudget::test_budget(2_000, 2_929, 60_000),
+            25_000,
+            4_000,
+        )
+        .unwrap()
+    }
+
+    #[cfg(feature = "trace-velocity-sweep")]
+    fn stage_b_terminal_fixture() -> VelocitySweepTerminal {
+        use crate::commissioning::types::VelocitySweepOutcome;
+
+        VelocitySweepTerminal {
+            run_sequence: 17,
+            evidence_sequence: 23,
+            plan_digest: 0x1111_2222_3333_4444,
+            outcome: VelocitySweepOutcome::Complete,
+            cause: 0,
+            model_direction_mask: 3,
+            selected_memberships: [0x0038_0000; 3],
+            nominated_p: 1_448,
+            selected_intervals: [[17_000_000, 18_000_000], [-19_000_000, -18_000_000]],
+            selected_common_intervals: [[17_250_000, 17_750_000], [-18_750_000, -18_250_000]],
+            p_start: 2,
+            p_top: 32_767,
+            rung_count: 23,
+            coverage_mask: 3,
+            directional_region_counts: [2; 2],
+            directional_fragment_counts: [1; 2],
+            expected_observations: 184,
+            emitted_observations: 184,
+            expected_rungs: 23,
+            emitted_rungs: 23,
+            digest: 0x5555_6666_7777_8888,
+            run_started_us: 1_000,
+            run_completed_us: 2_000,
+            safety_fault: None,
+        }
+    }
+
+    #[cfg(feature = "trace-velocity-sweep")]
+    #[test]
+    fn velocity_integral_reply_continuation_is_causal_and_plan_is_complete() {
+        let mut sink = RecordingSink::default();
+        let plan = velocity_integral_plan_fixture();
+
+        emit_terminal_reply(
+            &mut sink,
+            ReplyPayload::VelocityIntegralContinuation {
+                oid: 3,
+                run_sequence: 18,
+                stage_b_terminal: stage_b_terminal_fixture(),
+                stage_b_reproduction: None,
+                stage_c_plan: plan,
+            },
+        );
+
+        assert_eq!(
+            &sink.events[..4],
+            &[
+                Event::StageBTerminal {
+                    fragment: 0,
+                    evidence_sequence: 23,
+                },
+                Event::StageBTerminal {
+                    fragment: 1,
+                    evidence_sequence: 23,
+                },
+                Event::StageBTerminal {
+                    fragment: 2,
+                    evidence_sequence: 23,
+                },
+                Event::StageBTerminal {
+                    fragment: 3,
+                    evidence_sequence: 23,
+                },
+            ]
+        );
+        assert_eq!(
+            &sink.events[4..10],
+            &[
+                Event::IntegralPlan(0),
+                Event::IntegralPlan(1),
+                Event::IntegralPlan(4),
+                Event::IntegralPlan(5),
+                Event::IntegralPlan(2),
+                Event::IntegralPlan(3),
+            ]
+        );
+        assert_eq!(
+            sink.events.len(),
+            10 + usize::from(plan.positive_rung_count)
+        );
+    }
+
+    #[cfg(feature = "trace-velocity-sweep")]
+    #[test]
+    fn velocity_integral_reply_emits_derived_evidence_before_dedicated_terminal() {
+        use crate::commissioning::outer::velocity::integral_evidence::{
+            ExactRateInterval, IntegralRunEvidence,
+        };
+        use crate::commissioning::types::{VelocityIntegralOutcome, VelocityIntegralTerminal};
+
+        let evidence = IntegralRunEvidence::new([
+            ExactRateInterval::new(100, 120).unwrap(),
+            ExactRateInterval::new(-120, -100).unwrap(),
+        ]);
+        let terminal = VelocityIntegralTerminal {
+            run_sequence: 18,
+            evidence_sequence: 57,
+            plan_digest: 0x1111_2222_3333_4444,
+            digest: 0x5555_6666_7777_8888,
+            outcome: VelocityIntegralOutcome::Inconclusive,
+            cause: 7,
+            evidence,
+            expected_observations: 56,
+            emitted_observations: 56,
+            expected_rungs: 7,
+            emitted_rungs: 7,
+            run_started_us: 1_000,
+            run_completed_us: 2_000,
+            safety_fault: None,
+        };
+        let mut sink = RecordingSink::default();
+
+        emit_terminal_reply(
+            &mut sink,
+            ReplyPayload::VelocityIntegralTerminal {
+                oid: 3,
+                terminal,
+                reproduction: None,
+                authority: None,
+            },
+        );
+
+        assert!(matches!(
+            sink.events.first(),
+            Some(Event::IntegralDerived(0))
+        ));
+        assert_eq!(
+            &sink.events[sink.events.len() - 3..],
+            &[
+                Event::IntegralTerminal(0),
+                Event::IntegralTerminal(1),
+                Event::IntegralTerminal(2),
+            ]
+        );
+        assert!(
+            !sink
+                .events
+                .iter()
+                .any(|event| matches!(event, Event::Tune { .. }))
         );
     }
 

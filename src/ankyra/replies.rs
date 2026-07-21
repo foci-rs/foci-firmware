@@ -2863,6 +2863,565 @@ pub struct FociOuterInconclusive {
     pub digest_high: u32,
 }
 
+/// Command-level commissioning workflow disclosed before any motion.
+#[klipper_reply]
+pub struct FociCommissioningWorkflowPlan {
+    /// Endpoint object id.
+    pub oid: u8,
+    /// Caller-assigned command sequence.
+    pub run_sequence: u32,
+    /// Stage B, Stage-B-then-C, or Stage-C-resume discriminator.
+    pub shape: u8,
+    /// Exact low workflow-envelope digest word.
+    pub digest_low: u32,
+    /// Exact high workflow-envelope digest word.
+    pub digest_high: u32,
+    /// Expected duration under the fixed schedule.
+    pub nominal_workflow_ms: u32,
+    /// Conservative host-timeout authority.
+    pub maximum_workflow_ms: u32,
+}
+
+/// Stage-C plan identity and reproduced proportional authority.
+#[klipper_reply]
+pub struct FociVelocityIntegralPlanCore {
+    /// Endpoint object id.
+    pub oid: u8,
+    /// Caller-assigned run sequence.
+    pub run_sequence: u32,
+    /// Shared plan-group evidence sequence.
+    pub evidence_sequence: u16,
+    /// Plan fragment discriminator.
+    pub fragment: u8,
+    /// Exact low Stage-C plan digest word.
+    pub plan_digest_low: u32,
+    /// Exact high Stage-C plan digest word.
+    pub plan_digest_high: u32,
+    /// Exact low authorizing Stage-B plan digest word.
+    pub stage_b_digest_low: u32,
+    /// Exact high authorizing Stage-B plan digest word.
+    pub stage_b_digest_high: u32,
+    /// Shared-firmware build revision.
+    pub build_revision: u32,
+    /// Stage-C evidence schema revision.
+    pub schema_revision: u16,
+    /// Physical firmware channel.
+    pub channel: u8,
+    /// Reproduced fixed proportional gain.
+    pub final_p: u16,
+}
+
+/// Stage-C plan geometry and controller-domain limits.
+#[klipper_reply]
+pub struct FociVelocityIntegralPlanGeometry {
+    /// Endpoint object id.
+    pub oid: u8,
+    /// Caller-assigned run sequence.
+    pub run_sequence: u32,
+    /// Shared plan-group evidence sequence.
+    pub evidence_sequence: u16,
+    /// Plan fragment discriminator.
+    pub fragment: u8,
+    /// Frozen encoder-domain amplitude.
+    pub planned_velocity_mrev_s: u32,
+    /// Frozen mechanical-RPM target register.
+    pub target_velocity_rpm: i32,
+    /// Frozen PWM frequency.
+    pub pwm_hz: u32,
+    /// Mechanical encoder quadrature counts per revolution.
+    pub encoder_counts_per_rev: u32,
+    /// First exact positive-I rung.
+    pub i_start: u16,
+    /// Number of positive-I rungs.
+    pub positive_rung_count: u8,
+    /// Simultaneous observation family size per direction.
+    pub family_size: u16,
+    /// Total opening, positive, and closing rung count.
+    pub total_rung_count: u8,
+    /// Total planned observation count.
+    pub expected_observations: u16,
+    /// Configured hard torque-target limit.
+    pub hard_torque_limit: u16,
+    /// Inclusive usable torque-target boundary.
+    pub usable_torque_limit: u16,
+}
+
+/// One direction of Stage-B evidence authorizing Stage C.
+#[klipper_reply]
+pub struct FociVelocityIntegralPlanAuthority {
+    /// Endpoint object id.
+    pub oid: u8,
+    /// Caller-assigned run sequence.
+    pub run_sequence: u32,
+    /// Shared plan-group evidence sequence.
+    pub evidence_sequence: u16,
+    /// Direction code.
+    pub direction: u8,
+    /// Directional reproduced model membership.
+    pub directional_membership: u32,
+    /// Reproduced joint-operability membership.
+    pub joint_membership: u32,
+    /// Retained Stage-B pooled lower interval edge.
+    pub pooled_low_q16: i32,
+    /// Retained Stage-B pooled upper interval edge.
+    pub pooled_high_q16: i32,
+}
+
+/// Stage-C fixed schedule and travel identity.
+#[klipper_reply]
+pub struct FociVelocityIntegralPlanTiming {
+    /// Endpoint object id.
+    pub oid: u8,
+    /// Caller-assigned run sequence.
+    pub run_sequence: u32,
+    /// Shared plan-group evidence sequence.
+    pub evidence_sequence: u16,
+    /// Plan fragment discriminator.
+    pub fragment: u8,
+    /// Moving-stroke duration.
+    pub moving_stroke_us: u32,
+    /// Zero-target settle duration.
+    pub zero_settle_us: u32,
+    /// Cooperative analysis allowance.
+    pub analysis_budget_us: u32,
+    /// Expected fixed-schedule duration.
+    pub nominal_workflow_ms: u32,
+    /// Conservative fixed-schedule duration.
+    pub maximum_workflow_ms: u32,
+}
+
+/// Stage-C travel and absolute-position identity.
+#[klipper_reply]
+pub struct FociVelocityIntegralPlanTravel {
+    /// Endpoint object id.
+    pub oid: u8,
+    /// Caller-assigned run sequence.
+    pub run_sequence: u32,
+    /// Shared plan-group evidence sequence.
+    pub evidence_sequence: u16,
+    /// Plan fragment discriminator.
+    pub fragment: u8,
+    /// Per-stroke travel budget.
+    pub max_stroke_travel_mrev: u32,
+    /// Reserved settle/braking travel.
+    pub settle_travel_reserve_mrev: u32,
+    /// Negative absolute-position headroom.
+    pub negative_position_headroom_mrev: u32,
+    /// Positive absolute-position headroom.
+    pub positive_position_headroom_mrev: u32,
+}
+
+/// One exact positive-I plan rung.
+#[klipper_reply]
+pub struct FociVelocityIntegralPlanRung {
+    /// Endpoint object id.
+    pub oid: u8,
+    /// Caller-assigned run sequence.
+    pub run_sequence: u32,
+    /// Shared plan-group evidence sequence.
+    pub evidence_sequence: u16,
+    /// Zero-based positive-rung index.
+    pub rung_index: u8,
+    /// Exact raw velocity-I gain.
+    pub i_raw: u16,
+    /// Outward-ceiled advanced-PI time constant.
+    pub tau_us: u32,
+}
+
+/// Stage-C observation identity and classification.
+#[klipper_reply]
+pub struct FociVelocityIntegralObservationCore {
+    /// Endpoint object id.
+    pub oid: u8,
+    /// Caller-assigned run sequence.
+    pub run_sequence: u32,
+    /// Monotonic evidence sequence.
+    pub evidence_sequence: u16,
+    /// Observation fragment discriminator.
+    pub fragment: u8,
+    /// Exact low plan digest word.
+    pub plan_digest_low: u32,
+    /// Exact high plan digest word.
+    pub plan_digest_high: u32,
+    /// Rung index including anchors.
+    pub rung_index: u8,
+    /// Fixed F/R observation slot.
+    pub slot: u8,
+    /// Integral gain programmed for the rung.
+    pub i_raw: u16,
+    /// Direction code.
+    pub direction: u8,
+    /// Intrinsic Stage-C observation class.
+    pub classification: u8,
+    /// Whether this was the campaign's initial lead-in.
+    pub initial_lead_in: u8,
+    /// Peak absolute torque-target count.
+    pub peak_torque_target_abs: u16,
+}
+
+/// Stage-C observation rate and exact deficit interval.
+#[klipper_reply]
+pub struct FociVelocityIntegralObservationRate {
+    /// Endpoint object id.
+    pub oid: u8,
+    /// Caller-assigned run sequence.
+    pub run_sequence: u32,
+    /// Monotonic evidence sequence.
+    pub evidence_sequence: u16,
+    /// Observation fragment discriminator.
+    pub fragment: u8,
+    /// Compact settled-rate lower edge.
+    pub settled_low: i32,
+    /// Compact settled-rate point estimate.
+    pub settled_mean: i32,
+    /// Compact settled-rate upper edge.
+    pub settled_high: i32,
+    /// Common settled-rate right shift.
+    pub settled_shift: u8,
+    /// Exact signed deficit lower edge.
+    pub deficit_low_q: i32,
+    /// Exact signed deficit upper edge.
+    pub deficit_high_q: i32,
+}
+
+/// Stage-C observation stationarity quality.
+#[klipper_reply]
+pub struct FociVelocityIntegralObservationQuality {
+    /// Endpoint object id.
+    pub oid: u8,
+    /// Caller-assigned run sequence.
+    pub run_sequence: u32,
+    /// Monotonic evidence sequence.
+    pub evidence_sequence: u16,
+    /// Observation fragment discriminator.
+    pub fragment: u8,
+    /// Selected suffix length or zero when excluded.
+    pub suffix_len: u16,
+    /// Selected blocking level or exclusion code.
+    pub level_or_exclusion: u8,
+    /// Selected decorrelated block count.
+    pub selected_blocks: u32,
+    /// Outward compact slope estimate.
+    pub slope_mantissa: i32,
+    /// Slope estimate right shift.
+    pub slope_shift: u8,
+    /// Outward compact slope half-width.
+    pub slope_half_width_mantissa: u32,
+    /// Slope half-width right shift.
+    pub slope_half_width_shift: u8,
+    /// Lag-one residual correlation in millionths.
+    pub lag_one_q: i32,
+    /// Lag-one half-width in millionths.
+    pub lag_one_half_width_q: u32,
+    /// Outward compact residual magnitude.
+    pub residual_mantissa: u32,
+    /// Residual magnitude right shift.
+    pub residual_shift: u8,
+    /// Number of declared suffixes tested.
+    pub tested_suffixes: u8,
+}
+
+/// Stage-C directional rung verdict and consensus masks.
+#[klipper_reply]
+pub struct FociVelocityIntegralRungCore {
+    /// Endpoint object id.
+    pub oid: u8,
+    /// Caller-assigned run sequence.
+    pub run_sequence: u32,
+    /// Monotonic evidence sequence.
+    pub evidence_sequence: u16,
+    /// Rung fragment discriminator.
+    pub fragment: u8,
+    /// Rung index including anchors.
+    pub rung_index: u8,
+    /// Integral gain programmed for the rung.
+    pub i_raw: u16,
+    /// Direction code.
+    pub direction: u8,
+    /// Opening, positive, or closing role.
+    pub kind: u8,
+    /// Directional consensus class.
+    pub classification: u8,
+    /// Number of exact depth-three components.
+    pub component_count: u8,
+    /// Four-bit intrinsically usable observation mask.
+    pub usable_mask: u8,
+    /// Four-bit unique-component support mask.
+    pub included_mask: u8,
+    /// Four packed three-bit observation classes.
+    pub observation_classes: u16,
+}
+
+/// One exact Stage-C consensus component.
+#[klipper_reply]
+pub struct FociVelocityIntegralRungComponent {
+    /// Endpoint object id.
+    pub oid: u8,
+    /// Caller-assigned run sequence.
+    pub run_sequence: u32,
+    /// Monotonic evidence sequence.
+    pub evidence_sequence: u16,
+    /// Rung index including anchors.
+    pub rung_index: u8,
+    /// Direction code.
+    pub direction: u8,
+    /// Zero-based component index.
+    pub component: u8,
+    /// Exact lower deficit edge.
+    pub low_q: i32,
+    /// Exact upper deficit edge.
+    pub high_q: i32,
+}
+
+/// Stage-C run sufficiency, masks, and current terminus.
+#[klipper_reply]
+pub struct FociVelocityIntegralRunSummary {
+    /// Endpoint object id.
+    pub oid: u8,
+    /// Caller-assigned run sequence.
+    pub run_sequence: u32,
+    /// Terminal evidence sequence.
+    pub evidence_sequence: u16,
+    /// Derived fragment discriminator.
+    pub fragment: u8,
+    /// Forward positive-rung eligibility mask.
+    pub forward_eligible_mask: u32,
+    /// Reverse positive-rung eligibility mask.
+    pub reverse_eligible_mask: u32,
+    /// Directions with an eligible closing bookend.
+    pub bookend_available_mask: u8,
+    /// One plus the current-headroom terminus, or zero.
+    pub current_terminus_plus_one: u8,
+    /// Directions meeting the per-run three-rung floor.
+    pub sufficient_direction_mask: u8,
+}
+
+/// One exact Stage-C anchor, curve, or bookend interval.
+#[klipper_reply]
+pub struct FociVelocityIntegralCurveInterval {
+    /// Endpoint object id.
+    pub oid: u8,
+    /// Caller-assigned run sequence.
+    pub run_sequence: u32,
+    /// Terminal evidence sequence.
+    pub evidence_sequence: u16,
+    /// Opening, positive, or closing interval kind.
+    pub kind: u8,
+    /// Direction code.
+    pub direction: u8,
+    /// Positive-rung index, or zero for an anchor.
+    pub rung_index: u8,
+    /// Exact lower deficit edge.
+    pub low_q: i32,
+    /// Exact upper deficit edge.
+    pub high_q: i32,
+}
+
+/// One direction's opening-to-bookend drift evidence.
+#[klipper_reply]
+pub struct FociVelocityIntegralDrift {
+    /// Endpoint object id.
+    pub oid: u8,
+    /// Caller-assigned run sequence.
+    pub run_sequence: u32,
+    /// Terminal evidence sequence.
+    pub evidence_sequence: u16,
+    /// Direction code.
+    pub direction: u8,
+    /// Whether the closing bookend is available.
+    pub available: u8,
+    /// Exact opening lower edge.
+    pub opening_low_q: i32,
+    /// Exact opening upper edge.
+    pub opening_high_q: i32,
+    /// Exact closing lower edge, or zero.
+    pub closing_low_q: i32,
+    /// Exact closing upper edge, or zero.
+    pub closing_high_q: i32,
+}
+
+/// Fresh Stage-C opening anchor compared with retained Stage-B disturbance.
+#[klipper_reply]
+pub struct FociVelocityIntegralStageBComparison {
+    /// Endpoint object id.
+    pub oid: u8,
+    /// Caller-assigned run sequence.
+    pub run_sequence: u32,
+    /// Terminal evidence sequence.
+    pub evidence_sequence: u16,
+    /// Direction code.
+    pub direction: u8,
+    /// Retained Stage-B pooled lower disturbance edge.
+    pub stage_b_low_q16: i32,
+    /// Retained Stage-B pooled upper disturbance edge.
+    pub stage_b_high_q16: i32,
+    /// Rate-inverted Stage-B deficit lower edge.
+    pub expected_low_q: i32,
+    /// Rate-inverted Stage-B deficit upper edge.
+    pub expected_high_q: i32,
+    /// Fresh Stage-C opening-anchor lower deficit edge.
+    pub opening_low_q: i32,
+    /// Fresh Stage-C opening-anchor upper deficit edge.
+    pub opening_high_q: i32,
+}
+
+/// Stage-C reproduction outcome and run-level identity.
+#[klipper_reply]
+pub struct FociVelocityIntegralReproductionCore {
+    /// Endpoint object id.
+    pub oid: u8,
+    /// Current caller-assigned run sequence.
+    pub run_sequence: u32,
+    /// Shared reproduction-group evidence sequence.
+    pub evidence_sequence: u16,
+    /// Reproduced or mismatched outcome code.
+    pub outcome: u8,
+    /// Per-direction reproduced sufficiency mask.
+    pub direction_mask: u8,
+}
+
+/// One direction's Stage-C reproduction masks.
+#[klipper_reply]
+pub struct FociVelocityIntegralReproductionMask {
+    /// Endpoint object id.
+    pub oid: u8,
+    /// Current caller-assigned run sequence.
+    pub run_sequence: u32,
+    /// Shared reproduction-group evidence sequence.
+    pub evidence_sequence: u16,
+    /// Direction code.
+    pub direction: u8,
+    /// Retained-run eligibility mask.
+    pub previous_mask: u32,
+    /// Current-run eligibility mask.
+    pub current_mask: u32,
+    /// Eligibility shared by both runs.
+    pub shared_mask: u32,
+    /// Shared rungs with overlapping anchor-relative response.
+    pub reproduced_mask: u32,
+    /// Shared rungs with divergent anchor-relative response.
+    pub divergent_mask: u32,
+    /// Rungs present only in the retained run.
+    pub previous_only_mask: u32,
+    /// Rungs present only in the current run.
+    pub current_only_mask: u32,
+}
+
+/// One exact reproduced or divergent Stage-C response interval pair.
+#[klipper_reply]
+pub struct FociVelocityIntegralReproductionInterval {
+    /// Endpoint object id.
+    pub oid: u8,
+    /// Current caller-assigned run sequence.
+    pub run_sequence: u32,
+    /// Shared reproduction-group evidence sequence.
+    pub evidence_sequence: u16,
+    /// Direction code.
+    pub direction: u8,
+    /// Positive-rung index.
+    pub rung_index: u8,
+    /// One for reproduced overlap, two for divergence.
+    pub kind: u8,
+    /// Retained anchor-relative lower edge.
+    pub previous_low_q: i32,
+    /// Retained anchor-relative upper edge.
+    pub previous_high_q: i32,
+    /// Current anchor-relative lower edge.
+    pub current_low_q: i32,
+    /// Current anchor-relative upper edge.
+    pub current_high_q: i32,
+    /// Exact overlap lower edge, or signed gap for divergence.
+    pub result_low_or_gap_q: i32,
+    /// Exact overlap upper edge, or zero for divergence.
+    pub result_high_q: i32,
+}
+
+/// Exact previous and current Stage-C run digests.
+#[klipper_reply]
+pub struct FociVelocityIntegralReproductionDigest {
+    /// Endpoint object id.
+    pub oid: u8,
+    /// Current caller-assigned run sequence.
+    pub run_sequence: u32,
+    /// Shared reproduction-group evidence sequence.
+    pub evidence_sequence: u16,
+    /// Retained digest low word.
+    pub previous_digest_low: u32,
+    /// Retained digest high word.
+    pub previous_digest_high: u32,
+    /// Current digest low word.
+    pub current_digest_low: u32,
+    /// Current digest high word.
+    pub current_digest_high: u32,
+}
+
+/// Stage-C terminal class, cause, and report completeness.
+#[klipper_reply]
+pub struct FociVelocityIntegralTerminalCore {
+    /// Endpoint object id.
+    pub oid: u8,
+    /// Caller-assigned run sequence.
+    pub run_sequence: u32,
+    /// Terminal evidence sequence.
+    pub evidence_sequence: u16,
+    /// Terminal fragment discriminator.
+    pub fragment: u8,
+    /// Stage-C terminal outcome.
+    pub outcome: u8,
+    /// Dedicated Stage-C cause.
+    pub cause: u8,
+    /// Planned observation count.
+    pub expected_observations: u16,
+    /// Emitted observation count.
+    pub emitted_observations: u16,
+    /// Planned rung count.
+    pub expected_rungs: u16,
+    /// Emitted rung count.
+    pub emitted_rungs: u16,
+}
+
+/// Stage-C terminal plan and evidence digests.
+#[klipper_reply]
+pub struct FociVelocityIntegralTerminalIdentity {
+    /// Endpoint object id.
+    pub oid: u8,
+    /// Caller-assigned run sequence.
+    pub run_sequence: u32,
+    /// Terminal evidence sequence.
+    pub evidence_sequence: u16,
+    /// Terminal fragment discriminator.
+    pub fragment: u8,
+    /// Exact low plan digest word.
+    pub plan_digest_low: u32,
+    /// Exact high plan digest word.
+    pub plan_digest_high: u32,
+    /// Exact low evidence digest word.
+    pub digest_low: u32,
+    /// Exact high evidence digest word.
+    pub digest_high: u32,
+}
+
+/// Stage-C terminal monotonic timing.
+#[klipper_reply]
+pub struct FociVelocityIntegralTerminalTiming {
+    /// Endpoint object id.
+    pub oid: u8,
+    /// Caller-assigned run sequence.
+    pub run_sequence: u32,
+    /// Terminal evidence sequence.
+    pub evidence_sequence: u16,
+    /// Terminal fragment discriminator.
+    pub fragment: u8,
+    /// Low start timestamp word.
+    pub started_low: u32,
+    /// High start timestamp word.
+    pub started_high: u32,
+    /// Low completion timestamp word.
+    pub completed_low: u32,
+    /// High completion timestamp word.
+    pub completed_high: u32,
+}
+
 #[cfg(test)]
 mod velocity_sweep_reply_tests {
     use super::*;
@@ -3442,6 +4001,368 @@ mod velocity_sweep_reply_tests {
                 digest_high: WIDE_U32,
             },
             "outer_inconclusive",
+        );
+    }
+
+    #[test]
+    fn worst_case_velocity_integral_fragments_fit_transport() {
+        let workflow = FociCommissioningWorkflowPlan {
+            oid: u8::MAX,
+            run_sequence: WIDE_U32,
+            shape: u8::MAX,
+            digest_low: WIDE_U32,
+            digest_high: WIDE_U32,
+            nominal_workflow_ms: WIDE_U32,
+            maximum_workflow_ms: WIDE_U32,
+        };
+        assert_fits(&workflow, "integral_workflow");
+        assert_fits(
+            &FociVelocityIntegralPlanCore {
+                oid: u8::MAX,
+                run_sequence: WIDE_U32,
+                evidence_sequence: u16::MAX,
+                fragment: u8::MAX,
+                plan_digest_low: WIDE_U32,
+                plan_digest_high: WIDE_U32,
+                stage_b_digest_low: WIDE_U32,
+                stage_b_digest_high: WIDE_U32,
+                build_revision: WIDE_U32,
+                schema_revision: u16::MAX,
+                channel: u8::MAX,
+                final_p: u16::MAX,
+            },
+            "integral_plan_core",
+        );
+        assert_fits(
+            &FociVelocityIntegralPlanGeometry {
+                oid: u8::MAX,
+                run_sequence: WIDE_U32,
+                evidence_sequence: u16::MAX,
+                fragment: u8::MAX,
+                planned_velocity_mrev_s: WIDE_U32,
+                target_velocity_rpm: i32::MAX,
+                pwm_hz: WIDE_U32,
+                encoder_counts_per_rev: WIDE_U32,
+                i_start: u16::MAX,
+                positive_rung_count: u8::MAX,
+                family_size: u16::MAX,
+                total_rung_count: u8::MAX,
+                expected_observations: u16::MAX,
+                hard_torque_limit: u16::MAX,
+                usable_torque_limit: u16::MAX,
+            },
+            "integral_plan_geometry",
+        );
+        assert_fits(
+            &FociVelocityIntegralPlanAuthority {
+                oid: u8::MAX,
+                run_sequence: WIDE_U32,
+                evidence_sequence: u16::MAX,
+                direction: u8::MAX,
+                directional_membership: WIDE_U32,
+                joint_membership: WIDE_U32,
+                pooled_low_q16: i32::MIN,
+                pooled_high_q16: i32::MAX,
+            },
+            "integral_plan_authority",
+        );
+        assert_fits(
+            &FociVelocityIntegralPlanTiming {
+                oid: u8::MAX,
+                run_sequence: WIDE_U32,
+                evidence_sequence: u16::MAX,
+                fragment: u8::MAX,
+                moving_stroke_us: WIDE_U32,
+                zero_settle_us: WIDE_U32,
+                analysis_budget_us: WIDE_U32,
+                nominal_workflow_ms: WIDE_U32,
+                maximum_workflow_ms: WIDE_U32,
+            },
+            "integral_plan_timing",
+        );
+        assert_fits(
+            &FociVelocityIntegralPlanTravel {
+                oid: u8::MAX,
+                run_sequence: WIDE_U32,
+                evidence_sequence: u16::MAX,
+                fragment: u8::MAX,
+                max_stroke_travel_mrev: WIDE_U32,
+                settle_travel_reserve_mrev: WIDE_U32,
+                negative_position_headroom_mrev: WIDE_U32,
+                positive_position_headroom_mrev: WIDE_U32,
+            },
+            "integral_plan_travel",
+        );
+        assert_fits(
+            &FociVelocityIntegralPlanRung {
+                oid: u8::MAX,
+                run_sequence: WIDE_U32,
+                evidence_sequence: u16::MAX,
+                rung_index: u8::MAX,
+                i_raw: u16::MAX,
+                tau_us: WIDE_U32,
+            },
+            "integral_plan_rung",
+        );
+        assert_fits(
+            &FociVelocityIntegralObservationCore {
+                oid: u8::MAX,
+                run_sequence: WIDE_U32,
+                evidence_sequence: u16::MAX,
+                fragment: u8::MAX,
+                plan_digest_low: WIDE_U32,
+                plan_digest_high: WIDE_U32,
+                rung_index: u8::MAX,
+                slot: u8::MAX,
+                i_raw: u16::MAX,
+                direction: u8::MAX,
+                classification: u8::MAX,
+                initial_lead_in: u8::MAX,
+                peak_torque_target_abs: u16::MAX,
+            },
+            "integral_observation_core",
+        );
+        assert_fits(
+            &FociVelocityIntegralObservationRate {
+                oid: u8::MAX,
+                run_sequence: WIDE_U32,
+                evidence_sequence: u16::MAX,
+                fragment: u8::MAX,
+                settled_low: i32::MIN,
+                settled_mean: i32::MAX,
+                settled_high: i32::MAX,
+                settled_shift: u8::MAX,
+                deficit_low_q: i32::MIN,
+                deficit_high_q: i32::MAX,
+            },
+            "integral_observation_rate",
+        );
+        assert_fits(
+            &FociVelocityIntegralObservationQuality {
+                oid: u8::MAX,
+                run_sequence: WIDE_U32,
+                evidence_sequence: u16::MAX,
+                fragment: u8::MAX,
+                suffix_len: u16::MAX,
+                level_or_exclusion: u8::MAX,
+                selected_blocks: WIDE_U32,
+                slope_mantissa: i32::MIN,
+                slope_shift: u8::MAX,
+                slope_half_width_mantissa: WIDE_U32,
+                slope_half_width_shift: u8::MAX,
+                lag_one_q: i32::MIN,
+                lag_one_half_width_q: WIDE_U32,
+                residual_mantissa: WIDE_U32,
+                residual_shift: u8::MAX,
+                tested_suffixes: u8::MAX,
+            },
+            "integral_observation_quality",
+        );
+        assert_fits(
+            &FociVelocityIntegralRungCore {
+                oid: u8::MAX,
+                run_sequence: WIDE_U32,
+                evidence_sequence: u16::MAX,
+                fragment: u8::MAX,
+                rung_index: u8::MAX,
+                i_raw: u16::MAX,
+                direction: u8::MAX,
+                kind: u8::MAX,
+                classification: u8::MAX,
+                component_count: u8::MAX,
+                usable_mask: u8::MAX,
+                included_mask: u8::MAX,
+                observation_classes: u16::MAX,
+            },
+            "integral_rung_core",
+        );
+        assert_fits(
+            &FociVelocityIntegralRungComponent {
+                oid: u8::MAX,
+                run_sequence: WIDE_U32,
+                evidence_sequence: u16::MAX,
+                rung_index: u8::MAX,
+                direction: u8::MAX,
+                component: u8::MAX,
+                low_q: i32::MIN,
+                high_q: i32::MAX,
+            },
+            "integral_rung_component",
+        );
+        assert_fits(
+            &FociVelocityIntegralRunSummary {
+                oid: u8::MAX,
+                run_sequence: WIDE_U32,
+                evidence_sequence: u16::MAX,
+                fragment: u8::MAX,
+                forward_eligible_mask: WIDE_U32,
+                reverse_eligible_mask: WIDE_U32,
+                bookend_available_mask: u8::MAX,
+                current_terminus_plus_one: u8::MAX,
+                sufficient_direction_mask: u8::MAX,
+            },
+            "integral_run_summary",
+        );
+        assert_fits(
+            &FociVelocityIntegralCurveInterval {
+                oid: u8::MAX,
+                run_sequence: WIDE_U32,
+                evidence_sequence: u16::MAX,
+                kind: u8::MAX,
+                direction: u8::MAX,
+                rung_index: u8::MAX,
+                low_q: i32::MIN,
+                high_q: i32::MAX,
+            },
+            "integral_curve_interval",
+        );
+        assert_fits(
+            &FociVelocityIntegralDrift {
+                oid: u8::MAX,
+                run_sequence: WIDE_U32,
+                evidence_sequence: u16::MAX,
+                direction: u8::MAX,
+                available: u8::MAX,
+                opening_low_q: i32::MIN,
+                opening_high_q: i32::MAX,
+                closing_low_q: i32::MIN,
+                closing_high_q: i32::MAX,
+            },
+            "integral_drift",
+        );
+        assert_fits(
+            &FociVelocityIntegralStageBComparison {
+                oid: u8::MAX,
+                run_sequence: WIDE_U32,
+                evidence_sequence: u16::MAX,
+                direction: u8::MAX,
+                stage_b_low_q16: i32::MIN,
+                stage_b_high_q16: i32::MAX,
+                expected_low_q: i32::MIN,
+                expected_high_q: i32::MAX,
+                opening_low_q: i32::MIN,
+                opening_high_q: i32::MAX,
+            },
+            "integral_stage_b_comparison",
+        );
+        assert_fits(
+            &FociVelocityIntegralReproductionCore {
+                oid: u8::MAX,
+                run_sequence: WIDE_U32,
+                evidence_sequence: u16::MAX,
+                outcome: u8::MAX,
+                direction_mask: u8::MAX,
+            },
+            "integral_reproduction_core",
+        );
+        assert_fits(
+            &FociVelocityIntegralReproductionMask {
+                oid: u8::MAX,
+                run_sequence: WIDE_U32,
+                evidence_sequence: u16::MAX,
+                direction: u8::MAX,
+                previous_mask: WIDE_U32,
+                current_mask: WIDE_U32,
+                shared_mask: WIDE_U32,
+                reproduced_mask: WIDE_U32,
+                divergent_mask: WIDE_U32,
+                previous_only_mask: WIDE_U32,
+                current_only_mask: WIDE_U32,
+            },
+            "integral_reproduction_mask",
+        );
+        assert_fits(
+            &FociVelocityIntegralReproductionInterval {
+                oid: u8::MAX,
+                run_sequence: WIDE_U32,
+                evidence_sequence: u16::MAX,
+                direction: u8::MAX,
+                rung_index: u8::MAX,
+                kind: u8::MAX,
+                previous_low_q: i32::MIN,
+                previous_high_q: i32::MAX,
+                current_low_q: i32::MIN,
+                current_high_q: i32::MAX,
+                result_low_or_gap_q: i32::MIN,
+                result_high_q: i32::MAX,
+            },
+            "integral_reproduction_interval",
+        );
+        assert_fits(
+            &FociVelocityIntegralReproductionDigest {
+                oid: u8::MAX,
+                run_sequence: WIDE_U32,
+                evidence_sequence: u16::MAX,
+                previous_digest_low: WIDE_U32,
+                previous_digest_high: WIDE_U32,
+                current_digest_low: WIDE_U32,
+                current_digest_high: WIDE_U32,
+            },
+            "integral_reproduction_digest",
+        );
+        assert_fits(
+            &FociVelocityIntegralTerminalCore {
+                oid: u8::MAX,
+                run_sequence: WIDE_U32,
+                evidence_sequence: u16::MAX,
+                fragment: u8::MAX,
+                outcome: u8::MAX,
+                cause: u8::MAX,
+                expected_observations: u16::MAX,
+                emitted_observations: u16::MAX,
+                expected_rungs: u16::MAX,
+                emitted_rungs: u16::MAX,
+            },
+            "integral_terminal_core",
+        );
+        assert_fits(
+            &FociVelocityIntegralTerminalIdentity {
+                oid: u8::MAX,
+                run_sequence: WIDE_U32,
+                evidence_sequence: u16::MAX,
+                fragment: u8::MAX,
+                plan_digest_low: WIDE_U32,
+                plan_digest_high: WIDE_U32,
+                digest_low: WIDE_U32,
+                digest_high: WIDE_U32,
+            },
+            "integral_terminal_identity",
+        );
+        assert_fits(
+            &FociVelocityIntegralTerminalTiming {
+                oid: u8::MAX,
+                run_sequence: WIDE_U32,
+                evidence_sequence: u16::MAX,
+                fragment: u8::MAX,
+                started_low: WIDE_U32,
+                started_high: WIDE_U32,
+                completed_low: WIDE_U32,
+                completed_high: WIDE_U32,
+            },
+            "integral_terminal_timing",
+        );
+    }
+
+    #[test]
+    fn velocity_integral_digest_halves_round_trip_exactly() {
+        let digest = 0x0123_4567_89ab_cdef_u64;
+        let terminal = FociVelocityIntegralTerminalIdentity {
+            oid: 1,
+            run_sequence: 2,
+            evidence_sequence: 3,
+            fragment: 2,
+            plan_digest_low: digest as u32,
+            plan_digest_high: (digest >> 32) as u32,
+            digest_low: (!digest) as u32,
+            digest_high: ((!digest) >> 32) as u32,
+        };
+        assert_eq!(
+            (u64::from(terminal.plan_digest_high) << 32) | u64::from(terminal.plan_digest_low),
+            digest
+        );
+        assert_eq!(
+            (u64::from(terminal.digest_high) << 32) | u64::from(terminal.digest_low),
+            !digest
         );
     }
 

@@ -550,6 +550,10 @@ pub struct VelocitySweepTerminal {
 /// Exact Stage-C plan identity disclosed before the first integral stroke.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub struct VelocityIntegralPlanned {
+    /// Caller-assigned run sequence.
+    pub run_sequence: u32,
+    /// Monotonic evidence sequence within the run.
+    pub evidence_sequence: u16,
     /// Exact Stage-C stage-plan digest.
     pub plan_digest: u64,
     /// Firmware-authoritative fixed proportional gain.
@@ -563,6 +567,10 @@ pub struct VelocityIntegralPlanned {
 /// One analyzed Stage-C moving observation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub struct VelocityIntegralObservation {
+    /// Caller-assigned run sequence.
+    pub run_sequence: u32,
+    /// Monotonic evidence sequence within the run.
+    pub evidence_sequence: u16,
     /// Exact Stage-C plan digest.
     pub plan_digest: u64,
     /// Zero-based rung index including both anchors.
@@ -573,11 +581,17 @@ pub struct VelocityIntegralObservation {
     pub i_raw: u16,
     /// Direct encoder-rate-domain observation summary.
     pub summary: crate::commissioning::outer::velocity::sweep_evidence::VelocityObservationSummary,
+    /// Target-independent stationarity evidence for this observation.
+    pub stationarity: crate::autotune::velocity_measurement::StationarityResult,
 }
 
 /// One completed Stage-C rung after both directional consensus folds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub struct VelocityIntegralRungReport {
+    /// Caller-assigned run sequence.
+    pub run_sequence: u32,
+    /// Monotonic evidence sequence within the run.
+    pub evidence_sequence: u16,
     /// Exact Stage-C plan digest.
     pub plan_digest: u64,
     /// Zero-based rung index including both anchors.
@@ -618,8 +632,14 @@ pub enum VelocityIntegralOutcome {
 /// Detailed Stage-C terminal retained for lifecycle and canonical reporting.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub struct VelocityIntegralTerminal {
+    /// Caller-assigned run sequence.
+    pub run_sequence: u32,
+    /// Terminal evidence sequence.
+    pub evidence_sequence: u16,
     /// Exact Stage-C plan digest.
     pub plan_digest: u64,
+    /// Rolling FNV-1a digest over the plan marker and all nonterminal evidence.
+    pub digest: u64,
     /// Terminal measurement-stage class.
     pub outcome: VelocityIntegralOutcome,
     /// Dedicated Stage-C phase-local cause.

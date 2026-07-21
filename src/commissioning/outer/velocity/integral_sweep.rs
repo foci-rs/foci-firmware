@@ -190,15 +190,18 @@ fn terminal_from_data(
     safety_fault: Option<OuterSafetyFault>,
 ) -> StepResult {
     StepResult::VelocityIntegralTerminal(VelocityIntegralTerminal {
+        run_sequence: data.integrity.run_sequence(),
+        evidence_sequence: data.integrity.next_evidence_sequence(),
         plan_digest: data.plan.plan_digest,
+        digest: data.integrity.digest(),
         outcome,
         cause,
         evidence,
         expected_observations: u16::from(data.plan.positive_rung_count.saturating_add(2))
             .saturating_mul(u16::from(INTEGRAL_SLOT_COUNT)),
-        emitted_observations: data.emitted_observations,
+        emitted_observations: data.integrity.emitted_observations(),
         expected_rungs: u16::from(data.plan.positive_rung_count.saturating_add(2)),
-        emitted_rungs: data.emitted_rungs,
+        emitted_rungs: data.integrity.emitted_rungs(),
         run_started_us: data.run_started_us,
         run_completed_us: data.previous_read_us,
         safety_fault,
@@ -785,11 +788,14 @@ pub(crate) async fn step_velocity_integral_with_trace<B: CommissioningBackend>(
                 _ => None,
             };
             let report = VelocityIntegralObservation {
+                run_sequence: data.integrity.run_sequence(),
+                evidence_sequence: data.integrity.next_evidence_sequence(),
                 plan_digest: data.plan.plan_digest,
                 rung_index: data.rung_index,
                 slot: data.slot,
                 i_raw: integral_i_at(data.plan, data.rung_index).unwrap_or(0),
                 summary,
+                stationarity,
             };
             let settle_deadline_us = *settle_deadline_us;
             data.analysis.reset();
@@ -799,8 +805,10 @@ pub(crate) async fn step_velocity_integral_with_trace<B: CommissioningBackend>(
             } else {
                 VelocityIntegralState::BeginSettleCapture { settle_deadline_us }
             };
-            let _ = stationarity;
-            StepResult::VelocityIntegralEvent(VelocityIntegralEvent::Observation(report))
+            let event = data
+                .integrity
+                .record(VelocityIntegralEvent::Observation(report));
+            StepResult::VelocityIntegralEvent(event)
         }
         VelocityIntegralState::BeginSettleCapture { settle_deadline_us } => {
             let encoder_raw = match backend.read_capture_register(ABN_DECODER_COUNT).await {
@@ -999,6 +1007,8 @@ pub(crate) async fn step_velocity_integral_with_trace<B: CommissioningBackend>(
             }
             data.emitted_rungs = data.emitted_rungs.saturating_add(1);
             let report = VelocityIntegralRungReport {
+                run_sequence: data.integrity.run_sequence(),
+                evidence_sequence: data.integrity.next_evidence_sequence(),
                 plan_digest: data.plan.plan_digest,
                 rung_index: data.rung_index,
                 i_raw: integral_i_at(data.plan, data.rung_index).unwrap_or(0),
@@ -1016,7 +1026,8 @@ pub(crate) async fn step_velocity_integral_with_trace<B: CommissioningBackend>(
                     *state = VelocityIntegralState::WriteGains;
                 }
             }
-            StepResult::VelocityIntegralEvent(VelocityIntegralEvent::Rung(report))
+            let event = data.integrity.record(VelocityIntegralEvent::Rung(report));
+            StepResult::VelocityIntegralEvent(event)
         }
         VelocityIntegralState::FaultTerminal { error } => {
             let error = *error;

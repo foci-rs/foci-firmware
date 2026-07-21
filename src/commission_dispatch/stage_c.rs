@@ -5,8 +5,8 @@ use crate::commissioning::outer::velocity::integral_plan::{
     STAGE_C_EVIDENCE_SCHEMA_REVISION, VelocityIntegralPlan, plan_velocity_integral_response,
 };
 use crate::commissioning::outer::velocity::integral_reproduction::{
-    StageCCandidateSlot, StageCCandidateSummary, StageCPlanIdentity, StageCReproductionDecision,
-    StageCReproductionDelta,
+    StageCAuthoritySummary, StageCCandidateSlot, StageCCandidateSummary, StageCPlanIdentity,
+    StageCReproductionDecision, StageCReproductionDelta,
 };
 use crate::commissioning::outer::velocity::reproduction::STAGE_B_BUILD_REVISION;
 use crate::commissioning::outer::velocity::sweep_plan::{
@@ -39,6 +39,8 @@ impl StageCPreflight {
     /// Return the exact plan evidence emitted before the first Stage-C stroke.
     pub const fn planned_event(self) -> VelocityIntegralEvent {
         VelocityIntegralEvent::Planned(VelocityIntegralPlanned {
+            run_sequence: self.run_sequence,
+            evidence_sequence: 0,
             plan_digest: self.identity.plan_digest,
             final_p: self.plan.final_p,
             positive_rung_count: self.plan.positive_rung_count,
@@ -68,6 +70,10 @@ pub struct StageCReproductionReport {
     pub delta: StageCReproductionDelta,
     /// One for Complete, two for mismatch.
     pub outcome: u8,
+    /// Exact retained-run evidence digest.
+    pub previous_run_digest: u64,
+    /// Exact current-run evidence digest.
+    pub current_run_digest: u64,
 }
 
 /// Stage-C terminal after firmware-owned retention policy.
@@ -77,6 +83,8 @@ pub struct StageCTerminalDispatch {
     pub terminal: VelocityIntegralTerminal,
     /// Comparison evidence present only for a second sufficient run.
     pub reproduction: Option<StageCReproductionReport>,
+    /// Retained Stage-B authority used for anchor comparison and context.
+    pub authority: Option<StageCAuthoritySummary>,
 }
 
 /// Reconstruct and identity-check retained Stage-C authority before any SPI work.
@@ -124,6 +132,7 @@ pub fn preflight_stage_c_request(
         stage_b_plan.execution_plan(stage_b_plan_digest),
         motion_budget,
         pwm_hz,
+        encoder_counts_per_rev,
     )
     .map_err(|_| StageCPreflightRejection::InvalidPlan)?;
     let identity = StageCPlanIdentity {
@@ -156,6 +165,7 @@ pub fn apply_stage_c_terminal(
         return StageCTerminalDispatch {
             terminal,
             reproduction: None,
+            authority: None,
         };
     };
     if terminal.plan_digest != authority.identity.plan_digest {
@@ -165,29 +175,42 @@ pub fn apply_stage_c_terminal(
         return StageCTerminalDispatch {
             terminal,
             reproduction: None,
+            authority: Some(authority),
         };
     }
 
     let reproduction = match terminal.outcome {
         VelocityIntegralOutcome::CompleteCandidate => {
+            let previous_run_digest = stage_c_candidate
+                .candidate()
+                .map_or(0, |candidate| candidate.run_digest);
             let current = StageCCandidateSummary {
                 authority,
                 evidence: terminal.evidence,
                 run_completed_us: terminal.run_completed_us,
-                // Task 6 replaces this placeholder with the canonical evidence digest.
-                run_digest: terminal.plan_digest,
+                run_digest: terminal.digest,
             };
             match stage_c_candidate.observe_sufficient(current) {
                 StageCReproductionDecision::CompleteCandidate(_) => None,
                 StageCReproductionDecision::Complete(delta) => {
                     terminal.outcome = VelocityIntegralOutcome::Complete;
                     terminal.cause = 0;
-                    Some(StageCReproductionReport { delta, outcome: 1 })
+                    Some(StageCReproductionReport {
+                        delta,
+                        outcome: 1,
+                        previous_run_digest,
+                        current_run_digest: terminal.digest,
+                    })
                 }
                 StageCReproductionDecision::InconclusiveReproductionMismatch(delta) => {
                     terminal.outcome = VelocityIntegralOutcome::Inconclusive;
                     terminal.cause = STAGE_C_CAUSE_REPRODUCTION_MISMATCH;
-                    Some(StageCReproductionReport { delta, outcome: 2 })
+                    Some(StageCReproductionReport {
+                        delta,
+                        outcome: 2,
+                        previous_run_digest,
+                        current_run_digest: terminal.digest,
+                    })
                 }
                 StageCReproductionDecision::RejectedPlanMismatch { .. } => {
                     terminal.outcome = VelocityIntegralOutcome::RejectedPlanMismatch;
@@ -219,5 +242,6 @@ pub fn apply_stage_c_terminal(
     StageCTerminalDispatch {
         terminal,
         reproduction,
+        authority: Some(authority),
     }
 }

@@ -310,6 +310,7 @@ pub enum ReplyPayload {
     #[cfg(feature = "trace-velocity-sweep")]
     VelocityIntegralContinuation {
         oid: u8,
+        run_sequence: u32,
         stage_b_terminal: VelocitySweepTerminal,
         stage_b_reproduction: Option<stage_b::StageBReproductionReport>,
         stage_c_plan: crate::commissioning::outer::velocity::integral_plan::VelocityIntegralPlan,
@@ -318,6 +319,7 @@ pub enum ReplyPayload {
     #[cfg(feature = "trace-velocity-sweep")]
     VelocityIntegralPlan {
         oid: u8,
+        run_sequence: u32,
         plan: crate::commissioning::outer::velocity::integral_plan::VelocityIntegralPlan,
     },
     /// One streamed Stage-C observation or rung event.
@@ -332,6 +334,9 @@ pub enum ReplyPayload {
         oid: u8,
         terminal: crate::commissioning::types::VelocityIntegralTerminal,
         reproduction: Option<stage_c::StageCReproductionReport>,
+        authority: Option<
+            crate::commissioning::outer::velocity::integral_reproduction::StageCAuthoritySummary,
+        >,
     },
 }
 
@@ -509,6 +514,7 @@ pub async fn drive_commission_result<B: CommissioningBackend>(
                     oid,
                     terminal,
                     reproduction: None,
+                    authority: None,
                 },
                 actions: PostActions {
                     stop_trace: true,
@@ -1221,6 +1227,21 @@ pub async fn drive_commission_result_with_stages<B: CommissioningBackend>(
                     .await;
                 }
             };
+            let planned_event = crate::commissioning::types::VelocityIntegralEvent::Planned(
+                crate::commissioning::types::VelocityIntegralPlanned {
+                    run_sequence: dispatch.terminal.run_sequence,
+                    evidence_sequence: 0,
+                    plan_digest: stage_c_plan.digest(),
+                    final_p: stage_c_plan.final_p,
+                    positive_rung_count: stage_c_plan.positive_rung_count,
+                    maximum_workflow_ms: stage_c_plan.maximum_workflow_ms,
+                },
+            );
+            backend.record_velocity_sweep_trace_record(
+                crate::commissioning::outer::velocity::integral_reporting::encode_velocity_integral_event(
+                    planned_event,
+                ),
+            );
             retention.stage_c.install_authority(
                 crate::commissioning::outer::velocity::integral_reproduction::StageCAuthoritySummary::from_plan(
                     channel,
@@ -1234,6 +1255,7 @@ pub async fn drive_commission_result_with_stages<B: CommissioningBackend>(
             CommissionOutcome::Evidence {
                 reply: ReplyPayload::VelocityIntegralContinuation {
                     oid,
+                    run_sequence: dispatch.terminal.run_sequence,
                     stage_b_terminal: dispatch.terminal,
                     stage_b_reproduction: dispatch.reproduction,
                     stage_c_plan,
@@ -1242,6 +1264,10 @@ pub async fn drive_commission_result_with_stages<B: CommissioningBackend>(
         }
         StepResult::VelocityIntegralTerminal(terminal) => {
             let dispatch = stage_c::apply_stage_c_terminal(terminal, retention.stage_c);
+            engine
+                .as_mut()
+                .expect("engine slot is None on VelocityIntegralTerminal")
+                .emit_stage_c_terminal_trace(backend, dispatch.terminal, dispatch.reproduction);
             match drive_commission_result(
                 StepResult::VelocityIntegralTerminal(dispatch.terminal),
                 engine,
@@ -1259,6 +1285,7 @@ pub async fn drive_commission_result_with_stages<B: CommissioningBackend>(
                         oid,
                         terminal,
                         reproduction: dispatch.reproduction,
+                        authority: dispatch.authority,
                     },
                     actions,
                 },

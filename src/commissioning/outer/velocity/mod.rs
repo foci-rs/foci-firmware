@@ -7,6 +7,8 @@ pub mod integral_plan;
 #[cfg(test)]
 mod integral_plan_tests;
 #[cfg(feature = "trace-velocity-sweep")]
+pub(crate) mod integral_reporting;
+#[cfg(feature = "trace-velocity-sweep")]
 pub mod integral_reproduction;
 #[cfg(all(test, feature = "trace-velocity-sweep"))]
 mod integral_reproduction_tests;

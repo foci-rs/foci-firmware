@@ -29,6 +29,7 @@ fn authority(channel: u8, digest: u64) -> StageCAuthoritySummary {
         planned_velocity_mrev_s: 2_929,
         target_velocity_rpm: 176,
         pwm_hz: 25_000,
+        encoder_counts_per_rev: 4_000,
         positive_rung_count: 6,
         family_size: 32,
         maximum_workflow_ms: 79_872,

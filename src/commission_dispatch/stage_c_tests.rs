@@ -59,6 +59,7 @@ fn stage_c_plan() -> crate::commissioning::outer::velocity::integral_plan::Veloc
         stage_b.execution_plan(stage_b.digest()),
         OuterMotionBudget::test_budget(500, 2_929, 2_000),
         PWM_HZ,
+        COUNTS_PER_REV,
     )
     .expect("valid Stage-C plan")
 }
@@ -113,7 +114,10 @@ fn terminal(
 ) -> VelocityIntegralTerminal {
     let plan = stage_c_plan();
     VelocityIntegralTerminal {
+        run_sequence: 9,
+        evidence_sequence: 57,
         plan_digest: plan.digest(),
+        digest: 0x1234_5678_9abc_def0,
         outcome,
         cause: 0,
         evidence,
@@ -368,6 +372,9 @@ fn stage_b_complete_installs_authority_and_continues_without_disarm() {
             &mut stage_b_slot,
         )
         .unwrap();
+        crate::state::tmc::tmc_channel0()
+            .configure_motion_scale(crate::state::stepper::stepper_channel0(), 1_000, 3_200)
+            .expect("valid Stage-C test motion scale");
         let mut engine = Some(
             CommissioningEngine::new_outer_for_tmc_with_stage_b_preflight(
                 1,
@@ -410,6 +417,35 @@ fn stage_b_complete_installs_authority_and_continues_without_disarm() {
                 reply: ReplyPayload::VelocityIntegralContinuation { .. }
             }
         ));
+        let ReplyPayload::VelocityIntegralContinuation {
+            run_sequence,
+            stage_c_plan,
+            ..
+        } = (match outcome {
+            CommissionOutcome::Evidence { reply } => reply,
+            _ => unreachable!(),
+        })
+        else {
+            unreachable!()
+        };
+        let planned = crate::commissioning::types::VelocityIntegralEvent::Planned(
+            crate::commissioning::types::VelocityIntegralPlanned {
+                run_sequence,
+                evidence_sequence: 0,
+                plan_digest: stage_c_plan.digest(),
+                final_p: stage_c_plan.final_p,
+                positive_rung_count: stage_c_plan.positive_rung_count,
+                maximum_workflow_ms: stage_c_plan.maximum_workflow_ms,
+            },
+        );
+        assert_eq!(
+            backend.velocity_sweep_trace_records.last(),
+            Some(
+                &crate::commissioning::outer::velocity::integral_reporting::encode_velocity_integral_event(
+                    planned,
+                ),
+            )
+        );
     });
 }
 

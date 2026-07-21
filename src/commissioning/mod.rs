@@ -37,10 +37,16 @@ use crate::state::tmc::TmcChannelState;
 use crate::trace::events::{
     CommissionTraceEvent, EVENT_COMMISSION_ENGINE_START, EVENT_COMMISSION_ENGINE_TERMINAL,
     EVENT_COMMISSION_PHASE_END, EVENT_COMMISSION_PHASE_START,
-    EVENT_COMMISSION_VELOCITY_SWEEP_COMPLETE, EVENT_COMMISSION_VELOCITY_SWEEP_DERIVED,
-    EVENT_COMMISSION_VELOCITY_SWEEP_OBSERVATION, EVENT_COMMISSION_VELOCITY_SWEEP_PLAN,
-    EVENT_COMMISSION_VELOCITY_SWEEP_RUNG, EVENT_COMMISSION_VELOCITY_SWEEP_TERMINAL,
-    TraceEventLevel, u32_arg,
+    EVENT_COMMISSION_VELOCITY_INTEGRAL_OBSERVATION, EVENT_COMMISSION_VELOCITY_INTEGRAL_PLAN,
+    EVENT_COMMISSION_VELOCITY_INTEGRAL_RUNG, EVENT_COMMISSION_VELOCITY_SWEEP_COMPLETE,
+    EVENT_COMMISSION_VELOCITY_SWEEP_DERIVED, EVENT_COMMISSION_VELOCITY_SWEEP_OBSERVATION,
+    EVENT_COMMISSION_VELOCITY_SWEEP_PLAN, EVENT_COMMISSION_VELOCITY_SWEEP_RUNG,
+    EVENT_COMMISSION_VELOCITY_SWEEP_TERMINAL, TraceEventLevel, u32_arg,
+};
+#[cfg(feature = "trace-velocity-sweep")]
+use crate::trace::events::{
+    EVENT_COMMISSION_VELOCITY_INTEGRAL_COMPLETE, EVENT_COMMISSION_VELOCITY_INTEGRAL_DERIVED,
+    EVENT_COMMISSION_VELOCITY_INTEGRAL_TERMINAL,
 };
 
 // Re-export public API surface for downstream consumers.
@@ -579,7 +585,17 @@ impl CommissioningEngine {
             OuterPhase::VelocitySweep { data, safety, .. } => (data.plan, safety.budget),
             _ => return Err(VelocityIntegralPlanError::MissingStageBPlan),
         };
-        let plan = plan_velocity_integral_response(authority, stage_b_plan, budget, pwm_hz)?;
+        let counts_per_rev = self
+            .tmc_state
+            .encoder_counts_per_rev()
+            .ok_or(VelocityIntegralPlanError::InvalidRequest)?;
+        let plan = plan_velocity_integral_response(
+            authority,
+            stage_b_plan,
+            budget,
+            pwm_hz,
+            counts_per_rev,
+        )?;
         let maximum_workflow_ms = plan.maximum_workflow_ms;
         let execution_plan = plan.execution_plan();
         let old_phase =
@@ -589,7 +605,7 @@ impl CommissioningEngine {
         };
         *phase = OuterPhase::VelocityIntegral {
             state: VelocityIntegralState::Setup,
-            data: VelocityIntegralData::new(execution_plan),
+            data: VelocityIntegralData::new(self.trace_run.engine_seq, execution_plan),
             safety,
         };
         let _ = maximum_workflow_ms;
@@ -622,7 +638,10 @@ impl CommissioningEngine {
         };
         *phase = OuterPhase::VelocityIntegral {
             state: VelocityIntegralState::Setup,
-            data: VelocityIntegralData::new(preflight.plan.execution_plan()),
+            data: VelocityIntegralData::new(
+                preflight.run_sequence,
+                preflight.plan.execution_plan(),
+            ),
             safety,
         };
         engine
@@ -925,6 +944,59 @@ impl CommissioningEngine {
         );
     }
 
+    /// Emit the authoritative Stage-C terminal after retained-evidence policy.
+    #[cfg(feature = "trace-velocity-sweep")]
+    pub(crate) fn emit_stage_c_terminal_trace<B: CommissioningBackend>(
+        &mut self,
+        backend: &mut B,
+        terminal: crate::commissioning::types::VelocityIntegralTerminal,
+        reproduction: Option<crate::commission_dispatch::stage_c::StageCReproductionReport>,
+    ) {
+        backend.record_velocity_sweep_trace_record(
+            crate::commissioning::outer::velocity::integral_reporting::encode_velocity_integral_terminal(
+                terminal,
+            ),
+        );
+        if reproduction.is_some() {
+            backend.record_commission_trace_event(CommissionTraceEvent {
+                level: TraceEventLevel::Info,
+                event_id: EVENT_COMMISSION_VELOCITY_INTEGRAL_DERIVED,
+                engine_kind: EngineKind::OuterTune,
+                payload: [i32::from(terminal.evidence_sequence), 0],
+                payload_count: 1,
+            });
+        }
+        let level = match terminal.outcome {
+            crate::commissioning::types::VelocityIntegralOutcome::CompleteCandidate
+            | crate::commissioning::types::VelocityIntegralOutcome::Complete => {
+                TraceEventLevel::Info
+            }
+            crate::commissioning::types::VelocityIntegralOutcome::Inconclusive
+            | crate::commissioning::types::VelocityIntegralOutcome::RejectedPlanMismatch => {
+                TraceEventLevel::Warn
+            }
+            crate::commissioning::types::VelocityIntegralOutcome::Fault => TraceEventLevel::Error,
+        };
+        self.emit_trace_phase_end(backend, PHASE_END_OK, TraceEventLevel::Info);
+        backend.record_commission_trace_event(CommissionTraceEvent {
+            level,
+            event_id: EVENT_COMMISSION_VELOCITY_INTEGRAL_TERMINAL,
+            engine_kind: EngineKind::OuterTune,
+            payload: [terminal.cause.into(), terminal.digest as i32],
+            payload_count: 2,
+        });
+        if terminal.outcome == crate::commissioning::types::VelocityIntegralOutcome::Complete {
+            backend.record_commission_trace_event(CommissionTraceEvent {
+                level: TraceEventLevel::Info,
+                event_id: EVENT_COMMISSION_VELOCITY_INTEGRAL_COMPLETE,
+                engine_kind: EngineKind::OuterTune,
+                payload: [terminal.digest as i32, (terminal.digest >> 32) as i32],
+                payload_count: 2,
+            });
+        }
+        self.trace_run.terminal = true;
+    }
+
     fn emit_trace_after_step<B: CommissioningBackend>(
         &mut self,
         backend: &mut B,
@@ -1003,10 +1075,36 @@ impl CommissioningEngine {
                 #[cfg(not(feature = "trace-velocity-sweep"))]
                 self.emit_velocity_sweep_terminal_lifecycle(backend, *terminal);
             }
-            // Stage-C canonical trace records are added with their dedicated
-            // event IDs. Until then the phase is not reachable from command
-            // admission, and its transport-neutral evidence stays internal.
-            StepResult::VelocityIntegralEvent(_) | StepResult::VelocityIntegralTerminal(_) => {}
+            StepResult::VelocityIntegralEvent(event) => {
+                #[cfg(all(feature = "trace", feature = "trace-velocity-sweep"))]
+                backend.record_velocity_sweep_trace_record(
+                    crate::commissioning::outer::velocity::integral_reporting::encode_velocity_integral_event(
+                        *event,
+                    ),
+                );
+                let (event_id, sequence) = match event {
+                    crate::commissioning::types::VelocityIntegralEvent::Planned(report) => (
+                        EVENT_COMMISSION_VELOCITY_INTEGRAL_PLAN,
+                        report.evidence_sequence,
+                    ),
+                    crate::commissioning::types::VelocityIntegralEvent::Observation(report) => (
+                        EVENT_COMMISSION_VELOCITY_INTEGRAL_OBSERVATION,
+                        report.evidence_sequence,
+                    ),
+                    crate::commissioning::types::VelocityIntegralEvent::Rung(report) => (
+                        EVENT_COMMISSION_VELOCITY_INTEGRAL_RUNG,
+                        report.evidence_sequence,
+                    ),
+                };
+                backend.record_commission_trace_event(CommissionTraceEvent {
+                    level: TraceEventLevel::Info,
+                    event_id,
+                    engine_kind: EngineKind::OuterTune,
+                    payload: [i32::from(sequence), 0],
+                    payload_count: 1,
+                });
+            }
+            StepResult::VelocityIntegralTerminal(_) => {}
             StepResult::CommissionDone(result) => {
                 self.emit_trace_phase_end(backend, PHASE_END_OK, TraceEventLevel::Info);
                 let level = Self::status_level(result.inner.status);
@@ -1242,7 +1340,7 @@ mod tests {
         {
             assert_eq!(
                 size_of::<crate::commissioning::outer::VelocityIntegralData>(),
-                2_432
+                2_464
             );
             assert!(
                 size_of::<
@@ -2021,6 +2119,61 @@ mod tests {
             EngineKind::OuterTune,
             TraceEventLevel::Error,
             [3, 0x89ab_cdef_u32 as i32],
+        );
+        assert!(engine.trace_run.terminal);
+    }
+
+    #[cfg(feature = "trace-velocity-sweep")]
+    #[test]
+    fn complete_stage_c_uses_dedicated_terminal_and_complete_events() {
+        use crate::commissioning::outer::velocity::integral_evidence::{
+            ExactRateInterval, IntegralRunEvidence,
+        };
+        use crate::commissioning::types::{VelocityIntegralOutcome, VelocityIntegralTerminal};
+
+        let mut engine = CommissioningEngine::new_outer_with_trace_seq(
+            0,
+            sample_outer_params(),
+            sample_entry_snapshot(),
+            9,
+        );
+        let mut backend = crate::commission_dispatch::test_support::MockBackend::new();
+        let terminal = VelocityIntegralTerminal {
+            run_sequence: 9,
+            evidence_sequence: 57,
+            plan_digest: 0x1111_2222_3333_4444,
+            digest: 0x0123_4567_89ab_cdef,
+            outcome: VelocityIntegralOutcome::Complete,
+            cause: 0,
+            evidence: IntegralRunEvidence::new([
+                ExactRateInterval::new(100, 120).unwrap(),
+                ExactRateInterval::new(-120, -100).unwrap(),
+            ]),
+            expected_observations: 56,
+            emitted_observations: 56,
+            expected_rungs: 7,
+            emitted_rungs: 7,
+            run_started_us: 1_000,
+            run_completed_us: 2_000,
+            safety_fault: None,
+        };
+
+        engine.emit_trace_start(&mut backend);
+        engine.emit_stage_c_terminal_trace(&mut backend, terminal, None);
+
+        assert_eq!(backend.velocity_sweep_trace_records.len(), 1);
+        let ids: std::vec::Vec<_> = backend
+            .trace_events
+            .iter()
+            .map(|event| event.event_id)
+            .collect();
+        assert_eq!(
+            &ids[2..],
+            &[
+                crate::trace::events::EVENT_COMMISSION_PHASE_END,
+                crate::trace::events::EVENT_COMMISSION_VELOCITY_INTEGRAL_TERMINAL,
+                crate::trace::events::EVENT_COMMISSION_VELOCITY_INTEGRAL_COMPLETE,
+            ]
         );
         assert!(engine.trace_run.terminal);
     }

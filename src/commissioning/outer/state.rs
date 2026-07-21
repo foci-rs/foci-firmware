@@ -225,6 +225,7 @@ pub(crate) enum VelocityIntegralState {
 #[derive(Debug, defmt::Format)]
 pub(crate) struct VelocityIntegralData {
     pub(crate) plan: VelocityIntegralExecutionPlan,
+    pub(crate) integrity: super::velocity::integral_reporting::VelocityIntegralIntegrity,
     pub(crate) rung_index: u8,
     pub(crate) slot: u8,
     pub(crate) previous_encoder_raw: u32,
@@ -253,9 +254,13 @@ pub(crate) struct VelocityIntegralData {
 
 #[cfg(feature = "trace-velocity-sweep")]
 impl VelocityIntegralData {
-    pub(crate) const fn new(plan: VelocityIntegralExecutionPlan) -> Self {
+    pub(crate) fn new(run_sequence: u32, plan: VelocityIntegralExecutionPlan) -> Self {
         Self {
             plan,
+            integrity: super::velocity::integral_reporting::VelocityIntegralIntegrity::new(
+                run_sequence,
+                plan,
+            ),
             rung_index: 0,
             slot: 0,
             previous_encoder_raw: 0,

@@ -24,6 +24,7 @@ fn plan() -> VelocityIntegralExecutionPlan {
         planned_velocity_mrev_s: 2_929,
         target_velocity_rpm: 176,
         pwm_hz: 25_000,
+        encoder_counts_per_rev: 4_000,
         i_start: 5,
         positive_rung_count: 5,
         family_size: 28,
@@ -86,7 +87,7 @@ fn phase() -> OuterPhase {
     let plan = plan();
     OuterPhase::VelocityIntegral {
         state: VelocityIntegralState::Setup,
-        data: VelocityIntegralData::new(plan),
+        data: VelocityIntegralData::new(7, plan),
         safety: OuterSafetyLimits::new(
             plan.hard_torque_limit,
             OuterMotionBudget {

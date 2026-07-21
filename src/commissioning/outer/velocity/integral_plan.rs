@@ -136,6 +136,8 @@ pub struct VelocityIntegralPlan {
     pub target_velocity_rpm: i32,
     /// Frozen PWM frequency that defines every I time constant.
     pub pwm_hz: u32,
+    /// Mechanical encoder quadrature counts per revolution used by rate inversion.
+    pub encoder_counts_per_rev: u32,
     /// Whole-octave positive-I rungs; unused entries are zero.
     pub positive_i: [u16; STAGE_C_MAX_POSITIVE_RUNGS],
     /// Number of valid positive-I entries.
@@ -196,6 +198,7 @@ impl VelocityIntegralPlan {
         hash_value!(self.planned_velocity_mrev_s);
         hash_value!(self.target_velocity_rpm);
         hash_value!(self.pwm_hz);
+        hash_value!(self.encoder_counts_per_rev);
         hash_value!(self.positive_rung_count);
         for gain in self.positive_rungs() {
             hash_value!(*gain);
@@ -229,6 +232,7 @@ impl VelocityIntegralPlan {
             planned_velocity_mrev_s: self.planned_velocity_mrev_s,
             target_velocity_rpm: self.target_velocity_rpm,
             pwm_hz: self.pwm_hz,
+            encoder_counts_per_rev: self.encoder_counts_per_rev,
             i_start: self.positive_i[0],
             positive_rung_count: self.positive_rung_count,
             family_size: self.family_size,
@@ -255,6 +259,8 @@ pub struct VelocityIntegralExecutionPlan {
     pub target_velocity_rpm: i32,
     /// Frozen PWM frequency retained in candidate identity.
     pub pwm_hz: u32,
+    /// Mechanical encoder quadrature counts per revolution.
+    pub encoder_counts_per_rev: u32,
     /// First positive-I rung; later rungs are exact left shifts.
     pub i_start: u16,
     /// Number of valid positive-I entries.
@@ -395,6 +401,7 @@ pub(crate) fn plan_velocity_integral_response(
     stage_b_plan: VelocitySweepExecutionPlan,
     motion_budget: OuterMotionBudget,
     pwm_hz: u32,
+    encoder_counts_per_rev: u32,
 ) -> Result<VelocityIntegralPlan, VelocityIntegralPlanError> {
     if authority.final_p == 0 {
         return Err(VelocityIntegralPlanError::MissingAuthority);
@@ -421,6 +428,7 @@ pub(crate) fn plan_velocity_integral_response(
             .directional_pooled_intervals
             .iter()
             .any(|interval| interval[0] > interval[1])
+        || encoder_counts_per_rev == 0
         || motion_request.requested_velocity_mrev_s == 0
         || motion_request.machine_velocity_ceiling_mrev_s == 0
         || motion_request.max_stroke_travel_mrev == 0
@@ -467,6 +475,7 @@ pub(crate) fn plan_velocity_integral_response(
         planned_velocity_mrev_s: stage_b_plan.planned_velocity_mrev_s,
         target_velocity_rpm: stage_b_plan.target_velocity_rpm.raw(),
         pwm_hz,
+        encoder_counts_per_rev,
         positive_i,
         positive_rung_count,
         family_size: confidence_family_size(ladder.rungs.len())?,

@@ -76,6 +76,19 @@ pub const EVENT_COMMISSION_POSITION_TUNE_METRICS: u16 = 132;
 /// Position-tune summary limits fragment.
 pub const EVENT_COMMISSION_POSITION_TUNE_LIMITS: u16 = 133;
 
+/// Velocity-integral immutable plan.
+pub const EVENT_COMMISSION_VELOCITY_INTEGRAL_PLAN: u16 = 134;
+/// Velocity-integral observation summary.
+pub const EVENT_COMMISSION_VELOCITY_INTEGRAL_OBSERVATION: u16 = 135;
+/// Velocity-integral rung consensus.
+pub const EVENT_COMMISSION_VELOCITY_INTEGRAL_RUNG: u16 = 136;
+/// Velocity-integral derived curve and reproduction evidence.
+pub const EVENT_COMMISSION_VELOCITY_INTEGRAL_DERIVED: u16 = 137;
+/// Velocity-integral detailed terminal.
+pub const EVENT_COMMISSION_VELOCITY_INTEGRAL_TERMINAL: u16 = 138;
+/// Velocity-integral reproduced-complete marker.
+pub const EVENT_COMMISSION_VELOCITY_INTEGRAL_COMPLETE: u16 = 139;
+
 /// Restore summary result fragment.
 pub const EVENT_COMMISSION_RESTORE_RESULT: u16 = 140;
 /// Restore summary error/drift fragment.
@@ -193,6 +206,12 @@ mod tests {
         assert_eq!(EVENT_COMMISSION_VELOCITY_SWEEP_TERMINAL, 128);
         assert_eq!(EVENT_COMMISSION_VELOCITY_SWEEP_COMPLETE, 129);
         assert_eq!(EVENT_COMMISSION_POSITION_TUNE_RESULT, 130);
+        assert_eq!(EVENT_COMMISSION_VELOCITY_INTEGRAL_PLAN, 134);
+        assert_eq!(EVENT_COMMISSION_VELOCITY_INTEGRAL_OBSERVATION, 135);
+        assert_eq!(EVENT_COMMISSION_VELOCITY_INTEGRAL_RUNG, 136);
+        assert_eq!(EVENT_COMMISSION_VELOCITY_INTEGRAL_DERIVED, 137);
+        assert_eq!(EVENT_COMMISSION_VELOCITY_INTEGRAL_TERMINAL, 138);
+        assert_eq!(EVENT_COMMISSION_VELOCITY_INTEGRAL_COMPLETE, 139);
         assert_eq!(EVENT_COMMISSION_RESTORE_RESULT, 140);
         assert_eq!(EVENT_COMMISSION_DIAGNOSTIC_WARNING, 200);
     }

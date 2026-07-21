@@ -39,6 +39,8 @@ pub struct StageCAuthoritySummary {
     pub target_velocity_rpm: i32,
     /// Frozen PWM frequency defining every I time constant.
     pub pwm_hz: u32,
+    /// Mechanical encoder quadrature counts per revolution.
+    pub encoder_counts_per_rev: u32,
     /// Number of positive-I rungs.
     pub positive_rung_count: u8,
     /// Simultaneous interval family size per direction.
@@ -72,6 +74,7 @@ impl StageCAuthoritySummary {
             planned_velocity_mrev_s: plan.planned_velocity_mrev_s,
             target_velocity_rpm: plan.target_velocity_rpm,
             pwm_hz: plan.pwm_hz,
+            encoder_counts_per_rev: plan.encoder_counts_per_rev,
             positive_rung_count: plan.positive_rung_count,
             family_size: plan.family_size,
             maximum_workflow_ms: plan.maximum_workflow_ms,

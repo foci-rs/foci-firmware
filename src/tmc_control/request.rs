@@ -706,7 +706,11 @@ where
                             .tmc_state()
                             .commission_in_flight
                             .store(false, core::sync::atomic::Ordering::Relaxed);
-                        board.emit_reply(stage_c_preflight_failure_payload(oid, rejection));
+                        board.emit_reply(stage_c_preflight_failure_payload(
+                            oid,
+                            run_sequence,
+                            rejection,
+                        ));
                         return TmcControlRequestOutcome::skip_tick_tail();
                     }
                 };
@@ -865,8 +869,15 @@ where
                         );
                     }
                     TunePreflight::StageC(stage_c_preflight) => {
+                        let planned_event = stage_c_preflight.planned_event();
+                        board.record_velocity_sweep_trace_record(
+                            crate::commissioning::outer::velocity::integral_reporting::encode_velocity_integral_event(
+                                planned_event,
+                            ),
+                        );
                         board.emit_reply(ReplyPayload::VelocityIntegralPlan {
                             oid,
+                            run_sequence: stage_c_preflight.run_sequence,
                             plan: stage_c_preflight.plan,
                         });
                         runtime.set_commission_engine(
@@ -1224,6 +1235,7 @@ fn stage_b_preflight_failure_payload(
 #[cfg(feature = "trace-velocity-sweep")]
 fn stage_c_preflight_failure_payload(
     oid: u8,
+    run_sequence: u32,
     rejection: crate::commission_dispatch::stage_c::StageCPreflightRejection,
 ) -> ReplyPayload {
     use crate::commissioning::outer::velocity::integral_evidence::{
@@ -1241,7 +1253,10 @@ fn stage_c_preflight_failure_payload(
     ReplyPayload::VelocityIntegralTerminal {
         oid,
         terminal: VelocityIntegralTerminal {
+            run_sequence,
+            evidence_sequence: 0,
             plan_digest,
+            digest: 0,
             outcome: VelocityIntegralOutcome::RejectedPlanMismatch,
             cause: crate::commission_dispatch::stage_c::STAGE_C_CAUSE_PLAN_MISMATCH,
             evidence: IntegralRunEvidence::new([ExactRateInterval::EMPTY; 2]),
@@ -1254,6 +1269,7 @@ fn stage_c_preflight_failure_payload(
             safety_fault: None,
         },
         reproduction: None,
+        authority: None,
     }
 }
 
@@ -1606,6 +1622,7 @@ mod tests {
             planned_velocity_mrev_s: 2_929,
             target_velocity_rpm: 176,
             pwm_hz: 25_000,
+            encoder_counts_per_rev: 4_000,
             positive_rung_count: 5,
             family_size: 28,
             maximum_workflow_ms: 69_888,
@@ -2366,6 +2383,7 @@ mod tests {
                 stage_b_plan.execution_plan(stage_b_plan.digest()),
                 budget,
                 25_000,
+                4_000,
             )
             .unwrap();
             stage_c.install_authority(StageCAuthoritySummary::from_plan(
@@ -2398,6 +2416,22 @@ mod tests {
                 panic!("exact Stage-C plan must precede motion")
             };
             assert_eq!(emitted, plan);
+            let planned_event = crate::commissioning::types::VelocityIntegralEvent::Planned(
+                crate::commissioning::types::VelocityIntegralPlanned {
+                    run_sequence: workflow.run_sequence,
+                    evidence_sequence: 0,
+                    plan_digest: plan.digest(),
+                    final_p: plan.final_p,
+                    positive_rung_count: plan.positive_rung_count,
+                    maximum_workflow_ms: plan.maximum_workflow_ms,
+                },
+            );
+            assert_eq!(
+                board.velocity_sweep_records,
+                [crate::commissioning::outer::velocity::integral_reporting::encode_velocity_integral_event(
+                    planned_event,
+                )]
+            );
             assert_eq!(stage_c.state(), StageCSlotState::AuthorityOnly);
             assert!(stage_b.candidate().is_none());
             assert!(runtime.is_commission_active());
