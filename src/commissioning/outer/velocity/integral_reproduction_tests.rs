@@ -1,4 +1,5 @@
 use super::integral_evidence::{ExactRateInterval, IntegralRunEvidence, StageCEvidenceError};
+use super::integral_plan::STAGE_C_EVIDENCE_SCHEMA_REVISION;
 use super::integral_reproduction::{
     StageCAuthoritySummary, StageCCandidateSlot, StageCCandidateSummary, StageCPlanIdentity,
     StageCReproductionDecision, StageCSlotState, closed_intersection, compare_integral_runs,
@@ -13,7 +14,7 @@ fn identity(channel: u8, digest: u64) -> StageCPlanIdentity {
     StageCPlanIdentity {
         channel,
         build_revision: 0x1234_5678,
-        schema_revision: 1,
+        schema_revision: STAGE_C_EVIDENCE_SCHEMA_REVISION,
         plan_digest: digest,
     }
 }
@@ -267,6 +268,21 @@ fn plan_mismatch_and_invalidation_follow_the_authority_lifecycle() {
     slot.invalidate_for_unrelated_commissioning();
     assert_eq!(slot.state(), StageCSlotState::Empty);
     assert_eq!(StageCCandidateSlot::new().state(), StageCSlotState::Empty);
+}
+
+#[test]
+fn schema_one_candidate_rejects_before_motion_without_losing_authority() {
+    let current = authority(0, 7);
+    let mut retained = current;
+    retained.identity.schema_revision = 1;
+    let mut slot = StageCCandidateSlot::new();
+    slot.install_authority(retained);
+
+    assert!(matches!(
+        slot.preflight(current.identity),
+        Some(StageCReproductionDecision::RejectedPlanMismatch { .. })
+    ));
+    assert_eq!(slot.authority(), Some(retained));
 }
 
 #[test]

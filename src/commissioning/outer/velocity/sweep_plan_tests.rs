@@ -24,6 +24,36 @@ fn request() -> VelocitySweepRequest {
     }
 }
 
+fn live_recovery_request() -> VelocitySweepRequest {
+    VelocitySweepRequest {
+        requested_velocity_mrev_s: 6_666,
+        machine_velocity_ceiling_mrev_s: 10_000,
+        requested_velocity_source: RequestedVelocitySource::Defaulted,
+        max_stroke_travel_mrev: 2_500,
+        settle_travel_reserve_mrev: 250,
+        negative_position_headroom_mrev: 7_025,
+        positive_position_headroom_mrev: 7_025,
+        max_duration_ms: 3_000,
+    }
+}
+
+#[test]
+fn live_recovery_geometry_extends_both_workflow_durations() {
+    let request = live_recovery_request();
+    let primitive_cap_us = u32::from(request.max_duration_ms) * 1_000;
+
+    let plan = plan_velocity_sweep(request, 4_000, 2_816).unwrap();
+
+    assert_eq!(plan.planned_velocity_mrev_s, 4_394);
+    assert_eq!(plan.rung_count, 23);
+    assert_eq!(plan.recovery_origin_band_counts, 1_000);
+    assert_eq!(plan.recovery_nominal_slot_us, 1_816_958);
+    assert_eq!(plan.recovery_maximum_slot_us, primitive_cap_us);
+    assert_eq!(plan.recovery_slot_count, 23);
+    assert_eq!(plan.nominal_workflow_ms, 271_423);
+    assert_eq!(plan.maximum_workflow_ms, 298_632);
+}
+
 #[test]
 fn live_geometry_uses_mechanical_rpm_and_the_corrected_ladder() {
     let mut live = request();
@@ -45,8 +75,8 @@ fn live_geometry_uses_mechanical_rpm_and_the_corrected_ladder() {
     assert_eq!(plan.p_top.raw(), 3_685);
     assert_eq!(plan.rung_count, 23);
     assert_eq!(plan.observations_per_direction, 4);
-    assert_eq!(plan.nominal_workflow_ms, 229_632);
-    assert_eq!(plan.maximum_workflow_ms, 229_632);
+    assert_eq!(plan.nominal_workflow_ms, 274_042);
+    assert_eq!(plan.maximum_workflow_ms, 1_609_632);
     assert_eq!(
         u16::from(plan.rung_count) * plan.observations_per_direction,
         92
@@ -196,15 +226,22 @@ fn maximum_domain_stays_inside_the_audited_four_k_family() {
 #[test]
 fn plan_freezes_exact_ladder_and_workflow_duration() {
     let plan = plan_velocity_sweep(request(), 4_000, 1_000).unwrap();
-    let expected_ms = u32::from(plan.rung_count)
+    let base_us = u32::from(plan.rung_count)
         * u32::from(SWEEP_SLOT_COUNT)
-        * (MOVING_STROKE_US + ZERO_SETTLE_US + SETTLE_ANALYSIS_BUDGET_US)
-        / 1_000;
+        * (MOVING_STROKE_US + ZERO_SETTLE_US + SETTLE_ANALYSIS_BUDGET_US);
+    let nominal_recovery_us = u32::from(plan.rung_count) * plan.recovery_nominal_slot_us;
+    let maximum_recovery_us = u32::from(plan.rung_count) * plan.recovery_maximum_slot_us;
     assert_eq!(plan.gains[0], plan.p_start);
     assert_eq!(plan.gains[usize::from(plan.rung_count) - 1], plan.p_top);
     assert_eq!(plan.observations_per_direction, 4);
-    assert_eq!(plan.nominal_workflow_ms, expected_ms);
-    assert_eq!(plan.maximum_workflow_ms, expected_ms);
+    assert_eq!(
+        plan.nominal_workflow_ms,
+        (base_us + nominal_recovery_us).div_ceil(1_000)
+    );
+    assert_eq!(
+        plan.maximum_workflow_ms,
+        (base_us + maximum_recovery_us).div_ceil(1_000)
+    );
 }
 
 #[test]

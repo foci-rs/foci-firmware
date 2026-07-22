@@ -448,7 +448,7 @@ mod tests {
         }
         let plan = super::super::integral_plan::VelocityIntegralPlan {
             build_revision: 3,
-            schema_revision: 1,
+            schema_revision: 2,
             authority: super::super::integral_plan::StageCAuthority {
                 channel: 0,
                 stage_b_plan_digest: 0xfedc_ba98_7654_3210,
@@ -473,8 +473,12 @@ mod tests {
             moving_stroke_us: 512_000,
             zero_settle_us: 500_000,
             analysis_budget_us: 236_000,
-            nominal_workflow_ms: 69_888,
-            maximum_workflow_ms: 69_888,
+            nominal_workflow_ms: 82_607,
+            maximum_workflow_ms: 90_888,
+            recovery_origin_band_counts: 1_000,
+            recovery_nominal_slot_us: 1_816_958,
+            recovery_maximum_slot_us: 3_000_000,
+            recovery_slot_count: 7,
             hard_torque_limit: 2_816,
             usable_torque_limit: 2_534,
             motion_request: super::super::sweep_plan::VelocitySweepRequest {

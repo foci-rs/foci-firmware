@@ -1968,7 +1968,7 @@ fn stage_b_schema3_reproduction_records_are_canonical_and_ordered() {
         &records[10].as_bytes()[11..15],
         &0x0123_4567_u32.to_le_bytes()
     );
-    assert_eq!(STAGE_B_EVIDENCE_SCHEMA_REVISION, 3);
+    assert_eq!(STAGE_B_EVIDENCE_SCHEMA_REVISION, 4);
 
     let digest = records
         .iter()

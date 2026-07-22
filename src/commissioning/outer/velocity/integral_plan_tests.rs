@@ -12,14 +12,14 @@ use crate::commissioning::outer::{OUTER_MAX_VELOCITY_I, OuterMotionBudget};
 
 fn stage_b_request() -> VelocitySweepRequest {
     VelocitySweepRequest {
-        requested_velocity_mrev_s: 2_929,
+        requested_velocity_mrev_s: 6_666,
         machine_velocity_ceiling_mrev_s: 10_000,
         requested_velocity_source: RequestedVelocitySource::Defaulted,
-        max_stroke_travel_mrev: 2_000,
+        max_stroke_travel_mrev: 2_500,
         settle_travel_reserve_mrev: 250,
-        negative_position_headroom_mrev: 50_000,
-        positive_position_headroom_mrev: 50_000,
-        max_duration_ms: 60_000,
+        negative_position_headroom_mrev: 7_025,
+        positive_position_headroom_mrev: 7_025,
+        max_duration_ms: 3_000,
     }
 }
 
@@ -39,7 +39,16 @@ fn stage_b_plan() -> super::sweep_plan::VelocitySweepPlan {
 }
 
 fn motion_budget() -> OuterMotionBudget {
-    OuterMotionBudget::test_budget(2_000, 2_929, 60_000)
+    OuterMotionBudget {
+        requested_velocity_mrev_s: 6_666,
+        machine_velocity_ceiling_mrev_s: 10_000,
+        requested_velocity_source: RequestedVelocitySource::Defaulted,
+        max_stroke_travel_mrev: 2_500,
+        settle_travel_reserve_mrev: 250,
+        negative_position_headroom_mrev: 7_025,
+        positive_position_headroom_mrev: 7_025,
+        max_duration_ms: 3_000,
+    }
 }
 
 #[test]
@@ -103,14 +112,19 @@ fn stage_c_plan_freezes_geometry_and_conservative_duration() {
     assert_eq!(plan.moving_stroke_us, 512_000);
     assert_eq!(plan.zero_settle_us, 500_000);
     assert_eq!(plan.analysis_budget_us, 236_000);
-    assert_eq!(plan.nominal_workflow_ms, 69_888);
-    assert_eq!(plan.maximum_workflow_ms, 69_888);
+    assert_eq!(plan.recovery_origin_band_counts, 1_000);
+    assert_eq!(plan.recovery_nominal_slot_us, 1_816_958);
+    assert_eq!(plan.recovery_maximum_slot_us, 3_000_000);
+    assert_eq!(plan.recovery_slot_count, 7);
+    assert_eq!(plan.nominal_workflow_ms, 82_607);
+    assert_eq!(plan.maximum_workflow_ms, 90_888);
+    let base_us = u32::from(plan.total_rung_count)
+        * STAGE_C_OBSERVATIONS_PER_RUNG
+        * (MOVING_STROKE_US + ZERO_SETTLE_US + SETTLE_ANALYSIS_BUDGET_US);
+    let recovery_us = u32::from(plan.total_rung_count) * plan.recovery_nominal_slot_us;
     assert_eq!(
         plan.nominal_workflow_ms,
-        u32::from(plan.total_rung_count)
-            * STAGE_C_OBSERVATIONS_PER_RUNG
-            * (MOVING_STROKE_US + ZERO_SETTLE_US + SETTLE_ANALYSIS_BUDGET_US)
-            / 1_000
+        (base_us + recovery_us).div_ceil(1_000)
     );
 }
 
@@ -148,9 +162,9 @@ fn workflow_shape_does_not_change_either_stage_identity() {
     )
     .unwrap();
 
-    assert_eq!(candidate.maximum_workflow_ms, 229_632);
-    assert_eq!(composite.maximum_workflow_ms, 299_520);
-    assert_eq!(resume.maximum_workflow_ms, 69_888);
+    assert_eq!(candidate.maximum_workflow_ms, 298_632);
+    assert_eq!(composite.maximum_workflow_ms, 389_520);
+    assert_eq!(resume.maximum_workflow_ms, 90_888);
     assert_ne!(candidate.digest(), composite.digest());
     assert_ne!(composite.digest(), resume.digest());
     assert_eq!(StageCPlanShape::StageB as u8, 0);
