@@ -345,6 +345,23 @@ impl OuterSafetyLimits {
             duration_cap_us: clamp_u64_to_u32(duration_cap_us),
         }
     }
+
+    /// Construct the dedicated fail-closed fault for recovery motion away from origin.
+    #[cfg(feature = "trace-velocity-sweep")]
+    #[allow(dead_code)]
+    pub(crate) fn recovery_wrong_way_fault(
+        &self,
+        start_offset_counts: i32,
+        elapsed_us: u64,
+    ) -> OuterSafetyFault {
+        self.fault(
+            crate::commissioning::types::OUTER_SAFETY_FAULT_RECOVERY_WRONG_WAY,
+            self.unwrapped_position.saturating_sub(start_offset_counts),
+            0,
+            0,
+            elapsed_us,
+        )
+    }
 }
 
 fn mrev_to_counts(mrev: u32, counts_per_rev: u32) -> u32 {

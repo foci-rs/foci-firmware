@@ -732,6 +732,8 @@ pub const OUTER_SAFETY_FAULT_OBSERVATION_GAP: u8 = 7;
 pub const OUTER_SAFETY_FAULT_QUARTER_TURN: u8 = 8;
 /// Velocity sweep reached the configured hard torque-target clip.
 pub const OUTER_SAFETY_FAULT_CURRENT: u8 = 9;
+/// Rung-origin recovery increased absolute origin error beyond quantization allowance.
+pub const OUTER_SAFETY_FAULT_RECOVERY_WRONG_WAY: u8 = 10;
 
 /// Host-visible Stage 2 safety-envelope fault evidence.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
