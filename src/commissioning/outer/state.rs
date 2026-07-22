@@ -16,6 +16,10 @@ use crate::commissioning::outer::velocity::operating_region::{
     CompactSignedRate, OperatingRegionRuntime,
 };
 #[cfg(feature = "trace-velocity-sweep")]
+use crate::commissioning::outer::velocity::recovery::{
+    RungOriginRecoveryReport, RungOriginRecoveryRuntime,
+};
+#[cfg(feature = "trace-velocity-sweep")]
 use crate::commissioning::outer::velocity::sweep_evidence::{
     CollectedRungEvidence, CompactDirectionalRungReport, DirectionalObservationSet,
 };
@@ -344,16 +348,41 @@ pub(crate) enum VelocitySweepState {
     FoldJointRung { current_headroom: bool },
     /// Emit the complete compact per-rung consensus report.
     EmitRung { current_headroom: bool },
+    /// Execute the shared return-to-origin primitive after rung evidence is emitted.
+    RecoverRung {
+        current_headroom: bool,
+        final_rung: bool,
+    },
+    /// Preserve the recovery report for causal emission before routing onward.
+    FinalizeRecovery {
+        current_headroom: bool,
+        final_rung: bool,
+    },
     /// Close and emit the active forward directional candidate.
-    FinishForward { current_headroom: bool },
+    FinishForward {
+        current_headroom: bool,
+        recovery_failure: bool,
+    },
     /// Close and emit the active reverse directional candidate.
-    FinishReverse { current_headroom: bool },
+    FinishReverse {
+        current_headroom: bool,
+        recovery_failure: bool,
+    },
     /// Close and emit the active joint-operability candidate.
-    FinishJoint { current_headroom: bool },
+    FinishJoint {
+        current_headroom: bool,
+        recovery_failure: bool,
+    },
     /// Emit the selected sufficient Stage B handoff, when available.
-    EmitHandoff { current_headroom: bool },
+    EmitHandoff {
+        current_headroom: bool,
+        recovery_failure: bool,
+    },
     /// The fixed sweep schedule reached a normal or current-bound terminus.
-    Terminal { current_headroom: bool },
+    Terminal {
+        current_headroom: bool,
+        recovery_failure: bool,
+    },
 }
 
 /// Engine-owned measurement and current-rung evidence state.
@@ -369,12 +398,18 @@ pub(crate) enum VelocitySweepEvidenceState {
     ForwardFolded {
         forward: CompactDirectionalRungReport,
         reverse: DirectionalObservationSet,
+        forward_recovery_rate: CompactSignedRate,
     },
     /// Both compact directional reports are ready for joint folding and emission.
     Complete {
         forward: CompactDirectionalRungReport,
         reverse: CompactDirectionalRungReport,
+        recovery_rates: [CompactSignedRate; 2],
     },
+    /// Shared controller state while recovery borrows the measurement workspace.
+    Recovering(RungOriginRecoveryRuntime),
+    /// Completed or contained recovery retained for the reporting seam.
+    RecoveryComplete(RungOriginRecoveryReport),
 }
 
 /// Engine-owned measurement and current-rung evidence state.
@@ -975,6 +1010,7 @@ mod tests {
     #[test]
     fn velocity_sweep_evidence_state_pins_replacement_size_below_delivered_size() {
         // The delivered prior pair state was exactly 176 bytes.
+        assert_eq!(size_of::<super::RungOriginRecoveryRuntime>(), 84);
         assert_eq!(size_of::<super::VelocitySweepEvidenceState>(), 140);
         assert!(size_of::<super::VelocitySweepEvidenceState>() <= 176);
     }

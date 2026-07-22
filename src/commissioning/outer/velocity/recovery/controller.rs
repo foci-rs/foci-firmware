@@ -13,8 +13,8 @@ use super::super::sweep::clear_velocity_integrator;
 use super::super::sweep_analysis::poll_settle_confirmation_parts;
 use super::super::sweep_plan::{SETTLE_ANALYSIS_BUDGET_US, ZERO_SETTLE_US};
 use super::{
-    RecoveryBindingSource, RecoveryState, RungOriginRecoveryOutcome, RungOriginRecoveryResources,
-    RungOriginRecoveryRuntime, RungOriginRecoveryStep,
+    ExactU64Parts, RecoveryBindingSource, RecoveryState, RungOriginRecoveryOutcome,
+    RungOriginRecoveryResources, RungOriginRecoveryRuntime, RungOriginRecoveryStep,
 };
 
 /// Advance one bounded unit of shared rung-origin recovery work.
@@ -114,9 +114,11 @@ pub(crate) async fn step_rung_origin_recovery<B: CommissioningBackend>(
                 resources.safety.end_primitive();
                 return recovery_fault(CommissionError::InvalidSchedule, None);
             };
-            runtime.recovery_started_us = started_us;
+            runtime.recovery_started_us = ExactU64Parts::from_u64(started_us);
             runtime.motion_started = true;
-            runtime.state = RecoveryState::Observe { moving_deadline_us };
+            runtime.state = RecoveryState::Observe {
+                moving_deadline_us: ExactU64Parts::from_u64(moving_deadline_us),
+            };
             RungOriginRecoveryStep::At(
                 resources
                     .safety
@@ -125,6 +127,7 @@ pub(crate) async fn step_rung_origin_recovery<B: CommissioningBackend>(
             )
         }
         RecoveryState::Observe { moving_deadline_us } => {
+            let moving_deadline_us = moving_deadline_us.to_u64();
             let now_us = backend.elapsed_us();
             let next_sample_us = resources.safety.next_safety_deadline().unwrap_or(now_us);
             if now_us < next_sample_us {
@@ -138,7 +141,7 @@ pub(crate) async fn step_rung_origin_recovery<B: CommissioningBackend>(
             if wrong_way(runtime.start_offset_counts, offset) {
                 let elapsed_us = backend
                     .elapsed_us()
-                    .saturating_sub(runtime.recovery_started_us);
+                    .saturating_sub(runtime.recovery_started_us.to_u64());
                 let fault = resources
                     .safety
                     .recovery_wrong_way_fault(runtime.start_offset_counts, elapsed_us);
@@ -154,7 +157,7 @@ pub(crate) async fn step_rung_origin_recovery<B: CommissioningBackend>(
                 {
                     return recovery_fault(CommissionError::Spi, None);
                 }
-                runtime.zero_commanded_us = backend.elapsed_us();
+                runtime.zero_commanded_us = ExactU64Parts::from_u64(backend.elapsed_us());
                 runtime.state = RecoveryState::ClearSettleIntegrator {
                     settle_started_us: runtime.zero_commanded_us,
                     contained: deadline_reached && !in_band,
@@ -176,7 +179,10 @@ pub(crate) async fn step_rung_origin_recovery<B: CommissioningBackend>(
             if clear_velocity_integrator(backend).await.is_err() {
                 return recovery_fault(CommissionError::Spi, None);
             }
-            let Some(deadline_us) = settle_started_us.checked_add(u64::from(ZERO_SETTLE_US)) else {
+            let Some(deadline_us) = settle_started_us
+                .to_u64()
+                .checked_add(u64::from(ZERO_SETTLE_US))
+            else {
                 return recovery_fault(CommissionError::InvalidSchedule, None);
             };
             resources.observations.clear();
@@ -189,8 +195,8 @@ pub(crate) async fn step_rung_origin_recovery<B: CommissioningBackend>(
                 .next_safety_deadline()
                 .unwrap_or(backend.elapsed_us());
             runtime.state = RecoveryState::CaptureSettle {
-                next_sample_us,
-                deadline_us,
+                next_sample_us: ExactU64Parts::from_u64(next_sample_us),
+                deadline_us: ExactU64Parts::from_u64(deadline_us),
                 contained,
             };
             RungOriginRecoveryStep::At(next_sample_us)
@@ -200,6 +206,8 @@ pub(crate) async fn step_rung_origin_recovery<B: CommissioningBackend>(
             deadline_us,
             contained,
         } => {
+            let next_sample_us = next_sample_us.to_u64();
+            let deadline_us = deadline_us.to_u64();
             if backend.elapsed_us() < next_sample_us {
                 return RungOriginRecoveryStep::At(next_sample_us);
             }
@@ -213,7 +221,7 @@ pub(crate) async fn step_rung_origin_recovery<B: CommissioningBackend>(
             if wrong_way(runtime.start_offset_counts, offset) {
                 let elapsed_us = backend
                     .elapsed_us()
-                    .saturating_sub(runtime.recovery_started_us);
+                    .saturating_sub(runtime.recovery_started_us.to_u64());
                 let fault = resources
                     .safety
                     .recovery_wrong_way_fault(runtime.start_offset_counts, elapsed_us);
@@ -247,15 +255,15 @@ pub(crate) async fn step_rung_origin_recovery<B: CommissioningBackend>(
                 };
                 resources.analysis.reset();
                 runtime.state = RecoveryState::AnalyzeSettle {
-                    analysis_deadline_us,
+                    analysis_deadline_us: ExactU64Parts::from_u64(analysis_deadline_us),
                     contained,
                 };
                 RungOriginRecoveryStep::ReadyNow
             } else {
                 let next = resources.safety.next_safety_deadline().unwrap_or(read_us);
                 runtime.state = RecoveryState::CaptureSettle {
-                    next_sample_us: next,
-                    deadline_us,
+                    next_sample_us: ExactU64Parts::from_u64(next),
+                    deadline_us: ExactU64Parts::from_u64(deadline_us),
                     contained,
                 };
                 RungOriginRecoveryStep::At(next)
@@ -265,6 +273,7 @@ pub(crate) async fn step_rung_origin_recovery<B: CommissioningBackend>(
             analysis_deadline_us,
             contained,
         } => {
+            let analysis_deadline_us = analysis_deadline_us.to_u64();
             if backend.elapsed_us() >= analysis_deadline_us {
                 return recovery_fault(CommissionError::AnalysisOverrun, None);
             }
@@ -349,7 +358,7 @@ async fn recovery_safety_sample<B: CommissioningBackend>(
     if runtime.peak_torque_target_abs >= resources.safety.torque_cap {
         let elapsed_us = backend
             .elapsed_us()
-            .saturating_sub(runtime.recovery_started_us);
+            .saturating_sub(runtime.recovery_started_us.to_u64());
         let fault = resources
             .safety
             .fault(OUTER_SAFETY_FAULT_CURRENT, 0, 0, 0, elapsed_us);

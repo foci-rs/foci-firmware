@@ -24,13 +24,18 @@ use super::operating_region::{
     BoundRounding, CompactSignedRate, DirectionalRegionClosure, DirectionalRegionRef,
     DirectionalRegionSummary, JointOperableClosure, JointOperableRegion,
 };
+use super::recovery::{
+    RecoveryStage, RungOriginRecoveryConfig, RungOriginRecoveryOutcome,
+    RungOriginRecoveryResources, RungOriginRecoveryRuntime, RungOriginRecoveryStep,
+    plan_rung_origin_recovery, step_rung_origin_recovery,
+};
 use super::sweep_analysis::{
     poll_moving_observation_analysis, poll_settle_confirmation, retain_observation,
 };
 use super::sweep_evidence::{
     CollectedRungEvidence, CompactDirectionalRungReport, DirectionalRungAnalysis,
     VelocityEvidenceError, VelocityObservationClass, analyze_directional_rung,
-    analyze_directional_set,
+    analyze_directional_set, directional_recovery_lower_rate_q,
 };
 use super::sweep_plan::{
     MAX_SAFETY_OBSERVATION_GAP_US, MAX_SWEEP_RUNGS, MIN_SETTLE_CAPTURE_US, MOVING_STROKE_US,
@@ -45,6 +50,7 @@ const SWEEP_CAUSE_NO_DIRECTIONAL_MODEL: u8 = 1;
 const SWEEP_CAUSE_NO_JOINT_OPERABLE_REGION: u8 = 2;
 const SWEEP_CAUSE_INTEGRITY: u8 = 3;
 const SWEEP_CAUSE_CURRENT_HEADROOM: u8 = 4;
+const SWEEP_CAUSE_RECOVERY: u8 = 7;
 const PID_VELOCITY_ACTUAL_TRACE_DECIMATION: u16 = 16;
 
 fn execution_gains(
@@ -308,6 +314,7 @@ fn sweep_fault_terminal_from_data(
 fn sweep_evidence_terminal(
     data: &super::super::VelocitySweepData,
     current_headroom: bool,
+    recovery_failure: bool,
 ) -> VelocitySweepTerminal {
     let plan = data.plan;
     assert!(
@@ -316,7 +323,9 @@ fn sweep_evidence_terminal(
     );
     let model_direction_mask = data.operating_regions.handoff.model_direction_mask();
     let handoff = selected_handoff(data);
-    let (mut outcome, mut cause) = if handoff.is_some() {
+    let (mut outcome, mut cause) = if recovery_failure {
+        (VelocitySweepOutcome::Inconclusive, SWEEP_CAUSE_RECOVERY)
+    } else if handoff.is_some() {
         (
             VelocitySweepOutcome::CompleteCandidate,
             if current_headroom {
@@ -1051,6 +1060,21 @@ pub(crate) async fn step_velocity_sweep_with_trace<B: CommissioningBackend>(
             let Some(p) = plan.gain_at(data.rung_index) else {
                 return fail_sweep(phase, backend, CommissionError::InvalidSchedule).await;
             };
+            let forward_recovery_rate = match directional_recovery_lower_rate_q(
+                collected.directional_set(
+                    crate::autotune::velocity_measurement::VelocityDirection::Forward,
+                ),
+                crate::autotune::velocity_measurement::VelocityDirection::Forward,
+                p,
+                plan.target_velocity_rpm.raw(),
+                safety.counts_per_rev(),
+            ) {
+                Ok(rate) => rate.unwrap_or(CompactSignedRate::ZERO),
+                Err(_) => {
+                    return fail_sweep(phase, backend, CommissionError::VelocityValidationFailed)
+                        .await;
+                }
+            };
             let reverse = collected
                 .directional_set(crate::autotune::velocity_measurement::VelocityDirection::Reverse);
             let analysis = match analyze_directional_rung(
@@ -1079,7 +1103,11 @@ pub(crate) async fn step_velocity_sweep_with_trace<B: CommissioningBackend>(
                         .await;
                 }
             };
-            data.evidence = VelocitySweepEvidenceState::ForwardFolded { forward, reverse };
+            data.evidence = VelocitySweepEvidenceState::ForwardFolded {
+                forward,
+                reverse,
+                forward_recovery_rate,
+            };
             *state = VelocitySweepState::AnalyzeReverseRung {
                 current_headroom: *current_headroom,
             };
@@ -1103,13 +1131,30 @@ pub(crate) async fn step_velocity_sweep_with_trace<B: CommissioningBackend>(
             StepResult::ReadyNow
         }
         VelocitySweepState::FoldReverseRung { current_headroom } => {
-            let VelocitySweepEvidenceState::ForwardFolded { forward, reverse } = data.evidence
+            let VelocitySweepEvidenceState::ForwardFolded {
+                forward,
+                reverse,
+                forward_recovery_rate,
+            } = data.evidence
             else {
                 return fail_sweep(phase, backend, CommissionError::InvalidSchedule).await;
             };
             let plan = data.plan;
             let Some(p) = plan.gain_at(data.rung_index) else {
                 return fail_sweep(phase, backend, CommissionError::InvalidSchedule).await;
+            };
+            let reverse_recovery_rate = match directional_recovery_lower_rate_q(
+                reverse,
+                crate::autotune::velocity_measurement::VelocityDirection::Reverse,
+                p,
+                plan.target_velocity_rpm.raw(),
+                safety.counts_per_rev(),
+            ) {
+                Ok(rate) => rate.unwrap_or(CompactSignedRate::ZERO),
+                Err(_) => {
+                    return fail_sweep(phase, backend, CommissionError::VelocityValidationFailed)
+                        .await;
+                }
             };
             let analysis = match analyze_directional_set(
                 reverse,
@@ -1137,7 +1182,11 @@ pub(crate) async fn step_velocity_sweep_with_trace<B: CommissioningBackend>(
                         .await;
                 }
             };
-            data.evidence = VelocitySweepEvidenceState::Complete { forward, reverse };
+            data.evidence = VelocitySweepEvidenceState::Complete {
+                forward,
+                reverse,
+                recovery_rates: [forward_recovery_rate, reverse_recovery_rate],
+            };
             *state = VelocitySweepState::FoldJointRung {
                 current_headroom: *current_headroom,
             };
@@ -1159,7 +1208,10 @@ pub(crate) async fn step_velocity_sweep_with_trace<B: CommissioningBackend>(
             if !plan.is_present() {
                 return fail_sweep(phase, backend, CommissionError::InvalidSchedule).await;
             }
-            let VelocitySweepEvidenceState::Complete { forward, reverse } = data.evidence else {
+            let VelocitySweepEvidenceState::Complete {
+                forward, reverse, ..
+            } = data.evidence
+            else {
                 return fail_sweep(phase, backend, CommissionError::InvalidSchedule).await;
             };
             let current_rates = representative_rung_rates(forward, reverse);
@@ -1222,7 +1274,12 @@ pub(crate) async fn step_velocity_sweep_with_trace<B: CommissioningBackend>(
             if !plan.is_present() {
                 return fail_sweep(phase, backend, CommissionError::InvalidSchedule).await;
             }
-            let VelocitySweepEvidenceState::Complete { forward, reverse } = data.evidence else {
+            let VelocitySweepEvidenceState::Complete {
+                forward,
+                reverse,
+                recovery_rates,
+            } = data.evidence
+            else {
                 return fail_sweep(phase, backend, CommissionError::InvalidSchedule).await;
             };
             let report = VelocitySweepRungReport {
@@ -1233,30 +1290,138 @@ pub(crate) async fn step_velocity_sweep_with_trace<B: CommissioningBackend>(
                 reverse,
             };
             let event = data.integrity.record(VelocitySweepEvent::Rung(report));
-            if *current_headroom {
+            let complete_rung =
+                forward.collected_mask == 0b1111 && reverse.collected_mask == 0b1111;
+            let final_rung = *current_headroom || data.rung_index + 1 >= plan.rung_count;
+            if *current_headroom && !complete_rung {
                 *state = VelocitySweepState::FinishForward {
                     current_headroom: true,
+                    recovery_failure: false,
                 };
-            } else if data.rung_index + 1 < plan.rung_count {
-                data.rung_index += 1;
-                data.slot = 0;
-                *state = VelocitySweepState::WriteGain;
             } else {
-                *state = VelocitySweepState::FinishForward {
-                    current_headroom: false,
+                let recovery_plan = match plan_rung_origin_recovery(
+                    safety.budget,
+                    safety.counts_per_rev(),
+                    plan.planned_velocity_mrev_s,
+                ) {
+                    Ok(recovery_plan) => recovery_plan,
+                    Err(_) => {
+                        return fail_sweep(phase, backend, CommissionError::InvalidSchedule).await;
+                    }
+                };
+                let compact_rate = if safety.unwrapped_position < 0 {
+                    recovery_rates[0]
+                } else {
+                    recovery_rates[1]
+                };
+                let lower_rate_q = u64::try_from(compact_rate.decode())
+                    .ok()
+                    .filter(|rate| *rate != 0);
+                let runtime = match RungOriginRecoveryRuntime::new(
+                    RungOriginRecoveryConfig {
+                        stage: RecoveryStage::Proportional,
+                        rung_index: data.rung_index,
+                        p: plan
+                            .gain_at(data.rung_index)
+                            .expect("emitted rung belongs to the immutable ladder"),
+                        target_velocity_rpm: plan.target_velocity_rpm,
+                        planned_velocity_mrev_s: plan.planned_velocity_mrev_s,
+                        start_offset_counts: safety.unwrapped_position,
+                        lower_rate_q,
+                    },
+                    recovery_plan,
+                ) {
+                    Ok(runtime) => runtime,
+                    Err(error) => return fail_sweep(phase, backend, error).await,
+                };
+                data.evidence = VelocitySweepEvidenceState::Recovering(runtime);
+                *state = VelocitySweepState::RecoverRung {
+                    current_headroom: *current_headroom,
+                    final_rung,
                 };
             }
             StepResult::VelocitySweepEvent(event)
         }
-        VelocitySweepState::FinishForward { current_headroom } => {
-            let closure = if *current_headroom {
+        VelocitySweepState::RecoverRung {
+            current_headroom,
+            final_rung,
+        } => {
+            let VelocitySweepEvidenceState::Recovering(runtime) = &mut data.evidence else {
+                return fail_sweep(phase, backend, CommissionError::InvalidSchedule).await;
+            };
+            let mut resources = RungOriginRecoveryResources {
+                safety,
+                observations: &mut data.observations,
+                blocker: &mut data.blocker,
+                analysis: &mut data.analysis,
+                settle_displacement_counts: &mut data.settle_displacement_counts,
+                settle_min_displacement_counts: &mut data.settle_min_displacement_counts,
+                settle_max_displacement_counts: &mut data.settle_max_displacement_counts,
+            };
+            match step_rung_origin_recovery(runtime, &mut resources, backend).await {
+                RungOriginRecoveryStep::ReadyNow => StepResult::ReadyNow,
+                RungOriginRecoveryStep::At(deadline_us) => StepResult::At(deadline_us),
+                RungOriginRecoveryStep::Finished(report)
+                | RungOriginRecoveryStep::Contained(report) => {
+                    data.evidence = VelocitySweepEvidenceState::RecoveryComplete(report);
+                    *state = VelocitySweepState::FinalizeRecovery {
+                        current_headroom: *current_headroom,
+                        final_rung: *final_rung,
+                    };
+                    StepResult::ReadyNow
+                }
+                RungOriginRecoveryStep::Fault {
+                    error: _,
+                    safety: Some(fault),
+                } => fail_sweep_with_safety(phase, backend, fault).await,
+                RungOriginRecoveryStep::Fault {
+                    error,
+                    safety: None,
+                } => fail_sweep(phase, backend, error).await,
+            }
+        }
+        VelocitySweepState::FinalizeRecovery {
+            current_headroom,
+            final_rung,
+        } => {
+            let VelocitySweepEvidenceState::RecoveryComplete(report) = data.evidence else {
+                return fail_sweep(phase, backend, CommissionError::InvalidSchedule).await;
+            };
+            let contained = matches!(
+                report.outcome,
+                RungOriginRecoveryOutcome::ContainedNoRate
+                    | RungOriginRecoveryOutcome::ContainedDeadline
+            );
+            if *final_rung || contained {
+                *state = VelocitySweepState::FinishForward {
+                    current_headroom: *current_headroom,
+                    recovery_failure: contained && !*final_rung,
+                };
+            } else {
+                data.rung_index += 1;
+                data.slot = 0;
+                *state = VelocitySweepState::WriteGain;
+            }
+            StepResult::ReadyNow
+        }
+        VelocitySweepState::FinishForward {
+            current_headroom,
+            recovery_failure,
+        } => {
+            let closure = if *recovery_failure {
+                DirectionalRegionClosure::SafetyTerminus
+            } else if *current_headroom {
                 DirectionalRegionClosure::CurrentHeadroom
             } else {
                 DirectionalRegionClosure::EndOfLadder
             };
             let closed = data.operating_regions.directional[0].finish(closure);
             let current_headroom = *current_headroom;
-            *state = VelocitySweepState::FinishReverse { current_headroom };
+            let recovery_failure = *recovery_failure;
+            *state = VelocitySweepState::FinishReverse {
+                current_headroom,
+                recovery_failure,
+            };
             if let Some(region) = closed {
                 track_closed_directional_region(data, region);
                 let event = data.integrity.record(VelocitySweepEvent::DirectionalRegion(
@@ -1270,15 +1435,24 @@ pub(crate) async fn step_velocity_sweep_with_trace<B: CommissioningBackend>(
             }
             StepResult::ReadyNow
         }
-        VelocitySweepState::FinishReverse { current_headroom } => {
-            let closure = if *current_headroom {
+        VelocitySweepState::FinishReverse {
+            current_headroom,
+            recovery_failure,
+        } => {
+            let closure = if *recovery_failure {
+                DirectionalRegionClosure::SafetyTerminus
+            } else if *current_headroom {
                 DirectionalRegionClosure::CurrentHeadroom
             } else {
                 DirectionalRegionClosure::EndOfLadder
             };
             let closed = data.operating_regions.directional[1].finish(closure);
             let current_headroom = *current_headroom;
-            *state = VelocitySweepState::FinishJoint { current_headroom };
+            let recovery_failure = *recovery_failure;
+            *state = VelocitySweepState::FinishJoint {
+                current_headroom,
+                recovery_failure,
+            };
             if let Some(region) = closed {
                 track_closed_directional_region(data, region);
                 let event = data.integrity.record(VelocitySweepEvent::DirectionalRegion(
@@ -1292,15 +1466,24 @@ pub(crate) async fn step_velocity_sweep_with_trace<B: CommissioningBackend>(
             }
             StepResult::ReadyNow
         }
-        VelocitySweepState::FinishJoint { current_headroom } => {
-            let closure = if *current_headroom {
+        VelocitySweepState::FinishJoint {
+            current_headroom,
+            recovery_failure,
+        } => {
+            let closure = if *recovery_failure {
+                JointOperableClosure::SafetyTerminus
+            } else if *current_headroom {
                 JointOperableClosure::CurrentHeadroom
             } else {
                 JointOperableClosure::EndOfLadder
             };
             let closed = data.operating_regions.joint.finish(closure);
             let current_headroom = *current_headroom;
-            *state = VelocitySweepState::EmitHandoff { current_headroom };
+            let recovery_failure = *recovery_failure;
+            *state = VelocitySweepState::EmitHandoff {
+                current_headroom,
+                recovery_failure,
+            };
             if let Some(region) = closed {
                 retain_joint_candidate(data, region);
                 let report = joint_region_report(data, region);
@@ -1311,13 +1494,20 @@ pub(crate) async fn step_velocity_sweep_with_trace<B: CommissioningBackend>(
             }
             StepResult::ReadyNow
         }
-        VelocitySweepState::EmitHandoff { current_headroom } => {
+        VelocitySweepState::EmitHandoff {
+            current_headroom,
+            recovery_failure,
+        } => {
             if !data.plan.is_present() {
                 return fail_sweep(phase, backend, CommissionError::InvalidSchedule).await;
             }
             let handoff = selected_handoff(data);
             let current_headroom = *current_headroom;
-            *state = VelocitySweepState::Terminal { current_headroom };
+            let recovery_failure = *recovery_failure;
+            *state = VelocitySweepState::Terminal {
+                current_headroom,
+                recovery_failure,
+            };
             if let Some(handoff) = handoff {
                 let event = data.integrity.record(VelocitySweepEvent::Handoff(
                     crate::commissioning::types::VelocityStageBHandoffReport {
@@ -1330,11 +1520,18 @@ pub(crate) async fn step_velocity_sweep_with_trace<B: CommissioningBackend>(
             }
             StepResult::ReadyNow
         }
-        VelocitySweepState::Terminal { current_headroom } => {
+        VelocitySweepState::Terminal {
+            current_headroom,
+            recovery_failure,
+        } => {
             if !data.plan.is_present() {
                 return fail_sweep(phase, backend, CommissionError::InvalidSchedule).await;
             }
-            StepResult::VelocitySweepTerminal(sweep_evidence_terminal(data, *current_headroom))
+            StepResult::VelocitySweepTerminal(sweep_evidence_terminal(
+                data,
+                *current_headroom,
+                *recovery_failure,
+            ))
         }
     }
 }
@@ -1545,7 +1742,7 @@ mod tests {
         let expected_ladder = [data.plan.p_start.raw(), data.plan.p_top.raw()];
         let expected_rung_count = data.plan.rung_count;
 
-        let terminal = sweep_evidence_terminal(data, true);
+        let terminal = sweep_evidence_terminal(data, true, false);
 
         assert_eq!(terminal.selected_intervals, [[100, 140], [-140, -100]]);
         assert_eq!(
@@ -2123,7 +2320,7 @@ mod tests {
     }
 
     #[test]
-    fn one_rung_executes_fixed_eight_slot_schedule_without_early_stop() {
+    fn sweep_recovery_follows_one_rung_without_changing_its_evidence() {
         let mut phase = phase();
         let mut backend = MockBackend::new();
         backend.current_limit_value = current_limit(2_448);
@@ -2141,6 +2338,7 @@ mod tests {
         let mut evidence_sequences = std::vec![plan_report.evidence_sequence];
         let mut observation_slots = std::vec::Vec::new();
         let mut observation_targets = std::vec::Vec::new();
+        let mut terminal_rung = None;
         pollster::block_on(step_velocity_sweep_with_trace(&mut phase, &mut backend));
         let mut encoder_count = 0i32;
         let mut now_us = 0u64;
@@ -2217,6 +2415,7 @@ mod tests {
                     )) {
                         StepResult::VelocitySweepEvent(VelocitySweepEvent::Rung(report)) => {
                             evidence_sequences.push(report.evidence_sequence);
+                            terminal_rung = Some(report);
                             break;
                         }
                         StepResult::VelocitySweepEvent(event) => {
@@ -2245,17 +2444,38 @@ mod tests {
         };
         assert!(matches!(
             state,
-            VelocitySweepState::FinishForward { .. }
-                | VelocitySweepState::FinishReverse { .. }
-                | VelocitySweepState::FinishJoint { .. }
-                | VelocitySweepState::EmitHandoff { .. }
-                | VelocitySweepState::Terminal { .. }
+            VelocitySweepState::RecoverRung {
+                current_headroom: false,
+                final_rung: true,
+            }
         ));
-        let VelocitySweepEvidenceState::Complete { forward, reverse } = &data.evidence else {
-            panic!("terminal rung should retain both directional consensus reports");
+        assert!(matches!(
+            data.evidence,
+            VelocitySweepEvidenceState::Recovering(_)
+        ));
+        let terminal_rung = terminal_rung.expect("terminal rung must be emitted before recovery");
+        assert!(terminal_rung.forward.initial_lead_in());
+        assert!(!terminal_rung.reverse.initial_lead_in());
+
+        assert!(matches!(
+            pollster::block_on(step_velocity_sweep_with_trace(&mut phase, &mut backend)),
+            StepResult::ReadyNow
+        ));
+        let OuterPhase::VelocitySweep { state, data, .. } = &phase else {
+            panic!("velocity sweep should remain active");
         };
-        assert!(forward.initial_lead_in());
-        assert!(!reverse.initial_lead_in());
+        assert!(matches!(state, VelocitySweepState::FinalizeRecovery { .. }));
+        let VelocitySweepEvidenceState::RecoveryComplete(report) = data.evidence else {
+            panic!("recovery result must remain available for causal reporting");
+        };
+        assert_eq!(
+            report.outcome,
+            super::super::recovery::RungOriginRecoveryOutcome::AlreadyCentered
+        );
+        assert!(matches!(
+            pollster::block_on(step_velocity_sweep_with_trace(&mut phase, &mut backend)),
+            StepResult::ReadyNow
+        ));
         assert_eq!(&evidence_sequences[..10], [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
         assert_eq!(observation_slots, [0, 1, 2, 3, 4, 5, 6, 7]);
         assert!(

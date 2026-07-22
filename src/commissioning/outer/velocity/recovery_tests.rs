@@ -367,7 +367,7 @@ fn recovery_controller_confirms_fixed_settle_and_reports_complete_geometry() {
     assert_eq!(report.closest_offset_counts, 1_000);
     assert_eq!(report.final_offset_counts, 1_000);
     assert_eq!(report.origin_band_counts, 1_000);
-    assert_eq!(report.lower_rate_q, 14_000_000);
+    assert_eq!(report.lower_rate_q.to_u64(), 14_000_000);
     assert_eq!(report.moving_duration_us, 2_000);
     assert_eq!(report.settle_duration_us, 500_000);
     assert_eq!(report.total_duration_us, 502_000);

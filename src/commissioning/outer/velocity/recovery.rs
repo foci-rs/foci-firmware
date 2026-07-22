@@ -1,10 +1,9 @@
 //! Shared rung-origin recovery geometry and checked deadline arithmetic.
 
-#![allow(dead_code)] // Stage-neutral worker is wired into Stage B/C in the next two tasks.
+#![allow(dead_code)] // Stage C and canonical report consumers land in the next two tasks.
 
 mod controller;
 
-#[allow(unused_imports)] // Stage B/C consume the worker in the next two tasks.
 pub(crate) use controller::step_rung_origin_recovery;
 
 use crate::autotune::velocity_measurement::{
@@ -68,7 +67,7 @@ pub(crate) struct RungOriginRecoveryReport {
     pub(crate) closest_offset_counts: i32,
     pub(crate) final_offset_counts: i32,
     pub(crate) origin_band_counts: u32,
-    pub(crate) lower_rate_q: u64,
+    pub(crate) lower_rate_q: ExactU64Parts,
     pub(crate) moving_duration_us: u32,
     pub(crate) settle_duration_us: u32,
     pub(crate) total_duration_us: u32,
@@ -96,25 +95,47 @@ enum RecoveryState {
     ClearMovingIntegrator,
     CommandTowardOrigin,
     Observe {
-        moving_deadline_us: u64,
+        moving_deadline_us: ExactU64Parts,
     },
     ClearSettleIntegrator {
-        settle_started_us: u64,
+        settle_started_us: ExactU64Parts,
         contained: bool,
     },
     CaptureSettle {
-        next_sample_us: u64,
-        deadline_us: u64,
+        next_sample_us: ExactU64Parts,
+        deadline_us: ExactU64Parts,
         contained: bool,
     },
     AnalyzeSettle {
-        analysis_deadline_us: u64,
+        analysis_deadline_us: ExactU64Parts,
         contained: bool,
     },
     Terminal {
         outcome: RungOriginRecoveryOutcome,
         binding_source: RecoveryBindingSource,
     },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+#[repr(C)]
+pub(crate) struct ExactU64Parts {
+    low: u32,
+    high: u32,
+}
+
+impl ExactU64Parts {
+    const ZERO: Self = Self { low: 0, high: 0 };
+
+    pub(crate) const fn from_u64(value: u64) -> Self {
+        Self {
+            low: value as u32,
+            high: (value >> 32) as u32,
+        }
+    }
+
+    pub(crate) const fn to_u64(self) -> u64 {
+        self.low as u64 | ((self.high as u64) << 32)
+    }
 }
 
 /// Immutable recovery geometry derived before any commissioning motion.
@@ -149,12 +170,12 @@ pub(crate) struct RungOriginRecoveryRuntime {
     planned_velocity_mrev_s: u32,
     start_offset_counts: i32,
     closest_offset_counts: i32,
-    lower_rate_q: u64,
+    lower_rate_q: ExactU64Parts,
     plan: RungOriginRecoveryPlan,
     runtime_us: u32,
     motion_started: bool,
-    recovery_started_us: u64,
-    zero_commanded_us: u64,
+    recovery_started_us: ExactU64Parts,
+    zero_commanded_us: ExactU64Parts,
     peak_torque_target_abs: u16,
     state: RecoveryState,
 }
@@ -228,12 +249,12 @@ impl RungOriginRecoveryRuntime {
             planned_velocity_mrev_s: config.planned_velocity_mrev_s,
             start_offset_counts: config.start_offset_counts,
             closest_offset_counts: config.start_offset_counts,
-            lower_rate_q,
+            lower_rate_q: ExactU64Parts::from_u64(lower_rate_q),
             plan,
             runtime_us,
             motion_started: false,
-            recovery_started_us: 0,
-            zero_commanded_us: 0,
+            recovery_started_us: ExactU64Parts::ZERO,
+            zero_commanded_us: ExactU64Parts::ZERO,
             peak_torque_target_abs: 0,
             state,
         })
@@ -249,13 +270,14 @@ impl RungOriginRecoveryRuntime {
         let (moving_duration_us, settle_duration_us, total_duration_us) = if self.motion_started {
             (
                 self.zero_commanded_us
-                    .saturating_sub(self.recovery_started_us)
+                    .to_u64()
+                    .saturating_sub(self.recovery_started_us.to_u64())
                     .min(u64::from(u32::MAX)) as u32,
                 now_us
-                    .saturating_sub(self.zero_commanded_us)
+                    .saturating_sub(self.zero_commanded_us.to_u64())
                     .min(u64::from(u32::MAX)) as u32,
                 now_us
-                    .saturating_sub(self.recovery_started_us)
+                    .saturating_sub(self.recovery_started_us.to_u64())
                     .min(u64::from(u32::MAX)) as u32,
             )
         } else {
