@@ -159,28 +159,34 @@ pub(crate) struct RungOriginRecoveryRuntime {
     state: RecoveryState,
 }
 
+/// Immutable inputs for one checked rung-origin recovery attempt.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+pub(crate) struct RungOriginRecoveryConfig {
+    pub(crate) stage: RecoveryStage,
+    pub(crate) rung_index: u8,
+    pub(crate) p: PidGain,
+    pub(crate) target_velocity_rpm: TmcMechanicalRpm,
+    pub(crate) planned_velocity_mrev_s: u32,
+    pub(crate) start_offset_counts: i32,
+    pub(crate) lower_rate_q: Option<u64>,
+}
+
 impl RungOriginRecoveryRuntime {
     /// Construct one checked recovery attempt without touching hardware.
     pub(crate) fn new(
-        stage: RecoveryStage,
-        rung_index: u8,
-        p: PidGain,
-        target_velocity_rpm: TmcMechanicalRpm,
-        planned_velocity_mrev_s: u32,
-        start_offset_counts: i32,
-        lower_rate_q: Option<u64>,
+        config: RungOriginRecoveryConfig,
         plan: RungOriginRecoveryPlan,
     ) -> Result<Self, CommissionError> {
-        if p == PidGain::ZERO
-            || target_velocity_rpm.raw() <= 0
-            || planned_velocity_mrev_s == 0
+        if config.p == PidGain::ZERO
+            || config.target_velocity_rpm.raw() <= 0
+            || config.planned_velocity_mrev_s == 0
             || plan.origin_band_counts == 0
-            || start_offset_counts == i32::MIN
+            || config.start_offset_counts == i32::MIN
         {
             return Err(CommissionError::InvalidSchedule);
         }
         let return_distance =
-            recovery_return_distance_counts(start_offset_counts, plan.origin_band_counts)
+            recovery_return_distance_counts(config.start_offset_counts, plan.origin_band_counts)
                 .ok_or(CommissionError::InvalidSchedule)?;
         let (state, runtime_us, lower_rate_q) = if return_distance == 0 {
             (
@@ -191,7 +197,7 @@ impl RungOriginRecoveryRuntime {
                 0,
                 0,
             )
-        } else if let Some(rate) = lower_rate_q.filter(|rate| *rate != 0) {
+        } else if let Some(rate) = config.lower_rate_q.filter(|rate| *rate != 0) {
             match recovery_runtime_us(return_distance, rate, plan.maximum_slot_us) {
                 Ok(runtime_us) => (RecoveryState::WriteGains, runtime_us, rate),
                 Err(RungOriginRecoveryPlanError::ExceedsPrimitiveCap) => (
@@ -215,13 +221,13 @@ impl RungOriginRecoveryRuntime {
             )
         };
         Ok(Self {
-            stage,
-            rung_index,
-            p,
-            target_velocity_rpm,
-            planned_velocity_mrev_s,
-            start_offset_counts,
-            closest_offset_counts: start_offset_counts,
+            stage: config.stage,
+            rung_index: config.rung_index,
+            p: config.p,
+            target_velocity_rpm: config.target_velocity_rpm,
+            planned_velocity_mrev_s: config.planned_velocity_mrev_s,
+            start_offset_counts: config.start_offset_counts,
+            closest_offset_counts: config.start_offset_counts,
             lower_rate_q,
             plan,
             runtime_us,
