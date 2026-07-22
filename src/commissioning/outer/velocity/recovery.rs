@@ -18,6 +18,8 @@ use crate::commissioning::outer::OuterMotionBudget;
 #[cfg(feature = "trace-velocity-sweep")]
 use crate::commissioning::outer::OuterSafetyLimits;
 #[cfg(feature = "trace-velocity-sweep")]
+use crate::commissioning::outer::OuterSafetyTimingPhase;
+#[cfg(feature = "trace-velocity-sweep")]
 use crate::commissioning::outer::state::{VELOCITY_SWEEP_BLOCK_LEVELS, VelocityObservationRing};
 #[cfg(feature = "trace-velocity-sweep")]
 use crate::commissioning::types::OuterSafetyFault;
@@ -278,6 +280,19 @@ impl RungOriginRecoveryRuntime {
             peak_torque_target_abs: 0,
             state,
         })
+    }
+
+    pub(crate) const fn outer_safety_timing_phase(&self) -> (OuterSafetyTimingPhase, bool) {
+        match self.state {
+            RecoveryState::WriteGains
+            | RecoveryState::ClearMovingIntegrator
+            | RecoveryState::CommandTowardOrigin => (OuterSafetyTimingPhase::RecoverySetup, true),
+            RecoveryState::Observe { .. } => (OuterSafetyTimingPhase::RecoveryMove, false),
+            RecoveryState::ClearSettleIntegrator { .. }
+            | RecoveryState::CaptureSettle { .. }
+            | RecoveryState::AnalyzeSettle { .. } => (OuterSafetyTimingPhase::RecoverySettle, true),
+            RecoveryState::Terminal { .. } => (OuterSafetyTimingPhase::Terminalization, true),
+        }
     }
 
     fn report(

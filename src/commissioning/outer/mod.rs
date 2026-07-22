@@ -41,9 +41,10 @@ pub(crate) use safety::check_outer_safety_with_timing;
 pub(crate) use safety::{
     OuterMotionBudget, OuterSafetyLimits, check_outer_safety, safety_error_for_phase,
 };
+pub(crate) use safety_timing::{OuterSafetyTimingAccumulator, OuterSafetyTimingSummary};
+#[cfg(any(test, feature = "trace-velocity-sweep"))]
 pub(crate) use safety_timing::{
-    OuterSafetyTimingAccumulator, OuterSafetyTimingContext, OuterSafetyTimingPhase,
-    OuterSafetyTimingStage, OuterSafetyTimingSummary,
+    OuterSafetyTimingContext, OuterSafetyTimingPhase, OuterSafetyTimingStage,
 };
 pub(crate) use state::{
     EffectiveVelocityPolicy, MechanicalIdData, MechanicalIdState,

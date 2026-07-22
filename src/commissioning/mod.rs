@@ -1348,6 +1348,8 @@ mod tests {
         // ceiling.
         #[cfg(feature = "trace-velocity-sweep")]
         {
+            assert_eq!(size_of::<TraceRunState>(), 12);
+            assert_eq!(size_of::<TraceSummarySeqs>(), 16);
             assert_eq!(
                 size_of::<crate::commissioning::outer::VelocityIntegralData>(),
                 2_480

@@ -5,9 +5,16 @@ use crate::commissioning::backend::CommissioningBackend;
 use crate::commissioning::types::{OuterSafetyFault, StepResult};
 
 use super::safety::outer_safety_mut;
+#[cfg(feature = "trace-velocity-sweep")]
+use super::state::VelocitySweepEvidenceState;
 use super::{
     OuterPhase, TraceSummarySeqs, check_outer_safety, commit, filter, mechanical, position,
     safety_error_for_phase, velocity,
+};
+#[cfg(feature = "trace-velocity-sweep")]
+use super::{
+    OuterSafetyTimingContext, OuterSafetyTimingPhase, OuterSafetyTimingStage,
+    VelocityIntegralState, VelocitySweepState, check_outer_safety_with_timing,
 };
 
 /// Transition the outer phase to `Failed` and emit an `OuterFailed` result.
@@ -55,6 +62,117 @@ fn velocity_fault_terminal(
             velocity::integral_fault_terminal(phase, error, safety_fault)
         }
         _ => StepResult::OuterFailed(error),
+    }
+}
+
+#[cfg(feature = "trace-velocity-sweep")]
+fn velocity_integral_timing_phase(state: &VelocityIntegralState) -> (OuterSafetyTimingPhase, bool) {
+    match state {
+        VelocityIntegralState::Setup
+        | VelocityIntegralState::WriteGains
+        | VelocityIntegralState::ClearSignedIntegrator
+        | VelocityIntegralState::CommandTarget => (OuterSafetyTimingPhase::Setup, true),
+        VelocityIntegralState::Capture { .. } | VelocityIntegralState::CommandZero => {
+            (OuterSafetyTimingPhase::MovingCapture, false)
+        }
+        VelocityIntegralState::ClearSettleIntegrator { .. }
+        | VelocityIntegralState::BeginSettleCapture { .. }
+        | VelocityIntegralState::SettleCapture { .. } => (OuterSafetyTimingPhase::ZeroSettle, true),
+        VelocityIntegralState::AnalyzeMoving { .. }
+        | VelocityIntegralState::AnalyzeSettle { .. }
+        | VelocityIntegralState::Advance
+        | VelocityIntegralState::AnalyzeRung => (OuterSafetyTimingPhase::Analysis, true),
+        VelocityIntegralState::RecoverRung(runtime) => runtime.outer_safety_timing_phase(),
+        VelocityIntegralState::FinalizeRecovery(_) => {
+            (OuterSafetyTimingPhase::EvidenceEmission, true)
+        }
+        VelocityIntegralState::FaultTerminal { .. } | VelocityIntegralState::Terminal => {
+            (OuterSafetyTimingPhase::Terminalization, true)
+        }
+    }
+}
+
+#[cfg(feature = "trace-velocity-sweep")]
+fn velocity_sweep_timing_phase(
+    state: &VelocitySweepState,
+    evidence: &VelocitySweepEvidenceState,
+) -> Result<(OuterSafetyTimingPhase, bool), CommissionError> {
+    let phase = match state {
+        VelocitySweepState::Setup
+        | VelocitySweepState::WriteGain
+        | VelocitySweepState::ClearSignedIntegrator
+        | VelocitySweepState::CommandTarget => (OuterSafetyTimingPhase::Setup, true),
+        VelocitySweepState::Capture { .. } | VelocitySweepState::CommandZero => {
+            (OuterSafetyTimingPhase::MovingCapture, false)
+        }
+        VelocitySweepState::ClearSettleIntegrator { .. }
+        | VelocitySweepState::BeginSettleCapture { .. }
+        | VelocitySweepState::SettleCapture { .. } => (OuterSafetyTimingPhase::ZeroSettle, true),
+        VelocitySweepState::AnalyzeMoving { .. }
+        | VelocitySweepState::AnalyzeSettle { .. }
+        | VelocitySweepState::Advance
+        | VelocitySweepState::AnalyzeForwardRung { .. }
+        | VelocitySweepState::FoldForwardRung { .. }
+        | VelocitySweepState::AnalyzeReverseRung { .. }
+        | VelocitySweepState::FoldReverseRung { .. }
+        | VelocitySweepState::FoldJointRung { .. } => (OuterSafetyTimingPhase::Analysis, true),
+        VelocitySweepState::EmitRung { .. }
+        | VelocitySweepState::FinalizeRecovery { .. }
+        | VelocitySweepState::FinishForward { .. }
+        | VelocitySweepState::FinishReverse { .. }
+        | VelocitySweepState::FinishJoint { .. }
+        | VelocitySweepState::EmitHandoff { .. } => {
+            (OuterSafetyTimingPhase::EvidenceEmission, true)
+        }
+        VelocitySweepState::RecoverRung { .. } => {
+            let VelocitySweepEvidenceState::Recovering(runtime) = evidence else {
+                return Err(CommissionError::InvalidSchedule);
+            };
+            runtime.outer_safety_timing_phase()
+        }
+        VelocitySweepState::FaultTerminal { .. } | VelocitySweepState::Terminal { .. } => {
+            (OuterSafetyTimingPhase::Terminalization, true)
+        }
+    };
+    Ok(phase)
+}
+
+#[cfg(feature = "trace-velocity-sweep")]
+fn velocity_timing_context(
+    phase: &OuterPhase,
+) -> Result<Option<OuterSafetyTimingContext>, CommissionError> {
+    match phase {
+        OuterPhase::VelocitySweep { state, data, .. } => {
+            let (timing_phase, target_zero) = velocity_sweep_timing_phase(state, &data.evidence)?;
+            OuterSafetyTimingContext::new(
+                OuterSafetyTimingStage::Proportional,
+                timing_phase,
+                data.rung_index,
+                data.slot,
+                target_zero,
+            )
+            .map(Some)
+        }
+        OuterPhase::VelocityIntegral { state, data, .. } => {
+            let (timing_phase, target_zero) = velocity_integral_timing_phase(state);
+            OuterSafetyTimingContext::new(
+                OuterSafetyTimingStage::Integral,
+                timing_phase,
+                data.rung_index,
+                data.slot,
+                target_zero,
+            )
+            .map(Some)
+        }
+        OuterPhase::MechanicalId { .. }
+        | OuterPhase::VelocityTune { .. }
+        | OuterPhase::VelocityValidate { .. }
+        | OuterPhase::PositionTune { .. }
+        | OuterPhase::FilterTune { .. }
+        | OuterPhase::Commit { .. }
+        | OuterPhase::Done(_)
+        | OuterPhase::Failed(_)
+        | OuterPhase::FailedWithSafety { .. } => Ok(None),
     }
 }
 
@@ -109,6 +227,11 @@ pub(crate) async fn step_outer_with_trace<B: CommissioningBackend>(
     trace_summary_seqs: &mut TraceSummarySeqs,
     backend: &mut B,
 ) -> StepResult {
+    #[cfg(feature = "trace-velocity-sweep")]
+    let timing_context = match velocity_timing_context(phase) {
+        Ok(context) => context,
+        Err(error) => return velocity_fault_terminal(phase, error, None),
+    };
     if let Some(safety) = outer_safety_mut(phase) {
         if !safety.budget_request_is_valid() {
             defmt::warn!(
@@ -129,7 +252,21 @@ pub(crate) async fn step_outer_with_trace<B: CommissioningBackend>(
             }
             return fail_outer_with_safety(phase, err, fault);
         }
-        match check_outer_safety(safety, backend).await {
+        #[cfg(feature = "trace-velocity-sweep")]
+        let safety_result = if let Some(context) = timing_context {
+            check_outer_safety_with_timing(
+                safety,
+                trace_summary_seqs.outer_safety_timing_mut(),
+                context,
+                backend,
+            )
+            .await
+        } else {
+            check_outer_safety(safety, backend).await
+        };
+        #[cfg(not(feature = "trace-velocity-sweep"))]
+        let safety_result = check_outer_safety(safety, backend).await;
+        match safety_result {
             Ok(Some(fault)) => {
                 // Zero excitation immediately on any safety violation.
                 let _ = backend
@@ -223,6 +360,10 @@ pub(crate) async fn step_outer_with_trace<B: CommissioningBackend>(
 #[cfg(test)]
 mod tests {
     use super::clamp_outer_safety_deadline;
+    #[cfg(feature = "trace-velocity-sweep")]
+    use super::velocity_integral_timing_phase;
+    #[cfg(feature = "trace-velocity-sweep")]
+    use crate::commissioning::outer::{OuterSafetyTimingPhase, VelocityIntegralState};
     use crate::commissioning::types::StepResult;
 
     #[test]
@@ -230,5 +371,28 @@ mod tests {
         let result = clamp_outer_safety_deadline(StepResult::At(300_000), Some(2_000));
 
         assert!(matches!(result, StepResult::At(2_000)));
+    }
+
+    #[cfg(feature = "trace-velocity-sweep")]
+    #[test]
+    fn outer_safety_timing_context_distinguishes_motion_from_zero_target_work() {
+        assert_eq!(
+            velocity_integral_timing_phase(&VelocityIntegralState::Capture {
+                next_sample_us: 1,
+                deadline_us: 2,
+            }),
+            (OuterSafetyTimingPhase::MovingCapture, false)
+        );
+        assert_eq!(
+            velocity_integral_timing_phase(&VelocityIntegralState::AnalyzeMoving {
+                settle_deadline_us: 1,
+                analysis_deadline_us: 2,
+            }),
+            (OuterSafetyTimingPhase::Analysis, true)
+        );
+        assert_eq!(
+            velocity_integral_timing_phase(&VelocityIntegralState::Terminal),
+            (OuterSafetyTimingPhase::Terminalization, true)
+        );
     }
 }

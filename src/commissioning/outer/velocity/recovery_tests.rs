@@ -4,13 +4,13 @@ use super::recovery::{
     commanded_side_lower_rate_q, plan_rung_origin_recovery, recovery_return_distance_counts,
     recovery_runtime_us, step_rung_origin_recovery,
 };
-use super::sweep_plan::RequestedVelocitySource;
+use super::sweep_plan::{MAX_SAFETY_OBSERVATION_GAP_US, RequestedVelocitySource};
 use crate::autotune::TmcMechanicalRpm;
 use crate::autotune::velocity_measurement::{DyadicBlocker, StationarityWork, VelocityDirection};
 use crate::commission_dispatch::test_support::{MockBackend, SpiOp, current_limit};
 use crate::commissioning::outer::check_outer_safety;
 use crate::commissioning::outer::state::{VELOCITY_SWEEP_BLOCK_LEVELS, VelocityObservationRing};
-use crate::commissioning::outer::{OuterMotionBudget, OuterSafetyLimits};
+use crate::commissioning::outer::{OuterMotionBudget, OuterSafetyLimits, OuterSafetyTimingPhase};
 use crate::commissioning::types::OUTER_SAFETY_FAULT_RECOVERY_WRONG_WAY;
 use foci_tmc4671::pid::PidGain;
 use foci_tmc4671::registers::{PID_VELOCITY_P_VELOCITY_I, PID_VELOCITY_TARGET};
@@ -49,6 +49,18 @@ fn return_distance_stops_at_the_inclusive_origin_band() {
     assert_eq!(recovery_return_distance_counts(1_000, 1_000), Some(0));
     assert_eq!(recovery_return_distance_counts(-1_000, 1_000), Some(0));
     assert_eq!(recovery_return_distance_counts(i32::MIN, 1_000), None);
+}
+
+#[test]
+fn maximum_gap_blind_travel_remains_inside_the_recovery_reserve() {
+    let blind_travel_counts =
+        (6_591_u128 * 4_000 * u128::from(MAX_SAFETY_OBSERVATION_GAP_US)).div_ceil(1_000_000_000);
+
+    assert_eq!(blind_travel_counts, 528);
+    assert_eq!(1_001 - i32::try_from(blind_travel_counts).unwrap(), 473);
+    assert_eq!(473 - 1_000, -527);
+    assert_eq!(-1_001 + i32::try_from(blind_travel_counts).unwrap(), -473);
+    assert_eq!(-473 + 1_000, 527);
 }
 
 #[test]
@@ -442,6 +454,30 @@ fn recovery_controller_preserves_reverse_command_sign() {
     );
 }
 
+#[test]
+fn recovery_timing_context_tracks_setup_motion_and_settle() {
+    let mut fixture = RecoveryFixture::new(1_040, Some(14_000_000));
+    assert_eq!(
+        fixture.runtime.outer_safety_timing_phase(),
+        (OuterSafetyTimingPhase::RecoverySetup, true)
+    );
+
+    fixture.command_motion();
+    assert_eq!(
+        fixture.runtime.outer_safety_timing_phase(),
+        (OuterSafetyTimingPhase::RecoveryMove, false)
+    );
+
+    assert_eq!(
+        fixture.sample(1_000, 1_000),
+        RungOriginRecoveryStep::ReadyNow
+    );
+    assert_eq!(
+        fixture.runtime.outer_safety_timing_phase(),
+        (OuterSafetyTimingPhase::RecoverySettle, true)
+    );
+}
+
 fn safety_fault(result: RungOriginRecoveryStep) -> u8 {
     let RungOriginRecoveryStep::Fault {
         safety: Some(fault),
@@ -457,7 +493,10 @@ fn safety_fault(result: RungOriginRecoveryStep) -> u8 {
 fn recovery_safety_inherits_gap_quarter_turn_duration_current_and_spi_faults() {
     let mut gap = RecoveryFixture::new(8_458, Some(14_000_000));
     gap.command_motion();
-    assert_eq!(safety_fault(gap.sample(5_001, 8_458)), 7);
+    assert_eq!(
+        safety_fault(gap.sample(MAX_SAFETY_OBSERVATION_GAP_US + 1, 8_458)),
+        7
+    );
 
     let mut quarter = RecoveryFixture::new(8_458, Some(14_000_000));
     quarter.command_motion();

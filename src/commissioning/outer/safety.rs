@@ -438,6 +438,27 @@ pub(crate) async fn check_outer_safety<B: CommissioningBackend>(
     safety: &mut OuterSafetyLimits,
     backend: &mut B,
 ) -> Result<Option<OuterSafetyFault>, CommissionError> {
+    check_outer_safety_inner(safety, None, backend).await
+}
+
+#[cfg(feature = "trace-velocity-sweep")]
+pub(crate) async fn check_outer_safety_with_timing<B: CommissioningBackend>(
+    safety: &mut OuterSafetyLimits,
+    timing: &mut super::OuterSafetyTimingAccumulator,
+    context: super::OuterSafetyTimingContext,
+    backend: &mut B,
+) -> Result<Option<OuterSafetyFault>, CommissionError> {
+    check_outer_safety_inner(safety, Some((timing, context)), backend).await
+}
+
+async fn check_outer_safety_inner<B: CommissioningBackend>(
+    safety: &mut OuterSafetyLimits,
+    timing: Option<(
+        &mut super::OuterSafetyTimingAccumulator,
+        super::safety_timing::OuterSafetyTimingContext,
+    )>,
+    backend: &mut B,
+) -> Result<Option<OuterSafetyFault>, CommissionError> {
     // Safety limits are initialized by MechanicalId::Setup after it reads
     // the real encoder baseline. Skip the pre-setup placeholder values.
     if safety.torque_cap == 0 {
@@ -511,6 +532,11 @@ pub(crate) async fn check_outer_safety<B: CommissioningBackend>(
         })
         .transpose()?
         .unwrap_or(0);
+    if safety.last_sample_us.is_some() {
+        if let Some((timing, context)) = timing {
+            timing.observe(dt_us, context)?;
+        }
+    }
     if safety.last_sample_us.is_some() && (dt_us == 0 || dt_us > MAX_SAFETY_OBSERVATION_GAP_US) {
         defmt::warn!(
             "outer safety: observation gap {}us exceeds wrap-safe cap {}us",
@@ -666,6 +692,7 @@ pub(super) fn outer_safety_mut(phase: &mut OuterPhase) -> Option<&mut OuterSafet
                 | VelocitySweepState::Terminal { .. },
             ..
         } => None,
+        #[cfg(feature = "trace-velocity-sweep")]
         OuterPhase::VelocitySweep { safety, .. } | OuterPhase::VelocityIntegral { safety, .. } => {
             Some(safety)
         }
@@ -678,6 +705,8 @@ pub(super) fn outer_safety_mut(phase: &mut OuterPhase) -> Option<&mut OuterSafet
 
 #[cfg(test)]
 mod tests {
+    #[cfg(feature = "trace-velocity-sweep")]
+    use super::check_outer_safety_with_timing;
     use super::{
         MAX_SAFETY_OBSERVATION_GAP_US, OUTER_SAFETY_SAMPLE_MAX_REGISTER_OPS, OuterMotionBudget,
         OuterSafetyLimits, check_outer_safety,
@@ -687,6 +716,11 @@ mod tests {
     use crate::commissioning::outer::{
         MECHANICAL_ID_VELOCITY_CAP_COUNTS_PER_MS, MechanicalIdData, MechanicalIdState, OuterPhase,
         step_outer,
+    };
+    #[cfg(feature = "trace-velocity-sweep")]
+    use crate::commissioning::outer::{
+        OuterSafetyTimingAccumulator, OuterSafetyTimingContext, OuterSafetyTimingPhase,
+        OuterSafetyTimingStage,
     };
     use crate::commissioning::types::{
         OUTER_SAFETY_FAULT_OBSERVATION_GAP, OUTER_SAFETY_FAULT_POSITION,
@@ -978,6 +1012,78 @@ mod tests {
             assert_eq!(safety.prev_encoder_count, before.prev_encoder_count);
             assert_eq!(safety.last_sample_us, before.last_sample_us);
             assert_eq!(safety.unwrapped_position, before.unwrapped_position);
+        });
+    }
+
+    #[test]
+    fn outer_safety_allows_only_the_nonfaulting_quarter_turn_at_the_maximum_gap() {
+        pollster::block_on(async {
+            let mut legal = armed_safety(Some(0), 1_000);
+            let mut legal_backend = MockBackend::new();
+            legal_backend.elapsed_us_value = MAX_SAFETY_OBSERVATION_GAP_US;
+            legal_backend.mechanical_encoder_position_counts_value = 999;
+
+            assert_eq!(
+                check_outer_safety(&mut legal, &mut legal_backend).await,
+                Ok(None)
+            );
+            assert_eq!(legal.unwrapped_position, 999);
+
+            let mut quarter_turn = armed_safety(Some(0), 1_000);
+            let before = quarter_turn;
+            let mut quarter_turn_backend = MockBackend::new();
+            quarter_turn_backend.elapsed_us_value = MAX_SAFETY_OBSERVATION_GAP_US;
+            quarter_turn_backend.mechanical_encoder_position_counts_value = 1_000;
+
+            let fault = check_outer_safety(&mut quarter_turn, &mut quarter_turn_backend)
+                .await
+                .expect("the observation should produce a safety fault")
+                .expect("an exact quarter turn must fault at the maximum gap");
+
+            assert_eq!(fault.reason, OUTER_SAFETY_FAULT_QUARTER_TURN);
+            assert_eq!(quarter_turn.prev_encoder_count, before.prev_encoder_count);
+            assert_eq!(quarter_turn.last_sample_us, before.last_sample_us);
+            assert_eq!(quarter_turn.unwrapped_position, before.unwrapped_position);
+        });
+    }
+
+    #[cfg(feature = "trace-velocity-sweep")]
+    #[test]
+    fn observation_gap_contract_records_the_faulting_gap_before_delta_interpretation() {
+        pollster::block_on(async {
+            let mut safety = armed_safety(Some(0), 1);
+            let before = safety;
+            let mut backend = MockBackend::new();
+            backend.elapsed_us_value = MAX_SAFETY_OBSERVATION_GAP_US + 1;
+            backend.mechanical_encoder_position_counts_value = 1_000;
+            let mut timing = OuterSafetyTimingAccumulator::new();
+            let context = OuterSafetyTimingContext::new(
+                OuterSafetyTimingStage::Proportional,
+                OuterSafetyTimingPhase::RecoverySetup,
+                21,
+                7,
+                true,
+            )
+            .unwrap();
+
+            let fault =
+                check_outer_safety_with_timing(&mut safety, &mut timing, context, &mut backend)
+                    .await
+                    .expect("the observation should be interpreted")
+                    .expect("the over-bound gap must fault");
+
+            assert_eq!(fault.reason, OUTER_SAFETY_FAULT_OBSERVATION_GAP);
+            assert_eq!(safety.prev_encoder_count, before.prev_encoder_count);
+            assert_eq!(safety.last_sample_us, before.last_sample_us);
+            assert_eq!(safety.unwrapped_position, before.unwrapped_position);
+            let summary = timing.summary();
+            assert_eq!(summary.sample_count, 1);
+            assert_eq!(
+                u64::from(summary.max_gap_us),
+                MAX_SAFETY_OBSERVATION_GAP_US + 1
+            );
+            assert_eq!(summary.max_context, Some(context));
+            assert_eq!(summary.over_bound_count, 1);
         });
     }
 

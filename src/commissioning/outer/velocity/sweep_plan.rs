@@ -41,8 +41,10 @@ pub const CURRENT_HEADROOM_DEN: u32 = 10;
 const MICROS_PER_SECOND: u64 = 1_000_000;
 /// Maximum measured time between encoder reads before wrap-safe interpretation is refused.
 ///
-/// Two independent stressed trace runs observed valid 3,040 us and 3,036 us gaps.
-pub const MAX_SAFETY_OBSERVATION_GAP_US: u64 = 5_000;
+/// The recovery-enabled trace campaign observed a valid 14,329 us gap after the
+/// highest-P rung record. Twenty milliseconds is the largest 5 ms-aligned bound
+/// that keeps the live 10,000 mrev/s host ceiling below encoder observability.
+pub const MAX_SAFETY_OBSERVATION_GAP_US: u64 = 20_000;
 const VELOCITY_P_DIVISOR: u32 = 256;
 const HALF_OCTAVE_NUM: u32 = 181;
 const HALF_OCTAVE_DEN_SHIFT: u32 = 7;
