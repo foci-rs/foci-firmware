@@ -1672,6 +1672,38 @@ mod tests {
         }
     }
 
+    fn install_completed_rung(
+        phase: &mut OuterPhase,
+        backend: &mut MockBackend,
+        rung_count: u8,
+        current_headroom: bool,
+        recovery_rates: [CompactSignedRate; 2],
+        offset_counts: i32,
+    ) {
+        backend.current_limit_value = current_limit(2_448);
+        assert!(matches!(
+            pollster::block_on(step_velocity_sweep_with_trace(phase, backend)),
+            StepResult::VelocitySweepEvent(VelocitySweepEvent::Planned(_))
+        ));
+        let OuterPhase::VelocitySweep {
+            state,
+            data,
+            safety,
+        } = phase
+        else {
+            panic!("velocity sweep should remain active");
+        };
+        data.plan.rung_count = rung_count;
+        let p = data.plan.gain_at(0).unwrap().raw();
+        data.evidence = VelocitySweepEvidenceState::Complete {
+            forward: eligible_directional_analysis(p).report,
+            reverse: eligible_directional_analysis(p).report,
+            recovery_rates,
+        };
+        safety.unwrapped_position = offset_counts;
+        *state = VelocitySweepState::EmitRung { current_headroom };
+    }
+
     fn selected_region(
         direction: VelocityDirection,
         pooled: [i32; 2],
@@ -1793,6 +1825,128 @@ mod tests {
         assert_eq!(closed.member_mask, 0b0001);
         assert_eq!(closed.boundary_rung, None);
         assert_eq!(closed.closure, DirectionalRegionClosure::CurrentHeadroom);
+    }
+
+    #[test]
+    fn sweep_recovery_cause_is_unique_in_the_stage_b_namespace() {
+        assert_eq!(SWEEP_CAUSE_RECOVERY, 7);
+        assert!(
+            ![
+                SWEEP_CAUSE_NONE,
+                SWEEP_CAUSE_NO_DIRECTIONAL_MODEL,
+                SWEEP_CAUSE_NO_JOINT_OPERABLE_REGION,
+                SWEEP_CAUSE_INTEGRITY,
+                SWEEP_CAUSE_CURRENT_HEADROOM,
+            ]
+            .contains(&SWEEP_CAUSE_RECOVERY)
+        );
+    }
+
+    #[test]
+    fn sweep_recovery_containment_stops_before_the_next_gain() {
+        let mut phase = phase();
+        let mut backend = MockBackend::new();
+        install_completed_rung(
+            &mut phase,
+            &mut backend,
+            2,
+            false,
+            [CompactSignedRate::ZERO; 2],
+            1_001,
+        );
+
+        assert!(matches!(
+            pollster::block_on(step_velocity_sweep_with_trace(&mut phase, &mut backend)),
+            StepResult::VelocitySweepEvent(VelocitySweepEvent::Rung(_))
+        ));
+        assert!(matches!(
+            pollster::block_on(step_velocity_sweep_with_trace(&mut phase, &mut backend)),
+            StepResult::ReadyNow
+        ));
+        assert!(matches!(
+            pollster::block_on(step_velocity_sweep_with_trace(&mut phase, &mut backend)),
+            StepResult::ReadyNow
+        ));
+        assert!(matches!(
+            phase,
+            OuterPhase::VelocitySweep {
+                state: VelocitySweepState::FinishForward {
+                    current_headroom: false,
+                    recovery_failure: true,
+                },
+                ..
+            }
+        ));
+        assert!(!backend.spi_log.iter().any(|operation| {
+            matches!(operation, SpiOp::Write(address, value)
+                if *address == PID_VELOCITY_TARGET.addr() && *value != 0)
+        }));
+    }
+
+    #[test]
+    fn completed_current_terminus_recovers_but_partial_terminus_skips() {
+        let mut completed_phase = phase();
+        let mut completed_backend = MockBackend::new();
+        install_completed_rung(
+            &mut completed_phase,
+            &mut completed_backend,
+            1,
+            true,
+            [CompactSignedRate::ZERO; 2],
+            1_001,
+        );
+        assert!(matches!(
+            pollster::block_on(step_velocity_sweep_with_trace(
+                &mut completed_phase,
+                &mut completed_backend,
+            )),
+            StepResult::VelocitySweepEvent(VelocitySweepEvent::Rung(_))
+        ));
+        assert!(matches!(
+            completed_phase,
+            OuterPhase::VelocitySweep {
+                state: VelocitySweepState::RecoverRung {
+                    current_headroom: true,
+                    final_rung: true,
+                },
+                ..
+            }
+        ));
+
+        let mut partial_phase = phase();
+        let mut partial_backend = MockBackend::new();
+        install_completed_rung(
+            &mut partial_phase,
+            &mut partial_backend,
+            1,
+            true,
+            [CompactSignedRate::ZERO; 2],
+            1_001,
+        );
+        let OuterPhase::VelocitySweep { data, .. } = &mut partial_phase else {
+            panic!("velocity sweep should remain active");
+        };
+        let VelocitySweepEvidenceState::Complete { forward, .. } = &mut data.evidence else {
+            panic!("test must begin from complete transient storage");
+        };
+        forward.collected_mask = 0b0001;
+        assert!(matches!(
+            pollster::block_on(step_velocity_sweep_with_trace(
+                &mut partial_phase,
+                &mut partial_backend,
+            )),
+            StepResult::VelocitySweepEvent(VelocitySweepEvent::Rung(_))
+        ));
+        assert!(matches!(
+            partial_phase,
+            OuterPhase::VelocitySweep {
+                state: VelocitySweepState::FinishForward {
+                    current_headroom: true,
+                    recovery_failure: false,
+                },
+                ..
+            }
+        ));
     }
 
     #[test]
