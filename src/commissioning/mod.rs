@@ -2149,16 +2149,20 @@ mod tests {
         engine.emit_stage_b_terminal_trace(&mut backend, terminal, None);
 
         let events = &backend.trace_events;
+        #[cfg(not(feature = "trace-velocity-sweep"))]
+        assert_eq!(events.len(), 4);
+        #[cfg(feature = "trace-velocity-sweep")]
         assert_eq!(events.len(), 5);
+        let phase_end_index = usize::from(cfg!(feature = "trace-velocity-sweep")) + 2;
         assert_trace_event(
-            &events[3],
+            &events[phase_end_index],
             crate::trace::events::EVENT_COMMISSION_PHASE_END,
             EngineKind::OuterTune,
             TraceEventLevel::Info,
             [initial_outer_phase_id().to_u8() as i32, PHASE_END_OK.into()],
         );
         assert_trace_event(
-            &events[4],
+            &events[phase_end_index + 1],
             crate::trace::events::EVENT_COMMISSION_VELOCITY_SWEEP_TERMINAL,
             EngineKind::OuterTune,
             TraceEventLevel::Warn,
@@ -2186,16 +2190,20 @@ mod tests {
         engine.emit_stage_b_terminal_trace(&mut backend, terminal, None);
 
         let events = &backend.trace_events;
+        #[cfg(not(feature = "trace-velocity-sweep"))]
+        assert_eq!(events.len(), 4);
+        #[cfg(feature = "trace-velocity-sweep")]
         assert_eq!(events.len(), 5);
+        let phase_end_index = usize::from(cfg!(feature = "trace-velocity-sweep")) + 2;
         assert_trace_event(
-            &events[3],
+            &events[phase_end_index],
             crate::trace::events::EVENT_COMMISSION_PHASE_END,
             EngineKind::OuterTune,
             TraceEventLevel::Info,
             [initial_outer_phase_id().to_u8() as i32, PHASE_END_OK.into()],
         );
         assert_trace_event(
-            &events[4],
+            &events[phase_end_index + 1],
             crate::trace::events::EVENT_COMMISSION_VELOCITY_SWEEP_TERMINAL,
             EngineKind::OuterTune,
             TraceEventLevel::Error,
