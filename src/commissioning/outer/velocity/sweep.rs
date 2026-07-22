@@ -1585,7 +1585,10 @@ fn observe_directional_rung_for_sweep(
 #[cfg(test)]
 mod tests {
     use crate::autotune::velocity_measurement::VelocityDirection;
-    use crate::autotune::{EquivalentTorqueTargetInterval, EquivalentTorqueTargetQ16};
+    use crate::autotune::{
+        CommissionError, CommissionProfile, EquivalentTorqueTargetInterval,
+        EquivalentTorqueTargetQ16, OperatingMode, TransientBuffer,
+    };
     use crate::commission_dispatch::test_support::{MockBackend, SpiOp, current_limit};
     use crate::commissioning::outer::velocity::operating_region::{
         BoundRounding, CompactSignedRate, DirectionalRegionClosure, DirectionalRegionFold,
@@ -1619,6 +1622,22 @@ mod tests {
             data: VelocitySweepData::new(0),
             safety: OuterSafetyLimits::new(0, budget),
         }
+    }
+
+    fn dispatch_outer_tick(phase: &mut OuterPhase, backend: &mut MockBackend) -> StepResult {
+        let mut buffer = TransientBuffer::new();
+        pollster::block_on(crate::commissioning::outer::step_outer(
+            phase,
+            &mut buffer,
+            CommissionProfile::Balanced,
+            OperatingMode::Nominal,
+            0,
+            0,
+            false,
+            0,
+            0,
+            backend,
+        ))
     }
 
     fn enter_first_capture(phase: &mut OuterPhase, backend: &mut MockBackend) {
@@ -1900,6 +1919,96 @@ mod tests {
             matches!(operation, SpiOp::Write(address, value)
                 if *address == PID_VELOCITY_TARGET.addr() && *value != 0)
         }));
+    }
+
+    #[test]
+    fn terminalizing_sweep_skips_post_motion_safety_spi_read() {
+        let mut phase = phase();
+        let mut backend = MockBackend::new();
+        install_completed_rung(
+            &mut phase,
+            &mut backend,
+            2,
+            false,
+            [CompactSignedRate::ZERO; 2],
+            1_001,
+        );
+
+        assert!(matches!(
+            pollster::block_on(step_velocity_sweep_with_trace(&mut phase, &mut backend)),
+            StepResult::VelocitySweepEvent(VelocitySweepEvent::Rung(_))
+        ));
+        assert!(matches!(
+            pollster::block_on(step_velocity_sweep_with_trace(&mut phase, &mut backend)),
+            StepResult::ReadyNow
+        ));
+        assert!(matches!(
+            pollster::block_on(step_velocity_sweep_with_trace(&mut phase, &mut backend)),
+            StepResult::VelocitySweepEvent(VelocitySweepEvent::Recovery(report))
+                if report.report.outcome == RungOriginRecoveryOutcome::ContainedNoRate
+        ));
+
+        backend.elapsed_us_value = 2_000;
+        backend.fail_on_read = Some(ABN_DECODER_COUNT.addr());
+        let reads_before = backend
+            .spi_log
+            .iter()
+            .filter(|operation| matches!(operation, SpiOp::Read))
+            .count();
+
+        let result = dispatch_outer_tick(&mut phase, &mut backend);
+
+        assert!(matches!(result, StepResult::ReadyNow));
+        assert!(matches!(
+            phase,
+            OuterPhase::VelocitySweep {
+                state: VelocitySweepState::FinishReverse {
+                    recovery_failure: true,
+                    ..
+                },
+                ..
+            }
+        ));
+        assert_eq!(
+            backend
+                .spi_log
+                .iter()
+                .filter(|operation| matches!(operation, SpiOp::Read))
+                .count(),
+            reads_before
+        );
+    }
+
+    #[test]
+    fn active_sweep_recovery_keeps_outer_safety_spi_read() {
+        let mut phase = phase();
+        let mut backend = MockBackend::new();
+        install_completed_rung(
+            &mut phase,
+            &mut backend,
+            2,
+            false,
+            [CompactSignedRate::encode(1_000_000, BoundRounding::TowardNegativeInfinity); 2],
+            1_001,
+        );
+        assert!(matches!(
+            pollster::block_on(step_velocity_sweep_with_trace(&mut phase, &mut backend)),
+            StepResult::VelocitySweepEvent(VelocitySweepEvent::Rung(_))
+        ));
+        assert!(matches!(
+            phase,
+            OuterPhase::VelocitySweep {
+                state: VelocitySweepState::RecoverRung { .. },
+                ..
+            }
+        ));
+
+        backend.elapsed_us_value = 2_000;
+        backend.fail_on_read = Some(ABN_DECODER_COUNT.addr());
+
+        let result = dispatch_outer_tick(&mut phase, &mut backend);
+
+        assert_sweep_fault(result, CommissionError::Spi);
     }
 
     #[test]

@@ -11,6 +11,8 @@ use crate::commissioning::types::{
     OUTER_SAFETY_FAULT_VELOCITY, OuterSafetyFault,
 };
 
+#[cfg(feature = "trace-velocity-sweep")]
+use super::VelocitySweepState;
 use super::limits::{MECHANICAL_ID_VELOCITY_CAP_COUNTS_PER_MS, POSITION_WINDOW_COUNTS};
 use super::velocity::sweep_plan::{
     ENVELOPE_ABSOLUTE_MARGIN_MREV_S, ENVELOPE_PROPORTIONAL_DEN, ENVELOPE_PROPORTIONAL_NUM,
@@ -655,6 +657,15 @@ pub(super) fn outer_safety_mut(phase: &mut OuterPhase) -> Option<&mut OuterSafet
         | OuterPhase::PositionTune { safety, .. }
         | OuterPhase::FilterTune { safety, .. } => Some(safety),
         #[cfg(feature = "trace-velocity-sweep")]
+        OuterPhase::VelocitySweep {
+            state:
+                VelocitySweepState::FinishForward { .. }
+                | VelocitySweepState::FinishReverse { .. }
+                | VelocitySweepState::FinishJoint { .. }
+                | VelocitySweepState::EmitHandoff { .. }
+                | VelocitySweepState::Terminal { .. },
+            ..
+        } => None,
         OuterPhase::VelocitySweep { safety, .. } | OuterPhase::VelocityIntegral { safety, .. } => {
             Some(safety)
         }
