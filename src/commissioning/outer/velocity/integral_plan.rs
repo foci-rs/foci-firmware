@@ -253,6 +253,10 @@ impl VelocityIntegralPlan {
             zero_settle_us: self.zero_settle_us,
             analysis_budget_us: self.analysis_budget_us,
             maximum_workflow_ms: self.maximum_workflow_ms,
+            recovery_origin_band_counts: self.recovery_origin_band_counts,
+            recovery_nominal_slot_us: self.recovery_nominal_slot_us,
+            recovery_maximum_slot_us: self.recovery_maximum_slot_us,
+            recovery_slot_count: self.recovery_slot_count,
             hard_torque_limit: self.hard_torque_limit,
             usable_torque_limit: self.usable_torque_limit,
         }
@@ -288,6 +292,14 @@ pub struct VelocityIntegralExecutionPlan {
     pub analysis_budget_us: u32,
     /// Conservative complete Stage-C duration retained in candidate identity.
     pub maximum_workflow_ms: u32,
+    /// Inclusive immutable-origin recovery band.
+    pub recovery_origin_band_counts: u32,
+    /// Conservative nominal duration reserved for one recovery slot.
+    pub recovery_nominal_slot_us: u32,
+    /// Host-declared maximum duration reserved for one recovery slot.
+    pub recovery_maximum_slot_us: u32,
+    /// Maximum recovery-record count reserved by the plan.
+    pub recovery_slot_count: u8,
     /// Hard torque-target limit.
     pub hard_torque_limit: u16,
     /// Inclusive usable torque-target boundary.

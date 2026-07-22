@@ -45,8 +45,8 @@ use crate::trace::events::{
 };
 #[cfg(feature = "trace-velocity-sweep")]
 use crate::trace::events::{
-    EVENT_COMMISSION_VELOCITY_INTEGRAL_COMPLETE, EVENT_COMMISSION_VELOCITY_INTEGRAL_DERIVED,
-    EVENT_COMMISSION_VELOCITY_INTEGRAL_TERMINAL,
+    EVENT_COMMISSION_RUNG_ORIGIN_RECOVERY, EVENT_COMMISSION_VELOCITY_INTEGRAL_COMPLETE,
+    EVENT_COMMISSION_VELOCITY_INTEGRAL_DERIVED, EVENT_COMMISSION_VELOCITY_INTEGRAL_TERMINAL,
 };
 
 // Re-export public API surface for downstream consumers.
@@ -1035,6 +1035,11 @@ impl CommissioningEngine {
                         EVENT_COMMISSION_VELOCITY_SWEEP_RUNG,
                         report.evidence_sequence,
                     ),
+                    #[cfg(feature = "trace-velocity-sweep")]
+                    crate::commissioning::types::VelocitySweepEvent::Recovery(report) => (
+                        EVENT_COMMISSION_RUNG_ORIGIN_RECOVERY,
+                        report.evidence_sequence,
+                    ),
                     crate::commissioning::types::VelocitySweepEvent::DirectionalRegion(report) => (
                         EVENT_COMMISSION_VELOCITY_SWEEP_DERIVED,
                         report.evidence_sequence,
@@ -1093,6 +1098,11 @@ impl CommissioningEngine {
                     ),
                     crate::commissioning::types::VelocityIntegralEvent::Rung(report) => (
                         EVENT_COMMISSION_VELOCITY_INTEGRAL_RUNG,
+                        report.evidence_sequence,
+                    ),
+                    #[cfg(feature = "trace-velocity-sweep")]
+                    crate::commissioning::types::VelocityIntegralEvent::Recovery(report) => (
+                        EVENT_COMMISSION_RUNG_ORIGIN_RECOVERY,
                         report.evidence_sequence,
                     ),
                 };

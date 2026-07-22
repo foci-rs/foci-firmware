@@ -1,18 +1,27 @@
 //! Shared rung-origin recovery geometry and checked deadline arithmetic.
 
-#![allow(dead_code)] // Stage C and canonical report consumers land in the next two tasks.
-
+#[cfg(feature = "trace-velocity-sweep")]
 mod controller;
 
+#[cfg(feature = "trace-velocity-sweep")]
 pub(crate) use controller::step_rung_origin_recovery;
 
+#[cfg(feature = "trace-velocity-sweep")]
 use crate::autotune::velocity_measurement::{
     DyadicBlocker, StationarityWork, VELOCITY_RATE_Q_SCALE, VelocityDirection,
 };
+#[cfg(not(feature = "trace-velocity-sweep"))]
+use crate::autotune::velocity_measurement::{VELOCITY_RATE_Q_SCALE, VelocityDirection};
+#[cfg(feature = "trace-velocity-sweep")]
 use crate::autotune::{CommissionError, TmcMechanicalRpm};
+use crate::commissioning::outer::OuterMotionBudget;
+#[cfg(feature = "trace-velocity-sweep")]
+use crate::commissioning::outer::OuterSafetyLimits;
+#[cfg(feature = "trace-velocity-sweep")]
 use crate::commissioning::outer::state::{VELOCITY_SWEEP_BLOCK_LEVELS, VelocityObservationRing};
-use crate::commissioning::outer::{OuterMotionBudget, OuterSafetyLimits};
+#[cfg(feature = "trace-velocity-sweep")]
 use crate::commissioning::types::OuterSafetyFault;
+#[cfg(feature = "trace-velocity-sweep")]
 use foci_tmc4671::pid::PidGain;
 
 use super::sweep_plan::{MOVING_STROKE_US, SETTLE_ANALYSIS_BUDGET_US, ZERO_SETTLE_US};
@@ -21,6 +30,7 @@ const MREV_PER_REV: u128 = 1_000;
 const MICROS_PER_SECOND: u128 = 1_000_000;
 
 /// Commissioning stage that owns one recovery record.
+#[cfg(feature = "trace-velocity-sweep")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 #[repr(u8)]
 #[allow(dead_code)]
@@ -32,6 +42,7 @@ pub(crate) enum RecoveryStage {
 }
 
 /// Terminal classification for one bounded recovery attempt.
+#[cfg(feature = "trace-velocity-sweep")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 #[repr(u8)]
 pub(crate) enum RungOriginRecoveryOutcome {
@@ -46,6 +57,7 @@ pub(crate) enum RungOriginRecoveryOutcome {
 }
 
 /// Exact reason that bounded or authorized the recovery attempt.
+#[cfg(feature = "trace-velocity-sweep")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 #[repr(u8)]
 pub(crate) enum RecoveryBindingSource {
@@ -57,8 +69,9 @@ pub(crate) enum RecoveryBindingSource {
 }
 
 /// Complete stage-neutral summary of one recovery slot.
+#[cfg(feature = "trace-velocity-sweep")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
-pub(crate) struct RungOriginRecoveryReport {
+pub struct RungOriginRecoveryReport {
     pub(crate) stage: RecoveryStage,
     pub(crate) rung_index: u8,
     pub(crate) p_raw: u16,
@@ -77,6 +90,7 @@ pub(crate) struct RungOriginRecoveryReport {
 }
 
 /// One cooperative result from the shared recovery worker.
+#[cfg(feature = "trace-velocity-sweep")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub(crate) enum RungOriginRecoveryStep {
     ReadyNow,
@@ -89,6 +103,7 @@ pub(crate) enum RungOriginRecoveryStep {
     },
 }
 
+#[cfg(feature = "trace-velocity-sweep")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 enum RecoveryState {
     WriteGains,
@@ -118,11 +133,13 @@ enum RecoveryState {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 #[repr(C)]
+#[cfg(feature = "trace-velocity-sweep")]
 pub(crate) struct ExactU64Parts {
     low: u32,
     high: u32,
 }
 
+#[cfg(feature = "trace-velocity-sweep")]
 impl ExactU64Parts {
     const ZERO: Self = Self { low: 0, high: 0 };
 
@@ -161,6 +178,7 @@ pub(crate) enum RungOriginRecoveryPlanError {
 }
 
 /// Compact state retained by the owning phase while recovery borrows analysis storage.
+#[cfg(feature = "trace-velocity-sweep")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub(crate) struct RungOriginRecoveryRuntime {
     stage: RecoveryStage,
@@ -181,6 +199,7 @@ pub(crate) struct RungOriginRecoveryRuntime {
 }
 
 /// Immutable inputs for one checked rung-origin recovery attempt.
+#[cfg(feature = "trace-velocity-sweep")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub(crate) struct RungOriginRecoveryConfig {
     pub(crate) stage: RecoveryStage,
@@ -192,6 +211,7 @@ pub(crate) struct RungOriginRecoveryConfig {
     pub(crate) lower_rate_q: Option<u64>,
 }
 
+#[cfg(feature = "trace-velocity-sweep")]
 impl RungOriginRecoveryRuntime {
     /// Construct one checked recovery attempt without touching hardware.
     pub(crate) fn new(
@@ -304,6 +324,7 @@ impl RungOriginRecoveryRuntime {
 }
 
 /// Borrowed large state shared with the owning Stage-B or Stage-C phase.
+#[cfg(feature = "trace-velocity-sweep")]
 pub(crate) struct RungOriginRecoveryResources<'a> {
     pub(crate) safety: &'a mut OuterSafetyLimits,
     pub(crate) observations: &'a mut VelocityObservationRing,

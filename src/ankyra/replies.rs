@@ -2789,6 +2789,8 @@ pub struct FociVelocityStageBTerminalCore {
     pub outcome: u8,
     /// Dedicated Stage B terminal cause.
     pub cause: u8,
+    /// One when final or partial-rung recovery could not establish the continuation origin.
+    pub recovery_unavailable: u8,
     /// Directional-model sufficiency mask.
     pub model_direction_mask: u8,
     /// Direct nominated-P coverage mask.
@@ -3484,6 +3486,8 @@ pub struct FociVelocityIntegralTerminalCore {
     pub outcome: u8,
     /// Dedicated Stage-C cause.
     pub cause: u8,
+    /// One when final bookend recovery could not establish the next-command origin.
+    pub recovery_unavailable: u8,
     /// Planned observation count.
     pub expected_observations: u16,
     /// Emitted observation count.
@@ -4097,6 +4101,7 @@ mod velocity_sweep_reply_tests {
                 fragment: u8::MAX,
                 outcome: u8::MAX,
                 cause: u8::MAX,
+                recovery_unavailable: u8::MAX,
                 model_direction_mask: u8::MAX,
                 coverage_mask: u8::MAX,
                 forward_region_count: u8::MAX,
@@ -4502,6 +4507,7 @@ mod velocity_sweep_reply_tests {
                 fragment: u8::MAX,
                 outcome: u8::MAX,
                 cause: u8::MAX,
+                recovery_unavailable: u8::MAX,
                 expected_observations: u16::MAX,
                 emitted_observations: u16::MAX,
                 expected_rungs: u16::MAX,

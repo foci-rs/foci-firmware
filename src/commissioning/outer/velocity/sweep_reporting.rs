@@ -2,8 +2,8 @@
 
 use crate::autotune::velocity_measurement::StationarityResult;
 use crate::commissioning::types::{
-    VelocitySweepEvent, VelocitySweepObservation, VelocitySweepPlanned, VelocitySweepRungReport,
-    VelocitySweepTerminal,
+    RungOriginRecoveryEvidence, VelocitySweepEvent, VelocitySweepObservation, VelocitySweepPlanned,
+    VelocitySweepRungReport, VelocitySweepTerminal,
 };
 
 use super::sweep_consensus::consensus_class_report_code;
@@ -61,6 +61,7 @@ impl VelocitySweepIntegrity {
             VelocitySweepEvent::Rung(_) => {
                 self.emitted_rungs = self.emitted_rungs.saturating_add(1);
             }
+            VelocitySweepEvent::Recovery(_) => {}
             VelocitySweepEvent::DirectionalRegion(report) => {
                 let direction = match report.region.direction {
                     crate::autotune::velocity_measurement::VelocityDirection::Forward => 0,
@@ -124,6 +125,7 @@ pub(crate) fn encode_velocity_sweep_event(
         VelocitySweepEvent::Planned(report) => encode_plan(report),
         VelocitySweepEvent::Observation(report) => encode_observation(report),
         VelocitySweepEvent::Rung(report) => encode_rung(report),
+        VelocitySweepEvent::Recovery(report) => encode_rung_origin_recovery(report),
         VelocitySweepEvent::DirectionalRegion(report) => {
             let mut record = VelocitySweepCanonicalRecord::new();
             record.push_u8(4);
@@ -210,6 +212,38 @@ pub(crate) fn encode_velocity_sweep_event(
     }
 }
 
+/// Encode one stage-neutral rung-origin recovery in exact canonical wire order.
+pub(crate) fn encode_rung_origin_recovery(
+    evidence: RungOriginRecoveryEvidence,
+) -> VelocitySweepCanonicalRecord {
+    let report = evidence.report;
+    let mut record = VelocitySweepCanonicalRecord::new();
+    record.push_u8(9);
+    record.push_u32(evidence.run_sequence);
+    record.push_u16(evidence.evidence_sequence);
+    record.push_u8(report.stage as u8);
+    record.push_u8(report.rung_index);
+    record.push_u16(report.p_raw);
+    record.push_u32(report.planned_velocity_mrev_s);
+    record.push_i32(report.start_offset_counts);
+    record.push_i32(report.closest_offset_counts);
+    record.push_i32(report.final_offset_counts);
+    record.push_u32(report.origin_band_counts);
+    push_u64(&mut record, report.lower_rate_q.to_u64());
+    record.push_u32(report.moving_duration_us);
+    record.push_u32(report.settle_duration_us);
+    record.push_u32(report.total_duration_us);
+    record.push_u16(report.peak_torque_target_abs);
+    record.push_u8(report.binding_source as u8);
+    record.push_u8(report.outcome as u8);
+    record
+}
+
+fn push_u64(record: &mut VelocitySweepCanonicalRecord, value: u64) {
+    record.push_u32(value as u32);
+    record.push_u32((value >> 32) as u32);
+}
+
 /// Encode an observation's optional structured-boundary evidence.
 pub(crate) fn encode_velocity_sweep_structured_boundary(
     report: VelocitySweepObservation,
@@ -256,6 +290,10 @@ fn encode_plan(report: VelocitySweepPlanned) -> VelocitySweepCanonicalRecord {
     record.push_u32(report.zero_settle_us);
     record.push_u32(report.nominal_workflow_ms);
     record.push_u32(report.maximum_workflow_ms);
+    record.push_u32(report.recovery_origin_band_counts);
+    record.push_u32(report.recovery_nominal_slot_us);
+    record.push_u32(report.recovery_maximum_slot_us);
+    record.push_u8(report.recovery_slot_count);
     record.push_u32(report.max_stroke_travel_mrev);
     record.push_u32(report.settle_travel_reserve_mrev);
     record.push_u32(report.negative_position_headroom_mrev);
@@ -451,6 +489,7 @@ pub(crate) fn encode_velocity_sweep_terminal(
         VelocitySweepOutcome::RejectedPlanMismatch => 4,
     });
     record.push_u8(report.cause);
+    record.push_u8(u8::from(report.recovery_unavailable));
     record.push_u32(report.run_started_us as u32);
     record.push_u32((report.run_started_us >> 32) as u32);
     record.push_u32(report.run_completed_us as u32);
@@ -468,12 +507,17 @@ mod tests {
     use crate::commissioning::outer::velocity::operating_region::{
         BoundRounding, CompactSignedRate,
     };
+    use crate::commissioning::outer::velocity::recovery::{
+        ExactU64Parts, RecoveryBindingSource, RecoveryStage, RungOriginRecoveryOutcome,
+        RungOriginRecoveryReport,
+    };
     use crate::commissioning::outer::velocity::sweep_consensus::DirectionalConsensusClass;
     use crate::commissioning::outer::velocity::sweep_evidence::{
         CompactDirectionalRungReport, DIRECTIONAL_RUNG_FLAG_INITIAL_LEAD_IN,
         DIRECTIONAL_RUNG_FLAG_OPERABLE, PooledDisturbance, VelocityObservationClass,
         VelocityObservationSummary,
     };
+    use crate::commissioning::types::RungOriginRecoveryEvidence;
     use foci_tmc4671::pid::PidGain;
 
     fn fixture_plan() -> VelocitySweepPlanned {
@@ -496,6 +540,10 @@ mod tests {
             zero_settle_us: 200_000,
             nominal_workflow_ms: 9_120,
             maximum_workflow_ms: 10_000,
+            recovery_origin_band_counts: 1_000,
+            recovery_nominal_slot_us: 1_816_958,
+            recovery_maximum_slot_us: 3_000_000,
+            recovery_slot_count: 5,
             max_stroke_travel_mrev: 1_000,
             settle_travel_reserve_mrev: 250,
             negative_position_headroom_mrev: 1_250,
@@ -503,6 +551,58 @@ mod tests {
             hard_torque_limit: 1_000,
             usable_torque_limit: 900,
         }
+    }
+
+    fn fixture_recovery() -> RungOriginRecoveryEvidence {
+        RungOriginRecoveryEvidence {
+            run_sequence: 0x1234_5678,
+            evidence_sequence: 0x9abc,
+            report: RungOriginRecoveryReport {
+                stage: RecoveryStage::Proportional,
+                rung_index: u8::MAX,
+                p_raw: u16::MAX,
+                planned_velocity_mrev_s: u32::MAX,
+                start_offset_counts: i32::MIN,
+                closest_offset_counts: i32::MAX,
+                final_offset_counts: -1,
+                origin_band_counts: u32::MAX,
+                lower_rate_q: ExactU64Parts::from_u64(0xfedc_ba98_7654_3210),
+                moving_duration_us: u32::MAX,
+                settle_duration_us: u32::MAX,
+                total_duration_us: u32::MAX,
+                peak_torque_target_abs: u16::MAX,
+                binding_source: RecoveryBindingSource::SettledRate,
+                outcome: RungOriginRecoveryOutcome::Recovered,
+            },
+        }
+    }
+
+    #[test]
+    fn rung_origin_recovery_canonical_record_is_exact_and_count_neutral() {
+        let recovery = fixture_recovery();
+        let record = encode_rung_origin_recovery(recovery);
+        let mut integrity = VelocitySweepIntegrity::new(recovery.run_sequence);
+
+        integrity.record(VelocitySweepEvent::Recovery(recovery));
+
+        assert_eq!(record.as_bytes().len(), 55);
+        assert_eq!(
+            &record.as_bytes()[1..5],
+            &recovery.run_sequence.to_le_bytes()
+        );
+        assert_eq!(
+            &record.as_bytes()[5..7],
+            &recovery.evidence_sequence.to_le_bytes()
+        );
+        assert!(
+            record
+                .as_bytes()
+                .windows(8)
+                .any(|word| { word == 0xfedc_ba98_7654_3210_u64.to_le_bytes() })
+        );
+        assert_eq!(integrity.emitted_observations(), 0);
+        assert_eq!(integrity.emitted_rungs(), 0);
+        assert_eq!(integrity.next_evidence_sequence(), 1);
     }
 
     fn fixture_region(
@@ -624,7 +724,7 @@ mod tests {
         let mut integrity = VelocitySweepIntegrity::new(7);
         integrity.record(VelocitySweepEvent::Planned(fixture_plan()));
 
-        assert_eq!(integrity.digest(), 0x0ca9_8fe8_60fb_0af8);
+        assert_eq!(integrity.digest(), 0x5df5_d108_3d3e_407d);
     }
 
     #[test]
@@ -666,7 +766,7 @@ mod tests {
             structured_boundary: None,
         }));
 
-        assert_eq!(integrity.digest(), 0xd72d_ddd2_227b_c925);
+        assert_eq!(integrity.digest(), 0xd22a_c49c_f269_f830);
     }
 
     #[test]

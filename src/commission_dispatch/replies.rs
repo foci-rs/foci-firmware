@@ -143,6 +143,41 @@ pub trait CommissionReplySink {
     ) {
     }
 
+    /// Emit Stage-B recovery geometry and reserved schedule.
+    fn foci_velocity_sweep_plan_recovery(
+        &mut self,
+        _report: crate::ankyra::replies::FociVelocitySweepPlanRecovery,
+    ) {
+    }
+
+    /// Emit rung-origin recovery identity and classification.
+    fn foci_rung_origin_recovery_core(
+        &mut self,
+        _report: crate::ankyra::replies::FociRungOriginRecoveryCore,
+    ) {
+    }
+
+    /// Emit rung-origin recovery position evidence.
+    fn foci_rung_origin_recovery_position(
+        &mut self,
+        _report: crate::ankyra::replies::FociRungOriginRecoveryPosition,
+    ) {
+    }
+
+    /// Emit rung-origin recovery timing evidence.
+    fn foci_rung_origin_recovery_timing(
+        &mut self,
+        _report: crate::ankyra::replies::FociRungOriginRecoveryTiming,
+    ) {
+    }
+
+    /// Emit rung-origin recovery rate authority and observed limits.
+    fn foci_rung_origin_recovery_limits(
+        &mut self,
+        _report: crate::ankyra::replies::FociRungOriginRecoveryLimits,
+    ) {
+    }
+
     /// Emit one velocity-observation core fragment.
     fn foci_velocity_observation_core(
         &mut self,
@@ -402,6 +437,13 @@ pub trait CommissionReplySink {
     ) {
     }
 
+    /// Emit Stage-C recovery geometry and reserved schedule.
+    fn foci_velocity_integral_plan_recovery(
+        &mut self,
+        _report: crate::ankyra::replies::FociVelocityIntegralPlanRecovery,
+    ) {
+    }
+
     /// Emit one exact positive-I plan rung.
     fn foci_velocity_integral_plan_rung(
         &mut self,
@@ -563,8 +605,9 @@ pub fn emit_velocity_integral_plan<S: CommissionReplySink>(
 ) {
     use crate::ankyra::replies::{
         FociVelocityIntegralPlanAuthority, FociVelocityIntegralPlanCore,
-        FociVelocityIntegralPlanGeometry, FociVelocityIntegralPlanRung,
-        FociVelocityIntegralPlanTiming, FociVelocityIntegralPlanTravel,
+        FociVelocityIntegralPlanGeometry, FociVelocityIntegralPlanRecovery,
+        FociVelocityIntegralPlanRung, FociVelocityIntegralPlanTiming,
+        FociVelocityIntegralPlanTravel,
     };
 
     let digest = plan.digest();
@@ -633,6 +676,15 @@ pub fn emit_velocity_integral_plan<S: CommissionReplySink>(
         negative_position_headroom_mrev: plan.motion_request.negative_position_headroom_mrev,
         positive_position_headroom_mrev: plan.motion_request.positive_position_headroom_mrev,
     });
+    sink.foci_velocity_integral_plan_recovery(FociVelocityIntegralPlanRecovery {
+        oid,
+        run_sequence,
+        evidence_sequence: sequence,
+        origin_band_counts: plan.recovery_origin_band_counts,
+        nominal_slot_us: plan.recovery_nominal_slot_us,
+        maximum_slot_us: plan.recovery_maximum_slot_us,
+        slot_count: plan.recovery_slot_count,
+    });
     for (rung_index, i_raw) in plan.positive_rungs().iter().copied().enumerate() {
         let tau_us = crate::commissioning::outer::velocity::integral_plan::velocity_i_tau_us(
             i_raw,
@@ -665,6 +717,9 @@ pub fn emit_velocity_integral_event<S: CommissionReplySink>(
         }
         crate::commissioning::types::VelocityIntegralEvent::Rung(report) => {
             emit_velocity_integral_rung(sink, oid, report);
+        }
+        crate::commissioning::types::VelocityIntegralEvent::Recovery(report) => {
+            emit_rung_origin_recovery(sink, oid, report);
         }
     }
 }
@@ -1047,6 +1102,7 @@ pub fn emit_velocity_integral_terminal<S: CommissionReplySink>(
         fragment: 0,
         outcome: outcome_code(terminal.outcome),
         cause: terminal.cause,
+        recovery_unavailable: u8::from(terminal.recovery_unavailable),
         expected_observations: terminal.expected_observations,
         emitted_observations: terminal.emitted_observations,
         expected_rungs: terminal.expected_rungs,
@@ -1086,6 +1142,8 @@ pub fn emit_velocity_sweep_event<S: CommissionReplySink>(
             emit_velocity_sweep_observation(sink, oid, report);
         }
         VelocitySweepEvent::Rung(report) => emit_velocity_sweep_rung(sink, oid, report),
+        #[cfg(feature = "trace-velocity-sweep")]
+        VelocitySweepEvent::Recovery(report) => emit_rung_origin_recovery(sink, oid, report),
         VelocitySweepEvent::DirectionalRegion(report) => {
             emit_velocity_directional_region(sink, oid, report)
         }
@@ -1094,13 +1152,65 @@ pub fn emit_velocity_sweep_event<S: CommissionReplySink>(
     }
 }
 
+#[cfg(feature = "trace-velocity-sweep")]
+fn emit_rung_origin_recovery<S: CommissionReplySink>(
+    sink: &mut S,
+    oid: u8,
+    evidence: crate::commissioning::types::RungOriginRecoveryEvidence,
+) {
+    use crate::ankyra::replies::{
+        FociRungOriginRecoveryCore, FociRungOriginRecoveryLimits, FociRungOriginRecoveryPosition,
+        FociRungOriginRecoveryTiming,
+    };
+
+    let report = evidence.report;
+    let lower_rate_q = report.lower_rate_q.to_u64();
+    sink.foci_rung_origin_recovery_core(FociRungOriginRecoveryCore {
+        oid,
+        run_sequence: evidence.run_sequence,
+        evidence_sequence: evidence.evidence_sequence,
+        stage: report.stage as u8,
+        rung_index: report.rung_index,
+        p_raw: report.p_raw,
+        binding_source: report.binding_source as u8,
+        outcome: report.outcome as u8,
+    });
+    sink.foci_rung_origin_recovery_position(FociRungOriginRecoveryPosition {
+        oid,
+        run_sequence: evidence.run_sequence,
+        evidence_sequence: evidence.evidence_sequence,
+        start_offset_counts: report.start_offset_counts,
+        closest_offset_counts: report.closest_offset_counts,
+        final_offset_counts: report.final_offset_counts,
+        origin_band_counts: report.origin_band_counts,
+    });
+    sink.foci_rung_origin_recovery_timing(FociRungOriginRecoveryTiming {
+        oid,
+        run_sequence: evidence.run_sequence,
+        evidence_sequence: evidence.evidence_sequence,
+        moving_duration_us: report.moving_duration_us,
+        settle_duration_us: report.settle_duration_us,
+        total_duration_us: report.total_duration_us,
+    });
+    sink.foci_rung_origin_recovery_limits(FociRungOriginRecoveryLimits {
+        oid,
+        run_sequence: evidence.run_sequence,
+        evidence_sequence: evidence.evidence_sequence,
+        planned_velocity_mrev_s: report.planned_velocity_mrev_s,
+        lower_rate_low: lower_rate_q as u32,
+        lower_rate_high: (lower_rate_q >> 32) as u32,
+        peak_torque_target_abs: report.peak_torque_target_abs,
+    });
+}
+
 fn emit_velocity_sweep_plan<S: CommissionReplySink>(
     sink: &mut S,
     oid: u8,
     report: VelocitySweepPlanned,
 ) {
     use crate::ankyra::replies::{
-        FociVelocitySweepPlanGeometry, FociVelocitySweepPlanLimits, FociVelocitySweepPlanTiming,
+        FociVelocitySweepPlanGeometry, FociVelocitySweepPlanLimits, FociVelocitySweepPlanRecovery,
+        FociVelocitySweepPlanTiming,
     };
 
     sink.foci_velocity_sweep_plan_limits(FociVelocitySweepPlanLimits {
@@ -1141,6 +1251,15 @@ fn emit_velocity_sweep_plan<S: CommissionReplySink>(
         zero_settle_us: report.zero_settle_us,
         nominal_workflow_ms: report.nominal_workflow_ms,
         maximum_workflow_ms: report.maximum_workflow_ms,
+    });
+    sink.foci_velocity_sweep_plan_recovery(FociVelocitySweepPlanRecovery {
+        oid,
+        run_sequence: report.run_sequence,
+        evidence_sequence: report.evidence_sequence,
+        origin_band_counts: report.recovery_origin_band_counts,
+        nominal_slot_us: report.recovery_nominal_slot_us,
+        maximum_slot_us: report.recovery_maximum_slot_us,
+        slot_count: report.recovery_slot_count,
     });
 }
 
@@ -1563,6 +1682,7 @@ fn emit_velocity_sweep_terminal_fragments<S: CommissionReplySink>(
         fragment: 0,
         outcome,
         cause: report.cause,
+        recovery_unavailable: u8::from(report.recovery_unavailable),
         model_direction_mask: report.model_direction_mask,
         coverage_mask: report.coverage_mask,
         forward_region_count: report.directional_region_counts[0],
@@ -2531,6 +2651,7 @@ mod tests {
             velocity_cap_counts_per_ms: i32,
         },
         SweepPlan(u8),
+        SweepPlanRecovery,
         SweepObservation(u8),
         SweepRung(ConsensusEvent),
         SweepStructuredBoundary,
@@ -2552,8 +2673,10 @@ mod tests {
         },
         WorkflowPlan,
         IntegralPlan(u8),
+        IntegralPlanRecovery,
         IntegralObservation(u8),
         IntegralRung(u8),
+        Recovery(u8),
         IntegralDerived(u8),
         IntegralTerminal(u8),
         OuterInconclusive,
@@ -2881,6 +3004,41 @@ mod tests {
             self.events.push(Event::SweepPlan(report.fragment));
         }
 
+        fn foci_velocity_sweep_plan_recovery(
+            &mut self,
+            _report: crate::ankyra::replies::FociVelocitySweepPlanRecovery,
+        ) {
+            self.events.push(Event::SweepPlanRecovery);
+        }
+
+        fn foci_rung_origin_recovery_core(
+            &mut self,
+            _report: crate::ankyra::replies::FociRungOriginRecoveryCore,
+        ) {
+            self.events.push(Event::Recovery(0));
+        }
+
+        fn foci_rung_origin_recovery_position(
+            &mut self,
+            _report: crate::ankyra::replies::FociRungOriginRecoveryPosition,
+        ) {
+            self.events.push(Event::Recovery(1));
+        }
+
+        fn foci_rung_origin_recovery_timing(
+            &mut self,
+            _report: crate::ankyra::replies::FociRungOriginRecoveryTiming,
+        ) {
+            self.events.push(Event::Recovery(2));
+        }
+
+        fn foci_rung_origin_recovery_limits(
+            &mut self,
+            _report: crate::ankyra::replies::FociRungOriginRecoveryLimits,
+        ) {
+            self.events.push(Event::Recovery(3));
+        }
+
         fn foci_velocity_observation_core(
             &mut self,
             report: crate::ankyra::replies::FociVelocityObservationCore,
@@ -3177,6 +3335,13 @@ mod tests {
             report: crate::ankyra::replies::FociVelocityIntegralPlanTravel,
         ) {
             self.events.push(Event::IntegralPlan(report.fragment));
+        }
+
+        fn foci_velocity_integral_plan_recovery(
+            &mut self,
+            _report: crate::ankyra::replies::FociVelocityIntegralPlanRecovery,
+        ) {
+            self.events.push(Event::IntegralPlanRecovery);
         }
 
         fn foci_velocity_integral_plan_rung(
@@ -4789,6 +4954,99 @@ mod tests {
 
     #[cfg(feature = "trace-velocity-sweep")]
     #[test]
+    fn rung_origin_recovery_reply_is_shared_and_causally_complete() {
+        use crate::commissioning::outer::velocity::recovery::{
+            ExactU64Parts, RecoveryBindingSource, RecoveryStage, RungOriginRecoveryOutcome,
+            RungOriginRecoveryReport,
+        };
+        use crate::commissioning::types::{RungOriginRecoveryEvidence, VelocitySweepEvent};
+
+        let evidence = RungOriginRecoveryEvidence {
+            run_sequence: 7,
+            evidence_sequence: 10,
+            report: RungOriginRecoveryReport {
+                stage: RecoveryStage::Proportional,
+                rung_index: 4,
+                p_raw: 724,
+                planned_velocity_mrev_s: 2_929,
+                start_offset_counts: 8_458,
+                closest_offset_counts: 900,
+                final_offset_counts: 950,
+                origin_band_counts: 1_000,
+                lower_rate_q: ExactU64Parts::from_u64(0x0123_4567_89ab_cdef),
+                moving_duration_us: 350_000,
+                settle_duration_us: 500_000,
+                total_duration_us: 850_000,
+                peak_torque_target_abs: 2_533,
+                binding_source: RecoveryBindingSource::SettledRate,
+                outcome: RungOriginRecoveryOutcome::Recovered,
+            },
+        };
+        let mut sink = RecordingSink::default();
+
+        emit_velocity_sweep_event(&mut sink, 3, VelocitySweepEvent::Recovery(evidence));
+
+        assert_eq!(
+            sink.events,
+            [
+                Event::Recovery(0),
+                Event::Recovery(1),
+                Event::Recovery(2),
+                Event::Recovery(3),
+            ]
+        );
+    }
+
+    #[cfg(feature = "trace-velocity-sweep")]
+    #[test]
+    fn velocity_sweep_plan_reports_recovery_geometry_before_motion() {
+        let report = VelocitySweepPlanned {
+            plan_digest: 0x0123_4567_89ab_cdef,
+            run_sequence: 7,
+            evidence_sequence: 0,
+            requested_velocity_mrev_s: 2_929,
+            requested_velocity_source: 1,
+            planned_velocity_mrev_s: 2_929,
+            effective_ceiling_mrev_s: 10_000,
+            clamp_flags: 0,
+            effective_ceiling_source: 0,
+            target_velocity_rpm: 176,
+            p_start: 2,
+            p_top: 32_767,
+            rung_count: 23,
+            observations_per_direction: 4,
+            moving_stroke_us: 512_000,
+            zero_settle_us: 500_000,
+            nominal_workflow_ms: 271_700,
+            maximum_workflow_ms: 298_632,
+            recovery_origin_band_counts: 1_000,
+            recovery_nominal_slot_us: 1_816_958,
+            recovery_maximum_slot_us: 3_000_000,
+            recovery_slot_count: 23,
+            max_stroke_travel_mrev: 2_000,
+            settle_travel_reserve_mrev: 250,
+            negative_position_headroom_mrev: 50_000,
+            positive_position_headroom_mrev: 50_000,
+            hard_torque_limit: 2_816,
+            usable_torque_limit: 2_534,
+        };
+        let mut sink = RecordingSink::default();
+
+        emit_velocity_sweep_event(&mut sink, 3, VelocitySweepEvent::Planned(report));
+
+        assert_eq!(
+            sink.events,
+            [
+                Event::SweepPlan(0),
+                Event::SweepPlan(1),
+                Event::SweepPlan(2),
+                Event::SweepPlanRecovery,
+            ]
+        );
+    }
+
+    #[cfg(feature = "trace-velocity-sweep")]
+    #[test]
     fn reproduction_group_emits_before_the_authoritative_terminal() {
         use crate::commission_dispatch::stage_b::StageBReproductionReport;
         use crate::commissioning::outer::velocity::operating_region::CoverageKind;
@@ -5155,7 +5413,7 @@ mod tests {
             ]
         );
         assert_eq!(
-            &sink.events[4..10],
+            &sink.events[4..11],
             &[
                 Event::IntegralPlan(0),
                 Event::IntegralPlan(1),
@@ -5163,11 +5421,12 @@ mod tests {
                 Event::IntegralPlan(5),
                 Event::IntegralPlan(2),
                 Event::IntegralPlan(3),
+                Event::IntegralPlanRecovery,
             ]
         );
         assert_eq!(
             sink.events.len(),
-            10 + usize::from(plan.positive_rung_count)
+            11 + usize::from(plan.positive_rung_count)
         );
     }
 

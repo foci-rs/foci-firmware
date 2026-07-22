@@ -60,6 +60,7 @@ impl VelocityIntegralIntegrity {
             VelocityIntegralEvent::Rung(_) => {
                 self.emitted_rungs = self.emitted_rungs.saturating_add(1);
             }
+            VelocityIntegralEvent::Recovery(_) => {}
             VelocityIntegralEvent::Planned(_) => {}
         }
         self.digest =
@@ -102,6 +103,9 @@ pub(crate) fn encode_velocity_integral_event(
         }
         VelocityIntegralEvent::Observation(report) => encode_observation(report),
         VelocityIntegralEvent::Rung(report) => encode_rung(report),
+        VelocityIntegralEvent::Recovery(report) => {
+            super::sweep_reporting::encode_rung_origin_recovery(report)
+        }
     }
 }
 
@@ -113,7 +117,7 @@ pub(crate) fn encode_velocity_integral_event(
 pub(crate) fn encode_velocity_integral_plan_trace(
     run_sequence: u32,
     plan: VelocityIntegralPlan,
-) -> [VelocitySweepCanonicalRecord; 2] {
+) -> [VelocitySweepCanonicalRecord; 3] {
     let mut core = VelocitySweepCanonicalRecord::new();
     core.push_u8(0);
     core.push_u32(run_sequence);
@@ -167,7 +171,18 @@ pub(crate) fn encode_velocity_integral_plan_trace(
     schedule.push_u32(plan.motion_request.negative_position_headroom_mrev);
     schedule.push_u32(plan.motion_request.positive_position_headroom_mrev);
     schedule.push_u16(plan.motion_request.max_duration_ms);
-    [core, schedule]
+
+    let mut recovery = VelocitySweepCanonicalRecord::new();
+    recovery.push_u8(0);
+    recovery.push_u32(run_sequence);
+    recovery.push_u16(0);
+    push_u64(&mut recovery, plan.digest());
+    recovery.push_u8(2);
+    recovery.push_u32(plan.recovery_origin_band_counts);
+    recovery.push_u32(plan.recovery_nominal_slot_us);
+    recovery.push_u32(plan.recovery_maximum_slot_us);
+    recovery.push_u8(plan.recovery_slot_count);
+    [core, schedule, recovery]
 }
 
 /// Encode the detailed Stage-C terminal for trace-only parity.
@@ -182,6 +197,7 @@ pub(crate) fn encode_velocity_integral_terminal(
     push_u64(&mut record, report.digest);
     record.push_u8(outcome_code(report.outcome));
     record.push_u8(report.cause);
+    record.push_u8(u8::from(report.recovery_unavailable));
     record.push_u16(report.expected_observations);
     record.push_u16(report.emitted_observations);
     record.push_u16(report.expected_rungs);
@@ -213,6 +229,10 @@ fn encode_velocity_integral_plan_marker(
     record.push_u32(plan.zero_settle_us);
     record.push_u32(plan.analysis_budget_us);
     record.push_u32(plan.maximum_workflow_ms);
+    record.push_u32(plan.recovery_origin_band_counts);
+    record.push_u32(plan.recovery_nominal_slot_us);
+    record.push_u32(plan.recovery_maximum_slot_us);
+    record.push_u8(plan.recovery_slot_count);
     record.push_u16(plan.hard_torque_limit);
     record.push_u16(plan.usable_torque_limit);
     record
@@ -496,12 +516,15 @@ mod tests {
 
         let records = encode_velocity_integral_plan_trace(7, plan);
 
+        assert_eq!(records.len(), 3);
         assert_eq!(records[0].as_bytes()[0], 0);
         assert_eq!(records[1].as_bytes()[0], 0);
+        assert_eq!(records[2].as_bytes()[0], 0);
         assert_eq!(&records[0].as_bytes()[1..5], &7_u32.to_le_bytes());
         assert_eq!(&records[0].as_bytes()[7..15], &plan.digest().to_le_bytes());
         assert_eq!(records[0].as_bytes()[15], 0);
         assert_eq!(records[1].as_bytes()[15], 1);
+        assert_eq!(records[2].as_bytes()[15], 2);
         assert!(
             records
                 .iter()
@@ -525,6 +548,10 @@ mod tests {
             zero_settle_us: 500_000,
             analysis_budget_us: 236_000,
             maximum_workflow_ms: 69_888,
+            recovery_origin_band_counts: 1_000,
+            recovery_nominal_slot_us: 1_816_958,
+            recovery_maximum_slot_us: 3_000_000,
+            recovery_slot_count: 7,
             hard_torque_limit: 2_816,
             usable_torque_limit: 2_534,
         }
@@ -538,7 +565,7 @@ mod tests {
         assert_eq!(integrity.next_evidence_sequence(), 1);
         assert_eq!(integrity.emitted_observations(), 0);
         assert_eq!(integrity.emitted_rungs(), 0);
-        assert_eq!(integrity.digest(), 0x271e_1a4f_8f00_23c7);
+        assert_eq!(integrity.digest(), 0xabbe_8f32_faa4_a140);
     }
 
     #[test]

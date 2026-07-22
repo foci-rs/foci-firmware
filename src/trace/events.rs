@@ -95,6 +95,8 @@ pub const EVENT_COMMISSION_RESTORE_RESULT: u16 = 140;
 pub const EVENT_COMMISSION_RESTORE_ERROR_DRIFT: u16 = 141;
 /// Restore summary final disposition fragment.
 pub const EVENT_COMMISSION_RESTORE_DISPOSITION: u16 = 142;
+/// One bounded return to the immutable commissioning rung origin.
+pub const EVENT_COMMISSION_RUNG_ORIGIN_RECOVERY: u16 = 143;
 
 /// Single-frame commissioning diagnostic warning event.
 pub const EVENT_COMMISSION_DIAGNOSTIC_WARNING: u16 = 200;
@@ -214,6 +216,11 @@ mod tests {
         assert_eq!(EVENT_COMMISSION_VELOCITY_INTEGRAL_COMPLETE, 139);
         assert_eq!(EVENT_COMMISSION_RESTORE_RESULT, 140);
         assert_eq!(EVENT_COMMISSION_DIAGNOSTIC_WARNING, 200);
+    }
+
+    #[test]
+    fn trace_event_ids_are_stable() {
+        assert_eq!(EVENT_COMMISSION_RUNG_ORIGIN_RECOVERY, 143);
     }
 
     #[test]

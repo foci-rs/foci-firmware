@@ -348,6 +348,14 @@ pub struct VelocitySweepPlanned {
     pub nominal_workflow_ms: u32,
     /// Maximum declared workflow duration.
     pub maximum_workflow_ms: u32,
+    /// Inclusive immutable-origin recovery band.
+    pub recovery_origin_band_counts: u32,
+    /// Conservative nominal duration reserved for one recovery slot.
+    pub recovery_nominal_slot_us: u32,
+    /// Host-declared maximum duration reserved for one recovery slot.
+    pub recovery_maximum_slot_us: u32,
+    /// Maximum recovery-record count reserved by the plan.
+    pub recovery_slot_count: u8,
     /// Complete per-primitive displacement window.
     pub max_stroke_travel_mrev: u32,
     /// Reserved braking and settle displacement.
@@ -462,6 +470,18 @@ pub struct VelocityStageBHandoffReport {
     pub handoff: crate::commissioning::outer::velocity::operating_region::StageBHandoff,
 }
 
+/// One causally sequenced rung-origin recovery record shared by Stage B and Stage C.
+#[cfg(feature = "trace-velocity-sweep")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+pub struct RungOriginRecoveryEvidence {
+    /// Caller-assigned run sequence.
+    pub run_sequence: u32,
+    /// Monotonic evidence sequence within the owning stage.
+    pub evidence_sequence: u16,
+    /// Stage-neutral recovery measurements and classification.
+    pub report: crate::commissioning::outer::velocity::recovery::RungOriginRecoveryReport,
+}
+
 /// Nonterminal evidence produced by one velocity-sweep engine poll.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub enum VelocitySweepEvent {
@@ -471,6 +491,9 @@ pub enum VelocitySweepEvent {
     Observation(VelocitySweepObservation),
     /// One completed four-observation rung.
     Rung(VelocitySweepRungReport),
+    /// One bounded return to the immutable campaign origin.
+    #[cfg(feature = "trace-velocity-sweep")]
+    Recovery(RungOriginRecoveryEvidence),
     /// One directional region or fragment closed by the fold.
     DirectionalRegion(VelocityDirectionalRegionReport),
     /// One jointly operable region closed by the fold.
@@ -614,6 +637,9 @@ pub enum VelocityIntegralEvent {
     Observation(VelocityIntegralObservation),
     /// One complete anchor, positive, or bookend rung was folded.
     Rung(VelocityIntegralRungReport),
+    /// One bounded return to the immutable campaign origin.
+    #[cfg(feature = "trace-velocity-sweep")]
+    Recovery(RungOriginRecoveryEvidence),
 }
 
 /// Report-only Stage-C terminal class.
