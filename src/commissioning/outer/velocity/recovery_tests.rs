@@ -8,6 +8,7 @@ use super::sweep_plan::RequestedVelocitySource;
 use crate::autotune::TmcMechanicalRpm;
 use crate::autotune::velocity_measurement::{DyadicBlocker, StationarityWork, VelocityDirection};
 use crate::commission_dispatch::test_support::{MockBackend, SpiOp, current_limit};
+use crate::commissioning::outer::check_outer_safety;
 use crate::commissioning::outer::state::{VELOCITY_SWEEP_BLOCK_LEVELS, VelocityObservationRing};
 use crate::commissioning::outer::{OuterMotionBudget, OuterSafetyLimits};
 use crate::commissioning::types::OUTER_SAFETY_FAULT_RECOVERY_WRONG_WAY;
@@ -374,6 +375,29 @@ fn recovery_controller_confirms_fixed_settle_and_reports_complete_geometry() {
     assert_eq!(report.peak_torque_target_abs, 100);
     assert!(fixture.safety.primitive_start_us.is_none());
     assert_eq!(fixture.observations.len(), 0);
+}
+
+#[test]
+fn recovery_consumes_the_safety_observation_taken_by_the_outer_dispatcher() {
+    let mut fixture = RecoveryFixture::new(1_040, Some(14_000_000));
+    fixture.command_motion();
+    fixture.backend.elapsed_us_value = 1_000;
+    fixture.backend.mechanical_encoder_position_counts_value = 1_000;
+
+    assert_eq!(
+        pollster::block_on(check_outer_safety(
+            &mut fixture.safety,
+            &mut fixture.backend,
+        )),
+        Ok(None)
+    );
+    assert_eq!(fixture.safety.unwrapped_position, 1_000);
+
+    assert_eq!(fixture.step(), RungOriginRecoveryStep::ReadyNow);
+    assert_eq!(
+        fixture.backend.registers.get(&PID_VELOCITY_TARGET.addr()),
+        Some(&0)
+    );
 }
 
 #[test]

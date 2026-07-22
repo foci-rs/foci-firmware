@@ -128,11 +128,6 @@ pub(crate) async fn step_rung_origin_recovery<B: CommissioningBackend>(
         }
         RecoveryState::Observe { moving_deadline_us } => {
             let moving_deadline_us = moving_deadline_us.to_u64();
-            let now_us = backend.elapsed_us();
-            let next_sample_us = resources.safety.next_safety_deadline().unwrap_or(now_us);
-            if now_us < next_sample_us {
-                return RungOriginRecoveryStep::At(next_sample_us);
-            }
             if let Some(step) = recovery_safety_sample(runtime, resources, backend).await {
                 return step;
             }
