@@ -16,6 +16,9 @@ mod policy_tests;
 pub mod position;
 pub mod response;
 mod safety;
+mod safety_timing;
+#[cfg(test)]
+mod safety_timing_tests;
 pub mod slope_estimator;
 mod state;
 mod trace;
@@ -33,8 +36,14 @@ pub(crate) use limits::{
     position_tune_step_counts, position_window_counts,
     response_fallback_velocity_limit_counts_per_ms,
 };
+#[cfg(feature = "trace-velocity-sweep")]
+pub(crate) use safety::check_outer_safety_with_timing;
 pub(crate) use safety::{
     OuterMotionBudget, OuterSafetyLimits, check_outer_safety, safety_error_for_phase,
+};
+pub(crate) use safety_timing::{
+    OuterSafetyTimingAccumulator, OuterSafetyTimingContext, OuterSafetyTimingPhase,
+    OuterSafetyTimingStage, OuterSafetyTimingSummary,
 };
 pub(crate) use state::{
     EffectiveVelocityPolicy, MechanicalIdData, MechanicalIdState,

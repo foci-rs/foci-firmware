@@ -7,47 +7,50 @@ use crate::trace::events::{
     pack_u16_pair, u32_arg,
 };
 
-use super::OUTER_WARNING_NONE;
+use super::{OUTER_WARNING_NONE, OuterSafetyTimingAccumulator, OuterSafetyTimingSummary};
 
 #[derive(Debug, Clone, Copy, defmt::Format)]
 pub(crate) struct TraceSummarySeqs {
-    mechanical_id: u32,
-    velocity_validate: u32,
-    position_tune: u32,
-    restore: u32,
+    storage: OuterSafetyTimingAccumulator,
 }
 
 impl TraceSummarySeqs {
     pub(crate) const fn new() -> Self {
         Self {
-            mechanical_id: 0,
-            velocity_validate: 0,
-            position_tune: 0,
-            restore: 0,
+            storage: OuterSafetyTimingAccumulator::new(),
         }
     }
 
     pub(crate) fn next_mechanical_id(&mut self) -> i32 {
-        let seq = u32_arg(self.mechanical_id);
-        self.mechanical_id = self.mechanical_id.wrapping_add(1);
-        seq
+        self.next_legacy_sequence(0)
     }
 
     pub(crate) fn next_velocity_validate(&mut self) -> i32 {
-        let seq = u32_arg(self.velocity_validate);
-        self.velocity_validate = self.velocity_validate.wrapping_add(1);
-        seq
+        self.next_legacy_sequence(1)
     }
 
     pub(crate) fn next_position_tune(&mut self) -> i32 {
-        let seq = u32_arg(self.position_tune);
-        self.position_tune = self.position_tune.wrapping_add(1);
-        seq
+        self.next_legacy_sequence(2)
     }
 
     pub(crate) fn next_restore(&mut self) -> i32 {
-        let seq = u32_arg(self.restore);
-        self.restore = self.restore.wrapping_add(1);
+        self.next_legacy_sequence(3)
+    }
+
+    pub(crate) fn outer_safety_timing_mut(&mut self) -> &mut OuterSafetyTimingAccumulator {
+        &mut self.storage
+    }
+
+    pub(crate) fn take_outer_safety_timing(&mut self) -> OuterSafetyTimingSummary {
+        let summary = self.storage.summary();
+        self.storage.clear();
+        summary
+    }
+
+    fn next_legacy_sequence(&mut self, index: usize) -> i32 {
+        let words = self.storage.words_mut();
+        let seq = u32_arg(words[index]);
+        words[index] = words[index].wrapping_add(1);
         seq
     }
 }
