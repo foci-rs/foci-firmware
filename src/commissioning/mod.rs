@@ -1348,8 +1348,6 @@ mod tests {
         // ceiling.
         #[cfg(feature = "trace-velocity-sweep")]
         {
-            // The compact Stage-C plan retains the 16-byte recovery geometry
-            // needed for exact pre-motion reporting and digest reconstruction.
             assert_eq!(
                 size_of::<crate::commissioning::outer::VelocityIntegralData>(),
                 2_480
