@@ -7,7 +7,9 @@ use crate::trace::events::{
     pack_u16_pair, u32_arg,
 };
 
-use super::{OUTER_WARNING_NONE, OuterSafetyTimingAccumulator, OuterSafetyTimingSummary};
+#[cfg(any(test, feature = "trace-velocity-sweep"))]
+use super::OuterSafetyTimingSummary;
+use super::{OUTER_WARNING_NONE, OuterSafetyTimingAccumulator};
 
 #[derive(Debug, Clone, Copy, defmt::Format)]
 pub(crate) struct TraceSummarySeqs {
@@ -37,10 +39,12 @@ impl TraceSummarySeqs {
         self.next_legacy_sequence(3)
     }
 
+    #[cfg(any(test, feature = "trace-velocity-sweep"))]
     pub(crate) fn outer_safety_timing_mut(&mut self) -> &mut OuterSafetyTimingAccumulator {
         &mut self.storage
     }
 
+    #[cfg(any(test, feature = "trace-velocity-sweep"))]
     pub(crate) fn take_outer_safety_timing(&mut self) -> OuterSafetyTimingSummary {
         let summary = self.storage.summary();
         self.storage.clear();

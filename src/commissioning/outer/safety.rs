@@ -532,10 +532,10 @@ async fn check_outer_safety_inner<B: CommissioningBackend>(
         })
         .transpose()?
         .unwrap_or(0);
-    if safety.last_sample_us.is_some() {
-        if let Some((timing, context)) = timing {
-            timing.observe(dt_us, context)?;
-        }
+    if safety.last_sample_us.is_some()
+        && let Some((timing, context)) = timing
+    {
+        timing.observe(dt_us, context)?;
     }
     if safety.last_sample_us.is_some() && (dt_us == 0 || dt_us > MAX_SAFETY_OBSERVATION_GAP_US) {
         defmt::warn!(

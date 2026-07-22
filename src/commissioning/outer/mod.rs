@@ -16,6 +16,7 @@ mod policy_tests;
 pub mod position;
 pub mod response;
 mod safety;
+#[cfg_attr(not(any(test, feature = "trace-velocity-sweep")), allow(dead_code))]
 mod safety_timing;
 #[cfg(test)]
 mod safety_timing_tests;
@@ -41,10 +42,11 @@ pub(crate) use safety::check_outer_safety_with_timing;
 pub(crate) use safety::{
     OuterMotionBudget, OuterSafetyLimits, check_outer_safety, safety_error_for_phase,
 };
-pub(crate) use safety_timing::{OuterSafetyTimingAccumulator, OuterSafetyTimingSummary};
+pub(crate) use safety_timing::OuterSafetyTimingAccumulator;
 #[cfg(any(test, feature = "trace-velocity-sweep"))]
 pub(crate) use safety_timing::{
     OuterSafetyTimingContext, OuterSafetyTimingPhase, OuterSafetyTimingStage,
+    OuterSafetyTimingSummary,
 };
 pub(crate) use state::{
     EffectiveVelocityPolicy, MechanicalIdData, MechanicalIdState,
