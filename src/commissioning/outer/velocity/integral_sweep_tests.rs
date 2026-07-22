@@ -33,6 +33,10 @@ fn plan() -> VelocityIntegralExecutionPlan {
         zero_settle_us: 500_000,
         analysis_budget_us: 236_000,
         maximum_workflow_ms: 69_888,
+        recovery_origin_band_counts: 1_000,
+        recovery_nominal_slot_us: 1_816_958,
+        recovery_maximum_slot_us: 3_000_000,
+        recovery_slot_count: 7,
         hard_torque_limit: 2_816,
         usable_torque_limit: 2_534,
     }
@@ -211,12 +215,16 @@ fn integral_recovery_containment_is_cause_five_before_the_bookend() {
         step(&mut phase, &mut workspace, &mut backend),
         StepResult::VelocityIntegralEvent(VelocityIntegralEvent::Rung(_))
     ));
-    for _ in 0..2 {
-        assert!(matches!(
-            step(&mut phase, &mut workspace, &mut backend),
-            StepResult::ReadyNow
-        ));
-    }
+    assert!(matches!(
+        step(&mut phase, &mut workspace, &mut backend),
+        StepResult::ReadyNow
+    ));
+    assert!(matches!(
+        step(&mut phase, &mut workspace, &mut backend),
+        StepResult::VelocityIntegralEvent(VelocityIntegralEvent::Recovery(report))
+            if report.report.outcome
+                == super::recovery::RungOriginRecoveryOutcome::ContainedNoRate
+    ));
     let StepResult::VelocityIntegralTerminal(terminal) =
         step(&mut phase, &mut workspace, &mut backend)
     else {
@@ -433,12 +441,16 @@ fn contained_bookend_recovery_preserves_sufficient_curve_with_annotation() {
         step(&mut phase, &mut workspace, &mut backend),
         StepResult::VelocityIntegralEvent(VelocityIntegralEvent::Rung(_))
     ));
-    for _ in 0..2 {
-        assert!(matches!(
-            step(&mut phase, &mut workspace, &mut backend),
-            StepResult::ReadyNow
-        ));
-    }
+    assert!(matches!(
+        step(&mut phase, &mut workspace, &mut backend),
+        StepResult::ReadyNow
+    ));
+    assert!(matches!(
+        step(&mut phase, &mut workspace, &mut backend),
+        StepResult::VelocityIntegralEvent(VelocityIntegralEvent::Recovery(report))
+            if report.report.outcome
+                == super::recovery::RungOriginRecoveryOutcome::ContainedNoRate
+    ));
     let StepResult::VelocityIntegralTerminal(terminal) =
         step(&mut phase, &mut workspace, &mut backend)
     else {

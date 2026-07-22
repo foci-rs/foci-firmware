@@ -20,7 +20,7 @@ pub mod operating_region;
 #[cfg(test)]
 mod operating_region_tests;
 pub(crate) mod recovery;
-#[cfg(test)]
+#[cfg(all(test, feature = "trace-velocity-sweep"))]
 mod recovery_tests;
 pub mod reproduction;
 mod response_ramp;

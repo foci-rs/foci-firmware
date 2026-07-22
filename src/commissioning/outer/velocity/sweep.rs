@@ -9,9 +9,10 @@ use crate::commissioning::outer::{OuterPhase, VelocitySweepState};
 use crate::commissioning::schedule::next_grid_deadline;
 use crate::commissioning::types::{
     OUTER_SAFETY_FAULT_CURRENT, OUTER_SAFETY_FAULT_OBSERVATION_GAP,
-    OUTER_SAFETY_FAULT_QUARTER_TURN, OuterSafetyFault, StepResult, StructuredBoundaryEvidence,
-    VelocityDirectionalRegionReport, VelocityJointRegionReport, VelocitySweepEvent,
-    VelocitySweepObservation, VelocitySweepOutcome, VelocitySweepRungReport, VelocitySweepTerminal,
+    OUTER_SAFETY_FAULT_QUARTER_TURN, OuterSafetyFault, RungOriginRecoveryEvidence, StepResult,
+    StructuredBoundaryEvidence, VelocityDirectionalRegionReport, VelocityJointRegionReport,
+    VelocitySweepEvent, VelocitySweepObservation, VelocitySweepOutcome, VelocitySweepRungReport,
+    VelocitySweepTerminal,
 };
 use foci_tmc4671::pid::PidGainPair;
 use foci_tmc4671::registers::{
@@ -1412,7 +1413,14 @@ pub(crate) async fn step_velocity_sweep_with_trace<B: CommissioningBackend>(
                 data.slot = 0;
                 *state = VelocitySweepState::WriteGain;
             }
-            StepResult::ReadyNow
+            let event =
+                data.integrity
+                    .record(VelocitySweepEvent::Recovery(RungOriginRecoveryEvidence {
+                        run_sequence: data.integrity.run_sequence(),
+                        evidence_sequence: data.integrity.next_evidence_sequence(),
+                        report,
+                    }));
+            StepResult::VelocitySweepEvent(event)
         }
         VelocitySweepState::FinishForward {
             current_headroom,
@@ -1875,7 +1883,8 @@ mod tests {
         ));
         assert!(matches!(
             pollster::block_on(step_velocity_sweep_with_trace(&mut phase, &mut backend)),
-            StepResult::ReadyNow
+            StepResult::VelocitySweepEvent(VelocitySweepEvent::Recovery(report))
+                if report.report.outcome == RungOriginRecoveryOutcome::ContainedNoRate
         ));
         assert!(matches!(
             phase,
@@ -2636,11 +2645,14 @@ mod tests {
             report.outcome,
             super::super::recovery::RungOriginRecoveryOutcome::AlreadyCentered
         );
-        assert!(matches!(
-            pollster::block_on(step_velocity_sweep_with_trace(&mut phase, &mut backend)),
-            StepResult::ReadyNow
-        ));
-        assert_eq!(&evidence_sequences[..10], [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
+        let StepResult::VelocitySweepEvent(VelocitySweepEvent::Recovery(recovery)) =
+            pollster::block_on(step_velocity_sweep_with_trace(&mut phase, &mut backend))
+        else {
+            panic!("recovery must stream before the final fold");
+        };
+        evidence_sequences.push(recovery.evidence_sequence);
+        assert_eq!(recovery.report, report);
+        assert_eq!(evidence_sequences, [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
         assert_eq!(observation_slots, [0, 1, 2, 3, 4, 5, 6, 7]);
         assert!(
             observation_targets
@@ -2682,6 +2694,7 @@ mod tests {
                         VelocitySweepEvent::Planned(report) => report.evidence_sequence,
                         VelocitySweepEvent::Observation(report) => report.evidence_sequence,
                         VelocitySweepEvent::Rung(report) => report.evidence_sequence,
+                        VelocitySweepEvent::Recovery(report) => report.evidence_sequence,
                         VelocitySweepEvent::DirectionalRegion(report) => report.evidence_sequence,
                         VelocitySweepEvent::JointRegion(report) => report.evidence_sequence,
                         VelocitySweepEvent::Handoff(report) => report.evidence_sequence,

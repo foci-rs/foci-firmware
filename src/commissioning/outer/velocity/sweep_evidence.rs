@@ -691,7 +691,7 @@ pub fn analyze_directional_rung(
 }
 
 /// Derive the smallest commanded-side rate guaranteed by any intrinsically eligible observation.
-#[cfg(feature = "trace-velocity-sweep")]
+#[cfg(any(test, feature = "trace-velocity-sweep"))]
 pub(crate) fn directional_recovery_lower_rate_q(
     set: DirectionalObservationSet,
     direction: VelocityDirection,

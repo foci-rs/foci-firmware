@@ -10,9 +10,9 @@ use crate::commissioning::outer::{OuterPhase, VelocityIntegralData, VelocityInte
 use crate::commissioning::schedule::next_grid_deadline;
 use crate::commissioning::types::{
     OUTER_SAFETY_FAULT_CURRENT, OUTER_SAFETY_FAULT_OBSERVATION_GAP,
-    OUTER_SAFETY_FAULT_QUARTER_TURN, OuterSafetyFault, StepResult, VelocityIntegralEvent,
-    VelocityIntegralObservation, VelocityIntegralOutcome, VelocityIntegralRungReport,
-    VelocityIntegralTerminal,
+    OUTER_SAFETY_FAULT_QUARTER_TURN, OuterSafetyFault, RungOriginRecoveryEvidence, StepResult,
+    VelocityIntegralEvent, VelocityIntegralObservation, VelocityIntegralOutcome,
+    VelocityIntegralRungReport, VelocityIntegralTerminal,
 };
 use foci_tmc4671::pid::{PidGain, PidGainPair};
 use foci_tmc4671::registers::{
@@ -1165,6 +1165,7 @@ pub(crate) async fn step_velocity_integral_with_trace<B: CommissioningBackend>(
             }
         }
         VelocityIntegralState::FinalizeRecovery(report) => {
+            let report = *report;
             let contained = matches!(
                 report.outcome,
                 RungOriginRecoveryOutcome::ContainedNoRate
@@ -1184,7 +1185,14 @@ pub(crate) async fn step_velocity_integral_with_trace<B: CommissioningBackend>(
                     *state = VelocityIntegralState::WriteGains;
                 }
             }
-            StepResult::ReadyNow
+            let event = data.integrity.record(VelocityIntegralEvent::Recovery(
+                RungOriginRecoveryEvidence {
+                    run_sequence: data.integrity.run_sequence(),
+                    evidence_sequence: data.integrity.next_evidence_sequence(),
+                    report,
+                },
+            ));
+            StepResult::VelocityIntegralEvent(event)
         }
         VelocityIntegralState::FaultTerminal { error } => {
             let error = *error;
