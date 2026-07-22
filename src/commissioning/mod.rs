@@ -965,6 +965,7 @@ impl CommissioningEngine {
 
     /// Emit the board-authoritative Stage B comparison and terminal after candidate policy.
     #[cfg(feature = "trace-velocity-sweep")]
+    #[inline(never)]
     pub(crate) fn emit_stage_b_terminal_trace<B: CommissioningBackend>(
         &mut self,
         backend: &mut B,
@@ -1013,6 +1014,7 @@ impl CommissioningEngine {
 
     /// Emit the authoritative Stage-C terminal after retained-evidence policy.
     #[cfg(feature = "trace-velocity-sweep")]
+    #[inline(never)]
     pub(crate) fn emit_stage_c_terminal_trace<B: CommissioningBackend>(
         &mut self,
         backend: &mut B,
