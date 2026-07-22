@@ -208,6 +208,7 @@ mod tests {
             plan_digest: 0x1234,
             outcome: VelocitySweepOutcome::Inconclusive,
             cause: 4,
+            recovery_unavailable: false,
             model_direction_mask: 0,
             selected_memberships: [0; 3],
             nominated_p: 0,

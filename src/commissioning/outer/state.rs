@@ -218,6 +218,10 @@ pub(crate) enum VelocityIntegralState {
     Advance,
     /// Fold the completed rung into anchor, curve, or bookend evidence.
     AnalyzeRung,
+    /// Execute the shared return-to-origin primitive after rung evidence is emitted.
+    RecoverRung(RungOriginRecoveryRuntime),
+    /// Preserve the recovery report for causal emission before routing onward.
+    FinalizeRecovery(RungOriginRecoveryReport),
     /// Emit a structural-fault terminal after its observation evidence.
     FaultTerminal { error: CommissionError },
     /// Emit the report-only Stage-C terminal.
@@ -252,6 +256,8 @@ pub(crate) struct VelocityIntegralData {
     pub(crate) bookend_available_mask: u8,
     pub(crate) current_terminus: Option<u8>,
     pub(crate) opening_direction_mask: u8,
+    pub(crate) recovery_failure: bool,
+    pub(crate) recovery_unavailable: bool,
     pub(crate) emitted_observations: u16,
     pub(crate) emitted_rungs: u16,
 }
@@ -284,6 +290,8 @@ impl VelocityIntegralData {
             bookend_available_mask: 0,
             current_terminus: None,
             opening_direction_mask: 0,
+            recovery_failure: false,
+            recovery_unavailable: false,
             emitted_observations: 0,
             emitted_rungs: 0,
         }

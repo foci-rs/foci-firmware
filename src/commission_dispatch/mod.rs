@@ -1175,6 +1175,16 @@ pub async fn drive_commission_result_with_stage_b<B: CommissioningBackend>(
     }
 }
 
+#[cfg(feature = "trace-velocity-sweep")]
+pub(super) const fn stage_b_continuation_allowed(
+    terminal: crate::commissioning::types::VelocitySweepTerminal,
+) -> bool {
+    matches!(
+        terminal.outcome,
+        crate::commissioning::types::VelocitySweepOutcome::Complete
+    ) && !terminal.recovery_unavailable
+}
+
 /// Dispatch one result while applying both Stage-B and Stage-C retained lifecycles.
 #[cfg(feature = "trace-velocity-sweep")]
 pub async fn drive_commission_result_with_stages<B: CommissioningBackend>(
@@ -1189,9 +1199,7 @@ pub async fn drive_commission_result_with_stages<B: CommissioningBackend>(
     match result {
         StepResult::VelocitySweepTerminal(terminal) => {
             let dispatch = stage_b::apply_stage_b_terminal(terminal, channel, retention.stage_b);
-            if dispatch.terminal.outcome
-                != crate::commissioning::types::VelocitySweepOutcome::Complete
-            {
+            if !stage_b_continuation_allowed(dispatch.terminal) {
                 engine
                     .as_mut()
                     .expect("engine slot is None on VelocitySweepTerminal")

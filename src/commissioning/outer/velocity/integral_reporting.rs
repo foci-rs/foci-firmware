@@ -550,6 +550,7 @@ mod tests {
             digest: 0xfedc_ba98_7654_3210,
             outcome: VelocityIntegralOutcome::Complete,
             cause: 0,
+            recovery_unavailable: false,
             evidence: super::super::integral_evidence::IntegralRunEvidence::new(
                 [super::super::integral_evidence::ExactRateInterval::EMPTY; 2],
             ),

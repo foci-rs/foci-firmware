@@ -18,11 +18,11 @@ use crate::commissioning::types::{
 };
 
 /// Dedicated cause for retained or live Stage-C evidence violating its contract.
-pub const STAGE_C_CAUSE_EVIDENCE_INTEGRITY: u8 = 1;
+pub const STAGE_C_CAUSE_EVIDENCE_INTEGRITY: u8 = 4;
 /// Dedicated cause for a sufficient curve that did not reproduce.
-pub const STAGE_C_CAUSE_REPRODUCTION_MISMATCH: u8 = 2;
+pub const STAGE_C_CAUSE_REPRODUCTION_MISMATCH: u8 = 6;
 /// Dedicated cause for a frozen Stage-C plan mismatch.
-pub const STAGE_C_CAUSE_PLAN_MISMATCH: u8 = 3;
+pub const STAGE_C_CAUSE_PLAN_MISMATCH: u8 = 7;
 
 /// Immutable plan and identity accepted before Stage-C actuation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

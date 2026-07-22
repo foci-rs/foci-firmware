@@ -120,6 +120,7 @@ fn terminal(
         digest: 0x1234_5678_9abc_def0,
         outcome,
         cause: 0,
+        recovery_unavailable: false,
         evidence,
         expected_observations: plan.expected_observations,
         emitted_observations: plan.expected_observations,
@@ -329,6 +330,7 @@ fn stage_b_terminal() -> crate::commissioning::types::VelocitySweepTerminal {
         plan_digest: stage_b_plan().digest(),
         outcome: VelocitySweepOutcome::CompleteCandidate,
         cause: 0,
+        recovery_unavailable: false,
         model_direction_mask: 3,
         selected_memberships: [0x0038_0000; 3],
         nominated_p: 1_448,
@@ -349,6 +351,23 @@ fn stage_b_terminal() -> crate::commissioning::types::VelocitySweepTerminal {
         run_completed_us: 2_000,
         safety_fault: None,
     }
+}
+
+#[test]
+fn stage_b_continuation_requires_a_successful_final_recovery() {
+    let mut terminal = stage_b_terminal();
+    terminal.outcome = crate::commissioning::types::VelocitySweepOutcome::Complete;
+    assert!(super::stage_b_continuation_allowed(terminal));
+
+    terminal.recovery_unavailable = true;
+    assert!(!super::stage_b_continuation_allowed(terminal));
+}
+
+#[test]
+fn stage_c_terminal_causes_reserve_recovery_and_lifecycle_values() {
+    assert_eq!(super::stage_c::STAGE_C_CAUSE_EVIDENCE_INTEGRITY, 4);
+    assert_eq!(super::stage_c::STAGE_C_CAUSE_REPRODUCTION_MISMATCH, 6);
+    assert_eq!(super::stage_c::STAGE_C_CAUSE_PLAN_MISMATCH, 7);
 }
 
 #[test]

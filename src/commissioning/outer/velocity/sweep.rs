@@ -289,6 +289,7 @@ fn sweep_fault_terminal_from_data(
         plan_digest: data.plan.plan_digest,
         outcome: VelocitySweepOutcome::Fault,
         cause: error.status_code(),
+        recovery_unavailable: false,
         model_direction_mask,
         selected_memberships: [0; 3],
         nominated_p: 0,
@@ -362,6 +363,15 @@ fn sweep_evidence_terminal(
         plan_digest: plan.plan_digest,
         outcome,
         cause,
+        recovery_unavailable: match data.evidence {
+            VelocitySweepEvidenceState::RecoveryComplete(report) => matches!(
+                report.outcome,
+                RungOriginRecoveryOutcome::ContainedNoRate
+                    | RungOriginRecoveryOutcome::ContainedDeadline
+            ),
+            VelocitySweepEvidenceState::Complete { .. } => current_headroom,
+            _ => false,
+        },
         model_direction_mask,
         selected_memberships: handoff.map_or([0; 3], |handoff| {
             [

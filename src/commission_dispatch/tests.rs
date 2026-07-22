@@ -1731,6 +1731,7 @@ fn sample_velocity_sweep_terminal(
         plan_digest: 0x1234,
         outcome,
         cause: 4,
+        recovery_unavailable: false,
         model_direction_mask: 0,
         selected_memberships: [0; 3],
         nominated_p: 0,

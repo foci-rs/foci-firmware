@@ -507,6 +507,8 @@ pub struct VelocitySweepTerminal {
     pub outcome: VelocitySweepOutcome,
     /// Phase-local terminal cause.
     pub cause: u8,
+    /// Final or partial-rung recovery could not establish the continuation origin.
+    pub recovery_unavailable: bool,
     /// Bit zero is forward model sufficiency and bit one is reverse sufficiency.
     pub model_direction_mask: u8,
     /// Exact selected forward, reverse, and joint memberships.
@@ -644,6 +646,8 @@ pub struct VelocityIntegralTerminal {
     pub outcome: VelocityIntegralOutcome,
     /// Dedicated Stage-C phase-local cause.
     pub cause: u8,
+    /// Final bookend recovery could not establish the next-command origin.
+    pub recovery_unavailable: bool,
     /// Exact raw anchor and positive-rung evidence.
     pub evidence: crate::commissioning::outer::velocity::integral_evidence::IntegralRunEvidence,
     /// Number of observations required by the immutable plan.

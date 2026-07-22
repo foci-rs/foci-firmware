@@ -193,7 +193,7 @@ pub(super) fn deficit_interval_q(
     ))
 }
 
-fn floor_div_60(numerator: i128) -> Result<i128, CommissionError> {
+pub(super) fn floor_div_60(numerator: i128) -> Result<i128, CommissionError> {
     let quotient = numerator / 60;
     if numerator < 0 && numerator % 60 != 0 {
         quotient
@@ -204,7 +204,7 @@ fn floor_div_60(numerator: i128) -> Result<i128, CommissionError> {
     }
 }
 
-fn ceil_div_60(numerator: i128) -> Result<i128, CommissionError> {
+pub(super) fn ceil_div_60(numerator: i128) -> Result<i128, CommissionError> {
     let quotient = numerator / 60;
     if numerator > 0 && numerator % 60 != 0 {
         quotient

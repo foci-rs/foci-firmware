@@ -1687,6 +1687,7 @@ mod tests {
             plan_digest: 0x1234,
             outcome: VelocitySweepOutcome::Inconclusive,
             cause: 4,
+            recovery_unavailable: false,
             model_direction_mask: 0,
             selected_memberships: [0; 3],
             nominated_p: 0,
@@ -2145,6 +2146,7 @@ mod tests {
             digest: 0x0123_4567_89ab_cdef,
             outcome: VelocityIntegralOutcome::Complete,
             cause: 0,
+            recovery_unavailable: false,
             evidence: IntegralRunEvidence::new([
                 ExactRateInterval::new(100, 120).unwrap(),
                 ExactRateInterval::new(-120, -100).unwrap(),
