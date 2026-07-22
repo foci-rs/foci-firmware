@@ -2,6 +2,11 @@
 
 #![allow(dead_code)] // Stage-neutral worker is wired into Stage B/C in the next two tasks.
 
+mod controller;
+
+#[allow(unused_imports)] // Stage B/C consume the worker in the next two tasks.
+pub(crate) use controller::step_rung_origin_recovery;
+
 use crate::autotune::velocity_measurement::{
     DyadicBlocker, StationarityWork, VELOCITY_RATE_Q_SCALE, VelocityDirection,
 };
