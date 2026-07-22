@@ -45,8 +45,9 @@ use crate::trace::events::{
 };
 #[cfg(feature = "trace-velocity-sweep")]
 use crate::trace::events::{
-    EVENT_COMMISSION_RUNG_ORIGIN_RECOVERY, EVENT_COMMISSION_VELOCITY_INTEGRAL_COMPLETE,
-    EVENT_COMMISSION_VELOCITY_INTEGRAL_DERIVED, EVENT_COMMISSION_VELOCITY_INTEGRAL_TERMINAL,
+    EVENT_COMMISSION_OUTER_SAFETY_TIMING, EVENT_COMMISSION_RUNG_ORIGIN_RECOVERY,
+    EVENT_COMMISSION_VELOCITY_INTEGRAL_COMPLETE, EVENT_COMMISSION_VELOCITY_INTEGRAL_DERIVED,
+    EVENT_COMMISSION_VELOCITY_INTEGRAL_TERMINAL,
 };
 
 // Re-export public API surface for downstream consumers.
@@ -756,6 +757,59 @@ impl CommissioningEngine {
         &mut self.trace_summary_seqs
     }
 
+    #[cfg(feature = "trace-velocity-sweep")]
+    pub(crate) fn emit_outer_safety_timing_trace<B: CommissioningBackend>(
+        &mut self,
+        backend: &mut B,
+        run_sequence: u32,
+    ) {
+        let summary = self.trace_summary_seqs.take_outer_safety_timing();
+        backend.record_velocity_sweep_trace_record(
+            crate::ankyra::velocity_sweep_encoding::encode_outer_safety_timing_record(
+                self.trace_run.engine_seq,
+                run_sequence,
+                summary,
+            ),
+        );
+        backend.record_commission_trace_event(self.trace_event(
+            TraceEventLevel::Info,
+            EVENT_COMMISSION_OUTER_SAFETY_TIMING,
+            [
+                u32_arg(self.trace_run.engine_seq),
+                u32_arg(summary.max_gap_us),
+            ],
+            2,
+        ));
+    }
+
+    #[cfg(feature = "trace-velocity-sweep")]
+    pub(crate) fn trace_velocity_run_sequence(&self) -> Option<u32> {
+        match &self.engine_mode {
+            EngineMode::Outer {
+                phase: OuterPhase::VelocitySweep { data, .. },
+                ..
+            } => Some(data.integrity.run_sequence()),
+            EngineMode::Outer {
+                phase: OuterPhase::VelocityIntegral { data, .. },
+                ..
+            } => Some(data.integrity.run_sequence()),
+            EngineMode::Inner { .. }
+            | EngineMode::Outer {
+                phase:
+                    OuterPhase::MechanicalId { .. }
+                    | OuterPhase::VelocityTune { .. }
+                    | OuterPhase::VelocityValidate { .. }
+                    | OuterPhase::PositionTune { .. }
+                    | OuterPhase::FilterTune { .. }
+                    | OuterPhase::Commit { .. }
+                    | OuterPhase::Done(_)
+                    | OuterPhase::Failed(_)
+                    | OuterPhase::FailedWithSafety { .. },
+                ..
+            } => None,
+        }
+    }
+
     fn current_phase_id(&self) -> Option<PhaseId> {
         match &self.engine_mode {
             EngineMode::Inner { phase, .. } => phase.current_phase_id(),
@@ -917,7 +971,20 @@ impl CommissioningEngine {
         terminal: crate::commissioning::types::VelocitySweepTerminal,
         reproduction: Option<crate::commission_dispatch::stage_b::StageBReproductionReport>,
     ) {
-        self.emit_stage_b_terminal_evidence(backend, terminal, reproduction);
+        if let Some(report) = reproduction {
+            crate::commission_dispatch::stage_b::for_each_stage_b_reproduction_record(
+                report,
+                |record| backend.record_velocity_sweep_trace_record(record),
+            );
+        }
+        self.emit_outer_safety_timing_trace(backend, terminal.run_sequence);
+        backend.record_velocity_sweep_trace_record(
+            crate::commissioning::outer::velocity::sweep_reporting::encode_velocity_sweep_terminal(
+                terminal,
+                backend.mechanical_encoder_quadrature_counts_per_rev(),
+                backend.tmc_config().pwm_freq_hz(),
+            ),
+        );
         self.emit_velocity_sweep_terminal_lifecycle(backend, terminal);
     }
 
@@ -952,6 +1019,7 @@ impl CommissioningEngine {
         terminal: crate::commissioning::types::VelocityIntegralTerminal,
         reproduction: Option<crate::commission_dispatch::stage_c::StageCReproductionReport>,
     ) {
+        self.emit_outer_safety_timing_trace(backend, terminal.run_sequence);
         backend.record_velocity_sweep_trace_record(
             crate::commissioning::outer::velocity::integral_reporting::encode_velocity_integral_terminal(
                 terminal,
@@ -2081,16 +2149,16 @@ mod tests {
         engine.emit_stage_b_terminal_trace(&mut backend, terminal, None);
 
         let events = &backend.trace_events;
-        assert_eq!(events.len(), 4);
+        assert_eq!(events.len(), 5);
         assert_trace_event(
-            &events[2],
+            &events[3],
             crate::trace::events::EVENT_COMMISSION_PHASE_END,
             EngineKind::OuterTune,
             TraceEventLevel::Info,
             [initial_outer_phase_id().to_u8() as i32, PHASE_END_OK.into()],
         );
         assert_trace_event(
-            &events[3],
+            &events[4],
             crate::trace::events::EVENT_COMMISSION_VELOCITY_SWEEP_TERMINAL,
             EngineKind::OuterTune,
             TraceEventLevel::Warn,
@@ -2118,16 +2186,16 @@ mod tests {
         engine.emit_stage_b_terminal_trace(&mut backend, terminal, None);
 
         let events = &backend.trace_events;
-        assert_eq!(events.len(), 4);
+        assert_eq!(events.len(), 5);
         assert_trace_event(
-            &events[2],
+            &events[3],
             crate::trace::events::EVENT_COMMISSION_PHASE_END,
             EngineKind::OuterTune,
             TraceEventLevel::Info,
             [initial_outer_phase_id().to_u8() as i32, PHASE_END_OK.into()],
         );
         assert_trace_event(
-            &events[3],
+            &events[4],
             crate::trace::events::EVENT_COMMISSION_VELOCITY_SWEEP_TERMINAL,
             EngineKind::OuterTune,
             TraceEventLevel::Error,
@@ -2175,7 +2243,7 @@ mod tests {
         engine.emit_trace_start(&mut backend);
         engine.emit_stage_c_terminal_trace(&mut backend, terminal, None);
 
-        assert_eq!(backend.velocity_sweep_trace_records.len(), 1);
+        assert_eq!(backend.velocity_sweep_trace_records.len(), 2);
         let ids: std::vec::Vec<_> = backend
             .trace_events
             .iter()
@@ -2184,6 +2252,7 @@ mod tests {
         assert_eq!(
             &ids[2..],
             &[
+                crate::trace::events::EVENT_COMMISSION_OUTER_SAFETY_TIMING,
                 crate::trace::events::EVENT_COMMISSION_PHASE_END,
                 crate::trace::events::EVENT_COMMISSION_VELOCITY_INTEGRAL_TERMINAL,
                 crate::trace::events::EVENT_COMMISSION_VELOCITY_INTEGRAL_COMPLETE,

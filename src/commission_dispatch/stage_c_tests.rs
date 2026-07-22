@@ -371,7 +371,7 @@ fn stage_c_terminal_causes_reserve_recovery_and_lifecycle_values() {
 }
 
 #[test]
-fn stage_b_complete_installs_authority_and_continues_without_disarm() {
+fn outer_safety_timing_terminal_order_composite_preserves_intermediate_state() {
     pollster::block_on(async {
         use crate::commission_dispatch::stage_b::{
             apply_stage_b_terminal, preflight_stage_b_request,
@@ -454,6 +454,14 @@ fn stage_b_complete_installs_authority_and_continues_without_disarm() {
                 continued_plan,
             );
         let trace_records = backend.velocity_sweep_trace_records.as_slice();
+        assert!(
+            !trace_records
+                .iter()
+                .any(|record| record.as_bytes()[0] == 30)
+        );
+        assert!(!backend.trace_events.iter().any(|event| {
+            event.event_id == crate::trace::events::EVENT_COMMISSION_OUTER_SAFETY_TIMING
+        }));
         assert_eq!(
             &trace_records[trace_records.len() - expected.len()..],
             expected.as_slice()
@@ -462,7 +470,7 @@ fn stage_b_complete_installs_authority_and_continues_without_disarm() {
 }
 
 #[test]
-fn final_stage_c_terminal_applies_slot_policy_then_disarms_once() {
+fn outer_safety_timing_terminal_order_stage_c_resume() {
     pollster::block_on(async {
         use crate::commission_dispatch::test_support::{MockBackend, fresh_state_locals};
         use crate::commissioning::CommissioningEngine;
@@ -530,5 +538,11 @@ fn final_stage_c_terminal_applies_slot_policy_then_disarms_once() {
                 ..
             }
         ));
+        assert!(
+            backend
+                .trace_emission_order
+                .windows(3)
+                .any(|window| window == [30, 144, 4])
+        );
     });
 }

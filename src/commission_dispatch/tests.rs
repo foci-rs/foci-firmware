@@ -1981,7 +1981,7 @@ fn stage_b_schema3_reproduction_records_are_canonical_and_ordered() {
 
 #[cfg(feature = "trace-velocity-sweep")]
 #[test]
-fn stage_b_dispatch_traces_reproduction_before_one_authoritative_terminal() {
+fn outer_safety_timing_terminal_order_standalone_stage_b() {
     pollster::block_on(async {
         use crate::commissioning::outer::velocity::reproduction::{
             StageBCandidateSlot, StageBCandidateSummary, StageBPlanIdentity,
@@ -2053,7 +2053,13 @@ fn stage_b_dispatch_traces_reproduction_before_one_authoritative_terminal() {
             .iter()
             .map(|record| record.as_bytes()[0])
             .collect();
-        assert_eq!(kinds, [10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 8]);
+        assert_eq!(kinds, [10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 30, 8]);
+        assert!(
+            backend
+                .trace_emission_order
+                .windows(3)
+                .any(|window| window == [30, 144, 8])
+        );
         let traced_terminal = backend
             .velocity_sweep_trace_records
             .last()

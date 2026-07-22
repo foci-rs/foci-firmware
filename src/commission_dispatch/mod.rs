@@ -1144,13 +1144,26 @@ pub async fn drive_commission_result_with_stage_b<B: CommissioningBackend>(
 ) -> CommissionOutcome {
     let terminal = match result {
         StepResult::VelocitySweepTerminal(terminal) => terminal,
-        other => return drive_commission_result(other, engine, backend, state, pwm_maxcnt).await,
+        other => {
+            if matches!(other, StepResult::OuterFailed(_)) {
+                let run_sequence = engine
+                    .as_ref()
+                    .and_then(CommissioningEngine::trace_velocity_run_sequence);
+                if let Some(run_sequence) = run_sequence {
+                    engine
+                        .as_mut()
+                        .expect("trace velocity engine disappeared before terminal timing")
+                        .emit_outer_safety_timing_trace(backend, run_sequence);
+                }
+            }
+            return drive_commission_result(other, engine, backend, state, pwm_maxcnt).await;
+        }
     };
     let dispatch = stage_b::apply_stage_b_terminal(terminal, channel, stage_b_candidate);
-    engine
+    let engine_ref = engine
         .as_mut()
-        .expect("engine slot is None on VelocitySweepTerminal")
-        .emit_stage_b_terminal_trace(backend, dispatch.terminal, dispatch.reproduction);
+        .expect("engine slot is None on VelocitySweepTerminal");
+    engine_ref.emit_stage_b_terminal_trace(backend, dispatch.terminal, dispatch.reproduction);
     match drive_commission_result(
         StepResult::VelocitySweepTerminal(dispatch.terminal),
         engine,
@@ -1200,10 +1213,14 @@ pub async fn drive_commission_result_with_stages<B: CommissioningBackend>(
         StepResult::VelocitySweepTerminal(terminal) => {
             let dispatch = stage_b::apply_stage_b_terminal(terminal, channel, retention.stage_b);
             if !stage_b_continuation_allowed(dispatch.terminal) {
-                engine
+                let engine_ref = engine
                     .as_mut()
-                    .expect("engine slot is None on VelocitySweepTerminal")
-                    .emit_stage_b_terminal_trace(backend, dispatch.terminal, dispatch.reproduction);
+                    .expect("engine slot is None on VelocitySweepTerminal");
+                engine_ref.emit_stage_b_terminal_trace(
+                    backend,
+                    dispatch.terminal,
+                    dispatch.reproduction,
+                );
                 return match drive_commission_result(
                     StepResult::VelocitySweepTerminal(dispatch.terminal),
                     engine,
@@ -1254,6 +1271,10 @@ pub async fn drive_commission_result_with_stages<B: CommissioningBackend>(
                 Ok(plan) => plan,
                 Err(_) => {
                     retention.stage_c.observe_fault();
+                    engine
+                        .as_mut()
+                        .expect("engine slot is None after Stage-C plan rejection")
+                        .emit_outer_safety_timing_trace(backend, dispatch.terminal.run_sequence);
                     return drive_commission_result(
                         StepResult::OuterFailed(crate::autotune::CommissionError::InvalidSchedule),
                         engine,
@@ -1294,10 +1315,14 @@ pub async fn drive_commission_result_with_stages<B: CommissioningBackend>(
         }
         StepResult::VelocityIntegralTerminal(terminal) => {
             let dispatch = stage_c::apply_stage_c_terminal(terminal, retention.stage_c);
-            engine
+            let engine_ref = engine
                 .as_mut()
-                .expect("engine slot is None on VelocityIntegralTerminal")
-                .emit_stage_c_terminal_trace(backend, dispatch.terminal, dispatch.reproduction);
+                .expect("engine slot is None on VelocityIntegralTerminal");
+            engine_ref.emit_stage_c_terminal_trace(
+                backend,
+                dispatch.terminal,
+                dispatch.reproduction,
+            );
             match drive_commission_result(
                 StepResult::VelocityIntegralTerminal(dispatch.terminal),
                 engine,
@@ -1322,6 +1347,19 @@ pub async fn drive_commission_result_with_stages<B: CommissioningBackend>(
                 _ => unreachable!("velocity-integral terminal produced a nonterminal outcome"),
             }
         }
-        other => drive_commission_result(other, engine, backend, state, pwm_maxcnt).await,
+        other => {
+            if matches!(other, StepResult::OuterFailed(_)) {
+                let run_sequence = engine
+                    .as_ref()
+                    .and_then(CommissioningEngine::trace_velocity_run_sequence);
+                if let Some(run_sequence) = run_sequence {
+                    engine
+                        .as_mut()
+                        .expect("trace velocity engine disappeared before terminal timing")
+                        .emit_outer_safety_timing_trace(backend, run_sequence);
+                }
+            }
+            drive_commission_result(other, engine, backend, state, pwm_maxcnt).await
+        }
     }
 }

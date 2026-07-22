@@ -136,3 +136,82 @@ pub(crate) fn encode_rate_values(values: [i64; 5]) -> ([i32; 5], u8) {
     }
     ([i32::MIN, 0, i32::MAX, i32::MIN, i32::MAX], 63)
 }
+
+/// Encode command-lifetime outer-safety timing outside stage evidence digests.
+#[cfg(feature = "trace-velocity-sweep")]
+pub(crate) fn encode_outer_safety_timing_record(
+    engine_sequence: u32,
+    run_sequence: u32,
+    summary: crate::commissioning::outer::OuterSafetyTimingSummary,
+) -> VelocitySweepCanonicalRecord {
+    let mut record = VelocitySweepCanonicalRecord::new();
+    record.push_u8(30);
+    record.push_u32(engine_sequence);
+    record.push_u32(run_sequence);
+    record.push_u32(summary.sample_count);
+    for count in summary.bin_counts {
+        record.push_u32(count);
+    }
+    record.push_u32(summary.max_gap_us);
+    if let Some(context) = summary.max_context {
+        record.push_u8(1);
+        record.push_u8(context.stage as u8);
+        record.push_u8(context.phase as u8);
+        record.push_u8(context.rung);
+        record.push_u8(context.slot);
+        record.push_u8(u8::from(context.target_zero));
+    } else {
+        for _ in 0..6 {
+            record.push_u8(0);
+        }
+    }
+    record.push_u8(u8::try_from(summary.zero_count).expect("zero gap faults on first sample"));
+    record.push_u8(
+        u8::try_from(summary.over_bound_count).expect("over-bound gap faults on first sample"),
+    );
+    record
+}
+
+#[cfg(all(test, feature = "trace-velocity-sweep"))]
+mod outer_safety_timing_record_tests {
+    use super::encode_outer_safety_timing_record;
+    use crate::commissioning::outer::{
+        OuterSafetyTimingContext, OuterSafetyTimingPhase, OuterSafetyTimingStage,
+        OuterSafetyTimingSummary,
+    };
+
+    #[test]
+    fn outer_safety_timing_record_is_bounded_and_exact() {
+        let summary = OuterSafetyTimingSummary {
+            sample_count: 89,
+            bin_counts: [80, 7, 2, 0],
+            max_gap_us: 14_329,
+            max_context: Some(
+                OuterSafetyTimingContext::new(
+                    OuterSafetyTimingStage::Proportional,
+                    OuterSafetyTimingPhase::EvidenceEmission,
+                    21,
+                    7,
+                    true,
+                )
+                .unwrap(),
+            ),
+            zero_count: 0,
+            over_bound_count: 0,
+        };
+
+        let record = encode_outer_safety_timing_record(11, 17, summary);
+        let bytes = record.as_bytes();
+
+        assert_eq!(bytes[0], 30);
+        assert!(bytes.len() <= super::VELOCITY_SWEEP_CANONICAL_RECORD_MAX);
+        assert_eq!(u32::from_le_bytes(bytes[1..5].try_into().unwrap()), 11);
+        assert_eq!(u32::from_le_bytes(bytes[5..9].try_into().unwrap()), 17);
+        assert_eq!(u32::from_le_bytes(bytes[9..13].try_into().unwrap()), 89);
+        assert_eq!(
+            u32::from_le_bytes(bytes[29..33].try_into().unwrap()),
+            14_329
+        );
+        assert_eq!(&bytes[33..41], &[1, 0, 4, 21, 7, 1, 0, 0]);
+    }
+}
