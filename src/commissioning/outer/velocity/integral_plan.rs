@@ -4,6 +4,7 @@ use heapless::Vec;
 
 use crate::commissioning::outer::{OUTER_MAX_VELOCITY_I, OuterMotionBudget};
 
+use super::recovery::{RungOriginRecoveryPlanError, plan_rung_origin_recovery};
 use super::reproduction::STAGE_B_BUILD_REVISION;
 use super::sweep_plan::{
     MIN_SETTLE_CAPTURE_US, MOVING_STROKE_US, SETTLE_ANALYSIS_BUDGET_US, VelocitySweepExecutionPlan,
@@ -11,7 +12,7 @@ use super::sweep_plan::{
 };
 
 /// Evidence schema stored in the RAM-only Stage-C candidate slot.
-pub const STAGE_C_EVIDENCE_SCHEMA_REVISION: u16 = 1;
+pub const STAGE_C_EVIDENCE_SCHEMA_REVISION: u16 = 2;
 /// Largest predeclared positive-I ladder accepted by the family-128 table.
 pub const STAGE_C_MAX_POSITIVE_RUNGS: usize = 30;
 /// Independent observations collected in one direction at every Stage-C rung.
@@ -158,6 +159,14 @@ pub struct VelocityIntegralPlan {
     pub nominal_workflow_ms: u32,
     /// Maximum duration, equal to nominal for a nonextending schedule.
     pub maximum_workflow_ms: u32,
+    /// Inclusive reserve-derived origin band used after fully acquired rungs.
+    pub recovery_origin_band_counts: u32,
+    /// Conservative nominal duration reserved for one recovery slot.
+    pub recovery_nominal_slot_us: u32,
+    /// Host-declared maximum duration reserved for one recovery slot.
+    pub recovery_maximum_slot_us: u32,
+    /// Maximum number of recovery slots reserved by this plan.
+    pub recovery_slot_count: u8,
     /// Configured hard torque-target limit.
     pub hard_torque_limit: u16,
     /// Inclusive usable torque-target boundary.
@@ -211,6 +220,10 @@ impl VelocityIntegralPlan {
         hash_value!(self.analysis_budget_us);
         hash_value!(self.nominal_workflow_ms);
         hash_value!(self.maximum_workflow_ms);
+        hash_value!(self.recovery_origin_band_counts);
+        hash_value!(self.recovery_nominal_slot_us);
+        hash_value!(self.recovery_maximum_slot_us);
+        hash_value!(self.recovery_slot_count);
         hash_value!(self.hard_torque_limit);
         hash_value!(self.usable_torque_limit);
         hash_value!(self.motion_request.requested_velocity_mrev_s);
@@ -368,7 +381,13 @@ pub fn confidence_family_size(positive_rungs: usize) -> Result<u16, VelocityInte
 }
 
 /// Derive the conservative fixed Stage-C duration for one frozen PWM rate.
-pub fn integral_workflow_maximum_ms(pwm_hz: u32) -> Result<u32, VelocityIntegralPlanError> {
+pub fn integral_workflow_maximum_ms(
+    pwm_hz: u32,
+    maximum_recovery_slot_ms: u16,
+) -> Result<u32, VelocityIntegralPlanError> {
+    if maximum_recovery_slot_ms == 0 {
+        return Err(VelocityIntegralPlanError::InvalidRequest);
+    }
     let ladder = build_integral_ladder(
         pwm_hz,
         MOVING_STROKE_US,
@@ -391,7 +410,15 @@ pub fn integral_workflow_maximum_ms(pwm_hz: u32) -> Result<u32, VelocityIntegral
         .map_err(|_| VelocityIntegralPlanError::Arithmetic)?
         .checked_mul(primitive_us)
         .ok_or(VelocityIntegralPlanError::Arithmetic)?;
-    Ok(workflow_us / 1_000)
+    let recovery_us = u32::try_from(total_rungs)
+        .map_err(|_| VelocityIntegralPlanError::Arithmetic)?
+        .checked_mul(u32::from(maximum_recovery_slot_ms))
+        .and_then(|value| value.checked_mul(1_000))
+        .ok_or(VelocityIntegralPlanError::Arithmetic)?;
+    workflow_us
+        .checked_add(recovery_us)
+        .map(|value| value.div_ceil(1_000))
+        .ok_or(VelocityIntegralPlanError::Arithmetic)
 }
 
 /// Construct one exact Stage-C stage plan from reproduced Stage-B authority.
@@ -453,6 +480,12 @@ pub(crate) fn plan_velocity_integral_response(
     let expected_observations = u16::from(total_rung_count)
         .checked_mul(STAGE_C_OBSERVATIONS_PER_RUNG as u16)
         .ok_or(VelocityIntegralPlanError::Arithmetic)?;
+    let recovery = plan_rung_origin_recovery(
+        motion_budget,
+        encoder_counts_per_rev,
+        stage_b_plan.planned_velocity_mrev_s,
+    )
+    .map_err(map_recovery_plan_error)?;
     let primitive_us = MOVING_STROKE_US
         .checked_add(ZERO_SETTLE_US)
         .and_then(|value| value.checked_add(SETTLE_ANALYSIS_BUDGET_US))
@@ -463,7 +496,20 @@ pub(crate) fn plan_velocity_integral_response(
     let workflow_us = u32::from(expected_observations)
         .checked_mul(primitive_us)
         .ok_or(VelocityIntegralPlanError::Arithmetic)?;
-    let workflow_ms = workflow_us / 1_000;
+    let nominal_workflow_us = workflow_us
+        .checked_add(
+            u32::from(total_rung_count)
+                .checked_mul(recovery.nominal_slot_us)
+                .ok_or(VelocityIntegralPlanError::Arithmetic)?,
+        )
+        .ok_or(VelocityIntegralPlanError::Arithmetic)?;
+    let maximum_workflow_us = workflow_us
+        .checked_add(
+            u32::from(total_rung_count)
+                .checked_mul(recovery.maximum_slot_us)
+                .ok_or(VelocityIntegralPlanError::Arithmetic)?,
+        )
+        .ok_or(VelocityIntegralPlanError::Arithmetic)?;
     let mut positive_i = [0; STAGE_C_MAX_POSITIVE_RUNGS];
     positive_i[..ladder.rungs.len()].copy_from_slice(ladder.rungs.as_slice());
 
@@ -484,12 +530,26 @@ pub(crate) fn plan_velocity_integral_response(
         moving_stroke_us: MOVING_STROKE_US,
         zero_settle_us: ZERO_SETTLE_US,
         analysis_budget_us: SETTLE_ANALYSIS_BUDGET_US,
-        nominal_workflow_ms: workflow_ms,
-        maximum_workflow_ms: workflow_ms,
+        nominal_workflow_ms: nominal_workflow_us.div_ceil(1_000),
+        maximum_workflow_ms: maximum_workflow_us.div_ceil(1_000),
+        recovery_origin_band_counts: recovery.origin_band_counts,
+        recovery_nominal_slot_us: recovery.nominal_slot_us,
+        recovery_maximum_slot_us: recovery.maximum_slot_us,
+        recovery_slot_count: total_rung_count,
         hard_torque_limit: stage_b_plan.hard_torque_limit,
         usable_torque_limit: stage_b_plan.usable_torque_limit,
         motion_request,
     })
+}
+
+fn map_recovery_plan_error(error: RungOriginRecoveryPlanError) -> VelocityIntegralPlanError {
+    match error {
+        RungOriginRecoveryPlanError::InvalidRequest
+        | RungOriginRecoveryPlanError::ExceedsPrimitiveCap => {
+            VelocityIntegralPlanError::InvalidRequest
+        }
+        RungOriginRecoveryPlanError::Arithmetic => VelocityIntegralPlanError::Arithmetic,
+    }
 }
 
 fn largest_i_for_tau(

@@ -19,6 +19,7 @@ mod integral_sweep_tests;
 pub mod operating_region;
 #[cfg(test)]
 mod operating_region_tests;
+pub(crate) mod recovery;
 pub mod reproduction;
 mod response_ramp;
 #[cfg(feature = "trace-velocity-sweep")]

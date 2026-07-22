@@ -755,6 +755,7 @@ where
                             crate::commissioning::outer::velocity::integral_plan::StageCPlanShape::StageBThenStageC,
                             crate::commissioning::outer::velocity::integral_plan::integral_workflow_maximum_ms(
                                 board.pwm_freq_hz(),
+                                request.max_duration_ms,
                             )
                             .expect("configured PWM must admit the Stage-C geometry"),
                         )
@@ -1661,7 +1662,7 @@ mod tests {
             identity: StageCPlanIdentity {
                 channel: 0,
                 build_revision: 1,
-                schema_revision: 1,
+                schema_revision: crate::commissioning::outer::velocity::integral_plan::STAGE_C_EVIDENCE_SCHEMA_REVISION,
                 plan_digest: 2,
             },
             stage_b_plan_digest: 3,
@@ -1675,7 +1676,7 @@ mod tests {
             encoder_counts_per_rev: 4_000,
             positive_rung_count: 5,
             family_size: 28,
-            maximum_workflow_ms: 69_888,
+            maximum_workflow_ms: 90_888,
         }
     }
 

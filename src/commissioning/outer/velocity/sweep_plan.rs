@@ -2,6 +2,8 @@ use crate::autotune::TmcMechanicalRpm;
 use foci_tmc4671::pid::PidGain;
 use heapless::Vec;
 
+use super::recovery::{RungOriginRecoveryPlanError, plan_rung_origin_recovery};
+
 /// Numerator of the runtime velocity-envelope proportional margin.
 pub const ENVELOPE_PROPORTIONAL_NUM: u32 = 3;
 /// Denominator of the runtime velocity-envelope proportional margin.
@@ -121,6 +123,14 @@ pub struct VelocitySweepPlan {
     pub nominal_workflow_ms: u32,
     /// Maximum planned duration; equal to nominal while the schedule has no extension.
     pub maximum_workflow_ms: u32,
+    /// Inclusive reserve-derived origin band used after fully acquired rungs.
+    pub recovery_origin_band_counts: u32,
+    /// Conservative nominal duration reserved for one recovery slot.
+    pub recovery_nominal_slot_us: u32,
+    /// Host-declared maximum duration reserved for one recovery slot.
+    pub recovery_maximum_slot_us: u32,
+    /// Maximum number of recovery slots reserved by this plan.
+    pub recovery_slot_count: u8,
     /// Complete per-primitive displacement window.
     pub max_stroke_travel_mrev: u32,
     /// Reserved braking and settle displacement.
@@ -219,6 +229,10 @@ impl VelocitySweepPlan {
         hash_value!(self.zero_settle_us);
         hash_value!(self.nominal_workflow_ms);
         hash_value!(self.maximum_workflow_ms);
+        hash_value!(self.recovery_origin_band_counts);
+        hash_value!(self.recovery_nominal_slot_us);
+        hash_value!(self.recovery_maximum_slot_us);
+        hash_value!(self.recovery_slot_count);
         hash_value!(self.max_stroke_travel_mrev);
         hash_value!(self.settle_travel_reserve_mrev);
         hash_value!(self.negative_position_headroom_mrev);
@@ -359,6 +373,21 @@ pub fn plan_velocity_sweep(
 
     let target_velocity_rpm = TmcMechanicalRpm::from_mrev_s_nearest(planned_velocity_mrev_s)
         .map_err(|_| VelocityPlanError::ZeroMovingTravelAmplitude)?;
+    let recovery = plan_rung_origin_recovery(
+        crate::commissioning::outer::OuterMotionBudget {
+            requested_velocity_mrev_s: request.requested_velocity_mrev_s,
+            machine_velocity_ceiling_mrev_s: request.machine_velocity_ceiling_mrev_s,
+            requested_velocity_source: request.requested_velocity_source,
+            max_stroke_travel_mrev: request.max_stroke_travel_mrev,
+            settle_travel_reserve_mrev: request.settle_travel_reserve_mrev,
+            negative_position_headroom_mrev: request.negative_position_headroom_mrev,
+            positive_position_headroom_mrev: request.positive_position_headroom_mrev,
+            max_duration_ms: request.max_duration_ms,
+        },
+        encoder_counts_per_rev,
+        planned_velocity_mrev_s,
+    )
+    .map_err(map_recovery_plan_error)?;
     let (p_start, p_top, usable_torque_limit) =
         current_gain_span(target_velocity_rpm, torque_flux_limit)?;
     let ladder = build_gain_ladder(p_start.raw(), p_top.raw())?;
@@ -381,7 +410,22 @@ pub fn plan_velocity_sweep(
         .checked_mul(u32::from(SWEEP_SLOT_COUNT))
         .and_then(|value| value.checked_mul(primitive_us))
         .ok_or(VelocityPlanError::Arithmetic)?;
-    let workflow_ms = workflow_us / 1_000;
+    let nominal_workflow_us = workflow_us
+        .checked_add(
+            u32::from(rung_count)
+                .checked_mul(recovery.nominal_slot_us)
+                .ok_or(VelocityPlanError::Arithmetic)?,
+        )
+        .ok_or(VelocityPlanError::Arithmetic)?;
+    let maximum_workflow_us = workflow_us
+        .checked_add(
+            u32::from(rung_count)
+                .checked_mul(recovery.maximum_slot_us)
+                .ok_or(VelocityPlanError::Arithmetic)?,
+        )
+        .ok_or(VelocityPlanError::Arithmetic)?;
+    let nominal_workflow_ms = nominal_workflow_us.div_ceil(1_000);
+    let maximum_workflow_ms = maximum_workflow_us.div_ceil(1_000);
     let mut gains = [PidGain::ZERO; MAX_SWEEP_RUNGS];
     gains[..ladder.len()].copy_from_slice(ladder.as_slice());
 
@@ -400,8 +444,12 @@ pub fn plan_velocity_sweep(
         observations_per_direction: OBSERVATIONS_PER_DIRECTION_PER_RUNG,
         moving_stroke_us: MOVING_STROKE_US,
         zero_settle_us: ZERO_SETTLE_US,
-        nominal_workflow_ms: workflow_ms,
-        maximum_workflow_ms: workflow_ms,
+        nominal_workflow_ms,
+        maximum_workflow_ms,
+        recovery_origin_band_counts: recovery.origin_band_counts,
+        recovery_nominal_slot_us: recovery.nominal_slot_us,
+        recovery_maximum_slot_us: recovery.maximum_slot_us,
+        recovery_slot_count: rung_count,
         max_stroke_travel_mrev: request.max_stroke_travel_mrev,
         settle_travel_reserve_mrev: request.settle_travel_reserve_mrev,
         negative_position_headroom_mrev: request.negative_position_headroom_mrev,
@@ -409,6 +457,14 @@ pub fn plan_velocity_sweep(
         hard_torque_limit: torque_flux_limit,
         usable_torque_limit,
     })
+}
+
+fn map_recovery_plan_error(error: RungOriginRecoveryPlanError) -> VelocityPlanError {
+    match error {
+        RungOriginRecoveryPlanError::InvalidRequest
+        | RungOriginRecoveryPlanError::ExceedsPrimitiveCap => VelocityPlanError::InvalidRequest,
+        RungOriginRecoveryPlanError::Arithmetic => VelocityPlanError::Arithmetic,
+    }
 }
 
 fn envelope_cap(effective_ceiling_mrev_s: u32) -> Result<u32, VelocityPlanError> {
