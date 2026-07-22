@@ -98,6 +98,7 @@ impl OuterMotionBudget {
 
 #[derive(Debug, Clone, Copy, defmt::Format)]
 struct OuterVelocityObservation {
+    signed_delta_counts: i32,
     absolute_delta_counts: u32,
     elapsed_us: u64,
 }
@@ -280,6 +281,12 @@ impl OuterSafetyLimits {
     #[allow(dead_code)]
     pub(crate) fn last_observation_scoring_eligible(&self) -> bool {
         self.last_observation_scoring_eligible
+    }
+
+    #[cfg(feature = "trace-velocity-sweep")]
+    pub(crate) fn last_accepted_observation(&self) -> Option<(i32, u64)> {
+        self.previous_velocity_observation
+            .map(|observation| (observation.signed_delta_counts, observation.elapsed_us))
     }
 
     /// Return the next observation deadline while the safety envelope is armed.
@@ -570,6 +577,7 @@ pub(crate) async fn check_outer_safety<B: CommissioningBackend>(
     safety.last_observation_scoring_eligible = dt_us <= OUTER_SAFETY_SAMPLE_PERIOD_US;
 
     let velocity_observation = OuterVelocityObservation {
+        signed_delta_counts: delta_counts,
         absolute_delta_counts: delta.absolute_counts(),
         elapsed_us: dt_us,
     };

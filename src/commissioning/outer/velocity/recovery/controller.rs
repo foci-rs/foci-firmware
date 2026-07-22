@@ -206,8 +206,6 @@ pub(crate) async fn step_rung_origin_recovery<B: CommissioningBackend>(
             if backend.elapsed_us() < next_sample_us {
                 return RungOriginRecoveryStep::At(next_sample_us);
             }
-            let previous_position = resources.safety.unwrapped_position;
-            let previous_read_us = resources.safety.last_sample_us;
             if let Some(step) = recovery_safety_sample(runtime, resources, backend).await {
                 return step;
             }
@@ -222,13 +220,16 @@ pub(crate) async fn step_rung_origin_recovery<B: CommissioningBackend>(
                     .recovery_wrong_way_fault(runtime.start_offset_counts, elapsed_us);
                 return recovery_fault(CommissionError::SafetyEnvelopeViolation, Some(fault));
             }
-            let delta = offset.saturating_sub(previous_position);
-            let elapsed_us = resources
-                .safety
-                .last_sample_us
-                .zip(previous_read_us)
-                .and_then(|(current, previous)| current.checked_sub(previous));
-            let Some(elapsed_us) = elapsed_us.and_then(|value| u16::try_from(value).ok()) else {
+            let Some((delta, elapsed_us)) =
+                resources
+                    .safety
+                    .last_accepted_observation()
+                    .and_then(|(delta, elapsed_us)| {
+                        u16::try_from(elapsed_us)
+                            .ok()
+                            .map(|elapsed_us| (delta, elapsed_us))
+                    })
+            else {
                 return recovery_fault(CommissionError::InvalidSchedule, None);
             };
             *resources.settle_displacement_counts = i32::from(*resources.settle_displacement_counts)

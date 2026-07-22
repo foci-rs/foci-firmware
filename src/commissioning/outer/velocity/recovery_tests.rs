@@ -401,6 +401,38 @@ fn recovery_consumes_the_safety_observation_taken_by_the_outer_dispatcher() {
 }
 
 #[test]
+fn recovery_retains_dispatcher_timing_for_the_zero_target_settle() {
+    let mut fixture = RecoveryFixture::new(1_040, Some(14_000_000));
+    fixture.command_motion();
+    fixture.backend.elapsed_us_value = 1_000;
+    fixture.backend.mechanical_encoder_position_counts_value = 1_000;
+    assert_eq!(
+        pollster::block_on(check_outer_safety(
+            &mut fixture.safety,
+            &mut fixture.backend,
+        )),
+        Ok(None)
+    );
+    assert_eq!(fixture.step(), RungOriginRecoveryStep::ReadyNow);
+    assert!(matches!(fixture.step(), RungOriginRecoveryStep::At(2_000)));
+
+    fixture.backend.elapsed_us_value = 2_000;
+    assert_eq!(
+        pollster::block_on(check_outer_safety(
+            &mut fixture.safety,
+            &mut fixture.backend,
+        )),
+        Ok(None)
+    );
+
+    assert!(matches!(fixture.step(), RungOriginRecoveryStep::At(3_000)));
+    assert_eq!(fixture.observations.len(), 1);
+    let observation = fixture.observations.iter().next().unwrap();
+    assert_eq!(observation.delta_counts, 0);
+    assert_eq!(observation.elapsed_us, 1_000);
+}
+
+#[test]
 fn recovery_controller_preserves_reverse_command_sign() {
     let mut fixture = RecoveryFixture::new(-8_458, Some(14_000_000));
     fixture.command_motion();
