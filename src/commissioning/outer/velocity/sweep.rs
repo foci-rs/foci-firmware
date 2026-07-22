@@ -352,6 +352,7 @@ fn sweep_evidence_terminal(
         .saturating_mul(2);
     let expected_rungs = u16::from(plan.rung_count);
     if !current_headroom
+        && !recovery_failure
         && (data.integrity.emitted_observations() != expected_observations
             || data.integrity.emitted_rungs() != expected_rungs)
     {
@@ -1919,6 +1920,18 @@ mod tests {
             matches!(operation, SpiOp::Write(address, value)
                 if *address == PID_VELOCITY_TARGET.addr() && *value != 0)
         }));
+
+        let terminal = loop {
+            match pollster::block_on(step_velocity_sweep_with_trace(&mut phase, &mut backend)) {
+                StepResult::VelocitySweepTerminal(terminal) => break terminal,
+                StepResult::VelocitySweepEvent(_) | StepResult::ReadyNow => {}
+                other => panic!("unexpected recovery-containment finalization result: {other:?}"),
+            }
+        };
+        assert_eq!(terminal.outcome, VelocitySweepOutcome::Inconclusive);
+        assert_eq!(terminal.cause, SWEEP_CAUSE_RECOVERY);
+        assert_eq!(terminal.emitted_observations, 0);
+        assert_eq!(terminal.emitted_rungs, 1);
     }
 
     #[test]
