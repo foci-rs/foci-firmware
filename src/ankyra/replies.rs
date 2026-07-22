@@ -2017,6 +2017,101 @@ pub struct FociVelocitySweepPlanTiming {
     pub maximum_workflow_ms: u32,
 }
 
+/// Stage-B rung-origin recovery geometry and reserved schedule.
+#[klipper_reply]
+pub struct FociVelocitySweepPlanRecovery {
+    /// Endpoint object id.
+    pub oid: u8,
+    /// Caller-assigned run sequence.
+    pub run_sequence: u32,
+    /// Shared plan-group evidence sequence.
+    pub evidence_sequence: u16,
+    /// Inclusive immutable-origin band.
+    pub origin_band_counts: u32,
+    /// Conservative nominal duration of one recovery slot.
+    pub nominal_slot_us: u32,
+    /// Host-declared maximum duration of one recovery slot.
+    pub maximum_slot_us: u32,
+    /// Maximum recovery-record count reserved by the plan.
+    pub slot_count: u8,
+}
+
+/// Recovery identity, controller gain, and classification.
+#[klipper_reply]
+pub struct FociRungOriginRecoveryCore {
+    /// Endpoint object id.
+    pub oid: u8,
+    /// Caller-assigned run sequence.
+    pub run_sequence: u32,
+    /// Monotonic evidence sequence.
+    pub evidence_sequence: u16,
+    /// Owning commissioning stage.
+    pub stage: u8,
+    /// Zero-based rung index.
+    pub rung_index: u8,
+    /// Proportional gain used by the recovery controller.
+    pub p_raw: u16,
+    /// Binding recovery-authority or containment source.
+    pub binding_source: u8,
+    /// Recovery outcome.
+    pub outcome: u8,
+}
+
+/// Recovery position relative to the immutable campaign origin.
+#[klipper_reply]
+pub struct FociRungOriginRecoveryPosition {
+    /// Endpoint object id.
+    pub oid: u8,
+    /// Caller-assigned run sequence.
+    pub run_sequence: u32,
+    /// Monotonic evidence sequence.
+    pub evidence_sequence: u16,
+    /// Signed offset when recovery began.
+    pub start_offset_counts: i32,
+    /// Closest signed offset reached during recovery.
+    pub closest_offset_counts: i32,
+    /// Signed offset after fixed settle and analysis.
+    pub final_offset_counts: i32,
+    /// Inclusive immutable-origin band.
+    pub origin_band_counts: u32,
+}
+
+/// Recovery moving, settle, and total elapsed durations.
+#[klipper_reply]
+pub struct FociRungOriginRecoveryTiming {
+    /// Endpoint object id.
+    pub oid: u8,
+    /// Caller-assigned run sequence.
+    pub run_sequence: u32,
+    /// Monotonic evidence sequence.
+    pub evidence_sequence: u16,
+    /// Measured constant-amplitude moving time.
+    pub moving_duration_us: u32,
+    /// Measured fixed zero-target settle time.
+    pub settle_duration_us: u32,
+    /// Total measured recovery-slot time.
+    pub total_duration_us: u32,
+}
+
+/// Recovery rate authority and observed controller limits.
+#[klipper_reply]
+pub struct FociRungOriginRecoveryLimits {
+    /// Endpoint object id.
+    pub oid: u8,
+    /// Caller-assigned run sequence.
+    pub run_sequence: u32,
+    /// Monotonic evidence sequence.
+    pub evidence_sequence: u16,
+    /// Frozen encoder-domain velocity amplitude.
+    pub planned_velocity_mrev_s: u32,
+    /// Exact low word of the commanded-side settled-rate lower bound.
+    pub lower_rate_low: u32,
+    /// Exact high word of the commanded-side settled-rate lower bound.
+    pub lower_rate_high: u32,
+    /// Peak absolute torque target observed during recovery.
+    pub peak_torque_target_abs: u16,
+}
+
 /// Core identity and exact selected-suffix totals for one observation.
 #[klipper_reply]
 pub struct FociVelocityObservationCore {
@@ -3011,6 +3106,25 @@ pub struct FociVelocityIntegralPlanTravel {
     pub positive_position_headroom_mrev: u32,
 }
 
+/// Stage-C rung-origin recovery geometry and reserved schedule.
+#[klipper_reply]
+pub struct FociVelocityIntegralPlanRecovery {
+    /// Endpoint object id.
+    pub oid: u8,
+    /// Caller-assigned run sequence.
+    pub run_sequence: u32,
+    /// Shared plan-group evidence sequence.
+    pub evidence_sequence: u16,
+    /// Inclusive immutable-origin band.
+    pub origin_band_counts: u32,
+    /// Conservative nominal duration of one recovery slot.
+    pub nominal_slot_us: u32,
+    /// Host-declared maximum duration of one recovery slot.
+    pub maximum_slot_us: u32,
+    /// Maximum recovery-record count reserved by the plan.
+    pub slot_count: u8,
+}
+
 /// One exact positive-I plan rung.
 #[klipper_reply]
 pub struct FociVelocityIntegralPlanRung {
@@ -3447,6 +3561,86 @@ mod velocity_sweep_reply_tests {
             "{name} frame is {}",
             payload + FRAME_OVERHEAD_BYTES
         );
+    }
+
+    #[test]
+    fn rung_origin_recovery_reply_fragments_fit_and_preserve_exact_rate() {
+        let core = FociRungOriginRecoveryCore {
+            oid: u8::MAX,
+            run_sequence: WIDE_U32,
+            evidence_sequence: u16::MAX,
+            stage: u8::MAX,
+            rung_index: u8::MAX,
+            p_raw: u16::MAX,
+            binding_source: u8::MAX,
+            outcome: u8::MAX,
+        };
+        let position = FociRungOriginRecoveryPosition {
+            oid: u8::MAX,
+            run_sequence: WIDE_U32,
+            evidence_sequence: u16::MAX,
+            start_offset_counts: i32::MIN,
+            closest_offset_counts: i32::MAX,
+            final_offset_counts: i32::MIN,
+            origin_band_counts: WIDE_U32,
+        };
+        let timing = FociRungOriginRecoveryTiming {
+            oid: u8::MAX,
+            run_sequence: WIDE_U32,
+            evidence_sequence: u16::MAX,
+            moving_duration_us: WIDE_U32,
+            settle_duration_us: WIDE_U32,
+            total_duration_us: WIDE_U32,
+        };
+        let limits = FociRungOriginRecoveryLimits {
+            oid: u8::MAX,
+            run_sequence: WIDE_U32,
+            evidence_sequence: u16::MAX,
+            planned_velocity_mrev_s: WIDE_U32,
+            lower_rate_low: 0x7654_3210,
+            lower_rate_high: 0xfedc_ba98,
+            peak_torque_target_abs: u16::MAX,
+        };
+        let sweep_plan = FociVelocitySweepPlanRecovery {
+            oid: u8::MAX,
+            run_sequence: WIDE_U32,
+            evidence_sequence: u16::MAX,
+            origin_band_counts: WIDE_U32,
+            nominal_slot_us: WIDE_U32,
+            maximum_slot_us: WIDE_U32,
+            slot_count: u8::MAX,
+        };
+        let integral_plan = FociVelocityIntegralPlanRecovery {
+            oid: u8::MAX,
+            run_sequence: WIDE_U32,
+            evidence_sequence: u16::MAX,
+            origin_band_counts: WIDE_U32,
+            nominal_slot_us: WIDE_U32,
+            maximum_slot_us: WIDE_U32,
+            slot_count: u8::MAX,
+        };
+
+        for (name, fits) in [
+            ("recovery_core", encoded_reply_fits(&core)),
+            ("recovery_position", encoded_reply_fits(&position)),
+            ("recovery_timing", encoded_reply_fits(&timing)),
+            ("recovery_limits", encoded_reply_fits(&limits)),
+            ("sweep_plan_recovery", encoded_reply_fits(&sweep_plan)),
+            ("integral_plan_recovery", encoded_reply_fits(&integral_plan)),
+        ] {
+            assert!(fits, "{name} exceeds the transport limit");
+        }
+        assert_eq!(
+            (u64::from(limits.lower_rate_high) << 32) | u64::from(limits.lower_rate_low),
+            0xfedc_ba98_7654_3210
+        );
+    }
+
+    fn encoded_reply_fits<T: Writable>(reply: &T) -> bool {
+        let mut scratch = ScratchOutput::<64>::new();
+        reply.write(&mut scratch);
+        let payload = scratch.result().len() + REPLY_ID_WORST_CASE_BYTES;
+        payload <= PAYLOAD_WITH_ID_MAX && payload + FRAME_OVERHEAD_BYTES <= FRAME_MAX
     }
 
     #[test]
