@@ -1445,7 +1445,7 @@ mod tests {
                 size_of::<crate::commissioning::outer::VelocitySweepData>(),
                 2_864
             );
-            assert_eq!(size_of::<CommissioningEngine>(), 4_528);
+            assert_eq!(size_of::<CommissioningEngine>(), 4_512);
         }
         assert!(size_of::<CommissioningEngine>() <= 4_528);
         assert!(size_of::<CommissioningEngine>() <= 6_144);

@@ -105,6 +105,56 @@ struct OuterVelocityObservation {
     elapsed_us: u64,
 }
 
+/// Optional monotonic timestamp using an unreachable campaign-time sentinel.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+pub(crate) struct OuterSafetyTimestamp(u64);
+
+impl OuterSafetyTimestamp {
+    const NONE: u64 = u64::MAX;
+
+    const fn none() -> Self {
+        Self(Self::NONE)
+    }
+
+    pub(crate) fn some(value: u64) -> Result<Self, CommissionError> {
+        if value == Self::NONE {
+            Err(CommissionError::InvalidSchedule)
+        } else {
+            Ok(Self(value))
+        }
+    }
+
+    pub(crate) const fn get(self) -> Option<u64> {
+        if self.0 == Self::NONE {
+            None
+        } else {
+            Some(self.0)
+        }
+    }
+
+    pub(crate) const fn is_some(self) -> bool {
+        self.0 != Self::NONE
+    }
+
+    fn map<T>(self, map: impl FnOnce(u64) -> T) -> Option<T> {
+        self.get().map(map)
+    }
+
+    pub(crate) fn and_then<T>(self, map: impl FnOnce(u64) -> Option<T>) -> Option<T> {
+        self.get().and_then(map)
+    }
+
+    fn unwrap_or(self, default: u64) -> u64 {
+        self.get().unwrap_or(default)
+    }
+}
+
+impl PartialEq<Option<u64>> for OuterSafetyTimestamp {
+    fn eq(&self, other: &Option<u64>) -> bool {
+        self.get() == *other
+    }
+}
+
 /// Outer safety limits, computed once at the start of outer commissioning.
 #[derive(Debug, Clone, Copy, defmt::Format)]
 pub(crate) struct OuterSafetyLimits {
@@ -127,13 +177,13 @@ pub(crate) struct OuterSafetyLimits {
     /// Validated encoder modulo domain.
     pub(crate) encoder_domain: Option<EncoderDomain>,
     /// Timestamp (microseconds) of the previous safety sample.
-    pub(crate) last_sample_us: Option<u64>,
+    pub(crate) last_sample_us: OuterSafetyTimestamp,
     /// Timestamp (microseconds) when the active motion primitive began.
     pub(crate) primitive_start_us: Option<u64>,
     /// Unwrapped position when the active motion primitive began.
     pub(crate) primitive_start_position: Option<i32>,
     /// Absolute deadline for the next independent safety observation.
-    pub(crate) next_safety_sample_us: Option<u64>,
+    pub(crate) next_safety_sample_us: OuterSafetyTimestamp,
     /// Previous ordinary velocity observation for the sliding two-interval gate.
     previous_velocity_observation: Option<OuterVelocityObservation>,
     /// Whether the latest accepted observation met the scoring cadence.
@@ -154,10 +204,10 @@ impl OuterSafetyLimits {
             torque_cap,
             prev_encoder_count: None,
             encoder_domain: None,
-            last_sample_us: None,
+            last_sample_us: OuterSafetyTimestamp::none(),
             primitive_start_us: None,
             primitive_start_position: None,
-            next_safety_sample_us: None,
+            next_safety_sample_us: OuterSafetyTimestamp::none(),
             previous_velocity_observation: None,
             last_observation_scoring_eligible: false,
             budget,
@@ -254,8 +304,8 @@ impl OuterSafetyLimits {
         let next_safety_sample_us = now_us
             .checked_add(OUTER_SAFETY_SAMPLE_PERIOD_US)
             .ok_or(CommissionError::InvalidSchedule)?;
-        self.last_sample_us = Some(now_us);
-        self.next_safety_sample_us = Some(next_safety_sample_us);
+        self.last_sample_us = OuterSafetyTimestamp::some(now_us)?;
+        self.next_safety_sample_us = OuterSafetyTimestamp::some(next_safety_sample_us)?;
         self.previous_velocity_observation = None;
         self.last_observation_scoring_eligible = false;
         Ok(())
@@ -296,7 +346,7 @@ impl OuterSafetyLimits {
         if self.torque_cap == 0 {
             None
         } else {
-            self.next_safety_sample_us
+            self.next_safety_sample_us.get()
         }
     }
 
@@ -595,12 +645,12 @@ async fn check_outer_safety_inner<B: CommissioningBackend>(
     // Saturation keeps a corrupt or unexpectedly long sequence from wrapping
     // back inside the allowed safety window.
     safety.prev_encoder_count = Some(encoder_count);
-    safety.last_sample_us = Some(now_us);
-    safety.next_safety_sample_us = Some(next_grid_deadline(
+    safety.last_sample_us = OuterSafetyTimestamp::some(now_us)?;
+    safety.next_safety_sample_us = OuterSafetyTimestamp::some(next_grid_deadline(
         sample_deadline_us,
         OUTER_SAFETY_SAMPLE_PERIOD_US,
         now_us,
-    )?);
+    )?)?;
     safety.unwrapped_position = safety.unwrapped_position.saturating_add(delta_counts);
     safety.last_observation_scoring_eligible = dt_us <= OUTER_SAFETY_SAMPLE_PERIOD_US;
 
@@ -709,7 +759,7 @@ mod tests {
     use super::check_outer_safety_with_timing;
     use super::{
         MAX_SAFETY_OBSERVATION_GAP_US, OUTER_SAFETY_SAMPLE_MAX_REGISTER_OPS, OuterMotionBudget,
-        OuterSafetyLimits, check_outer_safety,
+        OuterSafetyLimits, OuterSafetyTimestamp, check_outer_safety,
     };
     use crate::autotune::{CommissionError, CommissionProfile, OperatingMode, TransientBuffer};
     use crate::commission_dispatch::test_support::{MockBackend, SpiOp};
@@ -734,8 +784,11 @@ mod tests {
         let mut safety = OuterSafetyLimits::new(100, OuterMotionBudget::firmware_caps());
         safety.configure_encoder_resolution(4_000).unwrap();
         safety.set_encoder_baseline(0).unwrap();
-        safety.last_sample_us = last_sample_us;
-        safety.next_safety_sample_us = Some(next_sample_us);
+        safety.last_sample_us = match last_sample_us {
+            Some(value) => OuterSafetyTimestamp::some(value).unwrap(),
+            None => OuterSafetyTimestamp::none(),
+        };
+        safety.next_safety_sample_us = OuterSafetyTimestamp::some(next_sample_us).unwrap();
         safety
     }
 
@@ -1116,8 +1169,8 @@ mod tests {
                 OuterSafetyLimits::new(100, OuterMotionBudget::test_budget(500, 6_000, 3_000));
             safety.configure_encoder_resolution(4_000).unwrap();
             safety.set_encoder_baseline(0).unwrap();
-            safety.last_sample_us = Some(0);
-            safety.next_safety_sample_us = Some(1_000);
+            safety.last_sample_us = OuterSafetyTimestamp::some(0).unwrap();
+            safety.next_safety_sample_us = OuterSafetyTimestamp::some(1_000).unwrap();
             safety.begin_primitive(0).unwrap();
             safety.unwrapped_position = 1_999;
             let mut backend = MockBackend::new();
@@ -1141,8 +1194,8 @@ mod tests {
                 OuterSafetyLimits::new(100, OuterMotionBudget::test_budget(500, 6_000, 3_000));
             safety.configure_encoder_resolution(4_000).unwrap();
             safety.set_encoder_baseline(0).unwrap();
-            safety.last_sample_us = Some(0);
-            safety.next_safety_sample_us = Some(1_000);
+            safety.last_sample_us = OuterSafetyTimestamp::some(0).unwrap();
+            safety.next_safety_sample_us = OuterSafetyTimestamp::some(1_000).unwrap();
             safety.begin_primitive(0).unwrap();
             safety.unwrapped_position = 1_600;
             let mut backend = MockBackend::new();
@@ -1167,8 +1220,8 @@ mod tests {
             let mut safety = OuterSafetyLimits::new(100, budget);
             safety.configure_encoder_resolution(4_000).unwrap();
             safety.set_encoder_baseline(0).unwrap();
-            safety.last_sample_us = Some(0);
-            safety.next_safety_sample_us = Some(1_000);
+            safety.last_sample_us = OuterSafetyTimestamp::some(0).unwrap();
+            safety.next_safety_sample_us = OuterSafetyTimestamp::some(1_000).unwrap();
             safety.unwrapped_position = 799;
             let mut backend = MockBackend::new();
             backend.elapsed_us_value = 1_000;
@@ -1239,7 +1292,7 @@ mod tests {
             let mut safety = OuterSafetyLimits::new(100, OuterMotionBudget::firmware_caps());
             safety.configure_encoder_resolution(4_000).unwrap();
             safety.set_encoder_baseline(2328).unwrap();
-            safety.last_sample_us = Some(100_000);
+            safety.last_sample_us = OuterSafetyTimestamp::some(100_000).unwrap();
             let mut backend = MockBackend::new();
             backend.elapsed_us_value = 101_500;
             backend.mechanical_encoder_position_counts_value = 2339;
@@ -1385,7 +1438,7 @@ mod tests {
             let mut safety = OuterSafetyLimits::new(100, OuterMotionBudget::firmware_caps());
             safety.configure_encoder_resolution(4_000).unwrap();
             safety.set_encoder_baseline(3_998).unwrap();
-            safety.last_sample_us = Some(100_000);
+            safety.last_sample_us = OuterSafetyTimestamp::some(100_000).unwrap();
             safety.primitive_start_us = Some(90_000);
             let mut backend = MockBackend::new();
             backend.elapsed_us_value = 101_000;
@@ -1410,7 +1463,7 @@ mod tests {
             let mut safety = OuterSafetyLimits::new(100, OuterMotionBudget::firmware_caps());
             safety.configure_encoder_resolution(4_000).unwrap();
             safety.set_encoder_baseline(2).unwrap();
-            safety.last_sample_us = Some(100_000);
+            safety.last_sample_us = OuterSafetyTimestamp::some(100_000).unwrap();
             safety.primitive_start_us = Some(90_000);
             let mut backend = MockBackend::new();
             backend.elapsed_us_value = 101_000;
@@ -1435,7 +1488,7 @@ mod tests {
             let mut safety = OuterSafetyLimits::new(100, OuterMotionBudget::firmware_caps());
             safety.configure_encoder_resolution(4_000).unwrap();
             safety.set_encoder_baseline(1_000).unwrap();
-            safety.last_sample_us = Some(100_000);
+            safety.last_sample_us = OuterSafetyTimestamp::some(100_000).unwrap();
             safety.primitive_start_us = Some(90_000);
             safety.unwrapped_position = 17;
             let before = safety;
@@ -1462,7 +1515,7 @@ mod tests {
             let mut safety = OuterSafetyLimits::new(2448, OuterMotionBudget::firmware_caps());
             safety.configure_encoder_resolution(4_000).unwrap();
             safety.set_encoder_baseline(1_000).unwrap();
-            safety.last_sample_us = Some(100_000);
+            safety.last_sample_us = OuterSafetyTimestamp::some(100_000).unwrap();
             safety.primitive_start_us = Some(90_000);
             let mut phase = OuterPhase::MechanicalId {
                 state: MechanicalIdState::ForwardCapture {
@@ -1541,7 +1594,7 @@ mod tests {
                 OuterSafetyLimits::new(100, OuterMotionBudget::test_budget(750, 6_000, 3_000));
             safety.configure_encoder_resolution(4_000).unwrap();
             safety.set_encoder_baseline(0).unwrap();
-            safety.last_sample_us = Some(100_000);
+            safety.last_sample_us = OuterSafetyTimestamp::some(100_000).unwrap();
             safety.primitive_start_us = Some(90_000);
             let mut backend = MockBackend::new();
             backend.elapsed_us_value = 101_000;
@@ -1584,7 +1637,7 @@ mod tests {
                 .configure_encoder_resolution(i32::MAX as u32)
                 .unwrap();
             safety.set_encoder_baseline(0).unwrap();
-            safety.last_sample_us = Some(100);
+            safety.last_sample_us = OuterSafetyTimestamp::some(100).unwrap();
             safety.primitive_start_us = Some(90);
             let mut backend = MockBackend::new();
             backend.elapsed_us_value = 101;
@@ -1618,7 +1671,7 @@ mod tests {
                 .configure_encoder_resolution(i32::MAX as u32)
                 .unwrap();
             safety.set_encoder_baseline(0).unwrap();
-            safety.last_sample_us = Some(100);
+            safety.last_sample_us = OuterSafetyTimestamp::some(100).unwrap();
             safety.primitive_start_us = Some(90);
             let mut backend = MockBackend::new();
             backend.elapsed_us_value = 101;
@@ -1647,7 +1700,7 @@ mod tests {
         pollster::block_on(async {
             let mut safety = OuterSafetyLimits::new(2448, OuterMotionBudget::firmware_caps());
             safety.configure_encoder_resolution(4_000).unwrap();
-            safety.last_sample_us = Some(1_000);
+            safety.last_sample_us = OuterSafetyTimestamp::some(1_000).unwrap();
             let mut phase = OuterPhase::MechanicalId {
                 state: MechanicalIdState::ForwardCapture {
                     next_sample_us: 2_000,

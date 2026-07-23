@@ -633,7 +633,8 @@ mod tests {
             );
             safety.configure_encoder_resolution(4_000).unwrap();
             safety.set_encoder_baseline(3_998).unwrap();
-            safety.last_sample_us = Some(10_000);
+            safety.last_sample_us =
+                crate::commissioning::outer::safety::OuterSafetyTimestamp::some(10_000).unwrap();
             let mut data = MechanicalIdData::new(100);
             data.start_position = safety.prev_encoder_count;
             let mut phase = OuterPhase::MechanicalId {
@@ -681,7 +682,8 @@ mod tests {
             );
             safety.configure_encoder_resolution(4_000).unwrap();
             safety.set_encoder_baseline(0).unwrap();
-            safety.last_sample_us = Some(10_000);
+            safety.last_sample_us =
+                crate::commissioning::outer::safety::OuterSafetyTimestamp::some(10_000).unwrap();
             let mut data = MechanicalIdData::new(100);
             data.start_position = safety.prev_encoder_count;
             let mut phase = OuterPhase::MechanicalId {
@@ -1602,7 +1604,9 @@ pub(crate) async fn step_mechanical_id_with_trace<B: CommissioningBackend>(
             safety.torque_cap = 0;
 
             let now = backend.elapsed_us();
-            safety.last_sample_us = Some(now);
+            safety.last_sample_us =
+                crate::commissioning::outer::safety::OuterSafetyTimestamp::some(now)
+                    .expect("the active monotonic timestamp is representable");
             let Some(next_sample_us) =
                 now.checked_add(MECHANICAL_ID_MODE_SWITCH_SETTLE_POLICY.grace_us)
             else {
@@ -1661,7 +1665,9 @@ pub(crate) async fn step_mechanical_id_with_trace<B: CommissioningBackend>(
             safety
                 .set_encoder_baseline(settled_pos)
                 .expect("configured domain");
-            safety.last_sample_us = Some(now);
+            safety.last_sample_us =
+                crate::commissioning::outer::safety::OuterSafetyTimestamp::some(now)
+                    .expect("the active monotonic timestamp is representable");
 
             let settle_threshold = response::mechanical_id_settle_velocity_threshold_counts_per_ms(
                 safety.counts_per_rev(),
