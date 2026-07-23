@@ -300,7 +300,7 @@ pub(crate) async fn step_rung_origin_recovery<B: CommissioningBackend>(
                 resources.safety.end_primitive();
                 (
                     RungOriginRecoveryOutcome::Recovered,
-                    RecoveryBindingSource::SettledRate,
+                    runtime.authority_source,
                 )
             };
             runtime.state = RecoveryState::Terminal {

@@ -26,6 +26,8 @@ use crate::commissioning::types::OuterSafetyFault;
 #[cfg(feature = "trace-velocity-sweep")]
 use foci_tmc4671::pid::PidGain;
 
+#[cfg(feature = "trace-velocity-sweep")]
+use super::operating_region::CompactSignedRate;
 use super::sweep_plan::{MOVING_STROKE_US, SETTLE_ANALYSIS_BUDGET_US, ZERO_SETTLE_US};
 
 const MREV_PER_REV: u128 = 1_000;
@@ -68,6 +70,56 @@ pub(crate) enum RecoveryBindingSource {
     MissingRate = 2,
     Deadline = 3,
     LocalTravel = 4,
+    StructuredSuffix = 5,
+}
+
+/// Compact rate bound and the evidence source that authorized its use.
+#[cfg(feature = "trace-velocity-sweep")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+pub(crate) struct RecoveryRateAuthority {
+    pub(crate) lower_rate: CompactSignedRate,
+    pub(crate) source: RecoveryBindingSource,
+}
+
+#[cfg(feature = "trace-velocity-sweep")]
+impl RecoveryRateAuthority {
+    pub(crate) const NONE: Self = Self {
+        lower_rate: CompactSignedRate::ZERO,
+        source: RecoveryBindingSource::MissingRate,
+    };
+
+    pub(crate) const fn settled(lower_rate: CompactSignedRate) -> Self {
+        Self {
+            lower_rate,
+            source: RecoveryBindingSource::SettledRate,
+        }
+    }
+
+    #[allow(dead_code)]
+    pub(crate) const fn structured(lower_rate: CompactSignedRate) -> Self {
+        Self {
+            lower_rate,
+            source: RecoveryBindingSource::StructuredSuffix,
+        }
+    }
+
+    pub(crate) fn lower_rate_q(self) -> Option<u64> {
+        u64::try_from(self.lower_rate.decode())
+            .ok()
+            .filter(|rate| *rate != 0)
+    }
+
+    pub(crate) fn select(ordinary: Option<Self>, structured: Option<Self>) -> Self {
+        match (ordinary, structured) {
+            (Some(left), Some(right)) if right.lower_rate.decode() < left.lower_rate.decode() => {
+                right
+            }
+            (Some(left), Some(_)) => left,
+            (Some(left), None) => left,
+            (None, Some(right)) => right,
+            (None, None) => Self::NONE,
+        }
+    }
 }
 
 /// Complete stage-neutral summary of one recovery slot.
@@ -191,6 +243,7 @@ pub(crate) struct RungOriginRecoveryRuntime {
     start_offset_counts: i32,
     closest_offset_counts: i32,
     lower_rate_q: ExactU64Parts,
+    authority_source: RecoveryBindingSource,
     plan: RungOriginRecoveryPlan,
     runtime_us: u32,
     motion_started: bool,
@@ -211,6 +264,7 @@ pub(crate) struct RungOriginRecoveryConfig {
     pub(crate) planned_velocity_mrev_s: u32,
     pub(crate) start_offset_counts: i32,
     pub(crate) lower_rate_q: Option<u64>,
+    pub(crate) authority_source: RecoveryBindingSource,
 }
 
 #[cfg(feature = "trace-velocity-sweep")]
@@ -228,6 +282,14 @@ impl RungOriginRecoveryRuntime {
         {
             return Err(CommissionError::InvalidSchedule);
         }
+        let lower_rate_q = match (config.lower_rate_q, config.authority_source) {
+            (
+                Some(rate),
+                RecoveryBindingSource::SettledRate | RecoveryBindingSource::StructuredSuffix,
+            ) if rate != 0 => Some(rate),
+            (None, RecoveryBindingSource::MissingRate) => None,
+            _ => return Err(CommissionError::InvalidSchedule),
+        };
         let return_distance =
             recovery_return_distance_counts(config.start_offset_counts, plan.origin_band_counts)
                 .ok_or(CommissionError::InvalidSchedule)?;
@@ -240,7 +302,7 @@ impl RungOriginRecoveryRuntime {
                 0,
                 0,
             )
-        } else if let Some(rate) = config.lower_rate_q.filter(|rate| *rate != 0) {
+        } else if let Some(rate) = lower_rate_q {
             match recovery_runtime_us(return_distance, rate, plan.maximum_slot_us) {
                 Ok(runtime_us) => (RecoveryState::WriteGains, runtime_us, rate),
                 Err(RungOriginRecoveryPlanError::ExceedsPrimitiveCap) => (
@@ -272,6 +334,7 @@ impl RungOriginRecoveryRuntime {
             start_offset_counts: config.start_offset_counts,
             closest_offset_counts: config.start_offset_counts,
             lower_rate_q: ExactU64Parts::from_u64(lower_rate_q),
+            authority_source: config.authority_source,
             plan,
             runtime_us,
             motion_started: false,

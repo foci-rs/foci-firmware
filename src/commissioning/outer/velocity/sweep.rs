@@ -26,7 +26,7 @@ use super::operating_region::{
     DirectionalRegionSummary, JointOperableClosure, JointOperableRegion,
 };
 use super::recovery::{
-    RecoveryStage, RungOriginRecoveryConfig, RungOriginRecoveryOutcome,
+    RecoveryRateAuthority, RecoveryStage, RungOriginRecoveryConfig, RungOriginRecoveryOutcome,
     RungOriginRecoveryResources, RungOriginRecoveryRuntime, RungOriginRecoveryStep,
     plan_rung_origin_recovery, step_rung_origin_recovery,
 };
@@ -1326,9 +1326,9 @@ pub(crate) async fn step_velocity_sweep_with_trace<B: CommissioningBackend>(
                 } else {
                     recovery_rates[1]
                 };
-                let lower_rate_q = u64::try_from(compact_rate.decode())
-                    .ok()
-                    .filter(|rate| *rate != 0);
+                let ordinary = (compact_rate != CompactSignedRate::ZERO)
+                    .then_some(RecoveryRateAuthority::settled(compact_rate));
+                let authority = RecoveryRateAuthority::select(ordinary, None);
                 let runtime = match RungOriginRecoveryRuntime::new(
                     RungOriginRecoveryConfig {
                         stage: RecoveryStage::Proportional,
@@ -1339,7 +1339,8 @@ pub(crate) async fn step_velocity_sweep_with_trace<B: CommissioningBackend>(
                         target_velocity_rpm: plan.target_velocity_rpm,
                         planned_velocity_mrev_s: plan.planned_velocity_mrev_s,
                         start_offset_counts: safety.unwrapped_position,
-                        lower_rate_q,
+                        lower_rate_q: authority.lower_rate_q(),
+                        authority_source: authority.source,
                     },
                     recovery_plan,
                 ) {

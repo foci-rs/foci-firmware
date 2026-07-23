@@ -28,7 +28,7 @@ use super::integral_evidence::{
 use super::integral_plan::STAGE_C_MAX_POSITIVE_RUNGS;
 use super::integral_plan::VelocityIntegralExecutionPlan;
 use super::recovery::{
-    RecoveryStage, RungOriginRecoveryConfig, RungOriginRecoveryOutcome,
+    RecoveryBindingSource, RecoveryStage, RungOriginRecoveryConfig, RungOriginRecoveryOutcome,
     RungOriginRecoveryResources, RungOriginRecoveryRuntime, RungOriginRecoveryStep,
     plan_rung_origin_recovery, step_rung_origin_recovery,
 };
@@ -1124,6 +1124,11 @@ pub(crate) async fn step_velocity_integral_with_trace<B: CommissioningBackend>(
                             planned_velocity_mrev_s: data.plan.planned_velocity_mrev_s,
                             start_offset_counts: safety.unwrapped_position,
                             lower_rate_q,
+                            authority_source: if lower_rate_q.is_some() {
+                                RecoveryBindingSource::SettledRate
+                            } else {
+                                RecoveryBindingSource::MissingRate
+                            },
                         },
                         recovery_plan,
                     ) {
