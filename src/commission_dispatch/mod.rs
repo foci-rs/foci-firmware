@@ -517,9 +517,11 @@ pub async fn drive_commission_result<B: CommissioningBackend>(
                 },
             }
         }
-        StepResult::VelocitySweepTerminal(mut terminal) => {
+        StepResult::VelocitySweepTerminal(terminal) => {
             use core::sync::atomic::Ordering::Relaxed;
 
+            #[cfg(feature = "trace-velocity-sweep")]
+            let mut terminal = terminal;
             #[cfg(feature = "trace-velocity-sweep")]
             if !disarm_velocity_workflow(engine, backend, state).await {
                 terminal.outcome = crate::commissioning::types::VelocitySweepOutcome::Fault;
@@ -1041,9 +1043,11 @@ pub async fn drive_commission_result<B: CommissioningBackend>(
                 },
             }
         }
-        StepResult::OuterFailed(mut error) => {
+        StepResult::OuterFailed(error) => {
             use crate::autotune::CommissionError as CE;
             use core::sync::atomic::Ordering::Relaxed;
+            #[cfg(feature = "trace-velocity-sweep")]
+            let mut error = error;
             #[cfg(feature = "trace-velocity-sweep")]
             if engine
                 .as_ref()

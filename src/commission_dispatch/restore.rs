@@ -8,6 +8,7 @@ use foci_tmc4671::pid::PidGain;
 pub enum RestoreError<E> {
     Spi(E),
     InvalidGains,
+    #[cfg_attr(not(feature = "trace-velocity-sweep"), allow(dead_code))]
     VelocityClamp,
 }
 
