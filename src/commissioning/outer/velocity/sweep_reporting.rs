@@ -605,6 +605,19 @@ mod tests {
         assert_eq!(integrity.next_evidence_sequence(), 1);
     }
 
+    #[test]
+    fn structured_recovery_source_round_trips_without_payload_growth() {
+        let mut recovery = fixture_recovery();
+        recovery.report.binding_source = RecoveryBindingSource::StructuredSuffix;
+        let record = encode_rung_origin_recovery(recovery);
+
+        assert_eq!(record.as_bytes().len(), 55);
+        assert_eq!(
+            record.as_bytes()[53],
+            RecoveryBindingSource::StructuredSuffix as u8
+        );
+    }
+
     fn fixture_region(
         direction: VelocityDirection,
         kind: super::super::operating_region::DirectionalRegionKind,

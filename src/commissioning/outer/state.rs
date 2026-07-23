@@ -17,7 +17,7 @@ use crate::commissioning::outer::velocity::operating_region::{
 };
 #[cfg(feature = "trace-velocity-sweep")]
 use crate::commissioning::outer::velocity::recovery::{
-    RungOriginRecoveryReport, RungOriginRecoveryRuntime,
+    RecoveryRateAuthority, RungOriginRecoveryReport, RungOriginRecoveryRuntime,
 };
 #[cfg(feature = "trace-velocity-sweep")]
 use crate::commissioning::outer::velocity::sweep_evidence::{
@@ -406,13 +406,13 @@ pub(crate) enum VelocitySweepEvidenceState {
     ForwardFolded {
         forward: CompactDirectionalRungReport,
         reverse: DirectionalObservationSet,
-        forward_recovery_rate: CompactSignedRate,
+        recovery_authorities: [RecoveryRateAuthority; 2],
     },
     /// Both compact directional reports are ready for joint folding and emission.
     Complete {
         forward: CompactDirectionalRungReport,
         reverse: CompactDirectionalRungReport,
-        recovery_rates: [CompactSignedRate; 2],
+        recovery_authorities: [RecoveryRateAuthority; 2],
     },
     /// Shared controller state while recovery borrows the measurement workspace.
     Recovering(RungOriginRecoveryRuntime),

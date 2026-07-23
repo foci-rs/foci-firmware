@@ -1852,7 +1852,7 @@ fn stage_b_dispatch_faults_and_clears_noncontiguous_evidence() {
 
 #[cfg(feature = "trace-velocity-sweep")]
 #[test]
-fn stage_b_schema3_reproduction_records_are_canonical_and_ordered() {
+fn stage_b_schema5_reproduction_records_are_canonical_and_ordered() {
     use crate::commission_dispatch::stage_b::{
         StageBReproductionReport, for_each_stage_b_reproduction_record,
     };
@@ -1969,7 +1969,7 @@ fn stage_b_schema3_reproduction_records_are_canonical_and_ordered() {
         &records[10].as_bytes()[11..15],
         &0x0123_4567_u32.to_le_bytes()
     );
-    assert_eq!(STAGE_B_EVIDENCE_SCHEMA_REVISION, 4);
+    assert_eq!(STAGE_B_EVIDENCE_SCHEMA_REVISION, 5);
 
     let digest = records
         .iter()

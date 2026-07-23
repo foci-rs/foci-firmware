@@ -68,6 +68,27 @@ fn execution_gains(
     gains
 }
 
+fn select_directional_recovery_authority(
+    collected: &CollectedRungEvidence,
+    direction: crate::autotune::velocity_measurement::VelocityDirection,
+    p: foci_tmc4671::pid::PidGain,
+    target_velocity_rpm: i32,
+    counts_per_rev: u32,
+) -> Result<RecoveryRateAuthority, VelocityEvidenceError> {
+    let ordinary = directional_recovery_lower_rate_q(
+        collected.directional_set(direction),
+        direction,
+        p,
+        target_velocity_rpm,
+        counts_per_rev,
+    )?
+    .map(RecoveryRateAuthority::settled);
+    let structured = collected
+        .structured_recovery_rate(direction)
+        .map(RecoveryRateAuthority::structured);
+    Ok(RecoveryRateAuthority::select(ordinary, structured))
+}
+
 #[derive(Clone, Copy)]
 enum VelocityDiagnosticKind {
     PidVelocityActual,
@@ -1072,16 +1093,27 @@ pub(crate) async fn step_velocity_sweep_with_trace<B: CommissioningBackend>(
             let Some(p) = plan.gain_at(data.rung_index) else {
                 return fail_sweep(phase, backend, CommissionError::InvalidSchedule).await;
             };
-            let forward_recovery_rate = match directional_recovery_lower_rate_q(
-                collected.directional_set(
-                    crate::autotune::velocity_measurement::VelocityDirection::Forward,
-                ),
+            let forward_recovery_authority = match select_directional_recovery_authority(
+                &collected,
                 crate::autotune::velocity_measurement::VelocityDirection::Forward,
                 p,
                 plan.target_velocity_rpm.raw(),
                 safety.counts_per_rev(),
             ) {
-                Ok(rate) => rate.unwrap_or(CompactSignedRate::ZERO),
+                Ok(authority) => authority,
+                Err(_) => {
+                    return fail_sweep(phase, backend, CommissionError::VelocityValidationFailed)
+                        .await;
+                }
+            };
+            let reverse_recovery_authority = match select_directional_recovery_authority(
+                &collected,
+                crate::autotune::velocity_measurement::VelocityDirection::Reverse,
+                p,
+                plan.target_velocity_rpm.raw(),
+                safety.counts_per_rev(),
+            ) {
+                Ok(authority) => authority,
                 Err(_) => {
                     return fail_sweep(phase, backend, CommissionError::VelocityValidationFailed)
                         .await;
@@ -1118,7 +1150,7 @@ pub(crate) async fn step_velocity_sweep_with_trace<B: CommissioningBackend>(
             data.evidence = VelocitySweepEvidenceState::ForwardFolded {
                 forward,
                 reverse,
-                forward_recovery_rate,
+                recovery_authorities: [forward_recovery_authority, reverse_recovery_authority],
             };
             *state = VelocitySweepState::AnalyzeReverseRung {
                 current_headroom: *current_headroom,
@@ -1146,7 +1178,7 @@ pub(crate) async fn step_velocity_sweep_with_trace<B: CommissioningBackend>(
             let VelocitySweepEvidenceState::ForwardFolded {
                 forward,
                 reverse,
-                forward_recovery_rate,
+                recovery_authorities,
             } = data.evidence
             else {
                 return fail_sweep(phase, backend, CommissionError::InvalidSchedule).await;
@@ -1154,19 +1186,6 @@ pub(crate) async fn step_velocity_sweep_with_trace<B: CommissioningBackend>(
             let plan = data.plan;
             let Some(p) = plan.gain_at(data.rung_index) else {
                 return fail_sweep(phase, backend, CommissionError::InvalidSchedule).await;
-            };
-            let reverse_recovery_rate = match directional_recovery_lower_rate_q(
-                reverse,
-                crate::autotune::velocity_measurement::VelocityDirection::Reverse,
-                p,
-                plan.target_velocity_rpm.raw(),
-                safety.counts_per_rev(),
-            ) {
-                Ok(rate) => rate.unwrap_or(CompactSignedRate::ZERO),
-                Err(_) => {
-                    return fail_sweep(phase, backend, CommissionError::VelocityValidationFailed)
-                        .await;
-                }
             };
             let analysis = match analyze_directional_set(
                 reverse,
@@ -1197,7 +1216,7 @@ pub(crate) async fn step_velocity_sweep_with_trace<B: CommissioningBackend>(
             data.evidence = VelocitySweepEvidenceState::Complete {
                 forward,
                 reverse,
-                recovery_rates: [forward_recovery_rate, reverse_recovery_rate],
+                recovery_authorities,
             };
             *state = VelocitySweepState::FoldJointRung {
                 current_headroom: *current_headroom,
@@ -1289,7 +1308,7 @@ pub(crate) async fn step_velocity_sweep_with_trace<B: CommissioningBackend>(
             let VelocitySweepEvidenceState::Complete {
                 forward,
                 reverse,
-                recovery_rates,
+                recovery_authorities,
             } = data.evidence
             else {
                 return fail_sweep(phase, backend, CommissionError::InvalidSchedule).await;
@@ -1321,14 +1340,11 @@ pub(crate) async fn step_velocity_sweep_with_trace<B: CommissioningBackend>(
                         return fail_sweep(phase, backend, CommissionError::InvalidSchedule).await;
                     }
                 };
-                let compact_rate = if safety.unwrapped_position < 0 {
-                    recovery_rates[0]
+                let authority = if safety.unwrapped_position < 0 {
+                    recovery_authorities[0]
                 } else {
-                    recovery_rates[1]
+                    recovery_authorities[1]
                 };
-                let ordinary = (compact_rate != CompactSignedRate::ZERO)
-                    .then_some(RecoveryRateAuthority::settled(compact_rate));
-                let authority = RecoveryRateAuthority::select(ordinary, None);
                 let runtime = match RungOriginRecoveryRuntime::new(
                     RungOriginRecoveryConfig {
                         stage: RecoveryStage::Proportional,
@@ -1586,7 +1602,9 @@ fn observe_directional_rung_for_sweep(
 
 #[cfg(test)]
 mod tests {
-    use crate::autotune::velocity_measurement::VelocityDirection;
+    use crate::autotune::velocity_measurement::{
+        StationarityExclusion, StructuredStationarityEvidence, VelocityDirection,
+    };
     use crate::autotune::{
         CommissionError, CommissionProfile, EquivalentTorqueTargetInterval,
         EquivalentTorqueTargetQ16, OperatingMode, TransientBuffer,
@@ -1597,10 +1615,13 @@ mod tests {
         DirectionalRegionKind, DirectionalRegionSummary, JointOperableClosure, JointOperableRegion,
         PooledDisturbanceAccumulator,
     };
+    use crate::commissioning::outer::velocity::recovery::{
+        RecoveryBindingSource, recovery_runtime_us,
+    };
     use crate::commissioning::outer::velocity::sweep_consensus::DirectionalConsensusClass;
     use crate::commissioning::outer::velocity::sweep_evidence::{
         CompactDirectionalRungReport, DIRECTIONAL_RUNG_FLAG_OPERABLE, DirectionalRungAnalysis,
-        PooledDisturbance,
+        PooledDisturbance, VelocityObservationClass, VelocityObservationSummary,
     };
     use crate::commissioning::outer::velocity::sweep_plan::RequestedVelocitySource;
     use crate::commissioning::outer::{OuterMotionBudget, OuterSafetyLimits, VelocitySweepData};
@@ -1711,6 +1732,100 @@ mod tests {
         }
     }
 
+    fn excluded_summary(direction: VelocityDirection, p: PidGain) -> VelocityObservationSummary {
+        VelocityObservationSummary {
+            direction,
+            p,
+            classification: VelocityObservationClass::StationarityExcluded(
+                StationarityExclusion::ResolvedSlope,
+            ),
+            settled_rate_interval_q: [0, 0],
+            settled_rate_mean_q: 0,
+            deficit_interval_q: [0, 0],
+            disturbance: None,
+            disturbance_interval: None,
+            disturbance_variance_q2: 0,
+            predicted_torque_target_abs: 0,
+            initial_lead_in: false,
+        }
+    }
+
+    fn structured_rate(interval_q: [i64; 2]) -> StructuredStationarityEvidence {
+        StructuredStationarityEvidence {
+            passing_suffix_mask: 0b110,
+            common_rate_interval_q: interval_q,
+            binding_slope_margin_q: -1,
+            binding_lag_one_margin_q: -1,
+        }
+    }
+
+    #[test]
+    fn p512_structured_suffix_authorizes_only_recovery_deadline() {
+        let p = PidGain::new(512).unwrap();
+        let mut collected = CollectedRungEvidence::new();
+        for slot in 0..SWEEP_SLOT_COUNT {
+            let direction = if slot % 2 == 0 {
+                VelocityDirection::Forward
+            } else {
+                VelocityDirection::Reverse
+            };
+            let structured = match slot {
+                4 => Some(structured_rate([9_174_700, 9_400_298])),
+                5 => Some(structured_rate([-9_500_000, -9_100_000])),
+                _ => None,
+            };
+            collected
+                .retain_with_structured(slot, excluded_summary(direction, p), structured)
+                .unwrap();
+        }
+
+        let forward = select_directional_recovery_authority(
+            &collected,
+            VelocityDirection::Forward,
+            p,
+            176,
+            4_000,
+        )
+        .unwrap();
+        assert_eq!(forward.lower_rate_q(), Some(9_174_528));
+        assert_eq!(forward.source, RecoveryBindingSource::StructuredSuffix);
+        assert_eq!(
+            recovery_runtime_us(834, 9_174_528, 3_000_000),
+            Ok(1_338_904)
+        );
+    }
+
+    #[test]
+    fn recovery_only_authority_leaves_statistical_evidence_identical() {
+        let p = PidGain::new(512).unwrap();
+        let mut baseline = CollectedRungEvidence::new();
+        let mut with_authority = CollectedRungEvidence::new();
+        for slot in 0..SWEEP_SLOT_COUNT {
+            let direction = if slot % 2 == 0 {
+                VelocityDirection::Forward
+            } else {
+                VelocityDirection::Reverse
+            };
+            let summary = excluded_summary(direction, p);
+            baseline.retain(slot, summary).unwrap();
+            with_authority
+                .retain_with_structured(
+                    slot,
+                    summary,
+                    (slot == 4).then_some(structured_rate([9_174_700, 9_400_298])),
+                )
+                .unwrap();
+        }
+
+        for direction in [VelocityDirection::Forward, VelocityDirection::Reverse] {
+            let baseline_report =
+                analyze_directional_rung(&baseline, direction, p, 176, 4_000).unwrap();
+            let authority_report =
+                analyze_directional_rung(&with_authority, direction, p, 176, 4_000).unwrap();
+            assert_eq!(baseline_report, authority_report);
+        }
+    }
+
     fn install_completed_rung(
         phase: &mut OuterPhase,
         backend: &mut MockBackend,
@@ -1737,7 +1852,13 @@ mod tests {
         data.evidence = VelocitySweepEvidenceState::Complete {
             forward: eligible_directional_analysis(p).report,
             reverse: eligible_directional_analysis(p).report,
-            recovery_rates,
+            recovery_authorities: recovery_rates.map(|rate| {
+                if rate == CompactSignedRate::ZERO {
+                    RecoveryRateAuthority::NONE
+                } else {
+                    RecoveryRateAuthority::settled(rate)
+                }
+            }),
         };
         safety.unwrapped_position = offset_counts;
         *state = VelocitySweepState::EmitRung { current_headroom };

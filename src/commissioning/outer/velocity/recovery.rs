@@ -77,50 +77,58 @@ pub(crate) enum RecoveryBindingSource {
 #[cfg(feature = "trace-velocity-sweep")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub(crate) struct RecoveryRateAuthority {
-    pub(crate) lower_rate: CompactSignedRate,
+    mantissa: i16,
+    shift: u8,
     pub(crate) source: RecoveryBindingSource,
 }
 
 #[cfg(feature = "trace-velocity-sweep")]
 impl RecoveryRateAuthority {
     pub(crate) const NONE: Self = Self {
-        lower_rate: CompactSignedRate::ZERO,
+        mantissa: 0,
+        shift: 0,
         source: RecoveryBindingSource::MissingRate,
     };
 
     pub(crate) const fn settled(lower_rate: CompactSignedRate) -> Self {
         Self {
-            lower_rate,
+            mantissa: lower_rate.mantissa,
+            shift: lower_rate.shift,
             source: RecoveryBindingSource::SettledRate,
         }
     }
 
-    #[allow(dead_code)]
     pub(crate) const fn structured(lower_rate: CompactSignedRate) -> Self {
         Self {
-            lower_rate,
+            mantissa: lower_rate.mantissa,
+            shift: lower_rate.shift,
             source: RecoveryBindingSource::StructuredSuffix,
         }
     }
 
     pub(crate) fn lower_rate_q(self) -> Option<u64> {
-        u64::try_from(self.lower_rate.decode())
+        u64::try_from(self.decoded_rate())
             .ok()
             .filter(|rate| *rate != 0)
     }
 
     pub(crate) fn select(ordinary: Option<Self>, structured: Option<Self>) -> Self {
         match (ordinary, structured) {
-            (Some(left), Some(right)) if right.lower_rate.decode() < left.lower_rate.decode() => {
-                right
-            }
+            (Some(left), Some(right)) if right.decoded_rate() < left.decoded_rate() => right,
             (Some(left), Some(_)) => left,
             (Some(left), None) => left,
             (None, Some(right)) => right,
             (None, None) => Self::NONE,
         }
     }
+
+    const fn decoded_rate(self) -> i64 {
+        (self.mantissa as i64) << self.shift
+    }
 }
+
+#[cfg(feature = "trace-velocity-sweep")]
+const _: () = assert!(core::mem::size_of::<RecoveryRateAuthority>() <= 4);
 
 /// Complete stage-neutral summary of one recovery slot.
 #[cfg(feature = "trace-velocity-sweep")]
