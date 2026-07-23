@@ -4,6 +4,76 @@ pub const CURRENT_STEP_STATUS_NOT_READY: u8 = 1;
 /// Diagnostic failed while communicating with or restoring the TMC4671.
 pub const CURRENT_STEP_STATUS_SPI: u8 = 2;
 
+/// Velocity-limit latch diagnostic could not run because the channel was not ready.
+#[cfg(feature = "trace-velocity-sweep")]
+pub const VELOCITY_LIMIT_LATCH_STATUS_NOT_READY: u8 = 1;
+
+/// Velocity-limit latch diagnostic lost register or restoration integrity.
+#[cfg(feature = "trace-velocity-sweep")]
+pub const VELOCITY_LIMIT_LATCH_STATUS_SPI: u8 = 2;
+
+/// Focused velocity-output-limit persistence diagnostic result.
+#[cfg(feature = "trace-velocity-sweep")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct VelocityLimitLatchReport {
+    /// Object id of the FOCI endpoint.
+    pub oid: u8,
+    /// Status code: zero success, one not ready, two SPI or restoration failure.
+    pub status: u8,
+    /// Temporary velocity-output clamp used by the focused stimulus.
+    pub test_limit: u16,
+    /// Velocity proportional gain used by the focused stimulus.
+    pub p_raw: u16,
+    /// Velocity integral gain used by the focused stimulus.
+    pub i_raw: u16,
+    /// Signed velocity target in the TMC4671 RPM register domain.
+    pub target_velocity_rpm: i32,
+    /// Verified temporary clamp readback.
+    pub limit_readback: u32,
+    /// Verified velocity gain-register readback.
+    pub gains_readback: u32,
+    /// Verified signed velocity-target readback.
+    pub target_readback: i32,
+    /// Complete status word sampled before commanding zero.
+    pub active_status_flags: u32,
+    /// Complete status word sampled immediately after commanding zero.
+    pub post_pulse_status_flags: u32,
+    /// Complete status word sampled after the delayed persistence interval.
+    pub delayed_status_flags: u32,
+    /// Complete status word sampled after the explicit status reset.
+    pub post_clear_status_flags: u32,
+    /// Measured target-active interval in microseconds.
+    pub pulse_elapsed_us: u32,
+    /// Measured interval from the immediate to delayed status read.
+    pub delayed_read_elapsed_us: u32,
+    /// ABN encoder count before the stimulus.
+    pub encoder_before: u32,
+    /// ABN encoder count after the delayed status read.
+    pub encoder_after: u32,
+    /// Signed encoder displacement across the diagnostic.
+    pub encoder_delta: i32,
+    /// Saved operational current-limit register word.
+    pub saved_limit: u32,
+    /// Saved velocity gain-register word.
+    pub saved_gains: u32,
+    /// Saved signed velocity target.
+    pub saved_target: i32,
+    /// Saved mode-register word.
+    pub saved_mode: u32,
+    /// Readback after restoring the operational current limit.
+    pub restored_limit_readback: u32,
+    /// Readback after restoring the velocity gains.
+    pub restored_gains_readback: u32,
+    /// Readback after restoring the velocity target.
+    pub restored_target_readback: i32,
+    /// Readback after restoring the motion mode.
+    pub restored_mode_readback: u32,
+    /// Bit mask of target, gains, limit, and mode registers restored exactly.
+    pub restore_verified_mask: u8,
+    /// Whether the board containment hook physically disarmed the channel.
+    pub power_stage_tripped: bool,
+}
+
 /// Collects readings captured during a current-step or current-vector-step test.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CurrentStepReport {

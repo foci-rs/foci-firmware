@@ -192,6 +192,11 @@ where
                 | TmcRequestKind::ResistanceTest { .. },
             ..
         } => sink.emit_busy_diagnostic(diagnostic_req),
+        #[cfg(feature = "trace-velocity-sweep")]
+        diagnostic_req @ TmcRequest {
+            kind: TmcRequestKind::VelocityLimitLatchTest { .. },
+            ..
+        } => sink.emit_busy_diagnostic(diagnostic_req),
         #[cfg(feature = "dev")]
         TmcRequest {
             kind:
@@ -974,6 +979,15 @@ where
                 | TmcRequestKind::PositionTorqueOffsetSampleTest { .. }
                 | TmcRequestKind::VoltageStepTest { .. }
                 | TmcRequestKind::ResistanceTest { .. },
+            ..
+        } => {
+            board
+                .run_diagnostic_request(diagnostic_req, runtime, tmc)
+                .await;
+        }
+        #[cfg(feature = "trace-velocity-sweep")]
+        diagnostic_req @ TmcRequest {
+            kind: TmcRequestKind::VelocityLimitLatchTest { .. },
             ..
         } => {
             board

@@ -404,6 +404,13 @@ impl TmcControlRuntime {
                     BoardAction::DelegatedDiagnostic(DelegatedDiagnostic { request: req }),
                 );
             }
+            #[cfg(feature = "trace-velocity-sweep")]
+            TmcRequestKind::VelocityLimitLatchTest { .. } => {
+                push_action(
+                    &mut actions,
+                    BoardAction::DelegatedDiagnostic(DelegatedDiagnostic { request: req }),
+                );
+            }
             _ => {}
         }
         actions

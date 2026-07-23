@@ -1,5 +1,7 @@
 //! Shared active diagnostic reply emission.
 
+#[cfg(feature = "trace-velocity-sweep")]
+use super::VelocityLimitLatchReport;
 use super::{
     CurrentStepReport, CurrentTorqueSampleReport, DiagnosticReport, ResistanceAxisReport,
     ResistanceProfileReport, ResistanceRunReport, VoltageStepReport,
@@ -31,6 +33,22 @@ pub trait DiagnosticReplySink {
     /// Emit the resistance-test per-run status/warnings/readbacks result.
     /// This is the diagnostic's terminal reply.
     fn foci_resistance_run(&mut self, report: ResistanceRunReport);
+
+    /// Emit focused velocity-output-limit status snapshots.
+    #[cfg(feature = "trace-velocity-sweep")]
+    fn foci_velocity_limit_latch_flags(&mut self, _report: VelocityLimitLatchReport) {}
+
+    /// Emit focused velocity-output-limit timing and displacement.
+    #[cfg(feature = "trace-velocity-sweep")]
+    fn foci_velocity_limit_latch_motion(&mut self, _report: VelocityLimitLatchReport) {}
+
+    /// Emit focused velocity-output-limit restoration evidence.
+    #[cfg(feature = "trace-velocity-sweep")]
+    fn foci_velocity_limit_latch_restore(&mut self, _report: VelocityLimitLatchReport) {}
+
+    /// Emit the focused velocity-output-limit terminal core.
+    #[cfg(feature = "trace-velocity-sweep")]
+    fn foci_velocity_limit_latch_result(&mut self, _report: VelocityLimitLatchReport) {}
 }
 
 /// Emit active diagnostic replies for a completed diagnostic report.
@@ -64,6 +82,14 @@ pub fn emit_diagnostic_report<S: DiagnosticReplySink>(sink: &mut S, report: Diag
             }
             // Run reply last: it is the diagnostic's terminal/"done" signal.
             sink.foci_resistance_run(run);
+        }
+        #[cfg(feature = "trace-velocity-sweep")]
+        DiagnosticReport::VelocityLimitLatch(report) => {
+            sink.foci_velocity_limit_latch_flags(report);
+            sink.foci_velocity_limit_latch_motion(report);
+            sink.foci_velocity_limit_latch_restore(report);
+            // Core reply last: it is the diagnostic's terminal/"done" signal.
+            sink.foci_velocity_limit_latch_result(report);
         }
     }
 }
