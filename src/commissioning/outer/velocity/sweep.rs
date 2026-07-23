@@ -11,8 +11,8 @@ use crate::commissioning::types::{
     OUTER_SAFETY_FAULT_CURRENT, OUTER_SAFETY_FAULT_OBSERVATION_GAP,
     OUTER_SAFETY_FAULT_QUARTER_TURN, OuterSafetyFault, RungOriginRecoveryEvidence, StepResult,
     StructuredBoundaryEvidence, VelocityDirectionalRegionReport, VelocityJointRegionReport,
-    VelocitySweepEvent, VelocitySweepObservation, VelocitySweepOutcome, VelocitySweepRungReport,
-    VelocitySweepTerminal,
+    VelocityPrimitiveCurrentEvidence, VelocitySweepEvent, VelocitySweepObservation,
+    VelocitySweepOutcome, VelocitySweepRungReport, VelocitySweepTerminal,
 };
 use foci_tmc4671::current_limit::PidTorqueFluxLimit;
 use foci_tmc4671::pid::PidGainPair;
@@ -1097,11 +1097,14 @@ pub(crate) async fn step_velocity_sweep_with_trace<B: CommissioningBackend>(
             {
                 return fail_sweep(phase, backend, current_guard_error(error)).await;
             }
-            if matches!(
-                data.current_observer
-                    .evidence(VelocityCurrentZeroPhase::Braking),
-                Ok(evidence) if evidence.contact == VelocityCurrentContact::Braking
-            ) {
+            let current_evidence = match data
+                .current_observer
+                .evidence(VelocityCurrentZeroPhase::Braking)
+            {
+                Ok(evidence) => evidence,
+                Err(error) => return fail_sweep(phase, backend, current_guard_error(error)).await,
+            };
+            if current_evidence.contact == VelocityCurrentContact::Braking {
                 *current_headroom = true;
             }
             data.analysis.reset();
@@ -1126,7 +1129,24 @@ pub(crate) async fn step_velocity_sweep_with_trace<B: CommissioningBackend>(
             } else {
                 VelocitySweepState::Advance
             };
-            StepResult::ReadyNow
+            let event = data.integrity.record(VelocitySweepEvent::Current(
+                VelocityPrimitiveCurrentEvidence {
+                    run_sequence: data.integrity.run_sequence(),
+                    evidence_sequence: data.integrity.next_evidence_sequence(),
+                    stage: RecoveryStage::Proportional as u8,
+                    rung_index: data.rung_index,
+                    slot: data.slot,
+                    clamp_limit: current_evidence.clamp_limit,
+                    clamp_readback: current_evidence.clamp_limit,
+                    moving_pid_output_peak: current_evidence.moving_pid_output_peak,
+                    zero_pid_output_peak: current_evidence.zero_pid_output_peak,
+                    moving_status_flags: current_evidence.moving_status_flags,
+                    zero_status_flags: current_evidence.zero_status_flags,
+                    capability: current_evidence.capability as u8,
+                    contact: current_evidence.contact as u8,
+                },
+            ));
+            StepResult::VelocitySweepEvent(event)
         }
         VelocitySweepState::FaultTerminal { error } => {
             let error = *error;
@@ -2886,10 +2906,16 @@ mod tests {
                     | crate::trace::stream::VELOCITY_OBSERVATION_FLAG_PPTM_ACTUAL_VALID),
             0
         );
-        assert!(matches!(
-            poll_until_settle_analysis_completes(&mut phase, &mut backend),
-            StepResult::ReadyNow
-        ));
+        let StepResult::VelocitySweepEvent(VelocitySweepEvent::Current(current)) =
+            poll_until_settle_analysis_completes(&mut phase, &mut backend)
+        else {
+            panic!("confirmed rest must emit causal current evidence");
+        };
+        assert_eq!(current.stage, RecoveryStage::Proportional as u8);
+        assert_eq!(current.rung_index, 0);
+        assert_eq!(current.slot, 0);
+        assert_ne!(current.clamp_limit, 0);
+        assert_eq!(current.clamp_readback, current.clamp_limit);
 
         let terminal = loop {
             match pollster::block_on(step_velocity_sweep_with_trace(&mut phase, &mut backend)) {
@@ -3053,10 +3079,14 @@ mod tests {
                 backend.set_abn_decoder_count(encoder_count);
                 pollster::block_on(step_velocity_sweep_with_trace(&mut phase, &mut backend));
             }
-            assert!(matches!(
-                poll_until_settle_analysis_completes(&mut phase, &mut backend),
-                StepResult::ReadyNow
-            ));
+            let StepResult::VelocitySweepEvent(VelocitySweepEvent::Current(current)) =
+                poll_until_settle_analysis_completes(&mut phase, &mut backend)
+            else {
+                panic!("confirmed rest must emit causal current evidence");
+            };
+            assert_eq!(current.rung_index, 0);
+            assert_eq!(current.slot, slot);
+            evidence_sequences.push(current.evidence_sequence);
             let OuterPhase::VelocitySweep { safety, .. } = &phase else {
                 panic!("velocity sweep should remain active");
             };
@@ -3136,7 +3166,12 @@ mod tests {
         };
         evidence_sequences.push(recovery.evidence_sequence);
         assert_eq!(recovery.report, report);
-        assert_eq!(evidence_sequences, [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+        assert_eq!(
+            evidence_sequences,
+            [
+                0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18
+            ]
+        );
         assert_eq!(observation_slots, [0, 1, 2, 3, 4, 5, 6, 7]);
         assert!(
             observation_targets
@@ -3180,6 +3215,7 @@ mod tests {
                         VelocitySweepEvent::Observation(report) => report.evidence_sequence,
                         VelocitySweepEvent::Rung(report) => report.evidence_sequence,
                         VelocitySweepEvent::Recovery(report) => report.evidence_sequence,
+                        VelocitySweepEvent::Current(report) => report.evidence_sequence,
                         VelocitySweepEvent::DirectionalRegion(report) => report.evidence_sequence,
                         VelocitySweepEvent::JointRegion(report) => report.evidence_sequence,
                         VelocitySweepEvent::Handoff(report) => report.evidence_sequence,

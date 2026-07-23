@@ -12,7 +12,7 @@ use crate::commissioning::types::{
     OUTER_SAFETY_FAULT_CURRENT, OUTER_SAFETY_FAULT_OBSERVATION_GAP,
     OUTER_SAFETY_FAULT_QUARTER_TURN, OuterSafetyFault, RungOriginRecoveryEvidence, StepResult,
     VelocityIntegralEvent, VelocityIntegralObservation, VelocityIntegralOutcome,
-    VelocityIntegralRungReport, VelocityIntegralTerminal,
+    VelocityIntegralRungReport, VelocityIntegralTerminal, VelocityPrimitiveCurrentEvidence,
 };
 use foci_tmc4671::current_limit::PidTorqueFluxLimit;
 use foci_tmc4671::pid::{PidGain, PidGainPair};
@@ -1105,11 +1105,16 @@ pub(crate) async fn step_velocity_integral_with_trace<B: CommissioningBackend>(
             {
                 return fail_integral(phase, backend, current_guard_error(error)).await;
             }
-            if matches!(
-                data.current_observer
-                    .evidence(VelocityCurrentZeroPhase::Braking),
-                Ok(evidence) if evidence.contact == VelocityCurrentContact::Braking
-            ) {
+            let current_evidence = match data
+                .current_observer
+                .evidence(VelocityCurrentZeroPhase::Braking)
+            {
+                Ok(evidence) => evidence,
+                Err(error) => {
+                    return fail_integral(phase, backend, current_guard_error(error)).await;
+                }
+            };
+            if current_evidence.contact == VelocityCurrentContact::Braking {
                 data.observation_current_headroom = true;
             }
             data.analysis.reset();
@@ -1122,7 +1127,24 @@ pub(crate) async fn step_velocity_integral_with_trace<B: CommissioningBackend>(
             } else {
                 *state = VelocityIntegralState::AnalyzeRung;
             }
-            StepResult::ReadyNow
+            let event = data.integrity.record(VelocityIntegralEvent::Current(
+                VelocityPrimitiveCurrentEvidence {
+                    run_sequence: data.integrity.run_sequence(),
+                    evidence_sequence: data.integrity.next_evidence_sequence(),
+                    stage: RecoveryStage::Integral as u8,
+                    rung_index: data.rung_index,
+                    slot: data.slot,
+                    clamp_limit: current_evidence.clamp_limit,
+                    clamp_readback: current_evidence.clamp_limit,
+                    moving_pid_output_peak: current_evidence.moving_pid_output_peak,
+                    zero_pid_output_peak: current_evidence.zero_pid_output_peak,
+                    moving_status_flags: current_evidence.moving_status_flags,
+                    zero_status_flags: current_evidence.zero_status_flags,
+                    capability: current_evidence.capability as u8,
+                    contact: current_evidence.contact as u8,
+                },
+            ));
+            StepResult::VelocityIntegralEvent(event)
         }
         VelocityIntegralState::Advance => {
             let finished = advance_integral_cursor(

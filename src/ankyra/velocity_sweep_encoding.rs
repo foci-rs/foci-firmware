@@ -172,6 +172,29 @@ pub(crate) fn encode_outer_safety_timing_record(
     record
 }
 
+/// Encode one stage-neutral primitive current-evidence record.
+#[cfg(feature = "trace-velocity-sweep")]
+pub(crate) fn encode_velocity_primitive_current_evidence(
+    evidence: crate::commissioning::types::VelocityPrimitiveCurrentEvidence,
+) -> VelocitySweepCanonicalRecord {
+    let mut record = VelocitySweepCanonicalRecord::new();
+    record.push_u8(31);
+    record.push_u32(evidence.run_sequence);
+    record.push_u16(evidence.evidence_sequence);
+    record.push_u8(evidence.stage);
+    record.push_u8(evidence.rung_index);
+    record.push_u8(evidence.slot);
+    record.push_u16(evidence.clamp_limit);
+    record.push_u16(evidence.clamp_readback);
+    record.push_u16(evidence.moving_pid_output_peak);
+    record.push_u16(evidence.zero_pid_output_peak);
+    record.push_u32(evidence.moving_status_flags);
+    record.push_u32(evidence.zero_status_flags);
+    record.push_u8(evidence.capability);
+    record.push_u8(evidence.contact);
+    record
+}
+
 #[cfg(all(test, feature = "trace-velocity-sweep"))]
 mod outer_safety_timing_record_tests {
     use super::encode_outer_safety_timing_record;
@@ -213,5 +236,39 @@ mod outer_safety_timing_record_tests {
             14_329
         );
         assert_eq!(&bytes[33..41], &[1, 0, 4, 21, 7, 1, 0, 0]);
+    }
+}
+
+#[cfg(all(test, feature = "trace-velocity-sweep"))]
+mod velocity_primitive_current_record_tests {
+    use super::encode_velocity_primitive_current_evidence;
+    use crate::commissioning::types::VelocityPrimitiveCurrentEvidence;
+
+    #[test]
+    fn velocity_primitive_current_record_is_bounded_and_exact() {
+        let record = encode_velocity_primitive_current_evidence(VelocityPrimitiveCurrentEvidence {
+            run_sequence: 0x0102_0304,
+            evidence_sequence: 0x0506,
+            stage: 1,
+            rung_index: 7,
+            slot: 3,
+            clamp_limit: 2_534,
+            clamp_readback: 2_534,
+            moving_pid_output_peak: 2_111,
+            zero_pid_output_peak: 2_534,
+            moving_status_flags: 0x1122_3344,
+            zero_status_flags: 0x5566_7788,
+            capability: 0,
+            contact: 2,
+        });
+
+        assert_eq!(
+            record.as_bytes(),
+            &[
+                31, 4, 3, 2, 1, 6, 5, 1, 7, 3, 0xe6, 0x09, 0xe6, 0x09, 0x3f, 0x08, 0xe6, 0x09,
+                0x44, 0x33, 0x22, 0x11, 0x88, 0x77, 0x66, 0x55, 0, 2,
+            ]
+        );
+        assert!(record.as_bytes().len() <= super::VELOCITY_SWEEP_CANONICAL_RECORD_MAX);
     }
 }

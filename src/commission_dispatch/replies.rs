@@ -178,6 +178,13 @@ pub trait CommissionReplySink {
     ) {
     }
 
+    /// Emit causal current-limit evidence for one velocity primitive.
+    fn foci_velocity_primitive_current_evidence(
+        &mut self,
+        _report: crate::ankyra::replies::FociVelocityPrimitiveCurrentEvidence,
+    ) {
+    }
+
     /// Emit one velocity-observation core fragment.
     fn foci_velocity_observation_core(
         &mut self,
@@ -721,6 +728,9 @@ pub fn emit_velocity_integral_event<S: CommissionReplySink>(
         crate::commissioning::types::VelocityIntegralEvent::Recovery(report) => {
             emit_rung_origin_recovery(sink, oid, report);
         }
+        crate::commissioning::types::VelocityIntegralEvent::Current(report) => {
+            emit_velocity_primitive_current_evidence(sink, oid, report);
+        }
     }
 }
 
@@ -1144,12 +1154,40 @@ pub fn emit_velocity_sweep_event<S: CommissionReplySink>(
         VelocitySweepEvent::Rung(report) => emit_velocity_sweep_rung(sink, oid, report),
         #[cfg(feature = "trace-velocity-sweep")]
         VelocitySweepEvent::Recovery(report) => emit_rung_origin_recovery(sink, oid, report),
+        VelocitySweepEvent::Current(report) => {
+            emit_velocity_primitive_current_evidence(sink, oid, report)
+        }
         VelocitySweepEvent::DirectionalRegion(report) => {
             emit_velocity_directional_region(sink, oid, report)
         }
         VelocitySweepEvent::JointRegion(report) => emit_velocity_joint_region(sink, oid, report),
         VelocitySweepEvent::Handoff(report) => emit_velocity_stage_b_handoff(sink, oid, report),
     }
+}
+
+fn emit_velocity_primitive_current_evidence<S: CommissionReplySink>(
+    sink: &mut S,
+    oid: u8,
+    report: crate::commissioning::types::VelocityPrimitiveCurrentEvidence,
+) {
+    sink.foci_velocity_primitive_current_evidence(
+        crate::ankyra::replies::FociVelocityPrimitiveCurrentEvidence {
+            oid,
+            run_sequence: report.run_sequence,
+            evidence_sequence: report.evidence_sequence,
+            stage: report.stage,
+            rung_index: report.rung_index,
+            slot: report.slot,
+            clamp_limit: report.clamp_limit,
+            clamp_readback: report.clamp_readback,
+            moving_pid_output_peak: report.moving_pid_output_peak,
+            zero_pid_output_peak: report.zero_pid_output_peak,
+            moving_status_flags: report.moving_status_flags,
+            zero_status_flags: report.zero_status_flags,
+            capability: report.capability,
+            contact: report.contact,
+        },
+    );
 }
 
 #[cfg(feature = "trace-velocity-sweep")]

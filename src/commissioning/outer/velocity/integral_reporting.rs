@@ -60,7 +60,7 @@ impl VelocityIntegralIntegrity {
             VelocityIntegralEvent::Rung(_) => {
                 self.emitted_rungs = self.emitted_rungs.saturating_add(1);
             }
-            VelocityIntegralEvent::Recovery(_) => {}
+            VelocityIntegralEvent::Recovery(_) | VelocityIntegralEvent::Current(_) => {}
             VelocityIntegralEvent::Planned(_) => {}
         }
         self.digest =
@@ -105,6 +105,11 @@ pub(crate) fn encode_velocity_integral_event(
         VelocityIntegralEvent::Rung(report) => encode_rung(report),
         VelocityIntegralEvent::Recovery(report) => {
             super::sweep_reporting::encode_rung_origin_recovery(report)
+        }
+        VelocityIntegralEvent::Current(report) => {
+            crate::ankyra::velocity_sweep_encoding::encode_velocity_primitive_current_evidence(
+                report,
+            )
         }
     }
 }
@@ -570,6 +575,38 @@ mod tests {
         assert_eq!(integrity.emitted_observations(), 0);
         assert_eq!(integrity.emitted_rungs(), 0);
         assert_eq!(integrity.digest(), 0xabbe_8f32_faa4_a140);
+    }
+
+    #[test]
+    fn primitive_current_evidence_is_hashed_and_count_neutral() {
+        let mut integrity = VelocityIntegralIntegrity::new(7, plan());
+        let before = integrity.digest();
+        let evidence = crate::commissioning::types::VelocityPrimitiveCurrentEvidence {
+            run_sequence: 7,
+            evidence_sequence: 1,
+            stage: 1,
+            rung_index: 2,
+            slot: 5,
+            clamp_limit: 2_534,
+            clamp_readback: 2_534,
+            moving_pid_output_peak: 2_111,
+            zero_pid_output_peak: 2_534,
+            moving_status_flags: 0,
+            zero_status_flags: 1 << 15,
+            capability: 0,
+            contact: 2,
+        };
+
+        integrity.record(VelocityIntegralEvent::Current(evidence));
+
+        assert_ne!(integrity.digest(), before);
+        assert_eq!(integrity.emitted_observations(), 0);
+        assert_eq!(integrity.emitted_rungs(), 0);
+        assert_eq!(integrity.next_evidence_sequence(), 2);
+        assert_eq!(
+            encode_velocity_integral_event(VelocityIntegralEvent::Current(evidence)).as_bytes()[0],
+            31
+        );
     }
 
     #[test]

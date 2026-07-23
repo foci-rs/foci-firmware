@@ -1150,6 +1150,10 @@ impl CommissioningEngine {
                         EVENT_COMMISSION_RUNG_ORIGIN_RECOVERY,
                         report.evidence_sequence,
                     ),
+                    crate::commissioning::types::VelocitySweepEvent::Current(report) => (
+                        EVENT_COMMISSION_VELOCITY_SWEEP_DERIVED,
+                        report.evidence_sequence,
+                    ),
                     crate::commissioning::types::VelocitySweepEvent::DirectionalRegion(report) => (
                         EVENT_COMMISSION_VELOCITY_SWEEP_DERIVED,
                         report.evidence_sequence,
@@ -1213,6 +1217,10 @@ impl CommissioningEngine {
                     #[cfg(feature = "trace-velocity-sweep")]
                     crate::commissioning::types::VelocityIntegralEvent::Recovery(report) => (
                         EVENT_COMMISSION_RUNG_ORIGIN_RECOVERY,
+                        report.evidence_sequence,
+                    ),
+                    crate::commissioning::types::VelocityIntegralEvent::Current(report) => (
+                        EVENT_COMMISSION_VELOCITY_INTEGRAL_DERIVED,
                         report.evidence_sequence,
                     ),
                 };

@@ -482,6 +482,37 @@ pub struct RungOriginRecoveryEvidence {
     pub report: crate::commissioning::outer::velocity::recovery::RungOriginRecoveryReport,
 }
 
+/// Causal current-limit evidence for one signed-plus-zero velocity primitive.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+pub struct VelocityPrimitiveCurrentEvidence {
+    /// Caller-assigned run sequence.
+    pub run_sequence: u32,
+    /// Monotonic evidence sequence within the owning stage.
+    pub evidence_sequence: u16,
+    /// Owning stage: zero for Stage B and one for Stage C.
+    pub stage: u8,
+    /// Zero-based rung index.
+    pub rung_index: u8,
+    /// Fixed signed observation slot.
+    pub slot: u8,
+    /// Temporary velocity-output clamp configured for the primitive.
+    pub clamp_limit: u16,
+    /// Verified clamp readback that authorized the signed target.
+    pub clamp_readback: u16,
+    /// Largest sampled absolute PID output during moving evidence.
+    pub moving_pid_output_peak: u16,
+    /// Largest sampled absolute PID output during braking and settle.
+    pub zero_pid_output_peak: u16,
+    /// Complete status word observed at the signed-to-zero boundary.
+    pub moving_status_flags: u32,
+    /// Complete status word observed after confirmed rest.
+    pub zero_status_flags: u32,
+    /// Limit-evidence capability declared by the immutable plan.
+    pub capability: u8,
+    /// First phase in which clamp contact was observed.
+    pub contact: u8,
+}
+
 /// Nonterminal evidence produced by one velocity-sweep engine poll.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub enum VelocitySweepEvent {
@@ -494,6 +525,8 @@ pub enum VelocitySweepEvent {
     /// One bounded return to the immutable campaign origin.
     #[cfg(feature = "trace-velocity-sweep")]
     Recovery(RungOriginRecoveryEvidence),
+    /// Current-limit evidence for one completed signed-plus-zero primitive.
+    Current(VelocityPrimitiveCurrentEvidence),
     /// One directional region or fragment closed by the fold.
     DirectionalRegion(VelocityDirectionalRegionReport),
     /// One jointly operable region closed by the fold.
@@ -640,6 +673,8 @@ pub enum VelocityIntegralEvent {
     /// One bounded return to the immutable campaign origin.
     #[cfg(feature = "trace-velocity-sweep")]
     Recovery(RungOriginRecoveryEvidence),
+    /// Current-limit evidence for one completed signed-plus-zero primitive.
+    Current(VelocityPrimitiveCurrentEvidence),
 }
 
 /// Report-only Stage-C terminal class.

@@ -61,7 +61,7 @@ impl VelocitySweepIntegrity {
             VelocitySweepEvent::Rung(_) => {
                 self.emitted_rungs = self.emitted_rungs.saturating_add(1);
             }
-            VelocitySweepEvent::Recovery(_) => {}
+            VelocitySweepEvent::Recovery(_) | VelocitySweepEvent::Current(_) => {}
             VelocitySweepEvent::DirectionalRegion(report) => {
                 let direction = match report.region.direction {
                     crate::autotune::velocity_measurement::VelocityDirection::Forward => 0,
@@ -126,6 +126,11 @@ pub(crate) fn encode_velocity_sweep_event(
         VelocitySweepEvent::Observation(report) => encode_observation(report),
         VelocitySweepEvent::Rung(report) => encode_rung(report),
         VelocitySweepEvent::Recovery(report) => encode_rung_origin_recovery(report),
+        VelocitySweepEvent::Current(report) => {
+            crate::ankyra::velocity_sweep_encoding::encode_velocity_primitive_current_evidence(
+                report,
+            )
+        }
         VelocitySweepEvent::DirectionalRegion(report) => {
             let mut record = VelocitySweepCanonicalRecord::new();
             record.push_u8(4);
@@ -517,7 +522,9 @@ mod tests {
         DIRECTIONAL_RUNG_FLAG_OPERABLE, PooledDisturbance, VelocityObservationClass,
         VelocityObservationSummary,
     };
-    use crate::commissioning::types::RungOriginRecoveryEvidence;
+    use crate::commissioning::types::{
+        RungOriginRecoveryEvidence, VelocityPrimitiveCurrentEvidence,
+    };
     use foci_tmc4671::pid::PidGain;
 
     fn fixture_plan() -> VelocitySweepPlanned {
@@ -603,6 +610,38 @@ mod tests {
         assert_eq!(integrity.emitted_observations(), 0);
         assert_eq!(integrity.emitted_rungs(), 0);
         assert_eq!(integrity.next_evidence_sequence(), 1);
+    }
+
+    #[test]
+    fn primitive_current_evidence_is_hashed_and_count_neutral() {
+        let mut integrity = VelocitySweepIntegrity::new(7);
+        let before = integrity.digest();
+        let evidence = VelocityPrimitiveCurrentEvidence {
+            run_sequence: 7,
+            evidence_sequence: 0,
+            stage: 0,
+            rung_index: 2,
+            slot: 5,
+            clamp_limit: 2_534,
+            clamp_readback: 2_534,
+            moving_pid_output_peak: 2_111,
+            zero_pid_output_peak: 2_534,
+            moving_status_flags: 0,
+            zero_status_flags: 1 << 15,
+            capability: 0,
+            contact: 2,
+        };
+
+        integrity.record(VelocitySweepEvent::Current(evidence));
+
+        assert_ne!(integrity.digest(), before);
+        assert_eq!(integrity.emitted_observations(), 0);
+        assert_eq!(integrity.emitted_rungs(), 0);
+        assert_eq!(integrity.next_evidence_sequence(), 1);
+        assert_eq!(
+            encode_velocity_sweep_event(VelocitySweepEvent::Current(evidence)).as_bytes()[0],
+            31
+        );
     }
 
     #[test]

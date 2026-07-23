@@ -2112,6 +2112,39 @@ pub struct FociRungOriginRecoveryLimits {
     pub peak_torque_target_abs: u16,
 }
 
+/// Causal current-limit evidence for one velocity primitive.
+#[klipper_reply]
+pub struct FociVelocityPrimitiveCurrentEvidence {
+    /// Endpoint object id.
+    pub oid: u8,
+    /// Caller-assigned run sequence.
+    pub run_sequence: u32,
+    /// Monotonic evidence sequence within the owning stage.
+    pub evidence_sequence: u16,
+    /// Owning stage: zero for Stage B and one for Stage C.
+    pub stage: u8,
+    /// Zero-based rung index.
+    pub rung_index: u8,
+    /// Fixed signed observation slot.
+    pub slot: u8,
+    /// Temporary velocity-output clamp.
+    pub clamp_limit: u16,
+    /// Verified clamp readback.
+    pub clamp_readback: u16,
+    /// Largest sampled absolute PID output during moving evidence.
+    pub moving_pid_output_peak: u16,
+    /// Largest sampled absolute PID output during braking and settle.
+    pub zero_pid_output_peak: u16,
+    /// Complete status word at the signed-to-zero boundary.
+    pub moving_status_flags: u32,
+    /// Complete status word after confirmed rest.
+    pub zero_status_flags: u32,
+    /// Declared limit-evidence capability.
+    pub capability: u8,
+    /// First phase with observed clamp contact.
+    pub contact: u8,
+}
+
 /// Core identity and exact selected-suffix totals for one observation.
 #[klipper_reply]
 pub struct FociVelocityObservationCore {
@@ -3637,6 +3670,29 @@ mod velocity_sweep_reply_tests {
         assert_eq!(
             (u64::from(limits.lower_rate_high) << 32) | u64::from(limits.lower_rate_low),
             0xfedc_ba98_7654_3210
+        );
+    }
+
+    #[test]
+    fn velocity_primitive_current_evidence_fits_transport() {
+        assert_fits(
+            &FociVelocityPrimitiveCurrentEvidence {
+                oid: u8::MAX,
+                run_sequence: WIDE_U32,
+                evidence_sequence: u16::MAX,
+                stage: u8::MAX,
+                rung_index: u8::MAX,
+                slot: u8::MAX,
+                clamp_limit: u16::MAX,
+                clamp_readback: u16::MAX,
+                moving_pid_output_peak: u16::MAX,
+                zero_pid_output_peak: u16::MAX,
+                moving_status_flags: WIDE_U32,
+                zero_status_flags: WIDE_U32,
+                capability: u8::MAX,
+                contact: u8::MAX,
+            },
+            "velocity_primitive_current_evidence",
         );
     }
 
