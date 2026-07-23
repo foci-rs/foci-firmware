@@ -11,6 +11,10 @@ use foci_tmc4671::registers::{
     PID_TORQUE_FLUX_ACTUAL, PID_TORQUE_FLUX_OFFSET, PID_TORQUE_FLUX_TARGET, PIDOUT_UQ_UD_LIMITS,
     STATUS_FLAGS, UQ_UD_EXT,
 };
+#[cfg(feature = "trace-velocity-sweep")]
+use foci_tmc4671::registers::{
+    PID_TORQUE_FLUX_LIMITS, PID_VELOCITY_P_VELOCITY_I, PID_VELOCITY_TARGET,
+};
 use foci_tmc4671::spi::Tmc4671Spi;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -28,6 +32,10 @@ struct DiagnosticMockSpi {
     write_attempts: std::vec::Vec<(u8, u32)>,
     read_requests: std::vec::Vec<u8>,
     reads: std::collections::VecDeque<u32>,
+    register_values: std::collections::BTreeMap<u8, u32>,
+    last_read_addr: Option<u8>,
+    transaction_attempts: usize,
+    fail_transaction: Option<usize>,
     fail_writes_to: Option<u8>,
     fail_reads_from: Option<u8>,
 }
@@ -35,6 +43,18 @@ struct DiagnosticMockSpi {
 impl DiagnosticMockSpi {
     fn with_read(mut self, value: u32) -> Self {
         self.reads.push_back(value);
+        self
+    }
+
+    #[cfg(feature = "trace-velocity-sweep")]
+    fn with_register(mut self, addr: u8, value: u32) -> Self {
+        self.register_values.insert(addr, value);
+        self
+    }
+
+    #[cfg(feature = "trace-velocity-sweep")]
+    fn fail_transaction(mut self, attempt: usize) -> Self {
+        self.fail_transaction = Some(attempt);
         self
     }
 
@@ -60,26 +80,34 @@ impl embedded_hal_async::spi::SpiDevice<u8> for DiagnosticMockSpi {
         &mut self,
         operations: &mut [embedded_hal_async::spi::Operation<'_, u8>],
     ) -> Result<(), Self::Error> {
+        self.transaction_attempts += 1;
+        let fail_this_transaction = self.fail_transaction == Some(self.transaction_attempts);
         for op in operations {
             match op {
                 embedded_hal_async::spi::Operation::Write(buf) if buf.len() == 5 => {
                     let addr = buf[0] & 0x7f;
                     let value = u32::from_be_bytes([buf[1], buf[2], buf[3], buf[4]]);
                     self.write_attempts.push((addr, value));
-                    if self.fail_writes_to == Some(addr) {
+                    if fail_this_transaction || self.fail_writes_to == Some(addr) {
                         return Err(MockSpiError);
                     }
                     self.writes.push((addr, value));
+                    self.register_values.insert(addr, value);
                 }
                 embedded_hal_async::spi::Operation::Write(buf) if buf.len() == 1 => {
                     let addr = buf[0];
                     self.read_requests.push(addr);
-                    if self.fail_reads_from == Some(addr) {
+                    self.last_read_addr = Some(addr);
+                    if fail_this_transaction || self.fail_reads_from == Some(addr) {
                         return Err(MockSpiError);
                     }
                 }
                 embedded_hal_async::spi::Operation::Read(buf) => {
-                    let value = self.reads.pop_front().unwrap_or(0);
+                    let value = self.reads.pop_front().unwrap_or_else(|| {
+                        self.last_read_addr
+                            .and_then(|addr| self.register_values.get(&addr).copied())
+                            .unwrap_or(0)
+                    });
                     buf.copy_from_slice(&value.to_be_bytes());
                 }
                 embedded_hal_async::spi::Operation::Write(_)
@@ -97,6 +125,7 @@ impl embedded_hal_async::spi::SpiDevice<u8> for DiagnosticMockSpi {
 #[derive(Default)]
 struct MockDelay {
     delays_ms: std::vec::Vec<u64>,
+    delays_us: std::vec::Vec<u32>,
     now_us: core::cell::Cell<u64>,
     advance_on_delay: bool,
     advance_on_now_us: u64,
@@ -123,6 +152,14 @@ impl DiagnosticDelay for MockDelay {
         if self.advance_on_delay {
             self.now_us
                 .set(self.now_us.get().wrapping_add(ms.saturating_mul(1_000)));
+        }
+    }
+
+    async fn delay_us(&mut self, us: u32) {
+        self.delays_us.push(us);
+        if self.advance_on_delay {
+            self.now_us
+                .set(self.now_us.get().wrapping_add(u64::from(us)));
         }
     }
 
@@ -257,6 +294,21 @@ fn commissioning_busy_diagnostic_returns_not_ready_without_hardware() {
     assert_eq!(report.torque_target, 64);
 }
 
+#[cfg(feature = "trace-velocity-sweep")]
+#[test]
+fn commissioning_busy_velocity_limit_latch_returns_not_ready() {
+    let outcome = super::busy_diagnostic_report(
+        crate::tmc::tmc_velocity_limit_latch_test(0, 9),
+        &crate::config::TmcConfig::default_for_test(),
+    );
+
+    let DiagnosticOutcome::Handled(DiagnosticReport::VelocityLimitLatch(report)) = outcome else {
+        panic!("expected velocity-limit latch busy report");
+    };
+    assert_eq!(report.oid, 9);
+    assert_eq!(report.status, VELOCITY_LIMIT_LATCH_STATUS_NOT_READY);
+}
+
 #[test]
 fn current_step_not_ready_returns_status_without_writes() {
     pollster::block_on(async {
@@ -295,6 +347,242 @@ fn current_step_not_ready_returns_status_without_writes() {
         assert_eq!(report.torque_target, 123);
         assert!(tmc.into_inner().writes.is_empty());
         assert!(delay.delays_ms.is_empty());
+    });
+}
+
+#[cfg(feature = "trace-velocity-sweep")]
+#[test]
+fn velocity_limit_latch_not_ready_returns_status_without_writes() {
+    pollster::block_on(async {
+        let mut runtime = TmcControlRuntime::new_for_channel(0);
+        let mut delay = MockDelay::default();
+        let mut tmc = Tmc4671Spi::new(DiagnosticMockSpi::default());
+        let req = crate::tmc::tmc_velocity_limit_latch_test(0, 7);
+
+        let outcome = run_velocity_limit_latch_request(
+            req,
+            DiagnosticContext {
+                tmc: &mut tmc,
+                runtime: &mut runtime,
+                delay: &mut delay,
+                power_stage: &mut MockDiagnosticPowerStage::default(),
+                tmc_config: &TEST_TMC_CONFIG,
+                readiness: DiagnosticReadiness {
+                    homing_active: false,
+                    stepper_active: false,
+                    saved_voltage_limit: 999,
+                },
+            },
+        )
+        .await;
+
+        let DiagnosticOutcome::Handled(DiagnosticReport::VelocityLimitLatch(report)) = outcome
+        else {
+            panic!("expected velocity-limit latch report");
+        };
+        assert_eq!(report.oid, 7);
+        assert_eq!(report.status, VELOCITY_LIMIT_LATCH_STATUS_NOT_READY);
+        assert!(tmc.into_inner().writes.is_empty());
+        assert!(delay.delays_ms.is_empty());
+    });
+}
+
+#[cfg(feature = "trace-velocity-sweep")]
+#[test]
+fn velocity_limit_latch_runs_fixed_pulse_and_restores_after_disarm() {
+    pollster::block_on(async {
+        const SAVED_MODE: u32 = 0x8000_0003;
+        const SAVED_LIMIT: u32 = 2_816;
+        const SAVED_GAINS: u32 = 0x0100_0002;
+        const TEST_GAINS: u32 = 0x0200_0000;
+        const VELOCITY_MODE: u32 = 0x8000_0002;
+        const OUTPUT_LIMIT_FLAG: u32 = 1 << 7;
+
+        let raw_spi = DiagnosticMockSpi::default()
+            .with_read(SAVED_MODE)
+            .with_read(SAVED_LIMIT)
+            .with_read(SAVED_GAINS)
+            .with_read(0)
+            .with_read(100)
+            .with_read(0)
+            .with_read(1)
+            .with_read(TEST_GAINS)
+            .with_read(VELOCITY_MODE)
+            .with_read(1)
+            .with_read(OUTPUT_LIMIT_FLAG)
+            .with_read(OUTPUT_LIMIT_FLAG)
+            .with_read(OUTPUT_LIMIT_FLAG)
+            .with_read(0)
+            .with_read(101)
+            .with_read(0)
+            .with_read(SAVED_GAINS)
+            .with_read(SAVED_LIMIT)
+            .with_read(SAVED_MODE);
+        let mut tmc = Tmc4671Spi::new(raw_spi);
+        let mut runtime = ready_runtime();
+        let mut delay = MockDelay {
+            advance_on_delay: true,
+            ..MockDelay::default()
+        };
+        let mut power_stage = MockDiagnosticPowerStage::default();
+
+        let outcome = run_velocity_limit_latch_request(
+            crate::tmc::tmc_velocity_limit_latch_test(0, 7),
+            DiagnosticContext {
+                tmc: &mut tmc,
+                runtime: &mut runtime,
+                delay: &mut delay,
+                power_stage: &mut power_stage,
+                tmc_config: &TEST_TMC_CONFIG,
+                readiness: DiagnosticReadiness {
+                    homing_active: false,
+                    stepper_active: false,
+                    saved_voltage_limit: 999,
+                },
+            },
+        )
+        .await;
+
+        let DiagnosticOutcome::Handled(DiagnosticReport::VelocityLimitLatch(report)) = outcome
+        else {
+            panic!("expected velocity-limit latch report");
+        };
+        assert_eq!(report.status, 0);
+        assert_eq!((report.test_limit, report.p_raw, report.i_raw), (1, 512, 0));
+        assert_eq!(report.target_velocity_rpm, 1);
+        assert_eq!(
+            (
+                report.limit_readback,
+                report.gains_readback,
+                report.target_readback
+            ),
+            (1, TEST_GAINS, 1)
+        );
+        assert_eq!(
+            (
+                report.active_status_flags,
+                report.post_pulse_status_flags,
+                report.delayed_status_flags,
+                report.post_clear_status_flags
+            ),
+            (OUTPUT_LIMIT_FLAG, OUTPUT_LIMIT_FLAG, OUTPUT_LIMIT_FLAG, 0)
+        );
+        assert_eq!(
+            (report.pulse_elapsed_us, report.delayed_read_elapsed_us),
+            (100, 1_000)
+        );
+        assert_eq!(
+            (
+                report.encoder_before,
+                report.encoder_after,
+                report.encoder_delta
+            ),
+            (100, 101, 1)
+        );
+        assert_eq!(
+            (
+                report.restored_limit_readback,
+                report.restored_gains_readback,
+                report.restored_target_readback,
+                report.restored_mode_readback
+            ),
+            (SAVED_LIMIT, SAVED_GAINS, 0, SAVED_MODE)
+        );
+        assert_eq!(report.restore_verified_mask, 0b1111);
+        assert!(report.power_stage_tripped);
+        assert_eq!(power_stage.trip_calls, 1);
+        assert!(!runtime.is_motor_enabled());
+        assert!(!runtime.is_calibrated());
+        assert_eq!(delay.delays_us, [100, 1_000]);
+    });
+}
+
+#[cfg(feature = "trace-velocity-sweep")]
+fn velocity_limit_latch_register_mock() -> DiagnosticMockSpi {
+    DiagnosticMockSpi::default()
+        .with_register(MODE_RAMP_MODE_MOTION.addr(), 0x8000_0003)
+        .with_register(PID_TORQUE_FLUX_LIMITS.addr(), 2_816)
+        .with_register(PID_VELOCITY_P_VELOCITY_I.addr(), 0x0100_0002)
+        .with_register(PID_VELOCITY_TARGET.addr(), 7)
+        .with_register(ABN_DECODER_COUNT.addr(), 100)
+        .with_register(STATUS_FLAGS.addr(), 0)
+}
+
+#[cfg(feature = "trace-velocity-sweep")]
+#[test]
+fn velocity_limit_latch_failures_disarm_and_attempt_every_saved_restore() {
+    pollster::block_on(async {
+        async fn run(
+            raw_spi: DiagnosticMockSpi,
+        ) -> (
+            VelocityLimitLatchReport,
+            DiagnosticMockSpi,
+            MockDiagnosticPowerStage,
+            TmcControlRuntime,
+        ) {
+            let mut tmc = Tmc4671Spi::new(raw_spi);
+            let mut runtime = ready_runtime();
+            let mut delay = MockDelay {
+                advance_on_delay: true,
+                ..MockDelay::default()
+            };
+            let mut power_stage = MockDiagnosticPowerStage::default();
+            let outcome = run_velocity_limit_latch_request(
+                crate::tmc::tmc_velocity_limit_latch_test(0, 7),
+                DiagnosticContext {
+                    tmc: &mut tmc,
+                    runtime: &mut runtime,
+                    delay: &mut delay,
+                    power_stage: &mut power_stage,
+                    tmc_config: &TEST_TMC_CONFIG,
+                    readiness: DiagnosticReadiness {
+                        homing_active: false,
+                        stepper_active: false,
+                        saved_voltage_limit: 999,
+                    },
+                },
+            )
+            .await;
+            let DiagnosticOutcome::Handled(DiagnosticReport::VelocityLimitLatch(report)) = outcome
+            else {
+                panic!("expected velocity-limit latch report");
+            };
+            (report, tmc.into_inner(), power_stage, runtime)
+        }
+
+        let (_, baseline_spi, _, _) = run(velocity_limit_latch_register_mock()).await;
+        let transaction_count = baseline_spi.transaction_attempts;
+        assert!(transaction_count > 0);
+
+        for fail_at in 1..=transaction_count {
+            let (report, raw_spi, power_stage, runtime) =
+                run(velocity_limit_latch_register_mock().fail_transaction(fail_at)).await;
+
+            assert_eq!(
+                report.status, VELOCITY_LIMIT_LATCH_STATUS_SPI,
+                "transaction {fail_at} did not fail closed"
+            );
+            assert_eq!(power_stage.trip_calls, 1, "transaction {fail_at}");
+            assert!(!runtime.is_motor_enabled(), "transaction {fail_at}");
+            assert!(!runtime.is_calibrated(), "transaction {fail_at}");
+
+            for (saved, register) in [
+                (report.saved_target as u32, PID_VELOCITY_TARGET),
+                (report.saved_gains, PID_VELOCITY_P_VELOCITY_I),
+                (report.saved_limit, PID_TORQUE_FLUX_LIMITS),
+                (report.saved_mode, MODE_RAMP_MODE_MOTION),
+            ] {
+                if saved != 0 {
+                    assert!(
+                        raw_spi
+                            .write_attempts
+                            .iter()
+                            .any(|&(addr, value)| addr == register.addr() && value == saved),
+                        "transaction {fail_at} skipped restore attempt for {register:?}"
+                    );
+                }
+            }
+        }
     });
 }
 
