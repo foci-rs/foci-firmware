@@ -395,6 +395,12 @@ impl CollectedRungEvidence {
             >> STATUS_COLLECTED_SHIFT) as u8
     }
 
+    /// Whether all four observations in both signed directions were collected.
+    pub const fn is_complete(&self) -> bool {
+        self.collected_mask(VelocityDirection::Forward) == 0b1111
+            && self.collected_mask(VelocityDirection::Reverse) == 0b1111
+    }
+
     /// Return one retained intrinsic class, or `None` when the slot was not collected.
     pub fn classification(
         &self,

@@ -1052,9 +1052,21 @@ pub(crate) async fn step_velocity_sweep_with_trace<B: CommissioningBackend>(
             data.analysis.reset();
             data.observations.clear();
             safety.end_primitive();
-            *state = if *current_headroom || data.slot + 1 >= SWEEP_SLOT_COUNT {
+            let complete_rung = data.slot + 1 >= SWEEP_SLOT_COUNT;
+            let structural_current_bound = if complete_rung {
+                match data.plan.structural_current_bound(data.rung_index) {
+                    Ok(bound) => bound,
+                    Err(_) => {
+                        return fail_sweep(phase, backend, CommissionError::InvalidSchedule).await;
+                    }
+                }
+            } else {
+                false
+            };
+            let terminal_current_headroom = *current_headroom || structural_current_bound;
+            *state = if terminal_current_headroom || complete_rung {
                 VelocitySweepState::AnalyzeForwardRung {
-                    current_headroom: *current_headroom,
+                    current_headroom: terminal_current_headroom,
                 }
             } else {
                 VelocitySweepState::Advance
@@ -1121,6 +1133,7 @@ pub(crate) async fn step_velocity_sweep_with_trace<B: CommissioningBackend>(
             };
             let reverse = collected
                 .directional_set(crate::autotune::velocity_measurement::VelocityDirection::Reverse);
+            let include_boundary_rung = !*current_headroom || collected.is_complete();
             let analysis = match analyze_directional_rung(
                 &collected,
                 crate::autotune::velocity_measurement::VelocityDirection::Forward,
@@ -1139,7 +1152,7 @@ pub(crate) async fn step_velocity_sweep_with_trace<B: CommissioningBackend>(
                 &mut data.operating_regions.directional[0],
                 data.rung_index,
                 analysis,
-                *current_headroom,
+                include_boundary_rung,
             ) {
                 Ok(closed) => closed,
                 Err(_) => {
@@ -1201,11 +1214,13 @@ pub(crate) async fn step_velocity_sweep_with_trace<B: CommissioningBackend>(
                 }
             };
             let reverse = analysis.report;
+            let include_boundary_rung = !*current_headroom
+                || (forward.collected_mask == 0b1111 && reverse.collected_mask == 0b1111);
             let closed = match observe_directional_rung_for_sweep(
                 &mut data.operating_regions.directional[1],
                 data.rung_index,
                 analysis,
-                *current_headroom,
+                include_boundary_rung,
             ) {
                 Ok(closed) => closed,
                 Err(_) => {
@@ -1248,7 +1263,9 @@ pub(crate) async fn step_velocity_sweep_with_trace<B: CommissioningBackend>(
             let current_rates = representative_rung_rates(forward, reverse);
             let current_headroom = *current_headroom;
             *state = VelocitySweepState::EmitRung { current_headroom };
-            if current_headroom {
+            let include_boundary_rung = !current_headroom
+                || (forward.collected_mask == 0b1111 && reverse.collected_mask == 0b1111);
+            if !include_boundary_rung {
                 data.previous_rung_rates = current_rates;
                 return StepResult::ReadyNow;
             }
@@ -1321,10 +1338,15 @@ pub(crate) async fn step_velocity_sweep_with_trace<B: CommissioningBackend>(
                 reverse,
             };
             let event = data.integrity.record(VelocitySweepEvent::Rung(report));
-            let complete_rung =
-                forward.collected_mask == 0b1111 && reverse.collected_mask == 0b1111;
-            let final_rung = *current_headroom || data.rung_index + 1 >= plan.rung_count;
-            if *current_headroom && !complete_rung {
+            let structural_current_bound = match plan.structural_current_bound(data.rung_index) {
+                Ok(bound) => bound,
+                Err(_) => {
+                    return fail_sweep(phase, backend, CommissionError::InvalidSchedule).await;
+                }
+            };
+            let terminal_current_headroom = *current_headroom || structural_current_bound;
+            let final_rung = data.rung_index + 1 >= plan.rung_count;
+            if terminal_current_headroom {
                 *state = VelocitySweepState::FinishForward {
                     current_headroom: true,
                     recovery_failure: false,
@@ -1365,7 +1387,7 @@ pub(crate) async fn step_velocity_sweep_with_trace<B: CommissioningBackend>(
                 };
                 data.evidence = VelocitySweepEvidenceState::Recovering(runtime);
                 *state = VelocitySweepState::RecoverRung {
-                    current_headroom: *current_headroom,
+                    current_headroom: false,
                     final_rung,
                 };
             }
@@ -1592,9 +1614,9 @@ fn observe_directional_rung_for_sweep(
     fold: &mut super::operating_region::DirectionalRegionFold,
     rung_index: u8,
     analysis: DirectionalRungAnalysis,
-    current_headroom: bool,
+    include_rung: bool,
 ) -> Result<Option<DirectionalRegionSummary>, VelocityEvidenceError> {
-    if current_headroom {
+    if !include_rung {
         return Ok(None);
     }
     super::operating_region::observe_directional_rung(fold, rung_index, analysis)
@@ -1701,20 +1723,28 @@ mod tests {
     }
 
     fn eligible_directional_analysis(p: u16) -> DirectionalRungAnalysis {
+        eligible_directional_analysis_with_interval(p, [100, 120])
+    }
+
+    fn eligible_directional_analysis_with_interval(
+        p: u16,
+        bounds: [i32; 2],
+    ) -> DirectionalRungAnalysis {
         let interval = EquivalentTorqueTargetInterval::new(
-            EquivalentTorqueTargetQ16::from_raw(100),
-            EquivalentTorqueTargetQ16::from_raw(120),
+            EquivalentTorqueTargetQ16::from_raw(bounds[0]),
+            EquivalentTorqueTargetQ16::from_raw(bounds[1]),
         )
         .unwrap();
         let mut accumulator = PooledDisturbanceAccumulator::new();
-        for point in [100, 110, 120] {
+        let midpoint = bounds[0] + (bounds[1] - bounds[0]) / 2;
+        for point in [bounds[0], midpoint, bounds[1]] {
             accumulator.add(EquivalentTorqueTargetQ16::from_raw(point), interval, 4);
         }
         DirectionalRungAnalysis {
             report: CompactDirectionalRungReport {
                 p: PidGain::new(p).unwrap(),
                 classification: DirectionalConsensusClass::EligibleConsensus,
-                components: [[100, 120], [0, 0]],
+                components: [bounds, [0, 0]],
                 pooled: accumulator.finish(0),
                 settled_rate_bounds_q: [
                     CompactSignedRate::encode(1_000, BoundRounding::TowardNegativeInfinity),
@@ -1946,14 +1976,14 @@ mod tests {
     }
 
     #[test]
-    fn current_headroom_incomplete_rung_closes_active_region_as_terminus() {
+    fn partial_current_headroom_rung_closes_without_folding() {
         let mut fold = DirectionalRegionFold::new(VelocityDirection::Forward);
         assert!(
             observe_directional_rung_for_sweep(
                 &mut fold,
                 0,
                 eligible_directional_analysis(256),
-                false,
+                true,
             )
             .unwrap()
             .is_none()
@@ -1975,7 +2005,7 @@ mod tests {
             pooled_accumulator: PooledDisturbanceAccumulator::new(),
         };
         assert!(
-            observe_directional_rung_for_sweep(&mut fold, 1, incomplete, true)
+            observe_directional_rung_for_sweep(&mut fold, 1, incomplete, false)
                 .unwrap()
                 .is_none()
         );
@@ -2147,7 +2177,35 @@ mod tests {
     }
 
     #[test]
-    fn completed_current_terminus_recovers_but_partial_terminus_skips() {
+    fn complete_current_headroom_rung_is_folded_without_recovery() {
+        let mut fold = DirectionalRegionFold::new(VelocityDirection::Forward);
+        for (rung_index, p) in [256, 362, 512].into_iter().enumerate() {
+            assert!(
+                observe_directional_rung_for_sweep(
+                    &mut fold,
+                    rung_index as u8,
+                    eligible_directional_analysis(p),
+                    true,
+                )
+                .unwrap()
+                .is_none()
+            );
+        }
+        assert!(
+            observe_directional_rung_for_sweep(
+                &mut fold,
+                3,
+                eligible_directional_analysis(724),
+                true,
+            )
+            .unwrap()
+            .is_none()
+        );
+        let closed = fold
+            .finish(DirectionalRegionClosure::CurrentHeadroom)
+            .unwrap();
+        assert_eq!(closed.member_mask, 0b1111);
+
         let mut completed_phase = phase();
         let mut completed_backend = MockBackend::new();
         install_completed_rung(
@@ -2168,14 +2226,116 @@ mod tests {
         assert!(matches!(
             completed_phase,
             OuterPhase::VelocitySweep {
-                state: VelocitySweepState::RecoverRung {
+                state: VelocitySweepState::FinishForward {
                     current_headroom: true,
-                    final_rung: true,
+                    recovery_failure: false,
                 },
                 ..
             }
         ));
+    }
 
+    #[test]
+    fn p2048_complete_current_headroom_replay_preserves_model_masks() {
+        let mut forward_fold = DirectionalRegionFold::new(VelocityDirection::Forward);
+        let mut reverse_fold = DirectionalRegionFold::new(VelocityDirection::Reverse);
+        let mut joint_fold = super::super::operating_region::JointOperableFold::new();
+        let mut gains = [foci_tmc4671::pid::PidGain::ZERO; MAX_SWEEP_RUNGS];
+        for (rung_index, p) in [(18, 724), (19, 1_024), (20, 1_448), (21, 2_048)] {
+            gains[rung_index] = PidGain::new(p).unwrap();
+            let mut forward =
+                eligible_directional_analysis_with_interval(p, [16_689_709, 16_897_585]);
+            if rung_index == 21 {
+                forward.report.eligible_mask = 0b1110;
+                forward.report.included_mask = 0b1110;
+                forward.report.operable_count = 3;
+            }
+            let reverse =
+                eligible_directional_analysis_with_interval(p, [-16_117_228, -15_501_617]);
+            observe_directional_rung_for_sweep(&mut forward_fold, rung_index as u8, forward, true)
+                .unwrap();
+            observe_directional_rung_for_sweep(&mut reverse_fold, rung_index as u8, reverse, true)
+                .unwrap();
+            super::super::operating_region::observe_joint_rung(
+                &mut joint_fold,
+                rung_index as u8,
+                forward.report,
+                reverse.report,
+            );
+        }
+
+        let forward = forward_fold
+            .finish(DirectionalRegionClosure::CurrentHeadroom)
+            .unwrap();
+        let reverse = reverse_fold
+            .finish(DirectionalRegionClosure::CurrentHeadroom)
+            .unwrap();
+        let joint = joint_fold
+            .finish(JointOperableClosure::CurrentHeadroom)
+            .unwrap();
+        let nomination = super::super::operating_region::choose_joint_nomination(
+            None,
+            joint,
+            &gains,
+            PidGain::new(2).unwrap(),
+            PidGain::new(2_457).unwrap(),
+        );
+
+        assert_eq!(forward.member_mask, 0x003c_0000);
+        assert_eq!(reverse.member_mask, 0x003c_0000);
+        assert_eq!(joint.member_mask, 0x003c_0000);
+        assert_eq!(
+            [
+                forward.common_intersection.low().raw(),
+                forward.common_intersection.high().raw(),
+            ],
+            [16_689_709, 16_897_585]
+        );
+        assert_eq!(
+            [
+                reverse.common_intersection.low().raw(),
+                reverse.common_intersection.high().raw(),
+            ],
+            [-16_117_228, -15_501_617]
+        );
+        assert_eq!(nomination.p.raw(), 1_024);
+    }
+
+    #[test]
+    fn structural_current_top_is_folded_without_recovery() {
+        let mut phase = phase();
+        let mut backend = MockBackend::new();
+        install_completed_rung(
+            &mut phase,
+            &mut backend,
+            1,
+            false,
+            [CompactSignedRate::ZERO; 2],
+            1_001,
+        );
+        let OuterPhase::VelocitySweep { data, .. } = &mut phase else {
+            panic!("velocity sweep should remain active");
+        };
+        data.plan.p_start = data.plan.p_top;
+
+        assert!(matches!(
+            pollster::block_on(step_velocity_sweep_with_trace(&mut phase, &mut backend,)),
+            StepResult::VelocitySweepEvent(VelocitySweepEvent::Rung(_))
+        ));
+        assert!(matches!(
+            phase,
+            OuterPhase::VelocitySweep {
+                state: VelocitySweepState::FinishForward {
+                    current_headroom: true,
+                    recovery_failure: false,
+                },
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn partial_current_headroom_rung_emits_no_recovery() {
         let mut partial_phase = phase();
         let mut partial_backend = MockBackend::new();
         install_completed_rung(
@@ -2747,6 +2907,8 @@ mod tests {
             panic!("velocity sweep should remain active");
         };
         data.plan.rung_count = 1;
+        data.plan.hard_torque_limit = u16::MAX;
+        data.plan.usable_torque_limit = u16::MAX;
 
         let StepResult::VelocitySweepEvent(VelocitySweepEvent::Planned(plan_report)) = plan_event
         else {
@@ -2764,7 +2926,10 @@ mod tests {
             pollster::block_on(step_velocity_sweep_with_trace(&mut phase, &mut backend));
             let result =
                 pollster::block_on(step_velocity_sweep_with_trace(&mut phase, &mut backend));
-            assert!(matches!(result, StepResult::At(deadline) if deadline == now_us + 1_000));
+            assert!(
+                matches!(result, StepResult::At(deadline) if deadline == now_us + 1_000),
+                "settle capture must start on the next sample: {result:?}"
+            );
 
             let direction = slot_direction(slot);
             for _ in 0..MOVING_STROKE_US / 1_000 {
@@ -2806,7 +2971,10 @@ mod tests {
             observation_targets.push(report.target_velocity_rpm);
             let result =
                 pollster::block_on(step_velocity_sweep_with_trace(&mut phase, &mut backend));
-            assert!(matches!(result, StepResult::At(deadline) if deadline == now_us + 1_000));
+            assert!(
+                matches!(result, StepResult::At(deadline) if deadline == now_us + 1_000),
+                "settle capture must start on the next sample: {result:?}"
+            );
             for _ in 0..ZERO_SETTLE_US / 1_000 {
                 now_us += 1_000;
                 backend.elapsed_us_value = now_us;

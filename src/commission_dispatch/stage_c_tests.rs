@@ -470,6 +470,92 @@ fn outer_safety_timing_terminal_order_composite_preserves_intermediate_state() {
 }
 
 #[test]
+fn reproduced_current_headroom_installs_authority_without_continuation() {
+    pollster::block_on(async {
+        use crate::commission_dispatch::stage_b::{
+            apply_stage_b_terminal, preflight_stage_b_request,
+        };
+        use crate::commission_dispatch::test_support::MockBackend;
+        use crate::commissioning::CommissioningEngine;
+        use crate::commissioning::outer::velocity::reproduction::StageBCandidateSlot;
+        use crate::config::TmcConfig;
+        use crate::tmc_control::{ScheduledCommissionTickAction, TmcControlConfig};
+
+        let mut stage_b_slot = StageBCandidateSlot::new();
+        apply_stage_b_terminal(stage_b_terminal(), CHANNEL, &mut stage_b_slot);
+        let preflight = preflight_stage_b_request(
+            request(),
+            COUNTS_PER_REV,
+            TORQUE_LIMIT,
+            CHANNEL,
+            8,
+            &mut stage_b_slot,
+        )
+        .unwrap();
+        crate::state::tmc::tmc_channel0()
+            .configure_motion_scale(crate::state::stepper::stepper_channel0(), 1_000, 3_200)
+            .expect("valid Stage-C test motion scale");
+        let mut runtime = crate::tmc_control::TmcControlRuntime::new_for_channel(CHANNEL);
+        runtime.set_motor_enabled_for_test(true);
+        runtime.set_commission_engine(
+            CommissioningEngine::new_outer_for_tmc_with_stage_b_preflight(
+                1,
+                crate::state::tmc::tmc_channel0(),
+                outer_params(),
+                entry_snapshot(),
+                preflight,
+            ),
+        );
+        let mut stage_c_slot = StageCCandidateSlot::new();
+        let mut backend = MockBackend::new();
+        backend.enable_pin = true;
+        let tmc = TmcConfig::default_for_test();
+        let config = TmcControlConfig::new(84_000_000, PWM_HZ, 0.03125, tmc);
+        let mut terminal = stage_b_terminal();
+        terminal.recovery_unavailable = true;
+
+        let action = runtime
+            .drive_commissioning_terminal_with_stages(
+                crate::commissioning::schedule::CommissionTerminal::VelocitySweep(terminal),
+                &mut backend,
+                super::CommissionTerminalContext::new(&mut stage_b_slot, &mut stage_c_slot, |_| {
+                    panic!("suppressed continuation must not emit continuation evidence")
+                }),
+                crate::state::tmc::tmc_channel0(),
+                crate::state::stepper::stepper_channel0(),
+                &config,
+            )
+            .await
+            .expect("suppressed continuation must emit a terminal action");
+
+        assert_eq!(stage_c_slot.state(), StageCSlotState::AuthorityOnly);
+        let retained = stage_c_slot
+            .authority()
+            .expect("reproduced Stage B must retain Stage-C authority");
+        assert!(matches!(
+            action,
+            ScheduledCommissionTickAction::Terminal {
+                reply: ReplyPayload::VelocitySweepTerminal { terminal, .. },
+                ..
+            } if terminal.recovery_unavailable
+        ));
+        let resume = preflight_stage_c_request(
+            request(),
+            COUNTS_PER_REV,
+            TORQUE_LIMIT,
+            CHANNEL,
+            PWM_HZ,
+            9,
+            &stage_c_slot,
+        )
+        .expect("retained authority must admit the next matching command")
+        .expect("retained authority must route directly to Stage C");
+        assert_eq!(resume.plan.final_p, retained.final_p);
+        assert_eq!(resume.plan.digest(), retained.identity.plan_digest);
+    });
+}
+
+#[test]
 fn outer_safety_timing_terminal_order_stage_c_resume() {
     pollster::block_on(async {
         use crate::commission_dispatch::test_support::{MockBackend, fresh_state_locals};

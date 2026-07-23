@@ -1202,7 +1202,10 @@ pub async fn drive_commission_result_with_stages<B: CommissioningBackend>(
     match result {
         StepResult::VelocitySweepTerminal(terminal) => {
             let dispatch = stage_b::apply_stage_b_terminal(terminal, channel, retention.stage_b);
-            if !stage_b_continuation_allowed(dispatch.terminal) {
+            if !matches!(
+                dispatch.terminal.outcome,
+                crate::commissioning::types::VelocitySweepOutcome::Complete
+            ) {
                 engine
                     .as_mut()
                     .expect("engine slot is None on VelocitySweepTerminal")
@@ -1245,14 +1248,9 @@ pub async fn drive_commission_result_with_stages<B: CommissioningBackend>(
             let engine_ref = engine
                 .as_mut()
                 .expect("engine slot is None on VelocitySweepTerminal");
-            engine_ref.emit_stage_b_terminal_evidence(
-                backend,
-                dispatch.terminal,
-                dispatch.reproduction,
-            );
             let oid = engine_ref.oid();
             let stage_c_plan = match engine_ref
-                .begin_stage_c_continuation(authority, backend.tmc_config().pwm_freq_hz())
+                .plan_stage_c_continuation(authority, backend.tmc_config().pwm_freq_hz())
             {
                 Ok(plan) => plan,
                 Err(_) => {
@@ -1271,14 +1269,6 @@ pub async fn drive_commission_result_with_stages<B: CommissioningBackend>(
                     .await;
                 }
             };
-            for record in
-                crate::commissioning::outer::velocity::integral_reporting::encode_velocity_integral_plan_trace(
-                    dispatch.terminal.run_sequence,
-                    stage_c_plan,
-                )
-            {
-                backend.record_velocity_sweep_trace_record(record);
-            }
             retention.stage_c.install_authority(
                 crate::commissioning::outer::velocity::integral_reproduction::StageCAuthoritySummary::from_plan(
                     channel,
@@ -1289,6 +1279,67 @@ pub async fn drive_commission_result_with_stages<B: CommissioningBackend>(
                     authority,
                 ),
             );
+            if !stage_b_continuation_allowed(dispatch.terminal) {
+                engine_ref.emit_stage_b_terminal_trace(
+                    backend,
+                    dispatch.terminal,
+                    dispatch.reproduction,
+                );
+                return match drive_commission_result(
+                    StepResult::VelocitySweepTerminal(dispatch.terminal),
+                    engine,
+                    backend,
+                    state,
+                    pwm_maxcnt,
+                )
+                .await
+                {
+                    CommissionOutcome::Terminal {
+                        reply: ReplyPayload::VelocitySweepTerminal { oid, terminal, .. },
+                        actions,
+                    } => CommissionOutcome::Terminal {
+                        reply: ReplyPayload::VelocitySweepTerminal {
+                            oid,
+                            terminal,
+                            reproduction: dispatch.reproduction,
+                        },
+                        actions,
+                    },
+                    _ => unreachable!("velocity-sweep terminal produced a nonterminal outcome"),
+                };
+            }
+
+            engine_ref.emit_stage_b_terminal_evidence(
+                backend,
+                dispatch.terminal,
+                dispatch.reproduction,
+            );
+            if engine_ref
+                .begin_stage_c_continuation_with_plan(stage_c_plan)
+                .is_err()
+            {
+                retention.stage_c.observe_fault();
+                engine
+                    .as_mut()
+                    .expect("engine slot is None after Stage-C transition rejection")
+                    .emit_outer_safety_timing_trace(backend, dispatch.terminal.run_sequence);
+                return drive_commission_result(
+                    StepResult::OuterFailed(crate::autotune::CommissionError::InvalidSchedule),
+                    engine,
+                    backend,
+                    state,
+                    pwm_maxcnt,
+                )
+                .await;
+            }
+            for record in
+                crate::commissioning::outer::velocity::integral_reporting::encode_velocity_integral_plan_trace(
+                    dispatch.terminal.run_sequence,
+                    stage_c_plan,
+                )
+            {
+                backend.record_velocity_sweep_trace_record(record);
+            }
             CommissionOutcome::Evidence {
                 reply: ReplyPayload::VelocityIntegralContinuation {
                     oid,

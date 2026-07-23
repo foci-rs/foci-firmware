@@ -565,10 +565,10 @@ impl CommissioningEngine {
         engine
     }
 
-    /// Continue a live reproduced Stage-B engine into the exact Stage-C plan.
+    /// Derive the exact Stage-C continuation plan without changing the live phase.
     #[cfg(feature = "trace-velocity-sweep")]
-    pub(crate) fn begin_stage_c_continuation(
-        &mut self,
+    pub(crate) fn plan_stage_c_continuation(
+        &self,
         authority: crate::commissioning::outer::velocity::integral_plan::StageCAuthority,
         pwm_hz: u32,
     ) -> Result<
@@ -579,7 +579,7 @@ impl CommissioningEngine {
             VelocityIntegralPlanError, plan_velocity_integral_response,
         };
 
-        let EngineMode::Outer { phase, .. } = &mut self.engine_mode else {
+        let EngineMode::Outer { phase, .. } = &self.engine_mode else {
             return Err(VelocityIntegralPlanError::MissingStageBPlan);
         };
         let (stage_b_plan, budget) = match phase {
@@ -590,14 +590,21 @@ impl CommissioningEngine {
             .tmc_state
             .encoder_counts_per_rev()
             .ok_or(VelocityIntegralPlanError::InvalidRequest)?;
-        let plan = plan_velocity_integral_response(
-            authority,
-            stage_b_plan,
-            budget,
-            pwm_hz,
-            counts_per_rev,
-        )?;
-        let maximum_workflow_ms = plan.maximum_workflow_ms;
+        plan_velocity_integral_response(authority, stage_b_plan, budget, pwm_hz, counts_per_rev)
+    }
+
+    /// Transition a live reproduced Stage-B engine into a prederived Stage-C plan.
+    #[cfg(feature = "trace-velocity-sweep")]
+    pub(crate) fn begin_stage_c_continuation_with_plan(
+        &mut self,
+        plan: crate::commissioning::outer::velocity::integral_plan::VelocityIntegralPlan,
+    ) -> Result<(), crate::commissioning::outer::velocity::integral_plan::VelocityIntegralPlanError>
+    {
+        use crate::commissioning::outer::velocity::integral_plan::VelocityIntegralPlanError;
+
+        let EngineMode::Outer { phase, .. } = &mut self.engine_mode else {
+            return Err(VelocityIntegralPlanError::MissingStageBPlan);
+        };
         let execution_plan = plan.execution_plan();
         let old_phase =
             core::mem::replace(phase, OuterPhase::Failed(CommissionError::InvalidSchedule));
@@ -609,8 +616,7 @@ impl CommissioningEngine {
             data: VelocityIntegralData::new(self.trace_run.engine_seq, execution_plan),
             safety,
         };
-        let _ = maximum_workflow_ms;
-        Ok(plan)
+        Ok(())
     }
 
     /// Create a direct Stage-C resume engine from a preflighted exact plan.
