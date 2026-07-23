@@ -12,6 +12,8 @@ use crate::autotune::velocity_measurement::{
     DyadicBlocker, RawVelocityObservation, StationarityWork, VelocityMeasurementError,
 };
 #[cfg(feature = "trace-velocity-sweep")]
+use crate::commissioning::outer::velocity::current_guard::VelocityCurrentObserver;
+#[cfg(feature = "trace-velocity-sweep")]
 use crate::commissioning::outer::velocity::operating_region::{
     CompactSignedRate, OperatingRegionRuntime,
 };
@@ -239,7 +241,7 @@ pub(crate) struct VelocityIntegralData {
     pub(crate) previous_encoder_raw: u32,
     pub(crate) previous_read_us: u64,
     pub(crate) run_started_us: u64,
-    pub(crate) peak_torque_target: u16,
+    pub(crate) current_observer: VelocityCurrentObserver,
     pub(crate) observation_current_headroom: bool,
     pub(crate) settle_displacement_counts: i8,
     pub(crate) settle_min_displacement_counts: i8,
@@ -276,7 +278,7 @@ impl VelocityIntegralData {
             previous_encoder_raw: 0,
             previous_read_us: 0,
             run_started_us: 0,
-            peak_torque_target: 0,
+            current_observer: VelocityCurrentObserver::EMPTY,
             observation_current_headroom: false,
             settle_displacement_counts: 0,
             settle_min_displacement_counts: 0,
@@ -430,7 +432,7 @@ pub(crate) struct VelocitySweepData {
     pub(crate) previous_encoder_raw: u32,
     pub(crate) previous_read_us: u64,
     pub(crate) run_started_us: u64,
-    pub(crate) peak_torque_target: u16,
+    pub(crate) current_observer: VelocityCurrentObserver,
     /// Cumulative zero-target displacement, saturated outside the accepted band.
     pub(crate) settle_displacement_counts: i8,
     /// Lowest saturated cumulative displacement observed during the settle.
@@ -464,7 +466,7 @@ impl VelocitySweepData {
             previous_encoder_raw: 0,
             previous_read_us: 0,
             run_started_us: 0,
-            peak_torque_target: 0,
+            current_observer: VelocityCurrentObserver::EMPTY,
             settle_displacement_counts: 0,
             settle_min_displacement_counts: 0,
             settle_max_displacement_counts: 0,
@@ -1010,7 +1012,7 @@ mod tests {
         assert_eq!(size_of::<[i32; 256]>(), 1_024);
         assert_eq!(size_of::<[u16; 256]>(), 512);
         assert_eq!(size_of::<super::VelocityObservationRing>(), 1_540);
-        assert_eq!(size_of::<super::VelocitySweepData>(), 2_864);
+        assert_eq!(size_of::<super::VelocitySweepData>(), 2_880);
         assert_eq!(size_of::<super::MechanicalIdData>(), 2_184);
     }
 

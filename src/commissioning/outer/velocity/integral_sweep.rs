@@ -14,12 +14,18 @@ use crate::commissioning::types::{
     VelocityIntegralEvent, VelocityIntegralObservation, VelocityIntegralOutcome,
     VelocityIntegralRungReport, VelocityIntegralTerminal,
 };
+use foci_tmc4671::current_limit::PidTorqueFluxLimit;
 use foci_tmc4671::pid::{PidGain, PidGainPair};
 use foci_tmc4671::registers::{
-    ABN_DECODER_COUNT, INTERIM_PIDOUT_TARGET_TORQUE, MODE_RAMP_MODE_MOTION, PID_TORQUE_FLUX_TARGET,
-    PID_VELOCITY_P_VELOCITY_I, PID_VELOCITY_TARGET,
+    ABN_DECODER_COUNT, MODE_RAMP_MODE_MOTION, PID_TORQUE_FLUX_TARGET, PID_VELOCITY_P_VELOCITY_I,
+    PID_VELOCITY_TARGET,
 };
 
+use super::current_guard::{
+    VelocityCurrentContact, VelocityCurrentGuardError, VelocityCurrentZeroPhase,
+    begin_velocity_current_primitive, finish_velocity_current_moving_phase,
+    finish_velocity_current_zero_phase, read_velocity_pid_output_abs,
+};
 use super::integral_evidence::{
     ExactRateInterval, IntegralInconclusiveKind, IntegralRunSufficiency, IntegralRungClass,
     IntegralRungEvidence, IntegralRungKind, analyze_integral_direction,
@@ -117,6 +123,16 @@ fn integral_stroke_index(rung_index: u8, slot: u8) -> Option<u16> {
     u16::from(rung_index)
         .checked_mul(u16::from(INTEGRAL_SLOT_COUNT))
         .and_then(|base| base.checked_add(u16::from(slot)))
+}
+
+fn current_guard_error(error: VelocityCurrentGuardError) -> CommissionError {
+    match error {
+        VelocityCurrentGuardError::RegisterIo => CommissionError::Spi,
+        VelocityCurrentGuardError::InvalidLimit
+        | VelocityCurrentGuardError::ActionableStatus(_) => {
+            CommissionError::SafetyEnvelopeViolation
+        }
+    }
 }
 
 fn reset_rung(data: &mut VelocityIntegralData) {
@@ -501,7 +517,7 @@ fn moving_analysis(
         deficit_high_q: 0,
         disturbance: None,
         disturbance_variance_q2: 0,
-        predicted_torque_target_abs: data.peak_torque_target,
+        predicted_torque_target_abs: data.current_observer.moving_pid_output_peak(),
         usable_torque_limit: data.plan.usable_torque_limit,
         hard_torque_limit: data.plan.hard_torque_limit,
         initial_lead_in: data.rung_index == 0 && data.slot == 0,
@@ -659,6 +675,23 @@ pub(crate) async fn step_velocity_integral_with_trace<B: CommissioningBackend>(
                     return fail_integral(phase, backend, CommissionError::InvalidSchedule).await;
                 }
             };
+            let clamp_limit = match PidTorqueFluxLimit::new(u32::from(data.plan.hard_torque_limit))
+            {
+                Ok(limit) => limit,
+                Err(_) => {
+                    return fail_integral(phase, backend, CommissionError::InvalidSchedule).await;
+                }
+            };
+            if let Err(error) = begin_velocity_current_primitive(
+                &mut data.current_observer,
+                backend,
+                clamp_limit,
+                data.plan.limit_evidence_capability,
+            )
+            .await
+            {
+                return fail_integral(phase, backend, current_guard_error(error)).await;
+            }
             if backend
                 .write_register(PID_VELOCITY_TARGET, target as u32)
                 .await
@@ -680,7 +713,6 @@ pub(crate) async fn step_velocity_integral_with_trace<B: CommissioningBackend>(
             data.observations.clear();
             data.previous_encoder_raw = encoder_raw;
             data.previous_read_us = baseline_us;
-            data.peak_torque_target = 0;
             data.observation_current_headroom = false;
             *state = VelocityIntegralState::Capture {
                 next_sample_us,
@@ -725,25 +757,15 @@ pub(crate) async fn step_velocity_integral_with_trace<B: CommissioningBackend>(
                     return fail_integral_with_safety(phase, backend, fault).await;
                 }
             };
-            if backend
-                .write_register(
-                    INTERIM_PIDOUT_TARGET_TORQUE.addr,
-                    u32::from(INTERIM_PIDOUT_TARGET_TORQUE.sub_addr),
-                )
-                .await
-                .is_err()
-            {
-                return fail_integral(phase, backend, CommissionError::Spi).await;
-            }
-            let torque_target = match backend
-                .read_register(INTERIM_PIDOUT_TARGET_TORQUE.data)
-                .await
-            {
-                Ok(value) => (value as u16 as i16).unsigned_abs(),
-                Err(_) => return fail_integral(phase, backend, CommissionError::Spi).await,
+            let torque_target = match read_velocity_pid_output_abs(backend).await {
+                Ok(value) => value,
+                Err(error) => {
+                    return fail_integral(phase, backend, current_guard_error(error)).await;
+                }
             };
-            data.peak_torque_target = data.peak_torque_target.max(torque_target);
-            if data.peak_torque_target >= data.plan.hard_torque_limit {
+            data.current_observer.observe_moving_output(torque_target);
+            let moving_peak = data.current_observer.moving_pid_output_peak();
+            if moving_peak >= data.plan.hard_torque_limit {
                 let fault = safety.fault(OUTER_SAFETY_FAULT_CURRENT, 0, elapsed_us, 0, 0);
                 return fail_integral_with_safety(phase, backend, fault).await;
             }
@@ -773,8 +795,8 @@ pub(crate) async fn step_velocity_integral_with_trace<B: CommissioningBackend>(
                     elapsed_us: elapsed_us as u32,
                     stroke_index,
                     direction: integral_slot_direction(data.slot).unwrap_or(0) as i8,
-                    flags: u8::from(data.peak_torque_target >= data.plan.usable_torque_limit),
-                    peak_torque_target_abs: data.peak_torque_target,
+                    flags: u8::from(moving_peak >= data.plan.usable_torque_limit),
+                    peak_torque_target_abs: moving_peak,
                     velocity_diagnostic_value: 0,
                 },
             );
@@ -798,12 +820,25 @@ pub(crate) async fn step_velocity_integral_with_trace<B: CommissioningBackend>(
             }
         }
         VelocityIntegralState::CommandZero => {
+            let boundary =
+                finish_velocity_current_moving_phase(&mut data.current_observer, backend).await;
             if backend
                 .write_register(PID_VELOCITY_TARGET, 0)
                 .await
                 .is_err()
             {
                 return fail_integral(phase, backend, CommissionError::Spi).await;
+            }
+            if let Err(error) = boundary {
+                return fail_integral(phase, backend, current_guard_error(error)).await;
+            }
+            if matches!(
+                data.current_observer
+                    .evidence(VelocityCurrentZeroPhase::Braking),
+                Ok(evidence) if evidence.contact == VelocityCurrentContact::Moving
+            ) {
+                let fault = safety.fault(OUTER_SAFETY_FAULT_CURRENT, 0, 0, 0, 0);
+                return fail_integral_with_safety(phase, backend, fault).await;
             }
             *state = VelocityIntegralState::ClearSettleIntegrator {
                 settle_started_us: backend.elapsed_us(),
@@ -955,6 +990,18 @@ pub(crate) async fn step_velocity_integral_with_trace<B: CommissioningBackend>(
                     return fail_integral_with_safety(phase, backend, fault).await;
                 }
             };
+            let torque_target = match read_velocity_pid_output_abs(backend).await {
+                Ok(value) => value,
+                Err(error) => {
+                    return fail_integral(phase, backend, current_guard_error(error)).await;
+                }
+            };
+            data.current_observer.observe_zero_output(torque_target);
+            let zero_peak = data.current_observer.zero_pid_output_peak();
+            if zero_peak >= data.plan.hard_torque_limit {
+                let fault = safety.fault(OUTER_SAFETY_FAULT_CURRENT, 0, elapsed_us, 0, 0);
+                return fail_integral_with_safety(phase, backend, fault).await;
+            }
             data.settle_displacement_counts = i32::from(data.settle_displacement_counts)
                 .saturating_add(delta.signed_counts())
                 .clamp(-2, 2) as i8;
@@ -982,7 +1029,7 @@ pub(crate) async fn step_velocity_integral_with_trace<B: CommissioningBackend>(
                     stroke_index: SETTLE_TRACE_STROKE_MARKER | stroke_index,
                     direction: 0,
                     flags: 0,
-                    peak_torque_target_abs: 0,
+                    peak_torque_target_abs: zero_peak,
                     velocity_diagnostic_value: 0,
                 },
             );
@@ -1037,6 +1084,19 @@ pub(crate) async fn step_velocity_integral_with_trace<B: CommissioningBackend>(
                 }
                 Ok(None) => return StepResult::ReadyNow,
                 Err(error) => return fail_integral(phase, backend, error).await,
+            }
+            if let Err(error) =
+                finish_velocity_current_zero_phase(&mut data.current_observer, backend).await
+            {
+                return fail_integral(phase, backend, current_guard_error(error)).await;
+            }
+            if matches!(
+                data.current_observer
+                    .evidence(VelocityCurrentZeroPhase::Braking),
+                Ok(evidence) if evidence.contact != VelocityCurrentContact::None
+            ) {
+                let fault = safety.fault(OUTER_SAFETY_FAULT_CURRENT, 0, 0, 0, 0);
+                return fail_integral_with_safety(phase, backend, fault).await;
             }
             data.analysis.reset();
             data.observations.clear();
@@ -1112,6 +1172,20 @@ pub(crate) async fn step_velocity_integral_with_trace<B: CommissioningBackend>(
                                 .await;
                         }
                     };
+                    let clamp_limit =
+                        match PidTorqueFluxLimit::new(u32::from(data.plan.hard_torque_limit)) {
+                            Ok(limit) => limit,
+                            Err(_) => {
+                                return fail_integral(
+                                    phase,
+                                    backend,
+                                    CommissionError::InvalidSchedule,
+                                )
+                                .await;
+                            }
+                        };
+                    data.current_observer
+                        .reset(clamp_limit, data.plan.limit_evidence_capability);
                     let recovery = match RungOriginRecoveryRuntime::new(
                         RungOriginRecoveryConfig {
                             stage: RecoveryStage::Integral,
@@ -1150,6 +1224,7 @@ pub(crate) async fn step_velocity_integral_with_trace<B: CommissioningBackend>(
                 settle_displacement_counts: &mut data.settle_displacement_counts,
                 settle_min_displacement_counts: &mut data.settle_min_displacement_counts,
                 settle_max_displacement_counts: &mut data.settle_max_displacement_counts,
+                current_observer: &mut data.current_observer,
             };
             match step_rung_origin_recovery(runtime, &mut resources, backend).await {
                 RungOriginRecoveryStep::ReadyNow => StepResult::ReadyNow,

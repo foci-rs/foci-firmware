@@ -72,7 +72,7 @@ fn finish_moving_observation_analysis(
         .and_then(|value| value.checked_add(255))
         .map(|value| value / 256)
         .ok_or(CommissionError::InvalidSchedule)?
-        .max(u32::from(data.peak_torque_target))
+        .max(u32::from(data.current_observer.moving_pid_output_peak()))
         .min(u32::from(u16::MAX)) as u16;
 
     let mut input = VelocityObservationInput {

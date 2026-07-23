@@ -1,3 +1,7 @@
+use super::current_guard::{
+    VelocityCurrentContact, VelocityCurrentObserver, VelocityCurrentZeroPhase,
+    VelocityLimitEvidenceCapability,
+};
 use super::operating_region::{BoundRounding, CompactSignedRate};
 use super::recovery::{
     RecoveryBindingSource, RecoveryRateAuthority, RecoveryStage, RungOriginRecoveryConfig,
@@ -13,6 +17,7 @@ use crate::commissioning::outer::check_outer_safety;
 use crate::commissioning::outer::state::{VELOCITY_SWEEP_BLOCK_LEVELS, VelocityObservationRing};
 use crate::commissioning::outer::{OuterMotionBudget, OuterSafetyLimits, OuterSafetyTimingPhase};
 use crate::commissioning::types::OUTER_SAFETY_FAULT_RECOVERY_WRONG_WAY;
+use foci_tmc4671::current_limit::PidTorqueFluxLimit;
 use foci_tmc4671::pid::PidGain;
 use foci_tmc4671::registers::{PID_VELOCITY_P_VELOCITY_I, PID_VELOCITY_TARGET};
 
@@ -172,6 +177,7 @@ struct RecoveryFixture {
     displacement: i8,
     minimum: i8,
     maximum: i8,
+    current_observer: VelocityCurrentObserver,
     backend: MockBackend,
 }
 
@@ -209,6 +215,7 @@ impl RecoveryFixture {
             displacement: 0,
             minimum: 0,
             maximum: 0,
+            current_observer: operational_current_observer(),
             backend,
         }
     }
@@ -243,6 +250,7 @@ impl RecoveryFixture {
             settle_displacement_counts: &mut self.displacement,
             settle_min_displacement_counts: &mut self.minimum,
             settle_max_displacement_counts: &mut self.maximum,
+            current_observer: &mut self.current_observer,
         };
         pollster::block_on(step_rung_origin_recovery(
             &mut self.runtime,
@@ -267,6 +275,13 @@ impl RecoveryFixture {
 
 fn authority_rate(rate_q: i64) -> CompactSignedRate {
     CompactSignedRate::encode(rate_q, BoundRounding::TowardNegativeInfinity)
+}
+
+fn operational_current_observer() -> VelocityCurrentObserver {
+    VelocityCurrentObserver::new(
+        PidTorqueFluxLimit::new(2_816).unwrap(),
+        VelocityLimitEvidenceCapability::BestEffortPolling,
+    )
 }
 
 #[test]
@@ -383,6 +398,7 @@ fn recovery_controller_contained_paths_never_write_a_nonzero_target() {
         let mut displacement = 0;
         let mut minimum = 0;
         let mut maximum = 0;
+        let mut current_observer = operational_current_observer();
         let mut resources = RungOriginRecoveryResources {
             safety: &mut safety,
             observations: &mut observations,
@@ -391,6 +407,7 @@ fn recovery_controller_contained_paths_never_write_a_nonzero_target() {
             settle_displacement_counts: &mut displacement,
             settle_min_displacement_counts: &mut minimum,
             settle_max_displacement_counts: &mut maximum,
+            current_observer: &mut current_observer,
         };
         let mut backend = MockBackend::new();
         backend.current_limit_value = current_limit(2_816);
@@ -427,6 +444,7 @@ fn recovery_controller_uses_constant_signed_target_and_faults_wrong_way_growth()
     let mut displacement = 0;
     let mut minimum = 0;
     let mut maximum = 0;
+    let mut current_observer = operational_current_observer();
     let mut resources = RungOriginRecoveryResources {
         safety: &mut safety,
         observations: &mut observations,
@@ -435,6 +453,7 @@ fn recovery_controller_uses_constant_signed_target_and_faults_wrong_way_growth()
         settle_displacement_counts: &mut displacement,
         settle_min_displacement_counts: &mut minimum,
         settle_max_displacement_counts: &mut maximum,
+        current_observer: &mut current_observer,
     };
     let mut backend = MockBackend::new();
     backend.current_limit_value = current_limit(2_816);
@@ -535,6 +554,35 @@ fn recovery_controller_confirms_fixed_settle_and_reports_complete_geometry() {
     assert_eq!(report.peak_torque_target_abs, 100);
     assert!(fixture.safety.primitive_start_us.is_none());
     assert_eq!(fixture.observations.len(), 0);
+}
+
+#[test]
+fn recovery_current_observer_covers_motion_and_zero_target_settle() {
+    let mut fixture = RecoveryFixture::new(1_040, Some(14_000_000));
+    fixture.command_motion();
+    assert_eq!(
+        fixture.sample(1_000, 1_000),
+        RungOriginRecoveryStep::ReadyNow
+    );
+    assert!(matches!(fixture.step(), RungOriginRecoveryStep::At(2_000)));
+
+    let _ = fixture.backend.registers.insert(
+        foci_tmc4671::registers::INTERIM_PIDOUT_TARGET_TORQUE
+            .data
+            .addr(),
+        2_816,
+    );
+    assert_eq!(safety_fault(fixture.sample(2_000, 1_000)), 9);
+    assert_eq!(fixture.current_observer.moving_pid_output_peak(), 100);
+    assert_eq!(fixture.current_observer.zero_pid_output_peak(), 2_816);
+    assert_eq!(
+        fixture
+            .current_observer
+            .evidence(VelocityCurrentZeroPhase::Recovery)
+            .unwrap()
+            .contact,
+        VelocityCurrentContact::Recovery
+    );
 }
 
 #[test]

@@ -27,6 +27,8 @@ use crate::commissioning::types::OuterSafetyFault;
 use foci_tmc4671::pid::PidGain;
 
 #[cfg(feature = "trace-velocity-sweep")]
+use super::current_guard::VelocityCurrentObserver;
+#[cfg(feature = "trace-velocity-sweep")]
 use super::operating_region::CompactSignedRate;
 use super::sweep_plan::{MOVING_STROKE_US, SETTLE_ANALYSIS_BUDGET_US, ZERO_SETTLE_US};
 
@@ -257,7 +259,6 @@ pub(crate) struct RungOriginRecoveryRuntime {
     motion_started: bool,
     recovery_started_us: ExactU64Parts,
     zero_commanded_us: ExactU64Parts,
-    peak_torque_target_abs: u16,
     state: RecoveryState,
 }
 
@@ -348,7 +349,6 @@ impl RungOriginRecoveryRuntime {
             motion_started: false,
             recovery_started_us: ExactU64Parts::ZERO,
             zero_commanded_us: ExactU64Parts::ZERO,
-            peak_torque_target_abs: 0,
             state,
         })
     }
@@ -372,6 +372,7 @@ impl RungOriginRecoveryRuntime {
         binding_source: RecoveryBindingSource,
         final_offset_counts: i32,
         now_us: u64,
+        peak_torque_target_abs: u16,
     ) -> RungOriginRecoveryReport {
         let (moving_duration_us, settle_duration_us, total_duration_us) = if self.motion_started {
             (
@@ -402,7 +403,7 @@ impl RungOriginRecoveryRuntime {
             moving_duration_us,
             settle_duration_us,
             total_duration_us,
-            peak_torque_target_abs: self.peak_torque_target_abs,
+            peak_torque_target_abs,
             binding_source,
             outcome,
         }
@@ -419,6 +420,7 @@ pub(crate) struct RungOriginRecoveryResources<'a> {
     pub(crate) settle_displacement_counts: &'a mut i8,
     pub(crate) settle_min_displacement_counts: &'a mut i8,
     pub(crate) settle_max_displacement_counts: &'a mut i8,
+    pub(crate) current_observer: &'a mut VelocityCurrentObserver,
 }
 
 /// Derive the fixed origin band and nominal/maximum recovery slots.

@@ -14,13 +14,19 @@ use crate::commissioning::types::{
     VelocitySweepEvent, VelocitySweepObservation, VelocitySweepOutcome, VelocitySweepRungReport,
     VelocitySweepTerminal,
 };
+use foci_tmc4671::current_limit::PidTorqueFluxLimit;
 use foci_tmc4671::pid::PidGainPair;
 use foci_tmc4671::registers::{
     ABN_DECODER_COUNT, CONFIG_VELOCITY_METER_PPTM_MIN_POS_DEV, INTERIM_ACTUAL_VELOCITY_PPTM,
-    INTERIM_PIDOUT_TARGET_TORQUE, MODE_RAMP_MODE_MOTION, PID_ERROR_PID_VELOCITY_ERROR_SUM,
-    PID_TORQUE_FLUX_TARGET, PID_VELOCITY_ACTUAL, PID_VELOCITY_P_VELOCITY_I, PID_VELOCITY_TARGET,
+    MODE_RAMP_MODE_MOTION, PID_ERROR_PID_VELOCITY_ERROR_SUM, PID_TORQUE_FLUX_TARGET,
+    PID_VELOCITY_ACTUAL, PID_VELOCITY_P_VELOCITY_I, PID_VELOCITY_TARGET,
 };
 
+use super::current_guard::{
+    VelocityCurrentContact, VelocityCurrentGuardError, VelocityCurrentZeroPhase,
+    begin_velocity_current_primitive, finish_velocity_current_moving_phase,
+    finish_velocity_current_zero_phase, read_velocity_pid_output_abs,
+};
 use super::operating_region::{
     BoundRounding, CompactSignedRate, DirectionalRegionClosure, DirectionalRegionRef,
     DirectionalRegionSummary, JointOperableClosure, JointOperableRegion,
@@ -619,6 +625,22 @@ pub(crate) async fn step_velocity_sweep_with_trace<B: CommissioningBackend>(
                     return fail_sweep(phase, backend, CommissionError::InvalidSchedule).await;
                 }
             };
+            let clamp_limit = match PidTorqueFluxLimit::new(u32::from(plan.hard_torque_limit)) {
+                Ok(limit) => limit,
+                Err(_) => {
+                    return fail_sweep(phase, backend, CommissionError::InvalidSchedule).await;
+                }
+            };
+            if let Err(error) = begin_velocity_current_primitive(
+                &mut data.current_observer,
+                backend,
+                clamp_limit,
+                plan.limit_evidence_capability,
+            )
+            .await
+            {
+                return fail_sweep(phase, backend, current_guard_error(error)).await;
+            }
             if backend
                 .write_register(PID_VELOCITY_TARGET, target as u32)
                 .await
@@ -642,7 +664,6 @@ pub(crate) async fn step_velocity_sweep_with_trace<B: CommissioningBackend>(
             data.settle_displacement_counts = 0;
             data.settle_min_displacement_counts = 0;
             data.settle_max_displacement_counts = 0;
-            data.peak_torque_target = 0;
             *state = VelocitySweepState::Capture {
                 next_sample_us,
                 deadline_us,
@@ -699,25 +720,13 @@ pub(crate) async fn step_velocity_sweep_with_trace<B: CommissioningBackend>(
             } else {
                 None
             };
-            if backend
-                .write_register(
-                    INTERIM_PIDOUT_TARGET_TORQUE.addr,
-                    u32::from(INTERIM_PIDOUT_TARGET_TORQUE.sub_addr),
-                )
-                .await
-                .is_err()
-            {
-                return fail_sweep(phase, backend, CommissionError::Spi).await;
-            }
-            let torque_target = match backend
-                .read_register(INTERIM_PIDOUT_TARGET_TORQUE.data)
-                .await
-            {
-                Ok(value) => (value as u16 as i16).unsigned_abs(),
-                Err(_) => return fail_sweep(phase, backend, CommissionError::Spi).await,
+            let torque_target = match read_velocity_pid_output_abs(backend).await {
+                Ok(value) => value,
+                Err(error) => return fail_sweep(phase, backend, current_guard_error(error)).await,
             };
-            data.peak_torque_target = data.peak_torque_target.max(torque_target);
-            if data.peak_torque_target >= plan_hard_limit(data) {
+            data.current_observer.observe_moving_output(torque_target);
+            let moving_peak = data.current_observer.moving_pid_output_peak();
+            if moving_peak >= plan_hard_limit(data) {
                 let fault = safety.fault(OUTER_SAFETY_FAULT_CURRENT, 0, elapsed_us, 0, 0);
                 return fail_sweep_with_safety(phase, backend, fault).await;
             }
@@ -774,9 +783,8 @@ pub(crate) async fn step_velocity_sweep_with_trace<B: CommissioningBackend>(
                     elapsed_us: elapsed_us as u32,
                     stroke_index,
                     direction: slot_direction(data.slot) as i8,
-                    flags: u8::from(data.peak_torque_target >= plan_usable_limit(data))
-                        | diagnostic_flag,
-                    peak_torque_target_abs: data.peak_torque_target,
+                    flags: u8::from(moving_peak >= plan_usable_limit(data)) | diagnostic_flag,
+                    peak_torque_target_abs: moving_peak,
                     velocity_diagnostic_value,
                 },
             );
@@ -800,12 +808,25 @@ pub(crate) async fn step_velocity_sweep_with_trace<B: CommissioningBackend>(
             }
         }
         VelocitySweepState::CommandZero => {
+            let boundary =
+                finish_velocity_current_moving_phase(&mut data.current_observer, backend).await;
             if backend
                 .write_register(PID_VELOCITY_TARGET, 0)
                 .await
                 .is_err()
             {
                 return fail_sweep(phase, backend, CommissionError::Spi).await;
+            }
+            if let Err(error) = boundary {
+                return fail_sweep(phase, backend, current_guard_error(error)).await;
+            }
+            if matches!(
+                data.current_observer
+                    .evidence(VelocityCurrentZeroPhase::Braking),
+                Ok(evidence) if evidence.contact == VelocityCurrentContact::Moving
+            ) {
+                let fault = safety.fault(OUTER_SAFETY_FAULT_CURRENT, 0, 0, 0, 0);
+                return fail_sweep_with_safety(phase, backend, fault).await;
             }
             *state = VelocitySweepState::ClearSettleIntegrator {
                 settle_started_us: backend.elapsed_us(),
@@ -974,6 +995,16 @@ pub(crate) async fn step_velocity_sweep_with_trace<B: CommissioningBackend>(
                     return fail_sweep_with_safety(phase, backend, fault).await;
                 }
             };
+            let torque_target = match read_velocity_pid_output_abs(backend).await {
+                Ok(value) => value,
+                Err(error) => return fail_sweep(phase, backend, current_guard_error(error)).await,
+            };
+            data.current_observer.observe_zero_output(torque_target);
+            let zero_peak = data.current_observer.zero_pid_output_peak();
+            if zero_peak >= plan_hard_limit(data) {
+                let fault = safety.fault(OUTER_SAFETY_FAULT_CURRENT, 0, elapsed_us, 0, 0);
+                return fail_sweep_with_safety(phase, backend, fault).await;
+            }
             data.settle_displacement_counts = i32::from(data.settle_displacement_counts)
                 .saturating_add(delta.signed_counts())
                 .clamp(-2, 2) as i8;
@@ -1001,7 +1032,7 @@ pub(crate) async fn step_velocity_sweep_with_trace<B: CommissioningBackend>(
                     stroke_index: SETTLE_TRACE_STROKE_MARKER | stroke_index,
                     direction: 0,
                     flags: 0,
-                    peak_torque_target_abs: 0,
+                    peak_torque_target_abs: zero_peak,
                     velocity_diagnostic_value: 0,
                 },
             );
@@ -1048,6 +1079,19 @@ pub(crate) async fn step_velocity_sweep_with_trace<B: CommissioningBackend>(
                 }
                 Ok(None) => return StepResult::ReadyNow,
                 Err(error) => return fail_sweep(phase, backend, error).await,
+            }
+            if let Err(error) =
+                finish_velocity_current_zero_phase(&mut data.current_observer, backend).await
+            {
+                return fail_sweep(phase, backend, current_guard_error(error)).await;
+            }
+            if matches!(
+                data.current_observer
+                    .evidence(VelocityCurrentZeroPhase::Braking),
+                Ok(evidence) if evidence.contact != VelocityCurrentContact::None
+            ) {
+                let fault = safety.fault(OUTER_SAFETY_FAULT_CURRENT, 0, 0, 0, 0);
+                return fail_sweep_with_safety(phase, backend, fault).await;
             }
             data.analysis.reset();
             data.observations.clear();
@@ -1367,6 +1411,14 @@ pub(crate) async fn step_velocity_sweep_with_trace<B: CommissioningBackend>(
                 } else {
                     recovery_authorities[1]
                 };
+                let clamp_limit = match PidTorqueFluxLimit::new(u32::from(plan.hard_torque_limit)) {
+                    Ok(limit) => limit,
+                    Err(_) => {
+                        return fail_sweep(phase, backend, CommissionError::InvalidSchedule).await;
+                    }
+                };
+                data.current_observer
+                    .reset(clamp_limit, plan.limit_evidence_capability);
                 let runtime = match RungOriginRecoveryRuntime::new(
                     RungOriginRecoveryConfig {
                         stage: RecoveryStage::Proportional,
@@ -1408,6 +1460,7 @@ pub(crate) async fn step_velocity_sweep_with_trace<B: CommissioningBackend>(
                 settle_displacement_counts: &mut data.settle_displacement_counts,
                 settle_min_displacement_counts: &mut data.settle_min_displacement_counts,
                 settle_max_displacement_counts: &mut data.settle_max_displacement_counts,
+                current_observer: &mut data.current_observer,
             };
             match step_rung_origin_recovery(runtime, &mut resources, backend).await {
                 RungOriginRecoveryStep::ReadyNow => StepResult::ReadyNow,
@@ -1608,6 +1661,16 @@ fn plan_usable_limit(data: &super::super::VelocitySweepData) -> u16 {
 
 fn plan_hard_limit(data: &super::super::VelocitySweepData) -> u16 {
     data.plan.hard_torque_limit
+}
+
+fn current_guard_error(error: VelocityCurrentGuardError) -> CommissionError {
+    match error {
+        VelocityCurrentGuardError::RegisterIo => CommissionError::Spi,
+        VelocityCurrentGuardError::InvalidLimit
+        | VelocityCurrentGuardError::ActionableStatus(_) => {
+            CommissionError::SafetyEnvelopeViolation
+        }
+    }
 }
 
 fn observe_directional_rung_for_sweep(
@@ -2684,7 +2747,9 @@ mod tests {
         backend.set_abn_decoder_count(encoder_count);
         enter_first_capture(phase, backend);
         let _ = backend.registers.insert(
-            INTERIM_PIDOUT_TARGET_TORQUE.data.addr(),
+            foci_tmc4671::registers::INTERIM_PIDOUT_TARGET_TORQUE
+                .data
+                .addr(),
             u32::from(torque_target_abs),
         );
         for sample in 1..=u64::from(MOVING_STROKE_US / 1_000) {
@@ -2900,15 +2965,13 @@ mod tests {
     fn sweep_recovery_follows_one_rung_without_changing_its_evidence() {
         let mut phase = phase();
         let mut backend = MockBackend::new();
-        backend.current_limit_value = current_limit(2_448);
+        backend.current_limit_value = current_limit(i16::MAX as u32);
         let plan_event =
             pollster::block_on(step_velocity_sweep_with_trace(&mut phase, &mut backend));
         let OuterPhase::VelocitySweep { data, .. } = &mut phase else {
             panic!("velocity sweep should remain active");
         };
         data.plan.rung_count = 1;
-        data.plan.hard_torque_limit = u16::MAX;
-        data.plan.usable_torque_limit = u16::MAX;
 
         let StepResult::VelocitySweepEvent(VelocitySweepEvent::Planned(plan_report)) = plan_event
         else {
@@ -3086,7 +3149,8 @@ mod tests {
         );
         assert_eq!(
             backend.velocity_controller_output_selects,
-            usize::from(SWEEP_SLOT_COUNT) * moving_samples
+            usize::from(SWEEP_SLOT_COUNT)
+                * (moving_samples + usize::try_from(ZERO_SETTLE_US / 1_000).unwrap())
         );
         assert_eq!(
             backend.pid_velocity_error_sum_clears,

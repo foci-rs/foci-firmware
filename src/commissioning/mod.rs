@@ -1428,7 +1428,7 @@ mod tests {
             assert_eq!(size_of::<TraceSummarySeqs>(), 16);
             assert_eq!(
                 size_of::<crate::commissioning::outer::VelocityIntegralData>(),
-                2_480
+                2_496
             );
             assert!(
                 size_of::<
@@ -1443,9 +1443,9 @@ mod tests {
             );
             assert_eq!(
                 size_of::<crate::commissioning::outer::VelocitySweepData>(),
-                2_864
+                2_880
             );
-            assert_eq!(size_of::<CommissioningEngine>(), 4_512);
+            assert_eq!(size_of::<CommissioningEngine>(), 4_528);
         }
         assert!(size_of::<CommissioningEngine>() <= 4_528);
         assert!(size_of::<CommissioningEngine>() <= 6_144);
