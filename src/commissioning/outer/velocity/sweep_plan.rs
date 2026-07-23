@@ -1,7 +1,9 @@
 use crate::autotune::TmcMechanicalRpm;
+use foci_tmc4671::current_limit::PidTorqueFluxLimit;
 use foci_tmc4671::pid::PidGain;
 use heapless::Vec;
 
+use super::current_guard::{VelocityLimitEvidenceCapability, derive_probe_limit};
 use super::recovery::{RungOriginRecoveryPlanError, plan_rung_origin_recovery};
 
 /// Numerator of the runtime velocity-envelope proportional margin.
@@ -145,6 +147,8 @@ pub struct VelocitySweepPlan {
     pub hard_torque_limit: u16,
     /// Inclusive nine-tenths torque-target boundary.
     pub usable_torque_limit: u16,
+    /// Available authority for proving absence of transient clamp contact.
+    pub(crate) limit_evidence_capability: VelocityLimitEvidenceCapability,
 }
 
 /// Compact immutable plan retained after the complete pre-motion report is emitted.
@@ -168,6 +172,8 @@ pub struct VelocitySweepExecutionPlan {
     pub hard_torque_limit: u16,
     /// Inclusive usable torque-target boundary.
     pub usable_torque_limit: u16,
+    /// Available authority for proving absence of transient clamp contact.
+    pub(crate) limit_evidence_capability: VelocityLimitEvidenceCapability,
 }
 
 impl VelocitySweepExecutionPlan {
@@ -182,6 +188,7 @@ impl VelocitySweepExecutionPlan {
         observations_per_direction: 0,
         hard_torque_limit: 0,
         usable_torque_limit: 0,
+        limit_evidence_capability: VelocityLimitEvidenceCapability::BestEffortPolling,
     };
 
     /// Whether command admission has installed a usable plan.
@@ -264,6 +271,7 @@ impl VelocitySweepPlan {
         hash_value!(self.positive_position_headroom_mrev);
         hash_value!(self.hard_torque_limit);
         hash_value!(self.usable_torque_limit);
+        hash_value!(self.limit_evidence_capability as u8);
         hash
     }
 
@@ -279,6 +287,7 @@ impl VelocitySweepPlan {
             observations_per_direction: self.observations_per_direction,
             hard_torque_limit: self.hard_torque_limit,
             usable_torque_limit: self.usable_torque_limit,
+            limit_evidence_capability: self.limit_evidence_capability,
         }
     }
 
@@ -485,6 +494,7 @@ pub fn plan_velocity_sweep(
         positive_position_headroom_mrev: request.positive_position_headroom_mrev,
         hard_torque_limit: torque_flux_limit,
         usable_torque_limit,
+        limit_evidence_capability: VelocityLimitEvidenceCapability::BestEffortPolling,
     })
 }
 
@@ -557,16 +567,16 @@ fn current_gain_span(
     hard_torque_limit: u16,
 ) -> Result<(PidGain, PidGain, u16), VelocityPlanError> {
     let target = target_velocity_rpm.raw().unsigned_abs();
-    if target == 0 || hard_torque_limit == 0 {
+    if target == 0 {
         return Err(VelocityPlanError::InvalidRequest);
     }
-    let usable = u32::from(hard_torque_limit)
-        .checked_mul(CURRENT_HEADROOM_NUM)
-        .ok_or(VelocityPlanError::Arithmetic)?
-        / CURRENT_HEADROOM_DEN;
-    if usable == 0 {
-        return Err(VelocityPlanError::InsufficientStructuralSpan);
-    }
+    let operational_limit = PidTorqueFluxLimit::new(u32::from(hard_torque_limit))
+        .map_err(|_| VelocityPlanError::InvalidRequest)?;
+    let usable = u32::from(
+        derive_probe_limit(operational_limit)
+            .map_err(|_| VelocityPlanError::InsufficientStructuralSpan)?
+            .raw(),
+    );
     let p_start_raw = VELOCITY_P_DIVISOR.div_ceil(target);
     let p_top_raw = VELOCITY_P_DIVISOR
         .checked_mul(usable)

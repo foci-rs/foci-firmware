@@ -1,3 +1,4 @@
+use super::current_guard::VelocityLimitEvidenceCapability;
 use super::integral_plan::VelocityIntegralExecutionPlan;
 use super::integral_sweep::{
     INTEGRAL_SLOT_COUNT, advance_integral_cursor, apply_integral_current_headroom,
@@ -39,6 +40,7 @@ fn plan() -> VelocityIntegralExecutionPlan {
         recovery_slot_count: 7,
         hard_torque_limit: 2_816,
         usable_torque_limit: 2_534,
+        limit_evidence_capability: VelocityLimitEvidenceCapability::BestEffortPolling,
     }
 }
 

@@ -51,7 +51,7 @@ fn compare(
 fn reproduction_fnv_vectors_and_build_revision_are_stable() {
     assert_eq!(const_fnv1a32(b""), 0x811c_9dc5);
     assert_eq!(const_fnv1a32(b"a"), 0xe40c_292c);
-    assert_eq!(STAGE_B_EVIDENCE_SCHEMA_REVISION, 6);
+    assert_eq!(STAGE_B_EVIDENCE_SCHEMA_REVISION, 7);
     assert_ne!(STAGE_B_BUILD_REVISION, 0);
 }
 
@@ -304,10 +304,10 @@ fn reproduction_rejects_schema_five_candidate_before_motion() {
         requested: requested_identity,
     }) = slot.preflight(requested)
     else {
-        panic!("schema-5 evidence must not compare with schema 6")
+        panic!("schema-5 evidence must not compare with schema 7")
     };
     assert_eq!(retained_identity.schema_revision, 5);
-    assert_eq!(requested_identity.schema_revision, 6);
+    assert_eq!(requested_identity.schema_revision, 7);
     assert_eq!(slot.candidate(), Some(retained));
 }
 

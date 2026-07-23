@@ -1,5 +1,8 @@
 //! Velocity-loop commissioning phases.
 
+pub(crate) mod current_guard;
+#[cfg(test)]
+mod current_guard_tests;
 pub mod integral_evidence;
 #[cfg(test)]
 mod integral_evidence_tests;

@@ -4,6 +4,7 @@ use heapless::Vec;
 
 use crate::commissioning::outer::{OUTER_MAX_VELOCITY_I, OuterMotionBudget};
 
+use super::current_guard::VelocityLimitEvidenceCapability;
 use super::recovery::{RungOriginRecoveryPlanError, plan_rung_origin_recovery};
 use super::reproduction::STAGE_B_BUILD_REVISION;
 use super::sweep_plan::{
@@ -12,7 +13,7 @@ use super::sweep_plan::{
 };
 
 /// Evidence schema stored in the RAM-only Stage-C candidate slot.
-pub const STAGE_C_EVIDENCE_SCHEMA_REVISION: u16 = 2;
+pub const STAGE_C_EVIDENCE_SCHEMA_REVISION: u16 = 3;
 /// Largest predeclared positive-I ladder accepted by the family-128 table.
 pub const STAGE_C_MAX_POSITIVE_RUNGS: usize = 30;
 /// Independent observations collected in one direction at every Stage-C rung.
@@ -171,6 +172,8 @@ pub struct VelocityIntegralPlan {
     pub hard_torque_limit: u16,
     /// Inclusive usable torque-target boundary.
     pub usable_torque_limit: u16,
+    /// Available authority for proving absence of transient clamp contact.
+    pub(crate) limit_evidence_capability: VelocityLimitEvidenceCapability,
     /// Complete motion/travel request retained for plan identity.
     pub motion_request: VelocitySweepRequest,
 }
@@ -226,6 +229,7 @@ impl VelocityIntegralPlan {
         hash_value!(self.recovery_slot_count);
         hash_value!(self.hard_torque_limit);
         hash_value!(self.usable_torque_limit);
+        hash_value!(self.limit_evidence_capability as u8);
         hash_value!(self.motion_request.requested_velocity_mrev_s);
         hash_value!(self.motion_request.machine_velocity_ceiling_mrev_s);
         hash_value!(self.motion_request.requested_velocity_source as u8);
@@ -259,6 +263,7 @@ impl VelocityIntegralPlan {
             recovery_slot_count: self.recovery_slot_count,
             hard_torque_limit: self.hard_torque_limit,
             usable_torque_limit: self.usable_torque_limit,
+            limit_evidence_capability: self.limit_evidence_capability,
         }
     }
 }
@@ -304,7 +309,11 @@ pub struct VelocityIntegralExecutionPlan {
     pub hard_torque_limit: u16,
     /// Inclusive usable torque-target boundary.
     pub usable_torque_limit: u16,
+    /// Available authority for proving absence of transient clamp contact.
+    pub(crate) limit_evidence_capability: VelocityLimitEvidenceCapability,
 }
+
+const _: () = assert!(core::mem::size_of::<VelocityIntegralExecutionPlan>() == 72);
 
 /// Failure to construct a deterministic Stage-C plan before motion.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
@@ -550,6 +559,7 @@ pub(crate) fn plan_velocity_integral_response(
         recovery_slot_count: total_rung_count,
         hard_torque_limit: stage_b_plan.hard_torque_limit,
         usable_torque_limit: stage_b_plan.usable_torque_limit,
+        limit_evidence_capability: stage_b_plan.limit_evidence_capability,
         motion_request,
     })
 }
