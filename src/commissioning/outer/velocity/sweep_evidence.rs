@@ -369,7 +369,7 @@ impl CollectedRungEvidence {
         Ok(())
     }
 
-    #[cfg(feature = "trace-velocity-sweep")]
+    #[cfg(any(test, feature = "trace-velocity-sweep"))]
     pub(crate) fn structured_recovery_rate(
         &self,
         direction: VelocityDirection,

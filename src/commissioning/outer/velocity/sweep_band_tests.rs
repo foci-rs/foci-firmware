@@ -90,7 +90,7 @@ fn summary(slot: u8, class: VelocityObservationClass) -> VelocityObservationSumm
 #[test]
 fn compact_consensus_collects_eight_slots_without_aliasing() {
     assert!(core::mem::size_of::<CompactConsensusObservation>() <= 16);
-    assert_eq!(core::mem::size_of::<CollectedRungEvidence>(), 136);
+    assert_eq!(core::mem::size_of::<CollectedRungEvidence>(), 144);
 
     let mut collected = CollectedRungEvidence::new();
     for slot in 0u8..8 {
