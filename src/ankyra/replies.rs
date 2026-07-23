@@ -2145,6 +2145,88 @@ pub struct FociVelocityPrimitiveCurrentEvidence {
     pub contact: u8,
 }
 
+/// Fixed stimulus for the velocity-limit latch test.
+#[klipper_reply]
+pub struct FociVelocityLimitLatchCore {
+    /// Endpoint object id.
+    pub oid: u8,
+    /// Diagnostic status code.
+    pub status: u8,
+    /// Temporary velocity-output clamp.
+    pub test_limit: u16,
+    /// Velocity proportional gain.
+    pub p_raw: u16,
+    /// Velocity integral gain.
+    pub i_raw: u16,
+    /// Signed velocity target in the TMC4671 RPM domain.
+    pub target_velocity_rpm: i32,
+    /// Verified clamp readback.
+    pub limit_readback: u32,
+    /// Verified gain-register readback.
+    pub gains_readback: u32,
+    /// Verified signed target readback.
+    pub target_readback: i32,
+    /// Whether the board containment hook physically disarmed the channel.
+    pub power_stage_tripped: u8,
+}
+
+/// Timing and displacement for the velocity-limit latch test.
+#[klipper_reply]
+pub struct FociVelocityLimitLatchMotion {
+    /// Endpoint object id.
+    pub oid: u8,
+    /// Measured target-active interval.
+    pub pulse_elapsed_us: u32,
+    /// Measured persistence interval.
+    pub delayed_read_elapsed_us: u32,
+    /// ABN count before the stimulus.
+    pub encoder_before: u32,
+    /// ABN count after the delayed read.
+    pub encoder_after: u32,
+    /// Signed diagnostic displacement.
+    pub encoder_delta: i32,
+}
+
+/// Full status snapshots for the velocity-limit latch test.
+#[klipper_reply]
+pub struct FociVelocityLimitLatchFlags {
+    /// Endpoint object id.
+    pub oid: u8,
+    /// Status sampled before commanding zero.
+    pub active_status_flags: u32,
+    /// Status sampled immediately after commanding zero.
+    pub post_pulse_status_flags: u32,
+    /// Status sampled after the persistence interval.
+    pub delayed_status_flags: u32,
+    /// Status sampled after explicit reset.
+    pub post_clear_status_flags: u32,
+}
+
+/// Saved and restored register evidence for the velocity-limit latch test.
+#[klipper_reply]
+pub struct FociVelocityLimitLatchRestore {
+    /// Endpoint object id.
+    pub oid: u8,
+    /// Saved operational current-limit word.
+    pub saved_limit: u32,
+    /// Saved velocity-gain word.
+    pub saved_gains: u32,
+    /// Saved signed velocity target.
+    pub saved_target: i32,
+    /// Saved motion-mode word.
+    pub saved_mode: u32,
+    /// Restored current-limit readback.
+    pub restored_limit_readback: u32,
+    /// Restored velocity-gain readback.
+    pub restored_gains_readback: u32,
+    /// Restored signed velocity-target readback.
+    pub restored_target_readback: i32,
+    /// Restored motion-mode readback.
+    pub restored_mode_readback: u32,
+    /// Exact restoration-success mask.
+    pub restore_verified_mask: u8,
+}
+
 /// Core identity and exact selected-suffix totals for one observation.
 #[klipper_reply]
 pub struct FociVelocityObservationCore {
@@ -3693,6 +3775,61 @@ mod velocity_sweep_reply_tests {
                 contact: u8::MAX,
             },
             "velocity_primitive_current_evidence",
+        );
+    }
+
+    #[test]
+    fn velocity_limit_latch_fragments_fit_transport() {
+        assert_fits(
+            &FociVelocityLimitLatchCore {
+                oid: u8::MAX,
+                status: u8::MAX,
+                test_limit: u16::MAX,
+                p_raw: u16::MAX,
+                i_raw: u16::MAX,
+                target_velocity_rpm: i32::MAX,
+                limit_readback: WIDE_U32,
+                gains_readback: WIDE_U32,
+                target_readback: i32::MIN,
+                power_stage_tripped: u8::MAX,
+            },
+            "velocity_limit_latch_core",
+        );
+        assert_fits(
+            &FociVelocityLimitLatchMotion {
+                oid: u8::MAX,
+                pulse_elapsed_us: WIDE_U32,
+                delayed_read_elapsed_us: WIDE_U32,
+                encoder_before: WIDE_U32,
+                encoder_after: WIDE_U32,
+                encoder_delta: i32::MIN,
+            },
+            "velocity_limit_latch_motion",
+        );
+        assert_fits(
+            &FociVelocityLimitLatchFlags {
+                oid: u8::MAX,
+                active_status_flags: WIDE_U32,
+                post_pulse_status_flags: WIDE_U32,
+                delayed_status_flags: WIDE_U32,
+                post_clear_status_flags: WIDE_U32,
+            },
+            "velocity_limit_latch_flags",
+        );
+        assert_fits(
+            &FociVelocityLimitLatchRestore {
+                oid: u8::MAX,
+                saved_limit: WIDE_U32,
+                saved_gains: WIDE_U32,
+                saved_target: i32::MIN,
+                saved_mode: WIDE_U32,
+                restored_limit_readback: WIDE_U32,
+                restored_gains_readback: WIDE_U32,
+                restored_target_readback: i32::MIN,
+                restored_mode_readback: WIDE_U32,
+                restore_verified_mask: u8::MAX,
+            },
+            "velocity_limit_latch_restore",
         );
     }
 

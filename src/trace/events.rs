@@ -99,6 +99,8 @@ pub const EVENT_COMMISSION_RESTORE_DISPOSITION: u16 = 142;
 pub const EVENT_COMMISSION_RUNG_ORIGIN_RECOVERY: u16 = 143;
 /// Final command-lifetime outer-safety observation-gap summary marker.
 pub const EVENT_COMMISSION_OUTER_SAFETY_TIMING: u16 = 144;
+/// Focused velocity-output-limit persistence diagnostic.
+pub const EVENT_COMMISSION_VELOCITY_LIMIT_LATCH_TEST: u16 = 145;
 
 /// Single-frame commissioning diagnostic warning event.
 pub const EVENT_COMMISSION_DIAGNOSTIC_WARNING: u16 = 200;
@@ -217,6 +219,7 @@ mod tests {
         assert_eq!(EVENT_COMMISSION_VELOCITY_INTEGRAL_TERMINAL, 138);
         assert_eq!(EVENT_COMMISSION_VELOCITY_INTEGRAL_COMPLETE, 139);
         assert_eq!(EVENT_COMMISSION_RESTORE_RESULT, 140);
+        assert_eq!(EVENT_COMMISSION_VELOCITY_LIMIT_LATCH_TEST, 145);
         assert_eq!(EVENT_COMMISSION_DIAGNOSTIC_WARNING, 200);
     }
 
