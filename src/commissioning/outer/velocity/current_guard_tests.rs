@@ -1,8 +1,9 @@
 use foci_tmc4671::current_limit::PidTorqueFluxLimit;
 
 use super::current_guard::{
-    VelocityCurrentClampSession, VelocityCurrentContact, VelocityCurrentZeroPhase,
-    VelocityLimitEvidenceCapability, classify_phase_evidence, derive_probe_limit,
+    VelocityCurrentClampSession, VelocityCurrentContact, VelocityCurrentObserver,
+    VelocityCurrentZeroPhase, VelocityLimitEvidenceCapability, classify_phase_evidence,
+    derive_probe_limit,
 };
 use super::integral_plan::{
     STAGE_C_EVIDENCE_SCHEMA_REVISION, StageCAuthority, plan_velocity_integral_response,
@@ -294,4 +295,72 @@ fn velocity_current_clamp_session() {
             assert!(VelocityCurrentClampSession::try_new(invalid).is_err());
         }
     });
+}
+
+#[test]
+fn velocity_current_observer_attributes_phases() {
+    let limit = PidTorqueFluxLimit::new(2_816).unwrap();
+    let mut observer =
+        VelocityCurrentObserver::new(limit, VelocityLimitEvidenceCapability::LatchedFlag);
+
+    for peak in [100, 2_815, 800] {
+        observer.observe_moving_output(peak);
+    }
+    observer.observe_moving_flags((1 << 3) | (1 << 26));
+    observer.observe_zero_output(2_000);
+    observer.observe_zero_flags(1 << 15);
+    let clear = observer
+        .evidence(VelocityCurrentZeroPhase::Braking)
+        .unwrap();
+    assert_eq!(clear.contact, VelocityCurrentContact::None);
+    assert_eq!(clear.moving_pid_output_peak, 2_815);
+    assert_eq!(clear.zero_pid_output_peak, 2_000);
+    assert_eq!(clear.moving_status_flags, (1 << 3) | (1 << 26));
+    assert_eq!(clear.zero_status_flags, 1 << 15);
+    assert!(clear.moving_clip_absence_proven());
+
+    for contact_index in 0..3 {
+        observer.reset(limit, VelocityLimitEvidenceCapability::LatchedFlag);
+        for (index, peak) in [100, 200, 300].into_iter().enumerate() {
+            observer.observe_moving_output(if index == contact_index {
+                limit.raw()
+            } else {
+                peak
+            });
+        }
+        assert_eq!(
+            observer
+                .evidence(VelocityCurrentZeroPhase::Braking)
+                .unwrap()
+                .contact,
+            VelocityCurrentContact::Moving
+        );
+    }
+
+    observer.reset(limit, VelocityLimitEvidenceCapability::LatchedFlag);
+    observer.observe_moving_output(2_815);
+    observer.observe_zero_flags(PID_V_OUTPUT_LIMIT | (1 << 15));
+    let braking = observer
+        .evidence(VelocityCurrentZeroPhase::Braking)
+        .unwrap();
+    assert_eq!(braking.contact, VelocityCurrentContact::Braking);
+    assert_eq!(braking.zero_status_flags, PID_V_OUTPUT_LIMIT | (1 << 15));
+
+    observer.reset(limit, VelocityLimitEvidenceCapability::LatchedFlag);
+    observer.observe_zero_output(limit.raw());
+    assert_eq!(
+        observer
+            .evidence(VelocityCurrentZeroPhase::Recovery)
+            .unwrap()
+            .contact,
+        VelocityCurrentContact::Recovery
+    );
+
+    observer.reset(limit, VelocityLimitEvidenceCapability::BestEffortPolling);
+    observer.observe_moving_output(2_815);
+    let best_effort = observer
+        .evidence(VelocityCurrentZeroPhase::Braking)
+        .unwrap();
+    assert_eq!(best_effort.contact, VelocityCurrentContact::None);
+    assert!(best_effort.moving_clip_uncertain());
 }

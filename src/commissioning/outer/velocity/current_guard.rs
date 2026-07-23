@@ -1,7 +1,7 @@
 //! Shared velocity-current prevention and evidence classification.
 #![cfg_attr(not(test), allow(dead_code))]
 
-use foci_tmc4671::registers::PID_TORQUE_FLUX_LIMITS;
+use foci_tmc4671::registers::{INTERIM_PIDOUT_TARGET_TORQUE, PID_TORQUE_FLUX_LIMITS, STATUS_FLAGS};
 use foci_tmc4671::{current_limit::PidTorqueFluxLimit, registers::StatusFlags};
 
 use super::sweep_plan::{CURRENT_HEADROOM_DEN, CURRENT_HEADROOM_NUM};
@@ -77,7 +77,14 @@ impl VelocityCurrentPhaseEvidence {
 
 /// Invalid operational current limit for a nonzero commissioning clamp.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
-pub(crate) struct VelocityCurrentGuardError;
+pub(crate) enum VelocityCurrentGuardError {
+    /// A configured limit cannot represent a nonzero commissioning clamp.
+    InvalidLimit,
+    /// A register read, write, or verified write failed.
+    RegisterIo,
+    /// A non-velocity status bit requires the existing fail-closed consequence.
+    ActionableStatus(u32),
+}
 
 /// Derive the exact nine-tenths probe limit from the operational limit.
 pub(crate) fn derive_probe_limit(
@@ -86,11 +93,120 @@ pub(crate) fn derive_probe_limit(
     let probe_raw =
         u32::from(operational_limit.raw()) * CURRENT_HEADROOM_NUM / CURRENT_HEADROOM_DEN;
     if probe_raw == 0 {
-        return Err(VelocityCurrentGuardError);
+        return Err(VelocityCurrentGuardError::InvalidLimit);
     }
 
-    PidTorqueFluxLimit::new(probe_raw).map_err(|_| VelocityCurrentGuardError)
+    PidTorqueFluxLimit::new(probe_raw).map_err(|_| VelocityCurrentGuardError::InvalidLimit)
 }
+
+/// Primitive-wide accumulator for velocity-output peaks and status flags.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+pub(crate) struct VelocityCurrentObserver {
+    moving_status_flags: u32,
+    zero_status_flags: u32,
+    clamp_limit: u16,
+    moving_pid_output_peak: u16,
+    zero_pid_output_peak: u16,
+    capability: VelocityLimitEvidenceCapability,
+}
+
+impl VelocityCurrentObserver {
+    /// Empty sentinel used before command admission installs a valid plan.
+    pub(crate) const EMPTY: Self = Self::new(
+        PidTorqueFluxLimit::ZERO,
+        VelocityLimitEvidenceCapability::BestEffortPolling,
+    );
+
+    /// Start an empty observer under one fixed clamp and evidence capability.
+    pub(crate) const fn new(
+        clamp_limit: PidTorqueFluxLimit,
+        capability: VelocityLimitEvidenceCapability,
+    ) -> Self {
+        Self {
+            moving_status_flags: 0,
+            zero_status_flags: 0,
+            clamp_limit: clamp_limit.raw(),
+            moving_pid_output_peak: 0,
+            zero_pid_output_peak: 0,
+            capability,
+        }
+    }
+
+    /// Clear phase evidence before the next signed-plus-zero primitive.
+    pub(crate) fn reset(
+        &mut self,
+        clamp_limit: PidTorqueFluxLimit,
+        capability: VelocityLimitEvidenceCapability,
+    ) {
+        *self = Self::new(clamp_limit, capability);
+    }
+
+    /// Clear observations while retaining the active clamp and capability.
+    pub(crate) fn reset_existing_contract(&mut self) {
+        self.moving_status_flags = 0;
+        self.zero_status_flags = 0;
+        self.moving_pid_output_peak = 0;
+        self.zero_pid_output_peak = 0;
+    }
+
+    /// Accumulate one absolute velocity-PID output sample from the signed phase.
+    pub(crate) fn observe_moving_output(&mut self, output_abs: u16) {
+        self.moving_pid_output_peak = self.moving_pid_output_peak.max(output_abs);
+    }
+
+    /// Accumulate one absolute velocity-PID output sample after commanding zero.
+    pub(crate) fn observe_zero_output(&mut self, output_abs: u16) {
+        self.zero_pid_output_peak = self.zero_pid_output_peak.max(output_abs);
+    }
+
+    /// Preserve all status bits observed at the moving-phase boundary.
+    pub(crate) fn observe_moving_flags(&mut self, flags: u32) {
+        self.moving_status_flags |= flags;
+    }
+
+    /// Preserve all status bits observed after the zero-target phase.
+    pub(crate) fn observe_zero_flags(&mut self, flags: u32) {
+        self.zero_status_flags |= flags;
+    }
+
+    /// Largest sampled signed-phase output magnitude.
+    pub(crate) const fn moving_pid_output_peak(self) -> u16 {
+        self.moving_pid_output_peak
+    }
+
+    /// Largest sampled zero-phase output magnitude.
+    pub(crate) const fn zero_pid_output_peak(self) -> u16 {
+        self.zero_pid_output_peak
+    }
+
+    /// Largest sampled output magnitude across the complete primitive.
+    pub(crate) const fn peak_pid_output_abs(self) -> u16 {
+        if self.moving_pid_output_peak > self.zero_pid_output_peak {
+            self.moving_pid_output_peak
+        } else {
+            self.zero_pid_output_peak
+        }
+    }
+
+    /// Classify the accumulated evidence without discarding its raw inputs.
+    pub(crate) fn evidence(
+        self,
+        zero_phase: VelocityCurrentZeroPhase,
+    ) -> Result<VelocityCurrentPhaseEvidence, VelocityCurrentGuardError> {
+        classify_phase_evidence(
+            PidTorqueFluxLimit::new(u32::from(self.clamp_limit))
+                .map_err(|_| VelocityCurrentGuardError::InvalidLimit)?,
+            self.moving_pid_output_peak,
+            self.zero_pid_output_peak,
+            self.moving_status_flags,
+            self.zero_status_flags,
+            self.capability,
+            zero_phase,
+        )
+    }
+}
+
+const _: () = assert!(core::mem::size_of::<VelocityCurrentObserver>() == 16);
 
 /// Verified temporary velocity-current clamp state for one commissioning workflow.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
@@ -104,7 +220,7 @@ impl VelocityCurrentClampSession {
     /// Validate the operational limit and derive its exact probe clamp.
     pub(crate) fn try_new(operational_limit_raw: u32) -> Result<Self, VelocityCurrentGuardError> {
         let operational_limit = PidTorqueFluxLimit::new(operational_limit_raw)
-            .map_err(|_| VelocityCurrentGuardError)?;
+            .map_err(|_| VelocityCurrentGuardError::InvalidLimit)?;
         let probe_limit = derive_probe_limit(operational_limit)?;
         Ok(Self {
             operational_limit,
@@ -139,7 +255,7 @@ impl VelocityCurrentClampSession {
         backend
             .write_register_verified(PID_TORQUE_FLUX_LIMITS, self.probe_limit.register_value())
             .await
-            .map_err(|_| VelocityCurrentGuardError)?;
+            .map_err(|_| VelocityCurrentGuardError::RegisterIo)?;
         self.probe_installed = true;
         Ok(())
     }
@@ -158,7 +274,7 @@ impl VelocityCurrentClampSession {
                 self.operational_limit.register_value(),
             )
             .await
-            .map_err(|_| VelocityCurrentGuardError)?;
+            .map_err(|_| VelocityCurrentGuardError::RegisterIo)?;
         self.probe_installed = false;
         Ok(())
     }
@@ -176,7 +292,7 @@ pub(crate) fn classify_phase_evidence(
     zero_phase: VelocityCurrentZeroPhase,
 ) -> Result<VelocityCurrentPhaseEvidence, VelocityCurrentGuardError> {
     if clamp_limit == PidTorqueFluxLimit::ZERO {
-        return Err(VelocityCurrentGuardError);
+        return Err(VelocityCurrentGuardError::InvalidLimit);
     }
 
     let moving_contact = moving_pid_output_peak >= clamp_limit.raw()
@@ -203,4 +319,108 @@ pub(crate) fn classify_phase_evidence(
         capability,
         contact,
     })
+}
+
+/// Reset one observer and clear stale flags immediately before a signed target.
+pub(crate) async fn begin_velocity_current_primitive<B>(
+    observer: &mut VelocityCurrentObserver,
+    backend: &mut B,
+    clamp_limit: PidTorqueFluxLimit,
+    capability: VelocityLimitEvidenceCapability,
+) -> Result<(), VelocityCurrentGuardError>
+where
+    B: CommissionRegisterIo,
+{
+    observer.reset(clamp_limit, capability);
+    let flags = backend
+        .read_register(STATUS_FLAGS)
+        .await
+        .map_err(|_| VelocityCurrentGuardError::RegisterIo)?;
+    reject_actionable_status(flags)?;
+    backend
+        .write_register(STATUS_FLAGS, 0)
+        .await
+        .map_err(|_| VelocityCurrentGuardError::RegisterIo)
+}
+
+/// Clear stale flags before recovery while retaining its inherited contract.
+pub(crate) async fn restart_velocity_current_primitive<B>(
+    observer: &mut VelocityCurrentObserver,
+    backend: &mut B,
+) -> Result<(), VelocityCurrentGuardError>
+where
+    B: CommissionRegisterIo,
+{
+    observer.reset_existing_contract();
+    let flags = backend
+        .read_register(STATUS_FLAGS)
+        .await
+        .map_err(|_| VelocityCurrentGuardError::RegisterIo)?;
+    reject_actionable_status(flags)?;
+    backend
+        .write_register(STATUS_FLAGS, 0)
+        .await
+        .map_err(|_| VelocityCurrentGuardError::RegisterIo)
+}
+
+/// Read and retain the complete status word at the signed-phase boundary.
+pub(crate) async fn finish_velocity_current_moving_phase<B>(
+    observer: &mut VelocityCurrentObserver,
+    backend: &mut B,
+) -> Result<(), VelocityCurrentGuardError>
+where
+    B: CommissionRegisterIo,
+{
+    let flags = backend
+        .read_register(STATUS_FLAGS)
+        .await
+        .map_err(|_| VelocityCurrentGuardError::RegisterIo)?;
+    observer.observe_moving_flags(flags);
+    reject_actionable_status(flags)
+}
+
+/// Read and retain the complete status word after confirmed zero-target rest.
+pub(crate) async fn finish_velocity_current_zero_phase<B>(
+    observer: &mut VelocityCurrentObserver,
+    backend: &mut B,
+) -> Result<(), VelocityCurrentGuardError>
+where
+    B: CommissionRegisterIo,
+{
+    let flags = backend
+        .read_register(STATUS_FLAGS)
+        .await
+        .map_err(|_| VelocityCurrentGuardError::RegisterIo)?;
+    observer.observe_zero_flags(flags);
+    reject_actionable_status(flags)
+}
+
+/// Read one absolute velocity-PID output sample through the interim selector.
+pub(crate) async fn read_velocity_pid_output_abs<B>(
+    backend: &mut B,
+) -> Result<u16, VelocityCurrentGuardError>
+where
+    B: CommissionRegisterIo,
+{
+    backend
+        .write_register(
+            INTERIM_PIDOUT_TARGET_TORQUE.addr,
+            u32::from(INTERIM_PIDOUT_TARGET_TORQUE.sub_addr),
+        )
+        .await
+        .map_err(|_| VelocityCurrentGuardError::RegisterIo)?;
+    backend
+        .read_register(INTERIM_PIDOUT_TARGET_TORQUE.data)
+        .await
+        .map(|value| (value as u16 as i16).unsigned_abs())
+        .map_err(|_| VelocityCurrentGuardError::RegisterIo)
+}
+
+fn reject_actionable_status(flags: u32) -> Result<(), VelocityCurrentGuardError> {
+    let actionable = flags & crate::autotune::current_loop_actionable_status_mask();
+    if actionable == 0 {
+        Ok(())
+    } else {
+        Err(VelocityCurrentGuardError::ActionableStatus(actionable))
+    }
 }
