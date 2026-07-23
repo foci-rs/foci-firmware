@@ -8,6 +8,45 @@ use foci_tmc4671::pid::PidGain;
 pub enum RestoreError<E> {
     Spi(E),
     InvalidGains,
+    VelocityClamp,
+}
+
+/// Leave a trace velocity workflow disarmed with its operational current limit restored.
+#[cfg(feature = "trace-velocity-sweep")]
+pub async fn disarm_and_restore_velocity_limit<B: CommissioningBackend>(
+    backend: &mut B,
+    state: &mut super::DispatchState<'_>,
+    operational_limit: u16,
+) -> Result<(), RestoreError<B::Error>> {
+    use foci_tmc4671::registers::{PID_ERROR_PID_VELOCITY_ERROR_SUM, PID_VELOCITY_TARGET};
+
+    backend
+        .write_register(PID_VELOCITY_TARGET, 0)
+        .await
+        .map_err(RestoreError::Spi)?;
+    backend
+        .write_register(
+            PID_ERROR_PID_VELOCITY_ERROR_SUM.addr,
+            u32::from(PID_ERROR_PID_VELOCITY_ERROR_SUM.sub_addr),
+        )
+        .await
+        .map_err(RestoreError::Spi)?;
+    backend
+        .write_register(PID_ERROR_PID_VELOCITY_ERROR_SUM.data, 0)
+        .await
+        .map_err(RestoreError::Spi)?;
+
+    crate::tmc_control::lifecycle::disarm_motor(backend, state).await;
+
+    let mut clamp =
+        crate::commissioning::outer::velocity::current_guard::VelocityCurrentClampSession::try_new(
+            u32::from(operational_limit),
+        )
+        .map_err(|_| RestoreError::VelocityClamp)?;
+    clamp
+        .restore_operational_limit(backend)
+        .await
+        .map_err(|_| RestoreError::VelocityClamp)
 }
 
 /// SPI restore sequence for the OuterDone success path.

@@ -681,6 +681,40 @@ impl CommissioningEngine {
         }
     }
 
+    /// Operational velocity-output limit owned by an active trace velocity workflow.
+    #[cfg(feature = "trace-velocity-sweep")]
+    pub(crate) fn velocity_operational_torque_limit(&self) -> Option<u16> {
+        let EngineMode::Outer { phase, .. } = &self.engine_mode else {
+            return None;
+        };
+        match phase {
+            OuterPhase::VelocitySweep { data, .. }
+                if data.plan.is_present() && data.plan.hard_torque_limit != 0 =>
+            {
+                Some(data.plan.hard_torque_limit)
+            }
+            OuterPhase::VelocityIntegral { data, .. }
+                if data.plan.plan_digest != 0 && data.plan.hard_torque_limit != 0 =>
+            {
+                Some(data.plan.hard_torque_limit)
+            }
+            _ => None,
+        }
+    }
+
+    /// Mark a completed trace velocity exit after disarm and checked restoration.
+    #[cfg(feature = "trace-velocity-sweep")]
+    pub(crate) fn mark_velocity_limit_restored(&mut self) {
+        let EngineMode::Outer { phase, .. } = &mut self.engine_mode else {
+            return;
+        };
+        match phase {
+            OuterPhase::VelocitySweep { data, .. } => data.plan.hard_torque_limit = 0,
+            OuterPhase::VelocityIntegral { data, .. } => data.plan.hard_torque_limit = 0,
+            _ => {}
+        }
+    }
+
     #[cfg(test)]
     pub(crate) fn calibrate_entry_inner_gains_for_test(
         &self,

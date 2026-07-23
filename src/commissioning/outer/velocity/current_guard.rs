@@ -1,7 +1,9 @@
 //! Shared velocity-current prevention and evidence classification.
 #![cfg_attr(not(test), allow(dead_code))]
 
-use foci_tmc4671::registers::{INTERIM_PIDOUT_TARGET_TORQUE, PID_TORQUE_FLUX_LIMITS, STATUS_FLAGS};
+use foci_tmc4671::registers::{
+    INTERIM_PIDIN_TARGET_TORQUE, INTERIM_PIDOUT_TARGET_TORQUE, PID_TORQUE_FLUX_LIMITS, STATUS_FLAGS,
+};
 use foci_tmc4671::{current_limit::PidTorqueFluxLimit, registers::StatusFlags};
 
 use super::sweep_plan::{CURRENT_HEADROOM_DEN, CURRENT_HEADROOM_NUM};
@@ -162,11 +164,22 @@ impl VelocityCurrentObserver {
     /// Preserve all status bits observed at the moving-phase boundary.
     pub(crate) fn observe_moving_flags(&mut self, flags: u32) {
         self.moving_status_flags |= flags;
+        if StatusFlags::from(flags).pid_v_output_limit() {
+            self.moving_pid_output_peak = self.moving_pid_output_peak.max(self.clamp_limit);
+        }
     }
 
     /// Preserve all status bits observed after the zero-target phase.
     pub(crate) fn observe_zero_flags(&mut self, flags: u32) {
         self.zero_status_flags |= flags;
+        if StatusFlags::from(flags).pid_v_output_limit() {
+            self.zero_pid_output_peak = self.zero_pid_output_peak.max(self.clamp_limit);
+        }
+    }
+
+    /// Active clamp magnitude used by this primitive.
+    pub(crate) const fn clamp_limit(self) -> u16 {
+        self.clamp_limit
     }
 
     /// Largest sampled signed-phase output magnitude.
@@ -411,6 +424,27 @@ where
         .map_err(|_| VelocityCurrentGuardError::RegisterIo)?;
     backend
         .read_register(INTERIM_PIDOUT_TARGET_TORQUE.data)
+        .await
+        .map(|value| (value as u16 as i16).unsigned_abs())
+        .map_err(|_| VelocityCurrentGuardError::RegisterIo)
+}
+
+/// Read one absolute velocity-PID input sample through the interim selector.
+pub(crate) async fn read_velocity_pid_input_abs<B>(
+    backend: &mut B,
+) -> Result<u16, VelocityCurrentGuardError>
+where
+    B: CommissionRegisterIo,
+{
+    backend
+        .write_register(
+            INTERIM_PIDIN_TARGET_TORQUE.addr,
+            u32::from(INTERIM_PIDIN_TARGET_TORQUE.sub_addr),
+        )
+        .await
+        .map_err(|_| VelocityCurrentGuardError::RegisterIo)?;
+    backend
+        .read_register(INTERIM_PIDIN_TARGET_TORQUE.data)
         .await
         .map(|value| (value as u16 as i16).unsigned_abs())
         .map_err(|_| VelocityCurrentGuardError::RegisterIo)

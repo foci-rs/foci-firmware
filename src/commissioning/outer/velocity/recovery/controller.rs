@@ -10,7 +10,7 @@ use foci_tmc4671::registers::{PID_VELOCITY_P_VELOCITY_I, PID_VELOCITY_TARGET};
 use super::super::current_guard::{
     VelocityCurrentContact, VelocityCurrentGuardError, VelocityCurrentZeroPhase,
     finish_velocity_current_moving_phase, finish_velocity_current_zero_phase,
-    read_velocity_pid_output_abs, restart_velocity_current_primitive,
+    read_velocity_pid_input_abs, read_velocity_pid_output_abs, restart_velocity_current_primitive,
 };
 use super::super::sweep::clear_velocity_integrator;
 use super::super::sweep_analysis::poll_settle_confirmation_parts;
@@ -166,7 +166,7 @@ pub(crate) async fn step_rung_origin_recovery<B: CommissioningBackend>(
                     return current_guard_fault(runtime, resources, backend, error);
                 }
                 if recovery_current_contact(resources.current_observer) {
-                    return current_limit_fault(runtime, resources, backend);
+                    return recovery_current_headroom(runtime, resources, backend).await;
                 }
                 runtime.zero_commanded_us = ExactU64Parts::from_u64(backend.elapsed_us());
                 runtime.state = RecoveryState::ClearSettleIntegrator {
@@ -309,7 +309,7 @@ pub(crate) async fn step_rung_origin_recovery<B: CommissioningBackend>(
                 return current_guard_fault(runtime, resources, backend, error);
             }
             if recovery_current_contact(resources.current_observer) {
-                return current_limit_fault(runtime, resources, backend);
+                return recovery_current_headroom(runtime, resources, backend).await;
             }
             resources.analysis.reset();
             resources.observations.clear();
@@ -363,6 +363,13 @@ async fn recovery_safety_sample<B: CommissioningBackend>(
         Err(error) => return Some(recovery_fault(error, None)),
         Ok(None) => {}
     }
+    let torque_demand = match read_velocity_pid_input_abs(backend).await {
+        Ok(value) => value,
+        Err(error) => return Some(current_guard_fault(runtime, resources, backend, error)),
+    };
+    if torque_demand > resources.current_observer.clamp_limit() {
+        return Some(current_limit_fault(runtime, resources, backend));
+    }
     let torque_target = match read_velocity_pid_output_abs(backend).await {
         Ok(value) => value,
         Err(error) => return Some(current_guard_fault(runtime, resources, backend, error)),
@@ -376,10 +383,39 @@ async fn recovery_safety_sample<B: CommissioningBackend>(
             .current_observer
             .observe_moving_output(torque_target);
     }
-    if resources.current_observer.peak_pid_output_abs() >= resources.safety.torque_cap {
-        return Some(current_limit_fault(runtime, resources, backend));
+    if recovery_current_contact(resources.current_observer) {
+        return Some(recovery_current_headroom(runtime, resources, backend).await);
     }
     None
+}
+
+async fn recovery_current_headroom<B: CommissioningBackend>(
+    runtime: &mut RungOriginRecoveryRuntime,
+    resources: &mut RungOriginRecoveryResources<'_>,
+    backend: &mut B,
+) -> RungOriginRecoveryStep {
+    if backend
+        .write_register(PID_VELOCITY_TARGET, 0)
+        .await
+        .is_err()
+        || clear_velocity_integrator(backend).await.is_err()
+    {
+        return recovery_fault(CommissionError::Spi, None);
+    }
+    resources.safety.end_primitive();
+    let outcome = RungOriginRecoveryOutcome::RecoveryCurrentHeadroom;
+    let binding_source = RecoveryBindingSource::CurrentHeadroom;
+    runtime.state = RecoveryState::Terminal {
+        outcome,
+        binding_source,
+    };
+    RungOriginRecoveryStep::Contained(runtime.report(
+        outcome,
+        binding_source,
+        resources.safety.unwrapped_position,
+        backend.elapsed_us(),
+        resources.current_observer.peak_pid_output_abs(),
+    ))
 }
 
 fn recovery_current_contact(

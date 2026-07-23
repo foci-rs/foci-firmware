@@ -449,6 +449,29 @@ fn calibration_status_from_commission_error(error: crate::autotune::CommissionEr
     calibration_error.status_code()
 }
 
+#[cfg(feature = "trace-velocity-sweep")]
+async fn disarm_velocity_workflow<B: CommissioningBackend>(
+    engine: &mut Option<CommissioningEngine>,
+    backend: &mut B,
+    state: &mut DispatchState<'_>,
+) -> bool {
+    let Some(operational_limit) = engine
+        .as_ref()
+        .and_then(CommissioningEngine::velocity_operational_torque_limit)
+    else {
+        crate::tmc_control::lifecycle::disarm_motor(backend, state).await;
+        return true;
+    };
+    let restored = restore::disarm_and_restore_velocity_limit(backend, state, operational_limit)
+        .await
+        .is_ok();
+    engine
+        .as_mut()
+        .expect("velocity workflow disappeared during restoration")
+        .mark_velocity_limit_restored();
+    restored
+}
+
 /// Dispatch a single `StepResult` from `CommissioningEngine::step()` to the
 /// appropriate outcome, executing any required SPI work, state mutations, and
 /// atomic stores along the way.
@@ -494,13 +517,21 @@ pub async fn drive_commission_result<B: CommissioningBackend>(
                 },
             }
         }
-        StepResult::VelocitySweepTerminal(terminal) => {
+        StepResult::VelocitySweepTerminal(mut terminal) => {
             use core::sync::atomic::Ordering::Relaxed;
 
+            #[cfg(feature = "trace-velocity-sweep")]
+            if !disarm_velocity_workflow(engine, backend, state).await {
+                terminal.outcome = crate::commissioning::types::VelocitySweepOutcome::Fault;
+                terminal.cause = crate::autotune::CommissionError::Spi.status_code();
+                terminal.recovery_unavailable = true;
+                terminal.safety_fault = None;
+            }
             let consumed = engine
                 .take()
                 .expect("engine slot is None on VelocitySweepTerminal");
             let oid = consumed.oid();
+            #[cfg(not(feature = "trace-velocity-sweep"))]
             crate::tmc_control::lifecycle::disarm_motor(backend, state).await;
             state.tmc.commission_in_flight.store(false, Relaxed);
             CommissionOutcome::Terminal {
@@ -529,14 +560,19 @@ pub async fn drive_commission_result<B: CommissioningBackend>(
             }
         }
         #[cfg(feature = "trace-velocity-sweep")]
-        StepResult::VelocityIntegralTerminal(terminal) => {
+        StepResult::VelocityIntegralTerminal(mut terminal) => {
             use core::sync::atomic::Ordering::Relaxed;
 
+            if !disarm_velocity_workflow(engine, backend, state).await {
+                terminal.outcome = crate::commissioning::types::VelocityIntegralOutcome::Fault;
+                terminal.cause = crate::autotune::CommissionError::Spi.status_code();
+                terminal.recovery_unavailable = true;
+                terminal.safety_fault = None;
+            }
             let consumed = engine
                 .take()
                 .expect("engine slot is None on VelocityIntegralTerminal");
             let oid = consumed.oid();
-            crate::tmc_control::lifecycle::disarm_motor(backend, state).await;
             state.tmc.commission_in_flight.store(false, Relaxed);
             CommissionOutcome::Terminal {
                 reply: ReplyPayload::VelocityIntegralTerminal {
@@ -891,7 +927,9 @@ pub async fn drive_commission_result<B: CommissioningBackend>(
                 Ok(gains) => gains,
                 Err(error) => {
                     let status = match error {
-                        restore::RestoreError::Spi(_) => crate::autotune::CommissionError::Spi,
+                        restore::RestoreError::Spi(_) | restore::RestoreError::VelocityClamp => {
+                            crate::autotune::CommissionError::Spi
+                        }
                         restore::RestoreError::InvalidGains => {
                             crate::autotune::CommissionError::VelocityValidationFailed
                         }
@@ -1003,9 +1041,18 @@ pub async fn drive_commission_result<B: CommissioningBackend>(
                 },
             }
         }
-        StepResult::OuterFailed(error) => {
+        StepResult::OuterFailed(mut error) => {
             use crate::autotune::CommissionError as CE;
             use core::sync::atomic::Ordering::Relaxed;
+            #[cfg(feature = "trace-velocity-sweep")]
+            if engine
+                .as_ref()
+                .and_then(CommissioningEngine::velocity_operational_torque_limit)
+                .is_some()
+                && !disarm_velocity_workflow(engine, backend, state).await
+            {
+                error = CE::Spi;
+            }
             let mut consumed = engine.take().expect("engine slot None on OuterFailed");
             let oid = consumed.oid();
             let snapshot = consumed.entry_snapshot();
@@ -1149,6 +1196,13 @@ pub async fn drive_commission_result_with_stage_b<B: CommissioningBackend>(
             return drive_commission_result(other, engine, backend, state, pwm_maxcnt).await;
         }
     };
+    let mut terminal = terminal;
+    if !disarm_velocity_workflow(engine, backend, state).await {
+        terminal.outcome = crate::commissioning::types::VelocitySweepOutcome::Fault;
+        terminal.cause = crate::autotune::CommissionError::Spi.status_code();
+        terminal.recovery_unavailable = true;
+        terminal.safety_fault = None;
+    }
     let dispatch = stage_b::apply_stage_b_terminal(terminal, channel, stage_b_candidate);
     engine
         .as_mut()
@@ -1201,11 +1255,21 @@ pub async fn drive_commission_result_with_stages<B: CommissioningBackend>(
 ) -> CommissionOutcome {
     match result {
         StepResult::VelocitySweepTerminal(terminal) => {
-            let dispatch = stage_b::apply_stage_b_terminal(terminal, channel, retention.stage_b);
+            let mut dispatch =
+                stage_b::apply_stage_b_terminal(terminal, channel, retention.stage_b);
             if !matches!(
                 dispatch.terminal.outcome,
                 crate::commissioning::types::VelocitySweepOutcome::Complete
             ) {
+                if !disarm_velocity_workflow(engine, backend, state).await {
+                    retention.stage_b.clear();
+                    dispatch.terminal.outcome =
+                        crate::commissioning::types::VelocitySweepOutcome::Fault;
+                    dispatch.terminal.cause = crate::autotune::CommissionError::Spi.status_code();
+                    dispatch.terminal.recovery_unavailable = true;
+                    dispatch.terminal.safety_fault = None;
+                    dispatch.reproduction = None;
+                }
                 engine
                     .as_mut()
                     .expect("engine slot is None on VelocitySweepTerminal")
@@ -1279,12 +1343,21 @@ pub async fn drive_commission_result_with_stages<B: CommissioningBackend>(
                     authority,
                 ),
             );
+            let _ = engine_ref;
             if !stage_b_continuation_allowed(dispatch.terminal) {
-                engine_ref.emit_stage_b_terminal_trace(
-                    backend,
-                    dispatch.terminal,
-                    dispatch.reproduction,
-                );
+                if !disarm_velocity_workflow(engine, backend, state).await {
+                    retention.stage_b.clear();
+                    dispatch.terminal.outcome =
+                        crate::commissioning::types::VelocitySweepOutcome::Fault;
+                    dispatch.terminal.cause = crate::autotune::CommissionError::Spi.status_code();
+                    dispatch.terminal.recovery_unavailable = true;
+                    dispatch.terminal.safety_fault = None;
+                    dispatch.reproduction = None;
+                }
+                engine
+                    .as_mut()
+                    .expect("engine slot is None before Stage-B terminal trace")
+                    .emit_stage_b_terminal_trace(backend, dispatch.terminal, dispatch.reproduction);
                 return match drive_commission_result(
                     StepResult::VelocitySweepTerminal(dispatch.terminal),
                     engine,
@@ -1309,6 +1382,9 @@ pub async fn drive_commission_result_with_stages<B: CommissioningBackend>(
                 };
             }
 
+            let engine_ref = engine
+                .as_mut()
+                .expect("engine slot is None before Stage-C continuation");
             engine_ref.emit_stage_b_terminal_evidence(
                 backend,
                 dispatch.terminal,
@@ -1351,7 +1427,17 @@ pub async fn drive_commission_result_with_stages<B: CommissioningBackend>(
             }
         }
         StepResult::VelocityIntegralTerminal(terminal) => {
-            let dispatch = stage_c::apply_stage_c_terminal(terminal, retention.stage_c);
+            let mut dispatch = stage_c::apply_stage_c_terminal(terminal, retention.stage_c);
+            if !disarm_velocity_workflow(engine, backend, state).await {
+                retention.stage_c.observe_fault();
+                dispatch.terminal.outcome =
+                    crate::commissioning::types::VelocityIntegralOutcome::Fault;
+                dispatch.terminal.cause = crate::autotune::CommissionError::Spi.status_code();
+                dispatch.terminal.recovery_unavailable = true;
+                dispatch.terminal.safety_fault = None;
+                dispatch.reproduction = None;
+                dispatch.authority = None;
+            }
             engine
                 .as_mut()
                 .expect("engine slot is None on VelocityIntegralTerminal")

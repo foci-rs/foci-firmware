@@ -60,6 +60,8 @@ pub(crate) enum RungOriginRecoveryOutcome {
     ContainedNoRate = 2,
     /// The return could not fit the declared geometry or deadline.
     ContainedDeadline = 3,
+    /// The temporary velocity-output clamp engaged during recovery.
+    RecoveryCurrentHeadroom = 4,
 }
 
 /// Exact reason that bounded or authorized the recovery attempt.
@@ -73,6 +75,7 @@ pub(crate) enum RecoveryBindingSource {
     Deadline = 3,
     LocalTravel = 4,
     StructuredSuffix = 5,
+    CurrentHeadroom = 6,
 }
 
 /// Compact rate bound and the evidence source that authorized its use.

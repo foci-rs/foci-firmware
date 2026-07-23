@@ -377,6 +377,8 @@ fn recovery_binding_source_codes_are_unique_and_stable() {
     assert_eq!(RecoveryBindingSource::Deadline as u8, 3);
     assert_eq!(RecoveryBindingSource::LocalTravel as u8, 4);
     assert_eq!(RecoveryBindingSource::StructuredSuffix as u8, 5);
+    assert_eq!(RecoveryBindingSource::CurrentHeadroom as u8, 6);
+    assert_eq!(RungOriginRecoveryOutcome::RecoveryCurrentHeadroom as u8, 4);
 }
 
 #[test]
@@ -572,7 +574,17 @@ fn recovery_current_observer_covers_motion_and_zero_target_settle() {
             .addr(),
         2_816,
     );
-    assert_eq!(safety_fault(fixture.sample(2_000, 1_000)), 9);
+    let RungOriginRecoveryStep::Contained(report) = fixture.sample(2_000, 1_000) else {
+        panic!("recovery clamp contact must be contained")
+    };
+    assert_eq!(
+        report.outcome,
+        RungOriginRecoveryOutcome::RecoveryCurrentHeadroom
+    );
+    assert_eq!(
+        report.binding_source,
+        RecoveryBindingSource::CurrentHeadroom
+    );
     assert_eq!(fixture.current_observer.moving_pid_output_peak(), 100);
     assert_eq!(fixture.current_observer.zero_pid_output_peak(), 2_816);
     assert_eq!(
@@ -707,7 +719,7 @@ fn recovery_safety_inherits_gap_quarter_turn_duration_current_and_spi_faults() {
         foci_tmc4671::registers::INTERIM_PIDOUT_TARGET_TORQUE
             .data
             .addr(),
-        2_816,
+        2_817,
     );
     current.command_motion();
     assert_eq!(safety_fault(current.sample(1_000, 8_458)), 9);
