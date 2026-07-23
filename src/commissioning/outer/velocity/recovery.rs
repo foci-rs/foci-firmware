@@ -453,7 +453,6 @@ pub(crate) fn plan_rung_origin_recovery(
 }
 
 /// Return the conservative commanded-side magnitude of one settled-rate interval.
-#[allow(dead_code)]
 pub(crate) const fn commanded_side_lower_rate_q(
     direction: VelocityDirection,
     low_q: i64,

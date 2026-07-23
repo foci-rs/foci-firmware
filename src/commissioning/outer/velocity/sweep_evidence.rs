@@ -1,10 +1,11 @@
 use crate::autotune::velocity_measurement::{
-    StationarityExclusion, StationarityResult, VelocityDirection,
+    StationarityExclusion, StationarityResult, StructuredStationarityEvidence, VelocityDirection,
 };
 use crate::autotune::{EquivalentTorqueTargetInterval, EquivalentTorqueTargetQ16};
 use foci_tmc4671::pid::PidGain;
 
 use super::operating_region::{BoundRounding, CompactSignedRate, PooledDisturbanceAccumulator};
+use super::recovery::commanded_side_lower_rate_q;
 use super::sweep_consensus::{
     CONSENSUS_OBSERVATIONS_PER_DIRECTION, DirectionalConsensusClass, depth_three_consensus,
 };
@@ -275,6 +276,7 @@ const _: () = assert!(core::mem::size_of::<CompactConsensusObservation>() <= 16)
 pub struct CollectedRungEvidence {
     observations: [CompactConsensusObservation; CONSENSUS_SLOT_COUNT],
     direction_status: [u32; CONSENSUS_DIRECTION_COUNT],
+    structured_recovery_rates: [CompactSignedRate; CONSENSUS_DIRECTION_COUNT],
 }
 
 impl CollectedRungEvidence {
@@ -283,11 +285,49 @@ impl CollectedRungEvidence {
         Self {
             observations: [CompactConsensusObservation::EMPTY; CONSENSUS_SLOT_COUNT],
             direction_status: [0; CONSENSUS_DIRECTION_COUNT],
+            structured_recovery_rates: [CompactSignedRate::ZERO; CONSENSUS_DIRECTION_COUNT],
         }
     }
 
     /// Retain one intrinsic observation at its declared global slot.
     pub fn retain(
+        &mut self,
+        slot: u8,
+        summary: VelocityObservationSummary,
+    ) -> Result<(), VelocityEvidenceError> {
+        self.retain_with_structured(slot, summary, None)
+    }
+
+    pub(crate) fn retain_with_structured(
+        &mut self,
+        slot: u8,
+        summary: VelocityObservationSummary,
+        structured: Option<StructuredStationarityEvidence>,
+    ) -> Result<(), VelocityEvidenceError> {
+        let structured_interval = match structured {
+            Some(evidence)
+                if matches!(
+                    summary.classification,
+                    VelocityObservationClass::StationarityExcluded(_)
+                ) =>
+            {
+                compact_structured_recovery_rate(
+                    summary.direction,
+                    evidence.common_rate_interval_q,
+                )?;
+                Some(evidence.common_rate_interval_q)
+            }
+            Some(_) => return Err(VelocityEvidenceError::MismatchedObservation),
+            None => None,
+        };
+        self.retain_summary(slot, summary)?;
+        if let Some(interval_q) = structured_interval {
+            self.retain_structured_recovery_interval(summary.direction, interval_q)?;
+        }
+        Ok(())
+    }
+
+    fn retain_summary(
         &mut self,
         slot: u8,
         summary: VelocityObservationSummary,
@@ -316,6 +356,37 @@ impl CollectedRungEvidence {
             self.direction_status[direction] |= STATUS_INITIAL_LEAD_IN;
         }
         Ok(())
+    }
+
+    pub(crate) fn retain_structured_recovery_interval(
+        &mut self,
+        direction: VelocityDirection,
+        interval_q: [i64; 2],
+    ) -> Result<(), VelocityEvidenceError> {
+        if let Some(rate) = compact_structured_recovery_rate(direction, interval_q)? {
+            self.retain_compact_structured_rate(direction, rate);
+        }
+        Ok(())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn structured_recovery_rate(
+        &self,
+        direction: VelocityDirection,
+    ) -> Option<CompactSignedRate> {
+        let rate = self.structured_recovery_rates[direction_index(direction)];
+        (rate.decode() > 0).then_some(rate)
+    }
+
+    fn retain_compact_structured_rate(
+        &mut self,
+        direction: VelocityDirection,
+        candidate: CompactSignedRate,
+    ) {
+        let retained = &mut self.structured_recovery_rates[direction_index(direction)];
+        if retained.decode() == 0 || candidate.decode() < retained.decode() {
+            *retained = candidate;
+        }
     }
 
     /// Return the four-bit collected mask for one signed direction.
@@ -362,13 +433,27 @@ impl CollectedRungEvidence {
     }
 }
 
+fn compact_structured_recovery_rate(
+    direction: VelocityDirection,
+    interval_q: [i64; 2],
+) -> Result<Option<CompactSignedRate>, VelocityEvidenceError> {
+    let Some(rate_q) = commanded_side_lower_rate_q(direction, interval_q[0], interval_q[1]) else {
+        return Ok(None);
+    };
+    let compact = CompactSignedRate::encode(
+        i64::try_from(rate_q).map_err(|_| VelocityEvidenceError::Arithmetic)?,
+        BoundRounding::TowardNegativeInfinity,
+    );
+    Ok((compact.decode() > 0).then_some(compact))
+}
+
 impl Default for CollectedRungEvidence {
     fn default() -> Self {
         Self::new()
     }
 }
 
-const _: () = assert!(core::mem::size_of::<CollectedRungEvidence>() <= 136);
+const _: () = assert!(core::mem::size_of::<CollectedRungEvidence>() <= 144);
 
 /// Compact four-observation evidence retained for one direction.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
@@ -1348,14 +1433,14 @@ fn closure_for(classification: VelocityRungClass) -> BandClosure {
 #[cfg(test)]
 mod tests {
     use super::{
-        CollectedRungEvidence, VelocityEvidenceError, VelocityObservationClass,
+        CollectedRungEvidence, CompactSignedRate, VelocityEvidenceError, VelocityObservationClass,
         VelocityObservationInput, VelocityRungClass, classify_velocity_observation,
         directional_recovery_lower_rate_q, disturbance_point_cell,
         rate_bounds_from_disturbance_cell, reproduce_velocity_rung,
     };
     use crate::autotune::velocity_measurement::{
         PlateauSelection, RateBlock, StationarityExclusion, StationarityResult, StationarySuffix,
-        VelocityDirection,
+        StructuredStationarityEvidence, VelocityDirection,
     };
     use crate::autotune::{EquivalentTorqueTargetInterval, EquivalentTorqueTargetQ16};
     use foci_tmc4671::pid::PidGain;
@@ -1443,6 +1528,112 @@ mod tests {
             hard_torque_limit: 1_000,
             initial_lead_in: false,
         }
+    }
+
+    fn structured(interval_q: [i64; 2]) -> StructuredStationarityEvidence {
+        StructuredStationarityEvidence {
+            passing_suffix_mask: 0b110,
+            common_rate_interval_q: interval_q,
+            binding_slope_margin_q: -1,
+            binding_lag_one_margin_q: -1,
+        }
+    }
+
+    fn stationarity_excluded(direction: VelocityDirection) -> super::VelocityObservationSummary {
+        let mut excluded = input(direction);
+        excluded.stationarity = StationarityResult::Excluded(StationarityExclusion::ResolvedSlope);
+        classify_velocity_observation(excluded)
+    }
+
+    #[test]
+    fn structured_recovery_rate_is_directional_and_conservative() {
+        let mut collected = CollectedRungEvidence::new();
+        collected
+            .retain_with_structured(
+                0,
+                stationarity_excluded(VelocityDirection::Forward),
+                Some(structured([9_174_700, 9_400_298])),
+            )
+            .unwrap();
+        collected
+            .retain_with_structured(
+                1,
+                stationarity_excluded(VelocityDirection::Reverse),
+                Some(structured([-9_500_000, -9_100_000])),
+            )
+            .unwrap();
+        collected
+            .retain_with_structured(
+                2,
+                stationarity_excluded(VelocityDirection::Forward),
+                Some(structured([9_300_000, 9_500_000])),
+            )
+            .unwrap();
+
+        assert_eq!(
+            collected
+                .structured_recovery_rate(VelocityDirection::Forward)
+                .unwrap()
+                .decode(),
+            9_174_528
+        );
+        assert_eq!(
+            collected
+                .structured_recovery_rate(VelocityDirection::Reverse)
+                .unwrap()
+                .decode(),
+            9_099_776
+        );
+
+        let mut unusable = CollectedRungEvidence::new();
+        for (slot, interval_q) in [(0, [-1, 10]), (2, [0, 0]), (4, [10, 9])] {
+            unusable
+                .retain_with_structured(
+                    slot,
+                    stationarity_excluded(VelocityDirection::Forward),
+                    Some(structured(interval_q)),
+                )
+                .unwrap();
+        }
+        assert_eq!(
+            unusable.structured_recovery_rate(VelocityDirection::Forward),
+            None
+        );
+    }
+
+    #[test]
+    fn structured_recovery_rate_cannot_change_observation_evidence() {
+        let summary = stationarity_excluded(VelocityDirection::Forward);
+        let boundary = structured([9_174_700, 9_400_298]);
+        let mut baseline = CollectedRungEvidence::new();
+        baseline.retain(0, summary).unwrap();
+        let mut with_authority = CollectedRungEvidence::new();
+        with_authority
+            .retain_with_structured(0, summary, Some(boundary))
+            .unwrap();
+
+        assert_eq!(baseline.collected_mask(VelocityDirection::Forward), 1);
+        assert_eq!(
+            baseline.classification(VelocityDirection::Forward, 0),
+            with_authority.classification(VelocityDirection::Forward, 0)
+        );
+        assert_eq!(
+            baseline.disturbance_interval(VelocityDirection::Forward, 0),
+            with_authority.disturbance_interval(VelocityDirection::Forward, 0)
+        );
+        with_authority.structured_recovery_rates = [CompactSignedRate::ZERO; 2];
+        assert_eq!(baseline, with_authority);
+
+        let mut rejected = CollectedRungEvidence::new();
+        assert_eq!(
+            rejected.retain_with_structured(
+                0,
+                classify_velocity_observation(input(VelocityDirection::Forward)),
+                Some(boundary),
+            ),
+            Err(VelocityEvidenceError::MismatchedObservation)
+        );
+        assert_eq!(rejected.collected_mask(VelocityDirection::Forward), 0);
     }
 
     #[test]

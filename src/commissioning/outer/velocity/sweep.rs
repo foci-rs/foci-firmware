@@ -863,7 +863,7 @@ pub(crate) async fn step_velocity_sweep_with_trace<B: CommissioningBackend>(
             };
             let current_headroom =
                 analysis.summary.classification == VelocityObservationClass::CurrentHeadroom;
-            if retain_observation(data, analysis.summary).is_err() {
+            if retain_observation(data, analysis.summary, analysis.structured_boundary).is_err() {
                 return fail_sweep(phase, backend, CommissionError::InvalidSchedule).await;
             }
             let settle_deadline = *settle_deadline_us;

@@ -218,11 +218,12 @@ pub(super) fn ceil_div_60(numerator: i128) -> Result<i128, CommissionError> {
 pub(super) fn retain_observation(
     data: &mut VelocitySweepData,
     summary: VelocityObservationSummary,
+    structured: Option<StructuredStationarityEvidence>,
 ) -> Result<(), VelocityEvidenceError> {
     let VelocitySweepEvidenceState::Collecting(collected) = &mut data.evidence else {
         return Err(VelocityEvidenceError::MismatchedObservation);
     };
-    collected.retain(data.slot, summary)
+    collected.retain_with_structured(data.slot, summary, structured)
 }
 
 pub(super) fn poll_settle_confirmation(

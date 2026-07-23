@@ -1019,7 +1019,8 @@ mod tests {
     fn velocity_sweep_evidence_state_pins_replacement_size_below_delivered_size() {
         // The delivered prior pair state was exactly 176 bytes.
         assert_eq!(size_of::<super::RungOriginRecoveryRuntime>(), 84);
-        assert_eq!(size_of::<super::VelocitySweepEvidenceState>(), 140);
+        assert_eq!(size_of::<super::CollectedRungEvidence>(), 144);
+        assert_eq!(size_of::<super::VelocitySweepEvidenceState>(), 144);
         assert!(size_of::<super::VelocitySweepEvidenceState>() <= 176);
     }
 
