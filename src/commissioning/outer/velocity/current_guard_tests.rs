@@ -1,15 +1,17 @@
 use foci_tmc4671::current_limit::PidTorqueFluxLimit;
 
 use super::current_guard::{
-    VelocityCurrentContact, VelocityCurrentZeroPhase, VelocityLimitEvidenceCapability,
-    classify_phase_evidence, derive_probe_limit,
+    VelocityCurrentClampSession, VelocityCurrentContact, VelocityCurrentZeroPhase,
+    VelocityLimitEvidenceCapability, classify_phase_evidence, derive_probe_limit,
 };
 use super::integral_plan::{
     STAGE_C_EVIDENCE_SCHEMA_REVISION, StageCAuthority, plan_velocity_integral_response,
 };
 use super::reproduction::STAGE_B_EVIDENCE_SCHEMA_REVISION;
 use super::sweep_plan::{RequestedVelocitySource, VelocitySweepRequest, plan_velocity_sweep};
+use crate::commission_dispatch::test_support::{MockBackend, SpiOp};
 use crate::commissioning::outer::OuterMotionBudget;
+use foci_tmc4671::registers::PID_TORQUE_FLUX_LIMITS;
 
 const PID_V_OUTPUT_LIMIT: u32 = 1 << 7;
 
@@ -190,4 +192,106 @@ fn velocity_current_guard_contract() {
     let mut latched_stage_c = stage_c;
     latched_stage_c.limit_evidence_capability = VelocityLimitEvidenceCapability::LatchedFlag;
     assert_ne!(stage_c.digest(), latched_stage_c.digest());
+}
+
+#[test]
+fn velocity_current_clamp_session() {
+    pollster::block_on(async {
+        let mut session = VelocityCurrentClampSession::try_new(2_816).unwrap();
+        assert_eq!(session.operational_limit().raw(), 2_816);
+        assert_eq!(session.probe_limit().raw(), 2_534);
+        assert!(!session.probe_is_installed());
+
+        let mut backend = MockBackend::new();
+        session.install_probe_limit(&mut backend).await.unwrap();
+        assert!(session.probe_is_installed());
+        assert!(matches!(
+            backend.spi_log.as_slice(),
+            [
+                SpiOp::Write(addr, 2_534),
+                SpiOp::Read,
+            ] if *addr == PID_TORQUE_FLUX_LIMITS.addr()
+        ));
+
+        let retained_log_len = backend.spi_log.len();
+        assert!(session.probe_is_installed());
+        assert_eq!(backend.spi_log.len(), retained_log_len);
+
+        session.install_probe_limit(&mut backend).await.unwrap();
+        assert!(session.probe_is_installed());
+        assert_eq!(backend.spi_log.len(), retained_log_len + 2);
+
+        session
+            .restore_operational_limit(&mut backend)
+            .await
+            .unwrap();
+        assert!(!session.probe_is_installed());
+        assert!(matches!(
+            &backend.spi_log.as_slice()[retained_log_len + 2..],
+            [
+                SpiOp::Write(addr, 2_816),
+                SpiOp::Read,
+            ] if *addr == PID_TORQUE_FLUX_LIMITS.addr()
+        ));
+
+        #[derive(Clone, Copy)]
+        enum FailureMode {
+            Write,
+            Read,
+            CompleteWordMismatch,
+        }
+        for failure in [
+            FailureMode::Write,
+            FailureMode::Read,
+            FailureMode::CompleteWordMismatch,
+        ] {
+            let mut session = VelocityCurrentClampSession::try_new(2_816).unwrap();
+            let mut backend = MockBackend::new();
+            match failure {
+                FailureMode::Write => {
+                    backend.fail_on_write = Some(PID_TORQUE_FLUX_LIMITS.addr());
+                }
+                FailureMode::Read => {
+                    backend.fail_on_read = Some(PID_TORQUE_FLUX_LIMITS.addr());
+                }
+                FailureMode::CompleteWordMismatch => {
+                    backend.read_override = Some((PID_TORQUE_FLUX_LIMITS.addr(), 0x0001_09e6));
+                }
+            }
+            assert!(session.install_probe_limit(&mut backend).await.is_err());
+            assert!(!session.probe_is_installed());
+        }
+
+        for failure in [
+            FailureMode::Write,
+            FailureMode::Read,
+            FailureMode::CompleteWordMismatch,
+        ] {
+            let mut session = VelocityCurrentClampSession::try_new(2_816).unwrap();
+            let mut backend = MockBackend::new();
+            session.install_probe_limit(&mut backend).await.unwrap();
+            match failure {
+                FailureMode::Write => {
+                    backend.fail_on_write = Some(PID_TORQUE_FLUX_LIMITS.addr());
+                }
+                FailureMode::Read => {
+                    backend.fail_on_read = Some(PID_TORQUE_FLUX_LIMITS.addr());
+                }
+                FailureMode::CompleteWordMismatch => {
+                    backend.read_override = Some((PID_TORQUE_FLUX_LIMITS.addr(), 0x0001_0b00));
+                }
+            }
+            assert!(
+                session
+                    .restore_operational_limit(&mut backend)
+                    .await
+                    .is_err()
+            );
+            assert!(session.probe_is_installed());
+        }
+
+        for invalid in [0, 1, 0x8000, u32::MAX] {
+            assert!(VelocityCurrentClampSession::try_new(invalid).is_err());
+        }
+    });
 }

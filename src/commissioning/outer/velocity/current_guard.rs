@@ -1,9 +1,11 @@
 //! Shared velocity-current prevention and evidence classification.
 #![cfg_attr(not(test), allow(dead_code))]
 
+use foci_tmc4671::registers::PID_TORQUE_FLUX_LIMITS;
 use foci_tmc4671::{current_limit::PidTorqueFluxLimit, registers::StatusFlags};
 
 use super::sweep_plan::{CURRENT_HEADROOM_DEN, CURRENT_HEADROOM_NUM};
+use crate::commissioning::backend::CommissionRegisterIo;
 
 /// Firmware's ability to prove whether the velocity-output clamp engaged.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
@@ -88,6 +90,78 @@ pub(crate) fn derive_probe_limit(
     }
 
     PidTorqueFluxLimit::new(probe_raw).map_err(|_| VelocityCurrentGuardError)
+}
+
+/// Verified temporary velocity-current clamp state for one commissioning workflow.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+pub(crate) struct VelocityCurrentClampSession {
+    operational_limit: PidTorqueFluxLimit,
+    probe_limit: PidTorqueFluxLimit,
+    probe_installed: bool,
+}
+
+impl VelocityCurrentClampSession {
+    /// Validate the operational limit and derive its exact probe clamp.
+    pub(crate) fn try_new(operational_limit_raw: u32) -> Result<Self, VelocityCurrentGuardError> {
+        let operational_limit = PidTorqueFluxLimit::new(operational_limit_raw)
+            .map_err(|_| VelocityCurrentGuardError)?;
+        let probe_limit = derive_probe_limit(operational_limit)?;
+        Ok(Self {
+            operational_limit,
+            probe_limit,
+            probe_installed: false,
+        })
+    }
+
+    /// Return the limit that normal controller operation must regain on exit.
+    pub(crate) const fn operational_limit(self) -> PidTorqueFluxLimit {
+        self.operational_limit
+    }
+
+    /// Return the temporary commissioning clamp.
+    pub(crate) const fn probe_limit(self) -> PidTorqueFluxLimit {
+        self.probe_limit
+    }
+
+    /// Return whether the latest verified session write installed the probe clamp.
+    pub(crate) const fn probe_is_installed(self) -> bool {
+        self.probe_installed
+    }
+
+    /// Install or reapply the probe clamp with complete-word readback verification.
+    pub(crate) async fn install_probe_limit<B>(
+        &mut self,
+        backend: &mut B,
+    ) -> Result<(), VelocityCurrentGuardError>
+    where
+        B: CommissionRegisterIo,
+    {
+        backend
+            .write_register_verified(PID_TORQUE_FLUX_LIMITS, self.probe_limit.register_value())
+            .await
+            .map_err(|_| VelocityCurrentGuardError)?;
+        self.probe_installed = true;
+        Ok(())
+    }
+
+    /// Restore the operational clamp with complete-word readback verification.
+    pub(crate) async fn restore_operational_limit<B>(
+        &mut self,
+        backend: &mut B,
+    ) -> Result<(), VelocityCurrentGuardError>
+    where
+        B: CommissionRegisterIo,
+    {
+        backend
+            .write_register_verified(
+                PID_TORQUE_FLUX_LIMITS,
+                self.operational_limit.register_value(),
+            )
+            .await
+            .map_err(|_| VelocityCurrentGuardError)?;
+        self.probe_installed = false;
+        Ok(())
+    }
 }
 
 /// Classify current-limit evidence without changing the underlying raw flags.
