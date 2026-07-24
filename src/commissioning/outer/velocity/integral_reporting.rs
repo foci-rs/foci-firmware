@@ -152,6 +152,7 @@ pub(crate) fn encode_velocity_integral_plan_trace(
     core.push_u16(plan.expected_observations);
     core.push_u16(plan.hard_torque_limit);
     core.push_u16(plan.usable_torque_limit);
+    core.push_u8(plan.limit_evidence_capability as u8);
 
     let mut schedule = VelocitySweepCanonicalRecord::new();
     schedule.push_u8(0);
@@ -532,6 +533,11 @@ mod tests {
         assert_eq!(records[0].as_bytes()[15], 0);
         assert_eq!(records[1].as_bytes()[15], 1);
         assert_eq!(records[2].as_bytes()[15], 2);
+        assert_eq!(records[0].as_bytes().len(), 88);
+        assert_eq!(
+            records[0].as_bytes()[87],
+            super::super::current_guard::VelocityLimitEvidenceCapability::BestEffortPolling as u8
+        );
         assert!(
             records
                 .iter()
