@@ -13,9 +13,11 @@ use super::sweep_plan::{
 };
 
 /// Evidence schema stored in the RAM-only Stage-C candidate slot.
-pub const STAGE_C_EVIDENCE_SCHEMA_REVISION: u16 = 3;
+pub const STAGE_C_EVIDENCE_SCHEMA_REVISION: u16 = 4;
 /// Largest predeclared positive-I ladder accepted by the family-128 table.
 pub const STAGE_C_MAX_POSITIVE_RUNGS: usize = 30;
+/// Minimum representable positive raw velocity-I gain in Q8.8 mode.
+pub const STAGE_C_MIN_POSITIVE_I: u16 = 1;
 /// Independent observations collected in one direction at every Stage-C rung.
 pub const STAGE_C_OBSERVATIONS_PER_DIRECTION: u16 = 4;
 /// Forward and reverse observations collected at every Stage-C rung.
@@ -113,7 +115,7 @@ pub struct StageCAuthority {
 /// Exact positive-I acquisition geometry.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VelocityIntegralLadder {
-    /// Largest nonzero I whose time constant spans the moving stroke.
+    /// Minimum representable positive raw velocity-I gain.
     pub i_start: u16,
     /// Largest I whose time constant spans half the shortest suffix.
     pub i_top_cap: u16,
@@ -360,9 +362,12 @@ pub fn build_integral_ladder(
     if pwm_hz == 0 || moving_stroke_us == 0 || shortest_suffix_us < 2 || maximum_i == 0 {
         return Err(VelocityIntegralPlanError::InvalidRequest);
     }
-    let i_start = largest_i_for_tau(pwm_hz, moving_stroke_us, maximum_i)?;
+    let i_start = STAGE_C_MIN_POSITIVE_I;
+    if maximum_i < i_start {
+        return Err(VelocityIntegralPlanError::InsufficientStructuralSpan);
+    }
     let i_top_cap = largest_i_for_tau(pwm_hz, shortest_suffix_us / 2, maximum_i)?;
-    if i_start == 0 || i_start > i_top_cap {
+    if i_start > i_top_cap {
         return Err(VelocityIntegralPlanError::InsufficientStructuralSpan);
     }
     let mut rungs = Vec::new();

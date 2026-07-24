@@ -1,8 +1,8 @@
 use super::integral_plan::{
     CommissioningWorkflowPlan, STAGE_C_EVIDENCE_SCHEMA_REVISION, STAGE_C_MAX_POSITIVE_RUNGS,
-    STAGE_C_OBSERVATIONS_PER_RUNG, StageCAuthority, StageCPlanShape, VelocityIntegralPlanError,
-    build_integral_ladder, confidence_family_size, plan_velocity_integral_response,
-    velocity_i_tau_us,
+    STAGE_C_MIN_POSITIVE_I, STAGE_C_OBSERVATIONS_PER_RUNG, StageCAuthority, StageCPlanShape,
+    VelocityIntegralPlanError, build_integral_ladder, confidence_family_size,
+    plan_velocity_integral_response, velocity_i_tau_us,
 };
 use super::sweep_plan::{
     MIN_SETTLE_CAPTURE_US, MOVING_STROKE_US, RequestedVelocitySource, SETTLE_ANALYSIS_BUDGET_US,
@@ -59,8 +59,10 @@ fn motion_budget() -> OuterMotionBudget {
 
 #[test]
 fn current_geometry_derives_the_exact_octave_ladder() {
-    assert_eq!(velocity_i_tau_us(5, 25_000), Some(524_288));
-    assert_eq!(velocity_i_tau_us(80, 25_000), Some(32_768));
+    assert_eq!(STAGE_C_EVIDENCE_SCHEMA_REVISION, 4);
+    assert_eq!(STAGE_C_MIN_POSITIVE_I, 1);
+    assert_eq!(velocity_i_tau_us(1, 25_000), Some(2_621_440));
+    assert_eq!(velocity_i_tau_us(64, 25_000), Some(40_960));
 
     let ladder = build_integral_ladder(
         25_000,
@@ -70,16 +72,42 @@ fn current_geometry_derives_the_exact_octave_ladder() {
     )
     .unwrap();
 
-    assert_eq!(ladder.i_start, 5);
+    assert_eq!(ladder.i_start, 1);
     assert_eq!(ladder.i_top_cap, 81);
-    assert_eq!(ladder.rungs.as_slice(), &[5, 10, 20, 40, 80]);
+    assert_eq!(ladder.rungs.as_slice(), &[1, 2, 4, 8, 16, 32, 64]);
+
+    let doubled_pwm = build_integral_ladder(50_000, 512_000, 64_000, 32_767).unwrap();
+    assert_eq!(doubled_pwm.i_start, 1);
+    assert_eq!(doubled_pwm.i_top_cap, 40);
+    assert_eq!(doubled_pwm.rungs.as_slice(), &[1, 2, 4, 8, 16, 32]);
+
+    let shorter_stroke = build_integral_ladder(25_000, 256_000, 64_000, 32_767).unwrap();
+    assert_eq!(shorter_stroke.i_start, 1);
+    assert_eq!(shorter_stroke.i_top_cap, 81);
+    assert_eq!(shorter_stroke.rungs.as_slice(), &[1, 2, 4, 8, 16, 32, 64]);
+}
+
+#[test]
+fn integral_accumulation_ratio_tracks_pwm_and_stroke_geometry() {
+    fn stroke_cycles(pwm_hz: u32, stroke_us: u32) -> u64 {
+        u64::from(pwm_hz) * u64::from(stroke_us) / 1_000_000
+    }
+
+    let current_cycles = stroke_cycles(25_000, 512_000);
+    assert_eq!(current_cycles, 12_800);
+    assert_eq!(
+        [1_u16, 2, 4, 8, 16, 32, 64].map(|gain| current_cycles * u64::from(gain)),
+        [12_800, 25_600, 51_200, 102_400, 204_800, 409_600, 819_200]
+    );
+    assert_eq!(stroke_cycles(50_000, 512_000), 25_600);
+    assert_eq!(stroke_cycles(25_000, 256_000), 6_400);
 }
 
 #[test]
 fn top_cap_is_not_appended_as_a_non_octave_rung() {
     let ladder = build_integral_ladder(25_000, 512_000, 64_000, 512).unwrap();
     assert_eq!(ladder.i_top_cap, 81);
-    assert_eq!(ladder.rungs.last(), Some(&80));
+    assert_eq!(ladder.rungs.last(), Some(&64));
     assert!(!ladder.rungs.contains(&81));
 }
 
@@ -87,7 +115,7 @@ fn top_cap_is_not_appended_as_a_non_octave_rung() {
 fn confidence_family_counts_both_anchors() {
     assert_eq!(STAGE_C_MAX_POSITIVE_RUNGS, 30);
     assert_eq!(STAGE_C_OBSERVATIONS_PER_RUNG, 8);
-    assert_eq!(confidence_family_size(5), Ok(28));
+    assert_eq!(confidence_family_size(7), Ok(36));
     assert_eq!(confidence_family_size(30), Ok(128));
     assert_eq!(
         confidence_family_size(31),
@@ -111,19 +139,19 @@ fn stage_c_plan_freezes_geometry_and_conservative_duration() {
 
     assert_eq!(plan.schema_revision, STAGE_C_EVIDENCE_SCHEMA_REVISION);
     assert_eq!(plan.final_p, 1_448);
-    assert_eq!(plan.positive_rungs(), &[5, 10, 20, 40, 80]);
-    assert_eq!(plan.family_size, 28);
-    assert_eq!(plan.total_rung_count, 7);
-    assert_eq!(plan.expected_observations, 56);
+    assert_eq!(plan.positive_rungs(), &[1, 2, 4, 8, 16, 32, 64]);
+    assert_eq!(plan.family_size, 36);
+    assert_eq!(plan.total_rung_count, 9);
+    assert_eq!(plan.expected_observations, 72);
     assert_eq!(plan.moving_stroke_us, 512_000);
     assert_eq!(plan.zero_settle_us, 500_000);
     assert_eq!(plan.analysis_budget_us, 236_000);
     assert_eq!(plan.recovery_origin_band_counts, 1_000);
     assert_eq!(plan.recovery_nominal_slot_us, 1_816_958);
     assert_eq!(plan.recovery_maximum_slot_us, 3_000_000);
-    assert_eq!(plan.recovery_slot_count, 7);
-    assert_eq!(plan.nominal_workflow_ms, 82_607);
-    assert_eq!(plan.maximum_workflow_ms, 90_888);
+    assert_eq!(plan.recovery_slot_count, 9);
+    assert_eq!(plan.nominal_workflow_ms, 106_209);
+    assert_eq!(plan.maximum_workflow_ms, 116_856);
     let base_us = u32::from(plan.total_rung_count)
         * STAGE_C_OBSERVATIONS_PER_RUNG
         * (MOVING_STROKE_US + ZERO_SETTLE_US + SETTLE_ANALYSIS_BUDGET_US);
@@ -169,8 +197,8 @@ fn workflow_shape_does_not_change_either_stage_identity() {
     .unwrap();
 
     assert_eq!(candidate.maximum_workflow_ms, 298_632);
-    assert_eq!(composite.maximum_workflow_ms, 389_520);
-    assert_eq!(resume.maximum_workflow_ms, 90_888);
+    assert_eq!(composite.maximum_workflow_ms, 415_488);
+    assert_eq!(resume.maximum_workflow_ms, 116_856);
     assert_ne!(candidate.digest(), composite.digest());
     assert_ne!(composite.digest(), resume.digest());
     assert_eq!(StageCPlanShape::StageB as u8, 0);
@@ -186,8 +214,15 @@ fn invalid_geometry_and_missing_authority_reject_before_motion() {
     assert_eq!(velocity_i_tau_us(0, 25_000), None);
     assert_eq!(velocity_i_tau_us(5, 0), None);
     assert_eq!(
-        build_integral_ladder(25_000, 512_000, 64_000, 10),
+        build_integral_ladder(25_000, 512_000, 64_000, 3),
         Err(VelocityIntegralPlanError::InsufficientStructuralSpan)
+    );
+    assert_eq!(
+        build_integral_ladder(25_000, 512_000, 64_000, 10)
+            .unwrap()
+            .rungs
+            .as_slice(),
+        &[1, 2, 4, 8]
     );
     assert_eq!(
         build_integral_ladder(1, 1_000_000, 2, u16::MAX),

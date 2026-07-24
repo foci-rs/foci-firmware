@@ -474,7 +474,7 @@ mod tests {
         }
         let plan = super::super::integral_plan::VelocityIntegralPlan {
             build_revision: 3,
-            schema_revision: 3,
+            schema_revision: super::super::integral_plan::STAGE_C_EVIDENCE_SCHEMA_REVISION,
             authority: super::super::integral_plan::StageCAuthority {
                 channel: 0,
                 stage_b_plan_digest: 0xfedc_ba98_7654_3210,
