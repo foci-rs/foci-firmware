@@ -196,6 +196,132 @@ fn velocity_current_guard_contract() {
 }
 
 #[test]
+fn velocity_current_prevention_configuration_matrix() {
+    const SUPPORTED_PWM_HZ: [u32; 1] = [25_000];
+    const SUPPORTED_VELOCITY_METERS: [u8; 1] = [1];
+    const SUPPORTED_VELOCITY_FILTERS_ENABLED: [bool; 2] = [false, true];
+
+    for encoder_counts_per_rev in [1_000_u32, 65_536] {
+        for pwm_hz in SUPPORTED_PWM_HZ {
+            let meter_quantum_rpm =
+                u32::try_from((u64::from(pwm_hz) * 60).div_ceil(u64::from(encoder_counts_per_rev)))
+                    .unwrap();
+            for target_rpm in [
+                meter_quantum_rpm.saturating_sub(1).max(1),
+                meter_quantum_rpm,
+                meter_quantum_rpm + 1,
+            ] {
+                for velocity_meter in SUPPORTED_VELOCITY_METERS {
+                    for filter_enabled in SUPPORTED_VELOCITY_FILTERS_ENABLED {
+                        for operational_limit in [10_u32, 32_767] {
+                            for (bed_mm, max_stroke_travel_mrev, headroom_mrev) in
+                                [(120_u16, 2_500_u32, 3_000_u32), (300, 6_250, 7_500)]
+                            {
+                                let probe = derive_probe_limit(
+                                    PidTorqueFluxLimit::new(operational_limit).unwrap(),
+                                )
+                                .unwrap();
+                                assert_eq!(
+                                    u32::from(probe.raw()),
+                                    operational_limit * 9 / 10,
+                                    "encoder={encoder_counts_per_rev} pwm={pwm_hz} \
+                                     target={target_rpm} meter={velocity_meter} \
+                                     filter={filter_enabled} bed={bed_mm}"
+                                );
+
+                                let request = VelocitySweepRequest {
+                                    requested_velocity_mrev_s: 6_666,
+                                    machine_velocity_ceiling_mrev_s: 10_000,
+                                    requested_velocity_source: RequestedVelocitySource::Defaulted,
+                                    max_stroke_travel_mrev,
+                                    settle_travel_reserve_mrev: 250,
+                                    negative_position_headroom_mrev: headroom_mrev,
+                                    positive_position_headroom_mrev: headroom_mrev,
+                                    max_duration_ms: 3_000,
+                                };
+                                let planned = plan_velocity_sweep(
+                                    request,
+                                    encoder_counts_per_rev,
+                                    u16::try_from(operational_limit).unwrap(),
+                                );
+                                let plan = planned.unwrap_or_else(|error| {
+                                    panic!(
+                                        "matrix plan failed: encoder={encoder_counts_per_rev} \
+                                         pwm={pwm_hz} target={target_rpm} \
+                                         meter={velocity_meter} filter={filter_enabled} \
+                                         limit={operational_limit} bed={bed_mm}: {error:?}"
+                                    )
+                                });
+                                assert_eq!(plan.usable_torque_limit, probe.raw());
+
+                                let below = classify_phase_evidence(
+                                    probe,
+                                    probe.raw() - 1,
+                                    0,
+                                    0,
+                                    0,
+                                    VelocityLimitEvidenceCapability::LatchedFlag,
+                                    VelocityCurrentZeroPhase::Braking,
+                                )
+                                .unwrap();
+                                assert_eq!(below.contact, VelocityCurrentContact::None);
+                                assert!(below.moving_clip_absence_proven());
+
+                                let at_boundary = classify_phase_evidence(
+                                    probe,
+                                    probe.raw(),
+                                    0,
+                                    0,
+                                    0,
+                                    VelocityLimitEvidenceCapability::LatchedFlag,
+                                    VelocityCurrentZeroPhase::Braking,
+                                )
+                                .unwrap();
+                                assert_eq!(at_boundary.contact, VelocityCurrentContact::Moving);
+
+                                let p_raw = 2_048_i64;
+                                let spin_up_output =
+                                    (p_raw * i64::from(target_rpm) / 256).unsigned_abs();
+                                let reversal_output = (p_raw
+                                    * (i64::from(target_rpm) - i64::from(meter_quantum_rpm))
+                                    / 256)
+                                    .unsigned_abs();
+                                let unconstrained_peak = spin_up_output.max(reversal_output);
+                                let sampled_peak =
+                                    unconstrained_peak.min(u64::from(probe.raw())) as u16;
+                                let flags = if unconstrained_peak >= u64::from(probe.raw()) {
+                                    PID_V_OUTPUT_LIMIT
+                                } else {
+                                    0
+                                };
+                                let quantized = classify_phase_evidence(
+                                    probe,
+                                    sampled_peak,
+                                    0,
+                                    flags,
+                                    0,
+                                    VelocityLimitEvidenceCapability::LatchedFlag,
+                                    VelocityCurrentZeroPhase::Braking,
+                                )
+                                .unwrap();
+                                assert_eq!(
+                                    quantized.contact == VelocityCurrentContact::Moving,
+                                    unconstrained_peak >= u64::from(probe.raw()),
+                                    "encoder={encoder_counts_per_rev} pwm={pwm_hz} \
+                                     target={target_rpm} meter={velocity_meter} \
+                                     filter={filter_enabled} limit={operational_limit} \
+                                     bed={bed_mm}"
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
 fn velocity_current_clamp_session() {
     pollster::block_on(async {
         let mut session = VelocityCurrentClampSession::try_new(2_816).unwrap();
