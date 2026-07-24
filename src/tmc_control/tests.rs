@@ -204,7 +204,7 @@ fn stage_b_candidate_retention_does_not_grow_channel_runtime() {
     #[cfg(feature = "trace")]
     assert_eq!(core::mem::size_of::<TmcControlRuntime>(), 4_624);
     #[cfg(not(feature = "trace"))]
-    assert_eq!(core::mem::size_of::<TmcControlRuntime>(), 3_904);
+    assert_eq!(core::mem::size_of::<TmcControlRuntime>(), 3_888);
 }
 
 #[test]

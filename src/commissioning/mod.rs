@@ -1459,7 +1459,7 @@ mod tests {
         // Outer safety retains independent local and asymmetric absolute travel
         // bounds in the largest engine variant.
         #[cfg(not(feature = "trace-velocity-sweep"))]
-        assert_eq!(size_of::<CommissioningEngine>(), 3_840);
+        assert_eq!(size_of::<CommissioningEngine>(), 3_824);
         // The feature-on immutable plan and engine-owned cooperative analysis
         // state make VelocitySweep the largest outer payload. Resumable
         // partial-block analysis reaches, but does not raise, the audited F407
