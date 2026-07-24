@@ -45,6 +45,10 @@ mod validate;
 pub const VELOCITY_LIMIT_EVIDENCE_CAPABILITY_BEST_EFFORT: u32 =
     current_guard::VelocityLimitEvidenceCapability::BestEffortPolling as u32;
 
+/// Wire value declaring latched velocity-limit status evidence.
+pub const VELOCITY_LIMIT_EVIDENCE_CAPABILITY_LATCHED_FLAG: u32 =
+    current_guard::VelocityLimitEvidenceCapability::LatchedFlag as u32;
+
 #[cfg(feature = "trace-velocity-sweep")]
 pub(crate) use integral_sweep::{integral_fault_terminal, step_velocity_integral_with_trace};
 #[allow(unused_imports)]
