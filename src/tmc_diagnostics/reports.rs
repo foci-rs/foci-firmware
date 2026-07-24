@@ -5,15 +5,15 @@ pub const CURRENT_STEP_STATUS_NOT_READY: u8 = 1;
 pub const CURRENT_STEP_STATUS_SPI: u8 = 2;
 
 /// Velocity-limit latch diagnostic could not run because the channel was not ready.
-#[cfg(feature = "trace-velocity-sweep")]
+#[cfg(feature = "trace-velocity-limit-latch-test")]
 pub const VELOCITY_LIMIT_LATCH_STATUS_NOT_READY: u8 = 1;
 
 /// Velocity-limit latch diagnostic lost register or restoration integrity.
-#[cfg(feature = "trace-velocity-sweep")]
+#[cfg(feature = "trace-velocity-limit-latch-test")]
 pub const VELOCITY_LIMIT_LATCH_STATUS_SPI: u8 = 2;
 
 /// Focused velocity-output-limit persistence diagnostic result.
-#[cfg(feature = "trace-velocity-sweep")]
+#[cfg(feature = "trace-velocity-limit-latch-test")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct VelocityLimitLatchReport {
     /// Object id of the FOCI endpoint.

@@ -11,7 +11,7 @@ use foci_tmc4671::registers::{
     PID_TORQUE_FLUX_ACTUAL, PID_TORQUE_FLUX_OFFSET, PID_TORQUE_FLUX_TARGET, PIDOUT_UQ_UD_LIMITS,
     STATUS_FLAGS, UQ_UD_EXT,
 };
-#[cfg(feature = "trace-velocity-sweep")]
+#[cfg(feature = "trace-velocity-limit-latch-test")]
 use foci_tmc4671::registers::{
     PID_TORQUE_FLUX_LIMITS, PID_VELOCITY_P_VELOCITY_I, PID_VELOCITY_TARGET,
 };
@@ -46,13 +46,13 @@ impl DiagnosticMockSpi {
         self
     }
 
-    #[cfg(feature = "trace-velocity-sweep")]
+    #[cfg(feature = "trace-velocity-limit-latch-test")]
     fn with_register(mut self, addr: u8, value: u32) -> Self {
         self.register_values.insert(addr, value);
         self
     }
 
-    #[cfg(feature = "trace-velocity-sweep")]
+    #[cfg(feature = "trace-velocity-limit-latch-test")]
     fn fail_transaction(mut self, attempt: usize) -> Self {
         self.fail_transaction = Some(attempt);
         self
@@ -294,7 +294,7 @@ fn commissioning_busy_diagnostic_returns_not_ready_without_hardware() {
     assert_eq!(report.torque_target, 64);
 }
 
-#[cfg(feature = "trace-velocity-sweep")]
+#[cfg(feature = "trace-velocity-limit-latch-test")]
 #[test]
 fn commissioning_busy_velocity_limit_latch_returns_not_ready() {
     let outcome = super::busy_diagnostic_report(
@@ -350,7 +350,7 @@ fn current_step_not_ready_returns_status_without_writes() {
     });
 }
 
-#[cfg(feature = "trace-velocity-sweep")]
+#[cfg(feature = "trace-velocity-limit-latch-test")]
 #[test]
 fn velocity_limit_latch_not_ready_returns_status_without_writes() {
     pollster::block_on(async {
@@ -387,7 +387,7 @@ fn velocity_limit_latch_not_ready_returns_status_without_writes() {
     });
 }
 
-#[cfg(feature = "trace-velocity-sweep")]
+#[cfg(feature = "trace-velocity-limit-latch-test")]
 #[test]
 fn velocity_limit_latch_runs_fixed_pulse_and_restores_after_disarm() {
     pollster::block_on(async {
@@ -502,7 +502,7 @@ fn velocity_limit_latch_runs_fixed_pulse_and_restores_after_disarm() {
     });
 }
 
-#[cfg(feature = "trace-velocity-sweep")]
+#[cfg(feature = "trace-velocity-limit-latch-test")]
 fn velocity_limit_latch_register_mock() -> DiagnosticMockSpi {
     DiagnosticMockSpi::default()
         .with_register(MODE_RAMP_MODE_MOTION.addr(), 0x8000_0003)
@@ -513,7 +513,7 @@ fn velocity_limit_latch_register_mock() -> DiagnosticMockSpi {
         .with_register(STATUS_FLAGS.addr(), 0)
 }
 
-#[cfg(feature = "trace-velocity-sweep")]
+#[cfg(feature = "trace-velocity-limit-latch-test")]
 #[test]
 fn velocity_limit_latch_failures_disarm_and_attempt_every_saved_restore() {
     pollster::block_on(async {

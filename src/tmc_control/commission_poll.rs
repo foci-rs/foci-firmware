@@ -133,7 +133,7 @@ pub fn classify_wait_request(kind: &TmcRequestKind) -> CommissionWaitRequestDisp
         | TmcRequestKind::PositionTorqueOffsetSampleTest { .. }
         | TmcRequestKind::VoltageStepTest { .. }
         | TmcRequestKind::ResistanceTest { .. } => CommissionWaitRequestDisposition::RejectBusy,
-        #[cfg(feature = "trace-velocity-sweep")]
+        #[cfg(feature = "trace-velocity-limit-latch-test")]
         TmcRequestKind::VelocityLimitLatchTest { .. } => {
             CommissionWaitRequestDisposition::RejectBusy
         }

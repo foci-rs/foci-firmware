@@ -192,7 +192,7 @@ where
                 | TmcRequestKind::ResistanceTest { .. },
             ..
         } => sink.emit_busy_diagnostic(diagnostic_req),
-        #[cfg(feature = "trace-velocity-sweep")]
+        #[cfg(feature = "trace-velocity-limit-latch-test")]
         diagnostic_req @ TmcRequest {
             kind: TmcRequestKind::VelocityLimitLatchTest { .. },
             ..
@@ -985,7 +985,7 @@ where
                 .run_diagnostic_request(diagnostic_req, runtime, tmc)
                 .await;
         }
-        #[cfg(feature = "trace-velocity-sweep")]
+        #[cfg(feature = "trace-velocity-limit-latch-test")]
         diagnostic_req @ TmcRequest {
             kind: TmcRequestKind::VelocityLimitLatchTest { .. },
             ..

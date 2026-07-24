@@ -1,6 +1,6 @@
 //! Shared active diagnostic reply emission.
 
-#[cfg(feature = "trace-velocity-sweep")]
+#[cfg(feature = "trace-velocity-limit-latch-test")]
 use super::VelocityLimitLatchReport;
 use super::{
     CurrentStepReport, CurrentTorqueSampleReport, DiagnosticReport, ResistanceAxisReport,
@@ -35,19 +35,19 @@ pub trait DiagnosticReplySink {
     fn foci_resistance_run(&mut self, report: ResistanceRunReport);
 
     /// Emit focused velocity-output-limit status snapshots.
-    #[cfg(feature = "trace-velocity-sweep")]
+    #[cfg(feature = "trace-velocity-limit-latch-test")]
     fn foci_velocity_limit_latch_flags(&mut self, _report: VelocityLimitLatchReport) {}
 
     /// Emit focused velocity-output-limit timing and displacement.
-    #[cfg(feature = "trace-velocity-sweep")]
+    #[cfg(feature = "trace-velocity-limit-latch-test")]
     fn foci_velocity_limit_latch_motion(&mut self, _report: VelocityLimitLatchReport) {}
 
     /// Emit focused velocity-output-limit restoration evidence.
-    #[cfg(feature = "trace-velocity-sweep")]
+    #[cfg(feature = "trace-velocity-limit-latch-test")]
     fn foci_velocity_limit_latch_restore(&mut self, _report: VelocityLimitLatchReport) {}
 
     /// Emit the focused velocity-output-limit terminal core.
-    #[cfg(feature = "trace-velocity-sweep")]
+    #[cfg(feature = "trace-velocity-limit-latch-test")]
     fn foci_velocity_limit_latch_result(&mut self, _report: VelocityLimitLatchReport) {}
 }
 
@@ -83,7 +83,7 @@ pub fn emit_diagnostic_report<S: DiagnosticReplySink>(sink: &mut S, report: Diag
             // Run reply last: it is the diagnostic's terminal/"done" signal.
             sink.foci_resistance_run(run);
         }
-        #[cfg(feature = "trace-velocity-sweep")]
+        #[cfg(feature = "trace-velocity-limit-latch-test")]
         DiagnosticReport::VelocityLimitLatch(report) => {
             sink.foci_velocity_limit_latch_flags(report);
             sink.foci_velocity_limit_latch_motion(report);
@@ -145,26 +145,26 @@ mod tests {
             current_ceiling_count: u16,
             power_stage_tripped: bool,
         },
-        #[cfg(feature = "trace-velocity-sweep")]
+        #[cfg(feature = "trace-velocity-limit-latch-test")]
         VelocityLimitFlags {
             active: u32,
             post_pulse: u32,
             delayed: u32,
             post_clear: u32,
         },
-        #[cfg(feature = "trace-velocity-sweep")]
+        #[cfg(feature = "trace-velocity-limit-latch-test")]
         VelocityLimitMotion {
             pulse_elapsed_us: u32,
             delayed_read_elapsed_us: u32,
             encoder_delta: i32,
         },
-        #[cfg(feature = "trace-velocity-sweep")]
+        #[cfg(feature = "trace-velocity-limit-latch-test")]
         VelocityLimitRestore {
             saved_limit: u32,
             restored_limit: u32,
             restore_verified_mask: u8,
         },
-        #[cfg(feature = "trace-velocity-sweep")]
+        #[cfg(feature = "trace-velocity-limit-latch-test")]
         VelocityLimitDone {
             oid: u8,
             status: u8,
@@ -246,7 +246,7 @@ mod tests {
             });
         }
 
-        #[cfg(feature = "trace-velocity-sweep")]
+        #[cfg(feature = "trace-velocity-limit-latch-test")]
         fn foci_velocity_limit_latch_flags(&mut self, report: VelocityLimitLatchReport) {
             self.events.push(Event::VelocityLimitFlags {
                 active: report.active_status_flags,
@@ -256,7 +256,7 @@ mod tests {
             });
         }
 
-        #[cfg(feature = "trace-velocity-sweep")]
+        #[cfg(feature = "trace-velocity-limit-latch-test")]
         fn foci_velocity_limit_latch_motion(&mut self, report: VelocityLimitLatchReport) {
             self.events.push(Event::VelocityLimitMotion {
                 pulse_elapsed_us: report.pulse_elapsed_us,
@@ -265,7 +265,7 @@ mod tests {
             });
         }
 
-        #[cfg(feature = "trace-velocity-sweep")]
+        #[cfg(feature = "trace-velocity-limit-latch-test")]
         fn foci_velocity_limit_latch_restore(&mut self, report: VelocityLimitLatchReport) {
             self.events.push(Event::VelocityLimitRestore {
                 saved_limit: report.saved_limit,
@@ -274,7 +274,7 @@ mod tests {
             });
         }
 
-        #[cfg(feature = "trace-velocity-sweep")]
+        #[cfg(feature = "trace-velocity-limit-latch-test")]
         fn foci_velocity_limit_latch_result(&mut self, report: VelocityLimitLatchReport) {
             self.events.push(Event::VelocityLimitDone {
                 oid: report.oid,
@@ -615,7 +615,7 @@ mod tests {
         );
     }
 
-    #[cfg(feature = "trace-velocity-sweep")]
+    #[cfg(feature = "trace-velocity-limit-latch-test")]
     #[test]
     fn velocity_limit_latch_emits_evidence_before_terminal_core() {
         let mut report = super::super::velocity_limit_latch::empty_report(7, 0);
