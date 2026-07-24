@@ -2036,9 +2036,9 @@ pub struct FociVelocitySweepPlanRecovery {
     pub slot_count: u8,
 }
 
-/// Recovery identity, controller gain, and classification.
+/// Compact ordinary-channel projection of one canonical recovery record.
 #[klipper_reply]
-pub struct FociRungOriginRecoveryCore {
+pub struct FociRungOriginRecoverySummary {
     /// Endpoint object id.
     pub oid: u8,
     /// Caller-assigned run sequence.
@@ -2055,61 +2055,6 @@ pub struct FociRungOriginRecoveryCore {
     pub binding_source: u8,
     /// Recovery outcome.
     pub outcome: u8,
-}
-
-/// Recovery position relative to the immutable campaign origin.
-#[klipper_reply]
-pub struct FociRungOriginRecoveryPosition {
-    /// Endpoint object id.
-    pub oid: u8,
-    /// Caller-assigned run sequence.
-    pub run_sequence: u32,
-    /// Monotonic evidence sequence.
-    pub evidence_sequence: u16,
-    /// Signed offset when recovery began.
-    pub start_offset_counts: i32,
-    /// Closest signed offset reached during recovery.
-    pub closest_offset_counts: i32,
-    /// Signed offset after fixed settle and analysis.
-    pub final_offset_counts: i32,
-    /// Inclusive immutable-origin band.
-    pub origin_band_counts: u32,
-}
-
-/// Recovery moving, settle, and total elapsed durations.
-#[klipper_reply]
-pub struct FociRungOriginRecoveryTiming {
-    /// Endpoint object id.
-    pub oid: u8,
-    /// Caller-assigned run sequence.
-    pub run_sequence: u32,
-    /// Monotonic evidence sequence.
-    pub evidence_sequence: u16,
-    /// Measured constant-amplitude moving time.
-    pub moving_duration_us: u32,
-    /// Measured fixed zero-target settle time.
-    pub settle_duration_us: u32,
-    /// Total measured recovery-slot time.
-    pub total_duration_us: u32,
-}
-
-/// Recovery rate authority and observed controller limits.
-#[klipper_reply]
-pub struct FociRungOriginRecoveryLimits {
-    /// Endpoint object id.
-    pub oid: u8,
-    /// Caller-assigned run sequence.
-    pub run_sequence: u32,
-    /// Monotonic evidence sequence.
-    pub evidence_sequence: u16,
-    /// Frozen encoder-domain velocity amplitude.
-    pub planned_velocity_mrev_s: u32,
-    /// Exact low word of the commanded-side settled-rate lower bound.
-    pub lower_rate_low: u32,
-    /// Exact high word of the commanded-side settled-rate lower bound.
-    pub lower_rate_high: u32,
-    /// Peak absolute torque target observed during recovery.
-    pub peak_torque_target_abs: u16,
 }
 
 /// Causal current-limit evidence for one velocity primitive.
@@ -3683,8 +3628,8 @@ mod velocity_sweep_reply_tests {
     }
 
     #[test]
-    fn rung_origin_recovery_reply_fragments_fit_and_preserve_exact_rate() {
-        let core = FociRungOriginRecoveryCore {
+    fn rung_origin_recovery_summary_is_one_bounded_frame() {
+        let summary = FociRungOriginRecoverySummary {
             oid: u8::MAX,
             run_sequence: WIDE_U32,
             evidence_sequence: u16::MAX,
@@ -3693,32 +3638,6 @@ mod velocity_sweep_reply_tests {
             p_raw: u16::MAX,
             binding_source: u8::MAX,
             outcome: u8::MAX,
-        };
-        let position = FociRungOriginRecoveryPosition {
-            oid: u8::MAX,
-            run_sequence: WIDE_U32,
-            evidence_sequence: u16::MAX,
-            start_offset_counts: i32::MIN,
-            closest_offset_counts: i32::MAX,
-            final_offset_counts: i32::MIN,
-            origin_band_counts: WIDE_U32,
-        };
-        let timing = FociRungOriginRecoveryTiming {
-            oid: u8::MAX,
-            run_sequence: WIDE_U32,
-            evidence_sequence: u16::MAX,
-            moving_duration_us: WIDE_U32,
-            settle_duration_us: WIDE_U32,
-            total_duration_us: WIDE_U32,
-        };
-        let limits = FociRungOriginRecoveryLimits {
-            oid: u8::MAX,
-            run_sequence: WIDE_U32,
-            evidence_sequence: u16::MAX,
-            planned_velocity_mrev_s: WIDE_U32,
-            lower_rate_low: 0x7654_3210,
-            lower_rate_high: 0xfedc_ba98,
-            peak_torque_target_abs: u16::MAX,
         };
         let sweep_plan = FociVelocitySweepPlanRecovery {
             oid: u8::MAX,
@@ -3740,19 +3659,12 @@ mod velocity_sweep_reply_tests {
         };
 
         for (name, fits) in [
-            ("recovery_core", encoded_reply_fits(&core)),
-            ("recovery_position", encoded_reply_fits(&position)),
-            ("recovery_timing", encoded_reply_fits(&timing)),
-            ("recovery_limits", encoded_reply_fits(&limits)),
+            ("recovery_summary", encoded_reply_fits(&summary)),
             ("sweep_plan_recovery", encoded_reply_fits(&sweep_plan)),
             ("integral_plan_recovery", encoded_reply_fits(&integral_plan)),
         ] {
             assert!(fits, "{name} exceeds the transport limit");
         }
-        assert_eq!(
-            (u64::from(limits.lower_rate_high) << 32) | u64::from(limits.lower_rate_low),
-            0xfedc_ba98_7654_3210
-        );
     }
 
     #[test]

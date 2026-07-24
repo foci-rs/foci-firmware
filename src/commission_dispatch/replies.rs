@@ -150,31 +150,10 @@ pub trait CommissionReplySink {
     ) {
     }
 
-    /// Emit rung-origin recovery identity and classification.
-    fn foci_rung_origin_recovery_core(
+    /// Emit one compact rung-origin recovery summary.
+    fn foci_rung_origin_recovery_summary(
         &mut self,
-        _report: crate::ankyra::replies::FociRungOriginRecoveryCore,
-    ) {
-    }
-
-    /// Emit rung-origin recovery position evidence.
-    fn foci_rung_origin_recovery_position(
-        &mut self,
-        _report: crate::ankyra::replies::FociRungOriginRecoveryPosition,
-    ) {
-    }
-
-    /// Emit rung-origin recovery timing evidence.
-    fn foci_rung_origin_recovery_timing(
-        &mut self,
-        _report: crate::ankyra::replies::FociRungOriginRecoveryTiming,
-    ) {
-    }
-
-    /// Emit rung-origin recovery rate authority and observed limits.
-    fn foci_rung_origin_recovery_limits(
-        &mut self,
-        _report: crate::ankyra::replies::FociRungOriginRecoveryLimits,
+        _report: crate::ankyra::replies::FociRungOriginRecoverySummary,
     ) {
     }
 
@@ -1196,14 +1175,10 @@ fn emit_rung_origin_recovery<S: CommissionReplySink>(
     oid: u8,
     evidence: crate::commissioning::types::RungOriginRecoveryEvidence,
 ) {
-    use crate::ankyra::replies::{
-        FociRungOriginRecoveryCore, FociRungOriginRecoveryLimits, FociRungOriginRecoveryPosition,
-        FociRungOriginRecoveryTiming,
-    };
+    use crate::ankyra::replies::FociRungOriginRecoverySummary;
 
     let report = evidence.report;
-    let lower_rate_q = report.lower_rate_q.to_u64();
-    sink.foci_rung_origin_recovery_core(FociRungOriginRecoveryCore {
+    sink.foci_rung_origin_recovery_summary(FociRungOriginRecoverySummary {
         oid,
         run_sequence: evidence.run_sequence,
         evidence_sequence: evidence.evidence_sequence,
@@ -1212,32 +1187,6 @@ fn emit_rung_origin_recovery<S: CommissionReplySink>(
         p_raw: report.p_raw,
         binding_source: report.binding_source as u8,
         outcome: report.outcome as u8,
-    });
-    sink.foci_rung_origin_recovery_position(FociRungOriginRecoveryPosition {
-        oid,
-        run_sequence: evidence.run_sequence,
-        evidence_sequence: evidence.evidence_sequence,
-        start_offset_counts: report.start_offset_counts,
-        closest_offset_counts: report.closest_offset_counts,
-        final_offset_counts: report.final_offset_counts,
-        origin_band_counts: report.origin_band_counts,
-    });
-    sink.foci_rung_origin_recovery_timing(FociRungOriginRecoveryTiming {
-        oid,
-        run_sequence: evidence.run_sequence,
-        evidence_sequence: evidence.evidence_sequence,
-        moving_duration_us: report.moving_duration_us,
-        settle_duration_us: report.settle_duration_us,
-        total_duration_us: report.total_duration_us,
-    });
-    sink.foci_rung_origin_recovery_limits(FociRungOriginRecoveryLimits {
-        oid,
-        run_sequence: evidence.run_sequence,
-        evidence_sequence: evidence.evidence_sequence,
-        planned_velocity_mrev_s: report.planned_velocity_mrev_s,
-        lower_rate_low: lower_rate_q as u32,
-        lower_rate_high: (lower_rate_q >> 32) as u32,
-        peak_torque_target_abs: report.peak_torque_target_abs,
     });
 }
 
@@ -2714,7 +2663,16 @@ mod tests {
         IntegralPlanRecovery,
         IntegralObservation(u8),
         IntegralRung(u8),
-        Recovery(u8),
+        Recovery {
+            oid: u8,
+            run_sequence: u32,
+            evidence_sequence: u16,
+            stage: u8,
+            rung_index: u8,
+            p_raw: u16,
+            binding_source: u8,
+            outcome: u8,
+        },
         IntegralDerived(u8),
         IntegralTerminal(u8),
         OuterInconclusive,
@@ -3049,32 +3007,20 @@ mod tests {
             self.events.push(Event::SweepPlanRecovery);
         }
 
-        fn foci_rung_origin_recovery_core(
+        fn foci_rung_origin_recovery_summary(
             &mut self,
-            _report: crate::ankyra::replies::FociRungOriginRecoveryCore,
+            report: crate::ankyra::replies::FociRungOriginRecoverySummary,
         ) {
-            self.events.push(Event::Recovery(0));
-        }
-
-        fn foci_rung_origin_recovery_position(
-            &mut self,
-            _report: crate::ankyra::replies::FociRungOriginRecoveryPosition,
-        ) {
-            self.events.push(Event::Recovery(1));
-        }
-
-        fn foci_rung_origin_recovery_timing(
-            &mut self,
-            _report: crate::ankyra::replies::FociRungOriginRecoveryTiming,
-        ) {
-            self.events.push(Event::Recovery(2));
-        }
-
-        fn foci_rung_origin_recovery_limits(
-            &mut self,
-            _report: crate::ankyra::replies::FociRungOriginRecoveryLimits,
-        ) {
-            self.events.push(Event::Recovery(3));
+            self.events.push(Event::Recovery {
+                oid: report.oid,
+                run_sequence: report.run_sequence,
+                evidence_sequence: report.evidence_sequence,
+                stage: report.stage,
+                rung_index: report.rung_index,
+                p_raw: report.p_raw,
+                binding_source: report.binding_source,
+                outcome: report.outcome,
+            });
         }
 
         fn foci_velocity_observation_core(
@@ -4997,7 +4943,9 @@ mod tests {
             ExactU64Parts, RecoveryBindingSource, RecoveryStage, RungOriginRecoveryOutcome,
             RungOriginRecoveryReport,
         };
-        use crate::commissioning::types::{RungOriginRecoveryEvidence, VelocitySweepEvent};
+        use crate::commissioning::types::{
+            RungOriginRecoveryEvidence, VelocityIntegralEvent, VelocitySweepEvent,
+        };
 
         let evidence = RungOriginRecoveryEvidence {
             run_sequence: 7,
@@ -5021,16 +4969,55 @@ mod tests {
             },
         };
         let mut sink = RecordingSink::default();
+        let canonical =
+            crate::commissioning::outer::velocity::sweep_reporting::encode_rung_origin_recovery(
+                evidence,
+            );
+        let integral_evidence = RungOriginRecoveryEvidence {
+            report: RungOriginRecoveryReport {
+                stage: RecoveryStage::Integral,
+                ..evidence.report
+            },
+            ..evidence
+        };
 
         emit_velocity_sweep_event(&mut sink, 3, VelocitySweepEvent::Recovery(evidence));
+        emit_velocity_integral_event(
+            &mut sink,
+            3,
+            VelocityIntegralEvent::Recovery(integral_evidence),
+        );
 
+        assert_eq!(canonical.as_bytes().len(), 55);
+        assert!(
+            canonical
+                .as_bytes()
+                .windows(8)
+                .any(|word| word == 0x0123_4567_89ab_cdef_u64.to_le_bytes())
+        );
         assert_eq!(
             sink.events,
             [
-                Event::Recovery(0),
-                Event::Recovery(1),
-                Event::Recovery(2),
-                Event::Recovery(3),
+                Event::Recovery {
+                    oid: 3,
+                    run_sequence: 7,
+                    evidence_sequence: 10,
+                    stage: RecoveryStage::Proportional as u8,
+                    rung_index: 4,
+                    p_raw: 724,
+                    binding_source: RecoveryBindingSource::SettledRate as u8,
+                    outcome: RungOriginRecoveryOutcome::Recovered as u8,
+                },
+                Event::Recovery {
+                    oid: 3,
+                    run_sequence: 7,
+                    evidence_sequence: 10,
+                    stage: RecoveryStage::Integral as u8,
+                    rung_index: 4,
+                    p_raw: 724,
+                    binding_source: RecoveryBindingSource::SettledRate as u8,
+                    outcome: RungOriginRecoveryOutcome::Recovered as u8,
+                },
             ]
         );
     }
