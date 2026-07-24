@@ -396,7 +396,7 @@ fn velocity_limit_latch_runs_fixed_pulse_and_restores_after_disarm() {
         const SAVED_GAINS: u32 = 0x0100_0002;
         const TEST_GAINS: u32 = 0x0200_0000;
         const VELOCITY_MODE: u32 = 0x8000_0002;
-        const OUTPUT_LIMIT_FLAG: u32 = 1 << 7;
+        const EXPECTED_LIMIT_FLAGS: u32 = (1 << 7) | (1 << 12);
 
         let raw_spi = DiagnosticMockSpi::default()
             .with_read(SAVED_MODE)
@@ -409,9 +409,9 @@ fn velocity_limit_latch_runs_fixed_pulse_and_restores_after_disarm() {
             .with_read(TEST_GAINS)
             .with_read(VELOCITY_MODE)
             .with_read(1)
-            .with_read(OUTPUT_LIMIT_FLAG)
-            .with_read(OUTPUT_LIMIT_FLAG)
-            .with_read(OUTPUT_LIMIT_FLAG)
+            .with_read(EXPECTED_LIMIT_FLAGS)
+            .with_read(EXPECTED_LIMIT_FLAGS)
+            .with_read(EXPECTED_LIMIT_FLAGS)
             .with_read(0)
             .with_read(101)
             .with_read(0)
@@ -465,7 +465,12 @@ fn velocity_limit_latch_runs_fixed_pulse_and_restores_after_disarm() {
                 report.delayed_status_flags,
                 report.post_clear_status_flags
             ),
-            (OUTPUT_LIMIT_FLAG, OUTPUT_LIMIT_FLAG, OUTPUT_LIMIT_FLAG, 0)
+            (
+                EXPECTED_LIMIT_FLAGS,
+                EXPECTED_LIMIT_FLAGS,
+                EXPECTED_LIMIT_FLAGS,
+                0
+            )
         );
         assert_eq!(
             (report.pulse_elapsed_us, report.delayed_read_elapsed_us),

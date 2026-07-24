@@ -19,6 +19,9 @@ const TEST_I_RAW: u16 = 0;
 const TEST_TARGET_RPM: i32 = 1;
 const TEST_PULSE_US: u32 = 100;
 const PERSISTENCE_DELAY_US: u32 = 1_000;
+const PID_V_OUTPUT_LIMIT_STATUS: u32 = 1 << 7;
+const PID_IQ_TARGET_LIMIT_STATUS: u32 = 1 << 12;
+const EXPECTED_STIMULUS_STATUS: u32 = PID_V_OUTPUT_LIMIT_STATUS | PID_IQ_TARGET_LIMIT_STATUS;
 
 const RESTORED_TARGET: u8 = 1 << 0;
 const RESTORED_GAINS: u8 = 1 << 1;
@@ -86,6 +89,15 @@ fn elapsed_u32(start_us: u64, end_us: u64) -> u32 {
 
 fn reject_actionable_status(flags: u32) -> Result<(), ()> {
     if flags & crate::autotune::current_loop_actionable_status_mask() == 0 {
+        Ok(())
+    } else {
+        Err(())
+    }
+}
+
+fn reject_unexpected_stimulus_status(flags: u32) -> Result<(), ()> {
+    let actionable = flags & crate::autotune::current_loop_actionable_status_mask();
+    if actionable & !EXPECTED_STIMULUS_STATUS == 0 {
         Ok(())
     } else {
         Err(())
@@ -236,7 +248,11 @@ where
             write_verified(ctx.tmc, PID_VELOCITY_TARGET, TEST_TARGET_RPM as u32).await? as i32;
         ctx.delay.delay_us(TEST_PULSE_US).await;
         report.active_status_flags = ctx.tmc.read_register(STATUS_FLAGS).await.map_err(|_| ())?;
-        reject_actionable_status(report.active_status_flags)?;
+        // TMC4671 Rev 1 Table 30 ties both pid_v_output_limit (bit 7) and
+        // pid_iq_target_limit (bit 12) to PID_TORQUE_FLUX_LIMITS (0x5E).
+        // The two-count request against the one-count test limit deliberately
+        // exercises both bounded limiters. No other actionable bit is allowed.
+        reject_unexpected_stimulus_status(report.active_status_flags)?;
         report.pulse_elapsed_us = elapsed_u32(pulse_start_us, ctx.delay.now_us());
 
         ctx.tmc
@@ -245,12 +261,12 @@ where
             .map_err(|_| ())?;
         report.post_pulse_status_flags =
             ctx.tmc.read_register(STATUS_FLAGS).await.map_err(|_| ())?;
-        reject_actionable_status(report.post_pulse_status_flags)?;
+        reject_unexpected_stimulus_status(report.post_pulse_status_flags)?;
 
         let delayed_start_us = ctx.delay.now_us();
         ctx.delay.delay_us(PERSISTENCE_DELAY_US).await;
         report.delayed_status_flags = ctx.tmc.read_register(STATUS_FLAGS).await.map_err(|_| ())?;
-        reject_actionable_status(report.delayed_status_flags)?;
+        reject_unexpected_stimulus_status(report.delayed_status_flags)?;
         report.delayed_read_elapsed_us = elapsed_u32(delayed_start_us, ctx.delay.now_us());
 
         ctx.tmc
