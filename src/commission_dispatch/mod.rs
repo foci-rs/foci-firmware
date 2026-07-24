@@ -1470,15 +1470,12 @@ pub async fn drive_commission_result_with_stages<B: CommissioningBackend>(
                 _ => unreachable!("velocity-integral terminal produced a nonterminal outcome"),
             }
         }
-        other => {
-            emit_outer_safety_timing_before_failure(&other, engine, backend);
-            drive_commission_result(other, engine, backend, state, pwm_maxcnt).await
-        }
+        _ => unreachable!("non-velocity terminal reached retained velocity dispatch"),
     }
 }
 
 #[cfg(feature = "trace-velocity-sweep")]
-fn emit_outer_safety_timing_before_failure<B: CommissioningBackend>(
+pub(crate) fn emit_outer_safety_timing_before_failure<B: CommissioningBackend>(
     result: &StepResult,
     engine: &mut Option<CommissioningEngine>,
     backend: &mut B,

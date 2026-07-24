@@ -520,18 +520,48 @@ impl TmcControlRuntime {
             &mut self.stored_gains,
         );
         #[cfg(feature = "trace-velocity-sweep")]
-        let channel = self.channel;
-        #[cfg(feature = "trace-velocity-sweep")]
-        let outcome = crate::commission_dispatch::drive_commission_result_with_stages(
-            result.into_step_result(),
-            &mut self.commission_engine,
-            backend,
-            &mut dispatch,
-            config.tmc.pwm_maxcnt,
-            channel,
-            retention,
-        )
-        .await;
+        let outcome = match result {
+            CommissionTerminal::VelocitySweep(terminal) => {
+                crate::commission_dispatch::drive_commission_result_with_stages(
+                    crate::commissioning::types::StepResult::VelocitySweepTerminal(terminal),
+                    &mut self.commission_engine,
+                    backend,
+                    &mut dispatch,
+                    config.tmc.pwm_maxcnt,
+                    self.channel,
+                    retention,
+                )
+                .await
+            }
+            CommissionTerminal::VelocityIntegral(terminal) => {
+                crate::commission_dispatch::drive_commission_result_with_stages(
+                    crate::commissioning::types::StepResult::VelocityIntegralTerminal(terminal),
+                    &mut self.commission_engine,
+                    backend,
+                    &mut dispatch,
+                    config.tmc.pwm_maxcnt,
+                    self.channel,
+                    retention,
+                )
+                .await
+            }
+            other => {
+                let other = other.into_step_result();
+                crate::commission_dispatch::emit_outer_safety_timing_before_failure(
+                    &other,
+                    &mut self.commission_engine,
+                    backend,
+                );
+                crate::commission_dispatch::drive_commission_result(
+                    other,
+                    &mut self.commission_engine,
+                    backend,
+                    &mut dispatch,
+                    config.tmc.pwm_maxcnt,
+                )
+                .await
+            }
+        };
         #[cfg(not(feature = "trace-velocity-sweep"))]
         let outcome = {
             let _ = retention;
