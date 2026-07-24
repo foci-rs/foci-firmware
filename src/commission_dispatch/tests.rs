@@ -34,7 +34,7 @@ fn stage_b_preflight_freezes_one_plan_and_rejects_mismatch_without_mutation() {
     };
 
     let mut slot = StageBCandidateSlot::new();
-    let first = preflight_stage_b_request(stage_b_request(), 4_000, 2_816, 0, 7, &mut slot)
+    let first = preflight_stage_b_request(stage_b_request(), 4_000, 2_816, 0, 0, 7, &mut slot)
         .expect("valid preflight");
     assert_eq!(first.plan.digest(), first.identity.plan_digest);
     assert_eq!(first.identity.channel, 0);
@@ -63,7 +63,7 @@ fn stage_b_preflight_freezes_one_plan_and_rejects_mismatch_without_mutation() {
 
     let mut changed = stage_b_request();
     changed.requested_velocity_mrev_s += 1;
-    let rejection = preflight_stage_b_request(changed, 4_000, 2_816, 0, 8, &mut slot)
+    let rejection = preflight_stage_b_request(changed, 4_000, 2_816, 0, 0, 8, &mut slot)
         .expect_err("changed frozen plan must be rejected");
     assert!(matches!(
         rejection,
@@ -85,7 +85,7 @@ fn stage_b_preflight_maps_invalid_plans_without_touching_retention() {
     let mut invalid = stage_b_request();
     invalid.requested_velocity_mrev_s = 0;
     assert_eq!(
-        preflight_stage_b_request(invalid, 4_000, 2_816, 0, 7, &mut slot),
+        preflight_stage_b_request(invalid, 4_000, 2_816, 0, 0, 7, &mut slot),
         Err(StageBPreflightRejection::InvalidPlan)
     );
     assert_eq!(slot.candidate(), None);
@@ -1761,6 +1761,7 @@ fn planned_stage_b_engine() -> CommissioningEngine {
         stage_b_request(),
         4_000,
         2_816,
+        0,
         0,
         9,
         &mut slot,

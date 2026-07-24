@@ -79,12 +79,18 @@ pub fn preflight_stage_b_request(
     request: VelocitySweepRequest,
     encoder_counts_per_rev: u32,
     torque_limit: u16,
+    limit_evidence_capability: u32,
     channel: u8,
     run_sequence: u32,
     stage_b_candidate: &mut StageBCandidateSlot,
 ) -> Result<StageBPreflight, StageBPreflightRejection> {
-    let plan = plan_velocity_sweep(request, encoder_counts_per_rev, torque_limit)
-        .map_err(|_| StageBPreflightRejection::InvalidPlan)?;
+    let plan = plan_velocity_sweep(
+        request,
+        encoder_counts_per_rev,
+        torque_limit,
+        limit_evidence_capability,
+    )
+    .map_err(|_| StageBPreflightRejection::InvalidPlan)?;
     let identity = StageBPlanIdentity {
         channel,
         build_revision: STAGE_B_BUILD_REVISION,

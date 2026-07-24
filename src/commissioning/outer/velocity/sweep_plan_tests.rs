@@ -1,3 +1,4 @@
+use super::super::VELOCITY_LIMIT_EVIDENCE_CAPABILITY_BEST_EFFORT;
 use super::{
     CLAMP_ENVELOPE, CLAMP_TRAVEL, CURRENT_HEADROOM_DEN, CURRENT_HEADROOM_NUM,
     EFFECTIVE_CEILING_ENCODER, EFFECTIVE_CEILING_MACHINE, ENVELOPE_ABSOLUTE_MARGIN_MREV_S,
@@ -42,7 +43,13 @@ fn live_recovery_geometry_extends_both_workflow_durations() {
     let request = live_recovery_request();
     let primitive_cap_us = u32::from(request.max_duration_ms) * 1_000;
 
-    let plan = plan_velocity_sweep(request, 4_000, 2_816).unwrap();
+    let plan = plan_velocity_sweep(
+        request,
+        4_000,
+        2_816,
+        VELOCITY_LIMIT_EVIDENCE_CAPABILITY_BEST_EFFORT,
+    )
+    .unwrap();
 
     assert_eq!(plan.planned_velocity_mrev_s, 4_394);
     assert_eq!(plan.rung_count, 23);
@@ -61,7 +68,13 @@ fn live_geometry_uses_mechanical_rpm_and_the_corrected_ladder() {
     live.max_stroke_travel_mrev = 2_000;
     live.settle_travel_reserve_mrev = 250;
 
-    let plan = plan_velocity_sweep(live, 4_000, 2_816).unwrap();
+    let plan = plan_velocity_sweep(
+        live,
+        4_000,
+        2_816,
+        VELOCITY_LIMIT_EVIDENCE_CAPABILITY_BEST_EFFORT,
+    )
+    .unwrap();
     let gains: heapless::Vec<u16, MAX_SWEEP_RUNGS> = plan
         .gains
         .iter()
@@ -104,7 +117,13 @@ fn inverse_envelope_uses_both_named_margins() {
 
 #[test]
 fn plan_reports_machine_and_encoder_ceiling_provenance() {
-    let machine_plan = plan_velocity_sweep(request(), 4_000, 1_000).unwrap();
+    let machine_plan = plan_velocity_sweep(
+        request(),
+        4_000,
+        1_000,
+        VELOCITY_LIMIT_EVIDENCE_CAPABILITY_BEST_EFFORT,
+    )
+    .unwrap();
     assert_eq!(machine_plan.effective_ceiling_mrev_s, 10_000);
     assert_eq!(
         machine_plan.effective_ceiling_source,
@@ -115,7 +134,13 @@ fn plan_reports_machine_and_encoder_ceiling_provenance() {
     let mut encoder_limited = request();
     encoder_limited.machine_velocity_ceiling_mrev_s = 200_000;
     encoder_limited.requested_velocity_mrev_s = 200_000;
-    let encoder_plan = plan_velocity_sweep(encoder_limited, 4_000, 1_000).unwrap();
+    let encoder_plan = plan_velocity_sweep(
+        encoder_limited,
+        4_000,
+        1_000,
+        VELOCITY_LIMIT_EVIDENCE_CAPABILITY_BEST_EFFORT,
+    )
+    .unwrap();
     assert_eq!(
         encoder_plan.effective_ceiling_source,
         EFFECTIVE_CEILING_ENCODER
@@ -161,7 +186,13 @@ fn travel_binding_has_a_named_clamp_cause() {
     let mut limited = request();
     limited.max_stroke_travel_mrev = 300;
     limited.settle_travel_reserve_mrev = 100;
-    let plan = plan_velocity_sweep(limited, 4_000, 1_000).unwrap();
+    let plan = plan_velocity_sweep(
+        limited,
+        4_000,
+        1_000,
+        VELOCITY_LIMIT_EVIDENCE_CAPABILITY_BEST_EFFORT,
+    )
+    .unwrap();
     assert_ne!(plan.clamp_flags & CLAMP_TRAVEL, 0);
     assert_eq!(plan.planned_velocity_mrev_s, 390);
 }
@@ -230,7 +261,13 @@ fn maximum_domain_stays_inside_the_audited_four_k_family() {
 
 #[test]
 fn plan_freezes_exact_ladder_and_workflow_duration() {
-    let plan = plan_velocity_sweep(request(), 4_000, 1_000).unwrap();
+    let plan = plan_velocity_sweep(
+        request(),
+        4_000,
+        1_000,
+        VELOCITY_LIMIT_EVIDENCE_CAPABILITY_BEST_EFFORT,
+    )
+    .unwrap();
     let base_us = u32::from(plan.rung_count)
         * u32::from(SWEEP_SLOT_COUNT)
         * (MOVING_STROKE_US + ZERO_SETTLE_US + SETTLE_ANALYSIS_BUDGET_US);
@@ -251,7 +288,13 @@ fn plan_freezes_exact_ladder_and_workflow_duration() {
 
 #[test]
 fn observation_count_changes_the_plan_digest() {
-    let mut n2 = plan_velocity_sweep(request(), 4_000, 1_000).unwrap();
+    let mut n2 = plan_velocity_sweep(
+        request(),
+        4_000,
+        1_000,
+        VELOCITY_LIMIT_EVIDENCE_CAPABILITY_BEST_EFFORT,
+    )
+    .unwrap();
     n2.observations_per_direction = 2;
     let mut n4 = n2;
     n4.observations_per_direction = 4;
@@ -282,7 +325,13 @@ fn compact_execution_plan_regenerates_every_emitted_gain() {
 
 #[test]
 fn execution_plan_drops_report_only_geometry() {
-    let plan = plan_velocity_sweep(request(), 4_000, 1_000).unwrap();
+    let plan = plan_velocity_sweep(
+        request(),
+        4_000,
+        1_000,
+        VELOCITY_LIMIT_EVIDENCE_CAPABILITY_BEST_EFFORT,
+    )
+    .unwrap();
     let execution = plan.execution_plan(0x1234_5678_9abc_def0);
     let report = plan.report(7, 0);
 
@@ -321,7 +370,13 @@ fn host_default_primitive_budget_does_not_cap_total_workflow() {
     let mut host_request = request();
     host_request.max_duration_ms = 3_000;
 
-    let plan = plan_velocity_sweep(host_request, 4_000, 1_000).unwrap();
+    let plan = plan_velocity_sweep(
+        host_request,
+        4_000,
+        1_000,
+        VELOCITY_LIMIT_EVIDENCE_CAPABILITY_BEST_EFFORT,
+    )
+    .unwrap();
 
     assert!(plan.maximum_workflow_ms > u32::from(host_request.max_duration_ms));
 }
@@ -332,7 +387,12 @@ fn primitive_budget_must_cover_one_moving_and_settle_window() {
     too_short.max_duration_ms = 455;
 
     assert_eq!(
-        plan_velocity_sweep(too_short, 4_000, 1_000),
+        plan_velocity_sweep(
+            too_short,
+            4_000,
+            1_000,
+            VELOCITY_LIMIT_EVIDENCE_CAPABILITY_BEST_EFFORT,
+        ),
         Err(VelocityPlanError::InvalidRequest)
     );
 }

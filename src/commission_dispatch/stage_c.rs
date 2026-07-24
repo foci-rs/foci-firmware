@@ -94,6 +94,7 @@ pub fn preflight_stage_c_request(
     request: VelocitySweepRequest,
     encoder_counts_per_rev: u32,
     torque_limit: u16,
+    limit_evidence_capability: u32,
     channel: u8,
     pwm_hz: u32,
     run_sequence: u32,
@@ -108,8 +109,13 @@ pub fn preflight_stage_c_request(
             requested_stage_b_plan_digest: 0,
         });
     }
-    let stage_b_plan = plan_velocity_sweep(request, encoder_counts_per_rev, torque_limit)
-        .map_err(|_| StageCPreflightRejection::InvalidPlan)?;
+    let stage_b_plan = plan_velocity_sweep(
+        request,
+        encoder_counts_per_rev,
+        torque_limit,
+        limit_evidence_capability,
+    )
+    .map_err(|_| StageCPreflightRejection::InvalidPlan)?;
     let stage_b_plan_digest = stage_b_plan.digest();
     if authority.stage_b_plan_digest != stage_b_plan_digest {
         return Err(StageCPreflightRejection::RejectedPlanMismatch {

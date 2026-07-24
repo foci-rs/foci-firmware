@@ -5357,7 +5357,13 @@ mod tests {
             positive_position_headroom_mrev: 50_000,
             max_duration_ms: 60_000,
         };
-        let stage_b = plan_velocity_sweep(request, 4_000, 2_816).unwrap();
+        let stage_b = plan_velocity_sweep(
+            request,
+            4_000,
+            2_816,
+            crate::commissioning::outer::velocity::VELOCITY_LIMIT_EVIDENCE_CAPABILITY_BEST_EFFORT,
+        )
+        .unwrap();
         let digest = stage_b.digest();
         plan_velocity_integral_response(
             StageCAuthority {

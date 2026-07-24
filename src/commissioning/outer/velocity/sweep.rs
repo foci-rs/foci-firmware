@@ -489,6 +489,7 @@ pub(crate) async fn step_velocity_sweep_with_trace<B: CommissioningBackend>(
                     request,
                     encoder_counts_per_rev,
                     torque_limit,
+                    super::VELOCITY_LIMIT_EVIDENCE_CAPABILITY_BEST_EFFORT,
                 ) {
                     Ok(plan) => {
                         let plan_digest = plan.digest();

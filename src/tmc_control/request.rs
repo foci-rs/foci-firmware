@@ -77,6 +77,8 @@ where
     fn default_current_filter_hz(&self) -> u16;
     /// Return the configured PWM frequency that defines the Stage-C I ladder.
     fn pwm_freq_hz(&self) -> u32;
+    /// Return the board-verified velocity-limit evidence capability.
+    fn velocity_limit_evidence_capability(&self) -> u32;
     /// Return whether the selected channel's physical step queue is empty.
     fn motion_scale_queue_empty(&self) -> bool;
     /// Install a freshly centered pulse mapper into the idle board P3 scheduler.
@@ -696,6 +698,7 @@ where
                     request,
                     encoder_counts_per_rev,
                     current_limit.raw(),
+                    board.velocity_limit_evidence_capability(),
                     board.channel(),
                     board.pwm_freq_hz(),
                     run_sequence,
@@ -737,6 +740,7 @@ where
                             request,
                             encoder_counts_per_rev,
                             current_limit.raw(),
+                            board.velocity_limit_evidence_capability(),
                             board.channel(),
                             run_sequence,
                             stage_b_candidate,
@@ -879,6 +883,7 @@ where
                                 request,
                                 encoder_counts_per_rev,
                                 current_limit.raw(),
+                                board.velocity_limit_evidence_capability(),
                                 board.channel(),
                                 board.pwm_freq_hz(),
                                 run_sequence,
@@ -1417,6 +1422,7 @@ mod tests {
         commissioning_blocked: bool,
         normal_tail: TmcControlRequestTail,
         default_current_filter_hz: u16,
+        velocity_limit_evidence_capability: u32,
         motion_scale_queue_empty: bool,
         mapper_install_result: Result<(), MotionScaleMapperInstallError>,
         mapper_install_calls: u8,
@@ -1447,6 +1453,8 @@ mod tests {
                 commissioning_blocked: false,
                 normal_tail,
                 default_current_filter_hz: 6000,
+                velocity_limit_evidence_capability:
+                    crate::commissioning::outer::velocity::VELOCITY_LIMIT_EVIDENCE_CAPABILITY_BEST_EFFORT,
                 motion_scale_queue_empty: true,
                 mapper_install_result: Ok(()),
                 mapper_install_calls: 0,
@@ -1511,6 +1519,10 @@ mod tests {
 
         fn pwm_freq_hz(&self) -> u32 {
             25_000
+        }
+
+        fn velocity_limit_evidence_capability(&self) -> u32 {
+            self.velocity_limit_evidence_capability
         }
 
         fn motion_scale_queue_empty(&self) -> bool {
@@ -2361,6 +2373,8 @@ mod tests {
             use crate::commissioning::outer::velocity::sweep_reporting::encode_velocity_sweep_event;
 
             let mut board = RecordingBoard::skip_tick_tail();
+            board.velocity_limit_evidence_capability =
+                crate::commissioning::outer::velocity::VELOCITY_LIMIT_EVIDENCE_CAPABILITY_LATCHED_FLAG;
             let tmc_state = tmc_channel0();
             tmc_state
                 .configure_motion_scale(stepper_channel0(), 1_000, 3_200)
@@ -2389,6 +2403,17 @@ mod tests {
             let ReplyPayload::VelocitySweepEvent { event, .. } = board.replies[1] else {
                 panic!("accepted Stage B request must publish its plan")
             };
+            let crate::commissioning::types::VelocitySweepEvent::Planned(planned) = event else {
+                panic!("first Stage B event must be its immutable plan")
+            };
+            let expected = crate::commissioning::outer::velocity::sweep_plan::plan_velocity_sweep(
+                velocity_sweep_request(),
+                4_000,
+                2_816,
+                crate::commissioning::outer::velocity::VELOCITY_LIMIT_EVIDENCE_CAPABILITY_LATCHED_FLAG,
+            )
+            .unwrap();
+            assert_eq!(planned.plan_digest, expected.digest());
             assert_eq!(
                 board.velocity_sweep_records,
                 [encode_velocity_sweep_event(event)]
@@ -2426,7 +2451,13 @@ mod tests {
             let mut stage_b = StageBCandidateSlot::new();
             let mut stage_c = StageCCandidateSlot::new();
             let request = velocity_sweep_request();
-            let stage_b_plan = plan_velocity_sweep(request, 4_000, 2_816).unwrap();
+            let stage_b_plan = plan_velocity_sweep(
+                request,
+                4_000,
+                2_816,
+                crate::commissioning::outer::velocity::VELOCITY_LIMIT_EVIDENCE_CAPABILITY_BEST_EFFORT,
+            )
+            .unwrap();
             let authority = StageCAuthority {
                 channel: 0,
                 stage_b_plan_digest: stage_b_plan.digest(),
@@ -2575,7 +2606,7 @@ mod tests {
             };
             let mut slot = StageBCandidateSlot::new();
             let accepted = crate::commission_dispatch::stage_b::preflight_stage_b_request(
-                request, 4_000, 2_816, 0, 1, &mut slot,
+                request, 4_000, 2_816, 0, 0, 1, &mut slot,
             )
             .expect("valid retained plan");
             let retained = StageBCandidateSummary {

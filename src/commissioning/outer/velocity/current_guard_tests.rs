@@ -10,6 +10,9 @@ use super::integral_plan::{
 };
 use super::reproduction::STAGE_B_EVIDENCE_SCHEMA_REVISION;
 use super::sweep_plan::{RequestedVelocitySource, VelocitySweepRequest, plan_velocity_sweep};
+use super::{
+    VELOCITY_LIMIT_EVIDENCE_CAPABILITY_BEST_EFFORT, VELOCITY_LIMIT_EVIDENCE_CAPABILITY_LATCHED_FLAG,
+};
 use crate::commission_dispatch::test_support::{MockBackend, SpiOp};
 use crate::commissioning::outer::OuterMotionBudget;
 use foci_tmc4671::registers::PID_TORQUE_FLUX_LIMITS;
@@ -141,21 +144,32 @@ fn velocity_current_guard_contract() {
         positive_position_headroom_mrev: 7_025,
         max_duration_ms: 3_000,
     };
-    let stage_b = plan_velocity_sweep(request, 4_000, 2_816).unwrap();
+    let stage_b = plan_velocity_sweep(
+        request,
+        4_000,
+        2_816,
+        VELOCITY_LIMIT_EVIDENCE_CAPABILITY_LATCHED_FLAG,
+    )
+    .unwrap();
     assert_eq!(STAGE_B_EVIDENCE_SCHEMA_REVISION, 7);
     assert_eq!(
         stage_b.limit_evidence_capability,
-        VelocityLimitEvidenceCapability::BestEffortPolling
+        VelocityLimitEvidenceCapability::LatchedFlag
     );
     assert_eq!(
         stage_b
             .execution_plan(stage_b.digest())
             .limit_evidence_capability,
-        VelocityLimitEvidenceCapability::BestEffortPolling
+        VelocityLimitEvidenceCapability::LatchedFlag
     );
-    let mut latched_stage_b = stage_b;
-    latched_stage_b.limit_evidence_capability = VelocityLimitEvidenceCapability::LatchedFlag;
-    assert_ne!(stage_b.digest(), latched_stage_b.digest());
+    let best_effort_stage_b = plan_velocity_sweep(
+        request,
+        4_000,
+        2_816,
+        VELOCITY_LIMIT_EVIDENCE_CAPABILITY_BEST_EFFORT,
+    )
+    .unwrap();
+    assert_ne!(stage_b.digest(), best_effort_stage_b.digest());
 
     let stage_c = plan_velocity_integral_response(
         StageCAuthority {
@@ -184,15 +198,16 @@ fn velocity_current_guard_contract() {
     assert_eq!(STAGE_C_EVIDENCE_SCHEMA_REVISION, 3);
     assert_eq!(
         stage_c.limit_evidence_capability,
-        VelocityLimitEvidenceCapability::BestEffortPolling
+        VelocityLimitEvidenceCapability::LatchedFlag
     );
     assert_eq!(
         stage_c.execution_plan().limit_evidence_capability,
-        VelocityLimitEvidenceCapability::BestEffortPolling
+        VelocityLimitEvidenceCapability::LatchedFlag
     );
-    let mut latched_stage_c = stage_c;
-    latched_stage_c.limit_evidence_capability = VelocityLimitEvidenceCapability::LatchedFlag;
-    assert_ne!(stage_c.digest(), latched_stage_c.digest());
+    let mut best_effort_stage_c = stage_c;
+    best_effort_stage_c.limit_evidence_capability =
+        VelocityLimitEvidenceCapability::BestEffortPolling;
+    assert_ne!(stage_c.digest(), best_effort_stage_c.digest());
 }
 
 #[test]
@@ -243,6 +258,7 @@ fn velocity_current_prevention_configuration_matrix() {
                                     request,
                                     encoder_counts_per_rev,
                                     u16::try_from(operational_limit).unwrap(),
+                                    VELOCITY_LIMIT_EVIDENCE_CAPABILITY_BEST_EFFORT,
                                 );
                                 let plan = planned.unwrap_or_else(|error| {
                                     panic!(

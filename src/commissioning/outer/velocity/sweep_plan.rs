@@ -358,6 +358,7 @@ pub fn plan_velocity_sweep(
     request: VelocitySweepRequest,
     encoder_counts_per_rev: u32,
     torque_flux_limit: u16,
+    limit_evidence_capability: u32,
 ) -> Result<VelocitySweepPlan, VelocityPlanError> {
     if request.requested_velocity_mrev_s == 0
         || request.machine_velocity_ceiling_mrev_s == 0
@@ -467,6 +468,16 @@ pub fn plan_velocity_sweep(
     let mut gains = [PidGain::ZERO; MAX_SWEEP_RUNGS];
     gains[..ladder.len()].copy_from_slice(ladder.as_slice());
 
+    let limit_evidence_capability = match limit_evidence_capability {
+        super::VELOCITY_LIMIT_EVIDENCE_CAPABILITY_BEST_EFFORT => {
+            VelocityLimitEvidenceCapability::BestEffortPolling
+        }
+        super::VELOCITY_LIMIT_EVIDENCE_CAPABILITY_LATCHED_FLAG => {
+            VelocityLimitEvidenceCapability::LatchedFlag
+        }
+        _ => return Err(VelocityPlanError::InvalidRequest),
+    };
+
     Ok(VelocitySweepPlan {
         requested_velocity_mrev_s: request.requested_velocity_mrev_s,
         planned_velocity_mrev_s,
@@ -494,7 +505,7 @@ pub fn plan_velocity_sweep(
         positive_position_headroom_mrev: request.positive_position_headroom_mrev,
         hard_torque_limit: torque_flux_limit,
         usable_torque_limit,
-        limit_evidence_capability: VelocityLimitEvidenceCapability::BestEffortPolling,
+        limit_evidence_capability,
     })
 }
 

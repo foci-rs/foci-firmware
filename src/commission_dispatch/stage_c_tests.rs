@@ -4,6 +4,7 @@ use super::stage_c::{
 };
 use super::{CommissionOutcome, ReplyPayload, drive_commission_result_with_stages};
 use crate::commissioning::outer::OuterMotionBudget;
+use crate::commissioning::outer::velocity::VELOCITY_LIMIT_EVIDENCE_CAPABILITY_BEST_EFFORT;
 use crate::commissioning::outer::velocity::integral_evidence::{
     ExactRateInterval, IntegralRunEvidence,
 };
@@ -49,7 +50,13 @@ fn authority() -> StageCAuthority {
 }
 
 fn stage_b_plan() -> crate::commissioning::outer::velocity::sweep_plan::VelocitySweepPlan {
-    plan_velocity_sweep(request(), COUNTS_PER_REV, TORQUE_LIMIT).expect("valid Stage-B plan")
+    plan_velocity_sweep(
+        request(),
+        COUNTS_PER_REV,
+        TORQUE_LIMIT,
+        VELOCITY_LIMIT_EVIDENCE_CAPABILITY_BEST_EFFORT,
+    )
+    .expect("valid Stage-B plan")
 }
 
 fn stage_c_plan() -> crate::commissioning::outer::velocity::integral_plan::VelocityIntegralPlan {
@@ -145,6 +152,7 @@ fn retained_authority_regenerates_the_exact_stage_c_plan_before_motion() {
         request(),
         COUNTS_PER_REV,
         TORQUE_LIMIT,
+        VELOCITY_LIMIT_EVIDENCE_CAPABILITY_BEST_EFFORT,
         CHANNEL,
         PWM_HZ,
         7,
@@ -171,6 +179,7 @@ fn changed_resume_plan_is_rejected_without_mutating_retention() {
         changed,
         COUNTS_PER_REV,
         TORQUE_LIMIT,
+        VELOCITY_LIMIT_EVIDENCE_CAPABILITY_BEST_EFFORT,
         CHANNEL,
         PWM_HZ,
         8,
@@ -388,6 +397,7 @@ fn outer_safety_timing_terminal_order_composite_preserves_intermediate_state() {
             request(),
             COUNTS_PER_REV,
             TORQUE_LIMIT,
+            VELOCITY_LIMIT_EVIDENCE_CAPABILITY_BEST_EFFORT,
             CHANNEL,
             8,
             &mut stage_b_slot,
@@ -487,6 +497,7 @@ fn reproduced_current_headroom_installs_authority_without_continuation() {
             request(),
             COUNTS_PER_REV,
             TORQUE_LIMIT,
+            VELOCITY_LIMIT_EVIDENCE_CAPABILITY_BEST_EFFORT,
             CHANNEL,
             8,
             &mut stage_b_slot,
@@ -543,6 +554,7 @@ fn reproduced_current_headroom_installs_authority_without_continuation() {
             request(),
             COUNTS_PER_REV,
             TORQUE_LIMIT,
+            VELOCITY_LIMIT_EVIDENCE_CAPABILITY_BEST_EFFORT,
             CHANNEL,
             PWM_HZ,
             9,
@@ -569,6 +581,7 @@ fn outer_safety_timing_terminal_order_stage_c_resume() {
             request(),
             COUNTS_PER_REV,
             TORQUE_LIMIT,
+            VELOCITY_LIMIT_EVIDENCE_CAPABILITY_BEST_EFFORT,
             CHANNEL,
             PWM_HZ,
             9,

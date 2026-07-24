@@ -2044,7 +2044,7 @@ mod tests {
             max_duration_ms: params.max_duration_ms,
         };
         let mut slot = StageBCandidateSlot::new();
-        let preflight = preflight_stage_b_request(request, 4_000, 2_816, 0, 42, &mut slot)
+        let preflight = preflight_stage_b_request(request, 4_000, 2_816, 0, 0, 42, &mut slot)
             .expect("valid Stage B preflight");
         let expected_digest = preflight.identity.plan_digest;
         let engine = CommissioningEngine::new_outer_for_tmc_with_stage_b_preflight(

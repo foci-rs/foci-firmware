@@ -35,7 +35,13 @@ fn authority(final_p: u16) -> StageCAuthority {
 }
 
 fn stage_b_plan() -> super::sweep_plan::VelocitySweepPlan {
-    plan_velocity_sweep(stage_b_request(), 4_000, 2_816).unwrap()
+    plan_velocity_sweep(
+        stage_b_request(),
+        4_000,
+        2_816,
+        super::VELOCITY_LIMIT_EVIDENCE_CAPABILITY_BEST_EFFORT,
+    )
+    .unwrap()
 }
 
 fn motion_budget() -> OuterMotionBudget {
