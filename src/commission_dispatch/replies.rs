@@ -5108,6 +5108,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "trace-velocity-sweep")]
     #[test]
     fn primitive_current_events_are_trace_only() {
         use crate::commissioning::types::{
