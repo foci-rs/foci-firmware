@@ -1448,7 +1448,7 @@ impl TmcControlRuntime {
                     Ok(gains) => gains,
                     Err(_) => return HomingMaintenanceResult::RetryCurrentState,
                 };
-                let reg = PidGainPair::new(gains.position_p, PidGain::ZERO).register_value();
+                let reg = PidGainPair::new_legacy(gains.position_p, PidGain::ZERO).register_value();
                 let _ = tmc_spi
                     .write_register(foci_tmc4671::registers::PID_POSITION_P_POSITION_I, reg)
                     .await;
@@ -1460,7 +1460,8 @@ impl TmcControlRuntime {
                     Ok(gains) => gains,
                     Err(_) => return HomingMaintenanceResult::RetryCurrentState,
                 };
-                let reg = PidGainPair::new(gains.position_p, gains.position_i).register_value();
+                let reg =
+                    PidGainPair::new_legacy(gains.position_p, gains.position_i).register_value();
                 let _ = tmc_spi
                     .write_register(foci_tmc4671::registers::PID_POSITION_P_POSITION_I, reg)
                     .await;

@@ -156,7 +156,7 @@ pub(crate) async fn step_position_tune_with_trace<B: CommissioningBackend>(
                 Ok(gain) => gain,
                 Err(_) => return fail_outer(phase, CommissionError::PositionTuneFailed),
             };
-            let pos_reg = PidGainPair::new(position_p, PidGain::ZERO).register_value();
+            let pos_reg = PidGainPair::new_legacy(position_p, PidGain::ZERO).register_value();
             if backend
                 .write_register(PID_POSITION_P_POSITION_I, pos_reg)
                 .await
@@ -377,7 +377,8 @@ pub(crate) async fn step_position_tune_with_trace<B: CommissioningBackend>(
                                 return fail_outer(phase, CommissionError::PositionTuneFailed);
                             }
                         };
-                        let pos_reg = PidGainPair::new(position_p, PidGain::ZERO).register_value();
+                        let pos_reg =
+                            PidGainPair::new_legacy(position_p, PidGain::ZERO).register_value();
                         if backend
                             .write_register(PID_POSITION_P_POSITION_I, pos_reg)
                             .await

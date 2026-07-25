@@ -723,12 +723,12 @@ pub async fn restore_entry_gains<B: CommissioningBackend>(
         PidGain::new(snapshot.position_p).map_err(|_| CommissionError::PositionTuneFailed)?;
     let position_i =
         PidGain::new(snapshot.position_i).map_err(|_| CommissionError::PositionTuneFailed)?;
-    let velocity_reg = PidGainPair::new(velocity_p, velocity_i).register_value();
+    let velocity_reg = PidGainPair::new_legacy(velocity_p, velocity_i).register_value();
     backend
         .write_register(PID_VELOCITY_P_VELOCITY_I, velocity_reg)
         .await
         .map_err(|_| CommissionError::Spi)?;
-    let position_reg = PidGainPair::new(position_p, position_i).register_value();
+    let position_reg = PidGainPair::new_legacy(position_p, position_i).register_value();
     backend
         .write_register(PID_POSITION_P_POSITION_I, position_reg)
         .await

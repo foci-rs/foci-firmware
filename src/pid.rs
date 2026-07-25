@@ -92,8 +92,8 @@ impl InnerLoopGains {
     /// Returns (flux_register, torque_register) ready for
     /// `PID_FLUX_P_FLUX_I` (0x54) and `PID_TORQUE_P_TORQUE_I` (0x56).
     pub fn to_registers(self) -> (u32, u32) {
-        let flux = PidGainPair::new(self.flux_p, self.flux_i).register_value();
-        let torque = PidGainPair::new(self.torque_p, self.torque_i).register_value();
+        let flux = PidGainPair::new_legacy(self.flux_p, self.flux_i).register_value();
+        let torque = PidGainPair::new_legacy(self.torque_p, self.torque_i).register_value();
         (flux, torque)
     }
 
@@ -102,10 +102,10 @@ impl InnerLoopGains {
         let flux = PidGainPair::try_from_register(flux_reg)?;
         let torque = PidGainPair::try_from_register(torque_reg)?;
         Ok(Self {
-            flux_p: flux.p,
-            flux_i: flux.i,
-            torque_p: torque.p,
-            torque_i: torque.i,
+            flux_p: PidGain::new(flux.p.raw())?,
+            flux_i: PidGain::new(flux.i.raw())?,
+            torque_p: PidGain::new(torque.p.raw())?,
+            torque_i: PidGain::new(torque.i.raw())?,
         })
     }
 }
@@ -116,8 +116,8 @@ impl OuterLoopGains {
     /// Returns `(velocity_register, position_register)` ready for
     /// `PID_VELOCITY_P_VELOCITY_I` and `PID_POSITION_P_POSITION_I`.
     pub fn to_registers(self) -> (u32, u32) {
-        let velocity = PidGainPair::new(self.velocity_p, self.velocity_i).register_value();
-        let position = PidGainPair::new(self.position_p, self.position_i).register_value();
+        let velocity = PidGainPair::new_legacy(self.velocity_p, self.velocity_i).register_value();
+        let position = PidGainPair::new_legacy(self.position_p, self.position_i).register_value();
         (velocity, position)
     }
 }

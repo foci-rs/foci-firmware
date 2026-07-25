@@ -1223,8 +1223,8 @@ async fn restore_current_validation_safe_state<B: CommissioningBackend>(
         failed = true;
     }
 
-    let flux_reg = PidGainPair::new(gains.flux_p, gains.flux_i).register_value();
-    let torque_reg = PidGainPair::new(gains.torque_p, gains.torque_i).register_value();
+    let flux_reg = PidGainPair::new_legacy(gains.flux_p, gains.flux_i).register_value();
+    let torque_reg = PidGainPair::new_legacy(gains.torque_p, gains.torque_i).register_value();
     if backend
         .write_register(PID_FLUX_P_FLUX_I, flux_reg)
         .await
@@ -1424,9 +1424,10 @@ pub(crate) async fn step_current_validate<B: CommissioningBackend>(
         CurrentValidateState::WriteGains => {
             // Write gains to TMC4671 PI registers.
             // PID_FLUX_P_FLUX_I: P in [31:16], I in [15:0]
-            let flux_reg = PidGainPair::new(data.gains.flux_p, data.gains.flux_i).register_value();
+            let flux_reg =
+                PidGainPair::new_legacy(data.gains.flux_p, data.gains.flux_i).register_value();
             let torque_reg =
-                PidGainPair::new(data.gains.torque_p, data.gains.torque_i).register_value();
+                PidGainPair::new_legacy(data.gains.torque_p, data.gains.torque_i).register_value();
 
             if backend
                 .write_register(PID_FLUX_P_FLUX_I, flux_reg)

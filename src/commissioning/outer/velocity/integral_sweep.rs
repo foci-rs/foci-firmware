@@ -694,7 +694,7 @@ pub(crate) async fn step_velocity_integral_with_trace<B: CommissioningBackend>(
             if backend
                 .write_register(
                     PID_VELOCITY_P_VELOCITY_I,
-                    PidGainPair::new(p, i).register_value(),
+                    PidGainPair::new_legacy(p, i).register_value(),
                 )
                 .await
                 .is_err()

@@ -70,7 +70,7 @@ pub(crate) async fn step_rung_origin_recovery<B: CommissioningBackend>(
             if backend
                 .write_register(
                     PID_VELOCITY_P_VELOCITY_I,
-                    PidGainPair::new(runtime.p, PidGain::ZERO).register_value(),
+                    PidGainPair::new_legacy(runtime.p, PidGain::ZERO).register_value(),
                 )
                 .await
                 .is_err()

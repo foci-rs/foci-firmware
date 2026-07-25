@@ -627,7 +627,8 @@ pub(crate) async fn step_velocity_sweep_with_trace<B: CommissioningBackend>(
                 || backend
                     .write_register(
                         PID_VELOCITY_P_VELOCITY_I,
-                        PidGainPair::new(p, foci_tmc4671::pid::PidGain::ZERO).register_value(),
+                        PidGainPair::new_legacy(p, foci_tmc4671::pid::PidGain::ZERO)
+                            .register_value(),
                     )
                     .await
                     .is_err()

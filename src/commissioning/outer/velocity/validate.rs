@@ -336,8 +336,8 @@ pub(crate) async fn step_velocity_validate_with_trace<B: CommissioningBackend>(
             )
             .max(1) as u32;
 
-            let vel_reg =
-                PidGainPair::new(data.gains.velocity_p, data.gains.velocity_i).register_value();
+            let vel_reg = PidGainPair::new_legacy(data.gains.velocity_p, data.gains.velocity_i)
+                .register_value();
             if backend
                 .write_register(PID_VELOCITY_P_VELOCITY_I, vel_reg)
                 .await

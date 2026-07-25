@@ -187,7 +187,7 @@ fn integral_recovery_follows_the_emitted_opening_anchor_and_restores_i_ladder_or
     assert!(backend.spi_log.iter().any(|operation| {
         matches!(operation, SpiOp::Write(address, value)
             if *address == PID_VELOCITY_P_VELOCITY_I.addr()
-                && *value == PidGainPair::new(PidGain::new(1_448).unwrap(), PidGain::ZERO)
+                && *value == PidGainPair::new_legacy(PidGain::new(1_448).unwrap(), PidGain::ZERO)
                     .register_value())
     }));
 }
@@ -373,7 +373,7 @@ fn setup_and_first_command_preserve_plan_before_motion_and_clear_integrator() {
     assert!(backend.spi_log.iter().any(|operation| {
         matches!(operation, SpiOp::Write(address, value)
             if *address == PID_VELOCITY_P_VELOCITY_I.addr()
-                && *value == PidGainPair::new(PidGain::new(1_448).unwrap(), PidGain::ZERO)
+                && *value == PidGainPair::new_legacy(PidGain::new(1_448).unwrap(), PidGain::ZERO)
                     .register_value())
     }));
 
