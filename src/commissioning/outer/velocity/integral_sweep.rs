@@ -34,8 +34,9 @@ use super::integral_evidence::{
     IntegralRungEvidence, IntegralRungKind, analyze_integral_direction,
     classify_integral_observation,
 };
-use super::integral_plan::STAGE_C_MAX_POSITIVE_RUNGS;
-use super::integral_plan::VelocityIntegralExecutionPlan;
+use super::integral_plan::{
+    STAGE_C_MAX_POSITIVE_RUNGS, VelocityIntegralExecutionPlan, native_velocity_i_at,
+};
 use super::recovery::{
     RecoveryBindingSource, RecoveryStage, RungOriginRecoveryConfig, RungOriginRecoveryOutcome,
     RungOriginRecoveryResources, RungOriginRecoveryRuntime, RungOriginRecoveryStep,
@@ -74,7 +75,7 @@ pub(super) fn integral_i_at(plan: VelocityIntegralExecutionPlan, rung_index: u8)
     } else if rung_index == 0 || rung_index + 1 == total {
         Some(0)
     } else {
-        plan.i_start.checked_shl(u32::from(rung_index - 1))
+        native_velocity_i_at(rung_index - 1)
     }
 }
 

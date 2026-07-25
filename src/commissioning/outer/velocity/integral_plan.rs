@@ -13,15 +13,11 @@ use super::sweep_plan::{
 };
 
 /// Evidence schema stored in the RAM-only Stage-C candidate slot.
-pub const STAGE_C_EVIDENCE_SCHEMA_REVISION: u16 = 4;
+pub const STAGE_C_EVIDENCE_SCHEMA_REVISION: u16 = 5;
 /// Largest predeclared positive-I ladder accepted by the family-128 table.
 pub const STAGE_C_MAX_POSITIVE_RUNGS: usize = 30;
-/// Q4.12 encoding of the existing Stage-C minimum physical velocity-I gain.
-///
-/// Preserves the shelved plan's physical rung set by scaling
-/// every historical Q8.8 raw rung by 16. Selecting a finer low-I ladder remains
-/// future work.
-pub const STAGE_C_MIN_POSITIVE_I: u16 = 16;
+/// Minimum representable positive Q4.12 velocity-I gain.
+pub const STAGE_C_MIN_POSITIVE_I: u16 = 1;
 /// Independent observations collected in one direction at every Stage-C rung.
 pub const STAGE_C_OBSERVATIONS_PER_DIRECTION: u16 = 4;
 /// Forward and reverse observations collected at every Stage-C rung.
@@ -141,7 +137,7 @@ pub struct VelocityIntegralLadder {
     pub i_start: u16,
     /// Largest I whose time constant spans half the shortest suffix.
     pub i_top_cap: u16,
-    /// Exact whole-octave rungs no greater than `i_top_cap`.
+    /// Fixed low-I prefix followed by whole-octave rungs no greater than `i_top_cap`.
     pub rungs: Vec<u16, STAGE_C_MAX_POSITIVE_RUNGS>,
 }
 
@@ -311,7 +307,7 @@ pub struct VelocityIntegralExecutionPlan {
     pub pwm_hz: u32,
     /// Mechanical encoder quadrature counts per revolution.
     pub encoder_counts_per_rev: u32,
-    /// First positive-I rung; later rungs are exact left shifts.
+    /// First positive-I rung; the full fixed schedule comes from the canonical accessor.
     pub i_start: u16,
     /// Number of valid positive-I entries.
     pub positive_rung_count: u8,
@@ -379,7 +375,17 @@ pub const fn velocity_i_tau_us(i_raw: u16, pwm_hz: u32) -> Option<u64> {
     Some(numerator.div_ceil(denominator))
 }
 
-/// Build exact whole-octave I geometry from the declared acquisition times.
+/// Return one positive rung from the fixed native-Q4.12 schedule.
+pub(crate) const fn native_velocity_i_at(index: u8) -> Option<u16> {
+    match index {
+        0 => Some(1),
+        1 => Some(2),
+        2 => Some(3),
+        value => 1_u16.checked_shl((value - 1) as u32),
+    }
+}
+
+/// Build the fixed-prefix and whole-octave I geometry from declared acquisition times.
 pub fn build_integral_ladder(
     pwm_hz: u32,
     moving_stroke_us: u32,
@@ -398,15 +404,17 @@ pub fn build_integral_ladder(
         return Err(VelocityIntegralPlanError::InsufficientStructuralSpan);
     }
     let mut rungs = Vec::new();
-    let mut shift = 0;
-    while let Some(candidate) = i_start.checked_shl(shift) {
+    let mut index = 0_u8;
+    while let Some(candidate) = native_velocity_i_at(index) {
         if candidate > i_top_cap {
             break;
         }
         rungs
             .push(candidate)
             .map_err(|_| VelocityIntegralPlanError::ConfidenceFamilyTooLarge)?;
-        shift += 1;
+        index = index
+            .checked_add(1)
+            .ok_or(VelocityIntegralPlanError::Arithmetic)?;
     }
     if rungs.len() < 3 {
         return Err(VelocityIntegralPlanError::InsufficientStructuralSpan);
@@ -470,6 +478,8 @@ pub fn integral_workflow_maximum_ms(
         .ok_or(VelocityIntegralPlanError::Arithmetic)?;
     workflow_us
         .checked_add(recovery_us)
+        .and_then(|value| value.checked_add(ZERO_SETTLE_US))
+        .and_then(|value| value.checked_add(SETTLE_ANALYSIS_BUDGET_US))
         .map(|value| value.div_ceil(1_000))
         .ok_or(VelocityIntegralPlanError::Arithmetic)
 }
@@ -568,6 +578,8 @@ pub(crate) fn plan_velocity_integral_response(
                 .checked_mul(recovery.nominal_slot_us)
                 .ok_or(VelocityIntegralPlanError::Arithmetic)?,
         )
+        .and_then(|value| value.checked_add(ZERO_SETTLE_US))
+        .and_then(|value| value.checked_add(SETTLE_ANALYSIS_BUDGET_US))
         .ok_or(VelocityIntegralPlanError::Arithmetic)?;
     let maximum_workflow_us = workflow_us
         .checked_add(
@@ -575,6 +587,8 @@ pub(crate) fn plan_velocity_integral_response(
                 .checked_mul(recovery.maximum_slot_us)
                 .ok_or(VelocityIntegralPlanError::Arithmetic)?,
         )
+        .and_then(|value| value.checked_add(ZERO_SETTLE_US))
+        .and_then(|value| value.checked_add(SETTLE_ANALYSIS_BUDGET_US))
         .ok_or(VelocityIntegralPlanError::Arithmetic)?;
     let mut positive_i = [0; STAGE_C_MAX_POSITIVE_RUNGS];
     positive_i[..ladder.rungs.len()].copy_from_slice(ladder.rungs.as_slice());

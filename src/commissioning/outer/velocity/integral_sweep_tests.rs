@@ -32,7 +32,7 @@ fn plan() -> VelocityIntegralExecutionPlan {
         target_velocity_rpm: 176,
         pwm_hz: 25_000,
         encoder_counts_per_rev: 4_000,
-        i_start: 5,
+        i_start: 1,
         positive_rung_count: 5,
         family_size: 28,
         moving_stroke_us: 512_000,
@@ -51,12 +51,18 @@ fn plan() -> VelocityIntegralExecutionPlan {
 
 #[test]
 fn schedule_has_two_anchors_and_the_exact_positive_i_ladder() {
-    let plan = plan();
-    let emitted: [u16; 7] = core::array::from_fn(|index| {
+    let mut plan = plan();
+    plan.positive_rung_count = 12;
+    plan.family_size = 56;
+    plan.recovery_slot_count = 14;
+    let emitted: [u16; 14] = core::array::from_fn(|index| {
         integral_i_at(plan, index as u8).expect("declared rung must exist")
     });
-    assert_eq!(emitted, [0, 5, 10, 20, 40, 80, 0]);
-    assert_eq!(integral_i_at(plan, 7), None);
+    assert_eq!(
+        emitted,
+        [0, 1, 2, 3, 4, 8, 16, 32, 64, 128, 256, 512, 1_024, 0]
+    );
+    assert_eq!(integral_i_at(plan, 14), None);
 }
 
 #[test]

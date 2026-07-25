@@ -2,7 +2,7 @@ use super::integral_plan::{
     CommissioningWorkflowPlan, STAGE_C_EVIDENCE_SCHEMA_REVISION, STAGE_C_MAX_POSITIVE_RUNGS,
     STAGE_C_MIN_POSITIVE_I, STAGE_C_OBSERVATIONS_PER_RUNG, StageCAuthority, StageCPlanShape,
     VelocityIntegralPlanError, build_integral_ladder, confidence_family_size,
-    plan_velocity_integral_response, velocity_i_tau_us,
+    integral_workflow_maximum_ms, plan_velocity_integral_response, velocity_i_tau_us,
 };
 use super::sweep_plan::{
     MIN_SETTLE_CAPTURE_US, MOVING_STROKE_US, RequestedVelocitySource, SETTLE_ANALYSIS_BUDGET_US,
@@ -61,10 +61,10 @@ fn motion_budget() -> OuterMotionBudget {
 }
 
 #[test]
-fn current_geometry_derives_the_exact_octave_ladder() {
-    assert_eq!(STAGE_C_EVIDENCE_SCHEMA_REVISION, 4);
-    assert_eq!(STAGE_C_MIN_POSITIVE_I, 16);
-    assert_eq!(velocity_i_tau_us(16, 25_000), Some(2_621_440));
+fn native_q4_12_geometry_derives_the_fixed_prefix_and_octaves() {
+    assert_eq!(STAGE_C_EVIDENCE_SCHEMA_REVISION, 5);
+    assert_eq!(STAGE_C_MIN_POSITIVE_I, 1);
+    assert_eq!(velocity_i_tau_us(1, 25_000), Some(41_943_040));
     assert_eq!(velocity_i_tau_us(1_024, 25_000), Some(40_960));
 
     let ladder = build_integral_ladder(
@@ -75,21 +75,27 @@ fn current_geometry_derives_the_exact_octave_ladder() {
     )
     .unwrap();
 
-    assert_eq!(ladder.i_start, 16);
+    assert_eq!(ladder.i_start, 1);
     assert_eq!(ladder.i_top_cap, 1_310);
-    assert_eq!(ladder.rungs.as_slice(), &[16, 32, 64, 128, 256, 512, 1_024]);
+    assert_eq!(
+        ladder.rungs.as_slice(),
+        &[1, 2, 3, 4, 8, 16, 32, 64, 128, 256, 512, 1_024]
+    );
 
     let doubled_pwm = build_integral_ladder(50_000, 512_000, 64_000, 32_767).unwrap();
-    assert_eq!(doubled_pwm.i_start, 16);
+    assert_eq!(doubled_pwm.i_start, 1);
     assert_eq!(doubled_pwm.i_top_cap, 655);
-    assert_eq!(doubled_pwm.rungs.as_slice(), &[16, 32, 64, 128, 256, 512]);
+    assert_eq!(
+        doubled_pwm.rungs.as_slice(),
+        &[1, 2, 3, 4, 8, 16, 32, 64, 128, 256, 512]
+    );
 
     let shorter_stroke = build_integral_ladder(25_000, 256_000, 64_000, 32_767).unwrap();
-    assert_eq!(shorter_stroke.i_start, 16);
+    assert_eq!(shorter_stroke.i_start, 1);
     assert_eq!(shorter_stroke.i_top_cap, 1_310);
     assert_eq!(
         shorter_stroke.rungs.as_slice(),
-        &[16, 32, 64, 128, 256, 512, 1_024]
+        &[1, 2, 3, 4, 8, 16, 32, 64, 128, 256, 512, 1_024]
     );
 }
 
@@ -109,9 +115,11 @@ fn integral_accumulation_ratio_tracks_pwm_and_stroke_geometry() {
         (12_800, 1_048_576)
     );
     assert_eq!(
-        [16_u16, 32, 64, 128, 256, 512, 1_024].map(|gain| current_cycles * u64::from(gain)),
+        [1_u16, 2, 3, 4, 8, 16, 32, 64, 128, 256, 512, 1_024]
+            .map(|gain| current_cycles * u64::from(gain)),
         [
-            204_800, 409_600, 819_200, 1_638_400, 3_276_800, 6_553_600, 13_107_200,
+            12_800, 25_600, 38_400, 51_200, 102_400, 204_800, 409_600, 819_200, 1_638_400,
+            3_276_800, 6_553_600, 13_107_200,
         ]
     );
     assert_eq!(stroke_cycles(50_000, 512_000), 25_600);
@@ -127,31 +135,33 @@ fn top_cap_is_not_appended_as_a_non_octave_rung() {
 }
 
 #[test]
-fn historical_q8_8_ladder_is_evidence_not_current_geometry() {
-    let historical_q8_8 = [1_u16, 2, 4, 8, 16, 32, 64];
+fn q4_12_deployment_bridge_is_evidence_not_native_geometry() {
+    let deployment_bridge = [16_u16, 32, 64, 128, 256, 512, 1_024];
     let current =
         build_integral_ladder(25_000, MOVING_STROKE_US, MIN_SETTLE_CAPTURE_US, 32_767).unwrap();
 
     assert_eq!(
         current.rungs.as_slice(),
-        &historical_q8_8.map(|gain| gain * 16)
+        &[1, 2, 3, 4, 8, 16, 32, 64, 128, 256, 512, 1_024]
     );
-    assert_eq!(
-        historical_q8_8.map(|gain| 12_800 * u64::from(gain)),
-        [12_800, 25_600, 51_200, 102_400, 204_800, 409_600, 819_200]
-    );
+    assert_ne!(current.rungs.as_slice(), deployment_bridge);
 }
 
 #[test]
 fn confidence_family_counts_both_anchors() {
     assert_eq!(STAGE_C_MAX_POSITIVE_RUNGS, 30);
     assert_eq!(STAGE_C_OBSERVATIONS_PER_RUNG, 8);
-    assert_eq!(confidence_family_size(7), Ok(36));
+    assert_eq!(confidence_family_size(12), Ok(56));
     assert_eq!(confidence_family_size(30), Ok(128));
     assert_eq!(
         confidence_family_size(31),
         Err(VelocityIntegralPlanError::ConfidenceFamilyTooLarge)
     );
+}
+
+#[test]
+fn preflight_duration_reserves_the_fixed_cleanup_window() {
+    assert_eq!(integral_workflow_maximum_ms(25_000, 3_000), Ok(182_512));
 }
 
 #[test]
@@ -170,26 +180,29 @@ fn stage_c_plan_freezes_geometry_and_conservative_duration() {
 
     assert_eq!(plan.schema_revision, STAGE_C_EVIDENCE_SCHEMA_REVISION);
     assert_eq!(plan.final_p, 1_448);
-    assert_eq!(plan.positive_rungs(), &[16, 32, 64, 128, 256, 512, 1_024]);
-    assert_eq!(plan.family_size, 36);
-    assert_eq!(plan.total_rung_count, 9);
-    assert_eq!(plan.expected_observations, 72);
+    assert_eq!(
+        plan.positive_rungs(),
+        &[1, 2, 3, 4, 8, 16, 32, 64, 128, 256, 512, 1_024]
+    );
+    assert_eq!(plan.family_size, 56);
+    assert_eq!(plan.total_rung_count, 14);
+    assert_eq!(plan.expected_observations, 112);
     assert_eq!(plan.moving_stroke_us, 512_000);
     assert_eq!(plan.zero_settle_us, 500_000);
     assert_eq!(plan.analysis_budget_us, 236_000);
     assert_eq!(plan.recovery_origin_band_counts, 1_000);
     assert_eq!(plan.recovery_nominal_slot_us, 1_816_958);
     assert_eq!(plan.recovery_maximum_slot_us, 3_000_000);
-    assert_eq!(plan.recovery_slot_count, 9);
-    assert_eq!(plan.nominal_workflow_ms, 106_209);
-    assert_eq!(plan.maximum_workflow_ms, 116_856);
+    assert_eq!(plan.recovery_slot_count, 14);
+    assert_eq!(plan.nominal_workflow_ms, 165_950);
+    assert_eq!(plan.maximum_workflow_ms, 182_512);
     let base_us = u32::from(plan.total_rung_count)
         * STAGE_C_OBSERVATIONS_PER_RUNG
         * (MOVING_STROKE_US + ZERO_SETTLE_US + SETTLE_ANALYSIS_BUDGET_US);
     let recovery_us = u32::from(plan.total_rung_count) * plan.recovery_nominal_slot_us;
     assert_eq!(
         plan.nominal_workflow_ms,
-        (base_us + recovery_us).div_ceil(1_000)
+        (base_us + recovery_us + ZERO_SETTLE_US + SETTLE_ANALYSIS_BUDGET_US).div_ceil(1_000)
     );
 }
 
@@ -228,8 +241,8 @@ fn workflow_shape_does_not_change_either_stage_identity() {
     .unwrap();
 
     assert_eq!(candidate.maximum_workflow_ms, 298_632);
-    assert_eq!(composite.maximum_workflow_ms, 415_488);
-    assert_eq!(resume.maximum_workflow_ms, 116_856);
+    assert_eq!(composite.maximum_workflow_ms, 481_144);
+    assert_eq!(resume.maximum_workflow_ms, 182_512);
     assert_ne!(candidate.digest(), composite.digest());
     assert_ne!(composite.digest(), resume.digest());
     assert_eq!(StageCPlanShape::StageB as u8, 0);
@@ -245,7 +258,7 @@ fn invalid_geometry_and_missing_authority_reject_before_motion() {
     assert_eq!(velocity_i_tau_us(0, 25_000), None);
     assert_eq!(velocity_i_tau_us(5, 0), None);
     assert_eq!(
-        build_integral_ladder(25_000, 512_000, 64_000, 48),
+        build_integral_ladder(25_000, 512_000, 64_000, 2),
         Err(VelocityIntegralPlanError::InsufficientStructuralSpan)
     );
     assert_eq!(
@@ -253,7 +266,7 @@ fn invalid_geometry_and_missing_authority_reject_before_motion() {
             .unwrap()
             .rungs
             .as_slice(),
-        &[16, 32, 64, 128]
+        &[1, 2, 3, 4, 8, 16, 32, 64, 128]
     );
     assert_eq!(
         build_integral_ladder(1, 1_000_000, 2, u16::MAX),
