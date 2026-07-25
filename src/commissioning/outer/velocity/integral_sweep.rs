@@ -6,7 +6,9 @@ use crate::autotune::velocity_measurement::{
 use crate::autotune::{CommissionError, TmcMechanicalRpm, TransientBuffer};
 use crate::commissioning::backend::CommissioningBackend;
 use crate::commissioning::encoder_domain::EncoderDomain;
-use crate::commissioning::outer::{OuterPhase, VelocityIntegralData, VelocityIntegralState};
+use crate::commissioning::outer::{
+    OuterPhase, OuterSafetyLimits, VelocityIntegralData, VelocityIntegralState,
+};
 use crate::commissioning::schedule::next_grid_deadline;
 use crate::commissioning::types::{
     OUTER_SAFETY_FAULT_CURRENT, OUTER_SAFETY_FAULT_OBSERVATION_GAP,
@@ -58,6 +60,7 @@ const INTEGRAL_CAUSE_CURRENT_BEFORE_SUFFICIENCY: u8 = 2;
 const INTEGRAL_CAUSE_CURRENT_AFTER_SUFFICIENCY: u8 = 3;
 const INTEGRAL_CAUSE_INTEGRITY: u8 = 4;
 const INTEGRAL_CAUSE_RECOVERY: u8 = 5;
+pub(super) const INTEGRAL_CAUSE_BOOKEND_UNAVAILABLE: u8 = 8;
 const OPENING_WORD_BASE: usize = 0;
 const POSITIVE_WORD_BASE: usize = 4;
 const BOOKEND_WORD_BASE: usize = POSITIVE_WORD_BASE + 2 * STAGE_C_MAX_POSITIVE_RUNGS * 2;
@@ -118,6 +121,12 @@ pub(super) fn apply_integral_current_headroom(
     }
     data.recovery_unavailable = true;
     *state = VelocityIntegralState::Terminal;
+}
+
+pub(super) fn positive_directional_floors_exist(data: &VelocityIntegralData) -> bool {
+    data.eligible_masks
+        .iter()
+        .all(|mask| mask.count_ones() >= 3)
 }
 
 fn integral_stroke_index(rung_index: u8, slot: u8) -> Option<u16> {
@@ -227,6 +236,48 @@ pub(super) fn opening_recovery_lower_rate_q(
         0 | 1 => Ok(None),
         _ => unreachable!("direction bounds are validated above"),
     }
+}
+
+fn plan_integral_recovery(
+    data: &mut VelocityIntegralData,
+    workspace: &TransientBuffer,
+    safety: &OuterSafetyLimits,
+) -> Result<RungOriginRecoveryRuntime, CommissionError> {
+    let direction = usize::from(safety.unwrapped_position >= 0);
+    let lower_rate_q = opening_recovery_lower_rate_q(
+        workspace,
+        data.opening_direction_mask,
+        data.plan.target_velocity_rpm,
+        safety.counts_per_rev(),
+        direction,
+    )?;
+    let recovery_plan = plan_rung_origin_recovery(
+        safety.budget,
+        safety.counts_per_rev(),
+        data.plan.planned_velocity_mrev_s,
+    )
+    .map_err(|_| CommissionError::InvalidSchedule)?;
+    let clamp_limit = PidTorqueFluxLimit::new(u32::from(data.plan.hard_torque_limit))
+        .map_err(|_| CommissionError::InvalidSchedule)?;
+    data.current_observer
+        .reset(clamp_limit, data.plan.limit_evidence_capability);
+    RungOriginRecoveryRuntime::new(
+        RungOriginRecoveryConfig {
+            stage: RecoveryStage::Integral,
+            rung_index: data.rung_index,
+            p: PidGain::new(data.plan.final_p).expect("validated Stage-C P remains nonzero"),
+            target_velocity_rpm: TmcMechanicalRpm::from_register(data.plan.target_velocity_rpm),
+            planned_velocity_mrev_s: data.plan.planned_velocity_mrev_s,
+            start_offset_counts: safety.unwrapped_position,
+            lower_rate_q,
+            authority_source: if lower_rate_q.is_some() {
+                RecoveryBindingSource::SettledRate
+            } else {
+                RecoveryBindingSource::MissingRate
+            },
+        },
+        recovery_plan,
+    )
 }
 
 fn materialize_run_evidence(
@@ -481,6 +532,9 @@ fn evidence_terminal(data: &VelocityIntegralData, workspace: &TransientBuffer) -
                     IntegralInconclusiveKind::TooFewEligibleRungs => INTEGRAL_CAUSE_TOO_FEW_RUNGS,
                     IntegralInconclusiveKind::CurrentBoundBeforeSufficiency => {
                         INTEGRAL_CAUSE_CURRENT_BEFORE_SUFFICIENCY
+                    }
+                    IntegralInconclusiveKind::BookendUnavailable => {
+                        INTEGRAL_CAUSE_BOOKEND_UNAVAILABLE
                     }
                 }
             },
@@ -1121,7 +1175,19 @@ pub(crate) async fn step_velocity_integral_with_trace<B: CommissioningBackend>(
             data.observations.clear();
             safety.end_primitive();
             if data.observation_current_headroom {
-                apply_integral_current_headroom(state, data);
+                if matches!(
+                    integral_rung_kind(data.plan, data.rung_index),
+                    IntegralRungKind::Positive
+                ) && positive_directional_floors_exist(data)
+                {
+                    data.current_terminus = data.rung_index.checked_sub(1);
+                    match plan_integral_recovery(data, workspace, safety) {
+                        Ok(recovery) => *state = VelocityIntegralState::RecoverRung(recovery),
+                        Err(error) => return fail_integral(phase, backend, error).await,
+                    }
+                } else {
+                    apply_integral_current_headroom(state, data);
+                }
             } else if data.slot + 1 < INTEGRAL_SLOT_COUNT {
                 *state = VelocityIntegralState::Advance;
             } else {
@@ -1186,62 +1252,7 @@ pub(crate) async fn step_velocity_integral_with_trace<B: CommissioningBackend>(
                 IntegralRungKind::OpeningAnchor
                 | IntegralRungKind::Positive
                 | IntegralRungKind::ClosingBookend => {
-                    let direction = usize::from(safety.unwrapped_position >= 0);
-                    let lower_rate_q = match opening_recovery_lower_rate_q(
-                        workspace,
-                        data.opening_direction_mask,
-                        data.plan.target_velocity_rpm,
-                        safety.counts_per_rev(),
-                        direction,
-                    ) {
-                        Ok(rate) => rate,
-                        Err(error) => return fail_integral(phase, backend, error).await,
-                    };
-                    let recovery_plan = match plan_rung_origin_recovery(
-                        safety.budget,
-                        safety.counts_per_rev(),
-                        data.plan.planned_velocity_mrev_s,
-                    ) {
-                        Ok(plan) => plan,
-                        Err(_) => {
-                            return fail_integral(phase, backend, CommissionError::InvalidSchedule)
-                                .await;
-                        }
-                    };
-                    let clamp_limit =
-                        match PidTorqueFluxLimit::new(u32::from(data.plan.hard_torque_limit)) {
-                            Ok(limit) => limit,
-                            Err(_) => {
-                                return fail_integral(
-                                    phase,
-                                    backend,
-                                    CommissionError::InvalidSchedule,
-                                )
-                                .await;
-                            }
-                        };
-                    data.current_observer
-                        .reset(clamp_limit, data.plan.limit_evidence_capability);
-                    let recovery = match RungOriginRecoveryRuntime::new(
-                        RungOriginRecoveryConfig {
-                            stage: RecoveryStage::Integral,
-                            rung_index: data.rung_index,
-                            p: PidGain::new(data.plan.final_p)
-                                .expect("validated Stage-C P remains nonzero"),
-                            target_velocity_rpm: TmcMechanicalRpm::from_register(
-                                data.plan.target_velocity_rpm,
-                            ),
-                            planned_velocity_mrev_s: data.plan.planned_velocity_mrev_s,
-                            start_offset_counts: safety.unwrapped_position,
-                            lower_rate_q,
-                            authority_source: if lower_rate_q.is_some() {
-                                RecoveryBindingSource::SettledRate
-                            } else {
-                                RecoveryBindingSource::MissingRate
-                            },
-                        },
-                        recovery_plan,
-                    ) {
+                    let recovery = match plan_integral_recovery(data, workspace, safety) {
                         Ok(runtime) => runtime,
                         Err(error) => return fail_integral(phase, backend, error).await,
                     };
@@ -1295,9 +1306,18 @@ pub(crate) async fn step_velocity_integral_with_trace<B: CommissioningBackend>(
                         data.recovery_unavailable = contained;
                         *state = VelocityIntegralState::Terminal;
                     }
+                    IntegralRungKind::Positive if data.current_terminus.is_some() && contained => {
+                        data.recovery_unavailable = true;
+                        *state = VelocityIntegralState::Terminal;
+                    }
                     IntegralRungKind::OpeningAnchor | IntegralRungKind::Positive if contained => {
                         data.recovery_failure = true;
                         *state = VelocityIntegralState::Terminal;
+                    }
+                    IntegralRungKind::Positive if data.current_terminus.is_some() => {
+                        data.rung_index = data.plan.positive_rung_count.saturating_add(1);
+                        reset_rung(data);
+                        *state = VelocityIntegralState::WriteGains;
                     }
                     IntegralRungKind::OpeningAnchor | IntegralRungKind::Positive => {
                         data.rung_index = data.rung_index.saturating_add(1);

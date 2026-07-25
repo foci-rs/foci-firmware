@@ -116,6 +116,8 @@ pub enum IntegralInconclusiveKind {
     TooFewEligibleRungs,
     /// Current headroom ended the ladder before both directional floors existed.
     CurrentBoundBeforeSufficiency,
+    /// One or both required closing I=0 anchors were unavailable.
+    BookendUnavailable,
 }
 
 /// Per-run Stage-C handoff sufficiency; this is not I acceptance.
@@ -136,6 +138,8 @@ pub enum IntegralRunSufficiency {
         eligible_masks: [u32; DIRECTION_COUNT],
         /// Exact structural insufficiency.
         cause: IntegralInconclusiveKind,
+        /// Bit zero is the forward bookend and bit one is the reverse bookend.
+        bookend_available_mask: u8,
         /// Exact positive-rung current terminus, when present.
         current_terminus: Option<u8>,
     },
@@ -212,14 +216,23 @@ impl IntegralRunEvidence {
             .eligible_masks
             .iter()
             .all(|mask| mask.count_ones() >= 3);
+        let bookend_available_mask =
+            u8::from(self.bookend[0].is_some()) | (u8::from(self.bookend[1].is_some()) << 1);
         if sufficient {
-            let bookend_available_mask =
-                u8::from(self.bookend[0].is_some()) | (u8::from(self.bookend[1].is_some()) << 1);
-            Ok(IntegralRunSufficiency::Sufficient {
-                eligible_masks: self.eligible_masks,
-                bookend_available_mask,
-                current_terminus: self.current_terminus,
-            })
+            if bookend_available_mask == 0b11 {
+                Ok(IntegralRunSufficiency::Sufficient {
+                    eligible_masks: self.eligible_masks,
+                    bookend_available_mask,
+                    current_terminus: self.current_terminus,
+                })
+            } else {
+                Ok(IntegralRunSufficiency::Inconclusive {
+                    eligible_masks: self.eligible_masks,
+                    cause: IntegralInconclusiveKind::BookendUnavailable,
+                    bookend_available_mask,
+                    current_terminus: self.current_terminus,
+                })
+            }
         } else {
             Ok(IntegralRunSufficiency::Inconclusive {
                 eligible_masks: self.eligible_masks,
@@ -228,6 +241,7 @@ impl IntegralRunEvidence {
                 } else {
                     IntegralInconclusiveKind::TooFewEligibleRungs
                 },
+                bookend_available_mask,
                 current_terminus: self.current_terminus,
             })
         }

@@ -1,9 +1,14 @@
 use super::current_guard::VelocityLimitEvidenceCapability;
 use super::integral_plan::VelocityIntegralExecutionPlan;
 use super::integral_sweep::{
-    INTEGRAL_SLOT_COUNT, advance_integral_cursor, apply_integral_current_headroom,
-    integral_fault_terminal, integral_i_at, integral_slot_direction, opening_recovery_lower_rate_q,
+    INTEGRAL_CAUSE_BOOKEND_UNAVAILABLE, INTEGRAL_SLOT_COUNT, advance_integral_cursor,
+    apply_integral_current_headroom, integral_fault_terminal, integral_i_at,
+    integral_slot_direction, opening_recovery_lower_rate_q, positive_directional_floors_exist,
     step_velocity_integral_with_trace,
+};
+use super::recovery::{
+    ExactU64Parts, RecoveryBindingSource, RecoveryStage, RungOriginRecoveryOutcome,
+    RungOriginRecoveryReport,
 };
 use super::sweep_plan::RequestedVelocitySource;
 use crate::autotune::CommissionError;
@@ -249,11 +254,53 @@ fn partial_integral_current_terminus_does_not_schedule_a_bookend() {
     };
     data.rung_index = 3;
 
+    assert!(!positive_directional_floors_exist(data));
     apply_integral_current_headroom(state, data);
 
     assert_eq!(data.current_terminus, Some(2));
     assert_eq!(data.rung_index, 3);
     assert!(matches!(state, VelocityIntegralState::Terminal));
+}
+
+#[test]
+fn post_sufficiency_current_terminus_restores_origin_before_bookend() {
+    let mut phase = phase();
+    let OuterPhase::VelocityIntegral { state, data, .. } = &mut phase else {
+        unreachable!()
+    };
+    data.rung_index = 3;
+    data.eligible_masks = [0b111; 2];
+    data.current_terminus = Some(2);
+    assert!(positive_directional_floors_exist(data));
+    *state = VelocityIntegralState::FinalizeRecovery(RungOriginRecoveryReport {
+        stage: RecoveryStage::Integral,
+        rung_index: 3,
+        p_raw: 1_448,
+        planned_velocity_mrev_s: 2_929,
+        start_offset_counts: 1_500,
+        closest_offset_counts: 900,
+        final_offset_counts: 900,
+        origin_band_counts: 1_000,
+        lower_rate_q: ExactU64Parts::from_u64(10_000_000),
+        moving_duration_us: 100_000,
+        settle_duration_us: 500_000,
+        total_duration_us: 600_000,
+        peak_torque_target_abs: 1_000,
+        binding_source: RecoveryBindingSource::SettledRate,
+        outcome: RungOriginRecoveryOutcome::Recovered,
+    });
+    let mut workspace = TransientBuffer::new();
+    let mut backend = MockBackend::new();
+
+    assert!(matches!(
+        step(&mut phase, &mut workspace, &mut backend),
+        StepResult::VelocityIntegralEvent(VelocityIntegralEvent::Recovery(_))
+    ));
+    let OuterPhase::VelocityIntegral { state, data, .. } = phase else {
+        unreachable!()
+    };
+    assert_eq!(data.rung_index, data.plan.positive_rung_count + 1);
+    assert!(matches!(state, VelocityIntegralState::WriteGains));
 }
 
 fn phase() -> OuterPhase {
@@ -376,7 +423,7 @@ fn opening_anchor_exclusion_short_circuits_before_positive_i_motion() {
 }
 
 #[test]
-fn excluded_closing_bookend_does_not_discard_a_sufficient_curve() {
+fn excluded_closing_bookend_makes_the_curve_inconclusive() {
     let mut phase = phase();
     let mut workspace = TransientBuffer::new();
     let OuterPhase::VelocityIntegral {
@@ -405,14 +452,15 @@ fn excluded_closing_bookend_does_not_discard_a_sufficient_curve() {
     let StepResult::VelocityIntegralTerminal(terminal) =
         step(&mut phase, &mut workspace, &mut backend)
     else {
-        panic!("sufficient curve must reach the dedicated terminal")
+        panic!("bookend insufficiency must reach the dedicated terminal")
     };
-    assert_eq!(terminal.outcome, VelocityIntegralOutcome::CompleteCandidate);
+    assert_eq!(terminal.outcome, VelocityIntegralOutcome::Inconclusive);
+    assert_eq!(terminal.cause, INTEGRAL_CAUSE_BOOKEND_UNAVAILABLE);
     assert_eq!(terminal.evidence.bookend, [None, None]);
 }
 
 #[test]
-fn contained_bookend_recovery_preserves_sufficient_curve_with_annotation() {
+fn contained_recovery_after_an_eligible_bookend_is_nonblocking() {
     let mut phase = phase();
     let mut workspace = TransientBuffer::new();
     let OuterPhase::VelocityIntegral {
@@ -429,10 +477,14 @@ fn contained_bookend_recovery_preserves_sufficient_curve_with_annotation() {
     for (index, value) in [-1_i32, 11_733_334, -11_733_334, 1].into_iter().enumerate() {
         assert!(workspace.write_workspace_word(index, value as u32));
     }
-    data.rung_classes =
-        [VelocityObservationClass::StationarityExcluded(StationarityExclusion::NoBlockingPlateau);
-            8];
-    data.rung_intervals = [ExactRateInterval::EMPTY; 8];
+    data.rung_classes = [VelocityObservationClass::Eligible; 8];
+    data.rung_intervals = core::array::from_fn(|slot| {
+        if slot % 2 == 0 {
+            ExactRateInterval::new(100, 200).unwrap()
+        } else {
+            ExactRateInterval::new(-200, -100).unwrap()
+        }
+    });
     safety
         .configure_velocity_sweep_encoder_resolution(4_000)
         .unwrap();
@@ -461,7 +513,13 @@ fn contained_bookend_recovery_preserves_sufficient_curve_with_annotation() {
     assert_eq!(terminal.outcome, VelocityIntegralOutcome::CompleteCandidate);
     assert_eq!(terminal.cause, 0);
     assert!(terminal.recovery_unavailable);
-    assert_eq!(terminal.evidence.bookend, [None, None]);
+    assert_eq!(
+        terminal.evidence.bookend,
+        [
+            Some(ExactRateInterval::new(100, 200).unwrap()),
+            Some(ExactRateInterval::new(-200, -100).unwrap()),
+        ]
+    );
 }
 
 #[test]

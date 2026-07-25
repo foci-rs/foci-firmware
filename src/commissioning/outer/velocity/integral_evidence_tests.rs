@@ -275,7 +275,7 @@ fn ambiguity_and_signed_overshoot_are_reported_without_teleology() {
 }
 
 #[test]
-fn run_sufficiency_is_directional_sparse_and_bookend_independent() {
+fn stage_c_requires_both_bookend_directions() {
     let mut run = IntegralRunEvidence::new([interval(100, 200), interval(-200, -100)]);
     for rung in [0, 2, 4] {
         run.retain_positive(0, rung, interval(10 + rung as i32, 20 + rung as i32))
@@ -285,14 +285,34 @@ fn run_sufficiency_is_directional_sparse_and_bookend_independent() {
         run.retain_positive(1, rung, interval(-20 - rung as i32, -10 - rung as i32))
             .unwrap();
     }
+    assert_eq!(
+        run.assess(5).unwrap(),
+        IntegralRunSufficiency::Inconclusive {
+            eligible_masks: [0b1_0101, 0b0_1110],
+            cause: IntegralInconclusiveKind::BookendUnavailable,
+            bookend_available_mask: 0,
+            current_terminus: None,
+        }
+    );
     run.bookend = [Some(interval(101, 201)), None];
 
     assert_eq!(run.eligible_masks, [0b1_0101, 0b0_1110]);
     assert_eq!(
         run.assess(5).unwrap(),
+        IntegralRunSufficiency::Inconclusive {
+            eligible_masks: [0b1_0101, 0b0_1110],
+            cause: IntegralInconclusiveKind::BookendUnavailable,
+            bookend_available_mask: 0b01,
+            current_terminus: None,
+        }
+    );
+
+    run.bookend[1] = Some(interval(-201, -101));
+    assert_eq!(
+        run.assess(5).unwrap(),
         IntegralRunSufficiency::Sufficient {
             eligible_masks: [0b1_0101, 0b0_1110],
-            bookend_available_mask: 0b01,
+            bookend_available_mask: 0b11,
             current_terminus: None,
         }
     );
@@ -314,6 +334,7 @@ fn current_bound_only_blocks_before_the_directional_floor() {
         IntegralRunSufficiency::Inconclusive {
             eligible_masks: [0b11, 0b11],
             cause: IntegralInconclusiveKind::CurrentBoundBeforeSufficiency,
+            bookend_available_mask: 0,
             current_terminus: Some(2),
         }
     );
@@ -321,6 +342,7 @@ fn current_bound_only_blocks_before_the_directional_floor() {
     let mut sufficient = insufficient;
     sufficient.retain_positive(0, 2, interval(10, 20)).unwrap();
     sufficient.retain_positive(1, 2, interval(10, 20)).unwrap();
+    sufficient.bookend = [Some(interval(100, 200)), Some(interval(-200, -100))];
     assert!(matches!(
         sufficient.assess(5).unwrap(),
         IntegralRunSufficiency::Sufficient {
