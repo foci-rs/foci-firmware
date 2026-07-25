@@ -851,6 +851,56 @@ impl CommissioningEngine {
         }
     }
 
+    /// Attach and return the terminal-sequenced active-I rest-boundary record.
+    #[cfg(feature = "trace-velocity-sweep")]
+    pub(crate) fn attach_stage_c_rest_boundary(
+        &self,
+        terminal: &mut crate::commissioning::types::VelocityIntegralTerminal,
+    ) -> Option<crate::ankyra::velocity_sweep_encoding::VelocitySweepCanonicalRecord> {
+        let EngineMode::Outer {
+            phase: OuterPhase::VelocityIntegral { data, .. },
+            ..
+        } = &self.engine_mode
+        else {
+            return None;
+        };
+        let boundary = data.positive_i_rest_boundary?;
+        if terminal.rest_boundary_rung_plus_one != 0 || terminal.rest_boundary_slot_plus_one != 0 {
+            return None;
+        }
+        let record =
+            crate::commissioning::outer::velocity::integral_reporting::encode_velocity_integral_rest_boundary(
+                terminal.run_sequence,
+                terminal.evidence_sequence,
+                terminal.plan_digest,
+                boundary,
+            );
+        let mut integrity = data.integrity;
+        integrity.record_terminal_boundary(&record);
+        terminal.digest = integrity.digest();
+        terminal.rest_boundary_rung_plus_one = boundary.rung_index;
+        terminal.rest_boundary_slot_plus_one = boundary
+            .slot
+            .checked_add(1)
+            .expect("Stage-C boundary slot fits its one-based terminal field");
+        Some(record)
+    }
+
+    #[cfg(all(test, feature = "trace-velocity-sweep"))]
+    pub(crate) fn set_stage_c_rest_boundary_for_test(
+        &mut self,
+        boundary: crate::commissioning::outer::PositiveIRestBoundary,
+    ) {
+        let EngineMode::Outer {
+            phase: OuterPhase::VelocityIntegral { data, .. },
+            ..
+        } = &mut self.engine_mode
+        else {
+            panic!("test requires a Stage-C engine");
+        };
+        data.positive_i_rest_boundary = Some(boundary);
+    }
+
     fn current_phase_id(&self) -> Option<PhaseId> {
         match &self.engine_mode {
             EngineMode::Inner { phase, .. } => phase.current_phase_id(),
@@ -2286,6 +2336,8 @@ mod tests {
             outcome: VelocityIntegralOutcome::Complete,
             cause: 0,
             recovery_unavailable: false,
+            rest_boundary_rung_plus_one: 0,
+            rest_boundary_slot_plus_one: 0,
             evidence: IntegralRunEvidence::new([
                 ExactRateInterval::new(100, 120).unwrap(),
                 ExactRateInterval::new(-120, -100).unwrap(),

@@ -132,6 +132,8 @@ fn terminal(
         outcome,
         cause: 0,
         recovery_unavailable: false,
+        rest_boundary_rung_plus_one: 0,
+        rest_boundary_slot_plus_one: 0,
         evidence,
         expected_observations: plan.expected_observations,
         emitted_observations: plan.expected_observations,
@@ -203,29 +205,52 @@ fn sufficient_runs_advance_candidate_compare_and_complete_lifecycle() {
     let mut slot = StageCCandidateSlot::new();
     slot.install_authority(retained_authority());
 
-    let first = apply_stage_c_terminal(
-        terminal(
-            VelocityIntegralOutcome::CompleteCandidate,
-            sufficient_evidence(0),
-        ),
-        &mut slot,
+    let mut first_terminal = terminal(
+        VelocityIntegralOutcome::CompleteCandidate,
+        sufficient_evidence(0),
     );
+    first_terminal.rest_boundary_rung_plus_one = 4;
+    first_terminal.rest_boundary_slot_plus_one = 6;
+    let first = apply_stage_c_terminal(first_terminal, &mut slot);
     assert_eq!(
         first.terminal.outcome,
         VelocityIntegralOutcome::CompleteCandidate
     );
     assert!(first.reproduction.is_none());
     assert_eq!(slot.state(), StageCSlotState::Candidate);
-
-    let second = apply_stage_c_terminal(
-        terminal(
-            VelocityIntegralOutcome::CompleteCandidate,
-            sufficient_evidence(2),
-        ),
-        &mut slot,
+    assert_eq!(
+        slot.candidate().unwrap().rest_boundary.unwrap(),
+        crate::commissioning::outer::velocity::integral_reproduction::StageCRestBoundaryReference {
+            positive_rung_index: 3,
+            slot: 5,
+        }
     );
+
+    let mut second_terminal = terminal(
+        VelocityIntegralOutcome::CompleteCandidate,
+        sufficient_evidence(2),
+    );
+    second_terminal.rest_boundary_rung_plus_one = 5;
+    second_terminal.rest_boundary_slot_plus_one = 2;
+    let second = apply_stage_c_terminal(second_terminal, &mut slot);
     assert_eq!(second.terminal.outcome, VelocityIntegralOutcome::Complete);
-    assert!(second.reproduction.is_some());
+    let reproduction = second.reproduction.unwrap();
+    assert_eq!(
+        reproduction
+            .delta
+            .previous_rest_boundary
+            .unwrap()
+            .positive_rung_index,
+        3
+    );
+    assert_eq!(
+        reproduction
+            .delta
+            .current_rest_boundary
+            .unwrap()
+            .positive_rung_index,
+        4
+    );
     assert_eq!(slot.state(), StageCSlotState::Empty);
 }
 
@@ -596,8 +621,13 @@ fn reproduced_joint_authority_with_fragment_survives_suppressed_continuation() {
 #[test]
 fn outer_safety_timing_terminal_order_stage_c_resume() {
     pollster::block_on(async {
+        use crate::autotune::velocity_measurement::{StationarityExclusion, StationarityResult};
         use crate::commission_dispatch::test_support::{MockBackend, fresh_state_locals};
         use crate::commissioning::CommissioningEngine;
+        use crate::commissioning::outer::velocity::current_guard::{
+            VelocityCurrentContact, VelocityCurrentPhaseEvidence, VelocityLimitEvidenceCapability,
+        };
+        use crate::commissioning::outer::{PositiveIRestBoundary, VelocitySettleMetrics};
 
         let mut stage_b_slot =
             crate::commissioning::outer::velocity::reproduction::StageBCandidateSlot::new();
@@ -624,6 +654,29 @@ fn outer_safety_timing_terminal_order_stage_c_resume() {
                 preflight,
             ),
         );
+        engine
+            .as_mut()
+            .unwrap()
+            .set_stage_c_rest_boundary_for_test(PositiveIRestBoundary {
+                rung_index: 4,
+                slot: 5,
+                i_raw: 4,
+                direction: -1,
+                active_stationarity: StationarityResult::Excluded(
+                    StationarityExclusion::StructuredResidual,
+                ),
+                active_settle: VelocitySettleMetrics::EMPTY,
+                zero_phase_current: VelocityCurrentPhaseEvidence {
+                    clamp_limit: 2_534,
+                    moving_pid_output_peak: 2_000,
+                    zero_pid_output_peak: 2_100,
+                    moving_status_flags: 0,
+                    zero_status_flags: 0,
+                    capability: VelocityLimitEvidenceCapability::BestEffortPolling,
+                    contact: VelocityCurrentContact::None,
+                },
+                cleanup_confirmed: true,
+            });
         let mut backend = MockBackend::new();
         backend.enable_pin = true;
         let (_, _, mut gains) = fresh_state_locals();
@@ -656,13 +709,32 @@ fn outer_safety_timing_terminal_order_stage_c_resume() {
         assert!(!calibrated);
         assert!(!backend.enable_pin);
         assert_eq!(stage_c_slot.state(), StageCSlotState::Candidate);
-        assert!(matches!(
-            outcome,
-            CommissionOutcome::Terminal {
-                reply: ReplyPayload::VelocityIntegralTerminal { .. },
-                ..
-            }
-        ));
+        let CommissionOutcome::Terminal {
+            reply: ReplyPayload::VelocityIntegralTerminal { terminal, .. },
+            ..
+        } = outcome
+        else {
+            panic!("Stage-C terminal must use the dedicated reply");
+        };
+        assert_eq!(terminal.rest_boundary_rung_plus_one, 4);
+        assert_eq!(terminal.rest_boundary_slot_plus_one, 6);
+        assert_eq!(
+            backend
+                .velocity_sweep_trace_records
+                .iter()
+                .filter(|record| record.as_bytes()[0] == 5)
+                .count(),
+            1
+        );
+        let terminal_record = backend
+            .velocity_sweep_trace_records
+            .iter()
+            .find(|record| record.as_bytes()[0] == 4)
+            .unwrap();
+        assert_eq!(
+            &terminal_record.as_bytes()[15..23],
+            terminal.digest.to_le_bytes()
+        );
         assert!(
             backend
                 .trace_emission_order

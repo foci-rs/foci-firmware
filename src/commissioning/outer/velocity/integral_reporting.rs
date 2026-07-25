@@ -10,6 +10,7 @@ use crate::commissioning::types::{
     VelocityIntegralRungReport, VelocityIntegralTerminal,
 };
 
+use super::super::state::PositiveIRestBoundary;
 use super::integral_evidence::{IntegralObservationClass, IntegralRungClass, IntegralRungKind};
 use super::integral_plan::{VelocityIntegralExecutionPlan, VelocityIntegralPlan};
 
@@ -67,6 +68,11 @@ impl VelocityIntegralIntegrity {
             extend_velocity_sweep_digest(self.digest, &encode_velocity_integral_event(event));
         self.next_evidence_sequence = self.next_evidence_sequence.saturating_add(1);
         event
+    }
+
+    /// Hash one terminal-sequenced boundary record without advancing evidence counters.
+    pub(crate) fn record_terminal_boundary(&mut self, record: &VelocitySweepCanonicalRecord) {
+        self.digest = extend_velocity_sweep_digest(self.digest, record);
     }
 
     /// Number of observation groups included in the current digest.
@@ -230,6 +236,47 @@ pub(crate) fn encode_velocity_integral_terminal(
     record
 }
 
+/// Encode the detailed active-I rest boundary that shares the terminal sequence.
+pub(crate) fn encode_velocity_integral_rest_boundary(
+    run_sequence: u32,
+    evidence_sequence: u16,
+    plan_digest: u64,
+    boundary: PositiveIRestBoundary,
+) -> VelocitySweepCanonicalRecord {
+    let mut record = VelocitySweepCanonicalRecord::new();
+    record.push_u8(5);
+    record.push_u32(run_sequence);
+    record.push_u16(evidence_sequence);
+    push_u64(&mut record, plan_digest);
+    record.push_u8(
+        boundary
+            .rung_index
+            .checked_sub(1)
+            .expect("positive-I rest boundary has a positive rung index"),
+    );
+    record.push_u8(boundary.slot);
+    record.push_u16(boundary.i_raw);
+    record.push_i8(boundary.direction);
+    record.push_u16(boundary.active_settle.sample_count);
+    record.push_u32(boundary.active_settle.duration_us);
+    record.push_i32(boundary.active_settle.net_displacement_counts);
+    record.push_i32(boundary.active_settle.minimum_displacement_counts);
+    record.push_i32(boundary.active_settle.maximum_displacement_counts);
+    record.push_u16(boundary.active_settle.transition_count);
+    encode_transition(&mut record, boundary.active_settle.first_transition);
+    encode_transition(&mut record, boundary.active_settle.last_transition);
+    encode_stationarity(&mut record, boundary.active_stationarity);
+    record.push_u16(boundary.zero_phase_current.clamp_limit);
+    record.push_u16(boundary.zero_phase_current.moving_pid_output_peak);
+    record.push_u16(boundary.zero_phase_current.zero_pid_output_peak);
+    record.push_u32(boundary.zero_phase_current.moving_status_flags);
+    record.push_u32(boundary.zero_phase_current.zero_status_flags);
+    record.push_u8(boundary.zero_phase_current.capability as u8);
+    record.push_u8(boundary.zero_phase_current.contact as u8);
+    record.push_u8(u8::from(boundary.cleanup_confirmed));
+    record
+}
+
 fn encode_velocity_integral_plan_marker(
     run_sequence: u32,
     plan: VelocityIntegralExecutionPlan,
@@ -282,7 +329,12 @@ fn encode_observation(report: VelocityIntegralObservation) -> VelocitySweepCanon
     }
     record.push_u8(rate_shift);
     record.push_u16(report.summary.predicted_torque_target_abs);
-    match report.stationarity {
+    encode_stationarity(&mut record, report.stationarity);
+    record
+}
+
+fn encode_stationarity(record: &mut VelocitySweepCanonicalRecord, result: StationarityResult) {
+    match result {
         StationarityResult::Usable(suffix) => {
             record.push_u8(0);
             record.push_u16(suffix.suffix_len);
@@ -306,7 +358,16 @@ fn encode_observation(report: VelocityIntegralObservation) -> VelocitySweepCanon
             record.push_u8(stationarity_exclusion_code(exclusion));
         }
     }
-    record
+}
+
+fn encode_transition(
+    record: &mut VelocitySweepCanonicalRecord,
+    transition: super::super::state::VelocitySettleTransition,
+) {
+    record.push_u16(transition.sample_index);
+    record.push_u32(transition.elapsed_us);
+    record.push_i32(transition.delta_counts);
+    record.push_i32(transition.displacement_counts);
 }
 
 fn encode_rung(report: VelocityIntegralRungReport) -> VelocitySweepCanonicalRecord {
@@ -479,6 +540,13 @@ fn push_u64(record: &mut VelocitySweepCanonicalRecord, value: u64) {
 mod tests {
     use super::*;
     use crate::ankyra::velocity_sweep_encoding::VELOCITY_SWEEP_CANONICAL_RECORD_MAX;
+    use crate::autotune::velocity_measurement::{PlateauSelection, RateBlock, StationarySuffix};
+    use crate::commissioning::outer::state::{
+        PositiveIRestBoundary, VelocitySettleMetrics, VelocitySettleTransition,
+    };
+    use crate::commissioning::outer::velocity::current_guard::{
+        VelocityCurrentContact, VelocityCurrentPhaseEvidence, VelocityLimitEvidenceCapability,
+    };
 
     #[test]
     fn full_plan_trace_record_preserves_offline_reconstruction_inputs() {
@@ -641,6 +709,82 @@ mod tests {
     }
 
     #[test]
+    fn schema_five_rest_boundary_is_terminal_sequenced_and_digest_bearing() {
+        let boundary = PositiveIRestBoundary {
+            rung_index: 4,
+            slot: 5,
+            i_raw: 8,
+            direction: -1,
+            active_stationarity: StationarityResult::Usable(StationarySuffix {
+                selection: PlateauSelection {
+                    level: 2,
+                    block_count: 16,
+                    variance_of_mean_q2: 9,
+                    exact_totals: RateBlock {
+                        delta_counts: -3,
+                        elapsed_us: 64_000,
+                        observation_count: 64,
+                    },
+                },
+                suffix_len: 64,
+                slope_q: -7,
+                slope_half_width_q: 11,
+                lag_one_q: 13,
+                lag_one_half_width_q: 17,
+                residual_magnitude_q2: 19,
+                tested_suffixes: 3,
+            }),
+            active_settle: VelocitySettleMetrics {
+                sample_count: 433,
+                duration_us: 433_000,
+                net_displacement_counts: -31,
+                minimum_displacement_counts: -33,
+                maximum_displacement_counts: 2,
+                transition_count: 7,
+                first_transition: VelocitySettleTransition {
+                    sample_index: 3,
+                    elapsed_us: 3_000,
+                    delta_counts: -1,
+                    displacement_counts: -1,
+                },
+                last_transition: VelocitySettleTransition {
+                    sample_index: 401,
+                    elapsed_us: 401_000,
+                    delta_counts: 2,
+                    displacement_counts: -31,
+                },
+            },
+            zero_phase_current: VelocityCurrentPhaseEvidence {
+                clamp_limit: 2_534,
+                moving_pid_output_peak: 2_111,
+                zero_pid_output_peak: 2_400,
+                moving_status_flags: 0x1122_3344,
+                zero_status_flags: 0x5566_7788,
+                capability: VelocityLimitEvidenceCapability::LatchedFlag,
+                contact: VelocityCurrentContact::None,
+            },
+            cleanup_confirmed: true,
+        };
+        let record = encode_velocity_integral_rest_boundary(7, 19, 0x0123_4567_89ab_cdef, boundary);
+        assert_eq!(record.as_bytes()[0], 5);
+        assert_eq!(&record.as_bytes()[1..5], 7_u32.to_le_bytes());
+        assert_eq!(&record.as_bytes()[5..7], 19_u16.to_le_bytes());
+        assert_eq!(record.as_bytes().len(), 117);
+        assert!(record.as_bytes().len() <= VELOCITY_SWEEP_CANONICAL_RECORD_MAX);
+
+        let mut integrity = VelocityIntegralIntegrity::new(7, plan());
+        let sequence = integrity.next_evidence_sequence();
+        let observations = integrity.emitted_observations();
+        let rungs = integrity.emitted_rungs();
+        let digest = integrity.digest();
+        integrity.record_terminal_boundary(&record);
+        assert_eq!(integrity.next_evidence_sequence(), sequence);
+        assert_eq!(integrity.emitted_observations(), observations);
+        assert_eq!(integrity.emitted_rungs(), rungs);
+        assert_ne!(integrity.digest(), digest);
+    }
+
+    #[test]
     fn exact_u64_terminal_words_survive_canonical_encoding() {
         let mut terminal = VelocityIntegralTerminal {
             run_sequence: 7,
@@ -650,6 +794,8 @@ mod tests {
             outcome: VelocityIntegralOutcome::Complete,
             cause: 0,
             recovery_unavailable: false,
+            rest_boundary_rung_plus_one: 5,
+            rest_boundary_slot_plus_one: 6,
             evidence: super::super::integral_evidence::IntegralRunEvidence::new(
                 [super::super::integral_evidence::ExactRateInterval::EMPTY; 2],
             ),
@@ -686,6 +832,17 @@ mod tests {
         );
         assert_eq!(record.as_bytes()[42], 0b11);
         assert_eq!(record.as_bytes()[43], 0b11);
+        assert_eq!(
+            record.as_bytes(),
+            &[
+                0x04, 0x07, 0x00, 0x00, 0x00, 0x09, 0x00, 0xef, 0xcd, 0xab, 0x89, 0x67, 0x45, 0x23,
+                0x01, 0x10, 0x32, 0x54, 0x76, 0x98, 0xba, 0xdc, 0xfe, 0x01, 0x00, 0x00, 0x38, 0x00,
+                0x38, 0x00, 0x07, 0x00, 0x07, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                0x03, 0x03, 0x00, 0x44, 0x44, 0x33, 0x33, 0x22, 0x22, 0x11, 0x11, 0x88, 0x88, 0x77,
+                0x77, 0x66, 0x66, 0x55, 0x55,
+            ],
+            "schema-4 terminal bytes remain unchanged"
+        );
     }
 
     #[test]

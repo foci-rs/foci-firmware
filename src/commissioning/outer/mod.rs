@@ -58,6 +58,8 @@ pub(crate) use state::{
     VELOCITY_SEARCH_STOP_UNSAFE_BACKOFF, VelocityTuneStrategy, VelocityValidateData,
     VelocityValidateState,
 };
+#[cfg(all(test, feature = "trace-velocity-sweep"))]
+pub(crate) use state::{PositiveIRestBoundary, VelocitySettleMetrics};
 #[cfg(feature = "trace-velocity-sweep")]
 pub(crate) use state::{
     VelocityIntegralData, VelocityIntegralState, VelocitySweepData, VelocitySweepState,

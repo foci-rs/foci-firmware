@@ -3714,6 +3714,10 @@ pub struct FociVelocityIntegralTerminalCore {
     pub cause: u8,
     /// One when final bookend recovery could not establish the next-command origin.
     pub recovery_unavailable: u8,
+    /// One-based positive-rung index of an active-I rest boundary, or zero.
+    pub rest_boundary_rung_plus_one: u8,
+    /// One-based observation slot of an active-I rest boundary, or zero.
+    pub rest_boundary_slot_plus_one: u8,
     /// Planned observation count.
     pub expected_observations: u16,
     /// Emitted observation count.
@@ -4877,6 +4881,8 @@ mod velocity_sweep_reply_tests {
                 outcome: u8::MAX,
                 cause: u8::MAX,
                 recovery_unavailable: u8::MAX,
+                rest_boundary_rung_plus_one: u8::MAX,
+                rest_boundary_slot_plus_one: u8::MAX,
                 expected_observations: u16::MAX,
                 emitted_observations: u16::MAX,
                 expected_rungs: u16::MAX,

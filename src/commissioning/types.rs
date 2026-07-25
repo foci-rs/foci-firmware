@@ -713,6 +713,10 @@ pub struct VelocityIntegralTerminal {
     pub cause: u8,
     /// Final bookend recovery could not establish the next-command origin.
     pub recovery_unavailable: bool,
+    /// One-based positive-rung index of an active-I rest boundary, or zero.
+    pub rest_boundary_rung_plus_one: u8,
+    /// One-based observation slot of an active-I rest boundary, or zero.
+    pub rest_boundary_slot_plus_one: u8,
     /// Exact raw anchor and positive-rung evidence.
     pub evidence: crate::commissioning::outer::velocity::integral_evidence::IntegralRunEvidence,
     /// Number of observations required by the immutable plan.

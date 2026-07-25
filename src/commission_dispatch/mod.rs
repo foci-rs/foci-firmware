@@ -565,6 +565,12 @@ pub async fn drive_commission_result<B: CommissioningBackend>(
         StepResult::VelocityIntegralTerminal(mut terminal) => {
             use core::sync::atomic::Ordering::Relaxed;
 
+            if let Some(record) = engine
+                .as_ref()
+                .and_then(|engine| engine.attach_stage_c_rest_boundary(&mut terminal))
+            {
+                backend.record_velocity_sweep_trace_record(record);
+            }
             if !disarm_velocity_workflow(engine, backend, state).await {
                 terminal.outcome = crate::commissioning::types::VelocityIntegralOutcome::Fault;
                 terminal.cause = crate::autotune::CommissionError::Spi.status_code();
@@ -1468,7 +1474,13 @@ pub async fn drive_commission_result_with_stages<B: CommissioningBackend>(
                 },
             }
         }
-        StepResult::VelocityIntegralTerminal(terminal) => {
+        StepResult::VelocityIntegralTerminal(mut terminal) => {
+            if let Some(record) = engine
+                .as_ref()
+                .and_then(|engine| engine.attach_stage_c_rest_boundary(&mut terminal))
+            {
+                backend.record_velocity_sweep_trace_record(record);
+            }
             let mut dispatch = stage_c::apply_stage_c_terminal(terminal, retention.stage_c);
             if !disarm_velocity_workflow(engine, backend, state).await {
                 retention.stage_c.observe_fault();

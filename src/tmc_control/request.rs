@@ -1374,6 +1374,8 @@ fn stage_c_preflight_failure_payload(
             outcome: VelocityIntegralOutcome::RejectedPlanMismatch,
             cause: crate::commission_dispatch::stage_c::STAGE_C_CAUSE_PLAN_MISMATCH,
             recovery_unavailable: false,
+            rest_boundary_rung_plus_one: 0,
+            rest_boundary_slot_plus_one: 0,
             evidence: IntegralRunEvidence::new([ExactRateInterval::EMPTY; 2]),
             expected_observations: 0,
             emitted_observations: 0,

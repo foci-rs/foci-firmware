@@ -6,7 +6,7 @@ use crate::commissioning::outer::velocity::integral_plan::{
 };
 use crate::commissioning::outer::velocity::integral_reproduction::{
     StageCAuthoritySummary, StageCCandidateSlot, StageCCandidateSummary, StageCPlanIdentity,
-    StageCReproductionDecision, StageCReproductionDelta,
+    StageCReproductionDecision, StageCReproductionDelta, StageCRestBoundaryReference,
 };
 use crate::commissioning::outer::velocity::reproduction::STAGE_B_BUILD_REVISION;
 use crate::commissioning::outer::velocity::sweep_plan::{
@@ -193,7 +193,14 @@ pub fn apply_stage_c_terminal(
             let current = StageCCandidateSummary {
                 authority,
                 evidence: terminal.evidence,
-                rest_boundary: None,
+                rest_boundary: terminal
+                    .rest_boundary_rung_plus_one
+                    .checked_sub(1)
+                    .zip(terminal.rest_boundary_slot_plus_one.checked_sub(1))
+                    .map(|(positive_rung_index, slot)| StageCRestBoundaryReference {
+                        positive_rung_index,
+                        slot,
+                    }),
                 run_completed_us: terminal.run_completed_us,
                 run_digest: terminal.digest,
             };

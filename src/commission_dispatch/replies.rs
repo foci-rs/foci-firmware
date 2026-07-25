@@ -1159,6 +1159,8 @@ pub fn emit_velocity_integral_terminal<S: CommissionReplySink>(
         outcome: outcome_code(terminal.outcome),
         cause: terminal.cause,
         recovery_unavailable: u8::from(terminal.recovery_unavailable),
+        rest_boundary_rung_plus_one: terminal.rest_boundary_rung_plus_one,
+        rest_boundary_slot_plus_one: terminal.rest_boundary_slot_plus_one,
         expected_observations: terminal.expected_observations,
         emitted_observations: terminal.emitted_observations,
         expected_rungs: terminal.expected_rungs,
@@ -2750,6 +2752,7 @@ mod tests {
     #[derive(Default)]
     struct RecordingSink {
         events: Vec<Event>,
+        integral_rest_boundary: Option<[u8; 2]>,
     }
 
     impl CommissionReplySink for RecordingSink {
@@ -3509,6 +3512,10 @@ mod tests {
             &mut self,
             report: crate::ankyra::replies::FociVelocityIntegralTerminalCore,
         ) {
+            self.integral_rest_boundary = Some([
+                report.rest_boundary_rung_plus_one,
+                report.rest_boundary_slot_plus_one,
+            ]);
             self.events.push(Event::IntegralTerminal(report.fragment));
         }
 
@@ -5617,6 +5624,8 @@ mod tests {
             outcome: VelocityIntegralOutcome::Inconclusive,
             cause: 7,
             recovery_unavailable: false,
+            rest_boundary_rung_plus_one: 5,
+            rest_boundary_slot_plus_one: 6,
             evidence,
             expected_observations: 56,
             emitted_observations: 56,
@@ -5656,6 +5665,7 @@ mod tests {
                 .iter()
                 .any(|event| matches!(event, Event::Tune { .. }))
         );
+        assert_eq!(sink.integral_rest_boundary, Some([5, 6]));
     }
 
     #[cfg(feature = "trace-velocity-sweep")]
@@ -5695,6 +5705,8 @@ mod tests {
             outcome: VelocityIntegralOutcome::Inconclusive,
             cause: 7,
             recovery_unavailable: false,
+            rest_boundary_rung_plus_one: 0,
+            rest_boundary_slot_plus_one: 0,
             evidence,
             expected_observations: 56,
             emitted_observations: 56,
@@ -5724,6 +5736,7 @@ mod tests {
             direction: 1,
             available: 0,
         }));
+        assert_eq!(sink.integral_rest_boundary, Some([0, 0]));
     }
 
     #[test]

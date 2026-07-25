@@ -63,8 +63,8 @@ const INTEGRAL_CAUSE_CURRENT_AFTER_SUFFICIENCY: u8 = 3;
 const INTEGRAL_CAUSE_INTEGRITY: u8 = 4;
 const INTEGRAL_CAUSE_RECOVERY: u8 = 5;
 pub(super) const INTEGRAL_CAUSE_BOOKEND_UNAVAILABLE: u8 = 8;
-const INTEGRAL_CAUSE_POSITIVE_I_REST_BOUNDARY: u8 = 9;
-const INTEGRAL_CAUSE_POSITIVE_I_REST_BOUNDARY_AFTER_SUFFICIENCY: u8 = 10;
+pub(super) const INTEGRAL_CAUSE_POSITIVE_I_REST_BOUNDARY: u8 = 9;
+pub(super) const INTEGRAL_CAUSE_POSITIVE_I_REST_BOUNDARY_AFTER_SUFFICIENCY: u8 = 10;
 const OPENING_WORD_BASE: usize = 0;
 const POSITIVE_WORD_BASE: usize = 4;
 const BOOKEND_WORD_BASE: usize = POSITIVE_WORD_BASE + 2 * STAGE_C_MAX_POSITIVE_RUNGS * 2;
@@ -339,6 +339,8 @@ fn terminal_from_data(
         outcome,
         cause,
         recovery_unavailable: data.recovery_unavailable,
+        rest_boundary_rung_plus_one: 0,
+        rest_boundary_slot_plus_one: 0,
         evidence,
         expected_observations: u16::from(data.plan.positive_rung_count.saturating_add(2))
             .saturating_mul(u16::from(INTEGRAL_SLOT_COUNT)),

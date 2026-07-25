@@ -481,6 +481,19 @@ fn settle_transition_metrics_retain_exact_first_and_last_context() {
     );
 }
 
+#[test]
+fn stage_c_terminal_causes_reserve_bookend_and_rest_boundary_values() {
+    assert_eq!(super::integral_sweep::INTEGRAL_CAUSE_BOOKEND_UNAVAILABLE, 8);
+    assert_eq!(
+        super::integral_sweep::INTEGRAL_CAUSE_POSITIVE_I_REST_BOUNDARY,
+        9
+    );
+    assert_eq!(
+        super::integral_sweep::INTEGRAL_CAUSE_POSITIVE_I_REST_BOUNDARY_AFTER_SUFFICIENCY,
+        10
+    );
+}
+
 fn seed_boundary(data: &mut VelocityIntegralData, rung_index: u8, slot: u8) {
     let observer = VelocityCurrentObserver::new(
         current_limit(u32::from(data.plan.usable_torque_limit)),
