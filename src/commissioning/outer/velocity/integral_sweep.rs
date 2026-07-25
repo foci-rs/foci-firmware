@@ -1143,8 +1143,8 @@ pub(crate) async fn step_velocity_integral_with_trace<B: CommissioningBackend>(
                 data.settle_min_displacement_counts,
                 data.settle_max_displacement_counts,
             ) {
-                Ok(Some(true)) => {}
-                Ok(Some(false)) => {
+                Ok(Some(result)) if result.confirmed_rest => {}
+                Ok(Some(_)) => {
                     return fail_integral(
                         phase,
                         backend,

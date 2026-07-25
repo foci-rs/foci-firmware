@@ -297,11 +297,11 @@ pub(crate) async fn step_rung_origin_recovery<B: CommissioningBackend>(
                 *resources.settle_max_displacement_counts,
             ) {
                 Ok(None) => return RungOriginRecoveryStep::ReadyNow,
-                Ok(Some(false)) => {
+                Ok(Some(result)) if !result.confirmed_rest => {
                     return recovery_fault(CommissionError::VelocityValidationFailed, None);
                 }
                 Err(error) => return recovery_fault(error, None),
-                Ok(Some(true)) => {}
+                Ok(Some(_)) => {}
             }
             if let Err(error) =
                 finish_velocity_current_zero_phase(resources.current_observer, backend).await
