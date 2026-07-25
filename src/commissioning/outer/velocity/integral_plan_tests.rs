@@ -8,6 +8,7 @@ use super::sweep_plan::{
     MIN_SETTLE_CAPTURE_US, MOVING_STROKE_US, RequestedVelocitySource, SETTLE_ANALYSIS_BUDGET_US,
     VelocitySweepRequest, ZERO_SETTLE_US, plan_velocity_sweep,
 };
+use crate::commissioning::outer::velocity::reproduction::StageBDirectionalValidity;
 use crate::commissioning::outer::{OUTER_MAX_VELOCITY_I, OuterMotionBudget};
 
 fn stage_b_request() -> VelocitySweepRequest {
@@ -30,6 +31,8 @@ fn authority(final_p: u16) -> StageCAuthority {
         final_p,
         directional_memberships: [0x0038_0000, 0x0038_0000],
         joint_membership: 0x0038_0000,
+        directional_validity: [StageBDirectionalValidity::ReproducedRegionCoversFinalP; 2],
+        reduced_margin: false,
         directional_pooled_intervals: [[17_000_000, 18_000_000], [-19_000_000, -18_000_000]],
     }
 }
@@ -263,4 +266,89 @@ fn invalid_geometry_and_missing_authority_reject_before_motion() {
         ),
         Err(VelocityIntegralPlanError::MismatchedAuthority)
     );
+}
+
+#[test]
+fn stage_c_accepts_local_authority_without_model() {
+    let stage_b = stage_b_plan();
+    let digest = stage_b.digest();
+    let mut local = authority(1_448);
+    local.stage_b_plan_digest = digest;
+    local.directional_memberships = [0x0018_0000, 0];
+    local.directional_pooled_intervals = [[0, 0]; 2];
+    local.directional_validity = [
+        StageBDirectionalValidity::Fragment,
+        StageBDirectionalValidity::NoRegion,
+    ];
+    local.reduced_margin = true;
+
+    let plan = plan_velocity_integral_response(
+        local,
+        stage_b.execution_plan(digest),
+        motion_budget(),
+        25_000,
+        4_000,
+    )
+    .expect("joint operability authorizes Stage C without a cross-P model");
+
+    assert!(!plan.authority.model_interval_available(0));
+    assert!(!plan.authority.model_interval_available(1));
+    assert!(plan.authority.reduced_margin);
+}
+
+#[test]
+fn stage_c_model_interval_availability_is_typed_and_hashed() {
+    let availability = [
+        (StageBDirectionalValidity::NoRegion, false),
+        (StageBDirectionalValidity::Fragment, false),
+        (StageBDirectionalValidity::RegionNotReproduced, false),
+        (
+            StageBDirectionalValidity::ReproducedRegionCoversFinalP,
+            true,
+        ),
+        (StageBDirectionalValidity::ReproducedRegionTransferred, true),
+    ];
+    let mut value = authority(1_448);
+    for (validity, expected) in availability {
+        value.directional_validity[0] = validity;
+        assert_eq!(value.model_interval_available(0), expected);
+    }
+    assert!(!value.model_interval_available(2));
+
+    let stage_b = stage_b_plan();
+    let digest = stage_b.digest();
+    let mut baseline = authority(1_448);
+    baseline.stage_b_plan_digest = digest;
+    let baseline = plan_velocity_integral_response(
+        baseline,
+        stage_b.execution_plan(digest),
+        motion_budget(),
+        25_000,
+        4_000,
+    )
+    .unwrap();
+
+    let mut transferred = baseline.authority;
+    transferred.directional_validity[0] = StageBDirectionalValidity::ReproducedRegionTransferred;
+    let transferred = plan_velocity_integral_response(
+        transferred,
+        stage_b.execution_plan(digest),
+        motion_budget(),
+        25_000,
+        4_000,
+    )
+    .unwrap();
+    assert_ne!(baseline.digest(), transferred.digest());
+
+    let mut reduced = baseline.authority;
+    reduced.reduced_margin = true;
+    let reduced = plan_velocity_integral_response(
+        reduced,
+        stage_b.execution_plan(digest),
+        motion_budget(),
+        25_000,
+        4_000,
+    )
+    .unwrap();
+    assert_ne!(baseline.digest(), reduced.digest());
 }

@@ -178,6 +178,11 @@ fn velocity_current_guard_contract() {
             final_p: 1_448,
             directional_memberships: [0x0038_0000, 0x0038_0000],
             joint_membership: 0x0038_0000,
+            directional_validity: [
+                crate::commissioning::outer::velocity::reproduction::StageBDirectionalValidity::ReproducedRegionCoversFinalP;
+                2
+            ],
+            reduced_margin: false,
             directional_pooled_intervals: [[17_000_000, 18_000_000], [-19_000_000, -18_000_000]],
         },
         stage_b.execution_plan(stage_b.digest()),

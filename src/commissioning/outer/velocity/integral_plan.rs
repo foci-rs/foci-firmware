@@ -6,7 +6,7 @@ use crate::commissioning::outer::{OUTER_MAX_VELOCITY_I, OuterMotionBudget};
 
 use super::current_guard::VelocityLimitEvidenceCapability;
 use super::recovery::{RungOriginRecoveryPlanError, plan_rung_origin_recovery};
-use super::reproduction::STAGE_B_BUILD_REVISION;
+use super::reproduction::{STAGE_B_BUILD_REVISION, StageBDirectionalValidity};
 use super::sweep_plan::{
     MIN_SETTLE_CAPTURE_US, MOVING_STROKE_US, SETTLE_ANALYSIS_BUDGET_US, VelocitySweepExecutionPlan,
     VelocitySweepRequest, ZERO_SETTLE_US,
@@ -104,12 +104,30 @@ pub struct StageCAuthority {
     pub stage_b_plan_digest: u64,
     /// Firmware-authoritative reproduced proportional gain.
     pub final_p: u16,
-    /// Reproduced forward and reverse directional model memberships.
+    /// Cross-run forward and reverse model-or-fragment intersections.
     pub directional_memberships: [u32; 2],
-    /// Reproduced joint-operability membership.
+    /// Selected reproduced joint-operability component.
     pub joint_membership: u32,
-    /// Reproduced forward and reverse pooled disturbance intervals.
+    /// Cross-run validity of the forward and reverse Stage-B models.
+    pub directional_validity: [StageBDirectionalValidity; 2],
+    /// Whether the selected joint component contains fewer than three rungs.
+    pub reduced_margin: bool,
+    /// Reproduced pooled intervals, or `[0, 0]` where model comparison is unavailable.
     pub directional_pooled_intervals: [[i32; 2]; 2],
+}
+
+impl StageCAuthority {
+    /// Whether one direction carries a reproduced cross-P model interval.
+    pub const fn model_interval_available(&self, direction: usize) -> bool {
+        if direction >= self.directional_validity.len() {
+            return false;
+        }
+        matches!(
+            self.directional_validity[direction],
+            StageBDirectionalValidity::ReproducedRegionCoversFinalP
+                | StageBDirectionalValidity::ReproducedRegionTransferred
+        )
+    }
 }
 
 /// Exact positive-I acquisition geometry.
@@ -205,6 +223,10 @@ impl VelocityIntegralPlan {
             hash_value!(membership);
         }
         hash_value!(self.authority.joint_membership);
+        for validity in self.authority.directional_validity {
+            hash_value!(validity as u8);
+        }
+        hash_value!(u8::from(self.authority.reduced_margin));
         for interval in self.authority.directional_pooled_intervals {
             hash_value!(interval[0]);
             hash_value!(interval[1]);
@@ -476,11 +498,24 @@ pub(crate) fn plan_velocity_integral_response(
         max_duration_ms: motion_budget.max_duration_ms,
     };
     if authority.joint_membership == 0
-        || authority.directional_memberships.contains(&0)
         || authority
             .directional_pooled_intervals
             .iter()
-            .any(|interval| interval[0] > interval[1])
+            .enumerate()
+            .any(|(direction, interval)| {
+                let membership = authority.directional_memberships[direction];
+                match authority.directional_validity[direction] {
+                    StageBDirectionalValidity::NoRegion => membership != 0 || *interval != [0, 0],
+                    StageBDirectionalValidity::Fragment => {
+                        membership.count_ones() > 2 || *interval != [0, 0]
+                    }
+                    StageBDirectionalValidity::RegionNotReproduced => *interval != [0, 0],
+                    StageBDirectionalValidity::ReproducedRegionCoversFinalP
+                    | StageBDirectionalValidity::ReproducedRegionTransferred => {
+                        membership.count_ones() < 3 || interval[0] > interval[1]
+                    }
+                }
+            })
         || encoder_counts_per_rev == 0
         || motion_request.requested_velocity_mrev_s == 0
         || motion_request.machine_velocity_ceiling_mrev_s == 0

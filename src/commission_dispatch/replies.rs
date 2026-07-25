@@ -976,6 +976,7 @@ pub fn emit_velocity_integral_terminal<S: CommissionReplySink>(
             closing_high_q: bookend.map_or(0, |interval| interval.high_q),
         });
         if let Some(authority) = authority
+            && authority.model_interval_available(direction)
             && let Some(expected) = stage_b_deficit_bounds_q(
                 authority.directional_pooled_intervals[direction],
                 authority.final_p,
@@ -5365,6 +5366,11 @@ mod tests {
                 final_p: 1_448,
                 directional_memberships: [0x0038_0000; 2],
                 joint_membership: 0x0038_0000,
+                directional_validity: [
+                    crate::commissioning::outer::velocity::reproduction::StageBDirectionalValidity::ReproducedRegionCoversFinalP;
+                    2
+                ],
+                reduced_margin: false,
                 directional_pooled_intervals: [
                     [17_000_000, 18_000_000],
                     [-19_000_000, -18_000_000],
@@ -5525,6 +5531,73 @@ mod tests {
                 .events
                 .iter()
                 .any(|event| matches!(event, Event::Tune { .. }))
+        );
+    }
+
+    #[cfg(feature = "trace-velocity-sweep")]
+    #[test]
+    fn velocity_integral_reply_omits_unavailable_model_comparison() {
+        use crate::commissioning::outer::velocity::integral_evidence::{
+            ExactRateInterval, IntegralRunEvidence,
+        };
+        use crate::commissioning::outer::velocity::integral_plan::STAGE_C_EVIDENCE_SCHEMA_REVISION;
+        use crate::commissioning::outer::velocity::integral_reproduction::StageCAuthoritySummary;
+        use crate::commissioning::outer::velocity::reproduction::{
+            STAGE_B_BUILD_REVISION, StageBDirectionalValidity,
+        };
+        use crate::commissioning::types::{VelocityIntegralOutcome, VelocityIntegralTerminal};
+
+        let mut plan = velocity_integral_plan_fixture();
+        plan.authority.directional_memberships[1] = 0x0018_0000;
+        plan.authority.directional_validity[1] = StageBDirectionalValidity::Fragment;
+        plan.authority.directional_pooled_intervals[1] = [0, 0];
+        let authority = StageCAuthoritySummary::from_plan(
+            plan.authority.channel,
+            STAGE_B_BUILD_REVISION,
+            STAGE_C_EVIDENCE_SCHEMA_REVISION,
+            plan.authority.stage_b_plan_digest,
+            plan.execution_plan(),
+            plan.authority,
+        );
+        let evidence = IntegralRunEvidence::new([
+            ExactRateInterval::new(100, 120).unwrap(),
+            ExactRateInterval::new(-120, -100).unwrap(),
+        ]);
+        let terminal = VelocityIntegralTerminal {
+            run_sequence: 18,
+            evidence_sequence: 57,
+            plan_digest: plan.digest(),
+            digest: 0x5555_6666_7777_8888,
+            outcome: VelocityIntegralOutcome::Inconclusive,
+            cause: 7,
+            recovery_unavailable: false,
+            evidence,
+            expected_observations: 56,
+            emitted_observations: 56,
+            expected_rungs: 7,
+            emitted_rungs: 7,
+            run_started_us: 1_000,
+            run_completed_us: 2_000,
+            safety_fault: None,
+        };
+        let mut sink = RecordingSink::default();
+
+        emit_terminal_reply(
+            &mut sink,
+            ReplyPayload::VelocityIntegralTerminal {
+                oid: 3,
+                terminal,
+                reproduction: None,
+                authority: Some(authority),
+            },
+        );
+
+        assert_eq!(
+            sink.events
+                .iter()
+                .filter(|event| matches!(event, Event::IntegralDerived(3)))
+                .count(),
+            1
         );
     }
 

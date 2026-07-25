@@ -2,6 +2,7 @@
 
 use super::integral_evidence::{ExactRateInterval, IntegralRunEvidence, StageCEvidenceError};
 use super::integral_plan::{STAGE_C_MAX_POSITIVE_RUNGS, VelocityIntegralExecutionPlan};
+use super::reproduction::StageBDirectionalValidity;
 
 const DIRECTION_COUNT: usize = 2;
 
@@ -27,11 +28,15 @@ pub struct StageCAuthoritySummary {
     pub stage_b_plan_digest: u64,
     /// Firmware-authoritative fixed proportional gain.
     pub final_p: u16,
-    /// Reproduced forward and reverse Stage-B model memberships.
+    /// Cross-run forward and reverse model-or-fragment intersections.
     pub directional_memberships: [u32; DIRECTION_COUNT],
-    /// Reproduced Stage-B joint-operability membership.
+    /// Selected reproduced Stage-B joint-operability component.
     pub joint_membership: u32,
-    /// Reproduced forward and reverse pooled disturbance intervals.
+    /// Cross-run validity of the forward and reverse Stage-B models.
+    pub directional_validity: [StageBDirectionalValidity; DIRECTION_COUNT],
+    /// Whether the selected joint component contains fewer than three rungs.
+    pub reduced_margin: bool,
+    /// Reproduced pooled intervals, or `[0, 0]` where model comparison is unavailable.
     pub directional_pooled_intervals: [[i32; 2]; DIRECTION_COUNT],
     /// Frozen encoder-domain amplitude.
     pub planned_velocity_mrev_s: u32,
@@ -70,6 +75,8 @@ impl StageCAuthoritySummary {
             final_p: plan.final_p,
             directional_memberships: authority.directional_memberships,
             joint_membership: authority.joint_membership,
+            directional_validity: authority.directional_validity,
+            reduced_margin: authority.reduced_margin,
             directional_pooled_intervals: authority.directional_pooled_intervals,
             planned_velocity_mrev_s: plan.planned_velocity_mrev_s,
             target_velocity_rpm: plan.target_velocity_rpm,
@@ -89,8 +96,15 @@ impl StageCAuthoritySummary {
             final_p: self.final_p,
             directional_memberships: self.directional_memberships,
             joint_membership: self.joint_membership,
+            directional_validity: self.directional_validity,
+            reduced_margin: self.reduced_margin,
             directional_pooled_intervals: self.directional_pooled_intervals,
         }
+    }
+
+    /// Whether one direction carries a reproduced cross-P model interval.
+    pub const fn model_interval_available(&self, direction: usize) -> bool {
+        self.stage_c_authority().model_interval_available(direction)
     }
 }
 

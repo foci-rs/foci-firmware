@@ -1302,6 +1302,17 @@ pub async fn drive_commission_result_with_stages<B: CommissioningBackend>(
                 };
             }
 
+            let Some(reproduction) = dispatch.reproduction else {
+                retention.stage_c.observe_fault();
+                return drive_commission_result(
+                    StepResult::OuterFailed(crate::autotune::CommissionError::InvalidSchedule),
+                    engine,
+                    backend,
+                    state,
+                    pwm_maxcnt,
+                )
+                .await;
+            };
             let authority = crate::commissioning::outer::velocity::integral_plan::StageCAuthority {
                 channel,
                 stage_b_plan_digest: dispatch.terminal.plan_digest,
@@ -1311,7 +1322,19 @@ pub async fn drive_commission_result_with_stages<B: CommissioningBackend>(
                     dispatch.terminal.selected_memberships[1],
                 ],
                 joint_membership: dispatch.terminal.selected_memberships[2],
-                directional_pooled_intervals: dispatch.terminal.selected_intervals,
+                directional_validity: reproduction.delta.directional_validity,
+                reduced_margin: reproduction.delta.reduced_margin,
+                directional_pooled_intervals: core::array::from_fn(|direction| {
+                    if matches!(
+                        reproduction.delta.directional_validity[direction],
+                        crate::commissioning::outer::velocity::reproduction::StageBDirectionalValidity::ReproducedRegionCoversFinalP
+                            | crate::commissioning::outer::velocity::reproduction::StageBDirectionalValidity::ReproducedRegionTransferred
+                    ) {
+                        dispatch.terminal.selected_intervals[direction]
+                    } else {
+                        [0, 0]
+                    }
+                }),
             };
             let engine_ref = engine
                 .as_mut()

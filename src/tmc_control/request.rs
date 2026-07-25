@@ -1697,6 +1697,11 @@ mod tests {
             final_p: 1_448,
             directional_memberships: [0x0038_0000; 2],
             joint_membership: 0x0038_0000,
+            directional_validity: [
+                crate::commissioning::outer::velocity::reproduction::StageBDirectionalValidity::ReproducedRegionCoversFinalP;
+                2
+            ],
+            reduced_margin: false,
             directional_pooled_intervals: [[100, 120], [-130, -100]],
             planned_velocity_mrev_s: 2_929,
             target_velocity_rpm: 176,
@@ -2464,6 +2469,11 @@ mod tests {
                 final_p: 1_448,
                 directional_memberships: [0x0038_0000; 2],
                 joint_membership: 0x0038_0000,
+                directional_validity: [
+                    crate::commissioning::outer::velocity::reproduction::StageBDirectionalValidity::ReproducedRegionCoversFinalP;
+                    2
+                ],
+                reduced_margin: false,
                 directional_pooled_intervals: [[100, 120], [-130, -100]],
             };
             let budget = OuterMotionBudget {

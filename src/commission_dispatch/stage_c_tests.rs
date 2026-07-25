@@ -14,7 +14,9 @@ use crate::commissioning::outer::velocity::integral_plan::{
 use crate::commissioning::outer::velocity::integral_reproduction::{
     StageCAuthoritySummary, StageCCandidateSlot, StageCSlotState,
 };
-use crate::commissioning::outer::velocity::reproduction::STAGE_B_BUILD_REVISION;
+use crate::commissioning::outer::velocity::reproduction::{
+    STAGE_B_BUILD_REVISION, StageBDirectionalValidity,
+};
 use crate::commissioning::outer::velocity::sweep_plan::{
     RequestedVelocitySource, VelocitySweepRequest, plan_velocity_sweep,
 };
@@ -45,6 +47,8 @@ fn authority() -> StageCAuthority {
         final_p: 1_448,
         directional_memberships: [0x0038_0000; 2],
         joint_membership: 0x0038_0000,
+        directional_validity: [StageBDirectionalValidity::ReproducedRegionCoversFinalP; 2],
+        reduced_margin: false,
         directional_pooled_intervals: [[15_000_000, 17_000_000], [-19_000_000, -17_000_000]],
     }
 }
@@ -525,6 +529,7 @@ fn reproduced_joint_authority_with_fragment_survives_suppressed_continuation() {
         let mut terminal = stage_b_terminal();
         terminal.model_direction_mask = 1;
         terminal.selected_memberships[1] = 0x0018_0000;
+        terminal.selected_memberships[2] = 0x0018_0000;
         terminal.recovery_unavailable = true;
 
         let action = runtime
@@ -545,8 +550,25 @@ fn reproduced_joint_authority_with_fragment_survives_suppressed_continuation() {
         let retained = stage_c_slot
             .authority()
             .expect("reproduced Stage B must retain Stage-C authority");
+        let stage_b = stage_b_plan();
+        let expected_final_p = stage_b
+            .execution_plan(stage_b.digest())
+            .gain_at(19)
+            .unwrap()
+            .raw();
         assert_eq!(retained.directional_memberships[1], 0x0018_0000);
-        assert_eq!(retained.joint_membership, 0x0038_0000);
+        assert_eq!(retained.joint_membership, 0x0018_0000);
+        assert_eq!(retained.final_p, expected_final_p);
+        assert!(retained.reduced_margin);
+        assert_eq!(
+            retained.directional_validity,
+            [
+                StageBDirectionalValidity::ReproducedRegionCoversFinalP,
+                StageBDirectionalValidity::Fragment,
+            ]
+        );
+        assert!(!retained.model_interval_available(1));
+        assert_eq!(retained.directional_pooled_intervals[1], [0, 0]);
         assert!(matches!(
             action,
             ScheduledCommissionTickAction::Terminal {

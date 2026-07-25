@@ -5,6 +5,7 @@ use super::integral_reproduction::{
     StageCReproductionDecision, StageCSlotState, closed_intersection, compare_integral_runs,
     delta_e, signed_divergence_gap,
 };
+use super::reproduction::StageBDirectionalValidity;
 
 fn interval(low_q: i32, high_q: i32) -> ExactRateInterval {
     ExactRateInterval::new(low_q, high_q).unwrap()
@@ -26,6 +27,11 @@ fn authority(channel: u8, digest: u64) -> StageCAuthoritySummary {
         final_p: 1_448,
         directional_memberships: [0x0038_0000; 2],
         joint_membership: 0x0038_0000,
+        directional_validity: [
+            StageBDirectionalValidity::ReproducedRegionCoversFinalP,
+            StageBDirectionalValidity::ReproducedRegionTransferred,
+        ],
+        reduced_margin: true,
         directional_pooled_intervals: [[10, 20], [-20, -10]],
         planned_velocity_mrev_s: 2_929,
         target_velocity_rpm: 176,
@@ -67,6 +73,18 @@ fn candidate(
         run_completed_us: run * 1_000_000,
         run_digest: run,
     }
+}
+
+#[test]
+fn authority_summary_preserves_model_validity_and_reduced_margin() {
+    let retained = authority(0, 7);
+    let rebuilt = retained.stage_c_authority();
+
+    assert_eq!(rebuilt.directional_validity, retained.directional_validity);
+    assert_eq!(rebuilt.reduced_margin, retained.reduced_margin);
+    assert!(retained.model_interval_available(0));
+    assert!(retained.model_interval_available(1));
+    assert!(!retained.model_interval_available(2));
 }
 
 #[test]

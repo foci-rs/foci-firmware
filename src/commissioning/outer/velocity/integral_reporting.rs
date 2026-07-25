@@ -138,6 +138,10 @@ pub(crate) fn encode_velocity_integral_plan_trace(
         core.push_u32(membership);
     }
     core.push_u32(plan.authority.joint_membership);
+    for validity in plan.authority.directional_validity {
+        core.push_u8(validity as u8);
+    }
+    core.push_u8(u8::from(plan.authority.reduced_margin));
     for interval in plan.authority.directional_pooled_intervals {
         core.push_i32(interval[0]);
         core.push_i32(interval[1]);
@@ -481,6 +485,11 @@ mod tests {
                 final_p: 1_448,
                 directional_memberships: [0x0038_0000, 0x0038_0000],
                 joint_membership: 0x0038_0000,
+                directional_validity: [
+                    super::super::reproduction::StageBDirectionalValidity::ReproducedRegionCoversFinalP;
+                    2
+                ],
+                reduced_margin: false,
                 directional_pooled_intervals: [
                     [17_000_000, 18_000_000],
                     [-19_000_000, -18_000_000],
@@ -533,9 +542,15 @@ mod tests {
         assert_eq!(records[0].as_bytes()[15], 0);
         assert_eq!(records[1].as_bytes()[15], 1);
         assert_eq!(records[2].as_bytes()[15], 2);
-        assert_eq!(records[0].as_bytes().len(), 88);
+        assert_eq!(records[0].as_bytes().len(), 91);
         assert_eq!(
-            records[0].as_bytes()[87],
+            &records[0].as_bytes()[45..47],
+            &[super::super::reproduction::StageBDirectionalValidity::ReproducedRegionCoversFinalP
+                as u8; 2]
+        );
+        assert_eq!(records[0].as_bytes()[47], 0);
+        assert_eq!(
+            records[0].as_bytes()[90],
             super::super::current_guard::VelocityLimitEvidenceCapability::BestEffortPolling as u8
         );
         assert!(
