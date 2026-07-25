@@ -193,6 +193,7 @@ pub fn apply_stage_c_terminal(
             let current = StageCCandidateSummary {
                 authority,
                 evidence: terminal.evidence,
+                rest_boundary: None,
                 run_completed_us: terminal.run_completed_us,
                 run_digest: terminal.digest,
             };

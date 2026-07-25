@@ -6,6 +6,15 @@ use super::reproduction::StageBDirectionalValidity;
 
 const DIRECTION_COUNT: usize = 2;
 
+/// Compact report-only reference to one positive-I rest boundary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+pub struct StageCRestBoundaryReference {
+    /// Zero-based positive-I rung index, excluding the opening anchor.
+    pub positive_rung_index: u8,
+    /// Fixed F/R observation slot that reached the boundary.
+    pub slot: u8,
+}
+
 /// Pre-motion identity for one exact Stage-C plan.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub struct StageCPlanIdentity {
@@ -115,6 +124,8 @@ pub struct StageCCandidateSummary {
     pub authority: StageCAuthoritySummary,
     /// Exact unmodified anchor and positive-rung intervals.
     pub evidence: IntegralRunEvidence,
+    /// Optional response-boundary location; never part of reproduction authority.
+    pub rest_boundary: Option<StageCRestBoundaryReference>,
     /// Run-completion time retained as non-gating context.
     pub run_completed_us: u64,
     /// Exact digest of the emitted run evidence.
@@ -147,6 +158,10 @@ enum RetainedStageC {
 pub struct StageCReproductionDelta {
     /// Exact retained-run curve used to derive every comparison interval.
     pub previous_evidence: IntegralRunEvidence,
+    /// Retained-run response boundary, when present.
+    pub previous_rest_boundary: Option<StageCRestBoundaryReference>,
+    /// Current-run response boundary, when present.
+    pub current_rest_boundary: Option<StageCRestBoundaryReference>,
     /// Retained-run positive-I membership.
     pub previous_masks: [u32; DIRECTION_COUNT],
     /// Current-run positive-I membership.
@@ -269,10 +284,12 @@ impl StageCCandidateSlot {
             self.retained = RetainedStageC::Candidate(current);
             return StageCReproductionDecision::CompleteCandidate(current);
         };
-        let delta = match compare_integral_runs(
+        let delta = match compare_integral_runs_with_boundaries(
             previous.evidence,
             current.evidence,
             usize::from(authority.positive_rung_count),
+            previous.rest_boundary,
+            current.rest_boundary,
         ) {
             Ok(delta) => delta,
             Err(_) => {
@@ -389,6 +406,16 @@ pub fn compare_integral_runs(
     current: IntegralRunEvidence,
     positive_rung_count: usize,
 ) -> Result<StageCReproductionDelta, StageCEvidenceError> {
+    compare_integral_runs_with_boundaries(previous, current, positive_rung_count, None, None)
+}
+
+fn compare_integral_runs_with_boundaries(
+    previous: IntegralRunEvidence,
+    current: IntegralRunEvidence,
+    positive_rung_count: usize,
+    previous_rest_boundary: Option<StageCRestBoundaryReference>,
+    current_rest_boundary: Option<StageCRestBoundaryReference>,
+) -> Result<StageCReproductionDelta, StageCEvidenceError> {
     if positive_rung_count == 0 || positive_rung_count > STAGE_C_MAX_POSITIVE_RUNGS {
         return Err(StageCEvidenceError::MaskOutOfRange);
     }
@@ -404,6 +431,8 @@ pub fn compare_integral_runs(
 
     let mut result = StageCReproductionDelta {
         previous_evidence: previous,
+        previous_rest_boundary,
+        current_rest_boundary,
         previous_masks: previous.eligible_masks,
         current_masks: current.eligible_masks,
         shared_masks: [0; DIRECTION_COUNT],

@@ -2,8 +2,8 @@ use super::integral_evidence::{ExactRateInterval, IntegralRunEvidence, StageCEvi
 use super::integral_plan::STAGE_C_EVIDENCE_SCHEMA_REVISION;
 use super::integral_reproduction::{
     StageCAuthoritySummary, StageCCandidateSlot, StageCCandidateSummary, StageCPlanIdentity,
-    StageCReproductionDecision, StageCSlotState, closed_intersection, compare_integral_runs,
-    delta_e, signed_divergence_gap,
+    StageCReproductionDecision, StageCRestBoundaryReference, StageCSlotState, closed_intersection,
+    compare_integral_runs, delta_e, signed_divergence_gap,
 };
 use super::reproduction::{STAGE_B_BUILD_REVISION, StageBDirectionalValidity};
 
@@ -70,8 +70,79 @@ fn candidate(
     StageCCandidateSummary {
         authority,
         evidence,
+        rest_boundary: None,
         run_completed_us: run * 1_000_000,
         run_digest: run,
+    }
+}
+
+#[test]
+fn boundary_references_are_reported_but_never_gate_reproduction() {
+    let authority = authority(0, 7);
+    let evidence = evidence(
+        [interval(100, 110), interval(-110, -100)],
+        [0b001111, 0b111100],
+        [20, -40],
+    );
+    let previous_boundary = StageCRestBoundaryReference {
+        positive_rung_index: 3,
+        slot: 4,
+    };
+    let current_boundary = StageCRestBoundaryReference {
+        positive_rung_index: 5,
+        slot: 1,
+    };
+    let mut slot = StageCCandidateSlot::new();
+    slot.install_authority(authority);
+    let mut first = candidate(authority, evidence, 1);
+    first.rest_boundary = Some(previous_boundary);
+    assert!(matches!(
+        slot.observe_sufficient(first),
+        StageCReproductionDecision::CompleteCandidate(_)
+    ));
+
+    let mut second = candidate(authority, evidence, 2);
+    second.rest_boundary = Some(current_boundary);
+    let StageCReproductionDecision::Complete(delta) = slot.observe_sufficient(second) else {
+        panic!("boundary identity must not gate an otherwise reproduced curve");
+    };
+    assert_eq!(delta.previous_rest_boundary, Some(previous_boundary));
+    assert_eq!(delta.current_rest_boundary, Some(current_boundary));
+    assert!(delta.reproduces());
+
+    let mut none_then_present = StageCCandidateSlot::new();
+    none_then_present.install_authority(authority);
+    assert!(matches!(
+        none_then_present.observe_sufficient(candidate(authority, evidence, 3)),
+        StageCReproductionDecision::CompleteCandidate(_)
+    ));
+    let mut present = candidate(authority, evidence, 4);
+    present.rest_boundary = Some(current_boundary);
+    let StageCReproductionDecision::Complete(delta) = none_then_present.observe_sufficient(present)
+    else {
+        panic!("boundary presence must remain report-only");
+    };
+    assert_eq!(delta.previous_rest_boundary, None);
+    assert_eq!(delta.current_rest_boundary, Some(current_boundary));
+
+    for boundary in [None, Some(previous_boundary)] {
+        let mut equal_boundaries = StageCCandidateSlot::new();
+        equal_boundaries.install_authority(authority);
+        let mut first = candidate(authority, evidence, 5);
+        first.rest_boundary = boundary;
+        assert!(matches!(
+            equal_boundaries.observe_sufficient(first),
+            StageCReproductionDecision::CompleteCandidate(_)
+        ));
+        let mut second = candidate(authority, evidence, 6);
+        second.rest_boundary = boundary;
+        let StageCReproductionDecision::Complete(delta) =
+            equal_boundaries.observe_sufficient(second)
+        else {
+            panic!("equal boundary references must not gate reproduction");
+        };
+        assert_eq!(delta.previous_rest_boundary, boundary);
+        assert_eq!(delta.current_rest_boundary, boundary);
     }
 }
 
@@ -323,4 +394,8 @@ fn q8_8_package_authority_rejects_before_stage_c_motion() {
 fn candidate_slot_size_is_measured_without_padding() {
     assert!(core::mem::size_of::<StageCCandidateSlot>() <= 640);
     assert_eq!(core::mem::size_of::<StageCCandidateSlot>(), 632);
+    assert_eq!(
+        core::mem::size_of::<super::integral_reproduction::StageCReproductionDelta>(),
+        596
+    );
 }
