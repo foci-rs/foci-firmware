@@ -15,6 +15,7 @@ mod current;
 mod equivalent_disturbance;
 mod filters;
 mod hold;
+mod integral_gain;
 mod metrics;
 mod models;
 mod position;
@@ -56,6 +57,10 @@ pub use hold::{
     HOLD_GATE_WARNING_SAMPLE_OVERRUN, HOLD_GATE_WARNING_TORQUE_CROSSINGS,
     HOLD_GATE_WARNING_TORQUE_RMS, HOLD_GATE_WARNING_TORQUE_SPAN, HoldGateAccumulator,
     HoldGateMetrics, HoldGateSample, hold_status_failure_reason,
+};
+pub use integral_gain::{
+    ADVANCED_PI_I_Q4_12_NUMERATOR, CURRENT_I_Q4_12_DETUNED_NUMERATOR, IntegralGainError,
+    integral_tau_us, round_positive_ratio, synthesize_i_gain, synthesize_i_gain_from_cycles,
 };
 pub use metrics::Permille;
 pub(crate) use metrics::saturation_permille;
