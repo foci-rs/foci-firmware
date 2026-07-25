@@ -751,9 +751,7 @@ pub fn emit_velocity_integral_event<S: CommissionReplySink>(
         crate::commissioning::types::VelocityIntegralEvent::Recovery(report) => {
             emit_rung_origin_recovery(sink, oid, report);
         }
-        crate::commissioning::types::VelocityIntegralEvent::Current(report) => {
-            emit_velocity_primitive_current_evidence(sink, oid, report);
-        }
+        crate::commissioning::types::VelocityIntegralEvent::Current(_) => {}
     }
 }
 
@@ -1202,40 +1200,13 @@ pub fn emit_velocity_sweep_event<S: CommissionReplySink>(
         VelocitySweepEvent::Rung(report) => emit_velocity_sweep_rung(sink, oid, report),
         #[cfg(feature = "trace-velocity-sweep")]
         VelocitySweepEvent::Recovery(report) => emit_rung_origin_recovery(sink, oid, report),
-        VelocitySweepEvent::Current(report) => {
-            emit_velocity_primitive_current_evidence(sink, oid, report)
-        }
+        VelocitySweepEvent::Current(_) => {}
         VelocitySweepEvent::DirectionalRegion(report) => {
             emit_velocity_directional_region(sink, oid, report)
         }
         VelocitySweepEvent::JointRegion(report) => emit_velocity_joint_region(sink, oid, report),
         VelocitySweepEvent::Handoff(report) => emit_velocity_stage_b_handoff(sink, oid, report),
     }
-}
-
-fn emit_velocity_primitive_current_evidence<S: CommissionReplySink>(
-    sink: &mut S,
-    oid: u8,
-    report: crate::commissioning::types::VelocityPrimitiveCurrentEvidence,
-) {
-    sink.foci_velocity_primitive_current_evidence(
-        crate::ankyra::replies::FociVelocityPrimitiveCurrentEvidence {
-            oid,
-            run_sequence: report.run_sequence,
-            evidence_sequence: report.evidence_sequence,
-            stage: report.stage,
-            rung_index: report.rung_index,
-            slot: report.slot,
-            clamp_limit: report.clamp_limit,
-            clamp_readback: report.clamp_readback,
-            moving_pid_output_peak: report.moving_pid_output_peak,
-            zero_pid_output_peak: report.zero_pid_output_peak,
-            moving_status_flags: report.moving_status_flags,
-            zero_status_flags: report.zero_status_flags,
-            capability: report.capability,
-            contact: report.contact,
-        },
-    );
 }
 
 #[cfg(feature = "trace-velocity-sweep")]
@@ -2746,6 +2717,7 @@ mod tests {
         IntegralPlanRecovery,
         IntegralObservation(u8),
         IntegralRung(u8),
+        PrimitiveCurrent,
         Recovery {
             oid: u8,
             run_sequence: u32,
@@ -3108,6 +3080,13 @@ mod tests {
                 binding_source: report.binding_source,
                 outcome: report.outcome,
             });
+        }
+
+        fn foci_velocity_primitive_current_evidence(
+            &mut self,
+            _report: crate::ankyra::replies::FociVelocityPrimitiveCurrentEvidence,
+        ) {
+            self.events.push(Event::PrimitiveCurrent);
         }
 
         fn foci_velocity_observation_core(
@@ -5127,6 +5106,44 @@ mod tests {
                 },
             ]
         );
+    }
+
+    #[test]
+    fn primitive_current_events_are_trace_only() {
+        use crate::commissioning::types::{
+            VelocityIntegralEvent, VelocityPrimitiveCurrentEvidence, VelocitySweepEvent,
+        };
+
+        let evidence = VelocityPrimitiveCurrentEvidence {
+            run_sequence: 7,
+            evidence_sequence: 2,
+            stage: 0,
+            rung_index: 1,
+            slot: 3,
+            clamp_limit: 2_534,
+            clamp_readback: 2_534,
+            moving_pid_output_peak: 1_200,
+            zero_pid_output_peak: 1_400,
+            moving_status_flags: 0,
+            zero_status_flags: 0,
+            capability: 0,
+            contact: 0,
+        };
+        let mut sweep_sink = RecordingSink::default();
+        let mut integral_sink = RecordingSink::default();
+
+        emit_velocity_sweep_event(&mut sweep_sink, 3, VelocitySweepEvent::Current(evidence));
+        emit_velocity_integral_event(
+            &mut integral_sink,
+            3,
+            VelocityIntegralEvent::Current(VelocityPrimitiveCurrentEvidence {
+                stage: 1,
+                ..evidence
+            }),
+        );
+
+        assert!(sweep_sink.events.is_empty());
+        assert!(integral_sink.events.is_empty());
     }
 
     #[cfg(feature = "trace-velocity-sweep")]
