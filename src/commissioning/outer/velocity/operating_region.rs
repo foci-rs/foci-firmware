@@ -423,6 +423,7 @@ pub struct JointOperableRegion {
 pub struct JointOperableFold {
     member_mask: u32,
     best_member_mask: u32,
+    union_member_mask: u32,
     first_rung: u8,
     member_count: u8,
     active: bool,
@@ -435,6 +436,7 @@ impl JointOperableFold {
         Self {
             member_mask: 0,
             best_member_mask: 0,
+            union_member_mask: 0,
             first_rung: 0,
             member_count: 0,
             active: false,
@@ -455,12 +457,18 @@ impl JointOperableFold {
         p_start: PidGain,
         p_top: PidGain,
     ) {
+        self.union_member_mask |= candidate.member_mask;
         let current = self
             .best_region()
             .map(|region| choose_joint_nomination(None, region, gains, p_start, p_top));
         let selected = choose_joint_nomination(current, candidate, gains, p_start, p_top);
         self.best_member_mask = selected.joint.member_mask;
         self.best_closure = selected.joint.closure;
+    }
+
+    /// Return the union of every closed jointly operable component.
+    pub const fn union_member_mask(&self) -> u32 {
+        self.union_member_mask
     }
 
     /// Return the retained best joint nomination.
@@ -532,7 +540,7 @@ impl Default for JointOperableFold {
     }
 }
 
-const _: () = assert!(core::mem::size_of::<JointOperableFold>() <= 16);
+const _: () = assert!(core::mem::size_of::<JointOperableFold>() == 16);
 
 /// Fold one forward/reverse rung pair without consulting D_eq eligibility.
 pub fn observe_joint_rung(
@@ -576,7 +584,7 @@ pub struct ProvisionalPNomination {
     pub distance_to_start_num: u32,
     /// Q16 ratio distance from structural P_top.
     pub distance_to_top_num: u32,
-    /// Single-rung regions carry reduced I-ladder margin.
+    /// One- and two-rung regions carry reduced I-ladder margin.
     pub reduced_margin: bool,
 }
 
@@ -596,7 +604,7 @@ pub fn choose_joint_nomination(
         p,
         distance_to_start_num: ratio_q16(p.raw(), p_start.raw()),
         distance_to_top_num: ratio_q16(p_top.raw(), p.raw()),
-        reduced_margin: candidate.member_count == 1,
+        reduced_margin: candidate.member_count <= 2,
     };
     let Some(current) = current else {
         return proposed;
@@ -637,11 +645,8 @@ impl DirectionalRegionRef {
         selected_edge_rate: CompactSignedRate::ZERO,
     };
 
-    /// Compact one valid causal region for bounded handoff selection.
+    /// Compact one causal region or fragment for bounded handoff selection.
     pub fn from_summary(summary: DirectionalRegionSummary, nominated_rung: u8) -> Option<Self> {
-        if summary.kind != DirectionalRegionKind::Valid {
-            return None;
-        }
         let (edge_rate, rounding) = if nominated_rung > summary.last_rung {
             (
                 summary.settled_rate_mean_max_q,
@@ -722,14 +727,7 @@ pub fn select_directional_region(
     let Some(current) = current else {
         return Some(proposed);
     };
-    let proposed_distance = proposed.signed_rung_distance.unsigned_abs();
-    let current_distance = current.signed_rung_distance.unsigned_abs();
-    if proposed.coverage == CoverageKind::FullCoverage
-        && current.coverage != CoverageKind::FullCoverage
-        || proposed_distance < current_distance
-        || (proposed_distance == current_distance
-            && first_member(candidate.member_mask) < first_member(current.region.member_mask))
-    {
+    if prefer_ref(current.region, candidate, nominated_rung) {
         Some(proposed)
     } else {
         Some(current)
@@ -806,7 +804,7 @@ impl HandoffTrackers {
         }
     }
 
-    /// Observe one closed valid directional region against both live nominations.
+    /// Observe one closed directional region or fragment against both live nominations.
     pub fn observe_directional(
         &mut self,
         direction: VelocityDirection,
@@ -856,7 +854,7 @@ impl HandoffTrackers {
 
     /// Bit set for each direction with at least one retained valid model region.
     pub fn model_direction_mask(&self) -> u8 {
-        u8::from(self.best[0].member_mask != 0) | (u8::from(self.best[1].member_mask != 0) << 1)
+        u8::from(ref_is_valid(self.best[0])) | (u8::from(ref_is_valid(self.best[1])) << 1)
     }
 
     /// Build the complete bidirectional handoff for the selected nomination.
@@ -866,6 +864,9 @@ impl HandoffTrackers {
         gains: &[PidGain],
         nominated_rates_q: [i64; 2],
     ) -> Option<StageBHandoff> {
+        if self.model_direction_mask() != 3 {
+            return None;
+        }
         let forward = self.best(
             VelocityDirection::Forward,
             nomination.rung_index,
@@ -1032,17 +1033,43 @@ fn choose_ref(
     candidate: DirectionalRegionRef,
     nominated_rung: u8,
 ) -> DirectionalRegionRef {
-    let current_distance = ref_distance(current, nominated_rung);
-    let candidate_distance = ref_distance(candidate, nominated_rung);
-    if current.member_mask == 0
-        || candidate_distance < current_distance
-        || (candidate_distance == current_distance
-            && first_member(candidate.member_mask) < first_member(current.member_mask))
-    {
+    if prefer_ref(current, candidate, nominated_rung) {
         candidate
     } else {
         current
     }
+}
+
+fn prefer_ref(
+    current: DirectionalRegionRef,
+    candidate: DirectionalRegionRef,
+    nominated_rung: u8,
+) -> bool {
+    if candidate.member_mask == 0 {
+        return false;
+    }
+    if current.member_mask == 0 {
+        return true;
+    }
+    let current_valid = ref_is_valid(current);
+    let candidate_valid = ref_is_valid(candidate);
+    if candidate_valid != current_valid {
+        return candidate_valid;
+    }
+    let current_count = current.member_mask.count_ones();
+    let candidate_count = candidate.member_mask.count_ones();
+    if candidate_count != current_count {
+        return candidate_count > current_count;
+    }
+    let current_distance = ref_distance(current, nominated_rung);
+    let candidate_distance = ref_distance(candidate, nominated_rung);
+    candidate_distance < current_distance
+        || (candidate_distance == current_distance
+            && first_member(candidate.member_mask) < first_member(current.member_mask))
+}
+
+fn ref_is_valid(region: DirectionalRegionRef) -> bool {
+    region.member_mask.count_ones() >= u32::from(MIN_DIRECTIONAL_REGION_RUNGS)
 }
 
 fn ref_distance(region: DirectionalRegionRef, nominated_rung: u8) -> u8 {

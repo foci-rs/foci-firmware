@@ -435,6 +435,84 @@ fn joint_nomination_uses_count_ratio_distance_and_lower_p_ties() {
     assert_eq!(tied.joint.member_mask, lower.member_mask);
 }
 
+#[test]
+fn operating_region_union_retains_separated_components() {
+    let gains = gains();
+    let p_start = PidGain::new(1).unwrap();
+    let p_top = PidGain::new(2_457).unwrap();
+    let mut fold = JointOperableFold::new();
+
+    assert!(
+        observe_joint_rung(&mut fold, 0, verdict(256, 0, 1, 1), verdict(256, 0, 1, 1)).is_none()
+    );
+    assert!(
+        observe_joint_rung(&mut fold, 1, verdict(362, 0, 1, 1), verdict(362, 0, 1, 1)).is_none()
+    );
+    let low = observe_joint_rung(&mut fold, 2, ineligible(512), ineligible(512)).unwrap();
+    fold.consider_best(low, &gains, p_start, p_top);
+
+    assert!(
+        observe_joint_rung(&mut fold, 4, verdict(1024, 0, 1, 1), verdict(1024, 0, 1, 1)).is_none()
+    );
+    assert!(
+        observe_joint_rung(&mut fold, 5, verdict(1448, 0, 1, 1), verdict(1448, 0, 1, 1)).is_none()
+    );
+    let high = fold.finish(JointOperableClosure::EndOfLadder).unwrap();
+    fold.consider_best(high, &gains, p_start, p_top);
+
+    assert_eq!(fold.union_member_mask(), low.member_mask | high.member_mask);
+}
+
+#[test]
+fn operating_region_union_is_zero_then_tracks_one_component() {
+    let gains = gains();
+    let p_start = PidGain::new(1).unwrap();
+    let p_top = PidGain::new(2_457).unwrap();
+    let mut fold = JointOperableFold::new();
+
+    assert_eq!(fold.union_member_mask(), 0);
+    assert!(
+        observe_joint_rung(&mut fold, 4, verdict(1024, 0, 1, 1), verdict(1024, 0, 1, 1)).is_none()
+    );
+    let region = fold.finish(JointOperableClosure::EndOfLadder).unwrap();
+    fold.consider_best(region, &gains, p_start, p_top);
+
+    assert_eq!(fold.union_member_mask(), region.member_mask);
+}
+
+#[test]
+fn provisional_nomination_uses_structural_margin() {
+    let gains = gains();
+    let p_start = PidGain::new(1).unwrap();
+    let p_top = PidGain::new(2_457).unwrap();
+    let low = super::operating_region::JointOperableRegion {
+        member_mask: (1 << 0) | (1 << 1),
+        first_rung: 0,
+        last_rung: 1,
+        member_count: 2,
+        closure: JointOperableClosure::IneligibleGap,
+    };
+    let high = super::operating_region::JointOperableRegion {
+        member_mask: (1 << 4) | (1 << 5),
+        first_rung: 4,
+        last_rung: 5,
+        member_count: 2,
+        closure: JointOperableClosure::EndOfLadder,
+    };
+
+    let selected = choose_joint_nomination(
+        Some(choose_joint_nomination(None, low, &gains, p_start, p_top)),
+        high,
+        &gains,
+        p_start,
+        p_top,
+    );
+
+    assert_eq!(selected.joint.member_mask, low.member_mask);
+    assert_eq!(selected.p.raw(), 256);
+    assert!(selected.reduced_margin);
+}
+
 fn reference(mask: u32, low: i32, high: i32) -> DirectionalRegionRef {
     DirectionalRegionRef {
         member_mask: mask,
@@ -442,6 +520,100 @@ fn reference(mask: u32, low: i32, high: i32) -> DirectionalRegionRef {
         common_intersection: [low, high],
         selected_edge_rate: CompactSignedRate::encode(10, BoundRounding::TowardPositiveInfinity),
     }
+}
+
+#[test]
+fn directional_region_or_fragment_selection_prefers_valid_region() {
+    let fragment = reference(0b000_1100, 1, 2);
+    let valid = reference(0b111_0000, 3, 4);
+
+    let selected = select_directional_region(None, fragment, 2, &gains(), 0);
+    let selected = select_directional_region(selected, valid, 2, &gains(), 0).unwrap();
+
+    assert_eq!(selected.region.member_mask, valid.member_mask);
+}
+
+#[test]
+fn directional_region_or_fragment_selection_prefers_larger_same_class() {
+    let one_rung = reference(0b000_0100, 1, 2);
+    let two_rungs = reference(0b110_0000, 3, 4);
+
+    let selected = select_directional_region(None, one_rung, 2, &gains(), 0);
+    let selected = select_directional_region(selected, two_rungs, 2, &gains(), 0).unwrap();
+
+    assert_eq!(selected.region.member_mask, two_rungs.member_mask);
+}
+
+#[test]
+fn directional_region_or_fragment_selection_uses_proximity_then_lower_p() {
+    let lower = reference(0b000_0010, 1, 2);
+    let upper = reference(0b010_0000, 3, 4);
+
+    let selected = select_directional_region(None, lower, 4, &gains(), 0);
+    let selected = select_directional_region(selected, upper, 4, &gains(), 0).unwrap();
+    assert_eq!(selected.region.member_mask, upper.member_mask);
+
+    let tied_lower = reference(0b000_1000, 5, 6);
+    let selected = select_directional_region(Some(selected), tied_lower, 4, &gains(), 0).unwrap();
+    assert_eq!(selected.region.member_mask, tied_lower.member_mask);
+}
+
+#[test]
+fn directional_region_or_fragment_selection_ignores_zero_sentinel() {
+    assert!(select_directional_region(None, reference(0, 0, 0), 0, &gains(), 0).is_none());
+}
+
+#[test]
+fn directional_region_or_fragment_selection_retains_compact_upper_fragment() {
+    let mut structural_gains = [PidGain::ZERO; 23];
+    structural_gains[15] = PidGain::new(256).unwrap();
+    structural_gains[16] = PidGain::new(362).unwrap();
+    structural_gains[19] = PidGain::new(1024).unwrap();
+    structural_gains[20] = PidGain::new(1448).unwrap();
+    let low = reference(0x0001_0000, 1, 2);
+    let high = reference(0x0018_0000, 3, 4);
+
+    let selected = select_directional_region(None, low, 15, &structural_gains, 0);
+    let selected = select_directional_region(selected, high, 15, &structural_gains, 0).unwrap();
+
+    assert_eq!(selected.region.member_mask, high.member_mask);
+}
+
+#[test]
+fn directional_region_or_fragment_selection_compacts_fragments() {
+    let mut fold = DirectionalRegionFold::new(VelocityDirection::Reverse);
+    assert!(observe_directional_rung(&mut fold, 4, verdict(1024, 1, 2, -10)).is_none());
+    let fragment = fold.finish(DirectionalRegionClosure::EndOfLadder).unwrap();
+
+    let reference = DirectionalRegionRef::from_summary(fragment, 4).unwrap();
+
+    assert_eq!(reference.member_mask, 1 << 4);
+}
+
+#[test]
+fn directional_region_or_fragment_selection_keeps_schema7_model_mask_strict() {
+    let mut trackers = HandoffTrackers::new();
+    trackers.observe_directional(VelocityDirection::Forward, reference(0b11, 1, 2), 0, 0);
+    trackers.observe_directional(VelocityDirection::Reverse, reference(0b11, 1, 2), 0, 0);
+    trackers.promote_active();
+
+    assert_eq!(trackers.model_direction_mask(), 0);
+    let joint = super::operating_region::JointOperableRegion {
+        member_mask: 0b111,
+        first_rung: 0,
+        last_rung: 2,
+        member_count: 3,
+        closure: JointOperableClosure::EndOfLadder,
+    };
+    let nomination = choose_joint_nomination(None, joint, &gains(), gains()[0], gains()[6]);
+    assert!(trackers.handoff(nomination, &gains(), [0, 0]).is_none());
+
+    trackers.observe_directional(VelocityDirection::Forward, reference(0b111, 3, 4), 1, 1);
+    trackers.observe_directional(VelocityDirection::Reverse, reference(0b111, 3, 4), 1, 1);
+    trackers.promote_active();
+
+    assert_eq!(trackers.model_direction_mask(), 3);
+    assert!(trackers.handoff(nomination, &gains(), [0, 0]).is_some());
 }
 
 #[test]
