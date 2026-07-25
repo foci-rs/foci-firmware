@@ -330,7 +330,10 @@ fn apply_live_inner_gains_publishes_only_after_both_writes_succeed() {
         for (fail_flux, fail_torque, expected_first_ok, expected_second_ok) in cases {
             let mut runtime = TmcControlRuntime::new_for_channel(0);
             runtime.set_stored_gains(previous);
-            let mut spi = RuntimeMockSpi::default();
+            let tmc_state = crate::state::tmc::TmcChannelState::new();
+            tmc_state.mark_pi_representation_established();
+            let mut spi = RuntimeMockSpi::default()
+                .with_read(foci_tmc4671::registers::ADVANCED_PI_REPRESENT_P_Q8_8_I_Q4_12);
             if fail_flux {
                 spi = spi.fail_writes_to(PID_FLUX_P_FLUX_I.addr());
             }
@@ -339,15 +342,22 @@ fn apply_live_inner_gains_publishes_only_after_both_writes_succeed() {
             }
             let mut tmc = Tmc4671Spi::new(spi);
 
-            let status = apply_live_inner_gains(&mut runtime, &mut tmc, requested).await;
+            let status =
+                apply_live_inner_gains(&mut runtime, &tmc_state, &mut tmc, requested).await;
             let spi = tmc.into_inner();
 
             assert_eq!(status.first_write_ok, expected_first_ok);
             assert_eq!(status.second_write_ok, expected_second_ok);
-            assert_eq!(spi.write_attempts.len(), 2);
+            assert_eq!(spi.write_attempts.len(), 3);
             assert_eq!(
                 spi.write_attempts,
                 std::vec![
+                    (
+                        foci_tmc4671::registers::CONFIG_ADVANCED_PI_REPRESENT
+                            .addr
+                            .addr(),
+                        u32::from(foci_tmc4671::registers::CONFIG_ADVANCED_PI_REPRESENT.sub_addr,),
+                    ),
                     (PID_FLUX_P_FLUX_I.addr(), (11u32 << 16) | 12,),
                     (PID_TORQUE_P_TORQUE_I.addr(), (13u32 << 16) | 14,),
                 ],
@@ -379,7 +389,9 @@ fn apply_live_outer_gains_publishes_only_after_both_writes_succeed() {
         for (fail_velocity, fail_position, expected_first_ok, expected_second_ok) in cases {
             let tmc_state = crate::state::tmc::TmcChannelState::new();
             tmc_state.store_outer_gains(previous, Relaxed);
-            let mut spi = RuntimeMockSpi::default();
+            tmc_state.mark_pi_representation_established();
+            let mut spi = RuntimeMockSpi::default()
+                .with_read(foci_tmc4671::registers::ADVANCED_PI_REPRESENT_P_Q8_8_I_Q4_12);
             if fail_velocity {
                 spi = spi.fail_writes_to(PID_VELOCITY_P_VELOCITY_I.addr());
             }
@@ -394,10 +406,16 @@ fn apply_live_outer_gains_publishes_only_after_both_writes_succeed() {
 
             assert_eq!(status.first_write_ok, expected_first_ok);
             assert_eq!(status.second_write_ok, expected_second_ok);
-            assert_eq!(spi.write_attempts.len(), 2);
+            assert_eq!(spi.write_attempts.len(), 3);
             assert_eq!(
                 spi.write_attempts,
                 std::vec![
+                    (
+                        foci_tmc4671::registers::CONFIG_ADVANCED_PI_REPRESENT
+                            .addr
+                            .addr(),
+                        u32::from(foci_tmc4671::registers::CONFIG_ADVANCED_PI_REPRESENT.sub_addr,),
+                    ),
                     (PID_VELOCITY_P_VELOCITY_I.addr(), (203u32 << 16) | 204,),
                     (PID_POSITION_P_POSITION_I.addr(), (201u32 << 16) | 202,),
                 ],
@@ -407,6 +425,52 @@ fn apply_live_outer_gains_publishes_only_after_both_writes_succeed() {
                 if status.all_ok() { requested } else { previous },
             );
         }
+    });
+}
+
+#[test]
+fn live_gain_write_refuses_before_pi_representation_establishment() {
+    pollster::block_on(async {
+        let mut runtime = TmcControlRuntime::new_for_channel(0);
+        let tmc_state = crate::state::tmc::TmcChannelState::new();
+        let requested = InnerLoopGains {
+            flux_p: crate::pid::test_gain(11),
+            flux_i: crate::pid::test_gain(12),
+            torque_p: crate::pid::test_gain(13),
+            torque_i: crate::pid::test_gain(14),
+        };
+        let mut tmc = Tmc4671Spi::new(RuntimeMockSpi::default());
+
+        let status = apply_live_inner_gains(&mut runtime, &tmc_state, &mut tmc, requested).await;
+        let spi = tmc.into_inner();
+
+        assert!(!status.all_ok());
+        assert!(spi.write_attempts.is_empty());
+        assert!(spi.read_requests.is_empty());
+    });
+}
+
+#[test]
+fn live_gain_write_refuses_mismatching_pi_representation_before_pid_write() {
+    pollster::block_on(async {
+        let mut runtime = TmcControlRuntime::new_for_channel(0);
+        let tmc_state = crate::state::tmc::TmcChannelState::new();
+        tmc_state.mark_pi_representation_established();
+        let requested = InnerLoopGains {
+            flux_p: crate::pid::test_gain(11),
+            flux_i: crate::pid::test_gain(12),
+            torque_p: crate::pid::test_gain(13),
+            torque_i: crate::pid::test_gain(14),
+        };
+        let mut tmc = Tmc4671Spi::new(RuntimeMockSpi::default().with_read(0));
+
+        let status = apply_live_inner_gains(&mut runtime, &tmc_state, &mut tmc, requested).await;
+        let spi = tmc.into_inner();
+
+        assert!(!status.all_ok());
+        assert!(!spi.attempted_write_to(PID_FLUX_P_FLUX_I));
+        assert!(!spi.attempted_write_to(PID_TORQUE_P_TORQUE_I));
+        assert!(!tmc_state.pi_representation_established());
     });
 }
 
@@ -1035,6 +1099,7 @@ fn scheduled_dispatch_preserves_accepted_commission_reply_and_actions() {
         let stepper = crate::state::stepper::stepper_channel0();
         tmc.reset();
         stepper.reset();
+        tmc.mark_pi_representation_established();
         tmc.store_current_limit(current_limit(0x10), Ordering::Relaxed);
         tmc.motor_sentinel.store(MOTOR_SENTINEL, Ordering::Relaxed);
         let mut runtime = TmcControlRuntime::new_for_channel(0);

@@ -1,4 +1,6 @@
-use super::pi_representation::{PiRepresentationError, bootstrap_pi_representation};
+use super::pi_representation::{
+    PiRepresentationError, bootstrap_pi_representation, verify_pi_representation,
+};
 use crate::commission_dispatch::test_support::{MockBackend, SpiOp};
 use crate::state::tmc::TmcChannelState;
 use foci_tmc4671::registers::{ADVANCED_PI_REPRESENT_P_Q8_8_I_Q4_12, CONFIG_ADVANCED_PI_REPRESENT};
@@ -132,5 +134,19 @@ fn pi_representation_bootstrap_is_deterministic_when_repeated_disarmed() {
             ));
             assert!(matches!(pair[3], SpiOp::Read));
         }
+    });
+}
+
+#[test]
+fn pi_representation_verify_requires_established_state_before_spi() {
+    pollster::block_on(async {
+        let state = TmcChannelState::new();
+        let mut backend = MockBackend::new();
+
+        assert_eq!(
+            verify_pi_representation(&mut backend, &state).await,
+            Err(PiRepresentationError::NotEstablished)
+        );
+        assert!(backend.spi_log.is_empty());
     });
 }

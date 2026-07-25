@@ -87,12 +87,22 @@ where
 /// Apply live flux/torque register writes and publish the gains after complete success.
 pub async fn apply_live_inner_gains<Spi>(
     runtime: &mut TmcControlRuntime,
+    tmc_state: &TmcChannelState,
     tmc: &mut Tmc4671Spi<Spi>,
     gains: InnerLoopGains,
 ) -> LiveGainWriteStatus
 where
     Spi: SpiDevice<u8>,
 {
+    if crate::tmc_control::pi_representation::verify_pi_representation_spi(tmc, tmc_state)
+        .await
+        .is_err()
+    {
+        return LiveGainWriteStatus {
+            first_write_ok: false,
+            second_write_ok: false,
+        };
+    }
     let (flux_reg, torque_reg) = gains.to_registers();
     let first_write_ok = tmc
         .write_register(PID_FLUX_P_FLUX_I, flux_reg)
@@ -122,6 +132,15 @@ pub async fn apply_live_outer_gains<Spi>(
 where
     Spi: SpiDevice<u8>,
 {
+    if crate::tmc_control::pi_representation::verify_pi_representation_spi(tmc, tmc_state)
+        .await
+        .is_err()
+    {
+        return LiveGainWriteStatus {
+            first_write_ok: false,
+            second_write_ok: false,
+        };
+    }
     let (velocity_reg, position_reg) = gains.to_registers();
     let first_write_ok = tmc
         .write_register(PID_VELOCITY_P_VELOCITY_I, velocity_reg)

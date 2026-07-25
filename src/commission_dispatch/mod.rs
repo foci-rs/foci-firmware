@@ -682,7 +682,7 @@ pub async fn drive_commission_result<B: CommissioningBackend>(
                 .store(false, core::sync::atomic::Ordering::Relaxed);
             let restore_result =
                 restore::restore_calibrate_gains(backend, state.tmc, *state.stored_gains).await;
-            if restore_result.is_err() {
+            if let Err(restore_error) = restore_result {
                 defmt::error!("CalibrateDone: saved gain restore SPI failed");
                 crate::tmc_control::lifecycle::disarm_motor(backend, state).await;
                 state
@@ -692,7 +692,17 @@ pub async fn drive_commission_result<B: CommissioningBackend>(
                 return CommissionOutcome::Terminal {
                     reply: ReplyPayload::CalibrateResult {
                         oid,
-                        status: crate::calibration::CalibrationError::SpiError.status_code(),
+                        status: match restore_error {
+                            restore::RestoreError::PiRepresentation => {
+                                crate::calibration::CalibrationError::ChipResetDetected
+                                    .status_code()
+                            }
+                            restore::RestoreError::Spi(_)
+                            | restore::RestoreError::InvalidGains
+                            | restore::RestoreError::VelocityClamp => {
+                                crate::calibration::CalibrationError::SpiError.status_code()
+                            }
+                        },
                         result: zero_adc_cal_result(),
                         diagnostics: crate::selftest::CommissionDiagnostics::default(),
                     },
@@ -932,6 +942,9 @@ pub async fn drive_commission_result<B: CommissioningBackend>(
                         restore::RestoreError::Spi(_) | restore::RestoreError::VelocityClamp => {
                             crate::autotune::CommissionError::Spi
                         }
+                        restore::RestoreError::PiRepresentation => {
+                            crate::autotune::CommissionError::ChipResetDetected
+                        }
                         restore::RestoreError::InvalidGains => {
                             crate::autotune::CommissionError::VelocityValidationFailed
                         }
@@ -1070,7 +1083,9 @@ pub async fn drive_commission_result<B: CommissioningBackend>(
                 // Safety faults skip restore — motor state unknown, disarm immediately.
                 Some(error)
             } else if let Some(ref snap) = snapshot {
-                match crate::commissioning::inner::restore_entry_gains(snap, backend).await {
+                match crate::commissioning::inner::restore_entry_gains(snap, backend, state.tmc)
+                    .await
+                {
                     Ok(()) => match outer_restore_position_stable(backend).await {
                         Ok(stability) => {
                             restore_drift_counts = stability.span_counts;

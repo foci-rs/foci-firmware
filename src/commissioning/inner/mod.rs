@@ -655,6 +655,7 @@ async fn step_inner_dispatch<B: CommissioningBackend>(
 pub async fn restore_entry_gains<B: CommissioningBackend>(
     snapshot: &EntrySnapshot,
     backend: &mut B,
+    tmc_state: &crate::state::tmc::TmcChannelState,
 ) -> Result<(), CommissionError> {
     use foci_tmc4671::registers::*;
 
@@ -715,6 +716,9 @@ pub async fn restore_entry_gains<B: CommissioningBackend>(
         .map_err(|_| CommissionError::Spi)?;
 
     // 5. Reload outer gains from snapshot.
+    crate::tmc_control::pi_representation::verify_pi_representation(backend, tmc_state)
+        .await
+        .map_err(|_| CommissionError::ChipResetDetected)?;
     let velocity_p =
         PidGain::new(snapshot.velocity_p).map_err(|_| CommissionError::VelocityValidationFailed)?;
     let velocity_i =

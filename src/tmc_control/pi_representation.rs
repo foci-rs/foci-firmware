@@ -2,11 +2,15 @@
 
 use crate::commissioning::backend::CommissionRegisterIo;
 use crate::state::tmc::TmcChannelState;
+use embedded_hal_async::spi::SpiDevice;
 use foci_tmc4671::registers::{ADVANCED_PI_REPRESENT_P_Q8_8_I_Q4_12, CONFIG_ADVANCED_PI_REPRESENT};
+use foci_tmc4671::spi::Tmc4671Spi;
 
 /// Failure to establish or verify the fixed PI representation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub enum PiRepresentationError {
+    /// Startup has not established the required representation.
+    NotEstablished,
     /// Writing the selector or representation value failed.
     Write,
     /// Selecting or reading the representation value failed.
@@ -16,6 +20,22 @@ pub enum PiRepresentationError {
         /// Raw representation value returned by the TMC4671.
         actual: u32,
     },
+}
+
+fn require_established(state: &TmcChannelState) -> Result<(), PiRepresentationError> {
+    if state.pi_representation_established() {
+        Ok(())
+    } else {
+        Err(PiRepresentationError::NotEstablished)
+    }
+}
+
+fn require_expected(actual: u32) -> Result<(), PiRepresentationError> {
+    if actual == ADVANCED_PI_REPRESENT_P_Q8_8_I_Q4_12 {
+        Ok(())
+    } else {
+        Err(PiRepresentationError::Mismatch { actual })
+    }
 }
 
 /// Program and verify the fixed PI representation while the motor is disarmed.
@@ -57,9 +77,64 @@ pub async fn bootstrap_pi_representation<B: CommissionRegisterIo>(
         .read_register(CONFIG_ADVANCED_PI_REPRESENT.data)
         .await
         .map_err(|_| PiRepresentationError::Read)?;
-    if actual != ADVANCED_PI_REPRESENT_P_Q8_8_I_Q4_12 {
-        return Err(PiRepresentationError::Mismatch { actual });
-    }
+    require_expected(actual)?;
     state.mark_pi_representation_established();
     Ok(())
+}
+
+/// Verify the fixed PI representation through a commissioning backend.
+///
+/// This verifier never repairs missing or mismatching state.
+pub(crate) async fn verify_pi_representation<B: CommissionRegisterIo>(
+    backend: &mut B,
+    state: &TmcChannelState,
+) -> Result<(), PiRepresentationError> {
+    require_established(state)?;
+    let result = async {
+        backend
+            .write_register(
+                CONFIG_ADVANCED_PI_REPRESENT.addr,
+                u32::from(CONFIG_ADVANCED_PI_REPRESENT.sub_addr),
+            )
+            .await
+            .map_err(|_| PiRepresentationError::Read)?;
+        let actual = backend
+            .read_register(CONFIG_ADVANCED_PI_REPRESENT.data)
+            .await
+            .map_err(|_| PiRepresentationError::Read)?;
+        require_expected(actual)
+    }
+    .await;
+    if result.is_err() {
+        state.clear_pi_representation_established();
+    }
+    result
+}
+
+/// Verify the fixed PI representation through the raw request-path SPI owner.
+///
+/// This has the same fail-closed semantics as [`verify_pi_representation`].
+pub(crate) async fn verify_pi_representation_spi<Spi: SpiDevice<u8>>(
+    tmc: &mut Tmc4671Spi<Spi>,
+    state: &TmcChannelState,
+) -> Result<(), PiRepresentationError> {
+    require_established(state)?;
+    let result = async {
+        tmc.write_register(
+            CONFIG_ADVANCED_PI_REPRESENT.addr,
+            u32::from(CONFIG_ADVANCED_PI_REPRESENT.sub_addr),
+        )
+        .await
+        .map_err(|_| PiRepresentationError::Read)?;
+        let actual = tmc
+            .read_register(CONFIG_ADVANCED_PI_REPRESENT.data)
+            .await
+            .map_err(|_| PiRepresentationError::Read)?;
+        require_expected(actual)
+    }
+    .await;
+    if result.is_err() {
+        state.clear_pi_representation_established();
+    }
+    result
 }

@@ -210,6 +210,15 @@ where
     normal_outcome(sink.normal_tail())
 }
 
+async fn pi_representation_available<Spi: SpiDevice<u8>>(
+    tmc: &mut Tmc4671Spi<Spi>,
+    state: &TmcChannelState,
+) -> bool {
+    crate::tmc_control::pi_representation::verify_pi_representation_spi(tmc, state)
+        .await
+        .is_ok()
+}
+
 /// Handle one board-routed request with board-wide Stage B and Stage C retention.
 pub async fn handle_tmc_control_request_with_stages<Spi, Board>(
     req: TmcRequest,
@@ -231,6 +240,10 @@ where
             return normal_outcome(board.normal_tail());
         }
         TmcPreRequestDisposition::RunDiagnostic(diagnostic_req) => {
+            if !pi_representation_available(tmc, board.tmc_state()).await {
+                defmt::error!("Diagnostic rejected: PI representation unavailable");
+                return TmcControlRequestOutcome::skip_tick_tail();
+            }
             board
                 .run_diagnostic_request(diagnostic_req, runtime, tmc)
                 .await;
@@ -244,6 +257,10 @@ where
             ..
         } => {
             if enabled {
+                if !pi_representation_available(tmc, board.tmc_state()).await {
+                    defmt::error!("Motor enable rejected: PI representation unavailable");
+                    return TmcControlRequestOutcome::skip_tick_tail();
+                }
                 if !runtime.is_calibrated() {
                     if board.commissioning_blocked(runtime) {
                         defmt::warn!("Auto-calibrate rejected: commissioning already active");
@@ -349,6 +366,18 @@ where
                 );
                 return TmcControlRequestOutcome::skip_tick_tail();
             }
+            if !pi_representation_available(tmc, board.tmc_state()).await {
+                board
+                    .tmc_state()
+                    .commission_in_flight
+                    .store(false, core::sync::atomic::Ordering::Relaxed);
+                emit_calibrate_failure::<Board, Spi>(
+                    board,
+                    oid,
+                    CalibrationError::ChipResetDetected.status_code(),
+                );
+                return TmcControlRequestOutcome::skip_tick_tail();
+            }
             // Host homing explicitly calibrates after the required Stage B
             // disarm/cooling interval. Preserve a same-channel candidate across
             // that alignment lifecycle; another channel still invalidates the
@@ -398,7 +427,7 @@ where
                 torque_p,
                 torque_i,
             };
-            let write_status = apply_live_inner_gains(runtime, tmc, gains).await;
+            let write_status = apply_live_inner_gains(runtime, board.tmc_state(), tmc, gains).await;
             if let Some(outcome) = live_gain_failure_outcome(write_status) {
                 defmt::warn!("PID gains live write failed");
                 return outcome;
@@ -576,6 +605,18 @@ where
                 );
                 return TmcControlRequestOutcome::skip_tick_tail();
             }
+            if !pi_representation_available(tmc, board.tmc_state()).await {
+                board
+                    .tmc_state()
+                    .commission_in_flight
+                    .store(false, core::sync::atomic::Ordering::Relaxed);
+                emit_commission_phase_failure::<Board, Spi>(
+                    board,
+                    oid,
+                    CommissionError::ChipResetDetected.status_code(),
+                );
+                return TmcControlRequestOutcome::skip_tick_tail();
+            }
             let current_limit = board
                 .tmc_state()
                 .load_current_limit(core::sync::atomic::Ordering::Relaxed);
@@ -588,6 +629,18 @@ where
                     board,
                     oid,
                     CommissionError::NoCurrent.status_code(),
+                );
+                return TmcControlRequestOutcome::skip_tick_tail();
+            }
+            if !pi_representation_available(tmc, board.tmc_state()).await {
+                board
+                    .tmc_state()
+                    .commission_in_flight
+                    .store(false, core::sync::atomic::Ordering::Relaxed);
+                emit_selftest_failure::<Board, Spi>(
+                    board,
+                    oid,
+                    CommissionError::ChipResetDetected.status_code(),
                 );
                 return TmcControlRequestOutcome::skip_tick_tail();
             }
@@ -647,6 +700,18 @@ where
                     board,
                     oid,
                     CommissionError::EncoderNotAligned.status_code(),
+                );
+                return TmcControlRequestOutcome::skip_tick_tail();
+            }
+            if !pi_representation_available(tmc, board.tmc_state()).await {
+                board
+                    .tmc_state()
+                    .commission_in_flight
+                    .store(false, core::sync::atomic::Ordering::Relaxed);
+                emit_commission_phase_failure::<Board, Spi>(
+                    board,
+                    oid,
+                    CommissionError::ChipResetDetected.status_code(),
                 );
                 return TmcControlRequestOutcome::skip_tick_tail();
             }
@@ -986,6 +1051,10 @@ where
                 | TmcRequestKind::ResistanceTest { .. },
             ..
         } => {
+            if !pi_representation_available(tmc, board.tmc_state()).await {
+                defmt::error!("Diagnostic rejected: PI representation unavailable");
+                return TmcControlRequestOutcome::skip_tick_tail();
+            }
             board
                 .run_diagnostic_request(diagnostic_req, runtime, tmc)
                 .await;
@@ -1345,12 +1414,24 @@ mod tests {
         }
     }
 
-    #[derive(Default)]
     struct RuntimeMockSpi {
         writes: std::vec::Vec<(u8, u32)>,
         write_attempts: std::vec::Vec<(u8, u32)>,
         read_requests: std::vec::Vec<u8>,
         fail_writes_to: Option<u8>,
+        read_value: u32,
+    }
+
+    impl Default for RuntimeMockSpi {
+        fn default() -> Self {
+            Self {
+                writes: std::vec::Vec::new(),
+                write_attempts: std::vec::Vec::new(),
+                read_requests: std::vec::Vec::new(),
+                fail_writes_to: None,
+                read_value: foci_tmc4671::registers::ADVANCED_PI_REPRESENT_P_Q8_8_I_Q4_12,
+            }
+        }
     }
 
     impl RuntimeMockSpi {
@@ -1381,7 +1462,7 @@ mod tests {
                         self.writes.push((addr, value));
                     }
                     Operation::Write(buf) if buf.len() == 1 => self.read_requests.push(buf[0]),
-                    Operation::Read(buf) => buf.copy_from_slice(&0_u32.to_be_bytes()),
+                    Operation::Read(buf) => buf.copy_from_slice(&self.read_value.to_be_bytes()),
                     Operation::Write(_) | Operation::DelayNs(_) => {}
                     Operation::Transfer(read, write) => read.copy_from_slice(write),
                     Operation::TransferInPlace(_) => {}
@@ -1448,6 +1529,7 @@ mod tests {
     impl RecordingBoard {
         fn new(normal_tail: TmcControlRequestTail) -> Self {
             reset_globals();
+            tmc_channel0().mark_pi_representation_established();
             Self {
                 channel: 0,
                 commissioning_blocked: false,
@@ -2284,6 +2366,40 @@ mod tests {
                     _ => panic!("unexpected reply"),
                 }
             }
+        });
+    }
+
+    #[test]
+    fn commissioning_admission_refuses_missing_pi_representation() {
+        run_request_test(async {
+            let mut runtime = TmcControlRuntime::new_for_channel(0);
+            let mut board = RecordingBoard::skip_tick_tail();
+            board
+                .tmc_state()
+                .store_current_limit(current_limit(2_816), Relaxed);
+            board.tmc_state().clear_pi_representation_established();
+            let mut tmc = Tmc4671Spi::new(RuntimeMockSpi::default());
+
+            let outcome = handle_tmc_control_request(
+                TmcRequest::new(0, TmcRequestKind::Commission { oid: 2, profile: 0 }),
+                TmcPreRequestDisposition::ContinueRequest,
+                &mut runtime,
+                &mut tmc,
+                &mut board,
+            )
+            .await;
+
+            assert_eq!(outcome.tail, TmcControlRequestTail::SkipTickTail);
+            assert_eq!(runtime.pending_commission_kind(), None);
+            assert_eq!(board.replies.len(), 1);
+            assert_commission_phase_failure(
+                &board.replies[0],
+                2,
+                CommissionError::ChipResetDetected.status_code(),
+            );
+            let spi = tmc.into_inner();
+            assert!(spi.write_attempts.is_empty());
+            assert!(spi.read_requests.is_empty());
         });
     }
 

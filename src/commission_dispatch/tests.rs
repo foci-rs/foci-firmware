@@ -96,6 +96,7 @@ fn dispatch_state<'a>(
     motor_enabled: &'a mut bool,
     stored_gains: &'a mut Option<crate::pid::InnerLoopGains>,
 ) -> DispatchState<'a> {
+    crate::state::tmc::tmc_channel0().mark_pi_representation_established();
     DispatchState::new(
         crate::state::tmc::tmc_channel0(),
         crate::state::stepper::stepper_channel0(),
@@ -106,7 +107,9 @@ fn dispatch_state<'a>(
 }
 
 fn tmc_state() -> &'static crate::state::tmc::TmcChannelState {
-    crate::state::tmc::tmc_channel0()
+    let state = crate::state::tmc::tmc_channel0();
+    state.mark_pi_representation_established();
+    state
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

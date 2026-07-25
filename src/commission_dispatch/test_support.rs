@@ -44,6 +44,10 @@ pub enum SpiOp {
 pub struct MockBackend {
     /// Current register values, keyed by TMC4671 address byte.
     pub registers: heapless::LinearMap<u8, u32, 64>,
+    /// Last CONFIG subregister selected through address register 0x4E.
+    config_selected_subregister: u8,
+    /// Value retained specifically for CONFIG subregister 62.
+    advanced_pi_representation: u32,
     /// Ordered log of every SPI read/write issued during the test.
     pub spi_log: Vec<SpiOp, 8_192>,
     /// Number of paired register-read operations issued during the test.
@@ -171,6 +175,9 @@ impl MockBackend {
     pub fn new() -> Self {
         Self {
             registers: heapless::LinearMap::new(),
+            config_selected_subregister: 0,
+            advanced_pi_representation:
+                foci_tmc4671::registers::ADVANCED_PI_REPRESENT_P_Q8_8_I_Q4_12,
             spi_log: Vec::new(),
             register_pair_reads: 0,
             capture_register_reads: 0,
@@ -312,6 +319,15 @@ impl CommissionRegisterIo for MockBackend {
         {
             return Ok(val);
         }
+        if addr
+            == foci_tmc4671::registers::CONFIG_ADVANCED_PI_REPRESENT
+                .data
+                .addr()
+            && self.config_selected_subregister
+                == foci_tmc4671::registers::CONFIG_ADVANCED_PI_REPRESENT.sub_addr
+        {
+            return Ok(self.advanced_pi_representation);
+        }
         if addr == foci_tmc4671::registers::PID_POSITION_ACTUAL.addr()
             && self.read_position_actual_pos < self.read_position_actual_sequence.len()
         {
@@ -431,6 +447,21 @@ impl CommissionRegisterIo for MockBackend {
         }
         if self.fail_on_write == Some(addr) {
             return Err(MockSpiError);
+        }
+        if addr
+            == foci_tmc4671::registers::CONFIG_ADVANCED_PI_REPRESENT
+                .addr
+                .addr()
+        {
+            self.config_selected_subregister = val as u8;
+        } else if addr
+            == foci_tmc4671::registers::CONFIG_ADVANCED_PI_REPRESENT
+                .data
+                .addr()
+            && self.config_selected_subregister
+                == foci_tmc4671::registers::CONFIG_ADVANCED_PI_REPRESENT.sub_addr
+        {
+            self.advanced_pi_representation = val;
         }
         let _ = self.registers.insert(addr, val);
         Ok(())

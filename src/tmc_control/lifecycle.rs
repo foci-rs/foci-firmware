@@ -105,6 +105,9 @@ pub async fn arm_motor_electrical<B: CommissioningBackend>(
         .read_register_verified(MOTOR_TYPE_N_POLE_PAIRS, expected)
         .await
         .map_err(|_| crate::autotune::CommissionError::ChipResetDetected)?;
+    crate::tmc_control::pi_representation::verify_pi_representation(backend, state.tmc)
+        .await
+        .map_err(|_| crate::autotune::CommissionError::ChipResetDetected)?;
 
     settle_closed_loop_hold_before_enable(backend).await?;
 
@@ -209,6 +212,7 @@ mod tests {
         motor_enabled: &'a mut bool,
         stored_gains: &'a mut Option<crate::pid::InnerLoopGains>,
     ) -> DispatchState<'a> {
+        crate::state::tmc::tmc_channel0().mark_pi_representation_established();
         DispatchState::new(
             crate::state::tmc::tmc_channel0(),
             crate::state::stepper::stepper_channel0(),
@@ -370,6 +374,47 @@ mod tests {
             tmc_state()
                 .motor_sentinel
                 .store(0, core::sync::atomic::Ordering::Relaxed);
+        });
+    }
+
+    #[test]
+    fn arm_motor_electrical_refuses_when_pi_representation_mismatches() {
+        pollster::block_on(async {
+            let _guard = crate::commission_dispatch::test_support::SHARED_STATE_MUTEX
+                .lock()
+                .await;
+            let mut backend = MockBackend::new();
+            tmc_state()
+                .motor_sentinel
+                .store(0x0002_0032, core::sync::atomic::Ordering::Relaxed);
+            tmc_state().mark_pi_representation_established();
+            let _ = backend
+                .write_register(
+                    foci_tmc4671::registers::MOTOR_TYPE_N_POLE_PAIRS,
+                    0x0002_0032,
+                )
+                .await;
+            backend.read_override = Some((
+                foci_tmc4671::registers::CONFIG_ADVANCED_PI_REPRESENT
+                    .data
+                    .addr(),
+                0,
+            ));
+            let (_, mut en, mut gains) = fresh_state_locals();
+            let mut cal = true;
+            let mut state = dispatch_state(&mut cal, &mut en, &mut gains);
+
+            let result = arm_motor_electrical(&mut backend, &mut state).await;
+
+            assert_eq!(
+                result,
+                Err(crate::autotune::CommissionError::ChipResetDetected)
+            );
+            assert!(!backend.enable_pin);
+            tmc_state()
+                .motor_sentinel
+                .store(0, core::sync::atomic::Ordering::Relaxed);
+            tmc_state().clear_pi_representation_established();
         });
     }
 
