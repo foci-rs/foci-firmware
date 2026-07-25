@@ -12,7 +12,9 @@ use crate::autotune::velocity_measurement::{
     DyadicBlocker, RawVelocityObservation, StationarityWork, VelocityMeasurementError,
 };
 #[cfg(feature = "trace-velocity-sweep")]
-use crate::commissioning::outer::velocity::current_guard::VelocityCurrentObserver;
+use crate::commissioning::outer::velocity::current_guard::{
+    VelocityCurrentObserver, VelocityCurrentPhaseEvidence,
+};
 #[cfg(feature = "trace-velocity-sweep")]
 use crate::commissioning::outer::velocity::operating_region::{
     CompactSignedRate, OperatingRegionRuntime,
@@ -183,6 +185,110 @@ impl crate::autotune::velocity_measurement::VelocityObservationSource for Veloci
 
 /// Phase-local state for the trace-gated velocity-integral response sweep.
 #[cfg(feature = "trace-velocity-sweep")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+pub(crate) struct VelocitySettleTransition {
+    pub(crate) sample_index: u16,
+    pub(crate) elapsed_us: u32,
+    pub(crate) delta_counts: i32,
+    pub(crate) displacement_counts: i32,
+}
+
+#[cfg(feature = "trace-velocity-sweep")]
+impl VelocitySettleTransition {
+    const EMPTY: Self = Self {
+        sample_index: 0,
+        elapsed_us: 0,
+        delta_counts: 0,
+        displacement_counts: 0,
+    };
+}
+
+/// Incremental whole-window metrics for one zero-target capture.
+#[cfg(feature = "trace-velocity-sweep")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+pub(crate) struct VelocitySettleMetrics {
+    pub(crate) sample_count: u16,
+    pub(crate) duration_us: u32,
+    pub(crate) net_displacement_counts: i32,
+    pub(crate) minimum_displacement_counts: i32,
+    pub(crate) maximum_displacement_counts: i32,
+    pub(crate) transition_count: u16,
+    pub(crate) first_transition: VelocitySettleTransition,
+    pub(crate) last_transition: VelocitySettleTransition,
+}
+
+#[cfg(feature = "trace-velocity-sweep")]
+impl VelocitySettleMetrics {
+    pub(crate) const EMPTY: Self = Self {
+        sample_count: 0,
+        duration_us: 0,
+        net_displacement_counts: 0,
+        minimum_displacement_counts: 0,
+        maximum_displacement_counts: 0,
+        transition_count: 0,
+        first_transition: VelocitySettleTransition::EMPTY,
+        last_transition: VelocitySettleTransition::EMPTY,
+    };
+
+    pub(crate) fn observe(
+        &mut self,
+        delta_counts: i32,
+        elapsed_us: u32,
+    ) -> Result<(), CommissionError> {
+        self.sample_count = self
+            .sample_count
+            .checked_add(1)
+            .ok_or(CommissionError::InvalidSchedule)?;
+        self.duration_us = self
+            .duration_us
+            .checked_add(elapsed_us)
+            .ok_or(CommissionError::InvalidSchedule)?;
+        self.net_displacement_counts = self
+            .net_displacement_counts
+            .checked_add(delta_counts)
+            .ok_or(CommissionError::InvalidSchedule)?;
+        self.minimum_displacement_counts = self
+            .minimum_displacement_counts
+            .min(self.net_displacement_counts);
+        self.maximum_displacement_counts = self
+            .maximum_displacement_counts
+            .max(self.net_displacement_counts);
+        if delta_counts != 0 {
+            self.transition_count = self
+                .transition_count
+                .checked_add(1)
+                .ok_or(CommissionError::InvalidSchedule)?;
+            let transition = VelocitySettleTransition {
+                sample_index: self.sample_count,
+                elapsed_us: self.duration_us,
+                delta_counts,
+                displacement_counts: self.net_displacement_counts,
+            };
+            if self.transition_count == 1 {
+                self.first_transition = transition;
+            }
+            self.last_transition = transition;
+        }
+        Ok(())
+    }
+}
+
+/// Exact active-I rest loss retained while the I=0 cleanup proof runs.
+#[cfg(feature = "trace-velocity-sweep")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+pub(crate) struct PositiveIRestBoundary {
+    pub(crate) rung_index: u8,
+    pub(crate) slot: u8,
+    pub(crate) i_raw: u16,
+    pub(crate) direction: i8,
+    pub(crate) active_stationarity: crate::autotune::velocity_measurement::StationarityResult,
+    pub(crate) active_settle: VelocitySettleMetrics,
+    pub(crate) zero_phase_current: VelocityCurrentPhaseEvidence,
+    pub(crate) cleanup_confirmed: bool,
+}
+
+/// Phase-local state for the trace-gated velocity-integral response sweep.
+#[cfg(feature = "trace-velocity-sweep")]
 #[derive(Debug, defmt::Format)]
 pub(crate) enum VelocityIntegralState {
     /// Validate the already-emitted immutable plan and arm measurement safety.
@@ -216,6 +322,15 @@ pub(crate) enum VelocityIntegralState {
     },
     /// Confirm rest without extending the declared schedule.
     AnalyzeSettle { analysis_deadline_us: u64 },
+    /// Program I=0 and begin the fixed cleanup proof after an active-I rest loss.
+    BeginPositiveIRestCleanup,
+    /// Capture the fixed I=0 cleanup rest window.
+    PositiveIRestCleanupCapture {
+        next_sample_us: u64,
+        deadline_us: u64,
+    },
+    /// Analyze the fixed I=0 cleanup rest window.
+    AnalyzePositiveIRestCleanup { analysis_deadline_us: u64 },
     /// Advance the fixed slot/rung cursor after confirmed rest.
     Advance,
     /// Fold the completed rung into anchor, curve, or bookend evidence.
@@ -246,6 +361,9 @@ pub(crate) struct VelocityIntegralData {
     pub(crate) settle_displacement_counts: i8,
     pub(crate) settle_min_displacement_counts: i8,
     pub(crate) settle_max_displacement_counts: i8,
+    pub(crate) settle_metrics: VelocitySettleMetrics,
+    pub(crate) positive_i_rest_boundary: Option<PositiveIRestBoundary>,
+    pub(crate) positive_i_rest_boundary_after_sufficiency: bool,
     #[defmt(Debug2Format)]
     pub(crate) observations: VelocityObservationRing,
     #[defmt(Debug2Format)]
@@ -283,6 +401,9 @@ impl VelocityIntegralData {
             settle_displacement_counts: 0,
             settle_min_displacement_counts: 0,
             settle_max_displacement_counts: 0,
+            settle_metrics: VelocitySettleMetrics::EMPTY,
+            positive_i_rest_boundary: None,
+            positive_i_rest_boundary_after_sufficiency: false,
             observations: VelocityObservationRing::new(),
             blocker: DyadicBlocker::new(),
             analysis: StationarityWork::new(),

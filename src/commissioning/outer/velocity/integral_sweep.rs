@@ -6,6 +6,7 @@ use crate::autotune::velocity_measurement::{
 use crate::autotune::{CommissionError, TmcMechanicalRpm, TransientBuffer};
 use crate::commissioning::backend::CommissioningBackend;
 use crate::commissioning::encoder_domain::EncoderDomain;
+use crate::commissioning::outer::state::{PositiveIRestBoundary, VelocitySettleMetrics};
 use crate::commissioning::outer::{
     OuterPhase, OuterSafetyLimits, VelocityIntegralData, VelocityIntegralState,
 };
@@ -62,6 +63,8 @@ const INTEGRAL_CAUSE_CURRENT_AFTER_SUFFICIENCY: u8 = 3;
 const INTEGRAL_CAUSE_INTEGRITY: u8 = 4;
 const INTEGRAL_CAUSE_RECOVERY: u8 = 5;
 pub(super) const INTEGRAL_CAUSE_BOOKEND_UNAVAILABLE: u8 = 8;
+const INTEGRAL_CAUSE_POSITIVE_I_REST_BOUNDARY: u8 = 9;
+const INTEGRAL_CAUSE_POSITIVE_I_REST_BOUNDARY_AFTER_SUFFICIENCY: u8 = 10;
 const OPENING_WORD_BASE: usize = 0;
 const POSITIVE_WORD_BASE: usize = 4;
 const BOOKEND_WORD_BASE: usize = POSITIVE_WORD_BASE + 2 * STAGE_C_MAX_POSITIVE_RUNGS * 2;
@@ -515,7 +518,9 @@ fn evidence_terminal(data: &VelocityIntegralData, workspace: &TransientBuffer) -
             data,
             evidence,
             VelocityIntegralOutcome::CompleteCandidate,
-            if current_terminus.is_some() {
+            if data.positive_i_rest_boundary_after_sufficiency {
+                INTEGRAL_CAUSE_POSITIVE_I_REST_BOUNDARY_AFTER_SUFFICIENCY
+            } else if current_terminus.is_some() {
                 INTEGRAL_CAUSE_CURRENT_AFTER_SUFFICIENCY
             } else {
                 INTEGRAL_CAUSE_NONE
@@ -526,7 +531,11 @@ fn evidence_terminal(data: &VelocityIntegralData, workspace: &TransientBuffer) -
             data,
             evidence,
             VelocityIntegralOutcome::Inconclusive,
-            if data.opening_direction_mask != 3 && data.observation_current_headroom {
+            if data.positive_i_rest_boundary.is_some()
+                && !data.positive_i_rest_boundary_after_sufficiency
+            {
+                INTEGRAL_CAUSE_POSITIVE_I_REST_BOUNDARY
+            } else if data.opening_direction_mask != 3 && data.observation_current_headroom {
                 INTEGRAL_CAUSE_CURRENT_BEFORE_SUFFICIENCY
             } else {
                 match cause {
@@ -549,6 +558,29 @@ fn evidence_terminal(data: &VelocityIntegralData, workspace: &TransientBuffer) -
             None,
         ),
     }
+}
+
+fn current_event(
+    data: &mut VelocityIntegralData,
+    current_evidence: super::current_guard::VelocityCurrentPhaseEvidence,
+) -> VelocityIntegralEvent {
+    data.integrity.record(VelocityIntegralEvent::Current(
+        VelocityPrimitiveCurrentEvidence {
+            run_sequence: data.integrity.run_sequence(),
+            evidence_sequence: data.integrity.next_evidence_sequence(),
+            stage: RecoveryStage::Integral as u8,
+            rung_index: data.rung_index,
+            slot: data.slot,
+            clamp_limit: current_evidence.clamp_limit,
+            clamp_readback: current_evidence.clamp_limit,
+            moving_pid_output_peak: current_evidence.moving_pid_output_peak,
+            zero_pid_output_peak: current_evidence.zero_pid_output_peak,
+            moving_status_flags: current_evidence.moving_status_flags,
+            zero_status_flags: current_evidence.zero_status_flags,
+            capability: current_evidence.capability as u8,
+            contact: current_evidence.contact as u8,
+        },
+    ))
 }
 
 fn moving_analysis(
@@ -1011,6 +1043,7 @@ pub(crate) async fn step_velocity_integral_with_trace<B: CommissioningBackend>(
             data.settle_displacement_counts = 0;
             data.settle_min_displacement_counts = 0;
             data.settle_max_displacement_counts = 0;
+            data.settle_metrics = VelocitySettleMetrics::EMPTY;
             *state = VelocityIntegralState::SettleCapture {
                 next_sample_us,
                 deadline_us: *settle_deadline_us,
@@ -1082,6 +1115,13 @@ pub(crate) async fn step_velocity_integral_with_trace<B: CommissioningBackend>(
                 .settle_max_displacement_counts
                 .max(data.settle_displacement_counts);
             if data
+                .settle_metrics
+                .observe(delta.signed_counts(), elapsed_us as u32)
+                .is_err()
+            {
+                return fail_integral(phase, backend, CommissionError::InvalidSchedule).await;
+            }
+            if data
                 .observations
                 .push(delta.signed_counts(), elapsed_us as u16)
                 .is_err()
@@ -1136,25 +1176,17 @@ pub(crate) async fn step_velocity_integral_with_trace<B: CommissioningBackend>(
             if backend.elapsed_us() >= *analysis_deadline_us {
                 return fail_integral(phase, backend, CommissionError::AnalysisOverrun).await;
             }
-            match poll_settle_confirmation_parts(
+            let settle_result = match poll_settle_confirmation_parts(
                 &mut data.analysis,
                 &data.observations,
                 &mut data.blocker,
                 data.settle_min_displacement_counts,
                 data.settle_max_displacement_counts,
             ) {
-                Ok(Some(result)) if result.confirmed_rest => {}
-                Ok(Some(_)) => {
-                    return fail_integral(
-                        phase,
-                        backend,
-                        CommissionError::VelocityValidationFailed,
-                    )
-                    .await;
-                }
+                Ok(Some(result)) => result,
                 Ok(None) => return StepResult::ReadyNow,
                 Err(error) => return fail_integral(phase, backend, error).await,
-            }
+            };
             if let Err(error) =
                 finish_velocity_current_zero_phase(&mut data.current_observer, backend).await
             {
@@ -1174,7 +1206,30 @@ pub(crate) async fn step_velocity_integral_with_trace<B: CommissioningBackend>(
             }
             data.analysis.reset();
             data.observations.clear();
-            safety.end_primitive();
+            if !settle_result.confirmed_rest
+                && !data.observation_current_headroom
+                && matches!(
+                    integral_rung_kind(data.plan, data.rung_index),
+                    IntegralRungKind::Positive
+                )
+            {
+                data.positive_i_rest_boundary = Some(PositiveIRestBoundary {
+                    rung_index: data.rung_index,
+                    slot: data.slot,
+                    i_raw: integral_i_at(data.plan, data.rung_index).unwrap_or(0),
+                    direction: integral_slot_direction(data.slot).unwrap_or(0) as i8,
+                    active_stationarity: settle_result.stationarity,
+                    active_settle: data.settle_metrics,
+                    zero_phase_current: current_evidence,
+                    cleanup_confirmed: false,
+                });
+                *state = VelocityIntegralState::BeginPositiveIRestCleanup;
+            } else if !settle_result.confirmed_rest && !data.observation_current_headroom {
+                return fail_integral(phase, backend, CommissionError::VelocityValidationFailed)
+                    .await;
+            } else {
+                safety.end_primitive();
+            }
             if data.observation_current_headroom {
                 if matches!(
                     integral_rung_kind(data.plan, data.rung_index),
@@ -1190,28 +1245,229 @@ pub(crate) async fn step_velocity_integral_with_trace<B: CommissioningBackend>(
                     apply_integral_current_headroom(state, data);
                 }
             } else if data.slot + 1 < INTEGRAL_SLOT_COUNT {
-                *state = VelocityIntegralState::Advance;
-            } else {
+                if settle_result.confirmed_rest {
+                    *state = VelocityIntegralState::Advance;
+                }
+            } else if settle_result.confirmed_rest {
                 *state = VelocityIntegralState::AnalyzeRung;
             }
-            let event = data.integrity.record(VelocityIntegralEvent::Current(
-                VelocityPrimitiveCurrentEvidence {
-                    run_sequence: data.integrity.run_sequence(),
-                    evidence_sequence: data.integrity.next_evidence_sequence(),
-                    stage: RecoveryStage::Integral as u8,
-                    rung_index: data.rung_index,
-                    slot: data.slot,
-                    clamp_limit: current_evidence.clamp_limit,
-                    clamp_readback: current_evidence.clamp_limit,
-                    moving_pid_output_peak: current_evidence.moving_pid_output_peak,
-                    zero_pid_output_peak: current_evidence.zero_pid_output_peak,
-                    moving_status_flags: current_evidence.moving_status_flags,
-                    zero_status_flags: current_evidence.zero_status_flags,
-                    capability: current_evidence.capability as u8,
-                    contact: current_evidence.contact as u8,
-                },
-            ));
+            let event = current_event(data, current_evidence);
             StepResult::VelocityIntegralEvent(event)
+        }
+        VelocityIntegralState::BeginPositiveIRestCleanup => {
+            if data.positive_i_rest_boundary.is_none() {
+                return fail_integral(phase, backend, CommissionError::InvalidSchedule).await;
+            }
+            let p = match PidPGain::new(data.plan.final_p) {
+                Ok(value) => value,
+                Err(_) => {
+                    return fail_integral(phase, backend, CommissionError::InvalidSchedule).await;
+                }
+            };
+            if backend
+                .write_register(
+                    PID_VELOCITY_P_VELOCITY_I,
+                    PidGainPair::new(p, PidIGain::ZERO).register_value(),
+                )
+                .await
+                .is_err()
+                || clear_velocity_integrator(backend).await.is_err()
+                || backend
+                    .write_register(PID_VELOCITY_TARGET, 0)
+                    .await
+                    .is_err()
+            {
+                return fail_integral(phase, backend, CommissionError::Spi).await;
+            }
+            let encoder_raw = match backend.read_capture_register(ABN_DECODER_COUNT).await {
+                Ok(value) => value,
+                Err(_) => return fail_integral(phase, backend, CommissionError::Spi).await,
+            };
+            let started_us = backend.elapsed_us();
+            let Some(next_sample_us) =
+                started_us.checked_add(u64::from(VELOCITY_SWEEP_SAMPLE_PERIOD_US))
+            else {
+                return fail_integral(phase, backend, CommissionError::InvalidSchedule).await;
+            };
+            let Some(deadline_us) = started_us.checked_add(u64::from(data.plan.zero_settle_us))
+            else {
+                return fail_integral(phase, backend, CommissionError::InvalidSchedule).await;
+            };
+            data.previous_encoder_raw = encoder_raw;
+            data.previous_read_us = started_us;
+            data.settle_displacement_counts = 0;
+            data.settle_min_displacement_counts = 0;
+            data.settle_max_displacement_counts = 0;
+            data.settle_metrics = VelocitySettleMetrics::EMPTY;
+            data.analysis.reset();
+            data.observations.clear();
+            *state = VelocityIntegralState::PositiveIRestCleanupCapture {
+                next_sample_us,
+                deadline_us,
+            };
+            StepResult::At(next_sample_us)
+        }
+        VelocityIntegralState::PositiveIRestCleanupCapture {
+            next_sample_us,
+            deadline_us,
+        } => {
+            if backend.elapsed_us() < *next_sample_us {
+                return StepResult::At(*next_sample_us);
+            }
+            let encoder_raw = match backend.read_capture_register(ABN_DECODER_COUNT).await {
+                Ok(value) => value,
+                Err(_) => return fail_integral(phase, backend, CommissionError::Spi).await,
+            };
+            let read_us = backend.elapsed_us();
+            let elapsed_us = match read_us.checked_sub(data.previous_read_us) {
+                Some(value @ 1..=MAX_SAFETY_OBSERVATION_GAP_US) => value,
+                _ => {
+                    let fault = safety.fault(
+                        OUTER_SAFETY_FAULT_OBSERVATION_GAP,
+                        0,
+                        read_us.saturating_sub(data.previous_read_us),
+                        0,
+                        0,
+                    );
+                    return fail_integral_with_safety(phase, backend, fault).await;
+                }
+            };
+            let domain = EncoderDomain::new(safety.counts_per_rev())
+                .expect("Stage-C setup validates encoder domain");
+            let delta = match domain.delta(
+                domain.count(data.previous_encoder_raw),
+                domain.count(encoder_raw),
+            ) {
+                Ok(delta) if delta.absolute_counts() < safety.quarter_turn_fault_counts => delta,
+                _ => {
+                    let fault = safety.fault(OUTER_SAFETY_FAULT_QUARTER_TURN, 0, elapsed_us, 0, 0);
+                    return fail_integral_with_safety(phase, backend, fault).await;
+                }
+            };
+            let torque_demand = match read_velocity_pid_input_abs(backend).await {
+                Ok(value) => value,
+                Err(error) => {
+                    return fail_integral(phase, backend, current_guard_error(error)).await;
+                }
+            };
+            if torque_demand > data.current_observer.clamp_limit() {
+                let fault = safety.fault(OUTER_SAFETY_FAULT_CURRENT, 0, elapsed_us, 0, 0);
+                return fail_integral_with_safety(phase, backend, fault).await;
+            }
+            let torque_target = match read_velocity_pid_output_abs(backend).await {
+                Ok(value) => value,
+                Err(error) => {
+                    return fail_integral(phase, backend, current_guard_error(error)).await;
+                }
+            };
+            data.current_observer.observe_zero_output(torque_target);
+            data.settle_displacement_counts = i32::from(data.settle_displacement_counts)
+                .saturating_add(delta.signed_counts())
+                .clamp(-2, 2) as i8;
+            data.settle_min_displacement_counts = data
+                .settle_min_displacement_counts
+                .min(data.settle_displacement_counts);
+            data.settle_max_displacement_counts = data
+                .settle_max_displacement_counts
+                .max(data.settle_displacement_counts);
+            if data
+                .settle_metrics
+                .observe(delta.signed_counts(), elapsed_us as u32)
+                .is_err()
+            {
+                return fail_integral(phase, backend, CommissionError::InvalidSchedule).await;
+            }
+            if data
+                .observations
+                .push(delta.signed_counts(), elapsed_us as u16)
+                .is_err()
+            {
+                return fail_integral(phase, backend, CommissionError::InvalidSchedule).await;
+            }
+            data.previous_encoder_raw = encoder_raw;
+            data.previous_read_us = read_us;
+            if read_us >= *deadline_us {
+                let Some(analysis_deadline_us) =
+                    read_us.checked_add(u64::from(data.plan.analysis_budget_us))
+                else {
+                    return fail_integral(phase, backend, CommissionError::InvalidSchedule).await;
+                };
+                data.analysis.reset();
+                *state = VelocityIntegralState::AnalyzePositiveIRestCleanup {
+                    analysis_deadline_us,
+                };
+                StepResult::ReadyNow
+            } else {
+                match next_grid_deadline(
+                    *next_sample_us,
+                    u64::from(VELOCITY_SWEEP_SAMPLE_PERIOD_US),
+                    read_us,
+                ) {
+                    Ok(next) => {
+                        *next_sample_us = next.min(*deadline_us);
+                        StepResult::At(*next_sample_us)
+                    }
+                    Err(error) => fail_integral(phase, backend, error).await,
+                }
+            }
+        }
+        VelocityIntegralState::AnalyzePositiveIRestCleanup {
+            analysis_deadline_us,
+        } => {
+            if backend.elapsed_us() >= *analysis_deadline_us {
+                return fail_integral(phase, backend, CommissionError::AnalysisOverrun).await;
+            }
+            let cleanup = match poll_settle_confirmation_parts(
+                &mut data.analysis,
+                &data.observations,
+                &mut data.blocker,
+                data.settle_min_displacement_counts,
+                data.settle_max_displacement_counts,
+            ) {
+                Ok(Some(result)) => result,
+                Ok(None) => return StepResult::ReadyNow,
+                Err(error) => return fail_integral(phase, backend, error).await,
+            };
+            let Some(boundary) = data.positive_i_rest_boundary.as_mut() else {
+                return fail_integral(phase, backend, CommissionError::InvalidSchedule).await;
+            };
+            boundary.cleanup_confirmed = cleanup.confirmed_rest;
+            if !cleanup.confirmed_rest {
+                return fail_integral(phase, backend, CommissionError::VelocityValidationFailed)
+                    .await;
+            }
+            if let Err(error) =
+                finish_velocity_current_zero_phase(&mut data.current_observer, backend).await
+            {
+                return fail_integral(phase, backend, current_guard_error(error)).await;
+            }
+            let cleanup_current = match data
+                .current_observer
+                .evidence(VelocityCurrentZeroPhase::Braking)
+            {
+                Ok(evidence) => evidence,
+                Err(error) => {
+                    return fail_integral(phase, backend, current_guard_error(error)).await;
+                }
+            };
+            if cleanup_current.contact != VelocityCurrentContact::None {
+                return fail_integral(phase, backend, CommissionError::SafetyEnvelopeViolation)
+                    .await;
+            }
+            data.analysis.reset();
+            data.observations.clear();
+            safety.end_primitive();
+            data.positive_i_rest_boundary_after_sufficiency =
+                positive_directional_floors_exist(data);
+            if data.positive_i_rest_boundary_after_sufficiency {
+                match plan_integral_recovery(data, workspace, safety) {
+                    Ok(recovery) => *state = VelocityIntegralState::RecoverRung(recovery),
+                    Err(error) => return fail_integral(phase, backend, error).await,
+                }
+            } else {
+                *state = VelocityIntegralState::Terminal;
+            }
+            StepResult::ReadyNow
         }
         VelocityIntegralState::Advance => {
             let finished = advance_integral_cursor(
@@ -1311,9 +1567,22 @@ pub(crate) async fn step_velocity_integral_with_trace<B: CommissioningBackend>(
                         data.recovery_unavailable = true;
                         *state = VelocityIntegralState::Terminal;
                     }
+                    IntegralRungKind::Positive
+                        if data.positive_i_rest_boundary_after_sufficiency && contained =>
+                    {
+                        data.recovery_unavailable = true;
+                        *state = VelocityIntegralState::Terminal;
+                    }
                     IntegralRungKind::OpeningAnchor | IntegralRungKind::Positive if contained => {
                         data.recovery_failure = true;
                         *state = VelocityIntegralState::Terminal;
+                    }
+                    IntegralRungKind::Positive
+                        if data.positive_i_rest_boundary_after_sufficiency =>
+                    {
+                        data.rung_index = data.plan.positive_rung_count.saturating_add(1);
+                        reset_rung(data);
+                        *state = VelocityIntegralState::WriteGains;
                     }
                     IntegralRungKind::Positive if data.current_terminus.is_some() => {
                         data.rung_index = data.plan.positive_rung_count.saturating_add(1);

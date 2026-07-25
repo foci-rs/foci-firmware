@@ -77,9 +77,14 @@ fn velocity_integral_timing_phase(state: &VelocityIntegralState) -> (OuterSafety
         }
         VelocityIntegralState::ClearSettleIntegrator { .. }
         | VelocityIntegralState::BeginSettleCapture { .. }
-        | VelocityIntegralState::SettleCapture { .. } => (OuterSafetyTimingPhase::ZeroSettle, true),
+        | VelocityIntegralState::SettleCapture { .. }
+        | VelocityIntegralState::BeginPositiveIRestCleanup
+        | VelocityIntegralState::PositiveIRestCleanupCapture { .. } => {
+            (OuterSafetyTimingPhase::ZeroSettle, true)
+        }
         VelocityIntegralState::AnalyzeMoving { .. }
         | VelocityIntegralState::AnalyzeSettle { .. }
+        | VelocityIntegralState::AnalyzePositiveIRestCleanup { .. }
         | VelocityIntegralState::Advance
         | VelocityIntegralState::AnalyzeRung => (OuterSafetyTimingPhase::Analysis, true),
         VelocityIntegralState::RecoverRung(runtime) => runtime.outer_safety_timing_phase(),
@@ -386,6 +391,19 @@ mod tests {
         assert_eq!(
             velocity_integral_timing_phase(&VelocityIntegralState::AnalyzeMoving {
                 settle_deadline_us: 1,
+                analysis_deadline_us: 2,
+            }),
+            (OuterSafetyTimingPhase::Analysis, true)
+        );
+        assert_eq!(
+            velocity_integral_timing_phase(&VelocityIntegralState::PositiveIRestCleanupCapture {
+                next_sample_us: 1,
+                deadline_us: 2,
+            }),
+            (OuterSafetyTimingPhase::ZeroSettle, true)
+        );
+        assert_eq!(
+            velocity_integral_timing_phase(&VelocityIntegralState::AnalyzePositiveIRestCleanup {
                 analysis_deadline_us: 2,
             }),
             (OuterSafetyTimingPhase::Analysis, true)
