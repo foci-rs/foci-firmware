@@ -195,6 +195,8 @@ pub(crate) fn encode_velocity_sweep_event(
             record.push_u16(report.evidence_sequence);
             record.push_u16(report.handoff.nomination.p.raw());
             record.push_u8(report.handoff.coverage_mask);
+            record.push_u8(report.model_direction_mask);
+            record.push_u32(report.joint_union);
             record.push_u32(report.handoff.nomination.joint.member_mask);
             record.push_u8(report.handoff.nomination.rung_index);
             record.push_u32(report.handoff.nomination.distance_to_start_num);
@@ -510,7 +512,9 @@ mod tests {
     };
     use crate::autotune::{EquivalentTorqueTargetInterval, EquivalentTorqueTargetQ16};
     use crate::commissioning::outer::velocity::operating_region::{
-        BoundRounding, CompactSignedRate,
+        BoundRounding, CompactSignedRate, CoverageKind, DirectionalRegionKind,
+        DirectionalRegionRef, JointOperableClosure, JointOperableRegion, ProvisionalPNomination,
+        SelectedDirectionalRegion, StageBHandoff,
     };
     use crate::commissioning::outer::velocity::recovery::{
         ExactU64Parts, RecoveryBindingSource, RecoveryStage, RungOriginRecoveryOutcome,
@@ -855,5 +859,49 @@ mod tests {
 
         assert_eq!(integrity.directional_region_counts(), [1, 0]);
         assert_eq!(integrity.directional_fragment_counts(), [0, 1]);
+    }
+
+    #[test]
+    fn schema8_handoff_distinguishes_joint_union_and_selected_component() {
+        let region = fixture_region(VelocityDirection::Forward, DirectionalRegionKind::Valid);
+        let reference = DirectionalRegionRef::from_summary(region, 2).unwrap();
+        let selected = SelectedDirectionalRegion {
+            region: reference,
+            coverage: CoverageKind::FullCoverage,
+            signed_rung_distance: 0,
+            gain_ratio_num: 1,
+            gain_ratio_den: 1,
+            settled_rate_difference_q: 0,
+        };
+        let event =
+            VelocitySweepEvent::Handoff(crate::commissioning::types::VelocityStageBHandoffReport {
+                run_sequence: 7,
+                evidence_sequence: 9,
+                joint_union: 0b11_0011,
+                model_direction_mask: 0b01,
+                handoff: StageBHandoff {
+                    nomination: ProvisionalPNomination {
+                        joint: JointOperableRegion {
+                            member_mask: 0b11_0000,
+                            first_rung: 4,
+                            last_rung: 5,
+                            member_count: 2,
+                            closure: JointOperableClosure::EndOfLadder,
+                        },
+                        rung_index: 4,
+                        p: PidGain::new(1_024).unwrap(),
+                        distance_to_start_num: 10,
+                        distance_to_top_num: 20,
+                        reduced_margin: true,
+                    },
+                    directional: [selected; 2],
+                    coverage_mask: 0b11,
+                },
+            });
+
+        let record = encode_velocity_sweep_event(event);
+        assert_eq!(&record.as_bytes()[11..15], &0b11_0011_u32.to_le_bytes());
+        assert_eq!(&record.as_bytes()[15..19], &0b11_0000_u32.to_le_bytes());
+        assert_eq!(record.as_bytes()[10], 0b01);
     }
 }

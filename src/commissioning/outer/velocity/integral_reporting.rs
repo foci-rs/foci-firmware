@@ -214,6 +214,16 @@ pub(crate) fn encode_velocity_integral_terminal(
     record.push_u16(report.emitted_rungs);
     record.push_u32(report.evidence.eligible_masks[0]);
     record.push_u32(report.evidence.eligible_masks[1]);
+    record.push_u8(
+        u8::from(report.evidence.opening[0] != super::integral_evidence::ExactRateInterval::EMPTY)
+            | (u8::from(
+                report.evidence.opening[1] != super::integral_evidence::ExactRateInterval::EMPTY,
+            ) << 1),
+    );
+    record.push_u8(
+        u8::from(report.evidence.bookend[0].is_some())
+            | (u8::from(report.evidence.bookend[1].is_some()) << 1),
+    );
     record.push_u8(report.evidence.current_terminus.map_or(0, |rung| rung + 1));
     push_u64(&mut record, report.run_started_us);
     push_u64(&mut record, report.run_completed_us);
@@ -632,7 +642,7 @@ mod tests {
 
     #[test]
     fn exact_u64_terminal_words_survive_canonical_encoding() {
-        let terminal = VelocityIntegralTerminal {
+        let mut terminal = VelocityIntegralTerminal {
             run_sequence: 7,
             evidence_sequence: 9,
             plan_digest: 0x0123_4567_89ab_cdef,
@@ -651,6 +661,14 @@ mod tests {
             run_completed_us: 0x5555_6666_7777_8888,
             safety_fault: None,
         };
+        terminal.evidence.opening = [
+            super::super::integral_evidence::ExactRateInterval::new(100, 200).unwrap(),
+            super::super::integral_evidence::ExactRateInterval::new(-200, -100).unwrap(),
+        ];
+        terminal.evidence.bookend = [
+            Some(super::super::integral_evidence::ExactRateInterval::new(110, 210).unwrap()),
+            Some(super::super::integral_evidence::ExactRateInterval::new(-210, -110).unwrap()),
+        ];
 
         let record = encode_velocity_integral_terminal(terminal);
         assert!(record.as_bytes().len() <= 128);
@@ -666,6 +684,8 @@ mod tests {
                 .windows(8)
                 .any(|word| word == terminal.digest.to_le_bytes())
         );
+        assert_eq!(record.as_bytes()[42], 0b11);
+        assert_eq!(record.as_bytes()[43], 0b11);
     }
 
     #[test]

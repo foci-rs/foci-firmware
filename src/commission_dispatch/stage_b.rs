@@ -226,7 +226,7 @@ pub fn apply_stage_b_terminal(
     }
 }
 
-/// Construct each schema-3 canonical reproduction record in emission order.
+/// Construct each schema-8 canonical reproduction record in emission order.
 pub(crate) fn for_each_stage_b_reproduction_record(
     report: StageBReproductionReport,
     mut consume: impl FnMut(crate::ankyra::velocity_sweep_encoding::VelocitySweepCanonicalRecord),
@@ -237,6 +237,12 @@ pub(crate) fn for_each_stage_b_reproduction_record(
     record.push_u16(report.delta.previous_provisional_p);
     record.push_u16(report.delta.current_provisional_p);
     record.push_u16(report.delta.final_p);
+    record.push_u32(report.delta.selected_joint.member_mask);
+    record.push_u8(report.delta.selected_joint.first_rung);
+    record.push_u8(report.delta.selected_joint.member_count);
+    for validity in report.delta.directional_validity {
+        record.push_u8(validity as u8);
+    }
     record.push_u8(u8::from(report.delta.reduced_margin));
     record.push_u16(STAGE_B_EVIDENCE_SCHEMA_REVISION);
     consume(record);

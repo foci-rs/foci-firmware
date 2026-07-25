@@ -1699,6 +1699,8 @@ pub(crate) async fn step_velocity_sweep_with_trace<B: CommissioningBackend>(
                     crate::commissioning::types::VelocityStageBHandoffReport {
                         run_sequence: data.integrity.run_sequence(),
                         evidence_sequence: data.integrity.next_evidence_sequence(),
+                        joint_union: data.operating_regions.joint.union_member_mask(),
+                        model_direction_mask: data.operating_regions.handoff.model_direction_mask(),
                         handoff,
                     },
                 ));

@@ -466,6 +466,10 @@ pub struct VelocityStageBHandoffReport {
     pub run_sequence: u32,
     /// Monotonic evidence sequence within the run.
     pub evidence_sequence: u16,
+    /// Union of every per-run jointly operable component.
+    pub joint_union: u32,
+    /// Directions whose selected per-run evidence is a valid model region.
+    pub model_direction_mask: u8,
     /// Sufficient report-only Stage B handoff.
     pub handoff: crate::commissioning::outer::velocity::operating_region::StageBHandoff,
 }

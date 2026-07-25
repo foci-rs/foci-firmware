@@ -4367,6 +4367,98 @@ mod velocity_sweep_reply_tests {
             "stage_b_reproduction_v3_digest",
         );
         assert_fits(
+            &FociVelocityStageBReproductionV4Core {
+                oid: u8::MAX,
+                run_sequence: WIDE_U32,
+                evidence_sequence: u16::MAX,
+                outcome: u8::MAX,
+                reason_mask: u8::MAX,
+                previous_provisional_p: u16::MAX,
+                current_provisional_p: u16::MAX,
+                final_p: u16::MAX,
+                selected_joint_mask: 0x8000_0001,
+                selected_first_rung: u8::MAX,
+                selected_member_count: u8::MAX,
+                forward_validity: u8::MAX,
+                reverse_validity: u8::MAX,
+                reduced_margin: u8::MAX,
+                schema_revision: u16::MAX,
+            },
+            "stage_b_reproduction_v4_core",
+        );
+        assert_fits(
+            &FociVelocityStageBReproductionV4Membership {
+                oid: u8::MAX,
+                run_sequence: WIDE_U32,
+                evidence_sequence: u16::MAX,
+                object: u8::MAX,
+                previous_mask: 0x8000_0001,
+                current_mask: 0x8000_0001,
+                core_mask: 0x8000_0001,
+                previous_only_mask: 0x8000_0001,
+                current_only_mask: 0x8000_0001,
+                low_delta: i32::MIN,
+                high_delta: i32::MAX,
+            },
+            "stage_b_reproduction_v4_membership",
+        );
+        assert_fits(
+            &FociVelocityStageBReproductionV4Pooled {
+                oid: u8::MAX,
+                run_sequence: WIDE_U32,
+                evidence_sequence: u16::MAX,
+                direction: u8::MAX,
+                previous_low_q16: i32::MIN,
+                previous_high_q16: i32::MAX,
+                current_low_q16: i32::MIN,
+                current_high_q16: i32::MAX,
+                overlap_low_q16: i32::MIN,
+                overlap_high_q16: i32::MAX,
+            },
+            "stage_b_reproduction_v4_pooled",
+        );
+        assert_fits(
+            &FociVelocityStageBReproductionV4Common {
+                oid: u8::MAX,
+                run_sequence: WIDE_U32,
+                evidence_sequence: u16::MAX,
+                direction: u8::MAX,
+                previous_low_q16: i32::MIN,
+                previous_high_q16: i32::MAX,
+                current_low_q16: i32::MIN,
+                current_high_q16: i32::MAX,
+                conservative_low_q16: i32::MIN,
+                conservative_high_q16: i32::MAX,
+                nonempty: u8::MAX,
+            },
+            "stage_b_reproduction_v4_common",
+        );
+        assert_fits(
+            &FociVelocityStageBReproductionV4Coverage {
+                oid: u8::MAX,
+                run_sequence: WIDE_U32,
+                evidence_sequence: u16::MAX,
+                direction: u8::MAX,
+                coverage: u8::MAX,
+                signed_rung_distance: i32::MIN,
+                gain_ratio_num: u16::MAX,
+                gain_ratio_den: u16::MAX,
+            },
+            "stage_b_reproduction_v4_coverage",
+        );
+        assert_fits(
+            &FociVelocityStageBReproductionV4Digest {
+                oid: u8::MAX,
+                run_sequence: WIDE_U32,
+                evidence_sequence: u16::MAX,
+                previous_digest_low: 0x89ab_cdef,
+                previous_digest_high: 0x0123_4567,
+                current_digest_low: 0x7654_3210,
+                current_digest_high: 0xfedc_ba98,
+            },
+            "stage_b_reproduction_v4_digest",
+        );
+        assert_fits(
             &FociVelocityStageBTerminalCore {
                 oid: u8::MAX,
                 run_sequence: WIDE_U32,

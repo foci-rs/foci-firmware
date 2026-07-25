@@ -2020,6 +2020,20 @@ fn stage_b_schema8_reproduction_records_are_canonical_and_ordered() {
     assert_eq!(records[1].as_bytes()[28] as i8, -1);
     assert_eq!(records[1].as_bytes()[29] as i8, 0);
     assert_eq!(records[1].as_bytes().len(), 30);
+    assert_eq!(
+        &records[0].as_bytes()[15..19],
+        &report.delta.selected_joint.member_mask.to_le_bytes()
+    );
+    assert_eq!(records[0].as_bytes()[19], 19);
+    assert_eq!(records[0].as_bytes()[20], 3);
+    assert_eq!(
+        &records[0].as_bytes()[21..23],
+        &[
+            StageBDirectionalValidity::ReproducedRegionCoversFinalP as u8,
+            StageBDirectionalValidity::ReproducedRegionTransferred as u8,
+        ]
+    );
+    assert_eq!(records[0].as_bytes().len(), 26);
     assert_eq!(records[7].as_bytes()[32], 0);
     assert_eq!(
         &records[10].as_bytes()[7..11],
