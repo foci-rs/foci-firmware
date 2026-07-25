@@ -24,7 +24,7 @@ use crate::commissioning::outer::state::{VELOCITY_SWEEP_BLOCK_LEVELS, VelocityOb
 #[cfg(feature = "trace-velocity-sweep")]
 use crate::commissioning::types::OuterSafetyFault;
 #[cfg(feature = "trace-velocity-sweep")]
-use foci_tmc4671::pid::PidGain;
+use foci_tmc4671::pid::PidPGain;
 
 #[cfg(feature = "trace-velocity-sweep")]
 use super::current_guard::VelocityCurrentObserver;
@@ -250,7 +250,7 @@ pub(crate) enum RungOriginRecoveryPlanError {
 pub(crate) struct RungOriginRecoveryRuntime {
     stage: RecoveryStage,
     rung_index: u8,
-    p: PidGain,
+    p: PidPGain,
     target_velocity_rpm: TmcMechanicalRpm,
     planned_velocity_mrev_s: u32,
     start_offset_counts: i32,
@@ -271,7 +271,7 @@ pub(crate) struct RungOriginRecoveryRuntime {
 pub(crate) struct RungOriginRecoveryConfig {
     pub(crate) stage: RecoveryStage,
     pub(crate) rung_index: u8,
-    pub(crate) p: PidGain,
+    pub(crate) p: PidPGain,
     pub(crate) target_velocity_rpm: TmcMechanicalRpm,
     pub(crate) planned_velocity_mrev_s: u32,
     pub(crate) start_offset_counts: i32,
@@ -286,7 +286,7 @@ impl RungOriginRecoveryRuntime {
         config: RungOriginRecoveryConfig,
         plan: RungOriginRecoveryPlan,
     ) -> Result<Self, CommissionError> {
-        if config.p == PidGain::ZERO
+        if config.p == PidPGain::ZERO
             || config.target_velocity_rpm.raw() <= 0
             || config.planned_velocity_mrev_s == 0
             || plan.origin_band_counts == 0

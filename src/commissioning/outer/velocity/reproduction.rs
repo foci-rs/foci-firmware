@@ -1,6 +1,6 @@
 use crate::commissioning::outer::velocity::operating_region::{CoverageKind, compare_margin};
 use crate::commissioning::outer::velocity::sweep_plan::{MAX_SWEEP_RUNGS, gain_at};
-use foci_tmc4671::pid::PidGain;
+use foci_tmc4671::pid::PidPGain;
 
 /// Evidence schema stored in the RAM-only Stage B reproduction slot.
 pub const STAGE_B_EVIDENCE_SCHEMA_REVISION: u16 = 8;
@@ -527,8 +527,8 @@ fn select_joint_component(
     if shared_union == 0 {
         return Some(StageBSelectedJointComponent::EMPTY);
     }
-    let p_start = PidGain::new(p_start).ok()?;
-    let p_top = PidGain::new(p_top).ok()?;
+    let p_start = PidPGain::new(p_start).ok()?;
+    let p_top = PidPGain::new(p_top).ok()?;
     let mut remaining = shared_union;
     let mut selected = StageBSelectedJointComponent::EMPTY;
     while remaining != 0 {
@@ -563,8 +563,8 @@ fn component_is_preferred(
     current: StageBSelectedJointComponent,
     candidate: StageBSelectedJointComponent,
     directional_cores: [u32; 2],
-    p_start: PidGain,
-    p_top: PidGain,
+    p_start: PidPGain,
+    p_top: PidPGain,
     rung_count: u8,
 ) -> Option<bool> {
     if current.member_mask == 0 {

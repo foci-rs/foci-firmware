@@ -2,7 +2,7 @@
 
 use crate::autotune::VelocityValidation;
 use crate::commissioning::outer::{OUTER_MAX_VELOCITY_P, response};
-use foci_tmc4671::pid::PidGain;
+use foci_tmc4671::pid::PidPGain;
 
 /// Response-ramp P gain multiplier between attempts.
 const VELOCITY_RESPONSE_P_MUL_NUM: u32 = 3;
@@ -12,25 +12,25 @@ const VELOCITY_RESPONSE_MAX_STEP_PERCENT: u32 = 50;
 const VELOCITY_RESPONSE_MIN_BRACKET_P: u16 = 64;
 pub(crate) const VELOCITY_RESPONSE_MAX_RETRIES: u8 = 12;
 
-pub(super) fn response_next_velocity_p(current_p: PidGain) -> Option<PidGain> {
+pub(super) fn response_next_velocity_p(current_p: PidPGain) -> Option<PidPGain> {
     let current_raw = u32::from(current_p);
     let next_p = current_raw * VELOCITY_RESPONSE_P_MUL_NUM / VELOCITY_RESPONSE_P_MUL_DEN;
     if next_p > OUTER_MAX_VELOCITY_P as u32 || next_p <= current_raw {
         None
     } else {
-        PidGain::new(next_p as u16).ok()
+        PidPGain::new(next_p as u16).ok()
     }
 }
 
-pub(super) fn response_midpoint_p(lower_p: u16, upper_p: u16) -> Option<PidGain> {
+pub(super) fn response_midpoint_p(lower_p: u16, upper_p: u16) -> Option<PidPGain> {
     if lower_p == 0 || upper_p <= lower_p.saturating_add(VELOCITY_RESPONSE_MIN_BRACKET_P) {
         return None;
     }
 
-    PidGain::new(lower_p + (upper_p - lower_p) / 2).ok()
+    PidPGain::new(lower_p + (upper_p - lower_p) / 2).ok()
 }
 
-pub(super) fn response_next_gain_limited_p(current_p: PidGain, upper_p: u16) -> Option<PidGain> {
+pub(super) fn response_next_gain_limited_p(current_p: PidPGain, upper_p: u16) -> Option<PidPGain> {
     if let Some(mid_p) = response_midpoint_p(current_p.raw(), upper_p) {
         Some(mid_p)
     } else if upper_p == 0 {
@@ -54,9 +54,9 @@ pub(super) fn response_scaled_p_for_target(
     lower_p: u16,
     old_target: u32,
     new_target: u32,
-) -> Option<PidGain> {
+) -> Option<PidPGain> {
     if old_target == 0 || new_target == 0 {
-        return PidGain::new(response::VELOCITY_RESPONSE_INITIAL_P).ok();
+        return PidPGain::new(response::VELOCITY_RESPONSE_INITIAL_P).ok();
     }
 
     let reference_p = lower_p.max(response::VELOCITY_RESPONSE_INITIAL_P);
@@ -64,7 +64,7 @@ pub(super) fn response_scaled_p_for_target(
     let raw = scaled
         .max(response::VELOCITY_RESPONSE_INITIAL_P as u32)
         .min(OUTER_MAX_VELOCITY_P as u32) as u16;
-    PidGain::new(raw).ok()
+    PidPGain::new(raw).ok()
 }
 
 pub(super) fn response_result_is_gain_limited(

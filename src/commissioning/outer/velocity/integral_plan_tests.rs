@@ -63,9 +63,9 @@ fn motion_budget() -> OuterMotionBudget {
 #[test]
 fn current_geometry_derives_the_exact_octave_ladder() {
     assert_eq!(STAGE_C_EVIDENCE_SCHEMA_REVISION, 4);
-    assert_eq!(STAGE_C_MIN_POSITIVE_I, 1);
-    assert_eq!(velocity_i_tau_us(1, 25_000), Some(2_621_440));
-    assert_eq!(velocity_i_tau_us(64, 25_000), Some(40_960));
+    assert_eq!(STAGE_C_MIN_POSITIVE_I, 16);
+    assert_eq!(velocity_i_tau_us(16, 25_000), Some(2_621_440));
+    assert_eq!(velocity_i_tau_us(1_024, 25_000), Some(40_960));
 
     let ladder = build_integral_ladder(
         25_000,
@@ -75,19 +75,22 @@ fn current_geometry_derives_the_exact_octave_ladder() {
     )
     .unwrap();
 
-    assert_eq!(ladder.i_start, 1);
-    assert_eq!(ladder.i_top_cap, 81);
-    assert_eq!(ladder.rungs.as_slice(), &[1, 2, 4, 8, 16, 32, 64]);
+    assert_eq!(ladder.i_start, 16);
+    assert_eq!(ladder.i_top_cap, 1_310);
+    assert_eq!(ladder.rungs.as_slice(), &[16, 32, 64, 128, 256, 512, 1_024]);
 
     let doubled_pwm = build_integral_ladder(50_000, 512_000, 64_000, 32_767).unwrap();
-    assert_eq!(doubled_pwm.i_start, 1);
-    assert_eq!(doubled_pwm.i_top_cap, 40);
-    assert_eq!(doubled_pwm.rungs.as_slice(), &[1, 2, 4, 8, 16, 32]);
+    assert_eq!(doubled_pwm.i_start, 16);
+    assert_eq!(doubled_pwm.i_top_cap, 655);
+    assert_eq!(doubled_pwm.rungs.as_slice(), &[16, 32, 64, 128, 256, 512]);
 
     let shorter_stroke = build_integral_ladder(25_000, 256_000, 64_000, 32_767).unwrap();
-    assert_eq!(shorter_stroke.i_start, 1);
-    assert_eq!(shorter_stroke.i_top_cap, 81);
-    assert_eq!(shorter_stroke.rungs.as_slice(), &[1, 2, 4, 8, 16, 32, 64]);
+    assert_eq!(shorter_stroke.i_start, 16);
+    assert_eq!(shorter_stroke.i_top_cap, 1_310);
+    assert_eq!(
+        shorter_stroke.rungs.as_slice(),
+        &[16, 32, 64, 128, 256, 512, 1_024]
+    );
 }
 
 #[test]
@@ -99,8 +102,17 @@ fn integral_accumulation_ratio_tracks_pwm_and_stroke_geometry() {
     let current_cycles = stroke_cycles(25_000, 512_000);
     assert_eq!(current_cycles, 12_800);
     assert_eq!(
-        [1_u16, 2, 4, 8, 16, 32, 64].map(|gain| current_cycles * u64::from(gain)),
-        [12_800, 25_600, 51_200, 102_400, 204_800, 409_600, 819_200]
+        (
+            current_cycles,
+            crate::autotune::ADVANCED_PI_I_Q4_12_NUMERATOR
+        ),
+        (12_800, 1_048_576)
+    );
+    assert_eq!(
+        [16_u16, 32, 64, 128, 256, 512, 1_024].map(|gain| current_cycles * u64::from(gain)),
+        [
+            204_800, 409_600, 819_200, 1_638_400, 3_276_800, 6_553_600, 13_107_200,
+        ]
     );
     assert_eq!(stroke_cycles(50_000, 512_000), 25_600);
     assert_eq!(stroke_cycles(25_000, 256_000), 6_400);
@@ -108,10 +120,26 @@ fn integral_accumulation_ratio_tracks_pwm_and_stroke_geometry() {
 
 #[test]
 fn top_cap_is_not_appended_as_a_non_octave_rung() {
-    let ladder = build_integral_ladder(25_000, 512_000, 64_000, 512).unwrap();
-    assert_eq!(ladder.i_top_cap, 81);
-    assert_eq!(ladder.rungs.last(), Some(&64));
-    assert!(!ladder.rungs.contains(&81));
+    let ladder = build_integral_ladder(25_000, 512_000, 64_000, 8_192).unwrap();
+    assert_eq!(ladder.i_top_cap, 1_310);
+    assert_eq!(ladder.rungs.last(), Some(&1_024));
+    assert!(!ladder.rungs.contains(&1_310));
+}
+
+#[test]
+fn historical_q8_8_ladder_is_evidence_not_current_geometry() {
+    let historical_q8_8 = [1_u16, 2, 4, 8, 16, 32, 64];
+    let current =
+        build_integral_ladder(25_000, MOVING_STROKE_US, MIN_SETTLE_CAPTURE_US, 32_767).unwrap();
+
+    assert_eq!(
+        current.rungs.as_slice(),
+        &historical_q8_8.map(|gain| gain * 16)
+    );
+    assert_eq!(
+        historical_q8_8.map(|gain| 12_800 * u64::from(gain)),
+        [12_800, 25_600, 51_200, 102_400, 204_800, 409_600, 819_200]
+    );
 }
 
 #[test]
@@ -142,7 +170,7 @@ fn stage_c_plan_freezes_geometry_and_conservative_duration() {
 
     assert_eq!(plan.schema_revision, STAGE_C_EVIDENCE_SCHEMA_REVISION);
     assert_eq!(plan.final_p, 1_448);
-    assert_eq!(plan.positive_rungs(), &[1, 2, 4, 8, 16, 32, 64]);
+    assert_eq!(plan.positive_rungs(), &[16, 32, 64, 128, 256, 512, 1_024]);
     assert_eq!(plan.family_size, 36);
     assert_eq!(plan.total_rung_count, 9);
     assert_eq!(plan.expected_observations, 72);
@@ -217,15 +245,15 @@ fn invalid_geometry_and_missing_authority_reject_before_motion() {
     assert_eq!(velocity_i_tau_us(0, 25_000), None);
     assert_eq!(velocity_i_tau_us(5, 0), None);
     assert_eq!(
-        build_integral_ladder(25_000, 512_000, 64_000, 3),
+        build_integral_ladder(25_000, 512_000, 64_000, 48),
         Err(VelocityIntegralPlanError::InsufficientStructuralSpan)
     );
     assert_eq!(
-        build_integral_ladder(25_000, 512_000, 64_000, 10)
+        build_integral_ladder(25_000, 512_000, 64_000, 160)
             .unwrap()
             .rungs
             .as_slice(),
-        &[1, 2, 4, 8]
+        &[16, 32, 64, 128]
     );
     assert_eq!(
         build_integral_ladder(1, 1_000_000, 2, u16::MAX),

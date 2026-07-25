@@ -20,7 +20,7 @@ use crate::trace::events::{
     EVENT_COMMISSION_POSITION_TUNE_RESULT, EVENT_COMMISSION_POSITION_TUNE_TARGET, TraceEventLevel,
     u32_arg,
 };
-use foci_tmc4671::pid::{PidGain, PidGainPair};
+use foci_tmc4671::pid::{PidGainPair, PidIGain, PidPGain};
 
 /// Position-tune P-gain growth ratio between attempts.
 pub(crate) const POSITION_TUNE_P_MUL_NUM: u32 = 3;
@@ -152,11 +152,11 @@ pub(crate) async fn step_position_tune_with_trace<B: CommissioningBackend>(
                 return fail_outer(phase, CommissionError::Spi);
             }
 
-            let position_p = match PidGain::new(data.current_p) {
+            let position_p = match PidPGain::new(data.current_p) {
                 Ok(gain) => gain,
                 Err(_) => return fail_outer(phase, CommissionError::PositionTuneFailed),
             };
-            let pos_reg = PidGainPair::new_legacy(position_p, PidGain::ZERO).register_value();
+            let pos_reg = PidGainPair::new(position_p, PidIGain::ZERO).register_value();
             if backend
                 .write_register(PID_POSITION_P_POSITION_I, pos_reg)
                 .await
@@ -371,14 +371,13 @@ pub(crate) async fn step_position_tune_with_trace<B: CommissioningBackend>(
                     } else {
                         data.current_p = new_p;
 
-                        let position_p = match PidGain::new(data.current_p) {
+                        let position_p = match PidPGain::new(data.current_p) {
                             Ok(gain) => gain,
                             Err(_) => {
                                 return fail_outer(phase, CommissionError::PositionTuneFailed);
                             }
                         };
-                        let pos_reg =
-                            PidGainPair::new_legacy(position_p, PidGain::ZERO).register_value();
+                        let pos_reg = PidGainPair::new(position_p, PidIGain::ZERO).register_value();
                         if backend
                             .write_register(PID_POSITION_P_POSITION_I, pos_reg)
                             .await
@@ -447,7 +446,7 @@ pub(crate) async fn step_position_tune_with_trace<B: CommissioningBackend>(
             }
 
             let final_p = data.stable_p;
-            let position_p = match PidGain::new(final_p) {
+            let position_p = match PidPGain::new(final_p) {
                 Ok(gain) => gain,
                 Err(_) => return fail_outer(phase, CommissionError::PositionTuneFailed),
             };
@@ -457,7 +456,7 @@ pub(crate) async fn step_position_tune_with_trace<B: CommissioningBackend>(
             let carried_safety = *safety;
             let position_gains = PositionGains {
                 position_p,
-                position_i: PidGain::ZERO,
+                position_i: PidIGain::ZERO,
             };
             let velocity_gains = data.velocity_gains;
             let velocity_chatter = data.velocity_chatter;
@@ -502,10 +501,10 @@ mod tests {
     use crate::autotune::VelocityGains;
     use crate::commission_dispatch::test_support::MockBackend;
     use crate::commissioning::outer::OuterDiagnostics;
-    use foci_tmc4671::pid::PidGain;
+    use foci_tmc4671::pid::{PidIGain, PidPGain};
 
-    fn gain(raw: u16) -> PidGain {
-        PidGain::new(raw).expect("test gain must be in range")
+    fn p_gain(raw: u16) -> PidPGain {
+        PidPGain::new(raw).expect("test gain must be in range")
     }
 
     fn zero_diagnostics() -> OuterDiagnostics {
@@ -550,8 +549,8 @@ mod tests {
                 step_start_tmc: 0,
                 oscillation_at_minimum: false,
                 velocity_gains: VelocityGains {
-                    velocity_p: gain(1),
-                    velocity_i: PidGain::ZERO,
+                    velocity_p: p_gain(1),
+                    velocity_i: PidIGain::ZERO,
                     velocity_limit: 1_000,
                     effective_bandwidth_hz: 50,
                     lambda_vel_ms: 20,
@@ -590,7 +589,7 @@ mod tests {
             match phase {
                 OuterPhase::FilterTune { position_gains, .. } => {
                     assert_eq!(position_gains.position_p.raw(), 640);
-                    assert_eq!(position_gains.position_i, PidGain::ZERO);
+                    assert_eq!(position_gains.position_i, PidIGain::ZERO);
                 }
                 other => panic!("expected FilterTune, got {other:?}"),
             }
@@ -818,8 +817,8 @@ mod tests {
             step_start_tmc: 0,
             oscillation_at_minimum: true,
             velocity_gains: VelocityGains {
-                velocity_p: gain(512),
-                velocity_i: PidGain::ZERO,
+                velocity_p: p_gain(512),
+                velocity_i: PidIGain::ZERO,
                 velocity_limit: 10_000,
                 effective_bandwidth_hz: 50,
                 lambda_vel_ms: 20,

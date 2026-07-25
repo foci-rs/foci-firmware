@@ -2,7 +2,7 @@
 
 use crate::commissioning::types::CommissioningBackend;
 use crate::state::tmc::TmcChannelState;
-use foci_tmc4671::pid::PidGain;
+use foci_tmc4671::pid::{PidIGain, PidPGain};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RestoreError<E> {
@@ -85,10 +85,10 @@ pub async fn restore_position_mode_after_outer<B: CommissioningBackend>(
 
     // Tuned velocity + position gains.
     let gains = crate::pid::OuterLoopGains {
-        position_p: PidGain::new(outer.position_p).map_err(|_| RestoreError::InvalidGains)?,
-        position_i: PidGain::new(outer.position_i).map_err(|_| RestoreError::InvalidGains)?,
-        velocity_p: PidGain::new(outer.velocity_p).map_err(|_| RestoreError::InvalidGains)?,
-        velocity_i: PidGain::new(outer.velocity_i).map_err(|_| RestoreError::InvalidGains)?,
+        position_p: PidPGain::new(outer.position_p).map_err(|_| RestoreError::InvalidGains)?,
+        position_i: PidIGain::new(outer.position_i).map_err(|_| RestoreError::InvalidGains)?,
+        velocity_p: PidPGain::new(outer.velocity_p).map_err(|_| RestoreError::InvalidGains)?,
+        velocity_i: PidIGain::new(outer.velocity_i).map_err(|_| RestoreError::InvalidGains)?,
     };
     let (velocity_reg, position_reg) = gains.to_registers();
     backend
@@ -390,10 +390,10 @@ mod tests {
                 Relaxed,
             );
             let stored_gains = crate::pid::InnerLoopGains {
-                flux_p: crate::pid::test_gain(100),
-                flux_i: crate::pid::test_gain(10),
-                torque_p: crate::pid::test_gain(200),
-                torque_i: crate::pid::test_gain(20),
+                flux_p: crate::pid::p_gain(100),
+                flux_i: crate::pid::i_gain(10),
+                torque_p: crate::pid::p_gain(200),
+                torque_i: crate::pid::i_gain(20),
             };
             let (flux_reg, torque_reg) = stored_gains.to_registers();
             let result =

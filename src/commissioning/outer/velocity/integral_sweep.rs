@@ -17,7 +17,7 @@ use crate::commissioning::types::{
     VelocityIntegralRungReport, VelocityIntegralTerminal, VelocityPrimitiveCurrentEvidence,
 };
 use foci_tmc4671::current_limit::PidTorqueFluxLimit;
-use foci_tmc4671::pid::{PidGain, PidGainPair};
+use foci_tmc4671::pid::{PidGainPair, PidIGain, PidPGain};
 use foci_tmc4671::registers::{
     ABN_DECODER_COUNT, MODE_RAMP_MODE_MOTION, PID_TORQUE_FLUX_TARGET, PID_VELOCITY_P_VELOCITY_I,
     PID_VELOCITY_TARGET,
@@ -265,7 +265,7 @@ fn plan_integral_recovery(
         RungOriginRecoveryConfig {
             stage: RecoveryStage::Integral,
             rung_index: data.rung_index,
-            p: PidGain::new(data.plan.final_p).expect("validated Stage-C P remains nonzero"),
+            p: PidPGain::new(data.plan.final_p).expect("validated Stage-C P remains nonzero"),
             target_velocity_rpm: TmcMechanicalRpm::from_register(data.plan.target_velocity_rpm),
             planned_velocity_mrev_s: data.plan.planned_velocity_mrev_s,
             start_offset_counts: safety.unwrapped_position,
@@ -391,7 +391,7 @@ fn compact_summary(
     slot: usize,
     direction: VelocityDirection,
 ) -> Result<VelocityObservationSummary, CommissionError> {
-    let p = PidGain::new(data.plan.final_p).map_err(|_| CommissionError::InvalidSchedule)?;
+    let p = PidPGain::new(data.plan.final_p).map_err(|_| CommissionError::InvalidSchedule)?;
     let interval = data.rung_intervals[slot];
     let direction_rate = match direction {
         VelocityDirection::Forward => [1, 1],
@@ -559,7 +559,7 @@ fn moving_analysis(
     else {
         return Ok(None);
     };
-    let p = PidGain::new(data.plan.final_p).map_err(|_| CommissionError::InvalidSchedule)?;
+    let p = PidPGain::new(data.plan.final_p).map_err(|_| CommissionError::InvalidSchedule)?;
     let direction = direction_for_slot(data.slot)?;
     let mut input = VelocityObservationInput {
         direction,
@@ -679,13 +679,13 @@ pub(crate) async fn step_velocity_integral_with_trace<B: CommissioningBackend>(
             let Some(i_raw) = integral_i_at(plan, data.rung_index) else {
                 return fail_integral(phase, backend, CommissionError::InvalidSchedule).await;
             };
-            let p = match PidGain::new(plan.final_p) {
+            let p = match PidPGain::new(plan.final_p) {
                 Ok(value) => value,
                 Err(_) => {
                     return fail_integral(phase, backend, CommissionError::InvalidSchedule).await;
                 }
             };
-            let i = match PidGain::new(i_raw) {
+            let i = match PidIGain::new(i_raw) {
                 Ok(value) => value,
                 Err(_) => {
                     return fail_integral(phase, backend, CommissionError::InvalidSchedule).await;
@@ -694,7 +694,7 @@ pub(crate) async fn step_velocity_integral_with_trace<B: CommissioningBackend>(
             if backend
                 .write_register(
                     PID_VELOCITY_P_VELOCITY_I,
-                    PidGainPair::new_legacy(p, i).register_value(),
+                    PidGainPair::new(p, i).register_value(),
                 )
                 .await
                 .is_err()

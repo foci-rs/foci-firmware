@@ -123,10 +123,14 @@ mod tests {
         OuterPhase,
     };
     use crate::commissioning::types::StepResult;
-    use foci_tmc4671::pid::PidGain;
+    use foci_tmc4671::pid::{PidIGain, PidPGain};
 
-    fn gain(raw: u16) -> PidGain {
-        PidGain::new(raw).expect("test gain must be in range")
+    fn p_gain(raw: u16) -> PidPGain {
+        PidPGain::new(raw).expect("test gain must be in range")
+    }
+
+    fn i_gain(raw: u16) -> PidIGain {
+        PidIGain::new(raw).expect("test gain must be in range")
     }
 
     fn zero_diagnostics() -> OuterDiagnostics {
@@ -169,8 +173,8 @@ mod tests {
 
     fn valid_velocity_gains() -> VelocityGains {
         VelocityGains {
-            velocity_p: gain(1152),
-            velocity_i: gain(341),
+            velocity_p: p_gain(1152),
+            velocity_i: i_gain(341),
             velocity_limit: 16,
             effective_bandwidth_hz: 50,
             lambda_vel_ms: 20,
@@ -179,8 +183,8 @@ mod tests {
 
     fn valid_position_gains() -> PositionGains {
         PositionGains {
-            position_p: gain(640),
-            position_i: PidGain::ZERO,
+            position_p: p_gain(640),
+            position_i: PidIGain::ZERO,
         }
     }
 
@@ -259,7 +263,7 @@ mod tests {
     #[test]
     fn commit_rejects_out_of_envelope_velocity_gains() {
         let mut velocity = valid_velocity_gains();
-        velocity.velocity_i = gain(OUTER_MAX_VELOCITY_I + 1);
+        velocity.velocity_i = i_gain(OUTER_MAX_VELOCITY_I + 1);
         let mut phase = commit_phase(velocity, valid_position_gains());
 
         let result = step_commit(&mut phase);
@@ -277,7 +281,7 @@ mod tests {
     #[test]
     fn commit_rejects_out_of_envelope_position_gains() {
         let mut position = valid_position_gains();
-        position.position_p = gain(OUTER_MAX_POSITION_P + 1);
+        position.position_p = p_gain(OUTER_MAX_POSITION_P + 1);
         let mut phase = commit_phase(valid_velocity_gains(), position);
 
         let result = step_commit(&mut phase);

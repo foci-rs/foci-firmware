@@ -16,8 +16,12 @@ use super::sweep_plan::{
 pub const STAGE_C_EVIDENCE_SCHEMA_REVISION: u16 = 4;
 /// Largest predeclared positive-I ladder accepted by the family-128 table.
 pub const STAGE_C_MAX_POSITIVE_RUNGS: usize = 30;
-/// Minimum representable positive raw velocity-I gain in Q8.8 mode.
-pub const STAGE_C_MIN_POSITIVE_I: u16 = 1;
+/// Q4.12 encoding of the existing Stage-C minimum physical velocity-I gain.
+///
+/// Preserves the shelved plan's physical rung set by scaling
+/// every historical Q8.8 raw rung by 16. Selecting a finer low-I ladder remains
+/// future work.
+pub const STAGE_C_MIN_POSITIVE_I: u16 = 16;
 /// Independent observations collected in one direction at every Stage-C rung.
 pub const STAGE_C_OBSERVATIONS_PER_DIRECTION: u16 = 4;
 /// Forward and reverse observations collected at every Stage-C rung.
@@ -363,10 +367,11 @@ pub const fn velocity_i_tau_us(i_raw: u16, pwm_hz: u32) -> Option<u64> {
     if i_raw == 0 || pwm_hz == 0 {
         return None;
     }
-    let numerator = match 65_536_u64.checked_mul(MICROS_PER_SECOND) {
-        Some(value) => value,
-        None => return None,
-    };
+    let numerator =
+        match crate::autotune::ADVANCED_PI_I_Q4_12_NUMERATOR.checked_mul(MICROS_PER_SECOND) {
+            Some(value) => value,
+            None => return None,
+        };
     let denominator = match (i_raw as u64).checked_mul(pwm_hz as u64) {
         Some(value) if value != 0 => value,
         _ => return None,

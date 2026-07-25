@@ -18,7 +18,7 @@ use crate::commissioning::outer::state::{VELOCITY_SWEEP_BLOCK_LEVELS, VelocityOb
 use crate::commissioning::outer::{OuterMotionBudget, OuterSafetyLimits, OuterSafetyTimingPhase};
 use crate::commissioning::types::OUTER_SAFETY_FAULT_RECOVERY_WRONG_WAY;
 use foci_tmc4671::current_limit::PidTorqueFluxLimit;
-use foci_tmc4671::pid::PidGain;
+use foci_tmc4671::pid::PidPGain;
 use foci_tmc4671::registers::{PID_VELOCITY_P_VELOCITY_I, PID_VELOCITY_TARGET};
 
 const RATE_Q: u128 = 1_000;
@@ -156,7 +156,7 @@ fn runtime_with_source(
         RungOriginRecoveryConfig {
             stage: RecoveryStage::Proportional,
             rung_index: 17,
-            p: PidGain::new(1_448).unwrap(),
+            p: PidPGain::new(1_448).unwrap(),
             target_velocity_rpm: TmcMechanicalRpm::from_register(264),
             planned_velocity_mrev_s: 4_394,
             start_offset_counts,
@@ -751,7 +751,7 @@ fn recovery_safety_inherits_velocity_local_and_absolute_position_faults() {
         RungOriginRecoveryConfig {
             stage: RecoveryStage::Proportional,
             rung_index: 17,
-            p: PidGain::new(1_448).unwrap(),
+            p: PidPGain::new(1_448).unwrap(),
             target_velocity_rpm: TmcMechanicalRpm::from_register(264),
             planned_velocity_mrev_s: 4_394,
             start_offset_counts: 90,

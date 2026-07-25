@@ -9,7 +9,7 @@
 use super::{MechanicalIdData, MechanicalIdState, OuterDiagnostics, OuterPhase, OuterSafetyLimits};
 use crate::autotune::{MechanicalModel, TransientBuffer, VelocityGains};
 use crate::commissioning::encoder_domain::{EncoderCount, EncoderDomain};
-use foci_tmc4671::pid::PidGain;
+use foci_tmc4671::pid::{PidIGain, PidPGain};
 
 /// Torque step attempts as fractions of run_current.
 ///
@@ -63,12 +63,12 @@ pub(crate) const VELOCITY_RESPONSE_VALIDATE_TAU_MS: u32 = 50;
 /// start with a low-energy validation step, then increase P until the first
 /// clean response is found and finally stop before the response turns unsafe.
 pub(crate) const VELOCITY_RESPONSE_INITIAL_P: u16 = 128;
-pub(crate) const VELOCITY_RESPONSE_INITIAL_GAIN: PidGain =
-    match PidGain::new(VELOCITY_RESPONSE_INITIAL_P) {
+pub(crate) const VELOCITY_RESPONSE_INITIAL_GAIN: PidPGain =
+    match PidPGain::new(VELOCITY_RESPONSE_INITIAL_P) {
         Ok(gain) => gain,
         Err(_) => panic!("response velocity P must be valid"),
     };
-const OUTER_FALLBACK_VELOCITY_I_GAIN: PidGain = match PidGain::new(OUTER_FALLBACK_VELOCITY_I) {
+const OUTER_FALLBACK_VELOCITY_I_GAIN: PidIGain = match PidIGain::new(OUTER_FALLBACK_VELOCITY_I) {
     Ok(gain) => gain,
     Err(_) => panic!("response velocity I must be valid"),
 };

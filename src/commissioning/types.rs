@@ -933,11 +933,11 @@ pub struct InnerResult {
     pub l_count_micro: u32,
     /// Computed flux P gain (Q8.8).
     pub flux_p: u16,
-    /// Computed flux I gain (raw Q8.8; effective advanced-PI zero is I/65536).
+    /// Computed flux I gain (raw Q4.12).
     pub flux_i: u16,
     /// Computed torque P gain (Q8.8).
     pub torque_p: u16,
-    /// Computed torque I gain (raw Q8.8; effective advanced-PI zero is I/65536).
+    /// Computed torque I gain (raw Q4.12).
     pub torque_i: u16,
     /// Candidate `CURRENT_GAINS_SOURCE_*` before validation verdict.
     pub candidate_gains_source: u8,
@@ -1163,13 +1163,13 @@ pub struct OuterResult {
     pub status: CommissionStatus,
     /// Velocity P gain (Q8.8).
     pub velocity_p: u16,
-    /// Velocity I gain (Q8.8).
+    /// Velocity I gain (Q4.12).
     pub velocity_i: u16,
     /// Velocity limit.
     pub velocity_limit: u32,
     /// Position P gain (Q8.8).
     pub position_p: u16,
-    /// Position I gain (Q8.8).
+    /// Position I gain (Q4.12).
     pub position_i: u16,
     /// Velocity filter cutoff Hz (0 = disabled).
     pub velocity_filter_hz: u16,
@@ -1309,11 +1309,11 @@ pub struct CommissionResult {
     pub inner: InnerResult,
     /// Fallback velocity P gain (Q8.8) written during closed-loop entry.
     pub fallback_velocity_p: u16,
-    /// Fallback velocity I gain (Q8.8) written during closed-loop entry.
+    /// Fallback velocity I gain (Q4.12) written during closed-loop entry.
     pub fallback_velocity_i: u16,
     /// Fallback position P gain (Q8.8) written during closed-loop entry.
     pub fallback_position_p: u16,
-    /// Fallback position I gain (Q8.8) written during closed-loop entry.
+    /// Fallback position I gain (Q4.12) written during closed-loop entry.
     pub fallback_position_i: u16,
     /// Fallback PID velocity limit register value.
     pub fallback_velocity_limit: u32,

@@ -18,7 +18,7 @@ use crate::commissioning::inner::current_loop::{CurrentValidateData, CurrentVali
 use crate::commissioning::types::{
     AdcCalResult, CommissioningBackend, InductanceEvidence, InnerResult, StepResult,
 };
-use foci_tmc4671::pid::{PidGain, PidGainPair};
+use foci_tmc4671::pid::{PidGainPair, PidIGain, PidPGain};
 
 pub mod adc;
 pub mod closed_loop_entry;
@@ -472,22 +472,22 @@ pub(crate) enum InnerPhase {
     ClosedLoopEntry {
         /// Current sub-state.
         state: ClosedLoopEntryState,
-        /// Current-loop flux P gain (Q8.8) to write.
-        flux_p: u16,
-        /// Current-loop flux I gain (raw Q8.8) to write.
-        flux_i: u16,
-        /// Current-loop torque P gain (Q8.8) to write.
-        torque_p: u16,
-        /// Current-loop torque I gain (raw Q8.8) to write.
-        torque_i: u16,
-        /// Outer velocity P gain (Q8.8) to write.
-        velocity_p: u16,
-        /// Outer velocity I gain (Q8.8) to write.
-        velocity_i: u16,
-        /// Outer position P gain (Q8.8) to write.
-        position_p: u16,
-        /// Outer position I gain (Q8.8) to write.
-        position_i: u16,
+        /// Current-loop flux P gain to write.
+        flux_p: PidPGain,
+        /// Current-loop flux I gain to write.
+        flux_i: PidIGain,
+        /// Current-loop torque P gain to write.
+        torque_p: PidPGain,
+        /// Current-loop torque I gain to write.
+        torque_i: PidIGain,
+        /// Outer velocity P gain to write.
+        velocity_p: PidPGain,
+        /// Outer velocity I gain to write.
+        velocity_i: PidIGain,
+        /// Outer position P gain to write.
+        position_p: PidPGain,
+        /// Outer position I gain to write.
+        position_i: PidIGain,
         /// PID velocity limit register value.
         velocity_limit: u32,
         /// Velocity biquad filter cutoff (Hz), 0 = disabled.
@@ -719,20 +719,12 @@ pub async fn restore_entry_gains<B: CommissioningBackend>(
     crate::tmc_control::pi_representation::verify_pi_representation(backend, tmc_state)
         .await
         .map_err(|_| CommissionError::ChipResetDetected)?;
-    let velocity_p =
-        PidGain::new(snapshot.velocity_p).map_err(|_| CommissionError::VelocityValidationFailed)?;
-    let velocity_i =
-        PidGain::new(snapshot.velocity_i).map_err(|_| CommissionError::VelocityValidationFailed)?;
-    let position_p =
-        PidGain::new(snapshot.position_p).map_err(|_| CommissionError::PositionTuneFailed)?;
-    let position_i =
-        PidGain::new(snapshot.position_i).map_err(|_| CommissionError::PositionTuneFailed)?;
-    let velocity_reg = PidGainPair::new_legacy(velocity_p, velocity_i).register_value();
+    let velocity_reg = PidGainPair::new(snapshot.velocity_p, snapshot.velocity_i).register_value();
     backend
         .write_register(PID_VELOCITY_P_VELOCITY_I, velocity_reg)
         .await
         .map_err(|_| CommissionError::Spi)?;
-    let position_reg = PidGainPair::new_legacy(position_p, position_i).register_value();
+    let position_reg = PidGainPair::new(snapshot.position_p, snapshot.position_i).register_value();
     backend
         .write_register(PID_POSITION_P_POSITION_I, position_reg)
         .await

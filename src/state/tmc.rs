@@ -7,7 +7,7 @@ use core::sync::atomic::{AtomicBool, AtomicI32, AtomicU8, AtomicU16, AtomicU32, 
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::signal::Signal;
 use foci_tmc4671::current_limit::PidTorqueFluxLimit;
-use foci_tmc4671::pid::{PidGain, PidGainOutOfRange};
+use foci_tmc4671::pid::{PidGainOutOfRange, PidIGain, PidPGain};
 
 use crate::pid::OuterLoopGains;
 
@@ -160,11 +160,11 @@ pub struct TmcChannelState {
     pub auto_calibrate_on_enable_allowed: AtomicBool,
     /// Position P gain for cross-priority access (Q8.8).
     position_p_value: AtomicU16,
-    /// Position I gain for cross-priority access (Q8.8).
+    /// Position I gain for cross-priority access (Q4.12).
     position_i_value: AtomicU16,
     /// Velocity P gain for cross-priority access (Q8.8).
     velocity_p_value: AtomicU16,
-    /// Velocity I gain for cross-priority access (Q8.8).
+    /// Velocity I gain for cross-priority access (Q4.12).
     velocity_i_value: AtomicU16,
 }
 
@@ -314,10 +314,10 @@ impl TmcChannelState {
         ordering: Ordering,
     ) -> Result<OuterLoopGains, PidGainOutOfRange> {
         Ok(OuterLoopGains {
-            position_p: PidGain::new(self.position_p_value.load(ordering))?,
-            position_i: PidGain::new(self.position_i_value.load(ordering))?,
-            velocity_p: PidGain::new(self.velocity_p_value.load(ordering))?,
-            velocity_i: PidGain::new(self.velocity_i_value.load(ordering))?,
+            position_p: PidPGain::new(self.position_p_value.load(ordering))?,
+            position_i: PidIGain::new(self.position_i_value.load(ordering))?,
+            velocity_p: PidPGain::new(self.velocity_p_value.load(ordering))?,
+            velocity_i: PidIGain::new(self.velocity_i_value.load(ordering))?,
         })
     }
 

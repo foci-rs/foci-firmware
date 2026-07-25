@@ -18,38 +18,14 @@ use super::{
     CURRENT_VALIDATION_AXIS_FLUX, CURRENT_VALIDATION_AXIS_TORQUE,
     CURRENT_VALIDATION_MAX_SAMPLES_PER_AXIS, ELECTRICAL_MODEL_RESISTANCE_SCALE,
 };
-use foci_tmc4671::pid::PidGain;
+use foci_tmc4671::pid::PidPGain;
+
+use super::integral_gain::{
+    CURRENT_I_Q4_12_DETUNED_NUMERATOR, IntegralGainError, synthesize_i_gain,
+};
 
 /// Raw settled-flux current-validation reads retained for audit.
 pub const CURRENT_VALIDATION_SETTLED_MAX_SAMPLES: usize = 8;
-
-/// Advanced-PI current-loop I zero scale.
-///
-/// With `CONFIG_ADVANCED_PI_REPRESENT=0`, current-loop I is Q8.8 and the
-/// advanced PI integrator input is divided by another 256, so the effective
-/// integral-zero term is `I_reg / 65536` per PWM sample.
-pub const ADVANCED_PI_I_ZERO_SCALE: f32 = 65_536.0;
-
-/// Stability detune applied to the pole-cancelling current-loop I zero.
-///
-/// `DETUNE=1` is true pole cancellation, but on the OpenFFBoard printer
-/// cascade it would produce `I ~= 1216`, roughly 3x beyond the observed
-/// sustained-hold squeal edge. The 2026-06-28 long-dwell current-loop artifact
-/// showed `DETUNE ~= 3.2` (`I=384`) near the instability boundary, while
-/// `DETUNE=8` (`I ~= 152-159`) closed the flux step cleanly in about 80-100 ms.
-///
-/// This is a fixed Phase-1 cascade stability margin, not a profile tuning knob.
-/// A future sustained-hold gate must catch hardware where this margin is not
-/// enough before any profile-dependent detune is introduced.
-pub const CURRENT_I_STABILITY_DETUNE: f32 = 8.0;
-
-/// Detuned current-loop I zero factor.
-///
-/// Commissioning stores `tau_e_us = L / R`, so Phase 1 uses
-/// `CURRENT_I_DETUNED_ZERO_FACTOR / (tau_e_seconds * f_pwm)`, where this factor
-/// is the advanced-PI zero scale divided by the fixed stability detune.
-pub const CURRENT_I_DETUNED_ZERO_FACTOR: f32 =
-    ADVANCED_PI_I_ZERO_SCALE / CURRENT_I_STABILITY_DETUNE;
 
 /// Axis sample passed validation.
 pub const CURRENT_AXIS_VALIDATION_PASS: u8 = 0;
@@ -283,17 +259,17 @@ fn valid_physical_current_bandwidth_hz(value: f32) -> bool {
     finite_positive(value) && value <= MAX_PHYSICAL_CURRENT_BANDWIDTH_HZ
 }
 
-fn pid_gain_from_float(value: f32) -> Result<PidGain, CurrentGainSynthesisError> {
+fn pid_gain_from_float(value: f32) -> Result<PidPGain, CurrentGainSynthesisError> {
     if !finite_positive(value) {
         return Err(CurrentGainSynthesisError::InvalidElectricalModel);
     }
     let rounded = (value + 0.5).max(1.0) as u64;
-    if rounded > u64::from(PidGain::MAX.raw()) {
+    if rounded > u64::from(PidPGain::MAX.raw()) {
         return Err(CurrentGainSynthesisError::GainOutOfRange {
             attempted_raw: rounded,
         });
     }
-    PidGain::new(rounded as u16).map_err(|error| CurrentGainSynthesisError::GainOutOfRange {
+    PidPGain::new(rounded as u16).map_err(|error| CurrentGainSynthesisError::GainOutOfRange {
         attempted_raw: u64::from(error.raw()),
     })
 }
@@ -301,7 +277,7 @@ fn pid_gain_from_float(value: f32) -> Result<PidGain, CurrentGainSynthesisError>
 fn physical_current_p_raw_from_l_count_micro(
     l_count_micro: u32,
     bandwidth_hz: f32,
-) -> Result<PidGain, CurrentGainSynthesisError> {
+) -> Result<PidPGain, CurrentGainSynthesisError> {
     if l_count_micro == 0 || !valid_physical_current_bandwidth_hz(bandwidth_hz) {
         return Err(CurrentGainSynthesisError::InvalidElectricalModel);
     }
@@ -340,9 +316,12 @@ fn physical_current_gains_checked(
         return Err(CurrentGainSynthesisError::InvalidElectricalModel);
     }
     let p_reg = physical_current_p_raw_from_l_count_micro(model.l_count_micro, bandwidth_hz)?;
-    let tau_s = model.tau_e_us as f32 * 1e-6;
-    let f_pwm = config.pwm_freq_hz() as f32;
-    let i_reg = pid_gain_from_float(CURRENT_I_DETUNED_ZERO_FACTOR / (tau_s * f_pwm))?;
+    let i_reg = synthesize_i_gain(
+        CURRENT_I_Q4_12_DETUNED_NUMERATOR,
+        u64::from(model.tau_e_us),
+        config.pwm_freq_hz(),
+    )
+    .map_err(map_integral_gain_error)?;
 
     Ok(CurrentGains {
         flux_p: p_reg,
@@ -353,6 +332,19 @@ fn physical_current_gains_checked(
         lambda_us: bandwidth_period_us(bandwidth_hz)
             .ok_or(CurrentGainSynthesisError::InvalidElectricalModel)?,
     })
+}
+
+fn map_integral_gain_error(error: IntegralGainError) -> CurrentGainSynthesisError {
+    match error {
+        IntegralGainError::InvalidInput | IntegralGainError::Arithmetic => {
+            CurrentGainSynthesisError::InvalidElectricalModel
+        }
+        IntegralGainError::GainOutOfRange { attempted_raw } => {
+            CurrentGainSynthesisError::GainOutOfRange {
+                attempted_raw: attempted_raw.min(u128::from(u64::MAX)) as u64,
+            }
+        }
+    }
 }
 
 /// Synthesize production current-loop gains and gain-source evidence.
@@ -470,19 +462,19 @@ fn scale_lambda_permille(lambda_us: u32, permille: u16) -> u32 {
 }
 
 fn scale_gain_for_lambda(
-    gain: PidGain,
+    gain: PidPGain,
     previous_lambda_us: u32,
     next_lambda_us: u32,
-) -> Result<PidGain, CurrentGainSynthesisError> {
+) -> Result<PidPGain, CurrentGainSynthesisError> {
     if previous_lambda_us == 0 || next_lambda_us == 0 {
         return Ok(gain);
     }
 
     let raw = (u64::from(gain.raw()) * u64::from(previous_lambda_us)) / u64::from(next_lambda_us);
-    if raw > u64::from(PidGain::MAX.raw()) {
+    if raw > u64::from(PidPGain::MAX.raw()) {
         return Err(CurrentGainSynthesisError::GainOutOfRange { attempted_raw: raw });
     }
-    PidGain::new(raw.max(1) as u16).map_err(|error| CurrentGainSynthesisError::GainOutOfRange {
+    PidPGain::new(raw.max(1) as u16).map_err(|error| CurrentGainSynthesisError::GainOutOfRange {
         attempted_raw: u64::from(error.raw()),
     })
 }
@@ -568,8 +560,12 @@ mod tests {
     use super::super::test_support::{autotune_test_config, test_electrical_model};
     use super::*;
 
-    fn gain(raw: u16) -> PidGain {
-        PidGain::new(raw).expect("test PID gain must be valid")
+    fn p_gain(raw: u16) -> PidPGain {
+        PidPGain::new(raw).expect("test PID gain must be valid")
+    }
+
+    fn i_gain(raw: u16) -> foci_tmc4671::pid::PidIGain {
+        foci_tmc4671::pid::PidIGain::new(raw).expect("test PID gain must be valid")
     }
 
     #[test]
@@ -766,7 +762,7 @@ mod tests {
     fn gain_conversion_accepts_maximum_and_rejects_first_negative_encoding() {
         assert_eq!(
             pid_gain_from_float(32_767.0).unwrap(),
-            foci_tmc4671::pid::PidGain::MAX
+            foci_tmc4671::pid::PidPGain::MAX
         );
         assert!(matches!(
             pid_gain_from_float(32_768.0),
@@ -779,10 +775,10 @@ mod tests {
     #[test]
     fn higher_bandwidth_retry_reports_gain_overflow_without_saturation() {
         let previous = CurrentGains {
-            flux_p: foci_tmc4671::pid::PidGain::MAX,
-            flux_i: foci_tmc4671::pid::PidGain::new(10).unwrap(),
-            torque_p: foci_tmc4671::pid::PidGain::MAX,
-            torque_i: foci_tmc4671::pid::PidGain::new(10).unwrap(),
+            flux_p: foci_tmc4671::pid::PidPGain::MAX,
+            flux_i: foci_tmc4671::pid::PidIGain::new(10).unwrap(),
+            torque_p: foci_tmc4671::pid::PidPGain::MAX,
+            torque_i: foci_tmc4671::pid::PidIGain::new(10).unwrap(),
             effective_bandwidth_hz: 100,
             lambda_us: 1_000,
         };
@@ -800,10 +796,10 @@ mod tests {
     #[test]
     fn retry_policy_scales_bandwidth_and_p_but_keeps_i() {
         let previous = CurrentGains {
-            flux_p: gain(120),
-            flux_i: gain(23),
-            torque_p: gain(220),
-            torque_i: gain(19),
+            flux_p: p_gain(120),
+            flux_i: i_gain(23),
+            torque_p: p_gain(220),
+            torque_i: i_gain(19),
             effective_bandwidth_hz: 145,
             lambda_us: 934,
         };
@@ -830,10 +826,10 @@ mod tests {
         let physical_limit_lambda =
             bandwidth_period_us(MAX_PHYSICAL_CURRENT_BANDWIDTH_HZ).expect("valid limit");
         let previous = CurrentGains {
-            flux_p: gain(1500),
-            flux_i: gain(23),
-            torque_p: gain(1600),
-            torque_i: gain(19),
+            flux_p: p_gain(1500),
+            flux_i: i_gain(23),
+            torque_p: p_gain(1600),
+            torque_i: i_gain(19),
             effective_bandwidth_hz: MAX_PHYSICAL_CURRENT_BANDWIDTH_HZ as u32,
             lambda_us: physical_limit_lambda,
         };
@@ -859,10 +855,10 @@ mod tests {
     #[test]
     fn retry_policy_lower_bandwidth_keeps_i() {
         let previous = CurrentGains {
-            flux_p: gain(120),
-            flux_i: gain(23),
-            torque_p: gain(220),
-            torque_i: gain(19),
+            flux_p: p_gain(120),
+            flux_i: i_gain(23),
+            torque_p: p_gain(220),
+            torque_i: i_gain(19),
             effective_bandwidth_hz: 145,
             lambda_us: 934,
         };
@@ -927,10 +923,13 @@ mod tests {
 
         let output = synthesize_current_gains(&input, &config).expect("physical gains");
 
-        let tau_s = model.tau_e_us as f32 * 1e-6;
-        let expected_i = (CURRENT_I_DETUNED_ZERO_FACTOR / (tau_s * config.pwm_freq_hz() as f32)
-            + 0.5)
-            .clamp(1.0, PidGain::MAX.raw() as f32) as u16;
+        let expected_i = synthesize_i_gain(
+            CURRENT_I_Q4_12_DETUNED_NUMERATOR,
+            u64::from(model.tau_e_us),
+            config.pwm_freq_hz(),
+        )
+        .unwrap()
+        .raw();
 
         assert_eq!(output.gains.flux_i.raw(), expected_i);
         assert_eq!(output.gains.torque_i.raw(), expected_i);

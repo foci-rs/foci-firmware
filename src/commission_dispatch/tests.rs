@@ -184,10 +184,10 @@ fn store_published_controller_cache(
 
 const PREVIOUS_CONTROLLER_CACHE: PublishedControllerCache = PublishedControllerCache {
     stored_gains: Some(crate::pid::InnerLoopGains {
-        flux_p: crate::pid::test_gain(11),
-        flux_i: crate::pid::test_gain(12),
-        torque_p: crate::pid::test_gain(13),
-        torque_i: crate::pid::test_gain(14),
+        flux_p: crate::pid::p_gain(11),
+        flux_i: crate::pid::i_gain(12),
+        torque_p: crate::pid::p_gain(13),
+        torque_i: crate::pid::i_gain(14),
     }),
     position_p: 21,
     position_i: 22,
@@ -763,10 +763,10 @@ fn calibrate_done_preserves_step_epoch_after_gain_restore() {
         seed_motor_sentinel(&mut backend).await;
         let (mut cal, mut en, _) = fresh_state_locals();
         let mut gains = Some(crate::pid::InnerLoopGains {
-            flux_p: crate::pid::test_gain(100),
-            flux_i: crate::pid::test_gain(10),
-            torque_p: crate::pid::test_gain(200),
-            torque_i: crate::pid::test_gain(20),
+            flux_p: crate::pid::p_gain(100),
+            flux_i: crate::pid::i_gain(10),
+            torque_p: crate::pid::p_gain(200),
+            torque_i: crate::pid::i_gain(20),
         });
         let mut state = dispatch_state(&mut cal, &mut en, &mut gains);
         let mut engine = Some(CommissioningEngine::new_calibrate(4));
@@ -1422,10 +1422,10 @@ fn commission_done_finalize_path() {
         assert_eq!(
             *state.stored_gains,
             Some(crate::pid::InnerLoopGains {
-                flux_p: crate::pid::test_gain(commission_result.inner.flux_p),
-                flux_i: crate::pid::test_gain(commission_result.inner.flux_i),
-                torque_p: crate::pid::test_gain(commission_result.inner.torque_p),
-                torque_i: crate::pid::test_gain(commission_result.inner.torque_i),
+                flux_p: crate::pid::p_gain(commission_result.inner.flux_p),
+                flux_i: crate::pid::i_gain(commission_result.inner.flux_i),
+                torque_p: crate::pid::p_gain(commission_result.inner.torque_p),
+                torque_i: crate::pid::i_gain(commission_result.inner.torque_i),
             })
         );
         let published = state.tmc.load_outer_gains(Ordering::Relaxed).unwrap();
@@ -1691,10 +1691,10 @@ fn commission_done_sentinel_failure_preserves_published_cache() {
 
 fn sample_entry_snapshot() -> crate::commissioning::EntrySnapshot {
     crate::commissioning::EntrySnapshot {
-        velocity_p: 1152,
-        velocity_i: 0,
-        position_p: 640,
-        position_i: 0,
+        velocity_p: crate::pid::p_gain(1152),
+        velocity_i: crate::pid::i_gain(0),
+        position_p: crate::pid::p_gain(640),
+        position_i: crate::pid::i_gain(0),
         velocity_limit: 500_000,
         voltage_limit: 16000,
         velocity_filter_hz: 0,

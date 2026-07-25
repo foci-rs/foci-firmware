@@ -529,7 +529,7 @@ mod tests {
     use crate::commissioning::types::{
         RungOriginRecoveryEvidence, VelocityPrimitiveCurrentEvidence,
     };
-    use foci_tmc4671::pid::PidGain;
+    use foci_tmc4671::pid::PidPGain;
 
     fn fixture_plan() -> VelocitySweepPlanned {
         VelocitySweepPlanned {
@@ -678,8 +678,8 @@ mod tests {
             member_mask: 0b111,
             first_rung: 0,
             last_rung: 2,
-            p_low: PidGain::new(256).unwrap(),
-            p_high: PidGain::new(512).unwrap(),
+            p_low: PidPGain::new(256).unwrap(),
+            p_high: PidPGain::new(512).unwrap(),
             member_count: 3,
             kind,
             common_intersection: interval,
@@ -698,7 +698,7 @@ mod tests {
         }
     }
 
-    fn maximal_directional_rung(p: PidGain) -> CompactDirectionalRungReport {
+    fn maximal_directional_rung(p: PidPGain) -> CompactDirectionalRungReport {
         let pooled_interval = EquivalentTorqueTargetInterval::new(
             EquivalentTorqueTargetQ16::from_raw(i32::MIN + 1),
             EquivalentTorqueTargetQ16::from_raw(i32::MAX),
@@ -729,7 +729,7 @@ mod tests {
 
     #[test]
     fn velocity_sweep_reporting_maximal_consensus_rung_fits_audited_capacity() {
-        let p = PidGain::new(PidGain::MAX.raw()).unwrap();
+        let p = PidPGain::new(PidPGain::MAX.raw()).unwrap();
         let directional = maximal_directional_rung(p);
         let record = encode_rung(VelocitySweepRungReport {
             run_sequence: u32::MAX,
@@ -745,7 +745,7 @@ mod tests {
 
     #[test]
     fn velocity_sweep_reporting_uses_the_wire_common_rate_shift() {
-        let p = PidGain::new(256).unwrap();
+        let p = PidPGain::new(256).unwrap();
         let mut directional = maximal_directional_rung(p);
         directional.settled_rate_bounds_q = [
             CompactSignedRate::encode(-10, BoundRounding::TowardNegativeInfinity),
@@ -801,7 +801,7 @@ mod tests {
             target_velocity_rpm: 3_200,
             summary: VelocityObservationSummary {
                 direction: VelocityDirection::Forward,
-                p: PidGain::new(350).unwrap(),
+                p: PidPGain::new(350).unwrap(),
                 classification: VelocityObservationClass::Eligible,
                 settled_rate_interval_q: [-5_000_000_001, 5_000_000_001],
                 settled_rate_mean_q: 1,
@@ -889,7 +889,7 @@ mod tests {
                             closure: JointOperableClosure::EndOfLadder,
                         },
                         rung_index: 4,
-                        p: PidGain::new(1_024).unwrap(),
+                        p: PidPGain::new(1_024).unwrap(),
                         distance_to_start_num: 10,
                         distance_to_top_num: 20,
                         reduced_margin: true,

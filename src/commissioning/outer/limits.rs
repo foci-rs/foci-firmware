@@ -26,9 +26,9 @@ pub(crate) const OUTER_FALLBACK_POSITION_P: u16 = 640;
 /// Keep runtime gains near the known-good default envelope even when SIMC
 /// widens lambda to fit high-damping mechanical models.
 pub(crate) const OUTER_MAX_VELOCITY_P: u16 = crate::autotune::VELOCITY_SIMC_MAX_P_REG;
-pub(crate) const OUTER_MAX_VELOCITY_I: u16 = 512;
+pub(crate) const OUTER_MAX_VELOCITY_I: u16 = 8_192;
 pub(crate) const OUTER_MAX_POSITION_P: u16 = OUTER_FALLBACK_POSITION_P * 4;
-pub(crate) const OUTER_MAX_POSITION_I: u16 = 128;
+pub(crate) const OUTER_MAX_POSITION_I: u16 = 2_048;
 
 pub(crate) const OUTER_WARNING_NONE: u8 = 0;
 pub(crate) const OUTER_WARNING_UNSAFE_SYNTH_GAINS: u8 = 2;

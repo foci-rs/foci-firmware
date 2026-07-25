@@ -53,7 +53,22 @@ fn reproduction_fnv_vectors_and_build_revision_are_stable() {
     assert_eq!(const_fnv1a32(b""), 0x811c_9dc5);
     assert_eq!(const_fnv1a32(b"a"), 0xe40c_292c);
     assert_eq!(STAGE_B_EVIDENCE_SCHEMA_REVISION, 8);
-    assert_ne!(STAGE_B_BUILD_REVISION, 0);
+    assert_eq!(STAGE_B_BUILD_REVISION, 0x05e2_1f75);
+}
+
+#[test]
+fn q8_8_package_candidate_rejects_before_current_build_comparison() {
+    let mut slot = StageBCandidateSlot::new();
+    let mut retained = summary(0, 1);
+    retained.identity.build_revision = 0x7553_6758;
+    slot.observe_sufficient(retained);
+
+    let requested = identity(0, retained.identity.plan_digest);
+    assert!(matches!(
+        slot.preflight(requested),
+        Some(StageBReproductionDecision::RejectedPlanMismatch { .. })
+    ));
+    assert_eq!(slot.candidate(), Some(retained));
 }
 
 #[test]

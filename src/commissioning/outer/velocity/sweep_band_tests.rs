@@ -11,7 +11,7 @@ use crate::commissioning::outer::velocity::sweep_evidence::{
     CollectedRungEvidence, CompactConsensusObservation, VelocityObservationClass,
     VelocityObservationSummary, analyze_directional_rung,
 };
-use foci_tmc4671::pid::PidGain;
+use foci_tmc4671::pid::PidPGain;
 
 fn interval(low: i32, high: i32) -> EquivalentTorqueTargetInterval {
     EquivalentTorqueTargetInterval::new(
@@ -25,7 +25,7 @@ fn verdict(p: u16, class: VelocityRungClass, low: i32, high: i32) -> VelocityRun
     let eligible = class == VelocityRungClass::Eligible;
     VelocityRungVerdict {
         direction: VelocityDirection::Forward,
-        p: PidGain::new(p).unwrap(),
+        p: PidPGain::new(p).unwrap(),
         classification: class,
         disturbance_interval: eligible.then(|| interval(low, high)),
         disturbance_intervals: eligible
@@ -74,7 +74,7 @@ fn summary(slot: u8, class: VelocityObservationClass) -> VelocityObservationSumm
     let high = 120 + i32::from(slot);
     VelocityObservationSummary {
         direction,
-        p: PidGain::new(512).unwrap(),
+        p: PidPGain::new(512).unwrap(),
         classification: class,
         settled_rate_interval_q: [1_000 + i64::from(slot), 1_010 + i64::from(slot)],
         settled_rate_mean_q: 1_005 + i64::from(slot),
@@ -161,7 +161,7 @@ fn compact_consensus_rate_bounds_ignore_excluded_minimum_and_maximum() {
     let low_outlier = analyze_directional_rung(
         &collected_with_outlier(1_000_000),
         VelocityDirection::Forward,
-        PidGain::new(512).unwrap(),
+        PidPGain::new(512).unwrap(),
         176,
         4_000,
     )
@@ -169,7 +169,7 @@ fn compact_consensus_rate_bounds_ignore_excluded_minimum_and_maximum() {
     let high_outlier = analyze_directional_rung(
         &collected_with_outlier(-1_000_000),
         VelocityDirection::Forward,
-        PidGain::new(512).unwrap(),
+        PidPGain::new(512).unwrap(),
         176,
         4_000,
     )

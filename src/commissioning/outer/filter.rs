@@ -177,11 +177,11 @@ mod tests {
     use crate::commission_dispatch::test_support::{MockBackend, SpiOp};
     use crate::commissioning::outer::{OuterDiagnostics, OuterPhase, OuterSafetyLimits, commit};
     use crate::commissioning::types::StepResult;
-    use foci_tmc4671::pid::PidGain;
+    use foci_tmc4671::pid::{PidIGain, PidPGain};
     use foci_tmc4671::registers::SubRegister;
 
-    fn gain(raw: u16) -> PidGain {
-        PidGain::new(raw).expect("test gain must be in range")
+    fn p_gain(raw: u16) -> PidPGain {
+        PidPGain::new(raw).expect("test gain must be in range")
     }
 
     fn zero_diagnostics() -> OuterDiagnostics {
@@ -224,15 +224,15 @@ mod tests {
         pollster::block_on(async {
             let mut phase = OuterPhase::FilterTune {
                 velocity_gains: VelocityGains {
-                    velocity_p: gain(1152),
-                    velocity_i: PidGain::ZERO,
+                    velocity_p: p_gain(1152),
+                    velocity_i: PidIGain::ZERO,
                     velocity_limit: 16,
                     effective_bandwidth_hz: 100,
                     lambda_vel_ms: 10,
                 },
                 position_gains: PositionGains {
-                    position_p: gain(640),
-                    position_i: PidGain::ZERO,
+                    position_p: p_gain(640),
+                    position_i: PidIGain::ZERO,
                 },
                 position_oscillation_early: false,
                 velocity_chatter: true,
@@ -265,15 +265,15 @@ mod tests {
         pollster::block_on(async {
             let mut phase = OuterPhase::FilterTune {
                 velocity_gains: VelocityGains {
-                    velocity_p: gain(1_152),
-                    velocity_i: PidGain::ZERO,
+                    velocity_p: p_gain(1_152),
+                    velocity_i: PidIGain::ZERO,
                     velocity_limit: 16,
                     effective_bandwidth_hz: 100,
                     lambda_vel_ms: 10,
                 },
                 position_gains: PositionGains {
-                    position_p: gain(640),
-                    position_i: PidGain::ZERO,
+                    position_p: p_gain(640),
+                    position_i: PidIGain::ZERO,
                 },
                 position_oscillation_early: true,
                 velocity_chatter: true,

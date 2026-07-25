@@ -4735,7 +4735,7 @@ mod tests {
             VelocityDirectionalRegionReport, VelocityJointRegionReport,
             VelocityStageBHandoffReport, VelocitySweepEvent,
         };
-        use foci_tmc4671::pid::PidGain;
+        use foci_tmc4671::pid::PidPGain;
 
         let disturbance = EquivalentTorqueTargetInterval::new(
             EquivalentTorqueTargetQ16::from_raw(100),
@@ -4748,8 +4748,8 @@ mod tests {
             member_mask: membership,
             first_rung: 2,
             last_rung: 4,
-            p_low: PidGain::new(512).unwrap(),
-            p_high: PidGain::new(1_024).unwrap(),
+            p_low: PidPGain::new(512).unwrap(),
+            p_high: PidPGain::new(1_024).unwrap(),
             member_count: 3,
             kind: DirectionalRegionKind::Valid,
             common_intersection: disturbance,
@@ -4794,7 +4794,7 @@ mod tests {
             nomination: ProvisionalPNomination {
                 joint,
                 rung_index: 3,
-                p: PidGain::new(724).unwrap(),
+                p: PidPGain::new(724).unwrap(),
                 distance_to_start_num: 2 << 16,
                 distance_to_top_num: 3 << 16,
                 reduced_margin: false,
@@ -4895,7 +4895,7 @@ mod tests {
             }
         });
         crate::commissioning::outer::velocity::sweep_evidence::CompactDirectionalRungReport {
-            p: foci_tmc4671::pid::PidGain::new(724).unwrap(),
+            p: foci_tmc4671::pid::PidPGain::new(724).unwrap(),
             classification: class,
             components,
             pooled,

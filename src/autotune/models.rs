@@ -1,5 +1,5 @@
 use super::types::CommissionProfile;
-use foci_tmc4671::pid::PidGain;
+use foci_tmc4671::pid::{PidIGain, PidPGain};
 
 /// First-order-plus-dead-time current plant model in TMC count space.
 ///
@@ -29,13 +29,13 @@ pub const ELECTRICAL_MODEL_RESISTANCE_SCALE: u32 = 1000;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub struct CurrentGains {
     /// Flux P gain — TMC4671 Q8.8 register value.
-    pub flux_p: PidGain,
-    /// Flux I gain — raw Q8.8; effective advanced-PI zero is I/65536.
-    pub flux_i: PidGain,
+    pub flux_p: PidPGain,
+    /// Flux I gain — TMC4671 Q4.12 register value.
+    pub flux_i: PidIGain,
     /// Torque P gain — TMC4671 Q8.8 register value.
-    pub torque_p: PidGain,
-    /// Torque I gain — raw Q8.8; effective advanced-PI zero is I/65536.
-    pub torque_i: PidGain,
+    pub torque_p: PidPGain,
+    /// Torque I gain — TMC4671 Q4.12 register value.
+    pub torque_i: PidIGain,
     /// Effective closed-loop bandwidth in Hz.
     pub effective_bandwidth_hz: u32,
     /// Inner-loop time scale in microseconds.
@@ -313,9 +313,9 @@ pub struct MechanicalModel {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub struct VelocityGains {
     /// Velocity P gain — TMC4671 Q8.8 register value.
-    pub velocity_p: PidGain,
-    /// Velocity I gain — TMC4671 Q8.8 register value.
-    pub velocity_i: PidGain,
+    pub velocity_p: PidPGain,
+    /// Velocity I gain — TMC4671 Q4.12 register value.
+    pub velocity_i: PidIGain,
     /// Commissioning velocity limit in encoder counts/ms.
     pub velocity_limit: u32,
     /// Effective closed-loop velocity bandwidth in Hz.
@@ -334,9 +334,9 @@ pub(crate) const VELOCITY_SIMC_MAX_P_REG: u16 = 1152 * 4;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub struct PositionGains {
     /// Position P gain — TMC4671 Q8.8 register value.
-    pub position_p: PidGain,
-    /// Position I gain — TMC4671 Q8.8 register value (usually 0).
-    pub position_i: PidGain,
+    pub position_p: PidPGain,
+    /// Position I gain — TMC4671 Q4.12 register value (usually 0).
+    pub position_i: PidIGain,
 }
 
 /// Filter cutoff recommendations from Phase 12.

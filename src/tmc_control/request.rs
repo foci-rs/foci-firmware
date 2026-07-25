@@ -883,10 +883,10 @@ where
                     }
                 };
                 EntrySnapshot {
-                    velocity_p: outer_gains.velocity_p.raw(),
-                    velocity_i: outer_gains.velocity_i.raw(),
-                    position_p: outer_gains.position_p.raw(),
-                    position_i: outer_gains.position_i.raw(),
+                    velocity_p: outer_gains.velocity_p,
+                    velocity_i: outer_gains.velocity_i,
+                    position_p: outer_gains.position_p,
+                    position_i: outer_gains.position_i,
                     velocity_limit: tmc_state.velocity_limit_cfg.load(Relaxed),
                     voltage_limit: tmc_state.voltage_limit_cfg.load(Relaxed),
                     velocity_filter_hz: tmc_state.velocity_filter_hz.load_or_zero(Relaxed),
@@ -1724,10 +1724,10 @@ mod tests {
 
     fn stored_gains() -> crate::pid::InnerLoopGains {
         crate::pid::InnerLoopGains {
-            flux_p: crate::pid::test_gain(11),
-            flux_i: crate::pid::test_gain(12),
-            torque_p: crate::pid::test_gain(13),
-            torque_i: crate::pid::test_gain(14),
+            flux_p: crate::pid::p_gain(11),
+            flux_i: crate::pid::i_gain(12),
+            torque_p: crate::pid::p_gain(13),
+            torque_i: crate::pid::i_gain(14),
         }
     }
 
@@ -2691,7 +2691,7 @@ mod tests {
 
     #[cfg(feature = "trace-velocity-sweep")]
     #[test]
-    fn stage_b_changed_plan_is_rejected_before_spi_and_preserves_candidate() {
+    fn stage_b_changed_plan_is_rejected_before_actuation_and_preserves_candidate() {
         run_request_test(async {
             use crate::commissioning::outer::velocity::reproduction::{
                 StageBCandidateSlot, StageBCandidateSummary,
@@ -2775,7 +2775,15 @@ mod tests {
             assert_eq!(outcome.tail, TmcControlRequestTail::SkipTickTail);
             assert!(!runtime.is_commission_active());
             assert_eq!(slot.candidate(), Some(retained));
-            assert!(tmc.into_inner().writes.is_empty());
+            assert_eq!(
+                tmc.into_inner().writes,
+                [(
+                    foci_tmc4671::registers::CONFIG_ADVANCED_PI_REPRESENT
+                        .addr
+                        .addr(),
+                    u32::from(foci_tmc4671::registers::CONFIG_ADVANCED_PI_REPRESENT.sub_addr),
+                )]
+            );
             assert_eq!(board.replies.len(), 1);
             let ReplyPayload::VelocitySweepTerminal { terminal, .. } = board.replies[0] else {
                 match board.replies[0] {

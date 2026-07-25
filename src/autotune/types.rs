@@ -392,19 +392,19 @@ impl PhaseId {
 pub struct SavedGains {
     /// Current-loop flux P gain (Q8.8).
     pub flux_p: u16,
-    /// Current-loop flux I gain (raw Q8.8; effective advanced-PI zero is I/65536).
+    /// Current-loop flux I gain (raw Q4.12).
     pub flux_i: u16,
     /// Current-loop torque P gain (Q8.8).
     pub torque_p: u16,
-    /// Current-loop torque I gain (raw Q8.8; effective advanced-PI zero is I/65536).
+    /// Current-loop torque I gain (raw Q4.12).
     pub torque_i: u16,
     /// Velocity P gain (Q8.8).
     pub velocity_p: u16,
-    /// Velocity I gain (Q8.8).
+    /// Velocity I gain (Q4.12).
     pub velocity_i: u16,
     /// Position P gain (Q8.8).
     pub position_p: u16,
-    /// Position I gain (Q8.8).
+    /// Position I gain (Q4.12).
     pub position_i: u16,
     /// PID velocity limit register value.
     pub velocity_limit: u32,

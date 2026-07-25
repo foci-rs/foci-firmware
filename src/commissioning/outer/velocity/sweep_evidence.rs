@@ -2,7 +2,7 @@ use crate::autotune::velocity_measurement::{
     StationarityExclusion, StationarityResult, StructuredStationarityEvidence, VelocityDirection,
 };
 use crate::autotune::{EquivalentTorqueTargetInterval, EquivalentTorqueTargetQ16};
-use foci_tmc4671::pid::PidGain;
+use foci_tmc4671::pid::PidPGain;
 
 use super::operating_region::{BoundRounding, CompactSignedRate, PooledDisturbanceAccumulator};
 use super::recovery::commanded_side_lower_rate_q;
@@ -119,7 +119,7 @@ pub struct VelocityObservationInput {
     /// Commanded mechanical direction.
     pub direction: VelocityDirection,
     /// Velocity proportional gain used for the observation.
-    pub p: PidGain,
+    pub p: PidPGain,
     /// Target-independent stationary-suffix result.
     pub stationarity: StationarityResult,
     /// Inclusive lower settled-rate confidence edge.
@@ -195,7 +195,7 @@ pub struct VelocityObservationSummary {
     /// Commanded direction.
     pub direction: VelocityDirection,
     /// Gain used for the observation.
-    pub p: PidGain,
+    pub p: PidPGain,
     /// Observation-level classification.
     pub classification: VelocityObservationClass,
     /// Settled-rate confidence interval.
@@ -502,7 +502,7 @@ const _: () = assert!(core::mem::size_of::<DirectionalObservationSet>() <= 68);
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub struct CompactDirectionalRungReport {
     /// Gain shared by the four observations.
-    pub p: PidGain,
+    pub p: PidPGain,
     /// Depth-three consensus classification.
     pub classification: DirectionalConsensusClass,
     /// Zero, one, or two exact consensus components.
@@ -595,7 +595,7 @@ pub struct VelocityRungVerdict {
     /// Direction shared by both observations.
     pub direction: VelocityDirection,
     /// Gain shared by both observations.
-    pub p: PidGain,
+    pub p: PidPGain,
     /// Pair-level classification.
     pub classification: VelocityRungClass,
     /// Intersection of corrected observation intervals when reproduced.
@@ -768,7 +768,7 @@ pub fn reproduce_velocity_rung(
 pub fn analyze_directional_rung(
     collected: &CollectedRungEvidence,
     direction: VelocityDirection,
-    p: PidGain,
+    p: PidPGain,
     target_rpm: i32,
     counts_per_rev: u32,
 ) -> Result<DirectionalRungAnalysis, VelocityEvidenceError> {
@@ -786,11 +786,11 @@ pub fn analyze_directional_rung(
 pub(crate) fn directional_recovery_lower_rate_q(
     set: DirectionalObservationSet,
     direction: VelocityDirection,
-    p: PidGain,
+    p: PidPGain,
     target_rpm: i32,
     counts_per_rev: u32,
 ) -> Result<Option<CompactSignedRate>, VelocityEvidenceError> {
-    if p == PidGain::ZERO || target_rpm <= 0 || counts_per_rev == 0 {
+    if p == PidPGain::ZERO || target_rpm <= 0 || counts_per_rev == 0 {
         return Err(VelocityEvidenceError::Arithmetic);
     }
     let signed_target_rpm = match direction {
@@ -834,11 +834,11 @@ pub(crate) fn directional_recovery_lower_rate_q(
 pub fn analyze_directional_set(
     set: DirectionalObservationSet,
     direction: VelocityDirection,
-    p: PidGain,
+    p: PidPGain,
     target_rpm: i32,
     counts_per_rev: u32,
 ) -> Result<DirectionalRungAnalysis, VelocityEvidenceError> {
-    if p == PidGain::ZERO || counts_per_rev == 0 || target_rpm == 0 {
+    if p == PidPGain::ZERO || counts_per_rev == 0 || target_rpm == 0 {
         return Err(VelocityEvidenceError::Arithmetic);
     }
     let classes = core::array::from_fn(|index| {
@@ -1148,17 +1148,17 @@ pub struct DirectionalDisturbanceBand {
     /// Signed direction represented by this band.
     pub direction: VelocityDirection,
     /// Last confirmed inert gain below the moving edge.
-    pub last_inert: Option<PidGain>,
+    pub last_inert: Option<PidPGain>,
     /// First gain with reproduced commanded-side motion.
-    pub first_moving: Option<PidGain>,
+    pub first_moving: Option<PidPGain>,
     /// Ambiguous gain observed around the lower edge.
-    pub ambiguous_edge: Option<PidGain>,
+    pub ambiguous_edge: Option<PidPGain>,
     /// Whether the first structural gain already moved.
     pub left_censored: bool,
     /// First D_eq-eligible gain.
-    pub p_low: Option<PidGain>,
+    pub p_low: Option<PidPGain>,
     /// Last contiguous D_eq-eligible gain.
-    pub p_high: Option<PidGain>,
+    pub p_high: Option<PidPGain>,
     /// Condition that closed the band.
     pub closure: BandClosure,
     /// Common interval compatible with every included rung.
@@ -1177,13 +1177,13 @@ pub struct DirectionalDisturbanceBand {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub struct JointIdentifiableGeometry {
     /// Lower jointly-identifiable gain when bands overlap.
-    pub low: Option<PidGain>,
+    pub low: Option<PidPGain>,
     /// Upper jointly-identifiable gain when bands overlap.
-    pub high: Option<PidGain>,
+    pub high: Option<PidPGain>,
     /// Lower edge of the gap when bands do not overlap.
-    pub gap_low: Option<PidGain>,
+    pub gap_low: Option<PidPGain>,
     /// Upper edge of the gap when bands do not overlap.
-    pub gap_high: Option<PidGain>,
+    pub gap_high: Option<PidPGain>,
     /// Whether a shared identifiable P exists.
     pub has_joint_band: bool,
 }
@@ -1449,7 +1449,7 @@ mod tests {
         StructuredStationarityEvidence, VelocityDirection,
     };
     use crate::autotune::{EquivalentTorqueTargetInterval, EquivalentTorqueTargetQ16};
-    use foci_tmc4671::pid::PidGain;
+    use foci_tmc4671::pid::PidPGain;
 
     fn stationary() -> StationarityResult {
         StationarityResult::Usable(StationarySuffix {
@@ -1520,7 +1520,7 @@ mod tests {
             };
         VelocityObservationInput {
             direction,
-            p: PidGain::new(350).unwrap(),
+            p: PidPGain::new(350).unwrap(),
             stationarity: stationary(),
             settled_rate_low_q,
             settled_rate_high_q,
@@ -1719,7 +1719,7 @@ mod tests {
 
     #[test]
     fn sweep_recovery_rate_uses_intrinsic_observations_before_consensus() {
-        let p = PidGain::new(350).unwrap();
+        let p = PidPGain::new(350).unwrap();
         let mut collected = CollectedRungEvidence::new();
         for (observation, bounds) in [[90, 110], [190, 210], [290, 310], [390, 410]]
             .into_iter()
@@ -1758,7 +1758,7 @@ mod tests {
 
     #[test]
     fn sweep_recovery_rate_rejects_non_authoritative_observation_classes() {
-        let p = PidGain::new(350).unwrap();
+        let p = PidPGain::new(350).unwrap();
         let mut collected = CollectedRungEvidence::new();
         for (observation, class) in [
             VelocityObservationClass::Inert,

@@ -2,7 +2,7 @@ use crate::autotune::velocity_measurement::{
     PlateauSelection, RateBlock, StationarityExclusion, StationarityResult, StationarySuffix,
     VelocityDirection,
 };
-use foci_tmc4671::pid::PidGain;
+use foci_tmc4671::pid::PidPGain;
 
 use super::integral_evidence::{
     ExactRateInterval, IntegralInconclusiveKind, IntegralObservationClass, IntegralRunEvidence,
@@ -42,7 +42,7 @@ fn summary(
 ) -> VelocityObservationSummary {
     VelocityObservationSummary {
         direction,
-        p: PidGain::new(1_448).unwrap(),
+        p: PidPGain::new(1_448).unwrap(),
         classification,
         settled_rate_interval_q: match direction {
             VelocityDirection::Forward => [10, 20],
@@ -81,7 +81,7 @@ fn interval(low_q: i32, high_q: i32) -> ExactRateInterval {
 fn intrinsic_stage_c_classification_never_requires_disturbance() {
     let input = VelocityObservationInput {
         direction: VelocityDirection::Forward,
-        p: PidGain::new(1_448).unwrap(),
+        p: PidPGain::new(1_448).unwrap(),
         stationarity: stationary(),
         settled_rate_low_q: 10,
         settled_rate_high_q: 20,

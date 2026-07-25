@@ -19,7 +19,7 @@
 
 use ankyra::prelude::klipper_command;
 use core::sync::atomic::Ordering;
-use foci_tmc4671::pid::PidGain;
+use foci_tmc4671::pid::{PidIGain, PidPGain};
 
 use crate::context::{ShutdownRecovery, TmcHost};
 use crate::shutdown::ShutdownReason;
@@ -174,10 +174,10 @@ pub fn tmc_set_pid_gains(
         return;
     };
     let (Ok(flux_p), Ok(flux_i), Ok(torque_p), Ok(torque_i)) = (
-        PidGain::new(flux_p),
-        PidGain::new(flux_i),
-        PidGain::new(torque_p),
-        PidGain::new(torque_i),
+        PidPGain::new(flux_p),
+        PidIGain::new(flux_i),
+        PidPGain::new(torque_p),
+        PidIGain::new(torque_i),
     ) else {
         shutdown_request_validation(ctx);
         return;
@@ -272,10 +272,10 @@ pub fn tmc_set_position_gains(
         return;
     };
     let (Ok(position_p), Ok(position_i), Ok(velocity_p), Ok(velocity_i)) = (
-        PidGain::new(position_p),
-        PidGain::new(position_i),
-        PidGain::new(velocity_p),
-        PidGain::new(velocity_i),
+        PidPGain::new(position_p),
+        PidIGain::new(position_i),
+        PidPGain::new(velocity_p),
+        PidIGain::new(velocity_i),
     ) else {
         shutdown_request_validation(ctx);
         return;

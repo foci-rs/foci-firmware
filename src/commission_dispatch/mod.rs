@@ -409,13 +409,13 @@ fn validate_outer_gains(
     velocity_p: u16,
     velocity_i: u16,
 ) -> Result<OuterLoopGains, foci_tmc4671::pid::PidGainOutOfRange> {
-    use foci_tmc4671::pid::PidGain;
+    use foci_tmc4671::pid::{PidIGain, PidPGain};
 
     Ok(OuterLoopGains {
-        position_p: PidGain::new(position_p)?,
-        position_i: PidGain::new(position_i)?,
-        velocity_p: PidGain::new(velocity_p)?,
-        velocity_i: PidGain::new(velocity_i)?,
+        position_p: PidPGain::new(position_p)?,
+        position_i: PidIGain::new(position_i)?,
+        velocity_p: PidPGain::new(velocity_p)?,
+        velocity_i: PidIGain::new(velocity_i)?,
     })
 }
 
@@ -894,13 +894,13 @@ pub async fn drive_commission_result<B: CommissioningBackend>(
             // Publish the completed result only after terminal restore and
             // sentinel verification have both succeeded.
             *state.stored_gains = Some(crate::pid::InnerLoopGains {
-                flux_p: foci_tmc4671::pid::PidGain::new(inner.flux_p)
+                flux_p: foci_tmc4671::pid::PidPGain::new(inner.flux_p)
                     .expect("commissioned flux P must be valid"),
-                flux_i: foci_tmc4671::pid::PidGain::new(inner.flux_i)
+                flux_i: foci_tmc4671::pid::PidIGain::new(inner.flux_i)
                     .expect("commissioned flux I must be valid"),
-                torque_p: foci_tmc4671::pid::PidGain::new(inner.torque_p)
+                torque_p: foci_tmc4671::pid::PidPGain::new(inner.torque_p)
                     .expect("commissioned torque P must be valid"),
-                torque_i: foci_tmc4671::pid::PidGain::new(inner.torque_i)
+                torque_i: foci_tmc4671::pid::PidIGain::new(inner.torque_i)
                     .expect("commissioned torque I must be valid"),
             });
             state.tmc.store_outer_gains(fallback_outer_gains, Relaxed);

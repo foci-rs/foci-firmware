@@ -49,6 +49,7 @@ use crate::trace::events::{
     EVENT_COMMISSION_OUTER_SAFETY_TIMING, EVENT_COMMISSION_RUNG_ORIGIN_RECOVERY,
     EVENT_COMMISSION_VELOCITY_INTEGRAL_COMPLETE, EVENT_COMMISSION_VELOCITY_INTEGRAL_TERMINAL,
 };
+use foci_tmc4671::pid::{PidIGain, PidPGain};
 
 // Re-export public API surface for downstream consumers.
 pub use crate::commissioning::backend::{
@@ -110,13 +111,13 @@ pub struct OuterTuneParams {
 #[derive(Debug, Clone, Copy, defmt::Format)]
 pub struct EntrySnapshot {
     /// Velocity P gain (Q8.8).
-    pub velocity_p: u16,
-    /// Velocity I gain (Q8.8).
-    pub velocity_i: u16,
+    pub velocity_p: PidPGain,
+    /// Velocity I gain (Q4.12).
+    pub velocity_i: PidIGain,
     /// Position P gain (Q8.8).
-    pub position_p: u16,
-    /// Position I gain (Q8.8).
-    pub position_i: u16,
+    pub position_p: PidPGain,
+    /// Position I gain (Q4.12).
+    pub position_i: PidIGain,
     /// PID velocity limit register value.
     pub velocity_limit: u32,
     /// PIDOUT_UQ_UD_LIMITS operational value.
@@ -1543,10 +1544,10 @@ mod tests {
 
     fn sample_entry_snapshot() -> EntrySnapshot {
         EntrySnapshot {
-            velocity_p: 1152,
-            velocity_i: 0,
-            position_p: 640,
-            position_i: 0,
+            velocity_p: crate::pid::p_gain(1152),
+            velocity_i: crate::pid::i_gain(0),
+            position_p: crate::pid::p_gain(640),
+            position_i: crate::pid::i_gain(0),
             velocity_limit: 500_000,
             voltage_limit: crate::state::tmc::DEFAULT_OPERATIONAL_PIDOUT_UQ_UD_LIMIT,
             velocity_filter_hz: 0,
@@ -1705,14 +1706,14 @@ mod tests {
             };
             *phase = InnerPhase::ClosedLoopEntry {
                 state: crate::autotune::ClosedLoopEntryState::WriteGains,
-                flux_p: 100,
-                flux_i: 10,
-                torque_p: 200,
-                torque_i: 20,
-                velocity_p: 1_152,
-                velocity_i: 0,
-                position_p: 640,
-                position_i: 0,
+                flux_p: crate::pid::p_gain(100),
+                flux_i: crate::pid::i_gain(10),
+                torque_p: crate::pid::p_gain(200),
+                torque_i: crate::pid::i_gain(20),
+                velocity_p: crate::pid::p_gain(1_152),
+                velocity_i: crate::pid::i_gain(0),
+                position_p: crate::pid::p_gain(640),
+                position_i: crate::pid::i_gain(0),
                 velocity_limit: 500_000,
                 velocity_filter_hz: 0,
                 torque_filter_hz: 0,
@@ -1914,10 +1915,10 @@ mod tests {
             tmc_state.flux_filter_hz.store(Some(19), Relaxed);
 
             let inner = crate::pid::InnerLoopGains {
-                flux_p: crate::pid::test_gain(711),
-                flux_i: crate::pid::test_gain(159),
-                torque_p: crate::pid::test_gain(711),
-                torque_i: crate::pid::test_gain(159),
+                flux_p: crate::pid::p_gain(711),
+                flux_i: crate::pid::i_gain(2_544),
+                torque_p: crate::pid::p_gain(711),
+                torque_i: crate::pid::i_gain(2_544),
             };
 
             let engine =

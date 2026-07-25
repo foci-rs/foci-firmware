@@ -10,7 +10,7 @@ use super::{
     travel_cap,
 };
 use crate::autotune::TmcMechanicalRpm;
-use foci_tmc4671::pid::PidGain;
+use foci_tmc4671::pid::PidPGain;
 
 fn request() -> VelocitySweepRequest {
     VelocitySweepRequest {
@@ -305,7 +305,7 @@ fn observation_count_changes_the_plan_digest() {
 #[test]
 fn compact_execution_plan_regenerates_every_emitted_gain() {
     for p_start in 1_u16..=64 {
-        for p_top in p_start..=p_start.saturating_mul(32).min(PidGain::MAX.raw()) {
+        for p_top in p_start..=p_start.saturating_mul(32).min(PidPGain::MAX.raw()) {
             let Ok(ladder) = build_gain_ladder(p_start, p_top) else {
                 continue;
             };

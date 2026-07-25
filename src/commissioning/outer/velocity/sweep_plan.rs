@@ -1,6 +1,6 @@
 use crate::autotune::TmcMechanicalRpm;
 use foci_tmc4671::current_limit::PidTorqueFluxLimit;
-use foci_tmc4671::pid::PidGain;
+use foci_tmc4671::pid::PidPGain;
 use heapless::Vec;
 
 use super::current_guard::{VelocityLimitEvidenceCapability, derive_probe_limit};
@@ -110,11 +110,11 @@ pub struct VelocitySweepPlan {
     /// Frozen positive TMC velocity-target register magnitude.
     pub target_velocity_rpm: TmcMechanicalRpm,
     /// Smallest gain producing one nonzero controller-output quantum.
-    pub p_start: PidGain,
+    pub p_start: PidPGain,
     /// Largest gain at the inclusive usable-current boundary.
-    pub p_top: PidGain,
+    pub p_top: PidPGain,
     /// Post-dedupe anchored half-octave gains; unused entries are zero.
-    pub gains: [PidGain; MAX_SWEEP_RUNGS],
+    pub gains: [PidPGain; MAX_SWEEP_RUNGS],
     /// Number of valid entries in `gains`.
     pub rung_count: u8,
     /// Independent observations planned in each direction per rung.
@@ -161,9 +161,9 @@ pub struct VelocitySweepExecutionPlan {
     /// Frozen positive TMC mechanical-RPM target.
     pub target_velocity_rpm: TmcMechanicalRpm,
     /// Structural ladder anchor.
-    pub p_start: PidGain,
+    pub p_start: PidPGain,
     /// Explicit structural ladder top.
-    pub p_top: PidGain,
+    pub p_top: PidPGain,
     /// Number of post-dedupe rungs.
     pub rung_count: u8,
     /// Independent observations per direction and rung.
@@ -182,8 +182,8 @@ impl VelocitySweepExecutionPlan {
         plan_digest: 0,
         planned_velocity_mrev_s: 0,
         target_velocity_rpm: TmcMechanicalRpm::from_register(0),
-        p_start: PidGain::ZERO,
-        p_top: PidGain::ZERO,
+        p_start: PidPGain::ZERO,
+        p_top: PidPGain::ZERO,
         rung_count: 0,
         observations_per_direction: 0,
         hard_torque_limit: 0,
@@ -197,7 +197,7 @@ impl VelocitySweepExecutionPlan {
     }
 
     /// Regenerate one exact post-dedupe gain without retaining the ladder array.
-    pub fn gain_at(self, rung_index: u8) -> Option<PidGain> {
+    pub fn gain_at(self, rung_index: u8) -> Option<PidPGain> {
         gain_at(
             self.p_start.raw(),
             self.p_top.raw(),
@@ -226,7 +226,7 @@ impl VelocitySweepExecutionPlan {
             .checked_mul(u32::from(self.usable_torque_limit))
             .ok_or(VelocityPlanError::Arithmetic)?
             / target;
-        Ok(unbounded_current_p_top <= u32::from(PidGain::MAX.raw()))
+        Ok(unbounded_current_p_top <= u32::from(PidPGain::MAX.raw()))
     }
 }
 
@@ -465,7 +465,7 @@ pub fn plan_velocity_sweep(
         .ok_or(VelocityPlanError::Arithmetic)?;
     let nominal_workflow_ms = nominal_workflow_us.div_ceil(1_000);
     let maximum_workflow_ms = maximum_workflow_us.div_ceil(1_000);
-    let mut gains = [PidGain::ZERO; MAX_SWEEP_RUNGS];
+    let mut gains = [PidPGain::ZERO; MAX_SWEEP_RUNGS];
     gains[..ladder.len()].copy_from_slice(ladder.as_slice());
 
     let limit_evidence_capability = match limit_evidence_capability {
@@ -576,7 +576,7 @@ fn representability_ceilings(
 fn current_gain_span(
     target_velocity_rpm: TmcMechanicalRpm,
     hard_torque_limit: u16,
-) -> Result<(PidGain, PidGain, u16), VelocityPlanError> {
+) -> Result<(PidPGain, PidPGain, u16), VelocityPlanError> {
     let target = target_velocity_rpm.raw().unsigned_abs();
     if target == 0 {
         return Err(VelocityPlanError::InvalidRequest);
@@ -593,13 +593,13 @@ fn current_gain_span(
         .checked_mul(usable)
         .ok_or(VelocityPlanError::Arithmetic)?
         / target;
-    let p_top_raw = p_top_raw.min(u32::from(PidGain::MAX.raw()));
-    if p_start_raw > p_top_raw || p_start_raw > u32::from(PidGain::MAX.raw()) {
+    let p_top_raw = p_top_raw.min(u32::from(PidPGain::MAX.raw()));
+    if p_start_raw > p_top_raw || p_start_raw > u32::from(PidPGain::MAX.raw()) {
         return Err(VelocityPlanError::InsufficientStructuralSpan);
     }
-    let p_start = PidGain::new(p_start_raw as u16)
+    let p_start = PidPGain::new(p_start_raw as u16)
         .map_err(|_| VelocityPlanError::InsufficientStructuralSpan)?;
-    let p_top = PidGain::new(p_top_raw as u16)
+    let p_top = PidPGain::new(p_top_raw as u16)
         .map_err(|_| VelocityPlanError::InsufficientStructuralSpan)?;
     Ok((p_start, p_top, usable as u16))
 }
@@ -607,8 +607,8 @@ fn current_gain_span(
 fn build_gain_ladder(
     p_start_raw: u16,
     p_top_raw: u16,
-) -> Result<Vec<PidGain, MAX_SWEEP_RUNGS>, VelocityPlanError> {
-    if p_start_raw == 0 || p_start_raw > p_top_raw || p_top_raw > PidGain::MAX.raw() {
+) -> Result<Vec<PidPGain, MAX_SWEEP_RUNGS>, VelocityPlanError> {
+    if p_start_raw == 0 || p_start_raw > p_top_raw || p_top_raw > PidPGain::MAX.raw() {
         return Err(VelocityPlanError::InsufficientStructuralSpan);
     }
     let start = u64::from(p_start_raw);
@@ -635,7 +635,7 @@ fn build_gain_ladder(
             if candidate > top || candidate <= previous {
                 continue;
             }
-            let gain = PidGain::new(candidate as u16)
+            let gain = PidPGain::new(candidate as u16)
                 .map_err(|_| VelocityPlanError::InsufficientStructuralSpan)?;
             gains
                 .push(gain)
@@ -645,7 +645,7 @@ fn build_gain_ladder(
     }
     if previous != top {
         let top_gain =
-            PidGain::new(p_top_raw).map_err(|_| VelocityPlanError::InsufficientStructuralSpan)?;
+            PidPGain::new(p_top_raw).map_err(|_| VelocityPlanError::InsufficientStructuralSpan)?;
         gains
             .push(top_gain)
             .map_err(|_| VelocityPlanError::ConfidenceFamilyTooLarge)?;
@@ -667,11 +667,11 @@ pub fn gain_at(
     p_top_raw: u16,
     rung_count: u8,
     rung_index: u8,
-) -> Option<PidGain> {
+) -> Option<PidPGain> {
     if rung_index >= rung_count
         || p_start_raw == 0
         || p_start_raw > p_top_raw
-        || p_top_raw > PidGain::MAX.raw()
+        || p_top_raw > PidPGain::MAX.raw()
     {
         return None;
     }
@@ -697,14 +697,14 @@ pub fn gain_at(
                 continue;
             }
             if emitted == rung_index {
-                return PidGain::new(candidate as u16).ok();
+                return PidPGain::new(candidate as u16).ok();
             }
             previous = candidate;
             emitted = emitted.checked_add(1)?;
         }
     }
     if previous != top && emitted == rung_index {
-        PidGain::new(p_top_raw).ok()
+        PidPGain::new(p_top_raw).ok()
     } else {
         None
     }

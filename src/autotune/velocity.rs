@@ -2,20 +2,19 @@ use super::{
     CommissionProfile, MechanicalModel, OperatingMode, Permille, TransientBuffer,
     VELOCITY_SIMC_MAX_P_REG, ValidationResult, VelocityGains, metrics,
 };
-use foci_tmc4671::pid::PidGain;
+use foci_tmc4671::pid::{PidIGain, PidPGain};
 
-const VELOCITY_ADVANCED_PI_I_ZERO_SCALE: f32 = 65_536.0;
+use super::integral_gain::{ADVANCED_PI_I_Q4_12_NUMERATOR, synthesize_i_gain};
 
-fn pid_gain_from_float(value: f32) -> Option<PidGain> {
-    if !value.is_finite() || value > PidGain::MAX.raw() as f32 {
+fn pid_gain_from_float(value: f32) -> Option<PidPGain> {
+    if !value.is_finite() || value > PidPGain::MAX.raw() as f32 {
         return None;
     }
-    PidGain::new(value.max(1.0) as u16).ok()
+    PidPGain::new(value.max(1.0) as u16).ok()
 }
 
-fn advanced_pi_velocity_i_gain(ti_us: f32, f_pwm_hz: u32) -> Option<PidGain> {
-    let ti_s = ti_us * 1e-6;
-    pid_gain_from_float(VELOCITY_ADVANCED_PI_I_ZERO_SCALE / (ti_s * f_pwm_hz as f32))
+fn advanced_pi_velocity_i_gain(ti_us: u64, f_pwm_hz: u32) -> Option<PidIGain> {
+    synthesize_i_gain(ADVANCED_PI_I_Q4_12_NUMERATOR, ti_us, f_pwm_hz).ok()
 }
 
 /// Metrics from a velocity-loop step-response validation test (Phase 10).
@@ -250,14 +249,15 @@ pub(crate) fn simc_velocity_gains_with_lambda_multiplier(
 
     let kp_cpms = tau / (k * (lambda + theta));
     let kp = kp_cpms / tmc_velocity_units_per_cpms;
-    let ti = {
-        let candidate = 4.0 * (lambda + theta);
-        if tau < candidate { tau } else { candidate }
-    };
+    let ti_us = u64::from(tau_mech_us).min(
+        u64::from(lambda_us)
+            .checked_add(u64::from(model.theta_mech_us))?
+            .checked_mul(4)?,
+    );
 
-    // In advanced-PI mode, the integral zero is I_raw / 65536 per PWM sample.
+    // In the fixed advanced-PI mode, the integral field is unsigned Q4.12.
     let p_reg = pid_gain_from_float(kp * 256.0)?;
-    let i_reg = advanced_pi_velocity_i_gain(ti, f_pwm_hz)?;
+    let i_reg = advanced_pi_velocity_i_gain(ti_us, f_pwm_hz)?;
 
     // Effective bandwidth = 1 / (2*pi*(lambda+theta)) in Hz.
     let bw_hz = 1_000_000.0 / (2.0 * core::f32::consts::PI * (lambda + theta));
@@ -503,7 +503,7 @@ mod tests {
 
     #[test]
     fn gain_conversion_accepts_maximum_and_rejects_first_negative_encoding() {
-        assert_eq!(pid_gain_from_float(32_767.0), Some(PidGain::MAX));
+        assert_eq!(pid_gain_from_float(32_767.0), Some(PidPGain::MAX));
         assert_eq!(pid_gain_from_float(32_768.0), None);
     }
 
@@ -681,11 +681,11 @@ mod tests {
             &config,
         );
         let gains = gains.expect("gains should be Some for valid model");
-        let _: PidGain = gains.velocity_p;
+        let _: PidPGain = gains.velocity_p;
         assert!(gains.velocity_p.raw() > 0, "velocity_p must be nonzero");
         assert!(gains.velocity_i.raw() > 0, "velocity_i must be nonzero");
-        assert!(gains.velocity_p.raw() <= PidGain::MAX.raw());
-        assert!(gains.velocity_i.raw() <= PidGain::MAX.raw());
+        assert!(gains.velocity_p.raw() <= PidPGain::MAX.raw());
+        assert!(gains.velocity_i.raw() <= PidPGain::MAX.raw());
         assert_eq!(gains.velocity_limit, 800, "80% of peak=1000");
         assert!(gains.effective_bandwidth_hz > 0);
         assert!(gains.lambda_vel_ms > 0);
@@ -694,16 +694,16 @@ mod tests {
     #[test]
     fn advanced_pi_velocity_i_matches_ti_pwm_matrix() {
         let cases = [
-            (10_000.0, 25_000, 262),
-            (20_000.0, 25_000, 131),
-            (10_000.0, 50_000, 131),
-            (4_000.0, 100_000, 163),
+            (10_000, 25_000, 4_194),
+            (20_000, 25_000, 2_097),
+            (10_000, 50_000, 2_097),
+            (4_000, 100_000, 2_621),
         ];
 
         for (ti_us, f_pwm_hz, expected) in cases {
             assert_eq!(
                 advanced_pi_velocity_i_gain(ti_us, f_pwm_hz),
-                Some(crate::pid::test_gain(expected)),
+                Some(crate::pid::i_gain(expected)),
                 "Ti={ti_us}us fPWM={f_pwm_hz}Hz"
             );
         }
@@ -711,11 +711,11 @@ mod tests {
 
     #[test]
     fn advanced_pi_velocity_i_reconstructs_requested_zero() {
-        for (ti_us, f_pwm_hz) in [(4_000.0, 25_000), (10_000.0, 25_000), (20_000.0, 50_000)] {
+        for (ti_us, f_pwm_hz) in [(4_000, 25_000), (10_000, 25_000), (20_000, 50_000)] {
             let i_raw = advanced_pi_velocity_i_gain(ti_us, f_pwm_hz).unwrap();
-            let reconstructed_hz = i_raw.raw() as f32 * f_pwm_hz as f32 / 65_536.0;
-            let requested_hz = 1_000_000.0 / ti_us;
-            let one_count_hz = f_pwm_hz as f32 / 65_536.0;
+            let reconstructed_hz = i_raw.raw() as f32 * f_pwm_hz as f32 / 1_048_576.0;
+            let requested_hz = 1_000_000.0 / ti_us as f32;
+            let one_count_hz = f_pwm_hz as f32 / 1_048_576.0;
 
             assert!((requested_hz - reconstructed_hz).abs() <= one_count_hz);
         }
@@ -761,7 +761,7 @@ mod tests {
 
         assert_ne!(low.velocity_p, high.velocity_p);
         assert_eq!(low.velocity_i, high.velocity_i);
-        assert_eq!(high.velocity_i.raw(), 262);
+        assert_eq!(high.velocity_i.raw(), 4_194);
     }
 
     #[test]
@@ -788,7 +788,7 @@ mod tests {
         .expect("non-divisible encoder scale should synthesize gains");
 
         assert_eq!(gains.velocity_p.raw(), 976);
-        assert_eq!(gains.velocity_i.raw(), 163);
+        assert_eq!(gains.velocity_i.raw(), 2_621);
     }
 
     #[test]

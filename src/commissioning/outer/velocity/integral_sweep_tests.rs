@@ -21,7 +21,7 @@ use crate::commissioning::outer::{
     OuterMotionBudget, OuterPhase, OuterSafetyLimits, VelocityIntegralData, VelocityIntegralState,
 };
 use crate::commissioning::types::{StepResult, VelocityIntegralEvent, VelocityIntegralOutcome};
-use foci_tmc4671::pid::{PidGain, PidGainPair};
+use foci_tmc4671::pid::{PidGainPair, PidIGain, PidPGain};
 use foci_tmc4671::registers::{PID_VELOCITY_P_VELOCITY_I, PID_VELOCITY_TARGET};
 
 fn plan() -> VelocityIntegralExecutionPlan {
@@ -187,7 +187,7 @@ fn integral_recovery_follows_the_emitted_opening_anchor_and_restores_i_ladder_or
     assert!(backend.spi_log.iter().any(|operation| {
         matches!(operation, SpiOp::Write(address, value)
             if *address == PID_VELOCITY_P_VELOCITY_I.addr()
-                && *value == PidGainPair::new_legacy(PidGain::new(1_448).unwrap(), PidGain::ZERO)
+                && *value == PidGainPair::new(PidPGain::new(1_448).unwrap(), PidIGain::ZERO)
                     .register_value())
     }));
 }
@@ -373,7 +373,7 @@ fn setup_and_first_command_preserve_plan_before_motion_and_clear_integrator() {
     assert!(backend.spi_log.iter().any(|operation| {
         matches!(operation, SpiOp::Write(address, value)
             if *address == PID_VELOCITY_P_VELOCITY_I.addr()
-                && *value == PidGainPair::new_legacy(PidGain::new(1_448).unwrap(), PidGain::ZERO)
+                && *value == PidGainPair::new(PidPGain::new(1_448).unwrap(), PidIGain::ZERO)
                     .register_value())
     }));
 

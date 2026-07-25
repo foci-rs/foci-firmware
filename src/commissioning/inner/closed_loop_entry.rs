@@ -20,7 +20,7 @@ use crate::commissioning::types::{
     StepResult,
 };
 use crate::tmc::{decode_signed_lower_half, decode_signed_upper_half};
-use foci_tmc4671::pid::PidGain;
+use foci_tmc4671::pid::{PidIGain, PidPGain};
 
 const CLOSED_LOOP_VELOCITY_SELECTION: u32 = 0x0000_0109;
 // phi_m_abn selects the mechanical ABN angle directly; no pole-pair scaling applies.
@@ -35,25 +35,13 @@ const CLOSED_LOOP_ENTRY_RUNAWAY_THRESHOLD: u32 = 32760; // ~40 steps
 #[allow(dead_code)]
 pub(super) const CLOSED_LOOP_ENTRY_MAX_REGISTER_OPS_PER_ARM: usize = 48;
 
-fn validated_gain_registers(
-    inner_raw: [u16; 4],
-    outer_raw: [u16; 4],
-) -> Result<(u32, u32, u32, u32), ()> {
-    let inner = crate::pid::InnerLoopGains {
-        flux_p: PidGain::new(inner_raw[0]).map_err(|_| ())?,
-        flux_i: PidGain::new(inner_raw[1]).map_err(|_| ())?,
-        torque_p: PidGain::new(inner_raw[2]).map_err(|_| ())?,
-        torque_i: PidGain::new(inner_raw[3]).map_err(|_| ())?,
-    };
-    let outer = crate::pid::OuterLoopGains {
-        position_p: PidGain::new(outer_raw[0]).map_err(|_| ())?,
-        position_i: PidGain::new(outer_raw[1]).map_err(|_| ())?,
-        velocity_p: PidGain::new(outer_raw[2]).map_err(|_| ())?,
-        velocity_i: PidGain::new(outer_raw[3]).map_err(|_| ())?,
-    };
+fn gain_registers(
+    inner: crate::pid::InnerLoopGains,
+    outer: crate::pid::OuterLoopGains,
+) -> (u32, u32, u32, u32) {
     let (flux_reg, torque_reg) = inner.to_registers();
     let (velocity_reg, position_reg) = outer.to_registers();
-    Ok((flux_reg, torque_reg, velocity_reg, position_reg))
+    (flux_reg, torque_reg, velocity_reg, position_reg)
 }
 
 async fn verify_closed_loop_armed_state<B: CommissioningBackend>(
@@ -148,10 +136,10 @@ fn copy_hold_metrics(inner: &mut InnerResult, metrics: HoldGateMetrics) {
 )]
 fn finish_commission(
     inner: InnerResult,
-    velocity_p: u16,
-    velocity_i: u16,
-    position_p: u16,
-    position_i: u16,
+    velocity_p: PidPGain,
+    velocity_i: PidIGain,
+    position_p: PidPGain,
+    position_i: PidIGain,
     velocity_limit: u32,
     velocity_filter_hz: u16,
     torque_filter_hz: u16,
@@ -160,10 +148,10 @@ fn finish_commission(
 ) -> StepResult {
     StepResult::CommissionDone(CommissionResult {
         inner,
-        fallback_velocity_p: velocity_p,
-        fallback_velocity_i: velocity_i,
-        fallback_position_p: position_p,
-        fallback_position_i: position_i,
+        fallback_velocity_p: velocity_p.raw(),
+        fallback_velocity_i: velocity_i.raw(),
+        fallback_position_p: position_p.raw(),
+        fallback_position_i: position_i.raw(),
         fallback_velocity_limit: velocity_limit,
         velocity_filter_hz,
         torque_filter_hz,
@@ -180,10 +168,10 @@ async fn fail_sustained_hold<B: CommissioningBackend>(
     mut inner: InnerResult,
     backend: &mut B,
     failure_reason: u8,
-    velocity_p: u16,
-    velocity_i: u16,
-    position_p: u16,
-    position_i: u16,
+    velocity_p: PidPGain,
+    velocity_i: PidIGain,
+    position_p: PidPGain,
+    position_i: PidIGain,
     velocity_limit: u32,
     velocity_filter_hz: u16,
     torque_filter_hz: u16,
@@ -235,10 +223,10 @@ async fn fail_closed_loop_entry<B: CommissioningBackend>(
     position_2: i32,
     drift: u32,
     runaway: bool,
-    velocity_p: u16,
-    velocity_i: u16,
-    position_p: u16,
-    position_i: u16,
+    velocity_p: PidPGain,
+    velocity_i: PidIGain,
+    position_p: PidPGain,
+    position_i: PidIGain,
     velocity_limit: u32,
     velocity_filter_hz: u16,
     torque_filter_hz: u16,
@@ -336,15 +324,20 @@ pub(crate) async fn step_closed_loop_entry<B: CommissioningBackend>(
 
     match cle_state {
         ClosedLoopEntryState::WriteGains => {
-            let (flux_reg, torque_reg, velocity_reg, position_reg) = match validated_gain_registers(
-                [flux_p, flux_i, torque_p, torque_i],
-                [position_p, position_i, velocity_p, velocity_i],
-            ) {
-                Ok(registers) => registers,
-                Err(()) => {
-                    return super::fail_inner(phase, CommissionError::CurrentValidationFailed);
-                }
-            };
+            let (flux_reg, torque_reg, velocity_reg, position_reg) = gain_registers(
+                crate::pid::InnerLoopGains {
+                    flux_p,
+                    flux_i,
+                    torque_p,
+                    torque_i,
+                },
+                crate::pid::OuterLoopGains {
+                    position_p,
+                    position_i,
+                    velocity_p,
+                    velocity_i,
+                },
+            );
             // 1. Flux and torque PID gains.
             if backend
                 .write_register(PID_FLUX_P_FLUX_I, flux_reg)
@@ -967,14 +960,14 @@ mod tests {
     fn closed_loop_phase_at(state: ClosedLoopEntryState) -> InnerPhase {
         InnerPhase::ClosedLoopEntry {
             state,
-            flux_p: 0,
-            flux_i: 0,
-            torque_p: 0,
-            torque_i: 0,
-            velocity_p: 0,
-            velocity_i: 0,
-            position_p: 0,
-            position_i: 0,
+            flux_p: PidPGain::ZERO,
+            flux_i: PidIGain::ZERO,
+            torque_p: PidPGain::ZERO,
+            torque_i: PidIGain::ZERO,
+            velocity_p: PidPGain::ZERO,
+            velocity_i: PidIGain::ZERO,
+            position_p: PidPGain::ZERO,
+            position_i: PidIGain::ZERO,
             velocity_limit: 500_000,
             velocity_filter_hz: 0,
             torque_filter_hz: 0,

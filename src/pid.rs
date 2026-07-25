@@ -1,49 +1,49 @@
 //! PID gain register helpers for TMC4671 control loops.
 
-use foci_tmc4671::pid::{PidGain, PidGainOutOfRange, PidGainPair};
+use foci_tmc4671::pid::{PidGainOutOfRange, PidGainPair, PidIGain, PidPGain};
 
 /// Computed PI gains for TMC4671 flux and torque controllers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub struct InnerLoopGains {
     /// Flux P gain — raw TMC4671 register value (Q8.8 format).
-    pub flux_p: PidGain,
-    /// Flux I gain — raw TMC4671 Q8.8 register value.
-    pub flux_i: PidGain,
+    pub flux_p: PidPGain,
+    /// Flux I gain — raw TMC4671 register value (Q4.12 format).
+    pub flux_i: PidIGain,
     /// Torque P gain — raw TMC4671 register value (Q8.8 format).
-    pub torque_p: PidGain,
-    /// Torque I gain — raw TMC4671 Q8.8 register value.
-    pub torque_i: PidGain,
+    pub torque_p: PidPGain,
+    /// Torque I gain — raw TMC4671 register value (Q4.12 format).
+    pub torque_i: PidIGain,
 }
 
 /// Computed PI gains for TMC4671 position and velocity outer loops.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub struct OuterLoopGains {
     /// Position P gain — raw TMC4671 register value (Q8.8 format).
-    pub position_p: PidGain,
-    /// Position I gain — raw TMC4671 register value (Q8.8 format).
-    pub position_i: PidGain,
+    pub position_p: PidPGain,
+    /// Position I gain — raw TMC4671 register value (Q4.12 format).
+    pub position_i: PidIGain,
     /// Velocity P gain — raw TMC4671 register value (Q8.8 format).
-    pub velocity_p: PidGain,
-    /// Velocity I gain — raw TMC4671 register value (Q8.8 format).
-    pub velocity_i: PidGain,
+    pub velocity_p: PidPGain,
+    /// Velocity I gain — raw TMC4671 register value (Q4.12 format).
+    pub velocity_i: PidIGain,
 }
 
 /// Conservative default gains for when no R/L data is available.
 /// These are intentionally low — stable but sluggish.
 pub const DEFAULT_INNER_GAINS: InnerLoopGains = InnerLoopGains {
-    flux_p: match PidGain::new(256) {
+    flux_p: match PidPGain::new(256) {
         Ok(gain) => gain,
         Err(_) => panic!("valid default"),
     },
-    flux_i: match PidGain::new(26) {
+    flux_i: match PidIGain::new(416) {
         Ok(gain) => gain,
         Err(_) => panic!("valid default"),
     },
-    torque_p: match PidGain::new(256) {
+    torque_p: match PidPGain::new(256) {
         Ok(gain) => gain,
         Err(_) => panic!("valid default"),
     },
-    torque_i: match PidGain::new(26) {
+    torque_i: match PidIGain::new(416) {
         Ok(gain) => gain,
         Err(_) => panic!("valid default"),
     },
@@ -51,23 +51,31 @@ pub const DEFAULT_INNER_GAINS: InnerLoopGains = InnerLoopGains {
 
 /// Conservative default gains for the position and velocity loops.
 pub const DEFAULT_OUTER_GAINS: OuterLoopGains = OuterLoopGains {
-    position_p: match PidGain::new(640) {
+    position_p: match PidPGain::new(640) {
         Ok(gain) => gain,
         Err(_) => panic!("valid default"),
     },
-    position_i: PidGain::ZERO,
-    velocity_p: match PidGain::new(1152) {
+    position_i: PidIGain::ZERO,
+    velocity_p: match PidPGain::new(1152) {
         Ok(gain) => gain,
         Err(_) => panic!("valid default"),
     },
-    velocity_i: PidGain::ZERO,
+    velocity_i: PidIGain::ZERO,
 };
 
 #[cfg(test)]
-pub(crate) const fn test_gain(raw: u16) -> PidGain {
-    match PidGain::new(raw) {
+pub(crate) const fn p_gain(raw: u16) -> PidPGain {
+    match PidPGain::new(raw) {
         Ok(gain) => gain,
-        Err(_) => panic!("test gain must be in range"),
+        Err(_) => panic!("test P gain must be in range"),
+    }
+}
+
+#[cfg(test)]
+pub(crate) const fn i_gain(raw: u16) -> PidIGain {
+    match PidIGain::new(raw) {
+        Ok(gain) => gain,
+        Err(_) => panic!("test I gain must be in range"),
     }
 }
 
@@ -79,10 +87,10 @@ pub(crate) const fn test_outer_gains(
     velocity_i: u16,
 ) -> OuterLoopGains {
     OuterLoopGains {
-        position_p: test_gain(position_p),
-        position_i: test_gain(position_i),
-        velocity_p: test_gain(velocity_p),
-        velocity_i: test_gain(velocity_i),
+        position_p: p_gain(position_p),
+        position_i: i_gain(position_i),
+        velocity_p: p_gain(velocity_p),
+        velocity_i: i_gain(velocity_i),
     }
 }
 
@@ -92,8 +100,8 @@ impl InnerLoopGains {
     /// Returns (flux_register, torque_register) ready for
     /// `PID_FLUX_P_FLUX_I` (0x54) and `PID_TORQUE_P_TORQUE_I` (0x56).
     pub fn to_registers(self) -> (u32, u32) {
-        let flux = PidGainPair::new_legacy(self.flux_p, self.flux_i).register_value();
-        let torque = PidGainPair::new_legacy(self.torque_p, self.torque_i).register_value();
+        let flux = PidGainPair::new(self.flux_p, self.flux_i).register_value();
+        let torque = PidGainPair::new(self.torque_p, self.torque_i).register_value();
         (flux, torque)
     }
 
@@ -102,10 +110,10 @@ impl InnerLoopGains {
         let flux = PidGainPair::try_from_register(flux_reg)?;
         let torque = PidGainPair::try_from_register(torque_reg)?;
         Ok(Self {
-            flux_p: PidGain::new(flux.p.raw())?,
-            flux_i: PidGain::new(flux.i.raw())?,
-            torque_p: PidGain::new(torque.p.raw())?,
-            torque_i: PidGain::new(torque.i.raw())?,
+            flux_p: PidPGain::new(flux.p.raw())?,
+            flux_i: PidIGain::new(flux.i.raw())?,
+            torque_p: PidPGain::new(torque.p.raw())?,
+            torque_i: PidIGain::new(torque.i.raw())?,
         })
     }
 }
@@ -116,8 +124,8 @@ impl OuterLoopGains {
     /// Returns `(velocity_register, position_register)` ready for
     /// `PID_VELOCITY_P_VELOCITY_I` and `PID_POSITION_P_POSITION_I`.
     pub fn to_registers(self) -> (u32, u32) {
-        let velocity = PidGainPair::new_legacy(self.velocity_p, self.velocity_i).register_value();
-        let position = PidGainPair::new_legacy(self.position_p, self.position_i).register_value();
+        let velocity = PidGainPair::new(self.velocity_p, self.velocity_i).register_value();
+        let position = PidGainPair::new(self.position_p, self.position_i).register_value();
         (velocity, position)
     }
 }
@@ -125,6 +133,24 @@ impl OuterLoopGains {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use foci_tmc4671::pid::{PidIGain, PidPGain};
+
+    #[test]
+    fn q4_12_migration_preserves_p_and_scales_i_exactly() {
+        let gains = InnerLoopGains {
+            flux_p: PidPGain::new(707).unwrap(),
+            flux_i: PidIGain::new(2_544).unwrap(),
+            torque_p: PidPGain::new(707).unwrap(),
+            torque_i: PidIGain::new(2_544).unwrap(),
+        };
+
+        let (flux_reg, torque_reg) = gains.to_registers();
+
+        assert_eq!(flux_reg, 0x02c3_09f0);
+        assert_eq!(torque_reg, 0x02c3_09f0);
+        assert_eq!(DEFAULT_INNER_GAINS.flux_i.raw(), 416);
+        assert_eq!(DEFAULT_INNER_GAINS.torque_i.raw(), 416);
+    }
 
     #[test]
     fn default_gains_are_valid() {
@@ -141,10 +167,10 @@ mod tests {
     #[test]
     fn maximum_inner_gains_round_trip() {
         let gains = InnerLoopGains {
-            flux_p: PidGain::MAX,
-            flux_i: PidGain::MAX,
-            torque_p: PidGain::MAX,
-            torque_i: PidGain::MAX,
+            flux_p: PidPGain::MAX,
+            flux_i: PidIGain::MAX,
+            torque_p: PidPGain::MAX,
+            torque_i: PidIGain::MAX,
         };
         let (flux_reg, torque_reg) = gains.to_registers();
         let restored = InnerLoopGains::from_registers(flux_reg, torque_reg).unwrap();
@@ -160,30 +186,30 @@ mod tests {
     #[test]
     fn inner_loop_gains_to_registers_places_p_in_upper_half() {
         let gains = InnerLoopGains {
-            flux_p: PidGain::new(707).unwrap(),
-            flux_i: PidGain::new(162).unwrap(),
-            torque_p: PidGain::new(707).unwrap(),
-            torque_i: PidGain::new(162).unwrap(),
+            flux_p: PidPGain::new(707).unwrap(),
+            flux_i: PidIGain::new(2_592).unwrap(),
+            torque_p: PidPGain::new(707).unwrap(),
+            torque_i: PidIGain::new(2_592).unwrap(),
         };
 
         let (flux_reg, torque_reg) = gains.to_registers();
 
-        assert_eq!(flux_reg, 0x02c3_00a2);
-        assert_eq!(torque_reg, 0x02c3_00a2);
+        assert_eq!(flux_reg, 0x02c3_0a20);
+        assert_eq!(torque_reg, 0x02c3_0a20);
     }
 
     #[test]
     fn outer_loop_gains_to_registers_places_p_in_upper_half() {
         let gains = OuterLoopGains {
-            position_p: test_gain(256),
-            position_i: test_gain(3),
-            velocity_p: test_gain(6656),
-            velocity_i: test_gain(4),
+            position_p: p_gain(256),
+            position_i: i_gain(48),
+            velocity_p: p_gain(6656),
+            velocity_i: i_gain(64),
         };
 
         let (velocity_reg, position_reg) = gains.to_registers();
 
-        assert_eq!(velocity_reg, 0x1a00_0004);
-        assert_eq!(position_reg, 0x0100_0003);
+        assert_eq!(velocity_reg, 0x1a00_0040);
+        assert_eq!(position_reg, 0x0100_0030);
     }
 }

@@ -65,8 +65,8 @@ const PID_VELOCITY_ACTUAL_TRACE_DECIMATION: u16 = 16;
 
 fn execution_gains(
     plan: VelocitySweepExecutionPlan,
-) -> [foci_tmc4671::pid::PidGain; MAX_SWEEP_RUNGS] {
-    let mut gains = [foci_tmc4671::pid::PidGain::ZERO; MAX_SWEEP_RUNGS];
+) -> [foci_tmc4671::pid::PidPGain; MAX_SWEEP_RUNGS] {
+    let mut gains = [foci_tmc4671::pid::PidPGain::ZERO; MAX_SWEEP_RUNGS];
     let mut index = 0;
     while index < plan.rung_count {
         if let Some(gain) = plan.gain_at(index) {
@@ -80,7 +80,7 @@ fn execution_gains(
 fn select_directional_recovery_authority(
     collected: &CollectedRungEvidence,
     direction: crate::autotune::velocity_measurement::VelocityDirection,
-    p: foci_tmc4671::pid::PidGain,
+    p: foci_tmc4671::pid::PidPGain,
     target_velocity_rpm: i32,
     counts_per_rev: u32,
 ) -> Result<RecoveryRateAuthority, VelocityEvidenceError> {
@@ -627,8 +627,7 @@ pub(crate) async fn step_velocity_sweep_with_trace<B: CommissioningBackend>(
                 || backend
                     .write_register(
                         PID_VELOCITY_P_VELOCITY_I,
-                        PidGainPair::new_legacy(p, foci_tmc4671::pid::PidGain::ZERO)
-                            .register_value(),
+                        PidGainPair::new(p, foci_tmc4671::pid::PidIGain::ZERO).register_value(),
                     )
                     .await
                     .is_err()
@@ -1784,7 +1783,7 @@ mod tests {
     };
     use crate::commissioning::outer::velocity::sweep_plan::RequestedVelocitySource;
     use crate::commissioning::outer::{OuterMotionBudget, OuterSafetyLimits, VelocitySweepData};
-    use foci_tmc4671::pid::PidGain;
+    use foci_tmc4671::pid::PidPGain;
 
     use super::*;
 
@@ -1879,7 +1878,7 @@ mod tests {
         }
         DirectionalRungAnalysis {
             report: CompactDirectionalRungReport {
-                p: PidGain::new(p).unwrap(),
+                p: PidPGain::new(p).unwrap(),
                 classification: DirectionalConsensusClass::EligibleConsensus,
                 components: [bounds, [0, 0]],
                 pooled: accumulator.finish(0),
@@ -1899,7 +1898,7 @@ mod tests {
         }
     }
 
-    fn excluded_summary(direction: VelocityDirection, p: PidGain) -> VelocityObservationSummary {
+    fn excluded_summary(direction: VelocityDirection, p: PidPGain) -> VelocityObservationSummary {
         VelocityObservationSummary {
             direction,
             p,
@@ -1928,7 +1927,7 @@ mod tests {
 
     #[test]
     fn p512_structured_suffix_authorizes_only_recovery_deadline() {
-        let p = PidGain::new(512).unwrap();
+        let p = PidPGain::new(512).unwrap();
         let mut collected = CollectedRungEvidence::new();
         for slot in 0..SWEEP_SLOT_COUNT {
             let direction = if slot % 2 == 0 {
@@ -1964,7 +1963,7 @@ mod tests {
 
     #[test]
     fn recovery_only_authority_leaves_statistical_evidence_identical() {
-        let p = PidGain::new(512).unwrap();
+        let p = PidPGain::new(512).unwrap();
         let mut baseline = CollectedRungEvidence::new();
         let mut with_authority = CollectedRungEvidence::new();
         for slot in 0..SWEEP_SLOT_COUNT {
@@ -2051,8 +2050,8 @@ mod tests {
             member_mask: 0b111,
             first_rung: 0,
             last_rung: 2,
-            p_low: PidGain::new(2).unwrap(),
-            p_high: PidGain::new(4).unwrap(),
+            p_low: PidPGain::new(2).unwrap(),
+            p_high: PidPGain::new(4).unwrap(),
             member_count: 3,
             kind: DirectionalRegionKind::Valid,
             common_intersection,
@@ -2159,7 +2158,7 @@ mod tests {
 
         let incomplete = DirectionalRungAnalysis {
             report: CompactDirectionalRungReport {
-                p: PidGain::new(362).unwrap(),
+                p: PidPGain::new(362).unwrap(),
                 classification: DirectionalConsensusClass::IncompleteRung,
                 components: [[0, 0]; 2],
                 pooled: None,
@@ -2408,9 +2407,9 @@ mod tests {
         let mut forward_fold = DirectionalRegionFold::new(VelocityDirection::Forward);
         let mut reverse_fold = DirectionalRegionFold::new(VelocityDirection::Reverse);
         let mut joint_fold = super::super::operating_region::JointOperableFold::new();
-        let mut gains = [foci_tmc4671::pid::PidGain::ZERO; MAX_SWEEP_RUNGS];
+        let mut gains = [foci_tmc4671::pid::PidPGain::ZERO; MAX_SWEEP_RUNGS];
         for (rung_index, p) in [(18, 724), (19, 1_024), (20, 1_448), (21, 2_048)] {
-            gains[rung_index] = PidGain::new(p).unwrap();
+            gains[rung_index] = PidPGain::new(p).unwrap();
             let mut forward =
                 eligible_directional_analysis_with_interval(p, [16_689_709, 16_897_585]);
             if rung_index == 21 {
@@ -2445,8 +2444,8 @@ mod tests {
             None,
             joint,
             &gains,
-            PidGain::new(2).unwrap(),
-            PidGain::new(2_457).unwrap(),
+            PidPGain::new(2).unwrap(),
+            PidPGain::new(2_457).unwrap(),
         );
 
         assert_eq!(forward.member_mask, 0x003c_0000);

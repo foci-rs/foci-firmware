@@ -4,7 +4,7 @@ use crate::autotune::CommissionError;
 use crate::commissioning::backend::CommissioningBackend;
 use crate::commissioning::outer::check_outer_safety;
 use crate::commissioning::types::{OUTER_SAFETY_FAULT_CURRENT, OuterSafetyFault};
-use foci_tmc4671::pid::{PidGain, PidGainPair};
+use foci_tmc4671::pid::{PidGainPair, PidIGain};
 use foci_tmc4671::registers::{PID_VELOCITY_P_VELOCITY_I, PID_VELOCITY_TARGET};
 
 use super::super::current_guard::{
@@ -70,7 +70,7 @@ pub(crate) async fn step_rung_origin_recovery<B: CommissioningBackend>(
             if backend
                 .write_register(
                     PID_VELOCITY_P_VELOCITY_I,
-                    PidGainPair::new_legacy(runtime.p, PidGain::ZERO).register_value(),
+                    PidGainPair::new(runtime.p, PidIGain::ZERO).register_value(),
                 )
                 .await
                 .is_err()

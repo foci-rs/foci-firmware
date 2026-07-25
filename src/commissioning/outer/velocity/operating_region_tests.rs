@@ -12,7 +12,7 @@ use super::sweep_evidence::{
 };
 use crate::autotune::velocity_measurement::VelocityDirection;
 use crate::autotune::{EquivalentTorqueTargetInterval, EquivalentTorqueTargetQ16};
-use foci_tmc4671::pid::PidGain;
+use foci_tmc4671::pid::PidPGain;
 
 fn interval(low: i32, high: i32) -> EquivalentTorqueTargetInterval {
     EquivalentTorqueTargetInterval::new(
@@ -84,7 +84,7 @@ fn consensus_analysis(
         .then(|| accumulator.finish(0).unwrap());
     DirectionalRungAnalysis {
         report: CompactDirectionalRungReport {
-            p: PidGain::new(p).unwrap(),
+            p: PidPGain::new(p).unwrap(),
             classification: class,
             components: if pooled.is_some() {
                 [[low, high], [0, 0]]
@@ -315,8 +315,8 @@ fn first_fit_counterexample_remains_two_fragments() {
     );
 }
 
-fn gains() -> [PidGain; 7] {
-    [256, 362, 512, 724, 1024, 1448, 2048].map(|raw| PidGain::new(raw).unwrap())
+fn gains() -> [PidPGain; 7] {
+    [256, 362, 512, 724, 1024, 1448, 2048].map(|raw| PidPGain::new(raw).unwrap())
 }
 
 #[test]
@@ -438,8 +438,8 @@ fn joint_nomination_uses_count_ratio_distance_and_lower_p_ties() {
 #[test]
 fn operating_region_union_retains_separated_components() {
     let gains = gains();
-    let p_start = PidGain::new(1).unwrap();
-    let p_top = PidGain::new(2_457).unwrap();
+    let p_start = PidPGain::new(1).unwrap();
+    let p_top = PidPGain::new(2_457).unwrap();
     let mut fold = JointOperableFold::new();
 
     assert!(
@@ -466,8 +466,8 @@ fn operating_region_union_retains_separated_components() {
 #[test]
 fn operating_region_union_is_zero_then_tracks_one_component() {
     let gains = gains();
-    let p_start = PidGain::new(1).unwrap();
-    let p_top = PidGain::new(2_457).unwrap();
+    let p_start = PidPGain::new(1).unwrap();
+    let p_top = PidPGain::new(2_457).unwrap();
     let mut fold = JointOperableFold::new();
 
     assert_eq!(fold.union_member_mask(), 0);
@@ -483,8 +483,8 @@ fn operating_region_union_is_zero_then_tracks_one_component() {
 #[test]
 fn provisional_nomination_uses_structural_margin() {
     let gains = gains();
-    let p_start = PidGain::new(1).unwrap();
-    let p_top = PidGain::new(2_457).unwrap();
+    let p_start = PidPGain::new(1).unwrap();
+    let p_top = PidPGain::new(2_457).unwrap();
     let low = super::operating_region::JointOperableRegion {
         member_mask: (1 << 0) | (1 << 1),
         first_rung: 0,
@@ -565,11 +565,11 @@ fn directional_region_or_fragment_selection_ignores_zero_sentinel() {
 
 #[test]
 fn directional_region_or_fragment_selection_retains_compact_upper_fragment() {
-    let mut structural_gains = [PidGain::ZERO; 23];
-    structural_gains[15] = PidGain::new(256).unwrap();
-    structural_gains[16] = PidGain::new(362).unwrap();
-    structural_gains[19] = PidGain::new(1024).unwrap();
-    structural_gains[20] = PidGain::new(1448).unwrap();
+    let mut structural_gains = [PidPGain::ZERO; 23];
+    structural_gains[15] = PidPGain::new(256).unwrap();
+    structural_gains[16] = PidPGain::new(362).unwrap();
+    structural_gains[19] = PidPGain::new(1024).unwrap();
+    structural_gains[20] = PidPGain::new(1448).unwrap();
     let low = reference(0x0001_0000, 1, 2);
     let high = reference(0x0018_0000, 3, 4);
 

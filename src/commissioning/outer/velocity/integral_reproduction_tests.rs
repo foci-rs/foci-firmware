@@ -5,7 +5,7 @@ use super::integral_reproduction::{
     StageCReproductionDecision, StageCSlotState, closed_intersection, compare_integral_runs,
     delta_e, signed_divergence_gap,
 };
-use super::reproduction::StageBDirectionalValidity;
+use super::reproduction::{STAGE_B_BUILD_REVISION, StageBDirectionalValidity};
 
 fn interval(low_q: i32, high_q: i32) -> ExactRateInterval {
     ExactRateInterval::new(low_q, high_q).unwrap()
@@ -298,6 +298,22 @@ fn schema_one_candidate_rejects_before_motion_without_losing_authority() {
 
     assert!(matches!(
         slot.preflight(current.identity),
+        Some(StageCReproductionDecision::RejectedPlanMismatch { .. })
+    ));
+    assert_eq!(slot.authority(), Some(retained));
+}
+
+#[test]
+fn q8_8_package_authority_rejects_before_stage_c_motion() {
+    let mut retained = authority(0, 7);
+    retained.identity.build_revision = 0x7553_6758;
+    let mut current = retained.identity;
+    current.build_revision = STAGE_B_BUILD_REVISION;
+    let mut slot = StageCCandidateSlot::new();
+    slot.install_authority(retained);
+
+    assert!(matches!(
+        slot.preflight(current),
         Some(StageCReproductionDecision::RejectedPlanMismatch { .. })
     ));
     assert_eq!(slot.authority(), Some(retained));

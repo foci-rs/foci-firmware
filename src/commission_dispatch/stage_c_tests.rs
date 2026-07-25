@@ -321,10 +321,10 @@ fn outer_params() -> crate::commissioning::OuterTuneParams {
 
 fn entry_snapshot() -> crate::commissioning::EntrySnapshot {
     crate::commissioning::EntrySnapshot {
-        velocity_p: 1_152,
-        velocity_i: 0,
-        position_p: 640,
-        position_i: 0,
+        velocity_p: crate::pid::p_gain(1_152),
+        velocity_i: crate::pid::i_gain(0),
+        position_p: crate::pid::p_gain(640),
+        position_i: crate::pid::i_gain(0),
         velocity_limit: 500_000,
         voltage_limit: 16_000,
         velocity_filter_hz: 0,

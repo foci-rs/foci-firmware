@@ -1,6 +1,6 @@
 use crate::autotune::velocity_measurement::VelocityDirection;
 use crate::autotune::{EquivalentTorqueTargetInterval, EquivalentTorqueTargetQ16};
-use foci_tmc4671::pid::PidGain;
+use foci_tmc4671::pid::PidPGain;
 
 use super::sweep_consensus::DirectionalConsensusClass;
 use super::sweep_evidence::{
@@ -183,9 +183,9 @@ pub struct DirectionalRegionSummary {
     /// Last member rung index.
     pub last_rung: u8,
     /// First member gain.
-    pub p_low: PidGain,
+    pub p_low: PidPGain,
     /// Last member gain.
-    pub p_high: PidGain,
+    pub p_high: PidPGain,
     /// Exact member population.
     pub member_count: u8,
     /// Valid region or retained fragment.
@@ -216,8 +216,8 @@ pub struct DirectionalRegionFold {
     pooled: PooledDisturbanceAccumulator,
     common_intersection: EquivalentTorqueTargetInterval,
     rate_bounds: [CompactSignedRate; 4],
-    p_low: PidGain,
-    p_high: PidGain,
+    p_low: PidPGain,
+    p_high: PidPGain,
     first_rung: u8,
     member_count: u8,
     flags: u8,
@@ -245,8 +245,8 @@ impl DirectionalRegionFold {
                 EquivalentTorqueTargetQ16::from_raw(0),
             ),
             rate_bounds: [zero_rate; 4],
-            p_low: PidGain::ZERO,
-            p_high: PidGain::ZERO,
+            p_low: PidPGain::ZERO,
+            p_high: PidPGain::ZERO,
             first_rung: 0,
             member_count: 0,
             flags,
@@ -453,9 +453,9 @@ impl JointOperableFold {
     pub fn consider_best(
         &mut self,
         candidate: JointOperableRegion,
-        gains: &[PidGain],
-        p_start: PidGain,
-        p_top: PidGain,
+        gains: &[PidPGain],
+        p_start: PidPGain,
+        p_top: PidPGain,
     ) {
         self.union_member_mask |= candidate.member_mask;
         let current = self
@@ -474,9 +474,9 @@ impl JointOperableFold {
     /// Return the retained best joint nomination.
     pub fn best_nomination(
         &self,
-        gains: &[PidGain],
-        p_start: PidGain,
-        p_top: PidGain,
+        gains: &[PidPGain],
+        p_start: PidPGain,
+        p_top: PidPGain,
     ) -> Option<ProvisionalPNomination> {
         self.best_region()
             .map(|region| choose_joint_nomination(None, region, gains, p_start, p_top))
@@ -485,9 +485,9 @@ impl JointOperableFold {
     /// Return the current active lower-middle nomination.
     pub fn active_nomination(
         &self,
-        gains: &[PidGain],
-        p_start: PidGain,
-        p_top: PidGain,
+        gains: &[PidPGain],
+        p_start: PidPGain,
+        p_top: PidPGain,
     ) -> Option<ProvisionalPNomination> {
         self.active_region()
             .map(|region| choose_joint_nomination(None, region, gains, p_start, p_top))
@@ -579,7 +579,7 @@ pub struct ProvisionalPNomination {
     /// Lower-middle rung index.
     pub rung_index: u8,
     /// Gain at the selected rung.
-    pub p: PidGain,
+    pub p: PidPGain,
     /// Q16 ratio distance from structural P_start.
     pub distance_to_start_num: u32,
     /// Q16 ratio distance from structural P_top.
@@ -592,9 +592,9 @@ pub struct ProvisionalPNomination {
 pub fn choose_joint_nomination(
     current: Option<ProvisionalPNomination>,
     candidate: JointOperableRegion,
-    gains: &[PidGain],
-    p_start: PidGain,
-    p_top: PidGain,
+    gains: &[PidPGain],
+    p_start: PidPGain,
+    p_top: PidPGain,
 ) -> ProvisionalPNomination {
     let rung_index = candidate.first_rung + (candidate.member_count - 1) / 2;
     let p = gains[usize::from(rung_index)];
@@ -717,7 +717,7 @@ pub fn select_directional_region(
     current: Option<SelectedDirectionalRegion>,
     candidate: DirectionalRegionRef,
     nominated_rung: u8,
-    gains: &[PidGain],
+    gains: &[PidPGain],
     nominated_rate_q: i64,
 ) -> Option<SelectedDirectionalRegion> {
     if candidate.member_mask == 0 {
@@ -737,7 +737,7 @@ pub fn select_directional_region(
 fn selected_directional(
     region: DirectionalRegionRef,
     nominated_rung: u8,
-    gains: &[PidGain],
+    gains: &[PidPGain],
     nominated_rate_q: i64,
 ) -> SelectedDirectionalRegion {
     let first = first_member(region.member_mask);
@@ -760,12 +760,12 @@ fn selected_directional(
     let source_p = gains
         .get(usize::from(edge))
         .copied()
-        .unwrap_or(PidGain::ZERO)
+        .unwrap_or(PidPGain::ZERO)
         .raw();
     let target_p = gains
         .get(usize::from(nominated_rung))
         .copied()
-        .unwrap_or(PidGain::ZERO)
+        .unwrap_or(PidPGain::ZERO)
         .raw();
     let (gain_ratio_num, gain_ratio_den) = if coverage == CoverageKind::FullCoverage {
         (1, 1)
@@ -844,7 +844,7 @@ impl HandoffTrackers {
         &self,
         direction: VelocityDirection,
         nominated_rung: u8,
-        gains: &[PidGain],
+        gains: &[PidPGain],
         nominated_rate_q: i64,
     ) -> Option<SelectedDirectionalRegion> {
         let selected = self.best[direction_index(direction)];
@@ -861,7 +861,7 @@ impl HandoffTrackers {
     pub fn handoff(
         &self,
         nomination: ProvisionalPNomination,
-        gains: &[PidGain],
+        gains: &[PidPGain],
         nominated_rates_q: [i64; 2],
     ) -> Option<StageBHandoff> {
         if self.model_direction_mask() != 3 {
@@ -1001,10 +1001,10 @@ fn ratio_q16(numerator: u16, denominator: u16) -> u32 {
 }
 
 pub(crate) fn compare_margin(
-    left: PidGain,
-    right: PidGain,
-    p_start: PidGain,
-    p_top: PidGain,
+    left: PidPGain,
+    right: PidPGain,
+    p_start: PidPGain,
+    p_top: PidPGain,
 ) -> core::cmp::Ordering {
     let left_margin = margin_fraction(left, p_start, p_top);
     let right_margin = margin_fraction(right, p_start, p_top);
@@ -1012,7 +1012,7 @@ pub(crate) fn compare_margin(
         .cmp(&(u64::from(right_margin.0) * u64::from(left_margin.1)))
 }
 
-fn margin_fraction(p: PidGain, p_start: PidGain, p_top: PidGain) -> (u16, u16) {
+fn margin_fraction(p: PidPGain, p_start: PidPGain, p_top: PidPGain) -> (u16, u16) {
     if u32::from(p.raw()) * u32::from(p.raw()) <= u32::from(p_start.raw()) * u32::from(p_top.raw())
     {
         (p.raw(), p_start.raw())
