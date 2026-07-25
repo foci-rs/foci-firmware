@@ -5076,8 +5076,8 @@ mod tests {
         use crate::commission_dispatch::stage_b::StageBReproductionReport;
         use crate::commissioning::outer::velocity::operating_region::CoverageKind;
         use crate::commissioning::outer::velocity::reproduction::{
-            StageBCoreCoverage, StageBIntervalComparison, StageBMembershipComparison,
-            StageBReproductionDelta,
+            StageBCoreCoverage, StageBDirectionalValidity, StageBIntervalComparison,
+            StageBMembershipComparison, StageBReproductionDelta, StageBSelectedJointComponent,
         };
         use crate::commissioning::types::VelocitySweepOutcome;
 
@@ -5142,6 +5142,12 @@ mod tests {
                         conservative_common_nonempty: true,
                     },
                 ],
+                selected_joint: StageBSelectedJointComponent {
+                    member_mask: 0b11100,
+                    first_rung: 2,
+                    member_count: 3,
+                },
+                directional_validity: [StageBDirectionalValidity::ReproducedRegionCoversFinalP; 2],
                 previous_provisional_p: 724,
                 current_provisional_p: 724,
                 final_p: 724,

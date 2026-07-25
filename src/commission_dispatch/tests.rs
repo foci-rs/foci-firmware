@@ -1880,8 +1880,9 @@ fn stage_b_schema7_reproduction_records_are_canonical_and_ordered() {
     };
     use crate::commissioning::outer::velocity::operating_region::CoverageKind;
     use crate::commissioning::outer::velocity::reproduction::{
-        STAGE_B_EVIDENCE_SCHEMA_REVISION, StageBCoreCoverage, StageBIntervalComparison,
-        StageBMembershipComparison, StageBReproductionDelta,
+        STAGE_B_EVIDENCE_SCHEMA_REVISION, StageBCoreCoverage, StageBDirectionalValidity,
+        StageBIntervalComparison, StageBMembershipComparison, StageBReproductionDelta,
+        StageBSelectedJointComponent,
     };
 
     let report = StageBReproductionReport {
@@ -1937,6 +1938,15 @@ fn stage_b_schema7_reproduction_records_are_canonical_and_ordered() {
                     conservative_common: [-110, -115],
                     conservative_common_nonempty: false,
                 },
+            ],
+            selected_joint: StageBSelectedJointComponent {
+                member_mask: 0x0038_0000,
+                first_rung: 19,
+                member_count: 3,
+            },
+            directional_validity: [
+                StageBDirectionalValidity::ReproducedRegionCoversFinalP,
+                StageBDirectionalValidity::ReproducedRegionTransferred,
             ],
             previous_provisional_p: 1_448,
             current_provisional_p: 1_024,
@@ -2115,7 +2125,7 @@ fn stage_b_terminal_mismatch_replaces_candidate_and_insufficient_clears_it() {
 
     let mut mismatch = first;
     mismatch.run_sequence += 1;
-    mismatch.selected_memberships[0] = 0b01110;
+    mismatch.selected_memberships[2] = 0b00011;
     mismatch.digest ^= 0xaa55;
     let mismatch_dispatch = apply_stage_b_terminal(mismatch, 0, &mut slot);
     assert_eq!(
@@ -2129,8 +2139,8 @@ fn stage_b_terminal_mismatch_replaces_candidate_and_insufficient_clears_it() {
     assert_eq!(
         slot.candidate()
             .expect("replacement candidate")
-            .forward_membership,
-        mismatch.selected_memberships[0]
+            .joint_membership,
+        mismatch.selected_memberships[2]
     );
     assert_eq!(
         slot.candidate().expect("replacement candidate").run_digest,

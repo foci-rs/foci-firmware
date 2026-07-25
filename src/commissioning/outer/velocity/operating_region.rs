@@ -1000,7 +1000,7 @@ fn ratio_q16(numerator: u16, denominator: u16) -> u32 {
     (u32::from(numerator) << 16) / u32::from(denominator.max(1))
 }
 
-fn compare_margin(
+pub(crate) fn compare_margin(
     left: PidGain,
     right: PidGain,
     p_start: PidGain,

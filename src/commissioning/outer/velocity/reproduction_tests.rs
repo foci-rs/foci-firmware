@@ -3,7 +3,8 @@ use super::{
     STAGE_B_REPRO_REASON_FORWARD_CORE_TOO_SMALL, STAGE_B_REPRO_REASON_FORWARD_POOLED_DISJOINT,
     STAGE_B_REPRO_REASON_JOINT_CORE_EMPTY, STAGE_B_REPRO_REASON_REVERSE_CORE_TOO_SMALL,
     STAGE_B_REPRO_REASON_REVERSE_POOLED_DISJOINT, StageBCandidateSlot, StageBCandidateSummary,
-    StageBPlanIdentity, StageBReproductionDecision, const_fnv1a32,
+    StageBDirectionalValidity, StageBPlanIdentity, StageBReproductionDecision, const_fnv1a32,
+    summary_geometry_valid,
 };
 use crate::commissioning::outer::velocity::operating_region::CoverageKind;
 
@@ -69,7 +70,65 @@ fn reproduction_core_exact_membership_has_zero_boundary_evidence() {
         assert_eq!(membership.high_delta, 0);
     }
     assert_eq!(delta.final_p, 724);
+    assert_eq!(delta.selected_joint.member_mask, 0b1_1100);
+    assert_eq!(delta.selected_joint.first_rung, 2);
+    assert_eq!(delta.selected_joint.member_count, 3);
+    assert_eq!(
+        delta.directional_validity,
+        [StageBDirectionalValidity::ReproducedRegionCoversFinalP; 2]
+    );
     assert_eq!(delta.reason_mask, 0);
+}
+
+fn split_union_summary(run_digest: u64) -> StageBCandidateSummary {
+    let mut value = summary(0, run_digest);
+    value.forward_membership = 0x001c_0000;
+    value.reverse_membership = 0x0018_0000;
+    value.joint_membership = 0x0019_8000;
+    value.nominated_p = 256;
+    value.p_start = 1;
+    value.p_top = 2_457;
+    value.rung_count = 23;
+    value
+}
+
+#[test]
+fn summary_geometry_valid_accepts_noncontiguous_joint_union() {
+    assert!(summary_geometry_valid(split_union_summary(1)));
+}
+
+#[test]
+fn reproduction_delta_splits_noncontiguous_joint_core_before_nomination() {
+    let union = 0x0019_8000_u32;
+    let forbidden_first = union.trailing_zeros() as u8;
+    let forbidden_count = union.count_ones() as u8;
+    let forbidden_rung = forbidden_first + (forbidden_count - 1) / 2;
+    assert_eq!(forbidden_rung, 16);
+    assert_eq!(
+        crate::commissioning::outer::velocity::sweep_plan::gain_at(1, 2_457, 23, forbidden_rung,)
+            .unwrap()
+            .raw(),
+        362
+    );
+
+    let StageBReproductionDecision::Complete(delta) =
+        compare(split_union_summary(1), split_union_summary(2))
+    else {
+        panic!("the shared upper component must reproduce independently")
+    };
+    assert_eq!(delta.memberships[2].core, union);
+    assert_eq!(delta.selected_joint.member_mask, 0x0018_0000);
+    assert_eq!(delta.selected_joint.first_rung, 19);
+    assert_eq!(delta.selected_joint.member_count, 2);
+    assert_eq!(delta.final_p, 1_024);
+    assert!(delta.reduced_margin);
+    assert_eq!(
+        delta.directional_validity,
+        [
+            StageBDirectionalValidity::ReproducedRegionCoversFinalP,
+            StageBDirectionalValidity::Fragment,
+        ]
+    );
 }
 
 #[test]
@@ -130,6 +189,8 @@ fn reproduction_core_reports_each_mismatch_reason_independently() {
                 current
             },
             STAGE_B_REPRO_REASON_FORWARD_CORE_TOO_SMALL,
+            0,
+            StageBDirectionalValidity::Fragment,
         ),
         (
             {
@@ -138,14 +199,8 @@ fn reproduction_core_reports_each_mismatch_reason_independently() {
                 current
             },
             STAGE_B_REPRO_REASON_REVERSE_CORE_TOO_SMALL,
-        ),
-        (
-            {
-                let mut current = summary(0, 2);
-                current.joint_membership = 0b11;
-                current
-            },
-            STAGE_B_REPRO_REASON_JOINT_CORE_EMPTY,
+            1,
+            StageBDirectionalValidity::Fragment,
         ),
         (
             {
@@ -154,6 +209,8 @@ fn reproduction_core_reports_each_mismatch_reason_independently() {
                 current
             },
             STAGE_B_REPRO_REASON_FORWARD_POOLED_DISJOINT,
+            0,
+            StageBDirectionalValidity::RegionNotReproduced,
         ),
         (
             {
@@ -162,17 +219,27 @@ fn reproduction_core_reports_each_mismatch_reason_independently() {
                 current
             },
             STAGE_B_REPRO_REASON_REVERSE_POOLED_DISJOINT,
+            1,
+            StageBDirectionalValidity::RegionNotReproduced,
         ),
     ];
 
-    for (current, expected_reason) in cases {
-        let StageBReproductionDecision::InconclusiveReproductionMismatch(delta) =
-            compare(previous, current)
-        else {
-            panic!("one failed predicate must produce a mismatch")
+    for (current, expected_reason, direction, expected_validity) in cases {
+        let StageBReproductionDecision::Complete(delta) = compare(previous, current) else {
+            panic!("directional model failure must remain non-gating evidence")
         };
         assert_eq!(delta.reason_mask, expected_reason);
+        assert_eq!(delta.directional_validity[direction], expected_validity);
     }
+
+    let mut no_joint = summary(0, 2);
+    no_joint.joint_membership = 0b11;
+    let StageBReproductionDecision::InconclusiveReproductionMismatch(delta) =
+        compare(previous, no_joint)
+    else {
+        panic!("empty shared joint operability must remain a mismatch")
+    };
+    assert_eq!(delta.reason_mask, STAGE_B_REPRO_REASON_JOINT_CORE_EMPTY);
 }
 
 #[test]
@@ -199,6 +266,9 @@ fn reproduction_core_one_rung_joint_core_has_reduced_margin() {
         panic!("a one-rung joint core remains operable")
     };
     assert_eq!(delta.memberships[2].core, 0b0010);
+    assert_eq!(delta.selected_joint.member_mask, 0b0010);
+    assert_eq!(delta.selected_joint.first_rung, 1);
+    assert_eq!(delta.selected_joint.member_count, 1);
     assert_eq!(delta.final_p, 362);
     assert!(delta.reduced_margin);
 }
@@ -220,6 +290,10 @@ fn reproduction_core_recomputes_full_and_transferred_coverage() {
     assert_eq!(delta.coverage[0].kind, CoverageKind::FullCoverage);
     assert_eq!(delta.coverage[0].signed_rung_distance, 0);
     assert_eq!(delta.coverage[1].kind, CoverageKind::TransferredCoverage);
+    assert_eq!(
+        delta.directional_validity[1],
+        StageBDirectionalValidity::ReproducedRegionTransferred
+    );
     assert_eq!(delta.coverage[1].signed_rung_distance, 1);
     assert_eq!(
         (
@@ -250,7 +324,7 @@ fn reproduction_core_mismatch_replaces_candidate_and_complete_clears_it() {
     let mut slot = StageBCandidateSlot::new();
     let first = summary(0, 1);
     let mut mismatch = summary(0, 2);
-    mismatch.forward_interval = [121, 130];
+    mismatch.joint_membership = 0b11;
     slot.observe_sufficient(first);
     assert!(matches!(
         slot.observe_sufficient(mismatch),
@@ -259,12 +333,41 @@ fn reproduction_core_mismatch_replaces_candidate_and_complete_clears_it() {
     assert_eq!(slot.candidate(), Some(mismatch));
 
     let mut matching = summary(0, 3);
-    matching.forward_interval = [125, 135];
+    matching.joint_membership = 0b11;
     assert!(matches!(
         slot.observe_sufficient(matching),
         StageBReproductionDecision::Complete(_)
     ));
     assert!(slot.candidate().is_none());
+}
+
+#[test]
+fn reproduction_directional_validity_reports_no_region_and_endpoint_touch() {
+    let mut no_region = summary(0, 1);
+    no_region.forward_membership = 0;
+    no_region.forward_interval = [0, 0];
+    no_region.forward_common_interval = [0, 0];
+    let StageBReproductionDecision::Complete(delta) = compare(no_region, summary(0, 2)) else {
+        panic!("absent directional evidence must not gate joint authority")
+    };
+    assert_eq!(
+        delta.directional_validity[0],
+        StageBDirectionalValidity::NoRegion
+    );
+    assert_eq!(delta.memberships[0].low_delta, 0);
+    assert_eq!(delta.memberships[0].high_delta, 0);
+
+    let previous = summary(0, 3);
+    let mut current = summary(0, 4);
+    current.forward_interval = [120, 130];
+    let StageBReproductionDecision::Complete(delta) = compare(previous, current) else {
+        panic!("closed intervals touching at one endpoint reproduce")
+    };
+    assert_eq!(delta.intervals[0].pooled_overlap, [120, 120]);
+    assert_eq!(
+        delta.directional_validity[0],
+        StageBDirectionalValidity::ReproducedRegionCoversFinalP
+    );
 }
 
 #[test]

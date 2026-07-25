@@ -1,5 +1,6 @@
-use crate::commissioning::outer::velocity::operating_region::CoverageKind;
+use crate::commissioning::outer::velocity::operating_region::{CoverageKind, compare_margin};
 use crate::commissioning::outer::velocity::sweep_plan::{MAX_SWEEP_RUNGS, gain_at};
+use foci_tmc4671::pid::PidGain;
 
 /// Evidence schema stored in the RAM-only Stage B reproduction slot.
 pub const STAGE_B_EVIDENCE_SCHEMA_REVISION: u16 = 7;
@@ -94,6 +95,41 @@ pub struct StageBMembershipComparison {
     pub high_delta: i8,
 }
 
+/// One contiguous component selected from the shared joint-operability union.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+pub struct StageBSelectedJointComponent {
+    /// Exact contiguous component membership.
+    pub member_mask: u32,
+    /// First member rung.
+    pub first_rung: u8,
+    /// Exact member population.
+    pub member_count: u8,
+}
+
+impl StageBSelectedJointComponent {
+    const EMPTY: Self = Self {
+        member_mask: 0,
+        first_rung: 0,
+        member_count: 0,
+    };
+}
+
+/// Cross-run validity of one selected directional model or fragment.
+#[repr(u8)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+pub enum StageBDirectionalValidity {
+    /// Either run has no selected directional evidence.
+    NoRegion = 0,
+    /// At least one run retains only a one- or two-rung fragment.
+    Fragment = 1,
+    /// Both runs retain regions, but their constant-disturbance model did not reproduce.
+    RegionNotReproduced = 2,
+    /// The reproduced directional model contains the final operating P.
+    ReproducedRegionCoversFinalP = 3,
+    /// The reproduced directional model transfers to the final operating P.
+    ReproducedRegionTransferred = 4,
+}
+
 /// Exact pooled and common interval evidence for one direction.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub struct StageBIntervalComparison {
@@ -142,6 +178,10 @@ pub struct StageBReproductionDelta {
     pub memberships: [StageBMembershipComparison; 3],
     /// Forward and reverse interval comparisons.
     pub intervals: [StageBIntervalComparison; 2],
+    /// Contiguous operating component selected from the shared joint union.
+    pub selected_joint: StageBSelectedJointComponent,
+    /// Forward and reverse cross-run model validity.
+    pub directional_validity: [StageBDirectionalValidity; 2],
     /// Retained provisional P.
     pub previous_provisional_p: u16,
     /// Current provisional P.
@@ -235,7 +275,7 @@ impl StageBCandidateSlot {
             self.clear();
             return StageBReproductionDecision::EvidenceIntegrityFault;
         };
-        if delta.reason_mask == 0 {
+        if delta.reason_mask & STAGE_B_REPRO_REASON_JOINT_CORE_EMPTY == 0 {
             self.clear();
             StageBReproductionDecision::Complete(delta)
         } else {
@@ -309,7 +349,7 @@ fn reproduction_delta(
         membership_comparison(previous_memberships[1], current_memberships[1])?,
         membership_comparison(previous_memberships[2], current_memberships[2])?,
     ];
-    if memberships
+    if memberships[..2]
         .iter()
         .any(|membership| membership.core != 0 && !contiguous_nonempty(membership.core))
     {
@@ -347,11 +387,18 @@ fn reproduction_delta(
         reason_mask |= STAGE_B_REPRO_REASON_REVERSE_POOLED_DISJOINT;
     }
 
-    let (final_p, coverage, reduced_margin) = if memberships[2].core == 0 {
-        (0, [StageBCoreCoverage::EMPTY; 2], false)
+    let selected_joint = select_joint_component(
+        memberships[2].core,
+        [memberships[0].core, memberships[1].core],
+        previous.p_start,
+        previous.p_top,
+        previous.rung_count,
+    )?;
+    let (final_rung, final_p, coverage, reduced_margin) = if selected_joint.member_mask == 0 {
+        (0, 0, [StageBCoreCoverage::EMPTY; 2], false)
     } else {
-        let joint_count = memberships[2].core.count_ones() as u8;
-        let joint_first = memberships[2].core.trailing_zeros() as u8;
+        let joint_count = selected_joint.member_count;
+        let joint_first = selected_joint.first_rung;
         let final_rung = joint_first + (joint_count - 1) / 2;
         let final_p = gain_at(
             previous.p_start,
@@ -361,6 +408,7 @@ fn reproduction_delta(
         )?
         .raw();
         (
+            final_rung,
             final_p,
             [
                 core_coverage(
@@ -381,10 +429,28 @@ fn reproduction_delta(
             joint_count <= 2,
         )
     };
+    let directional_validity = [
+        directional_validity(
+            previous.forward_membership,
+            current.forward_membership,
+            memberships[0],
+            intervals[0],
+            final_rung,
+        ),
+        directional_validity(
+            previous.reverse_membership,
+            current.reverse_membership,
+            memberships[1],
+            intervals[1],
+            final_rung,
+        ),
+    ];
 
     Some(StageBReproductionDelta {
         memberships,
         intervals,
+        selected_joint,
+        directional_validity,
         previous_provisional_p: previous.nominated_p,
         current_provisional_p: current.nominated_p,
         final_p,
@@ -397,25 +463,25 @@ fn reproduction_delta(
 }
 
 fn summary_geometry_valid(summary: StageBCandidateSummary) -> bool {
+    if summary.p_start == 0
+        || summary.p_start > summary.p_top
+        || summary.rung_count == 0
+        || usize::from(summary.rung_count) > MAX_SWEEP_RUNGS
+    {
+        return false;
+    }
+
     let rung_count = u32::from(summary.rung_count);
-    summary.p_start != 0
-        && summary.p_start <= summary.p_top
-        && summary.rung_count != 0
-        && usize::from(summary.rung_count) <= MAX_SWEEP_RUNGS
-        && [
-            summary.forward_membership,
-            summary.reverse_membership,
-            summary.joint_membership,
-        ]
+    let valid_bits = if rung_count == 32 {
+        u32::MAX
+    } else {
+        (1_u32 << rung_count) - 1
+    };
+    let directional_valid = [summary.forward_membership, summary.reverse_membership]
         .into_iter()
-        .all(|mask| {
-            let valid_bits = if rung_count == 32 {
-                u32::MAX
-            } else {
-                (1_u32 << rung_count) - 1
-            };
-            contiguous_nonempty(mask) && mask & !valid_bits == 0
-        })
+        .all(|mask| mask & !valid_bits == 0 && (mask == 0 || contiguous_nonempty(mask)));
+    let joint_valid = summary.joint_membership != 0 && summary.joint_membership & !valid_bits == 0;
+    directional_valid && joint_valid
 }
 
 fn contiguous_nonempty(mask: u32) -> bool {
@@ -427,20 +493,130 @@ fn contiguous_nonempty(mask: u32) -> bool {
 }
 
 fn membership_comparison(previous: u32, current: u32) -> Option<StageBMembershipComparison> {
-    let low_delta = i16::try_from(current.trailing_zeros()).ok()?
-        - i16::try_from(previous.trailing_zeros()).ok()?;
-    let current_high = 31_u32.checked_sub(current.leading_zeros())?;
-    let previous_high = 31_u32.checked_sub(previous.leading_zeros())?;
-    let high_delta = i16::try_from(current_high).ok()? - i16::try_from(previous_high).ok()?;
+    let (low_delta, high_delta) = if previous == 0 || current == 0 {
+        (0, 0)
+    } else {
+        let low_delta = i16::try_from(current.trailing_zeros()).ok()?
+            - i16::try_from(previous.trailing_zeros()).ok()?;
+        let current_high = 31_u32.checked_sub(current.leading_zeros())?;
+        let previous_high = 31_u32.checked_sub(previous.leading_zeros())?;
+        let high_delta = i16::try_from(current_high).ok()? - i16::try_from(previous_high).ok()?;
+        (
+            i8::try_from(low_delta).ok()?,
+            i8::try_from(high_delta).ok()?,
+        )
+    };
     Some(StageBMembershipComparison {
         previous,
         current,
         core: previous & current,
         previous_only: previous & !current,
         current_only: current & !previous,
-        low_delta: i8::try_from(low_delta).ok()?,
-        high_delta: i8::try_from(high_delta).ok()?,
+        low_delta,
+        high_delta,
     })
+}
+
+fn select_joint_component(
+    shared_union: u32,
+    directional_cores: [u32; 2],
+    p_start: u16,
+    p_top: u16,
+    rung_count: u8,
+) -> Option<StageBSelectedJointComponent> {
+    if shared_union == 0 {
+        return Some(StageBSelectedJointComponent::EMPTY);
+    }
+    let p_start = PidGain::new(p_start).ok()?;
+    let p_top = PidGain::new(p_top).ok()?;
+    let mut remaining = shared_union;
+    let mut selected = StageBSelectedJointComponent::EMPTY;
+    while remaining != 0 {
+        let first_rung = remaining.trailing_zeros() as u8;
+        let member_count = (remaining >> first_rung).trailing_ones() as u8;
+        let member_mask = if member_count == 32 {
+            u32::MAX
+        } else {
+            ((1_u32 << member_count) - 1) << first_rung
+        };
+        let candidate = StageBSelectedJointComponent {
+            member_mask,
+            first_rung,
+            member_count,
+        };
+        if component_is_preferred(
+            selected,
+            candidate,
+            directional_cores,
+            p_start,
+            p_top,
+            rung_count,
+        )? {
+            selected = candidate;
+        }
+        remaining &= !member_mask;
+    }
+    Some(selected)
+}
+
+fn component_is_preferred(
+    current: StageBSelectedJointComponent,
+    candidate: StageBSelectedJointComponent,
+    directional_cores: [u32; 2],
+    p_start: PidGain,
+    p_top: PidGain,
+    rung_count: u8,
+) -> Option<bool> {
+    if current.member_mask == 0 {
+        return Some(true);
+    }
+    if candidate.member_count != current.member_count {
+        return Some(candidate.member_count > current.member_count);
+    }
+    let coverage = |component: StageBSelectedJointComponent| {
+        directional_cores
+            .into_iter()
+            .map(|core| (component.member_mask & core).count_ones())
+            .sum::<u32>()
+    };
+    let candidate_coverage = coverage(candidate);
+    let current_coverage = coverage(current);
+    if candidate_coverage != current_coverage {
+        return Some(candidate_coverage > current_coverage);
+    }
+    let candidate_rung = candidate.first_rung + (candidate.member_count - 1) / 2;
+    let current_rung = current.first_rung + (current.member_count - 1) / 2;
+    let candidate_p = gain_at(p_start.raw(), p_top.raw(), rung_count, candidate_rung)?;
+    let current_p = gain_at(p_start.raw(), p_top.raw(), rung_count, current_rung)?;
+    Some(
+        match compare_margin(candidate_p, current_p, p_start, p_top) {
+            core::cmp::Ordering::Greater => true,
+            core::cmp::Ordering::Less => false,
+            core::cmp::Ordering::Equal => candidate_p.raw() < current_p.raw(),
+        },
+    )
+}
+
+fn directional_validity(
+    previous: u32,
+    current: u32,
+    membership: StageBMembershipComparison,
+    intervals: StageBIntervalComparison,
+    final_rung: u8,
+) -> StageBDirectionalValidity {
+    if previous == 0 || current == 0 {
+        StageBDirectionalValidity::NoRegion
+    } else if previous.count_ones() < 3 || current.count_ones() < 3 {
+        StageBDirectionalValidity::Fragment
+    } else if membership.core.count_ones() < 3
+        || !closed_interval_nonempty(intervals.pooled_overlap)
+    {
+        StageBDirectionalValidity::RegionNotReproduced
+    } else if membership.core & (1_u32 << final_rung) != 0 {
+        StageBDirectionalValidity::ReproducedRegionCoversFinalP
+    } else {
+        StageBDirectionalValidity::ReproducedRegionTransferred
+    }
 }
 
 fn interval_comparison(
