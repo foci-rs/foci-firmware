@@ -2552,7 +2552,7 @@ pub struct FociVelocityStageBHandoffCore {
     pub evidence_sequence: u16,
     /// Firmware-nominated proportional gain.
     pub nominated_p: u16,
-    /// Selected joint-operability membership.
+    /// Union of all per-run joint-operability components.
     pub joint_member_mask: u32,
     /// Selected forward model membership.
     pub forward_member_mask: u32,
@@ -2575,6 +2575,8 @@ pub struct FociVelocityStageBNomination {
     pub nominated_rung: u8,
     /// Firmware-nominated proportional gain.
     pub nominated_p: u16,
+    /// Joint-operability component selected for the provisional nomination.
+    pub selected_joint_mask: u32,
     /// Q16 ratio distance from structural P_start.
     pub distance_to_start_q16: u32,
     /// Q16 ratio distance from structural P_top.
@@ -2596,6 +2598,8 @@ pub struct FociVelocityStageBDirectionalHandoff {
     pub direction: u8,
     /// Exact source-region membership.
     pub member_mask: u32,
+    /// Per-run directional evidence class: fragment or valid region.
+    pub region_class: u8,
     /// Direct or transferred coverage code.
     pub coverage: u8,
     /// Signed half-octave rung distance from the nomination.
@@ -2818,6 +2822,160 @@ pub struct FociVelocityStageBReproductionV3Coverage {
 /// Schema-3 exact previous and current run digests.
 #[klipper_reply]
 pub struct FociVelocityStageBReproductionV3Digest {
+    /// Endpoint object id.
+    pub oid: u8,
+    /// Current caller-assigned run sequence.
+    pub run_sequence: u32,
+    /// Shared reproduction-group evidence sequence.
+    pub evidence_sequence: u16,
+    /// Retained digest low word.
+    pub previous_digest_low: u32,
+    /// Retained digest high word.
+    pub previous_digest_high: u32,
+    /// Current pre-reproduction digest low word.
+    pub current_digest_low: u32,
+    /// Current pre-reproduction digest high word.
+    pub current_digest_high: u32,
+}
+
+/// Schema-8 Stage B reproduction outcome and selected operating component.
+#[klipper_reply]
+pub struct FociVelocityStageBReproductionV4Core {
+    /// Endpoint object id.
+    pub oid: u8,
+    /// Current caller-assigned run sequence.
+    pub run_sequence: u32,
+    /// Shared reproduction-group evidence sequence.
+    pub evidence_sequence: u16,
+    /// Reproduced or mismatched outcome code.
+    pub outcome: u8,
+    /// Independent reproduction mismatch reasons.
+    pub reason_mask: u8,
+    /// Retained-run provisional proportional gain.
+    pub previous_provisional_p: u16,
+    /// Current-run provisional proportional gain.
+    pub current_provisional_p: u16,
+    /// Final proportional gain derived from the selected joint component.
+    pub final_p: u16,
+    /// Selected contiguous component of the shared joint union.
+    pub selected_joint_mask: u32,
+    /// First rung in the selected joint component.
+    pub selected_first_rung: u8,
+    /// Population of the selected joint component.
+    pub selected_member_count: u8,
+    /// Forward cross-run model-validity code.
+    pub forward_validity: u8,
+    /// Reverse cross-run model-validity code.
+    pub reverse_validity: u8,
+    /// Whether the selected component provides reduced I-ladder margin.
+    pub reduced_margin: u8,
+    /// Evidence schema revision.
+    pub schema_revision: u16,
+}
+
+/// Schema-8 membership intersection and exact union-envelope movement.
+#[klipper_reply]
+pub struct FociVelocityStageBReproductionV4Membership {
+    /// Endpoint object id.
+    pub oid: u8,
+    /// Current caller-assigned run sequence.
+    pub run_sequence: u32,
+    /// Shared reproduction-group evidence sequence.
+    pub evidence_sequence: u16,
+    /// Object code: forward, reverse, or joint.
+    pub object: u8,
+    /// Retained-run membership or joint union.
+    pub previous_mask: u32,
+    /// Current-run membership or joint union.
+    pub current_mask: u32,
+    /// Exact cross-run membership intersection.
+    pub core_mask: u32,
+    /// Rungs present only in the retained run.
+    pub previous_only_mask: u32,
+    /// Rungs present only in the current run.
+    pub current_only_mask: u32,
+    /// Current low envelope edge minus retained low envelope edge.
+    pub low_delta: i32,
+    /// Current high envelope edge minus retained high envelope edge.
+    pub high_delta: i32,
+}
+
+/// Schema-8 pooled-interval evidence for one direction.
+#[klipper_reply]
+pub struct FociVelocityStageBReproductionV4Pooled {
+    /// Endpoint object id.
+    pub oid: u8,
+    /// Current caller-assigned run sequence.
+    pub run_sequence: u32,
+    /// Shared reproduction-group evidence sequence.
+    pub evidence_sequence: u16,
+    /// Direction code.
+    pub direction: u8,
+    /// Retained pooled lower edge.
+    pub previous_low_q16: i32,
+    /// Retained pooled upper edge.
+    pub previous_high_q16: i32,
+    /// Current pooled lower edge.
+    pub current_low_q16: i32,
+    /// Current pooled upper edge.
+    pub current_high_q16: i32,
+    /// Cross-run pooled-overlap lower edge.
+    pub overlap_low_q16: i32,
+    /// Cross-run pooled-overlap upper edge.
+    pub overlap_high_q16: i32,
+}
+
+/// Schema-8 full-region common-interval evidence for one direction.
+#[klipper_reply]
+pub struct FociVelocityStageBReproductionV4Common {
+    /// Endpoint object id.
+    pub oid: u8,
+    /// Current caller-assigned run sequence.
+    pub run_sequence: u32,
+    /// Shared reproduction-group evidence sequence.
+    pub evidence_sequence: u16,
+    /// Direction code.
+    pub direction: u8,
+    /// Retained full-region common lower edge.
+    pub previous_low_q16: i32,
+    /// Retained full-region common upper edge.
+    pub previous_high_q16: i32,
+    /// Current full-region common lower edge.
+    pub current_low_q16: i32,
+    /// Current full-region common upper edge.
+    pub current_high_q16: i32,
+    /// Conservative cross-run common lower edge.
+    pub conservative_low_q16: i32,
+    /// Conservative cross-run common upper edge.
+    pub conservative_high_q16: i32,
+    /// Whether the conservative interval is nonempty.
+    pub nonempty: u8,
+}
+
+/// Schema-8 selected-component-relative coverage for one direction.
+#[klipper_reply]
+pub struct FociVelocityStageBReproductionV4Coverage {
+    /// Endpoint object id.
+    pub oid: u8,
+    /// Current caller-assigned run sequence.
+    pub run_sequence: u32,
+    /// Shared reproduction-group evidence sequence.
+    pub evidence_sequence: u16,
+    /// Direction code.
+    pub direction: u8,
+    /// Direct or transferred coverage code.
+    pub coverage: u8,
+    /// Signed nearest-evidence distance from the final rung.
+    pub signed_rung_distance: i32,
+    /// Larger gain in the source/final ratio.
+    pub gain_ratio_num: u16,
+    /// Smaller gain in the source/final ratio.
+    pub gain_ratio_den: u16,
+}
+
+/// Schema-8 exact previous and current run digests.
+#[klipper_reply]
+pub struct FociVelocityStageBReproductionV4Digest {
     /// Endpoint object id.
     pub oid: u8,
     /// Current caller-assigned run sequence.
@@ -3118,6 +3276,10 @@ pub struct FociVelocityIntegralPlanAuthority {
     pub directional_membership: u32,
     /// Reproduced joint-operability membership.
     pub joint_membership: u32,
+    /// Cross-run directional model-validity code.
+    pub directional_validity: u8,
+    /// Whether the selected operating component has reduced margin.
+    pub reduced_margin: u8,
     /// Retained Stage-B pooled lower interval edge.
     pub pooled_low_q16: i32,
     /// Retained Stage-B pooled upper interval edge.
@@ -3364,6 +3526,8 @@ pub struct FociVelocityIntegralRunSummary {
     pub forward_eligible_mask: u32,
     /// Reverse positive-rung eligibility mask.
     pub reverse_eligible_mask: u32,
+    /// Directions with an eligible opening anchor.
+    pub opening_available_mask: u8,
     /// Directions with an eligible closing bookend.
     pub bookend_available_mask: u8,
     /// One plus the current-headroom terminus, or zero.
@@ -3427,6 +3591,8 @@ pub struct FociVelocityIntegralStageBComparison {
     pub evidence_sequence: u16,
     /// Direction code.
     pub direction: u8,
+    /// Whether model-relative comparison evidence is available.
+    pub available: u8,
     /// Retained Stage-B pooled lower disturbance edge.
     pub stage_b_low_q16: i32,
     /// Retained Stage-B pooled upper disturbance edge.
@@ -4039,6 +4205,7 @@ mod velocity_sweep_reply_tests {
                 evidence_sequence: u16::MAX,
                 nominated_rung: u8::MAX,
                 nominated_p: u16::MAX,
+                selected_joint_mask: WIDE_U32,
                 distance_to_start_q16: WIDE_U32,
                 distance_to_top_q16: WIDE_U32,
                 flags: u8::MAX,
@@ -4052,6 +4219,7 @@ mod velocity_sweep_reply_tests {
                 evidence_sequence: u16::MAX,
                 direction: u8::MAX,
                 member_mask: 0x8000_0001,
+                region_class: u8::MAX,
                 coverage: u8::MAX,
                 signed_rung_distance: i32::MIN,
                 gain_ratio_num: u16::MAX,
@@ -4365,6 +4533,8 @@ mod velocity_sweep_reply_tests {
                 direction: u8::MAX,
                 directional_membership: WIDE_U32,
                 joint_membership: WIDE_U32,
+                directional_validity: u8::MAX,
+                reduced_margin: u8::MAX,
                 pooled_low_q16: i32::MIN,
                 pooled_high_q16: i32::MAX,
             },
@@ -4501,6 +4671,7 @@ mod velocity_sweep_reply_tests {
                 fragment: u8::MAX,
                 forward_eligible_mask: WIDE_U32,
                 reverse_eligible_mask: WIDE_U32,
+                opening_available_mask: u8::MAX,
                 bookend_available_mask: u8::MAX,
                 current_terminus_plus_one: u8::MAX,
                 sufficient_direction_mask: u8::MAX,
@@ -4540,6 +4711,7 @@ mod velocity_sweep_reply_tests {
                 run_sequence: WIDE_U32,
                 evidence_sequence: u16::MAX,
                 direction: u8::MAX,
+                available: u8::MAX,
                 stage_b_low_q16: i32::MIN,
                 stage_b_high_q16: i32::MAX,
                 expected_low_q: i32::MIN,

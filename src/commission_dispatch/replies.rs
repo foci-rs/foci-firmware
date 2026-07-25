@@ -346,6 +346,48 @@ pub trait CommissionReplySink {
     ) {
     }
 
+    /// Emit the schema-8 Stage B reproduction outcome and selected component.
+    fn foci_velocity_stage_b_reproduction_v4_core(
+        &mut self,
+        _report: crate::ankyra::replies::FociVelocityStageBReproductionV4Core,
+    ) {
+    }
+
+    /// Emit one schema-8 membership or joint-union comparison.
+    fn foci_velocity_stage_b_reproduction_v4_membership(
+        &mut self,
+        _report: crate::ankyra::replies::FociVelocityStageBReproductionV4Membership,
+    ) {
+    }
+
+    /// Emit one schema-8 pooled-interval comparison.
+    fn foci_velocity_stage_b_reproduction_v4_pooled(
+        &mut self,
+        _report: crate::ankyra::replies::FociVelocityStageBReproductionV4Pooled,
+    ) {
+    }
+
+    /// Emit one schema-8 common-interval comparison.
+    fn foci_velocity_stage_b_reproduction_v4_common(
+        &mut self,
+        _report: crate::ankyra::replies::FociVelocityStageBReproductionV4Common,
+    ) {
+    }
+
+    /// Emit one schema-8 selected-component-relative coverage result.
+    fn foci_velocity_stage_b_reproduction_v4_coverage(
+        &mut self,
+        _report: crate::ankyra::replies::FociVelocityStageBReproductionV4Coverage,
+    ) {
+    }
+
+    /// Emit exact schema-8 Stage B reproduction digest inputs.
+    fn foci_velocity_stage_b_reproduction_v4_digest(
+        &mut self,
+        _report: crate::ankyra::replies::FociVelocityStageBReproductionV4Digest,
+    ) {
+    }
+
     /// Emit the Stage B terminal class and completeness fragment.
     fn foci_velocity_stage_b_terminal_core(
         &mut self,
@@ -637,6 +679,8 @@ pub fn emit_velocity_integral_plan<S: CommissionReplySink>(
             direction: direction as u8,
             directional_membership: plan.authority.directional_memberships[direction],
             joint_membership: plan.authority.joint_membership,
+            directional_validity: plan.authority.directional_validity[direction] as u8,
+            reduced_margin: u8::from(plan.authority.reduced_margin),
             pooled_low_q16: plan.authority.directional_pooled_intervals[direction][0],
             pooled_high_q16: plan.authority.directional_pooled_intervals[direction][1],
         });
@@ -909,6 +953,19 @@ pub fn emit_velocity_integral_terminal<S: CommissionReplySink>(
         .fold(0_u8, |mask, (direction, interval)| {
             mask | (u8::from(interval.is_some()) << direction)
         });
+    let opening_available_mask =
+        terminal
+            .evidence
+            .opening
+            .iter()
+            .enumerate()
+            .fold(0_u8, |mask, (direction, interval)| {
+                mask
+                    | (u8::from(
+                        *interval
+                            != crate::commissioning::outer::velocity::integral_evidence::ExactRateInterval::EMPTY,
+                    ) << direction)
+            });
     sink.foci_velocity_integral_run_summary(FociVelocityIntegralRunSummary {
         oid,
         run_sequence: terminal.run_sequence,
@@ -916,6 +973,7 @@ pub fn emit_velocity_integral_terminal<S: CommissionReplySink>(
         fragment: 0,
         forward_eligible_mask: terminal.evidence.eligible_masks[0],
         reverse_eligible_mask: terminal.evidence.eligible_masks[1],
+        opening_available_mask,
         bookend_available_mask,
         current_terminus_plus_one: terminal
             .evidence
@@ -975,27 +1033,37 @@ pub fn emit_velocity_integral_terminal<S: CommissionReplySink>(
             closing_low_q: bookend.map_or(0, |interval| interval.low_q),
             closing_high_q: bookend.map_or(0, |interval| interval.high_q),
         });
-        if let Some(authority) = authority
-            && authority.model_interval_available(direction)
-            && let Some(expected) = stage_b_deficit_bounds_q(
-                authority.directional_pooled_intervals[direction],
-                authority.final_p,
-                authority.encoder_counts_per_rev,
-            )
-        {
-            sink.foci_velocity_integral_stage_b_comparison(FociVelocityIntegralStageBComparison {
-                oid,
-                run_sequence: terminal.run_sequence,
-                evidence_sequence: sequence,
-                direction: direction as u8,
-                stage_b_low_q16: authority.directional_pooled_intervals[direction][0],
-                stage_b_high_q16: authority.directional_pooled_intervals[direction][1],
-                expected_low_q: expected[0],
-                expected_high_q: expected[1],
-                opening_low_q: opening.low_q,
-                opening_high_q: opening.high_q,
+        let model_comparison = authority
+            .filter(|authority| authority.model_interval_available(direction))
+            .and_then(|authority| {
+                stage_b_deficit_bounds_q(
+                    authority.directional_pooled_intervals[direction],
+                    authority.final_p,
+                    authority.encoder_counts_per_rev,
+                )
+                .map(|expected| (authority, expected))
             });
-        }
+        let (stage_b_interval, expected, available) =
+            model_comparison.map_or(([0; 2], [0; 2], 0), |(authority, expected)| {
+                (
+                    authority.directional_pooled_intervals[direction],
+                    expected,
+                    1,
+                )
+            });
+        sink.foci_velocity_integral_stage_b_comparison(FociVelocityIntegralStageBComparison {
+            oid,
+            run_sequence: terminal.run_sequence,
+            evidence_sequence: sequence,
+            direction: direction as u8,
+            available,
+            stage_b_low_q16: stage_b_interval[0],
+            stage_b_high_q16: stage_b_interval[1],
+            expected_low_q: expected[0],
+            expected_high_q: expected[1],
+            opening_low_q: opening.low_q,
+            opening_high_q: opening.high_q,
+        });
     }
     if let Some(reproduction) = reproduction {
         let direction_mask =
@@ -1523,7 +1591,7 @@ fn emit_velocity_stage_b_handoff<S: CommissionReplySink>(
             run_sequence: report.run_sequence,
             evidence_sequence: report.evidence_sequence,
             nominated_p: report.handoff.nomination.p.raw(),
-            joint_member_mask: report.handoff.nomination.joint.member_mask,
+            joint_member_mask: report.joint_union,
             forward_member_mask: report.handoff.directional[0].region.member_mask,
             reverse_member_mask: report.handoff.directional[1].region.member_mask,
             flags: report.handoff.coverage_mask
@@ -1537,6 +1605,7 @@ fn emit_velocity_stage_b_handoff<S: CommissionReplySink>(
         evidence_sequence: report.evidence_sequence,
         nominated_rung: nomination.rung_index,
         nominated_p: nomination.p.raw(),
+        selected_joint_mask: nomination.joint.member_mask,
         distance_to_start_q16: nomination.distance_to_start_num,
         distance_to_top_q16: nomination.distance_to_top_num,
         flags: u8::from(nomination.reduced_margin),
@@ -1551,6 +1620,7 @@ fn emit_velocity_stage_b_handoff<S: CommissionReplySink>(
                 evidence_sequence: report.evidence_sequence,
                 direction: direction as u8,
                 member_mask: selected.region.member_mask,
+                region_class: u8::from(report.model_direction_mask & (1 << direction) != 0),
                 coverage: crate::commissioning::outer::velocity::sweep_evidence::coverage_kind_code(
                     selected.coverage,
                 ),
@@ -1721,8 +1791,8 @@ fn emit_velocity_stage_b_reproduction<S: CommissionReplySink>(
     report: crate::commission_dispatch::stage_b::StageBReproductionReport,
 ) {
     let delta = report.delta;
-    sink.foci_velocity_stage_b_reproduction_v3_core(
-        crate::ankyra::replies::FociVelocityStageBReproductionV3Core {
+    sink.foci_velocity_stage_b_reproduction_v4_core(
+        crate::ankyra::replies::FociVelocityStageBReproductionV4Core {
             oid,
             run_sequence: report.run_sequence,
             evidence_sequence: report.evidence_sequence,
@@ -1731,14 +1801,19 @@ fn emit_velocity_stage_b_reproduction<S: CommissionReplySink>(
             previous_provisional_p: delta.previous_provisional_p,
             current_provisional_p: delta.current_provisional_p,
             final_p: delta.final_p,
+            selected_joint_mask: delta.selected_joint.member_mask,
+            selected_first_rung: delta.selected_joint.first_rung,
+            selected_member_count: delta.selected_joint.member_count,
+            forward_validity: delta.directional_validity[0] as u8,
+            reverse_validity: delta.directional_validity[1] as u8,
             reduced_margin: u8::from(delta.reduced_margin),
             schema_revision:
                 crate::commissioning::outer::velocity::reproduction::STAGE_B_EVIDENCE_SCHEMA_REVISION,
         },
     );
     for (object, membership) in delta.memberships.into_iter().enumerate() {
-        sink.foci_velocity_stage_b_reproduction_v3_membership(
-            crate::ankyra::replies::FociVelocityStageBReproductionV3Membership {
+        sink.foci_velocity_stage_b_reproduction_v4_membership(
+            crate::ankyra::replies::FociVelocityStageBReproductionV4Membership {
                 oid,
                 run_sequence: report.run_sequence,
                 evidence_sequence: report.evidence_sequence,
@@ -1754,8 +1829,8 @@ fn emit_velocity_stage_b_reproduction<S: CommissionReplySink>(
         );
     }
     for (direction, interval) in delta.intervals.into_iter().enumerate() {
-        sink.foci_velocity_stage_b_reproduction_v3_pooled(
-            crate::ankyra::replies::FociVelocityStageBReproductionV3Pooled {
+        sink.foci_velocity_stage_b_reproduction_v4_pooled(
+            crate::ankyra::replies::FociVelocityStageBReproductionV4Pooled {
                 oid,
                 run_sequence: report.run_sequence,
                 evidence_sequence: report.evidence_sequence,
@@ -1770,8 +1845,8 @@ fn emit_velocity_stage_b_reproduction<S: CommissionReplySink>(
         );
     }
     for (direction, interval) in delta.intervals.into_iter().enumerate() {
-        sink.foci_velocity_stage_b_reproduction_v3_common(
-            crate::ankyra::replies::FociVelocityStageBReproductionV3Common {
+        sink.foci_velocity_stage_b_reproduction_v4_common(
+            crate::ankyra::replies::FociVelocityStageBReproductionV4Common {
                 oid,
                 run_sequence: report.run_sequence,
                 evidence_sequence: report.evidence_sequence,
@@ -1787,8 +1862,8 @@ fn emit_velocity_stage_b_reproduction<S: CommissionReplySink>(
         );
     }
     for (direction, coverage) in delta.coverage.into_iter().enumerate() {
-        sink.foci_velocity_stage_b_reproduction_v3_coverage(
-            crate::ankyra::replies::FociVelocityStageBReproductionV3Coverage {
+        sink.foci_velocity_stage_b_reproduction_v4_coverage(
+            crate::ankyra::replies::FociVelocityStageBReproductionV4Coverage {
                 oid,
                 run_sequence: report.run_sequence,
                 evidence_sequence: report.evidence_sequence,
@@ -1802,8 +1877,8 @@ fn emit_velocity_stage_b_reproduction<S: CommissionReplySink>(
             },
         );
     }
-    sink.foci_velocity_stage_b_reproduction_v3_digest(
-        crate::ankyra::replies::FociVelocityStageBReproductionV3Digest {
+    sink.foci_velocity_stage_b_reproduction_v4_digest(
+        crate::ankyra::replies::FociVelocityStageBReproductionV4Digest {
             oid,
             run_sequence: report.run_sequence,
             evidence_sequence: report.evidence_sequence,
@@ -2648,11 +2723,18 @@ mod tests {
         SweepDirectionalRegionRates(u32),
         SweepDirectionalRegionBoundary(u32),
         SweepJointRegion(u32),
-        SweepHandoff(u16),
-        SweepNomination(u16),
+        SweepHandoff {
+            nominated_p: u16,
+            joint_union: u32,
+        },
+        SweepNomination {
+            nominated_p: u16,
+            selected_joint: u32,
+        },
         SweepDirectionalHandoff {
             direction: u8,
             member_mask: u32,
+            region_class: u8,
         },
         StageBReproduction(u8),
         StageBTerminal {
@@ -2675,6 +2757,10 @@ mod tests {
             outcome: u8,
         },
         IntegralDerived(u8),
+        IntegralStageBComparison {
+            direction: u8,
+            available: u8,
+        },
         IntegralTerminal(u8),
         OuterInconclusive,
         SelftestResult {
@@ -3155,14 +3241,20 @@ mod tests {
             &mut self,
             report: crate::ankyra::replies::FociVelocityStageBHandoffCore,
         ) {
-            self.events.push(Event::SweepHandoff(report.nominated_p));
+            self.events.push(Event::SweepHandoff {
+                nominated_p: report.nominated_p,
+                joint_union: report.joint_member_mask,
+            });
         }
 
         fn foci_velocity_stage_b_nomination(
             &mut self,
             report: crate::ankyra::replies::FociVelocityStageBNomination,
         ) {
-            self.events.push(Event::SweepNomination(report.nominated_p));
+            self.events.push(Event::SweepNomination {
+                nominated_p: report.nominated_p,
+                selected_joint: report.selected_joint_mask,
+            });
         }
 
         fn foci_velocity_stage_b_directional_handoff(
@@ -3172,6 +3264,7 @@ mod tests {
             self.events.push(Event::SweepDirectionalHandoff {
                 direction: report.direction,
                 member_mask: report.member_mask,
+                region_class: report.region_class,
             });
         }
 
@@ -3204,48 +3297,48 @@ mod tests {
             self.events.push(Event::StageBReproduction(4));
         }
 
-        fn foci_velocity_stage_b_reproduction_v3_core(
+        fn foci_velocity_stage_b_reproduction_v4_core(
             &mut self,
-            _report: crate::ankyra::replies::FociVelocityStageBReproductionV3Core,
+            _report: crate::ankyra::replies::FociVelocityStageBReproductionV4Core,
         ) {
             self.events.push(Event::StageBReproduction(10));
         }
 
-        fn foci_velocity_stage_b_reproduction_v3_membership(
+        fn foci_velocity_stage_b_reproduction_v4_membership(
             &mut self,
-            report: crate::ankyra::replies::FociVelocityStageBReproductionV3Membership,
+            report: crate::ankyra::replies::FociVelocityStageBReproductionV4Membership,
         ) {
             self.events
                 .push(Event::StageBReproduction(11 + report.object));
         }
 
-        fn foci_velocity_stage_b_reproduction_v3_pooled(
+        fn foci_velocity_stage_b_reproduction_v4_pooled(
             &mut self,
-            report: crate::ankyra::replies::FociVelocityStageBReproductionV3Pooled,
+            report: crate::ankyra::replies::FociVelocityStageBReproductionV4Pooled,
         ) {
             self.events
                 .push(Event::StageBReproduction(14 + report.direction));
         }
 
-        fn foci_velocity_stage_b_reproduction_v3_common(
+        fn foci_velocity_stage_b_reproduction_v4_common(
             &mut self,
-            report: crate::ankyra::replies::FociVelocityStageBReproductionV3Common,
+            report: crate::ankyra::replies::FociVelocityStageBReproductionV4Common,
         ) {
             self.events
                 .push(Event::StageBReproduction(16 + report.direction));
         }
 
-        fn foci_velocity_stage_b_reproduction_v3_coverage(
+        fn foci_velocity_stage_b_reproduction_v4_coverage(
             &mut self,
-            report: crate::ankyra::replies::FociVelocityStageBReproductionV3Coverage,
+            report: crate::ankyra::replies::FociVelocityStageBReproductionV4Coverage,
         ) {
             self.events
                 .push(Event::StageBReproduction(18 + report.direction));
         }
 
-        fn foci_velocity_stage_b_reproduction_v3_digest(
+        fn foci_velocity_stage_b_reproduction_v4_digest(
             &mut self,
-            _report: crate::ankyra::replies::FociVelocityStageBReproductionV3Digest,
+            _report: crate::ankyra::replies::FociVelocityStageBReproductionV4Digest,
         ) {
             self.events.push(Event::StageBReproduction(20));
         }
@@ -3397,9 +3490,12 @@ mod tests {
 
         fn foci_velocity_integral_stage_b_comparison(
             &mut self,
-            _report: crate::ankyra::replies::FociVelocityIntegralStageBComparison,
+            report: crate::ankyra::replies::FociVelocityIntegralStageBComparison,
         ) {
-            self.events.push(Event::IntegralDerived(3));
+            self.events.push(Event::IntegralStageBComparison {
+                direction: report.direction,
+                available: report.available,
+            });
         }
 
         fn foci_velocity_integral_reproduction_core(
@@ -4755,6 +4851,8 @@ mod tests {
             VelocitySweepEvent::Handoff(VelocityStageBHandoffReport {
                 run_sequence: 7,
                 evidence_sequence: 6,
+                joint_union: membership | 1,
+                model_direction_mask: 0b11,
                 handoff,
             }),
         );
@@ -4767,15 +4865,23 @@ mod tests {
                 Event::SweepDirectionalRegionRates(membership),
                 Event::SweepDirectionalRegionBoundary(membership),
                 Event::SweepJointRegion(membership),
-                Event::SweepHandoff(724),
-                Event::SweepNomination(724),
+                Event::SweepHandoff {
+                    nominated_p: 724,
+                    joint_union: membership | 1,
+                },
+                Event::SweepNomination {
+                    nominated_p: 724,
+                    selected_joint: membership,
+                },
                 Event::SweepDirectionalHandoff {
                     direction: 0,
                     member_mask: membership,
+                    region_class: 1,
                 },
                 Event::SweepDirectionalHandoff {
                     direction: 1,
                     member_mask: membership,
+                    region_class: 1,
                 },
             ]
         );
@@ -5536,7 +5642,7 @@ mod tests {
 
     #[cfg(feature = "trace-velocity-sweep")]
     #[test]
-    fn velocity_integral_reply_omits_unavailable_model_comparison() {
+    fn velocity_integral_reply_labels_unavailable_model_comparison() {
         use crate::commissioning::outer::velocity::integral_evidence::{
             ExactRateInterval, IntegralRunEvidence,
         };
@@ -5592,13 +5698,14 @@ mod tests {
             },
         );
 
-        assert_eq!(
-            sink.events
-                .iter()
-                .filter(|event| matches!(event, Event::IntegralDerived(3)))
-                .count(),
-            1
-        );
+        assert!(sink.events.contains(&Event::IntegralStageBComparison {
+            direction: 0,
+            available: 1,
+        }));
+        assert!(sink.events.contains(&Event::IntegralStageBComparison {
+            direction: 1,
+            available: 0,
+        }));
     }
 
     #[test]
