@@ -1845,6 +1845,34 @@ fn stage_b_dispatch_rewrites_complete_from_the_reproduced_core() {
 
 #[cfg(feature = "trace-velocity-sweep")]
 #[test]
+fn stage_b_dispatch_authorizes_joint_operability_without_directional_models() {
+    use crate::commission_dispatch::stage_b::apply_stage_b_terminal;
+    use crate::commissioning::outer::velocity::reproduction::StageBCandidateSlot;
+    use crate::commissioning::types::VelocitySweepOutcome;
+
+    let mut slot = StageBCandidateSlot::new();
+    let mut first = sample_velocity_sweep_terminal(VelocitySweepOutcome::CompleteCandidate);
+    first.selected_memberships = [0, 0, 0b00110];
+    first.nominated_p = 362;
+    apply_stage_b_terminal(first, 0, &mut slot);
+
+    let mut second = first;
+    second.run_sequence += 1;
+    second.digest ^= 0x55aa;
+    let dispatch = apply_stage_b_terminal(second, 0, &mut slot);
+
+    assert_eq!(dispatch.terminal.outcome, VelocitySweepOutcome::Complete);
+    assert_eq!(dispatch.terminal.model_direction_mask, 0);
+    assert_eq!(dispatch.terminal.selected_memberships, [0, 0, 0b00110]);
+    assert_eq!(dispatch.terminal.nominated_p, 362);
+    assert_eq!(dispatch.terminal.selected_intervals, [[0, 0]; 2]);
+    assert_eq!(dispatch.terminal.selected_common_intervals, [[0, 0]; 2]);
+    assert!(dispatch.reproduction.is_some());
+    assert_eq!(slot.candidate(), None);
+}
+
+#[cfg(feature = "trace-velocity-sweep")]
+#[test]
 fn stage_b_dispatch_faults_and_clears_noncontiguous_evidence() {
     use crate::commission_dispatch::stage_b::{
         STAGE_B_CAUSE_EVIDENCE_INTEGRITY, apply_stage_b_terminal,
@@ -1874,7 +1902,7 @@ fn stage_b_dispatch_faults_and_clears_noncontiguous_evidence() {
 
 #[cfg(feature = "trace-velocity-sweep")]
 #[test]
-fn stage_b_schema7_reproduction_records_are_canonical_and_ordered() {
+fn stage_b_schema8_reproduction_records_are_canonical_and_ordered() {
     use crate::commission_dispatch::stage_b::{
         StageBReproductionReport, for_each_stage_b_reproduction_record,
     };
@@ -2001,7 +2029,7 @@ fn stage_b_schema7_reproduction_records_are_canonical_and_ordered() {
         &records[10].as_bytes()[11..15],
         &0x0123_4567_u32.to_le_bytes()
     );
-    assert_eq!(STAGE_B_EVIDENCE_SCHEMA_REVISION, 7);
+    assert_eq!(STAGE_B_EVIDENCE_SCHEMA_REVISION, 8);
 
     let digest = records
         .iter()

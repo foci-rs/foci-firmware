@@ -30,7 +30,8 @@ use super::current_guard::{
 };
 use super::operating_region::{
     BoundRounding, CompactSignedRate, DirectionalRegionClosure, DirectionalRegionRef,
-    DirectionalRegionSummary, JointOperableClosure, JointOperableRegion,
+    DirectionalRegionSummary, JointOperableClosure, JointOperableRegion, ProvisionalPNomination,
+    SelectedDirectionalRegion,
 };
 use super::recovery::{
     RecoveryRateAuthority, RecoveryStage, RungOriginRecoveryConfig, RungOriginRecoveryOutcome,
@@ -54,6 +55,7 @@ use super::sweep_plan::{
 const OUTER_VELOCITY_MODE: u32 = 0x8000_0002;
 const SETTLE_TRACE_STROKE_MARKER: u16 = 1 << 15;
 const SWEEP_CAUSE_NONE: u8 = 0;
+#[cfg(test)]
 const SWEEP_CAUSE_NO_DIRECTIONAL_MODEL: u8 = 1;
 const SWEEP_CAUSE_NO_JOINT_OPERABLE_REGION: u8 = 2;
 const SWEEP_CAUSE_INTEGRITY: u8 = 3;
@@ -221,6 +223,30 @@ fn joint_region_report(
 fn selected_handoff(
     data: &super::super::VelocitySweepData,
 ) -> Option<super::operating_region::StageBHandoff> {
+    let selected = selected_candidate(data)?;
+    if selected.model_direction_mask != 3 {
+        return None;
+    }
+    let [Some(forward), Some(reverse)] = selected.directional else {
+        return None;
+    };
+    Some(super::operating_region::StageBHandoff {
+        nomination: selected.nomination,
+        directional: [forward, reverse],
+        coverage_mask: selected.coverage_mask,
+    })
+}
+
+#[derive(Clone, Copy)]
+struct StageBCandidateSelection {
+    nomination: ProvisionalPNomination,
+    directional: [Option<SelectedDirectionalRegion>; 2],
+    joint_union: u32,
+    model_direction_mask: u8,
+    coverage_mask: u8,
+}
+
+fn selected_candidate(data: &super::super::VelocitySweepData) -> Option<StageBCandidateSelection> {
     let plan = data.plan;
     if !plan.is_present() {
         return None;
@@ -231,11 +257,33 @@ fn selected_handoff(
         data.operating_regions
             .joint
             .best_nomination(gains, plan.p_start, plan.p_top)?;
-    data.operating_regions.handoff.handoff(
+    let nominated_rates_q = data.best_nomination_rates.map(CompactSignedRate::decode);
+    let directional = [
+        data.operating_regions.handoff.best(
+            crate::autotune::velocity_measurement::VelocityDirection::Forward,
+            nomination.rung_index,
+            gains,
+            nominated_rates_q[0],
+        ),
+        data.operating_regions.handoff.best(
+            crate::autotune::velocity_measurement::VelocityDirection::Reverse,
+            nomination.rung_index,
+            gains,
+            nominated_rates_q[1],
+        ),
+    ];
+    let coverage_mask = u8::from(directional[0].is_some_and(|region| {
+        region.coverage == super::operating_region::CoverageKind::FullCoverage
+    })) | (u8::from(directional[1].is_some_and(|region| {
+        region.coverage == super::operating_region::CoverageKind::FullCoverage
+    })) << 1);
+    Some(StageBCandidateSelection {
         nomination,
-        gains,
-        data.best_nomination_rates.map(CompactSignedRate::decode),
-    )
+        directional,
+        joint_union: data.operating_regions.joint.union_member_mask(),
+        model_direction_mask: data.operating_regions.handoff.model_direction_mask(),
+        coverage_mask,
+    })
 }
 
 fn representative_rung_rates(
@@ -352,10 +400,10 @@ fn sweep_evidence_terminal(
         "velocity sweep terminal requires an immutable plan"
     );
     let model_direction_mask = data.operating_regions.handoff.model_direction_mask();
-    let handoff = selected_handoff(data);
+    let candidate = selected_candidate(data);
     let (mut outcome, mut cause) = if recovery_failure {
         (VelocitySweepOutcome::Inconclusive, SWEEP_CAUSE_RECOVERY)
-    } else if handoff.is_some() {
+    } else if candidate.is_some() {
         (
             VelocitySweepOutcome::CompleteCandidate,
             if current_headroom {
@@ -363,11 +411,6 @@ fn sweep_evidence_terminal(
             } else {
                 SWEEP_CAUSE_NONE
             },
-        )
-    } else if model_direction_mask != 3 {
-        (
-            VelocitySweepOutcome::Inconclusive,
-            SWEEP_CAUSE_NO_DIRECTIONAL_MODEL,
         )
     } else {
         (
@@ -404,30 +447,28 @@ fn sweep_evidence_terminal(
             _ => false,
         },
         model_direction_mask,
-        selected_memberships: handoff.map_or([0; 3], |handoff| {
+        selected_memberships: candidate.map_or([0; 3], |candidate| {
             [
-                handoff.directional[0].region.member_mask,
-                handoff.directional[1].region.member_mask,
-                handoff.nomination.joint.member_mask,
+                candidate.directional[0].map_or(0, |region| region.region.member_mask),
+                candidate.directional[1].map_or(0, |region| region.region.member_mask),
+                candidate.joint_union,
             ]
         }),
-        nominated_p: handoff.map_or(0, |handoff| handoff.nomination.p.raw()),
-        selected_intervals: handoff.map_or([[0; 2]; 2], |handoff| {
-            [
-                handoff.directional[0].region.pooled_interval,
-                handoff.directional[1].region.pooled_interval,
-            ]
+        nominated_p: candidate.map_or(0, |candidate| candidate.nomination.p.raw()),
+        selected_intervals: candidate.map_or([[0; 2]; 2], |candidate| {
+            candidate
+                .directional
+                .map(|region| region.map_or([0; 2], |region| region.region.pooled_interval))
         }),
-        selected_common_intervals: handoff.map_or([[0; 2]; 2], |handoff| {
-            [
-                handoff.directional[0].region.common_intersection,
-                handoff.directional[1].region.common_intersection,
-            ]
+        selected_common_intervals: candidate.map_or([[0; 2]; 2], |candidate| {
+            candidate
+                .directional
+                .map(|region| region.map_or([0; 2], |region| region.region.common_intersection))
         }),
         p_start: plan.p_start.raw(),
         p_top: plan.p_top.raw(),
         rung_count: plan.rung_count,
-        coverage_mask: handoff.map_or(0, |handoff| handoff.coverage_mask),
+        coverage_mask: candidate.map_or(0, |candidate| candidate.coverage_mask),
         directional_region_counts: data.integrity.directional_region_counts(),
         directional_fragment_counts: data.integrity.directional_fragment_counts(),
         expected_observations,
@@ -2069,6 +2110,37 @@ mod tests {
     }
 
     #[test]
+    fn stage_b_joint_authority_without_directional_model_is_sufficient() {
+        let mut phase = phase();
+        let mut backend = MockBackend::new();
+        backend.current_limit_value = current_limit(2_448);
+        pollster::block_on(step_velocity_sweep_with_trace(&mut phase, &mut backend));
+        let OuterPhase::VelocitySweep { data, .. } = &mut phase else {
+            panic!("velocity sweep should remain active");
+        };
+        retain_joint_candidate(
+            data,
+            JointOperableRegion {
+                member_mask: 0b110,
+                first_rung: 1,
+                last_rung: 2,
+                member_count: 2,
+                closure: JointOperableClosure::CurrentHeadroom,
+            },
+        );
+
+        let terminal = sweep_evidence_terminal(data, true, false);
+
+        assert_eq!(terminal.outcome, VelocitySweepOutcome::CompleteCandidate);
+        assert_eq!(terminal.cause, SWEEP_CAUSE_CURRENT_HEADROOM);
+        assert_eq!(terminal.model_direction_mask, 0);
+        assert_eq!(terminal.selected_memberships, [0, 0, 0b110]);
+        assert_eq!(terminal.selected_intervals, [[0, 0]; 2]);
+        assert_eq!(terminal.selected_common_intervals, [[0, 0]; 2]);
+        assert_eq!(terminal.nominated_p, data.plan.gain_at(1).unwrap().raw());
+    }
+
+    #[test]
     fn partial_current_headroom_rung_closes_without_folding() {
         let mut fold = DirectionalRegionFold::new(VelocityDirection::Forward);
         assert!(
@@ -2926,7 +2998,7 @@ mod tests {
             }
         };
         assert_eq!(terminal.outcome, VelocitySweepOutcome::Inconclusive);
-        assert_eq!(terminal.cause, SWEEP_CAUSE_NO_DIRECTIONAL_MODEL);
+        assert_eq!(terminal.cause, SWEEP_CAUSE_NO_JOINT_OPERABLE_REGION);
         assert_eq!(terminal.emitted_observations, 1);
         assert_eq!(terminal.emitted_rungs, 1);
         assert_eq!(
@@ -3232,7 +3304,7 @@ mod tests {
         assert_eq!(terminal.emitted_observations, u16::from(SWEEP_SLOT_COUNT));
         assert_eq!(terminal.expected_rungs, 1);
         assert_eq!(terminal.emitted_rungs, 1);
-        assert_eq!(terminal.outcome, VelocitySweepOutcome::Inconclusive);
+        assert_eq!(terminal.outcome, VelocitySweepOutcome::CompleteCandidate);
         assert_ne!(terminal.digest, 0);
     }
 }

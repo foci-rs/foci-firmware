@@ -480,7 +480,7 @@ fn outer_safety_timing_terminal_order_composite_preserves_intermediate_state() {
 }
 
 #[test]
-fn reproduced_current_headroom_installs_authority_without_continuation() {
+fn reproduced_joint_authority_with_fragment_survives_suppressed_continuation() {
     pollster::block_on(async {
         use crate::commission_dispatch::stage_b::{
             apply_stage_b_terminal, preflight_stage_b_request,
@@ -523,6 +523,8 @@ fn reproduced_current_headroom_installs_authority_without_continuation() {
         let tmc = TmcConfig::default_for_test();
         let config = TmcControlConfig::new(84_000_000, PWM_HZ, 0.03125, tmc);
         let mut terminal = stage_b_terminal();
+        terminal.model_direction_mask = 1;
+        terminal.selected_memberships[1] = 0x0018_0000;
         terminal.recovery_unavailable = true;
 
         let action = runtime
@@ -543,6 +545,8 @@ fn reproduced_current_headroom_installs_authority_without_continuation() {
         let retained = stage_c_slot
             .authority()
             .expect("reproduced Stage B must retain Stage-C authority");
+        assert_eq!(retained.directional_memberships[1], 0x0018_0000);
+        assert_eq!(retained.joint_membership, 0x0038_0000);
         assert!(matches!(
             action,
             ScheduledCommissionTickAction::Terminal {

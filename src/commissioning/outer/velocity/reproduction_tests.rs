@@ -52,7 +52,7 @@ fn compare(
 fn reproduction_fnv_vectors_and_build_revision_are_stable() {
     assert_eq!(const_fnv1a32(b""), 0x811c_9dc5);
     assert_eq!(const_fnv1a32(b"a"), 0xe40c_292c);
-    assert_eq!(STAGE_B_EVIDENCE_SCHEMA_REVISION, 7);
+    assert_eq!(STAGE_B_EVIDENCE_SCHEMA_REVISION, 8);
     assert_ne!(STAGE_B_BUILD_REVISION, 0);
 }
 
@@ -395,10 +395,10 @@ fn reproduction_plan_mismatch_is_pre_motion_and_preserves_candidate() {
 }
 
 #[test]
-fn reproduction_rejects_schema_five_candidate_before_motion() {
+fn reproduction_rejects_schema_seven_candidate_before_motion() {
     let mut slot = StageBCandidateSlot::new();
     let mut retained = summary(0, 1);
-    retained.identity.schema_revision = 5;
+    retained.identity.schema_revision = 7;
     slot.observe_sufficient(retained);
 
     let requested = identity(0, retained.identity.plan_digest);
@@ -407,10 +407,10 @@ fn reproduction_rejects_schema_five_candidate_before_motion() {
         requested: requested_identity,
     }) = slot.preflight(requested)
     else {
-        panic!("schema-5 evidence must not compare with schema 7")
+        panic!("schema-7 evidence must not compare with schema 8")
     };
-    assert_eq!(retained_identity.schema_revision, 5);
-    assert_eq!(requested_identity.schema_revision, 7);
+    assert_eq!(retained_identity.schema_revision, 7);
+    assert_eq!(requested_identity.schema_revision, 8);
     assert_eq!(slot.candidate(), Some(retained));
 }
 

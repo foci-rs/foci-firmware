@@ -151,7 +151,7 @@ fn velocity_current_guard_contract() {
         VELOCITY_LIMIT_EVIDENCE_CAPABILITY_LATCHED_FLAG,
     )
     .unwrap();
-    assert_eq!(STAGE_B_EVIDENCE_SCHEMA_REVISION, 7);
+    assert_eq!(STAGE_B_EVIDENCE_SCHEMA_REVISION, 8);
     assert_eq!(
         stage_b.limit_evidence_capability,
         VelocityLimitEvidenceCapability::LatchedFlag

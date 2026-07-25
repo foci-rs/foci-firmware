@@ -2,7 +2,8 @@
 
 use crate::commissioning::outer::velocity::reproduction::{
     STAGE_B_BUILD_REVISION, STAGE_B_EVIDENCE_SCHEMA_REVISION, StageBCandidateSlot,
-    StageBCandidateSummary, StageBPlanIdentity, StageBReproductionDecision,
+    StageBCandidateSummary, StageBDirectionalValidity, StageBPlanIdentity,
+    StageBReproductionDecision,
 };
 use crate::commissioning::outer::velocity::sweep_plan::{
     VelocitySweepPlan, VelocitySweepRequest, plan_velocity_sweep,
@@ -155,11 +156,26 @@ pub fn apply_stage_b_terminal(
     let reproduction = match stage_b_candidate.observe_sufficient(current) {
         StageBReproductionDecision::CompleteCandidate(_) => None,
         StageBReproductionDecision::Complete(delta) => {
-            terminal.selected_memberships = delta.memberships.map(|item| item.core);
+            terminal.selected_memberships = [
+                delta.memberships[0].core,
+                delta.memberships[1].core,
+                delta.selected_joint.member_mask,
+            ];
             terminal.nominated_p = delta.final_p;
             terminal.selected_intervals = delta.intervals.map(|item| item.pooled_overlap);
             terminal.selected_common_intervals =
                 delta.intervals.map(|item| item.conservative_common);
+            terminal.model_direction_mask = delta
+                .directional_validity
+                .into_iter()
+                .enumerate()
+                .fold(0, |mask, (direction, validity)| {
+                    mask | (u8::from(matches!(
+                        validity,
+                        StageBDirectionalValidity::ReproducedRegionCoversFinalP
+                            | StageBDirectionalValidity::ReproducedRegionTransferred
+                    )) << direction)
+                });
             terminal.coverage_mask = delta.coverage_mask();
             terminal.outcome = VelocitySweepOutcome::Complete;
             terminal.cause = 0;

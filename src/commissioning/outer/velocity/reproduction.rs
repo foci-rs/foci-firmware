@@ -3,7 +3,7 @@ use crate::commissioning::outer::velocity::sweep_plan::{MAX_SWEEP_RUNGS, gain_at
 use foci_tmc4671::pid::PidGain;
 
 /// Evidence schema stored in the RAM-only Stage B reproduction slot.
-pub const STAGE_B_EVIDENCE_SCHEMA_REVISION: u16 = 7;
+pub const STAGE_B_EVIDENCE_SCHEMA_REVISION: u16 = 8;
 
 /// Forward shared model core contains fewer than three rungs.
 pub const STAGE_B_REPRO_REASON_FORWARD_CORE_TOO_SMALL: u8 = 1 << 0;
