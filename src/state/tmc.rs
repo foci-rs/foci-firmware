@@ -76,6 +76,8 @@ pub struct TmcChannelState {
     /// inactive". Used by `arm_motor_electrical` to detect silent chip
     /// resets between commission and arm.
     pub motor_sentinel: AtomicU32,
+    /// Whether firmware established the fixed Q8.8-P/Q4.12-I representation.
+    pi_representation_established: AtomicBool,
     /// Configured mechanical ABN encoder pulses per revolution.
     pub encoder_ppr: AtomicU32,
     encoder_counts_per_rev: AtomicU32,
@@ -173,6 +175,7 @@ impl TmcChannelState {
             current_limit_value: AtomicU16::new(PidTorqueFluxLimit::ZERO.raw()),
             motor_armed: AtomicBool::new(false),
             motor_sentinel: AtomicU32::new(0),
+            pi_representation_established: AtomicBool::new(false),
             encoder_ppr: AtomicU32::new(0),
             encoder_counts_per_rev: AtomicU32::new(0),
             tmc_grid: AtomicU32::new(0),
@@ -230,6 +233,7 @@ impl TmcChannelState {
         self.store_current_limit(PidTorqueFluxLimit::ZERO, Relaxed);
         self.motor_armed.store(false, Relaxed);
         self.motor_sentinel.store(0, Relaxed);
+        self.clear_pi_representation_established();
         self.encoder_ppr.store(0, Relaxed);
         self.encoder_counts_per_rev.store(0, Relaxed);
         self.tmc_grid.store(0, Relaxed);
@@ -285,6 +289,23 @@ impl TmcChannelState {
     /// Publish a validated torque/flux current limit.
     pub fn store_current_limit(&self, limit: PidTorqueFluxLimit, ordering: Ordering) {
         self.current_limit_value.store(limit.raw(), ordering);
+    }
+
+    /// Return whether startup established the fixed PI representation.
+    pub fn pi_representation_established(&self) -> bool {
+        self.pi_representation_established.load(Ordering::Acquire)
+    }
+
+    /// Clear the representation invariant after chip reset or state loss.
+    pub(crate) fn clear_pi_representation_established(&self) {
+        self.pi_representation_established
+            .store(false, Ordering::Release);
+    }
+
+    /// Publish successful exact representation readback.
+    pub(crate) fn mark_pi_representation_established(&self) {
+        self.pi_representation_established
+            .store(true, Ordering::Release);
     }
 
     /// Load and validate the retained outer-loop gains.
@@ -510,8 +531,14 @@ pub static TMC_QUEUE_FLUSH: AtomicBool = AtomicBool::new(false);
 #[cfg(test)]
 mod tests {
     use super::*;
+    use core::mem::size_of;
     use core::sync::atomic::Ordering::Relaxed;
     use foci_tmc4671::current_limit::PidTorqueFluxLimit;
+
+    #[test]
+    fn tmc_channel_state_size_is_pinned() {
+        assert_eq!(size_of::<TmcChannelState>(), 120);
+    }
 
     #[test]
     fn optional_filter_hz_distinguishes_unset_disable_and_cutoff() {

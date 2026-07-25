@@ -13,12 +13,15 @@ pub mod dispatch;
 pub mod filters;
 pub mod helpers;
 pub mod lifecycle;
+pub mod pi_representation;
 pub mod request;
 pub mod request_writes;
 pub mod settle;
 pub mod signals;
 pub mod state;
 
+#[cfg(test)]
+mod pi_representation_tests;
 #[cfg(test)]
 mod tests;
 
