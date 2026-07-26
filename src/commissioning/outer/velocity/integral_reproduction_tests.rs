@@ -1,5 +1,7 @@
 use super::integral_evidence::{ExactRateInterval, IntegralRunEvidence, StageCEvidenceError};
-use super::integral_plan::STAGE_C_EVIDENCE_SCHEMA_REVISION;
+use super::integral_plan::{
+    STAGE_C_EVIDENCE_SCHEMA_REVISION, VelocityIntegralExecutionPlan, VelocityIntegralPlan,
+};
 use super::integral_reproduction::{
     StageCAuthoritySummary, StageCCandidateSlot, StageCCandidateSummary, StageCPlanIdentity,
     StageCReproductionDecision, StageCRestBoundaryReference, StageCSlotState, closed_intersection,
@@ -26,6 +28,7 @@ fn authority(channel: u8, digest: u64) -> StageCAuthoritySummary {
         stage_b_plan_digest: 0x0123_4567_89ab_cdef,
         final_p: 1_448,
         directional_memberships: [0x0038_0000; 2],
+        stage_b_joint_membership: 0x0038_0000,
         joint_membership: 0x0038_0000,
         directional_validity: [
             StageBDirectionalValidity::ReproducedRegionCoversFinalP,
@@ -40,6 +43,7 @@ fn authority(channel: u8, digest: u64) -> StageCAuthoritySummary {
         positive_rung_count: 6,
         family_size: 32,
         maximum_workflow_ms: 79_872,
+        probe_constrained_test_point: false,
     }
 }
 
@@ -391,9 +395,16 @@ fn q8_8_package_authority_rejects_before_stage_c_motion() {
 }
 
 #[test]
-fn candidate_slot_size_is_measured_without_padding() {
+fn stage_c_candidate_size_is_measured_without_padding() {
+    assert_eq!(core::mem::size_of::<VelocityIntegralPlan>(), 208);
+    assert_eq!(core::mem::size_of::<VelocityIntegralExecutionPlan>(), 72);
+    assert_eq!(core::mem::size_of::<StageCAuthoritySummary>(), 88);
+    assert_eq!(
+        core::mem::size_of::<crate::commissioning::types::VelocityIntegralTerminal>(),
+        632
+    );
     assert!(core::mem::size_of::<StageCCandidateSlot>() <= 640);
-    assert_eq!(core::mem::size_of::<StageCCandidateSlot>(), 632);
+    assert_eq!(core::mem::size_of::<StageCCandidateSlot>(), 640);
     assert_eq!(
         core::mem::size_of::<super::integral_reproduction::StageCReproductionDelta>(),
         596

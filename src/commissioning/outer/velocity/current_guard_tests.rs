@@ -175,9 +175,9 @@ fn velocity_current_guard_contract() {
         StageCAuthority {
             channel: 0,
             stage_b_plan_digest: stage_b.digest(),
-            final_p: 1_448,
-            directional_memberships: [0x0038_0000, 0x0038_0000],
-            joint_membership: 0x0038_0000,
+            directional_memberships: [0x001c_0000, 0x001c_0000],
+            stage_b_joint_membership: 0x001c_0000,
+            joint_membership: 0x001c_0000,
             directional_validity: [
                 crate::commissioning::outer::velocity::reproduction::StageBDirectionalValidity::ReproducedRegionCoversFinalP;
                 2
@@ -200,7 +200,7 @@ fn velocity_current_guard_contract() {
         4_000,
     )
     .unwrap();
-    assert_eq!(STAGE_C_EVIDENCE_SCHEMA_REVISION, 6);
+    assert_eq!(STAGE_C_EVIDENCE_SCHEMA_REVISION, 7);
     assert_eq!(
         stage_c.limit_evidence_capability,
         VelocityLimitEvidenceCapability::LatchedFlag

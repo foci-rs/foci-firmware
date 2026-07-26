@@ -1780,14 +1780,15 @@ mod tests {
                 plan_digest: 2,
             },
             stage_b_plan_digest: 3,
-            final_p: 1_448,
-            directional_memberships: [0x0038_0000; 2],
-            joint_membership: 0x0038_0000,
+            final_p: 724,
+            directional_memberships: [0x001c_0000; 2],
+            stage_b_joint_membership: 0x001c_0000,
+            joint_membership: 0x0004_0000,
             directional_validity: [
                 crate::commissioning::outer::velocity::reproduction::StageBDirectionalValidity::ReproducedRegionCoversFinalP;
                 2
             ],
-            reduced_margin: false,
+            reduced_margin: true,
             directional_pooled_intervals: [[100, 120], [-130, -100]],
             planned_velocity_mrev_s: 2_929,
             target_velocity_rpm: 176,
@@ -1796,6 +1797,7 @@ mod tests {
             positive_rung_count: 5,
             family_size: 28,
             maximum_workflow_ms: 90_888,
+            probe_constrained_test_point: true,
         }
     }
 
@@ -1814,10 +1816,10 @@ mod tests {
                 requested_velocity_mrev_s: 6000,
                 machine_velocity_ceiling_mrev_s: 10_000,
                 requested_velocity_source: crate::commissioning::outer::velocity::sweep_plan::RequestedVelocitySource::Defaulted,
-                max_stroke_travel_mrev: 1000,
-                settle_travel_reserve_mrev: 100,
-                negative_position_headroom_mrev: 2000,
-                positive_position_headroom_mrev: 2000,
+                max_stroke_travel_mrev: 2500,
+                settle_travel_reserve_mrev: 250,
+                negative_position_headroom_mrev: 7025,
+                positive_position_headroom_mrev: 7025,
                 max_duration_ms: 3000,
             },
         )
@@ -2586,9 +2588,9 @@ mod tests {
             let authority = StageCAuthority {
                 channel: 0,
                 stage_b_plan_digest: stage_b_plan.digest(),
-                final_p: 1_448,
-                directional_memberships: [0x0038_0000; 2],
-                joint_membership: 0x0038_0000,
+                directional_memberships: [0x001c_0000; 2],
+                stage_b_joint_membership: 0x001c_0000,
+                joint_membership: 0x001c_0000,
                 directional_validity: [
                     crate::commissioning::outer::velocity::reproduction::StageBDirectionalValidity::ReproducedRegionCoversFinalP;
                     2
@@ -2620,7 +2622,7 @@ mod tests {
                 STAGE_C_EVIDENCE_SCHEMA_REVISION,
                 stage_b_plan.digest(),
                 plan.execution_plan(),
-                authority,
+                plan.authority,
             ));
             let mut tmc = Tmc4671Spi::new(RuntimeMockSpi::default());
 

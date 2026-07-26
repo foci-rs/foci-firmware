@@ -39,7 +39,9 @@ pub struct StageCAuthoritySummary {
     pub final_p: u16,
     /// Cross-run forward and reverse model-or-fragment intersections.
     pub directional_memberships: [u32; DIRECTION_COUNT],
-    /// Selected reproduced Stage-B joint-operability component.
+    /// Reproduced Stage-B joint-operability component before Stage-C filtering.
+    pub stage_b_joint_membership: u32,
+    /// Stage-C transition-capable subset of the reproduced joint component.
     pub joint_membership: u32,
     /// Cross-run validity of the forward and reverse Stage-B models.
     pub directional_validity: [StageBDirectionalValidity; DIRECTION_COUNT],
@@ -61,6 +63,8 @@ pub struct StageCAuthoritySummary {
     pub family_size: u16,
     /// Conservative Stage-C schedule maximum.
     pub maximum_workflow_ms: u32,
+    /// The commissioning probe clamp removed at least one Stage-B-operable rung.
+    pub probe_constrained_test_point: bool,
 }
 
 impl StageCAuthoritySummary {
@@ -83,6 +87,7 @@ impl StageCAuthoritySummary {
             stage_b_plan_digest,
             final_p: plan.final_p,
             directional_memberships: authority.directional_memberships,
+            stage_b_joint_membership: authority.stage_b_joint_membership,
             joint_membership: authority.joint_membership,
             directional_validity: authority.directional_validity,
             reduced_margin: authority.reduced_margin,
@@ -94,6 +99,7 @@ impl StageCAuthoritySummary {
             positive_rung_count: plan.positive_rung_count,
             family_size: plan.family_size,
             maximum_workflow_ms: plan.maximum_workflow_ms,
+            probe_constrained_test_point: plan.probe_constrained_test_point,
         }
     }
 
@@ -102,8 +108,8 @@ impl StageCAuthoritySummary {
         super::integral_plan::StageCAuthority {
             channel: self.identity.channel,
             stage_b_plan_digest: self.stage_b_plan_digest,
-            final_p: self.final_p,
             directional_memberships: self.directional_memberships,
+            stage_b_joint_membership: self.stage_b_joint_membership,
             joint_membership: self.joint_membership,
             directional_validity: self.directional_validity,
             reduced_margin: self.reduced_margin,

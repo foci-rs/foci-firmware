@@ -2759,6 +2759,7 @@ mod tests {
     struct RecordingSink {
         events: Vec<Event>,
         integral_rest_boundary: Option<[u8; 2]>,
+        integral_plan_joint_memberships: [u32; 2],
     }
 
     impl CommissionReplySink for RecordingSink {
@@ -3386,6 +3387,8 @@ mod tests {
             &mut self,
             report: crate::ankyra::replies::FociVelocityIntegralPlanAuthority,
         ) {
+            self.integral_plan_joint_memberships[usize::from(report.direction)] =
+                report.joint_membership;
             self.events.push(Event::IntegralPlan(4 + report.direction));
         }
 
@@ -5167,7 +5170,7 @@ mod tests {
             plan_digest: 0x0123_4567_89ab_cdef,
             run_sequence: 7,
             evidence_sequence: 0,
-            requested_velocity_mrev_s: 2_929,
+            requested_velocity_mrev_s: 4_394,
             requested_velocity_source: 1,
             planned_velocity_mrev_s: 2_929,
             effective_ceiling_mrev_s: 10_000,
@@ -5186,7 +5189,7 @@ mod tests {
             recovery_nominal_slot_us: 1_816_958,
             recovery_maximum_slot_us: 3_000_000,
             recovery_slot_count: 23,
-            max_stroke_travel_mrev: 2_000,
+            max_stroke_travel_mrev: 2_500,
             settle_travel_reserve_mrev: 250,
             negative_position_headroom_mrev: 50_000,
             positive_position_headroom_mrev: 50_000,
@@ -5500,9 +5503,9 @@ mod tests {
             StageCAuthority {
                 channel: 0,
                 stage_b_plan_digest: digest,
-                final_p: 1_448,
-                directional_memberships: [0x0038_0000; 2],
-                joint_membership: 0x0038_0000,
+                directional_memberships: [0x001c_0000; 2],
+                stage_b_joint_membership: 0x001c_0000,
+                joint_membership: 0x001c_0000,
                 directional_validity: [
                     crate::commissioning::outer::velocity::reproduction::StageBDirectionalValidity::ReproducedRegionCoversFinalP;
                     2
@@ -5514,7 +5517,16 @@ mod tests {
                 ],
             },
             stage_b.execution_plan(digest),
-            OuterMotionBudget::test_budget(2_000, 2_929, 60_000),
+            OuterMotionBudget {
+                requested_velocity_mrev_s: request.requested_velocity_mrev_s,
+                machine_velocity_ceiling_mrev_s: request.machine_velocity_ceiling_mrev_s,
+                requested_velocity_source: request.requested_velocity_source,
+                max_stroke_travel_mrev: request.max_stroke_travel_mrev,
+                settle_travel_reserve_mrev: request.settle_travel_reserve_mrev,
+                negative_position_headroom_mrev: request.negative_position_headroom_mrev,
+                positive_position_headroom_mrev: request.positive_position_headroom_mrev,
+                max_duration_ms: request.max_duration_ms,
+            },
             25_000,
             4_000,
         )
@@ -5592,6 +5604,7 @@ mod tests {
                 },
             ]
         );
+        assert_eq!(sink.integral_plan_joint_memberships, [0x0004_0000; 2]);
         assert_eq!(
             &sink.events[4..11],
             &[

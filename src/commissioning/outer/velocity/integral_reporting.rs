@@ -16,16 +16,20 @@ use super::integral_plan::{VelocityIntegralExecutionPlan, VelocityIntegralPlan};
 
 const FNV1A64_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
 pub(crate) const PLAN_RECOVERY_QUANTIZATION_EXPOSED: u8 = 1 << 0;
+pub(crate) const PLAN_PROBE_CONSTRAINED_TEST_POINT: u8 = 1 << 1;
 pub(crate) const TERMINAL_RECOVERY_UNAVAILABLE: u8 = 1 << 0;
 pub(crate) const TERMINAL_RECOVERED_WITH_CURRENT_HEADROOM: u8 = 1 << 1;
 pub(crate) const TERMINAL_RECOVERY_QUANTIZATION_EXPOSED: u8 = 1 << 2;
 
 pub(crate) const fn plan_recovery_flags(plan: &VelocityIntegralPlan) -> u8 {
+    let mut flags = 0;
     if plan.recovery_quantization_exposed {
-        PLAN_RECOVERY_QUANTIZATION_EXPOSED
-    } else {
-        0
+        flags |= PLAN_RECOVERY_QUANTIZATION_EXPOSED;
     }
+    if plan.probe_constrained_test_point {
+        flags |= PLAN_PROBE_CONSTRAINED_TEST_POINT;
+    }
+    flags
 }
 
 pub(crate) fn terminal_recovery_flags(report: &VelocityIntegralTerminal) -> u8 {
@@ -162,6 +166,7 @@ pub(crate) fn encode_velocity_integral_plan_trace(
     for membership in plan.authority.directional_memberships {
         core.push_u32(membership);
     }
+    core.push_u32(plan.authority.stage_b_joint_membership);
     core.push_u32(plan.authority.joint_membership);
     for validity in plan.authority.directional_validity {
         core.push_u8(validity as u8);
@@ -569,7 +574,7 @@ mod tests {
     };
 
     #[test]
-    fn full_plan_trace_record_preserves_offline_reconstruction_inputs() {
+    fn stage_c_probe_constrained_flags_and_trace_plan_preserve_reconstruction_inputs() {
         let mut positive_i = [0; super::super::integral_plan::STAGE_C_MAX_POSITIVE_RUNGS];
         for (index, gain) in positive_i.iter_mut().enumerate() {
             *gain = u16::try_from(index + 1).unwrap();
@@ -580,9 +585,9 @@ mod tests {
             authority: super::super::integral_plan::StageCAuthority {
                 channel: 0,
                 stage_b_plan_digest: 0xfedc_ba98_7654_3210,
-                final_p: 1_448,
                 directional_memberships: [0x0038_0000, 0x0038_0000],
-                joint_membership: 0x0038_0000,
+                stage_b_joint_membership: 0x0038_0000,
+                joint_membership: 0x0018_0000,
                 directional_validity: [
                     super::super::reproduction::StageBDirectionalValidity::ReproducedRegionCoversFinalP;
                     2
@@ -617,6 +622,7 @@ mod tests {
             limit_evidence_capability:
                 super::super::current_guard::VelocityLimitEvidenceCapability::BestEffortPolling,
             recovery_quantization_exposed: true,
+            probe_constrained_test_point: true,
             motion_request: super::super::sweep_plan::VelocitySweepRequest {
                 requested_velocity_mrev_s: 4_394,
                 machine_velocity_ceiling_mrev_s: 10_000,
@@ -641,16 +647,28 @@ mod tests {
         assert_eq!(records[0].as_bytes()[15], 0);
         assert_eq!(records[1].as_bytes()[15], 1);
         assert_eq!(records[2].as_bytes()[15], 2);
-        assert_eq!(records[0].as_bytes().len(), 91);
+        assert_eq!(records[0].as_bytes().len(), 95);
         assert_eq!(
-            &records[0].as_bytes()[45..47],
+            &records[0].as_bytes()[41..45],
+            &plan.authority.stage_b_joint_membership.to_le_bytes()
+        );
+        assert_eq!(
+            &records[0].as_bytes()[45..49],
+            &plan.authority.joint_membership.to_le_bytes()
+        );
+        assert_eq!(
+            &records[0].as_bytes()[49..51],
             &[super::super::reproduction::StageBDirectionalValidity::ReproducedRegionCoversFinalP
                 as u8; 2]
         );
-        assert_eq!(records[0].as_bytes()[47], 0);
+        assert_eq!(records[0].as_bytes()[51], 0);
         assert_eq!(
-            records[0].as_bytes()[90],
+            records[0].as_bytes()[94],
             super::super::current_guard::VelocityLimitEvidenceCapability::BestEffortPolling as u8
+        );
+        assert_eq!(
+            records[2].as_bytes()[29],
+            PLAN_RECOVERY_QUANTIZATION_EXPOSED | PLAN_PROBE_CONSTRAINED_TEST_POINT
         );
         assert!(
             records
@@ -684,6 +702,7 @@ mod tests {
             limit_evidence_capability:
                 super::super::current_guard::VelocityLimitEvidenceCapability::BestEffortPolling,
             recovery_quantization_exposed: true,
+            probe_constrained_test_point: false,
         }
     }
 

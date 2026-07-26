@@ -32,11 +32,11 @@ fn request() -> VelocitySweepRequest {
         requested_velocity_mrev_s: 2_929,
         machine_velocity_ceiling_mrev_s: 10_000,
         requested_velocity_source: RequestedVelocitySource::Defaulted,
-        max_stroke_travel_mrev: 500,
-        settle_travel_reserve_mrev: 100,
-        negative_position_headroom_mrev: 2_000,
-        positive_position_headroom_mrev: 2_000,
-        max_duration_ms: 2_000,
+        max_stroke_travel_mrev: 2_500,
+        settle_travel_reserve_mrev: 250,
+        negative_position_headroom_mrev: 7_025,
+        positive_position_headroom_mrev: 7_025,
+        max_duration_ms: 3_000,
     }
 }
 
@@ -44,9 +44,9 @@ fn authority() -> StageCAuthority {
     StageCAuthority {
         channel: CHANNEL,
         stage_b_plan_digest: stage_b_plan().digest(),
-        final_p: 1_448,
-        directional_memberships: [0x0038_0000; 2],
-        joint_membership: 0x0038_0000,
+        directional_memberships: [0x000e_0000; 2],
+        stage_b_joint_membership: 0x000e_0000,
+        joint_membership: 0x000e_0000,
         directional_validity: [StageBDirectionalValidity::ReproducedRegionCoversFinalP; 2],
         reduced_margin: false,
         directional_pooled_intervals: [[15_000_000, 17_000_000], [-19_000_000, -17_000_000]],
@@ -65,10 +65,20 @@ fn stage_b_plan() -> crate::commissioning::outer::velocity::sweep_plan::Velocity
 
 fn stage_c_plan() -> crate::commissioning::outer::velocity::integral_plan::VelocityIntegralPlan {
     let stage_b = stage_b_plan();
+    let request = request();
     plan_velocity_integral_response(
         authority(),
         stage_b.execution_plan(stage_b.digest()),
-        OuterMotionBudget::test_budget(500, 2_929, 2_000),
+        OuterMotionBudget {
+            requested_velocity_mrev_s: request.requested_velocity_mrev_s,
+            machine_velocity_ceiling_mrev_s: request.machine_velocity_ceiling_mrev_s,
+            requested_velocity_source: request.requested_velocity_source,
+            max_stroke_travel_mrev: request.max_stroke_travel_mrev,
+            settle_travel_reserve_mrev: request.settle_travel_reserve_mrev,
+            negative_position_headroom_mrev: request.negative_position_headroom_mrev,
+            positive_position_headroom_mrev: request.positive_position_headroom_mrev,
+            max_duration_ms: request.max_duration_ms,
+        },
         PWM_HZ,
         COUNTS_PER_REV,
     )
@@ -83,7 +93,7 @@ fn retained_authority() -> StageCAuthoritySummary {
         STAGE_C_EVIDENCE_SCHEMA_REVISION,
         authority().stage_b_plan_digest,
         plan.execution_plan(),
-        authority(),
+        plan.authority,
     )
 }
 
@@ -372,8 +382,8 @@ fn stage_b_terminal() -> crate::commissioning::types::VelocitySweepTerminal {
         cause: 0,
         recovery_unavailable: false,
         model_direction_mask: 3,
-        selected_memberships: [0x0038_0000; 3],
-        nominated_p: 1_448,
+        selected_memberships: [0x000e_0000; 3],
+        nominated_p: 1_024,
         selected_intervals: authority().directional_pooled_intervals,
         selected_common_intervals: [[15_500_000, 16_500_000], [-18_500_000, -17_500_000]],
         p_start: stage_b_plan().p_start.raw(),
@@ -555,8 +565,8 @@ fn reproduced_joint_authority_with_fragment_survives_suppressed_continuation() {
         let config = TmcControlConfig::new(84_000_000, PWM_HZ, 0.03125, tmc);
         let mut terminal = stage_b_terminal();
         terminal.model_direction_mask = 1;
-        terminal.selected_memberships[1] = 0x0018_0000;
-        terminal.selected_memberships[2] = 0x0018_0000;
+        terminal.selected_memberships[1] = 0x0006_0000;
+        terminal.selected_memberships[2] = 0x0006_0000;
         terminal.recovery_unavailable = true;
 
         let action = runtime
@@ -580,11 +590,12 @@ fn reproduced_joint_authority_with_fragment_survives_suppressed_continuation() {
         let stage_b = stage_b_plan();
         let expected_final_p = stage_b
             .execution_plan(stage_b.digest())
-            .gain_at(19)
+            .gain_at(17)
             .unwrap()
             .raw();
-        assert_eq!(retained.directional_memberships[1], 0x0018_0000);
-        assert_eq!(retained.joint_membership, 0x0018_0000);
+        assert_eq!(retained.directional_memberships[1], 0x0006_0000);
+        assert_eq!(retained.stage_b_joint_membership, 0x0006_0000);
+        assert_eq!(retained.joint_membership, 0x0006_0000);
         assert_eq!(retained.final_p, expected_final_p);
         assert!(retained.reduced_margin);
         assert_eq!(

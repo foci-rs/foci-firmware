@@ -13,7 +13,7 @@ use super::sweep_plan::{
 };
 
 /// Evidence schema stored in the RAM-only Stage-C candidate slot.
-pub const STAGE_C_EVIDENCE_SCHEMA_REVISION: u16 = 6;
+pub const STAGE_C_EVIDENCE_SCHEMA_REVISION: u16 = 7;
 /// Largest predeclared positive-I ladder accepted by the family-128 table.
 pub const STAGE_C_MAX_POSITIVE_RUNGS: usize = 30;
 /// Minimum representable positive Q4.12 velocity-I gain.
@@ -102,11 +102,11 @@ pub struct StageCAuthority {
     pub channel: u8,
     /// Exact Stage-B stage-plan digest.
     pub stage_b_plan_digest: u64,
-    /// Firmware-authoritative reproduced proportional gain.
-    pub final_p: u16,
     /// Cross-run forward and reverse model-or-fragment intersections.
     pub directional_memberships: [u32; 2],
-    /// Selected reproduced joint-operability component.
+    /// Reproduced Stage-B joint-operability component before Stage-C filtering.
+    pub stage_b_joint_membership: u32,
+    /// Stage-C transition-capable subset of the reproduced joint component.
     pub joint_membership: u32,
     /// Cross-run validity of the forward and reverse Stage-B models.
     pub directional_validity: [StageBDirectionalValidity; 2],
@@ -128,6 +128,21 @@ impl StageCAuthority {
                 | StageBDirectionalValidity::ReproducedRegionTransferred
         )
     }
+}
+
+/// Stage-C proportional test point derived from reproduced Stage-B operability.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+pub(crate) struct StageCTestPointSelection {
+    /// Reproduced Stage-B joint-operability component before Stage-C filtering.
+    pub stage_b_joint_membership: u32,
+    /// Transition-capable subset used by Stage C.
+    pub joint_membership: u32,
+    /// Lower-middle proportional gain selected from the filtered component.
+    pub final_p: u16,
+    /// Whether fewer than three transition-capable rungs remain.
+    pub reduced_margin: bool,
+    /// Whether the probe clamp removed at least one Stage-B-operable rung.
+    pub probe_constrained_test_point: bool,
 }
 
 /// Exact positive-I acquisition geometry.
@@ -196,6 +211,8 @@ pub struct VelocityIntegralPlan {
     pub(crate) limit_evidence_capability: VelocityLimitEvidenceCapability,
     /// One opposite-sign meter quantum can contact the probe clamp during recovery.
     pub recovery_quantization_exposed: bool,
+    /// The commissioning probe clamp removed at least one Stage-B-operable rung.
+    pub probe_constrained_test_point: bool,
     /// Complete motion/travel request retained for plan identity.
     pub motion_request: VelocitySweepRequest,
 }
@@ -224,6 +241,7 @@ impl VelocityIntegralPlan {
         for membership in self.authority.directional_memberships {
             hash_value!(membership);
         }
+        hash_value!(self.authority.stage_b_joint_membership);
         hash_value!(self.authority.joint_membership);
         for validity in self.authority.directional_validity {
             hash_value!(validity as u8);
@@ -257,6 +275,7 @@ impl VelocityIntegralPlan {
         hash_value!(self.usable_torque_limit);
         hash_value!(self.limit_evidence_capability as u8);
         hash_value!(u8::from(self.recovery_quantization_exposed));
+        hash_value!(u8::from(self.probe_constrained_test_point));
         hash_value!(self.motion_request.requested_velocity_mrev_s);
         hash_value!(self.motion_request.machine_velocity_ceiling_mrev_s);
         hash_value!(self.motion_request.requested_velocity_source as u8);
@@ -292,6 +311,7 @@ impl VelocityIntegralPlan {
             usable_torque_limit: self.usable_torque_limit,
             limit_evidence_capability: self.limit_evidence_capability,
             recovery_quantization_exposed: self.recovery_quantization_exposed,
+            probe_constrained_test_point: self.probe_constrained_test_point,
         }
     }
 }
@@ -341,9 +361,20 @@ pub struct VelocityIntegralExecutionPlan {
     pub(crate) limit_evidence_capability: VelocityLimitEvidenceCapability,
     /// One opposite-sign meter quantum can contact the probe clamp during recovery.
     pub recovery_quantization_exposed: bool,
+    /// The commissioning probe clamp removed at least one Stage-B-operable rung.
+    pub probe_constrained_test_point: bool,
 }
 
 const _: () = assert!(core::mem::size_of::<VelocityIntegralExecutionPlan>() == 72);
+
+/// Exact identity retained when Stage C has no transition-capable test point.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+pub struct StageCFailedAdmission {
+    /// Digest of the rejected schema-7 authority and controller geometry.
+    pub plan_digest: u64,
+    /// The commissioning probe clamp removed every Stage-B-operable rung.
+    pub probe_constrained_test_point: bool,
+}
 
 /// Failure to construct a deterministic Stage-C plan before motion.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
@@ -362,6 +393,8 @@ pub enum VelocityIntegralPlanError {
     ConfidenceFamilyTooLarge,
     /// Checked planner arithmetic exceeded its representation.
     Arithmetic,
+    /// The reproduced Stage-B component contains no transition-capable Stage-C rung.
+    NoTransitionCapableOperatingPoint(StageCFailedAdmission),
 }
 
 /// Evaluate the advanced-PI time constant with outward ceiling.
@@ -472,6 +505,52 @@ pub(crate) fn recovery_quantization_exposed(
     Ok(demand > clamp)
 }
 
+/// Whether one proportional gain can exercise the required Q4.12 I prefix unclipped.
+pub(crate) fn transition_capable_stage_c_gain(
+    p_raw: u16,
+    target_rpm: i32,
+    counts_per_rev: u32,
+    pwm_hz: u32,
+    moving_stroke_us: u32,
+    probe_limit: u16,
+) -> Result<bool, VelocityIntegralPlanError> {
+    if p_raw == 0 || counts_per_rev == 0 || pwm_hz == 0 || moving_stroke_us == 0 || probe_limit == 0
+    {
+        return Err(VelocityIntegralPlanError::InvalidRequest);
+    }
+    let target_rpm = target_rpm
+        .checked_abs()
+        .ok_or(VelocityIntegralPlanError::Arithmetic)?;
+    let stroke_cycles = u128::from(pwm_hz)
+        .checked_mul(u128::from(moving_stroke_us))
+        .and_then(|value| value.checked_add(u128::from(MICROS_PER_SECOND - 1)))
+        .map(|value| value / u128::from(MICROS_PER_SECOND))
+        .ok_or(VelocityIntegralPlanError::Arithmetic)?;
+    let error_num = u128::from(target_rpm as u32)
+        .checked_mul(u128::from(counts_per_rev))
+        .and_then(|value| value.checked_add(60_u128 * u128::from(pwm_hz)))
+        .ok_or(VelocityIntegralPlanError::Arithmetic)?;
+    let prefix_scale = u128::from(crate::autotune::ADVANCED_PI_I_Q4_12_NUMERATOR)
+        .checked_add(
+            stroke_cycles
+                .checked_mul(3)
+                .ok_or(VelocityIntegralPlanError::Arithmetic)?,
+        )
+        .ok_or(VelocityIntegralPlanError::Arithmetic)?;
+    let lhs = u128::from(p_raw)
+        .checked_mul(error_num)
+        .and_then(|value| value.checked_mul(prefix_scale))
+        .ok_or(VelocityIntegralPlanError::Arithmetic)?;
+    let rhs = 256_u128
+        .checked_mul(u128::from(counts_per_rev))
+        .and_then(|value| {
+            value.checked_mul(u128::from(crate::autotune::ADVANCED_PI_I_Q4_12_NUMERATOR))
+        })
+        .and_then(|value| value.checked_mul(u128::from(probe_limit)))
+        .ok_or(VelocityIntegralPlanError::Arithmetic)?;
+    Ok(lhs < rhs)
+}
+
 /// Derive the conservative fixed Stage-C duration for one frozen PWM rate.
 pub fn integral_workflow_maximum_ms(
     pwm_hz: u32,
@@ -518,21 +597,59 @@ pub fn integral_workflow_maximum_ms(
 /// Construct one exact Stage-C stage plan from reproduced Stage-B authority.
 #[allow(dead_code)]
 pub(crate) fn plan_velocity_integral_response(
-    authority: StageCAuthority,
+    mut authority: StageCAuthority,
     stage_b_plan: VelocitySweepExecutionPlan,
     motion_budget: OuterMotionBudget,
     pwm_hz: u32,
     encoder_counts_per_rev: u32,
 ) -> Result<VelocityIntegralPlan, VelocityIntegralPlanError> {
-    if authority.final_p == 0 {
-        return Err(VelocityIntegralPlanError::MissingAuthority);
-    }
     if !stage_b_plan.is_present() {
         return Err(VelocityIntegralPlanError::MissingStageBPlan);
     }
     if authority.stage_b_plan_digest != stage_b_plan.plan_digest {
         return Err(VelocityIntegralPlanError::MismatchedAuthority);
     }
+    if authority.stage_b_joint_membership == 0 {
+        return Err(VelocityIntegralPlanError::MissingAuthority);
+    }
+    let selection = select_stage_c_test_point(
+        authority.stage_b_joint_membership,
+        stage_b_plan,
+        pwm_hz,
+        encoder_counts_per_rev,
+    )?;
+    let Some(selection) = selection else {
+        return Err(
+            VelocityIntegralPlanError::NoTransitionCapableOperatingPoint(StageCFailedAdmission {
+                plan_digest: failed_admission_digest(
+                    authority,
+                    stage_b_plan,
+                    pwm_hz,
+                    encoder_counts_per_rev,
+                ),
+                probe_constrained_test_point: true,
+            }),
+        );
+    };
+    let selected_rung = selection.joint_membership.trailing_zeros() as u8
+        + (selection.joint_membership.count_ones() as u8 - 1) / 2;
+    for direction in 0..authority.directional_validity.len() {
+        authority.directional_validity[direction] = match authority.directional_validity[direction]
+        {
+            StageBDirectionalValidity::ReproducedRegionCoversFinalP
+            | StageBDirectionalValidity::ReproducedRegionTransferred => {
+                if authority.directional_memberships[direction] & (1_u32 << selected_rung) != 0 {
+                    StageBDirectionalValidity::ReproducedRegionCoversFinalP
+                } else {
+                    StageBDirectionalValidity::ReproducedRegionTransferred
+                }
+            }
+            validity => validity,
+        };
+    }
+    authority.stage_b_joint_membership = selection.stage_b_joint_membership;
+    authority.joint_membership = selection.joint_membership;
+    authority.reduced_margin = selection.reduced_margin;
     let motion_request = VelocitySweepRequest {
         requested_velocity_mrev_s: motion_budget.requested_velocity_mrev_s,
         machine_velocity_ceiling_mrev_s: motion_budget.machine_velocity_ceiling_mrev_s,
@@ -624,7 +741,7 @@ pub(crate) fn plan_velocity_integral_response(
     let mut positive_i = [0; STAGE_C_MAX_POSITIVE_RUNGS];
     positive_i[..ladder.rungs.len()].copy_from_slice(ladder.rungs.as_slice());
     let recovery_quantization_exposed = recovery_quantization_exposed(
-        authority.final_p,
+        selection.final_p,
         stage_b_plan.target_velocity_rpm.raw(),
         encoder_counts_per_rev,
         pwm_hz,
@@ -635,7 +752,7 @@ pub(crate) fn plan_velocity_integral_response(
         build_revision: STAGE_B_BUILD_REVISION,
         schema_revision: STAGE_C_EVIDENCE_SCHEMA_REVISION,
         authority,
-        final_p: authority.final_p,
+        final_p: selection.final_p,
         planned_velocity_mrev_s: stage_b_plan.planned_velocity_mrev_s,
         target_velocity_rpm: stage_b_plan.target_velocity_rpm.raw(),
         pwm_hz,
@@ -658,8 +775,54 @@ pub(crate) fn plan_velocity_integral_response(
         usable_torque_limit: stage_b_plan.usable_torque_limit,
         limit_evidence_capability: stage_b_plan.limit_evidence_capability,
         recovery_quantization_exposed,
+        probe_constrained_test_point: selection.probe_constrained_test_point,
         motion_request,
     })
+}
+
+fn select_stage_c_test_point(
+    stage_b_joint_membership: u32,
+    stage_b_plan: VelocitySweepExecutionPlan,
+    pwm_hz: u32,
+    encoder_counts_per_rev: u32,
+) -> Result<Option<StageCTestPointSelection>, VelocityIntegralPlanError> {
+    let mut joint_membership = 0_u32;
+    for rung_index in 0..u32::BITS as u8 {
+        let rung_bit = 1_u32 << rung_index;
+        if stage_b_joint_membership & rung_bit == 0 {
+            continue;
+        }
+        let gain = stage_b_plan
+            .gain_at(rung_index)
+            .ok_or(VelocityIntegralPlanError::InvalidRequest)?;
+        if transition_capable_stage_c_gain(
+            gain.raw(),
+            stage_b_plan.target_velocity_rpm.raw(),
+            encoder_counts_per_rev,
+            pwm_hz,
+            MOVING_STROKE_US,
+            stage_b_plan.usable_torque_limit,
+        )? {
+            joint_membership |= rung_bit;
+        }
+    }
+    if joint_membership == 0 {
+        return Ok(None);
+    }
+    let first_rung = joint_membership.trailing_zeros() as u8;
+    let member_count = joint_membership.count_ones() as u8;
+    let selected_rung = first_rung + (member_count - 1) / 2;
+    let final_p = stage_b_plan
+        .gain_at(selected_rung)
+        .ok_or(VelocityIntegralPlanError::InvalidRequest)?
+        .raw();
+    Ok(Some(StageCTestPointSelection {
+        stage_b_joint_membership,
+        joint_membership,
+        final_p,
+        reduced_margin: member_count <= 2,
+        probe_constrained_test_point: stage_b_joint_membership != joint_membership,
+    }))
 }
 
 fn map_recovery_plan_error(error: RungOriginRecoveryPlanError) -> VelocityIntegralPlanError {
@@ -670,6 +833,37 @@ fn map_recovery_plan_error(error: RungOriginRecoveryPlanError) -> VelocityIntegr
         }
         RungOriginRecoveryPlanError::Arithmetic => VelocityIntegralPlanError::Arithmetic,
     }
+}
+
+fn failed_admission_digest(
+    authority: StageCAuthority,
+    stage_b_plan: VelocitySweepExecutionPlan,
+    pwm_hz: u32,
+    encoder_counts_per_rev: u32,
+) -> u64 {
+    let mut hash = 0xcbf2_9ce4_8422_2325_u64;
+    macro_rules! hash_value {
+        ($value:expr) => {
+            for byte in $value.to_le_bytes() {
+                hash = fnv1a64_byte(hash, byte);
+            }
+        };
+    }
+    hash_value!(STAGE_B_BUILD_REVISION);
+    hash_value!(STAGE_C_EVIDENCE_SCHEMA_REVISION);
+    hash_value!(authority.channel);
+    hash_value!(authority.stage_b_plan_digest);
+    hash_value!(authority.stage_b_joint_membership);
+    hash_value!(0_u32);
+    hash_value!(0_u16);
+    hash_value!(stage_b_plan.target_velocity_rpm.raw());
+    hash_value!(pwm_hz);
+    hash_value!(encoder_counts_per_rev);
+    hash_value!(MOVING_STROKE_US);
+    hash_value!(crate::autotune::ADVANCED_PI_I_Q4_12_NUMERATOR);
+    hash_value!(stage_b_plan.usable_torque_limit);
+    hash_value!(1_u8);
+    hash
 }
 
 fn largest_i_for_tau(

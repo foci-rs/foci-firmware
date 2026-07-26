@@ -51,6 +51,7 @@ fn plan() -> VelocityIntegralExecutionPlan {
         usable_torque_limit: 2_534,
         limit_evidence_capability: VelocityLimitEvidenceCapability::BestEffortPolling,
         recovery_quantization_exposed: true,
+        probe_constrained_test_point: false,
     }
 }
 

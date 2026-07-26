@@ -1392,11 +1392,11 @@ pub async fn drive_commission_result_with_stages<B: CommissioningBackend>(
             let authority = crate::commissioning::outer::velocity::integral_plan::StageCAuthority {
                 channel,
                 stage_b_plan_digest: dispatch.terminal.plan_digest,
-                final_p: dispatch.terminal.nominated_p,
                 directional_memberships: [
                     dispatch.terminal.selected_memberships[0],
                     dispatch.terminal.selected_memberships[1],
                 ],
+                stage_b_joint_membership: dispatch.terminal.selected_memberships[2],
                 joint_membership: dispatch.terminal.selected_memberships[2],
                 directional_validity: reproduction.delta.directional_validity,
                 reduced_margin: reproduction.delta.reduced_margin,
@@ -1443,7 +1443,7 @@ pub async fn drive_commission_result_with_stages<B: CommissioningBackend>(
                     crate::commissioning::outer::velocity::integral_plan::STAGE_C_EVIDENCE_SCHEMA_REVISION,
                     dispatch.terminal.plan_digest,
                     stage_c_plan.execution_plan(),
-                    authority,
+                    stage_c_plan.authority,
                 ),
             );
             let _ = engine_ref;

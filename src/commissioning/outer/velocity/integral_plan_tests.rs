@@ -25,13 +25,13 @@ fn stage_b_request() -> VelocitySweepRequest {
     }
 }
 
-fn authority(final_p: u16) -> StageCAuthority {
+fn authority() -> StageCAuthority {
     StageCAuthority {
         channel: 0,
         stage_b_plan_digest: 0x0123_4567_89ab_cdef,
-        final_p,
-        directional_memberships: [0x0038_0000, 0x0038_0000],
-        joint_membership: 0x0038_0000,
+        directional_memberships: [0x0007_0000, 0x0007_0000],
+        stage_b_joint_membership: 0x0007_0000,
+        joint_membership: 0x0007_0000,
         directional_validity: [StageBDirectionalValidity::ReproducedRegionCoversFinalP; 2],
         reduced_margin: false,
         directional_pooled_intervals: [[17_000_000, 18_000_000], [-19_000_000, -18_000_000]],
@@ -63,7 +63,7 @@ fn motion_budget() -> OuterMotionBudget {
 
 #[test]
 fn native_q4_12_geometry_derives_the_fixed_prefix_and_octaves() {
-    assert_eq!(STAGE_C_EVIDENCE_SCHEMA_REVISION, 6);
+    assert_eq!(STAGE_C_EVIDENCE_SCHEMA_REVISION, 7);
     assert_eq!(STAGE_C_MIN_POSITIVE_I, 1);
     assert_eq!(velocity_i_tau_us(1, 25_000), Some(41_943_040));
     assert_eq!(velocity_i_tau_us(1_024, 25_000), Some(40_960));
@@ -185,7 +185,7 @@ fn preflight_duration_reserves_the_fixed_cleanup_window() {
 #[test]
 fn stage_c_plan_freezes_geometry_and_conservative_duration() {
     let stage_b = stage_b_plan();
-    let mut authority = authority(1_448);
+    let mut authority = authority();
     authority.stage_b_plan_digest = stage_b.digest();
     let plan = plan_velocity_integral_response(
         authority,
@@ -197,7 +197,7 @@ fn stage_c_plan_freezes_geometry_and_conservative_duration() {
     .unwrap();
 
     assert_eq!(plan.schema_revision, STAGE_C_EVIDENCE_SCHEMA_REVISION);
-    assert_eq!(plan.final_p, 1_448);
+    assert_eq!(plan.final_p, 512);
     assert_eq!(
         plan.positive_rungs(),
         &[1, 2, 3, 4, 8, 16, 32, 64, 128, 256, 512, 1_024]
@@ -228,7 +228,7 @@ fn stage_c_plan_freezes_geometry_and_conservative_duration() {
 fn workflow_shape_does_not_change_either_stage_identity() {
     let stage_b = stage_b_plan();
     let stage_b_digest = stage_b.digest();
-    let mut authority = authority(1_448);
+    let mut authority = authority();
     authority.stage_b_plan_digest = stage_b_digest;
     let stage_c = plan_velocity_integral_response(
         authority,
@@ -293,9 +293,13 @@ fn invalid_geometry_and_missing_authority_reject_before_motion() {
 
     let stage_b = stage_b_plan();
     let digest = stage_b.digest();
+    let mut missing = authority();
+    missing.stage_b_plan_digest = digest;
+    missing.stage_b_joint_membership = 0;
+    missing.joint_membership = 0;
     assert_eq!(
         plan_velocity_integral_response(
-            authority(0),
+            missing,
             stage_b.execution_plan(digest),
             motion_budget(),
             25_000,
@@ -305,7 +309,7 @@ fn invalid_geometry_and_missing_authority_reject_before_motion() {
     );
     assert_eq!(
         plan_velocity_integral_response(
-            authority(1_448),
+            authority(),
             super::sweep_plan::VelocitySweepExecutionPlan::EMPTY,
             motion_budget(),
             25_000,
@@ -313,7 +317,7 @@ fn invalid_geometry_and_missing_authority_reject_before_motion() {
         ),
         Err(VelocityIntegralPlanError::MissingStageBPlan)
     );
-    let mut mismatched = authority(1_448);
+    let mut mismatched = authority();
     mismatched.stage_b_plan_digest = digest.wrapping_add(1);
     assert_eq!(
         plan_velocity_integral_response(
@@ -331,9 +335,11 @@ fn invalid_geometry_and_missing_authority_reject_before_motion() {
 fn stage_c_accepts_local_authority_without_model() {
     let stage_b = stage_b_plan();
     let digest = stage_b.digest();
-    let mut local = authority(1_448);
+    let mut local = authority();
     local.stage_b_plan_digest = digest;
-    local.directional_memberships = [0x0018_0000, 0];
+    local.stage_b_joint_membership = 0x0003_0000;
+    local.joint_membership = 0x0003_0000;
+    local.directional_memberships = [0x0003_0000, 0];
     local.directional_pooled_intervals = [[0, 0]; 2];
     local.directional_validity = [
         StageBDirectionalValidity::Fragment,
@@ -353,6 +359,13 @@ fn stage_c_accepts_local_authority_without_model() {
     assert!(!plan.authority.model_interval_available(0));
     assert!(!plan.authority.model_interval_available(1));
     assert!(plan.authority.reduced_margin);
+    assert_eq!(
+        plan.authority.directional_validity,
+        [
+            StageBDirectionalValidity::Fragment,
+            StageBDirectionalValidity::NoRegion,
+        ]
+    );
 }
 
 #[test]
@@ -367,7 +380,7 @@ fn stage_c_model_interval_availability_is_typed_and_hashed() {
         ),
         (StageBDirectionalValidity::ReproducedRegionTransferred, true),
     ];
-    let mut value = authority(1_448);
+    let mut value = authority();
     for (validity, expected) in availability {
         value.directional_validity[0] = validity;
         assert_eq!(value.model_interval_available(0), expected);
@@ -376,7 +389,7 @@ fn stage_c_model_interval_availability_is_typed_and_hashed() {
 
     let stage_b = stage_b_plan();
     let digest = stage_b.digest();
-    let mut baseline = authority(1_448);
+    let mut baseline = authority();
     baseline.stage_b_plan_digest = digest;
     let baseline = plan_velocity_integral_response(
         baseline,
@@ -387,8 +400,9 @@ fn stage_c_model_interval_availability_is_typed_and_hashed() {
     )
     .unwrap();
 
-    let mut transferred = baseline.authority;
-    transferred.directional_validity[0] = StageBDirectionalValidity::ReproducedRegionTransferred;
+    let mut transferred = authority();
+    transferred.stage_b_plan_digest = digest;
+    transferred.directional_memberships[0] = 0x001c_0000;
     let transferred = plan_velocity_integral_response(
         transferred,
         stage_b.execution_plan(digest),
@@ -399,8 +413,10 @@ fn stage_c_model_interval_availability_is_typed_and_hashed() {
     .unwrap();
     assert_ne!(baseline.digest(), transferred.digest());
 
-    let mut reduced = baseline.authority;
-    reduced.reduced_margin = true;
+    let mut reduced = authority();
+    reduced.stage_b_plan_digest = digest;
+    reduced.stage_b_joint_membership = 0x0003_0000;
+    reduced.joint_membership = 0x0003_0000;
     let reduced = plan_velocity_integral_response(
         reduced,
         stage_b.execution_plan(digest),
