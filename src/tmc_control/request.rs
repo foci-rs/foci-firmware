@@ -771,29 +771,44 @@ where
                 ) {
                     Ok(preflight) => preflight,
                     Err(rejection) => {
-                        let no_transition = matches!(
-                            rejection,
-                            crate::commission_dispatch::stage_c::StageCPreflightRejection::NoTransitionCapableOperatingPoint(_)
-                        );
-                        if no_transition {
+                        if let crate::commission_dispatch::stage_c::StageCPreflightRejection::NoTransitionCapableOperatingPoint(
+                            failure,
+                        ) = rejection
+                        {
                             stage_c_candidate.observe_fault();
+                            board
+                                .tmc_state()
+                                .commission_in_flight
+                                .store(false, core::sync::atomic::Ordering::Relaxed);
+                            board.record_velocity_sweep_trace_record(
+                                crate::commissioning::outer::velocity::integral_reporting::encode_velocity_integral_terminal(
+                                    &crate::commission_dispatch::stage_c::failed_stage_c_terminal(
+                                        run_sequence,
+                                        failure,
+                                    ),
+                                ),
+                            );
+                            board.emit_reply(ReplyPayload::VelocityIntegralTerminal {
+                                oid,
+                                terminal:
+                                    crate::commission_dispatch::stage_c::failed_stage_c_terminal(
+                                        run_sequence,
+                                        failure,
+                                    ),
+                                reproduction: None,
+                                authority: None,
+                            });
+                            return TmcControlRequestOutcome::skip_tick_tail();
                         }
                         board
                             .tmc_state()
                             .commission_in_flight
                             .store(false, core::sync::atomic::Ordering::Relaxed);
-                        let payload =
-                            stage_c_preflight_failure_payload(oid, run_sequence, rejection);
-                        if let ReplyPayload::VelocityIntegralTerminal { terminal, .. } = &payload
-                            && no_transition
-                        {
-                            board.record_velocity_sweep_trace_record(
-                                crate::commissioning::outer::velocity::integral_reporting::encode_velocity_integral_terminal(
-                                    terminal,
-                                ),
-                            );
-                        }
-                        board.emit_reply(payload);
+                        board.emit_reply(stage_c_preflight_failure_payload(
+                            oid,
+                            run_sequence,
+                            rejection,
+                        ));
                         return TmcControlRequestOutcome::skip_tick_tail();
                     }
                 };
