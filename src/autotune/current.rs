@@ -52,13 +52,14 @@ pub const CURRENT_AXIS_VALIDATION_ZERO_TARGET: u8 = 8;
 const CURRENT_AXIS_POSITION_VELOCITY_STATUS_MASK: u32 =
     (1 << 0) | (1 << 2) | (1 << 3) | (1 << 4) | (1 << 6) | (1 << 7);
 const CURRENT_AXIS_PID_OUTPUT_STATUS_MASK: u32 = (1 << 11) | (1 << 15);
-const CURRENT_AXIS_ENCODER_PRESENCE_STATUS_MASK: u32 = (1 << 28) | (1 << 29) | (1 << 30);
+const CURRENT_AXIS_INACTIVE_ENCODER_STATUS_MASK: u32 =
+    (1 << 27) | (1 << 28) | (1 << 29) | (1 << 30);
 // STATUS_FLAGS bit 31 is reserved in the TMC4671 status layout. It may appear
 // in sampled flags, but it is not an actionable current-validation fault.
 const CURRENT_AXIS_RESERVED_STATUS_MASK: u32 = 1 << 31;
 const CURRENT_AXIS_NON_ACTIONABLE_STATUS_MASK: u32 = CURRENT_AXIS_POSITION_VELOCITY_STATUS_MASK
     | CURRENT_AXIS_PID_OUTPUT_STATUS_MASK
-    | CURRENT_AXIS_ENCODER_PRESENCE_STATUS_MASK
+    | CURRENT_AXIS_INACTIVE_ENCODER_STATUS_MASK
     | CURRENT_AXIS_RESERVED_STATUS_MASK;
 
 /// Status flags that fail current-loop validation and sustained-hold checks.
@@ -1256,6 +1257,44 @@ mod tests {
         );
 
         assert_eq!(gate.status, CURRENT_AXIS_VALIDATION_PASS);
+    }
+
+    #[test]
+    fn current_sample_gate_ignores_unsupported_analog_encoder_clipping() {
+        let sample = CurrentAxisSample {
+            target: 250,
+            same_axis_actual: 240,
+            cross_axis_actual: 8,
+            output_limited: 500,
+            output_limit: 2000,
+            encoder_delta_counts: 0,
+            status_flags: 0x7800_0000,
+        };
+        let gate = classify_current_axis_sample(
+            &sample,
+            &CurrentAxisGate::commissioning_short_sample(700, 1250, 4),
+        );
+
+        assert_eq!(gate.status, CURRENT_AXIS_VALIDATION_PASS);
+    }
+
+    #[test]
+    fn current_sample_gate_keeps_adc_current_clipping_actionable() {
+        let sample = CurrentAxisSample {
+            target: 250,
+            same_axis_actual: 240,
+            cross_axis_actual: 8,
+            output_limited: 500,
+            output_limit: 2000,
+            encoder_delta_counts: 0,
+            status_flags: 0x0c00_0000,
+        };
+        let gate = classify_current_axis_sample(
+            &sample,
+            &CurrentAxisGate::commissioning_short_sample(700, 1250, 4),
+        );
+
+        assert_eq!(gate.status, CURRENT_AXIS_VALIDATION_STATUS_FLAGS);
     }
 
     #[test]
