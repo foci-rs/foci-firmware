@@ -263,8 +263,10 @@ fn sufficient_runs_advance_candidate_compare_and_complete_lifecycle() {
     );
     second_terminal.rest_boundary_rung_plus_one = 5;
     second_terminal.rest_boundary_slot_plus_one = 2;
+    second_terminal.cause = 10;
     let second = apply_stage_c_terminal(second_terminal, &mut slot);
     assert_eq!(second.terminal.outcome, VelocityIntegralOutcome::Complete);
+    assert_eq!(second.terminal.cause, 10);
     let reproduction = second.reproduction.unwrap();
     assert_eq!(
         reproduction

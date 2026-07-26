@@ -220,7 +220,6 @@ pub fn apply_stage_c_terminal(
                 StageCReproductionDecision::CompleteCandidate(_) => None,
                 StageCReproductionDecision::Complete(delta) => {
                     terminal.outcome = VelocityIntegralOutcome::Complete;
-                    terminal.cause = 0;
                     Some(StageCReproductionReport {
                         delta,
                         outcome: 1,
