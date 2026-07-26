@@ -52,6 +52,15 @@ fn live_geometry_derives_band_and_slots_from_the_budget() {
 }
 
 #[test]
+fn recovered_with_current_headroom_code_is_append_only() {
+    assert_eq!(RungOriginRecoveryOutcome::RecoveryCurrentHeadroom as u8, 4);
+    assert_eq!(
+        RungOriginRecoveryOutcome::RecoveredWithCurrentHeadroom as u8,
+        5
+    );
+}
+
+#[test]
 fn return_distance_stops_at_the_inclusive_origin_band() {
     assert_eq!(recovery_return_distance_counts(8_458, 1_000), Some(7_458));
     assert_eq!(recovery_return_distance_counts(-8_458, 1_000), Some(7_458));

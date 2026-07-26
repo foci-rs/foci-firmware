@@ -132,6 +132,8 @@ fn terminal(
         outcome,
         cause: 0,
         recovery_unavailable: false,
+        recovered_with_current_headroom: false,
+        recovery_quantization_exposed: plan.recovery_quantization_exposed,
         rest_boundary_rung_plus_one: 0,
         rest_boundary_slot_plus_one: 0,
         evidence,

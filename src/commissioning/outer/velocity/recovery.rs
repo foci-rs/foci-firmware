@@ -62,6 +62,9 @@ pub(crate) enum RungOriginRecoveryOutcome {
     ContainedDeadline = 3,
     /// The temporary velocity-output clamp engaged during recovery.
     RecoveryCurrentHeadroom = 4,
+    /// Clamp contact was followed by confirmed passive in-band rest.
+    #[allow(dead_code)]
+    RecoveredWithCurrentHeadroom = 5,
 }
 
 /// Exact reason that bounded or authorized the recovery attempt.

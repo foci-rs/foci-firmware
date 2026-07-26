@@ -3347,6 +3347,8 @@ pub struct FociVelocityIntegralPlanRecovery {
     pub maximum_slot_us: u32,
     /// Maximum recovery-record count reserved by the plan.
     pub slot_count: u8,
+    /// Schema-defined recovery policy flags.
+    pub flags: u8,
 }
 
 /// One exact positive-I plan rung.
@@ -3712,8 +3714,8 @@ pub struct FociVelocityIntegralTerminalCore {
     pub outcome: u8,
     /// Dedicated Stage-C cause.
     pub cause: u8,
-    /// One when final bookend recovery could not establish the next-command origin.
-    pub recovery_unavailable: u8,
+    /// Schema-defined recovery outcome and exposure flags.
+    pub recovery_flags: u8,
     /// One-based positive-rung index of an active-I rest boundary, or zero.
     pub rest_boundary_rung_plus_one: u8,
     /// One-based observation slot of an active-I rest boundary, or zero.
@@ -3826,6 +3828,7 @@ mod velocity_sweep_reply_tests {
             nominal_slot_us: WIDE_U32,
             maximum_slot_us: WIDE_U32,
             slot_count: u8::MAX,
+            flags: u8::MAX,
         };
 
         for (name, fits) in [
@@ -4880,7 +4883,7 @@ mod velocity_sweep_reply_tests {
                 fragment: u8::MAX,
                 outcome: u8::MAX,
                 cause: u8::MAX,
-                recovery_unavailable: u8::MAX,
+                recovery_flags: u8::MAX,
                 rest_boundary_rung_plus_one: u8::MAX,
                 rest_boundary_slot_plus_one: u8::MAX,
                 expected_observations: u16::MAX,

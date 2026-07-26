@@ -339,6 +339,8 @@ fn terminal_from_data(
         outcome,
         cause,
         recovery_unavailable: data.recovery_unavailable,
+        recovered_with_current_headroom: data.recovered_with_current_headroom,
+        recovery_quantization_exposed: data.plan.recovery_quantization_exposed,
         rest_boundary_rung_plus_one: 0,
         rest_boundary_slot_plus_one: 0,
         evidence,

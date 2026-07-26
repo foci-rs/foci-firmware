@@ -378,6 +378,7 @@ pub(crate) struct VelocityIntegralData {
     pub(crate) opening_direction_mask: u8,
     pub(crate) recovery_failure: bool,
     pub(crate) recovery_unavailable: bool,
+    pub(crate) recovered_with_current_headroom: bool,
     pub(crate) emitted_observations: u16,
     pub(crate) emitted_rungs: u16,
 }
@@ -415,6 +416,7 @@ impl VelocityIntegralData {
             opening_direction_mask: 0,
             recovery_failure: false,
             recovery_unavailable: false,
+            recovered_with_current_headroom: false,
             emitted_observations: 0,
             emitted_rungs: 0,
         }

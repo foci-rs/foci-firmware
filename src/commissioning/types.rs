@@ -713,6 +713,10 @@ pub struct VelocityIntegralTerminal {
     pub cause: u8,
     /// Final bookend recovery could not establish the next-command origin.
     pub recovery_unavailable: bool,
+    /// Final bookend recovery proved passive in-band rest after clamp contact.
+    pub recovered_with_current_headroom: bool,
+    /// The immutable plan permits one meter quantum to contact the probe clamp.
+    pub recovery_quantization_exposed: bool,
     /// One-based positive-rung index of an active-I rest boundary, or zero.
     pub rest_boundary_rung_plus_one: u8,
     /// One-based observation slot of an active-I rest boundary, or zero.

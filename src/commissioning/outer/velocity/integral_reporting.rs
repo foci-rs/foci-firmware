@@ -15,6 +15,25 @@ use super::integral_evidence::{IntegralObservationClass, IntegralRungClass, Inte
 use super::integral_plan::{VelocityIntegralExecutionPlan, VelocityIntegralPlan};
 
 const FNV1A64_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+pub(crate) const PLAN_RECOVERY_QUANTIZATION_EXPOSED: u8 = 1 << 0;
+pub(crate) const TERMINAL_RECOVERY_UNAVAILABLE: u8 = 1 << 0;
+pub(crate) const TERMINAL_RECOVERED_WITH_CURRENT_HEADROOM: u8 = 1 << 1;
+pub(crate) const TERMINAL_RECOVERY_QUANTIZATION_EXPOSED: u8 = 1 << 2;
+
+pub(crate) const fn plan_recovery_flags(plan: VelocityIntegralPlan) -> u8 {
+    if plan.recovery_quantization_exposed {
+        PLAN_RECOVERY_QUANTIZATION_EXPOSED
+    } else {
+        0
+    }
+}
+
+pub(crate) fn terminal_recovery_flags(report: VelocityIntegralTerminal) -> u8 {
+    (u8::from(report.recovery_unavailable) * TERMINAL_RECOVERY_UNAVAILABLE)
+        | (u8::from(report.recovered_with_current_headroom)
+            * TERMINAL_RECOVERED_WITH_CURRENT_HEADROOM)
+        | (u8::from(report.recovery_quantization_exposed) * TERMINAL_RECOVERY_QUANTIZATION_EXPOSED)
+}
 
 /// Fixed-memory sequencing and digest state for one Stage-C run.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
@@ -198,6 +217,7 @@ pub(crate) fn encode_velocity_integral_plan_trace(
     recovery.push_u32(plan.recovery_nominal_slot_us);
     recovery.push_u32(plan.recovery_maximum_slot_us);
     recovery.push_u8(plan.recovery_slot_count);
+    recovery.push_u8(plan_recovery_flags(plan));
     [core, schedule, recovery]
 }
 
@@ -213,7 +233,7 @@ pub(crate) fn encode_velocity_integral_terminal(
     push_u64(&mut record, report.digest);
     record.push_u8(outcome_code(report.outcome));
     record.push_u8(report.cause);
-    record.push_u8(u8::from(report.recovery_unavailable));
+    record.push_u8(terminal_recovery_flags(report));
     record.push_u16(report.expected_observations);
     record.push_u16(report.emitted_observations);
     record.push_u16(report.expected_rungs);
@@ -596,6 +616,7 @@ mod tests {
             usable_torque_limit: 2_534,
             limit_evidence_capability:
                 super::super::current_guard::VelocityLimitEvidenceCapability::BestEffortPolling,
+            recovery_quantization_exposed: true,
             motion_request: super::super::sweep_plan::VelocitySweepRequest {
                 requested_velocity_mrev_s: 4_394,
                 machine_velocity_ceiling_mrev_s: 10_000,
@@ -662,6 +683,7 @@ mod tests {
             usable_torque_limit: 2_534,
             limit_evidence_capability:
                 super::super::current_guard::VelocityLimitEvidenceCapability::BestEffortPolling,
+            recovery_quantization_exposed: true,
         }
     }
 
@@ -794,6 +816,8 @@ mod tests {
             outcome: VelocityIntegralOutcome::Complete,
             cause: 0,
             recovery_unavailable: false,
+            recovered_with_current_headroom: false,
+            recovery_quantization_exposed: false,
             rest_boundary_rung_plus_one: 5,
             rest_boundary_slot_plus_one: 6,
             evidence: super::super::integral_evidence::IntegralRunEvidence::new(
@@ -842,6 +866,42 @@ mod tests {
                 0x77, 0x66, 0x66, 0x55, 0x55,
             ],
             "schema-4 terminal bytes remain unchanged"
+        );
+    }
+
+    #[test]
+    fn velocity_integral_recovery_flags_are_packed_once() {
+        let terminal = VelocityIntegralTerminal {
+            run_sequence: 7,
+            evidence_sequence: 9,
+            plan_digest: 0,
+            digest: 0,
+            outcome: VelocityIntegralOutcome::Inconclusive,
+            cause: 8,
+            recovery_unavailable: false,
+            recovered_with_current_headroom: true,
+            recovery_quantization_exposed: true,
+            rest_boundary_rung_plus_one: 0,
+            rest_boundary_slot_plus_one: 0,
+            evidence: super::super::integral_evidence::IntegralRunEvidence::new(
+                [super::super::integral_evidence::ExactRateInterval::EMPTY; 2],
+            ),
+            expected_observations: 112,
+            emitted_observations: 48,
+            expected_rungs: 14,
+            emitted_rungs: 6,
+            run_started_us: 0,
+            run_completed_us: 1,
+            safety_fault: None,
+        };
+
+        assert_eq!(
+            terminal_recovery_flags(terminal),
+            TERMINAL_RECOVERED_WITH_CURRENT_HEADROOM | TERMINAL_RECOVERY_QUANTIZATION_EXPOSED
+        );
+        assert_eq!(
+            encode_velocity_integral_terminal(terminal).as_bytes()[25],
+            TERMINAL_RECOVERED_WITH_CURRENT_HEADROOM | TERMINAL_RECOVERY_QUANTIZATION_EXPOSED
         );
     }
 

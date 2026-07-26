@@ -2,7 +2,8 @@ use super::integral_plan::{
     CommissioningWorkflowPlan, STAGE_C_EVIDENCE_SCHEMA_REVISION, STAGE_C_MAX_POSITIVE_RUNGS,
     STAGE_C_MIN_POSITIVE_I, STAGE_C_OBSERVATIONS_PER_RUNG, StageCAuthority, StageCPlanShape,
     VelocityIntegralPlanError, build_integral_ladder, confidence_family_size,
-    integral_workflow_maximum_ms, plan_velocity_integral_response, velocity_i_tau_us,
+    integral_workflow_maximum_ms, plan_velocity_integral_response, recovery_quantization_exposed,
+    velocity_i_tau_us,
 };
 use super::sweep_plan::{
     MIN_SETTLE_CAPTURE_US, MOVING_STROKE_US, RequestedVelocitySource, SETTLE_ANALYSIS_BUDGET_US,
@@ -62,7 +63,7 @@ fn motion_budget() -> OuterMotionBudget {
 
 #[test]
 fn native_q4_12_geometry_derives_the_fixed_prefix_and_octaves() {
-    assert_eq!(STAGE_C_EVIDENCE_SCHEMA_REVISION, 5);
+    assert_eq!(STAGE_C_EVIDENCE_SCHEMA_REVISION, 6);
     assert_eq!(STAGE_C_MIN_POSITIVE_I, 1);
     assert_eq!(velocity_i_tau_us(1, 25_000), Some(41_943_040));
     assert_eq!(velocity_i_tau_us(1_024, 25_000), Some(40_960));
@@ -96,6 +97,23 @@ fn native_q4_12_geometry_derives_the_fixed_prefix_and_octaves() {
     assert_eq!(
         shorter_stroke.rungs.as_slice(),
         &[1, 2, 3, 4, 8, 16, 32, 64, 128, 256, 512, 1_024]
+    );
+}
+
+#[test]
+fn recovery_quantization_exposure_is_exact_and_checked() {
+    assert_eq!(
+        recovery_quantization_exposed(724, 264, 4_000, 25_000, 2_534),
+        Ok(false)
+    );
+    assert_eq!(
+        recovery_quantization_exposed(1_024, 264, 4_000, 25_000, 2_534),
+        Ok(true)
+    );
+    assert_eq!(recovery_quantization_exposed(256, 0, 1, 1, 60), Ok(false));
+    assert_eq!(
+        recovery_quantization_exposed(1, i32::MIN, 1, 1, 1),
+        Err(VelocityIntegralPlanError::Arithmetic)
     );
 }
 

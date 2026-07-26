@@ -49,6 +49,7 @@ fn plan() -> VelocityIntegralExecutionPlan {
         hard_torque_limit: 2_816,
         usable_torque_limit: 2_534,
         limit_evidence_capability: VelocityLimitEvidenceCapability::BestEffortPolling,
+        recovery_quantization_exposed: true,
     }
 }
 

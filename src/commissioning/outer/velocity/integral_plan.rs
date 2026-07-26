@@ -13,7 +13,7 @@ use super::sweep_plan::{
 };
 
 /// Evidence schema stored in the RAM-only Stage-C candidate slot.
-pub const STAGE_C_EVIDENCE_SCHEMA_REVISION: u16 = 5;
+pub const STAGE_C_EVIDENCE_SCHEMA_REVISION: u16 = 6;
 /// Largest predeclared positive-I ladder accepted by the family-128 table.
 pub const STAGE_C_MAX_POSITIVE_RUNGS: usize = 30;
 /// Minimum representable positive Q4.12 velocity-I gain.
@@ -194,6 +194,8 @@ pub struct VelocityIntegralPlan {
     pub usable_torque_limit: u16,
     /// Available authority for proving absence of transient clamp contact.
     pub(crate) limit_evidence_capability: VelocityLimitEvidenceCapability,
+    /// One opposite-sign meter quantum can contact the probe clamp during recovery.
+    pub recovery_quantization_exposed: bool,
     /// Complete motion/travel request retained for plan identity.
     pub motion_request: VelocitySweepRequest,
 }
@@ -254,6 +256,7 @@ impl VelocityIntegralPlan {
         hash_value!(self.hard_torque_limit);
         hash_value!(self.usable_torque_limit);
         hash_value!(self.limit_evidence_capability as u8);
+        hash_value!(u8::from(self.recovery_quantization_exposed));
         hash_value!(self.motion_request.requested_velocity_mrev_s);
         hash_value!(self.motion_request.machine_velocity_ceiling_mrev_s);
         hash_value!(self.motion_request.requested_velocity_source as u8);
@@ -288,6 +291,7 @@ impl VelocityIntegralPlan {
             hard_torque_limit: self.hard_torque_limit,
             usable_torque_limit: self.usable_torque_limit,
             limit_evidence_capability: self.limit_evidence_capability,
+            recovery_quantization_exposed: self.recovery_quantization_exposed,
         }
     }
 }
@@ -335,6 +339,8 @@ pub struct VelocityIntegralExecutionPlan {
     pub usable_torque_limit: u16,
     /// Available authority for proving absence of transient clamp contact.
     pub(crate) limit_evidence_capability: VelocityLimitEvidenceCapability,
+    /// One opposite-sign meter quantum can contact the probe clamp during recovery.
+    pub recovery_quantization_exposed: bool,
 }
 
 const _: () = assert!(core::mem::size_of::<VelocityIntegralExecutionPlan>() == 72);
@@ -439,6 +445,31 @@ pub fn confidence_family_size(positive_rungs: usize) -> Result<u16, VelocityInte
         return Err(VelocityIntegralPlanError::ConfidenceFamilyTooLarge);
     }
     u16::try_from(family).map_err(|_| VelocityIntegralPlanError::Arithmetic)
+}
+
+/// Report whether one opposite-sign meter quantum can contact the probe clamp.
+pub(crate) fn recovery_quantization_exposed(
+    p_raw: u16,
+    target_rpm: i32,
+    counts_per_rev: u32,
+    pwm_hz: u32,
+    probe_limit: u16,
+) -> Result<bool, VelocityIntegralPlanError> {
+    let target_rpm = target_rpm
+        .checked_abs()
+        .ok_or(VelocityIntegralPlanError::Arithmetic)?;
+    let velocity_term = u128::from(target_rpm as u32)
+        .checked_mul(u128::from(counts_per_rev))
+        .and_then(|value| value.checked_add(60_u128 * u128::from(pwm_hz)))
+        .ok_or(VelocityIntegralPlanError::Arithmetic)?;
+    let demand = u128::from(p_raw)
+        .checked_mul(velocity_term)
+        .ok_or(VelocityIntegralPlanError::Arithmetic)?;
+    let clamp = 256_u128
+        .checked_mul(u128::from(probe_limit))
+        .and_then(|value| value.checked_mul(u128::from(counts_per_rev)))
+        .ok_or(VelocityIntegralPlanError::Arithmetic)?;
+    Ok(demand > clamp)
 }
 
 /// Derive the conservative fixed Stage-C duration for one frozen PWM rate.
@@ -592,6 +623,13 @@ pub(crate) fn plan_velocity_integral_response(
         .ok_or(VelocityIntegralPlanError::Arithmetic)?;
     let mut positive_i = [0; STAGE_C_MAX_POSITIVE_RUNGS];
     positive_i[..ladder.rungs.len()].copy_from_slice(ladder.rungs.as_slice());
+    let recovery_quantization_exposed = recovery_quantization_exposed(
+        authority.final_p,
+        stage_b_plan.target_velocity_rpm.raw(),
+        encoder_counts_per_rev,
+        pwm_hz,
+        stage_b_plan.usable_torque_limit,
+    )?;
 
     Ok(VelocityIntegralPlan {
         build_revision: STAGE_B_BUILD_REVISION,
@@ -619,6 +657,7 @@ pub(crate) fn plan_velocity_integral_response(
         hard_torque_limit: stage_b_plan.hard_torque_limit,
         usable_torque_limit: stage_b_plan.usable_torque_limit,
         limit_evidence_capability: stage_b_plan.limit_evidence_capability,
+        recovery_quantization_exposed,
         motion_request,
     })
 }

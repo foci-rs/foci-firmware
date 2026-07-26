@@ -714,6 +714,7 @@ pub fn emit_velocity_integral_plan<S: CommissionReplySink>(
         nominal_slot_us: plan.recovery_nominal_slot_us,
         maximum_slot_us: plan.recovery_maximum_slot_us,
         slot_count: plan.recovery_slot_count,
+        flags: crate::commissioning::outer::velocity::integral_reporting::plan_recovery_flags(plan),
     });
     for (rung_index, i_raw) in plan.positive_rungs().iter().copied().enumerate() {
         let tau_us = crate::commissioning::outer::velocity::integral_plan::velocity_i_tau_us(
@@ -1158,7 +1159,10 @@ pub fn emit_velocity_integral_terminal<S: CommissionReplySink>(
         fragment: 0,
         outcome: outcome_code(terminal.outcome),
         cause: terminal.cause,
-        recovery_unavailable: u8::from(terminal.recovery_unavailable),
+        recovery_flags:
+            crate::commissioning::outer::velocity::integral_reporting::terminal_recovery_flags(
+                terminal,
+            ),
         rest_boundary_rung_plus_one: terminal.rest_boundary_rung_plus_one,
         rest_boundary_slot_plus_one: terminal.rest_boundary_slot_plus_one,
         expected_observations: terminal.expected_observations,
@@ -5624,6 +5628,8 @@ mod tests {
             outcome: VelocityIntegralOutcome::Inconclusive,
             cause: 7,
             recovery_unavailable: false,
+            recovered_with_current_headroom: false,
+            recovery_quantization_exposed: false,
             rest_boundary_rung_plus_one: 5,
             rest_boundary_slot_plus_one: 6,
             evidence,
@@ -5705,6 +5711,8 @@ mod tests {
             outcome: VelocityIntegralOutcome::Inconclusive,
             cause: 7,
             recovery_unavailable: false,
+            recovered_with_current_headroom: false,
+            recovery_quantization_exposed: plan.recovery_quantization_exposed,
             rest_boundary_rung_plus_one: 0,
             rest_boundary_slot_plus_one: 0,
             evidence,
