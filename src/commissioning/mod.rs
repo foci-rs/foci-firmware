@@ -1109,7 +1109,7 @@ impl CommissioningEngine {
     pub(crate) fn emit_stage_c_terminal_trace<B: CommissioningBackend>(
         &mut self,
         backend: &mut B,
-        terminal: crate::commissioning::types::VelocityIntegralTerminal,
+        terminal: &crate::commissioning::types::VelocityIntegralTerminal,
         reproduction: Option<crate::commission_dispatch::stage_c::StageCReproductionReport>,
     ) {
         self.emit_outer_safety_timing_trace(backend, terminal.run_sequence);
@@ -2354,7 +2354,7 @@ mod tests {
         };
 
         engine.emit_trace_start(&mut backend);
-        engine.emit_stage_c_terminal_trace(&mut backend, terminal, None);
+        engine.emit_stage_c_terminal_trace(&mut backend, &terminal, None);
 
         assert_eq!(backend.velocity_sweep_trace_records.len(), 2);
         let ids: std::vec::Vec<_> = backend

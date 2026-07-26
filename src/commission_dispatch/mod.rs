@@ -1267,7 +1267,62 @@ pub(super) const fn stage_b_continuation_allowed(
     ) && !terminal.recovery_unavailable
 }
 
-/// Dispatch one result while applying both Stage-B and Stage-C retained lifecycles.
+/// Dispatch one Stage-C terminal while applying its retained-evidence lifecycle.
+#[cfg(feature = "trace-velocity-sweep")]
+pub async fn drive_velocity_integral_terminal_with_stages<B: CommissioningBackend>(
+    mut terminal: crate::commissioning::types::VelocityIntegralTerminal,
+    engine: &mut Option<CommissioningEngine>,
+    backend: &mut B,
+    state: &mut DispatchState<'_>,
+    pwm_maxcnt: u16,
+    retention: CommissionRetention<'_>,
+) -> CommissionOutcome {
+    if let Some(record) = engine
+        .as_ref()
+        .and_then(|engine| engine.attach_stage_c_rest_boundary(&mut terminal))
+    {
+        backend.record_velocity_sweep_trace_record(record);
+    }
+    let mut dispatch = stage_c::apply_stage_c_terminal(terminal, retention.stage_c);
+    if !disarm_velocity_workflow(engine, backend, state).await {
+        retention.stage_c.observe_fault();
+        dispatch.terminal.outcome = crate::commissioning::types::VelocityIntegralOutcome::Fault;
+        dispatch.terminal.cause = crate::autotune::CommissionError::Spi.status_code();
+        dispatch.terminal.recovery_unavailable = true;
+        dispatch.terminal.safety_fault = None;
+        dispatch.reproduction = None;
+        dispatch.authority = None;
+    }
+    engine
+        .as_mut()
+        .expect("engine slot is None on VelocityIntegralTerminal")
+        .emit_stage_c_terminal_trace(backend, &dispatch.terminal, dispatch.reproduction);
+    match drive_commission_result(
+        StepResult::VelocityIntegralTerminal(dispatch.terminal),
+        engine,
+        backend,
+        state,
+        pwm_maxcnt,
+    )
+    .await
+    {
+        CommissionOutcome::Terminal {
+            reply: ReplyPayload::VelocityIntegralTerminal { oid, terminal, .. },
+            actions,
+        } => CommissionOutcome::Terminal {
+            reply: ReplyPayload::VelocityIntegralTerminal {
+                oid,
+                terminal,
+                reproduction: dispatch.reproduction,
+                authority: dispatch.authority,
+            },
+            actions,
+        },
+        _ => unreachable!("velocity-integral terminal produced a nonterminal outcome"),
+    }
+}
+
+/// Dispatch one Stage-B result while applying its retained-evidence lifecycle.
 #[cfg(feature = "trace-velocity-sweep")]
 pub async fn drive_commission_result_with_stages<B: CommissioningBackend>(
     result: StepResult,
@@ -1474,51 +1529,8 @@ pub async fn drive_commission_result_with_stages<B: CommissioningBackend>(
                 },
             }
         }
-        StepResult::VelocityIntegralTerminal(mut terminal) => {
-            if let Some(record) = engine
-                .as_ref()
-                .and_then(|engine| engine.attach_stage_c_rest_boundary(&mut terminal))
-            {
-                backend.record_velocity_sweep_trace_record(record);
-            }
-            let mut dispatch = stage_c::apply_stage_c_terminal(terminal, retention.stage_c);
-            if !disarm_velocity_workflow(engine, backend, state).await {
-                retention.stage_c.observe_fault();
-                dispatch.terminal.outcome =
-                    crate::commissioning::types::VelocityIntegralOutcome::Fault;
-                dispatch.terminal.cause = crate::autotune::CommissionError::Spi.status_code();
-                dispatch.terminal.recovery_unavailable = true;
-                dispatch.terminal.safety_fault = None;
-                dispatch.reproduction = None;
-                dispatch.authority = None;
-            }
-            engine
-                .as_mut()
-                .expect("engine slot is None on VelocityIntegralTerminal")
-                .emit_stage_c_terminal_trace(backend, dispatch.terminal, dispatch.reproduction);
-            match drive_commission_result(
-                StepResult::VelocityIntegralTerminal(dispatch.terminal),
-                engine,
-                backend,
-                state,
-                pwm_maxcnt,
-            )
-            .await
-            {
-                CommissionOutcome::Terminal {
-                    reply: ReplyPayload::VelocityIntegralTerminal { oid, terminal, .. },
-                    actions,
-                } => CommissionOutcome::Terminal {
-                    reply: ReplyPayload::VelocityIntegralTerminal {
-                        oid,
-                        terminal,
-                        reproduction: dispatch.reproduction,
-                        authority: dispatch.authority,
-                    },
-                    actions,
-                },
-                _ => unreachable!("velocity-integral terminal produced a nonterminal outcome"),
-            }
+        StepResult::VelocityIntegralTerminal(_) => {
+            unreachable!("Stage-C terminals use their stage-owned dispatcher")
         }
         _ => unreachable!("non-velocity terminal reached retained velocity dispatch"),
     }

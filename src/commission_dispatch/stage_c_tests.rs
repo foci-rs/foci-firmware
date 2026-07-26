@@ -2,7 +2,7 @@ use super::stage_c::{
     STAGE_C_CAUSE_REPRODUCTION_MISMATCH, StageCPreflightRejection, apply_stage_c_terminal,
     preflight_stage_c_request,
 };
-use super::{CommissionOutcome, ReplyPayload, drive_commission_result_with_stages};
+use super::{CommissionOutcome, ReplyPayload};
 use crate::commissioning::outer::OuterMotionBudget;
 use crate::commissioning::outer::velocity::VELOCITY_LIMIT_EVIDENCE_CAPABILITY_BEST_EFFORT;
 use crate::commissioning::outer::velocity::integral_evidence::{
@@ -692,16 +692,15 @@ fn outer_safety_timing_terminal_order_stage_c_resume() {
             &mut gains,
         );
 
-        let outcome = drive_commission_result_with_stages(
-            crate::commissioning::types::StepResult::VelocityIntegralTerminal(terminal(
+        let outcome = super::drive_velocity_integral_terminal_with_stages(
+            terminal(
                 VelocityIntegralOutcome::CompleteCandidate,
                 sufficient_evidence(0),
-            )),
+            ),
             &mut engine,
             &mut backend,
             &mut state,
             4_095,
-            CHANNEL,
             super::CommissionRetention::new(&mut stage_b_slot, &mut stage_c_slot),
         )
         .await;

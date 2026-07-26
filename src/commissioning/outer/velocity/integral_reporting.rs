@@ -20,7 +20,7 @@ pub(crate) const TERMINAL_RECOVERY_UNAVAILABLE: u8 = 1 << 0;
 pub(crate) const TERMINAL_RECOVERED_WITH_CURRENT_HEADROOM: u8 = 1 << 1;
 pub(crate) const TERMINAL_RECOVERY_QUANTIZATION_EXPOSED: u8 = 1 << 2;
 
-pub(crate) const fn plan_recovery_flags(plan: VelocityIntegralPlan) -> u8 {
+pub(crate) const fn plan_recovery_flags(plan: &VelocityIntegralPlan) -> u8 {
     if plan.recovery_quantization_exposed {
         PLAN_RECOVERY_QUANTIZATION_EXPOSED
     } else {
@@ -28,7 +28,7 @@ pub(crate) const fn plan_recovery_flags(plan: VelocityIntegralPlan) -> u8 {
     }
 }
 
-pub(crate) fn terminal_recovery_flags(report: VelocityIntegralTerminal) -> u8 {
+pub(crate) fn terminal_recovery_flags(report: &VelocityIntegralTerminal) -> u8 {
     (u8::from(report.recovery_unavailable) * TERMINAL_RECOVERY_UNAVAILABLE)
         | (u8::from(report.recovered_with_current_headroom)
             * TERMINAL_RECOVERED_WITH_CURRENT_HEADROOM)
@@ -217,13 +217,13 @@ pub(crate) fn encode_velocity_integral_plan_trace(
     recovery.push_u32(plan.recovery_nominal_slot_us);
     recovery.push_u32(plan.recovery_maximum_slot_us);
     recovery.push_u8(plan.recovery_slot_count);
-    recovery.push_u8(plan_recovery_flags(plan));
+    recovery.push_u8(plan_recovery_flags(&plan));
     [core, schedule, recovery]
 }
 
 /// Encode the detailed Stage-C terminal for trace-only parity.
 pub(crate) fn encode_velocity_integral_terminal(
-    report: VelocityIntegralTerminal,
+    report: &VelocityIntegralTerminal,
 ) -> VelocitySweepCanonicalRecord {
     let mut record = VelocitySweepCanonicalRecord::new();
     record.push_u8(4);
@@ -840,7 +840,7 @@ mod tests {
             Some(super::super::integral_evidence::ExactRateInterval::new(-210, -110).unwrap()),
         ];
 
-        let record = encode_velocity_integral_terminal(terminal);
+        let record = encode_velocity_integral_terminal(&terminal);
         assert!(record.as_bytes().len() <= 128);
         assert!(
             record
@@ -896,11 +896,11 @@ mod tests {
         };
 
         assert_eq!(
-            terminal_recovery_flags(terminal),
+            terminal_recovery_flags(&terminal),
             TERMINAL_RECOVERED_WITH_CURRENT_HEADROOM | TERMINAL_RECOVERY_QUANTIZATION_EXPOSED
         );
         assert_eq!(
-            encode_velocity_integral_terminal(terminal).as_bytes()[25],
+            encode_velocity_integral_terminal(&terminal).as_bytes()[25],
             TERMINAL_RECOVERED_WITH_CURRENT_HEADROOM | TERMINAL_RECOVERY_QUANTIZATION_EXPOSED
         );
     }

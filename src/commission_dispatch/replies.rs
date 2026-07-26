@@ -714,7 +714,9 @@ pub fn emit_velocity_integral_plan<S: CommissionReplySink>(
         nominal_slot_us: plan.recovery_nominal_slot_us,
         maximum_slot_us: plan.recovery_maximum_slot_us,
         slot_count: plan.recovery_slot_count,
-        flags: crate::commissioning::outer::velocity::integral_reporting::plan_recovery_flags(plan),
+        flags: crate::commissioning::outer::velocity::integral_reporting::plan_recovery_flags(
+            &plan,
+        ),
     });
     for (rung_index, i_raw) in plan.positive_rungs().iter().copied().enumerate() {
         let tau_us = crate::commissioning::outer::velocity::integral_plan::velocity_i_tau_us(
@@ -1161,7 +1163,7 @@ pub fn emit_velocity_integral_terminal<S: CommissionReplySink>(
         cause: terminal.cause,
         recovery_flags:
             crate::commissioning::outer::velocity::integral_reporting::terminal_recovery_flags(
-                terminal,
+                &terminal,
             ),
         rest_boundary_rung_plus_one: terminal.rest_boundary_rung_plus_one,
         rest_boundary_slot_plus_one: terminal.rest_boundary_slot_plus_one,

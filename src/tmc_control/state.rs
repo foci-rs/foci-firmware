@@ -534,13 +534,12 @@ impl TmcControlRuntime {
                 .await
             }
             CommissionTerminal::VelocityIntegral(terminal) => {
-                crate::commission_dispatch::drive_commission_result_with_stages(
-                    crate::commissioning::types::StepResult::VelocityIntegralTerminal(terminal),
+                crate::commission_dispatch::drive_velocity_integral_terminal_with_stages(
+                    terminal,
                     &mut self.commission_engine,
                     backend,
                     &mut dispatch,
                     config.tmc.pwm_maxcnt,
-                    self.channel,
                     retention,
                 )
                 .await
