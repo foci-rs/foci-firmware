@@ -2,7 +2,8 @@
 
 use crate::commissioning::outer::OuterMotionBudget;
 use crate::commissioning::outer::velocity::integral_plan::{
-    STAGE_C_EVIDENCE_SCHEMA_REVISION, VelocityIntegralPlan, plan_velocity_integral_response,
+    STAGE_C_EVIDENCE_SCHEMA_REVISION, StageCFailedAdmission, VelocityIntegralPlan,
+    VelocityIntegralPlanError, plan_velocity_integral_response,
 };
 use crate::commissioning::outer::velocity::integral_reproduction::{
     StageCAuthoritySummary, StageCCandidateSlot, StageCCandidateSummary, StageCPlanIdentity,
@@ -23,6 +24,8 @@ pub const STAGE_C_CAUSE_EVIDENCE_INTEGRITY: u8 = 4;
 pub const STAGE_C_CAUSE_REPRODUCTION_MISMATCH: u8 = 6;
 /// Dedicated cause for a frozen Stage-C plan mismatch.
 pub const STAGE_C_CAUSE_PLAN_MISMATCH: u8 = 7;
+/// No reproduced operating rung can run under the Stage-C probe clamp.
+pub const STAGE_C_CAUSE_NO_TRANSITION_CAPABLE_OPERATING_POINT: u8 = 11;
 
 /// Immutable plan and identity accepted before Stage-C actuation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -61,6 +64,8 @@ pub enum StageCPreflightRejection {
         /// Current Stage-B plan digest, which prevented exact reconstruction.
         requested_stage_b_plan_digest: u64,
     },
+    /// The reproduced operating component contains no Stage-C-safe test point.
+    NoTransitionCapableOperatingPoint(StageCFailedAdmission),
 }
 
 /// Cross-run comparison attached to the Stage-C terminal.
@@ -133,14 +138,21 @@ pub fn preflight_stage_c_request(
         positive_position_headroom_mrev: request.positive_position_headroom_mrev,
         max_duration_ms: request.max_duration_ms,
     };
-    let plan = plan_velocity_integral_response(
+    let plan = match plan_velocity_integral_response(
         authority.stage_c_authority(),
         stage_b_plan.execution_plan(stage_b_plan_digest),
         motion_budget,
         pwm_hz,
         encoder_counts_per_rev,
-    )
-    .map_err(|_| StageCPreflightRejection::InvalidPlan)?;
+    ) {
+        Ok(plan) => plan,
+        Err(VelocityIntegralPlanError::NoTransitionCapableOperatingPoint(failure)) => {
+            return Err(StageCPreflightRejection::NoTransitionCapableOperatingPoint(
+                failure,
+            ));
+        }
+        Err(_) => return Err(StageCPreflightRejection::InvalidPlan),
+    };
     let identity = StageCPlanIdentity {
         channel,
         build_revision: STAGE_B_BUILD_REVISION,
@@ -246,6 +258,10 @@ pub fn apply_stage_c_terminal(
             stage_c_candidate.observe_fault();
             None
         }
+        VelocityIntegralOutcome::Failed => {
+            stage_c_candidate.observe_fault();
+            None
+        }
         VelocityIntegralOutcome::Complete | VelocityIntegralOutcome::RejectedPlanMismatch => {
             stage_c_candidate.observe_fault();
             terminal.outcome = VelocityIntegralOutcome::Fault;
@@ -257,5 +273,38 @@ pub fn apply_stage_c_terminal(
         terminal,
         reproduction,
         authority: Some(authority),
+    }
+}
+
+/// Build the authoritative zero-motion terminal for a failed Stage-C admission.
+pub(crate) fn failed_stage_c_terminal(
+    run_sequence: u32,
+    failure: StageCFailedAdmission,
+) -> VelocityIntegralTerminal {
+    use crate::commissioning::outer::velocity::integral_evidence::{
+        ExactRateInterval, IntegralRunEvidence,
+    };
+
+    VelocityIntegralTerminal {
+        run_sequence,
+        evidence_sequence: 0,
+        plan_digest: failure.plan_digest,
+        digest: 0,
+        outcome: VelocityIntegralOutcome::Failed,
+        cause: STAGE_C_CAUSE_NO_TRANSITION_CAPABLE_OPERATING_POINT,
+        recovery_unavailable: false,
+        recovered_with_current_headroom: false,
+        recovery_quantization_exposed: false,
+        probe_constrained_test_point: failure.probe_constrained_test_point,
+        rest_boundary_rung_plus_one: 0,
+        rest_boundary_slot_plus_one: 0,
+        evidence: IntegralRunEvidence::new([ExactRateInterval::EMPTY; 2]),
+        expected_observations: 0,
+        emitted_observations: 0,
+        expected_rungs: 0,
+        emitted_rungs: 0,
+        run_started_us: 0,
+        run_completed_us: 0,
+        safety_fault: None,
     }
 }

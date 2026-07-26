@@ -20,6 +20,7 @@ pub(crate) const PLAN_PROBE_CONSTRAINED_TEST_POINT: u8 = 1 << 1;
 pub(crate) const TERMINAL_RECOVERY_UNAVAILABLE: u8 = 1 << 0;
 pub(crate) const TERMINAL_RECOVERED_WITH_CURRENT_HEADROOM: u8 = 1 << 1;
 pub(crate) const TERMINAL_RECOVERY_QUANTIZATION_EXPOSED: u8 = 1 << 2;
+pub(crate) const TERMINAL_PROBE_CONSTRAINED_TEST_POINT: u8 = 1 << 3;
 
 pub(crate) const fn plan_recovery_flags(plan: &VelocityIntegralPlan) -> u8 {
     let mut flags = 0;
@@ -37,6 +38,7 @@ pub(crate) fn terminal_recovery_flags(report: &VelocityIntegralTerminal) -> u8 {
         | (u8::from(report.recovered_with_current_headroom)
             * TERMINAL_RECOVERED_WITH_CURRENT_HEADROOM)
         | (u8::from(report.recovery_quantization_exposed) * TERMINAL_RECOVERY_QUANTIZATION_EXPOSED)
+        | (u8::from(report.probe_constrained_test_point) * TERMINAL_PROBE_CONSTRAINED_TEST_POINT)
 }
 
 /// Fixed-memory sequencing and digest state for one Stage-C run.
@@ -513,6 +515,7 @@ pub(crate) const fn outcome_code(outcome: VelocityIntegralOutcome) -> u8 {
         VelocityIntegralOutcome::Inconclusive => 2,
         VelocityIntegralOutcome::Fault => 3,
         VelocityIntegralOutcome::RejectedPlanMismatch => 4,
+        VelocityIntegralOutcome::Failed => 5,
     }
 }
 
@@ -837,6 +840,7 @@ mod tests {
             recovery_unavailable: false,
             recovered_with_current_headroom: false,
             recovery_quantization_exposed: false,
+            probe_constrained_test_point: false,
             rest_boundary_rung_plus_one: 5,
             rest_boundary_slot_plus_one: 6,
             evidence: super::super::integral_evidence::IntegralRunEvidence::new(
@@ -889,7 +893,7 @@ mod tests {
     }
 
     #[test]
-    fn velocity_integral_recovery_flags_are_packed_once() {
+    fn stage_c_terminal_flags_are_packed_once() {
         let terminal = VelocityIntegralTerminal {
             run_sequence: 7,
             evidence_sequence: 9,
@@ -900,6 +904,7 @@ mod tests {
             recovery_unavailable: false,
             recovered_with_current_headroom: true,
             recovery_quantization_exposed: true,
+            probe_constrained_test_point: true,
             rest_boundary_rung_plus_one: 0,
             rest_boundary_slot_plus_one: 0,
             evidence: super::super::integral_evidence::IntegralRunEvidence::new(
@@ -916,12 +921,17 @@ mod tests {
 
         assert_eq!(
             terminal_recovery_flags(&terminal),
-            TERMINAL_RECOVERED_WITH_CURRENT_HEADROOM | TERMINAL_RECOVERY_QUANTIZATION_EXPOSED
+            TERMINAL_RECOVERED_WITH_CURRENT_HEADROOM
+                | TERMINAL_RECOVERY_QUANTIZATION_EXPOSED
+                | TERMINAL_PROBE_CONSTRAINED_TEST_POINT
         );
         assert_eq!(
             encode_velocity_integral_terminal(&terminal).as_bytes()[25],
-            TERMINAL_RECOVERED_WITH_CURRENT_HEADROOM | TERMINAL_RECOVERY_QUANTIZATION_EXPOSED
+            TERMINAL_RECOVERED_WITH_CURRENT_HEADROOM
+                | TERMINAL_RECOVERY_QUANTIZATION_EXPOSED
+                | TERMINAL_PROBE_CONSTRAINED_TEST_POINT
         );
+        assert_eq!(terminal_recovery_flags(&terminal) & 0xf0, 0);
     }
 
     #[test]

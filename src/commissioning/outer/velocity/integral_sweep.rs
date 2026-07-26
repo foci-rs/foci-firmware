@@ -360,6 +360,7 @@ fn terminal_from_data(
         recovery_unavailable: data.recovery_unavailable,
         recovered_with_current_headroom: data.recovered_with_current_headroom,
         recovery_quantization_exposed: data.plan.recovery_quantization_exposed,
+        probe_constrained_test_point: data.plan.probe_constrained_test_point,
         rest_boundary_rung_plus_one: 0,
         rest_boundary_slot_plus_one: 0,
         evidence,

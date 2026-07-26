@@ -771,15 +771,29 @@ where
                 ) {
                     Ok(preflight) => preflight,
                     Err(rejection) => {
+                        let no_transition = matches!(
+                            rejection,
+                            crate::commission_dispatch::stage_c::StageCPreflightRejection::NoTransitionCapableOperatingPoint(_)
+                        );
+                        if no_transition {
+                            stage_c_candidate.observe_fault();
+                        }
                         board
                             .tmc_state()
                             .commission_in_flight
                             .store(false, core::sync::atomic::Ordering::Relaxed);
-                        board.emit_reply(stage_c_preflight_failure_payload(
-                            oid,
-                            run_sequence,
-                            rejection,
-                        ));
+                        let payload =
+                            stage_c_preflight_failure_payload(oid, run_sequence, rejection);
+                        if let ReplyPayload::VelocityIntegralTerminal { terminal, .. } = &payload
+                            && no_transition
+                        {
+                            board.record_velocity_sweep_trace_record(
+                                crate::commissioning::outer::velocity::integral_reporting::encode_velocity_integral_terminal(
+                                    terminal,
+                                ),
+                            );
+                        }
+                        board.emit_reply(payload);
                         return TmcControlRequestOutcome::skip_tick_tail();
                     }
                 };
@@ -1357,12 +1371,30 @@ fn stage_c_preflight_failure_payload(
     };
     use crate::commissioning::types::{VelocityIntegralOutcome, VelocityIntegralTerminal};
 
+    if let crate::commission_dispatch::stage_c::StageCPreflightRejection::NoTransitionCapableOperatingPoint(
+        failure,
+    ) = rejection
+    {
+        return ReplyPayload::VelocityIntegralTerminal {
+            oid,
+            terminal: crate::commission_dispatch::stage_c::failed_stage_c_terminal(
+                run_sequence,
+                failure,
+            ),
+            reproduction: None,
+            authority: None,
+        };
+    }
+
     let plan_digest = match rejection {
         crate::commission_dispatch::stage_c::StageCPreflightRejection::InvalidPlan => 0,
         crate::commission_dispatch::stage_c::StageCPreflightRejection::RejectedPlanMismatch {
             retained,
             ..
         } => retained.plan_digest,
+        crate::commission_dispatch::stage_c::StageCPreflightRejection::NoTransitionCapableOperatingPoint(
+            _,
+        ) => unreachable!("handled above"),
     };
     ReplyPayload::VelocityIntegralTerminal {
         oid,
@@ -1376,6 +1408,7 @@ fn stage_c_preflight_failure_payload(
             recovery_unavailable: false,
             recovered_with_current_headroom: false,
             recovery_quantization_exposed: false,
+            probe_constrained_test_point: false,
             rest_boundary_rung_plus_one: 0,
             rest_boundary_slot_plus_one: 0,
             evidence: IntegralRunEvidence::new([ExactRateInterval::EMPTY; 2]),
@@ -2656,6 +2689,123 @@ mod tests {
             assert_eq!(stage_c.state(), StageCSlotState::AuthorityOnly);
             assert!(stage_b.candidate().is_none());
             assert!(runtime.is_commission_active());
+        });
+    }
+
+    #[cfg(feature = "trace-velocity-sweep")]
+    #[test]
+    fn stage_c_no_transition_resume_emits_one_zero_motion_terminal() {
+        run_request_test(async {
+            use crate::commissioning::outer::OuterMotionBudget;
+            use crate::commissioning::outer::velocity::integral_plan::{
+                STAGE_C_EVIDENCE_SCHEMA_REVISION, VelocityIntegralPlanError,
+                plan_velocity_integral_response,
+            };
+            use crate::commissioning::outer::velocity::integral_reproduction::{
+                StageCCandidateSlot, StageCSlotState,
+            };
+            use crate::commissioning::outer::velocity::reproduction::{
+                STAGE_B_BUILD_REVISION, StageBCandidateSlot, StageBDirectionalValidity,
+            };
+            use crate::commissioning::outer::velocity::sweep_plan::plan_velocity_sweep;
+            use crate::commissioning::types::VelocityIntegralOutcome;
+
+            let mut board = RecordingBoard::skip_tick_tail();
+            let tmc_state = tmc_channel0();
+            tmc_state
+                .configure_motion_scale(stepper_channel0(), 1_000, 3_200)
+                .expect("valid motion scale");
+            tmc_state.store_current_limit(current_limit(2_816), Relaxed);
+            let mut runtime = TmcControlRuntime::new_for_channel(0);
+            runtime.set_motor_enabled_for_test(true);
+            runtime.set_calibrated_for_test(true);
+            let mut stage_b = StageBCandidateSlot::new();
+            let mut stage_c = StageCCandidateSlot::new();
+            let request = velocity_sweep_request();
+            let stage_b_plan = plan_velocity_sweep(
+                request,
+                4_000,
+                2_816,
+                crate::commissioning::outer::velocity::VELOCITY_LIMIT_EVIDENCE_CAPABILITY_BEST_EFFORT,
+            )
+            .unwrap();
+            let mut retained = retained_stage_c_authority();
+            retained.identity.build_revision = STAGE_B_BUILD_REVISION;
+            retained.identity.schema_revision = STAGE_C_EVIDENCE_SCHEMA_REVISION;
+            retained.stage_b_plan_digest = stage_b_plan.digest();
+            retained.final_p = 1_024;
+            retained.directional_memberships = [0x0018_0000; 2];
+            retained.stage_b_joint_membership = 0x0018_0000;
+            retained.joint_membership = 0x0018_0000;
+            retained.directional_validity = [StageBDirectionalValidity::Fragment; 2];
+            retained.reduced_margin = true;
+            retained.directional_pooled_intervals = [[0, 0]; 2];
+            let authority = retained.stage_c_authority();
+            let budget = OuterMotionBudget {
+                requested_velocity_mrev_s: request.requested_velocity_mrev_s,
+                machine_velocity_ceiling_mrev_s: request.machine_velocity_ceiling_mrev_s,
+                requested_velocity_source: request.requested_velocity_source,
+                max_stroke_travel_mrev: request.max_stroke_travel_mrev,
+                settle_travel_reserve_mrev: request.settle_travel_reserve_mrev,
+                negative_position_headroom_mrev: request.negative_position_headroom_mrev,
+                positive_position_headroom_mrev: request.positive_position_headroom_mrev,
+                max_duration_ms: request.max_duration_ms,
+            };
+            let VelocityIntegralPlanError::NoTransitionCapableOperatingPoint(failure) =
+                plan_velocity_integral_response(
+                    authority,
+                    stage_b_plan.execution_plan(stage_b_plan.digest()),
+                    budget,
+                    25_000,
+                    4_000,
+                )
+                .expect_err("the high-P component must be probe constrained")
+            else {
+                panic!("expected no transition-capable operating point");
+            };
+            retained.identity.plan_digest = failure.plan_digest;
+            retained.probe_constrained_test_point = true;
+            stage_c.install_authority(retained);
+            let mut tmc = Tmc4671Spi::new(RuntimeMockSpi::default());
+
+            handle_tmc_control_request_with_stages(
+                tune_request(),
+                TmcPreRequestDisposition::ContinueRequest,
+                &mut runtime,
+                &mut stage_b,
+                &mut stage_c,
+                &mut tmc,
+                &mut board,
+            )
+            .await;
+
+            assert_eq!(board.replies.len(), 1);
+            let ReplyPayload::VelocityIntegralTerminal { terminal, .. } = board.replies[0] else {
+                panic!("expected the dedicated Stage-C terminal");
+            };
+            assert_eq!(terminal.outcome, VelocityIntegralOutcome::Failed);
+            assert_eq!(
+                terminal.cause,
+                crate::commission_dispatch::stage_c::STAGE_C_CAUSE_NO_TRANSITION_CAPABLE_OPERATING_POINT
+            );
+            assert_eq!(terminal.plan_digest, failure.plan_digest);
+            assert!(terminal.probe_constrained_test_point);
+            assert_eq!(terminal.expected_observations, 0);
+            assert_eq!(terminal.emitted_observations, 0);
+            assert_eq!(terminal.expected_rungs, 0);
+            assert_eq!(terminal.emitted_rungs, 0);
+            assert_eq!(stage_c.state(), StageCSlotState::Empty);
+            assert!(!runtime.is_commission_active());
+            let spi = tmc.into_inner();
+            assert!(spi.write_attempts.iter().all(|(addr, _)| {
+                *addr != foci_tmc4671::registers::PID_TORQUE_FLUX_LIMITS.addr()
+                    && *addr != foci_tmc4671::registers::PID_VELOCITY_TARGET.addr()
+                    && *addr != foci_tmc4671::registers::PID_VELOCITY_P_VELOCITY_I.addr()
+            }));
+            assert_eq!(
+                board.velocity_sweep_records,
+                [crate::commissioning::outer::velocity::integral_reporting::encode_velocity_integral_terminal(&terminal)]
+            );
         });
     }
 

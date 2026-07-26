@@ -1,4 +1,5 @@
 use super::stage_c::{
+    STAGE_C_CAUSE_NO_TRANSITION_CAPABLE_OPERATING_POINT, STAGE_C_CAUSE_PLAN_MISMATCH,
     STAGE_C_CAUSE_REPRODUCTION_MISMATCH, StageCPreflightRejection, apply_stage_c_terminal,
     preflight_stage_c_request,
 };
@@ -144,6 +145,7 @@ fn terminal(
         recovery_unavailable: false,
         recovered_with_current_headroom: false,
         recovery_quantization_exposed: plan.recovery_quantization_exposed,
+        probe_constrained_test_point: plan.probe_constrained_test_point,
         rest_boundary_rung_plus_one: 0,
         rest_boundary_slot_plus_one: 0,
         evidence,
@@ -210,6 +212,23 @@ fn changed_resume_plan_is_rejected_without_mutating_retention() {
         StageCPreflightRejection::RejectedPlanMismatch { .. }
     ));
     assert_eq!(slot.authority(), Some(retained));
+}
+
+#[test]
+fn velocity_integral_outcome_codes_and_stage_c_namespace_are_stable() {
+    use crate::commissioning::outer::velocity::integral_reporting::outcome_code;
+
+    assert_eq!(outcome_code(VelocityIntegralOutcome::CompleteCandidate), 0);
+    assert_eq!(outcome_code(VelocityIntegralOutcome::Complete), 1);
+    assert_eq!(outcome_code(VelocityIntegralOutcome::Inconclusive), 2);
+    assert_eq!(outcome_code(VelocityIntegralOutcome::Fault), 3);
+    assert_eq!(
+        outcome_code(VelocityIntegralOutcome::RejectedPlanMismatch),
+        4
+    );
+    assert_eq!(outcome_code(VelocityIntegralOutcome::Failed), 5);
+    assert_eq!(STAGE_C_CAUSE_PLAN_MISMATCH, 7);
+    assert_eq!(STAGE_C_CAUSE_NO_TRANSITION_CAPABLE_OPERATING_POINT, 11);
 }
 
 #[test]
@@ -403,6 +422,14 @@ fn stage_b_terminal() -> crate::commissioning::types::VelocitySweepTerminal {
     }
 }
 
+fn stage_b_terminal_without_a_transition_capable_rung()
+-> crate::commissioning::types::VelocitySweepTerminal {
+    let mut terminal = stage_b_terminal();
+    terminal.selected_memberships = [0x001c_0000, 0x001c_0000, 0x0018_0000];
+    terminal.nominated_p = 1_024;
+    terminal
+}
+
 #[test]
 fn stage_b_continuation_requires_a_successful_final_recovery() {
     let mut terminal = stage_b_terminal();
@@ -517,6 +544,103 @@ fn outer_safety_timing_terminal_order_composite_preserves_intermediate_state() {
             &trace_records[trace_records.len() - expected.len()..],
             expected.as_slice()
         );
+    });
+}
+
+#[test]
+fn stage_c_no_transition_continuation_disarms_and_emits_both_terminals() {
+    pollster::block_on(async {
+        use crate::commission_dispatch::stage_b::{
+            apply_stage_b_terminal, preflight_stage_b_request,
+        };
+        use crate::commission_dispatch::test_support::MockBackend;
+        use crate::commissioning::CommissioningEngine;
+        use crate::commissioning::outer::velocity::reproduction::StageBCandidateSlot;
+        use crate::config::TmcConfig;
+        use crate::tmc_control::{ScheduledCommissionTickAction, TmcControlConfig};
+
+        let mut stage_b_slot = StageBCandidateSlot::new();
+        apply_stage_b_terminal(
+            stage_b_terminal_without_a_transition_capable_rung(),
+            CHANNEL,
+            &mut stage_b_slot,
+        );
+        let preflight = preflight_stage_b_request(
+            request(),
+            COUNTS_PER_REV,
+            TORQUE_LIMIT,
+            VELOCITY_LIMIT_EVIDENCE_CAPABILITY_BEST_EFFORT,
+            CHANNEL,
+            8,
+            &mut stage_b_slot,
+        )
+        .unwrap();
+        crate::state::tmc::tmc_channel0()
+            .configure_motion_scale(crate::state::stepper::stepper_channel0(), 1_000, 3_200)
+            .expect("valid Stage-C test motion scale");
+        let mut runtime = crate::tmc_control::TmcControlRuntime::new_for_channel(CHANNEL);
+        runtime.set_motor_enabled_for_test(true);
+        runtime.set_commission_engine(
+            CommissioningEngine::new_outer_for_tmc_with_stage_b_preflight(
+                1,
+                crate::state::tmc::tmc_channel0(),
+                outer_params(),
+                entry_snapshot(),
+                preflight,
+            ),
+        );
+        let mut stage_c_slot = StageCCandidateSlot::new();
+        let mut backend = MockBackend::new();
+        backend.enable_pin = true;
+        let tmc = TmcConfig::default_for_test();
+        let config = TmcControlConfig::new(84_000_000, PWM_HZ, 0.03125, tmc);
+
+        let action = runtime
+            .drive_commissioning_terminal_with_stages(
+                crate::commissioning::schedule::CommissionTerminal::VelocitySweep(
+                    stage_b_terminal_without_a_transition_capable_rung(),
+                ),
+                &mut backend,
+                super::CommissionTerminalContext::new(&mut stage_b_slot, &mut stage_c_slot, |_| {
+                    panic!("admission failure must be a terminal action")
+                }),
+                crate::state::tmc::tmc_channel0(),
+                crate::state::stepper::stepper_channel0(),
+                &config,
+            )
+            .await
+            .expect("admission failure must produce a terminal action");
+
+        assert!(!runtime.is_commission_active());
+        assert!(!runtime.is_motor_enabled());
+        assert!(!backend.enable_pin);
+        assert_eq!(stage_c_slot.state(), StageCSlotState::Empty);
+        let ScheduledCommissionTickAction::Terminal {
+            reply:
+                ReplyPayload::VelocityIntegralAdmissionFailure {
+                    stage_b_terminal,
+                    stage_c_terminal,
+                    ..
+                },
+            ..
+        } = action
+        else {
+            panic!("expected the ordered Stage-B/Stage-C admission terminal");
+        };
+        assert_eq!(
+            stage_b_terminal.outcome,
+            crate::commissioning::types::VelocitySweepOutcome::Complete
+        );
+        assert_eq!(stage_c_terminal.outcome, VelocityIntegralOutcome::Failed);
+        assert_eq!(
+            stage_c_terminal.cause,
+            STAGE_C_CAUSE_NO_TRANSITION_CAPABLE_OPERATING_POINT
+        );
+        assert!(stage_c_terminal.probe_constrained_test_point);
+        assert_eq!(stage_c_terminal.expected_observations, 0);
+        assert_eq!(stage_c_terminal.emitted_observations, 0);
+        assert_eq!(stage_c_terminal.expected_rungs, 0);
+        assert_eq!(stage_c_terminal.emitted_rungs, 0);
     });
 }
 

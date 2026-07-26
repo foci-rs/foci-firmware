@@ -1133,9 +1133,8 @@ impl CommissioningEngine {
                 TraceEventLevel::Info
             }
             crate::commissioning::types::VelocityIntegralOutcome::Inconclusive
-            | crate::commissioning::types::VelocityIntegralOutcome::RejectedPlanMismatch => {
-                TraceEventLevel::Warn
-            }
+            | crate::commissioning::types::VelocityIntegralOutcome::RejectedPlanMismatch
+            | crate::commissioning::types::VelocityIntegralOutcome::Failed => TraceEventLevel::Warn,
             crate::commissioning::types::VelocityIntegralOutcome::Fault => TraceEventLevel::Error,
         };
         self.emit_trace_phase_end(backend, PHASE_END_OK, TraceEventLevel::Info);
@@ -2338,6 +2337,7 @@ mod tests {
             recovery_unavailable: false,
             recovered_with_current_headroom: false,
             recovery_quantization_exposed: false,
+            probe_constrained_test_point: false,
             rest_boundary_rung_plus_one: 0,
             rest_boundary_slot_plus_one: 0,
             evidence: IntegralRunEvidence::new([

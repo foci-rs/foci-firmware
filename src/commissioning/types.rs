@@ -682,18 +682,21 @@ pub enum VelocityIntegralEvent {
 }
 
 /// Report-only Stage-C terminal class.
+#[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub enum VelocityIntegralOutcome {
     /// One sufficient run awaits a separately commanded repeat.
-    CompleteCandidate,
+    CompleteCandidate = 0,
     /// A second run reproduced at least three response points per direction.
-    Complete,
+    Complete = 1,
     /// Measurement was safe but evidence was insufficient.
-    Inconclusive,
+    Inconclusive = 2,
     /// Safety or evidence integrity failed.
-    Fault,
+    Fault = 3,
     /// A changed exact plan was rejected before motion.
-    RejectedPlanMismatch,
+    RejectedPlanMismatch = 4,
+    /// No reproduced operating rung can run the Stage-C acquisition.
+    Failed = 5,
 }
 
 /// Detailed Stage-C terminal retained for lifecycle and canonical reporting.
@@ -717,6 +720,8 @@ pub struct VelocityIntegralTerminal {
     pub recovered_with_current_headroom: bool,
     /// The immutable plan permits one meter quantum to contact the probe clamp.
     pub recovery_quantization_exposed: bool,
+    /// The commissioning probe clamp narrowed or removed the Stage-C test point.
+    pub probe_constrained_test_point: bool,
     /// One-based positive-rung index of an active-I rest boundary, or zero.
     pub rest_boundary_rung_plus_one: u8,
     /// One-based observation slot of an active-I rest boundary, or zero.

@@ -1,9 +1,10 @@
 use super::current_guard::{VelocityCurrentObserver, VelocityLimitEvidenceCapability};
 use super::integral_plan::VelocityIntegralExecutionPlan;
 use super::integral_sweep::{
-    INTEGRAL_CAUSE_BOOKEND_UNAVAILABLE, INTEGRAL_SLOT_COUNT, advance_integral_cursor,
-    apply_integral_current_headroom, integral_fault_terminal, integral_i_at,
-    integral_recovery_current_contact_policy, integral_slot_direction,
+    INTEGRAL_CAUSE_BOOKEND_UNAVAILABLE, INTEGRAL_CAUSE_POSITIVE_I_REST_BOUNDARY,
+    INTEGRAL_CAUSE_POSITIVE_I_REST_BOUNDARY_AFTER_SUFFICIENCY, INTEGRAL_SLOT_COUNT,
+    advance_integral_cursor, apply_integral_current_headroom, integral_fault_terminal,
+    integral_i_at, integral_recovery_current_contact_policy, integral_slot_direction,
     opening_recovery_lower_rate_q, positive_directional_floors_exist,
     step_velocity_integral_with_trace,
 };
@@ -27,6 +28,15 @@ use crate::commissioning::outer::{
 use crate::commissioning::types::{StepResult, VelocityIntegralEvent, VelocityIntegralOutcome};
 use foci_tmc4671::pid::{PidGainPair, PidIGain, PidPGain};
 use foci_tmc4671::registers::{PID_VELOCITY_P_VELOCITY_I, PID_VELOCITY_TARGET};
+
+#[test]
+fn velocity_integral_outcome_codes_preserve_rest_boundary_causes() {
+    assert_eq!(INTEGRAL_CAUSE_POSITIVE_I_REST_BOUNDARY, 9);
+    assert_eq!(
+        INTEGRAL_CAUSE_POSITIVE_I_REST_BOUNDARY_AFTER_SUFFICIENCY,
+        10
+    );
+}
 
 fn plan() -> VelocityIntegralExecutionPlan {
     VelocityIntegralExecutionPlan {

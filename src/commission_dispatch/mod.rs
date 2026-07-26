@@ -339,6 +339,14 @@ pub enum ReplyPayload {
         stage_b_reproduction: Option<stage_b::StageBReproductionReport>,
         stage_c_plan: crate::commissioning::outer::velocity::integral_plan::VelocityIntegralPlan,
     },
+    /// Causal Stage-B Complete followed by a zero-motion Stage-C failure.
+    #[cfg(feature = "trace-velocity-sweep")]
+    VelocityIntegralAdmissionFailure {
+        oid: u8,
+        stage_b_terminal: VelocitySweepTerminal,
+        stage_b_reproduction: Option<stage_b::StageBReproductionReport>,
+        stage_c_terminal: crate::commissioning::types::VelocityIntegralTerminal,
+    },
     /// Complete exact Stage-C plan emitted before direct-resume motion.
     #[cfg(feature = "trace-velocity-sweep")]
     VelocityIntegralPlan {
@@ -1420,6 +1428,69 @@ pub async fn drive_commission_result_with_stages<B: CommissioningBackend>(
                 .plan_stage_c_continuation(authority, backend.tmc_config().pwm_freq_hz())
             {
                 Ok(plan) => plan,
+                Err(
+                    crate::commissioning::outer::velocity::integral_plan::VelocityIntegralPlanError::NoTransitionCapableOperatingPoint(
+                        failure,
+                    ),
+                ) => {
+                    use core::sync::atomic::Ordering::Relaxed;
+
+                    retention.stage_c.observe_fault();
+                    if !disarm_velocity_workflow(engine, backend, state).await {
+                        retention.stage_b.clear();
+                        dispatch.terminal.outcome =
+                            crate::commissioning::types::VelocitySweepOutcome::Fault;
+                        dispatch.terminal.cause =
+                            crate::autotune::CommissionError::Spi.status_code();
+                        dispatch.terminal.recovery_unavailable = true;
+                        dispatch.terminal.safety_fault = None;
+                        dispatch.reproduction = None;
+                        engine
+                            .as_mut()
+                            .expect("engine slot is None after failed workflow disarm")
+                            .emit_stage_b_terminal_trace(
+                                backend,
+                                dispatch.terminal,
+                                dispatch.reproduction,
+                            );
+                        return drive_commission_result(
+                            StepResult::VelocitySweepTerminal(dispatch.terminal),
+                            engine,
+                            backend,
+                            state,
+                            pwm_maxcnt,
+                        )
+                        .await;
+                    }
+                    let stage_c_terminal =
+                        stage_c::failed_stage_c_terminal(dispatch.terminal.run_sequence, failure);
+                    let engine_ref = engine
+                        .as_mut()
+                        .expect("engine slot is None before Stage-C admission terminal");
+                    engine_ref.emit_stage_b_terminal_evidence(
+                        backend,
+                        dispatch.terminal,
+                        dispatch.reproduction,
+                    );
+                    engine_ref.emit_stage_c_terminal_trace(backend, &stage_c_terminal, None);
+                    let consumed = engine
+                        .take()
+                        .expect("engine slot is None on Stage-C admission terminal");
+                    let oid = consumed.oid();
+                    state.tmc.commission_in_flight.store(false, Relaxed);
+                    return CommissionOutcome::Terminal {
+                        reply: ReplyPayload::VelocityIntegralAdmissionFailure {
+                            oid,
+                            stage_b_terminal: dispatch.terminal,
+                            stage_b_reproduction: dispatch.reproduction,
+                            stage_c_terminal,
+                        },
+                        actions: PostActions {
+                            stop_trace: true,
+                            stepper: StepperPostAction::Stop,
+                        },
+                    };
+                }
                 Err(_) => {
                     retention.stage_c.observe_fault();
                     engine

@@ -1986,6 +1986,19 @@ pub fn emit_terminal_reply<S: CommissionReplySink>(sink: &mut S, payload: ReplyP
             emit_velocity_integral_plan(sink, oid, run_sequence, stage_c_plan);
         }
         #[cfg(feature = "trace-velocity-sweep")]
+        ReplyPayload::VelocityIntegralAdmissionFailure {
+            oid,
+            stage_b_terminal,
+            stage_b_reproduction,
+            stage_c_terminal,
+        } => {
+            if let Some(report) = stage_b_reproduction {
+                emit_velocity_stage_b_reproduction(sink, oid, report);
+            }
+            emit_velocity_sweep_terminal_fragments(sink, oid, stage_b_terminal);
+            emit_velocity_integral_terminal(sink, oid, stage_c_terminal, None, None);
+        }
+        #[cfg(feature = "trace-velocity-sweep")]
         ReplyPayload::VelocityIntegralPlan {
             oid,
             run_sequence,
@@ -5645,6 +5658,7 @@ mod tests {
             recovery_unavailable: false,
             recovered_with_current_headroom: false,
             recovery_quantization_exposed: false,
+            probe_constrained_test_point: false,
             rest_boundary_rung_plus_one: 5,
             rest_boundary_slot_plus_one: 6,
             evidence,
@@ -5728,6 +5742,7 @@ mod tests {
             recovery_unavailable: false,
             recovered_with_current_headroom: false,
             recovery_quantization_exposed: plan.recovery_quantization_exposed,
+            probe_constrained_test_point: plan.probe_constrained_test_point,
             rest_boundary_rung_plus_one: 0,
             rest_boundary_slot_plus_one: 0,
             evidence,
