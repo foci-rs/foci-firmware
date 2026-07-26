@@ -9,7 +9,10 @@ use super::recovery::{
     RungOriginRecoveryStep, commanded_side_lower_rate_q, plan_rung_origin_recovery,
     recovery_return_distance_counts, recovery_runtime_us, step_rung_origin_recovery,
 };
-use super::sweep_plan::{MAX_SAFETY_OBSERVATION_GAP_US, RequestedVelocitySource};
+use super::sweep_plan::{
+    MAX_SAFETY_OBSERVATION_GAP_US, RequestedVelocitySource, SETTLE_ANALYSIS_BUDGET_US,
+    ZERO_SETTLE_US,
+};
 use crate::autotune::TmcMechanicalRpm;
 use crate::autotune::velocity_measurement::{DyadicBlocker, StationarityWork, VelocityDirection};
 use crate::commission_dispatch::test_support::{MockBackend, SpiOp, current_limit};
@@ -97,6 +100,25 @@ fn runtime_uses_outward_rate_rounding_and_fixed_allowances() {
     assert_eq!(runtime, u32::try_from(measured).unwrap() + 1_248_000);
     assert!(recovery_runtime_us(7_458, 3_150_000, 3_000_000).is_err());
     assert!(recovery_runtime_us(1, 0, 3_000_000).is_err());
+}
+
+#[test]
+fn recovery_slot_includes_settle_tail() {
+    let runtime_us = recovery_runtime_us(834, 9_174_528, 3_000_000).unwrap();
+    let reserved_settle_analysis_us = ZERO_SETTLE_US + SETTLE_ANALYSIS_BUDGET_US;
+    let moving_budget_us = runtime_us.checked_sub(reserved_settle_analysis_us).unwrap();
+    let maximum_moving_budget_us = 3_000_000_u32
+        .checked_sub(reserved_settle_analysis_us)
+        .unwrap();
+
+    assert_eq!(runtime_us, 1_338_904);
+    assert_eq!(reserved_settle_analysis_us, 736_000);
+    assert_eq!(moving_budget_us, 602_904);
+    assert_eq!(maximum_moving_budget_us, 2_264_000);
+    assert_eq!(
+        maximum_moving_budget_us + reserved_settle_analysis_us,
+        3_000_000
+    );
 }
 
 #[test]
