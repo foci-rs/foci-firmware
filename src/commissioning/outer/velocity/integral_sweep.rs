@@ -39,9 +39,9 @@ use super::integral_plan::{
     STAGE_C_MAX_POSITIVE_RUNGS, VelocityIntegralExecutionPlan, native_velocity_i_at,
 };
 use super::recovery::{
-    RecoveryBindingSource, RecoveryStage, RungOriginRecoveryConfig, RungOriginRecoveryOutcome,
-    RungOriginRecoveryResources, RungOriginRecoveryRuntime, RungOriginRecoveryStep,
-    plan_rung_origin_recovery, step_rung_origin_recovery,
+    RecoveryBindingSource, RecoveryCurrentContactPolicy, RecoveryStage, RungOriginRecoveryConfig,
+    RungOriginRecoveryOutcome, RungOriginRecoveryResources, RungOriginRecoveryRuntime,
+    RungOriginRecoveryStep, plan_rung_origin_recovery, step_rung_origin_recovery,
 };
 use super::sweep::clear_velocity_integrator;
 use super::sweep_analysis::{
@@ -131,6 +131,24 @@ pub(super) fn positive_directional_floors_exist(data: &VelocityIntegralData) -> 
     data.eligible_masks
         .iter()
         .all(|mask| mask.count_ones() >= 3)
+}
+
+pub(super) fn integral_recovery_current_contact_policy(
+    data: &VelocityIntegralData,
+) -> RecoveryCurrentContactPolicy {
+    let closes_positive_ladder = data.rung_index == data.plan.positive_rung_count
+        || data.current_terminus.is_some()
+        || data.positive_i_rest_boundary_after_sufficiency;
+    if matches!(
+        integral_rung_kind(data.plan, data.rung_index),
+        IntegralRungKind::Positive
+    ) && positive_directional_floors_exist(data)
+        && closes_positive_ladder
+    {
+        RecoveryCurrentContactPolicy::ProvePassiveSettle
+    } else {
+        RecoveryCurrentContactPolicy::StopImmediately
+    }
 }
 
 fn integral_stroke_index(rung_index: u8, slot: u8) -> Option<u16> {
@@ -279,6 +297,7 @@ fn plan_integral_recovery(
             } else {
                 RecoveryBindingSource::MissingRate
             },
+            current_contact_policy: integral_recovery_current_contact_policy(data),
         },
         recovery_plan,
     )
@@ -1559,7 +1578,12 @@ pub(crate) async fn step_velocity_integral_with_trace<B: CommissioningBackend>(
                 RungOriginRecoveryOutcome::ContainedNoRate
                     | RungOriginRecoveryOutcome::ContainedDeadline
             );
-            if report.outcome == RungOriginRecoveryOutcome::RecoveryCurrentHeadroom {
+            if report.outcome == RungOriginRecoveryOutcome::RecoveredWithCurrentHeadroom {
+                data.recovered_with_current_headroom = true;
+                data.rung_index = data.plan.positive_rung_count.saturating_add(1);
+                reset_rung(data);
+                *state = VelocityIntegralState::WriteGains;
+            } else if report.outcome == RungOriginRecoveryOutcome::RecoveryCurrentHeadroom {
                 apply_integral_current_headroom(state, data);
             } else {
                 match integral_rung_kind(data.plan, data.rung_index) {

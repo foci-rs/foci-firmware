@@ -4,10 +4,11 @@ use super::current_guard::{
 };
 use super::operating_region::{BoundRounding, CompactSignedRate};
 use super::recovery::{
-    RecoveryBindingSource, RecoveryRateAuthority, RecoveryStage, RungOriginRecoveryConfig,
-    RungOriginRecoveryOutcome, RungOriginRecoveryResources, RungOriginRecoveryRuntime,
-    RungOriginRecoveryStep, commanded_side_lower_rate_q, plan_rung_origin_recovery,
-    recovery_return_distance_counts, recovery_runtime_us, step_rung_origin_recovery,
+    RecoveryBindingSource, RecoveryCurrentContactPolicy, RecoveryRateAuthority, RecoveryStage,
+    RungOriginRecoveryConfig, RungOriginRecoveryOutcome, RungOriginRecoveryResources,
+    RungOriginRecoveryRuntime, RungOriginRecoveryStep, commanded_side_lower_rate_q,
+    plan_rung_origin_recovery, recovery_return_distance_counts, recovery_runtime_us,
+    step_rung_origin_recovery,
 };
 use super::sweep_plan::{
     MAX_SAFETY_OBSERVATION_GAP_US, RequestedVelocitySource, SETTLE_ANALYSIS_BUDGET_US,
@@ -183,6 +184,20 @@ fn runtime_with_source(
     lower_rate_q: Option<u64>,
     authority_source: RecoveryBindingSource,
 ) -> RungOriginRecoveryRuntime {
+    runtime_with_policy(
+        start_offset_counts,
+        lower_rate_q,
+        authority_source,
+        RecoveryCurrentContactPolicy::StopImmediately,
+    )
+}
+
+fn runtime_with_policy(
+    start_offset_counts: i32,
+    lower_rate_q: Option<u64>,
+    authority_source: RecoveryBindingSource,
+    current_contact_policy: RecoveryCurrentContactPolicy,
+) -> RungOriginRecoveryRuntime {
     RungOriginRecoveryRuntime::new(
         RungOriginRecoveryConfig {
             stage: RecoveryStage::Proportional,
@@ -193,6 +208,7 @@ fn runtime_with_source(
             start_offset_counts,
             lower_rate_q,
             authority_source,
+            current_contact_policy,
         },
         plan_rung_origin_recovery(live_budget(), 4_000, 4_394).unwrap(),
     )
@@ -227,6 +243,20 @@ impl RecoveryFixture {
         lower_rate_q: Option<u64>,
         authority_source: RecoveryBindingSource,
     ) -> Self {
+        Self::new_with_policy(
+            start_offset_counts,
+            lower_rate_q,
+            authority_source,
+            RecoveryCurrentContactPolicy::StopImmediately,
+        )
+    }
+
+    fn new_with_policy(
+        start_offset_counts: i32,
+        lower_rate_q: Option<u64>,
+        authority_source: RecoveryBindingSource,
+        current_contact_policy: RecoveryCurrentContactPolicy,
+    ) -> Self {
         let mut backend = MockBackend::new();
         backend.current_limit_value = current_limit(2_816);
         backend.mechanical_encoder_position_counts_value =
@@ -238,7 +268,12 @@ impl RecoveryFixture {
             100,
         );
         Self {
-            runtime: runtime_with_source(start_offset_counts, lower_rate_q, authority_source),
+            runtime: runtime_with_policy(
+                start_offset_counts,
+                lower_rate_q,
+                authority_source,
+                current_contact_policy,
+            ),
             safety: configured_safety(start_offset_counts),
             observations: VelocityObservationRing::new(),
             blocker: DyadicBlocker::new(),
@@ -629,6 +664,136 @@ fn recovery_current_observer_covers_motion_and_zero_target_settle() {
 }
 
 #[test]
+fn recovery_contact_passive_settle_proves_an_in_band_origin() {
+    let mut fixture = RecoveryFixture::new_with_policy(
+        1_040,
+        Some(14_000_000),
+        RecoveryBindingSource::SettledRate,
+        RecoveryCurrentContactPolicy::ProvePassiveSettle,
+    );
+    fixture.command_motion();
+    let _ = fixture.backend.registers.insert(
+        foci_tmc4671::registers::INTERIM_PIDOUT_TARGET_TORQUE
+            .data
+            .addr(),
+        2_816,
+    );
+
+    assert_eq!(
+        fixture.sample(1_000, 1_000),
+        RungOriginRecoveryStep::ReadyNow
+    );
+    assert_eq!(
+        fixture.backend.registers.get(&PID_VELOCITY_TARGET.addr()),
+        Some(&0)
+    );
+    assert_eq!(fixture.backend.pid_velocity_error_sum_clears, 2);
+    assert!(matches!(fixture.step(), RungOriginRecoveryStep::At(2_000)));
+
+    let _ = fixture.backend.registers.insert(
+        foci_tmc4671::registers::INTERIM_PIDOUT_TARGET_TORQUE
+            .data
+            .addr(),
+        100,
+    );
+    for sample in 2..=501 {
+        let result = fixture.sample(sample * 1_000, 998);
+        if sample < 501 {
+            assert!(matches!(result, RungOriginRecoveryStep::At(_)));
+        } else {
+            assert_eq!(result, RungOriginRecoveryStep::ReadyNow);
+        }
+    }
+    let report = loop {
+        match fixture.step() {
+            RungOriginRecoveryStep::ReadyNow => {}
+            RungOriginRecoveryStep::Finished(report) => break report,
+            other => panic!("passive in-band rest should recover: {other:?}"),
+        }
+    };
+
+    assert_eq!(
+        report.outcome,
+        RungOriginRecoveryOutcome::RecoveredWithCurrentHeadroom
+    );
+    assert_eq!(
+        report.binding_source,
+        RecoveryBindingSource::CurrentHeadroom
+    );
+    assert_eq!(report.final_offset_counts, 998);
+    assert_eq!(fixture.backend.pid_velocity_error_sum_clears, 2);
+    assert_eq!(
+        fixture
+            .backend
+            .spi_log
+            .iter()
+            .filter(|operation| {
+                matches!(
+                    operation,
+                    SpiOp::Write(address, value)
+                        if *address == PID_VELOCITY_TARGET.addr() && *value != 0
+                )
+            })
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn recovery_contact_passive_settle_rejects_an_out_of_band_origin() {
+    let mut fixture = RecoveryFixture::new_with_policy(
+        1_040,
+        Some(14_000_000),
+        RecoveryBindingSource::SettledRate,
+        RecoveryCurrentContactPolicy::ProvePassiveSettle,
+    );
+    fixture.command_motion();
+    let _ = fixture.backend.registers.insert(
+        foci_tmc4671::registers::INTERIM_PIDOUT_TARGET_TORQUE
+            .data
+            .addr(),
+        2_816,
+    );
+
+    assert_eq!(
+        fixture.sample(1_000, 1_001),
+        RungOriginRecoveryStep::ReadyNow
+    );
+    let _ = fixture.backend.registers.insert(
+        foci_tmc4671::registers::INTERIM_PIDOUT_TARGET_TORQUE
+            .data
+            .addr(),
+        100,
+    );
+    for sample in 2..=501 {
+        let result = fixture.sample(sample * 1_000, 1_001);
+        if sample < 501 {
+            assert!(matches!(result, RungOriginRecoveryStep::At(_)));
+        } else {
+            assert_eq!(result, RungOriginRecoveryStep::ReadyNow);
+        }
+    }
+
+    let report = loop {
+        match fixture.step() {
+            RungOriginRecoveryStep::ReadyNow => {}
+            RungOriginRecoveryStep::Contained(report) => break report,
+            other => panic!("out-of-band rest must remain contained: {other:?}"),
+        }
+    };
+
+    assert_eq!(
+        report.outcome,
+        RungOriginRecoveryOutcome::RecoveryCurrentHeadroom
+    );
+    assert_eq!(
+        report.binding_source,
+        RecoveryBindingSource::CurrentHeadroom
+    );
+    assert_eq!(report.final_offset_counts, 1_001);
+}
+
+#[test]
 fn recovery_consumes_the_safety_observation_taken_by_the_outer_dispatcher() {
     let mut fixture = RecoveryFixture::new(1_040, Some(14_000_000));
     fixture.command_motion();
@@ -788,6 +953,7 @@ fn recovery_safety_inherits_velocity_local_and_absolute_position_faults() {
             start_offset_counts: 90,
             lower_rate_q: Some(14_000_000),
             authority_source: RecoveryBindingSource::SettledRate,
+            current_contact_policy: RecoveryCurrentContactPolicy::StopImmediately,
         },
         super::recovery::RungOriginRecoveryPlan {
             origin_band_counts: 10,

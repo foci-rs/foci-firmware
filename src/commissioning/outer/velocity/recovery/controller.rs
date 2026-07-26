@@ -43,7 +43,9 @@ pub(crate) async fn step_rung_origin_recovery<B: CommissioningBackend>(
             );
             if matches!(
                 outcome,
-                RungOriginRecoveryOutcome::AlreadyCentered | RungOriginRecoveryOutcome::Recovered
+                RungOriginRecoveryOutcome::AlreadyCentered
+                    | RungOriginRecoveryOutcome::Recovered
+                    | RungOriginRecoveryOutcome::RecoveredWithCurrentHeadroom
             ) {
                 RungOriginRecoveryStep::Finished(report)
             } else {
@@ -126,7 +128,7 @@ pub(crate) async fn step_rung_origin_recovery<B: CommissioningBackend>(
                 return recovery_fault(CommissionError::InvalidSchedule, None);
             };
             runtime.recovery_started_us = ExactU64Parts::from_u64(started_us);
-            runtime.motion_started = true;
+            runtime.mark_motion_started();
             runtime.state = RecoveryState::Observe {
                 moving_deadline_us: ExactU64Parts::from_u64(moving_deadline_us),
             };
@@ -165,7 +167,9 @@ pub(crate) async fn step_rung_origin_recovery<B: CommissioningBackend>(
                 if let Err(error) = current_result {
                     return current_guard_fault(runtime, resources, backend, error);
                 }
-                if recovery_current_contact(resources.current_observer) {
+                if recovery_current_contact(resources.current_observer)
+                    && !runtime.current_contact_detected()
+                {
                     return recovery_current_headroom(runtime, resources, backend).await;
                 }
                 runtime.zero_commanded_us = ExactU64Parts::from_u64(backend.elapsed_us());
@@ -187,7 +191,9 @@ pub(crate) async fn step_rung_origin_recovery<B: CommissioningBackend>(
             settle_started_us,
             contained,
         } => {
-            if clear_velocity_integrator(backend).await.is_err() {
+            if !runtime.settle_integrator_cleared()
+                && clear_velocity_integrator(backend).await.is_err()
+            {
                 return recovery_fault(CommissionError::Spi, None);
             }
             let Some(deadline_us) = settle_started_us
@@ -289,7 +295,7 @@ pub(crate) async fn step_rung_origin_recovery<B: CommissioningBackend>(
             if backend.elapsed_us() >= analysis_deadline_us {
                 return recovery_fault(CommissionError::AnalysisOverrun, None);
             }
-            match poll_settle_confirmation_parts(
+            let confirmed_rest = match poll_settle_confirmation_parts(
                 resources.analysis,
                 resources.observations,
                 resources.blocker,
@@ -297,25 +303,39 @@ pub(crate) async fn step_rung_origin_recovery<B: CommissioningBackend>(
                 *resources.settle_max_displacement_counts,
             ) {
                 Ok(None) => return RungOriginRecoveryStep::ReadyNow,
-                Ok(Some(result)) if !result.confirmed_rest => {
-                    return recovery_fault(CommissionError::VelocityValidationFailed, None);
-                }
+                Ok(Some(result)) => result.confirmed_rest,
                 Err(error) => return recovery_fault(error, None),
-                Ok(Some(_)) => {}
-            }
+            };
             if let Err(error) =
                 finish_velocity_current_zero_phase(resources.current_observer, backend).await
             {
                 return current_guard_fault(runtime, resources, backend, error);
             }
-            if recovery_current_contact(resources.current_observer) {
+            if recovery_current_contact(resources.current_observer)
+                && !runtime.current_contact_detected()
+            {
                 return recovery_current_headroom(runtime, resources, backend).await;
             }
             resources.analysis.reset();
             resources.observations.clear();
             let final_offset = resources.safety.unwrapped_position;
             let in_band = final_offset.unsigned_abs() <= runtime.plan.origin_band_counts;
-            let (outcome, binding_source) = if contained || !in_band {
+            let (outcome, binding_source) = if runtime.current_contact_detected() {
+                resources.safety.end_primitive();
+                if confirmed_rest && in_band {
+                    (
+                        RungOriginRecoveryOutcome::RecoveredWithCurrentHeadroom,
+                        RecoveryBindingSource::CurrentHeadroom,
+                    )
+                } else {
+                    (
+                        RungOriginRecoveryOutcome::RecoveryCurrentHeadroom,
+                        RecoveryBindingSource::CurrentHeadroom,
+                    )
+                }
+            } else if !confirmed_rest {
+                return recovery_fault(CommissionError::VelocityValidationFailed, None);
+            } else if contained || !in_band {
                 (
                     RungOriginRecoveryOutcome::ContainedDeadline,
                     RecoveryBindingSource::Deadline,
@@ -338,7 +358,11 @@ pub(crate) async fn step_rung_origin_recovery<B: CommissioningBackend>(
                 backend.elapsed_us(),
                 resources.current_observer.peak_pid_output_abs(),
             );
-            if outcome == RungOriginRecoveryOutcome::Recovered {
+            if matches!(
+                outcome,
+                RungOriginRecoveryOutcome::Recovered
+                    | RungOriginRecoveryOutcome::RecoveredWithCurrentHeadroom
+            ) {
                 RungOriginRecoveryStep::Finished(report)
             } else {
                 RungOriginRecoveryStep::Contained(report)
@@ -383,7 +407,7 @@ async fn recovery_safety_sample<B: CommissioningBackend>(
             .current_observer
             .observe_moving_output(torque_target);
     }
-    if recovery_current_contact(resources.current_observer) {
+    if recovery_current_contact(resources.current_observer) && !runtime.current_contact_detected() {
         return Some(recovery_current_headroom(runtime, resources, backend).await);
     }
     None
@@ -402,6 +426,19 @@ async fn recovery_current_headroom<B: CommissioningBackend>(
     {
         return recovery_fault(CommissionError::Spi, None);
     }
+    if runtime.proves_passive_settle() {
+        runtime.mark_current_contact_detected();
+        if matches!(runtime.state, RecoveryState::Observe { .. }) {
+            runtime.zero_commanded_us = ExactU64Parts::from_u64(backend.elapsed_us());
+            runtime.state = RecoveryState::ClearSettleIntegrator {
+                settle_started_us: runtime.zero_commanded_us,
+                contained: false,
+            };
+            return RungOriginRecoveryStep::ReadyNow;
+        }
+        return RungOriginRecoveryStep::ReadyNow;
+    }
+
     resources.safety.end_primitive();
     let outcome = RungOriginRecoveryOutcome::RecoveryCurrentHeadroom;
     let binding_source = RecoveryBindingSource::CurrentHeadroom;

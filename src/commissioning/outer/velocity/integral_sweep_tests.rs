@@ -3,12 +3,13 @@ use super::integral_plan::VelocityIntegralExecutionPlan;
 use super::integral_sweep::{
     INTEGRAL_CAUSE_BOOKEND_UNAVAILABLE, INTEGRAL_SLOT_COUNT, advance_integral_cursor,
     apply_integral_current_headroom, integral_fault_terminal, integral_i_at,
-    integral_slot_direction, opening_recovery_lower_rate_q, positive_directional_floors_exist,
+    integral_recovery_current_contact_policy, integral_slot_direction,
+    opening_recovery_lower_rate_q, positive_directional_floors_exist,
     step_velocity_integral_with_trace,
 };
 use super::recovery::{
-    ExactU64Parts, RecoveryBindingSource, RecoveryStage, RungOriginRecoveryOutcome,
-    RungOriginRecoveryReport,
+    ExactU64Parts, RecoveryBindingSource, RecoveryCurrentContactPolicy, RecoveryStage,
+    RungOriginRecoveryOutcome, RungOriginRecoveryReport,
 };
 use super::sweep_plan::RequestedVelocitySource;
 use crate::autotune::CommissionError;
@@ -355,6 +356,100 @@ fn post_sufficiency_current_terminus_restores_origin_before_bookend() {
     };
     assert_eq!(data.rung_index, data.plan.positive_rung_count + 1);
     assert!(matches!(state, VelocityIntegralState::WriteGains));
+}
+
+#[test]
+fn recovered_with_current_headroom_advances_to_the_required_bookend() {
+    let mut phase = phase();
+    let OuterPhase::VelocityIntegral { state, data, .. } = &mut phase else {
+        unreachable!()
+    };
+    data.rung_index = 3;
+    data.eligible_masks = [0b111; 2];
+    data.current_terminus = Some(2);
+    *state = VelocityIntegralState::FinalizeRecovery(RungOriginRecoveryReport {
+        stage: RecoveryStage::Integral,
+        rung_index: 3,
+        p_raw: 1_448,
+        planned_velocity_mrev_s: 2_929,
+        start_offset_counts: 1_834,
+        closest_offset_counts: 998,
+        final_offset_counts: 998,
+        origin_band_counts: 1_000,
+        lower_rate_q: ExactU64Parts::from_u64(9_174_528),
+        moving_duration_us: 100_000,
+        settle_duration_us: 500_000,
+        total_duration_us: 600_000,
+        peak_torque_target_abs: 2_534,
+        binding_source: RecoveryBindingSource::CurrentHeadroom,
+        outcome: RungOriginRecoveryOutcome::RecoveredWithCurrentHeadroom,
+    });
+    let mut workspace = TransientBuffer::new();
+    let mut backend = MockBackend::new();
+
+    assert!(matches!(
+        step(&mut phase, &mut workspace, &mut backend),
+        StepResult::VelocityIntegralEvent(VelocityIntegralEvent::Recovery(_))
+    ));
+    let OuterPhase::VelocityIntegral { state, data, .. } = phase else {
+        unreachable!()
+    };
+    assert!(data.recovered_with_current_headroom);
+    assert!(!data.recovery_unavailable);
+    assert_eq!(data.rung_index, data.plan.positive_rung_count + 1);
+    assert!(matches!(state, VelocityIntegralState::WriteGains));
+}
+
+#[test]
+fn recovery_current_contact_policy_is_limited_to_the_final_positive_recovery() {
+    let mut phase = phase();
+    let OuterPhase::VelocityIntegral { data, .. } = &mut phase else {
+        unreachable!()
+    };
+
+    data.rung_index = 0;
+    assert_eq!(
+        integral_recovery_current_contact_policy(data),
+        RecoveryCurrentContactPolicy::StopImmediately
+    );
+
+    data.rung_index = 1;
+    assert_eq!(
+        integral_recovery_current_contact_policy(data),
+        RecoveryCurrentContactPolicy::StopImmediately
+    );
+
+    data.eligible_masks = [0b111; 2];
+    assert_eq!(
+        integral_recovery_current_contact_policy(data),
+        RecoveryCurrentContactPolicy::StopImmediately
+    );
+
+    data.rung_index = data.plan.positive_rung_count;
+    assert_eq!(
+        integral_recovery_current_contact_policy(data),
+        RecoveryCurrentContactPolicy::ProvePassiveSettle
+    );
+
+    data.rung_index = 2;
+    data.current_terminus = Some(1);
+    assert_eq!(
+        integral_recovery_current_contact_policy(data),
+        RecoveryCurrentContactPolicy::ProvePassiveSettle
+    );
+
+    data.current_terminus = None;
+    data.positive_i_rest_boundary_after_sufficiency = true;
+    assert_eq!(
+        integral_recovery_current_contact_policy(data),
+        RecoveryCurrentContactPolicy::ProvePassiveSettle
+    );
+
+    data.rung_index = data.plan.positive_rung_count + 1;
+    assert_eq!(
+        integral_recovery_current_contact_policy(data),
+        RecoveryCurrentContactPolicy::StopImmediately
+    );
 }
 
 #[test]

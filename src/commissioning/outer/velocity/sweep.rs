@@ -34,9 +34,9 @@ use super::operating_region::{
     SelectedDirectionalRegion,
 };
 use super::recovery::{
-    RecoveryRateAuthority, RecoveryStage, RungOriginRecoveryConfig, RungOriginRecoveryOutcome,
-    RungOriginRecoveryResources, RungOriginRecoveryRuntime, RungOriginRecoveryStep,
-    plan_rung_origin_recovery, step_rung_origin_recovery,
+    RecoveryCurrentContactPolicy, RecoveryRateAuthority, RecoveryStage, RungOriginRecoveryConfig,
+    RungOriginRecoveryOutcome, RungOriginRecoveryResources, RungOriginRecoveryRuntime,
+    RungOriginRecoveryStep, plan_rung_origin_recovery, step_rung_origin_recovery,
 };
 use super::sweep_analysis::{
     poll_moving_observation_analysis, poll_settle_confirmation, retain_observation,
@@ -1504,6 +1504,7 @@ pub(crate) async fn step_velocity_sweep_with_trace<B: CommissioningBackend>(
                         start_offset_counts: safety.unwrapped_position,
                         lower_rate_q: authority.lower_rate_q(),
                         authority_source: authority.source,
+                        current_contact_policy: RecoveryCurrentContactPolicy::StopImmediately,
                     },
                     recovery_plan,
                 ) {

@@ -63,8 +63,17 @@ pub(crate) enum RungOriginRecoveryOutcome {
     /// The temporary velocity-output clamp engaged during recovery.
     RecoveryCurrentHeadroom = 4,
     /// Clamp contact was followed by confirmed passive in-band rest.
-    #[allow(dead_code)]
     RecoveredWithCurrentHeadroom = 5,
+}
+
+/// Response to a probe-clamp contact during one origin-recovery primitive.
+#[cfg(feature = "trace-velocity-sweep")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+pub(crate) enum RecoveryCurrentContactPolicy {
+    /// Stop immediately and report the existing contained outcome.
+    StopImmediately,
+    /// Hold zero target and prove passive in-band rest without restarting settle.
+    ProvePassiveSettle,
 }
 
 /// Exact reason that bounded or authorized the recovery attempt.
@@ -262,7 +271,7 @@ pub(crate) struct RungOriginRecoveryRuntime {
     authority_source: RecoveryBindingSource,
     plan: RungOriginRecoveryPlan,
     runtime_us: u32,
-    motion_started: bool,
+    flags: u8,
     recovery_started_us: ExactU64Parts,
     zero_commanded_us: ExactU64Parts,
     state: RecoveryState,
@@ -280,10 +289,16 @@ pub(crate) struct RungOriginRecoveryConfig {
     pub(crate) start_offset_counts: i32,
     pub(crate) lower_rate_q: Option<u64>,
     pub(crate) authority_source: RecoveryBindingSource,
+    pub(crate) current_contact_policy: RecoveryCurrentContactPolicy,
 }
 
 #[cfg(feature = "trace-velocity-sweep")]
 impl RungOriginRecoveryRuntime {
+    const MOTION_STARTED: u8 = 1 << 0;
+    const PROVE_PASSIVE_SETTLE: u8 = 1 << 1;
+    const CURRENT_CONTACT_DETECTED: u8 = 1 << 2;
+    const SETTLE_INTEGRATOR_CLEARED: u8 = 1 << 3;
+
     /// Construct one checked recovery attempt without touching hardware.
     pub(crate) fn new(
         config: RungOriginRecoveryConfig,
@@ -352,7 +367,13 @@ impl RungOriginRecoveryRuntime {
             authority_source: config.authority_source,
             plan,
             runtime_us,
-            motion_started: false,
+            flags: if config.current_contact_policy
+                == RecoveryCurrentContactPolicy::ProvePassiveSettle
+            {
+                Self::PROVE_PASSIVE_SETTLE
+            } else {
+                0
+            },
             recovery_started_us: ExactU64Parts::ZERO,
             zero_commanded_us: ExactU64Parts::ZERO,
             state,
@@ -372,6 +393,30 @@ impl RungOriginRecoveryRuntime {
         }
     }
 
+    fn motion_started(&self) -> bool {
+        self.flags & Self::MOTION_STARTED != 0
+    }
+
+    fn mark_motion_started(&mut self) {
+        self.flags |= Self::MOTION_STARTED;
+    }
+
+    fn proves_passive_settle(&self) -> bool {
+        self.flags & Self::PROVE_PASSIVE_SETTLE != 0
+    }
+
+    fn current_contact_detected(&self) -> bool {
+        self.flags & Self::CURRENT_CONTACT_DETECTED != 0
+    }
+
+    fn mark_current_contact_detected(&mut self) {
+        self.flags |= Self::CURRENT_CONTACT_DETECTED | Self::SETTLE_INTEGRATOR_CLEARED;
+    }
+
+    fn settle_integrator_cleared(&self) -> bool {
+        self.flags & Self::SETTLE_INTEGRATOR_CLEARED != 0
+    }
+
     fn report(
         &self,
         outcome: RungOriginRecoveryOutcome,
@@ -380,7 +425,7 @@ impl RungOriginRecoveryRuntime {
         now_us: u64,
         peak_torque_target_abs: u16,
     ) -> RungOriginRecoveryReport {
-        let (moving_duration_us, settle_duration_us, total_duration_us) = if self.motion_started {
+        let (moving_duration_us, settle_duration_us, total_duration_us) = if self.motion_started() {
             (
                 self.zero_commanded_us
                     .to_u64()
