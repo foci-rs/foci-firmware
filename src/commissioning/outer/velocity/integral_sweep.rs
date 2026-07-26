@@ -261,7 +261,7 @@ fn plan_integral_recovery(
         data.plan.planned_velocity_mrev_s,
     )
     .map_err(|_| CommissionError::InvalidSchedule)?;
-    let clamp_limit = PidTorqueFluxLimit::new(u32::from(data.plan.hard_torque_limit))
+    let clamp_limit = PidTorqueFluxLimit::new(u32::from(data.plan.usable_torque_limit))
         .map_err(|_| CommissionError::InvalidSchedule)?;
     data.current_observer
         .reset(clamp_limit, data.plan.limit_evidence_capability);

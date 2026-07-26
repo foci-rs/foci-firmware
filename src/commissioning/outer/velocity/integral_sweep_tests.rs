@@ -202,6 +202,50 @@ fn integral_recovery_follows_the_emitted_opening_anchor_and_restores_i_ladder_or
 }
 
 #[test]
+fn integral_recovery_preserves_probe_clamp() {
+    let mut phase = phase();
+    let mut workspace = TransientBuffer::new();
+    let OuterPhase::VelocityIntegral {
+        state,
+        data,
+        safety,
+    } = &mut phase
+    else {
+        unreachable!()
+    };
+    *state = VelocityIntegralState::AnalyzeRung;
+    data.rung_classes = [VelocityObservationClass::Eligible; 8];
+    data.rung_intervals = core::array::from_fn(|slot| {
+        if slot.is_multiple_of(2) {
+            ExactRateInterval::new(1_000_000, 2_000_000).unwrap()
+        } else {
+            ExactRateInterval::new(-2_000_000, -1_000_000).unwrap()
+        }
+    });
+    data.current_observer = VelocityCurrentObserver::new(
+        current_limit(u32::from(data.plan.hard_torque_limit)),
+        data.plan.limit_evidence_capability,
+    );
+    safety
+        .configure_velocity_sweep_encoder_resolution(4_000)
+        .unwrap();
+    safety.unwrapped_position = 1_001;
+    let mut backend = MockBackend::new();
+
+    assert!(matches!(
+        step(&mut phase, &mut workspace, &mut backend),
+        StepResult::VelocityIntegralEvent(VelocityIntegralEvent::Rung(_))
+    ));
+    let OuterPhase::VelocityIntegral { data, .. } = phase else {
+        unreachable!()
+    };
+    assert_eq!(
+        data.current_observer.clamp_limit(),
+        data.plan.usable_torque_limit
+    );
+}
+
+#[test]
 fn integral_recovery_containment_is_cause_five_before_the_bookend() {
     let mut phase = phase();
     let mut workspace = TransientBuffer::new();
