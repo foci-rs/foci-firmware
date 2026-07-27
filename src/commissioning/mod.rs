@@ -750,7 +750,6 @@ impl CommissioningEngine {
 
     /// Create one direct fixed-I matrix engine from an exact disclosed plan.
     #[cfg(feature = "trace-velocity-sweep")]
-    #[allow(dead_code)]
     pub fn new_outer_for_tmc_with_acceptance_preflight(
         oid: u8,
         tmc_state: &'static TmcChannelState,

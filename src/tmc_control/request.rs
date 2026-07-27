@@ -38,6 +38,7 @@ pub enum TmcPreRequestDisposition {
 #[cfg(feature = "trace-velocity-sweep")]
 enum TuneRoute {
     Combined(crate::commission_dispatch::stage_b::StageBPreflight),
+    Acceptance(crate::commission_dispatch::acceptance::AcceptanceMatrixPreflight),
 }
 
 /// A board could not install the validated mapper into its idle P3 scheduler.
@@ -233,6 +234,7 @@ where
     Spi: SpiDevice<u8>,
     Board: TmcRequestBoard<Spi>,
 {
+    let autotune_action = req.autotune_action;
     match pre_request {
         TmcPreRequestDisposition::ContinueRequest => {}
         TmcPreRequestDisposition::RequestHandled => {
@@ -755,65 +757,152 @@ where
                 max_duration_ms,
             };
             #[cfg(feature = "trace-velocity-sweep")]
-            let tune_route = {
-                let legacy_retained_state = stage_b_candidate.candidate().is_some()
-                    || stage_c_candidate.state()
-                        != crate::commissioning::outer::velocity::integral_reproduction::StageCSlotState::Empty;
-                let stage_b =
-                    match crate::commission_dispatch::stage_b::preflight_combined_stage_b_request(
-                        request,
-                        encoder_counts_per_rev,
-                        current_limit.raw(),
-                        board.velocity_limit_evidence_capability(),
-                        board.channel(),
-                        run_sequence,
-                        legacy_retained_state,
-                    ) {
+            let tune_route = match autotune_action {
+                crate::tmc::AutotuneAction::Combined => {
+                    use crate::commissioning::outer::velocity::integral_reproduction::StageCSlotState;
+
+                    let stage_c_blocks_replacement = match stage_c_candidate.state() {
+                        StageCSlotState::Empty => false,
+                        StageCSlotState::AcceptancePoint => stage_c_candidate
+                            .acceptance_point()
+                            .is_none_or(|point| point.identity.channel != board.channel()),
+                        StageCSlotState::AuthorityOnly | StageCSlotState::Candidate => true,
+                    };
+                    let legacy_retained_state =
+                        stage_b_candidate.candidate().is_some() || stage_c_blocks_replacement;
+                    let stage_b = match crate::commission_dispatch::stage_b::
+                        preflight_combined_stage_b_request(
+                            request,
+                            encoder_counts_per_rev,
+                            current_limit.raw(),
+                            board.velocity_limit_evidence_capability(),
+                            board.channel(),
+                            run_sequence,
+                            legacy_retained_state,
+                        ) {
+                            Ok(preflight) => preflight,
+                            Err(rejection) => {
+                                board.tmc_state().commission_in_flight.store(
+                                    false,
+                                    core::sync::atomic::Ordering::Relaxed,
+                                );
+                                board.emit_reply(stage_b_preflight_failure_payload(
+                                    oid,
+                                    run_sequence,
+                                    rejection,
+                                ));
+                                return TmcControlRequestOutcome::skip_tick_tail();
+                            }
+                        };
+                    let workflow_geometry = match crate::commissioning::outer::velocity::
+                        combined_plan::combined_workflow_geometry(
+                            stage_b.plan,
+                            board.pwm_freq_hz(),
+                        ) {
+                            Ok(geometry) => geometry,
+                            Err(_) => {
+                                board.tmc_state().commission_in_flight.store(
+                                    false,
+                                    core::sync::atomic::Ordering::Relaxed,
+                                );
+                                board.emit_reply(stage_b_preflight_failure_payload(
+                                    oid,
+                                    run_sequence,
+                                    crate::commission_dispatch::stage_b::
+                                        StageBPreflightRejection::InvalidPlan,
+                                ));
+                                return TmcControlRequestOutcome::skip_tick_tail();
+                            }
+                        };
+                    let workflow = crate::commissioning::outer::velocity::integral_plan::
+                        CommissioningWorkflowPlan::new_combined(
+                            run_sequence,
+                            workflow_geometry.combined_nominal_ms,
+                            workflow_geometry.combined_maximum_ms,
+                        )
+                        .expect("valid combined stage plans have a valid workflow envelope");
+                    board.emit_reply(ReplyPayload::CommissioningWorkflowPlan {
+                        oid,
+                        plan: workflow,
+                    });
+                    TuneRoute::Combined(stage_b)
+                }
+                action @ (crate::tmc::AutotuneAction::MatrixAscending
+                | crate::tmc::AutotuneAction::MatrixDescending) => {
+                    let result = stage_c_candidate
+                        .acceptance_point()
+                        .ok_or(
+                            crate::commission_dispatch::acceptance::
+                                AcceptanceMatrixPreflightRejection::MissingAcceptancePoint,
+                        )
+                        .and_then(|point| {
+                            crate::commission_dispatch::acceptance::reconstruct_combined_plan(
+                                point,
+                                request,
+                                encoder_counts_per_rev,
+                                current_limit.raw(),
+                                board.velocity_limit_evidence_capability(),
+                                board.pwm_freq_hz(),
+                            )
+                        })
+                        .and_then(|current| {
+                            crate::commission_dispatch::acceptance::
+                                preflight_acceptance_matrix(
+                                    action,
+                                    request,
+                                    current,
+                                    run_sequence,
+                                    stage_c_candidate,
+                                )
+                        });
+                    let preflight = match result {
                         Ok(preflight) => preflight,
                         Err(rejection) => {
+                            let terminal = crate::commission_dispatch::acceptance::
+                                failed_acceptance_matrix_terminal(
+                                    run_sequence,
+                                    rejection,
+                                    stage_c_candidate,
+                                );
+                            board.record_velocity_sweep_trace_record(
+                                crate::commissioning::outer::velocity::acceptance_reporting::
+                                    encode_acceptance_terminal(&terminal),
+                            );
+                            board.emit_reply(ReplyPayload::AcceptanceMatrixTerminal {
+                                oid,
+                                terminal,
+                            });
                             board
                                 .tmc_state()
                                 .commission_in_flight
                                 .store(false, core::sync::atomic::Ordering::Relaxed);
-                            board.emit_reply(stage_b_preflight_failure_payload(
-                                oid,
-                                run_sequence,
-                                rejection,
-                            ));
                             return TmcControlRequestOutcome::skip_tick_tail();
                         }
                     };
-                let workflow_geometry =
-                    match crate::commissioning::outer::velocity::combined_plan::combined_workflow_geometry(
-                        stage_b.plan,
-                        board.pwm_freq_hz(),
-                    ) {
-                        Ok(geometry) => geometry,
-                        Err(_) => {
-                            board
-                                .tmc_state()
-                                .commission_in_flight
-                                .store(false, core::sync::atomic::Ordering::Relaxed);
-                            board.emit_reply(stage_b_preflight_failure_payload(
-                                oid,
-                                run_sequence,
-                                crate::commission_dispatch::stage_b::StageBPreflightRejection::InvalidPlan,
-                            ));
-                            return TmcControlRequestOutcome::skip_tick_tail();
-                        }
-                    };
-                let workflow =
-                    crate::commissioning::outer::velocity::integral_plan::CommissioningWorkflowPlan::new_combined(
+                    let workflow = crate::commissioning::outer::velocity::integral_plan::
+                        CommissioningWorkflowPlan::new_acceptance_matrix(
+                            run_sequence,
+                            preflight.plan.order,
+                            preflight.plan.nominal_workflow_ms,
+                            preflight.plan.maximum_workflow_ms,
+                        )
+                        .expect("a valid matrix plan has a valid workflow envelope");
+                    board.emit_reply(ReplyPayload::CommissioningWorkflowPlan {
+                        oid,
+                        plan: workflow,
+                    });
+                    for record in crate::commissioning::outer::velocity::acceptance_reporting::
+                        encode_acceptance_plan(run_sequence, preflight.plan)
+                    {
+                        board.record_velocity_sweep_trace_record(record);
+                    }
+                    board.emit_reply(ReplyPayload::AcceptanceMatrixPlan {
+                        oid,
                         run_sequence,
-                        workflow_geometry.combined_nominal_ms,
-                        workflow_geometry.combined_maximum_ms,
-                    )
-                    .expect("valid combined stage plans have a valid workflow envelope");
-                board.emit_reply(ReplyPayload::CommissioningWorkflowPlan {
-                    oid,
-                    plan: workflow,
-                });
-                TuneRoute::Combined(stage_b)
+                        plan: preflight.plan,
+                    });
+                    TuneRoute::Acceptance(preflight)
+                }
             };
             if !runtime.restore_phase_advance_now(tmc).await {
                 defmt::warn!("phase advance: failed to restore ABN offset before tune");
@@ -884,6 +973,18 @@ where
             {
                 match tune_route {
                     TuneRoute::Combined(stage_b_preflight) => {
+                        if !stage_c_candidate.begin_acceptance_replacement(board.channel()) {
+                            board
+                                .tmc_state()
+                                .commission_in_flight
+                                .store(false, core::sync::atomic::Ordering::Relaxed);
+                            emit_commission_phase_failure::<Board, Spi>(
+                                board,
+                                oid,
+                                CommissionError::InvalidSchedule.status_code(),
+                            );
+                            return TmcControlRequestOutcome::skip_tick_tail();
+                        }
                         let planned_event = stage_b_preflight.planned_event();
                         board.record_velocity_sweep_trace_record(
                             crate::commissioning::outer::velocity::sweep_reporting::encode_velocity_sweep_event(
@@ -901,6 +1002,17 @@ where
                                 outer_params,
                                 entry_snapshot,
                                 stage_b_preflight,
+                            ),
+                        );
+                    }
+                    TuneRoute::Acceptance(preflight) => {
+                        runtime.set_commission_engine(
+                            CommissioningEngine::new_outer_for_tmc_with_acceptance_preflight(
+                                oid,
+                                tmc_state,
+                                outer_params,
+                                entry_snapshot,
+                                preflight,
                             ),
                         );
                     }
@@ -1697,6 +1809,13 @@ mod tests {
     }
 
     #[cfg(feature = "trace-velocity-sweep")]
+    fn tune_request_with_action(action: crate::tmc::AutotuneAction) -> TmcRequest {
+        let mut request = tune_request();
+        request.autotune_action = action;
+        request
+    }
+
+    #[cfg(feature = "trace-velocity-sweep")]
     fn velocity_sweep_request()
     -> crate::commissioning::outer::velocity::sweep_plan::VelocitySweepRequest {
         let TmcRequestKind::Tune {
@@ -2424,6 +2543,221 @@ mod tests {
             );
             assert!(slot.candidate().is_none());
             assert!(runtime.is_commission_active());
+        });
+    }
+
+    #[cfg(feature = "trace-velocity-sweep")]
+    #[test]
+    fn matrix_request_without_acceptance_point_fails_without_motion_writes() {
+        run_request_test(async {
+            use crate::commissioning::outer::velocity::integral_reproduction::StageCCandidateSlot;
+            use crate::commissioning::outer::velocity::reproduction::StageBCandidateSlot;
+            use crate::commissioning::types::{AcceptanceMatrixCause, AcceptanceMatrixOutcome};
+
+            let mut board = RecordingBoard::skip_tick_tail();
+            tmc_channel0()
+                .configure_motion_scale(stepper_channel0(), 1_000, 3_200)
+                .expect("valid motion scale");
+            tmc_channel0().store_current_limit(current_limit(2_816), Relaxed);
+            let mut runtime = TmcControlRuntime::new_for_channel(0);
+            runtime.set_motor_enabled_for_test(true);
+            runtime.set_calibrated_for_test(true);
+            let mut stage_b = StageBCandidateSlot::new();
+            let mut stage_c = StageCCandidateSlot::new();
+            let mut tmc = Tmc4671Spi::new(RuntimeMockSpi::default());
+
+            handle_tmc_control_request_with_stages(
+                tune_request_with_action(crate::tmc::AutotuneAction::MatrixAscending),
+                TmcPreRequestDisposition::ContinueRequest,
+                &mut runtime,
+                &mut stage_b,
+                &mut stage_c,
+                &mut tmc,
+                &mut board,
+            )
+            .await;
+
+            assert_eq!(board.replies.len(), 1);
+            let ReplyPayload::AcceptanceMatrixTerminal { terminal, .. } = board.replies[0] else {
+                panic!("missing point must use the matrix terminal namespace")
+            };
+            assert_eq!(terminal.outcome, AcceptanceMatrixOutcome::Failed);
+            assert_eq!(
+                terminal.cause,
+                AcceptanceMatrixCause::MissingAcceptancePoint
+            );
+            assert!(!runtime.is_commission_active());
+            assert_eq!(board.velocity_sweep_records.len(), 1);
+            let spi = tmc.into_inner();
+            assert!(spi.write_attempts.iter().all(|(addr, _)| {
+                *addr != foci_tmc4671::registers::PID_TORQUE_FLUX_LIMITS.addr()
+                    && *addr != foci_tmc4671::registers::PID_VELOCITY_TARGET.addr()
+                    && *addr != foci_tmc4671::registers::PID_VELOCITY_P_VELOCITY_I.addr()
+            }));
+        });
+    }
+
+    #[cfg(feature = "trace-velocity-sweep")]
+    #[test]
+    fn admitted_matrix_discloses_exact_plan_before_engine_execution() {
+        run_request_test(async {
+            use crate::commissioning::outer::velocity::integral_reproduction::{
+                AcceptanceMatrixProgress, StageCCandidateSlot,
+            };
+            use crate::commissioning::outer::velocity::reproduction::StageBCandidateSlot;
+
+            let mut board = RecordingBoard::skip_tick_tail();
+            tmc_channel0()
+                .configure_motion_scale(stepper_channel0(), 1_000, 3_200)
+                .expect("valid motion scale");
+            tmc_channel0().store_current_limit(current_limit(2_816), Relaxed);
+            let mut runtime = TmcControlRuntime::new_for_channel(0);
+            runtime.set_motor_enabled_for_test(true);
+            runtime.set_calibrated_for_test(true);
+            let mut stage_b = StageBCandidateSlot::new();
+            let mut stage_c = StageCCandidateSlot::new();
+            stage_c.install_acceptance_point(
+                crate::commission_dispatch::acceptance::test_acceptance_point(
+                    velocity_sweep_request(),
+                    AcceptanceMatrixProgress::ReadyAscending,
+                ),
+            );
+            let mut tmc = Tmc4671Spi::new(RuntimeMockSpi::default());
+
+            handle_tmc_control_request_with_stages(
+                tune_request_with_action(crate::tmc::AutotuneAction::MatrixAscending),
+                TmcPreRequestDisposition::ContinueRequest,
+                &mut runtime,
+                &mut stage_b,
+                &mut stage_c,
+                &mut tmc,
+                &mut board,
+            )
+            .await;
+
+            assert_eq!(board.replies.len(), 2);
+            let ReplyPayload::CommissioningWorkflowPlan { plan: workflow, .. } = board.replies[0]
+            else {
+                panic!("matrix workflow envelope must be first")
+            };
+            assert_eq!(
+                workflow.shape,
+                crate::commissioning::outer::velocity::integral_plan::StageCPlanShape::
+                    AcceptanceMatrixAscending
+            );
+            assert_eq!(workflow.maximum_workflow_ms, 66_456);
+            let ReplyPayload::AcceptanceMatrixPlan { plan, .. } = board.replies[1] else {
+                panic!("matrix plan must be disclosed before execution")
+            };
+            assert_eq!(plan.target_rpm, [16, 33, 66, 132, 263]);
+            assert_eq!(board.velocity_sweep_records.len(), 3);
+            assert!(runtime.is_commission_active());
+            assert_eq!(
+                stage_c.acceptance_point().unwrap().progress,
+                AcceptanceMatrixProgress::ReadyAscending
+            );
+        });
+    }
+
+    #[cfg(feature = "trace-velocity-sweep")]
+    #[test]
+    fn combined_replacement_clears_same_channel_point_only_after_admission() {
+        run_request_test(async {
+            use crate::commissioning::outer::velocity::integral_reproduction::{
+                AcceptanceMatrixProgress, StageCCandidateSlot,
+            };
+            use crate::commissioning::outer::velocity::reproduction::StageBCandidateSlot;
+
+            let mut board = RecordingBoard::skip_tick_tail();
+            tmc_channel0()
+                .configure_motion_scale(stepper_channel0(), 1_000, 3_200)
+                .expect("valid motion scale");
+            tmc_channel0().store_current_limit(current_limit(2_816), Relaxed);
+            let mut runtime = TmcControlRuntime::new_for_channel(0);
+            runtime.set_motor_enabled_for_test(true);
+            runtime.set_calibrated_for_test(true);
+            let mut stage_b = StageBCandidateSlot::new();
+            let mut stage_c = StageCCandidateSlot::new();
+            stage_c.install_acceptance_point(
+                crate::commission_dispatch::acceptance::test_acceptance_point(
+                    velocity_sweep_request(),
+                    AcceptanceMatrixProgress::ReadyAscending,
+                ),
+            );
+            let mut tmc = Tmc4671Spi::new(RuntimeMockSpi::default());
+
+            handle_tmc_control_request_with_stages(
+                tune_request(),
+                TmcPreRequestDisposition::ContinueRequest,
+                &mut runtime,
+                &mut stage_b,
+                &mut stage_c,
+                &mut tmc,
+                &mut board,
+            )
+            .await;
+
+            assert!(runtime.is_commission_active());
+            assert_eq!(stage_c.acceptance_point(), None);
+            assert!(matches!(
+                board.replies.as_slice(),
+                [
+                    ReplyPayload::CommissioningWorkflowPlan { .. },
+                    ReplyPayload::VelocitySweepEvent { .. }
+                ]
+            ));
+        });
+    }
+
+    #[cfg(feature = "trace-velocity-sweep")]
+    #[test]
+    fn matrix_order_mismatch_preserves_point_without_motion() {
+        run_request_test(async {
+            use crate::commissioning::outer::velocity::integral_reproduction::{
+                AcceptanceMatrixProgress, StageCCandidateSlot,
+            };
+            use crate::commissioning::outer::velocity::reproduction::StageBCandidateSlot;
+            use crate::commissioning::types::AcceptanceMatrixCause;
+
+            let mut board = RecordingBoard::skip_tick_tail();
+            tmc_channel0()
+                .configure_motion_scale(stepper_channel0(), 1_000, 3_200)
+                .expect("valid motion scale");
+            tmc_channel0().store_current_limit(current_limit(2_816), Relaxed);
+            let mut runtime = TmcControlRuntime::new_for_channel(0);
+            runtime.set_motor_enabled_for_test(true);
+            runtime.set_calibrated_for_test(true);
+            let mut stage_b = StageBCandidateSlot::new();
+            let mut stage_c = StageCCandidateSlot::new();
+            let point = crate::commission_dispatch::acceptance::test_acceptance_point(
+                velocity_sweep_request(),
+                AcceptanceMatrixProgress::ReadyDescending,
+            );
+            stage_c.install_acceptance_point(point);
+            let mut tmc = Tmc4671Spi::new(RuntimeMockSpi::default());
+
+            handle_tmc_control_request_with_stages(
+                tune_request_with_action(crate::tmc::AutotuneAction::MatrixAscending),
+                TmcPreRequestDisposition::ContinueRequest,
+                &mut runtime,
+                &mut stage_b,
+                &mut stage_c,
+                &mut tmc,
+                &mut board,
+            )
+            .await;
+
+            let ReplyPayload::AcceptanceMatrixTerminal { terminal, .. } = board.replies[0] else {
+                panic!("wrong order must use the matrix terminal namespace")
+            };
+            assert_eq!(terminal.cause, AcceptanceMatrixCause::MatrixOrderMismatch);
+            assert_eq!(stage_c.acceptance_point(), Some(point));
+            assert!(!runtime.is_commission_active());
+            assert!(tmc.into_inner().write_attempts.iter().all(|(addr, _)| {
+                *addr != foci_tmc4671::registers::PID_TORQUE_FLUX_LIMITS.addr()
+                    && *addr != foci_tmc4671::registers::PID_VELOCITY_TARGET.addr()
+                    && *addr != foci_tmc4671::registers::PID_VELOCITY_P_VELOCITY_I.addr()
+            }));
         });
     }
 
