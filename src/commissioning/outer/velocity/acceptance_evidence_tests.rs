@@ -1,10 +1,19 @@
 use super::acceptance_evidence::{
-    AcceptanceAmplitudeAvailability, AcceptanceDirectionInput, AcceptanceEvidenceError,
-    AcceptanceRunMasks, acceptance_run_sufficient, classify_acceptance_amplitude,
-    robust_rate_location,
+    AcceptanceAmplitudeAvailability, AcceptanceAmplitudeReport, AcceptanceDirectionInput,
+    AcceptanceEvidenceError, AcceptanceRunMasks, acceptance_run_sufficient,
+    classify_acceptance_amplitude, robust_rate_location,
 };
 use super::sweep_consensus::DirectionalConsensusClass;
 use super::sweep_evidence::VelocityObservationClass;
+
+#[test]
+fn acceptance_reports_keep_measured_sizes() {
+    assert_eq!(core::mem::size_of::<AcceptanceAmplitudeReport>(), 184);
+    assert_eq!(
+        core::mem::size_of::<crate::commissioning::types::AcceptanceMatrixTerminal>(),
+        112
+    );
+}
 
 fn input(intervals: [[i32; 2]; 4]) -> AcceptanceDirectionInput {
     AcceptanceDirectionInput {
