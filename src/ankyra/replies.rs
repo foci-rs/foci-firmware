@@ -3772,6 +3772,24 @@ pub struct FociVelocityIntegralTerminalTiming {
     pub completed_high: u32,
 }
 
+/// Immutable fixed-I velocity confidence-matrix plan.
+#[klipper_reply]
+pub struct FociAcceptanceMatrixPlan<'a> {
+    /// Endpoint object id.
+    pub oid: u8,
+    /// Exact fixed-layout schema-1 payload.
+    pub payload: &'a [u8],
+}
+
+/// Compact fixed-I velocity confidence-matrix terminal.
+#[klipper_reply]
+pub struct FociAcceptanceMatrixTerminal<'a> {
+    /// Endpoint object id.
+    pub oid: u8,
+    /// Exact fixed-layout schema-1 payload.
+    pub payload: &'a [u8],
+}
+
 #[cfg(test)]
 mod velocity_sweep_reply_tests {
     use super::*;
@@ -3796,6 +3814,24 @@ mod velocity_sweep_reply_tests {
             payload + FRAME_OVERHEAD_BYTES <= FRAME_MAX,
             "{name} frame is {}",
             payload + FRAME_OVERHEAD_BYTES
+        );
+    }
+
+    #[test]
+    fn acceptance_matrix_replies_fit_one_protocol_frame() {
+        assert_fits(
+            &FociAcceptanceMatrixPlan {
+                oid: u8::MAX,
+                payload: &[u8::MAX; 50],
+            },
+            "acceptance matrix plan",
+        );
+        assert_fits(
+            &FociAcceptanceMatrixTerminal {
+                oid: u8::MAX,
+                payload: &[u8::MAX; 37],
+            },
+            "acceptance matrix terminal",
         );
     }
 

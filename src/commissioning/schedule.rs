@@ -175,6 +175,7 @@ pub fn adapt_step_result(
         StepResult::VelocityIntegralTerminal(result) => Ok(CommissionPoll::Terminal {
             result: CommissionTerminal::VelocityIntegral(result),
         }),
+        StepResult::AcceptanceMatrixEvent(_) => Ok(CommissionPoll::ReadyNow { event: None }),
         StepResult::InnerFailed(error) => Ok(CommissionPoll::Terminal {
             result: CommissionTerminal::InnerFailed(error),
         }),
@@ -290,6 +291,52 @@ mod tests {
     fn elapsed_explicit_deadline_maps_to_ready_now() {
         assert!(matches!(
             adapt_step_result(StepResult::At(42_000), 42_000, None).unwrap(),
+            CommissionPoll::ReadyNow { event: None }
+        ));
+    }
+
+    #[test]
+    fn acceptance_matrix_evidence_stays_out_of_scheduler_events() {
+        let report =
+            crate::commissioning::outer::velocity::acceptance_evidence::AcceptanceAmplitudeReport {
+                amplitude_index: 0,
+                target_rpm: 16,
+                directions: core::array::from_fn(|_| {
+                    crate::commissioning::outer::velocity::acceptance_evidence::
+                        AcceptanceDirectionalEvidence {
+                            availability: crate::commissioning::outer::velocity::
+                                acceptance_evidence::AcceptanceAmplitudeAvailability::Unattempted,
+                            consensus: crate::commissioning::outer::velocity::sweep_consensus::
+                                DirectionalConsensus {
+                                    classification: crate::commissioning::outer::velocity::
+                                        sweep_consensus::DirectionalConsensusClass::
+                                        InsufficientConsensus,
+                                    components: [[0; 2]; 2],
+                                    component_count: 0,
+                                    collected_mask: 0,
+                                    eligible_mask: 0,
+                                    included_mask: 0,
+                                },
+                            signed_target_rate_q: 0,
+                            response_interval_q: None,
+                            robust_location_q: None,
+                            deficit_interval_q: None,
+                            excluded_mask: 0,
+                            blocking_levels: [0; 4],
+                        }
+                }),
+            };
+        let event = crate::commissioning::types::AcceptanceMatrixEvent::Amplitude(
+            crate::commissioning::types::AcceptanceAmplitudeEvidence {
+                run_sequence: 1,
+                evidence_sequence: 2,
+                plan_digest: 3,
+                report,
+            },
+        );
+
+        assert!(matches!(
+            adapt_step_result(StepResult::AcceptanceMatrixEvent(event), 42_000, None).unwrap(),
             CommissionPoll::ReadyNow { event: None }
         ));
     }

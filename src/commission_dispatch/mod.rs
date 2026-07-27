@@ -370,6 +370,19 @@ pub enum ReplyPayload {
             crate::commissioning::outer::velocity::integral_reproduction::StageCAuthoritySummary,
         >,
     },
+    /// Complete immutable fixed-I confidence-matrix plan disclosed before motion.
+    #[cfg(feature = "trace-velocity-sweep")]
+    AcceptanceMatrixPlan {
+        oid: u8,
+        run_sequence: u32,
+        plan: crate::commissioning::outer::velocity::acceptance_plan::AcceptanceMatrixPlan,
+    },
+    /// Compact firmware-authored fixed-I confidence-matrix terminal.
+    #[cfg(feature = "trace-velocity-sweep")]
+    AcceptanceMatrixTerminal {
+        oid: u8,
+        terminal: crate::commissioning::types::AcceptanceMatrixTerminal,
+    },
 }
 
 #[cfg(feature = "trace-velocity-sweep")]
@@ -628,6 +641,7 @@ pub async fn drive_commission_result<B: CommissioningBackend>(
                 },
             }
         }
+        StepResult::AcceptanceMatrixEvent(_) => CommissionOutcome::Continue,
         StepResult::SelftestDone => {
             let mut consumed = engine.take().expect("engine slot None on SelftestDone");
             let oid = consumed.oid();

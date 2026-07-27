@@ -12,11 +12,12 @@ use crate::commissioning::outer::{
 };
 use crate::commissioning::schedule::next_grid_deadline;
 use crate::commissioning::types::{
-    AcceptanceMatrixCause, AcceptanceMatrixOutcome, AcceptanceMatrixTerminal,
-    OUTER_SAFETY_FAULT_CURRENT, OUTER_SAFETY_FAULT_OBSERVATION_GAP,
-    OUTER_SAFETY_FAULT_QUARTER_TURN, OuterSafetyFault, RungOriginRecoveryEvidence, StepResult,
-    VelocityIntegralEvent, VelocityIntegralObservation, VelocityIntegralOutcome,
-    VelocityIntegralRungReport, VelocityIntegralTerminal, VelocityPrimitiveCurrentEvidence,
+    AcceptanceAmplitudeEvidence, AcceptanceMatrixCause, AcceptanceMatrixEvent,
+    AcceptanceMatrixOutcome, AcceptanceMatrixTerminal, OUTER_SAFETY_FAULT_CURRENT,
+    OUTER_SAFETY_FAULT_OBSERVATION_GAP, OUTER_SAFETY_FAULT_QUARTER_TURN, OuterSafetyFault,
+    RungOriginRecoveryEvidence, StepResult, VelocityIntegralEvent, VelocityIntegralObservation,
+    VelocityIntegralOutcome, VelocityIntegralRungReport, VelocityIntegralTerminal,
+    VelocityPrimitiveCurrentEvidence,
 };
 use foci_tmc4671::current_limit::PidTorqueFluxLimit;
 use foci_tmc4671::pid::{PidGainPair, PidIGain, PidPGain};
@@ -1029,27 +1030,25 @@ fn evidence_terminal(data: &VelocityIntegralData, workspace: &TransientBuffer) -
     }
 }
 
-fn current_event(
+fn current_report(
     data: &mut VelocityIntegralData,
     current_evidence: super::current_guard::VelocityCurrentPhaseEvidence,
-) -> VelocityIntegralEvent {
-    data.integrity.record(VelocityIntegralEvent::Current(
-        VelocityPrimitiveCurrentEvidence {
-            run_sequence: data.integrity.run_sequence(),
-            evidence_sequence: data.integrity.next_evidence_sequence(),
-            stage: RecoveryStage::Integral as u8,
-            rung_index: data.rung_index,
-            slot: data.slot,
-            clamp_limit: current_evidence.clamp_limit,
-            clamp_readback: current_evidence.clamp_limit,
-            moving_pid_output_peak: current_evidence.moving_pid_output_peak,
-            zero_pid_output_peak: current_evidence.zero_pid_output_peak,
-            moving_status_flags: current_evidence.moving_status_flags,
-            zero_status_flags: current_evidence.zero_status_flags,
-            capability: current_evidence.capability as u8,
-            contact: current_evidence.contact as u8,
-        },
-    ))
+) -> VelocityPrimitiveCurrentEvidence {
+    VelocityPrimitiveCurrentEvidence {
+        run_sequence: data.integrity.run_sequence(),
+        evidence_sequence: data.integrity.next_evidence_sequence(),
+        stage: RecoveryStage::Integral as u8,
+        rung_index: data.rung_index,
+        slot: data.slot,
+        clamp_limit: current_evidence.clamp_limit,
+        clamp_readback: current_evidence.clamp_limit,
+        moving_pid_output_peak: current_evidence.moving_pid_output_peak,
+        zero_pid_output_peak: current_evidence.zero_pid_output_peak,
+        moving_status_flags: current_evidence.moving_status_flags,
+        zero_status_flags: current_evidence.zero_status_flags,
+        capability: current_evidence.capability as u8,
+        contact: current_evidence.contact as u8,
+    }
 }
 
 fn moving_analysis(
@@ -1554,7 +1553,10 @@ pub(crate) async fn step_velocity_integral_with_trace<B: CommissioningBackend>(
                 VelocityIntegralState::BeginSettleCapture { settle_deadline_us }
             };
             if is_acceptance_matrix(data.plan) {
-                StepResult::ReadyNow
+                let event = data
+                    .integrity
+                    .record_acceptance(AcceptanceMatrixEvent::Observation(report));
+                StepResult::AcceptanceMatrixEvent(event)
             } else {
                 let event = data
                     .integrity
@@ -1807,10 +1809,16 @@ pub(crate) async fn step_velocity_integral_with_trace<B: CommissioningBackend>(
             } else if settle_result.confirmed_rest {
                 *state = VelocityIntegralState::AnalyzeRung;
             }
-            let event = current_event(data, current_evidence);
+            let report = current_report(data, current_evidence);
             if is_acceptance_matrix(data.plan) {
-                StepResult::ReadyNow
+                let event = data
+                    .integrity
+                    .record_acceptance(AcceptanceMatrixEvent::Current(report));
+                StepResult::AcceptanceMatrixEvent(event)
             } else {
+                let event = data
+                    .integrity
+                    .record(VelocityIntegralEvent::Current(report));
                 StepResult::VelocityIntegralEvent(event)
             }
         }
@@ -2053,8 +2061,16 @@ pub(crate) async fn step_velocity_integral_with_trace<B: CommissioningBackend>(
                     Err(error) => return fail_integral(phase, backend, error).await,
                 };
                 *state = VelocityIntegralState::RecoverRung(recovery);
-                let _ = report;
-                return StepResult::ReadyNow;
+                let evidence = AcceptanceAmplitudeEvidence {
+                    run_sequence: data.integrity.run_sequence(),
+                    evidence_sequence: data.integrity.next_evidence_sequence(),
+                    plan_digest: data.plan.plan_digest,
+                    report,
+                };
+                let event = data
+                    .integrity
+                    .record_acceptance(AcceptanceMatrixEvent::Amplitude(evidence));
+                return StepResult::AcceptanceMatrixEvent(event);
             }
             let directions = match (
                 analyze_rung(data, VelocityDirection::Forward),
@@ -2227,16 +2243,20 @@ pub(crate) async fn step_velocity_integral_with_trace<B: CommissioningBackend>(
                     }
                 }
             }
-            let event = data.integrity.record(VelocityIntegralEvent::Recovery(
-                RungOriginRecoveryEvidence {
-                    run_sequence: data.integrity.run_sequence(),
-                    evidence_sequence: data.integrity.next_evidence_sequence(),
-                    report,
-                },
-            ));
+            let recovery = RungOriginRecoveryEvidence {
+                run_sequence: data.integrity.run_sequence(),
+                evidence_sequence: data.integrity.next_evidence_sequence(),
+                report,
+            };
             if is_acceptance_matrix(data.plan) {
-                StepResult::ReadyNow
+                let event = data
+                    .integrity
+                    .record_acceptance(AcceptanceMatrixEvent::Recovery(recovery));
+                StepResult::AcceptanceMatrixEvent(event)
             } else {
+                let event = data
+                    .integrity
+                    .record(VelocityIntegralEvent::Recovery(recovery));
                 StepResult::VelocityIntegralEvent(event)
             }
         }

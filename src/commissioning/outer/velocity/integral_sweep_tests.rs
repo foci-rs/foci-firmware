@@ -272,6 +272,42 @@ fn matrix_amplitude_fold_retains_exact_consensus_location_and_masks() {
 }
 
 #[test]
+fn matrix_fold_emits_a_dedicated_result() {
+    let mut phase = phase();
+    let mut workspace = TransientBuffer::new();
+    let OuterPhase::VelocityIntegral {
+        state,
+        data,
+        safety,
+    } = &mut phase
+    else {
+        unreachable!()
+    };
+    data.plan.acquisition_kind = VelocityIntegralAcquisitionKind::AcceptanceAscending;
+    data.plan.i_start = 1_024;
+    data.plan.positive_rung_count = 5;
+    data.plan.matrix_targets_rpm = [16, 33, 66, 132, 263];
+    data.plan.selected_response_intervals_q = [[0x1234, 0], [0x55aa, 0]];
+    data.rung_classes = [VelocityObservationClass::Eligible; 8];
+    data.rung_intervals = [ExactRateInterval::new(100, 110).unwrap(); 8];
+    data.rung_means_q = [105; 8];
+    safety
+        .configure_velocity_sweep_encoder_resolution(4_000)
+        .unwrap();
+    *state = VelocityIntegralState::AnalyzeRung;
+    let mut backend = MockBackend::new();
+
+    let StepResult::AcceptanceMatrixEvent(
+        crate::commissioning::types::AcceptanceMatrixEvent::Amplitude(report),
+    ) = step(&mut phase, &mut workspace, &mut backend)
+    else {
+        panic!("matrix fold must emit a dedicated amplitude event")
+    };
+    assert_eq!(report.evidence_sequence, 1);
+    assert_eq!(report.report.amplitude_index, 0);
+}
+
+#[test]
 fn matrix_terminals_distinguish_sufficiency_recovery_and_integrity() {
     let mut matrix = plan();
     matrix.acquisition_kind = VelocityIntegralAcquisitionKind::AcceptanceAscending;

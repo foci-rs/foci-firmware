@@ -36,8 +36,9 @@ use crate::commissioning::types::{AdcCalResult, EngineKind, StepResult};
 use crate::pid::InnerLoopGains;
 use crate::state::tmc::TmcChannelState;
 use crate::trace::events::{
-    CommissionTraceEvent, EVENT_COMMISSION_ENGINE_START, EVENT_COMMISSION_ENGINE_TERMINAL,
-    EVENT_COMMISSION_PHASE_END, EVENT_COMMISSION_PHASE_START,
+    CommissionTraceEvent, EVENT_COMMISSION_ACCEPTANCE_MATRIX_AMPLITUDE,
+    EVENT_COMMISSION_ACCEPTANCE_MATRIX_OBSERVATION, EVENT_COMMISSION_ENGINE_START,
+    EVENT_COMMISSION_ENGINE_TERMINAL, EVENT_COMMISSION_PHASE_END, EVENT_COMMISSION_PHASE_START,
     EVENT_COMMISSION_VELOCITY_INTEGRAL_DERIVED, EVENT_COMMISSION_VELOCITY_INTEGRAL_OBSERVATION,
     EVENT_COMMISSION_VELOCITY_INTEGRAL_PLAN, EVENT_COMMISSION_VELOCITY_INTEGRAL_RUNG,
     EVENT_COMMISSION_VELOCITY_SWEEP_COMPLETE, EVENT_COMMISSION_VELOCITY_SWEEP_DERIVED,
@@ -1375,6 +1376,49 @@ impl CommissioningEngine {
                 });
             }
             StepResult::VelocityIntegralTerminal(_) => {}
+            StepResult::AcceptanceMatrixEvent(event) => {
+                let (record, event_id, sequence) = match event {
+                    crate::commissioning::types::AcceptanceMatrixEvent::Observation(report) => (
+                        crate::commissioning::outer::velocity::acceptance_reporting::
+                            encode_acceptance_observation(*report),
+                        EVENT_COMMISSION_ACCEPTANCE_MATRIX_OBSERVATION,
+                        report.evidence_sequence,
+                    ),
+                    crate::commissioning::types::AcceptanceMatrixEvent::Current(report) => (
+                        crate::commissioning::outer::velocity::acceptance_reporting::
+                            encode_acceptance_current(*report),
+                        EVENT_COMMISSION_ACCEPTANCE_MATRIX_OBSERVATION,
+                        report.evidence_sequence,
+                    ),
+                    #[cfg(feature = "trace-velocity-sweep")]
+                    crate::commissioning::types::AcceptanceMatrixEvent::Recovery(report) => (
+                        crate::commissioning::outer::velocity::acceptance_reporting::
+                            encode_acceptance_recovery(*report),
+                        EVENT_COMMISSION_ACCEPTANCE_MATRIX_OBSERVATION,
+                        report.evidence_sequence,
+                    ),
+                    crate::commissioning::types::AcceptanceMatrixEvent::Amplitude(report) => (
+                        crate::commissioning::outer::velocity::acceptance_reporting::
+                            encode_acceptance_amplitude(
+                                report.run_sequence,
+                                report.evidence_sequence,
+                                report.plan_digest,
+                                report.report,
+                            ),
+                        EVENT_COMMISSION_ACCEPTANCE_MATRIX_AMPLITUDE,
+                        report.evidence_sequence,
+                    ),
+                };
+                #[cfg(all(feature = "trace", feature = "trace-velocity-sweep"))]
+                backend.record_velocity_sweep_trace_record(record);
+                backend.record_commission_trace_event(CommissionTraceEvent {
+                    level: TraceEventLevel::Info,
+                    event_id,
+                    engine_kind: EngineKind::OuterTune,
+                    payload: [i32::from(sequence), 0],
+                    payload_count: 1,
+                });
+            }
             StepResult::CommissionDone(result) => {
                 self.emit_trace_phase_end(backend, PHASE_END_OK, TraceEventLevel::Info);
                 let level = Self::status_level(result.inner.status);

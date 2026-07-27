@@ -591,6 +591,20 @@ pub trait CommissionReplySink {
     ) {
     }
 
+    /// Emit one immutable fixed-I confidence-matrix plan.
+    fn foci_acceptance_matrix_plan(
+        &mut self,
+        _report: crate::ankyra::replies::FociAcceptanceMatrixPlan<'_>,
+    ) {
+    }
+
+    /// Emit one compact fixed-I confidence-matrix terminal.
+    fn foci_acceptance_matrix_terminal(
+        &mut self,
+        _report: crate::ankyra::replies::FociAcceptanceMatrixTerminal<'_>,
+    ) {
+    }
+
     /// Emit the generic outer inconclusive terminal.
     fn foci_outer_inconclusive(&mut self, _report: crate::ankyra::replies::FociOuterInconclusive) {}
 
@@ -620,6 +634,40 @@ pub fn emit_commissioning_workflow_plan<S: CommissionReplySink>(
         digest_high: (digest >> 32) as u32,
         nominal_workflow_ms: plan.nominal_workflow_ms,
         maximum_workflow_ms: plan.maximum_workflow_ms,
+    });
+}
+
+/// Emit the single compact matrix-plan reply disclosed before motion.
+#[cfg(feature = "trace-velocity-sweep")]
+pub fn emit_acceptance_matrix_plan<S: CommissionReplySink>(
+    sink: &mut S,
+    oid: u8,
+    run_sequence: u32,
+    plan: crate::commissioning::outer::velocity::acceptance_plan::AcceptanceMatrixPlan,
+) {
+    let payload =
+        crate::commissioning::outer::velocity::acceptance_reporting::encode_acceptance_plan_reply(
+            run_sequence,
+            plan,
+        );
+    sink.foci_acceptance_matrix_plan(crate::ankyra::replies::FociAcceptanceMatrixPlan {
+        oid,
+        payload: &payload,
+    });
+}
+
+/// Emit the single compact matrix terminal.
+#[cfg(feature = "trace-velocity-sweep")]
+pub fn emit_acceptance_matrix_terminal<S: CommissionReplySink>(
+    sink: &mut S,
+    oid: u8,
+    terminal: crate::commissioning::types::AcceptanceMatrixTerminal,
+) {
+    let payload = crate::commissioning::outer::velocity::acceptance_reporting::
+        encode_acceptance_terminal_reply(terminal);
+    sink.foci_acceptance_matrix_terminal(crate::ankyra::replies::FociAcceptanceMatrixTerminal {
+        oid,
+        payload: &payload,
     });
 }
 
@@ -2024,6 +2072,16 @@ pub fn emit_terminal_reply<S: CommissionReplySink>(sink: &mut S, payload: ReplyP
             reproduction,
             authority,
         } => emit_velocity_integral_terminal(sink, oid, terminal, reproduction, authority),
+        #[cfg(feature = "trace-velocity-sweep")]
+        ReplyPayload::AcceptanceMatrixPlan {
+            oid,
+            run_sequence,
+            plan,
+        } => emit_acceptance_matrix_plan(sink, oid, run_sequence, plan),
+        #[cfg(feature = "trace-velocity-sweep")]
+        ReplyPayload::AcceptanceMatrixTerminal { oid, terminal } => {
+            emit_acceptance_matrix_terminal(sink, oid, terminal);
+        }
     }
 }
 

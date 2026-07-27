@@ -2,8 +2,8 @@
 
 use crate::ankyra::velocity_sweep_encoding::VelocitySweepCanonicalRecord;
 use crate::commissioning::types::{
-    AcceptanceMatrixTerminal, RungOriginRecoveryEvidence, VelocityIntegralEvent,
-    VelocityIntegralObservation, VelocityPrimitiveCurrentEvidence,
+    AcceptanceMatrixEvent, AcceptanceMatrixTerminal, RungOriginRecoveryEvidence,
+    VelocityIntegralEvent, VelocityIntegralObservation, VelocityPrimitiveCurrentEvidence,
 };
 
 use super::acceptance_evidence::{AcceptanceAmplitudeReport, AcceptanceDirectionalEvidence};
@@ -77,11 +77,7 @@ pub(crate) fn encode_acceptance_terminal_reply(
         &mut offset,
         &[terminal.outcome as u8, terminal.cause as u8],
     );
-    push_reply(
-        &mut bytes,
-        &mut offset,
-        &terminal.plan_digest.to_le_bytes(),
-    );
+    push_reply(&mut bytes, &mut offset, &terminal.plan_digest.to_le_bytes());
     push_reply(&mut bytes, &mut offset, &terminal.digest.to_le_bytes());
     for masks in [
         terminal.attempted_masks,
@@ -96,11 +92,7 @@ pub(crate) fn encode_acceptance_terminal_reply(
         &mut offset,
         &terminal.emitted_observations.to_le_bytes(),
     );
-    push_reply(
-        &mut bytes,
-        &mut offset,
-        &[terminal.emitted_amplitudes],
-    );
+    push_reply(&mut bytes, &mut offset, &[terminal.emitted_amplitudes]);
     push_reply(
         &mut bytes,
         &mut offset,
@@ -119,6 +111,7 @@ fn push_reply<const N: usize>(destination: &mut [u8; N], offset: &mut usize, val
 }
 
 /// Encode the complete immutable matrix plan as bounded canonical fragments.
+#[allow(dead_code)]
 pub(crate) fn encode_acceptance_plan(
     run_sequence: u32,
     plan: AcceptanceMatrixPlan,
@@ -178,9 +171,9 @@ pub(crate) fn encode_acceptance_plan(
 pub(crate) fn encode_acceptance_observation(
     report: VelocityIntegralObservation,
 ) -> VelocitySweepCanonicalRecord {
-    super::integral_reporting::encode_velocity_integral_event(
-        VelocityIntegralEvent::Observation(report),
-    )
+    super::integral_reporting::encode_velocity_integral_event(VelocityIntegralEvent::Observation(
+        report,
+    ))
 }
 
 /// Encode one matrix primitive's current and rest evidence.
@@ -195,6 +188,23 @@ pub(crate) fn encode_acceptance_recovery(
     report: RungOriginRecoveryEvidence,
 ) -> VelocitySweepCanonicalRecord {
     super::sweep_reporting::encode_rung_origin_recovery(report)
+}
+
+/// Encode one trace-only matrix event in its canonical representation.
+pub(crate) fn encode_acceptance_event(
+    event: AcceptanceMatrixEvent,
+) -> VelocitySweepCanonicalRecord {
+    match event {
+        AcceptanceMatrixEvent::Observation(report) => encode_acceptance_observation(report),
+        AcceptanceMatrixEvent::Current(report) => encode_acceptance_current(report),
+        AcceptanceMatrixEvent::Recovery(report) => encode_acceptance_recovery(report),
+        AcceptanceMatrixEvent::Amplitude(report) => encode_acceptance_amplitude(
+            report.run_sequence,
+            report.evidence_sequence,
+            report.plan_digest,
+            report.report,
+        ),
+    }
 }
 
 /// Encode one completed amplitude fold in the canonical matrix representation.
@@ -257,10 +267,7 @@ fn encode_direction(
     record.push_u16(blocking_levels);
 }
 
-fn encode_optional_interval(
-    record: &mut VelocitySweepCanonicalRecord,
-    interval: Option<[i32; 2]>,
-) {
+fn encode_optional_interval(record: &mut VelocitySweepCanonicalRecord, interval: Option<[i32; 2]>) {
     if let Some(interval) = interval {
         record.push_u8(1);
         record.push_i32(interval[0]);
@@ -280,6 +287,7 @@ fn encode_optional_i32(record: &mut VelocitySweepCanonicalRecord, value: Option<
 }
 
 /// Encode one matrix terminal in the canonical matrix representation.
+#[allow(dead_code)]
 pub(crate) fn encode_acceptance_terminal(
     terminal: &AcceptanceMatrixTerminal,
 ) -> VelocitySweepCanonicalRecord {
@@ -317,6 +325,7 @@ fn push_u64(record: &mut VelocitySweepCanonicalRecord, value: u64) {
     record.push_u32((value >> 32) as u32);
 }
 
+#[allow(dead_code)]
 fn matrix_record_header(
     kind: u8,
     run_sequence: u32,
@@ -335,16 +344,15 @@ fn matrix_record_header(
 mod tests {
     use crate::ankyra::velocity_sweep_encoding::VELOCITY_SWEEP_CANONICAL_RECORD_MAX;
     use crate::commissioning::outer::velocity::acceptance_evidence::{
-        AcceptanceAmplitudeAvailability, AcceptanceAmplitudeReport,
-        AcceptanceDirectionalEvidence,
-    };
-    use crate::commissioning::outer::velocity::sweep_consensus::{
-        DirectionalConsensus, DirectionalConsensusClass,
+        AcceptanceAmplitudeAvailability, AcceptanceAmplitudeReport, AcceptanceDirectionalEvidence,
     };
     use crate::commissioning::outer::velocity::acceptance_plan::{
         AcceptanceMatrixOrder, AcceptanceMatrixPlan,
     };
     use crate::commissioning::outer::velocity::integral_reproduction::StageCPlanIdentity;
+    use crate::commissioning::outer::velocity::sweep_consensus::{
+        DirectionalConsensus, DirectionalConsensusClass,
+    };
     use crate::commissioning::outer::velocity::sweep_plan::{
         RequestedVelocitySource, VelocitySweepRequest,
     };
@@ -401,14 +409,18 @@ mod tests {
 
         let records = super::encode_acceptance_plan(7, plan);
 
-        assert!(records
-            .iter()
-            .all(|record| record.as_bytes().len() <= VELOCITY_SWEEP_CANONICAL_RECORD_MAX));
+        assert!(
+            records
+                .iter()
+                .all(|record| record.as_bytes().len() <= VELOCITY_SWEEP_CANONICAL_RECORD_MAX)
+        );
         assert_eq!(records.map(|record| record.as_bytes()[15]), [0, 1, 2]);
         let digest = plan.digest().to_le_bytes();
-        assert!(records
-            .iter()
-            .all(|record| record.as_bytes()[7..15] == digest));
+        assert!(
+            records
+                .iter()
+                .all(|record| record.as_bytes()[7..15] == digest)
+        );
     }
 
     fn direction() -> AcceptanceDirectionalEvidence {
@@ -444,5 +456,4 @@ mod tests {
         assert!(record.as_bytes().len() <= VELOCITY_SWEEP_CANONICAL_RECORD_MAX);
         assert_eq!(&record.as_bytes()[..7], &[2, 7, 0, 0, 0, 42, 0]);
     }
-
 }

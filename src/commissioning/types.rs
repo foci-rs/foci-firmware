@@ -753,6 +753,34 @@ pub enum AcceptanceMatrixCause {
     EvidenceIntegrity = 7,
 }
 
+/// One completed amplitude report with canonical matrix sequencing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+pub struct AcceptanceAmplitudeEvidence {
+    /// Caller-assigned run sequence.
+    pub run_sequence: u32,
+    /// Monotonic evidence sequence within the matrix run.
+    pub evidence_sequence: u16,
+    /// Exact immutable matrix-plan digest.
+    pub plan_digest: u64,
+    /// Exact two-direction amplitude fold.
+    pub report:
+        crate::commissioning::outer::velocity::acceptance_evidence::AcceptanceAmplitudeReport,
+}
+
+/// Trace-only evidence produced by one fixed-I confidence matrix.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+pub enum AcceptanceMatrixEvent {
+    /// One intrinsic moving observation.
+    Observation(VelocityIntegralObservation),
+    /// Current and zero-target rest evidence for one primitive.
+    Current(VelocityPrimitiveCurrentEvidence),
+    /// One evidence-excluded return to the immutable origin.
+    #[cfg(feature = "trace-velocity-sweep")]
+    Recovery(RungOriginRecoveryEvidence),
+    /// One complete four-observation fold per direction.
+    Amplitude(AcceptanceAmplitudeEvidence),
+}
+
 /// Compact terminal for one acceptance-matrix acquisition.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub struct AcceptanceMatrixTerminal {
@@ -879,6 +907,8 @@ pub enum StepResult {
     VelocityIntegralEvent(VelocityIntegralEvent),
     /// The report-only Stage-C response sweep reached a terminal result.
     VelocityIntegralTerminal(VelocityIntegralTerminal),
+    /// Trace-only fixed-I velocity confidence evidence became available.
+    AcceptanceMatrixEvent(AcceptanceMatrixEvent),
     /// Inner commissioning failed.
     InnerFailed(CommissionError),
     /// Outer commissioning completed successfully.

@@ -6,8 +6,8 @@ use crate::ankyra::velocity_sweep_encoding::{
 };
 use crate::autotune::velocity_measurement::{StationarityExclusion, StationarityResult};
 use crate::commissioning::types::{
-    VelocityIntegralEvent, VelocityIntegralObservation, VelocityIntegralOutcome,
-    VelocityIntegralRungReport, VelocityIntegralTerminal,
+    AcceptanceMatrixEvent, VelocityIntegralEvent, VelocityIntegralObservation,
+    VelocityIntegralOutcome, VelocityIntegralRungReport, VelocityIntegralTerminal,
 };
 
 use super::super::state::PositiveIRestBoundary;
@@ -145,6 +145,28 @@ impl VelocityIntegralIntegrity {
         }
         self.digest =
             extend_velocity_sweep_digest(self.digest, &encode_velocity_integral_event(event));
+        self.next_evidence_sequence = self.next_evidence_sequence.saturating_add(1);
+        event
+    }
+
+    /// Hash one matrix event and advance its exact counters.
+    pub(crate) fn record_acceptance(
+        &mut self,
+        event: AcceptanceMatrixEvent,
+    ) -> AcceptanceMatrixEvent {
+        match event {
+            AcceptanceMatrixEvent::Observation(_) => {
+                self.emitted_observations = self.emitted_observations.saturating_add(1);
+            }
+            AcceptanceMatrixEvent::Amplitude(_) => {
+                self.emitted_rungs = self.emitted_rungs.saturating_add(1);
+            }
+            AcceptanceMatrixEvent::Current(_) | AcceptanceMatrixEvent::Recovery(_) => {}
+        }
+        self.digest = extend_velocity_sweep_digest(
+            self.digest,
+            &super::acceptance_reporting::encode_acceptance_event(event),
+        );
         self.next_evidence_sequence = self.next_evidence_sequence.saturating_add(1);
         event
     }
