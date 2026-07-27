@@ -364,11 +364,25 @@ impl VelocityIntegralPlan {
             usable_torque_limit: self.usable_torque_limit,
             limit_evidence_capability: self.limit_evidence_capability,
             combined_workflow: self.combined_selected_response.is_some(),
+            acquisition_kind: VelocityIntegralAcquisitionKind::ResponseLadder,
+            matrix_targets_rpm: [0; 5],
             selected_response_intervals_q,
             recovery_quantization_exposed: self.recovery_quantization_exposed,
             probe_constrained_test_point: self.probe_constrained_test_point,
         }
     }
+}
+
+/// Compact acquisition shape interpreted by the shared velocity-integral engine.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+#[repr(u8)]
+pub enum VelocityIntegralAcquisitionKind {
+    /// Historical opening-anchor, positive-I response ladder, and bookend.
+    ResponseLadder = 0,
+    /// Fixed-I acceptance amplitudes in ascending order.
+    AcceptanceAscending = 1,
+    /// Fixed-I acceptance amplitudes in descending order.
+    AcceptanceDescending = 2,
 }
 
 /// Compact immutable Stage-C state retained after plan emission.
@@ -416,6 +430,10 @@ pub struct VelocityIntegralExecutionPlan {
     pub(crate) limit_evidence_capability: VelocityLimitEvidenceCapability,
     /// This execution continues directly from a live schema-9 response selection.
     pub combined_workflow: bool,
+    /// Response-ladder or fixed-I acceptance acquisition.
+    pub acquisition_kind: VelocityIntegralAcquisitionKind,
+    /// Exact fixed targets for a matrix acquisition; zero for response ladders.
+    pub matrix_targets_rpm: [i16; 5],
     /// Selected Stage-B response intervals in forward, reverse order.
     pub selected_response_intervals_q: [[i32; 2]; 2],
     /// One opposite-sign meter quantum can contact the probe clamp during recovery.
@@ -424,7 +442,8 @@ pub struct VelocityIntegralExecutionPlan {
     pub probe_constrained_test_point: bool,
 }
 
-const _: () = assert!(core::mem::size_of::<VelocityIntegralExecutionPlan>() == 88);
+const _: () = assert!(core::mem::size_of::<VelocityIntegralExecutionPlan>() == 96);
+const _: () = assert!(core::mem::size_of::<VelocityIntegralExecutionPlan>() <= 112);
 
 /// Exact identity retained when Stage C has no transition-capable test point.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]

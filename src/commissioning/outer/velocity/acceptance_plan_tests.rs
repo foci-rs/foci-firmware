@@ -4,7 +4,9 @@ use super::acceptance_plan::{
     derive_acceptance_targets, plan_acceptance_matrix,
 };
 use super::combined_plan::select_proportional_response;
-use super::integral_plan::plan_combined_velocity_integral_response;
+use super::integral_plan::{
+    VelocityIntegralAcquisitionKind, plan_combined_velocity_integral_response,
+};
 use super::integral_reproduction::{AcceptanceMatrixProgress, AcceptancePoint, StageCPlanIdentity};
 use super::operating_region::{BoundRounding, CompactSignedRate};
 use super::reproduction::STAGE_B_BUILD_REVISION;
@@ -155,6 +157,30 @@ fn target_derivation_rounds_half_up_and_rejects_unsupported_geometry() {
         derive_acceptance_targets(i32::MAX),
         Err(AcceptanceMatrixPlanError::Arithmetic)
     );
+}
+
+#[test]
+fn compact_execution_plan_carries_fixed_i_and_literal_targets() {
+    let current = combined_plan();
+    let ascending = plan_acceptance_matrix(
+        point(current),
+        request(),
+        AcceptanceMatrixOrder::Ascending,
+        current,
+    )
+    .unwrap();
+    let execution = ascending.execution_plan();
+
+    assert_eq!(
+        execution.acquisition_kind,
+        VelocityIntegralAcquisitionKind::AcceptanceAscending
+    );
+    assert_eq!(execution.i_start, 1_024);
+    assert_eq!(execution.matrix_targets_rpm, [16, 33, 66, 132, 263]);
+    assert_eq!(execution.positive_rung_count, 5);
+    assert_eq!(execution.family_size, 20);
+    assert_eq!(core::mem::size_of_val(&execution), 96);
+    assert!(core::mem::size_of_val(&execution) <= 112);
 }
 
 #[test]

@@ -1,7 +1,9 @@
 //! Immutable fixed-I velocity acceptance-matrix planning.
 
+use super::current_guard::VelocityLimitEvidenceCapability;
 use super::integral_plan::{
-    INTEGRAL_SLOT_TRANSITION_ALLOWANCE_US, STAGE_C_OBSERVATIONS_PER_RUNG, VelocityIntegralPlan,
+    INTEGRAL_SLOT_TRANSITION_ALLOWANCE_US, STAGE_C_OBSERVATIONS_PER_RUNG,
+    VelocityIntegralAcquisitionKind, VelocityIntegralExecutionPlan, VelocityIntegralPlan,
 };
 use super::integral_reproduction::{AcceptancePoint, StageCPlanIdentity};
 use super::reproduction::STAGE_B_BUILD_REVISION;
@@ -150,6 +152,52 @@ impl AcceptanceMatrixPlan {
         hash_value!(self.motion_request.positive_position_headroom_mrev);
         hash_value!(self.motion_request.max_duration_ms);
         hash
+    }
+
+    /// Compact the emitted matrix into existing velocity-integral execution state.
+    pub fn execution_plan(self) -> VelocityIntegralExecutionPlan {
+        let top_target = self.target_rpm.iter().copied().max().unwrap_or(0);
+        VelocityIntegralExecutionPlan {
+            plan_digest: self.digest(),
+            final_p: self.selected_p,
+            planned_velocity_mrev_s: u32::try_from(top_target).unwrap_or(0).saturating_mul(1_000)
+                / 60,
+            target_velocity_rpm: i32::from(top_target),
+            pwm_hz: self.pwm_hz,
+            encoder_counts_per_rev: self.encoder_counts_per_rev,
+            i_start: self.selected_i,
+            positive_rung_count: self.amplitude_count,
+            family_size: self.family_size,
+            moving_stroke_us: self.moving_stroke_us,
+            zero_settle_us: self.zero_settle_us,
+            analysis_budget_us: self.analysis_budget_us,
+            maximum_workflow_ms: self.maximum_workflow_ms,
+            recovery_origin_band_counts: self.recovery_origin_band_counts,
+            recovery_nominal_slot_us: self.recovery_nominal_slot_us,
+            recovery_maximum_slot_us: self.recovery_maximum_slot_us,
+            recovery_slot_count: self.recovery_slot_count,
+            hard_torque_limit: self.hard_torque_limit,
+            usable_torque_limit: self.usable_torque_limit,
+            limit_evidence_capability: match self.limit_evidence_capability {
+                value if value == VelocityLimitEvidenceCapability::BestEffortPolling as u8 => {
+                    VelocityLimitEvidenceCapability::BestEffortPolling
+                }
+                _ => VelocityLimitEvidenceCapability::LatchedFlag,
+            },
+            combined_workflow: false,
+            acquisition_kind: match self.order {
+                AcceptanceMatrixOrder::Ascending => {
+                    VelocityIntegralAcquisitionKind::AcceptanceAscending
+                }
+                AcceptanceMatrixOrder::Descending => {
+                    VelocityIntegralAcquisitionKind::AcceptanceDescending
+                }
+            },
+            matrix_targets_rpm: self.target_rpm,
+            selected_response_intervals_q: [[0; 2]; 2],
+            recovery_quantization_exposed: self.recovery_quantization_exposed,
+            probe_constrained_test_point: self.probe_constrained_test_point,
+        }
     }
 }
 

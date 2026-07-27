@@ -66,6 +66,8 @@ fn plan() -> VelocityIntegralExecutionPlan {
         usable_torque_limit: 2_534,
         limit_evidence_capability: VelocityLimitEvidenceCapability::BestEffortPolling,
         combined_workflow: false,
+        acquisition_kind: super::integral_plan::VelocityIntegralAcquisitionKind::ResponseLadder,
+        matrix_targets_rpm: [0; 5],
         selected_response_intervals_q: [[0; 2]; 2],
         recovery_quantization_exposed: true,
         probe_constrained_test_point: false,
