@@ -37,8 +37,7 @@ pub enum TmcPreRequestDisposition {
 
 #[cfg(feature = "trace-velocity-sweep")]
 enum TuneRoute {
-    StageB(crate::commission_dispatch::stage_b::StageBPreflight),
-    StageC,
+    Combined(crate::commission_dispatch::stage_b::StageBPreflight),
 }
 
 /// A board could not install the validated mapper into its idle P3 scheduler.
@@ -757,130 +756,64 @@ where
             };
             #[cfg(feature = "trace-velocity-sweep")]
             let tune_route = {
-                stage_b_candidate.invalidate_for_channel(board.channel());
-                stage_c_candidate.invalidate_for_channel(board.channel());
-                let stage_c = match crate::commission_dispatch::stage_c::preflight_stage_c_request(
-                    request,
-                    encoder_counts_per_rev,
-                    current_limit.raw(),
-                    board.velocity_limit_evidence_capability(),
-                    board.channel(),
-                    board.pwm_freq_hz(),
-                    run_sequence,
-                    stage_c_candidate,
-                ) {
-                    Ok(preflight) => preflight,
-                    Err(rejection) => {
-                        if let crate::commission_dispatch::stage_c::StageCPreflightRejection::NoTransitionCapableOperatingPoint(
-                            failure,
-                        ) = rejection
-                        {
-                            stage_c_candidate.observe_fault();
+                let legacy_retained_state = stage_b_candidate.candidate().is_some()
+                    || stage_c_candidate.state()
+                        != crate::commissioning::outer::velocity::integral_reproduction::StageCSlotState::Empty;
+                let stage_b =
+                    match crate::commission_dispatch::stage_b::preflight_combined_stage_b_request(
+                        request,
+                        encoder_counts_per_rev,
+                        current_limit.raw(),
+                        board.velocity_limit_evidence_capability(),
+                        board.channel(),
+                        run_sequence,
+                        legacy_retained_state,
+                    ) {
+                        Ok(preflight) => preflight,
+                        Err(rejection) => {
                             board
                                 .tmc_state()
                                 .commission_in_flight
                                 .store(false, core::sync::atomic::Ordering::Relaxed);
-                            board.record_velocity_sweep_trace_record(
-                                crate::commissioning::outer::velocity::integral_reporting::encode_velocity_integral_terminal(
-                                    &crate::commission_dispatch::stage_c::failed_stage_c_terminal(
-                                        run_sequence,
-                                        failure,
-                                    ),
-                                ),
-                            );
-                            board.emit_reply(ReplyPayload::VelocityIntegralTerminal {
+                            board.emit_reply(stage_b_preflight_failure_payload(
                                 oid,
-                                terminal:
-                                    crate::commission_dispatch::stage_c::failed_stage_c_terminal(
-                                        run_sequence,
-                                        failure,
-                                    ),
-                                reproduction: None,
-                                authority: None,
-                            });
+                                run_sequence,
+                                rejection,
+                            ));
                             return TmcControlRequestOutcome::skip_tick_tail();
                         }
-                        board
-                            .tmc_state()
-                            .commission_in_flight
-                            .store(false, core::sync::atomic::Ordering::Relaxed);
-                        board.emit_reply(stage_c_preflight_failure_payload(
-                            oid,
-                            run_sequence,
-                            rejection,
-                        ));
-                        return TmcControlRequestOutcome::skip_tick_tail();
-                    }
-                };
-                if let Some(preflight) = stage_c {
-                    stage_b_candidate.clear();
-                    let workflow = crate::commissioning::outer::velocity::integral_plan::CommissioningWorkflowPlan::new(
-                        run_sequence,
-                        crate::commissioning::outer::velocity::integral_plan::StageCPlanShape::StageCResume,
-                        0,
-                        preflight.plan.maximum_workflow_ms,
-                    )
-                    .expect("a valid Stage-C plan has a valid workflow envelope");
-                    board.emit_reply(ReplyPayload::CommissioningWorkflowPlan {
-                        oid,
-                        plan: workflow,
-                    });
-                    TuneRoute::StageC
-                } else {
-                    stage_c_candidate.invalidate_for_unrelated_commissioning();
-                    let stage_b_repeat = stage_b_candidate.candidate().is_some();
-                    let stage_b =
-                        match crate::commission_dispatch::stage_b::preflight_stage_b_request(
-                            request,
-                            encoder_counts_per_rev,
-                            current_limit.raw(),
-                            board.velocity_limit_evidence_capability(),
-                            board.channel(),
-                            run_sequence,
-                            stage_b_candidate,
-                        ) {
-                            Ok(preflight) => preflight,
-                            Err(rejection) => {
-                                board
-                                    .tmc_state()
-                                    .commission_in_flight
-                                    .store(false, core::sync::atomic::Ordering::Relaxed);
-                                board.emit_reply(stage_b_preflight_failure_payload(
-                                    oid,
-                                    run_sequence,
-                                    rejection,
-                                ));
-                                return TmcControlRequestOutcome::skip_tick_tail();
-                            }
-                        };
-                    let (shape, stage_c_ms) = if stage_b_repeat {
-                        (
-                            crate::commissioning::outer::velocity::integral_plan::StageCPlanShape::StageBThenStageC,
-                            crate::commissioning::outer::velocity::integral_plan::integral_workflow_maximum_ms(
-                                board.pwm_freq_hz(),
-                                request.max_duration_ms,
-                            )
-                            .expect("configured PWM must admit the Stage-C geometry"),
-                        )
-                    } else {
-                        (
-                            crate::commissioning::outer::velocity::integral_plan::StageCPlanShape::StageB,
-                            0,
-                        )
                     };
-                    let workflow = crate::commissioning::outer::velocity::integral_plan::CommissioningWorkflowPlan::new(
+                let workflow_geometry =
+                    match crate::commissioning::outer::velocity::combined_plan::combined_workflow_geometry(
+                        stage_b.plan,
+                        board.pwm_freq_hz(),
+                    ) {
+                        Ok(geometry) => geometry,
+                        Err(_) => {
+                            board
+                                .tmc_state()
+                                .commission_in_flight
+                                .store(false, core::sync::atomic::Ordering::Relaxed);
+                            board.emit_reply(stage_b_preflight_failure_payload(
+                                oid,
+                                run_sequence,
+                                crate::commission_dispatch::stage_b::StageBPreflightRejection::InvalidPlan,
+                            ));
+                            return TmcControlRequestOutcome::skip_tick_tail();
+                        }
+                    };
+                let workflow =
+                    crate::commissioning::outer::velocity::integral_plan::CommissioningWorkflowPlan::new_combined(
                         run_sequence,
-                        shape,
-                        stage_b.plan.maximum_workflow_ms,
-                        stage_c_ms,
+                        workflow_geometry.combined_nominal_ms,
+                        workflow_geometry.combined_maximum_ms,
                     )
-                    .expect("valid stage plans have a valid workflow envelope");
-                    board.emit_reply(ReplyPayload::CommissioningWorkflowPlan {
-                        oid,
-                        plan: workflow,
-                    });
-                    TuneRoute::StageB(stage_b)
-                }
+                    .expect("valid combined stage plans have a valid workflow envelope");
+                board.emit_reply(ReplyPayload::CommissioningWorkflowPlan {
+                    oid,
+                    plan: workflow,
+                });
+                TuneRoute::Combined(stage_b)
             };
             if !runtime.restore_phase_advance_now(tmc).await {
                 defmt::warn!("phase advance: failed to restore ABN offset before tune");
@@ -950,7 +883,7 @@ where
             #[cfg(feature = "trace-velocity-sweep")]
             {
                 match tune_route {
-                    TuneRoute::StageB(stage_b_preflight) => {
+                    TuneRoute::Combined(stage_b_preflight) => {
                         let planned_event = stage_b_preflight.planned_event();
                         board.record_velocity_sweep_trace_record(
                             crate::commissioning::outer::velocity::sweep_reporting::encode_velocity_sweep_event(
@@ -968,54 +901,6 @@ where
                                 outer_params,
                                 entry_snapshot,
                                 stage_b_preflight,
-                            ),
-                        );
-                    }
-                    TuneRoute::StageC => {
-                        let stage_c_preflight =
-                            match crate::commission_dispatch::stage_c::preflight_stage_c_request(
-                                request,
-                                encoder_counts_per_rev,
-                                current_limit.raw(),
-                                board.velocity_limit_evidence_capability(),
-                                board.channel(),
-                                board.pwm_freq_hz(),
-                                run_sequence,
-                                stage_c_candidate,
-                            ) {
-                                Ok(Some(preflight)) => preflight,
-                                Ok(None) | Err(_) => {
-                                    tmc_state
-                                        .commission_in_flight
-                                        .store(false, core::sync::atomic::Ordering::Relaxed);
-                                    emit_commission_phase_failure::<Board, Spi>(
-                                        board,
-                                        oid,
-                                        CommissionError::VelocityValidationFailed.status_code(),
-                                    );
-                                    return TmcControlRequestOutcome::skip_tick_tail();
-                                }
-                            };
-                        for record in
-                            crate::commissioning::outer::velocity::integral_reporting::encode_velocity_integral_plan_trace(
-                                stage_c_preflight.run_sequence,
-                                stage_c_preflight.plan,
-                            )
-                        {
-                            board.record_velocity_sweep_trace_record(record);
-                        }
-                        board.emit_reply(ReplyPayload::VelocityIntegralPlan {
-                            oid,
-                            run_sequence: stage_c_preflight.run_sequence,
-                            plan: stage_c_preflight.plan,
-                        });
-                        runtime.set_commission_engine(
-                            CommissioningEngine::new_outer_for_tmc_with_stage_c_preflight(
-                                oid,
-                                tmc_state,
-                                outer_params,
-                                entry_snapshot,
-                                stage_c_preflight,
                             ),
                         );
                     }
@@ -1336,6 +1221,9 @@ fn stage_b_preflight_failure_payload(
         crate::commission_dispatch::stage_b::StageBPreflightRejection::RejectedPlanMismatch {
             requested,
             ..
+        }
+        | crate::commission_dispatch::stage_b::StageBPreflightRejection::RejectedLegacyState {
+            requested,
         } => (
             VelocitySweepOutcome::RejectedPlanMismatch,
             crate::commission_dispatch::stage_b::STAGE_B_CAUSE_PLAN_MISMATCH,
@@ -1372,71 +1260,6 @@ fn stage_b_preflight_failure_payload(
             safety_fault: None,
         },
         reproduction: None,
-    }
-}
-
-#[cfg(feature = "trace-velocity-sweep")]
-fn stage_c_preflight_failure_payload(
-    oid: u8,
-    run_sequence: u32,
-    rejection: crate::commission_dispatch::stage_c::StageCPreflightRejection,
-) -> ReplyPayload {
-    use crate::commissioning::outer::velocity::integral_evidence::{
-        ExactRateInterval, IntegralRunEvidence,
-    };
-    use crate::commissioning::types::{VelocityIntegralOutcome, VelocityIntegralTerminal};
-
-    if let crate::commission_dispatch::stage_c::StageCPreflightRejection::NoTransitionCapableOperatingPoint(
-        failure,
-    ) = rejection
-    {
-        return ReplyPayload::VelocityIntegralTerminal {
-            oid,
-            terminal: crate::commission_dispatch::stage_c::failed_stage_c_terminal(
-                run_sequence,
-                failure,
-            ),
-            reproduction: None,
-            authority: None,
-        };
-    }
-
-    let plan_digest = match rejection {
-        crate::commission_dispatch::stage_c::StageCPreflightRejection::InvalidPlan => 0,
-        crate::commission_dispatch::stage_c::StageCPreflightRejection::RejectedPlanMismatch {
-            retained,
-            ..
-        } => retained.plan_digest,
-        crate::commission_dispatch::stage_c::StageCPreflightRejection::NoTransitionCapableOperatingPoint(
-            _,
-        ) => unreachable!("handled above"),
-    };
-    ReplyPayload::VelocityIntegralTerminal {
-        oid,
-        terminal: VelocityIntegralTerminal {
-            run_sequence,
-            evidence_sequence: 0,
-            plan_digest,
-            digest: 0,
-            outcome: VelocityIntegralOutcome::RejectedPlanMismatch,
-            cause: crate::commission_dispatch::stage_c::STAGE_C_CAUSE_PLAN_MISMATCH,
-            recovery_unavailable: false,
-            recovered_with_current_headroom: false,
-            recovery_quantization_exposed: false,
-            probe_constrained_test_point: false,
-            rest_boundary_rung_plus_one: 0,
-            rest_boundary_slot_plus_one: 0,
-            evidence: IntegralRunEvidence::new([ExactRateInterval::EMPTY; 2]),
-            expected_observations: 0,
-            emitted_observations: 0,
-            expected_rungs: 0,
-            emitted_rungs: 0,
-            run_started_us: 0,
-            run_completed_us: 0,
-            safety_fault: None,
-        },
-        reproduction: None,
-        authority: None,
     }
 }
 
@@ -2542,7 +2365,7 @@ mod tests {
 
     #[cfg(feature = "trace-velocity-sweep")]
     #[test]
-    fn admitted_stage_b_plan_is_recorded_before_engine_execution() {
+    fn combined_workflow_is_declared_and_recorded_before_engine_execution() {
         run_request_test(async {
             use crate::commissioning::outer::velocity::reproduction::StageBCandidateSlot;
             use crate::commissioning::outer::velocity::sweep_reporting::encode_velocity_sweep_event;
@@ -2571,21 +2394,27 @@ mod tests {
             )
             .await;
 
-            assert!(matches!(
-                board.replies[0],
-                ReplyPayload::CommissioningWorkflowPlan { .. }
-            ));
+            let ReplyPayload::CommissioningWorkflowPlan { plan: workflow, .. } = board.replies[0]
+            else {
+                panic!("combined workflow envelope must be first")
+            };
+            assert_eq!(
+                workflow.shape,
+                crate::commissioning::outer::velocity::integral_plan::StageCPlanShape::CombinedPThenI
+            );
+            assert_eq!(workflow.maximum_workflow_ms, 494_128);
             let ReplyPayload::VelocitySweepEvent { event, .. } = board.replies[1] else {
-                panic!("accepted Stage B request must publish its plan")
+                panic!("accepted combined request must publish its Stage-B plan")
             };
             let crate::commissioning::types::VelocitySweepEvent::Planned(planned) = event else {
                 panic!("first Stage B event must be its immutable plan")
             };
-            let expected = crate::commissioning::outer::velocity::sweep_plan::plan_velocity_sweep(
-                velocity_sweep_request(),
-                4_000,
-                2_816,
-                crate::commissioning::outer::velocity::VELOCITY_LIMIT_EVIDENCE_CAPABILITY_LATCHED_FLAG,
+            let expected =
+                crate::commissioning::outer::velocity::sweep_plan::plan_combined_velocity_sweep(
+                    velocity_sweep_request(),
+                    4_000,
+                    2_816,
+                    crate::commissioning::outer::velocity::VELOCITY_LIMIT_EVIDENCE_CAPABILITY_LATCHED_FLAG,
             )
             .unwrap();
             assert_eq!(planned.plan_digest, expected.digest());
@@ -2593,137 +2422,20 @@ mod tests {
                 board.velocity_sweep_records,
                 [encode_velocity_sweep_event(event)]
             );
+            assert!(slot.candidate().is_none());
             assert!(runtime.is_commission_active());
         });
     }
 
     #[cfg(feature = "trace-velocity-sweep")]
     #[test]
-    fn retained_stage_c_is_admitted_before_stage_b_and_publishes_both_plans() {
+    fn combined_workflow_rejects_retained_stage_c_without_mutating_it() {
         run_request_test(async {
-            use crate::commissioning::outer::OuterMotionBudget;
-            use crate::commissioning::outer::velocity::integral_plan::{
-                STAGE_C_EVIDENCE_SCHEMA_REVISION, StageCAuthority, StageCPlanShape,
-                plan_velocity_integral_response,
-            };
-            use crate::commissioning::outer::velocity::integral_reproduction::{
-                StageCAuthoritySummary, StageCCandidateSlot, StageCSlotState,
-            };
-            use crate::commissioning::outer::velocity::reproduction::{
-                STAGE_B_BUILD_REVISION, StageBCandidateSlot,
-            };
-            use crate::commissioning::outer::velocity::sweep_plan::plan_velocity_sweep;
-
-            let mut board = RecordingBoard::skip_tick_tail();
-            let tmc_state = tmc_channel0();
-            tmc_state
-                .configure_motion_scale(stepper_channel0(), 1_000, 3_200)
-                .expect("valid motion scale");
-            tmc_state.store_current_limit(current_limit(2_816), Relaxed);
-            let mut runtime = TmcControlRuntime::new_for_channel(0);
-            runtime.set_motor_enabled_for_test(true);
-            runtime.set_calibrated_for_test(true);
-            let mut stage_b = StageBCandidateSlot::new();
-            let mut stage_c = StageCCandidateSlot::new();
-            let request = velocity_sweep_request();
-            let stage_b_plan = plan_velocity_sweep(
-                request,
-                4_000,
-                2_816,
-                crate::commissioning::outer::velocity::VELOCITY_LIMIT_EVIDENCE_CAPABILITY_BEST_EFFORT,
-            )
-            .unwrap();
-            let authority = StageCAuthority {
-                channel: 0,
-                stage_b_plan_digest: stage_b_plan.digest(),
-                directional_memberships: [0x001c_0000; 2],
-                stage_b_joint_membership: 0x001c_0000,
-                joint_membership: 0x001c_0000,
-                directional_validity: [
-                    crate::commissioning::outer::velocity::reproduction::StageBDirectionalValidity::ReproducedRegionCoversFinalP;
-                    2
-                ],
-                reduced_margin: false,
-                directional_pooled_intervals: [[100, 120], [-130, -100]],
-            };
-            let budget = OuterMotionBudget {
-                requested_velocity_mrev_s: request.requested_velocity_mrev_s,
-                machine_velocity_ceiling_mrev_s: request.machine_velocity_ceiling_mrev_s,
-                requested_velocity_source: request.requested_velocity_source,
-                max_stroke_travel_mrev: request.max_stroke_travel_mrev,
-                settle_travel_reserve_mrev: request.settle_travel_reserve_mrev,
-                negative_position_headroom_mrev: request.negative_position_headroom_mrev,
-                positive_position_headroom_mrev: request.positive_position_headroom_mrev,
-                max_duration_ms: request.max_duration_ms,
-            };
-            let plan = plan_velocity_integral_response(
-                authority,
-                stage_b_plan.execution_plan(stage_b_plan.digest()),
-                budget,
-                25_000,
-                4_000,
-            )
-            .unwrap();
-            stage_c.install_authority(StageCAuthoritySummary::from_plan(
-                0,
-                STAGE_B_BUILD_REVISION,
-                STAGE_C_EVIDENCE_SCHEMA_REVISION,
-                stage_b_plan.digest(),
-                plan.execution_plan(),
-                plan.authority,
-            ));
-            let mut tmc = Tmc4671Spi::new(RuntimeMockSpi::default());
-
-            handle_tmc_control_request_with_stages(
-                tune_request(),
-                TmcPreRequestDisposition::ContinueRequest,
-                &mut runtime,
-                &mut stage_b,
-                &mut stage_c,
-                &mut tmc,
-                &mut board,
-            )
-            .await;
-
-            let ReplyPayload::CommissioningWorkflowPlan { plan: workflow, .. } = board.replies[0]
-            else {
-                panic!("workflow envelope must be first")
-            };
-            assert_eq!(workflow.shape, StageCPlanShape::StageCResume);
-            let ReplyPayload::VelocityIntegralPlan { plan: emitted, .. } = board.replies[1] else {
-                panic!("exact Stage-C plan must precede motion")
-            };
-            assert_eq!(emitted, plan);
-            assert_eq!(
-                board.velocity_sweep_records,
-                crate::commissioning::outer::velocity::integral_reporting::encode_velocity_integral_plan_trace(
-                    workflow.run_sequence,
-                    plan,
-                )
-            );
-            assert_eq!(stage_c.state(), StageCSlotState::AuthorityOnly);
-            assert!(stage_b.candidate().is_none());
-            assert!(runtime.is_commission_active());
-        });
-    }
-
-    #[cfg(feature = "trace-velocity-sweep")]
-    #[test]
-    fn stage_c_no_transition_resume_emits_one_zero_motion_terminal() {
-        run_request_test(async {
-            use crate::commissioning::outer::OuterMotionBudget;
-            use crate::commissioning::outer::velocity::integral_plan::{
-                STAGE_C_EVIDENCE_SCHEMA_REVISION, VelocityIntegralPlanError,
-                plan_velocity_integral_response,
-            };
             use crate::commissioning::outer::velocity::integral_reproduction::{
                 StageCCandidateSlot, StageCSlotState,
             };
-            use crate::commissioning::outer::velocity::reproduction::{
-                STAGE_B_BUILD_REVISION, StageBCandidateSlot, StageBDirectionalValidity,
-            };
-            use crate::commissioning::outer::velocity::sweep_plan::plan_velocity_sweep;
-            use crate::commissioning::types::VelocityIntegralOutcome;
+            use crate::commissioning::outer::velocity::reproduction::StageBCandidateSlot;
+            use crate::commissioning::types::VelocitySweepOutcome;
 
             let mut board = RecordingBoard::skip_tick_tail();
             let tmc_state = tmc_channel0();
@@ -2736,50 +2448,7 @@ mod tests {
             runtime.set_calibrated_for_test(true);
             let mut stage_b = StageBCandidateSlot::new();
             let mut stage_c = StageCCandidateSlot::new();
-            let request = velocity_sweep_request();
-            let stage_b_plan = plan_velocity_sweep(
-                request,
-                4_000,
-                2_816,
-                crate::commissioning::outer::velocity::VELOCITY_LIMIT_EVIDENCE_CAPABILITY_BEST_EFFORT,
-            )
-            .unwrap();
-            let mut retained = retained_stage_c_authority();
-            retained.identity.build_revision = STAGE_B_BUILD_REVISION;
-            retained.identity.schema_revision = STAGE_C_EVIDENCE_SCHEMA_REVISION;
-            retained.stage_b_plan_digest = stage_b_plan.digest();
-            retained.final_p = 1_024;
-            retained.directional_memberships = [0x0018_0000; 2];
-            retained.stage_b_joint_membership = 0x0018_0000;
-            retained.joint_membership = 0x0018_0000;
-            retained.directional_validity = [StageBDirectionalValidity::Fragment; 2];
-            retained.reduced_margin = true;
-            retained.directional_pooled_intervals = [[0, 0]; 2];
-            let authority = retained.stage_c_authority();
-            let budget = OuterMotionBudget {
-                requested_velocity_mrev_s: request.requested_velocity_mrev_s,
-                machine_velocity_ceiling_mrev_s: request.machine_velocity_ceiling_mrev_s,
-                requested_velocity_source: request.requested_velocity_source,
-                max_stroke_travel_mrev: request.max_stroke_travel_mrev,
-                settle_travel_reserve_mrev: request.settle_travel_reserve_mrev,
-                negative_position_headroom_mrev: request.negative_position_headroom_mrev,
-                positive_position_headroom_mrev: request.positive_position_headroom_mrev,
-                max_duration_ms: request.max_duration_ms,
-            };
-            let VelocityIntegralPlanError::NoTransitionCapableOperatingPoint(failure) =
-                plan_velocity_integral_response(
-                    authority,
-                    stage_b_plan.execution_plan(stage_b_plan.digest()),
-                    budget,
-                    25_000,
-                    4_000,
-                )
-                .expect_err("the high-P component must be probe constrained")
-            else {
-                panic!("expected no transition-capable operating point");
-            };
-            retained.identity.plan_digest = failure.plan_digest;
-            retained.probe_constrained_test_point = true;
+            let retained = retained_stage_c_authority();
             stage_c.install_authority(retained);
             let mut tmc = Tmc4671Spi::new(RuntimeMockSpi::default());
 
@@ -2795,21 +2464,78 @@ mod tests {
             .await;
 
             assert_eq!(board.replies.len(), 1);
-            let ReplyPayload::VelocityIntegralTerminal { terminal, .. } = board.replies[0] else {
-                panic!("expected the dedicated Stage-C terminal");
+            let ReplyPayload::VelocitySweepTerminal { terminal, .. } = board.replies[0] else {
+                panic!("legacy state must produce one Stage-B-family rejection")
             };
-            assert_eq!(terminal.outcome, VelocityIntegralOutcome::Failed);
+            assert_eq!(terminal.outcome, VelocitySweepOutcome::RejectedPlanMismatch);
             assert_eq!(
                 terminal.cause,
-                crate::commission_dispatch::stage_c::STAGE_C_CAUSE_NO_TRANSITION_CAPABLE_OPERATING_POINT
+                crate::commission_dispatch::stage_b::STAGE_B_CAUSE_PLAN_MISMATCH
             );
-            assert_eq!(terminal.plan_digest, failure.plan_digest);
-            assert!(terminal.probe_constrained_test_point);
-            assert_eq!(terminal.expected_observations, 0);
-            assert_eq!(terminal.emitted_observations, 0);
-            assert_eq!(terminal.expected_rungs, 0);
-            assert_eq!(terminal.emitted_rungs, 0);
-            assert_eq!(stage_c.state(), StageCSlotState::Empty);
+            assert_eq!(stage_c.state(), StageCSlotState::AuthorityOnly);
+            assert_eq!(stage_c.authority(), Some(retained));
+            assert!(stage_b.candidate().is_none());
+            assert!(!runtime.is_commission_active());
+            assert!(board.velocity_sweep_records.is_empty());
+            let spi = tmc.into_inner();
+            assert!(spi.write_attempts.iter().all(|(addr, _)| {
+                *addr != foci_tmc4671::registers::PID_TORQUE_FLUX_LIMITS.addr()
+                    && *addr != foci_tmc4671::registers::PID_VELOCITY_TARGET.addr()
+                    && *addr != foci_tmc4671::registers::PID_VELOCITY_P_VELOCITY_I.addr()
+            }));
+        });
+    }
+
+    #[cfg(feature = "trace-velocity-sweep")]
+    #[test]
+    fn combined_workflow_rejects_retained_stage_b_without_mutating_it() {
+        run_request_test(async {
+            use crate::commissioning::outer::velocity::integral_reproduction::StageCCandidateSlot;
+            use crate::commissioning::outer::velocity::reproduction::{
+                StageBCandidateSlot, StageBReproductionDecision,
+            };
+            use crate::commissioning::types::VelocitySweepOutcome;
+
+            let mut board = RecordingBoard::skip_tick_tail();
+            let tmc_state = tmc_channel0();
+            tmc_state
+                .configure_motion_scale(stepper_channel0(), 1_000, 3_200)
+                .expect("valid motion scale");
+            tmc_state.store_current_limit(current_limit(2_816), Relaxed);
+            let mut runtime = TmcControlRuntime::new_for_channel(0);
+            runtime.set_motor_enabled_for_test(true);
+            runtime.set_calibrated_for_test(true);
+            let mut stage_b = StageBCandidateSlot::new();
+            let mut stage_c = StageCCandidateSlot::new();
+            let retained = retained_stage_b_candidate();
+            assert!(matches!(
+                stage_b.observe_sufficient(retained),
+                StageBReproductionDecision::CompleteCandidate(_)
+            ));
+            let mut tmc = Tmc4671Spi::new(RuntimeMockSpi::default());
+
+            handle_tmc_control_request_with_stages(
+                tune_request(),
+                TmcPreRequestDisposition::ContinueRequest,
+                &mut runtime,
+                &mut stage_b,
+                &mut stage_c,
+                &mut tmc,
+                &mut board,
+            )
+            .await;
+
+            assert_eq!(board.replies.len(), 1);
+            let ReplyPayload::VelocitySweepTerminal { terminal, .. } = board.replies[0] else {
+                panic!("legacy state must produce one Stage-B-family rejection");
+            };
+            assert_eq!(terminal.outcome, VelocitySweepOutcome::RejectedPlanMismatch);
+            assert_eq!(
+                terminal.cause,
+                crate::commission_dispatch::stage_b::STAGE_B_CAUSE_PLAN_MISMATCH
+            );
+            assert_eq!(stage_b.candidate(), Some(retained));
+            assert!(stage_c.authority().is_none());
             assert!(!runtime.is_commission_active());
             let spi = tmc.into_inner();
             assert!(spi.write_attempts.iter().all(|(addr, _)| {
@@ -2817,10 +2543,7 @@ mod tests {
                     && *addr != foci_tmc4671::registers::PID_VELOCITY_TARGET.addr()
                     && *addr != foci_tmc4671::registers::PID_VELOCITY_P_VELOCITY_I.addr()
             }));
-            assert_eq!(
-                board.velocity_sweep_records,
-                [crate::commissioning::outer::velocity::integral_reporting::encode_velocity_integral_terminal(&terminal)]
-            );
+            assert!(board.velocity_sweep_records.is_empty());
         });
     }
 
