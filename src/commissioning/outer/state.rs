@@ -295,21 +295,18 @@ pub(crate) struct PositiveIRestBoundary {
 pub(crate) enum VelocityIntegralState {
     /// Validate the already-emitted immutable plan and arm measurement safety.
     Setup,
-    /// Program fixed P and the current rung's I value.
-    WriteGains,
-    /// Clear the integrator before a signed command.
-    ClearSignedIntegrator,
+    /// Prepare one moving slot without yielding between ordered controller writes.
+    PrepareMovingSlot { reset_rung: bool },
     /// Apply the next F/R target in the fixed eight-slot schedule.
-    CommandTarget,
+    CommandTarget { entry_transition_us: u32 },
     /// Capture one fixed moving window.
     Capture {
         next_sample_us: u64,
         deadline_us: u64,
+        entry_transition_us: u32,
     },
-    /// Return the target to zero before any analysis or settle work.
-    CommandZero,
-    /// Clear the integrator at the signed-step boundary.
-    ClearSettleIntegrator { settle_started_us: u64 },
+    /// Disable integral action, command zero, and clear the sum before rest.
+    PrepareZeroSettle { entry_transition_us: u32 },
     /// Analyze the moving tail within the fixed settle budget.
     AnalyzeMoving {
         settle_deadline_us: u64,

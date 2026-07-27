@@ -69,14 +69,12 @@ fn velocity_fault_terminal(
 fn velocity_integral_timing_phase(state: &VelocityIntegralState) -> (OuterSafetyTimingPhase, bool) {
     match state {
         VelocityIntegralState::Setup
-        | VelocityIntegralState::WriteGains
-        | VelocityIntegralState::ClearSignedIntegrator
-        | VelocityIntegralState::CommandTarget => (OuterSafetyTimingPhase::Setup, true),
-        VelocityIntegralState::Capture { .. } | VelocityIntegralState::CommandZero => {
+        | VelocityIntegralState::PrepareMovingSlot { .. }
+        | VelocityIntegralState::CommandTarget { .. } => (OuterSafetyTimingPhase::Setup, true),
+        VelocityIntegralState::Capture { .. } | VelocityIntegralState::PrepareZeroSettle { .. } => {
             (OuterSafetyTimingPhase::MovingCapture, false)
         }
-        VelocityIntegralState::ClearSettleIntegrator { .. }
-        | VelocityIntegralState::BeginSettleCapture { .. }
+        VelocityIntegralState::BeginSettleCapture { .. }
         | VelocityIntegralState::SettleCapture { .. }
         | VelocityIntegralState::BeginPositiveIRestCleanup
         | VelocityIntegralState::PositiveIRestCleanupCapture { .. } => {
@@ -385,6 +383,7 @@ mod tests {
             velocity_integral_timing_phase(&VelocityIntegralState::Capture {
                 next_sample_us: 1,
                 deadline_us: 2,
+                entry_transition_us: 3,
             }),
             (OuterSafetyTimingPhase::MovingCapture, false)
         );

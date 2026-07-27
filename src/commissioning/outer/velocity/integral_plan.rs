@@ -22,6 +22,8 @@ pub const STAGE_C_MIN_POSITIVE_I: u16 = 1;
 pub const STAGE_C_OBSERVATIONS_PER_DIRECTION: u16 = 4;
 /// Forward and reverse observations collected at every Stage-C rung.
 pub const STAGE_C_OBSERVATIONS_PER_RUNG: u32 = 8;
+/// Maximum combined entry-plus-exit SPI time reserved for one moving slot.
+pub const INTEGRAL_SLOT_TRANSITION_ALLOWANCE_US: u32 = 20_000;
 
 const MICROS_PER_SECOND: u64 = 1_000_000;
 const CONFIDENCE_FAMILY_MAX: u16 = 128;

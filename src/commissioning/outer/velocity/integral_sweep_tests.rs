@@ -1,11 +1,12 @@
 use super::current_guard::{VelocityCurrentObserver, VelocityLimitEvidenceCapability};
-use super::integral_plan::VelocityIntegralExecutionPlan;
+use super::integral_plan::{INTEGRAL_SLOT_TRANSITION_ALLOWANCE_US, VelocityIntegralExecutionPlan};
 use super::integral_sweep::{
     INTEGRAL_CAUSE_BOOKEND_UNAVAILABLE, INTEGRAL_CAUSE_POSITIVE_I_REST_BOUNDARY,
     INTEGRAL_CAUSE_POSITIVE_I_REST_BOUNDARY_AFTER_SUFFICIENCY, INTEGRAL_SLOT_COUNT,
-    advance_integral_cursor, apply_integral_current_headroom, combined_target_status,
-    integral_fault_terminal, integral_i_at, integral_recovery_current_contact_policy,
-    integral_slot_direction, opening_recovery_lower_rate_q, positive_directional_floors_exist,
+    advance_integral_cursor, apply_integral_current_headroom, combined_slot_transition_us,
+    combined_target_status, integral_fault_terminal, integral_i_at,
+    integral_recovery_current_contact_policy, integral_slot_direction,
+    opening_recovery_lower_rate_q, positive_directional_floors_exist,
     record_integral_target_if_reached, step_velocity_integral_with_trace,
 };
 use super::recovery::{
@@ -29,7 +30,8 @@ use crate::commissioning::outer::{
 use crate::commissioning::types::{StepResult, VelocityIntegralEvent, VelocityIntegralOutcome};
 use foci_tmc4671::pid::{PidGainPair, PidIGain, PidPGain};
 use foci_tmc4671::registers::{
-    PID_TORQUE_FLUX_LIMITS, PID_VELOCITY_P_VELOCITY_I, PID_VELOCITY_TARGET,
+    MODE_RAMP_MODE_MOTION, PID_ERROR_PID_VELOCITY_ERROR_SUM, PID_TORQUE_FLUX_LIMITS,
+    PID_VELOCITY_P_VELOCITY_I, PID_VELOCITY_TARGET,
 };
 
 #[test]
@@ -455,7 +457,10 @@ fn post_sufficiency_current_terminus_restores_origin_before_bookend() {
         unreachable!()
     };
     assert_eq!(data.rung_index, data.plan.positive_rung_count + 1);
-    assert!(matches!(state, VelocityIntegralState::WriteGains));
+    assert!(matches!(
+        state,
+        VelocityIntegralState::PrepareMovingSlot { reset_rung: true }
+    ));
 }
 
 #[test]
@@ -498,7 +503,10 @@ fn combined_target_stops_positive_motion_without_manufacturing_sufficiency() {
     assert_eq!(data.rung_index, data.plan.positive_rung_count + 1);
     assert_eq!(data.eligible_masks, [0b11; 2]);
     assert_eq!(data.target_terminus, Some(1));
-    assert!(matches!(state, VelocityIntegralState::WriteGains));
+    assert!(matches!(
+        state,
+        VelocityIntegralState::PrepareMovingSlot { reset_rung: true }
+    ));
 }
 
 #[test]
@@ -544,7 +552,10 @@ fn combined_current_boundary_below_the_floor_still_routes_to_the_bookend() {
     };
     assert_eq!(data.rung_index, data.plan.positive_rung_count + 1);
     assert_eq!(data.eligible_masks, [0b11; 2]);
-    assert!(matches!(state, VelocityIntegralState::WriteGains));
+    assert!(matches!(
+        state,
+        VelocityIntegralState::PrepareMovingSlot { reset_rung: true }
+    ));
 }
 
 #[test]
@@ -586,7 +597,10 @@ fn recovered_with_current_headroom_advances_to_the_required_bookend() {
     assert!(data.recovered_with_current_headroom);
     assert!(!data.recovery_unavailable);
     assert_eq!(data.rung_index, data.plan.positive_rung_count + 1);
-    assert!(matches!(state, VelocityIntegralState::WriteGains));
+    assert!(matches!(
+        state,
+        VelocityIntegralState::PrepareMovingSlot { reset_rung: true }
+    ));
 }
 
 #[test]
@@ -739,7 +753,7 @@ fn positive_i_rest_rejection_enters_cleanup_before_any_new_motion() {
 }
 
 #[test]
-fn positive_i_remains_programmed_while_the_scored_rest_is_acquired() {
+fn moving_exit_zeroes_i_and_target_before_clearing_the_scored_rest() {
     let mut phase = phase();
     let mut workspace = TransientBuffer::new();
     let OuterPhase::VelocityIntegral { state, data, .. } = &mut phase else {
@@ -750,23 +764,33 @@ fn positive_i_remains_programmed_while_the_scored_rest_is_acquired() {
         current_limit(u32::from(data.plan.usable_torque_limit)),
         VelocityLimitEvidenceCapability::BestEffortPolling,
     );
-    *state = VelocityIntegralState::CommandZero;
+    *state = VelocityIntegralState::PrepareZeroSettle {
+        entry_transition_us: 0,
+    };
     let mut backend = MockBackend::new();
 
     assert!(matches!(
         step(&mut phase, &mut workspace, &mut backend),
         StepResult::ReadyNow
     ));
-    assert!(matches!(
-        step(&mut phase, &mut workspace, &mut backend),
-        StepResult::ReadyNow
-    ));
 
+    let p = PidPGain::new(1_448).unwrap();
+    assert_eq!(
+        logged_writes(&backend).as_slice(),
+        &[
+            (
+                PID_VELOCITY_P_VELOCITY_I.addr(),
+                PidGainPair::new(p, PidIGain::ZERO).register_value(),
+            ),
+            (PID_VELOCITY_TARGET.addr(), 0),
+            (
+                PID_ERROR_PID_VELOCITY_ERROR_SUM.addr.addr(),
+                u32::from(PID_ERROR_PID_VELOCITY_ERROR_SUM.sub_addr),
+            ),
+            (PID_ERROR_PID_VELOCITY_ERROR_SUM.data.addr(), 0),
+        ]
+    );
     assert_eq!(backend.pid_velocity_error_sum_clears, 1);
-    assert!(!backend.spi_log.iter().any(|operation| {
-        matches!(operation, SpiOp::Write(address, _)
-            if *address == PID_VELOCITY_P_VELOCITY_I.addr())
-    }));
     assert!(matches!(
         phase,
         OuterPhase::VelocityIntegral {
@@ -1044,7 +1068,10 @@ fn successful_post_floor_cleanup_restores_origin_before_the_bookend() {
         unreachable!()
     };
     assert_eq!(data.rung_index, data.plan.positive_rung_count + 1);
-    assert!(matches!(state, VelocityIntegralState::WriteGains));
+    assert!(matches!(
+        state,
+        VelocityIntegralState::PrepareMovingSlot { reset_rung: true }
+    ));
 }
 
 #[test]
@@ -1127,6 +1154,16 @@ fn step(
     pollster::block_on(step_velocity_integral_with_trace(phase, workspace, backend))
 }
 
+fn logged_writes(backend: &MockBackend) -> heapless::Vec<(u8, u32), 16> {
+    let mut writes = heapless::Vec::new();
+    for operation in &backend.spi_log {
+        if let SpiOp::Write(address, value) = operation {
+            writes.push((*address, *value)).unwrap();
+        }
+    }
+    writes
+}
+
 fn seed_sufficient_curve(data: &mut VelocityIntegralData, workspace: &mut TransientBuffer) {
     data.opening_direction_mask = 3;
     data.eligible_masks = [0b111; 2];
@@ -1185,6 +1222,187 @@ fn setup_and_first_command_preserve_plan_before_motion_and_clear_integrator() {
 }
 
 #[test]
+fn every_moving_slot_entry_zeroes_clears_and_reprograms_the_declared_i() {
+    let mut phase = phase();
+    let mut workspace = TransientBuffer::new();
+    let OuterPhase::VelocityIntegral { data, .. } = &mut phase else {
+        unreachable!()
+    };
+    data.rung_index = 1;
+    let mut backend = MockBackend::new();
+    backend.current_limit_value = current_limit(2_816);
+
+    assert!(matches!(
+        step(&mut phase, &mut workspace, &mut backend),
+        StepResult::ReadyNow
+    ));
+    backend.spi_log.clear();
+    assert!(matches!(
+        step(&mut phase, &mut workspace, &mut backend),
+        StepResult::ReadyNow
+    ));
+
+    let p = PidPGain::new(1_448).unwrap();
+    assert_eq!(
+        logged_writes(&backend).as_slice(),
+        &[
+            (
+                PID_VELOCITY_P_VELOCITY_I.addr(),
+                PidGainPair::new(p, PidIGain::ZERO).register_value(),
+            ),
+            (
+                PID_ERROR_PID_VELOCITY_ERROR_SUM.addr.addr(),
+                u32::from(PID_ERROR_PID_VELOCITY_ERROR_SUM.sub_addr),
+            ),
+            (PID_ERROR_PID_VELOCITY_ERROR_SUM.data.addr(), 0),
+            (
+                PID_VELOCITY_P_VELOCITY_I.addr(),
+                PidGainPair::new(p, PidIGain::new(1).unwrap()).register_value(),
+            ),
+            (MODE_RAMP_MODE_MOTION.addr(), 0x8000_0002),
+        ]
+    );
+}
+
+#[test]
+fn slot_advance_reprograms_i_without_resetting_prior_evidence() {
+    let mut phase = phase();
+    let mut workspace = TransientBuffer::new();
+    let OuterPhase::VelocityIntegral { state, data, .. } = &mut phase else {
+        unreachable!()
+    };
+    data.rung_index = 1;
+    data.slot = 0;
+    data.rung_classes = [VelocityObservationClass::Eligible; 8];
+    data.rung_intervals = [ExactRateInterval::new(10, 20).unwrap(); 8];
+    *state = VelocityIntegralState::Advance;
+    let mut backend = MockBackend::new();
+
+    for expected_slot in 1..INTEGRAL_SLOT_COUNT {
+        backend.spi_log.clear();
+        assert!(matches!(
+            step(&mut phase, &mut workspace, &mut backend),
+            StepResult::ReadyNow
+        ));
+        assert!(matches!(
+            step(&mut phase, &mut workspace, &mut backend),
+            StepResult::ReadyNow
+        ));
+        let writes = logged_writes(&backend);
+        assert!(writes.iter().any(|(address, value)| {
+            *address == PID_VELOCITY_P_VELOCITY_I.addr()
+                && *value
+                    == PidGainPair::new(PidPGain::new(1_448).unwrap(), PidIGain::new(1).unwrap())
+                        .register_value()
+        }));
+        let OuterPhase::VelocityIntegral { state, data, .. } = &mut phase else {
+            unreachable!()
+        };
+        assert_eq!(data.slot, expected_slot);
+        assert_eq!(data.rung_classes, [VelocityObservationClass::Eligible; 8]);
+        assert_eq!(
+            data.rung_intervals,
+            [ExactRateInterval::new(10, 20).unwrap(); 8]
+        );
+        *state = VelocityIntegralState::Advance;
+    }
+}
+
+#[test]
+fn slot_transition_timing_starts_scored_rest_after_the_exit_clear() {
+    assert_eq!(INTEGRAL_SLOT_TRANSITION_ALLOWANCE_US, 20_000);
+    assert_eq!(combined_slot_transition_us(500, 400), Some(900));
+    assert_eq!(combined_slot_transition_us(19_600, 400), Some(20_000));
+    assert_eq!(combined_slot_transition_us(19_601, 400), None);
+
+    let mut phase = phase();
+    let mut workspace = TransientBuffer::new();
+    let OuterPhase::VelocityIntegral { state, data, .. } = &mut phase else {
+        unreachable!()
+    };
+    data.rung_index = 1;
+    *state = VelocityIntegralState::PrepareMovingSlot { reset_rung: true };
+    let mut backend = MockBackend::new();
+    backend.spi_elapsed_step_us = 100;
+
+    assert!(matches!(
+        step(&mut phase, &mut workspace, &mut backend),
+        StepResult::ReadyNow
+    ));
+    let OuterPhase::VelocityIntegral { state, data, .. } = &mut phase else {
+        unreachable!()
+    };
+    assert!(matches!(
+        state,
+        VelocityIntegralState::CommandTarget {
+            entry_transition_us: 500
+        }
+    ));
+    data.current_observer = VelocityCurrentObserver::new(
+        current_limit(u32::from(data.plan.usable_torque_limit)),
+        VelocityLimitEvidenceCapability::BestEffortPolling,
+    );
+    *state = VelocityIntegralState::PrepareZeroSettle {
+        entry_transition_us: 500,
+    };
+    let before_exit_writes = backend.elapsed_us_value;
+
+    assert!(matches!(
+        step(&mut phase, &mut workspace, &mut backend),
+        StepResult::ReadyNow
+    ));
+    let exit_write_count = logged_writes(&backend)
+        .len()
+        .checked_sub(5)
+        .expect("entry writes are present");
+    assert_eq!(exit_write_count, 4);
+    assert_eq!(backend.elapsed_us_value - before_exit_writes, 500);
+    let OuterPhase::VelocityIntegral { state, data, .. } = &phase else {
+        unreachable!()
+    };
+    assert!(matches!(
+        state,
+        VelocityIntegralState::AnalyzeMoving {
+            settle_deadline_us,
+            ..
+        } if *settle_deadline_us == backend.elapsed_us_value + u64::from(data.plan.zero_settle_us)
+    ));
+}
+
+#[test]
+fn excessive_slot_transition_time_emits_an_observation_gap_fault() {
+    let mut phase = phase();
+    let mut workspace = TransientBuffer::new();
+    let OuterPhase::VelocityIntegral { state, data, .. } = &mut phase else {
+        unreachable!()
+    };
+    data.rung_index = 1;
+    data.current_observer = VelocityCurrentObserver::new(
+        current_limit(u32::from(data.plan.usable_torque_limit)),
+        VelocityLimitEvidenceCapability::BestEffortPolling,
+    );
+    *state = VelocityIntegralState::PrepareZeroSettle {
+        entry_transition_us: 19_601,
+    };
+    let mut backend = MockBackend::new();
+    backend.spi_elapsed_step_us = 100;
+
+    let StepResult::VelocityIntegralTerminal(terminal) =
+        step(&mut phase, &mut workspace, &mut backend)
+    else {
+        panic!("transition overrun must emit the Stage-C safety terminal");
+    };
+    assert_eq!(terminal.outcome, VelocityIntegralOutcome::Fault);
+    assert_eq!(
+        terminal
+            .safety_fault
+            .expect("observation-gap detail is required")
+            .reason,
+        crate::commissioning::types::OUTER_SAFETY_FAULT_OBSERVATION_GAP
+    );
+}
+
+#[test]
 fn combined_opening_anchor_uses_the_declared_operational_clamp() {
     let mut phase = phase();
     let mut workspace = TransientBuffer::new();
@@ -1196,7 +1414,7 @@ fn combined_opening_anchor_uses_the_declared_operational_clamp() {
     let mut backend = MockBackend::new();
     backend.current_limit_value = current_limit(2_816);
 
-    for _ in 0..3 {
+    for _ in 0..2 {
         assert!(matches!(
             step(&mut phase, &mut workspace, &mut backend),
             StepResult::ReadyNow

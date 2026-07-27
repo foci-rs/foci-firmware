@@ -37,7 +37,8 @@ use super::integral_evidence::{
     classify_integral_observation,
 };
 use super::integral_plan::{
-    STAGE_C_MAX_POSITIVE_RUNGS, VelocityIntegralExecutionPlan, native_velocity_i_at,
+    INTEGRAL_SLOT_TRANSITION_ALLOWANCE_US, STAGE_C_MAX_POSITIVE_RUNGS,
+    VelocityIntegralExecutionPlan, native_velocity_i_at,
 };
 use super::recovery::{
     RecoveryBindingSource, RecoveryCurrentContactPolicy, RecoveryStage, RungOriginRecoveryConfig,
@@ -71,7 +72,6 @@ const POSITIVE_WORD_BASE: usize = 4;
 const BOOKEND_WORD_BASE: usize = POSITIVE_WORD_BASE + 2 * STAGE_C_MAX_POSITIVE_RUNGS * 2;
 
 pub(super) const INTEGRAL_SLOT_COUNT: u8 = 8;
-
 pub(super) fn integral_i_at(plan: VelocityIntegralExecutionPlan, rung_index: u8) -> Option<u16> {
     let total = plan.positive_rung_count.checked_add(2)?;
     if rung_index >= total {
@@ -234,6 +234,25 @@ fn reset_rung(data: &mut VelocityIntegralData) {
     data.slot = 0;
     data.rung_classes = [VelocityObservationClass::InvalidEvidenceFault; 8];
     data.rung_intervals = [ExactRateInterval::EMPTY; 8];
+}
+
+fn transition_elapsed_us(started_us: u64, finished_us: u64) -> Result<u32, CommissionError> {
+    let elapsed = finished_us
+        .checked_sub(started_us)
+        .ok_or(CommissionError::InvalidSchedule)?;
+    u32::try_from(elapsed).map_err(|_| CommissionError::InvalidSchedule)
+}
+
+pub(super) fn combined_slot_transition_us(
+    entry_transition_us: u32,
+    exit_transition_us: u32,
+) -> Option<u32> {
+    let total = entry_transition_us.checked_add(exit_transition_us)?;
+    if total > INTEGRAL_SLOT_TRANSITION_ALLOWANCE_US {
+        None
+    } else {
+        Some(total)
+    }
 }
 
 fn interval_word_index(direction: usize, rung: usize) -> Option<usize> {
@@ -804,10 +823,12 @@ pub(crate) async fn step_velocity_integral_with_trace<B: CommissioningBackend>(
             }
             data.run_started_us = run_started_us;
             data.previous_read_us = run_started_us;
-            *state = VelocityIntegralState::WriteGains;
+            *state = VelocityIntegralState::PrepareMovingSlot { reset_rung: true };
             StepResult::ReadyNow
         }
-        VelocityIntegralState::WriteGains => {
+        VelocityIntegralState::PrepareMovingSlot {
+            reset_rung: should_reset_rung,
+        } => {
             let plan = data.plan;
             let Some(i_raw) = integral_i_at(plan, data.rung_index) else {
                 return fail_integral(phase, backend, CommissionError::InvalidSchedule).await;
@@ -824,13 +845,22 @@ pub(crate) async fn step_velocity_integral_with_trace<B: CommissioningBackend>(
                     return fail_integral(phase, backend, CommissionError::InvalidSchedule).await;
                 }
             };
+            let transition_started_us = backend.elapsed_us();
             if backend
                 .write_register(
                     PID_VELOCITY_P_VELOCITY_I,
-                    PidGainPair::new(p, i).register_value(),
+                    PidGainPair::new(p, PidIGain::ZERO).register_value(),
                 )
                 .await
                 .is_err()
+                || clear_velocity_integrator(backend).await.is_err()
+                || backend
+                    .write_register(
+                        PID_VELOCITY_P_VELOCITY_I,
+                        PidGainPair::new(p, i).register_value(),
+                    )
+                    .await
+                    .is_err()
                 || backend
                     .write_register(MODE_RAMP_MODE_MOTION, OUTER_VELOCITY_MODE)
                     .await
@@ -838,18 +868,22 @@ pub(crate) async fn step_velocity_integral_with_trace<B: CommissioningBackend>(
             {
                 return fail_integral(phase, backend, CommissionError::Spi).await;
             }
-            reset_rung(data);
-            *state = VelocityIntegralState::ClearSignedIntegrator;
-            StepResult::ReadyNow
-        }
-        VelocityIntegralState::ClearSignedIntegrator => {
-            if clear_velocity_integrator(backend).await.is_err() {
-                return fail_integral(phase, backend, CommissionError::Spi).await;
+            let entry_transition_us =
+                match transition_elapsed_us(transition_started_us, backend.elapsed_us()) {
+                    Ok(value) => value,
+                    Err(error) => return fail_integral(phase, backend, error).await,
+                };
+            if *should_reset_rung {
+                reset_rung(data);
             }
-            *state = VelocityIntegralState::CommandTarget;
+            *state = VelocityIntegralState::CommandTarget {
+                entry_transition_us,
+            };
             StepResult::ReadyNow
         }
-        VelocityIntegralState::CommandTarget => {
+        VelocityIntegralState::CommandTarget {
+            entry_transition_us,
+        } => {
             let encoder_raw = match backend.read_capture_register(ABN_DECODER_COUNT).await {
                 Ok(value) => value,
                 Err(_) => return fail_integral(phase, backend, CommissionError::Spi).await,
@@ -916,12 +950,14 @@ pub(crate) async fn step_velocity_integral_with_trace<B: CommissioningBackend>(
             *state = VelocityIntegralState::Capture {
                 next_sample_us,
                 deadline_us,
+                entry_transition_us: *entry_transition_us,
             };
             StepResult::At(next_sample_us)
         }
         VelocityIntegralState::Capture {
             next_sample_us,
             deadline_us,
+            entry_transition_us,
         } => {
             if backend.elapsed_us() < *next_sample_us {
                 return StepResult::At(*next_sample_us);
@@ -1008,7 +1044,9 @@ pub(crate) async fn step_velocity_integral_with_trace<B: CommissioningBackend>(
             data.previous_encoder_raw = encoder_raw;
             data.previous_read_us = read_us;
             if read_us >= *deadline_us {
-                *state = VelocityIntegralState::CommandZero;
+                *state = VelocityIntegralState::PrepareZeroSettle {
+                    entry_transition_us: *entry_transition_us,
+                };
                 StepResult::ReadyNow
             } else {
                 match next_grid_deadline(
@@ -1024,29 +1062,52 @@ pub(crate) async fn step_velocity_integral_with_trace<B: CommissioningBackend>(
                 }
             }
         }
-        VelocityIntegralState::CommandZero => {
+        VelocityIntegralState::PrepareZeroSettle {
+            entry_transition_us,
+        } => {
             let boundary =
                 finish_velocity_current_moving_phase(&mut data.current_observer, backend).await;
+            let p = match PidPGain::new(data.plan.final_p) {
+                Ok(value) => value,
+                Err(_) => {
+                    return fail_integral(phase, backend, CommissionError::InvalidSchedule).await;
+                }
+            };
+            let transition_started_us = backend.elapsed_us();
             if backend
-                .write_register(PID_VELOCITY_TARGET, 0)
+                .write_register(
+                    PID_VELOCITY_P_VELOCITY_I,
+                    PidGainPair::new(p, PidIGain::ZERO).register_value(),
+                )
                 .await
                 .is_err()
+                || backend
+                    .write_register(PID_VELOCITY_TARGET, 0)
+                    .await
+                    .is_err()
+                || clear_velocity_integrator(backend).await.is_err()
             {
                 return fail_integral(phase, backend, CommissionError::Spi).await;
             }
             if let Err(error) = boundary {
                 return fail_integral(phase, backend, current_guard_error(error)).await;
             }
-            *state = VelocityIntegralState::ClearSettleIntegrator {
-                settle_started_us: backend.elapsed_us(),
-            };
-            StepResult::ReadyNow
-        }
-        VelocityIntegralState::ClearSettleIntegrator { settle_started_us } => {
-            if clear_velocity_integrator(backend).await.is_err() {
-                return fail_integral(phase, backend, CommissionError::Spi).await;
-            }
             let now_us = backend.elapsed_us();
+            let exit_transition_us = match transition_elapsed_us(transition_started_us, now_us) {
+                Ok(value) => value,
+                Err(error) => return fail_integral(phase, backend, error).await,
+            };
+            if combined_slot_transition_us(*entry_transition_us, exit_transition_us).is_none() {
+                let fault = safety.fault(
+                    OUTER_SAFETY_FAULT_OBSERVATION_GAP,
+                    0,
+                    u64::from(*entry_transition_us) + u64::from(exit_transition_us),
+                    0,
+                    0,
+                );
+                return fail_integral_with_safety(phase, backend, fault).await;
+            }
+            let settle_started_us = now_us;
             let Some(settle_deadline_us) =
                 settle_started_us.checked_add(u64::from(data.plan.zero_settle_us))
             else {
@@ -1309,6 +1370,7 @@ pub(crate) async fn step_velocity_integral_with_trace<B: CommissioningBackend>(
             data.observations.clear();
             if !settle_result.confirmed_rest
                 && !data.observation_current_headroom
+                && !data.plan.combined_workflow
                 && matches!(
                     integral_rung_kind(data.plan, data.rung_index),
                     IntegralRungKind::Positive
@@ -1579,7 +1641,7 @@ pub(crate) async fn step_velocity_integral_with_trace<B: CommissioningBackend>(
             if finished || data.slot == 0 {
                 return fail_integral(phase, backend, CommissionError::InvalidSchedule).await;
             }
-            *state = VelocityIntegralState::ClearSignedIntegrator;
+            *state = VelocityIntegralState::PrepareMovingSlot { reset_rung: false };
             StepResult::ReadyNow
         }
         VelocityIntegralState::AnalyzeRung => {
@@ -1659,8 +1721,7 @@ pub(crate) async fn step_velocity_integral_with_trace<B: CommissioningBackend>(
             if report.outcome == RungOriginRecoveryOutcome::RecoveredWithCurrentHeadroom {
                 data.recovered_with_current_headroom = true;
                 data.rung_index = data.plan.positive_rung_count.saturating_add(1);
-                reset_rung(data);
-                *state = VelocityIntegralState::WriteGains;
+                *state = VelocityIntegralState::PrepareMovingSlot { reset_rung: true };
             } else if report.outcome == RungOriginRecoveryOutcome::RecoveryCurrentHeadroom {
                 apply_integral_current_headroom(state, data);
             } else {
@@ -1687,8 +1748,7 @@ pub(crate) async fn step_velocity_integral_with_trace<B: CommissioningBackend>(
                         if data.positive_i_rest_boundary_after_sufficiency =>
                     {
                         data.rung_index = data.plan.positive_rung_count.saturating_add(1);
-                        reset_rung(data);
-                        *state = VelocityIntegralState::WriteGains;
+                        *state = VelocityIntegralState::PrepareMovingSlot { reset_rung: true };
                     }
                     IntegralRungKind::Positive
                         if data.plan.combined_workflow
@@ -1696,17 +1756,15 @@ pub(crate) async fn step_velocity_integral_with_trace<B: CommissioningBackend>(
                                 || data.positive_i_rest_boundary.is_some()) =>
                     {
                         data.rung_index = data.plan.positive_rung_count.saturating_add(1);
-                        reset_rung(data);
-                        *state = VelocityIntegralState::WriteGains;
+                        *state = VelocityIntegralState::PrepareMovingSlot { reset_rung: true };
                     }
                     IntegralRungKind::Positive if data.current_terminus.is_some() => {
                         data.rung_index = data.plan.positive_rung_count.saturating_add(1);
-                        reset_rung(data);
-                        *state = VelocityIntegralState::WriteGains;
+                        *state = VelocityIntegralState::PrepareMovingSlot { reset_rung: true };
                     }
                     IntegralRungKind::OpeningAnchor | IntegralRungKind::Positive => {
                         data.rung_index = data.rung_index.saturating_add(1);
-                        *state = VelocityIntegralState::WriteGains;
+                        *state = VelocityIntegralState::PrepareMovingSlot { reset_rung: true };
                     }
                 }
             }
