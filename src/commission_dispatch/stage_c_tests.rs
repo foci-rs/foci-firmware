@@ -58,7 +58,7 @@ fn selected_combined_response()
     select_proportional_response(
         report(8_300_000, 8_900_000),
         report(-8_900_000, -8_300_000),
-        176,
+        175,
         COUNTS_PER_REV,
     )
     .unwrap()
@@ -166,7 +166,7 @@ fn combined_workflow_continues_without_retaining_or_reproducing() {
             panic!("combined transition must reuse the integral continuation reply");
         };
         assert_eq!(stage_b_reproduction, None);
-        assert_eq!(stage_c_plan.schema_revision, 9);
+        assert_eq!(stage_c_plan.schema_revision, 10);
         assert_eq!(stage_c_plan.final_p, 1_024);
         assert_eq!(
             stage_c_plan.combined_selected_response,

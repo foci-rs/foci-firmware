@@ -9,8 +9,9 @@ use super::{
     MAX_SWEEP_RUNGS, MIN_SETTLE_CAPTURE_US, MIN_STRUCTURAL_RUNGS, MOVING_STROKE_US,
     OBSERVATIONS_PER_DIRECTION_PER_RUNG, RequestedVelocitySource, SETTLE_ANALYSIS_BUDGET_US,
     SWEEP_SLOT_COUNT, VelocityPlanError, VelocitySweepRequest, ZERO_SETTLE_US, build_gain_ladder,
-    current_gain_span, envelope_cap, gain_at, plan_combined_velocity_sweep, plan_velocity_sweep,
-    representability_ceilings, travel_cap,
+    cap_safe_target_rpm, current_gain_span, envelope_cap, gain_at, plan_combined_velocity_sweep,
+    plan_historical_combined_velocity_sweep, plan_velocity_sweep, representability_ceilings,
+    travel_cap,
 };
 use crate::autotune::TmcMechanicalRpm;
 use foci_tmc4671::pid::PidPGain;
@@ -82,17 +83,70 @@ fn combined_plan_uses_operational_current_authority_and_new_schemas() {
     .unwrap();
 
     assert_eq!(historical.schema_revision, 8);
+    assert_eq!(historical.target_velocity_rpm.raw(), 264);
     assert_eq!(historical.usable_torque_limit, 2_534);
     assert_eq!(historical.p_top.raw(), 2_457);
     assert_eq!(combined.schema_revision, COMBINED_STAGE_B_SCHEMA_REVISION);
-    assert_eq!(COMBINED_STAGE_C_SCHEMA_REVISION, 9);
+    assert_eq!(COMBINED_STAGE_B_SCHEMA_REVISION, 10);
+    assert_eq!(COMBINED_STAGE_C_SCHEMA_REVISION, 10);
+    assert_eq!(combined.target_velocity_rpm.raw(), 263);
     assert_eq!(combined.usable_torque_limit, 2_816);
-    assert_eq!(combined.p_top.raw(), 2_730);
+    assert_eq!(combined.p_top.raw(), 2_741);
     assert!(combined.digest() != historical.digest());
     assert_eq!(
         combined.execution_plan(combined.digest()).schema_revision,
         COMBINED_STAGE_B_SCHEMA_REVISION
     );
+}
+
+#[test]
+fn combined_target_execution_stays_inside_the_declared_travel_cap() {
+    let plan = plan_combined_velocity_sweep(
+        live_recovery_request(),
+        4_000,
+        2_816,
+        VELOCITY_LIMIT_EVIDENCE_CAPABILITY_BEST_EFFORT,
+    )
+    .unwrap();
+
+    assert_eq!(plan.planned_velocity_mrev_s, 4_394);
+    assert_eq!(plan.target_velocity_rpm.raw(), 263);
+    assert_eq!(
+        i64::from(plan.target_velocity_rpm.raw()) * 4_000 * 1_000 / 60,
+        17_533_333
+    );
+    assert!(263_u64 * 512 < 2_250_u64 * 60);
+    assert!(264_u64 * 512 > 2_250_u64 * 60);
+}
+
+#[test]
+fn cap_safe_targets_never_exceed_supported_positive_caps() {
+    for cap_mrev_s in 1..17 {
+        assert_eq!(
+            cap_safe_target_rpm(cap_mrev_s),
+            Err(VelocityPlanError::ZeroMovingTravelAmplitude)
+        );
+    }
+    for cap_mrev_s in 17..=100_000 {
+        let target_rpm = cap_safe_target_rpm(cap_mrev_s).unwrap();
+        assert!(u64::try_from(target_rpm).unwrap() * 1_000 <= u64::from(cap_mrev_s) * 60);
+    }
+}
+
+#[test]
+fn historical_combined_target_keeps_schema_nine_nearest_rounding() {
+    let plan = plan_historical_combined_velocity_sweep(
+        live_recovery_request(),
+        4_000,
+        2_816,
+        VELOCITY_LIMIT_EVIDENCE_CAPABILITY_BEST_EFFORT,
+    )
+    .unwrap();
+
+    assert_eq!(plan.schema_revision, 9);
+    assert_eq!(plan.planned_velocity_mrev_s, 4_394);
+    assert_eq!(plan.target_velocity_rpm.raw(), 264);
+    assert_eq!(plan.usable_torque_limit, 2_816);
 }
 
 #[test]

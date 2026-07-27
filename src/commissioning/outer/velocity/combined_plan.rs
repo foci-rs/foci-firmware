@@ -13,9 +13,9 @@ use super::sweep_evidence::CompactDirectionalRungReport;
 use super::sweep_plan::{SETTLE_ANALYSIS_BUDGET_US, VelocitySweepPlan, ZERO_SETTLE_US};
 
 /// Live Stage-B schema for the combined P-then-I experiment.
-pub const COMBINED_STAGE_B_SCHEMA_REVISION: u16 = 9;
+pub const COMBINED_STAGE_B_SCHEMA_REVISION: u16 = 10;
 /// Live Stage-C schema for the combined P-then-I experiment.
-pub const COMBINED_STAGE_C_SCHEMA_REVISION: u16 = 9;
+pub const COMBINED_STAGE_C_SCHEMA_REVISION: u16 = 10;
 /// First combined Stage-C schema, retained for historical digest parity.
 pub const FIRST_COMBINED_STAGE_C_SCHEMA_REVISION: u16 = 8;
 

@@ -14,7 +14,7 @@ use super::sweep_consensus::DirectionalConsensusClass;
 use super::sweep_evidence::CompactDirectionalRungReport;
 use super::sweep_plan::{
     MIN_SETTLE_CAPTURE_US, MOVING_STROKE_US, RequestedVelocitySource, VelocitySweepRequest,
-    plan_combined_velocity_sweep, plan_velocity_sweep,
+    plan_combined_velocity_sweep, plan_historical_combined_velocity_sweep, plan_velocity_sweep,
 };
 use crate::commissioning::outer::{OUTER_MAX_VELOCITY_I, OuterMotionBudget};
 use foci_tmc4671::pid::PidPGain;
@@ -75,6 +75,8 @@ fn corrected_y_intervals_select_p1024_without_model_membership() {
     assert!(proportional_response_in_initial_band(264, 4_000, candidate_p1024).unwrap());
     assert!(!proportional_response_in_initial_band(264, 4_000, reproduction_p724).unwrap());
     assert!(proportional_response_in_initial_band(264, 4_000, reproduction_p1024).unwrap());
+    assert!(!proportional_response_in_initial_band(263, 4_000, reproduction_p724).unwrap());
+    assert!(proportional_response_in_initial_band(263, 4_000, reproduction_p1024).unwrap());
 }
 
 #[test]
@@ -148,8 +150,8 @@ fn signed_deficit_target_uses_the_conservative_directional_endpoints() {
 
 #[test]
 fn combined_geometry_appends_the_exact_cap_without_changing_history() {
-    assert_eq!(COMBINED_STAGE_B_SCHEMA_REVISION, 9);
-    assert_eq!(COMBINED_STAGE_C_SCHEMA_REVISION, 9);
+    assert_eq!(COMBINED_STAGE_B_SCHEMA_REVISION, 10);
+    assert_eq!(COMBINED_STAGE_C_SCHEMA_REVISION, 10);
     assert_eq!(STAGE_C_EVIDENCE_SCHEMA_REVISION, 7);
     assert_eq!(StageCPlanShape::CombinedPThenI as u8, 3);
 
@@ -237,6 +239,13 @@ fn combined_stage_c_plan_uses_only_the_live_selected_response() {
         super::VELOCITY_LIMIT_EVIDENCE_CAPABILITY_BEST_EFFORT,
     )
     .unwrap();
+    let historical_stage_b = plan_historical_combined_velocity_sweep(
+        request,
+        4_000,
+        2_816,
+        super::VELOCITY_LIMIT_EVIDENCE_CAPABILITY_BEST_EFFORT,
+    )
+    .unwrap();
     let selected = select_proportional_response(
         response_report(1_024, 13_359_104, 13_492_224),
         response_report(1_024, -12_968_960, -12_921_856),
@@ -279,6 +288,8 @@ fn combined_stage_c_plan_uses_only_the_live_selected_response() {
     }
     let mut historical = plan;
     historical.schema_revision = FIRST_COMBINED_STAGE_C_SCHEMA_REVISION;
+    historical.authority.stage_b_plan_digest = historical_stage_b.digest();
+    historical.target_velocity_rpm = historical_stage_b.target_velocity_rpm.raw();
     historical.nominal_workflow_ms = 177_751;
     historical.maximum_workflow_ms = 195_496;
     assert_eq!(historical.digest(), 0x8674_2390_3e5e_a3f2);

@@ -355,6 +355,18 @@ pub enum VelocityPlanError {
     Arithmetic,
 }
 
+/// Convert a positive millirevolutions-per-second cap to a nonexceeding RPM target.
+pub(crate) fn cap_safe_target_rpm(planned_velocity_mrev_s: u32) -> Result<i32, VelocityPlanError> {
+    let target_rpm = planned_velocity_mrev_s
+        .checked_mul(60)
+        .ok_or(VelocityPlanError::Arithmetic)?
+        / 1_000;
+    if target_rpm == 0 {
+        return Err(VelocityPlanError::ZeroMovingTravelAmplitude);
+    }
+    i32::try_from(target_rpm).map_err(|_| VelocityPlanError::Arithmetic)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct RepresentabilityCeilings {
     encoder_observable_mrev_s: u32,
@@ -390,6 +402,24 @@ pub fn plan_combined_velocity_sweep(
         torque_flux_limit,
         limit_evidence_capability,
         super::combined_plan::COMBINED_STAGE_B_SCHEMA_REVISION,
+        true,
+    )
+}
+
+/// Reconstruct the immutable schema-9 combined plan for historical fixtures.
+#[cfg(test)]
+pub(crate) fn plan_historical_combined_velocity_sweep(
+    request: VelocitySweepRequest,
+    encoder_counts_per_rev: u32,
+    torque_flux_limit: u16,
+    limit_evidence_capability: u32,
+) -> Result<VelocitySweepPlan, VelocityPlanError> {
+    plan_velocity_sweep_with_limit(
+        request,
+        encoder_counts_per_rev,
+        torque_flux_limit,
+        limit_evidence_capability,
+        9,
         true,
     )
 }
@@ -452,8 +482,24 @@ fn plan_velocity_sweep_with_limit(
         clamp_flags |= CLAMP_EFFECTIVE_CEILING;
     }
 
-    let target_velocity_rpm = TmcMechanicalRpm::from_mrev_s_nearest(planned_velocity_mrev_s)
-        .map_err(|_| VelocityPlanError::ZeroMovingTravelAmplitude)?;
+    let target_velocity_rpm =
+        if schema_revision == super::combined_plan::COMBINED_STAGE_B_SCHEMA_REVISION {
+            let raw = cap_safe_target_rpm(planned_velocity_mrev_s)?;
+            let executed_mrev_numerator = u64::try_from(raw)
+                .map_err(|_| VelocityPlanError::Arithmetic)?
+                .checked_mul(1_000)
+                .ok_or(VelocityPlanError::Arithmetic)?;
+            let planned_mrev_numerator = u64::from(planned_velocity_mrev_s)
+                .checked_mul(60)
+                .ok_or(VelocityPlanError::Arithmetic)?;
+            if executed_mrev_numerator > planned_mrev_numerator {
+                return Err(VelocityPlanError::InvalidRequest);
+            }
+            TmcMechanicalRpm::from_register(raw)
+        } else {
+            TmcMechanicalRpm::from_mrev_s_nearest(planned_velocity_mrev_s)
+                .map_err(|_| VelocityPlanError::ZeroMovingTravelAmplitude)?
+        };
     let recovery = plan_rung_origin_recovery(
         crate::commissioning::outer::OuterMotionBudget {
             requested_velocity_mrev_s: request.requested_velocity_mrev_s,
