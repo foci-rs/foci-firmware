@@ -1,5 +1,8 @@
 //! Velocity-loop commissioning phases.
 
+pub mod combined_plan;
+#[cfg(test)]
+mod combined_plan_tests;
 pub(crate) mod current_guard;
 #[cfg(test)]
 mod current_guard_tests;

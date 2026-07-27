@@ -36,6 +36,8 @@ pub enum StageCPlanShape {
     StageBThenStageC = 1,
     /// Resume Stage C from retained firmware authority.
     StageCResume = 2,
+    /// Run one nonretained P search followed immediately by its I response.
+    CombinedPThenI = 3,
 }
 
 /// Conservative command-level plan used only for disclosure and host timeout.
@@ -63,6 +65,7 @@ impl CommissioningWorkflowPlan {
             StageCPlanShape::StageB => stage_b_ms != 0 && stage_c_ms == 0,
             StageCPlanShape::StageBThenStageC => stage_b_ms != 0 && stage_c_ms != 0,
             StageCPlanShape::StageCResume => stage_b_ms == 0 && stage_c_ms != 0,
+            StageCPlanShape::CombinedPThenI => false,
         };
         if !valid {
             return Err(VelocityIntegralPlanError::InvalidRequest);
@@ -74,6 +77,26 @@ impl CommissioningWorkflowPlan {
             run_sequence,
             shape,
             nominal_workflow_ms: maximum_workflow_ms,
+            maximum_workflow_ms,
+        })
+    }
+
+    /// Construct one checked combined P-then-I workflow envelope.
+    pub fn new_combined(
+        run_sequence: u32,
+        nominal_workflow_ms: u32,
+        maximum_workflow_ms: u32,
+    ) -> Result<Self, VelocityIntegralPlanError> {
+        if nominal_workflow_ms == 0
+            || maximum_workflow_ms == 0
+            || nominal_workflow_ms > maximum_workflow_ms
+        {
+            return Err(VelocityIntegralPlanError::InvalidRequest);
+        }
+        Ok(Self {
+            run_sequence,
+            shape: StageCPlanShape::CombinedPThenI,
+            nominal_workflow_ms,
             maximum_workflow_ms,
         })
     }
