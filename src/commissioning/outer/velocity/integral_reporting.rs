@@ -11,7 +11,9 @@ use crate::commissioning::types::{
 };
 
 use super::super::state::PositiveIRestBoundary;
-use super::combined_plan::CombinedTargetStatus;
+use super::combined_plan::{
+    CombinedTargetStatus, TERMINAL_COMBINED_TARGET_SHIFT, TERMINAL_COMBINED_WORKFLOW,
+};
 use super::integral_evidence::{IntegralObservationClass, IntegralRungClass, IntegralRungKind};
 use super::integral_plan::{VelocityIntegralExecutionPlan, VelocityIntegralPlan};
 
@@ -22,8 +24,6 @@ pub(crate) const TERMINAL_RECOVERY_UNAVAILABLE: u8 = 1 << 0;
 pub(crate) const TERMINAL_RECOVERED_WITH_CURRENT_HEADROOM: u8 = 1 << 1;
 pub(crate) const TERMINAL_RECOVERY_QUANTIZATION_EXPOSED: u8 = 1 << 2;
 pub(crate) const TERMINAL_PROBE_CONSTRAINED_TEST_POINT: u8 = 1 << 3;
-pub(crate) const TERMINAL_COMBINED_TARGET_SHIFT: u8 = 4;
-pub(crate) const TERMINAL_COMBINED_WORKFLOW: u8 = 1 << 7;
 
 pub(crate) const fn terminal_combined_workflow(report: &VelocityIntegralTerminal) -> bool {
     report.final_p != 0

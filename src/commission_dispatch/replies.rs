@@ -3553,11 +3553,11 @@ mod tests {
                     report.rest_boundary_slot_plus_one,
                 ]);
                 if report.recovery_flags
-                    & crate::commissioning::outer::velocity::integral_reporting::TERMINAL_COMBINED_WORKFLOW
+                    & crate::commissioning::outer::velocity::combined_plan::TERMINAL_COMBINED_WORKFLOW
                     != 0
                 {
                     let encoded = (report.recovery_flags
-                        >> crate::commissioning::outer::velocity::integral_reporting::TERMINAL_COMBINED_TARGET_SHIFT)
+                        >> crate::commissioning::outer::velocity::combined_plan::TERMINAL_COMBINED_TARGET_SHIFT)
                         & 0x07;
                     self.integral_target = (encoded != 0)
                         .then_some([encoded - 1, report.rest_boundary_rung_plus_one]);

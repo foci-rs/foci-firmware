@@ -261,14 +261,17 @@ fn combined_stage_c_plan_uses_only_the_live_selected_response() {
         plan.execution_plan().selected_response_intervals_q,
         [[13_359_104, 13_492_224], [-12_968_960, -12_921_856]]
     );
-    let trace = super::integral_reporting::encode_velocity_integral_plan_trace(7, plan);
-    for endpoint in [13_359_104_i32, 13_492_224, -12_968_960, -12_921_856] {
-        assert!(
-            trace[0]
-                .as_bytes()
-                .windows(4)
-                .any(|word| word == endpoint.to_le_bytes())
-        );
+    #[cfg(feature = "trace-velocity-sweep")]
+    {
+        let trace = super::integral_reporting::encode_velocity_integral_plan_trace(7, plan);
+        for endpoint in [13_359_104_i32, 13_492_224, -12_968_960, -12_921_856] {
+            assert!(
+                trace[0]
+                    .as_bytes()
+                    .windows(4)
+                    .any(|word| word == endpoint.to_le_bytes())
+            );
+        }
     }
     assert_eq!(plan.authority.joint_membership, 0);
     assert_eq!(

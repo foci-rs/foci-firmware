@@ -23,6 +23,10 @@ const I_RESPONSE_TARGET_PERCENT: i128 = 98;
 const PERCENT_SCALE: i128 = 100;
 const SECONDS_PER_MINUTE: i128 = 60;
 const MICROS_PER_MILLISECOND: u64 = 1_000;
+#[cfg(any(test, feature = "trace-velocity-sweep"))]
+pub(crate) const TERMINAL_COMBINED_TARGET_SHIFT: u8 = 4;
+#[cfg(any(test, feature = "trace-velocity-sweep"))]
+pub(crate) const TERMINAL_COMBINED_WORKFLOW: u8 = 1 << 7;
 
 /// Reportable outcome of the positive-I acquisition.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
