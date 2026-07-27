@@ -80,6 +80,8 @@ pub struct MockBackend {
     pub delay_us_log: Vec<u32, 32>,
     /// If `Some(addr)`, `write_register` returns `Err(MockSpiError)` for that address.
     pub fail_on_write: Option<u8>,
+    /// Fail the zero-based write occurrence for one register address.
+    pub fail_on_write_occurrence: Option<(u8, usize)>,
     /// If `Some(addr)`, `read_register` returns `Err(MockSpiError)` for that address.
     pub fail_on_read: Option<u8>,
     /// Transient write failures as `(address, remaining failures)`.
@@ -195,6 +197,7 @@ impl MockBackend {
             enable_pin: false,
             delay_us_log: Vec::new(),
             fail_on_write: None,
+            fail_on_write_occurrence: None,
             fail_on_read: None,
             fail_writes_remaining: None,
             fail_reads_remaining: None,
@@ -437,7 +440,15 @@ impl CommissionRegisterIo for MockBackend {
         {
             self.last_uq_ud_ext_write = val;
         }
+        let address_occurrence = self
+            .spi_log
+            .iter()
+            .filter(|operation| matches!(operation, SpiOp::Write(logged, _) if *logged == addr))
+            .count();
         self.spi_log.push(SpiOp::Write(addr, val)).ok();
+        if self.fail_on_write_occurrence == Some((addr, address_occurrence)) {
+            return Err(MockSpiError);
+        }
         if let Some((failure_addr, remaining)) = self.fail_writes_remaining.as_mut()
             && *failure_addr == addr
             && *remaining > 0

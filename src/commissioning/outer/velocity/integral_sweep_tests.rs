@@ -1309,6 +1309,78 @@ fn slot_advance_reprograms_i_without_resetting_prior_evidence() {
 }
 
 #[test]
+fn entry_and_exit_transaction_failures_fault_before_motion_or_evidence() {
+    let entry_failures = [
+        (PID_VELOCITY_P_VELOCITY_I.addr(), 0),
+        (PID_ERROR_PID_VELOCITY_ERROR_SUM.addr.addr(), 0),
+        (PID_ERROR_PID_VELOCITY_ERROR_SUM.data.addr(), 0),
+        (PID_VELOCITY_P_VELOCITY_I.addr(), 1),
+        (MODE_RAMP_MODE_MOTION.addr(), 0),
+    ];
+    for failure in entry_failures {
+        let mut phase = phase();
+        let mut workspace = TransientBuffer::new();
+        let OuterPhase::VelocityIntegral { state, data, .. } = &mut phase else {
+            unreachable!()
+        };
+        data.rung_index = 1;
+        *state = VelocityIntegralState::PrepareMovingSlot { reset_rung: true };
+        let mut backend = MockBackend::new();
+        backend.fail_on_write_occurrence = Some(failure);
+
+        let StepResult::VelocityIntegralTerminal(terminal) =
+            step(&mut phase, &mut workspace, &mut backend)
+        else {
+            panic!("entry failure must emit the Stage-C integrity terminal");
+        };
+        assert_eq!(terminal.outcome, VelocityIntegralOutcome::Fault);
+        assert!(!backend.spi_log.iter().any(|operation| {
+            matches!(operation, SpiOp::Write(address, value)
+                if *address == PID_VELOCITY_TARGET.addr() && *value != 0)
+        }));
+    }
+
+    let exit_failures = [
+        (PID_VELOCITY_P_VELOCITY_I.addr(), 0),
+        (PID_VELOCITY_TARGET.addr(), 0),
+        (PID_ERROR_PID_VELOCITY_ERROR_SUM.addr.addr(), 0),
+        (PID_ERROR_PID_VELOCITY_ERROR_SUM.data.addr(), 0),
+    ];
+    for failure in exit_failures {
+        let mut phase = phase();
+        let mut workspace = TransientBuffer::new();
+        let OuterPhase::VelocityIntegral { state, data, .. } = &mut phase else {
+            unreachable!()
+        };
+        data.rung_index = 1;
+        data.current_observer = VelocityCurrentObserver::new(
+            current_limit(u32::from(data.plan.usable_torque_limit)),
+            VelocityLimitEvidenceCapability::BestEffortPolling,
+        );
+        *state = VelocityIntegralState::PrepareZeroSettle {
+            entry_transition_us: 0,
+        };
+        let mut backend = MockBackend::new();
+        backend.fail_on_write_occurrence = Some(failure);
+
+        let StepResult::VelocityIntegralTerminal(terminal) =
+            step(&mut phase, &mut workspace, &mut backend)
+        else {
+            panic!("exit failure must emit the Stage-C integrity terminal");
+        };
+        assert_eq!(terminal.outcome, VelocityIntegralOutcome::Fault);
+        let OuterPhase::VelocityIntegral { data, .. } = &phase else {
+            unreachable!()
+        };
+        assert_eq!(
+            data.rung_classes[0],
+            VelocityObservationClass::InvalidEvidenceFault
+        );
+        assert_eq!(data.rung_intervals[0], ExactRateInterval::EMPTY);
+    }
+}
+
+#[test]
 fn slot_transition_timing_starts_scored_rest_after_the_exit_clear() {
     assert_eq!(INTEGRAL_SLOT_TRANSITION_ALLOWANCE_US, 20_000);
     assert_eq!(combined_slot_transition_us(500, 400), Some(900));
