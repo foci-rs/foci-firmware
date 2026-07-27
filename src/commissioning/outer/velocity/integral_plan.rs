@@ -40,6 +40,10 @@ pub enum StageCPlanShape {
     StageCResume = 2,
     /// Run one nonretained P search followed immediately by its I response.
     CombinedPThenI = 3,
+    /// Run the retained fixed-I acceptance matrix from low to high amplitude.
+    AcceptanceMatrixAscending = 4,
+    /// Run the retained fixed-I acceptance matrix from high to low amplitude.
+    AcceptanceMatrixDescending = 5,
 }
 
 /// Conservative command-level plan used only for disclosure and host timeout.
@@ -67,7 +71,9 @@ impl CommissioningWorkflowPlan {
             StageCPlanShape::StageB => stage_b_ms != 0 && stage_c_ms == 0,
             StageCPlanShape::StageBThenStageC => stage_b_ms != 0 && stage_c_ms != 0,
             StageCPlanShape::StageCResume => stage_b_ms == 0 && stage_c_ms != 0,
-            StageCPlanShape::CombinedPThenI => false,
+            StageCPlanShape::CombinedPThenI
+            | StageCPlanShape::AcceptanceMatrixAscending
+            | StageCPlanShape::AcceptanceMatrixDescending => false,
         };
         if !valid {
             return Err(VelocityIntegralPlanError::InvalidRequest);
@@ -98,6 +104,35 @@ impl CommissioningWorkflowPlan {
         Ok(Self {
             run_sequence,
             shape: StageCPlanShape::CombinedPThenI,
+            nominal_workflow_ms,
+            maximum_workflow_ms,
+        })
+    }
+
+    /// Construct one checked fixed-I acceptance-matrix workflow envelope.
+    pub fn new_acceptance_matrix(
+        run_sequence: u32,
+        order: super::acceptance_plan::AcceptanceMatrixOrder,
+        nominal_workflow_ms: u32,
+        maximum_workflow_ms: u32,
+    ) -> Result<Self, VelocityIntegralPlanError> {
+        if nominal_workflow_ms == 0
+            || maximum_workflow_ms == 0
+            || nominal_workflow_ms > maximum_workflow_ms
+        {
+            return Err(VelocityIntegralPlanError::InvalidRequest);
+        }
+        let shape = match order {
+            super::acceptance_plan::AcceptanceMatrixOrder::Ascending => {
+                StageCPlanShape::AcceptanceMatrixAscending
+            }
+            super::acceptance_plan::AcceptanceMatrixOrder::Descending => {
+                StageCPlanShape::AcceptanceMatrixDescending
+            }
+        };
+        Ok(Self {
+            run_sequence,
+            shape,
             nominal_workflow_ms,
             maximum_workflow_ms,
         })

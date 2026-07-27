@@ -143,6 +143,7 @@ pub(crate) fn combined_acceptance_point(
         selected_p: plan.final_p,
         selected_i,
         target_velocity_rpm: plan.target_velocity_rpm,
+        selected_response_intervals_q: plan.selected_response_intervals_q,
         qualifier_bits,
         progress: AcceptanceMatrixProgress::ReadyAscending,
     }))

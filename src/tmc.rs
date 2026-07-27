@@ -14,6 +14,8 @@ use core::sync::atomic::Ordering;
 pub struct TmcRequest {
     /// Board-local TMC4671 channel index.
     pub channel: u8,
+    /// Firmware-owned autotune selector; ignored by non-tune requests.
+    pub autotune_action: AutotuneAction,
     /// Requested TMC operation.
     pub kind: TmcRequestKind,
 }
@@ -21,7 +23,24 @@ pub struct TmcRequest {
 impl TmcRequest {
     /// Build a TMC request for `channel`.
     pub const fn new(channel: u8, kind: TmcRequestKind) -> Self {
-        Self { channel, kind }
+        Self {
+            channel,
+            autotune_action: AutotuneAction::Combined,
+            kind,
+        }
+    }
+
+    /// Build a TMC request with an explicit firmware-owned autotune selector.
+    pub const fn new_with_autotune_action(
+        channel: u8,
+        autotune_action: AutotuneAction,
+        kind: TmcRequestKind,
+    ) -> Self {
+        Self {
+            channel,
+            autotune_action,
+            kind,
+        }
     }
 }
 
@@ -414,6 +433,30 @@ pub enum TmcRequestKind {
     TestSpin { revolutions: u8 },
 }
 
+/// Operator-selected velocity-autotune acquisition.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+#[repr(u8)]
+pub enum AutotuneAction {
+    /// Run the combined proportional and integral response acquisition.
+    Combined = 0,
+    /// Run the retained fixed-I matrix from lowest to highest amplitude.
+    MatrixAscending = 1,
+    /// Run the retained fixed-I matrix from highest to lowest amplitude.
+    MatrixDescending = 2,
+}
+
+impl AutotuneAction {
+    /// Decode one wire action without assigning behavior to unknown values.
+    pub const fn from_u8(value: u8) -> Option<Self> {
+        match value {
+            0 => Some(Self::Combined),
+            1 => Some(Self::MatrixAscending),
+            2 => Some(Self::MatrixDescending),
+            _ => None,
+        }
+    }
+}
+
 /// Build a `SetCurrent` request.
 pub fn tmc_set_current(channel: u8, run_ma: u32) -> TmcRequest {
     TmcRequest::new(channel, TmcRequestKind::SetCurrent { run_ma })
@@ -507,8 +550,54 @@ pub fn tmc_tune(
     positive_position_headroom_mrev: u32,
     max_duration_ms: u16,
 ) -> TmcRequest {
-    TmcRequest::new(
+    tmc_tune_with_action(
         channel,
+        oid,
+        AutotuneAction::Combined,
+        profile,
+        mode,
+        inner_lambda_us,
+        theta_e_us,
+        current_ringing_count,
+        current_bandwidth_hz,
+        inner_warning_flags,
+        requested_velocity_mrev_s,
+        machine_velocity_ceiling_mrev_s,
+        requested_velocity_source,
+        max_stroke_travel_mrev,
+        settle_travel_reserve_mrev,
+        negative_position_headroom_mrev,
+        positive_position_headroom_mrev,
+        max_duration_ms,
+    )
+}
+
+/// Build a `Tune` request with an explicit firmware-owned acquisition action.
+#[allow(clippy::too_many_arguments)]
+pub fn tmc_tune_with_action(
+    channel: u8,
+    oid: u8,
+    action: AutotuneAction,
+    profile: u8,
+    mode: u8,
+    inner_lambda_us: u32,
+    theta_e_us: u32,
+    current_ringing_count: u8,
+    current_bandwidth_hz: u32,
+    inner_warning_flags: u8,
+    requested_velocity_mrev_s: u32,
+    machine_velocity_ceiling_mrev_s: u32,
+    requested_velocity_source:
+        crate::commissioning::outer::velocity::sweep_plan::RequestedVelocitySource,
+    max_stroke_travel_mrev: u32,
+    settle_travel_reserve_mrev: u32,
+    negative_position_headroom_mrev: u32,
+    positive_position_headroom_mrev: u32,
+    max_duration_ms: u16,
+) -> TmcRequest {
+    TmcRequest::new_with_autotune_action(
+        channel,
+        action,
         TmcRequestKind::Tune {
             oid,
             profile,

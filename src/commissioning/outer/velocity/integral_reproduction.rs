@@ -161,6 +161,8 @@ pub struct AcceptancePoint {
     pub selected_i: u16,
     /// Exact signed TMC mechanical-RPM target used by the combined run.
     pub target_velocity_rpm: i32,
+    /// Exact compact response intervals needed to reconstruct the accepted plan identity.
+    pub selected_response_intervals_q: [[i32; 2]; 2],
     /// Packed operating-point, model-validity, and evidence-quality qualifiers.
     pub qualifier_bits: u16,
     /// Next allowed matrix acquisition.
