@@ -179,6 +179,16 @@ fn compact_execution_plan_carries_fixed_i_and_literal_targets() {
     assert_eq!(execution.matrix_targets_rpm, [16, 33, 66, 132, 263]);
     assert_eq!(execution.positive_rung_count, 5);
     assert_eq!(execution.family_size, 20);
+    assert_eq!(
+        execution.selected_response_intervals_q,
+        [
+            [
+                ascending.acceptance_identity.plan_digest as u32 as i32,
+                (ascending.acceptance_identity.plan_digest >> 32) as u32 as i32,
+            ],
+            [i32::from(ascending.qualifier_bits), 0],
+        ]
+    );
     assert_eq!(core::mem::size_of_val(&execution), 96);
     assert!(core::mem::size_of_val(&execution) <= 112);
 }

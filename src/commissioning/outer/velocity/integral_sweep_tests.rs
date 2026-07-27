@@ -3,12 +3,12 @@ use super::integral_plan::{INTEGRAL_SLOT_TRANSITION_ALLOWANCE_US, VelocityIntegr
 use super::integral_sweep::{
     INTEGRAL_CAUSE_BOOKEND_UNAVAILABLE, INTEGRAL_CAUSE_POSITIVE_I_REST_BOUNDARY,
     INTEGRAL_CAUSE_POSITIVE_I_REST_BOUNDARY_AFTER_SUFFICIENCY, INTEGRAL_SLOT_COUNT,
-    advance_integral_cursor, apply_integral_current_headroom, combined_slot_transition_us,
-    combined_target_status, integral_fault_terminal, integral_i_at,
-    integral_recovery_current_contact_policy, integral_rung_count, integral_rung_kind,
-    integral_slot_direction, integral_target_rpm_at, opening_recovery_lower_rate_q,
-    positive_directional_floors_exist, record_integral_target_if_reached,
-    step_velocity_integral_with_trace,
+    acceptance_amplitude_report, acceptance_terminal, advance_integral_cursor,
+    apply_integral_current_headroom, combined_slot_transition_us, combined_target_status,
+    integral_fault_terminal, integral_i_at, integral_recovery_current_contact_policy,
+    integral_rung_count, integral_rung_kind, integral_slot_direction, integral_target_rpm_at,
+    opening_recovery_lower_rate_q, positive_directional_floors_exist,
+    record_integral_target_if_reached, step_velocity_integral_with_trace,
 };
 use super::recovery::{
     ExactU64Parts, RecoveryBindingSource, RecoveryCurrentContactPolicy, RecoveryStage,
@@ -31,7 +31,10 @@ use crate::commissioning::outer::velocity::sweep_evidence::VelocityObservationCl
 use crate::commissioning::outer::{
     OuterMotionBudget, OuterPhase, OuterSafetyLimits, VelocityIntegralData, VelocityIntegralState,
 };
-use crate::commissioning::types::{StepResult, VelocityIntegralEvent, VelocityIntegralOutcome};
+use crate::commissioning::types::{
+    AcceptanceMatrixCause, AcceptanceMatrixOutcome, StepResult, VelocityIntegralEvent,
+    VelocityIntegralOutcome,
+};
 use foci_tmc4671::pid::{PidGainPair, PidIGain, PidPGain};
 use foci_tmc4671::registers::{
     MODE_RAMP_MODE_MOTION, PID_ERROR_PID_VELOCITY_ERROR_SUM, PID_TORQUE_FLUX_LIMITS,
@@ -227,6 +230,85 @@ fn response_and_matrix_plans_expose_distinct_exact_schedules() {
     );
     assert_eq!(integral_i_at(descending, 5), None);
     assert_eq!(integral_target_rpm_at(descending, 5), None);
+}
+
+#[test]
+fn matrix_amplitude_fold_retains_exact_consensus_location_and_masks() {
+    let mut matrix = plan();
+    matrix.acquisition_kind = VelocityIntegralAcquisitionKind::AcceptanceAscending;
+    matrix.i_start = 1_024;
+    matrix.positive_rung_count = 5;
+    matrix.matrix_targets_rpm = [16, 33, 66, 132, 263];
+    let mut data = VelocityIntegralData::new(1, matrix);
+    data.rung_classes = [VelocityObservationClass::Eligible; 8];
+    data.rung_intervals = [
+        ExactRateInterval::new(100, 110).unwrap(),
+        ExactRateInterval::new(-110, -100).unwrap(),
+        ExactRateInterval::new(102, 112).unwrap(),
+        ExactRateInterval::new(-112, -102).unwrap(),
+        ExactRateInterval::new(103, 113).unwrap(),
+        ExactRateInterval::new(-113, -103).unwrap(),
+        ExactRateInterval::new(104, 114).unwrap(),
+        ExactRateInterval::new(-114, -104).unwrap(),
+    ];
+    data.rung_means_q = [100, -100, 102, -102, 104, -104, 106, -106];
+    data.rung_blocking_levels = 0x2244_3322;
+
+    let report = acceptance_amplitude_report(&mut data).unwrap();
+    assert_eq!(report.amplitude_index, 0);
+    assert_eq!(report.target_rpm, 16);
+    assert_eq!(report.directions[0].response_interval_q, Some([103, 112]));
+    assert_eq!(report.directions[1].response_interval_q, Some([-112, -103]));
+    assert_eq!(report.directions[0].consensus.included_mask, 0b1111);
+    assert_eq!(report.directions[0].excluded_mask, 0);
+    assert_eq!(report.directions[0].robust_location_q, Some(103));
+    assert_eq!(report.directions[1].robust_location_q, Some(-103));
+    assert_eq!(report.directions[0].blocking_levels, [2, 3, 4, 2]);
+    assert_eq!(
+        [data.opening_direction_mask, data.bookend_available_mask],
+        [1; 2]
+    );
+    assert_eq!(data.eligible_masks, [1; 2]);
+}
+
+#[test]
+fn matrix_terminals_distinguish_sufficiency_recovery_and_integrity() {
+    let mut matrix = plan();
+    matrix.acquisition_kind = VelocityIntegralAcquisitionKind::AcceptanceAscending;
+    matrix.selected_response_intervals_q = [[0x1234, 0], [0x55aa, 0]];
+    matrix.positive_rung_count = 5;
+    matrix.matrix_targets_rpm = [16, 33, 66, 132, 263];
+    let mut data = VelocityIntegralData::new(1, matrix);
+    data.opening_direction_mask = 0b11111;
+    data.bookend_available_mask = 0b11111;
+    data.eligible_masks = [0b00111; 2];
+    data.emitted_observations = 40;
+    data.emitted_rungs = 5;
+
+    let complete = acceptance_terminal(&data, false, None);
+    assert_eq!(complete.outcome, AcceptanceMatrixOutcome::Complete);
+    assert_eq!(complete.cause, AcceptanceMatrixCause::None);
+    assert_eq!(complete.acceptance_plan_digest, 0x1234);
+    assert_eq!(complete.qualifier_bits, 0x55aa);
+    assert_eq!(complete.unattempted_masks, [0; 2]);
+
+    data.eligible_masks[1] = 0b00011;
+    let insufficient = acceptance_terminal(&data, false, None);
+    assert_eq!(insufficient.outcome, AcceptanceMatrixOutcome::Inconclusive);
+    assert_eq!(
+        insufficient.cause,
+        AcceptanceMatrixCause::InsufficientSharedFloor
+    );
+
+    data.eligible_masks[1] = 0b00111;
+    data.recovery_unavailable = true;
+    let recovery = acceptance_terminal(&data, false, None);
+    assert_eq!(recovery.outcome, AcceptanceMatrixOutcome::Inconclusive);
+    assert_eq!(recovery.cause, AcceptanceMatrixCause::RecoveryUnavailable);
+
+    let fault = acceptance_terminal(&data, true, None);
+    assert_eq!(fault.outcome, AcceptanceMatrixOutcome::Fault);
+    assert_eq!(fault.cause, AcceptanceMatrixCause::EvidenceIntegrity);
 }
 
 #[test]
@@ -503,7 +585,6 @@ fn matrix_current_continuation_follows_only_remaining_lower_amplitudes() {
     data.plan.matrix_targets_rpm = [16, 33, 66, 132, 263];
     data.rung_index = 2;
     apply_integral_current_headroom(state, data);
-    assert_eq!(data.current_terminus, Some(2));
     assert_eq!(data.rung_index, 2);
     assert!(matches!(state, VelocityIntegralState::Terminal));
 
@@ -512,7 +593,6 @@ fn matrix_current_continuation_follows_only_remaining_lower_amplitudes() {
     data.current_terminus = None;
     data.rung_index = 2;
     apply_integral_current_headroom(state, data);
-    assert_eq!(data.current_terminus, Some(2));
     assert_eq!(data.rung_index, 3);
     assert!(matches!(
         state,
@@ -1427,6 +1507,7 @@ fn slot_advance_reprograms_i_without_resetting_prior_evidence() {
     data.rung_classes = [VelocityObservationClass::Eligible; 8];
     data.rung_intervals = [ExactRateInterval::new(10, 20).unwrap(); 8];
     data.rung_means_q = [10, 20, 30, 40, 50, 60, 70, 80];
+    data.rung_blocking_levels = 0x1234_1234;
     *state = VelocityIntegralState::Advance;
     let mut backend = MockBackend::new();
 
@@ -1457,6 +1538,7 @@ fn slot_advance_reprograms_i_without_resetting_prior_evidence() {
             [ExactRateInterval::new(10, 20).unwrap(); 8]
         );
         assert_eq!(data.rung_means_q, [10, 20, 30, 40, 50, 60, 70, 80]);
+        assert_eq!(data.rung_blocking_levels, 0x1234_1234);
         *state = VelocityIntegralState::Advance;
     }
 }
@@ -1472,6 +1554,7 @@ fn rung_reset_clears_only_per_rung_observation_state() {
     data.rung_classes = [VelocityObservationClass::Eligible; 8];
     data.rung_intervals = [ExactRateInterval::new(10, 20).unwrap(); 8];
     data.rung_means_q = [10, 20, 30, 40, 50, 60, 70, 80];
+    data.rung_blocking_levels = 0x1234_1234;
     data.eligible_masks = [0b101; 2];
     *state = VelocityIntegralState::PrepareMovingSlot { reset_rung: true };
     let mut backend = MockBackend::new();
@@ -1489,6 +1572,7 @@ fn rung_reset_clears_only_per_rung_observation_state() {
     );
     assert_eq!(data.rung_intervals, [ExactRateInterval::EMPTY; 8]);
     assert_eq!(data.rung_means_q, [0; 8]);
+    assert_eq!(data.rung_blocking_levels, 0);
     assert_eq!(data.eligible_masks, [0b101; 2]);
 }
 

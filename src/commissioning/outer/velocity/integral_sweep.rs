@@ -12,6 +12,7 @@ use crate::commissioning::outer::{
 };
 use crate::commissioning::schedule::next_grid_deadline;
 use crate::commissioning::types::{
+    AcceptanceMatrixCause, AcceptanceMatrixOutcome, AcceptanceMatrixTerminal,
     OUTER_SAFETY_FAULT_CURRENT, OUTER_SAFETY_FAULT_OBSERVATION_GAP,
     OUTER_SAFETY_FAULT_QUARTER_TURN, OuterSafetyFault, RungOriginRecoveryEvidence, StepResult,
     VelocityIntegralEvent, VelocityIntegralObservation, VelocityIntegralOutcome,
@@ -24,6 +25,11 @@ use foci_tmc4671::registers::{
     PID_VELOCITY_TARGET,
 };
 
+use super::acceptance_evidence::{
+    ACCEPTANCE_AMPLITUDE_COUNT, AcceptanceAmplitudeAvailability, AcceptanceAmplitudeReport,
+    AcceptanceDirectionInput, AcceptanceRunMasks, acceptance_run_sufficient,
+    classify_acceptance_amplitude,
+};
 use super::combined_plan::{CombinedRateInterval, integral_deficit_reaches_target};
 use super::current_guard::{
     VelocityCurrentClampSession, VelocityCurrentContact, VelocityCurrentGuardError,
@@ -178,7 +184,6 @@ pub(super) fn apply_integral_current_headroom(
         VelocityIntegralAcquisitionKind::AcceptanceAscending
             | VelocityIntegralAcquisitionKind::AcceptanceDescending
     ) {
-        data.current_terminus = Some(data.rung_index);
         if data.plan.acquisition_kind == VelocityIntegralAcquisitionKind::AcceptanceDescending {
             data.rung_index = data.rung_index.saturating_add(1);
             if data.rung_index < integral_rung_count(data.plan).unwrap_or(0) {
@@ -306,6 +311,233 @@ fn reset_rung(data: &mut VelocityIntegralData) {
     data.rung_classes = [VelocityObservationClass::InvalidEvidenceFault; 8];
     data.rung_intervals = [ExactRateInterval::EMPTY; 8];
     data.rung_means_q = [0; 8];
+    data.rung_blocking_levels = 0;
+}
+
+fn set_rung_blocking_level(
+    data: &mut VelocityIntegralData,
+    slot: u8,
+    level: u8,
+) -> Result<(), CommissionError> {
+    if slot >= INTEGRAL_SLOT_COUNT || level > 0x0f {
+        return Err(CommissionError::InvalidSchedule);
+    }
+    let shift = u32::from(slot) * 4;
+    data.rung_blocking_levels =
+        (data.rung_blocking_levels & !(0x0f << shift)) | (u32::from(level) << shift);
+    Ok(())
+}
+
+fn rung_blocking_level(data: &VelocityIntegralData, slot: usize) -> u8 {
+    ((data.rung_blocking_levels >> (slot * 4)) & 0x0f) as u8
+}
+
+fn acceptance_attempted_masks(data: &VelocityIntegralData) -> [u8; 2] {
+    [data.opening_direction_mask, data.bookend_available_mask]
+}
+
+fn set_acceptance_attempted(data: &mut VelocityIntegralData, direction: usize, bit: u8) {
+    if direction == 0 {
+        data.opening_direction_mask |= bit;
+    } else {
+        data.bookend_available_mask |= bit;
+    }
+}
+
+fn acceptance_current_masks(data: &VelocityIntegralData) -> [u8; 2] {
+    [
+        data.current_terminus.unwrap_or(0),
+        data.target_terminus.unwrap_or(0),
+    ]
+}
+
+fn set_acceptance_current(data: &mut VelocityIntegralData, direction: usize, bit: u8) {
+    let value = if direction == 0 {
+        &mut data.current_terminus
+    } else {
+        &mut data.target_terminus
+    };
+    *value = Some(value.unwrap_or(0) | bit);
+}
+
+fn is_acceptance_matrix(plan: VelocityIntegralExecutionPlan) -> bool {
+    matches!(
+        plan.acquisition_kind,
+        VelocityIntegralAcquisitionKind::AcceptanceAscending
+            | VelocityIntegralAcquisitionKind::AcceptanceDescending
+    )
+}
+
+fn acceptance_target_rate_q(
+    plan: VelocityIntegralExecutionPlan,
+    rung_index: u8,
+) -> Result<i64, CommissionError> {
+    let target_rpm =
+        integral_target_rpm_at(plan, rung_index).ok_or(CommissionError::InvalidSchedule)?;
+    i64::from(target_rpm)
+        .checked_mul(i64::from(plan.encoder_counts_per_rev))
+        .and_then(|value| {
+            value.checked_mul(crate::autotune::velocity_measurement::VELOCITY_RATE_Q_SCALE)
+        })
+        .map(|value| value / 60)
+        .ok_or(CommissionError::InvalidSchedule)
+}
+
+fn acceptance_identity_and_qualifiers(plan: VelocityIntegralExecutionPlan) -> Option<(u64, u16)> {
+    if !is_acceptance_matrix(plan)
+        || !(0..=i32::from(u16::MAX)).contains(&plan.selected_response_intervals_q[1][0])
+        || plan.selected_response_intervals_q[1][1] != 0
+    {
+        return None;
+    }
+    let low = plan.selected_response_intervals_q[0][0] as u32;
+    let high = plan.selected_response_intervals_q[0][1] as u32;
+    Some((
+        u64::from(low) | (u64::from(high) << 32),
+        plan.selected_response_intervals_q[1][0] as u16,
+    ))
+}
+
+pub(super) fn acceptance_amplitude_report(
+    data: &mut VelocityIntegralData,
+) -> Result<AcceptanceAmplitudeReport, CommissionError> {
+    let amplitude = usize::from(data.rung_index);
+    let bit = 1_u8
+        .checked_shl(u32::from(data.rung_index))
+        .ok_or(CommissionError::InvalidSchedule)?;
+    let target_rate_q = acceptance_target_rate_q(data.plan, data.rung_index)?;
+    let precision_floor_candidate = integral_target_rpm_at(data.plan, data.rung_index)
+        == data
+            .plan
+            .matrix_targets_rpm
+            .iter()
+            .copied()
+            .min()
+            .map(i32::from);
+    let directions: [Result<_, _>; 2] = core::array::from_fn(|direction| {
+        let slot = |observation: usize| observation * 2 + direction;
+        let classes = core::array::from_fn(|observation| data.rung_classes[slot(observation)]);
+        let intervals = core::array::from_fn(|observation| {
+            (classes[observation] == VelocityObservationClass::Eligible).then(|| {
+                let interval = data.rung_intervals[slot(observation)];
+                [interval.low_q, interval.high_q]
+            })
+        });
+        let means_q = core::array::from_fn(|observation| {
+            (classes[observation] == VelocityObservationClass::Eligible)
+                .then_some(data.rung_means_q[slot(observation)])
+        });
+        let blocking_levels =
+            core::array::from_fn(|observation| rung_blocking_level(data, slot(observation)));
+        classify_acceptance_amplitude(AcceptanceDirectionInput {
+            signed_target_rate_q: if direction == 0 {
+                target_rate_q
+            } else {
+                -target_rate_q
+            },
+            collected_mask: 0b1111,
+            classes,
+            intervals,
+            means_q,
+            blocking_levels,
+            precision_floor_candidate,
+        })
+    });
+    let directions = [
+        directions[0].map_err(|_| CommissionError::InvalidSchedule)?,
+        directions[1].map_err(|_| CommissionError::InvalidSchedule)?,
+    ];
+    for (direction, evidence) in directions.iter().enumerate() {
+        set_acceptance_attempted(data, direction, bit);
+        if evidence.availability == AcceptanceAmplitudeAvailability::Eligible {
+            data.eligible_masks[direction] |= u32::from(bit);
+        }
+        if evidence.availability == AcceptanceAmplitudeAvailability::CurrentHeadroom {
+            set_acceptance_current(data, direction, bit);
+        }
+    }
+    Ok(AcceptanceAmplitudeReport {
+        amplitude_index: u8::try_from(amplitude).map_err(|_| CommissionError::InvalidSchedule)?,
+        target_rpm: i16::try_from(
+            integral_target_rpm_at(data.plan, data.rung_index)
+                .ok_or(CommissionError::InvalidSchedule)?,
+        )
+        .map_err(|_| CommissionError::InvalidSchedule)?,
+        directions,
+    })
+}
+
+pub(super) fn acceptance_terminal(
+    data: &VelocityIntegralData,
+    faulted: bool,
+    safety_fault: Option<OuterSafetyFault>,
+) -> AcceptanceMatrixTerminal {
+    let eligible_masks = [
+        u8::try_from(data.eligible_masks[0])
+            .expect("matrix eligibility is written only through five-bit masks"),
+        u8::try_from(data.eligible_masks[1])
+            .expect("matrix eligibility is written only through five-bit masks"),
+    ];
+    let full_mask = (1_u8 << ACCEPTANCE_AMPLITUDE_COUNT) - 1;
+    let masks = AcceptanceRunMasks {
+        attempted: acceptance_attempted_masks(data),
+        eligible: eligible_masks,
+        current_terminus: acceptance_current_masks(data),
+        unattempted: acceptance_attempted_masks(data).map(|mask| full_mask & !mask),
+    };
+    let identity = acceptance_identity_and_qualifiers(data.plan);
+    let (outcome, cause) = if faulted || identity.is_none() {
+        (
+            AcceptanceMatrixOutcome::Fault,
+            AcceptanceMatrixCause::EvidenceIntegrity,
+        )
+    } else {
+        match acceptance_run_sufficient(masks) {
+            Err(_) => (
+                AcceptanceMatrixOutcome::Fault,
+                AcceptanceMatrixCause::EvidenceIntegrity,
+            ),
+            Ok(_) if data.recovery_failure || data.recovery_unavailable => (
+                AcceptanceMatrixOutcome::Inconclusive,
+                AcceptanceMatrixCause::RecoveryUnavailable,
+            ),
+            Ok(true) => (
+                AcceptanceMatrixOutcome::Complete,
+                AcceptanceMatrixCause::None,
+            ),
+            Ok(false) => (
+                AcceptanceMatrixOutcome::Inconclusive,
+                AcceptanceMatrixCause::InsufficientSharedFloor,
+            ),
+        }
+    };
+    let (acceptance_plan_digest, qualifier_bits) = identity.unwrap_or((0, 0));
+    AcceptanceMatrixTerminal {
+        schema_revision: super::acceptance_plan::ACCEPTANCE_MATRIX_SCHEMA_REVISION,
+        run_sequence: data.integrity.run_sequence(),
+        evidence_sequence: data.integrity.next_evidence_sequence(),
+        acceptance_plan_digest,
+        plan_digest: data.plan.plan_digest,
+        digest: data.integrity.digest(),
+        outcome,
+        cause,
+        attempted_masks: masks.attempted,
+        eligible_masks: masks.eligible,
+        current_terminus_masks: masks.current_terminus,
+        unattempted_masks: masks.unattempted,
+        expected_observations: u16::from(INTEGRAL_SLOT_COUNT)
+            * u16::try_from(ACCEPTANCE_AMPLITUDE_COUNT)
+                .expect("fixed amplitude count fits terminal"),
+        emitted_observations: data.emitted_observations,
+        expected_amplitudes: u8::try_from(ACCEPTANCE_AMPLITUDE_COUNT)
+            .expect("fixed amplitude count fits terminal"),
+        emitted_amplitudes: u8::try_from(data.emitted_rungs)
+            .expect("emitted amplitude count cannot exceed the five-rung plan"),
+        qualifier_bits,
+        run_started_us: data.run_started_us,
+        run_completed_us: data.previous_read_us,
+        safety_fault,
+    }
 }
 
 fn transition_elapsed_us(started_us: u64, finished_us: u64) -> Result<u32, CommissionError> {
@@ -583,6 +815,10 @@ pub(crate) fn integral_fault_terminal(
     let OuterPhase::VelocityIntegral { data, .. } = phase else {
         return StepResult::OuterFailed(error);
     };
+    if is_acceptance_matrix(data.plan) {
+        let _ = acceptance_terminal(data, true, safety_fault);
+        return StepResult::OuterFailed(error);
+    }
     terminal_from_data(
         data,
         super::integral_evidence::IntegralRunEvidence::new([ExactRateInterval::EMPTY; 2]),
@@ -1020,6 +1256,17 @@ pub(crate) async fn step_velocity_integral_with_trace<B: CommissioningBackend>(
                             .await;
                     }
                 };
+            if is_acceptance_matrix(data.plan) {
+                let bit = match 1_u8.checked_shl(u32::from(data.rung_index)) {
+                    Some(value) => value,
+                    None => {
+                        return fail_integral(phase, backend, CommissionError::InvalidSchedule)
+                            .await;
+                    }
+                };
+                let direction = usize::from(data.slot % 2);
+                set_acceptance_attempted(data, direction, bit);
+            }
             let mut clamp_session = match VelocityCurrentClampSession::try_new_with_limit(
                 u32::from(data.plan.hard_torque_limit),
                 u32::from(data.plan.usable_torque_limit),
@@ -1265,6 +1512,11 @@ pub(crate) async fn step_velocity_integral_with_trace<B: CommissioningBackend>(
                 Ok(None) => return StepResult::ReadyNow,
                 Err(error) => return fail_integral(phase, backend, error).await,
             };
+            if let StationarityResult::Usable(suffix) = stationarity
+                && set_rung_blocking_level(data, data.slot, suffix.selection.level).is_err()
+            {
+                return fail_integral(phase, backend, CommissionError::InvalidSchedule).await;
+            }
             if retain_analyzed_observation(data, summary).is_err() {
                 return fail_integral(phase, backend, CommissionError::InvalidSchedule).await;
             }
@@ -1301,10 +1553,14 @@ pub(crate) async fn step_velocity_integral_with_trace<B: CommissioningBackend>(
             } else {
                 VelocityIntegralState::BeginSettleCapture { settle_deadline_us }
             };
-            let event = data
-                .integrity
-                .record(VelocityIntegralEvent::Observation(report));
-            StepResult::VelocityIntegralEvent(event)
+            if is_acceptance_matrix(data.plan) {
+                StepResult::ReadyNow
+            } else {
+                let event = data
+                    .integrity
+                    .record(VelocityIntegralEvent::Observation(report));
+                StepResult::VelocityIntegralEvent(event)
+            }
         }
         VelocityIntegralState::BeginSettleCapture { settle_deadline_us } => {
             let encoder_raw = match backend.read_capture_register(ABN_DECODER_COUNT).await {
@@ -1517,10 +1773,24 @@ pub(crate) async fn step_velocity_integral_with_trace<B: CommissioningBackend>(
                 safety.end_primitive();
             }
             if data.observation_current_headroom {
-                if matches!(
+                if is_acceptance_matrix(data.plan) {
+                    let bit = match 1_u8.checked_shl(u32::from(data.rung_index)) {
+                        Some(value) => value,
+                        None => {
+                            return fail_integral(phase, backend, CommissionError::InvalidSchedule)
+                                .await;
+                        }
+                    };
+                    set_acceptance_current(data, usize::from(data.slot % 2), bit);
+                    match plan_integral_recovery(data, workspace, safety) {
+                        Ok(recovery) => *state = VelocityIntegralState::RecoverRung(recovery),
+                        Err(error) => return fail_integral(phase, backend, error).await,
+                    }
+                } else if matches!(
                     integral_rung_kind(data.plan, data.rung_index),
                     IntegralRungKind::Positive
-                ) && (positive_directional_floors_exist(data) || data.plan.combined_workflow)
+                ) && (positive_directional_floors_exist(data)
+                    || data.plan.combined_workflow)
                 {
                     data.current_terminus = data.rung_index.checked_sub(1);
                     match plan_integral_recovery(data, workspace, safety) {
@@ -1538,7 +1808,11 @@ pub(crate) async fn step_velocity_integral_with_trace<B: CommissioningBackend>(
                 *state = VelocityIntegralState::AnalyzeRung;
             }
             let event = current_event(data, current_evidence);
-            StepResult::VelocityIntegralEvent(event)
+            if is_acceptance_matrix(data.plan) {
+                StepResult::ReadyNow
+            } else {
+                StepResult::VelocityIntegralEvent(event)
+            }
         }
         VelocityIntegralState::BeginPositiveIRestCleanup => {
             if data.positive_i_rest_boundary.is_none() {
@@ -1768,6 +2042,20 @@ pub(crate) async fn step_velocity_integral_with_trace<B: CommissioningBackend>(
             StepResult::ReadyNow
         }
         VelocityIntegralState::AnalyzeRung => {
+            if is_acceptance_matrix(data.plan) {
+                let report = match acceptance_amplitude_report(data) {
+                    Ok(report) => report,
+                    Err(error) => return fail_integral(phase, backend, error).await,
+                };
+                data.emitted_rungs = data.emitted_rungs.saturating_add(1);
+                let recovery = match plan_integral_recovery(data, workspace, safety) {
+                    Ok(runtime) => runtime,
+                    Err(error) => return fail_integral(phase, backend, error).await,
+                };
+                *state = VelocityIntegralState::RecoverRung(recovery);
+                let _ = report;
+                return StepResult::ReadyNow;
+            }
             let directions = match (
                 analyze_rung(data, VelocityDirection::Forward),
                 analyze_rung(data, VelocityDirection::Reverse),
@@ -1924,6 +2212,11 @@ pub(crate) async fn step_velocity_integral_with_trace<B: CommissioningBackend>(
                         data.recovery_failure = true;
                         *state = VelocityIntegralState::Terminal;
                     }
+                    IntegralRungKind::AcceptanceAmplitude
+                        if acceptance_current_masks(data) != [0; 2] =>
+                    {
+                        apply_integral_current_headroom(state, data);
+                    }
                     IntegralRungKind::AcceptanceAmplitude => {
                         data.rung_index = data.rung_index.saturating_add(1);
                         if data.rung_index >= integral_rung_count(data.plan).unwrap_or(0) {
@@ -1941,11 +2234,19 @@ pub(crate) async fn step_velocity_integral_with_trace<B: CommissioningBackend>(
                     report,
                 },
             ));
-            StepResult::VelocityIntegralEvent(event)
+            if is_acceptance_matrix(data.plan) {
+                StepResult::ReadyNow
+            } else {
+                StepResult::VelocityIntegralEvent(event)
+            }
         }
         VelocityIntegralState::FaultTerminal { error } => {
             let error = *error;
             fail_integral(phase, backend, error).await
+        }
+        VelocityIntegralState::Terminal if is_acceptance_matrix(data.plan) => {
+            let _ = acceptance_terminal(data, false, None);
+            StepResult::OuterFailed(CommissionError::InvalidSchedule)
         }
         VelocityIntegralState::Terminal => evidence_terminal(data, workspace),
     }

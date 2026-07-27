@@ -157,6 +157,8 @@ impl AcceptanceMatrixPlan {
     /// Compact the emitted matrix into existing velocity-integral execution state.
     pub fn execution_plan(self) -> VelocityIntegralExecutionPlan {
         let top_target = self.target_rpm.iter().copied().max().unwrap_or(0);
+        let identity_low = self.acceptance_identity.plan_digest as u32;
+        let identity_high = (self.acceptance_identity.plan_digest >> 32) as u32;
         VelocityIntegralExecutionPlan {
             plan_digest: self.digest(),
             final_p: self.selected_p,
@@ -194,7 +196,10 @@ impl AcceptanceMatrixPlan {
                 }
             },
             matrix_targets_rpm: self.target_rpm,
-            selected_response_intervals_q: [[0; 2]; 2],
+            selected_response_intervals_q: [
+                [identity_low as i32, identity_high as i32],
+                [i32::from(self.qualifier_bits), 0],
+            ],
             recovery_quantization_exposed: self.recovery_quantization_exposed,
             probe_constrained_test_point: self.probe_constrained_test_point,
         }

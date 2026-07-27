@@ -434,7 +434,7 @@ pub struct VelocityIntegralExecutionPlan {
     pub acquisition_kind: VelocityIntegralAcquisitionKind,
     /// Exact fixed targets for a matrix acquisition; zero for response ladders.
     pub matrix_targets_rpm: [i16; 5],
-    /// Selected Stage-B response intervals in forward, reverse order.
+    /// Selected Stage-B intervals or exact matrix identity/qualifier storage.
     pub selected_response_intervals_q: [[i32; 2]; 2],
     /// One opposite-sign meter quantum can contact the probe clamp during recovery.
     pub recovery_quantization_exposed: bool,
