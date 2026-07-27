@@ -741,6 +741,7 @@ pub(crate) fn plan_velocity_integral_response(
 }
 
 /// Construct a nonretained Stage-C plan from the live selected Stage-B response.
+#[cfg(any(test, feature = "trace-velocity-sweep"))]
 pub(crate) fn plan_combined_velocity_integral_response(
     selected: super::combined_plan::CombinedSelectedResponse,
     stage_b_plan: VelocitySweepExecutionPlan,
