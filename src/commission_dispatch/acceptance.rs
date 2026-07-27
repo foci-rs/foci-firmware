@@ -240,3 +240,86 @@ pub fn failed_acceptance_matrix_terminal(
         safety_fault: None,
     }
 }
+
+#[cfg(test)]
+pub(crate) fn test_acceptance_point(
+    request: VelocitySweepRequest,
+    progress: AcceptanceMatrixProgress,
+) -> crate::commissioning::outer::velocity::integral_reproduction::AcceptancePoint {
+    use crate::commissioning::outer::velocity::combined_plan::select_proportional_response;
+    use crate::commissioning::outer::velocity::operating_region::{
+        BoundRounding, CompactSignedRate,
+    };
+    use crate::commissioning::outer::velocity::reproduction::STAGE_B_BUILD_REVISION;
+    use crate::commissioning::outer::velocity::sweep_consensus::DirectionalConsensusClass;
+    use crate::commissioning::outer::velocity::sweep_evidence::CompactDirectionalRungReport;
+
+    let report = |low_q, high_q| CompactDirectionalRungReport {
+        p: PidPGain::new(1_024).unwrap(),
+        classification: DirectionalConsensusClass::EligibleConsensus,
+        components: [[0; 2]; 2],
+        pooled: None,
+        settled_rate_bounds_q: [
+            CompactSignedRate::encode(low_q, BoundRounding::TowardNegativeInfinity),
+            CompactSignedRate::encode(high_q, BoundRounding::TowardPositiveInfinity),
+            CompactSignedRate::encode(low_q, BoundRounding::TowardNegativeInfinity),
+            CompactSignedRate::encode(high_q, BoundRounding::TowardPositiveInfinity),
+        ],
+        collected_mask: 0b1111,
+        eligible_mask: 0b1111,
+        included_mask: 0b1111,
+        operable_count: 4,
+        flags: 0,
+    };
+    let stage_b = plan_combined_velocity_sweep(
+        request,
+        4_000,
+        2_816,
+        crate::commissioning::outer::velocity::VELOCITY_LIMIT_EVIDENCE_CAPABILITY_BEST_EFFORT,
+    )
+    .unwrap();
+    let target_rpm = stage_b.target_velocity_rpm.raw();
+    let target_rate_q = i64::from(target_rpm) * 4_000 * 1_000 / 60;
+    let response_low = target_rate_q * 75 / 100;
+    let response_high = target_rate_q * 76 / 100;
+    let selected = select_proportional_response(
+        report(response_low, response_high),
+        report(-response_high, -response_low),
+        target_rpm,
+        4_000,
+    )
+    .unwrap()
+    .unwrap();
+    let plan = plan_combined_velocity_integral_response(
+        selected,
+        stage_b.execution_plan(stage_b.digest()),
+        OuterMotionBudget {
+            requested_velocity_mrev_s: request.requested_velocity_mrev_s,
+            machine_velocity_ceiling_mrev_s: request.machine_velocity_ceiling_mrev_s,
+            requested_velocity_source: request.requested_velocity_source,
+            max_stroke_travel_mrev: request.max_stroke_travel_mrev,
+            settle_travel_reserve_mrev: request.settle_travel_reserve_mrev,
+            negative_position_headroom_mrev: request.negative_position_headroom_mrev,
+            positive_position_headroom_mrev: request.positive_position_headroom_mrev,
+            max_duration_ms: request.max_duration_ms,
+        },
+        25_000,
+        4_000,
+    )
+    .unwrap();
+    crate::commissioning::outer::velocity::integral_reproduction::AcceptancePoint {
+        identity:
+            crate::commissioning::outer::velocity::integral_reproduction::StageCPlanIdentity {
+                channel: 0,
+                build_revision: STAGE_B_BUILD_REVISION,
+                schema_revision: plan.schema_revision,
+                plan_digest: plan.digest(),
+            },
+        selected_p: plan.final_p,
+        selected_i: 1_024,
+        target_velocity_rpm: plan.target_velocity_rpm,
+        selected_response_intervals_q: plan.execution_plan().selected_response_intervals_q,
+        qualifier_bits: 0,
+        progress,
+    }
+}
