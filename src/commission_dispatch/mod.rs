@@ -1457,6 +1457,45 @@ pub async fn drive_commission_result_with_stages<B: CommissioningBackend>(
     retention: CommissionRetention<'_>,
 ) -> CommissionOutcome {
     match result {
+        StepResult::AcceptanceMatrixTerminal(mut terminal) => {
+            let matrix_context = engine.as_ref().and_then(|engine| {
+                engine
+                    .acceptance_matrix_order()
+                    .zip(engine.acceptance_matrix_plan_digest())
+            });
+            if !disarm_velocity_workflow(engine, backend, state).await {
+                retention.stage_c.observe_fault();
+                terminal.outcome = crate::commissioning::types::AcceptanceMatrixOutcome::Fault;
+                terminal.cause =
+                    crate::commissioning::types::AcceptanceMatrixCause::EvidenceIntegrity;
+                terminal.safety_fault = None;
+            } else if let Some((order, plan_digest)) = matrix_context {
+                terminal = acceptance::apply_acceptance_matrix_terminal(
+                    terminal,
+                    order,
+                    plan_digest,
+                    retention.stage_c,
+                );
+            } else {
+                retention.stage_c.observe_fault();
+                terminal.outcome = crate::commissioning::types::AcceptanceMatrixOutcome::Fault;
+                terminal.cause =
+                    crate::commissioning::types::AcceptanceMatrixCause::EvidenceIntegrity;
+                terminal.safety_fault = None;
+            }
+            engine
+                .as_mut()
+                .expect("engine slot is None on AcceptanceMatrixTerminal")
+                .emit_acceptance_matrix_terminal_trace(backend, terminal);
+            drive_commission_result(
+                StepResult::AcceptanceMatrixTerminal(terminal),
+                engine,
+                backend,
+                state,
+                pwm_maxcnt,
+            )
+            .await
+        }
         StepResult::VelocitySweepTerminal(mut terminal)
             if engine
                 .as_ref()

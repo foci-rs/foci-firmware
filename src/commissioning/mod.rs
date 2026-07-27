@@ -785,7 +785,6 @@ impl CommissioningEngine {
 
     /// Return the order of the active fixed-I acceptance matrix.
     #[cfg(feature = "trace-velocity-sweep")]
-    #[allow(dead_code)]
     pub(crate) fn acceptance_matrix_order(
         &self,
     ) -> Option<crate::commissioning::outer::velocity::acceptance_plan::AcceptanceMatrixOrder> {
@@ -812,7 +811,6 @@ impl CommissioningEngine {
 
     /// Return the exact digest of the active fixed-I acceptance matrix.
     #[cfg(feature = "trace-velocity-sweep")]
-    #[allow(dead_code)]
     pub(crate) fn acceptance_matrix_plan_digest(&self) -> Option<u64> {
         let EngineMode::Outer {
             phase: OuterPhase::VelocityIntegral { data, .. },
@@ -1335,7 +1333,6 @@ impl CommissioningEngine {
 
     /// Emit the authoritative matrix terminal after disarm and retained-state policy.
     #[cfg(feature = "trace-velocity-sweep")]
-    #[allow(dead_code)]
     pub(crate) fn emit_acceptance_matrix_terminal_trace<B: CommissioningBackend>(
         &mut self,
         backend: &mut B,
