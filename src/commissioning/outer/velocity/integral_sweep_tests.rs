@@ -3,10 +3,10 @@ use super::integral_plan::VelocityIntegralExecutionPlan;
 use super::integral_sweep::{
     INTEGRAL_CAUSE_BOOKEND_UNAVAILABLE, INTEGRAL_CAUSE_POSITIVE_I_REST_BOUNDARY,
     INTEGRAL_CAUSE_POSITIVE_I_REST_BOUNDARY_AFTER_SUFFICIENCY, INTEGRAL_SLOT_COUNT,
-    advance_integral_cursor, apply_integral_current_headroom, integral_fault_terminal,
-    integral_i_at, integral_recovery_current_contact_policy, integral_slot_direction,
-    opening_recovery_lower_rate_q, positive_directional_floors_exist,
-    step_velocity_integral_with_trace,
+    advance_integral_cursor, apply_integral_current_headroom, combined_target_status,
+    integral_fault_terminal, integral_i_at, integral_recovery_current_contact_policy,
+    integral_slot_direction, opening_recovery_lower_rate_q, positive_directional_floors_exist,
+    record_integral_target_if_reached, step_velocity_integral_with_trace,
 };
 use super::recovery::{
     ExactU64Parts, RecoveryBindingSource, RecoveryCurrentContactPolicy, RecoveryStage,
@@ -20,6 +20,7 @@ use crate::commission_dispatch::test_support::{MockBackend, SpiOp, current_limit
 use crate::commissioning::outer::state::{
     PositiveIRestBoundary, VelocitySettleMetrics, VelocitySettleTransition,
 };
+use crate::commissioning::outer::velocity::combined_plan::CombinedTargetStatus;
 use crate::commissioning::outer::velocity::integral_evidence::ExactRateInterval;
 use crate::commissioning::outer::velocity::sweep_evidence::VelocityObservationClass;
 use crate::commissioning::outer::{
@@ -61,9 +62,94 @@ fn plan() -> VelocityIntegralExecutionPlan {
         usable_torque_limit: 2_534,
         limit_evidence_capability: VelocityLimitEvidenceCapability::BestEffortPolling,
         combined_workflow: false,
+        selected_response_intervals_q: [[0; 2]; 2],
         recovery_quantization_exposed: true,
         probe_constrained_test_point: false,
     }
+}
+
+#[test]
+fn combined_target_uses_the_first_two_direction_lower_bound_crossing() {
+    let mut plan = plan();
+    plan.combined_workflow = true;
+    plan.target_velocity_rpm = 264;
+    plan.encoder_counts_per_rev = 4_000;
+    plan.positive_rung_count = 13;
+    let mut data = VelocityIntegralData::new(1, plan);
+    data.rung_index = 3;
+
+    assert!(
+        !record_integral_target_if_reached(
+            &mut data,
+            [
+                ExactRateInterval::new(300_000, 400_000).unwrap(),
+                ExactRateInterval::new(-400_000, -300_000).unwrap(),
+            ],
+        )
+        .unwrap()
+    );
+    assert_eq!(data.target_terminus, None);
+
+    data.rung_index = 4;
+    assert!(
+        record_integral_target_if_reached(
+            &mut data,
+            [
+                ExactRateInterval::new(-100_000, 340_000).unwrap(),
+                ExactRateInterval::new(-340_000, 100_000).unwrap(),
+            ],
+        )
+        .unwrap()
+    );
+    assert_eq!(data.target_terminus, Some(3));
+
+    data.rung_index = 5;
+    assert!(
+        record_integral_target_if_reached(
+            &mut data,
+            [
+                ExactRateInterval::new(-200_000, 300_000).unwrap(),
+                ExactRateInterval::new(-300_000, 200_000).unwrap(),
+            ],
+        )
+        .unwrap()
+    );
+    assert_eq!(data.target_terminus, Some(3));
+}
+
+#[test]
+fn combined_target_status_distinguishes_sparse_current_and_cap_termini() {
+    let mut plan = plan();
+    plan.combined_workflow = true;
+    plan.positive_rung_count = 13;
+    let mut data = VelocityIntegralData::new(1, plan);
+
+    data.target_terminus = Some(1);
+    data.eligible_masks = [0b11; 2];
+    assert_eq!(
+        combined_target_status(&data),
+        Some(CombinedTargetStatus::TargetReachedSparse)
+    );
+
+    data.eligible_masks = [0b111; 2];
+    assert_eq!(
+        combined_target_status(&data),
+        Some(CombinedTargetStatus::TargetReached)
+    );
+
+    data.target_terminus = None;
+    data.current_terminus = Some(6);
+    assert_eq!(
+        combined_target_status(&data),
+        Some(CombinedTargetStatus::CurrentHeadroom)
+    );
+
+    data.current_terminus = None;
+    data.rung_index = 14;
+    assert_eq!(
+        combined_target_status(&data),
+        Some(CombinedTargetStatus::TargetNotReachedAtCap)
+    );
 }
 
 #[test]
@@ -367,6 +453,95 @@ fn post_sufficiency_current_terminus_restores_origin_before_bookend() {
         unreachable!()
     };
     assert_eq!(data.rung_index, data.plan.positive_rung_count + 1);
+    assert!(matches!(state, VelocityIntegralState::WriteGains));
+}
+
+#[test]
+fn combined_target_stops_positive_motion_without_manufacturing_sufficiency() {
+    let mut phase = phase();
+    let OuterPhase::VelocityIntegral { state, data, .. } = &mut phase else {
+        unreachable!()
+    };
+    data.plan.combined_workflow = true;
+    data.rung_index = 2;
+    data.eligible_masks = [0b11; 2];
+    data.target_terminus = Some(1);
+    *state = VelocityIntegralState::FinalizeRecovery(RungOriginRecoveryReport {
+        stage: RecoveryStage::Integral,
+        rung_index: 2,
+        p_raw: 1_448,
+        planned_velocity_mrev_s: 2_929,
+        start_offset_counts: 1_500,
+        closest_offset_counts: 900,
+        final_offset_counts: 900,
+        origin_band_counts: 1_000,
+        lower_rate_q: ExactU64Parts::from_u64(10_000_000),
+        moving_duration_us: 100_000,
+        settle_duration_us: 500_000,
+        total_duration_us: 600_000,
+        peak_torque_target_abs: 1_000,
+        binding_source: RecoveryBindingSource::SettledRate,
+        outcome: RungOriginRecoveryOutcome::Recovered,
+    });
+    let mut workspace = TransientBuffer::new();
+    let mut backend = MockBackend::new();
+
+    assert!(matches!(
+        step(&mut phase, &mut workspace, &mut backend),
+        StepResult::VelocityIntegralEvent(VelocityIntegralEvent::Recovery(_))
+    ));
+    let OuterPhase::VelocityIntegral { state, data, .. } = phase else {
+        unreachable!()
+    };
+    assert_eq!(data.rung_index, data.plan.positive_rung_count + 1);
+    assert_eq!(data.eligible_masks, [0b11; 2]);
+    assert_eq!(data.target_terminus, Some(1));
+    assert!(matches!(state, VelocityIntegralState::WriteGains));
+}
+
+#[test]
+fn combined_current_boundary_below_the_floor_still_routes_to_the_bookend() {
+    let mut phase = phase();
+    let OuterPhase::VelocityIntegral { state, data, .. } = &mut phase else {
+        unreachable!()
+    };
+    data.plan.combined_workflow = true;
+    data.rung_index = 2;
+    data.eligible_masks = [0b11; 2];
+    data.current_terminus = Some(1);
+    assert_eq!(
+        integral_recovery_current_contact_policy(data),
+        RecoveryCurrentContactPolicy::ProvePassiveSettle
+    );
+    *state = VelocityIntegralState::FinalizeRecovery(RungOriginRecoveryReport {
+        stage: RecoveryStage::Integral,
+        rung_index: 2,
+        p_raw: 1_448,
+        planned_velocity_mrev_s: 2_929,
+        start_offset_counts: 1_500,
+        closest_offset_counts: 900,
+        final_offset_counts: 900,
+        origin_band_counts: 1_000,
+        lower_rate_q: ExactU64Parts::from_u64(10_000_000),
+        moving_duration_us: 100_000,
+        settle_duration_us: 500_000,
+        total_duration_us: 600_000,
+        peak_torque_target_abs: 1_000,
+        binding_source: RecoveryBindingSource::SettledRate,
+        outcome: RungOriginRecoveryOutcome::Recovered,
+    });
+    let mut workspace = TransientBuffer::new();
+    let mut backend = MockBackend::new();
+
+    assert!(matches!(
+        step(&mut phase, &mut workspace, &mut backend),
+        StepResult::VelocityIntegralEvent(VelocityIntegralEvent::Recovery(_))
+    ));
+    let OuterPhase::VelocityIntegral { state, data, .. } = phase else {
+        unreachable!()
+    };
+    assert_eq!(data.rung_index, data.plan.positive_rung_count + 1);
+    assert_eq!(data.eligible_masks, [0b11; 2]);
     assert!(matches!(state, VelocityIntegralState::WriteGains));
 }
 
@@ -894,6 +1069,31 @@ fn sufficient_boundary_run_uses_cause_ten_after_the_required_bookend() {
     };
     assert_eq!(terminal.outcome, VelocityIntegralOutcome::CompleteCandidate);
     assert_eq!(terminal.cause, 10);
+}
+
+#[test]
+fn sufficient_combined_curve_emits_complete_without_retention() {
+    let mut phase = phase();
+    let mut workspace = TransientBuffer::new();
+    let OuterPhase::VelocityIntegral { state, data, .. } = &mut phase else {
+        unreachable!()
+    };
+    data.plan.combined_workflow = true;
+    seed_sufficient_curve(data, &mut workspace);
+    data.bookend_available_mask = 3;
+    for (index, value) in [100_i32, 200, -200, -100].into_iter().enumerate() {
+        assert!(workspace.write_workspace_word(124 + index, value as u32));
+    }
+    *state = VelocityIntegralState::Terminal;
+    let mut backend = MockBackend::new();
+
+    let StepResult::VelocityIntegralTerminal(terminal) =
+        step(&mut phase, &mut workspace, &mut backend)
+    else {
+        panic!("a sufficient combined curve must terminate directly");
+    };
+    assert_eq!(terminal.outcome, VelocityIntegralOutcome::Complete);
+    assert_eq!(terminal.cause, 0);
 }
 
 fn phase() -> OuterPhase {

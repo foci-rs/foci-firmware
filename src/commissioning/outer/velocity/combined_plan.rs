@@ -315,6 +315,38 @@ pub fn integral_response_reaches_target(
     })
 }
 
+/// Test whether signed deficit intervals prove at least the integral target response.
+pub fn integral_deficit_reaches_target(
+    target_rpm: i32,
+    encoder_counts_per_rev: u32,
+    deficits: [CombinedRateInterval; 2],
+) -> Result<bool, CombinedPlanError> {
+    if target_rpm <= 0
+        || encoder_counts_per_rev == 0
+        || deficits
+            .iter()
+            .any(|interval| interval.low_q > interval.high_q)
+    {
+        return Err(CombinedPlanError::InvalidTarget);
+    }
+    let target_numerator = i128::from(target_rpm)
+        .checked_mul(i128::from(encoder_counts_per_rev))
+        .and_then(|value| value.checked_mul(i128::from(VELOCITY_RATE_Q_SCALE)))
+        .ok_or(CombinedPlanError::Arithmetic)?;
+    let target_floor = target_numerator
+        .checked_mul(I_RESPONSE_TARGET_PERCENT)
+        .ok_or(CombinedPlanError::Arithmetic)?;
+    let forward_response = target_numerator
+        .checked_sub(i128::from(deficits[0].high_q) * SECONDS_PER_MINUTE)
+        .and_then(|value| value.checked_mul(PERCENT_SCALE))
+        .ok_or(CombinedPlanError::Arithmetic)?;
+    let reverse_response = target_numerator
+        .checked_add(i128::from(deficits[1].low_q) * SECONDS_PER_MINUTE)
+        .and_then(|value| value.checked_mul(PERCENT_SCALE))
+        .ok_or(CombinedPlanError::Arithmetic)?;
+    Ok(forward_response >= target_floor && reverse_response >= target_floor)
+}
+
 fn normalized_responses(
     target_rpm: i32,
     encoder_counts_per_rev: u32,

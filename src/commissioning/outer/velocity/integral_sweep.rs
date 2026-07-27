@@ -24,6 +24,7 @@ use foci_tmc4671::registers::{
     PID_VELOCITY_TARGET,
 };
 
+use super::combined_plan::{CombinedRateInterval, integral_deficit_reaches_target};
 use super::current_guard::{
     VelocityCurrentClampSession, VelocityCurrentContact, VelocityCurrentGuardError,
     VelocityCurrentZeroPhase, begin_velocity_current_primitive,
@@ -133,17 +134,78 @@ pub(super) fn positive_directional_floors_exist(data: &VelocityIntegralData) -> 
         .all(|mask| mask.count_ones() >= 3)
 }
 
+pub(super) fn combined_target_status(
+    data: &VelocityIntegralData,
+) -> Option<super::combined_plan::CombinedTargetStatus> {
+    if !data.plan.combined_workflow {
+        None
+    } else if data.target_terminus.is_some() {
+        Some(if positive_directional_floors_exist(data) {
+            super::combined_plan::CombinedTargetStatus::TargetReached
+        } else {
+            super::combined_plan::CombinedTargetStatus::TargetReachedSparse
+        })
+    } else if data.current_terminus.is_some() {
+        Some(super::combined_plan::CombinedTargetStatus::CurrentHeadroom)
+    } else if data.positive_i_rest_boundary.is_some()
+        || data.rung_index < data.plan.positive_rung_count.saturating_add(1)
+    {
+        None
+    } else {
+        Some(super::combined_plan::CombinedTargetStatus::TargetNotReachedAtCap)
+    }
+}
+
+pub(super) fn record_integral_target_if_reached(
+    data: &mut VelocityIntegralData,
+    intervals: [ExactRateInterval; 2],
+) -> Result<bool, CommissionError> {
+    if !data.plan.combined_workflow {
+        return Ok(false);
+    }
+    if data.target_terminus.is_some() {
+        return Ok(true);
+    }
+    if !matches!(
+        integral_rung_kind(data.plan, data.rung_index),
+        IntegralRungKind::Positive
+    ) {
+        return Ok(false);
+    }
+    let deficits = intervals.map(|interval| {
+        CombinedRateInterval::new(i64::from(interval.low_q), i64::from(interval.high_q))
+            .map_err(|_| CommissionError::InvalidSchedule)
+    });
+    let deficits = [deficits[0]?, deficits[1]?];
+    if integral_deficit_reaches_target(
+        data.plan.target_velocity_rpm,
+        data.plan.encoder_counts_per_rev,
+        deficits,
+    )
+    .map_err(|_| CommissionError::InvalidSchedule)?
+    {
+        data.target_terminus = data.rung_index.checked_sub(1);
+        Ok(true)
+    } else {
+        Ok(false)
+    }
+}
+
 pub(super) fn integral_recovery_current_contact_policy(
     data: &VelocityIntegralData,
 ) -> RecoveryCurrentContactPolicy {
     let closes_positive_ladder = data.rung_index == data.plan.positive_rung_count
         || data.current_terminus.is_some()
         || data.positive_i_rest_boundary_after_sufficiency;
+    let combined_ladder_terminus = data.plan.combined_workflow
+        && (data.target_terminus.is_some()
+            || data.current_terminus.is_some()
+            || data.positive_i_rest_boundary.is_some());
     if matches!(
         integral_rung_kind(data.plan, data.rung_index),
         IntegralRungKind::Positive
-    ) && positive_directional_floors_exist(data)
-        && closes_positive_ladder
+    ) && ((positive_directional_floors_exist(data) && closes_positive_ladder)
+        || combined_ladder_terminus)
     {
         RecoveryCurrentContactPolicy::ProvePassiveSettle
     } else {
@@ -500,6 +562,10 @@ fn retain_rung(
                     data.eligible_masks[direction] |= bit;
                 }
             }
+            if let [Some(forward), Some(reverse)] = [directions[0].interval, directions[1].interval]
+            {
+                record_integral_target_if_reached(data, [forward, reverse])?;
+            }
         }
         IntegralRungKind::ClosingBookend => {
             for (direction, evidence) in directions.iter().enumerate() {
@@ -541,7 +607,11 @@ fn evidence_terminal(data: &VelocityIntegralData, workspace: &TransientBuffer) -
         }) => terminal_from_data(
             data,
             evidence,
-            VelocityIntegralOutcome::CompleteCandidate,
+            if data.plan.combined_workflow {
+                VelocityIntegralOutcome::Complete
+            } else {
+                VelocityIntegralOutcome::CompleteCandidate
+            },
             if data.positive_i_rest_boundary_after_sufficiency {
                 INTEGRAL_CAUSE_POSITIVE_I_REST_BOUNDARY_AFTER_SUFFICIENCY
             } else if current_terminus.is_some() {
@@ -1258,7 +1328,7 @@ pub(crate) async fn step_velocity_integral_with_trace<B: CommissioningBackend>(
                 if matches!(
                     integral_rung_kind(data.plan, data.rung_index),
                     IntegralRungKind::Positive
-                ) && positive_directional_floors_exist(data)
+                ) && (positive_directional_floors_exist(data) || data.plan.combined_workflow)
                 {
                     data.current_terminus = data.rung_index.checked_sub(1);
                     match plan_integral_recovery(data, workspace, safety) {
@@ -1483,7 +1553,7 @@ pub(crate) async fn step_velocity_integral_with_trace<B: CommissioningBackend>(
             safety.end_primitive();
             data.positive_i_rest_boundary_after_sufficiency =
                 positive_directional_floors_exist(data);
-            if data.positive_i_rest_boundary_after_sufficiency {
+            if data.positive_i_rest_boundary_after_sufficiency || data.plan.combined_workflow {
                 match plan_integral_recovery(data, workspace, safety) {
                     Ok(recovery) => *state = VelocityIntegralState::RecoverRung(recovery),
                     Err(error) => return fail_integral(phase, backend, error).await,
@@ -1608,6 +1678,15 @@ pub(crate) async fn step_velocity_integral_with_trace<B: CommissioningBackend>(
                     }
                     IntegralRungKind::Positive
                         if data.positive_i_rest_boundary_after_sufficiency =>
+                    {
+                        data.rung_index = data.plan.positive_rung_count.saturating_add(1);
+                        reset_rung(data);
+                        *state = VelocityIntegralState::WriteGains;
+                    }
+                    IntegralRungKind::Positive
+                        if data.plan.combined_workflow
+                            && (data.target_terminus.is_some()
+                                || data.positive_i_rest_boundary.is_some()) =>
                     {
                         data.rung_index = data.plan.positive_rung_count.saturating_add(1);
                         reset_rung(data);

@@ -324,6 +324,17 @@ impl VelocityIntegralPlan {
 
     /// Compact the report plan into phase-local execution state.
     pub fn execution_plan(self) -> VelocityIntegralExecutionPlan {
+        let selected_response_intervals_q = self
+            .combined_selected_response
+            .map(|selected| {
+                selected.response_intervals_q().map(|interval| {
+                    interval.map(|endpoint| {
+                        i32::try_from(endpoint)
+                            .expect("validated combined response interval remains in i32")
+                    })
+                })
+            })
+            .unwrap_or([[0; 2]; 2]);
         VelocityIntegralExecutionPlan {
             plan_digest: self.digest(),
             final_p: self.final_p,
@@ -346,6 +357,7 @@ impl VelocityIntegralPlan {
             usable_torque_limit: self.usable_torque_limit,
             limit_evidence_capability: self.limit_evidence_capability,
             combined_workflow: self.combined_selected_response.is_some(),
+            selected_response_intervals_q,
             recovery_quantization_exposed: self.recovery_quantization_exposed,
             probe_constrained_test_point: self.probe_constrained_test_point,
         }
@@ -397,13 +409,15 @@ pub struct VelocityIntegralExecutionPlan {
     pub(crate) limit_evidence_capability: VelocityLimitEvidenceCapability,
     /// This execution continues directly from a live schema-9 response selection.
     pub combined_workflow: bool,
+    /// Selected Stage-B response intervals in forward, reverse order.
+    pub selected_response_intervals_q: [[i32; 2]; 2],
     /// One opposite-sign meter quantum can contact the probe clamp during recovery.
     pub recovery_quantization_exposed: bool,
     /// The commissioning probe clamp removed at least one Stage-B-operable rung.
     pub probe_constrained_test_point: bool,
 }
 
-const _: () = assert!(core::mem::size_of::<VelocityIntegralExecutionPlan>() == 72);
+const _: () = assert!(core::mem::size_of::<VelocityIntegralExecutionPlan>() == 88);
 
 /// Exact identity retained when Stage C has no transition-capable test point.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
@@ -793,6 +807,15 @@ fn plan_velocity_integral_response_from_source(
     pwm_hz: u32,
     encoder_counts_per_rev: u32,
 ) -> Result<VelocityIntegralPlan, VelocityIntegralPlanError> {
+    if source.combined_selected_response.is_some_and(|selected| {
+        selected
+            .response_intervals_q()
+            .into_iter()
+            .flatten()
+            .any(|endpoint| i32::try_from(endpoint).is_err())
+    }) {
+        return Err(VelocityIntegralPlanError::Arithmetic);
+    }
     let motion_request = VelocitySweepRequest {
         requested_velocity_mrev_s: motion_budget.requested_velocity_mrev_s,
         machine_velocity_ceiling_mrev_s: motion_budget.machine_velocity_ceiling_mrev_s,

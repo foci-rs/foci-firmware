@@ -706,6 +706,7 @@ mod tests {
             limit_evidence_capability:
                 super::super::current_guard::VelocityLimitEvidenceCapability::BestEffortPolling,
             combined_workflow: false,
+            selected_response_intervals_q: [[0; 2]; 2],
             recovery_quantization_exposed: true,
             probe_constrained_test_point: false,
         }

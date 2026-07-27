@@ -1,7 +1,7 @@
 use super::combined_plan::{
     COMBINED_STAGE_B_SCHEMA_REVISION, COMBINED_STAGE_C_SCHEMA_REVISION, CombinedPlanError,
     CombinedRateInterval, CombinedTargetStatus, build_combined_integral_ladder,
-    combined_workflow_geometry, integral_response_reaches_target,
+    combined_workflow_geometry, integral_deficit_reaches_target, integral_response_reaches_target,
     proportional_response_in_initial_band, select_proportional_response,
 };
 use super::integral_plan::{
@@ -131,6 +131,21 @@ fn integral_target_uses_the_lower_response_endpoint_and_preserves_overshoot() {
 }
 
 #[test]
+fn signed_deficit_target_uses_the_conservative_directional_endpoints() {
+    let below = [
+        CombinedRateInterval::new(300_000, 400_000).unwrap(),
+        CombinedRateInterval::new(-400_000, -300_000).unwrap(),
+    ];
+    assert!(!integral_deficit_reaches_target(264, 4_000, below).unwrap());
+
+    let reached = [
+        CombinedRateInterval::new(-100_000, 340_000).unwrap(),
+        CombinedRateInterval::new(-340_000, 100_000).unwrap(),
+    ];
+    assert!(integral_deficit_reaches_target(264, 4_000, reached).unwrap());
+}
+
+#[test]
 fn combined_geometry_appends_the_exact_cap_without_changing_history() {
     assert_eq!(COMBINED_STAGE_B_SCHEMA_REVISION, 9);
     assert_eq!(COMBINED_STAGE_C_SCHEMA_REVISION, 8);
@@ -242,6 +257,10 @@ fn combined_stage_c_plan_uses_only_the_live_selected_response() {
     assert_eq!(plan.schema_revision, COMBINED_STAGE_C_SCHEMA_REVISION);
     assert_eq!(plan.final_p, 1_024);
     assert_eq!(plan.combined_selected_response, Some(selected));
+    assert_eq!(
+        plan.execution_plan().selected_response_intervals_q,
+        [[13_359_104, 13_492_224], [-12_968_960, -12_921_856]]
+    );
     assert_eq!(plan.authority.joint_membership, 0);
     assert_eq!(
         plan.positive_rungs(),
