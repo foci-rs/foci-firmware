@@ -748,6 +748,90 @@ impl CommissioningEngine {
         engine
     }
 
+    /// Create one direct fixed-I matrix engine from an exact disclosed plan.
+    #[cfg(feature = "trace-velocity-sweep")]
+    #[allow(dead_code)]
+    pub fn new_outer_for_tmc_with_acceptance_preflight(
+        oid: u8,
+        tmc_state: &'static TmcChannelState,
+        params: OuterTuneParams,
+        entry_snapshot: EntrySnapshot,
+        preflight: crate::commission_dispatch::acceptance::AcceptanceMatrixPreflight,
+    ) -> Self {
+        let mut engine = Self::new_outer_for_tmc_with_trace_seq(
+            oid,
+            tmc_state,
+            params,
+            entry_snapshot,
+            preflight.run_sequence,
+        );
+        let EngineMode::Outer { phase, .. } = &mut engine.engine_mode else {
+            unreachable!("outer constructor must produce an outer engine")
+        };
+        let old_phase =
+            core::mem::replace(phase, OuterPhase::Failed(CommissionError::InvalidSchedule));
+        let OuterPhase::VelocitySweep { safety, .. } = old_phase else {
+            unreachable!("trace outer constructor must enter Stage B")
+        };
+        *phase = OuterPhase::VelocityIntegral {
+            state: VelocityIntegralState::Setup,
+            data: VelocityIntegralData::new(
+                preflight.run_sequence,
+                preflight.plan.execution_plan(),
+            ),
+            safety,
+        };
+        engine
+    }
+
+    /// Return the order of the active fixed-I acceptance matrix.
+    #[cfg(feature = "trace-velocity-sweep")]
+    #[allow(dead_code)]
+    pub(crate) fn acceptance_matrix_order(
+        &self,
+    ) -> Option<crate::commissioning::outer::velocity::acceptance_plan::AcceptanceMatrixOrder> {
+        use crate::commissioning::outer::velocity::acceptance_plan::AcceptanceMatrixOrder;
+        use crate::commissioning::outer::velocity::integral_plan::VelocityIntegralAcquisitionKind;
+
+        let EngineMode::Outer {
+            phase: OuterPhase::VelocityIntegral { data, .. },
+            ..
+        } = &self.engine_mode
+        else {
+            return None;
+        };
+        match data.plan.acquisition_kind {
+            VelocityIntegralAcquisitionKind::AcceptanceAscending => {
+                Some(AcceptanceMatrixOrder::Ascending)
+            }
+            VelocityIntegralAcquisitionKind::AcceptanceDescending => {
+                Some(AcceptanceMatrixOrder::Descending)
+            }
+            VelocityIntegralAcquisitionKind::ResponseLadder => None,
+        }
+    }
+
+    /// Return the exact digest of the active fixed-I acceptance matrix.
+    #[cfg(feature = "trace-velocity-sweep")]
+    #[allow(dead_code)]
+    pub(crate) fn acceptance_matrix_plan_digest(&self) -> Option<u64> {
+        let EngineMode::Outer {
+            phase: OuterPhase::VelocityIntegral { data, .. },
+            ..
+        } = &self.engine_mode
+        else {
+            return None;
+        };
+        matches!(
+            data.plan.acquisition_kind,
+            crate::commissioning::outer::velocity::integral_plan::
+                VelocityIntegralAcquisitionKind::AcceptanceAscending
+                | crate::commissioning::outer::velocity::integral_plan::
+                    VelocityIntegralAcquisitionKind::AcceptanceDescending
+        )
+        .then_some(data.plan.plan_digest)
+    }
+
     /// The OID this engine was started for.
     pub fn oid(&self) -> u8 {
         self.oid
@@ -1250,6 +1334,37 @@ impl CommissioningEngine {
         self.trace_run.terminal = true;
     }
 
+    /// Emit the authoritative matrix terminal after disarm and retained-state policy.
+    #[cfg(feature = "trace-velocity-sweep")]
+    #[allow(dead_code)]
+    pub(crate) fn emit_acceptance_matrix_terminal_trace<B: CommissioningBackend>(
+        &mut self,
+        backend: &mut B,
+        terminal: crate::commissioning::types::AcceptanceMatrixTerminal,
+    ) {
+        self.emit_outer_safety_timing_trace(backend, terminal.run_sequence);
+        backend.record_velocity_sweep_trace_record(
+            crate::commissioning::outer::velocity::acceptance_reporting::encode_acceptance_terminal(
+                &terminal,
+            ),
+        );
+        let level = match terminal.outcome {
+            crate::commissioning::types::AcceptanceMatrixOutcome::Complete => TraceEventLevel::Info,
+            crate::commissioning::types::AcceptanceMatrixOutcome::Inconclusive
+            | crate::commissioning::types::AcceptanceMatrixOutcome::Failed => TraceEventLevel::Warn,
+            crate::commissioning::types::AcceptanceMatrixOutcome::Fault => TraceEventLevel::Error,
+        };
+        self.emit_trace_phase_end(backend, PHASE_END_OK, TraceEventLevel::Info);
+        backend.record_commission_trace_event(CommissionTraceEvent {
+            level,
+            event_id: EVENT_COMMISSION_ACCEPTANCE_MATRIX_TERMINAL,
+            engine_kind: EngineKind::OuterTune,
+            payload: [i32::from(terminal.evidence_sequence), 0],
+            payload_count: 1,
+        });
+        self.trace_run.terminal = true;
+    }
+
     fn emit_trace_after_step<B: CommissioningBackend>(
         &mut self,
         backend: &mut B,
@@ -1419,26 +1534,7 @@ impl CommissioningEngine {
                     payload_count: 1,
                 });
             }
-            StepResult::AcceptanceMatrixTerminal(terminal) => {
-                #[cfg(all(feature = "trace", feature = "trace-velocity-sweep"))]
-                backend.record_velocity_sweep_trace_record(
-                    crate::commissioning::outer::velocity::acceptance_reporting::
-                        encode_acceptance_terminal(terminal),
-                );
-                backend.record_commission_trace_event(CommissionTraceEvent {
-                    level: if terminal.outcome
-                        == crate::commissioning::types::AcceptanceMatrixOutcome::Fault
-                    {
-                        TraceEventLevel::Error
-                    } else {
-                        TraceEventLevel::Info
-                    },
-                    event_id: EVENT_COMMISSION_ACCEPTANCE_MATRIX_TERMINAL,
-                    engine_kind: EngineKind::OuterTune,
-                    payload: [i32::from(terminal.evidence_sequence), 0],
-                    payload_count: 1,
-                });
-            }
+            StepResult::AcceptanceMatrixTerminal(_) => {}
             StepResult::CommissionDone(result) => {
                 self.emit_trace_phase_end(backend, PHASE_END_OK, TraceEventLevel::Info);
                 let level = Self::status_level(result.inner.status);
