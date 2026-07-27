@@ -242,6 +242,28 @@ impl VelocityCurrentClampSession {
         })
     }
 
+    /// Validate an explicit commissioning clamp against the operational limit.
+    pub(crate) fn try_new_with_limit(
+        operational_limit_raw: u32,
+        probe_limit_raw: u32,
+    ) -> Result<Self, VelocityCurrentGuardError> {
+        let operational_limit = PidTorqueFluxLimit::new(operational_limit_raw)
+            .map_err(|_| VelocityCurrentGuardError::InvalidLimit)?;
+        let probe_limit = PidTorqueFluxLimit::new(probe_limit_raw)
+            .map_err(|_| VelocityCurrentGuardError::InvalidLimit)?;
+        if operational_limit.raw() == 0
+            || probe_limit.raw() == 0
+            || probe_limit.raw() > operational_limit.raw()
+        {
+            return Err(VelocityCurrentGuardError::InvalidLimit);
+        }
+        Ok(Self {
+            operational_limit,
+            probe_limit,
+            probe_installed: false,
+        })
+    }
+
     /// Return the limit that normal controller operation must regain on exit.
     pub(crate) const fn operational_limit(self) -> PidTorqueFluxLimit {
         self.operational_limit

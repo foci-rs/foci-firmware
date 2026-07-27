@@ -445,6 +445,25 @@ fn velocity_current_clamp_session() {
 }
 
 #[test]
+fn velocity_current_clamp_session_accepts_an_explicit_bounded_limit() {
+    let historical = VelocityCurrentClampSession::try_new(2_816).unwrap();
+    assert_eq!(historical.operational_limit().raw(), 2_816);
+    assert_eq!(historical.probe_limit().raw(), 2_534);
+
+    let operational = VelocityCurrentClampSession::try_new_with_limit(2_816, 2_816).unwrap();
+    assert_eq!(operational.operational_limit().raw(), 2_816);
+    assert_eq!(operational.probe_limit().raw(), 2_816);
+
+    let conservative = VelocityCurrentClampSession::try_new_with_limit(2_816, 2_534).unwrap();
+    assert_eq!(conservative.operational_limit().raw(), 2_816);
+    assert_eq!(conservative.probe_limit().raw(), 2_534);
+
+    for active_limit in [0, 2_817, 0x8000, u32::MAX] {
+        assert!(VelocityCurrentClampSession::try_new_with_limit(2_816, active_limit).is_err());
+    }
+}
+
+#[test]
 fn velocity_current_observer_attributes_phases() {
     let limit = PidTorqueFluxLimit::new(2_816).unwrap();
     let mut observer =
