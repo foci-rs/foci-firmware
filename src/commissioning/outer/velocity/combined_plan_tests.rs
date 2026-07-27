@@ -1,8 +1,9 @@
 use super::combined_plan::{
     COMBINED_STAGE_B_SCHEMA_REVISION, COMBINED_STAGE_C_SCHEMA_REVISION, CombinedPlanError,
-    CombinedRateInterval, CombinedTargetStatus, build_combined_integral_ladder,
-    combined_workflow_geometry, integral_deficit_reaches_target, integral_response_reaches_target,
-    proportional_response_in_initial_band, select_proportional_response,
+    CombinedRateInterval, CombinedTargetStatus, FIRST_COMBINED_STAGE_C_SCHEMA_REVISION,
+    build_combined_integral_ladder, combined_workflow_geometry, integral_deficit_reaches_target,
+    integral_response_reaches_target, proportional_response_in_initial_band,
+    select_proportional_response,
 };
 use super::integral_plan::{
     CommissioningWorkflowPlan, STAGE_C_EVIDENCE_SCHEMA_REVISION, StageCPlanShape,
@@ -148,7 +149,7 @@ fn signed_deficit_target_uses_the_conservative_directional_endpoints() {
 #[test]
 fn combined_geometry_appends_the_exact_cap_without_changing_history() {
     assert_eq!(COMBINED_STAGE_B_SCHEMA_REVISION, 9);
-    assert_eq!(COMBINED_STAGE_C_SCHEMA_REVISION, 8);
+    assert_eq!(COMBINED_STAGE_C_SCHEMA_REVISION, 9);
     assert_eq!(STAGE_C_EVIDENCE_SCHEMA_REVISION, 7);
     assert_eq!(StageCPlanShape::CombinedPThenI as u8, 3);
 
@@ -201,10 +202,10 @@ fn combined_workflow_uses_exact_unrounded_phase_durations() {
     assert_eq!(geometry.i_observations, 120);
     assert_eq!(geometry.i_family_size, 60);
     assert_eq!(geometry.i_recovery_slots, 15);
-    assert_eq!(geometry.i_nominal_ms, 177_751);
-    assert_eq!(geometry.i_maximum_ms, 195_496);
-    assert_eq!(geometry.combined_nominal_ms, 449_173);
-    assert_eq!(geometry.combined_maximum_ms, 494_128);
+    assert_eq!(geometry.i_nominal_ms, 180_151);
+    assert_eq!(geometry.i_maximum_ms, 197_896);
+    assert_eq!(geometry.combined_nominal_ms, 451_573);
+    assert_eq!(geometry.combined_maximum_ms, 496_528);
 
     let workflow = CommissioningWorkflowPlan::new_combined(
         17,
@@ -213,8 +214,8 @@ fn combined_workflow_uses_exact_unrounded_phase_durations() {
     )
     .unwrap();
     assert_eq!(workflow.shape, StageCPlanShape::CombinedPThenI);
-    assert_eq!(workflow.nominal_workflow_ms, 449_173);
-    assert_eq!(workflow.maximum_workflow_ms, 494_128);
+    assert_eq!(workflow.nominal_workflow_ms, 451_573);
+    assert_eq!(workflow.maximum_workflow_ms, 496_528);
 }
 
 #[test]
@@ -272,7 +273,15 @@ fn combined_stage_c_plan_uses_only_the_live_selected_response() {
                     .any(|word| word == endpoint.to_le_bytes())
             );
         }
+        assert!(trace[1].as_bytes().windows(4).any(|word| {
+            word == super::integral_plan::INTEGRAL_SLOT_TRANSITION_ALLOWANCE_US.to_le_bytes()
+        }));
     }
+    let mut historical = plan;
+    historical.schema_revision = FIRST_COMBINED_STAGE_C_SCHEMA_REVISION;
+    historical.nominal_workflow_ms = 177_751;
+    historical.maximum_workflow_ms = 195_496;
+    assert_eq!(historical.digest(), 0x8674_2390_3e5e_a3f2);
     assert_eq!(plan.authority.joint_membership, 0);
     assert_eq!(
         plan.positive_rungs(),
@@ -280,7 +289,7 @@ fn combined_stage_c_plan_uses_only_the_live_selected_response() {
     );
     assert_eq!(plan.family_size, 60);
     assert_eq!(plan.total_rung_count, 15);
-    assert_eq!(plan.maximum_workflow_ms, 195_496);
+    assert_eq!(plan.maximum_workflow_ms, 197_896);
 }
 
 #[test]

@@ -3,7 +3,7 @@ use super::integral_plan::{
     STAGE_C_MIN_POSITIVE_I, STAGE_C_OBSERVATIONS_PER_RUNG, StageCAuthority, StageCPlanShape,
     VelocityIntegralPlanError, build_integral_ladder, confidence_family_size,
     integral_workflow_maximum_ms, plan_velocity_integral_response, recovery_quantization_exposed,
-    velocity_i_tau_us,
+    response_horizon, velocity_i_tau_us,
 };
 use super::sweep_plan::{
     MIN_SETTLE_CAPTURE_US, MOVING_STROKE_US, RequestedVelocitySource, SETTLE_ANALYSIS_BUDGET_US,
@@ -11,6 +11,7 @@ use super::sweep_plan::{
 };
 use crate::commissioning::outer::velocity::reproduction::StageBDirectionalValidity;
 use crate::commissioning::outer::{OUTER_MAX_VELOCITY_I, OuterMotionBudget};
+use crate::commissioning::types::ResponseHorizonClass;
 
 fn stage_b_request() -> VelocitySweepRequest {
     VelocitySweepRequest {
@@ -97,6 +98,22 @@ fn native_q4_12_geometry_derives_the_fixed_prefix_and_octaves() {
     assert_eq!(
         shorter_stroke.rungs.as_slice(),
         &[1, 2, 3, 4, 8, 16, 32, 64, 128, 256, 512, 1_024]
+    );
+}
+
+#[test]
+fn response_horizon_classifies_anchors_and_the_64_to_128_boundary() {
+    assert_eq!(
+        response_horizon(0, 25_000, 512_000),
+        Some((0, ResponseHorizonClass::NotApplicable))
+    );
+    assert_eq!(
+        response_horizon(64, 25_000, 512_000),
+        Some((655_360, ResponseHorizonClass::SubHorizon))
+    );
+    assert_eq!(
+        response_horizon(128, 25_000, 512_000),
+        Some((327_680, ResponseHorizonClass::HorizonResolved))
     );
 }
 

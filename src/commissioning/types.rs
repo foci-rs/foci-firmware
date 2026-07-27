@@ -647,6 +647,18 @@ pub struct VelocityIntegralObservation {
     pub stationarity: crate::autotune::velocity_measurement::StationarityResult,
 }
 
+/// Relation between one integral time constant and the fixed moving horizon.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+#[repr(u8)]
+pub enum ResponseHorizonClass {
+    /// I=0 has no finite integral time constant.
+    NotApplicable = 0,
+    /// The integral time constant exceeds the moving horizon.
+    SubHorizon = 1,
+    /// The moving horizon spans at least one integral time constant.
+    HorizonResolved = 2,
+}
+
 /// One completed Stage-C rung after both directional consensus folds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub struct VelocityIntegralRungReport {
@@ -660,6 +672,12 @@ pub struct VelocityIntegralRungReport {
     pub rung_index: u8,
     /// Integral gain programmed for this rung.
     pub i_raw: u16,
+    /// Exact integral time constant in microseconds, or zero for I=0.
+    pub tau_us: u64,
+    /// Fixed moving-response horizon in microseconds.
+    pub moving_horizon_us: u32,
+    /// Relation between the time constant and moving horizon.
+    pub horizon_class: ResponseHorizonClass,
     /// Forward and reverse exact consensus evidence.
     pub directions:
         [crate::commissioning::outer::velocity::integral_evidence::IntegralRungEvidence; 2],

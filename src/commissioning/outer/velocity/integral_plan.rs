@@ -278,7 +278,7 @@ impl VelocityIntegralPlan {
             hash_value!(interval[0]);
             hash_value!(interval[1]);
         }
-        if self.schema_revision == super::combined_plan::COMBINED_STAGE_C_SCHEMA_REVISION {
+        if self.schema_revision >= super::combined_plan::FIRST_COMBINED_STAGE_C_SCHEMA_REVISION {
             hash_value!(u8::from(self.combined_selected_response.is_some()));
             if let Some(selected) = self.combined_selected_response {
                 hash_value!(selected.p.raw());
@@ -302,6 +302,11 @@ impl VelocityIntegralPlan {
         hash_value!(self.moving_stroke_us);
         hash_value!(self.zero_settle_us);
         hash_value!(self.analysis_budget_us);
+        if self.schema_revision == super::combined_plan::COMBINED_STAGE_C_SCHEMA_REVISION
+            && self.combined_selected_response.is_some()
+        {
+            hash_value!(INTEGRAL_SLOT_TRANSITION_ALLOWANCE_US);
+        }
         hash_value!(self.nominal_workflow_ms);
         hash_value!(self.maximum_workflow_ms);
         hash_value!(self.recovery_origin_band_counts);
@@ -466,6 +471,29 @@ pub const fn velocity_i_tau_us(i_raw: u16, pwm_hz: u32) -> Option<u64> {
         _ => return None,
     };
     Some(numerator.div_ceil(denominator))
+}
+
+/// Classify one declared integral time constant against the moving horizon.
+pub const fn response_horizon(
+    i_raw: u16,
+    pwm_hz: u32,
+    moving_horizon_us: u32,
+) -> Option<(u64, crate::commissioning::types::ResponseHorizonClass)> {
+    use crate::commissioning::types::ResponseHorizonClass;
+
+    if i_raw == 0 {
+        return Some((0, ResponseHorizonClass::NotApplicable));
+    }
+    let tau_us = match velocity_i_tau_us(i_raw, pwm_hz) {
+        Some(value) => value,
+        None => return None,
+    };
+    let class = if tau_us > moving_horizon_us as u64 {
+        ResponseHorizonClass::SubHorizon
+    } else {
+        ResponseHorizonClass::HorizonResolved
+    };
+    Some((tau_us, class))
 }
 
 /// Return one positive rung from the fixed native-Q4.12 schedule.
@@ -879,12 +907,23 @@ fn plan_velocity_integral_response_from_source(
     let workflow_us = u32::from(expected_observations)
         .checked_mul(primitive_us)
         .ok_or(VelocityIntegralPlanError::Arithmetic)?;
+    let slot_transition_us = if source.schema_revision
+        == super::combined_plan::COMBINED_STAGE_C_SCHEMA_REVISION
+        && source.combined_selected_response.is_some()
+    {
+        u32::from(expected_observations)
+            .checked_mul(INTEGRAL_SLOT_TRANSITION_ALLOWANCE_US)
+            .ok_or(VelocityIntegralPlanError::Arithmetic)?
+    } else {
+        0
+    };
     let nominal_workflow_us = workflow_us
         .checked_add(
             u32::from(total_rung_count)
                 .checked_mul(recovery.nominal_slot_us)
                 .ok_or(VelocityIntegralPlanError::Arithmetic)?,
         )
+        .and_then(|value| value.checked_add(slot_transition_us))
         .and_then(|value| value.checked_add(ZERO_SETTLE_US))
         .and_then(|value| value.checked_add(SETTLE_ANALYSIS_BUDGET_US))
         .ok_or(VelocityIntegralPlanError::Arithmetic)?;
@@ -894,6 +933,7 @@ fn plan_velocity_integral_response_from_source(
                 .checked_mul(recovery.maximum_slot_us)
                 .ok_or(VelocityIntegralPlanError::Arithmetic)?,
         )
+        .and_then(|value| value.checked_add(slot_transition_us))
         .and_then(|value| value.checked_add(ZERO_SETTLE_US))
         .and_then(|value| value.checked_add(SETTLE_ANALYSIS_BUDGET_US))
         .ok_or(VelocityIntegralPlanError::Arithmetic)?;

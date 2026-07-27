@@ -2402,7 +2402,7 @@ mod tests {
                 workflow.shape,
                 crate::commissioning::outer::velocity::integral_plan::StageCPlanShape::CombinedPThenI
             );
-            assert_eq!(workflow.maximum_workflow_ms, 494_128);
+            assert_eq!(workflow.maximum_workflow_ms, 496_528);
             let ReplyPayload::VelocitySweepEvent { event, .. } = board.replies[1] else {
                 panic!("accepted combined request must publish its Stage-B plan")
             };

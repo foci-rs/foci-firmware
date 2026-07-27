@@ -270,6 +270,11 @@ pub(crate) fn encode_velocity_integral_plan_trace(
     schedule.push_u32(plan.moving_stroke_us);
     schedule.push_u32(plan.zero_settle_us);
     schedule.push_u32(plan.analysis_budget_us);
+    if plan.schema_revision == super::combined_plan::COMBINED_STAGE_C_SCHEMA_REVISION
+        && plan.combined_selected_response.is_some()
+    {
+        schedule.push_u32(super::integral_plan::INTEGRAL_SLOT_TRANSITION_ALLOWANCE_US);
+    }
     schedule.push_u32(plan.nominal_workflow_ms);
     schedule.push_u32(plan.maximum_workflow_ms);
     schedule.push_u32(plan.motion_request.requested_velocity_mrev_s);
@@ -485,6 +490,11 @@ fn encode_rung(report: VelocityIntegralRungReport) -> VelocitySweepCanonicalReco
     push_u64(&mut record, report.plan_digest);
     record.push_u8(report.rung_index);
     record.push_u16(report.i_raw);
+    if report.moving_horizon_us != 0 {
+        push_u64(&mut record, report.tau_us);
+        record.push_u32(report.moving_horizon_us);
+        record.push_u8(report.horizon_class as u8);
+    }
     for direction in report.directions {
         record.push_u8(direction_code(direction.direction));
         record.push_u8(rung_kind_code(direction.kind));
@@ -648,13 +658,88 @@ fn push_u64(record: &mut VelocitySweepCanonicalRecord, value: u64) {
 mod tests {
     use super::*;
     use crate::ankyra::velocity_sweep_encoding::VELOCITY_SWEEP_CANONICAL_RECORD_MAX;
-    use crate::autotune::velocity_measurement::{PlateauSelection, RateBlock, StationarySuffix};
+    use crate::autotune::velocity_measurement::{
+        PlateauSelection, RateBlock, StationarySuffix, VelocityDirection,
+    };
     use crate::commissioning::outer::state::{
         PositiveIRestBoundary, VelocitySettleMetrics, VelocitySettleTransition,
     };
     use crate::commissioning::outer::velocity::current_guard::{
         VelocityCurrentContact, VelocityCurrentPhaseEvidence, VelocityLimitEvidenceCapability,
     };
+    use crate::commissioning::outer::velocity::integral_evidence::{
+        ExactRateInterval, IntegralRungEvidence,
+    };
+    use crate::commissioning::types::ResponseHorizonClass;
+
+    fn eligible_rung(direction: VelocityDirection) -> IntegralRungEvidence {
+        let interval = ExactRateInterval::new(10, 20).unwrap();
+        IntegralRungEvidence {
+            direction,
+            kind: IntegralRungKind::Positive,
+            classification: IntegralRungClass::EligibleConsensus,
+            interval: Some(interval),
+            components: [interval, ExactRateInterval::EMPTY],
+            component_count: 1,
+            observation_classes: [IntegralObservationClass::Usable; 4],
+            observation_intervals: [Some(interval); 4],
+            usable_mask: 0b1111,
+            included_mask: 0b1111,
+        }
+    }
+
+    #[test]
+    fn schema_nine_rung_appends_exact_response_horizon_fields() {
+        let report = VelocityIntegralRungReport {
+            run_sequence: 7,
+            evidence_sequence: 9,
+            plan_digest: 0x0123_4567_89ab_cdef,
+            rung_index: 9,
+            i_raw: 64,
+            tau_us: 655_360,
+            moving_horizon_us: 512_000,
+            horizon_class: ResponseHorizonClass::SubHorizon,
+            directions: [
+                eligible_rung(VelocityDirection::Forward),
+                eligible_rung(VelocityDirection::Reverse),
+            ],
+        };
+
+        let record = encode_velocity_integral_event(VelocityIntegralEvent::Rung(report));
+
+        assert_eq!(record.as_bytes().len(), 83);
+        assert_eq!(&record.as_bytes()[18..26], &655_360_u64.to_le_bytes());
+        assert_eq!(&record.as_bytes()[26..30], &512_000_u32.to_le_bytes());
+        assert_eq!(
+            record.as_bytes()[30],
+            ResponseHorizonClass::SubHorizon as u8
+        );
+    }
+
+    #[test]
+    fn historical_rung_omits_response_horizon_fields() {
+        let report = VelocityIntegralRungReport {
+            run_sequence: 7,
+            evidence_sequence: 9,
+            plan_digest: 0x0123_4567_89ab_cdef,
+            rung_index: 9,
+            i_raw: 64,
+            tau_us: 0,
+            moving_horizon_us: 0,
+            horizon_class: ResponseHorizonClass::NotApplicable,
+            directions: [
+                eligible_rung(VelocityDirection::Forward),
+                eligible_rung(VelocityDirection::Reverse),
+            ],
+        };
+
+        assert_eq!(
+            encode_velocity_integral_event(VelocityIntegralEvent::Rung(report))
+                .as_bytes()
+                .len(),
+            70
+        );
+    }
 
     #[test]
     fn stage_c_probe_constrained_flags_and_trace_plan_preserve_reconstruction_inputs() {

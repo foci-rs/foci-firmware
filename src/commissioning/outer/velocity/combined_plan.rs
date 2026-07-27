@@ -4,8 +4,8 @@ use crate::autotune::velocity_measurement::VELOCITY_RATE_Q_SCALE;
 use foci_tmc4671::pid::PidPGain;
 
 use super::integral_plan::{
-    STAGE_C_OBSERVATIONS_PER_RUNG, VelocityIntegralLadder, VelocityIntegralPlanError,
-    build_integral_ladder, confidence_family_size,
+    INTEGRAL_SLOT_TRANSITION_ALLOWANCE_US, STAGE_C_OBSERVATIONS_PER_RUNG, VelocityIntegralLadder,
+    VelocityIntegralPlanError, build_integral_ladder, confidence_family_size,
 };
 use super::operating_region::CompactSignedRate;
 use super::sweep_consensus::DirectionalConsensusClass;
@@ -15,7 +15,9 @@ use super::sweep_plan::{SETTLE_ANALYSIS_BUDGET_US, VelocitySweepPlan, ZERO_SETTL
 /// Live Stage-B schema for the combined P-then-I experiment.
 pub const COMBINED_STAGE_B_SCHEMA_REVISION: u16 = 9;
 /// Live Stage-C schema for the combined P-then-I experiment.
-pub const COMBINED_STAGE_C_SCHEMA_REVISION: u16 = 8;
+pub const COMBINED_STAGE_C_SCHEMA_REVISION: u16 = 9;
+/// First combined Stage-C schema, retained for historical digest parity.
+pub const FIRST_COMBINED_STAGE_C_SCHEMA_REVISION: u16 = 8;
 
 const P_RESPONSE_LOW_PERCENT: i128 = 70;
 const P_RESPONSE_HIGH_PERCENT: i128 = 80;
@@ -225,6 +227,9 @@ pub fn combined_workflow_geometry(
     let i_base_us = u64::from(i_observations)
         .checked_mul(primitive_us)
         .ok_or(VelocityIntegralPlanError::Arithmetic)?;
+    let slot_transition_us = u64::from(i_observations)
+        .checked_mul(u64::from(INTEGRAL_SLOT_TRANSITION_ALLOWANCE_US))
+        .ok_or(VelocityIntegralPlanError::Arithmetic)?;
     let cleanup_us = u64::from(ZERO_SETTLE_US)
         .checked_add(u64::from(SETTLE_ANALYSIS_BUDGET_US))
         .ok_or(VelocityIntegralPlanError::Arithmetic)?;
@@ -234,6 +239,7 @@ pub fn combined_workflow_geometry(
                 .checked_mul(u64::from(stage_b.recovery_nominal_slot_us))
                 .ok_or(VelocityIntegralPlanError::Arithmetic)?,
         )
+        .and_then(|value| value.checked_add(slot_transition_us))
         .and_then(|value| value.checked_add(cleanup_us))
         .ok_or(VelocityIntegralPlanError::Arithmetic)?;
     let i_maximum_us = i_base_us
@@ -242,6 +248,7 @@ pub fn combined_workflow_geometry(
                 .checked_mul(u64::from(stage_b.recovery_maximum_slot_us))
                 .ok_or(VelocityIntegralPlanError::Arithmetic)?,
         )
+        .and_then(|value| value.checked_add(slot_transition_us))
         .and_then(|value| value.checked_add(cleanup_us))
         .ok_or(VelocityIntegralPlanError::Arithmetic)?;
 

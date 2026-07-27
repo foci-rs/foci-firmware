@@ -38,7 +38,7 @@ use super::integral_evidence::{
 };
 use super::integral_plan::{
     INTEGRAL_SLOT_TRANSITION_ALLOWANCE_US, STAGE_C_MAX_POSITIVE_RUNGS,
-    VelocityIntegralExecutionPlan, native_velocity_i_at,
+    VelocityIntegralExecutionPlan, native_velocity_i_at, response_horizon,
 };
 use super::recovery::{
     RecoveryBindingSource, RecoveryCurrentContactPolicy, RecoveryStage, RungOriginRecoveryConfig,
@@ -1656,12 +1656,34 @@ pub(crate) async fn step_velocity_integral_with_trace<B: CommissioningBackend>(
                 return fail_integral(phase, backend, CommissionError::InvalidSchedule).await;
             }
             data.emitted_rungs = data.emitted_rungs.saturating_add(1);
+            let i_raw = integral_i_at(data.plan, data.rung_index).unwrap_or(0);
+            let (tau_us, horizon_class) = if data.plan.combined_workflow {
+                match response_horizon(i_raw, data.plan.pwm_hz, data.plan.moving_stroke_us) {
+                    Some(value) => value,
+                    None => {
+                        return fail_integral(phase, backend, CommissionError::InvalidSchedule)
+                            .await;
+                    }
+                }
+            } else {
+                (
+                    0,
+                    crate::commissioning::types::ResponseHorizonClass::NotApplicable,
+                )
+            };
             let report = VelocityIntegralRungReport {
                 run_sequence: data.integrity.run_sequence(),
                 evidence_sequence: data.integrity.next_evidence_sequence(),
                 plan_digest: data.plan.plan_digest,
                 rung_index: data.rung_index,
-                i_raw: integral_i_at(data.plan, data.rung_index).unwrap_or(0),
+                i_raw,
+                tau_us,
+                moving_horizon_us: if data.plan.combined_workflow {
+                    data.plan.moving_stroke_us
+                } else {
+                    0
+                },
+                horizon_class,
                 directions,
             };
             let rung_kind = integral_rung_kind(data.plan, data.rung_index);

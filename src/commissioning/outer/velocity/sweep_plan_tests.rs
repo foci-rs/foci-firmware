@@ -85,7 +85,7 @@ fn combined_plan_uses_operational_current_authority_and_new_schemas() {
     assert_eq!(historical.usable_torque_limit, 2_534);
     assert_eq!(historical.p_top.raw(), 2_457);
     assert_eq!(combined.schema_revision, COMBINED_STAGE_B_SCHEMA_REVISION);
-    assert_eq!(COMBINED_STAGE_C_SCHEMA_REVISION, 8);
+    assert_eq!(COMBINED_STAGE_C_SCHEMA_REVISION, 9);
     assert_eq!(combined.usable_torque_limit, 2_816);
     assert_eq!(combined.p_top.raw(), 2_730);
     assert!(combined.digest() != historical.digest());
