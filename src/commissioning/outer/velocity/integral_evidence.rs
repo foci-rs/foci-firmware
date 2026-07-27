@@ -67,6 +67,8 @@ pub enum IntegralRungKind {
     Positive,
     /// Closing I=0 drift bookend.
     ClosingBookend,
+    /// Fixed-I production-acceptance amplitude.
+    AcceptanceAmplitude,
 }
 
 /// Directional result for one complete four-observation rung.

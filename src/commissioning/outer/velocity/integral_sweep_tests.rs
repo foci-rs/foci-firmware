@@ -5,9 +5,10 @@ use super::integral_sweep::{
     INTEGRAL_CAUSE_POSITIVE_I_REST_BOUNDARY_AFTER_SUFFICIENCY, INTEGRAL_SLOT_COUNT,
     advance_integral_cursor, apply_integral_current_headroom, combined_slot_transition_us,
     combined_target_status, integral_fault_terminal, integral_i_at,
-    integral_recovery_current_contact_policy, integral_slot_direction,
-    opening_recovery_lower_rate_q, positive_directional_floors_exist,
-    record_integral_target_if_reached, step_velocity_integral_with_trace,
+    integral_recovery_current_contact_policy, integral_rung_count, integral_rung_kind,
+    integral_slot_direction, integral_target_rpm_at, opening_recovery_lower_rate_q,
+    positive_directional_floors_exist, record_integral_target_if_reached,
+    step_velocity_integral_with_trace,
 };
 use super::recovery::{
     ExactU64Parts, RecoveryBindingSource, RecoveryCurrentContactPolicy, RecoveryStage,
@@ -22,7 +23,10 @@ use crate::commissioning::outer::state::{
     PositiveIRestBoundary, VelocitySettleMetrics, VelocitySettleTransition,
 };
 use crate::commissioning::outer::velocity::combined_plan::CombinedTargetStatus;
-use crate::commissioning::outer::velocity::integral_evidence::ExactRateInterval;
+use crate::commissioning::outer::velocity::integral_evidence::{
+    ExactRateInterval, IntegralRungKind,
+};
+use crate::commissioning::outer::velocity::integral_plan::VelocityIntegralAcquisitionKind;
 use crate::commissioning::outer::velocity::sweep_evidence::VelocityObservationClass;
 use crate::commissioning::outer::{
     OuterMotionBudget, OuterPhase, OuterSafetyLimits, VelocityIntegralData, VelocityIntegralState,
@@ -172,6 +176,57 @@ fn schedule_has_two_anchors_and_the_exact_positive_i_ladder() {
         [0, 1, 2, 3, 4, 8, 16, 32, 64, 128, 256, 512, 1_024, 0]
     );
     assert_eq!(integral_i_at(plan, 14), None);
+}
+
+#[test]
+fn response_and_matrix_plans_expose_distinct_exact_schedules() {
+    let response = plan();
+    assert_eq!(integral_rung_count(response), Some(7));
+    assert_eq!(integral_target_rpm_at(response, 0), Some(176));
+    assert_eq!(
+        core::array::from_fn::<_, 7, _>(|rung| { integral_rung_kind(response, rung as u8) }),
+        [
+            IntegralRungKind::OpeningAnchor,
+            IntegralRungKind::Positive,
+            IntegralRungKind::Positive,
+            IntegralRungKind::Positive,
+            IntegralRungKind::Positive,
+            IntegralRungKind::Positive,
+            IntegralRungKind::ClosingBookend,
+        ]
+    );
+
+    let mut ascending = plan();
+    ascending.acquisition_kind = VelocityIntegralAcquisitionKind::AcceptanceAscending;
+    ascending.i_start = 1_024;
+    ascending.matrix_targets_rpm = [16, 33, 66, 132, 263];
+    assert_eq!(integral_rung_count(ascending), Some(5));
+    assert_eq!(
+        core::array::from_fn::<_, 5, _>(|rung| integral_i_at(ascending, rung as u8).unwrap()),
+        [1_024; 5]
+    );
+    assert_eq!(
+        core::array::from_fn::<_, 5, _>(|rung| {
+            integral_target_rpm_at(ascending, rung as u8).unwrap()
+        }),
+        [16, 33, 66, 132, 263]
+    );
+    assert_eq!(
+        core::array::from_fn::<_, 5, _>(|rung| { integral_rung_kind(ascending, rung as u8) }),
+        [IntegralRungKind::AcceptanceAmplitude; 5]
+    );
+
+    let mut descending = ascending;
+    descending.acquisition_kind = VelocityIntegralAcquisitionKind::AcceptanceDescending;
+    descending.matrix_targets_rpm = [263, 132, 66, 33, 16];
+    assert_eq!(
+        core::array::from_fn::<_, 5, _>(|rung| {
+            integral_target_rpm_at(descending, rung as u8).unwrap()
+        }),
+        [263, 132, 66, 33, 16]
+    );
+    assert_eq!(integral_i_at(descending, 5), None);
+    assert_eq!(integral_target_rpm_at(descending, 5), None);
 }
 
 #[test]
@@ -436,6 +491,33 @@ fn partial_integral_current_terminus_does_not_schedule_a_bookend() {
     assert_eq!(data.current_terminus, Some(2));
     assert_eq!(data.rung_index, 3);
     assert!(matches!(state, VelocityIntegralState::Terminal));
+}
+
+#[test]
+fn matrix_current_continuation_follows_only_remaining_lower_amplitudes() {
+    let mut phase = phase();
+    let OuterPhase::VelocityIntegral { state, data, .. } = &mut phase else {
+        unreachable!()
+    };
+    data.plan.acquisition_kind = VelocityIntegralAcquisitionKind::AcceptanceAscending;
+    data.plan.matrix_targets_rpm = [16, 33, 66, 132, 263];
+    data.rung_index = 2;
+    apply_integral_current_headroom(state, data);
+    assert_eq!(data.current_terminus, Some(2));
+    assert_eq!(data.rung_index, 2);
+    assert!(matches!(state, VelocityIntegralState::Terminal));
+
+    data.plan.acquisition_kind = VelocityIntegralAcquisitionKind::AcceptanceDescending;
+    data.plan.matrix_targets_rpm = [263, 132, 66, 33, 16];
+    data.current_terminus = None;
+    data.rung_index = 2;
+    apply_integral_current_headroom(state, data);
+    assert_eq!(data.current_terminus, Some(2));
+    assert_eq!(data.rung_index, 3);
+    assert!(matches!(
+        state,
+        VelocityIntegralState::PrepareMovingSlot { reset_rung: true }
+    ));
 }
 
 #[test]
@@ -1284,6 +1366,56 @@ fn every_moving_slot_entry_zeroes_clears_and_reprograms_the_declared_i() {
 }
 
 #[test]
+fn matrix_slots_program_fixed_i_and_exact_signed_amplitudes() {
+    for (rung, expected_target) in [16_i32, 33, 66, 132, 263].into_iter().enumerate() {
+        for slot in 0..INTEGRAL_SLOT_COUNT {
+            let mut phase = phase();
+            let mut workspace = TransientBuffer::new();
+            let OuterPhase::VelocityIntegral { state, data, .. } = &mut phase else {
+                unreachable!()
+            };
+            data.plan.acquisition_kind = VelocityIntegralAcquisitionKind::AcceptanceAscending;
+            data.plan.i_start = 1_024;
+            data.plan.matrix_targets_rpm = [16, 33, 66, 132, 263];
+            data.plan.positive_rung_count = 5;
+            data.rung_index = rung as u8;
+            data.slot = slot;
+            *state = VelocityIntegralState::PrepareMovingSlot { reset_rung: false };
+            let mut backend = MockBackend::new();
+            backend.current_limit_value = current_limit(2_816);
+
+            assert!(matches!(
+                step(&mut phase, &mut workspace, &mut backend),
+                StepResult::ReadyNow
+            ));
+            assert!(logged_writes(&backend).iter().any(|(address, value)| {
+                *address == PID_VELOCITY_P_VELOCITY_I.addr()
+                    && *value
+                        == PidGainPair::new(
+                            PidPGain::new(1_448).unwrap(),
+                            PidIGain::new(1_024).unwrap(),
+                        )
+                        .register_value()
+            }));
+
+            assert!(matches!(
+                step(&mut phase, &mut workspace, &mut backend),
+                StepResult::At(_)
+            ));
+            let signed_target = if slot.is_multiple_of(2) {
+                expected_target
+            } else {
+                -expected_target
+            };
+            assert!(logged_writes(&backend).iter().any(|(address, value)| {
+                *address == PID_VELOCITY_TARGET.addr()
+                    && *value == u32::from_ne_bytes(signed_target.to_ne_bytes())
+            }));
+        }
+    }
+}
+
+#[test]
 fn slot_advance_reprograms_i_without_resetting_prior_evidence() {
     let mut phase = phase();
     let mut workspace = TransientBuffer::new();
@@ -1294,6 +1426,7 @@ fn slot_advance_reprograms_i_without_resetting_prior_evidence() {
     data.slot = 0;
     data.rung_classes = [VelocityObservationClass::Eligible; 8];
     data.rung_intervals = [ExactRateInterval::new(10, 20).unwrap(); 8];
+    data.rung_means_q = [10, 20, 30, 40, 50, 60, 70, 80];
     *state = VelocityIntegralState::Advance;
     let mut backend = MockBackend::new();
 
@@ -1323,8 +1456,40 @@ fn slot_advance_reprograms_i_without_resetting_prior_evidence() {
             data.rung_intervals,
             [ExactRateInterval::new(10, 20).unwrap(); 8]
         );
+        assert_eq!(data.rung_means_q, [10, 20, 30, 40, 50, 60, 70, 80]);
         *state = VelocityIntegralState::Advance;
     }
+}
+
+#[test]
+fn rung_reset_clears_only_per_rung_observation_state() {
+    let mut phase = phase();
+    let mut workspace = TransientBuffer::new();
+    let OuterPhase::VelocityIntegral { state, data, .. } = &mut phase else {
+        unreachable!()
+    };
+    data.rung_index = 1;
+    data.rung_classes = [VelocityObservationClass::Eligible; 8];
+    data.rung_intervals = [ExactRateInterval::new(10, 20).unwrap(); 8];
+    data.rung_means_q = [10, 20, 30, 40, 50, 60, 70, 80];
+    data.eligible_masks = [0b101; 2];
+    *state = VelocityIntegralState::PrepareMovingSlot { reset_rung: true };
+    let mut backend = MockBackend::new();
+
+    assert!(matches!(
+        step(&mut phase, &mut workspace, &mut backend),
+        StepResult::ReadyNow
+    ));
+    let OuterPhase::VelocityIntegral { data, .. } = &phase else {
+        unreachable!()
+    };
+    assert_eq!(
+        data.rung_classes,
+        [VelocityObservationClass::InvalidEvidenceFault; 8]
+    );
+    assert_eq!(data.rung_intervals, [ExactRateInterval::EMPTY; 8]);
+    assert_eq!(data.rung_means_q, [0; 8]);
+    assert_eq!(data.eligible_masks, [0b101; 2]);
 }
 
 #[test]

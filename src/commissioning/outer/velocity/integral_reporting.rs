@@ -575,6 +575,7 @@ pub(crate) const fn rung_kind_code(kind: IntegralRungKind) -> u8 {
         IntegralRungKind::OpeningAnchor => 0,
         IntegralRungKind::Positive => 1,
         IntegralRungKind::ClosingBookend => 2,
+        IntegralRungKind::AcceptanceAmplitude => 3,
     }
 }
 

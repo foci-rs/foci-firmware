@@ -38,7 +38,8 @@ use super::integral_evidence::{
 };
 use super::integral_plan::{
     INTEGRAL_SLOT_TRANSITION_ALLOWANCE_US, STAGE_C_MAX_POSITIVE_RUNGS,
-    VelocityIntegralExecutionPlan, largest_i_for_tau, native_velocity_i_at, response_horizon,
+    VelocityIntegralAcquisitionKind, VelocityIntegralExecutionPlan, largest_i_for_tau,
+    native_velocity_i_at, response_horizon,
 };
 use super::recovery::{
     RecoveryBindingSource, RecoveryCurrentContactPolicy, RecoveryStage, RungOriginRecoveryConfig,
@@ -72,8 +73,25 @@ const POSITIVE_WORD_BASE: usize = 4;
 const BOOKEND_WORD_BASE: usize = POSITIVE_WORD_BASE + 2 * STAGE_C_MAX_POSITIVE_RUNGS * 2;
 
 pub(super) const INTEGRAL_SLOT_COUNT: u8 = 8;
+
+pub(super) fn integral_rung_count(plan: VelocityIntegralExecutionPlan) -> Option<u8> {
+    match plan.acquisition_kind {
+        VelocityIntegralAcquisitionKind::ResponseLadder => plan.positive_rung_count.checked_add(2),
+        VelocityIntegralAcquisitionKind::AcceptanceAscending
+        | VelocityIntegralAcquisitionKind::AcceptanceDescending => {
+            u8::try_from(plan.matrix_targets_rpm.len()).ok()
+        }
+    }
+}
+
 pub(crate) fn integral_i_at(plan: VelocityIntegralExecutionPlan, rung_index: u8) -> Option<u16> {
-    let total = plan.positive_rung_count.checked_add(2)?;
+    let total = integral_rung_count(plan)?;
+    if !matches!(
+        plan.acquisition_kind,
+        VelocityIntegralAcquisitionKind::ResponseLadder
+    ) {
+        return (rung_index < total).then_some(plan.i_start);
+    }
     if rung_index >= total {
         None
     } else if rung_index == 0 || rung_index + 1 == total {
@@ -90,6 +108,23 @@ pub(crate) fn integral_i_at(plan: VelocityIntegralExecutionPlan, rung_index: u8)
         } else {
             native_velocity_i_at(positive_index)
         }
+    }
+}
+
+pub(super) fn integral_target_rpm_at(
+    plan: VelocityIntegralExecutionPlan,
+    rung_index: u8,
+) -> Option<i32> {
+    match plan.acquisition_kind {
+        VelocityIntegralAcquisitionKind::ResponseLadder => {
+            (rung_index < integral_rung_count(plan)?).then_some(plan.target_velocity_rpm)
+        }
+        VelocityIntegralAcquisitionKind::AcceptanceAscending
+        | VelocityIntegralAcquisitionKind::AcceptanceDescending => plan
+            .matrix_targets_rpm
+            .get(usize::from(rung_index))
+            .copied()
+            .map(i32::from),
     }
 }
 
@@ -114,13 +149,23 @@ pub(super) fn advance_integral_cursor(rung_index: &mut u8, slot: &mut u8, total_
     }
 }
 
-fn integral_rung_kind(plan: VelocityIntegralExecutionPlan, rung_index: u8) -> IntegralRungKind {
-    if rung_index == 0 {
-        IntegralRungKind::OpeningAnchor
-    } else if rung_index == plan.positive_rung_count + 1 {
-        IntegralRungKind::ClosingBookend
-    } else {
-        IntegralRungKind::Positive
+pub(super) fn integral_rung_kind(
+    plan: VelocityIntegralExecutionPlan,
+    rung_index: u8,
+) -> IntegralRungKind {
+    let total = integral_rung_count(plan).unwrap_or(0);
+    match plan.acquisition_kind {
+        VelocityIntegralAcquisitionKind::ResponseLadder if rung_index == 0 => {
+            IntegralRungKind::OpeningAnchor
+        }
+        VelocityIntegralAcquisitionKind::ResponseLadder if rung_index + 1 == total => {
+            IntegralRungKind::ClosingBookend
+        }
+        VelocityIntegralAcquisitionKind::ResponseLadder => IntegralRungKind::Positive,
+        VelocityIntegralAcquisitionKind::AcceptanceAscending
+        | VelocityIntegralAcquisitionKind::AcceptanceDescending => {
+            IntegralRungKind::AcceptanceAmplitude
+        }
     }
 }
 
@@ -128,6 +173,22 @@ pub(super) fn apply_integral_current_headroom(
     state: &mut VelocityIntegralState,
     data: &mut VelocityIntegralData,
 ) {
+    if matches!(
+        data.plan.acquisition_kind,
+        VelocityIntegralAcquisitionKind::AcceptanceAscending
+            | VelocityIntegralAcquisitionKind::AcceptanceDescending
+    ) {
+        data.current_terminus = Some(data.rung_index);
+        if data.plan.acquisition_kind == VelocityIntegralAcquisitionKind::AcceptanceDescending {
+            data.rung_index = data.rung_index.saturating_add(1);
+            if data.rung_index < integral_rung_count(data.plan).unwrap_or(0) {
+                *state = VelocityIntegralState::PrepareMovingSlot { reset_rung: true };
+                return;
+            }
+        }
+        *state = VelocityIntegralState::Terminal;
+        return;
+    }
     if matches!(
         integral_rung_kind(data.plan, data.rung_index),
         IntegralRungKind::Positive
@@ -244,6 +305,7 @@ fn reset_rung(data: &mut VelocityIntegralData) {
     data.slot = 0;
     data.rung_classes = [VelocityObservationClass::InvalidEvidenceFault; 8];
     data.rung_intervals = [ExactRateInterval::EMPTY; 8];
+    data.rung_means_q = [0; 8];
 }
 
 fn transition_elapsed_us(started_us: u64, finished_us: u64) -> Result<u32, CommissionError> {
@@ -352,23 +414,64 @@ pub(super) fn opening_recovery_lower_rate_q(
     }
 }
 
+fn matrix_recovery_lower_rate_q(
+    data: &VelocityIntegralData,
+    direction: usize,
+) -> Result<Option<u64>, CommissionError> {
+    let velocity_direction = match direction {
+        0 => VelocityDirection::Forward,
+        1 => VelocityDirection::Reverse,
+        _ => return Err(CommissionError::InvalidSchedule),
+    };
+    let mut lower_rate_q: Option<u64> = None;
+    for observation in 0..4 {
+        let slot = observation * 2 + direction;
+        if data.rung_classes[slot] != VelocityObservationClass::Eligible {
+            continue;
+        }
+        let interval = data.rung_intervals[slot];
+        let Some(bound) = super::recovery::commanded_side_lower_rate_q(
+            velocity_direction,
+            i64::from(interval.low_q),
+            i64::from(interval.high_q),
+        ) else {
+            continue;
+        };
+        lower_rate_q = Some(lower_rate_q.map_or(bound, |current| current.min(bound)));
+    }
+    Ok(lower_rate_q)
+}
+
 fn plan_integral_recovery(
     data: &mut VelocityIntegralData,
     workspace: &TransientBuffer,
     safety: &OuterSafetyLimits,
 ) -> Result<RungOriginRecoveryRuntime, CommissionError> {
     let direction = usize::from(safety.unwrapped_position >= 0);
-    let lower_rate_q = opening_recovery_lower_rate_q(
-        workspace,
-        data.opening_direction_mask,
-        data.plan.target_velocity_rpm,
-        safety.counts_per_rev(),
-        direction,
-    )?;
+    let target_velocity_rpm = integral_target_rpm_at(data.plan, data.rung_index)
+        .ok_or(CommissionError::InvalidSchedule)?;
+    let lower_rate_q = match data.plan.acquisition_kind {
+        VelocityIntegralAcquisitionKind::ResponseLadder => opening_recovery_lower_rate_q(
+            workspace,
+            data.opening_direction_mask,
+            data.plan.target_velocity_rpm,
+            safety.counts_per_rev(),
+            direction,
+        )?,
+        VelocityIntegralAcquisitionKind::AcceptanceAscending
+        | VelocityIntegralAcquisitionKind::AcceptanceDescending => {
+            matrix_recovery_lower_rate_q(data, direction)?
+        }
+    };
+    let planned_velocity_mrev_s = u32::try_from(target_velocity_rpm)
+        .ok()
+        .and_then(|target| target.checked_mul(1_000))
+        .map(|target| target / 60)
+        .ok_or(CommissionError::InvalidSchedule)?;
     let recovery_plan = plan_rung_origin_recovery(
         safety.budget,
         safety.counts_per_rev(),
-        data.plan.planned_velocity_mrev_s,
+        planned_velocity_mrev_s,
     )
     .map_err(|_| CommissionError::InvalidSchedule)?;
     let clamp_limit = PidTorqueFluxLimit::new(u32::from(data.plan.usable_torque_limit))
@@ -380,8 +483,8 @@ fn plan_integral_recovery(
             stage: RecoveryStage::Integral,
             rung_index: data.rung_index,
             p: PidPGain::new(data.plan.final_p).expect("validated Stage-C P remains nonzero"),
-            target_velocity_rpm: TmcMechanicalRpm::from_register(data.plan.target_velocity_rpm),
-            planned_velocity_mrev_s: data.plan.planned_velocity_mrev_s,
+            target_velocity_rpm: TmcMechanicalRpm::from_register(target_velocity_rpm),
+            planned_velocity_mrev_s,
             start_offset_counts: safety.unwrapped_position,
             lower_rate_q,
             authority_source: if lower_rate_q.is_some() {
@@ -461,10 +564,10 @@ fn terminal_from_data(
         rest_boundary_rung_plus_one: data.target_terminus.map_or(0, |rung| rung + 1),
         rest_boundary_slot_plus_one: 0,
         evidence,
-        expected_observations: u16::from(data.plan.positive_rung_count.saturating_add(2))
+        expected_observations: u16::from(integral_rung_count(data.plan).unwrap_or(0))
             .saturating_mul(u16::from(INTEGRAL_SLOT_COUNT)),
         emitted_observations: data.integrity.emitted_observations(),
-        expected_rungs: u16::from(data.plan.positive_rung_count.saturating_add(2)),
+        expected_rungs: u16::from(integral_rung_count(data.plan).unwrap_or(0)),
         emitted_rungs: data.integrity.emitted_rungs(),
         run_started_us: data.run_started_us,
         run_completed_us: data.previous_read_us,
@@ -610,6 +713,7 @@ fn retain_rung(
                 }
             }
         }
+        IntegralRungKind::AcceptanceAmplitude => {}
     }
     Ok(())
 }
@@ -752,9 +856,8 @@ fn moving_analysis(
         input.settled_rate_mean_q = mean_rate_q;
         input.settled_rate_low_q = mean_rate_q.saturating_sub(half_width);
         input.settled_rate_high_q = mean_rate_q.saturating_add(half_width);
-        let signed_target = data
-            .plan
-            .target_velocity_rpm
+        let signed_target = integral_target_rpm_at(data.plan, data.rung_index)
+            .ok_or(CommissionError::InvalidSchedule)?
             .checked_mul(integral_slot_direction(data.slot).unwrap_or(0))
             .ok_or(CommissionError::InvalidSchedule)?;
         (input.deficit_low_q, input.deficit_high_q) = deficit_interval_q(
@@ -771,15 +874,22 @@ fn retain_analyzed_observation(
     data: &mut VelocityIntegralData,
     summary: VelocityObservationSummary,
 ) -> Result<(), CommissionError> {
+    let source_interval = match data.plan.acquisition_kind {
+        VelocityIntegralAcquisitionKind::ResponseLadder => summary.deficit_interval_q,
+        VelocityIntegralAcquisitionKind::AcceptanceAscending
+        | VelocityIntegralAcquisitionKind::AcceptanceDescending => summary.settled_rate_interval_q,
+    };
     let interval = ExactRateInterval::new(
-        i32::try_from(summary.deficit_interval_q[0])
-            .map_err(|_| CommissionError::InvalidSchedule)?,
-        i32::try_from(summary.deficit_interval_q[1])
-            .map_err(|_| CommissionError::InvalidSchedule)?,
+        i32::try_from(source_interval[0]).map_err(|_| CommissionError::InvalidSchedule)?,
+        i32::try_from(source_interval[1]).map_err(|_| CommissionError::InvalidSchedule)?,
     )
     .map_err(|_| CommissionError::InvalidSchedule)?;
     data.rung_classes[usize::from(data.slot)] = summary.classification;
     data.rung_intervals[usize::from(data.slot)] = interval;
+    if summary.classification == VelocityObservationClass::Eligible {
+        data.rung_means_q[usize::from(data.slot)] = i32::try_from(summary.settled_rate_mean_q)
+            .map_err(|_| CommissionError::InvalidSchedule)?;
+    }
     Ok(())
 }
 
@@ -806,7 +916,7 @@ pub(crate) async fn step_velocity_integral_with_trace<B: CommissioningBackend>(
             let plan = data.plan;
             let counts_per_rev = backend.mechanical_encoder_quadrature_counts_per_rev();
             if plan.plan_digest == 0
-                || plan.positive_rung_count < 3
+                || integral_rung_count(plan).is_none_or(|count| count < 3)
                 || plan.hard_torque_limit != u16::from(backend.current_limit())
             {
                 return integral_fault_terminal(phase, CommissionError::InvalidSchedule, None);
@@ -899,14 +1009,17 @@ pub(crate) async fn step_velocity_integral_with_trace<B: CommissioningBackend>(
                 Err(_) => return fail_integral(phase, backend, CommissionError::Spi).await,
             };
             let baseline_us = backend.elapsed_us();
-            let target = match integral_slot_direction(data.slot)
-                .and_then(|direction| data.plan.target_velocity_rpm.checked_mul(direction))
-            {
-                Some(value) => value,
-                None => {
-                    return fail_integral(phase, backend, CommissionError::InvalidSchedule).await;
-                }
-            };
+            let target =
+                match integral_target_rpm_at(data.plan, data.rung_index).and_then(|target| {
+                    integral_slot_direction(data.slot)
+                        .and_then(|direction| target.checked_mul(direction))
+                }) {
+                    Some(value) => value,
+                    None => {
+                        return fail_integral(phase, backend, CommissionError::InvalidSchedule)
+                            .await;
+                    }
+                };
             let mut clamp_session = match VelocityCurrentClampSession::try_new_with_limit(
                 u32::from(data.plan.hard_torque_limit),
                 u32::from(data.plan.usable_torque_limit),
@@ -1646,7 +1759,7 @@ pub(crate) async fn step_velocity_integral_with_trace<B: CommissioningBackend>(
             let finished = advance_integral_cursor(
                 &mut data.rung_index,
                 &mut data.slot,
-                data.plan.positive_rung_count.saturating_add(2),
+                integral_rung_count(data.plan).unwrap_or(0),
             );
             if finished || data.slot == 0 {
                 return fail_integral(phase, backend, CommissionError::InvalidSchedule).await;
@@ -1703,7 +1816,8 @@ pub(crate) async fn step_velocity_integral_with_trace<B: CommissioningBackend>(
                 }
                 IntegralRungKind::OpeningAnchor
                 | IntegralRungKind::Positive
-                | IntegralRungKind::ClosingBookend => {
+                | IntegralRungKind::ClosingBookend
+                | IntegralRungKind::AcceptanceAmplitude => {
                     let recovery = match plan_integral_recovery(data, workspace, safety) {
                         Ok(runtime) => runtime,
                         Err(error) => return fail_integral(phase, backend, error).await,
@@ -1752,8 +1866,16 @@ pub(crate) async fn step_velocity_integral_with_trace<B: CommissioningBackend>(
             );
             if report.outcome == RungOriginRecoveryOutcome::RecoveredWithCurrentHeadroom {
                 data.recovered_with_current_headroom = true;
-                data.rung_index = data.plan.positive_rung_count.saturating_add(1);
-                *state = VelocityIntegralState::PrepareMovingSlot { reset_rung: true };
+                if matches!(
+                    data.plan.acquisition_kind,
+                    VelocityIntegralAcquisitionKind::AcceptanceAscending
+                        | VelocityIntegralAcquisitionKind::AcceptanceDescending
+                ) {
+                    apply_integral_current_headroom(state, data);
+                } else {
+                    data.rung_index = data.plan.positive_rung_count.saturating_add(1);
+                    *state = VelocityIntegralState::PrepareMovingSlot { reset_rung: true };
+                }
             } else if report.outcome == RungOriginRecoveryOutcome::RecoveryCurrentHeadroom {
                 apply_integral_current_headroom(state, data);
             } else {
@@ -1797,6 +1919,18 @@ pub(crate) async fn step_velocity_integral_with_trace<B: CommissioningBackend>(
                     IntegralRungKind::OpeningAnchor | IntegralRungKind::Positive => {
                         data.rung_index = data.rung_index.saturating_add(1);
                         *state = VelocityIntegralState::PrepareMovingSlot { reset_rung: true };
+                    }
+                    IntegralRungKind::AcceptanceAmplitude if contained => {
+                        data.recovery_failure = true;
+                        *state = VelocityIntegralState::Terminal;
+                    }
+                    IntegralRungKind::AcceptanceAmplitude => {
+                        data.rung_index = data.rung_index.saturating_add(1);
+                        if data.rung_index >= integral_rung_count(data.plan).unwrap_or(0) {
+                            *state = VelocityIntegralState::Terminal;
+                        } else {
+                            *state = VelocityIntegralState::PrepareMovingSlot { reset_rung: true };
+                        }
                     }
                 }
             }
