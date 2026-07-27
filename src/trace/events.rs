@@ -101,6 +101,14 @@ pub const EVENT_COMMISSION_RUNG_ORIGIN_RECOVERY: u16 = 143;
 pub const EVENT_COMMISSION_OUTER_SAFETY_TIMING: u16 = 144;
 /// Focused velocity-output-limit persistence diagnostic.
 pub const EVENT_COMMISSION_VELOCITY_LIMIT_LATCH_TEST: u16 = 145;
+/// Fixed-I velocity acceptance-matrix immutable plan.
+pub const EVENT_COMMISSION_ACCEPTANCE_MATRIX_PLAN: u16 = 146;
+/// Fixed-I velocity acceptance-matrix observation evidence.
+pub const EVENT_COMMISSION_ACCEPTANCE_MATRIX_OBSERVATION: u16 = 147;
+/// Fixed-I velocity acceptance-matrix amplitude consensus.
+pub const EVENT_COMMISSION_ACCEPTANCE_MATRIX_AMPLITUDE: u16 = 148;
+/// Fixed-I velocity acceptance-matrix terminal.
+pub const EVENT_COMMISSION_ACCEPTANCE_MATRIX_TERMINAL: u16 = 149;
 
 /// Single-frame commissioning diagnostic warning event.
 pub const EVENT_COMMISSION_DIAGNOSTIC_WARNING: u16 = 200;
@@ -220,6 +228,10 @@ mod tests {
         assert_eq!(EVENT_COMMISSION_VELOCITY_INTEGRAL_COMPLETE, 139);
         assert_eq!(EVENT_COMMISSION_RESTORE_RESULT, 140);
         assert_eq!(EVENT_COMMISSION_VELOCITY_LIMIT_LATCH_TEST, 145);
+        assert_eq!(EVENT_COMMISSION_ACCEPTANCE_MATRIX_PLAN, 146);
+        assert_eq!(EVENT_COMMISSION_ACCEPTANCE_MATRIX_OBSERVATION, 147);
+        assert_eq!(EVENT_COMMISSION_ACCEPTANCE_MATRIX_AMPLITUDE, 148);
+        assert_eq!(EVENT_COMMISSION_ACCEPTANCE_MATRIX_TERMINAL, 149);
         assert_eq!(EVENT_COMMISSION_DIAGNOSTIC_WARNING, 200);
     }
 

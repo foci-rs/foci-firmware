@@ -1,0 +1,448 @@
+//! Canonical trace and compact wire reporting for velocity confidence matrices.
+
+use crate::ankyra::velocity_sweep_encoding::VelocitySweepCanonicalRecord;
+use crate::commissioning::types::{
+    AcceptanceMatrixTerminal, RungOriginRecoveryEvidence, VelocityIntegralEvent,
+    VelocityIntegralObservation, VelocityPrimitiveCurrentEvidence,
+};
+
+use super::acceptance_evidence::{AcceptanceAmplitudeReport, AcceptanceDirectionalEvidence};
+use super::acceptance_plan::AcceptanceMatrixPlan;
+
+/// Bytes in the compact ordinary matrix-plan reply payload.
+pub(crate) const ACCEPTANCE_PLAN_REPLY_BYTES: usize = 50;
+/// Bytes in the compact ordinary matrix-terminal reply payload.
+pub(crate) const ACCEPTANCE_TERMINAL_REPLY_BYTES: usize = 37;
+
+/// Encode the compact matrix-plan ordinary reply payload.
+pub(crate) fn encode_acceptance_plan_reply(
+    run_sequence: u32,
+    plan: AcceptanceMatrixPlan,
+) -> [u8; ACCEPTANCE_PLAN_REPLY_BYTES] {
+    let mut bytes = [0_u8; ACCEPTANCE_PLAN_REPLY_BYTES];
+    let mut offset = 0;
+    push_reply(&mut bytes, &mut offset, &plan.schema_revision.to_le_bytes());
+    push_reply(&mut bytes, &mut offset, &run_sequence.to_le_bytes());
+    push_reply(&mut bytes, &mut offset, &[plan.order as u8]);
+    push_reply(&mut bytes, &mut offset, &plan.digest().to_le_bytes());
+    push_reply(
+        &mut bytes,
+        &mut offset,
+        &plan.acceptance_identity.plan_digest.to_le_bytes(),
+    );
+    push_reply(&mut bytes, &mut offset, &plan.selected_p.to_le_bytes());
+    push_reply(&mut bytes, &mut offset, &plan.selected_i.to_le_bytes());
+    for target in plan.target_rpm {
+        push_reply(&mut bytes, &mut offset, &target.to_le_bytes());
+    }
+    push_reply(&mut bytes, &mut offset, &plan.family_size.to_le_bytes());
+    push_reply(
+        &mut bytes,
+        &mut offset,
+        &plan.expected_observations.to_le_bytes(),
+    );
+    push_reply(&mut bytes, &mut offset, &[plan.amplitude_count]);
+    push_reply(
+        &mut bytes,
+        &mut offset,
+        &plan.nominal_workflow_ms.to_le_bytes(),
+    );
+    push_reply(
+        &mut bytes,
+        &mut offset,
+        &plan.maximum_workflow_ms.to_le_bytes(),
+    );
+    debug_assert_eq!(offset, ACCEPTANCE_PLAN_REPLY_BYTES);
+    bytes
+}
+
+/// Encode the compact matrix-terminal ordinary reply payload.
+pub(crate) fn encode_acceptance_terminal_reply(
+    terminal: AcceptanceMatrixTerminal,
+) -> [u8; ACCEPTANCE_TERMINAL_REPLY_BYTES] {
+    let mut bytes = [0_u8; ACCEPTANCE_TERMINAL_REPLY_BYTES];
+    let mut offset = 0;
+    push_reply(
+        &mut bytes,
+        &mut offset,
+        &terminal.schema_revision.to_le_bytes(),
+    );
+    push_reply(
+        &mut bytes,
+        &mut offset,
+        &terminal.run_sequence.to_le_bytes(),
+    );
+    push_reply(
+        &mut bytes,
+        &mut offset,
+        &[terminal.outcome as u8, terminal.cause as u8],
+    );
+    push_reply(
+        &mut bytes,
+        &mut offset,
+        &terminal.plan_digest.to_le_bytes(),
+    );
+    push_reply(&mut bytes, &mut offset, &terminal.digest.to_le_bytes());
+    for masks in [
+        terminal.attempted_masks,
+        terminal.eligible_masks,
+        terminal.current_terminus_masks,
+        terminal.unattempted_masks,
+    ] {
+        push_reply(&mut bytes, &mut offset, &masks);
+    }
+    push_reply(
+        &mut bytes,
+        &mut offset,
+        &terminal.emitted_observations.to_le_bytes(),
+    );
+    push_reply(
+        &mut bytes,
+        &mut offset,
+        &[terminal.emitted_amplitudes],
+    );
+    push_reply(
+        &mut bytes,
+        &mut offset,
+        &terminal.qualifier_bits.to_le_bytes(),
+    );
+    debug_assert_eq!(offset, ACCEPTANCE_TERMINAL_REPLY_BYTES);
+    bytes
+}
+
+fn push_reply<const N: usize>(destination: &mut [u8; N], offset: &mut usize, value: &[u8]) {
+    let end = offset
+        .checked_add(value.len())
+        .expect("fixed matrix reply length fits usize");
+    destination[*offset..end].copy_from_slice(value);
+    *offset = end;
+}
+
+/// Encode the complete immutable matrix plan as bounded canonical fragments.
+pub(crate) fn encode_acceptance_plan(
+    run_sequence: u32,
+    plan: AcceptanceMatrixPlan,
+) -> [VelocitySweepCanonicalRecord; 3] {
+    let digest = plan.digest();
+    let mut core = matrix_record_header(0, run_sequence, 0, digest);
+    core.push_u8(0);
+    core.push_u16(plan.schema_revision);
+    core.push_u8(plan.acceptance_identity.channel);
+    core.push_u32(plan.acceptance_identity.build_revision);
+    core.push_u16(plan.acceptance_identity.schema_revision);
+    push_u64(&mut core, plan.acceptance_identity.plan_digest);
+    core.push_u8(plan.order as u8);
+    core.push_u16(plan.selected_p);
+    core.push_u16(plan.selected_i);
+    core.push_u16(plan.qualifier_bits);
+    core.push_u32(plan.pwm_hz);
+    core.push_u32(plan.encoder_counts_per_rev);
+    for target in plan.target_rpm {
+        core.push_i32(i32::from(target));
+    }
+    core.push_u8(plan.amplitude_count);
+    core.push_u16(plan.expected_observations);
+    core.push_u16(plan.family_size);
+
+    let mut timing = matrix_record_header(0, run_sequence, 0, digest);
+    timing.push_u8(1);
+    timing.push_u32(plan.moving_stroke_us);
+    timing.push_u32(plan.zero_settle_us);
+    timing.push_u32(plan.analysis_budget_us);
+    timing.push_u32(plan.nominal_workflow_ms);
+    timing.push_u32(plan.maximum_workflow_ms);
+    timing.push_u32(plan.recovery_origin_band_counts);
+    timing.push_u32(plan.recovery_nominal_slot_us);
+    timing.push_u32(plan.recovery_maximum_slot_us);
+    timing.push_u8(plan.recovery_slot_count);
+    timing.push_u16(plan.hard_torque_limit);
+    timing.push_u16(plan.usable_torque_limit);
+    timing.push_u8(plan.limit_evidence_capability);
+    timing.push_u8(u8::from(plan.recovery_quantization_exposed));
+    timing.push_u8(u8::from(plan.probe_constrained_test_point));
+
+    let mut motion = matrix_record_header(0, run_sequence, 0, digest);
+    motion.push_u8(2);
+    motion.push_u32(plan.motion_request.requested_velocity_mrev_s);
+    motion.push_u32(plan.motion_request.machine_velocity_ceiling_mrev_s);
+    motion.push_u8(plan.motion_request.requested_velocity_source as u8);
+    motion.push_u32(plan.motion_request.max_stroke_travel_mrev);
+    motion.push_u32(plan.motion_request.settle_travel_reserve_mrev);
+    motion.push_u32(plan.motion_request.negative_position_headroom_mrev);
+    motion.push_u32(plan.motion_request.positive_position_headroom_mrev);
+    motion.push_u16(plan.motion_request.max_duration_ms);
+    [core, timing, motion]
+}
+
+/// Encode one intrinsic moving observation for the matrix trace stream.
+pub(crate) fn encode_acceptance_observation(
+    report: VelocityIntegralObservation,
+) -> VelocitySweepCanonicalRecord {
+    super::integral_reporting::encode_velocity_integral_event(
+        VelocityIntegralEvent::Observation(report),
+    )
+}
+
+/// Encode one matrix primitive's current and rest evidence.
+pub(crate) fn encode_acceptance_current(
+    report: VelocityPrimitiveCurrentEvidence,
+) -> VelocitySweepCanonicalRecord {
+    crate::ankyra::velocity_sweep_encoding::encode_velocity_primitive_current_evidence(report)
+}
+
+/// Encode one evidence-excluded matrix origin recovery.
+pub(crate) fn encode_acceptance_recovery(
+    report: RungOriginRecoveryEvidence,
+) -> VelocitySweepCanonicalRecord {
+    super::sweep_reporting::encode_rung_origin_recovery(report)
+}
+
+/// Encode one completed amplitude fold in the canonical matrix representation.
+pub(crate) fn encode_acceptance_amplitude(
+    run_sequence: u32,
+    evidence_sequence: u16,
+    plan_digest: u64,
+    report: AcceptanceAmplitudeReport,
+) -> VelocitySweepCanonicalRecord {
+    let mut record = VelocitySweepCanonicalRecord::new();
+    record.push_u8(2);
+    record.push_u32(run_sequence);
+    record.push_u16(evidence_sequence);
+    push_u64(&mut record, plan_digest);
+    record.push_u8(report.amplitude_index);
+    record.push_i32(i32::from(report.target_rpm));
+    for direction in report.directions {
+        encode_direction(&mut record, direction);
+    }
+    record
+}
+
+fn encode_direction(
+    record: &mut VelocitySweepCanonicalRecord,
+    direction: AcceptanceDirectionalEvidence,
+) {
+    record.push_u8(direction.availability as u8);
+    record.push_u8(direction.consensus.classification as u8);
+    for component in direction.consensus.components {
+        record.push_i32(component[0]);
+        record.push_i32(component[1]);
+    }
+    record.push_u8(direction.consensus.component_count);
+    record.push_u8(direction.consensus.collected_mask);
+    record.push_u8(direction.consensus.eligible_mask);
+    record.push_u8(direction.consensus.included_mask);
+    record.push_i32(
+        i32::try_from(direction.signed_target_rate_q)
+            .expect("validated matrix target rate fits i32"),
+    );
+    encode_optional_interval(record, direction.response_interval_q);
+    encode_optional_i32(record, direction.robust_location_q);
+    encode_optional_interval(
+        record,
+        direction.deficit_interval_q.map(|interval| {
+            [
+                i32::try_from(interval[0]).expect("validated matrix deficit fits i32"),
+                i32::try_from(interval[1]).expect("validated matrix deficit fits i32"),
+            ]
+        }),
+    );
+    record.push_u8(direction.excluded_mask);
+    let blocking_levels = direction
+        .blocking_levels
+        .into_iter()
+        .enumerate()
+        .fold(0_u16, |packed, (index, level)| {
+            packed | (u16::from(level) << (index * 4))
+        });
+    record.push_u16(blocking_levels);
+}
+
+fn encode_optional_interval(
+    record: &mut VelocitySweepCanonicalRecord,
+    interval: Option<[i32; 2]>,
+) {
+    if let Some(interval) = interval {
+        record.push_u8(1);
+        record.push_i32(interval[0]);
+        record.push_i32(interval[1]);
+    } else {
+        record.push_u8(0);
+    }
+}
+
+fn encode_optional_i32(record: &mut VelocitySweepCanonicalRecord, value: Option<i32>) {
+    if let Some(value) = value {
+        record.push_u8(1);
+        record.push_i32(value);
+    } else {
+        record.push_u8(0);
+    }
+}
+
+/// Encode one matrix terminal in the canonical matrix representation.
+pub(crate) fn encode_acceptance_terminal(
+    terminal: &AcceptanceMatrixTerminal,
+) -> VelocitySweepCanonicalRecord {
+    let mut record = VelocitySweepCanonicalRecord::new();
+    record.push_u8(3);
+    record.push_u32(terminal.run_sequence);
+    record.push_u16(terminal.evidence_sequence);
+    record.push_u16(terminal.schema_revision);
+    push_u64(&mut record, terminal.acceptance_plan_digest);
+    push_u64(&mut record, terminal.plan_digest);
+    push_u64(&mut record, terminal.digest);
+    record.push_u8(terminal.outcome as u8);
+    record.push_u8(terminal.cause as u8);
+    for masks in [
+        terminal.attempted_masks,
+        terminal.eligible_masks,
+        terminal.current_terminus_masks,
+        terminal.unattempted_masks,
+    ] {
+        record.push_u8(masks[0]);
+        record.push_u8(masks[1]);
+    }
+    record.push_u16(terminal.expected_observations);
+    record.push_u16(terminal.emitted_observations);
+    record.push_u8(terminal.expected_amplitudes);
+    record.push_u8(terminal.emitted_amplitudes);
+    record.push_u16(terminal.qualifier_bits);
+    push_u64(&mut record, terminal.run_started_us);
+    push_u64(&mut record, terminal.run_completed_us);
+    record
+}
+
+fn push_u64(record: &mut VelocitySweepCanonicalRecord, value: u64) {
+    record.push_u32(value as u32);
+    record.push_u32((value >> 32) as u32);
+}
+
+fn matrix_record_header(
+    kind: u8,
+    run_sequence: u32,
+    evidence_sequence: u16,
+    plan_digest: u64,
+) -> VelocitySweepCanonicalRecord {
+    let mut record = VelocitySweepCanonicalRecord::new();
+    record.push_u8(kind);
+    record.push_u32(run_sequence);
+    record.push_u16(evidence_sequence);
+    push_u64(&mut record, plan_digest);
+    record
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::ankyra::velocity_sweep_encoding::VELOCITY_SWEEP_CANONICAL_RECORD_MAX;
+    use crate::commissioning::outer::velocity::acceptance_evidence::{
+        AcceptanceAmplitudeAvailability, AcceptanceAmplitudeReport,
+        AcceptanceDirectionalEvidence,
+    };
+    use crate::commissioning::outer::velocity::sweep_consensus::{
+        DirectionalConsensus, DirectionalConsensusClass,
+    };
+    use crate::commissioning::outer::velocity::acceptance_plan::{
+        AcceptanceMatrixOrder, AcceptanceMatrixPlan,
+    };
+    use crate::commissioning::outer::velocity::integral_reproduction::StageCPlanIdentity;
+    use crate::commissioning::outer::velocity::sweep_plan::{
+        RequestedVelocitySource, VelocitySweepRequest,
+    };
+
+    fn plan() -> AcceptanceMatrixPlan {
+        AcceptanceMatrixPlan {
+            schema_revision: 1,
+            acceptance_identity: StageCPlanIdentity {
+                channel: 0,
+                build_revision: 0x1234_5678,
+                schema_revision: 10,
+                plan_digest: 0x1111_2222_3333_4444,
+            },
+            order: AcceptanceMatrixOrder::Ascending,
+            target_rpm: [16, 33, 66, 132, 263],
+            selected_p: 1_024,
+            selected_i: 1_024,
+            qualifier_bits: 0x0123,
+            pwm_hz: 25_000,
+            encoder_counts_per_rev: 4_000,
+            amplitude_count: 5,
+            expected_observations: 40,
+            family_size: 20,
+            moving_stroke_us: 512_000,
+            zero_settle_us: 500_000,
+            analysis_budget_us: 236_000,
+            nominal_workflow_ms: 60_541,
+            maximum_workflow_ms: 66_456,
+            recovery_origin_band_counts: 1_000,
+            recovery_nominal_slot_us: 1_816_958,
+            recovery_maximum_slot_us: 3_000_000,
+            recovery_slot_count: 5,
+            hard_torque_limit: 2_816,
+            usable_torque_limit: 2_816,
+            limit_evidence_capability: 1,
+            recovery_quantization_exposed: false,
+            probe_constrained_test_point: false,
+            motion_request: VelocitySweepRequest {
+                requested_velocity_mrev_s: 4_394,
+                machine_velocity_ceiling_mrev_s: 10_000,
+                requested_velocity_source: RequestedVelocitySource::Defaulted,
+                max_stroke_travel_mrev: 2_500,
+                settle_travel_reserve_mrev: 250,
+                negative_position_headroom_mrev: 7_025,
+                positive_position_headroom_mrev: 7_025,
+                max_duration_ms: 3_000,
+            },
+        }
+    }
+
+    #[test]
+    fn plan_records_preserve_all_fragments_with_one_digest() {
+        let plan = plan();
+
+        let records = super::encode_acceptance_plan(7, plan);
+
+        assert!(records
+            .iter()
+            .all(|record| record.as_bytes().len() <= VELOCITY_SWEEP_CANONICAL_RECORD_MAX));
+        assert_eq!(records.map(|record| record.as_bytes()[15]), [0, 1, 2]);
+        let digest = plan.digest().to_le_bytes();
+        assert!(records
+            .iter()
+            .all(|record| record.as_bytes()[7..15] == digest));
+    }
+
+    fn direction() -> AcceptanceDirectionalEvidence {
+        AcceptanceDirectionalEvidence {
+            availability: AcceptanceAmplitudeAvailability::Eligible,
+            consensus: DirectionalConsensus {
+                classification: DirectionalConsensusClass::EligibleConsensus,
+                components: [[10, 20], [0, 0]],
+                component_count: 1,
+                collected_mask: 0b1111,
+                eligible_mask: 0b1111,
+                included_mask: 0b0111,
+            },
+            signed_target_rate_q: 17_533_333,
+            response_interval_q: Some([17_300_000, 17_600_000]),
+            robust_location_q: Some(17_450_000),
+            deficit_interval_q: Some([-66_667, 233_333]),
+            excluded_mask: 0b1000,
+            blocking_levels: [2, 3, 4, 4],
+        }
+    }
+
+    #[test]
+    fn amplitude_record_is_exact_and_bounded() {
+        let report = AcceptanceAmplitudeReport {
+            amplitude_index: 4,
+            target_rpm: 263,
+            directions: [direction(), direction()],
+        };
+
+        let record = super::encode_acceptance_amplitude(7, 42, 0x0123_4567_89ab_cdef, report);
+
+        assert!(record.as_bytes().len() <= VELOCITY_SWEEP_CANONICAL_RECORD_MAX);
+        assert_eq!(&record.as_bytes()[..7], &[2, 7, 0, 0, 0, 42, 0]);
+    }
+
+}
