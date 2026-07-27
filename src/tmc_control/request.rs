@@ -234,6 +234,7 @@ where
     Spi: SpiDevice<u8>,
     Board: TmcRequestBoard<Spi>,
 {
+    #[cfg(feature = "trace-velocity-sweep")]
     let autotune_action = req.autotune_action;
     match pre_request {
         TmcPreRequestDisposition::ContinueRequest => {}

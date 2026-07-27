@@ -3,8 +3,9 @@
 pub mod acceptance_evidence;
 #[cfg(test)]
 mod acceptance_evidence_tests;
+#[cfg(feature = "trace-velocity-sweep")]
 pub mod acceptance_plan;
-#[cfg(test)]
+#[cfg(all(test, feature = "trace-velocity-sweep"))]
 mod acceptance_plan_tests;
 #[cfg(feature = "trace-velocity-sweep")]
 pub(crate) mod acceptance_reporting;

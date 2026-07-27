@@ -93,6 +93,7 @@ impl CombinedSelectedResponse {
     }
 
     /// Reconstruct the compact response selected by a retained combined plan.
+    #[cfg(feature = "trace-velocity-sweep")]
     pub(crate) fn from_retained_intervals(
         p: PidPGain,
         intervals_q: [[i32; 2]; 2],
