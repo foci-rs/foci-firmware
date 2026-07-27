@@ -130,7 +130,7 @@ fn velocity_sweep_timing_phase(
             (OuterSafetyTimingPhase::EvidenceEmission, true)
         }
         VelocitySweepState::RecoverRung { .. } => {
-            let VelocitySweepEvidenceState::Recovering(runtime) = evidence else {
+            let VelocitySweepEvidenceState::Recovering { runtime, .. } = evidence else {
                 return Err(CommissionError::InvalidSchedule);
             };
             runtime.outer_safety_timing_phase()

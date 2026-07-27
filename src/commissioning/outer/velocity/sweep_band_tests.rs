@@ -5,11 +5,13 @@ use super::{
 };
 use crate::autotune::velocity_measurement::VelocityDirection;
 use crate::autotune::{EquivalentTorqueTargetInterval, EquivalentTorqueTargetQ16};
+use crate::commissioning::outer::velocity::combined_plan::select_proportional_response;
 use crate::commissioning::outer::velocity::operating_region::{BoundRounding, CompactSignedRate};
+use crate::commissioning::outer::velocity::sweep_consensus::DirectionalConsensusClass;
 use crate::commissioning::outer::velocity::sweep_evidence::CompactVariance;
 use crate::commissioning::outer::velocity::sweep_evidence::{
-    CollectedRungEvidence, CompactConsensusObservation, VelocityObservationClass,
-    VelocityObservationSummary, analyze_directional_rung,
+    CollectedRungEvidence, CompactConsensusObservation, CompactDirectionalRungReport,
+    VelocityObservationClass, VelocityObservationSummary, analyze_directional_rung,
 };
 use foci_tmc4671::pid::PidPGain;
 
@@ -85,6 +87,52 @@ fn summary(slot: u8, class: VelocityObservationClass) -> VelocityObservationSumm
         predicted_torque_target_abs: 100,
         initial_lead_in: slot == 0,
     }
+}
+
+fn response_report(p: u16, low_q: i64, high_q: i64) -> CompactDirectionalRungReport {
+    CompactDirectionalRungReport {
+        p: PidPGain::new(p).unwrap(),
+        classification: DirectionalConsensusClass::EligibleConsensus,
+        components: [[0; 2]; 2],
+        pooled: None,
+        settled_rate_bounds_q: [
+            CompactSignedRate::encode(low_q, BoundRounding::TowardNegativeInfinity),
+            CompactSignedRate::encode(high_q, BoundRounding::TowardPositiveInfinity),
+            CompactSignedRate::encode(low_q, BoundRounding::TowardNegativeInfinity),
+            CompactSignedRate::encode(high_q, BoundRounding::TowardPositiveInfinity),
+        ],
+        collected_mask: 0b1111,
+        eligible_mask: 0b1111,
+        included_mask: 0b1111,
+        operable_count: 4,
+        flags: 0,
+    }
+}
+
+#[test]
+fn combined_selection_consumes_compact_consensus_not_model_membership() {
+    let p724 = select_proportional_response(
+        response_report(724, 11_562_496, 11_719_168),
+        response_report(724, -11_218_944, -11_187_200),
+        264,
+        4_000,
+    )
+    .unwrap();
+    let p1024 = select_proportional_response(
+        response_report(1_024, 13_359_104, 13_492_224),
+        response_report(1_024, -12_968_960, -12_921_856),
+        264,
+        4_000,
+    )
+    .unwrap();
+
+    assert_eq!(p724, None);
+    let selected = p1024.expect("P=1024 lies wholly inside the initial band");
+    assert_eq!(selected.p.raw(), 1_024);
+    assert_eq!(
+        selected.response_intervals_q(),
+        [[13_359_104, 13_492_224], [-12_968_960, -12_921_856],]
+    );
 }
 
 #[test]

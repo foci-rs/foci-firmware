@@ -1,4 +1,7 @@
 use super::super::VELOCITY_LIMIT_EVIDENCE_CAPABILITY_BEST_EFFORT;
+use super::super::combined_plan::{
+    COMBINED_STAGE_B_SCHEMA_REVISION, COMBINED_STAGE_C_SCHEMA_REVISION,
+};
 use super::{
     CLAMP_ENVELOPE, CLAMP_TRAVEL, CURRENT_HEADROOM_DEN, CURRENT_HEADROOM_NUM,
     EFFECTIVE_CEILING_ENCODER, EFFECTIVE_CEILING_MACHINE, ENVELOPE_ABSOLUTE_MARGIN_MREV_S,
@@ -6,8 +9,8 @@ use super::{
     MAX_SWEEP_RUNGS, MIN_SETTLE_CAPTURE_US, MIN_STRUCTURAL_RUNGS, MOVING_STROKE_US,
     OBSERVATIONS_PER_DIRECTION_PER_RUNG, RequestedVelocitySource, SETTLE_ANALYSIS_BUDGET_US,
     SWEEP_SLOT_COUNT, VelocityPlanError, VelocitySweepRequest, ZERO_SETTLE_US, build_gain_ladder,
-    current_gain_span, envelope_cap, gain_at, plan_velocity_sweep, representability_ceilings,
-    travel_cap,
+    current_gain_span, envelope_cap, gain_at, plan_combined_velocity_sweep, plan_velocity_sweep,
+    representability_ceilings, travel_cap,
 };
 use crate::autotune::TmcMechanicalRpm;
 use foci_tmc4671::pid::PidPGain;
@@ -59,6 +62,37 @@ fn live_recovery_geometry_extends_both_workflow_durations() {
     assert_eq!(plan.recovery_slot_count, 23);
     assert_eq!(plan.nominal_workflow_ms, 271_423);
     assert_eq!(plan.maximum_workflow_ms, 298_632);
+}
+
+#[test]
+fn combined_plan_uses_operational_current_authority_and_new_schemas() {
+    let historical = plan_velocity_sweep(
+        live_recovery_request(),
+        4_000,
+        2_816,
+        VELOCITY_LIMIT_EVIDENCE_CAPABILITY_BEST_EFFORT,
+    )
+    .unwrap();
+    let combined = plan_combined_velocity_sweep(
+        live_recovery_request(),
+        4_000,
+        2_816,
+        VELOCITY_LIMIT_EVIDENCE_CAPABILITY_BEST_EFFORT,
+    )
+    .unwrap();
+
+    assert_eq!(historical.schema_revision, 8);
+    assert_eq!(historical.usable_torque_limit, 2_534);
+    assert_eq!(historical.p_top.raw(), 2_457);
+    assert_eq!(combined.schema_revision, COMBINED_STAGE_B_SCHEMA_REVISION);
+    assert_eq!(COMBINED_STAGE_C_SCHEMA_REVISION, 8);
+    assert_eq!(combined.usable_torque_limit, 2_816);
+    assert_eq!(combined.p_top.raw(), 2_730);
+    assert!(combined.digest() != historical.digest());
+    assert_eq!(
+        combined.execution_plan(combined.digest()).schema_revision,
+        COMBINED_STAGE_B_SCHEMA_REVISION
+    );
 }
 
 #[test]

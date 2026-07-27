@@ -62,6 +62,7 @@ pub const fn directional_region_closure_code(
         super::operating_region::DirectionalRegionClosure::CurrentHeadroom => 2,
         super::operating_region::DirectionalRegionClosure::SafetyTerminus => 3,
         super::operating_region::DirectionalRegionClosure::EndOfLadder => 4,
+        super::operating_region::DirectionalRegionClosure::ResponseSelected => 5,
     }
 }
 
@@ -74,6 +75,7 @@ pub const fn joint_operable_closure_code(
         super::operating_region::JointOperableClosure::CurrentHeadroom => 1,
         super::operating_region::JointOperableClosure::SafetyTerminus => 2,
         super::operating_region::JointOperableClosure::EndOfLadder => 3,
+        super::operating_region::JointOperableClosure::ResponseSelected => 4,
     }
 }
 

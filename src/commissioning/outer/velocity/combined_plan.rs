@@ -1,11 +1,15 @@
 //! Pure planning and response-selection rules for combined velocity tuning.
 
 use crate::autotune::velocity_measurement::VELOCITY_RATE_Q_SCALE;
+use foci_tmc4671::pid::PidPGain;
 
 use super::integral_plan::{
     STAGE_C_OBSERVATIONS_PER_RUNG, VelocityIntegralLadder, VelocityIntegralPlanError,
     build_integral_ladder, confidence_family_size,
 };
+use super::operating_region::CompactSignedRate;
+use super::sweep_consensus::DirectionalConsensusClass;
+use super::sweep_evidence::CompactDirectionalRungReport;
 use super::sweep_plan::{SETTLE_ANALYSIS_BUDGET_US, VelocitySweepPlan, ZERO_SETTLE_US};
 
 /// Live Stage-B schema for the combined P-then-I experiment.
@@ -66,6 +70,23 @@ pub struct CombinedRateInterval {
     pub high_q: i64,
 }
 
+/// Selected Stage-B response retained only through the combined continuation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+pub struct CombinedSelectedResponse {
+    /// Proportional gain whose two directional intervals entered the band.
+    pub p: PidPGain,
+    /// Exact conservative compact bounds in forward, reverse order.
+    response_bounds_q: [[CompactSignedRate; 2]; 2],
+}
+
+impl CombinedSelectedResponse {
+    /// Decode both signed closed response intervals.
+    pub fn response_intervals_q(self) -> [[i64; 2]; 2] {
+        self.response_bounds_q
+            .map(|bounds| bounds.map(CompactSignedRate::decode))
+    }
+}
+
 impl CombinedRateInterval {
     /// Construct one ordered closed interval.
     pub const fn new(low_q: i64, high_q: i64) -> Result<Self, CombinedPlanError> {
@@ -86,6 +107,45 @@ pub enum CombinedPlanError {
     InvalidTarget,
     /// Checked response arithmetic exceeded its representation.
     Arithmetic,
+}
+
+/// Select one P directly from complete directional consensus reports.
+pub fn select_proportional_response(
+    forward: CompactDirectionalRungReport,
+    reverse: CompactDirectionalRungReport,
+    target_rpm: i32,
+    encoder_counts_per_rev: u32,
+) -> Result<Option<CombinedSelectedResponse>, CombinedPlanError> {
+    if forward.p != reverse.p {
+        return Err(CombinedPlanError::InvalidInterval);
+    }
+    if forward.classification != DirectionalConsensusClass::EligibleConsensus
+        || reverse.classification != DirectionalConsensusClass::EligibleConsensus
+        || forward.collected_mask != 0b1111
+        || reverse.collected_mask != 0b1111
+    {
+        return Ok(None);
+    }
+    let response_bounds_q = [
+        [
+            forward.settled_rate_bounds_q[2],
+            forward.settled_rate_bounds_q[3],
+        ],
+        [
+            reverse.settled_rate_bounds_q[2],
+            reverse.settled_rate_bounds_q[3],
+        ],
+    ];
+    let decoded = response_bounds_q
+        .map(|bounds| CombinedRateInterval::new(bounds[0].decode(), bounds[1].decode()));
+    let intervals = [decoded[0]?, decoded[1]?];
+    if !proportional_response_in_initial_band(target_rpm, encoder_counts_per_rev, intervals)? {
+        return Ok(None);
+    }
+    Ok(Some(CombinedSelectedResponse {
+        p: forward.p,
+        response_bounds_q,
+    }))
 }
 
 /// Build the combined ladder, appending the exact cap after the octave schedule.

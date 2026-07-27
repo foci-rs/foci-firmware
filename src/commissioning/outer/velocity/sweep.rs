@@ -22,6 +22,7 @@ use foci_tmc4671::registers::{
     PID_VELOCITY_ACTUAL, PID_VELOCITY_P_VELOCITY_I, PID_VELOCITY_TARGET,
 };
 
+use super::combined_plan::{COMBINED_STAGE_B_SCHEMA_REVISION, select_proportional_response};
 use super::current_guard::{
     VelocityCurrentClampSession, VelocityCurrentContact, VelocityCurrentGuardError,
     VelocityCurrentZeroPhase, begin_velocity_current_primitive,
@@ -437,7 +438,7 @@ fn sweep_evidence_terminal(
         outcome,
         cause,
         recovery_unavailable: match data.evidence {
-            VelocitySweepEvidenceState::RecoveryComplete(report) => matches!(
+            VelocitySweepEvidenceState::RecoveryComplete { report, .. } => matches!(
                 report.outcome,
                 RungOriginRecoveryOutcome::ContainedNoRate
                     | RungOriginRecoveryOutcome::ContainedDeadline
@@ -669,15 +670,15 @@ pub(crate) async fn step_velocity_sweep_with_trace<B: CommissioningBackend>(
                     return fail_sweep(phase, backend, CommissionError::InvalidSchedule).await;
                 }
             };
-            let mut clamp_session =
-                match VelocityCurrentClampSession::try_new(u32::from(plan.hard_torque_limit)) {
-                    Ok(session) if session.probe_limit().raw() == plan.usable_torque_limit => {
-                        session
-                    }
-                    Ok(_) | Err(_) => {
-                        return fail_sweep(phase, backend, CommissionError::InvalidSchedule).await;
-                    }
-                };
+            let mut clamp_session = match VelocityCurrentClampSession::try_new_with_limit(
+                u32::from(plan.hard_torque_limit),
+                u32::from(plan.usable_torque_limit),
+            ) {
+                Ok(session) if session.probe_limit().raw() == plan.usable_torque_limit => session,
+                Ok(_) | Err(_) => {
+                    return fail_sweep(phase, backend, CommissionError::InvalidSchedule).await;
+                }
+            };
             if let Err(error) = clamp_session.install_probe_limit(backend).await {
                 return fail_sweep(phase, backend, current_guard_error(error)).await;
             }
@@ -1463,6 +1464,28 @@ pub(crate) async fn step_velocity_sweep_with_trace<B: CommissioningBackend>(
             };
             let terminal_current_headroom = *current_headroom || structural_current_bound;
             let final_rung = data.rung_index + 1 >= plan.rung_count;
+            let selected = if plan.schema_revision == COMBINED_STAGE_B_SCHEMA_REVISION
+                && !terminal_current_headroom
+            {
+                match select_proportional_response(
+                    forward,
+                    reverse,
+                    plan.target_velocity_rpm.raw(),
+                    safety.counts_per_rev(),
+                ) {
+                    Ok(selected) => selected,
+                    Err(_) => {
+                        return fail_sweep(
+                            phase,
+                            backend,
+                            CommissionError::VelocityValidationFailed,
+                        )
+                        .await;
+                    }
+                }
+            } else {
+                None
+            };
             if terminal_current_headroom {
                 *state = VelocitySweepState::FinishForward {
                     current_headroom: true,
@@ -1511,7 +1534,7 @@ pub(crate) async fn step_velocity_sweep_with_trace<B: CommissioningBackend>(
                     Ok(runtime) => runtime,
                     Err(error) => return fail_sweep(phase, backend, error).await,
                 };
-                data.evidence = VelocitySweepEvidenceState::Recovering(runtime);
+                data.evidence = VelocitySweepEvidenceState::Recovering { runtime, selected };
                 *state = VelocitySweepState::RecoverRung {
                     current_headroom: false,
                     final_rung,
@@ -1523,9 +1546,11 @@ pub(crate) async fn step_velocity_sweep_with_trace<B: CommissioningBackend>(
             current_headroom,
             final_rung,
         } => {
-            let VelocitySweepEvidenceState::Recovering(runtime) = &mut data.evidence else {
+            let VelocitySweepEvidenceState::Recovering { runtime, selected } = &mut data.evidence
+            else {
                 return fail_sweep(phase, backend, CommissionError::InvalidSchedule).await;
             };
+            let selected = *selected;
             let mut resources = RungOriginRecoveryResources {
                 safety,
                 observations: &mut data.observations,
@@ -1541,7 +1566,8 @@ pub(crate) async fn step_velocity_sweep_with_trace<B: CommissioningBackend>(
                 RungOriginRecoveryStep::At(deadline_us) => StepResult::At(deadline_us),
                 RungOriginRecoveryStep::Finished(report)
                 | RungOriginRecoveryStep::Contained(report) => {
-                    data.evidence = VelocitySweepEvidenceState::RecoveryComplete(report);
+                    data.evidence =
+                        VelocitySweepEvidenceState::RecoveryComplete { report, selected };
                     *state = VelocitySweepState::FinalizeRecovery {
                         current_headroom: *current_headroom,
                         final_rung: *final_rung,
@@ -1562,7 +1588,8 @@ pub(crate) async fn step_velocity_sweep_with_trace<B: CommissioningBackend>(
             current_headroom,
             final_rung,
         } => {
-            let VelocitySweepEvidenceState::RecoveryComplete(report) = data.evidence else {
+            let VelocitySweepEvidenceState::RecoveryComplete { report, selected } = data.evidence
+            else {
                 return fail_sweep(phase, backend, CommissionError::InvalidSchedule).await;
             };
             let contained = matches!(
@@ -1572,7 +1599,7 @@ pub(crate) async fn step_velocity_sweep_with_trace<B: CommissioningBackend>(
             );
             let recovery_current_headroom =
                 report.outcome == RungOriginRecoveryOutcome::RecoveryCurrentHeadroom;
-            if *final_rung || contained || recovery_current_headroom {
+            if *final_rung || selected.is_some() || contained || recovery_current_headroom {
                 *state = VelocitySweepState::FinishForward {
                     current_headroom: *current_headroom || recovery_current_headroom,
                     recovery_failure: contained && !*final_rung,
@@ -1582,6 +1609,13 @@ pub(crate) async fn step_velocity_sweep_with_trace<B: CommissioningBackend>(
                 data.slot = 0;
                 *state = VelocitySweepState::WriteGain;
             }
+            data.evidence = match selected {
+                Some(selected) => VelocitySweepEvidenceState::ResponseSelected(selected),
+                None => VelocitySweepEvidenceState::RecoveryComplete {
+                    report,
+                    selected: None,
+                },
+            };
             let event =
                 data.integrity
                     .record(VelocitySweepEvent::Recovery(RungOriginRecoveryEvidence {
@@ -1595,7 +1629,12 @@ pub(crate) async fn step_velocity_sweep_with_trace<B: CommissioningBackend>(
             current_headroom,
             recovery_failure,
         } => {
-            let closure = if *recovery_failure {
+            let closure = if matches!(
+                data.evidence,
+                VelocitySweepEvidenceState::ResponseSelected(_)
+            ) {
+                DirectionalRegionClosure::ResponseSelected
+            } else if *recovery_failure {
                 DirectionalRegionClosure::SafetyTerminus
             } else if *current_headroom {
                 DirectionalRegionClosure::CurrentHeadroom
@@ -1626,7 +1665,12 @@ pub(crate) async fn step_velocity_sweep_with_trace<B: CommissioningBackend>(
             current_headroom,
             recovery_failure,
         } => {
-            let closure = if *recovery_failure {
+            let closure = if matches!(
+                data.evidence,
+                VelocitySweepEvidenceState::ResponseSelected(_)
+            ) {
+                DirectionalRegionClosure::ResponseSelected
+            } else if *recovery_failure {
                 DirectionalRegionClosure::SafetyTerminus
             } else if *current_headroom {
                 DirectionalRegionClosure::CurrentHeadroom
@@ -1657,7 +1701,12 @@ pub(crate) async fn step_velocity_sweep_with_trace<B: CommissioningBackend>(
             current_headroom,
             recovery_failure,
         } => {
-            let closure = if *recovery_failure {
+            let closure = if matches!(
+                data.evidence,
+                VelocitySweepEvidenceState::ResponseSelected(_)
+            ) {
+                JointOperableClosure::ResponseSelected
+            } else if *recovery_failure {
                 JointOperableClosure::SafetyTerminus
             } else if *current_headroom {
                 JointOperableClosure::CurrentHeadroom
@@ -2029,6 +2078,140 @@ mod tests {
         };
         safety.unwrapped_position = offset_counts;
         *state = VelocitySweepState::EmitRung { current_headroom };
+    }
+
+    fn set_response_interval(report: &mut CompactDirectionalRungReport, interval_q: [i64; 2]) {
+        report.settled_rate_bounds_q[2] =
+            CompactSignedRate::encode(interval_q[0], BoundRounding::TowardNegativeInfinity);
+        report.settled_rate_bounds_q[3] =
+            CompactSignedRate::encode(interval_q[1], BoundRounding::TowardPositiveInfinity);
+    }
+
+    #[test]
+    fn combined_response_selection_waits_for_origin_recovery() {
+        let mut phase = phase();
+        let mut backend = MockBackend::new();
+        install_completed_rung(
+            &mut phase,
+            &mut backend,
+            3,
+            false,
+            [CompactSignedRate::ZERO; 2],
+            0,
+        );
+        let OuterPhase::VelocitySweep { data, .. } = &mut phase else {
+            panic!("velocity sweep should remain active");
+        };
+        data.plan.schema_revision = COMBINED_STAGE_B_SCHEMA_REVISION;
+        let target_rate_q = i64::from(data.plan.target_velocity_rpm.raw()) * 4_000 * 1_000 / 60;
+        let VelocitySweepEvidenceState::Complete {
+            forward, reverse, ..
+        } = &mut data.evidence
+        else {
+            panic!("completed rung evidence must be installed");
+        };
+        set_response_interval(
+            forward,
+            [target_rate_q * 73 / 100, target_rate_q * 77 / 100],
+        );
+        set_response_interval(
+            reverse,
+            [-target_rate_q * 77 / 100, -target_rate_q * 73 / 100],
+        );
+
+        assert!(matches!(
+            pollster::block_on(step_velocity_sweep_with_trace(&mut phase, &mut backend)),
+            StepResult::VelocitySweepEvent(VelocitySweepEvent::Rung(_))
+        ));
+        let OuterPhase::VelocitySweep { state, data, .. } = &phase else {
+            panic!("velocity sweep should remain active");
+        };
+        assert!(matches!(
+            state,
+            VelocitySweepState::RecoverRung {
+                current_headroom: false,
+                final_rung: false,
+            }
+        ));
+        assert!(matches!(
+            data.evidence,
+            VelocitySweepEvidenceState::Recovering {
+                selected: Some(_),
+                ..
+            }
+        ));
+
+        assert!(matches!(
+            pollster::block_on(step_velocity_sweep_with_trace(&mut phase, &mut backend)),
+            StepResult::ReadyNow
+        ));
+        assert!(matches!(
+            pollster::block_on(step_velocity_sweep_with_trace(&mut phase, &mut backend)),
+            StepResult::VelocitySweepEvent(VelocitySweepEvent::Recovery(_))
+        ));
+        let OuterPhase::VelocitySweep { state, data, .. } = &phase else {
+            panic!("velocity sweep should remain active");
+        };
+        assert!(matches!(state, VelocitySweepState::FinishForward { .. }));
+        let VelocitySweepEvidenceState::ResponseSelected(selected) = data.evidence else {
+            panic!("selection must become visible only after recovery");
+        };
+        assert_eq!(selected.p, data.plan.gain_at(0).unwrap());
+    }
+
+    #[test]
+    fn combined_response_below_band_recovers_and_advances() {
+        let mut phase = phase();
+        let mut backend = MockBackend::new();
+        install_completed_rung(
+            &mut phase,
+            &mut backend,
+            3,
+            false,
+            [CompactSignedRate::ZERO; 2],
+            0,
+        );
+        let OuterPhase::VelocitySweep { data, .. } = &mut phase else {
+            panic!("velocity sweep should remain active");
+        };
+        data.plan.schema_revision = COMBINED_STAGE_B_SCHEMA_REVISION;
+        let target_rate_q = i64::from(data.plan.target_velocity_rpm.raw()) * 4_000 * 1_000 / 60;
+        let VelocitySweepEvidenceState::Complete {
+            forward, reverse, ..
+        } = &mut data.evidence
+        else {
+            panic!("completed rung evidence must be installed");
+        };
+        set_response_interval(
+            forward,
+            [target_rate_q * 63 / 100, target_rate_q * 67 / 100],
+        );
+        set_response_interval(
+            reverse,
+            [-target_rate_q * 67 / 100, -target_rate_q * 63 / 100],
+        );
+
+        assert!(matches!(
+            pollster::block_on(step_velocity_sweep_with_trace(&mut phase, &mut backend)),
+            StepResult::VelocitySweepEvent(VelocitySweepEvent::Rung(_))
+        ));
+        assert!(matches!(
+            pollster::block_on(step_velocity_sweep_with_trace(&mut phase, &mut backend)),
+            StepResult::ReadyNow
+        ));
+        assert!(matches!(
+            pollster::block_on(step_velocity_sweep_with_trace(&mut phase, &mut backend)),
+            StepResult::VelocitySweepEvent(VelocitySweepEvent::Recovery(_))
+        ));
+        let OuterPhase::VelocitySweep { state, data, .. } = &phase else {
+            panic!("velocity sweep should remain active");
+        };
+        assert!(matches!(state, VelocitySweepState::WriteGain));
+        assert_eq!(data.rung_index, 1);
+        assert!(!matches!(
+            data.evidence,
+            VelocitySweepEvidenceState::ResponseSelected(_)
+        ));
     }
 
     fn selected_region(
@@ -3214,7 +3397,7 @@ mod tests {
         ));
         assert!(matches!(
             data.evidence,
-            VelocitySweepEvidenceState::Recovering(_)
+            VelocitySweepEvidenceState::Recovering { .. }
         ));
         let terminal_rung = terminal_rung.expect("terminal rung must be emitted before recovery");
         assert!(terminal_rung.forward.initial_lead_in());
@@ -3228,7 +3411,7 @@ mod tests {
             panic!("velocity sweep should remain active");
         };
         assert!(matches!(state, VelocitySweepState::FinalizeRecovery { .. }));
-        let VelocitySweepEvidenceState::RecoveryComplete(report) = data.evidence else {
+        let VelocitySweepEvidenceState::RecoveryComplete { report, .. } = data.evidence else {
             panic!("recovery result must remain available for causal reporting");
         };
         assert_eq!(

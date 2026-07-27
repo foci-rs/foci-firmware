@@ -95,6 +95,8 @@ pub struct VelocitySweepRequest {
 /// Complete immutable motion plan produced before the first sweep stroke.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub struct VelocitySweepPlan {
+    /// Evidence schema governing this plan's terminal semantics.
+    pub schema_revision: u16,
     /// Host-requested velocity amplitude.
     pub requested_velocity_mrev_s: u32,
     /// Frozen velocity amplitude used for every rung.
@@ -156,6 +158,8 @@ pub struct VelocitySweepPlan {
 pub struct VelocitySweepExecutionPlan {
     /// Digest of every frozen request, bound, gain, duration, and geometry field.
     pub plan_digest: u64,
+    /// Evidence schema governing this plan's terminal semantics.
+    pub schema_revision: u16,
     /// Frozen encoder-domain velocity amplitude.
     pub planned_velocity_mrev_s: u32,
     /// Frozen positive TMC mechanical-RPM target.
@@ -180,6 +184,7 @@ impl VelocitySweepExecutionPlan {
     /// Sentinel used before a trace-gated sweep has an admitted immutable plan.
     pub const EMPTY: Self = Self {
         plan_digest: 0,
+        schema_revision: 0,
         planned_velocity_mrev_s: 0,
         target_velocity_rpm: TmcMechanicalRpm::from_register(0),
         p_start: PidPGain::ZERO,
@@ -244,6 +249,7 @@ impl VelocitySweepPlan {
             };
         }
         hash_value!(self.requested_velocity_mrev_s);
+        hash_value!(self.schema_revision);
         hash_value!(self.planned_velocity_mrev_s);
         hash_value!(self.requested_velocity_source as u8);
         hash_value!(self.clamp_flags);
@@ -279,6 +285,7 @@ impl VelocitySweepPlan {
     pub const fn execution_plan(self, plan_digest: u64) -> VelocitySweepExecutionPlan {
         VelocitySweepExecutionPlan {
             plan_digest,
+            schema_revision: self.schema_revision,
             planned_velocity_mrev_s: self.planned_velocity_mrev_s,
             target_velocity_rpm: self.target_velocity_rpm,
             p_start: self.p_start,
@@ -360,6 +367,41 @@ pub fn plan_velocity_sweep(
     torque_flux_limit: u16,
     limit_evidence_capability: u32,
 ) -> Result<VelocitySweepPlan, VelocityPlanError> {
+    plan_velocity_sweep_with_limit(
+        request,
+        encoder_counts_per_rev,
+        torque_flux_limit,
+        limit_evidence_capability,
+        super::reproduction::STAGE_B_EVIDENCE_SCHEMA_REVISION,
+        false,
+    )
+}
+
+/// Construct the nonretained combined-flow P search under operational authority.
+pub fn plan_combined_velocity_sweep(
+    request: VelocitySweepRequest,
+    encoder_counts_per_rev: u32,
+    torque_flux_limit: u16,
+    limit_evidence_capability: u32,
+) -> Result<VelocitySweepPlan, VelocityPlanError> {
+    plan_velocity_sweep_with_limit(
+        request,
+        encoder_counts_per_rev,
+        torque_flux_limit,
+        limit_evidence_capability,
+        super::combined_plan::COMBINED_STAGE_B_SCHEMA_REVISION,
+        true,
+    )
+}
+
+fn plan_velocity_sweep_with_limit(
+    request: VelocitySweepRequest,
+    encoder_counts_per_rev: u32,
+    torque_flux_limit: u16,
+    limit_evidence_capability: u32,
+    schema_revision: u16,
+    use_operational_limit: bool,
+) -> Result<VelocitySweepPlan, VelocityPlanError> {
     if request.requested_velocity_mrev_s == 0
         || request.machine_velocity_ceiling_mrev_s == 0
         || request.negative_position_headroom_mrev == 0
@@ -427,8 +469,13 @@ pub fn plan_velocity_sweep(
         planned_velocity_mrev_s,
     )
     .map_err(map_recovery_plan_error)?;
-    let (p_start, p_top, usable_torque_limit) =
-        current_gain_span(target_velocity_rpm, torque_flux_limit)?;
+    let (p_start, p_top, usable_torque_limit) = if use_operational_limit {
+        let (p_start, p_top) =
+            current_gain_span_with_limit(target_velocity_rpm, torque_flux_limit)?;
+        (p_start, p_top, torque_flux_limit)
+    } else {
+        current_gain_span(target_velocity_rpm, torque_flux_limit)?
+    };
     let ladder = build_gain_ladder(p_start.raw(), p_top.raw())?;
     let rung_count = u8::try_from(ladder.len()).map_err(|_| VelocityPlanError::Arithmetic)?;
     let family_size = usize::from(rung_count)
@@ -479,6 +526,7 @@ pub fn plan_velocity_sweep(
     };
 
     Ok(VelocitySweepPlan {
+        schema_revision,
         requested_velocity_mrev_s: request.requested_velocity_mrev_s,
         planned_velocity_mrev_s,
         requested_velocity_source: request.requested_velocity_source,
@@ -588,9 +636,21 @@ fn current_gain_span(
             .map_err(|_| VelocityPlanError::InsufficientStructuralSpan)?
             .raw(),
     );
+    let (p_start, p_top) = current_gain_span_with_limit(target_velocity_rpm, usable as u16)?;
+    Ok((p_start, p_top, usable as u16))
+}
+
+fn current_gain_span_with_limit(
+    target_velocity_rpm: TmcMechanicalRpm,
+    usable_torque_limit: u16,
+) -> Result<(PidPGain, PidPGain), VelocityPlanError> {
+    let target = target_velocity_rpm.raw().unsigned_abs();
+    if target == 0 || usable_torque_limit == 0 {
+        return Err(VelocityPlanError::InvalidRequest);
+    }
     let p_start_raw = VELOCITY_P_DIVISOR.div_ceil(target);
     let p_top_raw = VELOCITY_P_DIVISOR
-        .checked_mul(usable)
+        .checked_mul(u32::from(usable_torque_limit))
         .ok_or(VelocityPlanError::Arithmetic)?
         / target;
     let p_top_raw = p_top_raw.min(u32::from(PidPGain::MAX.raw()));
@@ -601,7 +661,7 @@ fn current_gain_span(
         .map_err(|_| VelocityPlanError::InsufficientStructuralSpan)?;
     let p_top = PidPGain::new(p_top_raw as u16)
         .map_err(|_| VelocityPlanError::InsufficientStructuralSpan)?;
-    Ok((p_start, p_top, usable as u16))
+    Ok((p_start, p_top))
 }
 
 fn build_gain_ladder(

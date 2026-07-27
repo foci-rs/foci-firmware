@@ -96,6 +96,8 @@ pub enum DirectionalRegionClosure {
     SafetyTerminus,
     /// The predeclared ladder ended normally.
     EndOfLadder,
+    /// The combined flow selected this rung from its response interval.
+    ResponseSelected,
 }
 
 /// Fixed-effect inverse-variance pooling state with no retained observations.
@@ -401,6 +403,8 @@ pub enum JointOperableClosure {
     SafetyTerminus,
     /// The predeclared ladder ended normally.
     EndOfLadder,
+    /// The combined flow selected this rung from its response interval.
+    ResponseSelected,
 }
 
 /// One maximal contiguous region where a shared P is operable in both directions.

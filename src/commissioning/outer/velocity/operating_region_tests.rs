@@ -290,6 +290,24 @@ fn current_and_fault_termini_are_distinct_finish_closures() {
 }
 
 #[test]
+fn response_selection_closes_active_directional_and_joint_evidence() {
+    let mut directional = DirectionalRegionFold::new(VelocityDirection::Forward);
+    let analysis = verdict(100, 0, 10, 1);
+    assert!(observe_directional_rung(&mut directional, 0, analysis).is_none());
+    let closed = directional
+        .finish(DirectionalRegionClosure::ResponseSelected)
+        .unwrap();
+    assert_eq!(closed.closure, DirectionalRegionClosure::ResponseSelected);
+
+    let mut joint = JointOperableFold::new();
+    assert!(observe_joint_rung(&mut joint, 0, analysis, analysis).is_none());
+    let closed = joint
+        .finish(JointOperableClosure::ResponseSelected)
+        .unwrap();
+    assert_eq!(closed.closure, JointOperableClosure::ResponseSelected);
+}
+
+#[test]
 fn first_fit_counterexample_remains_two_fragments() {
     let intervals = [(0, 2), (1, 10), (9, 11), (10, 12)];
     let mut fold = DirectionalRegionFold::new(VelocityDirection::Forward);

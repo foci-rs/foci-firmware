@@ -12,6 +12,8 @@ use crate::autotune::velocity_measurement::{
     DyadicBlocker, RawVelocityObservation, StationarityWork, VelocityMeasurementError,
 };
 #[cfg(feature = "trace-velocity-sweep")]
+use crate::commissioning::outer::velocity::combined_plan::CombinedSelectedResponse;
+#[cfg(feature = "trace-velocity-sweep")]
 use crate::commissioning::outer::velocity::current_guard::{
     VelocityCurrentObserver, VelocityCurrentPhaseEvidence,
 };
@@ -540,9 +542,17 @@ pub(crate) enum VelocitySweepEvidenceState {
         recovery_authorities: [RecoveryRateAuthority; 2],
     },
     /// Shared controller state while recovery borrows the measurement workspace.
-    Recovering(RungOriginRecoveryRuntime),
+    Recovering {
+        runtime: RungOriginRecoveryRuntime,
+        selected: Option<CombinedSelectedResponse>,
+    },
     /// Completed or contained recovery retained for the reporting seam.
-    RecoveryComplete(RungOriginRecoveryReport),
+    RecoveryComplete {
+        report: RungOriginRecoveryReport,
+        selected: Option<CombinedSelectedResponse>,
+    },
+    /// Response-selected evidence retained for the immediate combined continuation.
+    ResponseSelected(CombinedSelectedResponse),
 }
 
 /// Engine-owned measurement and current-rung evidence state.
