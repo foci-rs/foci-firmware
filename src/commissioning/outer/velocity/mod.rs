@@ -1,5 +1,8 @@
 //! Velocity-loop commissioning phases.
 
+pub mod acceptance_plan;
+#[cfg(test)]
+mod acceptance_plan_tests;
 pub mod combined_plan;
 #[cfg(test)]
 mod combined_plan_tests;
