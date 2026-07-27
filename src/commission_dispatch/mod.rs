@@ -11,6 +11,8 @@
 // import MockBackend + helpers via crate::commission_dispatch::test_support::*.
 #[cfg(feature = "trace-velocity-sweep")]
 pub mod acceptance;
+#[cfg(all(test, feature = "trace-velocity-sweep"))]
+mod acceptance_tests;
 pub mod post_actions;
 pub mod replies;
 mod restore;
