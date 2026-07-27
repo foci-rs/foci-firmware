@@ -38,7 +38,7 @@ use super::integral_evidence::{
 };
 use super::integral_plan::{
     INTEGRAL_SLOT_TRANSITION_ALLOWANCE_US, STAGE_C_MAX_POSITIVE_RUNGS,
-    VelocityIntegralExecutionPlan, native_velocity_i_at, response_horizon,
+    VelocityIntegralExecutionPlan, largest_i_for_tau, native_velocity_i_at, response_horizon,
 };
 use super::recovery::{
     RecoveryBindingSource, RecoveryCurrentContactPolicy, RecoveryStage, RungOriginRecoveryConfig,
@@ -79,7 +79,17 @@ pub(super) fn integral_i_at(plan: VelocityIntegralExecutionPlan, rung_index: u8)
     } else if rung_index == 0 || rung_index + 1 == total {
         Some(0)
     } else {
-        native_velocity_i_at(rung_index - 1)
+        let positive_index = rung_index - 1;
+        if plan.combined_workflow && positive_index + 1 == plan.positive_rung_count {
+            largest_i_for_tau(
+                plan.pwm_hz,
+                MIN_SETTLE_CAPTURE_US / 2,
+                crate::commissioning::outer::OUTER_MAX_VELOCITY_I,
+            )
+            .ok()
+        } else {
+            native_velocity_i_at(positive_index)
+        }
     }
 }
 

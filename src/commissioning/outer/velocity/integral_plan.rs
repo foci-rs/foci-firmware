@@ -1066,7 +1066,7 @@ fn failed_admission_digest(
     hash
 }
 
-fn largest_i_for_tau(
+pub(super) fn largest_i_for_tau(
     pwm_hz: u32,
     minimum_tau_us: u32,
     maximum_i: u16,

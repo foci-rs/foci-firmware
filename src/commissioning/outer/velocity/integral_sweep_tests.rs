@@ -173,6 +173,23 @@ fn schedule_has_two_anchors_and_the_exact_positive_i_ladder() {
 }
 
 #[test]
+fn combined_schedule_executes_the_exact_cap_instead_of_the_next_octave() {
+    let mut plan = plan();
+    plan.combined_workflow = true;
+    plan.positive_rung_count = 13;
+    plan.family_size = 60;
+    plan.recovery_slot_count = 15;
+    let emitted: [u16; 15] = core::array::from_fn(|index| {
+        integral_i_at(plan, index as u8).expect("declared combined rung must exist")
+    });
+    assert_eq!(
+        emitted,
+        [0, 1, 2, 3, 4, 8, 16, 32, 64, 128, 256, 512, 1_024, 1_310, 0]
+    );
+    assert_eq!(integral_i_at(plan, 15), None);
+}
+
+#[test]
 fn every_rung_uses_the_fixed_frfrfrfr_slot_order() {
     assert_eq!(INTEGRAL_SLOT_COUNT, 8);
     assert_eq!(
