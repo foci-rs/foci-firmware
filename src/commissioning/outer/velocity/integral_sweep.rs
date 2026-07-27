@@ -72,7 +72,7 @@ const POSITIVE_WORD_BASE: usize = 4;
 const BOOKEND_WORD_BASE: usize = POSITIVE_WORD_BASE + 2 * STAGE_C_MAX_POSITIVE_RUNGS * 2;
 
 pub(super) const INTEGRAL_SLOT_COUNT: u8 = 8;
-pub(super) fn integral_i_at(plan: VelocityIntegralExecutionPlan, rung_index: u8) -> Option<u16> {
+pub(crate) fn integral_i_at(plan: VelocityIntegralExecutionPlan, rung_index: u8) -> Option<u16> {
     let total = plan.positive_rung_count.checked_add(2)?;
     if rung_index >= total {
         None

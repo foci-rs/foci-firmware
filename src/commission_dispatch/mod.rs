@@ -1283,6 +1283,7 @@ pub async fn drive_velocity_integral_terminal_with_stages<B: CommissioningBacken
     backend: &mut B,
     state: &mut DispatchState<'_>,
     pwm_maxcnt: u16,
+    channel: u8,
     retention: CommissionRetention<'_>,
 ) -> CommissionOutcome {
     if let Some(record) = engine
@@ -1295,11 +1296,28 @@ pub async fn drive_velocity_integral_terminal_with_stages<B: CommissioningBacken
         .as_ref()
         .is_some_and(CommissioningEngine::is_combined_stage_c)
     {
+        let execution_plan = engine
+            .as_ref()
+            .and_then(CommissioningEngine::combined_stage_c_execution_plan);
         if !disarm_velocity_workflow(engine, backend, state).await {
             terminal.outcome = crate::commissioning::types::VelocityIntegralOutcome::Fault;
             terminal.cause = crate::autotune::CommissionError::Spi.status_code();
             terminal.recovery_unavailable = true;
             terminal.safety_fault = None;
+            retention.stage_c.observe_fault();
+        } else {
+            let acceptance_point = execution_plan
+                .map(|plan| stage_c::combined_acceptance_point(channel, plan, &terminal));
+            match acceptance_point {
+                Some(Ok(Some(point))) => retention.stage_c.install_acceptance_point(point),
+                Some(Ok(None)) => retention.stage_c.observe_fault(),
+                Some(Err(())) | None => {
+                    retention.stage_c.observe_fault();
+                    terminal.outcome = crate::commissioning::types::VelocityIntegralOutcome::Fault;
+                    terminal.cause = stage_c::STAGE_C_CAUSE_EVIDENCE_INTEGRITY;
+                    terminal.safety_fault = None;
+                }
+            }
         }
         engine
             .as_mut()

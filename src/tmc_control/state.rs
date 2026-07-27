@@ -540,6 +540,7 @@ impl TmcControlRuntime {
                     backend,
                     &mut dispatch,
                     config.tmc.pwm_maxcnt,
+                    self.channel,
                     retention,
                 )
                 .await

@@ -6,8 +6,9 @@ use crate::commissioning::outer::velocity::integral_plan::{
     VelocityIntegralPlanError, plan_velocity_integral_response,
 };
 use crate::commissioning::outer::velocity::integral_reproduction::{
-    StageCAuthoritySummary, StageCCandidateSlot, StageCCandidateSummary, StageCPlanIdentity,
-    StageCReproductionDecision, StageCReproductionDelta, StageCRestBoundaryReference,
+    AcceptanceMatrixProgress, AcceptancePoint, StageCAuthoritySummary, StageCCandidateSlot,
+    StageCCandidateSummary, StageCPlanIdentity, StageCReproductionDecision,
+    StageCReproductionDelta, StageCRestBoundaryReference,
 };
 use crate::commissioning::outer::velocity::reproduction::STAGE_B_BUILD_REVISION;
 use crate::commissioning::outer::velocity::sweep_plan::{
@@ -26,6 +27,10 @@ pub const STAGE_C_CAUSE_REPRODUCTION_MISMATCH: u8 = 6;
 pub const STAGE_C_CAUSE_PLAN_MISMATCH: u8 = 7;
 /// No reproduced operating rung can run under the Stage-C probe clamp.
 pub const STAGE_C_CAUSE_NO_TRANSITION_CAPABLE_OPERATING_POINT: u8 = 11;
+
+const ACCEPTANCE_QUALIFIER_RECOVERY_QUANTIZATION_EXPOSED: u16 = 1 << 7;
+const ACCEPTANCE_QUALIFIER_PROBE_CONSTRAINED_TEST_POINT: u16 = 1 << 8;
+const ACCEPTANCE_QUALIFIER_LATCHED_LIMIT_EVIDENCE: u16 = 1 << 9;
 
 /// Immutable plan and identity accepted before Stage-C actuation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -90,6 +95,57 @@ pub struct StageCTerminalDispatch {
     pub reproduction: Option<StageCReproductionReport>,
     /// Retained Stage-B authority used for anchor comparison and context.
     pub authority: Option<StageCAuthoritySummary>,
+}
+
+/// Derive one executable matrix handoff from a safe combined terminal.
+pub(crate) fn combined_acceptance_point(
+    channel: u8,
+    plan: crate::commissioning::outer::velocity::integral_plan::VelocityIntegralExecutionPlan,
+    terminal: &VelocityIntegralTerminal,
+) -> Result<Option<AcceptancePoint>, ()> {
+    use crate::commissioning::outer::velocity::combined_plan::{
+        COMBINED_STAGE_C_SCHEMA_REVISION, CombinedTargetStatus,
+    };
+    use crate::commissioning::outer::velocity::integral_reporting::{
+        terminal_target_status, terminal_target_terminus,
+    };
+    use crate::commissioning::outer::velocity::{
+        VELOCITY_LIMIT_EVIDENCE_CAPABILITY_LATCHED_FLAG, integral_i_at,
+    };
+
+    if terminal.outcome != VelocityIntegralOutcome::Complete
+        || terminal_target_status(terminal) != Some(CombinedTargetStatus::TargetReached)
+    {
+        return Ok(None);
+    }
+    if terminal.plan_digest != plan.plan_digest || terminal.final_p != plan.final_p {
+        return Err(());
+    }
+    let positive_index = terminal_target_terminus(terminal).ok_or(())?;
+    let selected_i = integral_i_at(plan, positive_index.checked_add(1).ok_or(())?).ok_or(())?;
+    let mut qualifier_bits = 0;
+    if terminal.recovery_quantization_exposed {
+        qualifier_bits |= ACCEPTANCE_QUALIFIER_RECOVERY_QUANTIZATION_EXPOSED;
+    }
+    if terminal.probe_constrained_test_point {
+        qualifier_bits |= ACCEPTANCE_QUALIFIER_PROBE_CONSTRAINED_TEST_POINT;
+    }
+    if plan.limit_evidence_capability as u32 == VELOCITY_LIMIT_EVIDENCE_CAPABILITY_LATCHED_FLAG {
+        qualifier_bits |= ACCEPTANCE_QUALIFIER_LATCHED_LIMIT_EVIDENCE;
+    }
+    Ok(Some(AcceptancePoint {
+        identity: StageCPlanIdentity {
+            channel,
+            build_revision: STAGE_B_BUILD_REVISION,
+            schema_revision: COMBINED_STAGE_C_SCHEMA_REVISION,
+            plan_digest: plan.plan_digest,
+        },
+        selected_p: plan.final_p,
+        selected_i,
+        target_velocity_rpm: plan.target_velocity_rpm,
+        qualifier_bits,
+        progress: AcceptanceMatrixProgress::ReadyAscending,
+    }))
 }
 
 /// Reconstruct and identity-check retained Stage-C authority before any SPI work.

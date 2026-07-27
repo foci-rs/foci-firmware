@@ -138,6 +138,35 @@ pub struct StageCCandidateSummary {
     pub run_digest: u64,
 }
 
+/// Next matrix acquisition allowed by one retained acceptance point.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+#[repr(u8)]
+pub enum AcceptanceMatrixProgress {
+    /// The ascending matrix is the next allowed acquisition.
+    ReadyAscending = 0,
+    /// The ascending matrix completed and the descending matrix is next.
+    ReadyDescending = 1,
+    /// The fixed two-run matrix sequence is closed.
+    Closed = 2,
+}
+
+/// Compact RAM-only handoff from one target-reaching combined run.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+pub struct AcceptancePoint {
+    /// Exact combined Stage-C identity that established the point.
+    pub identity: StageCPlanIdentity,
+    /// Firmware-selected proportional gain.
+    pub selected_p: u16,
+    /// First raw Q4.12 integral gain whose response reached the target.
+    pub selected_i: u16,
+    /// Exact signed TMC mechanical-RPM target used by the combined run.
+    pub target_velocity_rpm: i32,
+    /// Packed operating-point, model-validity, and evidence-quality qualifiers.
+    pub qualifier_bits: u16,
+    /// Next allowed matrix acquisition.
+    pub progress: AcceptanceMatrixProgress,
+}
+
 /// Externally visible lifecycle state of the Stage-C RAM slot.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub enum StageCSlotState {
@@ -147,6 +176,8 @@ pub enum StageCSlotState {
     AuthorityOnly,
     /// Authority and one sufficient Stage-C curve await reproduction.
     Candidate,
+    /// One target-reaching combined point awaits its fixed matrix sequence.
+    AcceptancePoint,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
@@ -157,6 +188,7 @@ enum RetainedStageC {
     Empty,
     AuthorityOnly(StageCAuthoritySummary),
     Candidate(StageCCandidateSummary),
+    AcceptancePoint(AcceptancePoint),
 }
 
 /// Exact per-direction masks and interval comparisons for one run pair.
@@ -238,6 +270,7 @@ impl StageCCandidateSlot {
             RetainedStageC::Empty => StageCSlotState::Empty,
             RetainedStageC::AuthorityOnly(_) => StageCSlotState::AuthorityOnly,
             RetainedStageC::Candidate(_) => StageCSlotState::Candidate,
+            RetainedStageC::AcceptancePoint(_) => StageCSlotState::AcceptancePoint,
         }
     }
 
@@ -247,6 +280,7 @@ impl StageCCandidateSlot {
             RetainedStageC::Empty => None,
             RetainedStageC::AuthorityOnly(authority) => Some(authority),
             RetainedStageC::Candidate(candidate) => Some(candidate.authority),
+            RetainedStageC::AcceptancePoint(_) => None,
         }
     }
 
@@ -254,13 +288,70 @@ impl StageCCandidateSlot {
     pub const fn candidate(&self) -> Option<StageCCandidateSummary> {
         match self.retained {
             RetainedStageC::Candidate(candidate) => Some(candidate),
-            RetainedStageC::Empty | RetainedStageC::AuthorityOnly(_) => None,
+            RetainedStageC::Empty
+            | RetainedStageC::AuthorityOnly(_)
+            | RetainedStageC::AcceptancePoint(_) => None,
+        }
+    }
+
+    /// Return the accepted combined operating point, if present.
+    pub const fn acceptance_point(&self) -> Option<AcceptancePoint> {
+        match self.retained {
+            RetainedStageC::AcceptancePoint(point) => Some(point),
+            RetainedStageC::Empty
+            | RetainedStageC::AuthorityOnly(_)
+            | RetainedStageC::Candidate(_) => None,
         }
     }
 
     /// Install newly reproduced Stage-B handoff authority.
     pub fn install_authority(&mut self, authority: StageCAuthoritySummary) {
         self.retained = RetainedStageC::AuthorityOnly(authority);
+    }
+
+    /// Install one target-reaching combined operating point.
+    pub fn install_acceptance_point(&mut self, point: AcceptancePoint) {
+        self.retained = RetainedStageC::AcceptancePoint(point);
+    }
+
+    /// Clear a same-channel acceptance point immediately before replacement motion.
+    pub fn begin_acceptance_replacement(&mut self, channel: u8) -> bool {
+        match self.retained {
+            RetainedStageC::Empty => true,
+            RetainedStageC::AcceptancePoint(point) if point.identity.channel == channel => {
+                self.retained = RetainedStageC::Empty;
+                true
+            }
+            RetainedStageC::AuthorityOnly(_)
+            | RetainedStageC::Candidate(_)
+            | RetainedStageC::AcceptancePoint(_) => false,
+        }
+    }
+
+    /// Advance a completed ascending matrix to the descending acquisition.
+    pub fn advance_matrix_progress(&mut self) -> bool {
+        let RetainedStageC::AcceptancePoint(mut point) = self.retained else {
+            return false;
+        };
+        if point.progress != AcceptanceMatrixProgress::ReadyAscending {
+            return false;
+        }
+        point.progress = AcceptanceMatrixProgress::ReadyDescending;
+        self.retained = RetainedStageC::AcceptancePoint(point);
+        true
+    }
+
+    /// Close a nonclosed matrix sequence after its final safe terminal.
+    pub fn close_matrix_progress(&mut self) -> bool {
+        let RetainedStageC::AcceptancePoint(mut point) = self.retained else {
+            return false;
+        };
+        if point.progress == AcceptanceMatrixProgress::Closed {
+            return false;
+        }
+        point.progress = AcceptanceMatrixProgress::Closed;
+        self.retained = RetainedStageC::AcceptancePoint(point);
+        true
     }
 
     /// Reject a changed plan before actuation without modifying retention.
@@ -334,10 +425,13 @@ impl StageCCandidateSlot {
 
     /// Invalidate authority and evidence when the active channel changes.
     pub fn invalidate_for_channel(&mut self, channel: u8) {
-        if self
-            .authority()
-            .is_some_and(|authority| authority.identity.channel != channel)
-        {
+        let retained_channel = match self.retained {
+            RetainedStageC::AuthorityOnly(authority) => Some(authority.identity.channel),
+            RetainedStageC::Candidate(candidate) => Some(candidate.authority.identity.channel),
+            RetainedStageC::AcceptancePoint(point) => Some(point.identity.channel),
+            RetainedStageC::Empty => None,
+        };
+        if retained_channel.is_some_and(|retained| retained != channel) {
             self.observe_fault();
         }
     }

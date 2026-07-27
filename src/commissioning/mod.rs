@@ -655,6 +655,22 @@ impl CommissioningEngine {
         )
     }
 
+    /// Return the exact live combined execution plan used by terminal retention.
+    #[cfg(feature = "trace-velocity-sweep")]
+    pub(crate) fn combined_stage_c_execution_plan(
+        &self,
+    ) -> Option<crate::commissioning::outer::velocity::integral_plan::VelocityIntegralExecutionPlan>
+    {
+        let EngineMode::Outer {
+            phase: OuterPhase::VelocityIntegral { data, .. },
+            ..
+        } = &self.engine_mode
+        else {
+            return None;
+        };
+        data.plan.combined_workflow.then_some(data.plan)
+    }
+
     #[cfg(all(test, feature = "trace-velocity-sweep"))]
     pub(crate) fn set_combined_stage_b_response_for_test(
         &mut self,

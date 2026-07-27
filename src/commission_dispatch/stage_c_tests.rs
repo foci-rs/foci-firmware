@@ -13,7 +13,7 @@ use crate::commissioning::outer::velocity::integral_plan::{
     STAGE_C_EVIDENCE_SCHEMA_REVISION, StageCAuthority, plan_velocity_integral_response,
 };
 use crate::commissioning::outer::velocity::integral_reproduction::{
-    StageCAuthoritySummary, StageCCandidateSlot, StageCSlotState,
+    AcceptanceMatrixProgress, StageCAuthoritySummary, StageCCandidateSlot, StageCSlotState,
 };
 use crate::commissioning::outer::velocity::reproduction::{
     STAGE_B_BUILD_REVISION, StageBDirectionalValidity,
@@ -79,7 +79,7 @@ fn request() -> VelocitySweepRequest {
 }
 
 #[test]
-fn combined_workflow_continues_without_retaining_or_reproducing() {
+fn combined_target_reached_installs_an_acceptance_point_after_restoration() {
     pollster::block_on(async {
         use crate::commission_dispatch::stage_b::preflight_combined_stage_b_request;
         use crate::commission_dispatch::test_support::MockBackend;
@@ -183,6 +183,8 @@ fn combined_workflow_continues_without_retaining_or_reproducing() {
             terminal(VelocityIntegralOutcome::Complete, sufficient_evidence(0));
         stage_c_terminal.run_sequence = 8;
         stage_c_terminal.plan_digest = stage_c_plan.digest();
+        stage_c_terminal.final_p = 1_024;
+        stage_c_terminal.rest_boundary_rung_plus_one = 12;
         let action = runtime
             .drive_commissioning_terminal_with_stages(
                 crate::commissioning::schedule::CommissionTerminal::VelocityIntegral(
@@ -216,7 +218,17 @@ fn combined_workflow_continues_without_retaining_or_reproducing() {
         assert_eq!(authority, None);
         assert!(emitted_reply.is_none());
         assert_eq!(stage_b_slot.candidate(), None);
-        assert_eq!(stage_c_slot.state(), StageCSlotState::Empty);
+        assert_eq!(stage_c_slot.state(), StageCSlotState::AcceptancePoint);
+        let point = stage_c_slot
+            .acceptance_point()
+            .expect("TargetReached must retain the exact operating point");
+        assert_eq!(point.identity.channel, CHANNEL);
+        assert_eq!(point.identity.schema_revision, 10);
+        assert_eq!(point.identity.plan_digest, stage_c_plan.digest());
+        assert_eq!(point.selected_p, 1_024);
+        assert_eq!(point.selected_i, 1_024);
+        assert_eq!(point.target_velocity_rpm, 175);
+        assert_eq!(point.progress, AcceptanceMatrixProgress::ReadyAscending);
         assert!(!runtime.is_commission_active());
     });
 }
@@ -264,6 +276,83 @@ fn stage_c_plan() -> crate::commissioning::outer::velocity::integral_plan::Veloc
         COUNTS_PER_REV,
     )
     .expect("valid Stage-C plan")
+}
+
+fn combined_stage_c_plan()
+-> crate::commissioning::outer::velocity::integral_plan::VelocityIntegralPlan {
+    use crate::commissioning::outer::velocity::integral_plan::plan_combined_velocity_integral_response;
+    use crate::commissioning::outer::velocity::sweep_plan::plan_combined_velocity_sweep;
+
+    let request = request();
+    let stage_b = plan_combined_velocity_sweep(
+        request,
+        COUNTS_PER_REV,
+        TORQUE_LIMIT,
+        VELOCITY_LIMIT_EVIDENCE_CAPABILITY_BEST_EFFORT,
+    )
+    .expect("valid combined Stage-B plan");
+    plan_combined_velocity_integral_response(
+        selected_combined_response(),
+        stage_b.execution_plan(stage_b.digest()),
+        OuterMotionBudget {
+            requested_velocity_mrev_s: request.requested_velocity_mrev_s,
+            machine_velocity_ceiling_mrev_s: request.machine_velocity_ceiling_mrev_s,
+            requested_velocity_source: request.requested_velocity_source,
+            max_stroke_travel_mrev: request.max_stroke_travel_mrev,
+            settle_travel_reserve_mrev: request.settle_travel_reserve_mrev,
+            negative_position_headroom_mrev: request.negative_position_headroom_mrev,
+            positive_position_headroom_mrev: request.positive_position_headroom_mrev,
+            max_duration_ms: request.max_duration_ms,
+        },
+        PWM_HZ,
+        COUNTS_PER_REV,
+    )
+    .expect("valid combined Stage-C plan")
+}
+
+#[test]
+fn combined_statuses_install_only_a_sufficient_target_reaching_point() {
+    let plan = combined_stage_c_plan();
+    let execution = plan.execution_plan();
+    let mut reached = terminal(VelocityIntegralOutcome::Complete, sufficient_evidence(0));
+    reached.plan_digest = plan.digest();
+    reached.final_p = plan.final_p;
+    reached.rest_boundary_rung_plus_one = 12;
+
+    let point = super::stage_c::combined_acceptance_point(CHANNEL, execution, &reached)
+        .unwrap()
+        .expect("TargetReached must produce a point");
+    assert_eq!(point.selected_i, 1_024);
+    assert_eq!(point.target_velocity_rpm, 175);
+
+    let mut sparse = reached;
+    sparse.evidence.eligible_masks = [0b11; 2];
+    assert_eq!(
+        super::stage_c::combined_acceptance_point(CHANNEL, execution, &sparse),
+        Ok(None)
+    );
+
+    let mut current = reached;
+    current.rest_boundary_rung_plus_one = 0;
+    current.evidence.current_terminus = Some(11);
+    assert_eq!(
+        super::stage_c::combined_acceptance_point(CHANNEL, execution, &current),
+        Ok(None)
+    );
+
+    let mut cap = reached;
+    cap.rest_boundary_rung_plus_one = 0;
+    assert_eq!(
+        super::stage_c::combined_acceptance_point(CHANNEL, execution, &cap),
+        Ok(None)
+    );
+
+    let mut fault = reached;
+    fault.outcome = VelocityIntegralOutcome::Fault;
+    assert_eq!(
+        super::stage_c::combined_acceptance_point(CHANNEL, execution, &fault),
+        Ok(None)
+    );
 }
 
 fn retained_authority() -> StageCAuthoritySummary {
@@ -1019,6 +1108,7 @@ fn outer_safety_timing_terminal_order_stage_c_resume() {
             &mut backend,
             &mut state,
             4_095,
+            CHANNEL,
             super::CommissionRetention::new(&mut stage_b_slot, &mut stage_c_slot),
         )
         .await;

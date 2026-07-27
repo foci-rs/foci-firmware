@@ -3,9 +3,10 @@ use super::integral_plan::{
     STAGE_C_EVIDENCE_SCHEMA_REVISION, VelocityIntegralExecutionPlan, VelocityIntegralPlan,
 };
 use super::integral_reproduction::{
-    StageCAuthoritySummary, StageCCandidateSlot, StageCCandidateSummary, StageCPlanIdentity,
-    StageCReproductionDecision, StageCRestBoundaryReference, StageCSlotState, closed_intersection,
-    compare_integral_runs, delta_e, signed_divergence_gap,
+    AcceptanceMatrixProgress, AcceptancePoint, StageCAuthoritySummary, StageCCandidateSlot,
+    StageCCandidateSummary, StageCPlanIdentity, StageCReproductionDecision,
+    StageCRestBoundaryReference, StageCSlotState, closed_intersection, compare_integral_runs,
+    delta_e, signed_divergence_gap,
 };
 use super::reproduction::{STAGE_B_BUILD_REVISION, StageBDirectionalValidity};
 
@@ -78,6 +79,83 @@ fn candidate(
         run_completed_us: run * 1_000_000,
         run_digest: run,
     }
+}
+
+fn acceptance_point(channel: u8, progress: AcceptanceMatrixProgress) -> AcceptancePoint {
+    AcceptancePoint {
+        identity: identity(channel, 0xfeed_beef),
+        selected_p: 1_024,
+        selected_i: 1_024,
+        target_velocity_rpm: 263,
+        qualifier_bits: 0x0123,
+        progress,
+    }
+}
+
+#[test]
+fn acceptance_point_uses_the_existing_slot_without_reinterpreting_legacy_authority() {
+    let point = acceptance_point(0, AcceptanceMatrixProgress::ReadyAscending);
+    let mut slot = StageCCandidateSlot::new();
+
+    slot.install_acceptance_point(point);
+
+    assert_eq!(slot.state(), StageCSlotState::AcceptancePoint);
+    assert_eq!(slot.acceptance_point(), Some(point));
+    assert_eq!(slot.authority(), None);
+    assert_eq!(slot.candidate(), None);
+    assert_eq!(core::mem::size_of::<StageCCandidateSlot>(), 640);
+}
+
+#[test]
+fn acceptance_point_progress_and_replacement_follow_the_declared_lifecycle() {
+    assert_eq!(AcceptanceMatrixProgress::ReadyAscending as u8, 0);
+    assert_eq!(AcceptanceMatrixProgress::ReadyDescending as u8, 1);
+    assert_eq!(AcceptanceMatrixProgress::Closed as u8, 2);
+
+    let point = acceptance_point(0, AcceptanceMatrixProgress::ReadyAscending);
+    let mut slot = StageCCandidateSlot::new();
+    slot.install_acceptance_point(point);
+    slot.observe_host_error();
+    slot.preserve_for_same_channel_calibration(0);
+    assert_eq!(slot.acceptance_point(), Some(point));
+
+    assert!(slot.advance_matrix_progress());
+    assert_eq!(
+        slot.acceptance_point().unwrap().progress,
+        AcceptanceMatrixProgress::ReadyDescending
+    );
+    assert!(!slot.advance_matrix_progress());
+    assert!(slot.close_matrix_progress());
+    assert_eq!(
+        slot.acceptance_point().unwrap().progress,
+        AcceptanceMatrixProgress::Closed
+    );
+    assert!(!slot.close_matrix_progress());
+
+    assert!(!slot.begin_acceptance_replacement(1));
+    assert_eq!(slot.state(), StageCSlotState::AcceptancePoint);
+    assert!(slot.begin_acceptance_replacement(0));
+    assert_eq!(slot.state(), StageCSlotState::Empty);
+
+    slot.install_acceptance_point(point);
+    slot.invalidate_for_channel(1);
+    assert_eq!(slot.state(), StageCSlotState::Empty);
+    slot.install_acceptance_point(point);
+    slot.invalidate_for_unrelated_commissioning();
+    assert_eq!(slot.state(), StageCSlotState::Empty);
+    slot.install_acceptance_point(point);
+    slot.observe_fault();
+    assert_eq!(slot.state(), StageCSlotState::Empty);
+}
+
+#[test]
+fn legacy_retained_states_refuse_acceptance_replacement() {
+    let legacy = authority(0, 7);
+    let mut slot = StageCCandidateSlot::new();
+    slot.install_authority(legacy);
+
+    assert!(!slot.begin_acceptance_replacement(0));
+    assert_eq!(slot.authority(), Some(legacy));
 }
 
 #[test]

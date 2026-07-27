@@ -55,7 +55,9 @@ pub const VELOCITY_LIMIT_EVIDENCE_CAPABILITY_LATCHED_FLAG: u32 =
     current_guard::VelocityLimitEvidenceCapability::LatchedFlag as u32;
 
 #[cfg(feature = "trace-velocity-sweep")]
-pub(crate) use integral_sweep::{integral_fault_terminal, step_velocity_integral_with_trace};
+pub(crate) use integral_sweep::{
+    integral_fault_terminal, integral_i_at, step_velocity_integral_with_trace,
+};
 #[allow(unused_imports)]
 pub(crate) use response_ramp::VELOCITY_RESPONSE_MAX_RETRIES;
 #[cfg(feature = "trace-velocity-sweep")]
