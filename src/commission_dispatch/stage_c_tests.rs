@@ -28,6 +28,43 @@ const PWM_HZ: u32 = 25_000;
 const TORQUE_LIMIT: u16 = 2_816;
 const COUNTS_PER_REV: u32 = 4_000;
 
+fn selected_combined_response()
+-> crate::commissioning::outer::velocity::combined_plan::CombinedSelectedResponse {
+    use crate::commissioning::outer::velocity::combined_plan::select_proportional_response;
+    use crate::commissioning::outer::velocity::operating_region::{
+        BoundRounding, CompactSignedRate,
+    };
+    use crate::commissioning::outer::velocity::sweep_consensus::DirectionalConsensusClass;
+    use crate::commissioning::outer::velocity::sweep_evidence::CompactDirectionalRungReport;
+    use foci_tmc4671::pid::PidPGain;
+
+    let report = |low_q, high_q| CompactDirectionalRungReport {
+        p: PidPGain::new(1_024).unwrap(),
+        classification: DirectionalConsensusClass::EligibleConsensus,
+        components: [[0; 2]; 2],
+        pooled: None,
+        settled_rate_bounds_q: [
+            CompactSignedRate::encode(low_q, BoundRounding::TowardNegativeInfinity),
+            CompactSignedRate::encode(high_q, BoundRounding::TowardPositiveInfinity),
+            CompactSignedRate::encode(low_q, BoundRounding::TowardNegativeInfinity),
+            CompactSignedRate::encode(high_q, BoundRounding::TowardPositiveInfinity),
+        ],
+        collected_mask: 0b1111,
+        eligible_mask: 0b1111,
+        included_mask: 0b1111,
+        operable_count: 4,
+        flags: 0,
+    };
+    select_proportional_response(
+        report(8_300_000, 8_900_000),
+        report(-8_900_000, -8_300_000),
+        176,
+        COUNTS_PER_REV,
+    )
+    .unwrap()
+    .unwrap()
+}
+
 fn request() -> VelocitySweepRequest {
     VelocitySweepRequest {
         requested_velocity_mrev_s: 2_929,
@@ -39,6 +76,149 @@ fn request() -> VelocitySweepRequest {
         positive_position_headroom_mrev: 7_025,
         max_duration_ms: 3_000,
     }
+}
+
+#[test]
+fn combined_workflow_continues_without_retaining_or_reproducing() {
+    pollster::block_on(async {
+        use crate::commission_dispatch::stage_b::preflight_combined_stage_b_request;
+        use crate::commission_dispatch::test_support::MockBackend;
+        use crate::commissioning::CommissioningEngine;
+        use crate::commissioning::outer::velocity::integral_reproduction::{
+            StageCCandidateSlot, StageCSlotState,
+        };
+        use crate::commissioning::outer::velocity::reproduction::StageBCandidateSlot;
+        use crate::commissioning::outer::velocity::sweep_plan::plan_combined_velocity_sweep;
+        use crate::commissioning::types::VelocitySweepOutcome;
+        use crate::config::TmcConfig;
+        use crate::tmc_control::{ScheduledCommissionTickAction, TmcControlConfig};
+
+        let stage_b_plan = plan_combined_velocity_sweep(
+            request(),
+            COUNTS_PER_REV,
+            TORQUE_LIMIT,
+            VELOCITY_LIMIT_EVIDENCE_CAPABILITY_BEST_EFFORT,
+        )
+        .unwrap();
+        let preflight = preflight_combined_stage_b_request(
+            request(),
+            COUNTS_PER_REV,
+            TORQUE_LIMIT,
+            VELOCITY_LIMIT_EVIDENCE_CAPABILITY_BEST_EFFORT,
+            CHANNEL,
+            8,
+            false,
+        )
+        .unwrap();
+        crate::state::tmc::tmc_channel0()
+            .configure_motion_scale(crate::state::stepper::stepper_channel0(), 1_000, 3_200)
+            .expect("valid combined test motion scale");
+        let mut runtime = crate::tmc_control::TmcControlRuntime::new_for_channel(CHANNEL);
+        runtime.set_motor_enabled_for_test(true);
+        let mut engine = CommissioningEngine::new_outer_for_tmc_with_stage_b_preflight(
+            1,
+            crate::state::tmc::tmc_channel0(),
+            outer_params(),
+            entry_snapshot(),
+            preflight,
+        );
+        engine.set_combined_stage_b_response_for_test(selected_combined_response());
+        runtime.set_commission_engine(engine);
+        let mut stage_b_slot = StageBCandidateSlot::new();
+        let mut stage_c_slot = StageCCandidateSlot::new();
+        let mut stage_b_terminal = stage_b_terminal();
+        stage_b_terminal.run_sequence = 8;
+        stage_b_terminal.plan_digest = stage_b_plan.digest();
+        stage_b_terminal.outcome = VelocitySweepOutcome::Complete;
+        stage_b_terminal.nominated_p = 1_024;
+        let mut backend = MockBackend::new();
+        backend.enable_pin = true;
+        let config =
+            TmcControlConfig::new(84_000_000, PWM_HZ, 0.03125, TmcConfig::default_for_test());
+        let mut emitted_reply = None;
+
+        let action = runtime
+            .drive_commissioning_terminal_with_stages(
+                crate::commissioning::schedule::CommissionTerminal::VelocitySweep(stage_b_terminal),
+                &mut backend,
+                super::CommissionTerminalContext::new(
+                    &mut stage_b_slot,
+                    &mut stage_c_slot,
+                    |reply| emitted_reply = Some(reply),
+                ),
+                crate::state::tmc::tmc_channel0(),
+                crate::state::stepper::stepper_channel0(),
+                &config,
+            )
+            .await
+            .expect("combined continuation must produce a scheduler action");
+
+        assert!(matches!(
+            action,
+            ScheduledCommissionTickAction::WorkflowContinuation
+        ));
+        let Some(ReplyPayload::VelocityIntegralContinuation {
+            stage_b_reproduction,
+            stage_c_plan,
+            ..
+        }) = emitted_reply
+        else {
+            panic!("combined transition must reuse the integral continuation reply");
+        };
+        assert_eq!(stage_b_reproduction, None);
+        assert_eq!(stage_c_plan.schema_revision, 8);
+        assert_eq!(stage_c_plan.final_p, 1_024);
+        assert_eq!(
+            stage_c_plan.combined_selected_response,
+            Some(selected_combined_response())
+        );
+        assert_eq!(stage_b_slot.candidate(), None);
+        assert_eq!(stage_c_slot.state(), StageCSlotState::Empty);
+        assert!(runtime.is_commission_active());
+        assert!(runtime.is_motor_enabled());
+        assert!(backend.enable_pin);
+
+        emitted_reply = None;
+        let mut stage_c_terminal =
+            terminal(VelocityIntegralOutcome::Complete, sufficient_evidence(0));
+        stage_c_terminal.run_sequence = 8;
+        stage_c_terminal.plan_digest = stage_c_plan.digest();
+        let action = runtime
+            .drive_commissioning_terminal_with_stages(
+                crate::commissioning::schedule::CommissionTerminal::VelocityIntegral(
+                    stage_c_terminal,
+                ),
+                &mut backend,
+                super::CommissionTerminalContext::new(
+                    &mut stage_b_slot,
+                    &mut stage_c_slot,
+                    |reply| emitted_reply = Some(reply),
+                ),
+                crate::state::tmc::tmc_channel0(),
+                crate::state::stepper::stepper_channel0(),
+                &config,
+            )
+            .await
+            .expect("combined Stage-C terminal must produce a scheduler action");
+        let ScheduledCommissionTickAction::Terminal {
+            reply:
+                ReplyPayload::VelocityIntegralTerminal {
+                    reproduction,
+                    authority,
+                    ..
+                },
+            ..
+        } = action
+        else {
+            panic!("combined Stage C must use the existing terminal reply")
+        };
+        assert_eq!(reproduction, None);
+        assert_eq!(authority, None);
+        assert!(emitted_reply.is_none());
+        assert_eq!(stage_b_slot.candidate(), None);
+        assert_eq!(stage_c_slot.state(), StageCSlotState::Empty);
+        assert!(!runtime.is_commission_active());
+    });
 }
 
 fn authority() -> StageCAuthority {

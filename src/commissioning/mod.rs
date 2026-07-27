@@ -655,6 +655,21 @@ impl CommissioningEngine {
         )
     }
 
+    #[cfg(all(test, feature = "trace-velocity-sweep"))]
+    pub(crate) fn set_combined_stage_b_response_for_test(
+        &mut self,
+        selected: crate::commissioning::outer::velocity::combined_plan::CombinedSelectedResponse,
+    ) {
+        let EngineMode::Outer {
+            phase: OuterPhase::VelocitySweep { data, .. },
+            ..
+        } = &mut self.engine_mode
+        else {
+            panic!("combined Stage-B test helper requires a velocity sweep");
+        };
+        data.evidence = VelocitySweepEvidenceState::ResponseSelected(selected);
+    }
+
     /// Transition a live reproduced Stage-B engine into a prederived Stage-C plan.
     #[cfg(feature = "trace-velocity-sweep")]
     pub(crate) fn begin_stage_c_continuation_with_plan(

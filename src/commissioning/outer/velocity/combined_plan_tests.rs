@@ -2,17 +2,54 @@ use super::combined_plan::{
     COMBINED_STAGE_B_SCHEMA_REVISION, COMBINED_STAGE_C_SCHEMA_REVISION, CombinedPlanError,
     CombinedRateInterval, CombinedTargetStatus, build_combined_integral_ladder,
     combined_workflow_geometry, integral_response_reaches_target,
-    proportional_response_in_initial_band,
+    proportional_response_in_initial_band, select_proportional_response,
 };
 use super::integral_plan::{
     CommissioningWorkflowPlan, STAGE_C_EVIDENCE_SCHEMA_REVISION, StageCPlanShape,
-    build_integral_ladder,
+    build_integral_ladder, plan_combined_velocity_integral_response,
 };
+use super::operating_region::{BoundRounding, CompactSignedRate};
+use super::sweep_consensus::DirectionalConsensusClass;
+use super::sweep_evidence::CompactDirectionalRungReport;
 use super::sweep_plan::{
     MIN_SETTLE_CAPTURE_US, MOVING_STROKE_US, RequestedVelocitySource, VelocitySweepRequest,
-    plan_velocity_sweep,
+    plan_combined_velocity_sweep, plan_velocity_sweep,
 };
-use crate::commissioning::outer::OUTER_MAX_VELOCITY_I;
+use crate::commissioning::outer::{OUTER_MAX_VELOCITY_I, OuterMotionBudget};
+use foci_tmc4671::pid::PidPGain;
+
+fn response_report(p: u16, low_q: i64, high_q: i64) -> CompactDirectionalRungReport {
+    CompactDirectionalRungReport {
+        p: PidPGain::new(p).unwrap(),
+        classification: DirectionalConsensusClass::EligibleConsensus,
+        components: [[0; 2]; 2],
+        pooled: None,
+        settled_rate_bounds_q: [
+            CompactSignedRate::encode(low_q, BoundRounding::TowardNegativeInfinity),
+            CompactSignedRate::encode(high_q, BoundRounding::TowardPositiveInfinity),
+            CompactSignedRate::encode(low_q, BoundRounding::TowardNegativeInfinity),
+            CompactSignedRate::encode(high_q, BoundRounding::TowardPositiveInfinity),
+        ],
+        collected_mask: 0b1111,
+        eligible_mask: 0b1111,
+        included_mask: 0b1111,
+        operable_count: 4,
+        flags: 0,
+    }
+}
+
+fn motion_budget(request: VelocitySweepRequest) -> OuterMotionBudget {
+    OuterMotionBudget {
+        requested_velocity_mrev_s: request.requested_velocity_mrev_s,
+        machine_velocity_ceiling_mrev_s: request.machine_velocity_ceiling_mrev_s,
+        requested_velocity_source: request.requested_velocity_source,
+        max_stroke_travel_mrev: request.max_stroke_travel_mrev,
+        settle_travel_reserve_mrev: request.settle_travel_reserve_mrev,
+        negative_position_headroom_mrev: request.negative_position_headroom_mrev,
+        positive_position_headroom_mrev: request.positive_position_headroom_mrev,
+        max_duration_ms: request.max_duration_ms,
+    }
+}
 
 #[test]
 fn corrected_y_intervals_select_p1024_without_model_membership() {
@@ -125,17 +162,18 @@ fn combined_geometry_appends_the_exact_cap_without_changing_history() {
 
 #[test]
 fn combined_workflow_uses_exact_unrounded_phase_durations() {
+    let request = VelocitySweepRequest {
+        requested_velocity_mrev_s: 6_666,
+        machine_velocity_ceiling_mrev_s: 10_000,
+        requested_velocity_source: RequestedVelocitySource::Defaulted,
+        max_stroke_travel_mrev: 2_500,
+        settle_travel_reserve_mrev: 250,
+        negative_position_headroom_mrev: 7_025,
+        positive_position_headroom_mrev: 7_025,
+        max_duration_ms: 3_000,
+    };
     let stage_b = plan_velocity_sweep(
-        VelocitySweepRequest {
-            requested_velocity_mrev_s: 6_666,
-            machine_velocity_ceiling_mrev_s: 10_000,
-            requested_velocity_source: RequestedVelocitySource::Defaulted,
-            max_stroke_travel_mrev: 2_500,
-            settle_travel_reserve_mrev: 250,
-            negative_position_headroom_mrev: 7_025,
-            positive_position_headroom_mrev: 7_025,
-            max_duration_ms: 3_000,
-        },
+        request,
         4_000,
         2_816,
         super::VELOCITY_LIMIT_EVIDENCE_CAPABILITY_BEST_EFFORT,
@@ -162,6 +200,56 @@ fn combined_workflow_uses_exact_unrounded_phase_durations() {
     assert_eq!(workflow.shape, StageCPlanShape::CombinedPThenI);
     assert_eq!(workflow.nominal_workflow_ms, 449_173);
     assert_eq!(workflow.maximum_workflow_ms, 494_128);
+}
+
+#[test]
+fn combined_stage_c_plan_uses_only_the_live_selected_response() {
+    let request = VelocitySweepRequest {
+        requested_velocity_mrev_s: 6_666,
+        machine_velocity_ceiling_mrev_s: 10_000,
+        requested_velocity_source: RequestedVelocitySource::Defaulted,
+        max_stroke_travel_mrev: 2_500,
+        settle_travel_reserve_mrev: 250,
+        negative_position_headroom_mrev: 7_025,
+        positive_position_headroom_mrev: 7_025,
+        max_duration_ms: 3_000,
+    };
+    let stage_b = plan_combined_velocity_sweep(
+        request,
+        4_000,
+        2_816,
+        super::VELOCITY_LIMIT_EVIDENCE_CAPABILITY_BEST_EFFORT,
+    )
+    .unwrap();
+    let selected = select_proportional_response(
+        response_report(1_024, 13_359_104, 13_492_224),
+        response_report(1_024, -12_968_960, -12_921_856),
+        264,
+        4_000,
+    )
+    .unwrap()
+    .unwrap();
+
+    let plan = plan_combined_velocity_integral_response(
+        selected,
+        stage_b.execution_plan(stage_b.digest()),
+        motion_budget(request),
+        25_000,
+        4_000,
+    )
+    .unwrap();
+
+    assert_eq!(plan.schema_revision, COMBINED_STAGE_C_SCHEMA_REVISION);
+    assert_eq!(plan.final_p, 1_024);
+    assert_eq!(plan.combined_selected_response, Some(selected));
+    assert_eq!(plan.authority.joint_membership, 0);
+    assert_eq!(
+        plan.positive_rungs(),
+        &[1, 2, 3, 4, 8, 16, 32, 64, 128, 256, 512, 1_024, 1_310]
+    );
+    assert_eq!(plan.family_size, 60);
+    assert_eq!(plan.total_rung_count, 15);
+    assert_eq!(plan.maximum_workflow_ms, 195_496);
 }
 
 #[test]
