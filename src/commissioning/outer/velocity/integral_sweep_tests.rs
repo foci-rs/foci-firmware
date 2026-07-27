@@ -305,6 +305,24 @@ fn matrix_fold_emits_a_dedicated_result() {
     };
     assert_eq!(report.evidence_sequence, 1);
     assert_eq!(report.report.amplitude_index, 0);
+
+    let OuterPhase::VelocityIntegral { state, data, .. } = &mut phase else {
+        unreachable!()
+    };
+    data.opening_direction_mask = 0b11111;
+    data.bookend_available_mask = 0b11111;
+    data.eligible_masks = [0b00111; 2];
+    data.emitted_observations = 40;
+    data.emitted_rungs = 5;
+    *state = VelocityIntegralState::Terminal;
+
+    let StepResult::AcceptanceMatrixTerminal(terminal) =
+        step(&mut phase, &mut workspace, &mut backend)
+    else {
+        panic!("matrix completion must emit a dedicated terminal")
+    };
+    assert_eq!(terminal.outcome, AcceptanceMatrixOutcome::Complete);
+    assert_eq!(terminal.emitted_amplitudes, 5);
 }
 
 #[test]
@@ -1954,4 +1972,23 @@ fn stage_c_safety_fault_uses_the_dedicated_terminal() {
     );
     assert_eq!(terminal.expected_observations, 56);
     assert_eq!(terminal.expected_rungs, 7);
+}
+
+#[test]
+fn matrix_safety_fault_uses_the_matrix_terminal() {
+    let mut phase = phase();
+    let OuterPhase::VelocityIntegral { data, .. } = &mut phase else {
+        unreachable!()
+    };
+    data.plan.acquisition_kind = VelocityIntegralAcquisitionKind::AcceptanceAscending;
+    data.plan.positive_rung_count = 5;
+    data.plan.matrix_targets_rpm = [16, 33, 66, 132, 263];
+
+    let StepResult::AcceptanceMatrixTerminal(terminal) =
+        integral_fault_terminal(&phase, CommissionError::SafetyEnvelopeViolation, None)
+    else {
+        panic!("matrix fault must not fall through to the generic terminal")
+    };
+    assert_eq!(terminal.outcome, AcceptanceMatrixOutcome::Fault);
+    assert_eq!(terminal.cause, AcceptanceMatrixCause::EvidenceIntegrity);
 }

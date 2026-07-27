@@ -817,8 +817,8 @@ pub(crate) fn integral_fault_terminal(
         return StepResult::OuterFailed(error);
     };
     if is_acceptance_matrix(data.plan) {
-        let _ = acceptance_terminal(data, true, safety_fault);
-        return StepResult::OuterFailed(error);
+        let _ = error;
+        return StepResult::AcceptanceMatrixTerminal(acceptance_terminal(data, true, safety_fault));
     }
     terminal_from_data(
         data,
@@ -2265,8 +2265,7 @@ pub(crate) async fn step_velocity_integral_with_trace<B: CommissioningBackend>(
             fail_integral(phase, backend, error).await
         }
         VelocityIntegralState::Terminal if is_acceptance_matrix(data.plan) => {
-            let _ = acceptance_terminal(data, false, None);
-            StepResult::OuterFailed(CommissionError::InvalidSchedule)
+            StepResult::AcceptanceMatrixTerminal(acceptance_terminal(data, false, None))
         }
         VelocityIntegralState::Terminal => evidence_terminal(data, workspace),
     }

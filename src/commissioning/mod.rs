@@ -37,14 +37,14 @@ use crate::pid::InnerLoopGains;
 use crate::state::tmc::TmcChannelState;
 use crate::trace::events::{
     CommissionTraceEvent, EVENT_COMMISSION_ACCEPTANCE_MATRIX_AMPLITUDE,
-    EVENT_COMMISSION_ACCEPTANCE_MATRIX_OBSERVATION, EVENT_COMMISSION_ENGINE_START,
-    EVENT_COMMISSION_ENGINE_TERMINAL, EVENT_COMMISSION_PHASE_END, EVENT_COMMISSION_PHASE_START,
-    EVENT_COMMISSION_VELOCITY_INTEGRAL_DERIVED, EVENT_COMMISSION_VELOCITY_INTEGRAL_OBSERVATION,
-    EVENT_COMMISSION_VELOCITY_INTEGRAL_PLAN, EVENT_COMMISSION_VELOCITY_INTEGRAL_RUNG,
-    EVENT_COMMISSION_VELOCITY_SWEEP_COMPLETE, EVENT_COMMISSION_VELOCITY_SWEEP_DERIVED,
-    EVENT_COMMISSION_VELOCITY_SWEEP_OBSERVATION, EVENT_COMMISSION_VELOCITY_SWEEP_PLAN,
-    EVENT_COMMISSION_VELOCITY_SWEEP_RUNG, EVENT_COMMISSION_VELOCITY_SWEEP_TERMINAL,
-    TraceEventLevel, u32_arg,
+    EVENT_COMMISSION_ACCEPTANCE_MATRIX_OBSERVATION, EVENT_COMMISSION_ACCEPTANCE_MATRIX_TERMINAL,
+    EVENT_COMMISSION_ENGINE_START, EVENT_COMMISSION_ENGINE_TERMINAL, EVENT_COMMISSION_PHASE_END,
+    EVENT_COMMISSION_PHASE_START, EVENT_COMMISSION_VELOCITY_INTEGRAL_DERIVED,
+    EVENT_COMMISSION_VELOCITY_INTEGRAL_OBSERVATION, EVENT_COMMISSION_VELOCITY_INTEGRAL_PLAN,
+    EVENT_COMMISSION_VELOCITY_INTEGRAL_RUNG, EVENT_COMMISSION_VELOCITY_SWEEP_COMPLETE,
+    EVENT_COMMISSION_VELOCITY_SWEEP_DERIVED, EVENT_COMMISSION_VELOCITY_SWEEP_OBSERVATION,
+    EVENT_COMMISSION_VELOCITY_SWEEP_PLAN, EVENT_COMMISSION_VELOCITY_SWEEP_RUNG,
+    EVENT_COMMISSION_VELOCITY_SWEEP_TERMINAL, TraceEventLevel, u32_arg,
 };
 #[cfg(feature = "trace-velocity-sweep")]
 use crate::trace::events::{
@@ -1416,6 +1416,26 @@ impl CommissioningEngine {
                     event_id,
                     engine_kind: EngineKind::OuterTune,
                     payload: [i32::from(sequence), 0],
+                    payload_count: 1,
+                });
+            }
+            StepResult::AcceptanceMatrixTerminal(terminal) => {
+                #[cfg(all(feature = "trace", feature = "trace-velocity-sweep"))]
+                backend.record_velocity_sweep_trace_record(
+                    crate::commissioning::outer::velocity::acceptance_reporting::
+                        encode_acceptance_terminal(terminal),
+                );
+                backend.record_commission_trace_event(CommissionTraceEvent {
+                    level: if terminal.outcome
+                        == crate::commissioning::types::AcceptanceMatrixOutcome::Fault
+                    {
+                        TraceEventLevel::Error
+                    } else {
+                        TraceEventLevel::Info
+                    },
+                    event_id: EVENT_COMMISSION_ACCEPTANCE_MATRIX_TERMINAL,
+                    engine_kind: EngineKind::OuterTune,
+                    payload: [i32::from(terminal.evidence_sequence), 0],
                     payload_count: 1,
                 });
             }

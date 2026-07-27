@@ -287,7 +287,6 @@ fn encode_optional_i32(record: &mut VelocitySweepCanonicalRecord, value: Option<
 }
 
 /// Encode one matrix terminal in the canonical matrix representation.
-#[allow(dead_code)]
 pub(crate) fn encode_acceptance_terminal(
     terminal: &AcceptanceMatrixTerminal,
 ) -> VelocitySweepCanonicalRecord {
@@ -355,6 +354,9 @@ mod tests {
     };
     use crate::commissioning::outer::velocity::sweep_plan::{
         RequestedVelocitySource, VelocitySweepRequest,
+    };
+    use crate::commissioning::types::{
+        AcceptanceMatrixCause, AcceptanceMatrixOutcome, AcceptanceMatrixTerminal,
     };
 
     fn plan() -> AcceptanceMatrixPlan {
@@ -455,5 +457,42 @@ mod tests {
 
         assert!(record.as_bytes().len() <= VELOCITY_SWEEP_CANONICAL_RECORD_MAX);
         assert_eq!(&record.as_bytes()[..7], &[2, 7, 0, 0, 0, 42, 0]);
+    }
+
+    #[test]
+    fn terminal_record_preserves_masks_counts_and_identity() {
+        let terminal = AcceptanceMatrixTerminal {
+            schema_revision: 1,
+            run_sequence: 7,
+            evidence_sequence: 43,
+            acceptance_plan_digest: 0x1111_2222_3333_4444,
+            plan_digest: 0x5555_6666_7777_8888,
+            digest: 0x9999_aaaa_bbbb_cccc,
+            outcome: AcceptanceMatrixOutcome::Complete,
+            cause: AcceptanceMatrixCause::None,
+            attempted_masks: [0b11111; 2],
+            eligible_masks: [0b11110, 0b11100],
+            current_terminus_masks: [0, 0b10000],
+            unattempted_masks: [0; 2],
+            expected_observations: 40,
+            emitted_observations: 40,
+            expected_amplitudes: 5,
+            emitted_amplitudes: 5,
+            qualifier_bits: 0x1234,
+            run_started_us: 100,
+            run_completed_us: 200,
+            safety_fault: None,
+        };
+
+        let record = super::encode_acceptance_terminal(&terminal);
+
+        assert!(record.as_bytes().len() <= VELOCITY_SWEEP_CANONICAL_RECORD_MAX);
+        assert_eq!(&record.as_bytes()[..7], &[3, 7, 0, 0, 0, 43, 0]);
+        assert!(
+            record
+                .as_bytes()
+                .windows(2)
+                .any(|bytes| bytes == [0x34, 0x12])
+        );
     }
 }

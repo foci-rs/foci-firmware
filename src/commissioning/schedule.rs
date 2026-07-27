@@ -2,8 +2,8 @@
 
 use crate::autotune::{CommissionError, PhaseId};
 use crate::commissioning::types::{
-    AdcCalResult, CommissionResult, EngineKind, OuterResult, StepResult, VelocityIntegralEvent,
-    VelocityIntegralTerminal, VelocitySweepEvent, VelocitySweepTerminal,
+    AcceptanceMatrixTerminal, AdcCalResult, CommissionResult, EngineKind, OuterResult, StepResult,
+    VelocityIntegralEvent, VelocityIntegralTerminal, VelocitySweepEvent, VelocitySweepTerminal,
 };
 
 /// Nonterminal commissioning evidence emitted independently of scheduling.
@@ -56,6 +56,8 @@ pub enum CommissionTerminal {
     VelocitySweep(VelocitySweepTerminal),
     /// Report-only Stage-C response sweep completed, remained inconclusive, or faulted.
     VelocityIntegral(VelocityIntegralTerminal),
+    /// One fixed-I velocity confidence matrix completed, remained inconclusive, or faulted.
+    AcceptanceMatrix(AcceptanceMatrixTerminal),
 }
 
 impl CommissionTerminal {
@@ -69,6 +71,7 @@ impl CommissionTerminal {
             Self::CommissionDone(result) => StepResult::CommissionDone(result),
             Self::VelocitySweep(result) => StepResult::VelocitySweepTerminal(result),
             Self::VelocityIntegral(result) => StepResult::VelocityIntegralTerminal(result),
+            Self::AcceptanceMatrix(result) => StepResult::AcceptanceMatrixTerminal(result),
         }
     }
 }
@@ -176,6 +179,9 @@ pub fn adapt_step_result(
             result: CommissionTerminal::VelocityIntegral(result),
         }),
         StepResult::AcceptanceMatrixEvent(_) => Ok(CommissionPoll::ReadyNow { event: None }),
+        StepResult::AcceptanceMatrixTerminal(result) => Ok(CommissionPoll::Terminal {
+            result: CommissionTerminal::AcceptanceMatrix(result),
+        }),
         StepResult::InnerFailed(error) => Ok(CommissionPoll::Terminal {
             result: CommissionTerminal::InnerFailed(error),
         }),

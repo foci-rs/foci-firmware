@@ -909,6 +909,8 @@ pub enum StepResult {
     VelocityIntegralTerminal(VelocityIntegralTerminal),
     /// Trace-only fixed-I velocity confidence evidence became available.
     AcceptanceMatrixEvent(AcceptanceMatrixEvent),
+    /// One fixed-I velocity confidence matrix reached its terminal.
+    AcceptanceMatrixTerminal(AcceptanceMatrixTerminal),
     /// Inner commissioning failed.
     InnerFailed(CommissionError),
     /// Outer commissioning completed successfully.

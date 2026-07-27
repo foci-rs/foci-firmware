@@ -642,6 +642,47 @@ pub async fn drive_commission_result<B: CommissioningBackend>(
             }
         }
         StepResult::AcceptanceMatrixEvent(_) => CommissionOutcome::Continue,
+        #[cfg(feature = "trace-velocity-sweep")]
+        StepResult::AcceptanceMatrixTerminal(terminal) => {
+            use core::sync::atomic::Ordering::Relaxed;
+
+            let consumed = engine
+                .take()
+                .expect("engine slot is None on AcceptanceMatrixTerminal");
+            let oid = consumed.oid();
+            crate::tmc_control::lifecycle::disarm_motor(backend, state).await;
+            state.tmc.commission_in_flight.store(false, Relaxed);
+            CommissionOutcome::Terminal {
+                reply: ReplyPayload::AcceptanceMatrixTerminal { oid, terminal },
+                actions: PostActions {
+                    stop_trace: true,
+                    stepper: StepperPostAction::Stop,
+                },
+            }
+        }
+        #[cfg(not(feature = "trace-velocity-sweep"))]
+        StepResult::AcceptanceMatrixTerminal(terminal) => {
+            use core::sync::atomic::Ordering::Relaxed;
+
+            let consumed = engine
+                .take()
+                .expect("engine slot is None on AcceptanceMatrixTerminal");
+            let oid = consumed.oid();
+            crate::tmc_control::lifecycle::disarm_motor(backend, state).await;
+            state.tmc.commission_in_flight.store(false, Relaxed);
+            CommissionOutcome::Terminal {
+                reply: ReplyPayload::TuneResult {
+                    oid,
+                    status: terminal.cause as u8,
+                    result: zero_outer_result(),
+                    safety_fault: terminal.safety_fault,
+                },
+                actions: PostActions {
+                    stop_trace: true,
+                    stepper: StepperPostAction::Stop,
+                },
+            }
+        }
         StepResult::SelftestDone => {
             let mut consumed = engine.take().expect("engine slot None on SelftestDone");
             let oid = consumed.oid();
