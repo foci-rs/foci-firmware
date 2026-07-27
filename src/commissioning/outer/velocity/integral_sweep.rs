@@ -134,6 +134,7 @@ pub(super) fn positive_directional_floors_exist(data: &VelocityIntegralData) -> 
         .all(|mask| mask.count_ones() >= 3)
 }
 
+#[cfg(test)]
 pub(super) fn combined_target_status(
     data: &VelocityIntegralData,
 ) -> Option<super::combined_plan::CombinedTargetStatus> {
@@ -419,11 +420,16 @@ fn terminal_from_data(
         digest: data.integrity.digest(),
         outcome,
         cause,
+        final_p: if data.plan.combined_workflow {
+            data.plan.final_p
+        } else {
+            0
+        },
         recovery_unavailable: data.recovery_unavailable,
         recovered_with_current_headroom: data.recovered_with_current_headroom,
         recovery_quantization_exposed: data.plan.recovery_quantization_exposed,
         probe_constrained_test_point: data.plan.probe_constrained_test_point,
-        rest_boundary_rung_plus_one: 0,
+        rest_boundary_rung_plus_one: data.target_terminus.map_or(0, |rung| rung + 1),
         rest_boundary_slot_plus_one: 0,
         evidence,
         expected_observations: u16::from(data.plan.positive_rung_count.saturating_add(2))

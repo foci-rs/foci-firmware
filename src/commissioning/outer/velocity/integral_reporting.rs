@@ -11,6 +11,7 @@ use crate::commissioning::types::{
 };
 
 use super::super::state::PositiveIRestBoundary;
+use super::combined_plan::CombinedTargetStatus;
 use super::integral_evidence::{IntegralObservationClass, IntegralRungClass, IntegralRungKind};
 use super::integral_plan::{VelocityIntegralExecutionPlan, VelocityIntegralPlan};
 
@@ -21,6 +22,52 @@ pub(crate) const TERMINAL_RECOVERY_UNAVAILABLE: u8 = 1 << 0;
 pub(crate) const TERMINAL_RECOVERED_WITH_CURRENT_HEADROOM: u8 = 1 << 1;
 pub(crate) const TERMINAL_RECOVERY_QUANTIZATION_EXPOSED: u8 = 1 << 2;
 pub(crate) const TERMINAL_PROBE_CONSTRAINED_TEST_POINT: u8 = 1 << 3;
+pub(crate) const TERMINAL_COMBINED_TARGET_SHIFT: u8 = 4;
+pub(crate) const TERMINAL_COMBINED_WORKFLOW: u8 = 1 << 7;
+
+pub(crate) const fn terminal_combined_workflow(report: &VelocityIntegralTerminal) -> bool {
+    report.final_p != 0
+}
+
+pub(crate) const fn terminal_target_terminus(report: &VelocityIntegralTerminal) -> Option<u8> {
+    if terminal_combined_workflow(report)
+        && report.rest_boundary_slot_plus_one == 0
+        && report.rest_boundary_rung_plus_one != 0
+    {
+        Some(report.rest_boundary_rung_plus_one - 1)
+    } else {
+        None
+    }
+}
+
+pub(crate) fn terminal_target_status(
+    report: &VelocityIntegralTerminal,
+) -> Option<CombinedTargetStatus> {
+    if !terminal_combined_workflow(report) {
+        None
+    } else if terminal_target_terminus(report).is_some() {
+        Some(
+            if report
+                .evidence
+                .eligible_masks
+                .iter()
+                .all(|mask| mask.count_ones() >= 3)
+            {
+                CombinedTargetStatus::TargetReached
+            } else {
+                CombinedTargetStatus::TargetReachedSparse
+            },
+        )
+    } else if report.evidence.current_terminus.is_some() {
+        Some(CombinedTargetStatus::CurrentHeadroom)
+    } else if report.rest_boundary_slot_plus_one != 0
+        || report.emitted_rungs < report.expected_rungs
+    {
+        None
+    } else {
+        Some(CombinedTargetStatus::TargetNotReachedAtCap)
+    }
+}
 
 pub(crate) const fn plan_recovery_flags(plan: &VelocityIntegralPlan) -> u8 {
     let mut flags = 0;
@@ -34,11 +81,18 @@ pub(crate) const fn plan_recovery_flags(plan: &VelocityIntegralPlan) -> u8 {
 }
 
 pub(crate) fn terminal_recovery_flags(report: &VelocityIntegralTerminal) -> u8 {
-    (u8::from(report.recovery_unavailable) * TERMINAL_RECOVERY_UNAVAILABLE)
+    let mut flags = (u8::from(report.recovery_unavailable) * TERMINAL_RECOVERY_UNAVAILABLE)
         | (u8::from(report.recovered_with_current_headroom)
             * TERMINAL_RECOVERED_WITH_CURRENT_HEADROOM)
         | (u8::from(report.recovery_quantization_exposed) * TERMINAL_RECOVERY_QUANTIZATION_EXPOSED)
-        | (u8::from(report.probe_constrained_test_point) * TERMINAL_PROBE_CONSTRAINED_TEST_POINT)
+        | (u8::from(report.probe_constrained_test_point) * TERMINAL_PROBE_CONSTRAINED_TEST_POINT);
+    if terminal_combined_workflow(report) {
+        flags |= TERMINAL_COMBINED_WORKFLOW;
+        if let Some(status) = terminal_target_status(report) {
+            flags |= ((status as u8) + 1) << TERMINAL_COMBINED_TARGET_SHIFT;
+        }
+    }
+    flags
 }
 
 /// Fixed-memory sequencing and digest state for one Stage-C run.
@@ -189,6 +243,19 @@ pub(crate) fn encode_velocity_integral_plan_trace(
     core.push_u16(plan.hard_torque_limit);
     core.push_u16(plan.usable_torque_limit);
     core.push_u8(plan.limit_evidence_capability as u8);
+    if let Some(selected) = plan.combined_selected_response {
+        core.push_u8(1);
+        for interval in selected.response_intervals_q() {
+            core.push_i32(
+                i32::try_from(interval[0])
+                    .expect("validated combined response interval remains in i32"),
+            );
+            core.push_i32(
+                i32::try_from(interval[1])
+                    .expect("validated combined response interval remains in i32"),
+            );
+        }
+    }
 
     let mut schedule = VelocitySweepCanonicalRecord::new();
     schedule.push_u8(0);
@@ -260,6 +327,12 @@ pub(crate) fn encode_velocity_integral_terminal(
     record.push_u8(report.evidence.current_terminus.map_or(0, |rung| rung + 1));
     push_u64(&mut record, report.run_started_us);
     push_u64(&mut record, report.run_completed_us);
+    if terminal_combined_workflow(report) {
+        record.push_u8(1);
+        record.push_u16(report.final_p);
+        record.push_u8(terminal_target_status(report).map_or(u8::MAX, |status| status as u8));
+        record.push_u8(terminal_target_terminus(report).map_or(0, |rung| rung + 1));
+    }
     record
 }
 
@@ -329,6 +402,13 @@ fn encode_velocity_integral_plan_marker(
     record.push_u8(plan.recovery_slot_count);
     record.push_u16(plan.hard_torque_limit);
     record.push_u16(plan.usable_torque_limit);
+    if plan.combined_workflow {
+        record.push_u8(1);
+        for interval in plan.selected_response_intervals_q {
+            record.push_i32(interval[0]);
+            record.push_i32(interval[1]);
+        }
+    }
     record
 }
 
@@ -840,6 +920,7 @@ mod tests {
             digest: 0xfedc_ba98_7654_3210,
             outcome: VelocityIntegralOutcome::Complete,
             cause: 0,
+            final_p: 0,
             recovery_unavailable: false,
             recovered_with_current_headroom: false,
             recovery_quantization_exposed: false,
@@ -893,17 +974,27 @@ mod tests {
             ],
             "schema-4 terminal bytes remain unchanged"
         );
+
+        terminal.final_p = 1_448;
+        terminal.rest_boundary_rung_plus_one = 2;
+        terminal.rest_boundary_slot_plus_one = 0;
+        let combined = encode_velocity_integral_terminal(&terminal);
+        assert_eq!(
+            &combined.as_bytes()[record.as_bytes().len()..],
+            &[1, 0xa8, 0x05, 1, 2]
+        );
     }
 
     #[test]
     fn stage_c_terminal_flags_are_packed_once() {
-        let terminal = VelocityIntegralTerminal {
+        let mut terminal = VelocityIntegralTerminal {
             run_sequence: 7,
             evidence_sequence: 9,
             plan_digest: 0,
             digest: 0,
             outcome: VelocityIntegralOutcome::Inconclusive,
             cause: 8,
+            final_p: 0,
             recovery_unavailable: false,
             recovered_with_current_headroom: true,
             recovery_quantization_exposed: true,
@@ -935,6 +1026,16 @@ mod tests {
                 | TERMINAL_PROBE_CONSTRAINED_TEST_POINT
         );
         assert_eq!(terminal_recovery_flags(&terminal) & 0xf0, 0);
+        terminal.final_p = 1_448;
+        terminal.rest_boundary_rung_plus_one = 2;
+        assert_eq!(
+            terminal_recovery_flags(&terminal),
+            TERMINAL_RECOVERED_WITH_CURRENT_HEADROOM
+                | TERMINAL_RECOVERY_QUANTIZATION_EXPOSED
+                | TERMINAL_PROBE_CONSTRAINED_TEST_POINT
+                | TERMINAL_COMBINED_WORKFLOW
+                | (2 << TERMINAL_COMBINED_TARGET_SHIFT)
+        );
     }
 
     #[test]

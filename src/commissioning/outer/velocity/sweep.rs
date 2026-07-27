@@ -479,11 +479,23 @@ fn sweep_evidence_terminal(
             || candidate.map_or(0, |candidate| candidate.nomination.p.raw()),
             |selected| selected.p.raw(),
         ),
-        selected_intervals: candidate.map_or([[0; 2]; 2], |candidate| {
-            candidate
-                .directional
-                .map(|region| region.map_or([0; 2], |region| region.region.pooled_interval))
-        }),
+        selected_intervals: combined_selected.map_or_else(
+            || {
+                candidate.map_or([[0; 2]; 2], |candidate| {
+                    candidate
+                        .directional
+                        .map(|region| region.map_or([0; 2], |region| region.region.pooled_interval))
+                })
+            },
+            |selected| {
+                selected.response_intervals_q().map(|interval| {
+                    interval.map(|endpoint| {
+                        i32::try_from(endpoint)
+                            .expect("validated combined response interval remains in i32")
+                    })
+                })
+            },
+        ),
         selected_common_intervals: candidate.map_or([[0; 2]; 2], |candidate| {
             candidate
                 .directional
@@ -2183,6 +2195,12 @@ mod tests {
         let terminal = sweep_evidence_terminal(data, false, false);
         assert_eq!(terminal.outcome, VelocitySweepOutcome::Complete);
         assert_eq!(terminal.nominated_p, selected.p.raw());
+        assert_eq!(
+            terminal.selected_intervals,
+            selected
+                .response_intervals_q()
+                .map(|interval| { interval.map(|endpoint| i32::try_from(endpoint).unwrap()) })
+        );
     }
 
     #[test]

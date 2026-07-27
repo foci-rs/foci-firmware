@@ -2410,6 +2410,7 @@ mod tests {
             digest: 0x0123_4567_89ab_cdef,
             outcome: VelocityIntegralOutcome::Complete,
             cause: 0,
+            final_p: 0,
             recovery_unavailable: false,
             recovered_with_current_headroom: false,
             recovery_quantization_exposed: false,

@@ -291,6 +291,7 @@ pub(crate) fn failed_stage_c_terminal(
         digest: 0,
         outcome: VelocityIntegralOutcome::Failed,
         cause: STAGE_C_CAUSE_NO_TRANSITION_CAPABLE_OPERATING_POINT,
+        final_p: 0,
         recovery_unavailable: false,
         recovered_with_current_headroom: false,
         recovery_quantization_exposed: false,

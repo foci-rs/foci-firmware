@@ -575,7 +575,7 @@ pub struct VelocitySweepTerminal {
     pub selected_memberships: [u32; 3],
     /// Firmware-nominated proportional gain, or zero when unavailable.
     pub nominated_p: u16,
-    /// Selected forward and reverse pooled disturbance intervals.
+    /// Selected pooled disturbance intervals, or schema-9 settled-rate intervals.
     pub selected_intervals: [[i32; 2]; 2],
     /// Selected forward and reverse full-region common disturbance intervals.
     pub selected_common_intervals: [[i32; 2]; 2],
@@ -714,6 +714,9 @@ pub struct VelocityIntegralTerminal {
     pub outcome: VelocityIntegralOutcome,
     /// Dedicated Stage-C phase-local cause.
     pub cause: u8,
+    /// Fixed proportional gain for the combined response curve, or zero for
+    /// historical Stage-C terminals.
+    pub final_p: u16,
     /// Final bookend recovery could not establish the next-command origin.
     pub recovery_unavailable: bool,
     /// Final bookend recovery proved passive in-band rest after clamp contact.

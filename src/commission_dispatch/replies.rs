@@ -672,6 +672,15 @@ pub fn emit_velocity_integral_plan<S: CommissionReplySink>(
         usable_torque_limit: plan.usable_torque_limit,
     });
     for direction in 0..2 {
+        let pooled_interval = plan.combined_selected_response.map_or(
+            plan.authority.directional_pooled_intervals[direction],
+            |selected| {
+                selected.response_intervals_q()[direction].map(|endpoint| {
+                    i32::try_from(endpoint)
+                        .expect("validated combined response interval remains in i32")
+                })
+            },
+        );
         sink.foci_velocity_integral_plan_authority(FociVelocityIntegralPlanAuthority {
             oid,
             run_sequence,
@@ -681,8 +690,8 @@ pub fn emit_velocity_integral_plan<S: CommissionReplySink>(
             joint_membership: plan.authority.joint_membership,
             directional_validity: plan.authority.directional_validity[direction] as u8,
             reduced_margin: u8::from(plan.authority.reduced_margin),
-            pooled_low_q16: plan.authority.directional_pooled_intervals[direction][0],
-            pooled_high_q16: plan.authority.directional_pooled_intervals[direction][1],
+            pooled_low_q16: pooled_interval[0],
+            pooled_high_q16: pooled_interval[1],
         });
     }
     sink.foci_velocity_integral_plan_timing(FociVelocityIntegralPlanTiming {
@@ -2772,7 +2781,9 @@ mod tests {
     struct RecordingSink {
         events: Vec<Event>,
         integral_rest_boundary: Option<[u8; 2]>,
+        integral_target: Option<[u8; 2]>,
         integral_plan_joint_memberships: [u32; 2],
+        integral_plan_intervals: [[i32; 2]; 2],
     }
 
     impl CommissionReplySink for RecordingSink {
@@ -3402,6 +3413,8 @@ mod tests {
         ) {
             self.integral_plan_joint_memberships[usize::from(report.direction)] =
                 report.joint_membership;
+            self.integral_plan_intervals[usize::from(report.direction)] =
+                [report.pooled_low_q16, report.pooled_high_q16];
             self.events.push(Event::IntegralPlan(4 + report.direction));
         }
 
@@ -3534,10 +3547,22 @@ mod tests {
             &mut self,
             report: crate::ankyra::replies::FociVelocityIntegralTerminalCore,
         ) {
-            self.integral_rest_boundary = Some([
-                report.rest_boundary_rung_plus_one,
-                report.rest_boundary_slot_plus_one,
-            ]);
+            if report.fragment == 0 {
+                self.integral_rest_boundary = Some([
+                    report.rest_boundary_rung_plus_one,
+                    report.rest_boundary_slot_plus_one,
+                ]);
+                if report.recovery_flags
+                    & crate::commissioning::outer::velocity::integral_reporting::TERMINAL_COMBINED_WORKFLOW
+                    != 0
+                {
+                    let encoded = (report.recovery_flags
+                        >> crate::commissioning::outer::velocity::integral_reporting::TERMINAL_COMBINED_TARGET_SHIFT)
+                        & 0x07;
+                    self.integral_target = (encoded != 0)
+                        .then_some([encoded - 1, report.rest_boundary_rung_plus_one]);
+                }
+            }
             self.events.push(Event::IntegralTerminal(report.fragment));
         }
 
@@ -5547,6 +5572,86 @@ mod tests {
     }
 
     #[cfg(feature = "trace-velocity-sweep")]
+    fn combined_velocity_integral_plan_fixture()
+    -> crate::commissioning::outer::velocity::integral_plan::VelocityIntegralPlan {
+        use crate::commissioning::outer::OuterMotionBudget;
+        use crate::commissioning::outer::velocity::combined_plan::select_proportional_response;
+        use crate::commissioning::outer::velocity::integral_plan::plan_combined_velocity_integral_response;
+        use crate::commissioning::outer::velocity::operating_region::{
+            BoundRounding, CompactSignedRate,
+        };
+        use crate::commissioning::outer::velocity::sweep_consensus::DirectionalConsensusClass;
+        use crate::commissioning::outer::velocity::sweep_evidence::CompactDirectionalRungReport;
+        use crate::commissioning::outer::velocity::sweep_plan::{
+            RequestedVelocitySource, VelocitySweepRequest, plan_combined_velocity_sweep,
+        };
+        use foci_tmc4671::pid::PidPGain;
+
+        fn report(low_q: i64, high_q: i64) -> CompactDirectionalRungReport {
+            CompactDirectionalRungReport {
+                p: PidPGain::new(1_024).unwrap(),
+                classification: DirectionalConsensusClass::EligibleConsensus,
+                components: [[0; 2]; 2],
+                pooled: None,
+                settled_rate_bounds_q: [
+                    CompactSignedRate::encode(low_q, BoundRounding::TowardNegativeInfinity),
+                    CompactSignedRate::encode(high_q, BoundRounding::TowardPositiveInfinity),
+                    CompactSignedRate::encode(low_q, BoundRounding::TowardNegativeInfinity),
+                    CompactSignedRate::encode(high_q, BoundRounding::TowardPositiveInfinity),
+                ],
+                collected_mask: 0b1111,
+                eligible_mask: 0b1111,
+                included_mask: 0b1111,
+                operable_count: 4,
+                flags: 0,
+            }
+        }
+
+        let request = VelocitySweepRequest {
+            requested_velocity_mrev_s: 6_666,
+            machine_velocity_ceiling_mrev_s: 10_000,
+            requested_velocity_source: RequestedVelocitySource::Defaulted,
+            max_stroke_travel_mrev: 2_500,
+            settle_travel_reserve_mrev: 250,
+            negative_position_headroom_mrev: 7_025,
+            positive_position_headroom_mrev: 7_025,
+            max_duration_ms: 3_000,
+        };
+        let stage_b = plan_combined_velocity_sweep(
+            request,
+            4_000,
+            2_816,
+            crate::commissioning::outer::velocity::VELOCITY_LIMIT_EVIDENCE_CAPABILITY_BEST_EFFORT,
+        )
+        .unwrap();
+        let selected = select_proportional_response(
+            report(13_359_104, 13_492_224),
+            report(-12_968_960, -12_921_856),
+            264,
+            4_000,
+        )
+        .unwrap()
+        .unwrap();
+        plan_combined_velocity_integral_response(
+            selected,
+            stage_b.execution_plan(stage_b.digest()),
+            OuterMotionBudget {
+                requested_velocity_mrev_s: request.requested_velocity_mrev_s,
+                machine_velocity_ceiling_mrev_s: request.machine_velocity_ceiling_mrev_s,
+                requested_velocity_source: request.requested_velocity_source,
+                max_stroke_travel_mrev: request.max_stroke_travel_mrev,
+                settle_travel_reserve_mrev: request.settle_travel_reserve_mrev,
+                negative_position_headroom_mrev: request.negative_position_headroom_mrev,
+                positive_position_headroom_mrev: request.positive_position_headroom_mrev,
+                max_duration_ms: request.max_duration_ms,
+            },
+            25_000,
+            4_000,
+        )
+        .unwrap()
+    }
+
+    #[cfg(feature = "trace-velocity-sweep")]
     fn stage_b_terminal_fixture() -> VelocitySweepTerminal {
         use crate::commissioning::types::VelocitySweepOutcome;
 
@@ -5577,6 +5682,40 @@ mod tests {
             run_completed_us: 2_000,
             safety_fault: None,
         }
+    }
+
+    #[cfg(feature = "trace-velocity-sweep")]
+    #[test]
+    fn combined_velocity_flow_reuses_the_existing_reply_inventory() {
+        let source = include_str!("replies.rs");
+        for method in [
+            "fn foci_commissioning_workflow_plan(",
+            "fn foci_velocity_sweep_plan_core(",
+            "fn foci_velocity_integral_plan_core(",
+            "fn foci_velocity_integral_terminal_core(",
+        ] {
+            assert!(
+                source.contains(method),
+                "missing existing reply method {method}"
+            );
+        }
+        assert!(!source.contains(concat!("fn foci_", "combined_")));
+        assert!(!source.contains(concat!("fn foci_velocity_", "combined_")));
+    }
+
+    #[cfg(feature = "trace-velocity-sweep")]
+    #[test]
+    fn combined_integral_plan_relabels_existing_interval_fragments() {
+        let mut sink = RecordingSink::default();
+        let plan = combined_velocity_integral_plan_fixture();
+
+        emit_velocity_integral_plan(&mut sink, 3, 18, plan);
+
+        assert_eq!(sink.integral_plan_joint_memberships, [0; 2]);
+        assert_eq!(
+            sink.integral_plan_intervals,
+            plan.execution_plan().selected_response_intervals_q
+        );
     }
 
     #[cfg(feature = "trace-velocity-sweep")]
@@ -5655,6 +5794,7 @@ mod tests {
             digest: 0x5555_6666_7777_8888,
             outcome: VelocityIntegralOutcome::Inconclusive,
             cause: 7,
+            final_p: 0,
             recovery_unavailable: false,
             recovered_with_current_headroom: false,
             recovery_quantization_exposed: false,
@@ -5701,6 +5841,30 @@ mod tests {
                 .any(|event| matches!(event, Event::Tune { .. }))
         );
         assert_eq!(sink.integral_rest_boundary, Some([5, 6]));
+
+        let mut combined_terminal = terminal;
+        combined_terminal.final_p = 1_448;
+        combined_terminal.rest_boundary_rung_plus_one = 2;
+        combined_terminal.rest_boundary_slot_plus_one = 0;
+        let mut combined_sink = RecordingSink::default();
+        emit_terminal_reply(
+            &mut combined_sink,
+            ReplyPayload::VelocityIntegralTerminal {
+                oid: 3,
+                terminal: combined_terminal,
+                reproduction: None,
+                authority: None,
+            },
+        );
+        assert_eq!(combined_sink.integral_target, Some([1, 2]));
+        assert_eq!(
+            &combined_sink.events[combined_sink.events.len() - 3..],
+            &[
+                Event::IntegralTerminal(0),
+                Event::IntegralTerminal(1),
+                Event::IntegralTerminal(2),
+            ]
+        );
     }
 
     #[cfg(feature = "trace-velocity-sweep")]
@@ -5739,6 +5903,7 @@ mod tests {
             digest: 0x5555_6666_7777_8888,
             outcome: VelocityIntegralOutcome::Inconclusive,
             cause: 7,
+            final_p: 0,
             recovery_unavailable: false,
             recovered_with_current_headroom: false,
             recovery_quantization_exposed: plan.recovery_quantization_exposed,

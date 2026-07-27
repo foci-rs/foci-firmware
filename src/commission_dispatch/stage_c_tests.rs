@@ -322,6 +322,7 @@ fn terminal(
         digest: 0x1234_5678_9abc_def0,
         outcome,
         cause: 0,
+        final_p: 0,
         recovery_unavailable: false,
         recovered_with_current_headroom: false,
         recovery_quantization_exposed: plan.recovery_quantization_exposed,

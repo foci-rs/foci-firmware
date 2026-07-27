@@ -3073,9 +3073,9 @@ pub struct FociVelocityStageBTerminalInterval {
     pub fragment: u8,
     /// Direction code.
     pub direction: u8,
-    /// Exact pooled lower confidence edge.
+    /// Exact pooled lower confidence edge, or schema-9 settled-rate lower edge.
     pub pooled_low_q16: i32,
-    /// Exact pooled upper confidence edge.
+    /// Exact pooled upper confidence edge, or schema-9 settled-rate upper edge.
     pub pooled_high_q16: i32,
     /// Low monotonic start timestamp word.
     pub started_low: u32,
@@ -3280,9 +3280,9 @@ pub struct FociVelocityIntegralPlanAuthority {
     pub directional_validity: u8,
     /// Whether the selected operating component has reduced margin.
     pub reduced_margin: u8,
-    /// Retained Stage-B pooled lower interval edge.
+    /// Retained Stage-B pooled lower edge, or schema-8 selected-rate lower edge.
     pub pooled_low_q16: i32,
-    /// Retained Stage-B pooled upper interval edge.
+    /// Retained Stage-B pooled upper edge, or schema-8 selected-rate upper edge.
     pub pooled_high_q16: i32,
 }
 
@@ -3714,9 +3714,9 @@ pub struct FociVelocityIntegralTerminalCore {
     pub outcome: u8,
     /// Dedicated Stage-C cause.
     pub cause: u8,
-    /// Schema-defined recovery outcome and exposure flags.
+    /// Recovery flags; schema 8 also carries combined target status.
     pub recovery_flags: u8,
-    /// One-based positive-rung index of an active-I rest boundary, or zero.
+    /// One-based rest-boundary rung, or schema-8 target rung when no boundary exists.
     pub rest_boundary_rung_plus_one: u8,
     /// One-based observation slot of an active-I rest boundary, or zero.
     pub rest_boundary_slot_plus_one: u8,
