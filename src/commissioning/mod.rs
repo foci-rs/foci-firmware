@@ -29,7 +29,8 @@ use crate::commissioning::outer::{
 };
 #[cfg(feature = "trace-velocity-sweep")]
 use crate::commissioning::outer::{
-    VelocityIntegralData, VelocityIntegralState, VelocitySweepData, VelocitySweepState,
+    VelocityIntegralData, VelocityIntegralState, VelocitySweepData, VelocitySweepEvidenceState,
+    VelocitySweepState,
 };
 use crate::commissioning::types::{AdcCalResult, EngineKind, StepResult};
 use crate::pid::InnerLoopGains;
@@ -592,6 +593,66 @@ impl CommissioningEngine {
             .encoder_counts_per_rev()
             .ok_or(VelocityIntegralPlanError::InvalidRequest)?;
         plan_velocity_integral_response(authority, stage_b_plan, budget, pwm_hz, counts_per_rev)
+    }
+
+    /// Derive Stage C directly from the response selected in the live combined sweep.
+    #[cfg(feature = "trace-velocity-sweep")]
+    pub(crate) fn plan_combined_stage_c_continuation(
+        &self,
+        pwm_hz: u32,
+    ) -> Result<
+        crate::commissioning::outer::velocity::integral_plan::VelocityIntegralPlan,
+        crate::commissioning::outer::velocity::integral_plan::VelocityIntegralPlanError,
+    > {
+        use crate::commissioning::outer::velocity::integral_plan::{
+            VelocityIntegralPlanError, plan_combined_velocity_integral_response,
+        };
+
+        let EngineMode::Outer { phase, .. } = &self.engine_mode else {
+            return Err(VelocityIntegralPlanError::MissingStageBPlan);
+        };
+        let OuterPhase::VelocitySweep { data, safety, .. } = phase else {
+            return Err(VelocityIntegralPlanError::MissingStageBPlan);
+        };
+        let VelocitySweepEvidenceState::ResponseSelected(selected) = data.evidence else {
+            return Err(VelocityIntegralPlanError::MissingAuthority);
+        };
+        let counts_per_rev = self
+            .tmc_state
+            .encoder_counts_per_rev()
+            .ok_or(VelocityIntegralPlanError::InvalidRequest)?;
+        plan_combined_velocity_integral_response(
+            selected,
+            data.plan,
+            safety.budget,
+            pwm_hz,
+            counts_per_rev,
+        )
+    }
+
+    /// Whether the active terminal belongs to the nonretained combined Stage-B schema.
+    #[cfg(feature = "trace-velocity-sweep")]
+    pub(crate) fn is_combined_stage_b(&self) -> bool {
+        matches!(
+            &self.engine_mode,
+            EngineMode::Outer {
+                phase: OuterPhase::VelocitySweep { data, .. },
+                ..
+            } if data.plan.schema_revision
+                == crate::commissioning::outer::velocity::combined_plan::COMBINED_STAGE_B_SCHEMA_REVISION
+        )
+    }
+
+    /// Whether the active terminal belongs to the nonretained combined Stage-C schema.
+    #[cfg(feature = "trace-velocity-sweep")]
+    pub(crate) fn is_combined_stage_c(&self) -> bool {
+        matches!(
+            &self.engine_mode,
+            EngineMode::Outer {
+                phase: OuterPhase::VelocityIntegral { data, .. },
+                ..
+            } if data.plan.combined_workflow
+        )
     }
 
     /// Transition a live reproduced Stage-B engine into a prederived Stage-C plan.

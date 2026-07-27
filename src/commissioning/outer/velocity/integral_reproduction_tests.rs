@@ -396,7 +396,7 @@ fn q8_8_package_authority_rejects_before_stage_c_motion() {
 
 #[test]
 fn stage_c_candidate_size_is_measured_without_padding() {
-    assert_eq!(core::mem::size_of::<VelocityIntegralPlan>(), 208);
+    assert_eq!(core::mem::size_of::<VelocityIntegralPlan>(), 224);
     assert_eq!(core::mem::size_of::<VelocityIntegralExecutionPlan>(), 72);
     assert_eq!(core::mem::size_of::<StageCAuthoritySummary>(), 88);
     assert_eq!(

@@ -402,8 +402,27 @@ fn sweep_evidence_terminal(
     );
     let model_direction_mask = data.operating_regions.handoff.model_direction_mask();
     let candidate = selected_candidate(data);
-    let (mut outcome, mut cause) = if recovery_failure {
+    let combined_selected = match data.evidence {
+        VelocitySweepEvidenceState::ResponseSelected(selected)
+            if plan.schema_revision == COMBINED_STAGE_B_SCHEMA_REVISION =>
+        {
+            Some(selected)
+        }
+        _ => None,
+    };
+    let (mut outcome, mut cause) = if combined_selected.is_some() {
+        (VelocitySweepOutcome::Complete, SWEEP_CAUSE_NONE)
+    } else if recovery_failure {
         (VelocitySweepOutcome::Inconclusive, SWEEP_CAUSE_RECOVERY)
+    } else if plan.schema_revision == COMBINED_STAGE_B_SCHEMA_REVISION {
+        (
+            VelocitySweepOutcome::Inconclusive,
+            if current_headroom {
+                SWEEP_CAUSE_CURRENT_HEADROOM
+            } else {
+                SWEEP_CAUSE_NO_JOINT_OPERABLE_REGION
+            },
+        )
     } else if candidate.is_some() {
         (
             VelocitySweepOutcome::CompleteCandidate,
@@ -423,7 +442,8 @@ fn sweep_evidence_terminal(
         .saturating_mul(plan.observations_per_direction)
         .saturating_mul(2);
     let expected_rungs = u16::from(plan.rung_count);
-    if !current_headroom
+    if combined_selected.is_none()
+        && !current_headroom
         && !recovery_failure
         && (data.integrity.emitted_observations() != expected_observations
             || data.integrity.emitted_rungs() != expected_rungs)
@@ -455,7 +475,10 @@ fn sweep_evidence_terminal(
                 candidate.joint_union,
             ]
         }),
-        nominated_p: candidate.map_or(0, |candidate| candidate.nomination.p.raw()),
+        nominated_p: combined_selected.map_or_else(
+            || candidate.map_or(0, |candidate| candidate.nomination.p.raw()),
+            |selected| selected.p.raw(),
+        ),
         selected_intervals: candidate.map_or([[0; 2]; 2], |candidate| {
             candidate
                 .directional
@@ -2157,6 +2180,9 @@ mod tests {
             panic!("selection must become visible only after recovery");
         };
         assert_eq!(selected.p, data.plan.gain_at(0).unwrap());
+        let terminal = sweep_evidence_terminal(data, false, false);
+        assert_eq!(terminal.outcome, VelocitySweepOutcome::Complete);
+        assert_eq!(terminal.nominated_p, selected.p.raw());
     }
 
     #[test]

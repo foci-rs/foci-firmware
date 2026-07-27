@@ -601,6 +601,7 @@ mod tests {
                     [-19_000_000, -18_000_000],
                 ],
             },
+            combined_selected_response: None,
             final_p: 1_448,
             planned_velocity_mrev_s: 4_394,
             target_velocity_rpm: 264,
@@ -704,6 +705,7 @@ mod tests {
             usable_torque_limit: 2_534,
             limit_evidence_capability:
                 super::super::current_guard::VelocityLimitEvidenceCapability::BestEffortPolling,
+            combined_workflow: false,
             recovery_quantization_exposed: true,
             probe_constrained_test_point: false,
         }

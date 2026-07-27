@@ -62,7 +62,8 @@ pub(crate) use state::{
 pub(crate) use state::{PositiveIRestBoundary, VelocitySettleMetrics};
 #[cfg(feature = "trace-velocity-sweep")]
 pub(crate) use state::{
-    VelocityIntegralData, VelocityIntegralState, VelocitySweepData, VelocitySweepState,
+    VelocityIntegralData, VelocityIntegralState, VelocitySweepData, VelocitySweepEvidenceState,
+    VelocitySweepState,
 };
 pub(crate) use trace::{
     TraceSummarySeqs, trace_diagnostic_warning, trace_pack_i16_pair, trace_pack_u16_pair,

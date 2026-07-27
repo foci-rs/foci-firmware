@@ -1291,6 +1291,44 @@ pub async fn drive_velocity_integral_terminal_with_stages<B: CommissioningBacken
     {
         backend.record_velocity_sweep_trace_record(record);
     }
+    if engine
+        .as_ref()
+        .is_some_and(CommissioningEngine::is_combined_stage_c)
+    {
+        if !disarm_velocity_workflow(engine, backend, state).await {
+            terminal.outcome = crate::commissioning::types::VelocityIntegralOutcome::Fault;
+            terminal.cause = crate::autotune::CommissionError::Spi.status_code();
+            terminal.recovery_unavailable = true;
+            terminal.safety_fault = None;
+        }
+        engine
+            .as_mut()
+            .expect("engine slot is None on combined VelocityIntegralTerminal")
+            .emit_stage_c_terminal_trace(backend, &terminal, None);
+        return match drive_commission_result(
+            StepResult::VelocityIntegralTerminal(terminal),
+            engine,
+            backend,
+            state,
+            pwm_maxcnt,
+        )
+        .await
+        {
+            CommissionOutcome::Terminal {
+                reply: ReplyPayload::VelocityIntegralTerminal { oid, terminal, .. },
+                actions,
+            } => CommissionOutcome::Terminal {
+                reply: ReplyPayload::VelocityIntegralTerminal {
+                    oid,
+                    terminal,
+                    reproduction: None,
+                    authority: None,
+                },
+                actions,
+            },
+            _ => unreachable!("combined velocity-integral terminal was not terminal"),
+        };
+    }
     let mut dispatch = stage_c::apply_stage_c_terminal(terminal, retention.stage_c);
     if !disarm_velocity_workflow(engine, backend, state).await {
         retention.stage_c.observe_fault();
@@ -1342,6 +1380,99 @@ pub async fn drive_commission_result_with_stages<B: CommissioningBackend>(
     retention: CommissionRetention<'_>,
 ) -> CommissionOutcome {
     match result {
+        StepResult::VelocitySweepTerminal(mut terminal)
+            if engine
+                .as_ref()
+                .is_some_and(CommissioningEngine::is_combined_stage_b) =>
+        {
+            if terminal.outcome != crate::commissioning::types::VelocitySweepOutcome::Complete {
+                if !disarm_velocity_workflow(engine, backend, state).await {
+                    terminal.outcome = crate::commissioning::types::VelocitySweepOutcome::Fault;
+                    terminal.cause = crate::autotune::CommissionError::Spi.status_code();
+                    terminal.recovery_unavailable = true;
+                    terminal.safety_fault = None;
+                }
+                engine
+                    .as_mut()
+                    .expect("engine slot is None on combined VelocitySweepTerminal")
+                    .emit_stage_b_terminal_trace(backend, terminal, None);
+                return match drive_commission_result(
+                    StepResult::VelocitySweepTerminal(terminal),
+                    engine,
+                    backend,
+                    state,
+                    pwm_maxcnt,
+                )
+                .await
+                {
+                    CommissionOutcome::Terminal {
+                        reply: ReplyPayload::VelocitySweepTerminal { oid, terminal, .. },
+                        actions,
+                    } => CommissionOutcome::Terminal {
+                        reply: ReplyPayload::VelocitySweepTerminal {
+                            oid,
+                            terminal,
+                            reproduction: None,
+                        },
+                        actions,
+                    },
+                    _ => unreachable!("combined velocity-sweep terminal was not terminal"),
+                };
+            }
+
+            let engine_ref = engine
+                .as_mut()
+                .expect("engine slot is None on combined VelocitySweepTerminal");
+            let oid = engine_ref.oid();
+            let stage_c_plan = match engine_ref
+                .plan_combined_stage_c_continuation(backend.tmc_config().pwm_freq_hz())
+            {
+                Ok(plan) => plan,
+                Err(_) => {
+                    engine_ref.emit_outer_safety_timing_trace(backend, terminal.run_sequence);
+                    return drive_commission_result(
+                        StepResult::OuterFailed(crate::autotune::CommissionError::InvalidSchedule),
+                        engine,
+                        backend,
+                        state,
+                        pwm_maxcnt,
+                    )
+                    .await;
+                }
+            };
+            engine_ref.emit_stage_b_terminal_evidence(backend, terminal, None);
+            if engine_ref
+                .begin_stage_c_continuation_with_plan(stage_c_plan)
+                .is_err()
+            {
+                engine_ref.emit_outer_safety_timing_trace(backend, terminal.run_sequence);
+                return drive_commission_result(
+                    StepResult::OuterFailed(crate::autotune::CommissionError::InvalidSchedule),
+                    engine,
+                    backend,
+                    state,
+                    pwm_maxcnt,
+                )
+                .await;
+            }
+            for record in
+                crate::commissioning::outer::velocity::integral_reporting::encode_velocity_integral_plan_trace(
+                    terminal.run_sequence,
+                    stage_c_plan,
+                )
+            {
+                backend.record_velocity_sweep_trace_record(record);
+            }
+            CommissionOutcome::Evidence {
+                reply: ReplyPayload::VelocityIntegralContinuation {
+                    oid,
+                    run_sequence: terminal.run_sequence,
+                    stage_b_terminal: terminal,
+                    stage_b_reproduction: None,
+                    stage_c_plan,
+                },
+            }
+        }
         StepResult::VelocitySweepTerminal(terminal) => {
             let mut dispatch =
                 stage_b::apply_stage_b_terminal(terminal, channel, retention.stage_b);

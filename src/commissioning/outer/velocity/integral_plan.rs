@@ -188,6 +188,8 @@ pub struct VelocityIntegralPlan {
     pub schema_revision: u16,
     /// Reproduced Stage-B authority.
     pub authority: StageCAuthority,
+    /// Live response-selected origin for a nonretained combined workflow.
+    pub combined_selected_response: Option<super::combined_plan::CombinedSelectedResponse>,
     /// Fixed proportional gain.
     pub final_p: u16,
     /// Frozen encoder-domain amplitude.
@@ -274,6 +276,16 @@ impl VelocityIntegralPlan {
             hash_value!(interval[0]);
             hash_value!(interval[1]);
         }
+        if self.schema_revision == super::combined_plan::COMBINED_STAGE_C_SCHEMA_REVISION {
+            hash_value!(u8::from(self.combined_selected_response.is_some()));
+            if let Some(selected) = self.combined_selected_response {
+                hash_value!(selected.p.raw());
+                for interval in selected.response_intervals_q() {
+                    hash_value!(interval[0]);
+                    hash_value!(interval[1]);
+                }
+            }
+        }
         hash_value!(self.planned_velocity_mrev_s);
         hash_value!(self.target_velocity_rpm);
         hash_value!(self.pwm_hz);
@@ -333,6 +345,7 @@ impl VelocityIntegralPlan {
             hard_torque_limit: self.hard_torque_limit,
             usable_torque_limit: self.usable_torque_limit,
             limit_evidence_capability: self.limit_evidence_capability,
+            combined_workflow: self.combined_selected_response.is_some(),
             recovery_quantization_exposed: self.recovery_quantization_exposed,
             probe_constrained_test_point: self.probe_constrained_test_point,
         }
@@ -382,6 +395,8 @@ pub struct VelocityIntegralExecutionPlan {
     pub usable_torque_limit: u16,
     /// Available authority for proving absence of transient clamp contact.
     pub(crate) limit_evidence_capability: VelocityLimitEvidenceCapability,
+    /// This execution continues directly from a live schema-9 response selection.
+    pub combined_workflow: bool,
     /// One opposite-sign meter quantum can contact the probe clamp during recovery.
     pub recovery_quantization_exposed: bool,
     /// The commissioning probe clamp removed at least one Stage-B-operable rung.
@@ -673,16 +688,6 @@ pub(crate) fn plan_velocity_integral_response(
     authority.stage_b_joint_membership = selection.stage_b_joint_membership;
     authority.joint_membership = selection.joint_membership;
     authority.reduced_margin = selection.reduced_margin;
-    let motion_request = VelocitySweepRequest {
-        requested_velocity_mrev_s: motion_budget.requested_velocity_mrev_s,
-        machine_velocity_ceiling_mrev_s: motion_budget.machine_velocity_ceiling_mrev_s,
-        requested_velocity_source: motion_budget.requested_velocity_source,
-        max_stroke_travel_mrev: motion_budget.max_stroke_travel_mrev,
-        settle_travel_reserve_mrev: motion_budget.settle_travel_reserve_mrev,
-        negative_position_headroom_mrev: motion_budget.negative_position_headroom_mrev,
-        positive_position_headroom_mrev: motion_budget.positive_position_headroom_mrev,
-        max_duration_ms: motion_budget.max_duration_ms,
-    };
     if authority.joint_membership == 0
         || authority
             .directional_pooled_intervals
@@ -702,7 +707,103 @@ pub(crate) fn plan_velocity_integral_response(
                     }
                 }
             })
-        || encoder_counts_per_rev == 0
+    {
+        return Err(VelocityIntegralPlanError::InvalidRequest);
+    }
+    plan_velocity_integral_response_from_source(
+        IntegralPlanSource {
+            authority,
+            combined_selected_response: None,
+            final_p: selection.final_p,
+            schema_revision: STAGE_C_EVIDENCE_SCHEMA_REVISION,
+            append_exact_cap: false,
+            probe_constrained_test_point: selection.probe_constrained_test_point,
+        },
+        stage_b_plan,
+        motion_budget,
+        pwm_hz,
+        encoder_counts_per_rev,
+    )
+}
+
+/// Construct a nonretained Stage-C plan from the live selected Stage-B response.
+pub(crate) fn plan_combined_velocity_integral_response(
+    selected: super::combined_plan::CombinedSelectedResponse,
+    stage_b_plan: VelocitySweepExecutionPlan,
+    motion_budget: OuterMotionBudget,
+    pwm_hz: u32,
+    encoder_counts_per_rev: u32,
+) -> Result<VelocityIntegralPlan, VelocityIntegralPlanError> {
+    if stage_b_plan.schema_revision != super::combined_plan::COMBINED_STAGE_B_SCHEMA_REVISION
+        || stage_b_plan.gain_at(
+            (0..stage_b_plan.rung_count)
+                .find(|index| stage_b_plan.gain_at(*index) == Some(selected.p))
+                .ok_or(VelocityIntegralPlanError::InvalidRequest)?,
+        ) != Some(selected.p)
+        || !transition_capable_stage_c_gain(
+            selected.p.raw(),
+            stage_b_plan.target_velocity_rpm.raw(),
+            encoder_counts_per_rev,
+            pwm_hz,
+            MOVING_STROKE_US,
+            stage_b_plan.usable_torque_limit,
+        )?
+    {
+        return Err(VelocityIntegralPlanError::InvalidRequest);
+    }
+    plan_velocity_integral_response_from_source(
+        IntegralPlanSource {
+            authority: StageCAuthority {
+                channel: 0,
+                stage_b_plan_digest: stage_b_plan.plan_digest,
+                directional_memberships: [0; 2],
+                stage_b_joint_membership: 0,
+                joint_membership: 0,
+                directional_validity: [StageBDirectionalValidity::NoRegion; 2],
+                reduced_margin: false,
+                directional_pooled_intervals: [[0; 2]; 2],
+            },
+            combined_selected_response: Some(selected),
+            final_p: selected.p.raw(),
+            schema_revision: super::combined_plan::COMBINED_STAGE_C_SCHEMA_REVISION,
+            append_exact_cap: true,
+            probe_constrained_test_point: false,
+        },
+        stage_b_plan,
+        motion_budget,
+        pwm_hz,
+        encoder_counts_per_rev,
+    )
+}
+
+#[derive(Debug, Clone, Copy)]
+struct IntegralPlanSource {
+    authority: StageCAuthority,
+    combined_selected_response: Option<super::combined_plan::CombinedSelectedResponse>,
+    final_p: u16,
+    schema_revision: u16,
+    append_exact_cap: bool,
+    probe_constrained_test_point: bool,
+}
+
+fn plan_velocity_integral_response_from_source(
+    source: IntegralPlanSource,
+    stage_b_plan: VelocitySweepExecutionPlan,
+    motion_budget: OuterMotionBudget,
+    pwm_hz: u32,
+    encoder_counts_per_rev: u32,
+) -> Result<VelocityIntegralPlan, VelocityIntegralPlanError> {
+    let motion_request = VelocitySweepRequest {
+        requested_velocity_mrev_s: motion_budget.requested_velocity_mrev_s,
+        machine_velocity_ceiling_mrev_s: motion_budget.machine_velocity_ceiling_mrev_s,
+        requested_velocity_source: motion_budget.requested_velocity_source,
+        max_stroke_travel_mrev: motion_budget.max_stroke_travel_mrev,
+        settle_travel_reserve_mrev: motion_budget.settle_travel_reserve_mrev,
+        negative_position_headroom_mrev: motion_budget.negative_position_headroom_mrev,
+        positive_position_headroom_mrev: motion_budget.positive_position_headroom_mrev,
+        max_duration_ms: motion_budget.max_duration_ms,
+    };
+    if encoder_counts_per_rev == 0
         || motion_request.requested_velocity_mrev_s == 0
         || motion_request.machine_velocity_ceiling_mrev_s == 0
         || motion_request.max_stroke_travel_mrev == 0
@@ -713,12 +814,21 @@ pub(crate) fn plan_velocity_integral_response(
     {
         return Err(VelocityIntegralPlanError::InvalidRequest);
     }
-    let ladder = build_integral_ladder(
-        pwm_hz,
-        MOVING_STROKE_US,
-        MIN_SETTLE_CAPTURE_US,
-        OUTER_MAX_VELOCITY_I,
-    )?;
+    let ladder = if source.append_exact_cap {
+        super::combined_plan::build_combined_integral_ladder(
+            pwm_hz,
+            MOVING_STROKE_US,
+            MIN_SETTLE_CAPTURE_US,
+            OUTER_MAX_VELOCITY_I,
+        )?
+    } else {
+        build_integral_ladder(
+            pwm_hz,
+            MOVING_STROKE_US,
+            MIN_SETTLE_CAPTURE_US,
+            OUTER_MAX_VELOCITY_I,
+        )?
+    };
     let positive_rung_count =
         u8::try_from(ladder.rungs.len()).map_err(|_| VelocityIntegralPlanError::Arithmetic)?;
     let total_rung_count = positive_rung_count
@@ -764,7 +874,7 @@ pub(crate) fn plan_velocity_integral_response(
     let mut positive_i = [0; STAGE_C_MAX_POSITIVE_RUNGS];
     positive_i[..ladder.rungs.len()].copy_from_slice(ladder.rungs.as_slice());
     let recovery_quantization_exposed = recovery_quantization_exposed(
-        selection.final_p,
+        source.final_p,
         stage_b_plan.target_velocity_rpm.raw(),
         encoder_counts_per_rev,
         pwm_hz,
@@ -773,9 +883,10 @@ pub(crate) fn plan_velocity_integral_response(
 
     Ok(VelocityIntegralPlan {
         build_revision: STAGE_B_BUILD_REVISION,
-        schema_revision: STAGE_C_EVIDENCE_SCHEMA_REVISION,
-        authority,
-        final_p: selection.final_p,
+        schema_revision: source.schema_revision,
+        authority: source.authority,
+        combined_selected_response: source.combined_selected_response,
+        final_p: source.final_p,
         planned_velocity_mrev_s: stage_b_plan.planned_velocity_mrev_s,
         target_velocity_rpm: stage_b_plan.target_velocity_rpm.raw(),
         pwm_hz,
@@ -798,7 +909,7 @@ pub(crate) fn plan_velocity_integral_response(
         usable_torque_limit: stage_b_plan.usable_torque_limit,
         limit_evidence_capability: stage_b_plan.limit_evidence_capability,
         recovery_quantization_exposed,
-        probe_constrained_test_point: selection.probe_constrained_test_point,
+        probe_constrained_test_point: source.probe_constrained_test_point,
         motion_request,
     })
 }
