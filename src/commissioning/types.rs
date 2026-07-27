@@ -717,6 +717,87 @@ pub enum VelocityIntegralOutcome {
     Failed = 5,
 }
 
+/// Firmware-owned terminal outcome for one fixed velocity confidence matrix.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+#[repr(u8)]
+pub enum AcceptanceMatrixOutcome {
+    /// The declared schedule closed with at least three eligible amplitudes per direction.
+    Complete = 0,
+    /// Motion stayed safe but the directional floor was not met.
+    Inconclusive = 1,
+    /// A firmware safety or evidence-integrity invariant failed.
+    Fault = 2,
+    /// Admission rejected before motion.
+    Failed = 3,
+}
+
+/// Matrix-local terminal cause; never mirrored into generic commissioning status.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+#[repr(u8)]
+pub enum AcceptanceMatrixCause {
+    /// No failure or insufficiency.
+    None = 0,
+    /// Fewer than three shared amplitudes remained in at least one direction.
+    InsufficientSharedFloor = 1,
+    /// A required return to the immutable origin could not be proved.
+    RecoveryUnavailable = 2,
+    /// No RAM-only acceptance point exists.
+    MissingAcceptancePoint = 3,
+    /// The retained point does not bind the reconstructed plan.
+    AcceptancePointIdentityMismatch = 4,
+    /// The requested order contradicts retained matrix progress.
+    MatrixOrderMismatch = 5,
+    /// Fixed evidence storage was exhausted.
+    EvidenceCapacity = 6,
+    /// Canonical counts, masks, or identities violated their contract.
+    EvidenceIntegrity = 7,
+}
+
+/// Compact terminal for one acceptance-matrix acquisition.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+pub struct AcceptanceMatrixTerminal {
+    /// Independent matrix evidence schema.
+    pub schema_revision: u16,
+    /// Caller-assigned run sequence.
+    pub run_sequence: u32,
+    /// Terminal evidence sequence.
+    pub evidence_sequence: u16,
+    /// Exact retained combined-plan identity.
+    pub acceptance_plan_digest: u64,
+    /// Exact matrix-plan digest.
+    pub plan_digest: u64,
+    /// Rolling canonical matrix evidence digest.
+    pub digest: u64,
+    /// Matrix-local terminal class.
+    pub outcome: AcceptanceMatrixOutcome,
+    /// Matrix-local terminal cause.
+    pub cause: AcceptanceMatrixCause,
+    /// Per-direction amplitudes whose schedules began.
+    pub attempted_masks: [u8; 2],
+    /// Per-direction amplitudes with unique depth-three consensus.
+    pub eligible_masks: [u8; 2],
+    /// Per-direction amplitudes ending on current headroom.
+    pub current_terminus_masks: [u8; 2],
+    /// Per-direction amplitudes not reached by the declared order.
+    pub unattempted_masks: [u8; 2],
+    /// Number of observation records required by the plan.
+    pub expected_observations: u16,
+    /// Number of observation records emitted.
+    pub emitted_observations: u16,
+    /// Number of amplitude records required by the plan.
+    pub expected_amplitudes: u8,
+    /// Number of amplitude records emitted.
+    pub emitted_amplitudes: u8,
+    /// Packed inherited validity and evidence-quality qualifiers.
+    pub qualifier_bits: u16,
+    /// Monotonic timestamp before the first matrix motion.
+    pub run_started_us: u64,
+    /// Monotonic timestamp after the final matrix action.
+    pub run_completed_us: u64,
+    /// Exact safety-fault context, when present.
+    pub safety_fault: Option<OuterSafetyFault>,
+}
+
 /// Detailed Stage-C terminal retained for lifecycle and canonical reporting.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub struct VelocityIntegralTerminal {
@@ -1415,5 +1496,30 @@ mod commission_timing_tests {
         assert_ne!(packed & (1 << 7), 0);
         assert_eq!((packed >> 8) & 0xff, 0xff);
         assert_eq!(packed >> 16, 0xffff);
+    }
+}
+
+#[cfg(test)]
+mod acceptance_matrix_code_tests {
+    use super::{AcceptanceMatrixCause, AcceptanceMatrixOutcome};
+
+    #[test]
+    fn acceptance_matrix_wire_namespace_is_stable() {
+        assert_eq!(AcceptanceMatrixOutcome::Complete as u8, 0);
+        assert_eq!(AcceptanceMatrixOutcome::Inconclusive as u8, 1);
+        assert_eq!(AcceptanceMatrixOutcome::Fault as u8, 2);
+        assert_eq!(AcceptanceMatrixOutcome::Failed as u8, 3);
+
+        assert_eq!(AcceptanceMatrixCause::None as u8, 0);
+        assert_eq!(AcceptanceMatrixCause::InsufficientSharedFloor as u8, 1);
+        assert_eq!(AcceptanceMatrixCause::RecoveryUnavailable as u8, 2);
+        assert_eq!(AcceptanceMatrixCause::MissingAcceptancePoint as u8, 3);
+        assert_eq!(
+            AcceptanceMatrixCause::AcceptancePointIdentityMismatch as u8,
+            4
+        );
+        assert_eq!(AcceptanceMatrixCause::MatrixOrderMismatch as u8, 5);
+        assert_eq!(AcceptanceMatrixCause::EvidenceCapacity as u8, 6);
+        assert_eq!(AcceptanceMatrixCause::EvidenceIntegrity as u8, 7);
     }
 }
