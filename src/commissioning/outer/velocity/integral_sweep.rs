@@ -863,9 +863,10 @@ pub(crate) async fn step_velocity_integral_with_trace<B: CommissioningBackend>(
                     return fail_integral(phase, backend, CommissionError::InvalidSchedule).await;
                 }
             };
-            let mut clamp_session = match VelocityCurrentClampSession::try_new(u32::from(
-                data.plan.hard_torque_limit,
-            )) {
+            let mut clamp_session = match VelocityCurrentClampSession::try_new_with_limit(
+                u32::from(data.plan.hard_torque_limit),
+                u32::from(data.plan.usable_torque_limit),
+            ) {
                 Ok(session) if session.probe_limit().raw() == data.plan.usable_torque_limit => {
                     session
                 }

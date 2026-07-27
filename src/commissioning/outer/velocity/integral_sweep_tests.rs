@@ -28,7 +28,9 @@ use crate::commissioning::outer::{
 };
 use crate::commissioning::types::{StepResult, VelocityIntegralEvent, VelocityIntegralOutcome};
 use foci_tmc4671::pid::{PidGainPair, PidIGain, PidPGain};
-use foci_tmc4671::registers::{PID_VELOCITY_P_VELOCITY_I, PID_VELOCITY_TARGET};
+use foci_tmc4671::registers::{
+    PID_TORQUE_FLUX_LIMITS, PID_VELOCITY_P_VELOCITY_I, PID_VELOCITY_TARGET,
+};
 
 #[test]
 fn velocity_integral_outcome_codes_preserve_rest_boundary_causes() {
@@ -1179,6 +1181,34 @@ fn setup_and_first_command_preserve_plan_before_motion_and_clear_integrator() {
     assert!(backend.spi_log.iter().any(|operation| {
         matches!(operation, SpiOp::Write(address, value)
             if *address == PID_VELOCITY_TARGET.addr() && *value == 176)
+    }));
+}
+
+#[test]
+fn combined_opening_anchor_uses_the_declared_operational_clamp() {
+    let mut phase = phase();
+    let mut workspace = TransientBuffer::new();
+    let OuterPhase::VelocityIntegral { data, .. } = &mut phase else {
+        unreachable!()
+    };
+    data.plan.combined_workflow = true;
+    data.plan.usable_torque_limit = data.plan.hard_torque_limit;
+    let mut backend = MockBackend::new();
+    backend.current_limit_value = current_limit(2_816);
+
+    for _ in 0..3 {
+        assert!(matches!(
+            step(&mut phase, &mut workspace, &mut backend),
+            StepResult::ReadyNow
+        ));
+    }
+    assert!(matches!(
+        step(&mut phase, &mut workspace, &mut backend),
+        StepResult::At(1_000)
+    ));
+    assert!(backend.spi_log.iter().any(|operation| {
+        matches!(operation, SpiOp::Write(address, value)
+            if *address == PID_TORQUE_FLUX_LIMITS.addr() && *value == 2_816)
     }));
 }
 
