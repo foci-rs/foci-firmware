@@ -1859,15 +1859,8 @@ pub(crate) async fn step_velocity_integral_with_trace<B: CommissioningBackend>(
                 });
                 *state = VelocityIntegralState::BeginPositiveIRestCleanup;
             } else if !settle_result.confirmed_rest && !data.observation_current_headroom {
-                let error = if matches!(
-                    integral_rung_kind(data.plan, data.rung_index),
-                    IntegralRungKind::OpeningAnchor | IntegralRungKind::ClosingBookend
-                ) {
-                    CommissionError::VelocityRestNotConfirmed
-                } else {
-                    CommissionError::VelocityValidationFailed
-                };
-                return fail_integral(phase, backend, error).await;
+                return fail_integral(phase, backend, CommissionError::VelocityRestNotConfirmed)
+                    .await;
             } else {
                 safety.end_primitive();
             }
