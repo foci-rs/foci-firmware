@@ -9,10 +9,11 @@ use crate::commissioning::outer::{OuterPhase, VelocitySweepState};
 use crate::commissioning::schedule::next_grid_deadline;
 use crate::commissioning::types::{
     OUTER_SAFETY_FAULT_CURRENT, OUTER_SAFETY_FAULT_OBSERVATION_GAP,
-    OUTER_SAFETY_FAULT_QUARTER_TURN, OuterSafetyFault, RungOriginRecoveryEvidence, StepResult,
-    StructuredBoundaryEvidence, VelocityDirectionalRegionReport, VelocityJointRegionReport,
-    VelocityPrimitiveCurrentEvidence, VelocitySweepEvent, VelocitySweepObservation,
-    VelocitySweepOutcome, VelocitySweepRungReport, VelocitySweepTerminal,
+    OUTER_SAFETY_FAULT_QUARTER_TURN, OuterSafetyFault, RungOriginRecoveryEvidence,
+    SelectedRecoveryRestDiagnostic, StepResult, StructuredBoundaryEvidence,
+    VelocityDirectionalRegionReport, VelocityJointRegionReport, VelocityPrimitiveCurrentEvidence,
+    VelocitySweepEvent, VelocitySweepObservation, VelocitySweepOutcome, VelocitySweepRungReport,
+    VelocitySweepTerminal,
 };
 use foci_tmc4671::current_limit::PidTorqueFluxLimit;
 use foci_tmc4671::pid::PidGainPair;
@@ -1618,7 +1619,47 @@ pub(crate) async fn step_velocity_sweep_with_trace<B: CommissioningBackend>(
                     };
                     StepResult::ReadyNow
                 }
-                RungOriginRecoveryStep::SelectedRestAnalysis(_) => StepResult::ReadyNow,
+                RungOriginRecoveryStep::SelectedRestAnalysis(analysis) => {
+                    let event = data
+                        .integrity
+                        .record(VelocitySweepEvent::SelectedRecoveryRest(
+                            SelectedRecoveryRestDiagnostic {
+                                plan_digest: data.plan.plan_digest,
+                                exact_velocity_interval_q: analysis.exact_velocity_interval_q,
+                                run_sequence: data.integrity.run_sequence(),
+                                start_offset_counts: analysis.start_offset_counts,
+                                closest_offset_counts: analysis.closest_offset_counts,
+                                final_offset_counts: analysis.final_offset_counts,
+                                planned_return_distance_counts: analysis
+                                    .planned_return_distance_counts,
+                                first_in_band_offset_counts: analysis.first_in_band_offset_counts,
+                                displacement_to_band_counts: analysis.displacement_to_band_counts,
+                                entry_to_band_duration_us: analysis.entry_to_band_duration_us,
+                                lead_in_net_displacement_counts: analysis
+                                    .lead_in
+                                    .net_displacement_counts,
+                                lead_in_displacement_span_counts: analysis
+                                    .lead_in
+                                    .displacement_span_counts,
+                                scored_net_displacement_counts: analysis
+                                    .scored_net_displacement_counts,
+                                scored_min_displacement_counts: analysis
+                                    .scored_min_displacement_counts,
+                                scored_max_displacement_counts: analysis
+                                    .scored_max_displacement_counts,
+                                p_raw: analysis.p_raw,
+                                evidence_sequence: data.integrity.next_evidence_sequence(),
+                                peak_torque_target_abs: analysis.peak_torque_target_abs,
+                                stage: analysis.stage,
+                                rung_index: analysis.rung_index,
+                                stationarity_code: analysis.stationarity_code,
+                                interval_present: analysis.interval_present,
+                                current_contact_code: analysis.current_contact_code,
+                                disposition: analysis.disposition,
+                            },
+                        ));
+                    StepResult::VelocitySweepEvent(event)
+                }
                 RungOriginRecoveryStep::RestUnconfirmed => {
                     let selected = selected.expect("selected rest belongs to a selected response");
                     data.evidence = VelocitySweepEvidenceState::ResponseSelected(selected);
@@ -2220,6 +2261,10 @@ mod tests {
                 .response_intervals_q()
                 .map(|interval| { interval.map(|endpoint| i32::try_from(endpoint).unwrap()) })
         );
+        let unavailable = sweep_evidence_terminal(data, false, true);
+        assert_eq!(unavailable.outcome, VelocitySweepOutcome::Inconclusive);
+        assert_eq!(unavailable.cause, SWEEP_CAUSE_RECOVERY);
+        assert!(unavailable.recovery_unavailable);
     }
 
     #[test]
@@ -3537,6 +3582,9 @@ mod tests {
                         VelocitySweepEvent::Observation(report) => report.evidence_sequence,
                         VelocitySweepEvent::Rung(report) => report.evidence_sequence,
                         VelocitySweepEvent::Recovery(report) => report.evidence_sequence,
+                        VelocitySweepEvent::SelectedRecoveryRest(report) => {
+                            report.evidence_sequence
+                        }
                         VelocitySweepEvent::Current(report) => report.evidence_sequence,
                         VelocitySweepEvent::DirectionalRegion(report) => report.evidence_sequence,
                         VelocitySweepEvent::JointRegion(report) => report.evidence_sequence,

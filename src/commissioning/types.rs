@@ -486,6 +486,60 @@ pub struct RungOriginRecoveryEvidence {
     pub report: crate::commissioning::outer::velocity::recovery::RungOriginRecoveryReport,
 }
 
+/// Selected Stage-B recovery lead-in and scored-rest evidence.
+#[cfg(feature = "trace-velocity-sweep")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+pub struct SelectedRecoveryRestDiagnostic {
+    /// Digest of the immutable Stage-B plan.
+    pub(crate) plan_digest: u64,
+    /// Exact zero-target velocity interval from the scored rest window.
+    pub(crate) exact_velocity_interval_q: [i64; 2],
+    /// Caller-assigned run sequence.
+    pub(crate) run_sequence: u32,
+    /// Offset from the immutable origin when recovery began.
+    pub(crate) start_offset_counts: i32,
+    /// Closest offset reached while returning toward the origin.
+    pub(crate) closest_offset_counts: i32,
+    /// Offset from the immutable origin after the scored rest window.
+    pub(crate) final_offset_counts: i32,
+    /// Planned driven return distance before entering the origin band.
+    pub(crate) planned_return_distance_counts: u32,
+    /// First sampled offset inside the origin band.
+    pub(crate) first_in_band_offset_counts: i32,
+    /// Signed displacement from recovery start to the first in-band sample.
+    pub(crate) displacement_to_band_counts: i32,
+    /// Elapsed time from recovery start to the first in-band sample.
+    pub(crate) entry_to_band_duration_us: u32,
+    /// Net displacement during the unscored lead-in window.
+    pub(crate) lead_in_net_displacement_counts: i32,
+    /// Full displacement span during the unscored lead-in window.
+    pub(crate) lead_in_displacement_span_counts: u32,
+    /// Net displacement during the scored rest window.
+    pub(crate) scored_net_displacement_counts: i32,
+    /// Minimum displacement during the scored rest window.
+    pub(crate) scored_min_displacement_counts: i32,
+    /// Maximum displacement during the scored rest window.
+    pub(crate) scored_max_displacement_counts: i32,
+    /// Proportional gain used by the selected response.
+    pub(crate) p_raw: u16,
+    /// Monotonic evidence sequence within the Stage-B run.
+    pub(crate) evidence_sequence: u16,
+    /// Largest sampled absolute velocity-loop output during recovery.
+    pub(crate) peak_torque_target_abs: u16,
+    /// Recovery phase that owned the diagnostic.
+    pub(crate) stage: crate::commissioning::outer::velocity::recovery::RecoveryStage,
+    /// Zero-based rung index.
+    pub(crate) rung_index: u8,
+    /// Stationarity result code for the scored rest window.
+    pub(crate) stationarity_code: u8,
+    /// Whether the exact velocity interval is present.
+    pub(crate) interval_present: u8,
+    /// Current-contact classification for the selected recovery.
+    pub(crate) current_contact_code: u8,
+    /// Zero for confirmed rest and one for completed but unconfirmed rest.
+    pub(crate) disposition: u8,
+}
+
 /// Causal current-limit evidence for one signed-plus-zero velocity primitive.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub struct VelocityPrimitiveCurrentEvidence {
@@ -529,6 +583,9 @@ pub enum VelocitySweepEvent {
     /// One bounded return to the immutable campaign origin.
     #[cfg(feature = "trace-velocity-sweep")]
     Recovery(RungOriginRecoveryEvidence),
+    /// Selected Stage-B recovery lead-in and scored-rest evidence.
+    #[cfg(feature = "trace-velocity-sweep")]
+    SelectedRecoveryRest(SelectedRecoveryRestDiagnostic),
     /// Current-limit evidence for one completed signed-plus-zero primitive.
     Current(VelocityPrimitiveCurrentEvidence),
     /// One directional region or fragment closed by the fold.

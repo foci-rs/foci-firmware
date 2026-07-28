@@ -49,8 +49,8 @@ use crate::trace::events::{
 use crate::trace::events::{
     EVENT_COMMISSION_ACCEPTANCE_MATRIX_AMPLITUDE, EVENT_COMMISSION_ACCEPTANCE_MATRIX_OBSERVATION,
     EVENT_COMMISSION_ACCEPTANCE_MATRIX_TERMINAL, EVENT_COMMISSION_OUTER_SAFETY_TIMING,
-    EVENT_COMMISSION_RUNG_ORIGIN_RECOVERY, EVENT_COMMISSION_VELOCITY_INTEGRAL_COMPLETE,
-    EVENT_COMMISSION_VELOCITY_INTEGRAL_TERMINAL,
+    EVENT_COMMISSION_RUNG_ORIGIN_RECOVERY, EVENT_COMMISSION_SELECTED_RECOVERY_REST,
+    EVENT_COMMISSION_VELOCITY_INTEGRAL_COMPLETE, EVENT_COMMISSION_VELOCITY_INTEGRAL_TERMINAL,
 };
 use foci_tmc4671::pid::{PidIGain, PidPGain};
 
@@ -1403,6 +1403,13 @@ impl CommissioningEngine {
                     #[cfg(feature = "trace-velocity-sweep")]
                     crate::commissioning::types::VelocitySweepEvent::Recovery(report) => (
                         EVENT_COMMISSION_RUNG_ORIGIN_RECOVERY,
+                        report.evidence_sequence,
+                    ),
+                    #[cfg(feature = "trace-velocity-sweep")]
+                    crate::commissioning::types::VelocitySweepEvent::SelectedRecoveryRest(
+                        report,
+                    ) => (
+                        EVENT_COMMISSION_SELECTED_RECOVERY_REST,
                         report.evidence_sequence,
                     ),
                     crate::commissioning::types::VelocitySweepEvent::Current(report) => (

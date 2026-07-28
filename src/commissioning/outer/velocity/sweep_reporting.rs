@@ -2,8 +2,8 @@
 
 use crate::autotune::velocity_measurement::StationarityResult;
 use crate::commissioning::types::{
-    RungOriginRecoveryEvidence, VelocitySweepEvent, VelocitySweepObservation, VelocitySweepPlanned,
-    VelocitySweepRungReport, VelocitySweepTerminal,
+    RungOriginRecoveryEvidence, SelectedRecoveryRestDiagnostic, VelocitySweepEvent,
+    VelocitySweepObservation, VelocitySweepPlanned, VelocitySweepRungReport, VelocitySweepTerminal,
 };
 
 use super::sweep_consensus::consensus_class_report_code;
@@ -61,7 +61,9 @@ impl VelocitySweepIntegrity {
             VelocitySweepEvent::Rung(_) => {
                 self.emitted_rungs = self.emitted_rungs.saturating_add(1);
             }
-            VelocitySweepEvent::Recovery(_) | VelocitySweepEvent::Current(_) => {}
+            VelocitySweepEvent::Recovery(_)
+            | VelocitySweepEvent::SelectedRecoveryRest(_)
+            | VelocitySweepEvent::Current(_) => {}
             VelocitySweepEvent::DirectionalRegion(report) => {
                 let direction = match report.region.direction {
                     crate::autotune::velocity_measurement::VelocityDirection::Forward => 0,
@@ -126,6 +128,7 @@ pub(crate) fn encode_velocity_sweep_event(
         VelocitySweepEvent::Observation(report) => encode_observation(report),
         VelocitySweepEvent::Rung(report) => encode_rung(report),
         VelocitySweepEvent::Recovery(report) => encode_rung_origin_recovery(report),
+        VelocitySweepEvent::SelectedRecoveryRest(report) => encode_selected_recovery_rest(report),
         VelocitySweepEvent::Current(report) => {
             crate::ankyra::velocity_sweep_encoding::encode_velocity_primitive_current_evidence(
                 report,
@@ -217,6 +220,40 @@ pub(crate) fn encode_velocity_sweep_event(
             record
         }
     }
+}
+
+/// Encode selected-recovery lead-in and scored-rest evidence in exact canonical order.
+pub(crate) fn encode_selected_recovery_rest(
+    report: SelectedRecoveryRestDiagnostic,
+) -> VelocitySweepCanonicalRecord {
+    let mut record = VelocitySweepCanonicalRecord::new();
+    record.push_u8(10);
+    record.push_u32(report.run_sequence);
+    record.push_u16(report.evidence_sequence);
+    record.push_u8(report.stage as u8);
+    record.push_u8(report.rung_index);
+    record.push_u16(report.p_raw);
+    push_u64(&mut record, report.plan_digest);
+    record.push_i32(report.start_offset_counts);
+    record.push_i32(report.closest_offset_counts);
+    record.push_i32(report.final_offset_counts);
+    record.push_u32(report.planned_return_distance_counts);
+    record.push_i32(report.first_in_band_offset_counts);
+    record.push_i32(report.displacement_to_band_counts);
+    record.push_u32(report.entry_to_band_duration_us);
+    record.push_i32(report.lead_in_net_displacement_counts);
+    record.push_u32(report.lead_in_displacement_span_counts);
+    record.push_i32(report.scored_net_displacement_counts);
+    record.push_i32(report.scored_min_displacement_counts);
+    record.push_i32(report.scored_max_displacement_counts);
+    record.push_u8(report.stationarity_code);
+    record.push_u8(report.interval_present);
+    push_u64(&mut record, report.exact_velocity_interval_q[0] as u64);
+    push_u64(&mut record, report.exact_velocity_interval_q[1] as u64);
+    record.push_u16(report.peak_torque_target_abs);
+    record.push_u8(report.current_contact_code);
+    record.push_u8(report.disposition);
+    record
 }
 
 /// Encode one stage-neutral rung-origin recovery in exact canonical wire order.
@@ -527,7 +564,8 @@ mod tests {
         VelocityObservationSummary,
     };
     use crate::commissioning::types::{
-        RungOriginRecoveryEvidence, VelocityPrimitiveCurrentEvidence,
+        RungOriginRecoveryEvidence, SelectedRecoveryRestDiagnostic,
+        VelocityPrimitiveCurrentEvidence,
     };
     use foci_tmc4671::pid::PidPGain;
 
@@ -611,6 +649,60 @@ mod tests {
                 .windows(8)
                 .any(|word| { word == 0xfedc_ba98_7654_3210_u64.to_le_bytes() })
         );
+        assert_eq!(integrity.emitted_observations(), 0);
+        assert_eq!(integrity.emitted_rungs(), 0);
+        assert_eq!(integrity.next_evidence_sequence(), 1);
+    }
+
+    #[test]
+    fn selected_recovery_rest_record_has_exact_sentinel_layout() {
+        let report = SelectedRecoveryRestDiagnostic {
+            plan_digest: 0x1122_3344_5566_7788,
+            exact_velocity_interval_q: [-9, 11],
+            run_sequence: 0x0102_0304,
+            start_offset_counts: -1_834,
+            closest_offset_counts: 998,
+            final_offset_counts: 999,
+            planned_return_distance_counts: 834,
+            first_in_band_offset_counts: 998,
+            displacement_to_band_counts: 2_832,
+            entry_to_band_duration_us: 90_904,
+            lead_in_net_displacement_counts: -3,
+            lead_in_displacement_span_counts: 7,
+            scored_net_displacement_counts: 0,
+            scored_min_displacement_counts: -1,
+            scored_max_displacement_counts: 1,
+            p_raw: 1_024,
+            evidence_sequence: 19,
+            peak_torque_target_abs: 1_560,
+            stage: RecoveryStage::Proportional,
+            rung_index: 15,
+            stationarity_code: 0,
+            interval_present: 1,
+            current_contact_code: 0,
+            disposition: 0,
+        };
+        let mut integrity = VelocitySweepIntegrity::new(report.run_sequence);
+        let record = encode_velocity_sweep_event(VelocitySweepEvent::SelectedRecoveryRest(report));
+
+        integrity.record(VelocitySweepEvent::SelectedRecoveryRest(report));
+
+        assert_eq!(record.as_bytes().len(), 89);
+        assert_eq!(record.as_bytes()[0], 10);
+        assert_eq!(&record.as_bytes()[1..5], &report.run_sequence.to_le_bytes());
+        assert_eq!(
+            &record.as_bytes()[11..19],
+            &report.plan_digest.to_le_bytes()
+        );
+        assert_eq!(
+            &record.as_bytes()[69..77],
+            &report.exact_velocity_interval_q[0].to_le_bytes()
+        );
+        assert_eq!(
+            &record.as_bytes()[77..85],
+            &report.exact_velocity_interval_q[1].to_le_bytes()
+        );
+        assert_eq!(&record.as_bytes()[85..89], &[24, 6, 0, 0]);
         assert_eq!(integrity.emitted_observations(), 0);
         assert_eq!(integrity.emitted_rungs(), 0);
         assert_eq!(integrity.next_evidence_sequence(), 1);

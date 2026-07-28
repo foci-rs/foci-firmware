@@ -34,6 +34,7 @@ use super::sweep_plan::{MOVING_STROKE_US, SETTLE_ANALYSIS_BUDGET_US, ZERO_SETTLE
 
 const MREV_PER_REV: u128 = 1_000;
 const MICROS_PER_SECOND: u128 = 1_000_000;
+#[cfg(feature = "trace-velocity-sweep")]
 pub(crate) const SELECTED_RECOVERY_LEAD_IN_US: u32 = 500_000;
 
 /// Commissioning stage that owns one recovery record.
@@ -83,6 +84,7 @@ pub(crate) enum RecoveryRestSchedule {
     /// Score the first fixed settle window.
     ImmediateScored,
     /// Discard one fixed lead-in before scoring a separate settle window.
+    #[cfg(feature = "trace-velocity-sweep")]
     SelectedLeadIn,
 }
 
@@ -662,6 +664,7 @@ pub(crate) fn recovery_runtime_us_with_schedule(
     let runtime_us = recovery_allowance_us(measured_return_us)?
         .checked_add(match rest_schedule {
             RecoveryRestSchedule::ImmediateScored => 0,
+            #[cfg(feature = "trace-velocity-sweep")]
             RecoveryRestSchedule::SelectedLeadIn => u128::from(SELECTED_RECOVERY_LEAD_IN_US),
         })
         .ok_or(RungOriginRecoveryPlanError::Arithmetic)?;

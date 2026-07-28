@@ -8,7 +8,7 @@ use super::recovery::{
     RecoveryRestSchedule, RecoveryStage, RungOriginRecoveryConfig, RungOriginRecoveryOutcome,
     RungOriginRecoveryResources, RungOriginRecoveryRuntime, RungOriginRecoveryStep,
     commanded_side_lower_rate_q, plan_rung_origin_recovery, recovery_return_distance_counts,
-    recovery_runtime_us, step_rung_origin_recovery,
+    recovery_runtime_us, recovery_runtime_us_with_schedule, step_rung_origin_recovery,
 };
 use super::sweep_plan::{
     MAX_SAFETY_OBSERVATION_GAP_US, RequestedVelocitySource, SETTLE_ANALYSIS_BUDGET_US,
@@ -128,6 +128,37 @@ fn recovery_slot_includes_settle_tail() {
     assert_eq!(
         maximum_moving_budget_us + reserved_settle_analysis_us,
         3_000_000
+    );
+}
+
+#[test]
+fn selected_recovery_reserves_one_fixed_lead_in() {
+    assert_eq!(
+        recovery_runtime_us_with_schedule(
+            2_500,
+            4_394_000,
+            3_000_000,
+            RecoveryRestSchedule::SelectedLeadIn,
+        ),
+        Ok(2_316_958)
+    );
+    assert_eq!(
+        recovery_runtime_us_with_schedule(
+            9_000,
+            13_257_728,
+            3_000_000,
+            RecoveryRestSchedule::SelectedLeadIn,
+        ),
+        Ok(2_426_850)
+    );
+    assert_eq!(
+        recovery_runtime_us_with_schedule(
+            9_000,
+            12_901_376,
+            3_000_000,
+            RecoveryRestSchedule::SelectedLeadIn,
+        ),
+        Ok(2_445_601)
     );
 }
 
@@ -371,6 +402,106 @@ impl RecoveryFixture {
             absolute_offset_counts.rem_euclid(4_000) as u32;
         self.step()
     }
+}
+
+#[test]
+fn selected_recovery_discards_lead_in_before_scoring_rest() {
+    let mut fixture = RecoveryFixture::new_with_schedule(
+        1_040,
+        Some(14_000_000),
+        RecoveryBindingSource::SettledRate,
+        RecoveryCurrentContactPolicy::StopImmediately,
+        RecoveryRestSchedule::SelectedLeadIn,
+    );
+    fixture.command_motion();
+    assert_eq!(
+        fixture.sample(1_000, 1_000),
+        RungOriginRecoveryStep::ReadyNow
+    );
+    assert!(matches!(fixture.step(), RungOriginRecoveryStep::At(2_000)));
+
+    for sample in 2..=501 {
+        let offset = if sample % 2 == 0 { 999 } else { 1_000 };
+        let result = fixture.sample(sample * 1_000, offset);
+        if sample < 501 {
+            assert!(matches!(result, RungOriginRecoveryStep::At(_)));
+        } else {
+            assert_eq!(result, RungOriginRecoveryStep::At(502_000));
+        }
+    }
+    for sample in 502..=1_001 {
+        let offset = if sample % 2 == 0 { 999 } else { 1_000 };
+        let result = fixture.sample(sample * 1_000, offset);
+        if sample < 1_001 {
+            assert!(matches!(result, RungOriginRecoveryStep::At(_)));
+        } else {
+            assert_eq!(result, RungOriginRecoveryStep::ReadyNow);
+        }
+    }
+    let analysis = loop {
+        match fixture.step() {
+            RungOriginRecoveryStep::ReadyNow => {}
+            RungOriginRecoveryStep::SelectedRestAnalysis(analysis) => break analysis,
+            other => panic!("selected recovery should produce rest analysis: {other:?}"),
+        }
+    };
+
+    assert_eq!(analysis.first_in_band_offset_counts, 1_000);
+    assert_eq!(analysis.entry_to_band_duration_us, 1_000);
+    assert_eq!(analysis.lead_in.net_displacement_counts, 0);
+    assert_eq!(analysis.lead_in.displacement_span_counts, 1);
+    assert_eq!(analysis.scored_net_displacement_counts, 0);
+    assert_eq!(analysis.disposition, 0);
+    assert_eq!(analysis.interval_present, 1);
+    assert!(matches!(
+        fixture.step(),
+        RungOriginRecoveryStep::Finished(_)
+    ));
+}
+
+#[test]
+fn selected_recovery_reports_completed_unconfirmed_rest_without_a_fault() {
+    let mut fixture = RecoveryFixture::new_with_schedule(
+        1_040,
+        Some(14_000_000),
+        RecoveryBindingSource::SettledRate,
+        RecoveryCurrentContactPolicy::StopImmediately,
+        RecoveryRestSchedule::SelectedLeadIn,
+    );
+    fixture.command_motion();
+    assert_eq!(
+        fixture.sample(1_000, 1_000),
+        RungOriginRecoveryStep::ReadyNow
+    );
+    assert!(matches!(fixture.step(), RungOriginRecoveryStep::At(2_000)));
+    for sample in 2..=501 {
+        let result = fixture.sample(sample * 1_000, 1_000);
+        if sample < 501 {
+            assert!(matches!(result, RungOriginRecoveryStep::At(_)));
+        } else {
+            assert_eq!(result, RungOriginRecoveryStep::At(502_000));
+        }
+    }
+    for sample in 502..=1_001 {
+        let offset = 1_000 - (sample as i32 - 501);
+        let result = fixture.sample(sample * 1_000, offset);
+        if sample < 1_001 {
+            assert!(matches!(result, RungOriginRecoveryStep::At(_)));
+        } else {
+            assert_eq!(result, RungOriginRecoveryStep::ReadyNow);
+        }
+    }
+    let analysis = loop {
+        match fixture.step() {
+            RungOriginRecoveryStep::ReadyNow => {}
+            RungOriginRecoveryStep::SelectedRestAnalysis(analysis) => break analysis,
+            other => panic!("weak rest should still produce analysis: {other:?}"),
+        }
+    };
+
+    assert_eq!(analysis.disposition, 1);
+    assert_eq!(analysis.scored_min_displacement_counts, -2);
+    assert_eq!(fixture.step(), RungOriginRecoveryStep::RestUnconfirmed);
 }
 
 fn authority_rate(rate_q: i64) -> CompactSignedRate {

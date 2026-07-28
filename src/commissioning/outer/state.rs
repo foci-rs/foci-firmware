@@ -1154,6 +1154,19 @@ mod tests {
     #[test]
     fn velocity_sweep_evidence_state_pins_replacement_size_below_delivered_size() {
         // The delivered prior pair state was exactly 176 bytes.
+        assert_eq!(
+            size_of::<super::super::velocity::recovery::SelectedRecoveryLeadInSummary>(),
+            8
+        );
+        assert_eq!(
+            size_of::<super::super::velocity::recovery::SelectedRecoveryRestAnalysis>(),
+            80
+        );
+        assert_eq!(
+            size_of::<crate::commissioning::types::SelectedRecoveryRestDiagnostic>(),
+            88
+        );
+        assert_eq!(size_of::<super::VelocitySweepState>(), 24);
         assert_eq!(size_of::<super::RungOriginRecoveryRuntime>(), 100);
         assert_eq!(size_of::<super::RungOriginRecoveryReport>(), 48);
         assert_eq!(size_of::<super::CollectedRungEvidence>(), 144);
