@@ -403,6 +403,7 @@ impl VelocityIntegralPlan {
             acquisition_kind: VelocityIntegralAcquisitionKind::ResponseLadder,
             matrix_targets_rpm: [0; 5],
             selected_response_intervals_q,
+            recovery_lower_rate_q: [0; 2],
             recovery_quantization_exposed: self.recovery_quantization_exposed,
             probe_constrained_test_point: self.probe_constrained_test_point,
         }
@@ -472,13 +473,15 @@ pub struct VelocityIntegralExecutionPlan {
     pub matrix_targets_rpm: [i16; 5],
     /// Selected Stage-B intervals or exact matrix identity/qualifier storage.
     pub selected_response_intervals_q: [[i32; 2]; 2],
+    /// Conservative top-point settled-rate bounds used only for matrix recovery deadlines.
+    pub recovery_lower_rate_q: [u64; 2],
     /// One opposite-sign meter quantum can contact the probe clamp during recovery.
     pub recovery_quantization_exposed: bool,
     /// The commissioning probe clamp removed at least one Stage-B-operable rung.
     pub probe_constrained_test_point: bool,
 }
 
-const _: () = assert!(core::mem::size_of::<VelocityIntegralExecutionPlan>() == 96);
+const _: () = assert!(core::mem::size_of::<VelocityIntegralExecutionPlan>() == 112);
 const _: () = assert!(core::mem::size_of::<VelocityIntegralExecutionPlan>() <= 112);
 
 /// Exact identity retained when Stage C has no transition-capable test point.

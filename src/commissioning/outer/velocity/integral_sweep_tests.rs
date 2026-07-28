@@ -7,8 +7,8 @@ use super::integral_sweep::{
     apply_integral_current_headroom, combined_slot_transition_us, combined_target_status,
     integral_fault_terminal, integral_i_at, integral_recovery_current_contact_policy,
     integral_rung_count, integral_rung_kind, integral_slot_direction, integral_target_rpm_at,
-    opening_recovery_lower_rate_q, positive_directional_floors_exist,
-    record_integral_target_if_reached, step_velocity_integral_with_trace,
+    matrix_rung_mean, opening_recovery_lower_rate_q, positive_directional_floors_exist,
+    record_integral_target_if_reached, step_velocity_integral_with_trace, store_matrix_rung_mean,
 };
 use super::recovery::{
     ExactU64Parts, RecoveryBindingSource, RecoveryCurrentContactPolicy, RecoveryStage,
@@ -22,6 +22,7 @@ use crate::commission_dispatch::test_support::{MockBackend, SpiOp, current_limit
 use crate::commissioning::outer::state::{
     PositiveIRestBoundary, VelocitySettleMetrics, VelocitySettleTransition,
 };
+use crate::commissioning::outer::velocity::acceptance_evidence::AcceptanceAmplitudeAvailability;
 use crate::commissioning::outer::velocity::combined_plan::CombinedTargetStatus;
 use crate::commissioning::outer::velocity::integral_evidence::{
     ExactRateInterval, IntegralRungKind,
@@ -76,6 +77,7 @@ fn plan() -> VelocityIntegralExecutionPlan {
         acquisition_kind: super::integral_plan::VelocityIntegralAcquisitionKind::ResponseLadder,
         matrix_targets_rpm: [0; 5],
         selected_response_intervals_q: [[0; 2]; 2],
+        recovery_lower_rate_q: [13_217_792, 12_827_648],
         recovery_quantization_exposed: true,
         probe_constrained_test_point: false,
     }
@@ -251,10 +253,16 @@ fn matrix_amplitude_fold_retains_exact_consensus_location_and_masks() {
         ExactRateInterval::new(104, 114).unwrap(),
         ExactRateInterval::new(-114, -104).unwrap(),
     ];
-    data.rung_means_q = [100, -100, 102, -102, 104, -104, 106, -106];
+    let mut workspace = TransientBuffer::new();
+    for (slot, mean) in [100, -100, 102, -102, 104, -104, 106, -106]
+        .into_iter()
+        .enumerate()
+    {
+        store_matrix_rung_mean(&mut workspace, slot, mean).unwrap();
+    }
     data.rung_blocking_levels = 0x2244_3322;
 
-    let report = acceptance_amplitude_report(&mut data).unwrap();
+    let report = acceptance_amplitude_report(&mut data, &workspace).unwrap();
     assert_eq!(report.amplitude_index, 0);
     assert_eq!(report.target_rpm, 16);
     assert_eq!(report.directions[0].response_interval_q, Some([103, 112]));
@@ -290,7 +298,9 @@ fn matrix_fold_emits_a_dedicated_result() {
     data.plan.selected_response_intervals_q = [[0x1234, 0], [0x55aa, 0]];
     data.rung_classes = [VelocityObservationClass::Eligible; 8];
     data.rung_intervals = [ExactRateInterval::new(100, 110).unwrap(); 8];
-    data.rung_means_q = [105; 8];
+    for slot in 0..8 {
+        store_matrix_rung_mean(&mut workspace, slot, 105).unwrap();
+    }
     safety
         .configure_velocity_sweep_encoder_resolution(4_000)
         .unwrap();
@@ -323,6 +333,92 @@ fn matrix_fold_emits_a_dedicated_result() {
     };
     assert_eq!(terminal.outcome, AcceptanceMatrixOutcome::Complete);
     assert_eq!(terminal.emitted_amplitudes, 5);
+}
+
+#[test]
+fn matrix_recovery_uses_the_retained_top_point_after_a_low_amplitude_precision_floor() {
+    let mut phase = phase();
+    let mut workspace = TransientBuffer::new();
+    let OuterPhase::VelocityIntegral {
+        state,
+        data,
+        safety,
+    } = &mut phase
+    else {
+        unreachable!()
+    };
+    data.plan.acquisition_kind = VelocityIntegralAcquisitionKind::AcceptanceAscending;
+    data.plan.planned_velocity_mrev_s = 4_394;
+    data.plan.target_velocity_rpm = 263;
+    data.plan.i_start = 1_024;
+    data.plan.positive_rung_count = 5;
+    data.plan.matrix_targets_rpm = [16, 33, 66, 132, 263];
+    data.plan.recovery_lower_rate_q = [13_217_792, 12_827_648];
+    data.rung_classes = core::array::from_fn(|slot| {
+        if slot.is_multiple_of(2) || slot < 4 {
+            VelocityObservationClass::Eligible
+        } else {
+            VelocityObservationClass::StationarityExcluded(StationarityExclusion::NoBlockingPlateau)
+        }
+    });
+    data.rung_intervals = core::array::from_fn(|slot| {
+        if slot.is_multiple_of(2) {
+            ExactRateInterval::new(800_000, 900_000).unwrap()
+        } else if slot < 4 {
+            ExactRateInterval::new(-900_000, -800_000).unwrap()
+        } else {
+            ExactRateInterval::EMPTY
+        }
+    });
+    for slot in 0..8 {
+        store_matrix_rung_mean(
+            &mut workspace,
+            slot,
+            if slot.is_multiple_of(2) {
+                850_000
+            } else {
+                -850_000
+            },
+        )
+        .unwrap();
+    }
+    *safety = OuterSafetyLimits::new(
+        data.plan.hard_torque_limit,
+        OuterMotionBudget {
+            requested_velocity_mrev_s: 4_394,
+            machine_velocity_ceiling_mrev_s: 10_000,
+            requested_velocity_source: RequestedVelocitySource::Explicit,
+            max_stroke_travel_mrev: 2_500,
+            settle_travel_reserve_mrev: 250,
+            negative_position_headroom_mrev: 50_000,
+            positive_position_headroom_mrev: 50_000,
+            max_duration_ms: 3_000,
+        },
+    );
+    safety
+        .configure_velocity_sweep_encoder_resolution(4_000)
+        .unwrap();
+    safety.unwrapped_position = -1_834;
+    *state = VelocityIntegralState::AnalyzeRung;
+    let mut backend = MockBackend::new();
+
+    let StepResult::AcceptanceMatrixEvent(
+        crate::commissioning::types::AcceptanceMatrixEvent::Amplitude(report),
+    ) = step(&mut phase, &mut workspace, &mut backend)
+    else {
+        panic!("the low-amplitude precision floor must not invalidate recovery authority")
+    };
+    assert_eq!(
+        report.report.directions[1].availability,
+        AcceptanceAmplitudeAvailability::BelowPrecisionFloor
+    );
+    assert!(matches!(
+        phase,
+        OuterPhase::VelocityIntegral {
+            state: VelocityIntegralState::RecoverRung(_),
+            ..
+        }
+    ));
 }
 
 #[test]
@@ -1560,7 +1656,6 @@ fn slot_advance_reprograms_i_without_resetting_prior_evidence() {
     data.slot = 0;
     data.rung_classes = [VelocityObservationClass::Eligible; 8];
     data.rung_intervals = [ExactRateInterval::new(10, 20).unwrap(); 8];
-    data.rung_means_q = [10, 20, 30, 40, 50, 60, 70, 80];
     data.rung_blocking_levels = 0x1234_1234;
     *state = VelocityIntegralState::Advance;
     let mut backend = MockBackend::new();
@@ -1591,7 +1686,6 @@ fn slot_advance_reprograms_i_without_resetting_prior_evidence() {
             data.rung_intervals,
             [ExactRateInterval::new(10, 20).unwrap(); 8]
         );
-        assert_eq!(data.rung_means_q, [10, 20, 30, 40, 50, 60, 70, 80]);
         assert_eq!(data.rung_blocking_levels, 0x1234_1234);
         *state = VelocityIntegralState::Advance;
     }
@@ -1604,10 +1698,14 @@ fn rung_reset_clears_only_per_rung_observation_state() {
     let OuterPhase::VelocityIntegral { state, data, .. } = &mut phase else {
         unreachable!()
     };
+    data.plan.acquisition_kind = VelocityIntegralAcquisitionKind::AcceptanceAscending;
+    data.plan.matrix_targets_rpm = [16, 33, 66, 132, 263];
     data.rung_index = 1;
     data.rung_classes = [VelocityObservationClass::Eligible; 8];
     data.rung_intervals = [ExactRateInterval::new(10, 20).unwrap(); 8];
-    data.rung_means_q = [10, 20, 30, 40, 50, 60, 70, 80];
+    for (slot, mean) in [10, 20, 30, 40, 50, 60, 70, 80].into_iter().enumerate() {
+        store_matrix_rung_mean(&mut workspace, slot, mean).unwrap();
+    }
     data.rung_blocking_levels = 0x1234_1234;
     data.eligible_masks = [0b101; 2];
     *state = VelocityIntegralState::PrepareMovingSlot { reset_rung: true };
@@ -1625,7 +1723,10 @@ fn rung_reset_clears_only_per_rung_observation_state() {
         [VelocityObservationClass::InvalidEvidenceFault; 8]
     );
     assert_eq!(data.rung_intervals, [ExactRateInterval::EMPTY; 8]);
-    assert_eq!(data.rung_means_q, [0; 8]);
+    assert_eq!(
+        core::array::from_fn::<_, 8, _>(|slot| matrix_rung_mean(&workspace, slot).unwrap()),
+        [0; 8]
+    );
     assert_eq!(data.rung_blocking_levels, 0);
     assert_eq!(data.eligible_masks, [0b101; 2]);
 }

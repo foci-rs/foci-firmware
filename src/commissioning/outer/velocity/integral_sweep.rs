@@ -76,6 +76,7 @@ pub(super) const INTEGRAL_CAUSE_BOOKEND_UNAVAILABLE: u8 = 8;
 pub(super) const INTEGRAL_CAUSE_POSITIVE_I_REST_BOUNDARY: u8 = 9;
 pub(super) const INTEGRAL_CAUSE_POSITIVE_I_REST_BOUNDARY_AFTER_SUFFICIENCY: u8 = 10;
 const OPENING_WORD_BASE: usize = 0;
+const MATRIX_MEAN_WORD_BASE: usize = 0;
 const POSITIVE_WORD_BASE: usize = 4;
 const BOOKEND_WORD_BASE: usize = POSITIVE_WORD_BASE + 2 * STAGE_C_MAX_POSITIVE_RUNGS * 2;
 
@@ -307,12 +308,49 @@ fn current_guard_error(error: VelocityCurrentGuardError) -> CommissionError {
     }
 }
 
-fn reset_rung(data: &mut VelocityIntegralData) {
+fn reset_rung(
+    data: &mut VelocityIntegralData,
+    workspace: &mut TransientBuffer,
+) -> Result<(), CommissionError> {
     data.slot = 0;
     data.rung_classes = [VelocityObservationClass::InvalidEvidenceFault; 8];
     data.rung_intervals = [ExactRateInterval::EMPTY; 8];
-    data.rung_means_q = [0; 8];
+    if is_acceptance_matrix(data.plan) {
+        for slot in 0..usize::from(INTEGRAL_SLOT_COUNT) {
+            if !workspace.write_workspace_word(MATRIX_MEAN_WORD_BASE + slot, 0) {
+                return Err(CommissionError::InvalidSchedule);
+            }
+        }
+    }
     data.rung_blocking_levels = 0;
+    Ok(())
+}
+
+pub(super) fn store_matrix_rung_mean(
+    workspace: &mut TransientBuffer,
+    slot: usize,
+    value: i32,
+) -> Result<(), CommissionError> {
+    if slot >= usize::from(INTEGRAL_SLOT_COUNT)
+        || !workspace.write_workspace_word(MATRIX_MEAN_WORD_BASE + slot, value as u32)
+    {
+        Err(CommissionError::InvalidSchedule)
+    } else {
+        Ok(())
+    }
+}
+
+pub(super) fn matrix_rung_mean(
+    workspace: &TransientBuffer,
+    slot: usize,
+) -> Result<i32, CommissionError> {
+    if slot >= usize::from(INTEGRAL_SLOT_COUNT) {
+        return Err(CommissionError::InvalidSchedule);
+    }
+    workspace
+        .workspace_word(MATRIX_MEAN_WORD_BASE + slot)
+        .map(|value| value as i32)
+        .ok_or(CommissionError::InvalidSchedule)
 }
 
 fn set_rung_blocking_level(
@@ -401,6 +439,7 @@ fn acceptance_identity_and_qualifiers(plan: VelocityIntegralExecutionPlan) -> Op
 
 pub(super) fn acceptance_amplitude_report(
     data: &mut VelocityIntegralData,
+    workspace: &TransientBuffer,
 ) -> Result<AcceptanceAmplitudeReport, CommissionError> {
     let amplitude = usize::from(data.rung_index);
     let bit = 1_u8
@@ -415,7 +454,7 @@ pub(super) fn acceptance_amplitude_report(
             .copied()
             .min()
             .map(i32::from);
-    let directions: [Result<_, _>; 2] = core::array::from_fn(|direction| {
+    let directions: [Result<_, CommissionError>; 2] = core::array::from_fn(|direction| {
         let slot = |observation: usize| observation * 2 + direction;
         let classes = core::array::from_fn(|observation| data.rung_classes[slot(observation)]);
         let intervals = core::array::from_fn(|observation| {
@@ -424,10 +463,13 @@ pub(super) fn acceptance_amplitude_report(
                 [interval.low_q, interval.high_q]
             })
         });
-        let means_q = core::array::from_fn(|observation| {
-            (classes[observation] == VelocityObservationClass::Eligible)
-                .then_some(data.rung_means_q[slot(observation)])
-        });
+        let means_q: [Result<Option<i32>, CommissionError>; 4] =
+            core::array::from_fn(|observation| {
+                (classes[observation] == VelocityObservationClass::Eligible)
+                    .then(|| matrix_rung_mean(workspace, slot(observation)))
+                    .transpose()
+            });
+        let means_q = [means_q[0]?, means_q[1]?, means_q[2]?, means_q[3]?];
         let blocking_levels =
             core::array::from_fn(|observation| rung_blocking_level(data, slot(observation)));
         classify_acceptance_amplitude(AcceptanceDirectionInput {
@@ -443,6 +485,7 @@ pub(super) fn acceptance_amplitude_report(
             blocking_levels,
             precision_floor_candidate,
         })
+        .map_err(|_| CommissionError::InvalidSchedule)
     });
     let directions = [
         directions[0].map_err(|_| CommissionError::InvalidSchedule)?,
@@ -647,42 +690,18 @@ pub(super) fn opening_recovery_lower_rate_q(
     }
 }
 
-fn matrix_recovery_lower_rate_q(
-    data: &VelocityIntegralData,
-    direction: usize,
-) -> Result<Option<u64>, CommissionError> {
-    let velocity_direction = match direction {
-        0 => VelocityDirection::Forward,
-        1 => VelocityDirection::Reverse,
-        _ => return Err(CommissionError::InvalidSchedule),
-    };
-    let mut lower_rate_q: Option<u64> = None;
-    for observation in 0..4 {
-        let slot = observation * 2 + direction;
-        if data.rung_classes[slot] != VelocityObservationClass::Eligible {
-            continue;
-        }
-        let interval = data.rung_intervals[slot];
-        let Some(bound) = super::recovery::commanded_side_lower_rate_q(
-            velocity_direction,
-            i64::from(interval.low_q),
-            i64::from(interval.high_q),
-        ) else {
-            continue;
-        };
-        lower_rate_q = Some(lower_rate_q.map_or(bound, |current| current.min(bound)));
-    }
-    Ok(lower_rate_q)
-}
-
 fn plan_integral_recovery(
     data: &mut VelocityIntegralData,
     workspace: &TransientBuffer,
     safety: &OuterSafetyLimits,
 ) -> Result<RungOriginRecoveryRuntime, CommissionError> {
     let direction = usize::from(safety.unwrapped_position >= 0);
-    let target_velocity_rpm = integral_target_rpm_at(data.plan, data.rung_index)
-        .ok_or(CommissionError::InvalidSchedule)?;
+    let target_velocity_rpm = if is_acceptance_matrix(data.plan) {
+        data.plan.target_velocity_rpm
+    } else {
+        integral_target_rpm_at(data.plan, data.rung_index)
+            .ok_or(CommissionError::InvalidSchedule)?
+    };
     let lower_rate_q = match data.plan.acquisition_kind {
         VelocityIntegralAcquisitionKind::ResponseLadder => opening_recovery_lower_rate_q(
             workspace,
@@ -692,15 +711,24 @@ fn plan_integral_recovery(
             direction,
         )?,
         VelocityIntegralAcquisitionKind::AcceptanceAscending
-        | VelocityIntegralAcquisitionKind::AcceptanceDescending => {
-            matrix_recovery_lower_rate_q(data, direction)?
-        }
+        | VelocityIntegralAcquisitionKind::AcceptanceDescending => Some(
+            *data
+                .plan
+                .recovery_lower_rate_q
+                .get(direction)
+                .filter(|value| **value != 0)
+                .ok_or(CommissionError::InvalidSchedule)?,
+        ),
     };
-    let planned_velocity_mrev_s = u32::try_from(target_velocity_rpm)
-        .ok()
-        .and_then(|target| target.checked_mul(1_000))
-        .map(|target| target / 60)
-        .ok_or(CommissionError::InvalidSchedule)?;
+    let planned_velocity_mrev_s = if is_acceptance_matrix(data.plan) {
+        data.plan.planned_velocity_mrev_s
+    } else {
+        u32::try_from(target_velocity_rpm)
+            .ok()
+            .and_then(|target| target.checked_mul(1_000))
+            .map(|target| target / 60)
+            .ok_or(CommissionError::InvalidSchedule)?
+    };
     let recovery_plan = plan_rung_origin_recovery(
         safety.budget,
         safety.counts_per_rev(),
@@ -1107,6 +1135,7 @@ fn moving_analysis(
 
 fn retain_analyzed_observation(
     data: &mut VelocityIntegralData,
+    workspace: &mut TransientBuffer,
     summary: VelocityObservationSummary,
 ) -> Result<(), CommissionError> {
     let source_interval = match data.plan.acquisition_kind {
@@ -1121,9 +1150,15 @@ fn retain_analyzed_observation(
     .map_err(|_| CommissionError::InvalidSchedule)?;
     data.rung_classes[usize::from(data.slot)] = summary.classification;
     data.rung_intervals[usize::from(data.slot)] = interval;
-    if summary.classification == VelocityObservationClass::Eligible {
-        data.rung_means_q[usize::from(data.slot)] = i32::try_from(summary.settled_rate_mean_q)
-            .map_err(|_| CommissionError::InvalidSchedule)?;
+    if is_acceptance_matrix(data.plan)
+        && summary.classification == VelocityObservationClass::Eligible
+    {
+        store_matrix_rung_mean(
+            workspace,
+            usize::from(data.slot),
+            i32::try_from(summary.settled_rate_mean_q)
+                .map_err(|_| CommissionError::InvalidSchedule)?,
+        )?;
     }
     Ok(())
 }
@@ -1228,8 +1263,8 @@ pub(crate) async fn step_velocity_integral_with_trace<B: CommissioningBackend>(
                     Ok(value) => value,
                     Err(error) => return fail_integral(phase, backend, error).await,
                 };
-            if *should_reset_rung {
-                reset_rung(data);
+            if *should_reset_rung && let Err(error) = reset_rung(data, workspace) {
+                return fail_integral(phase, backend, error).await;
             }
             *state = VelocityIntegralState::CommandTarget {
                 entry_transition_us,
@@ -1516,7 +1551,7 @@ pub(crate) async fn step_velocity_integral_with_trace<B: CommissioningBackend>(
             {
                 return fail_integral(phase, backend, CommissionError::InvalidSchedule).await;
             }
-            if retain_analyzed_observation(data, summary).is_err() {
+            if retain_analyzed_observation(data, workspace, summary).is_err() {
                 return fail_integral(phase, backend, CommissionError::InvalidSchedule).await;
             }
             data.emitted_observations = data.emitted_observations.saturating_add(1);
@@ -2051,7 +2086,7 @@ pub(crate) async fn step_velocity_integral_with_trace<B: CommissioningBackend>(
         }
         VelocityIntegralState::AnalyzeRung => {
             if is_acceptance_matrix(data.plan) {
-                let report = match acceptance_amplitude_report(data) {
+                let report = match acceptance_amplitude_report(data, workspace) {
                     Ok(report) => report,
                     Err(error) => return fail_integral(phase, backend, error).await,
                 };

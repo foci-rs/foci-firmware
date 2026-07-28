@@ -54,8 +54,8 @@ fn selected_response() -> super::combined_plan::CombinedSelectedResponse {
         flags: 0,
     };
     select_proportional_response(
-        report(13_300_000, 13_500_000),
-        report(-13_500_000, -13_300_000),
+        report(13_217_792, 13_672_960),
+        report(-13_308_416, -12_827_648),
         263,
         COUNTS_PER_REV,
     )
@@ -110,7 +110,7 @@ fn point(plan: super::integral_plan::VelocityIntegralPlan) -> AcceptancePoint {
 
 #[test]
 fn live_matrix_geometry_and_orders_are_exact() {
-    assert_eq!(ACCEPTANCE_MATRIX_SCHEMA_REVISION, 1);
+    assert_eq!(ACCEPTANCE_MATRIX_SCHEMA_REVISION, 2);
     assert_eq!(AcceptanceMatrixOrder::Ascending as u8, 1);
     assert_eq!(AcceptanceMatrixOrder::Descending as u8, 2);
     assert_eq!(ACCEPTANCE_MATRIX_AMPLITUDES, 5);
@@ -128,6 +128,7 @@ fn live_matrix_geometry_and_orders_are_exact() {
     assert_eq!(ascending.expected_observations, 40);
     assert_eq!(ascending.family_size, 20);
     assert_eq!(ascending.recovery_slot_count, 5);
+    assert_eq!(ascending.recovery_lower_rate_q, [13_217_792, 12_827_648]);
     assert_eq!(ascending.nominal_workflow_ms, 60_541);
     assert_eq!(ascending.maximum_workflow_ms, 66_456);
 
@@ -180,6 +181,9 @@ fn compact_execution_plan_carries_fixed_i_and_literal_targets() {
     assert_eq!(execution.matrix_targets_rpm, [16, 33, 66, 132, 263]);
     assert_eq!(execution.positive_rung_count, 5);
     assert_eq!(execution.family_size, 20);
+    assert_eq!(execution.target_velocity_rpm, 263);
+    assert_eq!(execution.planned_velocity_mrev_s, 4_394);
+    assert_eq!(execution.recovery_lower_rate_q, [13_217_792, 12_827_648]);
     assert_eq!(
         execution.selected_response_intervals_q,
         [
@@ -190,8 +194,7 @@ fn compact_execution_plan_carries_fixed_i_and_literal_targets() {
             [i32::from(ascending.qualifier_bits), 0],
         ]
     );
-    assert_eq!(core::mem::size_of_val(&execution), 96);
-    assert!(core::mem::size_of_val(&execution) <= 112);
+    assert_eq!(core::mem::size_of_val(&execution), 112);
 }
 
 #[test]
@@ -215,6 +218,27 @@ fn matrix_plan_rejects_identity_and_request_drift() {
         ),
         Err(AcceptanceMatrixPlanError::IdentityMismatch)
     );
+}
+
+#[test]
+fn matrix_plan_rejects_wrong_sided_recovery_authority() {
+    let current = combined_plan();
+    for intervals in [
+        [[0, 13_672_960], [-13_308_416, -12_827_648]],
+        [[13_217_792, 13_672_960], [-13_308_416, 0]],
+    ] {
+        let mut invalid = point(current);
+        invalid.selected_response_intervals_q = intervals;
+        assert_eq!(
+            plan_acceptance_matrix(
+                invalid,
+                request(),
+                AcceptanceMatrixOrder::Ascending,
+                current,
+            ),
+            Err(AcceptanceMatrixPlanError::Arithmetic)
+        );
+    }
 }
 
 #[test]
@@ -244,6 +268,8 @@ fn matrix_digest_binds_every_explicit_plan_dimension() {
     mutate(|plan| plan.hard_torque_limit += 1);
     mutate(|plan| plan.usable_torque_limit += 1);
     mutate(|plan| plan.recovery_origin_band_counts += 1);
+    mutate(|plan| plan.recovery_lower_rate_q[0] += 1);
+    mutate(|plan| plan.recovery_lower_rate_q[1] += 1);
     mutate(|plan| plan.recovery_maximum_slot_us += 1);
     mutate(|plan| plan.nominal_workflow_ms += 1);
     mutate(|plan| plan.maximum_workflow_ms += 1);

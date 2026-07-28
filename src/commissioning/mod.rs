@@ -1772,7 +1772,7 @@ mod tests {
             assert_eq!(size_of::<TraceSummarySeqs>(), 16);
             assert_eq!(
                 size_of::<crate::commissioning::outer::VelocityIntegralData>(),
-                2_800
+                2_784
             );
             assert!(
                 size_of::<

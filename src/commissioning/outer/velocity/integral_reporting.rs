@@ -15,6 +15,7 @@ use super::combined_plan::{
     CombinedTargetStatus, TERMINAL_COMBINED_TARGET_SHIFT, TERMINAL_COMBINED_WORKFLOW,
 };
 use super::integral_evidence::{IntegralObservationClass, IntegralRungClass, IntegralRungKind};
+use super::integral_plan::VelocityIntegralAcquisitionKind;
 use super::integral_plan::{VelocityIntegralExecutionPlan, VelocityIntegralPlan};
 
 const FNV1A64_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
@@ -429,11 +430,22 @@ fn encode_velocity_integral_plan_marker(
     record.push_u8(plan.recovery_slot_count);
     record.push_u16(plan.hard_torque_limit);
     record.push_u16(plan.usable_torque_limit);
-    if plan.combined_workflow {
+    if plan.combined_workflow
+        || matches!(
+            plan.acquisition_kind,
+            VelocityIntegralAcquisitionKind::AcceptanceAscending
+                | VelocityIntegralAcquisitionKind::AcceptanceDescending
+        )
+    {
         record.push_u8(1);
         for interval in plan.selected_response_intervals_q {
             record.push_i32(interval[0]);
             record.push_i32(interval[1]);
+        }
+        if !plan.combined_workflow {
+            for lower_rate_q in plan.recovery_lower_rate_q {
+                push_u64(&mut record, lower_rate_q);
+            }
         }
     }
     record
@@ -898,9 +910,28 @@ mod tests {
                 super::super::integral_plan::VelocityIntegralAcquisitionKind::ResponseLadder,
             matrix_targets_rpm: [0; 5],
             selected_response_intervals_q: [[0; 2]; 2],
+            recovery_lower_rate_q: [0; 2],
             recovery_quantization_exposed: true,
             probe_constrained_test_point: false,
         }
+    }
+
+    #[test]
+    fn matrix_plan_marker_carries_identity_and_recovery_bounds() {
+        let mut plan = plan();
+        plan.acquisition_kind =
+            super::super::integral_plan::VelocityIntegralAcquisitionKind::AcceptanceAscending;
+        plan.selected_response_intervals_q = [
+            [0x1234_5678_u32 as i32, 0x89ab_cdef_u32 as i32],
+            [0x55aa, 0],
+        ];
+        plan.recovery_lower_rate_q = [13_217_792, 12_827_648];
+
+        let marker = super::encode_velocity_integral_plan_marker(7, plan);
+
+        assert_eq!(marker.as_bytes().len(), 98);
+        assert_eq!(&marker.as_bytes()[82..90], &13_217_792_u64.to_le_bytes());
+        assert_eq!(&marker.as_bytes()[90..98], &12_827_648_u64.to_le_bytes());
     }
 
     #[test]

@@ -6,11 +6,13 @@ use super::integral_plan::{
     VelocityIntegralAcquisitionKind, VelocityIntegralExecutionPlan, VelocityIntegralPlan,
 };
 use super::integral_reproduction::{AcceptancePoint, StageCPlanIdentity};
+use super::recovery::commanded_side_lower_rate_q;
 use super::reproduction::STAGE_B_BUILD_REVISION;
 use super::sweep_plan::VelocitySweepRequest;
+use crate::autotune::velocity_measurement::VelocityDirection;
 
-/// First independent velocity-acceptance matrix schema.
-pub const ACCEPTANCE_MATRIX_SCHEMA_REVISION: u16 = 1;
+/// Current independent velocity-acceptance matrix schema.
+pub const ACCEPTANCE_MATRIX_SCHEMA_REVISION: u16 = 2;
 /// Number of frozen target amplitudes in each run.
 pub const ACCEPTANCE_MATRIX_AMPLITUDES: usize = 5;
 /// Capture-wrapper allowance for one matrix command.
@@ -80,6 +82,8 @@ pub struct AcceptanceMatrixPlan {
     pub maximum_workflow_ms: u32,
     /// Inclusive immutable-origin recovery band.
     pub recovery_origin_band_counts: u32,
+    /// Conservative top-point settled-rate bounds used only for recovery deadlines.
+    pub recovery_lower_rate_q: [u64; 2],
     /// Nominal allowance for one recovery slot.
     pub recovery_nominal_slot_us: u32,
     /// Maximum allowance for one recovery slot.
@@ -135,6 +139,9 @@ impl AcceptanceMatrixPlan {
         hash_value!(self.nominal_workflow_ms);
         hash_value!(self.maximum_workflow_ms);
         hash_value!(self.recovery_origin_band_counts);
+        for lower_rate_q in self.recovery_lower_rate_q {
+            hash_value!(lower_rate_q);
+        }
         hash_value!(self.recovery_nominal_slot_us);
         hash_value!(self.recovery_maximum_slot_us);
         hash_value!(self.recovery_slot_count);
@@ -162,8 +169,7 @@ impl AcceptanceMatrixPlan {
         VelocityIntegralExecutionPlan {
             plan_digest: self.digest(),
             final_p: self.selected_p,
-            planned_velocity_mrev_s: u32::try_from(top_target).unwrap_or(0).saturating_mul(1_000)
-                / 60,
+            planned_velocity_mrev_s: self.motion_request.requested_velocity_mrev_s,
             target_velocity_rpm: i32::from(top_target),
             pwm_hz: self.pwm_hz,
             encoder_counts_per_rev: self.encoder_counts_per_rev,
@@ -200,6 +206,7 @@ impl AcceptanceMatrixPlan {
                 [identity_low as i32, identity_high as i32],
                 [i32::from(self.qualifier_bits), 0],
             ],
+            recovery_lower_rate_q: self.recovery_lower_rate_q,
             recovery_quantization_exposed: self.recovery_quantization_exposed,
             probe_constrained_test_point: self.probe_constrained_test_point,
         }
@@ -262,6 +269,20 @@ pub fn plan_acceptance_matrix(
     let family_size = u16::from(amplitude_count)
         .checked_mul(OBSERVATIONS_PER_DIRECTION_PER_AMPLITUDE)
         .ok_or(AcceptanceMatrixPlanError::Arithmetic)?;
+    let recovery_lower_rate_q = [
+        commanded_side_lower_rate_q(
+            VelocityDirection::Forward,
+            i64::from(point.selected_response_intervals_q[0][0]),
+            i64::from(point.selected_response_intervals_q[0][1]),
+        )
+        .ok_or(AcceptanceMatrixPlanError::Arithmetic)?,
+        commanded_side_lower_rate_q(
+            VelocityDirection::Reverse,
+            i64::from(point.selected_response_intervals_q[1][0]),
+            i64::from(point.selected_response_intervals_q[1][1]),
+        )
+        .ok_or(AcceptanceMatrixPlanError::Arithmetic)?,
+    ];
     let primitive_us = u64::from(current_config.moving_stroke_us)
         .checked_add(u64::from(current_config.zero_settle_us))
         .and_then(|value| value.checked_add(u64::from(current_config.analysis_budget_us)))
@@ -308,6 +329,7 @@ pub fn plan_acceptance_matrix(
         nominal_workflow_ms: duration_ms(current_config.recovery_nominal_slot_us)?,
         maximum_workflow_ms: duration_ms(current_config.recovery_maximum_slot_us)?,
         recovery_origin_band_counts: current_config.recovery_origin_band_counts,
+        recovery_lower_rate_q,
         recovery_nominal_slot_us: current_config.recovery_nominal_slot_us,
         recovery_maximum_slot_us: current_config.recovery_maximum_slot_us,
         recovery_slot_count: amplitude_count,

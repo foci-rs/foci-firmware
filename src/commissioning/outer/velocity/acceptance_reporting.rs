@@ -10,7 +10,7 @@ use super::acceptance_evidence::{AcceptanceAmplitudeReport, AcceptanceDirectiona
 use super::acceptance_plan::AcceptanceMatrixPlan;
 
 /// Bytes in the compact ordinary matrix-plan reply payload.
-pub(crate) const ACCEPTANCE_PLAN_REPLY_BYTES: usize = 50;
+pub(crate) const ACCEPTANCE_PLAN_REPLY_BYTES: usize = 66;
 /// Bytes in the compact ordinary matrix-terminal reply payload.
 pub(crate) const ACCEPTANCE_TERMINAL_REPLY_BYTES: usize = 37;
 
@@ -52,6 +52,9 @@ pub(crate) fn encode_acceptance_plan_reply(
         &mut offset,
         &plan.maximum_workflow_ms.to_le_bytes(),
     );
+    for lower_rate_q in plan.recovery_lower_rate_q {
+        push_reply(&mut bytes, &mut offset, &lower_rate_q.to_le_bytes());
+    }
     debug_assert_eq!(offset, ACCEPTANCE_PLAN_REPLY_BYTES);
     bytes
 }
@@ -145,6 +148,9 @@ pub(crate) fn encode_acceptance_plan(
     timing.push_u32(plan.nominal_workflow_ms);
     timing.push_u32(plan.maximum_workflow_ms);
     timing.push_u32(plan.recovery_origin_band_counts);
+    for lower_rate_q in plan.recovery_lower_rate_q {
+        push_u64(&mut timing, lower_rate_q);
+    }
     timing.push_u32(plan.recovery_nominal_slot_us);
     timing.push_u32(plan.recovery_maximum_slot_us);
     timing.push_u8(plan.recovery_slot_count);
@@ -361,7 +367,8 @@ mod tests {
 
     fn plan() -> AcceptanceMatrixPlan {
         AcceptanceMatrixPlan {
-            schema_revision: 1,
+            schema_revision:
+                crate::commissioning::outer::velocity::acceptance_plan::ACCEPTANCE_MATRIX_SCHEMA_REVISION,
             acceptance_identity: StageCPlanIdentity {
                 channel: 0,
                 build_revision: 0x1234_5678,
@@ -384,6 +391,7 @@ mod tests {
             nominal_workflow_ms: 60_541,
             maximum_workflow_ms: 66_456,
             recovery_origin_band_counts: 1_000,
+            recovery_lower_rate_q: [13_217_792, 12_827_648],
             recovery_nominal_slot_us: 1_816_958,
             recovery_maximum_slot_us: 3_000_000,
             recovery_slot_count: 5,
@@ -411,6 +419,7 @@ mod tests {
 
         let records = super::encode_acceptance_plan(7, plan);
 
+        assert_eq!(records.map(|record| record.as_bytes().len()), [73, 72, 43]);
         assert!(
             records
                 .iter()
@@ -423,6 +432,17 @@ mod tests {
                 .iter()
                 .all(|record| record.as_bytes()[7..15] == digest)
         );
+    }
+
+    #[test]
+    fn compact_plan_reply_appends_exact_recovery_bounds() {
+        let plan = plan();
+
+        let payload = super::encode_acceptance_plan_reply(7, plan);
+
+        assert_eq!(payload.len(), 66);
+        assert_eq!(&payload[50..58], &13_217_792_u64.to_le_bytes());
+        assert_eq!(&payload[58..66], &12_827_648_u64.to_le_bytes());
     }
 
     fn direction() -> AcceptanceDirectionalEvidence {
