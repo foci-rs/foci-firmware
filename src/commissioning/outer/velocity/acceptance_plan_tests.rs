@@ -124,6 +124,25 @@ fn live_matrix_geometry_and_orders_are_exact() {
     )
     .unwrap();
     assert_eq!(ascending.target_rpm, [16, 33, 66, 132, 263]);
+    let executed_mrev_s_milli = ascending
+        .target_rpm
+        .map(|rpm| (u64::try_from(rpm).unwrap() * 1_000_000).div_ceil(60));
+    let stroke_travel_mrev_milli = ascending
+        .target_rpm
+        .map(|rpm| (u64::try_from(rpm).unwrap() * 512_000).div_ceil(60));
+    assert_eq!(
+        executed_mrev_s_milli,
+        [266_667, 550_000, 1_100_000, 2_200_000, 4_383_334]
+    );
+    assert_eq!(
+        stroke_travel_mrev_milli,
+        [136_534, 281_600, 563_200, 1_126_400, 2_244_267]
+    );
+    assert!(
+        stroke_travel_mrev_milli
+            .into_iter()
+            .all(|travel| travel <= 2_250_000)
+    );
     assert_eq!(ascending.amplitude_count, 5);
     assert_eq!(ascending.expected_observations, 40);
     assert_eq!(ascending.family_size, 20);
@@ -140,6 +159,12 @@ fn live_matrix_geometry_and_orders_are_exact() {
     )
     .unwrap();
     assert_eq!(descending.target_rpm, [263, 132, 66, 33, 16]);
+    assert_eq!(
+        descending
+            .target_rpm
+            .map(|rpm| (u64::try_from(rpm).unwrap() * 512_000).div_ceil(60)),
+        [2_244_267, 1_126_400, 563_200, 281_600, 136_534]
+    );
     assert_ne!(ascending.digest(), descending.digest());
 }
 

@@ -6,9 +6,10 @@ use super::operating_region::{BoundRounding, CompactSignedRate};
 use super::recovery::{
     RecoveryBindingSource, RecoveryCurrentContactPolicy, RecoveryRateAuthority,
     RecoveryRestSchedule, RecoveryStage, RungOriginRecoveryConfig, RungOriginRecoveryOutcome,
-    RungOriginRecoveryResources, RungOriginRecoveryRuntime, RungOriginRecoveryStep,
-    commanded_side_lower_rate_q, plan_rung_origin_recovery, recovery_return_distance_counts,
-    recovery_runtime_us, recovery_runtime_us_with_schedule, step_rung_origin_recovery,
+    RungOriginRecoveryPlanError, RungOriginRecoveryResources, RungOriginRecoveryRuntime,
+    RungOriginRecoveryStep, commanded_side_lower_rate_q, plan_rung_origin_recovery,
+    recovery_return_distance_counts, recovery_runtime_us, recovery_runtime_us_with_schedule,
+    step_rung_origin_recovery,
 };
 use super::sweep_plan::{
     MAX_SAFETY_OBSERVATION_GAP_US, RequestedVelocitySource, SETTLE_ANALYSIS_BUDGET_US,
@@ -50,6 +51,21 @@ fn live_geometry_derives_band_and_slots_from_the_budget() {
     assert_eq!(plan.origin_band_counts, 1_000);
     assert_eq!(plan.nominal_slot_us, 1_816_958);
     assert_eq!(plan.maximum_slot_us, primitive_cap_us);
+}
+
+#[test]
+fn matrix_lowest_target_cannot_author_recovery_geometry() {
+    let legacy_low_target_mrev_s = 16_u32 * 1_000 / 60;
+
+    assert_eq!(legacy_low_target_mrev_s, 266);
+    assert_eq!(
+        plan_rung_origin_recovery(live_budget(), 4_000, legacy_low_target_mrev_s),
+        Err(RungOriginRecoveryPlanError::ExceedsPrimitiveCap)
+    );
+
+    let corrected = plan_rung_origin_recovery(live_budget(), 4_000, 4_394).unwrap();
+    assert_eq!(corrected.nominal_slot_us, 1_816_958);
+    assert_eq!(corrected.maximum_slot_us, 3_000_000);
 }
 
 #[test]
