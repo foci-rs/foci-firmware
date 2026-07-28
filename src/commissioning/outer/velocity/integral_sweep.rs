@@ -2195,7 +2195,7 @@ pub(crate) async fn step_velocity_integral_with_trace<B: CommissioningBackend>(
                     *state = VelocityIntegralState::FinalizeRecovery(report);
                     StepResult::ReadyNow
                 }
-                RungOriginRecoveryStep::SelectedRestAnalysis(_)
+                RungOriginRecoveryStep::RestAnalysis(_)
                 | RungOriginRecoveryStep::RestUnconfirmed => {
                     fail_integral(phase, backend, CommissionError::InvalidSchedule).await
                 }

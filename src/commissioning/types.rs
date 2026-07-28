@@ -486,11 +486,11 @@ pub struct RungOriginRecoveryEvidence {
     pub report: crate::commissioning::outer::velocity::recovery::RungOriginRecoveryReport,
 }
 
-/// Selected Stage-B recovery lead-in and scored-rest evidence.
+/// Recovery stabilization lead-in and scored-rest evidence.
 #[cfg(feature = "trace-velocity-sweep")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
-pub struct SelectedRecoveryRestDiagnostic {
-    /// Digest of the immutable Stage-B plan.
+pub struct RecoveryRestDiagnostic {
+    /// Digest of the immutable owning-stage plan.
     pub(crate) plan_digest: u64,
     /// Exact zero-target velocity interval from the scored rest window.
     pub(crate) exact_velocity_interval_q: [i64; 2],
@@ -583,9 +583,9 @@ pub enum VelocitySweepEvent {
     /// One bounded return to the immutable campaign origin.
     #[cfg(feature = "trace-velocity-sweep")]
     Recovery(RungOriginRecoveryEvidence),
-    /// Selected Stage-B recovery lead-in and scored-rest evidence.
+    /// Recovery stabilization lead-in and scored-rest evidence.
     #[cfg(feature = "trace-velocity-sweep")]
-    SelectedRecoveryRest(SelectedRecoveryRestDiagnostic),
+    RecoveryRest(RecoveryRestDiagnostic),
     /// Current-limit evidence for one completed signed-plus-zero primitive.
     Current(VelocityPrimitiveCurrentEvidence),
     /// One directional region or fragment closed by the fold.

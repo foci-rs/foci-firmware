@@ -1266,7 +1266,7 @@ pub fn emit_velocity_sweep_event<S: CommissionReplySink>(
         #[cfg(feature = "trace-velocity-sweep")]
         VelocitySweepEvent::Recovery(report) => emit_rung_origin_recovery(sink, oid, report),
         #[cfg(feature = "trace-velocity-sweep")]
-        VelocitySweepEvent::SelectedRecoveryRest(_) => {}
+        VelocitySweepEvent::RecoveryRest(_) => {}
         VelocitySweepEvent::Current(_) => {}
         VelocitySweepEvent::DirectionalRegion(report) => {
             emit_velocity_directional_region(sink, oid, report)

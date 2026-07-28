@@ -1406,9 +1406,7 @@ impl CommissioningEngine {
                         report.evidence_sequence,
                     ),
                     #[cfg(feature = "trace-velocity-sweep")]
-                    crate::commissioning::types::VelocitySweepEvent::SelectedRecoveryRest(
-                        report,
-                    ) => (
+                    crate::commissioning::types::VelocitySweepEvent::RecoveryRest(report) => (
                         EVENT_COMMISSION_SELECTED_RECOVERY_REST,
                         report.evidence_sequence,
                     ),

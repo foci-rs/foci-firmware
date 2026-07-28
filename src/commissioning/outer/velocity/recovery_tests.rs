@@ -154,7 +154,7 @@ fn selected_recovery_reserves_one_fixed_lead_in() {
             2_500,
             4_394_000,
             3_000_000,
-            RecoveryRestSchedule::SelectedLeadIn,
+            RecoveryRestSchedule::Stabilized,
         ),
         Ok(2_316_958)
     );
@@ -163,7 +163,7 @@ fn selected_recovery_reserves_one_fixed_lead_in() {
             9_000,
             13_257_728,
             3_000_000,
-            RecoveryRestSchedule::SelectedLeadIn,
+            RecoveryRestSchedule::Stabilized,
         ),
         Ok(2_426_850)
     );
@@ -172,7 +172,7 @@ fn selected_recovery_reserves_one_fixed_lead_in() {
             9_000,
             12_901_376,
             3_000_000,
-            RecoveryRestSchedule::SelectedLeadIn,
+            RecoveryRestSchedule::Stabilized,
         ),
         Ok(2_445_601)
     );
@@ -427,7 +427,7 @@ fn selected_recovery_discards_lead_in_before_scoring_rest() {
         Some(14_000_000),
         RecoveryBindingSource::SettledRate,
         RecoveryCurrentContactPolicy::StopImmediately,
-        RecoveryRestSchedule::SelectedLeadIn,
+        RecoveryRestSchedule::Stabilized,
     );
     fixture.command_motion();
     assert_eq!(
@@ -457,7 +457,7 @@ fn selected_recovery_discards_lead_in_before_scoring_rest() {
     let analysis = loop {
         match fixture.step() {
             RungOriginRecoveryStep::ReadyNow => {}
-            RungOriginRecoveryStep::SelectedRestAnalysis(analysis) => break analysis,
+            RungOriginRecoveryStep::RestAnalysis(analysis) => break analysis,
             other => panic!("selected recovery should produce rest analysis: {other:?}"),
         }
     };
@@ -482,7 +482,7 @@ fn selected_recovery_reports_completed_unconfirmed_rest_without_a_fault() {
         Some(14_000_000),
         RecoveryBindingSource::SettledRate,
         RecoveryCurrentContactPolicy::StopImmediately,
-        RecoveryRestSchedule::SelectedLeadIn,
+        RecoveryRestSchedule::Stabilized,
     );
     fixture.command_motion();
     assert_eq!(
@@ -510,7 +510,7 @@ fn selected_recovery_reports_completed_unconfirmed_rest_without_a_fault() {
     let analysis = loop {
         match fixture.step() {
             RungOriginRecoveryStep::ReadyNow => {}
-            RungOriginRecoveryStep::SelectedRestAnalysis(analysis) => break analysis,
+            RungOriginRecoveryStep::RestAnalysis(analysis) => break analysis,
             other => panic!("weak rest should still produce analysis: {other:?}"),
         }
     };

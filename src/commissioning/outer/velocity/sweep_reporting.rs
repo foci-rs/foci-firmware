@@ -2,7 +2,7 @@
 
 use crate::autotune::velocity_measurement::StationarityResult;
 use crate::commissioning::types::{
-    RungOriginRecoveryEvidence, SelectedRecoveryRestDiagnostic, VelocitySweepEvent,
+    RecoveryRestDiagnostic, RungOriginRecoveryEvidence, VelocitySweepEvent,
     VelocitySweepObservation, VelocitySweepPlanned, VelocitySweepRungReport, VelocitySweepTerminal,
 };
 
@@ -62,7 +62,7 @@ impl VelocitySweepIntegrity {
                 self.emitted_rungs = self.emitted_rungs.saturating_add(1);
             }
             VelocitySweepEvent::Recovery(_)
-            | VelocitySweepEvent::SelectedRecoveryRest(_)
+            | VelocitySweepEvent::RecoveryRest(_)
             | VelocitySweepEvent::Current(_) => {}
             VelocitySweepEvent::DirectionalRegion(report) => {
                 let direction = match report.region.direction {
@@ -128,7 +128,7 @@ pub(crate) fn encode_velocity_sweep_event(
         VelocitySweepEvent::Observation(report) => encode_observation(report),
         VelocitySweepEvent::Rung(report) => encode_rung(report),
         VelocitySweepEvent::Recovery(report) => encode_rung_origin_recovery(report),
-        VelocitySweepEvent::SelectedRecoveryRest(report) => encode_selected_recovery_rest(report),
+        VelocitySweepEvent::RecoveryRest(report) => encode_recovery_rest(report),
         VelocitySweepEvent::Current(report) => {
             crate::ankyra::velocity_sweep_encoding::encode_velocity_primitive_current_evidence(
                 report,
@@ -222,10 +222,8 @@ pub(crate) fn encode_velocity_sweep_event(
     }
 }
 
-/// Encode selected-recovery lead-in and scored-rest evidence in exact canonical order.
-pub(crate) fn encode_selected_recovery_rest(
-    report: SelectedRecoveryRestDiagnostic,
-) -> VelocitySweepCanonicalRecord {
+/// Encode recovery lead-in and scored-rest evidence in exact canonical order.
+pub(crate) fn encode_recovery_rest(report: RecoveryRestDiagnostic) -> VelocitySweepCanonicalRecord {
     let mut record = VelocitySweepCanonicalRecord::new();
     record.push_u8(10);
     record.push_u32(report.run_sequence);
@@ -564,8 +562,7 @@ mod tests {
         VelocityObservationSummary,
     };
     use crate::commissioning::types::{
-        RungOriginRecoveryEvidence, SelectedRecoveryRestDiagnostic,
-        VelocityPrimitiveCurrentEvidence,
+        RecoveryRestDiagnostic, RungOriginRecoveryEvidence, VelocityPrimitiveCurrentEvidence,
     };
     use foci_tmc4671::pid::PidPGain;
 
@@ -656,7 +653,7 @@ mod tests {
 
     #[test]
     fn selected_recovery_rest_record_has_exact_sentinel_layout() {
-        let report = SelectedRecoveryRestDiagnostic {
+        let report = RecoveryRestDiagnostic {
             plan_digest: 0x1122_3344_5566_7788,
             exact_velocity_interval_q: [-9, 11],
             run_sequence: 0x0102_0304,
@@ -683,9 +680,9 @@ mod tests {
             disposition: 0,
         };
         let mut integrity = VelocitySweepIntegrity::new(report.run_sequence);
-        let record = encode_velocity_sweep_event(VelocitySweepEvent::SelectedRecoveryRest(report));
+        let record = encode_velocity_sweep_event(VelocitySweepEvent::RecoveryRest(report));
 
-        integrity.record(VelocitySweepEvent::SelectedRecoveryRest(report));
+        integrity.record(VelocitySweepEvent::RecoveryRest(report));
 
         assert_eq!(record.as_bytes().len(), 89);
         assert_eq!(record.as_bytes()[0], 10);

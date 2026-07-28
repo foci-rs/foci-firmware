@@ -27,7 +27,7 @@ const I_RESPONSE_TARGET_PERCENT: i128 = 98;
 const PERCENT_SCALE: i128 = 100;
 const SECONDS_PER_MINUTE: i128 = 60;
 const MICROS_PER_MILLISECOND: u64 = 1_000;
-const SELECTED_RECOVERY_LEAD_IN_US: u64 = 500_000;
+const RECOVERY_STABILIZATION_US: u64 = 500_000;
 #[cfg(any(test, feature = "trace-velocity-sweep"))]
 pub(crate) const TERMINAL_COMBINED_TARGET_SHIFT: u8 = 4;
 #[cfg(any(test, feature = "trace-velocity-sweep"))]
@@ -252,7 +252,7 @@ pub fn combined_workflow_geometry(
         .and_then(|value| {
             value.checked_add(
                 if stage_b.schema_revision == COMBINED_STAGE_B_SCHEMA_REVISION {
-                    SELECTED_RECOVERY_LEAD_IN_US
+                    RECOVERY_STABILIZATION_US
                 } else {
                     0
                 },
