@@ -1789,6 +1789,11 @@ mod tests {
                 size_of::<crate::commissioning::outer::VelocitySweepData>(),
                 2_880
             );
+            assert_eq!(
+                size_of::<crate::commissioning::types::VelocitySweepEvent>(),
+                304
+            );
+            assert_eq!(size_of::<crate::commissioning::types::StepResult>(), 928);
             assert_eq!(size_of::<CommissioningEngine>(), 4_528);
         }
         assert!(size_of::<CommissioningEngine>() <= 4_528);

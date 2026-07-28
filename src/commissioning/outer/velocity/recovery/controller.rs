@@ -18,6 +18,8 @@ use super::super::sweep_plan::{SETTLE_ANALYSIS_BUDGET_US, ZERO_SETTLE_US};
 use super::{
     ExactU64Parts, RecoveryBindingSource, RecoveryState, RungOriginRecoveryOutcome,
     RungOriginRecoveryResources, RungOriginRecoveryRuntime, RungOriginRecoveryStep,
+    SELECTED_RECOVERY_LEAD_IN_US, SelectedRecoveryLeadInSummary, SelectedRecoveryRestAnalysis,
+    recovery_return_distance_counts,
 };
 
 /// Advance one bounded unit of shared rung-origin recovery work.
@@ -51,6 +53,19 @@ pub(crate) async fn step_rung_origin_recovery<B: CommissioningBackend>(
             } else {
                 RungOriginRecoveryStep::Contained(report)
             }
+        }
+        RecoveryState::SelectedRestTerminal { confirmed } => {
+            if !confirmed {
+                return RungOriginRecoveryStep::RestUnconfirmed;
+            }
+            let report = runtime.report(
+                RungOriginRecoveryOutcome::Recovered,
+                runtime.authority_source,
+                resources.safety.unwrapped_position,
+                backend.elapsed_us(),
+                resources.current_observer.peak_pid_output_abs(),
+            );
+            RungOriginRecoveryStep::Finished(report)
         }
         RecoveryState::WriteGains => {
             if runtime.start_offset_counts.unsigned_abs() > resources.safety.position_window {
@@ -117,10 +132,7 @@ pub(crate) async fn step_rung_origin_recovery<B: CommissioningBackend>(
                 resources.safety.end_primitive();
                 return recovery_fault(CommissionError::Spi, None);
             }
-            let moving_budget_us = runtime
-                .runtime_us
-                .checked_sub(ZERO_SETTLE_US)
-                .and_then(|value| value.checked_sub(SETTLE_ANALYSIS_BUDGET_US));
+            let moving_budget_us = runtime.runtime_us.checked_sub(runtime.rest_allowance_us());
             let Some(moving_deadline_us) =
                 moving_budget_us.and_then(|value| started_us.checked_add(u64::from(value)))
             else {
@@ -158,6 +170,14 @@ pub(crate) async fn step_rung_origin_recovery<B: CommissioningBackend>(
             let in_band = offset.unsigned_abs() <= runtime.plan.origin_band_counts;
             let deadline_reached = backend.elapsed_us() >= moving_deadline_us;
             if in_band || deadline_reached {
+                runtime.first_in_band_offset_counts = offset;
+                runtime.entry_to_band_duration_us = backend
+                    .elapsed_us()
+                    .saturating_sub(runtime.recovery_started_us.to_u64())
+                    .min(u64::from(u32::MAX))
+                    as u32;
+                runtime.lead_in_first_or_net_counts = offset;
+                runtime.lead_in_min_or_span_counts = offset;
                 let current_result =
                     finish_velocity_current_moving_phase(resources.current_observer, backend).await;
                 let zero_result = backend.write_register(PID_VELOCITY_TARGET, 0).await;
@@ -176,6 +196,7 @@ pub(crate) async fn step_rung_origin_recovery<B: CommissioningBackend>(
                 runtime.state = RecoveryState::ClearSettleIntegrator {
                     settle_started_us: runtime.zero_commanded_us,
                     contained: deadline_reached && !in_band,
+                    lead_in: runtime.uses_selected_lead_in(),
                 };
                 RungOriginRecoveryStep::ReadyNow
             } else {
@@ -190,15 +211,21 @@ pub(crate) async fn step_rung_origin_recovery<B: CommissioningBackend>(
         RecoveryState::ClearSettleIntegrator {
             settle_started_us,
             contained,
+            lead_in,
         } => {
             if !runtime.settle_integrator_cleared()
                 && clear_velocity_integrator(backend).await.is_err()
             {
                 return recovery_fault(CommissionError::Spi, None);
             }
+            let capture_us = if lead_in {
+                SELECTED_RECOVERY_LEAD_IN_US
+            } else {
+                ZERO_SETTLE_US
+            };
             let Some(deadline_us) = settle_started_us
                 .to_u64()
-                .checked_add(u64::from(ZERO_SETTLE_US))
+                .checked_add(u64::from(capture_us))
             else {
                 return recovery_fault(CommissionError::InvalidSchedule, None);
             };
@@ -215,6 +242,7 @@ pub(crate) async fn step_rung_origin_recovery<B: CommissioningBackend>(
                 next_sample_us: ExactU64Parts::from_u64(next_sample_us),
                 deadline_us: ExactU64Parts::from_u64(deadline_us),
                 contained,
+                lead_in,
             };
             RungOriginRecoveryStep::At(next_sample_us)
         }
@@ -222,6 +250,7 @@ pub(crate) async fn step_rung_origin_recovery<B: CommissioningBackend>(
             next_sample_us,
             deadline_us,
             contained,
+            lead_in,
         } => {
             let next_sample_us = next_sample_us.to_u64();
             let deadline_us = deadline_us.to_u64();
@@ -254,18 +283,53 @@ pub(crate) async fn step_rung_origin_recovery<B: CommissioningBackend>(
             else {
                 return recovery_fault(CommissionError::InvalidSchedule, None);
             };
-            *resources.settle_displacement_counts = i32::from(*resources.settle_displacement_counts)
-                .saturating_add(delta)
-                .clamp(-2, 2) as i8;
-            *resources.settle_min_displacement_counts = (*resources.settle_min_displacement_counts)
-                .min(*resources.settle_displacement_counts);
-            *resources.settle_max_displacement_counts = (*resources.settle_max_displacement_counts)
-                .max(*resources.settle_displacement_counts);
+            if lead_in {
+                runtime.lead_in_first_or_net_counts =
+                    runtime.lead_in_first_or_net_counts.min(offset);
+                runtime.lead_in_min_or_span_counts = runtime.lead_in_min_or_span_counts.max(offset);
+            } else {
+                *resources.settle_displacement_counts =
+                    i32::from(*resources.settle_displacement_counts)
+                        .saturating_add(delta)
+                        .clamp(-2, 2) as i8;
+                *resources.settle_min_displacement_counts = (*resources
+                    .settle_min_displacement_counts)
+                    .min(*resources.settle_displacement_counts);
+                *resources.settle_max_displacement_counts = (*resources
+                    .settle_max_displacement_counts)
+                    .max(*resources.settle_displacement_counts);
+            }
             if resources.observations.push(delta, elapsed_us).is_err() {
                 return recovery_fault(CommissionError::InvalidSchedule, None);
             }
             let read_us = backend.elapsed_us();
             if read_us >= deadline_us {
+                if lead_in {
+                    let minimum = runtime.lead_in_first_or_net_counts;
+                    let maximum = runtime.lead_in_min_or_span_counts;
+                    runtime.lead_in_first_or_net_counts =
+                        offset.saturating_sub(runtime.first_in_band_offset_counts);
+                    runtime.lead_in_min_or_span_counts =
+                        i32::try_from(maximum.saturating_sub(minimum).unsigned_abs())
+                            .unwrap_or(i32::MAX);
+                    resources.observations.clear();
+                    resources.analysis.reset();
+                    *resources.settle_displacement_counts = 0;
+                    *resources.settle_min_displacement_counts = 0;
+                    *resources.settle_max_displacement_counts = 0;
+                    let Some(scored_deadline_us) = read_us.checked_add(u64::from(ZERO_SETTLE_US))
+                    else {
+                        return recovery_fault(CommissionError::InvalidSchedule, None);
+                    };
+                    let next = resources.safety.next_safety_deadline().unwrap_or(read_us);
+                    runtime.state = RecoveryState::CaptureSettle {
+                        next_sample_us: ExactU64Parts::from_u64(next),
+                        deadline_us: ExactU64Parts::from_u64(scored_deadline_us),
+                        contained,
+                        lead_in: false,
+                    };
+                    return RungOriginRecoveryStep::At(next);
+                }
                 let Some(analysis_deadline_us) =
                     read_us.checked_add(u64::from(SETTLE_ANALYSIS_BUDGET_US))
                 else {
@@ -283,6 +347,7 @@ pub(crate) async fn step_rung_origin_recovery<B: CommissioningBackend>(
                     next_sample_us: ExactU64Parts::from_u64(next),
                     deadline_us: ExactU64Parts::from_u64(deadline_us),
                     contained,
+                    lead_in,
                 };
                 RungOriginRecoveryStep::At(next)
             }
@@ -295,7 +360,7 @@ pub(crate) async fn step_rung_origin_recovery<B: CommissioningBackend>(
             if backend.elapsed_us() >= analysis_deadline_us {
                 return recovery_fault(CommissionError::AnalysisOverrun, None);
             }
-            let confirmed_rest = match poll_settle_confirmation_parts(
+            let confirmation = match poll_settle_confirmation_parts(
                 resources.analysis,
                 resources.observations,
                 resources.blocker,
@@ -303,7 +368,7 @@ pub(crate) async fn step_rung_origin_recovery<B: CommissioningBackend>(
                 *resources.settle_max_displacement_counts,
             ) {
                 Ok(None) => return RungOriginRecoveryStep::ReadyNow,
-                Ok(Some(result)) => result.confirmed_rest,
+                Ok(Some(result)) => result,
                 Err(error) => return recovery_fault(error, None),
             };
             if let Err(error) =
@@ -320,9 +385,80 @@ pub(crate) async fn step_rung_origin_recovery<B: CommissioningBackend>(
             resources.observations.clear();
             let final_offset = resources.safety.unwrapped_position;
             let in_band = final_offset.unsigned_abs() <= runtime.plan.origin_band_counts;
+            if runtime.uses_selected_lead_in() {
+                resources.safety.end_primitive();
+                let confirmed = confirmation.confirmed_rest && in_band;
+                runtime.state = RecoveryState::SelectedRestTerminal { confirmed };
+                let (stationarity_code, interval_present, exact_velocity_interval_q) =
+                    match confirmation.stationarity {
+                        crate::autotune::velocity_measurement::StationarityResult::Usable(_) => (
+                            0,
+                            1,
+                            confirmation
+                                .exact_velocity_interval_q
+                                .expect("usable settle carries an exact interval"),
+                        ),
+                        crate::autotune::velocity_measurement::StationarityResult::Excluded(
+                            exclusion,
+                        ) => (
+                            super::super::integral_reporting::stationarity_exclusion_code(
+                                exclusion,
+                            ),
+                            0,
+                            [0; 2],
+                        ),
+                    };
+                let current_contact_code = resources
+                    .current_observer
+                    .evidence(VelocityCurrentZeroPhase::Recovery)
+                    .map_or(VelocityCurrentContact::None as u8, |evidence| {
+                        evidence.contact as u8
+                    });
+                return RungOriginRecoveryStep::SelectedRestAnalysis(
+                    SelectedRecoveryRestAnalysis {
+                        exact_velocity_interval_q,
+                        start_offset_counts: runtime.start_offset_counts,
+                        closest_offset_counts: runtime.closest_offset_counts,
+                        final_offset_counts: final_offset,
+                        planned_return_distance_counts: recovery_return_distance_counts(
+                            runtime.start_offset_counts,
+                            runtime.plan.origin_band_counts,
+                        )
+                        .unwrap_or(0),
+                        first_in_band_offset_counts: runtime.first_in_band_offset_counts,
+                        displacement_to_band_counts: runtime
+                            .first_in_band_offset_counts
+                            .saturating_sub(runtime.start_offset_counts),
+                        entry_to_band_duration_us: runtime.entry_to_band_duration_us,
+                        lead_in: SelectedRecoveryLeadInSummary {
+                            net_displacement_counts: runtime.lead_in_first_or_net_counts,
+                            displacement_span_counts: runtime
+                                .lead_in_min_or_span_counts
+                                .unsigned_abs(),
+                        },
+                        scored_net_displacement_counts: i32::from(
+                            *resources.settle_displacement_counts,
+                        ),
+                        scored_min_displacement_counts: i32::from(
+                            *resources.settle_min_displacement_counts,
+                        ),
+                        scored_max_displacement_counts: i32::from(
+                            *resources.settle_max_displacement_counts,
+                        ),
+                        p_raw: runtime.p.raw(),
+                        peak_torque_target_abs: resources.current_observer.peak_pid_output_abs(),
+                        stage: runtime.stage,
+                        rung_index: runtime.rung_index,
+                        stationarity_code,
+                        interval_present,
+                        current_contact_code,
+                        disposition: u8::from(!confirmed),
+                    },
+                );
+            }
             let (outcome, binding_source) = if runtime.current_contact_detected() {
                 resources.safety.end_primitive();
-                if confirmed_rest && in_band {
+                if confirmation.confirmed_rest && in_band {
                     (
                         RungOriginRecoveryOutcome::RecoveredWithCurrentHeadroom,
                         RecoveryBindingSource::CurrentHeadroom,
@@ -333,7 +469,7 @@ pub(crate) async fn step_rung_origin_recovery<B: CommissioningBackend>(
                         RecoveryBindingSource::CurrentHeadroom,
                     )
                 }
-            } else if !confirmed_rest {
+            } else if !confirmation.confirmed_rest {
                 return recovery_fault(CommissionError::VelocityValidationFailed, None);
             } else if contained || !in_band {
                 (
@@ -433,6 +569,7 @@ async fn recovery_current_headroom<B: CommissioningBackend>(
             runtime.state = RecoveryState::ClearSettleIntegrator {
                 settle_started_us: runtime.zero_commanded_us,
                 contained: false,
+                lead_in: false,
             };
             return RungOriginRecoveryStep::ReadyNow;
         }

@@ -4,11 +4,11 @@ use super::current_guard::{
 };
 use super::operating_region::{BoundRounding, CompactSignedRate};
 use super::recovery::{
-    RecoveryBindingSource, RecoveryCurrentContactPolicy, RecoveryRateAuthority, RecoveryStage,
-    RungOriginRecoveryConfig, RungOriginRecoveryOutcome, RungOriginRecoveryResources,
-    RungOriginRecoveryRuntime, RungOriginRecoveryStep, commanded_side_lower_rate_q,
-    plan_rung_origin_recovery, recovery_return_distance_counts, recovery_runtime_us,
-    step_rung_origin_recovery,
+    RecoveryBindingSource, RecoveryCurrentContactPolicy, RecoveryRateAuthority,
+    RecoveryRestSchedule, RecoveryStage, RungOriginRecoveryConfig, RungOriginRecoveryOutcome,
+    RungOriginRecoveryResources, RungOriginRecoveryRuntime, RungOriginRecoveryStep,
+    commanded_side_lower_rate_q, plan_rung_origin_recovery, recovery_return_distance_counts,
+    recovery_runtime_us, step_rung_origin_recovery,
 };
 use super::sweep_plan::{
     MAX_SAFETY_OBSERVATION_GAP_US, RequestedVelocitySource, SETTLE_ANALYSIS_BUDGET_US,
@@ -198,6 +198,22 @@ fn runtime_with_policy(
     authority_source: RecoveryBindingSource,
     current_contact_policy: RecoveryCurrentContactPolicy,
 ) -> RungOriginRecoveryRuntime {
+    runtime_with_schedule(
+        start_offset_counts,
+        lower_rate_q,
+        authority_source,
+        current_contact_policy,
+        RecoveryRestSchedule::ImmediateScored,
+    )
+}
+
+fn runtime_with_schedule(
+    start_offset_counts: i32,
+    lower_rate_q: Option<u64>,
+    authority_source: RecoveryBindingSource,
+    current_contact_policy: RecoveryCurrentContactPolicy,
+    rest_schedule: RecoveryRestSchedule,
+) -> RungOriginRecoveryRuntime {
     RungOriginRecoveryRuntime::new(
         RungOriginRecoveryConfig {
             stage: RecoveryStage::Proportional,
@@ -209,6 +225,7 @@ fn runtime_with_policy(
             lower_rate_q,
             authority_source,
             current_contact_policy,
+            rest_schedule,
         },
         plan_rung_origin_recovery(live_budget(), 4_000, 4_394).unwrap(),
     )
@@ -257,6 +274,22 @@ impl RecoveryFixture {
         authority_source: RecoveryBindingSource,
         current_contact_policy: RecoveryCurrentContactPolicy,
     ) -> Self {
+        Self::new_with_schedule(
+            start_offset_counts,
+            lower_rate_q,
+            authority_source,
+            current_contact_policy,
+            RecoveryRestSchedule::ImmediateScored,
+        )
+    }
+
+    fn new_with_schedule(
+        start_offset_counts: i32,
+        lower_rate_q: Option<u64>,
+        authority_source: RecoveryBindingSource,
+        current_contact_policy: RecoveryCurrentContactPolicy,
+        rest_schedule: RecoveryRestSchedule,
+    ) -> Self {
         let mut backend = MockBackend::new();
         backend.current_limit_value = current_limit(2_816);
         backend.mechanical_encoder_position_counts_value =
@@ -268,11 +301,12 @@ impl RecoveryFixture {
             100,
         );
         Self {
-            runtime: runtime_with_policy(
+            runtime: runtime_with_schedule(
                 start_offset_counts,
                 lower_rate_q,
                 authority_source,
                 current_contact_policy,
+                rest_schedule,
             ),
             safety: configured_safety(start_offset_counts),
             observations: VelocityObservationRing::new(),
@@ -954,6 +988,7 @@ fn recovery_safety_inherits_velocity_local_and_absolute_position_faults() {
             lower_rate_q: Some(14_000_000),
             authority_source: RecoveryBindingSource::SettledRate,
             current_contact_policy: RecoveryCurrentContactPolicy::StopImmediately,
+            rest_schedule: RecoveryRestSchedule::ImmediateScored,
         },
         super::recovery::RungOriginRecoveryPlan {
             origin_band_counts: 10,

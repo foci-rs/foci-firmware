@@ -35,9 +35,10 @@ use super::operating_region::{
     SelectedDirectionalRegion,
 };
 use super::recovery::{
-    RecoveryCurrentContactPolicy, RecoveryRateAuthority, RecoveryStage, RungOriginRecoveryConfig,
-    RungOriginRecoveryOutcome, RungOriginRecoveryResources, RungOriginRecoveryRuntime,
-    RungOriginRecoveryStep, plan_rung_origin_recovery, step_rung_origin_recovery,
+    RecoveryCurrentContactPolicy, RecoveryRateAuthority, RecoveryRestSchedule, RecoveryStage,
+    RungOriginRecoveryConfig, RungOriginRecoveryOutcome, RungOriginRecoveryResources,
+    RungOriginRecoveryRuntime, RungOriginRecoveryStep, plan_rung_origin_recovery,
+    step_rung_origin_recovery,
 };
 use super::sweep_analysis::{
     poll_moving_observation_analysis, poll_settle_confirmation, retain_observation,
@@ -410,10 +411,10 @@ fn sweep_evidence_terminal(
         }
         _ => None,
     };
-    let (mut outcome, mut cause) = if combined_selected.is_some() {
-        (VelocitySweepOutcome::Complete, SWEEP_CAUSE_NONE)
-    } else if recovery_failure {
+    let (mut outcome, mut cause) = if recovery_failure {
         (VelocitySweepOutcome::Inconclusive, SWEEP_CAUSE_RECOVERY)
+    } else if combined_selected.is_some() {
+        (VelocitySweepOutcome::Complete, SWEEP_CAUSE_NONE)
     } else if plan.schema_revision == COMBINED_STAGE_B_SCHEMA_REVISION {
         (
             VelocitySweepOutcome::Inconclusive,
@@ -457,16 +458,17 @@ fn sweep_evidence_terminal(
         plan_digest: plan.plan_digest,
         outcome,
         cause,
-        recovery_unavailable: match data.evidence {
-            VelocitySweepEvidenceState::RecoveryComplete { report, .. } => matches!(
-                report.outcome,
-                RungOriginRecoveryOutcome::ContainedNoRate
-                    | RungOriginRecoveryOutcome::ContainedDeadline
-                    | RungOriginRecoveryOutcome::RecoveryCurrentHeadroom
-            ),
-            VelocitySweepEvidenceState::Complete { .. } => current_headroom,
-            _ => false,
-        },
+        recovery_unavailable: recovery_failure
+            || match data.evidence {
+                VelocitySweepEvidenceState::RecoveryComplete { report, .. } => matches!(
+                    report.outcome,
+                    RungOriginRecoveryOutcome::ContainedNoRate
+                        | RungOriginRecoveryOutcome::ContainedDeadline
+                        | RungOriginRecoveryOutcome::RecoveryCurrentHeadroom
+                ),
+                VelocitySweepEvidenceState::Complete { .. } => current_headroom,
+                _ => false,
+            },
         model_direction_mask,
         selected_memberships: candidate.map_or([0; 3], |candidate| {
             [
@@ -1563,6 +1565,13 @@ pub(crate) async fn step_velocity_sweep_with_trace<B: CommissioningBackend>(
                         lower_rate_q: authority.lower_rate_q(),
                         authority_source: authority.source,
                         current_contact_policy: RecoveryCurrentContactPolicy::StopImmediately,
+                        rest_schedule: if selected.is_some()
+                            && plan.schema_revision == COMBINED_STAGE_B_SCHEMA_REVISION
+                        {
+                            RecoveryRestSchedule::SelectedLeadIn
+                        } else {
+                            RecoveryRestSchedule::ImmediateScored
+                        },
                     },
                     recovery_plan,
                 ) {
@@ -1606,6 +1615,16 @@ pub(crate) async fn step_velocity_sweep_with_trace<B: CommissioningBackend>(
                     *state = VelocitySweepState::FinalizeRecovery {
                         current_headroom: *current_headroom,
                         final_rung: *final_rung,
+                    };
+                    StepResult::ReadyNow
+                }
+                RungOriginRecoveryStep::SelectedRestAnalysis(_) => StepResult::ReadyNow,
+                RungOriginRecoveryStep::RestUnconfirmed => {
+                    let selected = selected.expect("selected rest belongs to a selected response");
+                    data.evidence = VelocitySweepEvidenceState::ResponseSelected(selected);
+                    *state = VelocitySweepState::FinishForward {
+                        current_headroom: *current_headroom,
+                        recovery_failure: true,
                     };
                     StepResult::ReadyNow
                 }

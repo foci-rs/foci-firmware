@@ -49,9 +49,10 @@ use super::integral_plan::{
     native_velocity_i_at, response_horizon,
 };
 use super::recovery::{
-    RecoveryBindingSource, RecoveryCurrentContactPolicy, RecoveryStage, RungOriginRecoveryConfig,
-    RungOriginRecoveryOutcome, RungOriginRecoveryResources, RungOriginRecoveryRuntime,
-    RungOriginRecoveryStep, plan_rung_origin_recovery, step_rung_origin_recovery,
+    RecoveryBindingSource, RecoveryCurrentContactPolicy, RecoveryRestSchedule, RecoveryStage,
+    RungOriginRecoveryConfig, RungOriginRecoveryOutcome, RungOriginRecoveryResources,
+    RungOriginRecoveryRuntime, RungOriginRecoveryStep, plan_rung_origin_recovery,
+    step_rung_origin_recovery,
 };
 use super::sweep::clear_velocity_integrator;
 use super::sweep_analysis::{
@@ -754,6 +755,7 @@ fn plan_integral_recovery(
                 RecoveryBindingSource::MissingRate
             },
             current_contact_policy: integral_recovery_current_contact_policy(data),
+            rest_schedule: RecoveryRestSchedule::ImmediateScored,
         },
         recovery_plan,
     )
@@ -2185,6 +2187,10 @@ pub(crate) async fn step_velocity_integral_with_trace<B: CommissioningBackend>(
                 | RungOriginRecoveryStep::Contained(report) => {
                     *state = VelocityIntegralState::FinalizeRecovery(report);
                     StepResult::ReadyNow
+                }
+                RungOriginRecoveryStep::SelectedRestAnalysis(_)
+                | RungOriginRecoveryStep::RestUnconfirmed => {
+                    fail_integral(phase, backend, CommissionError::InvalidSchedule).await
                 }
                 RungOriginRecoveryStep::Fault {
                     error: _,

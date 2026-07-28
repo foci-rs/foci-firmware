@@ -34,6 +34,7 @@ use super::sweep_plan::{MOVING_STROKE_US, SETTLE_ANALYSIS_BUDGET_US, ZERO_SETTLE
 
 const MREV_PER_REV: u128 = 1_000;
 const MICROS_PER_SECOND: u128 = 1_000_000;
+pub(crate) const SELECTED_RECOVERY_LEAD_IN_US: u32 = 500_000;
 
 /// Commissioning stage that owns one recovery record.
 #[cfg(feature = "trace-velocity-sweep")]
@@ -74,6 +75,15 @@ pub(crate) enum RecoveryCurrentContactPolicy {
     StopImmediately,
     /// Hold zero target and prove passive in-band rest without restarting settle.
     ProvePassiveSettle,
+}
+
+/// Zero-target rest schedule following one origin return.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+pub(crate) enum RecoveryRestSchedule {
+    /// Score the first fixed settle window.
+    ImmediateScored,
+    /// Discard one fixed lead-in before scoring a separate settle window.
+    SelectedLeadIn,
 }
 
 /// Exact reason that bounded or authorized the recovery attempt.
@@ -168,6 +178,40 @@ pub struct RungOriginRecoveryReport {
     pub(crate) outcome: RungOriginRecoveryOutcome,
 }
 
+/// Compact displacement summary for the unscored selected-recovery lead-in.
+#[cfg(feature = "trace-velocity-sweep")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+pub(crate) struct SelectedRecoveryLeadInSummary {
+    pub(crate) net_displacement_counts: i32,
+    pub(crate) displacement_span_counts: u32,
+}
+
+/// Completed selected-recovery rest analysis before run identity is attached.
+#[cfg(feature = "trace-velocity-sweep")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+pub(crate) struct SelectedRecoveryRestAnalysis {
+    pub(crate) exact_velocity_interval_q: [i64; 2],
+    pub(crate) start_offset_counts: i32,
+    pub(crate) closest_offset_counts: i32,
+    pub(crate) final_offset_counts: i32,
+    pub(crate) planned_return_distance_counts: u32,
+    pub(crate) first_in_band_offset_counts: i32,
+    pub(crate) displacement_to_band_counts: i32,
+    pub(crate) entry_to_band_duration_us: u32,
+    pub(crate) lead_in: SelectedRecoveryLeadInSummary,
+    pub(crate) scored_net_displacement_counts: i32,
+    pub(crate) scored_min_displacement_counts: i32,
+    pub(crate) scored_max_displacement_counts: i32,
+    pub(crate) p_raw: u16,
+    pub(crate) peak_torque_target_abs: u16,
+    pub(crate) stage: RecoveryStage,
+    pub(crate) rung_index: u8,
+    pub(crate) stationarity_code: u8,
+    pub(crate) interval_present: u8,
+    pub(crate) current_contact_code: u8,
+    pub(crate) disposition: u8,
+}
+
 /// One cooperative result from the shared recovery worker.
 #[cfg(feature = "trace-velocity-sweep")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
@@ -176,6 +220,8 @@ pub(crate) enum RungOriginRecoveryStep {
     At(u64),
     Finished(RungOriginRecoveryReport),
     Contained(RungOriginRecoveryReport),
+    SelectedRestAnalysis(SelectedRecoveryRestAnalysis),
+    RestUnconfirmed,
     Fault {
         error: CommissionError,
         safety: Option<OuterSafetyFault>,
@@ -194,15 +240,20 @@ enum RecoveryState {
     ClearSettleIntegrator {
         settle_started_us: ExactU64Parts,
         contained: bool,
+        lead_in: bool,
     },
     CaptureSettle {
         next_sample_us: ExactU64Parts,
         deadline_us: ExactU64Parts,
         contained: bool,
+        lead_in: bool,
     },
     AnalyzeSettle {
         analysis_deadline_us: ExactU64Parts,
         contained: bool,
+    },
+    SelectedRestTerminal {
+        confirmed: bool,
     },
     Terminal {
         outcome: RungOriginRecoveryOutcome,
@@ -274,6 +325,10 @@ pub(crate) struct RungOriginRecoveryRuntime {
     flags: u8,
     recovery_started_us: ExactU64Parts,
     zero_commanded_us: ExactU64Parts,
+    first_in_band_offset_counts: i32,
+    entry_to_band_duration_us: u32,
+    lead_in_first_or_net_counts: i32,
+    lead_in_min_or_span_counts: i32,
     state: RecoveryState,
 }
 
@@ -290,6 +345,7 @@ pub(crate) struct RungOriginRecoveryConfig {
     pub(crate) lower_rate_q: Option<u64>,
     pub(crate) authority_source: RecoveryBindingSource,
     pub(crate) current_contact_policy: RecoveryCurrentContactPolicy,
+    pub(crate) rest_schedule: RecoveryRestSchedule,
 }
 
 #[cfg(feature = "trace-velocity-sweep")]
@@ -298,6 +354,7 @@ impl RungOriginRecoveryRuntime {
     const PROVE_PASSIVE_SETTLE: u8 = 1 << 1;
     const CURRENT_CONTACT_DETECTED: u8 = 1 << 2;
     const SETTLE_INTEGRATOR_CLEARED: u8 = 1 << 3;
+    const SELECTED_LEAD_IN: u8 = 1 << 4;
 
     /// Construct one checked recovery attempt without touching hardware.
     pub(crate) fn new(
@@ -333,7 +390,12 @@ impl RungOriginRecoveryRuntime {
                 0,
             )
         } else if let Some(rate) = lower_rate_q {
-            match recovery_runtime_us(return_distance, rate, plan.maximum_slot_us) {
+            match recovery_runtime_us_with_schedule(
+                return_distance,
+                rate,
+                plan.maximum_slot_us,
+                config.rest_schedule,
+            ) {
                 Ok(runtime_us) => (RecoveryState::WriteGains, runtime_us, rate),
                 Err(RungOriginRecoveryPlanError::ExceedsPrimitiveCap) => (
                     RecoveryState::Terminal {
@@ -367,15 +429,17 @@ impl RungOriginRecoveryRuntime {
             authority_source: config.authority_source,
             plan,
             runtime_us,
-            flags: if config.current_contact_policy
-                == RecoveryCurrentContactPolicy::ProvePassiveSettle
-            {
-                Self::PROVE_PASSIVE_SETTLE
-            } else {
-                0
-            },
+            flags: (u8::from(
+                config.current_contact_policy == RecoveryCurrentContactPolicy::ProvePassiveSettle,
+            ) * Self::PROVE_PASSIVE_SETTLE)
+                | (u8::from(config.rest_schedule == RecoveryRestSchedule::SelectedLeadIn)
+                    * Self::SELECTED_LEAD_IN),
             recovery_started_us: ExactU64Parts::ZERO,
             zero_commanded_us: ExactU64Parts::ZERO,
+            first_in_band_offset_counts: 0,
+            entry_to_band_duration_us: 0,
+            lead_in_first_or_net_counts: 0,
+            lead_in_min_or_span_counts: 0,
             state,
         })
     }
@@ -389,6 +453,9 @@ impl RungOriginRecoveryRuntime {
             RecoveryState::ClearSettleIntegrator { .. }
             | RecoveryState::CaptureSettle { .. }
             | RecoveryState::AnalyzeSettle { .. } => (OuterSafetyTimingPhase::RecoverySettle, true),
+            RecoveryState::SelectedRestTerminal { .. } => {
+                (OuterSafetyTimingPhase::Terminalization, true)
+            }
             RecoveryState::Terminal { .. } => (OuterSafetyTimingPhase::Terminalization, true),
         }
     }
@@ -415,6 +482,20 @@ impl RungOriginRecoveryRuntime {
 
     fn settle_integrator_cleared(&self) -> bool {
         self.flags & Self::SETTLE_INTEGRATOR_CLEARED != 0
+    }
+
+    fn uses_selected_lead_in(&self) -> bool {
+        self.flags & Self::SELECTED_LEAD_IN != 0
+    }
+
+    fn rest_allowance_us(&self) -> u32 {
+        ZERO_SETTLE_US
+            + SETTLE_ANALYSIS_BUDGET_US
+            + if self.uses_selected_lead_in() {
+                SELECTED_RECOVERY_LEAD_IN_US
+            } else {
+                0
+            }
     }
 
     fn report(
@@ -552,6 +633,22 @@ pub(crate) fn recovery_runtime_us(
     lower_rate_q: u64,
     primitive_cap_us: u32,
 ) -> Result<u32, RungOriginRecoveryPlanError> {
+    recovery_runtime_us_with_schedule(
+        return_distance_counts,
+        lower_rate_q,
+        primitive_cap_us,
+        RecoveryRestSchedule::ImmediateScored,
+    )
+}
+
+/// Derive a schedule-specific runtime deadline from a settled-rate lower bound.
+#[allow(dead_code)]
+pub(crate) fn recovery_runtime_us_with_schedule(
+    return_distance_counts: u32,
+    lower_rate_q: u64,
+    primitive_cap_us: u32,
+    rest_schedule: RecoveryRestSchedule,
+) -> Result<u32, RungOriginRecoveryPlanError> {
     if lower_rate_q == 0 || primitive_cap_us == 0 {
         return Err(RungOriginRecoveryPlanError::InvalidRequest);
     }
@@ -562,7 +659,12 @@ pub(crate) fn recovery_runtime_us(
         .and_then(|value| value.checked_mul(rate_q_scale))
         .ok_or(RungOriginRecoveryPlanError::Arithmetic)?
         .div_ceil(u128::from(lower_rate_q));
-    let runtime_us = recovery_allowance_us(measured_return_us)?;
+    let runtime_us = recovery_allowance_us(measured_return_us)?
+        .checked_add(match rest_schedule {
+            RecoveryRestSchedule::ImmediateScored => 0,
+            RecoveryRestSchedule::SelectedLeadIn => u128::from(SELECTED_RECOVERY_LEAD_IN_US),
+        })
+        .ok_or(RungOriginRecoveryPlanError::Arithmetic)?;
     if runtime_us > u128::from(primitive_cap_us) {
         return Err(RungOriginRecoveryPlanError::ExceedsPrimitiveCap);
     }

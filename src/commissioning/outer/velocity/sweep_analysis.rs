@@ -31,6 +31,7 @@ pub(super) struct MovingObservationAnalysis {
 pub(super) struct SettleConfirmation {
     pub(super) stationarity: StationarityResult,
     pub(super) confirmed_rest: bool,
+    pub(super) exact_velocity_interval_q: Option<[i64; 2]>,
 }
 
 fn slot_direction(slot: u8) -> i32 {
@@ -269,7 +270,7 @@ pub(super) fn poll_settle_confirmation_parts<const LEVELS: usize>(
     let Some(stationarity) = poll_stationarity(analysis, observations, blocker)? else {
         return Ok(None);
     };
-    let confirmed_rest = match stationarity {
+    let (confirmed_rest, exact_velocity_interval_q) = match stationarity {
         StationarityResult::Usable(suffix) => {
             let confidence = estimate_confidence(suffix.selection, 3)
                 .map_err(|_| CommissionError::VelocityValidationFailed)?;
@@ -282,20 +283,30 @@ pub(super) fn poll_settle_confirmation_parts<const LEVELS: usize>(
                 .map_err(|_| CommissionError::VelocityValidationFailed)?;
             let stationary =
                 mean.saturating_sub(half_width) <= 0 && mean.saturating_add(half_width) >= 0;
-            stationary
-                || bounded_rest_displacement(
-                    settle_min_displacement_counts,
-                    settle_max_displacement_counts,
-                )
+            (
+                stationary
+                    || bounded_rest_displacement(
+                        settle_min_displacement_counts,
+                        settle_max_displacement_counts,
+                    ),
+                Some([
+                    mean.saturating_sub(half_width),
+                    mean.saturating_add(half_width),
+                ]),
+            )
         }
-        StationarityResult::Excluded(_) => bounded_rest_displacement(
-            settle_min_displacement_counts,
-            settle_max_displacement_counts,
+        StationarityResult::Excluded(_) => (
+            bounded_rest_displacement(
+                settle_min_displacement_counts,
+                settle_max_displacement_counts,
+            ),
+            None,
         ),
     };
     Ok(Some(SettleConfirmation {
         stationarity,
         confirmed_rest,
+        exact_velocity_interval_q,
     }))
 }
 
