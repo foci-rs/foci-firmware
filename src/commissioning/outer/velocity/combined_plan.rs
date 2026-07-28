@@ -13,7 +13,9 @@ use super::sweep_evidence::CompactDirectionalRungReport;
 use super::sweep_plan::{SETTLE_ANALYSIS_BUDGET_US, VelocitySweepPlan, ZERO_SETTLE_US};
 
 /// Live Stage-B schema for the combined P-then-I experiment.
-pub const COMBINED_STAGE_B_SCHEMA_REVISION: u16 = 10;
+pub const COMBINED_STAGE_B_SCHEMA_REVISION: u16 = 11;
+/// First combined Stage-B schema with cap-safe target quantization.
+pub const FIRST_CAP_SAFE_STAGE_B_SCHEMA_REVISION: u16 = 10;
 /// Live Stage-C schema for the combined P-then-I experiment.
 pub const COMBINED_STAGE_C_SCHEMA_REVISION: u16 = 10;
 /// First combined Stage-C schema, retained for historical digest parity.
@@ -25,6 +27,7 @@ const I_RESPONSE_TARGET_PERCENT: i128 = 98;
 const PERCENT_SCALE: i128 = 100;
 const SECONDS_PER_MINUTE: i128 = 60;
 const MICROS_PER_MILLISECOND: u64 = 1_000;
+const SELECTED_RECOVERY_LEAD_IN_US: u64 = 500_000;
 #[cfg(any(test, feature = "trace-velocity-sweep"))]
 pub(crate) const TERMINAL_COMBINED_TARGET_SHIFT: u8 = 4;
 #[cfg(any(test, feature = "trace-velocity-sweep"))]
@@ -246,6 +249,15 @@ pub fn combined_workflow_geometry(
                 .checked_mul(u64::from(stage_b.recovery_nominal_slot_us))
                 .ok_or(VelocityIntegralPlanError::Arithmetic)?,
         )
+        .and_then(|value| {
+            value.checked_add(
+                if stage_b.schema_revision == COMBINED_STAGE_B_SCHEMA_REVISION {
+                    SELECTED_RECOVERY_LEAD_IN_US
+                } else {
+                    0
+                },
+            )
+        })
         .ok_or(VelocityIntegralPlanError::Arithmetic)?;
     let p_maximum_us = p_base_us
         .checked_add(

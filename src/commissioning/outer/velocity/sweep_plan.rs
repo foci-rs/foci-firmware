@@ -482,24 +482,25 @@ fn plan_velocity_sweep_with_limit(
         clamp_flags |= CLAMP_EFFECTIVE_CEILING;
     }
 
-    let target_velocity_rpm =
-        if schema_revision == super::combined_plan::COMBINED_STAGE_B_SCHEMA_REVISION {
-            let raw = cap_safe_target_rpm(planned_velocity_mrev_s)?;
-            let executed_mrev_numerator = u64::try_from(raw)
-                .map_err(|_| VelocityPlanError::Arithmetic)?
-                .checked_mul(1_000)
-                .ok_or(VelocityPlanError::Arithmetic)?;
-            let planned_mrev_numerator = u64::from(planned_velocity_mrev_s)
-                .checked_mul(60)
-                .ok_or(VelocityPlanError::Arithmetic)?;
-            if executed_mrev_numerator > planned_mrev_numerator {
-                return Err(VelocityPlanError::InvalidRequest);
-            }
-            TmcMechanicalRpm::from_register(raw)
-        } else {
-            TmcMechanicalRpm::from_mrev_s_nearest(planned_velocity_mrev_s)
-                .map_err(|_| VelocityPlanError::ZeroMovingTravelAmplitude)?
-        };
+    let cap_safe_schemas = super::combined_plan::FIRST_CAP_SAFE_STAGE_B_SCHEMA_REVISION
+        ..=super::combined_plan::COMBINED_STAGE_B_SCHEMA_REVISION;
+    let target_velocity_rpm = if cap_safe_schemas.contains(&schema_revision) {
+        let raw = cap_safe_target_rpm(planned_velocity_mrev_s)?;
+        let executed_mrev_numerator = u64::try_from(raw)
+            .map_err(|_| VelocityPlanError::Arithmetic)?
+            .checked_mul(1_000)
+            .ok_or(VelocityPlanError::Arithmetic)?;
+        let planned_mrev_numerator = u64::from(planned_velocity_mrev_s)
+            .checked_mul(60)
+            .ok_or(VelocityPlanError::Arithmetic)?;
+        if executed_mrev_numerator > planned_mrev_numerator {
+            return Err(VelocityPlanError::InvalidRequest);
+        }
+        TmcMechanicalRpm::from_register(raw)
+    } else {
+        TmcMechanicalRpm::from_mrev_s_nearest(planned_velocity_mrev_s)
+            .map_err(|_| VelocityPlanError::ZeroMovingTravelAmplitude)?
+    };
     let recovery = plan_rung_origin_recovery(
         crate::commissioning::outer::OuterMotionBudget {
             requested_velocity_mrev_s: request.requested_velocity_mrev_s,

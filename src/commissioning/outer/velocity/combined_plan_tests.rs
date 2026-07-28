@@ -14,7 +14,7 @@ use super::sweep_consensus::DirectionalConsensusClass;
 use super::sweep_evidence::CompactDirectionalRungReport;
 use super::sweep_plan::{
     MIN_SETTLE_CAPTURE_US, MOVING_STROKE_US, RequestedVelocitySource, VelocitySweepRequest,
-    plan_combined_velocity_sweep, plan_historical_combined_velocity_sweep, plan_velocity_sweep,
+    plan_combined_velocity_sweep, plan_historical_combined_velocity_sweep,
 };
 use crate::commissioning::outer::{OUTER_MAX_VELOCITY_I, OuterMotionBudget};
 use foci_tmc4671::pid::PidPGain;
@@ -150,7 +150,7 @@ fn signed_deficit_target_uses_the_conservative_directional_endpoints() {
 
 #[test]
 fn combined_geometry_appends_the_exact_cap_without_changing_history() {
-    assert_eq!(COMBINED_STAGE_B_SCHEMA_REVISION, 10);
+    assert_eq!(COMBINED_STAGE_B_SCHEMA_REVISION, 11);
     assert_eq!(COMBINED_STAGE_C_SCHEMA_REVISION, 10);
     assert_eq!(STAGE_C_EVIDENCE_SCHEMA_REVISION, 7);
     assert_eq!(StageCPlanShape::CombinedPThenI as u8, 3);
@@ -190,15 +190,20 @@ fn combined_workflow_uses_exact_unrounded_phase_durations() {
         positive_position_headroom_mrev: 7_025,
         max_duration_ms: 3_000,
     };
-    let stage_b = plan_velocity_sweep(
+    let stage_b = plan_combined_velocity_sweep(
         request,
         4_000,
         2_816,
         super::VELOCITY_LIMIT_EVIDENCE_CAPABILITY_BEST_EFFORT,
     )
     .unwrap();
+    let mut historical_stage_b = stage_b;
+    historical_stage_b.schema_revision = 10;
+    let historical = combined_workflow_geometry(historical_stage_b, 25_000).unwrap();
     let geometry = combined_workflow_geometry(stage_b, 25_000).unwrap();
 
+    assert_eq!(historical.combined_nominal_ms, 451_573);
+    assert_eq!(historical.combined_maximum_ms, 496_528);
     assert_eq!(geometry.positive_i_rungs, 13);
     assert_eq!(geometry.total_i_rungs, 15);
     assert_eq!(geometry.i_observations, 120);
@@ -206,7 +211,7 @@ fn combined_workflow_uses_exact_unrounded_phase_durations() {
     assert_eq!(geometry.i_recovery_slots, 15);
     assert_eq!(geometry.i_nominal_ms, 180_151);
     assert_eq!(geometry.i_maximum_ms, 197_896);
-    assert_eq!(geometry.combined_nominal_ms, 451_573);
+    assert_eq!(geometry.combined_nominal_ms, 452_073);
     assert_eq!(geometry.combined_maximum_ms, 496_528);
 
     let workflow = CommissioningWorkflowPlan::new_combined(
@@ -216,7 +221,7 @@ fn combined_workflow_uses_exact_unrounded_phase_durations() {
     )
     .unwrap();
     assert_eq!(workflow.shape, StageCPlanShape::CombinedPThenI);
-    assert_eq!(workflow.nominal_workflow_ms, 451_573);
+    assert_eq!(workflow.nominal_workflow_ms, 452_073);
     assert_eq!(workflow.maximum_workflow_ms, 496_528);
 }
 
