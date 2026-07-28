@@ -204,6 +204,9 @@ pub(crate) fn encode_acceptance_event(
         AcceptanceMatrixEvent::Observation(report) => encode_acceptance_observation(report),
         AcceptanceMatrixEvent::Current(report) => encode_acceptance_current(report),
         AcceptanceMatrixEvent::Recovery(report) => encode_acceptance_recovery(report),
+        AcceptanceMatrixEvent::RecoveryRest(report) => {
+            super::sweep_reporting::encode_recovery_rest(report)
+        }
         AcceptanceMatrixEvent::Amplitude(report) => encode_acceptance_amplitude(
             report.run_sequence,
             report.evidence_sequence,
@@ -355,6 +358,7 @@ mod tests {
         AcceptanceMatrixOrder, AcceptanceMatrixPlan,
     };
     use crate::commissioning::outer::velocity::integral_reproduction::StageCPlanIdentity;
+    use crate::commissioning::outer::velocity::recovery::RecoveryStage;
     use crate::commissioning::outer::velocity::sweep_consensus::{
         DirectionalConsensus, DirectionalConsensusClass,
     };
@@ -362,8 +366,44 @@ mod tests {
         RequestedVelocitySource, VelocitySweepRequest,
     };
     use crate::commissioning::types::{
-        AcceptanceMatrixCause, AcceptanceMatrixOutcome, AcceptanceMatrixTerminal,
+        AcceptanceMatrixCause, AcceptanceMatrixEvent, AcceptanceMatrixOutcome,
+        AcceptanceMatrixTerminal, RecoveryRestDiagnostic,
     };
+
+    #[test]
+    fn matrix_recovery_rest_reuses_the_exact_event_150_record() {
+        let report = RecoveryRestDiagnostic {
+            plan_digest: 0x0123_4567_89ab_cdef,
+            exact_velocity_interval_q: [-17, 29],
+            run_sequence: 7,
+            start_offset_counts: -1_212,
+            closest_offset_counts: -947,
+            final_offset_counts: -947,
+            planned_return_distance_counts: 212,
+            first_in_band_offset_counts: -1_000,
+            displacement_to_band_counts: 212,
+            entry_to_band_duration_us: 20_609,
+            lead_in_net_displacement_counts: 42,
+            lead_in_displacement_span_counts: 43,
+            scored_net_displacement_counts: 0,
+            scored_min_displacement_counts: 0,
+            scored_max_displacement_counts: 0,
+            p_raw: 1_024,
+            evidence_sequence: 11,
+            peak_torque_target_abs: 1_560,
+            stage: RecoveryStage::Integral,
+            rung_index: 4,
+            stationarity_code: 0,
+            interval_present: 1,
+            current_contact_code: 0,
+            disposition: 0,
+        };
+        let encoded = super::encode_acceptance_event(AcceptanceMatrixEvent::RecoveryRest(report));
+        let shared = super::super::sweep_reporting::encode_recovery_rest(report);
+
+        assert_eq!(encoded.as_bytes(), shared.as_bytes());
+        assert_eq!(encoded.as_bytes().len(), 89);
+    }
 
     fn plan() -> AcceptanceMatrixPlan {
         AcceptanceMatrixPlan {
@@ -372,7 +412,8 @@ mod tests {
             acceptance_identity: StageCPlanIdentity {
                 channel: 0,
                 build_revision: 0x1234_5678,
-                schema_revision: 10,
+                schema_revision:
+                    crate::commissioning::outer::velocity::combined_plan::COMBINED_STAGE_C_SCHEMA_REVISION,
                 plan_digest: 0x1111_2222_3333_4444,
             },
             order: AcceptanceMatrixOrder::Ascending,
@@ -388,11 +429,11 @@ mod tests {
             moving_stroke_us: 512_000,
             zero_settle_us: 500_000,
             analysis_budget_us: 236_000,
-            nominal_workflow_ms: 60_541,
+            nominal_workflow_ms: 63_041,
             maximum_workflow_ms: 66_456,
             recovery_origin_band_counts: 1_000,
             recovery_lower_rate_q: [13_217_792, 12_827_648],
-            recovery_nominal_slot_us: 1_816_958,
+            recovery_nominal_slot_us: 2_316_958,
             recovery_maximum_slot_us: 3_000_000,
             recovery_slot_count: 5,
             hard_torque_limit: 2_816,

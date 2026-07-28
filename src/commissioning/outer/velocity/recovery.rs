@@ -34,8 +34,9 @@ use super::sweep_plan::{MOVING_STROKE_US, SETTLE_ANALYSIS_BUDGET_US, ZERO_SETTLE
 
 const MREV_PER_REV: u128 = 1_000;
 const MICROS_PER_SECOND: u128 = 1_000_000;
-#[cfg(feature = "trace-velocity-sweep")]
 pub(crate) const RECOVERY_STABILIZATION_US: u32 = 500_000;
+/// Plan-digest code for the stabilization-before-score recovery schedule.
+pub(crate) const STABILIZED_RECOVERY_SCHEDULE_CODE: u8 = 1;
 
 /// Commissioning stage that owns one recovery record.
 #[cfg(feature = "trace-velocity-sweep")]

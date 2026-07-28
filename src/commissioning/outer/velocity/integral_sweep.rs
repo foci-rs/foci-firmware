@@ -15,9 +15,9 @@ use crate::commissioning::types::{
     AcceptanceAmplitudeEvidence, AcceptanceMatrixCause, AcceptanceMatrixEvent,
     AcceptanceMatrixOutcome, AcceptanceMatrixTerminal, OUTER_SAFETY_FAULT_CURRENT,
     OUTER_SAFETY_FAULT_OBSERVATION_GAP, OUTER_SAFETY_FAULT_QUARTER_TURN, OuterSafetyFault,
-    RungOriginRecoveryEvidence, StepResult, VelocityIntegralEvent, VelocityIntegralObservation,
-    VelocityIntegralOutcome, VelocityIntegralRungReport, VelocityIntegralTerminal,
-    VelocityPrimitiveCurrentEvidence,
+    RecoveryRestDiagnostic, RungOriginRecoveryEvidence, StepResult, VelocityIntegralEvent,
+    VelocityIntegralObservation, VelocityIntegralOutcome, VelocityIntegralRungReport,
+    VelocityIntegralTerminal, VelocityPrimitiveCurrentEvidence,
 };
 use foci_tmc4671::current_limit::PidTorqueFluxLimit;
 use foci_tmc4671::pid::{PidGainPair, PidIGain, PidPGain};
@@ -49,10 +49,10 @@ use super::integral_plan::{
     native_velocity_i_at, response_horizon,
 };
 use super::recovery::{
-    RecoveryBindingSource, RecoveryCurrentContactPolicy, RecoveryRestSchedule, RecoveryStage,
-    RungOriginRecoveryConfig, RungOriginRecoveryOutcome, RungOriginRecoveryResources,
-    RungOriginRecoveryRuntime, RungOriginRecoveryStep, plan_rung_origin_recovery,
-    step_rung_origin_recovery,
+    RecoveryBindingSource, RecoveryCurrentContactPolicy, RecoveryRestAnalysis,
+    RecoveryRestSchedule, RecoveryStage, RungOriginRecoveryConfig, RungOriginRecoveryOutcome,
+    RungOriginRecoveryResources, RungOriginRecoveryRuntime, RungOriginRecoveryStep,
+    plan_rung_origin_recovery, step_rung_origin_recovery,
 };
 use super::sweep::clear_velocity_integrator;
 use super::sweep_analysis::{
@@ -755,10 +755,63 @@ fn plan_integral_recovery(
                 RecoveryBindingSource::MissingRate
             },
             current_contact_policy: integral_recovery_current_contact_policy(data),
-            rest_schedule: RecoveryRestSchedule::ImmediateScored,
+            rest_schedule: integral_recovery_rest_schedule(data.plan),
         },
         recovery_plan,
     )
+}
+
+pub(super) fn integral_recovery_rest_schedule(
+    plan: VelocityIntegralExecutionPlan,
+) -> RecoveryRestSchedule {
+    if plan.combined_workflow || is_acceptance_matrix(plan) {
+        RecoveryRestSchedule::Stabilized
+    } else {
+        RecoveryRestSchedule::ImmediateScored
+    }
+}
+
+pub(super) fn record_integral_recovery_rest(
+    data: &mut VelocityIntegralData,
+    analysis: RecoveryRestAnalysis,
+) -> StepResult {
+    let diagnostic = RecoveryRestDiagnostic {
+        plan_digest: data.plan.plan_digest,
+        exact_velocity_interval_q: analysis.exact_velocity_interval_q,
+        run_sequence: data.integrity.run_sequence(),
+        start_offset_counts: analysis.start_offset_counts,
+        closest_offset_counts: analysis.closest_offset_counts,
+        final_offset_counts: analysis.final_offset_counts,
+        planned_return_distance_counts: analysis.planned_return_distance_counts,
+        first_in_band_offset_counts: analysis.first_in_band_offset_counts,
+        displacement_to_band_counts: analysis.displacement_to_band_counts,
+        entry_to_band_duration_us: analysis.entry_to_band_duration_us,
+        lead_in_net_displacement_counts: analysis.lead_in.net_displacement_counts,
+        lead_in_displacement_span_counts: analysis.lead_in.displacement_span_counts,
+        scored_net_displacement_counts: analysis.scored_net_displacement_counts,
+        scored_min_displacement_counts: analysis.scored_min_displacement_counts,
+        scored_max_displacement_counts: analysis.scored_max_displacement_counts,
+        p_raw: analysis.p_raw,
+        evidence_sequence: data.integrity.next_evidence_sequence(),
+        peak_torque_target_abs: analysis.peak_torque_target_abs,
+        stage: analysis.stage,
+        rung_index: analysis.rung_index,
+        stationarity_code: analysis.stationarity_code,
+        interval_present: analysis.interval_present,
+        current_contact_code: analysis.current_contact_code,
+        disposition: analysis.disposition,
+    };
+    if is_acceptance_matrix(data.plan) {
+        let event = data
+            .integrity
+            .record_acceptance(AcceptanceMatrixEvent::RecoveryRest(diagnostic));
+        StepResult::AcceptanceMatrixEvent(event)
+    } else {
+        let event = data
+            .integrity
+            .record(VelocityIntegralEvent::RecoveryRest(diagnostic));
+        StepResult::VelocityIntegralEvent(event)
+    }
 }
 
 fn materialize_run_evidence(
@@ -2195,9 +2248,16 @@ pub(crate) async fn step_velocity_integral_with_trace<B: CommissioningBackend>(
                     *state = VelocityIntegralState::FinalizeRecovery(report);
                     StepResult::ReadyNow
                 }
-                RungOriginRecoveryStep::RestAnalysis(_)
-                | RungOriginRecoveryStep::RestUnconfirmed => {
-                    fail_integral(phase, backend, CommissionError::InvalidSchedule).await
+                RungOriginRecoveryStep::RestAnalysis(analysis) => {
+                    record_integral_recovery_rest(data, analysis)
+                }
+                RungOriginRecoveryStep::RestUnconfirmed if is_acceptance_matrix(data.plan) => {
+                    data.recovery_failure = true;
+                    *state = VelocityIntegralState::Terminal;
+                    StepResult::ReadyNow
+                }
+                RungOriginRecoveryStep::RestUnconfirmed => {
+                    fail_integral(phase, backend, CommissionError::VelocityRestNotConfirmed).await
                 }
                 RungOriginRecoveryStep::Fault {
                     error: _,

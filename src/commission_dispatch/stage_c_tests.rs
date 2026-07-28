@@ -166,7 +166,7 @@ fn combined_target_reached_installs_an_acceptance_point_after_restoration() {
             panic!("combined transition must reuse the integral continuation reply");
         };
         assert_eq!(stage_b_reproduction, None);
-        assert_eq!(stage_c_plan.schema_revision, 10);
+        assert_eq!(stage_c_plan.schema_revision, 11);
         assert_eq!(stage_c_plan.final_p, 1_024);
         assert_eq!(
             stage_c_plan.combined_selected_response,
@@ -223,7 +223,7 @@ fn combined_target_reached_installs_an_acceptance_point_after_restoration() {
             .acceptance_point()
             .expect("TargetReached must retain the exact operating point");
         assert_eq!(point.identity.channel, CHANNEL);
-        assert_eq!(point.identity.schema_revision, 10);
+        assert_eq!(point.identity.schema_revision, 11);
         assert_eq!(point.identity.plan_digest, stage_c_plan.digest());
         assert_eq!(point.selected_p, 1_024);
         assert_eq!(point.selected_i, 1_024);

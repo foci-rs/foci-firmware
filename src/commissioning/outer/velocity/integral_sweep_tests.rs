@@ -6,13 +6,16 @@ use super::integral_sweep::{
     acceptance_amplitude_report, acceptance_terminal, advance_integral_cursor,
     apply_integral_current_headroom, combined_slot_transition_us, combined_target_status,
     integral_fault_terminal, integral_i_at, integral_recovery_current_contact_policy,
-    integral_rung_count, integral_rung_kind, integral_slot_direction, integral_target_rpm_at,
-    matrix_rung_mean, opening_recovery_lower_rate_q, positive_directional_floors_exist,
-    record_integral_target_if_reached, step_velocity_integral_with_trace, store_matrix_rung_mean,
+    integral_recovery_rest_schedule, integral_rung_count, integral_rung_kind,
+    integral_slot_direction, integral_target_rpm_at, matrix_rung_mean,
+    opening_recovery_lower_rate_q, positive_directional_floors_exist,
+    record_integral_recovery_rest, record_integral_target_if_reached,
+    step_velocity_integral_with_trace, store_matrix_rung_mean,
 };
 use super::recovery::{
-    ExactU64Parts, RecoveryBindingSource, RecoveryCurrentContactPolicy, RecoveryStage,
-    RungOriginRecoveryOutcome, RungOriginRecoveryReport,
+    ExactU64Parts, RecoveryBindingSource, RecoveryCurrentContactPolicy, RecoveryRestAnalysis,
+    RecoveryRestSchedule, RecoveryStabilizationSummary, RecoveryStage, RungOriginRecoveryOutcome,
+    RungOriginRecoveryReport,
 };
 use super::sweep_plan::RequestedVelocitySource;
 use crate::autotune::CommissionError;
@@ -33,8 +36,8 @@ use crate::commissioning::outer::{
     OuterMotionBudget, OuterPhase, OuterSafetyLimits, VelocityIntegralData, VelocityIntegralState,
 };
 use crate::commissioning::types::{
-    AcceptanceMatrixCause, AcceptanceMatrixOutcome, StepResult, VelocityIntegralEvent,
-    VelocityIntegralOutcome,
+    AcceptanceMatrixCause, AcceptanceMatrixEvent, AcceptanceMatrixOutcome,
+    RungOriginRecoveryEvidence, StepResult, VelocityIntegralEvent, VelocityIntegralOutcome,
 };
 use foci_tmc4671::pid::{PidGainPair, PidIGain, PidPGain};
 use foci_tmc4671::registers::{
@@ -205,6 +208,10 @@ fn response_and_matrix_plans_expose_distinct_exact_schedules() {
     ascending.acquisition_kind = VelocityIntegralAcquisitionKind::AcceptanceAscending;
     ascending.i_start = 1_024;
     ascending.matrix_targets_rpm = [16, 33, 66, 132, 263];
+    assert_eq!(
+        integral_recovery_rest_schedule(ascending),
+        RecoveryRestSchedule::Stabilized
+    );
     assert_eq!(integral_rung_count(ascending), Some(5));
     assert_eq!(
         core::array::from_fn::<_, 5, _>(|rung| integral_i_at(ascending, rung as u8).unwrap()),
@@ -232,6 +239,116 @@ fn response_and_matrix_plans_expose_distinct_exact_schedules() {
     );
     assert_eq!(integral_i_at(descending, 5), None);
     assert_eq!(integral_target_rpm_at(descending, 5), None);
+
+    let mut combined = response;
+    combined.combined_workflow = true;
+    assert_eq!(
+        integral_recovery_rest_schedule(combined),
+        RecoveryRestSchedule::Stabilized
+    );
+}
+
+fn completed_recovery_rest_analysis() -> RecoveryRestAnalysis {
+    RecoveryRestAnalysis {
+        exact_velocity_interval_q: [-17, 29],
+        start_offset_counts: -1_212,
+        closest_offset_counts: -947,
+        final_offset_counts: -947,
+        planned_return_distance_counts: 212,
+        first_in_band_offset_counts: -1_000,
+        displacement_to_band_counts: 212,
+        entry_to_band_duration_us: 20_609,
+        lead_in: RecoveryStabilizationSummary {
+            net_displacement_counts: 42,
+            displacement_span_counts: 43,
+        },
+        scored_net_displacement_counts: 0,
+        scored_min_displacement_counts: 0,
+        scored_max_displacement_counts: 0,
+        p_raw: 1_448,
+        peak_torque_target_abs: 1_560,
+        stage: RecoveryStage::Integral,
+        rung_index: 4,
+        stationarity_code: 0,
+        interval_present: 1,
+        current_contact_code: 0,
+        disposition: 0,
+    }
+}
+
+fn completed_recovery_report() -> RungOriginRecoveryReport {
+    RungOriginRecoveryReport {
+        stage: RecoveryStage::Integral,
+        rung_index: 4,
+        p_raw: 1_448,
+        planned_velocity_mrev_s: 4_394,
+        start_offset_counts: -1_212,
+        closest_offset_counts: -947,
+        final_offset_counts: -947,
+        origin_band_counts: 1_000,
+        lower_rate_q: ExactU64Parts::from_u64(12_827_648),
+        moving_duration_us: 20_609,
+        settle_duration_us: 1_000_000,
+        total_duration_us: 1_020_609,
+        peak_torque_target_abs: 1_560,
+        binding_source: RecoveryBindingSource::SettledRate,
+        outcome: RungOriginRecoveryOutcome::Recovered,
+    }
+}
+
+#[test]
+fn stage_c_and_matrix_place_rest_diagnostics_immediately_before_recovery() {
+    let mut stage_c_plan = plan();
+    stage_c_plan.combined_workflow = true;
+    let mut stage_c = VelocityIntegralData::new(17, stage_c_plan);
+    let before = stage_c.integrity.digest();
+    let StepResult::VelocityIntegralEvent(VelocityIntegralEvent::RecoveryRest(diagnostic)) =
+        record_integral_recovery_rest(&mut stage_c, completed_recovery_rest_analysis())
+    else {
+        panic!("Stage C must emit its recovery-rest diagnostic")
+    };
+    assert_eq!(diagnostic.run_sequence, 17);
+    assert_eq!(diagnostic.evidence_sequence, 1);
+    assert_eq!(diagnostic.plan_digest, stage_c.plan.plan_digest);
+    assert_eq!(diagnostic.stage, RecoveryStage::Integral);
+    assert_eq!(diagnostic.rung_index, 4);
+    let recovery = RungOriginRecoveryEvidence {
+        run_sequence: 17,
+        evidence_sequence: stage_c.integrity.next_evidence_sequence(),
+        report: completed_recovery_report(),
+    };
+    let VelocityIntegralEvent::Recovery(recovery) = stage_c
+        .integrity
+        .record(VelocityIntegralEvent::Recovery(recovery))
+    else {
+        unreachable!()
+    };
+    assert_eq!(recovery.evidence_sequence, diagnostic.evidence_sequence + 1);
+    assert_ne!(stage_c.integrity.digest(), before);
+
+    let mut matrix_plan = plan();
+    matrix_plan.acquisition_kind = VelocityIntegralAcquisitionKind::AcceptanceAscending;
+    matrix_plan.matrix_targets_rpm = [16, 33, 66, 132, 263];
+    let mut matrix = VelocityIntegralData::new(23, matrix_plan);
+    let StepResult::AcceptanceMatrixEvent(AcceptanceMatrixEvent::RecoveryRest(diagnostic)) =
+        record_integral_recovery_rest(&mut matrix, completed_recovery_rest_analysis())
+    else {
+        panic!("matrix must emit its recovery-rest diagnostic")
+    };
+    assert_eq!(diagnostic.run_sequence, 23);
+    assert_eq!(diagnostic.evidence_sequence, 1);
+    let recovery = RungOriginRecoveryEvidence {
+        run_sequence: 23,
+        evidence_sequence: matrix.integrity.next_evidence_sequence(),
+        report: completed_recovery_report(),
+    };
+    let AcceptanceMatrixEvent::Recovery(recovery) = matrix
+        .integrity
+        .record_acceptance(AcceptanceMatrixEvent::Recovery(recovery))
+    else {
+        unreachable!()
+    };
+    assert_eq!(recovery.evidence_sequence, diagnostic.evidence_sequence + 1);
 }
 
 #[test]

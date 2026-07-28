@@ -4,7 +4,10 @@ use foci_tmc4671::pid::PidPGain;
 use heapless::Vec;
 
 use super::current_guard::{VelocityLimitEvidenceCapability, derive_probe_limit};
-use super::recovery::{RungOriginRecoveryPlanError, plan_rung_origin_recovery};
+use super::recovery::{
+    RECOVERY_STABILIZATION_US, RungOriginRecoveryPlanError, STABILIZED_RECOVERY_SCHEDULE_CODE,
+    plan_rung_origin_recovery,
+};
 
 /// Numerator of the runtime velocity-envelope proportional margin.
 pub const ENVELOPE_PROPORTIONAL_NUM: u32 = 3;
@@ -268,6 +271,9 @@ impl VelocitySweepPlan {
         hash_value!(self.nominal_workflow_ms);
         hash_value!(self.maximum_workflow_ms);
         hash_value!(self.recovery_origin_band_counts);
+        if self.schema_revision == super::combined_plan::COMBINED_STAGE_B_SCHEMA_REVISION {
+            hash_value!(STABILIZED_RECOVERY_SCHEDULE_CODE);
+        }
         hash_value!(self.recovery_nominal_slot_us);
         hash_value!(self.recovery_maximum_slot_us);
         hash_value!(self.recovery_slot_count);
@@ -543,10 +549,19 @@ fn plan_velocity_sweep_with_limit(
         .checked_mul(u32::from(SWEEP_SLOT_COUNT))
         .and_then(|value| value.checked_mul(primitive_us))
         .ok_or(VelocityPlanError::Arithmetic)?;
+    let recovery_nominal_slot_us =
+        if schema_revision == super::combined_plan::COMBINED_STAGE_B_SCHEMA_REVISION {
+            recovery
+                .nominal_slot_us
+                .checked_add(RECOVERY_STABILIZATION_US)
+                .ok_or(VelocityPlanError::Arithmetic)?
+        } else {
+            recovery.nominal_slot_us
+        };
     let nominal_workflow_us = workflow_us
         .checked_add(
             u32::from(rung_count)
-                .checked_mul(recovery.nominal_slot_us)
+                .checked_mul(recovery_nominal_slot_us)
                 .ok_or(VelocityPlanError::Arithmetic)?,
         )
         .ok_or(VelocityPlanError::Arithmetic)?;
@@ -591,7 +606,7 @@ fn plan_velocity_sweep_with_limit(
         nominal_workflow_ms,
         maximum_workflow_ms,
         recovery_origin_band_counts: recovery.origin_band_counts,
-        recovery_nominal_slot_us: recovery.nominal_slot_us,
+        recovery_nominal_slot_us,
         recovery_maximum_slot_us: recovery.maximum_slot_us,
         recovery_slot_count: rung_count,
         max_stroke_travel_mrev: request.max_stroke_travel_mrev,

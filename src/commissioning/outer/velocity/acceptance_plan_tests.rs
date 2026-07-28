@@ -110,7 +110,7 @@ fn point(plan: super::integral_plan::VelocityIntegralPlan) -> AcceptancePoint {
 
 #[test]
 fn live_matrix_geometry_and_orders_are_exact() {
-    assert_eq!(ACCEPTANCE_MATRIX_SCHEMA_REVISION, 2);
+    assert_eq!(ACCEPTANCE_MATRIX_SCHEMA_REVISION, 3);
     assert_eq!(AcceptanceMatrixOrder::Ascending as u8, 1);
     assert_eq!(AcceptanceMatrixOrder::Descending as u8, 2);
     assert_eq!(ACCEPTANCE_MATRIX_AMPLITUDES, 5);
@@ -148,7 +148,7 @@ fn live_matrix_geometry_and_orders_are_exact() {
     assert_eq!(ascending.family_size, 20);
     assert_eq!(ascending.recovery_slot_count, 5);
     assert_eq!(ascending.recovery_lower_rate_q, [13_217_792, 12_827_648]);
-    assert_eq!(ascending.nominal_workflow_ms, 60_541);
+    assert_eq!(ascending.nominal_workflow_ms, 63_041);
     assert_eq!(ascending.maximum_workflow_ms, 66_456);
 
     let descending = plan_acceptance_matrix(

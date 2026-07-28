@@ -752,6 +752,9 @@ pub enum VelocityIntegralEvent {
     /// One bounded return to the immutable campaign origin.
     #[cfg(feature = "trace-velocity-sweep")]
     Recovery(RungOriginRecoveryEvidence),
+    /// Recovery stabilization lead-in and scored-rest evidence.
+    #[cfg(feature = "trace-velocity-sweep")]
+    RecoveryRest(RecoveryRestDiagnostic),
     /// Current-limit evidence for one completed signed-plus-zero primitive.
     Current(VelocityPrimitiveCurrentEvidence),
 }
@@ -834,6 +837,9 @@ pub enum AcceptanceMatrixEvent {
     /// One evidence-excluded return to the immutable origin.
     #[cfg(feature = "trace-velocity-sweep")]
     Recovery(RungOriginRecoveryEvidence),
+    /// Recovery stabilization lead-in and scored-rest evidence.
+    #[cfg(feature = "trace-velocity-sweep")]
+    RecoveryRest(RecoveryRestDiagnostic),
     /// One complete four-observation fold per direction.
     Amplitude(AcceptanceAmplitudeEvidence),
 }

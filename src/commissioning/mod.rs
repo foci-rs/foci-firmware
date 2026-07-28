@@ -1479,6 +1479,11 @@ impl CommissioningEngine {
                         EVENT_COMMISSION_RUNG_ORIGIN_RECOVERY,
                         report.evidence_sequence,
                     ),
+                    #[cfg(feature = "trace-velocity-sweep")]
+                    crate::commissioning::types::VelocityIntegralEvent::RecoveryRest(report) => (
+                        EVENT_COMMISSION_SELECTED_RECOVERY_REST,
+                        report.evidence_sequence,
+                    ),
                     crate::commissioning::types::VelocityIntegralEvent::Current(report) => (
                         EVENT_COMMISSION_VELOCITY_INTEGRAL_DERIVED,
                         report.evidence_sequence,
@@ -1513,6 +1518,12 @@ impl CommissioningEngine {
                         crate::commissioning::outer::velocity::acceptance_reporting::
                             encode_acceptance_recovery(*report),
                         EVENT_COMMISSION_ACCEPTANCE_MATRIX_OBSERVATION,
+                        report.evidence_sequence,
+                    ),
+                    crate::commissioning::types::AcceptanceMatrixEvent::RecoveryRest(report) => (
+                        crate::commissioning::outer::velocity::sweep_reporting::
+                            encode_recovery_rest(*report),
+                        EVENT_COMMISSION_SELECTED_RECOVERY_REST,
                         report.evidence_sequence,
                     ),
                     crate::commissioning::types::AcceptanceMatrixEvent::Amplitude(report) => (
@@ -1797,6 +1808,14 @@ mod tests {
             assert_eq!(
                 size_of::<crate::commissioning::types::VelocitySweepEvent>(),
                 304
+            );
+            assert_eq!(
+                size_of::<crate::commissioning::types::VelocityIntegralEvent>(),
+                224
+            );
+            assert_eq!(
+                size_of::<crate::commissioning::types::AcceptanceMatrixEvent>(),
+                224
             );
             assert_eq!(size_of::<crate::commissioning::types::StepResult>(), 928);
             assert_eq!(size_of::<CommissioningEngine>(), 4_528);

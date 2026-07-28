@@ -141,7 +141,9 @@ impl VelocityIntegralIntegrity {
             VelocityIntegralEvent::Rung(_) => {
                 self.emitted_rungs = self.emitted_rungs.saturating_add(1);
             }
-            VelocityIntegralEvent::Recovery(_) | VelocityIntegralEvent::Current(_) => {}
+            VelocityIntegralEvent::Recovery(_)
+            | VelocityIntegralEvent::RecoveryRest(_)
+            | VelocityIntegralEvent::Current(_) => {}
             VelocityIntegralEvent::Planned(_) => {}
         }
         self.digest =
@@ -162,7 +164,9 @@ impl VelocityIntegralIntegrity {
             AcceptanceMatrixEvent::Amplitude(_) => {
                 self.emitted_rungs = self.emitted_rungs.saturating_add(1);
             }
-            AcceptanceMatrixEvent::Current(_) | AcceptanceMatrixEvent::Recovery(_) => {}
+            AcceptanceMatrixEvent::Current(_)
+            | AcceptanceMatrixEvent::Recovery(_)
+            | AcceptanceMatrixEvent::RecoveryRest(_) => {}
         }
         self.digest = extend_velocity_sweep_digest(
             self.digest,
@@ -213,6 +217,9 @@ pub(crate) fn encode_velocity_integral_event(
         VelocityIntegralEvent::Rung(report) => encode_rung(report),
         VelocityIntegralEvent::Recovery(report) => {
             super::sweep_reporting::encode_rung_origin_recovery(report)
+        }
+        VelocityIntegralEvent::RecoveryRest(report) => {
+            super::sweep_reporting::encode_recovery_rest(report)
         }
         VelocityIntegralEvent::Current(report) => {
             crate::ankyra::velocity_sweep_encoding::encode_velocity_primitive_current_evidence(
@@ -705,7 +712,47 @@ mod tests {
     use crate::commissioning::outer::velocity::integral_evidence::{
         ExactRateInterval, IntegralRungEvidence,
     };
-    use crate::commissioning::types::ResponseHorizonClass;
+    use crate::commissioning::outer::velocity::recovery::RecoveryStage;
+    use crate::commissioning::types::{RecoveryRestDiagnostic, ResponseHorizonClass};
+
+    fn recovery_rest_diagnostic() -> RecoveryRestDiagnostic {
+        RecoveryRestDiagnostic {
+            plan_digest: 0x0123_4567_89ab_cdef,
+            exact_velocity_interval_q: [-17, 29],
+            run_sequence: 7,
+            start_offset_counts: -1_212,
+            closest_offset_counts: -947,
+            final_offset_counts: -947,
+            planned_return_distance_counts: 212,
+            first_in_band_offset_counts: -1_000,
+            displacement_to_band_counts: 212,
+            entry_to_band_duration_us: 20_609,
+            lead_in_net_displacement_counts: 42,
+            lead_in_displacement_span_counts: 43,
+            scored_net_displacement_counts: 0,
+            scored_min_displacement_counts: 0,
+            scored_max_displacement_counts: 0,
+            p_raw: 1_024,
+            evidence_sequence: 11,
+            peak_torque_target_abs: 1_560,
+            stage: RecoveryStage::Integral,
+            rung_index: 4,
+            stationarity_code: 0,
+            interval_present: 1,
+            current_contact_code: 0,
+            disposition: 0,
+        }
+    }
+
+    #[test]
+    fn stage_c_recovery_rest_reuses_the_exact_event_150_record() {
+        let report = recovery_rest_diagnostic();
+        let encoded = encode_velocity_integral_event(VelocityIntegralEvent::RecoveryRest(report));
+        let shared = super::super::sweep_reporting::encode_recovery_rest(report);
+
+        assert_eq!(encoded.as_bytes(), shared.as_bytes());
+        assert_eq!(encoded.as_bytes().len(), 89);
+    }
 
     fn eligible_rung(direction: VelocityDirection) -> IntegralRungEvidence {
         let interval = ExactRateInterval::new(10, 20).unwrap();

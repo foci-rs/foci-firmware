@@ -120,7 +120,8 @@ fn point(plan: VelocityIntegralPlan, progress: AcceptanceMatrixProgress) -> Acce
 
 fn terminal(plan_digest: u64, outcome: AcceptanceMatrixOutcome) -> AcceptanceMatrixTerminal {
     AcceptanceMatrixTerminal {
-        schema_revision: 1,
+        schema_revision:
+            crate::commissioning::outer::velocity::acceptance_plan::ACCEPTANCE_MATRIX_SCHEMA_REVISION,
         run_sequence: 9,
         evidence_sequence: 1,
         acceptance_plan_digest: combined_plan().digest(),
@@ -153,14 +154,14 @@ fn action_codes_and_invalid_values_are_exact() {
     let ascending = CommissioningWorkflowPlan::new_acceptance_matrix(
         1,
         AcceptanceMatrixOrder::Ascending,
-        60_541,
+        63_041,
         66_456,
     )
     .unwrap();
     let descending = CommissioningWorkflowPlan::new_acceptance_matrix(
         2,
         AcceptanceMatrixOrder::Descending,
-        60_541,
+        63_041,
         66_456,
     )
     .unwrap();

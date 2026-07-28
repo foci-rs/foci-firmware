@@ -240,6 +240,17 @@ fn selected_handoff(
     })
 }
 
+const fn sweep_recovery_rest_schedule(
+    schema_revision: u16,
+    selected_response: bool,
+) -> RecoveryRestSchedule {
+    if schema_revision == COMBINED_STAGE_B_SCHEMA_REVISION || selected_response {
+        RecoveryRestSchedule::Stabilized
+    } else {
+        RecoveryRestSchedule::ImmediateScored
+    }
+}
+
 #[derive(Clone, Copy)]
 struct StageBCandidateSelection {
     nomination: ProvisionalPNomination,
@@ -1566,13 +1577,10 @@ pub(crate) async fn step_velocity_sweep_with_trace<B: CommissioningBackend>(
                         lower_rate_q: authority.lower_rate_q(),
                         authority_source: authority.source,
                         current_contact_policy: RecoveryCurrentContactPolicy::StopImmediately,
-                        rest_schedule: if selected.is_some()
-                            && plan.schema_revision == COMBINED_STAGE_B_SCHEMA_REVISION
-                        {
-                            RecoveryRestSchedule::Stabilized
-                        } else {
-                            RecoveryRestSchedule::ImmediateScored
-                        },
+                        rest_schedule: sweep_recovery_rest_schedule(
+                            plan.schema_revision,
+                            selected.is_some(),
+                        ),
                     },
                     recovery_plan,
                 ) {
@@ -1655,13 +1663,16 @@ pub(crate) async fn step_velocity_sweep_with_trace<B: CommissioningBackend>(
                     StepResult::VelocitySweepEvent(event)
                 }
                 RungOriginRecoveryStep::RestUnconfirmed => {
-                    let selected = selected.expect("selected rest belongs to a selected response");
-                    data.evidence = VelocitySweepEvidenceState::ResponseSelected(selected);
-                    *state = VelocitySweepState::FinishForward {
-                        current_headroom: *current_headroom,
-                        recovery_failure: true,
-                    };
-                    StepResult::ReadyNow
+                    if let Some(selected) = selected {
+                        data.evidence = VelocitySweepEvidenceState::ResponseSelected(selected);
+                        *state = VelocitySweepState::FinishForward {
+                            current_headroom: *current_headroom,
+                            recovery_failure: true,
+                        };
+                        StepResult::ReadyNow
+                    } else {
+                        fail_sweep(phase, backend, CommissionError::VelocityRestNotConfirmed).await
+                    }
                 }
                 RungOriginRecoveryStep::Fault {
                     error: _,
@@ -1942,6 +1953,26 @@ mod tests {
             data: VelocitySweepData::new(0),
             safety: OuterSafetyLimits::new(0, budget),
         }
+    }
+
+    #[test]
+    fn live_combined_stage_b_stabilizes_every_origin_recovery() {
+        assert_eq!(
+            sweep_recovery_rest_schedule(COMBINED_STAGE_B_SCHEMA_REVISION, false),
+            RecoveryRestSchedule::Stabilized
+        );
+        assert_eq!(
+            sweep_recovery_rest_schedule(COMBINED_STAGE_B_SCHEMA_REVISION, true),
+            RecoveryRestSchedule::Stabilized
+        );
+        assert_eq!(
+            sweep_recovery_rest_schedule(11, false),
+            RecoveryRestSchedule::ImmediateScored
+        );
+        assert_eq!(
+            sweep_recovery_rest_schedule(11, true),
+            RecoveryRestSchedule::Stabilized
+        );
     }
 
     fn dispatch_outer_tick(phase: &mut OuterPhase, backend: &mut MockBackend) -> StepResult {

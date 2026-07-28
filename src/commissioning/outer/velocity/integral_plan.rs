@@ -5,7 +5,10 @@ use heapless::Vec;
 use crate::commissioning::outer::{OUTER_MAX_VELOCITY_I, OuterMotionBudget};
 
 use super::current_guard::VelocityLimitEvidenceCapability;
-use super::recovery::{RungOriginRecoveryPlanError, plan_rung_origin_recovery};
+use super::recovery::{
+    RECOVERY_STABILIZATION_US, RungOriginRecoveryPlanError, STABILIZED_RECOVERY_SCHEDULE_CODE,
+    plan_rung_origin_recovery,
+};
 use super::reproduction::{STAGE_B_BUILD_REVISION, StageBDirectionalValidity};
 use super::sweep_plan::{
     MIN_SETTLE_CAPTURE_US, MOVING_STROKE_US, SETTLE_ANALYSIS_BUDGET_US, VelocitySweepExecutionPlan,
@@ -342,6 +345,7 @@ impl VelocityIntegralPlan {
             && self.combined_selected_response.is_some()
         {
             hash_value!(INTEGRAL_SLOT_TRANSITION_ALLOWANCE_US);
+            hash_value!(STABILIZED_RECOVERY_SCHEDULE_CODE);
         }
         hash_value!(self.nominal_workflow_ms);
         hash_value!(self.maximum_workflow_ms);
@@ -975,10 +979,21 @@ fn plan_velocity_integral_response_from_source(
     } else {
         0
     };
+    let recovery_nominal_slot_us = if source.schema_revision
+        == super::combined_plan::COMBINED_STAGE_C_SCHEMA_REVISION
+        && source.combined_selected_response.is_some()
+    {
+        recovery
+            .nominal_slot_us
+            .checked_add(RECOVERY_STABILIZATION_US)
+            .ok_or(VelocityIntegralPlanError::Arithmetic)?
+    } else {
+        recovery.nominal_slot_us
+    };
     let nominal_workflow_us = workflow_us
         .checked_add(
             u32::from(total_rung_count)
-                .checked_mul(recovery.nominal_slot_us)
+                .checked_mul(recovery_nominal_slot_us)
                 .ok_or(VelocityIntegralPlanError::Arithmetic)?,
         )
         .and_then(|value| value.checked_add(slot_transition_us))
@@ -1026,7 +1041,7 @@ fn plan_velocity_integral_response_from_source(
         nominal_workflow_ms: nominal_workflow_us.div_ceil(1_000),
         maximum_workflow_ms: maximum_workflow_us.div_ceil(1_000),
         recovery_origin_band_counts: recovery.origin_band_counts,
-        recovery_nominal_slot_us: recovery.nominal_slot_us,
+        recovery_nominal_slot_us,
         recovery_maximum_slot_us: recovery.maximum_slot_us,
         recovery_slot_count: total_rung_count,
         hard_torque_limit: stage_b_plan.hard_torque_limit,

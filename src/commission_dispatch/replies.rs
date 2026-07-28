@@ -811,6 +811,7 @@ pub fn emit_velocity_integral_event<S: CommissionReplySink>(
         crate::commissioning::types::VelocityIntegralEvent::Recovery(report) => {
             emit_rung_origin_recovery(sink, oid, report);
         }
+        crate::commissioning::types::VelocityIntegralEvent::RecoveryRest(_) => {}
         crate::commissioning::types::VelocityIntegralEvent::Current(_) => {}
     }
 }
