@@ -1288,6 +1288,50 @@ fn failed_i_zero_cleanup_remains_a_fault() {
 }
 
 #[test]
+fn combined_anchor_and_bookend_unconfirmed_rest_use_dedicated_cause() {
+    for closing_bookend in [false, true] {
+        let mut phase = phase();
+        let mut workspace = TransientBuffer::new();
+        let OuterPhase::VelocityIntegral { state, data, .. } = &mut phase else {
+            unreachable!()
+        };
+        data.plan.combined_workflow = true;
+        data.rung_index = if closing_bookend {
+            data.plan.positive_rung_count + 1
+        } else {
+            0
+        };
+        data.current_observer = VelocityCurrentObserver::new(
+            current_limit(u32::from(data.plan.usable_torque_limit)),
+            VelocityLimitEvidenceCapability::BestEffortPolling,
+        );
+        data.settle_min_displacement_counts = 0;
+        data.settle_max_displacement_counts = 2;
+        for _ in 0..256 {
+            data.observations.push(1, 1_000).unwrap();
+        }
+        *state = VelocityIntegralState::AnalyzeSettle {
+            analysis_deadline_us: 236_000,
+        };
+        let mut backend = MockBackend::new();
+
+        let terminal = loop {
+            match step(&mut phase, &mut workspace, &mut backend) {
+                StepResult::ReadyNow => {}
+                StepResult::VelocityIntegralTerminal(terminal) => break terminal,
+                other => panic!("unexpected generic rest result: {other:?}"),
+            }
+        };
+
+        assert_eq!(terminal.outcome, VelocityIntegralOutcome::Fault);
+        assert_eq!(
+            terminal.cause,
+            CommissionError::VelocityRestNotConfirmed.status_code()
+        );
+    }
+}
+
+#[test]
 fn current_headroom_precedes_positive_i_rest_boundary_classification() {
     let mut phase = phase();
     let mut workspace = TransientBuffer::new();

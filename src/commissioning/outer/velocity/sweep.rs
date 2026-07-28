@@ -1167,7 +1167,7 @@ pub(crate) async fn step_velocity_sweep_with_trace<B: CommissioningBackend>(
             match poll_settle_confirmation(data) {
                 Ok(Some(true)) => {}
                 Ok(Some(false)) => {
-                    return fail_sweep(phase, backend, CommissionError::VelocityValidationFailed)
+                    return fail_sweep(phase, backend, CommissionError::VelocityRestNotConfirmed)
                         .await;
                 }
                 Ok(None) => return StepResult::ReadyNow,
@@ -3358,7 +3358,7 @@ mod tests {
 
         assert_sweep_fault(
             poll_until_settle_analysis_completes(&mut phase, &mut backend),
-            CommissionError::VelocityValidationFailed,
+            CommissionError::VelocityRestNotConfirmed,
         );
         assert_fail_closed_tail(&backend);
     }

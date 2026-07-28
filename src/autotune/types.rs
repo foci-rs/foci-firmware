@@ -209,6 +209,8 @@ pub enum CommissionError {
     DelayTimingRejected,
     /// Velocity-sweep analysis exceeded its declared cooperative budget. Code 52.
     AnalysisOverrun,
+    /// A completed velocity rest analysis did not confirm rest. Code 53.
+    VelocityRestNotConfirmed,
 }
 
 impl CommissionError {
@@ -270,6 +272,7 @@ impl CommissionError {
             Self::InductanceTimingRejected => 50,
             Self::DelayTimingRejected => 51,
             Self::AnalysisOverrun => 52,
+            Self::VelocityRestNotConfirmed => 53,
         }
     }
 }
@@ -607,6 +610,7 @@ mod tests {
             CommissionError::InductanceTimingRejected,
             CommissionError::DelayTimingRejected,
             CommissionError::AnalysisOverrun,
+            CommissionError::VelocityRestNotConfirmed,
         ];
         let mut seen = [false; 256];
         for e in errors {
@@ -629,6 +633,7 @@ mod tests {
         assert_eq!(CommissionError::InductanceTimingRejected.status_code(), 50);
         assert_eq!(CommissionError::DelayTimingRejected.status_code(), 51);
         assert_eq!(CommissionError::AnalysisOverrun.status_code(), 52);
+        assert_eq!(CommissionError::VelocityRestNotConfirmed.status_code(), 53);
     }
 
     #[test]

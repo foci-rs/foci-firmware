@@ -1176,7 +1176,7 @@ fn recovery_safety_rejects_unconfirmed_rest() {
         match fixture.step() {
             RungOriginRecoveryStep::ReadyNow => {}
             RungOriginRecoveryStep::Fault {
-                error: crate::autotune::CommissionError::VelocityValidationFailed,
+                error: crate::autotune::CommissionError::VelocityRestNotConfirmed,
                 safety: None,
             } => break,
             other => panic!("creeping settle must fail confirmation: {other:?}"),

@@ -470,7 +470,7 @@ pub(crate) async fn step_rung_origin_recovery<B: CommissioningBackend>(
                     )
                 }
             } else if !confirmation.confirmed_rest {
-                return recovery_fault(CommissionError::VelocityValidationFailed, None);
+                return recovery_fault(CommissionError::VelocityRestNotConfirmed, None);
             } else if contained || !in_band {
                 (
                     RungOriginRecoveryOutcome::ContainedDeadline,
