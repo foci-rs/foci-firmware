@@ -545,7 +545,27 @@ impl TmcControlRuntime {
                 )
                 .await
             }
-            other => {
+            CommissionTerminal::AcceptanceMatrix(terminal) => {
+                crate::commission_dispatch::drive_commission_result_with_stages(
+                    crate::commissioning::types::StepResult::AcceptanceMatrixTerminal(terminal),
+                    &mut self.commission_engine,
+                    backend,
+                    &mut dispatch,
+                    config.tmc.pwm_maxcnt,
+                    self.channel,
+                    retention,
+                )
+                .await
+            }
+            // Listed explicitly rather than caught by `_` so that a new terminal
+            // variant needing staged handling is a compile error instead of a
+            // silent bypass of its retained-state policy and trace record.
+            other @ (CommissionTerminal::InnerFailed(_)
+            | CommissionTerminal::OuterDone(_)
+            | CommissionTerminal::OuterFailed(_)
+            | CommissionTerminal::CalibrateDone(_)
+            | CommissionTerminal::SelftestDone
+            | CommissionTerminal::CommissionDone(_)) => {
                 let other = other.into_step_result();
                 crate::commission_dispatch::emit_outer_safety_timing_before_failure(
                     &other,

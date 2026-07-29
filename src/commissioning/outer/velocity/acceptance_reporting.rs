@@ -17,6 +17,7 @@ pub(crate) const ACCEPTANCE_PLAN_REPLY_BYTES: usize = 66;
 /// two equal fragments that each fit the ordinary payload budget.
 pub(crate) const ACCEPTANCE_PLAN_REPLY_FRAGMENT_BYTES: usize = 33;
 /// Number of matrix-plan reply fragments.
+#[cfg(test)]
 pub(crate) const ACCEPTANCE_PLAN_REPLY_FRAGMENTS: usize = 2;
 /// Bytes in the compact ordinary matrix-terminal reply payload.
 pub(crate) const ACCEPTANCE_TERMINAL_REPLY_BYTES: usize = 37;
@@ -30,6 +31,7 @@ pub(crate) const ACCEPTANCE_TERMINAL_REPLY_BYTES: usize = 37;
 ///
 /// A release-build transport silently rolls back and drops any oversized frame,
 /// so an over-budget payload never reaches the host and logs nothing anywhere.
+#[cfg(test)]
 pub(crate) const ORDINARY_REPLY_PAYLOAD_MAX_BYTES: usize = 53;
 
 /// Encode the compact matrix-plan ordinary reply payload.
