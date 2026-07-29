@@ -1,9 +1,9 @@
 use super::integral_plan::{
-    CommissioningWorkflowPlan, STAGE_C_EVIDENCE_SCHEMA_REVISION, STAGE_C_MAX_POSITIVE_RUNGS,
-    STAGE_C_MIN_POSITIVE_I, STAGE_C_OBSERVATIONS_PER_RUNG, StageCAuthority, StageCPlanShape,
-    VelocityIntegralPlanError, build_integral_ladder, confidence_family_size,
-    integral_workflow_maximum_ms, plan_velocity_integral_response, recovery_quantization_exposed,
-    response_horizon, velocity_i_tau_us,
+    CommissioningWorkflowPlan, IntegralSlotOrder, STAGE_C_EVIDENCE_SCHEMA_REVISION,
+    STAGE_C_MAX_POSITIVE_RUNGS, STAGE_C_MIN_POSITIVE_I, STAGE_C_OBSERVATIONS_PER_RUNG,
+    StageCAuthority, StageCPlanShape, VelocityIntegralPlanError, build_integral_ladder,
+    confidence_family_size, integral_workflow_maximum_ms, plan_velocity_integral_response,
+    recovery_quantization_exposed, response_horizon, velocity_i_tau_us,
 };
 use super::sweep_plan::{
     MIN_SETTLE_CAPTURE_US, MOVING_STROKE_US, RequestedVelocitySource, SETTLE_ANALYSIS_BUDGET_US,
@@ -443,4 +443,113 @@ fn stage_c_model_interval_availability_is_typed_and_hashed() {
     )
     .unwrap();
     assert_ne!(baseline.digest(), reduced.digest());
+}
+
+const SLOT_COUNT: u8 = STAGE_C_OBSERVATIONS_PER_RUNG as u8;
+
+/// The slot index and the travel direction must round-trip in both directions.
+///
+/// `rung_classes` and `rung_intervals` are written by raw slot index and read
+/// back by (observation, direction) in `acceptance_amplitude_report`. If the two
+/// mappings ever disagree, forward evidence is filed as reverse and the run is
+/// silently wrong rather than failing. This pins them together.
+#[test]
+fn slot_and_direction_mappings_are_mutual_inverses() {
+    for order in [
+        IntegralSlotOrder::ForwardFirst,
+        IntegralSlotOrder::ReverseFirst,
+    ] {
+        for slot in 0..SLOT_COUNT {
+            let direction = order.direction_index(slot);
+            let observation = order.observation_index(slot);
+            assert!(
+                direction < 2,
+                "{order:?} slot {slot} direction out of range"
+            );
+            assert!(
+                observation < 4,
+                "{order:?} slot {slot} observation out of range"
+            );
+            assert_eq!(
+                order.slot_for(observation, direction),
+                slot,
+                "{order:?} slot {slot} did not round-trip"
+            );
+        }
+
+        for observation in 0..4 {
+            for direction in 0..2 {
+                let slot = order.slot_for(observation, direction);
+                assert!(slot < SLOT_COUNT, "{order:?} produced slot {slot}");
+                assert_eq!(
+                    order.direction_index(slot),
+                    direction,
+                    "{order:?} direction"
+                );
+                assert_eq!(
+                    order.observation_index(slot),
+                    observation,
+                    "{order:?} observation"
+                );
+            }
+        }
+    }
+}
+
+/// Every slot must be used exactly once, so no observation is dropped or doubled.
+#[test]
+fn each_slot_order_is_a_permutation_of_all_slots() {
+    for order in [
+        IntegralSlotOrder::ForwardFirst,
+        IntegralSlotOrder::ReverseFirst,
+    ] {
+        let mut seen = [false; SLOT_COUNT as usize];
+        for observation in 0..4 {
+            for direction in 0..2 {
+                let slot = usize::from(order.slot_for(observation, direction));
+                assert!(!seen[slot], "{order:?} reused slot {slot}");
+                seen[slot] = true;
+            }
+        }
+        assert!(
+            seen.iter().all(|used| *used),
+            "{order:?} left a slot unused"
+        );
+    }
+}
+
+/// The default order must keep the historical parity mapping byte for byte.
+#[test]
+fn forward_first_preserves_the_historical_parity_mapping() {
+    let order = IntegralSlotOrder::ForwardFirst;
+    for slot in 0..SLOT_COUNT {
+        let expected_direction = usize::from(slot % 2);
+        assert_eq!(order.direction_index(slot), expected_direction);
+        assert_eq!(
+            order.signed_direction(slot),
+            if slot.is_multiple_of(2) { 1 } else { -1 }
+        );
+    }
+}
+
+/// Mirroring swaps which end of the span each direction's tail lands on.
+#[test]
+fn reverse_first_inverts_every_slot_direction() {
+    let forward_first = IntegralSlotOrder::ForwardFirst;
+    let reverse_first = IntegralSlotOrder::ReverseFirst;
+    for slot in 0..SLOT_COUNT {
+        assert_ne!(
+            forward_first.direction_index(slot),
+            reverse_first.direction_index(slot)
+        );
+        assert_eq!(
+            forward_first.signed_direction(slot),
+            -reverse_first.signed_direction(slot)
+        );
+        // The observation an ordinal belongs to does not move; only its direction.
+        assert_eq!(
+            forward_first.observation_index(slot),
+            reverse_first.observation_index(slot)
+        );
+    }
 }

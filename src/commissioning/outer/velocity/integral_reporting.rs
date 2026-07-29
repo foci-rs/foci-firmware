@@ -754,6 +754,7 @@ mod tests {
     use crate::commissioning::outer::velocity::integral_evidence::{
         ExactRateInterval, IntegralRungEvidence,
     };
+    use crate::commissioning::outer::velocity::integral_plan::IntegralSlotOrder;
     use crate::commissioning::outer::velocity::recovery::RecoveryStage;
     use crate::commissioning::outer::velocity::sweep_evidence::{
         VelocityObservationClass, VelocityObservationSummary,
@@ -978,6 +979,7 @@ mod tests {
 
     fn plan() -> VelocityIntegralExecutionPlan {
         VelocityIntegralExecutionPlan {
+            slot_order: IntegralSlotOrder::ForwardFirst,
             plan_digest: 0x0123_4567_89ab_cdef,
             final_p: 1_448,
             planned_velocity_mrev_s: 4_394,

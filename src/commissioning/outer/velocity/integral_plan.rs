@@ -383,6 +383,7 @@ impl VelocityIntegralPlan {
             })
             .unwrap_or([[0; 2]; 2]);
         VelocityIntegralExecutionPlan {
+            slot_order: IntegralSlotOrder::ForwardFirst,
             plan_digest: self.digest(),
             final_p: self.final_p,
             planned_velocity_mrev_s: self.planned_velocity_mrev_s,
@@ -411,6 +412,71 @@ impl VelocityIntegralPlan {
             recovery_quantization_exposed: self.recovery_quantization_exposed,
             probe_constrained_test_point: self.probe_constrained_test_point,
         }
+    }
+}
+
+/// Order in which the fixed forward and reverse observation slots execute.
+///
+/// The eight slots of a rung alternate travel direction about a common start
+/// point, and origin recovery runs only between rungs. One direction therefore
+/// always begins its stroke at the low end of the span and the other at the high
+/// end, so every settled tail for a given direction is measured at the same end.
+/// Direction and tail position are confounded, and this type makes which way
+/// round explicit and recordable instead of implicit in slot parity.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+#[repr(u8)]
+pub enum IntegralSlotOrder {
+    /// Even slots travel forward. The historical order.
+    ForwardFirst = 0,
+    /// Even slots travel reverse, swapping which end each direction's tail reaches.
+    ReverseFirst = 1,
+}
+
+impl IntegralSlotOrder {
+    /// Direction index for one slot: 0 is forward, 1 is reverse.
+    pub const fn direction_index(self, slot: u8) -> usize {
+        let forward = slot.is_multiple_of(2);
+        match self {
+            Self::ForwardFirst if forward => 0,
+            Self::ForwardFirst => 1,
+            Self::ReverseFirst if forward => 1,
+            Self::ReverseFirst => 0,
+        }
+    }
+
+    /// Signed mechanical travel direction for one slot.
+    pub const fn signed_direction(self, slot: u8) -> i32 {
+        if self.direction_index(slot) == 0 {
+            1
+        } else {
+            -1
+        }
+    }
+
+    /// Zero-based same-direction observation ordinal for one slot.
+    ///
+    /// Independent of the order: mirroring changes a slot's direction, not which
+    /// repeat within that direction it is.
+    pub const fn observation_index(self, slot: u8) -> usize {
+        (slot / 2) as usize
+    }
+
+    /// Slot carrying one same-direction observation ordinal.
+    ///
+    /// Inverse of [`Self::direction_index`] and [`Self::observation_index`]. The
+    /// two are pinned together by test, because evidence is written by raw slot
+    /// and read back by observation and direction.
+    pub const fn slot_for(self, observation: usize, direction: usize) -> u8 {
+        let parity = match self {
+            Self::ForwardFirst => direction,
+            Self::ReverseFirst => 1 - direction,
+        };
+        (observation * 2 + parity) as u8
+    }
+
+    /// Stable wire code.
+    pub const fn report_code(self) -> u8 {
+        self as u8
     }
 }
 
@@ -483,6 +549,8 @@ pub struct VelocityIntegralExecutionPlan {
     pub recovery_quantization_exposed: bool,
     /// The commissioning probe clamp removed at least one Stage-B-operable rung.
     pub probe_constrained_test_point: bool,
+    /// Execution order of the fixed forward and reverse observation slots.
+    pub slot_order: IntegralSlotOrder,
 }
 
 const _: () = assert!(core::mem::size_of::<VelocityIntegralExecutionPlan>() == 112);

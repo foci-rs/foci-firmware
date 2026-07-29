@@ -1,5 +1,6 @@
 //! Cooperative fixed-P Stage-C velocity-integral acquisition.
 
+use super::integral_plan::IntegralSlotOrder;
 use crate::autotune::velocity_measurement::SuffixDiagnostic;
 use crate::autotune::velocity_measurement::{
     RestStructuralCode, StationarityExclusion, StationarityResult, VelocityDirection,
@@ -86,6 +87,10 @@ const POSITIVE_WORD_BASE: usize = 4;
 const BOOKEND_WORD_BASE: usize = POSITIVE_WORD_BASE + 2 * STAGE_C_MAX_POSITIVE_RUNGS * 2;
 
 pub(super) const INTEGRAL_SLOT_COUNT: u8 = 8;
+const _: () = assert!(
+    INTEGRAL_SLOT_COUNT as u32 == super::integral_plan::STAGE_C_OBSERVATIONS_PER_RUNG,
+    "the engine slot count and the plan observation count are the same quantity"
+);
 
 pub(super) fn integral_rung_count(plan: VelocityIntegralExecutionPlan) -> Option<u8> {
     match plan.acquisition_kind {
@@ -141,13 +146,11 @@ pub(super) fn integral_target_rpm_at(
     }
 }
 
-pub(super) const fn integral_slot_direction(slot: u8) -> Option<i32> {
+pub(super) const fn integral_slot_direction(order: IntegralSlotOrder, slot: u8) -> Option<i32> {
     if slot >= INTEGRAL_SLOT_COUNT {
         None
-    } else if slot.is_multiple_of(2) {
-        Some(1)
     } else {
-        Some(-1)
+        Some(order.signed_direction(slot))
     }
 }
 
@@ -459,8 +462,10 @@ pub(super) fn acceptance_amplitude_report(
             .copied()
             .min()
             .map(i32::from);
+    let slot_order = data.plan.slot_order;
     let directions: [Result<_, CommissionError>; 2] = core::array::from_fn(|direction| {
-        let slot = |observation: usize| observation * 2 + direction;
+        // Must mirror the write side: evidence is stored by raw slot index.
+        let slot = |observation: usize| usize::from(slot_order.slot_for(observation, direction));
         let classes = core::array::from_fn(|observation| data.rung_classes[slot(observation)]);
         let intervals = core::array::from_fn(|observation| {
             (classes[observation] == VelocityObservationClass::Eligible).then(|| {
@@ -882,7 +887,7 @@ pub(super) fn record_integral_observation_rest_selection(
         stage: RecoveryStage::Integral,
         owner,
         rung_index: data.rung_index,
-        direction: data.slot % 2,
+        direction: data.plan.slot_order.direction_index(data.slot) as u8,
         slot: data.slot,
         disposition: decision.disposition,
     };
@@ -931,8 +936,11 @@ fn materialize_run_evidence(
     Ok(evidence)
 }
 
-fn direction_for_slot(slot: u8) -> Result<VelocityDirection, CommissionError> {
-    match integral_slot_direction(slot) {
+fn direction_for_slot(
+    order: IntegralSlotOrder,
+    slot: u8,
+) -> Result<VelocityDirection, CommissionError> {
+    match integral_slot_direction(order, slot) {
         Some(1) => Ok(VelocityDirection::Forward),
         Some(-1) => Ok(VelocityDirection::Reverse),
         _ => Err(CommissionError::InvalidSchedule),
@@ -1244,7 +1252,7 @@ fn moving_analysis(
         return Ok(None);
     };
     let p = PidPGain::new(data.plan.final_p).map_err(|_| CommissionError::InvalidSchedule)?;
-    let direction = direction_for_slot(data.slot)?;
+    let direction = direction_for_slot(data.plan.slot_order, data.slot)?;
     let mut input = VelocityObservationInput {
         direction,
         p,
@@ -1276,7 +1284,7 @@ fn moving_analysis(
         input.settled_rate_high_q = mean_rate_q.saturating_add(half_width);
         let signed_target = integral_target_rpm_at(data.plan, data.rung_index)
             .ok_or(CommissionError::InvalidSchedule)?
-            .checked_mul(integral_slot_direction(data.slot).unwrap_or(0))
+            .checked_mul(integral_slot_direction(data.plan.slot_order, data.slot).unwrap_or(0))
             .ok_or(CommissionError::InvalidSchedule)?;
         (input.deficit_low_q, input.deficit_high_q) = deficit_interval_q(
             signed_target,
@@ -1440,7 +1448,7 @@ pub(crate) async fn step_velocity_integral_with_trace<B: CommissioningBackend>(
             let baseline_us = backend.elapsed_us();
             let target =
                 match integral_target_rpm_at(data.plan, data.rung_index).and_then(|target| {
-                    integral_slot_direction(data.slot)
+                    integral_slot_direction(data.plan.slot_order, data.slot)
                         .and_then(|direction| target.checked_mul(direction))
                 }) {
                     Some(value) => value,
@@ -1457,7 +1465,7 @@ pub(crate) async fn step_velocity_integral_with_trace<B: CommissioningBackend>(
                             .await;
                     }
                 };
-                let direction = usize::from(data.slot % 2);
+                let direction = data.plan.slot_order.direction_index(data.slot);
                 set_acceptance_attempted(data, direction, bit);
             }
             let mut clamp_session = match VelocityCurrentClampSession::try_new_with_limit(
@@ -1585,7 +1593,7 @@ pub(crate) async fn step_velocity_integral_with_trace<B: CommissioningBackend>(
             };
             backend.record_velocity_trace_observation(
                 crate::trace::stream::VelocityTraceObservation {
-                    target_counts_per_ms: integral_slot_direction(data.slot)
+                    target_counts_per_ms: integral_slot_direction(data.plan.slot_order, data.slot)
                         .unwrap_or(0)
                         .saturating_mul(
                             i32::try_from(
@@ -1598,7 +1606,8 @@ pub(crate) async fn step_velocity_integral_with_trace<B: CommissioningBackend>(
                     delta_counts: delta.signed_counts(),
                     elapsed_us: elapsed_us as u32,
                     stroke_index,
-                    direction: integral_slot_direction(data.slot).unwrap_or(0) as i8,
+                    direction: integral_slot_direction(data.plan.slot_order, data.slot).unwrap_or(0)
+                        as i8,
                     flags: u8::from(moving_peak >= data.plan.usable_torque_limit),
                     peak_torque_target_abs: moving_peak,
                     velocity_diagnostic_value: 0,
@@ -1998,7 +2007,8 @@ pub(crate) async fn step_velocity_integral_with_trace<B: CommissioningBackend>(
                     rung_index: data.rung_index,
                     slot: data.slot,
                     i_raw: integral_i_at(data.plan, data.rung_index).unwrap_or(0),
-                    direction: integral_slot_direction(data.slot).unwrap_or(0) as i8,
+                    direction: integral_slot_direction(data.plan.slot_order, data.slot).unwrap_or(0)
+                        as i8,
                     active_stationarity,
                     active_settle: data.settle_metrics,
                     zero_phase_current: current_evidence,
@@ -2021,7 +2031,11 @@ pub(crate) async fn step_velocity_integral_with_trace<B: CommissioningBackend>(
                                 .await;
                         }
                     };
-                    set_acceptance_current(data, usize::from(data.slot % 2), bit);
+                    set_acceptance_current(
+                        data,
+                        data.plan.slot_order.direction_index(data.slot),
+                        bit,
+                    );
                     match plan_integral_recovery(data, workspace, safety) {
                         Ok(recovery) => *state = VelocityIntegralState::RecoverRung(recovery),
                         Err(error) => return fail_integral(phase, backend, error).await,

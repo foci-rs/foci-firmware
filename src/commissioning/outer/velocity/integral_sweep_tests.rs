@@ -1,4 +1,5 @@
 use super::current_guard::{VelocityCurrentObserver, VelocityLimitEvidenceCapability};
+use super::integral_plan::IntegralSlotOrder;
 use super::integral_plan::{INTEGRAL_SLOT_TRANSITION_ALLOWANCE_US, VelocityIntegralExecutionPlan};
 use super::integral_sweep::{
     INTEGRAL_CAUSE_BOOKEND_UNAVAILABLE, INTEGRAL_CAUSE_POSITIVE_I_REST_BOUNDARY,
@@ -60,6 +61,7 @@ fn velocity_integral_outcome_codes_preserve_rest_boundary_causes() {
 
 fn plan() -> VelocityIntegralExecutionPlan {
     VelocityIntegralExecutionPlan {
+        slot_order: IntegralSlotOrder::ForwardFirst,
         plan_digest: 7,
         final_p: 1_448,
         planned_velocity_mrev_s: 2_929,
@@ -837,10 +839,17 @@ fn combined_schedule_executes_the_exact_cap_instead_of_the_next_octave() {
 fn every_rung_uses_the_fixed_frfrfrfr_slot_order() {
     assert_eq!(INTEGRAL_SLOT_COUNT, 8);
     assert_eq!(
-        core::array::from_fn::<_, 8, _>(|slot| integral_slot_direction(slot as u8).unwrap()),
+        core::array::from_fn::<_, 8, _>(|slot| integral_slot_direction(
+            IntegralSlotOrder::ForwardFirst,
+            slot as u8
+        )
+        .unwrap()),
         [1, -1, 1, -1, 1, -1, 1, -1]
     );
-    assert_eq!(integral_slot_direction(8), None);
+    assert_eq!(
+        integral_slot_direction(IntegralSlotOrder::ForwardFirst, 8),
+        None
+    );
 
     let mut rung = 0;
     let mut slot = 0;
@@ -1574,7 +1583,7 @@ fn seed_boundary(data: &mut VelocityIntegralData, rung_index: u8, slot: u8) {
         rung_index,
         slot,
         i_raw: integral_i_at(data.plan, rung_index).unwrap(),
-        direction: integral_slot_direction(slot).unwrap() as i8,
+        direction: integral_slot_direction(IntegralSlotOrder::ForwardFirst, slot).unwrap() as i8,
         active_stationarity: StationarityResult::Excluded(
             StationarityExclusion::StructuredResidual,
         ),

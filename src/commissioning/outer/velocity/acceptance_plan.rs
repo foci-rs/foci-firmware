@@ -2,7 +2,7 @@
 
 use super::current_guard::VelocityLimitEvidenceCapability;
 use super::integral_plan::{
-    INTEGRAL_SLOT_TRANSITION_ALLOWANCE_US, STAGE_C_OBSERVATIONS_PER_RUNG,
+    INTEGRAL_SLOT_TRANSITION_ALLOWANCE_US, IntegralSlotOrder, STAGE_C_OBSERVATIONS_PER_RUNG,
     VelocityIntegralAcquisitionKind, VelocityIntegralExecutionPlan, VelocityIntegralPlan,
 };
 use super::integral_reproduction::{AcceptancePoint, StageCPlanIdentity};
@@ -170,6 +170,7 @@ impl AcceptanceMatrixPlan {
         let identity_low = self.acceptance_identity.plan_digest as u32;
         let identity_high = (self.acceptance_identity.plan_digest >> 32) as u32;
         VelocityIntegralExecutionPlan {
+            slot_order: IntegralSlotOrder::ForwardFirst,
             plan_digest: self.digest(),
             final_p: self.selected_p,
             planned_velocity_mrev_s: self.motion_request.requested_velocity_mrev_s,
