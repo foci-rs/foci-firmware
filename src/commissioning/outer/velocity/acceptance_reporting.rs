@@ -11,8 +11,26 @@ use super::acceptance_plan::AcceptanceMatrixPlan;
 
 /// Bytes in the compact ordinary matrix-plan reply payload.
 pub(crate) const ACCEPTANCE_PLAN_REPLY_BYTES: usize = 66;
+/// Payload bytes carried by each matrix-plan reply fragment.
+///
+/// The 66-byte plan cannot cross the transport in one message, so it ships as
+/// two equal fragments that each fit the ordinary payload budget.
+pub(crate) const ACCEPTANCE_PLAN_REPLY_FRAGMENT_BYTES: usize = 33;
+/// Number of matrix-plan reply fragments.
+pub(crate) const ACCEPTANCE_PLAN_REPLY_FRAGMENTS: usize = 2;
 /// Bytes in the compact ordinary matrix-terminal reply payload.
 pub(crate) const ACCEPTANCE_TERMINAL_REPLY_BYTES: usize = 37;
+
+/// Largest byte-array payload an ordinary reply can carry in one message.
+///
+/// A message is capped at 64 bytes, of which 2 header and 3 trailer bytes are
+/// framing, leaving 59 for the encoded reply. Each reply then spends up to 3
+/// bytes on its worst-case response id, up to 2 on the `oid` VLQ, and 1 on the
+/// byte-array length prefix, so 53 bytes remain for payload data.
+///
+/// A release-build transport silently rolls back and drops any oversized frame,
+/// so an over-budget payload never reaches the host and logs nothing anywhere.
+pub(crate) const ORDINARY_REPLY_PAYLOAD_MAX_BYTES: usize = 53;
 
 /// Encode the compact matrix-plan ordinary reply payload.
 pub(crate) fn encode_acceptance_plan_reply(
@@ -566,6 +584,45 @@ mod tests {
                 .as_bytes()
                 .windows(2)
                 .any(|bytes| bytes == [0x34, 0x12])
+        );
+    }
+}
+
+#[cfg(test)]
+mod reply_payload_budget_tests {
+    use super::{
+        ACCEPTANCE_PLAN_REPLY_BYTES, ACCEPTANCE_PLAN_REPLY_FRAGMENT_BYTES,
+        ACCEPTANCE_PLAN_REPLY_FRAGMENTS, ACCEPTANCE_TERMINAL_REPLY_BYTES,
+        ORDINARY_REPLY_PAYLOAD_MAX_BYTES,
+    };
+
+    /// An oversized payload is dropped silently in release builds, so the budget
+    /// has to be enforced at compile-test time rather than discovered on hardware.
+    #[test]
+    fn every_ordinary_reply_payload_fits_one_transport_message() {
+        for (name, bytes) in [
+            (
+                "acceptance matrix plan fragment",
+                ACCEPTANCE_PLAN_REPLY_FRAGMENT_BYTES,
+            ),
+            (
+                "acceptance matrix terminal",
+                ACCEPTANCE_TERMINAL_REPLY_BYTES,
+            ),
+        ] {
+            assert!(
+                bytes <= ORDINARY_REPLY_PAYLOAD_MAX_BYTES,
+                "{name} reply payload is {bytes} bytes, over the {ORDINARY_REPLY_PAYLOAD_MAX_BYTES}-byte transport budget"
+            );
+        }
+    }
+
+    /// Fragments must cover the whole plan payload with nothing dropped.
+    #[test]
+    fn plan_reply_fragments_span_the_entire_payload() {
+        assert_eq!(
+            ACCEPTANCE_PLAN_REPLY_FRAGMENT_BYTES * ACCEPTANCE_PLAN_REPLY_FRAGMENTS,
+            ACCEPTANCE_PLAN_REPLY_BYTES
         );
     }
 }

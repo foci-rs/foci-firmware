@@ -3777,7 +3777,9 @@ pub struct FociVelocityIntegralTerminalTiming {
 pub struct FociAcceptanceMatrixPlan<'a> {
     /// Endpoint object id.
     pub oid: u8,
-    /// Exact fixed-layout schema-1 payload.
+    /// Zero-based fragment index; the plan spans two fragments.
+    pub fragment: u8,
+    /// One fragment of the fixed-layout plan payload for its schema revision.
     pub payload: &'a [u8],
 }
 
@@ -3795,6 +3797,11 @@ mod velocity_sweep_reply_tests {
     use super::*;
     use ankyra::ScratchOutput;
     use ankyra::encoding::Writable;
+
+    #[cfg(feature = "trace-velocity-sweep")]
+    use crate::commissioning::outer::velocity::acceptance_reporting::{
+        ACCEPTANCE_PLAN_REPLY_FRAGMENT_BYTES, ACCEPTANCE_TERMINAL_REPLY_BYTES,
+    };
 
     const PAYLOAD_WITH_ID_MAX: usize = 59;
     const FRAME_MAX: usize = 64;
@@ -3818,18 +3825,20 @@ mod velocity_sweep_reply_tests {
     }
 
     #[test]
+    #[cfg(feature = "trace-velocity-sweep")]
     fn acceptance_matrix_replies_fit_one_protocol_frame() {
         assert_fits(
             &FociAcceptanceMatrixPlan {
                 oid: u8::MAX,
-                payload: &[u8::MAX; 50],
+                fragment: u8::MAX,
+                payload: &[u8::MAX; ACCEPTANCE_PLAN_REPLY_FRAGMENT_BYTES],
             },
-            "acceptance matrix plan",
+            "acceptance matrix plan fragment",
         );
         assert_fits(
             &FociAcceptanceMatrixTerminal {
                 oid: u8::MAX,
-                payload: &[u8::MAX; 37],
+                payload: &[u8::MAX; ACCEPTANCE_TERMINAL_REPLY_BYTES],
             },
             "acceptance matrix terminal",
         );

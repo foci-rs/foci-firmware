@@ -645,15 +645,20 @@ pub fn emit_acceptance_matrix_plan<S: CommissionReplySink>(
     run_sequence: u32,
     plan: crate::commissioning::outer::velocity::acceptance_plan::AcceptanceMatrixPlan,
 ) {
-    let payload =
-        crate::commissioning::outer::velocity::acceptance_reporting::encode_acceptance_plan_reply(
-            run_sequence,
-            plan,
-        );
-    sink.foci_acceptance_matrix_plan(crate::ankyra::replies::FociAcceptanceMatrixPlan {
-        oid,
-        payload: &payload,
-    });
+    use crate::commissioning::outer::velocity::acceptance_reporting::{
+        ACCEPTANCE_PLAN_REPLY_FRAGMENT_BYTES, encode_acceptance_plan_reply,
+    };
+    let payload = encode_acceptance_plan_reply(run_sequence, plan);
+    for (fragment, chunk) in payload
+        .chunks(ACCEPTANCE_PLAN_REPLY_FRAGMENT_BYTES)
+        .enumerate()
+    {
+        sink.foci_acceptance_matrix_plan(crate::ankyra::replies::FociAcceptanceMatrixPlan {
+            oid,
+            fragment: fragment as u8,
+            payload: chunk,
+        });
+    }
 }
 
 /// Emit the single compact matrix terminal.
