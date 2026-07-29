@@ -1,11 +1,12 @@
 use super::acceptance_plan::{
     ACCEPTANCE_MATRIX_AMPLITUDES, ACCEPTANCE_MATRIX_CAPTURE_ALLOWANCE_S,
     ACCEPTANCE_MATRIX_SCHEMA_REVISION, AcceptanceMatrixOrder, AcceptanceMatrixPlanError,
-    derive_acceptance_targets, plan_acceptance_matrix,
+    decode_schedule_order_code, derive_acceptance_targets, plan_acceptance_matrix,
+    schedule_order_code,
 };
 use super::combined_plan::select_proportional_response;
 use super::integral_plan::{
-    VelocityIntegralAcquisitionKind, plan_combined_velocity_integral_response,
+    IntegralSlotOrder, VelocityIntegralAcquisitionKind, plan_combined_velocity_integral_response,
 };
 use super::integral_reproduction::{AcceptanceMatrixProgress, AcceptancePoint, StageCPlanIdentity};
 use super::operating_region::{BoundRounding, CompactSignedRate};
@@ -110,7 +111,7 @@ fn point(plan: super::integral_plan::VelocityIntegralPlan) -> AcceptancePoint {
 
 #[test]
 fn live_matrix_geometry_and_orders_are_exact() {
-    assert_eq!(ACCEPTANCE_MATRIX_SCHEMA_REVISION, 4);
+    assert_eq!(ACCEPTANCE_MATRIX_SCHEMA_REVISION, 5);
     assert_eq!(AcceptanceMatrixOrder::Ascending as u8, 1);
     assert_eq!(AcceptanceMatrixOrder::Descending as u8, 2);
     assert_eq!(ACCEPTANCE_MATRIX_AMPLITUDES, 5);
@@ -120,6 +121,7 @@ fn live_matrix_geometry_and_orders_are_exact() {
         point(current),
         request(),
         AcceptanceMatrixOrder::Ascending,
+        IntegralSlotOrder::ForwardFirst,
         current,
     )
     .unwrap();
@@ -156,7 +158,7 @@ fn live_matrix_geometry_and_orders_are_exact() {
             super::combined_plan::COMBINED_STAGE_C_SCHEMA_REVISION,
             ACCEPTANCE_MATRIX_SCHEMA_REVISION,
         ),
-        (13, 12, 4)
+        (13, 12, 5)
     );
     assert_eq!([160 + 23, 120 + 15, 40 + 5], [183, 135, 45]);
     assert_eq!((183 + 135 + 45) * 78, 28_314);
@@ -165,6 +167,7 @@ fn live_matrix_geometry_and_orders_are_exact() {
         point(current),
         request(),
         AcceptanceMatrixOrder::Descending,
+        IntegralSlotOrder::ForwardFirst,
         current,
     )
     .unwrap();
@@ -185,6 +188,7 @@ fn historical_schema_three_keeps_the_stabilized_recovery_digest_input() {
         point(current),
         request(),
         AcceptanceMatrixOrder::Ascending,
+        IntegralSlotOrder::ForwardFirst,
         current,
     )
     .unwrap();
@@ -218,6 +222,7 @@ fn compact_execution_plan_carries_fixed_i_and_literal_targets() {
         point(current),
         request(),
         AcceptanceMatrixOrder::Ascending,
+        IntegralSlotOrder::ForwardFirst,
         current,
     )
     .unwrap();
@@ -253,7 +258,13 @@ fn matrix_plan_rejects_identity_and_request_drift() {
     let mut stale = point(current);
     stale.identity.plan_digest ^= 1;
     assert_eq!(
-        plan_acceptance_matrix(stale, request(), AcceptanceMatrixOrder::Ascending, current),
+        plan_acceptance_matrix(
+            stale,
+            request(),
+            AcceptanceMatrixOrder::Ascending,
+            IntegralSlotOrder::ForwardFirst,
+            current
+        ),
         Err(AcceptanceMatrixPlanError::IdentityMismatch)
     );
 
@@ -264,6 +275,7 @@ fn matrix_plan_rejects_identity_and_request_drift() {
             point(current),
             changed_request,
             AcceptanceMatrixOrder::Ascending,
+            IntegralSlotOrder::ForwardFirst,
             current,
         ),
         Err(AcceptanceMatrixPlanError::IdentityMismatch)
@@ -284,6 +296,7 @@ fn matrix_plan_rejects_wrong_sided_recovery_authority() {
                 invalid,
                 request(),
                 AcceptanceMatrixOrder::Ascending,
+                IntegralSlotOrder::ForwardFirst,
                 current,
             ),
             Err(AcceptanceMatrixPlanError::Arithmetic)
@@ -298,6 +311,7 @@ fn matrix_digest_binds_every_explicit_plan_dimension() {
         point(current),
         request(),
         AcceptanceMatrixOrder::Ascending,
+        IntegralSlotOrder::ForwardFirst,
         current,
     )
     .unwrap();
@@ -324,4 +338,93 @@ fn matrix_digest_binds_every_explicit_plan_dimension() {
     mutate(|plan| plan.nominal_workflow_ms += 1);
     mutate(|plan| plan.maximum_workflow_ms += 1);
     mutate(|plan| plan.schema_revision += 1);
+}
+
+/// Slot order packs into the spare high nibble of the existing order byte.
+///
+/// A dedicated byte would push the plan reply from 66 to 67 bytes and break the
+/// fragment span assertion for a field with two values. Packing keeps the reply
+/// size and, because ForwardFirst encodes as zero, keeps the historical byte
+/// unchanged for every non-mirrored run.
+#[test]
+fn schedule_order_code_round_trips_and_preserves_the_historical_byte() {
+    for order in [
+        AcceptanceMatrixOrder::Ascending,
+        AcceptanceMatrixOrder::Descending,
+    ] {
+        assert_eq!(
+            schedule_order_code(order, IntegralSlotOrder::ForwardFirst),
+            order as u8,
+            "forward-first must not change the wire byte"
+        );
+        for slot_order in [
+            IntegralSlotOrder::ForwardFirst,
+            IntegralSlotOrder::ReverseFirst,
+        ] {
+            let code = schedule_order_code(order, slot_order);
+            assert_eq!(decode_schedule_order_code(code), Some((order, slot_order)));
+        }
+    }
+    assert_eq!(
+        schedule_order_code(
+            AcceptanceMatrixOrder::Ascending,
+            IntegralSlotOrder::ReverseFirst
+        ),
+        0x11
+    );
+    assert_eq!(
+        schedule_order_code(
+            AcceptanceMatrixOrder::Descending,
+            IntegralSlotOrder::ReverseFirst
+        ),
+        0x12
+    );
+    assert_eq!(
+        decode_schedule_order_code(0),
+        None,
+        "order zero is not valid"
+    );
+    assert_eq!(decode_schedule_order_code(0x23), None, "unknown slot order");
+}
+
+/// Two runs differing only in slot order must not share a plan identity.
+///
+/// The digest is the audit identity. If it ignored slot order, the mirrored and
+/// unmirrored captures would be indistinguishable, which is the entire point of
+/// recording the order.
+#[test]
+fn slot_order_separates_the_matrix_plan_digest() {
+    let current = combined_plan();
+    let forward_first = plan_acceptance_matrix(
+        point(current),
+        request(),
+        AcceptanceMatrixOrder::Ascending,
+        IntegralSlotOrder::ForwardFirst,
+        current,
+    )
+    .unwrap();
+    let reverse_first = plan_acceptance_matrix(
+        point(current),
+        request(),
+        AcceptanceMatrixOrder::Ascending,
+        IntegralSlotOrder::ReverseFirst,
+        current,
+    )
+    .unwrap();
+
+    assert_eq!(forward_first.slot_order, IntegralSlotOrder::ForwardFirst);
+    assert_eq!(reverse_first.slot_order, IntegralSlotOrder::ReverseFirst);
+    assert_ne!(forward_first.digest(), reverse_first.digest());
+    // Everything else is identical, so the digest change is attributable.
+    assert_eq!(forward_first.target_rpm, reverse_first.target_rpm);
+    assert_eq!(forward_first.order, reverse_first.order);
+    // The order the engine executes must follow the plan.
+    assert_eq!(
+        forward_first.execution_plan().slot_order,
+        IntegralSlotOrder::ForwardFirst
+    );
+    assert_eq!(
+        reverse_first.execution_plan().slot_order,
+        IntegralSlotOrder::ReverseFirst
+    );
 }

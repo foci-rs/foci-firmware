@@ -443,6 +443,14 @@ pub enum AutotuneAction {
     MatrixAscending = 1,
     /// Run the retained fixed-I matrix from highest to lowest amplitude.
     MatrixDescending = 2,
+    /// Ascending amplitudes with the forward and reverse slots mirrored.
+    ///
+    /// Mirroring swaps which end of the travel span each direction's settled tail
+    /// is measured at, which is what separates a direction effect from a
+    /// tail-position effect in the acceptance matrix.
+    MatrixAscendingMirrored = 3,
+    /// Descending amplitudes with the forward and reverse slots mirrored.
+    MatrixDescendingMirrored = 4,
 }
 
 impl AutotuneAction {
@@ -452,6 +460,8 @@ impl AutotuneAction {
             0 => Some(Self::Combined),
             1 => Some(Self::MatrixAscending),
             2 => Some(Self::MatrixDescending),
+            3 => Some(Self::MatrixAscendingMirrored),
+            4 => Some(Self::MatrixDescendingMirrored),
             _ => None,
         }
     }

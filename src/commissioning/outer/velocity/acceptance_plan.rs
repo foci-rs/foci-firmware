@@ -12,7 +12,7 @@ use super::sweep_plan::VelocitySweepRequest;
 use crate::autotune::velocity_measurement::VelocityDirection;
 
 /// Current independent velocity-acceptance matrix schema.
-pub const ACCEPTANCE_MATRIX_SCHEMA_REVISION: u16 = 4;
+pub const ACCEPTANCE_MATRIX_SCHEMA_REVISION: u16 = 5;
 /// Number of frozen target amplitudes in each run.
 pub const ACCEPTANCE_MATRIX_AMPLITUDES: usize = 5;
 /// Capture-wrapper allowance for one matrix command.
@@ -30,6 +30,35 @@ pub enum AcceptanceMatrixOrder {
     Ascending = 1,
     /// Highest to lowest frozen target.
     Descending = 2,
+}
+
+/// Pack the amplitude order and the slot order into one wire byte.
+///
+/// The amplitude order occupies the low nibble and the slot order the high one.
+/// `ForwardFirst` encodes as zero, so every non-mirrored run keeps the byte it
+/// had before slot order was recorded.
+pub const fn schedule_order_code(
+    order: AcceptanceMatrixOrder,
+    slot_order: IntegralSlotOrder,
+) -> u8 {
+    (order as u8) | (slot_order.report_code() << 4)
+}
+
+/// Recover the amplitude and slot orders from one packed wire byte.
+pub const fn decode_schedule_order_code(
+    code: u8,
+) -> Option<(AcceptanceMatrixOrder, IntegralSlotOrder)> {
+    let order = match code & 0x0f {
+        1 => AcceptanceMatrixOrder::Ascending,
+        2 => AcceptanceMatrixOrder::Descending,
+        _ => return None,
+    };
+    let slot_order = match code >> 4 {
+        0 => IntegralSlotOrder::ForwardFirst,
+        1 => IntegralSlotOrder::ReverseFirst,
+        _ => return None,
+    };
+    Some((order, slot_order))
 }
 
 /// Failure to construct one exact fixed-I acceptance matrix.
@@ -52,6 +81,8 @@ pub struct AcceptanceMatrixPlan {
     pub acceptance_identity: StageCPlanIdentity,
     /// Immutable acquisition order.
     pub order: AcceptanceMatrixOrder,
+    /// Immutable execution order of the forward and reverse observation slots.
+    pub slot_order: IntegralSlotOrder,
     /// Exact order-dependent mechanical-RPM targets.
     pub target_rpm: [i16; ACCEPTANCE_MATRIX_AMPLITUDES],
     /// Firmware-selected proportional gain.
@@ -120,7 +151,7 @@ impl AcceptanceMatrixPlan {
         hash_value!(self.acceptance_identity.build_revision);
         hash_value!(self.acceptance_identity.schema_revision);
         hash_value!(self.acceptance_identity.plan_digest);
-        hash_value!(self.order as u8);
+        hash_value!(schedule_order_code(self.order, self.slot_order));
         for target in self.target_rpm {
             hash_value!(target);
         }
@@ -170,7 +201,7 @@ impl AcceptanceMatrixPlan {
         let identity_low = self.acceptance_identity.plan_digest as u32;
         let identity_high = (self.acceptance_identity.plan_digest >> 32) as u32;
         VelocityIntegralExecutionPlan {
-            slot_order: IntegralSlotOrder::ForwardFirst,
+            slot_order: self.slot_order,
             plan_digest: self.digest(),
             final_p: self.selected_p,
             planned_velocity_mrev_s: self.motion_request.requested_velocity_mrev_s,
@@ -244,6 +275,7 @@ pub fn plan_acceptance_matrix(
     point: AcceptancePoint,
     request: VelocitySweepRequest,
     order: AcceptanceMatrixOrder,
+    slot_order: IntegralSlotOrder,
     current_config: VelocityIntegralPlan,
 ) -> Result<AcceptanceMatrixPlan, AcceptanceMatrixPlanError> {
     if point.identity.build_revision != STAGE_B_BUILD_REVISION
@@ -318,6 +350,7 @@ pub fn plan_acceptance_matrix(
         schema_revision: ACCEPTANCE_MATRIX_SCHEMA_REVISION,
         acceptance_identity: point.identity,
         order,
+        slot_order,
         target_rpm,
         selected_p: point.selected_p,
         selected_i: point.selected_i,

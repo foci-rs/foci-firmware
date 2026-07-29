@@ -22,13 +22,33 @@ use crate::commissioning::types::{
 
 pub use crate::tmc::AutotuneAction;
 
+use crate::commissioning::outer::velocity::integral_plan::IntegralSlotOrder;
+
 impl AutotuneAction {
-    /// Return the immutable matrix order for a matrix action.
+    /// Return the immutable amplitude order for a matrix action.
     pub const fn matrix_order(self) -> Option<AcceptanceMatrixOrder> {
         match self {
             Self::Combined => None,
-            Self::MatrixAscending => Some(AcceptanceMatrixOrder::Ascending),
-            Self::MatrixDescending => Some(AcceptanceMatrixOrder::Descending),
+            Self::MatrixAscending | Self::MatrixAscendingMirrored => {
+                Some(AcceptanceMatrixOrder::Ascending)
+            }
+            Self::MatrixDescending | Self::MatrixDescendingMirrored => {
+                Some(AcceptanceMatrixOrder::Descending)
+            }
+        }
+    }
+
+    /// Return the immutable observation slot order for a matrix action.
+    ///
+    /// Amplitude order and slot order are independent dimensions that share one
+    /// wire byte; this keeps them separate in the type system.
+    pub const fn matrix_slot_order(self) -> Option<IntegralSlotOrder> {
+        match self {
+            Self::Combined => None,
+            Self::MatrixAscending | Self::MatrixDescending => Some(IntegralSlotOrder::ForwardFirst),
+            Self::MatrixAscendingMirrored | Self::MatrixDescendingMirrored => {
+                Some(IntegralSlotOrder::ReverseFirst)
+            }
         }
     }
 }
@@ -126,6 +146,9 @@ pub fn preflight_acceptance_matrix(
     let order = action
         .matrix_order()
         .ok_or(AcceptanceMatrixPreflightRejection::MatrixOrderMismatch)?;
+    let slot_order = action
+        .matrix_slot_order()
+        .ok_or(AcceptanceMatrixPreflightRejection::MatrixOrderMismatch)?;
     let expected_progress = match order {
         AcceptanceMatrixOrder::Ascending => AcceptanceMatrixProgress::ReadyAscending,
         AcceptanceMatrixOrder::Descending => AcceptanceMatrixProgress::ReadyDescending,
@@ -133,18 +156,17 @@ pub fn preflight_acceptance_matrix(
     if point.progress != expected_progress {
         return Err(AcceptanceMatrixPreflightRejection::MatrixOrderMismatch);
     }
-    let plan =
-        plan_acceptance_matrix(point, request, order, current_config).map_err(
-            |error| match error {
-                AcceptanceMatrixPlanError::IdentityMismatch => {
-                    AcceptanceMatrixPreflightRejection::AcceptancePointIdentityMismatch
-                }
-                AcceptanceMatrixPlanError::UnsupportedTargets
-                | AcceptanceMatrixPlanError::Arithmetic => {
-                    AcceptanceMatrixPreflightRejection::InvalidPlan
-                }
-            },
-        )?;
+    let plan = plan_acceptance_matrix(point, request, order, slot_order, current_config).map_err(
+        |error| match error {
+            AcceptanceMatrixPlanError::IdentityMismatch => {
+                AcceptanceMatrixPreflightRejection::AcceptancePointIdentityMismatch
+            }
+            AcceptanceMatrixPlanError::UnsupportedTargets
+            | AcceptanceMatrixPlanError::Arithmetic => {
+                AcceptanceMatrixPreflightRejection::InvalidPlan
+            }
+        },
+    )?;
     Ok(AcceptanceMatrixPreflight { plan, run_sequence })
 }
 

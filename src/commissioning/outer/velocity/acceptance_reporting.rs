@@ -7,7 +7,7 @@ use crate::commissioning::types::{
 };
 
 use super::acceptance_evidence::{AcceptanceAmplitudeReport, AcceptanceDirectionalEvidence};
-use super::acceptance_plan::AcceptanceMatrixPlan;
+use super::acceptance_plan::{AcceptanceMatrixPlan, schedule_order_code};
 
 /// Bytes in the compact ordinary matrix-plan reply payload.
 pub(crate) const ACCEPTANCE_PLAN_REPLY_BYTES: usize = 66;
@@ -43,7 +43,11 @@ pub(crate) fn encode_acceptance_plan_reply(
     let mut offset = 0;
     push_reply(&mut bytes, &mut offset, &plan.schema_revision.to_le_bytes());
     push_reply(&mut bytes, &mut offset, &run_sequence.to_le_bytes());
-    push_reply(&mut bytes, &mut offset, &[plan.order as u8]);
+    push_reply(
+        &mut bytes,
+        &mut offset,
+        &[schedule_order_code(plan.order, plan.slot_order)],
+    );
     push_reply(&mut bytes, &mut offset, &plan.digest().to_le_bytes());
     push_reply(
         &mut bytes,
@@ -147,7 +151,7 @@ pub(crate) fn encode_acceptance_plan(
     core.push_u32(plan.acceptance_identity.build_revision);
     core.push_u16(plan.acceptance_identity.schema_revision);
     push_u64(&mut core, plan.acceptance_identity.plan_digest);
-    core.push_u8(plan.order as u8);
+    core.push_u8(schedule_order_code(plan.order, plan.slot_order));
     core.push_u16(plan.selected_p);
     core.push_u16(plan.selected_i);
     core.push_u16(plan.qualifier_bits);
@@ -381,6 +385,7 @@ mod tests {
     use crate::commissioning::outer::velocity::acceptance_plan::{
         AcceptanceMatrixOrder, AcceptanceMatrixPlan,
     };
+    use crate::commissioning::outer::velocity::integral_plan::IntegralSlotOrder;
     use crate::commissioning::outer::velocity::integral_reproduction::StageCPlanIdentity;
     use crate::commissioning::outer::velocity::recovery::RecoveryStage;
     use crate::commissioning::outer::velocity::sweep_consensus::{
@@ -431,6 +436,7 @@ mod tests {
 
     fn plan() -> AcceptanceMatrixPlan {
         AcceptanceMatrixPlan {
+            slot_order: IntegralSlotOrder::ForwardFirst,
             schema_revision:
                 crate::commissioning::outer::velocity::acceptance_plan::ACCEPTANCE_MATRIX_SCHEMA_REVISION,
             acceptance_identity: StageCPlanIdentity {

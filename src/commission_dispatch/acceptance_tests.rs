@@ -8,6 +8,7 @@ use crate::commissioning::outer::velocity::acceptance_plan::AcceptanceMatrixOrde
 use crate::commissioning::outer::velocity::combined_plan::{
     CombinedSelectedResponse, select_proportional_response,
 };
+use crate::commissioning::outer::velocity::integral_plan::IntegralSlotOrder;
 use crate::commissioning::outer::velocity::integral_plan::{
     CommissioningWorkflowPlan, StageCPlanShape, VelocityIntegralPlan,
     plan_combined_velocity_integral_response,
@@ -155,8 +156,43 @@ fn action_codes_and_invalid_values_are_exact() {
     assert_eq!(AutotuneAction::Combined as u8, 0);
     assert_eq!(AutotuneAction::MatrixAscending as u8, 1);
     assert_eq!(AutotuneAction::MatrixDescending as u8, 2);
+    assert_eq!(AutotuneAction::MatrixAscendingMirrored as u8, 3);
+    assert_eq!(AutotuneAction::MatrixDescendingMirrored as u8, 4);
     assert_eq!(AutotuneAction::from_u8(0), Some(AutotuneAction::Combined));
-    assert_eq!(AutotuneAction::from_u8(3), None);
+    assert_eq!(AutotuneAction::from_u8(5), None);
+
+    // Amplitude order and slot order are independent dimensions of one action.
+    for (action, order, slot_order) in [
+        (
+            AutotuneAction::MatrixAscending,
+            AcceptanceMatrixOrder::Ascending,
+            IntegralSlotOrder::ForwardFirst,
+        ),
+        (
+            AutotuneAction::MatrixDescending,
+            AcceptanceMatrixOrder::Descending,
+            IntegralSlotOrder::ForwardFirst,
+        ),
+        (
+            AutotuneAction::MatrixAscendingMirrored,
+            AcceptanceMatrixOrder::Ascending,
+            IntegralSlotOrder::ReverseFirst,
+        ),
+        (
+            AutotuneAction::MatrixDescendingMirrored,
+            AcceptanceMatrixOrder::Descending,
+            IntegralSlotOrder::ReverseFirst,
+        ),
+    ] {
+        assert_eq!(action.matrix_order(), Some(order), "{action:?} order");
+        assert_eq!(
+            action.matrix_slot_order(),
+            Some(slot_order),
+            "{action:?} slot order"
+        );
+    }
+    assert_eq!(AutotuneAction::Combined.matrix_order(), None);
+    assert_eq!(AutotuneAction::Combined.matrix_slot_order(), None);
     let ascending = CommissioningWorkflowPlan::new_acceptance_matrix(
         1,
         AcceptanceMatrixOrder::Ascending,

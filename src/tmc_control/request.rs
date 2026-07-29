@@ -829,7 +829,9 @@ where
                     TuneRoute::Combined(stage_b)
                 }
                 action @ (crate::tmc::AutotuneAction::MatrixAscending
-                | crate::tmc::AutotuneAction::MatrixDescending) => {
+                | crate::tmc::AutotuneAction::MatrixDescending
+                | crate::tmc::AutotuneAction::MatrixAscendingMirrored
+                | crate::tmc::AutotuneAction::MatrixDescendingMirrored) => {
                     let result = stage_c_candidate
                         .acceptance_point()
                         .ok_or(
