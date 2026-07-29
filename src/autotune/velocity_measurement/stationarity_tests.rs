@@ -1,9 +1,11 @@
 use core::cell::Cell;
 
 use super::{
-    StationarityExclusion, StationarityResult, StationarityWork, StationarityWorkPoll,
-    VELOCITY_SUFFIX_LENGTHS, VelocityObservationSource, analyze_stationarity_diagnostics,
-    analyze_stationarity_with_blocking_variance, select_stationary_suffix,
+    RestSelectionDisposition, RestStructuralCode, RestSuffixEvaluation, StationarityExclusion,
+    StationarityResult, StationarityWork, StationarityWorkPoll, VELOCITY_SUFFIX_LENGTHS,
+    VelocityObservationSource, analyze_stationarity_diagnostics,
+    analyze_stationarity_with_blocking_variance, select_causal_rest_suffixes,
+    select_stationary_suffix,
 };
 use crate::autotune::velocity_measurement::{DyadicBlocker, RawVelocityObservation};
 
@@ -21,9 +23,217 @@ fn analyze_stationarity(
     analyze_stationarity_with_blocking_variance(observations, block_observations, family_size, 0)
 }
 
+fn usable_rest_suffix(interval: [i64; 2]) -> RestSuffixEvaluation {
+    RestSuffixEvaluation {
+        structural_code: RestStructuralCode::Usable,
+        interval_present: true,
+        interval_q: interval,
+    }
+}
+
+fn excluded_rest_suffix(
+    structural_code: RestStructuralCode,
+    interval: Option<[i64; 2]>,
+) -> RestSuffixEvaluation {
+    RestSuffixEvaluation {
+        structural_code,
+        interval_present: interval.is_some(),
+        interval_q: interval.unwrap_or([0, 0]),
+    }
+}
+
+#[test]
+fn causal_rest_selector_matches_literal_historical_decisions() {
+    struct Case {
+        name: &'static str,
+        suffixes: [RestSuffixEvaluation; 3],
+        fallback: bool,
+        selected_suffix_len: u16,
+        disposition: RestSelectionDisposition,
+    }
+
+    let cases = [
+        Case {
+            name: "X replacement combined",
+            suffixes: [
+                usable_rest_suffix([0, 0]),
+                usable_rest_suffix([-13_058, 44_450]),
+                usable_rest_suffix([5_840, 48_970]),
+            ],
+            fallback: false,
+            selected_suffix_len: 128,
+            disposition: RestSelectionDisposition::StatisticalAcceptance,
+        },
+        Case {
+            name: "Y final combined",
+            suffixes: [
+                usable_rest_suffix([-26_318, 57_862]),
+                usable_rest_suffix([-1_053, 79_545]),
+                usable_rest_suffix([8_900, 69_408]),
+            ],
+            fallback: false,
+            selected_suffix_len: 128,
+            disposition: RestSelectionDisposition::StatisticalAcceptance,
+        },
+        Case {
+            name: "Y retry",
+            suffixes: [
+                usable_rest_suffix([0, 0]),
+                usable_rest_suffix([-28_876, 13_216]),
+                usable_rest_suffix([-85_717, -317]),
+            ],
+            fallback: false,
+            selected_suffix_len: 128,
+            disposition: RestSelectionDisposition::StatisticalAcceptance,
+        },
+        Case {
+            name: "X 300 ms",
+            suffixes: [
+                usable_rest_suffix([-26_350, 57_830]),
+                usable_rest_suffix([33_244, 217_674]),
+                usable_rest_suffix([43_470, 175_680]),
+            ],
+            fallback: false,
+            selected_suffix_len: 64,
+            disposition: RestSelectionDisposition::StatisticalAcceptance,
+        },
+        Case {
+            name: "P=724",
+            suffixes: [
+                excluded_rest_suffix(
+                    RestStructuralCode::ResolvedSlope,
+                    Some([-511_681, -148_633]),
+                ),
+                usable_rest_suffix([-615_426, -262_274]),
+                usable_rest_suffix([-445_779, -117_587]),
+            ],
+            fallback: false,
+            selected_suffix_len: 0,
+            disposition: RestSelectionDisposition::Rejected,
+        },
+    ];
+
+    for case in cases {
+        let decision = select_causal_rest_suffixes(case.suffixes, case.fallback);
+        assert_eq!(
+            decision.selected_suffix_len, case.selected_suffix_len,
+            "{}",
+            case.name
+        );
+        assert_eq!(decision.disposition, case.disposition, "{}", case.name);
+    }
+}
+
+#[test]
+fn slot_157_recent_directional_motion_cannot_be_masked_by_older_suffixes() {
+    let mut recent_deltas = [0_i8; 64];
+    for sample_index in [410, 422, 439, 448, 453, 457] {
+        recent_deltas[sample_index - 396] = 1;
+    }
+    let decision = select_causal_rest_suffixes(
+        [
+            usable_rest_suffix([7_977, 181_103]),
+            usable_rest_suffix([-89, 109_923]),
+            usable_rest_suffix([-7_780, 62_582]),
+        ],
+        false,
+    );
+
+    assert_eq!(recent_deltas.iter().copied().map(i16::from).sum::<i16>(), 6);
+    assert_eq!(recent_deltas[457 - 396], 1);
+    assert_eq!(decision.selected_suffix_len, 0);
+    assert_eq!(decision.selected_mask, 0);
+    assert_eq!(decision.zero_compatible_mask, 0b110);
+    assert_eq!(decision.disposition, RestSelectionDisposition::Rejected);
+}
+
+#[test]
+fn causal_rest_selector_treats_closed_interval_endpoints_as_zero_compatible() {
+    for interval in [[0, 1], [-1, 0]] {
+        let decision = select_causal_rest_suffixes(
+            [
+                usable_rest_suffix(interval),
+                excluded_rest_suffix(RestStructuralCode::NoBlockingPlateau, None),
+                excluded_rest_suffix(RestStructuralCode::NoBlockingPlateau, None),
+            ],
+            false,
+        );
+
+        assert_eq!(decision.selected_suffix_len, 64);
+        assert_eq!(decision.zero_compatible_mask, 0b001);
+        assert_eq!(
+            decision.disposition,
+            RestSelectionDisposition::StatisticalAcceptance
+        );
+    }
+}
+
+#[test]
+fn one_count_fallback_applies_only_when_the_recent_chain_does_not_start() {
+    let recent_motion = [
+        usable_rest_suffix([1, 2]),
+        usable_rest_suffix([-1, 1]),
+        usable_rest_suffix([-1, 1]),
+    ];
+    let fallback = select_causal_rest_suffixes(recent_motion, true);
+    assert_eq!(fallback.selected_suffix_len, 0);
+    assert_eq!(
+        fallback.disposition,
+        RestSelectionDisposition::OneCountFallbackAcceptance
+    );
+
+    let statistical = select_causal_rest_suffixes(
+        [
+            usable_rest_suffix([-1, 1]),
+            usable_rest_suffix([-1, 1]),
+            usable_rest_suffix([1, 2]),
+        ],
+        true,
+    );
+    assert_eq!(statistical.selected_suffix_len, 128);
+    assert_eq!(
+        statistical.disposition,
+        RestSelectionDisposition::StatisticalAcceptance
+    );
+}
+
+#[test]
+fn every_selected_rest_suffix_has_a_contiguous_compatible_prefix() {
+    for usable_mask in 0_u8..8 {
+        for zero_mask in 0_u8..8 {
+            let suffixes = core::array::from_fn(|index| {
+                if usable_mask & (1 << index) == 0 {
+                    excluded_rest_suffix(RestStructuralCode::ResolvedSlope, Some([1, 2]))
+                } else if zero_mask & (1 << index) != 0 {
+                    usable_rest_suffix([-1, 1])
+                } else {
+                    usable_rest_suffix([1, 2])
+                }
+            });
+            let decision = select_causal_rest_suffixes(suffixes, false);
+            if decision.selected_mask == 0 {
+                continue;
+            }
+            let selected_index = decision.selected_mask.trailing_zeros() as usize;
+            let required_prefix = (1_u8 << (selected_index + 1)) - 1;
+            assert_eq!(decision.usable_mask & required_prefix, required_prefix);
+            assert_eq!(
+                decision.zero_compatible_mask & required_prefix,
+                required_prefix
+            );
+        }
+    }
+}
+
 #[test]
 fn suffix_family_is_fixed_and_dyadic() {
     assert_eq!(VELOCITY_SUFFIX_LENGTHS, [64, 128, 256]);
+}
+
+#[test]
+fn scored_rest_state_stays_inside_the_existing_storage_seam() {
+    assert_eq!(core::mem::size_of::<StationarityWork>(), 240);
+    assert!(core::mem::size_of::<super::StationarityWorkOutput>() <= 112);
 }
 
 #[test]
@@ -116,6 +326,9 @@ fn cooperative_work_matches_synchronous_selection_across_multiple_polls() {
         match work.poll(&samples[..], &mut cooperative_blocker).unwrap() {
             StationarityWorkPoll::Pending => {}
             StationarityWorkPoll::Complete(result) => break result,
+            StationarityWorkPoll::RestDiagnostic(_) | StationarityWorkPoll::RestComplete(_) => {
+                panic!("moving mode returned a scored-rest result")
+            }
         }
     };
 
@@ -159,6 +372,129 @@ fn cooperative_poll_limits_raw_visits_for_two_ms_safety_cadence() {
         );
         if matches!(poll, StationarityWorkPoll::Complete(_)) {
             break;
+        }
+    }
+}
+
+#[test]
+fn cooperative_rest_work_emits_one_diagnostic_then_reconstructs_its_witness() {
+    struct CountingSource<'a> {
+        samples: &'a [RawVelocityObservation],
+        visits: Cell<usize>,
+    }
+
+    impl VelocityObservationSource for CountingSource<'_> {
+        fn observation_len(&self) -> usize {
+            self.samples.len()
+        }
+
+        fn observation(&self, index: usize) -> Option<RawVelocityObservation> {
+            self.visits.set(self.visits.get() + 1);
+            self.samples.get(index).copied()
+        }
+    }
+
+    let samples = observations::<256>(|_| 0);
+    let source = CountingSource {
+        samples: &samples,
+        visits: Cell::new(0),
+    };
+    let mut blocker = DyadicBlocker::<LEVELS>::new();
+    let mut work = StationarityWork::new();
+    work.reset_for_scored_rest(false);
+    let mut diagnostic = None;
+    let mut diagnostic_count = 0;
+    let mut polls = 0_usize;
+
+    let completed = loop {
+        source.visits.set(0);
+        polls += 1;
+        match work.poll(&source, &mut blocker).unwrap() {
+            StationarityWorkPoll::Pending => {
+                let visit_limit = if diagnostic_count == 0 { 8 } else { 16 };
+                assert!(source.visits.get() <= visit_limit);
+            }
+            StationarityWorkPoll::RestDiagnostic(decision) => {
+                assert!(source.visits.get() <= 8);
+                diagnostic_count += 1;
+                diagnostic = Some(decision);
+            }
+            StationarityWorkPoll::RestComplete(result) => {
+                assert!(source.visits.get() <= 16);
+                break result;
+            }
+            StationarityWorkPoll::Complete(_) => {
+                panic!("rest mode returned a moving-rate result")
+            }
+        }
+    };
+
+    let diagnostic = diagnostic.expect("rest analysis must expose its decision");
+    let selected = completed
+        .selected
+        .expect("statistical acceptance must reconstruct its witness");
+    assert_eq!(diagnostic_count, 1);
+    assert_eq!(diagnostic.interval_present_mask, 0b111);
+    assert_eq!(diagnostic.usable_mask, 0b111);
+    assert_eq!(diagnostic.zero_compatible_mask, 0b111);
+    assert_eq!(diagnostic.selected_mask, 0b100);
+    assert_eq!(diagnostic.selected_suffix_len, 256);
+    assert_eq!(
+        diagnostic.disposition,
+        RestSelectionDisposition::StatisticalAcceptance
+    );
+    assert_eq!(selected.suffix_len, 256);
+    assert_eq!(
+        completed.exact_velocity_interval_q,
+        Some(diagnostic.intervals_q[2])
+    );
+    assert_eq!(completed.disposition, diagnostic.disposition);
+    assert!(
+        polls <= 236,
+        "diagnostic and witness reconstruction used {polls} cooperative polls"
+    );
+}
+
+#[test]
+fn scored_rest_fallback_and_rejection_do_not_reconstruct_a_witness() {
+    let samples = observations::<256>(|_| 1);
+
+    for (fallback, expected) in [
+        (true, RestSelectionDisposition::OneCountFallbackAcceptance),
+        (false, RestSelectionDisposition::Rejected),
+    ] {
+        let mut blocker = DyadicBlocker::<LEVELS>::new();
+        let mut work = StationarityWork::new();
+        work.reset_for_scored_rest(fallback);
+        let mut saw_diagnostic = false;
+        let mut recent_structural_code = None;
+
+        loop {
+            match work.poll(&samples[..], &mut blocker).unwrap() {
+                StationarityWorkPoll::Pending => {}
+                StationarityWorkPoll::RestDiagnostic(decision) => {
+                    saw_diagnostic = true;
+                    assert_eq!(decision.selected_suffix_len, 0);
+                    assert_eq!(decision.disposition, expected);
+                    assert_eq!(decision.usable_mask, 0b111);
+                    assert_eq!(decision.zero_compatible_mask, 0);
+                    recent_structural_code = Some(decision.structural_codes[0]);
+                }
+                StationarityWorkPoll::RestComplete(result) => {
+                    assert!(saw_diagnostic);
+                    assert_eq!(result.disposition, expected);
+                    assert_eq!(result.selected, None);
+                    assert_eq!(result.exact_velocity_interval_q, None);
+                    assert_eq!(
+                        result.recent_structural_code,
+                        recent_structural_code.unwrap()
+                    );
+                    break;
+                }
+                StationarityWorkPoll::Complete(_) => {
+                    panic!("rest mode returned a moving-rate result")
+                }
+            }
         }
     }
 }
@@ -210,6 +546,9 @@ fn cooperative_structured_diagnostics_match_synchronous_evidence_with_bounded_vi
         match poll {
             StationarityWorkPoll::Pending => {}
             StationarityWorkPoll::Complete(result) => break result,
+            StationarityWorkPoll::RestDiagnostic(_) | StationarityWorkPoll::RestComplete(_) => {
+                panic!("structured mode returned a scored-rest result")
+            }
         }
     };
 
@@ -265,6 +604,9 @@ fn cooperative_work_preserves_first_nonstationary_extension_rule() {
         match work.poll(&samples[..], &mut cooperative_blocker).unwrap() {
             StationarityWorkPoll::Pending => {}
             StationarityWorkPoll::Complete(result) => break result,
+            StationarityWorkPoll::RestDiagnostic(_) | StationarityWorkPoll::RestComplete(_) => {
+                panic!("moving mode returned a scored-rest result")
+            }
         }
     };
 
