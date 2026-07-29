@@ -540,6 +540,82 @@ pub struct RecoveryRestDiagnostic {
     pub(crate) disposition: u8,
 }
 
+/// Stage owning one completed scored-rest selector decision.
+#[cfg(feature = "trace-velocity-sweep")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+#[repr(u8)]
+pub enum RestSelectionStage {
+    /// Proportional response sweep.
+    StageB = 0,
+    /// Integral response sweep.
+    StageC = 1,
+    /// Fixed-I production-confidence matrix.
+    Matrix = 2,
+}
+
+/// Causal owner of one completed scored-rest selector decision.
+#[cfg(feature = "trace-velocity-sweep")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+#[repr(u8)]
+pub enum RestSelectionOwner {
+    /// Ordinary Stage-B observation.
+    StageBObservation = 0,
+    /// Ordinary Stage-B origin recovery.
+    StageBRecovery = 1,
+    /// Selected final-P Stage-B recovery.
+    StageBSelectedRecovery = 2,
+    /// Stage-C opening anchor or closing bookend.
+    StageCAnchor = 3,
+    /// Stage-C positive-I observation.
+    StageCPositiveObservation = 4,
+    /// Stage-C origin recovery.
+    StageCRecovery = 5,
+    /// Positive-I I=0 cleanup.
+    StageCCleanup = 6,
+    /// Matrix observation.
+    MatrixObservation = 7,
+    /// Matrix origin recovery.
+    MatrixRecovery = 8,
+}
+
+/// Exact trace-only evidence for one completed scored-rest selector decision.
+#[cfg(feature = "trace-velocity-sweep")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+pub struct RestSelectionDiagnostic {
+    /// Exact simultaneous intervals in 64-, 128-, and 256-sample order.
+    pub(crate) intervals_q: [[i64; 2]; 3],
+    /// Digest of the immutable owning-stage plan.
+    pub(crate) plan_digest: u64,
+    /// Caller-assigned run sequence.
+    pub(crate) run_sequence: u32,
+    /// Monotonic evidence sequence within the owning stage.
+    pub(crate) evidence_sequence: u16,
+    /// Selected suffix length, or zero for fallback and rejection.
+    pub(crate) selected_suffix_len: u16,
+    /// Structural result for each declared suffix.
+    pub(crate) structural_codes: [crate::autotune::velocity_measurement::RestStructuralCode; 3],
+    /// Bit set when the matching exact interval is present.
+    pub(crate) interval_present_mask: u8,
+    /// Bit set when every structural stationarity gate passed.
+    pub(crate) usable_mask: u8,
+    /// Bit set when a usable closed interval contains zero.
+    pub(crate) zero_compatible_mask: u8,
+    /// Bit naming the selected suffix, or zero.
+    pub(crate) selected_mask: u8,
+    /// Owning commissioning stage.
+    pub(crate) stage: RestSelectionStage,
+    /// Causal scored-rest owner.
+    pub(crate) owner: RestSelectionOwner,
+    /// Zero-based rung or amplitude index.
+    pub(crate) rung_index: u8,
+    /// Direction code, or `0xff` when inapplicable.
+    pub(crate) direction: u8,
+    /// Fixed observation slot, or `0xff` when inapplicable.
+    pub(crate) slot: u8,
+    /// Final selector disposition.
+    pub(crate) disposition: crate::autotune::velocity_measurement::RestSelectionDisposition,
+}
+
 /// Causal current-limit evidence for one signed-plus-zero velocity primitive.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub struct VelocityPrimitiveCurrentEvidence {
@@ -586,6 +662,9 @@ pub enum VelocitySweepEvent {
     /// Recovery stabilization lead-in and scored-rest evidence.
     #[cfg(feature = "trace-velocity-sweep")]
     RecoveryRest(RecoveryRestDiagnostic),
+    /// Exact per-suffix scored-rest selector evidence.
+    #[cfg(feature = "trace-velocity-sweep")]
+    RestSelection(RestSelectionDiagnostic),
     /// Current-limit evidence for one completed signed-plus-zero primitive.
     Current(VelocityPrimitiveCurrentEvidence),
     /// One directional region or fragment closed by the fold.
@@ -755,6 +834,9 @@ pub enum VelocityIntegralEvent {
     /// Recovery stabilization lead-in and scored-rest evidence.
     #[cfg(feature = "trace-velocity-sweep")]
     RecoveryRest(RecoveryRestDiagnostic),
+    /// Exact per-suffix scored-rest selector evidence.
+    #[cfg(feature = "trace-velocity-sweep")]
+    RestSelection(RestSelectionDiagnostic),
     /// Current-limit evidence for one completed signed-plus-zero primitive.
     Current(VelocityPrimitiveCurrentEvidence),
 }
@@ -840,6 +922,9 @@ pub enum AcceptanceMatrixEvent {
     /// Recovery stabilization lead-in and scored-rest evidence.
     #[cfg(feature = "trace-velocity-sweep")]
     RecoveryRest(RecoveryRestDiagnostic),
+    /// Exact per-suffix scored-rest selector evidence.
+    #[cfg(feature = "trace-velocity-sweep")]
+    RestSelection(RestSelectionDiagnostic),
     /// One complete four-observation fold per direction.
     Amplitude(AcceptanceAmplitudeEvidence),
 }

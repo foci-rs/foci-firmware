@@ -1,9 +1,12 @@
 //! Streamed velocity-sweep evidence sequencing and integrity.
 
-use crate::autotune::velocity_measurement::StationarityResult;
+use crate::autotune::velocity_measurement::{
+    RestSelectionDisposition, RestStructuralCode, StationarityResult, VELOCITY_SUFFIX_LENGTHS,
+};
 use crate::commissioning::types::{
-    RecoveryRestDiagnostic, RungOriginRecoveryEvidence, VelocitySweepEvent,
-    VelocitySweepObservation, VelocitySweepPlanned, VelocitySweepRungReport, VelocitySweepTerminal,
+    RecoveryRestDiagnostic, RestSelectionDiagnostic, RungOriginRecoveryEvidence,
+    VelocitySweepEvent, VelocitySweepObservation, VelocitySweepPlanned, VelocitySweepRungReport,
+    VelocitySweepTerminal,
 };
 
 use super::sweep_consensus::consensus_class_report_code;
@@ -63,6 +66,7 @@ impl VelocitySweepIntegrity {
             }
             VelocitySweepEvent::Recovery(_)
             | VelocitySweepEvent::RecoveryRest(_)
+            | VelocitySweepEvent::RestSelection(_)
             | VelocitySweepEvent::Current(_) => {}
             VelocitySweepEvent::DirectionalRegion(report) => {
                 let direction = match report.region.direction {
@@ -129,6 +133,9 @@ pub(crate) fn encode_velocity_sweep_event(
         VelocitySweepEvent::Rung(report) => encode_rung(report),
         VelocitySweepEvent::Recovery(report) => encode_rung_origin_recovery(report),
         VelocitySweepEvent::RecoveryRest(report) => encode_recovery_rest(report),
+        VelocitySweepEvent::RestSelection(report) => {
+            encode_rest_selection(report).expect("completed scored-rest diagnostic is coherent")
+        }
         VelocitySweepEvent::Current(report) => {
             crate::ankyra::velocity_sweep_encoding::encode_velocity_primitive_current_evidence(
                 report,
@@ -252,6 +259,141 @@ pub(crate) fn encode_recovery_rest(report: RecoveryRestDiagnostic) -> VelocitySw
     record.push_u8(report.current_contact_code);
     record.push_u8(report.disposition);
     record
+}
+
+/// Integrity error in one completed scored-rest selector diagnostic.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RestSelectionEncodingError {
+    /// A mask names a suffix outside the declared family.
+    MaskOutOfRange,
+    /// Structural codes, masks, and interval presence disagree.
+    StructuralMismatch,
+    /// A present interval is reversed or an absent interval is nonzero.
+    InvalidInterval,
+    /// The zero-compatible mask disagrees with the exact closed intervals.
+    ZeroCompatibilityMismatch,
+    /// The selected suffix is not the end of the causal compatible prefix.
+    InvalidSelection,
+    /// Arithmetic cannot be serialized as a completed decision.
+    ArithmeticResult,
+}
+
+/// Encode one completed scored-rest selector decision in exact canonical order.
+pub(crate) fn encode_rest_selection(
+    report: RestSelectionDiagnostic,
+) -> Result<VelocitySweepCanonicalRecord, RestSelectionEncodingError> {
+    validate_rest_selection(report)?;
+    let mut record = VelocitySweepCanonicalRecord::new();
+    record.push_u8(11);
+    record.push_u32(report.run_sequence);
+    record.push_u16(report.evidence_sequence);
+    record.push_u8(report.stage as u8);
+    record.push_u8(report.owner as u8);
+    record.push_u8(report.rung_index);
+    record.push_u8(report.direction);
+    record.push_u8(report.slot);
+    push_u64(&mut record, report.plan_digest);
+    for code in report.structural_codes {
+        record.push_u8(code as u8);
+    }
+    record.push_u8(report.interval_present_mask);
+    record.push_u8(report.usable_mask);
+    record.push_u8(report.zero_compatible_mask);
+    record.push_u8(report.selected_mask);
+    record.push_u16(report.selected_suffix_len);
+    record.push_u8(report.disposition as u8);
+    for interval in report.intervals_q {
+        for endpoint in interval {
+            push_u64(&mut record, endpoint as u64);
+        }
+    }
+    Ok(record)
+}
+
+fn validate_rest_selection(
+    report: RestSelectionDiagnostic,
+) -> Result<(), RestSelectionEncodingError> {
+    const VALID_MASK: u8 = 0b111;
+    for mask in [
+        report.interval_present_mask,
+        report.usable_mask,
+        report.zero_compatible_mask,
+        report.selected_mask,
+    ] {
+        if mask & !VALID_MASK != 0 {
+            return Err(RestSelectionEncodingError::MaskOutOfRange);
+        }
+    }
+
+    let mut expected_interval_mask = 0_u8;
+    let mut expected_usable_mask = 0_u8;
+    let mut expected_zero_mask = 0_u8;
+    for (index, code) in report.structural_codes.into_iter().enumerate() {
+        let bit = 1_u8 << index;
+        let interval_expected = match code {
+            RestStructuralCode::Usable => {
+                expected_usable_mask |= bit;
+                true
+            }
+            RestStructuralCode::ResolvedSlope | RestStructuralCode::StructuredResidual => true,
+            RestStructuralCode::NoBlockingPlateau
+            | RestStructuralCode::TooFewDecorrelatedBlocks => false,
+            RestStructuralCode::Arithmetic => {
+                return Err(RestSelectionEncodingError::ArithmeticResult);
+            }
+        };
+        if interval_expected {
+            expected_interval_mask |= bit;
+            let [low, high] = report.intervals_q[index];
+            if low > high {
+                return Err(RestSelectionEncodingError::InvalidInterval);
+            }
+            if code == RestStructuralCode::Usable && low <= 0 && 0 <= high {
+                expected_zero_mask |= bit;
+            }
+        } else if report.intervals_q[index] != [0, 0] {
+            return Err(RestSelectionEncodingError::InvalidInterval);
+        }
+    }
+    if report.interval_present_mask != expected_interval_mask
+        || report.usable_mask != expected_usable_mask
+    {
+        return Err(RestSelectionEncodingError::StructuralMismatch);
+    }
+    if report.zero_compatible_mask != expected_zero_mask {
+        return Err(RestSelectionEncodingError::ZeroCompatibilityMismatch);
+    }
+
+    let mut expected_selected_mask = 0_u8;
+    let mut expected_selected_len = 0_u16;
+    for (index, suffix_len) in VELOCITY_SUFFIX_LENGTHS.into_iter().enumerate() {
+        let bit = 1_u8 << index;
+        if expected_zero_mask & bit == 0 {
+            break;
+        }
+        expected_selected_mask = bit;
+        expected_selected_len = suffix_len;
+    }
+    match report.disposition {
+        RestSelectionDisposition::StatisticalAcceptance => {
+            if expected_selected_mask == 0
+                || report.selected_mask != expected_selected_mask
+                || report.selected_suffix_len != expected_selected_len
+            {
+                return Err(RestSelectionEncodingError::InvalidSelection);
+            }
+        }
+        RestSelectionDisposition::OneCountFallbackAcceptance
+        | RestSelectionDisposition::Rejected => {
+            if expected_selected_mask != 0
+                || report.selected_mask != 0
+                || report.selected_suffix_len != 0
+            {
+                return Err(RestSelectionEncodingError::InvalidSelection);
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Encode one stage-neutral rung-origin recovery in exact canonical wire order.
@@ -562,7 +704,8 @@ mod tests {
         VelocityObservationSummary,
     };
     use crate::commissioning::types::{
-        RecoveryRestDiagnostic, RungOriginRecoveryEvidence, VelocityPrimitiveCurrentEvidence,
+        RecoveryRestDiagnostic, RestSelectionDiagnostic, RestSelectionOwner, RestSelectionStage,
+        RungOriginRecoveryEvidence, VelocityPrimitiveCurrentEvidence,
     };
     use foci_tmc4671::pid::PidPGain;
 
@@ -703,6 +846,146 @@ mod tests {
         assert_eq!(integrity.emitted_observations(), 0);
         assert_eq!(integrity.emitted_rungs(), 0);
         assert_eq!(integrity.next_evidence_sequence(), 1);
+    }
+
+    fn rest_selection_diagnostic() -> RestSelectionDiagnostic {
+        RestSelectionDiagnostic {
+            intervals_q: [[-9, 0], [-17, 29], [31, 47]],
+            plan_digest: 0x1122_3344_5566_7788,
+            run_sequence: 0x0102_0304,
+            evidence_sequence: 0x0506,
+            selected_suffix_len: 128,
+            structural_codes: [
+                RestStructuralCode::Usable,
+                RestStructuralCode::Usable,
+                RestStructuralCode::ResolvedSlope,
+            ],
+            interval_present_mask: 0b111,
+            usable_mask: 0b011,
+            zero_compatible_mask: 0b011,
+            selected_mask: 0b010,
+            stage: RestSelectionStage::StageC,
+            owner: RestSelectionOwner::StageCPositiveObservation,
+            rung_index: 7,
+            direction: 1,
+            slot: 0xff,
+            disposition: RestSelectionDisposition::StatisticalAcceptance,
+        }
+    }
+
+    #[test]
+    fn rest_selection_record_has_exact_78_byte_layout() {
+        let report = rest_selection_diagnostic();
+        let record = encode_rest_selection(report).unwrap();
+        let mut expected = std::vec![11];
+        expected.extend_from_slice(&report.run_sequence.to_le_bytes());
+        expected.extend_from_slice(&report.evidence_sequence.to_le_bytes());
+        expected.extend_from_slice(&[1, 4, 7, 1, 0xff]);
+        expected.extend_from_slice(&report.plan_digest.to_le_bytes());
+        expected.extend_from_slice(&[0, 0, 3, 0b111, 0b011, 0b011, 0b010]);
+        expected.extend_from_slice(&128_u16.to_le_bytes());
+        expected.push(0);
+        for interval in report.intervals_q {
+            for endpoint in interval {
+                expected.extend_from_slice(&endpoint.to_le_bytes());
+            }
+        }
+
+        assert_eq!(record.as_bytes(), expected);
+        assert_eq!(record.as_bytes().len(), 78);
+    }
+
+    #[test]
+    fn rest_selection_codes_and_stage_encoders_are_shared() {
+        assert_eq!(
+            [
+                RestSelectionOwner::StageBObservation as u8,
+                RestSelectionOwner::StageBRecovery as u8,
+                RestSelectionOwner::StageBSelectedRecovery as u8,
+                RestSelectionOwner::StageCAnchor as u8,
+                RestSelectionOwner::StageCPositiveObservation as u8,
+                RestSelectionOwner::StageCRecovery as u8,
+                RestSelectionOwner::StageCCleanup as u8,
+                RestSelectionOwner::MatrixObservation as u8,
+                RestSelectionOwner::MatrixRecovery as u8,
+            ],
+            [0, 1, 2, 3, 4, 5, 6, 7, 8]
+        );
+        assert_eq!(
+            [
+                RestSelectionStage::StageB as u8,
+                RestSelectionStage::StageC as u8,
+                RestSelectionStage::Matrix as u8,
+            ],
+            [0, 1, 2]
+        );
+
+        let report = rest_selection_diagnostic();
+        let shared = encode_rest_selection(report).unwrap();
+        let stage_c = super::super::integral_reporting::encode_velocity_integral_event(
+            crate::commissioning::types::VelocityIntegralEvent::RestSelection(report),
+        );
+        let matrix = super::super::acceptance_reporting::encode_acceptance_event(
+            crate::commissioning::types::AcceptanceMatrixEvent::RestSelection(report),
+        );
+        assert_eq!(stage_c.as_bytes(), shared.as_bytes());
+        assert_eq!(matrix.as_bytes(), shared.as_bytes());
+    }
+
+    #[test]
+    fn rest_selection_advances_one_sequence_without_counting_an_observation() {
+        let report = rest_selection_diagnostic();
+        let mut integrity = VelocitySweepIntegrity::new(report.run_sequence);
+        let before = integrity.digest();
+
+        integrity.record(VelocitySweepEvent::RestSelection(report));
+
+        assert_eq!(integrity.next_evidence_sequence(), 1);
+        assert_eq!(integrity.emitted_observations(), 0);
+        assert_eq!(integrity.emitted_rungs(), 0);
+        assert_ne!(integrity.digest(), before);
+    }
+
+    #[test]
+    fn rest_selection_validation_rejects_incoherent_diagnostics() {
+        let valid = rest_selection_diagnostic();
+        assert!(encode_rest_selection(valid).is_ok());
+
+        let mut interval_without_result = valid;
+        interval_without_result.structural_codes[2] = RestStructuralCode::TooFewDecorrelatedBlocks;
+        assert!(encode_rest_selection(interval_without_result).is_err());
+
+        let mut selected_outside_prefix = valid;
+        selected_outside_prefix.intervals_q[0] = [1, 9];
+        selected_outside_prefix.zero_compatible_mask = 0b010;
+        assert!(encode_rest_selection(selected_outside_prefix).is_err());
+
+        let mut nonzero_unused_interval = valid;
+        nonzero_unused_interval.interval_present_mask = 0b011;
+        assert!(encode_rest_selection(nonzero_unused_interval).is_err());
+
+        let mut completed_arithmetic = valid;
+        completed_arithmetic.structural_codes[2] = RestStructuralCode::Arithmetic;
+        assert!(encode_rest_selection(completed_arithmetic).is_err());
+    }
+
+    #[test]
+    fn rest_selection_endpoint_touch_and_terminal_codes_are_exact() {
+        let mut report = rest_selection_diagnostic();
+        report.intervals_q[0] = [-9, 0];
+        report.intervals_q[1] = [0, 11];
+        assert!(encode_rest_selection(report).is_ok());
+
+        report.selected_mask = 0;
+        report.selected_suffix_len = 0;
+        report.disposition = RestSelectionDisposition::OneCountFallbackAcceptance;
+        report.zero_compatible_mask = 0;
+        report.intervals_q[0] = [1, 9];
+        report.intervals_q[1] = [1, 11];
+        assert_eq!(encode_rest_selection(report).unwrap().as_bytes()[29], 1);
+
+        report.disposition = RestSelectionDisposition::Rejected;
+        assert_eq!(encode_rest_selection(report).unwrap().as_bytes()[29], 2);
     }
 
     #[test]

@@ -3608,6 +3608,7 @@ mod tests {
                         VelocitySweepEvent::Rung(report) => report.evidence_sequence,
                         VelocitySweepEvent::Recovery(report) => report.evidence_sequence,
                         VelocitySweepEvent::RecoveryRest(report) => report.evidence_sequence,
+                        VelocitySweepEvent::RestSelection(report) => report.evidence_sequence,
                         VelocitySweepEvent::Current(report) => report.evidence_sequence,
                         VelocitySweepEvent::DirectionalRegion(report) => report.evidence_sequence,
                         VelocitySweepEvent::JointRegion(report) => report.evidence_sequence,

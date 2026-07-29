@@ -49,8 +49,9 @@ use crate::trace::events::{
 use crate::trace::events::{
     EVENT_COMMISSION_ACCEPTANCE_MATRIX_AMPLITUDE, EVENT_COMMISSION_ACCEPTANCE_MATRIX_OBSERVATION,
     EVENT_COMMISSION_ACCEPTANCE_MATRIX_TERMINAL, EVENT_COMMISSION_OUTER_SAFETY_TIMING,
-    EVENT_COMMISSION_RUNG_ORIGIN_RECOVERY, EVENT_COMMISSION_SELECTED_RECOVERY_REST,
-    EVENT_COMMISSION_VELOCITY_INTEGRAL_COMPLETE, EVENT_COMMISSION_VELOCITY_INTEGRAL_TERMINAL,
+    EVENT_COMMISSION_REST_SELECTION_DIAGNOSTIC, EVENT_COMMISSION_RUNG_ORIGIN_RECOVERY,
+    EVENT_COMMISSION_SELECTED_RECOVERY_REST, EVENT_COMMISSION_VELOCITY_INTEGRAL_COMPLETE,
+    EVENT_COMMISSION_VELOCITY_INTEGRAL_TERMINAL,
 };
 use foci_tmc4671::pid::{PidIGain, PidPGain};
 
@@ -1410,6 +1411,11 @@ impl CommissioningEngine {
                         EVENT_COMMISSION_SELECTED_RECOVERY_REST,
                         report.evidence_sequence,
                     ),
+                    #[cfg(feature = "trace-velocity-sweep")]
+                    crate::commissioning::types::VelocitySweepEvent::RestSelection(report) => (
+                        EVENT_COMMISSION_REST_SELECTION_DIAGNOSTIC,
+                        report.evidence_sequence,
+                    ),
                     crate::commissioning::types::VelocitySweepEvent::Current(report) => (
                         EVENT_COMMISSION_VELOCITY_SWEEP_DERIVED,
                         report.evidence_sequence,
@@ -1484,6 +1490,11 @@ impl CommissioningEngine {
                         EVENT_COMMISSION_SELECTED_RECOVERY_REST,
                         report.evidence_sequence,
                     ),
+                    #[cfg(feature = "trace-velocity-sweep")]
+                    crate::commissioning::types::VelocityIntegralEvent::RestSelection(report) => (
+                        EVENT_COMMISSION_REST_SELECTION_DIAGNOSTIC,
+                        report.evidence_sequence,
+                    ),
                     crate::commissioning::types::VelocityIntegralEvent::Current(report) => (
                         EVENT_COMMISSION_VELOCITY_INTEGRAL_DERIVED,
                         report.evidence_sequence,
@@ -1524,6 +1535,13 @@ impl CommissioningEngine {
                         crate::commissioning::outer::velocity::sweep_reporting::
                             encode_recovery_rest(*report),
                         EVENT_COMMISSION_SELECTED_RECOVERY_REST,
+                        report.evidence_sequence,
+                    ),
+                    crate::commissioning::types::AcceptanceMatrixEvent::RestSelection(report) => (
+                        crate::commissioning::outer::velocity::sweep_reporting::
+                            encode_rest_selection(*report)
+                            .expect("completed scored-rest diagnostic is coherent"),
+                        EVENT_COMMISSION_REST_SELECTION_DIAGNOSTIC,
                         report.evidence_sequence,
                     ),
                     crate::commissioning::types::AcceptanceMatrixEvent::Amplitude(report) => (
@@ -1816,6 +1834,14 @@ mod tests {
             assert_eq!(
                 size_of::<crate::commissioning::types::AcceptanceMatrixEvent>(),
                 224
+            );
+            assert_eq!(
+                size_of::<crate::commissioning::types::RestSelectionDiagnostic>(),
+                80
+            );
+            assert_eq!(
+                size_of::<crate::ankyra::velocity_sweep_encoding::VelocitySweepCanonicalRecord>(),
+                129
             );
             assert_eq!(size_of::<crate::commissioning::types::StepResult>(), 928);
             assert_eq!(size_of::<CommissioningEngine>(), 4_528);
@@ -2465,6 +2491,51 @@ mod tests {
             TraceEventLevel::Info,
             [crate::autotune::PhaseId::CoilCheck.to_u8() as i32, 1],
         );
+    }
+
+    #[cfg(feature = "trace-velocity-sweep")]
+    #[test]
+    fn rest_selection_uses_trace_event_151_and_exact_canonical_record() {
+        use crate::autotune::velocity_measurement::{RestSelectionDisposition, RestStructuralCode};
+        use crate::commissioning::types::{
+            RestSelectionDiagnostic, RestSelectionOwner, RestSelectionStage, VelocitySweepEvent,
+        };
+
+        let report = RestSelectionDiagnostic {
+            intervals_q: [[0, 0]; 3],
+            plan_digest: 11,
+            run_sequence: 7,
+            evidence_sequence: 2,
+            selected_suffix_len: 256,
+            structural_codes: [RestStructuralCode::Usable; 3],
+            interval_present_mask: 0b111,
+            usable_mask: 0b111,
+            zero_compatible_mask: 0b111,
+            selected_mask: 0b100,
+            stage: RestSelectionStage::StageB,
+            owner: RestSelectionOwner::StageBObservation,
+            rung_index: 1,
+            direction: 0,
+            slot: 3,
+            disposition: RestSelectionDisposition::StatisticalAcceptance,
+        };
+        let mut engine =
+            CommissioningEngine::new_outer(0, sample_outer_params(), sample_entry_snapshot());
+        let mut backend = crate::commission_dispatch::test_support::MockBackend::new();
+
+        engine.emit_trace_after_step(
+            &mut backend,
+            &StepResult::VelocitySweepEvent(VelocitySweepEvent::RestSelection(report)),
+        );
+
+        assert_eq!(backend.velocity_sweep_trace_records.len(), 1);
+        assert_eq!(backend.velocity_sweep_trace_records[0].as_bytes().len(), 78);
+        assert_eq!(backend.trace_events.len(), 1);
+        assert_eq!(
+            backend.trace_events[0].event_id,
+            crate::trace::events::EVENT_COMMISSION_REST_SELECTION_DIAGNOSTIC
+        );
+        assert_eq!(backend.trace_events[0].payload[0], 2);
     }
 
     #[test]

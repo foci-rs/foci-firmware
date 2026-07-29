@@ -207,6 +207,10 @@ pub(crate) fn encode_acceptance_event(
         AcceptanceMatrixEvent::RecoveryRest(report) => {
             super::sweep_reporting::encode_recovery_rest(report)
         }
+        AcceptanceMatrixEvent::RestSelection(report) => {
+            super::sweep_reporting::encode_rest_selection(report)
+                .expect("completed scored-rest diagnostic is coherent")
+        }
         AcceptanceMatrixEvent::Amplitude(report) => encode_acceptance_amplitude(
             report.run_sequence,
             report.evidence_sequence,

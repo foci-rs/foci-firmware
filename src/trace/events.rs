@@ -111,6 +111,8 @@ pub const EVENT_COMMISSION_ACCEPTANCE_MATRIX_AMPLITUDE: u16 = 148;
 pub const EVENT_COMMISSION_ACCEPTANCE_MATRIX_TERMINAL: u16 = 149;
 /// Selected Stage-B recovery lead-in and scored-rest evidence.
 pub const EVENT_COMMISSION_SELECTED_RECOVERY_REST: u16 = 150;
+/// Exact scored-rest suffix selection diagnostic.
+pub const EVENT_COMMISSION_REST_SELECTION_DIAGNOSTIC: u16 = 151;
 
 /// Single-frame commissioning diagnostic warning event.
 pub const EVENT_COMMISSION_DIAGNOSTIC_WARNING: u16 = 200;
@@ -235,6 +237,7 @@ mod tests {
         assert_eq!(EVENT_COMMISSION_ACCEPTANCE_MATRIX_AMPLITUDE, 148);
         assert_eq!(EVENT_COMMISSION_ACCEPTANCE_MATRIX_TERMINAL, 149);
         assert_eq!(EVENT_COMMISSION_SELECTED_RECOVERY_REST, 150);
+        assert_eq!(EVENT_COMMISSION_REST_SELECTION_DIAGNOSTIC, 151);
         assert_eq!(EVENT_COMMISSION_DIAGNOSTIC_WARNING, 200);
     }
 

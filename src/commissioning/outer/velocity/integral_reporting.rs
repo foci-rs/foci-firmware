@@ -143,6 +143,7 @@ impl VelocityIntegralIntegrity {
             }
             VelocityIntegralEvent::Recovery(_)
             | VelocityIntegralEvent::RecoveryRest(_)
+            | VelocityIntegralEvent::RestSelection(_)
             | VelocityIntegralEvent::Current(_) => {}
             VelocityIntegralEvent::Planned(_) => {}
         }
@@ -166,7 +167,8 @@ impl VelocityIntegralIntegrity {
             }
             AcceptanceMatrixEvent::Current(_)
             | AcceptanceMatrixEvent::Recovery(_)
-            | AcceptanceMatrixEvent::RecoveryRest(_) => {}
+            | AcceptanceMatrixEvent::RecoveryRest(_)
+            | AcceptanceMatrixEvent::RestSelection(_) => {}
         }
         self.digest = extend_velocity_sweep_digest(
             self.digest,
@@ -220,6 +222,10 @@ pub(crate) fn encode_velocity_integral_event(
         }
         VelocityIntegralEvent::RecoveryRest(report) => {
             super::sweep_reporting::encode_recovery_rest(report)
+        }
+        VelocityIntegralEvent::RestSelection(report) => {
+            super::sweep_reporting::encode_rest_selection(report)
+                .expect("completed scored-rest diagnostic is coherent")
         }
         VelocityIntegralEvent::Current(report) => {
             crate::ankyra::velocity_sweep_encoding::encode_velocity_primitive_current_evidence(
