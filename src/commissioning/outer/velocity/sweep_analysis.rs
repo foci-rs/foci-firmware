@@ -1,7 +1,8 @@
 //! Bounded post-capture analysis for the velocity sweep.
 
 use crate::autotune::velocity_measurement::{
-    DyadicBlocker, StationarityResult, StationarityWork, StationarityWorkPoll,
+    DyadicBlocker, RestSelectionDecision, RestSelectionDisposition, RestStructuralCode,
+    StationarityResult, StationarityWork, StationarityWorkPoll, StationarySuffix,
     StructuredStationarityEvidence, VELOCITY_RATE_Q_SCALE, VelocityDirection,
     VelocityObservationSource, estimate_confidence,
 };
@@ -28,10 +29,30 @@ pub(super) struct MovingObservationAnalysis {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) struct SettleConfirmation {
+pub(super) struct LegacySettleConfirmation {
     pub(super) stationarity: StationarityResult,
     pub(super) confirmed_rest: bool,
     pub(super) exact_velocity_interval_q: Option<[i64; 2]>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)]
+pub(super) struct SettleConfirmation {
+    pub(super) selected: Option<StationarySuffix>,
+    pub(super) confirmed_rest: bool,
+    pub(super) exact_velocity_interval_q: Option<[i64; 2]>,
+    pub(super) selected_suffix_len: u16,
+    pub(super) conditioned_rest_evidence: bool,
+    pub(super) disposition: RestSelectionDisposition,
+    pub(super) recent_structural_code: RestStructuralCode,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)]
+pub(super) enum ScoredRestPoll {
+    Pending,
+    Diagnostic(RestSelectionDecision),
+    Complete(SettleConfirmation),
 }
 
 fn slot_direction(slot: u8) -> i32 {
@@ -257,6 +278,37 @@ pub(super) fn poll_stationarity<const LEVELS: usize>(
     {
         StationarityWorkPoll::Pending => Ok(None),
         StationarityWorkPoll::Complete(stationarity) => Ok(Some(stationarity)),
+        StationarityWorkPoll::RestDiagnostic(_) | StationarityWorkPoll::RestComplete(_) => {
+            Err(CommissionError::VelocityValidationFailed)
+        }
+    }
+}
+
+#[allow(dead_code)]
+pub(super) fn poll_scored_rest_confirmation<const LEVELS: usize>(
+    analysis: &mut StationarityWork,
+    observations: &impl VelocityObservationSource,
+    blocker: &mut DyadicBlocker<LEVELS>,
+) -> Result<ScoredRestPoll, CommissionError> {
+    match analysis
+        .poll(observations, blocker)
+        .map_err(|_| CommissionError::VelocityValidationFailed)?
+    {
+        StationarityWorkPoll::Pending => Ok(ScoredRestPoll::Pending),
+        StationarityWorkPoll::RestDiagnostic(decision) => Ok(ScoredRestPoll::Diagnostic(decision)),
+        StationarityWorkPoll::RestComplete(result) => {
+            let selected_suffix_len = result.selected.map_or(0, |suffix| suffix.suffix_len);
+            Ok(ScoredRestPoll::Complete(SettleConfirmation {
+                selected: result.selected,
+                confirmed_rest: result.disposition != RestSelectionDisposition::Rejected,
+                exact_velocity_interval_q: result.exact_velocity_interval_q,
+                selected_suffix_len,
+                conditioned_rest_evidence: result.exact_velocity_interval_q.is_some(),
+                disposition: result.disposition,
+                recent_structural_code: result.recent_structural_code,
+            }))
+        }
+        StationarityWorkPoll::Complete(_) => Err(CommissionError::VelocityValidationFailed),
     }
 }
 
@@ -266,7 +318,7 @@ pub(super) fn poll_settle_confirmation_parts<const LEVELS: usize>(
     blocker: &mut DyadicBlocker<LEVELS>,
     settle_min_displacement_counts: i8,
     settle_max_displacement_counts: i8,
-) -> Result<Option<SettleConfirmation>, CommissionError> {
+) -> Result<Option<LegacySettleConfirmation>, CommissionError> {
     let Some(stationarity) = poll_stationarity(analysis, observations, blocker)? else {
         return Ok(None);
     };
@@ -303,7 +355,7 @@ pub(super) fn poll_settle_confirmation_parts<const LEVELS: usize>(
             None,
         ),
     };
-    Ok(Some(SettleConfirmation {
+    Ok(Some(LegacySettleConfirmation {
         stationarity,
         confirmed_rest,
         exact_velocity_interval_q,
@@ -322,11 +374,15 @@ fn bounded_rest_displacement(minimum: i8, maximum: i8) -> bool {
 #[cfg(test)]
 mod tests {
     use crate::autotune::velocity_measurement::{
-        DyadicBlocker, RawVelocityObservation, StationarityWork, select_stationary_suffix,
+        DyadicBlocker, RawVelocityObservation, RestSelectionDisposition, StationarityWork,
+        select_stationary_suffix,
     };
     use crate::commissioning::outer::state::VelocityObservationRing;
 
-    use super::{bounded_rest_displacement, deficit_interval_q, poll_settle_confirmation_parts};
+    use super::{
+        ScoredRestPoll, bounded_rest_displacement, deficit_interval_q,
+        poll_scored_rest_confirmation, poll_settle_confirmation_parts,
+    };
 
     #[test]
     fn settle_analysis_retains_the_exact_stationarity_result() {
@@ -353,6 +409,50 @@ mod tests {
 
         assert_eq!(result.stationarity, expected);
         assert!(result.confirmed_rest);
+    }
+
+    #[test]
+    fn scored_rest_contract_yields_diagnostic_before_conditioned_witness() {
+        let mut ring = VelocityObservationRing::new();
+        for _ in 0..256 {
+            ring.push(0, 1_000).unwrap();
+        }
+        let mut analysis = StationarityWork::new();
+        analysis.reset_for_scored_rest(false);
+        let mut blocker = DyadicBlocker::<5>::new();
+        let mut diagnostic = None;
+
+        loop {
+            match poll_scored_rest_confirmation(&mut analysis, &ring, &mut blocker).unwrap() {
+                ScoredRestPoll::Pending => {}
+                ScoredRestPoll::Diagnostic(decision) => {
+                    assert!(diagnostic.replace(decision).is_none());
+                }
+                ScoredRestPoll::Complete(confirmation) => {
+                    let diagnostic = diagnostic.expect("diagnostic must precede completion");
+                    assert!(confirmation.confirmed_rest);
+                    assert!(confirmation.conditioned_rest_evidence);
+                    assert_eq!(confirmation.selected_suffix_len, 256);
+                    assert_eq!(
+                        confirmation.exact_velocity_interval_q,
+                        Some(diagnostic.intervals_q[2])
+                    );
+                    assert_eq!(
+                        confirmation.disposition,
+                        RestSelectionDisposition::StatisticalAcceptance
+                    );
+                    assert_eq!(
+                        confirmation.selected.map(|suffix| suffix.suffix_len),
+                        Some(256)
+                    );
+                    assert_eq!(
+                        confirmation.recent_structural_code,
+                        diagnostic.structural_codes[0]
+                    );
+                    break;
+                }
+            }
+        }
     }
 
     #[test]

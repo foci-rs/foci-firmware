@@ -53,14 +53,12 @@ pub struct RestSelectionDecision {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[allow(dead_code)]
 pub(super) struct RestSuffixEvaluation {
     pub(super) structural_code: RestStructuralCode,
     pub(super) interval_present: bool,
     pub(super) interval_q: [i64; 2],
 }
 
-#[allow(dead_code)]
 pub(super) fn select_causal_rest_suffixes(
     suffixes: [RestSuffixEvaluation; 3],
     one_count_fallback: bool,

@@ -23,8 +23,8 @@ pub use rest::{
     RestSelectionDecision, RestSelectionDisposition, RestStructuralCode, VELOCITY_SUFFIX_LENGTHS,
 };
 pub use stationarity::{
-    StationarityDiagnostics, StationarityExclusion, StationarityResult, StationarityWork,
-    StationarityWorkPoll, StationarySuffix, StructuredStationarityEvidence, SuffixDiagnostic,
-    VelocityObservationSource, analyze_stationarity_diagnostics, select_stationary_suffix,
-    select_stationary_suffix_from_source,
+    RestSelectionCompletion, StationarityDiagnostics, StationarityExclusion, StationarityResult,
+    StationarityWork, StationarityWorkPoll, StationarySuffix, StructuredStationarityEvidence,
+    SuffixDiagnostic, VelocityObservationSource, analyze_stationarity_diagnostics,
+    select_stationary_suffix, select_stationary_suffix_from_source,
 };
