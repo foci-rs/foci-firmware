@@ -133,7 +133,7 @@ pub enum StationarityWorkPoll {
 /// Completed scored-rest decision after any selected witness is reconstructed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RestSelectionCompletion {
-    /// Full witness for statistical acceptance; absent for fallback or rejection.
+    /// Full accepted witness, or the recent usable witness retained for a rejection diagnostic.
     pub selected: Option<StationarySuffix>,
     /// Exact selected interval, conditioned on zero compatibility.
     pub exact_velocity_interval_q: Option<[i64; 2]>,
@@ -976,7 +976,20 @@ impl StationarityWork {
         let StationarityWorkOutput::RestDecision(decision) = self.output else {
             return Err(VelocityMeasurementError::ArithmeticOverflow);
         };
-        if decision.disposition != RestSelectionDisposition::StatisticalAcceptance {
+        let witness_index =
+            if decision.disposition == RestSelectionDisposition::StatisticalAcceptance {
+                Some(
+                    u8::try_from(decision.selected_mask.trailing_zeros())
+                        .map_err(|_| VelocityMeasurementError::ArithmeticOverflow)?,
+                )
+            } else if decision.disposition == RestSelectionDisposition::Rejected
+                && decision.structural_codes[0] == RestStructuralCode::Usable
+            {
+                Some(0)
+            } else {
+                None
+            };
+        let Some(witness_index) = witness_index else {
             self.stage = StationarityWorkStage::Done;
             return Ok(StationarityWorkPoll::RestComplete(
                 RestSelectionCompletion {
@@ -986,20 +999,20 @@ impl StationarityWork {
                     recent_structural_code: decision.structural_codes[0],
                 },
             ));
-        }
+        };
 
-        let selected_index = u8::try_from(decision.selected_mask.trailing_zeros())
-            .map_err(|_| VelocityMeasurementError::ArithmeticOverflow)?;
         let suffix_len = *VELOCITY_SUFFIX_LENGTHS
-            .get(usize::from(selected_index))
+            .get(usize::from(witness_index))
             .ok_or(VelocityMeasurementError::ArithmeticOverflow)?;
-        if suffix_len != decision.selected_suffix_len {
+        if decision.disposition == RestSelectionDisposition::StatisticalAcceptance
+            && suffix_len != decision.selected_suffix_len
+        {
             return Err(VelocityMeasurementError::ArithmeticOverflow);
         }
         self.start_suffix(
             observations,
             blocker,
-            selected_index,
+            witness_index,
             suffix_len,
             StationarityWorkMode::RestWitness,
         )?;
@@ -1014,10 +1027,19 @@ impl StationarityWork {
         let StationarityWorkOutput::RestDecision(decision) = self.output else {
             return Err(VelocityMeasurementError::ArithmeticOverflow);
         };
-        let selected_index = usize::try_from(decision.selected_mask.trailing_zeros())
-            .map_err(|_| VelocityMeasurementError::ArithmeticOverflow)?;
-        if selected.suffix_len != decision.selected_suffix_len
-            || decision.intervals_q.get(selected_index).copied() != Some(interval_q)
+        let witness_index =
+            if decision.disposition == RestSelectionDisposition::StatisticalAcceptance {
+                usize::try_from(decision.selected_mask.trailing_zeros())
+                    .map_err(|_| VelocityMeasurementError::ArithmeticOverflow)?
+            } else if decision.disposition == RestSelectionDisposition::Rejected
+                && decision.structural_codes[0] == RestStructuralCode::Usable
+            {
+                0
+            } else {
+                return Err(VelocityMeasurementError::ArithmeticOverflow);
+            };
+        if selected.suffix_len != VELOCITY_SUFFIX_LENGTHS[witness_index]
+            || decision.intervals_q.get(witness_index).copied() != Some(interval_q)
         {
             return Err(VelocityMeasurementError::ArithmeticOverflow);
         }
@@ -1026,7 +1048,9 @@ impl StationarityWork {
         Ok(StationarityWorkPoll::RestComplete(
             RestSelectionCompletion {
                 selected: Some(selected),
-                exact_velocity_interval_q: Some(interval_q),
+                exact_velocity_interval_q: (decision.disposition
+                    == RestSelectionDisposition::StatisticalAcceptance)
+                    .then_some(interval_q),
                 disposition: decision.disposition,
                 recent_structural_code: decision.structural_codes[0],
             },

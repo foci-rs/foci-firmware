@@ -9,8 +9,9 @@ use super::integral_sweep::{
     integral_recovery_rest_schedule, integral_rung_count, integral_rung_kind,
     integral_slot_direction, integral_target_rpm_at, matrix_rung_mean,
     opening_recovery_lower_rate_q, positive_directional_floors_exist,
-    record_integral_recovery_rest, record_integral_recovery_rest_selection,
-    record_integral_target_if_reached, step_velocity_integral_with_trace, store_matrix_rung_mean,
+    record_integral_observation_rest_selection, record_integral_recovery_rest,
+    record_integral_recovery_rest_selection, record_integral_target_if_reached,
+    step_velocity_integral_with_trace, store_matrix_rung_mean,
 };
 use super::recovery::{
     ExactU64Parts, RecoveryBindingSource, RecoveryCurrentContactPolicy, RecoveryRestAnalysis,
@@ -39,7 +40,7 @@ use crate::commissioning::outer::{
     OuterMotionBudget, OuterPhase, OuterSafetyLimits, VelocityIntegralData, VelocityIntegralState,
 };
 use crate::commissioning::types::{
-    AcceptanceMatrixCause, AcceptanceMatrixEvent, AcceptanceMatrixOutcome,
+    AcceptanceMatrixCause, AcceptanceMatrixEvent, AcceptanceMatrixOutcome, RestSelectionOwner,
     RungOriginRecoveryEvidence, StepResult, VelocityIntegralEvent, VelocityIntegralOutcome,
 };
 use foci_tmc4671::pid::{PidGainPair, PidIGain, PidPGain};
@@ -292,6 +293,16 @@ fn completed_rest_selection() -> RestSelectionDecision {
     }
 }
 
+fn reset_scored_rest(data: &mut VelocityIntegralData) {
+    data.analysis.reset_for_scored_rest(
+        data.settle_min_displacement_counts >= -1
+            && data.settle_max_displacement_counts <= 1
+            && i16::from(data.settle_max_displacement_counts)
+                - i16::from(data.settle_min_displacement_counts)
+                <= 1,
+    );
+}
+
 fn completed_recovery_report() -> RungOriginRecoveryReport {
     RungOriginRecoveryReport {
         stage: RecoveryStage::Integral,
@@ -310,6 +321,62 @@ fn completed_recovery_report() -> RungOriginRecoveryReport {
         binding_source: RecoveryBindingSource::SettledRate,
         outcome: RungOriginRecoveryOutcome::Recovered,
     }
+}
+
+#[test]
+fn live_stage_c_schedule_records_one_selector_per_observation() {
+    let mut live_plan = plan();
+    live_plan.combined_workflow = true;
+    live_plan.positive_rung_count = 13;
+    live_plan.recovery_slot_count = 15;
+    let mut data = VelocityIntegralData::new(31, live_plan);
+    let decision = completed_rest_selection();
+    let mut emitted = 0_u16;
+
+    for rung_index in 0..15 {
+        for slot in 0..INTEGRAL_SLOT_COUNT {
+            data.rung_index = rung_index;
+            data.slot = slot;
+            let owner = if rung_index == 0 || rung_index == 14 {
+                RestSelectionOwner::StageCAnchor
+            } else {
+                RestSelectionOwner::StageCPositiveObservation
+            };
+            let StepResult::VelocityIntegralEvent(VelocityIntegralEvent::RestSelection(report)) =
+                record_integral_observation_rest_selection(&mut data, decision, owner)
+            else {
+                panic!("every ordinary Stage-C rest decision must emit Event 151");
+            };
+            emitted += 1;
+            assert_eq!(report.evidence_sequence, emitted);
+            assert_eq!(report.owner, owner);
+            assert_eq!(report.rung_index, rung_index);
+            assert_eq!(report.direction, slot % 2);
+            assert_eq!(report.slot, slot);
+        }
+    }
+
+    assert_eq!(live_plan.recovery_slot_count, 15);
+    assert_eq!(emitted, 120);
+    assert_eq!(data.integrity.next_evidence_sequence(), 121);
+
+    for rung_index in 0..live_plan.recovery_slot_count {
+        let StepResult::VelocityIntegralEvent(VelocityIntegralEvent::RestSelection(report)) =
+            record_integral_recovery_rest_selection(
+                &mut data,
+                decision,
+                RecoveryStage::Integral,
+                rung_index,
+            )
+        else {
+            panic!("every completed Stage-C recovery rest decision must emit Event 151");
+        };
+        assert_eq!(report.evidence_sequence, 121 + u16::from(rung_index));
+        assert_eq!(report.owner, RestSelectionOwner::StageCRecovery);
+        assert_eq!(report.rung_index, rung_index);
+        assert_eq!([report.direction, report.slot], [u8::MAX; 2]);
+    }
+    assert_eq!(data.integrity.next_evidence_sequence(), 136);
 }
 
 #[test]
@@ -871,6 +938,30 @@ fn integral_recovery_containment_is_cause_five_before_the_bookend() {
 }
 
 #[test]
+fn completed_stage_c_recovery_rest_rejection_is_cause_53() {
+    let mut phase = phase();
+    let mut workspace = TransientBuffer::new();
+    let OuterPhase::VelocityIntegral { state, data, .. } = &mut phase else {
+        unreachable!()
+    };
+    data.rest_unconfirmed = true;
+    *state = VelocityIntegralState::Terminal;
+    let mut backend = MockBackend::new();
+
+    let StepResult::VelocityIntegralTerminal(terminal) =
+        step(&mut phase, &mut workspace, &mut backend)
+    else {
+        panic!("completed Stage-C recovery rest rejection must terminate");
+    };
+    assert_eq!(terminal.outcome, VelocityIntegralOutcome::Inconclusive);
+    assert_eq!(
+        terminal.cause,
+        CommissionError::VelocityRestNotConfirmed.status_code()
+    );
+    assert!(!terminal.recovery_unavailable);
+}
+
+#[test]
 fn partial_integral_current_terminus_does_not_schedule_a_bookend() {
     let mut phase = phase();
     let OuterPhase::VelocityIntegral { state, data, .. } = &mut phase else {
@@ -1173,18 +1264,24 @@ fn positive_i_rest_rejection_enters_cleanup_before_any_new_motion() {
     safety
         .configure_velocity_sweep_encoder_resolution(4_000)
         .unwrap();
+    reset_scored_rest(data);
     *state = VelocityIntegralState::AnalyzeSettle {
         analysis_deadline_us: 236_000,
     };
     let mut backend = MockBackend::new();
 
+    let mut saw_rest_selection = false;
     let event = loop {
         match step(&mut phase, &mut workspace, &mut backend) {
             StepResult::ReadyNow => {}
+            StepResult::VelocityIntegralEvent(VelocityIntegralEvent::RestSelection(_)) => {
+                saw_rest_selection = true;
+            }
             event => break event,
         }
     };
 
+    assert!(saw_rest_selection);
     assert!(matches!(
         event,
         StepResult::VelocityIntegralEvent(VelocityIntegralEvent::Current(_))
@@ -1386,21 +1483,24 @@ fn successful_cleanup_before_directional_floors_is_cause_nine() {
     safety
         .configure_velocity_sweep_encoder_resolution(4_000)
         .unwrap();
+    reset_scored_rest(data);
     *state = VelocityIntegralState::AnalyzePositiveIRestCleanup {
         analysis_deadline_us: 236_000,
     };
     let mut backend = MockBackend::new();
 
-    while matches!(
-        step(&mut phase, &mut workspace, &mut backend),
-        StepResult::ReadyNow
-    ) && !matches!(
+    while !matches!(
         phase,
         OuterPhase::VelocityIntegral {
             state: VelocityIntegralState::Terminal,
             ..
         }
-    ) {}
+    ) {
+        assert!(matches!(
+            step(&mut phase, &mut workspace, &mut backend),
+            StepResult::ReadyNow | StepResult::VelocityIntegralEvent(_)
+        ));
+    }
 
     let StepResult::VelocityIntegralTerminal(terminal) =
         step(&mut phase, &mut workspace, &mut backend)
@@ -1416,7 +1516,7 @@ fn successful_cleanup_before_directional_floors_is_cause_nine() {
 }
 
 #[test]
-fn failed_i_zero_cleanup_remains_a_fault() {
+fn completed_i_zero_cleanup_rejection_is_inconclusive_rest() {
     let mut phase = phase();
     let mut workspace = TransientBuffer::new();
     let OuterPhase::VelocityIntegral { state, data, .. } = &mut phase else {
@@ -1428,23 +1528,34 @@ fn failed_i_zero_cleanup_remains_a_fault() {
     for _ in 0..256 {
         data.observations.push(1, 1_000).unwrap();
     }
+    reset_scored_rest(data);
     *state = VelocityIntegralState::AnalyzePositiveIRestCleanup {
         analysis_deadline_us: 236_000,
     };
     let mut backend = MockBackend::new();
 
+    let mut diagnostic = None;
     let terminal = loop {
         match step(&mut phase, &mut workspace, &mut backend) {
             StepResult::ReadyNow => {}
+            StepResult::VelocityIntegralEvent(VelocityIntegralEvent::RestSelection(event)) => {
+                diagnostic = Some(event);
+            }
             StepResult::VelocityIntegralTerminal(terminal) => break terminal,
             other => panic!("unexpected cleanup result: {other:?}"),
         }
     };
 
-    assert_eq!(terminal.outcome, VelocityIntegralOutcome::Fault);
+    assert_eq!(
+        diagnostic
+            .expect("completed cleanup analysis must emit Event 151")
+            .owner,
+        RestSelectionOwner::StageCCleanup
+    );
+    assert_eq!(terminal.outcome, VelocityIntegralOutcome::Inconclusive);
     assert_eq!(
         terminal.cause,
-        CommissionError::VelocityValidationFailed.status_code()
+        CommissionError::VelocityRestNotConfirmed.status_code()
     );
 }
 
@@ -1471,20 +1582,29 @@ fn combined_anchor_and_bookend_unconfirmed_rest_use_dedicated_cause() {
         for _ in 0..256 {
             data.observations.push(1, 1_000).unwrap();
         }
+        reset_scored_rest(data);
         *state = VelocityIntegralState::AnalyzeSettle {
             analysis_deadline_us: 236_000,
         };
         let mut backend = MockBackend::new();
 
+        let mut diagnostic = None;
         let terminal = loop {
             match step(&mut phase, &mut workspace, &mut backend) {
                 StepResult::ReadyNow => {}
+                StepResult::VelocityIntegralEvent(VelocityIntegralEvent::RestSelection(event)) => {
+                    diagnostic = Some(event);
+                }
+                StepResult::VelocityIntegralEvent(VelocityIntegralEvent::Current(_)) => {}
                 StepResult::VelocityIntegralTerminal(terminal) => break terminal,
                 other => panic!("unexpected generic rest result: {other:?}"),
             }
         };
 
-        assert_eq!(terminal.outcome, VelocityIntegralOutcome::Fault);
+        let diagnostic = diagnostic.expect("completed Stage-C rest must emit Event 151");
+        assert_eq!(diagnostic.owner, RestSelectionOwner::StageCAnchor);
+        assert_eq!(diagnostic.slot, 0);
+        assert_eq!(terminal.outcome, VelocityIntegralOutcome::Inconclusive);
         assert_eq!(
             terminal.cause,
             CommissionError::VelocityRestNotConfirmed.status_code()
@@ -1510,20 +1630,32 @@ fn combined_positive_i_unconfirmed_rest_uses_dedicated_cause() {
     for _ in 0..256 {
         data.observations.push(1, 1_000).unwrap();
     }
+    reset_scored_rest(data);
     *state = VelocityIntegralState::AnalyzeSettle {
         analysis_deadline_us: 236_000,
     };
     let mut backend = MockBackend::new();
 
+    let mut diagnostic = None;
     let terminal = loop {
         match step(&mut phase, &mut workspace, &mut backend) {
             StepResult::ReadyNow => {}
+            StepResult::VelocityIntegralEvent(VelocityIntegralEvent::RestSelection(event)) => {
+                diagnostic = Some(event);
+            }
+            StepResult::VelocityIntegralEvent(VelocityIntegralEvent::Current(_)) => {}
             StepResult::VelocityIntegralTerminal(terminal) => break terminal,
             other => panic!("unexpected combined positive-I rest result: {other:?}"),
         }
     };
 
-    assert_eq!(terminal.outcome, VelocityIntegralOutcome::Fault);
+    let diagnostic = diagnostic.expect("completed positive-I rest must emit Event 151");
+    assert_eq!(
+        diagnostic.owner,
+        RestSelectionOwner::StageCPositiveObservation
+    );
+    assert_eq!(diagnostic.rung_index, 3);
+    assert_eq!(terminal.outcome, VelocityIntegralOutcome::Inconclusive);
     assert_eq!(
         terminal.cause,
         CommissionError::VelocityRestNotConfirmed.status_code()
@@ -1551,18 +1683,24 @@ fn current_headroom_precedes_positive_i_rest_boundary_classification() {
     for _ in 0..256 {
         data.observations.push(1, 1_000).unwrap();
     }
+    reset_scored_rest(data);
     *state = VelocityIntegralState::AnalyzeSettle {
         analysis_deadline_us: 236_000,
     };
     let mut backend = MockBackend::new();
 
+    let mut saw_rest_selection = false;
     let event = loop {
         match step(&mut phase, &mut workspace, &mut backend) {
             StepResult::ReadyNow => {}
+            StepResult::VelocityIntegralEvent(VelocityIntegralEvent::RestSelection(_)) => {
+                saw_rest_selection = true;
+            }
             event => break event,
         }
     };
 
+    assert!(saw_rest_selection);
     assert!(matches!(
         event,
         StepResult::VelocityIntegralEvent(VelocityIntegralEvent::Current(_))
@@ -1594,21 +1732,24 @@ fn successful_post_floor_cleanup_restores_origin_before_the_bookend() {
     safety
         .configure_velocity_sweep_encoder_resolution(4_000)
         .unwrap();
+    reset_scored_rest(data);
     *state = VelocityIntegralState::AnalyzePositiveIRestCleanup {
         analysis_deadline_us: 236_000,
     };
     let mut backend = MockBackend::new();
 
-    while matches!(
-        step(&mut phase, &mut workspace, &mut backend),
-        StepResult::ReadyNow
-    ) && !matches!(
+    while !matches!(
         phase,
         OuterPhase::VelocityIntegral {
             state: VelocityIntegralState::RecoverRung(_),
             ..
         }
-    ) {}
+    ) {
+        assert!(matches!(
+            step(&mut phase, &mut workspace, &mut backend),
+            StepResult::ReadyNow | StepResult::VelocityIntegralEvent(_)
+        ));
+    }
 
     let OuterPhase::VelocityIntegral { state, data, .. } = &mut phase else {
         unreachable!()

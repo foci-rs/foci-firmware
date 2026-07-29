@@ -151,7 +151,7 @@ fn signed_deficit_target_uses_the_conservative_directional_endpoints() {
 #[test]
 fn combined_geometry_appends_the_exact_cap_without_changing_history() {
     assert_eq!(COMBINED_STAGE_B_SCHEMA_REVISION, 13);
-    assert_eq!(COMBINED_STAGE_C_SCHEMA_REVISION, 11);
+    assert_eq!(COMBINED_STAGE_C_SCHEMA_REVISION, 12);
     assert_eq!(STAGE_C_EVIDENCE_SCHEMA_REVISION, 7);
     assert_eq!(StageCPlanShape::CombinedPThenI as u8, 3);
 
@@ -310,6 +310,7 @@ fn combined_stage_c_plan_uses_only_the_live_selected_response() {
     assert_eq!(plan.recovery_nominal_slot_us, 2_316_958);
     assert_eq!(plan.nominal_workflow_ms, 187_651);
     assert_eq!(plan.maximum_workflow_ms, 197_896);
+    assert_eq!(plan.digest(), 0xd139_bec9_9d0c_f017);
 }
 
 #[test]

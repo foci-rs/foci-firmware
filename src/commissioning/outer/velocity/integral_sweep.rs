@@ -1,7 +1,8 @@
 //! Cooperative fixed-P Stage-C velocity-integral acquisition.
 
 use crate::autotune::velocity_measurement::{
-    StationarityResult, VelocityDirection, estimate_confidence,
+    RestStructuralCode, StationarityExclusion, StationarityResult, VelocityDirection,
+    estimate_confidence,
 };
 use crate::autotune::{CommissionError, TmcMechanicalRpm, TransientBuffer};
 use crate::commissioning::backend::CommissioningBackend;
@@ -57,7 +58,8 @@ use super::recovery::{
 };
 use super::sweep::clear_velocity_integrator;
 use super::sweep_analysis::{
-    deficit_interval_q, poll_settle_confirmation_parts, poll_stationarity,
+    ScoredRestPoll, bounded_rest_displacement, deficit_interval_q, poll_scored_rest_confirmation,
+    poll_stationarity,
 };
 use super::sweep_evidence::{
     VelocityObservationClass, VelocityObservationInput, VelocityObservationSummary,
@@ -856,6 +858,42 @@ pub(super) fn record_integral_recovery_rest_selection(
     }
 }
 
+pub(super) fn record_integral_observation_rest_selection(
+    data: &mut VelocityIntegralData,
+    decision: crate::autotune::velocity_measurement::RestSelectionDecision,
+    owner: RestSelectionOwner,
+) -> StepResult {
+    let diagnostic = RestSelectionDiagnostic {
+        intervals_q: decision.intervals_q,
+        plan_digest: data.plan.plan_digest,
+        run_sequence: data.integrity.run_sequence(),
+        evidence_sequence: data.integrity.next_evidence_sequence(),
+        selected_suffix_len: decision.selected_suffix_len,
+        structural_codes: decision.structural_codes,
+        interval_present_mask: decision.interval_present_mask,
+        usable_mask: decision.usable_mask,
+        zero_compatible_mask: decision.zero_compatible_mask,
+        selected_mask: decision.selected_mask,
+        stage: RecoveryStage::Integral,
+        owner,
+        rung_index: data.rung_index,
+        direction: data.slot % 2,
+        slot: data.slot,
+        disposition: decision.disposition,
+    };
+    if is_acceptance_matrix(data.plan) {
+        let event = data
+            .integrity
+            .record_acceptance(AcceptanceMatrixEvent::RestSelection(diagnostic));
+        StepResult::AcceptanceMatrixEvent(event)
+    } else {
+        let event = data
+            .integrity
+            .record(VelocityIntegralEvent::RestSelection(diagnostic));
+        StepResult::VelocityIntegralEvent(event)
+    }
+}
+
 fn materialize_run_evidence(
     data: &VelocityIntegralData,
     workspace: &TransientBuffer,
@@ -1093,6 +1131,15 @@ fn evidence_terminal(data: &VelocityIntegralData, workspace: &TransientBuffer) -
             );
         }
     };
+    if data.rest_unconfirmed {
+        return terminal_from_data(
+            data,
+            evidence,
+            VelocityIntegralOutcome::Inconclusive,
+            CommissionError::VelocityRestNotConfirmed.status_code(),
+            None,
+        );
+    }
     if data.recovery_failure {
         return terminal_from_data(
             data,
@@ -1826,7 +1873,11 @@ pub(crate) async fn step_velocity_integral_with_trace<B: CommissioningBackend>(
                 else {
                     return fail_integral(phase, backend, CommissionError::InvalidSchedule).await;
                 };
-                data.analysis.reset();
+                data.analysis
+                    .reset_for_scored_rest(bounded_rest_displacement(
+                        data.settle_min_displacement_counts,
+                        data.settle_max_displacement_counts,
+                    ));
                 *state = VelocityIntegralState::AnalyzeSettle {
                     analysis_deadline_us,
                 };
@@ -1851,15 +1902,25 @@ pub(crate) async fn step_velocity_integral_with_trace<B: CommissioningBackend>(
             if backend.elapsed_us() >= *analysis_deadline_us {
                 return fail_integral(phase, backend, CommissionError::AnalysisOverrun).await;
             }
-            let settle_result = match poll_settle_confirmation_parts(
+            let settle_result = match poll_scored_rest_confirmation(
                 &mut data.analysis,
                 &data.observations,
                 &mut data.blocker,
-                data.settle_min_displacement_counts,
-                data.settle_max_displacement_counts,
             ) {
-                Ok(Some(result)) => result,
-                Ok(None) => return StepResult::ReadyNow,
+                Ok(ScoredRestPoll::Pending) => return StepResult::ReadyNow,
+                Ok(ScoredRestPoll::Diagnostic(decision)) => {
+                    let owner = match integral_rung_kind(data.plan, data.rung_index) {
+                        IntegralRungKind::OpeningAnchor | IntegralRungKind::ClosingBookend => {
+                            RestSelectionOwner::StageCAnchor
+                        }
+                        IntegralRungKind::Positive => RestSelectionOwner::StageCPositiveObservation,
+                        IntegralRungKind::AcceptanceAmplitude => {
+                            RestSelectionOwner::MatrixObservation
+                        }
+                    };
+                    return record_integral_observation_rest_selection(data, decision, owner);
+                }
+                Ok(ScoredRestPoll::Complete(result)) => result,
                 Err(error) => return fail_integral(phase, backend, error).await,
             };
             if let Err(error) =
@@ -1889,20 +1950,48 @@ pub(crate) async fn step_velocity_integral_with_trace<B: CommissioningBackend>(
                     IntegralRungKind::Positive
                 )
             {
+                let active_stationarity = match settle_result.selected {
+                    Some(suffix) => StationarityResult::Usable(suffix),
+                    None => {
+                        StationarityResult::Excluded(match settle_result.recent_structural_code {
+                            RestStructuralCode::NoBlockingPlateau => {
+                                StationarityExclusion::NoBlockingPlateau
+                            }
+                            RestStructuralCode::TooFewDecorrelatedBlocks => {
+                                StationarityExclusion::TooFewDecorrelatedBlocks
+                            }
+                            RestStructuralCode::ResolvedSlope => {
+                                StationarityExclusion::ResolvedSlope
+                            }
+                            RestStructuralCode::StructuredResidual => {
+                                StationarityExclusion::StructuredResidual
+                            }
+                            RestStructuralCode::Usable | RestStructuralCode::Arithmetic => {
+                                return fail_integral(
+                                    phase,
+                                    backend,
+                                    CommissionError::VelocityValidationFailed,
+                                )
+                                .await;
+                            }
+                        })
+                    }
+                };
                 data.positive_i_rest_boundary = Some(PositiveIRestBoundary {
                     rung_index: data.rung_index,
                     slot: data.slot,
                     i_raw: integral_i_at(data.plan, data.rung_index).unwrap_or(0),
                     direction: integral_slot_direction(data.slot).unwrap_or(0) as i8,
-                    active_stationarity: settle_result.stationarity,
+                    active_stationarity,
                     active_settle: data.settle_metrics,
                     zero_phase_current: current_evidence,
                     cleanup_confirmed: false,
                 });
                 *state = VelocityIntegralState::BeginPositiveIRestCleanup;
             } else if !settle_result.confirmed_rest && !data.observation_current_headroom {
-                return fail_integral(phase, backend, CommissionError::VelocityRestNotConfirmed)
-                    .await;
+                safety.end_primitive();
+                data.rest_unconfirmed = true;
+                *state = VelocityIntegralState::Terminal;
             } else {
                 safety.end_primitive();
             }
@@ -2092,7 +2181,11 @@ pub(crate) async fn step_velocity_integral_with_trace<B: CommissioningBackend>(
                 else {
                     return fail_integral(phase, backend, CommissionError::InvalidSchedule).await;
                 };
-                data.analysis.reset();
+                data.analysis
+                    .reset_for_scored_rest(bounded_rest_displacement(
+                        data.settle_min_displacement_counts,
+                        data.settle_max_displacement_counts,
+                    ));
                 *state = VelocityIntegralState::AnalyzePositiveIRestCleanup {
                     analysis_deadline_us,
                 };
@@ -2117,25 +2210,26 @@ pub(crate) async fn step_velocity_integral_with_trace<B: CommissioningBackend>(
             if backend.elapsed_us() >= *analysis_deadline_us {
                 return fail_integral(phase, backend, CommissionError::AnalysisOverrun).await;
             }
-            let cleanup = match poll_settle_confirmation_parts(
+            let cleanup = match poll_scored_rest_confirmation(
                 &mut data.analysis,
                 &data.observations,
                 &mut data.blocker,
-                data.settle_min_displacement_counts,
-                data.settle_max_displacement_counts,
             ) {
-                Ok(Some(result)) => result,
-                Ok(None) => return StepResult::ReadyNow,
+                Ok(ScoredRestPoll::Pending) => return StepResult::ReadyNow,
+                Ok(ScoredRestPoll::Diagnostic(decision)) => {
+                    return record_integral_observation_rest_selection(
+                        data,
+                        decision,
+                        RestSelectionOwner::StageCCleanup,
+                    );
+                }
+                Ok(ScoredRestPoll::Complete(result)) => result,
                 Err(error) => return fail_integral(phase, backend, error).await,
             };
             let Some(boundary) = data.positive_i_rest_boundary.as_mut() else {
                 return fail_integral(phase, backend, CommissionError::InvalidSchedule).await;
             };
             boundary.cleanup_confirmed = cleanup.confirmed_rest;
-            if !cleanup.confirmed_rest {
-                return fail_integral(phase, backend, CommissionError::VelocityValidationFailed)
-                    .await;
-            }
             if let Err(error) =
                 finish_velocity_current_zero_phase(&mut data.current_observer, backend).await
             {
@@ -2157,6 +2251,11 @@ pub(crate) async fn step_velocity_integral_with_trace<B: CommissioningBackend>(
             data.analysis.reset();
             data.observations.clear();
             safety.end_primitive();
+            if !cleanup.confirmed_rest {
+                data.rest_unconfirmed = true;
+                *state = VelocityIntegralState::Terminal;
+                return StepResult::ReadyNow;
+            }
             data.positive_i_rest_boundary_after_sufficiency =
                 positive_directional_floors_exist(data);
             if data.positive_i_rest_boundary_after_sufficiency || data.plan.combined_workflow {
@@ -2297,7 +2396,9 @@ pub(crate) async fn step_velocity_integral_with_trace<B: CommissioningBackend>(
                     StepResult::ReadyNow
                 }
                 RungOriginRecoveryStep::RestUnconfirmed => {
-                    fail_integral(phase, backend, CommissionError::VelocityRestNotConfirmed).await
+                    data.rest_unconfirmed = true;
+                    *state = VelocityIntegralState::Terminal;
+                    StepResult::ReadyNow
                 }
                 RungOriginRecoveryStep::Fault {
                     error: _,

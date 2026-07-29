@@ -29,6 +29,7 @@ pub(super) struct MovingObservationAnalysis {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)]
 pub(super) struct LegacySettleConfirmation {
     pub(super) stationarity: StationarityResult,
     pub(super) confirmed_rest: bool,
@@ -284,7 +285,12 @@ pub(super) fn poll_scored_rest_confirmation<const LEVELS: usize>(
         StationarityWorkPoll::Pending => Ok(ScoredRestPoll::Pending),
         StationarityWorkPoll::RestDiagnostic(decision) => Ok(ScoredRestPoll::Diagnostic(decision)),
         StationarityWorkPoll::RestComplete(result) => {
-            let selected_suffix_len = result.selected.map_or(0, |suffix| suffix.suffix_len);
+            let selected_suffix_len =
+                if result.disposition == RestSelectionDisposition::StatisticalAcceptance {
+                    result.selected.map_or(0, |suffix| suffix.suffix_len)
+                } else {
+                    0
+                };
             Ok(ScoredRestPoll::Complete(SettleConfirmation {
                 selected: result.selected,
                 confirmed_rest: result.disposition != RestSelectionDisposition::Rejected,
@@ -299,6 +305,7 @@ pub(super) fn poll_scored_rest_confirmation<const LEVELS: usize>(
     }
 }
 
+#[allow(dead_code)]
 pub(super) fn poll_settle_confirmation_parts<const LEVELS: usize>(
     analysis: &mut StationarityWork,
     observations: &impl VelocityObservationSource,

@@ -166,7 +166,10 @@ fn combined_target_reached_installs_an_acceptance_point_after_restoration() {
             panic!("combined transition must reuse the integral continuation reply");
         };
         assert_eq!(stage_b_reproduction, None);
-        assert_eq!(stage_c_plan.schema_revision, 11);
+        assert_eq!(
+            stage_c_plan.schema_revision,
+            crate::commissioning::outer::velocity::combined_plan::COMBINED_STAGE_C_SCHEMA_REVISION
+        );
         assert_eq!(stage_c_plan.final_p, 1_024);
         assert_eq!(
             stage_c_plan.combined_selected_response,
@@ -223,7 +226,10 @@ fn combined_target_reached_installs_an_acceptance_point_after_restoration() {
             .acceptance_point()
             .expect("TargetReached must retain the exact operating point");
         assert_eq!(point.identity.channel, CHANNEL);
-        assert_eq!(point.identity.schema_revision, 11);
+        assert_eq!(
+            point.identity.schema_revision,
+            crate::commissioning::outer::velocity::combined_plan::COMBINED_STAGE_C_SCHEMA_REVISION
+        );
         assert_eq!(point.identity.plan_digest, stage_c_plan.digest());
         assert_eq!(point.selected_p, 1_024);
         assert_eq!(point.selected_i, 1_024);
@@ -729,6 +735,33 @@ fn inconclusive_preserves_authority_while_fault_clears_it() {
     );
     assert_eq!(fault.terminal.outcome, VelocityIntegralOutcome::Fault);
     assert_eq!(slot.state(), StageCSlotState::Empty);
+}
+
+#[test]
+fn inconclusive_rest_discards_candidate_but_retains_stage_b_authority() {
+    let mut slot = StageCCandidateSlot::new();
+    slot.install_authority(retained_authority());
+    apply_stage_c_terminal(
+        terminal(
+            VelocityIntegralOutcome::CompleteCandidate,
+            sufficient_evidence(0),
+        ),
+        &mut slot,
+    );
+
+    let mut rest_terminal = terminal(VelocityIntegralOutcome::Inconclusive, empty_evidence());
+    rest_terminal.cause = crate::autotune::CommissionError::VelocityRestNotConfirmed.status_code();
+    let dispatch = apply_stage_c_terminal(rest_terminal, &mut slot);
+
+    assert_eq!(
+        dispatch.terminal.outcome,
+        VelocityIntegralOutcome::Inconclusive
+    );
+    assert_eq!(
+        dispatch.terminal.cause,
+        crate::autotune::CommissionError::VelocityRestNotConfirmed.status_code()
+    );
+    assert_eq!(slot.state(), StageCSlotState::AuthorityOnly);
 }
 
 #[test]

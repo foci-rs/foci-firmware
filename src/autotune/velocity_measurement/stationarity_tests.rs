@@ -456,7 +456,7 @@ fn cooperative_rest_work_emits_one_diagnostic_then_reconstructs_its_witness() {
 }
 
 #[test]
-fn scored_rest_fallback_and_rejection_do_not_reconstruct_a_witness() {
+fn scored_rest_rejection_retains_only_its_recent_structural_witness() {
     let samples = observations::<256>(|_| 1);
 
     for (fallback, expected) in [
@@ -483,7 +483,11 @@ fn scored_rest_fallback_and_rejection_do_not_reconstruct_a_witness() {
                 StationarityWorkPoll::RestComplete(result) => {
                     assert!(saw_diagnostic);
                     assert_eq!(result.disposition, expected);
-                    assert_eq!(result.selected, None);
+                    if expected == RestSelectionDisposition::Rejected {
+                        assert_eq!(result.selected.map(|suffix| suffix.suffix_len), Some(64));
+                    } else {
+                        assert_eq!(result.selected, None);
+                    }
                     assert_eq!(result.exact_velocity_interval_q, None);
                     assert_eq!(
                         result.recent_structural_code,
