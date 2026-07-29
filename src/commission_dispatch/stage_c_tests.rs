@@ -777,6 +777,8 @@ fn same_channel_calibration_preserves_stage_c_and_other_channel_clears_it() {
 
 fn outer_params() -> crate::commissioning::OuterTuneParams {
     crate::commissioning::OuterTuneParams {
+        slot_order:
+            crate::commissioning::outer::velocity::integral_plan::IntegralSlotOrder::ForwardFirst,
         profile: crate::autotune::CommissionProfile::Balanced,
         mode: crate::autotune::OperatingMode::Nominal,
         inner_lambda_us: 100,

@@ -759,7 +759,8 @@ where
             };
             #[cfg(feature = "trace-velocity-sweep")]
             let tune_route = match autotune_action {
-                crate::tmc::AutotuneAction::Combined => {
+                crate::tmc::AutotuneAction::Combined
+                | crate::tmc::AutotuneAction::CombinedMirrored => {
                     use crate::commissioning::outer::velocity::integral_reproduction::StageCSlotState;
 
                     let stage_c_blocks_replacement = match stage_c_candidate.state() {
@@ -956,6 +957,7 @@ where
                 }
             };
             let outer_params = OuterTuneParams {
+                slot_order: req.autotune_action.slot_order(),
                 profile: CommissionProfile::from_u8(profile),
                 mode: OperatingMode::from_u8(mode),
                 inner_lambda_us,

@@ -1736,6 +1736,8 @@ fn sample_entry_snapshot() -> crate::commissioning::EntrySnapshot {
 
 fn sample_outer_params() -> crate::commissioning::OuterTuneParams {
     crate::commissioning::OuterTuneParams {
+        slot_order:
+            crate::commissioning::outer::velocity::integral_plan::IntegralSlotOrder::ForwardFirst,
         profile: CommissionProfile::Balanced,
         mode: crate::autotune::OperatingMode::Nominal,
         inner_lambda_us: 100,

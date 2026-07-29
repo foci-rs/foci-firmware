@@ -158,8 +158,43 @@ fn action_codes_and_invalid_values_are_exact() {
     assert_eq!(AutotuneAction::MatrixDescending as u8, 2);
     assert_eq!(AutotuneAction::MatrixAscendingMirrored as u8, 3);
     assert_eq!(AutotuneAction::MatrixDescendingMirrored as u8, 4);
+    assert_eq!(AutotuneAction::CombinedMirrored as u8, 5);
     assert_eq!(AutotuneAction::from_u8(0), Some(AutotuneAction::Combined));
-    assert_eq!(AutotuneAction::from_u8(5), None);
+    assert_eq!(
+        AutotuneAction::from_u8(5),
+        Some(AutotuneAction::CombinedMirrored)
+    );
+    assert_eq!(AutotuneAction::from_u8(6), None);
+
+    // Slot order is defined for every acquisition, including combined runs.
+    for (action, slot_order) in [
+        (AutotuneAction::Combined, IntegralSlotOrder::ForwardFirst),
+        (
+            AutotuneAction::MatrixAscending,
+            IntegralSlotOrder::ForwardFirst,
+        ),
+        (
+            AutotuneAction::MatrixDescending,
+            IntegralSlotOrder::ForwardFirst,
+        ),
+        (
+            AutotuneAction::CombinedMirrored,
+            IntegralSlotOrder::ReverseFirst,
+        ),
+        (
+            AutotuneAction::MatrixAscendingMirrored,
+            IntegralSlotOrder::ReverseFirst,
+        ),
+        (
+            AutotuneAction::MatrixDescendingMirrored,
+            IntegralSlotOrder::ReverseFirst,
+        ),
+    ] {
+        assert_eq!(action.slot_order(), slot_order, "{action:?}");
+    }
+    // A mirrored combined run is not a matrix acquisition.
+    assert_eq!(AutotuneAction::CombinedMirrored.matrix_order(), None);
+    assert_eq!(AutotuneAction::CombinedMirrored.matrix_slot_order(), None);
 
     // Amplitude order and slot order are independent dimensions of one action.
     for (action, order, slot_order) in [

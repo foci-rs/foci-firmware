@@ -105,6 +105,8 @@ pub struct OuterTuneParams {
     pub positive_position_headroom_mrev: u32,
     /// Host-computed max primitive duration in milliseconds.
     pub max_duration_ms: u16,
+    /// Requested execution order of the forward and reverse observation slots.
+    pub slot_order: crate::commissioning::outer::velocity::integral_plan::IntegralSlotOrder,
 }
 
 /// Snapshot of outer gains at Stage 2 entry, for soft-failure restoration.
@@ -252,6 +254,11 @@ pub struct CommissioningEngine {
     diagnostics: crate::selftest::CommissionDiagnostics,
     trace_run: TraceRunState,
     trace_summary_seqs: TraceSummarySeqs,
+    /// Requested observation slot order, applied when Stage C is planned.
+    ///
+    /// Only the trace-gated Stage-C continuation reads this.
+    #[cfg_attr(not(feature = "trace-velocity-sweep"), allow(dead_code))]
+    requested_slot_order: crate::commissioning::outer::velocity::integral_plan::IntegralSlotOrder,
 }
 
 impl CommissioningEngine {
@@ -330,6 +337,8 @@ impl CommissioningEngine {
             diagnostics: crate::selftest::CommissionDiagnostics::default(),
             trace_run: TraceRunState::new(trace_engine_seq),
             trace_summary_seqs: TraceSummarySeqs::new(),
+            requested_slot_order:
+                crate::commissioning::outer::velocity::integral_plan::IntegralSlotOrder::ForwardFirst,
         }
     }
 
@@ -377,6 +386,8 @@ impl CommissioningEngine {
             diagnostics: crate::selftest::CommissionDiagnostics::default(),
             trace_run: TraceRunState::new(trace_engine_seq),
             trace_summary_seqs: TraceSummarySeqs::new(),
+            requested_slot_order:
+                crate::commissioning::outer::velocity::integral_plan::IntegralSlotOrder::ForwardFirst,
         }
     }
 
@@ -434,6 +445,8 @@ impl CommissioningEngine {
             diagnostics: crate::selftest::CommissionDiagnostics::default(),
             trace_run: TraceRunState::new(trace_engine_seq),
             trace_summary_seqs: TraceSummarySeqs::new(),
+            requested_slot_order:
+                crate::commissioning::outer::velocity::integral_plan::IntegralSlotOrder::ForwardFirst,
         }
     }
 
@@ -493,6 +506,7 @@ impl CommissioningEngine {
             requested_velocity_mrev_s,
             machine_velocity_ceiling_mrev_s,
             requested_velocity_source,
+            slot_order: requested_slot_order,
             max_stroke_travel_mrev,
             settle_travel_reserve_mrev,
             negative_position_headroom_mrev,
@@ -541,6 +555,7 @@ impl CommissioningEngine {
             diagnostics: crate::selftest::CommissionDiagnostics::default(),
             trace_run: TraceRunState::new(trace_engine_seq),
             trace_summary_seqs: TraceSummarySeqs::new(),
+            requested_slot_order,
         }
     }
 
@@ -620,6 +635,7 @@ impl CommissioningEngine {
         let VelocitySweepEvidenceState::ResponseSelected(selected) = data.evidence else {
             return Err(VelocityIntegralPlanError::MissingAuthority);
         };
+        let slot_order = self.requested_slot_order;
         let counts_per_rev = self
             .tmc_state
             .encoder_counts_per_rev()
@@ -631,6 +647,10 @@ impl CommissioningEngine {
             pwm_hz,
             counts_per_rev,
         )
+        .map(|mut plan| {
+            plan.slot_order = slot_order;
+            plan
+        })
     }
 
     /// Whether the active terminal belongs to the nonretained combined Stage-B schema.
@@ -1883,6 +1903,8 @@ mod tests {
 
     fn sample_outer_params() -> OuterTuneParams {
         OuterTuneParams {
+            slot_order:
+                crate::commissioning::outer::velocity::integral_plan::IntegralSlotOrder::ForwardFirst,
             profile: crate::autotune::CommissionProfile::Balanced,
             mode: crate::autotune::OperatingMode::Nominal,
             inner_lambda_us: 100,

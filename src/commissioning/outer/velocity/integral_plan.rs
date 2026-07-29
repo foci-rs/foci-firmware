@@ -281,6 +281,8 @@ pub struct VelocityIntegralPlan {
     pub probe_constrained_test_point: bool,
     /// Complete motion/travel request retained for plan identity.
     pub motion_request: VelocitySweepRequest,
+    /// Execution order of the forward and reverse observation slots.
+    pub slot_order: IntegralSlotOrder,
 }
 
 impl VelocityIntegralPlan {
@@ -366,6 +368,12 @@ impl VelocityIntegralPlan {
         hash_value!(self.motion_request.negative_position_headroom_mrev);
         hash_value!(self.motion_request.positive_position_headroom_mrev);
         hash_value!(self.motion_request.max_duration_ms);
+        // Hashed only when mirrored. Forward-first is the historical order, so
+        // omitting it keeps every archived plan digest and retained
+        // acceptance-point binding valid without a Stage-C schema bump.
+        if !matches!(self.slot_order, IntegralSlotOrder::ForwardFirst) {
+            hash_value!(self.slot_order.report_code());
+        }
         hash
     }
 
@@ -383,7 +391,7 @@ impl VelocityIntegralPlan {
             })
             .unwrap_or([[0; 2]; 2]);
         VelocityIntegralExecutionPlan {
-            slot_order: IntegralSlotOrder::ForwardFirst,
+            slot_order: self.slot_order,
             plan_digest: self.digest(),
             final_p: self.final_p,
             planned_velocity_mrev_s: self.planned_velocity_mrev_s,
@@ -1089,6 +1097,7 @@ fn plan_velocity_integral_response_from_source(
     )?;
 
     Ok(VelocityIntegralPlan {
+        slot_order: IntegralSlotOrder::ForwardFirst,
         build_revision: STAGE_B_BUILD_REVISION,
         schema_revision: source.schema_revision,
         authority: source.authority,

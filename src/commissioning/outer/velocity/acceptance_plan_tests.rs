@@ -8,6 +8,7 @@ use super::combined_plan::select_proportional_response;
 use super::integral_plan::{
     IntegralSlotOrder, VelocityIntegralAcquisitionKind, plan_combined_velocity_integral_response,
 };
+use super::integral_reporting::plan_recovery_flags;
 use super::integral_reproduction::{AcceptanceMatrixProgress, AcceptancePoint, StageCPlanIdentity};
 use super::operating_region::{BoundRounding, CompactSignedRate};
 use super::reproduction::STAGE_B_BUILD_REVISION;
@@ -426,5 +427,59 @@ fn slot_order_separates_the_matrix_plan_digest() {
     assert_eq!(
         reverse_first.execution_plan().slot_order,
         IntegralSlotOrder::ReverseFirst
+    );
+}
+
+/// A mirrored combined run must be requestable and must record that it was one.
+///
+/// Stage C carries the same forward/reverse tail-position confound as the matrix
+/// but is not lifecycle-limited, so it is where the mirrored order is measured.
+#[test]
+fn mirrored_combined_plans_are_distinguishable_without_a_schema_change() {
+    let forward_first = combined_plan();
+    let mut reverse_first = forward_first;
+    reverse_first.slot_order = IntegralSlotOrder::ReverseFirst;
+
+    assert_eq!(forward_first.slot_order, IntegralSlotOrder::ForwardFirst);
+    assert_ne!(
+        forward_first.digest(),
+        reverse_first.digest(),
+        "slot order must separate the plan identity"
+    );
+    assert_eq!(
+        forward_first.execution_plan().slot_order,
+        IntegralSlotOrder::ForwardFirst
+    );
+    assert_eq!(
+        reverse_first.execution_plan().slot_order,
+        IntegralSlotOrder::ReverseFirst
+    );
+    // The plan flags byte reports it, so the capture self-describes without
+    // growing the record or bumping the Stage-C schema.
+    assert_eq!(plan_recovery_flags(&forward_first) & 0b100, 0);
+    assert_eq!(plan_recovery_flags(&reverse_first) & 0b100, 0b100);
+    // Bits 0 and 1 keep their established meaning.
+    assert_eq!(
+        plan_recovery_flags(&forward_first) & 0b011,
+        plan_recovery_flags(&reverse_first) & 0b011
+    );
+}
+
+/// Forward-first must hash exactly as it did before slot order was recorded.
+///
+/// Hashing the order only when mirrored keeps every existing Stage-C plan digest,
+/// retained acceptance-point binding, and archived capture valid. A schema bump
+/// would have cascaded into the host cross-check for a diagnostic-only field.
+#[test]
+fn forward_first_leaves_the_stage_c_plan_digest_untouched() {
+    let plan = combined_plan();
+    let mut explicit = plan;
+    explicit.slot_order = IntegralSlotOrder::ForwardFirst;
+
+    assert_eq!(plan.digest(), explicit.digest());
+    assert_eq!(
+        plan.schema_revision,
+        super::combined_plan::COMBINED_STAGE_C_SCHEMA_REVISION,
+        "the schema must not move for a mirrored run"
     );
 }

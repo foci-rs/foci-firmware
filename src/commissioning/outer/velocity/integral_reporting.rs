@@ -23,6 +23,8 @@ use super::integral_plan::{VelocityIntegralExecutionPlan, VelocityIntegralPlan};
 const FNV1A64_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
 pub(crate) const PLAN_RECOVERY_QUANTIZATION_EXPOSED: u8 = 1 << 0;
 pub(crate) const PLAN_PROBE_CONSTRAINED_TEST_POINT: u8 = 1 << 1;
+/// The forward and reverse observation slots ran in mirrored order.
+pub(crate) const PLAN_MIRRORED_SLOT_ORDER: u8 = 1 << 2;
 pub(crate) const TERMINAL_RECOVERY_UNAVAILABLE: u8 = 1 << 0;
 pub(crate) const TERMINAL_RECOVERED_WITH_CURRENT_HEADROOM: u8 = 1 << 1;
 pub(crate) const TERMINAL_RECOVERY_QUANTIZATION_EXPOSED: u8 = 1 << 2;
@@ -79,6 +81,12 @@ pub(crate) const fn plan_recovery_flags(plan: &VelocityIntegralPlan) -> u8 {
     }
     if plan.probe_constrained_test_point {
         flags |= PLAN_PROBE_CONSTRAINED_TEST_POINT;
+    }
+    if !matches!(
+        plan.slot_order,
+        super::integral_plan::IntegralSlotOrder::ForwardFirst
+    ) {
+        flags |= PLAN_MIRRORED_SLOT_ORDER;
     }
     flags
 }
@@ -878,6 +886,7 @@ mod tests {
             *gain = u16::try_from(index + 1).unwrap();
         }
         let plan = super::super::integral_plan::VelocityIntegralPlan {
+            slot_order: IntegralSlotOrder::ForwardFirst,
             build_revision: 3,
             schema_revision: super::super::integral_plan::STAGE_C_EVIDENCE_SCHEMA_REVISION,
             authority: super::super::integral_plan::StageCAuthority {

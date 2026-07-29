@@ -451,6 +451,12 @@ pub enum AutotuneAction {
     MatrixAscendingMirrored = 3,
     /// Descending amplitudes with the forward and reverse slots mirrored.
     MatrixDescendingMirrored = 4,
+    /// Combined acquisition with the forward and reverse slots mirrored.
+    ///
+    /// Stage C carries the same tail-position confound as the matrix but is not
+    /// limited by the retained matrix lifecycle, so it is where the mirrored
+    /// order is measured.
+    CombinedMirrored = 5,
 }
 
 impl AutotuneAction {
@@ -462,7 +468,27 @@ impl AutotuneAction {
             2 => Some(Self::MatrixDescending),
             3 => Some(Self::MatrixAscendingMirrored),
             4 => Some(Self::MatrixDescendingMirrored),
+            5 => Some(Self::CombinedMirrored),
             _ => None,
+        }
+    }
+
+    /// Return the observation slot order this acquisition requests.
+    ///
+    /// Both the combined workflow and the matrix execute a fixed forward/reverse
+    /// slot schedule about a common start point, so both carry the same
+    /// tail-position confound and both can be run mirrored.
+    pub const fn slot_order(
+        self,
+    ) -> crate::commissioning::outer::velocity::integral_plan::IntegralSlotOrder {
+        use crate::commissioning::outer::velocity::integral_plan::IntegralSlotOrder;
+        match self {
+            Self::Combined | Self::MatrixAscending | Self::MatrixDescending => {
+                IntegralSlotOrder::ForwardFirst
+            }
+            Self::CombinedMirrored
+            | Self::MatrixAscendingMirrored
+            | Self::MatrixDescendingMirrored => IntegralSlotOrder::ReverseFirst,
         }
     }
 }
