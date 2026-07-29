@@ -1827,13 +1827,17 @@ mod tests {
                 size_of::<crate::commissioning::types::VelocitySweepEvent>(),
                 304
             );
+            // Both were 224 before observations carried the rejection diagnostic.
+            // These events are transient, built and encoded on the stack, so this
+            // does not grow retained commissioning state: VelocitySweepData and
+            // StationarityWork are unchanged. Frame budgets are checked by parity.
             assert_eq!(
                 size_of::<crate::commissioning::types::VelocityIntegralEvent>(),
-                224
+                256
             );
             assert_eq!(
                 size_of::<crate::commissioning::types::AcceptanceMatrixEvent>(),
-                224
+                256
             );
             assert_eq!(
                 size_of::<crate::commissioning::types::RestSelectionDiagnostic>(),

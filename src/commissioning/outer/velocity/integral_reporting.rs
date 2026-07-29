@@ -4,7 +4,9 @@ use crate::ankyra::velocity_sweep_encoding::{
     VelocitySweepCanonicalRecord, encode_rate_values, extend_velocity_sweep_digest,
     upper_bound_i64, upper_bound_u128,
 };
-use crate::autotune::velocity_measurement::{StationarityExclusion, StationarityResult};
+use crate::autotune::velocity_measurement::{
+    StationarityExclusion, StationarityResult, SuffixDiagnostic,
+};
 use crate::commissioning::types::{
     AcceptanceMatrixEvent, VelocityIntegralEvent, VelocityIntegralObservation,
     VelocityIntegralOutcome, VelocityIntegralRungReport, VelocityIntegralTerminal,
@@ -489,7 +491,37 @@ fn encode_observation(report: VelocityIntegralObservation) -> VelocitySweepCanon
     record.push_u8(rate_shift);
     record.push_u16(report.summary.predicted_torque_target_abs);
     encode_stationarity(&mut record, report.stationarity);
+    if matches!(report.stationarity, StationarityResult::Excluded(_)) {
+        encode_rejection(&mut record, report.rejection);
+    }
     record
+}
+
+/// Encoded width of one present rejection diagnostic, excluding the presence flag.
+#[cfg(test)]
+pub(crate) const REJECTION_DIAGNOSTIC_BYTES: usize = 33;
+
+/// Append the gate statistics that rejected an excluded tail.
+///
+/// A leading presence flag keeps blocking-stage exclusions, which never reach the
+/// gates and so have no statistics, distinguishable from gate rejections.
+fn encode_rejection(
+    record: &mut VelocitySweepCanonicalRecord,
+    rejection: Option<SuffixDiagnostic>,
+) {
+    let Some(rejection) = rejection else {
+        record.push_u8(0);
+        return;
+    };
+    record.push_u8(1);
+    record.push_u16(rejection.suffix_len);
+    record.push_u8(u8::from(rejection.usable_plateau));
+    record.push_u8(u8::from(rejection.slope_passed));
+    record.push_u8(u8::from(rejection.lag_one_passed));
+    push_i64(record, rejection.settled_rate_interval_q[0]);
+    push_i64(record, rejection.settled_rate_interval_q[1]);
+    push_i64(record, rejection.slope_rejection_margin_q);
+    record.push_i32(rejection.lag_one_rejection_margin_q);
 }
 
 fn encode_stationarity(record: &mut VelocitySweepCanonicalRecord, result: StationarityResult) {
@@ -702,12 +734,16 @@ fn push_u64(record: &mut VelocitySweepCanonicalRecord, value: u64) {
     record.push_u32((value >> 32) as u32);
 }
 
+fn push_i64(record: &mut VelocitySweepCanonicalRecord, value: i64) {
+    push_u64(record, value as u64);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::ankyra::velocity_sweep_encoding::VELOCITY_SWEEP_CANONICAL_RECORD_MAX;
     use crate::autotune::velocity_measurement::{
-        PlateauSelection, RateBlock, StationarySuffix, VelocityDirection,
+        PlateauSelection, RateBlock, StationarySuffix, SuffixDiagnostic, VelocityDirection,
     };
     use crate::commissioning::outer::state::{
         PositiveIRestBoundary, VelocitySettleMetrics, VelocitySettleTransition,
@@ -719,7 +755,12 @@ mod tests {
         ExactRateInterval, IntegralRungEvidence,
     };
     use crate::commissioning::outer::velocity::recovery::RecoveryStage;
+    use crate::commissioning::outer::velocity::sweep_evidence::{
+        VelocityObservationClass, VelocityObservationSummary,
+    };
+    use crate::commissioning::types::VelocityIntegralObservation;
     use crate::commissioning::types::{RecoveryRestDiagnostic, ResponseHorizonClass};
+    use foci_tmc4671::pid::PidPGain;
 
     fn recovery_rest_diagnostic() -> RecoveryRestDiagnostic {
         RecoveryRestDiagnostic {
@@ -1243,5 +1284,115 @@ mod tests {
             stage_b_deficit_bounds_q([-65_536, -65_536], 256, 4_000),
             Some([-66_667, -66_666])
         );
+    }
+
+    fn excluded_observation(
+        exclusion: StationarityExclusion,
+        rejection: Option<SuffixDiagnostic>,
+    ) -> VelocityIntegralObservation {
+        VelocityIntegralObservation {
+            run_sequence: 3,
+            evidence_sequence: 79,
+            plan_digest: 0x0123_4567_89ab_cdef,
+            rung_index: 3,
+            slot: 6,
+            i_raw: 512,
+            summary: VelocityObservationSummary {
+                direction: VelocityDirection::Forward,
+                p: PidPGain::new(1_024).unwrap(),
+                classification: VelocityObservationClass::StationarityExcluded(exclusion),
+                settled_rate_interval_q: [0, 0],
+                settled_rate_mean_q: 0,
+                deficit_interval_q: [0, 0],
+                disturbance: None,
+                disturbance_interval: None,
+                disturbance_variance_q2: 0,
+                predicted_torque_target_abs: 1_023,
+                initial_lead_in: false,
+            },
+            stationarity: StationarityResult::Excluded(exclusion),
+            rejection,
+        }
+    }
+
+    /// An excluded tail must carry the gate statistics that rejected it.
+    ///
+    /// Without this the failing observations are the only ones with no evidence,
+    /// which is precisely backwards for a diagnostic instrument.
+    #[test]
+    fn an_excluded_observation_records_why_the_gate_rejected_it() {
+        let rejection = SuffixDiagnostic {
+            suffix_len: 256,
+            usable_plateau: true,
+            slope_passed: false,
+            lag_one_passed: true,
+            settled_rate_interval_q: [-8_773_356, -8_351_644],
+            slope_rejection_margin_q: -2_389_706,
+            lag_one_rejection_margin_q: 55_874,
+        };
+        let record = encode_observation(excluded_observation(
+            StationarityExclusion::ResolvedSlope,
+            Some(rejection),
+        ));
+        let bytes = record.as_bytes();
+
+        // The exclusion code still lands where the usable path puts it.
+        let code_offset = bytes.len() - 1 - REJECTION_DIAGNOSTIC_BYTES - 1;
+        assert_eq!(bytes[code_offset], 3);
+        assert_eq!(bytes[code_offset + 1], 1, "presence flag must be set");
+
+        let tail = &bytes[code_offset + 2..];
+        assert_eq!(&tail[0..2], 256_u16.to_le_bytes());
+        assert_eq!(tail[2], 1, "usable_plateau");
+        assert_eq!(tail[3], 0, "slope_passed");
+        assert_eq!(tail[4], 1, "lag_one_passed");
+        assert_eq!(&tail[5..13], (-8_773_356_i64).to_le_bytes());
+        assert_eq!(&tail[13..21], (-8_351_644_i64).to_le_bytes());
+        assert_eq!(&tail[21..29], (-2_389_706_i64).to_le_bytes());
+        assert_eq!(&tail[29..33], 55_874_i32.to_le_bytes());
+        assert!(bytes.len() <= VELOCITY_SWEEP_CANONICAL_RECORD_MAX);
+    }
+
+    /// Blocking-stage exclusions never reach the gates, so they have no statistics.
+    #[test]
+    fn an_exclusion_before_the_gates_records_an_absent_diagnostic() {
+        let record = encode_observation(excluded_observation(
+            StationarityExclusion::NoBlockingPlateau,
+            None,
+        ));
+        let bytes = record.as_bytes();
+
+        assert_eq!(bytes[bytes.len() - 2], 1, "NoBlockingPlateau code");
+        assert_eq!(bytes[bytes.len() - 1], 0, "presence flag must be clear");
+    }
+
+    /// The usable path must keep its existing 77-byte layout untouched.
+    #[test]
+    fn a_usable_observation_keeps_its_established_layout() {
+        let mut report = excluded_observation(StationarityExclusion::ResolvedSlope, None);
+        report.summary.classification = VelocityObservationClass::Eligible;
+        report.stationarity = StationarityResult::Usable(StationarySuffix {
+            selection: PlateauSelection {
+                level: 4,
+                block_count: 16,
+                variance_of_mean_q2: 0,
+                exact_totals: RateBlock {
+                    delta_counts: 0,
+                    elapsed_us: 0,
+                    observation_count: 0,
+                },
+            },
+            suffix_len: 256,
+            slope_q: -2_389_706,
+            slope_half_width_q: 8_628_554,
+            lag_one_q: -680_061,
+            lag_one_half_width_q: 673_435,
+            residual_magnitude_q2: 0,
+            tested_suffixes: 3,
+        });
+
+        let record = encode_observation(report);
+
+        assert_eq!(record.as_bytes().len(), 77);
     }
 }

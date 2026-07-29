@@ -3,7 +3,7 @@
 use crate::autotune::velocity_measurement::{
     DyadicBlocker, RestSelectionDecision, RestSelectionDisposition, RestStructuralCode,
     StationarityResult, StationarityWork, StationarityWorkPoll, StationarySuffix,
-    StructuredStationarityEvidence, VELOCITY_RATE_Q_SCALE, VelocityDirection,
+    StructuredStationarityEvidence, SuffixDiagnostic, VELOCITY_RATE_Q_SCALE, VelocityDirection,
     VelocityObservationSource, estimate_confidence,
 };
 use crate::autotune::{
@@ -72,7 +72,7 @@ pub(super) fn poll_moving_observation_analysis(
     data: &mut VelocitySweepData,
     counts_per_rev: u32,
 ) -> Result<Option<MovingObservationAnalysis>, CommissionError> {
-    let Some(stationarity) =
+    let Some((stationarity, _rejection)) =
         poll_stationarity(&mut data.analysis, &data.observations, &mut data.blocker)?
     else {
         return Ok(None);
@@ -255,17 +255,22 @@ pub(super) fn retain_observation(
     collected.retain_with_structured(data.slot, summary, structured)
 }
 
+/// Poll one moving-tail analysis, returning its result and any gate rejection.
+///
+/// The rejection is transient: it is produced when a gate rejects the tail and
+/// consumed by the caller building the observation record, so it is never
+/// retained in the commissioning state.
 pub(super) fn poll_stationarity<const LEVELS: usize>(
     analysis: &mut StationarityWork,
     observations: &impl VelocityObservationSource,
     blocker: &mut DyadicBlocker<LEVELS>,
-) -> Result<Option<StationarityResult>, CommissionError> {
+) -> Result<Option<(StationarityResult, Option<SuffixDiagnostic>)>, CommissionError> {
     match analysis
         .poll(observations, blocker)
         .map_err(|_| CommissionError::VelocityValidationFailed)?
     {
         StationarityWorkPoll::Pending => Ok(None),
-        StationarityWorkPoll::Complete(stationarity) => Ok(Some(stationarity)),
+        StationarityWorkPoll::Complete { result, rejection } => Ok(Some((result, rejection))),
         StationarityWorkPoll::RestDiagnostic(_) | StationarityWorkPoll::RestComplete(_) => {
             Err(CommissionError::VelocityValidationFailed)
         }
@@ -301,7 +306,7 @@ pub(super) fn poll_scored_rest_confirmation<const LEVELS: usize>(
                 recent_structural_code: result.recent_structural_code,
             }))
         }
-        StationarityWorkPoll::Complete(_) => Err(CommissionError::VelocityValidationFailed),
+        StationarityWorkPoll::Complete { .. } => Err(CommissionError::VelocityValidationFailed),
     }
 }
 
@@ -313,7 +318,8 @@ pub(super) fn poll_settle_confirmation_parts<const LEVELS: usize>(
     settle_min_displacement_counts: i8,
     settle_max_displacement_counts: i8,
 ) -> Result<Option<LegacySettleConfirmation>, CommissionError> {
-    let Some(stationarity) = poll_stationarity(analysis, observations, blocker)? else {
+    let Some((stationarity, _rejection)) = poll_stationarity(analysis, observations, blocker)?
+    else {
         return Ok(None);
     };
     let (confirmed_rest, exact_velocity_interval_q) = match stationarity {

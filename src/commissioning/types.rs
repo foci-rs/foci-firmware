@@ -768,6 +768,11 @@ pub struct VelocityIntegralObservation {
     pub summary: crate::commissioning::outer::velocity::sweep_evidence::VelocityObservationSummary,
     /// Target-independent stationarity evidence for this observation.
     pub stationarity: crate::autotune::velocity_measurement::StationarityResult,
+    /// Gate statistics that rejected an excluded tail.
+    ///
+    /// Present only when the analysis reached the slope and lag-one gates.
+    /// Blocking-stage exclusions carry `None` because no statistics exist yet.
+    pub rejection: Option<crate::autotune::velocity_measurement::SuffixDiagnostic>,
 }
 
 /// Relation between one integral time constant and the fixed moving horizon.

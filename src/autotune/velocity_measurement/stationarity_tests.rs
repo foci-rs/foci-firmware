@@ -325,7 +325,7 @@ fn cooperative_work_matches_synchronous_selection_across_multiple_polls() {
         polls += 1;
         match work.poll(&samples[..], &mut cooperative_blocker).unwrap() {
             StationarityWorkPoll::Pending => {}
-            StationarityWorkPoll::Complete(result) => break result,
+            StationarityWorkPoll::Complete { result, .. } => break result,
             StationarityWorkPoll::RestDiagnostic(_) | StationarityWorkPoll::RestComplete(_) => {
                 panic!("moving mode returned a scored-rest result")
             }
@@ -370,7 +370,7 @@ fn cooperative_poll_limits_raw_visits_for_two_ms_safety_cadence() {
             "one cooperative poll visited {} raw observations",
             source.visits.get()
         );
-        if matches!(poll, StationarityWorkPoll::Complete(_)) {
+        if matches!(poll, StationarityWorkPoll::Complete { .. }) {
             break;
         }
     }
@@ -423,7 +423,7 @@ fn cooperative_rest_work_emits_one_diagnostic_then_reconstructs_its_witness() {
                 assert!(source.visits.get() <= 16);
                 break result;
             }
-            StationarityWorkPoll::Complete(_) => {
+            StationarityWorkPoll::Complete { .. } => {
                 panic!("rest mode returned a moving-rate result")
             }
         }
@@ -495,7 +495,7 @@ fn scored_rest_rejection_retains_only_its_recent_structural_witness() {
                     );
                     break;
                 }
-                StationarityWorkPoll::Complete(_) => {
+                StationarityWorkPoll::Complete { .. } => {
                     panic!("rest mode returned a moving-rate result")
                 }
             }
@@ -549,7 +549,7 @@ fn cooperative_structured_diagnostics_match_synchronous_evidence_with_bounded_vi
         );
         match poll {
             StationarityWorkPoll::Pending => {}
-            StationarityWorkPoll::Complete(result) => break result,
+            StationarityWorkPoll::Complete { result, .. } => break result,
             StationarityWorkPoll::RestDiagnostic(_) | StationarityWorkPoll::RestComplete(_) => {
                 panic!("structured mode returned a scored-rest result")
             }
@@ -607,7 +607,7 @@ fn cooperative_work_preserves_first_nonstationary_extension_rule() {
     let actual = loop {
         match work.poll(&samples[..], &mut cooperative_blocker).unwrap() {
             StationarityWorkPoll::Pending => {}
-            StationarityWorkPoll::Complete(result) => break result,
+            StationarityWorkPoll::Complete { result, .. } => break result,
             StationarityWorkPoll::RestDiagnostic(_) | StationarityWorkPoll::RestComplete(_) => {
                 panic!("moving mode returned a scored-rest result")
             }
@@ -727,4 +727,64 @@ fn first_nonstationary_extension_stops_without_stitching() {
     };
     assert_eq!(suffix.suffix_len, 64);
     assert_eq!(suffix.tested_suffixes, 2);
+}
+
+/// A tail rejected by the slope or lag-one gate must retain the statistics that
+/// rejected it. Without this the failing observations are the only ones carrying
+/// no evidence, which is backwards for a diagnostic instrument.
+#[test]
+fn a_gate_rejected_tail_retains_the_margins_that_rejected_it() {
+    // A monotonic ramp in per-sample displacement cannot be stationary.
+    let samples = observations::<256>(|index| 1 + (index as i32) / 8);
+    let mut blocker = DyadicBlocker::<LEVELS>::new();
+    let mut work = StationarityWork::new();
+
+    let (result, rejection) = loop {
+        match work.poll(&samples[..], &mut blocker).unwrap() {
+            StationarityWorkPoll::Pending => {}
+            StationarityWorkPoll::Complete { result, rejection } => break (result, rejection),
+            StationarityWorkPoll::RestDiagnostic(_) | StationarityWorkPoll::RestComplete(_) => {
+                panic!("moving mode returned a scored-rest result")
+            }
+        }
+    };
+
+    assert!(
+        matches!(result, StationarityResult::Excluded(_)),
+        "a ramp must not be certified stationary, got {result:?}"
+    );
+    let rejection = rejection.expect("a gate rejection must report its margins");
+    assert_eq!(
+        rejection.suffix_len, 64,
+        "the family is tried shortest first"
+    );
+    assert!(
+        !rejection.slope_passed || !rejection.lag_one_passed,
+        "at least one gate must report failure"
+    );
+    assert!(
+        rejection.slope_rejection_margin_q < 0 || rejection.lag_one_rejection_margin_q < 0,
+        "the failing gate must carry a negative margin"
+    );
+}
+
+/// Nothing was rejected, so there is no rejection to report.
+#[test]
+fn a_usable_tail_reports_no_rejection() {
+    let samples = observations::<256>(|index| [1, 0, 1, 1, 0][index % 5]);
+    let mut blocker = DyadicBlocker::<LEVELS>::new();
+    let mut work = StationarityWork::new();
+
+    let (result, rejection) = loop {
+        match work.poll(&samples[..], &mut blocker).unwrap() {
+            StationarityWorkPoll::Pending => {}
+            StationarityWorkPoll::Complete { result, rejection } => break (result, rejection),
+            StationarityWorkPoll::RestDiagnostic(_) | StationarityWorkPoll::RestComplete(_) => {
+                panic!("moving mode returned a scored-rest result")
+            }
+        }
+    };
+
+    assert!(matches!(result, StationarityResult::Usable(_)));
+    assert!(rejection.is_none());
 }

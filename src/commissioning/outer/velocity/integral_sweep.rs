@@ -1,5 +1,6 @@
 //! Cooperative fixed-P Stage-C velocity-integral acquisition.
 
+use crate::autotune::velocity_measurement::SuffixDiagnostic;
 use crate::autotune::velocity_measurement::{
     RestStructuralCode, StationarityExclusion, StationarityResult, VelocityDirection,
     estimate_confidence,
@@ -1227,11 +1228,17 @@ fn current_report(
     }
 }
 
+type MovingAnalysis = (
+    VelocityObservationSummary,
+    StationarityResult,
+    Option<SuffixDiagnostic>,
+);
+
 fn moving_analysis(
     data: &mut VelocityIntegralData,
     counts_per_rev: u32,
-) -> Result<Option<(VelocityObservationSummary, StationarityResult)>, CommissionError> {
-    let Some(stationarity) =
+) -> Result<Option<MovingAnalysis>, CommissionError> {
+    let Some((stationarity, rejection)) =
         poll_stationarity(&mut data.analysis, &data.observations, &mut data.blocker)?
     else {
         return Ok(None);
@@ -1278,7 +1285,11 @@ fn moving_analysis(
             input.settled_rate_high_q,
         )?;
     }
-    Ok(Some((classify_integral_observation(input), stationarity)))
+    Ok(Some((
+        classify_integral_observation(input),
+        stationarity,
+        rejection,
+    )))
 }
 
 fn retain_analyzed_observation(
@@ -1689,11 +1700,12 @@ pub(crate) async fn step_velocity_integral_with_trace<B: CommissioningBackend>(
             {
                 return fail_integral(phase, backend, CommissionError::AnalysisOverrun).await;
             }
-            let (summary, stationarity) = match moving_analysis(data, safety.counts_per_rev()) {
-                Ok(Some(result)) => result,
-                Ok(None) => return StepResult::ReadyNow,
-                Err(error) => return fail_integral(phase, backend, error).await,
-            };
+            let (summary, stationarity, rejection) =
+                match moving_analysis(data, safety.counts_per_rev()) {
+                    Ok(Some(result)) => result,
+                    Ok(None) => return StepResult::ReadyNow,
+                    Err(error) => return fail_integral(phase, backend, error).await,
+                };
             if let StationarityResult::Usable(suffix) = stationarity
                 && set_rung_blocking_level(data, data.slot, suffix.selection.level).is_err()
             {
@@ -1726,6 +1738,7 @@ pub(crate) async fn step_velocity_integral_with_trace<B: CommissioningBackend>(
                 i_raw: integral_i_at(data.plan, data.rung_index).unwrap_or(0),
                 summary,
                 stationarity,
+                rejection,
             };
             let settle_deadline_us = *settle_deadline_us;
             data.analysis.reset();

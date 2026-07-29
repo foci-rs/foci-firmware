@@ -123,7 +123,14 @@ pub enum StationarityWorkPoll {
     /// More bounded work remains.
     Pending,
     /// The declared suffix family has been classified.
-    Complete(StationarityResult),
+    ///
+    /// `rejection` carries the gate statistics of the suffix that rejected the
+    /// tail. It is `None` for a usable tail and for exclusions decided before the
+    /// gates, such as a missing blocking plateau, which produce no statistics.
+    Complete {
+        result: StationarityResult,
+        rejection: Option<SuffixDiagnostic>,
+    },
     /// Every scored-rest suffix has been classified for causal reporting.
     RestDiagnostic(RestSelectionDecision),
     /// The scored-rest decision is complete, including any selected witness.
@@ -367,9 +374,12 @@ impl StationarityWork {
                     self.stage = StationarityWorkStage::RestDecisionReady;
                     return Ok(StationarityWorkPoll::RestDiagnostic(decision));
                 }
-                return Ok(StationarityWorkPoll::Complete(
-                    StationarityResult::Excluded(StationarityExclusion::TooFewDecorrelatedBlocks),
-                ));
+                return Ok(StationarityWorkPoll::Complete {
+                    result: StationarityResult::Excluded(
+                        StationarityExclusion::TooFewDecorrelatedBlocks,
+                    ),
+                    rejection: None,
+                });
             };
             self.start_suffix(observations, blocker, suffix_index, suffix_len, mode)?;
         }
@@ -481,7 +491,7 @@ impl StationarityWork {
                     },
                 );
             }
-            return Ok(self.finish_on_exclusion(exclusion, suffix_index));
+            return Ok(self.finish_on_exclusion(exclusion, suffix_index, None));
         };
         let block_observations = 1u16
             .checked_shl(u32::from(selection.level))
@@ -506,6 +516,7 @@ impl StationarityWork {
             return Ok(self.finish_on_exclusion(
                 StationarityExclusion::TooFewDecorrelatedBlocks,
                 suffix_index,
+                None,
             ));
         }
         self.stage = StationarityWorkStage::Regression {
@@ -830,7 +841,9 @@ impl StationarityWork {
                     Err(_) if matches!(self.output, StationarityWorkOutput::Structured(_)) => {
                         self.advance_structured(observations, blocker, suffix_index, None)
                     }
-                    Err(exclusion) => Ok(self.finish_on_exclusion(exclusion, suffix_index)),
+                    Err(exclusion) => {
+                        Ok(self.finish_on_exclusion(exclusion, suffix_index, Some(diagnostic)))
+                    }
                 }
             }
             Err(_) if matches!(self.output, StationarityWorkOutput::Structured(_)) => {
@@ -845,7 +858,7 @@ impl StationarityWork {
             {
                 Err(VelocityMeasurementError::ArithmeticOverflow)
             }
-            Err(exclusion) => Ok(self.finish_on_exclusion(exclusion, suffix_index)),
+            Err(exclusion) => Ok(self.finish_on_exclusion(exclusion, suffix_index, None)),
         }
     }
 
@@ -853,15 +866,22 @@ impl StationarityWork {
         &mut self,
         exclusion: StationarityExclusion,
         suffix_index: u8,
+        rejection: Option<SuffixDiagnostic>,
     ) -> StationarityWorkPoll {
         if let StationarityWorkOutput::Selected(mut usable) = self.output {
             usable.tested_suffixes = suffix_index.saturating_add(1);
             self.output = StationarityWorkOutput::Selected(usable);
             self.stage = StationarityWorkStage::Done;
-            return StationarityWorkPoll::Complete(StationarityResult::Usable(usable));
+            return StationarityWorkPoll::Complete {
+                result: StationarityResult::Usable(usable),
+                rejection: None,
+            };
         }
         self.stage = StationarityWorkStage::Done;
-        StationarityWorkPoll::Complete(StationarityResult::Excluded(exclusion))
+        StationarityWorkPoll::Complete {
+            result: StationarityResult::Excluded(exclusion),
+            rejection,
+        }
     }
 
     fn advance_or_complete<const LEVELS: usize, S>(
@@ -887,9 +907,10 @@ impl StationarityWork {
         result.tested_suffixes = next_index;
         self.output = StationarityWorkOutput::Selected(result);
         self.stage = StationarityWorkStage::Done;
-        Ok(StationarityWorkPoll::Complete(StationarityResult::Usable(
-            result,
-        )))
+        Ok(StationarityWorkPoll::Complete {
+            result: StationarityResult::Usable(result),
+            rejection: None,
+        })
     }
 
     fn advance_structured<const LEVELS: usize, S>(
@@ -923,9 +944,10 @@ impl StationarityWork {
             return Ok(StationarityWorkPoll::Pending);
         }
         self.stage = StationarityWorkStage::Done;
-        Ok(StationarityWorkPoll::Complete(
-            StationarityResult::Excluded(accumulator.binding_exclusion),
-        ))
+        Ok(StationarityWorkPoll::Complete {
+            result: StationarityResult::Excluded(accumulator.binding_exclusion),
+            rejection: None,
+        })
     }
 
     fn advance_rest_diagnostic<const LEVELS: usize, S>(
