@@ -2,8 +2,8 @@
 
 use crate::commissioning::outer::OuterMotionBudget;
 use crate::commissioning::outer::velocity::integral_plan::{
-    STAGE_C_EVIDENCE_SCHEMA_REVISION, StageCFailedAdmission, VelocityIntegralPlan,
-    VelocityIntegralPlanError, plan_velocity_integral_response,
+    StageCFailedAdmission, VelocityIntegralPlan, VelocityIntegralPlanError,
+    plan_combined_velocity_integral_response, plan_velocity_integral_response,
 };
 use crate::commissioning::outer::velocity::integral_reproduction::{
     AcceptanceMatrixProgress, AcceptancePoint, StageCAuthoritySummary, StageCCandidateSlot,
@@ -12,7 +12,7 @@ use crate::commissioning::outer::velocity::integral_reproduction::{
 };
 use crate::commissioning::outer::velocity::reproduction::STAGE_B_BUILD_REVISION;
 use crate::commissioning::outer::velocity::sweep_plan::{
-    VelocitySweepRequest, plan_velocity_sweep,
+    VelocitySweepRequest, plan_combined_velocity_sweep, plan_velocity_sweep,
 };
 use crate::commissioning::types::{
     VelocityIntegralEvent, VelocityIntegralOutcome, VelocityIntegralPlanned,
@@ -171,12 +171,23 @@ pub fn preflight_stage_c_request(
             requested_stage_b_plan_digest: 0,
         });
     }
-    let stage_b_plan = plan_velocity_sweep(
-        request,
-        encoder_counts_per_rev,
-        torque_limit,
-        limit_evidence_capability,
-    )
+    let combined = authority.identity.schema_revision
+        == crate::commissioning::outer::velocity::combined_plan::COMBINED_STAGE_C_SCHEMA_REVISION;
+    let stage_b_plan = if combined {
+        plan_combined_velocity_sweep(
+            request,
+            encoder_counts_per_rev,
+            torque_limit,
+            limit_evidence_capability,
+        )
+    } else {
+        plan_velocity_sweep(
+            request,
+            encoder_counts_per_rev,
+            torque_limit,
+            limit_evidence_capability,
+        )
+    }
     .map_err(|_| StageCPreflightRejection::InvalidPlan)?;
     let stage_b_plan_digest = stage_b_plan.digest();
     if authority.stage_b_plan_digest != stage_b_plan_digest {
@@ -195,13 +206,33 @@ pub fn preflight_stage_c_request(
         positive_position_headroom_mrev: request.positive_position_headroom_mrev,
         max_duration_ms: request.max_duration_ms,
     };
-    let plan = match plan_velocity_integral_response(
-        authority.stage_c_authority(),
-        stage_b_plan.execution_plan(stage_b_plan_digest),
-        motion_budget,
-        pwm_hz,
-        encoder_counts_per_rev,
-    ) {
+    let stage_b_execution = stage_b_plan.execution_plan(stage_b_plan_digest);
+    let plan_result = if combined {
+        let p = foci_tmc4671::pid::PidPGain::new(authority.final_p)
+            .map_err(|_| StageCPreflightRejection::InvalidPlan)?;
+        let selected =
+            crate::commissioning::outer::velocity::combined_plan::CombinedSelectedResponse::from_retained_intervals(
+                p,
+                authority.directional_pooled_intervals,
+            )
+            .map_err(|_| StageCPreflightRejection::InvalidPlan)?;
+        plan_combined_velocity_integral_response(
+            selected,
+            stage_b_execution,
+            motion_budget,
+            pwm_hz,
+            encoder_counts_per_rev,
+        )
+    } else {
+        plan_velocity_integral_response(
+            authority.stage_c_authority(),
+            stage_b_execution,
+            motion_budget,
+            pwm_hz,
+            encoder_counts_per_rev,
+        )
+    };
+    let plan = match plan_result {
         Ok(plan) => plan,
         Err(VelocityIntegralPlanError::NoTransitionCapableOperatingPoint(failure)) => {
             return Err(StageCPreflightRejection::NoTransitionCapableOperatingPoint(
@@ -213,7 +244,7 @@ pub fn preflight_stage_c_request(
     let identity = StageCPlanIdentity {
         channel,
         build_revision: STAGE_B_BUILD_REVISION,
-        schema_revision: STAGE_C_EVIDENCE_SCHEMA_REVISION,
+        schema_revision: plan.schema_revision,
         plan_digest: plan.digest(),
     };
     if stage_c_candidate.preflight(identity).is_some() {

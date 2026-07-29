@@ -254,19 +254,6 @@ pub(super) fn retain_observation(
     collected.retain_with_structured(data.slot, summary, structured)
 }
 
-pub(super) fn poll_settle_confirmation(
-    data: &mut VelocitySweepData,
-) -> Result<Option<bool>, CommissionError> {
-    poll_settle_confirmation_parts(
-        &mut data.analysis,
-        &data.observations,
-        &mut data.blocker,
-        data.settle_min_displacement_counts,
-        data.settle_max_displacement_counts,
-    )
-    .map(|result| result.map(|result| result.confirmed_rest))
-}
-
 pub(super) fn poll_stationarity<const LEVELS: usize>(
     analysis: &mut StationarityWork,
     observations: &impl VelocityObservationSource,

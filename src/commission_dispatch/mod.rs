@@ -1501,8 +1501,41 @@ pub async fn drive_commission_result_with_stages<B: CommissioningBackend>(
                 .as_ref()
                 .is_some_and(CommissioningEngine::is_combined_stage_b) =>
         {
+            let rest_unconfirmed = terminal.outcome
+                == crate::commissioning::types::VelocitySweepOutcome::Inconclusive
+                && terminal.cause
+                    == crate::autotune::CommissionError::VelocityRestNotConfirmed.status_code();
+            if rest_unconfirmed {
+                let stage_c_plan = engine
+                    .as_ref()
+                    .expect("engine slot is None on combined VelocitySweepTerminal")
+                    .plan_combined_stage_c_continuation(backend.tmc_config().pwm_freq_hz());
+                match stage_c_plan {
+                    Ok(stage_c_plan) => {
+                        retention.stage_c.install_authority(
+                            crate::commissioning::outer::velocity::integral_reproduction::StageCAuthoritySummary::from_plan(
+                                channel,
+                                crate::commissioning::outer::velocity::reproduction::STAGE_B_BUILD_REVISION,
+                                stage_c_plan.schema_revision,
+                                terminal.plan_digest,
+                                stage_c_plan.execution_plan(),
+                                stage_c_plan.authority,
+                            ),
+                        );
+                    }
+                    Err(_) => {
+                        retention.stage_c.observe_fault();
+                        terminal.outcome = crate::commissioning::types::VelocitySweepOutcome::Fault;
+                        terminal.cause =
+                            crate::autotune::CommissionError::InvalidSchedule.status_code();
+                    }
+                }
+            }
             if terminal.outcome != crate::commissioning::types::VelocitySweepOutcome::Complete {
                 if !disarm_velocity_workflow(engine, backend, state).await {
+                    if rest_unconfirmed {
+                        retention.stage_c.observe_fault();
+                    }
                     terminal.outcome = crate::commissioning::types::VelocitySweepOutcome::Fault;
                     terminal.cause = crate::autotune::CommissionError::Spi.status_code();
                     terminal.recovery_unavailable = true;

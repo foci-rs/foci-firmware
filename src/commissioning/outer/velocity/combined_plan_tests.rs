@@ -150,7 +150,7 @@ fn signed_deficit_target_uses_the_conservative_directional_endpoints() {
 
 #[test]
 fn combined_geometry_appends_the_exact_cap_without_changing_history() {
-    assert_eq!(COMBINED_STAGE_B_SCHEMA_REVISION, 12);
+    assert_eq!(COMBINED_STAGE_B_SCHEMA_REVISION, 13);
     assert_eq!(COMBINED_STAGE_C_SCHEMA_REVISION, 11);
     assert_eq!(STAGE_C_EVIDENCE_SCHEMA_REVISION, 7);
     assert_eq!(StageCPlanShape::CombinedPThenI as u8, 3);

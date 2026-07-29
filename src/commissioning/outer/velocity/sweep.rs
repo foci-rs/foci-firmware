@@ -42,7 +42,8 @@ use super::recovery::{
     step_rung_origin_recovery,
 };
 use super::sweep_analysis::{
-    poll_moving_observation_analysis, poll_settle_confirmation, retain_observation,
+    ScoredRestPoll, bounded_rest_displacement, poll_moving_observation_analysis,
+    poll_scored_rest_confirmation, retain_observation,
 };
 use super::sweep_evidence::{
     CollectedRungEvidence, CompactDirectionalRungReport, DirectionalRungAnalysis,
@@ -285,6 +286,33 @@ fn record_sweep_recovery_rest_selection(
     StepResult::VelocitySweepEvent(event)
 }
 
+fn record_sweep_observation_rest_selection(
+    data: &mut super::super::VelocitySweepData,
+    decision: crate::autotune::velocity_measurement::RestSelectionDecision,
+) -> StepResult {
+    let event = data
+        .integrity
+        .record(VelocitySweepEvent::RestSelection(RestSelectionDiagnostic {
+            intervals_q: decision.intervals_q,
+            plan_digest: data.plan.plan_digest,
+            run_sequence: data.integrity.run_sequence(),
+            evidence_sequence: data.integrity.next_evidence_sequence(),
+            selected_suffix_len: decision.selected_suffix_len,
+            structural_codes: decision.structural_codes,
+            interval_present_mask: decision.interval_present_mask,
+            usable_mask: decision.usable_mask,
+            zero_compatible_mask: decision.zero_compatible_mask,
+            selected_mask: decision.selected_mask,
+            stage: RecoveryStage::Proportional,
+            owner: RestSelectionOwner::StageBObservation,
+            rung_index: data.rung_index,
+            direction: data.slot % 2,
+            slot: data.slot,
+            disposition: decision.disposition,
+        }));
+    StepResult::VelocitySweepEvent(event)
+}
+
 #[derive(Clone, Copy)]
 struct StageBCandidateSelection {
     nomination: ProvisionalPNomination,
@@ -380,6 +408,19 @@ async fn fail_sweep_with_safety<B: CommissioningBackend>(
     sweep_fault_terminal(phase, CommissionError::SafetyEnvelopeViolation, Some(fault))
 }
 
+async fn inconclusive_rest_sweep<B: CommissioningBackend>(
+    phase: &mut OuterPhase,
+    backend: &mut B,
+) -> StepResult {
+    let _ = backend.write_register(PID_VELOCITY_TARGET, 0).await;
+    let _ = backend.write_register(PID_TORQUE_FLUX_TARGET, 0).await;
+    let _ = backend.write_register(MODE_RAMP_MODE_MOTION, 0).await;
+    let OuterPhase::VelocitySweep { data, .. } = phase else {
+        return StepResult::OuterFailed(CommissionError::InvalidSchedule);
+    };
+    StepResult::VelocitySweepTerminal(sweep_evidence_terminal(data, false, false, true))
+}
+
 pub(crate) fn sweep_fault_terminal(
     phase: &OuterPhase,
     error: CommissionError,
@@ -441,6 +482,7 @@ fn sweep_evidence_terminal(
     data: &super::super::VelocitySweepData,
     current_headroom: bool,
     recovery_failure: bool,
+    rest_unconfirmed: bool,
 ) -> VelocitySweepTerminal {
     let plan = data.plan;
     assert!(
@@ -457,7 +499,12 @@ fn sweep_evidence_terminal(
         }
         _ => None,
     };
-    let (mut outcome, mut cause) = if recovery_failure {
+    let (mut outcome, mut cause) = if rest_unconfirmed {
+        (
+            VelocitySweepOutcome::Inconclusive,
+            CommissionError::VelocityRestNotConfirmed.status_code(),
+        )
+    } else if recovery_failure {
         (VelocitySweepOutcome::Inconclusive, SWEEP_CAUSE_RECOVERY)
     } else if combined_selected.is_some() {
         (VelocitySweepOutcome::Complete, SWEEP_CAUSE_NONE)
@@ -492,6 +539,7 @@ fn sweep_evidence_terminal(
     if combined_selected.is_none()
         && !current_headroom
         && !recovery_failure
+        && !rest_unconfirmed
         && (data.integrity.emitted_observations() != expected_observations
             || data.integrity.emitted_rungs() != expected_rungs)
     {
@@ -1182,7 +1230,11 @@ pub(crate) async fn step_velocity_sweep_with_trace<B: CommissioningBackend>(
                 else {
                     return fail_sweep(phase, backend, CommissionError::InvalidSchedule).await;
                 };
-                data.analysis.reset();
+                data.analysis
+                    .reset_for_scored_rest(bounded_rest_displacement(
+                        data.settle_min_displacement_counts,
+                        data.settle_max_displacement_counts,
+                    ));
                 *state = VelocitySweepState::AnalyzeSettle {
                     current_headroom: *current_headroom,
                     analysis_deadline_us,
@@ -1209,15 +1261,18 @@ pub(crate) async fn step_velocity_sweep_with_trace<B: CommissioningBackend>(
             if backend.elapsed_us() >= *analysis_deadline_us {
                 return fail_sweep(phase, backend, CommissionError::AnalysisOverrun).await;
             }
-            match poll_settle_confirmation(data) {
-                Ok(Some(true)) => {}
-                Ok(Some(false)) => {
-                    return fail_sweep(phase, backend, CommissionError::VelocityRestNotConfirmed)
-                        .await;
+            let confirmation = match poll_scored_rest_confirmation(
+                &mut data.analysis,
+                &data.observations,
+                &mut data.blocker,
+            ) {
+                Ok(ScoredRestPoll::Pending) => return StepResult::ReadyNow,
+                Ok(ScoredRestPoll::Diagnostic(decision)) => {
+                    return record_sweep_observation_rest_selection(data, decision);
                 }
-                Ok(None) => return StepResult::ReadyNow,
+                Ok(ScoredRestPoll::Complete(confirmation)) => confirmation,
                 Err(error) => return fail_sweep(phase, backend, error).await,
-            }
+            };
             if let Err(error) =
                 finish_velocity_current_zero_phase(&mut data.current_observer, backend).await
             {
@@ -1236,6 +1291,9 @@ pub(crate) async fn step_velocity_sweep_with_trace<B: CommissioningBackend>(
             data.analysis.reset();
             data.observations.clear();
             safety.end_primitive();
+            if !confirmation.confirmed_rest {
+                return inconclusive_rest_sweep(phase, backend).await;
+            }
             let complete_rung = data.slot + 1 >= SWEEP_SLOT_COUNT;
             let structural_current_bound = if complete_rung {
                 match data.plan.structural_current_bound(data.rung_index) {
@@ -1710,13 +1768,9 @@ pub(crate) async fn step_velocity_sweep_with_trace<B: CommissioningBackend>(
                 RungOriginRecoveryStep::RestUnconfirmed => {
                     if let Some(selected) = selected {
                         data.evidence = VelocitySweepEvidenceState::ResponseSelected(selected);
-                        *state = VelocitySweepState::FinishForward {
-                            current_headroom: *current_headroom,
-                            recovery_failure: true,
-                        };
-                        StepResult::ReadyNow
+                        inconclusive_rest_sweep(phase, backend).await
                     } else {
-                        fail_sweep(phase, backend, CommissionError::VelocityRestNotConfirmed).await
+                        inconclusive_rest_sweep(phase, backend).await
                     }
                 }
                 RungOriginRecoveryStep::Fault {
@@ -1914,6 +1968,7 @@ pub(crate) async fn step_velocity_sweep_with_trace<B: CommissioningBackend>(
                 data,
                 *current_headroom,
                 *recovery_failure,
+                false,
             ))
         }
     }
@@ -2062,6 +2117,64 @@ mod tests {
             assert_eq!([report.direction, report.slot], [u8::MAX; 2]);
             assert_eq!(data.integrity.next_evidence_sequence(), 1);
         }
+    }
+
+    #[test]
+    fn live_stage_b_schedule_records_one_selector_per_observation() {
+        use crate::autotune::velocity_measurement::{
+            RestSelectionDecision, RestSelectionDisposition, RestStructuralCode,
+        };
+
+        let request = super::super::sweep_plan::VelocitySweepRequest {
+            requested_velocity_mrev_s: 4_394,
+            machine_velocity_ceiling_mrev_s: 10_000,
+            requested_velocity_source: RequestedVelocitySource::Defaulted,
+            max_stroke_travel_mrev: 2_500,
+            settle_travel_reserve_mrev: 250,
+            negative_position_headroom_mrev: 7_025,
+            positive_position_headroom_mrev: 7_025,
+            max_duration_ms: 3_000,
+        };
+        let plan = super::super::sweep_plan::plan_combined_velocity_sweep(
+            request,
+            4_000,
+            2_816,
+            super::super::VELOCITY_LIMIT_EVIDENCE_CAPABILITY_BEST_EFFORT,
+        )
+        .unwrap();
+        assert_eq!(plan.recovery_slot_count, 23);
+        assert_eq!(plan.gains[19].raw(), 1_024);
+        let mut data = VelocitySweepData::new_with_plan(0, plan);
+        let decision = RestSelectionDecision {
+            structural_codes: [RestStructuralCode::Usable; 3],
+            intervals_q: [[-1, 1]; 3],
+            interval_present_mask: 0b111,
+            usable_mask: 0b111,
+            zero_compatible_mask: 0b111,
+            selected_mask: 0b100,
+            selected_suffix_len: 256,
+            disposition: RestSelectionDisposition::StatisticalAcceptance,
+        };
+        let mut emitted = 0u16;
+        for rung_index in 0..=19 {
+            for slot in 0..SWEEP_SLOT_COUNT {
+                data.rung_index = rung_index;
+                data.slot = slot;
+                let StepResult::VelocitySweepEvent(VelocitySweepEvent::RestSelection(report)) =
+                    record_sweep_observation_rest_selection(&mut data, decision)
+                else {
+                    panic!("every ordinary Stage-B rest decision must emit Event 151");
+                };
+                emitted += 1;
+                assert_eq!(report.evidence_sequence, emitted);
+                assert_eq!(report.owner, RestSelectionOwner::StageBObservation);
+                assert_eq!(report.rung_index, rung_index);
+                assert_eq!(report.direction, slot % 2);
+                assert_eq!(report.slot, slot);
+            }
+        }
+        assert_eq!(emitted, 160);
+        assert_eq!(data.integrity.next_evidence_sequence(), 161);
     }
 
     fn dispatch_outer_tick(phase: &mut OuterPhase, backend: &mut MockBackend) -> StepResult {
@@ -2366,7 +2479,7 @@ mod tests {
             panic!("selection must become visible only after recovery");
         };
         assert_eq!(selected.p, data.plan.gain_at(0).unwrap());
-        let terminal = sweep_evidence_terminal(data, false, false);
+        let terminal = sweep_evidence_terminal(data, false, false, false);
         assert_eq!(terminal.outcome, VelocitySweepOutcome::Complete);
         assert_eq!(terminal.nominated_p, selected.p.raw());
         assert_eq!(
@@ -2375,7 +2488,7 @@ mod tests {
                 .response_intervals_q()
                 .map(|interval| { interval.map(|endpoint| i32::try_from(endpoint).unwrap()) })
         );
-        let unavailable = sweep_evidence_terminal(data, false, true);
+        let unavailable = sweep_evidence_terminal(data, false, true, false);
         assert_eq!(unavailable.outcome, VelocitySweepOutcome::Inconclusive);
         assert_eq!(unavailable.cause, SWEEP_CAUSE_RECOVERY);
         assert!(unavailable.recovery_unavailable);
@@ -2506,7 +2619,7 @@ mod tests {
         let expected_ladder = [data.plan.p_start.raw(), data.plan.p_top.raw()];
         let expected_rung_count = data.plan.rung_count;
 
-        let terminal = sweep_evidence_terminal(data, true, false);
+        let terminal = sweep_evidence_terminal(data, true, false, false);
 
         assert_eq!(terminal.selected_intervals, [[100, 140], [-140, -100]]);
         assert_eq!(
@@ -2537,7 +2650,7 @@ mod tests {
             },
         );
 
-        let terminal = sweep_evidence_terminal(data, true, false);
+        let terminal = sweep_evidence_terminal(data, true, false, false);
 
         assert_eq!(terminal.outcome, VelocitySweepOutcome::CompleteCandidate);
         assert_eq!(terminal.cause, SWEEP_CAUSE_CURRENT_HEADROOM);
@@ -3387,10 +3500,19 @@ mod tests {
                     | crate::trace::stream::VELOCITY_OBSERVATION_FLAG_PPTM_ACTUAL_VALID),
             0
         );
+        let StepResult::VelocitySweepEvent(VelocitySweepEvent::RestSelection(selection)) =
+            poll_until_settle_analysis_completes(&mut phase, &mut backend)
+        else {
+            panic!("confirmed rest must emit its selector decision first");
+        };
+        assert_eq!(selection.owner, RestSelectionOwner::StageBObservation);
+        assert_eq!(selection.rung_index, 0);
+        assert_eq!(selection.direction, 0);
+        assert_eq!(selection.slot, 0);
         let StepResult::VelocitySweepEvent(VelocitySweepEvent::Current(current)) =
             poll_until_settle_analysis_completes(&mut phase, &mut backend)
         else {
-            panic!("confirmed rest must emit causal current evidence");
+            panic!("confirmed rest must emit causal current evidence after its selector");
         };
         assert_eq!(current.stage, RecoveryStage::Proportional as u8);
         assert_eq!(current.rung_index, 0);
@@ -3447,7 +3569,7 @@ mod tests {
     }
 
     #[test]
-    fn unconfirmed_zero_target_settle_fails_closed() {
+    fn unconfirmed_zero_target_settle_reports_causal_inconclusive_rest() {
         let mut phase = phase();
         let mut backend = MockBackend::new();
         enter_first_capture(&mut phase, &mut backend);
@@ -3470,10 +3592,33 @@ mod tests {
             pollster::block_on(step_velocity_sweep_with_trace(&mut phase, &mut backend));
         }
 
-        assert_sweep_fault(
-            poll_until_settle_analysis_completes(&mut phase, &mut backend),
-            CommissionError::VelocityRestNotConfirmed,
+        let StepResult::VelocitySweepEvent(VelocitySweepEvent::RestSelection(selection)) =
+            poll_until_settle_analysis_completes(&mut phase, &mut backend)
+        else {
+            panic!("completed rest analysis must emit its selector decision first");
+        };
+        assert_eq!(selection.owner, RestSelectionOwner::StageBObservation);
+        assert_eq!(selection.rung_index, 0);
+        assert_eq!(selection.direction, 0);
+        assert_eq!(selection.slot, 0);
+        assert_eq!(
+            selection.disposition,
+            crate::autotune::velocity_measurement::RestSelectionDisposition::Rejected
         );
+
+        let terminal = loop {
+            match pollster::block_on(step_velocity_sweep_with_trace(&mut phase, &mut backend)) {
+                StepResult::VelocitySweepTerminal(terminal) => break terminal,
+                StepResult::ReadyNow => {}
+                other => panic!("unexpected rest-rejection result: {other:?}"),
+            }
+        };
+        assert_eq!(terminal.outcome, VelocitySweepOutcome::Inconclusive);
+        assert_eq!(
+            terminal.cause,
+            CommissionError::VelocityRestNotConfirmed.status_code()
+        );
+        assert!(!terminal.recovery_unavailable);
         assert_fail_closed_tail(&backend);
     }
 
@@ -3560,10 +3705,20 @@ mod tests {
                 backend.set_abn_decoder_count(encoder_count);
                 pollster::block_on(step_velocity_sweep_with_trace(&mut phase, &mut backend));
             }
+            let StepResult::VelocitySweepEvent(VelocitySweepEvent::RestSelection(selection)) =
+                poll_until_settle_analysis_completes(&mut phase, &mut backend)
+            else {
+                panic!("confirmed rest must emit its selector decision first");
+            };
+            assert_eq!(selection.owner, RestSelectionOwner::StageBObservation);
+            assert_eq!(selection.rung_index, 0);
+            assert_eq!(selection.direction, slot % 2);
+            assert_eq!(selection.slot, slot);
+            evidence_sequences.push(selection.evidence_sequence);
             let StepResult::VelocitySweepEvent(VelocitySweepEvent::Current(current)) =
                 poll_until_settle_analysis_completes(&mut phase, &mut backend)
             else {
-                panic!("confirmed rest must emit causal current evidence");
+                panic!("confirmed rest must emit causal current evidence after its selector");
             };
             assert_eq!(current.rung_index, 0);
             assert_eq!(current.slot, slot);
@@ -3650,7 +3805,8 @@ mod tests {
         assert_eq!(
             evidence_sequences,
             [
-                0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18
+                0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22,
+                23, 24, 25, 26,
             ]
         );
         assert_eq!(observation_slots, [0, 1, 2, 3, 4, 5, 6, 7]);
