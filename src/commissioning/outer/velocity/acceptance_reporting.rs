@@ -527,14 +527,15 @@ mod tests {
     #[test]
     fn terminal_record_preserves_masks_counts_and_identity() {
         let terminal = AcceptanceMatrixTerminal {
-            schema_revision: 1,
+            schema_revision:
+                crate::commissioning::outer::velocity::acceptance_plan::ACCEPTANCE_MATRIX_SCHEMA_REVISION,
             run_sequence: 7,
             evidence_sequence: 43,
             acceptance_plan_digest: 0x1111_2222_3333_4444,
             plan_digest: 0x5555_6666_7777_8888,
             digest: 0x9999_aaaa_bbbb_cccc,
-            outcome: AcceptanceMatrixOutcome::Complete,
-            cause: AcceptanceMatrixCause::None,
+            outcome: AcceptanceMatrixOutcome::Inconclusive,
+            cause: AcceptanceMatrixCause::VelocityRestNotConfirmed,
             attempted_masks: [0b11111; 2],
             eligible_masks: [0b11110, 0b11100],
             current_terminus_masks: [0, 0b10000],
@@ -553,6 +554,13 @@ mod tests {
 
         assert!(record.as_bytes().len() <= VELOCITY_SWEEP_CANONICAL_RECORD_MAX);
         assert_eq!(&record.as_bytes()[..7], &[3, 7, 0, 0, 0, 43, 0]);
+        assert_eq!(
+            &record.as_bytes()[33..35],
+            &[
+                AcceptanceMatrixOutcome::Inconclusive as u8,
+                AcceptanceMatrixCause::VelocityRestNotConfirmed as u8,
+            ]
+        );
         assert!(
             record
                 .as_bytes()

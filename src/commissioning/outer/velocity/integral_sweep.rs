@@ -545,6 +545,10 @@ pub(super) fn acceptance_terminal(
                 AcceptanceMatrixOutcome::Fault,
                 AcceptanceMatrixCause::EvidenceIntegrity,
             ),
+            Ok(_) if data.rest_unconfirmed => (
+                AcceptanceMatrixOutcome::Inconclusive,
+                AcceptanceMatrixCause::VelocityRestNotConfirmed,
+            ),
             Ok(_) if data.recovery_failure || data.recovery_unavailable => (
                 AcceptanceMatrixOutcome::Inconclusive,
                 AcceptanceMatrixCause::RecoveryUnavailable,
@@ -2391,7 +2395,7 @@ pub(crate) async fn step_velocity_integral_with_trace<B: CommissioningBackend>(
                     record_integral_recovery_rest(data, analysis)
                 }
                 RungOriginRecoveryStep::RestUnconfirmed if is_acceptance_matrix(data.plan) => {
-                    data.recovery_failure = true;
+                    data.rest_unconfirmed = true;
                     *state = VelocityIntegralState::Terminal;
                     StepResult::ReadyNow
                 }

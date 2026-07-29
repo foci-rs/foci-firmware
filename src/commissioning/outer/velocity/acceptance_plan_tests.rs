@@ -110,7 +110,7 @@ fn point(plan: super::integral_plan::VelocityIntegralPlan) -> AcceptancePoint {
 
 #[test]
 fn live_matrix_geometry_and_orders_are_exact() {
-    assert_eq!(ACCEPTANCE_MATRIX_SCHEMA_REVISION, 3);
+    assert_eq!(ACCEPTANCE_MATRIX_SCHEMA_REVISION, 4);
     assert_eq!(AcceptanceMatrixOrder::Ascending as u8, 1);
     assert_eq!(AcceptanceMatrixOrder::Descending as u8, 2);
     assert_eq!(ACCEPTANCE_MATRIX_AMPLITUDES, 5);
@@ -150,6 +150,16 @@ fn live_matrix_geometry_and_orders_are_exact() {
     assert_eq!(ascending.recovery_lower_rate_q, [13_217_792, 12_827_648]);
     assert_eq!(ascending.nominal_workflow_ms, 63_041);
     assert_eq!(ascending.maximum_workflow_ms, 66_456);
+    assert_eq!(
+        (
+            super::combined_plan::COMBINED_STAGE_B_SCHEMA_REVISION,
+            super::combined_plan::COMBINED_STAGE_C_SCHEMA_REVISION,
+            ACCEPTANCE_MATRIX_SCHEMA_REVISION,
+        ),
+        (13, 12, 4)
+    );
+    assert_eq!([160 + 23, 120 + 15, 40 + 5], [183, 135, 45]);
+    assert_eq!((183 + 135 + 45) * 78, 28_314);
 
     let descending = plan_acceptance_matrix(
         point(current),
@@ -166,6 +176,21 @@ fn live_matrix_geometry_and_orders_are_exact() {
         [2_244_267, 1_126_400, 563_200, 281_600, 136_534]
     );
     assert_ne!(ascending.digest(), descending.digest());
+}
+
+#[test]
+fn historical_schema_three_keeps_the_stabilized_recovery_digest_input() {
+    let current = combined_plan();
+    let mut historical = plan_acceptance_matrix(
+        point(current),
+        request(),
+        AcceptanceMatrixOrder::Ascending,
+        current,
+    )
+    .unwrap();
+    historical.schema_revision = 3;
+
+    assert_eq!(historical.digest(), 0xb3c5_9858_d412_178a);
 }
 
 #[test]

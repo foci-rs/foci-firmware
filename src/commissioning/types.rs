@@ -880,6 +880,8 @@ pub enum AcceptanceMatrixCause {
     EvidenceCapacity = 6,
     /// Canonical counts, masks, or identities violated their contract.
     EvidenceIntegrity = 7,
+    /// Rest analysis completed but did not confirm a stationary zero-target window.
+    VelocityRestNotConfirmed = 53,
 }
 
 /// One completed amplitude report with canonical matrix sequencing.
@@ -1688,5 +1690,6 @@ mod acceptance_matrix_code_tests {
         assert_eq!(AcceptanceMatrixCause::MatrixOrderMismatch as u8, 5);
         assert_eq!(AcceptanceMatrixCause::EvidenceCapacity as u8, 6);
         assert_eq!(AcceptanceMatrixCause::EvidenceIntegrity as u8, 7);
+        assert_eq!(AcceptanceMatrixCause::VelocityRestNotConfirmed as u8, 53);
     }
 }

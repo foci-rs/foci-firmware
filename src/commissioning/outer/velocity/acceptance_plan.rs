@@ -12,7 +12,7 @@ use super::sweep_plan::VelocitySweepRequest;
 use crate::autotune::velocity_measurement::VelocityDirection;
 
 /// Current independent velocity-acceptance matrix schema.
-pub const ACCEPTANCE_MATRIX_SCHEMA_REVISION: u16 = 3;
+pub const ACCEPTANCE_MATRIX_SCHEMA_REVISION: u16 = 4;
 /// Number of frozen target amplitudes in each run.
 pub const ACCEPTANCE_MATRIX_AMPLITUDES: usize = 5;
 /// Capture-wrapper allowance for one matrix command.
@@ -136,7 +136,7 @@ impl AcceptanceMatrixPlan {
         hash_value!(self.zero_settle_us);
         hash_value!(self.analysis_budget_us);
         hash_value!(INTEGRAL_SLOT_TRANSITION_ALLOWANCE_US);
-        if self.schema_revision == ACCEPTANCE_MATRIX_SCHEMA_REVISION {
+        if matches!(self.schema_revision, 3 | ACCEPTANCE_MATRIX_SCHEMA_REVISION) {
             hash_value!(super::recovery::STABILIZED_RECOVERY_SCHEDULE_CODE);
         }
         hash_value!(self.nominal_workflow_ms);

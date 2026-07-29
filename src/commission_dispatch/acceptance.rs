@@ -179,6 +179,11 @@ pub fn apply_acceptance_matrix_terminal(
             AcceptanceMatrixOrder::Ascending => stage_c_candidate.advance_matrix_progress(),
             AcceptanceMatrixOrder::Descending => stage_c_candidate.close_matrix_progress(),
         },
+        AcceptanceMatrixOutcome::Inconclusive
+            if terminal.cause == AcceptanceMatrixCause::VelocityRestNotConfirmed =>
+        {
+            true
+        }
         AcceptanceMatrixOutcome::Inconclusive => stage_c_candidate.close_matrix_progress(),
         AcceptanceMatrixOutcome::Fault => {
             stage_c_candidate.observe_fault();

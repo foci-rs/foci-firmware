@@ -380,6 +380,59 @@ fn live_stage_c_schedule_records_one_selector_per_observation() {
 }
 
 #[test]
+fn live_matrix_schedule_records_one_selector_per_completed_rest_decision() {
+    let mut matrix_plan = plan();
+    matrix_plan.acquisition_kind = VelocityIntegralAcquisitionKind::AcceptanceAscending;
+    matrix_plan.i_start = 1_024;
+    matrix_plan.positive_rung_count = 5;
+    matrix_plan.matrix_targets_rpm = [16, 33, 66, 132, 263];
+    let mut data = VelocityIntegralData::new(41, matrix_plan);
+    let decision = completed_rest_selection();
+
+    for amplitude_index in 0..5 {
+        for slot in 0..INTEGRAL_SLOT_COUNT {
+            data.rung_index = amplitude_index;
+            data.slot = slot;
+            let StepResult::AcceptanceMatrixEvent(AcceptanceMatrixEvent::RestSelection(report)) =
+                record_integral_observation_rest_selection(
+                    &mut data,
+                    decision,
+                    RestSelectionOwner::MatrixObservation,
+                )
+            else {
+                panic!("every matrix observation rest decision must emit Event 151");
+            };
+            let expected_sequence =
+                1 + u16::from(amplitude_index) * u16::from(INTEGRAL_SLOT_COUNT) + u16::from(slot);
+            assert_eq!(report.evidence_sequence, expected_sequence);
+            assert_eq!(report.owner, RestSelectionOwner::MatrixObservation);
+            assert_eq!(report.rung_index, amplitude_index);
+            assert_eq!(report.direction, slot % 2);
+            assert_eq!(report.slot, slot);
+        }
+    }
+    assert_eq!(data.integrity.next_evidence_sequence(), 41);
+
+    for amplitude_index in 0..5 {
+        let StepResult::AcceptanceMatrixEvent(AcceptanceMatrixEvent::RestSelection(report)) =
+            record_integral_recovery_rest_selection(
+                &mut data,
+                decision,
+                RecoveryStage::Integral,
+                amplitude_index,
+            )
+        else {
+            panic!("every completed matrix recovery rest decision must emit Event 151");
+        };
+        assert_eq!(report.evidence_sequence, 41 + u16::from(amplitude_index));
+        assert_eq!(report.owner, RestSelectionOwner::MatrixRecovery);
+        assert_eq!(report.rung_index, amplitude_index);
+        assert_eq!([report.direction, report.slot], [u8::MAX; 2]);
+    }
+    assert_eq!(data.integrity.next_evidence_sequence(), 46);
+}
+
+#[test]
 fn stage_c_and_matrix_place_rest_diagnostics_immediately_before_recovery() {
     let mut stage_c_plan = plan();
     stage_c_plan.combined_workflow = true;
@@ -684,9 +737,83 @@ fn matrix_terminals_distinguish_sufficiency_recovery_and_integrity() {
     assert_eq!(recovery.outcome, AcceptanceMatrixOutcome::Inconclusive);
     assert_eq!(recovery.cause, AcceptanceMatrixCause::RecoveryUnavailable);
 
+    data.recovery_unavailable = false;
+    data.rest_unconfirmed = true;
+    let rest_unconfirmed = acceptance_terminal(&data, false, None);
+    assert_eq!(
+        rest_unconfirmed.outcome,
+        AcceptanceMatrixOutcome::Inconclusive
+    );
+    assert_eq!(
+        rest_unconfirmed.cause,
+        AcceptanceMatrixCause::VelocityRestNotConfirmed
+    );
+    assert_eq!(rest_unconfirmed.attempted_masks, [0b1_1111; 2]);
+    assert_eq!(rest_unconfirmed.eligible_masks, [0b00111; 2]);
+
     let fault = acceptance_terminal(&data, true, None);
     assert_eq!(fault.outcome, AcceptanceMatrixOutcome::Fault);
     assert_eq!(fault.cause, AcceptanceMatrixCause::EvidenceIntegrity);
+}
+
+#[test]
+fn both_matrix_orders_end_an_observation_rest_rejection_with_cause_53() {
+    for acquisition_kind in [
+        VelocityIntegralAcquisitionKind::AcceptanceAscending,
+        VelocityIntegralAcquisitionKind::AcceptanceDescending,
+    ] {
+        let mut phase = phase();
+        let mut workspace = TransientBuffer::new();
+        let OuterPhase::VelocityIntegral { state, data, .. } = &mut phase else {
+            unreachable!()
+        };
+        data.plan.acquisition_kind = acquisition_kind;
+        data.plan.i_start = 1_024;
+        data.plan.positive_rung_count = 5;
+        data.plan.matrix_targets_rpm = match acquisition_kind {
+            VelocityIntegralAcquisitionKind::AcceptanceAscending => [16, 33, 66, 132, 263],
+            VelocityIntegralAcquisitionKind::AcceptanceDescending => [263, 132, 66, 33, 16],
+            _ => unreachable!(),
+        };
+        data.plan.selected_response_intervals_q = [[0x1234, 0], [0x55aa, 0]];
+        data.current_observer = VelocityCurrentObserver::new(
+            current_limit(u32::from(data.plan.usable_torque_limit)),
+            VelocityLimitEvidenceCapability::BestEffortPolling,
+        );
+        data.settle_min_displacement_counts = 0;
+        data.settle_max_displacement_counts = 2;
+        for _ in 0..256 {
+            data.observations.push(1, 1_000).unwrap();
+        }
+        reset_scored_rest(data);
+        *state = VelocityIntegralState::AnalyzeSettle {
+            analysis_deadline_us: 236_000,
+        };
+        let mut backend = MockBackend::new();
+
+        let mut diagnostic = None;
+        let terminal = loop {
+            match step(&mut phase, &mut workspace, &mut backend) {
+                StepResult::ReadyNow => {}
+                StepResult::AcceptanceMatrixEvent(AcceptanceMatrixEvent::RestSelection(event)) => {
+                    diagnostic = Some(event);
+                }
+                StepResult::AcceptanceMatrixEvent(AcceptanceMatrixEvent::Current(_)) => {}
+                StepResult::AcceptanceMatrixTerminal(terminal) => break terminal,
+                other => panic!("unexpected matrix rest result: {other:?}"),
+            }
+        };
+
+        let diagnostic = diagnostic.expect("matrix rest analysis must emit Event 151");
+        assert_eq!(diagnostic.owner, RestSelectionOwner::MatrixObservation);
+        assert_eq!(terminal.outcome, AcceptanceMatrixOutcome::Inconclusive);
+        assert_eq!(
+            terminal.cause,
+            AcceptanceMatrixCause::VelocityRestNotConfirmed
+        );
+        assert_eq!(terminal.attempted_masks, [0; 2]);
+        assert_eq!(terminal.unattempted_masks, [0b1_1111; 2]);
+    }
 }
 
 #[test]

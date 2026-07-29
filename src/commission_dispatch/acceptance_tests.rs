@@ -144,6 +144,12 @@ fn terminal(plan_digest: u64, outcome: AcceptanceMatrixOutcome) -> AcceptanceMat
     }
 }
 
+fn rest_unconfirmed_terminal(plan_digest: u64) -> AcceptanceMatrixTerminal {
+    let mut terminal = terminal(plan_digest, AcceptanceMatrixOutcome::Inconclusive);
+    terminal.cause = AcceptanceMatrixCause::VelocityRestNotConfirmed;
+    terminal
+}
+
 #[test]
 fn action_codes_and_invalid_values_are_exact() {
     assert_eq!(AutotuneAction::Combined as u8, 0);
@@ -331,4 +337,45 @@ fn safe_terminals_advance_or_close_and_fault_clears() {
         &mut slot,
     );
     assert_eq!(slot.acceptance_point(), None);
+}
+
+#[test]
+fn rest_unconfirmed_preserves_the_exact_point_and_matrix_order() {
+    let current = combined_plan();
+
+    for (action, order, progress) in [
+        (
+            AutotuneAction::MatrixAscending,
+            AcceptanceMatrixOrder::Ascending,
+            AcceptanceMatrixProgress::ReadyAscending,
+        ),
+        (
+            AutotuneAction::MatrixDescending,
+            AcceptanceMatrixOrder::Descending,
+            AcceptanceMatrixProgress::ReadyDescending,
+        ),
+    ] {
+        let mut slot = StageCCandidateSlot::new();
+        slot.install_acceptance_point(point(current, progress));
+        let before = slot.acceptance_point().unwrap();
+        let preflight = preflight_acceptance_matrix(action, request(), current, 9, &slot).unwrap();
+
+        let terminal = apply_acceptance_matrix_terminal(
+            rest_unconfirmed_terminal(preflight.plan.digest()),
+            order,
+            preflight.plan.digest(),
+            &mut slot,
+        );
+
+        assert_eq!(terminal.outcome, AcceptanceMatrixOutcome::Inconclusive);
+        assert_eq!(
+            terminal.cause,
+            AcceptanceMatrixCause::VelocityRestNotConfirmed
+        );
+        assert_eq!(slot.acceptance_point(), Some(before));
+        assert!(
+            preflight_acceptance_matrix(action, request(), current, 10, &slot).is_ok(),
+            "the same matrix order must remain admissible after a rest rejection"
+        );
+    }
 }
