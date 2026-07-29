@@ -221,6 +221,11 @@ pub(crate) struct RecoveryRestAnalysis {
 pub(crate) enum RungOriginRecoveryStep {
     ReadyNow,
     At(u64),
+    RestSelection {
+        decision: crate::autotune::velocity_measurement::RestSelectionDecision,
+        stage: RecoveryStage,
+        rung_index: u8,
+    },
     Finished(RungOriginRecoveryReport),
     Contained(RungOriginRecoveryReport),
     RestAnalysis(RecoveryRestAnalysis),

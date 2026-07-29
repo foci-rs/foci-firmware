@@ -9,8 +9,8 @@ use super::integral_sweep::{
     integral_recovery_rest_schedule, integral_rung_count, integral_rung_kind,
     integral_slot_direction, integral_target_rpm_at, matrix_rung_mean,
     opening_recovery_lower_rate_q, positive_directional_floors_exist,
-    record_integral_recovery_rest, record_integral_target_if_reached,
-    step_velocity_integral_with_trace, store_matrix_rung_mean,
+    record_integral_recovery_rest, record_integral_recovery_rest_selection,
+    record_integral_target_if_reached, step_velocity_integral_with_trace, store_matrix_rung_mean,
 };
 use super::recovery::{
     ExactU64Parts, RecoveryBindingSource, RecoveryCurrentContactPolicy, RecoveryRestAnalysis,
@@ -20,7 +20,10 @@ use super::recovery::{
 use super::sweep_plan::RequestedVelocitySource;
 use crate::autotune::CommissionError;
 use crate::autotune::TransientBuffer;
-use crate::autotune::velocity_measurement::{StationarityExclusion, StationarityResult};
+use crate::autotune::velocity_measurement::{
+    RestSelectionDecision, RestSelectionDisposition, RestStructuralCode, StationarityExclusion,
+    StationarityResult,
+};
 use crate::commission_dispatch::test_support::{MockBackend, SpiOp, current_limit};
 use crate::commissioning::outer::state::{
     PositiveIRestBoundary, VelocitySettleMetrics, VelocitySettleTransition,
@@ -276,6 +279,19 @@ fn completed_recovery_rest_analysis() -> RecoveryRestAnalysis {
     }
 }
 
+fn completed_rest_selection() -> RestSelectionDecision {
+    RestSelectionDecision {
+        structural_codes: [RestStructuralCode::Usable; 3],
+        intervals_q: [[-17, 29]; 3],
+        interval_present_mask: 0b111,
+        usable_mask: 0b111,
+        zero_compatible_mask: 0b111,
+        selected_mask: 0b100,
+        selected_suffix_len: 256,
+        disposition: RestSelectionDisposition::StatisticalAcceptance,
+    }
+}
+
 fn completed_recovery_report() -> RungOriginRecoveryReport {
     RungOriginRecoveryReport {
         stage: RecoveryStage::Integral,
@@ -302,14 +318,28 @@ fn stage_c_and_matrix_place_rest_diagnostics_immediately_before_recovery() {
     stage_c_plan.combined_workflow = true;
     let mut stage_c = VelocityIntegralData::new(17, stage_c_plan);
     let before = stage_c.integrity.digest();
+    let StepResult::VelocityIntegralEvent(VelocityIntegralEvent::RestSelection(selection)) =
+        record_integral_recovery_rest_selection(
+            &mut stage_c,
+            completed_rest_selection(),
+            RecoveryStage::Integral,
+            4,
+        )
+    else {
+        panic!("Stage C must emit its selector diagnostic")
+    };
     let StepResult::VelocityIntegralEvent(VelocityIntegralEvent::RecoveryRest(diagnostic)) =
         record_integral_recovery_rest(&mut stage_c, completed_recovery_rest_analysis())
     else {
         panic!("Stage C must emit its recovery-rest diagnostic")
     };
     assert_eq!(diagnostic.run_sequence, 17);
-    assert_eq!(diagnostic.evidence_sequence, 1);
+    assert_eq!(selection.evidence_sequence, 1);
+    assert_eq!(diagnostic.evidence_sequence, 2);
     assert_eq!(diagnostic.plan_digest, stage_c.plan.plan_digest);
+    assert_eq!(selection.plan_digest, diagnostic.plan_digest);
+    assert_eq!(selection.stage as u8, diagnostic.stage as u8);
+    assert_eq!(selection.rung_index, diagnostic.rung_index);
     assert_eq!(diagnostic.stage, RecoveryStage::Integral);
     assert_eq!(diagnostic.rung_index, 4);
     let recovery = RungOriginRecoveryEvidence {
@@ -330,13 +360,27 @@ fn stage_c_and_matrix_place_rest_diagnostics_immediately_before_recovery() {
     matrix_plan.acquisition_kind = VelocityIntegralAcquisitionKind::AcceptanceAscending;
     matrix_plan.matrix_targets_rpm = [16, 33, 66, 132, 263];
     let mut matrix = VelocityIntegralData::new(23, matrix_plan);
+    let StepResult::AcceptanceMatrixEvent(AcceptanceMatrixEvent::RestSelection(selection)) =
+        record_integral_recovery_rest_selection(
+            &mut matrix,
+            completed_rest_selection(),
+            RecoveryStage::Integral,
+            4,
+        )
+    else {
+        panic!("matrix must emit its selector diagnostic")
+    };
     let StepResult::AcceptanceMatrixEvent(AcceptanceMatrixEvent::RecoveryRest(diagnostic)) =
         record_integral_recovery_rest(&mut matrix, completed_recovery_rest_analysis())
     else {
         panic!("matrix must emit its recovery-rest diagnostic")
     };
     assert_eq!(diagnostic.run_sequence, 23);
-    assert_eq!(diagnostic.evidence_sequence, 1);
+    assert_eq!(selection.evidence_sequence, 1);
+    assert_eq!(diagnostic.evidence_sequence, 2);
+    assert_eq!(selection.plan_digest, diagnostic.plan_digest);
+    assert_eq!(selection.stage as u8, diagnostic.stage as u8);
+    assert_eq!(selection.rung_index, diagnostic.rung_index);
     let recovery = RungOriginRecoveryEvidence {
         run_sequence: 23,
         evidence_sequence: matrix.integrity.next_evidence_sequence(),

@@ -13,7 +13,9 @@ use super::super::current_guard::{
     read_velocity_pid_input_abs, read_velocity_pid_output_abs, restart_velocity_current_primitive,
 };
 use super::super::sweep::clear_velocity_integrator;
-use super::super::sweep_analysis::poll_settle_confirmation_parts;
+use super::super::sweep_analysis::{
+    ScoredRestPoll, bounded_rest_displacement, poll_scored_rest_confirmation,
+};
 use super::super::sweep_plan::{SETTLE_ANALYSIS_BUDGET_US, ZERO_SETTLE_US};
 use super::{
     ExactU64Parts, RECOVERY_STABILIZATION_US, RecoveryBindingSource, RecoveryRestAnalysis,
@@ -335,7 +337,12 @@ pub(crate) async fn step_rung_origin_recovery<B: CommissioningBackend>(
                 else {
                     return recovery_fault(CommissionError::InvalidSchedule, None);
                 };
-                resources.analysis.reset();
+                resources
+                    .analysis
+                    .reset_for_scored_rest(bounded_rest_displacement(
+                        *resources.settle_min_displacement_counts,
+                        *resources.settle_max_displacement_counts,
+                    ));
                 runtime.state = RecoveryState::AnalyzeSettle {
                     analysis_deadline_us: ExactU64Parts::from_u64(analysis_deadline_us),
                     contained,
@@ -360,15 +367,20 @@ pub(crate) async fn step_rung_origin_recovery<B: CommissioningBackend>(
             if backend.elapsed_us() >= analysis_deadline_us {
                 return recovery_fault(CommissionError::AnalysisOverrun, None);
             }
-            let confirmation = match poll_settle_confirmation_parts(
+            let confirmation = match poll_scored_rest_confirmation(
                 resources.analysis,
                 resources.observations,
                 resources.blocker,
-                *resources.settle_min_displacement_counts,
-                *resources.settle_max_displacement_counts,
             ) {
-                Ok(None) => return RungOriginRecoveryStep::ReadyNow,
-                Ok(Some(result)) => result,
+                Ok(ScoredRestPoll::Pending) => return RungOriginRecoveryStep::ReadyNow,
+                Ok(ScoredRestPoll::Diagnostic(decision)) => {
+                    return RungOriginRecoveryStep::RestSelection {
+                        decision,
+                        stage: runtime.stage,
+                        rung_index: runtime.rung_index,
+                    };
+                }
+                Ok(ScoredRestPoll::Complete(result)) => result,
                 Err(error) => return recovery_fault(error, None),
             };
             if let Err(error) =
@@ -389,25 +401,9 @@ pub(crate) async fn step_rung_origin_recovery<B: CommissioningBackend>(
                 resources.safety.end_primitive();
                 let confirmed = confirmation.confirmed_rest && in_band;
                 runtime.state = RecoveryState::RestTerminal { confirmed };
-                let (stationarity_code, interval_present, exact_velocity_interval_q) =
-                    match confirmation.stationarity {
-                        crate::autotune::velocity_measurement::StationarityResult::Usable(_) => (
-                            0,
-                            1,
-                            confirmation
-                                .exact_velocity_interval_q
-                                .expect("usable settle carries an exact interval"),
-                        ),
-                        crate::autotune::velocity_measurement::StationarityResult::Excluded(
-                            exclusion,
-                        ) => (
-                            super::super::integral_reporting::stationarity_exclusion_code(
-                                exclusion,
-                            ),
-                            0,
-                            [0; 2],
-                        ),
-                    };
+                let exact_velocity_interval_q =
+                    confirmation.exact_velocity_interval_q.unwrap_or([0; 2]);
+                let interval_present = u8::from(confirmation.exact_velocity_interval_q.is_some());
                 let current_contact_code = resources
                     .current_observer
                     .evidence(VelocityCurrentZeroPhase::Recovery)
@@ -446,7 +442,7 @@ pub(crate) async fn step_rung_origin_recovery<B: CommissioningBackend>(
                     peak_torque_target_abs: resources.current_observer.peak_pid_output_abs(),
                     stage: runtime.stage,
                     rung_index: runtime.rung_index,
-                    stationarity_code,
+                    stationarity_code: confirmation.recent_structural_code as u8,
                     interval_present,
                     current_contact_code,
                     disposition: u8::from(!confirmed),

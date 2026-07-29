@@ -2497,8 +2497,9 @@ mod tests {
     #[test]
     fn rest_selection_uses_trace_event_151_and_exact_canonical_record() {
         use crate::autotune::velocity_measurement::{RestSelectionDisposition, RestStructuralCode};
+        use crate::commissioning::outer::velocity::recovery::RecoveryStage;
         use crate::commissioning::types::{
-            RestSelectionDiagnostic, RestSelectionOwner, RestSelectionStage, VelocitySweepEvent,
+            RestSelectionDiagnostic, RestSelectionOwner, VelocitySweepEvent,
         };
 
         let report = RestSelectionDiagnostic {
@@ -2512,7 +2513,7 @@ mod tests {
             usable_mask: 0b111,
             zero_compatible_mask: 0b111,
             selected_mask: 0b100,
-            stage: RestSelectionStage::StageB,
+            stage: RecoveryStage::Proportional,
             owner: RestSelectionOwner::StageBObservation,
             rung_index: 1,
             direction: 0,

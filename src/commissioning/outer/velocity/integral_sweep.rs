@@ -15,9 +15,10 @@ use crate::commissioning::types::{
     AcceptanceAmplitudeEvidence, AcceptanceMatrixCause, AcceptanceMatrixEvent,
     AcceptanceMatrixOutcome, AcceptanceMatrixTerminal, OUTER_SAFETY_FAULT_CURRENT,
     OUTER_SAFETY_FAULT_OBSERVATION_GAP, OUTER_SAFETY_FAULT_QUARTER_TURN, OuterSafetyFault,
-    RecoveryRestDiagnostic, RungOriginRecoveryEvidence, StepResult, VelocityIntegralEvent,
-    VelocityIntegralObservation, VelocityIntegralOutcome, VelocityIntegralRungReport,
-    VelocityIntegralTerminal, VelocityPrimitiveCurrentEvidence,
+    RecoveryRestDiagnostic, RestSelectionDiagnostic, RestSelectionOwner,
+    RungOriginRecoveryEvidence, StepResult, VelocityIntegralEvent, VelocityIntegralObservation,
+    VelocityIntegralOutcome, VelocityIntegralRungReport, VelocityIntegralTerminal,
+    VelocityPrimitiveCurrentEvidence,
 };
 use foci_tmc4671::current_limit::PidTorqueFluxLimit;
 use foci_tmc4671::pid::{PidGainPair, PidIGain, PidPGain};
@@ -810,6 +811,47 @@ pub(super) fn record_integral_recovery_rest(
         let event = data
             .integrity
             .record(VelocityIntegralEvent::RecoveryRest(diagnostic));
+        StepResult::VelocityIntegralEvent(event)
+    }
+}
+
+pub(super) fn record_integral_recovery_rest_selection(
+    data: &mut VelocityIntegralData,
+    decision: crate::autotune::velocity_measurement::RestSelectionDecision,
+    stage: RecoveryStage,
+    rung_index: u8,
+) -> StepResult {
+    let diagnostic = RestSelectionDiagnostic {
+        intervals_q: decision.intervals_q,
+        plan_digest: data.plan.plan_digest,
+        run_sequence: data.integrity.run_sequence(),
+        evidence_sequence: data.integrity.next_evidence_sequence(),
+        selected_suffix_len: decision.selected_suffix_len,
+        structural_codes: decision.structural_codes,
+        interval_present_mask: decision.interval_present_mask,
+        usable_mask: decision.usable_mask,
+        zero_compatible_mask: decision.zero_compatible_mask,
+        selected_mask: decision.selected_mask,
+        stage,
+        owner: if is_acceptance_matrix(data.plan) {
+            RestSelectionOwner::MatrixRecovery
+        } else {
+            RestSelectionOwner::StageCRecovery
+        },
+        rung_index,
+        direction: u8::MAX,
+        slot: u8::MAX,
+        disposition: decision.disposition,
+    };
+    if is_acceptance_matrix(data.plan) {
+        let event = data
+            .integrity
+            .record_acceptance(AcceptanceMatrixEvent::RestSelection(diagnostic));
+        StepResult::AcceptanceMatrixEvent(event)
+    } else {
+        let event = data
+            .integrity
+            .record(VelocityIntegralEvent::RestSelection(diagnostic));
         StepResult::VelocityIntegralEvent(event)
     }
 }
@@ -2236,6 +2278,11 @@ pub(crate) async fn step_velocity_integral_with_trace<B: CommissioningBackend>(
             match step_rung_origin_recovery(runtime, &mut resources, backend).await {
                 RungOriginRecoveryStep::ReadyNow => StepResult::ReadyNow,
                 RungOriginRecoveryStep::At(deadline_us) => StepResult::At(deadline_us),
+                RungOriginRecoveryStep::RestSelection {
+                    decision,
+                    stage,
+                    rung_index,
+                } => record_integral_recovery_rest_selection(data, decision, stage, rung_index),
                 RungOriginRecoveryStep::Finished(report)
                 | RungOriginRecoveryStep::Contained(report) => {
                     *state = VelocityIntegralState::FinalizeRecovery(report);

@@ -704,7 +704,7 @@ mod tests {
         VelocityObservationSummary,
     };
     use crate::commissioning::types::{
-        RecoveryRestDiagnostic, RestSelectionDiagnostic, RestSelectionOwner, RestSelectionStage,
+        RecoveryRestDiagnostic, RestSelectionDiagnostic, RestSelectionOwner,
         RungOriginRecoveryEvidence, VelocityPrimitiveCurrentEvidence,
     };
     use foci_tmc4671::pid::PidPGain;
@@ -864,7 +864,7 @@ mod tests {
             usable_mask: 0b011,
             zero_compatible_mask: 0b011,
             selected_mask: 0b010,
-            stage: RestSelectionStage::StageC,
+            stage: RecoveryStage::Integral,
             owner: RestSelectionOwner::StageCPositiveObservation,
             rung_index: 7,
             direction: 1,
@@ -913,11 +913,10 @@ mod tests {
         );
         assert_eq!(
             [
-                RestSelectionStage::StageB as u8,
-                RestSelectionStage::StageC as u8,
-                RestSelectionStage::Matrix as u8,
+                RecoveryStage::Proportional as u8,
+                RecoveryStage::Integral as u8
             ],
-            [0, 1, 2]
+            [0, 1]
         );
 
         let report = rest_selection_diagnostic();

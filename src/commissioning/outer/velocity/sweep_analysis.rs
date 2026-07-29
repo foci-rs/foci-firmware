@@ -367,7 +367,7 @@ pub(super) fn poll_settle_confirmation_parts<const LEVELS: usize>(
 /// This covers the observed boundary-toggle dither while rejecting the
 /// multi-count rebound that the statistical stationarity gate is intended to
 /// catch. The bounds include the settle origin at zero.
-fn bounded_rest_displacement(minimum: i8, maximum: i8) -> bool {
+pub(super) fn bounded_rest_displacement(minimum: i8, maximum: i8) -> bool {
     maximum - minimum <= 1
 }
 

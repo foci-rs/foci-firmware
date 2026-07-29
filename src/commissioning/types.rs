@@ -540,19 +540,6 @@ pub struct RecoveryRestDiagnostic {
     pub(crate) disposition: u8,
 }
 
-/// Stage owning one completed scored-rest selector decision.
-#[cfg(feature = "trace-velocity-sweep")]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
-#[repr(u8)]
-pub enum RestSelectionStage {
-    /// Proportional response sweep.
-    StageB = 0,
-    /// Integral response sweep.
-    StageC = 1,
-    /// Fixed-I production-confidence matrix.
-    Matrix = 2,
-}
-
 /// Causal owner of one completed scored-rest selector decision.
 #[cfg(feature = "trace-velocity-sweep")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
@@ -603,7 +590,7 @@ pub struct RestSelectionDiagnostic {
     /// Bit naming the selected suffix, or zero.
     pub(crate) selected_mask: u8,
     /// Owning commissioning stage.
-    pub(crate) stage: RestSelectionStage,
+    pub(crate) stage: crate::commissioning::outer::velocity::recovery::RecoveryStage,
     /// Causal scored-rest owner.
     pub(crate) owner: RestSelectionOwner,
     /// Zero-based rung or amplitude index.

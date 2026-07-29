@@ -10,10 +10,10 @@ use crate::commissioning::schedule::next_grid_deadline;
 use crate::commissioning::types::{
     OUTER_SAFETY_FAULT_CURRENT, OUTER_SAFETY_FAULT_OBSERVATION_GAP,
     OUTER_SAFETY_FAULT_QUARTER_TURN, OuterSafetyFault, RecoveryRestDiagnostic,
-    RungOriginRecoveryEvidence, StepResult, StructuredBoundaryEvidence,
-    VelocityDirectionalRegionReport, VelocityJointRegionReport, VelocityPrimitiveCurrentEvidence,
-    VelocitySweepEvent, VelocitySweepObservation, VelocitySweepOutcome, VelocitySweepRungReport,
-    VelocitySweepTerminal,
+    RestSelectionDiagnostic, RestSelectionOwner, RungOriginRecoveryEvidence, StepResult,
+    StructuredBoundaryEvidence, VelocityDirectionalRegionReport, VelocityJointRegionReport,
+    VelocityPrimitiveCurrentEvidence, VelocitySweepEvent, VelocitySweepObservation,
+    VelocitySweepOutcome, VelocitySweepRungReport, VelocitySweepTerminal,
 };
 use foci_tmc4671::current_limit::PidTorqueFluxLimit;
 use foci_tmc4671::pid::PidGainPair;
@@ -249,6 +249,40 @@ const fn sweep_recovery_rest_schedule(
     } else {
         RecoveryRestSchedule::ImmediateScored
     }
+}
+
+fn record_sweep_recovery_rest_selection(
+    data: &mut super::super::VelocitySweepData,
+    decision: crate::autotune::velocity_measurement::RestSelectionDecision,
+    stage: RecoveryStage,
+    rung_index: u8,
+    selected: bool,
+) -> StepResult {
+    let event = data
+        .integrity
+        .record(VelocitySweepEvent::RestSelection(RestSelectionDiagnostic {
+            intervals_q: decision.intervals_q,
+            plan_digest: data.plan.plan_digest,
+            run_sequence: data.integrity.run_sequence(),
+            evidence_sequence: data.integrity.next_evidence_sequence(),
+            selected_suffix_len: decision.selected_suffix_len,
+            structural_codes: decision.structural_codes,
+            interval_present_mask: decision.interval_present_mask,
+            usable_mask: decision.usable_mask,
+            zero_compatible_mask: decision.zero_compatible_mask,
+            selected_mask: decision.selected_mask,
+            stage,
+            owner: if selected {
+                RestSelectionOwner::StageBSelectedRecovery
+            } else {
+                RestSelectionOwner::StageBRecovery
+            },
+            rung_index,
+            direction: u8::MAX,
+            slot: u8::MAX,
+            disposition: decision.disposition,
+        }));
+    StepResult::VelocitySweepEvent(event)
 }
 
 #[derive(Clone, Copy)]
@@ -1617,6 +1651,17 @@ pub(crate) async fn step_velocity_sweep_with_trace<B: CommissioningBackend>(
             match step_rung_origin_recovery(runtime, &mut resources, backend).await {
                 RungOriginRecoveryStep::ReadyNow => StepResult::ReadyNow,
                 RungOriginRecoveryStep::At(deadline_us) => StepResult::At(deadline_us),
+                RungOriginRecoveryStep::RestSelection {
+                    decision,
+                    stage,
+                    rung_index,
+                } => record_sweep_recovery_rest_selection(
+                    data,
+                    decision,
+                    stage,
+                    rung_index,
+                    selected.is_some(),
+                ),
                 RungOriginRecoveryStep::Finished(report)
                 | RungOriginRecoveryStep::Contained(report) => {
                     data.evidence =
@@ -1973,6 +2018,50 @@ mod tests {
             sweep_recovery_rest_schedule(11, true),
             RecoveryRestSchedule::Stabilized
         );
+    }
+
+    #[test]
+    fn stage_b_recovery_selector_identity_distinguishes_selected_owner() {
+        use crate::autotune::velocity_measurement::{
+            RestSelectionDecision, RestSelectionDisposition, RestStructuralCode,
+        };
+
+        let decision = RestSelectionDecision {
+            structural_codes: [RestStructuralCode::Usable; 3],
+            intervals_q: [[0, 0]; 3],
+            interval_present_mask: 0b111,
+            usable_mask: 0b111,
+            zero_compatible_mask: 0b111,
+            selected_mask: 0b100,
+            selected_suffix_len: 256,
+            disposition: RestSelectionDisposition::StatisticalAcceptance,
+        };
+        for (selected, expected_owner) in [
+            (false, RestSelectionOwner::StageBRecovery),
+            (true, RestSelectionOwner::StageBSelectedRecovery),
+        ] {
+            let mut data = VelocitySweepData::new(17);
+            data.plan.plan_digest = 0x1122_3344_5566_7788;
+            let StepResult::VelocitySweepEvent(VelocitySweepEvent::RestSelection(report)) =
+                record_sweep_recovery_rest_selection(
+                    &mut data,
+                    decision,
+                    RecoveryStage::Proportional,
+                    9,
+                    selected,
+                )
+            else {
+                panic!("Stage B recovery must emit its selector diagnostic")
+            };
+            assert_eq!(report.run_sequence, 17);
+            assert_eq!(report.evidence_sequence, 0);
+            assert_eq!(report.plan_digest, data.plan.plan_digest);
+            assert_eq!(report.stage, RecoveryStage::Proportional);
+            assert_eq!(report.rung_index, 9);
+            assert_eq!(report.owner, expected_owner);
+            assert_eq!([report.direction, report.slot], [u8::MAX; 2]);
+            assert_eq!(data.integrity.next_evidence_sequence(), 1);
+        }
     }
 
     fn dispatch_outer_tick(phase: &mut OuterPhase, backend: &mut MockBackend) -> StepResult {

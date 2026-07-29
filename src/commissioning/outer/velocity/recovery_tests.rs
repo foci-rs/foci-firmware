@@ -16,7 +16,9 @@ use super::sweep_plan::{
     ZERO_SETTLE_US,
 };
 use crate::autotune::TmcMechanicalRpm;
-use crate::autotune::velocity_measurement::{DyadicBlocker, StationarityWork, VelocityDirection};
+use crate::autotune::velocity_measurement::{
+    DyadicBlocker, RestSelectionDisposition, StationarityWork, VelocityDirection,
+};
 use crate::commission_dispatch::test_support::{MockBackend, SpiOp, current_limit};
 use crate::commissioning::outer::check_outer_safety;
 use crate::commissioning::outer::state::{VELOCITY_SWEEP_BLOCK_LEVELS, VelocityObservationRing};
@@ -379,13 +381,17 @@ impl RecoveryFixture {
                 assert_eq!(result, RungOriginRecoveryStep::ReadyNow);
             }
         }
-        loop {
+        let mut selection_count = 0;
+        let report = loop {
             match self.step() {
                 RungOriginRecoveryStep::ReadyNow => {}
+                RungOriginRecoveryStep::RestSelection { .. } => selection_count += 1,
                 RungOriginRecoveryStep::Finished(report) => break report,
                 other => panic!("fixed rest should recover: {other:?}"),
             }
-        }
+        };
+        assert_eq!(selection_count, 1);
+        report
     }
 
     fn step(&mut self) -> RungOriginRecoveryStep {
@@ -454,9 +460,28 @@ fn selected_recovery_discards_lead_in_before_scoring_rest() {
             assert_eq!(result, RungOriginRecoveryStep::ReadyNow);
         }
     }
+    let decision = loop {
+        match fixture.step() {
+            RungOriginRecoveryStep::ReadyNow => {}
+            RungOriginRecoveryStep::RestSelection {
+                decision,
+                stage,
+                rung_index,
+            } => {
+                assert_eq!(stage, RecoveryStage::Proportional);
+                assert_eq!(rung_index, 17);
+                break decision;
+            }
+            other => panic!("selected recovery should yield its rest decision: {other:?}"),
+        }
+    };
+    assert_eq!(decision.selected_suffix_len, 256);
     let analysis = loop {
         match fixture.step() {
             RungOriginRecoveryStep::ReadyNow => {}
+            RungOriginRecoveryStep::RestSelection { decision, .. } => {
+                assert_eq!(decision.disposition, RestSelectionDisposition::Rejected);
+            }
             RungOriginRecoveryStep::RestAnalysis(analysis) => break analysis,
             other => panic!("selected recovery should produce rest analysis: {other:?}"),
         }
@@ -510,6 +535,9 @@ fn selected_recovery_reports_completed_unconfirmed_rest_without_a_fault() {
     let analysis = loop {
         match fixture.step() {
             RungOriginRecoveryStep::ReadyNow => {}
+            RungOriginRecoveryStep::RestSelection { decision, .. } => {
+                assert_eq!(decision.disposition, RestSelectionDisposition::Rejected);
+            }
             RungOriginRecoveryStep::RestAnalysis(analysis) => break analysis,
             other => panic!("weak rest should still produce analysis: {other:?}"),
         }
@@ -787,6 +815,7 @@ fn recovery_controller_confirms_fixed_settle_and_reports_complete_geometry() {
     let report = loop {
         match fixture.step() {
             RungOriginRecoveryStep::ReadyNow => {}
+            RungOriginRecoveryStep::RestSelection { .. } => {}
             RungOriginRecoveryStep::Finished(report) => break report,
             other => panic!("fixed rest should recover: {other:?}"),
         }
@@ -888,6 +917,7 @@ fn recovery_contact_passive_settle_proves_an_in_band_origin() {
     let report = loop {
         match fixture.step() {
             RungOriginRecoveryStep::ReadyNow => {}
+            RungOriginRecoveryStep::RestSelection { .. } => {}
             RungOriginRecoveryStep::Finished(report) => break report,
             other => panic!("passive in-band rest should recover: {other:?}"),
         }
@@ -958,6 +988,7 @@ fn recovery_contact_passive_settle_rejects_an_out_of_band_origin() {
     let report = loop {
         match fixture.step() {
             RungOriginRecoveryStep::ReadyNow => {}
+            RungOriginRecoveryStep::RestSelection { .. } => {}
             RungOriginRecoveryStep::Contained(report) => break report,
             other => panic!("out-of-band rest must remain contained: {other:?}"),
         }
@@ -1175,6 +1206,9 @@ fn recovery_safety_rejects_unconfirmed_rest() {
     loop {
         match fixture.step() {
             RungOriginRecoveryStep::ReadyNow => {}
+            RungOriginRecoveryStep::RestSelection { decision, .. } => {
+                assert_eq!(decision.disposition, RestSelectionDisposition::Rejected);
+            }
             RungOriginRecoveryStep::Fault {
                 error: crate::autotune::CommissionError::VelocityRestNotConfirmed,
                 safety: None,
