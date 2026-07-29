@@ -3,6 +3,7 @@
 mod blocker;
 mod decision;
 mod observation;
+mod rest;
 mod stationarity;
 
 pub use blocker::{
@@ -18,9 +19,12 @@ pub use observation::{
     BlockMoments, RateBlock, RawVelocityObservation, VELOCITY_RATE_Q_SCALE,
     VelocityMeasurementError,
 };
+pub use rest::{
+    RestSelectionDecision, RestSelectionDisposition, RestStructuralCode, VELOCITY_SUFFIX_LENGTHS,
+};
 pub use stationarity::{
     StationarityDiagnostics, StationarityExclusion, StationarityResult, StationarityWork,
     StationarityWorkPoll, StationarySuffix, StructuredStationarityEvidence, SuffixDiagnostic,
-    VELOCITY_SUFFIX_LENGTHS, VelocityObservationSource, analyze_stationarity_diagnostics,
-    select_stationary_suffix, select_stationary_suffix_from_source,
+    VelocityObservationSource, analyze_stationarity_diagnostics, select_stationary_suffix,
+    select_stationary_suffix_from_source,
 };
