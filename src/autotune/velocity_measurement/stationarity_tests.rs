@@ -1,10 +1,11 @@
 use core::cell::Cell;
 
 use super::{
-    RestSelectionDisposition, RestStructuralCode, RestSuffixEvaluation, StationarityExclusion,
-    StationarityResult, StationarityWork, StationarityWorkPoll, VELOCITY_SUFFIX_LENGTHS,
-    VelocityObservationSource, analyze_stationarity_diagnostics,
-    analyze_stationarity_with_blocking_variance, drift_ratio_ppm, select_causal_rest_suffixes,
+    RestExclusion, RestSelectionDisposition, RestStructuralCode, RestSuffixEvaluation,
+    SettledRateContext, StationarityExclusion, StationarityMetrics, StationarityResult,
+    StationarityWork, StationarityWorkPoll, VELOCITY_SUFFIX_LENGTHS, VelocityObservationSource,
+    analyze_stationarity_diagnostics, analyze_stationarity_with_blocking_variance,
+    classify_moving_metrics, classify_rest_metrics, drift_ratio_ppm, select_causal_rest_suffixes,
     select_stationary_suffix,
 };
 use crate::autotune::velocity_measurement::{DyadicBlocker, RawVelocityObservation};
@@ -669,11 +670,18 @@ fn quantized_flat_tail_remains_stationary() {
 }
 
 #[test]
-fn positive_and_negative_drift_are_resolved() {
+fn positive_and_negative_drift_are_rejected() {
+    // The rejection reason moved from ResolvedSlope to ExcessiveDrift when the
+    // moving classifier stopped gating on slope significance. The intent is
+    // unchanged and the fixture is untouched: a monotonic ramp in either
+    // direction must still be rejected. It is nowhere near the 200_000 ppm
+    // boundary either. The rate runs from 0 to 63 counts per sample about a mean
+    // of 31.5, so the drift across the span is roughly 2_000_000 ppm of the
+    // settled rate, an order of magnitude past the bound.
     for sign in [1, -1] {
         let samples = observations::<64>(|index| sign * i32::try_from(index).unwrap());
         let exclusion = analyze_stationarity(&samples, 1, 3).unwrap_err();
-        assert_eq!(exclusion, StationarityExclusion::ResolvedSlope);
+        assert_eq!(exclusion, StationarityExclusion::ExcessiveDrift);
     }
 }
 
@@ -782,7 +790,9 @@ fn a_gate_rejected_tail_retains_the_margins_that_rejected_it() {
     let (result, rejection) = loop {
         match work.poll(&samples[..], &mut blocker).unwrap() {
             StationarityWorkPoll::Pending => {}
-            StationarityWorkPoll::Complete { result, rejection } => break (result, rejection),
+            StationarityWorkPoll::Complete {
+                result, rejection, ..
+            } => break (result, rejection),
             StationarityWorkPoll::RestDiagnostic(_) | StationarityWorkPoll::RestComplete(_) => {
                 panic!("moving mode returned a scored-rest result")
             }
@@ -818,7 +828,9 @@ fn a_usable_tail_reports_no_rejection() {
     let (result, rejection) = loop {
         match work.poll(&samples[..], &mut blocker).unwrap() {
             StationarityWorkPoll::Pending => {}
-            StationarityWorkPoll::Complete { result, rejection } => break (result, rejection),
+            StationarityWorkPoll::Complete {
+                result, rejection, ..
+            } => break (result, rejection),
             StationarityWorkPoll::RestDiagnostic(_) | StationarityWorkPoll::RestComplete(_) => {
                 panic!("moving mode returned a scored-rest result")
             }
@@ -846,7 +858,9 @@ fn a_structured_mode_rejection_still_reports_its_margins() {
     let (result, rejection) = loop {
         match work.poll(&samples[..], &mut blocker).unwrap() {
             StationarityWorkPoll::Pending => {}
-            StationarityWorkPoll::Complete { result, rejection } => break (result, rejection),
+            StationarityWorkPoll::Complete {
+                result, rejection, ..
+            } => break (result, rejection),
             StationarityWorkPoll::RestDiagnostic(_) | StationarityWorkPoll::RestComplete(_) => {
                 panic!("structured mode returned a scored-rest result")
             }
@@ -903,4 +917,165 @@ fn drift_ratio_matches_a_hand_computed_case_at_capture_scale() {
     // real span is unknown; this pins the arithmetic at a realistic scale, not
     // the observation's actual ratio.
     assert_eq!(drift_ratio_ppm(-8_823_529, 2 * 60_000, 13_750_000), 38_503);
+}
+
+struct MetricsFixture {
+    slope_q: i64,
+    slope_half_width_q: u64,
+    span_x2_us: u64,
+    mean_rate_q: i64,
+    lag_one_passed: bool,
+}
+
+fn metrics_fixture(fixture: MetricsFixture) -> StationarityMetrics {
+    StationarityMetrics {
+        slope_q: fixture.slope_q,
+        slope_half_width_q: fixture.slope_half_width_q,
+        lag_one_q: 0,
+        lag_one_half_width_q: 1_000_000,
+        residual_magnitude_q2: 0,
+        slope_passed: fixture.slope_q.unsigned_abs() <= fixture.slope_half_width_q,
+        lag_one_passed: fixture.lag_one_passed,
+        slope_rejection_margin_q: 0,
+        lag_one_rejection_margin_q: 0,
+        span_x2_us: fixture.span_x2_us,
+        drift_ratio_ppm: drift_ratio_ppm(fixture.slope_q, fixture.span_x2_us, fixture.mean_rate_q),
+    }
+}
+
+fn metrics_with_ratio(ratio: u32) -> StationarityMetrics {
+    let mut metrics = metrics_fixture(MetricsFixture {
+        slope_q: 0,
+        slope_half_width_q: 1,
+        span_x2_us: 0,
+        mean_rate_q: 1_000_000,
+        lag_one_passed: true,
+    });
+    metrics.drift_ratio_ppm = ratio;
+    metrics
+}
+
+fn settled(mean_rate_q: i64, half_width_rate_q: u64) -> SettledRateContext {
+    SettledRateContext {
+        mean_rate_q,
+        half_width_rate_q,
+    }
+}
+
+#[test]
+fn a_moving_stroke_gates_on_drift_not_on_significance() {
+    // Steep but noisy: the significance test passes because the half-width is
+    // large, yet the rate moves far enough across the span that no single value
+    // describes it. The two gates are different predicates, not a loosening.
+    let metrics = metrics_fixture(MetricsFixture {
+        slope_q: 5_000_000,
+        slope_half_width_q: 9_000_000,
+        span_x2_us: 2 * 1_000_000,
+        mean_rate_q: 10_000_000,
+        lag_one_passed: true,
+    });
+
+    assert!(metrics.slope_passed, "fixture must pass the old gate");
+    assert_eq!(
+        classify_moving_metrics(metrics, settled(10_000_000, 1_000)),
+        Err(StationarityExclusion::ExcessiveDrift)
+    );
+}
+
+#[test]
+fn zero_target_rest_keeps_the_significance_test() {
+    // At rest the true slope really is zero, so proving it is the right question
+    // and the drift bound's denominator would collapse with the mean.
+    let metrics = metrics_fixture(MetricsFixture {
+        slope_q: 12_000,
+        slope_half_width_q: 5_000,
+        span_x2_us: 2 * 64_000,
+        mean_rate_q: 3,
+        lag_one_passed: true,
+    });
+
+    assert_eq!(
+        classify_rest_metrics(metrics),
+        Err(RestExclusion::ResolvedSlope)
+    );
+}
+
+#[test]
+fn an_inert_observation_bypasses_the_drift_gate() {
+    // sweep_evidence.rs evaluates StationarityExcluded before Inert, so a
+    // zero-rate observation reaches the classifier first. Rejecting it would
+    // relabel 15 P-ladder rungs from "did not move" to "excessive drift".
+    let metrics = metrics_fixture(MetricsFixture {
+        slope_q: 400,
+        slope_half_width_q: 1_000_000,
+        span_x2_us: 2 * 64_000,
+        mean_rate_q: 900,
+        lag_one_passed: true,
+    });
+
+    let settled = settled(900, 1_500); // interval contains zero
+    let classified = classify_moving_metrics(metrics, settled)
+        .expect("inert observations must not be excluded for drift");
+    assert_eq!(classified.drift_ratio_ppm, u32::MAX);
+}
+
+/// A capture whose 64-sample tail is stationary and whose 128-sample tail is not.
+///
+/// The same shape `first_nonstationary_extension_stops_without_stitching` uses:
+/// a stationary recent tail preceded by a large step, so the family stops at 64
+/// after testing 128.
+fn suffix_64_passes_128_fails() -> [RawVelocityObservation; 256] {
+    observations::<256>(|index| {
+        if index >= 192 {
+            1
+        } else if index >= 128 {
+            -100
+        } else {
+            1
+        }
+    })
+}
+
+fn poll_to_completion(
+    work: &mut StationarityWork,
+    observations: &[RawVelocityObservation],
+    blocker: &mut DyadicBlocker<LEVELS>,
+) -> (StationarityResult, u32) {
+    loop {
+        match work.poll(observations, blocker).unwrap() {
+            StationarityWorkPoll::Pending => {}
+            StationarityWorkPoll::Complete {
+                result,
+                drift_ratio_ppm,
+                ..
+            } => break (result, drift_ratio_ppm),
+            StationarityWorkPoll::RestDiagnostic(_) | StationarityWorkPoll::RestComplete(_) => {
+                panic!("moving mode returned a scored-rest result")
+            }
+        }
+    }
+}
+
+#[test]
+fn a_usable_completion_reports_the_selected_suffix_ratio_not_a_later_candidate() {
+    // Suffix 64 passes, 128 fails. The reported ratio must be 64's.
+    let observations = suffix_64_passes_128_fails();
+    let mut work = StationarityWork::default();
+    let mut blocker = DyadicBlocker::<LEVELS>::new();
+    let (result, envelope_ratio) = poll_to_completion(&mut work, &observations, &mut blocker);
+    let StationarityResult::Usable(suffix) = result else {
+        panic!("expected a usable suffix");
+    };
+    assert_eq!(suffix.suffix_len, 64);
+    assert_eq!(envelope_ratio, suffix.drift_ratio_ppm);
+}
+
+#[test]
+fn the_drift_boundary_is_inclusive() {
+    let settled = settled(1_000_000, 1);
+    for (ratio, expect_ok) in [(199_999u32, true), (200_000, true), (200_001, false)] {
+        let metrics = metrics_with_ratio(ratio);
+        let outcome = classify_moving_metrics(metrics, settled);
+        assert_eq!(outcome.is_ok(), expect_ok, "ratio {ratio}");
+    }
 }

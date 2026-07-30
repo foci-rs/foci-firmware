@@ -270,7 +270,12 @@ pub(super) fn poll_stationarity<const LEVELS: usize>(
         .map_err(|_| CommissionError::VelocityValidationFailed)?
     {
         StationarityWorkPoll::Pending => Ok(None),
-        StationarityWorkPoll::Complete { result, rejection } => Ok(Some((result, rejection))),
+        // The completion also carries drift_ratio_ppm, which the observation
+        // summary reports separately. This seam needs only the binding verdict
+        // and the gate statistics.
+        StationarityWorkPoll::Complete {
+            result, rejection, ..
+        } => Ok(Some((result, rejection))),
         StationarityWorkPoll::RestDiagnostic(_) | StationarityWorkPoll::RestComplete(_) => {
             Err(CommissionError::VelocityValidationFailed)
         }

@@ -32,6 +32,7 @@ fn stationary() -> StationarityResult {
         lag_one_half_width_q: 1,
         residual_magnitude_q2: 1,
         span_x2_us: 0,
+        drift_ratio_ppm: u32::MAX,
         tested_suffixes: 1,
     })
 }

@@ -6,6 +6,14 @@ use super::{
     estimate_confidence,
 };
 
+/// Reported drift ratio when no regression produced one.
+///
+/// Defaulting to the sentinel rather than to zero matters: a zero reads as
+/// "measured, and tiny", which is the opposite of the truth on a path that
+/// measured nothing. Defaulting this way also means a completion path added later
+/// cannot silently report no drift.
+const NO_REPORTABLE_DRIFT_RATIO_PPM: u32 = u32::MAX;
+
 const MICROS_PER_SECOND: f32 = 1_000_000.0;
 const LAG_ONE_Q_SCALE: f32 = 1_000_000.0;
 // Reconstruction starts only after the bounded rest decision is complete, so
@@ -63,6 +71,13 @@ pub struct StationarySuffix {
     pub residual_magnitude_q2: u128,
     /// Doubled midpoint-to-midpoint regression span in microseconds.
     pub span_x2_us: u64,
+    /// Drift across the regression span, parts per million of settled rate.
+    ///
+    /// Carried on the suffix rather than only on the completion envelope because
+    /// the state machine keeps testing longer suffixes after storing a winner. A
+    /// ratio held only on the envelope would be a later failing candidate's.
+    /// [`u32::MAX`] means no finite reportable ratio.
+    pub drift_ratio_ppm: u32,
     /// Number of nested suffix candidates examined.
     pub tested_suffixes: u8,
 }
@@ -150,8 +165,16 @@ pub enum StationarityWorkPoll {
     /// tail. It is `None` for a usable tail and for exclusions decided before the
     /// gates, such as a missing blocking plateau, which produce no statistics.
     Complete {
+        /// Binding stationarity decision.
         result: StationarityResult,
+        /// Gate statistics for a rejected tail, when one was evaluated.
         rejection: Option<SuffixDiagnostic>,
+        /// Drift across the regression span, parts per million of settled rate.
+        ///
+        /// Present on every completion, not only rejections, because the field is
+        /// reported on every observation. [`u32::MAX`] means no finite reportable
+        /// ratio, which is what the paths that never reached a regression report.
+        drift_ratio_ppm: u32,
     },
     /// Every scored-rest suffix has been classified for causal reporting.
     RestDiagnostic(RestSelectionDecision),
@@ -241,6 +264,8 @@ struct StructuredStationarityAccumulator {
     common_rate_interval_q: [i64; 2],
     binding_slope_margin_q: i64,
     binding_lag_one_margin_q: i32,
+    /// Drift ratio evaluated for the binding suffix, or [`u32::MAX`] if none was.
+    binding_drift_ratio_ppm: u32,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -271,7 +296,11 @@ impl RestSelectionAccumulator {
 }
 
 impl StructuredStationarityAccumulator {
-    fn new(binding_exclusion: StationarityExclusion, binding: SuffixDiagnostic) -> Self {
+    fn new(
+        binding_exclusion: StationarityExclusion,
+        binding: SuffixDiagnostic,
+        binding_drift_ratio_ppm: u32,
+    ) -> Self {
         Self {
             binding_exclusion,
             binding,
@@ -280,6 +309,7 @@ impl StructuredStationarityAccumulator {
             common_rate_interval_q: binding.settled_rate_interval_q,
             binding_slope_margin_q: binding.slope_rejection_margin_q,
             binding_lag_one_margin_q: binding.lag_one_rejection_margin_q,
+            binding_drift_ratio_ppm,
         }
     }
 
@@ -405,6 +435,7 @@ impl StationarityWork {
                         StationarityExclusion::TooFewDecorrelatedBlocks,
                     ),
                     rejection: None,
+                    drift_ratio_ppm: NO_REPORTABLE_DRIFT_RATIO_PPM,
                 });
             };
             self.start_suffix(observations, blocker, suffix_index, suffix_len, mode)?;
@@ -522,7 +553,13 @@ impl StationarityWork {
                     },
                 );
             }
-            return Ok(self.finish_on_exclusion(exclusion, suffix_index, None));
+            // Returns before any regression is attempted, so there is no ratio.
+            return Ok(self.finish_on_exclusion(
+                exclusion,
+                suffix_index,
+                None,
+                NO_REPORTABLE_DRIFT_RATIO_PPM,
+            ));
         };
         let block_observations = 1u16
             .checked_shl(u32::from(selection.level))
@@ -544,10 +581,12 @@ impl StationarityWork {
                     },
                 );
             }
+            // Returns before slope_q or span_x2_us exist, so there is no ratio.
             return Ok(self.finish_on_exclusion(
                 StationarityExclusion::TooFewDecorrelatedBlocks,
                 suffix_index,
                 None,
+                NO_REPORTABLE_DRIFT_RATIO_PPM,
             ));
         }
         self.stage = StationarityWorkStage::Regression {
@@ -859,7 +898,7 @@ impl StationarityWork {
                         classify_rest_metrics(metrics).map_err(Into::into)
                     }
                     StationarityWorkMode::Moving | StationarityWorkMode::Structured => {
-                        classify_moving_metrics(metrics)
+                        classify_moving_metrics(metrics, settled)
                     }
                 };
                 match classified {
@@ -881,6 +920,7 @@ impl StationarityWork {
                             lag_one_half_width_q: metrics.lag_one_half_width_q,
                             residual_magnitude_q2: metrics.residual_magnitude_q2,
                             span_x2_us: metrics.span_x2_us,
+                            drift_ratio_ppm: metrics.drift_ratio_ppm,
                             tested_suffixes: suffix_index.saturating_add(1),
                         };
                         if mode == StationarityWorkMode::RestWitness {
@@ -894,7 +934,11 @@ impl StationarityWork {
                         if mode == StationarityWorkMode::Structured && suffix_index == 0 =>
                     {
                         self.output = StationarityWorkOutput::Structured(
-                            StructuredStationarityAccumulator::new(exclusion, diagnostic),
+                            StructuredStationarityAccumulator::new(
+                                exclusion,
+                                diagnostic,
+                                metrics.drift_ratio_ppm,
+                            ),
                         );
                         self.advance_structured(observations, blocker, suffix_index, None)
                     }
@@ -902,7 +946,13 @@ impl StationarityWork {
                         self.advance_structured(observations, blocker, suffix_index, None)
                     }
                     Err(exclusion) => {
-                        Ok(self.finish_on_exclusion(exclusion, suffix_index, Some(diagnostic)))
+                        // A post-fit rejection evaluated a ratio, so it reports it.
+                        Ok(self.finish_on_exclusion(
+                            exclusion,
+                            suffix_index,
+                            Some(diagnostic),
+                            metrics.drift_ratio_ppm,
+                        ))
                     }
                 }
             }
@@ -918,15 +968,29 @@ impl StationarityWork {
             {
                 Err(VelocityMeasurementError::ArithmeticOverflow)
             }
-            Err(exclusion) => Ok(self.finish_on_exclusion(exclusion, suffix_index, None)),
+            // The metrics themselves failed, so slope_q and span_x2_us never existed.
+            Err(exclusion) => Ok(self.finish_on_exclusion(
+                exclusion,
+                suffix_index,
+                None,
+                NO_REPORTABLE_DRIFT_RATIO_PPM,
+            )),
         }
     }
 
+    /// Complete on a rejected candidate, keeping any suffix already selected.
+    ///
+    /// `drift_ratio_ppm` is the ratio evaluated for the *rejected* candidate, or
+    /// [`NO_REPORTABLE_DRIFT_RATIO_PPM`] when the candidate never reached a
+    /// regression. It is used only when nothing was selected: an already-selected
+    /// suffix reports its own ratio, because a later failing candidate must not
+    /// overwrite the ratio of the suffix that actually won.
     fn finish_on_exclusion(
         &mut self,
         exclusion: StationarityExclusion,
         suffix_index: u8,
         rejection: Option<SuffixDiagnostic>,
+        drift_ratio_ppm: u32,
     ) -> StationarityWorkPoll {
         if let StationarityWorkOutput::Selected(mut usable) = self.output {
             usable.tested_suffixes = suffix_index.saturating_add(1);
@@ -935,12 +999,14 @@ impl StationarityWork {
             return StationarityWorkPoll::Complete {
                 result: StationarityResult::Usable(usable),
                 rejection: None,
+                drift_ratio_ppm: usable.drift_ratio_ppm,
             };
         }
         self.stage = StationarityWorkStage::Done;
         StationarityWorkPoll::Complete {
             result: StationarityResult::Excluded(exclusion),
             rejection,
+            drift_ratio_ppm,
         }
     }
 
@@ -970,6 +1036,7 @@ impl StationarityWork {
         Ok(StationarityWorkPoll::Complete {
             result: StationarityResult::Usable(result),
             rejection: None,
+            drift_ratio_ppm: result.drift_ratio_ppm,
         })
     }
 
@@ -1007,6 +1074,7 @@ impl StationarityWork {
         Ok(StationarityWorkPoll::Complete {
             result: StationarityResult::Excluded(accumulator.binding_exclusion),
             rejection: Some(accumulator.binding),
+            drift_ratio_ppm: accumulator.binding_drift_ratio_ppm,
         })
     }
 
@@ -1413,6 +1481,7 @@ where
             lag_one_half_width_q: metrics.lag_one_half_width_q,
             residual_magnitude_q2: metrics.residual_magnitude_q2,
             span_x2_us: metrics.span_x2_us,
+            drift_ratio_ppm: metrics.drift_ratio_ppm,
             tested_suffixes,
         });
     }
@@ -1441,7 +1510,7 @@ fn analyze_stationarity_from_source(
         blocking_variance_of_mean_q2,
         settled,
     )?;
-    classify_moving_metrics(metrics)
+    classify_moving_metrics(metrics, settled)
 }
 
 fn calculate_stationarity_metrics_from_source(
@@ -1658,12 +1727,30 @@ fn calculate_stationarity_metrics(
     })
 }
 
+/// Parts-per-million of settled rate a moving stroke may drift across its span.
+pub(crate) const MAX_MOVING_DRIFT_PPM: u32 = 200_000;
+
 /// Apply the moving-stroke stationarity gates.
+///
+/// A moving stroke is bounded on how far the rate moves, not on whether the
+/// fitted slope is statistically distinguishable from zero. The significance test
+/// tightens as data accumulates, because the half-width falls while the fitted
+/// slope does not, so a longer and better measurement of a real machine rejects
+/// where a shorter one passed. The drift bound asks the question that matters
+/// instead: whether one settled value can describe the whole span.
 fn classify_moving_metrics(
-    metrics: StationarityMetrics,
+    mut metrics: StationarityMetrics,
+    settled: SettledRateContext,
 ) -> Result<StationarityMetrics, StationarityExclusion> {
-    if !metrics.slope_passed {
-        return Err(StationarityExclusion::ResolvedSlope);
+    // The settled interval containing zero is exactly the Inert condition.
+    // sweep_evidence classifies StationarityExcluded before Inert, so gating here
+    // would replace a correct "did not move" verdict with a wrong one on every
+    // rung below breakaway.
+    let interval_contains_zero = settled.mean_rate_q.unsigned_abs() <= settled.half_width_rate_q;
+    if interval_contains_zero {
+        metrics.drift_ratio_ppm = NO_REPORTABLE_DRIFT_RATIO_PPM;
+    } else if metrics.drift_ratio_ppm > MAX_MOVING_DRIFT_PPM {
+        return Err(StationarityExclusion::ExcessiveDrift);
     }
     if !metrics.lag_one_passed {
         return Err(StationarityExclusion::StructuredResidual);
@@ -1694,12 +1781,17 @@ fn analyze_stationarity_with_blocking_variance(
     family_size: u16,
     blocking_variance_of_mean_q2: u128,
 ) -> Result<StationarityMetrics, StationarityExclusion> {
-    // These callers exercise the slope and lag-one gates with a synthetic
-    // variance, not a real dyadic-blocker selection, so there is no exact
-    // settled rate to report. The drift ratio derived from this placeholder is
-    // unused: nothing gates on it, and none of these tests inspect it.
+    // These callers supply a synthetic blocking variance rather than a real
+    // dyadic-blocker selection, so there is no confidence half-width to report.
+    // The mean rate is still exact, taken over the whole capture, because the
+    // moving classifier gates on it: a placeholder zero would make every caller
+    // take the inert bypass and stop exercising the drift bound entirely. A zero
+    // half-width makes the interval a point, so a fixture whose mean rate is
+    // exactly zero is inert here and any other fixture is moving.
     let settled = SettledRateContext {
-        mean_rate_q: 0,
+        mean_rate_q: rate_block_at(observations, 0, 0, observations.len())?
+            .rate_q()
+            .map_err(|_| StationarityExclusion::Arithmetic)?,
         half_width_rate_q: 0,
     };
     analyze_stationarity_from_source(

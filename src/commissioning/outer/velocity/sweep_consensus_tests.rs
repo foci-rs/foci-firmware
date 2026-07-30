@@ -2,6 +2,7 @@ use super::sweep_consensus::{
     DirectionalConsensusClass, consensus_class_report_code, depth_three_consensus,
 };
 use super::sweep_evidence::VelocityObservationClass;
+use crate::autotune::velocity_measurement::StationarityExclusion;
 use crate::autotune::{EquivalentTorqueTargetInterval, EquivalentTorqueTargetQ16};
 
 fn interval(low: i32, high: i32) -> Option<EquivalentTorqueTargetInterval> {
@@ -78,6 +79,31 @@ fn disconnected_depth_three_components_are_ambiguous() {
     );
     assert_eq!(components(&result), [[0, 4], [6, 10]]);
     assert_eq!(result.included_mask, 0);
+}
+
+#[test]
+fn a_fourth_eligible_observation_can_split_a_settled_component() {
+    // Sibling of disconnected_depth_three_components_are_ambiguous, which covers the
+    // four-eligible half with these same intervals. With only three eligible, one
+    // triple is wholly eligible and the component is its intersection. The drift
+    // bound makes previously excluded observations eligible, so moving between these
+    // two states is a reachable consequence of this change, not a hypothetical.
+    let result = consensus(
+        0b1111,
+        [
+            VelocityObservationClass::Eligible,
+            VelocityObservationClass::Eligible,
+            VelocityObservationClass::Eligible,
+            VelocityObservationClass::StationarityExcluded(StationarityExclusion::ExcessiveDrift),
+        ],
+        [[0, 4], [0, 10], [0, 10], [6, 10]],
+    );
+
+    assert_eq!(
+        result.classification,
+        DirectionalConsensusClass::EligibleConsensus
+    );
+    assert_eq!(components(&result), [[0, 4]]);
 }
 
 #[test]
