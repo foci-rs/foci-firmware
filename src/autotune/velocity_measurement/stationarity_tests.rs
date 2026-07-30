@@ -689,12 +689,15 @@ fn positive_and_negative_drift_are_rejected() {
 fn curvature_with_zero_average_slope_has_structured_residuals() {
     // A parabola centered on the suffix has zero average slope but a large
     // lag-one residual correlation, so this exercises the lag-one gate, not the
-    // drift bound. The fitted drift ratio for this fixture is 177_515 ppm, a
-    // 22_485 ppm (about 11%) margin under the 200_000 ppm bound. The drift
-    // check runs before the lag-one check, so a future change to the blocking
-    // level or span selection that pushes this fixture's ratio over the bound
-    // would flip the expected exclusion from StructuredResidual to
-    // ExcessiveDrift instead of failing loudly.
+    // drift bound. Its fitted drift ratio passes the 200_000 ppm bound, but not
+    // by a wide margin.
+    //
+    // The drift check runs before the lag-one check, so a future change to the
+    // blocking level or span selection that pushes this fixture's ratio over the
+    // bound flips the expected exclusion from StructuredResidual to
+    // ExcessiveDrift rather than failing loudly. No figure is quoted here on
+    // purpose: the ratio depends on which fit path is measured, and three
+    // separate derivations of it disagreed.
     let samples = observations::<64>(|index| {
         let centered = i32::try_from(index).unwrap() - 31;
         centered * centered / 16
