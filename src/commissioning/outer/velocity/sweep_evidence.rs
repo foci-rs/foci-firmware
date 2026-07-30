@@ -178,13 +178,25 @@ pub const fn direction_report_code(direction: VelocityDirection) -> u8 {
 }
 
 /// Stable report code for one observation classification.
+///
+/// Every arm is written out. An earlier arithmetic form derived exclusion codes
+/// as `4 + reason`, which silently assigned a sixth exclusion the same code as
+/// `WrongDirectionFault`. Matching explicitly makes the next added variant a
+/// compile error instead.
 pub const fn observation_class_report_code(class: VelocityObservationClass) -> u8 {
     match class {
         VelocityObservationClass::Eligible => 0,
         VelocityObservationClass::Inert => 1,
         VelocityObservationClass::DeficitUnresolved => 2,
         VelocityObservationClass::CurrentHeadroom => 3,
-        VelocityObservationClass::StationarityExcluded(reason) => 4 + reason as u8,
+        VelocityObservationClass::StationarityExcluded(reason) => match reason {
+            StationarityExclusion::NoBlockingPlateau => 4,
+            StationarityExclusion::TooFewDecorrelatedBlocks => 5,
+            StationarityExclusion::ResolvedSlope => 6,
+            StationarityExclusion::StructuredResidual => 7,
+            StationarityExclusion::Arithmetic => 8,
+            StationarityExclusion::ExcessiveDrift => 12,
+        },
         VelocityObservationClass::WrongDirectionFault => 9,
         VelocityObservationClass::HardClipFault => 10,
         VelocityObservationClass::InvalidEvidenceFault => 11,
@@ -1443,7 +1455,7 @@ mod tests {
     use super::{
         CollectedRungEvidence, CompactSignedRate, VelocityEvidenceError, VelocityObservationClass,
         VelocityObservationInput, VelocityRungClass, classify_velocity_observation,
-        directional_recovery_lower_rate_q, disturbance_point_cell,
+        directional_recovery_lower_rate_q, disturbance_point_cell, observation_class_report_code,
         rate_bounds_from_disturbance_cell, reproduce_velocity_rung,
     };
     use crate::autotune::velocity_measurement::{
@@ -1827,6 +1839,61 @@ mod tests {
         let summary = classify_velocity_observation(initial);
 
         assert!(summary.initial_lead_in);
+    }
+
+    #[test]
+    fn excessive_drift_takes_a_code_that_collides_with_no_existing_class() {
+        use crate::autotune::velocity_measurement::StationarityExclusion;
+
+        // The old arithmetic form derived 4 + reason, which puts a sixth exclusion
+        // on top of WrongDirectionFault. Pin every code so that cannot recur.
+        let cases = [
+            (VelocityObservationClass::Eligible, 0u8),
+            (VelocityObservationClass::Inert, 1),
+            (VelocityObservationClass::DeficitUnresolved, 2),
+            (VelocityObservationClass::CurrentHeadroom, 3),
+            (
+                VelocityObservationClass::StationarityExcluded(
+                    StationarityExclusion::NoBlockingPlateau,
+                ),
+                4,
+            ),
+            (
+                VelocityObservationClass::StationarityExcluded(
+                    StationarityExclusion::TooFewDecorrelatedBlocks,
+                ),
+                5,
+            ),
+            (
+                VelocityObservationClass::StationarityExcluded(
+                    StationarityExclusion::ResolvedSlope,
+                ),
+                6,
+            ),
+            (
+                VelocityObservationClass::StationarityExcluded(
+                    StationarityExclusion::StructuredResidual,
+                ),
+                7,
+            ),
+            (
+                VelocityObservationClass::StationarityExcluded(StationarityExclusion::Arithmetic),
+                8,
+            ),
+            (VelocityObservationClass::WrongDirectionFault, 9),
+            (VelocityObservationClass::HardClipFault, 10),
+            (VelocityObservationClass::InvalidEvidenceFault, 11),
+            (
+                VelocityObservationClass::StationarityExcluded(
+                    StationarityExclusion::ExcessiveDrift,
+                ),
+                12,
+            ),
+        ];
+
+        for (class, expected) in cases {
+            assert_eq!(observation_class_report_code(class), expected, "{class:?}");
+        }
     }
 }
 

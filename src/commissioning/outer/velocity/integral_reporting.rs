@@ -684,6 +684,7 @@ pub(crate) const fn stationarity_exclusion_code(exclusion: StationarityExclusion
         StationarityExclusion::ResolvedSlope => 3,
         StationarityExclusion::StructuredResidual => 4,
         StationarityExclusion::Arithmetic => 5,
+        StationarityExclusion::ExcessiveDrift => 6,
     }
 }
 

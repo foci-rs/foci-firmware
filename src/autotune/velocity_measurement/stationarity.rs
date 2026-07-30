@@ -25,6 +25,14 @@ pub enum StationarityExclusion {
     StructuredResidual,
     /// Checked arithmetic or a numeric conversion failed.
     Arithmetic,
+    /// The rate moved too far across the regression span to be described by a
+    /// single settled value.
+    ///
+    /// Distinct from [`Self::ResolvedSlope`], which asks whether a slope is
+    /// statistically distinguishable from zero and is retained for zero-target
+    /// rest. This asks whether the magnitude of the drift is tolerable, which is
+    /// the meaningful question on a moving stroke.
+    ExcessiveDrift,
 }
 
 /// Result of selecting one target-independent stationary tail.
@@ -491,12 +499,17 @@ impl StationarityWork {
                 return self.advance_structured(observations, blocker, suffix_index, None);
             }
             if matches!(self.output, StationarityWorkOutput::RestAccumulator(_)) {
+                let structural = if blocker.has_two_doubling_plateau() {
+                    RestExclusion::TooFewDecorrelatedBlocks
+                } else {
+                    RestExclusion::NoBlockingPlateau
+                };
                 return self.advance_rest_diagnostic(
                     observations,
                     blocker,
                     suffix_index,
                     RestSuffixEvaluation {
-                        structural_code: rest_structural_code(exclusion),
+                        structural_code: rest_structural_code(structural),
                         interval_present: false,
                         interval_q: [0; 2],
                     },
@@ -799,7 +812,7 @@ impl StationarityWork {
             Ok(metrics) => {
                 let diagnostic = suffix_diagnostic_from_metrics(selection, suffix_len, metrics)?;
                 if matches!(self.output, StationarityWorkOutput::RestAccumulator(_)) {
-                    let structural_code = match classify_stationarity_metrics(metrics) {
+                    let structural_code = match classify_rest_metrics(metrics) {
                         Ok(_) => RestStructuralCode::Usable,
                         Err(exclusion) => rest_structural_code(exclusion),
                     };
@@ -814,7 +827,16 @@ impl StationarityWork {
                         },
                     );
                 }
-                match classify_stationarity_metrics(metrics) {
+                let classified = match mode {
+                    StationarityWorkMode::RestWitness
+                    | StationarityWorkMode::RestDiagnostic { .. } => {
+                        classify_rest_metrics(metrics).map_err(Into::into)
+                    }
+                    StationarityWorkMode::Moving | StationarityWorkMode::Structured => {
+                        classify_moving_metrics(metrics)
+                    }
+                };
+                match classified {
                     Ok(metrics) => {
                         if let StationarityWorkOutput::Structured(_) = self.output {
                             return self.advance_structured(
@@ -1099,15 +1121,42 @@ fn work_observations_per_step(mode: StationarityWorkMode) -> usize {
     }
 }
 
-fn rest_structural_code(exclusion: StationarityExclusion) -> RestStructuralCode {
-    match exclusion {
-        StationarityExclusion::NoBlockingPlateau => RestStructuralCode::NoBlockingPlateau,
-        StationarityExclusion::TooFewDecorrelatedBlocks => {
-            RestStructuralCode::TooFewDecorrelatedBlocks
+/// Exclusion reasons reachable while gating a zero-target rest capture.
+///
+/// `ExcessiveDrift` is deliberately absent. Rest gates on slope significance, so
+/// the drift bound cannot reject here, and encoding that in the type keeps
+/// `rest_structural_code` total without a wire variant that never occurs.
+///
+/// `Arithmetic` is deliberately absent too. A rest-path arithmetic failure is
+/// intercepted at the poll boundary and surfaces as
+/// [`VelocityMeasurementError::ArithmeticOverflow`] before it can reach
+/// `rest_structural_code`, so a structural code for it would never be produced.
+/// Do not re-add it without a producer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+pub(crate) enum RestExclusion {
+    NoBlockingPlateau,
+    TooFewDecorrelatedBlocks,
+    ResolvedSlope,
+    StructuredResidual,
+}
+
+impl From<RestExclusion> for StationarityExclusion {
+    fn from(value: RestExclusion) -> Self {
+        match value {
+            RestExclusion::NoBlockingPlateau => Self::NoBlockingPlateau,
+            RestExclusion::TooFewDecorrelatedBlocks => Self::TooFewDecorrelatedBlocks,
+            RestExclusion::ResolvedSlope => Self::ResolvedSlope,
+            RestExclusion::StructuredResidual => Self::StructuredResidual,
         }
-        StationarityExclusion::ResolvedSlope => RestStructuralCode::ResolvedSlope,
-        StationarityExclusion::StructuredResidual => RestStructuralCode::StructuredResidual,
-        StationarityExclusion::Arithmetic => RestStructuralCode::Arithmetic,
+    }
+}
+
+fn rest_structural_code(exclusion: RestExclusion) -> RestStructuralCode {
+    match exclusion {
+        RestExclusion::NoBlockingPlateau => RestStructuralCode::NoBlockingPlateau,
+        RestExclusion::TooFewDecorrelatedBlocks => RestStructuralCode::TooFewDecorrelatedBlocks,
+        RestExclusion::ResolvedSlope => RestStructuralCode::ResolvedSlope,
+        RestExclusion::StructuredResidual => RestStructuralCode::StructuredResidual,
     }
 }
 
@@ -1352,7 +1401,7 @@ fn analyze_stationarity_from_source(
         family_size,
         blocking_variance_of_mean_q2,
     )?;
-    classify_stationarity_metrics(metrics)
+    classify_moving_metrics(metrics)
 }
 
 fn calculate_stationarity_metrics_from_source(
@@ -1511,7 +1560,8 @@ fn calculate_stationarity_metrics(
     })
 }
 
-fn classify_stationarity_metrics(
+/// Apply the moving-stroke stationarity gates.
+fn classify_moving_metrics(
     metrics: StationarityMetrics,
 ) -> Result<StationarityMetrics, StationarityExclusion> {
     if !metrics.slope_passed {
@@ -1519,6 +1569,22 @@ fn classify_stationarity_metrics(
     }
     if !metrics.lag_one_passed {
         return Err(StationarityExclusion::StructuredResidual);
+    }
+    Ok(metrics)
+}
+
+/// Apply the zero-target rest stationarity gates.
+///
+/// Returns [`RestExclusion`], which cannot represent `ExcessiveDrift`, so the rest
+/// wire taxonomy stays total without a variant that never occurs.
+fn classify_rest_metrics(
+    metrics: StationarityMetrics,
+) -> Result<StationarityMetrics, RestExclusion> {
+    if !metrics.slope_passed {
+        return Err(RestExclusion::ResolvedSlope);
+    }
+    if !metrics.lag_one_passed {
+        return Err(RestExclusion::StructuredResidual);
     }
     Ok(metrics)
 }
