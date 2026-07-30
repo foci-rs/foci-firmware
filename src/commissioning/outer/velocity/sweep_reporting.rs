@@ -584,6 +584,7 @@ fn encode_observation(report: VelocitySweepObservation) -> VelocitySweepCanonica
     record.push_u32(disturbance_variance_mantissa);
     record.push_u8(disturbance_variance_shift);
     record.push_u16(report.summary.predicted_torque_target_abs);
+    record.push_u32(report.summary.drift_ratio_ppm);
     record
 }
 
@@ -1154,17 +1155,35 @@ mod tests {
         assert_eq!(integrity.digest(), 0x5df5_d108_3d3e_407d);
     }
 
-    #[test]
-    fn velocity_sweep_reporting_compressed_observation_digest_matches_host_wire_fixture() {
-        let mut integrity = VelocitySweepIntegrity::new(7);
-        integrity.record(VelocitySweepEvent::Planned(fixture_plan()));
+    /// Byte offset of `drift_ratio_ppm` in an encoded Stage-B observation record.
+    ///
+    /// Counted from the fixed prefix `encode_observation` pushes ahead of the
+    /// field: tag(1) + run_sequence(4) + evidence_sequence(2) + rung_index(1) +
+    /// slot(1) + target_velocity_rpm(4) + class(1) + initial_lead_in(1) +
+    /// delta_sign(1) + delta_mantissa(4) + delta_shift(1) + elapsed_mantissa(4) +
+    /// elapsed_shift(1) + five encoded rates(20) + rate_shift(1) + suffix_len(2) +
+    /// selected_level(1) + selected_blocks(4) + variance_mantissa(4) +
+    /// variance_shift(1) + slope_mantissa(4) + slope_shift(1) +
+    /// slope_half_width_mantissa(4) + slope_half_width_shift(1) + lag_one_q(4) +
+    /// lag_one_half_width_q(4) + residual_mantissa(4) + residual_shift(1) +
+    /// tested_suffixes(1) + p(2) + disturbance(4) + disturbance_low_q16(4) +
+    /// disturbance_high_q16(4) + disturbance_variance_mantissa(4) +
+    /// disturbance_variance_shift(1) + predicted_torque_target_abs(2) = 104.
+    const SWEEP_DRIFT_RATIO_PPM_OFFSET: usize = 104;
+
+    /// Read a little-endian `u32` out of an encoded record at a fixed offset.
+    fn read_u32_at(bytes: &[u8], offset: usize) -> u32 {
+        u32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap())
+    }
+
+    fn fixture_observation() -> VelocitySweepObservation {
         let disturbance = EquivalentTorqueTargetQ16::from_raw(123_456);
         let disturbance_interval = EquivalentTorqueTargetInterval::new(
             EquivalentTorqueTargetQ16::from_raw(120_000),
             EquivalentTorqueTargetQ16::from_raw(130_000),
         )
         .unwrap();
-        integrity.record(VelocitySweepEvent::Observation(VelocitySweepObservation {
+        VelocitySweepObservation {
             run_sequence: 7,
             evidence_sequence: 1,
             rung_index: 0,
@@ -1192,9 +1211,35 @@ mod tests {
             variance_of_mean_q2: 1 << 80,
             settled_rate_mean_q: 1,
             structured_boundary: None,
-        }));
+        }
+    }
 
-        assert_eq!(integrity.digest(), 0xd22a_c49c_f269_f830);
+    #[test]
+    fn velocity_sweep_reporting_compressed_observation_digest_matches_host_wire_fixture() {
+        let mut integrity = VelocitySweepIntegrity::new(7);
+        integrity.record(VelocitySweepEvent::Planned(fixture_plan()));
+        integrity.record(VelocitySweepEvent::Observation(fixture_observation()));
+
+        assert_eq!(integrity.digest(), 0x0b1d_04e6_d425_a08c);
+    }
+
+    #[test]
+    fn every_sweep_observation_carries_the_drift_ratio() {
+        // Stage B has no rejection diagnostic block at all, so a schema bump that
+        // only touched that block would change nothing here while claiming to.
+        let mut inert_report = fixture_observation();
+        inert_report.summary.classification = VelocityObservationClass::Inert;
+        inert_report.summary.drift_ratio_ppm = u32::MAX;
+        let inert = encode_observation(inert_report);
+
+        let mut eligible_report = fixture_observation();
+        eligible_report.summary.classification = VelocityObservationClass::Eligible;
+        eligible_report.summary.drift_ratio_ppm = 14_220;
+        let eligible = encode_observation(eligible_report);
+
+        let offset = SWEEP_DRIFT_RATIO_PPM_OFFSET;
+        assert_eq!(read_u32_at(inert.as_bytes(), offset), u32::MAX);
+        assert_eq!(read_u32_at(eligible.as_bytes(), offset), 14_220);
     }
 
     #[test]
