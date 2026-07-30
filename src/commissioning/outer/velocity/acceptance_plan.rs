@@ -12,7 +12,7 @@ use super::sweep_plan::VelocitySweepRequest;
 use crate::autotune::velocity_measurement::VelocityDirection;
 
 /// Current independent velocity-acceptance matrix schema.
-pub const ACCEPTANCE_MATRIX_SCHEMA_REVISION: u16 = 5;
+pub const ACCEPTANCE_MATRIX_SCHEMA_REVISION: u16 = 6;
 /// Number of frozen target amplitudes in each run.
 pub const ACCEPTANCE_MATRIX_AMPLITUDES: usize = 5;
 /// Capture-wrapper allowance for one matrix command.

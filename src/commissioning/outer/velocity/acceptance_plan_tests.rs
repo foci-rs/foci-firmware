@@ -112,7 +112,7 @@ fn point(plan: super::integral_plan::VelocityIntegralPlan) -> AcceptancePoint {
 
 #[test]
 fn live_matrix_geometry_and_orders_are_exact() {
-    assert_eq!(ACCEPTANCE_MATRIX_SCHEMA_REVISION, 5);
+    assert_eq!(ACCEPTANCE_MATRIX_SCHEMA_REVISION, 6);
     assert_eq!(AcceptanceMatrixOrder::Ascending as u8, 1);
     assert_eq!(AcceptanceMatrixOrder::Descending as u8, 2);
     assert_eq!(ACCEPTANCE_MATRIX_AMPLITUDES, 5);
@@ -159,7 +159,7 @@ fn live_matrix_geometry_and_orders_are_exact() {
             super::combined_plan::COMBINED_STAGE_C_SCHEMA_REVISION,
             ACCEPTANCE_MATRIX_SCHEMA_REVISION,
         ),
-        (13, 12, 5)
+        (14, 13, 6)
     );
     assert_eq!([160 + 23, 120 + 15, 40 + 5], [183, 135, 45]);
     assert_eq!((183 + 135 + 45) * 78, 28_314);
@@ -195,7 +195,7 @@ fn historical_schema_three_keeps_the_stabilized_recovery_digest_input() {
     .unwrap();
     historical.schema_revision = 3;
 
-    assert_eq!(historical.digest(), 0xb3c5_9858_d412_178a);
+    assert_eq!(historical.digest(), 0x03be_270c_ef0c_d2e4);
 }
 
 #[test]
