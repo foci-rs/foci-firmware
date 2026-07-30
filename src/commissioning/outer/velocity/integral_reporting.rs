@@ -506,7 +506,7 @@ fn encode_observation(report: VelocityIntegralObservation) -> VelocitySweepCanon
 
 /// Encoded width of one present rejection diagnostic, excluding the presence flag.
 #[cfg(test)]
-pub(crate) const REJECTION_DIAGNOSTIC_BYTES: usize = 33;
+pub(crate) const REJECTION_DIAGNOSTIC_BYTES: usize = 49;
 
 /// Append the gate statistics that rejected an excluded tail.
 ///
@@ -529,6 +529,8 @@ fn encode_rejection(
     push_i64(record, rejection.settled_rate_interval_q[1]);
     push_i64(record, rejection.slope_rejection_margin_q);
     record.push_i32(rejection.lag_one_rejection_margin_q);
+    push_i64(record, rejection.slope_q);
+    push_u64(record, rejection.slope_half_width_q);
 }
 
 fn encode_stationarity(record: &mut VelocitySweepCanonicalRecord, result: StationarityResult) {
@@ -1339,6 +1341,8 @@ mod tests {
             settled_rate_interval_q: [-8_773_356, -8_351_644],
             slope_rejection_margin_q: -2_389_706,
             lag_one_rejection_margin_q: 55_874,
+            slope_q: -6_100_000,
+            slope_half_width_q: 3_710_294,
         };
         let record = encode_observation(excluded_observation(
             StationarityExclusion::ResolvedSlope,
@@ -1360,6 +1364,9 @@ mod tests {
         assert_eq!(&tail[13..21], (-8_351_644_i64).to_le_bytes());
         assert_eq!(&tail[21..29], (-2_389_706_i64).to_le_bytes());
         assert_eq!(&tail[29..33], 55_874_i32.to_le_bytes());
+        // The margins alone cannot recover either term: margin = half_width - |slope|.
+        assert_eq!(&tail[33..41], (-6_100_000_i64).to_le_bytes());
+        assert_eq!(&tail[41..49], 3_710_294_u64.to_le_bytes());
         assert!(bytes.len() <= VELOCITY_SWEEP_CANONICAL_RECORD_MAX);
     }
 

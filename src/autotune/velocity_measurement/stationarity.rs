@@ -74,6 +74,14 @@ pub struct SuffixDiagnostic {
     pub slope_rejection_margin_q: i64,
     /// Positive clearance or negative rejection beyond the lag-one interval.
     pub lag_one_rejection_margin_q: i32,
+    /// Fitted rate slope in fixed-point rate units per second.
+    ///
+    /// Carried alongside the margins because a margin is `half_width - |slope|`
+    /// and cannot recover either term, so a rejection could report how far it
+    /// missed but not how fast the tail was actually drifting.
+    pub slope_q: i64,
+    /// Outward-rounded family-wise slope half-width in the same units.
+    pub slope_half_width_q: u64,
 }
 
 /// Binding stationarity result plus all declared suffix diagnostics.
@@ -1197,6 +1205,8 @@ where
             slope_passed: false,
             lag_one_passed: false,
             settled_rate_interval_q: [0, 0],
+            slope_q: 0,
+            slope_half_width_q: 0,
             slope_rejection_margin_q: 0,
             lag_one_rejection_margin_q: 0,
         });
@@ -1239,6 +1249,8 @@ fn suffix_diagnostic_from_metrics(
         settled_rate_interval_q: [low, high],
         slope_rejection_margin_q: metrics.slope_rejection_margin_q,
         lag_one_rejection_margin_q: metrics.lag_one_rejection_margin_q,
+        slope_q: metrics.slope_q,
+        slope_half_width_q: metrics.slope_half_width_q,
     })
 }
 
