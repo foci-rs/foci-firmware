@@ -3,7 +3,7 @@ use super::{
     VelocityRungVerdict, VelocitySweepSufficiency, assemble_directional_band,
     assess_sweep_sufficiency,
 };
-use crate::autotune::velocity_measurement::VelocityDirection;
+use crate::autotune::velocity_measurement::{StationarityExclusion, VelocityDirection};
 use crate::autotune::{EquivalentTorqueTargetInterval, EquivalentTorqueTargetQ16};
 use crate::commissioning::outer::velocity::combined_plan::select_proportional_response;
 use crate::commissioning::outer::velocity::operating_region::{BoundRounding, CompactSignedRate};
@@ -174,19 +174,36 @@ fn compact_consensus_collects_eight_slots_without_aliasing() {
 
 #[test]
 fn compact_consensus_preserves_ineligible_class_without_an_interval() {
-    let mut collected = CollectedRungEvidence::new();
-    collected
-        .retain(0, summary(0, VelocityObservationClass::Inert))
-        .unwrap();
+    // Both slots are Forward: slot 0 is observation 0, slot 2 is observation 1.
+    // Every class has to survive the packed direction_status round trip, which is
+    // where an exclusion missing from the reverse report-code map decays into
+    // InvalidEvidenceFault rather than staying an exclusion.
+    let cases = [
+        (0u8, 0usize, VelocityObservationClass::Inert),
+        (
+            2,
+            1,
+            VelocityObservationClass::StationarityExcluded(StationarityExclusion::ExcessiveDrift),
+        ),
+    ];
 
-    assert_eq!(
-        collected.classification(VelocityDirection::Forward, 0),
-        Some(VelocityObservationClass::Inert)
-    );
-    assert_eq!(
-        collected.disturbance_interval(VelocityDirection::Forward, 0),
-        None
-    );
+    let mut collected = CollectedRungEvidence::new();
+    for (slot, _, class) in cases {
+        collected.retain(slot, summary(slot, class)).unwrap();
+    }
+
+    for (_, observation, class) in cases {
+        assert_eq!(
+            collected.classification(VelocityDirection::Forward, observation),
+            Some(class),
+            "{class:?}"
+        );
+        assert_eq!(
+            collected.disturbance_interval(VelocityDirection::Forward, observation),
+            None,
+            "{class:?}"
+        );
+    }
 }
 
 #[test]

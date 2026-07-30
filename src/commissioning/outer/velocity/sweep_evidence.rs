@@ -187,7 +187,13 @@ pub const fn direction_report_code(direction: VelocityDirection) -> u8 {
 /// Every arm is written out. An earlier arithmetic form derived exclusion codes
 /// as `4 + reason`, which silently assigned a sixth exclusion the same code as
 /// `WrongDirectionFault`. Matching explicitly makes the next added variant a
-/// compile error instead.
+/// compile error here.
+///
+/// That protection is one-directional. The inverse
+/// [`observation_class_from_report_code`] matches on `u8` and ends in a
+/// catch-all, so a new variant compiles cleanly there while decoding to `None`.
+/// Both maps have to be extended by hand, and the round trip is pinned by
+/// `excessive_drift_takes_a_code_that_collides_with_no_existing_class`.
 pub const fn observation_class_report_code(class: VelocityObservationClass) -> u8 {
     match class {
         VelocityObservationClass::Eligible => 0,
@@ -1082,6 +1088,7 @@ fn observation_class_from_report_code(code: u8) -> Option<VelocityObservationCla
         9 => VelocityObservationClass::WrongDirectionFault,
         10 => VelocityObservationClass::HardClipFault,
         11 => VelocityObservationClass::InvalidEvidenceFault,
+        12 => VelocityObservationClass::StationarityExcluded(StationarityExclusion::ExcessiveDrift),
         _ => return None,
     })
 }
@@ -1468,7 +1475,8 @@ mod tests {
     use super::{
         CollectedRungEvidence, CompactSignedRate, VelocityEvidenceError, VelocityObservationClass,
         VelocityObservationInput, VelocityRungClass, classify_velocity_observation,
-        directional_recovery_lower_rate_q, disturbance_point_cell, observation_class_report_code,
+        directional_recovery_lower_rate_q, disturbance_point_cell,
+        observation_class_from_report_code, observation_class_report_code,
         rate_bounds_from_disturbance_cell, reproduce_velocity_rung,
     };
     use crate::autotune::velocity_measurement::{
@@ -1909,6 +1917,11 @@ mod tests {
 
         for (class, expected) in cases {
             assert_eq!(observation_class_report_code(class), expected, "{class:?}");
+            assert_eq!(
+                observation_class_from_report_code(expected),
+                Some(class),
+                "{class:?}"
+            );
         }
     }
 }
