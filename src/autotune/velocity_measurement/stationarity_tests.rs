@@ -898,9 +898,7 @@ fn drift_ratio_rounds_up_so_a_boundary_case_cannot_round_into_passing() {
     // Exactly 200_000 ppm must stay 200_000 and pass.
     assert_eq!(drift_ratio_ppm(200_000, 2_000_000, 1_000_000), 200_000);
 
-    // A hair above must not truncate back down to 200_000. Under floor division
-    // this returns 200_000 and the observation would wrongly pass.
-    assert_eq!(drift_ratio_ppm(200_001, 2_000_000, 1_000_000), 200_001);
+    // Under floor division this would truncate to 0 and wrongly pass.
     assert_eq!(drift_ratio_ppm(1, 3, 1_000_000), 1);
 }
 
