@@ -211,6 +211,8 @@ enum StationarityWorkStage {
 #[derive(Debug, Clone, Copy)]
 struct StructuredStationarityAccumulator {
     binding_exclusion: StationarityExclusion,
+    /// Gate statistics of the suffix that bound the exclusion.
+    binding: SuffixDiagnostic,
     passing_suffix_mask: u8,
     common_interval_valid: bool,
     common_rate_interval_q: [i64; 2],
@@ -249,6 +251,7 @@ impl StructuredStationarityAccumulator {
     fn new(binding_exclusion: StationarityExclusion, binding: SuffixDiagnostic) -> Self {
         Self {
             binding_exclusion,
+            binding,
             passing_suffix_mask: 0,
             common_interval_valid: binding.usable_plateau,
             common_rate_interval_q: binding.settled_rate_interval_q,
@@ -946,7 +949,7 @@ impl StationarityWork {
         self.stage = StationarityWorkStage::Done;
         Ok(StationarityWorkPoll::Complete {
             result: StationarityResult::Excluded(accumulator.binding_exclusion),
-            rejection: None,
+            rejection: Some(accumulator.binding),
         })
     }
 

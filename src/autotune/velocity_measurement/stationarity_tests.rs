@@ -788,3 +788,42 @@ fn a_usable_tail_reports_no_rejection() {
     assert!(matches!(result, StationarityResult::Usable(_)));
     assert!(rejection.is_none());
 }
+
+/// Structured mode must report its rejection too.
+///
+/// Stage C resets with structured diagnostics, so a rejected tail there took the
+/// structured completion path, which returned no rejection at all. The gate
+/// statistics were therefore absent from exactly the acquisition that needed
+/// them: four ResolvedSlope exclusions in the 2026-07-29 mirrored capture all
+/// carried a clear presence flag.
+#[test]
+fn a_structured_mode_rejection_still_reports_its_margins() {
+    let samples = observations::<256>(|index| 1 + (index as i32) / 8);
+    let mut blocker = DyadicBlocker::<LEVELS>::new();
+    let mut work = StationarityWork::new();
+    work.reset_with_structured_diagnostics();
+
+    let (result, rejection) = loop {
+        match work.poll(&samples[..], &mut blocker).unwrap() {
+            StationarityWorkPoll::Pending => {}
+            StationarityWorkPoll::Complete { result, rejection } => break (result, rejection),
+            StationarityWorkPoll::RestDiagnostic(_) | StationarityWorkPoll::RestComplete(_) => {
+                panic!("structured mode returned a scored-rest result")
+            }
+        }
+    };
+
+    assert!(
+        matches!(result, StationarityResult::Excluded(_)),
+        "a ramp must not be certified stationary, got {result:?}"
+    );
+    let rejection = rejection.expect("structured rejection must report its margins");
+    assert!(
+        !rejection.slope_passed || !rejection.lag_one_passed,
+        "at least one gate must report failure"
+    );
+    assert!(
+        rejection.slope_rejection_margin_q < 0 || rejection.lag_one_rejection_margin_q < 0,
+        "the failing gate must carry a negative margin"
+    );
+}
