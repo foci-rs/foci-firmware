@@ -8,10 +8,10 @@ use super::{
     ENVELOPE_PROPORTIONAL_DEN, ENVELOPE_PROPORTIONAL_NUM, MAX_SAFETY_OBSERVATION_GAP_US,
     MAX_SWEEP_RUNGS, MIN_SETTLE_CAPTURE_US, MIN_STRUCTURAL_RUNGS, MOVING_STROKE_US,
     OBSERVATIONS_PER_DIRECTION_PER_RUNG, RequestedVelocitySource, SETTLE_ANALYSIS_BUDGET_US,
-    SWEEP_SLOT_COUNT, VelocityPlanError, VelocitySweepRequest, ZERO_SETTLE_US, build_gain_ladder,
-    cap_safe_target_rpm, current_gain_span, envelope_cap, gain_at, plan_combined_velocity_sweep,
-    plan_historical_combined_velocity_sweep, plan_velocity_sweep, representability_ceilings,
-    travel_cap,
+    SWEEP_SLOT_COUNT, StrokeGeometry, VelocityPlanError, VelocitySweepRequest, ZERO_SETTLE_US,
+    build_gain_ladder, cap_safe_target_rpm, current_gain_span, envelope_cap, gain_at,
+    plan_combined_velocity_sweep, plan_historical_combined_velocity_sweep, plan_velocity_sweep,
+    representability_ceilings, travel_cap,
 };
 use crate::autotune::TmcMechanicalRpm;
 use foci_tmc4671::pid::PidPGain;
@@ -259,14 +259,20 @@ fn encoder_observability_tracks_the_stressed_twenty_ms_gap_bound() {
 
 #[test]
 fn travel_reserve_is_subtracted_before_the_active_duration_cap() {
-    assert_eq!(travel_cap(1_000, 100, 256_000), Ok(3_515));
-    assert_eq!(travel_cap(1_000, 100, 512_000), Ok(1_757));
     assert_eq!(
-        travel_cap(1_000, 1_000, 256_000),
+        travel_cap(StrokeGeometry::OriginAnchored, 1_000, 100, 256_000),
+        Ok(3_515)
+    );
+    assert_eq!(
+        travel_cap(StrokeGeometry::OriginAnchored, 1_000, 100, 512_000),
+        Ok(1_757)
+    );
+    assert_eq!(
+        travel_cap(StrokeGeometry::OriginAnchored, 1_000, 1_000, 256_000),
         Err(VelocityPlanError::InvalidRequest)
     );
     assert_eq!(
-        travel_cap(2, 1, 2_000_000),
+        travel_cap(StrokeGeometry::OriginAnchored, 2, 1, 2_000_000),
         Err(VelocityPlanError::ZeroMovingTravelAmplitude)
     );
 }
@@ -485,4 +491,64 @@ fn primitive_budget_must_cover_one_moving_and_settle_window() {
         ),
         Err(VelocityPlanError::InvalidRequest)
     );
+}
+
+/// A centred stroke reaches only half its displacement from the origin.
+///
+/// The travel envelope limits how far the axis may get from where it started,
+/// not how far it moves. An origin-anchored stroke spends its whole displacement
+/// going one way, so the two are equal. A stroke running symmetrically about the
+/// origin reaches only half its displacement in either direction, so the same
+/// envelope admits twice the stroke.
+#[test]
+fn centred_strokes_admit_twice_the_displacement_of_origin_anchored_ones() {
+    for (window, reserve, stroke_us) in [
+        (1_000_u32, 100_u32, 256_000_u32),
+        (1_000, 100, 512_000),
+        (2_500, 250, 512_000),
+    ] {
+        let anchored = travel_cap(StrokeGeometry::OriginAnchored, window, reserve, stroke_us)
+            .expect("anchored cap");
+        let centred = travel_cap(StrokeGeometry::OriginCentred, window, reserve, stroke_us)
+            .expect("centred cap");
+        // Doubling the window before dividing loses less to truncation, so the
+        // centred cap can exceed twice the anchored one by a single unit. The
+        // invariant is that half a centred stroke is a whole anchored stroke.
+        assert_eq!(centred / 2, anchored, "window {window} stroke {stroke_us}");
+        assert!(
+            centred >= anchored * 2,
+            "centred must admit at least twice the displacement"
+        );
+    }
+
+    // Peak excursion is what the envelope actually bounds.
+    assert_eq!(
+        StrokeGeometry::OriginAnchored.peak_excursion_mrev(2_250),
+        2_250
+    );
+    assert_eq!(
+        StrokeGeometry::OriginCentred.peak_excursion_mrev(2_250),
+        1_125
+    );
+
+    // The historical caps are unchanged for the anchored geometry.
+    assert_eq!(
+        travel_cap(StrokeGeometry::OriginAnchored, 1_000, 100, 256_000),
+        Ok(3_515)
+    );
+    assert_eq!(
+        travel_cap(StrokeGeometry::OriginAnchored, 1_000, 100, 512_000),
+        Ok(1_757)
+    );
+
+    // Rejections do not depend on geometry.
+    for geometry in [
+        StrokeGeometry::OriginAnchored,
+        StrokeGeometry::OriginCentred,
+    ] {
+        assert_eq!(
+            travel_cap(geometry, 1_000, 1_000, 256_000),
+            Err(VelocityPlanError::InvalidRequest)
+        );
+    }
 }

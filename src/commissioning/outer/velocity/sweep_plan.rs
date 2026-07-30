@@ -17,6 +17,49 @@ pub const ENVELOPE_PROPORTIONAL_DEN: u32 = 2;
 pub const ENVELOPE_ABSOLUTE_MARGIN_MREV_S: u32 = 2_000;
 /// Fixed duration of one moving observation.
 pub const MOVING_STROKE_US: u32 = 512_000;
+
+/// Where one moving stroke sits relative to the position it started from.
+///
+/// The travel envelope bounds how far the axis may get from its start, not how
+/// far it moves. Those are the same only when a stroke spends its whole
+/// displacement travelling one way.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+#[repr(u8)]
+pub enum StrokeGeometry {
+    /// The stroke starts at the origin and runs one way, so its peak excursion
+    /// equals its displacement. The historical geometry.
+    OriginAnchored = 0,
+    /// The stroke runs symmetrically about the origin, so its peak excursion is
+    /// half its displacement and the same envelope admits twice the stroke.
+    ///
+    /// It also puts each direction's settled tail at symmetric positions either
+    /// side of the origin, so a displacement-dependent disturbance acts equally
+    /// on both rather than favouring whichever direction travels outward.
+    OriginCentred = 1,
+}
+
+impl StrokeGeometry {
+    /// Furthest the axis gets from its start during one stroke.
+    pub const fn peak_excursion_mrev(self, stroke_displacement_mrev: u32) -> u32 {
+        match self {
+            Self::OriginAnchored => stroke_displacement_mrev,
+            Self::OriginCentred => stroke_displacement_mrev / 2,
+        }
+    }
+
+    /// Displacement admitted by one peak-excursion allowance.
+    const fn displacement_for_excursion(self, excursion_mrev: u64) -> u64 {
+        match self {
+            Self::OriginAnchored => excursion_mrev,
+            Self::OriginCentred => excursion_mrev * 2,
+        }
+    }
+
+    /// Stable wire code.
+    pub const fn report_code(self) -> u8 {
+        self as u8
+    }
+}
 /// Fixed duration of one zero-target settle.
 pub const ZERO_SETTLE_US: u32 = 500_000;
 /// Sampling period used by moving and zero-target velocity observations.
@@ -465,6 +508,7 @@ fn plan_velocity_sweep_with_limit(
         .ok_or(VelocityPlanError::InvalidRequest)?;
     let envelope_velocity_cap = envelope_cap(effective_ceiling_mrev_s)?;
     let travel_velocity_cap = travel_cap(
+        StrokeGeometry::OriginAnchored,
         request.max_stroke_travel_mrev,
         request.settle_travel_reserve_mrev,
         MOVING_STROKE_US,
@@ -642,6 +686,7 @@ fn envelope_cap(effective_ceiling_mrev_s: u32) -> Result<u32, VelocityPlanError>
 }
 
 fn travel_cap(
+    geometry: StrokeGeometry,
     full_window_mrev: u32,
     settle_reserve_mrev: u32,
     moving_stroke_us: u32,
@@ -649,8 +694,11 @@ fn travel_cap(
     if moving_stroke_us == 0 || settle_reserve_mrev >= full_window_mrev {
         return Err(VelocityPlanError::InvalidRequest);
     }
-    let moving_window = full_window_mrev - settle_reserve_mrev;
-    let cap = u64::from(moving_window)
+    // The window bounds peak excursion; the geometry says how much displacement
+    // that allowance buys.
+    let moving_window =
+        geometry.displacement_for_excursion(u64::from(full_window_mrev - settle_reserve_mrev));
+    let cap = moving_window
         .checked_mul(MICROS_PER_SECOND)
         .ok_or(VelocityPlanError::Arithmetic)?
         / u64::from(moving_stroke_us);
