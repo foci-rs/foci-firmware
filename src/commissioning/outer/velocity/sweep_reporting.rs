@@ -1181,6 +1181,7 @@ mod tests {
                 disturbance_interval: Some(disturbance_interval),
                 disturbance_variance_q2: 1 << 40,
                 predicted_torque_target_abs: 500,
+                drift_ratio_ppm: u32::MAX,
                 initial_lead_in: true,
             },
             stationarity: StationarityResult::Excluded(StationarityExclusion::NoBlockingPlateau),

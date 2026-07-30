@@ -306,6 +306,7 @@ pub fn classify_integral_observation(
         disturbance_interval: None,
         disturbance_variance_q2: 0,
         predicted_torque_target_abs: input.predicted_torque_target_abs,
+        drift_ratio_ppm: input.drift_ratio_ppm,
         initial_lead_in: input.initial_lead_in,
     }
 }

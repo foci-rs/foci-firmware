@@ -2284,6 +2284,7 @@ mod tests {
             disturbance_interval: None,
             disturbance_variance_q2: 0,
             predicted_torque_target_abs: 0,
+            drift_ratio_ppm: u32::MAX,
             initial_lead_in: false,
         }
     }

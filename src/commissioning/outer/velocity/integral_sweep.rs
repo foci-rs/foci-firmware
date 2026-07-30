@@ -1049,6 +1049,7 @@ fn compact_summary(
         disturbance_interval: None,
         disturbance_variance_q2: 0,
         predicted_torque_target_abs: 0,
+        drift_ratio_ppm: u32::MAX,
         initial_lead_in: data.rung_index == 0 && slot == 0,
     })
 }
@@ -1248,7 +1249,7 @@ fn moving_analysis(
     data: &mut VelocityIntegralData,
     counts_per_rev: u32,
 ) -> Result<Option<MovingAnalysis>, CommissionError> {
-    let Some((stationarity, rejection)) =
+    let Some((stationarity, rejection, drift_ratio_ppm)) =
         poll_stationarity(&mut data.analysis, &data.observations, &mut data.blocker)?
     else {
         return Ok(None);
@@ -1270,8 +1271,10 @@ fn moving_analysis(
         usable_torque_limit: data.plan.usable_torque_limit,
         hard_torque_limit: data.plan.hard_torque_limit,
         initial_lead_in: data.rung_index == 0 && data.slot == 0,
+        drift_ratio_ppm,
     };
     if let StationarityResult::Usable(suffix) = stationarity {
+        input.drift_ratio_ppm = suffix.drift_ratio_ppm;
         let confidence = estimate_confidence(suffix.selection, data.plan.family_size)
             .map_err(|_| CommissionError::VelocityValidationFailed)?;
         let mean_rate_q = suffix

@@ -85,6 +85,7 @@ fn summary(slot: u8, class: VelocityObservationClass) -> VelocityObservationSumm
         disturbance_interval: eligible.then(|| interval(low, high)),
         disturbance_variance_q2: 4,
         predicted_torque_target_abs: 100,
+        drift_ratio_ppm: u32::MAX,
         initial_lead_in: slot == 0,
     }
 }

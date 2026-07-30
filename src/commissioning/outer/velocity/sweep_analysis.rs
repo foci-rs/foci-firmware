@@ -72,20 +72,27 @@ pub(super) fn poll_moving_observation_analysis(
     data: &mut VelocitySweepData,
     counts_per_rev: u32,
 ) -> Result<Option<MovingObservationAnalysis>, CommissionError> {
-    let Some((stationarity, _rejection)) =
+    let Some((stationarity, _rejection, drift_ratio_ppm)) =
         poll_stationarity(&mut data.analysis, &data.observations, &mut data.blocker)?
     else {
         return Ok(None);
     };
     let structured_boundary = data.analysis.structured_evidence();
-    finish_moving_observation_analysis(data, counts_per_rev, stationarity, structured_boundary)
-        .map(Some)
+    finish_moving_observation_analysis(
+        data,
+        counts_per_rev,
+        stationarity,
+        drift_ratio_ppm,
+        structured_boundary,
+    )
+    .map(Some)
 }
 
 fn finish_moving_observation_analysis(
     data: &mut VelocitySweepData,
     counts_per_rev: u32,
     stationarity: StationarityResult,
+    drift_ratio_ppm: u32,
     structured_boundary: Option<StructuredStationarityEvidence>,
 ) -> Result<MovingObservationAnalysis, CommissionError> {
     let plan = data.plan;
@@ -119,9 +126,11 @@ fn finish_moving_observation_analysis(
         usable_torque_limit: plan.usable_torque_limit,
         hard_torque_limit: plan.hard_torque_limit,
         initial_lead_in: data.rung_index == 0 && data.slot == 0,
+        drift_ratio_ppm,
     };
     let mut settled_rate_mean_q = 0;
     if let StationarityResult::Usable(suffix) = stationarity {
+        input.drift_ratio_ppm = suffix.drift_ratio_ppm;
         let family_size = u16::from(plan.rung_count)
             .checked_mul(plan.observations_per_direction)
             .ok_or(CommissionError::InvalidSchedule)?;
@@ -264,18 +273,17 @@ pub(super) fn poll_stationarity<const LEVELS: usize>(
     analysis: &mut StationarityWork,
     observations: &impl VelocityObservationSource,
     blocker: &mut DyadicBlocker<LEVELS>,
-) -> Result<Option<(StationarityResult, Option<SuffixDiagnostic>)>, CommissionError> {
+) -> Result<Option<(StationarityResult, Option<SuffixDiagnostic>, u32)>, CommissionError> {
     match analysis
         .poll(observations, blocker)
         .map_err(|_| CommissionError::VelocityValidationFailed)?
     {
         StationarityWorkPoll::Pending => Ok(None),
-        // The completion also carries drift_ratio_ppm, which the observation
-        // summary reports separately. This seam needs only the binding verdict
-        // and the gate statistics.
         StationarityWorkPoll::Complete {
-            result, rejection, ..
-        } => Ok(Some((result, rejection))),
+            result,
+            rejection,
+            drift_ratio_ppm,
+        } => Ok(Some((result, rejection, drift_ratio_ppm))),
         StationarityWorkPoll::RestDiagnostic(_) | StationarityWorkPoll::RestComplete(_) => {
             Err(CommissionError::VelocityValidationFailed)
         }
@@ -323,7 +331,8 @@ pub(super) fn poll_settle_confirmation_parts<const LEVELS: usize>(
     settle_min_displacement_counts: i8,
     settle_max_displacement_counts: i8,
 ) -> Result<Option<LegacySettleConfirmation>, CommissionError> {
-    let Some((stationarity, _rejection)) = poll_stationarity(analysis, observations, blocker)?
+    let Some((stationarity, _rejection, _drift_ratio_ppm)) =
+        poll_stationarity(analysis, observations, blocker)?
     else {
         return Ok(None);
     };

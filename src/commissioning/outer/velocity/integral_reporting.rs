@@ -497,6 +497,7 @@ fn encode_observation(report: VelocityIntegralObservation) -> VelocitySweepCanon
     }
     record.push_u8(rate_shift);
     record.push_u16(report.summary.predicted_torque_target_abs);
+    record.push_u32(report.summary.drift_ratio_ppm);
     encode_stationarity(&mut record, report.stationarity);
     if matches!(report.stationarity, StationarityResult::Excluded(_)) {
         encode_rejection(&mut record, report.rejection);
@@ -753,7 +754,8 @@ mod tests {
     use super::*;
     use crate::ankyra::velocity_sweep_encoding::VELOCITY_SWEEP_CANONICAL_RECORD_MAX;
     use crate::autotune::velocity_measurement::{
-        PlateauSelection, RateBlock, StationarySuffix, SuffixDiagnostic, VelocityDirection,
+        DyadicBlocker, PlateauSelection, RateBlock, RawVelocityObservation, StationarityWork,
+        StationarityWorkPoll, StationarySuffix, SuffixDiagnostic, VelocityDirection,
     };
     use crate::commissioning::outer::state::{
         PositiveIRestBoundary, VelocitySettleMetrics, VelocitySettleTransition,
@@ -772,6 +774,20 @@ mod tests {
     use crate::commissioning::types::VelocityIntegralObservation;
     use crate::commissioning::types::{RecoveryRestDiagnostic, ResponseHorizonClass};
     use foci_tmc4671::pid::PidPGain;
+
+    /// Byte offset of `drift_ratio_ppm` in an encoded Stage-C observation record.
+    ///
+    /// Counted from the fixed prefix `encode_observation` pushes ahead of the
+    /// field: tag(1) + run_sequence(4) + evidence_sequence(2) + plan_digest(8) +
+    /// rung_index(1) + slot(1) + i_raw(2) + direction(1) + class(1) +
+    /// initial_lead_in(1) + five encoded rates(20) + rate_shift(1) +
+    /// predicted_torque_target_abs(2) = 45.
+    const DRIFT_RATIO_PPM_OFFSET: usize = 45;
+
+    /// Read a little-endian `u32` out of an encoded record at a fixed offset.
+    fn read_u32_at(bytes: &[u8], offset: usize) -> u32 {
+        u32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap())
+    }
 
     fn recovery_rest_diagnostic() -> RecoveryRestDiagnostic {
         RecoveryRestDiagnostic {
@@ -1323,6 +1339,7 @@ mod tests {
                 disturbance_interval: None,
                 disturbance_variance_q2: 0,
                 predicted_torque_target_abs: 1_023,
+                drift_ratio_ppm: u32::MAX,
                 initial_lead_in: false,
             },
             stationarity: StationarityResult::Excluded(exclusion),
@@ -1330,13 +1347,10 @@ mod tests {
         }
     }
 
-    /// An excluded tail must carry the gate statistics that rejected it.
-    ///
-    /// Without this the failing observations are the only ones with no evidence,
-    /// which is precisely backwards for a diagnostic instrument.
-    #[test]
-    fn an_excluded_observation_records_why_the_gate_rejected_it() {
-        let rejection = SuffixDiagnostic {
+    /// Gate statistics for a post-fit rejection, shared by every test that needs
+    /// a plausible rejected-tail diagnostic without caring about its exact values.
+    fn rejection_diagnostic_fixture() -> SuffixDiagnostic {
+        SuffixDiagnostic {
             suffix_len: 256,
             usable_plateau: true,
             slope_passed: false,
@@ -1346,7 +1360,42 @@ mod tests {
             lag_one_rejection_margin_q: 55_874,
             slope_q: -6_100_000,
             slope_half_width_q: 3_710_294,
-        };
+        }
+    }
+
+    /// A usable stationary suffix, shared by tests that need a plausible one
+    /// without caring about its exact values.
+    fn usable_suffix_fixture() -> StationarySuffix {
+        StationarySuffix {
+            selection: PlateauSelection {
+                level: 4,
+                block_count: 16,
+                variance_of_mean_q2: 0,
+                exact_totals: RateBlock {
+                    delta_counts: 0,
+                    elapsed_us: 0,
+                    observation_count: 0,
+                },
+            },
+            suffix_len: 256,
+            slope_q: -2_389_706,
+            slope_half_width_q: 8_628_554,
+            lag_one_q: -680_061,
+            lag_one_half_width_q: 673_435,
+            residual_magnitude_q2: 0,
+            span_x2_us: 0,
+            drift_ratio_ppm: u32::MAX,
+            tested_suffixes: 3,
+        }
+    }
+
+    /// An excluded tail must carry the gate statistics that rejected it.
+    ///
+    /// Without this the failing observations are the only ones with no evidence,
+    /// which is precisely backwards for a diagnostic instrument.
+    #[test]
+    fn an_excluded_observation_records_why_the_gate_rejected_it() {
+        let rejection = rejection_diagnostic_fixture();
         let record = encode_observation(excluded_observation(
             StationarityExclusion::ResolvedSlope,
             Some(rejection),
@@ -1386,35 +1435,169 @@ mod tests {
         assert_eq!(bytes[bytes.len() - 1], 0, "presence flag must be clear");
     }
 
-    /// The usable path must keep its existing 77-byte layout untouched.
+    /// The usable path must keep its established layout, now 81 bytes since
+    /// `drift_ratio_ppm` moved the fixed prefix four bytes wider.
     #[test]
     fn a_usable_observation_keeps_its_established_layout() {
         let mut report = excluded_observation(StationarityExclusion::ResolvedSlope, None);
         report.summary.classification = VelocityObservationClass::Eligible;
-        report.stationarity = StationarityResult::Usable(StationarySuffix {
-            selection: PlateauSelection {
-                level: 4,
-                block_count: 16,
-                variance_of_mean_q2: 0,
-                exact_totals: RateBlock {
-                    delta_counts: 0,
-                    elapsed_us: 0,
-                    observation_count: 0,
-                },
-            },
-            suffix_len: 256,
-            slope_q: -2_389_706,
-            slope_half_width_q: 8_628_554,
-            lag_one_q: -680_061,
-            lag_one_half_width_q: 673_435,
-            residual_magnitude_q2: 0,
-            span_x2_us: 0,
-            drift_ratio_ppm: u32::MAX,
-            tested_suffixes: 3,
-        });
+        report.stationarity = StationarityResult::Usable(usable_suffix_fixture());
 
         let record = encode_observation(report);
 
-        assert_eq!(record.as_bytes().len(), 77);
+        assert_eq!(record.as_bytes().len(), 81);
+    }
+
+    /// The field must not live in the rejection block, which is emitted only for
+    /// Excluded, or eligible and inert observations could never carry it. So the
+    /// offset is measured from the fixed prefix and must not move when the
+    /// conditional block is absent.
+    #[test]
+    fn every_integral_observation_carries_the_drift_ratio_whatever_the_classification() {
+        let mut excessive_report = excluded_observation(
+            StationarityExclusion::ExcessiveDrift,
+            Some(rejection_diagnostic_fixture()),
+        );
+        excessive_report.summary.drift_ratio_ppm = 412_009;
+        let excessive = encode_observation(excessive_report);
+
+        let mut pre_fit_report =
+            excluded_observation(StationarityExclusion::NoBlockingPlateau, None);
+        pre_fit_report.summary.drift_ratio_ppm = u32::MAX;
+        let pre_fit = encode_observation(pre_fit_report);
+
+        let mut usable_report = excluded_observation(StationarityExclusion::ResolvedSlope, None);
+        usable_report.summary.classification = VelocityObservationClass::Eligible;
+        usable_report.summary.drift_ratio_ppm = 38_503;
+        usable_report.stationarity = StationarityResult::Usable(usable_suffix_fixture());
+        let usable = encode_observation(usable_report);
+
+        // Immediately after predicted_torque_target_abs, before encode_stationarity.
+        let offset = DRIFT_RATIO_PPM_OFFSET;
+        assert_eq!(
+            read_u32_at(usable.as_bytes(), offset),
+            38_503,
+            "a usable observation must carry the ratio"
+        );
+        assert_eq!(
+            read_u32_at(excessive.as_bytes(), offset),
+            412_009,
+            "a post-fit exclusion must carry its evaluated ratio"
+        );
+        assert_eq!(
+            read_u32_at(pre_fit.as_bytes(), offset),
+            u32::MAX,
+            "a pre-fit exclusion must report no finite ratio"
+        );
+    }
+
+    #[test]
+    fn excessive_drift_encodes_as_stage_c_exclusion_code_six() {
+        let mut report = excluded_observation(
+            StationarityExclusion::ExcessiveDrift,
+            Some(rejection_diagnostic_fixture()),
+        );
+        report.summary.drift_ratio_ppm = 412_009;
+        let record = encode_observation(report);
+        let bytes = record.as_bytes();
+        let code_offset = bytes.len() - 1 - REJECTION_DIAGNOSTIC_BYTES - 1;
+        assert_eq!(bytes[code_offset], 6);
+        assert_eq!(bytes[code_offset + 1], 1, "presence flag must be set");
+    }
+
+    /// Drive the cooperative stationarity engine to completion on a fixed-size
+    /// observation source, returning the binding exclusion and the drift ratio
+    /// the completion envelope reports for it.
+    ///
+    /// Panics if the engine ever reaches a usable or scored-rest result: every
+    /// caller in this module drives a shape it expects to reject before any
+    /// regression is attempted.
+    fn drive_to_no_fit_exclusion<const LEVELS: usize>(
+        observations: &[RawVelocityObservation],
+        blocker: &mut DyadicBlocker<LEVELS>,
+    ) -> (StationarityExclusion, u32) {
+        let mut work = StationarityWork::new();
+        loop {
+            match work
+                .poll(observations, blocker)
+                .expect("bounded fixed-size observation feed stays in range")
+            {
+                StationarityWorkPoll::Pending => {}
+                StationarityWorkPoll::Complete {
+                    result,
+                    drift_ratio_ppm,
+                    ..
+                } => {
+                    let StationarityResult::Excluded(exclusion) = result else {
+                        panic!("expected a no-fit exclusion, got a usable suffix");
+                    };
+                    return (exclusion, drift_ratio_ppm);
+                }
+                StationarityWorkPoll::RestDiagnostic(_) | StationarityWorkPoll::RestComplete(_) => {
+                    panic!("moving mode returned a scored-rest result")
+                }
+            }
+        }
+    }
+
+    /// A flat 64-sample capture with only two dyadic blocking levels available.
+    ///
+    /// Two levels cannot express the two-doubling plateau the blocker requires,
+    /// so this rejects before any regression is attempted: `NoBlockingPlateau`.
+    fn observations_without_a_blocking_plateau() -> VelocityIntegralObservation {
+        let observations: [RawVelocityObservation; 64] =
+            core::array::from_fn(|_| RawVelocityObservation::new(1, 1_000).unwrap());
+        let mut blocker = DyadicBlocker::<2>::new();
+        let (exclusion, drift_ratio_ppm) = drive_to_no_fit_exclusion(&observations, &mut blocker);
+        assert_eq!(exclusion, StationarityExclusion::NoBlockingPlateau);
+        let mut report = excluded_observation(exclusion, None);
+        report.summary.drift_ratio_ppm = drift_ratio_ppm;
+        report
+    }
+
+    /// A capture shorter than the shortest declared suffix length.
+    ///
+    /// No suffix is even available to attempt, so this rejects before any
+    /// regression: `TooFewDecorrelatedBlocks`.
+    fn observations_with_two_blocks() -> VelocityIntegralObservation {
+        let observations: [RawVelocityObservation; 2] =
+            core::array::from_fn(|_| RawVelocityObservation::new(1, 1_000).unwrap());
+        let mut blocker = DyadicBlocker::<9>::new();
+        let (exclusion, drift_ratio_ppm) = drive_to_no_fit_exclusion(&observations, &mut blocker);
+        assert_eq!(exclusion, StationarityExclusion::TooFewDecorrelatedBlocks);
+        let mut report = excluded_observation(exclusion, None);
+        report.summary.drift_ratio_ppm = drift_ratio_ppm;
+        report
+    }
+
+    /// Every path that never reaches a regression must encode the sentinel.
+    ///
+    /// A zero ratio reads as "measured, and tiny". These paths measured nothing.
+    ///
+    /// This covers the two no-fit exclusions reachable through the real
+    /// cooperative engine from this module: `NoBlockingPlateau` and
+    /// `TooFewDecorrelatedBlocks`. A third no-fit case, a pre-fit `Arithmetic`
+    /// failure, is not included: every route to it either overflows i128
+    /// checked accumulators or produces a non-finite f32 value, and both
+    /// require magnitudes far beyond what a legal `RawVelocityObservation`
+    /// (bounded `i32` delta, `u32` elapsed, suffix length capped at 256) can
+    /// produce. Two adversarial probes confirmed this empirically: one drove
+    /// `StationarityWork::poll` to a hard `Err(ArithmeticOverflow)` (a
+    /// different failure mode, not this exclusion), and the other completed
+    /// as `Usable`. No test anywhere in this crate forces `Arithmetic` through
+    /// genuine raw-observation feeding either.
+    #[test]
+    fn each_no_fit_path_encodes_the_sentinel_rather_than_zero() {
+        for report in [
+            observations_without_a_blocking_plateau(),
+            observations_with_two_blocks(),
+        ] {
+            let record = encode_observation(report);
+            assert_eq!(
+                read_u32_at(record.as_bytes(), DRIFT_RATIO_PPM_OFFSET),
+                u32::MAX,
+                "a path with no fit reported a finite ratio"
+            );
+        }
     }
 }

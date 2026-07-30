@@ -59,6 +59,7 @@ fn summary(
         disturbance_interval: None,
         disturbance_variance_q2: 0,
         predicted_torque_target_abs: 100,
+        drift_ratio_ppm: u32::MAX,
         initial_lead_in: false,
     }
 }
@@ -96,6 +97,7 @@ fn intrinsic_stage_c_classification_never_requires_disturbance() {
         usable_torque_limit: 2_534,
         hard_torque_limit: 2_816,
         initial_lead_in: false,
+        drift_ratio_ppm: u32::MAX,
     };
 
     let summary = classify_integral_observation(input);
@@ -123,6 +125,7 @@ fn structured_motion_remains_ineligible_despite_target_response() {
         usable_torque_limit: 2_816,
         hard_torque_limit: 2_816,
         initial_lead_in: false,
+        drift_ratio_ppm: u32::MAX,
     };
 
     assert_eq!(

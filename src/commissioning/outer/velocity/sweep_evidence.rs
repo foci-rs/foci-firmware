@@ -146,6 +146,11 @@ pub struct VelocityObservationInput {
     pub hard_torque_limit: u16,
     /// Whether this observation lacks the normal reversal lead-in.
     pub initial_lead_in: bool,
+    /// Drift across the regression span, parts per million of settled rate.
+    ///
+    /// Sourced from the suffix on a usable result and from the completion
+    /// envelope otherwise. [`u32::MAX`] means no finite reportable ratio.
+    pub drift_ratio_ppm: u32,
 }
 
 /// Analysis-only classification for one completed observation.
@@ -226,6 +231,13 @@ pub struct VelocityObservationSummary {
     pub disturbance_variance_q2: u64,
     /// Predicted absolute controller output.
     pub predicted_torque_target_abs: u16,
+    /// Drift across the regression span, parts per million of settled rate.
+    ///
+    /// Present on every observation, not only rejections, so the tunability of
+    /// the moving-stroke drift bound can be judged from passing observations
+    /// too. [`u32::MAX`] means no finite reportable ratio, which is what the
+    /// paths that never reached a regression report.
+    pub drift_ratio_ppm: u32,
     /// Whether this was the exceptional first campaign observation.
     pub initial_lead_in: bool,
 }
@@ -696,6 +708,7 @@ pub fn classify_velocity_observation(
         disturbance_interval,
         disturbance_variance_q2: input.disturbance_variance_q2,
         predicted_torque_target_abs: input.predicted_torque_target_abs,
+        drift_ratio_ppm: input.drift_ratio_ppm,
         initial_lead_in: input.initial_lead_in,
     }
 }
@@ -1549,6 +1562,7 @@ mod tests {
             usable_torque_limit: 900,
             hard_torque_limit: 1_000,
             initial_lead_in: false,
+            drift_ratio_ppm: u32::MAX,
         }
     }
 
