@@ -1053,16 +1053,18 @@ fn compact_summary(
     })
 }
 
-fn analyze_rung(
+pub(super) fn analyze_rung(
     data: &VelocityIntegralData,
     direction: VelocityDirection,
 ) -> Result<IntegralRungEvidence, CommissionError> {
-    let offset = match direction {
+    let direction_index = match direction {
         VelocityDirection::Forward => 0,
         VelocityDirection::Reverse => 1,
     };
+    // Must mirror the write side: evidence is stored by raw slot index.
     let observations = core::array::from_fn(|index| {
-        compact_summary(data, index * 2 + offset, direction)
+        let slot = usize::from(data.plan.slot_order.slot_for(index, direction_index));
+        compact_summary(data, slot, direction)
             .expect("validated compact Stage-C evidence reconstructs")
     });
     analyze_integral_direction(

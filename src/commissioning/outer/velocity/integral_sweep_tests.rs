@@ -4,7 +4,7 @@ use super::integral_plan::{INTEGRAL_SLOT_TRANSITION_ALLOWANCE_US, VelocityIntegr
 use super::integral_sweep::{
     INTEGRAL_CAUSE_BOOKEND_UNAVAILABLE, INTEGRAL_CAUSE_POSITIVE_I_REST_BOUNDARY,
     INTEGRAL_CAUSE_POSITIVE_I_REST_BOUNDARY_AFTER_SUFFICIENCY, INTEGRAL_SLOT_COUNT,
-    acceptance_amplitude_report, acceptance_terminal, advance_integral_cursor,
+    acceptance_amplitude_report, acceptance_terminal, advance_integral_cursor, analyze_rung,
     apply_integral_current_headroom, combined_slot_transition_us, combined_target_status,
     integral_fault_terminal, integral_i_at, integral_recovery_current_contact_policy,
     integral_recovery_rest_schedule, integral_rung_count, integral_rung_kind,
@@ -22,6 +22,7 @@ use super::recovery::{
 use super::sweep_plan::RequestedVelocitySource;
 use crate::autotune::CommissionError;
 use crate::autotune::TransientBuffer;
+use crate::autotune::velocity_measurement::VelocityDirection;
 use crate::autotune::velocity_measurement::{
     RestSelectionDecision, RestSelectionDisposition, RestStructuralCode, StationarityExclusion,
     StationarityResult,
@@ -2612,4 +2613,48 @@ fn matrix_safety_fault_uses_the_matrix_terminal() {
     };
     assert_eq!(terminal.outcome, AcceptanceMatrixOutcome::Fault);
     assert_eq!(terminal.cause, AcceptanceMatrixCause::EvidenceIntegrity);
+}
+
+/// Stage-C rung aggregation must read the slots that actually carry each direction.
+///
+/// Evidence is written by raw slot index and read back by observation ordinal and
+/// direction. `analyze_rung` hardcoded `index * 2 + offset`, so a mirrored run
+/// aggregated the opposite direction's slots: every observation was reported Inert
+/// even though the stored observations were eligible and correctly signed. That
+/// produced eligible masks of 0x0/0x0 on hardware while the raw evidence was fine.
+#[test]
+fn rung_aggregation_follows_the_declared_slot_order() {
+    for (slot_order, forward_sign) in [
+        (IntegralSlotOrder::ForwardFirst, 1_i64),
+        (IntegralSlotOrder::ReverseFirst, -1_i64),
+    ] {
+        let mut plan = plan();
+        plan.slot_order = slot_order;
+        let mut data = VelocityIntegralData::new(1, plan);
+        data.rung_classes = [VelocityObservationClass::Eligible; 8];
+        // Sign each slot by the direction that slot actually travels, so reading
+        // the wrong slots yields the wrong sign rather than merely wrong values.
+        data.rung_intervals = core::array::from_fn(|slot| {
+            let travels_forward = slot_order.direction_index(slot as u8) == 0;
+            if travels_forward {
+                ExactRateInterval::new(100, 110).unwrap()
+            } else {
+                ExactRateInterval::new(-110, -100).unwrap()
+            }
+        });
+
+        let forward = analyze_rung(&data, VelocityDirection::Forward).unwrap();
+        let reverse = analyze_rung(&data, VelocityDirection::Reverse).unwrap();
+
+        let _ = forward_sign;
+        // Forward evidence must be positive and reverse negative under both orders.
+        assert!(
+            forward.interval.unwrap().low_q > 0,
+            "{slot_order:?} forward read a reverse slot"
+        );
+        assert!(
+            reverse.interval.unwrap().high_q < 0,
+            "{slot_order:?} reverse read a forward slot"
+        );
+    }
 }
