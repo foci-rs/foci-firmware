@@ -4,7 +4,7 @@ use super::{
     RestSelectionDisposition, RestStructuralCode, RestSuffixEvaluation, StationarityExclusion,
     StationarityResult, StationarityWork, StationarityWorkPoll, VELOCITY_SUFFIX_LENGTHS,
     VelocityObservationSource, analyze_stationarity_diagnostics,
-    analyze_stationarity_with_blocking_variance, select_causal_rest_suffixes,
+    analyze_stationarity_with_blocking_variance, drift_ratio_ppm, select_causal_rest_suffixes,
     select_stationary_suffix,
 };
 use crate::autotune::velocity_measurement::{DyadicBlocker, RawVelocityObservation};
@@ -826,4 +826,41 @@ fn a_structured_mode_rejection_still_reports_its_margins() {
         rejection.slope_rejection_margin_q < 0 || rejection.lag_one_rejection_margin_q < 0,
         "the failing gate must carry a negative margin"
     );
+}
+
+#[test]
+fn drift_ratio_is_exact_integer_parts_per_million() {
+    // 10% of rate over the span: slope 1_000_000 rate units per second across a
+    // 2 second span is 2_000_000 of drift against a rate of 20_000_000.
+    assert_eq!(drift_ratio_ppm(1_000_000, 4_000_000, 20_000_000), 100_000);
+
+    // Sign is irrelevant on both inputs; only magnitudes matter.
+    assert_eq!(drift_ratio_ppm(-1_000_000, 4_000_000, 20_000_000), 100_000);
+    assert_eq!(drift_ratio_ppm(1_000_000, 4_000_000, -20_000_000), 100_000);
+}
+
+#[test]
+fn drift_ratio_rounds_up_so_a_boundary_case_cannot_round_into_passing() {
+    // Exactly 200_000 ppm must stay 200_000 and pass.
+    assert_eq!(drift_ratio_ppm(200_000, 2_000_000, 1_000_000), 200_000);
+
+    // A hair above must not truncate back down to 200_000. Under floor division
+    // this returns 200_000 and the observation would wrongly pass.
+    assert_eq!(drift_ratio_ppm(200_001, 2_000_000, 1_000_000), 200_001);
+    assert_eq!(drift_ratio_ppm(1, 3, 1_000_000), 1);
+}
+
+#[test]
+fn drift_ratio_saturates_rather_than_wrapping() {
+    assert_eq!(drift_ratio_ppm(i64::MAX, u64::MAX, 1), u32::MAX);
+}
+
+#[test]
+fn drift_ratio_matches_a_hand_computed_case_at_capture_scale() {
+    // Magnitudes from rung 0 slot 3 of
+    // foc-192-stepper-y-rejection-slope-20260729-221033.bin, at a 60 ms span.
+    // The capture does not report the block level on the rejection path, so the
+    // real span is unknown; this pins the arithmetic at a realistic scale, not
+    // the observation's actual ratio.
+    assert_eq!(drift_ratio_ppm(-8_823_529, 2 * 60_000, 13_750_000), 38_503);
 }

@@ -125,6 +125,10 @@ struct StationarityMetrics {
     lag_one_passed: bool,
     slope_rejection_margin_q: i64,
     lag_one_rejection_margin_q: i32,
+    /// Doubled midpoint-to-midpoint regression span in microseconds.
+    span_x2_us: u64,
+    /// Drift across the span as parts per million of the settled rate.
+    drift_ratio_ppm: u32,
 }
 
 /// Maximum raw observations consumed by one cooperative stationarity step.
@@ -799,6 +803,10 @@ impl StationarityWork {
         let selection = blocker
             .select_plateau()
             .ok_or(VelocityMeasurementError::ArithmeticOverflow)?;
+        let settled = SettledRateContext {
+            mean_rate_q: selection.exact_totals.rate_q()?,
+            half_width_rate_q: estimate_confidence(selection, 3)?.half_width_rate_q,
+        };
         let metrics = calculate_stationarity_metrics(
             block_count as usize,
             denominator,
@@ -807,6 +815,12 @@ impl StationarityWork {
             lag_product_sum_q2,
             3,
             selection.variance_of_mean_q2,
+            // Placeholder. The streaming path cannot compute the span until the
+            // first block's elapsed time is carried in the stage state, which the
+            // next task adds. Nothing reads the ratio until the gate change, so
+            // this is unobservable in behaviour rather than wrong output.
+            0,
+            settled,
         );
         match metrics {
             Ok(metrics) => {
@@ -1263,6 +1277,10 @@ where
     let block_observations = 1usize
         .checked_shl(u32::from(selection.level))
         .ok_or(VelocityMeasurementError::ArithmeticOverflow)?;
+    let settled = SettledRateContext {
+        mean_rate_q: selection.exact_totals.rate_q()?,
+        half_width_rate_q: estimate_confidence(selection, 3)?.half_width_rate_q,
+    };
     let metrics = calculate_stationarity_metrics_from_source(
         observations,
         suffix_start,
@@ -1270,6 +1288,7 @@ where
         block_observations,
         3,
         selection.variance_of_mean_q2,
+        settled,
     )
     .map_err(|_| VelocityMeasurementError::ArithmeticOverflow)?;
     suffix_diagnostic_from_metrics(selection, suffix_len, metrics)
@@ -1349,6 +1368,10 @@ where
                 StationarityExclusion::Arithmetic,
             ));
         };
+        let settled = SettledRateContext {
+            mean_rate_q: selection.exact_totals.rate_q()?,
+            half_width_rate_q: estimate_confidence(selection, 3)?.half_width_rate_q,
+        };
         let metrics = match analyze_stationarity_from_source(
             observations,
             suffix_start,
@@ -1356,6 +1379,7 @@ where
             block_observations,
             3,
             selection.variance_of_mean_q2,
+            settled,
         ) {
             Ok(metrics) => metrics,
             Err(exclusion) => {
@@ -1392,6 +1416,7 @@ fn analyze_stationarity_from_source(
     block_observations: usize,
     family_size: u16,
     blocking_variance_of_mean_q2: u128,
+    settled: SettledRateContext,
 ) -> Result<StationarityMetrics, StationarityExclusion> {
     let metrics = calculate_stationarity_metrics_from_source(
         observations,
@@ -1400,6 +1425,7 @@ fn analyze_stationarity_from_source(
         block_observations,
         family_size,
         blocking_variance_of_mean_q2,
+        settled,
     )?;
     classify_moving_metrics(metrics)
 }
@@ -1411,6 +1437,7 @@ fn calculate_stationarity_metrics_from_source(
     block_observations: usize,
     family_size: u16,
     blocking_variance_of_mean_q2: u128,
+    settled: SettledRateContext,
 ) -> Result<StationarityMetrics, StationarityExclusion> {
     if block_observations == 0 {
         return Err(StationarityExclusion::Arithmetic);
@@ -1474,9 +1501,15 @@ fn calculate_stationarity_metrics_from_source(
     let mut residual_sum_q2 = 0.0f32;
     let mut lag_product_sum_q2 = 0.0f32;
     let mut previous_residual = None;
+    let mut first_block_elapsed_us = 0u64;
+    let mut last_block_elapsed_us = 0u64;
     cumulative_elapsed_us = 0;
     for block_index in 0..block_count {
         let block = rate_block_at(observations, suffix_start, block_index, block_observations)?;
+        if block_index == 0 {
+            first_block_elapsed_us = block.elapsed_us;
+        }
+        last_block_elapsed_us = block.elapsed_us;
         let midpoint_us = cumulative_elapsed_us
             .checked_add(block.elapsed_us / 2)
             .ok_or(StationarityExclusion::Arithmetic)?;
@@ -1493,6 +1526,11 @@ fn calculate_stationarity_metrics_from_source(
         }
         previous_residual = Some(residual);
     }
+    let span_x2_us = cumulative_elapsed_us
+        .checked_mul(2)
+        .and_then(|value| value.checked_sub(first_block_elapsed_us))
+        .and_then(|value| value.checked_sub(last_block_elapsed_us))
+        .ok_or(StationarityExclusion::Arithmetic)?;
     calculate_stationarity_metrics(
         block_count,
         denominator,
@@ -1501,7 +1539,45 @@ fn calculate_stationarity_metrics_from_source(
         lag_product_sum_q2,
         family_size,
         blocking_variance_of_mean_q2,
+        span_x2_us,
+        settled,
     )
+}
+
+/// Settled-rate quantities the drift bound needs but the regression does not.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct SettledRateContext {
+    /// Exact settled mean rate in fixed-point rate units.
+    pub mean_rate_q: i64,
+    /// Outward-rounded confidence half-width in the same units.
+    pub half_width_rate_q: u64,
+}
+
+/// Drift across the regression span as parts per million of the settled rate.
+///
+/// The parts-per-million factor cancels exactly: `slope_q` is in rate units per
+/// second and `mean_rate_q` in rate units, so `slope_q * span_seconds * 1e6 /
+/// mean_rate_q` reduces to `slope_q * span_us / mean_rate_q`.
+///
+/// The span is passed doubled so its halves stay integral, and the single
+/// `div_ceil` therefore applies to the exact rational. Rounding up biases toward
+/// rejection, the conservative direction for a guard against a stroke that no
+/// single rate describes.
+///
+/// Returns [`u32::MAX`] when the quotient does not fit, which the caller treats
+/// as "no finite reportable ratio" rather than as a magnitude.
+pub(crate) fn drift_ratio_ppm(slope_q: i64, span_x2_us: u64, mean_rate_q: i64) -> u32 {
+    let denominator = u128::from(mean_rate_q.unsigned_abs()).saturating_mul(2);
+    if denominator == 0 {
+        return u32::MAX;
+    }
+    let numerator = u128::from(slope_q.unsigned_abs()).saturating_mul(u128::from(span_x2_us));
+    let ratio = numerator.div_ceil(denominator);
+    if ratio > u128::from(u32::MAX) {
+        u32::MAX
+    } else {
+        ratio as u32
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1513,6 +1589,8 @@ fn calculate_stationarity_metrics(
     lag_product_sum_q2: f32,
     family_size: u16,
     blocking_variance_of_mean_q2: u128,
+    span_x2_us: u64,
+    settled: SettledRateContext,
 ) -> Result<StationarityMetrics, StationarityExclusion> {
     if block_count < 3 || !residual_sum_q2.is_finite() || !lag_product_sum_q2.is_finite() {
         return Err(StationarityExclusion::Arithmetic);
@@ -1557,6 +1635,12 @@ fn calculate_stationarity_metrics(
         lag_one_passed: lag_rejection_margin >= 0.0,
         slope_rejection_margin_q: rounded_i64(slope_rejection_margin)?,
         lag_one_rejection_margin_q: rounded_i32(lag_rejection_margin * LAG_ONE_Q_SCALE)?,
+        span_x2_us,
+        drift_ratio_ppm: drift_ratio_ppm(
+            rounded_i64(slope_per_second)?,
+            span_x2_us,
+            settled.mean_rate_q,
+        ),
     })
 }
 
@@ -1596,6 +1680,14 @@ fn analyze_stationarity_with_blocking_variance(
     family_size: u16,
     blocking_variance_of_mean_q2: u128,
 ) -> Result<StationarityMetrics, StationarityExclusion> {
+    // These callers exercise the slope and lag-one gates with a synthetic
+    // variance, not a real dyadic-blocker selection, so there is no exact
+    // settled rate to report. The drift ratio derived from this placeholder is
+    // unused: nothing gates on it, and none of these tests inspect it.
+    let settled = SettledRateContext {
+        mean_rate_q: 0,
+        half_width_rate_q: 0,
+    };
     analyze_stationarity_from_source(
         observations,
         0,
@@ -1603,6 +1695,7 @@ fn analyze_stationarity_with_blocking_variance(
         block_observations,
         family_size,
         blocking_variance_of_mean_q2,
+        settled,
     )
 }
 
