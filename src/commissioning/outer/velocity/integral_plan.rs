@@ -438,18 +438,41 @@ pub enum IntegralSlotOrder {
     ForwardFirst = 0,
     /// Even slots travel reverse, swapping which end each direction's tail reaches.
     ReverseFirst = 1,
+    /// Paired F,R,R,F,F,R,R,F so each direction takes both schedule roles.
+    ///
+    /// Both alternating orders lock three things together: a stroke's direction,
+    /// whether it leaves the origin or returns to it, and the direction of the
+    /// stroke before it. Pairing inverts the outbound/preceded-by relation while
+    /// leaving outbound/inbound on the same slots, and uses both excursion ends,
+    /// which is what separates those causes. Excursions stay within one stroke of
+    /// the origin in each direction, so it costs no more travel than the
+    /// alternating orders on a centred axis.
+    PairedOutAndBack = 2,
 }
 
 impl IntegralSlotOrder {
+    /// Every declared order, so a new variant cannot be added untested.
+    pub const ALL: [Self; 3] = [
+        Self::ForwardFirst,
+        Self::ReverseFirst,
+        Self::PairedOutAndBack,
+    ];
+
+    /// Parity offset applied to one same-direction observation ordinal.
+    ///
+    /// The three orders differ only here: the alternating orders apply a fixed
+    /// offset and the paired order alternates it with the ordinal.
+    const fn parity_twist(self, ordinal: usize) -> usize {
+        match self {
+            Self::ForwardFirst => 0,
+            Self::ReverseFirst => 1,
+            Self::PairedOutAndBack => ordinal & 1,
+        }
+    }
+
     /// Direction index for one slot: 0 is forward, 1 is reverse.
     pub const fn direction_index(self, slot: u8) -> usize {
-        let forward = slot.is_multiple_of(2);
-        match self {
-            Self::ForwardFirst if forward => 0,
-            Self::ForwardFirst => 1,
-            Self::ReverseFirst if forward => 1,
-            Self::ReverseFirst => 0,
-        }
+        (slot as usize & 1) ^ self.parity_twist(slot as usize >> 1)
     }
 
     /// Signed mechanical travel direction for one slot.
@@ -475,11 +498,7 @@ impl IntegralSlotOrder {
     /// two are pinned together by test, because evidence is written by raw slot
     /// and read back by observation and direction.
     pub const fn slot_for(self, observation: usize, direction: usize) -> u8 {
-        let parity = match self {
-            Self::ForwardFirst => direction,
-            Self::ReverseFirst => 1 - direction,
-        };
-        (observation * 2 + parity) as u8
+        (observation * 2 + (direction ^ self.parity_twist(observation))) as u8
     }
 
     /// Stable wire code.

@@ -457,6 +457,12 @@ pub enum AutotuneAction {
     /// limited by the retained matrix lifecycle, so it is where the mirrored
     /// order is measured.
     CombinedMirrored = 5,
+    /// Combined acquisition with paired F,R,R,F slots.
+    ///
+    /// Separates a stroke's direction from whether it leaves or returns to the
+    /// origin and from the direction of the stroke before it, which the two
+    /// alternating orders lock together.
+    CombinedPaired = 6,
 }
 
 impl AutotuneAction {
@@ -469,6 +475,7 @@ impl AutotuneAction {
             3 => Some(Self::MatrixAscendingMirrored),
             4 => Some(Self::MatrixDescendingMirrored),
             5 => Some(Self::CombinedMirrored),
+            6 => Some(Self::CombinedPaired),
             _ => None,
         }
     }
@@ -489,6 +496,7 @@ impl AutotuneAction {
             Self::CombinedMirrored
             | Self::MatrixAscendingMirrored
             | Self::MatrixDescendingMirrored => IntegralSlotOrder::ReverseFirst,
+            Self::CombinedPaired => IntegralSlotOrder::PairedOutAndBack,
         }
     }
 }

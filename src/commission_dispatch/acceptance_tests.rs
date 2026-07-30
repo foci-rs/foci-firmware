@@ -164,7 +164,12 @@ fn action_codes_and_invalid_values_are_exact() {
         AutotuneAction::from_u8(5),
         Some(AutotuneAction::CombinedMirrored)
     );
-    assert_eq!(AutotuneAction::from_u8(6), None);
+    assert_eq!(AutotuneAction::CombinedPaired as u8, 6);
+    assert_eq!(
+        AutotuneAction::from_u8(6),
+        Some(AutotuneAction::CombinedPaired)
+    );
+    assert_eq!(AutotuneAction::from_u8(7), None);
 
     // Slot order is defined for every acquisition, including combined runs.
     for (action, slot_order) in [
@@ -228,6 +233,8 @@ fn action_codes_and_invalid_values_are_exact() {
     }
     assert_eq!(AutotuneAction::Combined.matrix_order(), None);
     assert_eq!(AutotuneAction::Combined.matrix_slot_order(), None);
+    assert_eq!(AutotuneAction::CombinedPaired.matrix_order(), None);
+    assert_eq!(AutotuneAction::CombinedPaired.matrix_slot_order(), None);
     let ascending = CommissioningWorkflowPlan::new_acceptance_matrix(
         1,
         AcceptanceMatrixOrder::Ascending,

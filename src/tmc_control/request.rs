@@ -760,7 +760,8 @@ where
             #[cfg(feature = "trace-velocity-sweep")]
             let tune_route = match autotune_action {
                 crate::tmc::AutotuneAction::Combined
-                | crate::tmc::AutotuneAction::CombinedMirrored => {
+                | crate::tmc::AutotuneAction::CombinedMirrored
+                | crate::tmc::AutotuneAction::CombinedPaired => {
                     use crate::commissioning::outer::velocity::integral_reproduction::StageCSlotState;
 
                     let stage_c_blocks_replacement = match stage_c_candidate.state() {

@@ -358,10 +358,7 @@ fn schedule_order_code_round_trips_and_preserves_the_historical_byte() {
             order as u8,
             "forward-first must not change the wire byte"
         );
-        for slot_order in [
-            IntegralSlotOrder::ForwardFirst,
-            IntegralSlotOrder::ReverseFirst,
-        ] {
+        for slot_order in IntegralSlotOrder::ALL {
             let code = schedule_order_code(order, slot_order);
             assert_eq!(decode_schedule_order_code(code), Some((order, slot_order)));
         }
@@ -482,4 +479,43 @@ fn forward_first_leaves_the_stage_c_plan_digest_untouched() {
         super::combined_plan::COMBINED_STAGE_C_SCHEMA_REVISION,
         "the schema must not move for a mirrored run"
     );
+}
+
+/// The Stage-C plan flags carry the slot order as a two-bit field.
+///
+/// One bit only distinguished alternating from mirrored. A third order needs two,
+/// and bits 2 and 3 were both free, so forward-first stays all-zero and the
+/// mirrored encoding is unchanged.
+#[test]
+fn plan_flags_carry_every_slot_order_without_disturbing_the_older_bits() {
+    let mut plan = combined_plan();
+    let older_bits = plan_recovery_flags(&plan) & 0b011;
+
+    for (slot_order, expected) in [
+        (IntegralSlotOrder::ForwardFirst, 0b0000),
+        (IntegralSlotOrder::ReverseFirst, 0b0100),
+        (IntegralSlotOrder::PairedOutAndBack, 0b1000),
+    ] {
+        plan.slot_order = slot_order;
+        let flags = plan_recovery_flags(&plan);
+        assert_eq!(flags & 0b1100, expected, "{slot_order:?}");
+        assert_eq!(
+            flags & 0b011,
+            older_bits,
+            "{slot_order:?} disturbed older bits"
+        );
+    }
+}
+
+/// Every order must give the plan a distinct identity.
+#[test]
+fn every_slot_order_separates_the_stage_c_plan_digest() {
+    let mut digests = heapless::Vec::<u64, 3>::new();
+    for slot_order in IntegralSlotOrder::ALL {
+        let mut plan = combined_plan();
+        plan.slot_order = slot_order;
+        let digest = plan.digest();
+        assert!(!digests.contains(&digest), "{slot_order:?} reused a digest");
+        digests.push(digest).unwrap();
+    }
 }

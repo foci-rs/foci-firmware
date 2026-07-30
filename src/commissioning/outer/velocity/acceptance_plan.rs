@@ -56,6 +56,7 @@ pub const fn decode_schedule_order_code(
     let slot_order = match code >> 4 {
         0 => IntegralSlotOrder::ForwardFirst,
         1 => IntegralSlotOrder::ReverseFirst,
+        2 => IntegralSlotOrder::PairedOutAndBack,
         _ => return None,
     };
     Some((order, slot_order))

@@ -28,8 +28,7 @@ impl AutotuneAction {
     /// Return the immutable amplitude order for a matrix action.
     pub const fn matrix_order(self) -> Option<AcceptanceMatrixOrder> {
         match self {
-            Self::Combined => None,
-            Self::CombinedMirrored => None,
+            Self::Combined | Self::CombinedMirrored | Self::CombinedPaired => None,
             Self::MatrixAscending | Self::MatrixAscendingMirrored => {
                 Some(AcceptanceMatrixOrder::Ascending)
             }
@@ -45,7 +44,7 @@ impl AutotuneAction {
     /// wire byte; this keeps them separate in the type system.
     pub const fn matrix_slot_order(self) -> Option<IntegralSlotOrder> {
         match self {
-            Self::Combined | Self::CombinedMirrored => None,
+            Self::Combined | Self::CombinedMirrored | Self::CombinedPaired => None,
             Self::MatrixAscending | Self::MatrixDescending => Some(IntegralSlotOrder::ForwardFirst),
             Self::MatrixAscendingMirrored | Self::MatrixDescendingMirrored => {
                 Some(IntegralSlotOrder::ReverseFirst)
